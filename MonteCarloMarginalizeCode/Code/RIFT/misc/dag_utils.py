@@ -1063,7 +1063,7 @@ echo Starting ...
                 if name[0] == '/':
                     pre_needed =True
         except:
-            True
+            print(" WARNING: local.cache file not present, reverting to ile_pre.sh ")
         if not(pre_needed):
             transfer_files += ['../local.cache']
         else:            

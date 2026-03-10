@@ -118,6 +118,7 @@ for indx in np.arange(len(dlist_ranges)):
     downselect_dict[dlist[indx]] = dlist_ranges[indx]
 
 indx_reflect=[]
+rlist=[]
 if opts.reflect_parameter:
     rlist  = opts.reflect_parameter
     indx_reflect = [coord_names.index(param) for param in opts.reflect_parameter]
@@ -202,7 +203,8 @@ if len(coord_names) >1:
         # final reflection
         tmp = np.where( tmp > reflect_dict[param][1], 2*reflect_dict[param][1] - tmp, tmp)
         X_out[:,indx] = tmp
-                                                 
+        # DELETE parameter from downselet_dict : no longer needed
+        del downselect_dict[param]
 
     # perform manual requirement
     if 'eta' in coord_names:
@@ -218,7 +220,7 @@ else:
         indx_eta = coord_names.index('eta')
         X_out[:,indx_eta] = np.where(X_out[:,indx_eta] > 1/4, 1/2- X_out[:,indx_eta], X_out[:,indx_eta]) # reflection boundary condition, preserve points
         X_out[:,indx_eta] = np.where(X_out[:,indx_eta] < 0, -X_out[:,indx_eta], X_out[:,indx_eta]) # reflection on other side
-
+        
 # Undo natural logarithm
 for indx, name  in enumerate(coord_names):
     if name in log_coord_names:
@@ -237,7 +239,7 @@ for indx, name  in enumerate(coord_names):
 
 # Apply downselect constraints, using conversion utility for speed
 #   WARNING: For spin, we are NOT retaining transverse DOF by default!
-names_downselect = list(downselect_dict.keys())
+names_downselect = list(set(downselect_dict.keys()) - set(rlist)) # make sure to remove the unneeded conversions
 x_out_down = lalsimutils.convert_waveform_coordinates(X_out, coord_names=names_downselect, low_level_coord_names=coord_names)
 indx_ok = np.ones(len(x_out_down),dtype=bool)
 for indx, name in enumerate(names_downselect):
