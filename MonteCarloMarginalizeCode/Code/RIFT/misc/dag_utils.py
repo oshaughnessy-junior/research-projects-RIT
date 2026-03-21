@@ -18,7 +18,7 @@
 A collection of routines to manage Condor workflows (DAGs).
 """
 
-import os, sys, re
+import os, sys, re, shutil
 import numpy as np
 from time import time
 from hashlib import md5
@@ -1401,13 +1401,20 @@ def write_convert_sub(tag='convert', exe=None, file_input=None,file_output=None,
     # for example: 
     #    for i in `condor_q -hold  | grep oshaughn | awk '{print $1}'`; do condor_qedit $i RequestMemory 30000; done; condor_release -all 
 
-    ile_job.add_condor_cmd('requirements', '&&'.join('({0})'.format(r) for r in requirements))
-
     # no grid
-    if no_grid:
-        ile_job.add_condor_cmd("MY.DESIRED_SITES",'"nogrid"')
+    if no_grid:  # very aggressively enforce staying on the current filesystem!
+        ile_job.add_condor_cmd("MY.DESIRED_SITES",'"none"')
         ile_job.add_condor_cmd("MY.flock_local",'true')
+        try:
+            os.system("condor_config_val UID_DOMAIN > uid_domain.txt")
+            with open("uid_domain.txt", 'r') as f:
+                uid_domain = f.readline()
+                requirements.append(' UidDomain =?= "{}"'.format(uid_domain))
+        except:
+            True
 
+    ile_job.add_condor_cmd('requirements', '&&'.join('({0})'.format(r) for r in requirements))
+        
     try:
         ile_job.add_condor_cmd('accounting_group',os.environ['LIGO_ACCOUNTING'])
         ile_job.add_condor_cmd('accounting_group_user',os.environ['LIGO_USER_NAME'])
@@ -2496,11 +2503,24 @@ def write_bilby_pickle_sub(tag='Bilby_pickle', exe=None, universe='local', log_d
                 ifo = cache_lines[0] + '1'
                 bilby_data_dict[ifo] = cache_lines[-1].replace('file://localhost','')
             else:
-                if len(cache_lines) > len(ifo_list):
-                        raise Exception(" Pipeline failure: cache file must contain one line per IFO to identify files in this approach")
-                for indx in np.arange(len(cache_lines)):
+                if len(cache_lines) <= len(ifo_list):
+                    for indx in np.arange(len(cache_lines)):
                         ifo = cache_lines[indx][0]+"1"
                         bilby_data_dict[ifo] = cache_lines[indx][-1].replace('file://localhost','')
+                else:
+                    print(" WARNING: cache file ideallly contain one line per IFO to identify files in this approach")
+                    if  not(frames_dir) or not os.path.exists('./frames_dir'):
+                        print(" WARNING: Backstop method being applied - regenerating frames into frames_dir")
+                        shutil.copyfile(cache_file, 'local.cache')
+                        os.system("util_ForOSG_MakeTruncatedLocalFramesDir.sh .")
+                    fnames_gwf = list(glob.glob(frames_dir+"/*.gwf")  )
+                    # get dictionary matching files
+                    for name in fnames_gwf:
+                        this_frame_ifo = None
+                        for ifo in ifo_list:
+                            if name.startswith(frames_dir+"/{}-".format(ifo)):
+                                this_frame_ifo=ifo
+                        bilby_data_dict[ifo] = this_frame_ifo
         elif frames_dir:  # Danger : this directory might be EMPTY and generated at runtile
             import glob
             print(" calmarg: bilby ini file does not have data_dict, attempting to identify data from directory: {} ".format(frames_dir))
