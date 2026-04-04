@@ -53,7 +53,7 @@ import bilby
 import bilby_pipe
 
 import h5py
-
+import ast
 # So I can import the RIFT source while not making this some setup.py-able package
 # TODO this should not be a hardcoded path!
 
@@ -246,6 +246,10 @@ result=None # scoping requirement
 # read in the posterior samples for reweighting
 if args.posterior_sample_file.split(".")[-1] == 'json':
     result = bilby.core.result.read_in_result(args.posterior_sample_file)
+    if start_index is not None:
+        if start_index > len(result.posterior):
+            print(" Stopping : no work after end of file")
+            sys.exit(0)  # no work needed, stop
     if end_index is not None:
         if end_index > len(result.posterior):
             end_index = len(result.posterior)
@@ -253,6 +257,10 @@ if args.posterior_sample_file.split(".")[-1] == 'json':
 elif (args.posterior_sample_file.split(".")[-1] == 'txt') or (args.posterior_sample_file.split(".")[-1] == 'dat'):
     result = bilby.core.result.Result()
     result.posterior = pd.DataFrame(np.genfromtxt(args.posterior_sample_file, names=True))
+    if start_index is not None:
+        if start_index > len(result.posterior):
+            print(" Stopping : no work after end of file")
+            sys.exit(0)  # no work needed, stop
     if end_index is not None:
         if end_index > len(result.posterior):
             end_index = len(result.posterior)
@@ -339,7 +347,20 @@ if args.internal_waveform_fd_no_condition:
 if args.use_gwsignal_lmax_nyquist:
     extra_waveform_kwargs['lmax_nyquist'] = int(args.use_gwsignal_lmax_nyquist)
 if args.extra_waveform_kwargs:
-    extra_waveform_kwwargs.update(eval(args.extra_waveform_kwargs))
+    # this form is REQUIRED to parse the standard v5PHM arguments : the key strings are not quoted when passed in from asimov
+    # Need to work on consistency for XPHM-SpinTaylor parsing
+    my_arg_dict = ast.literal_eval(args.extra_waveform_kwargs)
+    # dictionary may be malformed (eg not properly quoted) or render as string
+    if not(isinstance(my_arg_dict, dict)):
+        base_list = my_arg_dict[1:-1].split(',') # remove {} at end, assume string
+        base_dict = {}
+        for item in base_list:
+            if item:
+                key,value =item.split(':')
+                key = key.lstrip()
+                base_dict[key] = value
+        my_arg_dict = base_dict
+    extra_waveform_kwargs.update(my_arg_dict)
 waveform_arguments['extra_waveform_kwargs'] = extra_waveform_kwargs
 if args.waveform_approximant:
     waveform_arguments['waveform_approximant'] = args.waveform_approximant
@@ -480,7 +501,11 @@ if args.dump_cal_realization:
     for indx in range(len(result.posterior)):
         dict_samples = {key: result.posterior[key][indx] for key in result.posterior}
         calibration_likelihood.parameters = dict_samples
-        recal_indx_array[indx] = int(calibration_likelihood.generate_calibration_sample_from_marginalized_likelihood())
+        try:
+            recal_indx_array[indx] = int(calibration_likelihood.generate_calibration_sample_from_marginalized_likelihood())
+        except:
+            # sometimes probabilities are 'nan'
+            recal_indx_array[indx] = -1
     #  ADD THEM TO THE RESULT OBJECT
     for ifo in ifos:
         ifo_name = ifo.name
@@ -492,33 +517,42 @@ if args.dump_cal_realization:
         cal_param_names_rest = list( set(cal_param_names) - set(cal_param_names_freq) )
         cal_names_for[ifo_name] =  cal_param_names_rest
         # assign blank entries for remaining parameters
-        args = dict(zip( cal_param_names_rest, [ np.zeros(len(new_posterior))  for x in cal_param_names_rest] ) )
-        new_posterior = new_posterior.assign(**args) # empty arrays
+        cal_args = dict(zip( cal_param_names_rest, [ np.zeros(len(new_posterior))  for x in cal_param_names_rest] ) )
+        new_posterior = new_posterior.assign(**cal_args) # empty arrays
         freq_values = [ recal_file_dict[ifo.name]["CalParams"]["table"][name][0]  for name in cal_param_names_freq]
-        args = dict(zip( cal_param_names_freq, [ freq_values[indx]*np.ones(len(new_posterior))  for indx in range(len(freq_values))] )) # frequency values
-        new_posterior = new_posterior.assign(**args)
+        cal_args = dict(zip( cal_param_names_freq, [ freq_values[indx]*np.ones(len(new_posterior))  for indx in range(len(freq_values))] )) # frequency values
+        new_posterior = new_posterior.assign(**cal_args)
 
         # now add cal results, based on cal index.
         for name in cal_names_for[ifo_name]:
-            new_posterior[name] = recal_file_dict[ifo.name]["CalParams"]["table"][name][    recal_indx_array]
+            values = recal_file_dict[ifo.name]["CalParams"]["table"][name][    recal_indx_array]
+            bad_indexes = recal_indx_array == -1
+            values[bad_indexes] = float('nan')  # these will not be selected anyways
+            new_posterior[name] = values
             #for indx_event in range(len(result.posterior)):
             #    new_posterior.loc[indx_event,name] = recal_file_dict[ifo.name]["CalParams"]["table"][name][    recal_indx_array[indx_event]]
 
     # Re-insert RIFT key names if needed
-    if opts.use_rift_samples:
-        names = list(new_posterior.keys())  # dangerous to have iterator tied to changing structure
-        for old_key in names:
-            if old_key in key_swap_dict:
-                new_posterior[key_swap_dict_backwards[old_key]] = new_posterior[old_key]
-                del new_posterior[old_key]
+    if args.use_rift_samples:
+        new_posterior.rename(columns=key_swap_dict_backwards,inplace=True)
+        #names = list(new_posterior.keys())  # dangerous to have iterator tied to changing structure
+        # for old_key in names:
+        #     if old_key in key_swap_dict:
+        #         new_posterior[key_swap_dict_backwards[old_key]] = new_posterior[old_key]
+        #         del new_posterior[old_key]
 
             
     # WRITE TO FILE
     #   - problem with corrupted output if job fails on write (happens too often)
-    #new_posterior.to_csv(extended_posterior_file,sep=' ',index=False)
-    with tempfile.NamedTemporaryFile(mode='w+',delete=False) as temp:
-        new_posterior.to_csv(temp.name,sep=' ',index=False)
-        shutil.copy(temp.name, extended_posterior_file)
+#    new_posterior.to_csv(extended_posterior_file,sep=' ',index=False)
+    with open(extended_posterior_file, 'w+') as f:
+        new_posterior.to_csv(f,sep=' ',index=False)
+        f.flush()
+        
+    # with tempfile.NamedTemporaryFile(mode='w+',delete=False) as temp:
+    #     print(" Writing to temporary file: ".temp.name)
+    #     new_posterior.to_csv(temp.name,sep=' ',index=False)
+    #     shutil.copy(temp.name, extended_posterior_file)
         #os.rename(temp.name, extended_posterior_file)
         
 

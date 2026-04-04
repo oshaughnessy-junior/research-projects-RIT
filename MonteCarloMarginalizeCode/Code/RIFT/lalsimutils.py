@@ -4065,7 +4065,7 @@ def hoft_from_hlm(hlms,P, return_complex=False, extra_phase_shift=0):
         hc = lal.CreateREAL8TimeSeries("hT", h22.epoch, h22.f0,
             h22.deltaT, h22.sampleUnits, h22.data.length)
         hp.data.data = np.real(hT.data.data)
-        hc.data.data = np.imag(hT.data.data)
+        hc.data.data = (-1)*np.imag(hT.data.data)
         hp.epoch = hp.epoch + P.tref
         hc.epoch = hc.epoch + P.tref
         h_real = lalsim.SimDetectorStrainREAL8TimeSeries(hp, hc, 
@@ -4603,7 +4603,7 @@ def frame_data_to_hoft_old(fname, channel, start=None, stop=None, window_shape=0
     return tmp
 
 def frame_data_to_hoft(fname, channel, start=None, stop=None, window_shape=0.,
-                       verbose=True,deltaT=None,deltaT_internal=None,use_gwpy=False,**kwargs):
+                       verbose=True,deltaT=None,deltaT_internal=None,upsample_method='cubic',use_gwpy=False,**kwargs):
     """
     Function to read in data in the frame format and convert it to 
     a REAL8TimeSeries. fname is the path to a LIGO cache file.
@@ -4677,7 +4677,13 @@ def frame_data_to_hoft(fname, channel, start=None, stop=None, window_shape=0.,
             xvals_resampled = np.arange(fac*tmp.data.length)
             tmp2 = lal.CreateREAL8TimeSeries("hoft", tmp.epoch, 0, tmp.deltaT/fac, lsu_DimensionlessUnit, fac*tmp.data.length)
             tmp2.data.data *= 0 # zero out
-            tmp2.data.data = np.interp(xvals_resampled,xvals,   tmp.data.data)
+            if upsample_method == 'cubic':
+                cs = interpolate.CubicSpline(xvals, tmp.data.data,extrapolate='periodic')
+                tmp2.data.data = cs(xvals_resampled)
+                # zero out last chunk where we extrapolated; it will be tapered anyways
+                tmp2.data.data[-fac:] =0
+            else:
+                tmp2.data.data = np.interp(xvals_resampled,xvals,   tmp.data.data)
             tmp = tmp2
 
     return tmp
