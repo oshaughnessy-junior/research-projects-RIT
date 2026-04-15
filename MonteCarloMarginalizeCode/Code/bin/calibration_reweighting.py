@@ -242,8 +242,14 @@ end_index = args.end_index
 key_swap_dict = None
 key_swap_dict_backwards = None
 
+outdir = os.path.dirname(os.path.abspath(args.posterior_sample_file))
+# make IMMEDIATELY, so we don't get held when evicted for OSG operation
+if not os.path.exists(f'{outdir}/weight_files/'):
+    os.makedirs(f'{outdir}/weight_files/')
+
 result=None # scoping requirement
 # read in the posterior samples for reweighting
+rift_time_samples=None # save b/c bilby somehow distorts them?
 if args.posterior_sample_file.split(".")[-1] == 'json':
     result = bilby.core.result.read_in_result(args.posterior_sample_file)
     if start_index is not None:
@@ -268,6 +274,7 @@ elif (args.posterior_sample_file.split(".")[-1] == 'txt') or (args.posterior_sam
     result.meta_data = {}
 
     if args.use_rift_samples:
+        rift_time_samples = np.array(result.posterior['time']) # save copy of original samples
         result.posterior  = result.posterior.drop(columns=['lnL','ps'])
         result.posterior['p'] = np.log(result.posterior['p'])  # not sure if used, but if so define correctly
         # The key_sap_dict does not have an 'eccentricity' key since both RIFT and Bilby use "eccentricity" as the key.
@@ -303,8 +310,6 @@ elif (args.posterior_sample_file.split(".")[-1] == 'txt') or (args.posterior_sam
               result.posterior['lambda_2'] = np.zeros(len(result.posterior['mass_1']))
 else:
   raise Exception(" Unknown posterior_sample_file format ")          
-
-outdir = os.path.dirname(os.path.abspath(args.posterior_sample_file))
 
 ifos = data.interferometers
 time_marginalization_interval = args.data_integration_window_half #args.time_marginalization_interval
@@ -506,6 +511,14 @@ if args.dump_cal_realization:
         except:
             # sometimes probabilities are 'nan'
             recal_indx_array[indx] = -1
+    bad_indexes = recal_indx_array == -1   # boolean
+    bad_indexes_array=None
+    has_bad=False
+    print(bad_indexes, np.sum(bad_indexes))
+    if np.sum(bad_indexes) > 0.5:
+      print("has bad items")
+      bad_indexes_array = np.arange(len(bad_indexes))[bad_indexes]
+      has_bad=True
     #  ADD THEM TO THE RESULT OBJECT
     for ifo in ifos:
         ifo_name = ifo.name
@@ -526,12 +539,17 @@ if args.dump_cal_realization:
         # now add cal results, based on cal index.
         for name in cal_names_for[ifo_name]:
             values = recal_file_dict[ifo.name]["CalParams"]["table"][name][    recal_indx_array]
-            bad_indexes = recal_indx_array == -1
+            bad_indexes = (recal_indx_array == -1)
             values[bad_indexes] = float('nan')  # these will not be selected anyways
             new_posterior[name] = values
             #for indx_event in range(len(result.posterior)):
             #    new_posterior.loc[indx_event,name] = recal_file_dict[ifo.name]["CalParams"]["table"][name][    recal_indx_array[indx_event]]
 
+    # remove events with no cal sample generated 
+    if has_bad:
+       print(" WARNING: Some samples have no cal realization generated ", len(bad_indexes_array))
+       print(" WARNING: These will be retained nominally to preserve shape for later recombination ")
+       
     # Re-insert RIFT key names if needed
     if args.use_rift_samples:
         new_posterior.rename(columns=key_swap_dict_backwards,inplace=True)
@@ -540,6 +558,15 @@ if args.dump_cal_realization:
         #     if old_key in key_swap_dict:
         #         new_posterior[key_swap_dict_backwards[old_key]] = new_posterior[old_key]
         #         del new_posterior[old_key]
+        # delete some undesired fields
+        undesired_fields = ['neff','time_jitter', 'p']
+        overlap = set(undesired_fields).intersection(set(new_posterior.columns))
+        for name in undesired_fields:          
+            if name in new_posterior.columns:
+                new_posterior.drop(columns=name,inplace=True)
+
+        # rewrite time field: bilby internally distorts it somehow, restore actual values from input
+        new_posterior['time'] = rift_time_samples
 
             
     # WRITE TO FILE

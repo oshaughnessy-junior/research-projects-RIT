@@ -29,8 +29,8 @@ import configparser
 __author__ = "Evan Ochsner <evano@gravity.phys.uwm.edu>, Chris Pankow <pankow@gravity.phys.uwm.edu>"
 
 # getenv=True deprecated, will need workaround to explicitly pull extra environment variables
-default_getenv_value='True'
-default_getenv_osg_value='True'
+default_getenv_value='*'
+default_getenv_osg_value='*'
 if 'RIFT_GETENV' in os.environ:
     default_getenv_value = os.environ['RIFT_GETENV']
 if 'RIFT_GETENV_OSG' in os.environ:
@@ -711,7 +711,7 @@ def write_CIP_sub(tag='integrate', exe=None, input_net='all.net',output='output-
     return ile_job, ile_sub_name
 
 
-def write_puff_sub(tag='puffball', exe=None, input_net='output-ILE-samples',output='puffball',universe="vanilla",out_dir=None,log_dir=None, use_eos=False,ncopies=1,arg_str=None,request_memory=1024,arg_vals=None, no_grid=False,extra_text='',**kwargs):
+def write_puff_sub(tag='puffball', exe=None, base=None,input_net='output-ILE-samples',output='puffball',universe="vanilla",out_dir=None,log_dir=None, use_eos=False,ncopies=1,arg_str=None,request_memory=1024,arg_vals=None, no_grid=False,extra_text='',**kwargs):
     """
     Perform puffball calculation 
     Inputs:
@@ -721,6 +721,7 @@ def write_puff_sub(tag='puffball', exe=None, input_net='output-ILE-samples',outp
 
     exe = exe or which("util_ParameterPuffball.py")
     # Create executable if needed  (using extra_text as flag for now)
+    base_str = ''
     if len(extra_text) > 0:
         if False: #not (base is None):
             base_str = ' ' + base +"/"
@@ -1173,6 +1174,7 @@ def write_consolidate_sub_simple(tag='consolidate', exe=None, base=None,target=N
 
     # Create executable if needed  (using extra_text as flag for now)
     # Note 'base' refers to the working diretory here, so we need to back up
+    base_str = ''
     if len(extra_text) > 0:
         if not (base is None):
             base_0 = base[0]
@@ -2341,6 +2343,7 @@ def write_calibration_uncertainty_reweighting_sub(tag='Calib_reweight', exe=None
         ile_job.add_condor_cmd('transfer_executable', 'False')
         ile_job.add_condor_cmd("MY.SingularityBindCVMFS", 'True')
         ile_job.add_condor_cmd("MY.SingularityImage", '"' + singularity_image_used + '"')
+        ile_job.add_condor_cmd("transfer_output_files", "weight_files")
         requirements.append("HAS_SINGULARITY=?=TRUE")
         print(" WARNING: cal reweighting requires bilby. Directories are moved to cal_evelopes")
 #        os.system("condor_config_val UID_DOMAIN > uid_domain.txt")
@@ -2371,8 +2374,8 @@ def write_calibration_uncertainty_reweighting_sub(tag='Calib_reweight', exe=None
         pickle_file_arg = os.path.basename(pickle_file_arg)
         post_file_arg = os.path.basename(post_file_arg)
         if os.path.exists('cal_envelopes'):
-            transfer_files += ['../cal_envelopes'] # note initial dir configured so this will work
-            ile_job.add_arg(" --use-local-cal-files ")
+            transfer_files += ['./cal_envelopes'] # note initial dir configured so this will work
+            ile_job.add_arg(" --use_local_cal_files ")
     ile_job.add_opt('data_dump_file', str(pickle_file_arg))
     ile_job.add_opt('posterior_sample_file', str(post_file_arg))
     ile_job.add_opt('number_of_calibration_curves', str(n_cal))
