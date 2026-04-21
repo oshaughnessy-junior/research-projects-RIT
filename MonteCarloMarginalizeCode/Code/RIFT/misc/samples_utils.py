@@ -33,9 +33,21 @@ import numpy.lib.recfunctions as rfn
 
 def extract_combination_from_LI(samples_LI, p):
     """
-    extract_combination_from_LI
-      - reads in known columns from posterior samples
-      - for selected known combinations not always available, it will compute them from standard quantities
+    Extracts a specific parameter or computed combination from posterior samples.
+
+    This function reads known columns from the posterior samples. If the requested
+    parameter `p` is not directly available, it attempts to compute it from standard
+    quantities using predefined remapping and physics formulas (e.g., computing
+    effective spin `chi_eff` from individual spin components).
+
+    Args:
+        samples_LI (np.recarray): A structured numpy array containing posterior samples.
+        p (str): The name of the parameter or combination to extract.
+
+    Returns:
+        np.ndarray: An array containing the extracted or computed values for parameter `p`.
+            Returns an array of zeros if the parameter cannot be accessed to avoid
+            hard failures.
     """
     if p in samples_LI.dtype.names:  # e.g., we have precomputed it
         return samples_LI[p]
@@ -141,28 +153,22 @@ def extract_combination_from_LI(samples_LI, p):
     return np.zeros(len(samples_LI['m1']))  # to avoid causing a hard failure
 
 def add_field(a, descr):
-    """Return a new array that is like "a", but has additional fields.
+    """
+    Returns a new structured array with additional fields.
 
-    Arguments:
-      a     -- a structured numpy array
-      descr -- a numpy type description of the new fields
+    The contents of "a" are copied over to the appropriate fields in the new array,
+    while the new fields are left uninitialized. The original array "a" is not modified.
 
-    The contents of "a" are copied over to the appropriate fields in
-    the new array, whereas the new fields are uninitialized.  The
-    arguments are not modified.
+    Args:
+        a (np.ndarray): A structured numpy array.
+        descr (list): A numpy type description of the new fields to add 
+            (e.g., `[('field_name', float)]`).
 
-    >>> sa = numpy.array([(1, 'Foo'), (2, 'Bar')], \
-                         dtype=[('id', int), ('name', 'S3')])
-    >>> sa.dtype.descr == numpy.dtype([('id', int), ('name', 'S3')])
-    True
-    >>> sb = add_field(sa, [('score', float)])
-    >>> sb.dtype.descr == numpy.dtype([('id', int), ('name', 'S3'), \
-                                       ('score', float)])
-    True
-    >>> numpy.all(sa['id'] == sb['id'])
-    True
-    >>> numpy.all(sa['name'] == sb['name'])
-    True
+    Returns:
+        np.ndarray: A new structured array containing the original fields and the new fields.
+
+    Raises:
+        ValueError: If the input array `a` is not a structured numpy array.
     """
     if a.dtype.fields is None:
         raise ValueError("`A' must be a structured numpy array")
@@ -177,8 +183,24 @@ def add_field(a, descr):
 
 def standard_expand_samples(samples):
     """
-    Do some things which add a bunch of standard fields to the samples, if I don't have them.  
-    Used in plot_posterior_corner.py for example
+    Expands a sample set by adding standard derived parameters.
+
+    This function checks for the presence of certain base parameters and computes
+    derived quantities if they are missing. This is commonly used for preparing
+    samples for plotting (e.g., in `plot_posterior_corner.py`).
+
+    Added fields may include:
+    - Mass parameters: `mtotal`, `eta`, `m1`, `m2` (computed from `mc` and `q`).
+    - Spin parameters: `a1x`, `a1y`, `a2x`, `a2y`, `chi1_perp`, `chi2_perp`, `chi_eff` 
+      (computed from `a1`, `theta1`, `phi1`, etc.).
+    - Angles: `phi1`, `phi2`, `phi12`.
+    - Tidal parameters: `lambdat`, `dlambdat` (computed from `lambda1`, `lambda2`).
+
+    Args:
+        samples (np.recarray): A structured numpy array of posterior samples.
+
+    Returns:
+        np.recarray: The expanded structured array containing the original and derived fields.
     """
     if not 'mtotal' in samples.dtype.names and 'mc' in samples.dtype.names:  # raw LI samples use 
         q_here = samples['q']
@@ -258,6 +280,17 @@ def standard_expand_samples(samples):
 from multiprocessing import Pool 
 
 def fchipavg(sample):
+    """
+    Helper function to compute the average effective spin chi_pavg for a single sample.
+
+    Designed for use with `multiprocessing.Pool.map`.
+
+    Args:
+        sample (tuple): A tuple containing [m1, m2, s1x, s1y, s1z, s2x, s2y, s2z].
+
+    Returns:
+        float: The computed chi_pavg value.
+    """
             P=lalsimutils.ChooseWaveformParams()
             P.m1 = sample[0]
             P.m2 = sample[1]
@@ -276,6 +309,17 @@ def fchipavg(sample):
             return chipavg     
 
 def fchip(sample):
+    """
+    Helper function to compute the effective spin chi_p for a single sample.
+
+    Designed for use with `multiprocessing.Pool.map`.
+
+    Args:
+        sample (tuple): A tuple containing [m1, m2, s1x, s1y, s1z, s2x, s2y, s2z].
+
+    Returns:
+        float: The computed chi_p value.
+    """
             P=lalsimutils.ChooseWaveformParams()
             P.m1 = sample[0]
             P.m2 = sample[1]
@@ -290,9 +334,25 @@ def fchip(sample):
 
 def dump_pesummary_samples_to_file_as_rift(fname_h5,key,fname_out,no_drop=False,no_rename=False):
     """
-    >>> import samples_utils
-    >>> samples_utils.dump_pesummary_samples_to_file_as_rift("metafile.h5", "bilby-IMRPhenomXPHM-SpinTaylor-3",'test.dat')
-    $ convert_output_format_inference2ile --posterior-samples test.dat --output-xml my.xml.gz
+    Converts posterior samples from a pesummary HDF5 file to the RIFT text format.
+
+    Reads samples from the specified key in the HDF5 file, renames fields based on 
+    `remap_bilby_to_rift`, and optionally drops metadata fields (e.g., SNR, recalib).
+
+    Args:
+        fname_h5 (str): Path to the input pesummary HDF5 file.
+        key (str): The key within the HDF5 file where the samples are stored.
+        fname_out (str): Path to the output text file.
+        no_drop (bool, optional): If True, does not drop 'recalib' or 'snr' fields. Defaults to False.
+        no_rename (bool, optional): If True, does not rename fields using `remap_bilby_to_rift`. Defaults to False.
+
+    Raises:
+        Exception: If the provided key is not found in the HDF5 file.
+
+    Example:
+        >>> import samples_utils
+        >>> samples_utils.dump_pesummary_samples_to_file_as_rift("metafile.h5", "bilby-IMRPhenomXPHM-SpinTaylor-3",'test.dat')
+       $ convert_output_format_inference2ile --posterior-samples test.dat --output-xml my.xml.gz
     """
     import h5py
     BBH = h5py.File(fname_h5, 'r')
