@@ -28,6 +28,11 @@ if 'RIFT_GETENV_OSG' in os.environ:
 
     
 
+def safely_quote_arg_str(s):
+    if s.startswith('"') and s.endswith('"'):
+        return s
+    return '"' + s + '"'
+
 if has_glue_pipeline:
     def default_condor_build_job(tag='job_tag_default',exe=None,arg_str=None,sim_path=None,universe='vanilla', use_singularity=False, use_osg=False, singularity_image_has_exe=False,singularity_image=False,use_oauth_files=False,transfer_files=None,transfer_output_files=None,request_gpus=False,request_disk=False,request_memory=False,condor_commands=None,log_dir=None,**kwargs):
         # PREP: Container management in file list
@@ -184,7 +189,7 @@ if has_glue_pipeline:
                 os.mkdir(self.base_location + '/logs')
             # workspace for dags which are building the simulations
             if not os.path.exists(self.base_location+"/dags"):
-                os.mkdir(self.base_location + '/dag')
+                os.mkdir(self.base_location + '/dags')
 
         def generate_simulation(self, sim_params,**kwargs):
             self._internal_simulations_have_sub_directories = True 
@@ -213,12 +218,49 @@ if has_glue_pipeline:
             self._internal_job = ile_job
 
         def get_node_for_dag(self,sim_id_internal=None,**kwargs):
-            ile_node = pipeline.CondorDAGNode(ile_job)
+            ile_node = pipeline.CondorDAGNode(self._internal_job)
             ile_node.add_macro("macro_sim_id", sim_id_internal)
             sim_path  = Path(self.simulations[sim_id_internal][1]).stem # path to directory 
             ile_node.add_macro("macro_sim_path", sim_path)
             return ile_node
 
+        def generate_dag_for_all_ready_simulations(self, tag='sim_dag', **kwargs):
+            if not has_glue_pipeline:
+                logger.error(" glue.pipeline not available, cannot generate DAG ")
+                return None
+            
+            dag = pipeline.CondorDAG(log=self.base_location + "/logs")
+            ready_sims = 0
+            
+            for sim_id, data in self.simulations.items():
+                # data = [params, fname, meta, {status}]
+                if len(data) > 3 and isinstance(data[3], dict) and data[3].get('queue_status') == 'ready':
+                    node = self.get_node_for_dag(sim_id)
+                    dag.add_node(node)
+                    # Update status to submit_ready
+                    data[3]['queue_status'] = 'submit_ready'
+                    ready_sims += 1
+            
+            if ready_sims == 0:
+                logger.info(" No ready simulations found for DAG ")
+                return None
+                
+            dag_path = os.path.join(self.base_location, "dags", tag + ".dag")
+            dag.set_dag_file(dag_path)
+            dag.write_concrete_dag()
+            
+            logger.info(" Generated DAG with %d simulations at %s ", ready_sims, dag_path)
+            return dag_path
+
+        def submit_dag(self, dag_path):
+            import subprocess
+            try:
+                result = subprocess.run(['condor_submit', dag_path], capture_output=True, text=True, check=True)
+                logger.info(" DAG submitted successfully: %s ", result.stdout)
+                return True
+            except subprocess.CalledProcessError as e:
+                logger.error(" Failed to submit DAG %s: %s ", dag_path, e.stderr)
+                return False
 
         # NEXT STEP
         #   - make a dag for all simulations which are 'ready', and set their status to 'submit_ready'
