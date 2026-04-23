@@ -72,6 +72,34 @@ if has_slurm_pipeline_static:
             with open(self.base_location+"/slurm_submit_files/" + ile_job_name, 'w') as f:
                 f.write(str(ile_job)) # should work
 
+        def build_array_job(self, tag=None, array_range=None, exe=None, arg_str=None, slurm_args=None, **kwargs):
+            """
+            Builds a Slurm array job script.
+            array_range: e.g., '0-99'
+            """
+            log_dir = self.base_location + "/logs"
+            build_args = {}
+            build_args.update(kwargs)
+            
+            if slurm_args is None:
+                slurm_args = {}
+            if array_range:
+                slurm_args['array'] = array_range
+            
+            # Pass the updated slurm_args to the builder
+            ile_job, ile_job_name = self._internal_build_submit(
+                tag=tag, 
+                log_dir=log_dir, 
+                exe=exe, 
+                arg_str=arg_str, 
+                slurm_args=slurm_args, 
+                **build_args
+            )
+            
+            self._internal_job = ile_job
+            with open(self.base_location+"/slurm_submit_files/" + ile_job_name, 'w') as f:
+                f.write(str(ile_job))
+
 
 if __name__ == "__main__":
     def my_generator(k, **kwargs):

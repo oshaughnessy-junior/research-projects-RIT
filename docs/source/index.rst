@@ -30,6 +30,7 @@ Rapid inference via Iterative FiTting: this algorithm provides a framework for e
    :maxdepth: 20
    :caption: Contents:
 
+   architecture
    overview
    installation
    using-pipeline
