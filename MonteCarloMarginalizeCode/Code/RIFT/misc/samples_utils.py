@@ -291,22 +291,22 @@ def fchipavg(sample):
     Returns:
         float: The computed chi_pavg value.
     """
-            P=lalsimutils.ChooseWaveformParams()
-            P.m1 = sample[0]
-            P.m2 = sample[1]
-            P.s1x = sample[2]
-            P.s1y = sample[3]
-            P.s1z = sample[4]
-            P.s2x = sample[5]
-            P.s2y = sample[6]
-            P.s2z = sample[7]
-            if (P.s1x == 0 and P.s1y == 0 and P.s2x == 0 and P.s2y == 0):
-                chipavg = 0
-            elif (P.s1x == 0 and P.s1y == 0 and P.s1z == 0) or (P.s2x == 0 and P.s2y == 0 and P.s2z == 0):
-                chipavg = P.extract_param('chi_p')
-            else:
-                chipavg = P.extract_param('chi_pavg')
-            return chipavg     
+    P=lalsimutils.ChooseWaveformParams()
+    P.m1 = sample[0]
+    P.m2 = sample[1]
+    P.s1x = sample[2]
+    P.s1y = sample[3]
+    P.s1z = sample[4]
+    P.s2x = sample[5]
+    P.s2y = sample[6]
+    P.s2z = sample[7]
+    if (P.s1x == 0 and P.s1y == 0 and P.s2x == 0 and P.s2y == 0):
+        chipavg = 0
+    elif (P.s1x == 0 and P.s1y == 0 and P.s1z == 0) or (P.s2x == 0 and P.s2y == 0 and P.s2z == 0):
+        chipavg = P.extract_param('chi_p')
+    else:
+        chipavg = P.extract_param('chi_pavg')
+    return chipavg     
 
 def fchip(sample):
     """
@@ -320,17 +320,17 @@ def fchip(sample):
     Returns:
         float: The computed chi_p value.
     """
-            P=lalsimutils.ChooseWaveformParams()
-            P.m1 = sample[0]
-            P.m2 = sample[1]
-            P.s1x = sample[2]
-            P.s1y = sample[3]
-            P.s1z = sample[4]
-            P.s2x = sample[5]
-            P.s2y = sample[6]
-            P.s2z = sample[7]
-            chip = P.extract_param('chi_p')
-            return chip  
+    P=lalsimutils.ChooseWaveformParams()
+    P.m1 = sample[0]
+    P.m2 = sample[1]
+    P.s1x = sample[2]
+    P.s1y = sample[3]
+    P.s1z = sample[4]
+    P.s2x = sample[5]
+    P.s2y = sample[6]
+    P.s2z = sample[7]
+    chip = P.extract_param('chi_p')
+    return chip  
 
 def dump_pesummary_samples_to_file_as_rift(fname_h5,key,fname_out,no_drop=False,no_rename=False):
     """
