@@ -291,15 +291,15 @@ def fchipavg(sample):
     Returns:
         float: The computed chi_pavg value.
     """
-            P=lalsimutils.ChooseWaveformParams()
-            P.m1 = sample[0]
-            P.m2 = sample[1]
-            P.s1x = sample[2]
-            P.s1y = sample[3]
-            P.s1z = sample[4]
-            P.s2x = sample[5]
-            P.s2y = sample[6]
-            P.s2z = sample[7]
+    P=lalsimutils.ChooseWaveformParams()
+    P.m1 = sample[0]
+    P.m2 = sample[1]
+    P.s1x = sample[2]
+    P.s1y = sample[3]
+    P.s1z = sample[4]
+    P.s2x = sample[5]
+    P.s2y = sample[6]
+    P.s2z = sample[7]
             if (P.s1x == 0 and P.s1y == 0 and P.s2x == 0 and P.s2y == 0):
                 chipavg = 0
             elif (P.s1x == 0 and P.s1y == 0 and P.s1z == 0) or (P.s2x == 0 and P.s2y == 0 and P.s2z == 0):
