@@ -7,7 +7,7 @@ Basics
 
 The primary user-interface for this code is a command line tool
 :code:`util_RIFT_pseudo_pipe.py` which is available after following the `installation
-instructions <installation.txt>`_. To see the help for this tool, run
+instructions <installation.txt>`_. For detailed documentation, see :doc:`executables/util_RIFT_pseudo_pipe`. To see the help for this tool, run
 
 .. code-block:: console
 
