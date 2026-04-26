@@ -58,8 +58,10 @@ class SimulationArchiveOnLocalDisk(SimulationArchive):
         self.save_params_command = easy_write
         self.load_simulation = np.loadtxt
         self.load_metadata = np.loadtxt
-        self.valid_simulation_file = lambda x: os.path.exists(x) and not(x.startswith('metadata_'))
-        self.valid_metadata_file = lambda x: os.path.exists(x) and (x.startswith('metadata_'))
+        # x here is a full path; the metadata-prefix check must look at the
+        # basename, not the absolute string.
+        self.valid_simulation_file = lambda x: os.path.exists(x) and not os.path.basename(x).startswith('metadata_')
+        self.valid_metadata_file = lambda x: os.path.exists(x) and os.path.basename(x).startswith('metadata_')
         self.params_same_q = lambda x,y : str(x)==str(y)   # check if parameters are IDENTICAL
         if not(hasattr(self, '_internal_simulations_have_sub_directories')):
             self._internal_simulations_have_sub_directories = False
