@@ -1,4 +1,5 @@
-# convergence_test_samples
+convergence_test_samples
+==========================
 
 The `convergence_test_samples` executable compares two sets of posterior samples to determine if the results have converged. It is primarily used in iterative pipelines to signal when further iterations are no longer significantly changing the results.
 

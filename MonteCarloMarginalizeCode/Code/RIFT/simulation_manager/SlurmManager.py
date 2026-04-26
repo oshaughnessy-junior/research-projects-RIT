@@ -51,6 +51,11 @@ if has_slurm_pipeline_static:
             if not os.path.exists(self.base_location+"/slurm_submit_files/"):
                 os.mkdir(self.base_location + '/slurm_submit_files/')
 
+        def _internal_check_complete(self, params=None, sim_path=None, sim_meta_path=None, sim_annotation=None):
+            if sim_path and os.path.exists(sim_path) and os.path.getsize(sim_path) > 0:
+                return True
+            return False
+
         def generate_simulation(self, sim_params,**kwargs):
             self._internal_simulations_have_sub_directories = True 
             # Create filesystem space, etc
