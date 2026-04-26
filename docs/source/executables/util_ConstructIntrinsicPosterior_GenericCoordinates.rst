@@ -1,98 +1,66 @@
-.. _util_ConstructIntrinsicPosterior_GenericCoordinates:
+# util_ConstructIntrinsicPosterior_GenericCoordinates
 
-util_ConstructIntrinsicPosterior_GenericCoordinates
-===================================================
+The `util_ConstructIntrinsicPosterior_GenericCoordinates` executable loads marginalized likelihood data (typically from `integrate_likelihood_extrinsic`), fits the peak using various interpolation methods, and generates posterior samples for the intrinsic parameters.
 
-This executable is a core component of the RIFT (Rapid Inference for Tidal) pipeline, responsible for constructing intrinsic posterior distributions of binary parameters. It takes pre-computed log-likelihood (lnL) data from parameter estimation runs, fits a smooth model to this likelihood landscape, and then uses Monte Carlo (MC) sampling to generate posterior samples in the intrinsic parameter space.
+## Overview
 
-It supports a variety of fitting and sampling methods, making it flexible for different analysis scenarios, including those involving neutron star Equations of State (EOS).
+This tool represents the "Construct Intrinsic Posterior" (CIP) stage of the RIFT pipeline. After `integrate_likelihood_extrinsic` has computed the marginalized likelihood for a grid of intrinsic parameters, `util_ConstructIntrinsicPosterior_GenericCoordinates` takes that grid and:
+1. Fits a continuous surface to the discrete log-likelihood ($\ln \mathcal{L}$) data.
+2. Uses a Monte Carlo sampler to draw posterior samples based on the fit and a specified prior.
+3. Performs coordinate transformations and adds derived quantities to the resulting samples.
 
-Usage
------
+## Usage
 
-The script is executed from the command line, accepting numerous arguments to control its behavior. A typical invocation might look like this:
+### Basic Command Line
+```bash
+util_ConstructIntrinsicPosterior_GenericCoordinates [options]
+```
 
-.. code-block:: bash
+### Primary Options
 
-    python util_ConstructIntrinsicPosterior_GenericCoordinates.py \
-        --fname-ile-output "ile_data.dat" \
-        --lnL-offset 10 \
-        --fit-method "gp" \
-        --sampler-method "adaptive_cartesian" \
-        --n-max 100000 \
-        --n-eff 1000 \
-        --fname-output-samples "intrinsic_posterior_samples.xml.gz" \
-        --fname-output-integral "intrinsic_integral" \
-        --coord-names "mc,eta,chi_eff" \
-        --prior-in-integrand-correction "uniform_over_volumetric" \
-        --desc-ILE "My Analysis"
+#### Input/Output
+- `--fname`: Filename of the `*.dat` file containing the marginalized likelihood data (standard ILE output).
+- `--fname-output-samples`: Filename for the resulting posterior samples (default: `output-ILE-samples`).
+- `--fname-output-integral`: Filename for the resulting integral result (default: `integral_result`).
+- `--n-output-samples`: Number of posterior samples to generate (default: 3000).
 
-Inputs
-------
+#### Fitting Configuration
+- `--fit-method`: Method used to interpolate the likelihood surface. Options include:
+    - `rf`: Random Forest (default)
+    - `gp`: Gaussian Process
+    - `quadratic`: Quadratic fit to the peak
+    - `polynomial`: General polynomial fit
+    - `kde`: Kernel Density Estimation
+- `--fit-order`: Order of the polynomial fit (default: 2 for quadratic).
+- `--lnL-offset`: Threshold relative to the peak ($\ln \mathcal{L}_{max} - \text{offset}$) used to filter data points for the fit.
 
-*   **lnL data files:** Typically ASCII `.dat` or `.txt` files (e.g., from `integrate_likelihood_extrinsic`) containing parameter points and their corresponding log-likelihood values.
-    *   `--fname-ile-output`: Path to the input lnL data file.
-*   **LALInference samples (optional):** Can compare results with samples from LALInference.
-    *   `--fname-lalinference`: Path to LALInference XML or HDF5 sample file.
-*   **EOS files (optional):** For neutron star binaries, files describing the Equation of State.
-    *   `--using-eos`, `--tabular-eos-file`: Paths/names for EOS data.
-*   **Prior dictionaries (optional):** Pre-defined prior distributions.
-    *   `--import-prior-dictionary-file`: Path to a `joblib` dumped prior dictionary.
-*   **Oracle reference samples (optional):** For some advanced sampling methods, reference samples can guide initial exploration.
-    *   `--oracle-reference-sample-file`: Path to reference samples.
+#### Parameter and Prior Configuration
+- `--parameter`: List of parameters to be used as fitting parameters and varied for the posterior.
+- `--parameter-implied`: Parameters used in the fit but not independently varied for MC.
+- `--mc-range`, `--eta-range`, `--mtot-range`: Manual ranges for the Monte Carlo sampling to avoid wasting time in low-probability regions.
+- `--aligned-prior`: Prior for aligned spins (`uniform`, `volumetric`, `alignedspin-zprior`).
+- `--transverse-prior`: Prior for transverse spins (`uniform`, `uniform-mag`, `taper-down`, `sqrt-prior`, etc.).
+- `--prior-gaussian-mass-ratio`: Applies a Gaussian mass ratio prior.
 
-Outputs
--------
+#### Advanced Analysis
+- `--downselect-parameter` & `--downselect-parameter-range`: Used to eliminate grid points that fall outside specified ranges.
+- `--fname-lalinference`: Filename of LALInference posterior samples to overlay on corner plots for comparison.
 
-*   **Posterior samples:** XML or HDF5 files containing the generated intrinsic posterior samples.
-    *   `--fname-output-samples`: Path to save the output samples.
-*   **Integral results:** Files containing the marginalized likelihood integral value (evidence).
-    *   `--fname-output-integral`: Base name for files storing integral results and annotations.
-*   **Plots (optional):** 1D cumulative distribution functions (CDFs) and 2D corner plots of the posterior distributions.
-    *   `--no-plots`: Disable plot generation.
-*   **Prior dictionary (optional):** Can export the sampler's prior definitions.
-    *   `--output-prior-dictionary-file`: Path to save the prior dictionary.
+## Functional Logic
 
-Key Features & Arguments
--------------------------
+1. **Data Loading**: Reads the marginalized likelihood grid from the input file.
+2. **Downselection**: Filters out points based on the `--downselect-parameter` criteria or EOS-based constraints.
+3. **Fitting**:
+    - Applies the chosen `--fit-method` (e.g., Gaussian Process or Random Forest) to create a continuous representation of the $\ln \mathcal{L}$ surface.
+    - Optionally shifts the $\ln \mathcal{L}$ values to prevent numerical overflow.
+4. **Sample Generation**:
+    - Uses an integrator (like `adaptive_cartesian` or `GMM`) to draw samples proportional to $\mathcal{L}_{fit}(\theta) \times \text{Prior}(\theta)$.
+    - This converts the fitted surface into a set of posterior samples.
+5. **Post-Processing**:
+    - Transforms samples into requested coordinate systems.
+    - Calculates derived parameters (e.g., $\chi_{eff}$, $\chi_{minus}$).
+    - Writes the samples to the output file and computes the total evidence (integral).
 
-*   **Likelihood Fitting Methods (`--fit-method`):**
-    *   `quadratic`: Fits a quadratic surface to the lnL data (default for many applications).
-    *   `polynomial`: Fits a general polynomial surface.
-    *   `gp` / `gp_hyper` / `gp-pool` / `gp-torch` / `gp-xgboost` / `gp_lazy` / `gp_sparse`: Various Gaussian Process-based fitting methods, offering different levels of sophistication and computational cost.
-    *   `nn`: Neural Network-based fitting.
-    *   `rf` / `rf_pca`: Random Forest-based fitting, with an option for PCA preprocessing.
-    *   `rbf`: Radial Basis Function-based fitting.
-    *   `kde`: Kernel Density Estimation.
-    *   `cov`: A placement-only approximation using covariance (no errors used).
-    *   `weighted_nearest`: A weighted nearest-neighbor approach.
-*   **Sampling Methods (`--sampler-method`):**
-    *   `adaptive_cartesian`: Standard adaptive Monte Carlo sampler.
-    *   `adaptive_cartesian_gpu`: GPU-accelerated adaptive Monte Carlo.
-    *   `GMM`: Gaussian Mixture Model-based sampling.
-    *   `AV`: Adaptive Volume sampling.
-    *   `NFlow`: Normalizing Flow-based sampling.
-    *   `portfolio`: Combines multiple sampling strategies.
-*   **Parameter Coordinates (`--coord-names`):** A comma-separated list of intrinsic parameters to use for fitting and sampling (e.g., `mc,eta,chi_eff`).
-*   **Prior Reweighting (`--prior-in-integrand-correction`):** Adjusts the integrand to account for different prior choices (e.g., `uniform_over_volumetric`, `volumetric_over_uniform`).
-*   **Data Truncation and Selection:**
-    *   `--lnL-offset`: Threshold for selecting significant lnL points for fitting.
-    *   `--cap-points`: Maximum number of points to retain for fitting.
-*   **Convergence Testing:**
-    *   `--n-eff`: Target effective number of samples for convergence.
-    *   `--fail-unless-n-eff`: Exits if the effective sample size is below this threshold.
-*   **EOS Integration:** Allows incorporating Equation of State models for tidal parameters (e.g., `lambda1`, `lambda2`) based on component masses.
-    *   `--using-eos`: Specifies the EOS model.
-    *   `--eos-param`: Parameterization for the EOS.
+## Output Details
 
-Detailed Explanation
--------------------
-
-The script proceeds in several stages:
-
-1.  **Data Loading and Preprocessing:** Input lnL data is loaded. Optionally, it can be filtered based on the `lnL-offset` and `cap-points` arguments to focus on regions of high likelihood. Coordinate transformations are applied as needed.
-2.  **Likelihood Fitting:** One of the many available fitting methods is used to model the lnL surface. This creates a continuous representation of the likelihood in the intrinsic parameter space.
-3.  **Monte Carlo Integration:** An `mcsampler` instance (or one of its specialized variants) is configured with the fitted likelihood and specified priors. The sampler then explores the parameter space, drawing samples according to the posterior distribution. Adaptive sampling techniques are used to efficiently explore high-likelihood regions.
-4.  **Output Generation:** The resulting posterior samples, integral value, and optional plots (1D CDFs, 2D corner plots) are saved. The posterior samples are typically converted into `lal` XML or HDF5 format for compatibility with other gravitational-wave analysis tools.
-
-This executable plays a crucial role in the RIFT pipeline by transforming raw likelihood evaluations into meaningful posterior probability distributions for intrinsic source parameters, which are essential for astrophysical interpretation.
+The primary output is a structured numpy array (or XML/HDF5 file) containing the posterior samples of the intrinsic parameters. It also produces an integral result representing the marginalized likelihood over the intrinsic space.
