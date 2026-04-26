@@ -288,9 +288,12 @@ if has_glue_pipeline:
                 logger.info(" No ready simulations found for DAG ")
                 return None
 
-            dag_path = os.path.join(self.base_location, "dags", tag + ".dag")
-            dag.set_dag_file(dag_path)
+            # glue.pipeline appends ".dag" itself (see e.g.
+            # RIFT/misc/dag_utils.py); pass the basename without extension.
+            dag_basename = os.path.join(self.base_location, "dags", tag)
+            dag.set_dag_file(dag_basename)
             dag.write_concrete_dag()
+            dag_path = dag_basename + ".dag"
             logger.info(" Generated DAG with %d simulations at %s ",
                         len(ready_names), dag_path)
             return dag_path
