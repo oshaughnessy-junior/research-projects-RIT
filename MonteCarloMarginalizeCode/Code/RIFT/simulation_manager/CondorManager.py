@@ -176,26 +176,49 @@ if has_glue_pipeline:
 
         return ile_job, ile_sub_name
         
+    def condor_check_complete(params=None, sim_path=None, sim_meta_path=None,
+                              sim_annotation=None):
+        """`_internal_check_complete` for condor-backed archives:
+        a sim is complete iff its output file exists and is non-empty.
+        We deliberately do NOT consult the schedd here — the schedd tells us
+        about *running* jobs, but completion is defined by output on disk
+        (i.e. the worker actually finished and wrote its result)."""
+        try:
+            return os.path.exists(sim_path) and os.path.getsize(sim_path) > 0
+        except OSError:
+            return False
+
     class SimulationArchiveOnLocalDiskIntegratedCondorQueue(bm.SimulationArchiveOnLocalDiskExternalQueue):
         """
-        User can specify a
+        Simulation archive whose entries are *queued* and *run* via HTCondor.
+
+        Lifecycle:
+          register_simulation(sim_params) -> entry created on disk, status='ready'
+          generate_dag_for_all_ready_simulations() -> DAG built, status flips to 'submit_ready'
+          submit_dag(dag_path)             -> condor_submit_dag invoked
+          (optional) refresh_status_from_condor() -> scrape condor_q, mark 'running'
+          refresh_status_from_disk()       -> output present? mark 'complete'
         """
-        def __init__(self,**kwargs):
-            self._internal_build_submit= default_condor_build_job
+        def __init__(self, **kwargs):
+            self._internal_build_submit = default_condor_build_job
             self._internal_exe = 'echo'
             self._internal_job = None
+            self._internal_dag_cluster_id = None  # condor cluster id of submitted DAGman
+            # Each sim gets its own subdirectory so per-job output paths don't collide.
+            self._internal_simulations_have_sub_directories = True
             super().__init__(**kwargs)
+            # Default completion check: the worker writes the output file.
+            self._internal_check_complete = condor_check_complete
             if not os.path.exists(self.base_location+"/logs"):
                 os.mkdir(self.base_location + '/logs')
             # workspace for dags which are building the simulations
             if not os.path.exists(self.base_location+"/dags"):
                 os.mkdir(self.base_location + '/dags')
 
-        def generate_simulation(self, sim_params,**kwargs):
-            self._internal_simulations_have_sub_directories = True 
-            # Create filesystem space, etc
-            super().generate_simulation(sim_params,**kwargs)
-            print(" NOT YET IMPLEMENTED TO INTERFACE AUTOMATICALLY")
+        def generate_simulation(self, sim_params, **kwargs):
+            """In a condor-backed archive, 'generate' = 'register'. The
+            generator runs in the submitted job, not at this call site."""
+            return self.register_simulation(sim_params, **kwargs)
 
         def build_master_job(self, tag=None, **kwargs):
             # Create condor job for making simulations, assume a SINGLE JOB PATTERN for all, with DAG arguments/etc to pass patterns that localize
@@ -217,69 +240,141 @@ if has_glue_pipeline:
             ile_job.write_sub_file()
             self._internal_job = ile_job
 
-        def get_node_for_dag(self,sim_id_internal=None,**kwargs):
+        def get_node_for_dag(self, sim_id_internal=None, **kwargs):
             ile_node = pipeline.CondorDAGNode(self._internal_job)
             ile_node.add_macro("macro_sim_id", sim_id_internal)
-            sim_path  = Path(self.simulations[sim_id_internal][1]).stem # path to directory 
+            # Pass per-sim params, output path, and metadata path as macros
+            # so a worker can find its inputs and write its result.
+            sim_params = self.simulations[sim_id_internal][0]
+            sim_path = self.simulations[sim_id_internal][1]
+            sim_meta = self.simulations[sim_id_internal][2]
+            ile_node.add_macro("macro_sim_params", str(sim_params))
             ile_node.add_macro("macro_sim_path", sim_path)
+            ile_node.add_macro("macro_sim_meta", sim_meta)
             return ile_node
 
         def generate_dag_for_all_ready_simulations(self, tag='sim_dag', **kwargs):
             if not has_glue_pipeline:
                 logger.error(" glue.pipeline not available, cannot generate DAG ")
                 return None
-            
+            if self._internal_job is None:
+                logger.error(" build_master_job() must be called before generate_dag_for_all_ready_simulations ")
+                return None
+
             dag = pipeline.CondorDAG(log=self.base_location + "/logs")
-            ready_sims = 0
-            
-            for sim_id, data in self.simulations.items():
-                # data = [params, fname, meta, {status}]
-                if len(data) > 3 and isinstance(data[3], dict) and data[3].get('queue_status') == 'ready':
-                    node = self.get_node_for_dag(sim_id)
-                    dag.add_node(node)
-                    # Update status to submit_ready
-                    data[3]['queue_status'] = 'submit_ready'
-                    ready_sims += 1
-            
-            if ready_sims == 0:
+            ready_names = self.simulations_with_status('ready')
+            for sim_id in ready_names:
+                node = self.get_node_for_dag(sim_id)
+                dag.add_node(node)
+                self.set_status('submit_ready', sim_name=sim_id)
+
+            if not ready_names:
                 logger.info(" No ready simulations found for DAG ")
                 return None
-                
+
             dag_path = os.path.join(self.base_location, "dags", tag + ".dag")
             dag.set_dag_file(dag_path)
             dag.write_concrete_dag()
-            
-            logger.info(" Generated DAG with %d simulations at %s ", ready_sims, dag_path)
+            logger.info(" Generated DAG with %d simulations at %s ",
+                        len(ready_names), dag_path)
             return dag_path
 
         def submit_dag(self, dag_path):
-            import subprocess
+            """Submit a DAG via condor_submit_dag. Captures the cluster id
+            for later schedd queries. Returns True on success."""
+            import re, subprocess
             try:
-                result = subprocess.run(['condor_submit', dag_path], capture_output=True, text=True, check=True)
+                result = subprocess.run(
+                    ['condor_submit_dag', '-f', dag_path],
+                    capture_output=True, text=True, check=True)
                 logger.info(" DAG submitted successfully: %s ", result.stdout)
+                m = re.search(r'submitted to cluster (\d+)', result.stdout)
+                if m:
+                    self._internal_dag_cluster_id = int(m.group(1))
+                # All nodes are now in the schedd's queue.
+                for sim_id in self.simulations_with_status('submit_ready'):
+                    self.set_status('running', sim_name=sim_id)
                 return True
             except subprocess.CalledProcessError as e:
                 logger.error(" Failed to submit DAG %s: %s ", dag_path, e.stderr)
                 return False
+            except FileNotFoundError:
+                logger.error(" condor_submit_dag not found on PATH ")
+                return False
 
-        # NEXT STEP
-        #   - make a dag for all simulations which are 'ready', and set their status to 'submit_ready'
+        def refresh_status_from_condor(self):
+            """Use the htcondor python bindings (if available) to inspect the
+            schedd. Sims whose nodes are still in the queue are marked
+            'running'; sims whose nodes left the queue but whose output is
+            missing are marked 'stuck'. Output-on-disk is the authoritative
+            'complete' signal — call refresh_status_from_disk() afterwards."""
+            try:
+                import htcondor as _htcondor
+            except ImportError:
+                logger.info(" refresh_status_from_condor: htcondor bindings not available ")
+                return None
+            try:
+                schedd = _htcondor.Schedd()
+                in_queue_sim_ids = set()
+                # If we have a cluster id from submit_dag, scope the query.
+                constraint = None
+                if self._internal_dag_cluster_id is not None:
+                    constraint = "DAGManJobId =?= {}".format(self._internal_dag_cluster_id)
+                ads = schedd.query(constraint=constraint,
+                                   projection=['ClusterId', 'ProcId', 'JobStatus',
+                                               'Args', 'Cmd'])
+                for ad in ads:
+                    args = ad.get('Args', '') or ''
+                    for sim_id in self.simulations:
+                        # macros for sim_id are passed as $(macro_sim_id)
+                        # which is rendered into the Args at submit time.
+                        if str(sim_id) in args:
+                            in_queue_sim_ids.add(sim_id)
+                # update statuses
+                for sim_id in self.simulations:
+                    current = self.get_status(sim_name=sim_id)
+                    if current in (None, 'complete', 'stuck'):
+                        continue
+                    if sim_id in in_queue_sim_ids:
+                        if current != 'running':
+                            self.set_status('running', sim_name=sim_id)
+                    else:
+                        # Job is no longer in the queue. If output is missing,
+                        # mark stuck. Otherwise refresh_status_from_disk will
+                        # promote to complete.
+                        sim_here = self.simulations[sim_id]
+                        if not condor_check_complete(
+                                params=sim_here[0], sim_path=sim_here[1],
+                                sim_meta_path=sim_here[2],
+                                sim_annotation=sim_here[3:]):
+                            if current == 'running':
+                                self.set_status('stuck', sim_name=sim_id)
+                return in_queue_sim_ids
+            except Exception as exc:
+                logger.warning(" refresh_status_from_condor failed: %s ", exc)
+                return None
     
 
 if __name__ == "__main__":
     def my_generator(k, **kwargs):
         return k*np.sqrt(2)  # argument
-    
-    archive = SimulationArchiveOnLocalDiskIntegratedCondorQueue(name="test", base_location="foo", _internal_annotator=bm.append_queue_default)
-    archive.generator = my_generator
-    archive.build_master_job(tag="me") # Create condor submit file prototype
 
-    # dag management
-    dag = pipeline.CondorDAG(log=os.getcwd())
-    # initialization node? None
-    
-    sim_param = 0.5
-    archive.generate_simulation(sim_param+1)
-    sim_node = acrhive.get_node_for_dag('1') # get simulation first from the table
-    dag.set_dag_file("dags/my_dag.dag") # do not be this hardcoded
-    dag.write_concrete_dag()
+    base = "foo"
+    archive = SimulationArchiveOnLocalDiskIntegratedCondorQueue(
+        name="test", base_location=base,
+        _internal_annotator=bm.append_queue_default)
+    archive.generator = my_generator
+    archive.build_master_job(tag="me")  # Create condor submit file prototype
+
+    # Register two sims (no inline run; no schedd contacted).
+    archive.generate_simulation(0.5)
+    archive.generate_simulation(1.5)
+    print(" Registered sims:", list(archive.simulations.keys()))
+    print(" Statuses:",
+          {k: archive.get_status(sim_name=k) for k in archive.simulations})
+
+    # Build a DAG covering all 'ready' sims; status flips to 'submit_ready'.
+    dag_path = archive.generate_dag_for_all_ready_simulations(tag="my_dag")
+    print(" DAG written to:", dag_path)
+    print(" Statuses after build_dag:",
+          {k: archive.get_status(sim_name=k) for k in archive.simulations})
