@@ -29,8 +29,18 @@ for c in condor_submit_dag condor_q; do
         exit 1
     fi
 done
-python3 -c "import htcondor" 2>/dev/null || {
-    echo "ERROR: 'htcondor' python bindings not available" >&2
+python3 -c "
+import sys
+for m in ('htcondor2', 'htcondor'):
+    try:
+        __import__(m)
+        print('Using', m, 'bindings')
+        sys.exit(0)
+    except ImportError:
+        continue
+sys.exit(1)
+" || {
+    echo "ERROR: neither 'htcondor2' nor 'htcondor' python bindings available" >&2
     exit 1
 }
 python3 -c "from glue import pipeline" 2>/dev/null || {

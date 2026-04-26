@@ -12,11 +12,27 @@ try:
     has_glue_pipeline=True
 except:
     logger.info(" CondorManager: glue.pipeline not available ")
-has_htcondor_pipeline = False
-try:
-    import htcondor
-except:
-    logger.info(" CondorManager: htcondor not available ")
+
+# HTCondor python bindings: try htcondor2 first (current upstream), fall
+# back to legacy htcondor. The two share the surface we depend on
+# (Schedd().query(constraint=..., projection=[...])), so callers should
+# use the cached `_htcondor_module` rather than `import htcondor` directly.
+_htcondor_module = None
+_htcondor_module_name = None
+for _candidate in ('htcondor2', 'htcondor'):
+    try:
+        _htcondor_module = __import__(_candidate)
+        _htcondor_module_name = _candidate
+        break
+    except ImportError:
+        continue
+has_htcondor = _htcondor_module is not None
+# Backward-compat alias (legacy code may have checked this symbol).
+has_htcondor_pipeline = has_htcondor
+if not has_htcondor:
+    logger.info(" CondorManager: neither htcondor2 nor htcondor bindings available ")
+else:
+    logger.info(" CondorManager: using %s python bindings ", _htcondor_module_name)
 
 default_getenv_value='True'
 default_getenv_osg_value='True'
@@ -307,12 +323,14 @@ if has_glue_pipeline:
             schedd. Sims whose nodes are still in the queue are marked
             'running'; sims whose nodes left the queue but whose output is
             missing are marked 'stuck'. Output-on-disk is the authoritative
-            'complete' signal — call refresh_status_from_disk() afterwards."""
-            try:
-                import htcondor as _htcondor
-            except ImportError:
+            'complete' signal — call refresh_status_from_disk() afterwards.
+
+            Works with either the modern `htcondor2` bindings or the legacy
+            `htcondor` bindings; the choice is made at module import time."""
+            if not has_htcondor:
                 logger.info(" refresh_status_from_condor: htcondor bindings not available ")
                 return None
+            _htcondor = _htcondor_module
             try:
                 schedd = _htcondor.Schedd()
                 in_queue_sim_ids = set()
