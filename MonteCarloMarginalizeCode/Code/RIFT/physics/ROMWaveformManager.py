@@ -86,6 +86,16 @@ def ModeToString(pair):
     return "l"+str(pair[0])+"_m"+str(pair[1]) 
 
 def CreateCompatibleComplexOverlap(hlmf,**kwargs):
+    """
+    Creates a ComplexOverlap object compatible with the provided harmonic modes.
+
+    Args:
+        hlmf (dict): A dictionary of harmonic modes.
+        **kwargs: Additional arguments for ComplexOverlap.
+
+    Returns:
+        lalsimutils.ComplexOverlap: A compatible overlap object.
+    """
     modes = hlmf.keys()
     hbase = hlmf[modes[0]]
     deltaF = hbase.deltaF
@@ -100,7 +110,14 @@ def CreateCompatibleComplexOverlap(hlmf,**kwargs):
 
 def CreateCompatibleComplexIP(hlmf,**kwargs):
     """
-    Creates complex IP (no maximization)
+    Creates a complex Inner Product (IP) object compatible with the provided harmonic modes.
+
+    Args:
+        hlmf (dict): A dictionary of harmonic modes.
+        **kwargs: Additional arguments for ComplexIP.
+
+    Returns:
+        lalsimutils.ComplexIP: A compatible inner product object.
     """
     modes = hlmf.keys()
     hbase = hlmf[modes[0]]
@@ -189,19 +206,19 @@ def ConvertWPtoSurrogateParamsPrecessingFull(P,**kwargs):
 
 class WaveformModeCatalog:
     """
-    Class containing ROM model.
-    API is currently **unsafe** for precessing binaries (=ambiguous reference time)
-    Reference for underlying notation:   Eq. (30) in http://arxiv.org/pdf/1308.3565v2
-       group
-       param
-       lmax                          # specifies modes to attempt to load. Not guaranteed to/required to find all.
-       strain_basis_functions_dimensionless   # don't recall
-       mode_list_to_load        # ability to constrain the mode list.  Passed directly to low-level code
-       build_fourier_time_window  # window for FT. NOT USED
-       reflection_symmetric     # reflection symmetry used
-       max_nbasis_per_mode   # constrain basis size
-       coord_names_internal    # coordinate names used by the basis.  FUTURE
+    Manager for Reduced Order Model (ROM) waveforms.
 
+    This class handles the loading of surrogate models, coordinate transformation 
+    between RIFT and surrogate parameters, and the reconstruction of waveforms 
+    using a reduced basis of functions.
+
+    Attributes:
+        group (str): The surrogate group name.
+        param (str): The surrogate parameter identifier.
+        lmax (int): Maximum harmonic mode l to load.
+        reflection_symmetric (bool): Whether to use reflection symmetry for modes.
+        sur_dict (dict): Mapping of (l, m) to the loaded surrogate model.
+        modes_available (list): List of available (l, m) modes.
     """
 
 
@@ -406,6 +423,9 @@ class WaveformModeCatalog:
         self.strain_basis_functions_dimensionless = self.sur_dict[(2,2)].resample_B  # We may need to add complex conjugate functions too. And a master index for basis functions associated with different modes
 
     def print_params(self):
+        """
+        Prints the available modes and their associated basis sizes for the current ROM.
+        """
         print(" Surrogate model ")
         print("   Modes available ")
         for mode in self.sur_dict:
@@ -413,6 +433,19 @@ class WaveformModeCatalog:
 
     # same arguments as hlm
     def complex_hoft(self, P, force_T=False, deltaT=1./16384, time_over_M_zero=0.,sgn=-1):
+        """
+        Generates a complex-valued time-domain waveform h(t) summed over available modes.
+
+        Args:
+            P (ChooseWaveformParams): Waveform parameters.
+            force_T (float/bool): If float, forces a specific time length.
+            deltaT (float): Time step.
+            time_over_M_zero (float): Reference time offset.
+            sgn (int): Sign of the imaginary part (usually -1).
+
+        Returns:
+            lal.COMPLEX16TimeSeries: The complex waveform.
+        """
         hlmT = self.hlmoft(P, force_T, deltaT,time_over_M_zero)
         npts = hlmT[(2,2)].data.length
         wfmTS = lal.CreateCOMPLEX16TimeSeries("h", lal.LIGOTimeGPS(0.), 0., deltaT, lalsimutils.lsu_DimensionlessUnit, npts)
@@ -425,6 +458,16 @@ class WaveformModeCatalog:
             wfmTS.data.data += np.exp(-2*sgn*1j*P.psi)* hlmT[mode].data.data*lal.SpinWeightedSphericalHarmonic(P.incl,-P.phiref,-2, int(mode[0]),int(mode[1]))
         return wfmTS
     def complex_hoff(self,P, force_T=False):
+        """
+        Generates a complex-valued frequency-domain waveform using the FFT of complex_hoft.
+
+        Args:
+            P (ChooseWaveformParams): Waveform parameters.
+            force_T (float/bool): If float, forces a specific time length.
+
+        Returns:
+            lal.COMPLEX16FrequencySeries: The complex frequency-domain waveform.
+        """
         htC  = self.complex_hoft(P, force_T=force_T,deltaT= P.deltaT)
         TDlen = int(1./P.deltaF * 1./P.deltaT)
         assert TDlen == htC.data.length
@@ -436,9 +479,15 @@ class WaveformModeCatalog:
         return hf
     def real_hoft(self,P,Fp=None, Fc=None):
         """
-        Returns the real-valued h(t) that would be produced in a single instrument.
-        Translates epoch as needed.
-        Based on 'hoft' in lalsimutils.py
+        Generates a real-valued time-domain waveform projected onto a detector.
+
+        Args:
+            P (ChooseWaveformParams): Waveform parameters.
+            Fp (float/array, optional): Antenna pattern F+.
+            Fc (float/array, optional): Antenna pattern Fx.
+
+        Returns:
+            lal.REAL8TimeSeries: The real-valued detector strain.
         """
         # Create complex timessereis
         htC = self.complex_hoft(P,force_T=1./P.deltaF, deltaT= P.deltaT)  # note P.tref is NOT used in the low-level code
@@ -502,9 +551,13 @@ class WaveformModeCatalog:
 
     def non_herm_hoff(self,P):
         """
-        Returns the 2-sided h(f) associated with the real-valued h(t) seen in a real instrument.
-        Translates epoch as needed.
-        Based on 'non_herm_hoff' in lalsimutils.py
+        Generates the 2-sided frequency-domain waveform h(f) for a real instrument.
+        
+        Args:
+            P (ChooseWaveformParams): Waveform parameters.
+
+        Returns:
+            lal.COMPLEX16FrequencySeries: The frequency-domain waveform.
         """
         htR = self.real_hoft() # Generate real-valued TD waveform, including detector response
         if P.deltaF == None: # h(t) was not zero-padded, so do it now
@@ -528,7 +581,16 @@ class WaveformModeCatalog:
 
 
     def estimateFminHz(self,P,fmin=10.):
-        # This SHOULD use information from the ROM
+        """
+        Estimate the minimum frequency for the ROM based on the 2,2 mode.
+
+        Args:
+            P (ChooseWaveformParams): Waveform parameters.
+            fmin (float): Nominal fmin. Default is 10 Hz.
+
+        Returns:
+            float: Estimated minimum frequency.
+        """
         return 2*self.fMin/(MsunInSec*(P.m1+P.m2)/lal.MSUN_SI)
 
     def estimateDurationSec(self,P,fmin=10.):
