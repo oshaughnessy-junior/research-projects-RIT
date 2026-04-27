@@ -32,7 +32,9 @@ Status:
 
 from __future__ import annotations
 
+import contextlib
 import datetime
+import errno
 import inspect
 import json
 import logging
@@ -41,8 +43,17 @@ import shutil
 import subprocess
 import sys
 import textwrap
+import threading
+import time
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tuple, Union
+
+try:
+    import fcntl   # POSIX-only; archive multi-writer safety relies on flock(2)
+    _HAS_FCNTL = True
+except ImportError:                                              # pragma: no cover
+    fcntl = None
+    _HAS_FCNTL = False
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +98,10 @@ def _default_lookup_key(p: Any) -> Any:
 
 def _now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+# Archive locking is implemented as an instance-method context manager on
+# Archive itself (see Archive._with_lock); reads stay unlocked.
 
 
 # ---------------------------------------------------------------------------
@@ -209,7 +224,12 @@ class Index:
         self._write_all([r for r in self.all() if r.get("name") != name])
 
     def _write_all(self, rows: Iterable[Dict[str, Any]]) -> None:
-        tmp = self.path.with_suffix(".jsonl.tmp")
+        # Use a per-PID/thread-id temp suffix so two writers (in pathological
+        # cases where the archive lock isn't held — shouldn't happen in
+        # normal use) don't stomp each other's temp file.
+        tmp = self.path.with_name(
+            "{}.{}.{}.tmp".format(self.path.name, os.getpid(),
+                                   threading.get_ident()))
         with open(tmp, "w") as f:
             for row in rows:
                 f.write(json.dumps(row, sort_keys=True) + "\n")
@@ -243,6 +263,7 @@ class StatusRecord:
             "history": [{"status": "ready", "ts": ts}],
             "request_queue": None,
             "run_queue": None,
+            "resources": {},  # per-sim overrides: request_memory, request_disk, extra_condor_cmds
             "started_at": None,
             "completed_at": None,
         })
@@ -383,6 +404,15 @@ class Archive:
                  same_q_spec: Optional[CodeSpec] = None,
                  lookup_key_spec: Optional[CodeSpec] = None):
         self.base = Path(base_location)
+        self._lock_path = self.base / ".archive.lock"
+        # Cross-process serialization: fcntl.flock on _lock_fd.
+        # Intra-process serialization across threads: threading.RLock
+        # (reentrant so nested locked calls in one thread don't deadlock).
+        # The flock fd is acquired on the OUTERMOST entry inside one
+        # process; the RLock guards entry/exit so flock state is always
+        # held by exactly one thread at a time per process.
+        self._intra_process_lock = threading.RLock()
+        self._lock_fd: Optional[int] = None
         self.request_queue = request_queue
         self.run_queue = run_queue
         if manifest is not None:
@@ -441,6 +471,58 @@ class Archive:
         manifest.write(self.base)
         self.manifest = manifest
 
+    # ---- locking ----------------------------------------------------------
+    @contextlib.contextmanager
+    def _with_lock(self) -> Iterator[None]:
+        """Hold the archive lock for the duration of the block.
+
+        Two layers:
+          * threading.RLock: serializes threads within one process and
+            allows re-entry from the same thread (so transition() called
+            from inside register() doesn't deadlock).
+          * fcntl.flock on <base>/.archive.lock: serializes processes.
+            Acquired on the outermost re-entry per process so concurrent
+            workers (e.g. multiple request_sim CLIs against the same
+            archive) coordinate cleanly.
+
+        Reads (Index.all, get_status, StatusRecord.read) intentionally
+        don't take this lock — they're a snapshot view and operate on
+        immutable JSON files."""
+        with self._intra_process_lock:
+            outermost = self._lock_fd is None
+            if outermost and _HAS_FCNTL:
+                self._lock_path.parent.mkdir(parents=True, exist_ok=True)
+                self._lock_fd = os.open(str(self._lock_path),
+                                        os.O_RDWR | os.O_CREAT, 0o644)
+                t0 = time.time()
+                warned = False
+                while True:
+                    try:
+                        fcntl.flock(self._lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except (BlockingIOError, OSError) as exc:
+                        if exc.errno not in (errno.EAGAIN, errno.EACCES):
+                            raise
+                        if not warned and time.time() - t0 > 5.0:
+                            logger.info("archive lock %s held; waiting...",
+                                        self._lock_path)
+                            warned = True
+                        time.sleep(0.1)
+            elif outermost and not getattr(Archive, "_warned_no_fcntl", False):
+                logger.warning("fcntl unavailable; archive operations are NOT "
+                               "safe across processes (intra-process locking "
+                               "via threading.RLock still active).")
+                Archive._warned_no_fcntl = True
+            try:
+                yield
+            finally:
+                if outermost and self._lock_fd is not None:
+                    try:
+                        fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
+                    finally:
+                        os.close(self._lock_fd)
+                        self._lock_fd = None
+
     # ---- callable resolution ---------------------------------------------
     def _resolve_same_q(self) -> Callable[[Any, Any], bool]:
         ep = self.manifest.data.get("code", {}).get("same_q_entrypoint")
@@ -485,43 +567,43 @@ class Archive:
             max(existing, N), transition to 'refine_ready', return name
 
         Returns the (existing or newly allocated) sim_name in all cases.
+        Multi-writer-safe: holds the archive lock for the duration.
         """
         target_level = int(target_level)
-        existing = self.find_existing(params)
-        if existing is not None:
-            self._maybe_bump_target(existing, target_level)
-            return existing
-        if name is None:
-            name = str(len(list((self.base / "sims").iterdir())) + 1)
-        sd = self.sim_dir(name)
-        sd.mkdir(parents=True, exist_ok=True)
-        (sd / "logs").mkdir(exist_ok=True)
-        (sd / "params.json").write_text(json.dumps(params) + "\n")
-        rec = StatusRecord.new(name, params, target_level=target_level)
-        rec.write(sd)
-        lk = self._lookup_key(params)
-        self.index.upsert({"name": name, "params": params,
-                           "status": "ready", "summary": None,
-                           "lookup_key": lk,
-                           "target_level": target_level,
-                           "current_level": 0})
-        self._dedup_buckets.setdefault(_safe_hashable(lk), []).append(name)
-        return name
+        with self._with_lock():
+            existing = self.find_existing(params)
+            if existing is not None:
+                self._maybe_bump_target(existing, target_level)
+                return existing
+            if name is None:
+                name = str(len(list((self.base / "sims").iterdir())) + 1)
+            sd = self.sim_dir(name)
+            sd.mkdir(parents=True, exist_ok=True)
+            (sd / "logs").mkdir(exist_ok=True)
+            (sd / "params.json").write_text(json.dumps(params) + "\n")
+            rec = StatusRecord.new(name, params, target_level=target_level)
+            rec.write(sd)
+            lk = self._lookup_key(params)
+            self.index.upsert({"name": name, "params": params,
+                               "status": "ready", "summary": None,
+                               "lookup_key": lk,
+                               "target_level": target_level,
+                               "current_level": 0})
+            self._dedup_buckets.setdefault(_safe_hashable(lk), []).append(name)
+            return name
 
     def refine(self, name: str, target_level: int) -> bool:
         """Explicit refinement request. Bumps the target_level if needed
         and (when the sim already had output) transitions it to
         'refine_ready'. Returns True iff a bump occurred."""
-        return self._maybe_bump_target(name, int(target_level))
+        with self._with_lock():
+            return self._maybe_bump_target(name, int(target_level))
 
     def _maybe_bump_target(self, name: str, target_level: int) -> bool:
+        # Caller must hold the archive lock.
         rec = StatusRecord.read(self.sim_dir(name))
         if not rec.bump_target(target_level):
             return False
-        # Decide the new status. If the sim already produced output for
-        # at least one level, it's now 'refine_ready'. If it had no
-        # levels yet, leave it in whatever pre-run state it was in
-        # (typically 'ready' or 'submit_ready').
         new_status = rec.data["status"]
         if rec.data["current_level"] >= 1 and rec.data["status"] == "complete":
             new_status = "refine_ready"
@@ -537,12 +619,13 @@ class Archive:
 
     # ---- transitions ------------------------------------------------------
     def transition(self, name: str, new_status: str, **fields: Any) -> None:
-        rec = StatusRecord.read(self.sim_dir(name))
-        rec.transition(new_status, **fields)
-        rec.write(self.sim_dir(name))
-        row = self.index.by_name(name) or {"name": name}
-        row["status"] = new_status
-        self.index.upsert(row)
+        with self._with_lock():
+            rec = StatusRecord.read(self.sim_dir(name))
+            rec.transition(new_status, **fields)
+            rec.write(self.sim_dir(name))
+            row = self.index.by_name(name) or {"name": name}
+            row["status"] = new_status
+            self.index.upsert(row)
 
     def refresh_status_from_disk(self) -> Dict[str, str]:
         """Sweep every sim and reconcile its `levels[]` history with the
@@ -555,43 +638,44 @@ class Archive:
         whose status changed. Safe to call repeatedly (idempotent
         when no new outputs have arrived)."""
         changed: Dict[str, str] = {}
-        for sim_name in list(self.simulations_iter_names()):
-            sd = self.sim_dir(sim_name)
-            if not sd.exists():
-                continue
-            try:
-                rec = StatusRecord.read(sd)
-            except Exception:
-                continue
-            known_levels = {l["level"] for l in rec.data.get("levels", [])}
-            target = rec.data.get("target_level", 0)
-            mutated = False
-            for lvl in range(1, target + 1):
-                if lvl in known_levels:
+        with self._with_lock():
+            for sim_name in list(self.simulations_iter_names()):
+                sd = self.sim_dir(sim_name)
+                if not sd.exists():
                     continue
-                level_file = sd / "level_{}.json".format(lvl)
-                if level_file.exists() and level_file.stat().st_size > 0:
-                    rec.append_level(lvl, str(level_file.relative_to(self.base)))
-                    mutated = True
-            if not mutated and rec.data.get("status") in ("complete", "stuck"):
-                continue
-            cur = rec.data.get("current_level", 0)
-            old_status = rec.data.get("status")
-            if cur >= target and target > 0:
-                new_status = "complete"
-            elif cur >= 1:
-                new_status = "refine_ready"
-            else:
-                new_status = old_status   # nothing computed yet; leave alone
-            if new_status != old_status or mutated:
-                rec.transition(new_status)
-                rec.write(sd)
-                row = self.index.by_name(sim_name) or {"name": sim_name}
-                row["status"] = new_status
-                row["current_level"] = cur
-                self.index.upsert(row)
-                if new_status != old_status:
-                    changed[sim_name] = new_status
+                try:
+                    rec = StatusRecord.read(sd)
+                except Exception:
+                    continue
+                known_levels = {l["level"] for l in rec.data.get("levels", [])}
+                target = rec.data.get("target_level", 0)
+                mutated = False
+                for lvl in range(1, target + 1):
+                    if lvl in known_levels:
+                        continue
+                    level_file = sd / "level_{}.json".format(lvl)
+                    if level_file.exists() and level_file.stat().st_size > 0:
+                        rec.append_level(lvl, str(level_file.relative_to(self.base)))
+                        mutated = True
+                if not mutated and rec.data.get("status") in ("complete", "stuck"):
+                    continue
+                cur = rec.data.get("current_level", 0)
+                old_status = rec.data.get("status")
+                if cur >= target and target > 0:
+                    new_status = "complete"
+                elif cur >= 1:
+                    new_status = "refine_ready"
+                else:
+                    new_status = old_status   # nothing computed yet; leave alone
+                if new_status != old_status or mutated:
+                    rec.transition(new_status)
+                    rec.write(sd)
+                    row = self.index.by_name(sim_name) or {"name": sim_name}
+                    row["status"] = new_status
+                    row["current_level"] = cur
+                    self.index.upsert(row)
+                    if new_status != old_status:
+                        changed[sim_name] = new_status
         return changed
 
     def simulations_iter_names(self) -> Iterable[str]:
@@ -599,12 +683,280 @@ class Archive:
             yield row["name"]
 
     def update_summary(self, name: str, summary: Dict[str, Any]) -> None:
+        with self._with_lock():
+            sd = self.sim_dir(name)
+            (sd / "summary.json").write_text(
+                json.dumps(summary, indent=2, sort_keys=True) + "\n")
+            row = self.index.by_name(name) or {"name": name}
+            row["summary"] = summary
+            self.index.upsert(row)
+
+    # ---- per-sim resource overrides --------------------------------------
+    def set_resources(self, name: str,
+                      request_memory: Optional[int] = None,
+                      request_disk: Optional[str] = None,
+                      extra_condor_cmds: Optional[Dict[str, str]] = None,
+                      ) -> None:
+        """Per-sim overrides on top of the queue's defaults. Only the
+        keys you pass are updated; pass `None` to leave a field
+        unchanged. The queue's `build_worker` reads these and merges
+        them on top of its own defaults at submit time."""
+        with self._with_lock():
+            sd = self.sim_dir(name)
+            rec = StatusRecord.read(sd)
+            res = dict(rec.data.get("resources") or {})
+            if request_memory is not None:
+                res["request_memory"] = int(request_memory)
+            if request_disk is not None:
+                res["request_disk"] = request_disk
+            if extra_condor_cmds is not None:
+                merged = dict(res.get("extra_condor_cmds") or {})
+                merged.update(extra_condor_cmds)
+                res["extra_condor_cmds"] = merged
+            rec.data["resources"] = res
+            rec.write(sd)
+
+    def get_resources(self, name: str) -> Dict[str, Any]:
         sd = self.sim_dir(name)
-        (sd / "summary.json").write_text(
-            json.dumps(summary, indent=2, sort_keys=True) + "\n")
-        row = self.index.by_name(name) or {"name": name}
-        row["summary"] = summary
-        self.index.upsert(row)
+        rec = StatusRecord.read(sd)
+        return dict(rec.data.get("resources") or {})
+
+    # ---- stuck-state recovery --------------------------------------------
+    def unstick(self, name: str, bump_memory: bool = False,
+                bump_factor: float = 1.5) -> None:
+        """Clear `stuck`, transition to `refine_ready` (if has prior
+        levels) or `ready` (if not). With `bump_memory=True`, also
+        multiplies the per-sim request_memory by `bump_factor` so the
+        next attempt asks for more headroom."""
+        with self._with_lock():
+            sd = self.sim_dir(name)
+            rec = StatusRecord.read(sd)
+            if rec.data.get("status") != "stuck":
+                logger.info("unstick: %s is not stuck (status=%s); no-op",
+                            name, rec.data.get("status"))
+                return
+            new_status = "refine_ready" if rec.data.get("current_level", 0) >= 1 else "ready"
+            if bump_memory:
+                res = dict(rec.data.get("resources") or {})
+                # Start from per-sim override if present; else use a
+                # reasonable baseline (the run-queue default would be
+                # the right thing but we don't have it here — caller
+                # can pass it through set_resources first if desired).
+                base = int(res.get("request_memory", 4096))
+                res["request_memory"] = int(base * float(bump_factor))
+                rec.data["resources"] = res
+                logger.info("unstick: bumped %s request_memory %d -> %d",
+                            name, base, res["request_memory"])
+            rec.transition(new_status)
+            rec.data["status"] = new_status
+            rec.write(sd)
+            row = self.index.by_name(name) or {"name": name}
+            row["status"] = new_status
+            self.index.upsert(row)
+
+    def unstick_all(self, bump_memory: bool = False,
+                    bump_factor: float = 1.5) -> List[str]:
+        names = self.with_status("stuck")
+        for n in names:
+            self.unstick(n, bump_memory=bump_memory, bump_factor=bump_factor)
+        return names
+
+    # ---- admin: resummarize / verify / rebuild_index ---------------------
+    def resummarize_all(self, *, only_complete: bool = False
+                        ) -> Dict[str, str]:
+        """Re-load the manifest's summarizer and re-run it for every sim
+        with at least one completed level. Used after the summarizer's
+        source has been updated (a new freeze + manifest rewrite, or
+        an in-place edit of code/summarizer.py for archives whose
+        summarizer is allowed to evolve).
+
+        Returns {sim_name: 'ok' | 'no-summarizer' | 'no-levels' | 'error: <msg>'}.
+        With `only_complete=True` skips sims whose status isn't 'complete'.
+        """
+        report: Dict[str, str] = {}
+        summarizer = self.load_summarizer()
+        if summarizer is None:
+            for n in self.simulations_iter_names():
+                report[n] = "no-summarizer"
+            return report
+        with self._with_lock():
+            for sim_name in list(self.simulations_iter_names()):
+                sd = self.sim_dir(sim_name)
+                try:
+                    rec = StatusRecord.read(sd)
+                except Exception as exc:
+                    report[sim_name] = "error: cannot read status ({})".format(exc)
+                    continue
+                if only_complete and rec.data.get("status") != "complete":
+                    report[sim_name] = "skipped: status={}".format(
+                        rec.data.get("status"))
+                    continue
+                level_paths = [str(self.base / l["output_path"])
+                               for l in rec.data.get("levels", [])
+                               if l.get("output_path")]
+                if not level_paths:
+                    report[sim_name] = "no-levels"
+                    continue
+                params = rec.data.get("params")
+                try:
+                    summary = summarizer(sim_dir=str(sd), params=params,
+                                         levels=level_paths)
+                except TypeError:
+                    summary = summarizer(sim_dir=str(sd), params=params)
+                except Exception as exc:
+                    report[sim_name] = "error: {}".format(exc)
+                    continue
+                if summary is not None:
+                    sd_summary = sd / "summary.json"
+                    sd_summary.write_text(
+                        json.dumps(summary, indent=2, sort_keys=True) + "\n")
+                    row = self.index.by_name(sim_name) or {"name": sim_name}
+                    row["summary"] = summary
+                    self.index.upsert(row)
+                report[sim_name] = "ok"
+        return report
+
+    def verify(self) -> Dict[str, Any]:
+        """Cross-check index.jsonl, per-sim status.json, and on-disk
+        files. Returns a structured report — meant to be inspected by
+        an operator before acting on it. Does NOT mutate; pair with
+        rebuild_index if the report shows drift you want to repair."""
+        report: Dict[str, Any] = {
+            "manifest_ok": True,
+            "manifest_issues": [],
+            "missing_in_index": [],     # sim_dirs on disk not in index
+            "orphan_in_index": [],      # index rows whose sim_dir is gone
+            "status_drift": [],         # status.json vs index disagreement
+            "missing_levels": [],       # status claims level N but file absent
+            "extra_levels": [],         # level files present but not in status
+            "stuck_sims": [],
+            "complete_sims": 0,
+            "incomplete_sims": 0,
+        }
+
+        # --- manifest sanity checks ------------------------------------
+        try:
+            man = self.manifest.data
+        except Exception as exc:
+            report["manifest_ok"] = False
+            report["manifest_issues"].append("read failed: {}".format(exc))
+            return report
+        for ep_key in ("generator", "summarizer", "same_q", "lookup_key"):
+            ep = man.get("code", {}).get(ep_key)
+            if ep is None:
+                continue
+            if not (self.base / ep).exists():
+                report["manifest_ok"] = False
+                report["manifest_issues"].append(
+                    "manifest.code.{} -> {!r} but file is missing".format(ep_key, ep))
+
+        # --- sims directory vs index -----------------------------------
+        sims_dir = self.base / "sims"
+        on_disk = {p.name for p in sims_dir.iterdir() if p.is_dir()} \
+            if sims_dir.exists() else set()
+        in_index = {row["name"] for row in self.index.all()}
+        report["missing_in_index"] = sorted(on_disk - in_index)
+        report["orphan_in_index"] = sorted(in_index - on_disk)
+
+        # --- per-sim cross-check ---------------------------------------
+        for sim_name in sorted(on_disk | in_index):
+            row = self.index.by_name(sim_name)
+            sd = self.sim_dir(sim_name)
+            if not sd.exists():
+                continue   # already accounted for in orphan_in_index
+            try:
+                rec = StatusRecord.read(sd)
+            except Exception as exc:
+                report["status_drift"].append(
+                    {"name": sim_name, "issue": "status.json unreadable: {}".format(exc)})
+                continue
+            if row is not None:
+                if row.get("status") != rec.data.get("status"):
+                    report["status_drift"].append(
+                        {"name": sim_name,
+                         "index_status": row.get("status"),
+                         "record_status": rec.data.get("status")})
+                if row.get("current_level") != rec.data.get("current_level"):
+                    report["status_drift"].append(
+                        {"name": sim_name,
+                         "index_current_level": row.get("current_level"),
+                         "record_current_level": rec.data.get("current_level")})
+            recorded_levels = {l["level"] for l in rec.data.get("levels", [])}
+            target = rec.data.get("target_level", 0)
+            for lvl in range(1, target + 1):
+                level_file = sd / "level_{}.json".format(lvl)
+                exists = level_file.exists() and level_file.stat().st_size > 0
+                if lvl in recorded_levels and not exists:
+                    report["missing_levels"].append({"name": sim_name, "level": lvl})
+                if exists and lvl not in recorded_levels:
+                    report["extra_levels"].append({"name": sim_name, "level": lvl})
+            status = rec.data.get("status")
+            if status == "complete":
+                report["complete_sims"] += 1
+            elif status == "stuck":
+                report["stuck_sims"].append(sim_name)
+            else:
+                report["incomplete_sims"] += 1
+
+        report["healthy"] = (
+            report["manifest_ok"]
+            and not report["missing_in_index"]
+            and not report["orphan_in_index"]
+            and not report["status_drift"]
+            and not report["missing_levels"]
+            and not report["extra_levels"]
+        )
+        return report
+
+    def rebuild_index(self) -> int:
+        """Reconstruct index.jsonl from per-sim status.json files. Useful
+        if the index is corrupted, lost, or out of sync (e.g. after
+        manual file ops). Returns the count of rows written. Re-runs the
+        summarizer would be a separate pass (resummarize_all)."""
+        with self._with_lock():
+            sims_dir = self.base / "sims"
+            if not sims_dir.exists():
+                logger.info("rebuild_index: no sims/ dir; clearing index")
+                self.index._write_all([])
+                return 0
+            rows: List[Dict[str, Any]] = []
+            for sd in sorted(sims_dir.iterdir()):
+                if not sd.is_dir():
+                    continue
+                try:
+                    rec = StatusRecord.read(sd)
+                except Exception:
+                    logger.warning("rebuild_index: skipping %s (no readable "
+                                   "status.json)", sd.name)
+                    continue
+                params = rec.data.get("params")
+                summary = None
+                summary_path = sd / "summary.json"
+                if summary_path.exists():
+                    try:
+                        summary = json.loads(summary_path.read_text())
+                    except Exception:
+                        summary = None
+                row = {
+                    "name": sd.name,
+                    "params": params,
+                    "status": rec.data.get("status"),
+                    "summary": summary,
+                    "lookup_key": (self._lookup_key(params)
+                                   if params is not None else None),
+                    "target_level": rec.data.get("target_level", 0),
+                    "current_level": rec.data.get("current_level", 0),
+                }
+                rows.append(row)
+            self.index._write_all(rows)
+            # Rebuild dedup buckets from scratch.
+            self._dedup_buckets = {}
+            for row in rows:
+                if row.get("lookup_key") is None:
+                    continue
+                key = _safe_hashable(row["lookup_key"])
+                self._dedup_buckets.setdefault(key, []).append(row["name"])
+            return len(rows)
 
     # ---- introspection ----------------------------------------------------
     def with_status(self, status: str) -> List[str]:
@@ -661,10 +1013,15 @@ class Archive:
     def worker_bootstrap_script(self) -> str:
         """Return a self-contained Python bootstrap script (as a string)
         that the run pool's executable should be set to. The script
-        expects argv: --sim-name <n> --level <N> --prev-levels FILE [...].
-        Standard input file layout: code/ in sandbox, params.json in
-        sandbox, prev-level files in sandbox by basename. Output is
-        written to cwd as level_<N>.json."""
+        expects argv:
+            --sim-name <n> --level <N>
+            [--code-dir <path>]              (default: 'code' relative to cwd;
+                                              slurm passes the archive's
+                                              absolute code/ path here)
+            [--prev-levels FILE [...]]
+        Reads ./params.json from cwd, writes ./level_<N>.json to cwd.
+        Used by both DualCondorRunQueue (sandbox cwd, files flattened)
+        and SlurmRunQueue (cwd = sim_dir on shared FS)."""
         ep = self.manifest.data["code"]["generator_entrypoint"]
         module_name, _, fn_name = ep.partition(":")
         return textwrap.dedent('''\
@@ -676,10 +1033,14 @@ class Archive:
             ap = argparse.ArgumentParser()
             ap.add_argument("--sim-name", required=True)
             ap.add_argument("--level", type=int, required=True)
+            ap.add_argument("--code-dir", default="code",
+                            help="path to the frozen code/ directory; "
+                                 "default 'code' is relative to cwd, "
+                                 "matching condor's flattened sandbox.")
             ap.add_argument("--prev-levels", nargs="*", default=[])
             args = ap.parse_args()
 
-            sys.path.insert(0, "code")
+            sys.path.insert(0, args.code_dir)
             from {module_name} import {fn_name} as _gen
 
             with open("params.json") as f:
@@ -971,6 +1332,9 @@ class DualCondorRunQueue(RunQueue):
                  use_singularity: bool = False,
                  singularity_image: Optional[str] = None,
                  extra_condor_cmds: Optional[Dict[str, str]] = None,
+                 auto_release_on_oom: bool = True,
+                 oom_max_retries: int = 5,
+                 oom_memory_factor: float = 1.5,
                  **submit_kwargs: Any):
         self.run_pool = run_pool
         self.run_collector = run_collector
@@ -979,9 +1343,6 @@ class DualCondorRunQueue(RunQueue):
         self.accounting_group = accounting_group or os.environ.get("LIGO_ACCOUNTING")
         self.accounting_group_user = (accounting_group_user
                                       or os.environ.get("LIGO_USER_NAME"))
-        # Resolve `getenv` precedence: explicit kwarg > RIFT_GETENV env >
-        # safe allowlist default. `getenv = True` is blocked by many
-        # sites; the allowlist is the OSG-blessed alternative.
         if getenv is not None:
             self.getenv = getenv
         else:
@@ -989,6 +1350,14 @@ class DualCondorRunQueue(RunQueue):
         self.use_singularity = use_singularity
         self.singularity_image = singularity_image
         self.extra_condor_cmds = extra_condor_cmds or {}
+        # Catch-and-release: when condor holds a job for hitting its
+        # memory limit (HoldReasonCode 26 = OUT_OF_MEMORY,
+        # 34 = MEMORY_LIMIT_EXCEEDED), automatically release it with a
+        # bumped request_memory. After oom_max_retries the job stays
+        # held and the archive will mark the sim 'stuck'.
+        self.auto_release_on_oom = bool(auto_release_on_oom)
+        self.oom_max_retries = int(oom_max_retries)
+        self.oom_memory_factor = float(oom_memory_factor)
         self.submit_kwargs = submit_kwargs
         # Per-archive state: cluster id of the last DAGMan we submitted,
         # used by poll() to scope the schedd query.
@@ -1007,10 +1376,25 @@ class DualCondorRunQueue(RunQueue):
     def build_worker(self, archive: Archive, sim_name: str,
                      level: int = 1) -> str:
         """Write the per-(sim, level) condor submit description and
-        return its absolute path. Idempotent: re-running it overwrites."""
+        return its absolute path. Idempotent: re-running it overwrites.
+
+        Per-sim resource overrides (set via Archive.set_resources) merge
+        on top of the queue's defaults: per-sim values for
+        request_memory / request_disk / extra_condor_cmds win where set.
+        """
         sd = archive.sim_dir(sim_name)
         if not sd.exists():
             raise FileNotFoundError("sim_dir does not exist: {}".format(sd))
+
+        # Per-sim overrides on top of the queue's defaults.
+        try:
+            res = archive.get_resources(sim_name)
+        except Exception:
+            res = {}
+        request_memory = int(res.get("request_memory", self.request_memory))
+        request_disk = res.get("request_disk", self.request_disk)
+        extra_cmds = dict(self.extra_condor_cmds)
+        extra_cmds.update(res.get("extra_condor_cmds") or {})
 
         bootstrap = self._bootstrap_path(archive)
         log_dir = archive.base / "run_queue" / "logs"
@@ -1018,32 +1402,24 @@ class DualCondorRunQueue(RunQueue):
         sub_dir = archive.base / "run_queue" / "submit_files"
         sub_dir.mkdir(parents=True, exist_ok=True)
 
-        # Declare ALL chained prior levels in the submit, regardless of
-        # whether they exist at build time. The DAG's PARENT/CHILD edges
-        # guarantee they will exist by the time the level-N job runs;
-        # filtering by disk presence here would silently drop dependencies.
+        # Declare ALL chained prior levels regardless of disk presence;
+        # PARENT/CHILD edges guarantee they exist by the time level N runs.
         prev_basenames = ["level_{}.json".format(i) for i in range(1, level)]
         prev_paths = [str(sd / b) for b in prev_basenames]
         out_base, out_target = archive.expected_output(sim_name, level)
-        # code/ + params.json (always); plus the full chained level history.
         transfer_in = [str(archive.base / "code"),
                        str(sd / "params.json")] + prev_paths
 
-        # Build submit description as ordered key/value lines.
         lines: List[str] = [
             "# Auto-generated by RIFT.simulation_manager.database."
             "DualCondorRunQueue",
             "universe                = vanilla",
             "executable              = {}".format(bootstrap),
         ]
-        args_tail = ["--sim-name", sim_name,
-                     "--level", str(int(level))]
+        args_tail = ["--sim-name", sim_name, "--level", str(int(level))]
         if prev_basenames:
             args_tail.append("--prev-levels")
             args_tail.extend(prev_basenames)
-        # condor 'arguments' uses a quoting convention; we rely on the
-        # absence of weird characters in sim names + integer levels, but
-        # belt-and-suspenders quote the basenames.
         lines.append('arguments              = "{}"'.format(
             " ".join(_condor_arg_quote(a) for a in args_tail)))
         if transfer_in:
@@ -1053,8 +1429,28 @@ class DualCondorRunQueue(RunQueue):
         lines.append("transfer_output_files   = {}".format(out_base))
         lines.append('transfer_output_remaps  = "{}={}"'.format(out_base, out_target))
         lines.append("getenv                  = {}".format(self.getenv))
-        lines.append("request_memory          = {}M".format(self.request_memory))
-        lines.append("request_disk            = {}".format(self.request_disk))
+
+        if self.auto_release_on_oom:
+            # Stuart's catch-and-release pattern. On hold codes 26
+            # (OUT_OF_MEMORY) or 34 (MEMORY_LIMIT_EXCEEDED), bump
+            # request_memory by oom_memory_factor and release the job.
+            # After oom_max_retries the job stays held and we let the
+            # archive's stuck-detection take over.
+            lines.append("MY.InitialRequestMemory = {}".format(request_memory))
+            lines.append(
+                "request_memory          = ifthenelse("
+                "(LastHoldReasonCode =!= 34 && LastHoldReasonCode =!= 26), "
+                "MY.InitialRequestMemory, "
+                "int({factor} * NumJobStarts * MemoryUsage))".format(
+                    factor=self.oom_memory_factor))
+            lines.append(
+                "periodic_release        = "
+                "((HoldReasonCode =?= 34) || (HoldReasonCode =?= 26)) "
+                "&& (NumJobStarts < {})".format(self.oom_max_retries))
+        else:
+            lines.append("request_memory          = {}M".format(request_memory))
+
+        lines.append("request_disk            = {}".format(request_disk))
         if self.accounting_group:
             lines.append("accounting_group        = {}".format(self.accounting_group))
         if self.accounting_group_user:
@@ -1066,9 +1462,8 @@ class DualCondorRunQueue(RunQueue):
             lines.append("MY.SingularityBindCVMFS = True")
             lines.append('Requirements            = HAS_SINGULARITY=?=TRUE')
             lines.append("transfer_executable     = False")
-        for k, v in self.extra_condor_cmds.items():
+        for k, v in extra_cmds.items():
             lines.append("{:24s}= {}".format(k, v))
-        # Logging
         tag = "{}_lvl{}".format(sim_name, level)
         lines.append("log                     = {}/{}.log".format(log_dir, tag))
         lines.append("output                  = {}/{}.out".format(log_dir, tag))
@@ -1254,6 +1649,330 @@ def _parse_args_for_sim_level(args: str) -> Tuple[Optional[str], Optional[int]]:
 
 
 # ---------------------------------------------------------------------------
+# Slurm queue
+# ---------------------------------------------------------------------------
+#
+# SLURM differs from condor in two important ways:
+#
+#   1. There is no transfer_input_files / transfer_output_files. Workers run
+#      on compute nodes that are assumed to share a filesystem with the
+#      submit host (the standard HPC model: NFS-mounted home/scratch). The
+#      worker reads sims/<n>/params.json directly and writes sims/<n>/
+#      level_<N>.json directly. No remap, no flattening.
+#   2. Inter-job dependencies use --dependency=afterok:<jobid> on sbatch
+#      rather than DAGMan's PARENT/CHILD edges. We chain each sim's level
+#      submissions with that flag so level N's job waits for level N-1.
+#
+# For sites where compute nodes do NOT share the archive's FS, the
+# operator should arrange a container with a bind-mount (singularity exec
+# -B <archive>:<archive> ...) or use sbcast to broadcast a manifest into
+# /tmp on the workers. That's deployment configuration; the framework
+# treats the archive directory as visible from the worker.
+
+class SlurmRunQueue(RunQueue):
+    """Per-(sim, level) worker is one sbatch script. Levels for the same
+    sim are chained via `--dependency=afterok:<previous-jobid>`.
+
+    Configuration:
+        partition          : str  -- required: SLURM partition / queue
+        time_limit         : str  -- e.g. '02:00:00' (default '01:00:00')
+        nodes              : int  -- default 1
+        ntasks             : int  -- default 1
+        cpus_per_task      : int  -- default 1
+        request_memory     : int (MB), default 4096
+        request_disk       : str  -- ignored by slurm directly; informational
+        account            : str  -- defaults to env SLURM_ACCOUNT
+        qos                : str  -- defaults to env SLURM_QOS
+        partition_extra    : dict -- additional `#SBATCH --key=value` lines
+                                     emitted verbatim
+        sbatch_path        : str  -- default 'sbatch'
+        squeue_path        : str  -- default 'squeue'
+        sacct_path         : str  -- default 'sacct'
+        python_executable  : str  -- default 'python3'; what to invoke the
+                                     bootstrap with
+        prelude            : str  -- shell snippet inserted before the
+                                     bootstrap (`module load python`,
+                                     `source /path/to/env/bin/activate`,
+                                     `singularity exec ... python3 ...`)
+
+    Compared to DualCondorRunQueue, this queue does NOT bake in an
+    auto-OOM-release mechanism. Slurm's standard tool for that is the
+    job's `--requeue` policy combined with operator-driven `scontrol
+    update jobid=... ReqMem=...`; users who want automated retry should
+    use Archive.unstick(name, bump_memory=True) and re-submit, or wrap
+    the sbatch in a re-submit shell harness.
+    """
+    kind = "slurm"
+
+    def __init__(self,
+                 partition: Optional[str] = None,
+                 time_limit: str = "01:00:00",
+                 nodes: int = 1,
+                 ntasks: int = 1,
+                 cpus_per_task: int = 1,
+                 request_memory: int = 4096,
+                 request_disk: Optional[str] = None,
+                 account: Optional[str] = None,
+                 qos: Optional[str] = None,
+                 partition_extra: Optional[Dict[str, str]] = None,
+                 sbatch_path: str = "sbatch",
+                 squeue_path: str = "squeue",
+                 sacct_path: str = "sacct",
+                 python_executable: str = "python3",
+                 prelude: str = "",
+                 **submit_kwargs: Any):
+        self.partition = partition
+        self.time_limit = time_limit
+        self.nodes = int(nodes)
+        self.ntasks = int(ntasks)
+        self.cpus_per_task = int(cpus_per_task)
+        self.request_memory = int(request_memory)
+        self.request_disk = request_disk
+        self.account = account or os.environ.get("SLURM_ACCOUNT")
+        self.qos = qos or os.environ.get("SLURM_QOS")
+        self.partition_extra = partition_extra or {}
+        self.sbatch_path = sbatch_path
+        self.squeue_path = squeue_path
+        self.sacct_path = sacct_path
+        self.python_executable = python_executable
+        self.prelude = prelude
+        self.submit_kwargs = submit_kwargs
+        # Per-archive bookkeeping: sim_name -> [(level, jobid), ...]
+        self.submitted_jobs: Dict[str, List[Tuple[int, str]]] = {}
+
+    # ---- bootstrap helpers ------------------------------------------------
+    def _bootstrap_path(self, archive: Archive) -> Path:
+        path = archive.base / "run_queue" / "workers" / "bootstrap.py"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(archive.worker_bootstrap_script())
+        path.chmod(0o755)
+        return path
+
+    # ---- per-(sim, level) sbatch script ---------------------------------
+    def build_worker(self, archive: Archive, sim_name: str,
+                     level: int = 1) -> str:
+        """Write the per-(sim, level) sbatch shell script and return its
+        absolute path. Idempotent."""
+        sd = archive.sim_dir(sim_name)
+        if not sd.exists():
+            raise FileNotFoundError("sim_dir does not exist: {}".format(sd))
+
+        # Per-sim resource overrides on top of queue defaults.
+        try:
+            res = archive.get_resources(sim_name)
+        except Exception:
+            res = {}
+        request_memory = int(res.get("request_memory", self.request_memory))
+        time_limit = res.get("time_limit", self.time_limit)
+        partition = res.get("partition", self.partition)
+        partition_extra = dict(self.partition_extra)
+        partition_extra.update(res.get("extra_sbatch_directives") or {})
+
+        bootstrap = self._bootstrap_path(archive)
+        log_dir = archive.base / "run_queue" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        sub_dir = archive.base / "run_queue" / "submit_files"
+        sub_dir.mkdir(parents=True, exist_ok=True)
+
+        prev_basenames = ["level_{}.json".format(i) for i in range(1, level)]
+        tag = "{}_lvl{}".format(sim_name, level)
+
+        sbatch_lines: List[str] = [
+            "#!/bin/bash",
+            "# Auto-generated by RIFT.simulation_manager.database.SlurmRunQueue",
+            "#SBATCH --job-name={}".format(tag),
+            "#SBATCH --output={}/{}.out".format(log_dir, tag),
+            "#SBATCH --error={}/{}.err".format(log_dir, tag),
+            "#SBATCH --time={}".format(time_limit),
+            "#SBATCH --nodes={}".format(self.nodes),
+            "#SBATCH --ntasks={}".format(self.ntasks),
+            "#SBATCH --cpus-per-task={}".format(self.cpus_per_task),
+            "#SBATCH --mem={}M".format(request_memory),
+        ]
+        if partition:
+            sbatch_lines.append("#SBATCH --partition={}".format(partition))
+        if self.account:
+            sbatch_lines.append("#SBATCH --account={}".format(self.account))
+        if self.qos:
+            sbatch_lines.append("#SBATCH --qos={}".format(self.qos))
+        for k, v in partition_extra.items():
+            sbatch_lines.append("#SBATCH --{}={}".format(k.lstrip("-"), v))
+        sbatch_lines.append("")
+        sbatch_lines.append("set -euo pipefail")
+        if self.prelude:
+            sbatch_lines.append(self.prelude)
+        # Worker logic.
+        sbatch_lines.append("cd {}".format(sd))
+        cmd = [self.python_executable, str(bootstrap),
+               "--sim-name", sim_name, "--level", str(int(level)),
+               "--code-dir", str(archive.base / "code")]
+        if prev_basenames:
+            cmd.append("--prev-levels")
+            cmd.extend(prev_basenames)
+        sbatch_lines.append("exec " + " ".join(cmd))
+        sbatch_lines.append("")
+
+        sub_path = sub_dir / "{}.sh".format(tag)
+        sub_path.write_text("\n".join(sbatch_lines))
+        sub_path.chmod(0o755)
+        return str(sub_path)
+
+    # ---- submission ------------------------------------------------------
+    def submit(self, archive: Archive, sim_names: Iterable[str]
+               ) -> List[Tuple[str, str]]:
+        """Build per-(sim, level) sbatch scripts and submit them with
+        --dependency=afterok chains within each sim. Returns
+        [(sim_name, last_level_jobid_or_empty), ...]."""
+        sim_names = list(sim_names)
+        results: List[Tuple[str, str]] = []
+        for sim in sim_names:
+            rec = StatusRecord.read(archive.sim_dir(sim))
+            cur = rec.data.get("current_level", 0)
+            tgt = rec.data.get("target_level", 0)
+            level_jobids: List[Tuple[int, str]] = []
+            prev_jobid: Optional[str] = None
+            failed = False
+            for lvl in range(cur + 1, tgt + 1):
+                sub_path = self.build_worker(archive, sim, level=lvl)
+                jobid = self._sbatch(sub_path, depends_on=prev_jobid)
+                if jobid is None:
+                    # sbatch missing or failed — skip remaining levels for
+                    # this sim; the chain would be invalid without the
+                    # parent jobid anyway.
+                    failed = True
+                    break
+                level_jobids.append((lvl, jobid))
+                prev_jobid = jobid
+            self.submitted_jobs.setdefault(sim, []).extend(level_jobids)
+            archive.transition(sim, "submit_ready",
+                               request_queue={"kind": "slurm",
+                                              "partition": self.partition,
+                                              "jobs": [
+                                                  {"level": lvl, "jobid": jid}
+                                                  for lvl, jid in level_jobids]})
+            last_jobid = level_jobids[-1][1] if level_jobids else ""
+            if failed and not level_jobids:
+                last_jobid = ""
+            results.append((sim, last_jobid))
+        return results
+
+    def _sbatch(self, sub_path: str,
+                depends_on: Optional[str] = None) -> Optional[str]:
+        """Invoke `sbatch [--dependency=afterok:<id>] <sub_path>` and
+        return the jobid. Returns None (and logs a warning) if sbatch
+        is not on PATH — useful for dry runs and for running the v2
+        unit tests on a non-slurm host."""
+        cmd = [self.sbatch_path, "--parsable"]
+        if depends_on:
+            cmd.append("--dependency=afterok:{}".format(depends_on))
+        cmd.append(sub_path)
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True,
+                                    check=True)
+        except FileNotFoundError:
+            logger.warning("sbatch not on PATH; skipping submit of %s. "
+                           "Set up a slurm environment to actually dispatch.",
+                           sub_path)
+            return None
+        except subprocess.CalledProcessError as exc:
+            logger.error("sbatch failed: %s", exc.stderr)
+            raise
+        # `--parsable` prints just the jobid (or jobid;cluster).
+        first_line = (result.stdout or "").strip().splitlines()[0:1]
+        if not first_line:
+            return None
+        return first_line[0].split(";", 1)[0]
+
+    # ---- polling ---------------------------------------------------------
+    def poll(self, archive: Archive, sim_names: Iterable[str]
+             ) -> Dict[str, str]:
+        """Use squeue to find jobs still in the queue, then sacct to
+        confirm completion/failure for ones that have left. Updates
+        archive statuses; output-on-disk is the authoritative
+        completion signal (applied by the request queue's poll via
+        Archive.refresh_status_from_disk)."""
+        sim_names = list(sim_names)
+        # Build the union of jobids we care about.
+        all_jobids: Dict[str, str] = {}   # jobid -> sim
+        for sim in sim_names:
+            for lvl, jid in self.submitted_jobs.get(sim, []):
+                if jid:
+                    all_jobids[jid] = sim
+        if not all_jobids:
+            return {n: archive.get_status(n) for n in sim_names}
+
+        in_queue = self._squeue(list(all_jobids.keys()))
+        results: Dict[str, str] = {}
+        for sim in sim_names:
+            current = archive.get_status(sim)
+            sim_jobs = self.submitted_jobs.get(sim, [])
+            still_running = [jid for _, jid in sim_jobs
+                             if jid and jid in in_queue]
+            if still_running:
+                if current not in ("running", "complete", "stuck"):
+                    archive.transition(sim, "running")
+                results[sim] = "running"
+            else:
+                results[sim] = current
+        return results
+
+    def _squeue(self, jobids: List[str]) -> set:
+        """Return the subset of `jobids` still showing in squeue.
+        Returns the input set unchanged on squeue failure (conservative:
+        we'd rather wait too long than declare a sim done prematurely)."""
+        if not jobids:
+            return set()
+        try:
+            result = subprocess.run(
+                [self.squeue_path, "-j", ",".join(jobids),
+                 "--noheader", "-o", "%i"],
+                capture_output=True, text=True, check=False)
+        except FileNotFoundError:
+            logger.info("squeue not on PATH; assuming all jobs still queued")
+            return set(jobids)
+        # squeue exits non-zero if NONE of the jobids match (slurm versions
+        # vary). Treat empty stdout as "all done".
+        out = (result.stdout or "").strip()
+        if not out:
+            return set()
+        return {line.strip() for line in out.splitlines() if line.strip()}
+
+
+class SlurmRequestQueue(RequestQueue):
+    """Slurm-side orchestrator. Identifies pending sims and delegates
+    submission to SlurmRunQueue."""
+    kind = "slurm"
+
+    def __init__(self,
+                 run_queue: Optional["SlurmRunQueue"] = None,
+                 **submit_kwargs: Any):
+        self.run_queue = run_queue
+        self.submit_kwargs = submit_kwargs
+
+    def submit_pending(self, archive: Archive) -> List[str]:
+        if self.run_queue is None:
+            raise RuntimeError("SlurmRequestQueue: run_queue not attached")
+        pending = (archive.with_status("ready")
+                   + archive.with_status("refine_ready"))
+        if not pending:
+            return []
+        try:
+            self.run_queue.submit(archive, pending)
+        except Exception:
+            for n in pending:
+                archive.transition(n, "ready")
+            raise
+        return pending
+
+    def poll(self, archive: Archive) -> Dict[str, str]:
+        if self.run_queue is None:
+            return {}
+        observed = self.run_queue.poll(archive, archive.simulations_iter_names())
+        archive.refresh_status_from_disk()
+        return observed
+
+
+# ---------------------------------------------------------------------------
 # Queue auto-resolution from manifest config
 # ---------------------------------------------------------------------------
 
@@ -1262,6 +1981,8 @@ QUEUE_REGISTRY: Dict[Tuple[str, str], type] = {
     ("run",     "local"):  LocalRunQueue,
     ("request", "condor"): DualCondorRequestQueue,
     ("run",     "condor"): DualCondorRunQueue,
+    ("request", "slurm"):  SlurmRequestQueue,
+    ("run",     "slurm"):  SlurmRunQueue,
 }
 
 

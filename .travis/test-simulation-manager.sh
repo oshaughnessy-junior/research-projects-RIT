@@ -11,4 +11,8 @@
 
 set -e
 
+# Legacy v1 simulation_manager smoke tests.
 python3 -m pytest -v MonteCarloMarginalizeCode/Code/test/test_simulation_manager.py
+
+# v2 archive unit tests (database.py + queues + admin operations).
+python3 -m pytest -v MonteCarloMarginalizeCode/Code/test/test_database.py

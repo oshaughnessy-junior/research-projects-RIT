@@ -463,6 +463,64 @@ The `kind` discriminator in the manifest stays as `"condor"` for both
 queue records; the `extra` dict carries the `pool` / `schedd` / DAG
 template differences.
 
+## Topology: SLURM
+
+The SLURM equivalent of `DualCondorRunQueue` is `SlurmRunQueue` (paired
+with `SlurmRequestQueue`). Two important differences from condor:
+
+* **Shared filesystem at compute nodes is assumed.** SLURM has no
+  built-in `transfer_input_files`/`transfer_output_files` analog. The
+  framework treats the archive directory as visible from the worker
+  (the standard HPC model with NFS-mounted home/scratch). Sites
+  without that property should arrange a Singularity container with
+  bind-mounts (`singularity exec -B <archive>:<archive> ... python3 ...`)
+  in the queue's `prelude` snippet, or use `sbcast` to broadcast a
+  manifest to `/tmp` on the workers.
+* **Inter-job dependencies use `--dependency=afterok:<jobid>`** rather
+  than DAGMan's PARENT/CHILD edges. `SlurmRunQueue.submit` chains each
+  sim's level submissions; level N's sbatch waits for level N-1 to
+  exit cleanly.
+
+The per-(sim, level) submit script is a normal `#!/bin/bash` script
+with `#SBATCH` directives at the top, a `prelude` shell snippet (e.g.
+`module load python/3.11`, virtualenv activate), `cd <sim_dir>`, and a
+final `exec python3 <archive>/run_queue/workers/bootstrap.py …`. The
+bootstrap is the same one condor uses; the only adaptation is the
+`--code-dir` argument (passed as the absolute path to `<archive>/code`
+because the worker's cwd is `<sim_dir>`, not a flattened sandbox).
+
+OOM auto-recovery is not built into the SLURM submit description.
+SLURM's standard idiom is `--requeue` plus operator-driven `scontrol
+update jobid=… ReqMem=…`; the archive's `Archive.unstick(name,
+bump_memory=True)` covers this from the framework side. For sites that
+want fully automatic retry, wrap the sbatch in a re-submit harness in
+the queue's `prelude`.
+
+Configuration in the manifest's `run_queue.extra`:
+
+```yaml
+partition:           compute        # required
+time_limit:          "02:00:00"     # default 01:00:00
+nodes:               1
+ntasks:              1
+cpus_per_task:       1
+request_memory:      4096           # MB
+account:             ligo-research  # or env SLURM_ACCOUNT
+qos:                 normal         # or env SLURM_QOS
+prelude: |
+  module load python/3.11
+  source /home/me/rift-env/bin/activate
+partition_extra:                    # extra `--key=value` directives
+  gres:              gpu:1
+  exclusive:         ""
+```
+
+Per-sim overrides supported via `Archive.set_resources(name, ...)`:
+`request_memory`, `time_limit`, `partition`, plus
+`extra_sbatch_directives` (a dict; merged into the queue's
+`partition_extra`).
+
+
 ### Configuration defaults
 
 `DualCondorRunQueue` reads the following from the constructor first,
