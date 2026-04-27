@@ -1,10 +1,5 @@
-Waveform Interfaces
-===================
-
-The RIFT physics module provides a set of interfaces to external waveform generators. The core utility provided by these interfaces is the ability to generate gravitational-wave signals, critically represented as spin-weighted spherical harmonic decompositions $h_{lm}Y_{lm}$.
-
 GWSignal Interface
-------------------
+===================
 
 The ``GWSignal.py`` module acts as a wrapper around the ``gwsignal`` library. It is designed to avoid some of the stdout noise and slow import times associated with the base library while providing a clean interface for generating both time-domain waveforms and their harmonic decompositions.
 
@@ -17,16 +12,18 @@ Core Functions
 ---------------
 
 **Harmonic Decomposition**
-- ``hlmoft(P, Lmax=2, ...)**: The core function for generating harmonic modes. It takes a parameter set ``P`` and returns a dictionary of ``LAL ``COMPLEX16TimeSeries`` objects for each $(l, m)$ mode up to ``Lmax``.
+
+- ``hlmoft(P, Lmax=2, ...)``: The core function for generating harmonic modes. It takes a parameter set ``P`` and returns a dictionary of LAL ``COMPLEX16TimeSeries`` objects for each $(l, m)$ mode up to ``Lmax``.
     - It handles the necessary coordinate conversions (e.g., masses to solar masses).
     - It applies required tapering and phase shifts.
     - It can optionally adjust the waveform epoch based on the peak of the signal.
-- ``hlmoff(P, ...)**: A convenience wrapper around ``hlmoft`` that returns Fourier-transformed harmonic modes.
-- ``std_and_conj_hlmoff(P, ...)**: Returns both the Fourier-transformed modes and their complex conjugates.
+- ``hlmoff(P, ...)``: A convenience wrapper around ``hlmoft`` that returns Fourier-transformed harmonic modes.
+- ``std_and_conj_hlmoff(P, ...)``: Returns both the Fourier-transformed modes and their complex conjugates.
 
 **Time-Domain Waveforms**
-- ``hoft(P, ...)**: Generates a real-valued time-domain waveform. It handles the projection of the $h_+$ and $h_\times$ polarizations onto a specific detector strain based on the sky location and orientation.
-- ``complex_hoft(P, ...)**: Generates a complex-valued time-domain waveform ($h_+ + i h_\times$), which is useful for certain internal RIFT calculations.
+
+- ``hoft(P, ...)``: Generates a real-valued time-domain waveform. It handles the projection of the $h_+$ and $h_\times$ polarizations onto a specific detector strain based on the sky location and orientation.
+- ``complex_hoft(P, ...)``: Generates a complex-valued time-domain waveform ($h_+ + i h_\times$), which is useful for certain internal RIFT calculations.
 
 Implementation Details
 ------------------------

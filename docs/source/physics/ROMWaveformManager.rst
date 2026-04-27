@@ -1,5 +1,5 @@
 ROM Waveform Manager
---------------------
+====================
 
 The ``ROMWaveformManager.py`` module provides an interface to Reduced Order Models (ROMs), which are highly efficient surrogate models of gravitational-wave waveforms. These are used in RIFT to significantly accelerate the generation of waveforms in iterative sampling pipelines.
 
@@ -12,6 +12,7 @@ Core Classes and Functions
 --------------------------
 
 **WaveformModeCatalog**
+
 The primary class for managing ROM models. It handles:
 - **Model Loading**: Dynamically loads surrogates based on the specified group and parameter set.
 - **Coordinate Conversion**: Maps RIFT's ``ChooseWaveformParams`` to surrogate-specific parameters (e.g., mass ratio $q$).
@@ -22,6 +23,7 @@ The primary class for managing ROM models. It handles:
 - **Hybridization**: Supports hybridization of ROM waveforms with other models using the ``LALHybrid`` library.
 
 **Utility Functions**
+
 - ``ConvertWPtoSurrogateParams``: A family of functions (Aligned, Precessing, Full) that map RIFT parameters to the inputs expected by various surrogate models.
 - ``CreateCompatibleComplexOverlap``: Ensures that overlap integrals are computed with consistent frequency grids and Nyquist limits.
 
