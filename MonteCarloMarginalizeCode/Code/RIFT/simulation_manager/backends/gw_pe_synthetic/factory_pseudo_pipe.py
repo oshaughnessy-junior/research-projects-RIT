@@ -3,9 +3,13 @@
 Produces a per-(sim, level) sub-DAG by:
 
     1. Rendering a synthetic coinc.xml from the archive's stored params
-    2. Staging frames: `gwpy`-generated noise from a canonical IGWN PSD,
-       OR injecting into user-supplied pre-existing noise frames; signal
-       added via the same logic as `test/pp/add_frames.py`.
+    2. Staging frames: `gwpy`-generated Gaussian noise OR user-supplied
+       pre-existing noise frames; signal generated via lalsimutils.hoft
+       and added in-memory using gwpy. We do NOT shell out to
+       `test/pp/add_frames.py` — that script lives outside PATH and
+       round-trips through pycbc, which is fragile on synthetic frames
+       (raises "invalid time" on epoch-rounding mismatches). Doing the
+       sum natively in gwpy avoids both issues.
     3. Staging a PSD file (canonical aLIGO design or user-supplied)
     4. Rendering an ini, with level-dependent knobs (more iterations /
        higher n-eff target as level rises)
@@ -130,84 +134,96 @@ def _render_coinc_xml(params: Dict[str, Any], out_path: Path) -> Path:
 
 def _stage_frames(params: Dict[str, Any], frames_dir: Path,
                   cache_path: Path) -> Path:
-    """Either copy user-provided noise frames + inject signal, or draw a
-    fresh noise realization with gwpy. Writes a `data.cache` file
-    pointing at the resulting frames."""
+    """Stage one combined-noise+signal `.gwf` per IFO, write a `.cache`
+    file pointing at them, and return the cache path. All frame I/O
+    goes through gwpy; we never shell out to `add_frames.py`."""
     frames_dir.mkdir(parents=True, exist_ok=True)
-    noise_source = params.get("noise_source", "gwpy")
     ifos = params.get("ifos") or ["H1", "L1", "V1"]
-    flow_per_ifo = params.get("flow") or {ifo: 20.0 for ifo in ifos}
     channel_per_ifo = params.get("channel") or {ifo: "FAKE-STRAIN" for ifo in ifos}
     seglen = float(params.get("seglen", 8.0))
     srate = int(params.get("srate", 4096))
     geocent_time = float(params.get("geocent_time", 0.0))
 
-    # GPS window centered on the event.
+    # GPS window centered on the event. Integer-aligned to keep frame
+    # epochs on the second so downstream readers don't choke on
+    # fractional-epoch frames.
     start = int(geocent_time - seglen + 2)
     duration = int(seglen)
 
     cache_lines: List[str] = []
     for ifo in ifos:
-        frame_path = frames_dir / "{}-NOISE-{}-{}.gwf".format(ifo, start, duration)
-        if noise_source == "user":
-            user_frames = params.get("user_noise_frames") or {}
-            src = user_frames.get(ifo)
-            if not src:
-                raise ValueError("noise_source='user' but no user_noise_frames[{}]"
-                                 .format(ifo))
-            shutil.copy(src, frame_path)
-        else:
-            _write_gwpy_noise_frame(ifo, channel_per_ifo[ifo],
-                                    start, duration, srate,
-                                    flow_per_ifo[ifo], frame_path)
-        # Inject the signal from coinc.xml into the frame. Reuses the
-        # same `add_frames.py` shell pattern as test/pp/.
-        signal_path = frames_dir / "{}-INJECT-{}-{}.gwf".format(ifo, start, duration)
-        combined_path = frames_dir / "{}-COMBINED-{}-{}.gwf".format(ifo, start, duration)
-        _inject_signal(ifo, channel_per_ifo[ifo], frame_path,
-                       params, signal_path, combined_path,
-                       srate=srate, start=start, duration=duration)
-        # Cache file uses the LIGO LFN format.
+        channel = channel_per_ifo[ifo]
+        frame_path = frames_dir / "{}-COMBINED-{}-{}.gwf".format(ifo, start, duration)
+        _stage_combined_frame_for_ifo(
+            ifo=ifo, channel=channel, params=params,
+            frame_path=frame_path,
+            srate=srate, start=start, duration=duration)
         cache_lines.append("{ifo} {tag} {start} {dur} file://{path}".format(
-            ifo=ifo[0], tag=ifo, start=start, dur=duration,
-            path=combined_path))
+            ifo=ifo[0], tag=ifo, start=start, dur=duration, path=frame_path))
 
     cache_path.write_text("\n".join(cache_lines) + "\n")
     return cache_path
 
 
-def _write_gwpy_noise_frame(ifo: str, channel: str,
-                            start: int, duration: int, srate: int,
-                            flow: float, out_path: Path) -> None:
-    """Draw a noise realization from a canonical IGWN/aLIGO PSD using
-    gwpy and write it as a single-channel .gwf file."""
+def _stage_combined_frame_for_ifo(*, ifo: str, channel: str,
+                                  params: Dict[str, Any],
+                                  frame_path: Path,
+                                  srate: int, start: int, duration: int) -> None:
+    """Build a single `.gwf` for `ifo` containing noise + injected signal,
+    using gwpy throughout. No pycbc, no `add_frames.py`, no intermediate
+    files.
+
+    Steps:
+      1. Build the noise gwpy.TimeSeries (gwpy-generated Gaussian, OR
+         a slice of a user-supplied frame).
+      2. Generate the IFO-projected signal via `RIFT.lalsimutils.hoft`
+         and convert to a gwpy.TimeSeries (matched sample rate).
+      3. Add signal into the noise array at the correct sample-index
+         offset — the signal occupies only a small window inside
+         `[start, start+duration]`; samples outside that window stay
+         as pure noise.
+      4. Write the combined TimeSeries as a single .gwf.
+    """
     try:
         from gwpy.timeseries import TimeSeries
     except ImportError as exc:
         raise ImportError(
-            "noise_source='gwpy' requires the gwpy package. "
-            "Install gwpy or supply user_noise_frames in the params."
+            "factory_pseudo_pipe requires gwpy for frame staging. "
+            "Install gwpy or skip this factory."
         ) from exc
-    # gwpy doesn't ship with a default PSD; for the simple case we
-    # generate Gaussian noise at the target sample rate. Real IGWN
-    # design PSDs can be plugged in via lalsimulation.SimNoisePSDaLIGO*
-    # — left as a follow-up.
     import numpy as np
-    n = duration * srate
-    rng = np.random.default_rng(seed=hash((ifo, channel, start)) & 0xffffffff)
-    data = rng.standard_normal(n).astype(np.float64) * 1e-23
-    ts = TimeSeries(data, sample_rate=srate, t0=start,
-                    name=channel, channel="{}:{}".format(ifo, channel))
-    ts.write(str(out_path), format="gwf")
 
+    # ---- 1. Noise --------------------------------------------------------
+    noise_source = params.get("noise_source", "gwpy")
+    if noise_source == "user":
+        user_frames = params.get("user_noise_frames") or {}
+        src = user_frames.get(ifo)
+        if not src:
+            raise ValueError(
+                "noise_source='user' but no user_noise_frames[{}]".format(ifo))
+        try:
+            full = TimeSeries.read(src, channel=channel)
+        except Exception as exc:
+            raise RuntimeError(
+                "Failed to read user noise frame {!r}: {}".format(src, exc)) from exc
+        try:
+            noise = full.crop(start, start + duration)
+        except Exception as exc:
+            raise RuntimeError(
+                "User noise frame {!r} does not cover [{}, {}]: {}".format(
+                    src, start, start + duration, exc)) from exc
+    else:
+        n = duration * srate
+        rng = np.random.default_rng(
+            seed=hash((ifo, channel, start)) & 0xffffffff)
+        # Scale roughly to design-aLIGO strain RMS so the synthetic SNR
+        # is in a sensible range; exact PSD shaping is deferred to a
+        # follow-up (lalsimulation.SimNoisePSDaLIGO*).
+        data = rng.standard_normal(n).astype(np.float64) * 1e-23
+        noise = TimeSeries(data, sample_rate=srate, t0=start,
+                           name=channel, channel="{}:{}".format(ifo, channel))
 
-def _inject_signal(ifo: str, channel: str, noise_frame: Path,
-                   params: Dict[str, Any], signal_frame: Path,
-                   combined_frame: Path,
-                   *, srate: int, start: int, duration: int) -> None:
-    """Synthesize the signal in the IFO frame, write it to
-    `signal_frame`, then add it to the noise via `add_frames.py`
-    (same script test/pp/ uses)."""
+    # ---- 2. Signal -------------------------------------------------------
     import RIFT.lalsimutils as lalsimutils
     import lal
     P = lalsimutils.ChooseWaveformParams()
@@ -223,13 +239,47 @@ def _inject_signal(ifo: str, channel: str, noise_frame: Path,
     P.s2z = float(params.get("s2z", 0.0))
     P.detector = ifo
     P.deltaT = 1.0 / srate
+    if "approximant" in params:
+        import lalsimulation as lalsim
+        P.approx = lalsim.GetApproximantFromString(str(params["approximant"]))
     htoft = lalsimutils.hoft(P)
-    lalsimutils.hoft_to_frame_data(str(signal_frame), channel, htoft)
+    sig_array = np.asarray(htoft.data.data, dtype=np.float64)
+    sig_dt = float(htoft.deltaT)
+    sig_t0 = float(htoft.epoch)   # GPS seconds
 
-    # Combine noise + signal via the canonical script.
-    cmd = ["add_frames.py", channel,
-           str(signal_frame), str(noise_frame), str(combined_frame)]
-    subprocess.run(cmd, check=True)
+    # Sanity: sample rates must agree. If they don't (lalsimutils may
+    # adjust deltaT in some edge cases), resample the signal to the
+    # noise grid.
+    noise_dt = float(noise.dt.value)
+    if abs(sig_dt - noise_dt) > 1e-9 * noise_dt:
+        from gwpy.timeseries import TimeSeries as _TS
+        sig_ts = _TS(sig_array, sample_rate=1.0 / sig_dt, t0=sig_t0,
+                     name=channel, channel="{}:{}".format(ifo, channel))
+        sig_ts = sig_ts.resample(noise.sample_rate.value)
+        sig_array = np.asarray(sig_ts.value, dtype=np.float64)
+        sig_t0 = float(sig_ts.t0.value)
+        sig_dt = float(sig_ts.dt.value)
+
+    # ---- 3. In-memory addition ------------------------------------------
+    combined_arr = np.array(noise.value, copy=True)
+    noise_t0 = float(noise.t0.value)
+    i0 = int(round((sig_t0 - noise_t0) / noise_dt))
+    i_start = max(0, i0)
+    i_end = min(len(combined_arr), i0 + len(sig_array))
+    if i_end > i_start:
+        s_start = i_start - i0
+        s_end = s_start + (i_end - i_start)
+        combined_arr[i_start:i_end] += sig_array[s_start:s_end]
+    else:
+        logger.warning("signal for %s falls entirely outside the noise "
+                       "window [%s, %s); writing pure noise frame",
+                       ifo, start, start + duration)
+
+    # ---- 4. Write combined frame ----------------------------------------
+    combined = TimeSeries(combined_arr, sample_rate=noise.sample_rate,
+                          t0=noise.t0, name=channel,
+                          channel="{}:{}".format(ifo, channel))
+    combined.write(str(frame_path), format="gwf")
 
 
 def _stage_psd(params: Dict[str, Any], out_path: Path) -> Path:
