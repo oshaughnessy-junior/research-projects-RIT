@@ -211,9 +211,15 @@ For backend (1) GW PE synthetic-targeted (resolved):
 * Channels follow the demo's convention: `FAKE-STRAIN` per IFO,
   default `flow=20` Hz. Make this configurable in the backend's
   params; default to the demo values.
-* The PE invocation should reuse `pp_RIFT_with_ini` semantics rather
-  than reinventing the workflow — same UX as the demo, easy
-  comparison.
+* The PE invocation **maps directly onto `pp_RIFT_with_ini`** — not a
+  parallel implementation. Per Richard: no duplicate code paths to
+  maintain. The backend's generator builds the ini + injection input
+  exactly as `demo/populations/` does, then shells out to
+  `pp_RIFT_with_ini` (located at
+  `MonteCarloMarginalizeCode/Code/test/pp/`). Output of the run goes
+  into the sim_dir as the level output. Refinement maps to additional
+  RIFT iterations / increased convergence requirements via the same
+  ini knobs.
 
 For backend (2) Kilonova Stage 1:
 * Container: **a student is providing one** (Richard, planning
