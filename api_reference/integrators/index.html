@@ -1,0 +1,241 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Integrators (MC Sampling) &mdash; RIFT &#34;2022, Richard O&#39;Shaughnessy et al&#34; documentation</title>
+      <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=9edc463e" />
+      <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=82021441" />
+
+  
+      <script src="../../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../../_static/documentation_options.js?v=911654a9"></script>
+      <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
+      <script defer="defer" src="https://cdn.jsdelivr.net/npm/mathjax@4/tex-mml-chtml.js"></script>
+    <script src="../../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="Interpolators (Surrogates)" href="../interpolators/index.html" />
+    <link rel="prev" title="API Reference" href="../index.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../../index.html" class="icon icon-home">
+            RIFT
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../../architecture.html">RIFT Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../overview.html">RIFT Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../getting-data.html">Getting data for RIFT</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../data_formats.html">Data Formats</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../using-pipeline.html">Using the pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../examples-ini.html">RIFT pipeline examples: the ini file</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../examples-noini.html">RIFT pipeline examples: command-line</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../osg.html">Using the OSG</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../injections.html">Signal Injections</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../plotting.html">Plotting with RIFT</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../hyperpipe.html">HyperPipe</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../troubleshooting.html">General Troubleshooting</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../api_samples_utils.html">Samples Utilities</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../executables/index.html">Executables</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../physics/index.html">Waveform Generation</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">RIFT API Reference:</span></p>
+<ul class="current">
+<li class="toctree-l1 current"><a class="reference internal" href="../index.html">API Reference</a><ul class="current">
+<li class="toctree-l2 current"><a class="reference internal" href="../index.html#core-rift-modules">Core RIFT Modules</a><ul class="current">
+<li class="toctree-l3 current"><a class="current reference internal" href="#">Integrators (MC Sampling)</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#overview">Overview</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#integration-strategies">Integration Strategies</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#api-reference">API Reference</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#base-integrators">Base Integrators</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#standard-mc-sampler">Standard MC Sampler</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#mc-sampler-with-adaptive-volume">MC Sampler with Adaptive Volume</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#ensemble-mc-sampler">Ensemble MC Sampler</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#gpu-mc-sampler">GPU MC Sampler</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#portfolio-mc-sampler">Portfolio MC Sampler</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#normalizing-flows-mc-sampler">Normalizing Flows MC Sampler</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#monte-carlo-ensemble">Monte Carlo Ensemble</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#weighted-gmm">Weighted GMM</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#statistical-utilities">Statistical Utilities</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#gaussian-mixture-model">Gaussian Mixture Model</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#direct-quadrature">Direct Quadrature</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#multivariate-truncated-normal">Multivariate Truncated Normal</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#unreliable-oracle">Unreliable Oracle</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="../interpolators/index.html">Interpolators (Surrogates)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../likelihood/index.html">Likelihood and Priors</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../physics/index.html">Physics Utilities</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plot_utilities/index.html">Plot Utilities</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../simulation_manager/index.html">Simulation Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../calmarg/index.html">Calibration Marginalization</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../misc/index.html">Misc Utilities</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../lalsimutils.html">LALSimUtils</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../index.html#indices-and-tables">Indices and tables</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../index.html">RIFT</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../index.html">API Reference</a></li>
+      <li class="breadcrumb-item active">Integrators (MC Sampling)</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../../_sources/api_reference/integrators/index.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="integrators-mc-sampling">
+<h1>Integrators (MC Sampling)<a class="headerlink" href="#integrators-mc-sampling" title="Link to this heading"></a></h1>
+<p>Monte Carlo integration modules for likelihood evaluation and parameter inference.</p>
+<section id="overview">
+<h2>Overview<a class="headerlink" href="#overview" title="Link to this heading"></a></h2>
+<p>Integration in RIFT is primarily focused on the computation of the evidence (marginal likelihood) and the characterization of the posterior distribution. Given the high dimensionality and potential complexity of the gravitational-wave parameter space, RIFT employs a variety of Monte Carlo (MC) integration strategies.</p>
+<p>The core goal of these integrators is to evaluate integrals of the form:</p>
+<div class="math notranslate nohighlight">
+\[Z = \int \mathcal{L}(\theta) \pi(\theta) d\theta\]</div>
+<p>where <span class="math notranslate nohighlight">\(\mathcal{L}\)</span> is the likelihood and <span class="math notranslate nohighlight">\(\pi\)</span> is the prior.</p>
+</section>
+<section id="integration-strategies">
+<h2>Integration Strategies<a class="headerlink" href="#integration-strategies" title="Link to this heading"></a></h2>
+<p>RIFT provides several specialized integrators, each optimized for different regimes of the likelihood surface or computational budgets.</p>
+<p><strong>Standard MC Sampler (``mcsampler``)</strong>
+The default integrator. It performs basic Monte Carlo integration by sampling from the prior and averaging the likelihood. While robust, it can be inefficient for highly peaked likelihoods.</p>
+<p><strong>GPU-Accelerated Sampler (``mcsamplerGPU``)</strong>
+A high-performance implementation designed to leverage CUDA-enabled GPUs. By parallelizing the likelihood evaluations across thousands of GPU cores, it can achieve orders-of-magnitude speedups over the CPU implementation, especially when using vectorized likelihoods.
+Reference: See <a class="reference external" href="https://arxiv.org/abs/1902.04934">Wysocki et al.</a> for details on GPU acceleration.</p>
+<p><strong>Ensemble / GMM Sampler (``mcsamplerEnsemble``)</strong>
+Based on Gaussian Mixture Model (GMM) approximations of the likelihood. This approach identifies the primary modes of the posterior and uses an ensemble of GMMs to efficiently sample the most important regions of the parameter space.
+Reference: See <a class="reference external" href="https://arxiv.org/pdf/2210.07912">Wofford et al.</a> for details on ensemble-based marginalization.</p>
+<p><strong>Adaptive Volume Sampler (``mcsamplerAdaptiveVolume``)</strong>
+An integrator that dynamically adjusts the sampling volume based on the observed likelihood distribution. By focusing samples in regions of high likelihood, it reduces the variance of the evidence estimate.
+Reference: See <a class="reference external" href="https://arxiv.org/abs/2505.11655">Wagner et al.</a> for adaptive sampling techniques.</p>
+<p><strong>Normalizing Flows Sampler (``mcsamplerNFlow``)</strong>
+Leverages deep learning-based Normalizing Flows to learn a bijective mapping between a simple base distribution (e.g., a Gaussian) and the complex posterior. This allows for nearly exact sampling from the posterior and highly efficient integration.
+Reference: See <a class="reference external" href="https://arxiv.org/abs/2505.11655">Wagner et al.</a>.</p>
+<p><strong>Portfolio Integrator (``mcsamplerPortfolio``)</strong>
+A meta-integrator that manages a “portfolio” of different sampling strategies. It can dynamically allocate computational resources among various integrators to optimize the trade-off between accuracy and wall-clock time.
+Reference: See <a class="reference external" href="https://arxiv.org/abs/2505.11655">Wagner et al.</a>.</p>
+</section>
+<section id="api-reference">
+<h2>API Reference<a class="headerlink" href="#api-reference" title="Link to this heading"></a></h2>
+<p>The following sections provide the detailed API for the integration modules.</p>
+</section>
+<section id="base-integrators">
+<h2>Base Integrators<a class="headerlink" href="#base-integrators" title="Link to this heading"></a></h2>
+</section>
+<section id="standard-mc-sampler">
+<h2>Standard MC Sampler<a class="headerlink" href="#standard-mc-sampler" title="Link to this heading"></a></h2>
+</section>
+<section id="mc-sampler-with-adaptive-volume">
+<h2>MC Sampler with Adaptive Volume<a class="headerlink" href="#mc-sampler-with-adaptive-volume" title="Link to this heading"></a></h2>
+</section>
+<section id="ensemble-mc-sampler">
+<h2>Ensemble MC Sampler<a class="headerlink" href="#ensemble-mc-sampler" title="Link to this heading"></a></h2>
+</section>
+<section id="gpu-mc-sampler">
+<h2>GPU MC Sampler<a class="headerlink" href="#gpu-mc-sampler" title="Link to this heading"></a></h2>
+</section>
+<section id="portfolio-mc-sampler">
+<h2>Portfolio MC Sampler<a class="headerlink" href="#portfolio-mc-sampler" title="Link to this heading"></a></h2>
+</section>
+<section id="normalizing-flows-mc-sampler">
+<h2>Normalizing Flows MC Sampler<a class="headerlink" href="#normalizing-flows-mc-sampler" title="Link to this heading"></a></h2>
+</section>
+<section id="monte-carlo-ensemble">
+<h2>Monte Carlo Ensemble<a class="headerlink" href="#monte-carlo-ensemble" title="Link to this heading"></a></h2>
+</section>
+<section id="weighted-gmm">
+<h2>Weighted GMM<a class="headerlink" href="#weighted-gmm" title="Link to this heading"></a></h2>
+</section>
+<section id="statistical-utilities">
+<h2>Statistical Utilities<a class="headerlink" href="#statistical-utilities" title="Link to this heading"></a></h2>
+</section>
+<section id="gaussian-mixture-model">
+<h2>Gaussian Mixture Model<a class="headerlink" href="#gaussian-mixture-model" title="Link to this heading"></a></h2>
+</section>
+<section id="direct-quadrature">
+<h2>Direct Quadrature<a class="headerlink" href="#direct-quadrature" title="Link to this heading"></a></h2>
+</section>
+<section id="multivariate-truncated-normal">
+<h2>Multivariate Truncated Normal<a class="headerlink" href="#multivariate-truncated-normal" title="Link to this heading"></a></h2>
+</section>
+<section id="unreliable-oracle">
+<h2>Unreliable Oracle<a class="headerlink" href="#unreliable-oracle" title="Link to this heading"></a></h2>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="../index.html" class="btn btn-neutral float-left" title="API Reference" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="../interpolators/index.html" class="btn btn-neutral float-right" title="Interpolators (Surrogates)" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2022, K Wagner.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

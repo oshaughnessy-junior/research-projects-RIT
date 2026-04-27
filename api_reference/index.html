@@ -1,0 +1,267 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>API Reference &mdash; RIFT &#34;2022, Richard O&#39;Shaughnessy et al&#34; documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
+      <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=82021441" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=911654a9"></script>
+      <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Integrators (MC Sampling)" href="integrators/index.html" />
+    <link rel="prev" title="ROM Waveform Manager" href="../physics/ROMWaveformManager.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            RIFT
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../architecture.html">RIFT Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../overview.html">RIFT Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../getting-data.html">Getting data for RIFT</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../data_formats.html">Data Formats</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../using-pipeline.html">Using the pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../examples-ini.html">RIFT pipeline examples: the ini file</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../examples-noini.html">RIFT pipeline examples: command-line</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../osg.html">Using the OSG</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../injections.html">Signal Injections</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../plotting.html">Plotting with RIFT</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../hyperpipe.html">HyperPipe</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../troubleshooting.html">General Troubleshooting</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api_samples_utils.html">Samples Utilities</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../executables/index.html">Executables</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../physics/index.html">Waveform Generation</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">RIFT API Reference:</span></p>
+<ul class="current">
+<li class="toctree-l1 current"><a class="current reference internal" href="#">API Reference</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#core-rift-modules">Core RIFT Modules</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="integrators/index.html">Integrators (MC Sampling)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="interpolators/index.html">Interpolators (Surrogates)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="likelihood/index.html">Likelihood and Priors</a></li>
+<li class="toctree-l3"><a class="reference internal" href="physics/index.html">Physics Utilities</a></li>
+<li class="toctree-l3"><a class="reference internal" href="plot_utilities/index.html">Plot Utilities</a></li>
+<li class="toctree-l3"><a class="reference internal" href="simulation_manager/index.html">Simulation Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="calmarg/index.html">Calibration Marginalization</a></li>
+<li class="toctree-l3"><a class="reference internal" href="misc/index.html">Misc Utilities</a></li>
+<li class="toctree-l3"><a class="reference internal" href="lalsimutils.html">LALSimUtils</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="#indices-and-tables">Indices and tables</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">RIFT</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">API Reference</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/api_reference/index.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="api-reference">
+<h1>API Reference<a class="headerlink" href="#api-reference" title="Link to this heading"></a></h1>
+<section id="core-rift-modules">
+<h2>Core RIFT Modules<a class="headerlink" href="#core-rift-modules" title="Link to this heading"></a></h2>
+<div class="toctree-wrapper compound">
+<p class="caption" role="heading"><span class="caption-text">Integrators (MC Sampling):</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="integrators/index.html">Integrators (MC Sampling)</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="integrators/index.html#overview">Overview</a></li>
+<li class="toctree-l2"><a class="reference internal" href="integrators/index.html#integration-strategies">Integration Strategies</a></li>
+<li class="toctree-l2"><a class="reference internal" href="integrators/index.html#api-reference">API Reference</a></li>
+<li class="toctree-l2"><a class="reference internal" href="integrators/index.html#base-integrators">Base Integrators</a></li>
+<li class="toctree-l2"><a class="reference internal" href="integrators/index.html#standard-mc-sampler">Standard MC Sampler</a></li>
+<li class="toctree-l2"><a class="reference internal" href="integrators/index.html#mc-sampler-with-adaptive-volume">MC Sampler with Adaptive Volume</a></li>
+<li class="toctree-l2"><a class="reference internal" href="integrators/index.html#ensemble-mc-sampler">Ensemble MC Sampler</a></li>
+<li class="toctree-l2"><a class="reference internal" href="integrators/index.html#gpu-mc-sampler">GPU MC Sampler</a></li>
+<li class="toctree-l2"><a class="reference internal" href="integrators/index.html#portfolio-mc-sampler">Portfolio MC Sampler</a></li>
+<li class="toctree-l2"><a class="reference internal" href="integrators/index.html#normalizing-flows-mc-sampler">Normalizing Flows MC Sampler</a></li>
+<li class="toctree-l2"><a class="reference internal" href="integrators/index.html#monte-carlo-ensemble">Monte Carlo Ensemble</a></li>
+<li class="toctree-l2"><a class="reference internal" href="integrators/index.html#weighted-gmm">Weighted GMM</a></li>
+<li class="toctree-l2"><a class="reference internal" href="integrators/index.html#statistical-utilities">Statistical Utilities</a></li>
+<li class="toctree-l2"><a class="reference internal" href="integrators/index.html#gaussian-mixture-model">Gaussian Mixture Model</a></li>
+<li class="toctree-l2"><a class="reference internal" href="integrators/index.html#direct-quadrature">Direct Quadrature</a></li>
+<li class="toctree-l2"><a class="reference internal" href="integrators/index.html#multivariate-truncated-normal">Multivariate Truncated Normal</a></li>
+<li class="toctree-l2"><a class="reference internal" href="integrators/index.html#unreliable-oracle">Unreliable Oracle</a></li>
+</ul>
+</li>
+</ul>
+</div>
+<div class="toctree-wrapper compound">
+<p class="caption" role="heading"><span class="caption-text">Interpolators (Surrogates):</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="interpolators/index.html">Interpolators (Surrogates)</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="interpolators/index.html#overview">Overview</a></li>
+<li class="toctree-l2"><a class="reference internal" href="interpolators/index.html#bayesian-least-squares">Bayesian Least Squares</a></li>
+<li class="toctree-l2"><a class="reference internal" href="interpolators/index.html#constrained-quadratic-likelihood">Constrained Quadratic Likelihood</a></li>
+<li class="toctree-l2"><a class="reference internal" href="interpolators/index.html#efficient-sklearn-gp-save">Efficient SKLearn GP Save</a></li>
+<li class="toctree-l2"><a class="reference internal" href="interpolators/index.html#basic-gp">Basic GP</a></li>
+<li class="toctree-l2"><a class="reference internal" href="interpolators/index.html#gpytorch-wrapper">GPyTorch Wrapper</a></li>
+<li class="toctree-l2"><a class="reference internal" href="interpolators/index.html#internal-gp">Internal GP</a></li>
+<li class="toctree-l2"><a class="reference internal" href="interpolators/index.html#gpu-interpolation">GPU Interpolation</a></li>
+<li class="toctree-l2"><a class="reference internal" href="interpolators/index.html#senni-surrogate-enabled-nested-nested-importance-sampling">SENNI (Surrogate Enabled Nested Nested Importance Sampling)</a></li>
+</ul>
+</li>
+</ul>
+</div>
+<div class="toctree-wrapper compound">
+<p class="caption" role="heading"><span class="caption-text">Likelihood and Priors:</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="likelihood/index.html">Likelihood and Priors</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="likelihood/index.html#overview">Overview</a></li>
+<li class="toctree-l2"><a class="reference internal" href="likelihood/index.html#q-inner-product">Q Inner Product</a></li>
+<li class="toctree-l2"><a class="reference internal" href="likelihood/index.html#spherical-harmonics-gpu">Spherical Harmonics GPU</a></li>
+<li class="toctree-l2"><a class="reference internal" href="likelihood/index.html#cuda-q-inner-product">CUDA Q Inner Product</a></li>
+<li class="toctree-l2"><a class="reference internal" href="likelihood/index.html#factored-likelihood">Factored Likelihood</a></li>
+<li class="toctree-l2"><a class="reference internal" href="likelihood/index.html#optimized-gpu-tools">Optimized GPU Tools</a></li>
+<li class="toctree-l2"><a class="reference internal" href="likelihood/index.html#priors-utils">Priors Utils</a></li>
+<li class="toctree-l2"><a class="reference internal" href="likelihood/index.html#rift-priors">RIFT Priors</a></li>
+<li class="toctree-l2"><a class="reference internal" href="likelihood/index.html#vectorized-general-tools">Vectorized General Tools</a></li>
+<li class="toctree-l2"><a class="reference internal" href="likelihood/index.html#vectorized-lal-tools">Vectorized LAL Tools</a></li>
+</ul>
+</li>
+</ul>
+</div>
+<div class="toctree-wrapper compound">
+<p class="caption" role="heading"><span class="caption-text">Physics Utilities:</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="physics/index.html">Physics Utilities</a></li>
+</ul>
+</div>
+<div class="toctree-wrapper compound">
+<p class="caption" role="heading"><span class="caption-text">Plot Utilities:</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="plot_utilities/index.html">Plot Utilities</a></li>
+</ul>
+</div>
+<div class="toctree-wrapper compound">
+<p class="caption" role="heading"><span class="caption-text">Simulation Manager:</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="simulation_manager/index.html">Simulation Manager</a></li>
+</ul>
+</div>
+<div class="toctree-wrapper compound">
+<p class="caption" role="heading"><span class="caption-text">Calibration Marginalization:</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="calmarg/index.html">Calibration Marginalization</a></li>
+</ul>
+</div>
+<div class="toctree-wrapper compound">
+<p class="caption" role="heading"><span class="caption-text">Misc Utilities:</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="misc/index.html">Misc Utilities</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="misc/index.html#configuration">Configuration</a></li>
+<li class="toctree-l2"><a class="reference internal" href="misc/index.html#sky-coordinates">Sky Coordinates</a></li>
+<li class="toctree-l2"><a class="reference internal" href="misc/index.html#spoke-management">Spoke Management</a></li>
+<li class="toctree-l2"><a class="reference internal" href="misc/index.html#coordinate-tools">Coordinate Tools</a></li>
+<li class="toctree-l2"><a class="reference internal" href="misc/index.html#simulation-weighting">Simulation Weighting</a></li>
+<li class="toctree-l2"><a class="reference internal" href="misc/index.html#xml-utilities">XML Utilities</a></li>
+<li class="toctree-l2"><a class="reference internal" href="misc/index.html#amr-library">AMR Library</a></li>
+<li class="toctree-l2"><a class="reference internal" href="misc/index.html#bounded-kde">Bounded KDE</a></li>
+<li class="toctree-l2"><a class="reference internal" href="misc/index.html#corner-plot-utilities">Corner Plot Utilities</a></li>
+<li class="toctree-l2"><a class="reference internal" href="misc/index.html#reference-samples">Reference Samples</a></li>
+<li class="toctree-l2"><a class="reference internal" href="misc/index.html#module-utilities">Module Utilities</a></li>
+<li class="toctree-l2"><a class="reference internal" href="misc/index.html#dag-utilities">DAG Utilities</a></li>
+<li class="toctree-l2"><a class="reference internal" href="misc/index.html#samples-utilities">Samples Utilities</a></li>
+<li class="toctree-l2"><a class="reference internal" href="misc/index.html#modified-scikit-fit">Modified Scikit Fit</a></li>
+</ul>
+</li>
+</ul>
+</div>
+<div class="toctree-wrapper compound">
+<p class="caption" role="heading"><span class="caption-text">Top-level Utilities:</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="lalsimutils.html">LALSimUtils</a></li>
+</ul>
+</div>
+</section>
+</section>
+<section id="indices-and-tables">
+<h1>Indices and tables<a class="headerlink" href="#indices-and-tables" title="Link to this heading"></a></h1>
+<ul class="simple">
+<li><p><a class="reference internal" href="../genindex.html"><span class="std std-ref">Index</span></a></p></li>
+<li><p><a class="reference internal" href="../py-modindex.html"><span class="std std-ref">Module Index</span></a></p></li>
+<li><p><a class="reference internal" href="../search.html"><span class="std std-ref">Search Page</span></a></p></li>
+</ul>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="../physics/ROMWaveformManager.html" class="btn btn-neutral float-left" title="ROM Waveform Manager" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="integrators/index.html" class="btn btn-neutral float-right" title="Integrators (MC Sampling)" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2022, K Wagner.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>
