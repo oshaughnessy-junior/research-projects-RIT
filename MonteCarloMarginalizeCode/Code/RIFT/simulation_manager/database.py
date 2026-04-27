@@ -55,6 +55,16 @@ DEFAULT_SUMMARIZER_FILE = "summarizer.py"
 DEFAULT_SAME_Q_FILE = "same_q.py"
 DEFAULT_LOOKUP_KEY_FILE = "lookup_key.py"
 
+# Safe default for the condor 'getenv' command. Many sites (CIT among
+# them) refuse `getenv = True` outright. The allowlist below mirrors
+# the OSG convention documented in docs/source/osg.rst:
+#   RIFT_GETENV=LD_LIBRARY_PATH,PATH,PYTHONPATH,*RIFT*,LIBRARY_PATH
+# A user who needs the legacy `True` behavior can either set
+# RIFT_GETENV=True in the environment or pass getenv='True' to the
+# DualCondorRunQueue constructor (or via run_queue.extra.getenv in the
+# manifest).
+DEFAULT_GETENV_ALLOWLIST = "LD_LIBRARY_PATH,PATH,PYTHONPATH,*RIFT*,LIBRARY_PATH"
+
 
 # Sentinel singletons used inside dedup buckets when a parameter set is
 # unhashable (lookup_key returns e.g. a dict). We fall back to the
@@ -917,13 +927,36 @@ class DualCondorRunQueue(RunQueue):
         run_collector    : str  -- collector host for cross-pool
                                    htcondor.Schedd(<collector>) queries
                                    in poll(). None = local.
-        accounting_group / accounting_group_user
-        request_memory   : int (MB)
-        request_disk     : str (e.g. '4G')
-        getenv           : str  -- value of condor 'getenv' command
+        accounting_group        -- defaults to env LIGO_ACCOUNTING
+        accounting_group_user   -- defaults to env LIGO_USER_NAME
+                                   Both follow the standard LIGO/IGWN
+                                   convention; the matching env-var
+                                   fallback matches the legacy
+                                   CondorManager behaviour so existing
+                                   submit hosts work unchanged.
+        request_memory   : int (MB), default 4096
+        request_disk     : str (e.g. '4G'), default '4G'
+        getenv           : str  -- value of condor 'getenv' command.
+                                   Default precedence: constructor kwarg >
+                                   $RIFT_GETENV env > safe allowlist
+                                   ('LD_LIBRARY_PATH,PATH,PYTHONPATH,*RIFT*,
+                                   LIBRARY_PATH'). NOTE: `getenv = True`
+                                   is blocked by many sites (CIT among
+                                   them); the allowlist is the OSG-blessed
+                                   alternative. Pass getenv='True'
+                                   explicitly only on sites that allow it.
         use_singularity  : bool
-        singularity_image: str
-        extra_condor_cmds: dict
+        singularity_image: str   -- required if use_singularity=True
+        extra_condor_cmds: dict  -- additional `key = value` lines
+                                    appended verbatim to the submit
+                                    description (e.g. +DESIRED_SITES,
+                                    +UNDESIRED_SITES for OSG site
+                                    selection, requirements clauses).
+
+    The defaults above also apply when DualCondorRunQueue is
+    instantiated via make_queues_from_manifest() — keys absent from
+    `run_queue.extra` in the manifest fall back to the constructor
+    defaults, which in turn fall back to the env vars listed above.
     """
     kind = "condor"
 
@@ -934,7 +967,7 @@ class DualCondorRunQueue(RunQueue):
                  request_disk: str = "4G",
                  accounting_group: Optional[str] = None,
                  accounting_group_user: Optional[str] = None,
-                 getenv: str = "True",
+                 getenv: Optional[str] = None,
                  use_singularity: bool = False,
                  singularity_image: Optional[str] = None,
                  extra_condor_cmds: Optional[Dict[str, str]] = None,
@@ -946,7 +979,13 @@ class DualCondorRunQueue(RunQueue):
         self.accounting_group = accounting_group or os.environ.get("LIGO_ACCOUNTING")
         self.accounting_group_user = (accounting_group_user
                                       or os.environ.get("LIGO_USER_NAME"))
-        self.getenv = getenv
+        # Resolve `getenv` precedence: explicit kwarg > RIFT_GETENV env >
+        # safe allowlist default. `getenv = True` is blocked by many
+        # sites; the allowlist is the OSG-blessed alternative.
+        if getenv is not None:
+            self.getenv = getenv
+        else:
+            self.getenv = os.environ.get("RIFT_GETENV", DEFAULT_GETENV_ALLOWLIST)
         self.use_singularity = use_singularity
         self.singularity_image = singularity_image
         self.extra_condor_cmds = extra_condor_cmds or {}

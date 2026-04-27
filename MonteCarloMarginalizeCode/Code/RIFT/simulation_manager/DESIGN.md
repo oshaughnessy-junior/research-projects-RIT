@@ -463,6 +463,41 @@ The `kind` discriminator in the manifest stays as `"condor"` for both
 queue records; the `extra` dict carries the `pool` / `schedd` / DAG
 template differences.
 
+### Configuration defaults
+
+`DualCondorRunQueue` reads the following from the constructor first,
+then falls back to environment variables, then to hard-coded defaults:
+
+| Setting                 | Constructor kwarg        | Env-var fallback | Default                                                |
+|-------------------------|--------------------------|------------------|--------------------------------------------------------|
+| Accounting group        | `accounting_group`       | `LIGO_ACCOUNTING`| (omit)                                                 |
+| Accounting group user   | `accounting_group_user`  | `LIGO_USER_NAME` | (omit)                                                 |
+| Memory request          | `request_memory`         | —                | 4096 MB                                                |
+| Disk request            | `request_disk`           | —                | `4G`                                                   |
+| `getenv` condor command | `getenv`                 | `RIFT_GETENV`    | `LD_LIBRARY_PATH,PATH,PYTHONPATH,*RIFT*,LIBRARY_PATH`  |
+| Run-pool schedd `-name` | `run_pool`               | —                | local                                                  |
+| Cross-pool collector    | `run_collector`          | —                | local                                                  |
+
+The `getenv` default is an *allowlist* rather than `True` because
+`getenv = True` is blocked by many sites (CIT among them). The
+allowlist is the OSG-blessed convention from `docs/source/osg.rst`.
+Sites that permit blanket env forwarding can set `RIFT_GETENV=True`
+in the submit-side environment, pass `getenv='True'` to the
+`DualCondorRunQueue` constructor, or set `run_queue.extra.getenv` in
+the manifest.
+
+The env-var fallback matches the legacy `CondorManager` behavior, so
+existing LIGO/IGWN submit hosts that already export `LIGO_ACCOUNTING`
+and `LIGO_USER_NAME` work without manifest changes. Manifest values in
+`run_queue.extra` override constructor defaults, which override env
+vars — manifest > constructor > env > hard-coded.
+
+OSG site-selection knobs (`+DESIRED_SITES`, `+UNDESIRED_SITES`,
+`Requirements`, etc.) are passed via the constructor's
+`extra_condor_cmds` dict (or `run_queue.extra.extra_condor_cmds` in
+the manifest). The bindings appear verbatim as additional `key =
+value` lines in every per-(sim, level) submit description.
+
 
 ## Hyperpipeline / glue.pipeline integration
 
