@@ -10,6 +10,21 @@ Welcome to RIFT's documentation!
    :maxdepth: 2
    :caption: Contents:
 
+   overview
+   installation
+   getting-data
+   data_formats
+   using-pipeline
+   executables/index
+   api_reference/index
+   architecture
+   hyperpipe
+   osg
+   plotting
+   injections
+   troubleshooting
+
+
 
 
 Indices and tables

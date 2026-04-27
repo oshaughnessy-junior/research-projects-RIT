@@ -8,6 +8,8 @@ Overview
 
 This tool is a core component of the RIFT pipeline. It takes a set of intrinsic parameters (like component masses) and integrates over the extrinsic parameters (sky location, distance, inclination, polarization, and time) to compute the marginalized likelihood. This allows the pipeline to efficiently explore the intrinsic parameter space by "marginalizing out" the extrinsic ones.
 
+**Warning**: Only experts will use this code -- most users will work with ``integrate_likelihood_extrinsic_batchmode``. For experts, this code provides additional debugging options, but has not been maintained to have the latest software and infrastructure updates.
+
 Usage
 -----
 
