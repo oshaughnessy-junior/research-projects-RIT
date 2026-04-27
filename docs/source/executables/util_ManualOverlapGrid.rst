@@ -6,7 +6,9 @@ The ``util_ManualOverlapGrid`` executable generates a grid of waveform overlaps 
 Overview
 --------
 
-This tool is primarily used for exploring the likelihood surface and estimating the Fisher information matrix. By calculating the overlap (inner product) between a reference signal and a grid of templates, the tool can determine how the match varies with changes in intrinsic parameters (like mass or spin). This is often a precursor to more expensive integration steps or used for quick estimations of parameter uncertainties.
+This tool is used to generate a grid of points covering a targeted region, in the data format needed by our codes. It supports variable dimensionality and the same coordinate charts as our main code.
+
+Historically, this tool was used for exploring the likelihood surface and estimating the Fisher information matrix. By calculating the overlap (inner product) between a reference signal and a grid of templates, the tool can determine how the match varies with changes in intrinsic parameters (like mass or spin). Because it computes overlaps between a reference signal h0 and h(\lambda) over a target grid \lambda, these match calculations can be used to estimate measurement accuracy via an empirical Fisher matrix; or to qualitatively characterize expected waveform systematics.
 
 Usage
 -----
