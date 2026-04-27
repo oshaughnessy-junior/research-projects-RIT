@@ -1335,6 +1335,8 @@ class DualCondorRunQueue(RunQueue):
                  auto_release_on_oom: bool = True,
                  oom_max_retries: int = 5,
                  oom_memory_factor: float = 1.5,
+                 subdag_factory: Optional[Callable[[Any, str, int], str]] = None,
+                 submit_mode: str = "submit",
                  **submit_kwargs: Any):
         self.run_pool = run_pool
         self.run_collector = run_collector
@@ -1350,18 +1352,30 @@ class DualCondorRunQueue(RunQueue):
         self.use_singularity = use_singularity
         self.singularity_image = singularity_image
         self.extra_condor_cmds = extra_condor_cmds or {}
-        # Catch-and-release: when condor holds a job for hitting its
-        # memory limit (HoldReasonCode 26 = OUT_OF_MEMORY,
-        # 34 = MEMORY_LIMIT_EXCEEDED), automatically release it with a
-        # bumped request_memory. After oom_max_retries the job stays
-        # held and the archive will mark the sim 'stuck'.
         self.auto_release_on_oom = bool(auto_release_on_oom)
         self.oom_max_retries = int(oom_max_retries)
         self.oom_memory_factor = float(oom_memory_factor)
+        # Per-(sim, level) work-unit factory. When set, each level emits
+        # a `SUBDAG EXTERNAL <node_id> <factory(archive, sim, level)>`
+        # node in the wrapper DAG instead of a vanilla-universe `JOB`
+        # backed by build_worker(). Used by backends whose work unit is
+        # itself a condor DAG (e.g. GW PE via util_RIFT_pseudo_pipe).
+        self.subdag_factory = subdag_factory
+        # submit_mode controls dispatch:
+        #   "submit"  -> call condor_submit_dag (default; archive owns
+        #                its own dispatch)
+        #   "embed"   -> write the wrapper DAG and return without
+        #                dispatching, so a parent workflow can include
+        #                it as `SUBDAG EXTERNAL`. Path is recorded on
+        #                self.last_wrapper_dag_path.
+        if submit_mode not in ("submit", "embed"):
+            raise ValueError("submit_mode must be 'submit' or 'embed'; got {!r}"
+                             .format(submit_mode))
+        self.submit_mode = submit_mode
         self.submit_kwargs = submit_kwargs
-        # Per-archive state: cluster id of the last DAGMan we submitted,
-        # used by poll() to scope the schedd query.
+        # Per-archive state.
         self.dag_cluster_id: Optional[int] = None
+        self.last_wrapper_dag_path: Optional[str] = None
 
     # -------- per-(sim, level) submit description --------------------------
     def _bootstrap_path(self, archive: Archive) -> Path:
@@ -1477,12 +1491,28 @@ class DualCondorRunQueue(RunQueue):
     # -------- DAG assembly + submit ---------------------------------------
     def submit(self, archive: Archive, sim_names: Iterable[str]
                ) -> List[Tuple[str, str]]:
-        """For each sim, generate per-level submits + a chained DAG
-        and dispatch via condor_submit_dag (-name <run_pool> for
-        cross-pool). Returns [(sim_name, dag_cluster_id), ...]."""
+        """For each sim, build its per-level work units (vanilla-universe
+        .sub via build_worker, OR a sub-DAG via subdag_factory) and
+        assemble a wrapper DAG with PARENT/CHILD edges between the
+        levels of each sim. Behavior of the dispatch step depends on
+        self.submit_mode:
+
+          * "submit" (default): invoke condor_submit_dag and return
+            [(sim, cluster_id), ...].
+          * "embed": write the wrapper DAG and return [(sim, ""), ...]
+            without dispatching. The wrapper DAG path is recorded on
+            self.last_wrapper_dag_path so a parent workflow can pick
+            it up via `SUBDAG EXTERNAL <id> <wrapper_path>`.
+
+        When self.subdag_factory is set, each per-(sim, level) node in
+        the wrapper DAG is `SUBDAG EXTERNAL` rather than `JOB`. This
+        lets backends whose work unit is itself a DAG (e.g. GW PE via
+        util_RIFT_pseudo_pipe) compose cleanly.
+        """
         sim_names = list(sim_names)
-        nodes: List[Tuple[str, int, str]] = []   # (sim, level, sub_path)
-        edges: List[Tuple[str, str]] = []        # (parent_id, child_id)
+        # nodes: list of (sim, level, work_path, is_subdag)
+        nodes: List[Tuple[str, int, str, bool]] = []
+        edges: List[Tuple[str, str]] = []
 
         for sim in sim_names:
             rec = StatusRecord.read(archive.sim_dir(sim))
@@ -1490,9 +1520,13 @@ class DualCondorRunQueue(RunQueue):
             tgt = rec.data.get("target_level", 0)
             prev_id: Optional[str] = None
             for lvl in range(cur + 1, tgt + 1):
-                sub_path = self.build_worker(archive, sim, level=lvl)
                 node_id = "{}_lvl{}".format(sim, lvl)
-                nodes.append((sim, lvl, sub_path))
+                if self.subdag_factory is not None:
+                    work_path = self.subdag_factory(archive, sim, lvl)
+                    nodes.append((sim, lvl, work_path, True))
+                else:
+                    work_path = self.build_worker(archive, sim, level=lvl)
+                    nodes.append((sim, lvl, work_path, False))
                 if prev_id is not None:
                     edges.append((prev_id, node_id))
                 prev_id = node_id
@@ -1502,31 +1536,44 @@ class DualCondorRunQueue(RunQueue):
 
         dag_dir = archive.base / "run_queue" / "dags"
         dag_dir.mkdir(parents=True, exist_ok=True)
-        # Number DAG files monotonically so concurrent submits don't
-        # collide. cheap counter via existing files.
         existing = sorted(dag_dir.glob("run_*.dag"))
         idx = len(existing) + 1
         dag_path = dag_dir / "run_{:04d}.dag".format(idx)
 
         dag_lines: List[str] = []
-        for sim, lvl, sub_path in nodes:
+        for sim, lvl, work_path, is_subdag in nodes:
             node_id = "{}_lvl{}".format(sim, lvl)
-            dag_lines.append("JOB {} {}".format(node_id, sub_path))
+            if is_subdag:
+                dag_lines.append("SUBDAG EXTERNAL {} {}".format(node_id, work_path))
+            else:
+                dag_lines.append("JOB {} {}".format(node_id, work_path))
         for parent, child in edges:
             dag_lines.append("PARENT {} CHILD {}".format(parent, child))
         dag_path.write_text("\n".join(dag_lines) + "\n")
+        self.last_wrapper_dag_path = str(dag_path)
 
+        if self.submit_mode == "embed":
+            # Mark sims submit_ready; the parent workflow that includes
+            # this DAG via SUBDAG EXTERNAL is responsible for actual
+            # dispatch + completion semantics.
+            for sim in sim_names:
+                archive.transition(sim, "submit_ready",
+                                   request_queue={"kind": "condor",
+                                                  "pool": self.run_pool,
+                                                  "wrapper_dag_path": str(dag_path),
+                                                  "submit_mode": "embed"})
+            return [(sim, "") for sim in sim_names]
+
+        # "submit" mode: dispatch now via condor_submit_dag.
         cluster_id = self._submit_dag(dag_path)
         self.dag_cluster_id = cluster_id
-
-        # Mark all submitted sims as 'submit_ready' (poll will move them
-        # to 'running' when their first level enters the queue).
         for sim in sim_names:
             archive.transition(sim, "submit_ready",
                                request_queue={"kind": "condor",
                                               "pool": self.run_pool,
                                               "dag_cluster_id": cluster_id,
-                                              "dag_path": str(dag_path)})
+                                              "dag_path": str(dag_path),
+                                              "submit_mode": "submit"})
         return [(sim, str(cluster_id) if cluster_id is not None else "")
                 for sim in sim_names]
 

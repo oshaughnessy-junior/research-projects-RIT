@@ -294,6 +294,99 @@ def test_make_queues_from_manifest(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# DualCondorRunQueue subdag_factory + submit_mode
+# ---------------------------------------------------------------------------
+
+def test_dual_condor_subdag_factory_emits_subdag_nodes(tmp_path):
+    """When subdag_factory is set, the wrapper DAG should use SUBDAG
+    EXTERNAL nodes instead of JOB nodes; the factory is invoked once
+    per (sim, level)."""
+    base = tmp_path / "x"
+    manifest = Manifest.new(name="x", request_queue_kind="condor",
+                            run_queue_kind="condor")
+    archive = Archive(base_location=base, manifest=manifest, generator_spec=_gen)
+
+    factory_calls = []
+    def fake_factory(arch, sim_name, level):
+        factory_calls.append((sim_name, level))
+        out = arch.base / "fake_{}_{}.dag".format(sim_name, level)
+        out.write_text("# noop\n")
+        return str(out)
+
+    rq = DualCondorRunQueue(subdag_factory=fake_factory, submit_mode="embed")
+    n1 = archive.register(0.1, target_level=2)
+    n2 = archive.register(0.2, target_level=1)
+    rq.submit(archive, [n1, n2])
+
+    # Factory invoked for every (sim, level) pair.
+    assert sorted(factory_calls) == sorted([(n1, 1), (n1, 2), (n2, 1)])
+
+    # Wrapper DAG uses SUBDAG EXTERNAL, not JOB.
+    wrapper = Path(rq.last_wrapper_dag_path)
+    text = wrapper.read_text()
+    assert "SUBDAG EXTERNAL {}_lvl1".format(n1) in text
+    assert "SUBDAG EXTERNAL {}_lvl2".format(n1) in text
+    assert "SUBDAG EXTERNAL {}_lvl1".format(n2) in text
+    assert "JOB " not in text, "should not emit JOB nodes when factory is set"
+    # PARENT/CHILD chains for n1 are still emitted.
+    assert "PARENT {}_lvl1 CHILD {}_lvl2".format(n1, n1) in text
+
+
+def test_submit_mode_embed_does_not_dispatch(tmp_path, monkeypatch):
+    """submit_mode='embed' must NOT call condor_submit_dag; the wrapper
+    path is on self.last_wrapper_dag_path."""
+    base = tmp_path / "x"
+    manifest = Manifest.new(name="x", request_queue_kind="condor",
+                            run_queue_kind="condor")
+    archive = Archive(base_location=base, manifest=manifest, generator_spec=_gen)
+    rq = DualCondorRunQueue(submit_mode="embed")
+
+    import RIFT.simulation_manager.database as db
+    calls = []
+    def panic(*a, **kw):
+        calls.append(a)
+        raise AssertionError("condor_submit_dag must not be invoked in embed mode")
+    monkeypatch.setattr(db.subprocess, "run", panic)
+
+    n = archive.register(0.5, target_level=2)
+    results = rq.submit(archive, [n])
+    assert results == [(n, "")]                # cluster id empty in embed mode
+    assert rq.last_wrapper_dag_path is not None
+    assert Path(rq.last_wrapper_dag_path).exists()
+    assert calls == []                         # subprocess.run never called
+
+
+def test_submit_mode_default_still_dispatches(tmp_path, monkeypatch):
+    """submit_mode default is 'submit': condor_submit_dag should be called."""
+    base = tmp_path / "x"
+    manifest = Manifest.new(name="x", request_queue_kind="condor",
+                            run_queue_kind="condor")
+    archive = Archive(base_location=base, manifest=manifest, generator_spec=_gen)
+    rq = DualCondorRunQueue()  # defaults
+
+    import RIFT.simulation_manager.database as db
+    calls = []
+    def fake_run(cmd, *a, **kw):
+        calls.append(list(cmd))
+        class R:
+            stdout = "submitted to cluster 4242.\n"
+            stderr = ""
+            returncode = 0
+        return R()
+    monkeypatch.setattr(db.subprocess, "run", fake_run)
+
+    n = archive.register(0.5, target_level=1)
+    results = rq.submit(archive, [n])
+    assert results == [(n, "4242")]
+    assert any("condor_submit_dag" in c[0] for c in calls), calls
+
+
+def test_invalid_submit_mode_raises():
+    with pytest.raises(ValueError):
+        DualCondorRunQueue(submit_mode="bogus")
+
+
+# ---------------------------------------------------------------------------
 # SlurmRunQueue submit-script generation
 # ---------------------------------------------------------------------------
 
