@@ -154,46 +154,81 @@ def make_factory(*, ini_localizer: Optional[Callable[..., str]] = None
 # ---------------------------------------------------------------------------
 
 def _render_coinc_xml(params: Dict[str, Any], out_path: Path) -> Path:
-    """Build a one-row sim_inspiral table representing the synthetic
-    event and write it as a *plain* coinc.xml file consumable by
-    pseudo_pipe. Modeled on `demo/populations/write_mdc.py`.
+    """Build a coinc.xml containing a `sngl_inspiral` table that
+    `util_RIFT_pseudo_pipe.py` can parse via
+    `SnglInspiralTable.get_table(...)`. One row per IFO.
 
-    `lalsimutils.ChooseWaveformParams_array_to_xml` writes a gzipped
-    `<prefix>.xml.gz`; pseudo_pipe wants a plain `.xml`, so we
-    decompress here. (Renaming alone doesn't help — the content stays
-    gzipped.)"""
-    import gzip
-    import RIFT.lalsimutils as lalsimutils
-    import lal
-    P = lalsimutils.ChooseWaveformParams()
-    P.m1 = float(_mass1(params)) * lal.MSUN_SI
-    P.m2 = float(_mass2(params)) * lal.MSUN_SI
-    P.dist = float(params.get("distance", 100.0)) * 1e6 * lal.PC_SI
-    P.theta = float(params.get("dec", 0.0))
-    P.phi = float(params.get("ra", 0.0))
-    P.psi = float(params.get("polarization", 0.0))
-    P.incl = float(params.get("inclination", 0.0))
-    P.tref = float(params.get("geocent_time", 0.0))
-    P.s1z = float(params.get("s1z", 0.0))
-    P.s2z = float(params.get("s2z", 0.0))
-    if "eccentricity" in params:
-        P.eccentricity = float(params["eccentricity"])
-    if "approximant" in params:
-        import lalsimulation as lalsim
-        P.approx = lalsim.GetApproximantFromString(str(params["approximant"]))
+    NOT a `sim_inspiral` table — that's what
+    `lalsimutils.ChooseWaveformParams_array_to_xml` writes, and
+    pseudo_pipe rejects it (raises 'document must contain exactly one
+    sngl_inspiral'). The sngl_inspiral fields pseudo_pipe reads are:
+    ifo, mass1, mass2, spin1z, spin2z, end_time, end_time_ns, snr,
+    event_duration, plus the optional eccentricity columns alpha4
+    (eccentricity) and alpha (meanPerAno).
+    """
+    from igwn_ligolw import lsctables, ligolw, utils as ligolw_utils
 
-    out_path = Path(out_path)
-    out_stem = str(out_path).removesuffix(".xml")
-    lalsimutils.ChooseWaveformParams_array_to_xml([P], out_stem)
-    gz_path = Path(out_stem + ".xml.gz")
-    if gz_path.exists():
-        with gzip.open(str(gz_path), "rb") as fin, open(str(out_path), "wb") as fout:
-            shutil.copyfileobj(fin, fout)
-        gz_path.unlink()
-    elif Path(out_stem + ".xml").exists() and Path(out_stem + ".xml") != out_path:
-        # Some lalsimutils versions write plain .xml directly.
-        shutil.move(out_stem + ".xml", str(out_path))
-    return out_path
+    ifos = params.get("ifos") or ["H1", "L1", "V1"]
+    geocent = float(params.get("geocent_time", 0.0))
+    end_time_int = int(geocent)
+    end_time_ns = int(round((geocent - end_time_int) * 1e9))
+    m1 = float(_mass1(params))
+    m2 = float(_mass2(params))
+    s1z = float(params.get("s1z", 0.0))
+    s2z = float(params.get("s2z", 0.0))
+    snr = float(params.get("snr", 12.0))         # placeholder; pseudo_pipe
+                                                 # uses it only to pick the
+                                                 # max-SNR IFO for tref
+    event_duration = float(params.get("seglen", 4.0))
+    has_ecc = "eccentricity" in params
+    if has_ecc:
+        ecc = float(params["eccentricity"])
+        mean_per_ano = float(params.get("meanPerAno", 0.0))
+    else:
+        ecc = 0.0
+        mean_per_ano = 0.0
+
+    xmldoc = ligolw.Document()
+    ll = xmldoc.appendChild(ligolw.LIGO_LW())
+
+    columns = ["process_id", "event_id", "ifo",
+               "mass1", "mass2", "spin1z", "spin2z",
+               "end_time", "end_time_ns",
+               "snr", "event_duration"]
+    if has_ecc:
+        columns += ["alpha4", "alpha"]   # eccentricity, meanPerAno
+    sngls = lsctables.New(lsctables.SnglInspiralTable, columns)
+    sngls.sync_next_id()
+    ll.appendChild(sngls)
+
+    for ifo in ifos:
+        row = sngls.RowType()
+        row.process_id = 0
+        row.event_id = sngls.get_next_id()
+        row.ifo = ifo
+        row.mass1 = m1
+        row.mass2 = m2
+        row.spin1z = s1z
+        row.spin2z = s2z
+        row.end_time = end_time_int
+        row.end_time_ns = end_time_ns
+        row.snr = snr
+        row.event_duration = event_duration
+        if has_ecc:
+            row.alpha4 = ecc
+            row.alpha = mean_per_ano
+        sngls.append(row)
+
+    # Plain XML; the .xml extension keeps it uncompressed across both
+    # the older `gz=` and newer `compress=` kwargs of write_filename.
+    # pseudo_pipe loads via ligolw_utils.load_filename which handles
+    # both, but plain XML is human-readable too.
+    try:
+        ligolw_utils.write_filename(xmldoc, str(out_path), compress=False)
+    except TypeError:
+        # Older API: gz=False
+        ligolw_utils.write_filename(xmldoc, str(out_path), gz=False)
+    return Path(out_path)
 
 
 def _stage_frames(params: Dict[str, Any], frames_dir: Path,
