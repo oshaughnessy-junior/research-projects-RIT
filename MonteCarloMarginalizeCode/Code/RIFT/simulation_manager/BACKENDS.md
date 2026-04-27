@@ -198,28 +198,59 @@ Subsequent (not yet agreed):
 ## Open per-backend questions (TODO before code)
 
 For backend (1) GW PE synthetic-targeted (resolved):
-* Reference: `MonteCarloMarginalizeCode/Code/demo/populations/`
-  (Makefile + write_mdc.py + pop-example.ini + setup.sh). The flow
-  there is: GWKokab → injections.dat → write_mdc.py converts to
-  RIFT-ready injections → pp_RIFT_with_ini builds run dirs →
-  condor_submit_dag.
-* Data format: `.gwf`. Two modes the backend should support:
+* The backend wraps **`util_RIFT_pseudo_pipe`** (single-event entry
+  point), NOT `pp_RIFT_with_ini`. Rationale (Richard, planning):
+  pseudo_pipe is the right level for request-driven, per-event work
+  (one archive sim = one event); pp_RIFT_with_ini is the population
+  batcher on top of it and bakes in frame-writing logic we'll
+  reinvent anyway. Going to pseudo_pipe directly keeps a single code
+  path with no duplication.
+* Reference for the populations workflow's frame-writing logic:
+  `MonteCarloMarginalizeCode/Code/demo/populations/` and `test/pp/`.
+  The backend OWNS frame writing — pseudo_pipe doesn't.
+* Data format: `.gwf`. Two modes:
     * accept user-provided pre-computed noise frames (drop them in,
-      inject the signal into them);
-    * generate noise on demand via gwpy (canonical IGWN/aLIGO PSDs
-      are fine for synthetic studies).
-* Channels follow the demo's convention: `FAKE-STRAIN` per IFO,
-  default `flow=20` Hz. Make this configurable in the backend's
-  params; default to the demo values.
-* The PE invocation **maps directly onto `pp_RIFT_with_ini`** — not a
-  parallel implementation. Per Richard: no duplicate code paths to
-  maintain. The backend's generator builds the ini + injection input
-  exactly as `demo/populations/` does, then shells out to
-  `pp_RIFT_with_ini` (located at
-  `MonteCarloMarginalizeCode/Code/test/pp/`). Output of the run goes
-  into the sim_dir as the level output. Refinement maps to additional
-  RIFT iterations / increased convergence requirements via the same
-  ini knobs.
+      inject the signal — same pattern as `add_frames.py` from the
+      pp tooling);
+    * generate noise on demand via gwpy from a canonical IGWN/aLIGO
+      PSD.
+* Channels: `FAKE-STRAIN` per IFO (default; configurable). Default
+  `flow=20` Hz.
+* Generator workflow per (sim, level):
+    1. Render synthetic coinc.xml from the params (mc, q, spins,
+       distance, sky, time, etc.)
+    2. Stage frames (gwpy noise OR user-provided + injection)
+    3. Stage PSD file
+    4. Render the ini, with level-dependent knobs (iteration count,
+       n-eff target, convergence threshold)
+    5. `util_RIFT_pseudo_pipe.py --use-ini <ini> --use-coinc <xml>
+       --use-rundir <sims/n/level_N> --use-online-psd-file <psd>` —
+       this writes a `.dag` under the rundir
+    6. Return the path of that .dag for inclusion as a SUBDAG node
+
+Implication for run-queue (important):
+* This swap means the backend does NOT launch DAGs itself. Each
+  per-(sim, level) work unit is a sub-DAG (produced by pseudo_pipe);
+  the archive's run-queue includes it as a `SUBDAG EXTERNAL` node in
+  its wrapper DAG. The archive's wrapper DAG can in turn be included
+  by a parent hyperpipeline workflow as another `SUBDAG EXTERNAL` —
+  composition all the way down.
+* Concretely: `DualCondorRunQueue` will grow a per-backend
+  `subdag_factory` hook (callable: `(archive, sim_name, level) ->
+  path_to_dag`). When set, the per-(sim, level) node in the wrapper
+  DAG is `SUBDAG EXTERNAL <node_id> <subdag_path>` instead of
+  `JOB <node_id> <sub_path>`. Backend (1) supplies a factory that
+  invokes pseudo_pipe and returns the rundir's .dag.
+* A second knob: `submit_mode` ∈ {`"submit"`, `"embed"`}. Default
+  stays `"submit"` (calls condor_submit_dag, current behavior).
+  In `"embed"` mode, `submit()` returns the wrapper-DAG path
+  without dispatching, so the user can include it as a SUBDAG node
+  in their own hyperpipeline workflow.
+* Refinement: same idea as the rest of the framework. Each level's
+  pseudo_pipe is rendered with progressively tighter ini knobs
+  (more iterations, higher n-eff target). A level-3 sim that bumps
+  to level-5 just emits two more pseudo_pipe-built sub-DAGs in the
+  refined wrapper DAG; PARENT/CHILD edges keep the chain.
 
 For backend (2) Kilonova Stage 1:
 * Container: **a student is providing one** (Richard, planning
