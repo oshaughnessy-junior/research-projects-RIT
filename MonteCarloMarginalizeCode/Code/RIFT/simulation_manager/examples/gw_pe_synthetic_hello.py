@@ -69,6 +69,22 @@ def _resolve_factory(name):
     raise ValueError("Unknown factory: {!r}".format(name))
 
 
+def _resolve_ini_localizer(spec):
+    """Resolve a 'module:callable' spec into the callable. Used for the
+    --ini-localizer CLI knob so users can plug in their own
+    domain-specific ini construction without editing this example."""
+    import importlib
+    if ":" not in spec:
+        raise ValueError("--ini-localizer must be 'module:callable'; got {!r}"
+                         .format(spec))
+    mod_name, _, attr = spec.partition(":")
+    mod = importlib.import_module(mod_name)
+    fn = getattr(mod, attr)
+    if not callable(fn):
+        raise TypeError("{}.{} is not callable".format(mod_name, attr))
+    return fn
+
+
 def _augment_events_for_factory(events, args):
     """Some factories need extra params on each event. The stub doesn't
     care; pseudo_pipe wants base_ini_path / noise_source / etc."""
@@ -109,10 +125,16 @@ def main():
                     help="target level for the registered events; default 1")
     # pseudo_pipe-specific knobs
     ap.add_argument("--base-ini-path", default=None,
-                    help="Path to a base RIFT ini (e.g. demo/populations/"
-                         "pop-example.ini). Required for pseudo_pipe in "
-                         "practice; the factory uses an ultra-minimal default "
-                         "if omitted.")
+                    help="Path to a base RIFT ini. The default ini_localizer "
+                         "copies this through with level-scaled iterations/"
+                         "n-eff layered on top — that is NOT enough for "
+                         "production runs (see --ini-localizer).")
+    ap.add_argument("--ini-localizer", default=None,
+                    help="Production-style ini localizer, as 'module:callable'. "
+                         "Signature: (base_ini_path, params, level, out_path) "
+                         "-> Path. Use this to inject per-event mass priors, "
+                         "signal duration, fmin, etc. that the default "
+                         "localizer leaves untouched.")
     ap.add_argument("--noise-source", choices=("gwpy", "user"), default="gwpy",
                     help="pseudo_pipe noise: gwpy-generated or user frames")
     ap.add_argument("--psd-source", choices=("design_aligo", "user"),
@@ -141,14 +163,19 @@ def main():
     if args.accounting_group_user:
         run_queue_extra["accounting_group_user"] = args.accounting_group_user
 
-    # Resolve the factory.
+    # Resolve the factory and (optional) ini_localizer.
     factory = _resolve_factory(args.factory)
+    ini_localizer = None
+    if args.ini_localizer:
+        ini_localizer = _resolve_ini_localizer(args.ini_localizer)
+        print("  ini_localizer: {}".format(args.ini_localizer))
 
     archive = make_archive(
         base_location=base,
         subdag_factory=factory,
         submit_mode=args.submit_mode,
         run_queue_extra=run_queue_extra,
+        ini_localizer=ini_localizer,
     )
     print("Built archive at: {}".format(archive.base))
     print("  factory      : {}".format(args.factory))

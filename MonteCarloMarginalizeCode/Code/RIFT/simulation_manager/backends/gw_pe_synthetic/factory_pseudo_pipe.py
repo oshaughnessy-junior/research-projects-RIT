@@ -34,16 +34,41 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
 
-def subdag_factory(archive, sim_name: str, level: int) -> str:
+def subdag_factory(archive, sim_name: str, level: int,
+                   *, ini_localizer: Optional[Callable[..., str]] = None) -> str:
     """Build the per-(sim, level) PE sub-DAG and return its path.
 
     Imports lalsuite and gwpy lazily; raises ImportError with a
-    helpful message if they're not installed."""
+    helpful message if they're not installed.
+
+    Layout (per (sim, level)):
+        <sim_dir>/level_<N>/                    -- staging dir we create
+            coinc.xml                           -- synthetic event
+            psd.xml.gz                          -- canonical or user PSD
+            config.ini                          -- localized RIFT ini
+            data.cache                          -- LFN cache file
+            frames/<IFO>-COMBINED-*.gwf         -- noise+signal frames
+            run/                                -- pseudo_pipe's rundir
+                                                   (NOT pre-created;
+                                                   pseudo_pipe creates
+                                                   it. We nuke any
+                                                   stale `run/` from
+                                                   a prior failed call.)
+
+    The `ini_localizer` callable lets backends plug in domain-specific
+    ini construction (per-event mass priors, signal duration, fmin,
+    event time, etc.). Signature:
+        localize(base_ini_path, params, level, out_path) -> Path
+    Default (when None): copy `params['base_ini_path']` (or a tiny
+    minimal stub) into `out_path` and add level-scaled internal-
+    iterations + n-eff. This default is enough for code-tests but not
+    enough for production runs — see BACKENDS.md for guidance.
+    """
     try:
         import RIFT.lalsimutils as lalsimutils  # noqa: F401
     except ImportError as exc:
@@ -54,8 +79,17 @@ def subdag_factory(archive, sim_name: str, level: int) -> str:
         ) from exc
 
     sd = archive.sim_dir(sim_name)
-    rundir = sd / "level_{}".format(level)
-    rundir.mkdir(parents=True, exist_ok=True)
+    staging = sd / "level_{}".format(level)
+    staging.mkdir(parents=True, exist_ok=True)
+
+    # pseudo_pipe creates its own rundir. If a prior call left a stale
+    # `run/` (failed run, retry), remove it so pseudo_pipe doesn't
+    # hard-fail on existing-target. Prior level outputs (level_<N-1>.json
+    # etc.) are NOT touched.
+    pseudo_pipe_rundir = staging / "run"
+    if pseudo_pipe_rundir.exists():
+        logger.info("removing stale pseudo_pipe rundir %s", pseudo_pipe_rundir)
+        shutil.rmtree(pseudo_pipe_rundir)
 
     # Pull params from the archive's status record.
     from RIFT.simulation_manager.database import StatusRecord
@@ -63,38 +97,56 @@ def subdag_factory(archive, sim_name: str, level: int) -> str:
     params: Dict[str, Any] = rec.data.get("params") or {}
 
     # 1. Render coinc.xml.
-    coinc_path = _render_coinc_xml(params, rundir / "coinc.xml")
+    coinc_path = _render_coinc_xml(params, staging / "coinc.xml")
 
     # 2. Stage frames (gwpy noise OR user-provided + injection).
-    cache_path = _stage_frames(params, rundir / "frames", rundir / "data.cache")
+    cache_path = _stage_frames(params, staging / "frames", staging / "data.cache")
 
     # 3. Stage PSD.
-    psd_path = _stage_psd(params, rundir / "psd.xml.gz")
+    psd_path = _stage_psd(params, staging / "psd.xml.gz")
 
-    # 4. Render ini, with level-dependent knobs.
-    ini_path = _render_ini(params, level, rundir / "config.ini")
+    # 4. Localize the ini.
+    base_ini = params.get("base_ini_path")
+    out_ini = staging / "config.ini"
+    localize = ini_localizer or _default_ini_localizer
+    ini_path = Path(localize(base_ini, params, level, str(out_ini)))
 
     # 5. Invoke pseudo_pipe.
     cmd = ["util_RIFT_pseudo_pipe.py",
            "--use-ini",              str(ini_path),
            "--use-coinc",            str(coinc_path),
-           "--use-rundir",           str(rundir),
+           "--use-rundir",           str(pseudo_pipe_rundir),
            "--use-online-psd-file",  str(psd_path)]
     extra = params.get("pseudo_pipe_extra_args") or []
     cmd.extend(extra)
     logger.info("running: %s", " ".join(cmd))
-    subprocess.run(cmd, check=True, cwd=str(rundir))
+    subprocess.run(cmd, check=True, cwd=str(staging))
 
-    # 6. Locate the .dag pseudo_pipe wrote. Convention: it lives in the
-    # rundir; pseudo_pipe writes a single top-level .dag plus several
-    # iteration sub-DAGs. We return the top-level one.
-    dag_paths = sorted(rundir.glob("*.dag"))
+    # 6. Locate the .dag pseudo_pipe wrote.
+    dag_paths = sorted(pseudo_pipe_rundir.glob("**/*.dag"))
     if not dag_paths:
         raise RuntimeError(
-            "util_RIFT_pseudo_pipe.py did not produce a .dag in {}".format(rundir))
-    # Heuristic: pick the shallowest one (the one DAGman drives).
+            "util_RIFT_pseudo_pipe.py did not produce a .dag in {}".format(
+                pseudo_pipe_rundir))
     top_dag = min(dag_paths, key=lambda p: len(p.parents))
     return str(top_dag)
+
+
+def make_factory(*, ini_localizer: Optional[Callable[..., str]] = None
+                 ) -> Callable[[Any, str, int], str]:
+    """Return a configured subdag_factory closing over the supplied
+    `ini_localizer` (and any future per-archive overrides). Use this
+    when the localizer can't ride along in `params` (e.g. it's a
+    callable, not JSON-serializable). Wire the result into
+    `make_archive(..., subdag_factory=...)`."""
+    if ini_localizer is None:
+        return subdag_factory
+    def _factory(archive, sim_name, level):
+        return subdag_factory(archive, sim_name, level,
+                              ini_localizer=ini_localizer)
+    _factory.__doc__ = (subdag_factory.__doc__ or "") + (
+        "\n\n(Closed over a custom ini_localizer.)")
+    return _factory
 
 
 # ---------------------------------------------------------------------------
@@ -310,18 +362,26 @@ def _stage_psd(params: Dict[str, Any], out_path: Path) -> Path:
     return out_path
 
 
-def _render_ini(params: Dict[str, Any], level: int, out_path: Path) -> Path:
-    """Render the ini RIFT will read. Per-level scaling: more iterations
-    and higher n-eff target as level rises. Falls back to a base ini if
-    `params` carries `base_ini_path`."""
+def _default_ini_localizer(base_ini_path: Optional[str],
+                           params: Dict[str, Any],
+                           level: int,
+                           out_path: str) -> str:
+    """Default `ini_localizer`. Copies `base_ini_path` to `out_path`
+    (or writes a near-useless minimal stub if no base ini was given),
+    then layers level-scaled `internal-iterations` and `n-eff` knobs
+    on top.
+
+    THIS IS NOT A REAL LOCALIZER. RIFT inis carry per-event quantities
+    (mass priors, fiducial event time, signal duration, fmin,
+    sky-position priors, spin/precession options) that this default
+    leaves untouched. Production users MUST supply their own
+    `ini_localizer` callable that injects those per-event fields from
+    the archive params. See BACKENDS.md."""
     import configparser
     cfg = configparser.ConfigParser()
-    base_ini = params.get("base_ini_path")
-    if base_ini:
-        cfg.read(base_ini)
+    if base_ini_path:
+        cfg.read(base_ini_path)
     else:
-        # Minimal default. Real users almost always pass `base_ini_path`
-        # to inherit their site/instrument configuration.
         cfg["analysis"] = {
             "ifos":            "['H1','L1','V1']",
             "engine":          "rift",

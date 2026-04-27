@@ -59,6 +59,7 @@ def make_archive(base_location: Union[str, Path],
                  submit_mode: str = "submit",
                  run_queue_extra: Optional[Dict[str, Any]] = None,
                  request_queue_extra: Optional[Dict[str, Any]] = None,
+                 ini_localizer: Optional[Callable[..., str]] = None,
                  ) -> Archive:
     """Create a fresh GW PE synthetic-targeted archive at
     `base_location`. Returns the Archive with both queues attached;
@@ -87,8 +88,17 @@ def make_archive(base_location: Union[str, Path],
         lookup_key_spec=_LOOKUP_KEY_SPEC,
     )
 
+    # If the caller supplied an ini_localizer AND the chosen factory is
+    # the pseudo_pipe one, wrap it via make_factory so the localizer
+    # rides along with each invocation. For the stub factory (or any
+    # other) the localizer is irrelevant and we ignore it.
+    final_factory = subdag_factory
+    if ini_localizer is not None:
+        from . import factory_pseudo_pipe as _fpp
+        if subdag_factory is _fpp.subdag_factory:
+            final_factory = _fpp.make_factory(ini_localizer=ini_localizer)
     run_queue = DualCondorRunQueue(
-        subdag_factory=subdag_factory,
+        subdag_factory=final_factory,
         submit_mode=submit_mode,
         **(run_queue_extra or {}),
     )

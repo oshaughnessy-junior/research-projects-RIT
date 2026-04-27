@@ -197,6 +197,30 @@ Subsequent (not yet agreed):
 
 ## Open per-backend questions (TODO before code)
 
+**Production gap (open): per-event ini localization.** RIFT-style ini
+files are NOT population templates — they carry per-event quantities
+that the framework currently leaves as the user's problem:
+
+* mass priors (`mc_min`, `mc_max`, `m_min`)
+* fiducial event time (`priors.fiducial_event_time`)
+* sky-position priors / `fix_sky_location`
+* signal `seglen`, `srate`
+* `fmin`
+* spin / precession / eccentricity options
+
+The `factory_pseudo_pipe` factory exposes an `ini_localizer` hook
+(callable: `(base_ini_path, params, level, out_path) -> Path`). The
+default implementation just copies the base ini through with level-
+scaled `internal-iterations` + `n-eff` layered on top — adequate for
+code-tests, NOT enough for production. Production users must supply
+their own localizer that injects the per-event fields above from the
+archive params. The hook can be wired via:
+* `make_archive(..., ini_localizer=<callable>)` (programmatic)
+* `--ini-localizer module:callable` on the example CLI
+A reference localizer that does the right thing for a typical
+RIT-deployed BBH study is a TODO; current users start by adapting
+their existing per-event ini-rendering helpers.
+
 For backend (1) GW PE synthetic-targeted (resolved):
 * The backend wraps **`util_RIFT_pseudo_pipe`** (single-event entry
   point), NOT `pp_RIFT_with_ini`. Rationale (Richard, planning):
