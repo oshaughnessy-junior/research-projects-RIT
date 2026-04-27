@@ -1054,7 +1054,17 @@ class WaveformMode:
 ###
 ### FFT syntatic sugar
 ###
-def DataFourierNumpy(wfComplex):    # assume (n,2) size array of [tvals, g(t)]; return fvals, tilde(g). 
+def DataFourierNumpy(wfComplex):
+    """
+    Performs a NumPy-based Fast Fourier Transform (FFT) on a complex waveform.
+    Assumes the input is an (n, 2) array of [time_values, waveform_values].
+
+    Args:
+        wfComplex (np.ndarray): Array of shape (n, 2) containing time and complex signal.
+
+    Returns:
+        np.ndarray: Array of shape (n, 2) containing frequency values and the FFT result.
+    """
     # FFT
     # Unroll -- it will save me time later if we are continuous
     T = wfComplex[-1,0] - wfComplex[0,0]
@@ -1069,7 +1079,17 @@ def DataFourierNumpy(wfComplex):    # assume (n,2) size array of [tvals, g(t)]; 
     wfComplexF = np.array([fvals,gtilde[::-1]]).T
     return wfComplexF
 
-def DataInverseFourierNumpy(wfComplex):    # assume (n,2) size array of [fvals, gtilde(f)]; return tvals, g
+def DataInverseFourierNumpy(wfComplex):
+    """
+    Performs a NumPy-based Inverse Fast Fourier Transform (IFFT) on frequency-domain data.
+    Assumes the input is an (n, 2) array of [frequency_values, waveform_values].
+
+    Args:
+        wfComplex (np.ndarray): Array of shape (n, 2) containing frequencies and complex signal.
+
+    Returns:
+        np.ndarray: Array of shape (n, 2) containing time values and the reconstructed signal.
+    """
 #    print "NAN check ", wfComplex[np.isnan(wfComplex[:,1]),1]
     df = wfComplex[1,0] - wfComplex[0,0]
     n = len(wfComplex)
@@ -1087,7 +1107,16 @@ def DataInverseFourierNumpy(wfComplex):    # assume (n,2) size array of [fvals, 
 ###
 ### Mode syntactic sugar
 ###
-def RawGetModePeakTime(wfMode):   # assumed applied to complex data sequence
+def RawGetModePeakTime(wfMode):
+    """
+    Finds the time of the maximum absolute magnitude for a given complex waveform mode.
+
+    Args:
+        wfMode (np.ndarray): A complex data sequence (usually an (n, 2) array).
+
+    Returns:
+        float: The real-valued time of the peak magnitude.
+    """
     nmax = np.argmax(np.abs(wfMode[:,1]))
     return np.real(wfMode[nmax][0])
 
