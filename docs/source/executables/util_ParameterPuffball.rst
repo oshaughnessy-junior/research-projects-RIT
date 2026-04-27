@@ -22,18 +22,23 @@ Primary Options
 ~~~~~~~~~~~~~~
 
 **Input and Output**
+``````
 - ``--inj-file``: Path to the input XML file containing the parameter set.
 - ``--inj-file-out``: Path to the output XML file (default: ``output-puffball``).
 - ``--puff-factor``: Scaling factor for the covariance matrix. A value of 1.0 maintains the original covariance; values > 1.0 "puff up" the distribution (default: 1.0).
 - ``--approx-output``: Waveform approximant to use when writing the output XML (default: ``SEOBNRv2``).
+``````
 
 **Parameter Selection**
+``````
 - ``--parameter``: Parameters to be used for covariance assessment and perturbation. These are the "fitting" parameters.
 - ``--no-correlation``: A list of parameter pairs (e.g., ``"['mc','eta']"``) whose mutual correlation should be eliminated by zeroing out the corresponding covariance matrix terms.
 - ``--random-parameter``: Parameters to be sampled uniformly at random over a specified range, uncorrelated with others.
 - ``--random-parameter-range``: The ranges for the ``--random-parameter`` variables (passed as string evaluations of Python lists).
+``````
 
 **Constraints and Filtering**
+``````
 - ``--downselect-parameter``: Parameters used to filter out points that fall outside a specific range.
 - ``--downselect-parameter-range``: The allowed ranges for the downselection parameters.
 - ``--mc-range``, ``--eta-range``, ``--mtot-range``: Convenient shortcuts for downselecting based on chirp mass, eta, or total mass.
@@ -41,6 +46,7 @@ Primary Options
 - ``--force-away``: If > 0, uses the inverse covariance matrix to compute a Mahalanobis distance and discards points that are too close to existing points.
 - ``--enforce-duration-bound``: Maximum allowed waveform duration. Points producing signals longer than this are discarded.
 - ``--fail-if-empty``: Causes the tool to exit with an error if no points survive the filtering process.
+``````
 
 Functional Logic
 ----------------
