@@ -35,6 +35,18 @@ except:
 
 
 def std_and_conj_hlmoff(P, Lmax=2,approx_string=None,**kwargs):
+    """
+    Generates both the Fourier-transformed harmonic modes and their complex conjugates.
+
+    Args:
+        P (ChooseWaveformParams): Waveform parameters.
+        Lmax (int): Maximum l-mode to generate. Default is 2.
+        approx_string (str): Approximant string. If None, P.approx is used.
+        **kwargs: Additional arguments passed to hlmoft.
+
+    Returns:
+        tuple: (hlmsF, hlms_conj_F) where both are dictionaries mapping (l, m) to Fourier-transformed series.
+    """
     hlms = hlmoft(P, Lmax,approx_string=approx_string,**kwargs)
     hlmsF = {}
     hlms_conj_F = {}
@@ -45,6 +57,18 @@ def std_and_conj_hlmoff(P, Lmax=2,approx_string=None,**kwargs):
     return hlmsF, hlms_conj_F
 
 def hlmoff(P, Lmax=2,approx_string=None,**kwargs):
+    """
+    Generates Fourier-transformed harmonic modes.
+
+    Args:
+        P (ChooseWaveformParams): Waveform parameters.
+        Lmax (int): Maximum l-mode to generate. Default is 2.
+        approx_string (str): Approximant string. If None, P.approx is used.
+        **kwargs: Additional arguments passed to hlmoft.
+
+    Returns:
+        dict: A dictionary mapping (l, m) to Fourier-transformed series.
+    """
     hlms = hlmoft(P, Lmax,approx_string=approx_string,**kwargs)
     hlmsF = {}
     for mode in hlms:
@@ -54,7 +78,18 @@ def hlmoff(P, Lmax=2,approx_string=None,**kwargs):
 
 def hlmoft(P, Lmax=2,approx_string=None,no_trust_align_method=None,internal_phase_shift=np.pi/2, **kwargs):
     """
-    gwsignal.  Note the call will use approx_string, NOT a lalsimulation mode ID.  If approx_string is none, use P.approx but convert to string
+    Generates time-domain harmonic modes using the gwsignal library.
+
+    Args:
+        P (ChooseWaveformParams): Waveform parameters.
+        Lmax (int): Maximum l-mode to generate. Default is 2.
+        approx_string (str): Approximant string. If None, P.approx is used.
+        no_trust_align_method (str): If 'peak', shifts epoch to the peak of the total signal power.
+        internal_phase_shift (float): Phase shift applied to the modes. Default is pi/2.
+        **kwargs: Additional arguments (e.g., 'lmax_nyquist').
+
+    Returns:
+        dict: A dictionary mapping (l, m) to LAL COMPLEX16TimeSeries objects.
     """
 
     assert Lmax >= 2
@@ -174,12 +209,21 @@ def hlmoft(P, Lmax=2,approx_string=None,no_trust_align_method=None,internal_phas
 #
 def hoft(P, Fp=None, Fc=None,approx_string=None, **kwargs):
     """
-    Generate a TD waveform from ChooseWaveformParams P
-    Based on https://git.ligo.org/waveforms/reviews/newwfinterface/-/blob/main/example_usage/example_usage_using_gwsignal_in_lalsimulation.ipynb
-    You may pass in antenna patterns Fp, Fc. If none are provided, they will
-    be computed from the information in ChooseWaveformParams.
+    Generate a real-valued time-domain waveform from ChooseWaveformParams P.
+    
+    This function projects the h+ and hx polarizations onto a detector strain.
+    If antenna patterns Fp and Fc are provided, they are used; otherwise, they are 
+    computed from the information in P.
 
-    Returns a REAL8TimeSeries object
+    Args:
+        P (ChooseWaveformParams): Waveform parameters.
+        Fp (float/array, optional): Antenna pattern F+.
+        Fc (float/array, optional): Antenna pattern Fx.
+        approx_string (str, optional): Approximant string. If None, P.approx is used.
+        **kwargs: Additional arguments.
+
+    Returns:
+        lal.REAL8TimeSeries: The projected time-domain waveform.
     """
 
     # special sauce for EOB, because it is so finicky regarding
@@ -280,7 +324,18 @@ def hoft(P, Fp=None, Fc=None,approx_string=None, **kwargs):
 
 def complex_hoft(P, Fp=None, Fc=None,approx_string=None,sgn=-1, **kwargs):
     """
-    Similarly. 
+    Generate a complex-valued time-domain waveform (h+ + i * sgn * hx).
+
+    Args:
+        P (ChooseWaveformParams): Waveform parameters.
+        Fp (float/array, optional): Antenna pattern F+.
+        Fc (float/array, optional): Antenna pattern Fx.
+        approx_string (str, optional): Approximant string. If None, P.approx is used.
+        sgn (int): Sign for the imaginary part. Default is -1.
+        **kwargs: Additional arguments.
+
+    Returns:
+        lal.COMPLEX16TimeSeries: The complex time-domain waveform.
     """
 
     # special sauce for EOB, because it is so finicky regarding
