@@ -26,23 +26,23 @@ The default integrator. It performs basic Monte Carlo integration by sampling fr
 
 **GPU-Accelerated Sampler (``mcsamplerGPU``)**
 A high-performance implementation designed to leverage CUDA-enabled GPUs. By parallelizing the likelihood evaluations across thousands of GPU cores, it can achieve orders-of-magnitude speedups over the CPU implementation, especially when using vectorized likelihoods.
-*Reference: See `Wysocki et al. <https://arxiv.org/abs/1902.04934>`_ for details on GPU acceleration.*
+Reference: See `Wysocki et al. <https://arxiv.org/abs/1902.04934>`_ for details on GPU acceleration.
 
 **Ensemble / GMM Sampler (``mcsamplerEnsemble``)**
 Based on Gaussian Mixture Model (GMM) approximations of the likelihood. This approach identifies the primary modes of the posterior and uses an ensemble of GMMs to efficiently sample the most important regions of the parameter space.
-*Reference: See `Wofford et al. <https://arxiv.org/pdf/2210.07912>`_ for details on ensemble-based marginalization.*
+Reference: See `Wofford et al. <https://arxiv.org/pdf/2210.07912>`_ for details on ensemble-based marginalization.
 
 **Adaptive Volume Sampler (``mcsamplerAdaptiveVolume``)**
 An integrator that dynamically adjusts the sampling volume based on the observed likelihood distribution. By focusing samples in regions of high likelihood, it reduces the variance of the evidence estimate.
-*Reference: See `Wagner et al. <https://arxiv.org/abs/2505.11655>`_ for adaptive sampling techniques.*
+Reference: See `Wagner et al. <https://arxiv.org/abs/2505.11655>`_ for adaptive sampling techniques.
 
 **Normalizing Flows Sampler (``mcsamplerNFlow``)**
 Leverages deep learning-based Normalizing Flows to learn a bijective mapping between a simple base distribution (e.g., a Gaussian) and the complex posterior. This allows for nearly exact sampling from the posterior and highly efficient integration.
-*Reference: See `Wagner et al. <https://arxiv.org/abs/2505.11655>`_.*
+Reference: See `Wagner et al. <https://arxiv.org/abs/2505.11655>`_.
 
 **Portfolio Integrator (``mcsamplerPortfolio``)**
 A meta-integrator that manages a "portfolio" of different sampling strategies. It can dynamically allocate computational resources among various integrators to optimize the trade-off between accuracy and wall-clock time.
-*Reference: See `Wagner et al. <https://arxiv.org/abs/2505.11655>`_.*
+Reference: See `Wagner et al. <https://arxiv.org/abs/2505.11655>`_.
 
 API Reference
 --------------
