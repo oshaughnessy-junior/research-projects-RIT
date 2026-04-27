@@ -246,6 +246,20 @@ class WaveformModeCatalog:
     def __init__(self, group ,param, lmax=2, 
                  strain_basis_functions_dimensionless=None,
                  mode_list_to_load=None,build_fourier_time_window=1000,reflection_symmetric=True,max_nbasis_per_mode=None,coord_names_internal=['q']):
+        """
+        Initializes the WaveformModeCatalog by loading surrogate models and setting up harmonic modes.
+
+        Args:
+            group (str): Surrogate group name.
+            param (str): Surrogate parameter identifier.
+            lmax (int): Maximum harmonic mode l to load. Defaults to 2.
+            strain_basis_functions_dimensionless: Optional pre-defined basis functions.
+            mode_list_to_load (list, optional): Specific list of (l, m) modes to load.
+            build_fourier_time_window (int): Window size for Fourier transforms.
+            reflection_symmetric (bool): Whether to enforce reflection symmetry. Defaults to True.
+            max_nbasis_per_mode (int, optional): Maximum number of basis functions to keep per mode.
+            coord_names_internal (list): Internal names for coordinates. Defaults to ['q'].
+        """
         self.group  = group
         self.param = param 
         self.deltaToverM =0
@@ -624,6 +638,20 @@ class WaveformModeCatalog:
         return None
 
     def basis_oft(self,  P, force_T=False, deltaT=1./16384, time_over_M_zero=0.,return_numpy=False):
+        """
+        Generates the ROM basis functions in the time domain, resampled to a physical grid.
+
+        Args:
+            P (ChooseWaveformParams): Waveform parameters.
+            force_T (float/bool): If float, forces a specific time length.
+            deltaT (float): Time step.
+            time_over_M_zero (float): Reference time offset.
+            return_numpy (bool): If True, returns NumPy arrays instead of LAL time series.
+
+        Returns:
+            dict or tuple: A dictionary mapping (l, m, index) to LAL time series, 
+                           or a tuple of (tvals, basis_grid) if return_numpy is True.
+        """
         m_total_s = MsunInSec*(P.m1+P.m2)/lal.MSUN_SI
         # Create a suitable set of time samples.  Zero pad to 2^n samples.
         T_estimated = np.abs(self.sur_dict[(2,2)].tmin)*m_total_s
