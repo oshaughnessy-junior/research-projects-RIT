@@ -27,6 +27,7 @@ Rapid inference via Iterative FiTting: this algorithm provides a framework for e
    troubleshooting
    api_samples_utils
    executables/index
+   physics/index
 
 .. toctree::
    :maxdepth: 20

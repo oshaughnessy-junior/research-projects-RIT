@@ -17,6 +17,7 @@ Welcome to RIFT's documentation!
    using-pipeline
    executables/index
    api_reference/index
+   physics/index
    architecture
    hyperpipe
    osg
