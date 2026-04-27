@@ -36,22 +36,27 @@ from RIFT.simulation_manager.database import (
 # This function is what the archive captures via inspect.getsource. It must
 # be self-contained: standard-library imports only, no closure captures.
 
-def my_generator(params, sim_dir):
-    """Trivial generator: writes k * sqrt(2) to <sim_dir>/output.txt."""
-    import math
-    import os
+def my_generator(params, sim_dir, level, prev_levels):
+    """Trivial generator. Writes <sim_dir>/level_<N>.json with the
+    same k*sqrt(2) at every level (this example doesn't actually use
+    prev_levels — the GW PE example does)."""
+    import json, math, os
     val = float(params) * math.sqrt(2.0)
-    with open(os.path.join(sim_dir, "output.txt"), "w") as f:
-        f.write("{:.17g}\n".format(val))
+    out = os.path.join(sim_dir, "level_{}.json".format(level))
+    with open(out, "w") as f:
+        json.dump({"level": level, "value": val}, f)
 
 
-def my_summarizer(sim_dir, params):
-    """Read the output and return a tiny summary dict for the index."""
-    import os
-    out = os.path.join(sim_dir, "output.txt")
-    with open(out) as f:
-        val = float(f.read().strip())
-    return {"value": val, "params": params}
+def my_summarizer(sim_dir, params, levels=None):
+    """Read the latest level's output for the rolling summary."""
+    import json, os
+    if levels:
+        latest = levels[-1]
+    else:
+        latest = os.path.join(sim_dir, "level_1.json")
+    with open(latest) as f:
+        data = json.load(f)
+    return {"value": data["value"], "params": params, "level": data["level"]}
 
 
 # ---- frozen similarity hooks ----------------------------------------------
@@ -139,10 +144,13 @@ def main():
     print("\nindex.jsonl:")
     print(archive.index.path.read_text())
 
-    # 6. Verify outputs match expectation.
+    # 6. Verify outputs match expectation. The deduped-or-new sim from
+    #    the dedup demo above will also be in the index but isn't in
+    #    `expected`; just skip those.
     bad = []
     for name, ref in expected.items():
-        got = archive.index.by_name(name)["summary"]["value"]
+        row = archive.index.by_name(name)
+        got = row["summary"]["value"]
         if abs(got - ref) > 1e-12:
             bad.append((name, got, ref))
     if bad:
