@@ -65,6 +65,7 @@ MsunInSec = lal.MSUN_SI*lal.G_SI/lal.C_SI**3
 #execfile(dirBaseFiles + "/"+"Sequence-GT-Aligned-UnequalMass/interface.py")
 
 def myzero(arg):
+    """Returns zero. Used as a helper for RangeWrap1d boundary conditions."""
     return 0
 
 def RangeWrap1d(bound, val,fn):
