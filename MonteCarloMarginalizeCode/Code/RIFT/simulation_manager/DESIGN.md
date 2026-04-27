@@ -464,6 +464,71 @@ queue records; the `extra` dict carries the `pool` / `schedd` / DAG
 template differences.
 
 
+## Hyperpipeline / glue.pipeline integration
+
+Many existing RIFT workflows are built with `glue.pipeline.CondorDAG`
+(see `RIFT/misc/dag_utils.py`, the various `bin/create_*_pipeline*`
+scripts, and the hyperpipeline). The simulation archive must drop into
+that ecosystem without forcing a top-level rewrite: the user adds *one
+node* to their DAG that says "ensure simulation X is present at level
+N", and downstream nodes simply add it as a parent.
+
+The integration is two pieces:
+
+1. **`request_sim` CLI** (`RIFT.simulation_manager.cli.request_sim`).
+   A small executable that opens an archive, calls `Archive.register`,
+   dispatches run-pool work via the configured request_queue if
+   needed, and (in `--ensure` mode) blocks until the requested level
+   is satisfied. Three modes: `--ensure` (the DAGMan-friendly default),
+   `--check` (poll-once and exit), `--submit-async` (dispatch and
+   return). Exit code drives DAGMan node success.
+
+2. **`RequestSimulationJob`** (`RIFT.simulation_manager.glue_compat`).
+   A `glue.pipeline.CondorDAGJob` subclass whose executable is the CLI
+   above. Construct once per archive/profile; call `make_node(params,
+   target_level)` to get a `CondorDAGNode` that the user attaches to
+   their existing DAG. Per-node values arrive as standard glue macros
+   (`$(macro_params)`, `$(macro_target_level)`).
+
+A consumer's hyperpipeline-style flow looks like:
+
+```python
+from glue import pipeline
+from RIFT.simulation_manager.glue_compat import RequestSimulationJob
+
+dag = pipeline.CondorDAG(log='hyperpipe.dag.log')
+
+sim_job = RequestSimulationJob(
+    archive_path='/data/archives/lnL_grid',
+    accounting_group='ligo.dev.o4.cbc.pe.lalinferencerapid',
+    accounting_group_user='albert.einstein',
+    timeout=3600,
+)
+sim_job.set_sub_file('request_sim.sub')
+sim_job.write_sub_file()
+
+for params in points_of_interest:
+    sim_node = sim_job.make_node(params=params, target_level=4)
+    dag.add_node(sim_node)
+    downstream_node.add_parent(sim_node)   # blocks until ready
+
+dag.set_dag_file('hyperpipe')
+dag.write_concrete_dag()
+```
+
+The CLI runs on the *submit node* (where the archive lives). The
+parent DAG can therefore live on a different pool from the run pool;
+the request-sim node only needs the archive's submit-node filesystem.
+When the CLI dispatches further work via the configured request_queue,
+the file-transfer machinery from the previous section ferries the
+inputs out to execute hosts and the outputs back.
+
+`glue.pipeline` is treated as an optional dependency of the
+simulation_manager package: importing `glue_compat` is safe without it
+(only the `RequestSimulationJob` constructor raises a clear error if
+glue is actually missing). The CLI itself has no glue dependency.
+
+
 ## Lightweight example
 
 `examples/sim_database_hello.py` registers three sims (params 0.5,

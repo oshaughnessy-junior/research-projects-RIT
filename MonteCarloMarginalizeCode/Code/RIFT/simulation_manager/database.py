@@ -548,6 +548,71 @@ class Archive:
             return None
         return load_entrypoint(self.base / "code", ep)
 
+    # ---- file-transfer helpers (for run pools without shared FS) ---------
+    def transfer_input_files_for(self, sim_name: str, level: int) -> List[str]:
+        """Files a worker needs on the execute host to compute (sim, level).
+
+        Suitable as the value of condor's `transfer_input_files`. Paths
+        are returned as filesystem paths on the submit side; condor
+        flattens basenames into the worker sandbox cwd.
+
+        Includes:
+          * <archive>/code   — the whole frozen code directory
+          * <archive>/sims/<name>/params.json
+          * <archive>/sims/<name>/level_1.json ... level_<level-1>.json
+            (whichever are present on disk)
+        """
+        sd = self.sim_dir(sim_name)
+        files: List[str] = [str(self.base / "code")]
+        params_path = sd / "params.json"
+        if params_path.exists():
+            files.append(str(params_path))
+        for i in range(1, int(level)):
+            p = sd / "level_{}.json".format(i)
+            if p.exists():
+                files.append(str(p))
+        return files
+
+    def expected_output(self, sim_name: str, level: int) -> Tuple[str, str]:
+        """Return (output_basename, absolute_remap_target) for a (sim, level)
+        worker. Use the basename in `transfer_output_files` and the pair
+        in `transfer_output_remaps` so condor places the worker's output
+        at the canonical archive location on the submit node."""
+        basename = "level_{}.json".format(int(level))
+        target = str(self.sim_dir(sim_name) / basename)
+        return basename, target
+
+    def worker_bootstrap_script(self) -> str:
+        """Return a self-contained Python bootstrap script (as a string)
+        that the run pool's executable should be set to. The script
+        expects argv: --sim-name <n> --level <N> --prev-levels FILE [...].
+        Standard input file layout: code/ in sandbox, params.json in
+        sandbox, prev-level files in sandbox by basename. Output is
+        written to cwd as level_<N>.json."""
+        ep = self.manifest.data["code"]["generator_entrypoint"]
+        module_name, _, fn_name = ep.partition(":")
+        return textwrap.dedent('''\
+            #!/usr/bin/env python3
+            """Auto-generated worker bootstrap for the simulation_manager
+            v2 archive. Loads the frozen generator and runs one level."""
+            import argparse, json, os, sys
+
+            ap = argparse.ArgumentParser()
+            ap.add_argument("--sim-name", required=True)
+            ap.add_argument("--level", type=int, required=True)
+            ap.add_argument("--prev-levels", nargs="*", default=[])
+            args = ap.parse_args()
+
+            sys.path.insert(0, "code")
+            from {module_name} import {fn_name} as _gen
+
+            with open("params.json") as f:
+                params = json.load(f)
+
+            prev = [os.path.abspath(p) for p in args.prev_levels]
+            _gen(params, sim_dir=os.getcwd(), level=args.level, prev_levels=prev)
+        ''').format(module_name=module_name, fn_name=fn_name)
+
 
 # ---------------------------------------------------------------------------
 # Queue interfaces
@@ -811,26 +876,42 @@ class DualCondorRunQueue(RunQueue):
 
     Pseudocode for build_worker(sim_name, level):
 
+        # The execute host has NO view of the archive directory. Use
+        # condor file transfer to ferry the per-(sim, level) inputs in
+        # and the level output back. All paths in the worker are
+        # sandbox-relative; condor flattens basenames into cwd.
+
         sd = archive.sim_dir(sim_name)
-        worker = '''
-        #!/usr/bin/env python3
-        import sys
-        sys.path.insert(0, "code")
-        from generator import {entry_callable}
-        import json
-        params = json.loads(open("{sd}/params.json").read())
-        prev = [{prev_paths}]
-        {entry_callable}(params, sim_dir="{sd}", level={lvl}, prev_levels=prev)
-        '''
-        worker_path = '<base>/run_queue/workers/<sim>_lvl<N>.py'
-        write(worker_path, worker)
+
+        # 1) Bootstrap script — written once per archive, reused for
+        #    every (sim, level) job. It expects --sim-name --level
+        #    --prev-levels and reads ./params.json + ./level_<i>.json
+        #    from the sandbox.
+        worker_path = '<base>/run_queue/workers/bootstrap.py'
+        write(worker_path, archive.worker_bootstrap_script())
+
+        # 2) Per-(sim, level) condor submit description.
+        prev_basenames = ['level_{}.json'.format(i) for i in range(1, level)
+                          if (sd / 'level_{}.json'.format(i)).exists()]
+        out_base, out_target = archive.expected_output(sim_name, level)
         sub = build_submit_description(
-            executable=worker_path, log_dir='<base>/run_queue/logs',
-            request_memory=..., transfer_input_files=['code/', f'sims/{sim}/params.json'],
-            transfer_output_files=[f'sims/{sim}/level_{N}.json'],
+            universe='vanilla',
+            executable=worker_path,
+            arguments=['--sim-name', sim_name, '--level', level,
+                       '--prev-levels'] + prev_basenames,
+            transfer_input_files=archive.transfer_input_files_for(sim_name, level),
+            transfer_output_files=[out_base],
+            transfer_output_remaps='"{}={}"'.format(out_base, out_target),
+            should_transfer_files='YES',
+            when_to_transfer_output='ON_EXIT',
+            request_memory=self.request_memory,
+            request_disk=self.request_disk,
+            getenv=os.environ.get('RIFT_GETENV', 'True'),
+            log_dir='<base>/run_queue/logs',
             ...)
-        write(f'<base>/run_queue/submit_files/{sim}_lvl{N}.sub', sub)
-        return submit_path
+        sub_path = '<base>/run_queue/submit_files/{}_lvl{}.sub'.format(sim_name, level)
+        write(sub_path, sub)
+        return sub_path
 
     Pseudocode for submit(sim_names):
 
