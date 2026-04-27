@@ -90,18 +90,21 @@ def main(argv=None):
     needs_work = (row.get("current_level", 0) < args.target_level)
     if needs_work:
         if archive.request_queue is None:
-            # Try to instantiate from the manifest. For a real deployment
-            # this is where DualCondorRequestQueue gets wired up; in the
-            # local-test path the user is expected to attach a queue
-            # before invoking the CLI.
-            print("ERROR: archive has no request_queue attached; "
-                  "the manifest declares request_queue.kind={!r} but "
-                  "no auto-resolve is implemented yet. Attach a queue "
-                  "before running the CLI.".format(
-                      archive.manifest.data.get("request_queue", {}).get("kind")),
-                  file=sys.stderr)
-            return 3
-        archive.request_queue.submit_pending(archive)
+            # Auto-resolve from the manifest's queue config.
+            from RIFT.simulation_manager.database import make_queues_from_manifest
+            try:
+                req_q, run_q = make_queues_from_manifest(archive)
+            except Exception as exc:
+                print("ERROR: could not instantiate queues from manifest: {}"
+                      .format(exc), file=sys.stderr)
+                return 3
+            archive.request_queue = req_q
+            archive.run_queue = run_q
+        try:
+            archive.request_queue.submit_pending(archive)
+        except Exception as exc:
+            print("ERROR: submit_pending failed: {}".format(exc), file=sys.stderr)
+            return 7
 
     if args.mode == "submit_async":
         return 0
