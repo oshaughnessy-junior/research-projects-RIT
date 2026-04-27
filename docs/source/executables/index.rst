@@ -9,6 +9,13 @@ This section documents the core user-facing command-line executables in RIFT.
 
    util_RIFT_pseudo_pipe
    create_event_parameter_pipeline_BasicIteration
+   integrate_likelihood_extrinsic
+   integrate_likelihood_extrinsic_batchmode
+   util_ConstructIntrinsicPosterior_GenericCoordinates
+   plot_posterior_corner
+   util_ManualOverlapGrid
+   convergence_test_samples
+   util_ParameterPuffball
 
 Core Executables Overview
 =========================

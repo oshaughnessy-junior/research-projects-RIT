@@ -15,10 +15,11 @@ Rapid inference via Iterative FiTting: this algorithm provides a framework for e
    architecture
    overview
    installation
+   getting-data
+   data_formats
    using-pipeline
    examples-ini
    examples-noini
-   getting-data
    osg
    injections
    plotting
