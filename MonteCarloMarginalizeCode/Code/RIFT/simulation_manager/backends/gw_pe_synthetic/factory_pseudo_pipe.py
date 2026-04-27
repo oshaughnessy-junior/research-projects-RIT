@@ -155,8 +155,14 @@ def make_factory(*, ini_localizer: Optional[Callable[..., str]] = None
 
 def _render_coinc_xml(params: Dict[str, Any], out_path: Path) -> Path:
     """Build a one-row sim_inspiral table representing the synthetic
-    event and write it as a coinc.xml file consumable by pseudo_pipe.
-    Modeled on `demo/populations/write_mdc.py`."""
+    event and write it as a *plain* coinc.xml file consumable by
+    pseudo_pipe. Modeled on `demo/populations/write_mdc.py`.
+
+    `lalsimutils.ChooseWaveformParams_array_to_xml` writes a gzipped
+    `<prefix>.xml.gz`; pseudo_pipe wants a plain `.xml`, so we
+    decompress here. (Renaming alone doesn't help — the content stays
+    gzipped.)"""
+    import gzip
     import RIFT.lalsimutils as lalsimutils
     import lal
     P = lalsimutils.ChooseWaveformParams()
@@ -175,12 +181,18 @@ def _render_coinc_xml(params: Dict[str, Any], out_path: Path) -> Path:
     if "approximant" in params:
         import lalsimulation as lalsim
         P.approx = lalsim.GetApproximantFromString(str(params["approximant"]))
-    lalsimutils.ChooseWaveformParams_array_to_xml([P], str(out_path).removesuffix(".xml"))
-    # ChooseWaveformParams_array_to_xml writes <prefix>.xml.gz; rename
-    # to plain .xml if needed for pseudo_pipe.
-    written = Path(str(out_path).removesuffix(".xml") + ".xml.gz")
-    if written.exists() and not out_path.exists():
-        shutil.move(str(written), str(out_path))
+
+    out_path = Path(out_path)
+    out_stem = str(out_path).removesuffix(".xml")
+    lalsimutils.ChooseWaveformParams_array_to_xml([P], out_stem)
+    gz_path = Path(out_stem + ".xml.gz")
+    if gz_path.exists():
+        with gzip.open(str(gz_path), "rb") as fin, open(str(out_path), "wb") as fout:
+            shutil.copyfileobj(fin, fout)
+        gz_path.unlink()
+    elif Path(out_stem + ".xml").exists() and Path(out_stem + ".xml") != out_path:
+        # Some lalsimutils versions write plain .xml directly.
+        shutil.move(out_stem + ".xml", str(out_path))
     return out_path
 
 

@@ -197,29 +197,30 @@ Subsequent (not yet agreed):
 
 ## Open per-backend questions (TODO before code)
 
-**Production gap (open): per-event ini localization.** RIFT-style ini
-files are NOT population templates — they carry per-event quantities
-that the framework currently leaves as the user's problem:
+**Per-event ini localization (mostly handled by pseudo_pipe).**
+`util_RIFT_pseudo_pipe.py` auto-localizes priors and analysis
+settings from the supplied `--use-coinc <coinc.xml>` when given a
+*generic* base ini (i.e. one without hard-coded mass/distance/time
+limits). For most production runs nothing extra is needed.
 
-* mass priors (`mc_min`, `mc_max`, `m_min`)
-* fiducial event time (`priors.fiducial_event_time`)
-* sky-position priors / `fix_sky_location`
-* signal `seglen`, `srate`
-* `fmin`
-* spin / precession / eccentricity options
+The factory still exposes an `ini_localizer` hook
+(`(base_ini_path, params, level, out_path) -> Path`) for the cases
+where pseudo_pipe's auto-localization isn't enough:
 
-The `factory_pseudo_pipe` factory exposes an `ini_localizer` hook
-(callable: `(base_ini_path, params, level, out_path) -> Path`). The
-default implementation just copies the base ini through with level-
-scaled `internal-iterations` + `n-eff` layered on top — adequate for
-code-tests, NOT enough for production. Production users must supply
-their own localizer that injects the per-event fields above from the
-archive params. The hook can be wired via:
+* PP-plot studies that need consistent priors across events
+* high-SNR signals with tight prior peaks
+* per-event seglen / fmin overrides for very massive or very low-mass
+  systems
+* spin / precession / eccentricity option toggling per event
+
+The default localizer just copies the base ini through and adds
+level-scaled `internal-iterations` + `n-eff`. Override via:
 * `make_archive(..., ini_localizer=<callable>)` (programmatic)
 * `--ini-localizer module:callable` on the example CLI
-A reference localizer that does the right thing for a typical
-RIT-deployed BBH study is a TODO; current users start by adapting
-their existing per-event ini-rendering helpers.
+
+Practical guidance: start with a generic ini that doesn't hard-code
+mass / distance / time bounds and let pseudo_pipe localize. Reach
+for `ini_localizer` only when one of the bullets above bites.
 
 For backend (1) GW PE synthetic-targeted (resolved):
 * The backend wraps **`util_RIFT_pseudo_pipe`** (single-event entry
