@@ -83,6 +83,15 @@ def RangeWrap1d(bound, val,fn):
 
 
 def ModeToString(pair):
+    """
+    Converts a harmonic mode pair (l, m) into a string representation (e.g., 'l2_m2').
+
+    Args:
+        pair (tuple): A tuple containing (l, m) integers.
+
+    Returns:
+        str: The formatted mode string.
+    """
     return "l"+str(pair[0])+"_m"+str(pair[1]) 
 
 def CreateCompatibleComplexOverlap(hlmf,**kwargs):
@@ -132,23 +141,35 @@ def CreateCompatibleComplexIP(hlmf,**kwargs):
     return IP
 
 class NRError(Exception):
-    """Base class for this module"""
+    """Base exception class for ROMWaveformManager module."""
     pass
 class NRNoSimulation(NRError):
-    """Nothing"""
+    """Exception raised when no known simulation is found for the given parameters."""
     def __init__(self,expr,msg):
         print("No known simulation ", expr, msg)
     pass
 
 def SurrogateDimensionlessBasisFunction(sur,k):    
+    """
+    Creates a basis function w(t) for a surrogate model.
+
+    Args:
+        sur: The surrogate model object containing fit functions.
+        k (int): The index of the basis function.
+
+    Returns:
+        function: A function w(t) that returns the basis function value at time t.
+    """
     def w(t):
         return sur.amp_fit_func(k,t)*np.exp(1j*sur.phase_fit_func(k,t))
 
     return w
 
 def sur_identity(t,hp,hc):
+    """Identity transformation for surrogate output."""
     return t, hp, hc
 def sur_conj(t,hp,hc):
+    """Conjugation transformation for surrogate output (negates hc)."""
     return t, hp, -hc
 
 
