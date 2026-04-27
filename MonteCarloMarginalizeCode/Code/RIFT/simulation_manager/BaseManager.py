@@ -160,10 +160,15 @@ class SimulationArchiveOnLocalDisk(SimulationArchive):
 #   ready        -> registered; nothing submitted yet
 #   submit_ready -> included in a built DAG / submit file
 #   running      -> condor/slurm reports the job is in the queue
-#   complete     -> output file present on disk; archive is final
+#   complete     -> output present and at target level; archive is final
+#   refine_ready -> output exists but more levels were requested; the
+#                   sim is queued for additional refinement work
+#                   (used by the v2 archive design; legacy code that only
+#                   knows the binary 'complete' state can ignore it)
 #   stuck        -> condor/slurm reports failure or output is missing past
 #                   a deadline (manager-defined); manual intervention
-QUEUE_STATES = ('ready', 'submit_ready', 'running', 'complete', 'stuck')
+QUEUE_STATES = ('ready', 'submit_ready', 'running', 'complete',
+                'refine_ready', 'stuck')
 
 
 def append_queue_default(params=None, sim_path=None, sim_meta_path=None,

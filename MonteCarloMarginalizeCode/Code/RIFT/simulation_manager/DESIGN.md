@@ -238,6 +238,79 @@ def same_q(a, b):
 ```
 
 
+## Refinement (iterative improvement)
+
+A simulation is rarely "done" in a binary sense. For GW parameter
+inference the lnL at a single (mc, eta) is computed via a Monte Carlo
+integral; the answer can always be made tighter by running more
+samples. A user might come back and say "this point doesn't have the
+precision I need — improve it."
+
+The archive models this as a `level` counter per sim:
+
+* Each sim has a `target_level` (what's been requested) and a
+  `current_level` (what's been computed). They're both integers,
+  starting at 0.
+* A sim's output is a sequence of per-level files:
+  `sims/<name>/level_1.json`, `level_2.json`, ... Each level is
+  self-contained (or builds on its predecessors — that's the
+  generator's choice).
+* The summarizer can fold all completed levels into a single rolling
+  summary (e.g. weighted average of lnL across levels with errors that
+  shrink with sample count).
+
+The FSM extends:
+
+```
+ready          -> never run, target_level >= 1, current_level == 0
+submit_ready   -> queued for the run system (next level to compute is current_level + 1)
+running        -> a level is being computed
+complete       -> current_level == target_level
+refine_ready   -> output exists (current_level >= 1) but target_level > current_level
+stuck          -> failure
+```
+
+`Archive.register(params, target_level=N)` is *idempotent on bump*:
+- doesn't exist: register fresh with `target_level=N`
+- exists at `current_level >= N`: return name, no work
+- exists at `current_level < N`: bump `target_level` to `max(existing, N)`,
+  transition to `refine_ready`, return name
+
+`Archive.refine(name, target_level=N)` is the explicit form for
+callers that already know the sim_name.
+
+The generator signature is `(params, sim_dir, level, prev_levels)`:
+- `level`: integer, the level being computed right now
+- `prev_levels`: list of paths to outputs from levels 1..level-1, so
+  the generator can read prior work and extend it (e.g. a Monte Carlo
+  generator can accumulate samples from earlier levels)
+
+Each `register_simulation` invocation in the run queue may compute one
+or many levels. The simplest run queue computes one level per submit
+and re-submits the sim for the next level. A smarter run queue might
+batch level-1-through-N for a sim into a single condor job to amortize
+startup cost.
+
+Status records grow a `levels[]` list:
+
+```jsonc
+{
+  "name": "1",
+  "params": {"mc": 25.0, "eta": 0.22},
+  "status": "complete",
+  "target_level": 4,
+  "current_level": 4,
+  "levels": [
+    { "level": 1, "output_path": "sims/1/level_1.json", "completed_at": "..." },
+    { "level": 2, "output_path": "sims/1/level_2.json", "completed_at": "..." },
+    { "level": 3, "output_path": "sims/1/level_3.json", "completed_at": "..." },
+    { "level": 4, "output_path": "sims/1/level_4.json", "completed_at": "..." }
+  ],
+  "summary": { "lnL_mean": -123.4, "lnL_stderr": 0.05, "n_samples": 4000 }
+}
+```
+
+
 ## Two-tier queueing
 
 Two interfaces, composed by the archive. The same archive can mix and
@@ -275,6 +348,120 @@ In a production OSG setup the implementations look like:
 
 The archive composes them and owns the FSM transitions: queue
 implementations *report* state, the archive *applies* it.
+
+
+## Topology: dual condor
+
+A common production setup at OSG is *two condor pools*: a "request"
+pool on a dedicated submit host that runs the long-lived planner DAG,
+and a "run" pool (typically OSG itself, or a remote site) that runs
+the actual workers. The archive doesn't care that both happen to be
+condor — they're configured as two separate `(RequestQueue, RunQueue)`
+instances. Concretely:
+
+```
++-------------------------------+        +---------------------------------+
+| request pool (e.g. CIT submit)|        | run pool (e.g. OSG / remote site)|
+|                               |        |                                  |
+|   meta-DAG                    |        |   sub-DAG (one per scout pass)  |
+|   ┌─────────────┐             |        |   ┌─────────────┐               |
+|   │ scout       │             |        |   │ sim_a lvl 1 │               |
+|   │ (read       │             |        |   │ sim_b lvl 1 │               |
+|   │  archive,   │             |        |   │ sim_c lvl 2 │  (refine)     |
+|   │  pick work) │             |        |   │ sim_a lvl 2 │  (refine)     |
+|   └─────┬───────┘             |        |   └─────┬───────┘               |
+|         │                     |        |         │                       |
+|   ┌─────▼───────┐ -- submit ──┼────────┼──> writes outputs to shared FS  |
+|   │ submit_run  │  via        |        |         │                       |
+|   │ (condor_    │ condor_     |        |   ┌─────▼───────┐               |
+|   │  submit_dag │ submit_dag  |        |   │ workers     │               |
+|   │  -name run) │ -name run   |        |   │ (run gen)   │               |
+|   └─────┬───────┘             |        |   └─────────────┘               |
+|         │                     |        |                                  |
+|   ┌─────▼───────┐             |        +---------------------------------+
+|   │ wait/poll   │ <-- htcondor.Schedd(run_pool).query(...)
+|   │ collect     │
+|   └─────┬───────┘
+|         │
+|   ┌─────▼───────┐
+|   │ iterate     │ -- back to scout
+|   └─────────────┘
++-------------------------------+
+
+                shared filesystem (the archive)
+            <base>/manifest.json, index.jsonl, sims/...
+```
+
+The shared filesystem typically only spans the *submit* nodes of each
+pool (and is most often the same machine for both pools, or two
+machines NFS-cross-mounted). Execute hosts on the run pool — OSG
+machines, leased EC2 nodes, etc. — generally have no view of the
+archive directory. The framework's job is to ferry exactly the files
+each (sim, level) worker needs onto the execute host, run there, and
+ferry the level output back.
+
+### File-transfer model (no shared FS at execute hosts)
+
+Each (sim, level) worker is a self-contained condor job that:
+
+1. **Receives** these files via `transfer_input_files`:
+   * `code/` — the entire frozen code directory (generator,
+     summarizer, etc.). Condor preserves the directory name in the
+     sandbox.
+   * `sims/<name>/params.json` — flattened by condor to `params.json`
+     in the sandbox cwd.
+   * `sims/<name>/level_1.json`, ..., `sims/<name>/level_<N-1>.json` —
+     prior levels needed by an accumulating generator. Condor flattens
+     these to `level_<i>.json` in cwd.
+2. **Runs** a small bootstrap script (also transferred in `code/` or
+   composed inline) that does:
+       sys.path.insert(0, 'code'); from generator import run
+       params = json.load(open('params.json'))
+       run(params, sim_dir=os.getcwd(), level=N, prev_levels=['level_1.json', ...])
+3. **Writes** `level_<N>.json` in cwd.
+4. **Ships** that file back via `transfer_output_files = level_<N>.json`
+   plus `transfer_output_remaps = "level_<N>.json = <abs_path>/sims/<name>/level_<N>.json"`
+   so the file lands at the correct location in the archive on the
+   submit node.
+
+The submit-side helper `Archive.transfer_input_files_for(sim_name,
+level)` returns the input list; `Archive.expected_output(sim_name,
+level)` returns the output basename + remap target.
+
+For very large inputs (NR catalogs, conditioned data) condor's
+`osdf://` URLs are the right escape hatch — same pattern as the
+existing CondorManager's `singularity_image` handling. The framework
+should treat anything beyond a small `params.json + level files` budget
+as a hint to push it through OSDF rather than `transfer_input_files`.
+
+Neither pool talks to the other directly. The submit-side queue
+implementations are responsible for assembling the input set, naming
+the remap, and parsing condor events to know when transfer-back is
+complete. Once the level file exists at its remapped location, the
+archive's existing `refresh_status_from_disk` style sweep promotes the
+sim to `complete` (or to `refine_ready` if more levels remain).
+
+Implementation notes for the dual-condor queue classes:
+
+* `DualCondorRequestQueue` runs on the request pool. Its
+  `submit_pending(archive)` writes a sub-DAG file under
+  `<base>/request_queue/dags/`, the sub-DAG's nodes target the *run*
+  pool via condor's `-name <run_schedd>` argument, and returns the
+  cluster id of the spawned `condor_submit_dag` process.
+* `DualCondorRunQueue` runs on the run pool. Its `build_worker(sim,
+  level)` writes a per-(sim,level) submit description under
+  `<base>/run_queue/submit_files/<sim>_lvl<N>.sub`, with the executable
+  set to a small bootstrap that does:
+    `python -c "from generator import run; run(<params>, <sim_dir>, <level>, <prev>)"`
+  (`generator` is loaded from the frozen `code/` dir).
+* Polling on the request side queries the run pool's schedd:
+  `htcondor.Schedd(<run_pool_collector>).query(...)`. The
+  `_htcondor_module` caching machinery from `CondorManager.py` is
+  reusable as-is.
+
+The `kind` discriminator in the manifest stays as `"condor"` for both
+queue records; the `extra` dict carries the `pool` / `schedd` / DAG
+template differences.
 
 
 ## Lightweight example
