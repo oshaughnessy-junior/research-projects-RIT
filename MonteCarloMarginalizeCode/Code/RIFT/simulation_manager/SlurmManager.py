@@ -40,27 +40,23 @@ if has_slurm_pipeline_static:
         """
         User can specify a
         """
-        def __init__(self,**kwargs):
-            self._internal_build_submit= default_slurm_build_job
+        def __init__(self, **kwargs):
+            self._internal_build_submit = default_slurm_build_job
             self._internal_exe = 'echo'
             self._internal_job = None
+            self._internal_simulations_have_sub_directories = True
             super().__init__(**kwargs)
             if not os.path.exists(self.base_location+"/logs"):
                 os.mkdir(self.base_location + '/logs')
-            # workspace for dags which are building the simulations
+            # workspace for slurm submit scripts
             if not os.path.exists(self.base_location+"/slurm_submit_files/"):
                 os.mkdir(self.base_location + '/slurm_submit_files/')
 
-        def _internal_check_complete(self, params=None, sim_path=None, sim_meta_path=None, sim_annotation=None):
-            if sim_path and os.path.exists(sim_path) and os.path.getsize(sim_path) > 0:
-                return True
-            return False
-
-        def generate_simulation(self, sim_params,**kwargs):
-            self._internal_simulations_have_sub_directories = True 
-            # Create filesystem space, etc
-            super().__init__(**kwargs)
-            print(" NOT YET IMPLEMENTED TO INTERFACE AUTOMATICALLY")
+        def generate_simulation(self, sim_params, **kwargs):
+            # In a slurm-backed archive, 'generate' = 'register'. The
+            # generator runs inside the submitted batch job, not at this
+            # call site. Per-sim subdirectories are forced in __init__.
+            return self.register_simulation(sim_params, **kwargs)
 
         def build_single_job(self, tag=None, **kwargs):
             # Create slurm job to submit *one* simulation - different than what we do otherwise

@@ -47,6 +47,15 @@ import_check:
   script:
     - python .travis/test-all-mod.py
 
+sim_manager_check:
+  stage: unit tests
+  script:
+    # lscsoft-glue is optional; if it installs, the smoke test also exercises
+    # the Condor build_master_job + generate_dag round trip. If it fails to
+    # install, the condor portion of the test simply skips.
+    - python -m pip install lscsoft-glue --break-system-packages || echo "lscsoft-glue unavailable; condor portion will skip"
+    - bash .travis/test-simulation-manager.sh
+
 test_run:
   stage: system tests
   script:
