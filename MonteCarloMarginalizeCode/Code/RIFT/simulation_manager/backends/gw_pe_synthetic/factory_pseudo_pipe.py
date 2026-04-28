@@ -102,8 +102,16 @@ def subdag_factory(archive, sim_name: str, level: int,
     # 2. Stage frames (gwpy noise OR user-provided + injection).
     cache_path = _stage_frames(params, staging / "frames", staging / "data.cache")
 
-    # 3. Stage PSD.
-    psd_path = _stage_psd(params, staging / "psd.xml.gz")
+    # 3. Stage per-IFO PSDs at the conventional names. pseudo_pipe and
+    # the downstream DAG nodes look for `<rundir>/<ifo>-psd.xml.gz`;
+    # we'll copy these into the rundir AFTER pseudo_pipe creates it
+    # (pseudo_pipe hard-fails on existing rundir, so we can't pre-seed).
+    psd_paths = _stage_psd(params, staging)   # {ifo: Path(<ifo>-psd.xml.gz)}
+    # Pick one as pseudo_pipe's --use-online-psd-file argument; the
+    # rendered helper invocation fans it out to --psd-file IFO=<file>
+    # per IFO. The actual per-IFO files are dropped into the rundir
+    # below so downstream DAG nodes find them at conventional paths.
+    psd_pseudo_pipe_arg = next(iter(psd_paths.values()))
 
     # 4. Localize the ini.
     base_ini = params.get("base_ini_path")
@@ -111,16 +119,37 @@ def subdag_factory(archive, sim_name: str, level: int,
     localize = ini_localizer or _default_ini_localizer
     ini_path = Path(localize(base_ini, params, level, str(out_ini)))
 
-    # 5. Invoke pseudo_pipe.
+    # 5. Invoke pseudo_pipe. --fake-data-cache forwards the cache to
+    # helper_LDG_Events as `--cache <path> --fake-data`, which short-
+    # circuits gwdatafind and uses our synthetic frames. Without this,
+    # a base ini referencing real channels would trigger a real-data
+    # fetch and clobber what we wrote.
     cmd = ["util_RIFT_pseudo_pipe.py",
            "--use-ini",              str(ini_path),
            "--use-coinc",            str(coinc_path),
            "--use-rundir",           str(pseudo_pipe_rundir),
-           "--use-online-psd-file",  str(psd_path)]
+           "--use-online-psd-file",  str(psd_pseudo_pipe_arg),
+           "--fake-data-cache",      str(cache_path)]
     extra = params.get("pseudo_pipe_extra_args") or []
     cmd.extend(extra)
     logger.info("running: %s", " ".join(cmd))
     subprocess.run(cmd, check=True, cwd=str(staging))
+
+    # Drop per-IFO PSDs into the rundir at conventional paths. The DAG
+    # nodes pseudo_pipe just wrote will look up <rundir>/<ifo>-psd.xml.gz
+    # at execution time (helper_LDG_Events line 906 hardcodes that
+    # path). pseudo_pipe doesn't add any safety here, so we don't
+    # either — just copy the files.
+    for ifo, src in psd_paths.items():
+        dst = pseudo_pipe_rundir / "{}-psd.xml.gz".format(ifo)
+        try:
+            shutil.copy(str(src), str(dst))
+        except FileNotFoundError:
+            # rundir wasn't created (pseudo_pipe failed before mkdir);
+            # the earlier subprocess.run(check=True) would already have
+            # raised, so we should never get here, but be defensive.
+            logger.warning("rundir %s missing; PSDs not copied", pseudo_pipe_rundir)
+            break
 
     # 6. Locate the .dag pseudo_pipe wrote.
     dag_paths = sorted(pseudo_pipe_rundir.glob("**/*.dag"))
@@ -340,6 +369,7 @@ def _stage_combined_frame_for_ifo(*, ifo: str, channel: str,
     # ---- 2. Signal -------------------------------------------------------
     import RIFT.lalsimutils as lalsimutils
     import lal
+    import lalsimulation as lalsim
     P = lalsimutils.ChooseWaveformParams()
     P.m1 = float(_mass1(params)) * lal.MSUN_SI
     P.m2 = float(_mass2(params)) * lal.MSUN_SI
@@ -349,13 +379,27 @@ def _stage_combined_frame_for_ifo(*, ifo: str, channel: str,
     P.psi = float(params.get("polarization", 0.0))
     P.incl = float(params.get("inclination", 0.0))
     P.tref = float(params.get("geocent_time", 0.0))
+    # Spins. Precessing components default to 0; setting them to params
+    # values is a no-op when absent.
+    P.s1x = float(params.get("s1x", 0.0))
+    P.s1y = float(params.get("s1y", 0.0))
     P.s1z = float(params.get("s1z", 0.0))
+    P.s2x = float(params.get("s2x", 0.0))
+    P.s2y = float(params.get("s2y", 0.0))
     P.s2z = float(params.get("s2z", 0.0))
     P.detector = ifo
     P.deltaT = 1.0 / srate
-    if "approximant" in params:
-        import lalsimulation as lalsim
-        P.approx = lalsim.GetApproximantFromString(str(params["approximant"]))
+    P.fmin = float(params.get("fmin", 20.0))
+    P.fref = float(params.get("fref", P.fmin))
+    # Approximant: default to IMRPhenomXPHM, which handles precessing,
+    # aligned-spin, AND zero-spin uniformly. The lalsimutils default
+    # (TaylorT4 in some versions) is non-spinning and SimInspiralTD
+    # raises XLAL_EINVAL the moment any s1z/s2z is nonzero. Override
+    # via params['approximant'].
+    approx_name = params.get("approximant") or "IMRPhenomXPHM"
+    P.approx = lalsim.GetApproximantFromString(str(approx_name))
+    if "eccentricity" in params:
+        P.eccentricity = float(params["eccentricity"])
     htoft = lalsimutils.hoft(P)
     sig_array = np.asarray(htoft.data.data, dtype=np.float64)
     sig_dt = float(htoft.deltaT)
@@ -396,41 +440,51 @@ def _stage_combined_frame_for_ifo(*, ifo: str, channel: str,
     combined.write(str(frame_path), format="gwf")
 
 
-def _stage_psd(params: Dict[str, Any], out_path: Path) -> Path:
-    """Either copy a user-supplied psd.xml.gz or generate a canonical
-    aLIGO design PSD natively (lalsimulation + lal.series + igwn_ligolw,
-    matching the pattern in `bin/convert_psd_ascii2xml`).
+def _stage_psd(params: Dict[str, Any], staging_dir: Path) -> Dict[str, Path]:
+    """Write one PSD file per IFO at the conventional name
+    `<ifo>-psd.xml.gz` inside `staging_dir`. Returns a dict
+    `{ifo: Path(<staging_dir>/<ifo>-psd.xml.gz)}`. Caller is responsible
+    for delivering these to wherever the DAG nodes will look (typically
+    `<rundir>/<ifo>-psd.xml.gz` after pseudo_pipe creates the rundir).
 
-    Native generation: build one `lal.REAL8FrequencySeries` per IFO
-    sampled from `lalsim.SimNoisePSDaLIGOZeroDetHighPower` (or whichever
-    `psd_function_name` the params name), package via
-    `lal.series.make_psd_xmldoc`, and write via
-    `igwn_ligolw.utils.write_filename`.
+    `psd_source='user'` mode: the user supplies `user_psd_paths` as a
+    `{ifo: path}` dict (preferred) or a single `user_psd_path` that's
+    copied for every IFO. `psd_source='design_aligo'` (default) builds
+    each file natively from `lalsimulation.SimNoisePSDaLIGOZeroDetHighPower`
+    (or whichever `psd_function_name` the params name); the pattern
+    follows `bin/convert_psd_ascii2xml`. No `util_WriteFakePSD.py`
+    shell-out (that script doesn't exist in bin/)."""
+    staging_dir = Path(staging_dir)
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    ifos = params.get("ifos") or ["H1", "L1", "V1"]
 
-    No `util_WriteFakePSD.py` shell-out — that script does not exist in
-    bin/, and going through lal/igwn directly avoids the dependency.
-    """
-    out_path = Path(out_path)
     psd_source = params.get("psd_source", "design_aligo")
     if psd_source == "user":
-        src = params.get("user_psd_path")
-        if not src:
-            raise ValueError("psd_source='user' but no user_psd_path")
-        shutil.copy(src, out_path)
-        return out_path
+        per_ifo = params.get("user_psd_paths") or {}
+        single = params.get("user_psd_path")
+        out: Dict[str, Path] = {}
+        for ifo in ifos:
+            src = per_ifo.get(ifo) or single
+            if not src:
+                raise ValueError(
+                    "psd_source='user' requires user_psd_paths[{}] "
+                    "or a fallback user_psd_path".format(ifo))
+            dst = staging_dir / "{}-psd.xml.gz".format(ifo)
+            shutil.copy(src, dst)
+            out[ifo] = dst
+        return out
 
+    # design_aligo (or other) — generate per-IFO natively.
     import lal
     import lal.series
     import lalsimulation as lalsim
     from igwn_ligolw import utils as ligolw_utils
 
-    ifos = params.get("ifos") or ["H1", "L1", "V1"]
     seglen = float(params.get("seglen", 8.0))
     srate = int(params.get("srate", 4096))
     deltaF = 1.0 / seglen
     f_max = srate / 2.0
-    n = int(round(f_max / deltaF)) + 1   # bins from 0 to fNyq inclusive
-
+    n = int(round(f_max / deltaF)) + 1
     psd_function_name = params.get("psd_function_name",
                                    "SimNoisePSDaLIGOZeroDetHighPower")
     try:
@@ -442,14 +496,12 @@ def _stage_psd(params: Dict[str, Any], out_path: Path) -> Path:
             "SimNoisePSDaLIGODesignSensitivityP1200087, "
             "SimNoisePSDAdvVirgo).".format(psd_function_name)) from exc
 
-    psd_dict = {}
+    out: Dict[str, Path] = {}
     epoch = lal.LIGOTimeGPS(0)
     for ifo in ifos:
         psd_s = lal.CreateREAL8FrequencySeries(
             name=ifo, epoch=epoch, f0=0.0, deltaF=deltaF,
             sampleUnits=lal.SecondUnit, length=n)
-        # Bin 0 (DC) and bin nyquist must be 0 / very large; clamp the rest
-        # to the analytic PSD value.
         for k in range(1, n - 1):
             f = k * deltaF
             try:
@@ -459,29 +511,18 @@ def _stage_psd(params: Dict[str, Any], out_path: Path) -> Path:
             psd_s.data.data[k] = val
         psd_s.data.data[0] = 0.0
         psd_s.data.data[n - 1] = 0.0
-        psd_dict[ifo] = psd_s
-
-    xmldoc = lal.series.make_psd_xmldoc(psd_dict)
-    # Set the document Name attribute to "psd" — pseudo_pipe / lalinference
-    # readers expect this. Mirrors convert_psd_ascii2xml.
-    try:
-        xmldoc.childNodes[0].attributes._attrs = {"Name": "psd"}
-    except Exception:
-        pass
-
-    # File extension drives compression. pseudo_pipe accepts both .xml
-    # and .xml.gz — we follow the user-passed `out_path`. If the path
-    # ends in .gz, write gzipped; otherwise plain.
-    compress = "gz" if str(out_path).endswith(".gz") else False
-    try:
-        if compress:
-            ligolw_utils.write_filename(xmldoc, str(out_path), compress=compress)
-        else:
-            ligolw_utils.write_filename(xmldoc, str(out_path), compress=False)
-    except TypeError:
-        # Older API: `gz` kwarg.
-        ligolw_utils.write_filename(xmldoc, str(out_path), gz=bool(compress))
-    return out_path
+        xmldoc = lal.series.make_psd_xmldoc({ifo: psd_s})
+        try:
+            xmldoc.childNodes[0].attributes._attrs = {"Name": "psd"}
+        except Exception:
+            pass
+        dst = staging_dir / "{}-psd.xml.gz".format(ifo)
+        try:
+            ligolw_utils.write_filename(xmldoc, str(dst), compress="gz")
+        except TypeError:
+            ligolw_utils.write_filename(xmldoc, str(dst), gz=True)
+        out[ifo] = dst
+    return out
 
 
 # ---------------------------------------------------------------------------

@@ -222,6 +222,24 @@ Practical guidance: start with a generic ini that doesn't hard-code
 mass / distance / time bounds and let pseudo_pipe localize. Reach
 for `ini_localizer` only when one of the bullets above bites.
 
+**Real vs. synthetic data semantics.** Anything in the ini that names
+a real channel will trigger `gwdatafind` and pull real frames,
+overriding whatever the factory wrote. For an end-to-end code test
+this is harmless — the framework runs through to a DAG either way.
+For *synthetic-only* runs, pass `--fake-data-cache <cache>` (the
+factory does this automatically when invoking pseudo_pipe). That
+forwards as `--cache <path> --fake-data` to helper_LDG_Events,
+short-circuiting datafind. The channel name itself doesn't have to
+be `FAKE-STRAIN`; pseudo_pipe will use whatever the ini specifies.
+
+**Approximant default.** The factory sets `P.approx = IMRPhenomXPHM`
+unless `params['approximant']` overrides. `IMRPhenomXPHM` handles
+precessing, aligned-spin, and zero-spin uniformly. The lalsimutils
+`ChooseWaveformParams` default is non-spinning (TaylorT4 in some
+versions); `SimInspiralTD` raises `XLAL Error: Non-zero spins were
+given, but this is a non-spinning approximant` the moment any s_iz
+is nonzero, so we override.
+
 For backend (1) GW PE synthetic-targeted (resolved):
 * The backend wraps **`util_RIFT_pseudo_pipe`** (single-event entry
   point), NOT `pp_RIFT_with_ini`. Rationale (Richard, planning):
