@@ -121,8 +121,147 @@
 <h2>Sampling and Jacobians<a class="headerlink" href="#sampling-and-jacobians" title="Link to this heading"></a></h2>
 <p>When changing coordinate systems during sampling, the prior volume must be preserved. The function <code class="docutils literal notranslate"><span class="pre">m1m2chi1chi2Tomu1mu2qchi2Jacobian</span></code> computes the determinant of the transformation Jacobian, allowing the sampler to correctly weight the prior in the $mu$-coordinate space.</p>
 </section>
-<section id="api-reference">
-<h2>API Reference<a class="headerlink" href="#api-reference" title="Link to this heading"></a></h2>
+<section id="module-RIFT.misc.tools">
+<span id="api-reference"></span><h2>API Reference<a class="headerlink" href="#module-RIFT.misc.tools" title="Link to this heading"></a></h2>
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.tools.McqToMtot">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.tools.</span></span><span class="sig-name descname"><span class="pre">McqToMtot</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">Mc</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">q</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.tools.McqToMtot" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.tools.McqTom1m2">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.tools.</span></span><span class="sig-name descname"><span class="pre">McqTom1m2</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">Mc</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">q</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.tools.McqTom1m2" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.tools.Mcqchi1chi2Tomu1mu2mu3">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.tools.</span></span><span class="sig-name descname"><span class="pre">Mcqchi1chi2Tomu1mu2mu3</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">mc</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">q</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">chi1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">chi2</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.tools.Mcqchi1chi2Tomu1mu2mu3" title="Link to this definition"></a></dt>
+<dd><p>chirpmass, q, chi1, chi2 to mu1, mu2, mu3</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.tools.convert_Mcqchi1chi2_to_mu1mu2">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.tools.</span></span><span class="sig-name descname"><span class="pre">convert_Mcqchi1chi2_to_mu1mu2</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">parameters</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.tools.convert_Mcqchi1chi2_to_mu1mu2" title="Link to this definition"></a></dt>
+<dd><p>Convert Mc, q, chi1, chi2 to mu1, mu2 and add them to parameters.</p>
+<section id="parameters">
+<h3>Parameters<a class="headerlink" href="#parameters" title="Link to this heading"></a></h3>
+<p>parameters: dict</p>
+</section>
+<section id="returns">
+<h3>Returns<a class="headerlink" href="#returns" title="Link to this heading"></a></h3>
+<p>converted_parameters: dict</p>
+</section>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.tools.convert_m1m2chi1chi2_to_Mcqmu1mu2">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.tools.</span></span><span class="sig-name descname"><span class="pre">convert_m1m2chi1chi2_to_Mcqmu1mu2</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">parameters</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.tools.convert_m1m2chi1chi2_to_Mcqmu1mu2" title="Link to this definition"></a></dt>
+<dd><p>Convert m1, m2, chi1, chi2 to Mc, q, mu1, mu2 and add them to parameters.</p>
+<section id="id1">
+<h3>Parameters<a class="headerlink" href="#id1" title="Link to this heading"></a></h3>
+<p>parameters: dict</p>
+</section>
+<section id="id2">
+<h3>Returns<a class="headerlink" href="#id2" title="Link to this heading"></a></h3>
+<p>converted_parameters: dict</p>
+</section>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.tools.convert_mu1mu2qchi2_to_Mcchi1">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.tools.</span></span><span class="sig-name descname"><span class="pre">convert_mu1mu2qchi2_to_Mcchi1</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">parameters</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.tools.convert_mu1mu2qchi2_to_Mcchi1" title="Link to this definition"></a></dt>
+<dd><p>Convert mu1, mu2, q, chi2 to Mc, chi1 and add them to parameters.</p>
+<section id="id3">
+<h3>Parameters<a class="headerlink" href="#id3" title="Link to this heading"></a></h3>
+<p>parameters: dict</p>
+</section>
+<section id="id4">
+<h3>Returns<a class="headerlink" href="#id4" title="Link to this heading"></a></h3>
+<p>converted_parameters: dict</p>
+</section>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.tools.etaToq">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.tools.</span></span><span class="sig-name descname"><span class="pre">etaToq</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">eta</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.tools.etaToq" title="Link to this definition"></a></dt>
+<dd><p>eta=m1*m2/(m1+m2)**2 to q=m2/m1</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.tools.m1m2">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.tools.</span></span><span class="sig-name descname"><span class="pre">m1m2</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">Mc</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">eta</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.tools.m1m2" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.tools.m1m2ToMc">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.tools.</span></span><span class="sig-name descname"><span class="pre">m1m2ToMc</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">m1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">m2</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.tools.m1m2ToMc" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.tools.m1m2chi1chi2Tomu1mu2qchi2Jacobian">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.tools.</span></span><span class="sig-name descname"><span class="pre">m1m2chi1chi2Tomu1mu2qchi2Jacobian</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">Mc</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">q</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.tools.m1m2chi1chi2Tomu1mu2qchi2Jacobian" title="Link to this definition"></a></dt>
+<dd><p>Jacobian of the transformation from m1, m2, chi1, chi2 to mu1, mu2, q, chi2</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.tools.mu1mu2etaToMc">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.tools.</span></span><span class="sig-name descname"><span class="pre">mu1mu2etaToMc</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">mu1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mu2</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">eta</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.tools.mu1mu2etaToMc" title="Link to this definition"></a></dt>
+<dd><p>Convert mu1, mu2, eta=m1*m2/(m1+m2)**2 into chirpmass using bisection
+search.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.tools.mu1mu2qchi2ToMcqchi1chi2">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.tools.</span></span><span class="sig-name descname"><span class="pre">mu1mu2qchi2ToMcqchi1chi2</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">mu1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mu2</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">q</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">chi2</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.tools.mu1mu2qchi2ToMcqchi1chi2" title="Link to this definition"></a></dt>
+<dd><p>mu1, mu2, q=m2/m1, chi2 to chirpmass, q, chi1, chi2</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.tools.mu2Mcetachi2Tochi1">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.tools.</span></span><span class="sig-name descname"><span class="pre">mu2Mcetachi2Tochi1</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">mu2</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">Mc</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">eta</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">chi2</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.tools.mu2Mcetachi2Tochi1" title="Link to this definition"></a></dt>
+<dd><p>mu2, chirpmass, eta=m1*m2/(m1+m2)**2, chi2 to chi1</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.tools.psi0">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.tools.</span></span><span class="sig-name descname"><span class="pre">psi0</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">Mc</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.tools.psi0" title="Link to this definition"></a></dt>
+<dd><p>chirpmass to the 0PN phase coefficient</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.tools.psi2">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.tools.</span></span><span class="sig-name descname"><span class="pre">psi2</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">Mc</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">eta</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.tools.psi2" title="Link to this definition"></a></dt>
+<dd><p>chirpmass and eta=m1*m2/(m1+m2)**2 to the 1PN phase coefficient</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.tools.psi3">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.tools.</span></span><span class="sig-name descname"><span class="pre">psi3</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">Mc</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">q</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">a1z</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">a2z</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.tools.psi3" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.tools.qToeta">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.tools.</span></span><span class="sig-name descname"><span class="pre">qToeta</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">q</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.tools.qToeta" title="Link to this definition"></a></dt>
+<dd><p>q=m2/m1 to eta=m1*m2/(m1+m2)**2</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.tools.qa1za2zTobeta">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.tools.</span></span><span class="sig-name descname"><span class="pre">qa1za2zTobeta</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">q</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">a1z</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">a2z</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.tools.qa1za2zTobeta" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.tools.transform_m1m2s1zs2z_mu1mu2qs2z">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.tools.</span></span><span class="sig-name descname"><span class="pre">transform_m1m2s1zs2z_mu1mu2qs2z</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">m1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">m2</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">s1z</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">s2z</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.tools.transform_m1m2s1zs2z_mu1mu2qs2z" title="Link to this definition"></a></dt>
+<dd><p>component masses: m1, m2 and z-components of spins: s1z, s2z to mu1, mu2, q=m2/m1, s2z</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.tools.transform_mu1mu2qs2z_m1m2s1zs2z">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.tools.</span></span><span class="sig-name descname"><span class="pre">transform_mu1mu2qs2z_m1m2s1zs2z</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">mu1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mu2</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">q</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">s2z</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.tools.transform_mu1mu2qs2z_m1m2s1zs2z" title="Link to this definition"></a></dt>
+<dd><p>mu1, mu2, q=m2/m1, z-component of secondary spin to component masses: m1, m2 and z-components of spins: s1z, s2z</p>
+</dd></dl>
+
 </section>
 </section>
 

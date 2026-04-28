@@ -116,8 +116,51 @@ The <code class="docutils literal notranslate"><span class="pre">append_likeliho
 - <code class="docutils literal notranslate"><span class="pre">db_to_samples</span></code>: Efficiently extracts sets of parameters and results from a SQL database, returning them as Python named-tuples.
 - <code class="docutils literal notranslate"><span class="pre">db_identify_param</span></code>: Allows quick lookup of specific process parameters.</p>
 </section>
-<section id="api-reference">
-<h2>API Reference<a class="headerlink" href="#api-reference" title="Link to this heading"></a></h2>
+<section id="module-RIFT.misc.xmlutils">
+<span id="api-reference"></span><h2>API Reference<a class="headerlink" href="#module-RIFT.misc.xmlutils" title="Link to this heading"></a></h2>
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.xmlutils.append_likelihood_result_to_xmldoc">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.xmlutils.</span></span><span class="sig-name descname"><span class="pre">append_likelihood_result_to_xmldoc</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">xmldoc</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">loglikelihood</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">neff</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">converged</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">cols</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.xmlutils.append_likelihood_result_to_xmldoc" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.xmlutils.append_samples_to_xmldoc">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.xmlutils.</span></span><span class="sig-name descname"><span class="pre">append_samples_to_xmldoc</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">xmldoc</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sampdict</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.xmlutils.append_samples_to_xmldoc" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.xmlutils.assign_id">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.xmlutils.</span></span><span class="sig-name descname"><span class="pre">assign_id</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">row</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">i</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.xmlutils.assign_id" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.xmlutils.assign_time">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.xmlutils.</span></span><span class="sig-name descname"><span class="pre">assign_time</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">row</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">t</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.xmlutils.assign_time" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.xmlutils.db_identify_param">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.xmlutils.</span></span><span class="sig-name descname"><span class="pre">db_identify_param</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">db_fname</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">process_id</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">param</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.xmlutils.db_identify_param" title="Link to this definition"></a></dt>
+<dd><p>Extract the event time for a given process ID. This may fail in the case that the event time was not given on the command line (rather in a pointer to a XML file)
+NOTE: This is definitely not the best way to do this.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.xmlutils.db_to_samples">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.xmlutils.</span></span><span class="sig-name descname"><span class="pre">db_to_samples</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">db_fname</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tbltype</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cols</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.xmlutils.db_to_samples" title="Link to this definition"></a></dt>
+<dd><p>Pull samples from db_fname and return object that resembles a row from an XML table.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.xmlutils.likelihood_to_snglinsp_row">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.xmlutils.</span></span><span class="sig-name descname"><span class="pre">likelihood_to_snglinsp_row</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">table</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">loglikelihood</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">neff</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">converged</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">cols</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.xmlutils.likelihood_to_snglinsp_row" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.xmlutils.samples_to_siminsp_row">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.xmlutils.</span></span><span class="sig-name descname"><span class="pre">samples_to_siminsp_row</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">table</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">colmap</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">{}</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">sampdict</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.xmlutils.samples_to_siminsp_row" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
 </section>
 </section>
 

@@ -121,8 +121,56 @@
 2. Applying simulation weights (via <code class="docutils literal notranslate"><span class="pre">RIFT.misc.weight_simulations</span></code>) to calculate a weighted average of the log-likelihoods.
 3. Computing a net uncertainty ($sigma$) for the consolidated entry.</p>
 </section>
-<section id="api-reference">
-<h2>API Reference<a class="headerlink" href="#api-reference" title="Link to this heading"></a></h2>
+<section id="module-RIFT.misc.spokes">
+<span id="api-reference"></span><h2>API Reference<a class="headerlink" href="#module-RIFT.misc.spokes" title="Link to this heading"></a></h2>
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.spokes.ChooseWaveformParams_to_spoke_label">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.spokes.</span></span><span class="sig-name descname"><span class="pre">ChooseWaveformParams_to_spoke_label</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">P</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">digits</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">4</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">is_eccentric</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.spokes.ChooseWaveformParams_to_spoke_label" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.spokes.ChooseWaveformParams_to_spoke_mass">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.spokes.</span></span><span class="sig-name descname"><span class="pre">ChooseWaveformParams_to_spoke_mass</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">P</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">digits</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">4</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.spokes.ChooseWaveformParams_to_spoke_mass" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.spokes.CleanSpokeEntries">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.spokes.</span></span><span class="sig-name descname"><span class="pre">CleanSpokeEntries</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">spoke_entries</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">digits</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">4</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.spokes.CleanSpokeEntries" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.spokes.FitSpokeNearPeak">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.spokes.</span></span><span class="sig-name descname"><span class="pre">FitSpokeNearPeak</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">xvals</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">lnLVals</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">deltaLogL</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">10</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">refinement_scale_min</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.2</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.spokes.FitSpokeNearPeak" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.spokes.Line_to_spoke_entry">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.spokes.</span></span><span class="sig-name descname"><span class="pre">Line_to_spoke_entry</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">line</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">digits</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">4</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">is_eccentric</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.spokes.Line_to_spoke_entry" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.spokes.Line_to_spoke_label">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.spokes.</span></span><span class="sig-name descname"><span class="pre">Line_to_spoke_label</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">line</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">digits</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">4</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">is_eccentric</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.spokes.Line_to_spoke_label" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.spokes.LoadSpokeDAT">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.spokes.</span></span><span class="sig-name descname"><span class="pre">LoadSpokeDAT</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">fname</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">is_eccentric</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.spokes.LoadSpokeDAT" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.spokes.LoadSpokeXML">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.spokes.</span></span><span class="sig-name descname"><span class="pre">LoadSpokeXML</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">fname</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">is_eccentric</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.spokes.LoadSpokeXML" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.spokes.Refine">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.spokes.</span></span><span class="sig-name descname"><span class="pre">Refine</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">xvals</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">lnLVals</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">xmin</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">deltaLogL</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">10</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">npts</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">10</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">refinement_scale_min</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.2</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.spokes.Refine" title="Link to this definition"></a></dt>
+<dd><p>Refine(xvals,lnLVals) takes a 1d grid of lnL(x) and returns a simple grid refinement guess.
+If the maximum is at or very near an edge (1 or two samples).
+Refinement by default fits to top 30%</p>
+</dd></dl>
+
 </section>
 </section>
 

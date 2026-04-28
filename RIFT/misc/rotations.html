@@ -117,8 +117,33 @@
 <li><p><strong>Performance</strong>: The current implementation is non-vectorized, performing transformations in a loop. For large-scale coordinate transformations, using a fully vectorized library like <code class="docutils literal notranslate"><span class="pre">astropy</span></code> is recommended.</p></li>
 </ul>
 </section>
-<section id="api-reference">
-<h2>API Reference<a class="headerlink" href="#api-reference" title="Link to this heading"></a></h2>
+<section id="module-RIFT.misc.sky_rotations">
+<span id="api-reference"></span><h2>API Reference<a class="headerlink" href="#module-RIFT.misc.sky_rotations" title="Link to this heading"></a></h2>
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.sky_rotations.assign_sky_frame">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.sky_rotations.</span></span><span class="sig-name descname"><span class="pre">assign_sky_frame</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">det0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">det1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">theEpochFiducial</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.sky_rotations.assign_sky_frame" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.sky_rotations.rotate_sky_backwards">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.sky_rotations.</span></span><span class="sig-name descname"><span class="pre">rotate_sky_backwards</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">th</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ph</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">frmInverse</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">array([[1.,</span> <span class="pre">0.,</span> <span class="pre">0.],</span> <span class="pre">[0.,</span> <span class="pre">1.,</span> <span class="pre">0.],</span> <span class="pre">[0.,</span> <span class="pre">0.,</span> <span class="pre">1.]])</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.sky_rotations.rotate_sky_backwards" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.sky_rotations.rotate_sky_backwards_scalar">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.sky_rotations.</span></span><span class="sig-name descname"><span class="pre">rotate_sky_backwards_scalar</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">theta</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">phi</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">frmInverse</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">array([[1.,</span> <span class="pre">0.,</span> <span class="pre">0.],</span> <span class="pre">[0.,</span> <span class="pre">1.,</span> <span class="pre">0.],</span> <span class="pre">[0.,</span> <span class="pre">0.,</span> <span class="pre">1.]])</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.sky_rotations.rotate_sky_backwards_scalar" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.sky_rotations.rotate_sky_forwards">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.sky_rotations.</span></span><span class="sig-name descname"><span class="pre">rotate_sky_forwards</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">th</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ph</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">frm</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">array([[1.,</span> <span class="pre">0.,</span> <span class="pre">0.],</span> <span class="pre">[0.,</span> <span class="pre">1.,</span> <span class="pre">0.],</span> <span class="pre">[0.,</span> <span class="pre">0.,</span> <span class="pre">1.]])</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.sky_rotations.rotate_sky_forwards" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.sky_rotations.rotate_sky_forwards_scalar">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.sky_rotations.</span></span><span class="sig-name descname"><span class="pre">rotate_sky_forwards_scalar</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">theta</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">phi</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">frm</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">array([[1.,</span> <span class="pre">0.,</span> <span class="pre">0.],</span> <span class="pre">[0.,</span> <span class="pre">1.,</span> <span class="pre">0.],</span> <span class="pre">[0.,</span> <span class="pre">0.,</span> <span class="pre">1.]])</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.sky_rotations.rotate_sky_forwards_scalar" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
 </section>
 </section>
 

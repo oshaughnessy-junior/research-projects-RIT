@@ -117,8 +117,46 @@ Each simulation is assigned an equal weight ($W_k = 1/N$), treating all runs as 
 <p>$$W_{final} = W_{strategy} times Delta P_k$$</p>
 <p>This ensures that simulations covering larger regions of the intrinsic prior volume contribute proportionally more to the composite result, effectively performing a discrete integration over the prior.</p>
 </section>
-<section id="api-reference">
-<h2>API Reference<a class="headerlink" href="#api-reference" title="Link to this heading"></a></h2>
+<section id="module-RIFT.misc.weight_simulations">
+<span id="api-reference"></span><h2>API Reference<a class="headerlink" href="#module-RIFT.misc.weight_simulations" title="Link to this heading"></a></h2>
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.misc.weight_simulations.AverageSimulationWeights">
+<span class="sig-prename descclassname"><span class="pre">RIFT.misc.weight_simulations.</span></span><span class="sig-name descname"><span class="pre">AverageSimulationWeights</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">param_list</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">length_list</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sigma_list</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">prior_volume_list</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">weight_at_intrinsic</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'sigma'</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.misc.weight_simulations.AverageSimulationWeights" title="Link to this definition"></a></dt>
+<dd><p>AverageSimulationWeights returns the factors W_k appearing in a simple average over
+N simulations, for example for the integral value</p>
+<blockquote>
+<div><p>I = sum_k W_k I_k</p>
+</div></blockquote>
+<dl>
+<dt>For backward compatibility, weights can be chosen that depend on</dt><dd><ul class="simple">
+<li><p>the number of draws for each simulation</p></li>
+<li><p>the variance of each simulation</p></li>
+<li><p>the parameter values of each simulation</p></li>
+<li><p>priors,  <em>if</em> the priors are provided as <em>pre-integrated volumes</em> (i.e., an array,
+one member per simulation).  The user is assumed to have already identified volumes surrounding each simulation and 
+integrated the prior accordingly.  The user is responsible for the (in)accuracy of the resulting average, if the prior and likelihood
+vary significantly versus intrinsic parameters.</p></li>
+</ul>
+</dd>
+<dt>Specific implementations and use cases include:</dt><dd><ul>
+<li><dl class="simple">
+<dt>single ILE run at fixed parameters, with different numbers of draws, either by variance-minimizing</dt><dd><p>I = (sum_k  I_k /sigma_k^2) / sum_k 1/sigma_k^2</p>
+</dd>
+<dt>or by a simple average over the N simulations</dt><dd><p>I = (sum_k  I_k)/N         N=# of simulations</p>
+</dd>
+</dl>
+</li>
+<li><p>multiple ILE runs at different parameters, accounting for an intrinsic prior volume Delta P_k for each simulation
+(normalized relative to the intrinsic prior: sum_k Delta P_k = (prior probability of lying in ellipsoid) &lt;&lt; 1)</p>
+<blockquote>
+<div><p>I =( sum_k I_k Delta P_k /sigma_k^2)/ sum_k 1/sigma_k^2</p>
+</div></blockquote>
+</li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
 </section>
 </section>
 
