@@ -11,6 +11,11 @@ The RIFT physics module provides a set of interfaces to external waveform genera
 1. **LALSimulation Utilities**: The base layer for many waveform calls, providing low-level access to the LAL library.
 2. **GWSignal Interface**: A wrapper around the ``gwsignal`` library, providing a clean interface for high-fidelity waveforms.
 3. **ROM Waveform Manager**: A specialized interface for Reduced Order Models (ROMs) used in high-performance iterative pipelines.
+4. **EOB Tidal External**: Interface to the Bernuzzi EOB model for tidal waveforms, providing high-fidelity tidal effects via external MATLAB code.
+5. **EOB Tidal External C**: C-based implementation of EOB tidal waveforms, offering faster generation without MATLAB dependencies.
+6. **Monotonic Spline**: Utility for creating and evaluating monotonic interpolating splines, used throughout RIFT for waveform and EOS interpolation.
+7. **Precessing Fisher Matrix**: Tools for computing the Fisher information matrix in the presence of precessing spin configurations.
+8. **Effective Fisher**: Efficient Fisher matrix calculations for rapid parameter estimation and covariance estimation.
 
 Conceptual Overview
 -------------------
@@ -50,3 +55,8 @@ For detailed guides on each generator interface, see the following:
    LALSimUtils
    GWSignal
    ROMWaveformManager
+   EOBTidalExternal
+   EOBTidalExternalC
+   MonotonicSpline
+   PrecessingFisherMatrix
+   effectiveFisher
