@@ -165,6 +165,13 @@ def _render_coinc_xml(params: Dict[str, Any], out_path: Path) -> Path:
     ifo, mass1, mass2, spin1z, spin2z, end_time, end_time_ns, snr,
     event_duration, plus the optional eccentricity columns alpha4
     (eccentricity) and alpha (meanPerAno).
+
+    Note on column evolution: recent igwn_ligolw releases have pruned
+    `process_id` from `sngl_inspiral` (process metadata is now treated
+    as document-level, not per-row). We list only the data columns
+    pseudo_pipe actually consumes; any column we name that's been
+    dropped from the schema would raise
+    `igwn_ligolw.ligolw.ElementError: invalid Column ... for Table`.
     """
     from igwn_ligolw import lsctables, ligolw, utils as ligolw_utils
 
@@ -191,20 +198,28 @@ def _render_coinc_xml(params: Dict[str, Any], out_path: Path) -> Path:
     xmldoc = ligolw.Document()
     ll = xmldoc.appendChild(ligolw.LIGO_LW())
 
-    columns = ["process_id", "event_id", "ifo",
+    # Only columns pseudo_pipe actually reads (plus event_id as the
+    # row's primary key — igwn_ligolw still requires it for sngl_*
+    # tables in current versions). NO process_id; recent igwn_ligolw
+    # rejects it as "invalid Column ... for Table 'sngl_inspiral'".
+    columns = ["event_id", "ifo",
                "mass1", "mass2", "spin1z", "spin2z",
                "end_time", "end_time_ns",
                "snr", "event_duration"]
     if has_ecc:
         columns += ["alpha4", "alpha"]   # eccentricity, meanPerAno
-    sngls = lsctables.New(lsctables.SnglInspiralTable, columns)
-    sngls.sync_next_id()
+    sngls = _new_sngl_inspiral_table_safe(lsctables, columns)
     ll.appendChild(sngls)
 
-    for ifo in ifos:
+    for idx, ifo in enumerate(ifos):
         row = sngls.RowType()
-        row.process_id = 0
-        row.event_id = sngls.get_next_id()
+        # Some igwn_ligolw versions return None from get_next_id when
+        # the table has no auto-incrementing peg; fall back to an
+        # integer if so.
+        try:
+            row.event_id = sngls.get_next_id()
+        except Exception:
+            row.event_id = idx
         row.ifo = ifo
         row.mass1 = m1
         row.mass2 = m2
@@ -382,8 +397,20 @@ def _stage_combined_frame_for_ifo(*, ifo: str, channel: str,
 
 
 def _stage_psd(params: Dict[str, Any], out_path: Path) -> Path:
-    """Either copy a user-supplied psd.xml.gz or generate the canonical
-    aLIGO design PSD. The latter follows the helper script in test/pp/."""
+    """Either copy a user-supplied psd.xml.gz or generate a canonical
+    aLIGO design PSD natively (lalsimulation + lal.series + igwn_ligolw,
+    matching the pattern in `bin/convert_psd_ascii2xml`).
+
+    Native generation: build one `lal.REAL8FrequencySeries` per IFO
+    sampled from `lalsim.SimNoisePSDaLIGOZeroDetHighPower` (or whichever
+    `psd_function_name` the params name), package via
+    `lal.series.make_psd_xmldoc`, and write via
+    `igwn_ligolw.utils.write_filename`.
+
+    No `util_WriteFakePSD.py` shell-out — that script does not exist in
+    bin/, and going through lal/igwn directly avoids the dependency.
+    """
+    out_path = Path(out_path)
     psd_source = params.get("psd_source", "design_aligo")
     if psd_source == "user":
         src = params.get("user_psd_path")
@@ -391,22 +418,103 @@ def _stage_psd(params: Dict[str, Any], out_path: Path) -> Path:
             raise ValueError("psd_source='user' but no user_psd_path")
         shutil.copy(src, out_path)
         return out_path
-    # design_aligo path. Generate a standard PSD via lalsimulation +
-    # ligolw. For the prototype we shell out to gen_psd if available;
-    # otherwise we leave a placeholder and pseudo_pipe falls back to
-    # its own internal default.
-    if shutil.which("util_WriteFakePSD.py"):
-        cmd = ["util_WriteFakePSD.py",
-               "--ifo", "H1", "--ifo", "L1", "--ifo", "V1",
-               "--inj-snr", "20.0",
-               "--out-psd-xml", str(out_path)]
-        subprocess.run(cmd, check=True)
-        return out_path
-    logger.warning("util_WriteFakePSD.py not found; pseudo_pipe will fall back "
-                   "to its built-in PSD. Write a psd.xml.gz manually for "
-                   "more control.")
-    out_path.write_text("")  # empty placeholder
+
+    import lal
+    import lal.series
+    import lalsimulation as lalsim
+    from igwn_ligolw import utils as ligolw_utils
+
+    ifos = params.get("ifos") or ["H1", "L1", "V1"]
+    seglen = float(params.get("seglen", 8.0))
+    srate = int(params.get("srate", 4096))
+    deltaF = 1.0 / seglen
+    f_max = srate / 2.0
+    n = int(round(f_max / deltaF)) + 1   # bins from 0 to fNyq inclusive
+
+    psd_function_name = params.get("psd_function_name",
+                                   "SimNoisePSDaLIGOZeroDetHighPower")
+    try:
+        psd_fn = getattr(lalsim, psd_function_name)
+    except AttributeError as exc:
+        raise ValueError(
+            "Unknown psd_function_name {!r}; pick a function name from "
+            "lalsimulation (e.g. SimNoisePSDaLIGOZeroDetHighPower, "
+            "SimNoisePSDaLIGODesignSensitivityP1200087, "
+            "SimNoisePSDAdvVirgo).".format(psd_function_name)) from exc
+
+    psd_dict = {}
+    epoch = lal.LIGOTimeGPS(0)
+    for ifo in ifos:
+        psd_s = lal.CreateREAL8FrequencySeries(
+            name=ifo, epoch=epoch, f0=0.0, deltaF=deltaF,
+            sampleUnits=lal.SecondUnit, length=n)
+        # Bin 0 (DC) and bin nyquist must be 0 / very large; clamp the rest
+        # to the analytic PSD value.
+        for k in range(1, n - 1):
+            f = k * deltaF
+            try:
+                val = psd_fn(f)
+            except Exception:
+                val = 1e-40
+            psd_s.data.data[k] = val
+        psd_s.data.data[0] = 0.0
+        psd_s.data.data[n - 1] = 0.0
+        psd_dict[ifo] = psd_s
+
+    xmldoc = lal.series.make_psd_xmldoc(psd_dict)
+    # Set the document Name attribute to "psd" — pseudo_pipe / lalinference
+    # readers expect this. Mirrors convert_psd_ascii2xml.
+    try:
+        xmldoc.childNodes[0].attributes._attrs = {"Name": "psd"}
+    except Exception:
+        pass
+
+    # File extension drives compression. pseudo_pipe accepts both .xml
+    # and .xml.gz — we follow the user-passed `out_path`. If the path
+    # ends in .gz, write gzipped; otherwise plain.
+    compress = "gz" if str(out_path).endswith(".gz") else False
+    try:
+        if compress:
+            ligolw_utils.write_filename(xmldoc, str(out_path), compress=compress)
+        else:
+            ligolw_utils.write_filename(xmldoc, str(out_path), compress=False)
+    except TypeError:
+        # Older API: `gz` kwarg.
+        ligolw_utils.write_filename(xmldoc, str(out_path), gz=bool(compress))
     return out_path
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _new_sngl_inspiral_table_safe(lsctables, columns):
+    """Wrap `lsctables.New(SnglInspiralTable, columns)` with a fallback
+    that drops columns igwn_ligolw rejects ("invalid Column ... for
+    Table"). The schema has been pruning columns over recent releases
+    (process_id was an early casualty); this lets us be permissive
+    about which exact column list we send rather than re-coding the
+    factory each time."""
+    cols = list(columns)
+    while True:
+        try:
+            return lsctables.New(lsctables.SnglInspiralTable, cols)
+        except Exception as exc:
+            msg = str(exc)
+            if "invalid Column" not in msg:
+                raise
+            # Pull the column name out of the message and drop it.
+            # Format: "invalid Column '<name>' for Table 'sngl_inspiral'"
+            import re
+            m = re.search(r"invalid Column ['\"]?(\w+)['\"]?", msg)
+            if not m:
+                raise
+            bad = m.group(1)
+            if bad not in cols:
+                raise
+            logger.info("dropping unsupported sngl_inspiral column %r "
+                        "(igwn_ligolw rejected it)", bad)
+            cols.remove(bad)
 
 
 def _default_ini_localizer(base_ini_path: Optional[str],
