@@ -197,6 +197,49 @@ Subsequent (not yet agreed):
 
 ## Open per-backend questions (TODO before code)
 
+**Per-event ini localization (mostly handled by pseudo_pipe).**
+`util_RIFT_pseudo_pipe.py` auto-localizes priors and analysis
+settings from the supplied `--use-coinc <coinc.xml>` when given a
+*generic* base ini (i.e. one without hard-coded mass/distance/time
+limits). For most production runs nothing extra is needed.
+
+The factory still exposes an `ini_localizer` hook
+(`(base_ini_path, params, level, out_path) -> Path`) for the cases
+where pseudo_pipe's auto-localization isn't enough:
+
+* PP-plot studies that need consistent priors across events
+* high-SNR signals with tight prior peaks
+* per-event seglen / fmin overrides for very massive or very low-mass
+  systems
+* spin / precession / eccentricity option toggling per event
+
+The default localizer just copies the base ini through and adds
+level-scaled `internal-iterations` + `n-eff`. Override via:
+* `make_archive(..., ini_localizer=<callable>)` (programmatic)
+* `--ini-localizer module:callable` on the example CLI
+
+Practical guidance: start with a generic ini that doesn't hard-code
+mass / distance / time bounds and let pseudo_pipe localize. Reach
+for `ini_localizer` only when one of the bullets above bites.
+
+**Real vs. synthetic data semantics.** Anything in the ini that names
+a real channel will trigger `gwdatafind` and pull real frames,
+overriding whatever the factory wrote. For an end-to-end code test
+this is harmless — the framework runs through to a DAG either way.
+For *synthetic-only* runs, pass `--fake-data-cache <cache>` (the
+factory does this automatically when invoking pseudo_pipe). That
+forwards as `--cache <path> --fake-data` to helper_LDG_Events,
+short-circuiting datafind. The channel name itself doesn't have to
+be `FAKE-STRAIN`; pseudo_pipe will use whatever the ini specifies.
+
+**Approximant default.** The factory sets `P.approx = IMRPhenomXPHM`
+unless `params['approximant']` overrides. `IMRPhenomXPHM` handles
+precessing, aligned-spin, and zero-spin uniformly. The lalsimutils
+`ChooseWaveformParams` default is non-spinning (TaylorT4 in some
+versions); `SimInspiralTD` raises `XLAL Error: Non-zero spins were
+given, but this is a non-spinning approximant` the moment any s_iz
+is nonzero, so we override.
+
 For backend (1) GW PE synthetic-targeted (resolved):
 * The backend wraps **`util_RIFT_pseudo_pipe`** (single-event entry
   point), NOT `pp_RIFT_with_ini`. Rationale (Richard, planning):
