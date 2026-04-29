@@ -50,7 +50,7 @@ The Common Defaults define the environment and hardware requirements that remain
 * **Global Sampler Logic**: Sets the default fitting method (Random Forest) and effective sample target.
 
 .. note::
-   The ``cip`` label maps to command-line arguments for the ``cip`` sampler tool. See :ref:`cip-section`.
+   The ``cip`` label maps to command-line arguments for the ``cip`` sampler tool. See :doc:`../../executables/util_ConstructIntrinsicPosterior_GenericCoordinates`.
    The ``ile`` label maps to command-line arguments for ``integrate_likelihood_extrinsic_batchmode``. See :doc:`../../executables/integrate_likelihood_extrinsic_batchmode`.
 
 2. The Analysis Specification (Physics Layer)
@@ -138,7 +138,7 @@ Label to Argument Mapping (rift.ini)
 
 The authoritative ``rift.ini`` template is located at:
 
-``MonteCarloMarginalizeCode/Code/RIFT/asimov/rift.ini`` in this repository.
+`MonteCarloMarginalizeCode/Code/RIFT/asimov/rift.ini <https://github.com/oshaughnessy-junior/research-projects-rit/blob/main/MonteCarloMarginalizeCode/Code/RIFT/asimov/rift.ini>`_ in this repository.
 
 .. _asimov-rift-example:
 
@@ -210,12 +210,6 @@ Asimov Workflow Execution
       # OR for automated monitoring:
       asimov start
 
-10. **Aggregate results** (after completion):
-
-    .. code-block:: bash
-
-       asimov manage aggregate
-
 This process ensures that infrastructure changes (like upgrading a base container) can be applied globally across all analyses by editing a single defaults file, while physics changes remain isolated to their respective analysis blueprints.
 
 References
@@ -223,9 +217,9 @@ References
 
 * **RIFT GitHub Repository**: `oshaughnessy-junior/research-projects-rit <https://github.com/oshaughnessy-junior/research-projects-rit>`_
 * **ILE (Integrate Likelihood Extrinsic) Documentation**: :doc:`../../executables/integrate_likelihood_extrinsic_batchmode`
-* **CIP Sampler Documentation**: :ref:`cip-section`
+* **CIP Sampler Documentation**: :doc:`../../executables/util_ConstructIntrinsicPosterior_GenericCoordinates`
 * **cbcflow Documentation**: `cbcflow <https://cbc.docs.ligo.org/projects/cbcflow/index.html>`_
 * **Asimov Documentation**: `asimov <https://asimov.docs.ligo.org/asimov/master/index.html>`_
 * **Example YAML Configs**: Refer to Asimov configuration directories for infrastructure and physics blueprints
-* **rift.ini Template**: ``MonteCarloMarginalizeCode/Code/RIFT/asimov/rift.ini``
-* **Authoritative YAML Examples**: ``defaults/``, ``analyses/``, ``precursors/`` directories
+* **rift.ini Template**: `MonteCarloMarginalizeCode/Code/RIFT/asimov/rift.ini <https://github.com/oshaughnessy-junior/research-projects-rit/blob/rift_O4d_junior/MonteCarloMarginalizeCode/Code/RIFT/asimov/rift.ini>`_
+* **Authoritative YAML Examples**: `defaults/ <https://git.ligo.org/asimov/data/-/tree/main/defaults>`_, `analyses/ <https://git.ligo.org/asimov/data/-/tree/main/events>`_, and `precursors/ <https://git.ligo.org/asimov/data/-/tree/main/precursors>`_ directories

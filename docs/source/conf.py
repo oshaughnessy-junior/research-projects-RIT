@@ -67,9 +67,9 @@ html_theme_options = {
     # Toc options
     "collapse_navigation": True,
     "sticky_navigation": True,
-    "navigation_depth": 25,
+    "navigation_depth": 4,
     "includehidden": True,
-    "titles_only": False,
+    "titles_only": True,
 }
 
 # Add any paths that contain custom static files (such as style sheets) here,
