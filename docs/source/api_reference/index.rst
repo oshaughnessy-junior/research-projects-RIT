@@ -42,6 +42,12 @@ Core RIFT Modules
 
 .. toctree::
    :maxdepth: 20
+   :caption: Asimov Interface:
+
+   asimov/index
+
+.. toctree::
+   :maxdepth: 20
    :caption: Calibration Marginalization:
 
    calmarg/index
