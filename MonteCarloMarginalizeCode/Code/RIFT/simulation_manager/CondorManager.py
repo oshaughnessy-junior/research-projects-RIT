@@ -198,7 +198,12 @@ if has_glue_pipeline:
         a sim is complete iff its output file exists and is non-empty.
         We deliberately do NOT consult the schedd here — the schedd tells us
         about *running* jobs, but completion is defined by output on disk
-        (i.e. the worker actually finished and wrote its result)."""
+        (i.e. the worker actually finished and wrote its result).
+
+        TODO: Implement more robust failure detection by scanning .err logs
+        for common crash signatures (e.g., segfaults, OOM) to distinguish
+        between 'stuck' (slow) and 'failed' jobs.
+        """
         try:
             return os.path.exists(sim_path) and os.path.getsize(sim_path) > 0
         except OSError:
