@@ -20,7 +20,7 @@
     <script src="../../_static/js/theme.js"></script>
     <link rel="index" title="Index" href="../../genindex.html" />
     <link rel="search" title="Search" href="../../search.html" />
-    <link rel="next" title="Common Workflows" href="workflows.html" />
+    <link rel="next" title="Asimov + RIFT Workflows" href="workflows.html" />
     <link rel="prev" title="Asimov Interface" href="index.html" /> 
 </head>
 
@@ -65,35 +65,20 @@
 <p class="caption" role="heading"><span class="caption-text">RIFT API Reference:</span></p>
 <ul class="current">
 <li class="toctree-l1 current"><a class="reference internal" href="../index.html">API Reference</a><ul class="current">
-<li class="toctree-l2 current"><a class="reference internal" href="../index.html#core-rift-modules">Core RIFT Modules</a><ul class="current">
-<li class="toctree-l3"><a class="reference internal" href="../integrators/index.html">Integrators (MC Sampling)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../interpolators/index.html">Interpolators (Surrogates)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../likelihood/index.html">Likelihood and Priors</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../physics/index.html">Physics Utilities</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../plot_utilities/index.html">Plot Utilities</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../simulation_manager/index.html">Simulation Manager</a></li>
-<li class="toctree-l3 current"><a class="reference internal" href="index.html">Asimov Interface</a><ul class="current">
-<li class="toctree-l4 current"><a class="current reference internal" href="#">Asimov Use Cases and Mapping</a><ul>
-<li class="toctree-l5"><a class="reference internal" href="#user-facing-use-cases">User-Facing Use Cases</a></li>
-<li class="toctree-l5"><a class="reference internal" href="#writing-a-template-yaml-specification">Writing a Template YAML Specification</a></li>
-<li class="toctree-l5"><a class="reference internal" href="#mapping-to-rift-configuration">Mapping to RIFT Configuration</a></li>
-<li class="toctree-l5"><a class="reference internal" href="#actionable-configuration">Actionable Configuration</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../integrators/index.html">Integrators (MC Sampling)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../interpolators/index.html">Interpolators (Surrogates)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../likelihood/index.html">Likelihood and Priors</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../physics/index.html">Physics Utilities</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../plot_utilities/index.html">Plot Utilities</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../simulation_manager/index.html">Simulation Manager</a></li>
+<li class="toctree-l2 current"><a class="reference internal" href="index.html">Asimov Interface</a><ul class="current">
+<li class="toctree-l3 current"><a class="current reference internal" href="#">Asimov Use Cases and Mapping</a></li>
+<li class="toctree-l3"><a class="reference internal" href="workflows.html">Asimov + RIFT Workflows</a></li>
 </ul>
 </li>
-<li class="toctree-l4"><a class="reference internal" href="workflows.html">Common Workflows</a></li>
-<li class="toctree-l4"><a class="reference internal" href="index.html#overview">Overview</a></li>
-<li class="toctree-l4"><a class="reference internal" href="index.html#api-reference">API Reference</a></li>
-<li class="toctree-l4"><a class="reference internal" href="index.html#asimov-use-case-production-pe">Asimov Use Case: Production PE</a></li>
-<li class="toctree-l4"><a class="reference internal" href="index.html#mapping-the-ledger-to-rift">Mapping the Ledger to RIFT</a></li>
-<li class="toctree-l4"><a class="reference internal" href="index.html#configuration-file-note">Configuration File Note</a></li>
-<li class="toctree-l4"><a class="reference internal" href="index.html#deployment-workflow">Deployment Workflow</a></li>
-</ul>
-</li>
-<li class="toctree-l3"><a class="reference internal" href="../calmarg/index.html">Calibration Marginalization</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../misc/index.html">Misc Utilities</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../lalsimutils.html">LALSimUtils</a></li>
-</ul>
-</li>
+<li class="toctree-l2"><a class="reference internal" href="../calmarg/index.html">Calibration Marginalization</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../misc/index.html">Misc Utilities</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../lalsimutils.html">LALSimUtils</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../index.html#indices-and-tables">Indices and tables</a></li>
@@ -127,9 +112,17 @@
              
   <section id="asimov-use-cases-and-mapping">
 <h1>Asimov Use Cases and Mapping<a class="headerlink" href="#asimov-use-cases-and-mapping" title="Link to this heading"></a></h1>
+<nav class="contents local" id="contents">
+<ul class="simple">
+<li><p><a class="reference internal" href="#user-facing-use-cases" id="id1">User-Facing Use Cases</a></p></li>
+<li><p><a class="reference internal" href="#writing-a-template-yaml-specification" id="id2">Writing a Template YAML Specification</a></p></li>
+<li><p><a class="reference internal" href="#mapping-to-rift-configuration" id="id3">Mapping to RIFT Configuration</a></p></li>
+<li><p><a class="reference internal" href="#actionable-configuration" id="id4">Actionable Configuration</a></p></li>
+</ul>
+</nav>
 <p>This document explains how to construct a YAML production specification for <code class="docutils literal notranslate"><span class="pre">asimov</span></code> and how those values map to the RIFT pipeline.</p>
 <section id="user-facing-use-cases">
-<h2>User-Facing Use Cases<a class="headerlink" href="#user-facing-use-cases" title="Link to this heading"></a></h2>
+<h2><a class="toc-backref" href="#id1" role="doc-backlink">User-Facing Use Cases</a><a class="headerlink" href="#user-facing-use-cases" title="Link to this heading"></a></h2>
 <p>RIFT is integrated into <code class="docutils literal notranslate"><span class="pre">asimov</span></code> to support several primary analysis workflows:</p>
 <ol class="arabic simple">
 <li><p><strong>Production-style PE</strong>: Full-scale parameter estimation runs.</p></li>
@@ -139,7 +132,7 @@
 </ol>
 </section>
 <section id="writing-a-template-yaml-specification">
-<h2>Writing a Template YAML Specification<a class="headerlink" href="#writing-a-template-yaml-specification" title="Link to this heading"></a></h2>
+<h2><a class="toc-backref" href="#id2" role="doc-backlink">Writing a Template YAML Specification</a><a class="headerlink" href="#writing-a-template-yaml-specification" title="Link to this heading"></a></h2>
 <p>A production specification in the <code class="docutils literal notranslate"><span class="pre">asimov</span></code> ledger defines the “what” and “how” of a RIFT run. Below is a simplified example of a production entry:</p>
 <div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">Prod_RIFT_01</span><span class="p">:</span>
 <span class="w">    </span><span class="nt">pipeline</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">rift</span>
@@ -168,18 +161,20 @@
 </div>
 </section>
 <section id="mapping-to-rift-configuration">
-<h2>Mapping to RIFT Configuration<a class="headerlink" href="#mapping-to-rift-configuration" title="Link to this heading"></a></h2>
+<h2><a class="toc-backref" href="#id3" role="doc-backlink">Mapping to RIFT Configuration</a><a class="headerlink" href="#mapping-to-rift-configuration" title="Link to this heading"></a></h2>
 <p>The values defined in the YAML specification are processed by <code class="docutils literal notranslate"><span class="pre">rift.py</span></code> and the <code class="docutils literal notranslate"><span class="pre">rift.ini</span></code> template to produce the final execution environment.</p>
 <p><strong>Mapping Table</strong></p>
 </section>
 <section id="actionable-configuration">
-<h2>Actionable Configuration<a class="headerlink" href="#actionable-configuration" title="Link to this heading"></a></h2>
+<h2><a class="toc-backref" href="#id4" role="doc-backlink">Actionable Configuration</a><a class="headerlink" href="#actionable-configuration" title="Link to this heading"></a></h2>
 <p>When modifying the <code class="docutils literal notranslate"><span class="pre">RIFT/asimov/rift.ini</span></code> template, keep in mind that the low-level code (<code class="docutils literal notranslate"><span class="pre">util_RIFT_pseudo_pipe.py</span></code>) only consumes a subset of the provided keys.</p>
-<p><strong>Priority Actionable Items:</strong>
-* <strong>Approximant and Modes</strong>: Crucial for the underlying waveform generation.
-* <strong>Assumption Flags</strong>: Directly control the physics of the likelihood calculation.
-* <strong>CIP/ILE Parameters</strong>: Control the convergence and efficiency of the sampling process.
-* <strong>Priors</strong>: Ensure the search space is correctly bounded.</p>
+<p><strong>Priority Actionable Items:</strong></p>
+<ul class="simple">
+<li><p><strong>Approximant and Modes</strong>: Crucial for the underlying waveform generation.</p></li>
+<li><p><strong>Assumption Flags</strong>: Directly control the physics of the likelihood calculation.</p></li>
+<li><p><strong>CIP/ILE Parameters</strong>: Control the convergence and efficiency of the sampling process.</p></li>
+<li><p><strong>Priors</strong>: Ensure the search space is correctly bounded.</p></li>
+</ul>
 <p>Everything else in the <code class="docutils literal notranslate"><span class="pre">ini</span></code> file is generally considered boilerplate or legacy filler.</p>
 </section>
 </section>
@@ -189,7 +184,7 @@
           </div>
           <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
         <a href="index.html" class="btn btn-neutral float-left" title="Asimov Interface" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
-        <a href="workflows.html" class="btn btn-neutral float-right" title="Common Workflows" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+        <a href="workflows.html" class="btn btn-neutral float-right" title="Asimov + RIFT Workflows" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
     </div>
 
   <hr/>

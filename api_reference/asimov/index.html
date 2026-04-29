@@ -65,29 +65,20 @@
 <p class="caption" role="heading"><span class="caption-text">RIFT API Reference:</span></p>
 <ul class="current">
 <li class="toctree-l1 current"><a class="reference internal" href="../index.html">API Reference</a><ul class="current">
-<li class="toctree-l2 current"><a class="reference internal" href="../index.html#core-rift-modules">Core RIFT Modules</a><ul class="current">
-<li class="toctree-l3"><a class="reference internal" href="../integrators/index.html">Integrators (MC Sampling)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../interpolators/index.html">Interpolators (Surrogates)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../likelihood/index.html">Likelihood and Priors</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../physics/index.html">Physics Utilities</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../plot_utilities/index.html">Plot Utilities</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../simulation_manager/index.html">Simulation Manager</a></li>
-<li class="toctree-l3 current"><a class="current reference internal" href="#">Asimov Interface</a><ul>
-<li class="toctree-l4"><a class="reference internal" href="use_cases.html">Asimov Use Cases and Mapping</a></li>
-<li class="toctree-l4"><a class="reference internal" href="workflows.html">Common Workflows</a></li>
-<li class="toctree-l4"><a class="reference internal" href="#overview">Overview</a></li>
-<li class="toctree-l4"><a class="reference internal" href="#api-reference">API Reference</a></li>
-<li class="toctree-l4"><a class="reference internal" href="#asimov-use-case-production-pe">Asimov Use Case: Production PE</a></li>
-<li class="toctree-l4"><a class="reference internal" href="#mapping-the-ledger-to-rift">Mapping the Ledger to RIFT</a></li>
-<li class="toctree-l4"><a class="reference internal" href="#configuration-file-note">Configuration File Note</a></li>
-<li class="toctree-l4"><a class="reference internal" href="#deployment-workflow">Deployment Workflow</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../integrators/index.html">Integrators (MC Sampling)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../interpolators/index.html">Interpolators (Surrogates)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../likelihood/index.html">Likelihood and Priors</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../physics/index.html">Physics Utilities</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../plot_utilities/index.html">Plot Utilities</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../simulation_manager/index.html">Simulation Manager</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Asimov Interface</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="use_cases.html">Asimov Use Cases and Mapping</a></li>
+<li class="toctree-l3"><a class="reference internal" href="workflows.html">Asimov + RIFT Workflows</a></li>
 </ul>
 </li>
-<li class="toctree-l3"><a class="reference internal" href="../calmarg/index.html">Calibration Marginalization</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../misc/index.html">Misc Utilities</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../lalsimutils.html">LALSimUtils</a></li>
-</ul>
-</li>
+<li class="toctree-l2"><a class="reference internal" href="../calmarg/index.html">Calibration Marginalization</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../misc/index.html">Misc Utilities</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../lalsimutils.html">LALSimUtils</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../index.html#indices-and-tables">Indices and tables</a></li>
@@ -120,66 +111,12 @@
              
   <section id="asimov-interface">
 <h1>Asimov Interface<a class="headerlink" href="#asimov-interface" title="Link to this heading"></a></h1>
-<p>This section describes the integration of the RIFT pipeline into the <code class="docutils literal notranslate"><span class="pre">asimov</span></code> production framework.</p>
 <div class="toctree-wrapper compound">
-<p class="caption" role="heading"><span class="caption-text">Asimov Interface:</span></p>
 <ul>
-<li class="toctree-l1"><a class="reference internal" href="use_cases.html">Asimov Use Cases and Mapping</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="use_cases.html#user-facing-use-cases">User-Facing Use Cases</a></li>
-<li class="toctree-l2"><a class="reference internal" href="use_cases.html#writing-a-template-yaml-specification">Writing a Template YAML Specification</a></li>
-<li class="toctree-l2"><a class="reference internal" href="use_cases.html#mapping-to-rift-configuration">Mapping to RIFT Configuration</a></li>
-<li class="toctree-l2"><a class="reference internal" href="use_cases.html#actionable-configuration">Actionable Configuration</a></li>
-</ul>
-</li>
-<li class="toctree-l1"><a class="reference internal" href="workflows.html">Common Workflows</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="workflows.html#rift-asimov-workflow">RIFT+Asimov Workflow</a></li>
-<li class="toctree-l2"><a class="reference internal" href="workflows.html#example-of-asimov-rift-full-project-analysis-setup">Example of Asimov+RIFT: Full project + analysis setup</a></li>
-<li class="toctree-l2"><a class="reference internal" href="workflows.html#references">References</a></li>
-</ul>
-</li>
+<li class="toctree-l1"><a class="reference internal" href="use_cases.html">Asimov Use Cases and Mapping</a></li>
+<li class="toctree-l1"><a class="reference internal" href="workflows.html">Asimov + RIFT Workflows</a></li>
 </ul>
 </div>
-<section id="overview">
-<h2>Overview<a class="headerlink" href="#overview" title="Link to this heading"></a></h2>
-<p>The <code class="docutils literal notranslate"><span class="pre">asimov</span></code> interface allows RIFT to be deployed as a production pipeline. This involves a Python wrapper (<code class="docutils literal notranslate"><span class="pre">rift.py</span></code>) and a configuration template (<code class="docutils literal notranslate"><span class="pre">rift.ini</span></code>) that map <code class="docutils literal notranslate"><span class="pre">asimov</span></code> ledger metadata to RIFT-specific execution arguments.</p>
-</section>
-<section id="api-reference">
-<h2>API Reference<a class="headerlink" href="#api-reference" title="Link to this heading"></a></h2>
-<p>The core integration is handled by:</p>
-<ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">RIFT/asimov/rift.py</span></code>: The pipeline class that manages DAG construction, submission, and monitoring.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">RIFT/asimov/rift.ini</span></code>: The Jinja2 template used to generate the runtime configuration.</p></li>
-</ul>
-</section>
-<section id="asimov-use-case-production-pe">
-<h2>Asimov Use Case: Production PE<a class="headerlink" href="#asimov-use-case-production-pe" title="Link to this heading"></a></h2>
-<p>To run RIFT through <code class="docutils literal notranslate"><span class="pre">asimov</span></code>, a user typically defines a production specification in a YAML file (the “ledger”). This specification is then mapped by <code class="docutils literal notranslate"><span class="pre">rift.py</span></code> and <code class="docutils literal notranslate"><span class="pre">rift.ini</span></code> into the final command line arguments for <code class="docutils literal notranslate"><span class="pre">util_RIFT_pseudo_pipe.py</span></code>.</p>
-</section>
-<section id="mapping-the-ledger-to-rift">
-<h2>Mapping the Ledger to RIFT<a class="headerlink" href="#mapping-the-ledger-to-rift" title="Link to this heading"></a></h2>
-<p>The mapping process determines which RIFT flags are set based on the ledger’s <code class="docutils literal notranslate"><span class="pre">meta</span></code> section.</p>
-<p><strong>Key Mapping Examples:</strong></p>
-<ul class="simple">
-<li><p><strong>Waveform Approximant</strong>: The <code class="docutils literal notranslate"><span class="pre">waveform:</span> <span class="pre">approximant</span></code> field in the ledger maps to the <code class="docutils literal notranslate"><span class="pre">--approx</span></code> flag in RIFT.</p></li>
-<li><p><strong>Physics Assumptions</strong>: Fields under <code class="docutils literal notranslate"><span class="pre">likelihood:</span> <span class="pre">assume</span></code> (e.g., <code class="docutils literal notranslate"><span class="pre">no</span> <span class="pre">spin</span></code>, <code class="docutils literal notranslate"><span class="pre">precessing</span></code>, <code class="docutils literal notranslate"><span class="pre">eccentric</span></code>) map to corresponding <code class="docutils literal notranslate"><span class="pre">--assume-xxx</span></code> flags.</p></li>
-<li><p><strong>Sampling Settings</strong>: Fields under <code class="docutils literal notranslate"><span class="pre">sampler:</span> <span class="pre">cip</span></code> (e.g., <code class="docutils literal notranslate"><span class="pre">sampling</span> <span class="pre">method</span></code>) map to <code class="docutils literal notranslate"><span class="pre">cip-sampler-method</span></code> in the <code class="docutils literal notranslate"><span class="pre">ini</span></code> file.</p></li>
-<li><p><strong>Priors</strong>: Prior ranges defined in the ledger are mapped to specific <code class="docutils literal notranslate"><span class="pre">ile-xxx-prior</span></code> settings in the <code class="docutils literal notranslate"><span class="pre">ini</span></code> file.</p></li>
-</ul>
-</section>
-<section id="configuration-file-note">
-<h2>Configuration File Note<a class="headerlink" href="#configuration-file-note" title="Link to this heading"></a></h2>
-<p>It is important to note that the <code class="docutils literal notranslate"><span class="pre">RIFT/asimov/rift.ini</span></code> file contains many legacy or placeholder entries. The actual behavior of the pipeline is determined by which values are explicitly parsed by <code class="docutils literal notranslate"><span class="pre">util_RIFT_pseudo_pipe.py</span></code> and <code class="docutils literal notranslate"><span class="pre">helper_LDG_Events.py</span></code>.</p>
-<p>Users should focus on the <strong>actionable items</strong>—the flags and configuration keys that the low-level RIFT code actually reads—rather than the entirety of the <code class="docutils literal notranslate"><span class="pre">ini</span></code> template.</p>
-</section>
-<section id="deployment-workflow">
-<h2>Deployment Workflow<a class="headerlink" href="#deployment-workflow" title="Link to this heading"></a></h2>
-<ol class="arabic simple">
-<li><p><strong>Define Production</strong>: Create a YAML production spec in the <code class="docutils literal notranslate"><span class="pre">asimov</span></code> ledger.</p></li>
-<li><p><strong>Build</strong>: Run <code class="docutils literal notranslate"><span class="pre">asimov</span> <span class="pre">manage</span> <span class="pre">build</span></code>. The <code class="docutils literal notranslate"><span class="pre">Rift</span></code> pipeline class identifies the production and uses <code class="docutils literal notranslate"><span class="pre">rift.ini</span></code> to generate a specific configuration.</p></li>
-<li><p><strong>Submit</strong>: The <code class="docutils literal notranslate"><span class="pre">Rift</span></code> pipeline calls <code class="docutils literal notranslate"><span class="pre">util_RIFT_pseudo_pipe.py</span></code> to build a Condor DAG and then submits it to the cluster.</p></li>
-<li><p><strong>Monitor</strong>: <code class="docutils literal notranslate"><span class="pre">asimov</span></code> monitors the job status via <code class="docutils literal notranslate"><span class="pre">detect_completion()</span></code>, which looks for the final posterior sample files.</p></li>
-</ol>
-</section>
 </section>
 
 

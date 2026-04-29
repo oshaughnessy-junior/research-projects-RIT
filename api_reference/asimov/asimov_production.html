@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Asimov + RIFT Workflows &mdash; RIFT &#34;2022, Richard O&#39;Shaughnessy et al&#34; documentation</title>
+  <title>RIFT+Asimov: Production Workflow &mdash; RIFT &#34;2022, Richard O&#39;Shaughnessy et al&#34; documentation</title>
       <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=82021441" />
@@ -20,8 +20,8 @@
     <script src="../../_static/js/theme.js"></script>
     <link rel="index" title="Index" href="../../genindex.html" />
     <link rel="search" title="Search" href="../../search.html" />
-    <link rel="next" title="RIFT+Asimov: Simple Workflow" href="asimov_simple.html" />
-    <link rel="prev" title="Asimov Use Cases and Mapping" href="use_cases.html" /> 
+    <link rel="next" title="Calibration Marginalization" href="../calmarg/index.html" />
+    <link rel="prev" title="RIFT+Asimov: Simple Workflow" href="asimov_simple.html" /> 
 </head>
 
 <body class="wy-body-for-nav"> 
@@ -73,9 +73,9 @@
 <li class="toctree-l2"><a class="reference internal" href="../simulation_manager/index.html">Simulation Manager</a></li>
 <li class="toctree-l2 current"><a class="reference internal" href="index.html">Asimov Interface</a><ul class="current">
 <li class="toctree-l3"><a class="reference internal" href="use_cases.html">Asimov Use Cases and Mapping</a></li>
-<li class="toctree-l3 current"><a class="current reference internal" href="#">Asimov + RIFT Workflows</a><ul>
+<li class="toctree-l3 current"><a class="reference internal" href="workflows.html">Asimov + RIFT Workflows</a><ul class="current">
 <li class="toctree-l4"><a class="reference internal" href="asimov_simple.html">RIFT+Asimov: Simple Workflow</a></li>
-<li class="toctree-l4"><a class="reference internal" href="asimov_production.html">RIFT+Asimov: Production Workflow</a></li>
+<li class="toctree-l4 current"><a class="current reference internal" href="#">RIFT+Asimov: Production Workflow</a></li>
 </ul>
 </li>
 </ul>
@@ -104,9 +104,10 @@
       <li><a href="../../index.html" class="icon icon-home" aria-label="Home"></a></li>
           <li class="breadcrumb-item"><a href="../index.html">API Reference</a></li>
           <li class="breadcrumb-item"><a href="index.html">Asimov Interface</a></li>
-      <li class="breadcrumb-item active">Asimov + RIFT Workflows</li>
+          <li class="breadcrumb-item"><a href="workflows.html">Asimov + RIFT Workflows</a></li>
+      <li class="breadcrumb-item active">RIFT+Asimov: Production Workflow</li>
       <li class="wy-breadcrumbs-aside">
-            <a href="../../_sources/api_reference/asimov/workflows.rst.txt" rel="nofollow"> View page source</a>
+            <a href="../../_sources/api_reference/asimov/asimov_production.rst.txt" rel="nofollow"> View page source</a>
       </li>
   </ul>
   <hr/>
@@ -114,33 +115,21 @@
           <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
            <div itemprop="articleBody">
              
-  <section id="asimov-rift-workflows">
-<h1>Asimov + RIFT Workflows<a class="headerlink" href="#asimov-rift-workflows" title="Link to this heading"></a></h1>
-<p>This section outlines the various workflows for deploying RIFT analyses using the Asimov framework.
-It provides guidance for both simple and production-grade analysis setups.</p>
-<div class="toctree-wrapper compound">
+  <section id="rift-asimov-production-workflow">
+<h1>RIFT+Asimov: Production Workflow<a class="headerlink" href="#rift-asimov-production-workflow" title="Link to this heading"></a></h1>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>This section will detail the deployment of RIFT analyses using the <code class="docutils literal notranslate"><span class="pre">asimov</span></code> framework in a production environment.
+Work in Progress.</p>
 </div>
-<section id="references">
-<h2>References<a class="headerlink" href="#references" title="Link to this heading"></a></h2>
-<ul class="simple">
-<li><p><strong>RIFT GitHub Repository</strong>: <a class="reference external" href="https://github.com/oshaughnessy-junior/research-projects-rit">oshaughnessy-junior/research-projects-rit</a></p></li>
-<li><p><strong>ILE (Integrate Likelihood Extrinsic) Documentation</strong>: <a class="reference internal" href="../../executables/integrate_likelihood_extrinsic_batchmode.html"><span class="doc">integrate_likelihood_extrinsic_batchmode</span></a></p></li>
-<li><p><strong>CIP Sampler Documentation</strong>: <a class="reference internal" href="../../executables/util_ConstructIntrinsicPosterior_GenericCoordinates.html"><span class="doc">util_ConstructIntrinsicPosterior_GenericCoordinates</span></a></p></li>
-<li><p><strong>cbcflow Documentation</strong>: <a class="reference external" href="https://cbc.docs.ligo.org/projects/cbcflow/index.html">cbcflow</a></p></li>
-<li><p><strong>Asimov Documentation</strong>: <a class="reference external" href="https://asimov.docs.ligo.org/asimov/master/index.html">asimov</a></p></li>
-<li><p><strong>Example YAML Configs</strong>: Refer to Asimov configuration directories for infrastructure and physics blueprints</p></li>
-<li><p><strong>rift.ini Template</strong>: <code class="docutils literal notranslate"><span class="pre">MonteCarloMarginalizeCode/Code/RIFT/asimov/rift.ini</span></code></p></li>
-<li><p><strong>Authoritative YAML Examples</strong>: <code class="docutils literal notranslate"><span class="pre">defaults/</span></code>, <code class="docutils literal notranslate"><span class="pre">analyses/</span></code>, <code class="docutils literal notranslate"><span class="pre">precursors/</span></code> directories</p></li>
-</ul>
-</section>
 </section>
 
 
            </div>
           </div>
           <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
-        <a href="use_cases.html" class="btn btn-neutral float-left" title="Asimov Use Cases and Mapping" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
-        <a href="asimov_simple.html" class="btn btn-neutral float-right" title="RIFT+Asimov: Simple Workflow" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+        <a href="asimov_simple.html" class="btn btn-neutral float-left" title="RIFT+Asimov: Simple Workflow" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="../calmarg/index.html" class="btn btn-neutral float-right" title="Calibration Marginalization" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
     </div>
 
   <hr/>

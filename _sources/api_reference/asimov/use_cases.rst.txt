@@ -1,6 +1,9 @@
 Asimov Use Cases and Mapping
 ==============================
 
+.. contents::
+   :local:
+
 This document explains how to construct a YAML production specification for ``asimov`` and how those values map to the RIFT pipeline.
 
 User-Facing Use Cases
@@ -79,6 +82,7 @@ Actionable Configuration
 When modifying the ``RIFT/asimov/rift.ini`` template, keep in mind that the low-level code (``util_RIFT_pseudo_pipe.py``) only consumes a subset of the provided keys. 
 
 **Priority Actionable Items:**
+
 * **Approximant and Modes**: Crucial for the underlying waveform generation.
 * **Assumption Flags**: Directly control the physics of the likelihood calculation.
 * **CIP/ILE Parameters**: Control the convergence and efficiency of the sampling process.
