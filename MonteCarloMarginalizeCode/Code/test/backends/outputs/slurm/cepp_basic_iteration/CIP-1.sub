@@ -1,0 +1,21 @@
+#!/bin/bash
+
+#SBATCH --mem=16384M
+#SBATCH --cpus-per-task=4
+#SBATCH --tmp=2048M
+#SBATCH --output=logs/cip-1.out
+#SBATCH --error=logs/cip-1.err
+#SBATCH --job-name=util_ConstructIntrinsicPosterior_GenericCoordinates.py
+#SBATCH --account=ligo.dev.o4.cbc.pe.lalinference
+#SBATCH --partition=compute
+#SBATCH --export=ALL
+
+# Original HTCondor submit-file commands (preserved for reference):
+#   request_memory = 16384M
+#   request_disk = 2048M
+#   request_cpus = 4
+#   getenv = True
+#   accounting_group = ligo.dev.o4.cbc.pe.lalinference
+#   +SlurmPartition = "compute"
+
+exec util_ConstructIntrinsicPosterior_GenericCoordinates.py --input-net=all-iter-1.net --output-file=overlap-grid-2.xml.gz --n-eff 5000

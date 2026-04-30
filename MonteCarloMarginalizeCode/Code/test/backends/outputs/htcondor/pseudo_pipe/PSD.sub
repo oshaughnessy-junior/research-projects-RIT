@@ -1,0 +1,13 @@
+universe = vanilla
+executable = BayesWave
+arguments = --Niter 1000000 --ifo H1 --ifo L1
+log = logs/psd.log
+output = logs/psd.out
+error = logs/psd.err
+request_memory = 8192M
+request_disk = 2048M
+request_cpus = 1
+getenv = True
+accounting_group = ligo.dev.o4.cbc.pe.lalinference
++SlurmPartition = "compute"
+queue 1

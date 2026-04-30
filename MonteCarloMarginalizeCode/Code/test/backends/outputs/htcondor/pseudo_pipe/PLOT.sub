@@ -1,0 +1,9 @@
+universe = vanilla
+executable = plot_posterior_corner.py
+arguments = --posterior-file posterior-final-cal-reweighted.dat
+log = logs/plot.log
+output = logs/plot.out
+error = logs/plot.err
+request_memory = 2048M
+getenv = True
+queue 1

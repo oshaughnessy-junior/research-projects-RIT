@@ -1,0 +1,24 @@
+#!/bin/bash
+
+#SBATCH --mem=8192M
+#SBATCH --cpus-per-task=2
+#SBATCH --gres=gpu:1
+#SBATCH --tmp=1024M
+#SBATCH --array=0-7
+#SBATCH --output=logs/ile-0.$(cluster).$(process).out
+#SBATCH --error=logs/ile-0.$(cluster).$(process).err
+#SBATCH --job-name=integrate_likelihood_extrinsic_batchmode
+#SBATCH --account=ligo.dev.o4.cbc.pe.lalinference
+#SBATCH --partition=gpu
+#SBATCH --export=ALL
+
+# Original HTCondor submit-file commands (preserved for reference):
+#   request_memory = 8192M
+#   request_disk = 1024M
+#   request_cpus = 2
+#   request_gpus = 1
+#   getenv = True
+#   accounting_group = ligo.dev.o4.cbc.pe.lalinference
+#   +SlurmPartition = "gpu"
+
+exec integrate_likelihood_extrinsic_batchmode --inj-xml=overlap-grid-0.xml.gz --output-file=ile-0-$(cluster)-$(process) --event=${SLURM_VAR_EVENT} --time-marginalization --vectorized

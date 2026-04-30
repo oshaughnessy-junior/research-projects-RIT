@@ -1,0 +1,14 @@
+universe = vanilla
+executable = integrate_likelihood_extrinsic_batchmode
+arguments = --inj-xml=overlap-grid-0.xml.gz --output-file=ile-0-$(cluster)-$(process) --event=$(macroevent) --time-marginalization --vectorized
+log = logs/ile-0.$(cluster).$(process).log
+output = logs/ile-0.$(cluster).$(process).out
+error = logs/ile-0.$(cluster).$(process).err
+request_memory = 8192M
+request_disk = 1024M
+request_cpus = 2
+request_gpus = 1
+getenv = True
+accounting_group = ligo.dev.o4.cbc.pe.lalinference
++SlurmPartition = "gpu"
+queue 8

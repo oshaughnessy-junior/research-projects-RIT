@@ -1,0 +1,13 @@
+universe = vanilla
+executable = util_ConstructIntrinsicPosterior_GenericCoordinates.py
+arguments = --input-net=all-iter-0.net --output-file=overlap-grid-1.xml.gz --n-eff 5000
+log = logs/cip-0.log
+output = logs/cip-0.out
+error = logs/cip-0.err
+request_memory = 16384M
+request_disk = 2048M
+request_cpus = 4
+getenv = True
+accounting_group = ligo.dev.o4.cbc.pe.lalinference
++SlurmPartition = "compute"
+queue 1

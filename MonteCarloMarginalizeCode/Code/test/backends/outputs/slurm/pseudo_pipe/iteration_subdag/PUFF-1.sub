@@ -1,0 +1,13 @@
+#!/bin/bash
+
+#SBATCH --mem=1024M
+#SBATCH --output=logs/puff-1.out
+#SBATCH --error=logs/puff-1.err
+#SBATCH --job-name=util_ParameterPuffball.py
+#SBATCH --export=ALL
+
+# Original HTCondor submit-file commands (preserved for reference):
+#   request_memory = 1024M
+#   getenv = True
+
+exec util_ParameterPuffball.py --input=overlap-grid-2.xml.gz --output=overlap-grid-2.xml.gz

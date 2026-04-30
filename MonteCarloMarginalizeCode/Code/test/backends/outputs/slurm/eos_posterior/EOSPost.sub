@@ -1,0 +1,19 @@
+#!/bin/bash
+
+#SBATCH --mem=16384M
+#SBATCH --tmp=1024M
+#SBATCH --output=logs/eospost.out
+#SBATCH --error=logs/eospost.err
+#SBATCH --job-name=util_EOSPosterior.py
+#SBATCH --account=ligo.dev.o4.cbc.pe.lalinference
+#SBATCH --partition=compute
+#SBATCH --export=ALL
+
+# Original HTCondor submit-file commands (preserved for reference):
+#   request_memory = 16384M
+#   request_disk = 1024M
+#   getenv = True
+#   accounting_group = ligo.dev.o4.cbc.pe.lalinference
+#   +SlurmPartition = "compute"
+
+exec util_EOSPosterior.py --input-net=joint.net --output-file=eos-posterior.dat

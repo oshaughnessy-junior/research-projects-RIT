@@ -1,0 +1,9 @@
+universe = vanilla
+executable = /usr/bin/cp
+arguments = overlap-grid.xml.gz overlap-grid-0.xml.gz
+log = logs/init.log
+output = logs/init.out
+error = logs/init.err
+request_memory = 256
+getenv = True
+queue 1

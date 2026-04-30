@@ -1,0 +1,135 @@
+RIFT.misc: pluggable workflow backends (htcondor / glue / slurm)
+
+Replace the glue.pipeline-only RIFT.misc.dag_utils with a backend-neutral
+re-implementation, RIFT.misc.dag_utils_generic, and a registry-based
+backend abstraction so RIFT can drive HTCondor, Slurm, and (legacy)
+glue.pipeline workflows from the same pipeline drivers.
+
+Why
+---
+
+The original dag_utils.py was written directly against glue.pipeline,
+which is part of an older lalsuite/glue stack that:
+
+  * is fragile to install on macOS (and routinely breaks elsewhere),
+  * is no longer actively maintained, and
+  * hard-couples RIFT to HTCondor as the only execution system.
+
+That coupling means RIFT cannot run on Slurm clusters (or PBS / LSF /
+Kubernetes / etc.) without a wholesale rewrite of every pipeline driver
+that emits a DAG.
+
+Architecture
+------------
+
+The new module separates three concerns:
+
+  1. A backend-neutral data model (_GenericJob, _GenericNode, _GenericDAG,
+     _GenericManJob).  These are plain data containers that record
+     everything about a job and its place in a workflow without
+     committing to a particular execution system.  They expose the
+     historical glue.pipeline.CondorDAGJob API (set_sub_file, add_opt,
+     add_arg, add_condor_cmd, _CondorJob__queue, _CondorJob__arguments,
+     ...) as a *facade* so the existing 31 write_*_sub helpers and the
+     bin/ pipeline drivers don't have to change semantically.  Semantic
+     resource concepts (memory, disk, cpus, gpus, runtime_minutes,
+     environment, inherit_environment) are extracted automatically when
+     add_condor_cmd is called with a known key, so non-Condor backends
+     can use them.
+
+  2. A WorkflowBackend ABC with two methods: emit_job(job, path) turns a
+     _GenericJob into the per-system submit description, and
+     emit_dag(dag, path) turns a _GenericDAG into the per-system
+     workflow driver.  Three concrete backends ship in this commit:
+
+       * HTCondorBackend -- uses the modern htcondor python bindings
+         (htcondor.Submit) to validate the submit description; emits
+         .sub files and a DAGMan .dag.
+       * GluePipelineBackend -- legacy fallback that replays the
+         generic spec onto a freshly-constructed
+         glue.pipeline.CondorDAGJob / CondorDAG / ... at emit time.
+         Useful where the htcondor python bindings are unavailable.
+       * SlurmBackend -- emits #SBATCH-prefixed shell scripts and a
+         shell driver that submits jobs in topological order with
+         sbatch --dependency=afterok:JOBID chains.  Maps the structured
+         resource fields to the appropriate SBATCH directives;
+         preserves HTCondor-specific submit-file commands as `#`
+         comments so the information is not silently dropped.
+
+  3. A backend registry: register_backend(), set_backend(),
+     get_backend(), current_backend_name().  Backends are looked up by
+     name.  New backends (PBS, LSF, Kubernetes, ...) can be added by
+     user code with no changes to dag_utils_generic itself.
+
+Selection precedence
+--------------------
+
+  1. set_backend("name") from python (highest priority).
+  2. RIFT_DAG_BACKEND env var: htcondor / glue / slurm / auto / a
+     user-registered name.
+  3. Auto: prefer htcondor python bindings, fall back to glue.pipeline.
+
+Slurm is intentionally never auto-selected: there is no robust pure-
+python "are we on a Slurm cluster" test, so it must be selected
+explicitly.
+
+Ported consumers
+----------------
+
+All RIFT pipeline drivers under MonteCarloMarginalizeCode/Code/bin/
+that imported `from glue import pipeline` or
+`from RIFT.misc.dag_utils ...` have been updated to use
+RIFT.misc.dag_utils_generic and the `pipeline` namespace it exposes.
+Specifically:
+
+  * assess_propose_CIP_convergence_sequence.py
+  * create_CIP_convergence_sequence.py
+  * create_eos_posterior_pipeline
+  * create_event_dag_via_grid
+  * create_event_nr_pipeline_with_cip
+  * create_event_parameter_pipeline_AlternateIteration
+  * create_event_parameter_pipeline_BasicIteration
+  * create_event_parameter_pipeline_BasicMultiApproxIteration
+  * create_ile_sub_dag.py
+  * create_postprocessing_event_dag.py
+  * helper_LDG_Events.py
+  * util_RIFT_MultiMetaPipe.py
+  * util_RIFT_hyperpipe.py
+  * util_RIFT_pseudo_pipe.py
+
+plus plot_BasicIteration.py and test/test_effectiveFisher.py.
+
+The original dag_utils.py is intentionally retained for a deprecation
+window so any out-of-tree caller continues to work; new development
+should target dag_utils_generic.
+
+Test suite
+----------
+
+A new directory MonteCarloMarginalizeCode/Code/test/backends/
+exercises the abstraction at three levels:
+
+  1. test_backends_lowlevel.py -- 15 unittest tests for the data model,
+     registry, custom-backend registration, and per-backend artefact
+     emission (htcondor, glue, slurm).  Provides minimal stubs for
+     `htcondor` and `glue.pipeline` so the suite is runnable on any
+     vanilla python install.
+
+  2. synthesize_pipeline_outputs.py -- a self-contained Python driver
+     that builds workflows analogous to the production pipeline drivers
+     (create_event_parameter_pipeline_BasicIteration,
+     create_eos_posterior_pipeline, util_RIFT_pseudo_pipe.py) and emits
+     them under all three backends.  Runnable without the RIFT science
+     stack.  Outputs land in test/backends/outputs/<backend>/<pipeline>/
+     for side-by-side inspection.
+
+  3. demo_create_event_parameter_pipeline_BasicIteration.sh,
+     demo_create_eos_posterior_pipeline.sh,
+     demo_util_RIFT_pseudo_pipe.sh -- shell drivers that invoke the
+     real production pipeline scripts under each backend, on a host
+     that has lalsimulation / scipy / RIFT installed.  Each script
+     iterates over RIFT_DAG_BACKEND={htcondor,glue,slurm} and writes
+     its artefacts to outputs/<backend>/<pipeline>/.
+
+  4. run_all_backends.sh -- top-level runner that runs (1) and (2)
+     unconditionally and (3) when the science stack is available.

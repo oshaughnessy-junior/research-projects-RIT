@@ -1,0 +1,9 @@
+universe = vanilla
+executable = convergence_test_samples
+arguments = --threshold 0.02
+log = logs/test-1.log
+output = logs/test-1.out
+error = logs/test-1.err
+request_memory = 1024
+getenv = True
+queue 1

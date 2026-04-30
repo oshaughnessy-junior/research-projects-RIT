@@ -1,0 +1,15 @@
+JOB 9cb891b1a572c9590fdf4b9c6d584941 /Users/rossma/RIFT_ralph/MonteCarloMarginalizeCode/Code/test/backends/outputs/glue/eos_posterior/MARG-event-1.sub
+RETRY 9cb891b1a572c9590fdf4b9c6d584941 1
+VARS 9cb891b1a572c9590fdf4b9c6d584941 idx="1"
+JOB 84262fdf204df438a26aa515b55af30d /Users/rossma/RIFT_ralph/MonteCarloMarginalizeCode/Code/test/backends/outputs/glue/eos_posterior/MARG-event-2.sub
+RETRY 84262fdf204df438a26aa515b55af30d 1
+VARS 84262fdf204df438a26aa515b55af30d idx="2"
+JOB 6026f66d3342ee915f75a246ebd5cfab /Users/rossma/RIFT_ralph/MonteCarloMarginalizeCode/Code/test/backends/outputs/glue/eos_posterior/EOSPost.sub
+RETRY 6026f66d3342ee915f75a246ebd5cfab 0
+
+JOB d8e6ba06e2c64455c7f46b0bcbeacce3 /Users/rossma/RIFT_ralph/MonteCarloMarginalizeCode/Code/test/backends/outputs/glue/eos_posterior/TEST.sub
+RETRY d8e6ba06e2c64455c7f46b0bcbeacce3 0
+
+PARENT 9cb891b1a572c9590fdf4b9c6d584941 CHILD 6026f66d3342ee915f75a246ebd5cfab
+PARENT 84262fdf204df438a26aa515b55af30d CHILD 6026f66d3342ee915f75a246ebd5cfab
+PARENT 6026f66d3342ee915f75a246ebd5cfab CHILD d8e6ba06e2c64455c7f46b0bcbeacce3

@@ -1,0 +1,19 @@
+JOB 57ea6a6973a2673e161e5d6f1fbdac39 /Users/rossma/RIFT_ralph/MonteCarloMarginalizeCode/Code/test/backends/outputs/glue/pseudo_pipe/helper.sub
+RETRY 57ea6a6973a2673e161e5d6f1fbdac39 0
+
+JOB f22fe72c41a39c9b4d0bf644201eb6d4 /Users/rossma/RIFT_ralph/MonteCarloMarginalizeCode/Code/test/backends/outputs/glue/pseudo_pipe/PSD.sub
+RETRY f22fe72c41a39c9b4d0bf644201eb6d4 2
+
+SUBDAG EXTERNAL aa909c5f0cd3acf7b75512676bc6438c /Users/rossma/RIFT_ralph/MonteCarloMarginalizeCode/Code/test/backends/outputs/glue/pseudo_pipe/iteration_subdag/marginalize_intrinsic_parameters.dag
+RETRY aa909c5f0cd3acf7b75512676bc6438c 1
+
+JOB 1412d3a85028c0bb84fff719c6a8f2cf /Users/rossma/RIFT_ralph/MonteCarloMarginalizeCode/Code/test/backends/outputs/glue/pseudo_pipe/CalReweight.sub
+RETRY 1412d3a85028c0bb84fff719c6a8f2cf 0
+
+JOB 3858611faed2bc0af7d5cab51703debe /Users/rossma/RIFT_ralph/MonteCarloMarginalizeCode/Code/test/backends/outputs/glue/pseudo_pipe/PLOT.sub
+RETRY 3858611faed2bc0af7d5cab51703debe 0
+
+PARENT 57ea6a6973a2673e161e5d6f1fbdac39 CHILD f22fe72c41a39c9b4d0bf644201eb6d4
+PARENT f22fe72c41a39c9b4d0bf644201eb6d4 CHILD aa909c5f0cd3acf7b75512676bc6438c
+PARENT aa909c5f0cd3acf7b75512676bc6438c CHILD 1412d3a85028c0bb84fff719c6a8f2cf
+PARENT 1412d3a85028c0bb84fff719c6a8f2cf CHILD 3858611faed2bc0af7d5cab51703debe

@@ -1,0 +1,13 @@
+#!/bin/bash
+
+#SBATCH --mem=1024M
+#SBATCH --output=logs/test.out
+#SBATCH --error=logs/test.err
+#SBATCH --job-name=convergence_test_samples
+#SBATCH --export=ALL
+
+# Original HTCondor submit-file commands (preserved for reference):
+#   request_memory = 1024
+#   getenv = True
+
+exec convergence_test_samples --threshold 0.02

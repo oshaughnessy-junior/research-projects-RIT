@@ -1,0 +1,12 @@
+universe = vanilla
+executable = util_EOSPosterior.py
+arguments = --input-net=joint.net --output-file=eos-posterior.dat
+log = logs/eospost.log
+output = logs/eospost.out
+error = logs/eospost.err
+request_memory = 16384M
+request_disk = 1024M
+getenv = True
+accounting_group = ligo.dev.o4.cbc.pe.lalinference
++SlurmPartition = "compute"
+queue 1

@@ -1,0 +1,11 @@
+universe = local
+executable = helper_LDG_Events.py
+arguments = " --event-time 1187008882.4 --use-coinc event-1.net --manual-ifo-list H1,L1 "
+request_memory = 2048M
+getenv = True
+accounting_group = ligo.dev.o4.cbc.pe.lalinference
+log = logs/helper.log
+error = logs/helper.err
+output = logs/helper.out
+notification = never
+queue 1

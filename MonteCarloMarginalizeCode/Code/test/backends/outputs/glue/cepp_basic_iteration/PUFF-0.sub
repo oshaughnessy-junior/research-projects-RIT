@@ -1,0 +1,10 @@
+universe = vanilla
+executable = util_ParameterPuffball.py
+arguments = " --input overlap-grid-1.xml.gz --output overlap-grid-1.xml.gz "
+request_memory = 1024M
+getenv = True
+log = logs/puff-0.log
+error = logs/puff-0.err
+output = logs/puff-0.out
+notification = never
+queue 1

@@ -1,0 +1,13 @@
+#!/bin/bash
+
+#SBATCH --mem=256M
+#SBATCH --output=logs/init.out
+#SBATCH --error=logs/init.err
+#SBATCH --job-name=cp
+#SBATCH --export=ALL
+
+# Original HTCondor submit-file commands (preserved for reference):
+#   request_memory = 256
+#   getenv = True
+
+exec /usr/bin/cp overlap-grid.xml.gz overlap-grid-0.xml.gz

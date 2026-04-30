@@ -1,0 +1,20 @@
+#!/bin/bash
+
+#SBATCH --mem=8192M
+#SBATCH --tmp=1024M
+#SBATCH --array=0-3
+#SBATCH --output=logs/marg-event-1.out
+#SBATCH --error=logs/marg-event-1.err
+#SBATCH --job-name=util_ConstructIntrinsicPosterior_GenericCoordinates.py
+#SBATCH --account=ligo.dev.o4.cbc.pe.lalinference
+#SBATCH --partition=compute
+#SBATCH --export=ALL
+
+# Original HTCondor submit-file commands (preserved for reference):
+#   request_memory = 8192M
+#   request_disk = 1024M
+#   getenv = True
+#   accounting_group = ligo.dev.o4.cbc.pe.lalinference
+#   +SlurmPartition = "compute"
+
+exec util_ConstructIntrinsicPosterior_GenericCoordinates.py --input-net=event-1.net --output-file=marg-event-1.dat --idx=${SLURM_VAR_IDX}

@@ -1,0 +1,35 @@
+JOB aea773fa3cd4a83d694a7aa42667fb1a /Users/rossma/RIFT_ralph/MonteCarloMarginalizeCode/Code/test/backends/outputs/glue/pseudo_pipe/iteration_subdag/init.sub
+RETRY aea773fa3cd4a83d694a7aa42667fb1a 0
+
+JOB da3f528cd40cf37d6c320d6397d3c24c /Users/rossma/RIFT_ralph/MonteCarloMarginalizeCode/Code/test/backends/outputs/glue/pseudo_pipe/iteration_subdag/ILE-0.sub
+RETRY da3f528cd40cf37d6c320d6397d3c24c 2
+VARS da3f528cd40cf37d6c320d6397d3c24c event="0"
+JOB b533ffd6952892be686ee24408252419 /Users/rossma/RIFT_ralph/MonteCarloMarginalizeCode/Code/test/backends/outputs/glue/pseudo_pipe/iteration_subdag/CIP-0.sub
+RETRY b533ffd6952892be686ee24408252419 1
+
+JOB 90535577ab9f30f123cc11ca8b3b7415 /Users/rossma/RIFT_ralph/MonteCarloMarginalizeCode/Code/test/backends/outputs/glue/pseudo_pipe/iteration_subdag/TEST-0.sub
+RETRY 90535577ab9f30f123cc11ca8b3b7415 0
+
+JOB 81c295f4d2bad1d3a136cef6f6d9d152 /Users/rossma/RIFT_ralph/MonteCarloMarginalizeCode/Code/test/backends/outputs/glue/pseudo_pipe/iteration_subdag/PUFF-0.sub
+RETRY 81c295f4d2bad1d3a136cef6f6d9d152 0
+
+JOB 97090073b04fac70b56080c49c57ce63 /Users/rossma/RIFT_ralph/MonteCarloMarginalizeCode/Code/test/backends/outputs/glue/pseudo_pipe/iteration_subdag/ILE-1.sub
+RETRY 97090073b04fac70b56080c49c57ce63 2
+VARS 97090073b04fac70b56080c49c57ce63 event="1"
+JOB f46b88b740073942b1d623a12ffd7f9a /Users/rossma/RIFT_ralph/MonteCarloMarginalizeCode/Code/test/backends/outputs/glue/pseudo_pipe/iteration_subdag/CIP-1.sub
+RETRY f46b88b740073942b1d623a12ffd7f9a 1
+
+JOB 92292a2a35653f01ab85ce8d04494706 /Users/rossma/RIFT_ralph/MonteCarloMarginalizeCode/Code/test/backends/outputs/glue/pseudo_pipe/iteration_subdag/TEST-1.sub
+RETRY 92292a2a35653f01ab85ce8d04494706 0
+
+JOB 0afc7bd0c7ad98e0ff3742cc0427d7cc /Users/rossma/RIFT_ralph/MonteCarloMarginalizeCode/Code/test/backends/outputs/glue/pseudo_pipe/iteration_subdag/PUFF-1.sub
+RETRY 0afc7bd0c7ad98e0ff3742cc0427d7cc 0
+
+PARENT aea773fa3cd4a83d694a7aa42667fb1a CHILD da3f528cd40cf37d6c320d6397d3c24c
+PARENT da3f528cd40cf37d6c320d6397d3c24c CHILD b533ffd6952892be686ee24408252419
+PARENT b533ffd6952892be686ee24408252419 CHILD 90535577ab9f30f123cc11ca8b3b7415
+PARENT 90535577ab9f30f123cc11ca8b3b7415 CHILD 81c295f4d2bad1d3a136cef6f6d9d152
+PARENT 81c295f4d2bad1d3a136cef6f6d9d152 CHILD 97090073b04fac70b56080c49c57ce63
+PARENT 97090073b04fac70b56080c49c57ce63 CHILD f46b88b740073942b1d623a12ffd7f9a
+PARENT f46b88b740073942b1d623a12ffd7f9a CHILD 92292a2a35653f01ab85ce8d04494706
+PARENT 92292a2a35653f01ab85ce8d04494706 CHILD 0afc7bd0c7ad98e0ff3742cc0427d7cc

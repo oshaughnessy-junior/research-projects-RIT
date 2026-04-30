@@ -1,0 +1,12 @@
+universe = vanilla
+executable = util_ConstructIntrinsicPosterior_GenericCoordinates.py
+arguments = --input-net=event-2.net --output-file=marg-event-2.dat --idx=$(macroidx)
+log = logs/marg-event-2.log
+output = logs/marg-event-2.out
+error = logs/marg-event-2.err
+request_memory = 8192M
+request_disk = 1024M
+getenv = True
+accounting_group = ligo.dev.o4.cbc.pe.lalinference
++SlurmPartition = "compute"
+queue 4
