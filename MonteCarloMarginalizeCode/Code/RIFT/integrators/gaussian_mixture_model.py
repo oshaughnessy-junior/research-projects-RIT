@@ -13,11 +13,42 @@ from six.moves import range
 
 import numpy as np
 from scipy.stats import multivariate_normal,norm
+
+
+# 1. Try to find the legacy mvnun in known locations
 try:
-    from scipy.stats._mvn import mvnun # integrates multivariate normal distributions in rectangular domains - used for normalization
-except:
-    from scipy.stats.mvn import mvnun # integrates multivariate normal distributions in rectangular domains - used for normalization
-    #   warning: previously scipy.stats.mvn.
+    from scipy.stats.mvn import mvnun
+    _ORIGINAL_AVAILABLE = True
+except (ImportError, AttributeError):
+    try:
+        from scipy.stats._mvn import mvnun
+        _ORIGINAL_AVAILABLE = True
+    except (ImportError, AttributeError):
+        _ORIGINAL_AVAILABLE = False
+
+if not _ORIGINAL_AVAILABLE:
+    def mvnun(lower, upper, mean, cov, maxpts=None, abseps=1e-5, releps=1e-5):
+        """
+        Modern fallback for scipy.stats.mvn.mvnun using multivariate_normal.cdf.
+        Requires SciPy 1.10.0+ for the 'lower_limit' parameter.
+        """
+        dim = len(mean)
+        if maxpts is None:
+            maxpts = 2000 * dim
+            
+        p = multivariate_normal.cdf(
+            x=upper,
+            mean=mean,
+            cov=cov,
+            lower_limit=lower,
+            maxpts=maxpts,
+            abseps=abseps,
+            releps=releps
+        )
+        # Return probability and a '0' for success (mimicking legacy API)
+        return p, 0
+
+        
 #from scipy.misc import logsumexp
 from scipy.special import logsumexp
 from . import multivariate_truncnorm as truncnorm

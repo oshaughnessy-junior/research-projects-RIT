@@ -40,22 +40,23 @@ if has_slurm_pipeline_static:
         """
         User can specify a
         """
-        def __init__(self,**kwargs):
-            self._internal_build_submit= default_slurm_build_job
+        def __init__(self, **kwargs):
+            self._internal_build_submit = default_slurm_build_job
             self._internal_exe = 'echo'
             self._internal_job = None
+            self._internal_simulations_have_sub_directories = True
             super().__init__(**kwargs)
             if not os.path.exists(self.base_location+"/logs"):
                 os.mkdir(self.base_location + '/logs')
-            # workspace for dags which are building the simulations
+            # workspace for slurm submit scripts
             if not os.path.exists(self.base_location+"/slurm_submit_files/"):
                 os.mkdir(self.base_location + '/slurm_submit_files/')
 
-        def generate_simulation(self, sim_params,**kwargs):
-            self._internal_simulations_have_sub_directories = True 
-            # Create filesystem space, etc
-            super().__init__(**kwargs)
-            print(" NOT YET IMPLEMENTED TO INTERFACE AUTOMATICALLY")
+        def generate_simulation(self, sim_params, **kwargs):
+            # In a slurm-backed archive, 'generate' = 'register'. The
+            # generator runs inside the submitted batch job, not at this
+            # call site. Per-sim subdirectories are forced in __init__.
+            return self.register_simulation(sim_params, **kwargs)
 
         def build_single_job(self, tag=None, **kwargs):
             # Create slurm job to submit *one* simulation - different than what we do otherwise
@@ -71,6 +72,34 @@ if has_slurm_pipeline_static:
             print(str(ile_job))
             with open(self.base_location+"/slurm_submit_files/" + ile_job_name, 'w') as f:
                 f.write(str(ile_job)) # should work
+
+        def build_array_job(self, tag=None, array_range=None, exe=None, arg_str=None, slurm_args=None, **kwargs):
+            """
+            Builds a Slurm array job script.
+            array_range: e.g., '0-99'
+            """
+            log_dir = self.base_location + "/logs"
+            build_args = {}
+            build_args.update(kwargs)
+            
+            if slurm_args is None:
+                slurm_args = {}
+            if array_range:
+                slurm_args['array'] = array_range
+            
+            # Pass the updated slurm_args to the builder
+            ile_job, ile_job_name = self._internal_build_submit(
+                tag=tag, 
+                log_dir=log_dir, 
+                exe=exe, 
+                arg_str=arg_str, 
+                slurm_args=slurm_args, 
+                **build_args
+            )
+            
+            self._internal_job = ile_job
+            with open(self.base_location+"/slurm_submit_files/" + ile_job_name, 'w') as f:
+                f.write(str(ile_job))
 
 
 if __name__ == "__main__":

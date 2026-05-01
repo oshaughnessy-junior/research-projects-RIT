@@ -10,9 +10,11 @@
 # add these directories to sys.path here. If the directory is relative to the
 # documentation root, use os.path.abspath to make it absolute, like shown here.
 #
-# import os
-# import sys
-# sys.path.insert(0, os.path.abspath('.'))
+import os
+import sys
+# Add RIFT module path for autodoc
+sys.path.insert(0, os.path.abspath('../../MonteCarloMarginalizeCode/Code'))
+
 import sphinx_rtd_theme
 
 # -- Project information -----------------------------------------------------
@@ -35,9 +37,9 @@ master_doc = "index"
 
 extensions = ["sphinx.ext.autodoc",
               "sphinx_rtd_theme",
-              "sphinx_tabs.tabs",
+              #"sphinx_tabs.tabs",
               "sphinx_multiversion",
-              "sphinx_toolbox.collapse"
+              #"sphinx_toolbox.collapse"
 ]
 
 # Add any paths that contain templates here, relative to this directory.
@@ -65,9 +67,9 @@ html_theme_options = {
     # Toc options
     "collapse_navigation": True,
     "sticky_navigation": True,
-    "navigation_depth": 25,
+    "navigation_depth": 4,
     "includehidden": True,
-    "titles_only": False,
+    "titles_only": True,
 }
 
 # Add any paths that contain custom static files (such as style sheets) here,
