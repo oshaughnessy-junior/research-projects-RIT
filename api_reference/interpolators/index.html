@@ -15,8 +15,8 @@
       <script src="../../_static/jquery.js?v=5d32c60e"></script>
       <script src="../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
       <script src="../../_static/documentation_options.js?v=911654a9"></script>
-      <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
-      <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
+      <script src="../../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../_static/js/theme.js"></script>
     <link rel="index" title="Index" href="../../genindex.html" />
     <link rel="search" title="Search" href="../../search.html" />
@@ -236,7 +236,7 @@ Critical for iterative evaluation of</p>
 <span id="basic-gp"></span><h2>Basic GP<a class="headerlink" href="#module-RIFT.interpolators.gp" title="Link to this heading"></a></h2>
 <dl class="py class">
 <dt class="sig sig-object py" id="RIFT.interpolators.gp.GaussianProcess1d">
-<span class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></span><span class="sig-prename descclassname"><span class="pre">RIFT.interpolators.gp.</span></span><span class="sig-name descname"><span class="pre">GaussianProcess1d</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">dat1d</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sigma0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sigmab</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1e-05</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">h</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.interpolators.gp.GaussianProcess1d" title="Link to this definition"></a></dt>
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">RIFT.interpolators.gp.</span></span><span class="sig-name descname"><span class="pre">GaussianProcess1d</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">dat1d</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sigma0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sigmab</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1e-05</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">h</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.interpolators.gp.GaussianProcess1d" title="Link to this definition"></a></dt>
 <dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></p>
 <p>Very simple gaussian process model. Does not take into account errors that vary with position.</p>
 <dl class="py method">
@@ -276,7 +276,7 @@ gaussian process code.</p>
 book on Gaussian Processes and Machine Learning.</p>
 <dl class="py function">
 <dt class="sig sig-object py" id="RIFT.interpolators.internal_GP.GP_fit_function">
-<span class="sig-prename descclassname"><span class="pre">RIFT.interpolators.internal_GP.</span></span><span class="sig-name descname"><span class="pre">GP_fit_function</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">x_train</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">y_train</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">thetas</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">white_noise</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">kernel_function</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">&lt;function</span> <span class="pre">compact_kernel&gt;</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">**kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.interpolators.internal_GP.GP_fit_function" title="Link to this definition"></a></dt>
+<span class="sig-prename descclassname"><span class="pre">RIFT.interpolators.internal_GP.</span></span><span class="sig-name descname"><span class="pre">GP_fit_function</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">x_train</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">y_train</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">thetas</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">white_noise</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">kernel_function=&lt;function</span> <span class="pre">compact_kernel&gt;</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">**kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.interpolators.internal_GP.GP_fit_function" title="Link to this definition"></a></dt>
 <dd><dl class="simple">
 <dt>Objective: return a function which can sample the distribution</dt><dd><p>with only the test inputs as an input.
 This function only needs to return a mean.</p>
