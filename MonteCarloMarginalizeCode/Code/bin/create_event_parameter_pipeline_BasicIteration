@@ -113,6 +113,7 @@ def parse_ile_args_lazy(my_arg_str,key_target):
     matches = [x for x in str_split if x.startswith(key_target)]
     print(matches)
     return matches[-1].split(' ')[1]
+
                 
 def parse_ile_args_for_bw(my_arg_str):
     """
@@ -938,8 +939,9 @@ if opts.condor_containerize_nonworker and singularity_image:
 unify_job.write_sub_file()
 
 
+# Evidence job
 exe_evidence = which('util_CIPDirSummarizeEvidence.py')
-evidence_job, evidence_job_name = dag_utils.write_convert_sub(tag='evidence', exe=exe_evidence, log_dir='', file_input='',  arg_str=" --cip-dir iteration_$(macroiteration)_cip --output evidence_$(macroiteration) ",  universe=local_worker_universe, no_grid=True)
+evidence_job, evidence_job_name = dag_utils.write_convert_sub(tag='evidence', exe=exe_evidence, log_dir='', file_input='',  arg_str=" --cip-dir iteration_$(macroiteration)_cip --output evidence_$(macroiteration) ",  universe=local_worker_universe, no_grid=no_worker_grid)
 evidence_job.add_condor_cmd("initialdir",opts.working_directory)
 evidence_job.set_log_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/evidence-$(cluster)-$(process).log")
 evidence_job.set_stderr_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/evidence-$(cluster)-$(process).err")
@@ -1473,7 +1475,9 @@ for it in np.arange(it_start,opts.n_iterations):
     unify_node.add_macro("macroiteration",it)
     unify_node.add_parent(con_node)
     unify_node.set_retry(opts.general_retries)
-    unify_node_list.append(unify_node)
+    if not(it ==0) and not(opts.first_iteration_jumpstart):  # don't require first composite to be nonempty if we are running a jumpstart!
+        unify_node_list.append(unify_node)
+        
     # Create evidence job. ALWAYS HAS con_node as parent, guarantees it happens at the right time, same time as unify, NO CHILDREN.
     # It is also *backward looking*
     evidence_node = pipeline.CondorDAGNode(evidence_job)

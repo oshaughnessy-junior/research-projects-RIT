@@ -1,5 +1,48 @@
-0.0.18.0
 
+0.0.18.0
+------------
+development tree is rift_O4d.
+  - CIP hyperpipe improvements (initialize_me; enable population and EOS params in using_eos file with arbitrary
+    labelled parameters); CIP xgboost gp fit (from Aasim); install make 'precession' optional; see also 0.0.17.4rc0
+    igwn-ligolw
+    
+0.0.17.9
+------------
+development tree is rift_O4c_staging -> rift_O4c; draft MR notes at
+https://git.ligo.org/rapidpe-rift/rift/-/merge_requests/49
+   - (rc0) write_bilby_pickle: shutil.copyfile threw error if cache file already existed (copy into same file error) in
+     code that protected against duplicate IFO entries.
+
+
+0.0.17.8
+------------
+development tree is rift_O4c_staging -> rift_O4c; draft MR notes at
+https://git.ligo.org/rapidpe-rift/rift/-/merge_requests/49
+
+   - (rc0) extrinsic output shuffle; datafind parsing contemporary environement; evidence files collected in one place
+     for humans; asimov SNR bootstrap; asimov safety protection for calmarg/bilby ini parsing; condor_commands
+     capability; calmarg output includes calibratio parameters in workflow, along with script to add postprocessing
+   - (rc1) data upsampling support (--srate-internal); time output interpolation to higher sampling rates
+     (--srate-resample-time-marginalization); calmarg output for cal  parameters safety and function improved; fix bugs
+     introduced cherry-picking for last release.
+   - (rc2) calparam_attempt review feedback; calibration_reweighting lessons learned from review; lalsimutils fix
+     cherry-picking error in last release frame_data_to ...
+   - (rc3) evidence calculation doesn't fail on subdags; calmarg nan protection.
+   - (rc4) calmarg+cal params: fix concatenation
+   - (rc5) typo in last commit/port
+   - (rc6) calmarg: fix export using rift field names
+   - (rc7) calmarg+OSG operation, combine_weights uses pandas consistently for safety, delete cal files after run, minor
+     evidence fix
+   - (rc8) calmarg+OSG miscellaneous missing cherry-picks, plus swap order of writing submit files so cal_envelopes made first.
+   - (rc9) OSG-safe operation missing cherry-pick from O4d for allinone_convert; minor arg label fix calmarg+OSG
+   - (rc10) OSG-safe operation make sure weight_files created early to avoid hold on evict/fail; remove unused columns
+     that were empty and caused downstream pesummary parsing problems; safety protect calmarg against draw failures
+   - (rc11) fix shape inconsitency in cal draw - eliminate rare failures at end not immediately to preserve
+     shape. Stronger safety checks and warnings.
+   - (rc12) patch puzzling calmarg side effect where bilby internals were changing geocenter_time from inputs
+
+Release is rc12
+     
 0.0.17.7
 ------------
 development tree is rift_O4c.
@@ -13,11 +56,16 @@ Point release targeting MR https://git.ligo.org/rapidpe-rift/rift/-/merge_reques
 
 0.0.17.6
 ------------
-development tree is rift_O4d.
-  - CIP hyperpipe improvements (initialize_me; enable population and EOS params in using_eos file with arbitrary
-    labelled parameters); CIP xgboost gp fit (from Aasim); install make 'precession' optional; see also 0.0.17.4rc0
-    igwn-ligolw
-    
+development tree is rift_O4c.
+   - cepp_basic two corner cases impacting calmarg args: minor fix use of package name if calmarg extra args passed to
+     gwsignal; add transfer-input-files to Calib_reweight.sub writer to pass h5 dependencies to reweighting code (rc0)
+   - calibration_reweighting.py: fix typo and parsing issue for --extra_waveform_kwargs, since argument not usually
+     fully quoted unlike ILE args (rc1)
+   - calibration_reweighting: typos in previous commits (rc2)
+   - pseudo_pipe --internal-general-request-disk (rc3)
+   - calib_reweight scitokens (rc4)
+release is rc4
+
 0.0.17.5
 ------------
 development tree is rift_O4c.

@@ -1173,8 +1173,8 @@ def write_consolidate_sub_simple(tag='consolidate', exe=None, base=None,target=N
     exe = exe or which("util_ILEdagPostprocess.sh")
 
     # Create executable if needed  (using extra_text as flag for now)
-    # Note 'base' refers to the working diretory here, so we need to back up
     base_str = ''
+    # Note 'base' refers to the working diretory here, so we need to back up
     if len(extra_text) > 0:
         if not (base is None):
             base_0 = base[0]
@@ -2302,12 +2302,13 @@ def write_calibration_uncertainty_reweighting_sub(tag='Calib_reweight', exe=None
         sys.exit(0)
 
     singularity_image_used = "{}".format(singularity_image) # make copy
-    extra_files = []
     if singularity_image:
-            if 'osdf:' in singularity_image:
-                singularity_image_used  = "./{}".format(singularity_image.split('/')[-1])
-                extra_files += [singularity_image]
-
+        if 'osdf:' in singularity_image:
+            singularity_image_used  = "./{}".format(singularity_image.split('/')[-1])
+            if transfer_files is None:
+                transfer_files= [singularity_image]
+            else:
+                transfer_files += [singularity_image]
 
     
     exe = exe or which("calibration_reweighting.py")
@@ -2444,9 +2445,9 @@ def write_calibration_uncertainty_reweighting_sub(tag='Calib_reweight', exe=None
     # Write transfer file list.  Will handle any surrogates + pickle/container files.
     if not transfer_files is None:
         if not isinstance(transfer_files, list):
-            fname_str=transfer_files  + ' '.join(extra_files)
+            fname_str=transfer_files # + ' '.join(extra_files)
         else:
-            fname_str = ','.join(transfer_files+extra_files)
+            fname_str = ','.join(transfer_files)
         fname_str=fname_str.strip()
         ile_job.add_condor_cmd('transfer_input_files', fname_str)
         ile_job.add_condor_cmd('should_transfer_files','YES')
@@ -2556,7 +2557,8 @@ def write_bilby_pickle_sub(tag='Bilby_pickle', exe=None, universe='local', log_d
                     print(" WARNING: cache file ideallly contain one line per IFO to identify files in this approach")
                     if  not(frames_dir) or not os.path.exists('./frames_dir'):
                         print(" WARNING: Backstop method being applied - regenerating frames into frames_dir")
-                        shutil.copyfile(cache_file, 'local.cache')
+                        if not(os.path.samefile(cache_file,'local.cache')):
+                               shutil.copyfile(cache_file, 'local.cache')
                         os.system("util_ForOSG_MakeTruncatedLocalFramesDir.sh .")
                     fnames_gwf = list(glob.glob(frames_dir+"/*.gwf")  )
                     # get dictionary matching files
