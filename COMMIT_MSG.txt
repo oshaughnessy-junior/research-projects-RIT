@@ -1,135 +1,125 @@
-RIFT.misc: pluggable workflow backends (htcondor / glue / slurm)
+RIFT.misc: dag_utils_generic fixes from end-to-end demo testing
 
-Replace the glue.pipeline-only RIFT.misc.dag_utils with a backend-neutral
-re-implementation, RIFT.misc.dag_utils_generic, and a registry-based
-backend abstraction so RIFT can drive HTCondor, Slurm, and (legacy)
-glue.pipeline workflows from the same pipeline drivers.
+Follow-up to the initial pluggable-backend commit.  These changes are all
+driven by running the three new demo drivers (BasicIteration, EOS,
+util_RIFT_pseudo_pipe) under the htcondor / glue / slurm backends on a
+real RIFT install and fixing every site that crashed.
 
-Why
----
+Backend abstraction
+-------------------
 
-The original dag_utils.py was written directly against glue.pipeline,
-which is part of an older lalsuite/glue stack that:
+* _GenericNode now generates globally-unique node names of the form
+  "<exe-basename>-<md5>" using the same generate_job_id() recipe as
+  glue.pipeline.CondorDAGNode.  This avoids identifier collisions when
+  multiple workflows are merged into a single .dag file.  The legacy
+  private attribute _CondorDAGNode__md5name is exposed and mirrors
+  node.name verbatim, so RIFT consumers that hard-code that attribute
+  (e.g. when wiring up custom SCRIPT POST items) keep working.  A new
+  set_name() helper keeps name and _CondorDAGNode__md5name in sync if a
+  caller wants a more legible override.
 
-  * is fragile to install on macOS (and routinely breaks elsewhere),
-  * is no longer actively maintained, and
-  * hard-couples RIFT to HTCondor as the only execution system.
+* HTCondorBackend is now *always* registered.  Its emit_job() already had
+  a self-contained submit-file text renderer for environments without the
+  htcondor python bindings (macOS in particular), so gating the
+  registration on `import htcondor` produced spurious warnings
+  ("RIFT_DAG_BACKEND='htcondor' not registered") and silently rerouted to
+  whichever backend auto-detection happened to find.  GluePipelineBackend
+  is still gated on `from glue import pipeline`, since it strictly needs
+  glue at emit time.  SlurmBackend has no python-level dependency and
+  always registers.
 
-That coupling means RIFT cannot run on Slurm clusters (or PBS / LSF /
-Kubernetes / etc.) without a wholesale rewrite of every pipeline driver
-that emits a DAG.
+* GluePipelineBackend supplies default log / stdout / stderr file paths
+  derived from the sub-file when the caller didn't set them, instead of
+  letting glue.pipeline raise CondorSubmitError("Log file not specified.")
+  / "Error file not specified." / "Output file not specified.".  Other
+  backends already tolerated their absence.
 
-Architecture
-------------
+* GluePipelineBackend.emit_dag() strips a trailing ".dag" before passing
+  the path to glue.pipeline.CondorDAG.set_dag_file(), since glue itself
+  appends ".dag" and would otherwise produce "wf.dag.dag".
 
-The new module separates three concerns:
+Test suite (test/backends/)
+---------------------------
 
-  1. A backend-neutral data model (_GenericJob, _GenericNode, _GenericDAG,
-     _GenericManJob).  These are plain data containers that record
-     everything about a job and its place in a workflow without
-     committing to a particular execution system.  They expose the
-     historical glue.pipeline.CondorDAGJob API (set_sub_file, add_opt,
-     add_arg, add_condor_cmd, _CondorJob__queue, _CondorJob__arguments,
-     ...) as a *facade* so the existing 31 write_*_sub helpers and the
-     bin/ pipeline drivers don't have to change semantically.  Semantic
-     resource concepts (memory, disk, cpus, gpus, runtime_minutes,
-     environment, inherit_environment) are extracted automatically when
-     add_condor_cmd is called with a known key, so non-Condor backends
-     can use them.
+* test_backends_lowlevel.py: explicit `import importlib.util` (the
+  submodule is not auto-loaded on all Python versions / startup paths);
+  open(...).read() patterns rewritten with `with` blocks to silence
+  Python 3.14+ ResourceWarnings; `--input=x.txt` assertion relaxed to
+  also accept the space-separated `--input x.txt` form that real
+  glue.pipeline emits; node-name test now asserts the new "<exe>-<md5>"
+  format and that _CondorDAGNode__md5name mirrors .name.
 
-  2. A WorkflowBackend ABC with two methods: emit_job(job, path) turns a
-     _GenericJob into the per-system submit description, and
-     emit_dag(dag, path) turns a _GenericDAG into the per-system
-     workflow driver.  Three concrete backends ship in this commit:
+* run_all_backends.sh + each demo_*.sh: prepend
+  MonteCarloMarginalizeCode/Code to PYTHONPATH and bin/ to PATH so the
+  in-tree RIFT package is discoverable without `pip install -e .`.  The
+  command-v / fallback resolution for the pipeline-driver path captures
+  the absolute path returned by command-v (so the existence check is
+  meaningful).  Tolerant `rm -rf 2>/dev/null || true` instead of bare
+  `rm -rf` so cleanup never aborts the run on FUSE / restrictive
+  filesystems.
 
-       * HTCondorBackend -- uses the modern htcondor python bindings
-         (htcondor.Submit) to validate the submit description; emits
-         .sub files and a DAGMan .dag.
-       * GluePipelineBackend -- legacy fallback that replays the
-         generic spec onto a freshly-constructed
-         glue.pipeline.CondorDAGJob / CondorDAG / ... at emit time.
-         Useful where the htcondor python bindings are unavailable.
-       * SlurmBackend -- emits #SBATCH-prefixed shell scripts and a
-         shell driver that submits jobs in topological order with
-         sbatch --dependency=afterok:JOBID chains.  Maps the structured
-         resource fields to the appropriate SBATCH directives;
-         preserves HTCondor-specific submit-file commands as `#`
-         comments so the information is not silently dropped.
+* The three demos no longer falsely report PASS when their child python
+  invocations crashed.  Each backend run captures the python exit code
+  via PIPESTATUS (so tee doesn't swallow it) and treats the run as
+  failed if the exit code is non-zero *or* the driver log contains a
+  "Traceback (most recent call last):" line; failed backends are
+  collected in BACKEND_FAILURES and the demo exits non-zero at the end
+  if any failed.
 
-  3. A backend registry: register_backend(), set_backend(),
-     get_backend(), current_backend_name().  Backends are looked up by
-     name.  New backends (PBS, LSF, Kubernetes, ...) can be added by
-     user code with no changes to dag_utils_generic itself.
+Fixture and invocation fixes
+----------------------------
 
-Selection precedence
---------------------
+* demo_create_event_parameter_pipeline_BasicIteration.sh: switched to
+  the actual argument names accepted by the script
+  (--ile-n-events-to-analyze, --general-request-disk); removed
+  --skip-reproducibility (only valid on pseudo_pipe); added a sanitize
+  step on the input grid (see below).
 
-  1. set_backend("name") from python (highest priority).
-  2. RIFT_DAG_BACKEND env var: htcondor / glue / slurm / auto / a
-     user-registered name.
-  3. Auto: prefer htcondor python bindings, fall back to glue.pipeline.
+* demo_create_eos_posterior_pipeline.sh: switched from the single-args
+  --marg-event-args path (which leaves marg_event_nchunk_list = None
+  and crashes the multi-event loop) to the list-file path with
+  --marg-event-args-list-file, --marg-event-exe-list-file, and
+  --marg-event-nchunk-list-file.  Uses a plain-text inputs/eos-grid.dat
+  for --input-grid (np.loadtxt cannot read a gzipped XML).  Added
+  inputs/args_marg_event_list.txt, inputs/marg_event_exe_list.txt,
+  inputs/marg_event_nchunk_list.txt.
 
-Slurm is intentionally never auto-selected: there is no robust pure-
-python "are we on a Slurm cluster" test, so it must be selected
-explicitly.
+* demo_util_RIFT_pseudo_pipe.sh: rewritten to mirror
+  .travis/test-build.sh -- uses --use-ini + --use-coinc which is the
+  only path through pseudo_pipe that populates event_dict["IFOs"]
+  without contacting GraceDb.  Copied the in-tree
+  .travis/ref_ini/GW150914.ini and .travis/ref_ini/coinc.xml into
+  inputs/ (overridable via PSEUDO_INI / PSEUDO_COINC env vars).  Sets
+  RIFT_LOWLATENCY / SINGULARITY_RIFT_IMAGE / SINGULARITY_BASE_EXE_DIR
+  exactly as the travis driver does.  Wipes the rundir before the run
+  but does NOT pre-create it (pseudo_pipe.py does its own os.mkdir on
+  --use-rundir and aborts with FileExistsError otherwise); the driver
+  log goes to a sibling path and is moved into the rundir after
+  pseudo_pipe creates it.  Artefact-listing block tolerates a missing
+  rundir.
 
-Ported consumers
-----------------
+* inputs/overlap-grid.xml.gz: replaced the comment-only placeholder
+  (which trivially failed expat parsing) with a real LIGO_LW
+  sim_inspiral table copied from
+  MonteCarloMarginalizeCode/data/zero_noise_mdc/mdc-bns.xml.gz.
 
-All RIFT pipeline drivers under MonteCarloMarginalizeCode/Code/bin/
-that imported `from glue import pipeline` or
-`from RIFT.misc.dag_utils ...` have been updated to use
-RIFT.misc.dag_utils_generic and the `pipeline` namespace it exposes.
-Specifically:
+* inputs/sanitize_grid.py: new helper.  Modern igwn_ligolw rejects both
+  Type="ilwd:char" Column declarations and the `process_id` /
+  `simulation_id` columns on sim_inspiral.  The helper prefers the
+  ligo.lw / igwn_ligolw API (running ligolw_no_ilwdchar.process_document
+  and removing the rejected columns).  The stdlib-only text fallback
+  walks each <Table>, identifies columns to drop and ilwd:char columns
+  to rewrite, parses the comma-separated <Stream> body via Python's csv
+  module, drops the corresponding column values from each data row, and
+  rewrites ilwd-format string values like "process:process_id:0" to the
+  bare integer 0.  The BasicIteration demo invokes this as a
+  preprocessing step.
 
-  * assess_propose_CIP_convergence_sequence.py
-  * create_CIP_convergence_sequence.py
-  * create_eos_posterior_pipeline
-  * create_event_dag_via_grid
-  * create_event_nr_pipeline_with_cip
-  * create_event_parameter_pipeline_AlternateIteration
-  * create_event_parameter_pipeline_BasicIteration
-  * create_event_parameter_pipeline_BasicMultiApproxIteration
-  * create_ile_sub_dag.py
-  * create_postprocessing_event_dag.py
-  * helper_LDG_Events.py
-  * util_RIFT_MultiMetaPipe.py
-  * util_RIFT_hyperpipe.py
-  * util_RIFT_pseudo_pipe.py
+Upstream bug fixes
+------------------
 
-plus plot_BasicIteration.py and test/test_effectiveFisher.py.
-
-The original dag_utils.py is intentionally retained for a deprecation
-window so any out-of-tree caller continues to work; new development
-should target dag_utils_generic.
-
-Test suite
-----------
-
-A new directory MonteCarloMarginalizeCode/Code/test/backends/
-exercises the abstraction at three levels:
-
-  1. test_backends_lowlevel.py -- 15 unittest tests for the data model,
-     registry, custom-backend registration, and per-backend artefact
-     emission (htcondor, glue, slurm).  Provides minimal stubs for
-     `htcondor` and `glue.pipeline` so the suite is runnable on any
-     vanilla python install.
-
-  2. synthesize_pipeline_outputs.py -- a self-contained Python driver
-     that builds workflows analogous to the production pipeline drivers
-     (create_event_parameter_pipeline_BasicIteration,
-     create_eos_posterior_pipeline, util_RIFT_pseudo_pipe.py) and emits
-     them under all three backends.  Runnable without the RIFT science
-     stack.  Outputs land in test/backends/outputs/<backend>/<pipeline>/
-     for side-by-side inspection.
-
-  3. demo_create_event_parameter_pipeline_BasicIteration.sh,
-     demo_create_eos_posterior_pipeline.sh,
-     demo_util_RIFT_pseudo_pipe.sh -- shell drivers that invoke the
-     real production pipeline scripts under each backend, on a host
-     that has lalsimulation / scipy / RIFT installed.  Each script
-     iterates over RIFT_DAG_BACKEND={htcondor,glue,slurm} and writes
-     its artefacts to outputs/<backend>/<pipeline>/.
-
-  4. run_all_backends.sh -- top-level runner that runs (1) and (2)
-     unconditionally and (3) when the science stack is available.
+* bin/create_event_parameter_pipeline_BasicIteration line 803:
+  `which_short` was a typo for `which_sort` (introduced in upstream
+  commit 8ef16ec9 "cepp: add 'shuf' to output, to randomize extrinsic
+  order at creation time").  Triggered when running with
+  --last-iteration-extrinsic-time-resampling.  Fixed in place.

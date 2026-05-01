@@ -10,6 +10,14 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 cd "${HERE}"
 
+# ----------------------------------------------------------------------------
+# Make in-tree RIFT discoverable without `pip install -e .`.
+# ----------------------------------------------------------------------------
+RIFT_CODE_ROOT="$(cd "${HERE}/../.." && pwd)"        # MonteCarloMarginalizeCode/Code
+RIFT_BIN_DIR="${RIFT_CODE_ROOT}/bin"
+export PYTHONPATH="${RIFT_CODE_ROOT}:${PYTHONPATH:-}"
+export PATH="${RIFT_BIN_DIR}:${PATH}"
+
 PASS=0
 FAIL=0
 SKIP=0

@@ -432,10 +432,28 @@ class _GenericJob(object):
         }
 
 
-class _GenericNode(object):
-    """A node in a workflow DAG.  Bound to a :class:`_GenericJob`."""
+def _make_unique_node_name(prefix):
+    """Return a globally-unique node name of the form ``<prefix>-<md5>``.
 
-    _id_counter = 0
+    Mirrors ``glue.pipeline.CondorDAGNode``: the md5 hash is generated from
+    ``time() * 1000`` plus a random integer, so two workflows constructed in
+    different processes (or the same process) cannot collide accidentally
+    when their ``.dag`` files are merged.  ``generate_job_id()`` is exposed
+    as the helper that produces the hash.
+    """
+    safe_prefix = re.sub(r"\W+", "_", prefix or "job") or "job"
+    return "{}-{}".format(safe_prefix, generate_job_id())
+
+
+class _GenericNode(object):
+    """A node in a workflow DAG.  Bound to a :class:`_GenericJob`.
+
+    Each node carries a globally-unique ``name`` (and equivalent
+    ``_CondorDAGNode__md5name``) so multiple workflows can be combined
+    without identifier collisions.  The legacy ``_CondorDAGNode__md5name``
+    private attribute is preserved so external code that reaches for that
+    name (e.g. when wiring up ``SCRIPT POST`` items by hand) keeps working.
+    """
 
     def __init__(self, job):
         self.job = job
@@ -443,18 +461,23 @@ class _GenericNode(object):
         self.category = None
         self.retry = 0
         self.parents = []
-        _GenericNode._id_counter += 1
-        base = (
-            os.path.basename(getattr(job, "executable", None) or "")
-            or "job"
-        )
-        # Strip path/extension to make the name DAG-friendly
-        base = re.sub(r"\W+", "_", base) or "job"
-        self.name = "{}_{}".format(base, _GenericNode._id_counter)
+        prefix = os.path.basename(getattr(job, "executable", None) or "") or "job"
+        self.name = _make_unique_node_name(prefix)
+        # glue.pipeline.CondorDAGNode stores its globally-unique id under
+        # ``self.__md5name`` (which Python name-mangles to
+        # ``_CondorDAGNode__md5name``).  Mirror that exact attribute name so
+        # consumer code that hard-codes it keeps working.
+        self._CondorDAGNode__md5name = self.name
 
     # Compatibility names from glue.pipeline
     def get_name(self):
         return self.name
+
+    def set_name(self, name):
+        """Override the node name (e.g. for legibility).  Keeps the legacy
+        ``_CondorDAGNode__md5name`` attribute in sync."""
+        self.name = name
+        self._CondorDAGNode__md5name = name
 
     def add_macro(self, key, value):
         self.macros[str(key)] = value
@@ -480,8 +503,8 @@ class _GenericSubdagNode(_GenericNode):
         self.retry = 0
         self.parents = []
         self.subdag_file = subdag_file
-        _GenericNode._id_counter += 1
-        self.name = "subdag_{}".format(_GenericNode._id_counter)
+        self.name = _make_unique_node_name("subdag")
+        self._CondorDAGNode__md5name = self.name
 
 
 class _GenericManJob(object):
@@ -729,12 +752,29 @@ class GluePipelineBackend(WorkflowBackend):
         gjob = self._pipeline.CondorDAGJob(universe=job.universe, executable=job.executable)
         if job.sub_file is not None:
             gjob.set_sub_file(job.sub_file)
-        if job.log_file is not None:
-            gjob.set_log_file(job.log_file)
-        if job.stdout_file is not None:
-            gjob.set_stdout_file(job.stdout_file)
-        if job.stderr_file is not None:
-            gjob.set_stderr_file(job.stderr_file)
+        # glue.pipeline insists that log/stdout/stderr files all be set,
+        # raising CondorSubmitError otherwise; htcondor and slurm tolerate
+        # their absence.  Smooth over the difference by deriving defaults
+        # from the sub-file whenever the caller didn't supply one.
+        if job.sub_file is not None:
+            base, _ = os.path.splitext(job.sub_file)
+        else:
+            base = None
+        log_file = job.log_file
+        if log_file is None and base is not None:
+            log_file = base + ".log"
+        if log_file is not None:
+            gjob.set_log_file(log_file)
+        stdout_file = job.stdout_file
+        if stdout_file is None and base is not None:
+            stdout_file = base + ".out"
+        if stdout_file is not None:
+            gjob.set_stdout_file(stdout_file)
+        stderr_file = job.stderr_file
+        if stderr_file is None and base is not None:
+            stderr_file = base + ".err"
+        if stderr_file is not None:
+            gjob.set_stderr_file(stderr_file)
         for n, v in job.opts:
             gjob.add_opt(n, v)
         for n, v in job.short_opts:
@@ -788,7 +828,15 @@ class GluePipelineBackend(WorkflowBackend):
                     gnode.add_parent(glue_nodes[id(parent)])
         for node in dag.nodes:
             gdag.add_node(glue_nodes[id(node)])
-        gdag.set_dag_file(path)
+        # glue.pipeline.CondorDAG.write_concrete_dag() always appends a
+        # ".dag" suffix.  If the caller already passed a path ending in
+        # ".dag" we'd get "wf.dag.dag" otherwise; strip the suffix so the
+        # final file lands at the path we were asked for.
+        if path.endswith(".dag"):
+            glue_path = path[:-4]
+        else:
+            glue_path = path
+        gdag.set_dag_file(glue_path)
         gdag.write_concrete_dag()
 
 
@@ -1083,13 +1131,22 @@ def _auto_select_backend():
                 pass
 
 
-# Register the bundled backends if their dependencies are available.  We
-# always register Slurm because its emission has no python-level dependency.
-if HTCondorBackend.is_available():
-    try:
-        register_backend(HTCondorBackend())
-    except Exception:
-        pass
+# Register the bundled backends.
+#
+# We *always* register HTCondorBackend and SlurmBackend because both have a
+# pure-python emission path with no library dependency (HTCondor falls back
+# to a built-in submit-file text renderer when ``htcondor.Submit`` isn't
+# available; Slurm only emits shell text).  GluePipelineBackend is the
+# exception: its emit_* paths construct real glue.pipeline objects, so we
+# can only register it when glue is actually importable.
+try:
+    register_backend(HTCondorBackend())
+except Exception as _exc:
+    print(
+        "[dag_utils_generic] WARNING: could not register HTCondorBackend: {}"
+        .format(_exc),
+        file=sys.stderr,
+    )
 if GluePipelineBackend.is_available():
     try:
         register_backend(GluePipelineBackend())

@@ -27,6 +27,7 @@ import textwrap
 import types
 import unittest
 import importlib
+import importlib.util  # required: importlib.util is a submodule, not auto-loaded
 
 # ---------------------------------------------------------------------------
 # Locate the module under test without importing the rest of RIFT (which
@@ -242,7 +243,17 @@ class GenericJobApiTests(unittest.TestCase):
         n.set_retry(3)
         self.assertEqual(n.retry, 3)
         self.assertEqual(n.macros["event"], "7")
-        self.assertTrue(n.name.startswith("echo_"))
+        # Node name is "<exe-basename>-<md5>" per the glue.pipeline format
+        # (so workflows from independent runs can be safely combined without
+        # name collisions).
+        self.assertTrue(n.name.startswith("echo-"),
+                        "name was {!r}".format(n.name))
+        # Legacy private attribute used by RIFT consumers writing custom
+        # POST items must mirror node.name exactly.
+        self.assertEqual(n._CondorDAGNode__md5name, n.name)
+        # And must be unique across nodes
+        n2 = self.m.CondorDAGNode(job)
+        self.assertNotEqual(n.name, n2.name)
 
     def test_subdag_node(self):
         manjob = self.m.CondorDAGManJob("/path/to/inner.dag")
@@ -308,7 +319,8 @@ class HTCondorBackendTests(unittest.TestCase):
             job._CondorJob__queue = 3
             job.write_sub_file()
 
-            text = open(os.path.join(td, "j.sub")).read()
+            with open(os.path.join(td, "j.sub")) as _fh:
+                text = _fh.read()
             self.assertIn("universe = vanilla", text)
             self.assertIn("executable = /bin/echo", text)
             self.assertIn("--foo=bar", text)
@@ -328,7 +340,8 @@ class HTCondorBackendTests(unittest.TestCase):
             dag.add_node(n1); dag.add_node(n2)
             dag.set_dag_file(os.path.join(td, "wf.dag"))
             dag.write_concrete_dag()
-            text = open(os.path.join(td, "wf.dag")).read()
+            with open(os.path.join(td, "wf.dag")) as _fh:
+                text = _fh.read()
             self.assertIn("JOB " + n1.name + " " + j.get_sub_file(), text)
             self.assertIn('VARS {} event="7"'.format(n1.name), text)
             self.assertIn("RETRY {} 2".format(n1.name), text)
@@ -349,11 +362,17 @@ class GlueBackendTests(unittest.TestCase):
             job.add_arg("positional_arg")
             job.add_condor_cmd("request_memory", "1024")
             job.write_sub_file()
-            text = open(os.path.join(td, "g.sub")).read()
+            with open(os.path.join(td, "g.sub")) as _fh:
+                text = _fh.read()
             # glue stub writes a comment header and the universe line
             self.assertIn("universe = vanilla", text)
             self.assertIn("executable = /bin/cat", text)
-            self.assertIn("--input=x.txt", text)
+            # glue.pipeline emits "--input x.txt" (space-separated); the
+            # htcondor backend uses "--input=x.txt".  Accept either.
+            self.assertTrue(
+                "--input=x.txt" in text or "--input x.txt" in text,
+                "expected --input/x.txt in: {!r}".format(text),
+            )
             self.assertIn("positional_arg", text)
             self.assertIn("request_memory = 1024", text)
 
@@ -368,7 +387,8 @@ class GlueBackendTests(unittest.TestCase):
             dag.add_node(n1); dag.add_node(n2)
             dag.set_dag_file(os.path.join(td, "wf.dag"))
             dag.write_concrete_dag()
-            text = open(os.path.join(td, "wf.dag")).read()
+            with open(os.path.join(td, "wf.dag")) as _fh:
+                text = _fh.read()
             self.assertIn("PARENT", text)
 
 
@@ -394,7 +414,8 @@ class SlurmBackendTests(unittest.TestCase):
             job.add_condor_cmd("+SlurmPartition", '"compute"')
             job._CondorJob__queue = 4
             job.write_sub_file()
-            text = open(os.path.join(td, "j.sbatch")).read()
+            with open(os.path.join(td, "j.sbatch")) as _fh:
+                text = _fh.read()
             self.assertTrue(text.startswith("#!/bin/bash"))
             self.assertIn("#SBATCH --mem=4096M", text)
             self.assertIn("#SBATCH --tmp=2048M", text)
@@ -427,7 +448,8 @@ class SlurmBackendTests(unittest.TestCase):
             # Slurm rewrites .dag → _dag.sh
             driver = os.path.join(td, "wf_dag.sh")
             self.assertTrue(os.path.exists(driver))
-            text = open(driver).read()
+            with open(driver) as _fh:
+                text = _fh.read()
             self.assertTrue(text.startswith("#!/bin/bash"))
             self.assertIn("set -euo pipefail", text)
             self.assertIn("JOBID_0=$(sbatch", text)
@@ -453,7 +475,8 @@ class SlurmBackendTests(unittest.TestCase):
                 dag.add_node(n)
             dag.set_dag_file(os.path.join(td, "deep.dag"))
             dag.write_concrete_dag()
-            text = open(os.path.join(td, "deep_dag.sh")).read()
+            with open(os.path.join(td, "deep_dag.sh")) as _fh:
+                text = _fh.read()
             # Each successive sbatch line must depend on the previous JOBID_X
             ids = re.findall(r"JOBID_(\d+)=\$\(sbatch", text)
             self.assertEqual(ids, ["0", "1", "2", "3", "4"])
@@ -498,9 +521,11 @@ class CrossBackendInvarianceTests(unittest.TestCase):
                     dag.write_concrete_dag()
 
                     # Submit files exist and reference the executable
-                    text_a = open(os.path.join(td, "A.sub")).read()
+                    with open(os.path.join(td, "A.sub")) as _fh:
+                        text_a = _fh.read()
                     self.assertIn("/bin/echo", text_a)
-                    text_b = open(os.path.join(td, "B.sub")).read()
+                    with open(os.path.join(td, "B.sub")) as _fh:
+                        text_b = _fh.read()
                     self.assertIn("/bin/cat", text_b)
 
                     # Workflow artefact exists.  HTCondor/glue write to .dag,
