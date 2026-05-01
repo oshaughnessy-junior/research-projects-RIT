@@ -27,6 +27,8 @@ remap_ILE_2_LI = {
   "thetaJN":"theta_jn"}
 remap_LI_to_ILE = { "a1z":"s1z", "a2z":"s2z", "chi_eff":"xi", "lambdat":"LambdaTilde", 'mtotal':'mtot', "distance":"dist", 'ra':'phi', 'dec':'theta',"phiorb":"phiref"}
 
+remap_bilby_to_rift={'chirp_mass':'mc', 'mass_ratio':'q', 'mass_1':'m1', 'mass_2':'m2','geocent_time':'time','luminosity_distance':'distance','phase':'phiorb','chi_1_in_plane':'chi1_perp','spin_1x': 'a1x', 'spin_1y':'a1y', 'spin_2x': 'a2x','spin_2y':'a2y', 'spin_1z':'a1z', 'spin_2z':'a2z', 'chi_2_in_plane':'chi2_perp','iota':'incl','lambda_1':'lambda1', 'lambda_2':'lambda2','lambdat':'LambdaTilde','log_likelihood':'lnL'}
+
 import numpy.lib.recfunctions as rfn
 
 def extract_combination_from_LI(samples_LI, p):
@@ -97,6 +99,11 @@ def extract_combination_from_LI(samples_LI, p):
         m2v = samples_LI["m2"]
         return lalsimutils.symRatio(m1v,m2v)
 
+    if (p == 'chi1' or p=='a1') and 'a1x' in samples.dtype.names:
+        return np.sqrt(samples['a1x']**2 + samples['a1y']**2 + samples['a1z']**2)
+    if (p == 'chi2' or p=='a2') and 'a2x' in samples.dtype.names:
+        return np.sqrt(samples['a2x']**2 + samples['a2y']**2 + samples['a2z']**2)
+    
     if p == 'phi1':
         return np.angle(samples_LI['a1x']+1j*samples_LI['a1y'])
     if p == 'chi_pavg':
@@ -181,8 +188,9 @@ def standard_expand_samples(samples):
         m1_here = mtot_here/(1+q_here)
         samples = add_field(samples, [('mtotal', float)]); samples['mtotal'] = mtot_here
         samples = add_field(samples, [('eta', float)]); samples['eta'] = eta_here
-        samples = add_field(samples, [('m1', float)]); samples['m1'] = m1_here
-        samples = add_field(samples, [('m2', float)]); samples['m2'] = mtot_here * q_here/(1+q_here)
+        if not 'm1' in samples.dtype.names:
+                       samples = add_field(samples, [('m1', float)]); samples['m1'] = m1_here
+                       samples = add_field(samples, [('m2', float)]); samples['m2'] = mtot_here * q_here/(1+q_here)
         
     if "theta1" in samples.dtype.names and not('chi1_perp' in samples.dtype.names):
         a1x_dat = samples["a1"]*np.sin(samples["theta1"])*np.cos(samples["phi1"])
@@ -209,6 +217,13 @@ def standard_expand_samples(samples):
         samples = add_field(samples, [('chi1_perp',float)]); samples['chi1_perp'] = chi1_perp
         samples = add_field(samples, [('chi2_perp',float)]); samples['chi2_perp'] = chi2_perp
 
+        if not ('a1' in samples.dtype.names):
+            chi1 = np.sqrt(samples['a1x']**2 + samples['a1y']**2 + samples['a1z']**2)
+            samples = add_field(samples, [('a1', float)]); samples['a1']= chi1
+        if not ('a2' in samples.dtype.names):
+            chi2 = np.sqrt(samples['a2x']**2 + samples['a2y']**2 + samples['a2z']**2)
+            samples = add_field(samples, [('a2', float)]); samples['a2']= chi2
+
         # Askold: this part will check if phi1, phi2, phi12 are present. If not, compute and add the missing ones
         phi_fields = ['phi1', 'phi2', 'phi12']
         phi_func_dict = {
@@ -222,6 +237,14 @@ def standard_expand_samples(samples):
                 samples = add_field(samples, [(field_name, float)])
                 samples[field_name] = phi_func_dict[field_name](samples)
 
+    if not('chi1' in samples.dtype.names):
+        chi1 = np.sqrt(samples['a1x']**2 + samples['a1y']**2+samples['a1z']**2)
+        samples = add_field(samples, [('chi1',float)])
+    if not('chi2' in samples.dtype.names):
+        chi2 = np.sqrt(samples['a2x']**2 + samples['a2y']**2+samples['a2z']**2)
+        samples = add_field(samples, [('chi2',float)])
+        
+                
     if 'lambda1' in samples.dtype.names and not ('lambdat' in samples.dtype.names):
         Lt,dLt = lalsimutils.tidal_lambda_tilde(samples['m1'], samples['m2'],  samples['lambda1'], samples['lambda2'])
         samples = add_field(samples, [('lambdat', float)]); samples['lambdat'] = Lt
@@ -265,7 +288,7 @@ def fchip(sample):
             chip = P.extract_param('chi_p')
             return chip  
 
-def dump_pesummary_samples_to_file_as_rift(fname_h5,key,fname_out):
+def dump_pesummary_samples_to_file_as_rift(fname_h5,key,fname_out,no_drop=False,no_rename=False):
     """
     >>> import samples_utils
     >>> samples_utils.dump_pesummary_samples_to_file_as_rift("metafile.h5", "bilby-IMRPhenomXPHM-SpinTaylor-3",'test.dat')
@@ -293,9 +316,30 @@ def dump_pesummary_samples_to_file_as_rift(fname_h5,key,fname_out):
             continue
         samp[name] = samples[name]
     # Rename
-    samp = rfn.rename_fields(samp, {'chirp_mass':'mc', 'mass_1':'m1', 'mass_2':'m2','geocent_time':'time','luminosity_distance':'distance','phase':'phiorb','chi_1_in_plane':'chi1_perp','spin_1x': 'a1x', 'spin_1y':'a1y', 'spin_2x': 'a2x','spin_2y':'a2y', 'spin_1z':'a1z', 'spin_2z':'a2z', 'chi_2_in_plane':'chi2_perp','iota':'incl','lambda_1':'lambda1', 'lambda_2':'lambda2','lambdat':'LambdaTilde'})
+    samp = rfn.rename_fields(samp,remap_bilby_to_rift )
     # Drop
-    ugly_fields = [x for x in samp.dtype.names if 'recalib' in x or 'snr' in x]
-    samp = rfn.drop_fields(samp,ugly_fields)
+    if not(no_drop):
+      ugly_fields = [x for x in samp.dtype.names if 'recalib' in x or 'snr' in x]
+      samp = rfn.drop_fields(samp,ugly_fields)
 
     np.savetxt(fname_out,samp,header=" ".join(samp.dtype.names) )
+
+
+
+if __name__ == "__main__":
+    import os
+    import sys
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--key", default="rift-v5PHM-calmarg",help="Key for bilby file")
+    parser.add_argument("--no-drop",action='store_true',default=False)
+    parser.add_argument("fname_in",default=None,help="File name of result file")
+    parser.add_argument("fname_out",default=None,help="output file")
+    opts=  parser.parse_args()
+
+    dump_pesummary_samples_to_file_as_rift(opts.fname_in, opts.key, opts.fname_out,no_drop=opts.no_drop)
+    
+
+
+    

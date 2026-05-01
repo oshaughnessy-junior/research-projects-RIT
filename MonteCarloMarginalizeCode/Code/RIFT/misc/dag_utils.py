@@ -524,15 +524,16 @@ def write_CIP_sub(tag='integrate', exe=None, input_net='all.net',output='output-
 
     exe = exe or which("util_ConstructIntrinsicPosterior_GenericCoordinates.py")
     if use_singularity:
-        path_split = exe.split("/")
-        print((" Executable: name breakdown ", path_split, " from ", exe))
+        exe_base = os.path.basename(exe)
+#        path_split = exe.split("/")
+#        print((" Executable: name breakdown ", path_split, " from ", exe))
         singularity_base_exe_path = "/usr/bin/"  # should not hardcode this ...!
         if 'SINGULARITY_BASE_EXE_DIR_HYPERPIPE' in list(os.environ.keys()) : # allow a DIFFERENT exe to be used here for hyperpipe : CIP used for remote
             singularity_base_exe_path = os.environ['SINGULARITY_BASE_EXE_DIR_HYPERPIPE']
         elif 'SINGULARITY_BASE_EXE_DIR' in list(os.environ.keys()) :
             singularity_base_exe_path = os.environ['SINGULARITY_BASE_EXE_DIR']
-        exe=singularity_base_exe_path + path_split[-1]
-        if path_split[-1] == 'true':  # special universal path for /bin/true, don't override it!
+        exe=singularity_base_exe_path + exe_base
+        if exe_base == 'true':  # special universal path for /bin/true, don't override it!
             exe = "/usr/bin/true"
     ile_job = pipeline.CondorDAGJob(universe=universe, executable=exe)
     # This is a hack since CondorDAGJob hides the queue property
@@ -842,22 +843,21 @@ def write_ILE_sub_simple(tag='integrate', exe=None, log_dir=None, use_eos=False,
     exe = exe or which("integrate_likelihood_extrinsic")
     frames_local = None
     if use_singularity:
-        path_split = exe.split("/")
-        print((" Executable: name breakdown ", path_split, " from ", exe))
+        exe_base = os.path.basename(exe)
+#        print((" Executable: name breakdown ", path_split, " from ", exe))
         singularity_base_exe_path = "/opt/lscsoft/rift/MonteCarloMarginalizeCode/Code/"  # should not hardcode this ...!
         if 'SINGULARITY_BASE_EXE_DIR' in list(os.environ.keys()) :
             singularity_base_exe_path = os.environ['SINGULARITY_BASE_EXE_DIR']
         else:
 #            singularity_base_exe_path = "/opt/lscsoft/rift/MonteCarloMarginalizeCode/Code/"  # should not hardcode this ...!
             singularity_base_exe_path = "/usr/bin/"  # should not hardcode this ...!
-        exe=singularity_base_exe_path + path_split[-1]
+        exe=singularity_base_exe_path + exe_base
         if not(frames_dir is None):
             frames_local = frames_dir.split("/")[-1]
     elif use_osg:  # NOT using singularity!
         if not(frames_dir is None):
             frames_local = frames_dir.split("/")[-1]
-        path_split = exe.split("/")
-        exe=path_split[-1]  # pull out basename
+        exe = os.path.basename(exe)
         exe_here = 'my_wrapper.sh'
         if transfer_files is None:
             transfer_files = []
@@ -1062,8 +1062,24 @@ echo Starting ...
         cmdname = 'ile_pre.sh'
         if transfer_files is None:
             transfer_files = []
-        transfer_files += ["../ile_pre.sh", frames_dir]  # assuming default working directory setup
-        with open(cmdname,'w') as f:
+        transfer_files += [frames_dir]
+        # Test if we *need* ile_pre.sh : are path names already relative? DOES NOT WORK
+        pre_needed = True
+        if False: # try:
+          with open('local.cache', 'r') as f:
+            lines = f.readlines()
+            fnames = [x.split()[-1] for x in lines]
+            fnames_no_prefix = [x.replace('file:/','').replace('osdf:/','') for x in fnames]
+            for name in fnames_no_prefix:
+                if name[0] == '/':
+                    pre_needed =True
+        else: # except:
+            print(" WARNING: local.cache file not present, reverting to ile_pre.sh ")
+        if not(pre_needed):
+            transfer_files += ['../local.cache']
+        else:            
+          transfer_files += ["../ile_pre.sh"]  # assuming default working directory setup
+          with open(cmdname,'w') as f:
             f.write("#! /bin/bash -xe \n")
             f.write( "ls "+frames_local+" | {lalapps_path2cache} 1> local.cache \n".format(lalapps_path2cache=lalapps_path2cache))  # Danger: need user to correctly specify local.cache directory
             # Rewrite cache file to use relative paths, not a file:// operation
@@ -1398,13 +1414,20 @@ def write_convert_sub(tag='convert', exe=None, file_input=None,file_output=None,
     # for example: 
     #    for i in `condor_q -hold  | grep oshaughn | awk '{print $1}'`; do condor_qedit $i RequestMemory 30000; done; condor_release -all 
 
-    ile_job.add_condor_cmd('requirements', '&&'.join('({0})'.format(r) for r in requirements))
-
     # no grid
-    if no_grid:
-        ile_job.add_condor_cmd("MY.DESIRED_SITES",'"nogrid"')
+    if no_grid:  # very aggressively enforce staying on the current filesystem!
+        ile_job.add_condor_cmd("MY.DESIRED_SITES",'"none"')
         ile_job.add_condor_cmd("MY.flock_local",'true')
+        try:
+            os.system("condor_config_val UID_DOMAIN > uid_domain.txt")
+            with open("uid_domain.txt", 'r') as f:
+                uid_domain = f.readline().strip()
+                requirements.append(' UidDomain =?= "{}"'.format(uid_domain))
+        except:
+            True
 
+    ile_job.add_condor_cmd('requirements', '&&'.join('({0})'.format(r) for r in requirements))
+        
     try:
         ile_job.add_condor_cmd('accounting_group',os.environ['LIGO_ACCOUNTING'])
         ile_job.add_condor_cmd('accounting_group_user',os.environ['LIGO_USER_NAME'])
@@ -1465,6 +1488,14 @@ def write_test_sub(tag='converge', exe=None,samples_files=None, base=None,target
     if no_grid:
         ile_job.add_condor_cmd("MY.DESIRED_SITES",'"nogrid"')
         ile_job.add_condor_cmd("MY.flock_local",'true')
+        try:
+            os.system("condor_config_val UID_DOMAIN > uid_domain.txt")
+            with open("uid_domain.txt", 'r') as f:
+                uid_domain = f.readline().strip()
+                requirements.append(' UidDomain =?= "{}"'.format(uid_domain))
+        except:
+            True
+
 
     try:
         ile_job.add_condor_cmd('accounting_group',os.environ['LIGO_ACCOUNTING'])
@@ -2042,6 +2073,13 @@ def write_cat_sub(tag='cat', exe=None, file_prefix=None,file_postfix=None,file_o
     if no_grid:
         ile_job.add_condor_cmd("MY.DESIRED_SITES",'"nogrid"')
         ile_job.add_condor_cmd("MY.flock_local",'true')
+        try:
+            os.system("condor_config_val UID_DOMAIN > uid_domain.txt")
+            with open("uid_domain.txt", 'r') as f:
+                uid_domain = f.readline().strip()
+                requirements.append(' UidDomain =?= "{}"'.format(uid_domain))
+        except:
+            True
 
 
     ile_sub_name = tag + '.sub'
@@ -2146,6 +2184,13 @@ def write_joingrids_sub(tag='join_grids', exe=None, universe='vanilla', input_pa
     if no_grid:
         ile_job.add_condor_cmd("MY.DESIRED_SITES",'"nogrid"')
         ile_job.add_condor_cmd("MY.flock_local",'true')
+        try:
+            os.system("condor_config_val UID_DOMAIN > uid_domain.txt")
+            with open("uid_domain.txt", 'r') as f:
+                uid_domain = f.readline().strip()
+                requirements.append(' UidDomain =?= "{}"'.format(uid_domain))
+        except:
+            True
 
     ile_sub_name = tag + '.sub'
     ile_job.set_sub_file(ile_sub_name)
@@ -2180,6 +2225,7 @@ def write_joingrids_sub(tag='join_grids', exe=None, universe='vanilla', input_pa
         ile_job.add_opt("ilwdchar-compat",'')  # needed?
 
     ile_job.add_condor_cmd('getenv', default_getenv_value)
+
     try:
         ile_job.add_condor_cmd('accounting_group',os.environ['LIGO_ACCOUNTING'])
         ile_job.add_condor_cmd('accounting_group_user',os.environ['LIGO_USER_NAME'])
@@ -2477,14 +2523,16 @@ def write_bilby_pickle_sub(tag='Bilby_pickle', exe=None, universe='local', log_d
         bilby_items = dict(config["top"])
         # Backstop horrible parsing situations where it returns a string and not dict
         if not(isinstance(bilby_items['channel-dict'], dict)):
-            base_list=bilby_items['channel-dict'][1:-1].split(',')[:-1]
-            base_dict = {}
-            for item in base_list:
-                if item:
-                   key,value =item.split(':')
-                   key = key.lstrip()
-                   base_dict[key] = value
-            bilby_items['channel-dict'] = base_dict
+            # Safer string parsing - in case no comma at end, etc
+            bilby_items['channel-dict'] = bilby_ish_string_to_dict(bilby_items['channel-dict'])
+            # base_list=bilby_items['channel-dict'][1:-1].split(',')[:-1]
+            # base_dict = {}
+            # for item in base_list:
+            #     if item:
+            #        key,value =item.split(':')
+            #        key = key.lstrip()
+            #        base_dict[key] = value
+            # bilby_items['channel-dict'] = base_dict
         ifo_list = list(bilby_items['channel-dict'])  # PSDs must be listed, implicitly provides all ifos
     # remove entries with the None keyword, as misleading
     dict_names = list(bilby_items)
@@ -2494,7 +2542,7 @@ def write_bilby_pickle_sub(tag='Bilby_pickle', exe=None, universe='local', log_d
     if not('data-dict' in bilby_items):
         bilby_data_dict = {}
         if cache_file:
-            print(" calmarg: bilby ini file does not have data_dict, attempting to identify data from (host) directory: {} ".format(frames_dir))
+            print(" calmarg: bilby ini file does not have data_dict, attempting to identify data from (host) cache file: {} ".format(cache_file))
             cache_lines = np.loadtxt(cache_file,dtype=str)
             if len(ifo_list)==1 and len(cache_lines.shape)==1:
                 ifo = cache_lines[0] + '1'
@@ -2659,6 +2707,13 @@ def write_bilby_pickle_sub(tag='Bilby_pickle', exe=None, universe='local', log_d
     if no_grid:
         ile_job.add_condor_cmd("MY.DESIRED_SITES",'"nogrid"')
         ile_job.add_condor_cmd("MY.flock_local",'true')
+        try:
+            os.system("condor_config_val UID_DOMAIN > uid_domain.txt")
+            with open("uid_domain.txt", 'r') as f:
+                uid_domain = f.readline().strip()
+                requirements.append(' UidDomain =?= "{}"'.format(uid_domain))
+        except:
+            True
 
     # Write requirements
     ile_job.add_condor_cmd('requirements', '&&'.join('({0})'.format(r) for r in requirements))
@@ -2807,6 +2862,13 @@ def write_convert_ascii_to_h5_sub(tag='Convert_ascii2h5', convert_ascii_to_h5_ex
     if no_grid:
         ile_job.add_condor_cmd("MY.DESIRED_SITES",'"nogrid"')
         ile_job.add_condor_cmd("MY.flock_local",'true')
+        try:
+            os.system("condor_config_val UID_DOMAIN > uid_domain.txt")
+            with open("uid_domain.txt", 'r') as f:
+                uid_domain = f.readline().strip()
+                requirements.append(' UidDomain =?= "{}"'.format(uid_domain))
+        except:
+            True
 
     # Write requirements
     ile_job.add_condor_cmd('requirements', '&&'.join('({0})'.format(r) for r in requirements))
@@ -2858,6 +2920,13 @@ def write_hyperpost_sub(tag='HYPER', exe=None, input_net='all.marg_net',output='
     if no_grid:
         ile_job.add_condor_cmd("MY.DESIRED_SITES",'"nogrid"')
         ile_job.add_condor_cmd("MY.flock_local",'true')
+        try:
+            os.system("condor_config_val UID_DOMAIN > uid_domain.txt")
+            with open("uid_domain.txt", 'r') as f:
+                uid_domain = f.readline().strip()
+                requirements.append(' UidDomain =?= "{}"'.format(uid_domain))
+        except:
+            True
 
     requirements=[]
     if universe=='local':

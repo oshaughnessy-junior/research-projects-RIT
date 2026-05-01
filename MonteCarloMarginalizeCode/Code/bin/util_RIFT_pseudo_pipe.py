@@ -193,12 +193,14 @@ parser.add_argument("--internal-ile-n-max",default=None,type=int,help="Set maxim
 parser.add_argument("--internal-ile-inv-spec-trunc-time",default=None,type=float,help="Timescale of inverse spectrum truncation time. Default in pipeline is zero. Should be no more than 1/2 the segment length")
 parser.add_argument("--internal-ile-data-tukey-window-time",default=None,type=float,help="Timescale of the tukey window (total, both sides)")
 parser.add_argument("--internal-ile-psd-common-window",action='store_true',help="Default is to use the window shape correction on the input PSD (assumed to be scaled), and NOT to try to scale PSD.  Adding this option means we assume the PSD is not being window-corrected on input, so does not need rescaling. ")
+parser.add_argument("--internal-ile-modify-taper",default=None,help="String provided modifies taper. If not provided TAPER_START will be used for all waveforms. Future-protecting for nonstandard tapering")
 parser.add_argument("--internal-marginalize-distance",action='store_true',help="If present, the code will marginalize over the distance variable. Passed diretly to helper script. Default will be to generate d_marg script *on the fly*")
 parser.add_argument("--internal-marginalize-distance-file",help="Filename for marginalization file.  You MUST make sure the max distance is set correctly")
 parser.add_argument("--internal-distance-max",type=float,help="If present, the code will use this as the upper limit on distance (overriding the distance maximum in the ini file, or any other setting). *required* to use internal-marginalize-distance in most circumstances")
 parser.add_argument("--internal-ile-check-good-enough",action='store_true', help=" IN PROGRESS: force creation of 'ile_good_enough' files in all ILE run directories, and adding to transfer_file_list")
 parser.add_argument("--internal-correlate-default",action='store_true',help='Force joint sampling in mc,delta_mc, s1z and possibly s2z')
-parser.add_argument("--internal-force-iterations",type=int,default=None,help="If inteeger provided, overrides internal guidance on number of iterations, attempts to force prolonged run. By default puts convergence tests on")
+parser.add_argument("--internal-force-iterations",type=int,default=None,help="If integer provided, overrides internal guidance on number of iterations, attempts to force prolonged run. By default puts convergence tests on")
+parser.add_argument("--internal-truncate-cip-arg-list",type=int, default=None, help="If integer provided, write only the last N lines of the cip_arg_list file. Recommended value is 1, to create extrinsic+calmarg only output. Other values can be used to disable the first few iterations of manual tuning, if initial grid is well-adapted")
 parser.add_argument("--internal-test-convergence-threshold",type=float,default=None,help="The value of the threshold. 0.02 has been default. If not specified, left out of helper command line (where default is maintained) ")
 parser.add_argument("--internal-flat-strategy",action='store_true',help="Use the same CIP options for every iteration, with convergence tests on.  Passes --test-convergence, ")
 parser.add_argument("--internal-use-amr",action='store_true',help="Changes refinement strategy (and initial grid) to use. PRESENTLY WE CAN'T MIX AND MATCH AMR, CIP ITERATIONS, so this is fixed for the whole run right now; use continuation and 'fetch' to augment")
@@ -231,6 +233,7 @@ parser.add_argument("--cip-sampler-oracle-list",type=str,default=None,help="if s
 parser.add_argument("--cip-fit-method",type=str,default=None)
 parser.add_argument("--cip-internal-use-eta-in-sampler",action='store_true', help="Use 'eta' as a sampling parameter. Designed to make GMM sampling behave particularly nicely for objects which could be equal mass")
 parser.add_argument("--ile-jobs-per-worker",type=int,default=None,help="Default will be 20 per worker usually for moderate-speed approximants, and more for very fast configurations")
+parser.add_argument("--ile-jobs-per-worker-first",type=int,default=None,help="Default size for initial iteration, usually 2* number used for others")
 parser.add_argument("--ile-no-gpu",action='store_true')
 parser.add_argument("--ile-xpu",action='store_true',help='Request ILE run on both GPU and CPU. Disables ile_force_gpu, if provided!')
 parser.add_argument("--ile-force-gpu",action='store_true')
@@ -329,6 +332,8 @@ if (opts.use_ini):
     config = ConfigParser.ConfigParser()
     config.optionxform=str # force preserve case! Important for --choose-data-LI-seglen
     config.read(opts.use_ini)
+    config_stored=config
+    # Command line arguments
     if 'rift-pseudo-pipe' in config:
         # get the list of items
         rift_items = dict(config["rift-pseudo-pipe"])
@@ -652,13 +657,22 @@ if not(opts.skip_reproducibility): # not(assume_lowlatency):
         import shutil, json
         if opts.use_ini:
             shutil.copyfile(opts.use_ini, "local.ini") # copy into current directory
-        os.mkdir("reproducibility")
+        if not(os.path.exists("reproducibility")):
+            os.mkdir("reproducibility")
         # Write this script and its arguments
 #        thisfile = os.path.realpath(__file__)
 #        shutil.copyfile(thisfile, "reproducibility/the_script_used.py")
         argparse_dict = vars(opts)
+        # arguments in json form
         with open("reproducibility/the_arguments_used.json",'w') as f:
                 json.dump(argparse_dict,f)
+        # config parsing
+        if opts.use_ini and not(config_dict is None):
+            for name in argparse_dict:
+                config_stored['rift-pseudo-pipe'][name] = str(argparse_dict[name]) # add info
+            with open("reproducibility/local_real.ini",'w') as f:
+                config.write(f) # the actual arguments used!  (Not yet tested it works as input)
+            
         # Write commits
 #        cmd = "(cd ${ILE_CODE_PATH}; git rev-parse HEAD) > reproducibility/RIFT.commit"
 #        os.system(cmd)
@@ -969,6 +983,8 @@ if opts.internal_mitigate_fd_J_frame == 'L_frame':
     line += " --internal-waveform-fd-L-frame "
 if opts.internal_ile_inv_spec_trunc_time:
     line = line.replace("inv-spec-trunc-time 0 ","inv-spec-trunc-time {} ".format(opts.internal_ile_inv_spec_trunc_time))
+if (opts.internal_ile_modify_taper):
+    line += " --internal-waveform-taper SIM_INSPIRAL_TAPER_START " # taper start of waveform by default, overrides any settings in the grids
 if opts.internal_ile_srate_internal:
     line += " --srate-internal {} ".format(opts.internal_ile_srate_internal)
 # strictly the next argument only does anything at the extrinsic step, otherwis it is ignored
@@ -1265,7 +1281,9 @@ if opts.internal_use_amr:
         if not(opts.assume_lowlatency_tradeoffs):
             lines[0] += " --intrinsic-param spin2z "
 
-with open("args_cip_list.txt",'w') as f: 
+with open("args_cip_list.txt",'w') as f:
+   if not(opts.internal_truncate_cip_arg_list is None):
+       lines = lines[-opts.internal_truncate_cip_arg_list:]  # truncate the cip arg list file
    for line in lines:
            f.write(line)
 
@@ -1293,7 +1311,7 @@ instructions_puff = np.loadtxt("helper_puff_args.txt", dtype=str)  # should be o
 puff_params = ' '.join(instructions_puff)
 if opts.internal_puff_transverse:
     puff_params = puff_params.replace('--parameter chieff_aligned', '--parameter s1z_bar --parameter s2z_bar ')
-    puff_params +=  ' --parameter phi1 --parameter phi2 --parameter chi1_perp_u --parameter chi2_perp_u '
+    puff_params +=  ' --parameter phi1 --parameter phi2 --parameter chi1_perp_u --parameter chi2_perp_u --reflect-parameter chi1_perp_u --downselect-parameter chi1_perp_u  --downselect-parameter-range [0,1]  --reflect-parameter chi2_perp_u --downselect-parameter chi2_perp_u  --downselect-parameter-range [0,1] '
 if opts.assume_matter:
 #    puff_params += " --parameter LambdaTilde "  # should already be present
     puff_max_it +=5   # make sure we resolve the correlations
@@ -1398,6 +1416,8 @@ cepp = "create_event_parameter_pipeline_BasicIteration"
 if opts.use_subdags:
     cepp = "create_event_parameter_pipeline_AlternateIteration"
 cmd =cepp+ "  --ile-n-events-to-analyze {} --input-grid proposed-grid.xml.gz --ile-exe  `which integrate_likelihood_extrinsic_batchmode`   --ile-args `pwd`/args_ile.txt --cip-args-list args_cip_list.txt --test-args args_test.txt --request-memory-CIP {} --request-memory-ILE {} --n-samples-per-job ".format(n_jobs_per_worker,cip_mem,ile_mem) + str(npts_it) + " --working-directory `pwd` --n-iterations " + str(n_iterations) + " --n-iterations-subdag-max {} ".format(opts.internal_n_iterations_subdag_max) + "  --n-copies {} ".format(opts.ile_copies) + "   --ile-retries "+ str(opts.ile_retries) + " --general-retries " + str(opts.general_retries)
+if opts.ile_jobs_per_worker_first:
+    cmd += " --ile-n-events-to-analyze-first {} ".format(opts.ile_jobs_per_worker_first)
 if opts.assume_matter or opts.assume_eccentric:
     cmd +=  " --convert-args `pwd`/helper_convert_args.txt "
 if not(opts.ile_runtime_max_minutes is None):
@@ -1543,8 +1563,12 @@ if opts.use_osg:
         cmd += " --use-osg-cip "
     if not(opts.use_osg_file_transfer):
         cmd += " --use-cvmfs-frames "
-    elif not(opts.internal_truncate_files_for_osg_file_transfer):  # attempt to make copies of frame files, and set up to transfer them with *every* job (!)
-        os.system("util_ForOSG_MakeTruncatedLocalFramesDir.sh .")
+    elif (opts.internal_truncate_files_for_osg_file_transfer):  # attempt to make copies of frame files, and set up to transfer them with *every* job (!)
+        if os.path.exists('local.cache'):
+            os.system("util_ForOSG_MakeTruncatedLocalFramesDir.sh .")
+        else:
+            print(" --- WARNING --- ")
+            print(" File truncation not yet performed")
         # if environment variable active, check that frames were created! Fail otherwise
         if 'RIFT_TRUNCATE_CHECK' in os.environ:
             fnames_gwf = os.listdir('./frames_dir/')
@@ -1659,7 +1683,11 @@ if opts.use_osg_file_transfer and opts.internal_truncate_files_for_osg_file_tran
     if opts.fake_data_cache:
         shutil.copyfile(opts.fake_data_cache, 'local.cache')
     # build truncated frames.  Note this parses ILE arguments, so must be done last
-    os.system("util_ForOSG_MakeTruncatedLocalFramesDir.sh .")
+    if os.path.exists('local.cache'):
+        os.system("util_ForOSG_MakeTruncatedLocalFramesDir.sh .")
+
+
+    
 
 ## RUNMON
 try:

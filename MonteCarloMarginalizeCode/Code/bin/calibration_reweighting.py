@@ -40,6 +40,7 @@ weights.dat:
 
 import os
 import sys
+import tempfile,shutil
 
 import argparse
 from copy import deepcopy, copy
@@ -52,7 +53,7 @@ import bilby
 import bilby_pipe
 
 import h5py
-
+import ast
 # So I can import the RIFT source while not making this some setup.py-able package
 # TODO this should not be a hardcoded path!
 
@@ -351,7 +352,9 @@ if args.internal_waveform_fd_no_condition:
 if args.use_gwsignal_lmax_nyquist:
     extra_waveform_kwargs['lmax_nyquist'] = int(args.use_gwsignal_lmax_nyquist)
 if args.extra_waveform_kwargs:
-    my_arg_dict = eval(args.extra_waveform_kwargs)
+    # this form is REQUIRED to parse the standard v5PHM arguments : the key strings are not quoted when passed in from asimov
+    # Need to work on consistency for XPHM-SpinTaylor parsing
+    my_arg_dict = ast.literal_eval(args.extra_waveform_kwargs)
     # dictionary may be malformed (eg not properly quoted) or render as string
     if not(isinstance(my_arg_dict, dict)):
         base_list = my_arg_dict[1:-1].split(',') # remove {} at end, assume string

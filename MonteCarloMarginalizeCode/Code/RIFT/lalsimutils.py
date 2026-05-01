@@ -1757,7 +1757,9 @@ class ChooseWaveformParams:
             if lalmetaio_old_style or hasattr(row, 'geocent_end_time_ns'):
                 self.tref += 1e-9*row.geocent_end_time_ns
         if hasattr(row, 'taper'):
-            self.taper = lalsim.GetTaperFromString(str(row.taper))
+            self.taper = row.taper
+        else:
+            self.taper = lalsimutils.lsu_TAPER_NONE
         # FAKED COLUMNS (nonstandard)
         self.lambda1 = row.alpha5
         self.lambda2 = row.alpha6
@@ -1783,7 +1785,7 @@ class ChooseWaveformParams:
         if rosDebugMessagesContainer[0]:
             print( " --- Creating XML row for the following ---- ")
             self.print_params()
-        sim_valid_cols = [ "simulation_id", "inclination", "longitude", "latitude", "polarization", "geocent_end_time",  "coa_phase", "distance", "mass1", "mass2", "spin1x", "spin1y", "spin1z", "spin2x", "spin2y", "spin2z"] # ,  "alpha1", "alpha2", "alpha3"
+        sim_valid_cols = [ "simulation_id", "inclination", "longitude", "latitude", "polarization", "geocent_end_time",  "coa_phase", "distance", "mass1", "mass2", "spin1x", "spin1y", "spin1z", "spin2x", "spin2y", "spin2z","taper"] # ,  "alpha1", "alpha2", "alpha3"
         if True: #lalmetaio_old_style:
             sim_valid_cols += [ "geocent_end_time_ns"]
         si_table = lsctables.New(lsctables.SimInspiralTable, sim_valid_cols)
@@ -1921,7 +1923,6 @@ def xml_to_ChooseWaveformParams_array(fname, minrow=None, maxrow=None,
     values will use the standard default values of ChooseWaveformParams.
     """
     
-  
     xmldoc = utils.load_filename( fname ,contenthandler = cthdler )
     try:
         # Read SimInspiralTable from the xml file, set row bounds
@@ -1937,13 +1938,27 @@ def xml_to_ChooseWaveformParams_array(fname, minrow=None, maxrow=None,
         rng = range(minrow,maxrow)
         # Create a ChooseWaveformParams for each requested row
         Ps = [ChooseWaveformParams(deltaT=deltaT, fref=fref, lambda1=lambda1,
-            lambda2=lambda2, waveFlags=waveFlags, nonGRparams=nonGRparams,                                   
-            detector=detector, deltaF=deltaF, fmax=fmax) for i in rng]
-        # Copy the information from requested rows to the ChooseWaveformParams
-        [Ps[i-minrow].copy_lsctables_sim_inspiral(sim_insp[i]) for i in rng]
-        # set the approximants correctly -- this is NOT straightforward because of conversions
+            lambda2=lambda2, waveFlags=waveFlags, nonGRparams=nonGRparams,                                       detector=detector, deltaF=deltaF, fmax=fmax) for i in rng]
+        # Copy data from XML rows to ChooseWaveformParams
+        for i in rng:
+            row = sim_insp[i]
+            P = Ps[i - minrow]
+
+            # Copy the standard SimInspiral attributes
+            P.copy_lsctables_sim_inspiral(row)
+
+            # DEBUG: print taper from XML row
+            taper_val = getattr(row, "taper", None)
+
+            # Set taper if present, else default
+            if taper_val is not None:
+                P.taper = taper_val
+            else:
+                P.taper = lsu_TAPER_NONE
+
     except ValueError:
-        print( "No SimInspiral table found in xml file",file=sys.stderr)
+        print("No SimInspiral table found in xml file", file=sys.stderr)
+
     return Ps
 
 #
@@ -1956,15 +1971,28 @@ def ChooseWaveformParams_array_to_xml(P_list, fname="injections", minrow=None, m
     Standard XML storage for parameters.
     Note that lambda values are NOT stored in xml table entries --- I have a special hack to do this
     """
+
     xmldoc = ligolw.Document()
     xmldoc.appendChild(ligolw.LIGO_LW())
     sim_table = lsctables.New(lsctables.SimInspiralTable)
     xmldoc.childNodes[0].appendChild(sim_table)
+
+    # Make sure taper column exists
+    if 'taper' not in sim_table.validcolumns:
+         sim_table.validcolumns.append('taper')
+        
     indx =0
     for P in P_list:
         row= P.create_sim_inspiral()
         row.process_id = indx # ilwd.ilwdchar("process:process_id:{0}".format(indx))
         row.simulation_id = indx # ilwd.ilwdchar("sim_inspiral:simulation_id:{0}".format(indx))
+        taper_map = {
+            lsu_TAPER_NONE: "TAPER_NONE",
+            lsu_TAPER_START: "TAPER_START",
+            lsu_TAPER_END: "TAPER_END",
+            lsu_TAPER_STARTEND: "TAPER_STARTEND"
+        }
+        row.taper = taper_map.get(getattr(P, "taper", lsu_TAPER_NONE), "TAPER_NONE")
         indx+=1
         sim_table.append(row)
     if rosDebugMessagesContainer[0]:
@@ -1976,7 +2004,6 @@ def ChooseWaveformParams_array_to_xml(P_list, fname="injections", minrow=None, m
     if not(".xml.gz" in fname):
         fname_out = fname+".xml.gz"
     utils.write_filename(xmldoc, fname_out, compress="gz")
-
     return True
 
 hdf_params = ['m1', 'm2', \
@@ -3377,6 +3404,7 @@ def hlmoft(P, Lmax=2,nr_polarization_convention=False, fixed_tapering=False, sil
     if ('IMRPhenomP' in  lalsim.GetStringFromApproximant(P.approx) or P.approx == lalIMRPhenomXP or (check_FD_pending(P.approx)) ): # and not (P.SoftAlignedQ()):
         print("Passing model through hlmoft_IMRPv2_dict")
         hlms = hlmoft_IMRPv2_dict(P)
+        TDlen_orig = hlms[(2,2)].data.length
         if not (P.deltaF is None):
             TDlen = int(1./P.deltaF * 1./P.deltaT)
             for mode in hlms:
@@ -3385,7 +3413,7 @@ def hlmoft(P, Lmax=2,nr_polarization_convention=False, fixed_tapering=False, sil
                 if TDlen < hlms[mode].data.length:  # we have generated too long a signal!...truncate from LEFT. Danger!
                     hlms[mode] = lal.ResizeCOMPLEX16TimeSeries(hlms[mode],hlms[mode].data.length-TDlen,TDlen)
         if True: #P.taper:
-            ntaper = int(0.01*hlms[(2,2)].data.length)  # fixed 1% of waveform length, at start, be consistent with other methods
+            ntaper = int(0.01*np.min([hlms[(2,2)].data.length,TDlen_orig]))  # fixed 1% of waveform length, at start, be consistent with other methods
             ntaper = np.max([ntaper, int(1./(P.fmin*P.deltaT))])  # require at least one waveform cycle of tapering; should never happen
             vectaper= 0.5 - 0.5*np.cos(np.pi*np.arange(ntaper)/(1.*ntaper))
             for key in hlms.keys():
@@ -3615,17 +3643,19 @@ def hlmoft(P, Lmax=2,nr_polarization_convention=False, fixed_tapering=False, sil
     # FIXME: Add ability to taper
     # COMMENT: Add ability to generate hlmoft at a nonzero GPS time directly.
     #      USUALLY we will use the hlms in template-generation mode, so will want the event at zero GPS time
-
+    TDlen_orig = None
     if P.deltaF is not None:
         TDlen = int(1./P.deltaF * 1./P.deltaT)
         hxx = lalsim.SphHarmTimeSeriesGetMode(hlms, 2, 2)
+        TDlen_orig = hxx.data.length
         # Consider modifing TD behavior to be consistent with FD behavior used to match LI
         if TDlen >= hxx.data.length:
             hlms = lalsim.ResizeSphHarmTimeSeries(hlms, 0, TDlen)
 
     hlm_dict = SphHarmTimeSeries_to_dict(hlms,Lmax)
-
-
+    if (TDlen_orig is None):
+        TDlen_orig = hlm_dict[(2,2)].data.length
+    
     # positive m only check: should never happen
     # ...but if it does (for NRSur lalsuite interface), perform reflection.
     approx_string = P.approx
@@ -3665,7 +3695,7 @@ def hlmoft(P, Lmax=2,nr_polarization_convention=False, fixed_tapering=False, sil
         # at this point we know the waveform length!
         TDlen_here = hlm_dict[mode].data.length
         # Base taper, based on 1% of waveform length
-        ntaper = int(0.01*TDlen_here)  # fixed 1% of waveform length, at start
+        ntaper = int(0.01*np.min([TDlen_here,TDlen_orig]) )  # fixed 1% of waveform length, at start
         ntaper = np.max([ntaper, int(1./(fmin_effective*P.deltaT)) ])  # require at least one waveform cycle of tapering; should never happen
         vectaper= 0.5 - 0.5*np.cos(np.pi*np.arange(ntaper)/(1.*ntaper))
         # Taper at the start of the segment
@@ -4035,7 +4065,7 @@ def hoft_from_hlm(hlms,P, return_complex=False, extra_phase_shift=0):
         hc = lal.CreateREAL8TimeSeries("hT", h22.epoch, h22.f0,
             h22.deltaT, h22.sampleUnits, h22.data.length)
         hp.data.data = np.real(hT.data.data)
-        hc.data.data = np.imag(hT.data.data)
+        hc.data.data = (-1)*np.imag(hT.data.data)
         hp.epoch = hp.epoch + P.tref
         hc.epoch = hc.epoch + P.tref
         h_real = lalsim.SimDetectorStrainREAL8TimeSeries(hp, hc, 
@@ -4589,20 +4619,39 @@ def frame_data_to_hoft(fname, channel, start=None, stop=None, window_shape=0.,
     """
     if verbose:
         print( " ++ Loading from cache ", fname, channel)
+
     with open(fname) as cfile:
         cachef = Cache.fromfile(cfile)
     cachef=cachef.sieve(ifos=channel[:1])
-    # for i in range(len(cachef))[::-1]:
-    #     # FIXME: HACKHACKHACK
-    #     if cachef[i].observatory != channel[0]:
-    #         del cachef[i]
-    if verbose:
+    for name in cachef:
+        print(name)
+        
+    if use_gwpy:
+        import gwpy.timeseries #, gwpy.io
+        #my_cache=gwpy.io.cache.read_cache(fname)
+        my_cache = [x.url.split(' ')[-1]  for x in cachef]
+        my_cache_cleaned = [ x.replace("file://localhost","") for x in my_cache] # causes problems
+        ht_gwpy = gwpy.timeseries.TimeSeries.read(source=my_cache_cleaned, start=start, end=stop ,channel=channel,pad=0).astype(np.float64) # force type so real8 later
+        trange_here = ht_gwpy.times.value-start
+        #print(ht_gwpy.t0, 1./ht_gwpy.dt, start, stop, np.min(trange_here), np.max(trange_here), len(trange_here),ht_gwpy.dtype)
+        ht_gwpy.crop(start=start, end=stop) # force to target size, NTRODUCES TIME SHIFTS RELATIVE TO USUAL CODE
+        #ht_gwpy.dtype =np.float64 # make sure cast to REAL8
+        tmp = ht_gwpy.to_lal() # DANGER, can truncate the desired size! 
+        #print(" Input ", 1./tmp.deltaT, tmp.data.length, tmp.deltaT*tmp.data.length)
+        #print(type(tmp))
+    else:
+
+      # for i in range(len(cachef))[::-1]:
+      #     # FIXME: HACKHACKHACK
+      #     if cachef[i].observatory != channel[0]:
+      #         del cachef[i]
+      if verbose:
         print( cachef.to_segmentlistdict())
         
-    duration = stop - start if None not in (start, stop) else None
-    try:
+      duration = stop - start if None not in (start, stop) else None
+      try:
         tmp = frread.read_timeseries(cachef, channel, start=start,duration=duration,verbose=verbose,datatype='REAL8')
-    except Exception as fail:
+      except Exception as fail:
         if str(fail) == "RuntimeError: Failure in an XLAL routine":
             print(f"Encountered {fail}")
             sys.exit(91)
@@ -4641,7 +4690,7 @@ def frame_data_to_hoft(fname, channel, start=None, stop=None, window_shape=0.,
 
 
 def frame_data_to_hoff(fname, channel, start=None, stop=None, TDlen=0,
-        window_shape=0., verbose=True):
+                       window_shape=0., verbose=True,**kwargs):
     """
     Function to read in data in the frame format
     and convert it to a COMPLEX16FrequencySeries holding
@@ -4657,7 +4706,7 @@ def frame_data_to_hoff(fname, channel, start=None, stop=None, TDlen=0,
     If TDlen == 0 (default), zero-pad the TD waveform to the next power of 2
     If TDlen == N, zero-pad the TD waveform to length N before FFTing
     """
-    ht = frame_data_to_hoft(fname, channel, start, stop, window_shape, verbose)
+    ht = frame_data_to_hoft(fname, channel, start, stop, window_shape, verbose,**kwargs)
 
     tmplen = ht.data.length
     if TDlen == -1:
@@ -5551,7 +5600,7 @@ def convert_waveform_coordinates(x_in,coord_names=['mc', 'eta'],low_level_coord_
         for name in ['mc', 'm1', 'm2']:
             if name in coord_names:
                 indx_name = coord_names.index(name)
-                x_out[indx_name] *= (1+source_redshift)
+                x_out[:,indx_name] *= (1+source_redshift)
 
     # return if we don't need to do any more conversions (e.g., if we only have --parameter specification)
     if len(coord_names_reduced)<1:
@@ -5576,7 +5625,7 @@ def convert_waveform_coordinates(x_in,coord_names=['mc', 'eta'],low_level_coord_
             x_out[indx_out] = -np.inf*np.ones( len(coord_names) ) # return negative infinity for all coordinates, if Kerr bound violated
     return x_out
 
-def convert_waveform_coordinates_with_eos(x_in,coord_names=['mc', 'eta'],low_level_coord_names=['m1','m2'],enforce_kerr=False,eos_class=None,no_matter1=False,no_matter2=False,source_redshift=0):
+def convert_waveform_coordinates_with_eos(x_in,coord_names=['mc', 'eta'],low_level_coord_names=['m1','m2'],enforce_kerr=False,eos_class=None,no_matter1=False,no_matter2=False,source_redshift=0, backstop_novector=False):
     """
     A wrapper for ChooseWaveformParams() 's coordinate tools (extract_param, assign_param) providing array-formatted coordinate changes.  BE VERY CAREFUL, because coordinates may be defined inconsistently (e.g., holding different variables constant: M and eta, or mc and q)
     """
@@ -5586,6 +5635,28 @@ def convert_waveform_coordinates_with_eos(x_in,coord_names=['mc', 'eta'],low_lev
         print( " - Failed to load EOSManager - ")  # this will occur at the start
     assert not (eos_class==None)
     x_out = np.zeros( (len(x_in), len(coord_names) ) )
+
+    if not(backstop_novector):  # backstop option to use older code
+        # define coordinates
+        low_level_coord_names_extended = low_level_coord_names  + ['lambda1','lambda2'] # forces a copy
+        n_fields_normal = len(low_level_coord_names)
+        x_in_extended = np.zeros( (len(x_in), len(low_level_coord_names_extended)))
+        x_in_extended[:,:n_fields_normal] = x_in
+
+        # Extract individual masses
+        x_out_temp_mass = convert_waveform_coordinates(x_in, coord_names=['m1','m2'], low_level_coord_names=low_level_coord_names)
+
+        # Add lambda from EOS. Note backend vectorization is not ready, so this is not as efficient as it should be
+        if not(no_matter1):
+            indx_ok = x_out_temp_mass[:,0] < eos_class.mMaxMsun # valid assignments
+            x_in_extended[indx_ok,-2] = eos_class.lambda_from_m_vector( x_out_temp_mass[indx_ok,0]*lal.MSUN_SI)  # mass of primary
+        if not(no_matter2):
+            indx_ok = x_out_temp_mass[:,1] < eos_class.mMaxMsun # valid assignments
+            x_in_extended[indx_ok,-1] = eos_class.lambda_from_m_vector( x_out_temp_mass[indx_ok,1]*lal.MSUN_SI)  # mass of secondary
+
+        # Now call normal converter, with new variables defined
+        return convert_waveform_coordinates(x_in_extended, coord_names=coord_names,low_level_coord_names=low_level_coord_names_extended,enforce_kerr=enforce_kerr, source_redshift=source_redshift)
+            
     P = ChooseWaveformParams()
     for indx_out  in np.arange(len(x_in)):
         # WARNING UNUSUAL CONVENTION

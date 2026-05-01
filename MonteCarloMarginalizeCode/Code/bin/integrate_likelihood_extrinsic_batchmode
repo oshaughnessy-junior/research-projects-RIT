@@ -179,7 +179,8 @@ optp.add_option("-C", "--channel-name", action="append", help="instrument=channe
 optp.add_option("-p", "--psd-file", action="append", help="instrument=psd-file, e.g. H1=H1_PSD.xml.gz. Can be given multiple times for different instruments.")
 optp.add_option("-k", "--skymap-file", help="Use skymap stored in given FITS file.")
 optp.add_option("-x", "--coinc-xml", help="gstlal_inspiral XML file containing coincidence information.")
-optp.add_option("-I", "--sim-xml", help="XML file containing mass grid to be evaluated")
+optp.add_option("-I", "--sim-xml", help="XML file containing parameter grid to be evaluated")
+optp.add_option( "--sim-grid", help="ascii file with labels containing parameter grid to be evaluated, potentially including parameters passed to external libraries or to the waveform generator/cal/systematics as extra arguments.  ")
 optp.add_option("-E", "--event", default=0,type=int, help="Event number used for this run")
 optp.add_option( "--random-event", action='store_true', help="Pick a RANDOM event from the file. Dangerous - watch out for oversampling fast events")
 optp.add_option("--n-events-to-analyze", default=1,type=int, help="Number of events to analyze from this XML")
@@ -187,6 +188,8 @@ optp.add_option("--soft-fail-event-range",action='store_true',help='Soft failure
 optp.add_option("-f", "--reference-freq", type=float, default=100.0, help="Waveform reference frequency. Required, default is 100 Hz.")
 optp.add_option("--fmin-template", dest='fmin_template', type=float, default=40, help="Waveform starting frequency.  Default is 40 Hz. Also equal to starting frequency for integration") 
 optp.add_option("--fmin-template-correct-for-lmax",action='store_true',help="Modify amount of data selected, waveform starting frequency to account for l-max, to better insure all requested modes start within the targeted band")
+optp.add_option("--internal-waveform-taper",default=None, help="lalsimulation taper option string name ")
+optp.add_option("--internal-use-gwpy",action='store_true', help="Use gwpy for low-level io")
 optp.add_option("--fmin-ifo", action='append' , help="Minimum frequency for each IFO. Implemented by setting the PSD=0 below this cutoff. Use with care.") 
 #optp.add_option("--nr-params",default=None, help="List of specific NR parameters and groups (and masses?) to use for the grid.")
 #optp.add_option("--nr-index",type=int,default=-1,help="Index of specific NR simulation to use [integer]. Mass used: mtot= m1+m2")
@@ -231,6 +234,9 @@ optp.add_option("--resample-time-marginalization",action='store_true', help="If 
 optp.add_option("--srate-resample-time-marginalization",type=int, default=None, help="If time-marginalizaiton is true (and should almost always be true), an opportunity to interpolate the likelihoods on the (internal) time grid and perform time resampling at a higher sampling rate, for greater nominal time resolution. Does not change underlying calculations.")
 optp.add_option("-d", "--distance-marginalization", action="store_true", help="Perform marginalization over distance via a look-up table. Default is false.")
 optp.add_option("-l", "--distance-marginalization-lookup-table", default=None, help="Look-up table for distance marginalization.")
+optp.add_option("--calibration-envelope-directory",default=None, help="Name of directory")
+optp.add_option("--calibration-n-realizations", default=100, type=int, help="Number of realizations to use for calmarg, recommend 100")
+optp.add_option("--calibration-spline-count", default=10,type=int)
 optp.add_option("--vectorized", action="store_true", help="Perform manipulations of lm and timeseries using numpy arrays, not LAL data structures.  (Combine with --gpu to enable GPU use, where available)")
 optp.add_option("--gpu", action="store_true", help="Perform manipulations of lm and timeseries using numpy arrays, CONVERTING TO GPU when available. You MUST use this option with --vectorized (otherwise it is a no-op). You MUST have a suitable version of cupy installed, your cuda operational, etc")
 optp.add_option("--force-gpu-only", action="store_true", help="Hard fail if no GPU present (assessed by cupy not loading)")
@@ -261,6 +267,7 @@ integration_params = OptionGroup(optp, "Integration Parameters", "Control the in
 integration_params.add_option("--n-max", type=int, help="Total number of samples points to draw. If this number is hit before n_eff, then the integration will terminate. Default is 'infinite'.",default=1e7)
 integration_params.add_option("--n-eff", type=int, default=100, help="Total number of effective samples points to calculate before the integration will terminate. Default is 100")
 integration_params.add_option("--fairdraw-extrinsic-output", action='store_true' , help="Output is fair draw, rather than being comprehensive")
+integration_params.add_option("--fairdraw-extrinsic-output-n-max", default=5, type=int, help="Maximum number of fair draws per ILE evaluation.")
 integration_params.add_option("--n-chunk", type=int, help="Chunk'.",default=10000)
 integration_params.add_option("--convergence-tests-on",default=False,action='store_true')
 integration_params.add_option("--seed", type=int, help="Random seed to use. Default is to not seed the RNG.")
@@ -357,6 +364,11 @@ if opts.check_good_enough:
       print(" Good enough file ZERO LENGTH, continuing")
 
 
+# Parse tapering request, if present.
+taper_default =lalsimutils.lsu_TAPER_NONE
+if opts.internal_waveform_taper and 'TAPER' in opts.internal_waveform_taper:
+  if hasattr(lalsimutils.lalsim, opts.internal_waveform_taper):
+    taper_default = getattr(lalsimutils.lalsim, opts.internal_waveform_taper)
 
 #
 # Failure modes
@@ -539,6 +551,7 @@ fiducial_epoch = event_time.seconds + 1e-9*event_time.nanoseconds   # no more di
 # Struct to hold template parameters
 P_list = None
 P=None # force allocation so I can use the preferred event later
+grid_in = None
 if opts.sim_xml:
     print( "====Loading injection XML:", opts.sim_xml, opts.event, " =======")
     P_list = lalsimutils.xml_to_ChooseWaveformParams_array(str(opts.sim_xml))
@@ -573,6 +586,43 @@ if opts.sim_xml:
             P.phaseO = 3
 
     P = P_list[0]  # Load in the physical parameters of the injection.  
+elif opts.sim_grid:
+  print( "====Loading injection grid file:", opts.sim_grid, opts.event, " =======")
+  grid_in = np.genfromtxt(opts.sim_grid,names=True)
+  grid_names = grid_in.dtype.names
+  grid_names_params = list(set(grid_names).intersection(set(lalsimutils.valid_params))) # only do internal loop over valid parameters
+  grid_indx_params = [grid_names.index(x) for x in grid_names_params]
+  if len(grid_in) < opts.event:
+    print(" No events lft to analyze, out of ramge")
+    sys.exit(0)
+  n_event_max= np.min([len(grid_in), opts.event+opts.n_events_to_analyze])
+  grid_in = grid_in[opts.event:n_event_max]
+  P_list = []
+  # Should call a convert_vector_coordinates call to get m1, m2, etc all in a grid, to make it faster. Assume user is friendly/sane
+  for indx in range(opts.n_events_to_analyze):
+    P = lalsimutils.ChooseWaveformParams()
+    for indx, name  in enumerate(grid_names_params):
+      if hasattr(P, name): # fast version
+        setattr(P,name,  float(grid_in[grid_names_params[indx]]))
+      else: # slightly slower version
+        P.assign_param(name, grid_in[grid_names_params[indx]])
+    # Set required properties for all - note distance must be fixed here !
+    P.radec =False  # do NOT propagate the epoch later
+    P.fref = opts.reference_freq
+    P.fmin = template_min_freq
+    P.tref = fiducial_epoch  # the XML table
+    # fix mass scale
+    if P.m1 < 1e15:  # 
+      P.m1 *= lal.MSUN_SI
+      P.m2 *= lal.MSUN_SI
+    m1 = P.m1/lal.MSUN_SI
+    m2 =P.m2/lal.MSUN_SI
+    lambda1, lambda2 = P.lambda1,P.lambda2
+    P.dist = factored_likelihood.distMpcRef * 1.e6 * lal.PC_SI   # use *nonstandard* distance
+
+    P_list.append(P)
+  P = P_list[0]
+  P.print_params()
 else:
  if opts.mass1 is not None and opts.mass2 is not None:
     m1, m2 = opts.mass1, opts.mass2
@@ -606,7 +656,8 @@ else:
     ampO = opts.amp_order,
     fref = opts.reference_freq,
     tref = fiducial_epoch,
-    dist = factored_likelihood.distMpcRef * 1.e6 * lal.PC_SI
+    dist = factored_likelihood.distMpcRef * 1.e6 * lal.PC_SI,
+    taper= taper_default
     )
  P_list= [P]
 
@@ -653,13 +704,13 @@ for inst, chan in map(lambda c: c.split("="), opts.channel_name):
     print( "Reading channel %s from cache %s" % (inst+":"+chan, opts.cache_file))
     data_dict[inst] = lalsimutils.frame_data_to_non_herm_hoff(opts.cache_file,
             inst+":"+chan, start=start_time, stop=end_time,
-            window_shape=opts.window_shape,deltaT=deltaT,deltaT_internal=deltaT_internal)
+            window_shape=opts.window_shape,deltaT=deltaT,deltaT_internal=deltaT_internal,use_gwpy=opts.internal_use_gwpy)
     print( "Frequency binning: %f, length %d" % (data_dict[inst].deltaF,
             data_dict[inst].data.length) )
 # set global sampling rate, now that we have done import
 if deltaT_internal:
   deltaT=deltaT_internal
-  fSample = 1./deltaT
+  fSample = 1./deltaT   # make sure reassign, for time resampling argument safety
     
 flow_ifo_dict = {}
 if opts.fmin_ifo:
@@ -733,6 +784,24 @@ for Psig in P_list:
   Psig.deltaf = P.deltaF
 
 
+#
+# Load in calibration realizations, if desired
+#
+calibration_marginalization=False
+calibration_realization_dict = {}
+if opts.calibration_envelope_directory:
+#  t_ref_wind = opts.calibration_n_realizations * t_ref_wind  # changes length of buffer, should produce longer window. DOES NOT WORK PROPERLY
+  import RIFT.calmarg.generate_realizations
+  calibration_marginalization=True
+  for ifo in psd_dict:
+     fname = opts.calibration_envelope_directory + "/" + ifo + ".txt"
+     fmin_here = opts.fmin_template
+     if opts.fmin_ifo:
+       fmin_here = flow_ifo_dict[ifo]
+       
+     calibration_realization_dict[ifo] = RIFT.calmarg.generate_realizations.create_realizations(fname, 1./P.deltaF, P.deltaT, fmin_here, fmax, opts.calibration_spline_count, opts.calibration_n_realizations)
+
+  
 
 #
 # Set up parameters and bounds
@@ -1211,7 +1280,7 @@ pinned_params.update({
     "igrand_threshold_deltalnL": opts.save_deltalnL, # Threshold on distance from max L to save sample
     "igrand_threshold_p": opts.save_P, # Threshold on cumulative probability contribution to cache sample
     "igrand_fairdraw_samples": opts.fairdraw_extrinsic_output,
-    "igrand_fairdraw_samples_max": opts.n_eff
+    "igrand_fairdraw_samples_max": np.min([opts.fairdraw_extrinsic_output_n_max,opts.n_eff])
 })
 if opts.sampler_method == "adaptive_cartesian_gpu":
   pinned_params.update({"save_no_samples":True})   # do not exhaust GPU memory with MC samples!  
@@ -1426,6 +1495,9 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
     if opts.internal_precompute_ignore_threshold:
       ignore_threshold=opts.internal_precompute_ignore_threshold
       print("IGNORE ACTIVE ", ignore_threshold)
+    extra_kwargs ={}
+    if calibration_marginalization:
+      extra_kwargs['calibration_realizations'] = calibration_realization_dict
     rholms_intp, cross_terms, cross_terms_V,  rholms,  guess_snr, rest=factored_likelihood.PrecomputeLikelihoodTerms(
             fiducial_epoch, t_window, P, data_dict, psd_dict, opts.l_max, fmax,
             False, inv_spec_trunc_Q, T_spec,
@@ -1433,7 +1505,7 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
             NR_group=NR_template_group,NR_param=NR_template_param,
             use_gwsignal=opts.use_gwsignal,
             use_gwsignal_approx=opts.approximant,
-            use_external_EOB=opts.use_external_EOB,nr_lookup=opts.nr_lookup,nr_lookup_valid_groups=opts.nr_lookup_group,perturbative_extraction=opts.nr_perturbative_extraction,perturbative_extraction_full=opts.nr_perturbative_extraction_full,use_provided_strain=opts.nr_use_provided_strain,hybrid_use=opts.nr_hybrid_use,hybrid_method=opts.nr_hybrid_method,ROM_group=opts.rom_group,ROM_param=opts.rom_param,ROM_use_basis=opts.rom_use_basis,verbose=opts.verbose,quiet=not opts.verbose,ROM_limit_basis_size=opts.rom_limit_basis_size_to,no_memory=opts.no_memory,skip_interpolation=opts.vectorized, extra_waveform_kwargs=extra_waveform_kwargs)
+            use_external_EOB=opts.use_external_EOB,nr_lookup=opts.nr_lookup,nr_lookup_valid_groups=opts.nr_lookup_group,perturbative_extraction=opts.nr_perturbative_extraction,perturbative_extraction_full=opts.nr_perturbative_extraction_full,use_provided_strain=opts.nr_use_provided_strain,hybrid_use=opts.nr_hybrid_use,hybrid_method=opts.nr_hybrid_method,ROM_group=opts.rom_group,ROM_param=opts.rom_param,ROM_use_basis=opts.rom_use_basis,verbose=opts.verbose,quiet=not opts.verbose,ROM_limit_basis_size=opts.rom_limit_basis_size_to,no_memory=opts.no_memory,skip_interpolation=opts.vectorized, extra_waveform_kwargs=extra_waveform_kwargs,**extra_kwargs)
 
     # skip nan ! Something horrible has happened
     if np.isnan(guess_snr):
@@ -1895,6 +1967,22 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
       sqrt_var_over_res =  numpy.exp(var/2 - log_res)
 
     # Report results
+    if opts.output_file and opts.sim_grid:
+      fname_output_txt = opts.output_file +"_"+str(indx_event)+"_" + ".grid"
+      from  RIFT.misc.samples_utils import add_field
+      # grid file output: use preserved columns
+      grid_out =grid_in.copy()
+      if not('lnL' in grid_out.dtype.names):
+        grid_out = add_field(grid_out, [('lnL',float)])
+      if not('sigma_lnL' in grid_out.dtype.names):
+        grid_out = add_field(grid_out, [('sigma_lnL',float)])
+      grid_out['lnL'][indx_event] = log_res + manual_avoid_overflow_logarithm
+      grid_out['sigma_lnL'][indx_event] = log_res + manual_avoid_overflow_logarithm
+      line_out = np.array(list(grid_out[indx_event])) # convert tuple to list then to array - very silly
+#      print(grid_out[indx_event], line_out, type(line_out))
+      np.savetxt(fname_output_txt, [line_out], header=' '.join(grid_out.dtype.names) )
+      
+    # Report results (standard. Note this is BEFORE TIME RESAMPLING)    
     if opts.output_file:
         fname_output_txt = opts.output_file +"_"+str(indx_event)+"_" + ".dat"
         m1 =P.m1/lal.MSUN_SI
@@ -2043,9 +2131,9 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
             samples["latitude"] = samples["declination"]
             samples["longitude"] = samples["right_ascension"]
       if "log_integrand" in samples:
-        samples["loglikelihood"] = samples["log_integrand"] +  manual_avoid_overflow_logarithm
+          samples["loglikelihood"] = samples["log_integrand"] +  manual_avoid_overflow_logarithm
       else:
-        samples["loglikelihood"] = numpy.log(samples["integrand"]) + manual_avoid_overflow_logarithm  # export with consistent offset
+          samples["loglikelihood"] = numpy.log(samples["integrand"]) + manual_avoid_overflow_logarithm  # export with consistent offset
       if not opts.rom_integrate_intrinsic:
             # ILE mode: insert fixed model parameters
             samples["mass1"] = numpy.ones(samples["psi"].shape)*m1 # opts.mass1
