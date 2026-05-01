@@ -519,12 +519,46 @@ class _GenericManJob(object):
 
 
 class _GenericDAG(object):
-    """Backend-neutral workflow / DAG container."""
+    """Backend-neutral workflow / DAG container.
+
+    In addition to the basic node graph, the DAG carries the *control-logic*
+    overlays that HTCondor's DAGMan supports natively:
+
+      * **per-node pre/post scripts** -- analogous to ``SCRIPT PRE`` /
+        ``SCRIPT POST`` directives.  These run on the submit node before /
+        after the corresponding job.
+      * **abort-on hooks** -- analogous to ``ABORT-DAG-ON``: if the named
+        node returns the given exit code, the DAG aborts (optionally with
+        a specific success/failure return value).
+      * **dot visualisation file** -- ``DOT`` directive.
+      * **escape-hatch raw directives** -- arbitrary backend-native lines
+        appended verbatim by the active backend.
+
+    Each backend is responsible for translating these into its native form:
+    HTCondor / glue.pipeline emit DAGMan directives unchanged; the Slurm
+    backend translates pre/post into pre-sbatch shell stanzas and
+    afterany-dependency wrapper jobs respectively, and emits the rest as
+    documented comments where there's no direct equivalent.
+
+    The control-logic accessors can be called either *before*
+    :meth:`write_concrete_dag` (in which case they're emitted alongside
+    the rest of the DAG) or *after* (in which case the active backend is
+    asked to append them to the artefact it already produced -- this
+    matches the legacy pattern of ``open(dag_file, "a").write(...)`` that
+    older RIFT bin/ scripts use).
+    """
 
     def __init__(self, log=None):
         self.log = log
         self.dag_file = None
         self.nodes = []
+        # Control-logic overlays
+        self.script_pre = []        # list of (node_or_name, exe, args_str)
+        self.script_post = []       # list of (node_or_name, exe, args_str)
+        self.abort_on = []          # list of (node_or_name, exit_code, return_value)
+        self.dot_file = None
+        self.extra_directives = []  # list of raw lines (escape hatch)
+        self._already_written = False
 
     def set_dag_file(self, name):
         self.dag_file = name
@@ -532,11 +566,74 @@ class _GenericDAG(object):
     def add_node(self, node):
         self.nodes.append(node)
 
+    @staticmethod
+    def _node_name(node_or_name):
+        """Accept either a node instance or its bare name string."""
+        if isinstance(node_or_name, str):
+            return node_or_name
+        # Prefer the legacy ``_CondorDAGNode__md5name`` attribute so we
+        # match exactly what HTCondor / glue.pipeline already use.
+        return (
+            getattr(node_or_name, "_CondorDAGNode__md5name", None)
+            or getattr(node_or_name, "name", None)
+            or str(node_or_name)
+        )
+
+    def add_script_pre(self, node, executable, *args):
+        """Add a SCRIPT PRE hook for *node* (executable + args)."""
+        entry = (self._node_name(node), str(executable),
+                 " ".join(str(a) for a in args))
+        self.script_pre.append(entry)
+        if self._already_written:
+            get_backend().append_script_pre(self, *entry)
+
+    def add_script_post(self, node, executable, *args):
+        """Add a SCRIPT POST hook for *node* (executable + args)."""
+        entry = (self._node_name(node), str(executable),
+                 " ".join(str(a) for a in args))
+        self.script_post.append(entry)
+        if self._already_written:
+            get_backend().append_script_post(self, *entry)
+
+    def add_abort_on(self, node, exit_code, return_value=0):
+        """Add an ABORT-DAG-ON hook: if *node* returns *exit_code*, abort
+        the DAG with overall exit *return_value*."""
+        entry = (self._node_name(node), int(exit_code), int(return_value))
+        self.abort_on.append(entry)
+        if self._already_written:
+            get_backend().append_abort_on(self, *entry)
+
+    def set_dot_file(self, path):
+        """Request a DAG visualisation file (DOT directive)."""
+        self.dot_file = path
+        if self._already_written:
+            get_backend().append_dot_file(self, path)
+
+    def add_extra_directive(self, line):
+        """Append a raw backend-native directive line.  Escape hatch for
+        anything the structured API doesn't cover."""
+        self.extra_directives.append(line)
+        if self._already_written:
+            get_backend().append_extra_directive(self, line)
+
     def write_concrete_dag(self):
         """Hand the DAG to the active backend, which writes the workflow artefact."""
         if self.dag_file is None:
             raise RuntimeError("write_concrete_dag: no dag file set")
         get_backend().emit_dag(self, self.dag_file)
+        self._already_written = True
+
+    @property
+    def output_path(self):
+        """Path the active backend actually wrote to.
+
+        Useful when external code wants to append further directives.  For
+        HTCondor / glue this is ``<dag_file>.dag``; for Slurm it's the
+        ``_dag.sh`` driver script.
+        """
+        if self.dag_file is None:
+            return None
+        return get_backend().output_path_for_dag(self.dag_file)
 
 
 # ===========================================================================
@@ -574,6 +671,74 @@ class WorkflowBackend(abc.ABC):
     @abc.abstractmethod
     def emit_dag(self, dag, path):
         """Write the workflow driver artefact for *dag* to *path*."""
+
+    # ------------------------------------------------------------------
+    # DAG-level control-logic overlays.
+    #
+    # The default behaviour of every ``append_*`` method is to write a
+    # single backend-native line into ``output_path_for_dag(dag.dag_file)``.
+    # Subclasses override the formatters via ``format_*``; only Slurm
+    # needs to fully override ``append_script_post`` etc. because its
+    # control-logic equivalent isn't a single text line.
+    # ------------------------------------------------------------------
+
+    def output_path_for_dag(self, dag_file):
+        """Return the absolute path the backend wrote (or will write)
+        for *dag_file*.  Default: append ``.dag`` if missing."""
+        if dag_file.endswith(".dag"):
+            return dag_file
+        return dag_file + ".dag"
+
+    def format_script_pre(self, name, exe, args_str):
+        return "SCRIPT PRE {} {} {}\n".format(name, exe, args_str).rstrip(" \n") + "\n"
+
+    def format_script_post(self, name, exe, args_str):
+        return "SCRIPT POST {} {} {}\n".format(name, exe, args_str).rstrip(" \n") + "\n"
+
+    def format_abort_on(self, name, exit_code, return_value):
+        return "ABORT-DAG-ON {} {} RETURN {}\n".format(name, exit_code, return_value)
+
+    def format_dot_file(self, path):
+        return "DOT {}\n".format(path)
+
+    def _append_to_output(self, dag, text):
+        path = self.output_path_for_dag(dag.dag_file)
+        with open(path, "a") as fh:
+            fh.write(text)
+
+    def append_script_pre(self, dag, name, exe, args_str):
+        self._append_to_output(dag, self.format_script_pre(name, exe, args_str))
+
+    def append_script_post(self, dag, name, exe, args_str):
+        self._append_to_output(dag, self.format_script_post(name, exe, args_str))
+
+    def append_abort_on(self, dag, name, exit_code, return_value):
+        self._append_to_output(dag, self.format_abort_on(name, exit_code, return_value))
+
+    def append_dot_file(self, dag, path):
+        self._append_to_output(dag, self.format_dot_file(path))
+
+    def append_extra_directive(self, dag, line):
+        if not line.endswith("\n"):
+            line = line + "\n"
+        self._append_to_output(dag, line)
+
+    def _emit_dag_control_overlays(self, dag, fh):
+        """Helper for emit_dag implementations that produce a single
+        text artefact: write all the captured control-logic overlays
+        appended to the workflow body."""
+        for name, exe, args_str in dag.script_pre:
+            fh.write(self.format_script_pre(name, exe, args_str))
+        for name, exe, args_str in dag.script_post:
+            fh.write(self.format_script_post(name, exe, args_str))
+        for name, exit_code, return_value in dag.abort_on:
+            fh.write(self.format_abort_on(name, exit_code, return_value))
+        if dag.dot_file is not None:
+            fh.write(self.format_dot_file(dag.dot_file))
+        for line in dag.extra_directives:
+            if not line.endswith("\n"):
+                line = line + "\n"
+            fh.write(line)
 
     # Defaults useful for sub-classes
     @staticmethod
@@ -709,6 +874,8 @@ class HTCondorBackend(WorkflowBackend):
             for node in dag.nodes:
                 for parent in node.parents:
                     fh.write("PARENT {} CHILD {}\n".format(parent.name, node.name))
+            # Control-logic overlays (SCRIPT POST, ABORT-DAG-ON, DOT, ...)
+            self._emit_dag_control_overlays(dag, fh)
 
 
 # ---------------------------------------------------------------------------
@@ -838,6 +1005,16 @@ class GluePipelineBackend(WorkflowBackend):
             glue_path = path
         gdag.set_dag_file(glue_path)
         gdag.write_concrete_dag()
+        # Append the control-logic overlays directly to the file glue
+        # produced (glue.pipeline does not expose its own SCRIPT POST /
+        # ABORT-DAG-ON / DOT API).
+        final_path = self.output_path_for_dag(path)
+        with open(final_path, "a") as fh:
+            self._emit_dag_control_overlays(dag, fh)
+
+    def output_path_for_dag(self, dag_file):
+        # glue.pipeline always lands the dag at ``<basename>.dag``.
+        return dag_file if dag_file.endswith(".dag") else dag_file + ".dag"
 
 
 # ---------------------------------------------------------------------------
@@ -944,18 +1121,54 @@ class SlurmBackend(WorkflowBackend):
         except OSError:
             pass
 
+    def output_path_for_dag(self, dag_file):
+        """For Slurm, the workflow lands in a shell driver, not a .dag.
+
+        Mapping:
+          ``foo.dag``  → ``foo_dag.sh``
+          ``foo.sh``   → ``foo.sh``
+          otherwise    → ``foo.sh``
+        """
+        if dag_file.endswith(".sh"):
+            return dag_file
+        if dag_file.endswith(".dag"):
+            return dag_file[:-4] + "_dag.sh"
+        return dag_file + ".sh"
+
     def emit_dag(self, dag, path):
-        """Emit a shell driver that submits the DAG via sbatch dependency chains."""
-        if not path.endswith(".sh"):
-            # Slurm has no native DAG file format, so we use a shell driver.
-            # Append .sh if the caller passed a Condor-style ".dag" path.
-            if path.endswith(".dag"):
-                path = path[:-4] + "_dag.sh"
-            else:
-                path = path + ".sh"
+        """Emit a shell driver that submits the DAG via sbatch dependency chains.
+
+        High-level DAGMan control directives are translated as follows:
+
+        * ``RETRY`` per node          → ``--requeue`` on the corresponding sbatch
+        * ``VARS k="v"`` per node     → ``--export=ALL,SLURM_VAR_K=v``
+        * ``SCRIPT PRE`` per node     → bash command run before sbatch
+        * ``SCRIPT POST`` per node    → ``sbatch --dependency=afterany:<jobid> --wrap=...``
+                                        scheduled to run regardless of success/failure
+        * ``ABORT-DAG-ON`` per node   → bash check that inspects the named
+                                        job's exit code, scancels future
+                                        dependents, and exits with the
+                                        requested return value
+        * ``DOT`` directive           → comment (Slurm has no equivalent)
+        * Extra raw directives        → comment (escape hatch); preserved verbatim
+        """
+        path = self.output_path_for_dag(path)
 
         # Topological sort so we can emit submissions in dependency order
         order = self._topological_sort(dag.nodes)
+        var_for_node_id = {}
+        var_for_node_name = {}
+        for i, node in enumerate(order):
+            var = "JOBID_{}".format(i)
+            var_for_node_id[id(node)] = var
+            var_for_node_name[node.name] = var
+        # Index pre/post hooks per node-name for quick lookup.
+        pre_by_name = {}
+        post_by_name = {}
+        for name, exe, args in dag.script_pre:
+            pre_by_name.setdefault(name, []).append((exe, args))
+        for name, exe, args in dag.script_post:
+            post_by_name.setdefault(name, []).append((exe, args))
 
         lines = [
             "#!/bin/bash",
@@ -964,34 +1177,108 @@ class SlurmBackend(WorkflowBackend):
             "set -euo pipefail",
             "",
         ]
-        var_for_node = {}
-        for i, node in enumerate(order):
-            var = "JOBID_{}".format(i)
-            var_for_node[id(node)] = var
+        # Track post-script jobs we submitted so subsequent abort-on checks
+        # can wait for them too.
+        for node in order:
+            var = var_for_node_id[id(node)]
+            # SCRIPT PRE -- run synchronously before sbatch.
+            for exe, args in pre_by_name.get(node.name, []):
+                lines.append("# SCRIPT PRE for {}: {} {}".format(node.name, exe, args))
+                lines.append("{} {}".format(exe, args).rstrip())
+
             if isinstance(node, _GenericSubdagNode):
                 lines.append("# Sub-DAG: {}".format(node.subdag_file))
                 lines.append('echo "Slurm backend: SUBDAG nodes are not supported natively; '
                              'driving sub-script {} via bash" >&2'.format(node.subdag_file))
-                deps = self._dep_clause(node, var_for_node)
+                deps = self._dep_clause(node, var_for_node_id)
                 lines.append("{}=$(sbatch{} --wrap=\"bash {}\" | awk '{{print $4}}')".format(
                     var, deps, node.subdag_file))
-                continue
-            sub = node.job.get_sub_file()
-            if sub is None:
-                raise RuntimeError("Slurm: node {} has no sbatch script".format(node.name))
-            # Per-node variable opts get exported via --export=ALL,VAR=val
-            export_args = ""
-            if node.macros:
-                kvs = ",".join("SLURM_VAR_{}={}".format(re.sub(r"\W+", "_", k).upper(), v)
-                               for k, v in node.macros.items())
-                export_args = " --export=ALL,{}".format(kvs)
-            deps = self._dep_clause(node, var_for_node)
-            retry_clause = ""
-            if node.retry:
-                retry_clause = " --requeue"
-            lines.append("{}=$(sbatch{}{}{} {} | awk '{{print $4}}')".format(
-                var, deps, export_args, retry_clause, sub))
-            lines.append('echo "Submitted {} as $'.format(node.name) + '{' + var + '}"')
+            else:
+                sub = node.job.get_sub_file()
+                if sub is None:
+                    raise RuntimeError(
+                        "Slurm: node {} has no sbatch script".format(node.name))
+                # Per-node variable opts get exported via --export=ALL,VAR=val
+                export_args = ""
+                if node.macros:
+                    kvs = ",".join("SLURM_VAR_{}={}".format(
+                        re.sub(r"\W+", "_", k).upper(), v)
+                        for k, v in node.macros.items())
+                    export_args = " --export=ALL,{}".format(kvs)
+                deps = self._dep_clause(node, var_for_node_id)
+                retry_clause = ""
+                if node.retry:
+                    retry_clause = " --requeue"
+                lines.append("{}=$(sbatch{}{}{} {} | awk '{{print $4}}')".format(
+                    var, deps, export_args, retry_clause, sub))
+                lines.append('echo "Submitted {} as ${{{}}}"'.format(node.name, var))
+
+            # SCRIPT POST -- a separate sbatch with afterany dependency so
+            # the post-script runs regardless of success / failure.
+            for j, (exe, args) in enumerate(post_by_name.get(node.name, [])):
+                post_var = "{}_post_{}".format(var, j)
+                lines.append("# SCRIPT POST for {}: {} {}".format(node.name, exe, args))
+                lines.append(
+                    "{}=$(sbatch --dependency=afterany:${{{}}} --wrap=\"{} {}\" "
+                    "| awk '{{print $4}}')".format(post_var, var, exe, args.rstrip())
+                )
+                lines.append('echo "Post-script for {} as ${{{}}}"'.format(node.name, post_var))
+
+        # ABORT-DAG-ON -- block waiting for the named job, then if its
+        # exit code matches, scancel everything else and exit with the
+        # requested return value.  Scheduled at the end of the driver
+        # (after all sbatch calls have been issued) so we have all jobids.
+        if dag.abort_on:
+            lines.append("")
+            lines.append("# ABORT-DAG-ON checks: monitor the named jobs and abort the workflow")
+            lines.append("# if any of them returns the matching exit code.")
+            for name, exit_code, return_value in dag.abort_on:
+                if name not in var_for_node_name:
+                    lines.append("# (skipped abort-on for unknown node {})".format(name))
+                    continue
+                target_var = var_for_node_name[name]
+                lines.append("(")
+                lines.append("    sleep_until_finished_var=${{{}}}".format(target_var))
+                lines.append('    while squeue -j "${sleep_until_finished_var}" -h '
+                             '-o "%i" 2>/dev/null | grep -q .; do sleep 30; done')
+                lines.append('    code=$(sacct -j "${sleep_until_finished_var}" -X '
+                             '--format=ExitCode --noheader | head -1 | awk -F: '
+                             "'{print $1}')")
+                lines.append('    if [[ "${{code}}" -eq {} ]]; then'.format(exit_code))
+                lines.append('        echo "ABORT-DAG-ON: node {} returned exit ${{code}};'
+                             ' scancelling remaining jobs and exiting {}" >&2'
+                             .format(name, return_value))
+                lines.append('        scancel ' + ' '.join(
+                    '${{{}}}'.format(v) for v in var_for_node_id.values() if v != target_var
+                ))
+                lines.append('        exit {}'.format(return_value))
+                lines.append('    fi')
+                lines.append(") &")
+            lines.append("wait")
+
+        # DOT directive -- best-effort: emit a graphviz file describing the
+        # dependency graph, since Slurm has no native equivalent.
+        if dag.dot_file is not None:
+            lines.append("")
+            lines.append("# DOT visualisation requested by DAG; written to {}".format(dag.dot_file))
+            lines.append("cat <<'__DOT_EOF__' > '{}'".format(dag.dot_file))
+            lines.append("digraph workflow {")
+            for node in order:
+                lines.append('  "{}";'.format(node.name))
+            for node in order:
+                for parent in node.parents:
+                    lines.append('  "{}" -> "{}";'.format(parent.name, node.name))
+            lines.append("}")
+            lines.append("__DOT_EOF__")
+
+        # Escape-hatch raw directives -- emit each as a comment so the
+        # information is preserved (these are usually condor-specific and
+        # don't have a Slurm equivalent).
+        if dag.extra_directives:
+            lines.append("")
+            lines.append("# Original DAG-language directives preserved as comments:")
+            for line in dag.extra_directives:
+                lines.append("#   " + line.rstrip("\n"))
 
         text = "\n".join(lines) + "\n"
         with open(path, "w") as fh:
@@ -1000,6 +1287,37 @@ class SlurmBackend(WorkflowBackend):
             os.chmod(path, 0o755)
         except OSError:
             pass
+
+    # ------------------------------------------------------------------
+    # Post-emission append hooks.
+    #
+    # For backends that emit a single DAG file (HTCondor / glue) the
+    # default ``WorkflowBackend._append_to_output`` is fine -- it just
+    # appends a ``SCRIPT POST ...\n`` line to the .dag and DAGMan picks
+    # it up.  For Slurm the .sh driver is a bash program; we can't just
+    # append a foreign DAG-language line to it.  So if the caller is
+    # adding control logic *after* ``write_concrete_dag()`` we re-emit
+    # the whole driver, picking up the new state captured on ``dag``.
+    # ------------------------------------------------------------------
+    def _reemit(self, dag):
+        # Re-run emit_dag on the same target.  We can do this safely
+        # because ``dag`` already holds the updated state.
+        self.emit_dag(dag, dag.dag_file)
+
+    def append_script_pre(self, dag, name, exe, args_str):
+        self._reemit(dag)
+
+    def append_script_post(self, dag, name, exe, args_str):
+        self._reemit(dag)
+
+    def append_abort_on(self, dag, name, exit_code, return_value):
+        self._reemit(dag)
+
+    def append_dot_file(self, dag, path):
+        self._reemit(dag)
+
+    def append_extra_directive(self, dag, line):
+        self._reemit(dag)
 
     @staticmethod
     def _dep_clause(node, var_for_node):
