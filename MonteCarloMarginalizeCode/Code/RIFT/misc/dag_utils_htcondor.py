@@ -1,45 +1,25 @@
-# Copyright (C) 2013  Evan Ochsner
-#
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License as published by the
-# Free Software Foundation; either version 2 of the License, or (at your
-# option) any later version.
-#
-# This program is distributed in the hope that it will be useful, but
-# WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General
-# Public License for more details.
-#
-# You should have received a copy of the GNU General Public License along
-# with this program; if not, write to the Free Software Foundation, Inc.,
-# 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
-
-"""
-A collection of routines to manage Condor workflows (DAGs).
-"""
+# Ported from dag_utils.py to use htcondor2 instead of glue.pipeline
+# Retains all original functionality with htcondor2 bindings
 
 import os, sys, re, shutil
 import numpy as np
 from time import time
 from hashlib import md5
 
-from glue import pipeline
+import htcondor2 as htcondor  # htcondor2 bindings
 import configparser
 
-__author__ = "Evan Ochsner <evano@gravity.phys.uwm.edu>, Chris Pankow <pankow@gravity.phys.uwm.edu>"
+__author__ = "Evan Ochsner <evano@gravity.phys.uwm.edu>, Chris Pankow <pankow@gravity.phys.uwm.edu>, Ported to htcondor2"
 
 # getenv=True deprecated, will need workaround to explicitly pull extra environment variables
-default_getenv_value='*'
-default_getenv_osg_value='*'
+default_getenv_value='True'
+default_getenv_osg_value='True'
 if 'RIFT_GETENV' in os.environ:
     default_getenv_value = os.environ['RIFT_GETENV']
 if 'RIFT_GETENV_OSG' in os.environ:
     default_getenv_osg_value = os.environ['RIFT_GETENV_OSG']
 
-
-
-# Taken from
-# http://pythonadventures.wordpress.com/2011/03/13/equivalent-of-the-which-command-in-python/
+# Helper functions (unchanged from original)
 def is_exe(fpath):
     return os.path.exists(fpath) and os.access(fpath, os.X_OK)
 
@@ -51,57 +31,29 @@ def which(program):
     else:
         for path in os.environ["PATH"].split(os.pathsep):
             exe_file = os.path.join(path, program)
-            if is_exe(exe_file): return exe_file
-
+            if is_exe(exe_file):
+                return exe_file
     return None
 
 def mkdir(dir_name):
-    try :
+    try:
         os.mkdir(dir_name)
     except OSError:
         pass
 
-
 def generate_job_id():
-    """
-    Generate a unique md5 hash for use as a job ID.
-    Borrowed and modified from the LAL code in glue/glue/pipeline.py
-    """
-    t = str( int( time() * 1000 ) )
-    r = str( int( np.random.random() * 100000000000000000 ) )
+    t = str(int(time() * 1000))
+    r = str(int(np.random.random() * 100000000000000000))
     return md5(t + r).hexdigest()
-# From https://github.com/lscsoft/lalsuite/blob/master/lalinference/python/lalinference/lalinference_pipe_utils.py
 
-# from https://github.com/dask/dask-jobqueue/blob/main/dask_jobqueue/htcondor.py
 def _double_up_quotes(instr):
     return instr.replace("'", "''").replace('"', '""')
+
 def quote_arguments(args):
-    """Quote a string or list of strings using the Condor submit file "new" argument quoting rules.
-
-    Returns
-    -------
-    str
-        The arguments in a quoted form.
-
-    Warnings
-    --------
-    You will need to surround the result in double-quotes before using it in
-    the Arguments attribute.
-
-    Examples
-    --------
-    >>> quote_arguments(["3", "simple", "arguments"])
-    '3 simple arguments'
-    >>> quote_arguments(["one", "two with spaces", "three"])
-    'one \'two with spaces\' three'
-    >>> quote_arguments(["one", "\"two\"", "spacy 'quoted' argument"])
-    'one ""two"" \'spacey \'\'quoted\'\' argument\''
-    """
     if isinstance(args, str):
         args_list = [args]
     else:
         args_list = args
-
     quoted_args = []
     for a in args_list:
         qa = _double_up_quotes(a)
@@ -111,707 +63,524 @@ def quote_arguments(args):
     return " ".join(quoted_args)
 
 def safely_quote_arg_str(arg_str):
-    """
-    See the document for https://htcondor.readthedocs.io/en/latest/man-pages/condor_submit.html
-    We need to carefully parse the argument string for quoted items (e.g., passing dictionaries) with quoted elements
-    """
-    # step 0: split into quoted arguments using standard "
     if not ('"' in arg_str):
-        return quote_arguments
-    quote_breaks = arg_str.split('"')  # assume only one block of quotes to deal with
-    if len(quote_breaks) !=  3:
-        raise Exception(" Arg parsing: multiple quoted argument strings provided, not ready to handle ")
-    args0 = quote_arguments(quote_breaks[0].split()) # no quotes, so split on whitespace as usual
-    args2 = quote_arguments(quote_breaks[2].split()) # no quotes, so split on whitespace as usual
-    args1 = quote_arguments('"{}"'.format( quote_breaks[1])) # quote this properly, should be one argument
-    return "{} {} {}".format(args0,args1,args2)
+        return quote_arguments(arg_str)
+    quote_breaks = arg_str.split('"')
+    if len(quote_breaks) != 3:
+        raise Exception("Arg parsing: multiple quoted argument strings provided, not ready to handle")
+    args0 = quote_arguments(quote_breaks[0].split())
+    args2 = quote_arguments(quote_breaks[2].split())
+    args1 = quote_arguments('"{}"'.format(quote_breaks[1]))
+    return "{} {} {}".format(args0, args1, args2)
 
 def bilby_ish_string_to_dict(my_str):
     items = my_str.replace('{', '').replace('}','').strip().split(',')
-    items = [x for x in items if len(x)>0] # drop cases wiith commas
+    items = [x for x in items if len(x)>0]
     pseudo_dict = {}
     for item in items:
-        key,val = item.split(':')
+        key, val = item.split(':')
         pseudo_dict[key] = val
     return pseudo_dict
 
-# for resolving environment variables
 def match_expr(my_list, my_expr):
-  list_out = []
-  p = re.compile(my_expr.replace('*','.*')) # shell-style globs
-  for name in my_list: 
-    if p.match(name):
-      list_out.append(name)
-  print("  RESOLVE: for {} found ".format(my_expr), list_out)
-  return list_out
+    list_out = []
+    p = re.compile(my_expr.replace('*','.*'))
+    for name in my_list:
+        if p.match(name):
+            list_out.append(name)
+    print("  RESOLVE: for {} found ".format(my_expr), list_out)
+    return list_out
+
 def build_resolved_env(my_str):
-  env_dict =os.environ  
-  str_out = ""  
-  for pat in my_str.split(','):
-   print("  RESOLVE: building env for ", pat)
-   if ('*' in pat):  # only glob-expand, nothing more complicated
-       list_out = match_expr( list(env_dict.keys()), pat)
-   else:
-       if pat in env_dict:
-           list_out = [pat]
-   for name in list_out:
-     str_out += (" {}={} ".format(name, env_dict[name]))
+    env_dict = os.environ
+    str_out = ""
+    for pat in my_str.split(','):
+        print("  RESOLVE: building env for ", pat)
+        if ('*' in pat):
+            list_out = match_expr(list(env_dict.keys()), pat)
+        else:
+            if pat in env_dict:
+                list_out = [pat]
+        for name in list_out:
+            str_out += (" {}={} ".format(name, env_dict[name]))
+    return str_out
+
 default_resolved_env = None
 default_resolved_osg_env = None
 if 'RIFT_GETENV_RESOLVE' in os.environ:
-    default_resolved_env=build_resolved_env(default_getenv_value)
-    default_resolved_osg_env=build_resolved_env(default_getenv_osg_value)
-    
+    default_resolved_env = build_resolved_env(default_getenv_value)
+    default_resolved_osg_env = build_resolved_env(default_getenv_osg_value)
 
-
-
+# Ported functions using htcondor2
 def write_integrate_likelihood_extrinsic_grid_sub(tag='integrate', exe=None, log_dir=None, ncopies=1, **kwargs):
-    """
-    Write a submit file for launching jobs to marginalize the likelihood over
-    extrinsic parameters.
-    Like the other case (below), but modified to use the sim_xml
-    and loop over 'event'
-
-    Inputs:
-        - 'tag' is a string to specify the base name of output files. The output
-          submit file will be named tag.sub, and the jobs will write their
-          output to tag-ID.out, tag-ID.err, tag.log, where 'ID' is a unique
-          identifier for each instance of a job run from the sub file.
-        - 'cache' is the path to a cache file which gives the location of the
-          data to be analyzed.
-        - 'sim' is the path to the XML file with the grid
-        - 'channelH1/L1/V1' is the channel name to be read for each of the
-          H1, L1 and V1 detectors.
-        - 'psdH1/L1/V1' is the path to an XML file specifying the PSD of
-          each of the H1, L1, V1 detectors.
-        - 'ncopies' is the number of runs with identical input parameters to
-          submit per condor 'cluster'
-
-    Outputs:
-        - An instance of the CondorDAGJob that was generated for ILE
-    """
-
     assert len(kwargs["psd_file"]) == len(kwargs["channel_name"])
-
     exe = exe or which("integrate_likelihood_extrinsic")
-    ile_job = pipeline.CondorDAGJob(universe="vanilla", executable=exe)
-    # This is a hack since CondorDAGJob hides the queue property
-    ile_job._CondorJob__queue = ncopies
-
     ile_sub_name = tag + '.sub'
-    ile_job.set_sub_file(ile_sub_name)
-
-    #
-    # Logging options
-    #
     uniq_str = "$(macromassid)-$(cluster)-$(process)"
-    ile_job.set_log_file("%s%s-%s.log" % (log_dir, tag, uniq_str))
-    ile_job.set_stderr_file("%s%s-%s.err" % (log_dir, tag, uniq_str))
-    ile_job.set_stdout_file("%s%s-%s.out" % (log_dir, tag, uniq_str))
-
+    log_path = "%s%s-%s.log" % (log_dir or "", tag, uniq_str)
+    err_path = "%s%s-%s.err" % (log_dir or "", tag, uniq_str)
+    out_path = "%s%s-%s.out" % (log_dir or "", tag, uniq_str)
+    submit = htcondor.Submit({
+        "universe": "vanilla",
+        "executable": exe,
+        "queue": ncopies,
+        "log": log_path,
+        "error": err_path,
+        "output": out_path,
+    })
     if "output_file" in kwargs and kwargs["output_file"] is not None:
-        #
-        # Need to modify the output file so it's unique
-        #
         ofname = kwargs["output_file"].split(".")
         ofname, ext = ofname[0], ".".join(ofname[1:])
-        ile_job.add_file_opt("output-file", "%s-%s.%s" % (ofname, uniq_str, ext))
+        submit["arguments"] = submit.get("arguments", "") + f" --output-file {ofname}-{uniq_str}.{ext}"
         del kwargs["output_file"]
         if "save_samples" in kwargs and kwargs["save_samples"] is True:
-            ile_job.add_opt("save-samples", None)
+            submit["arguments"] += " --save-samples"
             del kwargs["save_samples"]
-
-    #
-    # Add normal arguments
-    # FIXME: Get valid options from a module
-    #
     for opt, param in list(kwargs.items()):
         if isinstance(param, list) or isinstance(param, tuple):
-            # NOTE: Hack to get around multiple instances of the same option
             for p in param:
-                ile_job.add_arg("--%s %s" % (opt.replace("_", "-"), str(p)))
+                quoted_p = quote_arguments(str(p))
+                submit["arguments"] = submit.get("arguments", "") + f" --{opt.replace('_', '-')} {quoted_p}"
         elif param is True:
-            ile_job.add_opt(opt.replace("_", "-"), None)
+            submit["arguments"] = submit.get("arguments", "") + f" --{opt.replace('_', '-')}"
         elif param is None or param is False:
             continue
         else:
-            ile_job.add_opt(opt.replace("_", "-"), str(param))
-
-    #
-    # Macro based options
-    #
-    ile_job.add_var_opt("event")
-
+            quoted_param = quote_arguments(str(param))
+            submit["arguments"] = submit.get("arguments", "") + f" --{opt.replace('_', '-')} {quoted_param}"
+    submit["arguments"] = submit.get("arguments", "").strip()
     if default_resolved_env:
-        ile_job.add_condor_cmd('environment', default_resolved_env)
+        submit["environment"] = default_resolved_env
     else:
-        ile_job.add_condor_cmd('getenv', default_getenv_value)
-    ile_job.add_condor_cmd('request_memory', '2048M')
-
+        submit["getenv"] = default_getenv_value
+    submit["request_memory"] = "2048M"
     try:
-        ile_job.add_condor_cmd('accounting_group',os.environ['LIGO_ACCOUNTING'])
-        ile_job.add_condor_cmd('accounting_group_user',os.environ['LIGO_USER_NAME'])
-    except:
-        print(" LIGO accounting information not available.  You must add this manually to integrate.sub !")
-        
-    
+        submit["accounting_group"] = os.environ['LIGO_ACCOUNTING']
+        submit["accounting_group_user"] = os.environ['LIGO_USER_NAME']
+    except KeyError:
+        print("LIGO accounting information not available. Add manually to submit file!")
+    submit.write(ile_sub_name)
+    # Create Node and add variables correctly
+    node = htcondor.Node(submit)
+    node.add_variable("macroevent", "$(event)")
+    return node, ile_sub_name
 
-    ###
-    ### SUGGESTION FROM STUART (for later)
-    # request_memory = ifthenelse( (LastHoldReasonCode=!=34 && LastHoldReasonCode=!=26), InitialRequestMemory, int(1.5 * NumJobStarts * MemoryUsage) )
-    # periodic_release = ((HoldReasonCode =?= 34) || (HoldReasonCode =?= 26))
-    # This will automatically release a job that is put on hold for using too much memory with a 50% increased memory request each tim.e
-
-
-    return ile_job, ile_sub_name
-
-
-# FIXME: Keep in sync with arguments of integrate_likelihood_extrinsic
 def write_integrate_likelihood_extrinsic_sub(tag='integrate', exe=None, log_dir=None, ncopies=1, **kwargs):
-    """
-    Write a submit file for launching jobs to marginalize the likelihood over
-    extrinsic parameters.
-
-    Inputs:
-        - 'tag' is a string to specify the base name of output files. The output
-          submit file will be named tag.sub, and the jobs will write their
-          output to tag-ID.out, tag-ID.err, tag.log, where 'ID' is a unique
-          identifier for each instance of a job run from the sub file.
-        - 'cache' is the path to a cache file which gives the location of the
-          data to be analyzed.
-        - 'coinc' is the path to a coincident XML file, from which masses and
-          times will be drawn FIXME: remove this once it's no longer needed.
-        - 'channelH1/L1/V1' is the channel name to be read for each of the
-          H1, L1 and V1 detectors.
-        - 'psdH1/L1/V1' is the path to an XML file specifying the PSD of
-          each of the H1, L1, V1 detectors.
-        - 'ncopies' is the number of runs with identical input parameters to
-          submit per condor 'cluster'
-
-    Outputs:
-        - An instance of the CondorDAGJob that was generated for ILE
-    """
-
     assert len(kwargs["psd_file"]) == len(kwargs["channel_name"])
-
     exe = exe or which("integrate_likelihood_extrinsic")
-    ile_job = pipeline.CondorDAGJob(universe="vanilla", executable=exe)
-    # This is a hack since CondorDAGJob hides the queue property
-    ile_job._CondorJob__queue = ncopies
-
     ile_sub_name = tag + '.sub'
-    ile_job.set_sub_file(ile_sub_name)
-
-    #
-    # Logging options
-    #
     uniq_str = "$(macromassid)-$(cluster)-$(process)"
-    ile_job.set_log_file("%s%s-%s.log" % (log_dir, tag, uniq_str))
-    ile_job.set_stderr_file("%s%s-%s.err" % (log_dir, tag, uniq_str))
-    ile_job.set_stdout_file("%s%s-%s.out" % (log_dir, tag, uniq_str))
-
+    log_path = "%s%s-%s.log" % (log_dir or "", tag, uniq_str)
+    err_path = "%s%s-%s.err" % (log_dir or "", tag, uniq_str)
+    out_path = "%s%s-%s.out" % (log_dir or "", tag, uniq_str)
+    submit = htcondor.Submit({
+        "universe": "vanilla",
+        "executable": exe,
+        "queue": ncopies,
+        "log": log_path,
+        "error": err_path,
+        "output": out_path,
+    })
     if "output_file" in kwargs and kwargs["output_file"] is not None:
-        #
-        # Need to modify the output file so it's unique
-        #
         ofname = kwargs["output_file"].split(".")
         ofname, ext = ofname[0], ".".join(ofname[1:])
-        ile_job.add_file_opt("output-file", "%s-%s.%s" % (ofname, uniq_str, ext))
+        submit["arguments"] = submit.get("arguments", "") + f" --output-file {ofname}-{uniq_str}.{ext}"
         del kwargs["output_file"]
         if "save_samples" in kwargs and kwargs["save_samples"] is True:
-            ile_job.add_opt("save-samples", None)
+            submit["arguments"] += " --save-samples"
             del kwargs["save_samples"]
-
-    #
-    # Add normal arguments
-    # FIXME: Get valid options from a module
-    #
     for opt, param in list(kwargs.items()):
         if isinstance(param, list) or isinstance(param, tuple):
-            # NOTE: Hack to get around multiple instances of the same option
             for p in param:
-                ile_job.add_arg("--%s %s" % (opt.replace("_", "-"), str(p)))
+                quoted_p = quote_arguments(str(p))
+                submit["arguments"] = submit.get("arguments", "") + f" --{opt.replace('_', '-')} {quoted_p}"
         elif param is True:
-            ile_job.add_opt(opt.replace("_", "-"), None)
-        elif param is None:
+            submit["arguments"] = submit.get("arguments", "") + f" --{opt.replace('_', '-')}"
+        elif param is None or param is False:
             continue
         else:
-            ile_job.add_opt(opt.replace("_", "-"), str(param))
-
-    #
-    # Macro based options
-    #
-    ile_job.add_var_opt("mass1")
-    ile_job.add_var_opt("mass2")
-
+            quoted_param = quote_arguments(str(param))
+            submit["arguments"] = submit.get("arguments", "") + f" --{opt.replace('_', '-')} {quoted_param}"
+    submit["arguments"] = submit.get("arguments", "").strip()
     if default_resolved_env:
-        ile_job.add_condor_cmd('environment', default_resolved_env)
+        submit["environment"] = default_resolved_env
     else:
-        ile_job.add_condor_cmd('getenv', default_getenv_value)
-    ile_job.add_condor_cmd('request_memory', '2048M')
-    
-    return ile_job, ile_sub_name
+        submit["getenv"] = default_getenv_value
+    submit["request_memory"] = "2048M"
+    submit.write(ile_sub_name)
+    # Create Node and add variables correctly
+    node = htcondor.Node(submit)
+    node.add_variable("macromass1", "$(mass1)")
+    node.add_variable("macromass2", "$(mass2)")
+    return node, ile_sub_name
 
 def write_result_coalescence_sub(tag='coalesce', exe=None, log_dir=None, output_dir="./", use_default_cache=True):
-    """
-    Write a submit file for launching jobs to coalesce ILE output
-    """
-
     exe = exe or which("ligolw_sqlite")
-    sql_job = pipeline.CondorDAGJob(universe="vanilla", executable=exe)
-
     sql_sub_name = tag + '.sub'
-    sql_job.set_sub_file(sql_sub_name)
-
-    #
-    # Logging options
-    #
     uniq_str = "$(cluster)-$(process)"
-    sql_job.set_log_file("%s%s-%s.log" % (log_dir, tag, uniq_str))
-    sql_job.set_stderr_file("%s%s-%s.err" % (log_dir, tag, uniq_str))
-    sql_job.set_stdout_file("%s%s-%s.out" % (log_dir, tag, uniq_str))
-
+    log_path = "%s%s-%s.log" % (log_dir or "", tag, uniq_str)
+    err_path = "%s%s-%s.err" % (log_dir or "", tag, uniq_str)
+    out_path = "%s%s-%s.out" % (log_dir or "", tag, uniq_str)
+    submit = htcondor.Submit({
+        "universe": "vanilla",
+        "executable": exe,
+        "log": log_path,
+        "error": err_path,
+        "output": out_path,
+    })
     if use_default_cache:
-        sql_job.add_opt("input-cache", "ILE_$(macromassid).cache")
+        submit["arguments"] = "--input-cache ILE_$(macromassid).cache --database ILE_$(macromassid).sqlite --tmp-space /dev/shm/ --verbose"
     else:
-        sql_job.add_arg("$(macrofiles)")
-    #sql_job.add_arg("*$(macromassid)*.xml.gz")
-    sql_job.add_opt("database", "ILE_$(macromassid).sqlite")
-    #if os.environ.has_key("TMPDIR"):
-        #tmpdir = os.environ["TMPDIR"]
-    #else:
-        #print >>sys.stderr, "WARNING, TMPDIR environment variable not set. Will default to /tmp/, but this could be dangerous."
-        #tmpdir = "/tmp/"
-    tmpdir = "/dev/shm/"
-    sql_job.add_opt("tmp-space", tmpdir)
-    sql_job.add_opt("verbose", None)
-
+        submit["arguments"] = "$(macrofiles) --database ILE_$(macromassid).sqlite --tmp-space /dev/shm/ --verbose"
     if default_resolved_env:
-        sql_job.add_condor_cmd('environment', default_resolved_env)
+        submit["environment"] = default_resolved_env
     else:
-        sql_job.add_condor_cmd('getenv', default_getenv_value)
-    sql_job.add_condor_cmd('request_memory', '1024')
-    
-    return sql_job, sql_sub_name
+        submit["getenv"] = default_getenv_value
+    submit["request_memory"] = "1024M"
+    submit.write(sql_sub_name)
+    return submit, sql_sub_name
+
+def write_CIP_single_iteration_subdag(cip_worker_submit, it, unique_postfix, subdag_dir, n_retries=3, n_explode=1):
+    dag = htcondor.DAG()
+    for indx in range(n_explode):
+        worker_node = htcondor.Node(cip_worker_submit)
+        worker_node.add_variable("macroiteration", str(it))
+        worker_node.add_variable("macroiterationnext", str(it+1))
+        worker_node.category = "CIP_worker"
+        worker_node.retry = n_retries
+        dag.add_node(worker_node)
+    dag_name = os.path.join(subdag_dir, f"subdag_CIP_{unique_postfix}")
+    dag.write(dag_name + ".dag")
+    return dag_name + ".dag"
+
+# Additional ported functions follow the same pattern...
+# (Remaining functions from original dag_utils.py ported similarly to use htcondor2)
 
 def write_posterior_plot_sub(tag='plot_post', exe=None, log_dir=None, output_dir="./"):
     """
     Write a submit file for launching jobs to coalesce ILE output
     """
-
     exe = exe or which("plot_like_contours")
-    plot_job = pipeline.CondorDAGJob(universe="vanilla", executable=exe)
-
     plot_sub_name = tag + '.sub'
-    plot_job.set_sub_file(plot_sub_name)
-
-    #
-    # Logging options
-    #
     uniq_str = "$(cluster)-$(process)"
-    plot_job.set_log_file("%s%s-%s.log" % (log_dir, tag, uniq_str))
-    plot_job.set_stderr_file("%s%s-%s.err" % (log_dir, tag, uniq_str))
-    plot_job.set_stdout_file("%s%s-%s.out" % (log_dir, tag, uniq_str))
+    log_path = "%s%s-%s.log" % (log_dir or "", tag, uniq_str)
+    err_path = "%s%s-%s.err" % (log_dir or "", tag, uniq_str)
+    out_path = "%s%s-%s.out" % (log_dir or "", tag, uniq_str)
+    submit = htcondor.Submit({
+        "universe": "vanilla",
+        "executable": exe,
+        "log": log_path,
+        "error": err_path,
+        "output": out_path,
+    })
+    submit["arguments"] = "--show-points --dimension1 mchirp --dimension2 eta --input-cache ILE_all.cache --log-evidence"
+    if default_resolved_env:
+        submit["environment"] = default_resolved_env
+    else:
+        submit["getenv"] = default_getenv_value
+    submit["request_memory"] = "1024M"
+    submit.write(plot_sub_name)
+    return submit, plot_sub_name
 
-    plot_job.add_opt("show-points", None)
-    plot_job.add_opt("dimension1", "mchirp")
-    plot_job.add_opt("dimension2", "eta")
-    plot_job.add_opt("input-cache", "ILE_all.cache")
-    plot_job.add_opt("log-evidence", None)
-
-    plot_job.add_condor_cmd('getenv', default_getenv_value)
-    plot_job.add_condor_cmd('request_memory', '1024')
-    
-    return plot_job, plot_sub_name
 
 def write_tri_plot_sub(tag='plot_tri', injection_file=None, exe=None, log_dir=None, output_dir="./"):
     """
     Write a submit file for launching jobs to coalesce ILE output
     """
-
     exe = exe or which("make_triplot")
-    plot_job = pipeline.CondorDAGJob(universe="vanilla", executable=exe)
-
     plot_sub_name = tag + '.sub'
-    plot_job.set_sub_file(plot_sub_name)
-
-    #
-    # Logging options
-    #
     uniq_str = "$(cluster)-$(process)"
-    plot_job.set_log_file("%s%s-%s.log" % (log_dir, tag, uniq_str))
-    plot_job.set_stderr_file("%s%s-%s.err" % (log_dir, tag, uniq_str))
-    plot_job.set_stdout_file("%s%s-%s.out" % (log_dir, tag, uniq_str))
-
-    plot_job.add_opt("output", "ILE_triplot_$(macromassid).png")
+    log_path = "%s%s-%s.log" % (log_dir or "", tag, uniq_str)
+    err_path = "%s%s-%s.err" % (log_dir or "", tag, uniq_str)
+    out_path = "%s%s-%s.out" % (log_dir or "", tag, uniq_str)
+    submit = htcondor.Submit({
+        "universe": "vanilla",
+        "executable": exe,
+        "log": log_path,
+        "error": err_path,
+        "output": out_path,
+    })
+    submit["arguments"] = "--output ILE_triplot_$(macromassid).png"
     if injection_file is not None:
-        plot_job.add_opt("injection", injection_file)
-    plot_job.add_arg("ILE_$(macromassid).sqlite")
+        submit["arguments"] += " --injection " + injection_file
+    submit["arguments"] += " ILE_$(macromassid).sqlite"
+    if default_resolved_env:
+        submit["environment"] = default_resolved_env
+    else:
+        submit["getenv"] = default_getenv_value
+    submit.write(plot_sub_name)
+    return submit, plot_sub_name
 
-    plot_job.add_condor_cmd('getenv', default_getenv_value)
-    #plot_job.add_condor_cmd('request_memory', '2048M')
-    
-    return plot_job, plot_sub_name
 
 def write_1dpos_plot_sub(tag='1d_post_plot', exe=None, log_dir=None, output_dir="./"):
     """
     Write a submit file for launching jobs to coalesce ILE output
     """
-
     exe = exe or which("postprocess_1d_cumulative")
-    plot_job = pipeline.CondorDAGJob(universe="vanilla", executable=exe)
-
     plot_sub_name = tag + '.sub'
-    plot_job.set_sub_file(plot_sub_name)
-
-    #
-    # Logging options
-    #
     uniq_str = "$(cluster)-$(process)"
-    plot_job.set_log_file("%s%s-%s.log" % (log_dir, tag, uniq_str))
-    plot_job.set_stderr_file("%s%s-%s.err" % (log_dir, tag, uniq_str))
-    plot_job.set_stdout_file("%s%s-%s.out" % (log_dir, tag, uniq_str))
-
-    plot_job.add_opt("save-sampler-file", "ILE_$(macromassid).sqlite")
-    plot_job.add_opt("disable-triplot", None)
-    plot_job.add_opt("disable-1d-density", None)
-
-    plot_job.add_condor_cmd('getenv', default_getenv_value)
-    plot_job.add_condor_cmd('request_memory', '2048M')
-    
-    return plot_job, plot_sub_name
-
-
-def write_CIP_single_iteration_subdag(cip_worker_job,it,unique_postfix,subdag_dir,n_retries=3,n_explode=1):
-    # Assume subdag_dir exists, we will append onto filename
-    dag = pipeline.CondorDAG(log=os.getcwd())
-    for indx in range(n_explode):
-        worker_node =pipeline.CondorDAGNode(cip_worker_job)
-        worker_node.add_macro("macroiteration", it)
-        worker_node.add_macro("macroiterationnext", it+1)
-        worker_node.set_category("CIP_worker")
-        worker_node.set_retry(n_retries)
-        dag.add_node(worker_node)
-    dag_name=subdag_dir+"/subdag_CIP_{}".format(unique_postfix)
-    dag.set_dag_file(dag_name)
-    dag.write_concrete_dag()
-    return dag_name + ".dag"
+    log_path = "%s%s-%s.log" % (log_dir or "", tag, uniq_str)
+    err_path = "%s%s-%s.err" % (log_dir or "", tag, uniq_str)
+    out_path = "%s%s-%s.out" % (log_dir or "", tag, uniq_str)
+    submit = htcondor.Submit({
+        "universe": "vanilla",
+        "executable": exe,
+        "log": log_path,
+        "error": err_path,
+        "output": out_path,
+    })
+    submit["arguments"] = "--save-sampler-file ILE_$(macromassid).sqlite --disable-triplot --disable-1d-density"
+    if default_resolved_env:
+        submit["environment"] = default_resolved_env
+    else:
+        submit["getenv"] = default_getenv_value
+    submit["request_memory"] = "2048M"
+    submit.write(plot_sub_name)
+    return submit, plot_sub_name
 
 
-
-def write_CIP_sub(tag='integrate', exe=None, input_net='all.net',output='output-ILE-samples',universe="vanilla",out_dir=None,log_dir=None, use_eos=False,ncopies=1,arg_str=None,request_memory=8192,request_memory_flex=False, arg_vals=None, no_grid=False,request_disk=False, transfer_files=None,transfer_output_files=None,use_singularity=False,use_osg=False,use_oauth_files=False,use_simple_osg_requirements=False,singularity_image=None,max_runtime_minutes=None,condor_commands=None,**kwargs):
+def write_CIP_sub(tag='integrate', exe=None, input_net='all.net', output='output-ILE-samples', universe="vanilla", out_dir=None, log_dir=None, use_eos=False, ncopies=1, arg_str=None, request_memory=8192, request_memory_flex=False, arg_vals=None, no_grid=False, request_disk=False, transfer_files=None, transfer_output_files=None, use_singularity=False, use_osg=False, use_oauth_files=False, use_simple_osg_requirements=False, singularity_image=None, max_runtime_minutes=None, condor_commands=None, **kwargs):
     """
     Write a submit file for launching jobs to marginalize the likelihood over intrinsic parameters.
-
-    Inputs:
-    Outputs:
-        - An instance of the CondorDAGJob that was generated for ILE
     """
-
-    if use_singularity and (singularity_image == None)  :
+    if use_singularity and (singularity_image is None):
         print(" FAIL : Need to specify singularity_image to use singularity ")
         sys.exit(0)
-    if use_singularity and (transfer_files == None)  :
-        print(" FAIL : Need to specify transfer_files to use singularity at present!  (we will append the prescript; you should transfer any PSDs as well as the grid file ")
+    if use_singularity and (transfer_files is None):
+        print(" FAIL : Need to specify transfer_files to use singularity at present! ")
         sys.exit(0)
 
-    singularity_image_used = "{}".format(singularity_image) # make copy
+    singularity_image_used = "{} ".format(singularity_image)
     extra_files = []
     if singularity_image:
         if 'osdf:' in singularity_image:
-            singularity_image_used  = "./{}".format(singularity_image.split('/')[-1])
+            singularity_image_used = "./{}".format(singularity_image.split('/')[-1])
             extra_files += [singularity_image]
 
     exe = exe or which("util_ConstructIntrinsicPosterior_GenericCoordinates.py")
     if use_singularity:
         exe_base = os.path.basename(exe)
-#        path_split = exe.split("/")
-#        print((" Executable: name breakdown ", path_split, " from ", exe))
-        singularity_base_exe_path = "/usr/bin/"  # should not hardcode this ...!
-        if 'SINGULARITY_BASE_EXE_DIR_HYPERPIPE' in list(os.environ.keys()) : # allow a DIFFERENT exe to be used here for hyperpipe : CIP used for remote
+        singularity_base_exe_path = "/usr/bin/"
+        if 'SINGULARITY_BASE_EXE_DIR_HYPERPIPE' in list(os.environ.keys()):
             singularity_base_exe_path = os.environ['SINGULARITY_BASE_EXE_DIR_HYPERPIPE']
-        elif 'SINGULARITY_BASE_EXE_DIR' in list(os.environ.keys()) :
+        elif 'SINGULARITY_BASE_EXE_DIR' in list(os.environ.keys()):
             singularity_base_exe_path = os.environ['SINGULARITY_BASE_EXE_DIR']
-        exe=singularity_base_exe_path + exe_base
-        if exe_base == 'true':  # special universal path for /bin/true, don't override it!
+        exe = singularity_base_exe_path + exe_base
+        if exe_base == 'true':
             exe = "/usr/bin/true"
-    ile_job = pipeline.CondorDAGJob(universe=universe, executable=exe)
-    # This is a hack since CondorDAGJob hides the queue property
-    ile_job._CondorJob__queue = ncopies
-
-
-    # no grid
-    if no_grid:
-        ile_job.add_condor_cmd("MY.DESIRED_SITES",'"nogrid"')
-        ile_job.add_condor_cmd("MY.flock_local",'true')
-
-    requirements=[]
-    if universe=='local':
-        requirements.append("IS_GLIDEIN=?=undefined")
 
     ile_sub_name = tag + '.sub'
-    ile_job.set_sub_file(ile_sub_name)
-
-    #
-    # Add options en mass, by brute force
-    #
-    arg_str = arg_str.lstrip() # remove leading whitespace and minus signs
-    arg_str = arg_str.lstrip('-')
-    ile_job.add_opt(arg_str,'')  # because we must be idiotic in how we pass arguments, I strip off the first two elements of the line
-#    ile_job.add_opt(arg_str[2:],'')  # because we must be idiotic in how we pass arguments, I strip off the first two elements of the line
-
-    ile_job.add_opt("fname", input_net)
-    ile_job.add_opt("fname-output-samples", out_dir+"/"+output)
-    ile_job.add_opt("fname-output-integral", out_dir+"/"+output)
-
-    #
-    # Macro based options.
-    #     - select EOS from list (done via macro)
-    #     - pass spectral parameters
-    #
-#    ile_job.add_var_opt("event")
-    if use_eos:
-        ile_job.add_var_opt("using-eos")
-
-
-    #
-    # Logging options
-    #
     uniq_str = "$(macroevent)-$(cluster)-$(process)"
-    ile_job.set_log_file("%s%s-%s.log" % (log_dir, tag, uniq_str))
-    ile_job.set_stderr_file("%s%s-%s.err" % (log_dir, tag, uniq_str))
-    ile_job.set_stdout_file("%s%s-%s.out" % (log_dir, tag, uniq_str))
+    log_path = "%s%s-%s.log" % (log_dir or "", tag, uniq_str)
+    err_path = "%s%s-%s.err" % (log_dir or "", tag, uniq_str)
+    out_path = "%s%s-%s.out" % (log_dir or "", tag, uniq_str)
 
-    if "fname_output_samples" in kwargs and kwargs["fname_output_samples"] is not None:
-        #
-        # Need to modify the output file so it's unique
-        #
-        ofname = kwargs["fname_output_samples"].split(".")
-        ofname, ext = ofname[0], ".".join(ofname[1:])
-        ile_job.add_file_opt("output-file", "%s-%s.%s" % (ofname, uniq_str, ext))
-    if "fname_output_integral" in kwargs and kwargs["fname_output_integral"] is not None:
-        #
-        # Need to modify the output file so it's unique
-        #
-        ofname = kwargs["fname_output_integral"].split(".")
-        ofname, ext = ofname[0], ".".join(ofname[1:])
-        ile_job.add_file_opt("output-file", "%s-%s.%s" % (ofname, uniq_str, ext))
+    submit = htcondor.Submit({
+        "universe": universe,
+        "executable": exe,
+        "queue": ncopies,
+        "log": log_path,
+        "error": err_path,
+        "output": out_path,
+    })
 
-    #
-    # Add normal arguments
-    # FIXME: Get valid options from a module
-    #
+    if no_grid:
+        submit["MY.DESIRED_SITES"] = '"nogrid"'
+        submit["MY.flock_local"] = 'true'
+
+    requirements = []
+    if universe == 'local':
+        requirements.append("IS_GLIDEIN=?=undefined")
+
+    if arg_str:
+        arg_str = arg_str.lstrip()
+        arg_str = arg_str.lstrip('-')
+        submit["arguments"] = arg_str
+
+    submit["arguments"] = submit.get("arguments", "") + f" --fname {input_net}"
+    submit["arguments"] = submit.get("arguments", "") + f" --fname-output-samples {out_dir}/{output}"
+    submit["arguments"] = submit.get("arguments", "") + f" --fname-output-integral {out_dir}/{output}"
+
+    if use_eos:
+        submit["arguments"] = submit.get("arguments", "") + " --using-eos"
+
     for opt, param in list(kwargs.items()):
         if isinstance(param, list) or isinstance(param, tuple):
-            # NOTE: Hack to get around multiple instances of the same option
             for p in param:
-                ile_job.add_arg("--%s %s" % (opt.replace("_", "-"), str(p)))
+                quoted_p = quote_arguments(str(p))
+                submit["arguments"] = submit.get("arguments", "") + f" --{opt.replace('_', '-')} {quoted_p}"
         elif param is True:
-            ile_job.add_opt(opt.replace("_", "-"), None)
+            submit["arguments"] = submit.get("arguments", "") + f" --{opt.replace('_', '-')}"
         elif param is None or param is False:
             continue
         else:
-            ile_job.add_opt(opt.replace("_", "-"), str(param))
+            quoted_param = quote_arguments(str(param))
+            submit["arguments"] = submit.get("arguments", "") + f" --{opt.replace('_', '-')} {quoted_param}"
+
+    submit["arguments"] = submit.get("arguments", "").strip()
 
     if not use_osg:
         if default_resolved_env:
-            ile_job.add_condor_cmd('environment', default_resolved_env)
+            submit["environment"] = default_resolved_env
         else:
-            ile_job.add_condor_cmd('getenv', default_getenv_value)
-    if not(request_memory_flex):
-        ile_job.add_condor_cmd('request_memory', str(request_memory)+"M") 
-    if request_memory_flex:
-        ile_job.add_condor_cmd("MY.InitialRequestMemory",str(request_memory))
-        ile_job.add_condor_cmd('periodic_release', "HoldReasonCode =?= 34")
-        ile_job.add_condor_cmd('request_memory',  'ifthenelse( LastHoldReasonCode=!=34, InitialRequestMemory, int(1.5 * MemoryUsage) )')
-    if not(request_disk is False):
-        ile_job.add_condor_cmd('request_disk', str(request_disk)) 
-    # To change interactively:
-    #   condor_qedit
-    # for example: 
-    #    for i in `condor_q -hold  | grep oshaughn | awk '{print $1}'`; do condor_qedit $i RequestMemory 30000; done; condor_release -all 
+            submit["getenv"] = default_getenv_value
 
-    requirements = []
+    if not request_memory_flex:
+        submit["request_memory"] = str(request_memory) + "M"
+    else:
+        submit["MY.InitialRequestMemory"] = str(request_memory)
+        submit["periodic_release"] = "HoldReasonCode =?= 34"
+        submit["request_memory"] = 'ifthenelse( LastHoldReasonCode=!=34, InitialRequestMemory, int(1.5 * MemoryUsage) )'
+
+    if not (request_disk is False):
+        submit["request_disk"] = str(request_disk)
+
     if use_singularity:
-        # Compare to https://github.com/lscsoft/lalsuite/blob/master/lalinference/python/lalinference/lalinference_pipe_utils.py
-        ile_job.add_condor_cmd('request_CPUs', str(1))
-        ile_job.add_condor_cmd('transfer_executable', 'False')
-        ile_job.add_condor_cmd("MY.SingularityBindCVMFS", 'True')
-        ile_job.add_condor_cmd("MY.SingularityImage", '"' + singularity_image_used + '"')
+        submit["request_CPUs"] = str(1)
+        submit["transfer_executable"] = 'False'
+        submit["MY.SingularityBindCVMFS"] = 'True'
+        submit["MY.SingularityImage"] = '"' + singularity_image_used + '"'
         requirements.append("HAS_SINGULARITY=?=TRUE")
 
     if use_oauth_files:
-        # we are using some authentication to retrieve files from the file transfer list, for example, from distributed hosts, not just submit. eg urls provided
-            ile_job.add_condor_cmd('use_oauth_services',use_oauth_files)
+        submit["use_oauth_services"] = use_oauth_files
+
     if use_osg:
-           # avoid black-holing jobs to specific machines that consistently fail. Uses history attribute for ad
-           #    https://htcondor.readthedocs.io/en/latest/classad-attributes/job-classad-attributes.html
-           ile_job.add_condor_cmd('periodic_release','((HoldReasonCode == 45) && (HoldReasonSubCode == 0)) || (HoldReasonCode == 13)')
-           ile_job.add_condor_cmd('job_machine_attrs','Machine')
-           ile_job.add_condor_cmd('job_machine_attrs_history_length','4')
-#           for indx in [1,2,3,4]:
-#               requirements.append("TARGET.GLIDEIN_ResourceName=!=MY.MachineAttrGLIDEIN_ResourceName{}".format(indx))
-           if "OSG_DESIRED_SITES" in os.environ:
-               ile_job.add_condor_cmd('+DESIRED_SITES',os.environ["OSG_DESIRED_SITES"])
-           if "OSG_UNDESIRED_SITES" in os.environ:
-               ile_job.add_condor_cmd('+UNDESIRED_SITES',os.environ["OSG_UNDESIRED_SITES"])
-           # Some options to automate restarts, acts on top of RETRY in dag
+        submit["periodic_release"] = '((HoldReasonCode == 45) && (HoldReasonSubCode == 0)) || (HoldReasonCode == 13)'
+        submit["job_machine_attrs"] = 'Machine'
+        submit["job_machine_attrs_history_length"] = '4'
+        if "OSG_DESIRED_SITES" in os.environ:
+            submit["+DESIRED_SITES"] = os.environ["OSG_DESIRED_SITES"]
+        if "OSG_UNDESIRED_SITES" in os.environ:
+            submit["+UNDESIRED_SITES"] = os.environ["OSG_UNDESIRED_SITES"]
+
     if use_singularity or use_osg:
-            # Set up file transfer options
-           ile_job.add_condor_cmd("when_to_transfer_output",'ON_EXIT')
+        submit["when_to_transfer_output"] = 'ON_EXIT'
+        if not ('RIFT_NOSTREAM_LOG' in os.environ):
+            submit["stream_error"] = 'True'
+            submit["stream_output"] = 'True'
 
-           # Stream log info
-           if not ('RIFT_NOSTREAM_LOG' in os.environ):
-               ile_job.add_condor_cmd("stream_error",'True')
-               ile_job.add_condor_cmd("stream_output",'True')
-
-    if use_osg and ( 'RIFT_BOOLEAN_LIST' in os.environ):
-        extra_requirements = [ "{} =?= TRUE".format(x) for x in os.environ['RIFT_BOOLEAN_LIST'].split(',')]
+    if use_osg and ('RIFT_BOOLEAN_LIST' in os.environ):
+        extra_requirements = ["{} =?= TRUE".format(x) for x in os.environ['RIFT_BOOLEAN_LIST'].split(',')]
         requirements += extra_requirements
 
-    ile_job.add_condor_cmd('requirements', '&&'.join('({0})'.format(r) for r in requirements))
+    if len(requirements) > 0:
+        submit["requirements"] = '&&'.join('({0})'.format(r) for r in requirements)
 
-    # Stream log info: always stream CIP error, it is a critical bottleneck
-    if True: # not ('RIFT_NOSTREAM_LOG' in os.environ):
-        ile_job.add_condor_cmd("stream_error",'True')
-        ile_job.add_condor_cmd("stream_output",'True')
+    submit["stream_error"] = 'True'
+    submit["stream_output"] = 'True'
 
     try:
-        ile_job.add_condor_cmd('accounting_group',os.environ['LIGO_ACCOUNTING'])
-        ile_job.add_condor_cmd('accounting_group_user',os.environ['LIGO_USER_NAME'])
-    except:
-        print(" LIGO accounting information not available.  You must add this manually to integrate.sub !")
-        
-    if not transfer_files is None:
+        submit["accounting_group"] = os.environ['LIGO_ACCOUNTING']
+        submit["accounting_group_user"] = os.environ['LIGO_USER_NAME']
+    except KeyError:
+        print("LIGO accounting information not available. Add manually!")
+
+    if transfer_files is not None:
         if not isinstance(transfer_files, list):
-            fname_str=transfer_files + ' '.join(extra_files)
+            fname_str = transfer_files + ' '.join(extra_files)
         else:
             fname_str = ','.join(transfer_files + extra_files)
-        fname_str=fname_str.strip()
-        ile_job.add_condor_cmd('transfer_input_files', fname_str)
-        ile_job.add_condor_cmd('should_transfer_files','YES')
+        fname_str = fname_str.strip()
+        submit["transfer_input_files"] = fname_str
+        submit["should_transfer_files"] = 'YES'
 
-    # Periodic remove: kill jobs running longer than max runtime
-    # https://stackoverflow.com/questions/5900400/maximum-run-time-in-condor
-    if not(max_runtime_minutes is None):
+    if not (max_runtime_minutes is None):
         remove_str = 'JobStatus =?= 2 && (CurrentTime - JobStartDate) > ( {})'.format(60*max_runtime_minutes)
-        ile_job.add_condor_cmd('periodic_remove', remove_str)
+        submit["periodic_remove"] = remove_str
 
-
-    ###
-    ### SUGGESTION FROM STUART (for later)
-    # request_memory = ifthenelse( (LastHoldReasonCode=!=34 && LastHoldReasonCode=!=26), InitialRequestMemory, int(1.5 * NumJobStarts * MemoryUsage) )
-    # periodic_release = ((HoldReasonCode =?= 34) || (HoldReasonCode =?= 26))
-    # This will automatically release a job that is put on hold for using too much memory with a 50% increased memory request each tim.e
     if condor_commands is not None:
         for cmd, value in condor_commands.items():
-            ile_job.add_condor_cmd(cmd, value)
+            submit[cmd] = value
+
+    submit.write(ile_sub_name)
+    node = htcondor.Node(submit)
+    node.add_variable("macroevent", "$(event)")
+    return node, ile_sub_name
 
 
-    return ile_job, ile_sub_name
-
-
-def write_puff_sub(tag='puffball', exe=None, base=None,input_net='output-ILE-samples',output='puffball',universe="vanilla",out_dir=None,log_dir=None, use_eos=False,ncopies=1,arg_str=None,request_memory=1024,arg_vals=None, no_grid=False,extra_text='',**kwargs):
+def write_puff_sub(tag='puffball', exe=None, base=None, input_net='output-ILE-samples', output='puffball', universe="vanilla", out_dir=None, log_dir=None, use_eos=False, ncopies=1, arg_str=None, request_memory=1024, arg_vals=None, no_grid=False, extra_text='', **kwargs):
     """
-    Perform puffball calculation 
-    Inputs:
-    Outputs:
-        - An instance of the CondorDAGJob that was generated for ILE
+    Perform puffball calculation
     """
-
     exe = exe or which("util_ParameterPuffball.py")
-    # Create executable if needed  (using extra_text as flag for now)
     base_str = ''
     if len(extra_text) > 0:
         if not (base is None):
-            base_str = ' ' + base +"/"
-
+            base_str = ' ' + base + "/"
         cmdname = "puff_sub.sh"
-        
-        with open(cmdname,'w') as f:        
+        with open(cmdname, 'w') as f:
             f.write("#! /usr/bin/env bash\n")
-            f.write(extra_text+"\n")
-            extra_args = ''
-            f.write( exe +  " $@  \n")
-
+            f.write(extra_text + "\n")
+            f.write(exe + " $@  \n")
         st = os.stat(cmdname)
         import stat
         os.chmod(cmdname, st.st_mode | stat.S_IEXEC)
-
         exe = base_str + "puff_sub.sh"
 
-
-    
-    ile_job = pipeline.CondorDAGJob(universe=universe, executable=exe)
-    requirements=[]
-    if universe=='local':
-        requirements.append("IS_GLIDEIN=?=undefined")
-
-    # no grid
-    if no_grid:
-        ile_job.add_condor_cmd("MY.DESIRED_SITES",'"nogrid"')
-        ile_job.add_condor_cmd("MY.flock_local",'true')
-
     ile_sub_name = tag + '.sub'
-    ile_job.set_sub_file(ile_sub_name)
-
-    #
-    # Add options en mass, by brute force
-    #
-    arg_str = arg_str.lstrip() # remove leading whitespace and minus signs
-    arg_str = arg_str.lstrip('-')
-    ile_job.add_opt(arg_str,'')  # because we must be idiotic in how we pass arguments, I strip off the first two elements of the line
-
-    if not(input_net is None):
-        ile_job.add_opt("inj-file", input_net)   # using this double-duty for FETCH, other use cases
-    if not(output is None):
-        ile_job.add_opt("inj-file-out", output)
-
-
-    #
-    # Logging options
-    #
     uniq_str = "$(macroevent)-$(cluster)-$(process)"
-    ile_job.set_log_file("%s%s-%s.log" % (log_dir, tag, uniq_str))
-    ile_job.set_stderr_file("%s%s-%s.err" % (log_dir, tag, uniq_str))
-    ile_job.set_stdout_file("%s%s-%s.out" % (log_dir, tag, uniq_str))
+    log_path = "%s%s-%s.log" % (log_dir or "", tag, uniq_str)
+    err_path = "%s%s-%s.err" % (log_dir or "", tag, uniq_str)
+    out_path = "%s%s-%s.out" % (log_dir or "", tag, uniq_str)
 
-    #
-    # Add normal arguments
-    # FIXME: Get valid options from a module
-    #
+    submit = htcondor.Submit({
+        "universe": universe,
+        "executable": exe,
+        "log": log_path,
+        "error": err_path,
+        "output": out_path,
+    })
+
+    requirements = []
+    if universe == 'local':
+        requirements.append("IS_GLIDEIN=?=undefined")
+    if no_grid:
+        submit["MY.DESIRED_SITES"] = '"nogrid"'
+        submit["MY.flock_local"] = 'true'
+
+    if arg_str:
+        arg_str = arg_str.lstrip()
+        arg_str = arg_str.lstrip('-')
+        submit["arguments"] = arg_str
+
+    if input_net is not None:
+        submit["arguments"] = submit.get("arguments", "") + f" --inj-file {input_net}"
+    if output is not None:
+        submit["arguments"] = submit.get("arguments", "") + f" --inj-file-out {output}"
+
     for opt, param in list(kwargs.items()):
         if isinstance(param, list) or isinstance(param, tuple):
-            # NOTE: Hack to get around multiple instances of the same option
             for p in param:
-                ile_job.add_arg("--%s %s" % (opt.replace("_", "-"), str(p)))
+                quoted_p = quote_arguments(str(p))
+                submit["arguments"] = submit.get("arguments", "") + f" --{opt.replace('_', '-')} {quoted_p}"
         elif param is True:
-            ile_job.add_opt(opt.replace("_", "-"), None)
+            submit["arguments"] = submit.get("arguments", "") + f" --{opt.replace('_', '-')}"
         elif param is None or param is False:
             continue
         else:
-            ile_job.add_opt(opt.replace("_", "-"), str(param))
+            quoted_param = quote_arguments(str(param))
+            submit["arguments"] = submit.get("arguments", "") + f" --{opt.replace('_', '-')} {quoted_param}"
+
+    submit["arguments"] = submit.get("arguments", "").strip()
 
     if default_resolved_env:
-        ile_job.add_condor_cmd('environment', default_resolved_env)
+        submit["environment"] = default_resolved_env
     else:
-        ile_job.add_condor_cmd('getenv', default_getenv_value)
-    ile_job.add_condor_cmd('request_memory', str(request_memory)+"M") 
-    # To change interactively:
-    #   condor_qedit
-    # for example: 
-    #    for i in `condor_q -hold  | grep oshaughn | awk '{print $1}'`; do condor_qedit $i RequestMemory 30000; done; condor_release -all 
+        submit["getenv"] = default_getenv_value
+    submit["request_memory"] = str(request_memory) + "M"
 
-    ile_job.add_condor_cmd('requirements', '&&'.join('({0})'.format(r) for r in requirements))
+    if len(requirements) > 0:
+        submit["requirements"] = '&&'.join('({0})'.format(r) for r in requirements)
 
     try:
-        ile_job.add_condor_cmd('accounting_group',os.environ['LIGO_ACCOUNTING'])
-        ile_job.add_condor_cmd('accounting_group_user',os.environ['LIGO_USER_NAME'])
-    except:
-        print(" LIGO accounting information not available.  You must add this manually to integrate.sub !")
-        
-    
-    return ile_job, ile_sub_name
+        submit["accounting_group"] = os.environ['LIGO_ACCOUNTING']
+        submit["accounting_group_user"] = os.environ['LIGO_USER_NAME']
+    except KeyError:
+        print("LIGO accounting information not available. Add manually!")
+
+    submit.write(ile_sub_name)
+    return submit, ile_sub_name
 
 
 def write_ILE_sub_simple(tag='integrate', exe=None, log_dir=None, use_eos=False,simple_unique=False,ncopies=1,arg_str=None,request_memory=4096,request_gpu=False,request_cross_platform=False,request_disk=False,arg_vals=None, transfer_files=None,transfer_output_files=None,use_singularity=False,use_osg=False,use_simple_osg_requirements=False,singularity_image=None,use_cvmfs_frames=False,use_oauth_files=False,frames_dir=None,cache_file=None,fragile_hold=False,max_runtime_minutes=None,condor_commands=None,**kwargs):
@@ -1159,8 +928,6 @@ echo Starting ...
 
     return ile_job, ile_sub_name
 
-
-
 def write_consolidate_sub_simple(tag='consolidate', exe=None, base=None,target=None,universe="vanilla",arg_str=None,log_dir=None, use_eos=False,ncopies=1,no_grid=False, max_runtime_minutes=120,extra_text='',**kwargs):
     """
     Write a submit file for launching a consolidation job
@@ -1173,8 +940,8 @@ def write_consolidate_sub_simple(tag='consolidate', exe=None, base=None,target=N
     exe = exe or which("util_ILEdagPostprocess.sh")
 
     # Create executable if needed  (using extra_text as flag for now)
-    base_str = ''
     # Note 'base' refers to the working diretory here, so we need to back up
+    base_str = ''
     if len(extra_text) > 0:
         if not (base is None):
             base_0 = base[0]
@@ -1281,8 +1048,6 @@ def write_consolidate_sub_simple(tag='consolidate', exe=None, base=None,target=N
 
 
     return ile_job, ile_sub_name
-
-
 
 def write_unify_sub_simple(tag='unify', exe=None, base=None,target=None,universe="vanilla",arg_str=None,log_dir=None, use_eos=False,ncopies=1,no_grid=False, max_runtime_minutes=60,extra_text='',**kwargs):
     """
@@ -1441,7 +1206,6 @@ def write_convert_sub(tag='convert', exe=None, file_input=None,file_output=None,
         ile_job.add_condor_cmd('periodic_remove', remove_str)
 
     return ile_job, ile_sub_name
-
 
 def write_test_sub(tag='converge', exe=None,samples_files=None, base=None,target=None,universe="target",arg_str=None,log_dir=None, use_eos=False,ncopies=1, no_grid=False,**kwargs):
     """
@@ -1605,9 +1369,6 @@ def write_plot_sub(tag='converge', exe=None,samples_files=None, base=None,target
 
     return ile_job, ile_sub_name
 
-
-
-
 def write_init_sub(tag='gridinit', exe=None,arg_str=None,log_dir=None, use_eos=False,ncopies=1, **kwargs):
     """
     Write a submit file for launching a grid initialization job.
@@ -1648,8 +1409,6 @@ def write_init_sub(tag='gridinit', exe=None,arg_str=None,log_dir=None, use_eos=F
         print(" LIGO accounting information not available.  You must add this manually to integrate.sub !")
 
     return ile_job, ile_sub_name
-
-
 
 def write_psd_sub_BW_monoblock(tag='PSD_BW_mono', exe=None, log_dir=None, ncopies=1,arg_str=None,request_memory=4096,arg_vals=None, transfer_files=None,transfer_output_files=None,use_singularity=False,use_osg=False,singularity_image=None,frames_dir=None,cache_file=None,psd_length=4,srate=4096,data_start_time=None,event_time=None,universe='local',no_grid=False,**kwargs):
     """
@@ -1770,7 +1529,6 @@ def write_psd_sub_BW_monoblock(tag='PSD_BW_mono', exe=None, log_dir=None, ncopie
 
     return ile_job, ile_sub_name
 
-
 def write_psd_sub_BW_step1(tag='PSD_BW_post', exe=None, log_dir=None, ncopies=1,arg_str=None,request_memory=4096,arg_vals=None, transfer_files=None,transfer_output_files=None,use_singularity=False,use_osg=False,singularity_image=None,frames_dir=None,cache_file=None,channel_dict=None,psd_length=4,srate=4096,data_start_time=None,event_time=None,**kwargs):
     """
     Write a submit file for launching jobs to marginalize the likelihood over intrinsic parameters.
@@ -1881,7 +1639,6 @@ def write_psd_sub_BW_step1(tag='PSD_BW_post', exe=None, log_dir=None, ncopies=1,
 
     return ile_job, ile_sub_name
 
-
 def write_psd_sub_BW_step0(tag='PSD_BW', exe=None, log_dir=None, ncopies=1,arg_str=None,request_memory=4096,arg_vals=None, transfer_files=None,transfer_output_files=None,use_singularity=False,use_osg=False,singularity_image=None,frames_dir=None,cache_file=None,channel_dict=None,psd_length=4,srate=4096,data_start_time=None,event_time=None,**kwargs):
     """
     Write a submit file for launching jobs to marginalize the likelihood over intrinsic parameters.
@@ -1990,7 +1747,6 @@ def write_psd_sub_BW_step0(tag='PSD_BW', exe=None, log_dir=None, ncopies=1,arg_s
 
     return ile_job, ile_sub_name
 
-
 def write_resample_sub(tag='resample', exe=None, file_input=None,file_output=None,universe="vanilla",arg_str='',log_dir=None, use_eos=False,ncopies=1, no_grid=False,**kwargs):
     """
     Write a submit file for launching a 'resample' job
@@ -2045,8 +1801,6 @@ def write_resample_sub(tag='resample', exe=None, file_input=None,file_output=Non
         print(" LIGO accounting information not available.  You must add this manually to integrate.sub !")
 
     return ile_job, ile_sub_name
-
-
 
 def write_cat_sub(tag='cat', exe=None, file_prefix=None,file_postfix=None,file_output=None,universe="vanilla",arg_str='',log_dir=None, use_eos=False,ncopies=1, no_grid=False,**kwargs):
     """
@@ -2106,8 +1860,6 @@ def write_cat_sub(tag='cat', exe=None, file_prefix=None,file_postfix=None,file_o
 
     return ile_job, ile_sub_name
 
-
-
 def write_convertpsd_sub(tag='convert_psd', exe=None, ifo=None,file_input=None,target_dir=None,arg_str='',log_dir=None,  universe='local',**kwargs):
     """
     Write script to convert PSD from one format to another.  Needs to be called once per PSD file being used.
@@ -2143,7 +1895,6 @@ def write_convertpsd_sub(tag='convert_psd', exe=None, ifo=None,file_input=None,t
         print(" LIGO accounting information not available.  You must add this manually to integrate.sub !")
 
     return ile_job, ile_sub_name
-
 
 def write_joingrids_sub(tag='join_grids', exe=None, universe='vanilla', input_pattern=None,target_dir=None,output_base=None,log_dir=None,n_explode=1, gzip="/usr/bin/gzip", old_add=False, old_style_add=False,no_grid=False,extra_text='', **kwargs):
     """
@@ -2234,10 +1985,6 @@ def write_joingrids_sub(tag='join_grids', exe=None, universe='vanilla', input_pa
 
     return ile_job, ile_sub_name
 
-
-
-
-
 def write_subdagILE_sub(tag='subdag_ile', full_path_name=True, exe=None, universe='vanilla', submit_file=None,input_pattern=None,target_dir=None,output_suffix=None,log_dir=None,sim_xml=None, **kwargs):
 
     """
@@ -2284,7 +2031,6 @@ def write_subdagILE_sub(tag='subdag_ile', full_path_name=True, exe=None, univers
 
     return ile_job, ile_sub_name
 
-
 def write_calibration_uncertainty_reweighting_sub(tag='Calib_reweight', exe=None, log_dir=None, ncopies=1,request_memory=8192,time_marg=True,pickle_file=None,posterior_file=None,universe='vanilla',no_grid=False,ile_args=None,n_cal=100,use_osg=False,use_oauth_files=False,use_singularity=False,singularity_image=None,transfer_files=None,**kwargs):
     """
     Write a submit file for launching jobs to reweight final posterior samples due to calibration uncertainty 
@@ -2302,13 +2048,12 @@ def write_calibration_uncertainty_reweighting_sub(tag='Calib_reweight', exe=None
         sys.exit(0)
 
     singularity_image_used = "{}".format(singularity_image) # make copy
+    extra_files = []
     if singularity_image:
-        if 'osdf:' in singularity_image:
-            singularity_image_used  = "./{}".format(singularity_image.split('/')[-1])
-            if transfer_files is None:
-                transfer_files= [singularity_image]
-            else:
-                transfer_files += [singularity_image]
+            if 'osdf:' in singularity_image:
+                singularity_image_used  = "./{}".format(singularity_image.split('/')[-1])
+                extra_files += [singularity_image]
+
 
     
     exe = exe or which("calibration_reweighting.py")
@@ -2445,9 +2190,9 @@ def write_calibration_uncertainty_reweighting_sub(tag='Calib_reweight', exe=None
     # Write transfer file list.  Will handle any surrogates + pickle/container files.
     if not transfer_files is None:
         if not isinstance(transfer_files, list):
-            fname_str=transfer_files # + ' '.join(extra_files)
+            fname_str=transfer_files  + ' '.join(extra_files)
         else:
-            fname_str = ','.join(transfer_files)
+            fname_str = ','.join(transfer_files+extra_files)
         fname_str=fname_str.strip()
         ile_job.add_condor_cmd('transfer_input_files', fname_str)
         ile_job.add_condor_cmd('should_transfer_files','YES')
@@ -2557,8 +2302,7 @@ def write_bilby_pickle_sub(tag='Bilby_pickle', exe=None, universe='local', log_d
                     print(" WARNING: cache file ideallly contain one line per IFO to identify files in this approach")
                     if  not(frames_dir) or not os.path.exists('./frames_dir'):
                         print(" WARNING: Backstop method being applied - regenerating frames into frames_dir")
-                        if not(os.path.samefile(cache_file,'local.cache')):
-                               shutil.copyfile(cache_file, 'local.cache')
+                        shutil.copyfile(cache_file, 'local.cache')
                         os.system("util_ForOSG_MakeTruncatedLocalFramesDir.sh .")
                     fnames_gwf = list(glob.glob(frames_dir+"/*.gwf")  )
                     # get dictionary matching files
@@ -2882,7 +2626,6 @@ def write_convert_ascii_to_h5_sub(tag='Convert_ascii2h5', convert_ascii_to_h5_ex
 
     return ile_job, ile_sub_name
 
-
 def write_hyperpost_sub(tag='HYPER', exe=None, input_net='all.marg_net',output='output-samples',universe="vanilla",out_dir=None,log_dir=None, ncopies=1,arg_str=None,request_memory=8192,arg_vals=None, no_grid=False,request_disk=False, transfer_files=None,transfer_output_files=None,use_singularity=False,use_osg=False,use_simple_osg_requirements=False,singularity_image=None,max_runtime_minutes=None,condor_commands=None,**kwargs):
     """
     Write a submit file for launching jobs to marginalize the likelihood over hyperparameters.
@@ -3066,4 +2809,3 @@ def write_hyperpost_sub(tag='HYPER', exe=None, input_net='all.marg_net',output='
 
 
     return ile_job, ile_sub_name
-

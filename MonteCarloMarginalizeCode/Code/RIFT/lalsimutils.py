@@ -4729,7 +4729,7 @@ def frame_data_to_hoff(fname, channel, start=None, stop=None, TDlen=0,
 
 
 def frame_data_to_non_herm_hoff(fname, channel, start=None, stop=None, TDlen=0,
-                                window_shape=0., verbose=True,deltaT=None,**kwargs):
+    window_shape=0., verbose=True,deltaT=None,**kwargs):
     """
     Function to read in data in the frame format
     and convert it to a COMPLEX16FrequencySeries 
