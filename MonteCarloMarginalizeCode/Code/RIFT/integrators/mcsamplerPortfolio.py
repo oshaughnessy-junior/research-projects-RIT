@@ -6,6 +6,7 @@ from types import ModuleType
 
 import numpy
 np=numpy #import numpy as np
+from RIFT.precision import RiftFloat  # platform-portable replacement for np.float128
 from scipy import integrate, interpolate, special
 import itertools
 import functools
@@ -322,7 +323,7 @@ class MCSampler(object):
         # Determine stopping conditions
         #
         nmax = kwargs["nmax"] if "nmax" in kwargs else float("inf")
-        neff = kwargs["neff"] if "neff" in kwargs else numpy.float128("inf")
+        neff = kwargs["neff"] if "neff" in kwargs else RiftFloat("inf")
         n = int(kwargs["n"] if "n" in kwargs else min(100000, nmax))
         convergence_tests = kwargs["convergence_tests"] if "convergence_tests" in kwargs else None
         save_no_samples = kwargs["save_no_samples"] if "save_no_samples" in kwargs else None

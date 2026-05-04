@@ -11,6 +11,7 @@ from collections import defaultdict
 
 import numpy
 np=numpy #import numpy as np
+from RIFT.precision import RiftFloat  # platform-portable replacement for np.float128
 from scipy import integrate, interpolate, special
 import itertools
 import functools
@@ -546,7 +547,7 @@ class MCSampler(object):
       weights_alt = self.xpy.maximum(weights_alt, 1e-5)    # prevent negative weights, in case integrating function with lnL < 0
       # now treat as sum
       weights_alt = weights_alt/(weights_alt.sum())
-      if weights_alt.dtype == numpy.float128:
+      if weights_alt.dtype == RiftFloat:
         weights_alt = weights_alt.astype(numpy.float64,copy=False)
 
       def function_wrapper(f, p):
@@ -621,7 +622,7 @@ class MCSampler(object):
         # Determine stopping conditions
         #
         nmax = kwargs["nmax"] if "nmax" in kwargs else float("inf")
-        neff = kwargs["neff"] if "neff" in kwargs else numpy.float128("inf")
+        neff = kwargs["neff"] if "neff" in kwargs else RiftFloat("inf")
         n = int(kwargs["n"] if "n" in kwargs else min(1000, nmax))
         convergence_tests = kwargs["convergence_tests"] if "convergence_tests" in kwargs else None
         save_no_samples = kwargs["save_no_samples"] if "save_no_samples" in kwargs else None
@@ -808,7 +809,7 @@ class MCSampler(object):
             weights_alt = self._rvs["log_integrand"][-n_history:]+np.max([maxlnL, 200])  # try to make sure we have some dynamic range here
             weights_alt = self.xpy.maximum(weights_alt, 1e-5)  # prevent negative weights. NOTE THIS IS IMPORTANT: if you are integrating a function with lnL<0, use an offset!
             weights_alt = weights_alt/(weights_alt.sum())
-            if weights_alt.dtype == numpy.float128:
+            if weights_alt.dtype == RiftFloat:
               weights_alt = weights_alt.astype(numpy.float64,copy=False)
 
             for itr, p in enumerate(self.params_ordered):
@@ -980,7 +981,7 @@ class MCSampler(object):
         # Determine stopping conditions
         #
         nmax = kwargs["nmax"] if "nmax" in kwargs else float("inf")
-        neff = kwargs["neff"] if "neff" in kwargs else numpy.float128("inf")
+        neff = kwargs["neff"] if "neff" in kwargs else RiftFloat("inf")
         n = int(kwargs["n"] if "n" in kwargs else min(1000, nmax))
         convergence_tests = kwargs["convergence_tests"] if "convergence_tests" in kwargs else None
         save_no_samples = kwargs["save_no_samples"] if "save_no_samples" in kwargs else None
@@ -1023,12 +1024,12 @@ class MCSampler(object):
         if bShowEvaluationLog:
             print(" .... mcsampler : providing verbose output ..... ")
 
-        int_val1 = numpy.float128(0)
+        int_val1 = RiftFloat(0)
         self.ntotal = 0
         maxval = -float("Inf")
         maxlnL = -float("Inf")
         eff_samp = 0
-        mean, var = None, numpy.float128(0)    # to prevent infinite variance due to overflow
+        mean, var = None, RiftFloat(0)    # to prevent infinite variance due to overflow
         if cupy_ok:
           var = xpy_default.float64(0)   # cupy doesn't have float128
 
@@ -1228,7 +1229,7 @@ class MCSampler(object):
 
             weights_alt = weights_alt/(weights_alt.sum())
             # Type convert as needed: if weights are float128, convert to float64; otherwise we hit a typing error later with bincount
-            if weights_alt.dtype == numpy.float128:
+            if weights_alt.dtype == RiftFloat:
               weights_alt = weights_alt.astype(numpy.float64,copy=False)
 #            weights_alt = floor_integrated_probability*xpy_default.ones(len(weights_alt))/len(weights_alt) + (1-floor_integrated_probability)*weights_alt
 
@@ -1412,7 +1413,7 @@ def q_samp_vector(qmin,qmax,x):
     scale = 1./(1+qmin) - 1./(1+qmax)
     return 1/numpy.power((1+x),2)/scale
 def q_cdf_inv_vector(qmin,qmax,x,xpy=xpy_default):
-    return np.array((qmin + qmax*qmin + qmax*x - qmin*x)/(1 + qmax - qmax*x + qmin*x),dtype=np.float128)
+    return np.array((qmin + qmax*qmin + qmax*x - qmin*x)/(1 + qmax - qmax*x + qmin*x),dtype=RiftFloat)
 
 # total mass. Assumed used with q.  2M/Mmax^2-Mmin^2
 def M_samp_vector(Mmin,Mmax,x):

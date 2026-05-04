@@ -4,6 +4,7 @@ import bisect
 from collections import defaultdict
 
 import numpy as np
+from RIFT.precision import RiftFloat  # platform-portable replacement for np.float128
 
 try:
     import cupy
@@ -453,7 +454,7 @@ def q_samp_vector(qmin,qmax,x):
     scale = 1./(1+qmin) - 1./(1+qmax)
     return 1/np.power((1+x),2)/scale
 def q_cdf_inv_vector(qmin,qmax,x):
-    return np.array((qmin + qmax*qmin + qmax*x - qmin*x)/(1 + qmax - qmax*x + qmin*x),dtype=np.float128)
+    return np.array((qmin + qmax*qmin + qmax*x - qmin*x)/(1 + qmax - qmax*x + qmin*x),dtype=RiftFloat)
 
 def M_samp_vector(Mmin,Mmax,x):
     scale = 2./(Mmax**2 - Mmin**2)
