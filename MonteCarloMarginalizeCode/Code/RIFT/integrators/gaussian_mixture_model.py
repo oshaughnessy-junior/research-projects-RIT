@@ -74,6 +74,11 @@ def gpu_logpdf(x, mean, cov, xpy):
     x: (n, d) array
     mean: (d,) array
     cov: (d, d) array
+
+    Uses Cholesky + a generic linear solve (xpy.linalg.solve) so the same
+    code path works for both numpy and cupy. Note: solve_triangular is
+    NOT in numpy.linalg or cupy.linalg (only in scipy.linalg /
+    cupyx.scipy.linalg), so we deliberately use the generic solver here.
     """
     d = mean.shape[0]
     diff = x - mean
@@ -84,17 +89,17 @@ def gpu_logpdf(x, mean, cov, xpy):
         # Fallback to adding small epsilon to diagonal
         eps = 1e-6 * xpy.eye(d)
         L = xpy.linalg.cholesky(cov + eps)
-        
+
     # Solve L*y = diff^T => y = L^-1 * diff^T
     # diff is (n, d), so diff.T is (d, n)
-    y = xpy.linalg.solve_triangular(L, diff.T, lower=True)
-    
+    y = xpy.linalg.solve(L, diff.T)
+
     # quad_form = sum(y^2, axis=0)
     quad_form = xpy.sum(y**2, axis=0)
-    
+
     # log_det = 2 * sum(log(diag(L)))
     log_det = 2.0 * xpy.sum(xpy.log(xpy.diag(L)))
-    
+
     log_prob = -0.5 * (d * xpy.log(2 * xpy.pi) + log_det + quad_form)
     return log_prob
 
@@ -500,14 +505,24 @@ class gmm:
     def sample(self, n, use_bounds=True):
         '''
         Draw samples from the current model.
+
+        Note the model's means/covariances are stored in *normalized* coordinates
+        (the [-1, 1] image of self.bounds under self._normalize). Samples are
+        therefore drawn in normalized coordinates and then unnormalized back to
+        the original coordinate frame before being returned, matching the
+        pre-port behavior expected by MonteCarloEnsemble._sample().
         '''
-        # Sampling is kept on CPU for stability (truncnorm)
-        # Convert model params to numpy
+        # Sampling is kept on CPU for stability (truncnorm is CPU-only)
         means_np = [self.identity_convert(m) for m in self.means]
         covs_np = [self.identity_convert(c) for c in self.covariances]
         weights_np = self.identity_convert(self.weights)
-        bounds_np = self.identity_convert(self.bounds)
-        
+
+        # truncnorm bounds must match the coordinate frame of the model
+        # parameters (mean/cov), which is normalized [-1, 1].
+        bounds_normalized = np.empty((self.d, 2))
+        bounds_normalized[:, 0] = -1.0
+        bounds_normalized[:, 1] = 1.0
+
         sample_array_np = np.empty((n, self.d))
         start = 0
         for component in range(self.k):
@@ -523,14 +538,16 @@ class gmm:
                 if not use_bounds:
                     sample_array_np[start:end] = np.random.multivariate_normal(mean, cov, end - start)
                 else:
-                    sample_array_np[start:end] = truncnorm.sample(mean, cov, bounds_np, end - start)
+                    sample_array_np[start:end] = truncnorm.sample(mean, cov, bounds_normalized, end - start)
                 start = end
             except Exception as e:
                 print('Exiting due to non-positive-semidefinite', e)
                 raise Exception("gmm covariance not positive-semidefinite")
-                
-        # Return as xpy array
-        return self.identity_convert_togpu(sample_array_np)
+
+        # Move to xpy and unnormalize back to original [llim, rlim] coordinates,
+        # so callers receive samples in the same frame as self.bounds.
+        sample_array_xpy = self.identity_convert_togpu(sample_array_np)
+        return self._unnormalize(sample_array_xpy)
 
     def print_params(self):
         '''
@@ -547,13 +564,13 @@ class gmm:
             cov = covs_np[i]
             weight = weights_np[i]
             if self.d >1:
-                print('________________________________________\\n')
+                print('________________________________________\n')
                 print('Component', i)
                 print('Mean (scaled and unscaled)')
                 print(mean, self._unnormalize(np.array([mean])))
                 print('Covariance')
                 print(cov)
                 print('Weight')
-                print(weight, '\\n')
+                print(weight, '\n')
             else:
                 print(i, weight, self._unnormalize(np.array([mean]))[0,0], mean[0], np.sqrt(cov[0,0]))
