@@ -527,7 +527,7 @@ class gmm:
                 start = end
             except Exception as e:
                 print('Exiting due to non-positive-semidefinite', e)
-                raise Exception(\"gmm covariance not positive-semidefinite\")
+                raise Exception("gmm covariance not positive-semidefinite")
                 
         # Return as xpy array
         return self.identity_convert_togpu(sample_array_np)
@@ -541,7 +541,7 @@ class gmm:
         weights_np = self.identity_convert(self.weights)
         
         if self.d ==1:
-            print(\"GMM:   component wt mean_correct mean_normed std_normed \")
+            print("GMM:   component wt mean_correct mean_normed std_normed ")
         for i in range(self.k):
             mean = means_np[i]
             cov = covs_np[i]

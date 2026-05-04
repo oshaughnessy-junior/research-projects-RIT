@@ -376,6 +376,7 @@ class integrator:
             if epoch is not None and self.iterations % epoch == 0:
                 self._reset()
             if verbose:
+                print(self.scaled_error_squared)
                 if not(self.return_lnI):
                     print(" : {} {} {} {} {} ".format((self.iterations-1)*self.n, self.eff_samp, self.xpy.sqrt(2*self.xpy.max(self.cumulative_values)), self.xpy.sqrt(2*(self.xpy.log(self.integral))),  self.xpy.sqrt(self.scaled_error_squared )/self.integral/self.xpy.sqrt(self.iterations ) ) )
                 else:
