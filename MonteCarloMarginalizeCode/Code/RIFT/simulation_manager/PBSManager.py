@@ -6,16 +6,21 @@ import RIFT.simulation_manager.BaseManager as bm
 
 logger = logging.getLogger(__name__)
 
-def default_pbs_build_job(tag='job_tag_default_pbs', exe=None, arg_str=None, sim_path=None, pbs_args=None, **kwargs):
+def default_pbs_build_job(tag='job_tag_default_pbs', exe=None, arg_str=None, sim_path=None, pbs_args=None, array_range=None, **kwargs):
     """
     Builds a PBS submit script.
     pbs_args: dict of PBS options, e.g., {'queue': 'workq', 'walltime': '01:00:00', 'nodes': '1:ppn=1'}
+    array_range: PBS array job specification, e.g., '1-10' or '1-10:2' (step size)
     """
     if pbs_args is None:
         pbs_args = {}
     
     # Standard PBS headers
     script_lines = ["#!/bin/bash", "#PBS -N " + tag]
+    
+    # Add array job directive if specified
+    if array_range:
+        script_lines.append(f"#PBS -J {array_range}")
     
     # Add custom PBS arguments
     if 'queue' in pbs_args:
@@ -27,10 +32,7 @@ def default_pbs_build_job(tag='job_tag_default_pbs', exe=None, arg_str=None, sim
     if 'mem' in pbs_args:
         script_lines.append(f"#PBS -l mem={pbs_args['mem']}")
     
-    # Handle other arbitrary pbs_args as -v or other flags if needed, 
-    # but usually -l is the primary.
-    
-    script_lines.append("") # newline
+    script_lines.append("")  # newline
     script_lines.append(f"cd $PBS_O_WORKDIR")
     script_lines.append(f"{exe} {arg_str}")
     
@@ -67,7 +69,24 @@ class SimulationArchiveOnLocalDiskIntegratedPBSQueue(bm.SimulationArchiveOnLocal
         with open(full_path, 'w') as f:
             f.write(script_content)
         
-        self._internal_job_id = script_name # Temporary reference
+        self._internal_job_id = script_name  # Temporary reference
+        return full_path
+
+    def build_array_job(self, tag=None, array_range='1-10', **kwargs):
+        """
+        Builds and writes a PBS array job submit script.
+        array_range: PBS array job specification, e.g., '1-10' or '1-10:2'
+        """
+        build_args = dict(kwargs)
+        build_args['array_range'] = array_range
+        
+        script_content, script_name = self._internal_build_submit(tag=tag, **build_args)
+        
+        full_path = os.path.join(self.base_location, "pbs_submit_files", script_name)
+        with open(full_path, 'w') as f:
+            f.write(script_content)
+        
+        self._internal_job_id = script_name
         return full_path
 
     def submit_job(self, script_path):
