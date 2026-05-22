@@ -176,7 +176,7 @@ For reference, here is the full output of
 
 Expand below for a description of each of the optional arguments:
 
-.. collapse:: Args
+**Args:**
 
 	      --h, --help        show this help message and exit
 	      --use-production-defaults        Use production defaults. Intended for use with tools like asimov or by nonexperts who just want something to run on a real event. Will require manual setting of other arguments!

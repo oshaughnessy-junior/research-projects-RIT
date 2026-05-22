@@ -130,7 +130,7 @@ Comparison with Alternatives
 +----------------------+---------------+------------------------+
 | Feature              | Monotonic     | Standard Cubic Spline   |
 |                      | Spline        |                        |
-+======================+===============+========================+
++----------------------+---------------+------------------------+
 | Preserves monotonicity| Yes          | No (can oscillate)     |
 | Preserves sign       | Yes          | No                     |
 | Computation cost     | Similar      | Similar                |

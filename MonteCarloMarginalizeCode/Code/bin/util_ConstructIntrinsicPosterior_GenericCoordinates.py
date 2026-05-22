@@ -22,6 +22,7 @@ import sys
 import numpy as np
 import numpy.lib.recfunctions
 import scipy
+import RIFT.misc.samples_utils as samples_utils
 import scipy.stats
 import scipy.special
 import RIFT.lalsimutils as lalsimutils
@@ -523,7 +524,7 @@ elif opts.using_eos!=None and not(opts.using_eos_for_prior):
         eos_name = eos_name.replace('tabular_cgs','')
         # Format now defined by record structure needed : column data, header with 'baryon_density', 'pressure', and 'energy_density' in cgs
         fname =EOSManager.dirEOSTablesBase+"/tabular_" + eos_name+".dat"
-        my_eos_dat = np.genfromtxt(fname, names=True)
+        my_eos_dat = samples_utils.load_posterior_samples(fname)
         my_eos = EOSManager.EOSFromTabularData(name=eos_name,eos_data=my_eos_dat)
     else:
         my_eos = EOSManager.EOSFromDataFile(name=eos_name,fname =EOSManager.dirEOSTablesBase+"/" + eos_name+".dat")
@@ -566,7 +567,7 @@ remap_ILE_2_LI = {
 
 if opts.fname_lalinference:
     print(" Loading lalinference samples for direct comparison ", opts.fname_lalinference)
-    samples_LI = np.genfromtxt(opts.fname_lalinference,names=True)
+    samples_LI = samples_utils.load_posterior_samples(opts.fname_lalinference)
 
     print(" Checking consistency between fref in samples and fref assumed here ")
     try:
@@ -735,7 +736,7 @@ if opts.supplementary_likelihood_factor_code and opts.supplementary_likelihood_f
   if opts.using_eos_for_prior:
           # Load in filename
           fname = opts.using_eos.replace('file:', '')
-          dat = np.genfromtxt(fname,names=True)[opts.using_eos_index]   # Parse file for them, to reduce need for burden parsing, and avoid burden/confusion.
+          dat = samples_utils.load_posterior_samples(fname)[opts.using_eos_index]   # Parse file for them, to reduce need for burden parsing, and avoid burden/confusion.
           param_names = dat.dtype.names
           dat_as_array = dat.view((float, len(param_names)))
           args_init = {'input_line' : dat_as_array, 'param_names':param_names, 'cip_param_names':coord_names}  # pass the recordarray broken into parts, for convenience

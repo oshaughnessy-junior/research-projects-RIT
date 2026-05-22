@@ -13,7 +13,7 @@ Core Functions
 
 **Harmonic Decomposition**
 
-- ``hlmoft(P, Lmax=2, ...)``: The core function for generating harmonic modes. It takes a parameter set ``P`` and returns a dictionary of LAL ``COMPLEX16TimeSeries`` objects for each $(l, m)$ mode up to ``Lmax``.
+- ``hlmoft(P, Lmax=2, ...)``: The core function for generating harmonic modes. It takes a parameter set ``P`` and returns a dictionary of LAL ``COMPLEX16TimeSeries`` objects for each :math:\`(l, m)\` mode up to ``Lmax``.
     - It handles the necessary coordinate conversions (e.g., masses to solar masses).
     - It applies required tapering and phase shifts.
     - It can optionally adjust the waveform epoch based on the peak of the signal.
@@ -22,8 +22,8 @@ Core Functions
 
 **Time-Domain Waveforms**
 
-- ``hoft(P, ...)``: Generates a real-valued time-domain waveform. It handles the projection of the $h_+$ and $h_\times$ polarizations onto a specific detector strain based on the sky location and orientation.
-- ``complex_hoft(P, ...)``: Generates a complex-valued time-domain waveform ($h_+ + i h_\times$), which is useful for certain internal RIFT calculations.
+- ``hoft(P, ...)``: Generates a real-valued time-domain waveform. It handles the projection of the :math:\`h_+\` and :math:\`h_\times\` polarizations onto a specific detector strain based on the sky location and orientation.
+- ``complex_hoft(P, ...)``: Generates a complex-valued time-domain waveform (:math:\`h_+ + i h_\times\`), which is useful for certain internal RIFT calculations.
 
 Implementation Details
 ------------------------

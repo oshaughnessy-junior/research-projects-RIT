@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import pickle
 from glob import glob
+import RIFT.misc.samples_utils as samples_utils
 
 import bilby
 import bilby_pipe
@@ -120,7 +121,7 @@ else:
         result = bilby.core.result.read_in_result(sample_file)
     elif (sample_file.split(".")[-1] == 'txt') or (sample_file.split(".")[-1] == 'dat'):
         result = bilby.core.result.Result()
-        result.posterior = pd.DataFrame(np.genfromtxt(sample_file, names=True))
+        result.posterior = pd.DataFrame(samples_utils.load_posterior_samples(sample_file))
         result.posterior = result.posterior
         result.meta_data = {}
 

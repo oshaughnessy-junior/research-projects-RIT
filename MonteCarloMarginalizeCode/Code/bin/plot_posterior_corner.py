@@ -390,14 +390,9 @@ label_list = []
 # Load posterior files
 if opts.posterior_file:
  for fname in opts.posterior_file:
-    samples = np.genfromtxt(fname,names=True,replace_space=None)  # don't replace underscores in names
-    if 'm1' in samples.dtype.names:
-        samples = standard_expand_samples(samples)
-#    if not(opts.no_mod_psi) and 'psi' in samples.dtype.names:
-#        samples['psi'] = np.mod(samples['psi'],np.pi)
-    for name in samples.dtype.names:
-        if name in lalsimutils.periodic_params:
-            samples[name] = np.mod(samples[name], lalsimutils.periodic_params[name])
+    samples = samples_utils.load_posterior_samples(fname)
+    
+    if 'chi1_perp' in samples.dtype.names:
     # if not 'mtotal' in samples.dtype.names and 'mc' in samples.dtype.names:  # raw LI samples use 
     #     q_here = samples['q']
     #     eta_here = q_here/(1+q_here)
@@ -541,22 +536,13 @@ if opts.composite_file:
  print(opts.composite_file)
  for fname in opts.composite_file[:1]:  # Only load the first one!
     print(" Loading ... ", fname)
-    if not(opts.composite_file_has_labels):
-        samples = np.loadtxt(fname,dtype=composite_dtype)  # Names are not always available
-        if opts.source_redshift:
-            samples['m1'] *= 1./(1+opts.source_redshift)
-            samples['m2'] *= 1./(1+opts.source_redshift)
-    else:
-        samples = np.genfromtxt(fname,names=True)
-        samples = rfn.rename_fields(samples, {'sigmalnL': 'sigmaOverL', 'sigma_lnL': 'sigmaOverL'})   # standardize names, some drift in labels
-        if opts.source_redshift:
-            print(" WARNING SOURCE REDSHIFT SCALING NOT IMPLEMENTED FOR THIS PATH")
-    # enforce periodicity
-    for name in samples.dtype.names:
-        if name in lalsimutils.periodic_params:
-            samples[name] = np.mod(samples[name], lalsimutils.periodic_params[name])
-    if 'lnL' in samples.dtype.names:
-        samples = samples[ ~np.isnan(samples["lnL"])] # remove nan likelihoods -- they can creep in with poor settings/overflows
+    samples = samples_utils.load_composite_samples(
+        fname, 
+        has_labels=opts.composite_file_has_labels, 
+        composite_dtype=composite_dtype, 
+        source_redshift=opts.source_redshift
+    )
+    
     name_ref = samples.dtype.names[0]
     if opts.sigma_cut >0:
         npts = len(np.atleast_1d(samples[name_ref]))

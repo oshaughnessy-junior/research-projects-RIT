@@ -1,44 +1,14 @@
-RIFT
-==========
+.. HyperPipe Documentation Index
 
-Rapid inference via Iterative FiTting: this algorithm provides a framework for efficient, highly-parallelized parameter inference for GW sources.
-   
-.. automodule:: RIFT
-    :members:
-    :undoc-members:
-    :show-inheritance:
+This is the main index for the HyperPipe documentation. Choose a section below:
 
-.. toctree::
-   :maxdepth: 20
-   :caption: Contents:
+1. `HyperPipe Overview <overview.rst>`_
+2. `Creating a Run Directory <creating_run_directory.rst>`_
+3. `Input Files <input_files.rst>`_
+4. `Generated Directory Structure <directory_structure.rst>`_
+5. `Workflow Stages <workflow_stages.rst>`_
+6. `Submitting the Workflow <submitting_workflow.rst>`_
+7. `Multiple Observable Constraints <multiple_constraints.rst>`_
+8. `Transition for RIFT Users <rift_transition.rst>`_
 
-   architecture
-   overview
-   installation
-   getting-data
-   data_formats
-   using-pipeline
-   examples-ini
-   examples-noini
-   osg
-   injections
-   plotting
-   hyperpipe
-   troubleshooting
-   api_samples_utils
-   executables/index
-   physics/index
-
-.. toctree::
-   :maxdepth: 20
-   :caption: RIFT API Reference:
-
-   api_reference/index
-
-
-
-
-
-
-
-
+For more information about HyperPipe, visit the `GitHub repository <https://github.com/oshaughn/research-projects-RIT/tree/rift_O4b/MonteCarloMarginalizeCode/Code/demo/hyperpipe>`__.

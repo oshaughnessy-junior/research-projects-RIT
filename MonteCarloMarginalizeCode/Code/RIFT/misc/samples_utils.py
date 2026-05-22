@@ -152,6 +152,47 @@ def extract_combination_from_LI(samples_LI, p):
     print(" No access for parameter ", p)
     return np.zeros(len(samples_LI['m1']))  # to avoid causing a hard failure
 
+def load_posterior_samples(filepath):
+    """
+    Loads posterior samples from a .dat file, expands them with derived parameters,
+    and applies periodic wrapping to appropriate fields.
+    """
+    samples = np.genfromtxt(filepath, names=True, replace_space=None)
+    samples = standard_expand_samples(samples)
+    for name in samples.dtype.names:
+        if name in lalsimutils.periodic_params:
+            samples[name] = np.mod(samples[name], lalsimutils.periodic_params[name])
+    return samples
+
+def load_composite_samples(filepath, has_labels=False, composite_dtype=None, source_redshift=None):
+    """
+    Loads composite samples from a .dat file. Handles label-based and fixed-dtype loading,
+    applies source redshift scaling, filters NaN likelihoods, and applies periodic wrapping.
+    """
+    if not has_labels:
+        if composite_dtype is None:
+            raise ValueError("composite_dtype must be provided if has_labels is False")
+        samples = np.loadtxt(filepath, dtype=composite_dtype)
+        if source_redshift:
+            samples['m1'] *= 1.0 / (1.0 + source_redshift)
+            samples['m2'] *= 1.0 / (1.0 + source_redshift)
+    else:
+        samples = np.genfromtxt(filepath, names=True)
+        # Handle potential label drift from plot_posterior_corner.py logic
+        if hasattr(samples, 'dtype') and samples.dtype.names:
+            samples = rfn.rename_fields(samples, {'sigmalnL': 'sigmaOverL', 'sigma_lnL': 'sigmaOverL'})
+
+    # Filter NaN likelihoods
+    if 'lnL' in samples.dtype.names:
+        samples = samples[~np.isnan(samples["lnL"])]
+
+    # Apply periodic wrapping
+    for name in samples.dtype.names:
+        if name in lalsimutils.periodic_params:
+            samples[name] = np.mod(samples[name], lalsimutils.periodic_params[name])
+
+    return samples
+
 def add_field(a, descr):
     """
     Returns a new structured array with additional fields.

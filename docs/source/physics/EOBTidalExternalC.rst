@@ -19,7 +19,7 @@ This module serves the same purpose as ``EOBTidalExternal`` but uses a different
 
 +---------------------------+---------------------------+
 | Feature                   | EOBTidalExternalC (C++)   |
-+===========================+===========================+
++---------------------------+---------------------------+
 | Speed                     | Faster                    |
 | Dependencies              | C++ compiler              |
 | Spin support              | Aligned spins (chi1z,    |

@@ -83,7 +83,7 @@ The module uses tolerance scales for numerical derivatives of:
 
 +----------------------+-------------+
 | Parameter            | Tolerance   |
-+======================+=============+
++----------------------+-------------+
 | chirp mass (mc)      | 1e-3 rel   |
 | total mass (mtot)     | 1e-3 rel   |
 | time (tref)          | 1e-3 abs   |

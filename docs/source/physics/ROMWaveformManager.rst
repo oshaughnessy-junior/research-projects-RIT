@@ -14,6 +14,7 @@ Core Classes and Functions
 **WaveformModeCatalog**
 
 The primary class for managing ROM models. It handles:
+
 - **Model Loading**: Dynamically loads surrogates based on the specified group and parameter set.
 - **Coordinate Conversion**: Maps RIFT's ``ChooseWaveformParams`` to surrogate-specific parameters (e.g., mass ratio $q$).
 - **Waveform Reconstruction**: 

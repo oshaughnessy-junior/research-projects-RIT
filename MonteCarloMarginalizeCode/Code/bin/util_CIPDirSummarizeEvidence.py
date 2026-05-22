@@ -3,6 +3,7 @@
 import numpy as np
 import argparse
 import glob
+import RIFT.misc.samples_utils as samples_utils
 
 
 parser=argparse.ArgumentParser()
@@ -23,9 +24,9 @@ if len(fnames_cip) < 1:
 net_dat = []
 for fname in fnames_cip:
     fname_alt =fname.replace('+annotation.dat', '_withpriorchange+annotation.dat')
-    dat_base = np.genfromtxt(fname,names=True)
+    dat_base = samples_utils.load_posterior_samples(fname)
     sigma_lnL = dat_base['sigmaL']
-    dat_alt = np.genfromtxt(fname_alt,names=True)
+    dat_alt = samples_utils.load_posterior_samples(fname_alt)
     lnL = dat_alt['lnL']
     n_eff = dat_alt['neff']
     net_dat.append([lnL, sigma_lnL, n_eff])

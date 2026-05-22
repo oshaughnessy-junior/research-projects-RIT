@@ -48,6 +48,7 @@ from copy import deepcopy, copy
 import numpy as np
 import pandas as pd
 import pickle
+import RIFT.misc.samples_utils as samples_utils
 
 import bilby
 import bilby_pipe
@@ -262,7 +263,7 @@ if args.posterior_sample_file.split(".")[-1] == 'json':
     result.posterior = result.posterior.iloc[start_index:end_index].reset_index(drop=True)
 elif (args.posterior_sample_file.split(".")[-1] == 'txt') or (args.posterior_sample_file.split(".")[-1] == 'dat'):
     result = bilby.core.result.Result()
-    result.posterior = pd.DataFrame(np.genfromtxt(args.posterior_sample_file, names=True))
+    result.posterior = pd.DataFrame(samples_utils.load_posterior_samples(args.posterior_sample_file))
     if start_index is not None:
         if start_index > len(result.posterior):
             print(" Stopping : no work after end of file")

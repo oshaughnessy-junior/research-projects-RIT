@@ -10,6 +10,7 @@
 import argparse
 import numpy as np
 import RIFT.lalsimutils
+import RIFT.misc.samples_utils as samples_utils
 
 
 parser = argparse.ArgumentParser()
@@ -23,20 +24,29 @@ opts=  parser.parse_args()
 quantile_list = np.array(eval(opts.quantiles))
 #print opts.quantiles, quantile_list
 
-dat = np.genfromtxt(opts.fname,names=True,invalid_raise=False)
+dat = samples_utils.load_posterior_samples(opts.fname)
 for param in opts.parameter:
     # lightweight conversion: not full capability
     if param in dat.dtype.names:
         dat_1d = dat[param]
-    elif param == 'mc':
-        dat_1d = RIFT.lalsimutils.mchirp(dat['m1'],dat['m2'])
-    elif param == 'q':
-        dat_1d = dat['m2']/dat['m1']
-    elif param == 'xi':
-        dat_1d = (dat['m2']*dat['a2z']+dat['m1']*dat['a1z'])/(dat['m1']+dat['m2'])
-    elif param=='mtot':
-        dat_1d = dat['m1']+dat['m2']
     else:
-        dat_1d = dat[param]
+        # Fallback to derived parameters if not directly in the loaded samples
+        # load_posterior_samples already calls standard_expand_samples, 
+        # so common combinations like 'mc', 'q', 'xi' should now be present.
+        try:
+            dat_1d = dat[param]
+        except KeyError:
+            # This is a safety fallback in case the param isn't in expanded samples
+            if param == 'mc':
+                dat_1d = RIFT.lalsimutils.mchirp(dat['m1'],dat['m2'])
+            elif param == 'q':
+                dat_1d = dat['m2']/dat['m1']
+            elif param == 'xi':
+                dat_1d = (dat['m2']*dat['a2z']+dat['m1']*dat['a1z'])/(dat['m1']+dat['m2'])
+            elif param=='mtot':
+                dat_1d = dat['m1']+dat['m2']
+            else:
+                # Force failure for truly missing params
+                dat_1d = dat[param]
     quant_here  = np.percentile(dat_1d,100*quantile_list)
     print(param, ' '.join(map(str,quant_here)))
