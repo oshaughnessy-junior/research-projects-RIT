@@ -164,14 +164,16 @@ def load_posterior_samples(filepath):
             samples[name] = np.mod(samples[name], lalsimutils.periodic_params[name])
     return samples
 
-def load_composite_samples(filepath, has_labels=False, composite_dtype=None, source_redshift=None):
+def load_composite_samples(filepath, has_labels=False, composite_dtype=None, source_redshift=None, field_names=None):
     """
     Loads composite samples from a .dat file. Handles label-based and fixed-dtype loading,
     applies source redshift scaling, filters NaN likelihoods, and applies periodic wrapping.
     """
     if not has_labels:
         if composite_dtype is None:
-            raise ValueError("composite_dtype must be provided if has_labels is False")
+            if field_names is None:
+                raise ValueError("composite_dtype or field_names must be provided if has_labels is False")
+            composite_dtype = _detect_dtype_from_field_names(field_names)
         samples = np.loadtxt(filepath, dtype=composite_dtype)
         if source_redshift:
             samples['m1'] *= 1.0 / (1.0 + source_redshift)
@@ -217,6 +219,60 @@ def add_field(a, descr):
     for name in a.dtype.names:
         b[name] = a[name]
     return b
+
+
+def _detect_dtype_from_field_names(field_names):
+    """
+    Auto-detects the appropriate composite dtype based on field names.
+    
+    This logic is used to determine the data type for loading composite samples
+    when the field names are known (e.g., from a .dat file with headers).
+    
+    Args:
+        field_names: List of column names
+        
+    Returns:
+        numpy dtype for loading the samples
+    """
+    # Common fields across all sample types
+    common_fields = [('lnL', float), ('dist', float), ('mc', float), ('q', float), ('m1', float), ('m2', float)]
+    
+    # Additional fields for spin-parameterized runs
+    spin_fields = [('s1z', float), ('s2z', float), ('theta1', float), ('theta2', float), ('phi1', float), ('phi2', float)]
+    
+    # Additional fields for spin+eos runs (with tides)
+    tidal_fields = [('lambdat', float), ('dlambdat', float)]
+    
+    # Additional fields for eccentricity
+    ecc_fields = [('ecc', float), ('omega', float)]
+    
+    dtype_list = common_fields.copy()
+    
+    # Check for spin parameters
+    if any('s1' in fn or 'a1' in fn or 'chi1' in fn for fn in field_names):
+        dtype_list.extend(spin_fields)
+    
+    # Check for tidal parameters
+    if 'lambdat' in field_names:
+        dtype_list.extend(tidal_fields)
+    
+    # Check for eccentricity
+    if 'ecc' in field_names:
+        dtype_list.extend(ecc_fields)
+    
+    # Add other common parameters that might be present
+    extra_params = []
+    for fn in field_names:
+        if fn in ['lnL', 'dist', 'mc', 'q', 'm1', 'm2', 's1z', 's2z', 'theta1', 'theta2', 'phi1', 'phi2', 'lambdat', 'dlambdat', 'ecc', 'omega']:
+            continue
+        # Add any other recognized parameter
+        if fn not in [d[0] for d in dtype_list]:
+            extra_params.append((fn, float))
+    
+    dtype_list.extend(extra_params)
+    
+    return np.dtype(dtype_list)
+
 
 
 
@@ -424,6 +480,172 @@ def dump_pesummary_samples_to_file_as_rift(fname_h5,key,fname_out,no_drop=False,
       samp = rfn.drop_fields(samp,ugly_fields)
 
     np.savetxt(fname_out,samp,header=" ".join(samp.dtype.names) )
+
+
+
+
+
+def apply_kerr_limit(samples, chi_max=1.0):
+    """
+    Filters samples to keep only those with spin magnitude <= chi_max.
+    
+    Handles different spin representations (a1z, a2z) or (a1, theta1, phi1, etc.)
+    
+    Args:
+        samples: Structured numpy array of samples
+        chi_max: Maximum allowed spin magnitude (default 1.0)
+        
+    Returns:
+        Filtered samples array
+    """
+    keep = np.ones(len(samples), dtype=bool)
+    
+    # Check for cartesian spin components
+    if 'a1x' in samples.dtype.names and 'a1y' in samples.dtype.names and 'a1z' in samples.dtype.names:
+        chi1 = np.sqrt(samples['a1x']**2 + samples['a1y']**2 + samples['a1z']**2)
+        chi2 = np.sqrt(samples['a2x']**2 + samples['a2y']**2 + samples['a2z']**2)
+    # Check for spherical spin components
+    elif 'a1' in samples.dtype.names and 'theta1' in samples.dtype.names:
+        # For spherical representation, a1 is already the magnitude
+        chi1 = samples['a1'].copy()
+        if 'a2' in samples.dtype.names and 'theta2' in samples.dtype.names:
+            chi2 = samples['a2'].copy()
+        else:
+            chi2 = np.zeros(len(samples))
+    # Check for just a1z, a2z
+    elif 'a1z' in samples.dtype.names and 'a2z' in samples.dtype.names:
+        chi1 = samples['a1z'].copy()
+        chi2 = samples['a2z'].copy()
+    else:
+        # No spin information available, keep all samples
+        return samples
+    
+    keep = (chi1 <= chi_max) & (chi2 <= chi_max)
+    
+    return samples[keep]
+
+
+def apply_downselection(samples, downselect_dict):
+    """
+    Applies various downselection cuts to samples based on a dictionary of parameters.
+    
+    Supported parameters in downselect_dict:
+        - m1_min, m1_max: Minimum and maximum for m1
+        - m2_min, m2_max: Minimum and maximum for m2
+        - mtot_min, mtot_max: Minimum and maximum for total mass
+        - mc_min, mc_max: Minimum and maximum for chirp mass
+        - q_min, q_max: Minimum and maximum for mass ratio (m2/m1)
+        - chi_max: Maximum spin magnitude (passes to apply_kerr_limit)
+        - lnL_min: Minimum log likelihood
+        - lnL_max: Maximum log likelihood
+    
+    Args:
+        samples: Structured numpy array of samples
+        downselect_dict: Dictionary of downselection parameters
+        
+    Returns:
+        Filtered samples array
+    """
+    keep = np.ones(len(samples), dtype=bool)
+    
+    # Mass cuts
+    if 'm1_min' in downselect_dict:
+        keep &= samples['m1'] >= downselect_dict['m1_min']
+    if 'm1_max' in downselect_dict:
+        keep &= samples['m1'] <= downselect_dict['m1_max']
+    if 'm2_min' in downselect_dict:
+        keep &= samples['m2'] >= downselect_dict['m2_min']
+    if 'm2_max' in downselect_dict:
+        keep &= samples['m2'] <= downselect_dict['m2_max']
+    if 'mtot_min' in downselect_dict:
+        keep &= samples['mtotal'] >= downselect_dict['mtot_min']
+    if 'mtot_max' in downselect_dict:
+        keep &= samples['mtotal'] <= downselect_dict['mtot_max']
+    if 'mc_min' in downselect_dict:
+        keep &= samples['mc'] >= downselect_dict['mc_min']
+    if 'mc_max' in downselect_dict:
+        keep &= samples['mc'] <= downselect_dict['mc_max']
+    if 'q_min' in downselect_dict:
+        keep &= (samples['m2'] / samples['m1']) >= downselect_dict['q_min']
+    if 'q_max' in downselect_dict:
+        keep &= (samples['m2'] / samples['m1']) <= downselect_dict['q_max']
+    
+    # Likelihood cuts
+    if 'lnL_min' in downselect_dict and 'lnL' in samples.dtype.names:
+        keep &= samples['lnL'] >= downselect_dict['lnL_min']
+    if 'lnL_max' in downselect_dict and 'lnL' in samples.dtype.names:
+        keep &= samples['lnL'] <= downselect_dict['lnL_max']
+    
+    # Spin cut (Kerr limit)
+    if 'chi_max' in downselect_dict:
+        samples = apply_kerr_limit(samples, downselect_dict['chi_max'])
+        # Combine with other cuts - apply_kerr_limit returns filtered samples
+        # So we need to adjust keep accordingly
+        # Actually, we should combine logically: keep = keep & (result of apply_kerr_limit)
+        # But apply_kerr_limit returns a subset, so we can just return that subset at the end
+        # Let's handle differently: apply filters sequentially
+    
+    # Apply spin cut after other cuts if chi_max is provided
+    if 'chi_max' in downselect_dict:
+        samples = apply_kerr_limit(samples, downselect_dict['chi_max'])
+    else:
+        samples = samples[keep]
+    
+    return samples
+
+
+def apply_lnL_cut(samples, lnL_cut):
+    """
+    Filters samples by log likelihood cutoff.
+    
+    Args:
+        samples: Structured numpy array of samples
+        lnL_cut: Minimum log likelihood to keep
+        
+    Returns:
+        Filtered samples array
+    """
+    if 'lnL' not in samples.dtype.names:
+        return samples
+    
+    return samples[samples['lnL'] >= lnL_cut]
+
+
+def load_and_prepare_samples(filepath, sample_type='posterior', field_names=None, **kwargs):
+    """
+    High-level wrapper that loads, expands, and filters samples.
+    
+    This function provides a unified interface for loading posterior or composite samples,
+    automatically expanding derived parameters, and applying filters.
+    
+    Args:
+        filepath: Path to the samples file
+        sample_type: Type of samples - 'posterior' or 'composite'
+        field_names: Optional list of field names (used for composite samples to auto-detect dtype)
+        **kwargs: Additional arguments passed to filtering functions:
+            - chi_max: Passed to apply_kerr_limit or apply_downselection
+            - downselect_dict: Dictionary of downselection parameters
+            - lnL_cut: Log likelihood cutoff
+        
+    Returns:
+        Structured numpy array of prepared samples
+    """
+    if sample_type == 'posterior':
+        samples = load_posterior_samples(filepath)
+    elif sample_type == 'composite':
+        samples = load_composite_samples(filepath, field_names=field_names)
+    else:
+        raise ValueError(f"Unknown sample_type: {sample_type}")
+    
+    # Apply filters
+    if 'chi_max' in kwargs:
+        samples = apply_kerr_limit(samples, kwargs['chi_max'])
+    if 'downselect_dict' in kwargs:
+        samples = apply_downselection(samples, kwargs['downselection_dict'])
+    if 'lnL_cut' in kwargs:
+        samples = apply_lnL_cut(samples, kwargs['lnL_cut'])
+    
+    return samples
 
 
 
