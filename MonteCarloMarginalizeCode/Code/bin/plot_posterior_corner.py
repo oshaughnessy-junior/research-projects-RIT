@@ -17,7 +17,7 @@
 
 import RIFT.lalsimutils as lalsimutils
 import RIFT.misc.samples_utils as samples_utils
-from RIFT.misc.samples_utils import add_field, extract_combination_from_LI, standard_expand_samples
+from RIFT.misc.samples_utils import add_field, extract_combination_from_LI, standard_expand_samples, load_and_prepare_samples
 import lal
 import numpy as np
 import argparse
@@ -390,7 +390,14 @@ label_list = []
 # Load posterior files
 if opts.posterior_file:
  for fname in opts.posterior_file:
-    samples = samples_utils.load_posterior_samples(fname)
+    # Use centralized load_and_prepare_samples for posterior files
+        samples = load_and_prepare_samples(
+            fname, 
+            sample_type='posterior',
+            chi_max=opts.chi_max,
+            downselect_dict=downselect_dict if len(downselect_dict.keys()) > 0 else None,
+            lnL_cut=opts.lnL_cut
+        )
     
     if 'chi1_perp' in samples.dtype.names:
     # if not 'mtotal' in samples.dtype.names and 'mc' in samples.dtype.names:  # raw LI samples use 
@@ -511,10 +518,9 @@ for indx in np.arange(len(posterior_list)):
     if 'distance' in samples.dtype.names:
         samples["distance"]*= fac
 
-# Import
+# Import (refactored)
 composite_list = []
 composite_full_list = []
-field_names=("indx","m1", "m2",  "a1x", "a1y", "a1z", "a2x", "a2y", "a2z","lnL", "sigmaOverL", "ntot", "neff")
 if opts.flag_tides_in_composite:
     if opts.flag_eos_index_in_composite:
         print(" Reading composite file, assumingtide/eos-index-based format ")
