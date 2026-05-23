@@ -25,6 +25,8 @@ import scipy.linalg as linalg
 import scipy.stats
 import scipy.special
 import RIFT.lalsimutils as lalsimutils
+import RIFT.misc.samples_utils as samples_utils
+from RIFT.misc.samples_utils import load_and_prepare_samples
 import lalsimulation as lalsim
 import lalframe
 import lal
@@ -425,7 +427,7 @@ def unscaled_eta_prior_cdf(eta_min):
     cumulative for integration of x^(-6/5)(1-4x)^(-1/2) from eta_min to 1/4.
     Used to normalize the eta prior
     Derivation in mathematica:
-       Integrate[ 1/\[Eta]^(6/5) 1/Sqrt[1 - 4 \[Eta]], {\[Eta], \[Eta]min, 1/4}]
+       Integrate[ 1/[Eta]^(6/5) 1/Sqrt[1 - 4 [Eta]], {[Eta], [Eta]min, 1/4}]
     """
     return  2**(2./5.) *np.sqrt(np.pi)*scipy.special.gamma(-0.2)/scipy.special.gamma(0.3) + 5*scipy.special.hyp2f1(-0.2,0.5,0.8, 4*eta_min)/(eta_min**(0.2))
 def eta_prior(x,norm_factor=1.44):
@@ -738,7 +740,12 @@ elif opts.use_eccentricity:
 if opts.input_distance:
     print(" Distance input")
     col_lnL +=1
-dat_orig = dat = np.loadtxt(opts.fname)
+dat_structured = load_and_prepare_samples(
+    opts.fname, 
+    sample_type='posterior',
+    lnL_cut=opts.lnL_cut
+)
+dat = dat_structured.view(np.float64).reshape(len(dat_structured), -1)
 dat_orig = dat[dat[:,col_lnL].argsort()] # sort  http://stackoverflow.com/questions/2828059/sorting-arrays-in-numpy-by-column
 print(" Original data size = ", len(dat), dat.shape)
 
