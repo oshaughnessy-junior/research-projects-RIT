@@ -391,17 +391,16 @@ label_list = []
 if opts.posterior_file:
  for fname in opts.posterior_file:
     # Use centralized load_and_prepare_samples for posterior files
-        samples = load_and_prepare_samples(
-            fname, 
-            sample_type='posterior',
-            chi_max=opts.chi_max,
-            downselect_dict=downselect_dict if len(downselect_dict.keys()) > 0 else None,
-            lnL_cut=opts.lnL_cut
-        )
+    samples = load_and_prepare_samples(
+        fname, 
+        sample_type='posterior',
+        chi_max=opts.chi_max,
+        downselect_dict=downselect_dict if len(downselect_dict.keys()) > 0 else None,
+        lnL_cut=opts.lnL_cut
+    )
     
-    if 'chi1_perp' in samples.dtype.names:
-    # if not 'mtotal' in samples.dtype.names and 'mc' in samples.dtype.names:  # raw LI samples use 
-    #     q_here = samples['q']
+    # Coordinate conversion is now handled by load_and_prepare_samples
+    # The following coordinate conversion logic is redundant since standard_expand_samples handles this
     #     eta_here = q_here/(1+q_here)
     #     mc_here = samples['mc']
     #     mtot_here = mc_here / np.power(eta_here, 3./5.)
@@ -623,31 +622,9 @@ if opts.composite_file:
 
 
     print(" Loaded samples from ", fname , len(np.atleast_1d(samples[name_ref])))
-    if 'm1' in samples.dtype.names:
-        # impose Kerr limit
-        npts = len(np.atleast_1d(samples["m1"]))
-        indx_ok =np.arange(npts)
-        chi1_squared = samples["chi1_perp"]**2 + samples["a1z"]**2
-        chi2_squared = samples["chi2_perp"]**2 + samples["a2z"]**2
-        indx_ok = np.logical_and(chi1_squared < opts.chi_max ,chi2_squared < opts.chi_max)
-        npts_out = np.sum(indx_ok)
-        if npts_out < npts:
-            print(" Ok systems ", npts_out)
-            new_samples = np.recarray( (npts_out,), dtype=samples.dtype)
-            for name in samples.dtype.names:
-                new_samples[name] = samples[name][indx_ok]
-            samples = new_samples
-            print(" Stripped samples  from ", fname , len(np.atleast_1d(samples["m1"])))
+    # Coordinate conversion and Kerr limit are now handled by load_and_prepare_samples
 
-    # impose downselect on composite file
-    if len(downselect_dict.keys()) < 1:
-        indx_ok = np.ones(len(samples),dtype=bool)
-        for param in downselect_dict:
-            if not param in samples.dtype.names:
-                print(" FAILURE TO DOWNSELECT ON  ", param)
-                continue
-            indx_ok = np.logical_and(indx_ok, np.logical_and(samples[param] > downselect_dict[param][0], samples[param]<=downselect_dict[param][1]))
-        samples = samples[indx_ok]
+    # Downselection is now handled by load_and_prepare_samples
 
 
     composite_list.append(samples)
