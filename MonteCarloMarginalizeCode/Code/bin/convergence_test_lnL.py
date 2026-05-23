@@ -68,8 +68,7 @@ composite_dtype = [ (x,float) for x in field_names] #np.dtype(names=field_names 
 samples_list = []
 composite_list = []
 for fname in opts.posterior_file:
-    samples = np.genfromtxt(fname, names=True)
-    samples = stan
+    samples = samples_utils.load_posterior_samples(fname)
     samples = standard_expand_samples(samples)
     for name in samples.dtype.names:
         if name in lalsimutils.periodic_params:
@@ -78,9 +77,9 @@ for fname in opts.posterior_file:
 # Composite file parsing: from composite list
 for fname in opts.composite_file:
     if not(opts.composite_file_has_labels):
-        samples = np.loadtxt(fname,dtype=composite_dtype)  # Names are not always available
+        samples = samples_utils.load_posterior_samples(fname)  # Names are not always available
     else:
-        samples = np.genfromtxt(fname,names=True)
+        samples = samples_utils.load_posterior_samples(fname)
         samples = rfn.rename_fields(samples, {'sigmalnL': 'sigmaOverL', 'sigma_lnL': 'sigmaOverL'})   # standardize names, some drift in labels
     # enforce periodicity
     for name in samples.dtype.names:
