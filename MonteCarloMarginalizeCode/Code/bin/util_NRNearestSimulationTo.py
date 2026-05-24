@@ -18,6 +18,7 @@ import sys
 import numpy as np
 import scipy
 import RIFT.lalsimutils as lalsimutils
+import RIFT.misc.samples_utils as samples_utils
 import lalsimulation as lalsim
 import lalframe
 import lal
@@ -137,7 +138,7 @@ if opts.fname_fisher:
     ###
     ### Load in Fisher. Create default distance function (WARNING: needs parameter labels to be appended!)
     ###
-    datFisher = np.genfromtxt(opts.fname_fisher,names=True)
+    datFisher = samples_utils.load_posterior_samples(opts.fname_fisher)
     print(" Fisher matrix ", datFisher, " with shape ",  datFisher.shape , " and parameters ", datFisher.dtype.names)
 
     # parameter names

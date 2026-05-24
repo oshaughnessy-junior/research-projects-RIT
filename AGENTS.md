@@ -11,17 +11,21 @@ RIFT = Iterative parameter estimation pipeline for gravitational wave astronomy 
 
 ## Developer commands
 ```bash
-# Install in editable mode
-pip install -e .
+# Install in editable mode inside the active project sandbox
+oc-run python -m pip install -e .
 
 # Run a specific test
-python MonteCarloMarginalizeCode/Code/test/test_likelihood.py
+oc-run python MonteCarloMarginalizeCode/Code/test/test_likelihood.py
 ```
 
 ## Required environment
 - **lalsuite** must be installed (LIGO analysis library)
 - Set: `export GW_SURROGATE=''`
 - On LDG clusters: `export LIGO_USER_NAME=... LIGO_ACCOUNTING=...`
+
+## Environment protocol
+- Before installing or running tests, use the global `project-sandboxing` skill.
+- Prefer the existing project sandbox via `oc-run` or `pixi run`; do not run bare installs.
 
 ## Testing
 Tests use pytest but have no standard runner. Run individual test files directly.

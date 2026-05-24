@@ -12,6 +12,7 @@ import RIFT.misc.xmlutils as xmlutils
 from igwn_ligolw import lsctables, table, utils
 
 import numpy as np
+import RIFT.misc.samples_utils as samples_utils
 import RIFT.misc.weight_simulations as weight_simulations
 
 import fileinput
@@ -44,7 +45,8 @@ for fname in opts.fname[0]: #sys.argv[1:]:
         continue
     sys.stderr.write(str(fname)+"\n")
 #    data = np.loadtxt(fname)  # this will FAIL if we have a heterogeneous data source!  BE CAREFUL
-    data = np.genfromtxt(fname,invalid_raise=False)  #  Protect against inhomogeneous data
+    data_structured = samples_utils.load_posterior_samples(fname)
+    data = data_structured.view(np.float64).reshape(len(data_structured), -1)  #  Protect against inhomogeneous data
     if len(data.shape) ==1:
         data = np.array([data]) # force proper treatment for single-line file
     for line in data:

@@ -1,6 +1,36 @@
-
 import numpy as np
 import RIFT.lalsimutils as lalsimutils
+
+# Mapping of composite file formats to their field lists
+COMPOSITE_FORMATS = {
+    "standard": ("indx", "m1", "m2", "a1x", "a1y", "a1z", "a2x", "a2y", "a2z", "lnL", "sigmaOverL", "ntot", "neff"),
+    "tides": ("indx", "m1", "m2", "a1x", "a1y", "a1z", "a2x", "a2y", "a2z", "lambda1", "lambda2", "lnL", "sigmaOverL", "ntot", "neff"),
+    "tides_eos": ("indx", "m1", "m2", "a1x", "a1y", "a1z", "a2x", "a2y", "a2z", "lambda1", "lambda2", "eos_indx", "lnL", "sigmaOverL", "ntot", "neff"),
+    "eccentricity": ("indx", "m1", "m2", "a1x", "a1y", "a1z", "a2x", "a2y", "a2z", "eccentricity", "lnL", "sigmaOverL", "ntot", "neff"),
+    "eccentricity_mpa": ("indx", "m1", "m2", "a1x", "a1y", "a1z", "a2x", "a2y", "a2z", "eccentricity", "meanPerAno", "lnL", "sigmaOverL", "ntot", "neff"),
+    "synthetic": ("indx", "m1", "m2", "s1x", "s1y", "s1z", "s2x", "s2y", "s2z", "lnL", "sigmaL", "neff", "npts"),
+}
+
+COMPOSITE_FORMAT_FIELD_ALIASES = {
+    "synthetic": {
+        "s1x": "a1x",
+        "s1y": "a1y",
+        "s1z": "a1z",
+        "s2x": "a2x",
+        "s2y": "a2y",
+        "s2z": "a2z",
+        "sigmaL": "sigmaOverL",
+        "sigmalnL": "sigmaOverL",
+        "sigma_lnL": "sigmaOverL",
+        "npts": "ntot",
+    },
+}
+
+COMPOSITE_FIELD_ALIASES = {
+    "sigmalnL": "sigmaOverL",
+    "sigma_lnL": "sigmaOverL",
+}
+
 remap_ILE_2_LI = {
  "s1z":"a1z", "s2z":"a2z", 
  "s1x":"a1x", "s1y":"a1y",
@@ -115,7 +145,7 @@ def extract_combination_from_LI(samples_LI, p):
         return np.sqrt(samples['a1x']**2 + samples['a1y']**2 + samples['a1z']**2)
     if (p == 'chi2' or p=='a2') and 'a2x' in samples.dtype.names:
         return np.sqrt(samples['a2x']**2 + samples['a2y']**2 + samples['a2z']**2)
-    
+
     if p == 'phi1':
         return np.angle(samples_LI['a1x']+1j*samples_LI['a1y'])
     if p == 'chi_pavg':
@@ -164,25 +194,58 @@ def load_posterior_samples(filepath):
             samples[name] = np.mod(samples[name], lalsimutils.periodic_params[name])
     return samples
 
-def load_composite_samples(filepath, has_labels=False, composite_dtype=None, source_redshift=None, field_names=None):
+def _rename_existing_fields(samples, field_aliases):
+    names = getattr(samples.dtype, "names", None)
+    if not names:
+        return samples
+    rename_map = {}
+    for old_name, new_name in field_aliases.items():
+        if old_name in names and new_name not in names:
+            rename_map[old_name] = new_name
+    if rename_map:
+        return rfn.rename_fields(samples, rename_map)
+    return samples
+
+
+def load_composite_samples(filepath, has_labels=False, composite_dtype=None, source_redshift=None, field_names=None, format=None):
     """
     Loads composite samples from a .dat file. Handles label-based and fixed-dtype loading,
     applies source redshift scaling, filters NaN likelihoods, and applies periodic wrapping.
+
+    Args:
+        filepath: Path to the composite file
+        has_labels: Boolean, whether the file has headers for field names
+        composite_dtype: Optional, numpy dtype for fixed-dtype loading
+        source_redshift: Optional, redshift for mass conversion
+        field_names: Optional, list of field names (deprecated, use format instead)
+        format: Optional, string name from COMPOSITE_FORMATS (e.g., "tides", "eccentricity")
     """
-    if not has_labels:
+    # Determine dtype/field names based on format
+    if format is not None:
+        if format not in COMPOSITE_FORMATS:
+            raise ValueError(f"Unknown format '{format}'. Available formats: {list(COMPOSITE_FORMATS.keys())}")
+        field_names = COMPOSITE_FORMATS[format]
+        composite_dtype = [(name, float) for name in field_names]
+
+    # Load samples regardless of the path taken
+    if has_labels:
+        samples = np.genfromtxt(filepath, names=True)
+    else:
         if composite_dtype is None:
             if field_names is None:
-                raise ValueError("composite_dtype or field_names must be provided if has_labels is False")
+                raise ValueError("composite_dtype, field_names, or format must be provided if has_labels is False")
             composite_dtype = _detect_dtype_from_field_names(field_names)
         samples = np.loadtxt(filepath, dtype=composite_dtype)
-        if source_redshift:
-            samples['m1'] *= 1.0 / (1.0 + source_redshift)
-            samples['m2'] *= 1.0 / (1.0 + source_redshift)
-    else:
-        samples = np.genfromtxt(filepath, names=True)
-        # Handle potential label drift from plot_posterior_corner.py logic
-        if hasattr(samples, 'dtype') and samples.dtype.names:
-            samples = rfn.rename_fields(samples, {'sigmalnL': 'sigmaOverL', 'sigma_lnL': 'sigmaOverL'})
+
+    # Apply source redshift scaling
+    if source_redshift:
+        samples['m1'] *= 1.0 / (1.0 + source_redshift)
+        samples['m2'] *= 1.0 / (1.0 + source_redshift)
+
+    # First normalize format-specific field names, then handle generic label drift.
+    if format in COMPOSITE_FORMAT_FIELD_ALIASES:
+        samples = _rename_existing_fields(samples, COMPOSITE_FORMAT_FIELD_ALIASES[format])
+    samples = _rename_existing_fields(samples, COMPOSITE_FIELD_ALIASES)
 
     # Filter NaN likelihoods
     if 'lnL' in samples.dtype.names:
@@ -356,10 +419,10 @@ def standard_expand_samples(samples):
                 samples = add_field(samples, [(field_name, float)])
                 samples[field_name] = phi_func_dict[field_name](samples)
 
-    if not('chi1' in samples.dtype.names):
+    if not('chi1' in samples.dtype.names) and 'a1x' in samples.dtype.names:
         chi1 = np.sqrt(samples['a1x']**2 + samples['a1y']**2+samples['a1z']**2)
         samples = add_field(samples, [('chi1',float)])
-    if not('chi2' in samples.dtype.names):
+    if not('chi2' in samples.dtype.names) and 'a2x' in samples.dtype.names:
         chi2 = np.sqrt(samples['a2x']**2 + samples['a2y']**2+samples['a2z']**2)
         samples = add_field(samples, [('chi2',float)])
         
@@ -622,7 +685,8 @@ def load_and_prepare_samples(filepath, sample_type='posterior', field_names=None
         filepath: Path to the samples file
         sample_type: Type of samples - 'posterior' or 'composite'
         field_names: Optional list of field names (used for composite samples to auto-detect dtype)
-        **kwargs: Additional arguments passed to filtering functions:
+        **kwargs: Additional arguments passed to loading and filtering functions:
+            - composite_format: Composite format name passed to load_composite_samples
             - chi_max: Passed to apply_kerr_limit or apply_downselection
             - downselect_dict: Dictionary of downselection parameters
             - lnL_cut: Log likelihood cutoff
@@ -633,16 +697,23 @@ def load_and_prepare_samples(filepath, sample_type='posterior', field_names=None
     if sample_type == 'posterior':
         samples = load_posterior_samples(filepath)
     elif sample_type == 'composite':
-        samples = load_composite_samples(filepath, field_names=field_names)
+        samples = load_composite_samples(
+            filepath,
+            has_labels=kwargs.get('has_labels', kwargs.get('composite_file_has_labels', False)),
+            composite_dtype=kwargs.get('composite_dtype'),
+            source_redshift=kwargs.get('source_redshift'),
+            field_names=field_names,
+            format=kwargs.get('composite_format', kwargs.get('format')),
+        )
     else:
         raise ValueError(f"Unknown sample_type: {sample_type}")
     
     # Apply filters
     if 'chi_max' in kwargs:
         samples = apply_kerr_limit(samples, kwargs['chi_max'])
-    if 'downselect_dict' in kwargs:
+    if 'downselection_dict' in kwargs:
         samples = apply_downselection(samples, kwargs['downselection_dict'])
-    if 'lnL_cut' in kwargs:
+    if kwargs.get('lnL_cut') is not None:
         samples = apply_lnL_cut(samples, kwargs['lnL_cut'])
     
     return samples

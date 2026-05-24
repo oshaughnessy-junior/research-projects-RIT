@@ -6,8 +6,10 @@
 
 from gwpy.timeseries import TimeSeries
 import RIFT.lalsimutils as lalsimutils
+import RIFT.misc.samples_utils as samples_utils
 #import glob
 import sys
+import numpy as np
 import bilby
 import gwpy.time
 from scipy.interpolate import make_interp_spline
@@ -56,7 +58,8 @@ if opts.calibration_file_path:
     #    phase_median 2
     # see : bilby/pw.prior.py parsing for this
     fname_cal = opts.calibration_file_path + "/" + opts.ifo + ".txt"  # assume standard envelope file names, eg output asimov retrieves
-    calibration_data = np.genfromtxt(fname_cal).T
+    samples_structured = samples_utils.load_posterior_samples(fname_cal)
+    calibration_data = samples_structured.view(np.float64).reshape(len(samples_structured), -1).T
     log_frequency_array = np.log(calibration_data[0])
     amplitude_median = calibration_data[1] - 1
     phase_median = calibration_data[2]

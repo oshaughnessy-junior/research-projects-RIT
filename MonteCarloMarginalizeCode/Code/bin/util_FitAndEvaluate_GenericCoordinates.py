@@ -23,6 +23,8 @@ import numpy as np
 import numpy.lib.recfunctions
 import scipy
 import RIFT.lalsimutils as lalsimutils
+import RIFT.misc.samples_utils as samples_utils
+from RIFT.misc.samples_utils import load_and_prepare_samples
 import lalsimulation as lalsim
 import lalframe
 import lal
@@ -379,7 +381,12 @@ col_lnL = 9
 if opts.input_tides:
     print(" Tides input")
     col_lnL +=2
-dat_orig = dat = np.loadtxt(opts.fname)
+dat_structured = load_and_prepare_samples(
+    opts.fname, 
+    sample_type='posterior',
+    lnL_cut=opts.lnL_cut
+)
+dat = dat_structured.view(np.float64).reshape(len(dat_structured), -1)
 dat_orig = dat[dat[:,col_lnL].argsort()] # sort  http://stackoverflow.com/questions/2828059/sorting-arrays-in-numpy-by-column
 print(" Original data size = ", len(dat), dat.shape)
 
@@ -619,7 +626,11 @@ if len(low_level_coord_names) ==10:
 P_base = lalsimutils.xml_to_ChooseWaveformParams_array(opts.fname_xml_base)[0]
 
 # Grid
-samples_rec = np.genfromtxt(opts.fname_parameter_grid,names=True)
+samples_rec = load_and_prepare_samples(
+    opts.fname_parameter_grid, 
+    sample_type='posterior',
+    lnL_cut=opts.lnL_cut
+)
 params_rec = samples_rec.dtype.names
 
 # Conversion

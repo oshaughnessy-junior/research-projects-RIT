@@ -4,6 +4,8 @@
 #   python util_ConstructBNSMarginalEOSRank.py --composite G298048/production_C00_cleaned_TaylorT4/all.composite --parameter mc --parameter eta --lnL-cutoff 10 --using-eos ap4
 
 import numpy as np
+import RIFT.misc.samples_utils as samples_utils
+from RIFT.misc.samples_utils import load_and_prepare_samples
 import matplotlib.pyplot as plt
 import argparse
 
@@ -253,8 +255,13 @@ if opts.composite_file:
     if opts.using_eos:
        param_array.append('eos_lambda')
 
-    #load data 
-    comp_data = np.loadtxt(opts.composite_file)
+    # Use centralized load_and_prepare_samples for composite files
+    comp_structured = load_and_prepare_samples(
+        opts.composite_file, 
+        sample_type='composite',
+        lnL_cut=opts.lnL_cutoff
+    )
+    comp_data = comp_structured.view(np.float64).reshape(len(comp_structured), -1)
 
     #determine mc range
     mc_comp = lalsimutils.mchirp(comp_data[:,1], comp_data[:,2]) 

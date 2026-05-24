@@ -132,8 +132,8 @@ def test_js_additive(dat1,dat2):
 
 # Procedure
 
-samples1 = np.genfromtxt(opts.samples[0], names=True)
-samples2 = np.genfromtxt(opts.samples[1], names=True)
+samples1 = samples_utils.load_posterior_samples(opts.samples[0])
+samples2 = samples_utils.load_posterior_samples(opts.samples[1])
 
 # Add necessary parameterys
 if 'm1' in samples1.dtype.names:

@@ -216,6 +216,9 @@ parser.add_argument("--truth-file-manual",type=str, help="file containing the tr
 parser.add_argument("--posterior-distance-factor",action='append',help="Sequence of factors used to correct the distances")
 parser.add_argument("--truth-event",type=int, default=0,help="file containing the true parameters")
 parser.add_argument("--composite-file",action='append',help="filename of *.dat file [standard ILE intermediate]")
+parser.add_argument("--composite-format", type=str, default=None,
+                    choices=sorted(samples_utils.COMPOSITE_FORMATS.keys()),
+                    help="Format of composite files")
 parser.add_argument("--composite-file-has-labels",action='store_true',help="Assume header for composite file")
 parser.add_argument("--use-all-composite-but-grayscale",action='store_true',help="Composite")
 parser.add_argument("--flag-tides-in-composite",action='store_true',help='Required, if you want to parse files with tidal parameters')
@@ -520,22 +523,28 @@ for indx in np.arange(len(posterior_list)):
 # Import (refactored)
 composite_list = []
 composite_full_list = []
-if opts.flag_tides_in_composite:
+# Determine composite format based on explicit format or legacy flags.
+if opts.composite_format:
+    composite_format = opts.composite_format
+    print(f" Reading composite file, assuming {composite_format} format ")
+elif opts.flag_tides_in_composite:
     if opts.flag_eos_index_in_composite:
-        print(" Reading composite file, assumingtide/eos-index-based format ")
-        field_names=("indx","m1", "m2",  "a1x", "a1y", "a1z", "a2x", "a2y", "a2z","lambda1", "lambda2", "eos_indx","lnL", "sigmaOverL", "ntot", "neff")
+        composite_format = "tides_eos"
+        print(" Reading composite file, assuming tide/eos-index-based format ")
     else:
+        composite_format = "tides"
         print(" Reading composite file, assuming tide-based format ")
-        field_names=("indx","m1", "m2",  "a1x", "a1y", "a1z", "a2x", "a2y", "a2z","lambda1", "lambda2", "lnL", "sigmaOverL", "ntot", "neff")
-if opts.eccentricity:
-    print(" Reading composite file, assuming eccentricity-based format ")
+elif opts.eccentricity:
     if opts.meanPerAno:
+        composite_format = "eccentricity_mpa"
         print(" Reading composite file, assuming mpa-based format ")
-        field_names=("indx","m1", "m2",  "a1x", "a1y", "a1z", "a2x", "a2y", "a2z","eccentricity", "meanPerAno", "lnL", "sigmaOverL", "ntot", "neff")
     else:
-        field_names=("indx","m1", "m2",  "a1x", "a1y", "a1z", "a2x", "a2y", "a2z","eccentricity", "lnL", "sigmaOverL", "ntot", "neff")
-field_formats = [np.float32 for x in field_names]
-composite_dtype = [ (x,float) for x in field_names] #np.dtype(names=field_names ,formats=field_formats)
+        composite_format = "eccentricity"
+        print(" Reading composite file, assuming eccentricity-based format ")
+else:
+    composite_format = "standard"
+    print(f" Reading composite file, assuming {composite_format} format ")
+
 # Load posterior files
 if opts.composite_file:
  print(opts.composite_file)
@@ -544,9 +553,10 @@ if opts.composite_file:
     samples = samples_utils.load_composite_samples(
         fname, 
         has_labels=opts.composite_file_has_labels, 
-        composite_dtype=composite_dtype, 
-        source_redshift=opts.source_redshift
+        source_redshift=opts.source_redshift,
+        format=composite_format
     )
+    field_names = list(samples.dtype.names)
     
     name_ref = samples.dtype.names[0]
     if opts.sigma_cut >0:

@@ -11,6 +11,7 @@
 ###############################################
 
 import numpy as np
+import RIFT.misc.samples_utils as samples_utils
 import h5py as h5
 import argparse
 
@@ -24,7 +25,7 @@ parser.add_argument("--output-file", type=str, default='results.hdf5', help="Out
 parser.add_argument("--sampler", type=str, default='mcmc', help="Sampler used mcmc/nest")
 args = parser.parse_args()
 
-dat_file = np.genfromtxt(args.input_file, names=True)
+dat_file = samples_utils.load_posterior_samples(args.input_file)
 
 h5_file  = h5.File(args.output_file, 'w')
 

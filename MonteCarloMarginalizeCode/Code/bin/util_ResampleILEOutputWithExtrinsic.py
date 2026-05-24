@@ -19,6 +19,7 @@
 import numpy as np
 import lal
 import RIFT.lalsimutils as lalsimutils
+import RIFT.misc.samples_utils as samples_utils
 import bisect
 
 
@@ -30,7 +31,7 @@ parser.add_argument("--save-P",default=0.,type=float,help="Not currently used")
 parser.add_argument("--n-output-samples",default=2000,type=int)
 opts = parser.parse_args()
 
-samples = np.genfromtxt(opts.fname,names=True,invalid_raise=False)
+samples = samples_utils.load_posterior_samples(opts.fname)
 lnLmax = np.max(samples["lnL"])
 p = samples["p"]     # only prior!
 ps = samples["ps"]  # sampling prior

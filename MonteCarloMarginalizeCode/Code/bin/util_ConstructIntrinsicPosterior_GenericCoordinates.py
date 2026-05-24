@@ -20,6 +20,7 @@ import RIFT.interpolators.BayesianLeastSquares as BayesianLeastSquares
 import argparse
 import sys
 import numpy as np
+import RIFT.misc.samples_utils as samples_utils
 import numpy.lib.recfunctions
 import scipy
 import RIFT.misc.samples_utils as samples_utils
@@ -421,7 +422,8 @@ if  not(opts.input_eos_index) and (opts.tabular_eos_file):
 if opts.using_eos and opts.using_eos.startswith('file:') and not(opts.using_eos_index is None):
     fname = opts.using_eos.replace('file:', '')
     try:
-        dat = np.loadtxt(fname)[opts.using_eos_index]
+        samples_structured = samples_utils.load_posterior_samples(fname)
+        dat = samples_structured.view(np.float64).reshape(len(samples_structured), -1)[opts.using_eos_index]
     except Exception as e:
         print(" Fail: EOS index out of range:\n   ",e)
         sys.exit(0)
@@ -443,7 +445,8 @@ elif opts.using_eos!=None and not(opts.using_eos_for_prior):
         # Load in filename
         fname = eos_name.replace('file:', '')
         # Retrieve row with parameters
-        dat = np.loadtxt(fname)[opts.using_eos_index]
+        samples_structured = samples_utils.load_posterior_samples(fname)
+        dat = samples_structured.view(np.float64).reshape(len(samples_structured), -1)[opts.using_eos_index]
         spec_param_array = dat[2:]  # drop first two as lnL, sigma_lnL
         if opts.eos_param == 'spectral':
             spec_params ={}
@@ -1771,7 +1774,9 @@ elif opts.use_eccentricity:
 if opts.input_distance:
     print(" Distance input")
     col_lnL +=1
-dat_orig = dat = np.loadtxt(opts.fname)
+samples_structured = samples_utils.load_posterior_samples(opts.fname)
+dat = samples_structured.view(np.float64).reshape(len(samples_structured), -1)
+dat_orig = dat
 dat_orig = dat[dat[:,col_lnL].argsort()] # sort  http://stackoverflow.com/questions/2828059/sorting-arrays-in-numpy-by-column
 if col_meanPerAno:
     dat_orig[:,col_meanPerAno] = np.mod(dat_orig[:,col_meanPerAno], lalsimutils.periodic_params['meanPerAno'] ) # 2 *np.pi
@@ -2936,7 +2941,8 @@ if opts.using_eos and not(opts.using_eos.startswith('file:')):
         annotation_header += "gamma1 gamma2 gamma3 gamma4 p0 epsilon0 xmax"
 elif opts.using_eos and opts.using_eos.startswith('file:'):
     fname = opts.using_eos.replace('file:','')
-    params_here = np.loadtxt(fname)[opts.using_eos_index][2:]
+    samples_structured = samples_utils.load_posterior_samples(fname)
+    params_here = samples_structured.view(np.float64).reshape(len(samples_structured), -1)[opts.using_eos_index][2:]
     linefirst =''
     with open(fname) as f:
         linefirst = f.readline()

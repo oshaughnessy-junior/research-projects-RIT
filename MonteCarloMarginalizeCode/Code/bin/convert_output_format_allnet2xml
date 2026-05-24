@@ -3,6 +3,7 @@
 import argparse
 import sys
 import numpy as np
+import RIFT.misc.samples_utils as samples_utils
 import numpy.lib.recfunctions
 import scipy
 import scipy.stats
@@ -28,7 +29,9 @@ col_lnL=9
 if opts.use_eccentricity:
     col_lnL = 10
 
-dat_orig = dat = np.loadtxt(opts.fname)
+samples_structured = samples_utils.load_posterior_samples(opts.fname)
+dat = samples_structured.view(np.float64).reshape(len(samples_structured), -1)
+dat_orig = dat
 dat_orig = dat[dat[:,col_lnL].argsort()] # sort  http://stackoverflow.com/questions/2828059/sorting-arrays-in-numpy-by-colu
 
 P_list = []

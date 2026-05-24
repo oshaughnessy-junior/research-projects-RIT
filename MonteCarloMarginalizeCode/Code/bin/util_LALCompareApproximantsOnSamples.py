@@ -15,6 +15,7 @@ import sys
 import numpy as np
 import scipy
 import RIFT.lalsimutils as lalsimutils
+import RIFT.misc.samples_utils as samples_utils
 import lalsimulation as lalsim
 import lalframe
 import lal
@@ -53,7 +54,7 @@ else:
 
 
 print(" Loading samples ")
-samples_in = np.genfromtxt(opts.fname_lalinference,names=True)
+samples_in = samples_utils.load_posterior_samples(opts.fname_lalinference)
 print(" Done loading samples ")
 deltaT = 1./4096
 T_window =int(opts.seglen)
