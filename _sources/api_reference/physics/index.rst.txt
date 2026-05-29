@@ -1,14 +1,7 @@
-Physics API Reference
-=====================
+Physics Utilities
+==================
 
-.. toctree::
-   :maxdepth: 1
-
-   EOBTidalExternal
-   EOBTidalExternalC
-   EOSManager
-   GWSignal
-   MonotonicSpline
-   PrecessingFisherMatrix
-   ROMWaveformManager
-   effectiveFisher
+.. automodule:: RIFT.physics
+   :members:
+   :undoc-members:
+   :show-inheritance:
