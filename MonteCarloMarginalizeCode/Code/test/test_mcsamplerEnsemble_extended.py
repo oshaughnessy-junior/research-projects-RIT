@@ -129,6 +129,13 @@ print(" --- finished AC --")
 integral_2, var_2, eff_samp_2, _ = samplerEnsemble.integrate(infunc, *params, 
         min_iter=n_iters, max_iter=n_iters, correlate_all_dims=True, n_comp=n_comp,super_verbose=False,verbose=verbose,use_lnL=use_lnL,return_lnI=return_lnI,**extra_args)
 if return_lnI and use_lnL:
+    assert np.allclose(samplerEnsemble._rvs["integrand"], samplerEnsemble._rvs["log_integrand"])
+    assert np.allclose(
+        samplerEnsemble._rvs["log_weights"],
+        samplerEnsemble._rvs["log_integrand"]
+        + samplerEnsemble._rvs["log_joint_prior"]
+        - samplerEnsemble._rvs["log_joint_s_prior"],
+    )
     rel_error_2 = np.exp(var_2/2 - integral_2)
     integral_2 = np.exp(integral_2)
 else:

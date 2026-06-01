@@ -198,7 +198,7 @@ class integrator:
         else:
             lnL = self.xpy.log(value_array+regularize_log_scale)
         
-        log_weights = self.tempering_exp*lnL + self.xpy.log(self.prior_array) - sampling_prior_array
+        log_weights = self.tempering_exp*lnL + self.xpy.log(self.prior_array) - self.xpy.log(sampling_prior_array)
         if self.temper_log:
             log_weights = self.xpy.log(self.xpy.maximum(lnL,1e-5))
             

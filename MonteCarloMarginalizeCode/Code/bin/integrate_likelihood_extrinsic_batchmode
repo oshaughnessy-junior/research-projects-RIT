@@ -2324,10 +2324,10 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
 
     if opts.maximize_only and opts.output_file:
       # Pick the best extrinsic parameters, except for time (assumed not set: time marginalization)
-      if "integrand" in sampler._rvs:
-        indx_guess = numpy.argmax(sampler._rvs["integrand"])   # start search near maximum-likelihood point. (WARNING: can be very close by)
-      else:
+      if "log_integrand" in sampler._rvs:
         indx_guess = numpy.argmax(sampler._rvs["log_integrand"])
+      else:
+        indx_guess = numpy.argmax(sampler._rvs["integrand"])   # start search near maximum-likelihood point. (WARNING: can be very close by)
       P.radec=True
       P.phi = sampler._rvs["right_ascension"][indx_guess]
       P.theta = sampler._rvs["declination"][indx_guess]
@@ -2392,7 +2392,11 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
       print( " Starting point [dimensionless] ", x0)
       print( " Starting point [physical] ", [x0[0]*2*numpy.pi, numpy.pi*(x0[1]),  t_ref_wind*2*(x0[2]-0.5), 2*numpy.pi*x0[3], numpy.pi*x0[4], numpy.pi*x0[5], x0[6]*dmax])
       lnLstart = -1*fn_scaled(x0)   # note the two -1's cancel. Compare to 'rho^2/2' value reported by code
-      print( " lnL at start :", lnLstart, " [note can be lower than peak because of time offset]: best reported by ILE (including weights) is ", numpy.log(numpy.max(sampler._rvs["integrand"])))
+      if "log_integrand" in sampler._rvs:
+        sampler_lnLmax = numpy.max(sampler._rvs["log_integrand"])
+      else:
+        sampler_lnLmax = numpy.log(numpy.max(sampler._rvs["integrand"]))
+      print( " lnL at start :", lnLstart, " [note can be lower than peak because of time offset]: best reported by ILE (including weights) is ", sampler_lnLmax)
       x = scipy.optimize.fmin(fn_scaled,x0, xtol=1e-5,ftol=1e-3,maxiter=opts.n_max,maxfun=opts.n_max)
       lnLmax = -1.0*fn_scaled(x)
       if lnLmax < lnLstart:
