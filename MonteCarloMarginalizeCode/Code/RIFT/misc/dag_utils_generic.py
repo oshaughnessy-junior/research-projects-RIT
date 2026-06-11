@@ -135,6 +135,7 @@ try:
         build_singularity_image_expr,
         build_transfer_input_expr,
         build_require_gpus_floor,
+        build_runtime_selection_wrapper,
         ContainerManifestError,
     )
     _HAVE_CONTAINER_MANIFEST = True
@@ -2262,6 +2263,8 @@ def write_ILE_sub_simple(tag='integrate', exe=None, log_dir=None, use_eos=False,
     # selective ($$()) transfer entry and a require_gpus capability floor.  A
     # plain .sif / osdf:// value keeps the legacy single-image behavior below.
     singularity_is_family = False
+    singularity_runtime_select = False
+    singularity_inner_exe = None
     singularity_image_expr = None
     singularity_transfer_expr = None
     singularity_require_gpus_floor = None
@@ -2271,11 +2274,20 @@ def write_ILE_sub_simple(tag='integrate', exe=None, log_dir=None, use_eos=False,
         singularity_image_expr = build_singularity_image_expr(_manifest)
         singularity_transfer_expr = build_transfer_input_expr(_manifest)
         singularity_require_gpus_floor = build_require_gpus_floor(_manifest)
+        # OSG-safe runtime selection (opt-in: RIFT_CONTAINER_RUNTIME_SELECT set).
+        # The expression-valued MY.SingularityImage below works on the CIT-local
+        # pool but OSPool glidein pilots read it as a LITERAL string and hold the
+        # job.  When enabled, we instead pick + exec the image at job start via a
+        # wrapper executable (build_runtime_selection_wrapper, set near the end).
+        # Requires use_singularity (the wrapper runs apptainer itself).
+        singularity_runtime_select = bool(use_singularity and os.environ.get('RIFT_CONTAINER_RUNTIME_SELECT'))
         # Selective transfer: only the matched osdf image is fetched (via the
         # $$() token, which is comma-free so it survives transfer_input_files
         # comma-splitting).  CVMFS/local images are referenced in place and
-        # never transferred, so the whole family is never pulled.
-        if singularity_transfer_expr:
+        # never transferred, so the whole family is never pulled.  In runtime-
+        # select mode the wrapper fetches its single image itself, so we do NOT
+        # emit the $$() token.
+        if singularity_transfer_expr and not singularity_runtime_select:
             extra_files += [singularity_transfer_expr]
     elif singularity_image:
         if 'osdf:' in singularity_image:
@@ -2295,6 +2307,9 @@ def write_ILE_sub_simple(tag='integrate', exe=None, log_dir=None, use_eos=False,
 #            singularity_base_exe_path = "/opt/lscsoft/rift/MonteCarloMarginalizeCode/Code/"  # should not hardcode this ...!
             singularity_base_exe_path = "/usr/bin/"  # should not hardcode this ...!
         exe=singularity_base_exe_path + exe_base
+        # Command the runtime-select wrapper execs INSIDE the container (the
+        # in-container exe path; overridden to ./ile_pre.sh below if frames need it).
+        singularity_inner_exe = exe
         if not(frames_dir is None):
             frames_local = frames_dir.split("/")[-1]
     elif use_osg:  # NOT using singularity!
@@ -2437,14 +2452,21 @@ echo Starting ...
     if use_singularity:
         # Compare to https://github.com/lscsoft/lalsuite/blob/master/lalinference/python/lalinference/lalinference_pipe_utils.py
         ile_job.add_condor_cmd('request_CPUs', str(1))
-        ile_job.add_condor_cmd('transfer_executable', 'False')
-        ile_job.add_condor_cmd("MY.SingularityBindCVMFS", 'True')
-        if singularity_is_family:
-            # Expression-valued: emit the ifThenElse raw, with NO surrounding
-            # double quotes (a classad expression must not be quoted).
-            ile_job.add_condor_cmd("MY.SingularityImage", singularity_image_expr)
+        if singularity_runtime_select:
+            # OSG-safe: the container is chosen + exec'd by the wrapper executable
+            # (set near the end), so we run on the bare node with NO condor
+            # auto-singularity.  Do NOT set transfer_executable=False (the wrapper
+            # IS transferred), MY.SingularityImage, or MY.SingularityBindCVMFS.
+            pass
         else:
-            ile_job.add_condor_cmd("MY.SingularityImage", '"' + singularity_image_used + '"')
+            ile_job.add_condor_cmd('transfer_executable', 'False')
+            ile_job.add_condor_cmd("MY.SingularityBindCVMFS", 'True')
+            if singularity_is_family:
+                # Expression-valued: emit the ifThenElse raw, with NO surrounding
+                # double quotes (a classad expression must not be quoted).
+                ile_job.add_condor_cmd("MY.SingularityImage", singularity_image_expr)
+            else:
+                ile_job.add_condor_cmd("MY.SingularityImage", '"' + singularity_image_used + '"')
         ile_job.add_condor_cmd("MY.flock_local",'true')  # jobs can match to local pool !
         requirements.append("HAS_SINGULARITY=?=TRUE")
 #               if not(use_simple_osg_requirements):
@@ -2538,6 +2560,10 @@ echo Starting ...
             f.write('{exe}  "$@" '.format(exe=exe))
             os.system("chmod a+x ile_pre.sh")
             ile_job.set_executable("ile_pre.sh")  # transferred, used as executable
+            # In runtime-select mode the wrapper is the executable instead; have
+            # it exec ile_pre.sh INSIDE the chosen container (CWD is bound by
+            # apptainer, so reference it relatively).
+            singularity_inner_exe = "./ile_pre.sh"
 #          ile_job.add_condor_cmd('+PreCmd', '"ile_pre.sh"')
 
 
@@ -2614,6 +2640,19 @@ echo Starting ...
     if condor_commands is not None:
         for cmd, value in condor_commands.items():
             ile_job.add_condor_cmd(cmd, value)
+
+    # OSG-safe runtime container selection: replace the job executable with a
+    # wrapper that detects the GPU, picks the matching family image, fetches only
+    # that one, and execs the real in-container command (singularity_inner_exe)
+    # at job start.  This avoids the expression-valued MY.SingularityImage that
+    # OSPool glidein pilots cannot evaluate.  Opt-in via RIFT_CONTAINER_RUNTIME_SELECT.
+    if singularity_runtime_select:
+        wrapper_text = build_runtime_selection_wrapper(_manifest, inner_command=singularity_inner_exe)
+        wrapper_name = 'rift_container_select.sh'
+        with open(wrapper_name, 'w') as f:
+            f.write(wrapper_text)
+        os.system('chmod a+x ' + wrapper_name)
+        ile_job.set_executable(wrapper_name)  # transferred; runs on the bare node
 
     return ile_job, ile_sub_name
 

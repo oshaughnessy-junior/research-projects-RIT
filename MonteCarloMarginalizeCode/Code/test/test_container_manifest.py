@@ -11,6 +11,9 @@ Or via pytest: pytest test/test_container_manifest.py
 """
 
 import os
+import shutil
+import stat
+import subprocess
 import sys
 import textwrap
 
@@ -203,6 +206,96 @@ def test_backward_compat_single_sif(tmp_path, monkeypatch):
     assert cmds["MY.SingularityImage"] == '"./foo.sif"'
     assert "$$([" not in cmds.get("transfer_input_files", "")
     assert "require_gpus" not in cmds
+
+
+# ---------------------------------------------------------------------------
+# 6. OSG-safe runtime-selection wrapper
+# ---------------------------------------------------------------------------
+
+def test_runtime_wrapper_text_contents(tmp_path):
+    m = cm.load_container_manifest(_write(tmp_path, MIXED_MANIFEST))
+    text = cm.build_runtime_selection_wrapper(m, inner_command="./ile_pre.sh")
+    assert text.startswith("#!/bin/bash")
+    # cap->image table baked from the manifest (osdf image -> ./basename; cvmfs
+    # image -> verbatim in-place path; the osdf URL is the single-fetch source)
+    assert '"./rift_modern_cuda12.sif"' in text                 # osdf runtime path
+    assert '"/cvmfs/sw/rift_ancient_cuda11.sif"' in text        # cvmfs verbatim
+    assert '"osdf:///igwn/rift_modern_cuda12.sif"' in text      # fetch URL
+    assert 'FALLBACK_LABEL="ancient"' in text
+    assert 'INNER_COMMAND="./ile_pre.sh"' in text
+    # an in-place-only image must have an empty fetch URL (never fetched)
+    bash = shutil.which("bash")
+    if bash:
+        r = subprocess.run([bash, "-n", "-c", text], capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr
+
+
+@pytest.mark.skipif(not shutil.which("bash") or not shutil.which("awk"),
+                    reason="needs bash + awk to exercise the wrapper")
+def test_runtime_wrapper_selects_by_capability(tmp_path):
+    # in-place image paths that exist, so acquisition needs no network fetch
+    anc = tmp_path / "anc.sif"; anc.write_text("x")
+    mod = tmp_path / "mod.sif"; mod.write_text("x")
+    manifest_text = textwrap.dedent(
+        """
+        version: 1
+        fallback: ancient
+        containers:
+          - label: ancient
+            image: {anc}
+            cuda_capability_min: 3.0
+            cuda_capability_max: 7.0
+          - label: modern
+            image: {mod}
+            cuda_capability_min: 7.0
+        """
+    ).format(anc=anc, mod=mod)
+    m = cm.load_container_manifest(_write(tmp_path, manifest_text))
+    wrapper = tmp_path / "select.sh"
+    wrapper.write_text(cm.build_runtime_selection_wrapper(m, inner_command="/bin/true"))
+    wrapper.chmod(wrapper.stat().st_mode | stat.S_IEXEC)
+
+    # fake `apptainer` on PATH so the final exec succeeds without a real runtime
+    fakebin = tmp_path / "bin"; fakebin.mkdir()
+    fake = fakebin / "apptainer"
+    fake.write_text('#!/bin/bash\necho "APPTAINER $*"\n')
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    env = dict(os.environ, PATH="{}:{}".format(fakebin, os.environ["PATH"]))
+
+    def run(cap):
+        env2 = dict(env, RIFT_CONTAINER_FORCE_CAP=cap)
+        return subprocess.run([str(wrapper)], capture_output=True, text=True, env=env2)
+
+    r = run("12.0")   # >= 7.0 -> modern
+    assert r.returncode == 0, r.stderr
+    assert "selected: modern" in r.stderr
+    r = run("5.0")    # in [3.0,7.0) -> ancient
+    assert "selected: ancient" in r.stderr
+    r = run("2.0")    # below everything -> fallback (ancient)
+    assert "fallback" in r.stderr and "selected: ancient" in r.stderr
+
+
+def test_integration_runtime_select(tmp_path, monkeypatch):
+    # Opt-in OSG-safe mode: no expression-valued MY.SingularityImage, no $$()
+    # transfer token; a wrapper executable is emitted instead, and the
+    # require_gpus floor is still applied.
+    monkeypatch.setenv("RIFT_CONTAINER_RUNTIME_SELECT", "1")
+    monkeypatch.delenv("RIFT_REQUIRE_GPUS", raising=False)
+    # pin the in-container exe dir so the inner command is deterministic
+    monkeypatch.setenv("SINGULARITY_BASE_EXE_DIR", "/opt/rift/bin/")
+    cmds = _make_ile_job(tmp_path, monkeypatch, _write(tmp_path, MIXED_MANIFEST))
+
+    assert "MY.SingularityImage" not in cmds          # the OSG-breaking attr is gone
+    assert "MY.SingularityBindCVMFS" not in cmds
+    assert "$$([" not in cmds.get("transfer_input_files", "")  # wrapper self-fetches
+    assert "Capability >= 3.0" in cmds["require_gpus"]         # floor still steers GPUs
+
+    # the wrapper was written and execs the in-container exe (no frames -> not ile_pre.sh)
+    wrapper = tmp_path / "rift_container_select.sh"
+    assert wrapper.exists()
+    body = wrapper.read_text()
+    assert body.startswith("#!/bin/bash")
+    assert 'INNER_COMMAND="/opt/rift/bin/true"' in body    # SINGULARITY_BASE_EXE_DIR + exe basename
 
 
 if __name__ == "__main__":
