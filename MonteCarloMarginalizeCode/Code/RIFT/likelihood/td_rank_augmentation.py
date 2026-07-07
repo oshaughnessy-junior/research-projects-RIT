@@ -16,6 +16,21 @@ with
 - Lambda = sigma_g^2 * Lambda_0:  a shaped Gaussian coefficient prior; sigma_g is the
       single amplitude hyperparameter, Lambda_0 the (fixed) shape.
 
+Pinned conventions (GLITCH_MARG_DESIGN.md Sec. 2b, binding on this module):
+  * Units split.  Lambda_0 is a DIMENSIONLESS shape with max eigenvalue = 1; sigma_g
+    carries physical STRAIN units, so Lambda = sigma_g^2 Lambda_0 reaches this layer in
+    covariance units (~C[0,0] ~ 1e-42 for real ACFs) automatically.  Default sigma_g
+    search bounds are RELATIVE to the covariance scale, [1e-3, 1e3] * sqrt(C[0,0]),
+    log-spaced (see profile_sigma_g).
+  * Inner products are BILINEAR.  dot(u, v) = u^T C'^{-1} v with NO conjugation (C' is
+    real).  Hermitian forms are the caller's job (pass conj(u)).
+  * The Woodbury r x r matrix is formed in the SCALED (dimensionless) representation
+    M_hat = I + sigma_g^2 Lambda_0^{1/2} G Lambda_0^{1/2} rather than the direct
+    M = Lambda_0^{-1}/sigma_g^2 + G, so the algebra stays well-conditioned at the physical
+    covariance scale (C[0,0] ~ 1e-42, sigma_g ~ 1e-21) where Lambda_0^{-1}/sigma_g^2 ~ 1e42
+    would otherwise swamp G.  The public API is unchanged; only the internals scale.
+    logdet_correction = ln det M_hat exactly.
+
 Marginalizing the coefficients a analytically gives  d - h ~ N(0, C')  with
 
     C'      = C + B Lambda B^T
@@ -188,13 +203,12 @@ class ToeplitzCovariance(object):
         return scipy.linalg.cho_solve(self._cho, b, check_finite=False)
 
     def dot(self, u, v):
-        """Return the quadratic form u^T C^{-1} v (== conj not applied; see note).
+        """Return the BILINEAR quadratic form u^T C^{-1} v (NO conjugation; Sec. 2b).
 
         C is real, so C^{-1} v is computed on the real and imaginary parts separately.
         For complex u, v this returns the bilinear form sum_i u_i (C^{-1} v)_i WITHOUT
         conjugation, matching the convention used throughout the augmentation algebra
-        (Woodbury identities are bilinear).  Callers wanting a Hermitian form should pass
-        conj(u).
+        (Woodbury identities are bilinear).  Callers wanting a Hermitian form pass conj(u).
         """
         Cinv_v = self.solve(v)
         u = np.asarray(u)
@@ -270,39 +284,101 @@ class RankAugmentation(object):
             r = B.shape[1]
             Lambda0 = np.asarray(Lambda0, dtype=np.float64)
             # Accept either a length-r vector (diagonal) or a full (r,r) matrix.
+            # Lambda0 is a DIMENSIONLESS shape prior with max eigenvalue = 1 (Sec. 2b);
+            # sigma_g carries the physical strain scale.  We also cache the symmetric
+            # matrix square root Lambda0^{1/2}, used to form the scaled Woodbury matrix
+            # M_hat = I + sigma_g^2 Lambda0^{1/2} G Lambda0^{1/2} (well-conditioned at the
+            # physical covariance scale, unlike the direct M = Lambda0^{-1}/sigma_g^2 + G).
             if Lambda0.ndim == 1:
                 if Lambda0.size != r:
                     raise ValueError("Diagonal Lambda0 must have length r = {0}.".format(r))
+                if np.any(Lambda0 <= 0):
+                    raise ValueError("Diagonal Lambda0 entries must be strictly positive.")
                 Lambda0_mat = np.diag(Lambda0)
                 Lambda0_inv = np.diag(1.0 / Lambda0)
+                Lambda0_half = np.diag(np.sqrt(Lambda0))
             elif Lambda0.ndim == 2:
                 if Lambda0.shape != (r, r):
                     raise ValueError("Matrix Lambda0 must be (r, r) = ({0},{0}).".format(r))
-                Lambda0_mat = Lambda0
-                Lambda0_inv = np.linalg.inv(Lambda0)
+                Lambda0_mat = 0.5 * (Lambda0 + Lambda0.T)
+                Lambda0_inv = np.linalg.inv(Lambda0_mat)
+                evals, evecs = np.linalg.eigh(Lambda0_mat)
+                if np.any(evals <= 0):
+                    raise ValueError("Matrix Lambda0 must be positive definite.")
+                Lambda0_half = (evecs * np.sqrt(evals)).dot(evecs.T)
             else:
                 raise ValueError("Lambda0 must be 1D (diagonal) or 2D (r x r).")
+
+            max_eig = np.max(np.linalg.eigvalsh(Lambda0_mat))
+            if not np.isclose(max_eig, 1.0, rtol=1e-6, atol=1e-9):
+                # Sec. 2b: Lambda0 is a shape prior with max eigenvalue 1; the amplitude
+                # lives in sigma_g.  Warn but do not mutate (basis builders normalize).
+                import warnings
+                warnings.warn(
+                    "Lambda0 max eigenvalue = {0:.3e} != 1; the units convention (Sec. 2b) "
+                    "expects a shape prior with max eig 1 and sigma_g carrying the strain "
+                    "scale.".format(max_eig), stacklevel=2)
 
             Phi = self.cov.solve(B)          # C^{-1} B, (N x r)
             G = B.T.dot(Phi)                 # B^T C^{-1} B, (r x r); symmetric
             G = 0.5 * (G + G.T)
+            # G_hat = Lambda0^{1/2} G Lambda0^{1/2}: the symmetric core of M_hat.
+            G_hat = Lambda0_half.dot(G).dot(Lambda0_half)
+            G_hat = 0.5 * (G_hat + G_hat.T)
             self.blocks.append(dict(
                 B=B, r=r, label=label,
-                Lambda0=Lambda0_mat, Lambda0_inv=Lambda0_inv,
-                Phi=Phi, G=G))
+                Lambda0=Lambda0_mat, Lambda0_inv=Lambda0_inv, Lambda0_half=Lambda0_half,
+                Phi=Phi, G=G, G_hat=G_hat))
 
     # ---- per-block sigma_g-dependent pieces -------------------------------------
 
     def M(self, sigma_g, k=0):
-        """Return the Woodbury matrix M_k = Lambda_k^{-1} + G_k for block k.
+        """Return the (direct) Woodbury matrix M_k = Lambda_k^{-1} + G_k for block k.
 
         Lambda_k = sigma_g^2 Lambda0_k, so Lambda_k^{-1} = Lambda0_inv / sigma_g^2.
+
+        NOTE: this direct form is provided for reference/inspection only.  All internal
+        Woodbury solves use the SCALED, well-conditioned representation
+        M_hat = I + sigma_g^2 Lambda0^{1/2} G Lambda0^{1/2} (see _M_hat_cho and Sec. 2b),
+        which relates to M by  M^{-1} = sigma_g^2 Lambda0^{1/2} M_hat^{-1} Lambda0^{1/2}.
         """
         blk = self.blocks[k]
         return blk["Lambda0_inv"] / (sigma_g ** 2) + blk["G"]
 
-    def _M_cho(self, sigma_g, k):
-        return scipy.linalg.cho_factor(self.M(sigma_g, k), lower=True, check_finite=False)
+    def M_hat(self, sigma_g, k=0):
+        """Return the scaled Woodbury matrix M_hat_k = I + sigma_g^2 G_hat_k.
+
+        G_hat_k = Lambda0^{1/2} G_k Lambda0^{1/2}.  Dimensionless and well-conditioned at
+        the physical covariance scale; ln det M_hat_k == ln det(I + sigma_g^2 Lambda0 G).
+        """
+        blk = self.blocks[k]
+        return np.eye(blk["r"]) + (sigma_g ** 2) * blk["G_hat"]
+
+    def _M_hat_cho(self, sigma_g, k):
+        return scipy.linalg.cho_factor(self.M_hat(sigma_g, k), lower=True, check_finite=False)
+
+    def _Minv_apply(self, y, sigma_g, k):
+        """Apply M_k^{-1} to a vector/matrix y (last axis = r), via the scaled form.
+
+        M^{-1} y = sigma_g^2 Lambda0^{1/2} M_hat^{-1} (Lambda0^{1/2} y).  Real or complex y
+        (solves act on real/imag parts; the algebra is bilinear, no conjugation).
+        """
+        blk = self.blocks[k]
+        L0h = blk["Lambda0_half"]
+        Mhat_cho = self._M_hat_cho(sigma_g, k)
+
+        def _solve_real(z):  # z: (..., r) real -> M_hat^{-1} applied on last axis
+            return scipy.linalg.cho_solve(Mhat_cho, z.T, check_finite=False).T
+
+        y = np.asarray(y)
+        # Lambda0^{1/2} y  (contract last axis with L0h)
+        z = np.tensordot(y, L0h, axes=([-1], [0]))
+        if np.iscomplexobj(z):
+            w = _solve_real(z.real) + 1j * _solve_real(z.imag)
+        else:
+            w = _solve_real(z)
+        # sigma_g^2 Lambda0^{1/2} w
+        return (sigma_g ** 2) * np.tensordot(w, L0h, axes=([-1], [0]))
 
     def _gamma(self, d, k):
         """gamma_k = Phi_k^T d for the supplied data vector d."""
@@ -317,16 +393,15 @@ class RankAugmentation(object):
         for k, blk in enumerate(self.blocks):
             Phi = blk["Phi"]
             gamma = Phi.T.dot(d)
-            Mcho = self._M_cho(sigma_g, k)
-            corr = scipy.linalg.cho_solve(Mcho, gamma, check_finite=False)
+            corr = self._Minv_apply(gamma, sigma_g, k)
             out = out - Phi.dot(corr)
         return out
 
     def dot(self, u, v, sigma_g):
         """Return the bilinear form u^T C'^{-1} v (Woodbury-corrected).
 
-        Supports complex u, v (C real; solves act on real/imag parts).  No conjugation
-        is applied -- pass conj(u) for a Hermitian form.
+        BILINEAR: no conjugation is applied (C' is real); pass conj(u) for a Hermitian
+        form.  Supports complex u, v (C real; solves act on real/imag parts).
         """
         u = np.asarray(u)
         v = np.asarray(v)
@@ -335,22 +410,20 @@ class RankAugmentation(object):
             Phi = blk["Phi"]
             pu = np.tensordot(u, Phi, axes=([-1], [0]))   # Phi^T u (last axis contracted)
             pv = np.tensordot(v, Phi, axes=([-1], [0]))   # Phi^T v
-            Mcho = self._M_cho(sigma_g, k)
-            # M^{-1} pv, handling complex by parts.
-            if np.iscomplexobj(pv):
-                Minv_pv = (scipy.linalg.cho_solve(Mcho, pv.real.T, check_finite=False).T
-                           + 1j * scipy.linalg.cho_solve(Mcho, pv.imag.T, check_finite=False).T)
-            else:
-                Minv_pv = scipy.linalg.cho_solve(Mcho, pv.T, check_finite=False).T
+            Minv_pv = self._Minv_apply(pv, sigma_g, k)
             val = val - np.tensordot(pu, Minv_pv, axes=([-1], [-1]))
         return val
 
     def logdet_correction(self, sigma_g):
-        """Return ln det(C') - ln det(C) = sum_k ln det(I + sigma_g^2 Lambda0_k G_k)."""
+        """Return ln det(C') - ln det(C) = sum_k ln det M_hat_k.
+
+        ln det(I + sigma_g^2 Lambda0_k G_k) = ln det(I + sigma_g^2 Lambda0^{1/2} G
+        Lambda0^{1/2}) = ln det M_hat_k (similarity transform preserves the determinant).
+        Computed from the scaled, symmetric-positive-definite M_hat for stability.
+        """
         total = 0.0
-        for blk in self.blocks:
-            Amat = np.eye(blk["r"]) + (sigma_g ** 2) * blk["Lambda0"].dot(blk["G"])
-            sign, logabs = np.linalg.slogdet(Amat)
+        for k, blk in enumerate(self.blocks):
+            sign, logabs = np.linalg.slogdet(self.M_hat(sigma_g, k))
             total += logabs
         return total
 
@@ -371,19 +444,32 @@ class RankAugmentation(object):
         total = 0.0
         for k, blk in enumerate(self.blocks):
             gamma = blk["Phi"].T.dot(d)
-            Mcho = self._M_cho(sigma_g, k)
-            Minv_gamma = scipy.linalg.cho_solve(Mcho, gamma, check_finite=False)
+            Minv_gamma = self._Minv_apply(gamma, sigma_g, k)
             total += 0.5 * np.real(np.vdot(gamma, Minv_gamma))
         total -= 0.5 * self.logdet_correction(sigma_g)
         return total
 
-    def profile_sigma_g(self, d, bounds):
+    def default_sigma_g_bounds(self):
+        """Return the default profile/prior bounds (lo, hi) for sigma_g (Sec. 2b).
+
+        Relative to the covariance scale: [1e-3, 1e3] * sqrt(C[0,0]).  This keeps both
+        O(1) unit-test covariances and physical ~1e-42 covariances in range with the same
+        code, and avoids the underflow trap (an O(1) prior against a 1e-42 covariance makes
+        Lambda^{-1} negligible in M and the prior silently improper).
+        """
+        scale = np.sqrt(self.cov.C[0, 0])
+        return (1e-3 * scale, 1e3 * scale)
+
+    def profile_sigma_g(self, d, bounds=None):
         """Maximize Delta lnZ(sigma_g) over sigma_g in `bounds` = (lo, hi).
 
         Returns (sigma_g_hat, delta_lnZ_hat).  Uses a bounded scalar maximization
         (scipy.optimize.minimize_scalar on -Delta lnZ) in log(sigma_g) for good
-        conditioning over the typically wide amplitude range.
+        conditioning over the typically wide amplitude range.  If `bounds` is None, the
+        default [1e-3, 1e3] * sqrt(C[0,0]) log-spaced range (Sec. 2b) is used.
         """
+        if bounds is None:
+            bounds = self.default_sigma_g_bounds()
         lo, hi = bounds
         if lo <= 0:
             raise ValueError("profile_sigma_g bounds must be strictly positive.")
@@ -411,8 +497,7 @@ class RankAugmentation(object):
         for kk in ks:
             blk = self.blocks[kk]
             gamma = blk["Phi"].T.dot(d)
-            Mcho = self._M_cho(sigma_g, kk)
-            a_hat = scipy.linalg.cho_solve(Mcho, gamma, check_finite=False)
+            a_hat = self._Minv_apply(gamma, sigma_g, kk)   # M^{-1} gamma, scaled form
             g_hat = g_hat + blk["B"].dot(a_hat)
         return g_hat
 

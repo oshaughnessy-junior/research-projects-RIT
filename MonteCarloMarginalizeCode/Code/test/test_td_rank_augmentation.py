@@ -9,6 +9,8 @@ Runnable two ways:
 Cases (see GLITCH_MARG_DESIGN.md Sec. 7):
   - test_v1_woodbury_parity:   dense Cholesky of (C + B Lambda B^T) vs RankAugmentation
                                for solve / dot / logdet / delta_lnZ, agreement 1e-9.
+  - test_physical_scale_parity: MANDATORY (Sec. 2b) parity at realistic units
+                               (C[0,0]~1e-42, sigma_g~1e-21) via the scaled M_hat form, 1e-12.
   - test_td_fd_norm_equivalence: ToeplitzCovariance.dot(v,v) vs (4/(N fs)) sum|vtilde|^2/S.
   - test_slepian_concentration: DPSS basis captures >= 99.9% of in-support band-limited
                                energy; rank tracks 2 W T within the buffer.
@@ -137,6 +139,99 @@ def test_v1_woodbury_parity():
     rel_cdot = abs(cdot_wb - cdot_ref) / abs(cdot_ref)
     print("[V1] rel dot(complex) = %.3e" % rel_cdot)
     assert rel_cdot < 1e-9
+
+
+# ---------------------------------------------------------------------------------
+# MANDATORY physical-scale parity (GLITCH_MARG_DESIGN.md Sec. 2b, point 2)
+# ---------------------------------------------------------------------------------
+
+def test_physical_scale_parity():
+    r"""Woodbury path == dense reference at REALISTIC ACF/strain units.
+
+    C[0,0] ~ 1e-42 (realistic autocovariance units), sigma_g ~ 1e-21 (strain), a shaped
+    Lambda_0 with max eigenvalue = 1.  The scaled internal form
+    M_hat = I + sigma_g^2 Lambda_0^{1/2} G Lambda_0^{1/2} must keep solve / dot / logdet /
+    delta_lnZ within ~1e-12 relative of a dense Cholesky of C' = C + B (sigma_g^2 Lambda_0) B^T.
+    This is the trap the design flags: an O(1) Lambda_0 against a 1e-42 covariance makes
+    Lambda^{-1} negligible and the direct M ill-scaled; the scaled form must not lose precision.
+    """
+    rng = np.random.default_rng(20260707)
+    N = 1024
+    fs = 4096.0
+    # PSD scaled so that C[0,0] lands in the ~1e-42 regime (realistic strain^2 ACF units).
+    f = np.arange(0.0, fs / 2.0 + 1.0, 1.0)
+    S = 1e-47 * (1.0 + (20.0 / np.maximum(f, 1.0)) ** 4 + (f / 250.0) ** 2)
+    acf = tra.acf_from_psd(f, S, fs, acf_duration=(N + 32) / fs)
+    cov = tra.ToeplitzCovariance(acf, N)
+    C00 = cov.C[0, 0]
+    strain = np.sqrt(C00)
+    print("[PHYS] C[0,0] = %.3e ; sqrt(C[0,0]) = %.3e" % (C00, strain))
+    assert 1e-45 < C00 < 1e-39     # confirm we are genuinely at the physical scale
+
+    r = 12
+    # B in strain units (columns ~ strain amplitude); Lambda_0 shaped, max eig = 1.
+    B = strain * rng.standard_normal((N, r)) / np.sqrt(N)
+    lam = np.abs(rng.standard_normal(r)) + 0.3
+    Lambda0 = lam / lam.max()      # max eigenvalue exactly 1 (Sec. 2b units convention)
+    sigma_g = strain               # ~ 1e-21, the physical amplitude regime
+
+    ra = tra.RankAugmentation(cov, [(B, Lambda0, "H1")])
+    # sanity: the scaled core is well-conditioned even though direct M is ~1e42-scaled.
+    print("[PHYS] cond(M_hat) = %.3e ; cond(M_direct) = %.3e"
+          % (np.linalg.cond(ra.M_hat(sigma_g)), np.linalg.cond(ra.M(sigma_g))))
+
+    Lam = sigma_g ** 2 * np.diag(Lambda0)
+    Cprime = cov.C + B.dot(Lam).dot(B.T)
+    cho = tra.scipy.linalg.cho_factor(Cprime, lower=True, check_finite=False)
+    Lref = np.tril(cho[0])
+    logdet_ref = 2.0 * np.sum(np.log(np.abs(np.diag(Lref))))
+
+    # Data with a real glitch in span(B) so delta_lnZ is meaningfully non-zero, plus a
+    # noise-scale part; kept at the physical strain scale throughout.
+    d = strain * rng.standard_normal(N) + B.dot(sigma_g * rng.standard_normal(r))
+    u = strain * rng.standard_normal(N)
+
+    x_ref = tra.scipy.linalg.cho_solve(cho, d, check_finite=False)
+    x_wb = ra.solve(d, sigma_g)
+    rel_solve = np.linalg.norm(x_wb - x_ref) / np.linalg.norm(x_ref)
+
+    dot_ref = u.dot(x_ref)
+    dot_wb = ra.dot(u, d, sigma_g)
+    rel_dot = abs(dot_wb - dot_ref) / abs(dot_ref)
+
+    rel_logdet = abs(ra.logdet(sigma_g) - logdet_ref) / abs(logdet_ref)
+
+    # Reference delta_lnZ.  IMPORTANT: the "obvious" dense form
+    # 0.5 (d^T C^{-1} d - d^T C'^{-1} d) catastrophically cancels at the physical scale --
+    # both terms are ~3e4 and differ only at the ~1e-38 level, so in float64 the dense
+    # difference collapses to exactly 0.  This is the very trap the design warns about.
+    # The Woodbury quadratic piece 0.5 gamma^T M^{-1} gamma is the *correct* small object
+    # and is what delta_lnZ must reproduce; build the reference from the same small algebra
+    # (using the direct M here purely as an independent second route).
+    Phi = ra.blocks[0]["Phi"]
+    gamma_ref = Phi.T.dot(d)
+    M_direct = np.diag(1.0 / Lambda0) / sigma_g ** 2 + ra.blocks[0]["G"]
+    quad_ref = 0.5 * gamma_ref.dot(np.linalg.solve(M_direct, gamma_ref))
+    dlnZ_ref = quad_ref - 0.5 * (logdet_ref - cov.logdet())
+    dlnZ_wb = ra.delta_lnZ(d, sigma_g)
+    dlnZ_scale = max(abs(dlnZ_ref), abs(quad_ref), 1e-300)
+    rel_dlnZ = abs(dlnZ_wb - dlnZ_ref) / dlnZ_scale
+
+    print("[PHYS] rel solve  = %.3e" % rel_solve)
+    print("[PHYS] rel dot    = %.3e" % rel_dot)
+    print("[PHYS] rel logdet = %.3e" % rel_logdet)
+    print("[PHYS] rel dlnZ   = %.3e" % rel_dlnZ)
+
+    assert rel_solve < 1e-12
+    assert rel_dot < 1e-12
+    assert rel_logdet < 1e-12
+    assert rel_dlnZ < 1e-12
+
+    # default sigma_g bounds track the covariance scale (Sec. 2b: [1e-3,1e3]*sqrt(C00)).
+    lo, hi = ra.default_sigma_g_bounds()
+    print("[PHYS] default sigma_g bounds = (%.3e, %.3e)" % (lo, hi))
+    assert np.isclose(lo, 1e-3 * strain, rtol=1e-9)
+    assert np.isclose(hi, 1e3 * strain, rtol=1e-9)
 
 
 # ---------------------------------------------------------------------------------
@@ -380,6 +475,7 @@ if __name__ == "__main__":
     import time
     tests = [
         ("V1 Woodbury parity", test_v1_woodbury_parity),
+        ("Physical-scale parity", test_physical_scale_parity),
         ("TD<->FD norm equivalence", test_td_fd_norm_equivalence),
         ("Slepian concentration", test_slepian_concentration),
         ("Inpainting limit", test_inpainting_limit),
