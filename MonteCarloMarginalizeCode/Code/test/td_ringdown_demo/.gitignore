@@ -1,0 +1,11 @@
+# bulky / regenerable run products
+frames32/
+frames_noise/
+frames_*/
+pp/frames_*/
+zn/*/pt_*_.dat
+zn/*/ile.log
+tune_out/
+smoke_out/
+cal/
+*.pyc
