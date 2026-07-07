@@ -226,6 +226,9 @@ optp.add_option("--srate",default=16384,type=int,help="Sampling rate. Change ONL
 optp.add_option("--srate-internal",default=None,type=int,help="If provided, internal-use sampling rate. If not provided, all calculations performed with 'srate'. Change ONLY IF YOU ARE ABSOLUTELY SURE YOU KNOW WHAT YOU ARE DOING.")
 optp.add_option("-t", "--event-time", type=float, help="GPS time of the event --- probably the end time. Required if --coinc-xml not given.")
 optp.add_option("-i", "--inv-spec-trunc-time", type=float, default=8., help="Timescale of inverse spectrum truncation in seconds (Default is 8 - give 0 for no truncation)")
+optp.add_option("--internal-ile-inner-product", type=str, default="fd-diagonal", help="Inner product used in the Precompute step: 'fd-diagonal' (default, the classic frequency-domain-diagonal lsu.ComplexIP/ComplexOverlap, zero behavioral change) or 'td-toeplitz' (time-domain Toeplitz precision kernel; RIFT_TD_INTEGRATION_PLAN.md task T3). EXPERIMENTAL.")
+optp.add_option("--td-solver", type=str, default="auto", help="Solver mode for --internal-ile-inner-product td-toeplitz: {auto,dense,pcg}. Affects only the physical-covariance/augmentation path; the full-segment precision-kernel inner products are FFT-based and solver-independent. Default auto.")
+optp.add_option("--td-acf-duration", type=float, default=None, help="Optional ACF truncation duration [s] for --internal-ile-inner-product td-toeplitz (Stage-3 truncated-segment path). Default None = full segment; unused by the full-segment precision-kernel inner products (plan D5).")
 optp.add_option("-w", "--window-shape", type=float, default=0, help="Shape of Tukey window to apply to data (default is no windowing)")
 optp.add_option("--psd-window-shape", type=float, default=0, help="Shape of Tukey window that *was* applied to the PSD being passed. If nonzero, we will rescale the PSD by the ratio of window shape results")
 optp.add_option("-m", "--time-marginalization", action="store_true", help="Perform marginalization over time via direct numerical integration. Default is false.")
@@ -782,6 +785,27 @@ P.deltaF = deltaF
 for Psig in P_list:
   Psig.deltaT = P.deltaT
   Psig.deltaf = P.deltaF
+
+
+#
+# Optional time-domain (Toeplitz) inner product for the Precompute step (plan T3).
+#   Default 'fd-diagonal' leaves IP_factory=None => the classic lsu inner products, ZERO
+#   behavioral change.  'td-toeplitz' builds one TDInnerProductFactory (memoizing one
+#   ToeplitzInnerProductContext per detector configuration next to the PSD handling above)
+#   threaded into PrecomputeLikelihoodTerms.  --td-solver / --td-acf-duration configure it.
+#
+ile_ip_factory = None
+if opts.internal_ile_inner_product == "td-toeplitz":
+    from RIFT.likelihood.td_inner_product import TDInnerProductFactory
+    ile_ip_factory = TDInnerProductFactory(
+        solver=opts.td_solver, acf_duration=opts.td_acf_duration)
+    print("  [TD] Using time-domain Toeplitz inner product (solver=%s, acf_duration=%s). "
+          "EXPERIMENTAL; inverse-spectrum truncation is redundant and ignored on this path "
+          "(plan D5)." % (opts.td_solver, opts.td_acf_duration))
+elif opts.internal_ile_inner_product != "fd-diagonal":
+    print("FAIL: --internal-ile-inner-product must be 'fd-diagonal' or 'td-toeplitz', got %r"
+          % opts.internal_ile_inner_product)
+    sys.exit(1)
 
 
 #
@@ -1498,6 +1522,8 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
     extra_kwargs ={}
     if calibration_marginalization:
       extra_kwargs['calibration_realizations'] = calibration_realization_dict
+    if ile_ip_factory is not None:
+      extra_kwargs['IP_factory'] = ile_ip_factory   # plan T3: time-domain Toeplitz inner product
     rholms_intp, cross_terms, cross_terms_V,  rholms,  guess_snr, rest=factored_likelihood.PrecomputeLikelihoodTerms(
             fiducial_epoch, t_window, P, data_dict, psd_dict, opts.l_max, fmax,
             False, inv_spec_trunc_Q, T_spec,

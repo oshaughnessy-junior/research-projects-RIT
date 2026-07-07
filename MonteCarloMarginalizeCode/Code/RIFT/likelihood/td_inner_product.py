@@ -475,6 +475,128 @@ class ToeplitzComplexOverlap(object):
         return np.sqrt(2.0 * self.ctx.deltaF * np.abs(val))
 
 
+class TDInnerProductFactory(object):
+    r"""Factory of TD-Toeplitz inner products for the Precompute seam (task T3).
+
+    This is the object threaded through ``factored_likelihood.PrecomputeLikelihoodTerms``
+    as the ``IP_factory`` kwarg (default None => the classic frequency-domain-diagonal
+    lsu inner products, byte-identical).  Passing a ``TDInnerProductFactory`` instead swaps
+    in ``ToeplitzComplexOverlap`` (for Q_lm(t)) and ``ToeplitzComplexIP`` (for scalar U/V)
+    at the two FL call sites (FL:453/456 via ``ip_scalar``, FL:463 via ``overlap``) WITHOUT
+    any other change to the Precompute path.
+
+    It exposes exactly the two constructor-shaped methods FL needs:
+
+      * ``ip_scalar(fmin, fMax, fNyq, deltaF, psd, analyticPSD_Q, inv_spec_trunc_Q,
+        T_spec)`` -> a ``ToeplitzComplexIP`` (drop-in for ``lsu.ComplexIP``).
+      * ``overlap(fmin, fMax, fNyq, deltaF, psd, analyticPSD_Q, inv_spec_trunc_Q, T_spec,
+        full_output=...)`` -> a ``ToeplitzComplexOverlap`` (drop-in for
+        ``lsu.ComplexOverlap``).
+
+    The signatures mirror the lsu constructors the FL call sites use, so FL can call the
+    factory with the identical positional/keyword arguments it would have handed to lsu.
+
+    One ``ToeplitzInnerProductContext`` is held per DISTINCT detector configuration.  The
+    intended usage is "one factory per detector" (build it next to the ILE PSD handling),
+    but the factory also memoizes contexts keyed on
+    ``(fmin, fMax, fNyq, deltaF, analyticPSD_Q, id(psd), solver)`` so repeated FL calls
+    with the same detector configuration reuse the same operator (the cross-term and
+    Q calls for a given detector share one context, built once).
+
+    Parameters
+    ----------
+    solver : {"auto", "dense", "pcg"}
+        Solver mode forwarded to ``ToeplitzInnerProductContext``.  Note this affects only
+        the physical-covariance / augmentation path (``solve_covariance``); the full-segment
+        precision-kernel inner products (this seam) are FFT-based and solver-independent.
+        Corresponds to the ILE ``--td-solver`` flag ({auto,dense,pcg}; "gs" is not wired in
+        this adapter).
+    acf_duration : float or None
+        Optional ACF truncation duration [s] carried for the Stage-3 truncated-segment
+        path; unused by the full-segment precision-kernel inner products (D5 DEFAULT: the
+        full-segment path uses K = irfft(band-limited weights), not the ACF-covariance
+        route).  Corresponds to the ILE ``--td-acf-duration`` flag.
+    warn_inv_spec_trunc : bool
+        If True (default), emit a one-time warning when a call site requests inverse-spectrum
+        truncation (``inv_spec_trunc_Q=True``): the TD precision kernel K = irfft(1/S on band)
+        IS the exact band-limited inverse-spectrum operator, so the approximate FD
+        inverse-spectrum truncation is redundant here and is ignored (see D5 and the note in
+        ``_resolve_inv_spec_trunc``).
+    """
+
+    def __init__(self, solver="auto", acf_duration=None, warn_inv_spec_trunc=True):
+        self.solver = solver
+        self.acf_duration = acf_duration
+        self.warn_inv_spec_trunc = warn_inv_spec_trunc
+        self._contexts = {}
+        self._warned_inv_spec_trunc = False
+
+    # -------------------------------------------------------------- inv-spec-trunc policy
+
+    def _resolve_inv_spec_trunc(self, inv_spec_trunc_Q, T_spec):
+        r"""Decide how inverse-spectrum truncation interacts with the TD kernel (D5).
+
+        RIFT's FD ``inv_spec_trunc_Q`` builds an APPROXIMATE band-limited inverse-spectrum
+        operator by iFFT'ing sqrt(1/S), hard-windowing the TD kernel to +-T_spec/2, and
+        FFT'ing back (lsu.InnerProduct L2142-2164).  Its purpose is to tame the edge/line
+        ringing of the FD-diagonal kernel.
+
+        The TD Toeplitz path does NOT need it: our operator K = irfft(band-limited 1/S) IS
+        the exact band-limited inverse-spectrum (precision) operator -- inverse-spectrum
+        truncation is precisely the finite-support approximation of what K already is
+        exactly (this is the inv-spec-trunc <-> ACF/kernel-truncation duality noted in
+        plan D5).  Applying an additional TD window would only DEGRADE K away from the exact
+        operator and break the bit-exact drop-in property verified in the T1 tests.
+
+        Policy: when the TD path is active we IGNORE ``inv_spec_trunc_Q`` (warn once).  The
+        exactness is the feature; the redundant approximation is dropped, not layered on.
+        """
+        if inv_spec_trunc_Q and self.warn_inv_spec_trunc and not self._warned_inv_spec_trunc:
+            import warnings
+            warnings.warn(
+                "TDInnerProductFactory: inv_spec_trunc_Q=True (T_spec={0}) requested, but "
+                "the TD Toeplitz kernel K = irfft(band-limited 1/S) IS already the exact "
+                "band-limited inverse-spectrum operator that inverse-spectrum truncation "
+                "only approximates (plan D5).  Ignoring inv_spec_trunc_Q for the TD path "
+                "(the exactness is the point; layering the approximation on top would break "
+                "the exact drop-in).".format(T_spec), stacklevel=3)
+            self._warned_inv_spec_trunc = True
+        return False, 0.0
+
+    # -------------------------------------------------------------- context management
+
+    def context_for(self, fmin, fMax, fNyq, deltaF, psd, analyticPSD_Q=False):
+        """Return (memoized) ToeplitzInnerProductContext for this detector configuration."""
+        key = (round(float(fmin), 9),
+               None if fMax is None else round(float(fMax), 9),
+               round(float(fNyq), 9), round(float(deltaF), 9),
+               bool(analyticPSD_Q), id(psd), self.solver)
+        ctx = self._contexts.get(key)
+        if ctx is None:
+            ctx = ToeplitzInnerProductContext(
+                psd, deltaF, fNyq, fmin, fMax=fMax,
+                analyticPSD_Q=analyticPSD_Q, solver=self.solver)
+            self._contexts[key] = ctx
+        return ctx
+
+    # -------------------------------------------------------------- FL-shaped constructors
+
+    def ip_scalar(self, fmin, fMax, fNyq, deltaF, psd,
+                  analyticPSD_Q=False, inv_spec_trunc_Q=False, T_spec=0.):
+        """Drop-in for ``lsu.ComplexIP(...)`` -> a ``ToeplitzComplexIP`` (scalar U/V)."""
+        self._resolve_inv_spec_trunc(inv_spec_trunc_Q, T_spec)
+        ctx = self.context_for(fmin, fMax, fNyq, deltaF, psd, analyticPSD_Q=analyticPSD_Q)
+        return ToeplitzComplexIP(ctx)
+
+    def overlap(self, fmin, fMax, fNyq, deltaF, psd,
+                analyticPSD_Q=False, inv_spec_trunc_Q=False, T_spec=0.,
+                full_output=True):
+        """Drop-in for ``lsu.ComplexOverlap(..., full_output=True)`` -> Q_lm(t) overlap."""
+        self._resolve_inv_spec_trunc(inv_spec_trunc_Q, T_spec)
+        ctx = self.context_for(fmin, fMax, fNyq, deltaF, psd, analyticPSD_Q=analyticPSD_Q)
+        return ToeplitzComplexOverlap(ctx)
+
+
 # --------------------------------------------------------------------------- helpers
 
 def _ifft_to_td(hf):
