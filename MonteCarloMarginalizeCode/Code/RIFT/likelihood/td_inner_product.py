@@ -183,6 +183,18 @@ class ToeplitzInnerProductContext(object):
         self._configure_segment(segment_duration, segment_start_index,
                                 gaps, gap_time_origin, gap_sample_ranges)
 
+        # ---- G3 glitch marginalization state (attached lazily; OFF by default) ----
+        # When no glitch basis is attached the object is byte-identical to the T1/T5
+        # context (all glitch branches are gated on self._glitch_active).
+        self._glitch_active = False
+        self._glitch_aug = None            # RankAugmentation over the precision operator
+        self._glitch_sigma_g = None        # profiled amplitude (per detector)
+        self._glitch_delta_lnZ = 0.0       # Occam-disciplined evidence term (Sec. 4)
+        self._glitch_data_id = None        # id() of the data series used to build gamma/ghat
+        self._glitch_data_corr_fd = None   # cached glitch-subtracted data (FD, for Q')
+        self._glitch_ghat_td = None        # MAP glitch reconstruction B M^-1 gamma (TD)
+        self._glitch_support = None        # (i0, i1) sample support of the basis (diagnostics)
+
     # ------------------------------------------------------------------ segment (T5)
 
     def _configure_segment(self, segment_duration, segment_start_index,
@@ -548,6 +560,184 @@ class ToeplitzInnerProductContext(object):
         S_fill = np.where(finite, S, np.max(S[finite]) * 1e6)
         return tra.acf_from_psd(f, S_fill, self.fs, acf_duration=acf_duration)
 
+    # ------------------------------------------------------------------ glitch marginalization (G3)
+
+    @property
+    def glitch_active(self):
+        """True iff a rank-augmentation (glitch) basis has been attached to this context."""
+        return self._glitch_active
+
+    def attach_glitch_basis(self, blocks, data_fd, sigma_g="profile"):
+        r"""Attach a per-detector rank-augmentation (glitch) basis and profile sigma_g (G3).
+
+        THE ALGEBRA (K-vs-C^{-1} Woodbury placement -- the crux of G3).
+        ---------------------------------------------------------------
+        The base TD matched filter uses the PRECISION operator ``P = ip_normalization * K``
+        (``K`` = band-limited inverse-PSD Toeplitz kernel).  ``P`` IS the noise precision
+        ``C^{-1}`` in matched-filter normalization: every inner product is
+        ``<u|v> = conj(u)^T P v``.  So the standard covariance-side Woodbury of the design
+        (Phi = C^{-1} B via r solves) becomes here a DIRECT MATVEC, no linear solve:
+
+            Phi   = C^{-1} B = P B            (apply the precision to each basis column)
+            G     = B^T Phi = B^T P B
+            M     = Lambda^{-1} + G           (Lambda = sigma_g^2 Lambda_0)
+            gamma = Phi^T d = B^T P d
+            C'^{-1} = P - Phi M^{-1} Phi^T    (Woodbury; NEVER inverts P)
+
+        This is exactly ``RankAugmentation`` fed an object whose ``.solve(x)`` returns
+        ``P x`` (the precision apply) rather than a covariance solve -- see
+        ``_PrecisionAsCovariance``.  ``M`` inverts ``Lambda^{-1} + B^T P B`` (a well-posed
+        r x r system floored by the prior), so the augmentation is well-defined even though
+        ``P`` itself is rank-deficient off-band (the always-dropped Nyquist bin + the
+        band-limit): the glitch basis is band-limited into [f1,f2], living where ``P`` is
+        well-conditioned.  ``C`` = "inverse of P on the band" is never formed.
+
+        THE TWO CORRECTED INGREDIENTS.
+          * U'_{lm,l'm'} = conj(h_lm)^T C'^{-1} h_l'm'
+                         = U - conj(Phi^T h_lm)^T M^{-1} (Phi^T h_l'm')      (scalar, per pair)
+            -- the base Hermitian ip minus a rank-r correction (``glitch_ip_correction``).
+          * Q'_lm(t) = correlate(h_lm, w'),  w' = C'^{-1} d = P (d - B M^{-1} gamma)
+                     = the base overlap machinery run on the GLITCH-SUBTRACTED data
+                       d_corr = d - g_hat,  g_hat = B M^{-1} gamma  (the MAP glitch).
+            Because the overlap is linear in the data, Q'(t) = overlap(h, d_corr); we
+            precompute d_corr once per detector (``glitch_corrected_data_fd``).
+
+        THE EVIDENCE CONSTANT (does NOT cancel; surfaced for ILE).
+            Delta lnZ(sigma_g) = 1/2 gamma^H M^{-1} gamma - 1/2 ln det(I + sigma_g^2 Lambda_0 G)
+        A per-detector data constant (independent of intrinsic/extrinsic params); ILE adds
+        sum_det Delta lnZ to lnL_marg (Sec. 4).
+
+        CONJUGATION.  ``RankAugmentation`` is BILINEAR; RIFT ips are HERMITIAN.  The Hermitian
+        corrected ip is obtained by passing ``conj`` on the first slot -- validated against a
+        dense conj-explicit reference in ``test_td_glitch.py`` (the bilinear-vs-Hermitian trap).
+
+        Parameters
+        ----------
+        blocks : list of (B, Lambda0[, label])
+            Rank-augmentation blocks (N x r basis + dimensionless shape prior), as consumed by
+            ``td_rank_augmentation.RankAugmentation``.  B must have N = ``self.N`` rows.
+        data_fd : lal.COMPLEX16FrequencySeries
+            The detector data (same object the overlap step will receive); used to profile
+            sigma_g, form gamma / g_hat / Delta lnZ.
+        sigma_g : "profile" or float
+            "profile" (default, the only wired mode) maximizes Delta lnZ over sigma_g on d
+            alone (Sec. 4, empirical Bayes).  A float pins sigma_g.  Grid marginalization is
+            OUT OF SCOPE for G3 (follow-on: precompute {d_corr, M} per grid value and
+            logsumexp inside ILE).
+
+        NOTE (scope): glitch marginalization is implemented for the FULL segment only.  On a
+        truncated/gapped segment (``segment_active``) the base operator is the truncated
+        precision kernel K_seg and Phi = K_seg B must use ``apply_Kseg`` on the retained
+        subspace; that extension is documented but deferred (raises here).
+        """
+        if self.segment_active:
+            raise NotImplementedError(
+                "Glitch marginalization is wired for the FULL segment only.  On a truncated/"
+                "gapped segment the Woodbury base operator is the truncated precision kernel "
+                "K_seg (Phi = K_seg B on the retained subspace); that extension is deferred "
+                "(see attach_glitch_basis docstring / REPORT.md).")
+        from RIFT.likelihood import td_rank_augmentation as tra
+        prec = _PrecisionAsCovariance(self)
+        self._glitch_aug = tra.RankAugmentation(prec, blocks)
+        # record the basis support (union over blocks) for the overlap diagnostic
+        i0s, i1s = [], []
+        for blk in self._glitch_aug.blocks:
+            nz = np.nonzero(np.any(np.abs(blk["B"]) > 0, axis=1))[0]
+            if nz.size:
+                i0s.append(int(nz[0])); i1s.append(int(nz[-1]) + 1)
+        self._glitch_support = (min(i0s), max(i1s)) if i0s else None
+
+        d_td = _ifft_to_td(data_fd)
+        if sigma_g == "profile":
+            sig, dlnZ = self._glitch_aug.profile_sigma_g(d_td)
+        else:
+            sig = float(sigma_g)
+            dlnZ = self._glitch_aug.delta_lnZ(d_td, sig)
+        self._glitch_sigma_g = sig
+        self._glitch_delta_lnZ = float(dlnZ)
+
+        # MAP glitch reconstruction g_hat = B M^{-1} gamma (per block, summed), and the
+        # glitch-subtracted data d_corr = d - g_hat -> corrected filter w' = P d_corr.
+        ghat = np.zeros(self.N, dtype=complex)
+        for k, blk in enumerate(self._glitch_aug.blocks):
+            gamma = blk["Phi"].T.dot(d_td)
+            a_hat = self._glitch_aug._Minv_apply(gamma, sig, k)   # M^{-1} gamma (scaled form)
+            ghat = ghat + blk["B"].dot(a_hat)
+        self._glitch_ghat_td = ghat
+        d_corr_td = d_td - ghat
+        self._glitch_data_corr_fd = self._fd_from_td(d_corr_td, data_fd)
+        self._glitch_data_id = id(data_fd)
+        self._glitch_active = True
+        return dict(sigma_g=sig, delta_lnZ=self._glitch_delta_lnZ,
+                    support=self._glitch_support)
+
+    def _fd_from_td(self, td_array, template_fd):
+        """Forward-FFT a TD numpy array into a COMPLEX16FrequencySeries matching template_fd.
+
+        Uses ``lalsimutils.DataFourier`` (the exact inverse of the ``DataInverseFourier`` used
+        by ``_ifft_to_td``), so ``_fd_from_td(_ifft_to_td(x), x)`` round-trips to x's packing
+        (verified in test_td_glitch).
+        """
+        from RIFT import lalsimutils as lsu
+        ts = lal.CreateCOMPLEX16TimeSeries(
+            "gc", template_fd.epoch, 0., self.deltaT, _dimensionless_unit(), self.len2side)
+        ts.data.data = np.asarray(td_array, dtype=complex)
+        return lsu.DataFourier(ts)
+
+    def glitch_ip_correction(self, u_td, v_td):
+        r"""Hermitian rank-r correction subtracted from U/V to form U'/V' (G3).
+
+            correction = sum_k conj(Phi_k^T u)^T M_k^{-1} (Phi_k^T v)
+
+        so that ``U'(u,v) = ip_normalization*dot_td(u,v) - glitch_ip_correction(u,v)`` equals
+        ``conj(u)^T C'^{-1} v``.  ``Phi_k = P B_k`` already carries the ``ip_normalization``
+        (2 deltaT) factor (it is ``cov.solve`` on the precision-as-covariance adapter), so the
+        correction is in the same physical units as the base ip -- no extra normalization.
+        The explicit ``conj`` on ``Phi^T u`` is the Hermitian-vs-bilinear reconciliation.
+        """
+        if not self._glitch_active:
+            return 0.0
+        aug = self._glitch_aug
+        sig = self._glitch_sigma_g
+        u_td = np.asarray(u_td); v_td = np.asarray(v_td)
+        total = 0.0 + 0.0j
+        for k, blk in enumerate(aug.blocks):
+            Phi = blk["Phi"]
+            pu = Phi.T.dot(u_td)                       # Phi^T u  (bilinear r-vector)
+            pv = Phi.T.dot(v_td)                       # Phi^T v
+            Minv_pv = aug._Minv_apply(pv, sig, k)
+            total += np.tensordot(np.conj(pu), Minv_pv, axes=([-1], [-1]))
+        return total
+
+    def glitch_corrected_data_fd(self, data_fd):
+        """Return the cached glitch-subtracted data FD series (for Q'); see attach_glitch_basis.
+
+        Asserts the passed data is the same object the basis was attached with (the profiled
+        sigma_g, gamma and g_hat are specific to that data).  If a different data object is
+        passed the correction is recomputed on it (keeps the method correct if the caller
+        rebuilds the series), which is rare on the ILE path.
+        """
+        if not self._glitch_active:
+            return data_fd
+        if id(data_fd) == self._glitch_data_id and self._glitch_data_corr_fd is not None:
+            return self._glitch_data_corr_fd
+        # Different data object: recompute (data-conditional gamma / g_hat).
+        d_td = _ifft_to_td(data_fd)
+        ghat = np.zeros(self.N, dtype=complex)
+        for k, blk in enumerate(self._glitch_aug.blocks):
+            gamma = blk["Phi"].T.dot(d_td)
+            ghat = ghat + blk["B"].dot(self._glitch_aug._Minv_apply(gamma, self._glitch_sigma_g, k))
+        return self._fd_from_td(d_td - ghat, data_fd)
+
+    @property
+    def glitch_delta_lnZ(self):
+        """Per-detector Occam-disciplined glitch evidence term (0 if no basis attached)."""
+        return self._glitch_delta_lnZ
+
+    def glitch_reconstruction_td(self):
+        """MAP glitch reconstruction g_hat = B M^-1 gamma (TD, diagnostic); None if inactive."""
+        return self._glitch_ghat_td
+
     # ------------------------------------------------------------------ optional iterative
 
     def _ensure_pcg(self, covariance_acf=None):
@@ -622,6 +812,48 @@ class ToeplitzInnerProductContext(object):
             "series deltaF {0} != context deltaF {1}".format(hf.deltaF, self.deltaF))
 
 
+class _PrecisionAsCovariance(object):
+    r"""Adapter presenting a ToeplitzInnerProductContext's PRECISION as a covariance-solve.
+
+    ``RankAugmentation`` (td_rank_augmentation) is written against a covariance object whose
+    ``.solve(x)`` returns ``C^{-1} x``.  In the RIFT TD path the base operator we hold IS the
+    precision ``P = ip_normalization * K`` (``K`` = band-limited inverse-PSD kernel), i.e.
+    ``C^{-1} = P``.  So this adapter's ``.solve(x)`` is a DIRECT precision matvec ``P x`` (no
+    linear solve), which makes ``RankAugmentation`` compute Phi = C^{-1} B = P B, G = B^T P B,
+    gamma = B^T P d, and the Woodbury correction exactly as the K-side algebra of
+    ``attach_glitch_basis`` requires -- reusing the validated G1 code unchanged.
+
+    ``.dot(u, v)`` is the BILINEAR form ``u^T P v`` (no conjugation; ``RankAugmentation`` is
+    bilinear -- Hermitian forms pass conj explicitly).  ``.C`` exposes only ``C[0,0]`` (the
+    physical noise variance from the ACF) for the default sigma_g bounds; it is a 1x1 array,
+    never the full covariance (which is not formed).
+    """
+
+    def __init__(self, ctx):
+        self.ctx = ctx
+        self.N = ctx.N
+        # C[0,0] = physical noise variance (ACF at lag 0) -> default sigma_g scale (Sec. 2b).
+        try:
+            c00 = float(ctx.covariance_acf(acf_duration=1.0 / ctx.fs)[0])
+        except Exception:
+            c00 = 1.0
+        self.C = np.full((1, 1), c00, dtype=float)
+
+    def solve(self, b):
+        """Return C^{-1} b = P b (precision matvec; no solve).  Real or complex, matrix ok."""
+        return self.ctx.ip_normalization * self.ctx.apply_K(b)
+
+    def dot(self, u, v):
+        """Bilinear u^T C^{-1} v = u^T P v (NO conjugation; Sec. 2b)."""
+        Pv = self.solve(v)
+        return np.tensordot(np.asarray(u), Pv, axes=([-1], [-1]))
+
+    def logdet(self):
+        # Not used by the glitch path (Delta lnZ uses only the logdet CORRECTION); the
+        # precision determinant is off-band-singular and deliberately never formed.
+        raise NotImplementedError("precision logdet is off-band-singular and not formed")
+
+
 class ToeplitzComplexIP(object):
     r"""Scalar TD-Toeplitz analogue of ``lsu.ComplexIP`` (no time/phase maximization).
 
@@ -667,7 +899,11 @@ class ToeplitzComplexIP(object):
             h1_td = ctx.apply_template_truncation(h1_td, float(h1.epoch))
             h2_td = ctx.apply_template_truncation(h2_td, float(h2.epoch))
             return ctx.ip_normalization * ctx.segment_dot_td(h1_td, h2_td)
-        return ctx.ip_normalization * ctx.dot_td(h1_td, h2_td)
+        val = ctx.ip_normalization * ctx.dot_td(h1_td, h2_td)
+        if ctx.glitch_active:
+            # G3: U'/V' = U/V - conj(Phi^T h1)^T M^{-1} (Phi^T h2)  (Hermitian correction).
+            val = val - ctx.glitch_ip_correction(h1_td, h2_td)
+        return val
 
     def norm(self, h):
         """sqrt(|ip(h, h)|), matching lsu.ComplexIP.norm (2 deltaF sum |h~|^2 / S)."""
@@ -711,12 +947,18 @@ class ToeplitzComplexOverlap(object):
         if ctx.segment_active:
             return self._ip_segment(hlm, data)
 
+        # G3: Q'_lm(t) = correlate(h_lm, w'), w' = C'^{-1} d = P (d - g_hat).  Because the
+        # overlap is linear in the data, this is the base machinery run on the glitch-
+        # subtracted data d_corr = d - g_hat (g_hat = B M^{-1} gamma).  Default (no glitch)
+        # returns `data` unchanged -> byte-identical.
+        data_use = ctx.glitch_corrected_data_fd(data) if ctx.glitch_active else data
+
         # Integrand exactly as lsu.ComplexOverlap: 2 conj(hlm~) data~ weights2side.
         # Because K's FD symbol == weights2side, this is 2 conj(hlm~) (K data)~, i.e. the
         # impulse-response construction rhoTS = iFFT(conj(hlm~) FFT(K data)) up to the
         # identical lal reverse-FFT scaling.
         self._intgd.data.data = (2.0 * np.conj(np.asarray(hlm.data.data))
-                                 * np.asarray(data.data.data) * ctx.weights2side)
+                                 * np.asarray(data_use.data.data) * ctx.weights2side)
         lal.COMPLEX16FreqTimeFFT(self._ovlp, self._intgd, self._revplan)
 
         rhoSeries = np.abs(self._ovlp.data.data)
@@ -846,10 +1088,22 @@ class TDInnerProductFactory(object):
 
     def __init__(self, solver="auto", acf_duration=None, warn_inv_spec_trunc=True,
                  template_start_offset=None, template_end_offset=None,
-                 gaps=None, segment_start_index=0, gap_time_origin=None):
+                 gaps=None, segment_start_index=0, gap_time_origin=None,
+                 glitch_specs=None, glitch_sigma="profile"):
         self.solver = solver
         self.acf_duration = acf_duration
         self.warn_inv_spec_trunc = warn_inv_spec_trunc
+        # G3 glitch marginalization: per-IFO basis support specs and the sigma_g mode.
+        #   glitch_specs: {ifo: dict(t1,t2,f1,f2,r)} parsed from --glitch-basis (Sec. 3 Slepian).
+        #   glitch_sigma: "profile" (only wired mode); grid marginalization is a documented
+        #                 follow-on (out of scope for G3).
+        # The data + geocenter epoch needed to place the basis and profile sigma_g are supplied
+        # per detector via register_detector_data (called by ILE before Precompute), keyed on
+        # id(psd) so context_for can attach the basis when it first builds a detector's context.
+        self.glitch_specs = glitch_specs or {}
+        self.glitch_sigma = glitch_sigma
+        self._detector_registry = {}   # id(psd) -> dict(ifo, data_fd, event_time_geo)
+        self._glitch_contexts = []     # contexts that had a basis attached (for Delta lnZ sum)
         # Stage-3 (T5) segment specification, forwarded to every context this factory builds.
         #   * acf_duration          -> segment_duration -> N_seg (kernel truncation, D5)
         #   * template_start/end     -> template-frame truncation offsets (ILE
@@ -922,8 +1176,70 @@ class TDInnerProductFactory(object):
                 gaps=self.gaps, gap_time_origin=self.gap_time_origin,
                 template_start_offset=self.template_start_offset,
                 template_end_offset=self.template_end_offset)
+            self._maybe_attach_glitch(ctx, psd)
             self._contexts[key] = ctx
         return ctx
+
+    def register_detector_data(self, ifo, psd, data_fd, event_time_geo=None):
+        """Register a detector's (psd, data, event time) so its glitch basis can be attached.
+
+        Called by ILE once per detector BEFORE Precompute.  Keyed on ``id(psd)`` (the same
+        object Precompute forwards to ``context_for``), so the memoized context for that
+        detector is the one that receives the basis.  ``event_time_geo`` is the geocenter
+        event GPS time; the basis support offsets (geocenter seconds, per --glitch-basis) are
+        placed at sample ``round((event_time_geo + t - float(data.epoch)) / deltaT)``.
+        """
+        self._detector_registry[id(psd)] = dict(
+            ifo=ifo, data_fd=data_fd, event_time_geo=event_time_geo)
+
+    def _maybe_attach_glitch(self, ctx, psd):
+        r"""Attach the per-IFO Slepian glitch basis to a freshly built context (G3).
+
+        EPOCH ARITHMETIC (documented).  --glitch-basis gives (t1,t2) in GEOCENTER seconds
+        relative to the event; the analysis stream's sample 0 sits at GPS ``float(data.epoch)``.
+        The basis support in stream samples is therefore
+            i0 = round((event_time_geo + t1 - float(data.epoch)) / deltaT)
+            i1 = round((event_time_geo + t2 - float(data.epoch)) / deltaT)
+        which we hand to ``slepian_basis`` as seconds-from-sample-0 (t_start = i0*deltaT).  If
+        ``event_time_geo`` is None (unit tests), t1/t2 are taken as seconds from sample 0.
+        """
+        reg = self._detector_registry.get(id(psd))
+        if reg is None:
+            return
+        ifo = reg["ifo"]
+        spec = self.glitch_specs.get(ifo)
+        if spec is None:
+            return
+        if ctx.segment_active:
+            import warnings
+            warnings.warn(
+                "TDInnerProductFactory: --glitch-basis for %s ignored -- glitch marginalization "
+                "is wired for the full segment only, but a truncated/gapped segment is active "
+                "(deferred; see attach_glitch_basis)." % ifo, stacklevel=2)
+            return
+        from RIFT.likelihood import td_rank_augmentation as tra
+        data_fd = reg["data_fd"]
+        evt = reg["event_time_geo"]
+        origin = 0.0 if evt is None else (float(evt) - float(data_fd.epoch))
+        t_start = origin + float(spec["t1"])
+        t_end = origin + float(spec["t2"])
+        B, Lambda0 = tra.slepian_basis(
+            ctx.N, ctx.fs, t_start, t_end, float(spec["f1"]), float(spec["f2"]),
+            r=spec.get("r"))
+        info = ctx.attach_glitch_basis([(B, Lambda0, ifo)], data_fd,
+                                       sigma_g=self.glitch_sigma)
+        self._glitch_contexts.append(ctx)
+        print("  [G3] %s glitch basis attached: r=%d, support=[%.4f,%.4f]s, band=[%g,%g]Hz, "
+              "sigma_g=%.3e, Delta_lnZ=%.4f"
+              % (ifo, B.shape[1], t_start, t_end, spec["f1"], spec["f2"],
+                 info["sigma_g"], info["delta_lnZ"]))
+
+    def glitch_delta_lnZ_total(self):
+        """Sum of per-detector glitch Delta lnZ over all contexts with a basis attached (G3).
+
+        This is the additive evidence constant ILE adds to lnL_marg (it does NOT cancel;
+        Sec. 4).  Zero if no glitch basis was attached (default OFF)."""
+        return float(sum(c.glitch_delta_lnZ for c in self._glitch_contexts))
 
     # -------------------------------------------------------------- FL-shaped constructors
 
@@ -977,6 +1293,31 @@ class TDInnerProductFactory(object):
                 "factored_likelihood FL:1936/2019 may be violated for this segment "
                 "configuration (a GPS-frame cut or too-wide time window; see plan D1/T6)."
                 % (rep["rel_var"], warn_tol, tag), stacklevel=2)
+
+        # G3 extension: when a glitch basis is attached, check whether it overlaps the SLIDING
+        # dominant-template support across the marginalization window.  The scalar U' correction
+        # is evaluated at the reference time (template-frame convention); if the glitch support
+        # overlaps the template track the correction becomes time-dependent (U'(t)) and the
+        # time-indexed U'(t) lookup -- deferred here -- would be needed.  We warn but proceed.
+        if ctx.glitch_active and ctx._glitch_support is not None:
+            gi0, gi1 = ctx._glitch_support
+            hpk = int(np.argmax(np.abs(h_td)))
+            nz = np.nonzero(np.abs(h_td) > 1e-6 * np.max(np.abs(h_td)))[0]
+            hi0, hi1 = (int(nz[0]), int(nz[-1]) + 1) if nz.size else (hpk, hpk + 1)
+            n = rep["n_shift"]
+            # sliding support of the template across +-n samples
+            overlap = (gi0 < hi1 + n) and (hi0 - n < gi1)
+            rep["glitch_overlaps_template"] = bool(overlap)
+            print("  [G3]%s glitch basis support=[%d,%d) vs template support=[%d,%d) (+-%d "
+                  "slide): overlap=%s; U' evaluated at reference time (time-indexed U'(t) "
+                  "deferred)." % (tag, gi0, gi1, hi0, hi1, n, overlap))
+            if overlap:
+                import warnings
+                warnings.warn(
+                    "TDInnerProductFactory: glitch basis%s overlaps the sliding template "
+                    "support -- the U' correction is time-dependent across the window; G3 uses "
+                    "the reference-time scalar U' (time-indexed U'(t) lookup deferred, see "
+                    "GLITCH_MARG_DESIGN.md Sec. 2/2b)." % tag, stacklevel=2)
         return rep
 
 
