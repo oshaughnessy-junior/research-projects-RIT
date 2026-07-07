@@ -232,6 +232,8 @@ optp.add_option("--td-acf-duration", type=float, default=None, help="Optional AC
 optp.add_option("--td-analysis-start", type=float, default=None, help="TD segment analysis START offset [seconds], geocenter, relative to the TEMPLATE peak-amplitude reference (plan T5/D1). The template is hard-cut (no taper) to [t_ref+start, t_ref+end] in its own frame and slides inside the data segment. Geometric-unit (xM) start times convert as t[s] = xM * (G Mtot/c^3) ~ xM * 4.925e-6 * (Mtot/Msun); pick xM externally and pass the resulting seconds (one run per start-time choice, embarrassingly parallel). Requires --internal-ile-inner-product td-toeplitz. Default None = no start cut.")
 optp.add_option("--td-analysis-end", type=float, default=None, help="TD segment analysis END offset [seconds], geocenter, relative to the template peak reference (plan T5/D1). See --td-analysis-start for the xM conversion. Default None = no end cut (keep to segment end, e.g. ringdown-only with --td-analysis-start >=0).")
 optp.add_option("--td-gap", action="append", default=None, help="TD gap interval 'tstart,tend' in geocenter seconds relative to the event time (plan T5, Eqs. 11-12 precision-kernel version: the gap samples are zeroed in data+template and the corresponding K_seg rows/cols deleted). Repeatable. Requires --internal-ile-inner-product td-toeplitz.")
+optp.add_option("--glitch-basis", action="append", default=None, help="Analytic GLITCH MARGINALIZATION basis for one detector (GLITCH_MARG_DESIGN.md task G3). Format 'IFO:t1,t2,f1,f2[:r]': IFO the glitchy detector; t1,t2 geocenter seconds relative to the event time (glitch time support); f1,f2 Hz (glitch band); optional :r number of Slepian columns (default from the 2*W*T time-bandwidth theorem). A per-detector, band-limited Slepian (DPSS) basis is built and its coefficients are analytically marginalized (Woodbury) in the TD Toeplitz Precompute: Q'/U' corrections + a per-detector Delta-lnZ evidence term added to lnL_marg. Repeatable (one glitch block per detector). Requires --internal-ile-inner-product td-toeplitz. EXPERIMENTAL.")
+optp.add_option("--glitch-sigma", type=str, default="profile", help="Glitch amplitude hyperparameter sigma_g mode for --glitch-basis: 'profile' (default, and the only mode wired in G3: empirical-Bayes maximize Delta-lnZ over sigma_g per detector from the data). Grid marginalization is a documented follow-on (out of scope for G3).")
 optp.add_option("-w", "--window-shape", type=float, default=0, help="Shape of Tukey window to apply to data (default is no windowing)")
 optp.add_option("--psd-window-shape", type=float, default=0, help="Shape of Tukey window that *was* applied to the PSD being passed. If nonzero, we will rescale the PSD by the ratio of window shape results")
 optp.add_option("-m", "--time-marginalization", action="store_true", help="Perform marginalization over time via direct numerical integration. Default is false.")
@@ -798,6 +800,13 @@ for Psig in P_list:
 #   threaded into PrecomputeLikelihoodTerms.  --td-solver / --td-acf-duration configure it.
 #
 ile_ip_factory = None
+# --glitch-basis (G3) is only meaningful on the TD path (glitch marginalization augments the
+# TD Toeplitz PRECISION operator; there is no fd-diagonal analogue).  Error early otherwise.
+if opts.glitch_basis and opts.internal_ile_inner_product != "td-toeplitz":
+    print("FAIL: --glitch-basis requires --internal-ile-inner-product td-toeplitz "
+          "(glitch marginalization exists only on the TD Toeplitz path; got inner-product %r)"
+          % opts.internal_ile_inner_product)
+    sys.exit(1)
 if opts.internal_ile_inner_product == "td-toeplitz":
     from RIFT.likelihood.td_inner_product import TDInnerProductFactory
     # Parse repeatable --td-gap 'tstart,tend' (geocenter seconds relative to the event).
@@ -807,6 +816,16 @@ if opts.internal_ile_inner_product == "td-toeplitz":
         for _g in opts.td_gap:
             _t0, _t1 = (float(x) for x in _g.split(","))
             td_gaps.append((_t0, _t1))
+    # Parse repeatable --glitch-basis 'IFO:t1,t2,f1,f2[:r]' (G3).  t1,t2 geocenter seconds
+    # relative to the event; f1,f2 Hz; optional r Slepian columns.  One block per detector.
+    glitch_specs = {}
+    if opts.glitch_basis:
+        for _spec in opts.glitch_basis:
+            _ifo, _rest = _spec.split(":", 1)
+            _parts = _rest.split(":")
+            _t1, _t2, _f1, _f2 = (float(x) for x in _parts[0].split(","))
+            _r = int(_parts[1]) if len(_parts) > 1 and _parts[1] != "" else None
+            glitch_specs[_ifo] = dict(t1=_t1, t2=_t2, f1=_f1, f2=_f2, r=_r)
     # Gap times are geocenter-relative-to-event; the context places them relative to the
     # segment sample-0 origin (T7 supplies the per-detector geocenter origin; default 0
     # here means gap times are interpreted relative to segment sample 0).
@@ -814,12 +833,20 @@ if opts.internal_ile_inner_product == "td-toeplitz":
         solver=opts.td_solver, acf_duration=opts.td_acf_duration,
         template_start_offset=opts.td_analysis_start,
         template_end_offset=opts.td_analysis_end,
-        gaps=td_gaps)
+        gaps=td_gaps,
+        glitch_specs=glitch_specs, glitch_sigma=opts.glitch_sigma)
+    # Register each detector's (psd, data, event time) so the per-IFO glitch basis can be
+    # placed and its sigma_g profiled (G3).  Keyed on id(psd) -- the object Precompute forwards.
+    if glitch_specs:
+        for _inst in data_dict:
+            ile_ip_factory.register_detector_data(
+                _inst, psd_dict[_inst], data_dict[_inst],
+                event_time_geo=float(event_time))
     print("  [TD] Using time-domain Toeplitz inner product (solver=%s, acf_duration=%s, "
-          "analysis=[%s,%s]s, gaps=%s). EXPERIMENTAL; inverse-spectrum truncation is "
-          "redundant and ignored on this path (plan D5)."
+          "analysis=[%s,%s]s, gaps=%s, glitch=%s/sigma=%s). EXPERIMENTAL; inverse-spectrum "
+          "truncation is redundant and ignored on this path (plan D5)."
           % (opts.td_solver, opts.td_acf_duration, opts.td_analysis_start,
-             opts.td_analysis_end, td_gaps))
+             opts.td_analysis_end, td_gaps, list(glitch_specs.keys()), opts.glitch_sigma))
 elif opts.internal_ile_inner_product != "fd-diagonal":
     print("FAIL: --internal-ile-inner-product must be 'fd-diagonal' or 'td-toeplitz', got %r"
           % opts.internal_ile_inner_product)
@@ -2009,6 +2036,20 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
     else:
       log_res = res
       sqrt_var_over_res =  numpy.exp(var/2 - log_res)
+
+    # G3 glitch marginalization: add the per-detector glitch Delta-lnZ evidence constant to the
+    # marginal lnL.  Delta-lnZ = sum_det [ 1/2 gamma^H M^-1 gamma - 1/2 ln det(I+sigma^2 Lam0 G) ]
+    # is a per-detector DATA constant (independent of intrinsic/extrinsic parameters) that does
+    # NOT cancel (GLITCH_MARG_DESIGN.md Sec. 4).  Because it is constant across samples,
+    # int exp(lnL + C) = exp(C) int exp(lnL), so adding it to log_res shifts lnL_marg by exactly
+    # the constant it contributes to every per-sample lnL -- the single cleanest injection point
+    # (the Q'/U' corrections that shape lnL(t) already entered through the TD Precompute seam).
+    if ile_ip_factory is not None and hasattr(ile_ip_factory, "glitch_delta_lnZ_total"):
+      _glitch_dlnZ = ile_ip_factory.glitch_delta_lnZ_total()
+      if _glitch_dlnZ != 0.0:
+        print("  [G3] adding glitch Delta-lnZ = %.6g to lnL_marg (per-detector evidence term)"
+              % _glitch_dlnZ)
+        log_res = log_res + _glitch_dlnZ
 
     # Report results
     if opts.output_file and opts.sim_grid:
