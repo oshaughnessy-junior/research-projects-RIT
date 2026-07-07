@@ -462,6 +462,16 @@ def PrecomputeLikelihoodTerms(event_time_geo, t_window, P, data_dict,
         crossTermsV[det] = ComputeModeCrossTermIP(hlms_conj, hlms, psd_dict[det], P.fmin,
                 fMax, 1./2./P.deltaT, P.deltaF, analyticPSD_Q,
                 inv_spec_trunc_Q, T_spec,prefix="V",verbose=verbose,same_waveform_Q=internal_fast_precompute,IP_factory=IP_factory)
+        # T6 (RIFT_TD_INTEGRATION_PLAN.md): U/V edge-sensitivity diagnostic for the TD path.
+        # Cheap (2 scalar IPs per det); logs the dominant-mode U variation across the time
+        # window and warns if the scalar-U (shift-invariance) assumption looks violated.
+        if IP_factory is not None and hasattr(IP_factory, "report_uv_edge_sensitivity"):
+            try:
+                IP_factory.report_uv_edge_sensitivity(
+                    hlms, psd_dict[det], P.fmin, fMax, 1./2./P.deltaT, P.deltaF,
+                    analyticPSD_Q=analyticPSD_Q, det=det, window_half=t_window)
+            except Exception as _e_t6:
+                print("  [T6] edge-sensitivity diagnostic skipped:", _e_t6)
         # Compute rholm(t) = < h_lm(t) | d >
         cal_realization = None
         if not(calibration_realizations is None) and isinstance(calibration_realizations, dict):
