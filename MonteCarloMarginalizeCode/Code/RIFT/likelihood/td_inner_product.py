@@ -73,6 +73,8 @@ References: RIFT_TD_INTEGRATION_PLAN.md Sec. 5-6 (T1); GLITCH_MARG_DESIGN.md Sec
 
 __author__ = "R. O'Shaughnessy and the RIFT TD team"
 
+import os
+
 import numpy as np
 import scipy.linalg
 
@@ -523,7 +525,11 @@ class ToeplitzInnerProductContext(object):
         return self._toeplitz_matvec(v)
 
     def _toeplitz_matvec(self, v):
-        """Exact symmetric-Toeplitz matvec K v via zero-padded circular convolution."""
+        """Exact symmetric-Toeplitz matvec K v via zero-padded circular convolution.
+
+        Accepts a vector (N,) or a MATRIX (N, r) of stacked column vectors (the
+        rank-augmentation layer solves Phi = C^{-1} B column-block-wise; the FFTs
+        vectorize over the trailing axis at identical numerics to the per-column loop)."""
         N = self.N
         col = self.kappa[:N]
         # embed the symmetric Toeplitz into a circulant of length >= 2N-1
@@ -534,9 +540,12 @@ class ToeplitzInnerProductContext(object):
         fc = np.fft.fft(c)
 
         def _mv(x):
-            xp = np.zeros(m, dtype=x.dtype)
+            # x: (N,) or (N, r); pad + FFT along axis 0
+            shape = (m,) + x.shape[1:]
+            xp = np.zeros(shape, dtype=x.dtype)
             xp[:N] = x
-            y = np.fft.ifft(fc * np.fft.fft(xp))[:N]
+            fx = np.fft.fft(xp, axis=0)
+            y = np.fft.ifft(fc.reshape((m,) + (1,) * (x.ndim - 1)) * fx, axis=0)[:N]
             return y
 
         v = np.asarray(v)
@@ -1125,18 +1134,25 @@ class TDInnerProductFactory(object):
     def __init__(self, solver="auto", acf_duration=None, warn_inv_spec_trunc=True,
                  template_start_offset=None, template_end_offset=None,
                  gaps=None, segment_start_index=0, gap_time_origin=None,
-                 glitch_specs=None, glitch_sigma="profile"):
+                 glitch_specs=None, glitch_sigma="profile", glitch_basis_files=None):
         self.solver = solver
         self.acf_duration = acf_duration
         self.warn_inv_spec_trunc = warn_inv_spec_trunc
         # G3 glitch marginalization: per-IFO basis support specs and the sigma_g mode.
         #   glitch_specs: {ifo: dict(t1,t2,f1,f2,r)} parsed from --glitch-basis (Sec. 3 Slepian).
+        #   glitch_basis_files: {ifo: path.npz} parsed from --glitch-basis-file (Sec. 3 modes
+        #                 3/4, data-informed PCA/SVD basis).  npz keys: 'basis' (n_snip x r
+        #                 time-domain snippet columns at the analysis sample rate), 'lambda0'
+        #                 (length r, dimensionless shape prior, max entry 1 per Sec. 2b),
+        #                 't0' (scalar: geocenter seconds relative to the EVENT of snippet
+        #                 sample 0), 'fs' (snippet sample rate [Hz], validated vs the context).
         #   glitch_sigma: "profile" (only wired mode); grid marginalization is a documented
         #                 follow-on (out of scope for G3).
         # The data + geocenter epoch needed to place the basis and profile sigma_g are supplied
         # per detector via register_detector_data (called by ILE before Precompute), keyed on
         # id(psd) so context_for can attach the basis when it first builds a detector's context.
         self.glitch_specs = glitch_specs or {}
+        self.glitch_basis_files = glitch_basis_files or {}
         self.glitch_sigma = glitch_sigma
         self._detector_registry = {}   # id(psd) -> dict(ifo, data_fd, event_time_geo)
         self._glitch_contexts = []     # contexts that had a basis attached (for Delta lnZ sum)
@@ -1244,7 +1260,8 @@ class TDInnerProductFactory(object):
             return
         ifo = reg["ifo"]
         spec = self.glitch_specs.get(ifo)
-        if spec is None:
+        basis_file = self.glitch_basis_files.get(ifo)
+        if spec is None and basis_file is None:
             return
         if ctx.segment_active:
             import warnings
@@ -1257,17 +1274,51 @@ class TDInnerProductFactory(object):
         data_fd = reg["data_fd"]
         evt = reg["event_time_geo"]
         origin = 0.0 if evt is None else (float(evt) - float(data_fd.epoch))
-        t_start = origin + float(spec["t1"])
-        t_end = origin + float(spec["t2"])
-        B, Lambda0 = tra.slepian_basis(
-            ctx.N, ctx.fs, t_start, t_end, float(spec["f1"]), float(spec["f2"]),
-            r=spec.get("r"))
+        if basis_file is not None:
+            # Data-informed basis from file (--glitch-basis-file, Sec. 3 modes 3/4).  The
+            # snippet columns are zero-embedded at t0 (same epoch arithmetic as the Slepian
+            # branch: geocenter-relative-to-event -> seconds from segment sample 0 -> sample).
+            payload = np.load(basis_file)
+            for _key in ("basis", "lambda0", "t0", "fs"):
+                if _key not in payload:
+                    raise ValueError(
+                        "--glitch-basis-file %s: npz %r missing required key %r "
+                        "(need basis, lambda0, t0, fs)." % (ifo, basis_file, _key))
+            snip = np.asarray(payload["basis"], dtype=np.float64)
+            Lambda0 = np.asarray(payload["lambda0"], dtype=np.float64)
+            fs_file = float(payload["fs"])
+            if not np.isclose(fs_file, ctx.fs, rtol=1e-9):
+                raise ValueError(
+                    "--glitch-basis-file %s: snippet sample rate %g Hz != analysis rate %g Hz."
+                    % (ifo, fs_file, ctx.fs))
+            if snip.ndim != 2 or snip.shape[1] != Lambda0.shape[0]:
+                raise ValueError(
+                    "--glitch-basis-file %s: basis shape %s inconsistent with lambda0 shape %s."
+                    % (ifo, snip.shape, Lambda0.shape))
+            t_start = origin + float(payload["t0"])
+            i0 = int(round(t_start * ctx.fs))
+            n_snip = snip.shape[0]
+            if i0 < 0 or i0 + n_snip > ctx.N:
+                raise ValueError(
+                    "--glitch-basis-file %s: snippet [%d,%d) falls outside the segment [0,%d)."
+                    % (ifo, i0, i0 + n_snip, ctx.N))
+            B = np.zeros((ctx.N, snip.shape[1]))
+            B[i0:i0 + n_snip, :] = snip
+            t_end = t_start + n_snip / ctx.fs
+            band_note = "file:%s" % os.path.basename(basis_file)
+        else:
+            t_start = origin + float(spec["t1"])
+            t_end = origin + float(spec["t2"])
+            B, Lambda0 = tra.slepian_basis(
+                ctx.N, ctx.fs, t_start, t_end, float(spec["f1"]), float(spec["f2"]),
+                r=spec.get("r"))
+            band_note = "band=[%g,%g]Hz" % (spec["f1"], spec["f2"])
         info = ctx.attach_glitch_basis([(B, Lambda0, ifo)], data_fd,
                                        sigma_g=self.glitch_sigma)
         self._glitch_contexts.append(ctx)
-        print("  [G3] %s glitch basis attached: r=%d, support=[%.4f,%.4f]s, band=[%g,%g]Hz, "
+        print("  [G3] %s glitch basis attached: r=%d, support=[%.4f,%.4f]s, %s, "
               "sigma_g=%.3e, Delta_lnZ=%.4f"
-              % (ifo, B.shape[1], t_start, t_end, spec["f1"], spec["f2"],
+              % (ifo, B.shape[1], t_start, t_end, band_note,
                  info["sigma_g"], info["delta_lnZ"]))
 
     def glitch_delta_lnZ_total(self):

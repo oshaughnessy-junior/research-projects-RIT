@@ -234,6 +234,7 @@ optp.add_option("--td-analysis-start", type=float, default=None, help="TD segmen
 optp.add_option("--td-analysis-end", type=float, default=None, help="TD segment analysis END offset [seconds], geocenter, relative to the template peak reference (plan T5/D1). See --td-analysis-start for the xM conversion. Default None = no end cut (keep to segment end, e.g. ringdown-only with --td-analysis-start >=0).")
 optp.add_option("--td-gap", action="append", default=None, help="TD gap interval 'tstart,tend' in geocenter seconds relative to the event time (plan T5, Eqs. 11-12 precision-kernel version: the gap samples are zeroed in data+template and the corresponding K_seg rows/cols deleted). Repeatable. Requires --internal-ile-inner-product td-toeplitz.")
 optp.add_option("--glitch-basis", action="append", default=None, help="Analytic GLITCH MARGINALIZATION basis for one detector (GLITCH_MARG_DESIGN.md task G3). Format 'IFO:t1,t2,f1,f2[:r]': IFO the glitchy detector; t1,t2 geocenter seconds relative to the event time (glitch time support); f1,f2 Hz (glitch band); optional :r number of Slepian columns (default from the 2*W*T time-bandwidth theorem). A per-detector, band-limited Slepian (DPSS) basis is built and its coefficients are analytically marginalized (Woodbury) in the TD Toeplitz Precompute: Q'/U' corrections + a per-detector Delta-lnZ evidence term added to lnL_marg. Repeatable (one glitch block per detector). Requires --internal-ile-inner-product td-toeplitz. EXPERIMENTAL.")
+optp.add_option("--glitch-basis-file", action="append", default=None, help="Analytic GLITCH MARGINALIZATION basis for one detector from a FILE (data-informed basis, GLITCH_MARG_DESIGN.md Sec. 3 modes 3/4: e.g. glitschen-style PCA of real glitches, or BayesWave-draw SVD). Format 'IFO:path.npz'; the npz must contain 'basis' (n_snip x r time-domain snippet columns at the analysis sample rate), 'lambda0' (length-r dimensionless shape prior, max entry 1 per design Sec. 2b -- sigma_g carries the strain scale), 't0' (scalar: geocenter seconds RELATIVE TO THE EVENT TIME of snippet sample 0), and 'fs' (snippet sample rate [Hz], checked against the analysis rate). The snippet columns are zero-embedded into the analysis segment at t0 and their coefficients marginalized exactly like --glitch-basis (same Woodbury Q'/U' corrections + per-detector Delta-lnZ). Repeatable (one block per detector); mutually exclusive per-IFO with --glitch-basis. Requires --internal-ile-inner-product td-toeplitz. EXPERIMENTAL.")
 optp.add_option("--glitch-sigma", type=str, default="profile", help="Glitch amplitude hyperparameter sigma_g mode for --glitch-basis: 'profile' (default, and the only mode wired in G3: empirical-Bayes maximize Delta-lnZ over sigma_g per detector from the data). Grid marginalization is a documented follow-on (out of scope for G3).")
 optp.add_option("-w", "--window-shape", type=float, default=0, help="Shape of Tukey window to apply to data (default is no windowing)")
 optp.add_option("--psd-window-shape", type=float, default=0, help="Shape of Tukey window that *was* applied to the PSD being passed. If nonzero, we will rescale the PSD by the ratio of window shape results")
@@ -884,8 +885,8 @@ for Psig in P_list:
 ile_ip_factory = None
 # --glitch-basis (G3) is only meaningful on the TD path (glitch marginalization augments the
 # TD Toeplitz PRECISION operator; there is no fd-diagonal analogue).  Error early otherwise.
-if opts.glitch_basis and opts.internal_ile_inner_product != "td-toeplitz":
-    print("FAIL: --glitch-basis requires --internal-ile-inner-product td-toeplitz "
+if (opts.glitch_basis or opts.glitch_basis_file) and opts.internal_ile_inner_product != "td-toeplitz":
+    print("FAIL: --glitch-basis/--glitch-basis-file requires --internal-ile-inner-product td-toeplitz "
           "(glitch marginalization exists only on the TD Toeplitz path; got inner-product %r)"
           % opts.internal_ile_inner_product)
     sys.exit(1)
@@ -908,6 +909,20 @@ if opts.internal_ile_inner_product == "td-toeplitz":
             _t1, _t2, _f1, _f2 = (float(x) for x in _parts[0].split(","))
             _r = int(_parts[1]) if len(_parts) > 1 and _parts[1] != "" else None
             glitch_specs[_ifo] = dict(t1=_t1, t2=_t2, f1=_f1, f2=_f2, r=_r)
+    # Parse repeatable --glitch-basis-file 'IFO:path.npz' (data-informed basis, Sec. 3 modes
+    # 3/4).  The npz payload (basis/lambda0/t0/fs) is validated when the factory attaches it.
+    glitch_basis_files = {}
+    if opts.glitch_basis_file:
+        for _spec in opts.glitch_basis_file:
+            _ifo, _path = _spec.split(":", 1)
+            if _ifo in glitch_specs:
+                print("FAIL: --glitch-basis and --glitch-basis-file both given for %s "
+                      "(one glitch block per detector)" % _ifo)
+                sys.exit(1)
+            if not os.path.isfile(_path):
+                print("FAIL: --glitch-basis-file %s: no such file %r" % (_ifo, _path))
+                sys.exit(1)
+            glitch_basis_files[_ifo] = _path
     # Gap times are geocenter-relative-to-event; the context places them relative to the
     # segment sample-0 origin (T7 supplies the per-detector geocenter origin; default 0
     # here means gap times are interpreted relative to segment sample 0).
@@ -916,10 +931,11 @@ if opts.internal_ile_inner_product == "td-toeplitz":
         template_start_offset=opts.td_analysis_start,
         template_end_offset=opts.td_analysis_end,
         gaps=td_gaps,
-        glitch_specs=glitch_specs, glitch_sigma=opts.glitch_sigma)
+        glitch_specs=glitch_specs, glitch_sigma=opts.glitch_sigma,
+        glitch_basis_files=glitch_basis_files)
     # Register each detector's (psd, data, event time) so the per-IFO glitch basis can be
     # placed and its sigma_g profiled (G3).  Keyed on id(psd) -- the object Precompute forwards.
-    if glitch_specs:
+    if glitch_specs or glitch_basis_files:
         for _inst in data_dict:
             ile_ip_factory.register_detector_data(
                 _inst, psd_dict[_inst], data_dict[_inst],
@@ -928,7 +944,9 @@ if opts.internal_ile_inner_product == "td-toeplitz":
           "analysis=[%s,%s]s, gaps=%s, glitch=%s/sigma=%s). EXPERIMENTAL; inverse-spectrum "
           "truncation is redundant and ignored on this path (plan D5)."
           % (opts.td_solver, opts.td_acf_duration, opts.td_analysis_start,
-             opts.td_analysis_end, td_gaps, list(glitch_specs.keys()), opts.glitch_sigma))
+             opts.td_analysis_end, td_gaps,
+             list(glitch_specs.keys()) + ["%s(file)" % k for k in glitch_basis_files],
+             opts.glitch_sigma))
 elif opts.internal_ile_inner_product != "fd-diagonal":
     print("FAIL: --internal-ile-inner-product must be 'fd-diagonal' or 'td-toeplitz', got %r"
           % opts.internal_ile_inner_product)

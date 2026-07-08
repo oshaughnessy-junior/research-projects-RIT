@@ -292,6 +292,84 @@ def test_default_off_byte_identical():
     assert maxdiff == 0.0
 
 
+def test_basis_file_matches_direct_attach(tmp_path=None):
+    """--glitch-basis-file npz path == direct attach_glitch_basis of the embedded matrix.
+
+    The file-based (data-informed PCA, Sec. 3 modes 3/4) branch of
+    TDInnerProductFactory._maybe_attach_glitch must reproduce EXACTLY what a direct
+    attach of the zero-embedded basis gives: same sigma_g, same Delta lnZ, same U'
+    correction, same Q'(t).  Also: a factory with glitch_basis_files={} stays
+    byte-identical to the plain factory (default OFF)."""
+    import os
+    import tempfile
+    rng = np.random.default_rng(77)
+    psd = make_psd_series()
+    hlms = {(2, 2): bandlimited_series(rng)}
+    data = bandlimited_series(rng)
+
+    # a small random band-limited snippet basis (n_snip x r), orthonormal columns
+    n_snip, r = 256, 5
+    raw = np.zeros((n_snip, r))
+    tg = np.arange(n_snip) / FS
+    for j in range(r):
+        f0 = 150.0 + 60.0 * j
+        raw[:, j] = np.exp(-((tg - tg[n_snip // 2]) ** 2) / (2 * 0.01 ** 2)) * np.cos(
+            2 * np.pi * f0 * (tg - tg[n_snip // 2]) + 0.3 * j)
+    snip, _ = np.linalg.qr(raw)
+    lam0 = np.linspace(1.0, 0.2, r)
+    t0 = 0.61                      # seconds from sample 0 (event_time_geo=None convention)
+    i0 = int(round(t0 * FS))
+
+    if tmp_path is None:
+        tmp_dir = tempfile.mkdtemp()
+    else:
+        tmp_dir = str(tmp_path)
+    npz_path = os.path.join(tmp_dir, "basis_H1.npz")
+    np.savez(npz_path, basis=snip, lambda0=lam0, t0=t0, fs=FS)
+
+    # (1) file-based factory path
+    fac_file = TDInnerProductFactory(solver="auto",
+                                     glitch_basis_files={"H1": npz_path},
+                                     glitch_sigma="profile")
+    fac_file.register_detector_data("H1", psd, data, event_time_geo=None)
+    U_file = fl.ComputeModeCrossTermIP(hlms, hlms, psd, FLOW, FMAX, FNYQ, DELTAF,
+                                       analyticPSD_Q=False, verbose=False,
+                                       same_waveform_Q=False, IP_factory=fac_file)
+    Q_file = fl.ComputeModeIPTimeSeries(hlms, data, psd, FLOW, FMAX, FNYQ, 0, N,
+                                        analyticPSD_Q=False, IP_factory=fac_file)
+    ctx_file = fac_file._glitch_contexts[0]
+
+    # (2) direct attach of the SAME embedded basis on a fresh context
+    B_full = np.zeros((N, r))
+    B_full[i0:i0 + n_snip, :] = snip
+    ctx_direct = ToeplitzInnerProductContext(psd, DELTAF, FNYQ, FLOW, fMax=FMAX,
+                                             analyticPSD_Q=False, solver="auto")
+    info = ctx_direct.attach_glitch_basis([(B_full, lam0, "H1")], data, sigma_g="profile")
+
+    assert np.isclose(ctx_file._glitch_sigma_g, info["sigma_g"], rtol=1e-12)
+    assert np.isclose(ctx_file.glitch_delta_lnZ, info["delta_lnZ"], rtol=1e-12)
+    # U' correction identical on a random band-limited pair
+    u = bandlimited_series(rng)
+    v = bandlimited_series(rng)
+    u_td = np.fft.ifft(np.asarray(u.data.data)) * (N * DELTAF)
+    v_td = np.fft.ifft(np.asarray(v.data.data)) * (N * DELTAF)
+    c_file = ctx_file.glitch_ip_correction(u_td, v_td)
+    c_direct = ctx_direct.glitch_ip_correction(u_td, v_td)
+    assert np.isclose(c_file, c_direct, rtol=1e-10)
+    print("[G4-file] sigma_g=%.6e Delta_lnZ=%.6f ip-corr match %.3e vs %.3e"
+          % (info["sigma_g"], info["delta_lnZ"], abs(c_file), abs(c_direct)))
+
+    # (3) default OFF: empty glitch_basis_files == plain factory, byte-identical
+    fac_plain = TDInnerProductFactory(solver="auto")
+    fac_off = TDInnerProductFactory(solver="auto", glitch_basis_files={})
+    Q_a = fl.ComputeModeIPTimeSeries(hlms, data, psd, FLOW, FMAX, FNYQ, 0, 256,
+                                     analyticPSD_Q=False, IP_factory=fac_plain)
+    Q_b = fl.ComputeModeIPTimeSeries(hlms, data, psd, FLOW, FMAX, FNYQ, 0, 256,
+                                     analyticPSD_Q=False, IP_factory=fac_off)
+    for k in hlms:
+        assert np.max(np.abs(Q_a[k].data.data - Q_b[k].data.data)) == 0.0
+
+
 # --------------------------------------------------------------------------- (c) end-to-end
 
 def _lnL_of_t(Q_ts, U):
@@ -377,6 +455,7 @@ if __name__ == "__main__":
         ("(a2) Q'(t) overlap consistency", test_Qprime_overlap_consistency),
         ("(b) conjugation trap", test_conjugation_trap),
         ("(c) default-OFF byte-identical", test_default_off_byte_identical),
+        ("(c) basis-file == direct attach", test_basis_file_matches_direct_attach),
         ("(c) end-to-end glitch mitigation", test_end_to_end_glitch_mitigation),
     ]
     t0 = time.time()
