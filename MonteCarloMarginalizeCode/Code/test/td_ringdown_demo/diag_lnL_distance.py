@@ -29,7 +29,7 @@ import run_equivalence_study as t4
 import RIFT.lalsimutils as lalsimutils
 from RIFT.likelihood.td_inner_product import TDInnerProductFactory
 
-T7C = "/home/richard.oshaughnessy/rift_td/analyses/t7c_gw250114"
+T7C = os.environ.get("T7C_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "t7c_gw250114"))
 GPS = 1420878141.2
 SRATE = 2048.0
 dT = 1.0/SRATE

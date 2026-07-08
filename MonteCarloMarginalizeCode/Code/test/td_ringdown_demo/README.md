@@ -10,8 +10,21 @@ Env: `~/.conda/envs/junior_rift/bin/python`, `PYTHONPATH=<worktree>/MonteCarloMa
 
 ## Injection (fiducial single event -- "GW250114-like")
 m1=m2=50 Msun, IMRPhenomD, fmin 25 Hz, srate 2048, dist 700 Mpc, H1+L1, 8 s segment (N=2^14),
-smooth analytic PSD (reused from ../td_equivalence). mchirp_true=43.53, eta_true=0.25.
+smooth analytic PSD (same formula as ../td_equivalence). mchirp_true=43.53, eta_true=0.25.
 peak+10M = 10*G*Mtot/c^3 = 10*4.925491e-6*100 = **4.9255e-3 s** (ringdown-only start offset).
+
+## Regenerating data products (frames, PSD xml, figures, result JSON are gitignored)
+Only the scripts, this README, and the tiny grid/injection `xml.gz` are tracked; bulky
+products are regenerated. The demo scripts expect the PSD xml **in this directory** (`$HERE`):
+```bash
+PY=~/.conda/envs/junior_rift/bin/python
+$PY ../td_equivalence/make_psd_ascii.py --out psd_smooth_ascii.txt   # byte-identical smooth PSD
+convert_psd_ascii2xml --fname-psd-ascii psd_smooth_ascii.txt --ifo H1 --conventional-postfix
+convert_psd_ascii2xml --fname-psd-ascii psd_smooth_ascii.txt --ifo L1 --conventional-postfix
+```
+Frames are built per the injection command block below (native or util_LALWriteFrame path).
+GW250114 (T7c) scripts read/write under `$T7C_DIR` (default `./t7c_gw250114`); set it to your
+run directory.
 
 ## Scripts
 | file | purpose |

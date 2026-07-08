@@ -12,7 +12,7 @@ sys.path.insert(0, CODE); sys.path.insert(0, os.path.join(CODE, "test", "td_equi
 import run_equivalence_study as t4
 import RIFT.lalsimutils as lalsimutils
 
-T7C = "/home/richard.oshaughnessy/rift_td/analyses/t7c_gw250114"
+T7C = os.environ.get("T7C_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "t7c_gw250114"))
 GPS = 1420878141.2; dT = 1.0/2048.0
 CACHE = os.path.join(T7C, "data", "frames.cache")
 chan = {"H1": "GWOSC-STRAIN", "L1": "GWOSC-STRAIN"}

@@ -9,7 +9,7 @@
 # Ringdown = template kept from peak+10M (0.0035435 s, Mtot_det=71.9); inspiral = up to peak-20ms.
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
-OUTROOT="${OUTROOT:-/home/richard.oshaughnessy/rift_td/analyses/t7c_gw250114/results/av_fixed}"
+OUTROOT="${OUTROOT:-$HERE/t7c_gw250114/results/av_fixed}"
 mkdir -p "$OUTROOT"
 export NMAX="${NMAX:-200000}" NEFF="${NEFF:-40}"
 echo "#### three-way AV (windowed + dist/phase marg)  NMAX=$NMAX NEFF=$NEFF  -> $OUTROOT"

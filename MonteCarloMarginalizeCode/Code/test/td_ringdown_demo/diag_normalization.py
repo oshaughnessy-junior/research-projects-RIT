@@ -20,7 +20,7 @@ import RIFT.lalsimutils as lalsimutils
 from RIFT.likelihood.td_inner_product import TDInnerProductFactory
 import RIFT.likelihood.factored_likelihood as fl
 
-T7C = "/home/richard.oshaughnessy/rift_td/analyses/t7c_gw250114"
+T7C = os.environ.get("T7C_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "t7c_gw250114"))
 GPS = 1420878141.2; SRATE = 2048.0; dT = 1.0/SRATE; DREF = 405.0
 CACHE = os.path.join(T7C, "data", "frames.cache")
 chan = {"H1": "GWOSC-STRAIN", "L1": "GWOSC-STRAIN"}

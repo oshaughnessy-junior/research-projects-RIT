@@ -9,7 +9,7 @@ export PYTHONPATH="$CODE:$PYTHONPATH"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-3}"
 PY=~/.conda/envs/junior_rift/bin/python
 ILE="$CODE/bin/integrate_likelihood_extrinsic_batchmode"
-T7C=/home/richard.oshaughnessy/rift_td/analyses/t7c_gw250114
+T7C="${T7C_DIR:-$HERE/t7c_gw250114}"
 LABEL="$1"; OUT="$2"; shift 2; EXTRA=("$@")
 # Generous budgets for a LOUD event (netSNR 78.6): the extrinsic target is a thin sheet, so
 # AV needs many samples.  Distance+phase are marginalized ANALYTICALLY (lookup table) so the

@@ -1,0 +1,23 @@
+# Regenerable data products for the T4 equivalence study.
+# Regenerate with make_psd_ascii.py + convert_psd_ascii2xml + util_LALWriteFrame
+# (see README.md "Reproduce").  Only the scripts, README, small injection xml.gz,
+# and PART0 writeup are tracked.
+
+# frames + caches (util_LALWriteFrame / make_gaussian_noise_frames.py)
+*.gwf
+*.cache
+frames32/
+frames32_noise/
+frames_*/
+
+# PSDs (make_psd_ascii.py -> convert_psd_ascii2xml)
+psd_smooth_ascii.txt
+H1-psd.xml.gz
+L1-psd.xml.gz
+
+# study outputs
+equivalence_results*.json
+lnLt_dump*.txt
+lnLt_overlay*.png
+*.log
+*.pyc
