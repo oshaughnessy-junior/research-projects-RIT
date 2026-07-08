@@ -11,9 +11,22 @@ PY=~/.conda/envs/junior_rift/bin/python
 ILE="$CODE/bin/integrate_likelihood_extrinsic_batchmode"
 T7C=/home/richard.oshaughnessy/rift_td/analyses/t7c_gw250114
 LABEL="$1"; OUT="$2"; shift 2; EXTRA=("$@")
-NMAX="${NMAX:-80000}"; NEFF="${NEFF:-5000}"
-mkdir -p "$OUT"
-echo "==== GW250114 AV config=$LABEL extra='${EXTRA[*]}' ===="
+# Generous budgets for a LOUD event (netSNR 78.6): the extrinsic target is a thin sheet, so
+# AV needs many samples.  Distance+phase are marginalized ANALYTICALLY (lookup table) so the
+# MC only samples (RA,dec,inclination,psi) -- neff climbs ~linearly and clears 30 well before nmax.
+NMAX="${NMAX:-200000}"; NEFF="${NEFF:-40}"
+DMIN=50; DMAX=3000
+LOOK="${LOOK:-$T7C/build/distmarg_lookup_d${DMIN}_${DMAX}.npz}"
+mkdir -p "$OUT" "$(dirname "$LOOK")"
+# Build the distance+phase marginalization lookup table once (Morisaki util_InitMargTable,
+# Euclidean d^2 prior over [DMIN,DMAX]).  This is the PI-endorsed fix: dropping the sharp
+# distance dimension (and the l=2-only analytic phase) is what makes the loud-event MC converge.
+if [ ! -s "$LOOK" ]; then
+  echo "  [build] distance+phase marg lookup -> $LOOK"
+  $PY "$CODE/bin/util_InitMargTable" --d-min "$DMIN" --d-max "$DMAX" --max-snr 200 \
+      --phase-marginalization --d-prior Euclidean --out "$LOOK" > "$OUT/marg_build.log" 2>&1
+fi
+echo "==== GW250114 AV config=$LABEL extra='${EXTRA[*]}' nmax=$NMAX neff=$NEFF ===="
 START=$(date +%s)
 $PY "$ILE" \
   -c "$T7C/data/frames.cache" -C H1=GWOSC-STRAIN -C L1=GWOSC-STRAIN \
@@ -22,9 +35,11 @@ $PY "$ILE" \
   --data-start-time 1420878137.2 --data-end-time 1420878145.2 \
   --srate 2048 --fmin-template 25 --fmax 1000 --reference-freq 25 \
   --l-max 2 --approximant IMRPhenomD \
+  --window-shape 0.4 \
   --time-marginalization --vectorized --gpu --force-xpy \
   --internal-use-lnL --sampler-method AV \
-  --d-min 50 --d-max 3000 \
+  --d-min "$DMIN" --d-max "$DMAX" \
+  --distance-marginalization --distance-marginalization-lookup-table "$LOOK" \
   --n-max "$NMAX" --n-eff "$NEFF" --n-chunk 10000 --seed 1234 \
   --internal-ile-inner-product td-toeplitz --td-solver auto \
   "${EXTRA[@]}" \
