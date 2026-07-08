@@ -17,13 +17,51 @@ peak+10M = 10*G*Mtot/c^3 = 10*4.925491e-6*100 = **4.9255e-3 s** (ringdown-only s
 | file | purpose |
 |---|---|
 | `build_grid.py` | build an intrinsic (mchirp x eta) sim-xml grid |
+| `native_inject.py` | **T7b** RIFT-native self-consistent injection (hlmoft modes + integer-sample detector delay); CLI or importable |
 | `make_noise_frames.py` | add PSD-colored Gaussian noise to a zero-noise frame cache |
 | `run_config.sh` | one batched-ILE NoLoop MC evaluation of the grid for one config |
 | `run_deterministic_surfaces.py` | zero-MC-noise 3-config surfaces (T4 harness + distance profiling) |
-| `pp_run.py` | reduced-scope ringdown-only pp-check (deterministic, per-injection noise) |
+| `run_gate.py` | **gate** three-way consistency on the native injection; PASS/FAIL + `gate_native.json` |
+| `pp_one.py` | **pp** single-injection ringdown-only pp runner: SEED + OUTDIR -> `{q_mc,q_eta,seed}` JSON |
+| `pp_run.py` | (legacy) reduced-scope ringdown-only pp-check batch (util_LALWriteFrame injection) |
 | `make_figures.py` | consistency figures + tables + pp-plot |
 
-## Exact commands
+## Native injection + gate (T7b / gate, 2026-07-07)
+The original demo injected with `util_LALWriteFrame` (`lalsimutils.hoft`), a DIFFERENT waveform
+generation than the templates (`std_and_conj_hlmoff` == `DataFourier(hlmoft)`); for the
+few-cycle 50+50 signal the injected data != truth template, pushing recovered intrinsics
+off-truth. `native_inject.py` builds the strain from THE SAME `hlmoft` modes the templates use,
+projected with `ComputeYlms` + `ComputeDetAMResponse` and an INTEGER-sample detector delay
+(matching the likelihood's integer arrival lookup -- load-bearing: a sub-sample
+`SimDetectorStrain` delay leaves an H1-vs-L1 differential timing error a common
+time-marginalization cannot absorb).
+
+```bash
+PY=~/.conda/envs/junior_rift/bin/python
+export PYTHONPATH=$(cd ../.. && pwd)
+$PY run_gate.py            # native-inject zero-noise + 3-config surfaces + PASS/FAIL
+```
+Result (`gate_native.json`): FULL config peaks EXACTLY at the truth grid node (mc=43.5,
+eta=0.25) -- vs the old injection railing to the mc=46 edge -- proving self-consistency; width
+ordering preserved (sigma_mc full 0.15 < inspiral 0.45 < ringdown 0.76). **GATE PASS.** Segment
+argmaxes slide along the mchirp-eta degeneracy ridge (ringdown mc within 1 step; inspiral mc
+biased ~3 steps low -- an injection-INDEPENDENT segment truncated-template-vs-full-IMR effect,
+reported informationally, not a pass/fail criterion).
+
+## Single-injection pp runner (pp_one.py)
+```bash
+$PY pp_one.py --seed <SEED> --outdir <OUTDIR>       # writes OUTDIR/pp_one_seed<SEED>.json
+```
+Draws truth (mc,eta,dist,time,sky,incl,phase) around the fiducial, native-injects into a fresh
+colored-noise realization keyed on SEED, runs the ringdown-only config over `ppgrid.xml.gz` via
+the NoLoop Precompute + factored-likelihood code (solver=auto/FFT), forms the flat-prior grid
+posterior, and writes truth quantiles `{"q_mc","q_eta","seed",...}`. **~3.7 s/injection** (the
+T7d FFT solver removed the old ~2 GB dense build). Embarrassingly parallel over SEED. Scope:
+deterministic TIME-marginalization at known extrinsics (the full-extrinsic MC under-converges on
+this cheap PSD -- pre-existing); q_mc/q_eta are systematically skewed by the ringdown mc-eta
+degeneracy, so a CALIBRATED pp needs full-extrinsic MC + a wider grid (future).
+
+## Exact commands (original util_LALWriteFrame path; native path above)
 ```bash
 PY=~/.conda/envs/junior_rift/bin/python
 export PYTHONPATH=$(cd ../.. && pwd)

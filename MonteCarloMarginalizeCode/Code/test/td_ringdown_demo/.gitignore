@@ -2,7 +2,11 @@
 frames32/
 frames_noise/
 frames_*/
+frames_native/
 pp/frames_*/
+*.cache
+pp_one_seed*.json
+zn_det_native.json
 zn/*/pt_*_.dat
 zn/*/ile.log
 tune_out/
