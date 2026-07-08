@@ -87,6 +87,7 @@ elif opts.inj:
       sim_inspiral_table = lsctables.SimInspiralTable.get_table(xmldoc)
       P.copy_sim_inspiral(sim_inspiral_table[int(event)])
       P.taper = lalsimutils.lsu_TAPER_START
+      P.taper  = lalsimutils.lsu_TAPER_START
       P.tref = 0.0 ## force this for plotting purposes only - safe?
 else:
    print("Using fiducial event parameters.")
@@ -160,6 +161,7 @@ if opts.verbose:
 if not(opts.use_gwsignal):
   hTc_2  = lalsimutils.complex_hoft(P,extra_waveform_args=extra_waveform_args)
 else:
+  P.taper = lalsimutils.lsu_TAPER_NONE
   hTc_2 = rift_gws.complex_hoft(P, approx_string=opts.approximant, extra_waveform_args=extra_waveform_args)
   # import astropy.units as u
   # python_dict = {'mass1' : P.m1/lal.MSUN_SI * u.solMass,

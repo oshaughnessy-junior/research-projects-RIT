@@ -1,0 +1,119 @@
+# T4 -- full-segment TD-vs-FD equivalence study (the GO/NO-GO gate)
+
+Self-contained, runnable study for task **T4** of `RIFT_TD_INTEGRATION_PLAN.md`
+(Sec. 6, Stage 2): demonstrate that a real end-to-end RIFT likelihood computed with
+the time-domain Toeplitz inner product (`--internal-ile-inner-product td-toeplitz`)
+reproduces the standard frequency-domain-diagonal run (`fd-diagonal`).
+
+**Acceptance gate:** `|Delta lnL_marg| < 0.05` per intrinsic point on smooth PSDs /
+long segments.
+
+**Verdict: GO.** All deterministic comparisons agree to machine precision
+(~1e-13), 11+ orders of magnitude inside the gate, on both zero-noise and
+Gaussian-noise data. See `../../../../rift_td/analyses/t4_equivalence/REPORT.md` for
+the full write-up, tables, and figures.
+
+## Environment
+
+```
+~/.conda/envs/junior_rift/bin/python   # lal 7.7.0, lalframe, lalsimulation, numpy, scipy
+PYTHONPATH=<worktree>/MonteCarloMarginalizeCode/Code
+```
+
+Frame writing and the Precompute/likelihood evaluation both run in `junior_rift`.
+
+## What is compared, and why deterministically
+
+The strongest evidence here is **deterministic** (no Monte-Carlo error). The study
+drives the REAL RIFT code path
+(`factored_likelihood.PrecomputeLikelihoodTerms` + the factored log-likelihood
+evaluation) exactly as `integrate_likelihood_extrinsic_batchmode` does, up to but not
+including the extrinsic MC layer. It loads data with `frame_data_to_non_herm_hoff`
+and PSDs with `get_psd_series_from_xmldoc` + `resample_psd_series` -- the identical
+ILE data path. The two runs differ ONLY in the inner product (`IP_factory=None`
+vs `TDInnerProductFactory`).
+
+Three comparisons:
+
+1. **PRIMARY (deterministic lnL(t)):** per-detector and network lnL(t) at the true
+   intrinsic point, pointwise. fd uses `inv-spec-trunc-time 0` (exact FD kernel) for
+   a fair comparison against the exact TD kernel.
+2. **GATE (deterministic lnL_marg):** the time-marginalized network log-likelihood
+   (`FactoredLogLikelihoodTimeMarginalized`, a deterministic quadrature) over a small
+   intrinsic grid -- the true point + 4 perturbations in mchirp/eta. This is the
+   `|Delta lnL_marg|` the AC gates on, with ZERO MC error.
+3. **INSTRUCTIVE EXTRA (inv-spec-trunc):** fd with inverse-spectrum truncation vs
+   td-toeplitz, to quantify how much inv-spec-trunc itself moves lnL (the TD kernel
+   is its *exact* version and needs no such knob).
+
+## Files
+
+| File | Purpose |
+|---|---|
+| `inj_bbh35.xml.gz` | injection: non-spinning BBH m1=m2=35 Msun, fmin=25 Hz, dist=500 Mpc, fixed sky/incl/phase |
+| `psd_smooth_ascii.txt`, `{H1,L1}-psd.xml.gz` | smooth analytic PSD `S(f)=1e-46*(1+(20/f)^4+(f/250)^2)`, df=0.125 |
+| `frames.cache`, `H/L-fake_strain-*-8.gwf` | zero-noise 8 s frames (srate 2048, N=2^14) |
+| `frames32.cache`, `frames32/` | zero-noise 32 s frames (for the real ILE run, which auto-picks a ~14 s segment) |
+| `make_gaussian_noise_frames.py`, `frames32_noise.cache`, `frames32_noise/` | PSD-colored Gaussian-noise variant |
+| `run_equivalence_study.py` | the deterministic study (PRIMARY + GATE + EXTRA) |
+| `run_ile_mc.sh` | real end-to-end ILE MC runs (see caveat below) |
+| `equivalence_results*.json`, `lnLt_dump*.txt`, `lnLt_overlay*.png` | outputs |
+
+## Reproduce
+
+```bash
+WT=<worktree>; export PYTHONPATH=$WT/MonteCarloMarginalizeCode/Code
+PY=~/.conda/envs/junior_rift/bin/python
+cd $WT/MonteCarloMarginalizeCode/Code/test/td_equivalence
+
+# (data products are committed; to regenerate them:)
+$PY $WT/MonteCarloMarginalizeCode/Code/bin/util_WriteInjectionFile.py \
+    --parameter m1 --parameter-value 35 --parameter m2 --parameter-value 35 \
+    --parameter dist --parameter-value 500 --parameter fmin --parameter-value 25 \
+    --parameter incl --parameter-value 0.7 --parameter phiref --parameter-value 1.2 \
+    --parameter theta --parameter-value 0.3 --parameter phi --parameter-value 2.1 \
+    --parameter psi --parameter-value 0.8 --parameter tref --parameter-value 1000000000 \
+    --approximant IMRPhenomD --fname inj_bbh35
+# frames: util_LALWriteFrame.py --inj inj_bbh35.xml.gz --event 0 --instrument H1 --srate 2048 --seglen 8 --approx IMRPhenomD  (omit --fname; it has a bug)
+# PSD:    convert_psd_ascii2xml --fname-psd-ascii psd_smooth_ascii.txt --ifo H1 --conventional-postfix
+
+# THE STUDY (deterministic; ~1 min):
+$PY run_equivalence_study.py                                 # zero noise
+$PY make_gaussian_noise_frames.py                            # build noise frames
+$PY run_equivalence_study.py --cache frames32_noise.cache \
+    --start 999999999 --stop 1000000007 \
+    --out-json equivalence_results_noise.json --out-lnLt lnLt_dump_noise.txt
+```
+
+## Expected numbers (zero noise; Gaussian noise identical to ~1e-13)
+
+```
+[primary] guess_snr fd=12.402321 td=12.402321  |diff|=1.8e-15
+[primary] network lnL(t): max abs dev = 2.3e-13 ; max rel dev = 2.1e-16
+[gate]    worst |Delta lnL_marg| = 2.6e-13   (gate 0.05)  -> PASS
+[extra]   fd(inv=0)==td exactly; inv-spec-trunc self-shift = 0.11 (zero-noise) / 1.5 (noise)
+================ VERDICT: GO ================
+```
+
+## Real end-to-end ILE run -- status and caveat
+
+`run_ile_mc.sh` invokes `integrate_likelihood_extrinsic_batchmode` twice (fd vs td,
+same `--seed`). Both runs execute the full ILE pipeline -- data load, PSD resample,
+**Precompute with the selected inner product** (the `[TD]` banner confirms
+td-toeplitz is active), and packing -- and produce **identical `guess_snr`
+(12.402320805608445 fd vs 12.402320805608442 td, ~3e-15 relative)**, confirming the
+end-to-end wiring is exact.
+
+The **Monte-Carlo lnL_marg output could not be produced in this environment for a
+reason independent of the inner product**: the CPU vectorized likelihood path
+(`DiscreteFactoredLogLikelihoodViaArrayVector`) calls `lalylm`, whose numba
+`@vectorize` of `lal.SpinWeightedSphericalHarmonic` fails to compile in nopython
+mode (`Unknown attribute 'SpinWeightedSphericalHarmonic'`) in every `junior_rift`-class
+conda env on this host, so the code falls back to a scalar Ylm that cannot take the
+array inclinations the sampler passes; and the GPU path needs a GPU (none on this
+submit host). This is a pre-existing MC-layer limitation hit **identically by fd and
+td** (it is downstream of Precompute). Per the plan's explicit fallback, the
+**deterministic study above is the primary evidence** and it exercises the same
+Precompute + factored-lnL code minus the broken MC wrapper. The MC-layer gate
+therefore ran at reduced scope (Precompute parity confirmed end-to-end; lnL_marg
+parity established deterministically, which is strictly stronger than an MC estimate).

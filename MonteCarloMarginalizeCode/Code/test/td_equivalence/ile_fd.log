@@ -1,0 +1,102 @@
+/home/richard.oshaughnessy/.conda/envs/junior_rift/lib/python3.11/site-packages/igwn_ligolw/table.py:37: UserWarning: igwn_ligolw.table module is deprecated.  the features previously implemented by the Column and Table classes in this module are now implemented natively by the classes in the igwn_ligolw.ligolw module proper.  this module will be removed in the next release.
+  warnings.warn(
+ no cupy
+ - No vegas - 
+no multiprocess
+ no cupy (mcsamplerGPU)
+ no cupy (mcsamplerAV)
+ no cupy (mcsamplerPortfolio)
+ Portfolio discovery: loading  AC
+ Portfolio discovery: loading  AV
+ Portfolio discovery: loading  GMM
+ Portfolio discovery: loading  NF
+ No mcsamplerPortolfio 
+ no cupy (factored)
+lal.MSUN_SI != Msun
+Event time from command line: 1000000000
+====Loading injection XML: /home/richard.oshaughnessy/RIFT_develUWM/src/research-projects-RIT/.claude/worktrees/agent-a69c50e6e0b85f972/MonteCarloMarginalizeCode/Code/test/td_equivalence/inj_bbh35.xml.gz 0  =======
+Fetching data segment with start= 999999999.0
+                             end= 1000000007.0
+Reading channel H1:FAKE-STRAIN from cache /home/richard.oshaughnessy/RIFT_develUWM/src/research-projects-RIT/.claude/worktrees/agent-a69c50e6e0b85f972/MonteCarloMarginalizeCode/Code/test/td_equivalence/frames32.cache
+ ++ Loading from cache  /home/richard.oshaughnessy/RIFT_develUWM/src/research-projects-RIT/.claude/worktrees/agent-a69c50e6e0b85f972/MonteCarloMarginalizeCode/Code/test/td_equivalence/frames32.cache H1:FAKE-STRAIN
+H FAKE 999999998 32 file://localhost/home/richard.oshaughnessy/RIFT_develUWM/src/research-projects-RIT/.claude/worktrees/agent-a69c50e6e0b85f972/MonteCarloMarginalizeCode/Code/test/td_equivalence/frames32/H-fake_strain-999999998-32.gwf
+{'H': [segment(LIGOTimeGPS(999999998, 0), LIGOTimeGPS(1000000030, 0))]}
+ ++ Loaded data h(f) of length n=  16384  (=  8.0 s) at sampling rate  2048.0
+Frequency binning: 0.125000, length 16384
+Reading channel L1:FAKE-STRAIN from cache /home/richard.oshaughnessy/RIFT_develUWM/src/research-projects-RIT/.claude/worktrees/agent-a69c50e6e0b85f972/MonteCarloMarginalizeCode/Code/test/td_equivalence/frames32.cache
+ ++ Loading from cache  /home/richard.oshaughnessy/RIFT_develUWM/src/research-projects-RIT/.claude/worktrees/agent-a69c50e6e0b85f972/MonteCarloMarginalizeCode/Code/test/td_equivalence/frames32.cache L1:FAKE-STRAIN
+L FAKE 999999998 32 file://localhost/home/richard.oshaughnessy/RIFT_develUWM/src/research-projects-RIT/.claude/worktrees/agent-a69c50e6e0b85f972/MonteCarloMarginalizeCode/Code/test/td_equivalence/frames32/L-fake_strain-999999998-32.gwf
+{'L': [segment(LIGOTimeGPS(999999998, 0), LIGOTimeGPS(1000000030, 0))]}
+ ++ Loaded data h(f) of length n=  16384  (=  8.0 s) at sampling rate  2048.0
+Frequency binning: 0.125000, length 16384
+Reading PSD for instrument H1 from /home/richard.oshaughnessy/RIFT_develUWM/src/research-projects-RIT/.claude/worktrees/agent-a69c50e6e0b85f972/MonteCarloMarginalizeCode/Code/test/td_equivalence/H1-psd.xml.gz
+PSD deltaF after interpolation 0.125000
+Reading PSD for instrument L1 from /home/richard.oshaughnessy/RIFT_develUWM/src/research-projects-RIT/.claude/worktrees/agent-a69c50e6e0b85f972/MonteCarloMarginalizeCode/Code/test/td_equivalence/L1-psd.xml.gz
+PSD deltaF after interpolation 0.125000
+Recommended distance for sampling  3000.0  and probably near  3000.0  smaller than   3000.0
+    (recommendation not yet used) 
+ ILE: GMM
+ mcsampler: Adding parameter  psi  with limits  [0, 6.283185307179586]
+ mcsampler: Adding parameter  phi_orb  with limits  [0, 6.283185307179586]
+ mcsampler: Adding parameter  inclination  with limits  [0, 3.141592653589793]
+ mcsampler: Adding parameter  distance  with limits  [10.0, 3000.0]
+ mcsampler: Adding parameter  right_ascension  with limits  [0, 6.283185307179586]
+ mcsampler: Adding parameter  declination  with limits  [-1.5707963267948966, 1.5707963267948966]
+parameter                 lower limit upper limit              pinned? pin value 
+psi                       0   6.28                False           
+right_ascension           0   6.28                False           
+inclination               0   3.14                False           
+distance                  10   3e+03                False           
+declination               -1.57   1.57                False           
+phi_orb                   0   6.28                False           
+GMM: {'n_comp': {(4, 5): 4, (3, 2): 2, (0, 1): 4}, 'max_iter': 1.0, 'gmm_dict': {(4, 5): None, (3, 2): None, (0, 1): None}, 'gmm_adapt': {(4, 5): True, (3, 2): True, (0, 1): False}}
+GMM: ['psi', 'phi_orb', 'inclination', 'distance', 'right_ascension', 'declination']
+Passing model through hlmoft_FromFD_dict
+SNR guess (internal, from det response)  12.402320805608445 76.90878068261405
+ Packing  H1
+ Packing  L1
+ --------> Arguments  ('right_ascension', 'declination', 'phi_orb', 'inclination', 'psi', 'distance')
+ ==> input assumed as lnL 
+ ==> internal calculations and return values are lnI 
+  ===> FAILED ANALYSIS <==== 
+in method 'SpinWeightedSphericalHarmonic', argument 1 of type 'REAL8'
+ Probable reasons: SEOB nyquist or starting frequency limit or signal duration 
+ Skipping the following binary! 
+This ChooseWaveformParams has the following parameter values:
+m1 = 35.0 (Msun)
+m2 = 35.0 (Msun)
+s1x = 0.0
+s1y = 0.0
+s1z = 0.0
+s2x = 0.0
+s2y = 0.0
+s2z = 0.0
+ : Vector spin products
+ : |s1|, |s2| =  0.0 0.0
+ : s1.s2 =  0.0
+ : hat(L). s1 x s2 =   0.0
+ : hat(L).(S1(1+q)+S2(1+1/q)) =  0.0
+lambda1 = 0.0
+lambda2 = 0.0
+inclination = 0
+distance = 0.0 (Mpc)
+reference orbital phase = 0
+polarization angle = 0
+eccentricity =  0.0
+meanPerAno =  0.0
+time of coalescence = 0.0  [GPS sec:  0 ,  GPS ns  0.0 ]
+detector is: H1
+Sky position relative to overhead detector is:
+zenith angle = 0 (radians)
+azimuth angle = 0 (radians)
+starting frequency is = 25.0
+reference frequency is = 25.0
+Max frequency is = 0.0
+time step = 0.00048828125 (s) <==> 2048.0 (Hz) sample rate
+freq. bin size is = 0.125 (Hz)
+approximant is = IMRPhenomD
+phase order = -1
+amplitude order = 0
+waveFlags struct is =  None
+nonGRparams struct is None
+Tapering is set to LAL_SIM_INSPIRAL_TAPER_START

@@ -913,7 +913,7 @@ def write_puff_sub(tag='puffball', exe=None, base=None,input_net='output-ILE-sam
     # Create executable if needed  (using extra_text as flag for now)
     base_str = ''
     if len(extra_text) > 0:
-        if not (base is None):
+        if False: #not (base is None):
             base_str = ' ' + base +"/"
 
         cmdname = "puff_sub.sh"
@@ -928,7 +928,7 @@ def write_puff_sub(tag='puffball', exe=None, base=None,input_net='output-ILE-sam
         import stat
         os.chmod(cmdname, st.st_mode | stat.S_IEXEC)
 
-        exe = base_str + "puff_sub.sh"
+        exe =  "puff_sub.sh"
 
 
     

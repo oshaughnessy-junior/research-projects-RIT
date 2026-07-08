@@ -363,7 +363,7 @@ def PrecomputeLikelihoodTerms(event_time_geo, t_window, P, data_dict,
         extra_waveform_kwargs={},
         use_gwsignal=False,
         use_gwsignal_approx=None,
-        use_external_EOB=False,nr_lookup=False,nr_lookup_valid_groups=None,no_memory=True,perturbative_extraction=False,perturbative_extraction_full=False,hybrid_use=False,hybrid_method='taper_add',use_provided_strain=False,ROM_group=None,ROM_param=None,ROM_use_basis=False,ROM_limit_basis_size=None,skip_interpolation=False, calibration_realizations=None):
+        use_external_EOB=False,nr_lookup=False,nr_lookup_valid_groups=None,no_memory=True,perturbative_extraction=False,perturbative_extraction_full=False,hybrid_use=False,hybrid_method='taper_add',use_provided_strain=False,ROM_group=None,ROM_param=None,ROM_use_basis=False,ROM_limit_basis_size=None,skip_interpolation=False, calibration_realizations=None, IP_factory=None):
     """
     Compute < h_lm(t) | d > and < h_lm | h_l'm' >
 
@@ -375,6 +375,12 @@ def PrecomputeLikelihoodTerms(event_time_geo, t_window, P, data_dict,
         - Dictionary of discrete time series of < h_lm(t) | d >, keyed the same
           as the interpolating functions.
           Their main use is to validate the interpolating functions
+
+    IP_factory:  optional inner-product factory threaded to ComputeModeCrossTermIP and
+        ComputeModeIPTimeSeries (task T3 of RIFT_TD_INTEGRATION_PLAN.md).  Default None
+        keeps the frequency-domain-diagonal lsu inner products (byte-identical default);
+        a factory (e.g. RIFT.likelihood.td_inner_product.TDInnerProductFactory) swaps in
+        the time-domain Toeplitz inner products at these two Precompute call sites only.
     """
     assert data_dict.keys() == psd_dict.keys()
     global distMpcRef
@@ -410,9 +416,9 @@ def PrecomputeLikelihoodTerms(event_time_geo, t_window, P, data_dict,
                                              
 
     if not(ignore_threshold is None) and (not ROM_use_basis):
-            crossTermsFiducial = ComputeModeCrossTermIP(hlms,hlms, psd_dict[detectors[0]], 
+            crossTermsFiducial = ComputeModeCrossTermIP(hlms,hlms, psd_dict[detectors[0]],
                                                         P.fmin, fMax,
-                                                        1./2./P.deltaT, P.deltaF, analyticPSD_Q=analyticPSD_Q, inv_spec_trunc_Q=inv_spec_trunc_Q, T_spec=T_spec,verbose=verbose,same_waveform_Q=internal_fast_precompute)
+                                                        1./2./P.deltaT, P.deltaF, analyticPSD_Q=analyticPSD_Q, inv_spec_trunc_Q=inv_spec_trunc_Q, T_spec=T_spec,verbose=verbose,same_waveform_Q=internal_fast_precompute,IP_factory=IP_factory)
             theWorthwhileModes =  IdentifyEffectiveModesForDetector(crossTermsFiducial, ignore_threshold, detectors)
             # Make sure worthwhile modes satisfy reflection symmetry! Do not truncate egregiously!
             theWorthwhileModes  = theWorthwhileModes.union(  set([(p,-q) for (p,q) in theWorthwhileModes]))
@@ -453,17 +459,28 @@ def PrecomputeLikelihoodTerms(event_time_geo, t_window, P, data_dict,
         # Compute cross terms < h_lm | h_l'm' >
         crossTerms[det] = ComputeModeCrossTermIP(hlms, hlms, psd_dict[det], P.fmin,
                 fMax, 1./2./P.deltaT, P.deltaF, analyticPSD_Q,
-                inv_spec_trunc_Q, T_spec,verbose=verbose,same_waveform_Q=internal_fast_precompute)
+                inv_spec_trunc_Q, T_spec,verbose=verbose,same_waveform_Q=internal_fast_precompute,IP_factory=IP_factory)
         crossTermsV[det] = ComputeModeCrossTermIP(hlms_conj, hlms, psd_dict[det], P.fmin,
                 fMax, 1./2./P.deltaT, P.deltaF, analyticPSD_Q,
-                inv_spec_trunc_Q, T_spec,prefix="V",verbose=verbose,same_waveform_Q=internal_fast_precompute)
+                inv_spec_trunc_Q, T_spec,prefix="V",verbose=verbose,same_waveform_Q=internal_fast_precompute,IP_factory=IP_factory)
+        # T6 (RIFT_TD_INTEGRATION_PLAN.md): U/V edge-sensitivity diagnostic for the TD path.
+        # Cheap (2 scalar IPs per det); logs the dominant-mode U variation across the time
+        # window and warns if the scalar-U (shift-invariance) assumption looks violated.
+        if IP_factory is not None and hasattr(IP_factory, "report_uv_edge_sensitivity"):
+            try:
+                IP_factory.report_uv_edge_sensitivity(
+                    hlms, psd_dict[det], P.fmin, fMax, 1./2./P.deltaT, P.deltaF,
+                    analyticPSD_Q=analyticPSD_Q, det=det, window_half=t_window)
+            except Exception as _e_t6:
+                print("  [T6] edge-sensitivity diagnostic skipped:", _e_t6)
         # Compute rholm(t) = < h_lm(t) | d >
         cal_realization = None
         if not(calibration_realizations is None) and isinstance(calibration_realizations, dict):
           cal_realization=calibration_realizations[det]
         rholms[det] = ComputeModeIPTimeSeries(hlms, data_dict[det],
                 psd_dict[det], P.fmin, fMax, 1./2./P.deltaT, N_shift, N_window,
-                analyticPSD_Q, inv_spec_trunc_Q, T_spec, calibration_realizations=cal_realization)
+                analyticPSD_Q, inv_spec_trunc_Q, T_spec, calibration_realizations=cal_realization,
+                IP_factory=IP_factory)
 #        rhoXX = rholms[det][list(rholms[det].keys())[0]]
         # The vector of time steps within our window of interest
         # for which we have discrete values of the rholms
@@ -900,7 +917,8 @@ def SingleDetectorLogLikelihood(rholm_vals, crossTerms,crossTermsV, Ylms, F, dis
 
 def ComputeModeIPTimeSeries(hlms, data, psd, fmin, fMax, fNyq,
         N_shift, N_window, analyticPSD_Q=False,
-        inv_spec_trunc_Q=False, T_spec=0., calibration_realizations=None):
+        inv_spec_trunc_Q=False, T_spec=0., calibration_realizations=None,
+        IP_factory=None):
     r"""
     Compute the complex-valued overlap between
     each member of a SphHarmFrequencySeries 'hlms'
@@ -914,6 +932,12 @@ def ComputeModeIPTimeSeries(hlms, data, psd, fmin, fMax, fNyq,
     Returns a SphHarmTimeSeries object containing the complex inner product
     for discrete values of the reference time tref.  The epoch of the
     SphHarmTimeSeries object is set to account for the transformation
+
+    IP_factory:  optional inner-product factory (see RIFT.likelihood.td_inner_product,
+        task T3 of RIFT_TD_INTEGRATION_PLAN.md).  When None (the default), the overlap
+        object is exactly the current lsu.ComplexOverlap construction (byte-identical
+        default path).  When provided, IP_factory.overlap(...) returns a drop-in object
+        whose .ip(hlm, data) yields the same (rho, rhoTS, rhoIdx, rhoPhase) contract.
     """
     rholms = {}
     assert data.deltaF == hlms[list(hlms.keys())[0]].deltaF
@@ -921,8 +945,13 @@ def ComputeModeIPTimeSeries(hlms, data, psd, fmin, fMax, fNyq,
     deltaT = 1./(2*fNyq)
 
     # Create an instance of class to compute inner product time series
-    IP = lsu.ComplexOverlap(fmin, fMax, fNyq, data.deltaF, psd,
-            analyticPSD_Q, inv_spec_trunc_Q, T_spec, full_output=True)
+    if IP_factory is None:
+        IP = lsu.ComplexOverlap(fmin, fMax, fNyq, data.deltaF, psd,
+                analyticPSD_Q, inv_spec_trunc_Q, T_spec, full_output=True)
+    else:
+        IP = IP_factory.overlap(fmin, fMax, fNyq, data.deltaF, psd,
+                analyticPSD_Q=analyticPSD_Q, inv_spec_trunc_Q=inv_spec_trunc_Q,
+                T_spec=T_spec, full_output=True)
 
     # Loop over modes and compute the overlap time series
     if calibration_realizations is None:
@@ -1020,8 +1049,9 @@ def InterpolateRholms(rholms, t,verbose=False):
 
     return rholm_intp
 
-def ComputeModeCrossTermIP(hlmsA, hlmsB, psd, fmin, fMax, fNyq, deltaF, 
-        analyticPSD_Q=False, inv_spec_trunc_Q=False, T_spec=0., verbose=True,prefix="U",same_waveform_Q=False):
+def ComputeModeCrossTermIP(hlmsA, hlmsB, psd, fmin, fMax, fNyq, deltaF,
+        analyticPSD_Q=False, inv_spec_trunc_Q=False, T_spec=0., verbose=True,prefix="U",same_waveform_Q=False,
+        IP_factory=None):
     """
     Compute the 'cross terms' between waveform modes, i.e.
     < h_lm | h_l'm' >.
@@ -1033,10 +1063,21 @@ def ComputeModeCrossTermIP(hlmsA, hlmsB, psd, fmin, fMax, fNyq, deltaF,
 
     same_waveform_Q:  if true, it will do a loop that assumes (a) the same keys in both loops and (b) the same waveform in both (i.e., conjugate transpose)
         Note we WILL use the 'prefix' quantity to identify if we are computing 'V' and therefore using a different symmetry!
+
+    IP_factory:  optional inner-product factory (see RIFT.likelihood.td_inner_product,
+        task T3 of RIFT_TD_INTEGRATION_PLAN.md).  When None (the default), the inner
+        product is exactly the current lsu.ComplexIP construction (byte-identical default
+        path).  When provided, IP_factory.ip_scalar(...) returns a drop-in object whose
+        .ip(h1, h2) yields the same scalar <h1|h2>.
     """
     # Create an instance of class to compute inner product
-    IP = lsu.ComplexIP(fmin, fMax, fNyq, deltaF, psd, analyticPSD_Q,
-            inv_spec_trunc_Q, T_spec)
+    if IP_factory is None:
+        IP = lsu.ComplexIP(fmin, fMax, fNyq, deltaF, psd, analyticPSD_Q,
+                inv_spec_trunc_Q, T_spec)
+    else:
+        IP = IP_factory.ip_scalar(fmin, fMax, fNyq, deltaF, psd,
+                analyticPSD_Q=analyticPSD_Q, inv_spec_trunc_Q=inv_spec_trunc_Q,
+                T_spec=T_spec)
 
     crossTerms = {}
 
