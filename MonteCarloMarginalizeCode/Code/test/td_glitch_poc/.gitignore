@@ -1,0 +1,15 @@
+# regenerable PoC inputs/outputs (script-driven; see README)
+*.csv
+*.npz
+*.npy
+*.gwf
+*.cache
+*.xml.gz
+*.dat
+*.log
+*.png
+*.json
+work/
+frames_*/
+run_*/
+psd_smooth_ascii.txt
