@@ -161,11 +161,23 @@ class ToeplitzInnerProductContext(object):
         self._solver = solver
         self._dense = None
         self._pcg = None
-        if self.N <= _MAX_DENSE_N and solver in ("auto", "dense"):
+        # Whether the dense N x N precision Toeplitz is the chosen apply path.
+        #   * solver="dense": always dense (any N), but BUILT LAZILY (see _ensure_dense) so
+        #     __init__ never pays the O(N^2) memory / build cost -- important because at
+        #     N = 2^14 the dense matrix is ~2 GB and building one per context OOMs when many
+        #     are constructed in parallel.
+        #   * solver="auto": dense only for SMALL segments (N < _MAX_DENSE_N); at
+        #     N >= _MAX_DENSE_N "auto" routes to the FFT (circulant-embedding) Toeplitz matvec,
+        #     which is solver-independent for the full-segment inner products and needs no dense
+        #     matrix at all.
+        #   * solver="pcg": FFT matvec for the precision apply; the optional tdanalysis PCG is
+        #     used only for the physical-covariance solve (lazy, see _ensure_pcg).
+        self._use_dense = (solver == "dense") or (solver == "auto" and self.N < _MAX_DENSE_N)
+        if self._use_dense and self.N < _MAX_DENSE_N:
+            # Cheap for small N; build eagerly so callers that read ``ctx._dense`` directly
+            # (and the byte-identical numerics the T1/glitch tests pin) see the same operator.
+            # The large-N explicit-dense case stays lazy (built on first apply_K).
             self._build_dense()
-        elif solver in ("auto", "pcg"):
-            # Larger N: iterative path is attempted lazily on first solve/dot.
-            pass
         # cache of w = K^{-1} d (or K d, precision-operator apply) per data vector id
         self._w_cache = {}
 
@@ -277,10 +289,18 @@ class ToeplitzInnerProductContext(object):
             or self.template_end_offset is not None)
 
         # Build the (dense) truncated precision operator K_seg and run the D5 SPD check.
+        # ONLY for a genuinely sub-length or gapped segment.  A pure template-frame
+        # truncation leaves N_seg == len2side with no gaps: ``segment_dot_td`` then applies
+        # the FULL precision operator (``_apply_seg`` -> ``apply_K``, the FFT matvec), so
+        # materialising the len2side x len2side dense K_seg (~2 GB at 2^14) and running its
+        # O(N^3) ``eigvalsh`` SPD check would be wasted work.  Skip it there; ``is_spd`` stays
+        # None (an informational diagnostic only -- the full-segment kernel is SPD by
+        # construction up to the single dropped Nyquist bin).
         self._Kseg = None
         self.is_spd = None
         self._Kseg_min_eig = None
-        if self.segment_active and self.N_seg <= _MAX_DENSE_N:
+        needs_dense_Kseg = (self.N_seg != self.len2side) or (not self.retain_mask.all())
+        if self.segment_active and needs_dense_Kseg and self.N_seg <= _MAX_DENSE_N:
             self._Kseg = scipy.linalg.toeplitz(self.kappa[:self.N_seg])
             self._spd_check_Kseg()
 
@@ -469,6 +489,21 @@ class ToeplitzInnerProductContext(object):
         col = self.kappa[:self.N]
         self._dense = scipy.linalg.toeplitz(col)
 
+    def _ensure_dense(self):
+        """Return the dense precision operator (building it lazily), or None for the FFT path.
+
+        Returns ``None`` when the dense path is not selected (solver="auto" at
+        N >= _MAX_DENSE_N, or solver="pcg"), in which case ``apply_K`` uses the FFT
+        (circulant-embedding) Toeplitz matvec.  When dense IS selected (explicit
+        solver="dense", or "auto" at small N) the matrix is materialised on first use so a
+        large explicit-dense operator is never built eagerly in ``__init__``.
+        """
+        if not self._use_dense:
+            return None
+        if self._dense is None:
+            self._build_dense()
+        return self._dense
+
     # ------------------------------------------------------------------ operator apply
 
     def apply_K(self, v):
@@ -478,10 +513,11 @@ class ToeplitzInnerProductContext(object):
         exact Toeplitz matvec via circulant embedding is used.  Bilinear (no conjugation).
         """
         v = np.asarray(v)
-        if self._dense is not None:
+        dense = self._ensure_dense()
+        if dense is not None:
             if np.iscomplexobj(v):
-                return self._dense.dot(v.real) + 1j * self._dense.dot(v.imag)
-            return self._dense.dot(v)
+                return dense.dot(v.real) + 1j * dense.dot(v.imag)
+            return dense.dot(v)
         # circulant-embedding exact Toeplitz matvec (matches the dense result), used for
         # large N where forming the dense matrix is too costly.
         return self._toeplitz_matvec(v)
