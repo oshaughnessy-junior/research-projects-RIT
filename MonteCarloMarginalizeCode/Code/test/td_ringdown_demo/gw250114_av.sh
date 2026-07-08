@@ -34,8 +34,15 @@ $PY "$ILE" \
   -I "$T7C/grid/grid.xml.gz" --event 0 --n-events-to-analyze 35 --event-time 1420878141.2 \
   --data-start-time 1420878137.2 --data-end-time 1420878145.2 \
   --srate 2048 --fmin-template 25 --fmax 1000 --reference-freq 25 \
+  `# --window-shape below follows the PRODUCTION convention, not an ad-hoc 0.4.` \
+  `# helper_LDG_Events.py:1199  window_shape = data_tukey_window_time*2/T_window,` \
+  `# default data_tukey_window_time=0.4 s (helper_LDG_Events.py:189) => 0.4*2/8 = 0.1` \
+  `# for this 8 s segment.  LAL Tukey: window_shape=fraction tapered TOTAL, split in half` \
+  `# at each end -> 0.1 = 0.8 s tapered total (0.4 s/end); signal is centred 4 s from each` \
+  `# edge, so the taper never touches it.  0.1 fully kills the sub-20 Hz leakage (d* 75->485` \
+  `# Mpc, <d|d> 1.5e10->6.2e7), identical d* to 0.4; see diag_window_sweep.py.` \
   --l-max 2 --approximant IMRPhenomD \
-  --window-shape 0.4 \
+  --window-shape 0.1 \
   --time-marginalization --vectorized --gpu --force-xpy \
   --internal-use-lnL --sampler-method AV \
   --d-min "$DMIN" --d-max "$DMAX" \

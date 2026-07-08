@@ -1,8 +1,10 @@
 #!/bin/bash
 # run_all_gw250114_av.sh -- the three-way (full / ringdown / inspiral) AV-marginalized
 # GW250114 surface, WITH the diagnosed fixes applied by gw250114_av.sh:
-#   (1) --window-shape 0.4  (removes the sub-20Hz spectral-leakage inflation; the root cause
-#       of the d->d_min runaway -- see diag_*.py / t7c REPORT.md), and
+#   (1) --window-shape 0.1  (the PRODUCTION pseudo_pipe/helper convention,
+#       window_shape = data_tukey_window_time*2/T_window = 0.4*2/8; removes the sub-20Hz
+#       spectral-leakage inflation, the root cause of the d->d_min runaway -- see
+#       diag_window_sweep.py / t7c REPORT.md.  NOT the earlier ad-hoc 0.4.), and
 #   (2) analytic distance+phase marginalization (lookup table) so the loud-event MC converges.
 # Ringdown = template kept from peak+10M (0.0035435 s, Mtot_det=71.9); inspiral = up to peak-20ms.
 set -e
