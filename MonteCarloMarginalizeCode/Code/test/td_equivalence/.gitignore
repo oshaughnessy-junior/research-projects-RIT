@@ -14,6 +14,7 @@ frames_*/
 psd_smooth_ascii.txt
 H1-psd.xml.gz
 L1-psd.xml.gz
+*_fmax.dat
 
 # study outputs
 equivalence_results*.json
