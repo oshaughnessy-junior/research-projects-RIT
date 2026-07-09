@@ -3,10 +3,16 @@ r"""population_probe.py -- flat vs population-prior comparison on the G4 PoC sce
 (paper 2, Sec. 3.4 "What the population prior buys": identifiability + suppressed signal
 absorption), plus the glitch-products comparison for the PoC-rerun table.
 
-Runs three coefficient priors on the SAME PoC L1 scene at the context level (no full ILE):
+Runs the coefficient priors on the SAME PoC L1 scene at the context level (no full ILE):
   * FLAT       : diagonal Lambda0 (paper-1 default)                    glitch_basis_L1.npz
-  * COV-ONLY   : anisotropic Sigma_shape, mu=0 (identifiability shape) *_pop_covarianceonly.npz
-  * FULL       : Sigma_shape + population mean mu_hat                   *_pop_full.npz
+  * POP-M2     : anisotropic Sigma_shape from E[aa^T], mu=0 (DEFAULT)  *_pop_m2.npz
+  * FULL       : Sigma_central + population mean mu_hat (UNPHYSICAL;    *_pop_full.npz
+                 opt-in, superseded record -- compared only if present)
+
+PI decision (2026-07-08): the population prior is COVARIANCE-ONLY, ZERO MEAN (M2).  The M2
+Sigma_shape is the sign-symmetrized uncentered second moment E[aa^T] = Sigma_central + mu mu^T,
+so the aligned-frame mean direction's power is retained as VARIANCE, never used as a mean.
+FULL (mu != 0) is included only if the opt-in npz is present, to report M2-vs-FULL.
 
 Reports, on the REAL frames the PoC produced:
 
@@ -92,7 +98,7 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--workdir", required=True)
     ap.add_argument("--popdir", required=True,
-                    help="dir holding glitch_basis_L1_pop_full.npz / _pop_covarianceonly.npz")
+                    help="dir holding glitch_basis_L1_pop_m2.npz (+ optional _pop_full.npz)")
     ap.add_argument("--outdir", required=True)
     ap.add_argument("--shifts", default="-0.15,-0.075,0.0,0.075,0.15")
     args = ap.parse_args()
@@ -105,7 +111,7 @@ def main():
 
     bases = {
         "flat": os.path.join(W, "glitch_basis_L1.npz"),
-        "cov-only": os.path.join(args.popdir, "glitch_basis_L1_pop_covarianceonly.npz"),
+        "pop-M2": os.path.join(args.popdir, "glitch_basis_L1_pop_m2.npz"),
         "full": os.path.join(args.popdir, "glitch_basis_L1_pop_full.npz"),
     }
     bases = {k: v for k, v in bases.items() if os.path.exists(v)}

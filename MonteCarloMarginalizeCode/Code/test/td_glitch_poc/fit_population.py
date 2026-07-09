@@ -6,35 +6,51 @@ Given the real-blip corpus (fetch_blips.py -> blip_corpus.npz) and the PCA basis
 (build_pca.py -> blip_pca_white.npz), this projects the CONDITIONED training snippets onto
 the r-column basis and fits a Gaussian population prior on the coefficients:
 
-    mu_hat     dimensionless population MEAN direction   (scale mixture: mu_a = sigma_g mu_hat)
     Sigma_shape dimensionless population SHAPE covariance (max-eig 1; Sigma_a = sigma_g^2 Sigma_shape)
+    mu_hat     dimensionless population MEAN direction (OPT-IN, DISCOURAGED; mu_a = sigma_g mu_hat)
 
 so a ~ N(mu_a, Sigma_a) drives the paper-2 marginalization at a SINGLE profiled amplitude
 sigma_g.  These are appended (optionally) to a basis npz alongside the existing
-basis/lambda0/t0/fs contract, consumed by RIFT via --glitch-basis-file (COVARIANCE-ONLY or
-FULL mode; absent keys => paper-1 flat behavior).
+basis/lambda0/t0/fs contract, consumed by RIFT via --glitch-basis-file (absent keys =>
+paper-1 flat behavior).
 
-PROJECTION METRIC (Sec. 3.3 design question).  We project with the plain pseudo-inverse
-a_i = B^+ g_i (whitened-domain Euclidean least squares; for the orthonormal PCA basis this is
-a_i = B^T g_i).  This is the paper's Sec. 3.3 DEFAULT.  The likelihood-consistent C-weighted
-projection a_i = M0^-1 B^T C^-1 g_i is flagged as a TODO: for the whitened corpus with white-
-ish conditioning it nearly coincides, but for a strongly colored analysis segment they differ.
+DEFAULT = M2 (COVARIANCE-ONLY, ZERO MEAN).  PI decision (2026-07-08).  Physics: there are no
+phase-coherent glitches in strain -- a nonzero prior MEAN asserts that glitches are coherently
+present with a fixed sign/phase at our reference time, which is wrong regardless of what the
+corpus statistics say.  The corpus was sign-aligned before PCA, so its raw mean is a property
+of the ALIGNED-CORPUS FRAME (conditioning sign-aligned the snippets), NOT of physical arrivals;
+it is inadmissible as a strain-domain prior mean.  The M2 default therefore sets mu = 0 and
+takes Sigma_shape from the SIGN-SYMMETRIZED UNCENTERED second moment E[a a^T] over the corpus
+(equivalently the covariance over corpus {a_i} U {-a_i}).  On the sign-aligned corpus this equals
+Sigma_central + mu mu^T -- i.e. the aligned-frame mean DIRECTION's power is RETAINED as variance
+(a legitimate anisotropy of the shape), never used as a mean.  Max-eig normalized to 1 as before.
 
-SIGN-ALIGNMENT AUDIT (paper-2 Sec. 3.2 / g4_poc REPORT Sec. 1).  The corpus was sign-aligned
-before PCA, so the RAW corpus mean may be an ALIGNMENT ARTIFACT rather than physics.  We audit:
-  (1) the mean-to-spread ratio ||mu_hat|| (mean amplitude relative to the shape scale);
-  (2) a sign-flip NULL: randomly flip each snippet's sign many times and rebuild ||mu_hat||;
-      the observed value is compared to that null distribution (percentile).
-If the observed mean is NOT clearly above the arbitrary-sign null (or the ratio is tiny), the
-mean is consistent with an alignment artifact and we DEFAULT to COVARIANCE-ONLY (mu = 0).
+FULL mode (mu + Sigma_shape) is available ONLY via --include-mean-UNPHYSICAL and reproduces the
+superseded FULL-mode record; its help text states the physics objection.  Do not use it for the
+paper.
+
+PROJECTION METRIC (Sec. 3.3 design question -- "the hack", kept pragmatically).  We project with
+the plain pseudo-inverse a_i = B^+ g_i (whitened-domain Euclidean least squares; for the
+orthonormal PCA basis this is a_i = B^T g_i).  This is the paper's Sec. 3.3 DEFAULT.  The
+long-term-correct model traces glitches to raw/unwhitened witness channels with physical coupling
+functions (likelihood-consistent C-weighted projection a_i = M0^-1 B^T C^-1 g_i is the near-term
+refinement); both are future work, flagged as a TODO, not done here.
+
+SIGN-ALIGNMENT DIAGNOSTIC (paper-2 Sec. 3.2 / g4_poc REPORT Sec. 3).  The corpus was sign-aligned
+before PCA, so the RAW corpus mean is (at least partly) an alignment artifact.  We no longer USE
+the mean; we report the aligned-frame mean-to-spread ratio ||mu_hat|| and its arbitrary-sign NULL
+(random per-snippet +-1) purely as a DIAGNOSTIC of how anisotropic the second moment is: a large
+ratio means the leading population mode carries a lot of the shape's power, and in M2 that power
+is folded into Sigma_shape (as the mu mu^T contribution), never used as a mean.
 
 HELD-OUT VALIDATION.  The same held-out split as build_pca.py is reconstructed under the FLAT
 prior (LS projection) and under the POPULATION prior (coefficient-space MAP at the per-instance
 whitened noise floor); the population prior must not DEGRADE reconstruction.  Mahalanobis
 coverage under Sigma_shape is reported (chi^2_r calibration).
 
-Output (default): <outdir>/population_fit.json  (all audited numbers) and, with --write-basis,
-a copy of the input basis npz with mu/sigma_shape added per the chosen mode.
+Output (default): <outdir>/population_fit.json  (all fitted numbers) and, with --write-basis,
+a copy of the input basis npz with sigma_shape added (M2) -- no mu key unless
+--include-mean-UNPHYSICAL.
 """
 import argparse
 import json
@@ -67,15 +83,35 @@ def robust_covariance(A):
         return mu, S, "sample-cov+diag-load (%s)" % type(exc).__name__
 
 
+def symmetrized_second_moment(A):
+    r"""Sign-symmetrized UNCENTERED second moment E[a a^T] over the corpus (M2 construction).
+
+    Fits the covariance on the sign-augmented corpus {a_i} U {-a_i}, whose mean is exactly zero,
+    so the returned matrix is E[a a^T] = Sigma_central + mu mu^T (the aligned-frame mean
+    direction's power RETAINED as variance, per the PI decision -- no phase-coherent strain mean).
+    Uses the same robust (Ledoit-Wolf) estimator as ``robust_covariance`` for parity with the
+    centered path, applied to the symmetrized corpus.  Returns (S2, method).
+    """
+    A = np.asarray(A, dtype=float)
+    A_sym = np.vstack([A, -A])
+    mu_sym, S2, method = robust_covariance(A_sym)
+    # mu_sym is 0 up to round-off by construction; keep S2 symmetric.
+    S2 = 0.5 * (S2 + S2.T)
+    return S2, method
+
+
 # ------------------------------------------------------------------ sign-alignment audit
 
 def sign_alignment_audit(A, n_null=4000, seed=7):
-    r"""Audit whether the corpus mean is a genuine population direction or an alignment artifact.
+    r"""DIAGNOSTIC: how anisotropic is the second moment along the aligned-frame mean direction?
 
-    Returns a dict with the observed mean-to-spread ratio ||mu_hat||, the arbitrary-sign NULL
-    distribution of that ratio (random per-snippet +-1), and the observed percentile.  A large
-    percentile (observed >> arbitrary sign) => a real common mean (adopt FULL).  A percentile
-    near the bulk of the null => the mean is consistent with the sign convention (COVARIANCE-ONLY).
+    The corpus was sign-aligned before PCA, so its raw mean is a property of the aligned frame,
+    NOT of physical arrivals; we do not use it as a prior mean (M2).  This routine reports the
+    aligned-frame mean-to-spread ratio ||mu_hat||, the arbitrary-sign NULL distribution of that
+    ratio (random per-snippet +-1), and the observed percentile, purely as a measure of how much
+    of the shape's power the leading population mode carries -- power that M2 folds into
+    Sigma_shape (the mu mu^T contribution), never into a mean.  A large ratio simply means a
+    strongly anisotropic second moment; it does NOT justify a nonzero strain-domain prior mean.
     """
     A = np.asarray(A, dtype=float)
     n, r = A.shape
@@ -141,12 +177,19 @@ def main():
                     help="MUST match build_pca.py --seed to reproduce the train/holdout split")
     ap.add_argument("--n-holdout", type=int, default=5,
                     help="MUST match build_pca.py --n-holdout")
-    ap.add_argument("--ratio-floor", type=float, default=0.35,
-                    help="min ||mu_hat|| (mean-to-spread) to consider the mean physical")
-    ap.add_argument("--null-percentile", type=float, default=95.0,
-                    help="observed sign-audit percentile above which the mean is adopted (FULL)")
-    ap.add_argument("--mode", choices=["auto", "full", "covariance-only", "flat"],
-                    default="auto", help="prior mode; 'auto' = decide from the sign audit")
+    ap.add_argument("--mode", choices=["m2", "flat"], default="m2",
+                    help="prior mode. 'm2' (DEFAULT) = covariance-only, ZERO mean; Sigma_shape "
+                         "from the sign-symmetrized uncentered second moment E[a a^T]. "
+                         "'flat' = paper-1 diagonal lambda0 (no population keys written).")
+    ap.add_argument("--include-mean-UNPHYSICAL", action="store_true", dest="include_mean",
+                    help="OPT-IN, DISCOURAGED: also write a nonzero population MEAN (FULL mode, "
+                         "Sigma_central + mu_hat).  PHYSICS OBJECTION: there are no phase-coherent "
+                         "glitches in strain -- a nonzero prior mean asserts glitches are "
+                         "coherently present with a fixed sign/phase at our reference time, which "
+                         "is wrong regardless of corpus statistics.  The aligned-corpus mean is a "
+                         "property of the sign-aligned frame, not of physical arrivals, and is "
+                         "inadmissible as a strain-domain prior mean.  Use ONLY to reproduce the "
+                         "superseded FULL-mode record; never for the paper.")
     ap.add_argument("--write-basis", default=None,
                     help="input basis npz to copy + augment with mu/sigma_shape (e.g. "
                          "glitch_basis_L1.npz); the r must match")
@@ -180,49 +223,63 @@ def main():
     print("[fit] r=%d, n_train=%d, n_holdout=%d, |a_i| mean=%.4f (unit-norm snippets)"
           % (r, len(train_idx), len(holdout_idx), np.mean(np.linalg.norm(A, axis=1))))
 
-    # ---- robust moments ----
-    mu_raw, S_raw, cov_method = robust_covariance(A)
-    evals = np.linalg.eigvalsh(S_raw)
-    max_eig = float(evals[-1])
-    # shared-scale normalization (coherent scale mixture): Sigma_shape max-eig 1, and mu_hat
-    # normalized by the SAME sqrt(max_eig) so ||mu_hat|| = mean-to-shape-scale ratio survives.
-    scale = np.sqrt(max_eig)
-    Sigma_shape = S_raw / max_eig
-    mu_hat_full = mu_raw / scale
-    print("[fit] robust cov: %s ; eig(S_raw)=[%.3e .. %.3e] ; ||mu_hat||=%.4f"
-          % (cov_method, evals[0], evals[-1], np.linalg.norm(mu_hat_full)))
+    # ---- mode decision (PI 2026-07-08: default M2 = covariance-only, zero mean) ----
+    if args.include_mean:
+        chosen = "full"
+    else:
+        chosen = args.mode                         # "m2" or "flat"
 
-    # ---- sign-alignment audit ----
+    # ---- centered moments (diagnostic; FULL mode) ----
+    mu_raw, S_central, cov_method = robust_covariance(A)
+    evals_c = np.linalg.eigvalsh(S_central)
+    max_eig_c = float(evals_c[-1])
+    scale_c = np.sqrt(max_eig_c)
+    mu_hat_full = mu_raw / scale_c                 # diagnostic aligned-frame mean direction
+
+    # ---- M2: sign-symmetrized UNCENTERED second moment E[a a^T] = Sigma_central + mu mu^T ----
+    S2, cov_method_m2 = symmetrized_second_moment(A)
+    evals2 = np.linalg.eigvalsh(S2)
+    max_eig2 = float(evals2[-1])
+    Sigma_shape_m2 = S2 / max_eig2                 # DEFAULT population shape (max-eig 1)
+    # how much of the second moment's power the aligned-frame mean direction carries
+    mean_power_frac = float((mu_raw @ mu_raw) / np.trace(S2)) if np.trace(S2) > 0 else 0.0
+
+    if chosen == "full":
+        Sigma_shape = S_central / max_eig_c        # superseded FULL: centered covariance shape
+        mu_hat = mu_hat_full
+        scale = scale_c
+        Sigma_pop_scaled = S_central               # raw units for held-out MAP
+        cov_report = cov_method
+    else:                                          # "m2" (default) or "flat"
+        Sigma_shape = Sigma_shape_m2               # M2 covariance-only shape
+        mu_hat = np.zeros(r)
+        scale = np.sqrt(max_eig2)
+        Sigma_pop_scaled = S2
+        cov_report = cov_method_m2
+    print("[fit] centered cov: %s ; eig[%.3e..%.3e] ; ||mu_hat(aligned-frame)||=%.4f"
+          % (cov_method, evals_c[0], evals_c[-1], np.linalg.norm(mu_hat_full)))
+    print("[fit] M2 second moment E[aa^T]: %s ; eig[%.3e..%.3e] ; mean-power fraction "
+          "||mu||^2/tr(S2)=%.3f (folded into Sigma_shape, NOT used as a mean)"
+          % (cov_method_m2, evals2[0], evals2[-1], mean_power_frac))
+
+    # ---- sign-alignment DIAGNOSTIC (mean is NOT used as a prior mean) ----
     audit = sign_alignment_audit(A)
     ratio = audit["obs_ratio"]
     pct = audit["observed_percentile"]
-    print("[audit] mean-to-spread ||mu_hat||=%.4f ; sign-flip NULL median=%.4f p95=%.4f ; "
-          "observed at %.1f-th percentile of the arbitrary-sign null"
-          % (ratio, audit["null_median"], audit["null_p95"], pct))
-
-    # ---- mode decision ----
-    if args.mode == "auto":
-        mean_is_physical = (ratio >= args.ratio_floor) and (pct >= args.null_percentile)
-        chosen = "full" if mean_is_physical else "covariance-only"
-        audit_verdict = ("mean ADOPTED (ratio %.2f >= %.2f AND percentile %.1f >= %.1f)"
-                         % (ratio, args.ratio_floor, pct, args.null_percentile)) \
-            if mean_is_physical else \
-            ("mean REJECTED as alignment-ambiguous (ratio %.2f, percentile %.1f) -> "
-             "COVARIANCE-ONLY" % (ratio, pct))
-    else:
-        chosen = args.mode
-        audit_verdict = "mode forced to %s by --mode" % chosen
-    print("[mode] chosen = %s ; %s" % (chosen.upper(), audit_verdict))
-
+    print("[diag] aligned-frame mean-to-spread ||mu_hat||=%.4f ; sign-flip NULL median=%.4f "
+          "p95=%.4f ; observed at %.1f-th percentile.  Anisotropy of E[aa^T] -- its power is "
+          "FOLDED INTO Sigma_shape, never used as a mean." % (ratio, audit["null_median"],
+                                                              audit["null_p95"], pct))
     if chosen == "full":
-        mu_hat = mu_hat_full
+        print("[mode] chosen = FULL (mu + Sigma_central) via --include-mean-UNPHYSICAL.  "
+              "WARNING: a nonzero strain-domain prior mean is UNPHYSICAL (no phase-coherent "
+              "glitches); reproduces the superseded record only.")
     else:
-        mu_hat = np.zeros(r)
+        print("[mode] chosen = %s (zero mean; Sigma_shape from E[aa^T])" % chosen.upper())
 
     # ---- held-out validation: flat vs population reconstruction ----
     ho_rows = []
     mu_pop_scaled = mu_hat * scale                 # back to raw-coefficient units for MAP
-    Sigma_pop_scaled = Sigma_shape * max_eig       # == S_raw (raw units)
     if chosen == "flat":
         Sigma_pop_scaled = np.diag((scale ** 2) * lambda0)  # flat diagonal in raw units
         mu_pop_scaled = np.zeros(r)
@@ -248,13 +305,19 @@ def main():
     summary = dict(
         r=r, n_train=int(len(train_idx)), n_holdout=int(len(holdout_idx)),
         projection_metric="pseudo-inverse (whitened Euclidean; C-weighted = TODO)",
-        cov_method=cov_method, max_eig_S_raw=max_eig,
-        mu_hat_full=[float(x) for x in mu_hat_full],
-        mu_hat_norm_full=float(np.linalg.norm(mu_hat_full)),
+        chosen_mode=chosen,
+        mean_policy=("ZERO mean (M2: covariance-only; Sigma_shape from sign-symmetrized "
+                     "uncentered second moment E[aa^T])" if chosen != "full" else
+                     "NONZERO mean written (FULL mode via --include-mean-UNPHYSICAL; UNPHYSICAL)"),
+        cov_method=cov_report,
+        cov_method_centered=cov_method, cov_method_m2=cov_method_m2,
+        max_eig_S_central=max_eig_c, max_eig_S2=max_eig2,
         sigma_shape_eigs=[float(x) for x in np.linalg.eigvalsh(Sigma_shape)],
-        sign_audit=audit, ratio_floor=args.ratio_floor,
-        null_percentile_threshold=args.null_percentile,
-        chosen_mode=chosen, audit_verdict=audit_verdict,
+        sigma_shape_m2_eigs=[float(x) for x in evals2 / max_eig2],
+        mu_hat_aligned_frame_DIAGNOSTIC=[float(x) for x in mu_hat_full],
+        mu_hat_aligned_frame_norm=float(np.linalg.norm(mu_hat_full)),
+        mean_power_fraction=mean_power_frac,
+        sign_diag=audit,
         mu_hat_written=[float(x) for x in mu_hat],
         heldout=ho_rows, heldout_mean_mismatch_flat=mean_flat,
         heldout_mean_mismatch_pop=mean_pop)
@@ -270,12 +333,12 @@ def main():
                              % (src["basis"].shape[1], r))
         payload = dict(basis=src["basis"], lambda0=src["lambda0"],
                        t0=src["t0"], fs=src["fs"])
-        if chosen in ("full", "covariance-only"):
+        if chosen in ("m2", "full"):
             payload["sigma_shape"] = Sigma_shape
         if chosen == "full":
-            payload["mu"] = mu_hat
+            payload["mu"] = mu_hat                 # UNPHYSICAL; opt-in only
         base = os.path.basename(args.write_basis).replace(".npz", "")
-        out_npz = os.path.join(args.outdir, "%s_pop_%s.npz" % (base, chosen.replace("-", "")))
+        out_npz = os.path.join(args.outdir, "%s_pop_%s.npz" % (base, chosen))
         np.savez(out_npz, **payload)
         print("[fit] wrote augmented basis (%s mode): %s [keys: %s]"
               % (chosen, out_npz, ", ".join(sorted(payload))))

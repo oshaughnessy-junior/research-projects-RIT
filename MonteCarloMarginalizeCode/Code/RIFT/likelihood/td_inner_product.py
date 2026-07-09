@@ -1357,6 +1357,26 @@ class TDInnerProductFactory(object):
                     raise ValueError(
                         "--glitch-basis-file %s: mu length %d != r=%d."
                         % (ifo, mu0.size, r_file))
+                if np.any(mu0 != 0.0):
+                    # PI decision (2026-07-08): a nonzero strain-domain prior MEAN is UNPHYSICAL.
+                    # There are no phase-coherent glitches in strain -- a nonzero mu asserts
+                    # glitches are coherently present with a fixed sign/phase at the reference
+                    # time, which is wrong regardless of corpus statistics (the aligned-corpus
+                    # mean is a property of the sign-aligned frame, not of physical arrivals).
+                    # The math below is correct and tested; the mean is honored for reproducing
+                    # the superseded FULL-mode record ONLY.  Prefer the covariance-only (M2)
+                    # default (no mu key; Sigma_shape from the sign-symmetrized E[aa^T]).
+                    import warnings
+                    warnings.warn(
+                        "--glitch-basis-file %s carries a NONZERO population MEAN (mu). This is "
+                        "UNPHYSICAL as a strain-domain prior mean (no phase-coherent glitches; "
+                        "the aligned-corpus mean is a sign-alignment-frame artifact, not a "
+                        "physical arrival) and is superseded by the covariance-only (M2) prior. "
+                        "Honoring it only to reproduce the FULL-mode record." % ifo,
+                        RuntimeWarning, stacklevel=2)
+                    print("  [G3] WARNING %s: NONZERO population MEAN (mu) present -- UNPHYSICAL "
+                          "strain-domain prior mean (PI 2026-07-08); prefer covariance-only M2."
+                          % ifo)
             t_start = origin + float(payload["t0"])
             i0 = int(round(t_start * ctx.fs))
             n_snip = snip.shape[0]
