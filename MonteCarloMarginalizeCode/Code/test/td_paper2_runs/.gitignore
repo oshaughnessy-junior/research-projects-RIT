@@ -1,0 +1,15 @@
+# Regenerable per-event products (fetch_data.sh / build_basis.sh / make build).
+# Commit only: scripts, event.env, Makefiles, READMEs, and the small basis/*.npz (<1 MB).
+*/data/
+*/psd/
+*/work/
+*/runs/
+*/ini/
+*/sim.xml.gz
+*/coinc.xml
+*/*.log
+*_fmax.dat
+__pycache__/
+*.pyc
+# corpus CSVs (Gravity Spy, Zenodo 5649212) are large downloads, never commit
+*.csv
