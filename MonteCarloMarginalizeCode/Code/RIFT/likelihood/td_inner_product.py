@@ -701,13 +701,13 @@ class ToeplitzInnerProductContext(object):
         self._glitch_sigma_g = sig
         self._glitch_delta_lnZ = float(dlnZ)
 
-        # MAP glitch reconstruction g_hat = B M^{-1} gamma (per block, summed), and the
-        # glitch-subtracted data d_corr = d - g_hat -> corrected filter w' = P d_corr.
-        ghat = np.zeros(self.N, dtype=complex)
-        for k, blk in enumerate(self._glitch_aug.blocks):
-            gamma = blk["Phi"].T.dot(d_td)
-            a_hat = self._glitch_aug._Minv_apply(gamma, sig, k)   # M^{-1} gamma (scaled form)
-            ghat = ghat + blk["B"].dot(a_hat)
+        # MAP glitch reconstruction g_hat_total = B(mu_a + M^{-1} gamma_tilde) (per block,
+        # summed) -- the prior-predicted mean piece B mu_a = sigma_g B mu0 PLUS the data-driven
+        # posterior update on the mean-shifted residual (paper-2 Sec. 3.1; reduces to the
+        # paper-1 B M^{-1} gamma when the population mean mu0 = 0).  The glitch-subtracted data
+        # d_corr = d - g_hat_total -> corrected filter w' = P d_corr, so Q'_lm(t) =
+        # overlap(h, d - g_hat_total) holds with the mean-predicted piece included.
+        ghat = self._glitch_aug.glitch_reconstruction(d_td, sig).astype(complex)
         self._glitch_ghat_td = ghat
         d_corr_td = d_td - ghat
         self._glitch_data_corr_fd = self._fd_from_td(d_corr_td, data_fd)
@@ -766,12 +766,9 @@ class ToeplitzInnerProductContext(object):
             return data_fd
         if id(data_fd) == self._glitch_data_id and self._glitch_data_corr_fd is not None:
             return self._glitch_data_corr_fd
-        # Different data object: recompute (data-conditional gamma / g_hat).
+        # Different data object: recompute (data-conditional gamma / g_hat, mean-inclusive).
         d_td = _ifft_to_td(data_fd)
-        ghat = np.zeros(self.N, dtype=complex)
-        for k, blk in enumerate(self._glitch_aug.blocks):
-            gamma = blk["Phi"].T.dot(d_td)
-            ghat = ghat + blk["B"].dot(self._glitch_aug._Minv_apply(gamma, self._glitch_sigma_g, k))
+        ghat = self._glitch_aug.glitch_reconstruction(d_td, self._glitch_sigma_g).astype(complex)
         return self._fd_from_td(d_td - ghat, data_fd)
 
     @property
@@ -1153,11 +1150,17 @@ class TDInnerProductFactory(object):
         # G3 glitch marginalization: per-IFO basis support specs and the sigma_g mode.
         #   glitch_specs: {ifo: dict(t1,t2,f1,f2,r)} parsed from --glitch-basis (Sec. 3 Slepian).
         #   glitch_basis_files: {ifo: path.npz} parsed from --glitch-basis-file (Sec. 3 modes
-        #                 3/4, data-informed PCA/SVD basis).  npz keys: 'basis' (n_snip x r
-        #                 time-domain snippet columns at the analysis sample rate), 'lambda0'
-        #                 (length r, dimensionless shape prior, max entry 1 per Sec. 2b),
-        #                 't0' (scalar: geocenter seconds relative to the EVENT of snippet
-        #                 sample 0), 'fs' (snippet sample rate [Hz], validated vs the context).
+        #                 3/4, data-informed PCA/SVD basis).  REQUIRED npz keys: 'basis'
+        #                 (n_snip x r time-domain snippet columns at the analysis sample rate),
+        #                 'lambda0' (length r, dimensionless diagonal shape prior, max entry 1
+        #                 per Sec. 2b), 't0' (scalar: geocenter seconds relative to the EVENT of
+        #                 snippet sample 0), 'fs' (snippet sample rate [Hz], validated vs ctx).
+        #                 OPTIONAL population-informed keys (paper-2 Sec. 3; absent => paper-1
+        #                 flat behavior EXACTLY): 'sigma_shape' (r x r dimensionless SPD shape
+        #                 covariance, max-eig 1 -- replaces the diagonal lambda0 as Lambda0 ==
+        #                 Sigma_shape; COVARIANCE-ONLY or FULL mode), 'mu' (length r
+        #                 dimensionless population-mean direction mu_hat, scale mixture
+        #                 mu_a = sigma_g mu_hat; FULL mode).  SPD is validated on load.
         #   glitch_sigma: "profile" (only wired mode); grid marginalization is a documented
         #                 follow-on (out of scope for G3).
         # The data + geocenter epoch needed to place the basis and profile sigma_g are supplied
@@ -1325,6 +1328,35 @@ class TDInnerProductFactory(object):
                 raise ValueError(
                     "--glitch-basis-file %s: basis shape %s inconsistent with lambda0 shape %s."
                     % (ifo, snip.shape, Lambda0.shape))
+            r_file = snip.shape[1]
+            # OPTIONAL population-informed keys (paper-2 Sec. 3; backward compatible: absent
+            # keys => the paper-1 flat behavior exactly).
+            #   sigma_shape (r,r): dimensionless SPD population SHAPE covariance (max-eig 1);
+            #       when present it REPLACES the diagonal lambda0 as the covariance shape
+            #       Lambda0 == Sigma_shape (COVARIANCE-ONLY or FULL mode).
+            #   mu (r,): dimensionless population MEAN direction mu_hat; scale mixture
+            #       mu_a(sigma_g) = sigma_g mu_hat (FULL mode).  Absent => zero mean.
+            mu0 = None
+            files = getattr(payload, "files", list(payload.keys()))
+            if "sigma_shape" in files:
+                Sigma_shape = np.asarray(payload["sigma_shape"], dtype=np.float64)
+                if Sigma_shape.shape != (r_file, r_file):
+                    raise ValueError(
+                        "--glitch-basis-file %s: sigma_shape shape %s != (r,r)=(%d,%d)."
+                        % (ifo, Sigma_shape.shape, r_file, r_file))
+                Sigma_shape = 0.5 * (Sigma_shape + Sigma_shape.T)
+                evals = np.linalg.eigvalsh(Sigma_shape)
+                if evals[0] <= 0:
+                    raise ValueError(
+                        "--glitch-basis-file %s: sigma_shape is not SPD (min eig %.3e <= 0)."
+                        % (ifo, float(evals[0])))
+                Lambda0 = Sigma_shape                    # full-matrix shape prior
+            if "mu" in files:
+                mu0 = np.asarray(payload["mu"], dtype=np.float64).reshape(-1)
+                if mu0.size != r_file:
+                    raise ValueError(
+                        "--glitch-basis-file %s: mu length %d != r=%d."
+                        % (ifo, mu0.size, r_file))
             t_start = origin + float(payload["t0"])
             i0 = int(round(t_start * ctx.fs))
             n_snip = snip.shape[0]
@@ -1335,16 +1367,23 @@ class TDInnerProductFactory(object):
             B = np.zeros((ctx.N, snip.shape[1]))
             B[i0:i0 + n_snip, :] = snip
             t_end = t_start + n_snip / ctx.fs
-            band_note = "file:%s" % os.path.basename(basis_file)
+            # population-prior provenance for the banner
+            if mu0 is not None and np.any(mu0 != 0.0):
+                band_note = "file:%s [FULL pop-prior: mu+Sigma_shape]" % os.path.basename(basis_file)
+            elif Lambda0.ndim == 2:
+                band_note = "file:%s [COV-ONLY pop-prior: Sigma_shape]" % os.path.basename(basis_file)
+            else:
+                band_note = "file:%s" % os.path.basename(basis_file)
         else:
             t_start = origin + float(spec["t1"])
             t_end = origin + float(spec["t2"])
             B, Lambda0 = tra.slepian_basis(
                 ctx.N, ctx.fs, t_start, t_end, float(spec["f1"]), float(spec["f2"]),
                 r=spec.get("r"))
+            mu0 = None
             band_note = "band=[%g,%g]Hz" % (spec["f1"], spec["f2"])
-        info = ctx.attach_glitch_basis([(B, Lambda0, ifo)], data_fd,
-                                       sigma_g=self.glitch_sigma)
+        block = (B, Lambda0, ifo) if mu0 is None else (B, Lambda0, ifo, mu0)
+        info = ctx.attach_glitch_basis([block], data_fd, sigma_g=self.glitch_sigma)
         self._glitch_contexts.append(ctx)
         print("  [G3] %s glitch basis attached: r=%d, support=[%.4f,%.4f]s, %s, "
               "sigma_g=%.3e, Delta_lnZ=%.4f"

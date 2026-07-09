@@ -269,13 +269,22 @@ class RankAugmentation(object):
         self.N = toeplitz_cov.N
         self.blocks = []
         for entry in blocks:
-            if len(entry) == 3:
+            # A block is (B, Lambda0[, ifo_label[, mu0]]).  mu0 is the OPTIONAL dimensionless
+            # population-mean DIRECTION mu_hat (length r); absent => zero mean (paper-1 flat
+            # behavior, bit-identical).  In the recommended scale-mixture convention the
+            # physical prior mean is mu_a(sigma_g) = sigma_g * mu0 and the physical prior
+            # covariance is Sigma_a(sigma_g) = sigma_g^2 * Lambda0 (Lambda0 == Sigma_shape,
+            # max-eig 1); a SINGLE sigma_g carries the strain scale for both (paper-2 Sec. 3.2).
+            mu0 = None
+            if len(entry) == 4:
+                B, Lambda0, label, mu0 = entry
+            elif len(entry) == 3:
                 B, Lambda0, label = entry
             elif len(entry) == 2:
                 B, Lambda0 = entry
                 label = None
             else:
-                raise ValueError("Each block must be (B, Lambda0[, ifo_label]).")
+                raise ValueError("Each block must be (B, Lambda0[, ifo_label[, mu0]]).")
             B = np.asarray(B, dtype=np.float64)
             if B.ndim != 2 or B.shape[0] != self.N:
                 raise ValueError(
@@ -325,10 +334,20 @@ class RankAugmentation(object):
             # G_hat = Lambda0^{1/2} G Lambda0^{1/2}: the symmetric core of M_hat.
             G_hat = Lambda0_half.dot(G).dot(Lambda0_half)
             G_hat = 0.5 * (G_hat + G_hat.T)
+            # Population-mean direction mu_hat (dimensionless).  None / all-zero => flat.
+            if mu0 is None:
+                mu0_vec = np.zeros(r, dtype=np.float64)
+            else:
+                mu0_vec = np.asarray(mu0, dtype=np.float64).reshape(-1)
+                if mu0_vec.size != r:
+                    raise ValueError(
+                        "Population mean mu0 must have length r = {0}; got {1}.".format(
+                            r, mu0_vec.size))
             self.blocks.append(dict(
                 B=B, r=r, label=label,
                 Lambda0=Lambda0_mat, Lambda0_inv=Lambda0_inv, Lambda0_half=Lambda0_half,
-                Phi=Phi, G=G, G_hat=G_hat))
+                Phi=Phi, G=G, G_hat=G_hat, mu0=mu0_vec,
+                has_mean=bool(np.any(mu0_vec != 0.0))))
 
     # ---- per-block sigma_g-dependent pieces -------------------------------------
 
@@ -384,6 +403,26 @@ class RankAugmentation(object):
         """gamma_k = Phi_k^T d for the supplied data vector d."""
         return self.blocks[k]["Phi"].T.dot(np.asarray(d))
 
+    def mu_a(self, sigma_g, k=0):
+        """Physical prior mean mu_a = sigma_g * mu0 for block k (scale-mixture convention).
+
+        Zero vector for a flat (no-mean) block.  In the scale mixture the prior-predicted
+        glitch is g_hat_0 = B mu_a = sigma_g B mu0, scaling with the amplitude hyperparameter.
+        """
+        return sigma_g * self.blocks[k]["mu0"]
+
+    def _gamma_tilde(self, d, sigma_g, k):
+        r"""Mean-shifted gamma_tilde_k = Phi_k^T (d - B mu_a) = gamma_k - G_k mu_a (paper-2 Eq. popshift).
+
+        Uses Phi^T B = B^T C^{-1} B = G, so no extra basis apply is needed.  For a flat block
+        (mu0 = 0) this is exactly gamma_k, so the reduction to paper 1 is bit-identical.
+        """
+        blk = self.blocks[k]
+        gamma = blk["Phi"].T.dot(np.asarray(d))
+        if not blk["has_mean"]:
+            return gamma
+        return gamma - blk["G"].dot(self.mu_a(sigma_g, k))
+
     # ---- Woodbury-corrected primitives ------------------------------------------
 
     def solve(self, d, sigma_g):
@@ -432,20 +471,39 @@ class RankAugmentation(object):
         return self.cov.logdet() + self.logdet_correction(sigma_g)
 
     def delta_lnZ(self, d, sigma_g):
-        """Return the glitch evidence term Delta lnZ(sigma_g) for data d.
+        r"""Return the glitch evidence term Delta lnZ(sigma_g) for data d.
 
-            Delta lnZ = sum_k [ 1/2 gamma_k^T M_k^{-1} gamma_k
-                                - 1/2 ln det(I + sigma_g^2 Lambda0_k G_k) ]
+        This is the glitch/no-glitch data-level log Bayes factor (h = 0): the marginalized
+        data self-normalization minus the paper-1 no-glitch one.  For a general population
+        prior a ~ N(mu_a, Sigma_a), Sigma_a = sigma_g^2 Lambda0, mu_a = sigma_g mu0, completing
+        the square with ALL constants retained gives (paper-2 Sec. 3.1, derived + tested):
 
-        The first term is the power the glitch model absorbs; the second is the Occam
-        penalty.  Their difference disciplines the glitch amplitude (Sec. 4).
+            Delta lnZ = sum_k [ mu_a^T gamma_k - 1/2 mu_a^T G_k mu_a
+                                + 1/2 gamma_tilde_k^T M_k^{-1} gamma_tilde_k ]
+                        - 1/2 ln det(I + sigma_g^2 Lambda0 G)
+
+        with gamma_k = Phi_k^T d and gamma_tilde_k = gamma_k - G_k mu_a.  The first two
+        (mean) terms are the paper's carried "-1/2 mu^T Sigma_a^-1 mu + data self-term"
+        constants that change with mu; they VANISH when mu0 = 0, reducing bit-identically to
+        the paper-1 form  1/2 gamma^T M^-1 gamma - 1/2 ln det(I + sigma_g^2 Lambda0 G).
+
+        The quadratic term is the power the glitch model absorbs; the log-det is the Occam
+        penalty.  Their balance disciplines the glitch amplitude (Sec. 4).
         """
         d = np.asarray(d)
         total = 0.0
         for k, blk in enumerate(self.blocks):
             gamma = blk["Phi"].T.dot(d)
-            Minv_gamma = self._Minv_apply(gamma, sigma_g, k)
-            total += 0.5 * np.real(np.vdot(gamma, Minv_gamma))
+            if blk["has_mean"]:
+                mu_a = self.mu_a(sigma_g, k)
+                gamma_t = gamma - blk["G"].dot(mu_a)
+                # mean terms: mu_a^T gamma - 1/2 mu_a^T G mu_a
+                total += float(np.real(np.dot(mu_a, gamma)))
+                total -= 0.5 * float(np.real(mu_a.dot(blk["G"]).dot(mu_a)))
+            else:
+                gamma_t = gamma
+            Minv_gt = self._Minv_apply(gamma_t, sigma_g, k)
+            total += 0.5 * np.real(np.vdot(gamma_t, Minv_gt))
         total -= 0.5 * self.logdet_correction(sigma_g)
         return total
 
@@ -484,20 +542,30 @@ class RankAugmentation(object):
         return sigma_hat, -float(res.fun)
 
     def glitch_reconstruction(self, d, sigma_g, k=None):
-        """Return the MAP glitch reconstruction g_hat = B M^{-1} Phi^T d (diagnostic).
+        r"""Return the MAP glitch reconstruction g_hat_total = B (mu_a + M^{-1} gamma_tilde).
 
-        This is the posterior-mean glitch under the Gaussian coefficient prior:
-        a_hat = M^{-1} Phi^T d and g_hat = B a_hat.  With k=None, the reconstructions of
-        all blocks are summed (they live in disjoint / different-IFO supports in
-        general); pass an integer k to reconstruct a single block.
+        This is the posterior-mean glitch under the Gaussian coefficient prior a ~ N(mu_a,
+        Sigma_a).  The posterior mean coefficient is
+
+            a_hat = mu_a + M^{-1} (Phi^T d - G mu_a) = mu_a + M^{-1} gamma_tilde,
+
+        i.e. the prior-predicted piece mu_a = sigma_g mu0 plus the data-driven update on the
+        mean-shifted residual gamma_tilde = gamma - G mu_a.  With mu0 = 0 this collapses to
+        the paper-1  a_hat = M^{-1} gamma  and g_hat = B M^{-1} gamma (bit-identical).  This
+        g_hat_total is exactly the vector subtracted from the data to form the corrected
+        filter (w' = C'^{-1} d_tilde = P(d - g_hat_total); see td_inner_product), so
+        Q'_lm(t) = overlap(h, d - g_hat_total) holds unchanged.  With k=None the block
+        reconstructions are summed; pass an integer k for a single block.
         """
         d = np.asarray(d)
         ks = range(len(self.blocks)) if k is None else [k]
         g_hat = np.zeros(self.N, dtype=float)
         for kk in ks:
             blk = self.blocks[kk]
-            gamma = blk["Phi"].T.dot(d)
-            a_hat = self._Minv_apply(gamma, sigma_g, kk)   # M^{-1} gamma, scaled form
+            gamma_t = self._gamma_tilde(d, sigma_g, kk)
+            a_hat = self._Minv_apply(gamma_t, sigma_g, kk)   # M^{-1} gamma_tilde, scaled form
+            if blk["has_mean"]:
+                a_hat = a_hat + self.mu_a(sigma_g, kk)       # + prior-predicted piece
             g_hat = g_hat + blk["B"].dot(a_hat)
         return g_hat
 

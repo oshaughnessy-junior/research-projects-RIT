@@ -151,6 +151,154 @@ def test_formula_vs_bruteforce_invertible_C():
     assert err < 1e-10
 
 
+# ------------------------------------------------------ (pop) population-prior dense parity
+
+def _dense_pop_marginal(C, B, Sigma_shape, mu0, sigma_g, d, h):
+    r"""Direct N-dim Gaussian marginalization of a ~ N(mu_a, Sigma_a) (paper-2 boxed Eq.).
+
+    lnL_marg(h) = ln \int da N(d; h + B a, C) N(a; mu_a, Sigma_a)
+                = -1/2 (d - h - B mu_a)^T Cp^-1 (d - h - B mu_a) - 1/2 ln det(2 pi Cp)
+    with Sigma_a = sigma_g^2 Sigma_shape, mu_a = sigma_g mu0, Cp = C + B Sigma_a B^T.
+    Also returns the h=0 evidence relative to the no-glitch (C-only) model = the reference
+    Delta lnZ, and the posterior-mean coefficient a_hat / reconstruction g_hat.
+    """
+    n = C.shape[0]
+    Sigma_a = sigma_g ** 2 * Sigma_shape
+    mu_a = sigma_g * np.asarray(mu0, dtype=float)
+    Cp = C + B @ Sigma_a @ B.T
+    Cpinv = np.linalg.inv(Cp)
+    x = d - h - B @ mu_a
+    _, logdet_Cp = np.linalg.slogdet(Cp)
+    lnL = -0.5 * x @ Cpinv @ x - 0.5 * (logdet_Cp + n * np.log(2 * np.pi))
+    # h=0 evidence vs no-glitch
+    x0 = d - B @ mu_a
+    Cinv = np.linalg.inv(C)
+    _, logdet_C = np.linalg.slogdet(C)
+    lnZ_g0 = -0.5 * x0 @ Cpinv @ x0 - 0.5 * (logdet_Cp + n * np.log(2 * np.pi))
+    lnZ_nog0 = -0.5 * d @ Cinv @ d - 0.5 * (logdet_C + n * np.log(2 * np.pi))
+    dlnZ_ref = lnZ_g0 - lnZ_nog0
+    # posterior-mean coefficient a_hat = mu_a + M^-1 (B^T Cinv (d - B mu_a))
+    M = np.linalg.inv(Sigma_a) + B.T @ Cinv @ B
+    gamma_t = B.T @ Cinv @ (d - B @ mu_a)
+    a_hat = mu_a + np.linalg.solve(M, gamma_t)
+    g_hat = B @ a_hat
+    return lnL, dlnZ_ref, g_hat
+
+
+def test_pop_prior_dense_parity_full_mean_cov():
+    """Mean-shifted, FULL-Sigma marginal lnL / Delta lnZ / g_hat via RankAugmentation vs a
+    direct N-dim Gaussian marginalization on a small INVERTIBLE-C segment (paper-2 Sec. 3.1)."""
+    rng = np.random.default_rng(2024)
+    n = 220
+    lags = np.arange(n)
+    acf = np.exp(-lags / 18.0) * np.cos(0.09 * lags)
+    C = scipy.linalg.toeplitz(acf)
+    C = 0.5 * (C + C.T)
+    C = C + (abs(min(np.linalg.eigvalsh(C))) + 1e-3) * np.eye(n)
+
+    r = 6
+    B = rng.standard_normal((n, r))
+    # a genuine anisotropic SPD shape, max-eig normalized to 1
+    A = rng.standard_normal((r, r))
+    Sig = A @ A.T + 0.3 * np.eye(r)
+    Sigma_shape = Sig / np.max(np.linalg.eigvalsh(Sig))
+    mu0 = rng.standard_normal(r) * 0.4          # dimensionless mean direction
+    sigma_g = 0.7
+    d = rng.standard_normal(n) * 0.5
+    h = rng.standard_normal(n) * 0.3            # a "signal"
+
+    lnL_ref, dlnZ_ref, ghat_ref = _dense_pop_marginal(C, B, Sigma_shape, mu0, sigma_g, d, h)
+
+    # A small dense-covariance adapter (our SPD C is Toeplitz-ish but we treat it generally).
+    class _DenseCov(object):
+        def __init__(self, Cmat):
+            self.N = Cmat.shape[0]
+            self.C = Cmat
+            self._cho = scipy.linalg.cho_factor(Cmat, lower=True, check_finite=False)
+            L = np.tril(self._cho[0])
+            self._logdet = 2.0 * np.sum(np.log(np.abs(np.diag(L))))
+        def solve(self, b):
+            b = np.asarray(b)
+            if np.iscomplexobj(b):
+                return (scipy.linalg.cho_solve(self._cho, b.real, check_finite=False)
+                        + 1j * scipy.linalg.cho_solve(self._cho, b.imag, check_finite=False))
+            return scipy.linalg.cho_solve(self._cho, b, check_finite=False)
+        def dot(self, u, v):
+            return np.tensordot(np.asarray(u), self.solve(v), axes=([-1], [-1]))
+        def logdet(self):
+            return self._logdet
+
+    aug = tra.RankAugmentation(_DenseCov(C), [(B, Sigma_shape, "H1", mu0)])
+
+    # assemble lnL_marg from the primitives (d_tilde = d - B mu_a)
+    mu_a = sigma_g * mu0
+    d_tilde = d - B @ mu_a
+    x = d_tilde - h
+    quad = aug.dot(x, x, sigma_g)
+    logdet_Cp = aug.logdet(sigma_g)
+    lnL_aug = -0.5 * quad - 0.5 * (logdet_Cp + n * np.log(2 * np.pi))
+
+    dlnZ_aug = aug.delta_lnZ(d, sigma_g)
+    ghat_aug = aug.glitch_reconstruction(d, sigma_g)
+
+    rel_lnL = abs(lnL_aug - lnL_ref) / abs(lnL_ref)
+    rel_dlnZ = abs(dlnZ_aug - dlnZ_ref) / abs(dlnZ_ref)
+    rel_ghat = np.max(np.abs(ghat_aug - ghat_ref)) / np.max(np.abs(ghat_ref))
+    print("[pop-a] FULL mean+cov: lnL_marg rel=%.3e  Delta_lnZ rel=%.3e  g_hat rel=%.3e"
+          % (rel_lnL, rel_dlnZ, rel_ghat))
+    print("        Delta_lnZ(aug)=%.6f vs dense=%.6f" % (dlnZ_aug, dlnZ_ref))
+    assert rel_lnL < 1e-9
+    assert rel_dlnZ < 1e-9
+    assert rel_ghat < 1e-9
+
+
+def test_pop_prior_reduction_to_flat():
+    """mu=0 + (full) diagonal Sigma_shape == the flat diagonal-Lambda0 path, to round-off."""
+    rng = np.random.default_rng(2025)
+    n = 180
+    lags = np.arange(n)
+    acf = np.exp(-lags / 12.0)
+    C = scipy.linalg.toeplitz(acf) + 0.5 * np.eye(n)
+
+    class _DenseCov(object):
+        def __init__(self, Cmat):
+            self.N = Cmat.shape[0]; self.C = Cmat
+            self._cho = scipy.linalg.cho_factor(Cmat, lower=True, check_finite=False)
+            self._logdet = 2.0 * np.sum(np.log(np.abs(np.diag(np.tril(self._cho[0])))))
+        def solve(self, b):
+            return scipy.linalg.cho_solve(self._cho, np.asarray(b), check_finite=False)
+        def dot(self, u, v):
+            return np.tensordot(np.asarray(u), self.solve(v), axes=([-1], [-1]))
+        def logdet(self):
+            return self._logdet
+
+    r = 5
+    B = rng.standard_normal((n, r))
+    lam0 = np.linspace(1.0, 0.3, r)             # diagonal shape, max 1
+    sigma_g = 0.55
+    d = rng.standard_normal(n)
+
+    cov = _DenseCov(C)
+    aug_flat = tra.RankAugmentation(cov, [(B, lam0, "H1")])                 # paper-1 flat
+    aug_pop0 = tra.RankAugmentation(cov, [(B, np.diag(lam0), "H1",
+                                           np.zeros(r))])                    # mu=0, full-diag
+
+    dz_flat = aug_flat.delta_lnZ(d, sigma_g)
+    dz_pop0 = aug_pop0.delta_lnZ(d, sigma_g)
+    gh_flat = aug_flat.glitch_reconstruction(d, sigma_g)
+    gh_pop0 = aug_pop0.glitch_reconstruction(d, sigma_g)
+    ld_flat = aug_flat.logdet_correction(sigma_g)
+    ld_pop0 = aug_pop0.logdet_correction(sigma_g)
+    rel_dz = abs(dz_pop0 - dz_flat) / abs(dz_flat)
+    rel_gh = np.max(np.abs(gh_pop0 - gh_flat)) / np.max(np.abs(gh_flat))
+    rel_ld = abs(ld_pop0 - ld_flat) / abs(ld_flat)
+    print("[pop-b] reduction (mu=0, diag Sigma_shape) vs flat: Delta_lnZ rel=%.3e  "
+          "g_hat rel=%.3e  logdet rel=%.3e" % (rel_dz, rel_gh, rel_ld))
+    assert rel_dz < 1e-11
+    assert rel_gh < 1e-11
+    assert rel_ld < 1e-11
+
+
 # --------------------------------------------------------------------------- (a2) implementation vs dense
 
 def _dense_reference(ctx, B, Lam0, sig, d_td):
@@ -451,6 +599,8 @@ if __name__ == "__main__":
     import time
     tests = [
         ("(a1) formula vs brute-force", test_formula_vs_bruteforce_invertible_C),
+        ("(pop-a) population-prior dense parity (mean+cov)", test_pop_prior_dense_parity_full_mean_cov),
+        ("(pop-b) reduction mu=0 == flat", test_pop_prior_reduction_to_flat),
         ("(a2) dense parity implementation", test_dense_parity_implementation),
         ("(a2) Q'(t) overlap consistency", test_Qprime_overlap_consistency),
         ("(b) conjugation trap", test_conjugation_trap),
