@@ -932,7 +932,8 @@ if opts.internal_ile_inner_product == "td-toeplitz":
         template_end_offset=opts.td_analysis_end,
         gaps=td_gaps,
         glitch_specs=glitch_specs, glitch_sigma=opts.glitch_sigma,
-        glitch_basis_files=glitch_basis_files)
+        glitch_basis_files=glitch_basis_files,
+        window_shape=opts.window_shape)
     # Register each detector's (psd, data, event time) so the per-IFO glitch basis can be
     # placed and its sigma_g profiled (G3).  Keyed on id(psd) -- the object Precompute forwards.
     if glitch_specs or glitch_basis_files:

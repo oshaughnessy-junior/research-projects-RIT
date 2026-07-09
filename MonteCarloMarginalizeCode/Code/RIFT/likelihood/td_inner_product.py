@@ -1134,8 +1134,20 @@ class TDInnerProductFactory(object):
     def __init__(self, solver="auto", acf_duration=None, warn_inv_spec_trunc=True,
                  template_start_offset=None, template_end_offset=None,
                  gaps=None, segment_start_index=0, gap_time_origin=None,
-                 glitch_specs=None, glitch_sigma="profile", glitch_basis_files=None):
+                 glitch_specs=None, glitch_sigma="profile", glitch_basis_files=None,
+                 window_shape=None):
         self.solver = solver
+        # Data Tukey window shape the surrounding pipeline applied to the data + PSD BEFORE
+        # Precompute (ILE --window-shape, set in production by helper_LDG_Events from
+        # --data-tukey-window-time; T1900249 <w^2> PSD factor auto-applied).  The TD path is
+        # DOWNSTREAM of windowing: it receives the already-windowed data stream and the
+        # already-rescaled PSD, exactly as the fd-diagonal path does, so no windowing lives in
+        # this kernel.  Stored only for the one-time provenance banner in context_for (below):
+        # window_shape==0/None means the data is un-windowed (rectangular) -- correct for
+        # zero-noise equivalence tests, but a foot-gun on real data (see plan T7c: the TD path
+        # MUST inherit the production window, not bypass it).
+        self.window_shape = window_shape
+        self._logged_window = False
         self.acf_duration = acf_duration
         self.warn_inv_spec_trunc = warn_inv_spec_trunc
         # G3 glitch marginalization: per-IFO basis support specs and the sigma_g mode.
@@ -1220,6 +1232,24 @@ class TDInnerProductFactory(object):
                self.segment_start_index, self.gap_time_origin)
         ctx = self._contexts.get(key)
         if ctx is None:
+            if not self._logged_window:
+                # One-time provenance banner: assert the TD kernel inherited the SAME data
+                # window the surrounding pipeline applied (windowing + PSD <w^2> rescale happen
+                # upstream at data load, so the TD path sees identically-windowed data as fd).
+                _ws = self.window_shape
+                print("  [TD] inner-product factory: inherited data window_shape=%s "
+                      "(windowing + T1900249 <w^2> PSD rescale applied UPSTREAM at data load; "
+                      "the TD kernel sees the same windowed data/PSD as the fd-diagonal path)."
+                      % (_ws,))
+                if _ws is None or float(_ws) == 0.0:
+                    import warnings
+                    warnings.warn(
+                        "TDInnerProductFactory: window_shape=%s (rectangular / un-windowed "
+                        "data).  This is correct ONLY for zero-noise equivalence tests; a real "
+                        "production run must inherit the pipeline window (helper_LDG_Events "
+                        "--data-tukey-window-time -> ILE --window-shape).  See plan T7c." % (_ws,),
+                        stacklevel=2)
+                self._logged_window = True
             ctx = ToeplitzInnerProductContext(
                 psd, deltaF, fNyq, fmin, fMax=fMax,
                 analyticPSD_Q=analyticPSD_Q, solver=self.solver,
