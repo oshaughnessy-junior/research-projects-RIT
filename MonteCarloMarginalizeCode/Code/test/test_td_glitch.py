@@ -299,6 +299,94 @@ def test_pop_prior_reduction_to_flat():
     assert rel_ld < 1e-11
 
 
+# ------------------------------------------------------ (pop) M2 default = covariance-only, zero mean
+
+def test_fit_population_default_is_M2_zero_mean():
+    r"""fit_population.py DEFAULT (PI 2026-07-08): the written basis npz has NO mu key and its
+    sigma_shape is the SIGN-SYMMETRIZED UNCENTERED second moment E[aa^T] (= Sigma_central +
+    mu mu^T), max-eig normalized.  Also checks --include-mean-UNPHYSICAL restores the FULL
+    (mu + Sigma_central) record.  Runs the tool end-to-end on a tiny synthetic corpus."""
+    import os
+    import subprocess
+    import sys
+    import tempfile
+
+    poc_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "td_glitch_poc")
+    if not os.path.isfile(os.path.join(poc_dir, "fit_population.py")):
+        print("[pop-M2] fit_population.py not found -- skipping")
+        return
+    sys.path.insert(0, poc_dir)
+    import fit_population as fp
+
+    # sanity on the estimator: sign-symmetrized second moment == Sigma_central + mu mu^T
+    rng = np.random.default_rng(99)
+    Atest = rng.standard_normal((30, 4)) @ rng.standard_normal((4, 4)) + 0.7
+    S2, _ = fp.symmetrized_second_moment(Atest)
+    mu = Atest.mean(0)
+    Sc = (Atest - mu).T @ (Atest - mu) / len(Atest)
+    # with LW shrinkage S2 != exactly Sc+mu mu^T, but the RAW symmetrized moment must be
+    raw_sym = np.vstack([Atest, -Atest])
+    S2raw = raw_sym.T @ raw_sym / len(raw_sym)
+    assert np.max(np.abs(S2raw - (Sc + np.outer(mu, mu)))) < 1e-10
+
+    # tiny synthetic corpus/PCA/flat-basis so the CLI has real inputs
+    n, n_full, n_win, r = 24, 32, 16, 3
+    c, hw = n_full // 2, n_win // 2
+    snips = rng.standard_normal((n, n_full))
+    Q, _ = np.linalg.qr(rng.standard_normal((n_win, n_win)))
+    components = Q.T[:r + 1]                             # (r+1, n_win) orthonormal rows
+    lambda0 = np.linspace(1.0, 0.3, r + 1)
+    tmp = tempfile.mkdtemp()
+    corpus_p = os.path.join(tmp, "corpus.npz")
+    pca_p = os.path.join(tmp, "pca.npz")
+    basis_p = os.path.join(tmp, "glitch_basis_L1.npz")
+    np.savez(corpus_p, snippets=snips, snr=np.full(n, 20.0), gps=np.arange(n, dtype=float))
+    np.savez(pca_p, components=components, r_sel=r, lambda0=lambda0, n_win=n_win)
+    np.savez(basis_p, basis=rng.standard_normal((n_win, r)), lambda0=lambda0[:r],
+             t0=0.5, fs=FS)
+
+    seed, n_holdout = 12345, 4
+    common = [sys.executable, os.path.join(poc_dir, "fit_population.py"),
+              "--corpus", corpus_p, "--pca", pca_p, "--seed", str(seed),
+              "--n-holdout", str(n_holdout), "--write-basis", basis_p]
+
+    # (1) DEFAULT -> M2, no mu key
+    out_m2 = os.path.join(tmp, "m2"); os.makedirs(out_m2, exist_ok=True)
+    subprocess.check_call(common + ["--outdir", out_m2],
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    npz_m2 = np.load(os.path.join(out_m2, "glitch_basis_L1_pop_m2.npz"))
+    assert "mu" not in npz_m2.files, "DEFAULT fit must NOT write a mu key"
+    assert "sigma_shape" in npz_m2.files
+
+    # reproduce the tool's projection + split to recompute the expected M2 sigma_shape
+    B = components[:r].T
+    X = snips[:, c - hw:c + hw]
+    X = X / np.linalg.norm(X, axis=1)[:, None]
+    rng2 = np.random.default_rng(seed)
+    holdout = np.sort(rng2.choice(n, size=n_holdout, replace=False))
+    train = np.setdiff1d(np.arange(n), holdout)
+    A = X[train] @ B
+    S2exp, _ = fp.symmetrized_second_moment(A)
+    Sig_exp = S2exp / np.max(np.linalg.eigvalsh(S2exp))
+    rel = np.max(np.abs(np.asarray(npz_m2["sigma_shape"]) - Sig_exp)) / np.max(np.abs(Sig_exp))
+    print("[pop-M2] default: no-mu=%s ; sigma_shape==M2 second-moment rel=%.3e"
+          % ("mu" not in npz_m2.files, rel))
+    assert rel < 1e-10
+    # M2 max-eig normalized
+    assert abs(np.max(np.linalg.eigvalsh(np.asarray(npz_m2["sigma_shape"]))) - 1.0) < 1e-10
+
+    # (2) --include-mean-UNPHYSICAL -> FULL (mu present, Sigma_central shape)
+    out_full = os.path.join(tmp, "full"); os.makedirs(out_full, exist_ok=True)
+    subprocess.check_call(common + ["--outdir", out_full, "--include-mean-UNPHYSICAL"],
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    npz_full = np.load(os.path.join(out_full, "glitch_basis_L1_pop_full.npz"))
+    assert "mu" in npz_full.files and np.any(np.asarray(npz_full["mu"]) != 0.0)
+    # FULL shape is the CENTERED covariance (differs from M2 by the mu mu^T ridge)
+    assert np.max(np.abs(np.asarray(npz_full["sigma_shape"])
+                         - np.asarray(npz_m2["sigma_shape"]))) > 1e-3
+    print("[pop-M2] --include-mean-UNPHYSICAL restores FULL: mu present, shape != M2")
+
+
 # --------------------------------------------------------------------------- (a2) implementation vs dense
 
 def _dense_reference(ctx, B, Lam0, sig, d_td):
@@ -601,6 +689,7 @@ if __name__ == "__main__":
         ("(a1) formula vs brute-force", test_formula_vs_bruteforce_invertible_C),
         ("(pop-a) population-prior dense parity (mean+cov)", test_pop_prior_dense_parity_full_mean_cov),
         ("(pop-b) reduction mu=0 == flat", test_pop_prior_reduction_to_flat),
+        ("(pop-M2) default fit = covariance-only zero-mean", test_fit_population_default_is_M2_zero_mean),
         ("(a2) dense parity implementation", test_dense_parity_implementation),
         ("(a2) Q'(t) overlap consistency", test_Qprime_overlap_consistency),
         ("(b) conjugation trap", test_conjugation_trap),
