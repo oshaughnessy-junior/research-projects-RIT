@@ -138,6 +138,17 @@ def main():
                   'internal-ile-td-solver="auto"',
                   'internal-ile-glitch-basis-file="%s:%s"' % (gifo, basis),
                   'internal-ile-glitch-sigma="profile"']
+        if args.config == "MP":
+            # paper-2 Sec. 3.2 detection-conditioned prior.  The OPERATING RECOMMENDATION for
+            # triggered events is the exact two-component sign mixture (signmix); the M2
+            # moment-matched Gaussian is its cheap zero-mean stand-in -- flip GLITCH_PRIOR_MODE
+            # to m2 in event.env to switch.  Presence conditioning: GLITCH_SIGMA_MIN floors
+            # sigma_g (a detected glitch is not small), a per-event knob (default unset = code
+            # default bounds).
+            prior_mode = e.get("GLITCH_PRIOR_MODE", "signmix")
+            lines += ['internal-ile-glitch-prior-mode="%s"' % prior_mode]
+            if e.get("GLITCH_SIGMA_MIN", "").strip():
+                lines += ["internal-ile-glitch-sigma-min=%s" % e["GLITCH_SIGMA_MIN"].strip()]
     elif args.config == "U":
         lines += ["",
                   "# ---- UNMITIGATED baseline (td engine, no glitch model) ----",

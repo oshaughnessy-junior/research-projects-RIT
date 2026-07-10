@@ -236,11 +236,24 @@ def main():
     scale_c = np.sqrt(max_eig_c)
     mu_hat_full = mu_raw / scale_c                 # diagnostic aligned-frame mean direction
 
-    # ---- M2: sign-symmetrized UNCENTERED second moment E[a a^T] = Sigma_central + mu mu^T ----
-    S2, cov_method_m2 = symmetrized_second_moment(A)
+    # ---- M2: uncentered second moment E[a a^T] = Sigma_central + mu mu^T (paper Eq. m2) ----
+    # Built from the robust CENTERED covariance + the sample mean, so the detection-conditioned
+    # mixture keys below satisfy the moment identity sigma_shape == sigma_central + mu_mix
+    # mu_mix^T EXACTLY and sigma_central (a scaled robust covariance) is guaranteed SPD.  The
+    # symmetrized_second_moment estimator gives the same quantity in expectation but does not
+    # reconstruct that identity under shrinkage; it is retained as a helper / sanity reference.
+    S2 = S_central + np.outer(mu_raw, mu_raw)
+    S2 = 0.5 * (S2 + S2.T)
+    cov_method_m2 = cov_method
     evals2 = np.linalg.eigvalsh(S2)
     max_eig2 = float(evals2[-1])
     Sigma_shape_m2 = S2 / max_eig2                 # DEFAULT population shape (max-eig 1)
+    # detection-conditioned sign-mixture keys (paper-2 Sec. 3.2): p(a|det) = 1/2 N(+sigma_g
+    # mu_mix, sigma_g^2 sigma_central) + 1/2 N(-sigma_g mu_mix, sigma_g^2 sigma_central).  The
+    # sqrt-max-eig (mu_mix) / max-eig (sigma_central) normalization is SHARED with sigma_shape
+    # so the moment identity holds and max-eig(sigma_shape) == 1.
+    mu_mix = mu_raw / np.sqrt(max_eig2)            # sqrt-max-eig-normalized mean direction mu_hat
+    sigma_central_norm = S_central / max_eig2      # CENTERED covariance, same normalization (SPD)
     # how much of the second moment's power the aligned-frame mean direction carries
     mean_power_frac = float((mu_raw @ mu_raw) / np.trace(S2)) if np.trace(S2) > 0 else 0.0
 
@@ -319,6 +332,10 @@ def main():
         mean_power_fraction=mean_power_frac,
         sign_diag=audit,
         mu_hat_written=[float(x) for x in mu_hat],
+        mu_mix=[float(x) for x in mu_mix],
+        sigma_central_eigs=[float(x) for x in np.linalg.eigvalsh(sigma_central_norm)],
+        moment_identity_max_abs_resid=float(np.max(np.abs(
+            Sigma_shape_m2 - (sigma_central_norm + np.outer(mu_mix, mu_mix))))),
         heldout=ho_rows, heldout_mean_mismatch_flat=mean_flat,
         heldout_mean_mismatch_pop=mean_pop)
     out_json = os.path.join(args.outdir, "population_fit.json")
@@ -335,8 +352,15 @@ def main():
                        t0=src["t0"], fs=src["fs"])
         if chosen in ("m2", "full"):
             payload["sigma_shape"] = Sigma_shape
+        if chosen == "m2":
+            # detection-conditioned sign-mixture / pinned keys (paper-2 Sec. 3.2).  Written
+            # ALONGSIDE sigma_shape (the M2 default); they satisfy sigma_shape == sigma_central
+            # + mu_mix mu_mix^T.  Consumed by --glitch-prior-mode {signmix,pinned}.  Named
+            # distinctly from the deprecated bare 'mu' so the loader semantics stay unambiguous.
+            payload["mu_mix"] = mu_mix
+            payload["sigma_central"] = sigma_central_norm
         if chosen == "full":
-            payload["mu"] = mu_hat                 # UNPHYSICAL; opt-in only
+            payload["mu"] = mu_hat                 # UNPHYSICAL deprecated bare mean; opt-in only
         base = os.path.basename(args.write_basis).replace(".npz", "")
         out_npz = os.path.join(args.outdir, "%s_pop_%s.npz" % (base, chosen))
         np.savez(out_npz, **payload)
