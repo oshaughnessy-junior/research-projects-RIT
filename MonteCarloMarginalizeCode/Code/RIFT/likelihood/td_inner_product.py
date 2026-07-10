@@ -208,6 +208,22 @@ class ToeplitzInnerProductContext(object):
         self._glitch_data_corr_fd = None   # cached glitch-subtracted data (FD, for Q')
         self._glitch_ghat_td = None        # MAP glitch reconstruction B M^-1 gamma (TD)
         self._glitch_support = None        # (i0, i1) sample support of the basis (diagnostics)
+        # paper-2 Sec. 3.2 detection-conditioned prior modes.  prior_mode in {m2,signmix,pinned}:
+        #   m2      zero-mean moment-matched Gaussian (Sigma_shape); the operating default,
+        #           bit-identical to the paper-1 path.
+        #   pinned  single mean-shifted branch at +mu_mix (decisive-sign limit).
+        #   signmix the exact two-component sign mixture -- BOTH +-mu_mix branches evaluated,
+        #           combined logsumexp - ln2 at the marginal level (the ILE two-pass toggles
+        #           the active sign via set_active_glitch_sign; each branch carries its own
+        #           per-branch Delta lnZ).
+        self._glitch_prior_mode = "m2"
+        self._glitch_active_sign = 1.0     # signmix: which +-mu component is currently active
+        self._glitch_data_td = None        # cached TD data (to re-sign d_corr per branch)
+        self._glitch_data_fd_ref = None    # the data COMPLEX16FrequencySeries the basis used
+        self._glitch_delta_lnZ_plus = 0.0  # per-branch evidence (signmix bookkeeping)
+        self._glitch_delta_lnZ_minus = 0.0
+        self._glitch_has_mean = False      # True iff mu_mix is carried (pinned / signmix)
+        self._glitch_sign_odds = None      # closed-form ln(L+/L-) at attach (h=0)
 
     # ------------------------------------------------------------------ segment (T5)
 
@@ -612,8 +628,16 @@ class ToeplitzInnerProductContext(object):
         """True iff a rank-augmentation (glitch) basis has been attached to this context."""
         return self._glitch_active
 
-    def attach_glitch_basis(self, blocks, data_fd, sigma_g="profile"):
+    def attach_glitch_basis(self, blocks, data_fd, sigma_g="profile",
+                            sigma_g_min=None, prior_mode="m2"):
         r"""Attach a per-detector rank-augmentation (glitch) basis and profile sigma_g (G3).
+
+        ``prior_mode`` (paper-2 Sec. 3.2): ``m2`` (default, zero-mean moment-matched, the
+        block's ``mu0`` should be absent/zero), ``pinned`` (single +mu_mix mean-shift), or
+        ``signmix`` (two-component sign mixture; sigma_g profiled on the MIXTURE evidence, both
+        +-mu branches recorded, the active branch toggled by ``set_active_glitch_sign``).
+        ``sigma_g_min`` (strain) floors the amplitude profile bounds (presence conditioning).
+
 
         THE ALGEBRA (K-vs-C^{-1} Woodbury placement -- the crux of G3).
         ---------------------------------------------------------------
@@ -692,29 +716,81 @@ class ToeplitzInnerProductContext(object):
                 i0s.append(int(nz[0])); i1s.append(int(nz[-1]) + 1)
         self._glitch_support = (min(i0s), max(i1s)) if i0s else None
 
+        self._glitch_prior_mode = prior_mode
+        self._glitch_has_mean = bool(any(blk["has_mean"] for blk in self._glitch_aug.blocks))
         d_td = _ifft_to_td(data_fd)
+        self._glitch_data_td = d_td
+        self._glitch_data_fd_ref = data_fd
+
+        # --- amplitude profile / pin (paper-2 Sec. 3.2 presence conditioning via sigma_g_min) ---
         if sigma_g == "profile":
-            sig, dlnZ = self._glitch_aug.profile_sigma_g(d_td)
+            if prior_mode == "signmix":
+                # empirical-Bayes on the MIXTURE evidence (a single sigma_g for both branches)
+                sig, _ = self._glitch_aug.profile_sigma_g_signmix(d_td, sigma_g_min=sigma_g_min)
+            else:
+                sig, _ = self._glitch_aug.profile_sigma_g(d_td, sigma_g_min=sigma_g_min)
         else:
             sig = float(sigma_g)
-            dlnZ = self._glitch_aug.delta_lnZ(d_td, sig)
         self._glitch_sigma_g = sig
-        self._glitch_delta_lnZ = float(dlnZ)
 
-        # MAP glitch reconstruction g_hat_total = B(mu_a + M^{-1} gamma_tilde) (per block,
-        # summed) -- the prior-predicted mean piece B mu_a = sigma_g B mu0 PLUS the data-driven
-        # posterior update on the mean-shifted residual (paper-2 Sec. 3.1; reduces to the
-        # paper-1 B M^{-1} gamma when the population mean mu0 = 0).  The glitch-subtracted data
-        # d_corr = d - g_hat_total -> corrected filter w' = P d_corr, so Q'_lm(t) =
-        # overlap(h, d - g_hat_total) holds with the mean-predicted piece included.
-        ghat = self._glitch_aug.glitch_reconstruction(d_td, sig).astype(complex)
-        self._glitch_ghat_td = ghat
-        d_corr_td = d_td - ghat
-        self._glitch_data_corr_fd = self._fd_from_td(d_corr_td, data_fd)
-        self._glitch_data_id = id(data_fd)
+        # --- per-branch evidence (paper-2 Sec. 3.2 bookkeeping) ---
+        # MAP glitch reconstruction g_hat_total(sign) = B(sign*mu_a + M^{-1} gamma_tilde) and
+        # the corrected data d_corr = d - g_hat_total feed Q'_lm(t); each branch's Delta lnZ
+        # carries its own sign-dependent mean constants (mu0 = 0 => both branches identical =>
+        # paper-1 bit-identical).  signmix combines the two at the marginal level
+        # (logsumexp - ln2), but the ILE adds each branch's Delta lnZ to that branch's lnL_marg
+        # BEFORE the logsumexp, so we store both and expose the ACTIVE one.
+        if self._glitch_has_mean:
+            self._glitch_delta_lnZ_plus = float(self._glitch_aug.delta_lnZ(d_td, sig, sign=+1.0))
+            self._glitch_delta_lnZ_minus = float(self._glitch_aug.delta_lnZ(d_td, sig, sign=-1.0))
+        else:
+            _dz = float(self._glitch_aug.delta_lnZ(d_td, sig))
+            self._glitch_delta_lnZ_plus = _dz
+            self._glitch_delta_lnZ_minus = _dz
+
         self._glitch_active = True
+        self.set_active_glitch_sign(+1.0)   # default branch (+mu; m2: sign irrelevant)
+
+        # closed-form sign log-odds ln(L+/L-) = 2 <d | B mu_a>_C' (data-only regime indicator,
+        # h=0; paper-2 Eq. signodds).  Available whenever a mean direction is carried.
+        sodds = float(self._glitch_aug.sign_odds(d_td, sig, h=None)) if self._glitch_has_mean else None
+        self._glitch_sign_odds = sodds
+
         return dict(sigma_g=sig, delta_lnZ=self._glitch_delta_lnZ,
+                    delta_lnZ_plus=self._glitch_delta_lnZ_plus,
+                    delta_lnZ_minus=self._glitch_delta_lnZ_minus,
+                    prior_mode=prior_mode, sign_odds=sodds,
                     support=self._glitch_support)
+
+    def set_active_glitch_sign(self, sign):
+        r"""Select the active +-mu sign-mixture branch (paper-2 Sec. 3.2, signmix two-pass).
+
+        Recomputes the glitch-subtracted data ``d_corr = d - g_hat(sign)`` (so Q'_lm(t) picks
+        up the branch's mean-predicted glitch) and sets the active per-branch Delta lnZ.  A
+        no-op difference for a zero-mean (m2) block.  The ILE runs this for sign=+1 then
+        sign=-1 in signmix mode and combines the two lnL_marg via logsumexp - ln2."""
+        if not self._glitch_active:
+            return
+        sign = float(sign)
+        self._glitch_active_sign = sign
+        d_td = self._glitch_data_td
+        ghat = self._glitch_aug.glitch_reconstruction(
+            d_td, self._glitch_sigma_g, sign=sign).astype(complex)
+        self._glitch_ghat_td = ghat
+        self._glitch_data_corr_fd = self._fd_from_td(d_td - ghat, self._glitch_data_fd_ref)
+        self._glitch_data_id = id(self._glitch_data_fd_ref)
+        self._glitch_delta_lnZ = (self._glitch_delta_lnZ_plus if sign > 0
+                                  else self._glitch_delta_lnZ_minus)
+
+    def glitch_sign_odds(self, h_td=None):
+        r"""Closed-form sign log-odds ln(L+/L-) = 2 <d - h | B mu_a>_C' (paper-2 Eq. signodds).
+
+        ``h_td`` is the reference template (TD packing; default 0 = the data-only indicator).
+        Returns None if no mean direction is carried."""
+        if not self._glitch_active or not self._glitch_has_mean:
+            return None
+        return float(self._glitch_aug.sign_odds(
+            self._glitch_data_td, self._glitch_sigma_g, h=h_td))
 
     def _fd_from_td(self, td_array, template_fd):
         """Forward-FFT a TD numpy array into a COMPLEX16FrequencySeries matching template_fd.
@@ -1132,8 +1208,16 @@ class TDInnerProductFactory(object):
                  template_start_offset=None, template_end_offset=None,
                  gaps=None, segment_start_index=0, gap_time_origin=None,
                  glitch_specs=None, glitch_sigma="profile", glitch_basis_files=None,
+                 glitch_prior_mode="m2", glitch_sigma_min=None,
                  window_shape=None):
         self.solver = solver
+        # paper-2 Sec. 3.2 detection-conditioned prior mode {m2,signmix,pinned} (default m2 =
+        # paper-1 behavior, bit-identical) and the presence-conditioning amplitude floor
+        # sigma_g_min (strain; default None = code default bounds).  Both apply only to a
+        # data-informed --glitch-basis-file that carries mu_mix/sigma_central (Slepian bases
+        # have no population mean -> m2 only).
+        self.glitch_prior_mode = glitch_prior_mode
+        self.glitch_sigma_min = glitch_sigma_min
         # Data Tukey window shape the surrounding pipeline applied to the data + PSD BEFORE
         # Precompute (ILE --window-shape, set in production by helper_LDG_Events from
         # --data-tukey-window-time; T1900249 <w^2> PSD factor auto-applied).  The TD path is
@@ -1330,53 +1414,92 @@ class TDInnerProductFactory(object):
                     % (ifo, snip.shape, Lambda0.shape))
             r_file = snip.shape[1]
             # OPTIONAL population-informed keys (paper-2 Sec. 3; backward compatible: absent
-            # keys => the paper-1 flat behavior exactly).
-            #   sigma_shape (r,r): dimensionless SPD population SHAPE covariance (max-eig 1);
-            #       when present it REPLACES the diagonal lambda0 as the covariance shape
-            #       Lambda0 == Sigma_shape (COVARIANCE-ONLY or FULL mode).
-            #   mu (r,): dimensionless population MEAN direction mu_hat; scale mixture
-            #       mu_a(sigma_g) = sigma_g mu_hat (FULL mode).  Absent => zero mean.
-            mu0 = None
+            # keys => the paper-1 flat behavior exactly).  The prior MODE (--glitch-prior-mode,
+            # self.glitch_prior_mode) selects how they are used:
+            #   sigma_shape   (r,r): dimensionless SPD moment-matched (M2) shape covariance
+            #                 (max-eig 1); the OPERATING DEFAULT (mode m2), ZERO MEAN.
+            #   mu_mix        (r,) : dimensionless population MEAN DIRECTION mu_hat (sqrt-max-eig
+            #                 normalized).  With sigma_central it enables the detection-conditioned
+            #                 modes: mu_a(sigma_g) = sigma_g mu_mix, the sign-mixture component
+            #                 mean.  Named distinctly from the deprecated bare 'mu'.
+            #   sigma_central (r,r): dimensionless SPD CENTERED covariance (same normalization);
+            #                 the per-component covariance of the two-component sign mixture.
+            #   mu            (r,) : DEPRECATED bare strain-domain mean (legacy FULL record).
+            #                 Keeps its loud UNPHYSICAL warning; honored only in the m2/flat path.
+            def _read_spd(key):
+                M = np.asarray(payload[key], dtype=np.float64)
+                if M.shape != (r_file, r_file):
+                    raise ValueError("--glitch-basis-file %s: %s shape %s != (r,r)=(%d,%d)."
+                                     % (ifo, key, M.shape, r_file, r_file))
+                M = 0.5 * (M + M.T)
+                if np.linalg.eigvalsh(M)[0] <= 0:
+                    raise ValueError("--glitch-basis-file %s: %s is not SPD (min eig <= 0)."
+                                     % (ifo, key))
+                return M
+
             files = getattr(payload, "files", list(payload.keys()))
-            if "sigma_shape" in files:
-                Sigma_shape = np.asarray(payload["sigma_shape"], dtype=np.float64)
-                if Sigma_shape.shape != (r_file, r_file):
+            mode = self.glitch_prior_mode
+            mu0 = None
+            Sigma_shape = _read_spd("sigma_shape") if "sigma_shape" in files else None
+            mu_mix = (np.asarray(payload["mu_mix"], dtype=np.float64).reshape(-1)
+                      if "mu_mix" in files else None)
+            sigma_central = _read_spd("sigma_central") if "sigma_central" in files else None
+            if mu_mix is not None and mu_mix.size != r_file:
+                raise ValueError("--glitch-basis-file %s: mu_mix length %d != r=%d."
+                                 % (ifo, mu_mix.size, r_file))
+            has_mix = (mu_mix is not None and sigma_central is not None)
+
+            if mode in ("signmix", "pinned"):
+                # Detection-conditioned two-component sign mixture (signmix) or its decisive-sign
+                # limit (pinned).  Both use the CENTERED covariance per component and +-mu_mix.
+                if not has_mix:
                     raise ValueError(
-                        "--glitch-basis-file %s: sigma_shape shape %s != (r,r)=(%d,%d)."
-                        % (ifo, Sigma_shape.shape, r_file, r_file))
-                Sigma_shape = 0.5 * (Sigma_shape + Sigma_shape.T)
-                evals = np.linalg.eigvalsh(Sigma_shape)
-                if evals[0] <= 0:
-                    raise ValueError(
-                        "--glitch-basis-file %s: sigma_shape is not SPD (min eig %.3e <= 0)."
-                        % (ifo, float(evals[0])))
-                Lambda0 = Sigma_shape                    # full-matrix shape prior
-            if "mu" in files:
-                mu0 = np.asarray(payload["mu"], dtype=np.float64).reshape(-1)
-                if mu0.size != r_file:
-                    raise ValueError(
-                        "--glitch-basis-file %s: mu length %d != r=%d."
-                        % (ifo, mu0.size, r_file))
-                if np.any(mu0 != 0.0):
-                    # PI decision (2026-07-08): a nonzero strain-domain prior MEAN is UNPHYSICAL.
-                    # There are no phase-coherent glitches in strain -- a nonzero mu asserts
-                    # glitches are coherently present with a fixed sign/phase at the reference
-                    # time, which is wrong regardless of corpus statistics (the aligned-corpus
-                    # mean is a property of the sign-aligned frame, not of physical arrivals).
-                    # The math below is correct and tested; the mean is honored for reproducing
-                    # the superseded FULL-mode record ONLY.  Prefer the covariance-only (M2)
-                    # default (no mu key; Sigma_shape from the sign-symmetrized E[aa^T]).
+                        "--glitch-prior-mode %s for %s requires the npz keys 'mu_mix' + "
+                        "'sigma_central' (regenerate the basis with fit_population.py; a Slepian "
+                        "band basis has no population mean -- use mode m2)." % (mode, ifo))
+                Lambda0 = sigma_central
+                mu0 = mu_mix
+                band_note = ("file:%s [%s pop-prior: +-mu_mix, Sigma_central]"
+                             % (os.path.basename(basis_file), mode))
+                if mode == "pinned":
                     import warnings
                     warnings.warn(
-                        "--glitch-basis-file %s carries a NONZERO population MEAN (mu). This is "
-                        "UNPHYSICAL as a strain-domain prior mean (no phase-coherent glitches; "
-                        "the aligned-corpus mean is a sign-alignment-frame artifact, not a "
-                        "physical arrival) and is superseded by the covariance-only (M2) prior. "
-                        "Honoring it only to reproduce the FULL-mode record." % ifo,
+                        "--glitch-prior-mode pinned for %s pins the glitch to the +mu_mix branch "
+                        "(the decisive-sign limit of the sign mixture).  This is legitimate ONLY "
+                        "when the closed-form sign odds ln(L+/L-) = 2<d-h|B mu_a>_C' is DECISIVE "
+                        "(loud, well-localized glitch); check the [G3] sign-odds line.  For weak "
+                        "glitches use m2 (default) or signmix." % ifo,
                         RuntimeWarning, stacklevel=2)
-                    print("  [G3] WARNING %s: NONZERO population MEAN (mu) present -- UNPHYSICAL "
-                          "strain-domain prior mean (PI 2026-07-08); prefer covariance-only M2."
-                          % ifo)
+                    print("  [G3] %s prior-mode=pinned: pinning +mu_mix (decisive-sign limit; "
+                          "assumes the sign odds below are decisive)." % ifo)
+            else:                                        # m2 (default) or flat -- ZERO population mean
+                if Sigma_shape is not None:
+                    Lambda0 = Sigma_shape                # M2 moment-matched shape (zero mean)
+                    band_note = ("file:%s [M2 pop-prior: Sigma_shape (zero mean)]"
+                                 % os.path.basename(basis_file))
+                else:
+                    band_note = "file:%s" % os.path.basename(basis_file)
+                # DEPRECATED bare 'mu' legacy path (loud UNPHYSICAL warning; unchanged behavior).
+                if "mu" in files:
+                    _mu = np.asarray(payload["mu"], dtype=np.float64).reshape(-1)
+                    if _mu.size != r_file:
+                        raise ValueError("--glitch-basis-file %s: mu length %d != r=%d."
+                                         % (ifo, _mu.size, r_file))
+                    if np.any(_mu != 0.0):
+                        import warnings
+                        warnings.warn(
+                            "--glitch-basis-file %s carries a NONZERO deprecated bare population "
+                            "MEAN (mu). This is UNPHYSICAL as a strain-domain prior mean (no "
+                            "phase-coherent glitches; aligned-corpus mean is a sign-alignment-frame "
+                            "artifact) and is superseded by covariance-only (M2) / the sign mixture. "
+                            "Honoring it only to reproduce the FULL-mode record." % ifo,
+                            RuntimeWarning, stacklevel=2)
+                        print("  [G3] WARNING %s: NONZERO deprecated bare MEAN (mu) present -- "
+                              "UNPHYSICAL strain-domain prior mean (PI 2026-07-08); prefer m2/signmix."
+                              % ifo)
+                        mu0 = _mu
+                        band_note = ("file:%s [FULL(legacy) pop-prior: mu+Sigma_shape]"
+                                     % os.path.basename(basis_file))
             t_start = origin + float(payload["t0"])
             i0 = int(round(t_start * ctx.fs))
             n_snip = snip.shape[0]
@@ -1387,13 +1510,7 @@ class TDInnerProductFactory(object):
             B = np.zeros((ctx.N, snip.shape[1]))
             B[i0:i0 + n_snip, :] = snip
             t_end = t_start + n_snip / ctx.fs
-            # population-prior provenance for the banner
-            if mu0 is not None and np.any(mu0 != 0.0):
-                band_note = "file:%s [FULL pop-prior: mu+Sigma_shape]" % os.path.basename(basis_file)
-            elif Lambda0.ndim == 2:
-                band_note = "file:%s [COV-ONLY pop-prior: Sigma_shape]" % os.path.basename(basis_file)
-            else:
-                band_note = "file:%s" % os.path.basename(basis_file)
+            mode_for_attach = mode
         else:
             t_start = origin + float(spec["t1"])
             t_end = origin + float(spec["t2"])
@@ -1402,20 +1519,72 @@ class TDInnerProductFactory(object):
                 r=spec.get("r"))
             mu0 = None
             band_note = "band=[%g,%g]Hz" % (spec["f1"], spec["f2"])
+            # A Slepian band basis carries no population mean -> the mixture/pinned modes are
+            # meaningless here; fall back to m2 (zero-mean) regardless of the requested mode.
+            mode_for_attach = "m2"
         block = (B, Lambda0, ifo) if mu0 is None else (B, Lambda0, ifo, mu0)
-        info = ctx.attach_glitch_basis([block], data_fd, sigma_g=self.glitch_sigma)
+        info = ctx.attach_glitch_basis([block], data_fd, sigma_g=self.glitch_sigma,
+                                       sigma_g_min=self.glitch_sigma_min,
+                                       prior_mode=mode_for_attach)
+        ctx._glitch_ifo_label = ifo
         self._glitch_contexts.append(ctx)
+        _odds = info.get("sign_odds")
         print("  [G3] %s glitch basis attached: r=%d, support=[%.4f,%.4f]s, %s, "
-              "sigma_g=%.3e, Delta_lnZ=%.4f"
-              % (ifo, B.shape[1], t_start, t_end, band_note,
+              "mode=%s, sigma_g=%.3e, Delta_lnZ=%.4f"
+              % (ifo, B.shape[1], t_start, t_end, band_note, mode_for_attach,
                  info["sigma_g"], info["delta_lnZ"]))
+        if _odds is not None:
+            # per-event regime indicator the paper promises, logged next to guess_snr/Delta_lnZ
+            print("  [G3] %s sign-odds ln(L+/L-)=2<d|B mu_a>_C' = %+.4f (data-only, h=0); "
+                  "Delta_lnZ[+]=%.4f Delta_lnZ[-]=%.4f -- %s regime"
+                  % (ifo, _odds, info["delta_lnZ_plus"], info["delta_lnZ_minus"],
+                     "DECISIVE" if abs(_odds) > 4.0 else "sign-undecided"))
 
     def glitch_delta_lnZ_total(self):
         """Sum of per-detector glitch Delta lnZ over all contexts with a basis attached (G3).
 
         This is the additive evidence constant ILE adds to lnL_marg (it does NOT cancel;
-        Sec. 4).  Zero if no glitch basis was attached (default OFF)."""
+        Sec. 4).  For signmix this is the sum of the ACTIVE branch's per-detector Delta lnZ
+        (the ILE combines branch lnL_marg via logsumexp - ln2; each branch adds its own active
+        Delta lnZ before the combine).  Zero if no glitch basis was attached (default OFF)."""
         return float(sum(c.glitch_delta_lnZ for c in self._glitch_contexts))
+
+    @property
+    def signmix_active(self):
+        """True iff a two-component sign-mixture glitch prior is CONFIGURED (paper-2 Sec. 3.2).
+
+        When True the ILE must evaluate the per-intrinsic-point likelihood for BOTH +-mu
+        branches (via ``set_active_glitch_sign``) and combine the two lnL_marg by
+        logsumexp - ln2.  m2 / pinned / off => False (single pass).
+
+        CONFIG-based (not context-based): the glitch context is attached lazily during the
+        first Precompute, so this must be decidable BEFORE any context exists (the ILE reads
+        it at the top of each intrinsic point, ahead of Precompute).  signmix requires a
+        data-informed --glitch-basis-file carrying mu_mix/sigma_central; a Slepian
+        --glitch-basis has no population mean and is forced to m2, so it never triggers the
+        two-pass even under --glitch-prior-mode signmix."""
+        return (self.glitch_prior_mode == "signmix" and bool(self.glitch_basis_files))
+
+    def set_active_glitch_sign(self, sign):
+        """Set the active +-mu sign-mixture branch on EVERY attached glitch context (signmix).
+
+        The ILE two-pass calls this with +1 then -1; each context recomputes its
+        glitch-subtracted data (Q') and active per-detector Delta lnZ for that branch."""
+        for c in self._glitch_contexts:
+            c.set_active_glitch_sign(sign)
+
+    def glitch_sign_odds_report(self):
+        """Return {ifo: closed-form sign log-odds} for every glitch context that carries a mean.
+
+        The per-event regime indicator (paper-2 Eq. signodds), computed at attach time with
+        h=0 (data-only).  Empty when no mean direction is carried (m2 without mu_mix, Slepian
+        bases)."""
+        out = {}
+        for c in self._glitch_contexts:
+            odds = getattr(c, "_glitch_sign_odds", None)
+            if odds is not None:
+                out[getattr(c, "_glitch_ifo_label", "?")] = odds
+        return out
 
     # -------------------------------------------------------------- FL-shaped constructors
 

@@ -403,25 +403,32 @@ class RankAugmentation(object):
         """gamma_k = Phi_k^T d for the supplied data vector d."""
         return self.blocks[k]["Phi"].T.dot(np.asarray(d))
 
-    def mu_a(self, sigma_g, k=0):
-        """Physical prior mean mu_a = sigma_g * mu0 for block k (scale-mixture convention).
+    def mu_a(self, sigma_g, k=0, sign=1.0):
+        """Physical prior mean mu_a = sign * sigma_g * mu0 for block k (scale-mixture convention).
 
         Zero vector for a flat (no-mean) block.  In the scale mixture the prior-predicted
         glitch is g_hat_0 = B mu_a = sigma_g B mu0, scaling with the amplitude hyperparameter.
-        """
-        return sigma_g * self.blocks[k]["mu0"]
 
-    def _gamma_tilde(self, d, sigma_g, k):
+        ``sign`` selects the sign-mixture COMPONENT (paper-2 Sec. 3.2, Eq. signmix): the
+        detection-conditioned prior p(a|det) = 1/2 N(+sigma_g mu_hat, Sigma) + 1/2
+        N(-sigma_g mu_hat, Sigma) is a two-component mixture over the discrete sign latent;
+        ``sign=+1`` / ``sign=-1`` pick the two components, ``sign=+1`` (default) reproduces the
+        single mean-shifted (pinned / FULL) path bit-identically.
+        """
+        return float(sign) * sigma_g * self.blocks[k]["mu0"]
+
+    def _gamma_tilde(self, d, sigma_g, k, sign=1.0):
         r"""Mean-shifted gamma_tilde_k = Phi_k^T (d - B mu_a) = gamma_k - G_k mu_a (paper-2 Eq. popshift).
 
         Uses Phi^T B = B^T C^{-1} B = G, so no extra basis apply is needed.  For a flat block
         (mu0 = 0) this is exactly gamma_k, so the reduction to paper 1 is bit-identical.
+        ``sign`` selects the sign-mixture component (see ``mu_a``).
         """
         blk = self.blocks[k]
         gamma = blk["Phi"].T.dot(np.asarray(d))
         if not blk["has_mean"]:
             return gamma
-        return gamma - blk["G"].dot(self.mu_a(sigma_g, k))
+        return gamma - blk["G"].dot(self.mu_a(sigma_g, k, sign=sign))
 
     # ---- Woodbury-corrected primitives ------------------------------------------
 
@@ -470,7 +477,7 @@ class RankAugmentation(object):
         """Return the full ln det C' = ln det C + logdet_correction."""
         return self.cov.logdet() + self.logdet_correction(sigma_g)
 
-    def delta_lnZ(self, d, sigma_g):
+    def delta_lnZ(self, d, sigma_g, sign=1.0):
         r"""Return the glitch evidence term Delta lnZ(sigma_g) for data d.
 
         This is the glitch/no-glitch data-level log Bayes factor (h = 0): the marginalized
@@ -495,7 +502,7 @@ class RankAugmentation(object):
         for k, blk in enumerate(self.blocks):
             gamma = blk["Phi"].T.dot(d)
             if blk["has_mean"]:
-                mu_a = self.mu_a(sigma_g, k)
+                mu_a = self.mu_a(sigma_g, k, sign=sign)
                 gamma_t = gamma - blk["G"].dot(mu_a)
                 # mean terms: mu_a^T gamma - 1/2 mu_a^T G mu_a
                 total += float(np.real(np.dot(mu_a, gamma)))
@@ -507,27 +514,80 @@ class RankAugmentation(object):
         total -= 0.5 * self.logdet_correction(sigma_g)
         return total
 
-    def default_sigma_g_bounds(self):
+    def delta_lnZ_signmix(self, d, sigma_g):
+        r"""Two-component sign-mixture glitch evidence (paper-2 Sec. 3.2, Eq. signmix).
+
+        The detection-conditioned prior p(a|det) = 1/2 N(+sigma_g mu_hat, Sigma_a) + 1/2
+        N(-sigma_g mu_hat, Sigma_a) is a mixture over a discrete sign latent that is
+        INDEPENDENT of every other parameter, so its marginal combines exactly at the lnL
+        level:
+
+            Delta lnZ_mix = logsumexp(Delta lnZ(+mu), Delta lnZ(-mu)) - ln 2.
+
+        Each branch's ``delta_lnZ`` already carries its own (sign-dependent) mean constants,
+        so the combination is exact.  For a flat block (mu0 = 0) both branches coincide and
+        this reduces to ``delta_lnZ`` exactly (logsumexp(x, x) - ln2 == x)."""
+        from scipy.special import logsumexp
+        dzp = self.delta_lnZ(d, sigma_g, sign=+1.0)
+        dzm = self.delta_lnZ(d, sigma_g, sign=-1.0)
+        return float(logsumexp([dzp, dzm]) - np.log(2.0)), float(dzp), float(dzm)
+
+    def sign_odds(self, d, sigma_g, h=None, k=0):
+        r"""Closed-form sign log-odds ln(L+/L-) = 2 <d - h | B mu_a>_{C'} (paper-2 Eq. signodds).
+
+        The posterior weight between the +mu and -mu mixture components is computable in
+        closed form from the already-precomputed Woodbury pieces (no new solves): twice the
+        C'-weighted matched-filter overlap of the residual ``d - h`` with the mean-glitch
+        template ``B mu_a = sigma_g B mu0``.  ``h`` (the reference/fiducial template, in the
+        same TD packing as ``d``) defaults to 0 -- the data-only regime indicator
+        2 <d | B mu_a>_{C'}, i.e. the matched-filter SNR of the glitch's projection onto the
+        class mean.  Decisive |odds| >> 1 is where a pinned mean is legitimate (loud,
+        well-localized glitch); moderate odds is the sign-undecided regime the mixture
+        refines.  Returns a real scalar (C' is real).
+
+        Derivation: lnL(+) - lnL(-) with C' shared between the two mixture components leaves
+        only the cross term, = 2 (d-h)^T C'^{-1} (B mu_a) (the sign-independent logdet and
+        |B mu_a|^2 terms cancel).  Uses ``dot`` (the bilinear C'^{-1} form)."""
+        blk = self.blocks[k]
+        mu_a = self.mu_a(sigma_g, k, sign=+1.0)      # +mu component's mean-glitch coefficients
+        Bmu = blk["B"].dot(mu_a)                      # B mu_a, length N
+        r = np.asarray(d) if h is None else (np.asarray(d) - np.asarray(h))
+        # 2 <d-h | B mu_a>_{C'} = 2 (d-h)^T C'^{-1} (B mu_a), bilinear (C' real)
+        return 2.0 * float(np.real(self.dot(r, Bmu, sigma_g)))
+
+    def default_sigma_g_bounds(self, sigma_g_min=None):
         """Return the default profile/prior bounds (lo, hi) for sigma_g (Sec. 2b).
 
         Relative to the covariance scale: [1e-3, 1e3] * sqrt(C[0,0]).  This keeps both
         O(1) unit-test covariances and physical ~1e-42 covariances in range with the same
         code, and avoids the underflow trap (an O(1) prior against a 1e-42 covariance makes
         Lambda^{-1} negligible in M and the prior silently improper).
+
+        ``sigma_g_min`` (strain units, paper-2 Sec. 3.2 presence conditioning: a DETECTED
+        glitch means sigma_g is not small) raises the lower bound to
+        ``max(1e-3*sqrt(C[0,0]), sigma_g_min)`` -- a per-event run-config knob (default None
+        = the code default), never a code default.
         """
         scale = np.sqrt(self.cov.C[0, 0])
-        return (1e-3 * scale, 1e3 * scale)
+        lo = 1e-3 * scale
+        if sigma_g_min is not None:
+            lo = max(lo, float(sigma_g_min))
+        hi = 1e3 * scale
+        if lo >= hi:
+            hi = lo * 1e3
+        return (lo, hi)
 
-    def profile_sigma_g(self, d, bounds=None):
+    def profile_sigma_g(self, d, bounds=None, sigma_g_min=None):
         """Maximize Delta lnZ(sigma_g) over sigma_g in `bounds` = (lo, hi).
 
         Returns (sigma_g_hat, delta_lnZ_hat).  Uses a bounded scalar maximization
         (scipy.optimize.minimize_scalar on -Delta lnZ) in log(sigma_g) for good
         conditioning over the typically wide amplitude range.  If `bounds` is None, the
-        default [1e-3, 1e3] * sqrt(C[0,0]) log-spaced range (Sec. 2b) is used.
+        default [1e-3, 1e3] * sqrt(C[0,0]) log-spaced range (Sec. 2b) is used, floored by
+        ``sigma_g_min`` (presence conditioning) when supplied.
         """
         if bounds is None:
-            bounds = self.default_sigma_g_bounds()
+            bounds = self.default_sigma_g_bounds(sigma_g_min=sigma_g_min)
         lo, hi = bounds
         if lo <= 0:
             raise ValueError("profile_sigma_g bounds must be strictly positive.")
@@ -541,7 +601,28 @@ class RankAugmentation(object):
         sigma_hat = float(np.exp(res.x))
         return sigma_hat, -float(res.fun)
 
-    def glitch_reconstruction(self, d, sigma_g, k=None):
+    def profile_sigma_g_signmix(self, d, bounds=None, sigma_g_min=None):
+        """Maximize the sign-MIXTURE evidence Delta lnZ_mix(sigma_g) over sigma_g.
+
+        The empirical-Bayes amplitude for the detection-conditioned two-component sign
+        mixture (paper-2 Sec. 3.2): a single sigma_g shared by both +-mu components.  Returns
+        (sigma_g_hat, delta_lnZ_mix_hat).  For a flat block this coincides with
+        ``profile_sigma_g`` (both branches equal)."""
+        if bounds is None:
+            bounds = self.default_sigma_g_bounds(sigma_g_min=sigma_g_min)
+        lo, hi = bounds
+        if lo <= 0:
+            raise ValueError("profile_sigma_g_signmix bounds must be strictly positive.")
+        loglo, loghi = np.log(lo), np.log(hi)
+
+        def neg(log_sig):
+            return -self.delta_lnZ_signmix(d, np.exp(log_sig))[0]
+
+        res = scipy.optimize.minimize_scalar(
+            neg, bounds=(loglo, loghi), method="bounded")
+        return float(np.exp(res.x)), -float(res.fun)
+
+    def glitch_reconstruction(self, d, sigma_g, k=None, sign=1.0):
         r"""Return the MAP glitch reconstruction g_hat_total = B (mu_a + M^{-1} gamma_tilde).
 
         This is the posterior-mean glitch under the Gaussian coefficient prior a ~ N(mu_a,
@@ -562,10 +643,10 @@ class RankAugmentation(object):
         g_hat = np.zeros(self.N, dtype=float)
         for kk in ks:
             blk = self.blocks[kk]
-            gamma_t = self._gamma_tilde(d, sigma_g, kk)
+            gamma_t = self._gamma_tilde(d, sigma_g, kk, sign=sign)
             a_hat = self._Minv_apply(gamma_t, sigma_g, kk)   # M^{-1} gamma_tilde, scaled form
             if blk["has_mean"]:
-                a_hat = a_hat + self.mu_a(sigma_g, kk)       # + prior-predicted piece
+                a_hat = a_hat + self.mu_a(sigma_g, kk, sign=sign)  # + prior-predicted piece
             g_hat = g_hat + blk["B"].dot(a_hat)
         return g_hat
 
