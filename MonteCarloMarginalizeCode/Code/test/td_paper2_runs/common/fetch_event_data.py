@@ -83,10 +83,35 @@ def main():
             ts = ts.resample(args.srate)
         # ---- off-source PSD (median-averaged Welch, df = 1/fftlen) ----
         off = ts.crop(psd_start, psd_end)
+        ov = np.asarray(off.value, dtype=float)
+        finite = np.isfinite(ov)
+        if not finite.all():
+            # Real open data can carry NaN gaps (e.g. GW191109 H1 has a ~12-14% off-source
+            # gap).  gwpy's median PSD is NOT NaN-aware, so a single gapped Welch window
+            # poisons EVERY frequency bin -> all-NaN S -> the old np.max(S[finite]) hit a
+            # zero-size reduction.  Use the LONGEST contiguous finite stretch for the PSD (no
+            # fabricated samples); require >= 4 PSD windows.
+            fint = finite.astype(np.int8)
+            d = np.diff(np.concatenate([[0], fint, [0]]))
+            starts = np.where(d == 1)[0]
+            ends = np.where(d == -1)[0]
+            k = int(np.argmax(ends - starts))
+            i0, i1 = int(starts[k]), int(ends[k])
+            need = int(4 * fftlen * args.srate)
+            print("   [psd] %s off-source has %.1f%% NaN; longest finite run = %.1f s"
+                  % (ifo, 100.0 * (1.0 - finite.mean()), (i1 - i0) / args.srate), flush=True)
+            if (i1 - i0) < need:
+                raise SystemExit("[psd] %s longest finite off-source run too short (%d < %d "
+                                 "samples) -- widen --fetch-pre or move --psd-gap"
+                                 % (ifo, i1 - i0, need))
+            off = off[i0:i1]
         p = off.psd(fftlength=fftlen, overlap=fftlen / 2.0, method="median")
         f = p.frequencies.value
         S = p.value
-        S = np.where(np.isfinite(S) & (S > 0), S, np.max(S[np.isfinite(S)]))
+        finS = np.isfinite(S) & (S > 0)
+        if not finS.any():
+            raise SystemExit("[psd] %s PSD all non-finite after gap handling" % ifo)
+        S = np.where(finS, S, np.max(S[finS]))
         asc = os.path.join(psd, "%s-psd-ascii.txt" % ifo)
         np.savetxt(asc, np.column_stack([f, S]))
         meta["psd_ascii"][ifo] = asc
@@ -94,6 +119,10 @@ def main():
               % (f[1] - f[0], len(f), f[-1], S[np.argmin(np.abs(f - 100))]), flush=True)
         # ---- analysis frame ----
         seg = ts.crop(ana_start, ana_end)
+        if not np.all(np.isfinite(np.asarray(seg.value))):
+            raise SystemExit("[frame] %s analysis frame [%d,%d] contains NaN -- the analysis "
+                             "segment overlaps a data gap; shift the event window or pick a "
+                             "different frame placement" % (ifo, ana_start, ana_end))
         seg.name = "%s:GWOSC-STRAIN" % ifo
         seg.channel = "%s:GWOSC-STRAIN" % ifo
         fn = os.path.join(data, "%s-%s-%d-%d.gwf" % (ifo, args.tag, ana_start, ana_end - ana_start))
