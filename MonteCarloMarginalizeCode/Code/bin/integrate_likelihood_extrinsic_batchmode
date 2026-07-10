@@ -236,6 +236,8 @@ optp.add_option("--td-gap", action="append", default=None, help="TD gap interval
 optp.add_option("--glitch-basis", action="append", default=None, help="Analytic GLITCH MARGINALIZATION basis for one detector (GLITCH_MARG_DESIGN.md task G3). Format 'IFO:t1,t2,f1,f2[:r]': IFO the glitchy detector; t1,t2 geocenter seconds relative to the event time (glitch time support); f1,f2 Hz (glitch band); optional :r number of Slepian columns (default from the 2*W*T time-bandwidth theorem). A per-detector, band-limited Slepian (DPSS) basis is built and its coefficients are analytically marginalized (Woodbury) in the TD Toeplitz Precompute: Q'/U' corrections + a per-detector Delta-lnZ evidence term added to lnL_marg. Repeatable (one glitch block per detector). Requires --internal-ile-inner-product td-toeplitz. EXPERIMENTAL.")
 optp.add_option("--glitch-basis-file", action="append", default=None, help="Analytic GLITCH MARGINALIZATION basis for one detector from a FILE (data-informed basis, GLITCH_MARG_DESIGN.md Sec. 3 modes 3/4: e.g. glitschen-style PCA of real glitches, or BayesWave-draw SVD). Format 'IFO:path.npz'; the npz must contain 'basis' (n_snip x r time-domain snippet columns at the analysis sample rate), 'lambda0' (length-r dimensionless shape prior, max entry 1 per design Sec. 2b -- sigma_g carries the strain scale), 't0' (scalar: geocenter seconds RELATIVE TO THE EVENT TIME of snippet sample 0), and 'fs' (snippet sample rate [Hz], checked against the analysis rate). The snippet columns are zero-embedded into the analysis segment at t0 and their coefficients marginalized exactly like --glitch-basis (same Woodbury Q'/U' corrections + per-detector Delta-lnZ). Repeatable (one block per detector); mutually exclusive per-IFO with --glitch-basis. Requires --internal-ile-inner-product td-toeplitz. EXPERIMENTAL.")
 optp.add_option("--glitch-sigma", type=str, default="profile", help="Glitch amplitude hyperparameter sigma_g mode for --glitch-basis: 'profile' (default, and the only mode wired in G3: empirical-Bayes maximize Delta-lnZ over sigma_g per detector from the data). Grid marginalization is a documented follow-on (out of scope for G3).")
+optp.add_option("--glitch-prior-mode", type=str, default="m2", help="Detection-conditioned coefficient-prior mode for --glitch-basis-file (paper-2 Sec. 3.2). 'm2' (DEFAULT, bit-identical to the paper-1 path): zero-mean moment-matched Gaussian (npz key sigma_shape). 'signmix': the EXACT two-component sign mixture p(a|det)=1/2 N(+sigma_g mu_hat, Sigma_central)+1/2 N(-sigma_g mu_hat, Sigma_central) -- BOTH +-mu branches are evaluated and combined logsumexp(lnL+,lnL-)-ln2 at the marginal level (requires npz keys mu_mix + sigma_central). 'pinned': the decisive-sign limit, a single +mu_mix mean-shift (legitimate only when the closed-form sign odds are decisive; requires mu_mix + sigma_central). EXPERIMENTAL.")
+optp.add_option("--glitch-sigma-min", type=float, default=None, help="Presence-conditioning floor (strain units) on the glitch amplitude hyperparameter sigma_g (paper-2 Sec. 3.2: a DETECTED glitch means sigma_g is not small). Raises the lower profile bound to max(1e-3*sqrt(C[0,0]), glitch-sigma-min). Default None = the code default bounds. A per-event run-config knob.")
 optp.add_option("-w", "--window-shape", type=float, default=0, help="Shape of Tukey window to apply to data (default is no windowing)")
 optp.add_option("--psd-window-shape", type=float, default=0, help="Shape of Tukey window that *was* applied to the PSD being passed. If nonzero, we will rescale the PSD by the ratio of window shape results")
 optp.add_option("-m", "--time-marginalization", action="store_true", help="Perform marginalization over time via direct numerical integration. Default is false.")
@@ -926,6 +928,10 @@ if opts.internal_ile_inner_product == "td-toeplitz":
     # Gap times are geocenter-relative-to-event; the context places them relative to the
     # segment sample-0 origin (T7 supplies the per-detector geocenter origin; default 0
     # here means gap times are interpreted relative to segment sample 0).
+    if opts.glitch_prior_mode not in ("m2", "signmix", "pinned"):
+        print("FAIL: --glitch-prior-mode must be one of {m2,signmix,pinned}, got %r"
+              % opts.glitch_prior_mode)
+        sys.exit(1)
     ile_ip_factory = TDInnerProductFactory(
         solver=opts.td_solver, acf_duration=opts.td_acf_duration,
         template_start_offset=opts.td_analysis_start,
@@ -933,6 +939,8 @@ if opts.internal_ile_inner_product == "td-toeplitz":
         gaps=td_gaps,
         glitch_specs=glitch_specs, glitch_sigma=opts.glitch_sigma,
         glitch_basis_files=glitch_basis_files,
+        glitch_prior_mode=opts.glitch_prior_mode,
+        glitch_sigma_min=opts.glitch_sigma_min,
         window_shape=opts.window_shape)
     # Register each detector's (psd, data, event time) so the per-IFO glitch basis can be
     # placed and its sigma_g profiled (G3).  Keyed on id(psd) -- the object Precompute forwards.
@@ -942,12 +950,13 @@ if opts.internal_ile_inner_product == "td-toeplitz":
                 _inst, psd_dict[_inst], data_dict[_inst],
                 event_time_geo=float(event_time))
     print("  [TD] Using time-domain Toeplitz inner product (solver=%s, acf_duration=%s, "
-          "analysis=[%s,%s]s, gaps=%s, glitch=%s/sigma=%s). EXPERIMENTAL; inverse-spectrum "
-          "truncation is redundant and ignored on this path (plan D5)."
+          "analysis=[%s,%s]s, gaps=%s, glitch=%s/sigma=%s/prior-mode=%s/sigma-min=%s). "
+          "EXPERIMENTAL; inverse-spectrum truncation is redundant and ignored on this path "
+          "(plan D5)."
           % (opts.td_solver, opts.td_acf_duration, opts.td_analysis_start,
              opts.td_analysis_end, td_gaps,
              list(glitch_specs.keys()) + ["%s(file)" % k for k in glitch_basis_files],
-             opts.glitch_sigma))
+             opts.glitch_sigma, opts.glitch_prior_mode, opts.glitch_sigma_min))
 elif opts.internal_ile_inner_product != "fd-diagonal":
     print("FAIL: --internal-ile-inner-product must be 'fd-diagonal' or 'td-toeplitz', got %r"
           % opts.internal_ile_inner_product)
@@ -1845,383 +1854,355 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
       print(" Waveform high-level extra args passed ", extra_args_dict, type(extra_args_dict))
       extra_waveform_kwargs.update(extra_args_dict)
     # Precompute
-    t_window = opts.internal_data_storage_window_half
-    ignore_threshold=None
-    if opts.internal_precompute_ignore_threshold:
-      ignore_threshold=opts.internal_precompute_ignore_threshold
-      print("IGNORE ACTIVE ", ignore_threshold)
-    extra_kwargs ={}
-    n_cal_for_likelihood = 1   # >1 triggers in-loop calibration marginalization in the likelihood
-    # use the fused implementation (Option C) when requested; works on GPU (CUDA
-    # kernels) and CPU (numpy).  Phase marginalization is not supported by the fused
-    # path, so it is disabled there below (that call site stays on the loop method).
-    use_fused_calmarg = bool(calibration_marginalization and opts.calibration_fused_kernel)
-    if calibration_marginalization:
-      extra_kwargs['calibration_realizations'] = calibration_realization_dict
-      n_cal_for_likelihood = opts.calibration_n_realizations
-    if ile_ip_factory is not None:
-      extra_kwargs['IP_factory'] = ile_ip_factory   # plan T3: time-domain Toeplitz inner product
-    rholms_intp, cross_terms, cross_terms_V,  rholms,  guess_snr, rest=factored_likelihood.PrecomputeLikelihoodTerms(
-            fiducial_epoch, t_window, P, data_dict, psd_dict, opts.l_max, fmax,
-            False, inv_spec_trunc_Q, T_spec,
-            ignore_threshold=ignore_threshold,   # default is None, old default was 1e-4. Use to speed calculation and/or discard 'junky' modes, esp at lower SNR. Dangerous at high SNR
-            NR_group=NR_template_group,NR_param=NR_template_param,
-            use_gwsignal=opts.use_gwsignal,
-            use_gwsignal_approx=opts.approximant,
-            use_external_EOB=opts.use_external_EOB,nr_lookup=opts.nr_lookup,nr_lookup_valid_groups=opts.nr_lookup_group,perturbative_extraction=opts.nr_perturbative_extraction,perturbative_extraction_full=opts.nr_perturbative_extraction_full,use_provided_strain=opts.nr_use_provided_strain,hybrid_use=opts.nr_hybrid_use,hybrid_method=opts.nr_hybrid_method,ROM_group=opts.rom_group,ROM_param=opts.rom_param,ROM_use_basis=opts.rom_use_basis,verbose=opts.verbose,quiet=not opts.verbose,ROM_limit_basis_size=opts.rom_limit_basis_size_to,no_memory=opts.no_memory,skip_interpolation=opts.vectorized, extra_waveform_kwargs=extra_waveform_kwargs,**extra_kwargs)
+    # ---- paper-2 Sec. 3.2 detection-conditioned sign-mixture two-pass (glitch-prior-mode
+    # signmix): evaluate the +mu_mix and -mu_mix branches and combine their marginal
+    # likelihoods, lnL_marg_mix = logsumexp(lnL_marg+, lnL_marg-) - ln2 (the mixture is over a
+    # discrete sign latent independent of every other parameter, so it combines EXACTLY at the
+    # marginal level).  m2 / pinned / glitch-OFF => a single pass (_branch_signs=[None]),
+    # BIT-IDENTICAL to the pre-signmix path.  Chosen seam = 'run Precompute twice per intrinsic
+    # point' (the least-invasive correct option; the base U/V/Q are shared -- only the glitch
+    # d_corr (Q') and per-branch Delta-lnZ differ; the expensive sampler adaptation is redone,
+    # accepted as the price of an exact marginal-level mixture).
+    _signmix = bool(ile_ip_factory is not None and getattr(ile_ip_factory, 'signmix_active', False))
+    _branch_signs = [+1.0, -1.0] if _signmix else [None]
+    _branch_lnL_marg = []
+    if _signmix:
+        import copy as _copy_signmix
+        _P_pristine_signmix = _copy_signmix.deepcopy(P)    # untouched intrinsic point
+    for _gsign in _branch_signs:
+        if _gsign is not None:
+            # Each branch regenerates the waveform from a PRISTINE intrinsic point: the first
+            # Precompute pass mutates P in place (deltaF/deltaT/segment bookkeeping), which would
+            # otherwise make the second pass' waveform generator reject the reused P.
+            P = _copy_signmix.deepcopy(_P_pristine_signmix)
+            ile_ip_factory.set_active_glitch_sign(_gsign)
+            print('  [G3] signmix: evaluating branch sign=%+d (mu_a -> %+d*sigma_g*mu_mix)' % (int(_gsign), int(_gsign)))
+        t_window = opts.internal_data_storage_window_half
+        ignore_threshold=None
+        if opts.internal_precompute_ignore_threshold:
+          ignore_threshold=opts.internal_precompute_ignore_threshold
+          print("IGNORE ACTIVE ", ignore_threshold)
+        extra_kwargs ={}
+        n_cal_for_likelihood = 1   # >1 triggers in-loop calibration marginalization in the likelihood
+        # use the fused implementation (Option C) when requested; works on GPU (CUDA
+        # kernels) and CPU (numpy).  Phase marginalization is not supported by the fused
+        # path, so it is disabled there below (that call site stays on the loop method).
+        use_fused_calmarg = bool(calibration_marginalization and opts.calibration_fused_kernel)
+        if calibration_marginalization:
+          extra_kwargs['calibration_realizations'] = calibration_realization_dict
+          n_cal_for_likelihood = opts.calibration_n_realizations
+        if ile_ip_factory is not None:
+          extra_kwargs['IP_factory'] = ile_ip_factory   # plan T3: time-domain Toeplitz inner product
+        rholms_intp, cross_terms, cross_terms_V,  rholms,  guess_snr, rest=factored_likelihood.PrecomputeLikelihoodTerms(
+                fiducial_epoch, t_window, P, data_dict, psd_dict, opts.l_max, fmax,
+                False, inv_spec_trunc_Q, T_spec,
+                ignore_threshold=ignore_threshold,   # default is None, old default was 1e-4. Use to speed calculation and/or discard 'junky' modes, esp at lower SNR. Dangerous at high SNR
+                NR_group=NR_template_group,NR_param=NR_template_param,
+                use_gwsignal=opts.use_gwsignal,
+                use_gwsignal_approx=opts.approximant,
+                use_external_EOB=opts.use_external_EOB,nr_lookup=opts.nr_lookup,nr_lookup_valid_groups=opts.nr_lookup_group,perturbative_extraction=opts.nr_perturbative_extraction,perturbative_extraction_full=opts.nr_perturbative_extraction_full,use_provided_strain=opts.nr_use_provided_strain,hybrid_use=opts.nr_hybrid_use,hybrid_method=opts.nr_hybrid_method,ROM_group=opts.rom_group,ROM_param=opts.rom_param,ROM_use_basis=opts.rom_use_basis,verbose=opts.verbose,quiet=not opts.verbose,ROM_limit_basis_size=opts.rom_limit_basis_size_to,no_memory=opts.no_memory,skip_interpolation=opts.vectorized, extra_waveform_kwargs=extra_waveform_kwargs,**extra_kwargs)
 
-    # skip nan ! Something horrible has happened
-    if np.isnan(guess_snr):
-      print("  --- NAN SNR GUESS, ABORTING THIS EVENT {} --".format(indx_event))
-      raise Exception(" NAN SNR ")
+        # skip nan ! Something horrible has happened
+        if np.isnan(guess_snr):
+          print("  --- NAN SNR GUESS, ABORTING THIS EVENT {} --".format(indx_event))
+          raise Exception(" NAN SNR ")
 
-    if opts.auto_logarithm_offset and guess_snr:
-      # important: this only impacts *this* analysis
-      # important: if we have a very loud signal, it is important to change this dynamically to avoid *underflow*, which sometimes happens otherwise if we fix the scale early on.
-      print("    : naive overflow protection: updating lnL overflow based on SNR guess of {} ".format(guess_snr))
-      print("    : reminder, diagnostics for lnLmax below are offset by this amount! ")
-      # Note by changing the offset, we change how adapt-weight-exponent is being applied (because we've offset the range before squashing it!).  Use with care: pipeline auto-sets the weight exponent
-      manual_avoid_overflow_logarithm = guess_snr**2/2 - 100  # more conservative than helper, if I were to auto-set it from --hint-snr.  So the integral peak is more likely positive
-      # Don't scale so much that peak guess likelihood is negative:  we do fine for low-ampltiude sources
-      if manual_avoid_overflow_logarithm < 0:
-        manual_avoid_overflow_logarithm = 0
-    elif opts.auto_logarithm_offset:
-      print(" PROBLEM: guess_snr not being returned, but auto-tuning requested ")
-      # reset to default.  Should not be needed, but weird python scoping error
-      manual_avoid_overflow_logarithm = manual_avoid_overflow_logarithm_default 
-    else:
-      # reset to default.  Should not be needed, but weird python scoping error
-      manual_avoid_overflow_logarithm = manual_avoid_overflow_logarithm_default 
+        if opts.auto_logarithm_offset and guess_snr:
+          # important: this only impacts *this* analysis
+          # important: if we have a very loud signal, it is important to change this dynamically to avoid *underflow*, which sometimes happens otherwise if we fix the scale early on.
+          print("    : naive overflow protection: updating lnL overflow based on SNR guess of {} ".format(guess_snr))
+          print("    : reminder, diagnostics for lnLmax below are offset by this amount! ")
+          # Note by changing the offset, we change how adapt-weight-exponent is being applied (because we've offset the range before squashing it!).  Use with care: pipeline auto-sets the weight exponent
+          manual_avoid_overflow_logarithm = guess_snr**2/2 - 100  # more conservative than helper, if I were to auto-set it from --hint-snr.  So the integral peak is more likely positive
+          # Don't scale so much that peak guess likelihood is negative:  we do fine for low-ampltiude sources
+          if manual_avoid_overflow_logarithm < 0:
+            manual_avoid_overflow_logarithm = 0
+        elif opts.auto_logarithm_offset:
+          print(" PROBLEM: guess_snr not being returned, but auto-tuning requested ")
+          # reset to default.  Should not be needed, but weird python scoping error
+          manual_avoid_overflow_logarithm = manual_avoid_overflow_logarithm_default 
+        else:
+          # reset to default.  Should not be needed, but weird python scoping error
+          manual_avoid_overflow_logarithm = manual_avoid_overflow_logarithm_default 
 
-    if opts.vectorized:
-        lookupNKDict = {}
-        lookupKNDict={}
-        lookupKNconjDict={}
-        ctUArrayDict = {}
-        ctVArrayDict={}
-        rholmArrayDict={}
-        rholms_intpArrayDict={}
-        epochDict={}
-        for det in rholms_intp.keys():
-            print( " Packing ", det)
-            lookupNKDict[det],lookupKNDict[det], lookupKNconjDict[det], ctUArrayDict[det], ctVArrayDict[det], rholmArrayDict[det], rholms_intpArrayDict[det], epochDict[det] = factored_likelihood.PackLikelihoodDataStructuresAsArrays( rholms[det].keys(), rholms_intp[det], rholms[det], cross_terms[det],cross_terms_V[det])
-            if opts.gpu and (not xpy_default is np):
-                lookupNKDict[det] = cupy.asarray(lookupNKDict[det])
-                rholmArrayDict[det] = cupy.asarray(rholmArrayDict[det])
-                ctUArrayDict[det] = cupy.asarray(ctUArrayDict[det])
-                ctVArrayDict[det] = cupy.asarray(ctVArrayDict[det])
-                epochDict[det] = cupy.asarray(epochDict[det])
+        if opts.vectorized:
+            lookupNKDict = {}
+            lookupKNDict={}
+            lookupKNconjDict={}
+            ctUArrayDict = {}
+            ctVArrayDict={}
+            rholmArrayDict={}
+            rholms_intpArrayDict={}
+            epochDict={}
+            for det in rholms_intp.keys():
+                print( " Packing ", det)
+                lookupNKDict[det],lookupKNDict[det], lookupKNconjDict[det], ctUArrayDict[det], ctVArrayDict[det], rholmArrayDict[det], rholms_intpArrayDict[det], epochDict[det] = factored_likelihood.PackLikelihoodDataStructuresAsArrays( rholms[det].keys(), rholms_intp[det], rholms[det], cross_terms[det],cross_terms_V[det])
+                if opts.gpu and (not xpy_default is np):
+                    lookupNKDict[det] = cupy.asarray(lookupNKDict[det])
+                    rholmArrayDict[det] = cupy.asarray(rholmArrayDict[det])
+                    ctUArrayDict[det] = cupy.asarray(ctUArrayDict[det])
+                    ctVArrayDict[det] = cupy.asarray(ctVArrayDict[det])
+                    epochDict[det] = cupy.asarray(epochDict[det])
 
-        def _cal_error_probe(n_cal_now, n_start=256, n_cap=None, rel_tol=0.1):
-            """Estimate (sigma_lnZ_cal, neff_cal, n_used, dist_mode): the calibration
-            MC error of lnZ and the effective cal draw count, from per-realization
-            responsibilities on an extrinsic batch drawn from the RUN'S priors.
+            def _cal_error_probe(n_cal_now, n_start=256, n_cap=None, rel_tol=0.1):
+                """Estimate (sigma_lnZ_cal, neff_cal, n_used, dist_mode): the calibration
+                MC error of lnZ and the effective cal draw count, from per-realization
+                responsibilities on an extrinsic batch drawn from the RUN'S priors.
 
-            * Distance comes from the run's distance prior -- the sampler's own
-              prior_pdf when distance is sampled (incl. cosmo/redshift variants, via
-              a uniform proposal + importance weight), the --d-prior pdf when distance
-              marginalization is active, or the PINNED value (with a warning: at fixed
-              distance the distance/amplitude degeneracy cannot absorb amplitude-like
-              cal perturbations, so the estimate is conservative).
-            * The batch is ADAPTIVE: doubled until sigma stabilizes (rel_tol) with
-              adequate weight support, up to n_cap.
-            Responsibilities are ~extrinsic-independent so modest batches converge."""
-            import RIFT.calmarg.adaptive as _adapt
-            from scipy.special import logsumexp as _lse
-            _rng = np.random.default_rng()   # fresh randomness: this is a diagnostic
-            if n_cap is None:
-                n_cap = max(int(opts.calibration_mc_error_extrinsic or 0), n_start)
-            _warned = []
-            def _draw_dist(n):
-                if 'distance' in pinned_params:
-                    if not _warned:
-                        print(" [calmarg error] WARNING: distance is PINNED -- probe runs at the fixed value; without the distance/amplitude degeneracy the cal error estimate is conservative (an upper bound).")
-                        _warned.append(1)
-                    return np.full(n, float(pinned_params['distance'])), np.zeros(n), 'pinned'
-                if opts.distance_marginalization:
-                    # distance is integrated on-board against the lookup-table prior;
-                    # the probe varies it explicitly, drawing per --d-prior.
-                    if opts.d_prior == 'pseudo_cosmo':
-                        d = _rng.uniform(dmin, dmax, n)
-                        _nm = priors_utils.dist_prior_pseudo_cosmo_eval_norm(dmin, dmax)
-                        corr = np.log(np.clip(np.asarray(priors_utils.dist_prior_pseudo_cosmo(d, nm=_nm, xpy=np), dtype=float), 1e-300, None))
-                        return d, corr, 'pseudo_cosmo'
-                    # Euclidean: exact inverse-CDF draw from the d^2 prior
-                    u = _rng.uniform(0, 1, n)
-                    d = (dmin**3 + u*(dmax**3 - dmin**3))**(1./3)
-                    return d, np.zeros(n), 'Euclidean'
-                # distance is a sampler dimension: uniform proposal over its range,
-                # importance-weighted by the run's OWN prior_pdf (cosmo/redshift safe);
-                # redshift_to_distance maps the sampled coordinate to luminosity distance.
-                lo, hi = float(sampler.llim['distance']), float(sampler.rlim['distance'])
-                x = _rng.uniform(lo, hi, n)
-                pw = np.asarray(identity_convert(sampler.prior_pdf['distance'](identity_convert_togpu(x))), dtype=float)
-                corr = np.log(np.clip(pw, 1e-300, None))
-                d = np.asarray(redshift_to_distance(x), dtype=float)
-                return d, corr, 'sampler prior ({})'.format(opts.d_prior)
-            _tv = xpy_default.linspace(-t_ref_wind, t_ref_wind, int((t_ref_wind)*2/P.deltaT))
-            _calw_np = np.zeros(n_cal_now) if calibration_log_weights is None else np.asarray(identity_convert(calibration_log_weights), dtype=float)[:n_cal_now]
-            comp_list = []; corr_list = []
-            sigma = None; neff_cal = None; sigma_prev = None
-            n_batch = int(n_start); n_tot = 0; dist_mode = None
-            while True:
-                P.phi    = xpy_default.asarray(_rng.uniform(0, 2*np.pi, n_batch), dtype=np.float64)
-                P.theta  = xpy_default.asarray(np.arcsin(_rng.uniform(-1, 1, n_batch)), dtype=np.float64)
-                P.incl   = xpy_default.asarray(np.arccos(_rng.uniform(-1, 1, n_batch)), dtype=np.float64)
-                P.psi    = xpy_default.asarray(_rng.uniform(0, np.pi, n_batch), dtype=np.float64)
-                P.phiref = xpy_default.asarray(_rng.uniform(0, 2*np.pi, n_batch), dtype=np.float64)
+                * Distance comes from the run's distance prior -- the sampler's own
+                  prior_pdf when distance is sampled (incl. cosmo/redshift variants, via
+                  a uniform proposal + importance weight), the --d-prior pdf when distance
+                  marginalization is active, or the PINNED value (with a warning: at fixed
+                  distance the distance/amplitude degeneracy cannot absorb amplitude-like
+                  cal perturbations, so the estimate is conservative).
+                * The batch is ADAPTIVE: doubled until sigma stabilizes (rel_tol) with
+                  adequate weight support, up to n_cap.
+                Responsibilities are ~extrinsic-independent so modest batches converge."""
+                import RIFT.calmarg.adaptive as _adapt
+                from scipy.special import logsumexp as _lse
+                _rng = np.random.default_rng()   # fresh randomness: this is a diagnostic
+                if n_cap is None:
+                    n_cap = max(int(opts.calibration_mc_error_extrinsic or 0), n_start)
+                _warned = []
+                def _draw_dist(n):
+                    if 'distance' in pinned_params:
+                        if not _warned:
+                            print(" [calmarg error] WARNING: distance is PINNED -- probe runs at the fixed value; without the distance/amplitude degeneracy the cal error estimate is conservative (an upper bound).")
+                            _warned.append(1)
+                        return np.full(n, float(pinned_params['distance'])), np.zeros(n), 'pinned'
+                    if opts.distance_marginalization:
+                        # distance is integrated on-board against the lookup-table prior;
+                        # the probe varies it explicitly, drawing per --d-prior.
+                        if opts.d_prior == 'pseudo_cosmo':
+                            d = _rng.uniform(dmin, dmax, n)
+                            _nm = priors_utils.dist_prior_pseudo_cosmo_eval_norm(dmin, dmax)
+                            corr = np.log(np.clip(np.asarray(priors_utils.dist_prior_pseudo_cosmo(d, nm=_nm, xpy=np), dtype=float), 1e-300, None))
+                            return d, corr, 'pseudo_cosmo'
+                        # Euclidean: exact inverse-CDF draw from the d^2 prior
+                        u = _rng.uniform(0, 1, n)
+                        d = (dmin**3 + u*(dmax**3 - dmin**3))**(1./3)
+                        return d, np.zeros(n), 'Euclidean'
+                    # distance is a sampler dimension: uniform proposal over its range,
+                    # importance-weighted by the run's OWN prior_pdf (cosmo/redshift safe);
+                    # redshift_to_distance maps the sampled coordinate to luminosity distance.
+                    lo, hi = float(sampler.llim['distance']), float(sampler.rlim['distance'])
+                    x = _rng.uniform(lo, hi, n)
+                    pw = np.asarray(identity_convert(sampler.prior_pdf['distance'](identity_convert_togpu(x))), dtype=float)
+                    corr = np.log(np.clip(pw, 1e-300, None))
+                    d = np.asarray(redshift_to_distance(x), dtype=float)
+                    return d, corr, 'sampler prior ({})'.format(opts.d_prior)
+                _tv = xpy_default.linspace(-t_ref_wind, t_ref_wind, int((t_ref_wind)*2/P.deltaT))
+                _calw_np = np.zeros(n_cal_now) if calibration_log_weights is None else np.asarray(identity_convert(calibration_log_weights), dtype=float)[:n_cal_now]
+                comp_list = []; corr_list = []
+                sigma = None; neff_cal = None; sigma_prev = None
+                n_batch = int(n_start); n_tot = 0; dist_mode = None
+                while True:
+                    P.phi    = xpy_default.asarray(_rng.uniform(0, 2*np.pi, n_batch), dtype=np.float64)
+                    P.theta  = xpy_default.asarray(np.arcsin(_rng.uniform(-1, 1, n_batch)), dtype=np.float64)
+                    P.incl   = xpy_default.asarray(np.arccos(_rng.uniform(-1, 1, n_batch)), dtype=np.float64)
+                    P.psi    = xpy_default.asarray(_rng.uniform(0, np.pi, n_batch), dtype=np.float64)
+                    P.phiref = xpy_default.asarray(_rng.uniform(0, 2*np.pi, n_batch), dtype=np.float64)
+                    P.tref   = float(fiducial_epoch)
+                    _d, _corr, dist_mode = _draw_dist(n_batch)
+                    P.dist   = xpy_default.asarray(_d*1.e6*lalsimutils.lsu_PC, dtype=np.float64)
+                    _comp = factored_likelihood.DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(
+                        _tv, P, lookupNKDict, rholmArrayDict, ctUArrayDict, ctVArrayDict, epochDict,
+                        Lmax=opts.l_max, xpy=xpy_default, n_cal=n_cal_now, cal_method='loop',
+                        return_cal_components=True, time_interp=opts._noloop_time_interp)
+                    comp_list.append(np.atleast_2d(np.asarray(identity_convert(_comp), dtype=float)))
+                    corr_list.append(_corr)
+                    comp_all = np.vstack(comp_list); corr_all = np.concatenate(corr_list)
+                    slw = _lse(comp_all + _calw_np[None, :], axis=1) + corr_all
+                    sigma, neff_cal, _a = _adapt.cal_mc_error_from_components(
+                        comp_all, cal_log_weights=_calw_np, sample_log_weights=slw)
+                    n_tot += n_batch
+                    kish = float(np.exp(2*_lse(slw) - _lse(2*slw)))
+                    if n_tot >= n_cap:
+                        break
+                    if (sigma_prev is not None) and (abs(sigma - sigma_prev) <= rel_tol*max(sigma, 0.02)) and kish >= 32:
+                        break
+                    sigma_prev = sigma
+                    n_batch = min(n_tot, n_cap - n_tot)   # double the total each pass
+                return float(sigma), float(neff_cal), int(n_tot), dist_mode
+
+            # ---- ADAPTIVE cal draw count: instead of trusting a hardcoded
+            # --calibration-n-realizations, probe the effective number of contributing
+            # draws at THIS intrinsic point and grow the draw set (fresh independent
+            # draws; incremental precompute of only the new blocks) until the target
+            # neff_cal is met or the cap is reached.  The realization dict and the
+            # importance-weight/node bookkeeping are extended in place, so later events
+            # in this job inherit the enlarged set.
+            if calibration_marginalization and n_cal_for_likelihood > 1 and (not opts.calibration_dump_responsibilities) and opts.calibration_neff_cal_target:
+                _ncal_cap = int(opts.calibration_n_realizations_max) if opts.calibration_n_realizations_max else 8*int(opts.calibration_n_realizations)
+                while True:
+                    _sig0, _neff0, _npr0, _dmode0 = _cal_error_probe(n_cal_for_likelihood, n_start=256, n_cap=512)
+                    print(" [calmarg adapt] n_cal={} : cal n_eff ~ {:.1f} (target {:g}), sigma_cal ~ {:.3f} (probe {} pts, distance: {})".format(
+                          n_cal_for_likelihood, _neff0, opts.calibration_neff_cal_target, _sig0, _npr0, _dmode0))
+                    if _neff0 >= opts.calibration_neff_cal_target:
+                        break
+                    if n_cal_for_likelihood >= _ncal_cap:
+                        print(" [calmarg adapt] WARNING: cal n_eff {:.1f} below target at the n_cal cap {} -- proceeding; the reported sigma will carry the (large) cal term.".format(_neff0, _ncal_cap))
+                        break
+                    _n_more = min(n_cal_for_likelihood, _ncal_cap - n_cal_for_likelihood)
+                    print(" [calmarg adapt] growing cal draw set by {} -> {} (incremental precompute)".format(_n_more, n_cal_for_likelihood + _n_more))
+                    _new_real = _draw_more_calibration_draws(_n_more, psd_dict)
+                    _ek_more = dict(extra_kwargs); _ek_more['calibration_realizations'] = _new_real
+                    _intp_more, _ct_more, _ctV_more, rholms_more, _snr_more, _rest_more = factored_likelihood.PrecomputeLikelihoodTerms(
+                        fiducial_epoch, t_window, P, data_dict, psd_dict, opts.l_max, fmax,
+                        False, inv_spec_trunc_Q, T_spec,
+                        ignore_threshold=ignore_threshold,
+                        NR_group=NR_template_group,NR_param=NR_template_param,
+                        use_gwsignal=opts.use_gwsignal,
+                        use_gwsignal_approx=opts.approximant,
+                        use_external_EOB=opts.use_external_EOB,nr_lookup=opts.nr_lookup,nr_lookup_valid_groups=opts.nr_lookup_group,perturbative_extraction=opts.nr_perturbative_extraction,perturbative_extraction_full=opts.nr_perturbative_extraction_full,use_provided_strain=opts.nr_use_provided_strain,hybrid_use=opts.nr_hybrid_use,hybrid_method=opts.nr_hybrid_method,ROM_group=opts.rom_group,ROM_param=opts.rom_param,ROM_use_basis=opts.rom_use_basis,verbose=opts.verbose,quiet=not opts.verbose,ROM_limit_basis_size=opts.rom_limit_basis_size_to,no_memory=opts.no_memory,skip_interpolation=opts.vectorized, extra_waveform_kwargs=extra_waveform_kwargs,**_ek_more)
+                    for det in rholms_more.keys():
+                        _,_,_,_,_, _rholmArray_more, _, _ = factored_likelihood.PackLikelihoodDataStructuresAsArrays(
+                            rholms_more[det].keys(), _intp_more[det], rholms_more[det], _ct_more[det], _ctV_more[det])
+                        if opts.gpu and (not xpy_default is np):
+                            _rholmArray_more = cupy.asarray(_rholmArray_more)
+                        rholmArrayDict[det] = xpy_default.concatenate([rholmArrayDict[det], _rholmArray_more], axis=-1)
+                    n_cal_for_likelihood += _n_more
+                    opts.calibration_n_realizations = n_cal_for_likelihood   # later events start consistent with the extended dict
+
+            if opts.calibration_dump_responsibilities and calibration_marginalization:
+                # PILOT: accumulate the per-cal-realization extrinsic-marginalized log L at
+                # THIS intrinsic point.  Cal is ~extrinsic-independent, so a uniform-prior
+                # extrinsic batch gives an unbiased Monte-Carlo estimate of int dOmega L_c
+                # (the cal posterior responsibility).  Uses the simplest likelihood config
+                # (default helper, loop, fiducial distance) -- only the SHAPE in cal-node
+                # space matters, and the runtime importance weights keep the production
+                # marginalization unbiased regardless of pilot quality.
+                _Next = int(opts.calibration_pilot_extrinsic or 256)
+                _rng_ext = np.random.default_rng((getattr(opts,'seed',0) or 0) + 101 + int(indx_event))
+                P.phi    = xpy_default.asarray(_rng_ext.uniform(0, 2*np.pi, _Next), dtype=np.float64)
+                P.theta  = xpy_default.asarray(np.arcsin(_rng_ext.uniform(-1, 1, _Next)), dtype=np.float64)  # uniform in sin(dec)
+                P.incl   = xpy_default.asarray(np.arccos(_rng_ext.uniform(-1, 1, _Next)), dtype=np.float64)
+                P.psi    = xpy_default.asarray(_rng_ext.uniform(0, np.pi, _Next), dtype=np.float64)
+                P.phiref = xpy_default.asarray(_rng_ext.uniform(0, 2*np.pi, _Next), dtype=np.float64)
                 P.tref   = float(fiducial_epoch)
-                _d, _corr, dist_mode = _draw_dist(n_batch)
-                P.dist   = xpy_default.asarray(_d*1.e6*lalsimutils.lsu_PC, dtype=np.float64)
+                P.dist   = xpy_default.asarray(np.full(_Next, factored_likelihood.distMpcRef)*1.e6*lalsimutils.lsu_PC, dtype=np.float64)
+                _tvals = xpy_default.linspace(-t_ref_wind, t_ref_wind, int((t_ref_wind)*2/P.deltaT))
                 _comp = factored_likelihood.DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(
-                    _tv, P, lookupNKDict, rholmArrayDict, ctUArrayDict, ctVArrayDict, epochDict,
-                    Lmax=opts.l_max, xpy=xpy_default, n_cal=n_cal_now, cal_method='loop',
+                    _tvals, P, lookupNKDict, rholmArrayDict, ctUArrayDict, ctVArrayDict, epochDict,
+                    Lmax=opts.l_max, xpy=xpy_default, n_cal=n_cal_for_likelihood, cal_method='loop',
                     return_cal_components=True, time_interp=opts._noloop_time_interp)
-                comp_list.append(np.atleast_2d(np.asarray(identity_convert(_comp), dtype=float)))
-                corr_list.append(_corr)
-                comp_all = np.vstack(comp_list); corr_all = np.concatenate(corr_list)
-                slw = _lse(comp_all + _calw_np[None, :], axis=1) + corr_all
-                sigma, neff_cal, _a = _adapt.cal_mc_error_from_components(
-                    comp_all, cal_log_weights=_calw_np, sample_log_weights=slw)
-                n_tot += n_batch
-                kish = float(np.exp(2*_lse(slw) - _lse(2*slw)))
-                if n_tot >= n_cap:
-                    break
-                if (sigma_prev is not None) and (abs(sigma - sigma_prev) <= rel_tol*max(sigma, 0.02)) and kish >= 32:
-                    break
-                sigma_prev = sigma
-                n_batch = min(n_tot, n_cap - n_tot)   # double the total each pass
-            return float(sigma), float(neff_cal), int(n_tot), dist_mode
-
-        # ---- ADAPTIVE cal draw count: instead of trusting a hardcoded
-        # --calibration-n-realizations, probe the effective number of contributing
-        # draws at THIS intrinsic point and grow the draw set (fresh independent
-        # draws; incremental precompute of only the new blocks) until the target
-        # neff_cal is met or the cap is reached.  The realization dict and the
-        # importance-weight/node bookkeeping are extended in place, so later events
-        # in this job inherit the enlarged set.
-        if calibration_marginalization and n_cal_for_likelihood > 1 and (not opts.calibration_dump_responsibilities) and opts.calibration_neff_cal_target:
-            _ncal_cap = int(opts.calibration_n_realizations_max) if opts.calibration_n_realizations_max else 8*int(opts.calibration_n_realizations)
-            while True:
-                _sig0, _neff0, _npr0, _dmode0 = _cal_error_probe(n_cal_for_likelihood, n_start=256, n_cap=512)
-                print(" [calmarg adapt] n_cal={} : cal n_eff ~ {:.1f} (target {:g}), sigma_cal ~ {:.3f} (probe {} pts, distance: {})".format(
-                      n_cal_for_likelihood, _neff0, opts.calibration_neff_cal_target, _sig0, _npr0, _dmode0))
-                if _neff0 >= opts.calibration_neff_cal_target:
-                    break
-                if n_cal_for_likelihood >= _ncal_cap:
-                    print(" [calmarg adapt] WARNING: cal n_eff {:.1f} below target at the n_cal cap {} -- proceeding; the reported sigma will carry the (large) cal term.".format(_neff0, _ncal_cap))
-                    break
-                _n_more = min(n_cal_for_likelihood, _ncal_cap - n_cal_for_likelihood)
-                print(" [calmarg adapt] growing cal draw set by {} -> {} (incremental precompute)".format(_n_more, n_cal_for_likelihood + _n_more))
-                _new_real = _draw_more_calibration_draws(_n_more, psd_dict)
-                _ek_more = dict(extra_kwargs); _ek_more['calibration_realizations'] = _new_real
-                _intp_more, _ct_more, _ctV_more, rholms_more, _snr_more, _rest_more = factored_likelihood.PrecomputeLikelihoodTerms(
-                    fiducial_epoch, t_window, P, data_dict, psd_dict, opts.l_max, fmax,
-                    False, inv_spec_trunc_Q, T_spec,
-                    ignore_threshold=ignore_threshold,
-                    NR_group=NR_template_group,NR_param=NR_template_param,
-                    use_gwsignal=opts.use_gwsignal,
-                    use_gwsignal_approx=opts.approximant,
-                    use_external_EOB=opts.use_external_EOB,nr_lookup=opts.nr_lookup,nr_lookup_valid_groups=opts.nr_lookup_group,perturbative_extraction=opts.nr_perturbative_extraction,perturbative_extraction_full=opts.nr_perturbative_extraction_full,use_provided_strain=opts.nr_use_provided_strain,hybrid_use=opts.nr_hybrid_use,hybrid_method=opts.nr_hybrid_method,ROM_group=opts.rom_group,ROM_param=opts.rom_param,ROM_use_basis=opts.rom_use_basis,verbose=opts.verbose,quiet=not opts.verbose,ROM_limit_basis_size=opts.rom_limit_basis_size_to,no_memory=opts.no_memory,skip_interpolation=opts.vectorized, extra_waveform_kwargs=extra_waveform_kwargs,**_ek_more)
-                for det in rholms_more.keys():
-                    _,_,_,_,_, _rholmArray_more, _, _ = factored_likelihood.PackLikelihoodDataStructuresAsArrays(
-                        rholms_more[det].keys(), _intp_more[det], rholms_more[det], _ct_more[det], _ctV_more[det])
-                    if opts.gpu and (not xpy_default is np):
-                        _rholmArray_more = cupy.asarray(_rholmArray_more)
-                    rholmArrayDict[det] = xpy_default.concatenate([rholmArrayDict[det], _rholmArray_more], axis=-1)
-                n_cal_for_likelihood += _n_more
-                opts.calibration_n_realizations = n_cal_for_likelihood   # later events start consistent with the extended dict
-
-        if opts.calibration_dump_responsibilities and calibration_marginalization:
-            # PILOT: accumulate the per-cal-realization extrinsic-marginalized log L at
-            # THIS intrinsic point.  Cal is ~extrinsic-independent, so a uniform-prior
-            # extrinsic batch gives an unbiased Monte-Carlo estimate of int dOmega L_c
-            # (the cal posterior responsibility).  Uses the simplest likelihood config
-            # (default helper, loop, fiducial distance) -- only the SHAPE in cal-node
-            # space matters, and the runtime importance weights keep the production
-            # marginalization unbiased regardless of pilot quality.
-            _Next = int(opts.calibration_pilot_extrinsic or 256)
-            _rng_ext = np.random.default_rng((getattr(opts,'seed',0) or 0) + 101 + int(indx_event))
-            P.phi    = xpy_default.asarray(_rng_ext.uniform(0, 2*np.pi, _Next), dtype=np.float64)
-            P.theta  = xpy_default.asarray(np.arcsin(_rng_ext.uniform(-1, 1, _Next)), dtype=np.float64)  # uniform in sin(dec)
-            P.incl   = xpy_default.asarray(np.arccos(_rng_ext.uniform(-1, 1, _Next)), dtype=np.float64)
-            P.psi    = xpy_default.asarray(_rng_ext.uniform(0, np.pi, _Next), dtype=np.float64)
-            P.phiref = xpy_default.asarray(_rng_ext.uniform(0, 2*np.pi, _Next), dtype=np.float64)
-            P.tref   = float(fiducial_epoch)
-            P.dist   = xpy_default.asarray(np.full(_Next, factored_likelihood.distMpcRef)*1.e6*lalsimutils.lsu_PC, dtype=np.float64)
-            _tvals = xpy_default.linspace(-t_ref_wind, t_ref_wind, int((t_ref_wind)*2/P.deltaT))
-            _comp = factored_likelihood.DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(
-                _tvals, P, lookupNKDict, rholmArrayDict, ctUArrayDict, ctVArrayDict, epochDict,
-                Lmax=opts.l_max, xpy=xpy_default, n_cal=n_cal_for_likelihood, cal_method='loop',
-                return_cal_components=True, time_interp=opts._noloop_time_interp)
-            _comp = np.asarray(identity_convert(_comp))                       # (Next, n_cal) -> CPU
-            from scipy.special import logsumexp as _logsumexp
-            _calpilot_logresp_list.append(_logsumexp(_comp, axis=0) - np.log(_Next))
-            print("   pilot point {}: accumulated cal responsibilities ({} realizations, {} extrinsic)".format(
-                  int(indx_event), n_cal_for_likelihood, _Next))
-            # PILOT is cheap: skip the full extrinsic sampler integration -- we only needed
-            # the precompute + this small per-realization eval.  Return a harmless lnL.
-            return 0.0
+                _comp = np.asarray(identity_convert(_comp))                       # (Next, n_cal) -> CPU
+                from scipy.special import logsumexp as _logsumexp
+                _calpilot_logresp_list.append(_logsumexp(_comp, axis=0) - np.log(_Next))
+                print("   pilot point {}: accumulated cal responsibilities ({} realizations, {} extrinsic)".format(
+                      int(indx_event), n_cal_for_likelihood, _Next))
+                # PILOT is cheap: skip the full extrinsic sampler integration -- we only needed
+                # the precompute + this small per-realization eval.  Return a harmless lnL.
+                return 0.0
 
 
 
-    # Likelihood
-    if not opts.time_marginalization:
+        # Likelihood
+        if not opts.time_marginalization:
 
-        def likelihood_function(right_ascension, declination, t_ref, phi_orb,
-                inclination, psi, distance):
+            def likelihood_function(right_ascension, declination, t_ref, phi_orb,
+                    inclination, psi, distance):
 
-            dec = numpy.copy(declination).astype(numpy.float64)
-            if opts.declination_cosine_sampler:
-                dec = numpy.pi/2 - numpy.arccos(dec)
-            incl = numpy.copy(inclination).astype(numpy.float64)
-            if opts.inclination_cosine_sampler:
-                incl = numpy.arccos(incl)
-            if opts.d_prior_redshift:
-                distance = redshift_to_distance(distance)
-
-            # use EXTREMELY many bits
-            lnL = numpy.zeros(right_ascension.shape,dtype=RiftFloat)
-            i = 0
-            for ph, th, tr, phr, ic, ps, di in zip(right_ascension, dec,
-                    t_ref, phi_orb, incl, psi, distance):
-                P.phi = ph # right ascension
-                P.theta = th # declination
-                P.tref = fiducial_epoch + tr # ref. time (rel to epoch for data taking)
-                P.phiref = phr # ref. orbital phase
-                P.incl = ic # inclination
-                P.psi = ps # polarization angle
-                P.dist = di* 1.e6 * lalsimutils.lsu_PC # luminosity distance
-
-                lnL[i] = factored_likelihood.FactoredLogLikelihood(
-                        P, rholms_intp, cross_terms, cross_terms_V, opts.l_max)
-                i+=1
-            if return_lnL:
-              return lnL - manual_avoid_overflow_logarithm 
-            return numpy.exp(lnL - manual_avoid_overflow_logarithm)
-
-    else: # Sum over time for every point in other extrinsic params
-     if not (opts.rom_integrate_intrinsic or opts.vectorized):
-        def likelihood_function(right_ascension, declination, phi_orb, inclination,
-                psi, distance):
-            dec = numpy.copy(declination).astype(numpy.float64)  # get rid of 'object', and allocate space
-            if opts.declination_cosine_sampler:
-                dec = numpy.pi/2 - numpy.arccos(dec)
-            incl = numpy.copy(inclination).astype(numpy.float64)
-            if opts.inclination_cosine_sampler:
-                incl = numpy.arccos(incl)
-            if opts.d_prior_redshift:
-                distance = redshift_to_distance(distance)
-
-            # use EXTREMELY many bits
-            lnL = numpy.zeros(right_ascension.shape,dtype=RiftFloat)
-            i = 0
-            tvals = numpy.linspace(-t_ref_wind,t_ref_wind,int((t_ref_wind)*2/P.deltaT))  # choose an array at the target sampling rate. P is inherited globally
-
-            for ph, th, phr, ic, ps, di in zip(right_ascension, dec,
-                    phi_orb, inclination, psi, distance):
-                P.phi = ph # right ascension
-                P.theta = th # declination
-                P.tref = fiducial_epoch  # see 'tvals', above
-                P.phiref = phr # ref. orbital phase
-                P.incl = ic # inclination
-                P.psi = ps # polarization angle
-                P.dist = di* 1.e6 * lalsimutils.lsu_PC # luminosity distance
-
-
-                lnL[i] = factored_likelihood.FactoredLogLikelihoodTimeMarginalized(tvals,
-                        P, rholms_intp, rholms, cross_terms, cross_terms_V,                   
-                        opts.l_max,interpolate=opts.interpolate_time)
-                i+=1
-            if supplemental_ln_likelihood:
-              lnL += supplemental_ln_likelihood(right_ascension, declination, phi_orb,inclination, psi, distance)
-            if return_lnL:
-              return lnL -manual_avoid_overflow_logarithm 
-            return numpy.exp(lnL -manual_avoid_overflow_logarithm)
-
-     elif opts.vectorized: # use array-based multiplications, fewer for loops
-        if (not opts.gpu):
-          if opts.distance_marginalization:
-            print(" **Warning**: distance marginalization not being used, this is the old vectorized code path not the xpy path.  Check your code path; you may want --force-xpy ")
-          def likelihood_function(right_ascension, declination, phi_orb, inclination,
-                psi, distance):
-#            global nEvals
-            tvals = numpy.linspace(-t_ref_wind,t_ref_wind,int((t_ref_wind)*2/P.deltaT))  # choose an array at the target sampling rate. P is inherited globally
-            dec = numpy.copy(declination).astype(numpy.float64)
-            if opts.declination_cosine_sampler:
-              dec = numpy.pi/2 - numpy.arccos(dec)
-            incl = numpy.copy(inclination).astype(numpy.float64)
-            if opts.inclination_cosine_sampler:
-              incl = numpy.arccos(incl)
-            if opts.d_prior_redshift:
-                distance = redshift_to_distance(distance)
-
-            # use EXTREMELY many bits
-            lnL = numpy.zeros(right_ascension.shape,dtype=RiftFloat)
-            P.phi = right_ascension.astype(float)  # cast to float
-            P.theta = dec #declination.astype(float)
-            P.tref = float(fiducial_epoch)
-            P.phiref = phi_orb.astype(float)
-            P.incl = incl #inclination.astype(float)
-            P.psi = psi.astype(float)
-            P.dist = (distance* 1.e6 * lalsimutils.lsu_PC).astype(float) # luminosity distance
-
-            # rotate sky if needed
-            if opts.internal_sky_network_coordinates:
-                  P.theta,P.phi = my_rotation(np.pi/2 - P.theta,P.phi)
-                  P.theta = np.pi/2 - P.theta
-                  P.phi = xpy_default.mod(P.phi, 2*np.pi)
-
-            # rotate phase if needed
-            # make copies of arrays
-            #   Sampling assumes P.phiref == phi+ \psi ,   P.psi == phi - psi
-            if opts.internal_rotate_phase:
-              phi_orb_true = (P.phiref + P.psi)/2.
-              psi_true = (P.phiref - P.psi)/2.
-              P.psi= psi_true
-              P.phiref = phi_orb_true
-
-            lnL = factored_likelihood.DiscreteFactoredLogLikelihoodViaArrayVector(tvals,
-                        P, lookupNKDict, rholmArrayDict, ctUArrayDict, ctVArrayDict,epochDict,Lmax=opts.l_max)
-#            nEvals +=len(right_ascension)
-            if supplemental_ln_likelihood:
-              lnL += supplemental_ln_likelihood(P.phi, P.theta, P.phiref ,P.incl, P.psi, P.dist) # use these variables so they are already float-type
-            if return_lnL:
-              return lnL -manual_avoid_overflow_logarithm
-            return numpy.exp(lnL-manual_avoid_overflow_logarithm)
-        else: # vectorized and gpu either available or being forced to use xpy code path
-            print( " Using CUDA GPU likelihood, if cupy available ")
-            if not opts.distance_marginalization:
-              def likelihood_function(right_ascension, declination, phi_orb, inclination,
-                psi, distance):
-#                global nEvals
-                tvals = xpy_default.linspace(-t_ref_wind,t_ref_wind,int((t_ref_wind)*2/P.deltaT))  # choose an array at the target sampling rate. P is inherited globally
-                # Use xpy_default.asarray (not the passthrough xpy_asarray_already): some
-                # samplers (e.g. AV) hand back numpy arrays, so on GPU we must convert
-                # them to cupy.  asarray is a no-op for already-on-device arrays.  This
-                # mirrors the distance-marginalization likelihood_function below.
-                P.phi = xpy_default.asarray(right_ascension, dtype=np.float64)
+                dec = numpy.copy(declination).astype(numpy.float64)
                 if opts.declination_cosine_sampler:
-                  P.theta = numpy.pi/2 - xpy_default.arccos(xpy_default.asarray(declination, dtype=np.float64))
-                else:
-                  P.theta = xpy_default.asarray(declination, dtype=np.float64)
-                P.tref = float(fiducial_epoch)
-                P.phiref = xpy_default.asarray(phi_orb, dtype=np.float64)
+                    dec = numpy.pi/2 - numpy.arccos(dec)
+                incl = numpy.copy(inclination).astype(numpy.float64)
                 if opts.inclination_cosine_sampler:
-                  P.incl = xpy_default.arccos(xpy_default.asarray(inclination, dtype=np.float64))
-                else:
-                  P.incl = xpy_default.asarray(inclination, dtype=np.float64)
+                    incl = numpy.arccos(incl)
                 if opts.d_prior_redshift:
-                  distance = redshift_to_distance(distance)
+                    distance = redshift_to_distance(distance)
 
-                P.psi = xpy_default.asarray(psi, dtype=np.float64)
-                P.dist = xpy_default.asarray(distance* 1.e6 * lalsimutils.lsu_PC, dtype=np.float64) # luminosity distance
+                # use EXTREMELY many bits
+                lnL = numpy.zeros(right_ascension.shape,dtype=RiftFloat)
+                i = 0
+                for ph, th, tr, phr, ic, ps, di in zip(right_ascension, dec,
+                        t_ref, phi_orb, incl, psi, distance):
+                    P.phi = ph # right ascension
+                    P.theta = th # declination
+                    P.tref = fiducial_epoch + tr # ref. time (rel to epoch for data taking)
+                    P.phiref = phr # ref. orbital phase
+                    P.incl = ic # inclination
+                    P.psi = ps # polarization angle
+                    P.dist = di* 1.e6 * lalsimutils.lsu_PC # luminosity distance
+
+                    lnL[i] = factored_likelihood.FactoredLogLikelihood(
+                            P, rholms_intp, cross_terms, cross_terms_V, opts.l_max)
+                    i+=1
+                if return_lnL:
+                  return lnL - manual_avoid_overflow_logarithm 
+                return numpy.exp(lnL - manual_avoid_overflow_logarithm)
+
+        else: # Sum over time for every point in other extrinsic params
+         if not (opts.rom_integrate_intrinsic or opts.vectorized):
+            def likelihood_function(right_ascension, declination, phi_orb, inclination,
+                    psi, distance):
+                dec = numpy.copy(declination).astype(numpy.float64)  # get rid of 'object', and allocate space
+                if opts.declination_cosine_sampler:
+                    dec = numpy.pi/2 - numpy.arccos(dec)
+                incl = numpy.copy(inclination).astype(numpy.float64)
+                if opts.inclination_cosine_sampler:
+                    incl = numpy.arccos(incl)
+                if opts.d_prior_redshift:
+                    distance = redshift_to_distance(distance)
+
+                # use EXTREMELY many bits
+                lnL = numpy.zeros(right_ascension.shape,dtype=RiftFloat)
+                i = 0
+                tvals = numpy.linspace(-t_ref_wind,t_ref_wind,int((t_ref_wind)*2/P.deltaT))  # choose an array at the target sampling rate. P is inherited globally
+
+                for ph, th, phr, ic, ps, di in zip(right_ascension, dec,
+                        phi_orb, inclination, psi, distance):
+                    P.phi = ph # right ascension
+                    P.theta = th # declination
+                    P.tref = fiducial_epoch  # see 'tvals', above
+                    P.phiref = phr # ref. orbital phase
+                    P.incl = ic # inclination
+                    P.psi = ps # polarization angle
+                    P.dist = di* 1.e6 * lalsimutils.lsu_PC # luminosity distance
+
+
+                    lnL[i] = factored_likelihood.FactoredLogLikelihoodTimeMarginalized(tvals,
+                            P, rholms_intp, rholms, cross_terms, cross_terms_V,                   
+                            opts.l_max,interpolate=opts.interpolate_time)
+                    i+=1
+                if supplemental_ln_likelihood:
+                  lnL += supplemental_ln_likelihood(right_ascension, declination, phi_orb,inclination, psi, distance)
+                if return_lnL:
+                  return lnL -manual_avoid_overflow_logarithm 
+                return numpy.exp(lnL -manual_avoid_overflow_logarithm)
+
+         elif opts.vectorized: # use array-based multiplications, fewer for loops
+            if (not opts.gpu):
+              if opts.distance_marginalization:
+                print(" **Warning**: distance marginalization not being used, this is the old vectorized code path not the xpy path.  Check your code path; you may want --force-xpy ")
+              def likelihood_function(right_ascension, declination, phi_orb, inclination,
+                    psi, distance):
+    #            global nEvals
+                tvals = numpy.linspace(-t_ref_wind,t_ref_wind,int((t_ref_wind)*2/P.deltaT))  # choose an array at the target sampling rate. P is inherited globally
+                dec = numpy.copy(declination).astype(numpy.float64)
+                if opts.declination_cosine_sampler:
+                  dec = numpy.pi/2 - numpy.arccos(dec)
+                incl = numpy.copy(inclination).astype(numpy.float64)
+                if opts.inclination_cosine_sampler:
+                  incl = numpy.arccos(incl)
+                if opts.d_prior_redshift:
+                    distance = redshift_to_distance(distance)
+
+                # use EXTREMELY many bits
+                lnL = numpy.zeros(right_ascension.shape,dtype=RiftFloat)
+                P.phi = right_ascension.astype(float)  # cast to float
+                P.theta = dec #declination.astype(float)
+                P.tref = float(fiducial_epoch)
+                P.phiref = phi_orb.astype(float)
+                P.incl = incl #inclination.astype(float)
+                P.psi = psi.astype(float)
+                P.dist = (distance* 1.e6 * lalsimutils.lsu_PC).astype(float) # luminosity distance
 
                 # rotate sky if needed
                 if opts.internal_sky_network_coordinates:
-                  P.theta,P.phi = my_rotation(np.pi/2 - P.theta,P.phi)
-                  P.theta = np.pi/2 - P.theta
-                  P.phi = xpy_default.mod(P.phi, 2*np.pi)
+                      P.theta,P.phi = my_rotation(np.pi/2 - P.theta,P.phi)
+                      P.theta = np.pi/2 - P.theta
+                      P.phi = xpy_default.mod(P.phi, 2*np.pi)
 
                 # rotate phase if needed
                 # make copies of arrays
@@ -2232,312 +2213,373 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
                   P.psi= psi_true
                   P.phiref = phi_orb_true
 
-
-                lnL = factored_likelihood.DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals,
-                        P, lookupNKDict, rholmArrayDict, ctUArrayDict, ctVArrayDict,epochDict,Lmax=opts.l_max,xpy=xpy_default,n_cal=n_cal_for_likelihood,
-                        cal_method=('fused' if use_fused_calmarg and opts._noloop_time_interp == 'nearest' else 'loop'), cal_log_weights=calibration_log_weights,
-                        time_interp=opts._noloop_time_interp)  # non-distmarg: default-helper fused kernel (cal_distmarg=None)
-#                nEvals +=len(right_ascension)
+                lnL = factored_likelihood.DiscreteFactoredLogLikelihoodViaArrayVector(tvals,
+                            P, lookupNKDict, rholmArrayDict, ctUArrayDict, ctVArrayDict,epochDict,Lmax=opts.l_max)
+    #            nEvals +=len(right_ascension)
                 if supplemental_ln_likelihood:
-                  lnL += supplemental_ln_likelihood(P.phi, P.theta, P.phiref ,P.incl, P.psi, P.dist,xpy=xpy_default) # use these variables so they are already float-type
+                  lnL += supplemental_ln_likelihood(P.phi, P.theta, P.phiref ,P.incl, P.psi, P.dist) # use these variables so they are already float-type
                 if return_lnL:
-                  return identity_convert_lnL(lnL -manual_avoid_overflow_logarithm)
-                return identity_convert_lnL(xpy_default.exp(lnL-manual_avoid_overflow_logarithm))
-            else:
-              print( " Using direct distance marginalization  ")
-              xmin = factored_likelihood.distMpcRef / dmax
-              xmax = factored_likelihood.distMpcRef / dmin
-              bmax = xpy_default.asarray(lookup_table["bmax"])
-              sqrt_bmax = xpy_default.sqrt(bmax)
-              bref = xpy_default.asarray(lookup_table["bref"])
-              s_array = xpy_default.asarray(lookup_table["s_array"])
-              smin = s_array[0]
-              smax = s_array[-1]
-              t_array = xpy_default.asarray(lookup_table["t_array"])
-              tmax = t_array[-1]
-              lnI_array = xpy_default.asarray(lookup_table["lnI_array"])
+                  return lnL -manual_avoid_overflow_logarithm
+                return numpy.exp(lnL-manual_avoid_overflow_logarithm)
+            else: # vectorized and gpu either available or being forced to use xpy code path
+                print( " Using CUDA GPU likelihood, if cupy available ")
+                if not opts.distance_marginalization:
+                  def likelihood_function(right_ascension, declination, phi_orb, inclination,
+                    psi, distance):
+    #                global nEvals
+                    tvals = xpy_default.linspace(-t_ref_wind,t_ref_wind,int((t_ref_wind)*2/P.deltaT))  # choose an array at the target sampling rate. P is inherited globally
+                    # Use xpy_default.asarray (not the passthrough xpy_asarray_already): some
+                    # samplers (e.g. AV) hand back numpy arrays, so on GPU we must convert
+                    # them to cupy.  asarray is a no-op for already-on-device arrays.  This
+                    # mirrors the distance-marginalization likelihood_function below.
+                    P.phi = xpy_default.asarray(right_ascension, dtype=np.float64)
+                    if opts.declination_cosine_sampler:
+                      P.theta = numpy.pi/2 - xpy_default.arccos(xpy_default.asarray(declination, dtype=np.float64))
+                    else:
+                      P.theta = xpy_default.asarray(declination, dtype=np.float64)
+                    P.tref = float(fiducial_epoch)
+                    P.phiref = xpy_default.asarray(phi_orb, dtype=np.float64)
+                    if opts.inclination_cosine_sampler:
+                      P.incl = xpy_default.arccos(xpy_default.asarray(inclination, dtype=np.float64))
+                    else:
+                      P.incl = xpy_default.asarray(inclination, dtype=np.float64)
+                    if opts.d_prior_redshift:
+                      distance = redshift_to_distance(distance)
 
-              intp = EvenBivariateLinearInterpolator(s_array[0], s_array[1] - s_array[0], t_array[0], t_array[1] - t_array[0], lnI_array)
+                    P.psi = xpy_default.asarray(psi, dtype=np.float64)
+                    P.dist = xpy_default.asarray(distance* 1.e6 * lalsimutils.lsu_PC, dtype=np.float64) # luminosity distance
 
-              def exponent_max(x0, b):
-                x0_expmax = xpy_default.clip(x0, a_min=xmin, a_max=xmax)
-                return b * x0_expmax * (x0 - 0.5*x0_expmax)
+                    # rotate sky if needed
+                    if opts.internal_sky_network_coordinates:
+                      P.theta,P.phi = my_rotation(np.pi/2 - P.theta,P.phi)
+                      P.theta = np.pi/2 - P.theta
+                      P.phi = xpy_default.mod(P.phi, 2*np.pi)
 
-              def b_to_t(b):
-                # TODO: this function is duplicate with what is in util_InitMargTable
-#                return np.arcsinh(b / bref)
-                b_by_bref = b / bref
-                return xpy_default.arcsinh(b_by_bref, out=b_by_bref)
+                    # rotate phase if needed
+                    # make copies of arrays
+                    #   Sampling assumes P.phiref == phi+ \psi ,   P.psi == phi - psi
+                    if opts.internal_rotate_phase:
+                      phi_orb_true = (P.phiref + P.psi)/2.
+                      psi_true = (P.phiref - P.psi)/2.
+                      P.psi= psi_true
+                      P.phiref = phi_orb_true
 
 
-              def x0_to_s(x0):
-                # TODO: this function is duplicate with what is in util_InitMargTable
-#                return np.arcsinh(np.sqrt(bmax) * (x0 - xmin)) - np.arcsinh(np.sqrt(bmax) * (xmax - x0))
-                A = x0 - xmin
-                A *= sqrt_bmax
-                xpy_default.arcsinh(A, out=A)
+                    lnL = factored_likelihood.DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals,
+                            P, lookupNKDict, rholmArrayDict, ctUArrayDict, ctVArrayDict,epochDict,Lmax=opts.l_max,xpy=xpy_default,n_cal=n_cal_for_likelihood,
+                            cal_method=('fused' if use_fused_calmarg and opts._noloop_time_interp == 'nearest' else 'loop'), cal_log_weights=calibration_log_weights,
+                            time_interp=opts._noloop_time_interp)  # non-distmarg: default-helper fused kernel (cal_distmarg=None)
+    #                nEvals +=len(right_ascension)
+                    if supplemental_ln_likelihood:
+                      lnL += supplemental_ln_likelihood(P.phi, P.theta, P.phiref ,P.incl, P.psi, P.dist,xpy=xpy_default) # use these variables so they are already float-type
+                    if return_lnL:
+                      return identity_convert_lnL(lnL -manual_avoid_overflow_logarithm)
+                    return identity_convert_lnL(xpy_default.exp(lnL-manual_avoid_overflow_logarithm))
+                else:
+                  print( " Using direct distance marginalization  ")
+                  xmin = factored_likelihood.distMpcRef / dmax
+                  xmax = factored_likelihood.distMpcRef / dmin
+                  bmax = xpy_default.asarray(lookup_table["bmax"])
+                  sqrt_bmax = xpy_default.sqrt(bmax)
+                  bref = xpy_default.asarray(lookup_table["bref"])
+                  s_array = xpy_default.asarray(lookup_table["s_array"])
+                  smin = s_array[0]
+                  smax = s_array[-1]
+                  t_array = xpy_default.asarray(lookup_table["t_array"])
+                  tmax = t_array[-1]
+                  lnI_array = xpy_default.asarray(lookup_table["lnI_array"])
 
-                B = xmax - x0
-                B *= sqrt_bmax
-                xpy_default.arcsinh(B, out=B)
+                  intp = EvenBivariateLinearInterpolator(s_array[0], s_array[1] - s_array[0], t_array[0], t_array[1] - t_array[0], lnI_array)
 
-                A -= B
-                return A
+                  def exponent_max(x0, b):
+                    x0_expmax = xpy_default.clip(x0, a_min=xmin, a_max=xmax)
+                    return b * x0_expmax * (x0 - 0.5*x0_expmax)
 
-              def distmarg_loglikelihood(kappa_sq, rho_sq):
-                x0 = kappa_sq / rho_sq
-#                lnI = np.ones(shape=x0.shape) * -np.inf
-                lnI = xpy_default.full_like(x0, -xpy_default.inf)
-                s = x0_to_s(x0)
-                t = b_to_t(rho_sq)
-#                in_bounds = (s > smin) * (s < smax) * (t < tmax)
-                in_bounds = (s > smin) & (s < smax) & (t < tmax)
-                lnI[in_bounds] = intp(s[in_bounds], t[in_bounds])
-                return exponent_max(x0, rho_sq) + lnI
+                  def b_to_t(b):
+                    # TODO: this function is duplicate with what is in util_InitMargTable
+    #                return np.arcsinh(b / bref)
+                    b_by_bref = b / bref
+                    return xpy_default.arcsinh(b_by_bref, out=b_by_bref)
 
-              # Opt-in: package the distmarg table for the fused kernel (Option C).
-              # Only used (below) at the non-phase-marg distmarg call site; the loop
-              # method (Option B) remains the default and the fallback.  Works on GPU
-              # and CPU (the fused path has a numpy backend), so no GPU gate here.
-              cal_distmarg_dict = None
-              if use_fused_calmarg:
-                  cal_distmarg_dict = dict(
-                    lnI_array=lnI_array,
-                    s0=float(s_array[0]), ds=float(s_array[1] - s_array[0]),
-                    smin=float(smin), smax=float(smax),
-                    t0=float(t_array[0]), dt=float(t_array[1] - t_array[0]), tmax=float(tmax),
-                    xmin=float(xmin), xmax=float(xmax),
-                    sqrt_bmax=float(sqrt_bmax), bref=float(bref))
 
-              if lookup_table["phase_marginalization"]:
+                  def x0_to_s(x0):
+                    # TODO: this function is duplicate with what is in util_InitMargTable
+    #                return np.arcsinh(np.sqrt(bmax) * (x0 - xmin)) - np.arcsinh(np.sqrt(bmax) * (xmax - x0))
+                    A = x0 - xmin
+                    A *= sqrt_bmax
+                    xpy_default.arcsinh(A, out=A)
 
-                print( " Using direct phase marginalization  ")
-                for det in lookupNKDict:
-                  if set((lm[0], lm[1]) for lm in lookupNKDict[det]) != {(2, 2), (2, -2)}:
-                    raise Exception(
-                        " Phase marginalization is implemented only for 2-2 modes, "
-                        f"while the modes consired here are {lookupNKDict[det]}."
-                    )
+                    B = xmax - x0
+                    B *= sqrt_bmax
+                    xpy_default.arcsinh(B, out=B)
 
-                def likelihood_function(right_ascension, declination, inclination, psi):
-#                  global nEvals
-                  tvals = xpy_default.linspace(-t_ref_wind,t_ref_wind,int((t_ref_wind)*2/P.deltaT))  # choose an array at the target sampling rate. P is inherited globally
-                  P.phi = xpy_default.asarray(right_ascension, dtype=np.float64)  # cast to float
-                  if opts.declination_cosine_sampler:
-                    P.theta = numpy.pi/2 - xpy_default.arccos(xpy_default.asarray(declination,dtype=np.float64))
+                    A -= B
+                    return A
+
+                  def distmarg_loglikelihood(kappa_sq, rho_sq):
+                    x0 = kappa_sq / rho_sq
+    #                lnI = np.ones(shape=x0.shape) * -np.inf
+                    lnI = xpy_default.full_like(x0, -xpy_default.inf)
+                    s = x0_to_s(x0)
+                    t = b_to_t(rho_sq)
+    #                in_bounds = (s > smin) * (s < smax) * (t < tmax)
+                    in_bounds = (s > smin) & (s < smax) & (t < tmax)
+                    lnI[in_bounds] = intp(s[in_bounds], t[in_bounds])
+                    return exponent_max(x0, rho_sq) + lnI
+
+                  # Opt-in: package the distmarg table for the fused kernel (Option C).
+                  # Only used (below) at the non-phase-marg distmarg call site; the loop
+                  # method (Option B) remains the default and the fallback.  Works on GPU
+                  # and CPU (the fused path has a numpy backend), so no GPU gate here.
+                  cal_distmarg_dict = None
+                  if use_fused_calmarg:
+                      cal_distmarg_dict = dict(
+                        lnI_array=lnI_array,
+                        s0=float(s_array[0]), ds=float(s_array[1] - s_array[0]),
+                        smin=float(smin), smax=float(smax),
+                        t0=float(t_array[0]), dt=float(t_array[1] - t_array[0]), tmax=float(tmax),
+                        xmin=float(xmin), xmax=float(xmax),
+                        sqrt_bmax=float(sqrt_bmax), bref=float(bref))
+
+                  if lookup_table["phase_marginalization"]:
+
+                    print( " Using direct phase marginalization  ")
+                    for det in lookupNKDict:
+                      if set((lm[0], lm[1]) for lm in lookupNKDict[det]) != {(2, 2), (2, -2)}:
+                        raise Exception(
+                            " Phase marginalization is implemented only for 2-2 modes, "
+                            f"while the modes consired here are {lookupNKDict[det]}."
+                        )
+
+                    def likelihood_function(right_ascension, declination, inclination, psi):
+    #                  global nEvals
+                      tvals = xpy_default.linspace(-t_ref_wind,t_ref_wind,int((t_ref_wind)*2/P.deltaT))  # choose an array at the target sampling rate. P is inherited globally
+                      P.phi = xpy_default.asarray(right_ascension, dtype=np.float64)  # cast to float
+                      if opts.declination_cosine_sampler:
+                        P.theta = numpy.pi/2 - xpy_default.arccos(xpy_default.asarray(declination,dtype=np.float64))
+                      else:
+                        P.theta = xpy_default.asarray(declination,dtype=np.float64)
+                      P.tref = float(fiducial_epoch)
+                      P.phiref = xpy_default.full_like(inclination, 0., dtype=np.float64)
+                      if opts.inclination_cosine_sampler:
+                        P.incl = xpy_default.arccos(xpy_default.asarray(inclination, dtype=np.float64))
+                      else:
+                        P.incl = xpy_default.asarray(inclination, dtype=np.float64)
+
+                      P.psi = xpy_default.asarray(psi, dtype=np.float64)
+                      P.dist = xpy_default.asarray(factored_likelihood.distMpcRef * 1.e6 * lalsimutils.lsu_PC,dtype=np.float64) # luminosity distance
+
+                      # rotate sky if needed
+                      if opts.internal_sky_network_coordinates:
+                        P.theta,P.phi = my_rotation(np.pi/2 - P.theta,P.phi)
+                        P.theta = np.pi/2 - P.theta
+                        P.phi = xpy_default.mod(P.phi, 2*np.pi)
+
+                      # rotate phase if needed
+                      # make copies of arrays
+                      #   Sampling assumes P.phiref == phi+ \psi ,   P.psi == phi - psi
+                      if opts.internal_rotate_phase:
+                        phi_orb_true = (P.phiref + P.psi)/2.
+                        psi_true = (P.phiref - P.psi)/2.
+                        P.psi= psi_true
+                        P.phiref = phi_orb_true
+
+                      lnL = factored_likelihood.DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals,
+                        P, lookupNKDict, rholmArrayDict, ctUArrayDict, ctVArrayDict,epochDict,Lmax=opts.l_max,xpy=xpy_default, loglikelihood=distmarg_loglikelihood, phase_marginalization=True,n_cal=n_cal_for_likelihood,
+                        cal_method=('fused' if cal_distmarg_dict is not None and opts._noloop_time_interp == 'nearest' else 'loop'), cal_distmarg=(cal_distmarg_dict if opts._noloop_time_interp == 'nearest' else None), cal_log_weights=calibration_log_weights,
+                        time_interp=opts._noloop_time_interp)
+    #                  nEvals +=len(right_ascension)
+                      if supplemental_ln_likelihood:
+                        lnL += supplemental_ln_likelihood(P.phi, P.theta, P.phiref ,P.incl, P.psi, 0,xpy=xpy_default) # Same API
+                      if return_lnL:
+                        return identity_convert_lnL(lnL -manual_avoid_overflow_logarithm)
+                      return identity_convert_lnL(xpy_default.exp(lnL-manual_avoid_overflow_logarithm))
+
                   else:
-                    P.theta = xpy_default.asarray(declination,dtype=np.float64)
-                  P.tref = float(fiducial_epoch)
-                  P.phiref = xpy_default.full_like(inclination, 0., dtype=np.float64)
-                  if opts.inclination_cosine_sampler:
-                    P.incl = xpy_default.arccos(xpy_default.asarray(inclination, dtype=np.float64))
+
+                    def likelihood_function(right_ascension, declination, phi_orb, inclination, psi):
+    #                  global nEvals
+                      tvals = xpy_default.linspace(-t_ref_wind,t_ref_wind,int((t_ref_wind)*2/P.deltaT))  # choose an array at the target sampling rate. P is inherited globally
+                      P.phi = xpy_default.asarray(right_ascension, dtype=np.float64)  # cast to float
+                      if opts.declination_cosine_sampler:
+                        P.theta = numpy.pi/2 - xpy_default.arccos(xpy_default.asarray(declination,dtype=np.float64))
+                      else:
+                        P.theta = xpy_default.asarray(declination,dtype=np.float64)
+                      P.tref = float(fiducial_epoch)
+                      P.phiref = xpy_default.asarray(phi_orb, dtype=np.float64)
+                      if opts.inclination_cosine_sampler:
+                        P.incl = xpy_default.arccos(xpy_default.asarray(inclination, dtype=np.float64))
+                      else:
+                        P.incl = xpy_default.asarray(inclination, dtype=np.float64)
+                      P.psi = xpy_default.asarray(psi, dtype=np.float64)
+                      P.dist = xpy_default.asarray(factored_likelihood.distMpcRef * 1.e6 * lalsimutils.lsu_PC,dtype=np.float64) # luminosity distance
+
+                      # rotate sky if needed
+                      if opts.internal_sky_network_coordinates:
+                        P.theta,P.phi = my_rotation(np.pi/2 - P.theta,P.phi)
+                        P.theta = np.pi/2 - P.theta
+                        P.phi = xpy_default.mod(P.phi, 2*np.pi)
+
+                      # rotate phase if needed
+                      # make copies of arrays
+                      #   Sampling assumes P.phiref == phi+ \psi ,   P.psi == phi - psi
+                      if opts.internal_rotate_phase:
+                        phi_orb_true = (P.phiref + P.psi)/2.
+                        psi_true = (P.phiref - P.psi)/2.
+                        P.psi= psi_true
+                        P.phiref = phi_orb_true
+
+                      lnL = factored_likelihood.DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals,
+                        P, lookupNKDict, rholmArrayDict, ctUArrayDict, ctVArrayDict,epochDict,Lmax=opts.l_max,xpy=xpy_default, loglikelihood=distmarg_loglikelihood,n_cal=n_cal_for_likelihood,
+                        cal_method=('fused' if cal_distmarg_dict is not None and opts._noloop_time_interp == 'nearest' else 'loop'), cal_distmarg=(cal_distmarg_dict if opts._noloop_time_interp == 'nearest' else None), cal_log_weights=calibration_log_weights,
+                        time_interp=opts._noloop_time_interp)
+    #                  nEvals +=len(right_ascension)
+                      if supplemental_ln_likelihood:
+                        lnL += supplemental_ln_likelihood(P.phi, P.theta, P.phiref ,P.incl, P.psi, 0,xpy=xpy_default) # Same API
+                      if return_lnL:
+                        return identity_convert_lnL(lnL -manual_avoid_overflow_logarithm)
+                      return identity_convert_lnL(xpy_default.exp(lnL-manual_avoid_overflow_logarithm))
+
+         else: # integrate over intrinsic variables. Right now those variables ahave HARDCODED NAMES, alas
+            def likelihood_function(right_ascension, declination, phi_orb, inclination,
+                    psi, distance,q):
+                dec = numpy.copy(declination).astype(numpy.float64)
+                if opts.declination_cosine_sampler:
+                    dec = numpy.pi/2 - numpy.arccos(dec)
+                incl = numpy.copy(inclination).astype(numpy.float64)
+                if opts.inclination_cosine_sampler:
+                    incl = numpy.arccos(incl)
+                if opts.d_prior_redshift:
+                  distance = redshift_to_distance(distance)
+
+                lnL = numpy.zeros(len(right_ascension),dtype=RiftFloat)
+    #            i = 0
+                tvals = numpy.linspace(-t_ref_wind,t_ref_wind,int((t_ref_wind)*2/P.deltaT))  # choose an array at the target sampling rate. P is inherited globally
+
+
+    #            t_start =lal.GPSTimeNow() 
+                for ph, th, phr, ic, ps, di,qi in zip(right_ascension, dec,
+                        phi_orb, incl, psi, distance,q):
+                     # Reconstruct U,V using ROM fits.  PROBABLY should do this once for every q, rather than deep on the loop
+                    P.assign_param('q',qi)  # mass ratio
+                    rholms_intp_A, cross_terms_A, cross_terms_V_A, rholms_A, rest_A = factored_likelihood.ReconstructPrecomputedLikelihoodTermsROM(P, rest, rholms_intp, cross_terms, cross_terms_V, rholms,verbose=False)
+                    # proceed for rest
+                    P.phi = ph # right ascension
+                    P.theta = th # declination
+                    P.tref = fiducial_epoch  # see 'tvals', above
+                    P.phiref = phr # ref. orbital phase
+                    P.incl = ic # inclination
+                    P.psi = ps # polarization angle
+                    P.dist = di* 1.e6 * lalsimutils.lsu_PC # luminosity distance
+
+
+                    lnL[i] = factored_likelihood.FactoredLogLikelihoodTimeMarginalized(tvals,
+                            P, rholms_intp_A, rholms_A, cross_terms_A, cross_terms_V_A,                   
+                            opts.l_max,interpolate=opts.interpolate_time)
+                    if numpy.isnan(lnL[i]) or lnL[i]<-200:
+                        lnL[i] = -200   # regularize  : a hack, for now, to deal with rare ROM problems. Only on the ROM logic fork
+                    i+=1
+    #            t_end =lal.GPSTimeNow() 
+    #            print " Cost per evaluation ", (t_end - t_start)/len(q)
+    #            print " Max lnL for this iteration ", numpy.max(lnL)
+                if return_lnL:
+                  return lnL -manual_avoid_overflow_logarithm
+                return numpy.exp(lnL - manual_avoid_overflow_logarithm)
+
+        if opts.sampler_method == "adaptive_cartesian_gpu":
+          # reset sampling parameter as needed (distance, inclination but not sky location)
+          # distance (and inclination) can conceivably correlate with mass, and we don't want to truncate in distance/inclination prematurely from history effects
+          # method ONLY implemented for adaptcart!
+          if 'distance' in sampler.params:
+            sampler.reset_sampling('distance')
+          sampler.reset_sampling('inclination')
+        elif opts.sampler_method == "GMM":
+          if 'distance' in sampler.params:
+             pair_d_incl = sampler_param_tuple(sampler, ['distance','inclination'])
+             if  pair_d_incl in gmm_dict:
+                gmm_dict[pair_d_incl] = None # reset inclination/distance sampling
+          single_incl = sampler_param_tuple(sampler, ['inclination'])
+          if (opts.distance_marginalization) and single_incl in gmm_dict:
+            gmm_dict[single_incl] = None # reset inclination sampling
+
+
+        # Integrate
+        args = likelihood_function.__code__.co_varnames[:likelihood_function.__code__.co_argcount]
+        print( " --------> Arguments ", args)
+        # if exactly zero likelihood function
+        like_to_integrate = likelihood_function
+        if opts.zero_likelihood:
+                  if opts.internal_use_lnL:
+                       like_to_integrate = zero_like
                   else:
-                    P.incl = xpy_default.asarray(inclination, dtype=np.float64)
+                       like_to_integrate = unit_like
+        if oracleRS:
+             print("  ORACLE  - seeding sampling  with" , oracleRS.params_ordered)
+             if hasattr(sampler, 'update_sampling_prior'):
+                 rvs_train = {}
+                 _, _, rv_oracle = oracleRS.draw_simplified(opts.n_chunk)
+                 for indx,p  in enumerate(sampler.params_ordered):
+                   rvs_train[p] = rv_oracle[:,indx]
+                 # train with equal weight - no likelihood information
+                 lnL_oracles  = np.zeros(opts.n_chunk)
+                 sampler.update_sampling_prior(lnL_oracles, opts.n_chunk, external_rvs=rvs_train,log_scale_weights=True,floor_integrated_probability=opts.adapt_floor_level)
 
-                  P.psi = xpy_default.asarray(psi, dtype=np.float64)
-                  P.dist = xpy_default.asarray(factored_likelihood.distMpcRef * 1.e6 * lalsimutils.lsu_PC,dtype=np.float64) # luminosity distance
+        # Optional ZERO-CAL burn-in (generally useful; see RIFT/calmarg/DESIGN_adaptive_driver.md).
+        # Adapt the extrinsic sampler cheaply on the n_cal=1 baseline first, then run the full
+        # cal-marginalized integration reusing the adapted proposal.  The likelihood closures
+        # read the enclosing n_cal_for_likelihood, so toggling it to 1 makes this same
+        # like_to_integrate evaluate the fast baseline.  Correctness is preserved regardless of
+        # whether the sampler retains adaptation across the two integrate() calls -- worst case
+        # the burn-in is simply wasted; the production integral below is always the full cal one.
+        if opts.calibration_burn_in_neff and calibration_marginalization and n_cal_for_likelihood > 1:
+            _ncal_full = n_cal_for_likelihood
+            n_cal_for_likelihood = 1
+            _burn_pinned = dict(pinned_params)
+            _burn_pinned['neff'] = float(opts.calibration_burn_in_neff)
+            _burn_pinned['nmax'] = int(opts.calibration_burn_in_nmax) if opts.calibration_burn_in_nmax else int(pinned_params.get('nmax', n_max))
+            print(" [calmarg burn-in] adapting extrinsic sampler on ZERO-CAL likelihood -> neff>={:g} (nmax cap {})".format(_burn_pinned['neff'], _burn_pinned['nmax']))
+            try:
+                _b = sampler.integrate(like_to_integrate, *unpinned_params, **_burn_pinned)
+                print(" [calmarg burn-in] done (burn-in neff ~ {}); switching to full cal marginalization".format(_b[2] if _b and len(_b) > 2 else '?'))
+            except Exception as _eb:
+                print(" [calmarg burn-in] integrate failed ({}); proceeding to production".format(_eb))
+            n_cal_for_likelihood = _ncal_full   # restore: production uses the full cal set
 
-                  # rotate sky if needed
-                  if opts.internal_sky_network_coordinates:
-                    P.theta,P.phi = my_rotation(np.pi/2 - P.theta,P.phi)
-                    P.theta = np.pi/2 - P.theta
-                    P.phi = xpy_default.mod(P.phi, 2*np.pi)
+        res, var, neff, dict_return = sampler.integrate(like_to_integrate, *unpinned_params, **pinned_params)
 
-                  # rotate phase if needed
-                  # make copies of arrays
-                  #   Sampling assumes P.phiref == phi+ \psi ,   P.psi == phi - psi
-                  if opts.internal_rotate_phase:
-                    phi_orb_true = (P.phiref + P.psi)/2.
-                    psi_true = (P.phiref - P.psi)/2.
-                    P.psi= psi_true
-                    P.phiref = phi_orb_true
+        if not(res): # no resut
+          raise ValueError(" No integral result returned")
 
-                  lnL = factored_likelihood.DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals,
-                    P, lookupNKDict, rholmArrayDict, ctUArrayDict, ctVArrayDict,epochDict,Lmax=opts.l_max,xpy=xpy_default, loglikelihood=distmarg_loglikelihood, phase_marginalization=True,n_cal=n_cal_for_likelihood,
-                    cal_method=('fused' if cal_distmarg_dict is not None and opts._noloop_time_interp == 'nearest' else 'loop'), cal_distmarg=(cal_distmarg_dict if opts._noloop_time_interp == 'nearest' else None), cal_log_weights=calibration_log_weights,
-                    time_interp=opts._noloop_time_interp)
-#                  nEvals +=len(right_ascension)
-                  if supplemental_ln_likelihood:
-                    lnL += supplemental_ln_likelihood(P.phi, P.theta, P.phiref ,P.incl, P.psi, 0,xpy=xpy_default) # Same API
-                  if return_lnL:
-                    return identity_convert_lnL(lnL -manual_avoid_overflow_logarithm)
-                  return identity_convert_lnL(xpy_default.exp(lnL-manual_avoid_overflow_logarithm))
+        if not(opts.internal_use_lnL):
+          log_res = numpy.log(res)
+          sqrt_var_over_res =  numpy.sqrt(var)/res
+        else:
+          log_res = res
+          sqrt_var_over_res =  numpy.exp(var/2 - log_res)
 
-              else:
-
-                def likelihood_function(right_ascension, declination, phi_orb, inclination, psi):
-#                  global nEvals
-                  tvals = xpy_default.linspace(-t_ref_wind,t_ref_wind,int((t_ref_wind)*2/P.deltaT))  # choose an array at the target sampling rate. P is inherited globally
-                  P.phi = xpy_default.asarray(right_ascension, dtype=np.float64)  # cast to float
-                  if opts.declination_cosine_sampler:
-                    P.theta = numpy.pi/2 - xpy_default.arccos(xpy_default.asarray(declination,dtype=np.float64))
-                  else:
-                    P.theta = xpy_default.asarray(declination,dtype=np.float64)
-                  P.tref = float(fiducial_epoch)
-                  P.phiref = xpy_default.asarray(phi_orb, dtype=np.float64)
-                  if opts.inclination_cosine_sampler:
-                    P.incl = xpy_default.arccos(xpy_default.asarray(inclination, dtype=np.float64))
-                  else:
-                    P.incl = xpy_default.asarray(inclination, dtype=np.float64)
-                  P.psi = xpy_default.asarray(psi, dtype=np.float64)
-                  P.dist = xpy_default.asarray(factored_likelihood.distMpcRef * 1.e6 * lalsimutils.lsu_PC,dtype=np.float64) # luminosity distance
-
-                  # rotate sky if needed
-                  if opts.internal_sky_network_coordinates:
-                    P.theta,P.phi = my_rotation(np.pi/2 - P.theta,P.phi)
-                    P.theta = np.pi/2 - P.theta
-                    P.phi = xpy_default.mod(P.phi, 2*np.pi)
-
-                  # rotate phase if needed
-                  # make copies of arrays
-                  #   Sampling assumes P.phiref == phi+ \psi ,   P.psi == phi - psi
-                  if opts.internal_rotate_phase:
-                    phi_orb_true = (P.phiref + P.psi)/2.
-                    psi_true = (P.phiref - P.psi)/2.
-                    P.psi= psi_true
-                    P.phiref = phi_orb_true
-
-                  lnL = factored_likelihood.DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals,
-                    P, lookupNKDict, rholmArrayDict, ctUArrayDict, ctVArrayDict,epochDict,Lmax=opts.l_max,xpy=xpy_default, loglikelihood=distmarg_loglikelihood,n_cal=n_cal_for_likelihood,
-                    cal_method=('fused' if cal_distmarg_dict is not None and opts._noloop_time_interp == 'nearest' else 'loop'), cal_distmarg=(cal_distmarg_dict if opts._noloop_time_interp == 'nearest' else None), cal_log_weights=calibration_log_weights,
-                    time_interp=opts._noloop_time_interp)
-#                  nEvals +=len(right_ascension)
-                  if supplemental_ln_likelihood:
-                    lnL += supplemental_ln_likelihood(P.phi, P.theta, P.phiref ,P.incl, P.psi, 0,xpy=xpy_default) # Same API
-                  if return_lnL:
-                    return identity_convert_lnL(lnL -manual_avoid_overflow_logarithm)
-                  return identity_convert_lnL(xpy_default.exp(lnL-manual_avoid_overflow_logarithm))
-
-     else: # integrate over intrinsic variables. Right now those variables ahave HARDCODED NAMES, alas
-        def likelihood_function(right_ascension, declination, phi_orb, inclination,
-                psi, distance,q):
-            dec = numpy.copy(declination).astype(numpy.float64)
-            if opts.declination_cosine_sampler:
-                dec = numpy.pi/2 - numpy.arccos(dec)
-            incl = numpy.copy(inclination).astype(numpy.float64)
-            if opts.inclination_cosine_sampler:
-                incl = numpy.arccos(incl)
-            if opts.d_prior_redshift:
-              distance = redshift_to_distance(distance)
-
-            lnL = numpy.zeros(len(right_ascension),dtype=RiftFloat)
-#            i = 0
-            tvals = numpy.linspace(-t_ref_wind,t_ref_wind,int((t_ref_wind)*2/P.deltaT))  # choose an array at the target sampling rate. P is inherited globally
-
-
-#            t_start =lal.GPSTimeNow() 
-            for ph, th, phr, ic, ps, di,qi in zip(right_ascension, dec,
-                    phi_orb, incl, psi, distance,q):
-                 # Reconstruct U,V using ROM fits.  PROBABLY should do this once for every q, rather than deep on the loop
-                P.assign_param('q',qi)  # mass ratio
-                rholms_intp_A, cross_terms_A, cross_terms_V_A, rholms_A, rest_A = factored_likelihood.ReconstructPrecomputedLikelihoodTermsROM(P, rest, rholms_intp, cross_terms, cross_terms_V, rholms,verbose=False)
-                # proceed for rest
-                P.phi = ph # right ascension
-                P.theta = th # declination
-                P.tref = fiducial_epoch  # see 'tvals', above
-                P.phiref = phr # ref. orbital phase
-                P.incl = ic # inclination
-                P.psi = ps # polarization angle
-                P.dist = di* 1.e6 * lalsimutils.lsu_PC # luminosity distance
-
-
-                lnL[i] = factored_likelihood.FactoredLogLikelihoodTimeMarginalized(tvals,
-                        P, rholms_intp_A, rholms_A, cross_terms_A, cross_terms_V_A,                   
-                        opts.l_max,interpolate=opts.interpolate_time)
-                if numpy.isnan(lnL[i]) or lnL[i]<-200:
-                    lnL[i] = -200   # regularize  : a hack, for now, to deal with rare ROM problems. Only on the ROM logic fork
-                i+=1
-#            t_end =lal.GPSTimeNow() 
-#            print " Cost per evaluation ", (t_end - t_start)/len(q)
-#            print " Max lnL for this iteration ", numpy.max(lnL)
-            if return_lnL:
-              return lnL -manual_avoid_overflow_logarithm
-            return numpy.exp(lnL - manual_avoid_overflow_logarithm)
-
-    if opts.sampler_method == "adaptive_cartesian_gpu":
-      # reset sampling parameter as needed (distance, inclination but not sky location)
-      # distance (and inclination) can conceivably correlate with mass, and we don't want to truncate in distance/inclination prematurely from history effects
-      # method ONLY implemented for adaptcart!
-      if 'distance' in sampler.params:
-        sampler.reset_sampling('distance')
-      sampler.reset_sampling('inclination')
-    elif opts.sampler_method == "GMM":
-      if 'distance' in sampler.params:
-         pair_d_incl = sampler_param_tuple(sampler, ['distance','inclination'])
-         if  pair_d_incl in gmm_dict:
-            gmm_dict[pair_d_incl] = None # reset inclination/distance sampling
-      single_incl = sampler_param_tuple(sampler, ['inclination'])
-      if (opts.distance_marginalization) and single_incl in gmm_dict:
-        gmm_dict[single_incl] = None # reset inclination sampling
-
-
-    # Integrate
-    args = likelihood_function.__code__.co_varnames[:likelihood_function.__code__.co_argcount]
-    print( " --------> Arguments ", args)
-    # if exactly zero likelihood function
-    like_to_integrate = likelihood_function
-    if opts.zero_likelihood:
-              if opts.internal_use_lnL:
-                   like_to_integrate = zero_like
-              else:
-                   like_to_integrate = unit_like
-    if oracleRS:
-         print("  ORACLE  - seeding sampling  with" , oracleRS.params_ordered)
-         if hasattr(sampler, 'update_sampling_prior'):
-             rvs_train = {}
-             _, _, rv_oracle = oracleRS.draw_simplified(opts.n_chunk)
-             for indx,p  in enumerate(sampler.params_ordered):
-               rvs_train[p] = rv_oracle[:,indx]
-             # train with equal weight - no likelihood information
-             lnL_oracles  = np.zeros(opts.n_chunk)
-             sampler.update_sampling_prior(lnL_oracles, opts.n_chunk, external_rvs=rvs_train,log_scale_weights=True,floor_integrated_probability=opts.adapt_floor_level)
-
-    # Optional ZERO-CAL burn-in (generally useful; see RIFT/calmarg/DESIGN_adaptive_driver.md).
-    # Adapt the extrinsic sampler cheaply on the n_cal=1 baseline first, then run the full
-    # cal-marginalized integration reusing the adapted proposal.  The likelihood closures
-    # read the enclosing n_cal_for_likelihood, so toggling it to 1 makes this same
-    # like_to_integrate evaluate the fast baseline.  Correctness is preserved regardless of
-    # whether the sampler retains adaptation across the two integrate() calls -- worst case
-    # the burn-in is simply wasted; the production integral below is always the full cal one.
-    if opts.calibration_burn_in_neff and calibration_marginalization and n_cal_for_likelihood > 1:
-        _ncal_full = n_cal_for_likelihood
-        n_cal_for_likelihood = 1
-        _burn_pinned = dict(pinned_params)
-        _burn_pinned['neff'] = float(opts.calibration_burn_in_neff)
-        _burn_pinned['nmax'] = int(opts.calibration_burn_in_nmax) if opts.calibration_burn_in_nmax else int(pinned_params.get('nmax', n_max))
-        print(" [calmarg burn-in] adapting extrinsic sampler on ZERO-CAL likelihood -> neff>={:g} (nmax cap {})".format(_burn_pinned['neff'], _burn_pinned['nmax']))
-        try:
-            _b = sampler.integrate(like_to_integrate, *unpinned_params, **_burn_pinned)
-            print(" [calmarg burn-in] done (burn-in neff ~ {}); switching to full cal marginalization".format(_b[2] if _b and len(_b) > 2 else '?'))
-        except Exception as _eb:
-            print(" [calmarg burn-in] integrate failed ({}); proceeding to production".format(_eb))
-        n_cal_for_likelihood = _ncal_full   # restore: production uses the full cal set
-
-    res, var, neff, dict_return = sampler.integrate(like_to_integrate, *unpinned_params, **pinned_params)
-
-    if not(res): # no resut
-      raise ValueError(" No integral result returned")
-
-    if not(opts.internal_use_lnL):
-      log_res = numpy.log(res)
-      sqrt_var_over_res =  numpy.sqrt(var)/res
-    else:
-      log_res = res
-      sqrt_var_over_res =  numpy.exp(var/2 - log_res)
-
-    # G3 glitch marginalization: add the per-detector glitch Delta-lnZ evidence constant to the
-    # marginal lnL.  Delta-lnZ = sum_det [ 1/2 gamma^H M^-1 gamma - 1/2 ln det(I+sigma^2 Lam0 G) ]
-    # is a per-detector DATA constant (independent of intrinsic/extrinsic parameters) that does
-    # NOT cancel (GLITCH_MARG_DESIGN.md Sec. 4).  Because it is constant across samples,
-    # int exp(lnL + C) = exp(C) int exp(lnL), so adding it to log_res shifts lnL_marg by exactly
-    # the constant it contributes to every per-sample lnL -- the single cleanest injection point
-    # (the Q'/U' corrections that shape lnL(t) already entered through the TD Precompute seam).
-    if ile_ip_factory is not None and hasattr(ile_ip_factory, "glitch_delta_lnZ_total"):
-      _glitch_dlnZ = ile_ip_factory.glitch_delta_lnZ_total()
-      if _glitch_dlnZ != 0.0:
-        print("  [G3] adding glitch Delta-lnZ = %.6g to lnL_marg (per-detector evidence term)"
-              % _glitch_dlnZ)
-        log_res = log_res + _glitch_dlnZ
+        # G3 glitch marginalization: add the per-detector glitch Delta-lnZ evidence constant to the
+        # marginal lnL.  Delta-lnZ = sum_det [ 1/2 gamma^H M^-1 gamma - 1/2 ln det(I+sigma^2 Lam0 G) ]
+        # is a per-detector DATA constant (independent of intrinsic/extrinsic parameters) that does
+        # NOT cancel (GLITCH_MARG_DESIGN.md Sec. 4).  Because it is constant across samples,
+        # int exp(lnL + C) = exp(C) int exp(lnL), so adding it to log_res shifts lnL_marg by exactly
+        # the constant it contributes to every per-sample lnL -- the single cleanest injection point
+        # (the Q'/U' corrections that shape lnL(t) already entered through the TD Precompute seam).
+        if ile_ip_factory is not None and hasattr(ile_ip_factory, "glitch_delta_lnZ_total"):
+          _glitch_dlnZ = ile_ip_factory.glitch_delta_lnZ_total()
+          if _glitch_dlnZ != 0.0:
+            print("  [G3] adding glitch Delta-lnZ = %.6g to lnL_marg (per-detector evidence term)"
+                  % _glitch_dlnZ)
+            log_res = log_res + _glitch_dlnZ
+        # per-branch marginal likelihood, offset-restored so the logsumexp is offset-safe
+        # (each branch already added its own active per-detector Delta-lnZ above).
+        _branch_lnL_marg.append(float(log_res + manual_avoid_overflow_logarithm))
+    if _signmix:
+        from scipy.special import logsumexp as _logsumexp_signmix
+        _lnL_marg_mix = float(_logsumexp_signmix(_branch_lnL_marg) - np.log(2.0))
+        # re-express in the current overflow-offset frame for the downstream output writers
+        log_res = _lnL_marg_mix - manual_avoid_overflow_logarithm
+        print('  [G3] signmix: per-branch lnL_marg=%s ; combined logsumexp - ln2 = %.6f (exact two-component sign-mixture marginal)'
+              % (['%.6f' % x for x in _branch_lnL_marg], _lnL_marg_mix))
 
     # Calibration MC error budget.  The sampler's `var` is the EXTRINSIC sampling
     # variance with the cal draw set held FIXED -- it is structurally blind to the

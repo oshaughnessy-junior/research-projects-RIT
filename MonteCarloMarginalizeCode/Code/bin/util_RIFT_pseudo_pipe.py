@@ -577,6 +577,8 @@ parser.add_argument("--internal-ile-td-gap",action='append',default=None,help="P
 parser.add_argument("--internal-ile-glitch-basis",action='append',default=None,help="Passthrough to ILE --glitch-basis 'IFO:t1,t2,f1,f2[:r]' (analytic Slepian glitch marginalization, G3). Repeatable. Requires --internal-ile-inner-product td-toeplitz. In an ini give a list literal or a single quoted string.")
 parser.add_argument("--internal-ile-glitch-basis-file",action='append',default=None,help="Data-informed glitch basis for one detector, 'IFO:path.npz' (G4, glitschen/BayesWave PCA/SVD). Repeatable. The .npz is ADDED TO THE ILE CONDOR TRANSFER LIST and the ILE flag is rewritten to reference the transferred basename, so it works on execute nodes / OSG. Requires --internal-ile-inner-product td-toeplitz. In an ini give a list literal or a single quoted string.")
 parser.add_argument("--internal-ile-glitch-sigma",default=None,type=str,help="Passthrough to ILE --glitch-sigma (glitch amplitude hyperparameter mode; only 'profile' is wired).")
+parser.add_argument("--internal-ile-glitch-prior-mode",default=None,type=str,help="Passthrough to ILE --glitch-prior-mode {m2,signmix,pinned} (paper-2 Sec. 3.2 detection-conditioned coefficient prior for a --glitch-basis-file). 'm2' (default OFF here) = zero-mean moment-matched; 'signmix' = the exact two-component sign mixture (needs npz keys mu_mix+sigma_central); 'pinned' = decisive-sign limit. Requires --internal-ile-inner-product td-toeplitz.")
+parser.add_argument("--internal-ile-glitch-sigma-min",default=None,type=float,help="Passthrough to ILE --glitch-sigma-min [strain] (paper-2 Sec. 3.2 presence conditioning: a detected glitch means sigma_g is not small; floors the amplitude profile lower bound). Requires --internal-ile-inner-product td-toeplitz.")
 parser.add_argument("--internal-puff-transverse",action='store_true', help=" appends the following arguments: --parameter phi1 --parameter phi2 --parameter chi1_perp_u --parameter chi2_perp_u ")
 parser.add_argument("--manual-extra-puff-args",default=None,type=str,help="Avenue to adjoin extra PUFF arguments.  ")
 parser.add_argument("--manual-extra-test-args",default=None,type=str,help="Avenue to adjoin extra TEST arguments.  ")
@@ -1316,6 +1318,10 @@ if opts.internal_ile_inner_product:
         line += " --glitch-basis {} ".format(_gb)
     if opts.internal_ile_glitch_sigma:
         line += " --glitch-sigma {} ".format(opts.internal_ile_glitch_sigma)
+    if opts.internal_ile_glitch_prior_mode:
+        line += " --glitch-prior-mode {} ".format(opts.internal_ile_glitch_prior_mode)
+    if not(opts.internal_ile_glitch_sigma_min is None):
+        line += " --glitch-sigma-min {} ".format(opts.internal_ile_glitch_sigma_min)
     for _spec in _as_list(opts.internal_ile_glitch_basis_file):
         _ifo, _path = _spec.split(":", 1)
         _path_abs = os.path.abspath(os.path.expanduser(_path))
@@ -1330,6 +1336,7 @@ if opts.internal_ile_inner_product:
         line += " --glitch-basis-file {}:{} ".format(_ifo, _ref)
 elif (opts.internal_ile_td_gap or opts.internal_ile_glitch_basis or
       opts.internal_ile_glitch_basis_file or opts.internal_ile_glitch_sigma or
+      opts.internal_ile_glitch_prior_mode or opts.internal_ile_glitch_sigma_min is not None or
       opts.internal_ile_td_solver or opts.internal_ile_td_analysis_start is not None or
       opts.internal_ile_td_analysis_end is not None or opts.internal_ile_td_acf_duration is not None):
     print(" FAILURE: --internal-ile-td-* / --internal-ile-glitch-* require "
