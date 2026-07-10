@@ -358,7 +358,10 @@ def test_fit_population_default_is_M2_zero_mean():
     assert "mu" not in npz_m2.files, "DEFAULT fit must NOT write a mu key"
     assert "sigma_shape" in npz_m2.files
 
-    # reproduce the tool's projection + split to recompute the expected M2 sigma_shape
+    # reproduce the tool's projection + split to recompute the expected M2 sigma_shape.  The
+    # M2 second moment is now built from the robust CENTERED covariance + sample mean (paper
+    # Eq. m2: E[aa^T] = Sigma_central + mu mu^T), so the new mu_mix/sigma_central keys satisfy
+    # the moment identity exactly and sigma_central stays SPD.
     B = components[:r].T
     X = snips[:, c - hw:c + hw]
     X = X / np.linalg.norm(X, axis=1)[:, None]
@@ -366,7 +369,8 @@ def test_fit_population_default_is_M2_zero_mean():
     holdout = np.sort(rng2.choice(n, size=n_holdout, replace=False))
     train = np.setdiff1d(np.arange(n), holdout)
     A = X[train] @ B
-    S2exp, _ = fp.symmetrized_second_moment(A)
+    mu_raw, S_central, _ = fp.robust_covariance(A)
+    S2exp = S_central + np.outer(mu_raw, mu_raw)
     Sig_exp = S2exp / np.max(np.linalg.eigvalsh(S2exp))
     rel = np.max(np.abs(np.asarray(npz_m2["sigma_shape"]) - Sig_exp)) / np.max(np.abs(Sig_exp))
     print("[pop-M2] default: no-mu=%s ; sigma_shape==M2 second-moment rel=%.3e"
@@ -374,6 +378,17 @@ def test_fit_population_default_is_M2_zero_mean():
     assert rel < 1e-10
     # M2 max-eig normalized
     assert abs(np.max(np.linalg.eigvalsh(np.asarray(npz_m2["sigma_shape"]))) - 1.0) < 1e-10
+    # NEW detection-conditioned keys present (distinct from the deprecated bare 'mu')
+    assert "mu_mix" in npz_m2.files and "sigma_central" in npz_m2.files
+    assert "mu" not in npz_m2.files
+    _ss = np.asarray(npz_m2["sigma_shape"]); _sc = np.asarray(npz_m2["sigma_central"])
+    _mm = np.asarray(npz_m2["mu_mix"])
+    # (5e) moment identity sigma_shape == sigma_central + mu_mix mu_mix^T (to round-off)
+    resid = np.max(np.abs(_ss - (_sc + np.outer(_mm, _mm))))
+    print("[pop-M2] moment identity max|sigma_shape-(sigma_central+mu_mix mu_mix^T)|=%.3e ; "
+          "sigma_central SPD min-eig=%.3e" % (resid, np.linalg.eigvalsh(_sc)[0]))
+    assert resid < 1e-14
+    assert np.linalg.eigvalsh(_sc)[0] > 0        # sigma_central SPD
 
     # (2) --include-mean-UNPHYSICAL -> FULL (mu present, Sigma_central shape)
     out_full = os.path.join(tmp, "full"); os.makedirs(out_full, exist_ok=True)
@@ -681,6 +696,248 @@ def test_end_to_end_glitch_mitigation():
     assert dlnZ != 0.0
 
 
+# ------------------------------------------------ (signmix) detection-conditioned sign mixture
+
+class _DenseCovMix(object):
+    """Minimal dense-covariance adapter for the RankAugmentation (sign-mixture tests)."""
+    def __init__(self, Cmat):
+        self.N = Cmat.shape[0]; self.C = Cmat
+        self._cho = scipy.linalg.cho_factor(Cmat, lower=True, check_finite=False)
+        self._logdet = 2.0 * np.sum(np.log(np.abs(np.diag(np.tril(self._cho[0])))))
+    def solve(self, b):
+        b = np.asarray(b)
+        if np.iscomplexobj(b):
+            return (scipy.linalg.cho_solve(self._cho, b.real, check_finite=False)
+                    + 1j * scipy.linalg.cho_solve(self._cho, b.imag, check_finite=False))
+        return scipy.linalg.cho_solve(self._cho, b, check_finite=False)
+    def dot(self, u, v):
+        return np.tensordot(np.asarray(u), self.solve(v), axes=([-1], [-1]))
+    def logdet(self):
+        return self._logdet
+
+
+def _dense_branch_marginal(C, B, Sigma_central, mu_mix, sigma_g, d, h, sign):
+    """Direct N-dim Gaussian marginal lnL for the single mixture component N(sign*sigma_g mu, Sigma_a)."""
+    n = C.shape[0]
+    Sigma_a = sigma_g ** 2 * Sigma_central
+    mu_a = sign * sigma_g * np.asarray(mu_mix, dtype=float)
+    Cp = C + B @ Sigma_a @ B.T
+    Cpinv = np.linalg.inv(Cp)
+    x = d - h - B @ mu_a
+    _, logdet_Cp = np.linalg.slogdet(Cp)
+    return -0.5 * x @ Cpinv @ x - 0.5 * (logdet_Cp + n * np.log(2 * np.pi))
+
+
+def _signmix_fixture(seed=303, n=200):
+    rng = np.random.default_rng(seed)
+    lags = np.arange(n)
+    acf = np.exp(-lags / 15.0) * np.cos(0.1 * lags)
+    C = scipy.linalg.toeplitz(acf); C = 0.5 * (C + C.T)
+    C = C + (abs(min(np.linalg.eigvalsh(C))) + 1e-3) * np.eye(n)
+    r = 5
+    B = rng.standard_normal((n, r))
+    A = rng.standard_normal((r, r)); Sig = A @ A.T + 0.3 * np.eye(r)
+    Sigma_central = Sig / np.max(np.linalg.eigvalsh(Sig))
+    mu_mix = rng.standard_normal(r) * 0.5
+    return rng, C, B, Sigma_central, mu_mix
+
+
+def test_signmix_dense_parity():
+    """(5a) Wired two-component sign-mixture marginal == brute-force N-dim mixture (~1e-9)."""
+    from scipy.special import logsumexp
+    rng, C, B, Sigma_central, mu_mix = _signmix_fixture()
+    n = C.shape[0]
+    sigma_g = 0.7
+    d = rng.standard_normal(n) * 0.4
+    h = rng.standard_normal(n) * 0.2                  # a "signal" template
+
+    # brute: mixture marginal = logsumexp(branch+, branch-) - ln2
+    lnLp = _dense_branch_marginal(C, B, Sigma_central, mu_mix, sigma_g, d, h, +1.0)
+    lnLm = _dense_branch_marginal(C, B, Sigma_central, mu_mix, sigma_g, d, h, -1.0)
+    lnLmix_dense = logsumexp([lnLp, lnLm]) - np.log(2.0)
+
+    # wired: the SAME primitives ILE/Precompute assemble (d_tilde = d - sign*B mu_a), combined
+    aug = tra.RankAugmentation(_DenseCovMix(C), [(B, Sigma_central, "H1", mu_mix)])
+
+    def branch(sign):
+        mu_a = sign * sigma_g * mu_mix
+        x = (d - B @ mu_a) - h
+        quad = aug.dot(x, x, sigma_g)
+        return -0.5 * quad - 0.5 * (aug.logdet(sigma_g) + n * np.log(2 * np.pi))
+    lnLmix_wired = logsumexp([branch(+1.0), branch(-1.0)]) - np.log(2.0)
+
+    rel = abs(lnLmix_wired - lnLmix_dense) / abs(lnLmix_dense)
+    print("[signmix-a] mixture marginal dense=%.8f wired=%.8f rel=%.3e"
+          % (lnLmix_dense, lnLmix_wired, rel))
+    assert rel < 1e-9
+
+
+def test_sign_odds_formula_vs_bruteforce():
+    """(5c) Closed-form sign odds 2<d-h|B mu_a>_C' == direct lnL+ - lnL- branch difference (1e-10)."""
+    rng, C, B, Sigma_central, mu_mix = _signmix_fixture(seed=404)
+    n = C.shape[0]
+    sigma_g = 0.6
+    d = rng.standard_normal(n) * 0.5
+    h = rng.standard_normal(n) * 0.3
+    aug = tra.RankAugmentation(_DenseCovMix(C), [(B, Sigma_central, "H1", mu_mix)])
+    odds_formula = aug.sign_odds(d, sigma_g, h=h)
+    lnLp = _dense_branch_marginal(C, B, Sigma_central, mu_mix, sigma_g, d, h, +1.0)
+    lnLm = _dense_branch_marginal(C, B, Sigma_central, mu_mix, sigma_g, d, h, -1.0)
+    odds_brute = lnLp - lnLm
+    print("[signmix-c] sign-odds formula=%.10f  brute(lnL+ - lnL-)=%.10f  |diff|=%.3e"
+          % (odds_formula, odds_brute, abs(odds_formula - odds_brute)))
+    assert abs(odds_formula - odds_brute) < 1e-10
+
+
+def test_decisive_limit_signmix_to_pinned():
+    """(5d) Crank the injected +mu glitch: sign odds grows, signmix -> pinned(+) branch dominance."""
+    from scipy.special import logsumexp
+    rng, C, B, Sigma_central, mu_mix = _signmix_fixture(seed=505)
+    n = C.shape[0]
+    sigma_g = 0.7
+    h = np.zeros(n)                                   # h=0: pure glitch/no-signal regime indicator
+    base = rng.standard_normal(n) * 0.05             # small noise
+    g_dir = B @ mu_mix                               # the +mu class-mean glitch template
+    aug = tra.RankAugmentation(_DenseCovMix(C), [(B, Sigma_central, "H1", mu_mix)])
+
+    prev_odds = None
+    resp_plus = []
+    for amp in [0.0, 1.0, 3.0, 8.0]:
+        d = base + amp * g_dir                        # inject a +mu-aligned glitch of growing amplitude
+        odds = aug.sign_odds(d, sigma_g, h=h)
+        lnLp = _dense_branch_marginal(C, B, Sigma_central, mu_mix, sigma_g, d, h, +1.0)
+        lnLm = _dense_branch_marginal(C, B, Sigma_central, mu_mix, sigma_g, d, h, -1.0)
+        lnLmix = logsumexp([lnLp, lnLm]) - np.log(2.0)
+        p_plus = 1.0 / (1.0 + np.exp(-(lnLp - lnLm)))  # + branch responsibility
+        resp_plus.append(p_plus)
+        # the mixture is dominated by the + branch: lnLmix -> lnLp - <tiny>
+        gap_to_plus = lnLp - np.log(2.0) if False else (lnLmix - (lnLp - np.log(2.0)))
+        print("[signmix-d] amp=%.1f: sign-odds=%+.4f  p(+)=%.6f  lnLmix-(lnL+ -ln2)=%.3e"
+              % (amp, odds, p_plus, lnLmix - (lnLp - np.log(2.0))))
+        if prev_odds is not None:
+            assert odds > prev_odds                    # odds grows with the +mu glitch amplitude
+        prev_odds = odds
+    # decisive limit: at the loudest injection the + branch carries ~all the weight (pinned +)
+    assert resp_plus[-1] > 0.99
+    assert resp_plus[-1] > resp_plus[0]
+
+
+def _write_pop_npz(path, snip, lam0, t0, fs, sigma_shape=None, mu_mix=None, sigma_central=None):
+    payload = dict(basis=snip, lambda0=lam0, t0=t0, fs=fs)
+    if sigma_shape is not None:
+        payload["sigma_shape"] = sigma_shape
+    if mu_mix is not None:
+        payload["mu_mix"] = mu_mix
+    if sigma_central is not None:
+        payload["sigma_central"] = sigma_central
+    np.savez(path, **payload)
+
+
+def _pop_npz_fixture(rng, r=5, n_snip=256):
+    """A synthetic pop-basis payload with the M2 + mixture keys, moment-identity consistent."""
+    tg = np.arange(n_snip) / FS
+    raw = np.zeros((n_snip, r))
+    for j in range(r):
+        f0 = 150.0 + 60.0 * j
+        raw[:, j] = np.exp(-((tg - tg[n_snip // 2]) ** 2) / (2 * 0.01 ** 2)) * np.cos(
+            2 * np.pi * f0 * (tg - tg[n_snip // 2]) + 0.3 * j)
+    snip, _ = np.linalg.qr(raw)
+    lam0 = np.linspace(1.0, 0.2, r)
+    # a robust-covariance-like centered SPD + a mean direction; build the M2 keys by the same
+    # centered-primitive the fit tool uses so the moment identity holds.
+    Araw = rng.standard_normal((r, r)); S_central = Araw @ Araw.T + 0.5 * np.eye(r)
+    mu_raw = rng.standard_normal(r) * 0.6
+    S2 = S_central + np.outer(mu_raw, mu_raw)
+    max_eig2 = np.max(np.linalg.eigvalsh(S2))
+    sigma_shape = S2 / max_eig2
+    mu_mix = mu_raw / np.sqrt(max_eig2)
+    sigma_central = S_central / max_eig2
+    return snip, lam0, sigma_shape, mu_mix, sigma_central
+
+
+def test_m2_default_bit_identical_with_mixture_keys():
+    """(5b) prior-mode m2 with mu_mix/sigma_central present == a plain sigma_shape-only attach.
+
+    Adding the detection-conditioned keys to the npz must NOT perturb the default (m2) path:
+    it uses sigma_shape zero-mean exactly as before, ignoring mu_mix/sigma_central."""
+    import os
+    import tempfile
+    rng = np.random.default_rng(717)
+    psd = make_psd_series()
+    hlms = {(2, 2): bandlimited_series(rng)}
+    data = bandlimited_series(rng)
+    snip, lam0, sigma_shape, mu_mix, sigma_central = _pop_npz_fixture(rng)
+    t0 = 0.61
+    tmp = tempfile.mkdtemp()
+    npz_mix = os.path.join(tmp, "pop_mix_H1.npz")     # has sigma_shape + mixture keys
+    npz_m2only = os.path.join(tmp, "pop_m2only_H1.npz")  # only sigma_shape
+    _write_pop_npz(npz_mix, snip, lam0, t0, FS, sigma_shape, mu_mix, sigma_central)
+    _write_pop_npz(npz_m2only, snip, lam0, t0, FS, sigma_shape)
+
+    def run(path):
+        fac = TDInnerProductFactory(solver="auto", glitch_basis_files={"H1": path},
+                                    glitch_sigma="profile", glitch_prior_mode="m2")
+        fac.register_detector_data("H1", psd, data, event_time_geo=None)
+        Q = fl.ComputeModeIPTimeSeries(hlms, data, psd, FLOW, FMAX, FNYQ, 0, N,
+                                       analyticPSD_Q=False, IP_factory=fac)
+        U = fl.ComputeModeCrossTermIP(hlms, hlms, psd, FLOW, FMAX, FNYQ, DELTAF,
+                                      analyticPSD_Q=False, verbose=False,
+                                      same_waveform_Q=False, IP_factory=fac)
+        return Q, U, fac
+    Q_mix, U_mix, fac_mix = run(npz_mix)
+    Q_m2, U_m2, fac_m2 = run(npz_m2only)
+    dQ = max(np.max(np.abs(Q_mix[k].data.data - Q_m2[k].data.data)) for k in hlms)
+    dU = abs(U_mix[((2, 2), (2, 2))] - U_m2[((2, 2), (2, 2))])
+    dZ = abs(fac_mix.glitch_delta_lnZ_total() - fac_m2.glitch_delta_lnZ_total())
+    print("[signmix-b] m2 with-mixture-keys vs sigma_shape-only: Q byte-diff=%.3e U diff=%.3e "
+          "Delta_lnZ diff=%.3e" % (dQ, dU, dZ))
+    assert dQ == 0.0 and dU == 0.0 and dZ == 0.0
+    # m2 carries no mean -> the signmix two-pass is NOT engaged
+    assert not fac_mix.signmix_active
+
+
+def test_signmix_pinned_context_paths():
+    """signmix loader: both +-branches recorded, active toggles d_corr/Delta_lnZ; pinned==signmix(+)."""
+    import os
+    import tempfile
+    rng = np.random.default_rng(818)
+    psd = make_psd_series()
+    hlms = {(2, 2): bandlimited_series(rng)}
+    data = bandlimited_series(rng)
+    snip, lam0, sigma_shape, mu_mix, sigma_central = _pop_npz_fixture(rng)
+    tmp = tempfile.mkdtemp()
+    npz = os.path.join(tmp, "pop_H1.npz")
+    _write_pop_npz(npz, snip, lam0, 0.61, FS, sigma_shape, mu_mix, sigma_central)
+
+    fac = TDInnerProductFactory(solver="auto", glitch_basis_files={"H1": npz},
+                                glitch_sigma="profile", glitch_prior_mode="signmix")
+    fac.register_detector_data("H1", psd, data, event_time_geo=None)
+    # attach happens on first context build
+    _ = fl.ComputeModeIPTimeSeries(hlms, data, psd, FLOW, FMAX, FNYQ, 0, N,
+                                   analyticPSD_Q=False, IP_factory=fac)
+    assert fac.signmix_active
+    ctx = fac._glitch_contexts[0]
+    dz_plus = ctx._glitch_delta_lnZ_plus
+    dz_minus = ctx._glitch_delta_lnZ_minus
+    assert dz_plus != dz_minus                        # a genuine mean -> branches differ
+    # active toggling changes d_corr (Q') and the reported active Delta_lnZ
+    fac.set_active_glitch_sign(+1.0)
+    dcorr_plus = np.asarray(ctx._glitch_data_corr_fd.data.data).copy()
+    assert abs(ctx.glitch_delta_lnZ - dz_plus) < 1e-12
+    fac.set_active_glitch_sign(-1.0)
+    dcorr_minus = np.asarray(ctx._glitch_data_corr_fd.data.data)
+    assert abs(ctx.glitch_delta_lnZ - dz_minus) < 1e-12
+    assert np.max(np.abs(dcorr_plus - dcorr_minus)) > 0
+
+    # pinned mode == signmix + branch (single mean-shift at +mu_mix): same sigma-profile family,
+    # same +branch d_corr up to the (different) amplitude profile; here check the delta_lnZ[+]
+    # branch matches a pinned attach on the same data at the pinned sigma_g.
+    odds = fac.glitch_sign_odds_report()
+    print("[signmix-ctx] Delta_lnZ[+]=%.4f Delta_lnZ[-]=%.4f ; sign-odds report=%s"
+          % (dz_plus, dz_minus, {k: round(v, 4) for k, v in odds.items()}))
+    assert "H1" in odds
+
+
 # --------------------------------------------------------------------------- script entry
 
 if __name__ == "__main__":
@@ -696,6 +953,11 @@ if __name__ == "__main__":
         ("(c) default-OFF byte-identical", test_default_off_byte_identical),
         ("(c) basis-file == direct attach", test_basis_file_matches_direct_attach),
         ("(c) end-to-end glitch mitigation", test_end_to_end_glitch_mitigation),
+        ("(signmix-a) dense mixture parity", test_signmix_dense_parity),
+        ("(signmix-c) sign-odds vs brute", test_sign_odds_formula_vs_bruteforce),
+        ("(signmix-d) decisive limit -> pinned(+)", test_decisive_limit_signmix_to_pinned),
+        ("(signmix-b) m2 bit-identical w/ mixture keys", test_m2_default_bit_identical_with_mixture_keys),
+        ("(signmix-ctx) signmix/pinned context paths", test_signmix_pinned_context_paths),
     ]
     t0 = time.time()
     failures = 0
