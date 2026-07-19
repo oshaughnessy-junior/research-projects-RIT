@@ -2130,6 +2130,21 @@ if not opts.no_plots:
 
 # Eliminate values with Y too small
 max_lnL = np.max(Y)
+# --lnL-protect-overflow : dynamic sibling of --lnL-shift-prevent-overflow.
+#   Both operate on the SAME lnL_shift machinery: lnL_shift is subtracted from Y before
+#   every fit/exp() (the `Y = Y[indx_ok] - lnL_shift` lines below) and added back to the
+#   final ln-evidence (fname_output_integral, +lnL_shift).  --lnL-shift-prevent-overflow
+#   uses a *static* user-supplied shift; --lnL-protect-overflow computes the shift
+#   dynamically from the data as (lnLmax - 100), per its docstring, so exp(Y-lnL_shift)
+#   peaks at ~exp(100) instead of overflowing for loud/peaked events (e.g. GW250114,
+#   lnL~3300, where GMM otherwise overflows the integrand to inf -> 'probabilities
+#   contain NaN').  We clamp so the shift is never negative and never smaller than an
+#   explicit --lnL-shift-prevent-overflow: for well-behaved (low max_lnL) cases lnL_shift
+#   stays at its prior value (0 by default), keeping default behavior byte-identical.
+if opts.lnL_protect_overflow:
+    lnL_shift_dynamic = max_lnL - 100
+    lnL_shift = np.max([lnL_shift, lnL_shift_dynamic])
+    print("  [lnL-protect-overflow] max_lnL {}, using lnL_shift {} (peak exp arg ~ {})".format(max_lnL, lnL_shift, max_lnL - lnL_shift))
 indx_ok = Y>np.max(Y)-opts.lnL_offset
 # Provide some random points, to insure reasonable tapering behavior away from the sample
 if opts.lnL_offset_n_random>0:
