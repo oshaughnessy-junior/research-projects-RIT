@@ -1312,8 +1312,97 @@ Much faster and lighter weight. We never use the cutoffs anyways, because the li
 <dd></dd></dl>
 
 </section>
-<section id="portfolio-mc-sampler">
-<h2>Portfolio MC Sampler<a class="headerlink" href="#portfolio-mc-sampler" title="Link to this heading"></a></h2>
+<section id="module-RIFT.integrators.mcsamplerPortfolio">
+<span id="portfolio-mc-sampler"></span><h2>Portfolio MC Sampler<a class="headerlink" href="#module-RIFT.integrators.mcsamplerPortfolio" title="Link to this heading"></a></h2>
+<dl class="py class">
+<dt class="sig sig-object py" id="RIFT.integrators.mcsamplerPortfolio.MCSampler">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">RIFT.integrators.mcsamplerPortfolio.</span></span><span class="sig-name descname"><span class="pre">MCSampler</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">portfolio</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">portfolio_weights</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">oracle_realizations</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">n_chunk</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">400000</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">portfolio_freeze_wt</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.05</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerPortfolio.MCSampler" title="Link to this definition"></a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></p>
+<p>Class to define a set of parameter names, limits, and probability densities.</p>
+<dl class="py method">
+<dt class="sig sig-object py" id="RIFT.integrators.mcsamplerPortfolio.MCSampler.add_parameter">
+<span class="sig-name descname"><span class="pre">add_parameter</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">params</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">pdf</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerPortfolio.MCSampler.add_parameter" title="Link to this definition"></a></dt>
+<dd><p>Add one (or more) parameters to sample dimensions. params is either a string describing the parameter, or a tuple of strings. The tuple will indicate to the sampler that these parameters must be sampled together. left_limit and right_limit are on the infinite interval by default, but can and probably should be specified. If several params are given, left_limit, and right_limit must be a set of tuples with corresponding length. Sampling PDF is required, and if not provided, the cdf inverse function will be determined numerically from the sampling PDF.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="RIFT.integrators.mcsamplerPortfolio.MCSampler.bootstrap_from_samples">
+<span class="sig-name descname"><span class="pre">bootstrap_from_samples</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">samples</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">params</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerPortfolio.MCSampler.bootstrap_from_samples" title="Link to this definition"></a></dt>
+<dd><p>Warm-start: forward a seed cloud to every member that supports it (e.g. the
+AV/VARAHA member’s live volume).  Members without bootstrap_from_samples are left
+cold.  This is safe: a warm start only ever shapes a member’s proposal, and the
+portfolio combines members with the balance-heuristic mixture density (q_mix), so a
+cold or mis-seeded member can only cost efficiency, never bias the estimate.  Column
+order matches self.params_ordered, which every member shares (add_parameter forwards
+to all members in the same order), so no per-member remapping is needed.</p>
+<p>Only VARAHA/AV-style members (those exposing bootstrap_from_samples) are seeded
+directly here.  GMM / adaptive-Gaussian members cannot be seeded pre-integration
+(their internal integrator, hence gmm_dict, does not exist until the first
+integrate() call), but they still warm up STRUCTURALLY during the run: the portfolio
+lets the cold GMM member adapt its proposal from the warm AV member’s high-likelihood
+draws, which is what gives the mixture a faster early n_eff than warm-AV alone.  An
+explicit GMM pre-seed (build an initial gmm_dict from the sample cloud) is a future
+enhancement.  q_mix keeps any cold/mis-seeded member from biasing the estimate.</p>
+<p>Returns the number of members warm-started (0 is fine; the portfolio still runs).</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="RIFT.integrators.mcsamplerPortfolio.MCSampler.draw">
+<span class="sig-name descname"><span class="pre">draw</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">n_samples</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">args</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerPortfolio.MCSampler.draw" title="Link to this definition"></a></dt>
+<dd><p>draw n_samples</p>
+<p>Draw from portfolio.
+Uses portfolio weights to calculate desired outcomes.
+Restricts to ACTIVE members.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="RIFT.integrators.mcsamplerPortfolio.MCSampler.integrate">
+<span class="sig-name descname"><span class="pre">integrate</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">lnF</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">*args</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">xpy=&lt;module</span> <span class="pre">'numpy'</span> <span class="pre">from</span> <span class="pre">'/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/numpy/__init__.py'&gt;</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">**kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerPortfolio.MCSampler.integrate" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="RIFT.integrators.mcsamplerPortfolio.MCSampler.integrate_log">
+<span class="sig-name descname"><span class="pre">integrate_log</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">lnF</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">*args</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">xpy=&lt;module</span> <span class="pre">'numpy'</span> <span class="pre">from</span> <span class="pre">'/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/numpy/__init__.py'&gt;</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">**kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerPortfolio.MCSampler.integrate_log" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="RIFT.integrators.mcsamplerPortfolio.MCSampler.setup">
+<span class="sig-name descname"><span class="pre">setup</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerPortfolio.MCSampler.setup" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+</dd></dl>
+
+<dl class="py exception">
+<dt class="sig sig-object py" id="RIFT.integrators.mcsamplerPortfolio.NanOrInf">
+<em class="property"><span class="k"><span class="pre">exception</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">RIFT.integrators.mcsamplerPortfolio.</span></span><span class="sig-name descname"><span class="pre">NanOrInf</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">value</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerPortfolio.NanOrInf" title="Link to this definition"></a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">Exception</span></code></p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.integrators.mcsamplerPortfolio.identity_convert">
+<span class="sig-prename descclassname"><span class="pre">RIFT.integrators.mcsamplerPortfolio.</span></span><span class="sig-name descname"><span class="pre">identity_convert</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">x</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerPortfolio.identity_convert" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.integrators.mcsamplerPortfolio.identity_convert_togpu">
+<span class="sig-prename descclassname"><span class="pre">RIFT.integrators.mcsamplerPortfolio.</span></span><span class="sig-name descname"><span class="pre">identity_convert_togpu</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">x</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerPortfolio.identity_convert_togpu" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.integrators.mcsamplerPortfolio.portfolio_default_weights">
+<span class="sig-prename descclassname"><span class="pre">RIFT.integrators.mcsamplerPortfolio.</span></span><span class="sig-name descname"><span class="pre">portfolio_default_weights</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">n_ess_list</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">wt_previous</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">portfolio_probability_floor=0.01</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">history_factor=0.5</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">xpy=&lt;module</span> <span class="pre">'numpy'</span> <span class="pre">from</span> <span class="pre">'/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/numpy/__init__.py'&gt;</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">identity_convert=&lt;function</span> <span class="pre">&lt;lambda&gt;&gt;</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">**kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerPortfolio.portfolio_default_weights" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.integrators.mcsamplerPortfolio.profile">
+<span class="sig-prename descclassname"><span class="pre">RIFT.integrators.mcsamplerPortfolio.</span></span><span class="sig-name descname"><span class="pre">profile</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">fn</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerPortfolio.profile" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.integrators.mcsamplerPortfolio.set_xpy_to_numpy">
+<span class="sig-prename descclassname"><span class="pre">RIFT.integrators.mcsamplerPortfolio.</span></span><span class="sig-name descname"><span class="pre">set_xpy_to_numpy</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerPortfolio.set_xpy_to_numpy" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
 </section>
 <section id="normalizing-flows-mc-sampler">
 <h2>Normalizing Flows MC Sampler<a class="headerlink" href="#normalizing-flows-mc-sampler" title="Link to this heading"></a></h2>
