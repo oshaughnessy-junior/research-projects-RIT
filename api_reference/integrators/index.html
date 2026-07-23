@@ -1336,7 +1336,7 @@ Much faster and lighter weight. We never use the cutoffs anyways, because the li
 
 <dl class="py class">
 <dt class="sig sig-object py" id="RIFT.integrators.MonteCarloEnsemble.integrator">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">RIFT.integrators.MonteCarloEnsemble.</span></span><span class="sig-name descname"><span class="pre">integrator</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">d</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">bounds</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">gmm_dict</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">n_comp</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">n</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">prior</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">user_func</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">proc_count</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">L_cutoff</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_lnL</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">return_lnI</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">gmm_adapt</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">gmm_epsilon</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tempering_exp</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">temper_log</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">lnw_failure_cut</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tempering_adapt</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ess_target</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ess_floor</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.MonteCarloEnsemble.integrator" title="Link to this definition"></a></dt>
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">RIFT.integrators.MonteCarloEnsemble.</span></span><span class="sig-name descname"><span class="pre">integrator</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">d</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">bounds</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">gmm_dict</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">n_comp</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">n</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">prior</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">user_func</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">proc_count</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">L_cutoff</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_lnL</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">return_lnI</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">gmm_adapt</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">gmm_epsilon</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tempering_exp</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">temper_log</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">lnw_failure_cut</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tempering_adapt</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ess_target</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ess_floor</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">gmm_adaptive</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">gmm_defensive_frac</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.05</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">gmm_inflate</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1.0</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.MonteCarloEnsemble.integrator" title="Link to this definition"></a></dt>
 <dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></p>
 <p>Class to iteratively perform an adaptive Monte Carlo integral where the integrand
 is a combination of one or more Gaussian curves, in one or more dimensions.</p>
@@ -1432,11 +1432,11 @@ it prints additionally the change and time needed for each step.</p>
 <section id="attributes">
 <h3>Attributes<a class="headerlink" href="#attributes" title="Link to this heading"></a></h3>
 <dl>
-<dt><a href="#id35"><span class="problematic" id="id36">weights_</span></a><span class="classifier">array, shape (<cite>n_components</cite>,)</span></dt><dd><p>This attribute stores the mixing weights for each mixture component.</p>
+<dt><a href="#id36"><span class="problematic" id="id37">weights_</span></a><span class="classifier">array, shape (<cite>n_components</cite>,)</span></dt><dd><p>This attribute stores the mixing weights for each mixture component.</p>
 </dd>
-<dt><a href="#id37"><span class="problematic" id="id38">means_</span></a><span class="classifier">array, shape (<cite>n_components</cite>, <cite>n_features</cite>)</span></dt><dd><p>Mean parameters for each mixture component.</p>
+<dt><a href="#id38"><span class="problematic" id="id39">means_</span></a><span class="classifier">array, shape (<cite>n_components</cite>, <cite>n_features</cite>)</span></dt><dd><p>Mean parameters for each mixture component.</p>
 </dd>
-<dt><a href="#id39"><span class="problematic" id="id40">covars_</span></a><span class="classifier">array</span></dt><dd><p>Covariance parameters for each mixture component.  The shape
+<dt><a href="#id40"><span class="problematic" id="id41">covars_</span></a><span class="classifier">array</span></dt><dd><p>Covariance parameters for each mixture component.  The shape
 depends on <cite>covariance_type</cite>:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="p">(</span><span class="n">n_components</span><span class="p">,</span> <span class="n">n_features</span><span class="p">)</span>             <span class="k">if</span> <span class="s1">&#39;spherical&#39;</span><span class="p">,</span>
 <span class="p">(</span><span class="n">n_features</span><span class="p">,</span> <span class="n">n_features</span><span class="p">)</span>               <span class="k">if</span> <span class="s1">&#39;tied&#39;</span><span class="p">,</span>
@@ -1445,7 +1445,7 @@ depends on <cite>covariance_type</cite>:</p>
 </pre></div>
 </div>
 </dd>
-<dt><a href="#id41"><span class="problematic" id="id42">converged_</span></a><span class="classifier">bool</span></dt><dd><p>True when convergence was reached in fit(), False otherwise.</p>
+<dt><a href="#id42"><span class="problematic" id="id43">converged_</span></a><span class="classifier">bool</span></dt><dd><p>True when convergence was reached in fit(), False otherwise.</p>
 </dd>
 </dl>
 </section>
@@ -1936,6 +1936,24 @@ see also <a class="reference external" href="https://brenocon.com/blog/2008/11/c
 Expectation-Maximization algorithm.</p>
 <p>Weighted data GMM formulae: different from framework in eg. <a class="reference external" href="https://arxiv.org/pdf/1509.01509.pdf">https://arxiv.org/pdf/1509.01509.pdf</a></p>
 </section>
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.integrators.gaussian_mixture_model.add_defensive_component">
+<span class="sig-prename descclassname"><span class="pre">RIFT.integrators.gaussian_mixture_model.</span></span><span class="sig-name descname"><span class="pre">add_defensive_component</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">defensive_frac</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.05</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">width_norm</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1.0</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.gaussian_mixture_model.add_defensive_component" title="Link to this definition"></a></dt>
+<dd><p>Append a broad, box-covering “defensive” component to a fitted mixture so
+the proposal has heavy enough tails for importance sampling.</p>
+<p>This is the single most important fix for the SNR~82 extrinsic posterior: a
+mixture fit to the (tight) elite cloud UNDER-COVERS the broad, degenerate
+directions (distance-inclination), so the importance weight L*p/q blows up on
+the rare draw that lands in a poorly-covered high-likelihood pocket and the
+effective sample size collapses to ~1.  A defensive component (Hesterberg
+1995) with weight <cite>defensive_frac</cite>, wide in the model’s normalized [-1,1]
+frame, bounds the weights: q &gt;= defensive_frac * q_broad everywhere, so no
+single sample can dominate.  The AV sampler gets the same guarantee from its
+cover-fraction floor; the fitted GMM had none.</p>
+<p>width_norm is the std of the defensive Gaussian in normalized coords (1.0 ~
+covers the whole [-1,1] box; truncated to the box it is near-uniform).</p>
+</dd></dl>
+
 <dl class="py class">
 <dt class="sig sig-object py" id="RIFT.integrators.gaussian_mixture_model.estimator">
 <em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">RIFT.integrators.gaussian_mixture_model.</span></span><span class="sig-name descname"><span class="pre">estimator</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">k</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_iters</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">100</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tempering_coeff</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1e-08</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">adapt</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.gaussian_mixture_model.estimator" title="Link to this definition"></a></dt>
@@ -1964,6 +1982,54 @@ Expectation-Maximization algorithm.</p>
 </section>
 </dd></dl>
 
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.integrators.gaussian_mixture_model.fit_gmm_adaptive">
+<span class="sig-prename descclassname"><span class="pre">RIFT.integrators.gaussian_mixture_model.</span></span><span class="sig-name descname"><span class="pre">fit_gmm_adaptive</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">sample_array</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">bounds</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">log_sample_weights</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">k_max</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">8</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">k_min</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">k_candidates</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">epsilon</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tempering_coeff</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1e-08</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">prune_weight_floor</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.001</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">defensive_frac</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.05</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">inflate</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1.0</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.gaussian_mixture_model.fit_gmm_adaptive" title="Link to this definition"></a></dt>
+<dd><p>Fit a GMM whose COMPONENT COUNT is chosen from the data by BIC, then
+prune near-zero-weight components.  Data-driven replacement for a hard-coded
+per-group component count.</p>
+<dl class="simple">
+<dt>Rationale (measured on the S250114ax extrinsic posterior, SNR~82):</dt><dd><ul class="simple">
+<li><p>A fixed SMALL k (e.g. the correlate-all default of 2) cannot wrap a
+curved distance-inclination degeneracy arc: the elite fit is one broad
+Gaussian over the ridge, the proposal never locks onto the peak, and
+the honest effective sample size stays ~1.</p></li>
+<li><p>A fixed LARGE k is both statistically fragile (a spurious sharp
+component collapses onto ~1 elite sample and dominates the importance
+weights) and computationally costly (score() does an O(k) per-component
+mvnun box normalization on the CPU).</p></li>
+</ul>
+</dd>
+</dl>
+<p>BIC threads between the two: fit k over a ladder, penalize free parameters
+by ln(N_eff), keep the best, and drop dead components.  It allocates more
+components only where the (importance-weighted) cloud is genuinely
+non-Gaussian and stays at k=1 for a single blob.</p>
+<p>SAFETY FLOOR: k is chosen in [k_min, k_max], and pruning never drops below
+k_min.  Pass k_min = the stress-tested hard-coded per-group count so opting
+into adaptive can only ADD components where the data earns them, never fewer
+than the layout that was validated for the primary ILE use case (e.g. a broad
+multi-modal sky keeps its default components even if the INITIAL elite cloud
+– fit before the proposal has explored every mode – looks single-peaked).</p>
+<section id="id33">
+<h3>Parameters<a class="headerlink" href="#id33" title="Link to this heading"></a></h3>
+<p>sample_array : (N, d) array in ORIGINAL coordinates.
+bounds       : (d, 2) array of [llim, rlim] per dimension (as gmm expects).
+log_sample_weights : (N,) importance/elite log-weights (default: equal).
+k_max        : cap on the number of components.
+k_min        : floor on the number of components (default 1); the stress-</p>
+<blockquote>
+<div><p>tested hard-coded count when used as a refinement layer.</p>
+</div></blockquote>
+<p>k_candidates : explicit ladder (overrides k_max/k_min-derived ladder).
+prune_weight_floor : components below this mixture weight are removed (but</p>
+<blockquote>
+<div><p>never below k_min).</p>
+</div></blockquote>
+<p>Returns a fitted <cite>gmm</cite>.</p>
+</section>
+</dd></dl>
+
 <dl class="py class">
 <dt class="sig sig-object py" id="RIFT.integrators.gaussian_mixture_model.gmm">
 <em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">RIFT.integrators.gaussian_mixture_model.</span></span><span class="sig-name descname"><span class="pre">gmm</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">k</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">bounds</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_iters</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1000</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">epsilon</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tempering_coeff</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1e-08</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">memory_factor</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">3.0</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.gaussian_mixture_model.gmm" title="Link to this definition"></a></dt>
@@ -1976,9 +2042,28 @@ Expectation-Maximization algorithm.</p>
 </dd></dl>
 
 <dl class="py method">
+<dt class="sig sig-object py" id="RIFT.integrators.gaussian_mixture_model.gmm.num_free_params">
+<span class="sig-name descname"><span class="pre">num_free_params</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.gaussian_mixture_model.gmm.num_free_params" title="Link to this definition"></a></dt>
+<dd><p>Number of free parameters of this k-component d-dim mixture:
+k means (k*d) + k covariances (k*d*(d+1)/2) + (k-1) mixture weights.</p>
+</dd></dl>
+
+<dl class="py method">
 <dt class="sig sig-object py" id="RIFT.integrators.gaussian_mixture_model.gmm.print_params">
 <span class="sig-name descname"><span class="pre">print_params</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.gaussian_mixture_model.gmm.print_params" title="Link to this definition"></a></dt>
 <dd><p>Prints the model’s parameters in an easily-readable format</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="RIFT.integrators.gaussian_mixture_model.gmm.prune_components">
+<span class="sig-name descname"><span class="pre">prune_components</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">weight_floor</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.001</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">min_keep</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.gaussian_mixture_model.gmm.prune_components" title="Link to this definition"></a></dt>
+<dd><p>Drop mixture components whose weight falls below weight_floor and
+renormalize.  Over-allocated components collapse to ~zero weight under
+EM; removing them (a) prevents a spurious sharp component from dominating
+the importance weights and (b) cuts score() cost, which is O(k) in the
+per-component mvnun box normalization.  Keeps at least max(1, min_keep)
+components (the highest-weight ones) – pass min_keep to preserve a safety
+floor.  No-op if nothing is below the floor.</p>
 </dd></dl>
 
 <dl class="py method">
@@ -2060,8 +2145,8 @@ g : optional additional function used to specify priors, if not uniform</p>
 <dt class="sig sig-object py" id="RIFT.integrators.multivariate_truncnorm.sample">
 <span class="sig-prename descclassname"><span class="pre">RIFT.integrators.multivariate_truncnorm.</span></span><span class="sig-name descname"><span class="pre">sample</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">mean</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cov</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">bounds</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">n</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.multivariate_truncnorm.sample" title="Link to this definition"></a></dt>
 <dd><p>Generate samples</p>
-<section id="id33">
-<h3>Parameters<a class="headerlink" href="#id33" title="Link to this heading"></a></h3>
+<section id="id34">
+<h3>Parameters<a class="headerlink" href="#id34" title="Link to this heading"></a></h3>
 <dl class="simple">
 <dt>mean<span class="classifier">np.ndarray</span></dt><dd><p>Mean of the distribution</p>
 </dd>
@@ -2073,8 +2158,8 @@ g : optional additional function used to specify priors, if not uniform</p>
 </dd>
 </dl>
 </section>
-<section id="id34">
-<h3>Returns<a class="headerlink" href="#id34" title="Link to this heading"></a></h3>
+<section id="id35">
+<h3>Returns<a class="headerlink" href="#id35" title="Link to this heading"></a></h3>
 <dl class="simple">
 <dt>np.ndarray</dt><dd><p>Array of samples</p>
 </dd>
