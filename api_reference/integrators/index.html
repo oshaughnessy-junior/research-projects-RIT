@@ -1966,6 +1966,30 @@ X under each of the n_components multivariate Gaussian distributions.</p>
 <section id="module-RIFT.integrators.statutils">
 <span id="statistical-utilities"></span><h2>Statistical Utilities<a class="headerlink" href="#module-RIFT.integrators.statutils" title="Link to this heading"></a></h2>
 <dl class="py function">
+<dt class="sig sig-object py" id="RIFT.integrators.statutils.block_scatter_sigma">
+<span class="sig-prename descclassname"><span class="pre">RIFT.integrators.statutils.</span></span><span class="sig-name descname"><span class="pre">block_scatter_sigma</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">lnZ_blocks</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">n_blocks</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.statutils.block_scatter_sigma" title="Link to this definition"></a></dt>
+<dd><p>sigma(lnZ) from the between-chunk scatter of per-chunk mean estimates,
+via a delete-one jackknife of the n-weighted pooled mean.  Each chunk of an
+adaptive run used a different proposal, so this sees the nonstationarity the
+pooled within-run variance averages away.  (It still cannot see modes that
+EVERY chunk missed – only independent replicas can.)  Returns float sigma
+or None if fewer than 2 usable chunks.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.integrators.statutils.bootstrap_lnZ_quantiles">
+<span class="sig-prename descclassname"><span class="pre">RIFT.integrators.statutils.</span></span><span class="sig-name descname"><span class="pre">bootstrap_lnZ_quantiles</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">log_wt</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">n_total</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">n_boot</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">200</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">quantiles</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(0.05,</span> <span class="pre">0.5,</span> <span class="pre">0.95)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rng_seed</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.statutils.bootstrap_lnZ_quantiles" title="Link to this definition"></a></dt>
+<dd><p>Bootstrap quantiles of lnZ_hat = ln( sum_i w_i / n_total ) by resampling
+the stored LOG weights with replacement.  When the relative error is O(1)
+the delta-method +-sigma interval on lnZ is meaningless (the distribution is
+strongly skewed); these quantiles are an honest same-sample interval.  They
+remain blind to tail mass never sampled – pair with pareto_khat_from_log.
+n_total: divisor if the stored weights are a pruned subset of a larger run
+(the pruned-away weights contribute negligibly to the sum).  Returns a
+numpy array of lnZ quantiles, or None if too few weights.</p>
+</dd></dl>
+
+<dl class="py function">
 <dt class="sig sig-object py" id="RIFT.integrators.statutils.cumvar">
 <span class="sig-prename descclassname"><span class="pre">RIFT.integrators.statutils.</span></span><span class="sig-name descname"><span class="pre">cumvar</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">arr</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mean</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">var</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">n</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.statutils.cumvar" title="Link to this definition"></a></dt>
 <dd><blockquote>
@@ -1973,6 +1997,12 @@ X under each of the n_components multivariate Gaussian distributions.</p>
 </div></blockquote>
 <p><a class="reference external" href="http://www.johndcook.com/standard_deviation.html">http://www.johndcook.com/standard_deviation.html</a></p>
 <p>for algorithm details.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.integrators.statutils.ess_from_log_weights">
+<span class="sig-prename descclassname"><span class="pre">RIFT.integrators.statutils.</span></span><span class="sig-name descname"><span class="pre">ess_from_log_weights</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">log_wt</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.statutils.ess_from_log_weights" title="Link to this definition"></a></dt>
+<dd><p>Kish effective sample size (sum w)^2 / sum w^2 from LOG weights.</p>
 </dd></dl>
 
 <dl class="py function">
@@ -1996,6 +2026,22 @@ X under each of the n_components multivariate Gaussian distributions.</p>
 <dt class="sig sig-object py" id="RIFT.integrators.statutils.int_var">
 <span class="sig-prename descclassname"><span class="pre">RIFT.integrators.statutils.</span></span><span class="sig-name descname"><span class="pre">int_var</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">samples</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.statutils.int_var" title="Link to this definition"></a></dt>
 <dd></dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.integrators.statutils.pareto_khat_from_log">
+<span class="sig-prename descclassname"><span class="pre">RIFT.integrators.statutils.</span></span><span class="sig-name descname"><span class="pre">pareto_khat_from_log</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">log_wt</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tail_frac</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.2</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">min_tail</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">20</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.statutils.pareto_khat_from_log" title="Link to this definition"></a></dt>
+<dd><p>Generalized-Pareto tail index k of the importance-weight distribution,
+fit to the largest weights (Zhang &amp; Stephens 2009 posterior-mean estimator,
+as used by Pareto-smoothed importance sampling).  Input is LOG weights on
+any scale (k is invariant under overall rescaling).  Interpretation:
+k &lt; 0.5 : weight variance finite, the naive error estimate is meaningful;
+0.5-0.7 : variance marginal, treat the naive sigma as optimistic;
+k &gt; 0.7 : the weight tail is unresolved – the naive sigma is a lower bound</p>
+<blockquote>
+<div><p>and the integral itself may be dominated by unseen tail mass.</p>
+</div></blockquote>
+<p>Returns float k, or None if there are too few finite weights to fit.</p>
+</dd></dl>
 
 <dl class="py function">
 <dt class="sig sig-object py" id="RIFT.integrators.statutils.update">
