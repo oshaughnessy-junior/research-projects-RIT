@@ -88,8 +88,13 @@ discovered_plugins = entry_points(group='RIFT.integrator_plugins')
 known_pipelines = {}
 for pipeline in discovered_plugins:
   print(" Portfolio discovery: loading ", pipeline.name)
-  known_pipelines[pipeline.name] = pipeline.load()
-print('RIFT portfolio plugins:', [ep.name for ep in discovered_plugins])
+  try:
+    known_pipelines[pipeline.name] = pipeline.load()
+  except Exception as e:
+    # optional plugins (e.g. the NF pipeline needing torch) must not make
+    # importing mcsamplerPortfolio itself fail on torch-free installations
+    print(" Portfolio discovery: SKIPPING {} (unavailable: {})".format(pipeline.name, e))
+print('RIFT portfolio plugins:', sorted(known_pipelines))
 
 
 class NanOrInf(Exception):
@@ -110,6 +115,12 @@ def portfolio_default_weights(n_ess_list, wt_previous, portfolio_probability_flo
   rewt = vals - 1   # will be non-negative
   # don't update if we have insane answers
   if any(np.isnan(rewt)):
+    return wt_previous
+  # if every member is degenerate (n_ess ~ 1, e.g. a very hard target's first
+  # chunk found nothing), the normalization below would divide by zero and
+  # produce nan weights -> negative per-member sample counts downstream.  Keep
+  # the previous (typically uniform) weights instead.
+  if np.sum(rewt) <= 0:
     return wt_previous
   rewt = np.ones(len(rewt))*portfolio_probability_floor + (rewt/np.sum(rewt)) * (1-portfolio_probability_floor)
   net = (rewt * history_factor + wt_previous*(1-history_factor))
@@ -150,8 +161,114 @@ class MCSampler(object):
         if not(self.portfolio_weights ):
             self.portfolio_weights = np.ones(len(self.portfolio))/(1.0*len(self.portfolio))
 
-        self.portfolio_adapt = np.ones(len(self.portfolio),dtype=bool) # default : everything adapts.  
+        self.portfolio_adapt = np.ones(len(self.portfolio),dtype=bool) # default : everything adapts.
         self.portfolio_freeze_wt =portfolio_freeze_wt  # if weight is below this number, the portfolio member's distribution will NOT update. SCALAR
+        # Freeze protection.  A member (esp. a VARAHA/AV workhorse) contributes little on its
+        # first chunks -- before it has contracted -- so a plain weight<freeze_wt freeze starves
+        # it from chunk 1 and it never gets going.  Instead of freezing permanently:
+        #  * GRACE: never freeze during the first `grace_iters` iterations (let members contract);
+        #  * REVIVE: every `revive_period` iterations, update the frozen members anyway (one step)
+        #    so a starved-but-recoverable member gets periodic chances instead of wasting cycles.
+        # Both are overridable via setup(**kwargs).
+        self.portfolio_grace_iters = kwargs.get('portfolio_grace_iters', 25)
+        self.portfolio_revive_period = kwargs.get('portfolio_revive_period', 8)
+        # VARAHA/AV members are a special case.  A VARAHA member ONLY contracts its live
+        # volume on the chunk where it is UPDATED (update_sampling_prior_selfish); grace/revive
+        # update it only intermittently, so it contracts ~revive_period x slower than a
+        # standalone AV that updates every chunk -- it never becomes the workhorse.  Because the
+        # balance-heuristic mixture density (q_mix) makes the estimate unbiased for ANY member
+        # weights, a continuously-updated VARAHA can only ever COST efficiency (extra selfish
+        # draws), never bias the integral.  So by default we make VARAHA members freeze-EXEMPT:
+        # once past their activation breakpoint they update every chunk, exactly like standalone
+        # AV.  Set portfolio_varaha_never_freeze=False to fall back to the grace/revive schedule
+        # (e.g. to save eval cycles on a VARAHA member you know is a genuinely bad fit).
+        self.portfolio_varaha_never_freeze = kwargs.get('portfolio_varaha_never_freeze', True)
+        # PLATEAU-AWARE REVIVE (OPT-IN, default OFF): also update a low-weight member while its
+        # own per-chunk n_ess is still climbing.  It sounded strictly helpful, but the shape
+        # merge gate showed it SYSTEMATICALLY HALVES portfolio n_eff: forcing updates of members
+        # the freeze schedule would have parked makes their proposals worse, not better.
+        # Isolated on the gate's own targets (plateau ON -> OFF, vs gate base):
+        #   d4_n1_s101 25.9 -> 53.5 (base 53.5)   d4_n3_s202 29.1 -> 83.8 (base 83.8)
+        #   d6_n1_s202 64.0 -> 102.1 (base 102.1)  d6_n3_s202  7.2 -> 31.4 (base 31.4)
+        #   d8_n1_s101 37.3 -> 61.9 (base 61.9)
+        # i.e. OFF reproduces base EXACTLY, so this was the sole default-path regression in
+        # PR #28 (never-freeze was measured to be a no-op on these targets, ratio 1.00).
+        # Kept available for experimentation; DO NOT default it on without re-running the gate.
+        self.portfolio_plateau_revive = kwargs.get('portfolio_plateau_revive', False)
+        # Diagnostic: per-member n_ess history (one list per portfolio member), appended each
+        # chunk in the report block.  Enables plateau-aware policies and post-hoc analysis.
+        self.portfolio_member_ness_history = [[] for _ in range(len(self.portfolio))]
+
+        # ADAPTIVE-PROBE DRAW ALLOCATION -- OPT-IN (default OFF).  Idea: keep a per-member QUALITY
+        # estimate updated only from fair-allocation chunks, allocate draws by quality^exponent, and
+        # round-robin PROBE each member at a raised share so a suppressed member can prove itself.
+        # q_mix keeps this unbiased for ANY allocation.  On strongly-correlated SYNTHETIC targets it
+        # works well (a full-covariance GMM wins the probe and the portfolio beats AV --
+        # test_portfolio_adaptive_alloc.py).
+        #
+        # BUT it is NOT a safe default: the quality signal is each member's per-chunk Kish n_ess,
+        # which rewards SELF-CONSISTENCY, not integral coverage.  A warm GMM is instantly
+        # self-consistent (per-chunk n_ess ~120) while a warm VARAHA/AV member's per-chunk n_ess is
+        # genuinely ~1 during its slow, CUMULATIVE contraction (its value emerges over ~70 chunks).
+        # So on a real high-SNR AV-favorable event (S250114ax) adaptive drives the true AV workhorse
+        # to the floor and rides the self-consistent-but-worse GMM: measured n_eff 8 vs 53 for the
+        # legacy allocation -- a regression.  The probe cannot rescue AV because AV still looks bad
+        # at high allocation until fully contracted.  A correct default needs a GLOBAL-impact quality
+        # signal (how much a member improves the pooled q_mix n_eff), not per-member self-n_ess; that
+        # is future work.  Until then the DEFAULT keeps the legacy n_ess reweighting.
+        self.portfolio_adaptive_alloc = kwargs.get('portfolio_adaptive_alloc', False)
+        # QUALITY SIGNAL for the allocation:
+        #  'global' (default) -- each member's MARGINAL GAIN IN POOLED n_eff PER SAMPLE,
+        #      g_m = 2*mean_w_m/S - mean_w2_m/Q  (S=sum w, Q=sum w^2 over ALL samples; see the
+        #      derivation where it is computed).  This directly optimizes the quantity we care
+        #      about: it credits a member for the weight MASS it contributes and debits it for the
+        #      weight VARIANCE it injects.  The two simpler candidates both fail:
+        #        * Kish n_ess is SCALE-INVARIANT ((sum w)^2/sum w^2 is unchanged if all w are
+        #          scaled), so it cannot see whether a member carries any integral mass at all -- a
+        #          self-consistent member sitting off-peak scores as well as one covering the peak.
+        #        * mean weight alone REWARDS badly-matched proposals: a well-matched contracted AV
+        #          correctly has small uniform weights, while a broad GMM's rare huge-weight outlier
+        #          sets the max (measured on S250114ax: AV 1e-40 vs GMM 2e-4 -- backwards).
+        #      g_m is also self-correcting at low allocation: a starved peak-covering member sees
+        #      inflated weights (q_mix is small there) so it earns share, and as its share grows
+        #      q_mix rises and the weights fall -- an equilibrium, with no under-observation trap.
+        #  'ness' -- legacy per-member Kish n_ess (kept for comparison; see the S250114ax regression).
+        self.portfolio_quality_signal = kwargs.get('portfolio_quality_signal', 'global')
+        self.portfolio_alloc_exponent = kwargs.get('portfolio_alloc_exponent', 1.0)  # weights ~ quality^p
+        self.portfolio_alloc_floor    = kwargs.get('portfolio_alloc_floor', 0.05)     # min share (coverage+probe)
+        self.portfolio_quality_decay  = kwargs.get('portfolio_quality_decay', 0.5)    # EMA alpha for quality
+        self.portfolio_probe_period   = kwargs.get('portfolio_probe_period', 4)       # probe one member every N chunks
+        self.portfolio_probe_frac     = kwargs.get('portfolio_probe_frac', 0.6)       # raise probed member to >= this
+        # WEIGHT CLIPPING (truncated importance sampling) -- OPT-IN, default off, PROPOSAL-FIT INPUT
+        # ONLY (see the clipping block in integrate_log).  Cap w at
+        #     tau = portfolio_weight_clip * sqrt(n) * mean(w)          (Ionides 2008, truncated IS)
+        # Clipping is BIASED and distorts n_ess, so the clipped copy feeds ONLY
+        # member.update_sampling_prior (the GMM covariance fit) -- one enormous weight can't make
+        # that fit degenerate.  The estimator (ln Z, n_eff), the n_ess report, and the allocation
+        # signal all use the TRUE weights, so they stay exactly unbiased/undistorted.  The withheld
+        # mass is accumulated in log space and reported as a TAIL DIAGNOSTIC, not a bias.
+        self.portfolio_weight_clip = kwargs.get('portfolio_weight_clip', 0.0)  # 0 = off
+        self.portfolio_clip_log_removed = -np.inf
+        self.portfolio_clip_log_total = -np.inf
+        self.portfolio_clip_n = 0
+        # diagnostic: samples whose mixture density UNDERFLOWED to 0 and hit the 1e-300 floor (those
+        # produce spurious ~1/1e-300 weights -- a numerical artifact, not real tail mass)
+        self.portfolio_qmix_underflow = 0
+        # VARAHA DRAW FLOOR (opt-in, default 0 = off).  never-freeze guarantees a VARAHA/AV member
+        # keeps UPDATING (contracting), but nothing guarantees it keeps DRAWING: both allocation
+        # rules score members by per-chunk n_ess, and a VARAHA member's per-chunk n_ess sits at ~1
+        # during its slow CUMULATIVE contraction, so a member that looks instantly good (a live GMM)
+        # can take almost the whole budget.  Measured on S250114ax after the PR #33 fixes made the
+        # GMM member genuinely live: the allocation gave GMM ~0.84 and the portfolio collapsed to
+        # n_eff ~2 at 4M, versus ~100 for standalone AV.  Setting this to f reserves a combined
+        # fraction f of the draws for VARAHA members (applied AFTER whichever allocation rule runs,
+        # so it protects the legacy and adaptive paths alike).  q_mix keeps any allocation unbiased,
+        # so this only trades efficiency.
+        self.portfolio_varaha_min_frac = kwargs.get('portfolio_varaha_min_frac', 0.0)
+        self.portfolio_varaha_max_frac = kwargs.get('portfolio_varaha_max_frac', 0.0)  # 0 = no cap
+        self.portfolio_quality = np.ones(len(self.portfolio))   # per-member quality (EMA of the signal)
+        self.portfolio_quality_nobs = np.zeros(len(self.portfolio), dtype=int)  # #updates per member
+        self.portfolio_probe_ptr = 0                            # round-robin probe pointer
 
         # Total number of samples drawn
         self.ntotal = 0
@@ -194,8 +311,62 @@ class MCSampler(object):
             self.adaptive = member.adaptive  # top level list of adaptive coordinates
 
 
+    def bootstrap_from_samples(self, samples, params=None, **kwargs):
+        """Warm-start: forward a seed cloud to every member that supports it (e.g. the
+        AV/VARAHA member's live volume).  Members without bootstrap_from_samples are left
+        cold.  This is safe: a warm start only ever shapes a member's proposal, and the
+        portfolio combines members with the balance-heuristic mixture density (q_mix), so a
+        cold or mis-seeded member can only cost efficiency, never bias the estimate.  Column
+        order matches self.params_ordered, which every member shares (add_parameter forwards
+        to all members in the same order), so no per-member remapping is needed.
+
+        Only VARAHA/AV-style members (those exposing bootstrap_from_samples) are seeded
+        directly here.  GMM / adaptive-Gaussian members cannot be seeded pre-integration
+        (their internal integrator, hence gmm_dict, does not exist until the first
+        integrate() call), but they still warm up STRUCTURALLY during the run: the portfolio
+        lets the cold GMM member adapt its proposal from the warm AV member's high-likelihood
+        draws, which is what gives the mixture a faster early n_eff than warm-AV alone.  An
+        explicit GMM pre-seed (build an initial gmm_dict from the sample cloud) is a future
+        enhancement.  q_mix keeps any cold/mis-seeded member from biasing the estimate.
+
+        Returns the number of members warm-started (0 is fine; the portfolio still runs)."""
+        samples = np.asarray(samples)
+        n_warmed = 0
+        for indx, member in enumerate(self.portfolio_realizations):
+            if not hasattr(member, 'bootstrap_from_samples'):
+                continue
+            try:
+                member.bootstrap_from_samples(samples, params=params, **kwargs)
+                n_warmed += 1
+            except Exception as e:
+                print("  [portfolio] member {} warm-start skipped ( {} )".format(indx, e))
+        print("  [portfolio] warm-started {}/{} members directly (others warm structurally)".format(
+            n_warmed, len(self.portfolio_realizations)))
+        return n_warmed
+
     def setup(self,  **kwargs):
         self.extra_args =kwargs  # may need to pass/use during the 'update' step
+        # allow the driver/CLI to tune the freeze-protection knobs.  A None means "not set on
+        # the CLI" (optparse default), so keep the current value rather than clobbering it.
+        def _kw_keep(name):
+            v = kwargs.get(name, None)
+            if v is not None:
+                setattr(self, name, v)
+        _kw_keep('portfolio_freeze_wt')
+        _kw_keep('portfolio_grace_iters')
+        _kw_keep('portfolio_revive_period')
+        _kw_keep('portfolio_varaha_never_freeze')
+        _kw_keep('portfolio_plateau_revive')
+        _kw_keep('portfolio_adaptive_alloc')
+        _kw_keep('portfolio_quality_signal')
+        _kw_keep('portfolio_alloc_exponent')
+        _kw_keep('portfolio_alloc_floor')
+        _kw_keep('portfolio_quality_decay')
+        _kw_keep('portfolio_probe_period')
+        _kw_keep('portfolio_probe_frac')
+        _kw_keep('portfolio_weight_clip')
+        _kw_keep('portfolio_varaha_min_frac')
+        _kw_keep('portfolio_varaha_max_frac')
         if 'oracle_realizations' in kwargs:
           if kwargs['oracle_realizations']: 
             self.oracle_realizations = kwargs['oracle_realizations']  # might not have been initialized earlier
@@ -214,7 +385,11 @@ class MCSampler(object):
               portfolio_extra_args = kwargs['portfolio_args']
             else:
               print(" PORTFOLIO - format ERROR ", kwargs['portfolio_args'])
-        for indx, member in enumerate(self.portfolio):
+        # Iterate the INSTANTIATED samplers (portfolio_realizations), NOT self.portfolio: the
+        # latter may hold modules/names (see __init__), which lack .setup(), so member setup was
+        # silently skipped -> a cold member's internal state (AV my_ranges, GMM integrator) was
+        # never built and draw_simplified failed.  Setting up the realizations fixes AV+GMM cold.
+        for indx, member in enumerate(self.portfolio_realizations):
             if hasattr(member, 'setup'):
               print(" PORTFOLIO setup ", member, portfolio_extra_args[indx])
               args_here = {}
@@ -229,6 +404,60 @@ class MCSampler(object):
               args_here.update(portfolio_extra_args[indx])
               member.setup(**args_here)
               member.params_ordered = list(self.params_ordered)  # enforce parameters for oracle being sane
+
+    def _adaptive_allocation(self, ness_now, frac_now, iteration):
+        """Adaptive-probe draw allocation (see __init__).  Returns the next chunk's per-member
+        draw weights.  Decouples a QUALITY estimate (EMA of n_ess, updated only from chunks where
+        the member had a fair allocation) from the ALLOCATION (quality^exponent, floored), and
+        round-robin PROBES one member per `probe_period` chunks at a raised share so a suppressed
+        member can prove itself.  Unbiased for any allocation (q_mix handles correctness)."""
+        m = len(self.portfolio)
+        if m <= 1:
+            return np.ones(m)
+        # 'global' (marginal pooled n_eff) and 'credit' (MIS credit) are both ZERO-based
+        # contribution measures; only the legacy Kish n_ess signal is floored at 1.
+        _global = self.portfolio_quality_signal in ('global', 'credit')
+        _floor_obs = 0.0 if _global else 1.0   # contribution is zero-based; Kish n_ess is >= 1
+        obs = np.asarray(ness_now, dtype=float)
+        obs = np.where(np.isfinite(obs), obs, _floor_obs)
+        frac = np.asarray(frac_now, dtype=float)
+        # 1) update QUALITY.  With the 'ness' signal a member drawn at the floor has too few/too
+        #    noisy samples to trust, so only fair-allocation chunks count.  The 'global'
+        #    contribution signal is SELF-CORRECTING at low allocation (a starved peak-covering
+        #    member shows inflated weights), so every chunk is informative -- no gating needed.
+        fair = 0.0 if _global else 0.9 / m
+        a = self.portfolio_quality_decay
+        for k in range(m):
+            if frac[k] > 0 and frac[k] >= fair:
+                _o = max(obs[k], _floor_obs)
+                if self.portfolio_quality_nobs[k] == 0:
+                    # first real observation: adopt it outright.  The 'global' contribution signal
+                    # has an arbitrary scale, so EMA-ing from the placeholder 1.0 would bias it.
+                    self.portfolio_quality[k] = _o
+                else:
+                    self.portfolio_quality[k] = (1 - a) * self.portfolio_quality[k] + a * _o
+                self.portfolio_quality_nobs[k] += 1
+        # 2) base allocation ~ quality^exponent above a floor.  For 'ness' we use the EXCESS over the
+        #    degenerate n_ess=1 (a member at n_ess 1 contributes nothing); the 'global' contribution
+        #    is already zero-based.
+        q = np.maximum(self.portfolio_quality - _floor_obs, 0.0)
+        if np.sum(q) <= 0:
+            base = np.ones(m) / m
+        else:
+            w = (q / np.sum(q)) ** self.portfolio_alloc_exponent
+            base = w / np.sum(w)
+        base = self.portfolio_alloc_floor + base * (1.0 - m * self.portfolio_alloc_floor)
+        base = base / np.sum(base)
+        # 3) round-robin probe: raise ONE member to >= probe_frac every probe_period chunks so an
+        #    under-observed member gets a fair look next chunk (breaks the under-observation trap).
+        if self.portfolio_probe_period > 0 and (iteration % self.portfolio_probe_period == 0):
+            k = self.portfolio_probe_ptr % m
+            self.portfolio_probe_ptr += 1
+            if base[k] < self.portfolio_probe_frac:
+                base = base * (1.0 - self.portfolio_probe_frac) / max(1e-12, 1.0 - base[k])
+                base[k] = self.portfolio_probe_frac
+                base = base / np.sum(base)
+        return base
 
     def draw(self,n_samples, *args, **kwargs):
         """
@@ -260,7 +489,16 @@ class MCSampler(object):
 
         # if only one method is active, just call the low-level function
         if len(indx_active) == 1:
-           joint_p_s, joint_p_prior, rv = self.portfolio[indx_active[0]].draw_simplified(n_samples, *self.params_ordered, **kwargs)
+           only_member = self.portfolio_realizations[indx_active[0]]
+           joint_p_s, joint_p_prior, rv = only_member.draw_simplified(n_samples, *self.params_ordered, **kwargs)
+           # The portfolio aggregates on the host (self.xpy is numpy); members
+           # may be GPU-backed (cupy), so bring their draws to the host.
+           joint_p_s = identity_convert(joint_p_s); joint_p_prior = identity_convert(joint_p_prior); rv = identity_convert(rv)
+           # Record which members produced this chunk, and each member's SAMPLING
+           # FRACTION (n_from_member / n_total).  integrate_log uses these to form
+           # the balance-heuristic mixture density q_mix = sum_m frac_m * q_m.
+           self._chunk_members = [only_member]
+           self._chunk_fractions = np.array([1.0])
         else:
           # Identify number of samples per member of the portfolio. Can be zero.
           n_samples_per_member = ((np.array(weights_active))*n_samples).astype(int)
@@ -282,17 +520,27 @@ class MCSampler(object):
             joint_p_s_here, joint_p_prior_here, rv_here = member.draw_simplified(
                 n_samples_per_member[indx_member], *self.params_ordered, **kwargs
                 )
-            # type convert as needed, to GPU
-            if not(isinstance( type(joint_p_s_here), type(joint_p_s))):
-              joint_p_s_here = self.identity_convert_togpu(joint_p_s_here)
-              joint_p_prior_here = self.identity_convert_togpu(joint_p_prior_here)
-              rv_here = self.identity_convert_togpu(rv_here)
+            # Bring member draws to the host backend the portfolio aggregates in
+            # (self.xpy is numpy).  identity_convert is cupy.asnumpy when a member
+            # is GPU-backed, else a no-op.  (The previous isinstance(type(x),..)
+            # guard never fired, leaving cupy arrays to collide with numpy ones.)
+            joint_p_s_here = identity_convert(joint_p_s_here)
+            joint_p_prior_here = identity_convert(joint_p_prior_here)
+            rv_here = identity_convert(rv_here)
             indx_start = int(n_index_start_per_member[indx_member])
             indx_end = indx_start + int(n_samples_per_member[indx_member])
             joint_p_s[indx_start:indx_end] = joint_p_s_here
             joint_p_prior[indx_start:indx_end] = joint_p_prior_here
             rv[:,indx_start:indx_end] = rv_here
-            
+
+          # Record the ACTUAL per-member sampling fractions for this chunk (the
+          # counts actually drawn, not the raw portfolio_weights).  These are the
+          # w_m in the balance-heuristic mixture density q_mix = sum_m w_m q_m
+          # that integrate_log builds; using the true drawn fractions is what
+          # keeps the deterministic-mixture estimator exactly unbiased.
+          self._chunk_members = list(portfolio_active)
+          self._chunk_fractions = np.array(n_samples_per_member, dtype=float) / float(n_samples)
+
         #
         # Cache the samples we chose.  REQUIRED
         #
@@ -317,8 +565,18 @@ class MCSampler(object):
         
 
     def integrate_log(self, lnF, *args, xpy=xpy_default,**kwargs):
-        xpy_here = self.xpy
-        
+        # The portfolio AGGREGATES on the host: draw() brings member draws to the
+        # host, so force the running-estimate math onto numpy/scipy regardless of
+        # what the driver set self.xpy to (it sets cupy for GPU members).  Members
+        # still do their own heavy sampling/adaptation on their own backend.  The
+        # INTEGRAND, however, may be device-native (the real vectorized GPU ILE
+        # likelihood) or host-native (synthetic/CI): _eval_integrand() below feeds
+        # it device-first and falls back to host, so both work.
+        self.xpy = numpy
+        xpy_here = numpy
+        xpy = numpy
+        special_here = special    # scipy.special (host); statutils uses this
+
         #
         # Determine stopping conditions
         #
@@ -328,6 +586,12 @@ class MCSampler(object):
         convergence_tests = kwargs["convergence_tests"] if "convergence_tests" in kwargs else None
         save_no_samples = kwargs["save_no_samples"] if "save_no_samples" in kwargs else None
         portfolio_wt_func = kwargs['portfolio_schedule'] if 'portfolio_schedule' in kwargs else portfolio_default_weights
+        # allow a per-integration override of the adaptive-probe allocation (else use the instance
+        # default set at init/setup); falling back to the legacy n_ess reweighting when off.
+        use_adaptive_alloc = kwargs.get('portfolio_adaptive_alloc', self.portfolio_adaptive_alloc)
+        # per-integration override of the weight clip (else the instance default from init/setup)
+        if 'portfolio_weight_clip' in kwargs:
+            self.portfolio_weight_clip = kwargs['portfolio_weight_clip']
 
         #
         # Adaptive sampling parameters
@@ -413,22 +677,155 @@ class MCSampler(object):
                     params.extend(item)
                 else:
                     params.append(item)
-            unpacked = unpacked0 = rv #numpy.hstack([r.flatten() for r in rv]).reshape(len(args), -1)
-            unpacked = dict(list(zip(params, unpacked)))
-
-            # Evaluate function, protecting argument order
-            if 'no_protect_names' in kwargs:
-                lnL = lnF(*unpacked0)  # do not protect order
+            # Evaluate the integrand.  rv is on the host (see draw()).  The real
+            # GPU ILE likelihood is DEVICE-native (wants cupy); synthetic/CI
+            # integrands are host-native.  Feed device-first, fall back to host on
+            # a type error, and remember the choice (same contract as the AV
+            # integrator).  lnL is brought back to the host for aggregation.
+            def _eval_integrand(cols):
+                if 'no_protect_names' in kwargs:
+                    return lnF(*cols)
+                return lnF(**dict(list(zip(params, cols))))
+            if getattr(self, '_integrand_wants_host', False) or not cupy_ok:
+                lnL = _eval_integrand(rv)
             else:
-                lnL= lnF(**unpacked)  # protect order using dictionary
-            # take log if we are NOT using lnL
-            if cupy_ok:
-              if not(isinstance(lnL,cupy.ndarray)):
-                lnL = identity_convert_togpu(lnL)  # send to GPU, if not already there
+                try:
+                    lnL = _eval_integrand(identity_convert_togpu(rv))
+                except (TypeError, ValueError):
+                    self._integrand_wants_host = True
+                    lnL = _eval_integrand(rv)
+            # bring lnL back to the host for the host-side aggregation
+            lnL = identity_convert(lnL)
+
+            # ---- BALANCE-HEURISTIC (deterministic-mixture) sampling density ----
+            # The pooled draw is, by construction, a sample from the MIXTURE
+            #     q_mix(theta) = sum_m frac_m * q_m(theta),
+            # where frac_m = (# samples member m contributed)/n for THIS chunk and
+            # q_m is member m's own sampling density evaluated at theta.  Using
+            # q_mix (rather than each sample's own member density -- the previous
+            # STRATIFIED estimator) makes the estimate unbiased for ANY member
+            # weights, provided the mixture covers the peak (Veach & Guibas MIS
+            # balance heuristic).  A broad member with even a small weight then
+            # guarantees coverage, so a wrongly-contracted member can no longer
+            # drive the integral low.  See portfolio_default_weights: n_ess-based
+            # weighting made the old stratified denominator UNSAFE.
+            #
+            # We require EVERY active member (that drew >0 samples) to expose a
+            # sampling_density; if any does not (e.g. an AC-histogram member with
+            # no pointwise density yet), we fall back to the legacy per-member
+            # joint_p_s so those portfolios keep running unchanged.
+            use_mixture = kwargs['portfolio_use_mixture_density'] if 'portfolio_use_mixture_density' in kwargs else True
+            q_mix = None
+            if use_mixture:
+                X_all = numpy.asarray(identity_convert(rv), dtype=float)
+                if X_all.shape[0] == len(self.params_ordered):
+                    X_all = X_all.T   # -> (N, ndim), columns in params_ordered order
+                members_here = getattr(self, '_chunk_members', [])
+                fracs_here = getattr(self, '_chunk_fractions', None)
+                if len(members_here) > 0 and fracs_here is not None:
+                    acc = numpy.zeros(X_all.shape[0], dtype=float)
+                    _mix_parts = {}
+                    all_ok = True
+                    any_active = False
+                    for frac_m, member_m in zip(fracs_here, members_here):
+                        if frac_m <= 0:
+                            continue   # member drew nothing this chunk
+                        dens_fn = getattr(member_m, 'sampling_density', None)
+                        q_m = dens_fn(X_all) if dens_fn is not None else None
+                        if q_m is None:
+                            all_ok = False
+                            break
+                        _contrib_m = float(frac_m) * numpy.asarray(identity_convert(q_m), dtype=float)
+                        acc = acc + _contrib_m
+                        # retain frac_m*q_m per member: the balance-heuristic credit
+                        # frac_m q_m / q_mix is the MIS share of each sample owed to member m
+                        _mix_parts[id(member_m)] = _contrib_m
+                        any_active = True
+                    if all_ok and any_active:
+                        # every pooled sample was drawn by some active member, so
+                        # q_mix >= frac*q_m(own) > 0 there; floor only guards FP.
+                        # UNDERFLOW DIAGNOSTIC: mathematically acc>0 for every drawn sample, so any
+                        # acc==0 is a floating-point UNDERFLOW of the linear-space density sum.  The
+                        # 1e-300 floor then turns it into a spurious ~target/1e-300 weight, which can
+                        # single-handedly dominate the pooled estimator.  Count these so a numerical
+                        # artifact can be told apart from genuine heavy-tailed weights (the former
+                        # wants a log-space q_mix / member fix, the latter wants weight clipping).
+                        _n_uf = int(numpy.sum(acc <= 0))
+                        if _n_uf > 0:
+                            self.portfolio_qmix_underflow += _n_uf
+                            print("  PORTFOLIO: q_mix UNDERFLOW on {}/{} samples this chunk"
+                                  " (density summed to 0 -> floored 1e-300 -> spurious huge weight;"
+                                  " cumulative {})".format(_n_uf, len(acc), self.portfolio_qmix_underflow))
+                        q_mix = numpy.maximum(acc, 1e-300)
+                        self._chunk_mix_parts = _mix_parts
+            if q_mix is not None:
+                joint_p_s = q_mix   # deterministic-mixture denominator
+            else:
+                if use_mixture and getattr(self, '_warned_no_mixture', False) is False:
+                    print(" PORTFOLIO: some active member lacks sampling_density; "
+                          "falling back to legacy stratified per-member density.")
+                    self._warned_no_mixture = True
 
             log_integrand =lnL + self.xpy.log(joint_p_prior) - self.xpy.log(joint_p_s)
             # tempering_exp done inside the update proposal, NOT here
             log_weights = lnL + self.xpy.log(joint_p_prior) - self.xpy.log(joint_p_s)
+            # NaN guard: a frozen/degenerate member (e.g. an un-contracted VARAHA) can emit NaN
+            # samples -> NaN lnL / joint_p_s -> NaN weights, which otherwise propagate into the
+            # aggregation and the reported crash ("boolean index did not match ... 10000 vs 9882"
+            # when a NaN mask is applied downstream).  Map any non-finite weight to -inf (zero
+            # weight) IN PLACE, keeping the array length fixed so no mask-size mismatch can arise.
+            _bad = ~self.xpy.isfinite(log_integrand)
+            if bool(self.identity_convert(self.xpy.any(_bad))):
+                log_integrand = self.xpy.where(_bad, -self.xpy.inf, log_integrand)
+                log_weights   = self.xpy.where(_bad, -self.xpy.inf, log_weights)
+
+            # WEIGHT CLIPPING (truncated IS; OPT-IN) -- PROPOSAL-TRAINING INPUT ONLY.
+            # Clipping is BIASED and also distorts n_ess, so its scope is deliberately narrow: it
+            # produces log_weights_adapt, which is fed ONLY to member.update_sampling_prior (the GMM
+            # covariance fit), so that a single enormous weight cannot make that fit degenerate.
+            # Everything else uses the TRUE weights:
+            #   * log_integrand -> the ESTIMATE (ln Z, eff_samp): UNCLIPPED -> exactly unbiased.
+            #   * the per-member n_ess REPORT and the ALLOCATION signal: UNCLIPPED -> undistorted
+            #     (clipping flattens weights and would INFLATE the clipped member's Kish n_ess,
+            #      perversely rewarding the very member whose weights had to be clipped).
+            # This is also strictly better than DROPPING a chunk that clipped: dropping conditional
+            # on "a big weight appeared" is data-dependent selection and would bias ln Z low.  The
+            # tracked withheld mass is a TAIL DIAGNOSTIC (how much weight the proposal fit ignored).
+            log_weights_adapt = log_weights
+            if self.portfolio_weight_clip and self.portfolio_weight_clip > 0:
+                _lw = numpy.asarray(self.identity_convert(log_weights), dtype=float)
+                _fin = numpy.isfinite(_lw)
+                if bool(numpy.any(_fin)):
+                    _mx = float(numpy.max(_lw[_fin]))
+                    _u = numpy.where(_fin, numpy.exp(_lw - _mx), 0.0)
+                    _n_here = max(1, len(_u))
+                    _total = float(numpy.sum(_u))
+                    _tau = self.portfolio_weight_clip * numpy.sqrt(_n_here) * (_total / _n_here)
+                    if _total > 0:
+                        self.portfolio_clip_log_total = numpy.logaddexp(
+                            self.portfolio_clip_log_total, numpy.log(_total) + _mx)
+                    _over = _u > _tau
+                    _n_over = int(numpy.sum(_over))
+                    if _n_over > 0 and _tau > 0:
+                        _removed = float(numpy.sum(_u[_over] - _tau))
+                        if _removed > 0:
+                            self.portfolio_clip_log_removed = numpy.logaddexp(
+                                self.portfolio_clip_log_removed, numpy.log(_removed) + _mx)
+                        self.portfolio_clip_n += _n_over
+                        _u = numpy.minimum(_u, _tau)
+                        # ADAPTATION copy only -- log_integrand (the estimator) is deliberately
+                        # untouched, so ln Z and n_eff remain exactly unbiased.
+                        log_weights_adapt = numpy.where(_u > 0,
+                                                        numpy.log(numpy.maximum(_u, 1e-300)) + _mx,
+                                                        -numpy.inf)
+                        _frac = float(numpy.exp(self.portfolio_clip_log_removed
+                                                - self.portfolio_clip_log_total)) \
+                            if numpy.isfinite(self.portfolio_clip_log_removed) else 0.0
+                        _frac = min(max(_frac, 0.0), 1.0 - 1e-15)
+                        print("  PORTFOLIO: proposal-fit weight-clip tau={:.3e}(rel max) clipped {} "
+                              "this chunk ({} total); cumulative tail mass withheld from PROPOSAL FIT"
+                              " ={:.3e} (estimator + n_ess report + allocation all unclipped)"
+                              .format(_tau, _n_over, self.portfolio_clip_n, _frac))
 
             if save_intg:
                 # FIXME: See warning at beginning of function. The prior values
@@ -455,9 +852,9 @@ class MCSampler(object):
 
             # n, Mean, error tracked by statutils structure
             if current_log_aggregate is None:
-              current_log_aggregate = init_log(log_integrand,xpy=xpy,special=xpy_special_default)
+              current_log_aggregate = init_log(log_integrand,xpy=xpy,special=special_here)
             else:
-              current_log_aggregate = update_log(current_log_aggregate, log_integrand,xpy=xpy,special=xpy_special_default)
+              current_log_aggregate = update_log(current_log_aggregate, log_integrand,xpy=xpy,special=special_here)
             outvals = finalize_log(current_log_aggregate,xpy=xpy)
             self.ntotal = current_log_aggregate[0]
             # effective samples
@@ -499,44 +896,186 @@ class MCSampler(object):
             n_index_start_per_member = np.zeros(len(self.portfolio_realizations),dtype=int)
             n_index_start_per_member[1:] = np.cumsum(n_samples_per_member)[:-1]
 
+            # GLOBAL-IMPACT signal: each member's MARGINAL GAIN IN POOLED n_eff PER SAMPLE.
+            # Pooled Kish n_eff = S^2/Q with S = sum(w), Q = sum(w^2) over ALL members' samples.
+            # One extra sample from member m adds (in expectation) mean_w_m to S and mean_w2_m to Q,
+            # so d(n_eff)/dn_m divided by n_eff gives the relative per-sample gain
+            #     g_m = 2*mean_w_m/S  -  mean_w2_m/Q .
+            # This is the quantity the allocation should maximize: it credits a member for the
+            # weight MASS it supplies but debits it for the weight VARIANCE it injects, so an
+            # outlier-heavy broad member (a few enormous weights) scores LOW or negative -- those
+            # outliers are precisely what destroys pooled n_eff.  Note both simpler candidates fail:
+            # Kish n_ess is SCALE-INVARIANT (blind to whether a member carries any integral mass),
+            # and mean weight alone REWARDS badly-matched proposals (a well-matched, contracted AV
+            # correctly has small uniform weights, while a broad GMM's rare huge-weight outlier sets
+            # the maximum) -- measured on S250114ax, mean weight ranked AV at 1e-40 vs GMM 2e-4.
+            # A single global normalization (the chunk's max log-weight) keeps members comparable.
+            # NB: the report n_ess and the allocation signal use the TRUE (unclipped) weights.
+            # Feeding them the clipped copy is WRONG: clipping flattens weights, which INFLATES a
+            # member's Kish n_ess, so the allocation would perversely favor exactly the member whose
+            # weights had to be clipped (measured: on S250114ax it starved the AV workhorse to the
+            # 1% floor and collapsed n_eff to ~1).  Clipping's ONLY job is to protect proposal FITS.
+            _lw_all = numpy.asarray(self.identity_convert(log_weights), dtype=float)
+            _finite = numpy.isfinite(_lw_all)
+            _lw_max = float(numpy.max(_lw_all[_finite])) if bool(numpy.any(_finite)) else 0.0
+            _u_all = numpy.where(_finite, numpy.exp(_lw_all - _lw_max), 0.0)
+            _S_tot = float(numpy.sum(_u_all)); _Q_tot = float(numpy.sum(_u_all * _u_all))
+            contrib_per_sample = numpy.zeros(len(self.portfolio))
+            # MIS CREDIT ASSIGNMENT (q_mix-native, the 'credit' quality signal).  Under the
+            # balance heuristic each sample's contribution is owed to members in proportion to
+            # their share of the mixture density there, so member m's credit is
+            #     credit_m = sum_i [ frac_m q_m(x_i) / q_mix(x_i) ] * w_i .
+            # Unlike Kish n_ess (scale-invariant, hence blind to whether a member carries any
+            # integral mass) this credits a member for COVERING WHERE THE INTEGRAND IS, even if
+            # it drew few samples there -- exactly the signal a slow-contracting VARAHA member
+            # needs.  Normalized per drawn sample so members are comparable at unequal shares.
+            credit_per_sample = numpy.zeros(len(self.portfolio))
+            _parts = getattr(self, '_chunk_mix_parts', None)
+            if _parts and q_mix is not None:
+                _qm = numpy.asarray(self.identity_convert(q_mix), dtype=float)
+                _w_all = numpy.where(numpy.isfinite(_lw_all), numpy.exp(_lw_all - _lw_max), 0.0)
+                for _im, _mem in enumerate(self.portfolio_realizations):
+                    _pc = _parts.get(id(_mem))
+                    if _pc is None:
+                        continue
+                    _share = numpy.where(_qm > 0, _pc / _qm, 0.0)
+                    # DIVIDE OUT THE MEMBER'S OWN ALLOCATION.  The raw share frac_m*q_m/q_mix scales
+                    # with frac_m, so a member accrues credit simply BECAUSE it is dominant -- the
+                    # same circularity the n_ess signal has (measured: a 0.95-share GMM scored 6e-4
+                    # vs AV's 9e-10 and starved AV to the floor).  Normalizing by frac_m turns this
+                    # into "integral explained PER UNIT ALLOCATION", which is allocation-invariant
+                    # and is what an allocation rule must compare.
+                    _frac_m = float(n_samples_per_member[_im]) / float(max(1, n_samples))
+                    if _frac_m > 0:
+                        credit_per_sample[_im] = float(numpy.sum(_share * _w_all)) / (_frac_m * max(1, n_samples))
+
             portfolio_report = {}
             for indx_member, member in enumerate(self.portfolio):
               indx_start = int(n_index_start_per_member[indx_member])
-              indx_end = indx_start + int(n_samples_per_member[indx_member])    
-              ln_wt_here =  log_weights[indx_start:indx_end]
+              indx_end = indx_start + int(n_samples_per_member[indx_member])
+              _n_here = max(1, indx_end - indx_start)
+              _u_here = _u_all[indx_start:indx_end]
+              if _S_tot > 0 and _Q_tot > 0 and indx_end > indx_start:
+                _mean_w = float(numpy.sum(_u_here)) / _n_here
+                _mean_w2 = float(numpy.sum(_u_here * _u_here)) / _n_here
+                contrib_per_sample[indx_member] = 2.0 * _mean_w / _S_tot - _mean_w2 / _Q_tot
+              ln_wt_here =  log_weights[indx_start:indx_end]  # TRUE weights (see note above); not the clipped copy
               ln_wt_here += - np.max(ln_wt_here)
               # evaluate  n_ess, n_eff for this set of samples in batch specifically,
               portfolio_report[indx_member] = [ self.portfolio_weights[indx_member], self.identity_convert(self.xpy.sum(self.xpy.exp(ln_wt_here))**2/self.xpy.sum(self.xpy.exp(ln_wt_here*2))), identity_convert(self.xpy.sum(self.xpy.exp(ln_wt_here)))]
             print("\t",portfolio_report)
+            if use_adaptive_alloc and len(self.portfolio) > 1:
+              print("\t credit/sample (MIS credit):", numpy.array2string(credit_per_sample, precision=3))
+              print("\t contrib/sample (global-impact signal):", numpy.array2string(contrib_per_sample, precision=3),
+                    " quality:", numpy.array2string(np.asarray(self.portfolio_quality, dtype=float), precision=3))
+            # Record each member's per-chunk n_ess so freeze policies (and post-hoc analysis)
+            # can tell a member that is still CLIMBING from one that has PLATEAUED.
+            for indx_member in range(len(self.portfolio)):
+              self.portfolio_member_ness_history[indx_member].append(float(portfolio_report[indx_member][1]))
             # Weight based on n_ESS from batch.  remember these are >=1, so no negatives or 0 will happen
             dat =np.array([ portfolio_report[k][1] for k in range(len(self.portfolio))])
-            self.portfolio_weights = portfolio_wt_func(dat, self.portfolio_weights, xpy=self.xpy, identity_convert=self.identity_convert) # call weighting function
+            if use_adaptive_alloc and len(self.portfolio) > 1:
+              # adaptive-probe allocation: quality-EMA + round-robin probe (see _adaptive_allocation).
+              # frac_now = the fraction each member actually drew THIS chunk (n_samples_per_member is
+              # derived from self.portfolio_weights just above).  The quality OBSERVABLE is either the
+              # global-impact contribution (default) or the legacy per-member Kish n_ess.
+              frac_now = np.array(n_samples_per_member, dtype=float) / float(max(1, n_samples))
+              if self.portfolio_quality_signal == 'credit':
+                _obs = credit_per_sample
+              elif self.portfolio_quality_signal == 'global':
+                _obs = contrib_per_sample
+              else:
+                _obs = dat
+              self.portfolio_weights = self._adaptive_allocation(_obs, frac_now, self.portfolio_draw_iteration)
+            else:
+              self.portfolio_weights = portfolio_wt_func(dat, self.portfolio_weights, xpy=self.xpy, identity_convert=self.identity_convert) # call weighting function
+            # VARAHA DRAW FLOOR (see __init__): reserve a combined fraction for VARAHA members, so a
+            # slow-contracting workhorse cannot be starved of DRAWS by a member that merely looks
+            # good per-chunk.  Applied after either allocation rule; unbiased (q_mix).
+            # BANDED: a floor alone is not enough.  Measured on a loud-event best-fit point: with no
+            # floor the mixture degenerates to GMM-alone (VARAHA share -> 0.0099), q_mix loses its
+            # broad backstop, and a mode the peaked member misses is uncovered -> lnZ silently low
+            # while n_eff looks GOOD (the confidently-wrong failure).  With a floor but no cap, one
+            # seed ran away the OTHER way (VARAHA -> 0.99) and was the outlier of its arm.  Both are
+            # mixture degeneration.  Constraining the VARAHA share to a BAND keeps q_mix genuinely
+            # mixed -- a broad backstop AND a peaked component -- by construction.  Unbiased either
+            # way (q_mix balance heuristic), so this costs at most draws, never correctness.
+            _vmin = float(self.portfolio_varaha_min_frac)
+            _vmax = float(self.portfolio_varaha_max_frac)   # <=0 or >=1 => no cap (back-compatible)
+            _cap_on = (0.0 < _vmax < 1.0)
+            if (_vmin > 0 or _cap_on) and len(self.portfolio) > 1:
+              _is_v = np.array([hasattr(m, 'is_varaha') for m in self.portfolio_realizations])
+              if _is_v.any() and not _is_v.all():
+                _w = np.asarray(self.portfolio_weights, dtype=float)
+                _w = np.where(np.isfinite(_w) & (_w > 0), _w, 0.0)
+                _sv = _w[_is_v].sum(); _so = _w[~_is_v].sum()
+                _target = None
+                if _vmin > 0 and _sv < _vmin:
+                  _target = _vmin
+                elif _cap_on and _sv > _vmax:
+                  _target = _vmax
+                if _target is not None and (_sv > 0 or _so > 0):
+                  # put the VARAHA group at _target and the rest at (1-_target), each preserving its
+                  # own internal split; if a group is all-zero, spread its share evenly within it.
+                  if _sv > 0:
+                    _w[_is_v] *= _target / _sv
+                  else:
+                    _w[_is_v] = _target / max(int(_is_v.sum()), 1)
+                  if _so > 0:
+                    _w[~_is_v] *= (1.0 - _target) / _so
+                  else:
+                    _w[~_is_v] = (1.0 - _target) / max(int((~_is_v).sum()), 1)
+                  _tot = _w.sum()
+                  if _tot > 0:
+                    self.portfolio_weights = _w / _tot
 
               
             ###
             ### ORACLE BLOCK
             ###
+            # Oracles PROPOSE points (hill-climb hotspots, a Fisher/Gaussian, a
+            # previous posterior).  We evaluate the true likelihood there and
+            # APPEND those (point, weight) pairs to the training data the other
+            # portfolio members adapt from, so they learn about regions the plain
+            # sampling missed.  Oracles never enter the integral estimate itself,
+            # so they cannot bias it -- at worst they cost a few evaluations.
             rvs_train = self._rvs
+            log_weights_train = log_weights_adapt   # weights aligned with rvs_train tail (clipped copy)
             if it_now < it_max_oracle and len(self.oracle_realizations )>0:
               rvs_train = deepcopy(self._rvs)  # duplicate deeply, since we will append to it
               n_samples_per_oracle = int(n*0.1/len(self.oracle_realizations)) # try to minimize oracle effort
-              print(" ORACLE: attempting updates ")
-              # update each oracle
-              for member in self.oracle_realizations:
-                member.update_sampling_prior(log_weights, n_history, external_rvs=rvs_train, log_scale_weights=True)
-              # generate samples from oracles
-              rv_oracle = self.xpy.empty((n_samples_per_oracle*len(self.oracle_realizations), len(self.params_ordered)))
-              base_now = 0
-              for member in self.oracle_realizations:
-                _, _, rv_here = member.draw_simplified(n_samples_per_oracle)
-                rv_oracle[base_now:base_now+n_samples_per_oracle] = rv_here
-                base_now += n_samples_per_oracle
-              # evaluate lnL for each,
-              lnL_oracles = lnF(*rv_oracle.T)
-              # put into weights and rvs, for use in training other samples
-              self.xpy.append(log_weights, lnL_oracles)
-              for indx, p in enumerate(self.params_ordered):
-                self.xpy.append(rvs_train[p],  rv_oracle[:,indx])
+              if n_samples_per_oracle > 0:
+                print(" ORACLE: attempting updates ")
+                # update each oracle from the current (host) history
+                for member in self.oracle_realizations:
+                  member.update_sampling_prior(log_weights_adapt, n_history, external_rvs=rvs_train, log_scale_weights=True)
+                # generate proposals from oracles (oracles are host/numpy)
+                rv_list = []
+                for member in self.oracle_realizations:
+                  _, _, rv_here = member.draw_simplified(n_samples_per_oracle)
+                  rv_list.append(numpy.asarray(identity_convert(rv_here)))  # (n, ndim) host
+                rv_oracle = numpy.vstack(rv_list)  # host, (n_oracle_total, ndim)
+                # evaluate the true integrand at the proposals; feed it device-first
+                # (real GPU ILE likelihood) with host fallback, mirroring the main loop
+                _cols = rv_oracle.T
+                if getattr(self, '_integrand_wants_host', False) or not cupy_ok:
+                  _lnLo = lnF(*_cols) if 'no_protect_names' in kwargs else lnF(**dict(zip(self.params_ordered, _cols)))
+                else:
+                  try:
+                    _colsg = identity_convert_togpu(_cols)
+                    _lnLo = lnF(*_colsg) if 'no_protect_names' in kwargs else lnF(**dict(zip(self.params_ordered, _colsg)))
+                  except (TypeError, ValueError):
+                    self._integrand_wants_host = True
+                    _lnLo = lnF(*_cols) if 'no_protect_names' in kwargs else lnF(**dict(zip(self.params_ordered, _cols)))
+                lnL_oracles = numpy.asarray(identity_convert(_lnLo))
+                # training weight for a proposal = its lnL (same log scale as
+                # log_weights up to the shared normalization the members remove)
+                log_w_oracle = lnL_oracles
+                # ACTUALLY append (numpy.append is not in-place -- must reassign)
+                for indx, p in enumerate(self.params_ordered):
+                  base = identity_convert(rvs_train[p])
+                  rvs_train[p] = numpy.append(base, rv_oracle[:, indx])
+                log_weights_train = numpy.append(identity_convert(log_weights_adapt), log_w_oracle)
 
 
             ###
@@ -549,12 +1088,34 @@ class MCSampler(object):
                 # update sampling prior, using ALL past data
                 # Don't update samples which are not being drawn
                 # always update if we have an oracle  - don't freeze out out oracle, UNLESS we have explicitly frozen it with a breakpoint
+                _is_varaha = hasattr(member, 'is_varaha')
+                # VARAHA EXEMPTION: a VARAHA/AV member contracts its live volume ONLY on the chunk
+                # it is updated, so it must update EVERY chunk (like standalone AV) to become the
+                # workhorse.  q_mix keeps this unbiased regardless of weight, so exempt it from the
+                # freeze schedule entirely by default (see portfolio_varaha_never_freeze).
+                _varaha_exempt = _is_varaha and self.portfolio_varaha_never_freeze
+                # GRACE: don't freeze anyone during the first grace_iters iterations (let a slow
+                # starter like a VARAHA member contract before its weight is judged).
+                _in_grace = (self.portfolio_draw_iteration <= self.portfolio_grace_iters)
+                # REVIVE: periodically update even a frozen member so it gets a chance to recover
+                # instead of being starved forever.
+                _revive = (self.portfolio_revive_period > 0
+                           and (self.portfolio_draw_iteration % self.portfolio_revive_period == 0))
+                # PLATEAU-AWARE revive: also update a low-weight member while its OWN per-chunk
+                # n_ess is still climbing (it is still learning); only let the freeze schedule
+                # govern a member that has plateaued.  Uses the n_ess history recorded above.
+                _climbing = False
+                _hist = self.portfolio_member_ness_history[indx]
+                if self.portfolio_plateau_revive and len(_hist) >= 3:
+                  _recent = _hist[-1]; _older = np.median(_hist[-3:-1])
+                  _climbing = (_recent > 1.05*max(_older, 1.0))
                 if self.portfolio_draw_iteration < self.portfolio_breakpoints[indx]:
                   print("  - before activation breakpoint for member {} ".format( indx))
                   pass
-                elif (len(self.oracle_realizations) > 0 and it_now <it_max_oracle) or (   self.portfolio_weights[indx] > self.portfolio_freeze_wt):
-                  if not(hasattr(member, 'is_varaha')):
-                    member.update_sampling_prior(log_weights, n_history,external_rvs=rvs_train,log_scale_weights=True, **update_dict)
+                elif (len(self.oracle_realizations) > 0 and it_now <it_max_oracle) or (self.portfolio_weights[indx] > self.portfolio_freeze_wt) or _in_grace or _revive or _varaha_exempt or _climbing:
+                  if not(_is_varaha):
+                    # log_weights_train / rvs_train include any oracle proposals appended above
+                    member.update_sampling_prior(log_weights_train, n_history,external_rvs=rvs_train,log_scale_weights=True, **update_dict)
                   else:
                     # just do a single VARAHA step, independent of others
                     member.update_sampling_prior_selfish(lnF)
@@ -590,10 +1151,23 @@ class MCSampler(object):
             ln_wt = self._rvs["log_integrand"] + self._rvs["log_joint_prior"] - self._rvs["log_joint_s_prior"]
             # Convert to CPU as needed
             ln_wt = identity_convert(ln_wt)
-            ln_wt += - np.max(ln_wt)  # remove maximum value, irrelevant
-            wt = np.exp(ln_wt) # exponentiate.  Danger underflow
+            ln_wt = numpy.asarray(ln_wt, dtype=float)
+            # Guard: rejected/underflowed samples (-inf) or bad priors (nan) must not poison the
+            # cumulative sum below.  Map any non-finite log-weight to -inf so it exponentiates to a
+            # zero linear weight instead of corrupting cumsum/normalization (which would drop ALL rows).
+            ln_wt[~numpy.isfinite(ln_wt)] = -numpy.inf
+            ln_wt_max = numpy.max(ln_wt)
+            if numpy.isfinite(ln_wt_max):
+                ln_wt = ln_wt - ln_wt_max  # remove maximum value, irrelevant to the normalized cumulative prob
+                wt = numpy.exp(ln_wt)      # exponentiate to LINEAR weights (max-subtracted).  Underflow -> 0, which is fine
+            else:
+                # degenerate: no finite-weight sample survived Step 1 -- keep everything rather than drop all rows
+                wt = numpy.ones(len(ln_wt))
             idx_sorted_index = numpy.lexsort((numpy.arange(len(wt)), wt))  # Sort the array of weights, recovering index values
-            indx_list = numpy.array( [[k, ln_wt[k]] for k in idx_sorted_index])     # pair up with the weights again. NOTE NOT INTEGER TYPE ANY MORE
+            # Pair the sorted index with the LINEAR weight wt[k] (NOT the log-weight ln_wt[k]): the cumulative
+            # sum below must be a cumulative PROBABILITY, matching mcsampler/mcsamplerEnsemble.  Cumsumming the
+            # log-weights (<=0, and -inf for rejects) is not a probability threshold and kept 0 rows for peaked runs.
+            indx_list = numpy.array( [[k, wt[k]] for k in idx_sorted_index])     # pair up with the LINEAR weights again. NOTE NOT INTEGER TYPE ANY MORE
             cum_sum = numpy.cumsum(indx_list[:,1])  # find the cumulative sum
             cum_sum = cum_sum/cum_sum[-1]          # normalize the cumulative sum
             indx_list = [int(indx_list[k, 0]) for k, value in enumerate(cum_sum > deltaP) if value]  # find the indices that preserve > 1e-7 of total probability. RECAST TO INTEGER

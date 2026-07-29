@@ -3672,7 +3672,7 @@ def hlmoft(P, Lmax=2,nr_polarization_convention=False, fixed_tapering=False, sil
     approx_string = P.approx
     if not(isinstance(approx_string,str)):
         approx_string = lalsim.GetStringFromApproximant(approx_string)
-    if 'NRSur' in approx_string:
+    if 'NRSur' in approx_string or 'NRHyb' in approx_string:
         # some NRSur are aligned only and return only m>=0 modes, so reflect IF NEEDED
         mode_keys = np.array([[l,m] for l,m in hlm_dict.keys()])[:,1]
         check_if_only_positive_m = not((mode_keys < 0).any())
@@ -4634,6 +4634,16 @@ def frame_data_to_hoft(fname, channel, start=None, stop=None, window_shape=0.,
     with open(fname) as cfile:
         cachef = Cache.fromfile(cfile)
     cachef=cachef.sieve(ifos=channel[:1])
+    # ET's three detectors (E1,E2,E3) share the site letter, so the channel[:1] sieve above is
+    # ambiguous and would read the wrong frame (e.g. E2:... served from the E1 frame -> "channel
+    # not found").  When the cache carries full-IFO observatories (E1/E2/E3/C1 from <IFO>-*.gwf
+    # frames), narrow to the exact IFO.  Standard single-letter observatories ('H','L','V') never
+    # equal the 2-char IFO, so this leaves ordinary H1/L1/V1 caches untouched.
+    ifo_full = channel.split(':')[0]
+    if len(ifo_full) > 1:
+        exact = [e for e in cachef if getattr(e, 'observatory', None) == ifo_full]
+        if exact:
+            cachef = cachef.__class__(exact)
     for name in cachef:
         print(name)
         
