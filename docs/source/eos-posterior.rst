@@ -10,11 +10,10 @@ and helper classes are documented separately in :doc:`physics/EOSManager`.
 Inputs
 ------
 
-The driver requires an initial, plain-text EOS grid through ``--input-grid``;
-the input is copied into the working directory as ``grid-0.dat``.  Provide one
-``--event-file`` for each event likelihood input.  The production interface
-also needs an EOS-posterior argument file via ``--eos-post-args``.  The
-event-marginalization configuration can be supplied as a shared
+The driver requires an initial, plain-text EOS grid through ``--input-grid``.
+Provide one ``--event-file`` for each event likelihood input.  The production
+interface also needs an EOS-posterior argument file via ``--eos-post-args``.
+The event-marginalization configuration can be supplied as a shared
 ``--marg-event-args`` file or as matching per-event argument and executable
 list files.
 
@@ -22,27 +21,30 @@ For example, the repository's backend demo exercises the list-file form:
 
 .. code-block:: console
 
+   mkdir eos-run && cd eos-run
    create_eos_posterior_pipeline \
-       --working-directory eos-run \
-       --input-grid eos-grid.dat \
-       --event-file event-1.net \
-       --event-file event-2.net \
-       --marg-event-args-list-file args_marg_event_list.txt \
-       --marg-event-exe-list-file marg_event_exe_list.txt \
-       --marg-event-nchunk-list-file marg_event_nchunk_list.txt \
-       --eos-post-args args_eos_post.txt \
+       --working-directory "$PWD" \
+       --input-grid ../eos-grid.dat \
+       --event-file ../event-1.net \
+       --event-file ../event-2.net \
+       --marg-event-args-list-file ../args_marg_event_list.txt \
+       --marg-event-exe-list-file ../marg_event_exe_list.txt \
+       --marg-event-nchunk-list-file ../marg_event_nchunk_list.txt \
+       --eos-post-args ../args_eos_post.txt \
        --n-iterations 2
 
-The list files must correspond to the supplied event files.  The executable
-copies event inputs into the working directory with standardized names, so use
-a new or otherwise disposable working directory for each generated workflow.
+The list files must correspond to the supplied event files.  Run the driver
+from a new or otherwise disposable output directory: it writes ``grid-0.dat``,
+standardized event-input copies, helper files, and workflow artefacts in the
+current directory.  ``--working-directory`` should name that same directory so
+the generated workflow uses consistent paths.
 
 Generated workflow
 ------------------
 
 For every configured iteration, the driver creates marginalization, posterior,
 and consolidation directories, along with logs and scheduler submit files.
-Typical top-level results include:
+Typical current-directory results include:
 
 * ``grid-0.dat`` and later grid files for EOS samples;
 * ``iteration_*_marg/``, ``iteration_*_post/``, and ``iteration_*_con/``;
