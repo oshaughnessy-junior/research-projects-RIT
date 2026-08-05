@@ -54,6 +54,7 @@ if _use_hpip_pp:
 
 # Backward compatibility
 from RIFT.misc.dag_utils_generic import which
+from RIFT.misc.cip_pipeline import use_replacement_before_final_iteration
 ligolw_prefix = 'igwn_'
 if not(which(ligolw_prefix + "ligolw_add")):
     ligolw_prefix = ''
@@ -1685,8 +1686,17 @@ if opts.internal_use_amr:
 with open("args_cip_list.txt",'w') as f:
    if not(opts.internal_truncate_cip_arg_list is None):
        lines = lines[-opts.internal_truncate_cip_arg_list:]  # truncate the cip arg list file
+   # Internal CIP products feed convergence tests and the next proposal grid,
+   # so use unbiased weighted draws there. Keep the last actual iteration at
+   # CIP's without-replacement default because its consumers require uniqueness.
+   # The helper also splits a repeated final group.
+   terminal_convergence_group = bool(lines and lines[-1].split()[0] == "Z")
+   lines = use_replacement_before_final_iteration(lines)
+   if terminal_convergence_group:
+       # The helper appended one post-convergence cleanup iteration.
+       n_iterations += 1
    for line in lines:
-           f.write(line)
+           f.write(line + "\n")
 
 # Write test file
 # with open("args_test.txt",'w') as f:

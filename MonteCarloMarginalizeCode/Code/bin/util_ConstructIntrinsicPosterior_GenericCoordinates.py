@@ -249,6 +249,8 @@ parser.add_argument("--fref",default=20,type=float, help="Reference frequency us
 parser.add_argument("--fmin",type=float,default=20)
 parser.add_argument("--fname-rom-samples",default=None,help="*.rom_composite output. Treated identically to set of posterior samples produced by mcsampler after constructing fit.")
 parser.add_argument("--n-output-samples",default=3000,type=int,help="output posterior samples (default 3000)")
+parser.add_argument("--posterior-resample-with-replacement", action="store_true", default=False,
+                    help="Draw the posterior export with replacement. This is an unbiased weighted posterior draw but may contain duplicate samples. The default is False so exported intrinsic grids remain unique.")
 parser.add_argument("--desc-lalinference",type=str,default='',help="String to adjoin to legends for LI")
 parser.add_argument("--desc-ILE",type=str,default='',help="String to adjoin to legends for ILE")
 parser.add_argument("--parameter", action='append', help="Parameters used as fitting parameters AND varied at a low level to make a posterior")
@@ -3463,7 +3465,10 @@ if opts.verbose:
 #cum_sum  = np.cumsum(weights)
 #cum_sum = cum_sum/cum_sum[-1]
 #indx_list = list(map(lambda x : np.sum(cum_sum < x),  p_thresholds))  # this can lead to duplicates
-indx_list = np.random.choice(np.arange(len(weights)),p_threshold_size,p=np.array(weights/np.sum(weights),dtype=float),replace=False)
+indx_list = np.random.choice(
+    np.arange(len(weights)), p_threshold_size,
+    p=np.array(weights/np.sum(weights), dtype=float),
+    replace=opts.posterior_resample_with_replacement)
 if opts.verbose:
     print(" output size: selected random indices N=", len(indx_list))
 if opts.internal_bound_factor_if_n_eff_small and neff <opts.n_output_samples  and opts.internal_bound_factor_if_n_eff_small* neff < opts.n_output_samples:
