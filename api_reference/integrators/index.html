@@ -1348,6 +1348,21 @@ enhancement.  q_mix keeps any cold/mis-seeded member from biasing the estimate.<
 </dd></dl>
 
 <dl class="py method">
+<dt class="sig sig-object py" id="RIFT.integrators.mcsamplerPortfolio.MCSampler.clear_warm_state">
+<span class="sig-name descname"><span class="pre">clear_warm_state</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerPortfolio.MCSampler.clear_warm_state" title="Link to this definition"></a></dt>
+<dd><p>Clear any warm-start seed AND the installed active grid on every member.</p>
+<p>Setting <cite>portfolio._warm = None</cite> does NOT do this: <cite>_warm</cite> and the contracted AV grid live on
+the MEMBERS, not on the portfolio object.  Now that a seed is actually installed on the draw
+path (AV._apply_warm_state), failing to clear it between points would let the next point reuse
+the PREVIOUS point’s contracted live volume – which can exclude the new point’s support and
+bias it low with no diagnostic.  Called by the driver wherever it used to do
+<cite>sampler._warm = None</cite>, including the seed-capture failure and exception paths.</p>
+<p>Failures PROPAGATE.  A reset that quietly did not happen leaves the next point drawing from
+the previous point’s grid, which is the exact silent-wrong-answer this method exists to
+prevent – so it must not be reducible to a log line.</p>
+</dd></dl>
+
+<dl class="py method">
 <dt class="sig sig-object py" id="RIFT.integrators.mcsamplerPortfolio.MCSampler.draw">
 <span class="sig-name descname"><span class="pre">draw</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">n_samples</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">args</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerPortfolio.MCSampler.draw" title="Link to this definition"></a></dt>
 <dd><p>draw n_samples</p>
@@ -1365,6 +1380,23 @@ Restricts to ACTIVE members.</p>
 <dt class="sig sig-object py" id="RIFT.integrators.mcsamplerPortfolio.MCSampler.integrate_log">
 <span class="sig-name descname"><span class="pre">integrate_log</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">lnF</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">*args</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">xpy=&lt;module</span> <span class="pre">'numpy'</span> <span class="pre">from</span> <span class="pre">'/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/numpy/__init__.py'&gt;</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">**kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerPortfolio.MCSampler.integrate_log" title="Link to this definition"></a></dt>
 <dd></dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="RIFT.integrators.mcsamplerPortfolio.MCSampler.restrict_member_range">
+<span class="sig-name descname"><span class="pre">restrict_member_range</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">member_index</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">param</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">lo</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">hi</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerPortfolio.MCSampler.restrict_member_range" title="Link to this definition"></a></dt>
+<dd><p>Narrow ONE portfolio member’s sampling range for <cite>param</cite> to [lo, hi] (interval narrowing).</p>
+<p>This is a PROPOSAL-only change: the member’s prior callables are untouched, so it keeps
+reporting the true global prior, and the balance-heuristic mixture density q_mix keeps the
+estimate unbiased with no renormalization – PROVIDED at least one member retains full
+support.  Member 0 is that backstop by convention and may not be narrowed.</p>
+<p>Why the backstop is not optional: measured on a truth-known ladder, a WRONG sub-box costs a
+STANDALONE sampler up to -1949 nats (while still reporting a healthy n_eff of 220-840, i.e.
+confidently wrong), but only ~1 nat inside a portfolio whose full-box member keeps q_mix
+covering the complement.  Restriction without a backstop converts a rare pathology into a
+systematic one.</p>
+<p>Call before add_parameter(); narrowing is applied there, and setup() then builds every
+derived quantity from the narrowed range.</p>
+</dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="RIFT.integrators.mcsamplerPortfolio.MCSampler.setup">
