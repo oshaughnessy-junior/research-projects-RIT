@@ -519,7 +519,6 @@ Remember:   pdf, cdf_inv refer to the <em>sampling</em> prior, so I need to mult
 <dt class="sig sig-object py" id="RIFT.integrators.mcsamplerAdaptiveVolume.MCSampler">
 <em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">RIFT.integrators.mcsamplerAdaptiveVolume.</span></span><span class="sig-name descname"><span class="pre">MCSampler</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">n_chunk</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">400000</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerAdaptiveVolume.MCSampler" title="Link to this definition"></a></dt>
 <dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></p>
-<p>Class to define a set of parameter names, limits, and probability densities.</p>
 <dl class="py method">
 <dt class="sig sig-object py" id="RIFT.integrators.mcsamplerAdaptiveVolume.MCSampler.add_parameter">
 <span class="sig-name descname"><span class="pre">add_parameter</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">params</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">pdf</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cdf_inv</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">left_limit</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">right_limit</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">prior_pdf</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">adaptive_sampling</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerAdaptiveVolume.MCSampler.add_parameter" title="Link to this definition"></a></dt>
@@ -571,13 +570,36 @@ unbiased.</p>
 high-likelihood region (e.g. a previous run’s posterior draws, a puff of
 an earlier MAP point, or fair-draw samples from a prior ILE instance).
 <cite>loglkl</cite> (optional) is L*prior at those points, used to seed the threshold.</p>
-<p><cite>cover_frac</cite> (0..1) is the SAFETY FLOOR for reuse across DIFFERENT problems
-(a neighbouring intrinsic point, a stale breadcrumb): it mixes this fraction
-of uniform full-box points into the seed cloud, so the seeded live volume is
-a superset of a cold (uniform) start.  Then a mis-placed proposal can only
-cost efficiency – warm coverage always contains cold coverage, so the
-warm-started integral can never be MORE biased than a cold one.  Leave 0
-when reusing a proposal for the SAME problem (e.g. an in-run second pass).</p>
+<p><cite>cover_frac</cite> (0..1) mixes this fraction of uniform full-box points into the
+seed cloud, widening the seeded live volume.  Leave 0 when reusing a proposal
+for the SAME problem (e.g. an in-run second pass).</p>
+<p>IT IS NOT A COVERAGE GUARANTEE, despite what this docstring claimed until
+2026-08.  A FINITE set of uniform points occupies only the bins it lands in,
+so the seeded grid is NOT a superset of a cold (uniform) start – and the
+shortfall grows fast with dimension.  Measured, fraction of the [-5,5]^d prior
+box covered by the seeded grid (a cold start is 1.0 by construction):</p>
+<blockquote>
+<div><p>cover_frac:      0.0        0.2       0.5      0.9
+d=2           0.027      0.634     0.982     1.000
+d=4          0.0015      0.028     0.104     0.620
+d=6         6.3e-05    0.00087    0.0033    0.0287</p>
+</div></blockquote>
+<p>At d=6 even cover_frac=0.9 leaves 97% of the box unsampled.  So the claim that
+“a warm-started integral can never be MORE biased than a cold one” was false;
+do not rely on it.</p>
+<p>WHAT ACTUALLY PROTECTS YOU is having a component with support everywhere.  In
+the default AV+GMM portfolio that is the GMM member: a Gaussian mixture has
+nonzero density over the whole box, so q_mix never vanishes and a badly-seeded
+AV member costs efficiency rather than bias (measured with a deliberately
+displaced seed at d=4 and d=6: <a href="#id36"><span class="problematic" id="id37">|lnZ bias|</span></a> &lt;= 0.05 in every run).  An ALL-AV
+portfolio has no such member – every component is a hard-edged box – and the
+same displaced seed gave lnZ bias -1.0 to -6.8 nats.</p>
+<p>And note the limit of any coverage fix: in that all-AV test, keeping one member
+fully cold (V=1) still gave -1.1 to -4.2 nats, because a uniform member at d=6
+finds a sharp peak too rarely to carry the integral within the budget (n_eff
+3-9).  Coverage in principle is necessary, not sufficient.  A badly mismatched
+seed is an efficiency catastrophe no knob repairs – detect it (the L0 rescue)
+or do not warm-start across dissimilar points.</p>
 <p><cite>inflate</cite> (&gt;=1) is the HANDOFF SAFETY MARGIN: widen the seed cloud by this
 factor about its own mean before building the grid.  When importing a proposal
 that came from a <em>neighbouring</em> intrinsic point, the true peak is shifted (and
@@ -602,6 +624,12 @@ inflate is the fine margin for a modest shift.</p>
 <dt class="sig sig-object py" id="RIFT.integrators.mcsamplerAdaptiveVolume.MCSampler.draw_simplified">
 <span class="sig-name descname"><span class="pre">draw_simplified</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">n_to_get</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">args</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerAdaptiveVolume.MCSampler.draw_simplified" title="Link to this definition"></a></dt>
 <dd></dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="RIFT.integrators.mcsamplerAdaptiveVolume.MCSampler.has_unbounded_support">
+<span class="sig-name descname"><span class="pre">has_unbounded_support</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">False</span></em><a class="headerlink" href="#RIFT.integrators.mcsamplerAdaptiveVolume.MCSampler.has_unbounded_support" title="Link to this definition"></a></dt>
+<dd><p>Class to define a set of parameter names, limits, and probability densities.</p>
+</dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="RIFT.integrators.mcsamplerAdaptiveVolume.MCSampler.integrate">
@@ -813,7 +841,6 @@ discard_prob: threshold on CDF to throw away an entire bin.  Should be very smal
 <dt class="sig sig-object py" id="RIFT.integrators.mcsamplerEnsemble.MCSampler">
 <em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">RIFT.integrators.mcsamplerEnsemble.</span></span><span class="sig-name descname"><span class="pre">MCSampler</span></span><a class="headerlink" href="#RIFT.integrators.mcsamplerEnsemble.MCSampler" title="Link to this definition"></a></dt>
 <dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></p>
-<p>Class to define a set of parameter names, limits, and probability densities.</p>
 <dl class="py method">
 <dt class="sig sig-object py" id="RIFT.integrators.mcsamplerEnsemble.MCSampler.add_parameter">
 <span class="sig-name descname"><span class="pre">add_parameter</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">params</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">pdf</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cdf_inv</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">left_limit</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">right_limit</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">prior_pdf</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">adaptive_sampling</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerEnsemble.MCSampler.add_parameter" title="Link to this definition"></a></dt>
@@ -853,6 +880,31 @@ portfolio can forward a single seed to every member uniformly.</p>
 <dt class="sig sig-object py" id="RIFT.integrators.mcsamplerEnsemble.MCSampler.evaluate">
 <span class="sig-name descname"><span class="pre">evaluate</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">samples</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerEnsemble.MCSampler.evaluate" title="Link to this definition"></a></dt>
 <dd></dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="RIFT.integrators.mcsamplerEnsemble.MCSampler.has_unbounded_support">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">has_unbounded_support</span></span><a class="headerlink" href="#RIFT.integrators.mcsamplerEnsemble.MCSampler.has_unbounded_support" title="Link to this definition"></a></dt>
+<dd><p>Does this member’s proposal genuinely have support across the WHOLE prior box?</p>
+<p>mcsamplerPortfolio uses this to decide whether it must hold a member cold on a warm start.
+Getting it wrong costs coverage silently, so it is answered from the INSTALLED MODELS, not
+from a configuration value.</p>
+<dl class="simple">
+<dt>Two traps this avoids:</dt><dd><ul class="simple">
+<li><p><cite>gmm_defensive_frac &gt; 0</cite> is only a REQUEST.  add_defensive_component() is called by
+fit_gmm_adaptive, but the fixed-component fit paths did not call it, and gmm_adaptive
+defaults to None (off) – so the default configuration asked for a defensive component
+and never installed one.</p></li>
+<li><p>gmm.score() FLOORS its return at 1e-300, so a member always looks like it has nonzero
+density everywhere.  That is a numerical guard against log(0), not coverage: a sample
+landing there carries weight L*p/q ~ 1e300 and would wreck the estimate rather than
+support it.  Measured, a fixed-component fit to a tight cloud returns exactly that
+floor at the far corner for every d &gt;= 4.</p></li>
+</ul>
+</dd>
+</dl>
+<p>Reports False whenever it cannot be verified – before the integrator exists, before any
+group has been trained, or if ANY trained group lacks the component.</p>
+</dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="RIFT.integrators.mcsamplerEnsemble.MCSampler.integrate">
@@ -1328,12 +1380,13 @@ Much faster and lighter weight. We never use the cutoffs anyways, because the li
 
 <dl class="py method">
 <dt class="sig sig-object py" id="RIFT.integrators.mcsamplerPortfolio.MCSampler.bootstrap_from_samples">
-<span class="sig-name descname"><span class="pre">bootstrap_from_samples</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">samples</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">params</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerPortfolio.MCSampler.bootstrap_from_samples" title="Link to this definition"></a></dt>
+<span class="sig-name descname"><span class="pre">bootstrap_from_samples</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">samples</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">params</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">keep_backstop_cold</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerPortfolio.MCSampler.bootstrap_from_samples" title="Link to this definition"></a></dt>
 <dd><p>Warm-start: forward a seed cloud to every member that supports it (e.g. the
-AV/VARAHA member’s live volume).  Members without bootstrap_from_samples are left
-cold.  This is safe: a warm start only ever shapes a member’s proposal, and the
-portfolio combines members with the balance-heuristic mixture density (q_mix), so a
-cold or mis-seeded member can only cost efficiency, never bias the estimate.  Column
+AV/VARAHA member’s live volume), EXCEPT the full-support backstop (see below).
+Members without bootstrap_from_samples are left cold.  A warm start only shapes a
+member’s proposal, and the portfolio combines members with the balance-heuristic
+mixture density (q_mix), so a mis-seeded member costs efficiency rather than bias –
+BUT ONLY WHILE SOME MEMBER STILL COVERS THE SUPPORT.  Column
 order matches self.params_ordered, which every member shares (add_parameter forwards
 to all members in the same order), so no per-member remapping is needed.</p>
 <p>Only VARAHA/AV-style members (those exposing bootstrap_from_samples) are seeded
@@ -1344,6 +1397,41 @@ lets the cold GMM member adapt its proposal from the warm AV member’s high-lik
 draws, which is what gives the mixture a faster early n_eff than warm-AV alone.  An
 explicit GMM pre-seed (build an initial gmm_dict from the sample cloud) is a future
 enhancement.  q_mix keeps any cold/mis-seeded member from biasing the estimate.</p>
+<p>THE BACKSTOP MUST STAY COLD.  Seeding EVERY member destroys the coverage invariant the
+whole design rests on.  <cite>cover_frac</cite> does not save it: it mixes a FINITE number of uniform
+points into the seed, and a finite point set occupies only the bins it lands in, so the
+seeded live volume is NOT a superset of a cold start.  Measured on a tight seed in the
+[-5,5]^d box – fraction of the prior box covered, against 1.0 cold:</p>
+<blockquote>
+<div><p>d=2:  cover_frac 0.0 / 0.2 / 0.5 / 0.9  -&gt;  0.027 / 0.634 / 0.982 / 1.000
+d=4:                                    -&gt;  0.0015 / 0.028 / 0.104 / 0.620
+d=6:                                    -&gt;  6.3e-05 / 0.00087 / 0.0033 / 0.0287</p>
+</div></blockquote>
+<p>so at d=6 even cover_frac=0.9 leaves 97% of the box unsampled.  Before this change a
+portfolio warm start narrowed member 0 to V=0.0033 along with everyone else.  Keeping
+member 0 (the designated backstop, which restrict_member_range also refuses to narrow)
+cold makes the mixture-level guarantee TRUE instead of merely asserted.</p>
+<p>BE PRECISE ABOUT WHAT THIS BUYS, because the measurements are not what one expects:</p>
+<blockquote>
+<div><ul class="simple">
+<li><p>With a CORRECT seed it is nearly free – n_eff 3630/3466/5695 cold-backstop vs
+3876/3461/5621 seeded at d=4, and 5078/5689/5163 vs 5857/5387/5266 at d=6.  Within
+run-to-run scatter, so it is cheap insurance.  That is the case for the default.</p></li>
+<li><p>It is NOT what protects the DEFAULT AV+GMM portfolio.  The GMM member is a Gaussian
+mixture with nonzero density over the whole box, so q_mix never vanishes there
+regardless of this setting.  With a deliberately displaced seed, <a href="#id38"><span class="problematic" id="id39">|lnZ bias|</span></a> stayed
+&lt;= 0.05 in every d=4 and d=6 run in BOTH arms.  That unbounded support is the real
+(previously undocumented) reason production has not been biased by warm starts.</p></li>
+<li><p>It does NOT rescue a badly mismatched seed.  In an ALL-AV portfolio (every component
+a hard-edged box) with a displaced seed at d=6, the cold backstop still gave lnZ bias
+-1.1 to -4.2 nats with n_eff 3-9, versus -1.0 to -6.8 seeded.  A uniform member finds
+a sharp 6-D peak too rarely to carry the integral within budget.  Coverage in
+principle is necessary, not sufficient – for a mismatched seed the mitigations are
+detection (L0 rescue) and not warm-starting across dissimilar points.</p></li>
+</ul>
+</div></blockquote>
+<p><cite>keep_backstop_cold</cite>: None (default) uses self.portfolio_warmstart_backstop_cold, itself
+True by default; pass False to restore the old seed-everything behaviour.</p>
 <p>Returns the number of members warm-started (0 is fine; the portfolio still runs).</p>
 </dd></dl>
 
@@ -1380,6 +1468,19 @@ Restricts to ACTIVE members.</p>
 <dt class="sig sig-object py" id="RIFT.integrators.mcsamplerPortfolio.MCSampler.integrate_log">
 <span class="sig-name descname"><span class="pre">integrate_log</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">lnF</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">*args</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">xpy=&lt;module</span> <span class="pre">'numpy'</span> <span class="pre">from</span> <span class="pre">'/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/numpy/__init__.py'&gt;</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">**kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerPortfolio.MCSampler.integrate_log" title="Link to this definition"></a></dt>
 <dd></dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="RIFT.integrators.mcsamplerPortfolio.MCSampler.reset_adaptation">
+<span class="sig-name descname"><span class="pre">reset_adaptation</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerPortfolio.MCSampler.reset_adaptation" title="Link to this definition"></a></dt>
+<dd><p>FULL reset: member proposals AND the portfolio’s own adaptive bookkeeping.</p>
+<p>clear_warm_state() rebuilds the MEMBERS, but the portfolio itself also learns during a run
+– draw allocation, per-member quality EMAs and their observation counts, the round-robin
+probe pointer, the iteration counter, breakpoint progression and the per-member n_ess
+histories.  MC-error replicas that inherit those start with scheduling learned from the
+earlier replicas, so they are not adaptation-independent and the between-replica scatter
+still understates the true error – which is the entire quantity the replicas exist to
+measure.  Restores every field to its post-setup value.</p>
+</dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="RIFT.integrators.mcsamplerPortfolio.MCSampler.restrict_member_range">
@@ -1561,11 +1662,11 @@ it prints additionally the change and time needed for each step.</p>
 <section id="attributes">
 <h3>Attributes<a class="headerlink" href="#attributes" title="Link to this heading"></a></h3>
 <dl>
-<dt><a href="#id36"><span class="problematic" id="id37">weights_</span></a><span class="classifier">array, shape (<cite>n_components</cite>,)</span></dt><dd><p>This attribute stores the mixing weights for each mixture component.</p>
+<dt><a href="#id40"><span class="problematic" id="id41">weights_</span></a><span class="classifier">array, shape (<cite>n_components</cite>,)</span></dt><dd><p>This attribute stores the mixing weights for each mixture component.</p>
 </dd>
-<dt><a href="#id38"><span class="problematic" id="id39">means_</span></a><span class="classifier">array, shape (<cite>n_components</cite>, <cite>n_features</cite>)</span></dt><dd><p>Mean parameters for each mixture component.</p>
+<dt><a href="#id42"><span class="problematic" id="id43">means_</span></a><span class="classifier">array, shape (<cite>n_components</cite>, <cite>n_features</cite>)</span></dt><dd><p>Mean parameters for each mixture component.</p>
 </dd>
-<dt><a href="#id40"><span class="problematic" id="id41">covars_</span></a><span class="classifier">array</span></dt><dd><p>Covariance parameters for each mixture component.  The shape
+<dt><a href="#id44"><span class="problematic" id="id45">covars_</span></a><span class="classifier">array</span></dt><dd><p>Covariance parameters for each mixture component.  The shape
 depends on <cite>covariance_type</cite>:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="p">(</span><span class="n">n_components</span><span class="p">,</span> <span class="n">n_features</span><span class="p">)</span>             <span class="k">if</span> <span class="s1">&#39;spherical&#39;</span><span class="p">,</span>
 <span class="p">(</span><span class="n">n_features</span><span class="p">,</span> <span class="n">n_features</span><span class="p">)</span>               <span class="k">if</span> <span class="s1">&#39;tied&#39;</span><span class="p">,</span>
@@ -1574,7 +1675,7 @@ depends on <cite>covariance_type</cite>:</p>
 </pre></div>
 </div>
 </dd>
-<dt><a href="#id42"><span class="problematic" id="id43">converged_</span></a><span class="classifier">bool</span></dt><dd><p>True when convergence was reached in fit(), False otherwise.</p>
+<dt><a href="#id46"><span class="problematic" id="id47">converged_</span></a><span class="classifier">bool</span></dt><dd><p>True when convergence was reached in fit(), False otherwise.</p>
 </dd>
 </dl>
 </section>
