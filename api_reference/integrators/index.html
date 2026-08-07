@@ -940,7 +940,18 @@ sampler’s own integrate().  Used by the portfolio balance heuristic.</p>
 <dl class="py method">
 <dt class="sig sig-object py" id="RIFT.integrators.mcsamplerEnsemble.MCSampler.setup">
 <span class="sig-name descname"><span class="pre">setup</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">n_comp</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerEnsemble.MCSampler.setup" title="Link to this definition"></a></dt>
-<dd></dd></dl>
+<dd><p>Build the integrator.  REMEMBERS its arguments and re-applies them on later calls.</p>
+<p>setup() is not called once: bootstrap_from_samples() re-runs it to rebuild the proposal as
+a single full-dim group, and mcsamplerPortfolio replays it to reset a member between
+points.  Each of those rebuilt the integrator from ONLY the kwargs of that call, so every
+option the caller set originally was silently dropped.  That has now bitten three separate
+settings – gmm_dict (the dimension grouping and any seeded models), gmm_defensive_frac,
+and gmm_defensive_all_paths – each found as its own P1, each patched individually, and a
+fourth would have followed.</p>
+<p>So: merge this call’s kwargs OVER the remembered ones, and remember the result.  An
+explicit argument still wins; an omitted one keeps whatever it was configured to be
+instead of reverting to a library default.  Pass <cite>setup_forget=True</cite> to start clean.</p>
+</dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="RIFT.integrators.mcsamplerEnsemble.MCSampler.update_sampling_prior">
