@@ -34,7 +34,7 @@ my_extra_source  = glob.glob("MonteCarloMarginalizeCode/Code/RIFT/likelihood/cud
 
 setuptools.setup(
     name="RIFT",
-    version="0.0.18.0rc0", # do not build on OSX machine, side effects
+    version="0.0.18.0rc1", # do not build on OSX machine, side effects
     author="Richard O'Shaughnessy",
     author_email="richard.oshaughnessy@ligo.org",
     description="RIFT parameter estimation pipeline. Note branch used is temp-RIT-Tides-port_python3_restructure_package (which will become master shortly)!",
@@ -58,6 +58,15 @@ setuptools.setup(
    data_files=[('RIFT/likelihood',my_extra_source)],
    setup_requires=['setuptools','pip'],
    install_requires=REQUIREMENTS["install"],
+   # Optional JAX interpolator stack (RIFT.interpolators.jax_gp). Kept out of the
+   # base install so the production pipeline is unaffected; install with
+   #   pip install RIFT[jax-interp]
+   extras_require={
+        'jax-interp': ['jax', 'optax', 'equinox', 'tinygp'],
+        # AD applications of the differentiable export (gradient sampling, AD
+        # population inference): RIFT.interpolators.jax_gp.applications
+        'jax-apps': ['jax', 'optax', 'equinox', 'tinygp', 'numpyro', 'flowMC'],
+   },
    entry_points={
         'asimov.pipelines':
         ["rift = RIFT.asimov.rift:Rift"],

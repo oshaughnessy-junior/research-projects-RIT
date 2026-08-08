@@ -39,6 +39,7 @@ import glue.lal
 #import pylal
 
 import RIFT.lalsimutils as lalsimutils
+from RIFT.precision import RiftFloat
 import RIFT.likelihood.factored_likelihood as factored_likelihood
 import RIFT.integrators.mcsampler as mcsampler
 import RIFT.misc.sky_rotations as sky_rotations
@@ -205,7 +206,7 @@ integration_params.add_option("--adapt-weight-exponent", type=float, default=1.0
 integration_params.add_option("--adapt-floor-level", type=float, default=0.1, help="Floor to use with weights (likelihood integrand) when doing adaptive sampling. This is necessary to ensure the *sampling* prior is non zero during adaptive sampling and to prevent overconvergence. Default is 0.1 (no floor)")
 integration_params.add_option("--adapt-adapt",action='store_true',help="Adapt the tempering exponent")
 integration_params.add_option("--adapt-log",action='store_true',help="Use a logarithmic tempering exponent")
-integration_params.add_option("--interpolate-time", default=False,help="If using time marginalization, compute using a continuously-interpolated array. (Default=false)")
+integration_params.add_option("--interpolate-time", default=False,help="If using the maintained NoLoop likelihood, evaluate Q_lm at fractional detector times using cubic interpolation instead of nearest sample bins. Accepts truthy values such as True/1/yes. (Default=false)")
 integration_params.add_option("--d-prior",default='Euclidean' ,type=str,help="Distance prior for dL.  Options are dL^2 (Euclidean) and 'pseudo-cosmo'  .")
 integration_params.add_option("--d-max", default=10000,type=float,help="Maximum distance in volume integral. Used to SET THE PRIOR; changing this value changes the numerical answer.")
 integration_params.add_option("--d-min", default=1,type=float,help="Minimum distance in volume integral. Used to SET THE PRIOR; changing this value changes the numerical answer.")
@@ -252,7 +253,26 @@ for pin_param in LIKELIHOOD_PINNABLE_PARAMS:
     pinnable.add_option(option, type=float, help="Pin the value of %s." % pin_param)
 optp.add_option_group(pinnable)
 
-opts, args = optp.parse_args()
+def _normalize_interpolate_time_argv(argv):
+    out = []
+    i = 0
+    while i < len(argv):
+        out.append(argv[i])
+        if argv[i] == "--interpolate-time" and (i + 1 == len(argv) or argv[i + 1].startswith("--")):
+            out.append("True")
+        i += 1
+    return out
+
+opts, args = optp.parse_args(_normalize_interpolate_time_argv(sys.argv[1:]))
+
+def _truthy_option(value):
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in ("1", "true", "t", "yes", "y", "on")
+
+opts._noloop_time_interp = "cubic" if _truthy_option(opts.interpolate_time) else "nearest"
 
 if opts.gpu and xpy_default is numpy:
     print( " Override --gpu  (not available);  use --force-xpy to require the identical code path is used (with xpy =[np|cupy]")
@@ -1047,7 +1067,7 @@ if not opts.time_marginalization:
             incl = numpy.arccos(incl)
 
         # use EXTREMELY many bits
-        lnL = numpy.zeros(right_ascension.shape,dtype=numpy.float128)
+        lnL = numpy.zeros(right_ascension.shape,dtype=RiftFloat)
         i = 0
         for ph, th, tr, phr, ic, ps, di in zip(right_ascension, dec,
                 t_ref, phi_orb, incl, psi, distance):
@@ -1078,7 +1098,7 @@ else: # Sum over time for every point in other extrinsic params
             incl = numpy.arccos(incl)
 
         # use EXTREMELY many bits
-        lnL = numpy.zeros(right_ascension.shape,dtype=numpy.float128)
+        lnL = numpy.zeros(right_ascension.shape,dtype=RiftFloat)
         i = 0
         tvals = numpy.linspace(-t_ref_wind,t_ref_wind,int((t_ref_wind)*2/P.deltaT))  # choose an array at the target sampling rate. P is inherited globally
 
@@ -1140,7 +1160,7 @@ else: # Sum over time for every point in other extrinsic params
             incl = numpy.arccos(incl)
 
         # use EXTREMELY many bits
-        lnL = numpy.zeros(right_ascension.shape,dtype=numpy.float128)
+        lnL = numpy.zeros(right_ascension.shape,dtype=RiftFloat)
         P.phi = right_ascension.astype(float)  # cast to float
         P.theta = dec #declination.astype(float)
         P.tref = float(fiducial_epoch)
@@ -1180,7 +1200,8 @@ else: # Sum over time for every point in other extrinsic params
                   P.phi = xpy_default.mod(P.phi, 2*np.pi)
 
                 lnL = factored_likelihood.DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals,
-                    P, lookupNKDict, rholmArrayDict, ctUArrayDict, ctVArrayDict,epochDict,Lmax=opts.l_max,xpy=xpy_default)
+                    P, lookupNKDict, rholmArrayDict, ctUArrayDict, ctVArrayDict,epochDict,Lmax=opts.l_max,xpy=xpy_default,
+                    time_interp=opts._noloop_time_interp)
                 nEvals +=len(right_ascension)
                 return identity_convert(xpy_default.exp(lnL-manual_avoid_overflow_logarithm))
         else:
@@ -1261,7 +1282,8 @@ else: # Sum over time for every point in other extrinsic params
                   P.phi = xpy_default.mod(P.phi, 2*np.pi)
 
                 lnL = factored_likelihood.DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals,
-                    P, lookupNKDict, rholmArrayDict, ctUArrayDict, ctVArrayDict,epochDict,Lmax=opts.l_max,xpy=xpy_default, loglikelihood=distmarg_loglikelihood)
+                    P, lookupNKDict, rholmArrayDict, ctUArrayDict, ctVArrayDict,epochDict,Lmax=opts.l_max,xpy=xpy_default, loglikelihood=distmarg_loglikelihood,
+                    time_interp=opts._noloop_time_interp)
                 nEvals +=len(right_ascension)
                 return identity_convert(xpy_default.exp(lnL-manual_avoid_overflow_logarithm))
 
@@ -1278,7 +1300,7 @@ else: # Sum over time for every point in other extrinsic params
         if opts.inclination_cosine_sampler:
             incl = numpy.arccos(incl)
 
-        lnL = numpy.zeros(len(right_ascension),dtype=numpy.float128)
+        lnL = numpy.zeros(len(right_ascension),dtype=RiftFloat)
         i = 0
         tvals = numpy.linspace(-t_ref_wind,t_ref_wind,int((t_ref_wind)*2/P.deltaT))  # choose an array at the target sampling rate. P is inherited globally
 
@@ -1378,7 +1400,7 @@ if opts.maximize_only and opts.output_file:
        sampler._rvs["inclination"][indx_guess]/(numpy.pi),\
        sampler._rvs["psi"][indx_guess]/numpy.pi,\
        sampler._rvs["distance"][indx_guess]/dmax\
-            ],dtype=numpy.float128)
+            ],dtype=RiftFloat)
     x0 = numpy.fmod(x0,numpy.ones(len(x0)))  # had BETTER be defined on this range!
     # Pick the best starting time. BRUTE FORCE METHOD: use grid
     def fn_scaled_t(t,x0):

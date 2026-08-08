@@ -2,6 +2,13 @@
 0.0.18.0
 ------------
 development tree is rift_O4d.
+  - (rc0) O4d base refresh, from rift_O4c to rift_O4d: Python/numpy CI modernization (py3.10-py3.13,
+    numpy 2.x checks), Asimov/RIFT smoke tests, docs deployment, pluggable workflow backends and
+    simulation-manager prototypes, distance-grid/distance-slice likelihood export, container-family and pixi/SWIG
+    canaries, hyperpipeline ASCII workflow support, parsimonious-placement preview, EFPE and standalone NR-frame
+    utilities, plot_RIFT diagnostics, and GPU/CuPy portability fixes.
+
+** (rc1)
   - parsimonious-placement (preview): new RIFT.misc.tracer_placement engine (SMC+MALA, birth-death,
     and SMC-MALA+BD samplers; pluggable RF / RBF / polynomial / quadratic fits) plus two
     opt-in CLI tools that mirror the existing puffball tools' I/O contract:
@@ -12,9 +19,11 @@ development tree is rift_O4d.
     exact-regression fallback. See
     https://git.ligo.org/rapidpe-rift/rift/-/merge_requests/ (TBD) and the project notes at
     20260513-Me-ParsimoniousPlacementOptions/parsimonious_placement_plan.md.
+  - generic worfklow backend (condor, slurm, htcondor, etc) via dag_utils_generic
+  - simulation_manager framework: interface requirements for external adaptive simulations
   - CIP hyperpipe improvements (initialize_me; enable population and EOS params in using_eos file with arbitrary
-    labelled parameters); CIP xgboost gp fit (from Aasim); install make 'precession' optional; see also 0.0.17.4rc0
-    igwn-ligolw
+    labelled parameters; arbitrary coordinates); CIP xgboost gp fit (from Aasim); install make 'precession' optional; see also 0.0.17.4rc0
+    igwn-ligolw. Hyperpipe 'omegaconf/hydra' framework
   - parsimonious placement (preview): new RIFT.misc.tracer_placement engine package (SMC+MALA / birth-death /
     SMC-MALA+BD samplers with pluggable RF / RBF / polynomial / quadratic surrogate fits) plus two thin
     command-line drivers, bin/util_HyperparameterTracerUpdate.py (hyperpipe, .dat I/O) and
@@ -28,6 +37,32 @@ development tree is rift_O4d.
     sampler hyperparameters can be set declaratively in Hydra. See
     20260513-Me-ParsimoniousPlacementOptions/parsimonious_placement_plan.md for theory, prototype results,
     rollout plan, and references.
+  - distance grid creation and (AD-compatible) fit
+  - RiftFloat wrapper for portability across platforms with modern python/numpy
+  - ascii data format; waveforms (epfe);  container auto-selection framework ; cepp_alternate now feature-parity;
+    mcsamplerEnsemble full GPU path
+  - demos: calmarg, lisa, distance grids, likelihood export, multiple GPU use, hyperpipe
+  - tools: importing cal posteriors from other codes
+  - (rc1 pending) In-loop calibration marginalization: move calibration draws into ILE, add loop and fused
+    GPU kernels (including distance-marginalized and phase-marginalized paths), export cal/time diagnostics,
+    account for calibration Monte-Carlo error in reported uncertainty, add adaptive/pilot calibration proposal
+    scaffolding, and include a runnable calmarg demo with OSG/container transfer fixes.
+  - (rc1 pending) Extrinsic proposal handoff and sampler robustness: save and consolidate extrinsic GMM
+    breadcrumbs across iterations, seed later ILE jobs from those proposals, add GMM proposal/adaptation
+    controls and diagnostics, improve log-domain covariance/ESS handling, and thread the cal/extrinsic seed
+    barriers through CEPP/puffball workflows.
+  - Likelihood export Differentiable JAX likelihood/export work: optional jax_gp interpolators, differentiable
+    export artifacts, quad-GP and RF/GP validation tooling, jax_cip experiments
+  - JAX ILE driver with AD-compatible extrinsic likelihood, distance/phase marginalization, network coordinates, and gradient-aware
+    samplers. These remain optional extras and are skipped by base CI when JAX is not installed.
+  -  LISA support: add a LISA compatibility layer, response import path, standalone helper
+    contract, LISA ILE scaffold, and synthetic operational/import tests.
+  - EOS/coordinate and workflow updates: add NMB/PCA/tabular EOS sequence dispatch and
+    single-EOS-index evidence support, coordinate-plugin hooks for posterior plotting and puffing, Morisaki-frame
+    and aligned-spin coordinate helpers for GP/JAX studies, container-universe/OSDF scitokens support, and
+    per-machine container image selection.
+  - ILE 'fanout' submission can use multiple GPUs on one host (RIFT_ILE_GPU_FANOUT)
+  - Qlm interpolated in factored_likelihood...NoLoop (option)
 
 0.0.17.9
 ------------

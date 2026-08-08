@@ -24,9 +24,11 @@ Rapid inference via Iterative FiTting: this algorithm provides a framework for e
    containers
    injections
    plotting
+   demos
    hyperpipe
    troubleshooting
    api_samples_utils
+   gp_likelihood_export
    executables/index
    physics/index
 
