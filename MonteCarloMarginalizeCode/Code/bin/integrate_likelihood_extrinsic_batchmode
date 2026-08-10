@@ -3040,6 +3040,9 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
     if (opts.sampler_method in ('AV', 'portfolio') and opts.sampler_warmstart_retry_neff
             and hasattr(sampler, 'bootstrap_from_samples')
             and _needs_l0_rescue):
+        # Cold state to fall back on, captured only once the warm pass is actually about to run.
+        # `None` means nothing has been disturbed yet, so the handler must not "restore".
+        _cold_state_l0 = None
         try:
             _lnkey = 'log_integrand' if 'log_integrand' in sampler._rvs else ('integrand' if 'integrand' in sampler._rvs else None)
             _lnv = np.asarray(sampler.identity_convert(sampler._rvs[_lnkey]), dtype=float).ravel() if _lnkey else np.array([])
@@ -3087,12 +3090,17 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
                 # the cold pass reached.  There we keep the cold result rather than report the
                 # precise-but-truncated one.  Detection is imperfect -- a missed mode need not
                 # produce this ordering -- so this narrows the failure, it does not close it.
-                _cold_rvs = sampler._rvs
+                # SNAPSHOT, not an alias: integrate_log repopulates sampler._rvs IN PLACE, so
+                # `_cold_rvs = sampler._rvs` would be holding the warm samples by the time the
+                # restore below ran -- i.e. the reject path would report the cold lnZ while
+                # exporting the warm cloud, exactly what it exists to prevent.
+                _cold_rvs = dict(sampler._rvs)
                 _cold_lnZ = _lnZ_of_rvs(_cold_rvs, already_pooled=False)
                 # dict_return too: khat, block scatter, ESS, the confidence interval and the
                 # replica trigger downstream all read it, so keeping the warm pass's diagnostics
                 # beside a restored cold result would describe a run we did not report.
                 _cold_res, _cold_var, _cold_neff, _cold_dict = res, var, neff, dict_return
+                _cold_state_l0 = (_cold_rvs, _cold_res, _cold_var, _cold_neff, _cold_dict)
                 sampler.bootstrap_from_samples(_seed, cover_frac=0.0)
                 res, var, neff, dict_return = sampler.integrate(like_to_integrate, *unpinned_params, **pinned_params)
                 _warm_lnZ = _lnZ_of_rvs(sampler._rvs, already_pooled=False)
@@ -3118,7 +3126,20 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
                         res, var, neff, dict_return = _cold_res, _cold_var, _cold_neff, _cold_dict
                 _clear_warm_state(sampler)
         except Exception as _e_l0:
-            print("  [L0 auto-rescue] skipped (", _e_l0, ")")
+            # "skipped" is only true if the warm pass never started.  If it raised PARTWAY THROUGH
+            # sampler.integrate(), the assignment `res, var, neff, dict_return = ...` never
+            # completed, so those still hold the COLD pass -- while sampler._rvs was repopulated in
+            # place and now holds the WARM samples.  Reporting cold k-hat / ESS / lnZ beside a warm
+            # export describes a run that was never made, and it did so silently for a whole
+            # campaign.  Put the point back on the cold pass, in full, and say so loudly.
+            print("  [L0 auto-rescue] *** FAILED *** (", _e_l0, ")")
+            import traceback as _tb_l0
+            _tb_l0.print_exc()
+            if _cold_state_l0 is not None:
+                print("  [L0 auto-rescue] the warm pass may already have replaced the stored"
+                      " samples; restoring the COLD pass so the reported diagnostics and the"
+                      " exported samples describe the same integral.")
+                sampler._rvs, res, var, neff, dict_return = _cold_state_l0
             _clear_warm_state(sampler)
 
     # Persist adapted state / trained flow for reuse by later instances.

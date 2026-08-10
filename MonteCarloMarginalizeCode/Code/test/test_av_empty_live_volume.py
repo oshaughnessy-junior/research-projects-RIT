@@ -361,3 +361,166 @@ def test_ile_does_not_blame_the_waveform_unconditionally():
     assert _indent('print( " Probable reasons: SEOB nyquist') > _indent('print( "  ===> FAILED ANALYSIS'), \
         'the SEOB-nyquist hint sits at the handler top level again: it would be printed ' \
         'for every exception, including an integrator live-volume collapse'
+
+
+
+###
+### 7. The L0 WARM-START RESCUE: a second integrate() on the same sampler
+###
+# Observed on all 12 replicates of a rho_net=146.8 rescue campaign: the cold pass
+# collapsed, the ILE re-ran a warm pass on the SAME sampler object, and that pass died
+# partway through with
+#
+#     Implicit conversion to a NumPy array is not allowed. Please use `.get()` ...
+#
+# reported only as "[L0 auto-rescue] skipped (...)".  Cause: integrate() writes
+# _rvs['integrand'] AFTER integrate_log has moved everything to the host and (if a fair
+# draw ran) truncated it, so on the next pass that key is stale in both length and
+# backend -- and the fair-draw gather indexed it with a device index array.  The cold
+# pass survived the same code only because a 1-sample live set makes n_extr < len(...)
+# False, skipping the gather entirely.
+#
+# The damage was not the exception: `res, var, neff, dict_return = sampler.integrate(...)`
+# never completed, so the ILE reported the COLD diagnostics beside the WARM export.
+
+
+def test_a_second_integrate_with_a_fairdraw_does_not_die_on_the_stale_integrand_key():
+    """The regression.  Two integrate() calls, both fair-drawing, on one sampler."""
+    np.random.seed(20260810)
+    s = _sampler(20000)
+    kw = dict(nmax=200000, neff=8, n=20000, no_protect_names=True, verbose=False,
+              igrand_fairdraw_samples=True, igrand_fairdraw_samples_max=50)
+    s.integrate(_peaked(20.0), *NAMES, use_lnL=True, **kw)
+    assert 'integrand' in s._rvs, 'setup no longer reproduces the stale key'
+    # Pre-fix this raised TypeError("Implicit conversion to a NumPy array is not allowed")
+    # from the fair-draw gather on a GPU host, and IndexError on a CPU host (the stale
+    # key still carries the FIRST pass's fair-draw length).
+    res = s.integrate(_peaked(20.0), *NAMES, use_lnL=True, **kw)
+    assert res[0] is not None
+    n = len(np.asarray(to_host(s._rvs['log_integrand'])))
+    for k, v in s._rvs.items():
+        assert len(np.asarray(to_host(v))) == n, \
+            'key {} kept a stale length from the previous integral'.format(k)
+
+
+def test_the_fairdraw_gather_leaves_no_device_typed_entry_behind():
+    """The gather must land on the host for EVERY key, not only the ones it knows.
+
+    The gather indexes each stored array with the index array `random.choice` returned.
+    Those need not share a backend -- on a GPU host the index array is a cupy array while
+    a key written outside integrate_log is host-typed, and numpy raises rather than
+    converting.  Converting each array to the host first makes the gather backend-blind;
+    this pins that nothing device-typed survives it.  Inert on a CPU host, which is why
+    the original bug reached production unnoticed by this suite.
+    """
+    np.random.seed(20260810)
+    s = _sampler(20000)
+    kw = dict(nmax=200000, neff=8, n=20000, no_protect_names=True, verbose=False,
+              igrand_fairdraw_samples=True, igrand_fairdraw_samples_max=50)
+    s.integrate(_peaked(20.0), *NAMES, use_lnL=True, **kw)
+    s.integrate(_peaked(20.0), *NAMES, use_lnL=True, **kw)
+    for k, v in s._rvs.items():
+        assert isinstance(v, np.ndarray), \
+            'key {} came back on the device: a later host-side consumer will raise'.format(k)
+
+
+###
+### 8. An OVER-CONTRACTED warm start must be reported
+###
+# The other failure direction, and the one none of the section-3 rules see: seeded from
+# too few points the grid contracts onto a sliver, the integrand is flat across it, and
+# the pass terminates in ONE cycle looking excellent.  Measured over the 12 rescue
+# replicates (see live_volume_collapse_verdict): eleven seeded from 2000 puffed points
+# warm-started at V = 7.5e-9..1.5e-8 (351-684 bins) and returned ln(Z/Lmax) = -27.0..-30.6;
+# the twelfth seeded from 2 points, warm-started at V = 9.192e-36 (13 bins), and returned
+# -80.68 with eff_samp 9789 of 10010 samples -- ~50 nats low, and every existing rule
+# passes it: n_live 10010 >> ndim, ESS ~ n, k-hat small, no empty cycles.
+
+
+def test_the_existing_rules_alone_do_not_see_an_over_contracted_warm_start():
+    """Pins WHY a new rule was needed: seed 9134's warm pass looks healthy on the stats."""
+    collapsed, _ = live_volume_collapse_verdict(10010, NDIM, ess=9788.7, khat=0.4)
+    assert collapsed is False
+
+
+@pytest.mark.parametrize('n_seed,expect', [
+    (2, True),          # seed 9134: V = 9.192e-36, lnZ ~50 nats low
+    (NDIM + 1, True),   # a simplex is the smallest cloud that spans NDIM dimensions
+    (NDIM + 2, False),
+    (2000, False),      # the eleven healthy replicates (the caller's puffed seed)
+])
+def test_collapse_verdict_flags_a_warm_seed_too_small_to_define_a_volume(n_seed, expect):
+    collapsed, reasons = live_volume_collapse_verdict(10010, NDIM, ess=9788.7, khat=0.4,
+                                                      n_warm_seed=n_seed)
+    assert collapsed is expect, reasons
+    if expect:
+        assert 'seed point' in '; '.join(reasons)
+
+
+def test_a_cold_pass_is_never_flagged_for_its_warm_seed():
+    """n_warm_seed=None (cold) and 0 (grid of unknown provenance) both skip the rule."""
+    for val in (None, 0):
+        collapsed, reasons = live_volume_collapse_verdict(10010, NDIM, ess=9788.7,
+                                                          khat=0.4, n_warm_seed=val)
+        assert collapsed is False, reasons
+
+
+def test_the_warm_seed_size_reaches_the_verdict_from_bootstrap_from_samples():
+    """End to end: bootstrap_from_samples -> _warm['n_seed'] -> dict_return + collapse."""
+    np.random.seed(20260810)
+    s = _sampler(20000)
+    s.setup()
+    peak = 0.5 * np.ones(NDIM)
+    s.bootstrap_from_samples(peak + 1e-3 * np.array([[-1.0] * NDIM, [1.0] * NDIM]),
+                             cover_frac=0.0)
+    assert s._warm['n_seed'] == 2
+    res = s.integrate_log(_peaked(20.0), *NAMES, nmax=100000, neff=8, n=20000,
+                          no_protect_names=True, verbose=False)
+    dd = res[3]
+    assert dd['n_warm_seed'] == 2
+    assert dd['live_volume_collapsed'] is True
+    assert 'seed point' in dd['collapse_reason']
+
+
+def test_a_well_seeded_warm_start_is_not_flagged():
+    """The guard must not cry wolf on the eleven replicates that worked."""
+    np.random.seed(20260810)
+    s = _sampler(20000)
+    s.setup()
+    peak = 0.5 * np.ones(NDIM)
+    s.bootstrap_from_samples(peak + 0.02 * np.random.randn(2000, NDIM), cover_frac=0.0)
+    assert s._warm['n_seed'] > NDIM + 1
+    res = s.integrate_log(_peaked(20.0), *NAMES, nmax=400000, neff=20, n=20000,
+                          no_protect_names=True, verbose=False)
+    dd = res[3]
+    assert dd.get('live_volume_collapsed') is False, dd.get('collapse_reason')
+
+
+###
+### 9. Wiring: the ILE must not report one pass's diagnostics beside another's samples
+###
+
+
+@pytest.mark.skipif(not os.path.exists(_ILE), reason='ILE executable not in this tree')
+def test_ile_l0_rescue_restores_the_cold_pass_when_the_warm_pass_raises():
+    with open(_ILE) as f:
+        src = f.read()
+    i = src.find('[L0 auto-rescue]')
+    assert i > 0, 'rescue block moved; update this test'
+    block = src[i:src.find('# Persist adapted state', i)]
+
+    # _rvs is repopulated IN PLACE, so an aliasing capture would restore the warm samples.
+    assert '_cold_rvs = dict(sampler._rvs)' in block, \
+        '_cold_rvs must be a snapshot: `= sampler._rvs` aliases the dict integrate() mutates'
+
+    # A warm pass that raises mid-assignment leaves res/var/neff/dict_return on the COLD
+    # pass while sampler._rvs already holds the WARM samples.  The handler must undo that.
+    j = block.find('except Exception as _e_l0')
+    assert j > 0, 'handler moved; update this test'
+    handler = block[j:]
+    assert 'sampler._rvs' in handler and '_cold_state_l0' in handler, \
+        'the L0 handler no longer restores the cold pass: the ILE would report cold ' \
+        'k-hat/ESS/lnZ beside a warm export'
+
+
+###

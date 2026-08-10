@@ -128,7 +128,8 @@ class LiveVolumeCollapse(Exception):
     pass
 
 def live_volume_collapse_verdict(n_live, ndim, ess=None, khat=None,
-                                 n_empty_cycles=0, n_live_collapses=0):
+                                 n_empty_cycles=0, n_live_collapses=0,
+                                 n_warm_seed=None):
     """Has the adaptive-volume live set degenerated?  -> (collapsed, [reasons])
 
     A degenerate contraction must be REPORTED rather than silently exported: the run
@@ -147,8 +148,24 @@ def live_volume_collapse_verdict(n_live, ndim, ess=None, khat=None,
     both sides of it.  k-hat is deliberately NOT a gate on its own: it exceeds its
     nominal 0.70 "unresolved tail" threshold even in the healthy runs on this problem,
     and it is not always computable once the live set is tiny.
+
+    A WARM start fails the OTHER way, and none of the rules above see it: seeded from too
+    few points the grid contracts onto a sliver of the support, the integrand is then flat
+    across it, and the pass terminates in one cycle looking excellent -- large n_live, ESS
+    ~ n, small k-hat -- while lnZ is short by the mass outside the sliver.  Measured on 12
+    rho_net=146.8 rescue replicates: the eleven seeded from 2000 puffed points warm-started
+    at V = 7.5e-9 to 1.5e-8 (351-684 live bins) and returned ln(Z/Lmax) = -27.0 to -30.6;
+    the one seeded from 2 points warm-started at V = 9.2e-36 (13 bins) and returned -80.7,
+    i.e. ~50 nats low, with eff_samp 9789 of 10010 samples.  So:
+      * n_warm_seed <= ndim + 1 -- fewer points than a simplex cannot define a volume in
+        ndim dimensions, whatever the grid built from them looks like.  Geometric, not
+        tuned, and the same kind of statement as the n_live <= ndim rule above.
+    n_warm_seed is None (cold pass) or 0 (grid of unknown provenance) -> rule skipped.
     """
     reasons = []
+    if n_warm_seed and n_warm_seed <= ndim + 1:   # None (cold) / 0 (unknown) -> skip
+        reasons.append("warm-started from only {} seed point(s) in {} dimensions".format(
+            n_warm_seed, ndim))
     if n_empty_cycles:
         reasons.append("{} cycle(s) with no finite in-volume sample".format(n_empty_cycles))
     if n_live_collapses:
@@ -833,8 +850,11 @@ class MCSampler(object):
         # keeps the seeded region; if no lnL given, let integrate_log recompute it
         # (the concentrated grid already delivers the efficiency win).
         loglkl_thr = -1e15 if loglkl is None else float(np.min(loglkl))
+        # n_seed: how many in-box reference points this grid was actually built from.
+        # Carried so integrate_log can report a seed too small to define a volume -- see
+        # live_volume_collapse_verdict.  It is provenance, not a sampling parameter.
         return dict(binunique=binunique, dx=dx, nbins=nbins, V=V,
-                    loglkl_thr=loglkl_thr, trunc_p=1e-10)
+                    loglkl_thr=loglkl_thr, trunc_p=1e-10, n_seed=nrec)
 
     def bootstrap_from_samples(self, samples, params=None, loglkl=None, enc_prob=0.999,
                                cover_frac=0.0, dilate=1, inflate=1.0, seed=None):
@@ -1005,7 +1025,8 @@ class MCSampler(object):
                  llim=self.my_ranges.T[0], rlim=self.my_ranges.T[1],
                  binunique=warm['binunique'], dx=warm['dx'], nbins=warm['nbins'],
                  V=warm['V'], loglkl_thr=warm['loglkl_thr'],
-                 trunc_p=warm.get('trunc_p', 1e-10))
+                 trunc_p=warm.get('trunc_p', 1e-10),
+                 n_seed=warm.get('n_seed', 0))   # 0 = unknown provenance (grid taken from the live state)
         return path
 
     def load_state(self, path):
@@ -1024,7 +1045,8 @@ class MCSampler(object):
         self._warm_applied = False   # new seed -> must be re-installed
         self._warm = dict(binunique=np.array(d['binunique']), dx=np.array(d['dx']),
                           nbins=np.array(d['nbins']), V=float(d['V']),
-                          loglkl_thr=float(d['loglkl_thr']), trunc_p=float(d['trunc_p']))
+                          loglkl_thr=float(d['loglkl_thr']), trunc_p=float(d['trunc_p']),
+                          n_seed=int(d['n_seed']) if 'n_seed' in d else 0)
         return self._warm
 
 
@@ -1053,6 +1075,17 @@ class MCSampler(object):
 
 
         xpy_here = self.xpy
+
+        # A SECOND integral on the same sampler object (the ILE L0 warm-start rescue) must not
+        # inherit the first one's 'integrand'.  integrate() writes that key AFTER integrate_log
+        # returns -- i.e. after the block below has already moved every array to the host and, if
+        # a fair draw ran, truncated it to the fair-draw length.  It is therefore stale on entry
+        # here in BOTH size and backend, and integrate_log repopulates every other key but not it.
+        # The fair-draw loop then indexes it (host, cold length) with a device index array and
+        # raises "Implicit conversion to a NumPy array is not allowed", aborting the pass.
+        # mcsamplerPortfolio.integrate_log already drops it on entry for the same reason.
+        if 'integrand' in self._rvs:
+          del self._rvs['integrand']
 
         #
         # Pin values
@@ -1154,6 +1187,8 @@ class MCSampler(object):
         # threshold with the seeded live-volume state.  self.setup() above has
         # already reset these to cold defaults, so we re-apply the seed here.
         warm = getattr(self, '_warm', None)
+        n_warm_seed = None   # in-box points the seeded grid was built from (None: cold pass)
+        V_warm = None        # the seeded fractional volume, for the collapse report
         if warm is not None:
             self.binunique = np.array(warm['binunique'])
             self.dx = np.array(warm['dx'])
@@ -1162,9 +1197,14 @@ class MCSampler(object):
             V = float(warm['V'])
             loglkl_thr = float(warm['loglkl_thr'])
             trunc_p = float(warm.get('trunc_p', 1e-10))
+            # 0 (or absent) = provenance unknown, e.g. a grid restored by load_state from a run
+            # that predates this field; the seed-size check below then does not fire.
+            n_warm_seed = int(warm.get('n_seed', 0)) or None
+            V_warm = V
             if bShowEvaluationLog:
-                print("  [AV warm-start] live bins={} V={:.3e} loglkl_thr={:.3g}".format(
-                    self.binunique.shape[0], V, loglkl_thr))
+                print("  [AV warm-start] live bins={} V={:.3e} loglkl_thr={:.3g} from {} seed pt(s)".format(
+                    self.binunique.shape[0], V, loglkl_thr,
+                    "?" if n_warm_seed is None else n_warm_seed))
 
         var_lnV = 0.0  # accumulated variance of ln(V): V is a stochastic product of per-cycle
                        # binomial survival fractions, and Z ~ V*mean(w), so Var(lnV) is a
@@ -1398,15 +1438,26 @@ class MCSampler(object):
            ln_wt = self.xpy.array(self._rvs["log_integrand"] + self._rvs["log_joint_prior"] - self._rvs["log_joint_s_prior"] ,dtype=float)
            ln_wt = identity_convert(ln_wt)  # send to CPU
            ln_wt += - special.logsumexp(ln_wt)
-           wt = xpy.exp(identity_convert_togpu(ln_wt))
+           # Build the weights on the SAMPLER's backend (self.xpy), which is what draws below.
+           # The module-global `xpy` kwarg defaults to cupy independently of self.xpy, so using it
+           # here handed a device array to numpy.random.choice whenever the two disagreed.
+           wt = self.xpy.exp(self.xpy.asarray(ln_wt))
            if n_extr < len(self._rvs["log_integrand"]):
                indx_list = self.xpy.random.choice(self.xpy.arange(len(wt)), size=n_extr,replace=True,p=wt) # fair draw
                # FIXME: See previous FIXME
+               # Gather on the HOST.  _rvs entries are not guaranteed to sit on the same backend as
+               # indx_list (a caller may set self.xpy independently of the module-level backend, and
+               # keys written outside integrate_log arrive host-typed), and a numpy array indexed by
+               # a cupy array raises "Implicit conversion to a NumPy array is not allowed" -- which
+               # aborted this pass mid-way, leaving the caller's result tuple unassigned.  Converting
+               # first is free: the block just below moves every array to the host anyway.
+               indx_host = np.asarray(identity_convert(indx_list))
                for key in list(self._rvs.keys()):
+                   arr = identity_convert(self._rvs[key])
                    if isinstance(key, tuple):
-                       self._rvs[key] = identity_convert(self._rvs[key][:,indx_list])
+                       self._rvs[key] = arr[:,indx_host]
                    else:
-                       self._rvs[key] = identity_convert(self._rvs[key][indx_list])
+                       self._rvs[key] = arr[indx_host]
 
 
         # perform type conversion of all stored variables.  VERY LARGE -- should only do this if we need it!
@@ -1449,18 +1500,32 @@ class MCSampler(object):
         _khat_v = dict_return.get('pareto_khat', None)
         collapsed, _reasons = live_volume_collapse_verdict(
             n_live_final, ndim, ess=_ess, khat=_khat_v,
-            n_empty_cycles=n_empty_cycles, n_live_collapses=n_live_collapses)
+            n_empty_cycles=n_empty_cycles, n_live_collapses=n_live_collapses,
+            n_warm_seed=n_warm_seed)
         dict_return['live_volume_collapsed'] = collapsed
         dict_return['n_live_final'] = n_live_final
         dict_return['n_empty_cycles'] = int(n_empty_cycles)
         dict_return['n_live_collapses'] = int(n_live_collapses)
+        if n_warm_seed is not None:
+            dict_return['n_warm_seed'] = int(n_warm_seed)
+            dict_return['V_warm_start'] = float(V_warm)
         if collapsed:
             dict_return['collapse_reason'] = "; ".join(_reasons)
             print(" [AV COLLAPSE] the live volume degenerated: " + dict_return['collapse_reason'] + ".")
             print(" [AV COLLAPSE] lnZ and the exported samples describe a SINGLE mode of the integrand and are")
             print(" [AV COLLAPSE] NOT a fair draw from the posterior.  Do not use this export unweighted.")
-            print(" [AV COLLAPSE] At high network SNR this is likelihood underflow over a cold extrinsic prior;")
-            print(" [AV COLLAPSE] narrow the prior or seed the sampler (--sampler-warmstart-retry-neff).")
+            if n_warm_seed is not None and n_warm_seed <= ndim + 1:
+                # OPPOSITE failure to the cold one below, so it needs the opposite advice: the
+                # numbers look GOOD (n_eff at target in one cycle) precisely because the seeded
+                # volume is too small for the integrand to vary across it.  lnZ is a lower bound.
+                print(" [AV COLLAPSE] this is an OVER-CONTRACTED WARM START (V={:.3e}), not underflow:".format(V_warm))
+                print(" [AV COLLAPSE] a healthy n_eff here is an artifact of a live volume too small to")
+                print(" [AV COLLAPSE] resolve the peak, and lnZ is a LOWER BOUND missing the mass outside it.")
+                print(" [AV COLLAPSE] Seed from more points (widen --sampler-sequential-warmstart-deltalnL,")
+                print(" [AV COLLAPSE] or let the caller puff a thin peak) rather than trusting this pass.")
+            else:
+                print(" [AV COLLAPSE] At high network SNR this is likelihood underflow over a cold extrinsic prior;")
+                print(" [AV COLLAPSE] narrow the prior or seed the sampler (--sampler-warmstart-retry-neff).")
 
         return log_int, np.log(rel_var)  +2*log_int, eff_samp, dict_return
 
