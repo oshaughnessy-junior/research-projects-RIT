@@ -354,6 +354,15 @@ Remember:   pdf, cdf_inv refer to the <em>sampling</em> prior, so I need to mult
 </dd></dl>
 
 <dl class="py function">
+<dt class="sig sig-object py" id="RIFT.integrators.mcsampler.clip_angle_limits">
+<span class="sig-prename descclassname"><span class="pre">RIFT.integrators.mcsampler.</span></span><span class="sig-name descname"><span class="pre">clip_angle_limits</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">lo</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">hi</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">kind</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsampler.clip_angle_limits" title="Link to this definition"></a></dt>
+<dd><p>Clip an angular range [lo,hi] (radians) to the physical domain of <cite>kind</cite>
+(‘declination’ -&gt; [-pi/2,pi/2], ‘inclination’ -&gt; [0,pi]).</p>
+<p>Raises ValueError if the requested range is empty/inverted, or if it does
+not overlap the physical domain.  Returns (lo, hi) as floats with lo &lt; hi.</p>
+</dd></dl>
+
+<dl class="py function">
 <dt class="sig sig-object py" id="RIFT.integrators.mcsampler.convergence_test_MostSignificantPoint">
 <span class="sig-prename descclassname"><span class="pre">RIFT.integrators.mcsampler.</span></span><span class="sig-name descname"><span class="pre">convergence_test_MostSignificantPoint</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">pcut</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rvs</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">params</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsampler.convergence_test_MostSignificantPoint" title="Link to this definition"></a></dt>
 <dd></dd></dl>
@@ -377,6 +386,22 @@ Remember:   pdf, cdf_inv refer to the <em>sampling</em> prior, so I need to mult
 <dt class="sig sig-object py" id="RIFT.integrators.mcsampler.cos_samp_vector">
 <span class="sig-prename descclassname"><span class="pre">RIFT.integrators.mcsampler.</span></span><span class="sig-name descname"><span class="pre">cos_samp_vector</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">x</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsampler.cos_samp_vector" title="Link to this definition"></a></dt>
 <dd></dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.integrators.mcsampler.cosine_sampler_limits">
+<span class="sig-prename descclassname"><span class="pre">RIFT.integrators.mcsampler.</span></span><span class="sig-name descname"><span class="pre">cosine_sampler_limits</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">lo</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">hi</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">kind</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsampler.cosine_sampler_limits" title="Link to this definition"></a></dt>
+<dd><p>Map an angular range [lo,hi] (radians) into the coordinate actually sampled
+by RIFT’s ‘cosine’ sky/orientation samplers.</p>
+<dl class="simple">
+<dt>kind=’declination’: sampled variable is z = sin(dec); sin is increasing, so</dt><dd><p>the limit order is preserved:  [lo,hi] -&gt; [sin(lo), sin(hi)].</p>
+</dd>
+<dt>kind=’inclination’: sampled variable is z = cos(iota); cos is DECREASING, so</dt><dd><p>the limit order SWAPS:         [lo,hi] -&gt; [cos(hi), cos(lo)].</p>
+</dd>
+</dl>
+<p>The range is clipped to the physical angular domain first, and the result is
+clipped to the sampler domain [-1,1].  Raises ValueError on an empty or
+inverted request.  Returns (z_lo, z_hi) with z_lo &lt; z_hi.</p>
+</dd></dl>
 
 <dl class="py function">
 <dt class="sig sig-object py" id="RIFT.integrators.mcsampler.dec_samp">
@@ -412,6 +437,21 @@ Remember:   pdf, cdf_inv refer to the <em>sampling</em> prior, so I need to mult
 <dt class="sig sig-object py" id="RIFT.integrators.mcsampler.gauss_samp_withfloor">
 <span class="sig-prename descclassname"><span class="pre">RIFT.integrators.mcsampler.</span></span><span class="sig-name descname"><span class="pre">gauss_samp_withfloor</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">mu</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">std</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">myfloor</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">x</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsampler.gauss_samp_withfloor" title="Link to this definition"></a></dt>
 <dd></dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.integrators.mcsampler.infer_array_module">
+<span class="sig-prename descclassname"><span class="pre">RIFT.integrators.mcsampler.</span></span><span class="sig-name descname"><span class="pre">infer_array_module</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">x</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">xpy</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsampler.infer_array_module" title="Link to this definition"></a></dt>
+<dd><p>Return the array module (numpy, cupy, …) that should be used to operate on <cite>x</cite>.</p>
+<p>The truncated samplers below are handed to whichever backend the run selected:
+mcsampler and mcsamplerAdaptiveVolume call them with host (numpy) arrays, while
+mcsamplerGPU.draw_simplified() calls <cite>self.pdf[param](samples)</cite> / <cite>self.cdf_inv[param](p)</cite>
+with a SINGLE positional argument holding a cupy array.  Defaulting to numpy would then
+hit <cite>numpy.asarray(cupy_array)</cite>, which raises, so the backend is inferred from the
+argument instead of assumed.  An explicit <cite>xpy=</cite> always wins.</p>
+<p>The lookup is by the array type’s top-level module, taken from <cite>sys.modules</cite> (a cupy
+array cannot exist unless cupy is already imported), so this file keeps its numpy-only
+import list and works for any duck-typed backend exposing the numpy API.</p>
+</dd></dl>
 
 <dl class="py function">
 <dt class="sig sig-object py" id="RIFT.integrators.mcsampler.inv_uniform_cdf">
@@ -461,6 +501,38 @@ Remember:   pdf, cdf_inv refer to the <em>sampling</em> prior, so I need to mult
 <dt class="sig sig-object py" id="RIFT.integrators.mcsampler.quadratic_samp">
 <span class="sig-prename descclassname"><span class="pre">RIFT.integrators.mcsampler.</span></span><span class="sig-name descname"><span class="pre">quadratic_samp</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">rmax</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">x</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsampler.quadratic_samp" title="Link to this definition"></a></dt>
 <dd></dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.integrators.mcsampler.ret_cos_samp_cdf_inv_vector">
+<span class="sig-prename descclassname"><span class="pre">RIFT.integrators.mcsampler.</span></span><span class="sig-name descname"><span class="pre">ret_cos_samp_cdf_inv_vector</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">incl_lo</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">incl_hi</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsampler.ret_cos_samp_cdf_inv_vector" title="Link to this definition"></a></dt>
+<dd><p>Inverse CDF (p in [0,1] -&gt; inclination) for uniform-in-cos(iota)
+truncated to [incl_lo, incl_hi].  Monotonically increasing in p: p=0 gives
+incl_lo (which is arccos of the UPPER cosine limit – note the swap).</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.integrators.mcsampler.ret_cos_samp_vector">
+<span class="sig-prename descclassname"><span class="pre">RIFT.integrators.mcsampler.</span></span><span class="sig-name descname"><span class="pre">ret_cos_samp_vector</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">incl_lo</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">incl_hi</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsampler.ret_cos_samp_vector" title="Link to this definition"></a></dt>
+<dd><p>Sampling pdf in INCLINATION for a uniform-in-cos(iota) draw truncated to
+[incl_lo, incl_hi].  Normalized to unity over that box.  Reduces to
+cos_samp_vector for the full range.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.integrators.mcsampler.ret_dec_samp_cdf_inv_vector">
+<span class="sig-prename descclassname"><span class="pre">RIFT.integrators.mcsampler.</span></span><span class="sig-name descname"><span class="pre">ret_dec_samp_cdf_inv_vector</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">dec_lo</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dec_hi</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsampler.ret_dec_samp_cdf_inv_vector" title="Link to this definition"></a></dt>
+<dd><p>Inverse CDF (p in [0,1] -&gt; declination) for uniform-in-sin(dec) truncated
+to [dec_lo, dec_hi].  Monotonically increasing in p.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.integrators.mcsampler.ret_dec_samp_vector">
+<span class="sig-prename descclassname"><span class="pre">RIFT.integrators.mcsampler.</span></span><span class="sig-name descname"><span class="pre">ret_dec_samp_vector</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">dec_lo</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dec_hi</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsampler.ret_dec_samp_vector" title="Link to this definition"></a></dt>
+<dd><p>Sampling pdf in DECLINATION for a uniform-in-sin(dec) draw truncated to
+[dec_lo, dec_hi].  Normalized to unity over that box (the samplers that use
+an explicit cdf_inv do not renormalize the pdf themselves).  Reduces to
+dec_samp_vector for the full range.</p>
+</dd></dl>
 
 <dl class="py function">
 <dt class="sig sig-object py" id="RIFT.integrators.mcsampler.ret_uniform_samp_vector_alt">
