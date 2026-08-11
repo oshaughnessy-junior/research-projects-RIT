@@ -587,6 +587,17 @@ dec_samp_vector for the full range.</p>
 </section>
 <section id="module-RIFT.integrators.mcsamplerAdaptiveVolume">
 <span id="mc-sampler-with-adaptive-volume"></span><h2>MC Sampler with Adaptive Volume<a class="headerlink" href="#module-RIFT.integrators.mcsamplerAdaptiveVolume" title="Link to this heading"></a></h2>
+<dl class="py exception">
+<dt class="sig sig-object py" id="RIFT.integrators.mcsamplerAdaptiveVolume.LiveVolumeCollapse">
+<em class="property"><span class="k"><span class="pre">exception</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">RIFT.integrators.mcsamplerAdaptiveVolume.</span></span><span class="sig-name descname"><span class="pre">LiveVolumeCollapse</span></span><a class="headerlink" href="#RIFT.integrators.mcsamplerAdaptiveVolume.LiveVolumeCollapse" title="Link to this definition"></a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">Exception</span></code></p>
+<p>The adaptive-volume live set is empty (or carries no usable information).</p>
+<p>Raised INSTEAD of the bare numpy/cupy “zero-size array to reduction operation
+… which has no identity” that the empty-live-volume path used to produce, so
+callers and logs can tell a degenerate contraction apart from a waveform
+generation failure.  See the collapse discussion in get_likelihood_threshold.</p>
+</dd></dl>
+
 <dl class="py class">
 <dt class="sig sig-object py" id="RIFT.integrators.mcsamplerAdaptiveVolume.MCSampler">
 <em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">RIFT.integrators.mcsamplerAdaptiveVolume.</span></span><span class="sig-name descname"><span class="pre">MCSampler</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">n_chunk</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">400000</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerAdaptiveVolume.MCSampler" title="Link to this definition"></a></dt>
@@ -854,6 +865,56 @@ discard_prob: threshold on CDF to throw away an entire bin.  Should be very smal
 <dt class="sig sig-object py" id="RIFT.integrators.mcsamplerAdaptiveVolume.identity_convert_togpu">
 <span class="sig-prename descclassname"><span class="pre">RIFT.integrators.mcsamplerAdaptiveVolume.</span></span><span class="sig-name descname"><span class="pre">identity_convert_togpu</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">x</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerAdaptiveVolume.identity_convert_togpu" title="Link to this definition"></a></dt>
 <dd></dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.integrators.mcsamplerAdaptiveVolume.live_volume_collapse_verdict">
+<span class="sig-prename descclassname"><span class="pre">RIFT.integrators.mcsamplerAdaptiveVolume.</span></span><span class="sig-name descname"><span class="pre">live_volume_collapse_verdict</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">n_live</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ndim</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ess</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">khat</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">n_empty_cycles</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">n_live_collapses</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">n_warm_seed</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">n_warm_seed_rank</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">n_warm_seed_dim</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerAdaptiveVolume.live_volume_collapse_verdict" title="Link to this definition"></a></dt>
+<dd><p>Has the adaptive-volume live set degenerated?  -&gt; (collapsed, [reasons])</p>
+<p>A degenerate contraction must be REPORTED rather than silently exported: the run
+still returns a lnZ and a sample cloud, but both describe a single mode and the
+cloud is not a fair posterior draw.</p>
+<p>Thresholds, against the separation measured on zero-noise injections at a fixed
+intrinsic point (rho_net 51 -&gt; 147):</p>
+<blockquote>
+<div><blockquote>
+<div><p>healthy    ESS 16.8-20.2,  k-hat 1.03-1.50   (rho 51.4, converges cold)
+collapsed  ESS 1.0-1.7,    k-hat 21-202      (rho 103-147)</p>
+</div></blockquote>
+<ul class="simple">
+<li><p>n_live &lt;= ndim – a live set no larger than the dimension cannot span the
+space, let alone describe a posterior in it.  Geometric, not tuned.</p></li>
+<li><p>ESS &lt; 2 – fewer than two effective samples IS one sample.</p></li>
+<li><p>ESS &lt; 5 with k-hat &gt; 10 – near-degenerate AND a pathological weight tail.</p></li>
+</ul>
+</div></blockquote>
+<p>The gap between the regimes is an order of magnitude wide, so these sit far from
+both sides of it.  k-hat is deliberately NOT a gate on its own: it exceeds its
+nominal 0.70 “unresolved tail” threshold even in the healthy runs on this problem,
+and it is not always computable once the live set is tiny.</p>
+<p>A WARM start fails the OTHER way, and none of the rules above see it: seeded from too
+few points the grid contracts onto a sliver of the support, the integrand is then flat
+across it, and the pass terminates in one cycle looking excellent – large n_live, ESS
+~ n, small k-hat – while lnZ is short by the mass outside the sliver.  Measured on 12
+rho_net=146.8 rescue replicates: the eleven seeded from 2000 puffed points warm-started
+at V = 7.5e-9 to 1.5e-8 (351-684 live bins) and returned ln(Z/Lmax) = -27.0 to -30.6;
+the one seeded from 2 points warm-started at V = 9.2e-36 (13 bins) and returned -80.7,
+i.e. ~50 nats low, with eff_samp 9789 of 10010 samples.  So:</p>
+<blockquote>
+<div><ul class="simple">
+<li><p>n_warm_seed_rank &lt; n_warm_seed_dim – the seed cloud’s AFFINE RANK (rank of the
+mean-centred points, per-axis scaled by the box) is below the dimension it must
+span, so it lies in a lower-dimensional subspace and cannot define a volume there.</p></li>
+</ul>
+</div></blockquote>
+<p>RANK, not row count, is the invariant.  Rows are neither necessary nor sufficient:
+thousands of duplicated or collinear points span the same degenerate subspace two
+points do and fail identically, while d+1 affinely independent points are exactly
+enough to define a volume in d dimensions and must NOT be flagged.  Rank subsumes the
+count anyway, since n points span at most n-1 affine dimensions.</p>
+<p>n_warm_seed* are None on a cold pass -&gt; the rule is skipped.  If rank is unavailable
+(a grid restored by load_state from a run that predates it) we fall back to the count,
+at the correct simplex boundary: fewer than dim+1 points, i.e. n &lt;= dim.</p>
+</dd></dl>
 
 <dl class="py function">
 <dt class="sig sig-object py" id="RIFT.integrators.mcsamplerAdaptiveVolume.profile">
