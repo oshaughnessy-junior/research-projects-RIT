@@ -95,11 +95,47 @@ jobs:
               repository_id:($repository_id | tonumber), pr:($pr | tonumber),
               head_sha:$head_sha, draft:($draft == "true")}')"
 
-          curl --fail-with-body --silent --show-error \
+          response_path="$RUNNER_TEMP/private-review-dispatch-response.json"
+          http_status="$(curl --silent --show-error \
+            --output "$response_path" --write-out '%{http_code}' \
             --proto '=https' \
             --retry 3 --retry-all-errors --retry-delay 2 \
             --connect-timeout 10 --max-time 30 \
             --header "Authorization: Bearer $oidc_token" \
             --header "Content-Type: application/json" \
             --data-binary "$payload" \
-            "https://${REVIEW_COORDINATOR_HOST}:${REVIEW_COORDINATOR_PORT}/github/actions/rift-dispatch"
+            "https://${REVIEW_COORDINATOR_HOST}:${REVIEW_COORDINATOR_PORT}/github/actions/rift-dispatch")"
+
+          if [[ "$http_status" =~ ^2[0-9][0-9]$ ]]; then
+            jq -e --arg head "$DISPATCH_HEAD_SHA" \
+              '(.ok == true) and
+               (((.action | IN("queued", "duplicate")) and
+                 (.generation_id | type == "string") and
+                 (.generation_id | test("^[0-9a-f]{64}$")) and
+                 (.head_sha == $head)) or
+                ((.action == "suppressed") and (.generation_id == null)) or
+                ((.action | IN("ignored_stale_suppression", "ignored_stale_eligible")) and
+                 (.generation_id == null) and (.head_sha | type == "string") and
+                 (.head_sha | test("^[0-9a-f]{40}$"))))' \
+              "$response_path" >/dev/null
+            exit 0
+          fi
+
+          if [[ "$http_status" == "409" ]] &&
+             jq -e --arg head "$DISPATCH_HEAD_SHA" \
+               '(.ok == true) and (.action == "elevated") and
+                (.reason == "REVIEW_GENERATION_LIMIT") and
+                (.generation_id == null) and (.head_sha == $head)' \
+               "$response_path" >/dev/null; then
+            echo "::notice title=Review loop complete::Review-generation ceiling reached for this exact head; no review was launched. Human closeout remains required."
+            {
+              echo "### Private review dispatch"
+              echo ""
+              echo "Review-generation ceiling reached for the exact current head."
+              echo "No reviewer was launched; human closeout remains required."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          echo "::error title=Private review dispatch failed::Coordinator returned unexpected HTTP ${http_status}."
+          exit 1
