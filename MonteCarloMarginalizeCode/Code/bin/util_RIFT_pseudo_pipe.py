@@ -612,6 +612,8 @@ parser.add_argument("--manual-initial-grid-supplements",action='store_true', hel
 parser.add_argument("--manual-extra-ile-args",default=None,type=str,help="Avenue to adjoin extra ILE arguments.  Needed for unusual configurations (e.g., if channel names are not being selected, etc)")
 parser.add_argument("--internal-ile-force-adapt-all",action='store_true', help="Syntactic sugar to prevent need to add manual-extra-ile-args for this: easier on user")
 parser.add_argument("--internal-puff-transverse",action='store_true', help=" appends the following arguments: --parameter phi1 --parameter phi2 --parameter chi1_perp_u --parameter chi2_perp_u ")
+parser.add_argument("--internal-puff-anisotropic",action='store_true', help="Requires --internal-puff-transverse.  Narrows the puff in the TIGHTLY-CONSTRAINED directions (masses, aligned spins) while leaving the transverse spread at the global --puff-factor.  The isotropic puff buys transverse reach by also displacing mc/eta/chi_eff, where the likelihood is sharp, so the reach arrives off-peak: measured on a real grid, 20.7 percent of puffed points clear bilby chi1_perp p90 but sit at median Mahalanobis 6.15 from the lnL shell, only 0.97 percent within 1.  Narrowing the parallel block gives 14x the top-decile-likelihood fraction at 2.5x lower cost per point.")
+parser.add_argument("--internal-puff-force-away-quantile",default=None,type=float, help="Sets force-away by TARGET REJECTION FRACTION (0.3-0.5 recommended) against the unpuffed grid covariance, instead of by distance.  A fixed distance does not transfer: rejection goes as 1-exp(-(r/delta)^d), whose 10-to-90 window is a factor 1.47 at d=8, and delta moves from 0.23 at d=4 to 1.01 at d=8 -- so the default --force-away 0.05 rejects exactly zero points at d=8.")
 parser.add_argument("--manual-extra-puff-args",default=None,type=str,help="Avenue to adjoin extra PUFF arguments.  ")
 parser.add_argument("--manual-extra-test-args",default=None,type=str,help="Avenue to adjoin extra TEST arguments.  ")
 parser.add_argument("--manual-extra-cip-args",default=None,type=str,help="Avenue to adjoin extra CIP arguments.  Needed for external priors or likelihoods in CIP stage")
@@ -2076,6 +2078,22 @@ puff_params = ' '.join(instructions_puff)
 if opts.internal_puff_transverse:
     puff_params = puff_params.replace('--parameter chieff_aligned', '--parameter s1z_bar --parameter s2z_bar ')
     puff_params +=  ' --parameter phi1 --parameter phi2 --parameter chi1_perp_u --parameter chi2_perp_u --reflect-parameter chi1_perp_u --downselect-parameter chi1_perp_u  --downselect-parameter-range [0,1]  --reflect-parameter chi2_perp_u --downselect-parameter chi2_perp_u  --downselect-parameter-range [0,1] '
+puff_args_late = ''   # appended AFTER the force-away string surgery below; see the note there
+if opts.internal_puff_anisotropic:
+    # ANISOTROPIC puff (transverse-spin study 2026-08).  Leave the global --puff-factor alone -- the
+    # transverse coordinates keep exactly the spread they had -- and pull IN the directions where the
+    # likelihood is sharp.  The scales below are relative to the global factor, and reproduce the
+    # configuration measured against 3000 true ILE likelihoods per arm: 14x the top-decile-likelihood
+    # fraction, median lnL 66.3 vs 37.3, at 2.5x lower cost per point, with transverse reach
+    # UNCHANGED (0.215 vs 0.194 -- equal by construction, since the transverse scale is untouched).
+    if not opts.internal_puff_transverse:
+        raise Exception(" --internal-puff-anisotropic requires --internal-puff-transverse (it scales s1z_bar/s2z_bar/chi1_perp_u/chi2_perp_u, which only exist in that mode) ")
+    puff_args_late += ' --puff-factor-parameter mc:0.03125 --puff-factor-parameter eta:0.03125 --puff-factor-parameter s1z_bar:0.0625 --puff-factor-parameter s2z_bar:0.0625 '
+if opts.internal_puff_force_away_quantile is not None:
+    # Target rejection FRACTION against the unpuffed grid covariance.  See the option help: a fixed
+    # distance cannot transfer across dimensionality, grid size or puff shape, and the default 0.05
+    # is a measured no-op at d=8.
+    puff_args_late += ' --force-away-quantile {} --force-away-unpuffed '.format(opts.internal_puff_force_away_quantile)
 if opts.internal_cip_transverse_tails:
     # transverse TAIL-GUARD (transverse-spin study 2026-07): every puff APPENDS (and shuffles in)
     # uniformly-random chi1_perp draws (range defaults to [0, chi1-downselect-cap], azimuth also
@@ -2153,6 +2171,14 @@ with open("args_puff.txt",'w') as f:
                 puff_args+= " --enforce-duration-bound " +str(opts.data_LI_seglen)
         if opts.internal_use_force_away:
             puff_args = puff_args.replace(unsafe_parse_arg_string(puff_args,'force-away')," --force-away {} ".format(str(opts.internal_use_force_away)))
+        # Appended HERE, deliberately after the --force-away surgery above: unsafe_parse_arg_string
+        # splits on '--' and returns the first chunk merely CONTAINING 'force-away', so
+        # '--force-away-quantile' / '--force-away-unpuffed' would be matched and overwritten by the
+        # internal_use_force_away branch whenever the helper did not already emit a plain
+        # --force-away.  Adding them after that surgery makes them immune, the same way
+        # --manual-extra-puff-args is.
+        if puff_args_late:
+            puff_args += " {} ".format(puff_args_late)
         if not(opts.manual_extra_puff_args is None):
             puff_args += " {} ".format(opts.manual_extra_puff_args)  # embed with space on each side, avoid collisions
         f.write("X " + puff_args)
