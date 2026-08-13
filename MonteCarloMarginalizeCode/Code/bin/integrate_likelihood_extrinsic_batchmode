@@ -1226,6 +1226,25 @@ def _draw_more_calibration_draws(n_more, psd_dict):
     return new
 
 
+# The per-realization calibration self term <C_c h|C_c h> is frequency-domain-diagonal only
+# (it reweights IP.weights2side; the TD Toeplitz kernel never reads that).  Combining it with
+# --internal-ile-inner-product td-toeplitz would compute the U/V cross terms with the TD
+# precision kernel and the calibration self terms with the FD-diagonal kernel -- two inner
+# products in one likelihood.  PrecomputeLikelihoodTerms refuses it, but that happens per
+# intrinsic point AFTER all the setup above; check here so a misconfigured job dies at
+# startup with the fix in hand.  Predicate is shared with FL so the two cannot drift.
+if (ile_ip_factory is not None) and calibration_marginalization and not opts.calibration_global_norm:
+    if not factored_likelihood.CalibrationSelfTermInnerProductSupported(ile_ip_factory):
+        print("FAIL: --internal-ile-inner-product %r cannot be combined with calibration "
+              "marginalization using the per-realization self term.  The |C_c|^2-weighted "
+              "self-term cross terms are frequency-domain-diagonal only, so this run would "
+              "compute the U/V cross terms with the TD precision kernel and the calibration "
+              "self terms with the FD-diagonal kernel.  Use EITHER "
+              "--internal-ile-inner-product fd-diagonal OR --calibration-global-norm (the "
+              "calibration-independent norm <h|h>, computed with the same TD inner product)."
+              % opts.internal_ile_inner_product)
+        sys.exit(1)
+
 
 #
 # Set up parameters and bounds

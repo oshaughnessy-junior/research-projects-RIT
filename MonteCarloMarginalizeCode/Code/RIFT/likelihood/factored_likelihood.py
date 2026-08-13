@@ -411,6 +411,10 @@ def PrecomputeLikelihoodTerms(event_time_geo, t_window, P, data_dict,
     # <h|h>.  When the build is skipped the trailing crossTermsCal/crossTermsCalV are None.
     _build_cal_ct = _have_cal and return_calibration_crossterms and calibration_self_term
     if _build_cal_ct:
+        # The |C_c|^2-weighted self-term route below is FD-diagonal-ONLY: refuse the silent
+        # two-kernel mix (U/V from IP_factory, self terms from lsu.ComplexIP) rather than
+        # compute it.  See CalibrationSelfTermInnerProductSupported.
+        AssertCalibrationSelfTermInnerProductSupported(IP_factory)
         crossTermsCal = {}
         crossTermsCalV = {}
 
@@ -1165,6 +1169,60 @@ def ComputeModeCrossTermIP(hlmsA, hlmsB, psd, fmin, fMax, fNyq, deltaF,
     return crossTerms
 
 
+#
+# --- Which inner products the |C_c|^2-weighted calibration self term supports -------------
+#
+# The self-term route (BuildCalibrationSelfTermBasis + CalibrationSelfTermCrossTermsFromBasis)
+# is written against the FREQUENCY-DOMAIN-DIAGONAL inner product and ONLY that one: it forms
+# <C_c h|C_c h> = <h|h>_{|C_c|^2/S} by SWAPPING the band weight ``IP.weights2side`` for
+# ``base_weights2side * b_k(f)`` between ``IP.ip`` calls.  That trick presumes the inner
+# product IS a diagonal sum against ``weights2side`` -- true for lsu.ComplexIP, false for any
+# non-diagonal kernel.  In particular ToeplitzComplexIP (RIFT.likelihood.td_inner_product,
+# the --internal-ile-inner-product td-toeplitz path) evaluates
+# ``2 dT conj(h1_td)^T K h2_td`` with K = Toeplitz(irfft(weights)) and NEVER reads
+# ``weights2side`` on its default branch, so assigning to it would set a dead attribute and
+# silently return the UNWEIGHTED base kernel for every realization.
+#
+# Supporting the TD kernel here is not a plumbing change: it needs one precision context per
+# basis function per detector (symbol ``weights*b_k(f)``, which is sign-indefinite), and the
+# truncated/gapped K_seg and the glitch rank-augmentation correction are both defined against
+# the BASE precision operator with no |C_c|^2-weighted analogue.  Until someone works that
+# out, an inner-product factory is opted IN to this route by setting
+# ``supports_calibration_self_term = True`` on itself; everything else is refused early
+# (AssertCalibrationSelfTermInnerProductSupported) instead of silently mixing two kernels in
+# one likelihood.
+#
+
+def CalibrationSelfTermInnerProductSupported(IP_factory):
+    """True if ``IP_factory`` may be used for the |C_c|^2-weighted calibration self-term
+    cross terms.  ``None`` (the default frequency-domain-diagonal lsu path) always is; any
+    other factory must advertise ``supports_calibration_self_term = True``."""
+    if IP_factory is None:
+        return True
+    return bool(getattr(IP_factory, "supports_calibration_self_term", False))
+
+
+def AssertCalibrationSelfTermInnerProductSupported(IP_factory):
+    """Raise ValueError if ``IP_factory`` cannot supply the calibration self-term cross terms.
+
+    Called from PrecomputeLikelihoodTerms BEFORE any waveform is generated, so a misconfigured
+    job dies at once instead of producing a likelihood whose U/V cross terms and whose
+    per-realization calibration self terms come from two DIFFERENT inner products."""
+    if CalibrationSelfTermInnerProductSupported(IP_factory):
+        return
+    raise ValueError(
+        "calibration marginalization with the per-realization self term is not supported by "
+        "inner-product factory %r (type %s).  The |C_c|^2-weighted self-term cross terms are "
+        "frequency-domain-diagonal only (they reweight IP.weights2side), so proceeding would "
+        "compute the U/V cross terms with one inner product and the calibration self terms "
+        "with another -- two kernels in one likelihood.  Fix by EITHER dropping "
+        "--internal-ile-inner-product td-toeplitz (use fd-diagonal) OR adding "
+        "--calibration-global-norm, which uses the calibration-independent norm <h|h> from the "
+        "same (factory) inner product for every realization.  A factory that genuinely "
+        "implements the weighted self term should set supports_calibration_self_term=True."
+        % (IP_factory, type(IP_factory).__name__))
+
+
 _cal_selfterm_basis_cache = {}   # key -> (weakref(cal), basis dict); bounded to a few entries
 
 
@@ -1274,6 +1332,11 @@ def CalibrationSelfTermCrossTermsFromBasis(IP, hlmsA, hlmsB, cal_basis,
     Because |C_c(f)|^2 = sum_k alpha[k,c] b_k(f) exactly (to the basis rank_tol), this
     reproduces the per-realization <C_c h|C_c h> to that tolerance.  alpha is real, so
     the U-hermitian / V-symmetric structure of each U^(k) (real weight) carries to U_c.
+
+    ``IP`` MUST be a frequency-domain-diagonal inner product (lsu.ComplexIP): the basis
+    weight is applied by assigning ``IP.weights2side``, which only a diagonal kernel reads.
+    Callers reach this through PrecomputeLikelihoodTerms, which refuses any other inner
+    product up front (CalibrationSelfTermInnerProductSupported).
     """
     w2 = cal_basis["weights2side"]
     alpha = cal_basis["alpha"]
