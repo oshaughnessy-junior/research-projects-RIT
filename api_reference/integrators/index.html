@@ -976,6 +976,38 @@ at the correct simplex boundary: fewer than dim+1 points, i.e. n &lt;= dim.</p>
 </dd></dl>
 
 <dl class="py function">
+<dt class="sig sig-object py" id="RIFT.integrators.mcsamplerAdaptiveVolume.lnZ_from_reserve">
+<span class="sig-prename descclassname"><span class="pre">RIFT.integrators.mcsamplerAdaptiveVolume.</span></span><span class="sig-name descname"><span class="pre">lnZ_from_reserve</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">reserve</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerAdaptiveVolume.lnZ_from_reserve" title="Link to this definition"></a></dt>
+<dd><p>lnZ implied by a warm-seed reserve, on the ORIGINAL PROPOSAL-DRAW normalization.</p>
+<p>-&gt; float, or None if the reserve cannot support the estimate.</p>
+<p>THE DENOMINATOR IS THE POINT.  An importance estimate is mean(w) over the draws that were
+MADE, and a draw whose likelihood underflowed to -inf is a real draw contributing a real
+zero.  make_warm_seed_reserve drops those rows – they are ballast for every other
+consumer – and may then cap what survives, so the stored array is neither the draw set
+nor a uniform sample of it.  Averaging over the stored rows silently divides by the wrong
+n, overestimating by log(n_retained/n_finite).  For a PORTFOLIO, whose _rvs holds every
+draw and whose finite fraction on a collapsed pass is ~1e-5, that is ~11 nats.</p>
+<p>It does not cancel in the L0 reject gate, which is what makes it dangerous rather than
+merely wrong: the cold and warm passes have DIFFERENT finite fractions, so the gate would
+see the difference of two different-sized errors and could again keep a mass-losing warm
+pass or discard a good one – the failure the gate change exists to remove, reappearing
+one layer down.</p>
+<p>So rebuild the estimate explicitly.  With <cite>m</cite> rows kept, out of <cite>n_finite</cite> finite draws,
+out of <cite>n_retained</cite> draws made:</p>
+<blockquote>
+<div><p>sum over the finite population  ~=  (n_finite / m) * sum over kept rows
+lnZ = logsumexp(lw_kept) + log(n_finite) - log(m) - log(n_retained)</p>
+</div></blockquote>
+<p>which collapses to logsumexp(lw) - log(m) exactly when nothing was dropped and nothing
+was capped – i.e. for AV, whose retained set is already all finite, leaving its
+behaviour unchanged.</p>
+<p>One wrinkle, disclosed rather than corrected: make_warm_seed_reserve force-appends the
+peak row, so the kept rows are very slightly peak-biased rather than uniform.  At one row
+in n_max (default 20000) that sits far below the MC error on either pass, and correcting
+it exactly would mean tracking whether the peak was already in the subsample.</p>
+</dd></dl>
+
+<dl class="py function">
 <dt class="sig sig-object py" id="RIFT.integrators.mcsamplerAdaptiveVolume.make_warm_seed_reserve">
 <span class="sig-prename descclassname"><span class="pre">RIFT.integrators.mcsamplerAdaptiveVolume.</span></span><span class="sig-name descname"><span class="pre">make_warm_seed_reserve</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">X</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">lnL</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">params_ordered</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">n_max</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">20000</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">log_joint_prior</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">log_joint_s_prior</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rng</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerAdaptiveVolume.make_warm_seed_reserve" title="Link to this definition"></a></dt>
 <dd><p>A bounded copy of the points a pass RETAINED, for a later warm start -&gt; dict.</p>
