@@ -54,7 +54,25 @@ RIFT_CODE="${RIFT_PROJECT_ROOT}/MonteCarloMarginalizeCode/Code"
 RIFT_CONDA_ENV="/home/richard.oshaughnessy/.conda/envs/junior_rift"
 RIFT_CONDA_BIN="${RIFT_CONDA_ENV}/bin"
 
-# Pinned commit this project is supposed to be running.  Validation warns on mismatch.
+# What this project is supposed to be running.
+#
+#   RIFT_PINNED_CODE_TREE is the authoritative pin and is what validation checks: the git
+#   TREE hash of MonteCarloMarginalizeCode/, i.e. of the RIFT code itself.  A commit hash
+#   cannot be used for this, because the pin lives in a file that the pinning commit must
+#   itself contain -- so a commit pin is always one commit stale and its warning degrades
+#   into noise you learn to ignore (exactly what happened after the 2026-08-13 merge).
+#   The tree hash has no such circularity: project_env.sh and PROJECT_CHECKOUT.md sit at
+#   the repo ROOT, outside MonteCarloMarginalizeCode/, so repinning does not perturb the
+#   thing being pinned.  It also pins what actually matters -- if this value matches, the
+#   RIFT code is byte-identical to the campaign code, whatever the commit graph did.
+#
+#   RIFT_PINNED_COMMIT is provenance only (which commit the tree was taken from) and is
+#   reported, not enforced.
+#
+# To repin after a deliberate code change:
+#   git rev-parse HEAD:MonteCarloMarginalizeCode     # -> RIFT_PINNED_CODE_TREE
+#   git rev-parse HEAD                               # -> RIFT_PINNED_COMMIT (informational)
+RIFT_PINNED_CODE_TREE="0a62d736ab066724bdb8d346116bf0ea6cb510d6"
 RIFT_PINNED_COMMIT="3e1287bbc75e406b2680a4163feb70584f3e2593"
 
 # Any of these appearing in PATH/PYTHONPATH means a foreign RIFT has leaked in.
@@ -70,7 +88,7 @@ RIFT_CONTAMINANT_PATTERNS=(
     "rift_O4d_junior_ralph"
 )
 
-export RIFT_PROJECT_ROOT RIFT_CODE RIFT_CONDA_ENV RIFT_CONDA_BIN RIFT_PINNED_COMMIT
+export RIFT_PROJECT_ROOT RIFT_CODE RIFT_CONDA_ENV RIFT_CONDA_BIN RIFT_PINNED_COMMIT RIFT_PINNED_CODE_TREE
 
 # ---------------------------------------------------------------------------
 # The environment itself -- ASSIGNED, not appended.
@@ -138,12 +156,22 @@ validate_env() {
         _ok "checkout is a real clone (unprunable)"
     fi
 
-    local cur; cur=$(git -C "${RIFT_PROJECT_ROOT}" rev-parse HEAD 2>/dev/null)
-    if [ -n "${cur}" ] && [ "${cur}" != "${RIFT_PINNED_COMMIT}" ]; then
-        _warn "checkout is at ${cur:0:8}, expected pinned ${RIFT_PINNED_COMMIT:0:8} (campaign code changed?)"
+    # The RIFT code itself is what must not move: compare the tree hash of
+    # MonteCarloMarginalizeCode/, not the commit (see RIFT_PINNED_CODE_TREE above).
+    local curtree; curtree=$(git -C "${RIFT_PROJECT_ROOT}" rev-parse HEAD:MonteCarloMarginalizeCode 2>/dev/null)
+    local cur;     cur=$(git -C "${RIFT_PROJECT_ROOT}" rev-parse HEAD 2>/dev/null)
+    if [ -z "${curtree}" ]; then
+        _warn "cannot resolve HEAD:MonteCarloMarginalizeCode -- code pin not checked"
+    elif [ "${curtree}" != "${RIFT_PINNED_CODE_TREE}" ]; then
+        _warn "RIFT CODE has moved: tree ${curtree:0:8}, expected pinned ${RIFT_PINNED_CODE_TREE:0:8} (campaign code changed?)"
     else
-        _ok "at pinned commit ${RIFT_PINNED_COMMIT:0:8}"
+        _ok "RIFT code matches the pinned tree ${RIFT_PINNED_CODE_TREE:0:8}"
     fi
+    # Dirty worktree defeats any pin -- the tree hash is HEAD's, not what is on disk.
+    if [ -n "$(git -C "${RIFT_PROJECT_ROOT}" status --porcelain -- MonteCarloMarginalizeCode 2>/dev/null)" ]; then
+        _warn "MonteCarloMarginalizeCode has UNCOMMITTED changes -- the code pin describes HEAD, not what will run"
+    fi
+    [ -n "${cur}" ] && _ok "commit ${cur:0:8} (pin taken from ${RIFT_PINNED_COMMIT:0:8})"
 
     # -- 2. interpreter and required executables --------------------------------------
     local py; py=$(command -v python 2>/dev/null)

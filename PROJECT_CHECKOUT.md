@@ -11,7 +11,8 @@ of this tree. Deleting or moving it will kill running analyses.
 | Path | `/home/richard.oshaughnessy/vaishak_p/rift_tdlike` |
 | Repo | `research-projects-RIT` (**full clone**, not a worktree) |
 | Branch | `tdlike_paper2` |
-| Pinned commit | `3e1287bbc75e406b2680a4163feb70584f3e2593` (`3e1287bb`) |
+| Pinned RIFT code tree | `0a62d736ab066724bdb8d346116bf0ea6cb510d6` (`git rev-parse HEAD:MonteCarloMarginalizeCode`) |
+| Pin taken from commit | `3e1287bbc75e406b2680a4163feb70584f3e2593` (`3e1287bb`, provenance only) |
 | Created | 2026-07-29 |
 | `RIFT_CODE` | `<this dir>/MonteCarloMarginalizeCode/Code` |
 
