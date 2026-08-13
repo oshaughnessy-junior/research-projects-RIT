@@ -217,10 +217,15 @@ parser.add_argument("--internal-propose-ile-adapt-log",action='store_true',help=
 parser.add_argument("--internal-ile-rotate-phase", action='store_true')
 parser.add_argument("--internal-ile-auto-logarithm-offset",action='store_true',help="Passthrough to ILE")
 parser.add_argument("--internal-ile-use-lnL",action='store_true',help="Passthrough to ILE.  Will DISABLE auto-logarithm-offset and manual-logarithm-offset")
+parser.add_argument("--internal-ile-n-chunk",default=None,type=int,help="Override the extrinsic chunk size (--n-chunk) passed to ILE. Default: 40000, scaled linearly with SNR above 40 and capped at 160000. Rationale: at high SNR the posterior is a vanishing fraction of the prior volume, so a small chunk gives few informative samples per adaptation step; measured collapse on a truth-known SNR ladder falls 88%%->50%% (SNR160) and 69%%->25%% (SNR80) going 1e4->1.6e5, and the gain survives at fixed budget. Larger chunks cost GPU memory, so raise the ILE memory request if you raise this a lot.")
+parser.add_argument("--internal-ile-interpolate-time",action='store_true',help="Evaluate Q_lm at FRACTIONAL detector times by cubic interpolation instead of snapping to the nearest sample bin (passes --interpolate-time True). Requires the maintained NoLoop likelihood, i.e. the --vectorized --gpu --force-xpy combination. Nearest-bin evaluation injects a time-quantization non-smoothness into the extrinsic likelihood surface that is a discretization artifact, not physics; removing it makes convergence more robust. Default off for backward compatibility.")
 parser.add_argument("--internal-cip-use-lnL",action='store_true')
 parser.add_argument("--ile-n-eff",default=50,type=int,help="Target n_eff passed to ILE.  Try to keep above 2")
 parser.add_argument("--test-convergence",action='store_true',help="If present, the code will terminate if the convergence test  passes. WARNING: if you are using a low-dimensional model the code may terminate during the low-dimensional model!")
 parser.add_argument("--internal-test-convergence-threshold",type=float,default=0.02,help="The value of the threshold. 0.02 has been default ")
+parser.add_argument("--internal-test-convergence-method",type=str,default="lame",help="Convergence-test method passed to convergence_test_samples.py (lame|ks1d|KL_1d|js_additive|js_lame). Default 'lame' (multivariate-Gaussian mean+variance KL) is BLIND to skewed transverse tails: it can declare convergence while chi1_perp is still contracting (observed: passed at 0.016<0.02 while the chi1_perp 90%% CI was still moving ~4.5 percent/iteration). Use 'js_lame' (lame on mc/eta/xi AND bounded-domain JS + lagged upper-quantile drift on chi1_perp) to resolve transverse tails, esp. at low mass. See transverse-spin convergence protocol (results_triage/CONVERGENCE_PROTOCOL_*).")
+parser.add_argument("--internal-test-convergence-js-lame-fixed-thresholds",action='store_true',help="With --internal-test-convergence-method js_lame: do NOT pass --js-lame-auto-threshold, so the fixed --threshold/--js-threshold/--quantile-tolerance values are used as given.  Only correct if you know the distinct-sample supply matches the sample size those fixed values were tuned at; otherwise the components fire on pure sampling noise and the gate never converges.")
+parser.add_argument("--internal-test-convergence-js-lame-allow-missing-lags",action='store_true',help="With --internal-test-convergence-method js_lame: do NOT pass --js-lame-require-lags, so the test may report convergence before its lag window is populated.  This restores the one-step behaviour js_lame exists to replace (an unusually clean early comparison can stop the loop at sub-iteration 2-3); for diagnostics only.")
 parser.add_argument("--lowlatency-propose-approximant",action='store_true', help="If present, based on the object masses, propose an approximant. Typically TaylorF2 for mc < 6, and SEOBNRv4_ROM for mc > 6.")
 parser.add_argument("--online", action='store_true', help="Use online settings")
 parser.add_argument("--propose-initial-grid",action='store_true',help="If present, the code will either write an initial grid file or (optionally) add arguments to the workflow so the grid is created by the workflow.  The proposed grid is designed for ground-based LIGO/Virgo/Kagra-scale instruments")
@@ -1052,11 +1057,33 @@ helper_cip_arg_list = []
 
 chieff_str = '' # Scoping issue fix
 
-helper_test_args += "  --method lame  --parameter mc --parameter eta  --iteration $(macroiteration) "
+helper_test_args += "  --method {}  --parameter mc --parameter eta  --iteration $(macroiteration) ".format(opts.internal_test_convergence_method)
+if opts.internal_test_convergence_method == 'js_lame':
+    # js_lame's thresholds are only meaningful relative to the noise floor at the DISTINCT sample
+    # count it is actually handed, and that floor moves with n (JS/lame as 1/n, quantile drift as
+    # 1/sqrt(n)).  At the interim supply this pipeline produces -- and lower still once CIP's export
+    # pads a request with duplicates -- the p95 null quantile-drift floor sits ABOVE the fixed
+    # --quantile-tolerance, so that component fires on pure sampling noise and the gate can never
+    # report convergence.  Key the thresholds to the measured floor instead.
+    if not opts.internal_test_convergence_js_lame_fixed_thresholds:
+        helper_test_args += " --js-lame-auto-threshold "
+    # The drift component is what makes this test tail-sensitive, and it does not exist until the
+    # lag window is populated: before then the test silently degrades to the one-step statistic that
+    # cannot see slow monotone tail motion, so a clean early comparison can certify convergence at
+    # sub-iteration 2-3 -- exactly the premature stop js_lame was added to prevent.
+    if not opts.internal_test_convergence_js_lame_allow_missing_lags:
+        helper_test_args += " --js-lame-require-lags "
 if not opts.assume_nospin:
     helper_test_args += " --parameter xi "  # require chi_eff distribution to be stable
     if opts.assume_precessing_spin:  # test on spin 1 perpendicular variables. Note this WILL PROBABLY FAIL IF PRIMARY HAS EXACTLY ZERO TRANSVERSE SPIN (or zero overall)
         helper_test_args += " --parameter chi1_perp --parameter phi1 "
+# js_lame's tail sensitivity comes entirely from its bounded-JS and quantile-drift components, and
+# those only exist if the test is handed a bounded transverse parameter.  chi1_perp is added just
+# above ONLY for a precessing analysis, so without one this method silently degenerates to the
+# Gaussian 'lame' test on (mc,eta,xi) -- the premature stop it was added to prevent.  Refuse the
+# combination rather than shipping a convergence gate that cannot see the tail it advertises.
+if opts.internal_test_convergence_method == 'js_lame' and not(' --parameter chi1_perp ' in helper_test_args):
+    raise Exception(" --internal-test-convergence-method js_lame scores the tail of a bounded transverse parameter (chi1_perp), which exists only for a precessing analysis; the current settings ({}{}) supply no transverse parameter, so the test would degenerate to the 'lame' test it replaces.  Pass --assume-precessing-spin (without --assume-nospin), or use --internal-test-convergence-method lame.".format('--assume-nospin ' if opts.assume_nospin else '', 'without --assume-precessing-spin' if not opts.assume_precessing_spin else 'with --assume-precessing-spin'))
 if not opts.test_convergence:
     helper_test_args+= " --always-succeed "
 
@@ -1081,6 +1108,34 @@ if "SNR" in event_dict.keys():
         else:
             helper_cip_args_extra = " --internal-use-lnL "   # always use lnL scaling for loud signals at late times, overflow issue for most integrators
         rescaled_base_ile = True
+
+# EXTRINSIC CHUNK SIZE, SCALED WITH SNR.
+# At high SNR the extrinsic posterior is a vanishing fraction of the prior volume, so a small chunk
+# carries very few informative samples per adaptation step and the sampler adapts on noise.  Measured
+# on a truth-known synthetic SNR ladder (demos/integrator_snr_lottery; AV, d=4, collapse = failure to
+# recover the known lnZ), at EQUAL adaptation steps:
+#     SNR  40:  31% collapse @1e4 ->  19% @4e4 ->   0% @1.6e5
+#     SNR  80:  69% collapse @1e4 ->  38% @4e4 ->  25% @1.6e5
+#     SNR 160:  88% collapse @1e4 ->  62% @4e4 ->  50% @1.6e5
+# and the gain SURVIVES at fixed total budget (pooled Fisher p=0.014 for SNR>=80, 10k vs 160k),
+# despite the larger chunk taking 16x fewer adaptation steps.  The driver default (1e4) is therefore
+# too small for loud events.  40k is the new baseline; scale up with SNR, capped, because GPU memory
+# grows with the chunk and an over-large request matches fewer slots (held jobs / idle capacity).
+# Override with --internal-ile-n-chunk.  NOTE the skymap branch later sets --n-chunk 500 deliberately
+# and must keep winning: optparse takes the LAST occurrence, and that append happens after this one.
+if opts.internal_ile_n_chunk:
+    n_chunk_ile = int(opts.internal_ile_n_chunk)
+else:
+    n_chunk_ile = 40000
+    if "SNR" in event_dict.keys():
+        # 40k up to SNR 40, then linear in SNR, capped at 160k (the largest size measured)
+        n_chunk_ile = int(40000 * np.max([1.0, event_dict["SNR"] / 40.0]))
+        n_chunk_ile = int(np.min([n_chunk_ile, 160000]))
+helper_ile_args += " --n-chunk " + str(n_chunk_ile) + " "
+if opts.internal_ile_interpolate_time:
+    # cubic Q_lm time interpolation; needs the NoLoop path (--vectorized --gpu --force-xpy)
+    helper_ile_args += " --interpolate-time True "
+
 if opts.internal_ile_auto_logarithm_offset and not opts.internal_ile_use_lnL:
     helper_ile_args += " --auto-logarithm-offset "
     rescaled_base_ile = True
@@ -1424,6 +1479,12 @@ if opts.propose_ile_convergence_options:
     if not(opts.internal_use_gracedb_bayestar):
         helper_ile_args += " --declination-cosine-sampler  "  # skymap coordinates all fixed
     else:
+        # DEPRECATED PATH (bayestar skymap input): unused in production for ~a decade.
+        # It is also the only place n-chunk drops to 500, which makes it the least-tested
+        # regime for anything whose scale depends on the chunk size -- notably the opt-in
+        # --portfolio-weight-clip, whose threshold is tau = C*sqrt(n_chunk)*mean(w), i.e.
+        # ~4.5x more aggressive here than at the n_chunk=1e4 used for every clip test.
+        # Do not treat clip validation as covering this branch; prefer retiring the branch.
         helper_ile_args += " --n-chunk 500 " # much smaller chunk size for integration for ILE if we are using an input skymap! Slow, but does the hard dimension
     # Modify someday to use the SNR to adjust some settings
     # Proposed option will use GPUs
