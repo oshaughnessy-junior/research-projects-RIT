@@ -55,7 +55,7 @@ RIFT_CONDA_ENV="/home/richard.oshaughnessy/.conda/envs/junior_rift"
 RIFT_CONDA_BIN="${RIFT_CONDA_ENV}/bin"
 
 # Pinned commit this project is supposed to be running.  Validation warns on mismatch.
-RIFT_PINNED_COMMIT="1b96f4880e5b69f8ced8b68db12649469e4c617c"
+RIFT_PINNED_COMMIT="3e1287bbc75e406b2680a4163feb70584f3e2593"
 
 # Any of these appearing in PATH/PYTHONPATH means a foreign RIFT has leaked in.
 RIFT_CONTAMINANT_PATTERNS=(
