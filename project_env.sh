@@ -72,8 +72,8 @@ RIFT_CONDA_BIN="${RIFT_CONDA_ENV}/bin"
 # To repin after a deliberate code change:
 #   git rev-parse HEAD:MonteCarloMarginalizeCode     # -> RIFT_PINNED_CODE_TREE
 #   git rev-parse HEAD                               # -> RIFT_PINNED_COMMIT (informational)
-RIFT_PINNED_CODE_TREE="0a62d736ab066724bdb8d346116bf0ea6cb510d6"
-RIFT_PINNED_COMMIT="3e1287bbc75e406b2680a4163feb70584f3e2593"
+RIFT_PINNED_CODE_TREE="9be8aebfaa06d1a90311ce925dfc6af3bcfc4747"
+RIFT_PINNED_COMMIT="37efa1bf478bc695a71136e29f65a12e0d557864"
 
 # Any of these appearing in PATH/PYTHONPATH means a foreign RIFT has leaked in.
 RIFT_CONTAMINANT_PATTERNS=(

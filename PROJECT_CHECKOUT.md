@@ -11,8 +11,9 @@ of this tree. Deleting or moving it will kill running analyses.
 | Path | `/home/richard.oshaughnessy/vaishak_p/rift_tdlike` |
 | Repo | `research-projects-RIT` (**full clone**, not a worktree) |
 | Branch | `tdlike_paper2` |
-| Pinned RIFT code tree | `0a62d736ab066724bdb8d346116bf0ea6cb510d6` (`git rev-parse HEAD:MonteCarloMarginalizeCode`) |
-| Pin taken from commit | `3e1287bbc75e406b2680a4163feb70584f3e2593` (`3e1287bb`, provenance only) |
+| Pinned RIFT code tree | `9be8aebfaa06d1a90311ce925dfc6af3bcfc4747` (`git rev-parse HEAD:MonteCarloMarginalizeCode`) |
+| Pin taken from commit | `37efa1bf478bc695a71136e29f65a12e0d557864` (`37efa1bf`, provenance only) |
+| Extrinsic-sampler validation | done at code tree `0a62d736` (see `~/rift_td/analyses/paper2_runs/SAMPLER_FIX_VALIDATION.md`); the current tree differs only by the td-toeplitz/calmarg guard, which touches no sampler code, so those numbers stand |
 | Created | 2026-07-29 |
 | `RIFT_CODE` | `<this dir>/MonteCarloMarginalizeCode/Code` |
 
