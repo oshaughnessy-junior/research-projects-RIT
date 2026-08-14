@@ -723,6 +723,12 @@ class MCSampler(object):
         # broad -- distance/inclination), instead of the default equal split.  Keeps the same
         # total bin budget (prod(nbins)=1/delta_V) so the estimator is unchanged.  Default off.
         self.anisotropic_bins = False
+        # Grid frozen at the likelihood-threshold freeze; see setup() and the
+        # "GRID FREEZE" block in integrate_log.  Declared here as well so a
+        # sampler that is restored (load_state) rather than set up always has
+        # the attributes.
+        self._nbins_at_threshold_freeze = None
+        self._dx_at_threshold_freeze = None
 
 
     def setup(self, **kwargs):
@@ -742,6 +748,12 @@ class MCSampler(object):
         self.V_s = np.prod([ self.rlim[x] - self.llim[x] for x in self.llim])  # global sampling volume
         self.lnL_thresh = -np.inf
         self.enc_prob = 0.999
+        # Grid resolution captured on the first cycle at the FINAL likelihood
+        # threshold, and held from then on -- see the "GRID FREEZE" block in
+        # integrate_log for why.  Reset here so every setup() (i.e. every
+        # integrate_log call) starts with no frozen grid.
+        self._nbins_at_threshold_freeze = None
+        self._dx_at_threshold_freeze = None
 
         self.is_varaha=True
 
@@ -1088,18 +1100,37 @@ class MCSampler(object):
  
             # Redefine bin sizes, reassign points to redefined hypercube set. [Asymptotically this becomes stationary]
             # Note hypercube calculation is on CPU at present, always
-            if self.d_adaptive > 0:
-              # per-axis (anisotropic) or equal (default) split; same total bin budget either way
-              self.nbins = self._allocate_nbins(allx, delta_V, ndim)
-              self.nbins[self.indx_not_adaptive] = 1  # reset to 1 bin for non-adaptive dimensions
+            #
+            # GRID FREEZE: the twin of the block in integrate_log; see there for
+            # the mechanism.  NOTE that with the code as it stands this branch
+            # is UNREACHABLE: this method re-initializes `trunc_p = 1e-10` on
+            # every call and takes a single step, so at_final_threshold --
+            # which needs trunc_p to have accumulated to ~(1 - enc_prob) --
+            # is always False here.  It is written anyway because these two
+            # blocks are copy-paste twins, and letting them diverge is how the
+            # defect in the other one survived unnoticed; if trunc_p is ever
+            # made persistent state so this path can freeze, it will already be
+            # correct rather than silently acquiring the same runaway.
+            _frozen_nbins = getattr(self, '_nbins_at_threshold_freeze', None)
+            if at_final_threshold and (_frozen_nbins is not None):
+              self.nbins = _frozen_nbins
+              self.dx = self._dx_at_threshold_freeze
             else:
-              self.nbins = np.ones(ndim) # why are we even doing this!
+              if self.d_adaptive > 0:
+                # per-axis (anisotropic) or equal (default) split; same total bin budget either way
+                self.nbins = self._allocate_nbins(allx, delta_V, ndim)
+                self.nbins[self.indx_not_adaptive] = 1  # reset to 1 bin for non-adaptive dimensions
+              else:
+                self.nbins = np.ones(ndim) # why are we even doing this!
 
-            # bin sizes integers?  May slow us down
-            if enforce_bounds:
-              self.nbins = np.floor(self.nbins)
+              # bin sizes integers?  May slow us down
+              if enforce_bounds:
+                self.nbins = np.floor(self.nbins)
 
-            self.dx = np.diff(self.my_ranges, axis = 1).flatten() / self.nbins   # update bin widths
+              self.dx = np.diff(self.my_ranges, axis = 1).flatten() / self.nbins   # update bin widths
+              if at_final_threshold:
+                self._nbins_at_threshold_freeze = np.array(self.nbins)
+                self._dx_at_threshold_freeze = np.array(self.dx)
             binidx = ( (( identity_convert(allx) - self.my_ranges.T[0]) / self.dx.T).astype(int)  ) #bin indexs of the samples ... sent back to CPU as needed
 
             self.binunique = np.unique(binidx, axis = 0)
@@ -1806,18 +1837,56 @@ class MCSampler(object):
  
             # Redefine bin sizes, reassign points to redefined hypercube set. [Asymptotically this becomes stationary]
             # Note hypercube calculation is on CPU at present, always
-            if self.d_adaptive > 0:
-              # per-axis (anisotropic) or equal (default) split; same total bin budget either way
-              self.nbins = self._allocate_nbins(allx, delta_V, ndim)
-              self.nbins[self.indx_not_adaptive] = 1  # reset to 1 bin for non-adaptive dimensions
+            #
+            # GRID FREEZE AT THE THRESHOLD FREEZE.  The comment above says this
+            # "asymptotically becomes stationary".  It does not.  Once
+            # at_final_threshold is True the truncation budget is spent: the
+            # threshold never moves again, every drawn sample is kept, so
+            # nrec == ninj and `V *= nrec/ninj` above is a no-op -- V is
+            # CONSTANT.  But delta_V = V/sqrt(nrec) keeps shrinking, purely
+            # because samples pile up, so prod(nbins) = 1/delta_V keeps growing,
+            # the grid keeps refining, more distinct bins get occupied, and
+            #     ninbin = n_chunk // n_occupied + 1
+            # floors to 1 draw per bin as soon as n_occupied > n_chunk.  From
+            # there the per-cycle block IS the occupied-bin count and climbs
+            # without bound -- the only ceiling is nmax.  That is a positive
+            # feedback loop (more samples -> finer grid -> bigger block -> more
+            # samples), not an approach to a stationary state.
+            #
+            # Refining after the freeze is also inconsistent with what the
+            # estimator claims: log_joint_s_prior asserts the samples were drawn
+            # uniformly on fractional volume V, while the region actually drawn
+            # from is the occupied-bin union, whose fractional volume
+            # n_occupied/prod(nbins) drifts away from V cycle after cycle (this
+            # is measured, see the PR).
+            #
+            # So: hold the grid at the resolution it had when the threshold
+            # stopped moving.  Nothing else changes -- V, dx0, the estimator and
+            # the GPU path are untouched, and before the freeze this branch is
+            # never taken.
+            _frozen_nbins = getattr(self, '_nbins_at_threshold_freeze', None)
+            if at_final_threshold and (_frozen_nbins is not None):
+              self.nbins = _frozen_nbins
+              self.dx = self._dx_at_threshold_freeze
             else:
-              self.nbins = np.ones(ndim) # why are we even doing this!
+              if self.d_adaptive > 0:
+                # per-axis (anisotropic) or equal (default) split; same total bin budget either way
+                self.nbins = self._allocate_nbins(allx, delta_V, ndim)
+                self.nbins[self.indx_not_adaptive] = 1  # reset to 1 bin for non-adaptive dimensions
+              else:
+                self.nbins = np.ones(ndim) # why are we even doing this!
 
-            # bin sizes integers?  May slow us down
-            if enforce_bounds:
-              self.nbins = np.floor(self.nbins)
+              # bin sizes integers?  May slow us down
+              if enforce_bounds:
+                self.nbins = np.floor(self.nbins)
 
-            self.dx = np.diff(self.my_ranges, axis = 1).flatten() / self.nbins   # update bin widths
+              self.dx = np.diff(self.my_ranges, axis = 1).flatten() / self.nbins   # update bin widths
+              if at_final_threshold:
+                # FIRST cycle at the final threshold: this resolution is the one
+                # to hold.  Store a copy -- self.nbins/self.dx are rebound, not
+                # mutated, below and by the warm-start machinery.
+                self._nbins_at_threshold_freeze = np.array(self.nbins)
+                self._dx_at_threshold_freeze = np.array(self.dx)
             binidx = ( (( identity_convert(allx) - self.my_ranges.T[0]) / self.dx.T).astype(int)  ) #bin indexs of the samples ... sent back to CPU as needed
 
             self.binunique = np.unique(binidx, axis = 0)
