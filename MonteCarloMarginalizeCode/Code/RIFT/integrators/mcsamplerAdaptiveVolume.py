@@ -1855,12 +1855,15 @@ class MCSampler(object):
             # feedback loop (more samples -> finer grid -> bigger block -> more
             # samples), not an approach to a stationary state.
             #
-            # Refining after the freeze is also inconsistent with what the
-            # estimator claims: log_joint_s_prior asserts the samples were drawn
-            # uniformly on fractional volume V, while the region actually drawn
-            # from is the occupied-bin union, whose fractional volume
-            # n_occupied/prod(nbins) drifts away from V cycle after cycle (this
-            # is measured, see the PR).
+            # A second, weaker symptom of the same thing: the occupied-bin
+            # cover's fractional volume n_occupied/prod(nbins) drifts steadily
+            # AWAY from V after the freeze (measured: a factor 3-6.7 over the
+            # post-freeze cycles).  That ratio is not required to be 1 -- a cover
+            # is always larger than what it covers -- and the drift is not by
+            # itself a bias, since re-applying the threshold each cycle keeps the
+            # retained samples uniform on the live region.  But it is another
+            # quantity this code implicitly treats as settling down and which in
+            # fact does not.
             #
             # So: hold the grid at the resolution it had when the threshold
             # stopped moving.  Nothing else changes -- V, dx0, the estimator and
