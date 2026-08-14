@@ -1113,8 +1113,10 @@ class MCSampler(object):
             # correct rather than silently acquiring the same runaway.
             _frozen_nbins = getattr(self, '_nbins_at_threshold_freeze', None)
             if at_final_threshold and (_frozen_nbins is not None):
-              self.nbins = _frozen_nbins
-              self.dx = self._dx_at_threshold_freeze
+              # copies, so that anything mutating self.nbins/self.dx in place
+              # cannot corrupt the stored resolution for later cycles
+              self.nbins = np.array(_frozen_nbins)
+              self.dx = np.array(self._dx_at_threshold_freeze)
             else:
               if self.d_adaptive > 0:
                 # per-axis (anisotropic) or equal (default) split; same total bin budget either way
@@ -1866,8 +1868,10 @@ class MCSampler(object):
             # never taken.
             _frozen_nbins = getattr(self, '_nbins_at_threshold_freeze', None)
             if at_final_threshold and (_frozen_nbins is not None):
-              self.nbins = _frozen_nbins
-              self.dx = self._dx_at_threshold_freeze
+              # copies, so that anything mutating self.nbins/self.dx in place
+              # cannot corrupt the stored resolution for later cycles
+              self.nbins = np.array(_frozen_nbins)
+              self.dx = np.array(self._dx_at_threshold_freeze)
             else:
               if self.d_adaptive > 0:
                 # per-axis (anisotropic) or equal (default) split; same total bin budget either way
