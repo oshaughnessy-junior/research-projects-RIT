@@ -49,7 +49,8 @@ import numpy as np
 
 
 def select_glitches(catalog_csv, ml_label, n_target, snr_lo, snr_hi, peakf_lo, peakf_hi,
-                    duration_max, min_conf, min_per_window, seed=1234):
+                    duration_max, min_conf, min_per_window, seed=1234, near_gps=None,
+                    exclude_gps=None, exclude_half=0.0):
     """Select high-confidence, well-localized instances of ONE class, grouped by GWOSC file.
 
     Grouping by the 4096 s GWOSC file that contains each trigger minimizes network transfer:
@@ -67,9 +68,13 @@ def select_glitches(catalog_csv, ml_label, n_target, snr_lo, snr_hi, peakf_lo, p
                          % (ml_label, catalog_csv))
     sel["gps"] = sel.peak_time + 1e-9 * sel.peak_time_ns
     sel = sel.drop_duplicates(subset="gps")
+    if exclude_gps is not None and exclude_half > 0:   # never train on the event's own segment
+        sel = sel[np.abs(sel.gps - float(exclude_gps)) > float(exclude_half)]
     sel["window"] = (sel.gps // 4096).astype(int)
     counts = sel.window.value_counts()
     windows = counts[counts >= min_per_window].index.tolist()
+    if near_gps is not None:                        # detector-state relevance: nearest in time
+        windows.sort(key=lambda w: abs(w * 4096 + 2048 - float(near_gps)))
     rows = []
     for w in windows:
         rows.append(sel[sel.window == w])
@@ -82,13 +87,50 @@ def select_glitches(catalog_csv, ml_label, n_target, snr_lo, snr_hi, peakf_lo, p
     return out
 
 
-def condition_one(gps, ifo, fs_out, window_half, search_half, f_lo, f_hi, fetch_span):
-    """Fetch + condition one instance; returns the unit-norm whitened snippet or None."""
-    import scipy.signal as ss
+def _raw_gwosc(gps, ifo, fetch_span):
     from gwpy.timeseries import TimeSeries
     t0 = float(gps)
-    ts = TimeSeries.fetch_open_data(ifo, t0 - fetch_span, t0 + fetch_span, sample_rate=4096,
-                                    cache=True, verbose=False)
+    return TimeSeries.fetch_open_data(ifo, t0 - fetch_span, t0 + fetch_span, sample_rate=4096,
+                                      cache=True, verbose=False)
+
+
+_DATAFIND_CACHE = {}
+
+
+def _raw_datafind(gps, ifo, fetch_span, frametype, channel, server):
+    """Read raw strain from the LOCAL (proprietary) frame archive via gwdatafind.
+
+    Needed because Gravity Spy classifies Omicron triggers over ALL locked time, while GWOSC
+    publishes only the observing-mode segments: the DENSEST scattered-light windows in
+    L1_O3b.csv fall outside GWOSC coverage (this is the July-2026 fetch blocker -- every
+    candidate returned "Cannot find a GWOSC dataset for L1 covering ...").  On an LDG cluster
+    the same times are directly readable from the C01 archive.
+    """
+    import gwdatafind
+    from gwpy.timeseries import TimeSeries
+    t0 = float(gps)
+    s, e = int(np.floor(t0 - fetch_span)) - 1, int(np.ceil(t0 + fetch_span)) + 1
+    key = (ifo[0], frametype, s // 4096)
+    urls = _DATAFIND_CACHE.get(key)
+    if urls is None:
+        urls = gwdatafind.find_urls(ifo[0], frametype, s, e, host=server)
+        _DATAFIND_CACHE[key] = urls
+    if not urls:
+        raise RuntimeError("no frames for %s %s [%d,%d)" % (ifo, frametype, s, e))
+    paths = [u.replace("file://localhost", "") for u in urls]
+    return TimeSeries.read(paths, "%s:%s" % (ifo, channel), start=t0 - fetch_span,
+                           end=t0 + fetch_span).resample(4096)
+
+
+def condition_one(gps, ifo, fs_out, window_half, search_half, f_lo, f_hi, fetch_span,
+                  source="gwosc", frametype=None, channel=None, datafind_server=None):
+    """Fetch + condition one instance; returns the unit-norm whitened snippet or None."""
+    import scipy.signal as ss
+    t0 = float(gps)
+    if source == "datafind":
+        ts = _raw_datafind(gps, ifo, fetch_span, frametype, channel, datafind_server)
+    else:
+        ts = _raw_gwosc(gps, ifo, fetch_span)
     if np.any(np.isnan(ts.value)):
         return None
     ts = ts.resample(fs_out)
@@ -137,19 +179,34 @@ def main():
     ap.add_argument("--min-conf", type=float, default=0.99)
     ap.add_argument("--n-target", type=int, default=45)
     ap.add_argument("--min-per-window", type=int, default=3)
+    ap.add_argument("--source", choices=["gwosc", "datafind"], default="gwosc",
+                    help="gwosc = open strain (observing segments only); datafind = the local "
+                         "LDG frame archive (all locked time -- required for the dense O3b "
+                         "scattered-light windows, which GWOSC does not publish)")
+    ap.add_argument("--frametype", default="L1_HOFT_C01")
+    ap.add_argument("--channel", default="DCS-CALIB_STRAIN_CLEAN_C01")
+    ap.add_argument("--datafind-server", default="datafind.ldas.cit:80")
+    ap.add_argument("--near-gps", type=float, default=None,
+                    help="prefer catalog windows nearest this GPS (detector-state relevance)")
+    ap.add_argument("--exclude-gps", type=float, default=None,
+                    help="drop triggers within --exclude-half of this GPS (the event itself)")
+    ap.add_argument("--exclude-half", type=float, default=0.0)
     args = ap.parse_args()
     os.makedirs(args.outdir, exist_ok=True)
 
     sel = select_glitches(args.catalog, args.ml_label, args.n_target, args.snr_lo, args.snr_hi,
                           args.peakf_lo, args.peakf_hi, args.duration_max, args.min_conf,
-                          args.min_per_window)
+                          args.min_per_window, near_gps=args.near_gps,
+                          exclude_gps=args.exclude_gps, exclude_half=args.exclude_half)
     print("[fetch] %s %s: selected %d candidates in %d GWOSC windows"
           % (args.ifo, args.ml_label, len(sel), sel.window.nunique()))
     snippets, gps_l, snr_l, pf_l, conf_l = [], [], [], [], []
     for _, row in sel.iterrows():
         try:
             snip = condition_one(row.gps, args.ifo, args.fs, args.window_half,
-                                 args.search_half, args.f_lo, args.f_hi, args.fetch_span)
+                                 args.search_half, args.f_lo, args.f_hi, args.fetch_span,
+                                 source=args.source, frametype=args.frametype,
+                                 channel=args.channel, datafind_server=args.datafind_server)
         except Exception as exc:                   # data gap / fetch failure: skip
             print("[fetch] gps %.3f SKIP (%s)" % (row.gps, exc))
             continue
