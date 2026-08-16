@@ -417,7 +417,16 @@ path is the fallback for everything (incl. distmarg, on CPU and GPU).</p>
 <dt>cal_distmarg<span class="classifier">dict or None</span></dt><dd><p>Distance-marginalization table+params for the fused distmarg kernel; see
 RIFT.likelihood.Q_fused_calmarg.Q_fused_calmarg_distmarg_cupy.</p>
 </dd>
-<dt>time_interp<span class="classifier">{‘nearest’, ‘cubic’}</span></dt><dd><p>Detector-time sampling convention for the data term.  ‘nearest’
+<dt>time_interp<span class="classifier">{‘nearest’, ‘cubic’, ‘sinc’}</span></dt><dd><p>Sub-sample stencil for the Q(t) lookup.  Which is best depends on the oversampling
+factor fNyq/fmax: ‘cubic’ (4-point Lagrange) has O(h^4) error so it wins when heavily
+oversampled, while ‘sinc’ (Lanczos) is window-limited so its error is flat in
+oversampling and it wins near Nyquist – ~50x better at fNyq/fmax ~ 1.2, which is where
+Q is band-limited by the TEMPLATE’s cutoff as well as by fmax, so the right choice
+depends on the masses and on fmin, not on fmax alone: measured with an IMR model, the
+crossover is between 20 and 35 Msun total – ‘sinc’ below, ‘cubic’ above.
+See _sinc_Q_window_numpy and RIFT.likelihood.time_interp_choice for the measured tables.
+All three stencils have both CPU and GPU implementations.
+Detector-time sampling convention for the data term.  ‘nearest’
 preserves the historical NoLoop integer-bin gather.  ‘cubic’ evaluates
 the precomputed Q_lm time series at the fractional detector arrival time
 using a four-sample cubic Lagrange stencil, with zero extension outside
@@ -725,6 +734,16 @@ Needs to be restructured so it works on a ‘hook’ basis, so we are not consta
 <dt class="sig sig-object py" id="RIFT.likelihood.factored_likelihood.profile">
 <span class="sig-prename descclassname"><span class="pre">RIFT.likelihood.factored_likelihood.</span></span><span class="sig-name descname"><span class="pre">profile</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">fn</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.likelihood.factored_likelihood.profile" title="Link to this definition"></a></dt>
 <dd></dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.likelihood.factored_likelihood.validate_time_interp">
+<span class="sig-prename descclassname"><span class="pre">RIFT.likelihood.factored_likelihood.</span></span><span class="sig-name descname"><span class="pre">validate_time_interp</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">time_interp</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">on_gpu</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.likelihood.factored_likelihood.validate_time_interp" title="Link to this definition"></a></dt>
+<dd><p>Reject unknown stencils loudly.</p>
+<p>All three stencils now have both a CPU and a GPU implementation (‘sinc’ via the Q_inner_sinc
+kernel added alongside Q_inner and Q_inner_cubic), so on_gpu no longer restricts the choice.
+It is kept in the signature because the callers pass it and because it documents, at each
+call site, that the stencil has to be legal on the backend actually in use.</p>
+</dd></dl>
 
 </section>
 <section id="optimized-gpu-tools">
