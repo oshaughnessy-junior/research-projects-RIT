@@ -129,6 +129,29 @@ class DriftSentinelTests(unittest.TestCase):
                 "--run-id", "test-run", "--as-of", "2026-08-17", "--fail-on-incompatible"
             ]), 1)
 
+    def test_unsupported_property_type_is_indeterminate_not_compatible(self):
+        producer = self.root / "examples" / "nodes" / "protocol" / "contracts" / "report.schema.json"
+        consumer = self.root / "examples" / "nodes" / "runner" / "contracts" / "report-required.schema.json"
+        for path in (producer, consumer):
+            schema = json.loads(path.read_text(encoding="utf-8"))
+            schema["properties"]["status"]["type"] = "not-a-json-schema-type"
+            path.write_text(json.dumps(schema), encoding="utf-8")
+        resolved = load_resolved_inputs(self.resolved_path, self.registry)
+        report = evaluate(self.registry, resolved, "test-run", "2026-08-17")
+        finding = next(item for item in report["checks"] if item["edge"] == "report-consumption")
+        self.assertEqual(finding["outcome"], "indeterminate")
+        self.assertIn("not supported", finding["reason"])
+
+    def test_enum_order_is_not_a_contract_mismatch(self):
+        producer = self.root / "examples" / "nodes" / "protocol" / "contracts" / "report.schema.json"
+        schema = json.loads(producer.read_text(encoding="utf-8"))
+        schema["properties"]["status"]["enum"].reverse()
+        producer.write_text(json.dumps(schema), encoding="utf-8")
+        resolved = load_resolved_inputs(self.resolved_path, self.registry)
+        report = evaluate(self.registry, resolved, "test-run", "2026-08-17")
+        finding = next(item for item in report["checks"] if item["edge"] == "report-consumption")
+        self.assertEqual(finding["outcome"], "compatible")
+
     def test_machine_and_human_reports_are_deterministic_and_do_not_leak_roots(self):
         resolved = load_resolved_inputs(self.resolved_path, self.registry)
         first = evaluate(self.registry, resolved, "test-run", "2026-08-17")
@@ -185,6 +208,13 @@ class DriftSentinelTests(unittest.TestCase):
         self.assertEqual(report_schema["properties"]["report_version"]["const"], "rift-drift-report/v1")
 
     def test_active_exception_is_visible_and_suppresses_opt_in_gate_only_until_expiry(self):
+        producer = self.root / "examples" / "nodes" / "protocol" / "contracts" / "report.schema.json"
+        schema = json.loads(producer.read_text(encoding="utf-8"))
+        schema["properties"]["status"]["enum"] = ["compatible"]
+        producer.write_text(json.dumps(schema), encoding="utf-8")
+        resolved = load_resolved_inputs(self.resolved_path, self.registry)
+        initial = evaluate(self.registry, resolved, "test-run", "2026-08-17")
+        initial_finding = next(item for item in initial["checks"] if item["edge"] == "report-consumption")
         raw = json.loads(self.registry_path.read_text(encoding="utf-8"))
         edge = raw["groups"][1]["edges"][0]
         edge["exceptions"] = [{
@@ -192,20 +222,25 @@ class DriftSentinelTests(unittest.TestCase):
             "owner": "drift-sentinel-maintainers",
             "rationale": "exercise explicit exception handling",
             "expires": "2026-08-18",
-            "approvers": ["drift-sentinel-maintainers", "coding-sysadmin"]
+            "approvers": ["drift-sentinel-maintainers", "coding-sysadmin"],
+            "mismatch_fingerprint": initial_finding["mismatch_fingerprint"]
         }]
         self.registry_path.write_text(json.dumps(raw), encoding="utf-8")
         self.registry = load_registry(self.registry_path)
         self._write_resolved()
-        producer = self.root / "examples" / "nodes" / "protocol" / "contracts" / "report.schema.json"
-        schema = json.loads(producer.read_text(encoding="utf-8"))
-        schema["properties"]["status"]["enum"] = ["compatible"]
-        producer.write_text(json.dumps(schema), encoding="utf-8")
         resolved = load_resolved_inputs(self.resolved_path, self.registry)
         active = evaluate(self.registry, resolved, "test-run", "2026-08-17")
         finding = next(item for item in active["checks"] if item["edge"] == "report-consumption")
         self.assertEqual(finding["observation_status"], "intentionally_divergent")
         self.assertEqual(active["summary"]["blocking_incompatible"], 0)
+        schema["required"].remove("status")
+        producer.write_text(json.dumps(schema), encoding="utf-8")
+        expanded = evaluate(self.registry, resolved, "test-run", "2026-08-17")
+        finding = next(item for item in expanded["checks"] if item["edge"] == "report-consumption")
+        self.assertEqual(finding["observation_status"], "observed")
+        self.assertEqual(expanded["summary"]["blocking_incompatible"], 1)
+        schema["required"].append("status")
+        producer.write_text(json.dumps(schema), encoding="utf-8")
         expired = evaluate(self.registry, resolved, "test-run", "2026-08-19")
         finding = next(item for item in expired["checks"] if item["edge"] == "report-consumption")
         self.assertEqual(finding["observation_status"], "observed")
@@ -218,11 +253,28 @@ class DriftSentinelTests(unittest.TestCase):
             "owner": "coding-rift",
             "rationale": "must not be sufficient",
             "expires": "2026-08-18",
-            "approvers": ["coding-rift"]
+            "approvers": ["coding-rift"],
+            "mismatch_fingerprint": "sha256:" + "0" * 64
         }]
         path = self.root / "one-sided.json"
         path.write_text(json.dumps(raw), encoding="utf-8")
         with self.assertRaisesRegex(SentinelInputError, "missing affected node owners"):
+            load_registry(path)
+
+    def test_exception_requires_sha256_mismatch_scope(self):
+        raw = json.loads(self.registry_path.read_text(encoding="utf-8"))
+        edge = raw["groups"][1]["edges"][0]
+        edge["exceptions"] = [{
+            "id": "bad-scope",
+            "owner": "drift-sentinel-maintainers",
+            "rationale": "a Git commit is not a mismatch-set identity",
+            "expires": "2026-08-18",
+            "approvers": ["drift-sentinel-maintainers", "coding-sysadmin"],
+            "mismatch_fingerprint": "0" * 40,
+        }]
+        path = self.root / "bad-scope.json"
+        path.write_text(json.dumps(raw), encoding="utf-8")
+        with self.assertRaisesRegex(SentinelInputError, "expected sha256 content identity"):
             load_registry(path)
 
     def test_untrusted_mismatch_values_are_fingerprinted_not_copied(self):
