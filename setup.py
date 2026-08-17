@@ -52,6 +52,8 @@ setuptools.setup(
             'examples/*.json',
             'examples/*.md',
             'examples/nodes/*/contracts/*.json',
+            'examples/archive-adapter/snapshot-draft-v0/*.json',
+            'examples/archive-adapter/snapshot-draft-v0/*.md',
             'examples/nodes/*/golden/*.json',
         ],
     },

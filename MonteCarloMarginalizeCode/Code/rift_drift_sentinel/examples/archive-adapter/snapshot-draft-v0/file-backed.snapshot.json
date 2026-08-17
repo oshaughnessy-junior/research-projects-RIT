@@ -1,0 +1,38 @@
+{
+  "producer": {
+    "backend": {"kind": "plain-files", "schema": "synthetic-files/v1"},
+    "id": "synthetic-file-snapshot-producer",
+    "implementation_version": "fixture/v0"
+  },
+  "archive": {
+    "id": "synthetic-campaign",
+    "provenance": {"fixture": "archive-adapter/snapshot-draft-v0"}
+  },
+  "vocabulary_version": "archive.snapshot-draft/v0",
+  "simulations": [
+    {
+      "id": "sim-0001",
+      "levels": [
+        {
+          "artifacts": [
+            {
+              "id": "summary",
+              "handle": {"kind": "opaque", "value": "synthetic-summary-handle"},
+              "media_type": "application/json",
+              "sha256": null,
+              "size_bytes": null
+            }
+          ],
+          "fidelity": {"level": 1},
+          "id": "level-1",
+          "state": {"namespace": "synthetic.files", "normalized": "complete", "value": "done"},
+          "summary": {"observable": 1.25, "uncertainty": 0.05}
+        }
+      ],
+      "native_id": "row-1",
+      "parameters": {"model_parameter": 0.5},
+      "provenance": {"fixture_record": "semantic-record-1"},
+      "state": {"namespace": "synthetic.files", "normalized": "complete", "value": "done"}
+    }
+  ]
+}
