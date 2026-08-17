@@ -1,24 +1,19 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://rift.example/schemas/archive-adapter-envelope-v1.json",
-  "title": "Backend-neutral archive adapter read envelope v1",
+  "$id": "urn:rift:archive-snapshot-draft:v0",
+  "title": "Experimental backend-neutral archive snapshot vocabulary v0",
   "type": "object",
   "additionalProperties": false,
-  "required": ["contract_version", "adapter", "archive", "simulations"],
+  "required": ["vocabulary_version", "producer", "archive", "simulations"],
   "properties": {
-    "contract_version": {"const": "archive.read/v1"},
-    "adapter": {
+    "vocabulary_version": {"const": "archive.snapshot-draft/v0"},
+    "producer": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "capabilities", "backend"],
+      "required": ["id", "implementation_version", "backend"],
       "properties": {
         "id": {"type": "string", "minLength": 1},
-        "capabilities": {
-          "type": "array",
-          "uniqueItems": true,
-          "contains": {"const": "archive.read/v1"},
-          "items": {"type": "string", "pattern": "^archive\\.[a-z-]+/v[0-9]+$"}
-        },
+        "implementation_version": {"type": "string", "minLength": 1},
         "backend": {"type": "object"}
       }
     },
@@ -52,19 +47,19 @@
     "artifact": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "media_type", "locator"],
+      "required": ["id", "media_type", "handle"],
       "properties": {
         "id": {"type": "string", "minLength": 1},
         "media_type": {"type": "string", "minLength": 1},
         "size_bytes": {"type": ["integer", "null"], "minimum": 0},
         "sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
-        "locator": {
+        "handle": {
           "type": "object",
           "additionalProperties": false,
           "required": ["kind", "value"],
           "properties": {
-            "kind": {"enum": ["inline", "relative_path", "uri", "opaque"]},
-            "value": {}
+            "kind": {"const": "opaque"},
+            "value": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9._:-]+$"}
           }
         }
       }
