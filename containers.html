@@ -134,7 +134,7 @@ selection (see <a class="reference internal" href="#what-the-pipeline-generates"
 <div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">version</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
 
 <span class="c1"># Machine ClassAd attribute the selection expression tests.</span>
-<span class="c1"># Default GPUs_Capability (see &quot;GPU attribute names&quot; below).</span>
+<span class="c1"># Default GPUs_Capability (see "GPU attribute names" below).</span>
 <span class="nt">capability_attr</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">GPUs_Capability</span>
 
 <span class="c1"># Catch-all image (innermost else of the selection); MUST be CPU-safe,</span>
@@ -149,7 +149,7 @@ selection (see <a class="reference internal" href="#what-the-pipeline-generates"
 <span class="w">    </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/cvmfs/singularity.opensciencegrid.org/oshaughn/rift_container_default.sif</span>
 <span class="w">    </span><span class="nt">cuda_capability_min</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3.5</span><span class="w">     </span><span class="c1"># inclusive lower bound for this image</span>
 <span class="w">    </span><span class="nt">cuda_capability_max</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">8.0</span><span class="w">     </span><span class="c1"># informational; null = open-ended</span>
-<span class="w">    </span><span class="nt">note</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;cupy-cuda11x,</span><span class="nv"> </span><span class="s">ubuntu22.04/cuda11.8&quot;</span>
+<span class="w">    </span><span class="nt">note</span><span class="p">:</span><span class="w"> </span><span class="s">"cupy-cuda11x,</span><span class="nv"> </span><span class="s">ubuntu22.04/cuda11.8"</span>
 
 <span class="w">  </span><span class="c1"># Newer image for higher-capability GPUs. Delivered via osdf: only the</span>
 <span class="w">  </span><span class="c1"># matched machine fetches it (selective transfer).</span>
@@ -157,7 +157,7 @@ selection (see <a class="reference internal" href="#what-the-pipeline-generates"
 <span class="w">    </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">osdf:///igwn/staging/oshaughn/rift_containers/rift_container_modern.sif</span>
 <span class="w">    </span><span class="nt">cuda_capability_min</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">8.0</span>
 <span class="w">    </span><span class="nt">cuda_capability_max</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">null</span>
-<span class="w">    </span><span class="nt">note</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;cupy-cuda12x,</span><span class="nv"> </span><span class="s">ubuntu22.04/cuda12.4&quot;</span>
+<span class="w">    </span><span class="nt">note</span><span class="p">:</span><span class="w"> </span><span class="s">"cupy-cuda12x,</span><span class="nv"> </span><span class="s">ubuntu22.04/cuda12.4"</span>
 </pre></div>
 </div>
 <table class="docutils align-default">
@@ -224,7 +224,7 @@ if you use hyperpipe.</p>
 selects the highest-capability image the matched machine can run, with the
 <code class="docutils literal notranslate"><span class="pre">fallback</span></code> image as the innermost <code class="docutils literal notranslate"><span class="pre">else</span></code> (used when the machine’s
 capability is below every threshold):</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">ifThenElse</span><span class="p">(</span><span class="n">TARGET</span><span class="o">.</span><span class="n">GPUs_Capability</span> <span class="o">&gt;=</span> <span class="mf">8.0</span><span class="p">,</span> <span class="s2">&quot;./rift_container_modern.sif&quot;</span><span class="p">,</span> <span class="s2">&quot;/cvmfs/.../rift_container_default.sif&quot;</span><span class="p">)</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">ifThenElse</span><span class="p">(</span><span class="n">TARGET</span><span class="o">.</span><span class="n">GPUs_Capability</span> <span class="o">&gt;=</span> <span class="mf">8.0</span><span class="p">,</span> <span class="s2">"./rift_container_modern.sif"</span><span class="p">,</span> <span class="s2">"/cvmfs/.../rift_container_default.sif"</span><span class="p">)</span>
 </pre></div>
 </div>
 </li>
@@ -232,7 +232,7 @@ capability is below every threshold):</p>
 machine that selected them, via a single HTCondor <code class="docutils literal notranslate"><span class="pre">$$()</span></code> match-time token
 appended to <code class="docutils literal notranslate"><span class="pre">transfer_input_files</span></code>.  CVMFS/local images are referenced in
 place and never transferred, so the <strong>whole family is never pulled</strong>:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$$([ (TARGET.GPUs_Capability &gt;= 8.0 ? &quot;osdf:///.../rift_container_modern.sif&quot; : &quot;&quot;) ])
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$$([ (TARGET.GPUs_Capability &gt;= 8.0 ? "osdf:///.../rift_container_modern.sif" : "") ])
 </pre></div>
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">request_disk</span></code> is <strong>not</strong> auto-sized — set it to your largest single
@@ -326,7 +326,7 @@ full paths is therefore cut in half, and the fragment that survives is not a
 valid image name.  Submitting that form to the IGWN pool holds the job at the
 execute point:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">PREPARE_JOB</span> <span class="p">(</span><span class="n">prepare</span><span class="o">-</span><span class="n">hook</span><span class="p">)</span> <span class="n">failed</span> <span class="p">(</span><span class="n">reported</span> <span class="n">status</span> <span class="mi">001</span><span class="p">):</span>
-<span class="n">Unable</span> <span class="n">to</span> <span class="n">download</span> <span class="ow">or</span> <span class="n">build</span> <span class="n">singularity</span> <span class="n">image</span> <span class="n">cutest_busybox_</span><span class="o">...</span><span class="n">sif</span><span class="s2">&quot;) ])</span>
+<span class="n">Unable</span> <span class="n">to</span> <span class="n">download</span> <span class="ow">or</span> <span class="n">build</span> <span class="n">singularity</span> <span class="n">image</span> <span class="n">cutest_busybox_</span><span class="o">...</span><span class="n">sif</span><span class="s2">") ])</span>
 </pre></div>
 </div>
 <p>So the selector emits <strong>basenames only</strong> (no <code class="docutils literal notranslate"><span class="pre">/</span></code>), the whole <code class="docutils literal notranslate"><span class="pre">$$</span></code> token
@@ -352,7 +352,7 @@ use <code class="docutils literal notranslate"><span class="pre">RIFT_CONTAINER_
 attribute is <code class="docutils literal notranslate"><span class="pre">GPUs_Capability</span></code>.  Override it per run with the environment
 variable <code class="docutils literal notranslate"><span class="pre">RIFT_GPU_CAPABILITY_ATTR</span></code>, or per manifest with <code class="docutils literal notranslate"><span class="pre">capability_attr</span></code>.
 Verify what your pool advertises:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">condor_status</span> <span class="o">-</span><span class="n">constraint</span> <span class="s1">&#39;TotalGPUs &gt; 0&#39;</span> <span class="o">-</span><span class="n">autoformat</span> <span class="n">GPUs_DeviceName</span> <span class="n">GPUs_Capability</span> <span class="n">GPUs_GlobalMemoryMb</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">condor_status</span> <span class="o">-</span><span class="n">constraint</span> <span class="s1">'TotalGPUs &gt; 0'</span> <span class="o">-</span><span class="n">autoformat</span> <span class="n">GPUs_DeviceName</span> <span class="n">GPUs_Capability</span> <span class="n">GPUs_GlobalMemoryMb</span>
 </pre></div>
 </div>
 <p>Not every GPU host advertises this; on such hosts the expression collapses to

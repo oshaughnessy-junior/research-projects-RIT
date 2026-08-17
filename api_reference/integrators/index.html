@@ -2016,10 +2016,10 @@ it prints additionally the change and time needed for each step.</p>
 </dd>
 <dt><a href="#id44"><span class="problematic" id="id45">covars_</span></a><span class="classifier">array</span></dt><dd><p>Covariance parameters for each mixture component.  The shape
 depends on <cite>covariance_type</cite>:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="p">(</span><span class="n">n_components</span><span class="p">,</span> <span class="n">n_features</span><span class="p">)</span>             <span class="k">if</span> <span class="s1">&#39;spherical&#39;</span><span class="p">,</span>
-<span class="p">(</span><span class="n">n_features</span><span class="p">,</span> <span class="n">n_features</span><span class="p">)</span>               <span class="k">if</span> <span class="s1">&#39;tied&#39;</span><span class="p">,</span>
-<span class="p">(</span><span class="n">n_components</span><span class="p">,</span> <span class="n">n_features</span><span class="p">)</span>             <span class="k">if</span> <span class="s1">&#39;diag&#39;</span><span class="p">,</span>
-<span class="p">(</span><span class="n">n_components</span><span class="p">,</span> <span class="n">n_features</span><span class="p">,</span> <span class="n">n_features</span><span class="p">)</span> <span class="k">if</span> <span class="s1">&#39;full&#39;</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="p">(</span><span class="n">n_components</span><span class="p">,</span> <span class="n">n_features</span><span class="p">)</span>             <span class="k">if</span> <span class="s1">'spherical'</span><span class="p">,</span>
+<span class="p">(</span><span class="n">n_features</span><span class="p">,</span> <span class="n">n_features</span><span class="p">)</span>               <span class="k">if</span> <span class="s1">'tied'</span><span class="p">,</span>
+<span class="p">(</span><span class="n">n_components</span><span class="p">,</span> <span class="n">n_features</span><span class="p">)</span>             <span class="k">if</span> <span class="s1">'diag'</span><span class="p">,</span>
+<span class="p">(</span><span class="n">n_components</span><span class="p">,</span> <span class="n">n_features</span><span class="p">,</span> <span class="n">n_features</span><span class="p">)</span> <span class="k">if</span> <span class="s1">'full'</span>
 </pre></div>
 </div>
 </dd>
@@ -2048,8 +2048,8 @@ data to get a good estimate of the covariance matrix.</p>
 <span class="gp">&gt;&gt;&gt; </span><span class="n">obs</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">concatenate</span><span class="p">((</span><span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">randn</span><span class="p">(</span><span class="mi">100</span><span class="p">,</span> <span class="mi">1</span><span class="p">),</span>
 <span class="gp">... </span>                      <span class="mi">10</span> <span class="o">+</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">randn</span><span class="p">(</span><span class="mi">300</span><span class="p">,</span> <span class="mi">1</span><span class="p">)))</span>
 <span class="gp">&gt;&gt;&gt; </span><span class="n">g</span><span class="o">.</span><span class="n">fit</span><span class="p">(</span><span class="n">obs</span><span class="p">)</span>
-<span class="go">GMM(covariance_type=&#39;diag&#39;, init_params=&#39;wmc&#39;, min_covar=0.001,</span>
-<span class="go">        n_components=2, n_init=1, n_iter=100, params=&#39;wmc&#39;,</span>
+<span class="go">GMM(covariance_type='diag', init_params='wmc', min_covar=0.001,</span>
+<span class="go">        n_components=2, n_init=1, n_iter=100, params='wmc',</span>
 <span class="go">        random_state=None, thresh=None, tol=0.001, verbose=0)</span>
 <span class="gp">&gt;&gt;&gt; </span><span class="n">np</span><span class="o">.</span><span class="n">round</span><span class="p">(</span><span class="n">g</span><span class="o">.</span><span class="n">weights_</span><span class="p">,</span> <span class="mi">2</span><span class="p">)</span>
 <span class="go">array([ 0.75,  0.25])</span>
@@ -2066,8 +2066,8 @@ data to get a good estimate of the covariance matrix.</p>
 <span class="gp">&gt;&gt;&gt; </span><span class="c1"># Refit the model on new data (initial parameters remain the</span>
 <span class="gp">&gt;&gt;&gt; </span><span class="c1"># same), this time with an even split between the two modes.</span>
 <span class="gp">&gt;&gt;&gt; </span><span class="n">g</span><span class="o">.</span><span class="n">fit</span><span class="p">(</span><span class="mi">20</span> <span class="o">*</span> <span class="p">[[</span><span class="mi">0</span><span class="p">]]</span> <span class="o">+</span>  <span class="mi">20</span> <span class="o">*</span> <span class="p">[[</span><span class="mi">10</span><span class="p">]])</span>
-<span class="go">GMM(covariance_type=&#39;diag&#39;, init_params=&#39;wmc&#39;, min_covar=0.001,</span>
-<span class="go">        n_components=2, n_init=1, n_iter=100, params=&#39;wmc&#39;,</span>
+<span class="go">GMM(covariance_type='diag', init_params='wmc', min_covar=0.001,</span>
+<span class="go">        n_components=2, n_init=1, n_iter=100, params='wmc',</span>
 <span class="go">        random_state=None, thresh=None, tol=0.001, verbose=0)</span>
 <span class="gp">&gt;&gt;&gt; </span><span class="n">np</span><span class="o">.</span><span class="n">round</span><span class="p">(</span><span class="n">g</span><span class="o">.</span><span class="n">weights_</span><span class="p">,</span> <span class="mi">2</span><span class="p">)</span>
 <span class="go">array([ 0.5,  0.5])</span>
