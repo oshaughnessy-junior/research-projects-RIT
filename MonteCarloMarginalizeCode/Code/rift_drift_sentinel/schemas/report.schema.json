@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rift:drift-sentinel:report:v1",
+  "title": "RIFT drift sentinel report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["report_version", "core_version", "run_id", "as_of", "registry", "status", "summary", "checks"],
+  "properties": {
+    "report_version": {"const": "rift-drift-report/v1"},
+    "core_version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "run_id": {"type": "string", "minLength": 1},
+    "as_of": {"type": "string", "format": "date"},
+    "registry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "fingerprint"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "fingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+      }
+    },
+    "status": {"enum": ["compatible", "incompatible", "indeterminate", "intentionally_divergent"]},
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["compatible", "incompatible", "indeterminate", "intentionally_divergent", "blocking_incompatible"],
+      "properties": {
+        "compatible": {"type": "integer", "minimum": 0},
+        "incompatible": {"type": "integer", "minimum": 0},
+        "indeterminate": {"type": "integer", "minimum": 0},
+        "intentionally_divergent": {"type": "integer", "minimum": 0},
+        "blocking_incompatible": {"type": "integer", "minimum": 0}
+      }
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["group", "edge", "producer", "consumer", "owner", "severity", "contract", "check", "revisions", "evidence", "reproduce", "outcome", "observation_status"],
+        "properties": {
+          "group": {"type": "string"},
+          "edge": {"type": "string"},
+          "producer": {"type": "string"},
+          "consumer": {"type": "string"},
+          "owner": {"type": "string"},
+          "severity": {"enum": ["info", "warning", "error"]},
+          "contract": {"type": "object"},
+          "check": {"const": "json_schema_subset_v1"},
+          "revisions": {"type": "object"},
+          "evidence": {"type": "object"},
+          "reproduce": {"type": "string"},
+          "outcome": {"enum": ["compatible", "incompatible", "indeterminate"]},
+          "observation_status": {"enum": ["observed", "indeterminate", "intentionally_divergent"]},
+          "mismatches": {"type": "array"},
+          "reason": {"type": "string"},
+          "exception": {"type": "object"}
+        }
+      }
+    }
+  }
+}

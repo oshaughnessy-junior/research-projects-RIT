@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rift:drift-sentinel:resolved-inputs:v1",
+  "title": "RIFT drift sentinel resolved inputs v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["resolved_inputs_version", "registry_fingerprint", "groups"],
+  "properties": {
+    "resolved_inputs_version": {"const": "rift-drift-resolved-inputs/v1"},
+    "registry_fingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "groups": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["root", "revision", "source_id"],
+          "properties": {
+            "root": {"type": "string", "minLength": 1},
+            "revision": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|sha256:[0-9a-f]{64})$"},
+            "source_id": {"type": "string", "minLength": 1}
+          }
+        }
+      }
+    }
+  }
+}

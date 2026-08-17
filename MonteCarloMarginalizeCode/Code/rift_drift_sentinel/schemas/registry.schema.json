@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rift:drift-sentinel:registry:v1",
+  "title": "RIFT drift sentinel registry v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["registry_version", "registry_id", "groups"],
+  "properties": {
+    "registry_version": {"const": "rift-drift-registry/v1"},
+    "registry_id": {"$ref": "#/$defs/id"},
+    "groups": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/group"}}
+  },
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "default_ref", "visibility"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "default_ref": {"type": "string", "minLength": 1},
+        "visibility": {"enum": ["public", "private", "local"]}
+      }
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "role", "owner", "source"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "role": {"type": "string", "minLength": 1},
+        "owner": {"type": "string", "minLength": 1},
+        "source": {"$ref": "#/$defs/source"}
+      }
+    },
+    "exception": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "owner", "rationale", "expires", "approvers"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "owner": {"type": "string", "minLength": 1},
+        "rationale": {"type": "string", "minLength": 1},
+        "expires": {"type": "string", "format": "date"},
+        "approvers": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+      }
+    },
+    "contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "verification", "semantics"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "version": {"type": "string", "minLength": 1},
+        "verification": {"enum": ["verified", "inventory_only"]},
+        "semantics": {
+          "type": "object",
+          "additionalProperties": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "producer_path", "consumer_path"],
+      "properties": {
+        "kind": {"const": "json_schema_subset_v1"},
+        "producer_path": {"type": "string", "minLength": 1},
+        "consumer_path": {"type": "string", "minLength": 1}
+      }
+    },
+    "edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "producer", "consumer", "owner", "severity", "contract", "check", "exceptions"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "producer": {"$ref": "#/$defs/id"},
+        "consumer": {"$ref": "#/$defs/id"},
+        "owner": {"type": "string", "minLength": 1},
+        "severity": {"enum": ["info", "warning", "error"]},
+        "contract": {"$ref": "#/$defs/contract"},
+        "check": {"$ref": "#/$defs/check"},
+        "exceptions": {"type": "array", "maxItems": 1, "items": {"$ref": "#/$defs/exception"}}
+      }
+    },
+    "group": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "owner", "nodes", "edges"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "owner": {"type": "string", "minLength": 1},
+        "nodes": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/node"}},
+        "edges": {"type": "array", "items": {"$ref": "#/$defs/edge"}}
+      }
+    }
+  }
+}

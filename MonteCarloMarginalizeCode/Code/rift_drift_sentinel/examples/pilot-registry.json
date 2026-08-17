@@ -1,0 +1,109 @@
+{
+  "registry_version": "rift-drift-registry/v1",
+  "registry_id": "rift-supernu-pilot",
+  "groups": [
+    {
+      "id": "rift-supernu",
+      "owner": "coding-rift",
+      "nodes": [
+        {
+          "id": "supernu-manager",
+          "role": "evaluation-producer",
+          "owner": "sim-manager-supernu-maintainers",
+          "source": {
+            "id": "oshaughnessy-junior/sim_manager_supernu",
+            "default_ref": "main",
+            "visibility": "private"
+          }
+        },
+        {
+          "id": "rift-hyperpipe",
+          "role": "evaluation-consumer",
+          "owner": "coding-rift",
+          "source": {
+            "id": "oshaughnessy-junior/research-projects-RIT",
+            "default_ref": "rift_O4d_vision_implentation",
+            "visibility": "public"
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "supernu-evaluation-result",
+          "producer": "supernu-manager",
+          "consumer": "rift-hyperpipe",
+          "owner": "coding-rift+sim-manager-supernu-maintainers",
+          "severity": "warning",
+          "contract": {
+            "id": "costly-simulation-evaluation-result",
+            "version": "inventory-0",
+            "verification": "inventory_only",
+            "semantics": {
+              "content_identity": "proposed canonical JSON identity; not yet verified against production archives",
+              "coordinates": "domain parameter mapping; exact SuperNu names and transformations pending owner verification",
+              "normalization": "log-likelihood convention pending owner verification",
+              "uncertainty": "numerical uncertainty representation pending owner verification",
+              "units": "per-field explicit units proposed; production inventory pending"
+            }
+          },
+          "check": {
+            "kind": "json_schema_subset_v1",
+            "producer_path": "contracts/evaluation-result.schema.json",
+            "consumer_path": "contracts/evaluation-result-required.schema.json"
+          },
+          "exceptions": []
+        }
+      ]
+    },
+    {
+      "id": "synthetic-protocol-runner",
+      "owner": "drift-sentinel-maintainers",
+      "nodes": [
+        {
+          "id": "protocol",
+          "role": "protocol",
+          "owner": "drift-sentinel-maintainers",
+          "source": {
+            "id": "local/synthetic-protocol",
+            "default_ref": "fixture-v1",
+            "visibility": "local"
+          }
+        },
+        {
+          "id": "runner",
+          "role": "consumer",
+          "owner": "coding-sysadmin",
+          "source": {
+            "id": "local/synthetic-runner",
+            "default_ref": "fixture-v1",
+            "visibility": "local"
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "report-consumption",
+          "producer": "protocol",
+          "consumer": "runner",
+          "owner": "drift-sentinel-maintainers",
+          "severity": "error",
+          "contract": {
+            "id": "sentinel-report-envelope",
+            "version": "fixture-v1",
+            "verification": "verified",
+            "semantics": {
+              "content_identity": "sha256 of exact UTF-8 bytes",
+              "units": "not applicable"
+            }
+          },
+          "check": {
+            "kind": "json_schema_subset_v1",
+            "producer_path": "contracts/report.schema.json",
+            "consumer_path": "contracts/report-required.schema.json"
+          },
+          "exceptions": []
+        }
+      ]
+    }
+  ]
+}

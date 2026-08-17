@@ -1,0 +1,18 @@
+{
+  "type": "object",
+  "required": ["evaluation_id", "parameters", "status", "provenance"],
+  "properties": {
+    "evaluation_id": {"type": "string"},
+    "parameters": {"type": "object"},
+    "status": {
+      "type": "string",
+      "enum": ["complete", "failed"],
+      "x-science": {"meaning": "proposed terminal evaluation state"}
+    },
+    "provenance": {"type": "object"}
+  },
+  "x-contract": {
+    "content_identity": "proposed-canonical-json-v0",
+    "normalization": "unverified"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "required": ["report_version", "core_version", "run_id", "status", "checks"],
+  "properties": {
+    "report_version": {"type": "string", "enum": ["rift-drift-report/v1"]},
+    "core_version": {"type": "string"},
+    "run_id": {"type": "string"},
+    "status": {"type": "string", "enum": ["compatible", "incompatible", "indeterminate", "intentionally_divergent"]},
+    "checks": {"type": "array"}
+  },
+  "x-contract": {"content_identity": "exact-json-bytes-sha256"}
+}
