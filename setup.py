@@ -52,6 +52,8 @@ setuptools.setup(
             'examples/*.json',
             'examples/*.md',
             'examples/nodes/*/contracts/*.json',
+            'examples/archive-adapter/v1/*.json',
+            'examples/archive-adapter/v1/*.md',
             'examples/nodes/*/golden/*.json',
         ],
     },

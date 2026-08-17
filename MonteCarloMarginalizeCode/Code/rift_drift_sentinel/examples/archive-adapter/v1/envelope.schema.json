@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rift.example/schemas/archive-adapter-envelope-v1.json",
+  "title": "Backend-neutral archive adapter read envelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "adapter", "archive", "simulations"],
+  "properties": {
+    "contract_version": {"const": "archive.read/v1"},
+    "adapter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "capabilities", "backend"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "capabilities": {
+          "type": "array",
+          "uniqueItems": true,
+          "contains": {"const": "archive.read/v1"},
+          "items": {"type": "string", "pattern": "^archive\\.[a-z-]+/v[0-9]+$"}
+        },
+        "backend": {"type": "object"}
+      }
+    },
+    "archive": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "provenance"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "provenance": {"type": "object"}
+      }
+    },
+    "simulations": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/simulation"}
+    }
+  },
+  "$defs": {
+    "state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["namespace", "value"],
+      "properties": {
+        "namespace": {"type": "string", "minLength": 1},
+        "value": {"type": "string", "minLength": 1},
+        "normalized": {
+          "enum": ["requested", "ready", "running", "complete", "failed", "unknown"]
+        }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "media_type", "locator"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "media_type": {"type": "string", "minLength": 1},
+        "size_bytes": {"type": ["integer", "null"], "minimum": 0},
+        "sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+        "locator": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": {"enum": ["inline", "relative_path", "uri", "opaque"]},
+            "value": {}
+          }
+        }
+      }
+    },
+    "level": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "fidelity", "state", "artifacts"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "fidelity": {},
+        "state": {"$ref": "#/$defs/state"},
+        "summary": {},
+        "artifacts": {"type": "array", "items": {"$ref": "#/$defs/artifact"}}
+      }
+    },
+    "simulation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "parameters", "state", "levels", "provenance"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "native_id": {"type": ["string", "null"]},
+        "parameters": {},
+        "state": {"$ref": "#/$defs/state"},
+        "levels": {"type": "array", "items": {"$ref": "#/$defs/level"}},
+        "provenance": {"type": "object"}
+      }
+    }
+  }
+}
