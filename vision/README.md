@@ -43,6 +43,10 @@ This separation is the architectural direction, not a mandate for a disruptive
 rewrite. Existing RIFT workflows may be migrated incrementally only through
 separately authorized adapters and versioned contracts while remaining usable.
 
+See [Contract boundaries for cross-domain inference](CONTRACT_BOUNDARIES.md)
+for the dependency direction and the deliberately separate domain,
+evaluation, archive-read, and campaign-controller contracts.
+
 ## Point of the spear
 
 The first cross-domain proof is RIFT plus SuperNu. The pair is deliberately
@@ -52,10 +56,14 @@ simulation-dominated application with different parameter, scheduling, and
 failure semantics. A capability is not convincingly general merely because it
 works for two gravitational-wave analyses.
 
-Work should favor thin end-to-end slices that run in both domains over broad
-framework construction. The initial shared slice should demonstrate a versioned
-evaluation request, durable result/provenance record, adaptive HyperPipe step,
-and reproducible posterior or campaign diagnostic.
+Work should favor thin, separately authorized increments over broad framework
+construction. The initial increment is only a non-conformant evaluation
+request/result vocabulary with synthetic negative fixtures. It references
+separately owned domain schemas rather than defining scientific units,
+coordinates, priors, or normalization. Real RIFT/SuperNu adapters, a durable
+result path, an adaptive HyperPipe step, and a reproducible campaign diagnostic
+are later gates with their own budgets, compatibility declarations, tests, and
+reviews.
 
 ## JAX's role
 
