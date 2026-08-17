@@ -13,10 +13,12 @@ one narrow JSON-schema-subset comparison, and emits deterministic JSON and text
 reports. It does not fetch, authenticate, schedule, persist, notify, modify a
 repository, or decide that a scientific divergence is acceptable.
 
-The first registry is an **inventory**, not a compatibility certification. The
-RIFT/SuperNu edge remains `inventory_only`, so even matching illustrative files
-produce `indeterminate`. Only the disconnected synthetic protocol/runner fixture
-is marked `verified`.
+The first registry is an **inventory**, not a compatibility certification. Its
+candidate RIFT/SuperNu interchange edge compares a sanitized production-shaped
+root descriptor with the proven RIFT root-manifest filename requirement. The
+filenames differ, but the edge remains `inventory_only`, so it produces
+`indeterminate` with mismatch evidence until both owners review it. Only the
+disconnected synthetic protocol/runner fixture is marked `verified`.
 
 ## Install and invoke
 
@@ -35,9 +37,10 @@ must name the registry `source_id`, a local root, and an immutable 40-hex Git
 commit or `sha256:` content identity. Relative roots are resolved relative to
 the manifest, but absolute roots are never copied into a report.
 
-The bundled example is directly runnable from a source checkout. Its `sha256:`
-revisions identify the exact single contract file in each synthetic node; they
-are fixture identities, not claims about a repository revision:
+The bundled example is directly runnable from a source checkout. Public pilot
+nodes use SHA-256 identities of sanitized contract bytes; the private repository
+revisions that produced them remain in the private system of record. Synthetic
+nodes use unmistakably synthetic `sha256:` fixture identities:
 
 ```bash
 python -m rift_drift_sentinel check \

@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "required": [],
+  "properties": {},
+  "x-contract": {
+    "root_filename": "manifest.json"
+  },
+  "x-provenance": {
+    "source_id": "public/rift-simulation-manager",
+    "evidence_scope": "root manifest filename requirement only"
+  }
+}

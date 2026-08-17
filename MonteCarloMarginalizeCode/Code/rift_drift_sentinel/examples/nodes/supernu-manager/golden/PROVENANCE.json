@@ -1,0 +1,23 @@
+{
+  "fixture_version": "candidate-archive-root-golden/v1",
+  "claim": "Sanitized production-shaped root descriptor from a pinned private implementation; not a working-interchange or scientific-semantics certification.",
+  "producer": {
+    "source_id": "private/source-a",
+    "contract_revision": "sha256:6161347d63360a35251f623c4d1d9584bb9d19cea8d5f7550a81f254198dc14f"
+  },
+  "consumer": {
+    "source_id": "public/rift-simulation-manager",
+    "evidence_scope": "root manifest filename requirement only"
+  },
+  "derivation": {
+    "call": "simulation_manager.database.make_archive(temp_root, scheduler='condor', description='sanitized drift-sentinel fixture', archive_id='00000000-0000-0000-0000-000000000000')",
+    "normalizations": [
+      "Replace nondeterministic created_utc with 0.0.",
+      "Retain the exact generated key set, JSON value types, fixed archive UUID, schema tag, archive version, and sanitized description.",
+      "Serialize with sorted keys and two-space indentation, without a trailing line feed."
+    ]
+  },
+  "content_identity_scope": "The registered revision identifies only the sanitized contract schema bytes. The golden has a separate byte-integrity hash. Cross-project archive content identity is not assessed.",
+  "golden_file": "archive.json",
+  "golden_sha256": "2ebdf7b01e9035f99befb84b41352b955cbb1b81ff4db59f20354b8c3281d62f"
+}

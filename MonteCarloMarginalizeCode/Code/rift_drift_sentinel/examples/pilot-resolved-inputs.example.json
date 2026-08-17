@@ -1,17 +1,17 @@
 {
   "resolved_inputs_version": "rift-drift-resolved-inputs/v1",
-  "registry_fingerprint": "sha256:3787348958e8277a4c84ade40b1b2ad71ea79ac5fedb15adcf5ddcefce03d157",
+  "registry_fingerprint": "sha256:1479071be4fdea4d85eb75b8045f7803d8b663a0ade0bf93f736dc5bbb3be0f3",
   "groups": {
     "rift-supernu": {
       "supernu-manager": {
         "root": "nodes/supernu-manager",
-        "revision": "sha256:c0104ea14d76d2ed606a5f441f60658f4e33e035430dead5fd416b32e799a8ae",
-        "source_id": "oshaughnessy-junior/sim_manager_supernu"
+        "revision": "sha256:6161347d63360a35251f623c4d1d9584bb9d19cea8d5f7550a81f254198dc14f",
+        "source_id": "private/source-a"
       },
-      "rift-hyperpipe": {
-        "root": "nodes/rift-hyperpipe",
-        "revision": "sha256:c0104ea14d76d2ed606a5f441f60658f4e33e035430dead5fd416b32e799a8ae",
-        "source_id": "oshaughnessy-junior/research-projects-RIT"
+      "rift-simulation-manager": {
+        "root": "nodes/rift-simulation-manager",
+        "revision": "sha256:820d0b894fd9d7e75f27c990dd47840ab70bd86cfa148a32e347666d70cfa2b1",
+        "source_id": "public/rift-simulation-manager"
       }
     },
     "synthetic-protocol-runner": {

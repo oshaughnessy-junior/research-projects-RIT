@@ -34,11 +34,10 @@ other science stacks. Its focused tests live at
 `MonteCarloMarginalizeCode/Code/test/drift_sentinel/`.
 
 The checked-in registry is a redacted, non-authoritative pilot. The proposed
-authoritative desired-state location is the private
-`oshaughnessy-junior/drift-sentinel-registry` repository; compact observed run
-records use a separate private `oshaughnessy-junior/drift-sentinel-runs`
-repository or equivalently protected append-only store. Neither repository is
-created or deployed by Phase 1.
+authoritative desired state belongs in a dedicated private registry repository;
+compact observed run records belong in a separate private run-record repository
+or equivalently protected append-only store. Neither repository is created or
+deployed by Phase 1.
 
 ## Non-goals and safety boundary
 
@@ -147,6 +146,13 @@ registry:
 The pilot is successful when an incompatible boundary change fails its
 compatibility gate with actionable evidence while the current compatible path
 continues to pass.
+
+Phase 0/1 currently inventories a candidate archive-root interchange seam using
+sanitized pinned evidence. It exposes a root-filename mismatch but remains
+`inventory_only`; it is not a working result edge or the valid scientific round
+trip required for pilot success. See
+`MonteCarloMarginalizeCode/Code/rift_drift_sentinel/examples/PILOT_INVENTORY.md`
+for the exact evidence and owner-review questions.
 
 ## Delivery phases
 

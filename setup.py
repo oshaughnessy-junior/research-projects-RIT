@@ -52,6 +52,7 @@ setuptools.setup(
             'examples/*.json',
             'examples/*.md',
             'examples/nodes/*/contracts/*.json',
+            'examples/nodes/*/golden/*.json',
         ],
     },
     classifiers=[

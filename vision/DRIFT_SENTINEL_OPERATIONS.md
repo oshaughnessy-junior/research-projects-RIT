@@ -12,9 +12,9 @@ job from silently redefining the scientific contracts that it monitors.
 | Surface | Proposed authoritative home | Contents | Must not contain |
 |---|---|---|---|
 | Protocol and offline code | this RIFT repository, `rift_drift_sentinel/` | parsers, graph validation, checks, report renderers, public example, tests | credentials, scheduler code, project checkout logic, notification targets |
-| Desired state and approved baselines | a dedicated private GitHub repository, proposed `oshaughnessy-junior/drift-sentinel-registry` | registry groups, owner mappings, symbolic source policy, small sanitized golden fixtures, baseline hashes, severity policy, expiring exceptions, deployment manifests | tokens, SSH configuration, absolute local paths, raw job logs, automatically learned baselines |
+| Desired state and approved baselines | a dedicated private registry repository | registry groups, owner mappings, symbolic source policy, small sanitized golden fixtures, baseline hashes, severity policy, expiring exceptions, deployment manifests | tokens, SSH configuration, absolute local paths, raw job logs, automatically learned baselines |
 | Resolved run input | runner-local ephemeral workspace | exact immutable revisions, local checkout roots, verified registry fingerprint | mutable refs in place of resolved revisions, credentials copied into the manifest |
-| Compact immutable run record | a separate private GitHub repository, proposed `oshaughnessy-junior/drift-sentinel-runs`, under `runs/<deployment>/<YYYY>/<MM>/<run-id>/`, or an equivalently protected append-only store | machine report, human digest, registry commit, runner code revision, hashes of resolved manifest and any external raw bundle, attestation metadata | checkout roots, environment dumps, unbounded diffs, secret-bearing URLs or file contents |
+| Compact immutable run record | a separate private run-record repository under `runs/<deployment>/<YYYY>/<MM>/<run-id>/`, or an equivalently protected append-only store | machine report, human digest, registry commit, runner code revision, hashes of resolved manifest and any external raw bundle, attestation metadata | checkout roots, environment dumps, unbounded diffs, secret-bearing URLs or file contents |
 | Operational state | runner host, proposed `~/.openclaw/state/drift-sentinel/<deployment>/` | atomic last-success pointer, notification deduplication, retry queue, health timestamps | desired contracts, waiver decisions, sole copy of a report |
 | Raw diagnostic bundle | private restricted object storage when needed | bounded stderr/log evidence excluded from compact report | indefinite retention, secrets without redaction, scientific data not approved for that store |
 | Portfolio digest | meta-manager digest inputs and generated rollups | latest signed status per registered group, new/resolved counts, stale-run health | authority to edit contracts, close findings, or waive science |
@@ -31,8 +31,8 @@ branch is only a redacted starter and test input. A runner must not treat it as
 the authoritative fleet registry.
 
 Desired state and observed state should not share a repository or credential.
-The runner receives read-only access to `drift-sentinel-registry` and narrowly
-scoped append access to `drift-sentinel-runs`; it cannot approve its own input,
+The runner receives read-only access to the registry and narrowly scoped append
+access to the separate run-record store; it cannot approve its own input,
 rewrite baselines, or waive a finding. Branch protection or the selected object
 store policy must reject history rewrites. A Git repository is appropriate only
 for compact sanitized reports at the expected low cadence; raw or high-volume
@@ -96,7 +96,7 @@ commit, report hash, or transition digest that explains a decision.
 |---|---|---|---|
 | Sentinel protocol, schemas, and releases | drift-sentinel maintainers designated by coding-rift initially | feature author plus independent adversarial reviewer | all registered project owners |
 | RIFT contract declarations and interpretation of RIFT findings | coding-rift | coding-rift digest owner | adjacent producer/consumer owner |
-| SuperNu contract declarations and scientific interpretation | `sim_manager_supernu` scientific maintainers | their designated project agent/maintainer | coding-rift for shared edges |
+| Private producer contract declarations and scientific interpretation | that project's scientific maintainers | their designated project agent/maintainer | coding-rift for shared edges |
 | Other project group registration | that group's named scientific owner | project maintainer | drift-sentinel maintainer for schema review |
 | Private registry administration and portfolio owner map | meta-manager coordination owner | meta-manager automation after explicit deployment | coding-rift, coding-sysadmin, affected owners |
 | Portfolio aggregation and stale-owner/group reporting | meta-manager | meta-manager digest job | project owners and coding-sysadmin |
@@ -191,14 +191,17 @@ Deferred to separately authorized changes:
 - coding-sysadmin deployment, launchd/cron/CI configuration, durable writes,
   retention deletion, notifications, and health monitoring;
 - meta-manager ingestion and portfolio digest format;
-- production RIFT/SuperNu contract extraction, owner verification, golden
-  round-trip, and any promotion from `inventory_only`;
+- joint owner review of the sanitized candidate RIFT/SuperNu root seam, selection of
+  direct interchange versus an explicit adapter, a golden round trip through
+  that selected path, and any promotion from `inventory_only`;
 - report-to-report transition comparison and first-divergent-revision search;
 - callable/CLI inspection, dependency-range solving, general JSON Schema,
   canonical scientific artifact hashing, and optional project adapters;
 - any blocking CI policy or change to RIFT/SuperNu APIs, defaults, archives, or
   campaign execution.
 
-The next highest-value increment is owner-verifying one real RIFT/SuperNu
-request or result edge and producing a sanitized golden artifact at two pinned
-revisions. It should land before broadening the check engine.
+The next highest-value increment is joint owner review of the sanitized
+candidate RIFT/SuperNu interchange evidence: decide whether direct interchange
+remains supported or an adapter is the contract, then produce one sanitized
+round trip through the selected path. It should land before broadening the check
+engine.

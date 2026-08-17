@@ -3,9 +3,12 @@
 
 import copy
 import contextlib
+import hashlib
 import io
 import json
+import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -22,8 +25,10 @@ from rift_drift_sentinel.report import render_human, render_machine  # noqa: E40
 
 
 EXAMPLES = CODE_ROOT / "rift_drift_sentinel" / "examples"
-REVISION_A = "a" * 40
-REVISION_B = "b" * 40
+FIXTURES = Path(__file__).resolve().parent / "fixtures" / "archive-root"
+PRODUCER_CONTRACT_REVISION = "sha256:6161347d63360a35251f623c4d1d9584bb9d19cea8d5f7550a81f254198dc14f"
+CONSUMER_CONTRACT_REVISION = "sha256:820d0b894fd9d7e75f27c990dd47840ab70bd86cfa148a32e347666d70cfa2b1"
+GOLDEN_SHA256 = "2ebdf7b01e9035f99befb84b41352b955cbb1b81ff4db59f20354b8c3281d62f"
 
 
 class DriftSentinelTests(unittest.TestCase):
@@ -48,13 +53,13 @@ class DriftSentinelTests(unittest.TestCase):
                 "rift-supernu": {
                     "supernu-manager": {
                         "root": str(nodes / "supernu-manager"),
-                        "revision": REVISION_A,
-                        "source_id": "oshaughnessy-junior/sim_manager_supernu"
+                        "revision": PRODUCER_CONTRACT_REVISION,
+                        "source_id": "private/source-a"
                     },
-                    "rift-hyperpipe": {
-                        "root": str(nodes / "rift-hyperpipe"),
-                        "revision": REVISION_B,
-                        "source_id": "oshaughnessy-junior/research-projects-RIT"
+                    "rift-simulation-manager": {
+                        "root": str(nodes / "rift-simulation-manager"),
+                        "revision": CONSUMER_CONTRACT_REVISION,
+                        "source_id": "public/rift-simulation-manager"
                     }
                 },
                 "synthetic-protocol-runner": {
@@ -82,6 +87,25 @@ class DriftSentinelTests(unittest.TestCase):
         pilot = next(item for item in report["checks"] if item["group"] == "rift-supernu")
         self.assertEqual(pilot["outcome"], "indeterminate")
         self.assertIn("not been owner-verified", pilot["reason"])
+        self.assertGreater(len(pilot["mismatches"]), 0)
+        self.assertEqual(pilot["revisions"]["supernu-manager"], PRODUCER_CONTRACT_REVISION)
+        self.assertEqual(pilot["revisions"]["rift-simulation-manager"], CONSUMER_CONTRACT_REVISION)
+        producer_contract = (
+            self.root / "examples" / "nodes" / "supernu-manager" /
+            "contracts" / "archive-root.producer.schema.json"
+        ).read_bytes()
+        consumer_contract = (
+            self.root / "examples" / "nodes" / "rift-simulation-manager" /
+            "contracts" / "archive-root.required.schema.json"
+        ).read_bytes()
+        self.assertEqual(
+            pilot["evidence"]["producer"]["sha256"],
+            PRODUCER_CONTRACT_REVISION,
+        )
+        self.assertEqual(
+            pilot["evidence"]["consumer"]["sha256"],
+            CONSUMER_CONTRACT_REVISION,
+        )
 
     def test_incompatible_fixture_is_actionable_and_default_is_observation_only(self):
         producer = self.root / "examples" / "nodes" / "protocol" / "contracts" / "report.schema.json"
@@ -126,7 +150,7 @@ class DriftSentinelTests(unittest.TestCase):
 
     def test_resolved_inputs_require_immutable_revision_and_matching_fingerprint(self):
         raw = json.loads(self.resolved_path.read_text(encoding="utf-8"))
-        raw["groups"]["rift-supernu"]["rift-hyperpipe"]["revision"] = "main"
+        raw["groups"]["rift-supernu"]["rift-simulation-manager"]["revision"] = "main"
         raw["registry_fingerprint"] = "sha256:" + "0" * 64
         self.resolved_path.write_text(json.dumps(raw), encoding="utf-8")
         with self.assertRaises(SentinelInputError) as context:
@@ -211,6 +235,192 @@ class DriftSentinelTests(unittest.TestCase):
         report_text = render_machine(evaluate(self.registry, resolved, "test-run", "2026-08-17"))
         self.assertNotIn(marker, report_text)
         self.assertIn("sha256", report_text)
+
+    def _evaluate_seeded_pilot_schema(self, fixture_name):
+        raw = json.loads((EXAMPLES / "pilot-registry.json").read_text(encoding="utf-8"))
+        raw["registry_id"] = "synthetic-seeded-registry"
+        group = raw["groups"][0]
+        group["id"] = "synthetic-archive-root-fixture"
+        group["owner"] = "synthetic-fixture-owner"
+        producer_node, consumer_node = group["nodes"]
+        producer_node.update({
+            "id": "synthetic-archive-producer",
+            "role": "synthetic-producer",
+            "owner": "synthetic-fixture-owner",
+            "source": {
+                "id": "local/synthetic-archive-producer",
+                "default_ref": "sha256:" + "e" * 64,
+                "visibility": "local",
+            },
+        })
+        consumer_node.update({
+            "id": "synthetic-archive-consumer",
+            "role": "synthetic-consumer",
+            "owner": "synthetic-fixture-owner",
+            "source": {
+                "id": "local/synthetic-archive-consumer",
+                "default_ref": "sha256:" + "f" * 64,
+                "visibility": "local",
+            },
+        })
+        edge = group["edges"][0]
+        edge.update({
+            "id": "synthetic-archive-root-check",
+            "producer": "synthetic-archive-producer",
+            "consumer": "synthetic-archive-consumer",
+            "owner": "synthetic-fixture-owner",
+        })
+        edge["contract"].update({
+            "id": "synthetic-archive-root-contract",
+            "version": "synthetic-v1",
+            "verification": "verified",
+            "semantics": {"content_identity": "synthetic fixture bytes only"},
+        })
+        disconnected = raw["groups"][1]
+        disconnected["id"] = "synthetic-disconnected-fixture"
+        disconnected["owner"] = "synthetic-fixture-owner"
+        protocol_node, runner_node = disconnected["nodes"]
+        protocol_node.update({
+            "id": "synthetic-protocol-node",
+            "owner": "synthetic-fixture-owner",
+            "source": {
+                "id": "local/synthetic-protocol-node",
+                "default_ref": "sha256:" + "c" * 64,
+                "visibility": "local",
+            },
+        })
+        runner_node.update({
+            "id": "synthetic-runner-node",
+            "owner": "synthetic-fixture-owner",
+            "source": {
+                "id": "local/synthetic-runner-node",
+                "default_ref": "sha256:" + "d" * 64,
+                "visibility": "local",
+            },
+        })
+        disconnected_edge = disconnected["edges"][0]
+        disconnected_edge.update({
+            "id": "synthetic-report-consumption",
+            "producer": "synthetic-protocol-node",
+            "consumer": "synthetic-runner-node",
+            "owner": "synthetic-fixture-owner",
+        })
+        disconnected_edge["contract"].update({
+            "id": "synthetic-report-envelope",
+            "version": "synthetic-v1",
+        })
+        self.registry_path.write_text(json.dumps(raw), encoding="utf-8")
+        self.registry = load_registry(self.registry_path)
+        producer = (
+            self.root / "examples" / "nodes" / "supernu-manager" /
+            "contracts" / "archive-root.producer.schema.json"
+        )
+        shutil.copyfile(FIXTURES / fixture_name, producer)
+        consumer = (
+            self.root / "examples" / "nodes" / "rift-simulation-manager" /
+            "contracts" / "archive-root.required.schema.json"
+        )
+        consumer_schema = json.loads(consumer.read_text(encoding="utf-8"))
+        consumer_schema["x-provenance"] = {
+            "source_id": "local/synthetic-archive-consumer",
+            "evidence_scope": "synthetic root manifest filename fixture",
+        }
+        consumer.write_text(
+            json.dumps(consumer_schema, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        nodes = self.root / "examples" / "nodes"
+        payload = {
+            "resolved_inputs_version": "rift-drift-resolved-inputs/v1",
+            "registry_fingerprint": self.registry.fingerprint,
+            "groups": {
+                "synthetic-archive-root-fixture": {
+                    "synthetic-archive-producer": {
+                        "root": str(nodes / "supernu-manager"),
+                        "revision": "sha256:" + "e" * 64,
+                        "source_id": "local/synthetic-archive-producer",
+                    },
+                    "synthetic-archive-consumer": {
+                        "root": str(nodes / "rift-simulation-manager"),
+                        "revision": "sha256:" + "f" * 64,
+                        "source_id": "local/synthetic-archive-consumer",
+                    },
+                },
+                "synthetic-disconnected-fixture": {
+                    "synthetic-protocol-node": {
+                        "root": str(nodes / "protocol"),
+                        "revision": "sha256:" + "c" * 64,
+                        "source_id": "local/synthetic-protocol-node",
+                    },
+                    "synthetic-runner-node": {
+                        "root": str(nodes / "runner"),
+                        "revision": "sha256:" + "d" * 64,
+                        "source_id": "local/synthetic-runner-node",
+                    },
+                },
+            },
+        }
+        self.resolved_path.write_text(json.dumps(payload), encoding="utf-8")
+        resolved = load_resolved_inputs(self.resolved_path, self.registry)
+        report = evaluate(self.registry, resolved, "seeded-pilot", "2026-08-17")
+        machine = render_machine(report)
+        self.assertNotIn("supernu-manager", machine)
+        self.assertNotIn("rift-simulation-manager", machine)
+        self.assertNotIn(PRODUCER_CONTRACT_REVISION, machine)
+        self.assertNotIn(CONSUMER_CONTRACT_REVISION, machine)
+        return next(item for item in report["checks"] if item["edge"] == "synthetic-archive-root-check")
+
+    def test_seeded_archive_root_compatible_fixture(self):
+        check = self._evaluate_seeded_pilot_schema("producer.compatible-synthetic.schema.json")
+        self.assertEqual(check["outcome"], "compatible")
+        self.assertEqual(check["mismatches"], [])
+
+    def test_seeded_archive_root_incompatible_variants(self):
+        variants = (
+            "producer.incompatible-root-filename.schema.json",
+            "producer.incompatible-missing-root.schema.json",
+        )
+        for fixture_name in variants:
+            with self.subTest(fixture=fixture_name):
+                check = self._evaluate_seeded_pilot_schema(fixture_name)
+                self.assertEqual(check["outcome"], "incompatible")
+                self.assertGreater(len(check["mismatches"]), 0)
+
+    def test_supernu_golden_artifact_and_provenance_are_self_consistent(self):
+        golden_dir = EXAMPLES / "nodes" / "supernu-manager" / "golden"
+        golden_bytes = (golden_dir / "archive.json").read_bytes()
+        golden = json.loads(golden_bytes)
+        provenance = json.loads((golden_dir / "PROVENANCE.json").read_text(encoding="utf-8"))
+        producer_schema = json.loads(
+            (EXAMPLES / "nodes" / "supernu-manager" / "contracts" /
+             "archive-root.producer.schema.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(set(golden), set(producer_schema["required"]))
+        self.assertEqual(golden["schema"], "supernu.archive/1")
+        self.assertEqual(golden["created_utc"], 0.0)
+        self.assertEqual(provenance["producer"]["source_id"], "private/source-a")
+        self.assertEqual(provenance["producer"]["contract_revision"], PRODUCER_CONTRACT_REVISION)
+        self.assertEqual(provenance["consumer"]["source_id"], "public/rift-simulation-manager")
+        self.assertEqual(hashlib.sha256(golden_bytes).hexdigest(), provenance["golden_sha256"])
+        self.assertFalse(golden_bytes.endswith(b"\n"))
+
+    @unittest.skipUnless(
+        os.environ.get("RIFT_DRIFT_SENTINEL_SUPERNU_CHECKOUT"),
+        "set RIFT_DRIFT_SENTINEL_SUPERNU_CHECKOUT for implementation regeneration",
+    )
+    def test_supplied_implementation_regenerates_exact_golden(self):
+        script = Path(__file__).resolve().parent / "reproduce_supernu_archive_golden.py"
+        subprocess.run(
+            [
+                sys.executable,
+                str(script),
+                "--checkout",
+                os.environ["RIFT_DRIFT_SENTINEL_SUPERNU_CHECKOUT"],
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
 
 
 if __name__ == "__main__":
