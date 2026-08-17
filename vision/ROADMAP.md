@@ -14,18 +14,24 @@ with explicit compatibility and scientific validation.
 
 Use RIFT and SuperNu as the first paired application.
 
-- Specify one versioned evaluation request/result contract, including units,
-  coordinates, prior context, uncertainty, provenance, failure state, and
-  content identity.
-- Map current RIFT and SuperNu behavior to that contract through adapters;
-  preserve established production entry points. The contract specifies
-  observable behavior and scientific meaning, not JSONL, SQLite, or another
-  storage backend.
-- Define the minimum HyperPipe controller boundary: campaign state, proposal or
-  oracle selection, evaluation request, result assimilation, convergence, and
-  escalation.
-- Run one thin, reproducible campaign slice in each domain and retain golden
-  fixtures for round-trip and migration tests.
+- Preserve the four boundaries in `CONTRACT_BOUNDARIES.md`: domain science,
+  evaluation request/result, archive read, and campaign controller. Do not
+  collapse them into one universal simulation-manager API.
+
+- First define only a non-conformant evaluation request/result vocabulary with
+  synthetic positive and negative fixtures. It references separately owned
+  domain-schema identifiers and carries declared uncertainty, provenance, and
+  failure state without defining units, coordinates, priors, normalization, or
+  universal content identity.
+- In later, separately authorized issues, map one current RIFT and one SuperNu
+  evaluation through adapters while preserving established production entry
+  points. Observable adapter behavior must not prescribe JSONL, SQLite, or
+  another storage backend.
+- Define and test the minimum HyperPipe controller boundary only after adapter
+  evidence exists: campaign state, proposal or oracle selection, evaluation
+  request, result assimilation, convergence, and escalation.
+- Run thin campaign slices and retain golden migration evidence only after the
+  vocabulary, adapter, and controller increments pass their own reviews.
 - Put one scientifically useful JAX path in CI with a reference comparison.
 - Exercise the corresponding backend-neutral oracle or integrator contract in
   a SuperNu or related costly-simulation case before claiming cross-domain
