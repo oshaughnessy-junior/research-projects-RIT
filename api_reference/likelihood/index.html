@@ -398,7 +398,7 @@ ComputeModeCrossTermIPCal / BuildCalibrationSelfTermBasis.)</p>
 </dl>
 <p>via a streaming log-sum-exp over the n_cal realizations (memory unchanged vs
 the n_cal==1 path; one extra GPU kernel launch per realization).</p>
-<dl class="simple">
+<dl>
 <dt>cal_method selects the n_cal&gt;1 reduction:</dt><dd><dl class="simple">
 <dt>‘loop’  (default, Option B): Python loop over realizations reusing the</dt><dd><p>existing Q_inner_product kernel; works on CPU and GPU and with any
 loglikelihood callback (distance/phase marginalization).</p>
@@ -417,20 +417,26 @@ path is the fallback for everything (incl. distmarg, on CPU and GPU).</p>
 <dt>cal_distmarg<span class="classifier">dict or None</span></dt><dd><p>Distance-marginalization table+params for the fused distmarg kernel; see
 RIFT.likelihood.Q_fused_calmarg.Q_fused_calmarg_distmarg_cupy.</p>
 </dd>
-<dt>time_interp<span class="classifier">{‘nearest’, ‘cubic’, ‘sinc’}</span></dt><dd><p>Sub-sample stencil for the Q(t) lookup.  Which is best depends on the oversampling
-factor fNyq/fmax: ‘cubic’ (4-point Lagrange) has O(h^4) error so it wins when heavily
-oversampled, while ‘sinc’ (Lanczos) is window-limited so its error is flat in
-oversampling and it wins near Nyquist – ~50x better at fNyq/fmax ~ 1.2, which is where
-Q is band-limited by the TEMPLATE’s cutoff as well as by fmax, so the right choice
-depends on the masses and on fmin, not on fmax alone: measured with an IMR model, the
-crossover is between 20 and 35 Msun total – ‘sinc’ below, ‘cubic’ above.
-See _sinc_Q_window_numpy and RIFT.likelihood.time_interp_choice for the measured tables.
-All three stencils have both CPU and GPU implementations.
-Detector-time sampling convention for the data term.  ‘nearest’
+<dt>time_interp<span class="classifier">{‘nearest’, ‘cubic’, ‘sinc’}</span></dt><dd><p>Detector-time sampling convention for the data term.  ‘nearest’
 preserves the historical NoLoop integer-bin gather.  ‘cubic’ evaluates
 the precomputed Q_lm time series at the fractional detector arrival time
 using a four-sample cubic Lagrange stencil, with zero extension outside
 the precomputed buffer.</p>
+<p>CHOOSING BETWEEN ‘cubic’ AND ‘sinc’: neither is uniformly better.  ‘cubic’ (4-point
+Lagrange) has O(h^4) error, so it improves fast with oversampling and is poor near
+Nyquist; ‘sinc’ (Lanczos) is window-limited, so its error is flat in oversampling.
+The operative quantity is NOT fNyq/fmax: Q^a_lm(t) is band-limited by whichever is
+lower, fmax or the TEMPLATE’s own cutoff, so the right choice depends on the masses
+and on fmin.  Measured with an IMR model against an exact reference, the crossover in
+total mass is between 20 and 35 Msun at production settings – ‘sinc’ below it,
+‘cubic’ above.  THE DEFAULT IS ‘nearest’, NOT ‘cubic’: this argument defaults to
+‘nearest’, and the batch-mode CLI’s –interpolate-time defaults to off, which also
+resolves to ‘nearest’.  Omitting either therefore keeps the historical nearest-bin
+behavior, whose errors the guidance below calls scientifically significant (200-440
+nats at SNR 100, reaching 1 nat by SNR 2-6); ‘cubic’ is only what a legacy truthy
+–interpolate-time value maps to.  Ask for a stencil explicitly if you want one.
+All three stencils have CPU and GPU implementations.  See _sinc_Q_window_numpy and
+RIFT.likelihood.time_interp_choice for the measured tables.</p>
 </dd>
 </dl>
 </section>
