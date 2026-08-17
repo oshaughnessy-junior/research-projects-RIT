@@ -1,0 +1,38 @@
+{
+  "adapter": {
+    "backend": {"kind": "plain-files", "schema": "synthetic-files/v1"},
+    "capabilities": ["archive.read/v1"],
+    "id": "synthetic-file-adapter"
+  },
+  "archive": {
+    "id": "synthetic-campaign",
+    "provenance": {"fixture": "archive-adapter/v1"}
+  },
+  "contract_version": "archive.read/v1",
+  "simulations": [
+    {
+      "id": "sim-0001",
+      "levels": [
+        {
+          "artifacts": [
+            {
+              "id": "summary",
+              "locator": {"kind": "relative_path", "value": "records/sim-0001/summary.json"},
+              "media_type": "application/json",
+              "sha256": null,
+              "size_bytes": null
+            }
+          ],
+          "fidelity": {"level": 1},
+          "id": "level-1",
+          "state": {"namespace": "synthetic.files", "normalized": "complete", "value": "done"},
+          "summary": {"observable": 1.25, "uncertainty": 0.05}
+        }
+      ],
+      "native_id": "row-1",
+      "parameters": {"model_parameter": 0.5},
+      "provenance": {"fixture_record": "semantic-record-1"},
+      "state": {"namespace": "synthetic.files", "normalized": "complete", "value": "done"}
+    }
+  ]
+}
