@@ -1,4 +1,4 @@
-# Synthetic archive-adapter v1 fixture
+# Synthetic archive snapshot draft v0 fixture
 
 This fixture illustrates the experimental `archive.snapshot-draft/v0` record
 vocabulary. It contains no RIFT or SuperNu evidence, executes no adapter, and

@@ -6,7 +6,7 @@
   },
   "archive": {
     "id": "synthetic-campaign",
-    "provenance": {"fixture": "archive-adapter/v1"}
+    "provenance": {"fixture": "archive-adapter/snapshot-draft-v0"}
   },
   "vocabulary_version": "archive.snapshot-draft/v0",
   "simulations": [

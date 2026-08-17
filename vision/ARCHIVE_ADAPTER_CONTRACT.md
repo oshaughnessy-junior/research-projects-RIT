@@ -29,7 +29,8 @@ A separately reviewed operational profile should eventually define:
 
 1. describe the archive and adapter;
 2. enumerate simulations deterministically;
-3. retrieve a simulation by its adapter-stable identifier;
+3. retrieve a simulation by an opaque identifier whose lineage and stability
+   rules are defined by that future profile;
 4. enumerate its refinement/fidelity levels;
 5. expose state, parameters, summaries, artifacts, and provenance without
    requiring native backend access by the consumer.
@@ -72,9 +73,11 @@ The experimental snapshot contains:
 - zero or more levels with explicit fidelity descriptions;
 - artifact references carrying media type, size and digest when known.
 
-The snapshot describes a candidate record shape; it does not require an
-entire campaign to be materialized in one JSON document. Large implementations
-will require a future paged/streamed operations contract.
+The snapshot describes a candidate record shape and makes no completeness
+claim. Absence from a snapshot must not be interpreted as absence from the
+archive. It does not require an entire campaign to be materialized in one JSON
+document; large implementations will require a future paged/streamed operations
+contract.
 
 Parameters, summaries, fidelity descriptors and provenance remain opaque JSON
 values. This draft carries no semantic/schema identifier and makes no content
@@ -93,9 +96,11 @@ The future contract must distinguish three identities:
 3. **Content identity:** optional digest under an explicitly named
    canonicalization rule. Absence means unknown, not unequal.
 
-The draft carries adapter-stable and optional native IDs only. It does not
-encode content identity or canonicalization. No universal cross-project hash is
-assumed, and a native primary key must never be relabeled as content identity.
+The draft carries opaque proposed IDs and optional native IDs only. Their
+lineage and stability remain unresolved until an operational profile exists.
+The draft does not encode content identity or canonicalization. No universal
+cross-project hash is assumed, and a native primary key must never be relabeled
+as content identity.
 
 ## States
 
@@ -117,6 +122,9 @@ owner and lossiness, and distinguish simulation from level completion.
 ## Artifacts
 
 Draft artifact records contain metadata and an opaque redacted handle only.
+Handles are non-secret identifiers and must never contain bearer credentials;
+the restricted syntax reduces accidental path/URL disclosure but cannot prove
+that a producer did not embed a secret.
 They do not contain inline bytes, paths or URIs. Consumers must not assume the
 handle is resolvable. Typed resolution, containment, credentials, expiry,
 authorization and size bounds belong to a future `archive.artifact-read/v1`.

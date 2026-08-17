@@ -8,7 +8,10 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-FIXTURES = ROOT / "rift_drift_sentinel" / "examples" / "archive-adapter" / "v1"
+FIXTURES = (
+    ROOT / "rift_drift_sentinel" / "examples" / "archive-adapter" /
+    "snapshot-draft-v0"
+)
 
 
 def load(name):
