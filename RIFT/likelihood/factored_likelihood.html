@@ -349,10 +349,11 @@ the precomputed buffer.</p>
 Lagrange) has O(h^4) error, so it improves fast with oversampling and is poor near
 Nyquist; ‘sinc’ (Lanczos) is window-limited, so its error is flat in oversampling.
 The operative quantity is NOT fNyq/fmax: Q^a_lm(t) is band-limited by whichever is
-lower, fmax or the TEMPLATE’s own cutoff, so the right choice depends on the masses
-and on fmin.  Measured with an IMR model against an exact reference, the crossover in
-total mass is between 20 and 35 Msun at production settings – ‘sinc’ below it,
-‘cubic’ above.  THE DEFAULT IS ‘nearest’, NOT ‘cubic’: this argument defaults to
+lower, fmax or the TEMPLATE’s own cutoff, so the right choice depends on the masses,
+on fmin AND on srate.  The recommendation is NOT restated here – it has been superseded
+twice and docstring copies went stale both times.  Live value:
+RIFT.likelihood.time_interp_choice.CROSSOVER_GUIDANCE; measured tables:
+RIFT/likelihood/DESIGN_q_window_stencil.md.  THE DEFAULT IS ‘nearest’, NOT ‘cubic’: this argument defaults to
 ‘nearest’, and the batch-mode CLI’s –interpolate-time defaults to off, which also
 resolves to ‘nearest’.  Omitting either therefore keeps the historical nearest-bin
 behavior, whose errors the guidance below calls scientifically significant (200-440
