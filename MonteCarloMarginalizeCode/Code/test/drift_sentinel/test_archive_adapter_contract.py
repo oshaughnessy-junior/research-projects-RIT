@@ -15,45 +15,72 @@ def load(name):
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
 
-def semantic_projection(snapshot):
-    """Remove backend-native identity and transport from a read envelope."""
+def selected_field_projection(snapshot):
+    """Compare only deliberately selected fields in hand-authored fixtures."""
     projected = copy.deepcopy(snapshot)
-    projected.pop("adapter")
+    projected.pop("producer")
     for simulation in projected["simulations"]:
         simulation.pop("native_id", None)
         simulation["state"] = {"normalized": simulation["state"].get("normalized")}
         for level in simulation["levels"]:
             level["state"] = {"normalized": level["state"].get("normalized")}
             for artifact in level["artifacts"]:
-                artifact.pop("locator")
+                artifact.pop("handle")
     return projected
 
 
 class ArchiveAdapterContractTests(unittest.TestCase):
-    def test_schema_requires_read_capability(self):
+    def test_snapshots_validate_when_jsonschema_is_available(self):
+        try:
+            import jsonschema
+        except ImportError:
+            self.skipTest("jsonschema is test-only and is not installed")
         schema = load("envelope.schema.json")
-        capabilities = schema["properties"]["adapter"]["properties"]["capabilities"]
-        self.assertEqual(capabilities["contains"], {"const": "archive.read/v1"})
+        for name in ("file-backed.snapshot.json", "indexed.snapshot.json"):
+            jsonschema.validate(load(name), schema)
 
-    def test_backends_emit_same_semantics(self):
+    def test_unsafe_handle_is_rejected_when_jsonschema_is_available(self):
+        try:
+            import jsonschema
+        except ImportError:
+            self.skipTest("jsonschema is test-only and is not installed")
+        payload = load("file-backed.snapshot.json")
+        payload["simulations"][0]["levels"][0]["artifacts"][0]["handle"]["value"] = (
+            "../../private/key"
+        )
+        with self.assertRaises(jsonschema.ValidationError):
+            jsonschema.validate(payload, load("envelope.schema.json"))
+
+    def test_schema_is_explicitly_nonconformant_draft(self):
+        schema = load("envelope.schema.json")
+        self.assertEqual(
+            schema["properties"]["vocabulary_version"]["const"],
+            "archive.snapshot-draft/v0",
+        )
+        self.assertNotIn("capabilities", schema["properties"]["producer"]["properties"])
+
+    def test_hand_authored_selected_fields_match(self):
         file_backed = load("file-backed.snapshot.json")
         indexed = load("indexed.snapshot.json")
-        self.assertEqual(semantic_projection(file_backed), semantic_projection(indexed))
+        self.assertEqual(
+            selected_field_projection(file_backed),
+            selected_field_projection(indexed),
+        )
 
-    def test_lightweight_backend_needs_only_read_capability(self):
+    def test_lightweight_backend_description_is_non_normative(self):
         payload = load("file-backed.snapshot.json")
-        self.assertEqual(payload["adapter"]["capabilities"], ["archive.read/v1"])
-        self.assertEqual(payload["adapter"]["backend"]["kind"], "plain-files")
+        self.assertEqual(payload["producer"]["backend"]["kind"], "plain-files")
 
-    def test_optional_query_capability_does_not_change_read_semantics(self):
+    def test_indexed_backend_does_not_claim_operational_capabilities(self):
         payload = load("indexed.snapshot.json")
-        self.assertIn("archive.query/v1", payload["adapter"]["capabilities"])
-        self.assertNotIn("archive.register/v1", payload["adapter"]["capabilities"])
+        self.assertEqual(payload["producer"]["backend"]["kind"], "indexed-database")
+        self.assertNotIn("capabilities", payload["producer"])
 
-    def test_deterministic_simulation_order(self):
+    def test_artifact_handles_are_opaque_and_bounded(self):
         for name in ("file-backed.snapshot.json", "indexed.snapshot.json"):
-            ids = [item["id"] for item in load(name)["simulations"]]
-            self.assertEqual(ids, sorted(ids))
+            artifact = load(name)["simulations"][0]["levels"][0]["artifacts"][0]
+            self.assertEqual(artifact["handle"]["kind"], "opaque")
+            self.assertNotIn("/", artifact["handle"]["value"])
 
 
 if __name__ == "__main__":

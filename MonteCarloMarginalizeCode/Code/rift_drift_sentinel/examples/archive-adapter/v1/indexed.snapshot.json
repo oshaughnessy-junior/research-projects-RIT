@@ -1,14 +1,14 @@
 {
-  "adapter": {
+  "producer": {
     "backend": {"kind": "indexed-database", "schema": "synthetic-index/v7"},
-    "capabilities": ["archive.read/v1", "archive.query/v1"],
-    "id": "synthetic-indexed-adapter"
+    "id": "synthetic-indexed-snapshot-producer",
+    "implementation_version": "fixture/v0"
   },
   "archive": {
     "id": "synthetic-campaign",
     "provenance": {"fixture": "archive-adapter/v1"}
   },
-  "contract_version": "archive.read/v1",
+  "vocabulary_version": "archive.snapshot-draft/v0",
   "simulations": [
     {
       "id": "sim-0001",
@@ -17,7 +17,7 @@
           "artifacts": [
             {
               "id": "summary",
-              "locator": {"kind": "opaque", "value": "artifact-summary-1"},
+              "handle": {"kind": "opaque", "value": "synthetic-summary-handle"},
               "media_type": "application/json",
               "sha256": null,
               "size_bytes": null
