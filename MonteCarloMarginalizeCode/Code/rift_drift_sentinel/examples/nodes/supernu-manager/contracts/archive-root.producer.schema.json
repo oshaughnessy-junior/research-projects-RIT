@@ -1,0 +1,22 @@
+{
+  "type": "object",
+  "required": ["schema", "archive_version", "archive_id", "description", "created_utc"],
+  "properties": {
+    "schema": {"type": "string", "enum": ["supernu.archive/1"]},
+    "archive_version": {"type": "integer", "enum": [1]},
+    "archive_id": {"type": "string"},
+    "description": {"type": "string"},
+    "created_utc": {
+      "type": "number",
+      "x-science": {"meaning": "archive creation time; not scientific result time"}
+    }
+  },
+  "x-contract": {
+    "root_filename": "archive.json"
+  },
+  "x-provenance": {
+    "source_id": "private/source-a",
+    "golden_path": "golden/archive.json",
+    "golden_sha256": "2ebdf7b01e9035f99befb84b41352b955cbb1b81ff4db59f20354b8c3281d62f"
+  }
+}

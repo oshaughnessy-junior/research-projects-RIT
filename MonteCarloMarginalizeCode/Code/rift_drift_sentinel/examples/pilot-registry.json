@@ -1,0 +1,109 @@
+{
+  "registry_version": "rift-drift-registry/v1",
+  "registry_id": "rift-supernu-pilot",
+  "groups": [
+    {
+      "id": "rift-supernu",
+      "owner": "coding-rift",
+      "nodes": [
+        {
+          "id": "supernu-manager",
+          "role": "candidate-archive-interchange-producer",
+          "owner": "private-project-owner",
+          "source": {
+            "id": "private/source-a",
+            "default_ref": "sha256:6161347d63360a35251f623c4d1d9584bb9d19cea8d5f7550a81f254198dc14f",
+            "visibility": "private"
+          }
+        },
+        {
+          "id": "rift-simulation-manager",
+          "role": "candidate-archive-interchange-consumer",
+          "owner": "coding-rift",
+          "source": {
+            "id": "public/rift-simulation-manager",
+            "default_ref": "sha256:820d0b894fd9d7e75f27c990dd47840ab70bd86cfa148a32e347666d70cfa2b1",
+            "visibility": "public"
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "native-archive-root-observation",
+          "producer": "supernu-manager",
+          "consumer": "rift-simulation-manager",
+          "owner": "coding-rift+private-project-owner",
+          "severity": "warning",
+          "contract": {
+            "id": "candidate-portable-archive-root-interchange",
+            "version": "sanitized-evidence-v1",
+            "verification": "inventory_only",
+            "semantics": {
+              "content_identity": "not assessed; reports hash only the sanitized contract schema bytes",
+              "coordinates": "not assessed",
+              "normalization": "not assessed",
+              "uncertainty": "not assessed",
+              "units": "not assessed"
+            }
+          },
+          "check": {
+            "kind": "json_schema_subset_v1",
+            "producer_path": "contracts/archive-root.producer.schema.json",
+            "consumer_path": "contracts/archive-root.required.schema.json"
+          },
+          "exceptions": []
+        }
+      ]
+    },
+    {
+      "id": "synthetic-protocol-runner",
+      "owner": "drift-sentinel-maintainers",
+      "nodes": [
+        {
+          "id": "protocol",
+          "role": "protocol",
+          "owner": "drift-sentinel-maintainers",
+          "source": {
+            "id": "local/synthetic-protocol",
+            "default_ref": "fixture-v1",
+            "visibility": "local"
+          }
+        },
+        {
+          "id": "runner",
+          "role": "consumer",
+          "owner": "coding-sysadmin",
+          "source": {
+            "id": "local/synthetic-runner",
+            "default_ref": "fixture-v1",
+            "visibility": "local"
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "report-consumption",
+          "producer": "protocol",
+          "consumer": "runner",
+          "owner": "drift-sentinel-maintainers",
+          "severity": "error",
+          "contract": {
+            "id": "sentinel-report-envelope",
+            "version": "fixture-v1",
+            "verification": "verified",
+            "semantics": {
+              "content_identity": "sha256 of exact UTF-8 bytes",
+              "units": "not applicable"
+            }
+          },
+          "check": {
+            "kind": "json_schema_subset_v1",
+            "producer_path": "contracts/report.schema.json",
+            "consumer_path": "contracts/report-required.schema.json"
+          },
+          "exceptions": []
+        }
+      ]
+    }
+  ]
+}

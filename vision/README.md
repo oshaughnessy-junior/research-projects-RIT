@@ -83,6 +83,13 @@ coordinates, units, priors, normalization, uncertainty, content identity,
 failure state, and provenance. File formats and command-line interfaces may
 remain as adapters, but must not be the only definition of a contract.
 
+Archive contracts are backend-neutral. RIFT's JSONL archive is one native
+implementation, not a required storage format; other implementations may use
+plain JSON, SQLite, object storage, or another representation appropriate to
+their scale and query needs. Adapters satisfy the shared behavioral contract
+without forcing backend convergence. Lightweight archives should remain
+lightweight rather than acquiring a database solely for uniformity.
+
 Compatibility is tiered:
 
 - production O4 command lines, formats, and default scientific semantics remain

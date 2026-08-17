@@ -1,0 +1,7 @@
+{
+  "archive_id": "00000000-0000-0000-0000-000000000000",
+  "archive_version": 1,
+  "created_utc": 0.0,
+  "description": "sanitized drift-sentinel fixture",
+  "schema": "supernu.archive/1"
+}

@@ -1,0 +1,8 @@
+{
+  "type": "object",
+  "required": [],
+  "properties": {},
+  "x-contract": {
+    "root_filename": "manifest.json"
+  }
+}

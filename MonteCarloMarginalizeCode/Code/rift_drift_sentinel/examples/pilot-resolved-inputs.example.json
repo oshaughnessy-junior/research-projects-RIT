@@ -1,0 +1,30 @@
+{
+  "resolved_inputs_version": "rift-drift-resolved-inputs/v1",
+  "registry_fingerprint": "sha256:1479071be4fdea4d85eb75b8045f7803d8b663a0ade0bf93f736dc5bbb3be0f3",
+  "groups": {
+    "rift-supernu": {
+      "supernu-manager": {
+        "root": "nodes/supernu-manager",
+        "revision": "sha256:6161347d63360a35251f623c4d1d9584bb9d19cea8d5f7550a81f254198dc14f",
+        "source_id": "private/source-a"
+      },
+      "rift-simulation-manager": {
+        "root": "nodes/rift-simulation-manager",
+        "revision": "sha256:820d0b894fd9d7e75f27c990dd47840ab70bd86cfa148a32e347666d70cfa2b1",
+        "source_id": "public/rift-simulation-manager"
+      }
+    },
+    "synthetic-protocol-runner": {
+      "protocol": {
+        "root": "nodes/protocol",
+        "revision": "sha256:6d85d6f7dd9da0bb0ea30276a2001e92d59386e9a3099f1baf70df10d8de91ad",
+        "source_id": "local/synthetic-protocol"
+      },
+      "runner": {
+        "root": "nodes/runner",
+        "revision": "sha256:6d85d6f7dd9da0bb0ea30276a2001e92d59386e9a3099f1baf70df10d8de91ad",
+        "source_id": "local/synthetic-runner"
+      }
+    }
+  }
+}

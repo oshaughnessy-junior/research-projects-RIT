@@ -45,6 +45,16 @@ setuptools.setup(
 #    py_modules =set(my_library_prefixes),
     packages=setuptools.find_packages('MonteCarloMarginalizeCode/Code'),
     include_package_data=True,
+    package_data={
+        'rift_drift_sentinel': [
+            'schemas/*.json',
+            'schemas/*.md',
+            'examples/*.json',
+            'examples/*.md',
+            'examples/nodes/*/contracts/*.json',
+            'examples/nodes/*/golden/*.json',
+        ],
+    },
     classifiers=[
         "Programming Language :: Python :: 3",
         "License :: OSI Approved :: MIT License",

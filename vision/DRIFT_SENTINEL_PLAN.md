@@ -17,9 +17,27 @@ The sentinel is distinct from the scheduled job that invokes it:
   retention, and notification policy belong to the runner's deployment
   repository or operations workspace, not to this module.
 
+The durable storage, ownership, escalation, retention, and threat model are
+specified in [DRIFT_SENTINEL_OPERATIONS.md](DRIFT_SENTINEL_OPERATIONS.md).
+
 The first pilot is the RIFT/SuperNu boundary. The design must remain usable for
 other costly-simulation inference campaigns, including hydrodynamics,
 radiative-transfer, and population-inference projects.
+
+## Phase 0/1 reference implementation
+
+The bounded offline core lives at
+`MonteCarloMarginalizeCode/Code/rift_drift_sentinel/`. It is a standalone Python
+package distributed from the RIFT repository but deliberately outside the
+`RIFT` import namespace so it can run without importing RIFT, lalsuite, JAX, or
+other science stacks. Its focused tests live at
+`MonteCarloMarginalizeCode/Code/test/drift_sentinel/`.
+
+The checked-in registry is a redacted, non-authoritative pilot. The proposed
+authoritative desired state belongs in a dedicated private registry repository;
+compact observed run records belong in a separate private run-record repository
+or equivalently protected append-only store. Neither repository is created or
+deployed by Phase 1.
 
 ## Non-goals and safety boundary
 
@@ -128,6 +146,14 @@ registry:
 The pilot is successful when an incompatible boundary change fails its
 compatibility gate with actionable evidence while the current compatible path
 continues to pass.
+
+Phase 0/1 currently inventories a legacy direct-archive seam using sanitized
+pinned evidence. It exposes a root-filename mismatch but remains
+`inventory_only`; this observation motivates a backend-neutral adapter contract
+and is not itself the target compatibility gate or the valid scientific round
+trip required for pilot success. See
+`MonteCarloMarginalizeCode/Code/rift_drift_sentinel/examples/PILOT_INVENTORY.md`
+for the exact evidence and owner-review questions.
 
 ## Delivery phases
 
