@@ -1,0 +1,30 @@
+{
+  "vocabulary_version": "evaluation.record-draft/v0",
+  "record_type": "result",
+  "result_id": "synthetic-result-001",
+  "request_id": "synthetic-request-001",
+  "logical_evaluation_id": "synthetic-evaluation-001",
+  "attempt_number": 1,
+  "domain_contract": {
+    "id": "synthetic.scalar-objective",
+    "version": "draft-0"
+  },
+  "outcome": "complete",
+  "payload": {"objective": -1.25},
+  "producer": {
+    "id": "synthetic.result-writer",
+    "version": "0.1",
+    "native_reference": "toy-run-001"
+  },
+  "uncertainty": {
+    "status": "reported",
+    "schema_id": "synthetic.standard-error",
+    "value": {"standard_error": 0.05}
+  },
+  "cost": {
+    "wall_time_s": 2.5,
+    "cpu_time_s": 2.0,
+    "native_evaluation_count": 10
+  },
+  "diagnostics": []
+}

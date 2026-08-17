@@ -1,0 +1,22 @@
+{
+  "vocabulary_version": "evaluation.record-draft/v0",
+  "record_type": "result",
+  "result_id": "synthetic-result-invalid-002",
+  "request_id": "synthetic-request-001",
+  "logical_evaluation_id": "synthetic-evaluation-001",
+  "attempt_number": 1,
+  "domain_contract": {
+    "id": "synthetic.scalar-objective",
+    "version": "draft-0"
+  },
+  "outcome": "failed",
+  "payload": {"objective": -1.25},
+  "producer": {
+    "id": "synthetic.result-writer",
+    "version": "0.1"
+  },
+  "uncertainty": {"status": "not_reported"},
+  "diagnostics": [
+    {"category": "internal", "code": "synthetic-failure"}
+  ]
+}
