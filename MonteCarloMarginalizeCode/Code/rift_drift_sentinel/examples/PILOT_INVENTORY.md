@@ -1,12 +1,13 @@
-# RIFT/SuperNu candidate interchange inventory
+# RIFT/SuperNu native-archive observation
 
 ## Claim boundary
 
-This public Phase 0/1 fixture records one candidate archive-root interchange
-edge using sanitized, pinned evidence. It is not evidence that interchange
-works, is not a scientific result contract, and authorizes no archive or API
-change. The edge remains `inventory_only`, so the sentinel reports
-`indeterminate` while retaining the observed root-filename mismatch.
+This public Phase 0/1 fixture records one observation about the projects'
+native archive roots using sanitized, pinned evidence. It is not evidence that
+direct interchange works, is not the target scientific result contract, and
+authorizes no archive or API change. The edge remains `inventory_only`, so the
+sentinel reports `indeterminate` while retaining the observed root-filename
+mismatch.
 
 The public source identities are intentionally limited:
 
@@ -20,7 +21,7 @@ record, not in this public repository.
 
 ## Proven public seam
 
-- Edge: `candidate-archive-root-interchange`
+- Edge: `native-archive-root-observation`
 - Direction: sanitized private-producer evidence toward the RIFT loader seam
 - Producer evidence: a production-shaped root descriptor named `archive.json`
 - Consumer evidence: the RIFT loader requires a root file named
@@ -33,10 +34,15 @@ RIFT consumer requirements and are not used to infer nested compatibility.
 No index format, queue configuration, nested directory layout, status model,
 callable API, or scientific payload behavior is asserted publicly by this edge.
 
-The direction is a candidate contract grounded in sanitized pinned evidence and
-recorded intent. It is not a working result edge. Joint owner review may retain
-this direction, reverse it, split it, or replace direct interchange with an
-explicit adapter.
+This is evidence about native implementations, not a requirement that they
+converge. The selected direction is a backend-neutral adapter contract: RIFT's
+JSONL representation may remain a native backend, while another conforming
+implementation may use plain JSON, SQLite, object storage, or another suitable
+representation. Lightweight archives do not need SQLite merely to conform.
+
+The adapter contract will govern observable behavior and scientific meaning;
+the native root filename is not a compatibility surface once an adapter is the
+supported path.
 
 ## Golden artifact and reproduction
 
@@ -80,12 +86,14 @@ identities. They exercise:
 These fixtures never reuse the candidate edge's IDs or revisions and cannot be
 cited as real RIFT/SuperNu compatibility evidence.
 
-## Owner-review questions
+## Next contract questions
 
-Before any promotion from `inventory_only`, both owners must decide whether
-direct interchange is still intended or an adapter is the supported contract,
-which directions are supported, what compatibility is owed to existing
-archives, and what sanitized end-to-end round trip proves the decision.
+Before any promotion from `inventory_only`, both owners must specify the
+minimum adapter operations, supported direction or directions, version
+negotiation, error/status behavior, identity and provenance semantics,
+compatibility owed to existing archives, and the sanitized end-to-end round
+trip that proves conformance. Storage technology remains an implementation
+choice.
 
 ## Disconnected demonstration group
 

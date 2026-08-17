@@ -191,17 +191,21 @@ Deferred to separately authorized changes:
 - coding-sysadmin deployment, launchd/cron/CI configuration, durable writes,
   retention deletion, notifications, and health monitoring;
 - meta-manager ingestion and portfolio digest format;
-- joint owner review of the sanitized candidate RIFT/SuperNu root seam, selection of
-  direct interchange versus an explicit adapter, a golden round trip through
-  that selected path, and any promotion from `inventory_only`;
+- specification of a backend-neutral RIFT/SuperNu adapter contract, a golden
+  round trip through one conforming adapter, and any promotion from
+  `inventory_only`;
 - report-to-report transition comparison and first-divergent-revision search;
 - callable/CLI inspection, dependency-range solving, general JSON Schema,
   canonical scientific artifact hashing, and optional project adapters;
 - any blocking CI policy or change to RIFT/SuperNu APIs, defaults, archives, or
   campaign execution.
 
-The next highest-value increment is joint owner review of the sanitized
-candidate RIFT/SuperNu interchange evidence: decide whether direct interchange
-remains supported or an adapter is the contract, then produce one sanitized
-round trip through the selected path. It should land before broadening the check
-engine.
+The owner decision is to prefer a backend-neutral adapter contract. RIFT's
+JSONL archive may remain one native implementation; another project may use
+plain files, SQLite, object storage, or another backend without weakening
+conformance. Backend complexity should follow archive scale, query, concurrency,
+and durability needs rather than a uniform technology mandate.
+
+The next highest-value increment is to specify the minimum adapter behavior and
+produce one sanitized round trip through a conforming RIFT/SuperNu path. It
+should land before broadening the check engine.

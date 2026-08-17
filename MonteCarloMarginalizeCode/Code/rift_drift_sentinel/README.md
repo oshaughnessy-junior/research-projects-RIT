@@ -14,11 +14,12 @@ reports. It does not fetch, authenticate, schedule, persist, notify, modify a
 repository, or decide that a scientific divergence is acceptable.
 
 The first registry is an **inventory**, not a compatibility certification. Its
-candidate RIFT/SuperNu interchange edge compares a sanitized production-shaped
+RIFT/SuperNu native-archive observation compares a sanitized production-shaped
 root descriptor with the proven RIFT root-manifest filename requirement. The
 filenames differ, but the edge remains `inventory_only`, so it produces
-`indeterminate` with mismatch evidence until both owners review it. Only the
-disconnected synthetic protocol/runner fixture is marked `verified`.
+`indeterminate` evidence rather than making storage-layout compatibility a
+requirement. The intended shared surface is a backend-neutral adapter contract;
+only the disconnected synthetic protocol/runner fixture is marked `verified`.
 
 ## Install and invoke
 

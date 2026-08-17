@@ -18,7 +18,9 @@ Use RIFT and SuperNu as the first paired application.
   coordinates, prior context, uncertainty, provenance, failure state, and
   content identity.
 - Map current RIFT and SuperNu behavior to that contract through adapters;
-  preserve established production entry points.
+  preserve established production entry points. The contract specifies
+  observable behavior and scientific meaning, not JSONL, SQLite, or another
+  storage backend.
 - Define the minimum HyperPipe controller boundary: campaign state, proposal or
   oracle selection, evaluation request, result assimilation, convergence, and
   escalation.

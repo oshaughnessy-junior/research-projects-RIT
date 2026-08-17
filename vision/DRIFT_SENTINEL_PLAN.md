@@ -147,9 +147,10 @@ The pilot is successful when an incompatible boundary change fails its
 compatibility gate with actionable evidence while the current compatible path
 continues to pass.
 
-Phase 0/1 currently inventories a candidate archive-root interchange seam using
-sanitized pinned evidence. It exposes a root-filename mismatch but remains
-`inventory_only`; it is not a working result edge or the valid scientific round
+Phase 0/1 currently inventories a legacy direct-archive seam using sanitized
+pinned evidence. It exposes a root-filename mismatch but remains
+`inventory_only`; this observation motivates a backend-neutral adapter contract
+and is not itself the target compatibility gate or the valid scientific round
 trip required for pilot success. See
 `MonteCarloMarginalizeCode/Code/rift_drift_sentinel/examples/PILOT_INVENTORY.md`
 for the exact evidence and owner-review questions.

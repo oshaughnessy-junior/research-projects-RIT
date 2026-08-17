@@ -29,7 +29,7 @@
       ],
       "edges": [
         {
-          "id": "candidate-archive-root-interchange",
+          "id": "native-archive-root-observation",
           "producer": "supernu-manager",
           "consumer": "rift-simulation-manager",
           "owner": "coding-rift+private-project-owner",
