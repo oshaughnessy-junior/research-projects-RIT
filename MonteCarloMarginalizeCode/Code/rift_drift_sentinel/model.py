@@ -12,9 +12,10 @@ from typing import Any, Dict, List, Mapping, Sequence, Tuple
 REGISTRY_VERSION = "rift-drift-registry/v1"
 RESOLVED_INPUTS_VERSION = "rift-drift-resolved-inputs/v1"
 REPORT_VERSION = "rift-drift-report/v1"
-CORE_VERSION = "0.1.0"
+CORE_VERSION = "0.1.1"
 _IDENTIFIER = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 _REVISION = re.compile(r"^(?:[0-9a-f]{40}|sha256:[0-9a-f]{64})$")
+_SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 MAX_INPUT_BYTES = 1024 * 1024
 
 
@@ -43,6 +44,7 @@ class ExceptionRecord:
     rationale: str
     expires: str
     approvers: Tuple[str, ...]
+    mismatch_fingerprint: str
 
 
 @dataclass(frozen=True)
@@ -250,7 +252,12 @@ def load_registry(path: Path) -> Registry:
             for xi, exception_raw in enumerate(_require_list(edge_obj.get("exceptions", []), f"{ewhere}.exceptions", errors)):
                 xwhere = f"{ewhere}.exceptions[{xi}]"
                 exception_obj = _require_object(exception_raw, xwhere, errors)
-                _reject_unknown(exception_obj, ("id", "owner", "rationale", "expires", "approvers"), xwhere, errors)
+                _reject_unknown(
+                    exception_obj,
+                    ("id", "owner", "rationale", "expires", "approvers", "mismatch_fingerprint"),
+                    xwhere,
+                    errors,
+                )
                 exception_id = _identifier(exception_obj, "id", xwhere, errors)
                 if exception_id in exception_ids:
                     errors.append(f"{xwhere}.id: duplicate exception {exception_id!r}")
@@ -272,6 +279,9 @@ def load_registry(path: Path) -> Registry:
                 missing_approvers = sorted(required_approvers - set(approvers))
                 if missing_approvers:
                     errors.append(f"{xwhere}.approvers: missing affected node owners {missing_approvers}")
+                mismatch_fingerprint = _string(exception_obj, "mismatch_fingerprint", xwhere, errors)
+                if mismatch_fingerprint and not _SHA256.fullmatch(mismatch_fingerprint):
+                    errors.append(f"{xwhere}.mismatch_fingerprint: expected sha256 content identity")
                 exceptions.append(
                     ExceptionRecord(
                         exception_id=exception_id,
@@ -279,6 +289,7 @@ def load_registry(path: Path) -> Registry:
                         rationale=_string(exception_obj, "rationale", xwhere, errors),
                         expires=expires,
                         approvers=tuple(approvers),
+                        mismatch_fingerprint=mismatch_fingerprint,
                     )
                 )
             if len(exceptions) > 1:

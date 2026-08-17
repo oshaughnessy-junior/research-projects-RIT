@@ -60,10 +60,17 @@ def _validate_schema_shape(schema: Mapping[str, Any], label: str) -> None:
     for field, declaration in properties.items():
         if not isinstance(field, str) or not isinstance(declaration, dict):
             raise ValueError(f"{label} schema: properties must map string names to objects")
-        if "type" in declaration and not isinstance(declaration["type"], str):
-            raise ValueError(f"{label} schema: {field}.type must be a string")
-        if "enum" in declaration and not isinstance(declaration["enum"], list):
-            raise ValueError(f"{label} schema: {field}.enum must be an array")
+        if "type" in declaration:
+            if not isinstance(declaration["type"], str):
+                raise ValueError(f"{label} schema: {field}.type must be a string")
+            if declaration["type"] not in _PUBLIC_SCALARS:
+                raise ValueError(f"{label} schema: {field}.type is not supported by v1")
+        if "enum" in declaration:
+            if not isinstance(declaration["enum"], list):
+                raise ValueError(f"{label} schema: {field}.enum must be an array")
+            canonical_members = [_canonical_json(item) for item in declaration["enum"]]
+            if len(canonical_members) != len(set(canonical_members)):
+                raise ValueError(f"{label} schema: {field}.enum values must be unique")
         if "x-science" in declaration and not isinstance(declaration["x-science"], dict):
             raise ValueError(f"{label} schema: {field}.x-science must be an object")
         if isinstance(declaration.get("x-science"), dict) and len(declaration["x-science"]) > MAX_ANNOTATIONS:
@@ -82,6 +89,28 @@ def _safe_evidence(value: Any) -> Any:
     canonical = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
     kind = "array" if isinstance(value, list) else ("object" if isinstance(value, dict) else type(value).__name__)
     return {"kind": kind, "bytes": len(canonical), "sha256": hashlib.sha256(canonical).hexdigest()}
+
+
+def _canonical_json(value: Any) -> str:
+    """Return a type-preserving canonical identity for a JSON value."""
+
+    try:
+        return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"enum contains a value that is not canonical JSON: {exc}")
+
+
+def _enum_equal(producer: Any, consumer: Any) -> bool:
+    if not isinstance(producer, list) or not isinstance(consumer, list):
+        return False
+    return sorted(_canonical_json(item) for item in producer) == sorted(
+        _canonical_json(item) for item in consumer
+    )
+
+
+def _mismatch_fingerprint(mismatches: List[Mapping[str, Any]]) -> str:
+    canonical = json.dumps(mismatches, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    return "sha256:" + hashlib.sha256(canonical).hexdigest()
 
 
 def _path_key(value: str) -> str:
@@ -114,7 +143,12 @@ def _compare_subset(producer: Mapping[str, Any], consumer: Mapping[str, Any]) ->
             mismatches.append({"path": f"$.properties[{field_key}]", "expected": "object", "observed": "non-object"})
             continue
         for key in ("type", "enum"):
-            if key in expected and observed.get(key) != expected[key]:
+            values_match = (
+                _enum_equal(observed.get(key), expected[key])
+                if key == "enum" and key in expected
+                else observed.get(key) == expected.get(key)
+            )
+            if key in expected and not values_match:
                 mismatches.append(
                     {
                         "path": f"$.properties[{field_key}].{key}",
@@ -201,13 +235,15 @@ def evaluate(registry: Registry, resolved: ResolvedInputs, run_id: str, as_of: s
                 base["evidence"]["consumer"]["sha256"] = required_hash
                 mismatches = _compare_subset(provided, required)
                 base["mismatches"] = mismatches
+                if mismatches:
+                    base["mismatch_fingerprint"] = _mismatch_fingerprint(mismatches)
                 if edge.verification == "inventory_only":
                     base["outcome"] = "indeterminate"
                     base["observation_status"] = "indeterminate"
                     base["reason"] = "contract inventory has not been owner-verified"
                 elif mismatches:
                     exception = _active_exception(edge, run_date)
-                    if exception is None:
+                    if exception is None or exception.mismatch_fingerprint != base["mismatch_fingerprint"]:
                         base["outcome"] = "incompatible"
                         base["observation_status"] = "observed"
                     else:
@@ -219,6 +255,7 @@ def evaluate(registry: Registry, resolved: ResolvedInputs, run_id: str, as_of: s
                             "rationale": exception.rationale,
                             "expires": exception.expires,
                             "approvers": list(exception.approvers),
+                            "mismatch_fingerprint": exception.mismatch_fingerprint,
                         }
                 else:
                     base["outcome"] = "compatible"

@@ -36,13 +36,14 @@
     "exception": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "owner", "rationale", "expires", "approvers"],
+      "required": ["id", "owner", "rationale", "expires", "approvers", "mismatch_fingerprint"],
       "properties": {
         "id": {"$ref": "#/$defs/id"},
         "owner": {"type": "string", "minLength": 1},
         "rationale": {"type": "string", "minLength": 1},
         "expires": {"type": "string", "format": "date"},
-        "approvers": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+        "approvers": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "mismatch_fingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
       }
     },
     "contract": {
