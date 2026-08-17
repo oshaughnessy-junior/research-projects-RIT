@@ -356,11 +356,11 @@ RIFT.likelihood.time_interp_choice.CROSSOVER_GUIDANCE; measured tables:
 RIFT/likelihood/DESIGN_q_window_stencil.md.  THE DEFAULT IS ‘nearest’, NOT ‘cubic’: this argument defaults to
 ‘nearest’, and the batch-mode CLI’s –interpolate-time defaults to off, which also
 resolves to ‘nearest’.  Omitting either therefore keeps the historical nearest-bin
-behavior, whose errors the guidance below calls scientifically significant (200-440
+behavior, whose errors the measured guidance calls scientifically significant (200-443
 nats at SNR 100, reaching 1 nat by SNR 2-6); ‘cubic’ is only what a legacy truthy
 –interpolate-time value maps to.  Ask for a stencil explicitly if you want one.
 All three stencils have CPU and GPU implementations.  See _sinc_Q_window_numpy and
-RIFT.likelihood.time_interp_choice for the measured tables.</p>
+RIFT/likelihood/DESIGN_q_window_stencil.md for the measured tables.</p>
 </dd>
 </dl>
 </section>
