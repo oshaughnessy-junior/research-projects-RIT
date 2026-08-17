@@ -190,9 +190,12 @@ The initial synthetic fixture checks only the backend-neutral envelope:
 
 The fixture does not execute real adapters, validate state mappings, or prove
 semantic equivalence, ingestion, mutation, pagination or conformance. It is
-not RIFT/SuperNu compatibility evidence. The first real proof must implement
-`archive.read/v1` for one sanitized RIFT/SuperNu path, pin both adapter versions,
-and verify domain semantics separately.
+not RIFT/SuperNu compatibility evidence. Any future archive proof is a
+separately authorized archive-track issue. It should use one sanitized
+RIFT/SuperNu path, pin both adapter versions, and verify domain semantics
+separately, but it must not claim `archive.read/v1` until the operational
+pagination, identity, consistency, and failure semantics have been specified
+and tested.
 
 ## Sentinel coverage
 
