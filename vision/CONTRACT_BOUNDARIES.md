@@ -148,9 +148,9 @@ separately authorized phases, never as one umbrella implementation issue:
    small adapter per domain, preserving existing entry points and native
    archives. Each adapter has its own budget, compatibility declaration, and
    adversarial review.
-3. **Later controller issue.** Drive one bounded controller iteration from
-   correlated records, including one failed or indeterminate evaluation and a
-   restart/replay check.
+3. **Controller increments.** First define the atomic assimilation boundary
+   over separately supplied correlated records. Later drive one bounded
+   controller iteration, including failure and restart behavior.
 4. **Later conformance decision.** Decide which observed semantics justify a
    versioned evaluation profile. Archive-read conformance remains an independent
    decision and is not implied by evaluation or controller evidence.
@@ -243,3 +243,9 @@ records one direct native proposal-to-next-marginalization edge and the matching
 bounded artifact relationship. It is handoff evidence only: it establishes no
 assimilation, controller state, portable ordering, success policy, scientific
 validity, or cross-domain behavior.
+
+The normative
+[`controller assimilation v0`](contracts/controller-assimilation-v0/)
+defines only atomic, replay-safe acceptance of separately supplied correlated
+results. It does not implement proposal policy, evaluation, an archive, or a
+HyperPipe controller.
