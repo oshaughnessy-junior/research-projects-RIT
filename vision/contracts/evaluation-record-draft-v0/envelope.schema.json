@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rift:vision:evaluation-record-draft-v0",
+  "title": "Synthetic evaluation record draft v0",
+  "description": "Non-conformant vocabulary experiment; not an operational adapter contract.",
+  "oneOf": [
+    {"$ref": "#/$defs/request"},
+    {"$ref": "#/$defs/result"}
+  ],
+  "$defs": {
+    "opaque_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "short_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*$"
+    },
+    "domain_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version"],
+      "properties": {
+        "id": {"$ref": "#/$defs/opaque_id"},
+        "version": {"$ref": "#/$defs/short_version"}
+      }
+    },
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version"],
+      "properties": {
+        "id": {"$ref": "#/$defs/opaque_id"},
+        "version": {"$ref": "#/$defs/short_version"},
+        "native_reference": {"$ref": "#/$defs/opaque_id"}
+      }
+    },
+    "uncertainty": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": {
+          "enum": ["reported", "not_reported", "not_applicable"]
+        },
+        "schema_id": {"$ref": "#/$defs/opaque_id"},
+        "value": {}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"const": "reported"}}},
+          "then": {"required": ["schema_id", "value"]},
+          "else": {
+            "properties": {
+              "schema_id": false,
+              "value": false
+            }
+          }
+        }
+      ]
+    },
+    "cost": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "wall_time_s": {"type": "number", "minimum": 0, "maximum": 1000000000000},
+        "cpu_time_s": {"type": "number", "minimum": 0, "maximum": 1000000000000},
+        "accelerator_time_s": {"type": "number", "minimum": 0, "maximum": 1000000000000},
+        "native_evaluation_count": {"type": "integer", "minimum": 0, "maximum": 1000000000000000}
+      }
+    },
+    "diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["category", "code"],
+      "properties": {
+        "category": {
+          "enum": ["invalid", "unavailable", "unsupported", "internal", "science"]
+        },
+        "code": {"$ref": "#/$defs/opaque_id"},
+        "message": {"type": "string", "maxLength": 512}
+      }
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "vocabulary_version",
+        "record_type",
+        "request_id",
+        "logical_evaluation_id",
+        "attempt_number",
+        "domain_contract",
+        "payload",
+        "producer"
+      ],
+      "properties": {
+        "vocabulary_version": {"const": "evaluation.record-draft/v0"},
+        "record_type": {"const": "request"},
+        "request_id": {"$ref": "#/$defs/opaque_id"},
+        "logical_evaluation_id": {"$ref": "#/$defs/opaque_id"},
+        "attempt_number": {"type": "integer", "minimum": 1, "maximum": 1000000},
+        "domain_contract": {"$ref": "#/$defs/domain_contract"},
+        "payload": {},
+        "producer": {"$ref": "#/$defs/producer"}
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "vocabulary_version",
+        "record_type",
+        "result_id",
+        "request_id",
+        "logical_evaluation_id",
+        "attempt_number",
+        "domain_contract",
+        "outcome",
+        "producer",
+        "uncertainty"
+      ],
+      "properties": {
+        "vocabulary_version": {"const": "evaluation.record-draft/v0"},
+        "record_type": {"const": "result"},
+        "result_id": {"$ref": "#/$defs/opaque_id"},
+        "request_id": {"$ref": "#/$defs/opaque_id"},
+        "logical_evaluation_id": {"$ref": "#/$defs/opaque_id"},
+        "attempt_number": {"type": "integer", "minimum": 1, "maximum": 1000000},
+        "domain_contract": {"$ref": "#/$defs/domain_contract"},
+        "outcome": {
+          "enum": ["complete", "partial", "failed", "indeterminate", "unsupported"]
+        },
+        "payload": {},
+        "producer": {"$ref": "#/$defs/producer"},
+        "uncertainty": {"$ref": "#/$defs/uncertainty"},
+        "cost": {"$ref": "#/$defs/cost"},
+        "diagnostics": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {"$ref": "#/$defs/diagnostic"}
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "outcome": {"enum": ["complete", "partial"]}
+            }
+          },
+          "then": {"required": ["payload"]},
+          "else": {"not": {"required": ["payload"]}}
+        }
+      ]
+    }
+  }
+}

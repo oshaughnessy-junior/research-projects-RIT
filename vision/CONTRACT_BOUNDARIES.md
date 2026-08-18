@@ -200,3 +200,8 @@ Stop and return to design review if a proposed increment requires any of:
 The next implementation-sized architecture deliverable should therefore be a
 non-conformant evaluation request/result vocabulary plus synthetic negative
 fixtures, not the complete controller, archive, and execution stack.
+
+The current vocabulary checkpoint is recorded under
+[`contracts/evaluation-record-draft-v0`](contracts/evaluation-record-draft-v0/).
+It remains synthetic and non-conformant; its presence does not authorize the
+later adapter phase.
