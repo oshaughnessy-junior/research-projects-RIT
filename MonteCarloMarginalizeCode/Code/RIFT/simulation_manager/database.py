@@ -1831,17 +1831,33 @@ class DualCondorRunQueue(RunQueue):
             # request_memory by oom_memory_factor and release the job.
             # After oom_max_retries the job stays held and we let the
             # archive's stuck-detection take over.
+            #
+            # The retry counter is NumHolds, not NumJobStarts. NumJobStarts
+            # counts every execution attempt, including preemptions and
+            # checkpoint restarts that have nothing to do with memory. On an
+            # opportunistic pool those dominate, so a job can burn its whole
+            # OOM budget without having been held for memory even once -- and
+            # the memory bump is inflated by the same wrong factor. NumHolds
+            # counts holds, which is what this policy is actually rationing.
+            #
+            # NumHolds is undefined until the first hold. Both expressions
+            # below are only reached once the job is held, so it should be
+            # defined by then; the ifthenelse is there because an undefined
+            # request_memory silently never matches a slot, which is a much
+            # worse failure than a slightly wrong number.
+            hold_count = "ifthenelse(NumHolds =?= undefined, 1, NumHolds)"
             lines.append("MY.InitialRequestMemory = {}".format(request_memory))
             lines.append(
                 "request_memory          = ifthenelse("
                 "(LastHoldReasonCode =!= 34 && LastHoldReasonCode =!= 26), "
                 "MY.InitialRequestMemory, "
-                "int({factor} * NumJobStarts * MemoryUsage))".format(
-                    factor=self.oom_memory_factor))
+                "int({factor} * {holds} * MemoryUsage))".format(
+                    factor=self.oom_memory_factor, holds=hold_count))
             lines.append(
                 "periodic_release        = "
                 "((HoldReasonCode =?= 34) || (HoldReasonCode =?= 26)) "
-                "&& (NumJobStarts < {})".format(self.oom_max_retries))
+                "&& ({holds} < {n})".format(
+                    holds=hold_count, n=self.oom_max_retries))
         else:
             lines.append("request_memory          = {}M".format(request_memory))
 
