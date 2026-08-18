@@ -14,6 +14,14 @@ with explicit compatibility and scientific validation.
 
 Use RIFT and SuperNu as the first paired application.
 
+The draft evaluation envelope has now been exercised by separate RIFT and
+non-GW adapters, and genuine non-GW adapter records exercised the RIFT reference
+assimilation boundary in the private gate. That is sufficient design evidence
+to expose the next dependency problem, but it is not conformance and does not
+make RIFT the owner of a shared protocol. The next architecture slice is an
+ownership and distribution decision, not another retained run record, proof
+fixture, or package scaffold.
+
 - Preserve the four boundaries in `CONTRACT_BOUNDARIES.md`: domain science,
   evaluation request/result, archive read, and campaign controller. Do not
   collapse them into one universal simulation-manager API.
@@ -31,6 +39,16 @@ Use RIFT and SuperNu as the first paired application.
   API. The first increment covers atomic result assimilation only; proposal or
   oracle selection, evaluation dispatch, convergence, and escalation remain
   separate increments.
+- Before either project adopts the drafts as a production dependency, decide
+  whether they belong in a neutral dependency-light protocol module or in a
+  named canonical repository with explicit external version edges. Compare
+  ownership, release/deprecation policy, adopter burden, and compatibility
+  budget before creating package code. In either model, project adapters and
+  scientific payload schemas stay with their owning projects.
+- Supply stable contract and version metadata to the registry track. Only a
+  separately authorized registry task may record real project-to-protocol
+  edges after adoption; runner operators retain no authority to waive protocol
+  or project-science semantics.
 - First observe one unchanged, deterministic proposal-policy seam without
   treating that trace as controller conformance or durable controller state.
   Assimilation, failure, convergence, and restart remain later, separately
@@ -53,9 +71,10 @@ Use RIFT and SuperNu as the first paired application.
   a SuperNu or related costly-simulation case before claiming cross-domain
   generality. The non-GW implementation need not use JAX internally.
 
-Exit evidence: both domains exercise the same contract and controller boundary,
-with provenance and comparable scientific diagnostics, while supported O4
-workflows remain unchanged by default.
+Exit evidence: both domains exercise the same contract and controller boundary
+from an explicitly owned, versioned source rather than divergent copies, with
+provenance and comparable scientific diagnostics, while supported O4 workflows
+remain unchanged by default.
 
 ## Next: harden adaptive inference
 

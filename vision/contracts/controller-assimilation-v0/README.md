@@ -52,5 +52,8 @@ The implementation is standalone Python standard library. The JSON Schema is
 documentation and interchange validation; the reducer has no `jsonschema`
 runtime dependency.
 
-The contract remains draft until the separately authorized private non-GW
-consumer gate in the canonical issue has passed.
+The separately authorized private non-GW consumer gate has passed, establishing
+cross-domain design evidence but not production conformance. The contract
+remains experimental until its evaluation-envelope dependency and reducer are
+assigned an explicit owner and distribution model; downstream projects should
+not vendor this RIFT-owned copy.
