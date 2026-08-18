@@ -1,87 +1,78 @@
 # Architecture roadmap
 
-> **Status:** This is a directional record, not implementation authorization.
-> It authorizes no code, API or default, dependency, CI-gate, branch, or
-> deployment change. Each implementation slice requires a canonical SOR issue,
-> named owner, bounded budget and stop condition, compatibility declaration,
-> tests, and independent adversarial review.
+> **Status:** Strategic gates only. This roadmap authorizes no implementation,
+> adoption, dependency, registry declaration, production claim, or scientific
+> claim. Each runtime or project change requires a separate reviewed issue.
 
-This roadmap orders strategic proofs. It is intentionally not a backlog of
-local defects or stale code. Each stage should land as small, reviewable slices
-with explicit compatibility and scientific validation.
+## Current state
 
-## Now: establish the cross-domain seam
+The neutral public owner and experimental release now exist. RIFT and R3 each
+completed separately reviewed, opt-in test validation against that release.
+RIFT's incubation-comparison edge is useful historical evidence and is
+intentionally absent from the durable target tree.
 
-Use RIFT and SuperNu as the first paired application.
+These results establish only cross-domain mechanical evidence for evaluation
+and assimilation. They do not establish a stable API, production dependency,
+controller integration, operational archive-read conformance, or scientific
+validity. Proposal lifecycle, restart, convergence, and supported HyperPipe
+controller integration remain open.
 
-- Specify one versioned evaluation request/result contract, including units,
-  coordinates, prior context, uncertainty, provenance, failure state, and
-  content identity.
-- Map current RIFT and SuperNu behavior to that contract through adapters;
-  preserve established production entry points. The contract specifies
-  observable behavior and scientific meaning, not JSONL, SQLite, or another
-  storage backend.
-- Define the minimum HyperPipe controller boundary: campaign state, proposal or
-  oracle selection, evaluation request, result assimilation, convergence, and
-  escalation.
-- Run one thin, reproducible campaign slice in each domain and retain golden
-  fixtures for round-trip and migration tests.
-- Put one scientifically useful JAX path in CI with a reference comparison.
-- Exercise the corresponding backend-neutral oracle or integrator contract in
-  a SuperNu or related costly-simulation case before claiming cross-domain
-  generality. The non-GW implementation need not use JAX internally.
+## Gate 1: supported RIFT consumption
 
-Exit evidence: both domains exercise the same contract and controller boundary,
-with provenance and comparable scientific diagnostics, while supported O4
-workflows remain unchanged by default.
+The next runtime work should begin with a supported RIFT consumer, not another
+retained proof record.
 
-## Next: harden adaptive inference
+- Select one bounded consumer and enumerate its Tier-A behavior.
+- Propose opt-in use of the neutral evaluation or assimilation capability with
+  a project-specific rollback.
+- Compare scientific and operational behavior with the supported native path.
+- Keep archive persistence, scheduling, proposal policy, and default changes
+  outside the slice unless independently authorized.
 
-- Evaluate trained sampling oracles against representative multimodal,
-  high-dimensional, and failure-prone campaigns.
+Exit evidence: a reviewed RIFT path consumes an explicitly versioned neutral
+contract without changing supported defaults or claiming production
+conformance beyond the tested surface.
+
+## Gate 2: adaptive inference under stress
+
+- Reference-test trained sampling oracles on representative difficult cases.
 - Harden loud-signal and three-generation-interferometer integration with
-  shape-sensitive, effective-sample-size, and calibration gates.
-- Make restart, caching, partial failure, and heterogeneous-cost behavior
-  explicit in the evaluation substrate.
-- Add a second non-GW adapter, preferably for numerical or hydrodynamic
-  simulation, to challenge assumptions revealed by the first transfer.
-- Version shared status vocabularies and migration rules; use the independent
-  drift sentinel to monitor project groups and their dependency DAGs.
+  shape, calibration, and effective-sample-size checks.
+- Exercise the corresponding backend-neutral capability in a scientifically
+  meaningful non-GW case before making a cross-domain claim.
+- Keep JAX optional and CI-maintained; the non-GW implementation need not use
+  JAX.
 
-Exit evidence: adaptive choices improve robustness or cost on agreed benchmarks,
-campaigns resume without scientific ambiguity, and contract drift is reported
-before integration failure.
+Exit evidence: measured robustness or cost improves without weakening Tier-A
+behavior, and the portability claim depends on contracts rather than an array
+backend.
 
-## Later: portfolio-scale reuse
+## Gate 3: challenge the boundaries
 
-- Support disconnected groups of collaborating projects without forcing a
-  single release cadence or dependency environment.
-- Permit multiple numerical portfolios behind the same inference contracts,
-  chosen by measured regime suitability rather than domain names.
-- Establish release and deprecation windows for shared contracts and adapters.
-- Build campaign-level comparisons across simulation fidelities, emulators, and
-  direct evaluations while retaining uncertainty and provenance.
-- Extend the architecture to population and hierarchical inference without
-  coupling those scientific models to one scheduler or array backend.
+Add a second non-GW domain, preferably a hydrodynamic, numerical-simulation, or
+population-inference application. Use it to challenge identity, uncertainty,
+failure, cost, and provenance assumptions rather than merely translating a
+fixture.
 
-Exit evidence: a new costly-simulation project can adopt the shared seams with a
-small domain adapter, can remain on an independent dependency cadence, and can
-reproduce a campaign from durable records.
+Operational archive reads, restart semantics, convergence policy, and a
+supported HyperPipe controller path each require their own gates. Evaluation
+success does not authorize archive or controller conformance.
+
+Exit evidence: independently owned science can use the narrow seams without
+importing RIFT, adopting its storage, or sharing its dependency cadence.
+
+## Separate registry and sentinel track
+
+Registry or drift-sentinel declaration follows only after a dependency edge is
+intentionally retained in final project trees. The registry observes declared
+versions and evidence; it owns no protocol or science semantics. Its scheduled
+runner owns operations only and cannot waive compatibility or scientific
+review.
 
 ## Decision discipline
 
-For each proposed slice, future agents should record:
-
-1. the scientific outcome and, for a cross-domain or general-capability claim,
-   the two or more domains that test it; domain-specific work may remain within
-   one domain but must not imply generality;
-2. the contract and dependency edges affected;
-3. the compatibility tier and migration path;
-4. the reference, shape, calibration, and operational tests required;
-5. the bounded resource budget and stop conditions; and
-6. an adversarial review before landing.
-
-Defer work that only improves internal neatness, duplicates an existing
-workflow system, or requires simultaneous migration of many repositories. If a
-proposal cannot be validated as a thin cross-domain slice, reduce its scope
-before implementation.
+For every proposed slice, record the outcome, affected edges, compatibility
+surface, tests, rollback, budget, and stop conditions. Require an independent
+adversarial review before landing. Defer work that is primarily cleanup,
+duplicates a workflow system, or demands simultaneous multi-repository
+migration.
