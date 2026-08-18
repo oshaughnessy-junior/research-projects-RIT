@@ -27,9 +27,10 @@ Use RIFT and SuperNu as the first paired application.
   evaluation through adapters while preserving established production entry
   points. Observable adapter behavior must not prescribe JSONL, SQLite, or
   another storage backend.
-- Define and test the minimum HyperPipe controller boundary only after adapter
-  evidence exists: campaign state, proposal or oracle selection, evaluation
-  request, result assimilation, convergence, and escalation.
+- Define controller behavior as narrow contracts rather than one HyperPipe
+  API. The first increment covers atomic result assimilation only; proposal or
+  oracle selection, evaluation dispatch, convergence, and escalation remain
+  separate increments.
 - First observe one unchanged, deterministic proposal-policy seam without
   treating that trace as controller conformance or durable controller state.
   Assimilation, failure, convergence, and restart remain later, separately

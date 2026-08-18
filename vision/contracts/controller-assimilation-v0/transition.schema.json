@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rift:vision:campaign-assimilation-v0",
+  "title": "Campaign assimilation transition v0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "record_type",
+    "transition_id",
+    "campaign_id",
+    "iteration_id",
+    "expected_campaign_revision",
+    "committed_campaign_revision",
+    "controller_policy",
+    "decisions"
+  ],
+  "properties": {
+    "contract_version": {"const": "campaign.assimilation/v0"},
+    "record_type": {"const": "assimilation_transition"},
+    "transition_id": {"$ref": "#/$defs/opaque_id"},
+    "campaign_id": {"$ref": "#/$defs/opaque_id"},
+    "iteration_id": {"$ref": "#/$defs/opaque_id"},
+    "expected_campaign_revision": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740990
+    },
+    "committed_campaign_revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "controller_policy": {"$ref": "#/$defs/controller_policy"},
+    "decisions": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10000,
+      "items": {"$ref": "#/$defs/decision"}
+    }
+  },
+  "$defs": {
+    "opaque_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "short_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*$"
+    },
+    "controller_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version"],
+      "properties": {
+        "id": {"$ref": "#/$defs/opaque_id"},
+        "version": {"$ref": "#/$defs/short_version"}
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "logical_evaluation_id",
+        "result_id",
+        "attempt_number",
+        "disposition"
+      ],
+      "properties": {
+        "request_id": {"$ref": "#/$defs/opaque_id"},
+        "logical_evaluation_id": {"$ref": "#/$defs/opaque_id"},
+        "result_id": {"$ref": "#/$defs/opaque_id"},
+        "attempt_number": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "disposition": {
+          "enum": ["assimilated", "deferred", "rejected"]
+        }
+      }
+    }
+  }
+}
