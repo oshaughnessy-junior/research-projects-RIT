@@ -1,146 +1,95 @@
 # RIFT long-term vision
 
-> **Status:** This is a directional record, not implementation authorization.
-> It authorizes no code, API or default, dependency, CI-gate, branch, or
-> deployment change. Each implementation slice requires a canonical SOR issue,
-> named owner, bounded budget and stop condition, compatibility declaration,
-> tests, and independent adversarial review.
+> **Status:** Directional architecture only. This document authorizes no code,
+> dependency, API, default, workflow, scientific claim, or project adoption.
+> Every implementation slice needs a separate reviewed issue, bounded scope,
+> compatibility declaration, tests, stop conditions, and adversarial review.
 
 ## North star
 
-RIFT should become a durable inference architecture for science in which the
-forward model is expensive, campaigns are large, and correctness matters more
-than adopting any particular numerical fashion. Gravitational-wave inference
-is the proving ground: its high signal-to-noise cases, multiple instruments,
-strict statistical semantics, and production scale expose weaknesses early.
-The architecture should then transfer to radiative-transfer, numerical and
-hydrodynamic simulations, population inference, and other costly models.
+RIFT should be a proving ground for durable inference around expensive models,
+not the boundary of that architecture. Gravitational-wave inference sharpens
+the tools through high-SNR signals, multiple instruments, strict statistical
+semantics, and large campaigns. The reusable seams should transfer to
+radiative transport, hydrodynamic and numerical simulations, population
+inference, and other non-GW applications that will be primary future users.
 
-The goal is not to turn every scientific project into RIFT. It is to extract a
-small set of stable inference and campaign contracts so domain-specific models
-can share orchestration, evidence, diagnostics, and proven numerical tools.
+The goal is not to put every science project inside RIFT. It is to maintain a
+small set of explicit contracts so independently owned projects can reuse
+inference capabilities without sharing a science model, storage backend,
+scheduler, or dependency cadence.
 
-## Intended architecture
+## Architectural responsibilities
 
-The system should separate four responsibilities:
+The architecture keeps four responsibilities distinct:
 
-1. **Domain adapters** define parameters, priors, units, transformations,
-   likelihood semantics, and how a model evaluation is requested and decoded.
-   Gravitational-wave, SuperNu, hydrodynamic, population, and EOS applications
-   remain free to express their own science.
-2. **HyperPipe** is the adaptive inference controller. It decides what to
-   evaluate next, chooses or trains proposals and sampling oracles, manages
-   iteration state, and applies explicit convergence and escalation policies.
-3. **The simulation and evaluation substrate** executes costly work, records
-   immutable inputs and outputs, caches by scientific identity, and exposes
-   provenance, failure, and uncertainty consistently across local and batch
-   resources.
-4. **Numerical capabilities** provide interchangeable integration, fitting,
-   interpolation, surrogate, and posterior-construction methods behind tested
-   contracts. Their internal implementation is not a workflow API.
+1. **Domain adapters** own parameters, units, coordinates, priors,
+   transformations, validity, and native model execution.
+2. **HyperPipe as adaptive inference controller** owns proposal or oracle
+   policy, result assimilation, iteration state, convergence, escalation, and
+   restart, introduced incrementally around supported workflows.
+3. **The simulation and evaluation substrate** executes costly work and
+   retains identity, uncertainty, failure, cost, and provenance without
+   imposing one scheduler or storage backend.
+4. **Numerical capabilities** provide integrators, fits, surrogates, emulators,
+   and posterior construction behind tested interfaces.
 
-This separation is the architectural direction, not a mandate for a disruptive
-rewrite. Existing RIFT workflows may be migrated incrementally only through
-separately authorized adapters and versioned contracts while remaining usable.
+Those responsibilities interact through separate domain-science, evaluation,
+archive-read, and campaign-controller contracts. Scheduler success is not
+scientific assimilation, an evaluation result is not an archive record, and a
+controller checkpoint is not an archive record. The detailed seams are in
+[Contract boundaries](CONTRACT_BOUNDARIES.md).
 
-## Point of the spear
+## Selective JAX
 
-The first cross-domain proof is RIFT plus SuperNu. The pair is deliberately
-demanding: RIFT supplies a mature, high-throughput inference loop with difficult
-high-SNR and multi-instrument cases, while SuperNu supplies a non-GW,
-simulation-dominated application with different parameter, scheduling, and
-failure semantics. A capability is not convincingly general merely because it
-works for two gravitational-wave analyses.
+JAX is a targeted numerical tool, not the architecture. Near-term value lies in
+better trained sampling oracles and robust integration for loud signals and
+three-generation-interferometer regimes. A retained JAX path should have a
+scientific reference comparison, enough CI coverage to prevent silent decay,
+and a supported non-JAX path where compatibility requires it.
 
-Work should favor thin end-to-end slices that run in both domains over broad
-framework construction. The initial shared slice should demonstrate a versioned
-evaluation request, durable result/provenance record, adaptive HyperPipe step,
-and reproducible posterior or campaign diagnostic.
+A cross-domain claim additionally requires a backend-neutral, scientifically
+meaningful non-GW transfer case. That application need not use JAX internally
+and must not acquire JAX merely to demonstrate portability.
 
-## JAX's role
+## Compatibility and storage
 
-JAX is a targeted numerical capability within this architecture, not the new
-architecture itself. Near-term uses are better trained sampling oracles and
-more robust integration for loud-signal and three-generation-interferometer
-regimes. Each retained JAX path must:
+Practical O4 compatibility is a design constraint. Each implementation issue
+must name its Tier-A surfaces, including relevant CLIs, Python entry points,
+file products, defaults, shapes and ordering, restart behavior, and numerical
+tolerances. New behavior is additive or versioned until a separately reviewed
+migration changes a supported surface.
 
-- have a scientifically meaningful reference comparison;
-- run in CI often enough to prevent silent decay;
-- preserve a supported non-JAX path where compatibility requires it.
+Persistence contracts remain backend-neutral. JSON, JSONL, SQLite, object
+storage, or a service can satisfy a behavioral contract when appropriate.
+Projects retain their native storage and execution systems; shared contracts
+must not impose a backend or import a project's science stack.
 
-Before a JAX-backed capability or its contract is described as cross-domain,
-the backend-neutral oracle or integrator contract must be exercised in a
-scientifically meaningful non-GW case. That case need not use JAX internally,
-and SuperNu must not acquire a JAX dependency merely to demonstrate transfer.
+## Evidence and authorization
 
-A JAX implementation earns broader use through measured robustness,
-calibration, throughput, and maintainability—not through backend uniformity.
+Normative architectural decisions may live in `vision/`. Run artifacts, proof
+records, and historical observations belong in the `coding-rift` SOR or the
+project that owns them. Regression fixtures remain in RIFT only when they test
+supported RIFT code. Architecture documents should link durable public
+material rather than retaining incubation debris.
 
-## Contracts and compatibility
+Current mechanical evidence informs the direction but does not establish a
+stable API, production conformance, scientific validity, or runtime adoption.
+The accepted neutral ownership decision is summarized in
+[Contract ownership](CONTRACT_OWNERSHIP_DECISION.md); adoption and registry
+declarations remain separate project decisions.
 
-Shared interfaces must make scientific meaning explicit: schema version,
-coordinates, units, priors, normalization, uncertainty, content identity,
-failure state, and provenance. File formats and command-line interfaces may
-remain as adapters, but must not be the only definition of a contract.
+## Guardrails for future work
 
-Archive contracts are backend-neutral. RIFT's JSONL archive is one native
-implementation, not a required storage format; other implementations may use
-plain JSON, SQLite, object storage, or another representation appropriate to
-their scale and query needs. Adapters satisfy the shared behavioral contract
-without forcing backend convergence. Lightweight archives should remain
-lightweight rather than acquiring a database solely for uniformity.
+Prefer the narrowest supported consumer slice that advances a strategic gate.
+Before implementation, identify the scientific outcome, affected contract and
+dependency edges, compatibility tier, reference evidence, resource budget, and
+stop conditions. Integrator work remains subject to RIFT's shape-recovery
+merge gate.
 
-Compatibility is tiered:
-
-- production O4 command lines, formats, and default scientific semantics remain
-  supported unless a separately reviewed migration retires them;
-- each implementation issue enumerates its Tier-A compatibility surfaces,
-  considering supported Python imports and call signatures, output schemas,
-  shapes, dtypes and ordering, restart and checkpoint behavior, and agreed
-  numerical tolerances in addition to command lines, formats, and defaults;
-- unrecorded or uncertain surfaces begin as observation-only evidence and must
-  not be silently treated as either compatible or blocking;
-- new behavior enters through versioned contracts, explicit opt-ins, or
-  adapters;
-- migrations use golden fixtures and, where scientifically material, dual-run
-  comparisons before defaults change; and
-- dependency changes are treated as cross-project interface changes, not local
-  maintenance.
-
-The cross-project drift sentinel is a separate, small governance capability. It
-should observe these contracts and dependency relationships without becoming
-part of HyperPipe's scientific control loop.
-
-## Measures of progress
-
-Progress is demonstrated by outcomes, not code movement:
-
-- a RIFT/SuperNu campaign can share an evaluation and provenance contract;
-- HyperPipe can control a costly simulation loop without importing GW-specific
-  assumptions;
-- loud-signal and multi-instrument cases pass shape-sensitive validation, not
-  only scalar-integral checks;
-- a maintained JAX capability runs in CI, while any claim of cross-domain
-  generality is supported by a non-GW exercise of its backend-neutral contract;
-- old production entry points continue to reproduce agreed reference results;
-  and
-- cross-project contract or dependency drift is detected before a campaign is
-  launched.
-
-## Guardrails for future agents
-
-Future work should begin with the narrowest end-to-end scientific capability
-that advances this vision. Before implementation, identify the contract being
-changed, its current consumers, the compatibility tier, and the validation
-evidence required. Integrator changes must satisfy the repository's
-shape-recovery merge gate.
-
-Do not use this vision as authorization for repository-wide cleanup, API
-renaming, dependency upgrades, a full JAX rewrite, or replacement of working
-schedulers. Such work requires a concrete scientific or compatibility need.
-Keep domain policy in adapters, keep execution records durable, and prefer
-incremental migrations that can be compared with production behavior.
-
-Any feature proposed for landing should receive an independent, adversarial
-review focused on scientific semantics, hidden domain assumptions, backward
-compatibility, and operational failure modes.
+Do not treat this vision as permission for repository-wide cleanup, API
+renaming, dependency upgrades, a full JAX rewrite, storage convergence, or
+replacement of working schedulers. Do not infer adoption from experimental
+validation. Any proposed feature should receive independent adversarial review
+for scientific semantics, hidden domain assumptions, compatibility, and
+operational failure modes before landing.
