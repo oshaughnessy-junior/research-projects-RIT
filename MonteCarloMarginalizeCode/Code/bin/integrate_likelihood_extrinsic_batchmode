@@ -3692,7 +3692,11 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
     # if exactly zero likelihood function
     like_to_integrate = likelihood_function
     if opts.zero_likelihood:
-              if opts.internal_use_lnL:
+              # Same predicate question as log_res below: the stand-in must match the convention
+              # the INTEGRAND uses (ln L = 0 versus L = 1), which is return_lnL.  Under
+              # `--internal-use-lnL --sampler-method adaptive_cartesian` the option is True while
+              # the integrand is linear, so this handed a linear sampler a log-convention zero.
+              if return_lnL:
                    like_to_integrate = zero_like
               else:
                    like_to_integrate = unit_like
@@ -3979,7 +3983,16 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
     if not(res): # no resut
       raise ValueError(" No integral result returned")
 
-    if not(opts.internal_use_lnL):
+    # WHICH CONVENTION THE SAMPLER RETURNED -- `return_lnL`, not opts.internal_use_lnL.  This is
+    # the same distinction the rvs_integrand_is_lnL derivation above spells out, applied to the
+    # RETURN value: --internal-use-lnL is accepted for every method in ok_lnL_methods, but
+    # `adaptive_cartesian` (mcsampler.py) has no use_lnL handling at all, so the driver never
+    # hands it use_lnL and it returns a LINEAR integral no matter what the option says.  Reading
+    # the option here skipped the logarithm on exactly that pairing and wrote the linear integral
+    # into the lnL column: the ILE-GPU-Paper demo reported lnL = 1.3e29 (= e^67) with sigma inf,
+    # and the .dgrid built from it inherited that.  return_lnL and opts.internal_use_lnL agree for
+    # GMM / adaptive_cartesian_gpu / AV / portfolio, so this changes nothing else.
+    if not(return_lnL):
       log_res = numpy.log(res)
       sqrt_var_over_res =  numpy.sqrt(var)/res
     else:
@@ -4125,7 +4138,7 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
             if (_r2 is None) or (_r2[0] is None):
                 continue
             _res2, _var2, _neff2, _dd2 = _r2
-            if not(opts.internal_use_lnL):
+            if not(return_lnL):   # the sampler's convention, not the option -- see the main pass
                 _lr2 = numpy.log(_res2); _sig2 = numpy.sqrt(_var2)/_res2
             else:
                 _lr2 = _res2; _sig2 = numpy.exp(_var2/2 - _lr2)
@@ -4489,7 +4502,13 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
         # Per-intrinsic likelihood-vs-distance grid. Pure extrinsic-marginalized
         # likelihood as a function of d_L: divides out the distance sampling
         # prior so downstream can re-marginalize with any prior of choice.
-        if opts.output_file and opts.export_marginal_distance_grid and not(opts.distance_marginalization) and opts.internal_use_lnL:
+        # NOT gated on --internal-use-lnL.  That flag decided nothing here -- every quantity
+        # this block reads is already convention-aware (ln_weights_for_posterior is passed
+        # rvs_integrand_is_lnL, and log_res is now derived through return_lnL) -- it only made
+        # --export-marginal-distance-grid silently do nothing unless a SECOND, unrelated flag
+        # was also set, which is how a .dgrid request could be honoured on AV and dropped on
+        # the identical command line with --sampler-method GMM.
+        if opts.output_file and opts.export_marginal_distance_grid and not(opts.distance_marginalization):
           from RIFT.misc.distance_grid import build_distance_grid, save_distance_grid
           fname_output_dgrid = opts.output_file +"_"+str(indx_event)+"_" + ".dgrid"
           dL = np.array(sampler._rvs["distance"])

@@ -692,6 +692,14 @@ class MCSampler(SamplerOutputMixin, object):
         current_log_aggregate = None
         eff_samp = 0  # ratio of max weight to sum of weights
         maxlnL = -np.inf  # max lnL
+        # NOTE this is a LOG-scale running max (of log_integrand), initialized with a
+        # LINEAR-weight idiom: on a log scale 0 asserts max w >= 1, so eff_samp = sum(w)/max(w)
+        # is floored below its true value whenever the largest weight is < 1 -- it under-reports
+        # n_eff by 1/max w and keeps drawing to nmax.  Real GW lnL is large and positive so the
+        # floor does not bite in production, and -inf (what integrate(), the linear sibling,
+        # correctly uses) is DELIBERATELY not adopted here: it would move n_eff, hence run
+        # lengths, on every log-space backend, and the same initializer is copied verbatim in
+        # mcsamplerPortfolio and mcsamplerNFlow.  Change all of them together or none.
         maxval=0   # max weight
         outvals=None  # define in top level scope
         self.ntotal = 0
@@ -779,13 +787,19 @@ class MCSampler(SamplerOutputMixin, object):
                     self._rvs["log_joint_prior"] = self.xpy.log(joint_p_prior)
                     self._rvs["log_joint_s_prior"] = self.xpy.log(joint_p_s)
                     self._rvs["log_weights"] = log_weights
-            # maxlnL
-            maxlnL_now = identity_convert(xpy.max(lnL))
-            maxlnL = identity_convert(maxlnL)
+            # maxlnL.  float(), for the same reason as maxval below: under cupy these
+            # converters return 0-d HOST arrays, and on the FIRST chunk the isinf branch
+            # assigns one straight to maxlnL -- which then meets a device value in
+            # `outvals[0]-maxlnL` (the verbose per-iteration line) and in
+            # `self._rvs["log_integrand"] > maxlnL - deltalnL` (the deltalnL cut), both of
+            # which cupy refuses.  The else branch was already safe only by accident:
+            # np.max over a list returns a numpy SCALAR, which cupy does accept.
+            maxlnL_now = float(identity_convert(xpy.max(lnL)))
+            maxlnL = float(identity_convert(maxlnL))
             if np.isinf(maxlnL ):
               maxlnL = maxlnL_now
             else:
-              maxlnL = np.max([maxlnL, maxlnL_now,-100])
+              maxlnL = float(np.max([maxlnL, maxlnL_now,-100]))
 
 
             # n, Mean, error tracked by statutils structure
@@ -804,7 +818,14 @@ class MCSampler(SamplerOutputMixin, object):
               pass
             self.ntotal = current_log_aggregate[0]
             # effective samples
-            maxval = max(maxval, identity_convert(self.xpy.max(log_integrand) ))
+            # float(), not just identity_convert(): under cupy, identity_convert is
+            # cupy.asnumpy and self.xpy.max returns a 0-d DEVICE array, so asnumpy hands
+            # back a 0-d numpy.ndarray.  Python's max() then makes maxval a HOST ARRAY,
+            # and the eff_samp line below mixes it into a device expression -- which cupy
+            # refuses ("TypeError: Unsupported type <class 'numpy.ndarray'>"), taking down
+            # every --internal-use-lnL run on the default adaptive_cartesian_gpu sampler.
+            # A python float is accepted by both backends.
+            maxval = max(maxval, float(identity_convert(self.xpy.max(log_integrand) )))
 
             # sum of weights is the integral * the number of points
             eff_samp = xpy.exp(  outvals[0]+np.log(self.ntotal) - maxval)   # integral value minus floating point, which is maximum
