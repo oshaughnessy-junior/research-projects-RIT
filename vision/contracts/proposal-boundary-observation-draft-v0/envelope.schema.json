@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rift:vision:proposal-boundary-observation-draft-v0",
+  "title": "Synthetic proposal-boundary observation draft v0",
+  "description": "Non-conformant post-hoc vocabulary experiment; not an operational proposal or controller contract.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "vocabulary_version",
+    "record_type",
+    "domain_contract",
+    "input_population",
+    "proposal_policy",
+    "rng_declaration",
+    "candidate_population"
+  ],
+  "properties": {
+    "vocabulary_version": {"const": "proposal.boundary-observation-draft/v0"},
+    "record_type": {"const": "proposal_boundary_observation"},
+    "domain_contract": {"$ref": "#/$defs/contract_reference"},
+    "input_population": {"$ref": "#/$defs/population_observation"},
+    "proposal_policy": {"$ref": "#/$defs/configured_contract"},
+    "rng_declaration": {"$ref": "#/$defs/configured_contract"},
+    "candidate_population": {"$ref": "#/$defs/population_observation"}
+  },
+  "$defs": {
+    "portable_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "short_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*$"
+    },
+    "contract_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version"],
+      "properties": {
+        "id": {"$ref": "#/$defs/portable_id"},
+        "version": {"$ref": "#/$defs/short_version"}
+      }
+    },
+    "configuration_key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$"
+    },
+    "configuration_scalar": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._:+-]*$"
+        },
+        {
+          "type": "number",
+          "minimum": -1000000000000000,
+          "maximum": 1000000000000000
+        },
+        {"type": "boolean"}
+      ]
+    },
+    "configuration": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 32,
+      "propertyNames": {"$ref": "#/$defs/configuration_key"},
+      "additionalProperties": {"$ref": "#/$defs/configuration_scalar"}
+    },
+    "configured_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract", "configuration"],
+      "properties": {
+        "contract": {"$ref": "#/$defs/contract_reference"},
+        "configuration": {"$ref": "#/$defs/configuration"}
+      }
+    },
+    "population_observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract", "cardinality"],
+      "properties": {
+        "contract": {"$ref": "#/$defs/contract_reference"},
+        "cardinality": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000000
+        }
+      }
+    }
+  }
+}

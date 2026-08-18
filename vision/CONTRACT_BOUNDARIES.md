@@ -221,3 +221,10 @@ The RIFT-only
 fills the mechanical gap from an explicitly preselected, all-complete draft
 record batch back to the native evaluated table. It deliberately rejects every
 case requiring controller selection, retry, deduplication, or state.
+
+The higher-level
+[`proposal-boundary observation draft v0`](contracts/proposal-boundary-observation-draft-v0/)
+records only population-contract cardinalities plus policy and RNG declarations.
+It carries no native table or population payload and is intentionally
+non-correlatable. It is not a proposal request/result protocol, controller
+interface, cross-domain conformance claim, or backend-neutral implementation.
