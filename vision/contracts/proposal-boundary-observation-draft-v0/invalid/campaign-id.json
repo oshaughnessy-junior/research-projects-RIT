@@ -1,0 +1,10 @@
+{
+  "vocabulary_version": "proposal.boundary-observation-draft/v0",
+  "record_type": "proposal_boundary_observation",
+  "campaign_id": "campaign-1",
+  "domain_contract": {"id": "synthetic.domain", "version": "draft-0"},
+  "input_population": {"contract": {"id": "synthetic.input", "version": "draft-0"}, "cardinality": 2},
+  "proposal_policy": {"contract": {"id": "synthetic.policy", "version": "draft-0"}, "configuration": {"scale": 0.2}},
+  "rng_declaration": {"contract": {"id": "synthetic.rng", "version": "draft-0"}, "configuration": {"seed": 7}},
+  "candidate_population": {"contract": {"id": "synthetic.output", "version": "draft-0"}, "cardinality": 1}
+}

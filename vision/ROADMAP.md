@@ -37,8 +37,16 @@ Use RIFT and SuperNu as the first paired application.
 - Before defining controller state, prove the mechanical projection from one
   explicitly preselected, all-complete RIFT record batch to the current native
   evaluated table. Reject cases requiring selection or retry policy.
-- Run thin campaign slices and retain golden migration evidence only after the
-  vocabulary, adapter, and controller increments pass their own reviews.
+- Record the proposal boundary at a higher level than either native table:
+  domain-owned population contracts and cardinalities, an explicitly declared
+  policy, and an explicitly declared RNG. Keep this post-hoc vocabulary
+  non-correlatable; defer request/result lifecycle and controller semantics
+  until a separately authorized bounded evidence-gathering live run observes
+  them. That run may precede controller definition and establishes evidence
+  only; it is not a migration, conformance exercise, or operational campaign.
+- Run later operational thin campaign slices and retain golden migration
+  evidence only after the vocabulary, adapter, and controller increments pass
+  their own reviews.
 - Put one scientifically useful JAX path in CI with a reference comparison.
 - Exercise the corresponding backend-neutral oracle or integrator contract in
   a SuperNu or related costly-simulation case before claiming cross-domain

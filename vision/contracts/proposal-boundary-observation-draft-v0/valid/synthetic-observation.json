@@ -1,0 +1,44 @@
+{
+  "vocabulary_version": "proposal.boundary-observation-draft/v0",
+  "record_type": "proposal_boundary_observation",
+  "domain_contract": {
+    "id": "synthetic.costly-simulation",
+    "version": "draft-0"
+  },
+  "input_population": {
+    "contract": {
+      "id": "synthetic.evaluated-population",
+      "version": "draft-0"
+    },
+    "cardinality": 12
+  },
+  "proposal_policy": {
+    "contract": {
+      "id": "synthetic.local-jitter",
+      "version": "draft-0"
+    },
+    "configuration": {
+      "mode": "local",
+      "neighbor_count": 4,
+      "reflect_bounds": true,
+      "scale": 0.25
+    }
+  },
+  "rng_declaration": {
+    "contract": {
+      "id": "synthetic.local-rng",
+      "version": "draft-0"
+    },
+    "configuration": {
+      "algorithm": "counter-demo",
+      "seed": 1729
+    }
+  },
+  "candidate_population": {
+    "contract": {
+      "id": "synthetic.proposal-candidates",
+      "version": "draft-0"
+    },
+    "cardinality": 4
+  }
+}
