@@ -54,6 +54,10 @@ def build_rotation_data_from_precompute(P, data_dict, psd_dict, fiducial_epoch,
     ``t_window`` is the rholm-buffer half width for the rotation precompute (it
     builds its own buffer, unlike the baseline two-window driver); ``tvals`` is
     the marginalization grid (defaults to ``linspace(-iwh, iwh, 2*iwh/deltaT)``).
+
+    ``harmonics`` defaults to the ``p_max=0`` width; at ``p_max>=1`` the precompute
+    widens it to ``2 + p_max`` (issue #142) and warns, because the JAX packer would
+    otherwise drop the response coefficients that have no band.
     """
     import RIFT.likelihood.factored_likelihood_with_rotation as flwr
     from .banded import build_rotation_data
