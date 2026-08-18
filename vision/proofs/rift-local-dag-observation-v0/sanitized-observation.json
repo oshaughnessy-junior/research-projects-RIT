@@ -1,0 +1,133 @@
+{
+  "record_type": "rift.local-dag-observation/v0",
+  "status": "historical_observation_only",
+  "source_revision": "ccf86e92ecc5911406982b64c28f54749bbdc933",
+  "environment": {
+    "platform_family": "macos",
+    "python": "3.12.13",
+    "numpy": "1.26.4",
+    "scipy": "1.17.1",
+    "scikit_learn": "1.9.0",
+    "hydra": "1.3.2",
+    "htcondor": "25.8.2"
+  },
+  "budget": {
+    "maximum_nodes": 7,
+    "configured_retries": 0,
+    "wall_time_limit_seconds": 600,
+    "local_scheduler_only": true,
+    "external_network_allowed": false
+  },
+  "dag": {
+    "node_roles": [
+      "marginalization",
+      "event_consolidation",
+      "population_consolidation",
+      "unify",
+      "posterior_worker",
+      "posterior_join",
+      "proposal"
+    ],
+    "edges": [
+      ["marginalization", "event_consolidation"],
+      ["event_consolidation", "population_consolidation"],
+      ["population_consolidation", "unify"],
+      ["unify", "posterior_worker"],
+      ["posterior_worker", "posterior_join"],
+      ["unify", "proposal"]
+    ]
+  },
+  "events": [
+    {"sequence": 1, "event_type": "dag_submitted", "source": "scheduler_log"},
+    {"sequence": 2, "event_type": "node_submitted", "node_role": "marginalization", "source": "scheduler_log"},
+    {"sequence": 3, "event_type": "node_started", "node_role": "marginalization", "source": "scheduler_log"},
+    {"sequence": 4, "event_type": "node_terminated", "node_role": "marginalization", "exit_code": 0, "source": "scheduler_log"},
+    {"sequence": 5, "event_type": "artifact_observed", "artifact_role": "evaluated_population", "source": "artifact_metadata"},
+    {"sequence": 6, "event_type": "node_submitted", "node_role": "event_consolidation", "source": "scheduler_log"},
+    {"sequence": 7, "event_type": "node_started", "node_role": "event_consolidation", "source": "scheduler_log"},
+    {"sequence": 8, "event_type": "node_terminated", "node_role": "event_consolidation", "exit_code": 0, "source": "scheduler_log"},
+    {"sequence": 9, "event_type": "node_submitted", "node_role": "population_consolidation", "source": "scheduler_log"},
+    {"sequence": 10, "event_type": "node_started", "node_role": "population_consolidation", "source": "scheduler_log"},
+    {"sequence": 11, "event_type": "node_terminated", "node_role": "population_consolidation", "exit_code": 0, "source": "scheduler_log"},
+    {"sequence": 12, "event_type": "node_submitted", "node_role": "unify", "source": "scheduler_log"},
+    {"sequence": 13, "event_type": "node_started", "node_role": "unify", "source": "scheduler_log"},
+    {"sequence": 14, "event_type": "node_terminated", "node_role": "unify", "exit_code": 0, "source": "scheduler_log"},
+    {"sequence": 15, "event_type": "artifact_observed", "artifact_role": "unified_evaluated_population", "source": "artifact_metadata"},
+    {"sequence": 16, "event_type": "node_submitted", "node_role": "posterior_worker", "source": "scheduler_log"},
+    {"sequence": 17, "event_type": "node_submitted", "node_role": "proposal", "source": "scheduler_log"},
+    {"sequence": 18, "event_type": "node_started", "node_role": "proposal", "source": "scheduler_log"},
+    {"sequence": 19, "event_type": "node_terminated", "node_role": "proposal", "exit_code": 0, "source": "scheduler_log"},
+    {"sequence": 20, "event_type": "artifact_observed", "artifact_role": "proposal_population", "source": "artifact_metadata"},
+    {"sequence": 21, "event_type": "node_started", "node_role": "posterior_worker", "source": "scheduler_log"},
+    {"sequence": 22, "event_type": "node_terminated", "node_role": "posterior_worker", "exit_code": 0, "source": "scheduler_log"},
+    {"sequence": 23, "event_type": "artifact_observed", "artifact_role": "posterior_worker_samples", "source": "artifact_metadata"},
+    {"sequence": 24, "event_type": "node_submitted", "node_role": "posterior_join", "source": "scheduler_log"},
+    {"sequence": 25, "event_type": "node_started", "node_role": "posterior_join", "source": "scheduler_log"},
+    {"sequence": 26, "event_type": "node_terminated", "node_role": "posterior_join", "exit_code": 127, "source": "scheduler_log"},
+    {"sequence": 27, "event_type": "artifact_observed", "artifact_role": "aggregate_posterior", "source": "artifact_metadata"},
+    {"sequence": 28, "event_type": "dag_terminated", "dag_status": "node_failed", "source": "scheduler_log"}
+  ],
+  "artifacts": {
+    "input_population": {
+      "present": true,
+      "row_count": 27,
+      "columns": ["lnL", "sigma_lnL", "x", "y", "z"],
+      "finite": true
+    },
+    "unified_evaluated_population": {
+      "present": true,
+      "row_count": 27,
+      "columns": ["lnL", "sigma_lnL", "x", "y", "z"],
+      "finite": true
+    },
+    "proposal_population": {
+      "present": true,
+      "row_count": 27,
+      "columns": ["lnL", "sigma_lnL", "x", "y", "z"],
+      "finite": true,
+      "score_columns_zero": true
+    },
+    "posterior_worker_samples": {
+      "present": true,
+      "row_count": 2000,
+      "columns": ["lnL", "sigma_lnL", "x", "y", "z"],
+      "finite": true
+    },
+    "aggregate_posterior": {
+      "present": true,
+      "row_count": 0,
+      "columns": ["lnL", "sigma_lnL", "x", "y", "z"],
+      "header_only": true
+    }
+  },
+  "resources": {
+    "same_host_sandbox_transfer_observed": true,
+    "external_transfer_observed": false,
+    "posterior_worker": {
+      "request_memory": {"value": 8192, "unit": "MiB"},
+      "observed_memory_usage": {"value": 2, "unit": "MiB"},
+      "observed_resident_set_size": {"value": 1908, "unit": "KiB"},
+      "sandbox_bytes_received": {"value": 56318, "unit": "byte"}
+    }
+  },
+  "failure": {
+    "node_role": "posterior_join",
+    "exit_code": 127,
+    "category": "unavailable_local_tool",
+    "tool": "shuf",
+    "repair_attempted": false,
+    "retry_attempted": false
+  },
+  "claims": {
+    "dag_success": false,
+    "proposal_artifact_before_dag_failure": true,
+    "artifact_existence_implies_success": false,
+    "controller_assimilation_observed": false,
+    "controller_contract_established": false,
+    "portable_behavior_established": false,
+    "scientific_validity_established": false,
+    "retry_semantics_established": false,
+    "checkpoint_restart_semantics_established": false,
+    "memory_request_approved": false
+  }
+}
