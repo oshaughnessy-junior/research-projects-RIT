@@ -34,9 +34,20 @@ because a frequency shift does not commute with 1/S(f).  Fixed in PR #117.
 
 ALSO RETRACTED: the "~0.1-0.2 resolution floor from NoLoop nearest-neighbour time sampling" below.
 That floor was a TRUNCATION artefact -- the test was running a 48.5 s chirp in a 16 s segment, so
-the delayed lookup ran off the array end and nan_to_num deleted the loudest samples.  It survives a
-4x finer time grid and survives switching to cubic sub-sample interpolation, so it was never the
-time lookup.  Give the waveform a segment it fits in and it drops to ~1.6e-4.
+the delayed lookup ran off the array end and nan_to_num deleted the loudest samples.
+  DECISIVE EVIDENCE, and it is clean: run INFL=1.  With the rotation switched off the floor is
+  still there (0.205), and INFL=1 is IMMUNE to the PR #117 bug because that error scales with
+  Omega.  A floor that survives turning the rotation off cannot be the rotation likelihood; it also
+  fails to improve under a 4x finer time grid or under cubic sub-sample interpolation, so it was
+  not the time lookup either.  With a segment the waveform actually fits, the ROTATION-OFF floor is
+  1.5e-4 (measured both before and after #117 -- they agree, as they must).
+  CAUTION on the supporting scans: the srate and cubic comparisons quoted in the analysis notes
+  were run at INFL=340 with rotation ON in the truncated configuration, so their ABSOLUTE numbers
+  contain the #117 bug.  Only the INFL=1 comparison and the qualitative "does not improve with grid
+  refinement" trend survive; do not quote those absolute values.
+  NOTE the 1.5e-4 above is the rotation-off floor.  It is NOT what a fitting segment alone buys at
+  the physical rate: pre-#117, with a fitting segment, that was still 0.053.  Reaching 1.7e-4 at
+  the physical rate needed BOTH a fitting segment AND the #117 fix.
 
 Separately validated vs LAL's SimDetectorStrainREAL8TimeSeries (`test_slowrot_pathB_groundtruth.py`):
 baseline/PathA/PathB all agree with Jolien's full delay map to ~0.07 at fmax=256 (the ~26
