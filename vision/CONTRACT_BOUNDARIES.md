@@ -228,3 +228,11 @@ records only population-contract cardinalities plus policy and RNG declarations.
 It carries no native table or population payload and is intentionally
 non-correlatable. It is not a proposal request/result protocol, controller
 interface, cross-domain conformance claim, or backend-neutral implementation.
+
+The observation-only
+[`RIFT local DAG evidence v0`](proofs/rift-local-dag-observation-v0/) records
+one native seven-node scheduler run. A proposal artifact appeared before a
+sibling posterior-join failure; artifact existence did not establish overall
+DAG success, and no controller-assimilation event was observed. The
+environment-specific run defines no controller lifecycle and authorizes no
+runtime repair.
