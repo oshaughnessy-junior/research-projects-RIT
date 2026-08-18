@@ -210,3 +210,8 @@ The first separately authorized mechanical adapter proof is recorded under
 [`proofs/rift-marg-record-sidecar-v0`](proofs/rift-marg-record-sidecar-v0/).
 It covers one RIFT row only and does not establish cross-domain or operational
 adapter conformance.
+
+After separate RIFT and non-GW adapter evidence exists, the observation-only
+[`HyperPipe proposal-boundary trace v0`](proofs/hyperpipe-proposal-boundary-trace-v0/)
+pins one current evaluated-table-to-proposed-grid seam. It does not define a
+controller API, assimilation contract, durable state, or restart semantics.
