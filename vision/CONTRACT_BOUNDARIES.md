@@ -110,6 +110,33 @@ depend on a contract package and their native project; the reverse dependency
 is prohibited. A controller may depend on contract types, but not on every
 backend it can dispatch.
 
+### Shared ownership and extraction
+
+The contracts currently live under `vision/` as incubation artifacts. Their
+location does not make RIFT their long-term owner. The RIFT and non-GW adapter
+work has exercised the evaluation and assimilation boundaries far enough to
+justify an ownership and distribution decision. Duplicated validation creates
+a drift risk even when neither native scientific workflow changes.
+
+Before production adoption, compare at least two distributions: a neutral,
+standard-library protocol module with an independent release, and a named
+canonical repository whose external consumers pin explicit contract versions.
+The decision must name owners, adopters, namespace, compatibility budget, and
+release/deprecation policy before any package or scaffold is created. Whichever
+model is selected must not contain RIFT or SuperNu adapters, proposal policies,
+native fixtures, run records, scheduler code, archive implementations, or
+domain science schemas, and must import none of the project scientific stacks.
+RIFT, R3, population inference, and later simulation projects retain thin local
+adapters on their own release cadence.
+
+Extraction is not authorization to stabilize the current `draft/v0` names.
+The decision packet must also define the stable contract/version metadata that
+the registry track may consume. A separate registry task records real adopted
+edges; architecture does not configure its runner or grant it semantic waiver
+authority. Until the ownership decision lands, the RIFT copies remain
+experimental reference material, not a production API or a dependency that
+other projects should vendor.
+
 JAX, NumPy, GPU kernels, trained sampling oracles, and robust integrators live
 behind evaluator or controller-policy interfaces. They can improve high-SNR GW
 work and selected non-GW workloads without becoming wire-format requirements.
@@ -197,9 +224,12 @@ Stop and return to design review if a proposed increment requires any of:
 - replacement of current HyperPipe or O4 entry points; or
 - claims of semantic equivalence based only on hand-authored fixtures.
 
-The next implementation-sized architecture deliverable should therefore be a
-non-conformant evaluation request/result vocabulary plus synthetic negative
-fixtures, not the complete controller, archive, and execution stack.
+The next architecture deliverable is therefore a documentation-only ownership
+and distribution decision packet. It is not a package scaffold, another
+historical proof, a complete controller, an archive, an execution stack, or a
+migration of existing RIFT/SuperNu entry points. Stop before creating package
+code until ownership, namespace, adopters, release/deprecation policy,
+compatibility budget, and governance are accepted.
 
 The current vocabulary checkpoint is recorded under
 [`contracts/evaluation-record-draft-v0`](contracts/evaluation-record-draft-v0/).
