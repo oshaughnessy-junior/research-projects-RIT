@@ -1,0 +1,4 @@
+# Test-only GitHub prerelease; never a RIFT runtime or production dependency.
+# Neutral source: 551a28f04efd0b44ddf8578dc183ceb04a8086c7
+# No PyPI fallback: changing this release or hash requires a reviewed issue.
+inference-campaign-contracts @ https://github.com/oshaughnessy-junior/inference-campaign-contracts/releases/download/v0.1.0a1/inference_campaign_contracts-0.1.0a1-py3-none-any.whl --hash=sha256:a3fb1ea97a0b6889918baa9ee856ce16f5b6c932ed470063f69da636b6dcfe4c
