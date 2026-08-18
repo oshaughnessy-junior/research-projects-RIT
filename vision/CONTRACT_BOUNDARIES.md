@@ -236,3 +236,10 @@ sibling posterior-join failure; artifact existence did not establish overall
 DAG success, and no controller-assimilation event was observed. The
 environment-specific run defines no controller lifecycle and authorizes no
 runtime repair.
+
+The follow-on
+[`RIFT two-iteration native handoff observation v0`](proofs/rift-two-iteration-handoff-v0/)
+records one direct native proposal-to-next-marginalization edge and the matching
+bounded artifact relationship. It is handoff evidence only: it establishes no
+assimilation, controller state, portable ordering, success policy, scientific
+validity, or cross-domain behavior.

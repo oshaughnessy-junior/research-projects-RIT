@@ -1,0 +1,117 @@
+{
+  "record_type": "rift.two-iteration-native-handoff-observation/v0",
+  "status": "historical_observation_only",
+  "source_revision": "626379bbeac9f224b6c79d12c9d612d1eb954f3c",
+  "run_bounds": {
+    "iteration_count": 2,
+    "node_count": 15,
+    "configured_retries": 0,
+    "dag_unchanged_for_observation": true
+  },
+  "dag": {
+    "node_roles": [
+      "marginalization_0",
+      "event_consolidation_0",
+      "population_consolidation_0",
+      "unify_0",
+      "posterior_worker_0",
+      "posterior_join_0",
+      "proposal_0",
+      "marginalization_1",
+      "event_consolidation_1",
+      "population_consolidation_1",
+      "unify_1",
+      "posterior_worker_1",
+      "posterior_join_1",
+      "proposal_1",
+      "convergence"
+    ],
+    "edges": [
+      ["marginalization_0", "event_consolidation_0"],
+      ["event_consolidation_0", "population_consolidation_0"],
+      ["population_consolidation_0", "unify_0"],
+      ["unify_0", "posterior_worker_0"],
+      ["posterior_worker_0", "posterior_join_0"],
+      ["unify_0", "proposal_0"],
+      ["proposal_0", "marginalization_1"],
+      ["marginalization_1", "event_consolidation_1"],
+      ["event_consolidation_1", "population_consolidation_1"],
+      ["population_consolidation_1", "unify_1"],
+      ["unify_1", "posterior_worker_1"],
+      ["posterior_worker_1", "posterior_join_1"],
+      ["unify_1", "proposal_1"],
+      ["posterior_join_1", "convergence"]
+    ]
+  },
+  "observations": [
+    {
+      "observation_type": "native_direct_handoff",
+      "producer_role": "proposal_0",
+      "consumer_role": "marginalization_1",
+      "direct_edge_observed": true
+    },
+    {
+      "observation_type": "absent_direct_edge",
+      "producer_role": "posterior_join_0",
+      "consumer_role": "marginalization_1",
+      "direct_edge_observed": false
+    },
+    {
+      "observation_type": "native_iteration_input_wiring",
+      "producer_role": "proposal_0",
+      "producer_output_iteration_index": 1,
+      "consumer_role": "marginalization_1",
+      "consumer_input_iteration_index": 1,
+      "wiring_observed": true
+    },
+    {
+      "observation_type": "node_interval_overlap",
+      "running_role": "posterior_worker_0",
+      "completed_role": "marginalization_1",
+      "overlap_observed": true
+    }
+  ],
+  "populations": {
+    "proposal_0": {
+      "row_count": 27,
+      "finite": true,
+      "unique_proposal_coordinates": true
+    },
+    "marginalization_1_output": {
+      "row_count": 27,
+      "finite": true,
+      "unique_proposal_coordinates": true
+    },
+    "relations": {
+      "proposal_0_to_marginalization_1_ordered_coordinate_equality": true,
+      "proposal_0_differs_from_initial_population": true
+    }
+  },
+  "path_outcomes": {
+    "completed": [
+      "iteration_0_evaluated_data",
+      "iteration_0_proposal",
+      "iteration_1_evaluated_data",
+      "iteration_1_proposal"
+    ],
+    "posterior_joins": [
+      {"iteration": 0, "exit_code": 127, "category": "unavailable_local_tool", "tool": "shuf"},
+      {"iteration": 1, "exit_code": 127, "category": "unavailable_local_tool", "tool": "shuf"}
+    ],
+    "convergence_node": "futile",
+    "dag_status": "node_failed"
+  },
+  "claims": {
+    "native_handoff_observed": true,
+    "direct_proposal_to_next_marginalization_edge_observed": true,
+    "marginalization_1_completed_before_posterior_join_0_terminated": true,
+    "controller_assimilation_observed": false,
+    "controller_state_observed": false,
+    "backend_neutral_contract_established": false,
+    "portable_ordering_established": false,
+    "success_policy_established": false,
+    "scientific_validity_established": false,
+    "cross_domain_behavior_established": false,
+    "retry_or_recovery_semantics_established": false
+  }
+}
