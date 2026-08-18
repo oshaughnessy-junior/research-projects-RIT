@@ -61,7 +61,11 @@ From: @@BASE_IMAGE@@
    # In particular, keep pygsl_lite 0.1.8 away from setuptools 84 while still
    # resolving the container's runtime dependency set at latest versions.
    export PIP_BUILD_CONSTRAINT=/opt/constraints-container-build.txt
-   pip3 install --upgrade setuptools --break-system-packages
+   # setuptools 84 broke pygsl_lite 0.1.8's SWIG build (its gsl_dist calls
+   # distutils.util.spawn(cmd, 1, 1); setuptools 84 vendors distutils with a
+   # one-positional-arg spawn). 76.x is the last positional-spawn series and
+   # still satisfies pygsl's setuptools>=75 floor. See the pygsl pre-install below.
+   pip3 install --upgrade 'setuptools<77' wheel --break-system-packages
    pip3 install -e .
 
    # GPU-specific cupy variant, matched to the base image CUDA version.
@@ -71,6 +75,14 @@ From: @@BASE_IMAGE@@
    # dependency-resolution canary (containers/requirements-container.txt).
    # Staged into the image via the %files section above (independent of the
    # cloned branch).
+   # pygsl_lite (pulled transitively via pyseobnr in requirements-container.txt)
+   # builds a SWIG extension that must use setuptools<77 with build isolation OFF:
+   # pip's PEP-517 isolated build env ignores PIP_CONSTRAINT and would otherwise
+   # pull the broken newest setuptools. Pre-build it here against the pinned
+   # setuptools; setuptools_scm resolves the real 0.1.8 (else isolation-off -> 0.0.0).
+   pip3 install setuptools_scm swig
+   pip3 install --no-build-isolation --no-deps pygsl_lite
+
    pip3 install -r /opt/requirements-container.txt
 
 %environment
