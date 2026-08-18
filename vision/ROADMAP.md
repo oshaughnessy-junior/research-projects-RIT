@@ -30,6 +30,10 @@ Use RIFT and SuperNu as the first paired application.
 - Define and test the minimum HyperPipe controller boundary only after adapter
   evidence exists: campaign state, proposal or oracle selection, evaluation
   request, result assimilation, convergence, and escalation.
+- First observe one unchanged, deterministic proposal-policy seam without
+  treating that trace as controller conformance or durable controller state.
+  Assimilation, failure, convergence, and restart remain later, separately
+  authorized decisions.
 - Run thin campaign slices and retain golden migration evidence only after the
   vocabulary, adapter, and controller increments pass their own reviews.
 - Put one scientifically useful JAX path in CI with a reference comparison.

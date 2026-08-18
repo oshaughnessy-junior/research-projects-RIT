@@ -1,0 +1,91 @@
+{
+  "schema": "rift.hyperpipe.proposal-boundary-trace/v0",
+  "observation_only": true,
+  "revision": {
+    "rift": "59a7a2b176697ed5b7ad61b31f49cc97b30d5b84",
+    "r3_cross_domain_evidence": "bf3d22c07820b3882bfc4666aac860042733abbe",
+    "r3_evidence_consumed_by_trace": false
+  },
+  "source_identity": {
+    "entrypoint": {
+      "path": "MonteCarloMarginalizeCode/Code/bin/util_HyperparameterTracerUpdate.py",
+      "git_blob": "3ccdb520b18390809b49ba1c75944da582b5070c"
+    },
+    "tracer_package": {
+      "path": "MonteCarloMarginalizeCode/Code/RIFT/misc/tracer_placement",
+      "git_tree": "d84f3bca2bdcd3ecd385b52474d0bd33e124a24d"
+    }
+  },
+  "input": {
+    "path": "vision/proofs/hyperpipe-proposal-boundary-trace-v0/fixtures/evaluated-grid.dat",
+    "sha256": "785850f0c8414070cdda0d20b4db0ff8fc65127bc0f9fa8a0fa90a57f086737a",
+    "header": "# lnL sigma_lnL x y",
+    "columns": ["lnL", "sigma_lnL", "x", "y"],
+    "coordinate_order": ["x", "y"],
+    "row_count": 25,
+    "formula": "lnL = -0.5 * (x^2 + 2*y^2 + 0.3*x*y)",
+    "synthetic_units": {
+      "lnL": "dimensionless",
+      "sigma_lnL": "dimensionless synthetic constant 0.2",
+      "x": "dimensionless",
+      "y": "dimensionless"
+    }
+  },
+  "command": {
+    "entrypoint": "MonteCarloMarginalizeCode/Code/bin/util_HyperparameterTracerUpdate.py",
+    "arguments": [
+      "--inj-file", "{input}",
+      "--inj-file-out", "{output}",
+      "--parameter", "x",
+      "--parameter", "y",
+      "--update-method", "smc-mala-bd",
+      "--tracer-fit-method", "quadratic",
+      "--n-mala-steps", "2",
+      "--target-ess-frac", "0.5",
+      "--birth-death-rate", "1.0",
+      "--force-away", "0",
+      "--rng-seed", "1729"
+    ],
+    "method": "smc-mala-bd",
+    "fit_method": "quadratic",
+    "seed": 1729,
+    "timeout_seconds": 30,
+    "controlled_runtime": {
+      "python": "3.13.13",
+      "numpy": "2.4.6",
+      "thread_limits": {
+        "MKL_NUM_THREADS": "1",
+        "NUMEXPR_NUM_THREADS": "1",
+        "OMP_NUM_THREADS": "1",
+        "OPENBLAS_NUM_THREADS": "1",
+        "VECLIB_MAXIMUM_THREADS": "1"
+      },
+      "PYTHONHASHSEED": "0"
+    }
+  },
+  "reference_output": {
+    "path": "vision/proofs/hyperpipe-proposal-boundary-trace-v0/fixtures/proposed-grid.reference.dat",
+    "sha256": "d79d1746cf881f7983da1ff1d6c7efa07a37f4cf0f28b567544f0af22cf783ac",
+    "header": "# lnL sigma_lnL x y",
+    "row_count": 25,
+    "provenance_only": true,
+    "structural_invariants": [
+      "all values are finite",
+      "lnL and sigma_lnL are zero in every proposed row",
+      "coordinate columns remain in the inferred padded input box"
+    ]
+  },
+  "observation": {
+    "same_environment_twin_run_sha256": "d79d1746cf881f7983da1ff1d6c7efa07a37f4cf0f28b567544f0af22cf783ac",
+    "same_environment_twin_run_byte_identical": true
+  },
+  "claims": {
+    "proposal_boundary_observed": true,
+    "controller_conformance": false,
+    "portable_byte_replay": false,
+    "reference_trajectory_conformance": false,
+    "restart_safety": false,
+    "cross_domain_proposal_semantics": false,
+    "production_readiness": false
+  }
+}
