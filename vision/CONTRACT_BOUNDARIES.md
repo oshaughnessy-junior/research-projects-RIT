@@ -205,3 +205,8 @@ The current vocabulary checkpoint is recorded under
 [`contracts/evaluation-record-draft-v0`](contracts/evaluation-record-draft-v0/).
 It remains synthetic and non-conformant; its presence does not authorize the
 later adapter phase.
+
+The first separately authorized mechanical adapter proof is recorded under
+[`proofs/rift-marg-record-sidecar-v0`](proofs/rift-marg-record-sidecar-v0/).
+It covers one RIFT row only and does not establish cross-domain or operational
+adapter conformance.
