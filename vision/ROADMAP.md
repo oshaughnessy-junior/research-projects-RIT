@@ -34,6 +34,9 @@ Use RIFT and SuperNu as the first paired application.
   treating that trace as controller conformance or durable controller state.
   Assimilation, failure, convergence, and restart remain later, separately
   authorized decisions.
+- Before defining controller state, prove the mechanical projection from one
+  explicitly preselected, all-complete RIFT record batch to the current native
+  evaluated table. Reject cases requiring selection or retry policy.
 - Run thin campaign slices and retain golden migration evidence only after the
   vocabulary, adapter, and controller increments pass their own reviews.
 - Put one scientifically useful JAX path in CI with a reference comparison.
