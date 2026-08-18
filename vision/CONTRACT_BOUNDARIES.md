@@ -137,6 +137,10 @@ authority. Until the ownership decision lands, the RIFT copies remain
 experimental reference material, not a production API or a dependency that
 other projects should vendor.
 
+The proposed ownership and distribution choice is recorded in
+[`CONTRACT_OWNERSHIP_DECISION.md`](CONTRACT_OWNERSHIP_DECISION.md). It remains a
+no-code decision until accepted under its stated governance and stop conditions.
+
 JAX, NumPy, GPU kernels, trained sampling oracles, and robust integrators live
 behind evaluator or controller-policy interfaces. They can improve high-SNR GW
 work and selected non-GW workloads without becoming wire-format requirements.
