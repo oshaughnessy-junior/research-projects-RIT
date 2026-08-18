@@ -23,7 +23,9 @@ Checks:
   W4  the control: with widen_harmonics=False (the pre-fix behaviour) the same request DOES
       drop coefficients, is flagged meta['harmonics_truncated'], and moves lnL.  Without
       this, W2/W3 would be guards nobody has seen fail.
-  W5  the JAX packer (jax_ile.banded / response_slowrot) loses nothing on the widened bank
+  W5  the JAX packer: every key jax_ile.response_slowrot produces has a band, and
+      jax_ile.banded.build_rotation_data itself packs the full widened bank and refuses to
+      accept a truncated one in silence
   W6  the MAINTAINED evaluator: pack_rotation_arrays + the vectorized NoLoop.  The fix
       changes what that path receives (|a_list| 10 -> 14 for the default request at
       p_max=1), so the widened bank must run through it and must move lnL relative to the
@@ -204,6 +206,23 @@ def test_W5_jax_packer_loses_nothing():
     missing = sorted(set((int(p), int(n)) for (p, n) in cdict) - set(a_list))
     print("W5 jax coefficient keys with no band in a_list: %s" % (missing,))
     assert not missing, "the JAX packer would silently drop %s" % (missing,)
+
+    # ...and go through the real packer, which is where the drop would happen.
+    from RIFT.likelihood.jax_ile.banded import build_rotation_data
+    tvals = np.arange(200) * deltaT - 0.01
+    for widen, want_warn in ((True, False), (False, True)):
+        b = _bank(widen)[0]
+        lk, ra, cu, cv, ep = flwr.pack_rotation_arrays(b[4], b[3], b[1], b[2])
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            data = build_rotation_data(b[4], lk, ra, cu, cv, ep, deltaT, tvals)
+        got = [str(c.message) for c in caught
+               if issubclass(c.category, RuntimeWarning) and 'build_rotation_data' in str(c.message)]
+        print("W5 jax packer, widen=%s: A=%d bands, warned=%s"
+              % (widen, len(data.band['a_list']), bool(got)))
+        assert len(data.band['a_list']) == len(b[4]['a_list'])
+        assert bool(got) is want_warn, \
+            "build_rotation_data warning: got %r, wanted %r (widen=%s)" % (bool(got), want_warn, widen)
 
 
 def test_W6_maintained_noloop_path():
