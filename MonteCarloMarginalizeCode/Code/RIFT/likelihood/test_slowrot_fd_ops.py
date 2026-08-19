@@ -309,6 +309,52 @@ def test_nyquist_guard_clauses_on_synthetic_axes():
     print("nyquist guard clauses: one-sided / symmetric / fftfreq / degenerate all correct")
 
 
+def test_rotation_post_phase_is_not_the_identity():
+    """rotation_post_phase() against a known answer, because nothing else pins it.
+
+    This helper is the DOCUMENTED convention -- ~20 comments across the likelihood and the jax
+    port name it as the thing an evaluator must apply to both terms -- but it has exactly one
+    call site (the scalar evaluator), and production routes through the NoLoop, which inlines
+    its own copy.  Consequence, measured: neutering this function to `return dict(C)` leaves
+    BOTH the numpy slowrot suite and test/jax/test_jax_slowrot_cauchy_schwarz.py green.  The
+    Cauchy-Schwarz ladder built to guard exactly this fix does not see it, because the ladder
+    exercises the NoLoop's inline copy.
+
+    So the helper is untested by construction, and it is what a new evaluator would call.  Pin
+    it directly: known values, and an explicit assertion that it MOVES the coefficients at a
+    physically reachable arrival offset -- the identity is what a dropped post-phase looks like.
+    """
+    omega = 2.0 * np.pi * 1.16e-5          # ~sidereal
+    delta = 1.02e-2                        # 10 ms, the scale of a real geometric arrival offset
+    C = {(0, 2): 1.0 + 0.0j, (1, -3): 2.0 - 1.0j, (0, 0): 3.0 + 4.0j}
+    out = flwr.rotation_post_phase(C, omega, delta)
+
+    for a, c in C.items():
+        want = c * np.exp(1.0j * a[1] * omega * delta)
+        assert abs(out[a] - want) <= 1e-15 * max(1.0, abs(want)), (
+            "rotation_post_phase wrong at a=%r: got %r want %r" % (a, out[a], want))
+
+    # n = 0 carries no phase; every n != 0 entry MUST move.  Without this the neutered
+    # `return dict(C)` mutant passes the loop above only if the loop is also neutered, but
+    # this assertion states the intent independently of the formula.
+    assert out[(0, 0)] == C[(0, 0)], "n=0 must be untouched"
+    for a in ((0, 2), (1, -3)):
+        moved = abs(out[a] - C[a]) / abs(C[a])
+        assert moved > 1e-8, (
+            "rotation_post_phase left a=%r unchanged (rel move %.2e) -- a post-phase that is "
+            "the identity at a 10 ms arrival offset is a DROPPED post-phase, which is the "
+            "defect PR #117 fixed" % (a, moved))
+
+    # broadcasting: delta may be an array, and the input must not be mutated in place
+    darr = np.array([0.0, delta])
+    outa = flwr.rotation_post_phase(C, omega, darr)
+    assert np.allclose(outa[(0, 2)], C[(0, 2)] * np.exp(1.0j * 2 * omega * darr)), \
+        "rotation_post_phase does not broadcast an array delta"
+    assert C[(0, 2)] == 1.0 + 0.0j, "rotation_post_phase mutated its input"
+
+    print("rotation_post_phase: known-answer, non-identity, broadcast and purity all hold")
+
+
 if __name__ == "__main__":
     test_roundtrip_identity()
     test_tone_frequency_assignment_and_FT_SIGN()
@@ -318,4 +364,5 @@ if __name__ == "__main__":
     test_sidereal_modulation_exact()
     test_reference_matrix_matches_lal_modulation()
     test_nyquist_guard_clauses_on_synthetic_axes()
+    test_rotation_post_phase_is_not_the_identity()
     print("ALL FD-PRIMITIVE CHECKS PASSED")
