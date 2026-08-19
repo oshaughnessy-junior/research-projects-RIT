@@ -53,7 +53,7 @@ differs by 25%, in the leading digit.  Known divergent cells, Intel -> AMD:
                                                     peak sits 7.3e-12 ABOVE the bound)
     p_max=0  (C) vs explicit       5.821e-11     -> 7.276e-11      (1.14e-15 -> 1.43e-15 rel)
     p_max=1  (B) bound deficit     +5.602e-10    -> +5.093e-10
-    p_max=1  (C) vs explicit       6.476e-10     -> 6.039e-10
+    p_max=1  (C) vs explicit       6.476e-10     -> 6.039e-10      (1.27e-14 -> 1.19e-14 rel)
     p_max=1  (D) vs numpy NoLoop   8.222e-10     -> 8.440e-10
     p_max=2  (D) at INFL=5400,f1700  1.854947e-06 -> 1.855078e-06  (straddles 3 s.f.:
                                                     rounds to 1.85e-06 vs 1.86e-06)
@@ -98,7 +98,12 @@ both now fixed:
 
 With both fixed, (C) is at machine precision at p_max=1 and (B) sits ON the bound to 6e-10, so
 both are asserted at both rungs.  Do not "fix" a future regression here by widening TOL_BOUND,
-TOL_DIRECT_* or MIN_STATIC_DEFICIT -- every number above has four or more orders of margin.
+TOL_DIRECT_* or MIN_STATIC_DEFICIT.  The margins against those gates are, in orders of
+magnitude: (A) 0.70 / 0.59 vs MIN_STATIC_DEFICIT=1.0; (B) inf / 3.25 vs TOL_BOUND=1e-6; (C)
+absolute 4.2 / 3.2 and relative 8.9 / 7.9 vs TOL_DIRECT_*=1e-6.  (This sentence claimed "four
+or more orders" for every number above until 2026-08-19; that holds for two of the six cells.
+The advice stands on its own -- these gates are theorem-level, not tuned -- but a regression
+at (A) or (B) has less than an order of room, which is a reason to look harder, not to widen.)
 
 TWO THINGS THIS LADDER DELIBERATELY DOES NOT CLAIM.
 
@@ -118,8 +123,12 @@ TWO THINGS THIS LADDER DELIBERATELY DOES NOT CLAIM.
 
 The whole ladder runs at p_max=0 (Path A) AND p_max=1 (Path B).  Path B is a distinct code path
 for this port, not a wider bank: several ``p`` then share a sidereal harmonic ``n``, so the
-post-phase buckets ``m = n_a' - n_a`` collect (a,a') pairs from DIFFERENT p (4-20 pairs per bucket
+post-phase buckets ``m = n_a' - n_a`` collect (a,a') pairs from DIFFERENT p (4-28 pairs per bucket
 at p_max=1 vs 1-5 at p_max=0) and the V-term reflection ``(p,n)->(p,-n)`` has to resolve within p.
+(The p_max=1 figure read 4-20 until 2026-08-19: that is the PRE-#142 ten-band bank, measured
+before the widening this same paragraph goes on to describe.  Shipped is 14 bands, 13 buckets,
+occupancy 4-28; p_max=0 is unaffected by the widening, which is why only half the range was
+stale.)
 p_max=2 is NOT run, and is NOT currently supported: after the #142/#143 widening it is a
 27-band bank whose 729 U/V cross terms dominate the precompute, and it adds no new branch --
 the same duplicate-m scatter-add and within-p reflection p_max=1 already exercises.  It is skipped
@@ -153,8 +162,13 @@ rows, and (D) in fact FALLS 1.9x for a 4x rate change and 16x at the narrower ba
 statement is the table.
 
 The decision needs no mechanism.  (D) exceeds TOL_NOLOOP (1e-8, an ABSOLUTE-only gate) at every
-configuration tried -- by roughly 350x, 185x and 12x for the three rows above, in that order
-(approximate on purpose: the third row's inputs are host-split, see PORTABILITY).  Note the
+configuration tried -- by 345x, 185x and 11.6x for the three rows above, in that order.  Those
+three ratios ARE portable: (D) reads 3.454828e-06 / 1.854947e-06 / 1.163426e-07 on Intel and
+3.454916e-06 / 1.855078e-06 / 1.162989e-07 on AMD, agreeing to three figures on every row.  (An
+earlier revision rounded them to "roughly 350x / 185x / 12x" on the stated ground that row 3's
+inputs are host-split.  They are not: the host-split cell in row 3 is worst|noloop-expl|, which
+does not enter this ratio -- so that revision discarded portable digits to justify a portability
+caveat that did not apply.)  Note the
 third: at fmax=512 (D) is only ~12x over, so "the band is too wide" is the one reading this table
 does NOT rule out, and someone will propose shipping p_max=2 there.  It still fails, by an order
 of magnitude, on a gate with no relative arm -- so supporting the rung means giving (D) the
@@ -171,7 +185,9 @@ jax_ile/core.py, and both rungs re-measured).
   * Drop the post-phase from BOTH terms (the pre-#131 code).  Self-consistent, so (B) does NOT
     fire -- it lands 0.057 nats (p_max=0) / 0.993 nats (p_max=1) UNDER the bound.  (C) catches
     it at 95.31 nats = 1.87e-03 of 0.5<h|h> (p_max=0) and 231.33 nats = 4.54e-03 (p_max=1),
-    i.e. 1900-4500x the relative gate and 1e+11 x the absolute one; (D) at 163 / 379 nats.
+    i.e. 1900-4500x the relative gate (TOL_DIRECT_REL=1e-6) and ~1e+08 x the absolute one
+    (TOL_DIRECT_ABS=1e-6: 95.31/1e-6 = 9.5e+07, 231.33/1e-6 = 2.3e+08 -- this read 1e+11 from
+    bac1c81e until 2026-08-19); (D) at 163 / 379 nats.
     This is exactly why (C) and (D) exist and why NoLoop agreement alone is not enough --
     though test_jax_slowrot.py gate (a) does also fire.
   * Drop it from the model norm only (the asymmetric form).  (B) fires: 10.57 nats OVER the
