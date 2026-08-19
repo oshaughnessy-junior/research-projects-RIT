@@ -32,6 +32,51 @@ development tree is rift_O4d.
     parameters at srate 4096 (less at 16384). Marginalized lnZ moves sub-nat. Anyone comparing
     against archived runs should expect a shift at that scale. The JAX driver's window gains one
     sample at srate 1024/2048/16384; measured effect on its lnL is < 4e-3 nats.
+  - **CHANGES lnL VALUES** (issues #159/#163, slow-rotation Path B only) Nyquist bin of the
+    FD time-derivative weight. RIFT's two-sided packing carries +fNyq but not -fNyq -- the bin
+    holding -f[k] is npts-k, which for k=0 is bin 0 itself -- so that one bin serves both signs
+    and a weight can only be consistent there when it is EVEN in f. For ODD p it is not, and
+    conj(h^(p)) and (conj h)^(p), the same function, disagreed there by a sign. The U cross terms
+    take both factors from the same template family and never saw it; V = <chi_a^*|chi_a'> pairs
+    the two orders and did. The sidereal modulation is a sub-bin shift applied as a time-domain
+    phase, so the FFT round trip spread that single bin across the whole band: being above fMax
+    did not protect it. factored_likelihood_with_rotation.time_derivative_weight now zeroes the
+    weight there for odd p (the Hermitian average, and the derivative the sampled real Nyquist
+    component actually has); EVEN p is deliberately untouched, where the weight is real, the
+    derivative is exactly representable, and blanket zeroing was measured at 90%/99% relative
+    error at p = 2/4. Measured effect on max lnL, real H1 injection (m1=30, m2=25, fmin 30,
+    fMax 1700, 4 s, srate 4096, INFL = the sidereal-rate inflation used by the slowrot tests):
+
+      p_max   INFL     pre-#163              merged                delta
+        0     1350     2937.40594009874758   2937.40594009874758   0  (bit-identical)
+        0     5400     2867.39694718803048   2867.39694718803048   0  (bit-identical)
+        1     1350     2963.44408675118211   2963.44312435799930   -9.6e-04
+        1     5400     2963.74351720952518   2963.74083325234824   -2.7e-03
+        2     1350     2963.34635461444941   2963.34539399415826   -9.6e-04
+        2     5400     2962.52783855322468   2962.52533182761090   -2.5e-03
+
+    Measured on ldas-pcdev11 (Intel Xeon E5-2630 v4) and reproduced bit-identically, all 17
+    digits and all six rows, on citlogin6 (AMD EPYC 9475F), so these digits are portable
+    across CPU families.  That is worth stating because other cells of this suite are NOT:
+    quantities built from a near-total cancellation -- the (B) bound deficit is max lnL minus
+    0.5<d|d>, two numbers near 5e+04 that differ by 5e-10 -- vary in their second significant
+    figure between the two architectures.  max lnL itself carries no such cancellation.
+
+    p_max=0 (Path A) is bit-identical, so ONLY runs using --rotation-p-max >= 1 are affected;
+    anyone comparing a Path B result against an archive should expect a shift at the 1e-3 nat
+    scale, growing with the rotation rate. The numpy/cupy NoLoop and the JAX evaluator carried
+    the defect identically, so this moves both by the same amount. New guards in
+    RIFT/likelihood/test_slowrot_fd_ops.py pin both parities.
+  - (issues #164/#165, slow-rotation Path D) slowrot_freqresponse.finite_size_response_weights
+    projects the same unpaired Nyquist bin onto its real part, for the same reason: the module
+    documents each W_p as Hermitian and factored_likelihood_freqresponse identifies
+    <conj(W_p h)|W_p' h'> with crossTermsV_fr on the strength of it, which needs W_p real at a
+    self-paired bin. Unprojected it was up to 99% imaginary there. This moves NO lnL value:
+    lalsimutils.ComplexIP fills its one-sided weights with range(minIdx, maxIdx), which is
+    half-open, so the fMax bin carries weight exactly 0 in every RIFT overlap at every fMax
+    (verified by scaling that bin by 1e6 and seeing 0.000e+00 change in crossTerms_fr,
+    crossTermsV_fr and rholms_fr, including at fMax = fNyq). It is a repair of the primitive and
+    its stated contract. Related follow-ups: #168, #169.
   - generic worfklow backend (condor, slurm, htcondor, etc) via dag_utils_generic
   - simulation_manager framework: interface requirements for external adaptive simulations
   - CIP hyperpipe improvements (initialize_me; enable population and EOS params in using_eos file with arbitrary
