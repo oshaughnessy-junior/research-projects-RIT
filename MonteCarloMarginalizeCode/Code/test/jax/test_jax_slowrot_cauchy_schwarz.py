@@ -59,6 +59,28 @@ differs by 25%, in the leading digit.  Known divergent cells, Intel -> AMD:
                                                     rounds to 1.85e-06 vs 1.86e-06)
     p_max=2  worst|noloop-expl| at f512  6.35e-08 -> 6.26e-08
 
+WHICH CELLS DIVERGE IS PREDICTABLE, so classify a new one rather than measuring it on two
+architectures.  Every divergent cell above is a DIFFERENCE OF NEAR-EQUAL LARGE NUMBERS, and the
+digits that survive the cancellation are roughly
+
+    16 - log10(operand / result)          (float64 carries ~16)
+
+which is how many digits the FMA scheduling can still agree on.  Checked against every cell we
+have measured on both families:
+
+    (A) static deficit      5e4 -> 4.99       ~12 digits   stable
+    0.5<d|d>                (no cancellation) ~16 digits   stable
+    defect-1 overshoot      5e4 -> 8.0e-03    ~ 9 digits   identical on both
+    (B) overshoot p_max=2   5e4 -> 3.7e-07    ~ 5 digits   stable to 3 s.f.
+    (B) bound deficit p_max=1  5e4 -> 5.6e-10 ~ 2 digits   DIVERGES at the 2nd figure
+    (C) absolute p_max=1    5e4 -> 6.5e-10    ~ 2 digits   DIVERGES
+    (D) p_max=1             5e4 -> 8.2e-10    ~ 2 digits   DIVERGES
+
+Two surviving digits is exactly the second-significant-figure spread observed.  So: a cell that
+cancels most of the mantissa is host-specific; one that does not is portable.  (Criterion from
+the session on PR #170, which independently found its own six-row table bit-identical across
+both families -- its numbers are lnL values with no cancellation, and the rule predicts that.)
+
 Nothing in this file is a tolerance, so the spread costs nothing and no gate is at risk.  Do
 NOT "fix" a cell because your host differs, and do not derive an argument from a digit that
 appears above.  Everything the DECISIONS rest on is portable at the precision used for it.
@@ -73,8 +95,14 @@ WHAT THE LADDER MEASURES, AS OF ISSUE #159 (Config below; ldas-pcdev11, CPU, flo
     (D) vs numpy NoLoop  5.821e-11                    8.222e-10
 
 (A) and (B) were scoped to p_max=0 for one release (#151) because the p_max=1 rung read
-(A) 0.3907 / (B) -4.108e-03 / (C) 6.06e-07 relative, i.e. the bound was VIOLATED by more than
-the reference could resolve.  That was diagnosed as the delay expansion diverging.  IT WAS NOT:
+(A) 0.3907 / (B) -4.108e-03 / (C) 6.06e-07 relative -- (B) there is the printed DEFICIT, so the
+overshoot is +4.108e-03, which is how the decomposition table below quotes it -- i.e. VIOLATED by
+more than the reference could resolve.  (Issue #159 itself writes "(B) bound overshoot -4.108e-03
+nats (VIOLATED)", applying the label OVERSHOOT to the deficit's value; that mislabel is where the
+ambiguity entered, and it propagated here.  run_ladder prints HALF_DD - max(lnL) and asserts on
+max(lnL) - HALF_DD, so the printed and gated quantities are opposite BY DESIGN.) That was
+diagnosed as the delay expansion diverging.
+IT WAS NOT:
 lowering fmax from 1700 to 64, which cuts max|2 pi f delta_tau| from 30.4 to 1.1, moved (C) not
 much: (C) relative stays between 4.88e-07 and 6.06e-07 across fmax = 1700/1024/512/256/128 and
 rises only at fmax=64, to 1.18e-06 (sweep in issue #159).  A flat band and then a 2x wander,
@@ -86,21 +114,29 @@ both now fixed:
      the same function -- disagreed in that one bin by a SIGN.  U takes both factors from the
      same family and never noticed; V = <chi_a^*|chi_a'> pairs the two orders and did.  The
      sidereal modulation is a sub-bin shift applied as a time-domain phase, so it spread that
-     one bin across the whole band.  |H(+fNyq)| is 0.02-0.14 of |H(100 Hz)| for these modes, so
-     this was worth 1.5e-07 of the p_max=1 model norm -- a norm too SMALL, hence lnL OVER the
-     bound.  Measured by reintroducing THIS defect alone on the shipped tree (INFL=1350,
-     fmax=1700, p_max=1): (C) 1.5701e-07 relative, (B) overshoot +8.0024e-03 nats against
-     0.5<h|h> = 50991.267 -- which is the figure SLOWROT_HANDOFF.md quotes for p_max=1.  This
-     read "which is exactly how lnL got 4e-03 nats OVER the bound" until 2026-08-19; that does
-     not follow -- 1.5701e-07 of 50991.267 is 8.006e-03, which is the measured overshoot.
-     (Two quantities wear the "1.5e-07" label here: the norm error relative to <h|h>,
-     0.015/1.02e+05 = 1.47e-07, and (C)'s residual relative to 0.5<h|h>, 1.5701e-07.  The
-     conclusion holds either way.)  The 4e-03 in the issue #159 record was taken with BOTH
-     defects present and they partly cancelled: measured at that configuration, defect 1
-     alone +8.002370e-03, defect 2 alone -2.240793e-03, both +4.108112e-03 -- #159's number
-     to every digit.  Attributing it to this one alone is the mis-scope.
-     Fixed in flwr.time_derivative_weight; it is a defect in
-     the shared precompute, not in this port, and the numpy NoLoop carried it identically.
+     one bin across the whole band.  |H(+fNyq)| is 0.02-0.14 of |H(100 Hz)| for these modes.
+     Fixed in flwr.time_derivative_weight; it is a defect in the shared precompute, not in
+     this port, and the numpy NoLoop carried it identically.
+
+     DECOMPOSITION.  Each defect reintroduced alone on the shipped tree, at the configuration
+     issue #159 recorded (INFL=1350, fmax=1700, p_max=1).  (B) is run_ladder's overshoot,
+     max(lnL) - 0.5<d|d> -- note run_ladder PRINTS the deficit, the negation of that; (C) is
+     its relative residual.  The three defect rows are identical on Intel and AMD; the shipped
+     row is NOT (it is 4 orders inside TOL_BOUND, so nothing depends on it):
+
+         variant                          (B) overshoot      (C) relative
+         defect 1 alone (this one)        +8.002370e-03      1.570076e-07
+         defect 2 alone (item 2 below)    -2.240793e-03      3.259882e-07
+         both                             +4.108112e-03      6.061461e-07
+         shipped, AMD EPYC                +5.456968e-10      1.483979e-14
+         shipped, Intel Xeon E5-26xx v4   +5.893526e-10      1.683746e-14
+
+     The "both" row is what #159 records, so the two defects PARTLY CANCELLED and neither
+     one's number can be read off that issue.  Do not derive further quantities from this
+     table by hand: three successive revisions of this bullet did, and each was wrong --
+     attributing #159's 4e-03 to defect 1, then multiplying (C)-relative by 0.5<h|h> and
+     calling the product an overshoot, then naming 0.5<h|h> as the bound (B) is measured
+     against, which is 0.5<d|d>.  The rows above are measured; anything else, measure it.
   2. THE SHIFT CONVENTION of (C)'s own reference.  See _explicit_model_fd: the bank shifts the
      MODULATED template circularly and repairs the phase with rotation_post_phase, and the
      reference has to do the same.  Worth the rest: with defect 1 fixed but the reference
@@ -114,7 +150,7 @@ magnitude (p_max=0 / p_max=1, Intel): (A) 0.70 / 0.59 vs MIN_STATIC_DEFICIT=1.0;
 p_max=1 vs TOL_BOUND=1e-6, and at p_max=0 the deficit is exactly 0.0 here so the ratio is
 unbounded -- but that cell is host-split (PORTABILITY lists it; on AMD it is 5.14 orders), so do
 not build on it; (C) absolute 4.2 / 3.2 and relative 8.9 / 7.9 vs TOL_DIRECT_*=1e-6.  ONLY (A)
-has under an order of room; everything else has 3.19 orders or more (the smallest non-(A)
+has under an order of room; everything else has 3.18 orders or more (the smallest non-(A)
 cell is (C)-absolute at p_max=1: 3.189 on Intel, 3.219 on AMD).  Two earlier revisions got
 this quantifier wrong in opposite directions -- "every number above has four or more orders"
 (true for two of six cells), then "a regression at (A) or (B) has less than an order of room"
