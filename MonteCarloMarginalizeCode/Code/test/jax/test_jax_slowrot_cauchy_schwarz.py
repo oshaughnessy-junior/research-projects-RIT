@@ -25,9 +25,10 @@ Three checks, in order (the later ones are worthless without the earlier ones):
       figure because it is not portable across CPUs: bit-identical on repeat runs of a given
       host, but 5.602487e-10 on the Intel Xeon E5-26xx v4 head nodes (ldas-pcdev11/13) and
       5.093170e-10 on the AMD EPYC 9475F (citlogin6) -- same code, same venv, same commit, a
-      difference in the THIRD significant figure.  Do not read digits into it, and state the
-      host when you record one.  An earlier revision of this bullet called that "not
-      bit-reproducible run to run", which is the wrong mechanism: repeat runs agree exactly.
+      9.1% gap, i.e. a difference in the SECOND significant figure.  See PORTABILITY below.
+      Two earlier revisions of this bullet got this wrong in turn: "not bit-reproducible run
+      to run" (repeat runs agree to every digit -- it is the CPU), then "a difference in the
+      THIRD significant figure" (5.6 vs 5.1 is the second).
       This bullet read "5.1e-04 out of 3.2e+05" from 41a7d6fb until 2026-08-19; neither figure
       survived the #142/#143 widening and the #163 Nyquist fix.
   (C) THE MECHANISM.  lnL(t) must equal a directly constructed <d|h> - (1/2)<h|h> for the model
@@ -41,10 +42,28 @@ Three checks, in order (the later ones are worthless without the earlier ones):
 rungs now clear it on the ABSOLUTE arm with room to spare; the relative arm is a backstop, not
 slack bought to make p_max=1 go green.
 
-WHAT THE LADDER MEASURES, AS OF ISSUE #159 (Config below; ldas-pcdev11, CPU, float64).
-The low-order digits below are HOST-SPECIFIC -- see the (B) bullet above; on an AMD EPYC head
-node the same commit gives (B) +5.093e-10, (C) 6.039e-10 and (D) 8.440e-10 at p_max=1.  Nothing
-here is a tolerance, so the spread costs nothing; do not "fix" a cell because your host differs:
+PORTABILITY -- READ BEFORE FILING A FINDING ON ANY DIGIT IN THIS FILE.  Every number here is
+bit-identical on repeat runs of one host (repeat runs, core count and call order were all
+checked) but NOT portable between CPU families.  Unless a line says otherwise, numbers are
+measured on the Intel Xeon E5-26xx v4 head nodes (ldas-pcdev11/13).  The AMD EPYC 9475F head
+node (citlogin6) differs, and NOT only in low-order digits -- at p_max=0 the (C) residual
+differs by 25%, in the leading digit.  Known divergent cells, Intel -> AMD:
+
+    p_max=0  (B) bound deficit     +0.000000e+00 -> -7.275958e-12  (sign flips: on AMD the
+                                                    peak sits 7.3e-12 ABOVE the bound)
+    p_max=0  (C) vs explicit       5.821e-11     -> 7.276e-11      (1.14e-15 -> 1.43e-15 rel)
+    p_max=1  (B) bound deficit     +5.602e-10    -> +5.093e-10
+    p_max=1  (C) vs explicit       6.476e-10     -> 6.039e-10
+    p_max=1  (D) vs numpy NoLoop   8.222e-10     -> 8.440e-10
+    p_max=2  (D) at INFL=5400,f1700  1.854947e-06 -> 1.855078e-06  (straddles 3 s.f.:
+                                                    rounds to 1.85e-06 vs 1.86e-06)
+    p_max=2  worst|noloop-expl| at f512  6.35e-08 -> 6.26e-08
+
+Nothing in this file is a tolerance, so the spread costs nothing and no gate is at risk.  Do
+NOT "fix" a cell because your host differs, and do not derive an argument from a digit that
+appears above.  Everything the DECISIONS rest on is portable at the precision used for it.
+
+WHAT THE LADDER MEASURES, AS OF ISSUE #159 (Config below; ldas-pcdev11, CPU, float64):
 
                          p_max=0                      p_max=1
     bands / 0.5<d|d>     5 / 50960.387223             14 / 50908.118464
@@ -114,9 +133,10 @@ from TOL_NOLOOP but close to each other in relative terms, and both sit at a com
 from the independent explicit model.  The three |...-expl| and sign columns below are measured
 over (C)'s 21-sample window about the peak; (D) is run_ladder's own whole-164-sample-scan max,
 which is NOT the same window -- at row 2 (D)'s argmax is k=+17, outside the window's k in
-[32,52], and restricting (D) to the window would read 1.12e-06 rather than 1.86e-06:
+[32,52], and restricting (D) to the window would read 1.12e-06 rather than 1.85e-06:
 
-        p_max=2            worst|jax-expl|   worst|noloop-expl|   signs agree   (D), full scan
+        p_max=2 (Intel; (D) row 2 and |noloop-expl| row 3 are host-split, see PORTABILITY)
+        config             worst|jax-expl|   worst|noloop-expl|   signs agree   (D), full scan
         INFL=1350, f1700   3.50e-06          1.66e-06             21 of 21      3.45e-06
         INFL=5400, f1700   1.73e-06          1.42e-06             13 of 21      1.85e-06
         INFL=5400, f512    1.41e-07          6.35e-08             17 of 21      1.16e-07
@@ -133,7 +153,8 @@ rows, and (D) in fact FALLS 1.9x for a 4x rate change and 16x at the narrower ba
 statement is the table.
 
 The decision needs no mechanism.  (D) exceeds TOL_NOLOOP (1e-8, an ABSOLUTE-only gate) at every
-configuration tried -- by 345x, 185x and 11.6x for the three rows above, in that order.  Note the
+configuration tried -- by roughly 350x, 185x and 12x for the three rows above, in that order
+(approximate on purpose: the third row's inputs are host-split, see PORTABILITY).  Note the
 third: at fmax=512 (D) is only ~12x over, so "the band is too wide" is the one reading this table
 does NOT rule out, and someone will propose shipping p_max=2 there.  It still fails, by an order
 of magnitude, on a gate with no relative arm -- so supporting the rung means giving (D) the
@@ -249,8 +270,11 @@ class Config(object):
 # 90-minute one, and that is (A)'s requirement, not (B)'s or (C)'s.  With the model
 # non-truncated (#142/#143) the static approximation is good to 0.39 nats at the 90-minute
 # rate -- below MIN_STATIC_DEFICIT, i.e. the rung would not be exercising rotation.  The
-# deficit grows like Omega^2 (measured: 0.0046 / 0.107 / 0.389 / 1.296 / 3.923 nats at
-# INFL = 135 / 675 / 1350 / 2700 / 5400), so 4x the rate buys 10x the teeth.  Nothing else
+# deficit grows FASTER THAN LINEARLY but slower than Omega^2 over this range (measured:
+# 0.0046 / 0.107 / 0.389 / 1.296 / 3.923 nats at INFL = 135 / 675 / 1350 / 2700 / 5400 --
+# that is 10.1x for the last 4x, i.e. ~Omega^1.66, where Omega^2 would predict 16x; this
+# comment said "like Omega^2" against that same list).  So 4x the rate buys 10x the teeth.
+# Nothing else
 # pays for it: (B) and (C) are at machine precision across that whole range once the two
 # defects issue #159 turned up are fixed (see the module docstring).
 CONFIG = {
@@ -266,8 +290,8 @@ def config_for(p_max):
     rate this file argues is too slow for p >= 1 -- so `run_ladder(p_max=2)` silently ran at
     a rate its own asserts reject.  Measured there (shipped code, CPU float64):
 
-        p_max=2, INFL=1350   (A) 0.4022 -> fires   (B) +3.12e-06 > TOL_BOUND   (D) 3.46e-06
-        p_max=2, INFL=5400                          (B) +3.69e-07 ok           (D) 1.86e-06
+        p_max=2, INFL=1350   (A) 0.4022 -> fires   (B) +3.12e-06 > TOL_BOUND   (D) 3.45e-06
+        p_max=2, INFL=5400                          (B) +3.69e-07 ok           (D) 1.85e-06
         p_max=2, INFL=5400, fmax=512                (B) +1.08e-07 ok           (D) 1.16e-07
 
     (B) here is the OVERSHOOT max(lnL) - 0.5<d|d> that the assert gates, so all three rows are
