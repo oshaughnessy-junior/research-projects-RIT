@@ -141,8 +141,17 @@ def time_derivative_weight(fvals, p):
 
     That was not a rounding-level effect: an FD mode from internal_hlm_generator carries
     |H(+fNyq)| ~ 0.02-0.14 of |H(100 Hz)|, and the resulting p_max=1 model norm was wrong by
-    1.5e-07 relative (0.015 nats out of 1.0e+05) -- enough to push the Cauchy-Schwarz check
-    4e-03 nats OVER (1/2)<d|d>.  See issue #159.
+    1.5e-07 relative (0.015 nats out of 1.0e+05).  Reintroducing THIS defect alone on the
+    shipped tree pushes the Cauchy-Schwarz check +8.0e-03 nats OVER (1/2)<d|d> at INFL=1350,
+    fmax=1700 (measured +8.002370e-03, identical on Intel and AMD).
+
+    This read "enough to push the Cauchy-Schwarz check 4e-03 nats OVER" until 2026-08-19.
+    That was a mis-scope: issue #159's 4e-03 was recorded with a SECOND, unrelated defect
+    also present -- in the jax ladder's own reference construction, not in this file -- and
+    the two partly cancelled.  Measured at that configuration: defect 1 alone +8.002370e-03,
+    defect 2 alone -2.240793e-03, both together +4.108112e-03, which is #159's number.  Do
+    not attribute #159's overshoot to this function.  See issue #159 and, for the
+    decomposition, test/jax/test_jax_slowrot_cauchy_schwarz.py.
 
     Zero is the RIGHT value at odd p, not a compromise.  On this grid the Nyquist component
     is the alternating sequence (-1)^j; as a real signal cos(2 pi fNyq t) its derivative

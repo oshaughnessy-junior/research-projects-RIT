@@ -92,9 +92,14 @@ both now fixed:
      fmax=1700, p_max=1): (C) 1.5701e-07 relative, (B) overshoot +8.0024e-03 nats against
      0.5<h|h> = 50991.267 -- which is the figure SLOWROT_HANDOFF.md quotes for p_max=1.  This
      read "which is exactly how lnL got 4e-03 nats OVER the bound" until 2026-08-19; that does
-     not follow, since 1.5e-07 of 50991 is 7.6e-03.  The 4e-03 in the issue #159 record was
-     taken with BOTH defects present and they partly cancelled; attributing it to this one
-     alone is the mis-scope.  Fixed in flwr.time_derivative_weight; it is a defect in
+     not follow -- 1.5701e-07 of 50991.267 is 8.006e-03, which is the measured overshoot.
+     (Two quantities wear the "1.5e-07" label here: the norm error relative to <h|h>,
+     0.015/1.02e+05 = 1.47e-07, and (C)'s residual relative to 0.5<h|h>, 1.5701e-07.  The
+     conclusion holds either way.)  The 4e-03 in the issue #159 record was taken with BOTH
+     defects present and they partly cancelled: measured at that configuration, defect 1
+     alone +8.002370e-03, defect 2 alone -2.240793e-03, both +4.108112e-03 -- #159's number
+     to every digit.  Attributing it to this one alone is the mis-scope.
+     Fixed in flwr.time_derivative_weight; it is a defect in
      the shared precompute, not in this port, and the numpy NoLoop carried it identically.
   2. THE SHIFT CONVENTION of (C)'s own reference.  See _explicit_model_fd: the bank shifts the
      MODULATED template circularly and repairs the phase with rotation_post_phase, and the
@@ -109,7 +114,8 @@ magnitude (p_max=0 / p_max=1, Intel): (A) 0.70 / 0.59 vs MIN_STATIC_DEFICIT=1.0;
 p_max=1 vs TOL_BOUND=1e-6, and at p_max=0 the deficit is exactly 0.0 here so the ratio is
 unbounded -- but that cell is host-split (PORTABILITY lists it; on AMD it is 5.14 orders), so do
 not build on it; (C) absolute 4.2 / 3.2 and relative 8.9 / 7.9 vs TOL_DIRECT_*=1e-6.  ONLY (A)
-has under an order of room; everything else has 3.2 orders or more.  Two earlier revisions got
+has under an order of room; everything else has 3.19 orders or more (the smallest non-(A)
+cell is (C)-absolute at p_max=1: 3.189 on Intel, 3.219 on AMD).  Two earlier revisions got
 this quantifier wrong in opposite directions -- "every number above has four or more orders"
 (true for two of six cells), then "a regression at (A) or (B) has less than an order of room"
 (true for (A) only; (B) prints 3.25 two lines above it).  The ADVICE never depended on either:

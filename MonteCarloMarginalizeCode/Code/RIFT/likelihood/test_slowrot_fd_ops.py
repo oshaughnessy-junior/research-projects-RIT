@@ -245,15 +245,22 @@ def test_reference_matrix_matches_lal_modulation():
 
 
 def test_nyquist_guard_clauses_on_synthetic_axes():
-    """The three guard clauses in time_derivative_weight, which no production axis reaches.
+    """The guard clauses in time_derivative_weight, which no production axis reaches.
 
     Every current caller (fd_apply_time_derivative, and the jax ladder's _FVALS) passes a
     two-sided evaluate_fvals_from_length axis, which carries +fNyq and not -fNyq.  So the
-    "one-sided axis", "symmetric axis" and "fftfreq ordering" branches are dead in the suite
-    and three mutations of them survived the rest of this file: f.size < 2 -> < 0, dropping
-    the `not np.any(f < 0)` term, and removing the paired-axis early return.  They are cheap
-    to pin directly, so pin them -- a defensive branch nothing exercises is a branch that
-    silently rots.
+    "one-sided axis", "symmetric axis" and "fftfreq ordering" branches are dead in the suite,
+    and FOUR mutations of them survived the rest of this file:
+
+        f.size < 2 -> f.size < 0                 killed here by sub-case (iv), degenerate axes
+        drop the `not np.any(f < 0)` term        killed by (i), one-sided axis
+        remove the paired-axis early return      killed by (ii), symmetric axis
+        w[np.abs(f) >= fn] -> w[f >= fn]         killed by (iii), fftfreq ordering
+
+    The fourth is the easiest to miss: dropping abs() is a no-op on every production axis,
+    where the unpaired bin is at +fNyq, and only shows up when it sits at -fNyq.  They are
+    cheap to pin directly, so pin them -- a defensive branch nothing exercises is a branch
+    that silently rots.
 
     FRAGILITY: all four of those mutants die on assertions in THIS ONE function, so deleting it
     resurrects all four at once.  If you split or rename it, keep every sub-case (i)-(iv) --
