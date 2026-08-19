@@ -44,7 +44,7 @@ WHAT THE LADDER MEASURES, AS OF ISSUE #159 (Config below; ldas-pcdev11, CPU, flo
 (A) 0.3907 / (B) -4.108e-03 / (C) 6.06e-07 relative, i.e. the bound was VIOLATED by more than
 the reference could resolve.  That was diagnosed as the delay expansion diverging.  IT WAS NOT:
 lowering fmax from 1700 to 64, which cuts max|2 pi f delta_tau| from 30.4 to 1.1, moved (C) not
-much: (C) relative stays between 4.9e-07 and 6.1e-07 across fmax = 1700/1024/512/256/128 and
+much: (C) relative stays between 4.88e-07 and 6.06e-07 across fmax = 1700/1024/512/256/128 and
 rises only at fmax=64, to 1.18e-06 (sweep in issue #159).  A flat band and then a 2x wander,
 where the divergence hypothesis needed four orders.  Two separate defects were responsible,
 both now fixed:
@@ -97,9 +97,16 @@ the p_max=2 times are to the (D) failure below, not to a full pass), not because
 INFL=5400 it passes (A), (B) and (C), and only (D) -- this file's bonus cross-check against the
 numpy NoLoop -- exceeds its tolerance, and only on (D)'s ABSOLUTE arm (1.86e-06 vs TOL_NOLOOP
 1e-8; (C), which has an `abs OR rel` gate, passes at 3.4e-11 relative).  That gap is float64
-cancellation in the 729-term U/V sums, not a defect: against the independent explicit model JAX
-sits 3.50e-06 away and the numpy NoLoop 1.66e-06, in the same direction at the same floor, and
-the gap tracks the band edge (1.86e-06 at fmax=1700 -> 1.16e-07 at fmax=512).  Supporting the
+cancellation in the 729-term U/V sums, not a defect.  Measured over (C)'s window at this
+configuration, BOTH evaluators sit at the same floor against the independent explicit model --
+JAX 1.73e-06 away, the numpy NoLoop 1.42e-06 -- and their errors are INDEPENDENT, not a shared
+offset: the signs agree in only 13 of 21 samples, and at the sample that sets (D) they straddle
+the reference (jax -1.06e-06, NoLoop +7.9e-07).  So (D) is two independent floor-level errors
+differencing, which is why it lands near their sum and cannot be driven to TOL_NOLOOP by any
+choice of rate.  (An earlier revision of this paragraph claimed 3.50e-06 / 1.66e-06 "in the same
+direction"; neither number is attainable here -- 1.73e-06 is the largest JAX-vs-explicit
+disagreement anywhere in the 164-sample scan -- and the common-mode reading it implied is wrong.)
+The gap does track the band edge (1.86e-06 at fmax=1700 -> 1.16e-07 at fmax=512).  Supporting the
 rung would mean giving (D) the `abs OR rel` shape (C) already has -- a real change, not a
 tolerance bump -- so config_for() RAISES rather than quietly running at the Path-A rate.
 
@@ -203,7 +210,9 @@ class Config(object):
             self.infl, self.fmax, self.omega * seglen)
 
 
-# The configuration each rung runs at.  p_max not listed here falls back to the default.
+# The configuration each rung runs at.  An unlisted p_max >= 1 RAISES in config_for() below;
+# only p_max <= 0 falls back to the default.  (This comment said "falls back to the
+# default" for a while after config_for stopped doing that.)
 #
 # Path B runs FASTER than Path A, at Omega*T_segment for a 6-hour signal rather than a
 # 90-minute one, and that is (A)'s requirement, not (B)'s or (C)'s.  With the model
@@ -227,8 +236,15 @@ def config_for(p_max):
     a rate its own asserts reject.  Measured there (shipped code, CPU float64):
 
         p_max=2, INFL=1350   (A) 0.4022 -> fires   (B) +3.12e-06 > TOL_BOUND   (D) 3.46e-06
-        p_max=2, INFL=5400                          (B) -3.69e-07 ok           (D) 1.86e-06
-        p_max=2, INFL=5400, fmax=512                (B) -1.08e-07 ok           (D) 1.16e-07
+        p_max=2, INFL=5400                          (B) +3.69e-07 ok           (D) 1.86e-06
+        p_max=2, INFL=5400, fmax=512                (B) +1.08e-07 ok           (D) 1.16e-07
+
+    (B) here is the OVERSHOOT max(lnL) - 0.5<d|d> that the assert gates, so all three rows are
+    positive: the bound is exceeded at every one, and rows 2 and 3 are "ok" only because they sit
+    inside TOL_BOUND (1e-6).  Do not quote run_ladder's printed "deficit" in this column -- that
+    is 0.5<d|d> - max(lnL), the opposite sign, and an earlier revision of this table mixed the
+    two, so rows 2 and 3 read as "bound respected with margin" when they are violations 2.7x and
+    9x inside tolerance.
 
     So p_max=2 is not merely un-tuned: (D) -- JAX vs the numpy NoLoop -- exceeds TOL_NOLOOP
     (1e-8) at every rate tried, which is float64 cancellation in the 729-term U/V sums, not a

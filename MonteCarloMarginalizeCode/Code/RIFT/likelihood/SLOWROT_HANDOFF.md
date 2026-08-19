@@ -36,6 +36,10 @@ because a frequency shift does not commute with 1/S(f).  Fixed in PR #117.
   -- but those are from the JAX Cauchy-Schwarz ladder at INFL=1350, fmax=1700, a DIFFERENT
   configuration from this table (SEOBNRv4, fmin=50, seglen=16 s, srate=16384), where the same
   defect is worth ~1e-4 nats.  They are not error bars on the rows below.
+  CAVEAT on the p_max=1 entry: it duplicates the p_max=2 value, and issue #159 records 4.108e-03
+  -- not 8.0e-03 -- at that same INFL=1350, fmax=1700, p_max=1.  The p_max=2 and p_max=3 entries
+  corroborate independently; this one does not, and 8.0e-03 may simply be the p_max=2 number
+  copied up a row.  Do not quote the p_max=1 figure without re-measuring it.
   As recorded at the time: the Cauchy-Schwarz bound is respected at EVERY rate, and p=3
   IMPROVES on p=2 at 1.5x/2x/3x (by
   9x, 51x, 5.7x).  The expansion converges monotonically; high rates simply need more orders.  At

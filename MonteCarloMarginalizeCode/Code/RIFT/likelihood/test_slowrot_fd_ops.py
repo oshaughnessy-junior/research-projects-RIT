@@ -244,6 +244,60 @@ def test_reference_matrix_matches_lal_modulation():
         assert err < 1e-9, "reference matrix disagrees with LAL: %g" % err
 
 
+def test_nyquist_guard_clauses_on_synthetic_axes():
+    """The three guard clauses in time_derivative_weight, which no production axis reaches.
+
+    Every current caller (fd_apply_time_derivative, and the jax ladder's _FVALS) passes a
+    two-sided evaluate_fvals_from_length axis, which carries +fNyq and not -fNyq.  So the
+    "one-sided axis", "symmetric axis" and "fftfreq ordering" branches are dead in the suite
+    and three mutations of them survived the rest of this file: f.size < 2 -> < 0, dropping
+    the `not np.any(f < 0)` term, and removing the paired-axis early return.  They are cheap
+    to pin directly, so pin them -- a defensive branch nothing exercises is a branch that
+    silently rots.
+    """
+    p = 1   # odd: the only parity that touches any of this
+
+    # (i) ONE-SIDED axis (no negative frequencies): nothing is unpaired, so nothing may be
+    # zeroed.  Zeroing here would eat the top of an rfft-style band.
+    f_one = np.arange(0, 65) * DELTA_F
+    w = flwr.time_derivative_weight(f_one, p)
+    assert np.all(w != 0) or np.all(f_one[w == 0] == 0.), (
+        "one-sided axis: weight was zeroed at %s, but a one-sided axis has no unpaired "
+        "Nyquist bin" % (f_one[w == 0],))
+    assert np.allclose(w, (flwr.FT_SIGN * 2.0j * np.pi * f_one) ** p), \
+        "one-sided axis: weight is not the plain analytic weight"
+
+    # (ii) SYMMETRIC axis (both +fn and -fn present): the extreme bin IS paired, so the
+    # weight is well defined and both ends must survive.  Keying on |f| == max alone would
+    # blank both ends here -- that is what the paired early return prevents.
+    f_sym = np.arange(-64, 65) * DELTA_F
+    w = flwr.time_derivative_weight(f_sym, p)
+    assert np.count_nonzero(w == 0) == 1 and w[f_sym == 0.][0] == 0., (
+        "symmetric axis: %d bins zeroed (only the f=0 bin should vanish, and only because "
+        "the analytic weight is 0 there)" % np.count_nonzero(w == 0))
+    assert np.allclose(w, (flwr.FT_SIGN * 2.0j * np.pi * f_sym) ** p), \
+        "symmetric axis: weight is not the plain analytic weight"
+
+    # (iii) FFTFREQ ordering, where the unpaired bin sits at -fNyq rather than +fNyq.  This
+    # is why the mask tests abs(f) and not f: `w[f >= fn] = 0.` finds nothing here.
+    f_np = np.fft.fftfreq(8, d=1.0 / (8 * DELTA_F))       # [0,1,2,3,-4,-3,-2,-1]*DELTA_F
+    assert f_np.min() < 0 and f_np.max() < abs(f_np.min()), "fftfreq axis is not -fNyq-heavy"
+    w = flwr.time_derivative_weight(f_np, p)
+    nyq = np.abs(f_np) >= np.max(np.abs(f_np))
+    assert np.all(w[nyq] == 0), \
+        "fftfreq ordering: the unpaired bin at -fNyq was NOT zeroed (mask is not using abs())"
+    assert np.all(w[~nyq] == ((flwr.FT_SIGN * 2.0j * np.pi * f_np[~nyq]) ** p)), \
+        "fftfreq ordering: a paired bin was disturbed"
+
+    # (iv) DEGENERATE axes: too short to have a Nyquist pair at all.  Must not zero anything.
+    for f_deg in (np.array([DELTA_F]), np.array([-DELTA_F])):
+        w = flwr.time_derivative_weight(f_deg, p)
+        assert np.all(w == (flwr.FT_SIGN * 2.0j * np.pi * f_deg) ** p), \
+            "degenerate axis %s: weight was modified" % (f_deg,)
+
+    print("nyquist guard clauses: one-sided / symmetric / fftfreq / degenerate all correct")
+
+
 if __name__ == "__main__":
     test_roundtrip_identity()
     test_tone_frequency_assignment_and_FT_SIGN()
@@ -252,4 +306,5 @@ if __name__ == "__main__":
     test_time_derivative_exact()
     test_sidereal_modulation_exact()
     test_reference_matrix_matches_lal_modulation()
+    test_nyquist_guard_clauses_on_synthetic_axes()
     print("ALL FD-PRIMITIVE CHECKS PASSED")
