@@ -169,6 +169,11 @@ def time_derivative_weight(fvals, p):
     if p % 2 == 0:
         return w
     f = np.asarray(fvals)
+    # NOTE: the ndim test below is redundant -- a 0-d array has size 1, so the size test already
+    # covers it -- and mutating it alone is an EQUIVALENT MUTANT that no test can kill.  Kept for
+    # readability; recorded here so a future mutation sweep does not chase it as a coverage gap.
+    # (Deliberately phrased without the literal source text: a naive string-replace mutation
+    # harness will otherwise rewrite THIS COMMENT instead of the code and report a survivor.)
     if f.ndim < 1 or f.size < 2 or not np.any(f < 0):
         # Nothing to repair: a one-sided (or degenerate) frequency axis has no unpaired
         # Nyquist bin.  Leave it rather than eat the top of its band.

@@ -18,8 +18,14 @@ Three checks, in order (the later ones are worthless without the earlier ones):
       would pass on an untested code path.
   (B) THE BOUND.  No sampled lnL(t) may exceed (1/2)<d|d>.  The data IS the exact model at the
       p_max under test (see data_for), so at the true arrival sample lnL sits ON the bound:
-      maximum sensitivity, no slack.  Measured deficit at the peak: 0.0 nats (p_max=0) and
-      5.1e-04 out of 3.2e+05 (p_max=1).
+      maximum sensitivity, no slack.  Measured DEFICIT at the peak (0.5<d|d> - max(lnL); the
+      assert gates the OPPOSITE sign, overshoot <= TOL_BOUND, so a positive deficit means the
+      bound is respected -- see config_for): ~0 nats (p_max=0, roundoff either side of the
+      bound) and ~+5e-10 out of 50908.118464 (p_max=1), i.e. the table below.  Quoted to one
+      figure on purpose: this number is not bit-reproducible run to run (5.602e-10 and
+      5.093e-10 on two runs of the same code and host), so do not read digits into it.
+      This bullet read "5.1e-04 out of 3.2e+05" from 41a7d6fb until 2026-08-19; neither figure
+      survived the #142/#143 widening and the #163 Nyquist fix.
   (C) THE MECHANISM.  lnL(t) must equal a directly constructed <d|h> - (1/2)<h|h> for the model
       the likelihood implies, built explicitly in the time domain and contracted with the same
       band-limited, noise-weighted inner product.  (B) can only detect a violation; (C) pins the
@@ -96,19 +102,30 @@ because it buys no coverage for 2-3x the runtime (two interleaved trials, one ho
 the p_max=2 times are to the (D) failure below, not to a full pass), not because it is broken: at
 INFL=5400 it passes (A), (B) and (C), and only (D) -- this file's bonus cross-check against the
 numpy NoLoop -- exceeds its tolerance, and only on (D)'s ABSOLUTE arm (1.86e-06 vs TOL_NOLOOP
-1e-8; (C), which has an `abs OR rel` gate, passes at 3.4e-11 relative).  That gap is float64
-cancellation in the 729-term U/V sums, not a defect.  Measured over (C)'s window at this
-configuration, BOTH evaluators sit at the same floor against the independent explicit model --
-JAX 1.73e-06 away, the numpy NoLoop 1.42e-06 -- and their errors are INDEPENDENT, not a shared
-offset: the signs agree in only 13 of 21 samples, and at the sample that sets (D) they straddle
-the reference (jax -1.06e-06, NoLoop +7.9e-07).  So (D) is two independent floor-level errors
-differencing, which is why it lands near their sum and cannot be driven to TOL_NOLOOP by any
-choice of rate.  (An earlier revision of this paragraph claimed 3.50e-06 / 1.66e-06 "in the same
-direction"; neither number is attainable here -- 1.73e-06 is the largest JAX-vs-explicit
-disagreement anywhere in the 164-sample scan -- and the common-mode reading it implied is wrong.)
-The gap does track the band edge (1.86e-06 at fmax=1700 -> 1.16e-07 at fmax=512).  Supporting the
-rung would mean giving (D) the `abs OR rel` shape (C) already has -- a real change, not a
-tolerance bump -- so config_for() RAISES rather than quietly running at the Path-A rate.
+1e-8; (C), which has an `abs OR rel` gate, passes at 3.4e-11 relative).  Both evaluators sit far
+from TOL_NOLOOP but close to each other in relative terms, and both sit at a comparable distance
+from the independent explicit model.  Measured over (C)'s 21-sample window:
+
+        p_max=2            worst|jax-expl|   worst|noloop-expl|   signs agree   (D)
+        INFL=1350, f1700   3.50e-06          1.66e-06             21 of 21      3.45e-06
+        INFL=5400, f1700   1.73e-06          1.42e-06             13 of 21      1.86e-06
+        INFL=5400, f512    1.41e-07          6.35e-08             17 of 21      1.16e-07
+
+DO NOT ATTACH A MECHANISM TO THIS TABLE WITHOUT MEASURING IT AT MORE THAN ONE ROW.  Two earlier
+revisions of this paragraph did, and both were wrong in opposite directions: the first quoted
+row 1's numbers under row 2's heading and concluded the two evaluators err "in the same
+direction" (true at INFL=1350, where the signs agree 21 of 21 -- false at INFL=5400, where they
+agree 13 of 21, which is chance); the second retracted those numbers as unattainable (they are
+attainable, at row 1) and concluded the errors are INDEPENDENT and (D) therefore "lands near
+their sum and cannot be driven to TOL_NOLOOP by any choice of rate" -- but (D) is nowhere near
+either sum (5.16e-06 vs 3.45e-06; 3.16e-06 vs 1.86e-06), the sign structure differs between
+rows, and (D) in fact FALLS 1.9x for a 4x rate change and 16x at the narrower band.  The honest
+statement is the table.
+
+The decision needs no mechanism.  (D) exceeds TOL_NOLOOP by 100-350x at every rate tried, and
+TOL_NOLOOP is an absolute-only gate: supporting this rung would mean giving (D) the `abs OR rel`
+shape (C) already has -- a real change to what the test asserts, not a tolerance bump -- so
+config_for() RAISES rather than quietly running at the Path-A rate.
 
 THE ARRIVAL OFFSET MUST BE NONZERO.  The post-phase is exp(i n Omega (t - tref)); at t = tref it
 is the identity and a broken implementation passes every check.  The data is therefore placed at
@@ -211,8 +228,7 @@ class Config(object):
 
 
 # The configuration each rung runs at.  An unlisted p_max >= 1 RAISES in config_for() below;
-# only p_max <= 0 falls back to the default.  (This comment said "falls back to the
-# default" for a while after config_for stopped doing that.)
+# the bare-Config() fallback is reachable only for p_max <= -1, since 0 is a key here.
 #
 # Path B runs FASTER than Path A, at Omega*T_segment for a 6-hour signal rather than a
 # 90-minute one, and that is (A)'s requirement, not (B)'s or (C)'s.  With the model
