@@ -12,6 +12,10 @@ convention floor), at an inflated sidereal rate so the delay drift is large.  At
 90-min-BNS rate (= x340 inflation on a 16s test): p_max=0 deficit 3.43 -> p_max=1 0.23 ->
 p_max=2 0.207 -> p_max=3 0.207: CONVERGES, bound-respected, NO blow-up.  So Path B recovers
 the delay drift and is production-ready for the target signals with p_max<=2.
+(2026-08-19: that verdict predates #163, which fixed a second, independent defect in the FD
+derivative weight's Nyquist bin affecting every odd-p band.  Path B numbers taken before it are
+not reliable; the post-#163 re-measurement is in the paper repo at
+analyses/slowrot_bound_violation/ section 4b.)
 RETRACTED (2026-08-18) -- there is NO p>=3 catastrophic cancellation.  This file used to say it
 "only bites at x1000+ inflation (>2.6x faster than any physical signal)".  That was an artefact of
 a bug in the likelihood, not a property of the expansion: term2 dropped the arrival-time post-phase
@@ -25,7 +29,10 @@ because a frequency shift does not commute with 1/S(f).  Fixed in PR #117.
     1.5x 10.040  0.06892  0.000450  0.000049
     2.0x 51.041  2.85329  0.101903  0.001989
     3.0x 333.19  152.282  43.01335  7.563424
-  The Cauchy-Schwarz bound is respected at EVERY rate, and p=3 IMPROVES on p=2 at 1.5x/2x/3x (by
+  SUPERSEDED BY #163 -- every number in this block was measured with the DEFECTIVE FD derivative
+  weight (the Nyquist bin, see below), which violates the bound at p_max=1/2/3 by 8.0e-03 /
+  8.0e-03 / 34.4 nats in the rung that found it.  Re-measure before quoting any of it.
+  As recorded at the time: the Cauchy-Schwarz bound is respected at EVERY rate, and p=3 IMPROVES on p=2 at 1.5x/2x/3x (by
   9x, 51x, 5.7x).  The expansion converges monotonically; high rates simply need more orders.  At
   the physical rate the p=2 residual (1.7e-4) sits at the test's rotation-off noise floor (1.5e-4),
   so it is an UPPER LIMIT, not a measurement -- fractional agreement 1.6e-7.

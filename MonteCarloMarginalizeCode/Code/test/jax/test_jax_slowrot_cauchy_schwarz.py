@@ -44,7 +44,8 @@ WHAT THE LADDER MEASURES, AS OF ISSUE #159 (Config below; ldas-pcdev11, CPU, flo
 (A) 0.3907 / (B) -4.108e-03 / (C) 6.06e-07 relative, i.e. the bound was VIOLATED by more than
 the reference could resolve.  That was diagnosed as the delay expansion diverging.  IT WAS NOT:
 lowering fmax from 1700 to 64, which cuts max|2 pi f delta_tau| from 30.4 to 1.1, moved (C) not
-at all (6.06e-07 -> 5.4e-07).  Two separate defects were responsible, both now fixed:
+at all (6.06e-07 at fmax=1700 -> 1.18e-06 at fmax=64; the 5.35e-07 often quoted here is the
+fmax=512 row).  A 2x wander, where the divergence hypothesis needed four orders.  Two separate defects were responsible, both now fixed:
 
   1. The NYQUIST BIN of the FD derivative weight.  This packing carries +fNyq but not -fNyq, so
      an odd derivative weight cannot be consistent there, and conj(h^(p)) and (conj h)^(p) --
@@ -85,10 +86,13 @@ The whole ladder runs at p_max=0 (Path A) AND p_max=1 (Path B).  Path B is a dis
 for this port, not a wider bank: several ``p`` then share a sidereal harmonic ``n``, so the
 post-phase buckets ``m = n_a' - n_a`` collect (a,a') pairs from DIFFERENT p (4-20 pairs per bucket
 at p_max=1 vs 1-5 at p_max=0) and the V-term reflection ``(p,n)->(p,-n)`` has to resolve within p.
-p_max=2 is NOT run by default: after the #142/#143 widening it is a 27-band bank whose 729
-U/V cross terms dominate the precompute, and it adds no new branch -- the same duplicate-m
-scatter-add and within-p reflection p_max=1 already exercises.  Pass it explicitly to
-run_ladder() if you want it.
+p_max=2 is NOT run, and is NOT currently supported: after the #142/#143 widening it is a
+27-band bank whose 729 U/V cross terms dominate the precompute, and it adds no new branch --
+the same duplicate-m scatter-add and within-p reflection p_max=1 already exercises.  It also
+does not pass: (D), the comparison against the numpy NoLoop, exceeds TOL_NOLOOP at every rate
+tried (3.46e-06 at INFL=1350, 1.86e-06 at 5400, 1.16e-07 at 5400 with fmax=512), which reads
+as float64 cancellation in those 729 terms rather than a rate that wants raising.  config_for()
+therefore RAISES for it rather than quietly running at the Path-A rate; see its docstring.
 
 THE ARRIVAL OFFSET MUST BE NONZERO.  The post-phase is exp(i n Omega (t - tref)); at t = tref it
 is the identity and a broken implementation passes every check.  The data is therefore placed at
@@ -207,7 +211,30 @@ CONFIG = {
 
 
 def config_for(p_max):
-    return CONFIG.get(p_max, Config())
+    """Rotation rate for this rung.  REFUSES an unlisted p_max >= 1 rather than guessing.
+
+    The old fallback handed any unlisted p_max the Path-A default (INFL=1350), which is the
+    rate this file argues is too slow for p >= 1 -- so `run_ladder(p_max=2)` silently ran at
+    a rate its own asserts reject.  Measured there (shipped code, CPU float64):
+
+        p_max=2, INFL=1350   (A) 0.4022 -> fires   (B) +3.12e-06 > TOL_BOUND   (D) 3.46e-06
+        p_max=2, INFL=5400                          (B) -3.69e-07 ok           (D) 1.86e-06
+        p_max=2, INFL=5400, fmax=512                (B) -1.08e-07 ok           (D) 1.16e-07
+
+    So p_max=2 is not merely un-tuned: (D) -- JAX vs the numpy NoLoop -- exceeds TOL_NOLOOP
+    (1e-8) at every rate tried, which is float64 cancellation in the 729-term U/V sums, not a
+    rate that wants raising.  Adding a CONFIG entry would therefore mean loosening TOL_NOLOOP
+    on a number nobody has explained, so the rung stays unsupported and says so.  Give it a
+    CONFIG entry only together with a measured justification for whatever tolerance it needs.
+    """
+    if p_max in CONFIG:
+        return CONFIG[p_max]
+    if p_max >= 1:
+        raise ValueError(
+            "no CONFIG entry for p_max=%r: this ladder's rate is chosen per rung, and the "
+            "old fallback silently used the Path-A rate (INFL=1350), which p >= 1 asserts "
+            "reject.  See this function's docstring for the p_max=2 measurements." % (p_max,))
+    return Config()
 
 TOL_BOUND = 1e-6           # nats above (1/2)<d|d> that we call a violation
 TOL_DIRECT_ABS = 1e-6      # nats of disagreement with the explicit model
@@ -279,6 +306,13 @@ def delay_expansion_ratio(cfg):
     delta_tau(t) = tau(t) - tau(tref), so the p-th band is smaller than the p-1'th by roughly
     this factor.  Above 1 the series diverges at the top of the band and every construction
     that reconstructs the model from it -- including (C)'s explicit reference -- inherits that.
+
+    READ IT AS AN UPPER BOUND AT THE BAND EDGE, NOT AS THE MODEL'S ACTUAL EXPANSION.  It is a
+    max over the whole u_grid evaluated at fmax, so it overstates what the bands are worth:
+    at the rate this rung ships it prints ~185 while the p >= 1 bands move <d|d> by ~0.2%
+    (50960.39 at p_max=0, 50908.12 at p_max=1, 51063.79 at p_max=3).  A reader who takes the
+    printed number at face value concludes the model is 185x divergent when the correction is
+    perturbative.  It is printed because its TREND across rates is informative, not its value.
     """
     Bd = srr.delay_harmonics(lald.location, DEC)
     Btil = {m: Bd[m] * np.exp(1j * m * g_ev) for m in Bd}
@@ -392,7 +426,7 @@ def _explicit_model_fd(k, p_max, a_list, cfg):
     the |n| = 3 coefficients at p_max=1, both evaluators silently dropped them, and summing the
     full coefficient dict here instead of restricting to a_list disagreed by 2.2e+05 nats at
     this configuration -- the dropped bands were the same order as the ones kept, because at
-    INFL=1350 the first-order delay term dominates.
+    the rate this rung ships at (INFL=21600/seglen) the first-order delay term dominates.
     """
     C = flwr.rotation_coefficients(det, RA, DEC, PSI, event_time, p_max)   # {(p,n): C_a}
     keep = set((int(p), int(n)) for (p, n) in a_list)
