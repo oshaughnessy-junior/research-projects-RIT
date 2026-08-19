@@ -21,9 +21,13 @@ Three checks, in order (the later ones are worthless without the earlier ones):
       maximum sensitivity, no slack.  Measured DEFICIT at the peak (0.5<d|d> - max(lnL); the
       assert gates the OPPOSITE sign, overshoot <= TOL_BOUND, so a positive deficit means the
       bound is respected -- see config_for): ~0 nats (p_max=0, roundoff either side of the
-      bound) and ~+5e-10 out of 50908.118464 (p_max=1), i.e. the table below.  Quoted to one
-      figure on purpose: this number is not bit-reproducible run to run (5.602e-10 and
-      5.093e-10 on two runs of the same code and host), so do not read digits into it.
+      bound) and ~+5e-10 out of 50908.118464 (p_max=1), i.e. the table below.  Quoted to ONE
+      figure because it is not portable across CPUs: bit-identical on repeat runs of a given
+      host, but 5.602487e-10 on the Intel Xeon E5-26xx v4 head nodes (ldas-pcdev11/13) and
+      5.093170e-10 on the AMD EPYC 9475F (citlogin6) -- same code, same venv, same commit, a
+      difference in the THIRD significant figure.  Do not read digits into it, and state the
+      host when you record one.  An earlier revision of this bullet called that "not
+      bit-reproducible run to run", which is the wrong mechanism: repeat runs agree exactly.
       This bullet read "5.1e-04 out of 3.2e+05" from 41a7d6fb until 2026-08-19; neither figure
       survived the #142/#143 widening and the #163 Nyquist fix.
   (C) THE MECHANISM.  lnL(t) must equal a directly constructed <d|h> - (1/2)<h|h> for the model
@@ -37,7 +41,10 @@ Three checks, in order (the later ones are worthless without the earlier ones):
 rungs now clear it on the ABSOLUTE arm with room to spare; the relative arm is a backstop, not
 slack bought to make p_max=1 go green.
 
-WHAT THE LADDER MEASURES, AS OF ISSUE #159 (Config below; ldas-pcdev11, CPU, float64):
+WHAT THE LADDER MEASURES, AS OF ISSUE #159 (Config below; ldas-pcdev11, CPU, float64).
+The low-order digits below are HOST-SPECIFIC -- see the (B) bullet above; on an AMD EPYC head
+node the same commit gives (B) +5.093e-10, (C) 6.039e-10 and (D) 8.440e-10 at p_max=1.  Nothing
+here is a tolerance, so the spread costs nothing; do not "fix" a cell because your host differs:
 
                          p_max=0                      p_max=1
     bands / 0.5<d|d>     5 / 50960.387223             14 / 50908.118464
@@ -101,14 +108,17 @@ because it buys no coverage for 2-3x the runtime (two interleaved trials, one ho
 59.2 s then 55.0 s, p_max=1 27.8 s then 20.0 s -- the first-trial figures carry JIT warmup, and
 the p_max=2 times are to the (D) failure below, not to a full pass), not because it is broken: at
 INFL=5400 it passes (A), (B) and (C), and only (D) -- this file's bonus cross-check against the
-numpy NoLoop -- exceeds its tolerance, and only on (D)'s ABSOLUTE arm (1.86e-06 vs TOL_NOLOOP
+numpy NoLoop -- exceeds its tolerance, and only on (D)'s ABSOLUTE arm (1.85e-06 vs TOL_NOLOOP
 1e-8; (C), which has an `abs OR rel` gate, passes at 3.4e-11 relative).  Both evaluators sit far
 from TOL_NOLOOP but close to each other in relative terms, and both sit at a comparable distance
-from the independent explicit model.  Measured over (C)'s 21-sample window:
+from the independent explicit model.  The three |...-expl| and sign columns below are measured
+over (C)'s 21-sample window about the peak; (D) is run_ladder's own whole-164-sample-scan max,
+which is NOT the same window -- at row 2 (D)'s argmax is k=+17, outside the window's k in
+[32,52], and restricting (D) to the window would read 1.12e-06 rather than 1.86e-06:
 
-        p_max=2            worst|jax-expl|   worst|noloop-expl|   signs agree   (D)
+        p_max=2            worst|jax-expl|   worst|noloop-expl|   signs agree   (D), full scan
         INFL=1350, f1700   3.50e-06          1.66e-06             21 of 21      3.45e-06
-        INFL=5400, f1700   1.73e-06          1.42e-06             13 of 21      1.86e-06
+        INFL=5400, f1700   1.73e-06          1.42e-06             13 of 21      1.85e-06
         INFL=5400, f512    1.41e-07          6.35e-08             17 of 21      1.16e-07
 
 DO NOT ATTACH A MECHANISM TO THIS TABLE WITHOUT MEASURING IT AT MORE THAN ONE ROW.  Two earlier
@@ -118,13 +128,17 @@ direction" (true at INFL=1350, where the signs agree 21 of 21 -- false at INFL=5
 agree 13 of 21, which is chance); the second retracted those numbers as unattainable (they are
 attainable, at row 1) and concluded the errors are INDEPENDENT and (D) therefore "lands near
 their sum and cannot be driven to TOL_NOLOOP by any choice of rate" -- but (D) is nowhere near
-either sum (5.16e-06 vs 3.45e-06; 3.16e-06 vs 1.86e-06), the sign structure differs between
+either sum (5.16e-06 vs 3.45e-06; 3.15e-06 vs 1.85e-06), the sign structure differs between
 rows, and (D) in fact FALLS 1.9x for a 4x rate change and 16x at the narrower band.  The honest
 statement is the table.
 
-The decision needs no mechanism.  (D) exceeds TOL_NOLOOP by 100-350x at every rate tried, and
-TOL_NOLOOP is an absolute-only gate: supporting this rung would mean giving (D) the `abs OR rel`
-shape (C) already has -- a real change to what the test asserts, not a tolerance bump -- so
+The decision needs no mechanism.  (D) exceeds TOL_NOLOOP (1e-8, an ABSOLUTE-only gate) at every
+configuration tried -- by 345x, 185x and 11.6x for the three rows above, in that order.  Note the
+third: at fmax=512 (D) is only ~12x over, so "the band is too wide" is the one reading this table
+does NOT rule out, and someone will propose shipping p_max=2 there.  It still fails, by an order
+of magnitude, on a gate with no relative arm -- so supporting the rung means giving (D) the
+`abs OR rel` shape (C) already has, a change to what the test ASSERTS rather than a tolerance
+bump, and that is a decision to take deliberately with its own measurements.  Until then
 config_for() RAISES rather than quietly running at the Path-A rate.
 
 THE ARRIVAL OFFSET MUST BE NONZERO.  The post-phase is exp(i n Omega (t - tref)); at t = tref it
@@ -228,7 +242,8 @@ class Config(object):
 
 
 # The configuration each rung runs at.  An unlisted p_max >= 1 RAISES in config_for() below;
-# the bare-Config() fallback is reachable only for p_max <= -1, since 0 is a key here.
+# the bare-Config() fallback is reachable only for p_max < 1 and not in CONFIG -- i.e.
+# negative, or a non-integer below 1 -- since 0 is a key here.  Neither occurs in practice.
 #
 # Path B runs FASTER than Path A, at Omega*T_segment for a 6-hour signal rather than a
 # 90-minute one, and that is (A)'s requirement, not (B)'s or (C)'s.  With the model
@@ -263,10 +278,19 @@ def config_for(p_max):
     9x inside tolerance.
 
     So p_max=2 is not merely un-tuned: (D) -- JAX vs the numpy NoLoop -- exceeds TOL_NOLOOP
-    (1e-8) at every rate tried, which is float64 cancellation in the 729-term U/V sums, not a
-    rate that wants raising.  Adding a CONFIG entry would therefore mean loosening TOL_NOLOOP
-    on a number nobody has explained, so the rung stays unsupported and says so.  Give it a
-    CONFIG entry only together with a measured justification for whatever tolerance it needs.
+    (1e-8) at every configuration tried, by 345x / 185x / 11.6x for the three rows above.
+    DO NOT WRITE A MECHANISM FOR THAT HERE.  Three revisions of the module docstring tried to
+    ("float64 cancellation in the 729-term U/V sums", "same direction at the same floor",
+    "independent errors that cannot be driven to TOL_NOLOOP by any choice of rate") and all
+    three were refuted by measuring a second row; this docstring carried the first of them
+    verbatim for two commits after the module docstring retracted it.  The measurements live
+    in the module docstring's p_max=2 table -- read that, not a story about it.  Note also
+    that raising the rate DOES move (D) (3.45e-06 -> 1.85e-06 for 4x), so "not a rate that
+    wants raising", which this docstring used to say, is false; it moves and does not arrive.
+
+    Supporting the rung would mean giving (D) the `abs OR rel` shape (C) already has -- a
+    change to what the test ASSERTS, not a tolerance bump, and not a loosening of TOL_NOLOOP.
+    Give it a CONFIG entry only together with that change and its own measurements.
     """
     if p_max in CONFIG:
         return CONFIG[p_max]
@@ -360,11 +384,16 @@ def delay_expansion_ratio(cfg):
     model -- see its docstring -- so this row is the norm of the reconstruction, not of a
     fixed dataset.  That is exactly what makes it a divergence meter.)
 
-    The p <= 2 bands are perturbative there (<= 0.35%), and p = 3 is NOT: it blows up by a
-    factor of 40.  So at this configuration the printed 184.9 is a CORRECT warning about p = 3,
-    not an overstatement -- which is why the rung stops at p_max = 1 and config_for refuses
-    higher orders.  Its trend across rates is the informative part; the single number is a
-    band-edge bound and says nothing on its own about which p you can afford.
+    The p <= 2 bands are perturbative there (<= 0.35%, and p = 2 is SMALLER than p = 1 at
+    +0.148% vs +0.347%), and p = 3 is NOT: it blows up by a factor of 40.  So at this
+    configuration the printed 184.9 is a CORRECT warning about p = 3, not an overstatement.
+
+    IT IS NOT THE REASON THE RUNG STOPS AT p_max = 1.  This caption used to say it was; the
+    table above refutes that, since p = 2 is the most perturbative order here.  p_max = 2 is
+    unsupported for unrelated reasons -- runtime, and (D) against the numpy NoLoop -- which
+    are config_for's business, not this metric's.  What this number licenses is refusing
+    p >= 3.  Its trend across rates is the informative part; the single value is a band-edge
+    bound and says nothing on its own about which p you can afford.
     """
     Bd = srr.delay_harmonics(lald.location, DEC)
     Btil = {m: Bd[m] * np.exp(1j * m * g_ev) for m in Bd}
