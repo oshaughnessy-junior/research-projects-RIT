@@ -248,7 +248,11 @@ def _driver_slice(start, end):
 
 
 def _derive_return_lnL(sampler_method, internal_use_lnL):
-    """Run the ILE's real `return_lnL = ...` derivation for one option combination."""
+    """Run the ILE's real `return_lnL = ...` derivation for one option combination.
+
+    This is the FIRST derivation block only.  A second, unconditional `return_lnL=True` for
+    AV sits further down, past the sampler-setup code this cannot execute -- see
+    test_the_av_override_cannot_disagree_with_the_option for why that one is consistent."""
     code = _driver_slice('return_lnL=False\n', 'if use_gmm_args:')
     ns = {'opts': _Opts(sampler_method=sampler_method, internal_use_lnL=internal_use_lnL),
           'pinned_params': {}, 'use_gmm_member': False, 'print': lambda *a, **k: None,
@@ -471,7 +475,20 @@ def test_return_lnL_tracks_the_option_for_every_sampler_that_honours_it(method):
     got, pinned = _derive_return_lnL(method, True)
     assert got is True
     assert pinned.get('use_lnL') is True
-    assert _derive_return_lnL(method, False)[0] is False or method == 'portfolio'
+
+
+@pytest.mark.skipif(not os.path.exists(_ILE), reason='ILE executable not in this tree')
+def test_the_av_override_cannot_disagree_with_the_option():
+    """AV gets a SECOND, unconditional `return_lnL=True` after the derivation block above, so
+    reading only that block would model AV wrongly.  It is consistent anyway, but only because
+    the AV branch of the sampler chain forces the option on -- if that ever stops, AV joins
+    adaptive_cartesian as a place the two predicates part company."""
+    src = _driver_source()
+    i = src.index('if opts.sampler_method == "AV":')
+    assert 'return_lnL=True' in src[i:i + 200], 'the AV override moved; recheck the model above'
+    j = src.index("elif opts.sampler_method == 'AV':")          # the sampler-construction chain
+    assert 'opts.internal_use_lnL=True' in src[j:j + 400], \
+        'AV no longer forces --internal-use-lnL, so return_lnL and the option can now differ'
 
 
 @pytest.mark.skipif(not os.path.exists(_ILE), reason='ILE executable not in this tree')
