@@ -36,10 +36,12 @@ because a frequency shift does not commute with 1/S(f).  Fixed in PR #117.
   -- but those are from the JAX Cauchy-Schwarz ladder at INFL=1350, fmax=1700, a DIFFERENT
   configuration from this table (SEOBNRv4, fmin=50, seglen=16 s, srate=16384), where the same
   defect is worth ~1e-4 nats.  They are not error bars on the rows below.
-  CAVEAT on the p_max=1 entry: it duplicates the p_max=2 value, and issue #159 records 4.108e-03
-  -- not 8.0e-03 -- at that same INFL=1350, fmax=1700, p_max=1.  The p_max=2 and p_max=3 entries
-  corroborate independently; this one does not, and 8.0e-03 may simply be the p_max=2 number
-  copied up a row.  Do not quote the p_max=1 figure without re-measuring it.
+  The p_max=1 entry was flagged 2026-08-19 as possibly the p_max=2 number copied up a row, since
+  issue #159 records 4.108e-03 at that same INFL=1350, fmax=1700, p_max=1.  RESOLVED by
+  re-measurement the same day: reintroducing the Nyquist defect ALONE on the shipped tree gives
+  overshoot +8.0024e-03 nats there (relative residual 1.5701e-07 of 0.5<h|h> = 50991.267), so
+  8.0e-03 is correct and independently reproduced.  #159's 4.108e-03 is not in conflict -- it
+  was taken with BOTH defects present, and they partly cancelled.  The caveat is withdrawn.
   As recorded at the time: the Cauchy-Schwarz bound is respected at EVERY rate, and p=3
   IMPROVES on p=2 at 1.5x/2x/3x (by
   9x, 51x, 5.7x).  The expansion converges monotonically; high rates simply need more orders.  At

@@ -87,8 +87,14 @@ both now fixed:
      same family and never noticed; V = <chi_a^*|chi_a'> pairs the two orders and did.  The
      sidereal modulation is a sub-bin shift applied as a time-domain phase, so it spread that
      one bin across the whole band.  |H(+fNyq)| is 0.02-0.14 of |H(100 Hz)| for these modes, so
-     this was worth 1.5e-07 of the p_max=1 model norm -- a norm too SMALL, which is exactly how
-     lnL got 4e-03 nats OVER the bound.  Fixed in flwr.time_derivative_weight; it is a defect in
+     this was worth 1.5e-07 of the p_max=1 model norm -- a norm too SMALL, hence lnL OVER the
+     bound.  Measured by reintroducing THIS defect alone on the shipped tree (INFL=1350,
+     fmax=1700, p_max=1): (C) 1.5701e-07 relative, (B) overshoot +8.0024e-03 nats against
+     0.5<h|h> = 50991.267 -- which is the figure SLOWROT_HANDOFF.md quotes for p_max=1.  This
+     read "which is exactly how lnL got 4e-03 nats OVER the bound" until 2026-08-19; that does
+     not follow, since 1.5e-07 of 50991 is 7.6e-03.  The 4e-03 in the issue #159 record was
+     taken with BOTH defects present and they partly cancelled; attributing it to this one
+     alone is the mis-scope.  Fixed in flwr.time_derivative_weight; it is a defect in
      the shared precompute, not in this port, and the numpy NoLoop carried it identically.
   2. THE SHIFT CONVENTION of (C)'s own reference.  See _explicit_model_fd: the bank shifts the
      MODULATED template circularly and repairs the phase with rotation_post_phase, and the
@@ -99,11 +105,15 @@ both now fixed:
 With both fixed, (C) is at machine precision at p_max=1 and (B) sits ON the bound to 6e-10, so
 both are asserted at both rungs.  Do not "fix" a future regression here by widening TOL_BOUND,
 TOL_DIRECT_* or MIN_STATIC_DEFICIT.  The margins against those gates are, in orders of
-magnitude: (A) 0.70 / 0.59 vs MIN_STATIC_DEFICIT=1.0; (B) inf / 3.25 vs TOL_BOUND=1e-6; (C)
-absolute 4.2 / 3.2 and relative 8.9 / 7.9 vs TOL_DIRECT_*=1e-6.  (This sentence claimed "four
-or more orders" for every number above until 2026-08-19; that holds for two of the six cells.
-The advice stands on its own -- these gates are theorem-level, not tuned -- but a regression
-at (A) or (B) has less than an order of room, which is a reason to look harder, not to widen.)
+magnitude (p_max=0 / p_max=1, Intel): (A) 0.70 / 0.59 vs MIN_STATIC_DEFICIT=1.0; (B) 3.25 at
+p_max=1 vs TOL_BOUND=1e-6, and at p_max=0 the deficit is exactly 0.0 here so the ratio is
+unbounded -- but that cell is host-split (PORTABILITY lists it; on AMD it is 5.14 orders), so do
+not build on it; (C) absolute 4.2 / 3.2 and relative 8.9 / 7.9 vs TOL_DIRECT_*=1e-6.  ONLY (A)
+has under an order of room; everything else has 3.2 orders or more.  Two earlier revisions got
+this quantifier wrong in opposite directions -- "every number above has four or more orders"
+(true for two of six cells), then "a regression at (A) or (B) has less than an order of room"
+(true for (A) only; (B) prints 3.25 two lines above it).  The ADVICE never depended on either:
+these gates are theorem-level, not tuned, so a regression is a reason to look harder.
 
 TWO THINGS THIS LADDER DELIBERATELY DOES NOT CLAIM.
 
@@ -163,12 +173,13 @@ statement is the table.
 
 The decision needs no mechanism.  (D) exceeds TOL_NOLOOP (1e-8, an ABSOLUTE-only gate) at every
 configuration tried -- by 345x, 185x and 11.6x for the three rows above, in that order.  Those
-three ratios ARE portable: (D) reads 3.454828e-06 / 1.854947e-06 / 1.163426e-07 on Intel and
-3.454916e-06 / 1.855078e-06 / 1.162989e-07 on AMD, agreeing to three figures on every row.  (An
-earlier revision rounded them to "roughly 350x / 185x / 12x" on the stated ground that row 3's
-inputs are host-split.  They are not: the host-split cell in row 3 is worst|noloop-expl|, which
-does not enter this ratio -- so that revision discarded portable digits to justify a portability
-caveat that did not apply.)  Note the
+ratios come from (D) = 3.454828e-06 / 1.854947e-06 / 1.163426e-07 on Intel, 3.454916e-06 /
+1.855078e-06 / 1.162989e-07 on AMD.  Rows 1 and 3 are portable at three figures (345x and 11.6x
+on both).  ROW 2 IS NOT: 185.49 vs 185.51 rounds to 185x on Intel, 186x on AMD -- the straddle
+PORTABILITY records for that cell, inherited by the ratio.  Two earlier revisions each got half
+of this: the first hedged all three ratios, partly on the false ground that row 3's inputs are
+host-split (they are not -- row 3's host-split cell is worst|noloop-expl|, which never enters
+the ratio); the second removed both hedges together, including the one that applied.  Note the
 third: at fmax=512 (D) is only ~12x over, so "the band is too wide" is the one reading this table
 does NOT rule out, and someone will propose shipping p_max=2 there.  It still fails, by an order
 of magnitude, on a gate with no relative arm -- so supporting the rung means giving (D) the

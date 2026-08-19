@@ -254,6 +254,10 @@ def test_nyquist_guard_clauses_on_synthetic_axes():
     the `not np.any(f < 0)` term, and removing the paired-axis early return.  They are cheap
     to pin directly, so pin them -- a defensive branch nothing exercises is a branch that
     silently rots.
+
+    FRAGILITY: all four of those mutants die on assertions in THIS ONE function, so deleting it
+    resurrects all four at once.  If you split or rename it, keep every sub-case (i)-(iv) --
+    each is the only thing standing between one guard clause and a silent regression.
     """
     p = 1   # odd: the only parity that touches any of this
 
