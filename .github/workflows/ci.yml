@@ -259,7 +259,8 @@ jobs:
         # real p_max=2 bank.  The jax gate cannot catch that: at p_max=1 -- which is what
         # test_jax_slowrot_cauchy_schwarz exercises -- the correct and the over-zeroing weights
         # are BIT-IDENTICAL, because p=1 is odd either way.  Without this file, re-landing the
-        # wrong revision is a green CI run.  numpy + lal only, 3.1 s.
+        # wrong revision is a green CI run.  numpy + lal only, and fast (sub-second to a few
+        # seconds depending on the interpreter; it adds nothing material to this job).
         run: |
           python -m pytest -q \
             MonteCarloMarginalizeCode/Code/RIFT/likelihood/test_q_window_interp.py \

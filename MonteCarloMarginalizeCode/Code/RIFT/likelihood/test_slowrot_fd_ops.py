@@ -61,8 +61,13 @@ def _reverse(hf):
 
 def _multitone():
     """h(t) = sum_j c_j exp(2 pi i f_j t), f_j on distinct grid bins."""
-    bins = [3, 7, -5, 12, -11]
-    coeffs = [1.0, 0.5 - 0.3j, -0.8j, 0.4, 0.2 + 0.1j]
+    # 120/-119 are NEAR Nyquist on purpose.  Without them the highest tone is bin 12 of 128, so
+    # ANY mask down to ~0.1*fNyq passes every test here -- verified: w[abs(f) >= 0.9*fn] = 0.
+    # survives the whole file.  A mask that eats the top of the band is a silent likelihood
+    # error (production |H(+fNyq)| is 0.02-0.14 of |H(100 Hz)|), and it is exactly what the
+    # implementation comment in factored_likelihood_with_rotation says it is guarding against.
+    bins = [3, 7, -5, 12, -11, 120, -119]
+    coeffs = [1.0, 0.5 - 0.3j, -0.8j, 0.4, 0.2 + 0.1j, 0.3, 0.25 - 0.1j]
     h = np.zeros(N, dtype=complex)
     for b, c in zip(bins, coeffs):
         h += c * np.exp(2.0j * np.pi * (b * DELTA_F) * _T)

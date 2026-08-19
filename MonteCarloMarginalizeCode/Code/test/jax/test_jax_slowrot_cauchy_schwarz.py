@@ -44,8 +44,10 @@ WHAT THE LADDER MEASURES, AS OF ISSUE #159 (Config below; ldas-pcdev11, CPU, flo
 (A) 0.3907 / (B) -4.108e-03 / (C) 6.06e-07 relative, i.e. the bound was VIOLATED by more than
 the reference could resolve.  That was diagnosed as the delay expansion diverging.  IT WAS NOT:
 lowering fmax from 1700 to 64, which cuts max|2 pi f delta_tau| from 30.4 to 1.1, moved (C) not
-at all (6.06e-07 at fmax=1700 -> 1.18e-06 at fmax=64; the 5.35e-07 often quoted here is the
-fmax=512 row).  A 2x wander, where the divergence hypothesis needed four orders.  Two separate defects were responsible, both now fixed:
+much: (C) relative stays between 4.9e-07 and 6.1e-07 across fmax = 1700/1024/512/256/128 and
+rises only at fmax=64, to 1.18e-06 (sweep in issue #159).  A flat band and then a 2x wander,
+where the divergence hypothesis needed four orders.  Two separate defects were responsible,
+both now fixed:
 
   1. The NYQUIST BIN of the FD derivative weight.  This packing carries +fNyq but not -fNyq, so
      an odd derivative weight cannot be consistent there, and conj(h^(p)) and (conj h)^(p) --
@@ -88,11 +90,18 @@ post-phase buckets ``m = n_a' - n_a`` collect (a,a') pairs from DIFFERENT p (4-2
 at p_max=1 vs 1-5 at p_max=0) and the V-term reflection ``(p,n)->(p,-n)`` has to resolve within p.
 p_max=2 is NOT run, and is NOT currently supported: after the #142/#143 widening it is a
 27-band bank whose 729 U/V cross terms dominate the precompute, and it adds no new branch --
-the same duplicate-m scatter-add and within-p reflection p_max=1 already exercises.  It also
-does not pass: (D), the comparison against the numpy NoLoop, exceeds TOL_NOLOOP at every rate
-tried (3.46e-06 at INFL=1350, 1.86e-06 at 5400, 1.16e-07 at 5400 with fmax=512), which reads
-as float64 cancellation in those 729 terms rather than a rate that wants raising.  config_for()
-therefore RAISES for it rather than quietly running at the Path-A rate; see its docstring.
+the same duplicate-m scatter-add and within-p reflection p_max=1 already exercises.  It is skipped
+because it buys no coverage for 2-3x the runtime (two interleaved trials, one host: p_max=2 took
+59.2 s then 55.0 s, p_max=1 27.8 s then 20.0 s -- the first-trial figures carry JIT warmup, and
+the p_max=2 times are to the (D) failure below, not to a full pass), not because it is broken: at
+INFL=5400 it passes (A), (B) and (C), and only (D) -- this file's bonus cross-check against the
+numpy NoLoop -- exceeds its tolerance, and only on (D)'s ABSOLUTE arm (1.86e-06 vs TOL_NOLOOP
+1e-8; (C), which has an `abs OR rel` gate, passes at 3.4e-11 relative).  That gap is float64
+cancellation in the 729-term U/V sums, not a defect: against the independent explicit model JAX
+sits 3.50e-06 away and the numpy NoLoop 1.66e-06, in the same direction at the same floor, and
+the gap tracks the band edge (1.86e-06 at fmax=1700 -> 1.16e-07 at fmax=512).  Supporting the
+rung would mean giving (D) the `abs OR rel` shape (C) already has -- a real change, not a
+tolerance bump -- so config_for() RAISES rather than quietly running at the Path-A rate.
 
 THE ARRIVAL OFFSET MUST BE NONZERO.  The post-phase is exp(i n Omega (t - tref)); at t = tref it
 is the identity and a broken implementation passes every check.  The data is therefore placed at
@@ -307,12 +316,23 @@ def delay_expansion_ratio(cfg):
     this factor.  Above 1 the series diverges at the top of the band and every construction
     that reconstructs the model from it -- including (C)'s explicit reference -- inherits that.
 
-    READ IT AS AN UPPER BOUND AT THE BAND EDGE, NOT AS THE MODEL'S ACTUAL EXPANSION.  It is a
-    max over the whole u_grid evaluated at fmax, so it overstates what the bands are worth:
-    at the rate this rung ships it prints ~185 while the p >= 1 bands move <d|d> by ~0.2%
-    (50960.39 at p_max=0, 50908.12 at p_max=1, 51063.79 at p_max=3).  A reader who takes the
-    printed number at face value concludes the model is 185x divergent when the correction is
-    perturbative.  It is printed because its TREND across rates is informative, not its value.
+    It is a max over the whole u_grid evaluated at fmax, so it is an UPPER BOUND at the band
+    edge -- but do not read that as "therefore it overstates".  Measured at the rate this rung
+    ships (INFL=5400, fmax=1700), where it prints 184.9:
+
+        p_max      0          1          2          3
+        bands      5          14         27         44
+        0.5<d|d>   50732.00   50908.12   50807.14   2032018.46
+
+    (0.5<d|d> varies with p_max because data_for() rebuilds the DATA as the p_max-truncated
+    model -- see its docstring -- so this row is the norm of the reconstruction, not of a
+    fixed dataset.  That is exactly what makes it a divergence meter.)
+
+    The p <= 2 bands are perturbative there (<= 0.35%), and p = 3 is NOT: it blows up by a
+    factor of 40.  So at this configuration the printed 184.9 is a CORRECT warning about p = 3,
+    not an overstatement -- which is why the rung stops at p_max = 1 and config_for refuses
+    higher orders.  Its trend across rates is the informative part; the single number is a
+    band-edge bound and says nothing on its own about which p you can afford.
     """
     Bd = srr.delay_harmonics(lald.location, DEC)
     Btil = {m: Bd[m] * np.exp(1j * m * g_ev) for m in Bd}
@@ -426,7 +446,7 @@ def _explicit_model_fd(k, p_max, a_list, cfg):
     the |n| = 3 coefficients at p_max=1, both evaluators silently dropped them, and summing the
     full coefficient dict here instead of restricting to a_list disagreed by 2.2e+05 nats at
     this configuration -- the dropped bands were the same order as the ones kept, because at
-    the rate this rung ships at (INFL=21600/seglen) the first-order delay term dominates.
+    INFL=1350, the rate this rung then ran at, the first-order delay term dominates.
     """
     C = flwr.rotation_coefficients(det, RA, DEC, PSI, event_time, p_max)   # {(p,n): C_a}
     keep = set((int(p), int(n)) for (p, n) in a_list)
