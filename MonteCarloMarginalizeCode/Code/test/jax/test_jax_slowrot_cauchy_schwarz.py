@@ -59,27 +59,15 @@ differs by 25%, in the leading digit.  Known divergent cells, Intel -> AMD:
                                                     rounds to 1.85e-06 vs 1.86e-06)
     p_max=2  worst|noloop-expl| at f512  6.35e-08 -> 6.26e-08
 
-WHICH CELLS DIVERGE IS PREDICTABLE, so classify a new one rather than measuring it on two
-architectures.  Every divergent cell above is a DIFFERENCE OF NEAR-EQUAL LARGE NUMBERS, and the
-digits that survive the cancellation are roughly
-
-    16 - log10(operand / result)          (float64 carries ~16)
-
-which is how many digits the FMA scheduling can still agree on.  Checked against every cell we
-have measured on both families:
-
-    (A) static deficit      5e4 -> 4.99       ~12 digits   stable
-    0.5<d|d>                (no cancellation) ~16 digits   stable
-    defect-1 overshoot      5e4 -> 8.0e-03    ~ 9 digits   identical on both
-    (B) overshoot p_max=2   5e4 -> 3.7e-07    ~ 5 digits   stable to 3 s.f.
-    (B) bound deficit p_max=1  5e4 -> 5.6e-10 ~ 2 digits   DIVERGES at the 2nd figure
-    (C) absolute p_max=1    5e4 -> 6.5e-10    ~ 2 digits   DIVERGES
-    (D) p_max=1             5e4 -> 8.2e-10    ~ 2 digits   DIVERGES
-
-Two surviving digits is exactly the second-significant-figure spread observed.  So: a cell that
-cancels most of the mantissa is host-specific; one that does not is portable.  (Criterion from
-the session on PR #170, which independently found its own six-row table bit-identical across
-both families -- its numbers are lnL values with no cancellation, and the rule predicts that.)
+THERE IS NO SHORTCUT FOR CLASSIFYING A NEW CELL: measure it on both families.  A revision of
+this block carried a rule -- surviving digits ~ 16 - log10(operand/result), from cancellation --
+offered as a substitute for measuring.  It is REFUTED by a cell listed above: at p_max=2,
+INFL=5400, fmax=512 the operand is 0.5<d|d> = 50791.095816 and worst|noloop-expl| = 6.263e-08,
+so the rule predicts 16 - log10(50791.1/6.3e-08) = 4.09 surviving digits, i.e. "stable", while
+that cell in fact diverges at the SECOND figure (6.35e-08 -> 6.26e-08, ~1.9 digits).  At the
+same configuration it predicts 4.36 digits for (D) and 4.09 for worst|noloop-expl| -- two cells
+it cannot tell apart, where this file calls the first portable at three figures and the second
+host-split.  The rule is plausible, agrees with most rows, and is wrong where it matters.
 
 Nothing in this file is a tolerance, so the spread costs nothing and no gate is at risk.  Do
 NOT "fix" a cell because your host differs, and do not derive an argument from a digit that
@@ -97,7 +85,11 @@ WHAT THE LADDER MEASURES, AS OF ISSUE #159 (Config below; ldas-pcdev11, CPU, flo
 (A) and (B) were scoped to p_max=0 for one release (#151) because the p_max=1 rung read
 (A) 0.3907 / (B) -4.108e-03 / (C) 6.06e-07 relative -- (B) there is the printed DEFICIT, so the
 overshoot is +4.108e-03, which is how the decomposition table below quotes it -- i.e. VIOLATED by
-more than the reference could resolve.  (Issue #159 itself writes "(B) bound overshoot -4.108e-03
+more than the bound's own margin, though NOT more than the reference could resolve: at that
+measurement (C) is 3.09e-02 nats (6.06e-07 relative), so the reference's conditioning is ~7.5x
+LARGER than the violation -- #159 says so in as many words ("the data carries roughly 8x more").
+An earlier revision of this sentence had it backwards.  (Issue #159 itself writes
+"(B) bound overshoot -4.108e-03
 nats (VIOLATED)", applying the label OVERSHOOT to the deficit's value; that mislabel is where the
 ambiguity entered, and it propagated here.  run_ladder prints HALF_DD - max(lnL) and asserts on
 max(lnL) - HALF_DD, so the printed and gated quantities are opposite BY DESIGN.) That was
@@ -122,7 +114,8 @@ both now fixed:
      issue #159 recorded (INFL=1350, fmax=1700, p_max=1).  (B) is run_ladder's overshoot,
      max(lnL) - 0.5<d|d> -- note run_ladder PRINTS the deficit, the negation of that; (C) is
      its relative residual.  The three defect rows are identical on Intel and AMD; the shipped
-     row is NOT (it is 4 orders inside TOL_BOUND, so nothing depends on it):
+     row is NOT -- but it sits 3.2 orders inside TOL_BOUND on both (log10(1e-6/5.89e-10) = 3.23
+     Intel, 3.26 AMD), and their difference is 4.4 orders inside it, so nothing depends on it:
 
          variant                          (B) overshoot      (C) relative
          defect 1 alone (this one)        +8.002370e-03      1.570076e-07
@@ -150,8 +143,10 @@ magnitude (p_max=0 / p_max=1, Intel): (A) 0.70 / 0.59 vs MIN_STATIC_DEFICIT=1.0;
 p_max=1 vs TOL_BOUND=1e-6, and at p_max=0 the deficit is exactly 0.0 here so the ratio is
 unbounded -- but that cell is host-split (PORTABILITY lists it; on AMD it is 5.14 orders), so do
 not build on it; (C) absolute 4.2 / 3.2 and relative 8.9 / 7.9 vs TOL_DIRECT_*=1e-6.  ONLY (A)
-has under an order of room; everything else has 3.18 orders or more (the smallest non-(A)
-cell is (C)-absolute at p_max=1: 3.189 on Intel, 3.219 on AMD).  Two earlier revisions got
+has under an order of room; every other cell IN THIS LIST has 3.18 orders or more (the non-(A)
+minimum is (C)-absolute at p_max=1: 3.189 on Intel, 3.219 on AMD).  "This list" is literal --
+(D) against TOL_NOLOOP is 1.09 orders at p_max=1 and is deliberately not among the gates above,
+since TOL_NOLOOP guards a cross-check, not the bound.  Two earlier revisions got
 this quantifier wrong in opposite directions -- "every number above has four or more orders"
 (true for two of six cells), then "a regression at (A) or (B) has less than an order of room"
 (true for (A) only; (B) prints 3.25 two lines above it).  The ADVICE never depended on either:
