@@ -41,9 +41,9 @@ because a frequency shift does not commute with 1/S(f).  Fixed in PR #117.
   re-measurement the same day: reintroducing the Nyquist defect ALONE on the shipped tree gives
   overshoot +8.0024e-03 nats there (relative residual 1.5701e-07 of 0.5<h|h> = 50991.267), so
   8.0e-03 is correct and independently reproduced.  #159's 4.108e-03 is not in conflict -- it
-  is quoted here as a MAGNITUDE; #159 prints it as a deficit (-4.108e-03) and the decomposition
-  in test/jax/test_jax_slowrot_cauchy_schwarz.py quotes the same figure as an overshoot
-  (+4.108112e-03).  One number, two sign conventions, no disagreement.  And it
+  is quoted here as a MAGNITUDE; #159 prints it as a deficit (-4.108e-03) while the decomposition
+  quotes the same figure as an overshoot (+4.108112e-03) -- that decomposition now lives in
+  RIFT_roboto_paper analyses/slowrot_bound_violation/, not in the jax test.  One number, two sign conventions, no disagreement.  And it
   was taken with BOTH defects present, and they partly cancelled.  The caveat is withdrawn.
   As recorded at the time: the Cauchy-Schwarz bound is respected at EVERY rate, and p=3
   IMPROVES on p=2 at 1.5x/2x/3x (by

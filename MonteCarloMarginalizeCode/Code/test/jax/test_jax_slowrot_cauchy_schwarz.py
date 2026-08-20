@@ -61,14 +61,17 @@ a digit that is not stable.  THERE IS NO SHORTCUT FOR CLASSIFYING A NEW CELL -- 
 families.  A digit-count rule of the form 16 - log10(operand/result) was tried and REFUTED: it
 over-predicts stability and cannot separate cells that split from cells that do not.
 
+The spread is harmless ONLY BECAUSE no gate here is a tolerance on one of these numbers --
+every assert compares against a TOL_* constant, not against a recorded digit.  Pinning any
+host-split cell as an expected value would make the spread live and this suite host-dependent.
+If you must pin one, use a tolerance that survives both families, or state the host.
+
 DO NOT ATTACH A MECHANISM TO A MEASURED TABLE WITHOUT CHECKING IT AT MORE THAN ONE ROW.  Two
 explanations for the split were adopted on partial evidence and later withdrawn; the disconfirming
 row was already in the table both times.
 
-Evidence, sweeps, mutation tables and measured impact: PRs #117 and #163 (immutable, same
-repo), and RIFT_roboto_paper analyses/slowrot_bound_violation/ +
-analyses/slowrot_nyquist_bin/NOTE.md once those land -- as of 2026-08 both are unmerged
-branches there, so follow the PRs first.
+Evidence, sweeps, mutation tables and measured impact: PRs #117 and #163, and
+RIFT_roboto_paper analyses/slowrot_bound_violation/ + analyses/slowrot_nyquist_bin/NOTE.md.
 
 Run: JAX_PLATFORMS=cpu PYTHONPATH=<tree>/MonteCarloMarginalizeCode/Code \\
      python test/jax/test_jax_slowrot_cauchy_schwarz.py
@@ -118,7 +121,7 @@ DLOUD = fl.distMpcRef * 1e6 * lsu.lsu_PC / 30.      # loud, so lnL sits near the
 # The two knobs the rung's conditioning turns on: the rotation rate (through INFL, the factor
 # by which the sidereal rate is inflated so that Omega*T_segment matches a long signal) and the
 # upper end of the band.  They are PER p_max because the p >= 1 rungs need a different balance
-# from Path A -- see CONFIG below and the module docstring.
+# from Path A -- see CONFIG and config_for below.
 INFL_DEFAULT = 5400. / seglen      # Omega * T_segment as for a 90-minute signal
 FMAX_DEFAULT = 1700.
 
@@ -161,7 +164,7 @@ class Config(object):
 # comment said "like Omega^2" against that same list).  So 4x the rate buys 10x the teeth.
 # Nothing else
 # pays for it: (B) and (C) are at machine precision across that whole range once the two
-# defects issue #159 turned up are fixed (see the module docstring).
+# defects issue #159 turned up are fixed (see PRs #117 and #163).
 CONFIG = {
     0: Config(),
     1: Config(infl=21600. / seglen),
@@ -184,8 +187,7 @@ def config_for(p_max):
     refuted by measuring a second configuration.  Raising the rate does move (D); it does not
     move it far enough.
 
-    Measurements: PR #163, and RIFT_roboto_paper analyses/slowrot_bound_violation/ once it
-    lands (unmerged as of 2026-08).
+    Measurements: PR #163, and RIFT_roboto_paper analyses/slowrot_bound_violation/.
     """
     if p_max in CONFIG:
         return CONFIG[p_max]
@@ -198,7 +200,8 @@ def config_for(p_max):
 
 TOL_BOUND = 1e-6           # nats above (1/2)<d|d> that we call a violation
 TOL_DIRECT_ABS = 1e-6      # nats of disagreement with the explicit model
-TOL_DIRECT_REL = 1e-6      # ... or, as a backstop, of 0.5<h|h> (see the module docstring)
+TOL_DIRECT_REL = 1e-6      # ... or, as a backstop, of 0.5<h|h>.  A BACKSTOP, not slack
+                           # bought to make p_max=1 pass: both rungs clear the ABSOLUTE arm.
 TOL_NOLOOP = 1e-8          # nats of disagreement with the numpy NoLoop lnL(t)
 MIN_STATIC_DEFICIT = 1.0   # (A): rotation must be worth at least this much here
 NPTS_SCAN = 164            # +-20 ms
@@ -276,8 +279,7 @@ def delay_expansion_ratio(cfg):
     Its TREND across rates is the informative part; a single value is a band-edge bound and
     says nothing on its own about which p you can afford.
 
-    Measured norms per p_max: PR #163, and RIFT_roboto_paper
-    analyses/slowrot_bound_violation/ once it lands (unmerged as of 2026-08).
+    Measured norms per p_max: PR #163, and RIFT_roboto_paper analyses/slowrot_bound_violation/.
     """
     Bd = srr.delay_harmonics(lald.location, DEC)
     Btil = {m: Bd[m] * np.exp(1j * m * g_ev) for m in Bd}
@@ -347,7 +349,7 @@ def rotation_lnL_t(f_sidereal, p_max, cfg):
 # there, and the wrapped mismatch then shows up as ~1e-02 nats of disagreement with the
 # bank, which computes the shift by FFT correlation and is circular in exactly this sense.
 # See issue #159.  The post-phase is still applied EXPLICITLY below, so (C) keeps its teeth
-# against a dropped rotation_post_phase (see the mutation numbers in the module docstring).
+# against a dropped rotation_post_phase (mutation numbers: PRs #117 and #163).
 #
 # At p_max=0 the sum reduces to F(u)*roll(hY,k), the numpy twin's construction (G_0 == F),
 # and data_for() asserts that equality at 1e-12.

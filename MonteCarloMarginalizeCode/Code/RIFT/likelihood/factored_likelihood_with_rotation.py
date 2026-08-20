@@ -139,12 +139,23 @@ def time_derivative_weight(fvals, p):
     safety.  test_slowrot_fd_ops pins both parities -- and pins the VALUE, not just
     consistency, because any real value at that bin satisfies consistency.
 
-    slowrot_freqresponse.unpaired_extreme_bin applies the same rule with a slightly
-    different guard; the two are not interchangeable.
+    slowrot_freqresponse.unpaired_extreme_bin applies the same rule but declines on
+    `not (any(f<0) and any(f>0))` where this one declines on `not any(f<0)`.  They agree on
+    every axis production builds and DISAGREE on an all-negative one: this zeroes 1 bin,
+    that zeroes 0.  Not interchangeable, and this is the primary site for that fact -- do
+    not reduce it to a pointer.
 
-    Evidence and measured impact: PR #163 (immutable, same repo), and RIFT_roboto_paper
-    analyses/slowrot_nyquist_bin/NOTE.md + analyses/slowrot_bound_violation/ once those land
-    -- both are unmerged branches there as of 2026-08, so follow the PR first.
+    Evidence and measured impact: PRs #117 and #163, and RIFT_roboto_paper
+    analyses/slowrot_nyquist_bin/NOTE.md + analyses/slowrot_bound_violation/.
+
+    Do NOT reason that this bin sits above fMax and therefore cannot matter -- it does sit
+    above fMax, and it still mattered, because the modulation round trip does not leave it
+    there.
+
+    THE SAME RULE APPLIES IN PATH D, and if you are editing this you probably need to edit
+    that too: slowrot_freqresponse.finite_size_response_weights has the same unpaired-bin
+    problem and resolves it the same way, via the Hermitian average Re W_p(+fNyq).  Neither
+    module imports the other, so the duplicate is deliberate; see #164.
     """
     if p == 0:
         return np.ones_like(fvals, dtype=complex)
