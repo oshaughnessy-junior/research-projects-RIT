@@ -297,6 +297,7 @@ parser.add_argument("--lambda-plus-max", default=None,type=float,help="Maximum r
 parser.add_argument("--parameter-nofit", action='append', help="Parameter used to initialize the implied parameters, and varied at a low level, but NOT the fitting parameters")
 parser.add_argument("--use-precessing",action='store_true')
 parser.add_argument("--lnL-downscale-factor",type=float,default=None,help="Multiply log likelihood by this number.  Intended for early stages of iterative analyses. Broadens the posterior. Assumes lnL is usual scale. Applied by MULTIPLYING INPUT DATA BY THIS FACTOR, before anything else applied.  Note also applied BEFORE MANUAL OFFSETS")
+parser.add_argument("--integrate-prior", action='store_true', help="Replace the fitted likelihood by L=1 while retaining the configured CIP prior, bounds, coordinate Jacobians, and post-integration prior corrections. Intended for an independent prior-normalization run used to report Bayes factors.")
 parser.add_argument("--lnL-shift-prevent-overflow",default=None,type=float,help="Define this quantity to be a large positive number to avoid overflows. Note that we do *not* define this dynamically based on sample values, to insure reproducibility and comparable integral results. BEWARE: If you shift the result to be below zero, because the GP relaxes to 0, you will get crazy answers.")
 parser.add_argument("--lnL-protect-overflow",action='store_true',help="Before fitting, subtract lnLmax - 100.  Add this quantity back at the end.")
 parser.add_argument("--lnL-offset",type=float,default=np.inf,help="lnL offset. ONLY POINTS within lnLmax - lnLoffset are used in the calculation!  VERY IMPORTANT - default value chosen to include all points, not viable for production with some fit techniques like gp")
@@ -398,6 +399,10 @@ lnL_shift = 0
 lnL_default_large_negative = -500
 if opts.lnL_shift_prevent_overflow:
     lnL_shift  = opts.lnL_shift_prevent_overflow
+if opts.integrate_prior:
+    # No fitted likelihood is evaluated in this mode, so no likelihood-scale
+    # shift or supplementary-likelihood constant belongs in the result.
+    lnL_shift = 0
 if not(opts.force_no_adapt):
     opts.force_no_adapt=False  # force explicit boolean false
 
@@ -1977,7 +1982,14 @@ elif sum(indx_ok) < 5*len(X[0])**2: # and max_lnL > 30:
 X_raw = X.copy()
 
 my_fit= None
-if not(opts.fit_load_quadratic is None):
+if opts.integrate_prior:
+    print(" PRIOR NORMALIZATION: replacing the fitted likelihood by L=1 ")
+    def my_fit(x):
+        x = np.asarray(x)
+        if x.ndim < 2:
+            return 0.0
+        return np.zeros(len(x))
+elif not(opts.fit_load_quadratic is None):
     print("FIT METHOD IS STORED QUADRATIC; no data used! ")
     my_fit = fit_quadratic_stored(opts.fit_load_quadratic, opts.fit_load_quadratic_path)
 elif opts.fit_method == "quadratic":
@@ -2671,6 +2683,8 @@ if opts.sampler_method == 'GMM':
     my_exp = np.min([1,4*np.log(n_step)/np.max(Y)])   # target value : scale to slightly sublinear to (n_step)^(0.8) for Ymax = 200. This means we have ~ n_step points, with peak value wt~ n_step^(0.8)/n_step ~ 1/n_step^(0.2), limiting contrast
 if opts.sampler_method == 'NFlow':
     my_exp = 1 # don't use it
+if opts.integrate_prior:
+    my_exp = 1
 #my_exp = np.max([my_exp,  1/np.log(n_step)]) # do not allow extreme contrast in adaptivity, to the point that one iteration will dominate
 print(" Weight exponent ", my_exp, " and peak contrast (exp)*lnL = ", my_exp*np.max(Y), "; exp(ditto) =  ", np.exp(my_exp*np.max(Y)), " which should ideally be no larger than of order the number of trials in each epoch, to insure reweighting doesn't select a single preferred bin too strongly.  Note also the floor exponent also constrains the peak, de-facto")
 
@@ -2728,11 +2742,11 @@ if opts.force_no_adapt:
     tempering_adapt=False
 # Result shifted by lnL_shift
 fn_passed = likelihood_function
-if supplemental_ln_likelihood:
+if supplemental_ln_likelihood and not opts.integrate_prior:
     fn_passed =  lambda *x: likelihood_function(*x)*np.exp(supplemental_ln_likelihood(*x))
 if opts.internal_use_lnL:
     fn_passed = log_likelihood_function   # helps regularize large values
-    if supplemental_ln_likelihood:
+    if supplemental_ln_likelihood and not opts.integrate_prior:
         fn_passed =  lambda *x: log_likelihood_function(*x) + supplemental_ln_likelihood(*x)
     extra_args.update({"use_lnL":True,"return_lnI":True})
 if opts.internal_temper_log:
@@ -2776,7 +2790,6 @@ if sampler_oracle:  # NON-PORTFOLIO SCENARIO TARGET
     
 
 res, var, neff, dict_return = sampler.integrate(fn_passed, *low_level_coord_names,  verbose=True,nmax=int(opts.n_max),n=n_step,neff=opts.n_eff, save_intg=True,tempering_adapt=tempering_adapt, floor_level=1e-3,igrand_threshold_p=1e-3,convergence_tests=test_converged,tempering_exp=my_exp,no_protect_names=True, **extra_args)  # weight ecponent needs better choice. We are using arbitrary-name functions
-
 
 # Test n_eff threshold
 if not (opts.fail_unless_n_eff is None):
@@ -3021,7 +3034,7 @@ if opts.pseudo_gaussian_mass_prior:
 # Integral result v2: using modified prior. 
 # Note also downselects NOT applied: no range cuts, unless applied as part of aligned_prior, etc.  
 #   - use for Bayes factors with GREAT CARE for this reason; should correct for with indx_ok
-log_res_reweighted = lnLmax + np.log(np.mean(weights))
+log_res_reweighted = lnLmax + np.log(np.mean(weights)) + lnL_shift
 sigma_reweighted= np.std(weights,dtype=np.float128)/np.mean(weights)
 neff_reweighted = np.sum(weights)/np.max(weights)
 np.savetxt(opts.fname_output_integral+"_withpriorchange.dat", [log_res_reweighted])  # should agree with the usual result, if no prior changes
@@ -3599,5 +3612,3 @@ for indx in np.arange(len(extra_plot_coord_names)):
      print(" Failed to generate corner for ", extra_plot_coord_names[indx])
 
 sys.exit(0)
-
-
