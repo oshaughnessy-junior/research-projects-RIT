@@ -115,5 +115,7 @@ def test_prior_mode_is_independent_and_reweighted_evidence_restores_shift():
     assert 'parser.add_argument("--integrate-prior"' in source
     assert "if opts.integrate_prior:" in source
     assert "replacing the fitted likelihood by L=1" in source
+    assert 'indx_ok = samples["joint_s_prior"] > 0' in source
+    assert "sigma_reweighted /= np.sqrt(len(weights))" in source
     assert ("log_res_reweighted = lnLmax + np.log(np.mean(weights)) + "
             "lnL_shift") in source
