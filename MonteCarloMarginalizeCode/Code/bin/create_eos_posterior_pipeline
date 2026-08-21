@@ -55,6 +55,12 @@ parser.add_argument("--eos-post-args-list", default=None,
                     help="Grouped per-iteration posterior argument schedule using BasicIteration's integer-prefix format. Ordinary repeat groups are supported; G/Z groups fail explicitly.")
 parser.add_argument("--eos-post-exe",default=None,help="filename of ILE or equivalent executable. Will default to `which integrate_likelihood_extrinsic` in low-level code")
 parser.add_argument("--eos-post-retries",default=0,type=int,help="Number of retry attempts for ILE jobs. (These can fail)")
+parser.add_argument(
+    "--terminal-evidence", action="store_true",
+    help=("Add an independent L=1 posterior-stage run and strict terminal "
+          "prior-normalized evidence consolidation. Off by default for "
+          "backward compatibility with hyperpipe post executables that do "
+          "not emit CIP-style annotation files."))
 parser.add_argument("--eos-post-explode-jobs",default=2,type=int,help="Number of MARG jobs to use in posterior generation.")
 parser.add_argument("--eos-post-explode-jobs-last",default=2,type=int,help="Number of MARG jobs to use in posterior generation on the final stage (if desired).")
 parser.add_argument("--test-args",default=None,help="filename of args_test.txt, which holds test arguments.  Note i/o arguments will be modified, so should NOT specify the samples files or the output file, just the test to be performed and any related arguments")
@@ -715,6 +721,60 @@ for schedule_indx, eos_post_args_here in enumerate(eos_post_args_per_iteration):
     eospost_marg_job_list.append(eospost_marg_job)
 
 
+# Optional terminal evidence jobs. This capability is deliberately opt-in:
+# the long-standing hyperpipe default, util_ConstructEOSPosterior.py, writes a
+# scalar integral rather than the paired CIP annotation records consumed by
+# util_CIPDirSummarizeEvidence.py. The pseudo-pipe Hyperpipe route uses the
+# GenericCoordinates CIP executable and explicitly enables this contract.
+terminal_prior_job = None
+terminal_evidence_job = None
+if opts.terminal_evidence:
+    terminal_prior_args = (
+        eos_post_args_per_iteration[-1]
+        + " --integrate-prior --n-output-samples 1 --no-plots "
+    )
+    terminal_prior_job, _ = dag_utils.write_hyperpost_sub(
+        exe=eospost_exe, tag="EOS_POST_prior",
+        arg_str=terminal_prior_args, out_dir=opts.working_directory,
+        output="prior-integral-$(macroiteration)",
+        input_net=opts.working_directory + "/all.marg_net",
+        request_memory=opts.request_memory_marg,
+        request_disk=opts.general_request_disk,
+        universe=local_worker_universe, no_grid=no_worker_grid)
+    terminal_prior_job.add_condor_cmd("initialdir", opts.working_directory)
+    terminal_prior_job.set_log_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/prior-$(cluster)-$(process).log")
+    terminal_prior_job.set_stderr_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/prior-$(cluster)-$(process).err")
+    terminal_prior_job.set_stdout_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/prior-$(cluster)-$(process).out")
+    if opts.use_full_submit_paths:
+        terminal_prior_job.set_sub_file(
+            opts.working_directory + "/" + terminal_prior_job.get_sub_file())
+    terminal_prior_job.write_sub_file()
+
+    evidence_exe = dag_utils.which("util_CIPDirSummarizeEvidence.py") or "util_CIPDirSummarizeEvidence.py"
+    terminal_evidence_args = (
+        " --cip-dir {wd}"
+        " --annotation-glob {wd}/iteration_$(macroiteration)_post/"
+        "output-$(macroiterationnext)-*+annotation.dat"
+        " --output {wd}/evidence_$(macroiteration) --strict"
+        " --prior-integral {wd}/prior-integral-$(macroiteration)_withpriorchange+annotation.dat"
+        " --normalized-output {wd}/evidence_$(macroiteration)_normalized "
+    ).format(wd=opts.working_directory)
+    terminal_evidence_job, _ = dag_utils.write_convert_sub(
+        tag="evidence_final", exe=evidence_exe, log_dir=None,
+        file_input="", arg_str=terminal_evidence_args,
+        out_dir=opts.working_directory, universe=local_worker_universe,
+        no_grid=no_worker_grid)
+    terminal_evidence_job.add_condor_cmd("initialdir", opts.working_directory)
+    terminal_evidence_job.set_log_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/evidence-final-$(cluster)-$(process).log")
+    terminal_evidence_job.set_stderr_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/evidence-final-$(cluster)-$(process).err")
+    terminal_evidence_job.set_stdout_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/evidence-final-$(cluster)-$(process).out")
+    terminal_evidence_job.add_condor_cmd("request_disk", opts.general_request_disk)
+    if opts.use_full_submit_paths:
+        terminal_evidence_job.set_sub_file(
+            opts.working_directory + "/" + terminal_evidence_job.get_sub_file())
+    terminal_evidence_job.write_sub_file()
+
+
 # worker join job
 with open("join_post.sh",'w') as f:
     f.write("""#! /bin/bash
@@ -809,6 +869,8 @@ if puff_args and puff_cadence:
 
 parent_fit_node = None
 last_node=None
+terminal_evidence_parent_node = None
+final_test_node = None
 
 
 unify_node_list = []
@@ -924,6 +986,8 @@ for it in np.arange(it_start,opts.n_iterations):
                 dag.add_node(worker_node)
     dag.add_node(join_node)
     parent_fit_node=join_node
+    if it == opts.n_iterations - 1:
+        terminal_evidence_parent_node = parent_fit_node
 
     # add test here, using output of this most recent iteration
     if opts.test_args and it>0:
@@ -935,6 +999,9 @@ for it in np.arange(it_start,opts.n_iterations):
         test_node.set_category("CONVERGE")
         dag.add_node(test_node)
         test_node_list.append(test_node)
+
+        if it == opts.n_iterations - 1:
+            final_test_node = test_node
 
         parent_fit_node=test_node
 
@@ -959,6 +1026,31 @@ for it in np.arange(it_start,opts.n_iterations):
         dag.add_node(puff_node)
 
         parent_fit_node = puff_node
+
+
+# Terminal evidence must precede a convergence node that may abort the DAG.
+# It summarizes the final exploded posterior workers and divides by an
+# independent L=1 integral using the same physical posterior arguments.
+if (terminal_prior_job is not None and terminal_evidence_job is not None
+        and terminal_evidence_parent_node is not None):
+    final_iteration = opts.n_iterations - 1
+    prior_node = pipeline.CondorDAGNode(terminal_prior_job)
+    prior_node.add_macro("macroiteration", final_iteration)
+    prior_node.set_category("CIP_PRIOR")
+    prior_node.set_retry(opts.general_retries)
+    prior_node.add_parent(terminal_evidence_parent_node)
+    dag.add_node(prior_node)
+
+    final_evidence_node = pipeline.CondorDAGNode(terminal_evidence_job)
+    final_evidence_node.add_macro("macroiteration", final_iteration)
+    final_evidence_node.add_macro("macroiterationnext", final_iteration + 1)
+    final_evidence_node.set_category("EVIDENCE")
+    final_evidence_node.set_retry(opts.general_retries)
+    final_evidence_node.add_parent(terminal_evidence_parent_node)
+    final_evidence_node.add_parent(prior_node)
+    dag.add_node(final_evidence_node)
+    if final_test_node is not None:
+        final_test_node.add_parent(final_evidence_node)
 
 
 

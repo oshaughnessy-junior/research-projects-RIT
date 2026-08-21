@@ -82,7 +82,7 @@ cip_pipeline = _load(
 drivers_base = _load("RIFT.hyperpipe.drivers.base", HP / "drivers" / "base.py")
 
 
-def _check_pipeline_render() -> None:
+def _check_pipeline_render(terminal_evidence: bool = False) -> None:
     """Render a tiny indexed-grid DAG without importing the LAL stack."""
     with tempfile.TemporaryDirectory(prefix="rift-hyperpipe-render-") as tmpd:
         run = Path(tmpd)
@@ -121,6 +121,8 @@ def _check_pipeline_render() -> None:
                 "--eos-post-explode-jobs-last", "1",
                 "--use-full-submit-paths",
             ]
+            if terminal_evidence:
+                sys.argv.append("--terminal-evidence")
             runpy.run_path(
                 str(RIFT_PY / "bin" / "create_eos_posterior_pipeline"),
                 run_name="__main__",
@@ -142,6 +144,27 @@ def _check_pipeline_render() -> None:
         assert "request_memory = 4096" in sub
         assert "request_disk = 2G" in sub
         assert "util_CleanILE_hyperpipeline.py" in consolidator
+        if terminal_evidence:
+            prior_sub = (run / "EOS_POST_prior.sub").read_text()
+            evidence_sub = (run / "evidence_final.sub").read_text()
+            assert "--integrate-prior" in prior_sub
+            assert "--n-output-samples 1" in prior_sub
+            assert "prior-integral-$(macroiteration)" in prior_sub
+            assert "--strict" in evidence_sub
+            assert "--annotation-glob" in evidence_sub
+            assert "output-$(macroiterationnext)-*+annotation.dat" in evidence_sub
+            assert ("prior-integral-$(macroiteration)_withpriorchange+annotation.dat"
+                    in evidence_sub)
+            assert "evidence_$(macroiteration)_normalized" in evidence_sub
+            assert "EOS_POST_prior.sub" in dag
+            assert "evidence_final.sub" in dag
+            assert "CATEGORY" in dag and "CIP_PRIOR" in dag
+            assert "CATEGORY" in dag and "EVIDENCE" in dag
+        else:
+            assert not (run / "EOS_POST_prior.sub").exists()
+            assert not (run / "evidence_final.sub").exists()
+            assert "EOS_POST_prior.sub" not in dag
+            assert "evidence_final.sub" not in dag
 
 
 def run_checks() -> None:
@@ -225,8 +248,10 @@ def run_checks() -> None:
         )
         assert "-3.1415926535" in Path(out).read_text()
 
-    # 6. build-only integration: render DAG + ILE submit/consolidator files
+    # 6. build-only integration: preserve the legacy render, then opt in to
+    # terminal prior-normalized evidence using the same low-level writer.
     _check_pipeline_render()
+    _check_pipeline_render(terminal_evidence=True)
 
     print(f"standalone_check: ALL OK  (RIFT_ROOT={RIFT_ROOT})")
 

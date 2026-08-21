@@ -96,6 +96,27 @@ def test_non_exploded_cip_uses_its_top_level_output_prefix(tmp_path):
     assert result["n_workers"] == 1
 
 
+def test_explicit_annotation_glob_supports_hyperpipe_worker_names(tmp_path):
+    post_dir = tmp_path / "iteration_2_post"
+    post_dir.mkdir()
+    for worker, ln_z, sigma in [(101, 7.0, 0.2), (102, 9.0, 0.4)]:
+        prefix = post_dir / "output-3-{}".format(worker)
+        _write_annotation(str(prefix) + "+annotation.dat", ln_z - 1, sigma)
+        _write_annotation(
+            str(prefix) + "_withpriorchange+annotation.dat",
+            ln_z, sigma, neff=worker)
+
+    result = cip_evidence.consolidate_cip_directory(
+        str(tmp_path), strict=True,
+        annotation_glob=str(post_dir / "output-3-*+annotation.dat"))
+
+    # The explicit glob also matches the with-prior-change files. They must not
+    # be treated as additional workers.
+    assert result["lnZ"] == pytest.approx(7.4)
+    assert result["sigma_lnZ"] == pytest.approx(1.0)
+    assert result["n_workers"] == 2
+
+
 @pytest.mark.parametrize("pipeline", PIPELINES)
 def test_pipeline_has_terminal_prior_then_strict_final_evidence(pipeline):
     source = open(pipeline).read()

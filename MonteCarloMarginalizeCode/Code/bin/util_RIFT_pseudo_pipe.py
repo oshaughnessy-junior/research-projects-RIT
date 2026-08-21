@@ -2407,6 +2407,7 @@ if opts.pipeline_builder == "Hyperpipe":
         "--eos-post-explode-jobs", str(opts.cip_explode_jobs or 1),
         "--eos-post-explode-jobs-last", str(opts.cip_explode_jobs_last or opts.cip_explode_jobs or 1),
         "--general-retries", str(opts.general_retries),
+        "--terminal-evidence",
         "--working-directory", os.getcwd(),
         "--use-full-submit-paths",
     ]
