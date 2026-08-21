@@ -728,8 +728,10 @@ if opts.pipeline_builder == "Hyperpipe":
         (opts.calibration_reweighting, "--calibration-reweighting"),
         (opts.distance_reweighting, "--distance-reweighting"),
         (opts.archive_pesummary_label is not None, "--archive-pesummary-label"),
-        (opts.export_marginal_distance_grid, "--export-marginal-distance-grid"),
-        (bool(opts.export_distance_slices), "--export-distance-slices"),
+        (opts.export_marginal_distance_grid and not opts.add_extrinsic,
+         "--export-marginal-distance-grid without --add-extrinsic"),
+        (bool(opts.export_distance_slices) and not opts.add_extrinsic,
+         "--export-distance-slices without --add-extrinsic"),
     ]
     for active, label in _hyperpipe_feature_checks:
         if active:
@@ -2427,6 +2429,37 @@ if opts.pipeline_builder == "Hyperpipe":
             " --fairdraw-extrinsic-output"
             " --fairdraw-extrinsic-output-n-max {nmax} "
         ).format(neff=extrinsic_neff, nmax=samples_per_point)
+        if opts.export_marginal_distance_grid:
+            extrinsic_ile_args += " --export-marginal-distance-grid "
+        if opts.export_distance_slices and opts.export_distance_slices > 0:
+            extrinsic_ile_args += " --export-distance-slices {} ".format(
+                opts.export_distance_slices)
+            if opts.export_distance_slices_all_fresh:
+                extrinsic_ile_args += " --distance-slice-all-fresh "
+            if opts.export_distance_slices_randomize:
+                extrinsic_ile_args += " --distance-slice-randomize "
+            if opts.export_distance_slices_wing_neff is not None:
+                extrinsic_ile_args += " --distance-slice-wing-neff {} ".format(
+                    opts.export_distance_slices_wing_neff)
+            if opts.export_distance_slices_wing_nmax is not None:
+                extrinsic_ile_args += " --distance-slice-wing-nmax {} ".format(
+                    opts.export_distance_slices_wing_nmax)
+            if opts.export_distance_slices_n_core:
+                extrinsic_ile_args += " --n-distance-slice-core {} ".format(
+                    opts.export_distance_slices_n_core)
+            if opts.export_distance_slices_n_wing:
+                extrinsic_ile_args += " --n-distance-slice-wing {} ".format(
+                    opts.export_distance_slices_n_wing)
+            if opts.export_distance_slices_wing_delta_lnL is not None:
+                extrinsic_ile_args += (
+                    " --distance-slice-wing-delta-lnL {} ".format(
+                        opts.export_distance_slices_wing_delta_lnL))
+            if opts.export_distance_slices_skip_threshold is not None:
+                extrinsic_ile_args += (
+                    " --distance-slice-skip-threshold {} ".format(
+                        opts.export_distance_slices_skip_threshold))
+            if "--internal-use-lnL" not in extrinsic_ile_args:
+                extrinsic_ile_args += " --internal-use-lnL "
         extrinsic_args_path = os.path.abspath("args_ile_extrinsic.txt")
         with open(extrinsic_args_path, "w") as stream:
             stream.write(extrinsic_ile_args.strip() + "\n")
@@ -2479,40 +2512,60 @@ if opts.pipeline_builder == "Hyperpipe":
         terminal_worker_spec["execution"]["request_memory"] = int(ile_mem) * 2
         n_extrinsic_jobs = max(
             1, int(opts.n_output_samples_last / float(n_jobs_per_worker)))
-        terminal_manifest = {
-            "version": 1,
-            "stages": [
-                {
-                    "name": "extrinsic_samples",
-                    "kind": "indexed-grid-fanout-v1",
-                    "job": terminal_worker_spec,
-                    "grid": os.path.abspath(
-                        "grid-$(macroiteration).dat"),
-                    "output_file": "EXTR_out.xml",
-                    "fanout": {
-                        "count": n_extrinsic_jobs,
-                        "group_size": int(n_jobs_per_worker),
-                    },
-                    "initial_dir": terminal_extrinsic_dir,
-                    "log_dir": terminal_extrinsic_dir + "/logs",
+        terminal_command_common = {
+            "initial_dir": os.getcwd(),
+            "log_dir": terminal_extrinsic_dir + "/logs",
+            "universe": (
+                "local" if opts.condor_local_nonworker else "vanilla"),
+            "no_grid": bool(opts.condor_nogrid_nonworker),
+            "execution": {
+                "request_disk": general_request_disk,
+                "retries": int(opts.general_retries),
+            },
+        }
+        terminal_stages = [
+            {
+                "name": "extrinsic_samples",
+                "kind": "indexed-grid-fanout-v1",
+                "job": terminal_worker_spec,
+                "grid": os.path.abspath(
+                    "grid-$(macroiteration).dat"),
+                "output_file": "EXTR_out.xml",
+                "fanout": {
+                    "count": n_extrinsic_jobs,
+                    "group_size": int(n_jobs_per_worker),
                 },
-                {
-                    "name": "extrinsic_collect",
+                "initial_dir": terminal_extrinsic_dir,
+                "log_dir": terminal_extrinsic_dir + "/logs",
+            },
+            dict({
+                "name": "extrinsic_collect",
+                "kind": "command-v1",
+                "depends_on": ["extrinsic_samples"],
+                "exe": terminal_collect_script,
+            }, **terminal_command_common),
+        ]
+        consolidate_distance = (
+            shutil.which("util_ConsolidateDistanceGrids.py")
+            or "util_ConsolidateDistanceGrids.py")
+        for label, enabled, postfix, output in [
+                ("distance_grid", opts.export_marginal_distance_grid,
+                 "dgrid", "all_dgrid.dat"),
+                ("distance_slices", bool(opts.export_distance_slices),
+                 "dslice", "all_dslice.dat")]:
+            if enabled:
+                terminal_stages.append(dict({
+                    "name": label,
                     "kind": "command-v1",
                     "depends_on": ["extrinsic_samples"],
-                    "exe": terminal_collect_script,
-                    "initial_dir": os.getcwd(),
-                    "log_dir": terminal_extrinsic_dir + "/logs",
-                    "universe": (
-                        "local" if opts.condor_local_nonworker else "vanilla"),
-                    "no_grid": bool(opts.condor_nogrid_nonworker),
-                    "execution": {
-                        "request_disk": general_request_disk,
-                        "retries": int(opts.general_retries),
-                    },
-                },
-            ],
-        }
+                    "exe": consolidate_distance,
+                    "args": (
+                        "--input-glob {}/EXTR_out*.xml_*_.{}"
+                        " --output {}/{} --allow-empty".format(
+                            terminal_extrinsic_dir, postfix,
+                            os.getcwd(), output)),
+                }, **terminal_command_common))
+        terminal_manifest = {"version": 1, "stages": terminal_stages}
         terminal_stage_spec_path = os.path.abspath(
             "terminal_stage_specs.json")
         with open(terminal_stage_spec_path, "w") as stream:
