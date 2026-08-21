@@ -2476,6 +2476,7 @@ if opts.calibration_reweighting:
         calibration_node.add_parent(last_node)
         calibration_node.set_retry(opts.general_retries)
         dag.add_node(calibration_node)
+        last_node = calibration_node
     else:
         # Make job to reweight everything, after producing samples
         reweight_merge_node =    pipeline.CondorDAGNode(reweight_merge_job)
@@ -2496,6 +2497,7 @@ if opts.calibration_reweighting:
             
         # add the merge node.  Thouls be the last node
         dag.add_node(reweight_merge_node)
+        last_node = reweight_merge_node
     
 if opts.comov_distance_reweighting:
     convert_ascii_node = pipeline.CondorDAGNode(convert_ascii_job)

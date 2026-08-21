@@ -2109,6 +2109,9 @@ elif opts.calibration_reweighting and opts.bilby_pickle_file:
     cmd += " --calibration-reweighting --calibration-reweighting-exe `which calibration_reweighting.py` --bilby-pickle-file {} ".format(str(opts.bilby_pickle_file))
     if opts.calibration_reweighting_count:
         cmd+= " --calibration-reweighting-count {} ".format(opts.calibration_reweighting_count)
+    if opts.calibration_reweighting_batchsize:
+        cmd += " --calibration-reweighting-batchsize {} ".format(
+            opts.calibration_reweighting_batchsize)
     if opts.calibration_reweighting_extra_args:
         cmd += " --calibration-reweighting-extra-args '{}' ".format(opts.calibration_reweighting_extra_args)
     if opts.calibration_reweighting_osg:
