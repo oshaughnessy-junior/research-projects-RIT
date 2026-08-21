@@ -14,7 +14,9 @@ Locates RIFT_ROOT by:
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
+import runpy
 import sys
 import tempfile
 import types
@@ -57,6 +59,9 @@ sys.modules["RIFT"] = fake_rift
 fake_hp = types.ModuleType("RIFT.hyperpipe")
 fake_hp.__path__ = [str(HP)]
 sys.modules["RIFT.hyperpipe"] = fake_hp
+fake_misc = types.ModuleType("RIFT.misc")
+fake_misc.__path__ = [str(RIFT_PY / "RIFT" / "misc")]
+sys.modules["RIFT.misc"] = fake_misc
 
 
 def _load(name, path):
@@ -70,7 +75,73 @@ def _load(name, path):
 coords = _load("RIFT.hyperpipe.coords", HP / "coords.py")
 config = _load("RIFT.hyperpipe.config", HP / "config.py")
 marg_list = _load("RIFT.hyperpipe.marg_list", HP / "marg_list.py")
+marg_contract = _load("RIFT.hyperpipe.marg_contract", HP / "marg_contract.py")
+cip_pipeline = _load(
+    "RIFT.misc.cip_pipeline", RIFT_PY / "RIFT" / "misc" / "cip_pipeline.py"
+)
 drivers_base = _load("RIFT.hyperpipe.drivers.base", HP / "drivers" / "base.py")
+
+
+def _check_pipeline_render() -> None:
+    """Render a tiny indexed-grid DAG without importing the LAL stack."""
+    with tempfile.TemporaryDirectory(prefix="rift-hyperpipe-render-") as tmpd:
+        run = Path(tmpd)
+        (run / "grid.dat").write_text("# lnL sigma_lnL m1 m2\n0 0 30 20\n")
+        (run / "args_post.txt").write_text(
+            "2 --parameter m1 --parameter m2\n")
+        (run / "args_ile.txt").write_text("X --cache local.cache\n")
+        (run / "local.cache").write_text("cache\n")
+        (run / "jobs.json").write_text(json.dumps([{
+            "name": "ile",
+            "protocol": "indexed-grid-v1",
+            "exe": "/bin/true",
+            "args_file": "args_ile.txt",
+            "n_chunk": 2,
+            "execution": {
+                "cache_file": "local.cache",
+                "request_memory": 4096,
+                "request_disk": "2G",
+                "retries": 3,
+            },
+        }]))
+        old_cwd = os.getcwd()
+        old_argv = sys.argv[:]
+        try:
+            os.chdir(run)
+            sys.argv = [
+                "create_eos_posterior_pipeline",
+                "--working-directory", str(run),
+                "--input-grid", str(run / "grid.dat"),
+                "--marg-job-spec-file", str(run / "jobs.json"),
+                "--eos-post-args-list", str(run / "args_post.txt"),
+                "--eos-post-exe", "/bin/true",
+                "--n-iterations", "2",
+                "--n-samples-per-job", "4",
+                "--eos-post-explode-jobs", "1",
+                "--eos-post-explode-jobs-last", "1",
+                "--use-full-submit-paths",
+            ]
+            runpy.run_path(
+                str(RIFT_PY / "bin" / "create_eos_posterior_pipeline"),
+                run_name="__main__",
+            )
+        finally:
+            sys.argv = old_argv
+            os.chdir(old_cwd)
+
+        dag = (run / "marginalize_hyperparameters.dag").read_text()
+        sub = (run / "MARG_0.sub").read_text()
+        consolidator = (run / "con_marg_0.sh").read_text()
+        assert "macrongroup=\"2\"" in dag
+        assert "RETRY" in dag and " 3" in dag
+        assert "PARENT " in dag and " CHILD " in dag
+        assert "--sim-grid" in sub
+        assert sub.count("--event=$(macroevent)") == 1
+        assert "--n-events-to-analyze $(macrongroup)" in sub
+        assert "--output-file" in sub
+        assert "request_memory = 4096" in sub
+        assert "request_disk = 2G" in sub
+        assert "util_CleanILE_hyperpipeline.py" in consolidator
 
 
 def run_checks() -> None:
@@ -108,7 +179,37 @@ def run_checks() -> None:
     else:
         raise AssertionError("validate_config({}) should have raised")
 
-    # 4. base driver round-trip
+    # 4. generic indexed-grid MARG contract and posterior schedule
+    with tempfile.TemporaryDirectory() as tmpd:
+        base = Path(tmpd)
+        exe = base / "fake_ile"
+        exe.write_text("#!/bin/sh\n")
+        os.chmod(exe, 0o755)
+        (base / "args_ile.txt").write_text("X --cache local.cache\n")
+        (base / "jobs.json").write_text(
+            '[{"name":"ile","protocol":"indexed-grid-v1",'
+            '"exe":"fake_ile","args_file":"args_ile.txt","n_chunk":4}]'
+        )
+        jobs = marg_contract.load_marg_job_specs(str(base / "jobs.json"))
+        assert jobs[0].exe == str(exe)
+        assert jobs[0].args == "--cache local.cache"
+        assert jobs[0].result_glob == "MARG*.dat"
+    assert cip_pipeline.expand_argument_schedule(
+        ["2 --sampler-method GMM", "1 --sampler-method AV"], 4
+    ) == [
+        "--sampler-method GMM",
+        "--sampler-method GMM",
+        "--sampler-method AV",
+        "--sampler-method AV",
+    ]
+    try:
+        cip_pipeline.expand_argument_schedule(["G2 --sampler-method GMM"], 2)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("unsupported special schedules must fail explicitly")
+
+    # 5. base driver round-trip
     with tempfile.TemporaryDirectory() as tmpd:
         grid = Path(tmpd) / "g.dat"
         grid.write_text("# lnL sigma_lnL x y z\n0 0 1.0 2.0 3.0\n")
@@ -123,6 +224,9 @@ def run_checks() -> None:
             conforming_output_name=True,
         )
         assert "-3.1415926535" in Path(out).read_text()
+
+    # 6. build-only integration: render DAG + ILE submit/consolidator files
+    _check_pipeline_render()
 
     print(f"standalone_check: ALL OK  (RIFT_ROOT={RIFT_ROOT})")
 

@@ -16,6 +16,57 @@ import numpy as np
 POSTERIOR_UNIQUE_FLAG = "--posterior-unique-draw"
 
 
+def expand_argument_schedule(lines, n_iterations, allow_special=False):
+    """Expand a grouped CIP/posterior argument schedule by iteration.
+
+    Each non-empty line begins with an integer repeat count.  The legacy event
+    pipeline also accepts ``G<count>`` (alternate Gaussian-resampling
+    executable) and ``Z`` (run-to-convergence subdag).  Callers that cannot
+    reproduce those execution semantics must leave ``allow_special`` false;
+    the parser then fails explicitly instead of silently changing an analysis.
+
+    If the schedule is shorter than ``n_iterations``, its final ordinary group
+    is extended to cover the requested iterations. Longer schedules are
+    truncated to the requested iteration count.
+    """
+    n_iterations = int(n_iterations)
+    if n_iterations <= 0:
+        raise ValueError("n_iterations must be positive")
+    groups = []
+    for raw in lines:
+        raw = raw.strip()
+        if not raw or raw.startswith("#"):
+            continue
+        words = raw.split()
+        prefix = words[0]
+        args = " ".join(words[1:]).strip()
+        if prefix == "Z" or prefix.startswith("G"):
+            if not allow_special:
+                raise ValueError(
+                    "special CIP schedule prefix {!r} is not supported by this pipeline writer".format(prefix))
+            repeat = 1 if prefix == "Z" else int(prefix[1:])
+        else:
+            try:
+                repeat = int(prefix)
+            except ValueError:
+                raise ValueError("invalid CIP schedule prefix {!r}".format(prefix))
+        if repeat <= 0:
+            raise ValueError("CIP schedule repeat must be positive: {!r}".format(prefix))
+        groups.append((prefix, repeat, args))
+    if not groups:
+        raise ValueError("CIP argument schedule is empty")
+
+    expanded = []
+    for prefix, repeat, args in groups:
+        expanded.extend([args] * repeat)
+    if len(expanded) < n_iterations:
+        prefix = groups[-1][0]
+        if prefix == "Z" or prefix.startswith("G"):
+            raise ValueError("cannot extend a special final CIP schedule group")
+        expanded.extend([groups[-1][2]] * (n_iterations - len(expanded)))
+    return expanded[:n_iterations]
+
+
 def _validated_scaled_weights(weights):
     """Validate weights and return them scaled by their maximum, in the input dtype.
 

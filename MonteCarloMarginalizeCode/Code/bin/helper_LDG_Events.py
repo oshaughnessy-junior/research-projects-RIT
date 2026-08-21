@@ -18,6 +18,7 @@ import argparse
 
 import lal
 import RIFT.lalsimutils as lalsimutils
+from RIFT.misc import hyperpipeline_io
 import lalsimulation as lalsim
 
 from igwn_ligolw import lsctables, table, utils
@@ -169,6 +170,8 @@ parser.add_argument("--allow-subsolar", action='store_true', help="Override limi
 parser.add_argument("--use-legacy-gracedb",action='store_true')
 parser.add_argument("--event-time",type=float,default=None)
 parser.add_argument("--sim-xml",default=None)
+parser.add_argument("--sim-grid", default=None,
+                    help="Hyperpipeline .dat counterpart to --sim-xml")
 parser.add_argument("--use-coinc",default=None)
 parser.add_argument("--event",type=int,default=None)
 parser.add_argument("--check-ifo-availability",action='store_true',help="if true, attempt to use frame availability or DQ information to choose ")
@@ -478,6 +481,23 @@ elif opts.sim_xml:  # right now, configured to do synthetic data only...should b
     event_dict["s2z"] = P.s2z
     event_dict["P"] = P
     event_dict["epoch"]  = 0 # no estimate for now
+elif opts.sim_grid:
+    print("====Loading injection grid:", opts.sim_grid, opts.event, " =======")
+    P_list, _ = hyperpipeline_io.read_grid_to_P_list(
+        str(opts.sim_grid), P_factory=lalsimutils.ChooseWaveformParams,
+        lal_module=lal, valid_params=lalsimutils.valid_params)
+    P = P_list[opts.event]
+    P.radec = False
+    P.fref = opts.fmin_template
+    P.fmin = opts.fmin_template
+    event_dict["tref"] = P.tref = opts.event_time
+    event_dict["m1"] = P.m1/lal.MSUN_SI
+    event_dict["m2"] = P.m2/lal.MSUN_SI
+    event_dict["MChirp"] = P.extract_param('mc')/lal.MSUN_SI
+    event_dict["s1z"] = P.s1z
+    event_dict["s2z"] = P.s2z
+    event_dict["P"] = P
+    event_dict["epoch"] = 0
 elif opts.use_coinc: # If using a coinc through injections and not a GraceDB event.
     # Same code as used before for gracedb
     coinc_file = opts.use_coinc
@@ -672,7 +692,7 @@ if not (opts.hint_snr is None) and not ("SNR" in event_dict.keys()):
     event_dict["SNR"] = np.max([opts.hint_snr,6])  # hinting a low SNR isn't helpful
 
 print(" Event analysis ", event_dict)
-if (opts.event_time is None) or opts.sim_xml or "P" in event_dict:
+if (opts.event_time is None) or opts.sim_xml or opts.sim_grid or "P" in event_dict:
     print( " == candidate event parameters (as passed to helper) == ")
     event_dict["P"].print_params()
     if not(opts.event_time is None):

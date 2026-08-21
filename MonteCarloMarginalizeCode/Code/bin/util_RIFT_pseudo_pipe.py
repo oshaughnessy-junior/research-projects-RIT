@@ -16,6 +16,7 @@
 
 import numpy as np
 import argparse
+import json
 import os
 import shlex
 import subprocess
@@ -29,6 +30,23 @@ if ( 'RIFT_LOWLATENCY'  in os.environ):
     assume_lowlatency = True
 else:
     assume_lowlatency=False
+
+# Selecting the alternate hyperpipe writer is itself an opt-in to the
+# hyperpipeline ASCII contract.  Detect it before argparse and before any grid
+# is materialized; waiting until the final builder dispatch would leave the
+# earlier pseudo-pipe stages producing XML for a .dat-only workflow.
+def _argv_requests_hyperpipe(argv):
+    for indx, token in enumerate(argv):
+        if token == "--pipeline-builder" and indx + 1 < len(argv):
+            return argv[indx + 1] == "Hyperpipe"
+        if token.startswith("--pipeline-builder="):
+            return token.split("=", 1)[1] == "Hyperpipe"
+    return False
+
+
+if _argv_requests_hyperpipe(sys.argv[1:]):
+    os.environ["RIFT_HYPERPIPELINE_FORMAT"] = "1"
+
 
 # ----------------------------------------------------------------------
 # Hyperpipeline ASCII grid format (opt-in via env var).  When set, every
@@ -349,7 +367,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--skip-reproducibility",action='store_true')
 parser.add_argument("--use-production-defaults",action='store_true',help="Use production defaults. Intended for use with tools like asimov or by nonexperts who just want something to run on a real event.  Will require manual setting of other arguments!")
 parser.add_argument("--use-subdags",action='store_true',help="Use CEPP_Alternate instead of CEPP_BasicIteration. Note this writes an adaptively-sized DAG each iteration, but doesn't otherwise optimize yet.")
-parser.add_argument("--pipeline-builder",default=None,choices=["BasicIteration","AlternateIteration"],help="Explicitly select the create_event_parameter_pipeline_* iteration builder, as a drop-in hot-swap for side-by-side A/B testing. Overrides the implicit --use-subdags routing. If unset, the builder is chosen by --use-subdags (Alternate) vs. the default (Basic).")
+parser.add_argument("--pipeline-builder",default=None,choices=["BasicIteration","AlternateIteration","Hyperpipe"],help="Explicitly select the low-level iteration builder. Hyperpipe is opt-in and uses the generic .dat pipeline with ILE as its indexed-grid MARG evaluator. Overrides the implicit --use-subdags routing.")
 parser.add_argument("--use-ile-subdags",action='store_true',help="Use ILE subdag system (new)")
 parser.add_argument("--bilby-ini-file",default=None,type=str,help="Pass ini file for parsing. Intended to use for calibration reweighting. Full path recommended")
 parser.add_argument("--bilby-pickle-file",default=None,type=str,help="Bilby Pickle file with event settings. Intended to use for calibration reweighting. Full path recommended")
@@ -687,6 +705,35 @@ if opts.ile_gpu_fanout is not None:
 if opts.lisa_known_sky:
     run_lisa_known_sky_surface(opts)
     sys.exit(0)
+
+if opts.pipeline_builder == "Hyperpipe":
+    _unsupported_hyperpipe = []
+    _hyperpipe_feature_checks = [
+        (opts.use_subdags, "--use-subdags"),
+        (opts.use_ile_subdags, "--use-ile-subdags"),
+        (opts.internal_use_amr, "--internal-use-amr"),
+        (opts.use_gauss_early, "--use-gauss-early (G schedule groups)"),
+        (opts.internal_propose_converge_last_stage,
+         "--internal-propose-converge-last-stage (Z schedule groups)"),
+        (opts.calmarg_pilot, "--calmarg-pilot"),
+        (opts.extrinsic_handoff, "--extrinsic-handoff"),
+        (opts.external_fetch_native_from is not None, "--external-fetch-native-from"),
+        (opts.add_extrinsic, "--add-extrinsic"),
+        (opts.calibration_reweighting, "--calibration-reweighting"),
+        (opts.distance_reweighting, "--distance-reweighting"),
+        (opts.archive_pesummary_label is not None, "--archive-pesummary-label"),
+        (opts.export_marginal_distance_grid, "--export-marginal-distance-grid"),
+        (bool(opts.export_distance_slices), "--export-distance-slices"),
+    ]
+    for active, label in _hyperpipe_feature_checks:
+        if active:
+            _unsupported_hyperpipe.append(label)
+    if _unsupported_hyperpipe:
+        raise SystemExit(
+            "pseudo_pipe: --pipeline-builder Hyperpipe does not yet support: {}. "
+            "Use BasicIteration/AlternateIteration or disable these features; "
+            "the Hyperpipe writer refuses to silently omit them.".format(
+                ", ".join(_unsupported_hyperpipe)))
 
 
 
@@ -1969,8 +2016,11 @@ if opts.pipeline_builder:  # explicit override wins, for clean side-by-side A/B 
     if opts.use_subdags and opts.pipeline_builder != "AlternateIteration":
         # use_subdags is set either by the user or force-set by --internal-use-amr (which REQUIRES the Alternate builder)
         print(" WARNING: --pipeline-builder {} overrides --use-subdags routing; AMR/subdag runs require AlternateIteration ".format(opts.pipeline_builder))
-    cepp = "create_event_parameter_pipeline_" + opts.pipeline_builder
-print(" Pipeline builder (create_event_parameter_pipeline_*): ", cepp)
+    if opts.pipeline_builder == "Hyperpipe":
+        cepp = "create_eos_posterior_pipeline"
+    else:
+        cepp = "create_event_parameter_pipeline_" + opts.pipeline_builder
+print(" Pipeline builder: ", cepp)
 cmd =cepp+ "  --ile-n-events-to-analyze {} --input-grid proposed-grid.{} --ile-exe  `which integrate_likelihood_extrinsic_batchmode`   --ile-args `pwd`/args_ile.txt --cip-args-list args_cip_list.txt --test-args args_test.txt --request-memory-CIP {} --request-memory-ILE {} --n-samples-per-job ".format(n_jobs_per_worker,grid_suffix_pp,cip_mem,ile_mem) + str(npts_it) + " --working-directory `pwd` --n-iterations " + str(n_iterations) + " --n-iterations-subdag-max {} ".format(opts.internal_n_iterations_subdag_max) + "  --n-copies {} ".format(opts.ile_copies) + "   --ile-retries "+ str(opts.ile_retries) + " --general-retries " + str(opts.general_retries)
 if opts.ile_jobs_per_worker_first:
     cmd += " --ile-n-events-to-analyze-first {} ".format(opts.ile_jobs_per_worker_first)
@@ -2293,8 +2343,88 @@ if opts.export_distance_slices and opts.export_distance_slices > 0:
     if opts.export_distance_slices_skip_threshold is not None:
         cmd += " --last-iteration-export-distance-slices-skip-threshold {} ".format(opts.export_distance_slices_skip_threshold)
 
-print(cmd)
-os.system(cmd)
+if opts.pipeline_builder == "Hyperpipe":
+    transfer_files = []
+    if os.path.isfile("helper_transfer_files.txt"):
+        with open("helper_transfer_files.txt") as stream:
+            transfer_files = [line.strip() for line in stream if line.strip()]
+    ile_request_disk = opts.internal_ile_request_disk or "10M"
+    general_request_disk = opts.internal_general_request_disk or "10M"
+    frames_dir = None
+    cache_file = None
+    if opts.use_osg:
+        if opts.use_osg_file_transfer:
+            frames_dir = os.path.abspath("frames_dir")
+        else:
+            cache_file = os.path.abspath("local.cache")
+    marg_spec = [{
+        "name": "ile",
+        "protocol": "indexed-grid-v1",
+        "exe": shutil.which("integrate_likelihood_extrinsic_batchmode") or "integrate_likelihood_extrinsic_batchmode",
+        "args_file": os.path.abspath("args_ile.txt"),
+        "event_file": None,
+        "n_chunk": int(n_jobs_per_worker),
+        "execution": {
+            "request_memory": int(ile_mem),
+            "request_disk": ile_request_disk,
+            "request_gpu": not opts.ile_no_gpu,
+            "request_cross_platform": bool(opts.ile_xpu),
+            "copies": int(opts.ile_copies),
+            "retries": int(opts.ile_retries),
+            "max_runtime_minutes": opts.ile_runtime_max_minutes,
+            "use_osg": bool(opts.use_osg),
+            "use_singularity": bool(opts.use_osg),
+            "singularity_image": os.environ.get("SINGULARITY_RIFT_IMAGE"),
+            "use_simple_osg_requirements": bool(opts.use_osg_simple_requirements),
+            "use_cvmfs_frames": bool(opts.use_osg and not opts.use_osg_file_transfer),
+            "use_oauth_files": opts.internal_use_oauth_files or False,
+            "frames_dir": frames_dir,
+            "cache_file": cache_file,
+            "transfer_files": transfer_files,
+            "condor_commands": dict(ile_condor_commands or []),
+        },
+    }]
+    marg_spec_path = os.path.abspath("marg_job_specs.json")
+    with open(marg_spec_path, "w") as stream:
+        json.dump(marg_spec, stream, indent=2, sort_keys=True)
+        stream.write("\n")
+
+    hyperpipe_cmd = [
+        shutil.which("create_eos_posterior_pipeline") or "create_eos_posterior_pipeline",
+        "--marg-job-spec-file", marg_spec_path,
+        "--input-grid", os.path.abspath("proposed-grid.dat"),
+        "--eos-post-args-list", os.path.abspath("args_cip_list.txt"),
+        "--eos-post-exe", shutil.which("util_ConstructIntrinsicPosterior_GenericCoordinates.py") or "util_ConstructIntrinsicPosterior_GenericCoordinates.py",
+        "--puff-exe", shutil.which("util_ParameterPuffball.py") or "util_ParameterPuffball.py",
+        "--puff-args", os.path.abspath("args_puff.txt"),
+        "--puff-max-it", str(puff_max_it),
+        "--test-args", os.path.abspath("args_test.txt"),
+        "--test-exe", shutil.which("convergence_test_samples.py") or "convergence_test_samples.py",
+        "--request-memory-marg", str(cip_mem),
+        "--general-request-disk", str(general_request_disk),
+        "--n-samples-per-job", str(npts_it),
+        "--n-iterations", str(n_iterations),
+        "--eos-post-explode-jobs", str(opts.cip_explode_jobs or 1),
+        "--eos-post-explode-jobs-last", str(opts.cip_explode_jobs_last or opts.cip_explode_jobs or 1),
+        "--general-retries", str(opts.general_retries),
+        "--working-directory", os.getcwd(),
+        "--use-full-submit-paths",
+    ]
+    if os.path.isfile("helper_transfer_files.txt"):
+        hyperpipe_cmd += ["--transfer-file-list", os.path.abspath("helper_transfer_files.txt")]
+    if opts.use_osg:
+        hyperpipe_cmd += ["--use-osg", "--use-singularity"]
+    if opts.condor_local_nonworker:
+        hyperpipe_cmd.append("--condor-local-nonworker")
+    if opts.condor_local_nonworker_igwn_prefix:
+        hyperpipe_cmd.append("--condor-local-nonworker-igwn-prefix")
+    if opts.condor_nogrid_nonworker:
+        hyperpipe_cmd.append("--condor-nogrid-nonworker")
+    print(" ".join(shlex.quote(item) for item in hyperpipe_cmd))
+    subprocess.run(hyperpipe_cmd, check=True, env=os.environ.copy())
+else:
+    print(cmd)
+    os.system(cmd)
 
 if opts.internal_ile_check_good_enough:
     # Populate 'ile_check_good_enough' through all subdirectories

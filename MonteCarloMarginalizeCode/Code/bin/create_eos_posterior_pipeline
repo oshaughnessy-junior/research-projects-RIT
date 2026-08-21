@@ -15,12 +15,6 @@ import sys
 import os
 import shutil
 import numpy as np
-import RIFT.lalsimutils as lalsimutils
-import lalsimulation as lalsim
-import lal
-import functools
-import itertools
-import json
 
 # Backend-neutral pipeline namespace (htcondor/glue/slurm) provided by dag_utils_generic
 from RIFT.misc.dag_utils_generic import pipeline
@@ -28,6 +22,12 @@ from RIFT.misc.dag_utils_generic import pipeline
 import RIFT.misc.dag_utils_generic as dag_utils
 from RIFT.misc.dag_utils_generic import mkdir
 from RIFT.misc.dag_utils_generic import which
+from RIFT.hyperpipe.marg_contract import (
+    HYPERPIPE_V1,
+    INDEXED_GRID_V1,
+    load_marg_job_specs,
+)
+from RIFT.misc.cip_pipeline import expand_argument_schedule
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--working-directory",default="./")
@@ -38,6 +38,8 @@ parser.add_argument("--marg-event-exe",default=None,help="filename of CIP or equ
 parser.add_argument("--marg-event-exe-list-file",default=None,help="filename of a file containing a LIST of exe ")
 parser.add_argument("--marg-event-args-list-file",default=None,help="filename of a file with one line of arguments per event.  ")
 parser.add_argument("--marg-event-nchunk-list-file",default=None,help="filename of a file with one number per event, indicating the chunk size of its marginalization job (how many points to evaluate per job).  Job must accept --using-eos-index and --n-events-to-analyze arguments, like ILE  ")
+parser.add_argument("--marg-job-spec-file", default=None,
+                    help="JSON array describing generic MARG protocols and execution settings. Overrides the legacy parallel args/exe/nchunk/event lists.")
 parser.add_argument("--request-memory-marg",default=16384,type=int,help="Memory request for condor (in Mb) for fitting jobs.")
 parser.add_argument("--puff-exe",default=None,help="similar to PUFF, but cannot be the same executable since format different")
 parser.add_argument("--puff-args",default=None,help=" argumetns")
@@ -49,6 +51,8 @@ parser.add_argument("--tracer-final-marg-iterations", type=int, default=1,
 parser.add_argument("--puff-input-source", default="posterior", choices=("posterior", "marg_net"),
                     help="Which file feeds the puff/tracer node. 'posterior' (default, legacy) reads grid-{k+1}.dat (EOS_POST posterior samples) and writes grid_puff-{k+1}.dat which MARG_PUFF then evaluates. 'marg_net' wires the puff/tracer node to consume all.marg_net (the cumulative ILE-evaluated (lambda, lnL, sigma) table) and write grid-{k+1}.dat directly, suppressing the MARG_PUFF lane entirely; use with --puff-exe util_*TracerUpdate.py.")
 parser.add_argument("--eos-post-args",default=None,help="filename of args_ile.txt file  which holds ILE arguments.  Should NOT conflict with arguments auto-set by this DAG ... in particular, i/o arguments will be modified")
+parser.add_argument("--eos-post-args-list", default=None,
+                    help="Grouped per-iteration posterior argument schedule using BasicIteration's integer-prefix format. Ordinary repeat groups are supported; G/Z groups fail explicitly.")
 parser.add_argument("--eos-post-exe",default=None,help="filename of ILE or equivalent executable. Will default to `which integrate_likelihood_extrinsic` in low-level code")
 parser.add_argument("--eos-post-retries",default=0,type=int,help="Number of retry attempts for ILE jobs. (These can fail)")
 parser.add_argument("--eos-post-explode-jobs",default=2,type=int,help="Number of MARG jobs to use in posterior generation.")
@@ -74,6 +78,10 @@ opts=  parser.parse_args()
 print(opts)
 if not(opts.input_grid):
     raise Exception(" --input-grid FNAME required ")
+
+marg_job_specs = None
+if opts.marg_job_spec_file:
+    marg_job_specs = load_marg_job_specs(opts.marg_job_spec_file)
 
 main_worker_universe='vanilla'
 local_worker_universe="vanilla"
@@ -113,11 +121,23 @@ if opts.use_singularity:
 ### Event files : copy, give standard name (naming convention assumes CIP for now)
 ###
 
-indx=0
-for event in opts.event_file:
-    shutil.copyfile(event,opts.working_directory+"/event-{}.net".format(indx))  # put in working directory !
-    indx+=1
-n_events = len(opts.event_file)
+if marg_job_specs is not None:
+    for indx, spec in enumerate(marg_job_specs):
+        event_dest = opts.working_directory+"/event-{}.net".format(indx)
+        if spec.event_file:
+            shutil.copyfile(spec.event_file, event_dest)
+        else:
+            with open(event_dest, "w") as stream:
+                stream.write("empty_event_file\n")
+    n_events = len(marg_job_specs)
+else:
+    if not opts.event_file:
+        raise ValueError("at least one --event-file is required without --marg-job-spec-file")
+    indx=0
+    for event in opts.event_file:
+        shutil.copyfile(event,opts.working_directory+"/event-{}.net".format(indx))  # put in working directory !
+        indx+=1
+    n_events = len(opts.event_file)
 
 
 
@@ -129,7 +149,13 @@ n_events = len(opts.event_file)
 marg_event_args_list=None
 marg_event_exe_list=None
 marg_event_nchunk_list=None
-if opts.marg_event_args:
+if marg_job_specs is not None:
+    marg_event_args_list = [spec.args for spec in marg_job_specs]
+    marg_event_exe_list = [spec.exe for spec in marg_job_specs]
+    marg_event_nchunk_list = [spec.n_chunk for spec in marg_job_specs]
+    for indx, spec in enumerate(marg_job_specs):
+        print("MARG {} {} {} ".format(indx, spec.protocol, spec.exe), spec.args)
+elif opts.marg_event_args:
     with open(opts.marg_event_args) as f:
         marg_event_args_list = f.readlines()
     marg_event_args = ' '.join( [x.replace('\\','') for x in marg_event_args_list] )
@@ -165,7 +191,7 @@ elif opts.marg_event_args_list_file:
 
 marg_exe_master = None
 if opts.marg_event_exe:
-    marg_exe_master = "{}".format(marg_exe) # force clpy, so NOT BY REFERENCE
+    marg_exe_master = "{}".format(opts.marg_event_exe) # force copy, so NOT BY REFERENCE
 
 if opts.marg_event_args:
     with open('command-single.sh','w') as f:
@@ -219,8 +245,20 @@ if opts.test_args:
     print("CONVERGE", test_args)
 
     
-# Load args.txt. Remove first item.  Store
-if True: # not (opts.eos_post_args is None):
+# Load posterior-stage arguments. A grouped schedule is the compatibility
+# bridge for pseudo_pipe's args_cip_list.txt; the historical single args file
+# remains the default hyperpipe interface.
+if bool(opts.eos_post_args) == bool(opts.eos_post_args_list):
+    raise ValueError("set exactly one of --eos-post-args or --eos-post-args-list")
+if opts.eos_post_args_list:
+    with open(opts.eos_post_args_list) as f:
+        eos_post_args_per_iteration = expand_argument_schedule(
+            f.readlines(), opts.n_iterations, allow_special=False)
+    eos_post_args_per_iteration = [
+        line.rstrip() + ' --no-plots ' for line in eos_post_args_per_iteration]
+    eos_post_args = eos_post_args_per_iteration[0]
+    print("EOS_POST schedule", len(eos_post_args_per_iteration), "iterations")
+else:
     with open(opts.eos_post_args) as f:
         eos_post_args_list = f.readlines()
     eos_post_args = ' '.join( [x.replace('\\','') for x in eos_post_args_list] )
@@ -231,6 +269,7 @@ if True: # not (opts.eos_post_args is None):
 #    eos_post_args = eos_post_args.replace('] ', ']\' ')
     eos_post_args=eos_post_args.rstrip()
     eos_post_args += ' --no-plots '  
+    eos_post_args_per_iteration = [eos_post_args] * opts.n_iterations
     print("EOS_POST", eos_post_args)
 
 eospost_exe = which('util_ConstructEOSPosterior.py')
@@ -275,7 +314,7 @@ for it_indx in np.arange(it_start,opts.n_iterations+1):
     cip_dir = opts.working_directory+"/iteration_"+str(it_indx)+"_post"
     consolidate_dir = opts.working_directory+"/iteration_"+str(it_indx)+"_con"
     mkdir(ile_dir); mkdir(ile_dir+"/logs")
-    for event_indx, _event in enumerate(opts.event_file):
+    for event_indx in range(n_events):
         mkdir(ile_dir + "/event_{}".format(event_indx))
     mkdir(cip_dir);  mkdir(cip_dir+"/logs")
     mkdir(consolidate_dir); mkdir(consolidate_dir+"/logs")
@@ -297,7 +336,96 @@ if opts.use_singularity or opts.use_osg:
 # ++++
 cip_job_list =[]
 cip_puff_job_list =[]
-if opts.marg_event_args:
+if marg_job_specs is not None:
+    for indx, spec in enumerate(marg_job_specs):
+        n_chunk_here = int(spec.n_chunk)
+        execution = spec.execution
+        use_osg_here = bool(execution.get("use_osg", opts.use_osg))
+        use_singularity_here = bool(execution.get("use_singularity", opts.use_singularity))
+        singularity_image_here = execution.get("singularity_image") or singularity_image
+        request_memory_here = int(execution.get("request_memory", opts.request_memory_marg))
+        request_disk_here = execution.get("request_disk", opts.general_request_disk)
+        copies_here = int(execution.get("copies", 1))
+        transfer_here = list(transfer_file_names) + list(execution.get("transfer_files", []))
+
+        def _configure_marg_job(job, puff=False):
+            job.add_condor_cmd("initialdir", opts.working_directory+"/iteration_$(macroiteration)_marg/event_$(macroid)")
+            log_stem = "margPuff" if puff else "marg"
+            job.set_log_file(opts.working_directory+"/iteration_$(macroiteration)_marg/logs/{}-$(macroevent)-$(macroid)-$(cluster)-$(process).log".format(log_stem))
+            job.set_stderr_file(opts.working_directory+"/iteration_$(macroiteration)_marg/logs/{}-$(macroevent)-$(macroid)-$(cluster)-$(process).err".format(log_stem))
+            job.set_stdout_file(opts.working_directory+"/iteration_$(macroiteration)_marg/logs/{}-$(macroevent)-$(macroid)-$(cluster)-$(process).out".format(log_stem))
+            job.add_condor_cmd('request_disk', request_disk_here)
+            if opts.use_full_submit_paths:
+                job.set_sub_file(opts.working_directory+"/"+job.get_sub_file())
+            job.write_sub_file()
+
+        def _make_marg_job(puff=False):
+            grid_name = "grid_puff-$(macroiteration).dat" if puff else "grid-$(macroiteration).dat"
+            grid_path = working_dir_inside + "/" + grid_name
+            transfer_inputs = list(transfer_here)
+            if use_osg_here or use_singularity_here:
+                transfer_inputs.append(opts.working_directory + "/" + grid_name)
+
+            if spec.protocol == INDEXED_GRID_V1:
+                arg_str = spec.args + " --sim-grid " + grid_path
+                if n_chunk_here > 1:
+                    arg_str += " --n-events-to-analyze $(macrongroup)"
+                tag = ("MARG_PUFF_" if puff else "MARG_") + str(indx)
+                job, _ = dag_utils.write_ILE_sub_simple(
+                    tag=tag, log_dir=None, exe=spec.exe, arg_str=arg_str,
+                    output_file="MARG.dat", ncopies=copies_here,
+                    request_memory=request_memory_here,
+                    request_disk=request_disk_here,
+                    request_gpu=bool(execution.get("request_gpu", False)),
+                    request_cross_platform=bool(execution.get("request_cross_platform", False)),
+                    use_singularity=use_singularity_here,
+                    singularity_image=singularity_image_here,
+                    use_osg=use_osg_here,
+                    use_simple_osg_requirements=bool(execution.get("use_simple_osg_requirements", use_osg_here)),
+                    use_cvmfs_frames=bool(execution.get("use_cvmfs_frames", False)),
+                    use_oauth_files=execution.get("use_oauth_files", False),
+                    frames_dir=execution.get("frames_dir"),
+                    cache_file=execution.get("cache_file"),
+                    transfer_files=transfer_inputs,
+                    transfer_output_files=execution.get("transfer_output_files"),
+                    max_runtime_minutes=execution.get("max_runtime_minutes"),
+                    condor_commands=execution.get("condor_commands"),
+                )
+                return job
+
+            tag = ("MARG_PUFF_" if puff else "MARG_") + str(indx)
+            output = ("MARG_puff" if puff else "MARG") + "-$(macroid)-$(macroevent)"
+            job, _ = dag_utils.write_CIP_sub(
+                tag=tag, log_dir=None, exe=spec.exe, arg_str=spec.args,
+                using_eos='file:' + grid_path,
+                using_eos_index='$(macroevent)',
+                n_events_to_analyze=n_chunk_here,
+                request_memory=request_memory_here,
+                request_disk=request_disk_here,
+                ncopies=copies_here,
+                input_net=working_dir_inside+'/event-$(macroid).net',
+                output=output, out_dir=out_dir_inside_marg,
+                universe=main_worker_universe, no_grid=not(use_osg_here),
+                use_osg=use_osg_here,
+                use_singularity=use_singularity_here,
+                singularity_image=singularity_image_here,
+                use_oauth_files=execution.get("use_oauth_files", False),
+                use_simple_osg_requirements=bool(execution.get("use_simple_osg_requirements", use_osg_here)),
+                transfer_files=['../../event-$(macroid).net'] + transfer_inputs,
+                max_runtime_minutes=execution.get("max_runtime_minutes"),
+                condor_commands=execution.get("condor_commands"),
+            )
+            return job
+
+        cip_job = _make_marg_job(puff=False)
+        _configure_marg_job(cip_job, puff=False)
+        cip_job_list.append(cip_job)
+        if puff_args and not puff_uses_marg_net:
+            cipPuff_job = _make_marg_job(puff=True)
+            _configure_marg_job(cipPuff_job, puff=True)
+            cip_puff_job_list.append(cipPuff_job)
+
+elif opts.marg_event_args:
 ##   MARG job (CIP is default)
 #   - issue is that transfer files depend on event
 #   - all output goes into the same iter*_marg directory
@@ -399,8 +527,54 @@ if opts.use_osg:
     con_marg_job.add_condor_cmd("+DESIRED_SITES",'"{}"'.format(desired_sites_name))
     con_marg_job.add_condor_cmd("+flock_local",'true')
 if opts.use_singularity_local:
-    con_marg.add_condor_cmd("+SingularityImage", '"' + singularity_image + '"')
+    con_marg_job.add_condor_cmd("+SingularityImage", '"' + singularity_image + '"')
 con_marg_job.write_sub_file()
+
+# A manifest may mix MARG protocols.  Build one consolidator per entry so the
+# result discovery and normalization contract follows the driver rather than a
+# hard-coded filename convention.
+con_marg_job_list = None
+if marg_job_specs is not None:
+    con_marg_job_list = []
+    for indx, spec in enumerate(marg_job_specs):
+        script_path = opts.working_directory + "/con_marg_{}.sh".format(indx)
+        input_glob = "{}/iteration_$1_marg/event_$2/{}".format(
+            opts.working_directory, spec.result_glob)
+        output_path = "{}/iteration_$1_marg/consolidated_$1_$2.net_marg".format(
+            opts.working_directory)
+        with open(script_path, "w") as stream:
+            stream.write("#! /usr/bin/env bash\nset -e\n")
+            if extra_text:
+                stream.write(extra_text + "\n")
+            if spec.consolidation_mode == "hyperpipeline":
+                relevant_path = (
+                    dag_utils.which('util_CleanILE_hyperpipeline.py')
+                    or 'util_CleanILE_hyperpipeline.py'
+                )
+                stream.write("{} {} --output {}\n".format(
+                    relevant_path, input_glob, output_path))
+            else:
+                relevant_path = (
+                    dag_utils.which('util_HyperCombine.py')
+                    or 'util_HyperCombine.py'
+                )
+                stream.write("{} {} > {}\n".format(
+                    relevant_path, input_glob, output_path))
+        os.chmod(script_path, 0o755)
+        job, _ = dag_utils.write_convert_sub(
+            exe=script_path, tag='CON_{}'.format(indx), log_dir=None,
+            arg_str='', file_input="$(macroiteration) $(macroevent)",
+            out_dir=opts.working_directory, universe=local_worker_universe,
+            no_grid=no_worker_grid)
+        job.add_condor_cmd("initialdir", opts.working_directory)
+        job.set_log_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/con-$(macroevent).log")
+        job.set_stdout_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/con-$(macroevent).out")
+        job.set_stderr_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/con-$(macroevent).err")
+        job.add_condor_cmd('request_disk', opts.general_request_disk)
+        if opts.use_full_submit_paths:
+            job.set_sub_file(opts.working_directory+"/"+job.get_sub_file())
+        job.write_sub_file()
+        con_marg_job_list.append(job)
 
 
 ##   CON job 2 : join multiple events together into a single overall result
@@ -431,7 +605,7 @@ if opts.use_osg:
     con_prod_job.add_condor_cmd("+DESIRED_SITES",'"{}"'.format(desired_sites_name))
     con_prod_job.add_condor_cmd("+flock_local",'true')
 if opts.use_singularity_local:
-    con_marg.add_condor_cmd("+SingularityImage", '"' + singularity_image + '"')
+    con_prod_job.add_condor_cmd("+SingularityImage", '"' + singularity_image + '"')
 con_prod_job.write_sub_file()
         
 
@@ -508,7 +682,7 @@ if opts.use_osg:
     unify_marg_job.add_condor_cmd("+DESIRED_SITES",'"{}"'.format(desired_sites_name))
     unify_marg_job.add_condor_cmd("+flock_local",'true')
 if opts.use_singularity_local:
-    con_marg.add_condor_cmd("+SingularityImage", '"' + singularity_image + '"')
+    unify_marg_job.add_condor_cmd("+SingularityImage", '"' + singularity_image + '"')
 unify_marg_job.write_sub_file()
 
 
@@ -517,19 +691,28 @@ unify_marg_job.write_sub_file()
 eospost_outfile = 'iteration_$(macroiteration)_post/output-$(macroiterationnext)-$(cluster)'
 if opts.use_osg:
     eospost_outfile = 'output-$(macroiterationnext)-$(cluster)'
-eospost_marg_job, eospost_marg_job_name = dag_utils.write_hyperpost_sub(exe=eospost_exe,tag='EOS_POST_worker',arg_str=eos_post_args,out_dir=out_dir_inside_post,output=eospost_outfile,input_net=working_dir_inside + "/all.marg_net",transfer_files=transfer_file_names_post)
-eospost_marg_job.add_condor_cmd("initialdir",opts.working_directory+"/iteration_$(macroiteration)_post")
-if opts.use_singularity:
-    eospost_marg_job.add_condor_cmd("+SingularityImage", '"' + singularity_image + '"')
-    eospost_marg_job.add_condor_cmd("transfer_executable", 'False') # don't copy it
-eospost_marg_job.set_log_file(opts.working_directory+"/iteration_$(macroiteration)_post/logs/post-$(cluster)-$(process).log")
-eospost_marg_job.set_stderr_file(opts.working_directory+"/iteration_$(macroiteration)_post/logs/post-$(cluster)-$(process).err")
-eospost_marg_job.set_stdout_file(opts.working_directory+"/iteration_$(macroiteration)_post/logs/post-$(cluster)-$(process).out")
-eospost_marg_job.add_condor_cmd('request_disk',opts.general_request_disk)
-if opts.use_full_submit_paths:
-    fname = opts.working_directory+"/"+eospost_marg_job.get_sub_file()
-    eospost_marg_job.set_sub_file(fname)
-eospost_marg_job.write_sub_file()
+eospost_marg_job_list = []
+for schedule_indx, eos_post_args_here in enumerate(eos_post_args_per_iteration):
+    eospost_marg_job, eospost_marg_job_name = dag_utils.write_hyperpost_sub(
+        exe=eospost_exe, tag='EOS_POST_worker_{}'.format(schedule_indx),
+        arg_str=eos_post_args_here, out_dir=out_dir_inside_post,
+        output=eospost_outfile, input_net=working_dir_inside + "/all.marg_net",
+        transfer_files=list(transfer_file_names_post),
+        request_memory=opts.request_memory_marg,
+        request_disk=opts.general_request_disk)
+    eospost_marg_job.add_condor_cmd("initialdir",opts.working_directory+"/iteration_$(macroiteration)_post")
+    if opts.use_singularity:
+        eospost_marg_job.add_condor_cmd("+SingularityImage", '"' + singularity_image + '"')
+        eospost_marg_job.add_condor_cmd("transfer_executable", 'False') # don't copy it
+    eospost_marg_job.set_log_file(opts.working_directory+"/iteration_$(macroiteration)_post/logs/post-$(cluster)-$(process).log")
+    eospost_marg_job.set_stderr_file(opts.working_directory+"/iteration_$(macroiteration)_post/logs/post-$(cluster)-$(process).err")
+    eospost_marg_job.set_stdout_file(opts.working_directory+"/iteration_$(macroiteration)_post/logs/post-$(cluster)-$(process).out")
+    eospost_marg_job.add_condor_cmd('request_disk',opts.general_request_disk)
+    if opts.use_full_submit_paths:
+        fname = opts.working_directory+"/"+eospost_marg_job.get_sub_file()
+        eospost_marg_job.set_sub_file(fname)
+    eospost_marg_job.write_sub_file()
+    eospost_marg_job_list.append(eospost_marg_job)
 
 
 # worker join job
@@ -650,16 +833,17 @@ for it in np.arange(it_start,opts.n_iterations):
     n_jobs_this_time = opts.n_samples_per_job # hardcode for now?
     if it ==it_start:
         n_jobs_this_time = n_initial
-    indx_max = int((1.0*n_jobs_this_time)/n_group)
-    if indx_max*n_jobs_this_time < n_group:
-        indx_max+=1
+    indx_max = int(np.ceil((1.0*n_jobs_this_time)/n_group))
 
     if True: #not(it==it_start): # and opts.first_iteration_jumpstart):   # if on first iteration ,don't do this for jumpstart
         for event in np.arange(n_events):
             n_chunk_here = marg_event_nchunk_list[event]
-            indx_max_event = indx_max/n_chunk_here
+            indx_max_event = int(np.ceil((1.0*indx_max)/n_chunk_here))
             # Create consolidate job 1 for that event
-            con_node = pipeline.CondorDAGNode(con_marg_job)
+            con_job_here = con_marg_job
+            if con_marg_job_list is not None:
+                con_job_here = con_marg_job_list[event]
+            con_node = pipeline.CondorDAGNode(con_job_here)
             con_node.add_macro("macroiteration",it)
             con_node.add_macro("macroevent",int(event))
             con_node.set_retry(opts.general_retries)
@@ -670,9 +854,14 @@ for it in np.arange(it_start,opts.n_iterations):
                     cip_node = pipeline.CondorDAGNode(cip_job)
                 else:
                     cip_node = pipeline.CondorDAGNode(cip_job_list[event])
-                cip_node.set_retry(opts.general_retries)
+                marg_retries_here = opts.general_retries
+                if marg_job_specs is not None:
+                    marg_retries_here = int(marg_job_specs[event].execution_value(
+                        "retries", opts.general_retries))
+                cip_node.set_retry(marg_retries_here)
                 cip_node.add_macro("macroid",event)
                 cip_node.add_macro("macroevent", int(row*n_chunk_here))
+                cip_node.add_macro("macrongroup", int(n_chunk_here))
                 cip_node.add_macro("macroiteration", it)
                 if not(parent_fit_node is None):
                     cip_node.add_parent(parent_fit_node)
@@ -687,9 +876,10 @@ for it in np.arange(it_start,opts.n_iterations):
                             cipPuff_node = pipeline.CondorDAGNode(cipPuff_job)
                         else:
                             cipPuff_node = pipeline.CondorDAGNode(cip_puff_job_list[event])
-                        cipPuff_node.set_retry(opts.general_retries)
+                        cipPuff_node.set_retry(marg_retries_here)
                         cipPuff_node.add_macro("macroid",int(event))
                         cipPuff_node.add_macro("macroevent", int(row*n_chunk_here))
+                        cipPuff_node.add_macro("macrongroup", int(n_chunk_here))
                         cipPuff_node.add_macro("macroiteration", it)
                         if not(parent_fit_node is None):
                             cipPuff_node.add_parent(parent_fit_node)
@@ -724,7 +914,7 @@ for it in np.arange(it_start,opts.n_iterations):
         print("   Last iteration explode size ", opts.eos_post_explode_jobs_last)
         n_explode = opts.eos_post_explode_jobs_last
     for indx in np.arange(n_explode):
-                worker_node =pipeline.CondorDAGNode(eospost_marg_job)
+                worker_node =pipeline.CondorDAGNode(eospost_marg_job_list[it])
                 worker_node.add_macro("macroiteration", it)
                 worker_node.add_macro("macroiterationnext", it+1)
                 worker_node.set_category("EOS_post_worker")
