@@ -722,9 +722,6 @@ if opts.pipeline_builder == "Hyperpipe":
         (opts.add_extrinsic and not opts.add_extrinsic_time_resampling,
          "--add-extrinsic without --add-extrinsic-time-resampling"),
         (opts.batch_extrinsic, "--batch-extrinsic"),
-        (opts.add_extrinsic
-         and opts.internal_mitigate_fd_J_frame == "rotate",
-         "--internal-mitigate-fd-J-frame rotate (post-export rotation)"),
         (opts.calibration_reweighting, "--calibration-reweighting"),
         (opts.distance_reweighting, "--distance-reweighting"),
         (opts.archive_pesummary_label is not None, "--archive-pesummary-label"),
@@ -2503,6 +2500,33 @@ if opts.pipeline_builder == "Hyperpipe":
                     os.getcwd(), shuffle_clause))
         os.chmod(terminal_collect_script, 0o755)
 
+        terminal_rotation_script = None
+        if opts.internal_mitigate_fd_J_frame == "rotate":
+            reference_frequencies = re.findall(
+                r"--(?:reference-freq|fref)(?:=|\s+)([0-9.eE+-]+)",
+                extrinsic_ile_args)
+            reference_frequency = (
+                reference_frequencies[-1] if reference_frequencies else "20")
+            rotate_extrinsic = (
+                shutil.which("convert_ascii_framechange_xphm.py")
+                or "convert_ascii_framechange_xphm.py")
+            terminal_rotation_script = os.path.abspath(
+                "terminal_rotate_extrinsic.sh")
+            with open(terminal_rotation_script, "w") as stream:
+                stream.write("#!/bin/bash\nset -e\n")
+                stream.write(
+                    "if [ ! -e {0}/extrinsic_posterior_samples_orig.dat ]; then\n"
+                    "  mv {0}/extrinsic_posterior_samples.dat "
+                    "{0}/extrinsic_posterior_samples_orig.dat\n"
+                    "  {1} --extrinsic-posterior-file "
+                    "{0}/extrinsic_posterior_samples_orig.dat "
+                    "--fname-out {0}/extrinsic_posterior_samples.dat "
+                    "--fref {2}\n"
+                    "fi\n".format(
+                        os.getcwd(), shlex.quote(rotate_extrinsic),
+                        reference_frequency))
+            os.chmod(terminal_rotation_script, 0o755)
+
         terminal_worker_spec = dict(marg_spec[0])
         terminal_worker_spec["args_file"] = extrinsic_args_path
         terminal_worker_spec.pop("args", None)
@@ -2545,6 +2569,13 @@ if opts.pipeline_builder == "Hyperpipe":
                 "exe": terminal_collect_script,
             }, **terminal_command_common),
         ]
+        if terminal_rotation_script:
+            terminal_stages.append(dict({
+                "name": "frame_rotation",
+                "kind": "command-v1",
+                "depends_on": ["extrinsic_collect"],
+                "exe": terminal_rotation_script,
+            }, **terminal_command_common))
         consolidate_distance = (
             shutil.which("util_ConsolidateDistanceGrids.py")
             or "util_ConsolidateDistanceGrids.py")
