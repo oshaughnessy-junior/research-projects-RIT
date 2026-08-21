@@ -722,8 +722,23 @@ if opts.pipeline_builder == "Hyperpipe":
         (opts.add_extrinsic and not opts.add_extrinsic_time_resampling,
          "--add-extrinsic without --add-extrinsic-time-resampling"),
         (opts.batch_extrinsic, "--batch-extrinsic"),
-        (opts.calibration_reweighting, "--calibration-reweighting"),
-        (opts.distance_reweighting, "--distance-reweighting"),
+        (opts.calibration_reweighting and not opts.add_extrinsic,
+         "--calibration-reweighting without --add-extrinsic"),
+        (opts.calibration_reweighting and not opts.bilby_pickle_file,
+         "--calibration-reweighting without --bilby-pickle-file "
+         "(automatic Bilby pickle generation)"),
+        (opts.calibration_reweighting and opts.calibration_reweighting_osg,
+         "--calibration-reweighting-osg"),
+        (opts.calibration_reweighting and
+         opts.calibration_reweighting_batchsize is not None and
+         opts.calibration_reweighting_batchsize <= 0,
+         "non-positive --calibration-reweighting-batchsize"),
+        (opts.calibration_reweighting and
+         opts.calibration_reweighting_count is not None and
+         opts.calibration_reweighting_count <= 0,
+         "non-positive --calibration-reweighting-count"),
+        (opts.distance_reweighting and not opts.add_extrinsic,
+         "--distance-reweighting without --add-extrinsic"),
         (opts.archive_pesummary_label is not None, "--archive-pesummary-label"),
         (opts.export_marginal_distance_grid and not opts.add_extrinsic,
          "--export-marginal-distance-grid without --add-extrinsic"),
@@ -2576,6 +2591,109 @@ if opts.pipeline_builder == "Hyperpipe":
                 "depends_on": ["extrinsic_collect"],
                 "exe": terminal_rotation_script,
             }, **terminal_command_common))
+        terminal_extrinsic_product = (
+            "frame_rotation" if terminal_rotation_script
+            else "extrinsic_collect")
+        terminal_posterior_product = terminal_extrinsic_product
+        terminal_posterior_file = os.path.abspath(
+            "extrinsic_posterior_samples.dat")
+        if opts.calibration_reweighting:
+            calibration_reweight = (
+                shutil.which("calibration_reweighting.py")
+                or "calibration_reweighting.py")
+            calibration_args = [
+                "--data_dump_file", str(opts.bilby_pickle_file),
+                "--posterior_sample_file", terminal_posterior_file,
+                "--number_of_calibration_curves",
+                str(opts.calibration_reweighting_count
+                    if opts.calibration_reweighting_count is not None else 100),
+                "--reevaluate_likelihood", "True",
+                "--use_rift_samples", "True",
+            ]
+            for option, pattern in [
+                    ("--fmin", r"--fmin-template(?:=|\s+)([^\s]+)"),
+                    ("--l-max", r"--l-max(?:=|\s+)([^\s]+)"),
+                    ("--waveform_approximant",
+                     r"--approx(?:=|\s+)([^\s]+)")]:
+                values = re.findall(pattern, extrinsic_ile_args)
+                if values:
+                    calibration_args.extend([option, values[-1]])
+            if opts.calibration_reweighting_initial_extra_args:
+                calibration_args.append(
+                    opts.calibration_reweighting_initial_extra_args.strip())
+            calibration_stage = dict(terminal_command_common)
+            calibration_stage["execution"] = dict(
+                terminal_command_common["execution"], request_memory=8192)
+            calibration_stage.update({
+                "name": "calibration_reweight",
+                "kind": "command-v1",
+                "depends_on": [terminal_extrinsic_product],
+                "exe": calibration_reweight,
+                "args": " ".join(calibration_args),
+            })
+            calibration_batchsize = opts.calibration_reweighting_batchsize
+            if calibration_batchsize:
+                calibration_stage["args"] += (
+                    " --start_index $(macrostartidx)"
+                    " --end_index $(macroendidx)")
+                calibration_stage["instances"] = [
+                    {"startidx": start,
+                     "endidx": start + int(calibration_batchsize)}
+                    for start in range(
+                        0, int(opts.n_output_samples_last),
+                        int(calibration_batchsize))
+                ]
+            terminal_stages.append(calibration_stage)
+            terminal_posterior_product = "calibration_reweight"
+            terminal_posterior_file = os.path.abspath(
+                "reweighted_posterior_samples.dat")
+            if calibration_batchsize:
+                combine_calibration = (
+                    shutil.which("combine_weights_and_rejection_sample.py")
+                    or "combine_weights_and_rejection_sample.py")
+                merge_args = "{} {}/weight_files/".format(
+                    os.path.abspath("extrinsic_posterior_samples.dat"),
+                    os.getcwd())
+                if opts.calibration_reweighting_extra_args:
+                    merge_args += (
+                        " " + opts.calibration_reweighting_extra_args.strip())
+                terminal_stages.append(dict({
+                    "name": "calibration_merge",
+                    "kind": "command-v1",
+                    "depends_on": ["calibration_reweight"],
+                    "exe": combine_calibration,
+                    "args": merge_args,
+                }, **terminal_command_common))
+                terminal_posterior_product = "calibration_merge"
+        if opts.distance_reweighting:
+            convert_ascii_to_h5 = (
+                shutil.which("convert_output_format_ascii2h5.py")
+                or "convert_output_format_ascii2h5.py")
+            comoving_distance_reweight = (
+                shutil.which("make_uni_comov_skymap.py")
+                or "make_uni_comov_skymap.py")
+            terminal_stages.extend([
+                dict({
+                    "name": "posterior_hdf5",
+                    "kind": "command-v1",
+                    "depends_on": [terminal_posterior_product],
+                    "exe": convert_ascii_to_h5,
+                    "args": (
+                        "--posterior-samples {0} "
+                        "--output-file {1}/posterior_samples.h5"
+                    ).format(terminal_posterior_file, os.getcwd()),
+                }, **terminal_command_common),
+                dict({
+                    "name": "comoving_distance_reweight",
+                    "kind": "command-v1",
+                    "depends_on": ["posterior_hdf5"],
+                    "exe": comoving_distance_reweight,
+                    "args": (
+                        "{0}/posterior_samples.h5 "
+                        "--resampled-file {0}/cosmo_reweight.h5"
+                    ).format(os.getcwd()),
+                }, **terminal_command_common),
+            ])
         consolidate_distance = (
             shutil.which("util_ConsolidateDistanceGrids.py")
             or "util_ConsolidateDistanceGrids.py")

@@ -111,6 +111,7 @@ class TerminalStageSpec(object):
         self.exe = None
         self.args = ""
         self.args_file = None
+        self.instances = [{}]
         self.universe = str(raw.get("universe") or "vanilla")
         self.no_grid = bool(raw.get("no_grid", False))
 
@@ -144,6 +145,33 @@ class TerminalStageSpec(object):
                     "command terminal stage {!r} requires exe".format(self.name))
             self.exe = _resolve_exe(raw["exe"], base_dir)
             self.args, self.args_file = _read_args(raw, base_dir, self.name)
+            instances = raw.get("instances")
+            if instances is not None:
+                if not isinstance(instances, list) or not instances:
+                    raise ValueError(
+                        "terminal stage {!r} instances must be a non-empty list"
+                        .format(self.name))
+                reserved = {
+                    "iteration", "iterationprev", "iterationnext",
+                    "event", "ngroup",
+                }
+                self.instances = []
+                for instance in instances:
+                    if not isinstance(instance, dict):
+                        raise ValueError(
+                            "terminal stage {!r} instances must be objects"
+                            .format(self.name))
+                    macros = {}
+                    for key, value in instance.items():
+                        key = str(key)
+                        if key in reserved or not re.match(
+                                r"^[A-Za-z][A-Za-z0-9_]*$", key):
+                            raise ValueError(
+                                "terminal stage {!r} has unsafe or reserved "
+                                "instance macro {!r}".format(self.name, key))
+                        macros[key] = str(value)
+                    self.instances.append(macros)
+                self.count = len(self.instances)
 
     def execution_value(self, key, default=None):
         if self.job is not None and key in self.job.execution:

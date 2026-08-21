@@ -98,3 +98,36 @@ def test_relative_paths_are_manifest_relative(tmp_path):
     assert stage.job.exe == str(tmp_path / "worker")
     assert stage.grid == str(tmp_path / "grid.dat")
     assert Path(stage.initial_dir) == tmp_path
+
+
+def test_command_instances_define_generic_fanout_macros(tmp_path):
+    path = _write_manifest(tmp_path, [{
+        "name": "batches",
+        "kind": COMMAND_V1,
+        "exe": "/bin/true",
+        "args": "--start $(macrostart) --end $(macroend)",
+        "instances": [
+            {"start": 0, "end": 20},
+            {"start": 20, "end": 40},
+        ],
+    }])
+
+    stage = load_terminal_stage_specs(str(path))[0]
+
+    assert stage.count == 2
+    assert stage.instances == [
+        {"start": "0", "end": "20"},
+        {"start": "20", "end": "40"},
+    ]
+
+
+@pytest.mark.parametrize("instances", [[], [{"iteration": 2}], [{"bad-key": 1}]])
+def test_invalid_command_instances_fail_early(tmp_path, instances):
+    path = _write_manifest(tmp_path, [{
+        "name": "bad",
+        "kind": COMMAND_V1,
+        "exe": "/bin/true",
+        "instances": instances,
+    }])
+    with pytest.raises(ValueError, match="instances|unsafe or reserved"):
+        load_terminal_stage_specs(str(path))

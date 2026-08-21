@@ -3489,6 +3489,58 @@ def write_convert_sub(tag='convert', exe=None, file_input=None,file_output=None,
     return ile_job, ile_sub_name
 
 
+def write_command_sub(tag='command', exe=None, arg_str='', universe="vanilla",
+                      log_dir=None, ncopies=1, no_grid=False,
+                      max_runtime_minutes=120, **kwargs):
+    """Write a generic command submit file, preserving arguments verbatim.
+
+    Unlike :func:`write_convert_sub`, this helper does not reinterpret the
+    first argument as a long option.  It is therefore suitable for generic
+    terminal stages whose executable protocols may begin with either options
+    or positional arguments.
+    """
+    if exe is None:
+        raise ValueError("write_command_sub requires an executable")
+    command_job = CondorDAGJob(universe=universe, executable=exe)
+    command_job._CondorJob__queue = ncopies
+    requirements = []
+    if universe == 'local':
+        requirements.append("IS_GLIDEIN=?=undefined")
+
+    sub_name = tag + '.sub'
+    command_job.set_sub_file(sub_name)
+    if arg_str:
+        command_job.add_arg(str(arg_str).strip())
+
+    uniq_str = "$(macromassid)-$(cluster)-$(process)"
+    command_job.set_log_file("%s%s-%s.log" % (log_dir, tag, uniq_str))
+    command_job.set_stderr_file("%s%s-%s.err" % (log_dir, tag, uniq_str))
+    command_job.set_stdout_file("%s%s-%s.out" % (log_dir, tag, uniq_str))
+    command_job.add_condor_cmd('getenv', default_getenv_value)
+
+    if no_grid:
+        command_job.add_condor_cmd("MY.DESIRED_SITES", '"none"')
+        command_job.add_condor_cmd("MY.flock_local", 'true')
+    requirements += _nonworker_extra_requirements()
+    command_job.add_condor_cmd(
+        'requirements',
+        '&&'.join('({0})'.format(item) for item in requirements))
+
+    try:
+        command_job.add_condor_cmd('accounting_group', os.environ['LIGO_ACCOUNTING'])
+        command_job.add_condor_cmd(
+            'accounting_group_user', os.environ['LIGO_USER_NAME'])
+    except KeyError:
+        print(" LIGO accounting information not available.  You must add this manually to integrate.sub !")
+
+    if max_runtime_minutes is not None:
+        command_job.add_condor_cmd(
+            'periodic_remove',
+            'JobStatus =?= 2 && (CurrentTime - JobStartDate) > ( {})'.format(
+                60 * max_runtime_minutes))
+    return command_job, sub_name
+
+
 def write_test_sub(tag='converge', exe=None,samples_files=None, base=None,target=None,universe="target",arg_str=None,log_dir=None, use_eos=False,ncopies=1, no_grid=False,**kwargs):
     """
     Write a submit file for launching a convergence test job

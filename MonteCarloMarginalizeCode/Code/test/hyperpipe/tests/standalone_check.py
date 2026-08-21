@@ -138,6 +138,15 @@ def _check_pipeline_render(terminal_evidence: bool = False,
                         "args": "--collect $(macroiteration)",
                         "initial_dir": str(run),
                     },
+                    {
+                        "name": "positional",
+                        "kind": "command-v1",
+                        "depends_on": ["collect"],
+                        "exe": "/bin/true",
+                        "args": "input.dat --start $(macrostart)",
+                        "instances": [{"start": 0}, {"start": 10}],
+                        "initial_dir": str(run),
+                    },
                 ],
             }))
         old_cwd = os.getcwd()
@@ -207,6 +216,7 @@ def _check_pipeline_render(terminal_evidence: bool = False,
         if terminal_stages:
             terminal_sub = (run / "TERMINAL_samples.sub").read_text()
             collect_sub = (run / "TERMINAL_collect.sub").read_text()
+            positional_sub = (run / "TERMINAL_positional.sub").read_text()
             assert "--terminal-worker" in terminal_sub
             assert "--sim-grid" in terminal_sub
             assert "grid-$(macroiteration).dat" in terminal_sub
@@ -214,9 +224,15 @@ def _check_pipeline_render(terminal_evidence: bool = False,
             assert "request_memory = 6144M" in terminal_sub
             assert "request_disk = 3G" in terminal_sub
             assert "--collect $(macroiteration)" in collect_sub
+            assert 'arguments = "input.dat --start $(macrostart)' in positional_sub
+            assert '--input.dat' not in positional_sub
             assert dag.count("TERMINAL_samples.sub") == 3
             assert dag.count("macrongroup=\"2\"") >= 3
             assert "TERMINAL_collect.sub" in dag
+            assert "TERMINAL_positional.sub" in dag
+            assert dag.count("TERMINAL_positional.sub") == 2
+            assert 'macrostart="0"' in dag
+            assert 'macrostart="10"' in dag
             assert "TERMINAL_samples" in dag
             assert "TERMINAL_collect" in dag
             jobs = {}

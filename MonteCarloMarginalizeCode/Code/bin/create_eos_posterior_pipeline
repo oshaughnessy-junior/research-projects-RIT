@@ -843,10 +843,10 @@ for terminal_stage in terminal_stage_specs:
             condor_commands=execution.get("condor_commands"),
         )
     elif terminal_stage.kind == COMMAND_V1:
-        terminal_job, _ = dag_utils.write_convert_sub(
+        terminal_job, _ = dag_utils.write_command_sub(
             tag="TERMINAL_" + terminal_stage.name,
-            exe=terminal_stage.exe, log_dir=None, file_input="",
-            file_output="/dev/null", arg_str=terminal_stage.args,
+            exe=terminal_stage.exe, log_dir=None,
+            arg_str=terminal_stage.args,
             universe=terminal_stage.universe,
             no_grid=terminal_stage.no_grid,
             max_runtime_minutes=terminal_stage.execution_value(
@@ -1169,8 +1169,7 @@ for terminal_stage in terminal_stage_specs:
     for dependency in terminal_stage.depends_on:
         parent_nodes.extend(terminal_stage_nodes[dependency])
     nodes_here = []
-    count = terminal_stage.count if (
-        terminal_stage.kind == INDEXED_GRID_FANOUT_V1) else 1
+    count = terminal_stage.count
     for terminal_index in range(count):
         terminal_node = pipeline.CondorDAGNode(
             terminal_stage_jobs[terminal_stage.name])
@@ -1182,6 +1181,9 @@ for terminal_stage in terminal_stage_specs:
                 "macroevent", terminal_index * terminal_stage.group_size)
             terminal_node.add_macro(
                 "macrongroup", terminal_stage.group_size)
+        elif terminal_stage.kind == COMMAND_V1:
+            for key, value in terminal_stage.instances[terminal_index].items():
+                terminal_node.add_macro("macro" + key, value)
         terminal_node.set_category("TERMINAL_" + terminal_stage.name)
         terminal_node.set_retry(int(terminal_stage.execution_value(
             "retries", opts.general_retries)))
