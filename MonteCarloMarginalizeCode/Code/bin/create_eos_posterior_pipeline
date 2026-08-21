@@ -27,6 +27,11 @@ from RIFT.hyperpipe.marg_contract import (
     INDEXED_GRID_V1,
     load_marg_job_specs,
 )
+from RIFT.hyperpipe.terminal_contract import (
+    COMMAND_V1,
+    INDEXED_GRID_FANOUT_V1,
+    load_terminal_stage_specs,
+)
 from RIFT.misc.cip_pipeline import expand_argument_schedule
 
 parser = argparse.ArgumentParser()
@@ -61,6 +66,11 @@ parser.add_argument(
           "prior-normalized evidence consolidation. Off by default for "
           "backward compatibility with hyperpipe post executables that do "
           "not emit CIP-style annotation files."))
+parser.add_argument(
+    "--terminal-stage-spec-file", default=None,
+    help=("Versioned JSON manifest of generic indexed-grid fan-out and "
+          "one-shot command stages to append after the iterative pipeline. "
+          "Off by default for legacy Hyperpipe compatibility."))
 parser.add_argument("--eos-post-explode-jobs",default=2,type=int,help="Number of MARG jobs to use in posterior generation.")
 parser.add_argument("--eos-post-explode-jobs-last",default=2,type=int,help="Number of MARG jobs to use in posterior generation on the final stage (if desired).")
 parser.add_argument("--test-args",default=None,help="filename of args_test.txt, which holds test arguments.  Note i/o arguments will be modified, so should NOT specify the samples files or the output file, just the test to be performed and any related arguments")
@@ -88,6 +98,10 @@ if not(opts.input_grid):
 marg_job_specs = None
 if opts.marg_job_spec_file:
     marg_job_specs = load_marg_job_specs(opts.marg_job_spec_file)
+terminal_stage_specs = []
+if opts.terminal_stage_spec_file:
+    terminal_stage_specs = load_terminal_stage_specs(
+        opts.terminal_stage_spec_file)
 
 main_worker_universe='vanilla'
 local_worker_universe="vanilla"
@@ -775,6 +789,99 @@ if opts.terminal_evidence:
     terminal_evidence_job.write_sub_file()
 
 
+# Generic terminal jobs. The manifest owns the executable protocols and
+# dependency names; this writer only supplies the final-iteration macros and
+# the reserved ``pipeline`` parent when it materializes DAG nodes below.
+terminal_stage_jobs = {}
+for terminal_stage in terminal_stage_specs:
+    mkdir(terminal_stage.initial_dir)
+    mkdir(terminal_stage.log_dir)
+    if terminal_stage.kind == INDEXED_GRID_FANOUT_V1:
+        execution = terminal_stage.job.execution
+        use_osg_here = bool(execution.get("use_osg", opts.use_osg))
+        use_singularity_here = bool(
+            execution.get("use_singularity", opts.use_singularity))
+        singularity_image_here = execution.get("singularity_image") or singularity_image
+        transfer_here = list(transfer_file_names) + list(
+            execution.get("transfer_files", []))
+        grid_arg = terminal_stage.grid
+        if use_osg_here or use_singularity_here:
+            transfer_here.append(terminal_stage.grid)
+            grid_arg = os.path.basename(terminal_stage.grid)
+        terminal_args = terminal_stage.job.args
+        if terminal_stage.args_append:
+            terminal_args += " " + terminal_stage.args_append
+        terminal_args += " --sim-grid " + grid_arg
+        if terminal_stage.group_size > 1:
+            terminal_args += " --n-events-to-analyze $(macrongroup)"
+        terminal_job, _ = dag_utils.write_ILE_sub_simple(
+            tag="TERMINAL_" + terminal_stage.name,
+            log_dir=None, exe=terminal_stage.job.exe,
+            arg_str=terminal_args, output_file=terminal_stage.output_file,
+            simple_unique=True,
+            ncopies=int(execution.get("copies", 1)),
+            request_memory=int(execution.get(
+                "request_memory", opts.request_memory_marg)),
+            request_disk=execution.get(
+                "request_disk", opts.general_request_disk),
+            request_gpu=bool(execution.get("request_gpu", False)),
+            request_cross_platform=bool(
+                execution.get("request_cross_platform", False)),
+            use_singularity=use_singularity_here,
+            singularity_image=singularity_image_here,
+            use_osg=use_osg_here,
+            use_simple_osg_requirements=bool(execution.get(
+                "use_simple_osg_requirements", use_osg_here)),
+            use_cvmfs_frames=bool(
+                execution.get("use_cvmfs_frames", False)),
+            use_oauth_files=execution.get("use_oauth_files", False),
+            frames_dir=execution.get("frames_dir"),
+            cache_file=execution.get("cache_file"),
+            transfer_files=transfer_here,
+            transfer_output_files=execution.get("transfer_output_files"),
+            max_runtime_minutes=execution.get("max_runtime_minutes"),
+            condor_commands=execution.get("condor_commands"),
+        )
+    elif terminal_stage.kind == COMMAND_V1:
+        terminal_job, _ = dag_utils.write_convert_sub(
+            tag="TERMINAL_" + terminal_stage.name,
+            exe=terminal_stage.exe, log_dir=None, file_input="",
+            file_output="/dev/null", arg_str=terminal_stage.args,
+            universe=terminal_stage.universe,
+            no_grid=terminal_stage.no_grid,
+            max_runtime_minutes=terminal_stage.execution_value(
+                "max_runtime_minutes", 120))
+        request_memory = terminal_stage.execution_value("request_memory")
+        if request_memory is not None:
+            terminal_job.add_condor_cmd("request_memory", str(request_memory))
+        request_disk = terminal_stage.execution_value(
+            "request_disk", opts.general_request_disk)
+        if request_disk is not None:
+            terminal_job.add_condor_cmd("request_disk", str(request_disk))
+    else:
+        raise ValueError("unhandled terminal stage kind {}".format(
+            terminal_stage.kind))
+
+    terminal_job.add_condor_cmd("initialdir", terminal_stage.initial_dir)
+    terminal_job.set_log_file(
+        terminal_stage.log_dir + "/{}-$(cluster)-$(process).log".format(
+            terminal_stage.name))
+    terminal_job.set_stderr_file(
+        terminal_stage.log_dir + "/{}-$(cluster)-$(process).err".format(
+            terminal_stage.name))
+    terminal_job.set_stdout_file(
+        terminal_stage.log_dir + "/{}-$(cluster)-$(process).out".format(
+            terminal_stage.name))
+    for key, value in terminal_stage.execution_value(
+            "condor_commands", {}).items():
+        terminal_job.add_condor_cmd(str(key), str(value))
+    if opts.use_full_submit_paths:
+        terminal_job.set_sub_file(
+            opts.working_directory + "/" + terminal_job.get_sub_file())
+    terminal_job.write_sub_file()
+    terminal_stage_jobs[terminal_stage.name] = terminal_job
+
+
 # worker join job
 with open("join_post.sh",'w') as f:
     f.write("""#! /bin/bash
@@ -1051,6 +1158,39 @@ if (terminal_prior_job is not None and terminal_evidence_job is not None
     dag.add_node(final_evidence_node)
     if final_test_node is not None:
         final_test_node.add_parent(final_evidence_node)
+
+
+# Materialize the declarative terminal graph after the iterative loop. A stage
+# name denotes all nodes in its fan-out, so a downstream stage naturally forms
+# a barrier without requiring a pipeline-specific join node.
+terminal_stage_nodes = {"pipeline": [parent_fit_node]}
+for terminal_stage in terminal_stage_specs:
+    parent_nodes = []
+    for dependency in terminal_stage.depends_on:
+        parent_nodes.extend(terminal_stage_nodes[dependency])
+    nodes_here = []
+    count = terminal_stage.count if (
+        terminal_stage.kind == INDEXED_GRID_FANOUT_V1) else 1
+    for terminal_index in range(count):
+        terminal_node = pipeline.CondorDAGNode(
+            terminal_stage_jobs[terminal_stage.name])
+        terminal_node.add_macro("macroiteration", opts.n_iterations)
+        terminal_node.add_macro("macroiterationprev", opts.n_iterations - 1)
+        terminal_node.add_macro("macroiterationnext", opts.n_iterations + 1)
+        if terminal_stage.kind == INDEXED_GRID_FANOUT_V1:
+            terminal_node.add_macro(
+                "macroevent", terminal_index * terminal_stage.group_size)
+            terminal_node.add_macro(
+                "macrongroup", terminal_stage.group_size)
+        terminal_node.set_category("TERMINAL_" + terminal_stage.name)
+        terminal_node.set_retry(int(terminal_stage.execution_value(
+            "retries", opts.general_retries)))
+        for parent_node in parent_nodes:
+            if parent_node is not None:
+                terminal_node.add_parent(parent_node)
+        dag.add_node(terminal_node)
+        nodes_here.append(terminal_node)
+    terminal_stage_nodes[terminal_stage.name] = nodes_here
 
 
 

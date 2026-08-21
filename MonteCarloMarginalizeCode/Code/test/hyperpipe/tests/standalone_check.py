@@ -82,7 +82,8 @@ cip_pipeline = _load(
 drivers_base = _load("RIFT.hyperpipe.drivers.base", HP / "drivers" / "base.py")
 
 
-def _check_pipeline_render(terminal_evidence: bool = False) -> None:
+def _check_pipeline_render(terminal_evidence: bool = False,
+                           terminal_stages: bool = False) -> None:
     """Render a tiny indexed-grid DAG without importing the LAL stack."""
     with tempfile.TemporaryDirectory(prefix="rift-hyperpipe-render-") as tmpd:
         run = Path(tmpd)
@@ -104,6 +105,41 @@ def _check_pipeline_render(terminal_evidence: bool = False) -> None:
                 "retries": 3,
             },
         }]))
+        if terminal_stages:
+            (run / "terminal").mkdir()
+            (run / "terminal.json").write_text(json.dumps({
+                "version": 1,
+                "stages": [
+                    {
+                        "name": "samples",
+                        "kind": "indexed-grid-fanout-v1",
+                        "job": {
+                            "protocol": "indexed-grid-v1",
+                            "exe": "/bin/true",
+                            "args": "--terminal-worker",
+                            "n_chunk": 2,
+                            "execution": {
+                                "request_memory": 6144,
+                                "request_disk": "3G",
+                                "retries": 4,
+                            },
+                        },
+                        "grid": str(run / "grid-$(macroiteration).dat"),
+                        "output_file": "EXTR_out.xml",
+                        "fanout": {"count": 3, "group_size": 2},
+                        "initial_dir": str(run / "terminal"),
+                        "log_dir": str(run / "terminal"),
+                    },
+                    {
+                        "name": "collect",
+                        "kind": "command-v1",
+                        "depends_on": ["samples"],
+                        "exe": "/bin/true",
+                        "args": "--collect $(macroiteration)",
+                        "initial_dir": str(run),
+                    },
+                ],
+            }))
         old_cwd = os.getcwd()
         old_argv = sys.argv[:]
         try:
@@ -123,6 +159,9 @@ def _check_pipeline_render(terminal_evidence: bool = False) -> None:
             ]
             if terminal_evidence:
                 sys.argv.append("--terminal-evidence")
+            if terminal_stages:
+                sys.argv.extend([
+                    "--terminal-stage-spec-file", str(run / "terminal.json")])
             runpy.run_path(
                 str(RIFT_PY / "bin" / "create_eos_posterior_pipeline"),
                 run_name="__main__",
@@ -165,6 +204,41 @@ def _check_pipeline_render(terminal_evidence: bool = False) -> None:
             assert not (run / "evidence_final.sub").exists()
             assert "EOS_POST_prior.sub" not in dag
             assert "evidence_final.sub" not in dag
+        if terminal_stages:
+            terminal_sub = (run / "TERMINAL_samples.sub").read_text()
+            collect_sub = (run / "TERMINAL_collect.sub").read_text()
+            assert "--terminal-worker" in terminal_sub
+            assert "--sim-grid" in terminal_sub
+            assert "grid-$(macroiteration).dat" in terminal_sub
+            assert "--n-events-to-analyze $(macrongroup)" in terminal_sub
+            assert "request_memory = 6144M" in terminal_sub
+            assert "request_disk = 3G" in terminal_sub
+            assert "--collect $(macroiteration)" in collect_sub
+            assert dag.count("TERMINAL_samples.sub") == 3
+            assert dag.count("macrongroup=\"2\"") >= 3
+            assert "TERMINAL_collect.sub" in dag
+            assert "TERMINAL_samples" in dag
+            assert "TERMINAL_collect" in dag
+            jobs = {}
+            edges = set()
+            for line in dag.splitlines():
+                fields = line.split()
+                if fields and fields[0] == "JOB":
+                    jobs.setdefault(Path(fields[2]).name, []).append(fields[1])
+                elif fields and fields[0] == "PARENT":
+                    split_at = fields.index("CHILD")
+                    for parent in fields[1:split_at]:
+                        for child in fields[split_at + 1:]:
+                            edges.add((parent, child))
+            final_join = jobs["JOIN_POST.sub"][-1]
+            workers = jobs["TERMINAL_samples.sub"]
+            collector = jobs["TERMINAL_collect.sub"][0]
+            assert len(workers) == 3
+            assert all((final_join, worker) in edges for worker in workers)
+            assert all((worker, collector) in edges for worker in workers)
+        else:
+            assert not (run / "TERMINAL_samples.sub").exists()
+            assert not (run / "TERMINAL_collect.sub").exists()
 
 
 def run_checks() -> None:
@@ -252,6 +326,7 @@ def run_checks() -> None:
     # terminal prior-normalized evidence using the same low-level writer.
     _check_pipeline_render()
     _check_pipeline_render(terminal_evidence=True)
+    _check_pipeline_render(terminal_stages=True)
 
     print(f"standalone_check: ALL OK  (RIFT_ROOT={RIFT_ROOT})")
 

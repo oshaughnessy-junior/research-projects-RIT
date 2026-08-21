@@ -18,6 +18,7 @@ import numpy as np
 import argparse
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -718,7 +719,12 @@ if opts.pipeline_builder == "Hyperpipe":
         (opts.calmarg_pilot, "--calmarg-pilot"),
         (opts.extrinsic_handoff, "--extrinsic-handoff"),
         (opts.external_fetch_native_from is not None, "--external-fetch-native-from"),
-        (opts.add_extrinsic, "--add-extrinsic"),
+        (opts.add_extrinsic and not opts.add_extrinsic_time_resampling,
+         "--add-extrinsic without --add-extrinsic-time-resampling"),
+        (opts.batch_extrinsic, "--batch-extrinsic"),
+        (opts.add_extrinsic
+         and opts.internal_mitigate_fd_J_frame == "rotate",
+         "--internal-mitigate-fd-J-frame rotate (post-export rotation)"),
         (opts.calibration_reweighting, "--calibration-reweighting"),
         (opts.distance_reweighting, "--distance-reweighting"),
         (opts.archive_pesummary_label is not None, "--archive-pesummary-label"),
@@ -968,6 +974,13 @@ if opts.use_rundir:
     dirname_run = opts.use_rundir
 os.mkdir(dirname_run)
 os.chdir(dirname_run)
+
+# Manual-time analyses do not obtain detector metadata from GraceDB/coinc.
+# Preserve the explicitly supplied list in the same event-dictionary field
+# used by helper setup, file-transfer checks, and optional terminal stages.
+if "IFOs" not in event_dict and opts.manual_ifo_list:
+    event_dict["IFOs"] = [
+        ifo.strip() for ifo in opts.manual_ifo_list.split(",") if ifo.strip()]
 
 
 if not(opts.use_ini is None):
@@ -2389,6 +2402,123 @@ if opts.pipeline_builder == "Hyperpipe":
         json.dump(marg_spec, stream, indent=2, sort_keys=True)
         stream.write("\n")
 
+    terminal_stage_spec_path = None
+    if opts.add_extrinsic:
+        # The maintained pseudo-pipe path uses ILE's time-resampled fairdraw
+        # mode. Express it as generic terminal indexed-grid fan-out followed
+        # by a command-stage collector; the low-level writer remains unaware
+        # of ILE/extrinsic executable names and postprocessing policy.
+        with open("args_ile.txt") as stream:
+            extrinsic_ile_args = stream.read()
+        extrinsic_ile_args = extrinsic_ile_args.replace(
+            "--no-adapt-after-first", "")
+        extrinsic_ile_args = extrinsic_ile_args.replace(
+            "--distance-marginalization ", " ")
+        samples_per_point = int(
+            opts.internal_last_iteration_extrinsic_samples_per_ile or 5)
+        configured_neff = [
+            int(float(value)) for value in re.findall(
+                r"--n-eff(?:=|\s+)([0-9.eE+-]+)", extrinsic_ile_args)]
+        extrinsic_neff = max(
+            [int(opts.ile_n_eff or 0), samples_per_point] + configured_neff)
+        extrinsic_ile_args += (
+            " --save-P 0.01 --save-samples --n-eff {neff}"
+            " --resample-time-marginalization"
+            " --fairdraw-extrinsic-output"
+            " --fairdraw-extrinsic-output-n-max {nmax} "
+        ).format(neff=extrinsic_neff, nmax=samples_per_point)
+        extrinsic_args_path = os.path.abspath("args_ile_extrinsic.txt")
+        with open(extrinsic_args_path, "w") as stream:
+            stream.write(extrinsic_ile_args.strip() + "\n")
+
+        join_extrinsic = shutil.which("util_JoinExtrXML.py") or "util_JoinExtrXML.py"
+        convert_extrinsic = (
+            shutil.which("convert_output_format_ile2inference")
+            or "convert_output_format_ile2inference")
+        convert_args_extrinsic = (
+            "--convention LI --export-cosmology --use-interpolated-cosmology")
+        if opts.assume_matter or opts.assume_eccentric:
+            with open("helper_convert_args.txt") as stream:
+                convert_args_extrinsic += " " + stream.read().strip()
+        shuffle_extrinsic = shutil.which("shuf")
+        shuffle_clause = " | cat"
+        if shuffle_extrinsic:
+            shuffle_clause = " | {}".format(shlex.quote(shuffle_extrinsic))
+        elif shutil.which("sort"):
+            shuffle_clause = " | {} -R".format(
+                shlex.quote(shutil.which("sort")))
+
+        terminal_extrinsic_dir = os.path.abspath("terminal_extrinsic")
+        terminal_collect_script = os.path.abspath(
+            "terminal_collect_extrinsic.sh")
+        with open(terminal_collect_script, "w") as stream:
+            stream.write("#!/bin/bash\nset -e\n")
+            stream.write(
+                "{} '{}/EXTR_out-*.xml_*_.xml.gz' --output {}/tmp_extrinsic.xml.gz\n"
+                .format(shlex.quote(join_extrinsic), terminal_extrinsic_dir,
+                        os.getcwd()))
+            stream.write(
+                "{} {} {}/tmp_extrinsic.xml.gz > {}/tmp_extrinsic.dat\n"
+                .format(shlex.quote(convert_extrinsic),
+                        convert_args_extrinsic, os.getcwd(), os.getcwd()))
+            stream.write(
+                "head -n 1 {0}/tmp_extrinsic.dat > "
+                "{0}/extrinsic_posterior_samples.dat\n".format(os.getcwd()))
+            stream.write(
+                "sed 1d {0}/tmp_extrinsic.dat {1} >> "
+                "{0}/extrinsic_posterior_samples.dat\n".format(
+                    os.getcwd(), shuffle_clause))
+        os.chmod(terminal_collect_script, 0o755)
+
+        terminal_worker_spec = dict(marg_spec[0])
+        terminal_worker_spec["args_file"] = extrinsic_args_path
+        terminal_worker_spec.pop("args", None)
+        terminal_worker_spec["execution"] = dict(
+            terminal_worker_spec.get("execution") or {})
+        terminal_worker_spec["execution"]["copies"] = 1
+        terminal_worker_spec["execution"]["request_memory"] = int(ile_mem) * 2
+        n_extrinsic_jobs = max(
+            1, int(opts.n_output_samples_last / float(n_jobs_per_worker)))
+        terminal_manifest = {
+            "version": 1,
+            "stages": [
+                {
+                    "name": "extrinsic_samples",
+                    "kind": "indexed-grid-fanout-v1",
+                    "job": terminal_worker_spec,
+                    "grid": os.path.abspath(
+                        "grid-$(macroiteration).dat"),
+                    "output_file": "EXTR_out.xml",
+                    "fanout": {
+                        "count": n_extrinsic_jobs,
+                        "group_size": int(n_jobs_per_worker),
+                    },
+                    "initial_dir": terminal_extrinsic_dir,
+                    "log_dir": terminal_extrinsic_dir + "/logs",
+                },
+                {
+                    "name": "extrinsic_collect",
+                    "kind": "command-v1",
+                    "depends_on": ["extrinsic_samples"],
+                    "exe": terminal_collect_script,
+                    "initial_dir": os.getcwd(),
+                    "log_dir": terminal_extrinsic_dir + "/logs",
+                    "universe": (
+                        "local" if opts.condor_local_nonworker else "vanilla"),
+                    "no_grid": bool(opts.condor_nogrid_nonworker),
+                    "execution": {
+                        "request_disk": general_request_disk,
+                        "retries": int(opts.general_retries),
+                    },
+                },
+            ],
+        }
+        terminal_stage_spec_path = os.path.abspath(
+            "terminal_stage_specs.json")
+        with open(terminal_stage_spec_path, "w") as stream:
+            json.dump(terminal_manifest, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+
     hyperpipe_cmd = [
         shutil.which("create_eos_posterior_pipeline") or "create_eos_posterior_pipeline",
         "--marg-job-spec-file", marg_spec_path,
@@ -2411,6 +2541,9 @@ if opts.pipeline_builder == "Hyperpipe":
         "--working-directory", os.getcwd(),
         "--use-full-submit-paths",
     ]
+    if terminal_stage_spec_path:
+        hyperpipe_cmd += [
+            "--terminal-stage-spec-file", terminal_stage_spec_path]
     if os.path.isfile("helper_transfer_files.txt"):
         hyperpipe_cmd += ["--transfer-file-list", os.path.abspath("helper_transfer_files.txt")]
     if opts.use_osg:
