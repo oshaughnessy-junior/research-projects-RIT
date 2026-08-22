@@ -172,6 +172,31 @@ def test_ile_submit_builder_allows_explicit_data_free_container(
     assert "ile_pre.sh" not in submit
 
 
+def test_ile_pre_transfer_survives_nested_initialdir(
+    hp_modules, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SINGULARITY_BASE_EXE_DIR", "/container/bin")
+    frames = tmp_path / "frames_dir"
+    frames.mkdir()
+    (frames / "H1-test.gwf").write_bytes(b"")
+    job, _ = hp_modules.dag_utils_generic.write_ILE_sub_simple(
+        tag="nested", exe="/host/bin/ile", arg_str="--cache local.cache",
+        use_singularity=True, singularity_image="/tmp/rift.sif",
+        use_osg=True, frames_dir=str(frames), transfer_files=[],
+        condor_commands={"+PreCmd": '"ile_pre.sh"'},
+    )
+    nested = tmp_path / "iteration_0_marg" / "event_0"
+    nested.mkdir(parents=True)
+    job.add_condor_cmd("initialdir", str(nested))
+    job.set_sub_file(str(tmp_path / "nested.sub"))
+    job.write_sub_file()
+
+    submit = (tmp_path / "nested.sub").read_text()
+    assert str(tmp_path / "ile_pre.sh") in submit
+    assert "../ile_pre.sh" not in submit
+
+
 def test_ile_submit_builder_can_stage_candidate_executable(
     hp_modules, tmp_path, monkeypatch
 ):

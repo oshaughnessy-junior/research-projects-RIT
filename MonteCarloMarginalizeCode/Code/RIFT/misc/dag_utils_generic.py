@@ -2859,7 +2859,11 @@ echo Starting ...
         if not(pre_needed):
             transfer_files += ['../local.cache']
         else:            
-          transfer_files += ["../ile_pre.sh"]  # assuming default working directory setup
+          # Submit files may set an arbitrarily nested initialdir (Hyperpipe
+          # uses iteration_N_marg/event_K).  HTCondor resolves relative
+          # transfer inputs from that IWD, so preserve the submit-side
+          # absolute path; the sandbox still receives basename ile_pre.sh.
+          transfer_files += [os.path.abspath(cmdname)]
           has_pre_cmd = any(
               str(key).lower() in ("+precmd", "precmd")
               for key in (condor_commands or {}))
