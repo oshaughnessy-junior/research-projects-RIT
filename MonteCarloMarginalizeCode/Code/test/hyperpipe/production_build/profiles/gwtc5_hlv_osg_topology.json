@@ -44,6 +44,16 @@
     "--skip-reproducibility"
   ],
   "expected": {
+    "dry_run_macros": {
+      "macroiteration": 0,
+      "macroiterationprev": -1,
+      "macroiterationnext": 1,
+      "macroevent": 0,
+      "macroid": 0,
+      "macrongroup": 1,
+      "macrostartidx": 0,
+      "macroendidx": 2
+    },
     "dry_run_submits": [
       "MARG_0.sub",
       "EOS_POST_worker_*.sub",

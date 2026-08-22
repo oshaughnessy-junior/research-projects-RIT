@@ -221,6 +221,11 @@ def _condor_dry_run(profile, pipeline_dir, real_condor_submit):
     if not real.is_file():
         raise ValueError("real condor_submit does not exist: {}".format(real))
     checked = []
+    macro_assignments = [
+        "{}={}".format(name, value)
+        for name, value in profile["expected"].get(
+            "dry_run_macros", {}).items()
+    ]
     for pattern in profile["expected"].get("dry_run_submits", []):
         matches = sorted(pipeline_dir.glob(pattern))
         if not matches:
@@ -229,7 +234,8 @@ def _condor_dry_run(profile, pipeline_dir, real_condor_submit):
         submit = matches[0]
         output = pipeline_dir / (submit.name + ".dryrun")
         result = subprocess.run(
-            [str(real), "-dry-run", str(output), str(submit)],
+            [str(real), "-dry-run", str(output), str(submit)] +
+            macro_assignments,
             cwd=str(pipeline_dir), text=True, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, timeout=60)
         if result.returncode:
