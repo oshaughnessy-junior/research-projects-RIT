@@ -782,6 +782,11 @@ class _GenericDAG(object):
         self.log = log
         self.dag_file = None
         self.nodes = []
+        # Environment required by the workflow manager and inherited by
+        # node jobs that use ``getenv``.  This is deliberately DAG-level:
+        # setting a variable only in the shell which writes/submits a DAG is
+        # not sufficient once the workflow manager submits its children.
+        self.environment = {}
         # Control-logic overlays
         self.script_pre = []        # list of (node_or_name, exe, args_str)
         self.script_post = []       # list of (node_or_name, exe, args_str)
@@ -795,6 +800,20 @@ class _GenericDAG(object):
 
     def add_node(self, node):
         self.nodes.append(node)
+
+    def set_environment(self, name, value):
+        """Set a workflow-wide environment variable.
+
+        Backends translate this into their workflow-manager contract
+        (DAGMan ``ENV SET`` or a shell ``export`` in the Slurm driver).
+        """
+        name = str(name)
+        if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
+            raise ValueError("invalid environment variable name: {}".format(name))
+        value = str(value)
+        if "\n" in value or "\r" in value:
+            raise ValueError("environment variable values cannot contain newlines")
+        self.environment[name] = value
 
     @staticmethod
     def _node_name(node_or_name):
@@ -919,6 +938,19 @@ class WorkflowBackend(abc.ABC):
             return dag_file
         return dag_file + ".dag"
 
+    @staticmethod
+    def format_dag_environment(environment):
+        """Render the DAGMan workflow-environment directive."""
+        if not environment:
+            return ""
+        assignments = []
+        for key, value in environment.items():
+            if ";" in value:
+                raise ValueError(
+                    "DAGMan ENV SET values cannot contain semicolons: {}".format(key))
+            assignments.append("{}={}".format(key, value))
+        return "ENV SET {}\n".format(";".join(assignments))
+
     def format_script_pre(self, name, exe, args_str):
         return "SCRIPT PRE {} {} {}\n".format(name, exe, args_str).rstrip(" \n") + "\n"
 
@@ -957,6 +989,9 @@ class WorkflowBackend(abc.ABC):
         """Helper for emit_dag implementations that produce a single
         text artefact: write all the captured control-logic overlays
         appended to the workflow body."""
+        env_line = self.format_dag_environment(dag.environment)
+        if env_line:
+            fh.write(env_line)
         for name, exe, args_str in dag.script_pre:
             fh.write(self.format_script_pre(name, exe, args_str))
         for name, exe, args_str in dag.script_post:
@@ -1096,6 +1131,9 @@ class HTCondorBackend(WorkflowBackend):
         if not path.endswith(".dag"):
             path = path + ".dag"
         with open(path, "w") as fh:
+            env_line = self.format_dag_environment(dag.environment)
+            if env_line:
+                fh.write(env_line)
             for node in dag.nodes:
                 if isinstance(node, _GenericSubdagNode):
                     fh.write("SUBDAG EXTERNAL {} {}\n".format(node.name, node.subdag_file))
@@ -1431,6 +1469,10 @@ class SlurmBackend(WorkflowBackend):
             "set -euo pipefail",
             "",
         ]
+        for key, value in dag.environment.items():
+            lines.append("export {}={}".format(key, shlex.quote(value)))
+        if dag.environment:
+            lines.append("")
         # Track post-script jobs we submitted so subsequent abort-on checks
         # can wait for them too.
         for node in order:

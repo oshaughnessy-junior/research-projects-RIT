@@ -353,6 +353,12 @@ transfer_file_names_post = list(transfer_file_names) + ['../all.marg_net'] # mak
 
 
 dag = pipeline.CondorDAG(log=os.getcwd())
+if str(os.environ.get("RIFT_HYPERPIPELINE_FORMAT", "")).strip().lower() in (
+        "1", "true", "yes", "on"):
+    # DAGMan, rather than this process, submits the worker jobs.  Make the
+    # protocol selector part of the workflow itself so all getenv-enabled
+    # stages retain the self-describing Hyperpipeline table contract.
+    dag.set_environment("RIFT_HYPERPIPELINE_FORMAT", "1")
 
 
 # Make directories for all iterations

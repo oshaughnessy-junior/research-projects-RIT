@@ -349,12 +349,14 @@ class HTCondorBackendTests(unittest.TestCase):
             n1 = self.m.CondorDAGNode(j); n1.add_macro("event", "7"); n1.set_retry(2)
             n2 = self.m.CondorDAGNode(j); n2.add_parent(n1)
             dag = self.m.CondorDAG()
+            dag.set_environment("RIFT_HYPERPIPELINE_FORMAT", "1")
             dag.add_node(n1); dag.add_node(n2)
             dag.set_dag_file(os.path.join(td, "wf.dag"))
             dag.write_concrete_dag()
             with open(os.path.join(td, "wf.dag")) as _fh:
                 text = _fh.read()
             self.assertIn("JOB " + n1.name + " " + j.get_sub_file(), text)
+            self.assertIn("ENV SET RIFT_HYPERPIPELINE_FORMAT=1", text)
             self.assertIn('VARS {} event="7"'.format(n1.name), text)
             self.assertIn("RETRY {} 2".format(n1.name), text)
             self.assertIn("PARENT {} CHILD {}".format(n1.name, n2.name), text)
@@ -396,12 +398,14 @@ class GlueBackendTests(unittest.TestCase):
             n1 = self.m.CondorDAGNode(j)
             n2 = self.m.CondorDAGNode(j); n2.add_parent(n1)
             dag = self.m.CondorDAG()
+            dag.set_environment("RIFT_HYPERPIPELINE_FORMAT", "1")
             dag.add_node(n1); dag.add_node(n2)
             dag.set_dag_file(os.path.join(td, "wf.dag"))
             dag.write_concrete_dag()
             with open(os.path.join(td, "wf.dag")) as _fh:
                 text = _fh.read()
             self.assertIn("PARENT", text)
+            self.assertIn("ENV SET RIFT_HYPERPIPELINE_FORMAT=1", text)
 
 
 class SlurmBackendTests(unittest.TestCase):
@@ -460,6 +464,7 @@ class SlurmBackendTests(unittest.TestCase):
             na = self.m.CondorDAGNode(ja); na.add_macro("event", "7")
             nb = self.m.CondorDAGNode(jb); nb.add_parent(na); nb.set_retry(2)
             dag = self.m.CondorDAG()
+            dag.set_environment("RIFT_HYPERPIPELINE_FORMAT", "1")
             dag.add_node(na); dag.add_node(nb)
             dag.set_dag_file(os.path.join(td, "wf.dag"))
             dag.write_concrete_dag()
@@ -470,6 +475,7 @@ class SlurmBackendTests(unittest.TestCase):
                 text = _fh.read()
             self.assertTrue(text.startswith("#!/bin/bash"))
             self.assertIn("set -euo pipefail", text)
+            self.assertIn("export RIFT_HYPERPIPELINE_FORMAT=1", text)
             self.assertIn("JOBID_0=$(sbatch", text)
             self.assertIn("--export=ALL,SLURM_VAR_EVENT=7", text)
             self.assertIn("JOBID_1=$(sbatch --dependency=afterok:${JOBID_0}", text)
