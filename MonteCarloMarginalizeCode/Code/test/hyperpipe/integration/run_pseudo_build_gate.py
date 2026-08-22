@@ -98,6 +98,7 @@ def _build(builder: Optional[str], run_base: Path, seed_grid: Path, cache: Path,
         "--cip-explode-jobs-last", "1",
         "--add-extrinsic",
         "--add-extrinsic-time-resampling",
+        "--batch-extrinsic",
         "--internal-mitigate-fd-J-frame", "rotate",
         "--export-marginal-distance-grid",
         "--export-distance-slices", "2",
@@ -213,6 +214,7 @@ def _assert_hyperpipe_terminal_chain(hyper: Path):
     }
     assert expected <= set(stages)
     assert stages["extrinsic_collect"]["depends_on"] == ["extrinsic_samples"]
+    assert stages["extrinsic_collect"]["kind"] == "command-v1"
     assert stages["frame_rotation"]["depends_on"] == ["extrinsic_collect"]
     assert stages["calibration_reweight"]["depends_on"] == ["frame_rotation"]
     assert len(stages["calibration_reweight"]["instances"]) == 4
@@ -254,6 +256,11 @@ def _assert_basic_reweighting_chain(basic: Path):
     assert "--allow-empty" not in (basic / "consolidate_dslice.sh").read_text()
     assert (next(iter(merge)), next(iter(hdf5))) in edges
     assert (next(iter(hdf5)), next(iter(comoving))) in edges
+    # With time resampling enabled, BasicIteration deliberately gives the
+    # single all-in-one collector precedence over --batch-extrinsic's
+    # per-output converter.  Hyperpipe mirrors this production combination.
+    assert len(_nodes_for_submit(jobs, "convert_extr.sub")) == 1
+    assert (basic / "allinone_convert.sh").is_file()
 
 
 def _assert_unsupported_gates(run_base: Path):

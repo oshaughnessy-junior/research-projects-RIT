@@ -728,7 +728,8 @@ if opts.pipeline_builder == "Hyperpipe":
         (opts.external_fetch_native_from is not None, "--external-fetch-native-from"),
         (opts.add_extrinsic and not opts.add_extrinsic_time_resampling,
          "--add-extrinsic without --add-extrinsic-time-resampling"),
-        (opts.batch_extrinsic, "--batch-extrinsic"),
+        (opts.batch_extrinsic and not opts.add_extrinsic_time_resampling,
+         "--batch-extrinsic without --add-extrinsic-time-resampling"),
         (opts.calibration_reweighting and not opts.add_extrinsic,
          "--calibration-reweighting without --add-extrinsic"),
         (opts.calibration_reweighting and not opts.bilby_pickle_file,
@@ -2470,7 +2471,11 @@ if opts.pipeline_builder == "Hyperpipe":
         # The maintained pseudo-pipe path uses ILE's time-resampled fairdraw
         # mode. Express it as generic terminal indexed-grid fan-out followed
         # by a command-stage collector; the low-level writer remains unaware
-        # of ILE/extrinsic executable names and postprocessing policy.
+        # of ILE/extrinsic executable names and postprocessing policy.  This
+        # also implements pseudo_pipe's production --batch-extrinsic +
+        # --add-extrinsic-time-resampling combination: BasicIteration gives
+        # the time-resampling all-in-one collector precedence over its other
+        # batched converter, so no distinct Hyperpipe topology is required.
         with open("args_ile.txt") as stream:
             extrinsic_ile_args = stream.read()
         extrinsic_ile_args = extrinsic_ile_args.replace(
