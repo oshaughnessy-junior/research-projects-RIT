@@ -4893,7 +4893,7 @@ def write_bilby_pickle_sub(tag='Bilby_pickle', exe=None, universe='local', log_d
         ile_args_split = ile_args.split('--')
         start_time =None
         end_time=None
-        trigger_time =None
+        event_time =None
         rift_window_shape=None    # remember this is a dimensionless number, not a time
         rift_srate =None
         fmin_list = []
@@ -4923,11 +4923,16 @@ def write_bilby_pickle_sub(tag='Bilby_pickle', exe=None, universe='local', log_d
         ile_job.add_arg(" --waveform-approximant {} ".format(approx))
         if rift_srate:
             ile_job.add_arg(" --sampling-frequency {} ".format(rift_srate))
-        if event_time:
+        if event_time is not None:
             ile_job.add_arg(" --trigger-time {} ".format(event_time))
         # t_tukey
-        t_tukey = (end_time-start_time)*rift_window_shape/2   # basically the fraction of time not in the window; see formula in helper
-        ile_job.add_arg(" --tukey-roll-off {} ".format(t_tukey))
+        if (start_time is not None and end_time is not None and
+                rift_window_shape is not None):
+            # This override is useful when RIFT supplied all three values.  If
+            # any are absent, retain the Bilby ini setting instead of failing
+            # while constructing the workflow.
+            t_tukey = (end_time-start_time)*rift_window_shape/2
+            ile_job.add_arg(" --tukey-roll-off {} ".format(t_tukey))
         # channel list
         channel_dict ={}
         for channel_id in channel_list:

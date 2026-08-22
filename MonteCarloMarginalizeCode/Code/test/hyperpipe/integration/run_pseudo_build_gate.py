@@ -72,7 +72,9 @@ def _environment(run_base: Path):
 
 
 def _build(builder: Optional[str], run_base: Path, seed_grid: Path, cache: Path,
-           pickle_file: Path, run_label: Optional[str] = None):
+           pickle_file: Optional[Path], run_label: Optional[str] = None,
+           bilby_ini: Optional[Path] = None,
+           osg_calibration: bool = False):
     label = builder or "default"
     rundir = run_base / (run_label or label.lower())
     command = [
@@ -103,14 +105,26 @@ def _build(builder: Optional[str], run_base: Path, seed_grid: Path, cache: Path,
         "--export-marginal-distance-grid",
         "--export-distance-slices", "2",
         "--calibration-reweighting",
-        "--bilby-pickle-file", str(pickle_file),
         "--calibration-reweighting-count", "25",
         "--calibration-reweighting-batchsize", "2",
         "--distance-reweighting",
         "--skip-reproducibility",
     ])
+    if pickle_file is not None:
+        command.extend(["--bilby-pickle-file", str(pickle_file)])
+    elif bilby_ini is not None:
+        command.extend(["--bilby-ini-file", str(bilby_ini)])
+    env = _environment(run_base)
+    if osg_calibration:
+        command.extend([
+            "--use-osg", "--calibration-reweighting-osg",
+            "--internal-use-oauth-files", "scitokens",
+        ])
+        env["SINGULARITY_RIFT_IMAGE"] = (
+            "osdf://example.invalid/rift/test-rift.sif")
+        env["SINGULARITY_BASE_EXE_DIR"] = "/usr/bin"
     result = subprocess.run(
-        command, cwd=str(run_base), env=_environment(run_base),
+        command, cwd=str(run_base), env=env,
         text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     if result.returncode:
         raise RuntimeError(
@@ -243,6 +257,42 @@ def _assert_hyperpipe_terminal_chain(hyper: Path):
     assert "--waveform_approximant IMRPhenomXPHM" in calibration_sub
 
 
+def _assert_automatic_bilby_chain(hyper: Path):
+    manifest = json.loads((hyper / "terminal_stage_specs.json").read_text())
+    stages = {stage["name"]: stage for stage in manifest["stages"]}
+    assert stages["bilby_pickle"]["depends_on"] == ["frame_rotation"]
+    assert stages["calibration_reweight"]["depends_on"] == ["bilby_pickle"]
+    assert "calmarg_data_dump.pickle" in stages["bilby_pickle"]["args"]
+    assert "calmarg_data_dump.pickle" in stages["calibration_reweight"]["args"]
+
+    dag = hyper / "marginalize_hyperparameters.dag"
+    jobs, edges = _dag_jobs_and_edges(dag)
+    pickle_nodes = _nodes_for_submit(jobs, "TERMINAL_bilby_pickle.sub")
+    calibration_nodes = _nodes_for_submit(
+        jobs, "TERMINAL_calibration_reweight.sub")
+    assert len(pickle_nodes) == 1 and len(calibration_nodes) == 4
+    assert all(
+        (next(iter(pickle_nodes)), calibration) in edges
+        for calibration in calibration_nodes)
+
+
+def _assert_osg_calibration_contract(hyper: Path):
+    manifest = json.loads((hyper / "terminal_stage_specs.json").read_text())
+    stages = {stage["name"]: stage for stage in manifest["stages"]}
+    calibration = stages["calibration_reweight"]
+    commands = calibration["execution"]["backend_commands"]["htcondor"]
+    assert commands["use_oauth_services"] == "scitokens"
+    assert "test-rift.sif" in commands["MY.SingularityImage"]
+    assert "weight_files" in commands["transfer_output_files"]
+    assert "calmarg_data_dump.pickle" in commands["transfer_input_files"]
+    assert "extrinsic_posterior_samples.dat" in commands["transfer_input_files"]
+
+    submit = (hyper / "TERMINAL_calibration_reweight.sub").read_text()
+    assert "use_oauth_services = scitokens" in submit
+    assert "weight_files" in submit
+    assert "test-rift.sif" in submit
+
+
 def _assert_basic_reweighting_chain(basic: Path):
     dag = basic / "marginalize_intrinsic_parameters_BasicIterationWorkflow.dag"
     jobs, edges = _dag_jobs_and_edges(dag)
@@ -265,12 +315,16 @@ def _assert_basic_reweighting_chain(basic: Path):
 
 def _assert_unsupported_gates(run_base: Path):
     cases = [
-        (["--calibration-reweighting", "--bilby-ini-file", "event.ini"],
-         "automatic Bilby pickle generation"),
+        (["--calibration-reweighting"],
+         "without either --bilby-pickle-file or --bilby-ini-file"),
         (["--distance-reweighting"],
          "--distance-reweighting without --add-extrinsic"),
         (["--archive-pesummary-label", "review"],
          "--archive-pesummary-label"),
+        (["--calibration-reweighting", "--add-extrinsic",
+          "--add-extrinsic-time-resampling", "--bilby-pickle-file", "p",
+          "--calibration-reweighting-osg"],
+         "OSG calibration reweighting requires SINGULARITY_RIFT_IMAGE"),
     ]
     for extra, expected in cases:
         result = subprocess.run(
@@ -314,13 +368,26 @@ def main(argv=None):
         cache = run_base / "empty.cache"
         cache.touch()
         pickle_file = run_base / "calmarg_data_dump.pickle"
+        bilby_ini = run_base / "event.ini"
+        bilby_ini.write_text(
+            "channel-dict = {H1:FAKE,L1:FAKE}\n"
+            "data-dict = {H1:/dev/null,L1:/dev/null}\n"
+            "waveform-approximant = IMRPhenomXPHM\n")
         basic = _build("BasicIteration", run_base, xml_grid, cache, pickle_file)
         default = _build(None, run_base, xml_grid, cache, pickle_file)
         hyper = _build("Hyperpipe", run_base, ascii_grid, cache, pickle_file)
+        hyper_auto = _build(
+            "Hyperpipe", run_base, ascii_grid, cache, None,
+            run_label="hyperpipe-auto-bilby", bilby_ini=bilby_ini)
+        hyper_osg = _build(
+            "Hyperpipe", run_base, ascii_grid, cache, pickle_file,
+            run_label="hyperpipe-osg-calibration", osg_calibration=True)
         _assert_default_basic_unchanged(basic, default)
         _assert_shared_semantics(basic, hyper)
         _assert_basic_reweighting_chain(basic)
         _assert_hyperpipe_terminal_chain(hyper)
+        _assert_automatic_bilby_chain(hyper_auto)
+        _assert_osg_calibration_contract(hyper_osg)
         _assert_unsupported_gates(run_base)
         _assert_invalid_hyperpipe_grid_fails(run_base, cache, pickle_file)
         print("pseudo build gate: PASS")

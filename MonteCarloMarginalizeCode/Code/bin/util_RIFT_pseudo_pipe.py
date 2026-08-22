@@ -26,6 +26,7 @@ import lal
 import lalsimulation as lalsim
 import RIFT.lalsimutils as lalsimutils
 from RIFT.misc import hyperpipeline_io
+from RIFT.misc import dag_utils_generic
 import configparser as ConfigParser
 
 if ( 'RIFT_LOWLATENCY'  in os.environ):
@@ -81,6 +82,30 @@ from RIFT.likelihood.time_interp_choice import (
 ligolw_prefix = 'igwn_'
 if not(which(ligolw_prefix + "ligolw_add")):
     ligolw_prefix = ''
+
+
+def _render_generic_job_arguments(job):
+    """Render a dag_utils_generic job as a backend-neutral argument string."""
+    parts = []
+    for name, value in job.opts:
+        if value is None or value == "":
+            parts.append("--{}".format(name))
+        else:
+            parts.append("--{}={}".format(name, value))
+    for name, value in job.short_opts:
+        parts.append("-{} {}".format(name, value))
+    for name, value in job.file_opts:
+        parts.append("--{}={}".format(name, value))
+    if job.var_opts:
+        raise ValueError(
+            "cannot adapt a generic job with unresolved variable options")
+    parts.extend(str(arg) for arg in job.arguments)
+    return " ".join(parts)
+
+
+def _job_condor_commands(job):
+    """Return last-value-wins HTCondor commands from a generic job."""
+    return {str(key): value for key, value in job.condor_cmds}
 
 
     
@@ -732,11 +757,10 @@ if opts.pipeline_builder == "Hyperpipe":
          "--batch-extrinsic without --add-extrinsic-time-resampling"),
         (opts.calibration_reweighting and not opts.add_extrinsic,
          "--calibration-reweighting without --add-extrinsic"),
-        (opts.calibration_reweighting and not opts.bilby_pickle_file,
-         "--calibration-reweighting without --bilby-pickle-file "
-         "(automatic Bilby pickle generation)"),
-        (opts.calibration_reweighting and opts.calibration_reweighting_osg,
-         "--calibration-reweighting-osg"),
+        (opts.calibration_reweighting and not opts.bilby_pickle_file and
+         not opts.bilby_ini_file,
+         "--calibration-reweighting without either --bilby-pickle-file "
+         "or --bilby-ini-file"),
         (opts.calibration_reweighting and
          opts.calibration_reweighting_batchsize is not None and
          opts.calibration_reweighting_batchsize <= 0,
@@ -764,6 +788,11 @@ if opts.pipeline_builder == "Hyperpipe":
             "Use BasicIteration/AlternateIteration or disable these features; "
             "the Hyperpipe writer refuses to silently omit them.".format(
                 ", ".join(_unsupported_hyperpipe)))
+    if (opts.calibration_reweighting and opts.calibration_reweighting_osg and
+            not os.environ.get("SINGULARITY_RIFT_IMAGE")):
+        raise SystemExit(
+            "pseudo_pipe: Hyperpipe OSG calibration reweighting requires "
+            "SINGULARITY_RIFT_IMAGE")
 elif opts.ile_zero_likelihood_data_free:
     raise SystemExit(
         "pseudo_pipe: --ile-zero-likelihood-data-free requires "
@@ -2146,7 +2175,9 @@ if opts.calibration_reweighting and (not opts.bilby_pickle_file):
         cmd += " --calibration-reweighting-extra-args '{}' ".format(opts.calibration_reweighting_extra_args)
     if opts.calibration_reweighting_osg:
         cmd += " --calibration-reweighting-osg "
-        opts.calibration_reweighting_initial_extra_args += " --use_local_cal_files "
+        opts.calibration_reweighting_initial_extra_args = (
+            (opts.calibration_reweighting_initial_extra_args or "") +
+            " --use_local_cal_files ")
     if opts.calibration_reweighting_initial_extra_args:
         cmd += " --calibration-reweighting-initial-extra-args '{}' ".format(opts.calibration_reweighting_initial_extra_args)
 elif opts.calibration_reweighting and opts.bilby_pickle_file:
@@ -2160,7 +2191,9 @@ elif opts.calibration_reweighting and opts.bilby_pickle_file:
         cmd += " --calibration-reweighting-extra-args '{}' ".format(opts.calibration_reweighting_extra_args)
     if opts.calibration_reweighting_osg:
         cmd += " --calibration-reweighting-osg "
-        opts.calibration_reweighting_initial_extra_args += " --use_local_cal_files "
+        opts.calibration_reweighting_initial_extra_args = (
+            (opts.calibration_reweighting_initial_extra_args or "") +
+            " --use_local_cal_files ")
     if opts.calibration_reweighting_initial_extra_args:
         cmd += " --calibration-reweighting-initial-extra-args '{}' ".format(opts.calibration_reweighting_initial_extra_args)
 if opts.internal_tabular_eos_file:
@@ -2660,38 +2693,105 @@ if opts.pipeline_builder == "Hyperpipe":
         terminal_posterior_file = os.path.abspath(
             "extrinsic_posterior_samples.dat")
         if opts.calibration_reweighting:
+            calibration_dependency = terminal_extrinsic_product
+            calibration_pickle_file = opts.bilby_pickle_file
+            if not calibration_pickle_file:
+                os.makedirs(os.path.abspath("calmarg/data"), exist_ok=True)
+                os.makedirs(os.path.abspath("calmarg/logs"), exist_ok=True)
+                pickle_template, _ = dag_utils_generic.write_bilby_pickle_sub(
+                    tag="Bilby_pickle", log_dir=None,
+                    bilby_ini_file=os.path.abspath(opts.bilby_ini_file),
+                    exe=(shutil.which("bilby_pipe_generation")
+                         or "bilby_pipe_generation"),
+                    universe="local", no_grid=False,
+                    cache_file=(os.path.abspath("local.cache")
+                                if os.path.isfile("local.cache") else None),
+                    frames_dir=(os.path.abspath("frames_dir")
+                                if os.path.isdir("frames_dir") else None),
+                    ile_args=extrinsic_ile_args)
+                terminal_stages.append(dict({
+                    "name": "bilby_pickle",
+                    "kind": "command-v1",
+                    "depends_on": [terminal_extrinsic_product],
+                    "exe": pickle_template.executable,
+                    "args": _render_generic_job_arguments(pickle_template),
+                    "log_dir": os.path.abspath("calmarg/logs"),
+                }, **{
+                    key: value for key, value in terminal_command_common.items()
+                    if key != "log_dir"}))
+                calibration_dependency = "bilby_pickle"
+                calibration_pickle_file = os.path.abspath(
+                    "calmarg/data/calmarg_data_dump.pickle")
+
             calibration_reweight = (
                 shutil.which("calibration_reweighting.py")
                 or "calibration_reweighting.py")
-            calibration_args = [
-                "--data_dump_file", str(opts.bilby_pickle_file),
-                "--posterior_sample_file", terminal_posterior_file,
-                "--number_of_calibration_curves",
-                str(opts.calibration_reweighting_count
-                    if opts.calibration_reweighting_count is not None else 100),
-                "--reevaluate_likelihood", "True",
-                "--use_rift_samples", "True",
-            ]
-            for option, pattern in [
-                    ("--fmin", r"--fmin-template(?:=|\s+)([^\s]+)"),
-                    ("--l-max", r"--l-max(?:=|\s+)([^\s]+)"),
-                    ("--waveform_approximant",
-                     r"--approx(?:=|\s+)([^\s]+)")]:
-                values = re.findall(pattern, extrinsic_ile_args)
-                if values:
-                    calibration_args.extend([option, values[-1]])
+            calibration_args = None
+            calibration_execution = dict(
+                terminal_command_common["execution"], request_memory=8192)
+            calibration_universe = terminal_command_common["universe"]
+            calibration_no_grid = terminal_command_common["no_grid"]
+            if opts.calibration_reweighting_osg:
+                calibration_transfer_files = [
+                    item for item in transfer_files if item.endswith(".h5")]
+                calibration_template, _ = (
+                    dag_utils_generic
+                    .write_calibration_uncertainty_reweighting_sub(
+                        tag="Calib_reweight", log_dir=None,
+                        posterior_file=terminal_posterior_file,
+                        exe=calibration_reweight,
+                        ile_args=extrinsic_ile_args,
+                        n_cal=(opts.calibration_reweighting_count
+                               if opts.calibration_reweighting_count is not None
+                               else 100),
+                        pickle_file=calibration_pickle_file,
+                        use_osg=True,
+                        use_oauth_files=(opts.internal_use_oauth_files or False),
+                        use_singularity=True,
+                        singularity_image=os.environ.get(
+                            "SINGULARITY_RIFT_IMAGE"),
+                        transfer_files=calibration_transfer_files))
+                calibration_reweight = calibration_template.executable
+                calibration_args = _render_generic_job_arguments(
+                    calibration_template)
+                calibration_execution["backend_commands"] = {
+                    "htcondor": _job_condor_commands(calibration_template)}
+                calibration_universe = "vanilla"
+                calibration_no_grid = False
+            else:
+                calibration_arg_list = [
+                    "--data_dump_file", str(calibration_pickle_file),
+                    "--posterior_sample_file", terminal_posterior_file,
+                    "--number_of_calibration_curves",
+                    str(opts.calibration_reweighting_count
+                        if opts.calibration_reweighting_count is not None
+                        else 100),
+                    "--reevaluate_likelihood", "True",
+                    "--use_rift_samples", "True",
+                ]
+                for option, pattern in [
+                        ("--fmin", r"--fmin-template(?:=|\s+)([^\s]+)"),
+                        ("--l-max", r"--l-max(?:=|\s+)([^\s]+)"),
+                        ("--waveform_approximant",
+                         r"--approx(?:=|\s+)([^\s]+)")]:
+                    values = re.findall(pattern, extrinsic_ile_args)
+                    if values:
+                        calibration_arg_list.extend([option, values[-1]])
+                calibration_args = " ".join(calibration_arg_list)
             if opts.calibration_reweighting_initial_extra_args:
-                calibration_args.append(
+                calibration_args += (
+                    " " +
                     opts.calibration_reweighting_initial_extra_args.strip())
             calibration_stage = dict(terminal_command_common)
-            calibration_stage["execution"] = dict(
-                terminal_command_common["execution"], request_memory=8192)
+            calibration_stage["execution"] = calibration_execution
             calibration_stage.update({
                 "name": "calibration_reweight",
                 "kind": "command-v1",
-                "depends_on": [terminal_extrinsic_product],
+                "depends_on": [calibration_dependency],
                 "exe": calibration_reweight,
-                "args": " ".join(calibration_args),
+                "args": calibration_args,
+                "universe": calibration_universe,
+                "no_grid": calibration_no_grid,
             })
             calibration_batchsize = opts.calibration_reweighting_batchsize
             if calibration_batchsize:
