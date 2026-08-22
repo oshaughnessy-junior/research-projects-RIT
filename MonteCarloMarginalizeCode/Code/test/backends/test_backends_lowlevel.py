@@ -357,6 +357,8 @@ class HTCondorBackendTests(unittest.TestCase):
                 text = _fh.read()
             self.assertIn("JOB " + n1.name + " " + j.get_sub_file(), text)
             self.assertIn("ENV SET RIFT_HYPERPIPELINE_FORMAT=1", text)
+            self.assertEqual(
+                text.count("ENV SET RIFT_HYPERPIPELINE_FORMAT=1"), 1)
             self.assertIn('VARS {} event="7"'.format(n1.name), text)
             self.assertIn("RETRY {} 2".format(n1.name), text)
             self.assertIn("PARENT {} CHILD {}".format(n1.name, n2.name), text)

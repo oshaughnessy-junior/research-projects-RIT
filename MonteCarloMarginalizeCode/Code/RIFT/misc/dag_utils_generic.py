@@ -1131,9 +1131,6 @@ class HTCondorBackend(WorkflowBackend):
         if not path.endswith(".dag"):
             path = path + ".dag"
         with open(path, "w") as fh:
-            env_line = self.format_dag_environment(dag.environment)
-            if env_line:
-                fh.write(env_line)
             for node in dag.nodes:
                 if isinstance(node, _GenericSubdagNode):
                     fh.write("SUBDAG EXTERNAL {} {}\n".format(node.name, node.subdag_file))
