@@ -32,6 +32,8 @@ from RIFT.hyperpipe.terminal_contract import (
     INDEXED_GRID_FANOUT_V1,
     load_terminal_stage_specs,
 )
+from RIFT.hyperpipe.execution_contract import (
+    apply_backend_commands, apply_portable_resources, commands_for_backend)
 from RIFT.misc.cip_pipeline import expand_argument_schedule
 
 parser = argparse.ArgumentParser()
@@ -371,6 +373,7 @@ if marg_job_specs is not None:
             list(execution.get("transfer_files", []))))
 
         def _configure_marg_job(job, puff=False):
+            apply_backend_commands(job, execution)
             job.add_condor_cmd("initialdir", opts.working_directory+"/iteration_$(macroiteration)_marg/event_$(macroid)")
             log_stem = "margPuff" if puff else "marg"
             job.set_log_file(opts.working_directory+"/iteration_$(macroiteration)_marg/logs/{}-$(macroevent)-$(macroid)-$(cluster)-$(process).log".format(log_stem))
@@ -403,6 +406,7 @@ if marg_job_specs is not None:
                     tag=tag, log_dir=None, exe=spec.exe, arg_str=arg_str,
                     output_file="MARG.dat", ncopies=copies_here,
                     request_memory=request_memory_here,
+                    request_cpus=int(execution.get("request_cpus", 1)),
                     request_disk=request_disk_here,
                     request_gpu=bool(execution.get("request_gpu", False)),
                     request_cross_platform=bool(execution.get("request_cross_platform", False)),
@@ -417,7 +421,8 @@ if marg_job_specs is not None:
                     transfer_files=transfer_inputs,
                     transfer_output_files=execution.get("transfer_output_files"),
                     max_runtime_minutes=execution.get("max_runtime_minutes"),
-                    condor_commands=execution.get("condor_commands"),
+                    condor_commands=commands_for_backend(
+                        execution, "htcondor"),
                 )
                 return job
 
@@ -429,6 +434,7 @@ if marg_job_specs is not None:
                 using_eos_index='$(macroevent)',
                 n_events_to_analyze=n_chunk_here,
                 request_memory=request_memory_here,
+                request_cpus=int(execution.get("request_cpus", 1)),
                 request_disk=request_disk_here,
                 ncopies=copies_here,
                 input_net=event_path,
@@ -441,7 +447,7 @@ if marg_job_specs is not None:
                 use_simple_osg_requirements=bool(execution.get("use_simple_osg_requirements", use_osg_here)),
                 transfer_files=['../../event-$(macroid).net'] + transfer_inputs,
                 max_runtime_minutes=execution.get("max_runtime_minutes"),
-                condor_commands=execution.get("condor_commands"),
+                condor_commands=commands_for_backend(execution, "htcondor"),
             )
             return job
 
@@ -832,6 +838,7 @@ for terminal_stage in terminal_stage_specs:
             ncopies=int(execution.get("copies", 1)),
             request_memory=int(execution.get(
                 "request_memory", opts.request_memory_marg)),
+            request_cpus=int(execution.get("request_cpus", 1)),
             request_disk=execution.get(
                 "request_disk", opts.general_request_disk),
             request_gpu=bool(execution.get("request_gpu", False)),
@@ -850,7 +857,7 @@ for terminal_stage in terminal_stage_specs:
             transfer_files=transfer_here,
             transfer_output_files=execution.get("transfer_output_files"),
             max_runtime_minutes=execution.get("max_runtime_minutes"),
-            condor_commands=execution.get("condor_commands"),
+            condor_commands=commands_for_backend(execution, "htcondor"),
         )
     elif terminal_stage.kind == COMMAND_V1:
         command_execution = terminal_stage.execution
@@ -882,6 +889,12 @@ for terminal_stage in terminal_stage_specs:
         raise ValueError("unhandled terminal stage kind {}".format(
             terminal_stage.kind))
 
+    apply_backend_commands(terminal_job, terminal_stage.execution)
+    if terminal_stage.job is not None:
+        apply_backend_commands(terminal_job, terminal_stage.job.execution)
+    else:
+        apply_portable_resources(terminal_job, terminal_stage.execution)
+
     terminal_job.add_condor_cmd("initialdir", terminal_stage.initial_dir)
     terminal_job.set_log_file(
         terminal_stage.log_dir + "/{}-$(cluster)-$(process).log".format(
@@ -892,9 +905,10 @@ for terminal_stage in terminal_stage_specs:
     terminal_job.set_stdout_file(
         terminal_stage.log_dir + "/{}-$(cluster)-$(process).out".format(
             terminal_stage.name))
-    for key, value in terminal_stage.execution_value(
-            "condor_commands", {}).items():
-        terminal_job.add_condor_cmd(str(key), str(value))
+    if terminal_stage.job is None:
+        for key, value in commands_for_backend(
+                terminal_stage.execution, "htcondor").items():
+            terminal_job.add_condor_cmd(str(key), str(value))
     if opts.use_full_submit_paths:
         terminal_job.set_sub_file(
             opts.working_directory + "/" + terminal_job.get_sub_file())

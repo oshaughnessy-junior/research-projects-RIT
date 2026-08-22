@@ -2455,6 +2455,9 @@ if opts.pipeline_builder == "Hyperpipe":
             "cache_file": cache_file,
             "transfer_files": transfer_files,
             "condor_commands": dict(ile_condor_commands or []),
+            "backend_commands": ({
+                "htcondor": {"+PreCmd": '"ile_pre.sh"'},
+            } if opts.use_osg and opts.use_osg_file_transfer else {}),
         },
     }]
     marg_spec_path = os.path.abspath("marg_job_specs.json")

@@ -152,14 +152,27 @@ def test_indexed_fanout_accepts_remainder_group(tmp_path):
     assert stage.group_sizes == [3, 3, 1]
 
 
-def test_command_rejects_unknown_execution_setting(tmp_path):
+def test_command_preserves_unknown_scalar_execution_setting(tmp_path):
     path = _write_manifest(tmp_path, [{
         "name": "bad",
         "kind": COMMAND_V1,
         "exe": "/bin/true",
         "execution": {"silently_ignored_before": True},
     }])
-    with pytest.raises(ValueError, match="unsupported execution settings"):
+    with pytest.warns(UserWarning, match="preserving it"):
+        stage = load_terminal_stage_specs(str(path))[0]
+    assert stage.execution["backend_commands"] == {
+        "default": {"silently_ignored_before": True}}
+
+
+def test_command_rejects_unknown_structured_execution_setting(tmp_path):
+    path = _write_manifest(tmp_path, [{
+        "name": "bad",
+        "kind": COMMAND_V1,
+        "exe": "/bin/true",
+        "execution": {"site_policy": {"mode": "required"}},
+    }])
+    with pytest.raises(ValueError, match="backend_commands"):
         load_terminal_stage_specs(str(path))
 
 

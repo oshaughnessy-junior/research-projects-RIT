@@ -16,13 +16,15 @@ import re
 import shutil
 
 from .marg_contract import INDEXED_GRID_V1, MargJobSpec
+from .execution_contract import normalize_execution
 
 
 INDEXED_GRID_FANOUT_V1 = "indexed-grid-fanout-v1"
 COMMAND_V1 = "command-v1"
 SUPPORTED_KINDS = (INDEXED_GRID_FANOUT_V1, COMMAND_V1)
 COMMAND_EXECUTION_KEYS = {
-    "request_memory", "request_disk", "retries", "max_runtime_minutes",
+    "request_memory", "request_disk", "request_cpus", "request_gpu",
+    "retries", "max_runtime_minutes",
     "use_osg", "use_singularity", "singularity_image",
     "use_simple_osg_requirements", "transfer_files",
     "transfer_output_files", "condor_commands",
@@ -109,13 +111,9 @@ class TerminalStageSpec(object):
             raise ValueError(
                 "terminal stage {!r} execution must be an object".format(
                     self.name))
-        self.execution = dict(execution)
-        if not isinstance(self.execution.get("condor_commands", {}), dict):
-            raise ValueError(
-                "terminal stage {!r} execution condor_commands must be an "
-                "object".format(self.name))
-        self.execution["condor_commands"] = dict(
-            self.execution.get("condor_commands", {}))
+        self.execution = normalize_execution(
+            execution, COMMAND_EXECUTION_KEYS,
+            "terminal stage {!r}".format(self.name))
 
         self.job = None
         self.grid = None
@@ -180,12 +178,6 @@ class TerminalStageSpec(object):
                     "command terminal stage {!r} requires exe".format(self.name))
             self.exe = _resolve_exe(raw["exe"], base_dir)
             self.args, self.args_file = _read_args(raw, base_dir, self.name)
-            unknown_execution = set(self.execution) - COMMAND_EXECUTION_KEYS
-            if unknown_execution:
-                raise ValueError(
-                    "command terminal stage {!r} has unsupported execution "
-                    "settings {}".format(
-                        self.name, sorted(unknown_execution)))
             transfer_files = self.execution.get("transfer_files", [])
             transfer_output_files = self.execution.get(
                 "transfer_output_files", [])

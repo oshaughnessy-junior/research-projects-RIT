@@ -18,6 +18,8 @@ import json
 import os
 import shutil
 
+from .execution_contract import normalize_execution
+
 
 HYPERPIPE_V1 = "hyperpipe-v1"
 INDEXED_GRID_V1 = "indexed-grid-v1"
@@ -28,7 +30,7 @@ MARG_EXECUTION_KEYS = {
     "use_osg", "use_singularity", "singularity_image",
     "use_simple_osg_requirements", "use_cvmfs_frames", "use_oauth_files",
     "frames_dir", "cache_file", "transfer_files", "transfer_output_files",
-    "condor_commands",
+    "request_cpus", "condor_commands",
 }
 
 
@@ -109,12 +111,8 @@ class MargJobSpec(object):
         execution = raw.get("execution") or {}
         if not isinstance(execution, dict):
             raise ValueError("MARG job {!r} execution must be an object".format(self.name))
-        self.execution = dict(execution)
-        unknown_execution = set(self.execution) - MARG_EXECUTION_KEYS
-        if unknown_execution:
-            raise ValueError(
-                "MARG job {!r} has unsupported execution settings {}".format(
-                    self.name, sorted(unknown_execution)))
+        self.execution = normalize_execution(
+            execution, MARG_EXECUTION_KEYS, "MARG job {!r}".format(self.name))
         for key in ("frames_dir", "cache_file"):
             if self.execution.get(key):
                 self.execution[key] = _expand_path(self.execution[key], base_dir)
@@ -131,17 +129,11 @@ class MargJobSpec(object):
             raise ValueError(
                 "MARG job {!r} execution transfer_output_files must be a list"
                 .format(self.name))
-        if not isinstance(self.execution.get("condor_commands", {}), dict):
-            raise ValueError(
-                "MARG job {!r} execution condor_commands must be an object"
-                .format(self.name))
         self.execution["transfer_files"] = [
             _expand_path(item, base_dir)
             for item in transfer_files
         ]
         self.execution["transfer_output_files"] = list(transfer_output_files)
-        self.execution["condor_commands"] = dict(
-            self.execution.get("condor_commands", {}))
 
     @property
     def result_glob(self):

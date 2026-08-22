@@ -60,7 +60,6 @@ def test_marg_contract_rejects_unknown_protocol(hp_modules, tmp_path):
 
 
 @pytest.mark.parametrize("key, value, match", [
-    ("request_memroy", 8192, "unsupported execution settings"),
     ("transfer_files", "cache.dat", "transfer_files must be a list"),
     ("transfer_output_files", "result.dat",
      "transfer_output_files must be a list"),
@@ -79,6 +78,63 @@ def test_marg_contract_rejects_malformed_execution_settings(
     }]))
 
     with pytest.raises(ValueError, match=match):
+        hp_modules.marg_contract.load_marg_job_specs(str(manifest))
+
+
+def test_unknown_scalar_execution_key_is_preserved_as_default_command(
+    hp_modules, tmp_path
+):
+    manifest = tmp_path / "marg_jobs.json"
+    manifest.write_text(json.dumps([{
+        "name": "open",
+        "protocol": "indexed-grid-v1",
+        "exe": "/bin/true",
+        "execution": {"site_policy_knob": "required"},
+    }]))
+
+    with pytest.warns(UserWarning, match="preserving it"):
+        spec = hp_modules.marg_contract.load_marg_job_specs(str(manifest))[0]
+
+    assert spec.execution["schema"] == "rift-execution-v1"
+    assert spec.execution["backend_commands"] == {
+        "default": {"site_policy_knob": "required"}}
+
+
+def test_open_backend_namespace_and_condor_alias_coexist(hp_modules, tmp_path):
+    manifest = tmp_path / "marg_jobs.json"
+    manifest.write_text(json.dumps([{
+        "name": "open",
+        "protocol": "indexed-grid-v1",
+        "exe": "/bin/true",
+        "execution": {
+            "schema": "rift-execution-v1",
+            "condor_commands": {"+PreCmd": "ile_pre.sh"},
+            "backend_commands": {
+                "htcondor": {"requirements": "HAS_SINGULARITY"},
+                "future.batch": {"native_option": 7},
+            },
+        },
+    }]))
+
+    spec = hp_modules.marg_contract.load_marg_job_specs(str(manifest))[0]
+
+    assert spec.execution["condor_commands"]["+PreCmd"] == "ile_pre.sh"
+    assert spec.execution["backend_commands"]["future.batch"] == {
+        "native_option": 7}
+
+
+def test_unknown_structured_execution_key_requires_backend_namespace(
+    hp_modules, tmp_path
+):
+    manifest = tmp_path / "marg_jobs.json"
+    manifest.write_text(json.dumps([{
+        "name": "bad",
+        "protocol": "indexed-grid-v1",
+        "exe": "/bin/true",
+        "execution": {"site_policy": {"mode": "required"}},
+    }]))
+
+    with pytest.raises(ValueError, match="backend_commands"):
         hp_modules.marg_contract.load_marg_job_specs(str(manifest))
 
 

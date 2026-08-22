@@ -508,6 +508,7 @@ class _GenericJob(object):
         self.environment = {}            # explicit env: dict of name -> value
         self.inherit_environment = False # condor's "getenv = True" / slurm's "--export=ALL"
         self.condor_cmds = []            # raw Condor submit-file commands (escape hatch / passthrough)
+        self.backend_cmds = {}           # open backend-name -> native command mapping
         self.resources = {}              # structured: memory, disk, cpus, gpus, runtime_minutes
         # Files
         self.sub_file = None
@@ -598,6 +599,21 @@ class _GenericJob(object):
                 self.resources[mapped] = value
         self.condor_cmds.append((key, value))
 
+    def add_backend_cmd(self, backend, key, value):
+        """Record a native command owned by a named execution backend."""
+        self.backend_cmds.setdefault(str(backend), []).append((key, value))
+
+    def iter_backend_cmds(self, *backends):
+        """Yield default commands followed by commands for named backends."""
+        names = ["default"]
+        for backend in backends:
+            backend = str(backend)
+            if backend not in names:
+                names.append(backend)
+        for name in names:
+            for item in self.backend_cmds.get(name, []):
+                yield item
+
     def _merge_environment_string(self, value):
         """Best-effort parse of a Condor 'environment = ...' string."""
         s = str(value).strip()
@@ -635,6 +651,8 @@ class _GenericJob(object):
             "environment": dict(self.environment),
             "inherit_environment": self.inherit_environment,
             "condor_cmds": list(self.condor_cmds),
+            "backend_cmds": {
+                key: list(value) for key, value in self.backend_cmds.items()},
             "resources": dict(self.resources),
             "sub_file": self.sub_file,
             "log_file": self.log_file,
@@ -1039,6 +1057,8 @@ class HTCondorBackend(WorkflowBackend):
         # condor_cmds includes both well-known and custom commands; pass them all through.
         for key, value in job.condor_cmds:
             sub[key] = "" if value is None else str(value)
+        for key, value in job.iter_backend_cmds(self.name):
+            sub[key] = "" if value is None else str(value)
         return sub
 
     def emit_job(self, job, path):
@@ -1174,7 +1194,12 @@ class GluePipelineBackend(WorkflowBackend):
             gjob.add_var_opt(n)
         for arg in job.arguments:
             gjob.add_arg(arg)
+        submit_commands = {}
         for k, v in job.condor_cmds:
+            submit_commands[k] = v
+        for k, v in job.iter_backend_cmds("htcondor", self.name):
+            submit_commands[k] = v
+        for k, v in submit_commands.items():
             gjob.add_condor_cmd(k, v)
         try:
             # glue.pipeline stores the queue count in this private attribute.
@@ -1304,6 +1329,13 @@ class SlurmBackend(WorkflowBackend):
 
         for d in directives:
             lines.append("#SBATCH {}".format(d))
+
+        for key, value in job.iter_backend_cmds(self.name):
+            key = str(key).lstrip("-").replace("_", "-")
+            if value is None or value == "":
+                lines.append("#SBATCH --{}".format(key))
+            else:
+                lines.append("#SBATCH --{}={}".format(key, value))
 
         # Environment
         if job.inherit_environment:
@@ -2110,7 +2142,7 @@ def write_CIP_single_iteration_subdag(cip_worker_job,it,unique_postfix,subdag_di
 
 
 
-def write_CIP_sub(tag='integrate', exe=None, input_net='all.net',output='output-ILE-samples',universe="vanilla",out_dir=None,log_dir=None, use_eos=False,ncopies=1,arg_str=None,request_memory=8192,request_memory_flex=False, arg_vals=None, no_grid=False,request_disk=False, transfer_files=None,transfer_output_files=None,use_singularity=False,use_osg=False,use_oauth_files=False,use_simple_osg_requirements=False,singularity_image=None,max_runtime_minutes=None,condor_commands=None,**kwargs):
+def write_CIP_sub(tag='integrate', exe=None, input_net='all.net',output='output-ILE-samples',universe="vanilla",out_dir=None,log_dir=None, use_eos=False,ncopies=1,arg_str=None,request_memory=8192,request_memory_flex=False, arg_vals=None, no_grid=False,request_disk=False, transfer_files=None,transfer_output_files=None,use_singularity=False,use_osg=False,use_oauth_files=False,use_simple_osg_requirements=False,singularity_image=None,max_runtime_minutes=None,condor_commands=None,request_cpus=1,**kwargs):
     """
     Write a submit file for launching jobs to marginalize the likelihood over intrinsic parameters.
 
@@ -2269,7 +2301,7 @@ def write_CIP_sub(tag='integrate', exe=None, input_net='all.net',output='output-
     requirements = []
     if use_singularity:
         # Compare to https://github.com/lscsoft/lalsuite/blob/master/lalinference/python/lalinference/lalinference_pipe_utils.py
-        ile_job.add_condor_cmd('request_CPUs', str(1))
+        ile_job.add_condor_cmd('request_CPUs', str(request_cpus))
         ile_job.add_condor_cmd('transfer_executable', 'False')
         if singularity_container_universe:
             # CPU-only CIP: a SINGLE fixed container (the fallback image) -- no
@@ -2462,7 +2494,7 @@ def write_puff_sub(tag='puffball', exe=None, base=None,input_net='output-ILE-sam
     return ile_job, ile_sub_name
 
 
-def write_ILE_sub_simple(tag='integrate', exe=None, log_dir=None, use_eos=False,simple_unique=False,ncopies=1,arg_str=None,request_memory=4096,request_gpu=False,request_cross_platform=False,request_disk=False,arg_vals=None, transfer_files=None,transfer_output_files=None,use_singularity=False,use_osg=False,use_simple_osg_requirements=False,singularity_image=None,use_cvmfs_frames=False,use_oauth_files=False,frames_dir=None,cache_file=None,fragile_hold=False,max_runtime_minutes=None,condor_commands=None,**kwargs):
+def write_ILE_sub_simple(tag='integrate', exe=None, log_dir=None, use_eos=False,simple_unique=False,ncopies=1,arg_str=None,request_memory=4096,request_gpu=False,request_cross_platform=False,request_disk=False,arg_vals=None, transfer_files=None,transfer_output_files=None,use_singularity=False,use_osg=False,use_simple_osg_requirements=False,singularity_image=None,use_cvmfs_frames=False,use_oauth_files=False,frames_dir=None,cache_file=None,fragile_hold=False,max_runtime_minutes=None,condor_commands=None,request_cpus=1,**kwargs):
     """
     Write a submit file for launching jobs to marginalize the likelihood over intrinsic parameters.
 
@@ -2693,7 +2725,7 @@ echo Starting ...
         ile_job.add_condor_cmd('request_disk', str(request_disk)) 
     nGPUs =0
     requirements = []
-    ile_gpu_cpus = 1   # CPUs to drive the ILE GPU job(s); >1 for multi-GPU fan-out
+    ile_gpu_cpus = request_cpus  # CPUs to drive ILE; fan-out may override
     if request_gpu:
         nGPUs=1
         if request_cross_platform:
@@ -2710,9 +2742,9 @@ echo Starting ...
             if req_g != 1:
                 nGPUs = req_g
                 ile_gpu_cpus = req_c
-                if not use_singularity:
-                    ile_job.add_condor_cmd('request_CPUs', str(req_c))
         ile_job.add_condor_cmd('request_GPUs', str(nGPUs))
+    if not use_singularity and ile_gpu_cpus != 1:
+        ile_job.add_condor_cmd('request_CPUs', str(ile_gpu_cpus))
 # Claim we don't need to make this request anymore to avoid out-of-memory errors. Also, no longer in 'requirements'
 #        requirements.append("CUDAGlobalMemoryMb >= 2048")
     if use_singularity:
@@ -2824,6 +2856,9 @@ echo Starting ...
             transfer_files += ['../local.cache']
         else:            
           transfer_files += ["../ile_pre.sh"]  # assuming default working directory setup
+          has_pre_cmd = any(
+              str(key).lower() in ("+precmd", "precmd")
+              for key in (condor_commands or {}))
           with open(cmdname,'w') as f:
             f.write("#! /bin/bash -xe \n")
             f.write( "ls "+frames_local+" | {lalapps_path2cache} 1> local.cache \n".format(lalapps_path2cache=lalapps_path2cache))  # Danger: need user to correctly specify local.cache directory
@@ -2834,10 +2869,18 @@ echo Starting ...
             f.write("cp local_relative.cache local.cache \n")
             # Only GPU ILE jobs fan out; a CPU-only ILE job bakes '1' so the default
             # 'all' policy never makes a non-GPU job grab the node's GPUs.
-            f.write(ile_invocation_shell(exe, fanout=(ile_gpu_fanout_value() if request_gpu else '1')))
+            if not has_pre_cmd:
+                f.write(ile_invocation_shell(
+                    exe, fanout=(ile_gpu_fanout_value()
+                                 if request_gpu else '1')))
             os.system("chmod a+x ile_pre.sh")
-            ile_job.set_executable("ile_pre.sh")  # transferred, used as executable
-            singularity_inner_exe = "./ile_pre.sh"
+            # Production sites may prefer a scheduler-native PreCmd so the
+            # science executable remains visible in the submit description.
+            # Preserve the historical wrapper-as-executable behavior unless
+            # the caller explicitly supplied that backend command.
+            if not has_pre_cmd:
+                ile_job.set_executable("ile_pre.sh")
+                singularity_inner_exe = "./ile_pre.sh"
 #          ile_job.add_condor_cmd('+PreCmd', '"ile_pre.sh"')
 
 

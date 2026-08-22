@@ -202,6 +202,8 @@ class GenericJobApiTests(unittest.TestCase):
         job.add_condor_cmd("request_disk", "1024M")
         job.add_condor_cmd("getenv", "True")
         job.add_condor_cmd("MY.CustomThing", '"hello"')
+        job.add_backend_cmd("default", "site_policy", "required")
+        job.add_backend_cmd("slurm", "constraint", "x86_64")
         job._CondorJob__queue = 5
 
         d = job.to_dict()
@@ -221,6 +223,10 @@ class GenericJobApiTests(unittest.TestCase):
         self.assertTrue(d["inherit_environment"])
         # Custom (unknown) condor_cmd preserved verbatim
         self.assertIn(("MY.CustomThing", '"hello"'), d["condor_cmds"])
+        self.assertEqual(d["backend_cmds"]["default"],
+                         [("site_policy", "required")])
+        self.assertEqual(d["backend_cmds"]["slurm"],
+                         [("constraint", "x86_64")])
 
     def test_legacy_private_attributes(self):
         """Code that does ``job._CondorJob__arguments.remove(...)`` must work."""
@@ -316,6 +322,9 @@ class HTCondorBackendTests(unittest.TestCase):
             job.add_arg("hello")
             job.add_var_opt("event")
             job.add_condor_cmd("request_memory", "2048M")
+            job.add_backend_cmd("default", "+Campaign", '"GWTC5"')
+            job.add_backend_cmd("htcondor", "+PreCmd", '"ile_pre.sh"')
+            job.add_backend_cmd("slurm", "constraint", "not-for-condor")
             job._CondorJob__queue = 3
             job.write_sub_file()
 
@@ -327,6 +336,9 @@ class HTCondorBackendTests(unittest.TestCase):
             self.assertIn("--event=$(macroevent)", text)
             self.assertIn("hello", text)
             self.assertIn("request_memory = 2048M", text)
+            self.assertIn('+Campaign = "GWTC5"', text)
+            self.assertIn('+PreCmd = "ile_pre.sh"', text)
+            self.assertNotIn("not-for-condor", text)
             self.assertIn("queue 3", text)
 
     def test_emit_dag_writes_dagman_file(self):
@@ -412,6 +424,9 @@ class SlurmBackendTests(unittest.TestCase):
             job.add_condor_cmd("getenv", "True")
             job.add_condor_cmd("accounting_group", "ligo.test")
             job.add_condor_cmd("+SlurmPartition", '"compute"')
+            job.add_backend_cmd("default", "exclusive", None)
+            job.add_backend_cmd("slurm", "constraint", "x86_64")
+            job.add_backend_cmd("htcondor", "+PreCmd", '"ile_pre.sh"')
             job._CondorJob__queue = 4
             job.write_sub_file()
             with open(os.path.join(td, "j.sbatch")) as _fh:
@@ -426,6 +441,9 @@ class SlurmBackendTests(unittest.TestCase):
             self.assertIn("#SBATCH --error=/tmp/j.err", text)
             self.assertIn("#SBATCH --account=ligo.test", text)
             self.assertIn("#SBATCH --partition=compute", text)
+            self.assertIn("#SBATCH --exclusive", text)
+            self.assertIn("#SBATCH --constraint=x86_64", text)
+            self.assertNotIn("ile_pre.sh", text)
             self.assertIn("#SBATCH --export=ALL", text)
             self.assertIn("exec /bin/echo hello", text)
             # Original Condor commands should be preserved as comments.

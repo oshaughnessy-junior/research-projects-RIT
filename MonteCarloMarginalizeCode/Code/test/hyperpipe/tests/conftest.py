@@ -84,6 +84,8 @@ def hp_modules(rift_py: Path):
     config = importlib.import_module("RIFT.hyperpipe.config")
     marg_list = importlib.import_module("RIFT.hyperpipe.marg_list")
     marg_contract = importlib.import_module("RIFT.hyperpipe.marg_contract")
+    execution_contract = importlib.import_module(
+        "RIFT.hyperpipe.execution_contract")
     cip_pipeline = importlib.import_module("RIFT.misc.cip_pipeline")
     dag_utils_generic = importlib.import_module("RIFT.misc.dag_utils_generic")
     drivers_base = importlib.import_module("RIFT.hyperpipe.drivers.base")
@@ -92,6 +94,7 @@ def hp_modules(rift_py: Path):
         config=config,
         marg_list=marg_list,
         marg_contract=marg_contract,
+        execution_contract=execution_contract,
         cip_pipeline=cip_pipeline,
         dag_utils_generic=dag_utils_generic,
         drivers_base=drivers_base,
