@@ -663,9 +663,9 @@ with open("con_prod.sh",'w') as f:
 
 con_prod_job, con_prod_job_name = dag_utils.write_convert_sub(exe=opts.working_directory+"/con_prod.sh",tag='CON_PROD',log_dir=None,arg_str='',file_input="$(macroiteration)  ", out_dir=opts.working_directory,universe=local_worker_universe,no_grid=no_worker_grid)
 con_prod_job.add_condor_cmd("initialdir",opts.working_directory)
-con_prod_job.set_log_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/con_prod-$(macroevent)-$(process).log")
-con_prod_job.set_stdout_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/con_prod-$(macroevent)-$(process).out")
-con_prod_job.set_stderr_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/con_prod-$(macroevent)-$(process).err")
+con_prod_job.set_log_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/con_prod-$(process).log")
+con_prod_job.set_stdout_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/con_prod-$(process).out")
+con_prod_job.set_stderr_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/con_prod-$(process).err")
 con_prod_job.add_condor_cmd('request_disk',opts.general_request_disk)
 if opts.use_full_submit_paths:
     fname = opts.working_directory+"/"+con_prod_job.get_sub_file()
@@ -1025,9 +1025,9 @@ _join_post_output_path = opts.working_directory + (
     else "/grid-$(macroiterationnext).dat")
 join_post_job, join_post_job_name = dag_utils.write_convert_sub(exe=opts.working_directory+"/join_post.sh",tag='JOIN_POST',log_dir=None,arg_str='',file_input=opts.working_directory+"/iteration_$(macroiteration)_post/    "+_join_post_output_path, out_dir=opts.working_directory,universe=local_worker_universe,no_grid=no_worker_grid)
 join_post_job.add_condor_cmd("initialdir",opts.working_directory)
-join_post_job.set_log_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/unify-$(macroevent).log")
-join_post_job.set_stdout_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/unify-$(macroevent).out")
-join_post_job.set_stderr_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/unify-$(macroevent).err")
+join_post_job.set_log_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/unify.log")
+join_post_job.set_stdout_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/unify.out")
+join_post_job.set_stderr_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/unify.err")
 join_post_job.add_condor_cmd('request_disk',opts.general_request_disk)
 if opts.use_full_submit_paths:
     fname = opts.working_directory+"/"+join_post_job.get_sub_file()

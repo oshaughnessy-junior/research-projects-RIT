@@ -46,6 +46,32 @@ DAG_PATH = os.path.normpath(os.path.join(
 # real package is not importable.
 # ---------------------------------------------------------------------------
 
+def _strip_comments(script):
+    """Drop comment lines that are not sbatch directives.
+
+    The Slurm backend deliberately preserves the original HTCondor submit
+    commands as comments, and those contain ``$(macro...)`` text.  Auditing
+    them would report every preserved comment as a defect.
+    """
+    kept = []
+    for line in script.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#") and not stripped.startswith("#SBATCH"):
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
+def _has_classad(text, name, value):
+    """True if *text* declares custom ClassAd *name* under either spelling.
+
+    ``+Name = v`` (submit-file syntax) and ``MY.Name = v`` (the modern
+    equivalent the htcondor python bindings emit) are the same thing.
+    """
+    return ("+{} = {}".format(name, value) in text
+            or "MY.{} = {}".format(name, value) in text)
+
+
 def _install_htcondor_stub():
     """Provide a tiny `htcondor` shim if the real package isn't available."""
     try:
@@ -336,8 +362,14 @@ class HTCondorBackendTests(unittest.TestCase):
             self.assertIn("--event=$(macroevent)", text)
             self.assertIn("hello", text)
             self.assertIn("request_memory = 2048M", text)
-            self.assertIn('+Campaign = "GWTC5"', text)
-            self.assertIn('+PreCmd = "ile_pre.sh"', text)
+            # HTCondor accepts a custom ClassAd as either `+Name` or `MY.Name`,
+            # and the real python bindings normalize the former to the latter.
+            # This suite runs against a *stub* htcondor whenever the real
+            # package is absent (which is the case in CI), so asserting one
+            # spelling passes in CI and fails on every host that actually has
+            # HTCondor installed.  Accept either.
+            self.assertTrue(_has_classad(text, "Campaign", '"GWTC5"'), text)
+            self.assertTrue(_has_classad(text, "PreCmd", '"ile_pre.sh"'), text)
             self.assertNotIn("not-for-condor", text)
             self.assertIn("queue 3", text)
 
@@ -451,9 +483,117 @@ class SlurmBackendTests(unittest.TestCase):
             self.assertIn("#SBATCH --constraint=x86_64", text)
             self.assertNotIn("ile_pre.sh", text)
             self.assertIn("#SBATCH --export=ALL", text)
-            self.assertIn("exec /bin/echo hello", text)
+            # Each argv element is a separate double-quoted bash word: the
+            # shell must not glob or word-split what HTCondor would have
+            # passed to exec() verbatim.
+            self.assertIn('exec "/bin/echo" "hello"', text)
             # Original Condor commands should be preserved as comments.
             self.assertIn("# Original HTCondor submit-file commands", text)
+
+    # ------------------------------------------------------------------
+    # Per-node parameterization
+    # ------------------------------------------------------------------
+    # These are round-trip tests on purpose.  Asserting that a particular
+    # string appears in the sbatch script cannot catch the failure mode that
+    # matters here: a reference the script makes and the driver never
+    # satisfies.  Bash expands an unset variable to the empty string, so such
+    # a job runs to a zero exit status with an argument silently missing.
+
+    @staticmethod
+    def _shell_references(text):
+        """Every ``${NAME}`` / ``$NAME`` the script depends on."""
+        refs = set(re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-[^}]*)?\}", text))
+        refs |= set(re.findall(r"\$([A-Za-z_][A-Za-z0-9_]*)", text))
+        return refs
+
+    #: Supplied by Slurm itself, never by the workflow.
+    SLURM_BUILTINS = {
+        "SLURM_JOB_ID", "SLURM_ARRAY_TASK_ID", "SLURM_ARRAY_JOB_ID",
+        "SLURM_PROCID", "SLURM_NTASKS", "SLURM_SUBMIT_DIR", "HOME", "USER",
+        "PATH", "TMPDIR",
+    }
+
+    def _build_parameterized_workflow(self, td):
+        """A job whose per-node parameters appear in every field that matters.
+
+        This mirrors what RIFT's own writers do: macros are baked into option
+        values, log paths and the working directory, *not* only into the
+        var-opt list.
+        """
+        job = self.m.CondorDAGJob(universe="vanilla", executable="/bin/echo")
+        job.set_sub_file(os.path.join(td, "marg.sbatch"))
+        job.set_stdout_file(os.path.join(
+            td, "iteration_$(macroiteration)_marg/logs",
+            "marg-$(macroevent)-$(cluster)-$(process).out"))
+        job.set_stderr_file(os.path.join(
+            td, "iteration_$(macroiteration)_marg/logs",
+            "marg-$(macroevent)-$(cluster)-$(process).err"))
+        job.add_opt("sim-grid", os.path.join(td, "grid-$(macroiteration).dat"))
+        job.add_opt("output-file", "MARG-$(macroevent)-$(cluster)-$(process).dat")
+        job.add_var_opt("event")
+        job.add_condor_cmd("initialdir", os.path.join(
+            td, "iteration_$(macroiteration)_marg/event_$(macroid)"))
+        job.add_condor_cmd("getenv", "True")
+        job.write_sub_file()
+
+        node = self.m.CondorDAGNode(job)
+        for key, value in (("macroiteration", 0), ("macroevent", 3),
+                           ("macroid", 0), ("macrongroup", 3)):
+            node.add_macro(key, value)
+        dag = self.m.CondorDAG()
+        dag.add_node(node)
+        dag.set_dag_file(os.path.join(td, "wf.dag"))
+        dag.write_concrete_dag()
+        with open(os.path.join(td, "marg.sbatch")) as _fh:
+            script = _fh.read()
+        with open(os.path.join(td, "wf_dag.sh")) as _fh:
+            driver = _fh.read()
+        return script, driver
+
+    def test_sbatch_leaves_no_unrendered_condor_macro(self):
+        with tempfile.TemporaryDirectory() as td:
+            script, _ = self._build_parameterized_workflow(td)
+        leftovers = sorted(set(re.findall(r"\$\((macro[A-Za-z0-9_]*|cluster|process)\)",
+                                          _strip_comments(script))))
+        self.assertEqual(leftovers, [], (
+            "HTCondor macro syntax survived into an sbatch script; under bash "
+            "$(...) is command substitution, not a variable reference: "
+            "{}".format(leftovers)))
+
+    def test_every_sbatch_reference_is_supplied(self):
+        with tempfile.TemporaryDirectory() as td:
+            script, driver = self._build_parameterized_workflow(td)
+        exported = set(re.findall(r"(SLURM_VAR_[A-Za-z0-9_]+)=", driver))
+        self.assertTrue(exported, "driver exported no per-node variables")
+        referenced = self._shell_references(_strip_comments(script))
+        unsatisfied = sorted(
+            name for name in referenced
+            if name.startswith("SLURM_VAR_") and name not in exported)
+        self.assertEqual(unsatisfied, [], (
+            "sbatch script reads variables the driver never exports; bash "
+            "expands these to the empty string rather than failing: "
+            "{}\nexported: {}".format(unsatisfied, sorted(exported))))
+        stray = sorted(
+            name for name in referenced
+            if not name.startswith("SLURM_VAR_")
+            and name not in self.SLURM_BUILTINS)
+        self.assertEqual(stray, [], "unexpected shell references: {}".format(stray))
+
+    def test_job_enters_its_initialdir(self):
+        """HTCondor's initialdir is the job's cwd; Slurm has no equivalent.
+
+        RIFT puts per-iteration outputs under it, so a script that does not cd
+        writes them where the next stage will not look -- and still exits 0.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            script, _ = self._build_parameterized_workflow(td)
+        body = _strip_comments(script)
+        self.assertRegex(body, r"(?m)^cd \S*iteration_.*_marg/event_",
+                         "sbatch script never enters its initialdir")
+        self.assertRegex(body, r"(?m)^mkdir -p \S*iteration_",
+                         "sbatch script does not create its initialdir")
+        # The cd must precede the payload, or it does nothing useful.
+        self.assertLess(body.index("\ncd "), body.index("\nexec "))
 
     def test_emit_dag_writes_shell_driver(self):
         with tempfile.TemporaryDirectory() as td:
