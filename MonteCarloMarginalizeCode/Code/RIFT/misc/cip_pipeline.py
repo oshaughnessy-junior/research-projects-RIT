@@ -16,6 +16,53 @@ import numpy as np
 POSTERIOR_UNIQUE_FLAG = "--posterior-unique-draw"
 
 
+def worker_partition(n_points, group_size, clamp_last=False):
+    """Split *n_points* indices into worker batches of at most *group_size*.
+
+    Returns a list of ``(start, count)`` pairs.  Three places in RIFT decide
+    how many workers an iteration gets and which slice each one takes, and
+    they must agree: the ILE fan-out and the terminal extrinsic fan-out in
+    ``create_event_parameter_pipeline_BasicIteration``, and the Hyperpipe
+    terminal fan-out assembled in ``util_RIFT_pseudo_pipe.py``.
+
+    The historical ILE form was ``int(n/g)`` guarded by ``if indx_max*n < g:
+    indx_max += 1``.  That guard fires only when ``n < g`` (where ``int(n/g)``
+    is 0), which is the one case it does rescue.  For ``n > g`` with a
+    remainder, ``indx_max >= 1`` and ``indx_max*n >= n >= g``, so the guard
+    never fires and the request silently allocated too FEW workers, leaving the
+    tail of the requested points unevaluated -- with no error and no log line.
+    A production configuration was therefore affected only if its
+    points-per-iteration exceeded its jobs-per-worker AND did not divide by it.
+
+    ``clamp_last`` controls the tail:
+
+    * ``False`` (the ILE fan-out): every batch is a full ``group_size``, so the
+      last one can ask for indices past the end.  ILE tolerates that -- it
+      stops at the end of the grid -- and the uniform ``macrongroup`` is what
+      the historical DAG emitted.  Kept as-is deliberately: changing it would
+      change the shape of every production DAG.
+    * ``True`` (the extrinsic fan-outs): the last batch is truncated so the
+      total is exactly ``n_points``.  Here the count IS the deliverable --
+      it is how many posterior samples the run produces -- so over-requesting
+      is not free.
+    """
+    n_points = int(n_points)
+    group_size = int(group_size)
+    if group_size <= 0:
+        raise ValueError("group_size must be positive, got {}".format(group_size))
+    if n_points <= 0:
+        return []
+    n_workers = -(-n_points // group_size)   # ceil, without float rounding
+    batches = []
+    for index in range(n_workers):
+        start = index * group_size
+        count = group_size
+        if clamp_last:
+            count = min(group_size, n_points - start)
+        batches.append((start, count))
+    return batches
+
+
 def expand_argument_schedule(lines, n_iterations, allow_special=False,
                              include_prefix=False):
     """Expand a grouped CIP/posterior argument schedule by iteration.

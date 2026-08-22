@@ -748,3 +748,47 @@ def legacy_column_indices(use_eccentricity=False, use_meanPerAno=False,
     out["lnL"] = idx
     out["sigma_lnL"] = idx + 1
     return out
+
+
+def rewrite_cache_for_worker_transfer(cache_path, frames_dir, backup_path=None):
+    """Rewrite a LIGO cache so its paths are the ones a worker will see.
+
+    With ``--use-osg-file-transfer --internal-truncate-files-for-osg-file-transfer``
+    the frames are shipped into the job sandbox, so the cache must name them by
+    the relative path they land at, not by their submit-host path.
+
+    This replaces four ``os.system`` calls, one of which was
+    ``cat local.cache > awk '{print $1,$2,$3,$4}' > local_stripped.cache``.
+    That redirects ``cat`` into a file literally named ``awk``, passes the awk
+    program to ``cat`` as a nonexistent filename, and leaves EVERY column in
+    ``local_stripped.cache`` -- so the pasted result had the original path
+    still in it.  A second call emitted ``frames_local/frames_dir/<name>.gwf``,
+    doubling the prefix.  Neither failed loudly: ``os.system`` discards the
+    exit status, and the malformed cache only surfaces later, on a worker.
+
+    Returns the list of cache lines written.
+    """
+    cache_path = str(cache_path)
+    if backup_path:
+        shutil.copyfile(cache_path, str(backup_path))
+    frames = sorted(
+        os.path.join(str(frames_dir), name)
+        for name in os.listdir(str(frames_dir))
+        if name.endswith(".gwf"))
+    with open(cache_path) as stream:
+        entries = [line.split() for line in stream if line.strip()]
+    if len(entries) != len(frames):
+        raise ValueError(
+            "cache has {} entries but {} contains {} .gwf files; refusing to "
+            "pair them positionally".format(
+                len(entries), frames_dir, len(frames)))
+    lines = []
+    for fields, frame in zip(entries, frames):
+        if len(fields) < 4:
+            raise ValueError(
+                "malformed cache line (expected >=4 columns): {}".format(
+                    " ".join(fields)))
+        lines.append(" ".join(list(fields[:4]) + [frame]))
+    with open(cache_path, "w") as stream:
+        stream.write("\n".join(lines) + ("\n" if lines else ""))
+    return lines

@@ -27,6 +27,7 @@ import lalsimulation as lalsim
 import RIFT.lalsimutils as lalsimutils
 from RIFT.misc import hyperpipeline_io
 from RIFT.misc import dag_utils_generic
+from RIFT.misc import cip_pipeline
 import configparser as ConfigParser
 
 if ( 'RIFT_LOWLATENCY'  in os.environ):
@@ -2421,12 +2422,8 @@ if opts.use_osg_file_transfer and opts.use_online_psd_file:
 
 # Make copy of local.cache for use in file transfer
 if opts.use_osg_file_transfer and opts.internal_truncate_files_for_osg_file_transfer and os.path.exists('local.cache'):
-    shutil.copyfile('local.cache', 'local_orig.cache')
-    # Move contents of ile_pre.sh here
-    os.system("awk '{print $1, $2, $3, $4}' local.cache > local_stripped.cache")
-    os.system('for i in frames_dir/*.gwf; do echo ${i}; done > base_paths.dat')
-    os.system("paste local_stripped.cache base_paths.dat > local_relative.cache ")
-    os.system("cp local_relative.cache local.cache")
+    hyperpipeline_io.rewrite_cache_for_worker_transfer(
+        'local.cache', 'frames_dir', backup_path='local_orig.cache')
 
 if not(ile_condor_commands is None):
     # create file
@@ -2674,14 +2671,13 @@ if opts.pipeline_builder == "Hyperpipe":
         terminal_worker_spec["execution"]["copies"] = 1
         terminal_worker_spec["execution"]["request_memory"] = int(ile_mem) * 2
         n_extrinsic_points = int(opts.n_output_samples_last)
-        n_extrinsic_jobs = max(
-            1, (n_extrinsic_points + int(n_jobs_per_worker) - 1) //
-            int(n_jobs_per_worker))
-        extrinsic_group_sizes = [
-            min(int(n_jobs_per_worker),
-                max(1, n_extrinsic_points - start))
-            for start in range(
-                0, max(1, n_extrinsic_points), int(n_jobs_per_worker))]
+        # Same partition BasicIteration uses for its extrinsic fan-out; see
+        # RIFT.misc.cip_pipeline.worker_partition for why this must not be
+        # re-derived per builder.
+        extrinsic_batches = cip_pipeline.worker_partition(
+            n_extrinsic_points, int(n_jobs_per_worker), clamp_last=True)
+        n_extrinsic_jobs = max(1, len(extrinsic_batches))
+        extrinsic_group_sizes = [count for _start, count in extrinsic_batches]
         terminal_command_common = {
             "initial_dir": os.getcwd(),
             "log_dir": terminal_extrinsic_dir + "/logs",

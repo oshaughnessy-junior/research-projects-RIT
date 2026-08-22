@@ -71,6 +71,7 @@ import json
 from RIFT.misc.dag_utils_generic import pipeline
 
 import RIFT.misc.dag_utils_generic as dag_utils
+from RIFT.misc import cip_pipeline
 from RIFT.misc.dag_utils_generic import mkdir
 from RIFT.misc.dag_utils_generic import which
 
@@ -1872,7 +1873,7 @@ for it in np.arange(it_start,opts.n_iterations):
     n_jobs_this_time = opts.n_samples_per_job
     if it ==it_start:
         n_jobs_this_time = n_initial
-    indx_max = int(np.ceil((1.0*n_jobs_this_time)/n_group_here))
+    indx_max = len(cip_pipeline.worker_partition(n_jobs_this_time, n_group_here))
     if not(it==it_start and opts.first_iteration_jumpstart):   # if on first iteration ,don't do this for jumpstart
         if opts.ile_group_subdag:
             # Write the subdag
@@ -2365,8 +2366,9 @@ if opts.last_iteration_extrinsic:
     # Need to perform number of events CONSISTENT WITH TARGET SAMPLE SIZE
     #    - *not* always same as number of ILE events being analyzed
     #    - *assumes* grid files have sufficiently large numbers of samples to allow this! (as in many other cases)
-    n_jobs_extrinsic = int(np.ceil(
-        opts.last_iteration_extrinsic_nsamples/(1.0*n_group)))
+    extrinsic_batches = cip_pipeline.worker_partition(
+        opts.last_iteration_extrinsic_nsamples, n_group, clamp_last=True)
+    n_jobs_extrinsic = len(extrinsic_batches)
 
     if opts.last_iteration_extrinsic_time_resampling:
         convert_node = pipeline.CondorDAGNode(batchConvertExtr_job)
@@ -2375,9 +2377,7 @@ if opts.last_iteration_extrinsic:
 
 
     for event in np.arange(n_jobs_extrinsic):
-        start_event = int(event*n_group)
-        n_group_here = min(
-            n_group, opts.last_iteration_extrinsic_nsamples - start_event)
+        start_event, n_group_here = extrinsic_batches[int(event)]
         # Add task per ILE operation
         ile_node = pipeline.CondorDAGNode(ileExtr_job)
 #        ile_node.set_priority(JOB_PRIORITIES["ILE"])
