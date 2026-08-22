@@ -188,6 +188,78 @@ def _assert_shared_semantics(basic: Path, hyper: Path):
     assert "extrinsic_posterior_samples_orig .dat" not in basic_rotation
 
 
+def _dag_executables(rundir: Path, dag_name: str):
+    """Executables reachable from the workflow, via each JOB's submit file."""
+    dag = rundir / dag_name
+    assert dag.is_file(), "no DAG at {}".format(dag)
+    jobs, _ = _dag_jobs_and_edges(dag)
+    executables = set()
+    for submit_name in set(jobs.values()):
+        submit = rundir / submit_name
+        if not submit.is_file():
+            continue
+        for line in submit.read_text().splitlines():
+            if line.lower().startswith("executable") and "=" in line:
+                executables.add(Path(line.split("=", 1)[1].strip()).name)
+    return executables
+
+
+LEDGER_PATH = HERE.parent / "terminal_parity_ledger.json"
+
+
+def _assert_terminal_parity(basic: Path, hyper: Path):
+    """Every executable one builder runs and the other does not must be declared.
+
+    This is the drift guard.  Hyperpipe reconstructs the post-final-iteration
+    pipeline -- extrinsic fan-out, calibration reweighting, distance products,
+    archival pages -- from its own manifest, in code that lives in
+    util_RIFT_pseudo_pipe.py rather than in the builder BasicIteration uses.
+    Two implementations of one policy drift, and the dangerous direction is
+    silent: someone adds a terminal stage to BasicIteration, Hyperpipe simply
+    does not emit it, and a Hyperpipe run quietly produces less than it claims.
+
+    A fixed allowlist of "executables both must have" cannot catch that -- the
+    allowlist does not grow when the pipeline does.  So instead we compare the
+    two builders' actual executable sets and require every DIFFERENCE to carry
+    a written reason in terminal_parity_ledger.json.  Adding a stage to either
+    builder then forces an explicit decision: port it, or record why not.
+    """
+    # Executables of jobs the DAG actually RUNS, not every .sub written.
+    # Both builders emit submit templates they may never instantiate; counting
+    # those would fill the ledger with stages nobody executes and hide the
+    # real ones.
+    basic_exes = _dag_executables(
+        basic, "marginalize_intrinsic_parameters_BasicIterationWorkflow.dag")
+    hyper_exes = _dag_executables(hyper, "marginalize_hyperparameters.dag")
+    ledger = json.loads(LEDGER_PATH.read_text())
+
+    if os.environ.get("RIFT_PARITY_LEDGER_DUMP"):
+        Path(os.environ["RIFT_PARITY_LEDGER_DUMP"]).write_text(json.dumps({
+            "only_basic": sorted(basic_exes - hyper_exes),
+            "only_hyper": sorted(hyper_exes - basic_exes),
+            "shared": sorted(basic_exes & hyper_exes),
+        }, indent=2))
+
+    problems = []
+    for key, observed, owner, other in (
+            ("only_basic", basic_exes - hyper_exes, "BasicIteration", "Hyperpipe"),
+            ("only_hyper", hyper_exes - basic_exes, "Hyperpipe", "BasicIteration")):
+        declared = ledger.get(key, {})
+        for name in sorted(observed):
+            if name not in declared:
+                problems.append(
+                    "{} runs {!r} and {} does not, and the parity ledger does "
+                    "not say why. Either emit it from {} too, or add an entry "
+                    "to {} recording the decision.".format(
+                        owner, name, other, other, LEDGER_PATH.name))
+        for name in sorted(set(declared) - observed):
+            problems.append(
+                "parity ledger declares {!r} as {}-only, but this build does "
+                "not show that. A stale ledger entry hides the next real "
+                "divergence; remove it.".format(name, owner))
+    assert not problems, "terminal parity drift:\n  " + "\n  ".join(problems)
+
+
 def _dag_jobs_and_edges(path: Path):
     jobs = {}
     edges = set()
@@ -453,6 +525,7 @@ def main(argv=None):
             run_label="hyperpipe-z-convergence", z_convergence=True)
         _assert_default_basic_unchanged(basic, default)
         _assert_shared_semantics(basic, hyper)
+        _assert_terminal_parity(basic, hyper)
         _assert_basic_reweighting_chain(basic)
         _assert_hyperpipe_terminal_chain(hyper)
         _assert_automatic_bilby_chain(hyper_auto)

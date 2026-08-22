@@ -24,10 +24,10 @@ BIN = CODE / "bin"
 PSEUDO_PIPE = BIN / "util_RIFT_pseudo_pipe.py"
 
 
-def _environment(run_base: Path):
+def _environment(run_base: Path, backend: str = "htcondor"):
     env = os.environ.copy()
     env.pop("RIFT_HYPERPIPELINE_FORMAT", None)
-    env["RIFT_DAG_BACKEND"] = "htcondor"
+    env["RIFT_DAG_BACKEND"] = backend
     env["RIFT_ROOT"] = str(RIFT_ROOT)
     env["PYTHONPATH"] = os.pathsep.join(
         [str(CODE), env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
@@ -52,7 +52,7 @@ def _write_zero_spin_grid(path: Path):
         str(path), hyperpipeline_io.DEFAULT_BASE_COLUMNS, rows)
 
 
-def _build(run_base: Path, osg_contract=False):
+def _build(run_base: Path, osg_contract=False, backend: str = "htcondor"):
     seed = run_base / "zero-spin-grid.dat"
     cache = run_base / "empty.cache"
     rundir = run_base / "run"
@@ -84,7 +84,7 @@ def _build(run_base: Path, osg_contract=False):
         "--manual-extra-test-args=--always-succeed",
         "--skip-reproducibility",
     ]
-    env = _environment(run_base)
+    env = _environment(run_base, backend=backend)
     if osg_contract:
         command.extend([
             "--use-osg",
@@ -200,6 +200,34 @@ def _execute_without_condor(rundir: Path, env):
     return logs, completed
 
 
+def _execute_via_local_backend(rundir: Path, env):
+    """Run the workflow through the registered `local` backend.
+
+    This lane deliberately does NOT parse the workflow: it runs the driver the
+    backend emitted, exactly as a user on a laptop or a login node would.  The
+    HTCondor lane below does the parsing, because there the submit files are
+    the artefact under test.  Between them the two lanes cover both "the
+    submit description is right" and "the emitted scripts actually run".
+    """
+    driver = rundir / "marginalize_hyperparameters_local.sh"
+    if not driver.is_file():
+        raise RuntimeError(
+            "local backend emitted no driver at {}".format(driver))
+    result = subprocess.run(
+        ["bash", str(driver)], cwd=str(rundir), env=env, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=1800)
+    transcript = rundir / "local-driver.log"
+    transcript.write_text(result.stdout)
+    if result.returncode:
+        tail = "\n".join(result.stdout.splitlines()[-60:])
+        raise RuntimeError(
+            "local backend driver failed ({}):\n{}".format(
+                result.returncode, tail))
+    completed = set(re.findall(r"^\[local\] running (\S+) ", result.stdout,
+                               re.M))
+    return transcript, completed
+
+
 def _assert_outputs(rundir: Path, logs: Path, completed):
     marg_files = sorted((rundir / "iteration_0_marg" / "event_0").glob(
         "MARG*.dat"))
@@ -242,8 +270,16 @@ def _assert_outputs(rundir: Path, logs: Path, completed):
     # independent L=1 prior integral, modulo the two Monte Carlo estimates.
     assert abs(normalized_evidence[4]) < max(
         0.1, 5.0 * normalized_evidence[5])
+    if logs.is_dir():
+        sources = sorted(logs.glob("*.log"))
+    else:
+        # The local lane redirects each job's stdout/stderr to the paths the
+        # submit description names, so the driver transcript alone is not
+        # enough -- collect the per-job streams too.
+        sources = [logs] + sorted(rundir.glob("iteration_*/logs/*.out")) \
+                         + sorted(rundir.glob("iteration_*/*/logs/*.out"))
     combined_logs = "\n".join(
-        path.read_text(errors="replace") for path in logs.glob("*.log"))
+        path.read_text(errors="replace") for path in sources if path.is_file())
     assert "Data-free zero likelihood output:" in combined_logs
     assert "Reading channel" not in combined_logs
     assert len(completed) >= 8
@@ -254,6 +290,11 @@ def main(argv=None):
     parser.add_argument(
         "--keep-output", action="store_true",
         help="Keep the generated pipeline, local execution logs, and outputs")
+    parser.add_argument(
+        "--backend", default="htcondor", choices=["htcondor", "local"],
+        help=("htcondor: build submit files and drive them with this gate's "
+              "own executor. local: build and run through the registered "
+              "no-scheduler backend, i.e. what a user would actually do."))
     parser.add_argument(
         "--osg-build-contract-only", action="store_true",
         help="Build and inspect the OSG data-free transfer contract without running jobs")
@@ -268,17 +309,22 @@ def main(argv=None):
             prefix="rift-constant-likelihood-gate-")
         run_base = Path(temporary.name)
     try:
-        env = _environment(run_base)
-        rundir = _build(run_base, osg_contract=args.osg_build_contract_only)
+        env = _environment(run_base, backend=args.backend)
+        rundir = _build(run_base, osg_contract=args.osg_build_contract_only,
+                        backend=args.backend)
         if args.osg_build_contract_only:
             _assert_osg_data_free_contract(rundir)
             print("constant-likelihood OSG build contract gate: PASS")
             if args.keep_output:
                 print("outputs retained at {}".format(run_base))
             return 0
-        logs, completed = _execute_without_condor(rundir, env)
+        if args.backend == "local":
+            logs, completed = _execute_via_local_backend(rundir, env)
+        else:
+            logs, completed = _execute_without_condor(rundir, env)
         _assert_outputs(rundir, logs, completed)
-        print("constant-likelihood local pipeline gate: PASS")
+        print("constant-likelihood pipeline gate ({} backend): PASS".format(
+            args.backend))
         if args.keep_output:
             print("outputs retained at {}".format(run_base))
     finally:
