@@ -2764,7 +2764,7 @@ if opts.pipeline_builder == "Hyperpipe":
                     "exe": consolidate_distance,
                     "args": (
                         "--input-glob {}/EXTR_out*.xml_*_.{}"
-                        " --output {}/{} --allow-empty".format(
+                        " --output {}/{}".format(
                             terminal_extrinsic_dir, postfix,
                             os.getcwd(), output)),
                 }, **terminal_command_common))

@@ -2471,14 +2471,17 @@ def write_ILE_sub_simple(tag='integrate', exe=None, log_dir=None, use_eos=False,
         - An instance of the CondorDAGJob that was generated for ILE
     """
     if use_singularity and (singularity_image == None)  :
-        print(" FAIL : Need to specify singularity_image to use singularity ")
-        sys.exit(0)
+        raise ValueError(
+            "write_ILE_sub_simple requires singularity_image when "
+            "use_singularity is enabled")
     if use_singularity and (frames_dir == None)  and (cache_file == None) :
-        print(" FAIL : Need to specify frames_dir or cache_file to use singularity (at present) ")
-        sys.exit(0)
+        raise ValueError(
+            "write_ILE_sub_simple requires frames_dir or cache_file when "
+            "use_singularity is enabled")
     if use_singularity and (transfer_files == None)  :
-        print(" FAIL : Need to specify transfer_files to use singularity at present!  (we will append the prescript; you should transfer any PSDs as well as the grid file ")
-        sys.exit(0)
+        raise ValueError(
+            "write_ILE_sub_simple requires transfer_files when "
+            "use_singularity is enabled")
 
     singularity_image_used = "{}".format(singularity_image) # make copy
     extra_files = []
@@ -4285,10 +4288,8 @@ def write_consolidate_distance_grids_sub(tag='consolidate_dgrid', exe=None,
     with open(cmdname, 'w') as f:
         f.write("#! /bin/bash\n")
         f.write("set -e\n")
-        # --allow-empty keeps the post-extrinsic job from failing the DAG if a
-        # re-run already consumed the per-event files or none were produced.
         f.write(exe + " --input-glob '" + search_pattern + "'"
-                " --output " + file_output + " --allow-empty\n")
+                " --output " + file_output + "\n")
     os.system("chmod a+x " + cmdname)
 
     ile_job = CondorDAGJob(universe=universe, executable=cmdname)

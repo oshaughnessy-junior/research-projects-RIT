@@ -59,6 +59,46 @@ def test_marg_contract_rejects_unknown_protocol(hp_modules, tmp_path):
         hp_modules.marg_contract.load_marg_job_specs(str(manifest))
 
 
+@pytest.mark.parametrize("key, value, match", [
+    ("request_memroy", 8192, "unsupported execution settings"),
+    ("transfer_files", "cache.dat", "transfer_files must be a list"),
+    ("transfer_output_files", "result.dat",
+     "transfer_output_files must be a list"),
+    ("condor_commands", "request_cpus=2",
+     "condor_commands must be an object"),
+])
+def test_marg_contract_rejects_malformed_execution_settings(
+    hp_modules, tmp_path, key, value, match
+):
+    manifest = tmp_path / "marg_jobs.json"
+    manifest.write_text(json.dumps([{
+        "name": "bad",
+        "protocol": "indexed-grid-v1",
+        "exe": "/bin/true",
+        "execution": {key: value},
+    }]))
+
+    with pytest.raises(ValueError, match=match):
+        hp_modules.marg_contract.load_marg_job_specs(str(manifest))
+
+
+@pytest.mark.parametrize("kwargs, match", [
+    ({"singularity_image": None, "cache_file": "cache", "transfer_files": []},
+     "requires singularity_image"),
+    ({"singularity_image": "/tmp/rift.sif", "transfer_files": []},
+     "requires frames_dir or cache_file"),
+    ({"singularity_image": "/tmp/rift.sif", "cache_file": "cache",
+      "transfer_files": None}, "requires transfer_files"),
+])
+def test_ile_submit_builder_rejects_incomplete_singularity_configuration(
+    hp_modules, kwargs, match
+):
+    with pytest.raises(ValueError, match=match):
+        hp_modules.dag_utils_generic.write_ILE_sub_simple(
+            exe="/bin/true", arg_str="--zero-likelihood",
+            use_singularity=True, **kwargs)
+
+
 def test_iteration_schedule_expands_repeat_groups(hp_modules):
     expand = hp_modules.cip_pipeline.expand_argument_schedule
     assert expand([

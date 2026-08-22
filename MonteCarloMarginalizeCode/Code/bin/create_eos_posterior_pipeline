@@ -307,7 +307,7 @@ it_start = opts.start_iteration
 n_initial = opts.n_samples_per_job
 if (it_start == 0):
     shutil.copyfile(opts.input_grid,"grid-0.dat")  # put in working directory !
-    n_initial = len(np.loadtxt("grid-0.dat"))
+    n_initial = np.loadtxt("grid-0.dat", ndmin=2).shape[0]
 
 transfer_file_names = []
 if not (opts.transfer_file_list is None):
@@ -904,20 +904,40 @@ for terminal_stage in terminal_stage_specs:
 
 # worker join job
 with open("join_post.sh",'w') as f:
-    f.write("""#! /bin/bash
-awk '/^#/ {print; next} {exit}' grid-0.dat > $2
+    f.write("""#!/bin/bash
+set -euo pipefail
+input_dir=$1
+output_file=$2
+output_tmp="${output_file}.tmp.$$"
+trap 'rm -f "$output_tmp"' EXIT
+awk '/^#/ {print; next} {exit}' grid-0.dat > "$output_tmp"
 shuffle=$(command -v shuf || command -v gshuf)
 if [ -z "$shuffle" ]; then
     echo "join_post.sh requires shuf or gshuf" >&2
     exit 1
 fi
-for sample_file in "$1"/output-*.dat; do
+shopt -s nullglob
+sample_files=()
+for sample_file in "$input_dir"/output-*.dat; do
     sample_name=$(basename "$sample_file")
     case "$sample_name" in
         *+*|*_*) continue ;;
     esac
+    sample_files+=("$sample_file")
+done
+if [ "${#sample_files[@]}" -eq 0 ]; then
+    echo "join_post.sh found no primary posterior sample files in $input_dir" >&2
+    exit 2
+fi
+for sample_file in "${sample_files[@]}"; do
     grep -v '^#' "$sample_file"
-done | sort -r | uniq | "$shuffle" >> $2
+done | sort -r | uniq | "$shuffle" >> "$output_tmp"
+if ! awk '!/^#/ && NF {found=1} END {exit found ? 0 : 1}' "$output_tmp"; then
+    echo "join_post.sh found no posterior sample rows in $input_dir" >&2
+    exit 3
+fi
+mv "$output_tmp" "$output_file"
+trap - EXIT
 """)
     os.system("chmod a+x join_post.sh")
 # In tracer mode the tracer node owns grid-{k+1}.dat; EOS_POST output goes to a

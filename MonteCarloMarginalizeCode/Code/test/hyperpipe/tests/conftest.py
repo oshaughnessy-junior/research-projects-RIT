@@ -85,6 +85,7 @@ def hp_modules(rift_py: Path):
     marg_list = importlib.import_module("RIFT.hyperpipe.marg_list")
     marg_contract = importlib.import_module("RIFT.hyperpipe.marg_contract")
     cip_pipeline = importlib.import_module("RIFT.misc.cip_pipeline")
+    dag_utils_generic = importlib.import_module("RIFT.misc.dag_utils_generic")
     drivers_base = importlib.import_module("RIFT.hyperpipe.drivers.base")
     return types.SimpleNamespace(
         coords=coords,
@@ -92,5 +93,6 @@ def hp_modules(rift_py: Path):
         marg_list=marg_list,
         marg_contract=marg_contract,
         cip_pipeline=cip_pipeline,
+        dag_utils_generic=dag_utils_generic,
         drivers_base=drivers_base,
     )

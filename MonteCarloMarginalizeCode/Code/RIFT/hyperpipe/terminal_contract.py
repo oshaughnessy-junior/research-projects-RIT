@@ -104,7 +104,16 @@ class TerminalStageSpec(object):
 
         self.initial_dir = _expand_path(raw.get("initial_dir", "."), base_dir)
         self.log_dir = _expand_path(raw.get("log_dir", self.initial_dir), base_dir)
-        self.execution = dict(raw.get("execution") or {})
+        execution = raw.get("execution") or {}
+        if not isinstance(execution, dict):
+            raise ValueError(
+                "terminal stage {!r} execution must be an object".format(
+                    self.name))
+        self.execution = dict(execution)
+        if not isinstance(self.execution.get("condor_commands", {}), dict):
+            raise ValueError(
+                "terminal stage {!r} execution condor_commands must be an "
+                "object".format(self.name))
         self.execution["condor_commands"] = dict(
             self.execution.get("condor_commands", {}))
 
@@ -177,11 +186,22 @@ class TerminalStageSpec(object):
                     "command terminal stage {!r} has unsupported execution "
                     "settings {}".format(
                         self.name, sorted(unknown_execution)))
+            transfer_files = self.execution.get("transfer_files", [])
+            transfer_output_files = self.execution.get(
+                "transfer_output_files", [])
+            if not isinstance(transfer_files, list):
+                raise ValueError(
+                    "command terminal stage {!r} execution transfer_files "
+                    "must be a list".format(self.name))
+            if not isinstance(transfer_output_files, list):
+                raise ValueError(
+                    "command terminal stage {!r} execution "
+                    "transfer_output_files must be a list".format(self.name))
             self.execution["transfer_files"] = [
                 _expand_path(item, base_dir)
-                for item in self.execution.get("transfer_files", [])]
+                for item in transfer_files]
             self.execution["transfer_output_files"] = list(
-                self.execution.get("transfer_output_files", []))
+                transfer_output_files)
             image = self.execution.get("singularity_image")
             if image and "://" not in str(image):
                 self.execution["singularity_image"] = _expand_path(

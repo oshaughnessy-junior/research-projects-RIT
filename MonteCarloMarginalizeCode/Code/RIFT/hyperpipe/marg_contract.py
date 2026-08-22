@@ -22,6 +22,14 @@ import shutil
 HYPERPIPE_V1 = "hyperpipe-v1"
 INDEXED_GRID_V1 = "indexed-grid-v1"
 SUPPORTED_PROTOCOLS = (HYPERPIPE_V1, INDEXED_GRID_V1)
+MARG_EXECUTION_KEYS = {
+    "request_memory", "request_disk", "request_gpu",
+    "request_cross_platform", "copies", "retries", "max_runtime_minutes",
+    "use_osg", "use_singularity", "singularity_image",
+    "use_simple_osg_requirements", "use_cvmfs_frames", "use_oauth_files",
+    "frames_dir", "cache_file", "transfer_files", "transfer_output_files",
+    "condor_commands",
+}
 
 
 def _read_args_file(path):
@@ -102,18 +110,36 @@ class MargJobSpec(object):
         if not isinstance(execution, dict):
             raise ValueError("MARG job {!r} execution must be an object".format(self.name))
         self.execution = dict(execution)
+        unknown_execution = set(self.execution) - MARG_EXECUTION_KEYS
+        if unknown_execution:
+            raise ValueError(
+                "MARG job {!r} has unsupported execution settings {}".format(
+                    self.name, sorted(unknown_execution)))
         for key in ("frames_dir", "cache_file"):
             if self.execution.get(key):
                 self.execution[key] = _expand_path(self.execution[key], base_dir)
         image = self.execution.get("singularity_image")
         if image and "://" not in str(image):
             self.execution["singularity_image"] = _expand_path(image, base_dir)
+        transfer_files = self.execution.get("transfer_files", [])
+        transfer_output_files = self.execution.get("transfer_output_files", [])
+        if not isinstance(transfer_files, list):
+            raise ValueError(
+                "MARG job {!r} execution transfer_files must be a list".format(
+                    self.name))
+        if not isinstance(transfer_output_files, list):
+            raise ValueError(
+                "MARG job {!r} execution transfer_output_files must be a list"
+                .format(self.name))
+        if not isinstance(self.execution.get("condor_commands", {}), dict):
+            raise ValueError(
+                "MARG job {!r} execution condor_commands must be an object"
+                .format(self.name))
         self.execution["transfer_files"] = [
             _expand_path(item, base_dir)
-            for item in self.execution.get("transfer_files", [])
+            for item in transfer_files
         ]
-        self.execution["transfer_output_files"] = list(
-            self.execution.get("transfer_output_files", []))
+        self.execution["transfer_output_files"] = list(transfer_output_files)
         self.execution["condor_commands"] = dict(
             self.execution.get("condor_commands", {}))
 

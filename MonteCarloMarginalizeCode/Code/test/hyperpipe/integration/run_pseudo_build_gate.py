@@ -217,6 +217,8 @@ def _assert_hyperpipe_terminal_chain(hyper: Path):
     assert stages["calibration_reweight"]["depends_on"] == ["frame_rotation"]
     assert len(stages["calibration_reweight"]["instances"]) == 4
     assert stages["extrinsic_samples"]["fanout"]["group_sizes"] == [3, 3, 1]
+    assert "--allow-empty" not in stages["distance_grid"]["args"]
+    assert "--allow-empty" not in stages["distance_slices"]["args"]
     assert stages["calibration_merge"]["depends_on"] == ["calibration_reweight"]
     assert stages["posterior_hdf5"]["depends_on"] == ["calibration_merge"]
     assert stages["comoving_distance_reweight"]["depends_on"] == ["posterior_hdf5"]
@@ -248,6 +250,8 @@ def _assert_basic_reweighting_chain(basic: Path):
     comoving = _nodes_for_submit(jobs, "Comov_dist.sub")
     assert len(batches) == 4 and len(merge) == len(hdf5) == len(comoving) == 1
     assert all((batch, next(iter(merge))) in edges for batch in batches)
+    assert "--allow-empty" not in (basic / "consolidate_dgrid.sh").read_text()
+    assert "--allow-empty" not in (basic / "consolidate_dslice.sh").read_text()
     assert (next(iter(merge)), next(iter(hdf5))) in edges
     assert (next(iter(hdf5)), next(iter(comoving))) in edges
 

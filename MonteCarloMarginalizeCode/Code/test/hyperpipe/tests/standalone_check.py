@@ -17,6 +17,7 @@ import importlib.util
 import json
 import os
 import runpy
+import subprocess
 import sys
 import tempfile
 import types
@@ -215,6 +216,9 @@ def _check_pipeline_render(terminal_evidence: bool = False,
         sub = (run / "MARG_0.sub").read_text()
         consolidator = (run / "con_marg_0.sh").read_text()
         assert "macrongroup=\"2\"" in dag
+        # The one-row seed must produce exactly one first-iteration MARG node;
+        # iteration 1 has four requested points and therefore two more nodes.
+        assert dag.count("MARG_0.sub") == 3
         assert "RETRY" in dag and " 3" in dag
         assert "PARENT " in dag and " CHILD " in dag
         assert "--sim-grid" in sub
@@ -300,6 +304,30 @@ def _check_pipeline_render(terminal_evidence: bool = False,
         else:
             assert not (run / "TERMINAL_samples.sub").exists()
             assert not (run / "TERMINAL_collect.sub").exists()
+
+        # A missing posterior product must fail without leaving a header-only
+        # grid that a later iteration could accept as successful input.
+        empty_post = run / "empty-post"
+        empty_post.mkdir()
+        missing_grid = run / "missing-grid.dat"
+        join_result = subprocess.run(
+            [str(run / "join_post.sh"), str(empty_post), str(missing_grid)],
+            cwd=str(run), capture_output=True, text=True)
+        assert join_result.returncode != 0
+        assert "no primary posterior sample files" in join_result.stderr
+        assert not missing_grid.exists()
+
+        header_only_post = run / "header-only-post"
+        header_only_post.mkdir()
+        (header_only_post / "output-1-0.dat").write_text(
+            "# RIFT_HYPERPIPELINE_V1\n# lnL sigma_lnL m1 m2\n")
+        header_only_grid = run / "header-only-grid.dat"
+        join_result = subprocess.run(
+            [str(run / "join_post.sh"), str(header_only_post),
+             str(header_only_grid)],
+            cwd=str(run), capture_output=True, text=True)
+        assert join_result.returncode != 0
+        assert not header_only_grid.exists()
 
 
 def run_checks() -> None:

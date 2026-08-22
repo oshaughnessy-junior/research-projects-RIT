@@ -163,6 +163,37 @@ def test_command_rejects_unknown_execution_setting(tmp_path):
         load_terminal_stage_specs(str(path))
 
 
+@pytest.mark.parametrize("key, value, match", [
+    ("transfer_files", "input.dat", "transfer_files must be a list"),
+    ("transfer_output_files", "output.dat",
+     "transfer_output_files must be a list"),
+    ("condor_commands", "request_cpus=2",
+     "condor_commands must be an object"),
+])
+def test_command_rejects_malformed_execution_types(
+    tmp_path, key, value, match
+):
+    path = _write_manifest(tmp_path, [{
+        "name": "bad",
+        "kind": COMMAND_V1,
+        "exe": "/bin/true",
+        "execution": {key: value},
+    }])
+    with pytest.raises(ValueError, match=match):
+        load_terminal_stage_specs(str(path))
+
+
+def test_terminal_stage_rejects_non_object_execution(tmp_path):
+    path = _write_manifest(tmp_path, [{
+        "name": "bad",
+        "kind": COMMAND_V1,
+        "exe": "/bin/true",
+        "execution": ["request_memory", 1024],
+    }])
+    with pytest.raises(ValueError, match="execution must be an object"):
+        load_terminal_stage_specs(str(path))
+
+
 @pytest.mark.parametrize("instances", [[], [{"iteration": 2}], [{"bad-key": 1}]])
 def test_invalid_command_instances_fail_early(tmp_path, instances):
     path = _write_manifest(tmp_path, [{
