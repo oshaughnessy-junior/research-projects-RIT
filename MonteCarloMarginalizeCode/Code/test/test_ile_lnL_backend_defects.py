@@ -26,12 +26,15 @@ GMM as the only backends that could produce a .dgrid at all.
      next line mixes it into a device expression, which cupy refuses.  It is invisible on
      CPU because `numpy.max` returns a numpy SCALAR, which cupy accepts.
 
-     Those same two lines carry a second, quieter defect that is DELIBERATELY NOT fixed here:
-     `maxval` is a LOG-scale accumulator initialized at 0, a linear-weight idiom, so
-     eff_samp = sum(w)/max(w) is floored whenever the largest weight is < 1.  Real GW lnL is
-     large and positive so it does not bite in production, and the identical initializer is
-     copied verbatim into mcsamplerPortfolio and mcsamplerNFlow -- changing one would split
-     n_eff, and hence run lengths, across backends mid-campaign.  Recorded in the code.
+     Those same two lines carried a second, quieter defect, fixed here as well: `maxval` is a
+     LOG-scale accumulator that was initialized at 0, a linear-weight idiom, so
+     eff_samp = sum(w)/max(w) was floored by 1/max w whenever the largest weight was < 1.  A
+     constant log integrand of -5 reported n*exp(-5) effective samples instead of n and ran on
+     to nmax on a false ESS.  Real GW lnL is large and positive, but the log weights are
+     shifted down by supported options (--manual-logarithm-offset), and an ESS that moves with
+     the integrand's offset is a stopping rule that does not mean what it reports.  The
+     identity element for a log-scale max is -inf, which is what integrate(), the linear
+     sibling, already uses.
 
   2. Any --sampler-method that lands on the driver's "original sampler" fallback -- e.g.
      `adaptive_cartesian` -- died AFTER a successful integration with
@@ -297,15 +300,23 @@ def test_the_device_standin_reproduces_the_operand_rule_it_stands_for(monkeypatc
     assert float(dev - np.float64(1.0)) == 2.0   # numpy scalar: what plain numpy.max returns
 
 
-def test_eff_samp_is_the_number_of_draws_for_a_constant_integrand():
-    """Every weight equal => sum(w)/max(w) is exactly the number of draws.  Runs the same
-    loop on plain numpy, where the host/device confusion cannot arise, so a change to the
-    running max that silently altered the ESTIMATE (rather than only its type) is caught."""
+@pytest.mark.parametrize('c', [+5.0, 0.0, -5.0, -50.0])
+def test_eff_samp_is_the_number_of_draws_for_a_constant_integrand(c):
+    """Every weight equal => sum(w)/max(w) is exactly the number of draws, wherever the
+    constant sits.  Runs the same loop on plain numpy, where the host/device confusion cannot
+    arise, so a change to the running max that silently altered the ESTIMATE (rather than only
+    its type) is caught.
+
+    The negative constants are the offset-invariance case: with `maxval` initialized to 0 the
+    running max of the LOG weights could not go below 0, so c = -5 reported
+    100*exp(-5) ~ 0.67 effective samples out of 100 equal-weight draws, missed neff, and drew
+    on to nmax -- a false ESS and a wrong stopping decision, reachable through
+    --manual-logarithm-offset."""
     s = _sampler()
-    res, var, eff_samp, _ = s.integrate_log(_constant_lnL(+5.0), 'x', xpy=np,
+    res, var, eff_samp, _ = s.integrate_log(_constant_lnL(c), 'x', xpy=np,
                                             n=100, nmax=1000, neff=50, save_intg=True)
     assert float(eff_samp) == pytest.approx(s.ntotal, rel=1e-9)
-    assert s.ntotal == 100
+    assert s.ntotal == 100, 'neff was met on the first chunk; drawing on means a floored ESS'
 
 
 def test_a_constant_integrand_integrates_to_that_constant():

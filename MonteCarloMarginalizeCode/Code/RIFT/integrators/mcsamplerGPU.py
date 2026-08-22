@@ -692,15 +692,14 @@ class MCSampler(SamplerOutputMixin, object):
         current_log_aggregate = None
         eff_samp = 0  # ratio of max weight to sum of weights
         maxlnL = -np.inf  # max lnL
-        # NOTE this is a LOG-scale running max (of log_integrand), initialized with a
-        # LINEAR-weight idiom: on a log scale 0 asserts max w >= 1, so eff_samp = sum(w)/max(w)
-        # is floored below its true value whenever the largest weight is < 1 -- it under-reports
-        # n_eff by 1/max w and keeps drawing to nmax.  Real GW lnL is large and positive so the
-        # floor does not bite in production, and -inf (what integrate(), the linear sibling,
-        # correctly uses) is DELIBERATELY not adopted here: it would move n_eff, hence run
-        # lengths, on every log-space backend, and the same initializer is copied verbatim in
-        # mcsamplerPortfolio and mcsamplerNFlow.  Change all of them together or none.
-        maxval=0   # max weight
+        # LOG-scale running max (of log_integrand), so its identity element is -inf, the same
+        # one integrate() -- the linear sibling -- uses.  The old initializer 0 was a
+        # LINEAR-weight idiom: on a log scale it asserts max w >= 1, so eff_samp = sum(w)/max(w)
+        # came back floored by 1/max w whenever the largest weight was below 1.  A constant log
+        # integrand of -5 then reported n*exp(-5) instead of n and kept drawing to nmax.  That
+        # is reachable on any run whose log weights are shifted down, --manual-logarithm-offset
+        # among them, so eff_samp must not depend on where the integrand's offset happens to sit.
+        maxval=-np.inf   # max log weight
         outvals=None  # define in top level scope
         self.ntotal = 0
         # per-chunk lnZ record: each chunk used a (different) adapted proposal, so the
@@ -828,7 +827,14 @@ class MCSampler(SamplerOutputMixin, object):
             maxval = max(maxval, float(identity_convert(self.xpy.max(log_integrand) )))
 
             # sum of weights is the integral * the number of points
-            eff_samp = xpy.exp(  outvals[0]+np.log(self.ntotal) - maxval)   # integral value minus floating point, which is maximum
+            if maxval == -np.inf:
+              # no draw has a nonzero weight yet (every sample zero-prior or zero-likelihood):
+              # report no effective samples and draw again, as the 0 initializer did by accident,
+              # rather than form -inf - (-inf) = nan.  Only this one case is intercepted, so a
+              # genuine nan still reaches the guard below.
+              eff_samp = 0
+            else:
+              eff_samp = xpy.exp(  outvals[0]+np.log(self.ntotal) - maxval)   # integral value minus floating point, which is maximum
 
 
             # Throw exception if we get infinity or nan
