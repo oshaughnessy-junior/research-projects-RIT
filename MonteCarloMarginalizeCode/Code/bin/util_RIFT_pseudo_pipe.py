@@ -2481,6 +2481,13 @@ if opts.pipeline_builder == "Hyperpipe":
             transfer_files.append(os.path.abspath(os.path.join(
                 os.path.dirname(__file__), "..", "RIFT", "misc",
                 "hyperpipeline_io.py")))
+    elif opts.use_osg:
+        # Hyperpipe's indexed-grid protocol is newer than production
+        # containers that remain valid for the heavy likelihood stack. Stage
+        # the candidate ILE and its in-tree RIFT package while retaining the
+        # container for LAL, numpy, and site runtime dependencies.
+        transfer_files.append(os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "RIFT")))
     ile_request_disk = opts.internal_ile_request_disk or "10M"
     general_request_disk = opts.internal_general_request_disk or "10M"
     frames_dir = None
@@ -2514,8 +2521,7 @@ if opts.pipeline_builder == "Hyperpipe":
             "frames_dir": frames_dir,
             "cache_file": cache_file,
             "requires_data_inputs": not opts.ile_zero_likelihood_data_free,
-            "transfer_executable": bool(
-                opts.ile_zero_likelihood_data_free and opts.use_osg),
+            "transfer_executable": bool(opts.use_osg),
             "transfer_files": transfer_files,
             "condor_commands": dict(ile_condor_commands or []),
             "backend_commands": ({
