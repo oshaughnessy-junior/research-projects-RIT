@@ -2494,7 +2494,7 @@ def write_puff_sub(tag='puffball', exe=None, base=None,input_net='output-ILE-sam
     return ile_job, ile_sub_name
 
 
-def write_ILE_sub_simple(tag='integrate', exe=None, log_dir=None, use_eos=False,simple_unique=False,ncopies=1,arg_str=None,request_memory=4096,request_gpu=False,request_cross_platform=False,request_disk=False,arg_vals=None, transfer_files=None,transfer_output_files=None,use_singularity=False,use_osg=False,use_simple_osg_requirements=False,singularity_image=None,use_cvmfs_frames=False,use_oauth_files=False,frames_dir=None,cache_file=None,fragile_hold=False,max_runtime_minutes=None,condor_commands=None,request_cpus=1,**kwargs):
+def write_ILE_sub_simple(tag='integrate', exe=None, log_dir=None, use_eos=False,simple_unique=False,ncopies=1,arg_str=None,request_memory=4096,request_gpu=False,request_cross_platform=False,request_disk=False,arg_vals=None, transfer_files=None,transfer_output_files=None,use_singularity=False,use_osg=False,use_simple_osg_requirements=False,singularity_image=None,use_cvmfs_frames=False,use_oauth_files=False,frames_dir=None,cache_file=None,fragile_hold=False,max_runtime_minutes=None,condor_commands=None,request_cpus=1,requires_data_inputs=True,**kwargs):
     """
     Write a submit file for launching jobs to marginalize the likelihood over intrinsic parameters.
 
@@ -2506,7 +2506,8 @@ def write_ILE_sub_simple(tag='integrate', exe=None, log_dir=None, use_eos=False,
         raise ValueError(
             "write_ILE_sub_simple requires singularity_image when "
             "use_singularity is enabled")
-    if use_singularity and (frames_dir == None)  and (cache_file == None) :
+    if (use_singularity and requires_data_inputs
+            and (frames_dir == None) and (cache_file == None)):
         raise ValueError(
             "write_ILE_sub_simple requires frames_dir or cache_file when "
             "use_singularity is enabled")

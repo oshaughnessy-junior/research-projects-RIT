@@ -155,6 +155,23 @@ def test_ile_submit_builder_rejects_incomplete_singularity_configuration(
             use_singularity=True, **kwargs)
 
 
+def test_ile_submit_builder_allows_explicit_data_free_container(
+    hp_modules, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SINGULARITY_BASE_EXE_DIR", "/usr/bin")
+    job, _ = hp_modules.dag_utils_generic.write_ILE_sub_simple(
+        tag="data_free", exe="/bin/true",
+        arg_str="--zero-likelihood-data-free", use_singularity=True,
+        singularity_image="/tmp/rift.sif", transfer_files=[],
+        requires_data_inputs=False)
+    job.set_sub_file(str(tmp_path / "data_free.sub"))
+    job.write_sub_file()
+    submit = (tmp_path / "data_free.sub").read_text()
+    assert "frames_dir" not in submit
+    assert "ile_pre.sh" not in submit
+
+
 def test_container_executable_base_does_not_require_trailing_slash(
     hp_modules, tmp_path, monkeypatch
 ):

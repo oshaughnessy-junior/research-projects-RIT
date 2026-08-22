@@ -30,7 +30,7 @@ MARG_EXECUTION_KEYS = {
     "use_osg", "use_singularity", "singularity_image",
     "use_simple_osg_requirements", "use_cvmfs_frames", "use_oauth_files",
     "frames_dir", "cache_file", "transfer_files", "transfer_output_files",
-    "request_cpus", "condor_commands",
+    "request_cpus", "condor_commands", "requires_data_inputs",
 }
 
 

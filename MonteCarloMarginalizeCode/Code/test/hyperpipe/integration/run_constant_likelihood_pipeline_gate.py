@@ -52,7 +52,7 @@ def _write_zero_spin_grid(path: Path):
         str(path), hyperpipeline_io.DEFAULT_BASE_COLUMNS, rows)
 
 
-def _build(run_base: Path):
+def _build(run_base: Path, osg_contract=False):
     seed = run_base / "zero-spin-grid.dat"
     cache = run_base / "empty.cache"
     rundir = run_base / "run"
@@ -84,8 +84,17 @@ def _build(run_base: Path):
         "--manual-extra-test-args=--always-succeed",
         "--skip-reproducibility",
     ]
+    env = _environment(run_base)
+    if osg_contract:
+        command.extend([
+            "--use-osg",
+            "--use-osg-file-transfer",
+            "--internal-use-oauth-files", "scitokens",
+        ])
+        env["SINGULARITY_RIFT_IMAGE"] = "osdf://example.invalid/rift-test.sif"
+        env["SINGULARITY_BASE_EXE_DIR"] = str(BIN)
     result = subprocess.run(
-        command, cwd=str(run_base), env=_environment(run_base), text=True,
+        command, cwd=str(run_base), env=env, text=True,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     (run_base / "pipeline-build.log").write_text(result.stdout)
     if result.returncode:
@@ -93,6 +102,19 @@ def _build(run_base: Path):
             "constant-likelihood pseudo build failed ({}):\n{}".format(
                 result.returncode, result.stdout))
     return rundir
+
+
+def _assert_osg_data_free_contract(rundir: Path):
+    marg_submit = (rundir / "MARG_0.sub").read_text()
+    commands = _read_submit(rundir / "MARG_0.sub")
+    transferred = commands.get("transfer_input_files", "")
+    for token in ("H1-psd.xml.gz", "frames_dir", "ile_pre.sh"):
+        assert token not in transferred, (token, transferred)
+    assert "precmd" not in commands
+    assert "+precmd" not in commands
+    assert "--zero-likelihood-data-free" in marg_submit
+    assert "use_oauth_services = scitokens" in marg_submit
+    assert "rift-test.sif" in marg_submit
 
 
 def _parse_dag(path: Path):
@@ -223,6 +245,9 @@ def main(argv=None):
     parser.add_argument(
         "--keep-output", action="store_true",
         help="Keep the generated pipeline, local execution logs, and outputs")
+    parser.add_argument(
+        "--osg-build-contract-only", action="store_true",
+        help="Build and inspect the OSG data-free transfer contract without running jobs")
     args = parser.parse_args(argv)
 
     temporary = None
@@ -235,7 +260,13 @@ def main(argv=None):
         run_base = Path(temporary.name)
     try:
         env = _environment(run_base)
-        rundir = _build(run_base)
+        rundir = _build(run_base, osg_contract=args.osg_build_contract_only)
+        if args.osg_build_contract_only:
+            _assert_osg_data_free_contract(rundir)
+            print("constant-likelihood OSG build contract gate: PASS")
+            if args.keep_output:
+                print("outputs retained at {}".format(run_base))
+            return 0
         logs, completed = _execute_without_condor(rundir, env)
         _assert_outputs(rundir, logs, completed)
         print("constant-likelihood local pipeline gate: PASS")

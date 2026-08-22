@@ -437,6 +437,8 @@ if marg_job_specs is not None:
                     use_oauth_files=execution.get("use_oauth_files", False),
                     frames_dir=execution.get("frames_dir"),
                     cache_file=execution.get("cache_file"),
+                    requires_data_inputs=bool(
+                        execution.get("requires_data_inputs", True)),
                     transfer_files=transfer_inputs,
                     transfer_output_files=execution.get("transfer_output_files"),
                     max_runtime_minutes=execution.get("max_runtime_minutes"),

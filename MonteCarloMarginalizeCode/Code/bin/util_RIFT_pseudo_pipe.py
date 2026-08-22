@@ -2454,11 +2454,23 @@ if opts.pipeline_builder == "Hyperpipe":
     if os.path.isfile("helper_transfer_files.txt"):
         with open("helper_transfer_files.txt") as stream:
             transfer_files = [line.strip() for line in stream if line.strip()]
+    # A data-free constant-likelihood MARG job must not retain detector-data
+    # inputs synthesized by helper_LDG_Events.  Besides being unnecessary,
+    # those paths can be absent by construction and would make Condor reject
+    # the job before ILE reaches its data-free early exit.  Preserve only
+    # files the caller explicitly requested for transfer.
+    if opts.ile_zero_likelihood_data_free:
+        transfer_files = [
+            item
+            for group in (opts.ile_additional_files_to_transfer or "").split(",")
+            for item in group.split()
+            if item
+        ]
     ile_request_disk = opts.internal_ile_request_disk or "10M"
     general_request_disk = opts.internal_general_request_disk or "10M"
     frames_dir = None
     cache_file = None
-    if opts.use_osg:
+    if opts.use_osg and not opts.ile_zero_likelihood_data_free:
         if opts.use_osg_file_transfer:
             frames_dir = os.path.abspath("frames_dir")
         else:
@@ -2486,11 +2498,13 @@ if opts.pipeline_builder == "Hyperpipe":
             "use_oauth_files": opts.internal_use_oauth_files or False,
             "frames_dir": frames_dir,
             "cache_file": cache_file,
+            "requires_data_inputs": not opts.ile_zero_likelihood_data_free,
             "transfer_files": transfer_files,
             "condor_commands": dict(ile_condor_commands or []),
             "backend_commands": ({
                 "htcondor": {"+PreCmd": '"ile_pre.sh"'},
-            } if opts.use_osg and opts.use_osg_file_transfer else {}),
+            } if (opts.use_osg and opts.use_osg_file_transfer
+                  and not opts.ile_zero_likelihood_data_free) else {}),
         },
     }]
     marg_spec_path = os.path.abspath("marg_job_specs.json")
@@ -2926,7 +2940,8 @@ if opts.pipeline_builder == "Hyperpipe":
     if terminal_stage_spec_path:
         hyperpipe_cmd += [
             "--terminal-stage-spec-file", terminal_stage_spec_path]
-    if os.path.isfile("helper_transfer_files.txt"):
+    if (os.path.isfile("helper_transfer_files.txt")
+            and not opts.ile_zero_likelihood_data_free):
         hyperpipe_cmd += ["--transfer-file-list", os.path.abspath("helper_transfer_files.txt")]
     if opts.use_osg:
         hyperpipe_cmd += ["--use-osg", "--use-singularity"]
