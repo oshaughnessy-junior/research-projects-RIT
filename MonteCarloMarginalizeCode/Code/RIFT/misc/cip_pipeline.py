@@ -16,7 +16,8 @@ import numpy as np
 POSTERIOR_UNIQUE_FLAG = "--posterior-unique-draw"
 
 
-def expand_argument_schedule(lines, n_iterations, allow_special=False):
+def expand_argument_schedule(lines, n_iterations, allow_special=False,
+                             include_prefix=False):
     """Expand a grouped CIP/posterior argument schedule by iteration.
 
     Each non-empty line begins with an integer repeat count.  The legacy event
@@ -58,13 +59,18 @@ def expand_argument_schedule(lines, n_iterations, allow_special=False):
 
     expanded = []
     for prefix, repeat, args in groups:
-        expanded.extend([args] * repeat)
+        expanded.extend([(prefix, args)] * repeat)
     if len(expanded) < n_iterations:
         prefix = groups[-1][0]
         if prefix == "Z" or prefix.startswith("G"):
             raise ValueError("cannot extend a special final CIP schedule group")
-        expanded.extend([groups[-1][2]] * (n_iterations - len(expanded)))
-    return expanded[:n_iterations]
+        expanded.extend(
+            [(groups[-1][0], groups[-1][2])] *
+            (n_iterations - len(expanded)))
+    expanded = expanded[:n_iterations]
+    if include_prefix:
+        return expanded
+    return [args for _prefix, args in expanded]
 
 
 def _validated_scaled_weights(weights):

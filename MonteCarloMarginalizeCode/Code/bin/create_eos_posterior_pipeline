@@ -11,6 +11,9 @@
 #         Common format for input (with likelihoods) and output
 
 import argparse
+import json
+import re
+import subprocess
 import sys
 import os
 import shutil
@@ -59,7 +62,7 @@ parser.add_argument("--puff-input-source", default="posterior", choices=("poster
                     help="Which file feeds the puff/tracer node. 'posterior' (default, legacy) reads grid-{k+1}.dat (EOS_POST posterior samples) and writes grid_puff-{k+1}.dat which MARG_PUFF then evaluates. 'marg_net' wires the puff/tracer node to consume all.marg_net (the cumulative ILE-evaluated (lambda, lnL, sigma) table) and write grid-{k+1}.dat directly, suppressing the MARG_PUFF lane entirely; use with --puff-exe util_*TracerUpdate.py.")
 parser.add_argument("--eos-post-args",default=None,help="filename of args_ile.txt file  which holds ILE arguments.  Should NOT conflict with arguments auto-set by this DAG ... in particular, i/o arguments will be modified")
 parser.add_argument("--eos-post-args-list", default=None,
-                    help="Grouped per-iteration posterior argument schedule using BasicIteration's integer-prefix format. Ordinary repeat groups are supported; G/Z groups fail explicitly.")
+                    help="Grouped per-iteration posterior argument schedule using BasicIteration's integer-prefix format. Ordinary repeat groups and recursive Z convergence are supported; G groups fail explicitly.")
 parser.add_argument("--eos-post-exe",default=None,help="filename of ILE or equivalent executable. Will default to `which integrate_likelihood_extrinsic` in low-level code")
 parser.add_argument("--eos-post-retries",default=0,type=int,help="Number of retry attempts for ILE jobs. (These can fail)")
 parser.add_argument(
@@ -89,6 +92,12 @@ parser.add_argument("--condor-local-nonworker",action='store_true',help="Uses lo
 parser.add_argument("--condor-local-nonworker-igwn-prefix",action='store_true', help="Adds some prefix text to start up cvmfs igwn environment, so local jobs have access to standard RIFT operators. Required for public OSG.")
 parser.add_argument("--condor-nogrid-nonworker",action='store_true',help="Uses local flocking for non-worker condor jobs. Important to run in non-NFS location, as other jobs don't have file transfer set up.")
 parser.add_argument('--n-iterations',default=3,type=int,help="Number of iterations to perform")
+parser.add_argument('--n-iterations-subdag-max', default=10, type=int,
+                    help="Maximum iterations in a Z convergence subworkflow")
+parser.add_argument('--jumpstart-marg-net', default=None,
+                    help="Internal: seed iteration zero from an existing all.marg_net and skip its MARG lane")
+parser.add_argument('--test-convergence-abort', action='store_true',
+                    help="Treat convergence-test exit 1 as successful early DAG completion")
 parser.add_argument("--start-iteration",default=0,type=int,help="starting iteration. If >0, does not copy over --input-grid. DOES rewrite sub files.  This allows you to change the arguments provided (e.g., use more iterations or settings at late times). Note this overwrites the .sub files ")
 parser.add_argument("--use-full-submit-paths",action='store_true',help="DAG created has full paths to submit files generated. Note this is implemented on a per-file/as-needed basis, mainly to facilitate using this dag as an external subdag")
 
@@ -274,8 +283,20 @@ if bool(opts.eos_post_args) == bool(opts.eos_post_args_list):
     raise ValueError("set exactly one of --eos-post-args or --eos-post-args-list")
 if opts.eos_post_args_list:
     with open(opts.eos_post_args_list) as f:
-        eos_post_args_per_iteration = expand_argument_schedule(
-            f.readlines(), opts.n_iterations, allow_special=False)
+        eos_post_schedule = expand_argument_schedule(
+            f.readlines(), opts.n_iterations, allow_special=True,
+            include_prefix=True)
+    unsupported_special = sorted({
+        prefix for prefix, _args in eos_post_schedule
+        if prefix.startswith("G")})
+    if unsupported_special:
+        raise ValueError(
+            "special CIP schedule prefixes {} are not supported by this "
+            "pipeline writer".format(", ".join(unsupported_special)))
+    eos_post_prefix_per_iteration = [
+        prefix for prefix, _args in eos_post_schedule]
+    eos_post_args_per_iteration = [
+        args for _prefix, args in eos_post_schedule]
     eos_post_args_per_iteration = [
         line.rstrip() + ' --no-plots ' for line in eos_post_args_per_iteration]
     eos_post_args = eos_post_args_per_iteration[0]
@@ -292,6 +313,7 @@ else:
     eos_post_args=eos_post_args.rstrip()
     eos_post_args += ' --no-plots '  
     eos_post_args_per_iteration = [eos_post_args] * opts.n_iterations
+    eos_post_prefix_per_iteration = ["1"] * opts.n_iterations
     print("EOS_POST", eos_post_args)
 
 eospost_exe = which('util_ConstructEOSPosterior.py')
@@ -301,7 +323,7 @@ if opts.use_osg:
     # Correctly use EOS_POST in container location
     path_split = eospost_exe.split("/")
     singularity_base_exe_path = os.environ['SINGULARITY_BASE_EXE_DIR']
-    eospost_exe =singularity_base_exe_path + path_split[-1]
+    eospost_exe = os.path.join(singularity_base_exe_path, path_split[-1])
 
 
 # Copy seed grid into place as grid-0.dat
@@ -721,6 +743,31 @@ if opts.use_singularity_local:
 unify_marg_job.write_sub_file()
 
 
+# A recursive Z subworkflow starts after the outer MARG/UNIFY lane has already
+# produced all.marg_net.  Copy that seed as the first node of the child DAG;
+# subsequent child iterations then own and overwrite their local all.marg_net.
+jumpstart_job = None
+if opts.jumpstart_marg_net:
+    jumpstart_source = os.path.abspath(opts.jumpstart_marg_net)
+    jumpstart_target = os.path.abspath(
+        os.path.join(opts.working_directory, "all.marg_net"))
+    jumpstart_job, _ = dag_utils.write_command_sub(
+        tag="JUMPSTART_MARG_NET", exe="/bin/cp",
+        arg_str="{} {}".format(jumpstart_source, jumpstart_target),
+        universe=local_worker_universe, no_grid=no_worker_grid)
+    jumpstart_job.add_condor_cmd("initialdir", opts.working_directory)
+    jumpstart_job.set_log_file(
+        opts.working_directory + "/iteration_0_con/logs/jumpstart-$(cluster)-$(process).log")
+    jumpstart_job.set_stderr_file(
+        opts.working_directory + "/iteration_0_con/logs/jumpstart-$(cluster)-$(process).err")
+    jumpstart_job.set_stdout_file(
+        opts.working_directory + "/iteration_0_con/logs/jumpstart-$(cluster)-$(process).out")
+    if opts.use_full_submit_paths:
+        jumpstart_job.set_sub_file(
+            opts.working_directory + "/" + jumpstart_job.get_sub_file())
+    jumpstart_job.write_sub_file()
+
+
 ##   EOS_POST job  (workers)
 #  - main hyperparameter integration executable
 eospost_outfile = 'iteration_$(macroiteration)_post/output-$(macroiterationnext)-$(cluster)'
@@ -1045,9 +1092,132 @@ terminal_evidence_parent_node = None
 final_test_node = None
 
 
+def build_z_subworkflow(iteration, posterior_args):
+    """Build a recursive Hyperpipe convergence DAG and its harvest job."""
+    if not opts.marg_job_spec_file:
+        raise ValueError(
+            "Z convergence currently requires --marg-job-spec-file so the "
+            "child workflow can reproduce the MARG execution contract")
+    child_dir = os.path.abspath(os.path.join(
+        opts.working_directory,
+        "iteration_{}_post".format(iteration),
+        "convergence_subworkflow"))
+    mkdir(child_dir)
+    child_schedule = os.path.join(child_dir, "args_post_schedule.txt")
+    with open(child_schedule, "w") as stream:
+        stream.write("{} {}\n".format(
+            opts.n_iterations_subdag_max, posterior_args.strip()))
+
+    child_test_args = None
+    if opts.test_args:
+        with open(opts.test_args) as stream:
+            child_test_text = " ".join(
+                line.replace("\\", "").strip() for line in stream)
+        child_test_text = re.sub(r"--always-succeed(?:\s+|$)", " ",
+                                 child_test_text)
+        child_test_text = re.sub(
+            r"--iteration-threshold(?:=|\s+)\S+", " ", child_test_text)
+        child_test_args = os.path.join(child_dir, "args_test.txt")
+        with open(child_test_args, "w") as stream:
+            stream.write(" ".join(child_test_text.split()) + "\n")
+
+    command = [
+        os.path.realpath(sys.argv[0]),
+        "--working-directory", child_dir,
+        # The jumpstarted first iteration does not consume grid-0.  Reuse the
+        # real seed file as a build-time placeholder; the child starts from
+        # the outer all.marg_net and creates grid-1 itself at runtime.
+        "--input-grid", os.path.abspath(opts.input_grid),
+        "--marg-job-spec-file", os.path.abspath(opts.marg_job_spec_file),
+        "--eos-post-args-list", child_schedule,
+        "--eos-post-exe", eospost_exe,
+        "--request-memory-marg", str(opts.request_memory_marg),
+        "--general-request-disk", str(opts.general_request_disk),
+        "--n-samples-per-job", str(opts.n_samples_per_job),
+        "--n-iterations", str(opts.n_iterations_subdag_max),
+        "--eos-post-explode-jobs", str(opts.eos_post_explode_jobs),
+        "--eos-post-explode-jobs-last",
+        str(opts.eos_post_explode_jobs_last),
+        "--general-retries", str(opts.general_retries),
+        "--jumpstart-marg-net", os.path.abspath(os.path.join(
+            opts.working_directory, "all.marg_net")),
+        "--test-convergence-abort",
+        "--terminal-evidence",
+        "--use-full-submit-paths",
+    ]
+    if child_test_args:
+        command += ["--test-args", child_test_args,
+                    "--test-exe", opts.test_exe]
+    if opts.puff_args and opts.puff_exe:
+        command += [
+            "--puff-exe", opts.puff_exe,
+            "--puff-args", os.path.abspath(opts.puff_args),
+            "--puff-max-it", str(opts.n_iterations_subdag_max),
+            "--puff-input-source", opts.puff_input_source,
+        ]
+    if opts.transfer_file_list:
+        command += ["--transfer-file-list",
+                    os.path.abspath(opts.transfer_file_list)]
+    if opts.use_osg:
+        command.append("--use-osg")
+    if opts.use_singularity:
+        command.append("--use-singularity")
+    if opts.use_singularity_local:
+        command.append("--use-singularity-local")
+    if opts.condor_local_nonworker:
+        command.append("--condor-local-nonworker")
+    if opts.condor_local_nonworker_igwn_prefix:
+        command.append("--condor-local-nonworker-igwn-prefix")
+    if opts.condor_nogrid_nonworker:
+        command.append("--condor-nogrid-nonworker")
+    subprocess.run(command, cwd=child_dir, check=True, env=os.environ.copy())
+
+    child_dag = os.path.join(child_dir, "marginalize_hyperparameters.dag")
+    subdag_node = pipeline.CondorDAGManJob(child_dag).create_node()
+    subdag_node.set_category("Z_SUBWORKFLOW")
+    subdag_node.set_retry(opts.general_retries)
+
+    fetch_spec = os.path.abspath(os.path.join(
+        opts.working_directory,
+        "fetch_z_{}.json".format(iteration)))
+    with open(fetch_spec, "w") as stream:
+        json.dump({
+            "method": "native",
+            "source": child_dir,
+            "base_pattern": "grid-*.dat",
+        }, stream, indent=2, sort_keys=True)
+        stream.write("\n")
+    fetch_exe = (dag_utils.which("util_FetchExternalGrid.py")
+                 or "util_FetchExternalGrid.py")
+    fetch_job, _ = dag_utils.write_command_sub(
+        tag="FETCH_Z_{}".format(iteration), exe=fetch_exe,
+        arg_str="--input-json {} --inj-file-out {}".format(
+            fetch_spec, os.path.abspath(os.path.join(
+                opts.working_directory,
+                "grid-{}.dat".format(iteration + 1)))),
+        universe=local_worker_universe, no_grid=no_worker_grid)
+    fetch_job.add_condor_cmd("initialdir", opts.working_directory)
+    fetch_job.set_log_file(
+        opts.working_directory +
+        "/iteration_{}_con/logs/fetch-z-$(cluster)-$(process).log".format(iteration))
+    fetch_job.set_stderr_file(
+        opts.working_directory +
+        "/iteration_{}_con/logs/fetch-z-$(cluster)-$(process).err".format(iteration))
+    fetch_job.set_stdout_file(
+        opts.working_directory +
+        "/iteration_{}_con/logs/fetch-z-$(cluster)-$(process).out".format(iteration))
+    fetch_job.add_condor_cmd("request_disk", opts.general_request_disk)
+    if opts.use_full_submit_paths:
+        fetch_job.set_sub_file(
+            opts.working_directory + "/" + fetch_job.get_sub_file())
+    fetch_job.write_sub_file()
+    return subdag_node, fetch_job
+
+
 unify_node_list = []
 for it in np.arange(it_start,opts.n_iterations):
     print(it, opts.n_iterations)
+    jumpstart_now = bool(opts.jumpstart_marg_net) and it == it_start
     consolidate_now = None
     fit_node_now = None
     marg_nodes_now =[]
@@ -1069,7 +1239,7 @@ for it in np.arange(it_start,opts.n_iterations):
         n_jobs_this_time = n_initial
     indx_max = int(np.ceil((1.0*n_jobs_this_time)/n_group))
 
-    if True: #not(it==it_start): # and opts.first_iteration_jumpstart):   # if on first iteration ,don't do this for jumpstart
+    if not jumpstart_now:
         for event in np.arange(n_events):
             n_chunk_here = marg_event_nchunk_list[event]
             indx_max_event = int(np.ceil((1.0*indx_max)/n_chunk_here))
@@ -1124,16 +1294,41 @@ for it in np.arange(it_start,opts.n_iterations):
             dag.add_node(con_node)
             # Add node to combine all events.   con_prod requires all con nodes done
             con_prod_node.add_parent(con_node)
-    unify_node.add_parent(con_prod_node)
+    if jumpstart_now:
+        jumpstart_node = pipeline.CondorDAGNode(jumpstart_job)
+        jumpstart_node.set_category("JUMPSTART")
+        jumpstart_node.set_retry(opts.general_retries)
+        dag.add_node(jumpstart_node)
+        parent_fit_node = jumpstart_node
+        # Puff/tracer dependency logic below expects the current data product
+        # under this name; the seed copy is the jumpstarted UNIFY equivalent.
+        unify_node = jumpstart_node
+    else:
+        unify_node.add_parent(con_prod_node)
 
-    # add con job, then unify
-    dag.add_node(con_prod_node)
-    dag.add_node(unify_node)
-    parent_fit_node=unify_node
+        # add con job, then unify
+        dag.add_node(con_prod_node)
+        dag.add_node(unify_node)
+        parent_fit_node=unify_node
 
     # Create EOS_POST nodes. Explode out workers
     # Create fit node, which depends on consolidate node
     print(" Exploding workers out ")
+    if eos_post_prefix_per_iteration[it] == "Z":
+        subdag_node, fetch_z_job = build_z_subworkflow(
+            int(it), eos_post_args_per_iteration[it])
+        subdag_node.add_parent(parent_fit_node)
+        dag.add_node(subdag_node)
+        fetch_z_node = pipeline.CondorDAGNode(fetch_z_job)
+        fetch_z_node.set_category("FETCH_Z")
+        fetch_z_node.set_retry(opts.general_retries)
+        fetch_z_node.add_parent(subdag_node)
+        dag.add_node(fetch_z_node)
+        parent_fit_node = fetch_z_node
+        # The child owns its terminal evidence and operative convergence test.
+        # The outer workflow only harvests its latest completed grid.
+        continue
+
         # Create job to consolidate worker outputs
     join_node =pipeline.CondorDAGNode(join_post_job)
     join_node.add_macro("macroiteration", it)
@@ -1265,5 +1460,8 @@ for terminal_stage in terminal_stage_specs:
 
 
 dag_name="marginalize_hyperparameters"
+if opts.test_convergence_abort:
+    for convergence_node in test_node_list:
+        dag.add_abort_on(convergence_node, exit_code=1, return_value=0)
 dag.set_dag_file(dag_name)
 dag.write_concrete_dag()

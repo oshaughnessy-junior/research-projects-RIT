@@ -74,7 +74,8 @@ def _environment(run_base: Path):
 def _build(builder: Optional[str], run_base: Path, seed_grid: Path, cache: Path,
            pickle_file: Optional[Path], run_label: Optional[str] = None,
            bilby_ini: Optional[Path] = None,
-           osg_calibration: bool = False):
+           osg_calibration: bool = False,
+           z_convergence: bool = False):
     label = builder or "default"
     rundir = run_base / (run_label or label.lower())
     command = [
@@ -125,6 +126,11 @@ def _build(builder: Optional[str], run_base: Path, seed_grid: Path, cache: Path,
         env["SINGULARITY_RIFT_IMAGE"] = (
             "osdf://example.invalid/rift/test-rift.sif")
         env["SINGULARITY_BASE_EXE_DIR"] = "/usr/bin"
+    if z_convergence:
+        command.extend([
+            "--internal-propose-converge-last-stage",
+            "--internal-n-iterations-subdag-max", "3",
+        ])
     result = subprocess.run(
         command, cwd=str(run_base), env=env,
         text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -199,6 +205,20 @@ def _dag_jobs_and_edges(path: Path):
 
 def _nodes_for_submit(jobs, submit_name):
     return {node for node, submit in jobs.items() if submit == submit_name}
+
+
+def _is_reachable(edges, source, target):
+    pending = [source]
+    visited = set()
+    while pending:
+        node = pending.pop()
+        if node == target:
+            return True
+        if node in visited:
+            continue
+        visited.add(node)
+        pending.extend(child for parent, child in edges if parent == node)
+    return False
 
 
 def _canonical_dag(path: Path):
@@ -302,6 +322,43 @@ def _assert_osg_calibration_contract(hyper: Path):
     assert "test-rift.sif" in submit
 
 
+def _assert_z_subworkflow_contract(hyper: Path):
+    outer_dag = hyper / "marginalize_hyperparameters.dag"
+    lines = outer_dag.read_text().splitlines()
+    subdags = [line.split() for line in lines
+               if line.startswith("SUBDAG EXTERNAL ")]
+    assert len(subdags) == 1
+    child_dag = Path(subdags[0][3])
+    assert child_dag.is_file()
+    child_text = child_dag.read_text()
+    assert "JUMPSTART_MARG_NET.sub" in child_text
+    assert "ABORT-DAG-ON" in child_text
+    assert "EOS_POST_prior.sub" in child_text
+    assert "evidence_final.sub" in child_text
+    assert "MARG_" in child_text
+
+    jobs, edges = _dag_jobs_and_edges(outer_dag)
+    fetch_submits = sorted(hyper.glob("FETCH_Z_*.sub"))
+    assert len(fetch_submits) == 1
+    fetch = _nodes_for_submit(jobs, fetch_submits[0].name)
+    extrinsic = _nodes_for_submit(jobs, "TERMINAL_extrinsic_samples.sub")
+    assert len(fetch) == 1 and extrinsic
+    subdag_node = subdags[0][2]
+    fetch_node = next(iter(fetch))
+    assert (subdag_node, fetch_node) in edges
+    # Production schedules append a posterior-unique-draw iteration after Z.
+    # The harvested child grid must therefore feed that iteration's MARG jobs,
+    # and all terminal exports must remain downstream of the fetch.
+    fetch_children = {child for parent, child in edges if parent == fetch_node}
+    assert fetch_children
+    assert all(jobs[node] == "MARG_0.sub" for node in fetch_children)
+    assert all(_is_reachable(edges, fetch_node, node) for node in extrinsic)
+    fetch_specs = list(hyper.glob("fetch_z_*.json"))
+    assert len(fetch_specs) == 1
+    fetch_spec = json.loads(fetch_specs[0].read_text())
+    assert fetch_spec["base_pattern"] == "grid-*.dat"
+
+
 def _assert_basic_reweighting_chain(basic: Path):
     dag = basic / "marginalize_intrinsic_parameters_BasicIterationWorkflow.dag"
     jobs, edges = _dag_jobs_and_edges(dag)
@@ -391,12 +448,16 @@ def main(argv=None):
         hyper_osg = _build(
             "Hyperpipe", run_base, ascii_grid, cache, pickle_file,
             run_label="hyperpipe-osg-calibration", osg_calibration=True)
+        hyper_z = _build(
+            "Hyperpipe", run_base, ascii_grid, cache, pickle_file,
+            run_label="hyperpipe-z-convergence", z_convergence=True)
         _assert_default_basic_unchanged(basic, default)
         _assert_shared_semantics(basic, hyper)
         _assert_basic_reweighting_chain(basic)
         _assert_hyperpipe_terminal_chain(hyper)
         _assert_automatic_bilby_chain(hyper_auto)
         _assert_osg_calibration_contract(hyper_osg)
+        _assert_z_subworkflow_contract(hyper_z)
         _assert_unsupported_gates(run_base)
         _assert_invalid_hyperpipe_grid_fails(run_base, cache, pickle_file)
         print("pseudo build gate: PASS")

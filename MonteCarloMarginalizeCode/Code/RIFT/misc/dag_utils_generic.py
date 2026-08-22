@@ -2198,7 +2198,7 @@ def write_CIP_sub(tag='integrate', exe=None, input_net='all.net',output='output-
             singularity_base_exe_path = os.environ['SINGULARITY_BASE_EXE_DIR_HYPERPIPE']
         elif 'SINGULARITY_BASE_EXE_DIR' in list(os.environ.keys()) :
             singularity_base_exe_path = os.environ['SINGULARITY_BASE_EXE_DIR']
-        exe=singularity_base_exe_path + exe_base
+        exe = os.path.join(singularity_base_exe_path, exe_base)
         if exe_base == 'true':  # special universal path for /bin/true, don't override it!
             exe = "/usr/bin/true"
     # Container universe (opt-in) runs the job inside container_image directly.
@@ -2585,7 +2585,7 @@ def write_ILE_sub_simple(tag='integrate', exe=None, log_dir=None, use_eos=False,
         else:
 #            singularity_base_exe_path = "/opt/lscsoft/rift/MonteCarloMarginalizeCode/Code/"  # should not hardcode this ...!
             singularity_base_exe_path = "/usr/bin/"  # should not hardcode this ...!
-        exe=singularity_base_exe_path + exe_base
+        exe = os.path.join(singularity_base_exe_path, exe_base)
         singularity_inner_exe = exe
         if not(frames_dir is None):
             frames_local = frames_dir.split("/")[-1]
@@ -4611,7 +4611,7 @@ def write_calibration_uncertainty_reweighting_sub(tag='Calib_reweight', exe=None
         else:
 #            singularity_base_exe_path = "/opt/lscsoft/rift/MonteCarloMarginalizeCode/Code/"  # should not hardcode this ...!
             singularity_base_exe_path = "/usr/bin/"  # should not hardcode this ...!
-        exe=singularity_base_exe_path + exe_base
+        exe = os.path.join(singularity_base_exe_path, exe_base)
 
     ile_job = CondorDAGJob(universe="vanilla", executable=exe)
     # This is a hack since CondorDAGJob hides the queue property
@@ -5203,7 +5203,7 @@ def write_hyperpost_sub(tag='HYPER', exe=None, input_net='all.marg_net',output='
         singularity_base_exe_path = "/usr/bin/"  # should not hardcode this ...!
         if 'SINGULARITY_BASE_EXE_DIR' in list(os.environ.keys()) :
             singularity_base_exe_path = os.environ['SINGULARITY_BASE_EXE_DIR']
-        exe=singularity_base_exe_path + path_split[-1]
+        exe = os.path.join(singularity_base_exe_path, path_split[-1])
         if path_split[-1] == 'true':  # special universal path for /bin/true, don't override it!
             exe = "/usr/bin/true"
     ile_job = CondorDAGJob(universe=universe, executable=exe)

@@ -82,7 +82,17 @@ def retrieve_native(sourcedir,outfile,n_max=None,base_pattern=None,verbose=True)
         print("Checking ", sourcedir, " for ", base_pattern)
     # Identify the correct source file in the directory
     fnames = glob.glob(sourcedir+"/"+base_pattern)  # give flexibility to naming/reuse of this code
-    fnames.sort(key=lambda f:int(re.sub('\D', '', f))) # trick from https://pretagteam.com/question/how-to-sort-files-by-number-in-filename-of-a-directory-duplicate
+    if not fnames:
+        raise RuntimeError(
+            "No external grids matching {!r} in {!r}".format(
+                base_pattern, sourcedir))
+
+    def _numeric_basename_key(fname):
+        numbers = re.findall(r"\d+", os.path.basename(fname))
+        return tuple(int(number) for number in numbers)
+
+    # Never include digits from the parent run directory in the ordering.
+    fnames.sort(key=_numeric_basename_key)
     # if verbose:
     #     print(fnames)
     fname_to_use = fnames[-1]
@@ -134,4 +144,7 @@ with open(opts.input_json,'r') as f:
 
 method = config['method']
 if method =='native':
-    retrieve_native(config['source'],opts.inj_file_out)
+    retrieve_native(
+        config['source'], opts.inj_file_out,
+        n_max=config.get('n_max'),
+        base_pattern=config.get('base_pattern'))

@@ -155,6 +155,23 @@ def test_ile_submit_builder_rejects_incomplete_singularity_configuration(
             use_singularity=True, **kwargs)
 
 
+def test_container_executable_base_does_not_require_trailing_slash(
+    hp_modules, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SINGULARITY_BASE_EXE_DIR", "/usr/bin")
+    job, _ = hp_modules.dag_utils_generic.write_CIP_sub(
+        tag="container_path", exe="/host/bin/cip-tool",
+        arg_str="--parameter m1", input_net="all.net", output="posterior",
+        out_dir=str(tmp_path), use_singularity=True,
+        singularity_image="/tmp/rift.sif", transfer_files=["all.net"])
+    job.set_sub_file(str(tmp_path / "container_path.sub"))
+    job.write_sub_file()
+    submit = (tmp_path / "container_path.sub").read_text()
+    assert "executable = /usr/bin/cip-tool" in submit
+    assert "executable = /usr/bincip-tool" not in submit
+
+
 def test_iteration_schedule_expands_repeat_groups(hp_modules):
     expand = hp_modules.cip_pipeline.expand_argument_schedule
     assert expand([
@@ -175,3 +192,16 @@ def test_iteration_schedule_rejects_unimplemented_special_groups(
 ):
     with pytest.raises(ValueError, match="not supported"):
         hp_modules.cip_pipeline.expand_argument_schedule([line], 2)
+
+
+def test_iteration_schedule_can_preserve_z_marker_for_capable_writer(
+    hp_modules,
+):
+    assert hp_modules.cip_pipeline.expand_argument_schedule(
+        ["2 --sampler-method GMM", "Z --sampler-method AV"], 3,
+        allow_special=True, include_prefix=True,
+    ) == [
+        ("2", "--sampler-method GMM"),
+        ("2", "--sampler-method GMM"),
+        ("Z", "--sampler-method AV"),
+    ]
