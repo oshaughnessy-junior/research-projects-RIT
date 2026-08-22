@@ -48,6 +48,7 @@ the existing CIP pipeline still expects.
 from __future__ import absolute_import, division, print_function
 
 import os
+import shutil
 import numpy as np
 
 
@@ -99,6 +100,34 @@ def is_active(env=None):
         env = os.environ
     val = str(env.get(ENV_FLAG, "")).strip().lower()
     return val in ("1", "true", "yes", "on")
+
+
+def stage_file_for_worker_arguments(source_path, working_directory,
+                                    argument_files):
+    """Stage *source_path* and rewrite worker arguments to its basename.
+
+    File-transfer workers execute in a sandbox where submit-side absolute
+    paths are unavailable.  This helper copies an explicitly supplied input
+    into the pipeline working directory and rewrites exact references in the
+    named argument files to the execute-side basename.  It is deliberately
+    agnostic about the file's contents (PSD, response, lookup table, etc.).
+    """
+    source_path = os.path.abspath(source_path)
+    working_directory = os.path.abspath(working_directory)
+    basename = os.path.basename(source_path)
+    destination = os.path.join(working_directory, basename)
+    if source_path != destination:
+        shutil.copy2(source_path, destination)
+    for argument_file in argument_files:
+        if not os.path.isfile(argument_file):
+            continue
+        with open(argument_file) as stream:
+            text = stream.read()
+        rewritten = text.replace(source_path, basename)
+        if rewritten != text:
+            with open(argument_file, "w") as stream:
+                stream.write(rewritten)
+    return destination
 
 
 def build_column_list(use_eccentricity=False, use_meanPerAno=False,

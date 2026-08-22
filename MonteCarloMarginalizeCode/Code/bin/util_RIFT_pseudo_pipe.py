@@ -2408,6 +2408,17 @@ if opts.calibration_reweighting:
 if opts.condor_local_nonworker_igwn_prefix:
     cmd += " --condor-local-nonworker-igwn-prefix "
 
+# An explicitly supplied PSD can live outside the new run directory on the
+# submit host.  OSG file-transfer workers see only sandbox basenames, so stage
+# the file now and make both current and legacy ILE argument records use that
+# execute-side name.  CVMFS and non-transfer paths retain their old behavior.
+if opts.use_osg_file_transfer and opts.use_online_psd_file:
+    hyperpipeline_io.stage_file_for_worker_arguments(
+        opts.use_online_psd_file,
+        os.getcwd(),
+        ["args_ile.txt", "helper_ile_args.txt"],
+    )
+
 # Make copy of local.cache for use in file transfer
 if opts.use_osg_file_transfer and opts.internal_truncate_files_for_osg_file_transfer and os.path.exists('local.cache'):
     shutil.copyfile('local.cache', 'local_orig.cache')
