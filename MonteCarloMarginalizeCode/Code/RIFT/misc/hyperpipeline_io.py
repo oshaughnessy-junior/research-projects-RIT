@@ -130,6 +130,46 @@ def stage_file_for_worker_arguments(source_path, working_directory,
     return destination
 
 
+def stage_prepared_frame_cache(frames_dir, cache_file, transfer_files=None):
+    """Prefer an already worker-relative frame cache for file transfer.
+
+    Returns ``(frames_dir_arg, cache_file_arg, transfer_files)``.  When every
+    data path in *cache_file* is relative, both the cache and frame directory
+    are added explicitly to the transfer list and ``frames_dir_arg`` is
+    ``None``.  This tells the low-level submit writer to use the prepared
+    cache directly instead of regenerating it in a site-dependent pre-command.
+
+    If the cache is absent or contains submit-host paths, the inputs are left
+    in the legacy form so the low-level writer can construct its pre-command.
+    """
+    frames_dir = os.path.abspath(frames_dir)
+    cache_file = os.path.abspath(cache_file)
+    files = list(transfer_files or [])
+    if not os.path.isdir(frames_dir) or not os.path.isfile(cache_file):
+        return frames_dir, None, files
+
+    saw_data = False
+    with open(cache_file) as stream:
+        for raw in stream:
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            fields = line.split()
+            if len(fields) < 5:
+                return frames_dir, None, files
+            data_path = fields[-1]
+            if (os.path.isabs(data_path) or "://" in data_path
+                    or data_path.startswith("file:")):
+                return frames_dir, None, files
+            saw_data = True
+    if not saw_data:
+        return frames_dir, None, files
+
+    files.extend([frames_dir, cache_file])
+    files = list(dict.fromkeys(files))
+    return None, cache_file, files
+
+
 def build_column_list(use_eccentricity=False, use_meanPerAno=False,
                       use_tides=False, use_eos_index=False,
                       use_distance=False, use_sky=False):

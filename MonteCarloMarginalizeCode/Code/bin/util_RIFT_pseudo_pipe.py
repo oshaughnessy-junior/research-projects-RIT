@@ -2494,7 +2494,9 @@ if opts.pipeline_builder == "Hyperpipe":
     cache_file = None
     if opts.use_osg and not opts.ile_zero_likelihood_data_free:
         if opts.use_osg_file_transfer:
-            frames_dir = os.path.abspath("frames_dir")
+            frames_dir, cache_file, transfer_files = (
+                hyperpipeline_io.stage_prepared_frame_cache(
+                    "frames_dir", "local.cache", transfer_files))
         else:
             cache_file = os.path.abspath("local.cache")
     marg_spec = [{
@@ -2526,8 +2528,7 @@ if opts.pipeline_builder == "Hyperpipe":
             "condor_commands": dict(ile_condor_commands or []),
             "backend_commands": ({
                 "htcondor": {"+PreCmd": '"ile_pre.sh"'},
-            } if (opts.use_osg and opts.use_osg_file_transfer
-                  and not opts.ile_zero_likelihood_data_free) else {}),
+            } if frames_dir is not None else {}),
         },
     }]
     marg_spec_path = os.path.abspath("marg_job_specs.json")
