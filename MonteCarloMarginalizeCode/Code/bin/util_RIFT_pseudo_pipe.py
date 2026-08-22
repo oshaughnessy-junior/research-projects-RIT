@@ -771,7 +771,8 @@ if opts.pipeline_builder == "Hyperpipe":
          "non-positive --calibration-reweighting-count"),
         (opts.distance_reweighting and not opts.add_extrinsic,
          "--distance-reweighting without --add-extrinsic"),
-        (opts.archive_pesummary_label is not None, "--archive-pesummary-label"),
+        (opts.archive_pesummary_label is not None and not opts.add_extrinsic,
+         "--archive-pesummary-label without --add-extrinsic"),
         (opts.export_marginal_distance_grid and not opts.add_extrinsic,
          "--export-marginal-distance-grid without --add-extrinsic"),
         (bool(opts.export_distance_slices) and not opts.add_extrinsic,
@@ -2856,6 +2857,23 @@ if opts.pipeline_builder == "Hyperpipe":
                     ).format(os.getcwd()),
                 }, **terminal_command_common),
             ])
+        if opts.archive_pesummary_label:
+            with open("args_plot.txt") as stream:
+                pesummary_args = stream.read().strip()
+            # The legacy pseudo-pipe string is assembled before calibration
+            # policy selects the final posterior.  Bind the Hyperpipe terminal
+            # stage to that final product explicitly.
+            pesummary_args = re.sub(
+                r"--samples\s+\S+",
+                "--samples {}".format(terminal_posterior_file),
+                pesummary_args)
+            terminal_stages.append(dict({
+                "name": "pesummary",
+                "kind": "command-v1",
+                "depends_on": [terminal_posterior_product],
+                "exe": shutil.which("summarypages") or "summarypages",
+                "args": pesummary_args,
+            }, **terminal_command_common))
         consolidate_distance = (
             shutil.which("util_ConsolidateDistanceGrids.py")
             or "util_ConsolidateDistanceGrids.py")

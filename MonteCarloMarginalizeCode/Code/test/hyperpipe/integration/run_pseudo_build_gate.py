@@ -108,6 +108,8 @@ def _build(builder: Optional[str], run_base: Path, seed_grid: Path, cache: Path,
         "--calibration-reweighting-count", "25",
         "--calibration-reweighting-batchsize", "2",
         "--distance-reweighting",
+        "--archive-pesummary-label", "rift-test",
+        "--archive-pesummary-event-label", "test-event",
         "--skip-reproducibility",
     ])
     if pickle_file is not None:
@@ -161,6 +163,7 @@ def _assert_shared_semantics(basic: Path, hyper: Path):
         "convert_output_format_ascii2h5.py",
         "make_uni_comov_skymap.py",
         "util_CIPDirSummarizeEvidence.py",
+        "summarypages",
     }
     for label, rundir in [("BasicIteration", basic), ("Hyperpipe", hyper)]:
         missing = required - _submit_executables(rundir)
@@ -224,7 +227,7 @@ def _assert_hyperpipe_terminal_chain(hyper: Path):
         "extrinsic_samples", "extrinsic_collect", "frame_rotation",
         "distance_grid", "distance_slices", "calibration_reweight",
         "calibration_merge", "posterior_hdf5",
-        "comoving_distance_reweight",
+        "comoving_distance_reweight", "pesummary",
     }
     assert expected <= set(stages)
     assert stages["extrinsic_collect"]["depends_on"] == ["extrinsic_samples"]
@@ -238,6 +241,9 @@ def _assert_hyperpipe_terminal_chain(hyper: Path):
     assert stages["calibration_merge"]["depends_on"] == ["calibration_reweight"]
     assert stages["posterior_hdf5"]["depends_on"] == ["calibration_merge"]
     assert stages["comoving_distance_reweight"]["depends_on"] == ["posterior_hdf5"]
+    assert stages["pesummary"]["depends_on"] == ["calibration_merge"]
+    assert "--samples " in stages["pesummary"]["args"]
+    assert "/reweighted_posterior_samples.dat" in stages["pesummary"]["args"]
 
     dag = hyper / "marginalize_hyperparameters.dag"
     jobs, edges = _dag_jobs_and_edges(dag)
@@ -246,10 +252,13 @@ def _assert_hyperpipe_terminal_chain(hyper: Path):
     hdf5 = _nodes_for_submit(jobs, "TERMINAL_posterior_hdf5.sub")
     comoving = _nodes_for_submit(
         jobs, "TERMINAL_comoving_distance_reweight.sub")
+    pesummary = _nodes_for_submit(jobs, "TERMINAL_pesummary.sub")
     assert len(batches) == 4 and len(merge) == len(hdf5) == len(comoving) == 1
+    assert len(pesummary) == 1
     assert all((batch, next(iter(merge))) in edges for batch in batches)
     assert (next(iter(merge)), next(iter(hdf5))) in edges
     assert (next(iter(hdf5)), next(iter(comoving))) in edges
+    assert (next(iter(merge)), next(iter(pesummary))) in edges
 
     calibration_sub = (hyper / "TERMINAL_calibration_reweight.sub").read_text()
     assert "--start_index $(macrostartidx)" in calibration_sub
@@ -320,7 +329,7 @@ def _assert_unsupported_gates(run_base: Path):
         (["--distance-reweighting"],
          "--distance-reweighting without --add-extrinsic"),
         (["--archive-pesummary-label", "review"],
-         "--archive-pesummary-label"),
+         "--archive-pesummary-label without --add-extrinsic"),
         (["--calibration-reweighting", "--add-extrinsic",
           "--add-extrinsic-time-resampling", "--bilby-pickle-file", "p",
           "--calibration-reweighting-osg"],
