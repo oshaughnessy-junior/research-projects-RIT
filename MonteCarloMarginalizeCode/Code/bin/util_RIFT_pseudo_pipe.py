@@ -2412,8 +2412,8 @@ if opts.condor_local_nonworker_igwn_prefix:
 if opts.use_osg_file_transfer and opts.internal_truncate_files_for_osg_file_transfer and os.path.exists('local.cache'):
     shutil.copyfile('local.cache', 'local_orig.cache')
     # Move contents of ile_pre.sh here
-    os.system("cat local.cache > awk '{print $1, $2, $3, $4}' > local_stripped.cache")
-    os.system('for i in `ls frames_dir/*.gwf`; do echo frames_local/${i} ; done > base_paths.dat') # yes probably easier to do the ls myself
+    os.system("awk '{print $1, $2, $3, $4}' local.cache > local_stripped.cache")
+    os.system('for i in frames_dir/*.gwf; do echo ${i}; done > base_paths.dat')
     os.system("paste local_stripped.cache base_paths.dat > local_relative.cache ")
     os.system("cp local_relative.cache local.cache")
 

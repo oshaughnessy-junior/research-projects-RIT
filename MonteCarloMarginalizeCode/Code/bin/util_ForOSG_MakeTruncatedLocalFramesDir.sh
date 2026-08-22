@@ -17,14 +17,26 @@ if [ ! -e ILE.sub ]; then
        echo " CANNOT IDENTIF$Y EVENT TIME; failing nicely (just in case you fix this later)  "
        exit 0
    else
-  # get args from args_ile.txt 
-  grep arguments args_ile.txt | sed s/--/\\n/g | grep time > my_time_args
-  grep arguments args_ile.txt | sed s/--/\\n/g  | grep channel  | tr '=' ' '  | awk '{print $2,$3}' > my_channel_pairs
+  # get args from args_ile.txt.  Older files used an ``arguments =``
+  # wrapper, while current pseudo_pipe writes the raw ``X --option ...``
+  # record consumed by the pipeline writers.  Accept both contracts: the
+  # Hyperpipe path must truncate frames before an ILE.sub exists.
+  if grep -q arguments args_ile.txt; then
+      ARG_RECORD=`grep arguments args_ile.txt`
+  else
+      ARG_RECORD=`cat args_ile.txt`
+  fi
+  printf '%s\n' "${ARG_RECORD}" | sed s/--/\\n/g | grep time > my_time_args
+  printf '%s\n' "${ARG_RECORD}" | sed s/--/\\n/g | grep channel | tr '=' ' ' | awk '{print $2,$3}' > my_channel_pairs
   fi
 else
   # get args from ILE
   grep arguments ILE.sub | sed s/--/\\n/g | grep time > my_time_args
   grep arguments ILE.sub | sed s/--/\\n/g  | grep channel  | tr '=' ' '  | awk '{print $2,$3}' > my_channel_pairs
+fi
+if ! grep -q data-start-time my_time_args || ! grep -q data-end-time my_time_args || [ ! -s my_channel_pairs ]; then
+  echo "Unable to identify data interval and channel names for frame truncation" >&2
+  exit 1
 fi
 TSTART=`grep data-start-time my_time_args | awk '{print $NF}' | xargs printf '%.*f\n' 0 `
 TSTART=`echo ${TSTART} - 1 | bc `
