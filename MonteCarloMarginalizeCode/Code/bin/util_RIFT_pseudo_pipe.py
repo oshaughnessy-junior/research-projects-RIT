@@ -2971,7 +2971,10 @@ if opts.pipeline_builder == "Hyperpipe":
     if opts.internal_use_oauth_files:
         hyperpipe_cmd += [
             "--use-oauth-files", opts.internal_use_oauth_files]
-    if opts.ile_zero_likelihood_data_free and opts.use_osg:
+    if opts.use_osg:
+        # The Hyperpipe posterior protocol consumes the same new .dat contract
+        # as its MARG workers.  Production images may predate that contract,
+        # regardless of whether ILE used real data or a constant likelihood.
         hyperpipe_cmd += [
             "--eos-post-transfer-executable",
             "--eos-post-transfer-file",
