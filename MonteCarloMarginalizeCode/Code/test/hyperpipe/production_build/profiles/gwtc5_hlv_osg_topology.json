@@ -20,6 +20,8 @@
     "--n-output-samples", "7",
     "--n-output-samples-last", "7",
     "--ile-jobs-per-worker", "3",
+    "--internal-ile-request-disk", "4G",
+    "--internal-general-request-disk", "4G",
     "--cip-explode-jobs", "1",
     "--cip-explode-jobs-last", "1",
     "--internal-propose-converge-last-stage",
@@ -84,6 +86,7 @@
     "submit_tokens": {
       "MARG_0.sub": [
         "executable = /usr/bin/integrate_likelihood_extrinsic_batchmode",
+        "request_disk = 4G",
         "use_oauth_services = scitokens",
         "MY.SingularityBindCVMFS = True",
         "should_transfer_files = YES",
@@ -92,7 +95,11 @@
       ],
       "EOS_POST_worker_0.sub": [
         "executable = /usr/bin/util_ConstructIntrinsicPosterior_GenericCoordinates.py",
+        "request_disk = 4G",
+        "use_oauth_services = scitokens",
         "should_transfer_files = YES",
+        "MY.SingularityImage = \"./Reviewed-GWTC5-RIFT.sif\"",
+        "osdf://example.invalid/rift/Reviewed-GWTC5-RIFT.sif",
         "Reviewed-GWTC5-RIFT.sif"
       ],
       "TERMINAL_calibration_reweight.sub": [

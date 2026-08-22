@@ -5178,7 +5178,7 @@ def write_convert_ascii_to_h5_sub(tag='Convert_ascii2h5', convert_ascii_to_h5_ex
     return ile_job, ile_sub_name
 
 
-def write_hyperpost_sub(tag='HYPER', exe=None, input_net='all.marg_net',output='output-samples',universe="vanilla",out_dir=None,log_dir=None, ncopies=1,arg_str=None,request_memory=8192,arg_vals=None, no_grid=False,request_disk=False, transfer_files=None,transfer_output_files=None,use_singularity=False,use_osg=False,use_simple_osg_requirements=False,singularity_image=None,max_runtime_minutes=None,condor_commands=None,**kwargs):
+def write_hyperpost_sub(tag='HYPER', exe=None, input_net='all.marg_net',output='output-samples',universe="vanilla",out_dir=None,log_dir=None, ncopies=1,arg_str=None,request_memory=8192,arg_vals=None, no_grid=False,request_disk=False, transfer_files=None,transfer_output_files=None,use_singularity=False,use_osg=False,use_oauth_files=False,use_simple_osg_requirements=False,singularity_image=None,max_runtime_minutes=None,condor_commands=None,**kwargs):
     """
     Write a submit file for launching jobs to marginalize the likelihood over hyperparameters.
     Almost identical to CIP 
@@ -5195,6 +5195,13 @@ def write_hyperpost_sub(tag='HYPER', exe=None, input_net='all.marg_net',output='
         print(" FAIL : Need to specify transfer_files to use singularity at present!  (we will append the prescript; you should transfer any PSDs as well as the grid file ")
         sys.exit(0)
 
+
+    transfer_files_here = list(transfer_files or [])
+    singularity_image_used = singularity_image
+    if singularity_image and 'osdf:' in singularity_image:
+        singularity_image_used = "./{}".format(
+            singularity_image.split('/')[-1])
+        transfer_files_here.append(singularity_image)
 
     exe = exe or which("util_ConstructEOSPosterior.py")
     if use_singularity:
@@ -5295,8 +5302,12 @@ def write_hyperpost_sub(tag='HYPER', exe=None, input_net='all.marg_net',output='
         ile_job.add_condor_cmd('request_CPUs', str(1))
         ile_job.add_condor_cmd('transfer_executable', 'False')
         ile_job.add_condor_cmd("MY.SingularityBindCVMFS", 'True')
-        ile_job.add_condor_cmd("MY.SingularityImage", '"' + singularity_image + '"')
+        ile_job.add_condor_cmd(
+            "MY.SingularityImage", '"' + singularity_image_used + '"')
         requirements.append("HAS_SINGULARITY=?=TRUE")
+
+    if use_oauth_files:
+        ile_job.add_condor_cmd('use_oauth_services', use_oauth_files)
 
     if use_osg:
            # avoid black-holing jobs to specific machines that consistently fail. Uses history attribute for ad
@@ -5335,11 +5346,11 @@ def write_hyperpost_sub(tag='HYPER', exe=None, input_net='all.marg_net',output='
         print(" LIGO accounting information not available.  You must add this manually to integrate.sub !")
         
     
-    if not transfer_files is None:
-        if not isinstance(transfer_files, list):
-            fname_str=transfer_files
+    if transfer_files_here:
+        if not isinstance(transfer_files_here, list):
+            fname_str=transfer_files_here
         else:
-            fname_str = ','.join(transfer_files)
+            fname_str = ','.join(dict.fromkeys(transfer_files_here))
         fname_str=fname_str.strip()
         ile_job.add_condor_cmd('transfer_input_files', fname_str)
         ile_job.add_condor_cmd('should_transfer_files','YES')

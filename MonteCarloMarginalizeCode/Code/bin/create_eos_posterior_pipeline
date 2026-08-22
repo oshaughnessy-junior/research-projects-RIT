@@ -85,6 +85,8 @@ parser.add_argument("--general-request-disk",default="10M",type=str,help="Reques
 parser.add_argument("--transfer-file-list",default=None,help="File containing list of *input* filenames to transfer, one name per file. Copied into transfer_files for condor directly.  If provided, also enables attempts to deduce files that need to be transferred for the pipeline to operate, as needed for OSG, etc")
 parser.add_argument("--use-singularity",action='store_true',help="Attempts to use a singularity image in SINGULARITY_RIFT_IMAGE")
 parser.add_argument("--use-osg",action='store_true',help="Attempts to set up an OSG workflow.  Must submit from an osg allowed submit machine")
+parser.add_argument("--use-oauth-files", default=None,
+                    help="OAuth service name for transferred OSG inputs such as osdf containers")
 parser.add_argument("--use-singularity-local",action='store_true',help="Uses the singularity container even for local universe jobs. Note we are NOT doing file transfer, just starting an image")
 parser.add_argument('--n-samples-per-job',default=2000,type=int,help="Number of samples generated each iteration; also, number of marg jobs run each iteration. Should increase with dimension of problem")
 parser.add_argument('--neff-threshold',default=800,type=int,help="Number of samples generated each iteration")
@@ -319,11 +321,6 @@ else:
 eospost_exe = which('util_ConstructEOSPosterior.py')
 if opts.eos_post_exe:
     eospost_exe = "{}".format(opts.eos_post_exe) # force clpy, so NOT BY REFERENCE
-if opts.use_osg:
-    # Correctly use EOS_POST in container location
-    path_split = eospost_exe.split("/")
-    singularity_base_exe_path = os.environ['SINGULARITY_BASE_EXE_DIR']
-    eospost_exe = os.path.join(singularity_base_exe_path, path_split[-1])
 
 
 # Copy seed grid into place as grid-0.dat
@@ -781,11 +778,12 @@ for schedule_indx, eos_post_args_here in enumerate(eos_post_args_per_iteration):
         output=eospost_outfile, input_net=working_dir_inside + "/all.marg_net",
         transfer_files=list(transfer_file_names_post),
         request_memory=opts.request_memory_marg,
-        request_disk=opts.general_request_disk)
+        request_disk=opts.general_request_disk,
+        use_osg=opts.use_osg,
+        use_singularity=opts.use_singularity,
+        singularity_image=singularity_image,
+        use_oauth_files=opts.use_oauth_files)
     eospost_marg_job.add_condor_cmd("initialdir",opts.working_directory+"/iteration_$(macroiteration)_post")
-    if opts.use_singularity:
-        eospost_marg_job.add_condor_cmd("+SingularityImage", '"' + singularity_image + '"')
-        eospost_marg_job.add_condor_cmd("transfer_executable", 'False') # don't copy it
     eospost_marg_job.set_log_file(opts.working_directory+"/iteration_$(macroiteration)_post/logs/post-$(cluster)-$(process).log")
     eospost_marg_job.set_stderr_file(opts.working_directory+"/iteration_$(macroiteration)_post/logs/post-$(cluster)-$(process).err")
     eospost_marg_job.set_stdout_file(opts.working_directory+"/iteration_$(macroiteration)_post/logs/post-$(cluster)-$(process).out")
@@ -1160,6 +1158,8 @@ def build_z_subworkflow(iteration, posterior_args):
                     os.path.abspath(opts.transfer_file_list)]
     if opts.use_osg:
         command.append("--use-osg")
+    if opts.use_oauth_files:
+        command += ["--use-oauth-files", opts.use_oauth_files]
     if opts.use_singularity:
         command.append("--use-singularity")
     if opts.use_singularity_local:

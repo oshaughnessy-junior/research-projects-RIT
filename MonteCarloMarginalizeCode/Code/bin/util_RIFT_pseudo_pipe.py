@@ -2930,6 +2930,9 @@ if opts.pipeline_builder == "Hyperpipe":
         hyperpipe_cmd += ["--transfer-file-list", os.path.abspath("helper_transfer_files.txt")]
     if opts.use_osg:
         hyperpipe_cmd += ["--use-osg", "--use-singularity"]
+    if opts.internal_use_oauth_files:
+        hyperpipe_cmd += [
+            "--use-oauth-files", opts.internal_use_oauth_files]
     if opts.condor_local_nonworker:
         hyperpipe_cmd.append("--condor-local-nonworker")
     if opts.condor_local_nonworker_igwn_prefix:

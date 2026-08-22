@@ -172,6 +172,29 @@ def test_container_executable_base_does_not_require_trailing_slash(
     assert "executable = /usr/bincip-tool" not in submit
 
 
+def test_hyperpost_stages_osdf_container_with_oauth(
+    hp_modules, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SINGULARITY_BASE_EXE_DIR", "/usr/bin")
+    job, _ = hp_modules.dag_utils_generic.write_hyperpost_sub(
+        tag="hyperpost_osg", exe="/host/bin/post-tool",
+        arg_str="--parameter m1", input_net="all.marg_net",
+        output="posterior", out_dir=str(tmp_path), use_osg=True,
+        use_singularity=True,
+        singularity_image="osdf://example.invalid/rift/test.sif",
+        use_oauth_files="scitokens", transfer_files=["all.marg_net"],
+        request_disk="4G")
+    job.set_sub_file(str(tmp_path / "hyperpost_osg.sub"))
+    job.write_sub_file()
+    submit = (tmp_path / "hyperpost_osg.sub").read_text()
+    assert "executable = /usr/bin/post-tool" in submit
+    assert 'MY.SingularityImage = "./test.sif"' in submit
+    assert "use_oauth_services = scitokens" in submit
+    assert "osdf://example.invalid/rift/test.sif" in submit
+    assert "request_disk = 4G" in submit
+
+
 def test_iteration_schedule_expands_repeat_groups(hp_modules):
     expand = hp_modules.cip_pipeline.expand_argument_schedule
     assert expand([
