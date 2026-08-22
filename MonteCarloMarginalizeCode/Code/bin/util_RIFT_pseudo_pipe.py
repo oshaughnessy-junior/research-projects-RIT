@@ -2954,6 +2954,13 @@ if opts.pipeline_builder == "Hyperpipe":
     if opts.internal_use_oauth_files:
         hyperpipe_cmd += [
             "--use-oauth-files", opts.internal_use_oauth_files]
+    if opts.ile_zero_likelihood_data_free and opts.use_osg:
+        hyperpipe_cmd += [
+            "--eos-post-transfer-executable",
+            "--eos-post-transfer-file",
+            os.path.abspath(os.path.join(
+                os.path.dirname(__file__), "..", "RIFT")),
+        ]
     if opts.condor_local_nonworker:
         hyperpipe_cmd.append("--condor-local-nonworker")
     if opts.condor_local_nonworker_igwn_prefix:

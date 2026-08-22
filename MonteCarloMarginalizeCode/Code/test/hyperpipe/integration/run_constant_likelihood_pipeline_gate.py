@@ -119,6 +119,11 @@ def _assert_osg_data_free_contract(rundir: Path):
     assert "--zero-likelihood-data-free" in marg_submit
     assert "use_oauth_services = scitokens" in marg_submit
     assert "rift-test.sif" in marg_submit
+    post_commands = _read_submit(rundir / "EOS_POST_worker_0.sub")
+    assert post_commands["executable"] == str(
+        BIN / "util_ConstructIntrinsicPosterior_GenericCoordinates.py")
+    assert post_commands.get("transfer_executable", "true").lower() != "false"
+    assert "/RIFT" in post_commands.get("transfer_input_files", "")
 
 
 def _parse_dag(path: Path):

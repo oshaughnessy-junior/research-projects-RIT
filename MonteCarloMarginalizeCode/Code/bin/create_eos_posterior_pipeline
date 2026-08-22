@@ -64,6 +64,12 @@ parser.add_argument("--eos-post-args",default=None,help="filename of args_ile.tx
 parser.add_argument("--eos-post-args-list", default=None,
                     help="Grouped per-iteration posterior argument schedule using BasicIteration's integer-prefix format. Ordinary repeat groups and recursive Z convergence are supported; G groups fail explicitly.")
 parser.add_argument("--eos-post-exe",default=None,help="filename of ILE or equivalent executable. Will default to `which integrate_likelihood_extrinsic` in low-level code")
+parser.add_argument(
+    "--eos-post-transfer-executable", action="store_true",
+    help="Stage the selected posterior executable instead of using the container-installed basename")
+parser.add_argument(
+    "--eos-post-transfer-file", action="append", default=[],
+    help="Additional generic input required by a staged posterior executable; repeat as needed")
 parser.add_argument("--eos-post-retries",default=0,type=int,help="Number of retry attempts for ILE jobs. (These can fail)")
 parser.add_argument(
     "--terminal-evidence", action="store_true",
@@ -780,13 +786,15 @@ for schedule_indx, eos_post_args_here in enumerate(eos_post_args_per_iteration):
         exe=eospost_exe, tag='EOS_POST_worker_{}'.format(schedule_indx),
         arg_str=eos_post_args_here, out_dir=out_dir_inside_post,
         output=eospost_outfile, input_net=working_dir_inside + "/all.marg_net",
-        transfer_files=list(transfer_file_names_post),
         request_memory=opts.request_memory_marg,
         request_disk=opts.general_request_disk,
         use_osg=opts.use_osg,
         use_singularity=opts.use_singularity,
         singularity_image=singularity_image,
-        use_oauth_files=opts.use_oauth_files)
+        use_oauth_files=opts.use_oauth_files,
+        transfer_executable=opts.eos_post_transfer_executable,
+        transfer_files=(list(transfer_file_names_post)
+                        + list(opts.eos_post_transfer_file)))
     eospost_marg_job.add_condor_cmd("initialdir",opts.working_directory+"/iteration_$(macroiteration)_post")
     eospost_marg_job.set_log_file(opts.working_directory+"/iteration_$(macroiteration)_post/logs/post-$(cluster)-$(process).log")
     eospost_marg_job.set_stderr_file(opts.working_directory+"/iteration_$(macroiteration)_post/logs/post-$(cluster)-$(process).err")
@@ -1164,6 +1172,10 @@ def build_z_subworkflow(iteration, posterior_args):
         command.append("--use-osg")
     if opts.use_oauth_files:
         command += ["--use-oauth-files", opts.use_oauth_files]
+    if opts.eos_post_transfer_executable:
+        command.append("--eos-post-transfer-executable")
+    for transfer_file in opts.eos_post_transfer_file:
+        command += ["--eos-post-transfer-file", transfer_file]
     if opts.use_singularity:
         command.append("--use-singularity")
     if opts.use_singularity_local:

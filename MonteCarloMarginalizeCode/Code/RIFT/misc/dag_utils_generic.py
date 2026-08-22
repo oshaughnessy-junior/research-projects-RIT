@@ -5182,7 +5182,7 @@ def write_convert_ascii_to_h5_sub(tag='Convert_ascii2h5', convert_ascii_to_h5_ex
     return ile_job, ile_sub_name
 
 
-def write_hyperpost_sub(tag='HYPER', exe=None, input_net='all.marg_net',output='output-samples',universe="vanilla",out_dir=None,log_dir=None, ncopies=1,arg_str=None,request_memory=8192,arg_vals=None, no_grid=False,request_disk=False, transfer_files=None,transfer_output_files=None,use_singularity=False,use_osg=False,use_oauth_files=False,use_simple_osg_requirements=False,singularity_image=None,max_runtime_minutes=None,condor_commands=None,**kwargs):
+def write_hyperpost_sub(tag='HYPER', exe=None, input_net='all.marg_net',output='output-samples',universe="vanilla",out_dir=None,log_dir=None, ncopies=1,arg_str=None,request_memory=8192,arg_vals=None, no_grid=False,request_disk=False, transfer_files=None,transfer_output_files=None,use_singularity=False,use_osg=False,use_oauth_files=False,use_simple_osg_requirements=False,singularity_image=None,max_runtime_minutes=None,condor_commands=None,transfer_executable=False,**kwargs):
     """
     Write a submit file for launching jobs to marginalize the likelihood over hyperparameters.
     Almost identical to CIP 
@@ -5214,9 +5214,10 @@ def write_hyperpost_sub(tag='HYPER', exe=None, input_net='all.marg_net',output='
         singularity_base_exe_path = "/usr/bin/"  # should not hardcode this ...!
         if 'SINGULARITY_BASE_EXE_DIR' in list(os.environ.keys()) :
             singularity_base_exe_path = os.environ['SINGULARITY_BASE_EXE_DIR']
-        exe = os.path.join(singularity_base_exe_path, path_split[-1])
-        if path_split[-1] == 'true':  # special universal path for /bin/true, don't override it!
-            exe = "/usr/bin/true"
+        if not transfer_executable:
+            exe = os.path.join(singularity_base_exe_path, path_split[-1])
+            if path_split[-1] == 'true':  # special universal path for /bin/true, don't override it!
+                exe = "/usr/bin/true"
     ile_job = CondorDAGJob(universe=universe, executable=exe)
     # This is a hack since CondorDAGJob hides the queue property
     ile_job._CondorJob__queue = ncopies
@@ -5304,7 +5305,8 @@ def write_hyperpost_sub(tag='HYPER', exe=None, input_net='all.marg_net',output='
     if use_singularity:
         # Compare to https://github.com/lscsoft/lalsuite/blob/master/lalinference/python/lalinference/lalinference_pipe_utils.py
         ile_job.add_condor_cmd('request_CPUs', str(1))
-        ile_job.add_condor_cmd('transfer_executable', 'False')
+        if not transfer_executable:
+            ile_job.add_condor_cmd('transfer_executable', 'False')
         ile_job.add_condor_cmd("MY.SingularityBindCVMFS", 'True')
         ile_job.add_condor_cmd(
             "MY.SingularityImage", '"' + singularity_image_used + '"')

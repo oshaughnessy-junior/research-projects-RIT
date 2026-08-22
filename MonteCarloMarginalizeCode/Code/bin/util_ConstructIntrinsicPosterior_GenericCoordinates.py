@@ -20,6 +20,8 @@ from RIFT.precision import RiftFloat
 
 import argparse
 import sys
+import os
+import importlib.util
 import numpy as np
 import numpy.lib.recfunctions
 import scipy
@@ -1921,7 +1923,16 @@ if opts.input_distance:
 # downstream `for line in dat: line[col_lnL] ...` loop is unchanged.
 # Detection: env var RIFT_HYPERPIPELINE_FORMAT, else file-content sniff.
 # ----------------------------------------------------------------------
-from RIFT.misc import hyperpipeline_io as _hpio
+try:
+    from RIFT.misc import hyperpipeline_io as _hpio
+except ImportError:
+    _helper_path = os.path.join(os.getcwd(), "hyperpipeline_io.py")
+    if not os.path.isfile(_helper_path):
+        raise
+    _helper_spec = importlib.util.spec_from_file_location(
+        "rift_staged_hyperpipeline_io", _helper_path)
+    _hpio = importlib.util.module_from_spec(_helper_spec)
+    _helper_spec.loader.exec_module(_hpio)
 _use_hpip = _hpio.is_active() or _hpio.sniff(opts.fname)
 if _use_hpip:
     print(" Hyperpipeline ASCII input format detected for ", opts.fname)

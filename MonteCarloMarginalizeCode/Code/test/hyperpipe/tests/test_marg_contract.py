@@ -209,6 +209,28 @@ def test_container_executable_base_does_not_require_trailing_slash(
     assert "executable = /usr/bincip-tool" not in submit
 
 
+def test_hyperpost_submit_can_stage_candidate_executable(
+    hp_modules, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SINGULARITY_BASE_EXE_DIR", "/container/bin")
+    worker = tmp_path / "candidate-post"
+    worker.write_text("#!/bin/sh\nexit 0\n")
+    job, _ = hp_modules.dag_utils_generic.write_hyperpost_sub(
+        tag="staged_post", exe=str(worker), input_net="all.marg_net",
+        output="posterior", out_dir=str(tmp_path), arg_str="--no-plots",
+        use_singularity=True, singularity_image="/tmp/rift.sif",
+        transfer_files=["all.marg_net", "hyperpipeline_io.py"],
+        transfer_executable=True)
+    job.set_sub_file(str(tmp_path / "staged_post.sub"))
+    job.write_sub_file()
+    submit = (tmp_path / "staged_post.sub").read_text()
+    assert "executable = {}".format(worker) in submit
+    assert "executable = /container/bin/candidate-post" not in submit
+    assert "transfer_executable = False" not in submit
+    assert "hyperpipeline_io.py" in submit
+
+
 def test_hyperpost_stages_osdf_container_with_oauth(
     hp_modules, tmp_path, monkeypatch
 ):
