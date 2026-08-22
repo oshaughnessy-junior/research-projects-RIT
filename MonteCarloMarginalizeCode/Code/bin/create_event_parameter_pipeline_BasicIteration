@@ -1614,7 +1614,7 @@ if opts.frame_rotation:
         f.write("""#!/bin/bash
 if [ ! -e extrinsic_posterior_samples_orig.dat ]; then
    mv extrinsic_posterior_samples.dat  extrinsic_posterior_samples_orig.dat;
-   convert_ascii_framechange_xphm.py --extrinsic-posterior-file   extrinsic_posterior_samples_orig .dat --fname-out extrinsic_posterior_samples.dat {}
+   convert_ascii_framechange_xphm.py --extrinsic-posterior-file extrinsic_posterior_samples_orig.dat --fname-out extrinsic_posterior_samples.dat {}
 fi;
 """.format(extra_arg))
     # Write submit file for the conversion
@@ -1872,9 +1872,7 @@ for it in np.arange(it_start,opts.n_iterations):
     n_jobs_this_time = opts.n_samples_per_job
     if it ==it_start:
         n_jobs_this_time = n_initial
-    indx_max = int((1.0*n_jobs_this_time)/n_group_here)
-    if indx_max*n_jobs_this_time < n_group_here:
-        indx_max+=1
+    indx_max = int(np.ceil((1.0*n_jobs_this_time)/n_group_here))
     if not(it==it_start and opts.first_iteration_jumpstart):   # if on first iteration ,don't do this for jumpstart
         if opts.ile_group_subdag:
             # Write the subdag
@@ -2367,7 +2365,8 @@ if opts.last_iteration_extrinsic:
     # Need to perform number of events CONSISTENT WITH TARGET SAMPLE SIZE
     #    - *not* always same as number of ILE events being analyzed
     #    - *assumes* grid files have sufficiently large numbers of samples to allow this! (as in many other cases)
-    n_jobs_extrinsic = int(opts.last_iteration_extrinsic_nsamples/(1.0*n_group))
+    n_jobs_extrinsic = int(np.ceil(
+        opts.last_iteration_extrinsic_nsamples/(1.0*n_group)))
 
     if opts.last_iteration_extrinsic_time_resampling:
         convert_node = pipeline.CondorDAGNode(batchConvertExtr_job)
@@ -2376,12 +2375,15 @@ if opts.last_iteration_extrinsic:
 
 
     for event in np.arange(n_jobs_extrinsic):
+        start_event = int(event*n_group)
+        n_group_here = min(
+            n_group, opts.last_iteration_extrinsic_nsamples - start_event)
         # Add task per ILE operation
         ile_node = pipeline.CondorDAGNode(ileExtr_job)
 #        ile_node.set_priority(JOB_PRIORITIES["ILE"])
         ile_node.set_retry(opts.ile_retries)
-        ile_node.add_macro("macroevent", event*n_group)
-        ile_node.add_macro("macrongroup", n_group)
+        ile_node.add_macro("macroevent", start_event)
+        ile_node.add_macro("macrongroup", n_group_here)
         ile_node.add_macro("macroiteration", it)
         # Option C cal-pilot / extrinsic-handoff seed path.  The wide ILE args carry
         # --calibration-proposal-breadcrumb .../cal_consolidated_$(macroiterationprev).npz
@@ -2409,24 +2411,24 @@ if opts.last_iteration_extrinsic:
             convert_node.add_parent(ile_node)
         elif opts.last_iteration_extrinsic_batched_convert:
             convert_node = pipeline.CondorDAGNode(batchConvertExtr_job)
-            convert_node.add_macro("macroevent", event*n_group)
-            convert_node.add_macro("macrongroup", n_group)
+            convert_node.add_macro("macroevent", start_event)
+            convert_node.add_macro("macrongroup", n_group_here)
             convert_node.add_macro("macroiteration", it)
             convert_node.set_retry(opts.ile_retries)  # this can fail too
             convert_node.add_parent(ile_node)
             dag.add_node(convert_node)
             cat_node.add_parent(convert_node)
         else:
-          for indx in np.arange(n_group):
+          for indx in np.arange(n_group_here):
             convert_node = pipeline.CondorDAGNode(convertExtr_job)
-            convert_node.add_macro("macroevent", event*n_group)
+            convert_node.add_macro("macroevent", start_event)
             convert_node.add_macro("macroiteration", it)
             convert_node.add_macro("macroindx",indx)
             convert_node.set_retry(opts.ile_retries)  # this can fail too
             convert_node.add_parent(ile_node)
 
             resample_node = pipeline.CondorDAGNode(resample_job)
-            resample_node.add_macro("macroevent", event*n_group)
+            resample_node.add_macro("macroevent", start_event)
             resample_node.add_macro("macroiteration", it)
             resample_node.add_macro("macroindx",indx)
             resample_node.set_retry(opts.ile_retries)  # these occasionally fail for stupid reasons - nodes missing software, etc

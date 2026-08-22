@@ -1,13 +1,22 @@
+import importlib
 import json
 from pathlib import Path
+import sys
+import types
 
 import pytest
 
-from RIFT.hyperpipe.terminal_contract import (
-    COMMAND_V1,
-    INDEXED_GRID_FANOUT_V1,
-    load_terminal_stage_specs,
-)
+_CODE = Path(__file__).resolve().parents[3]
+if str(_CODE) not in sys.path:
+    sys.path.insert(0, str(_CODE))
+if "RIFT" not in sys.modules:
+    _RIFT = types.ModuleType("RIFT")
+    _RIFT.__path__ = [str(_CODE / "RIFT")]
+    sys.modules["RIFT"] = _RIFT
+_CONTRACT = importlib.import_module("RIFT.hyperpipe.terminal_contract")
+COMMAND_V1 = _CONTRACT.COMMAND_V1
+INDEXED_GRID_FANOUT_V1 = _CONTRACT.INDEXED_GRID_FANOUT_V1
+load_terminal_stage_specs = _CONTRACT.load_terminal_stage_specs
 
 
 def _write_manifest(tmp_path, stages):
@@ -57,6 +66,7 @@ def test_indexed_fanout_then_command_round_trip(tmp_path):
     assert [stage.name for stage in stages] == ["samples", "collect"]
     assert stages[0].count == 3
     assert stages[0].group_size == 4
+    assert stages[0].group_sizes == [4, 4, 4]
     assert stages[0].execution_value("request_memory") == 8192
     assert stages[1].depends_on == ["samples"]
     assert stages[1].universe == "local"
@@ -119,6 +129,38 @@ def test_command_instances_define_generic_fanout_macros(tmp_path):
         {"start": "0", "end": "20"},
         {"start": "20", "end": "40"},
     ]
+
+
+def test_indexed_fanout_accepts_remainder_group(tmp_path):
+    path = _write_manifest(tmp_path, [{
+        "name": "samples",
+        "kind": INDEXED_GRID_FANOUT_V1,
+        "job": {
+            "protocol": "indexed-grid-v1",
+            "exe": "/bin/true",
+            "n_chunk": 3,
+        },
+        "grid": "grid.dat",
+        "fanout": {"count": 3, "group_size": 3,
+                   "group_sizes": [3, 3, 1]},
+    }])
+    (tmp_path / "grid.dat").write_text("# lnL sigma_lnL m1 m2\n")
+
+    stage = load_terminal_stage_specs(str(path))[0]
+
+    assert stage.count == 3
+    assert stage.group_sizes == [3, 3, 1]
+
+
+def test_command_rejects_unknown_execution_setting(tmp_path):
+    path = _write_manifest(tmp_path, [{
+        "name": "bad",
+        "kind": COMMAND_V1,
+        "exe": "/bin/true",
+        "execution": {"silently_ignored_before": True},
+    }])
+    with pytest.raises(ValueError, match="unsupported execution settings"):
+        load_terminal_stage_specs(str(path))
 
 
 @pytest.mark.parametrize("instances", [[], [{"iteration": 2}], [{"bad-key": 1}]])

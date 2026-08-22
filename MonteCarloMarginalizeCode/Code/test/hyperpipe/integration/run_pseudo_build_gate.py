@@ -72,9 +72,9 @@ def _environment(run_base: Path):
 
 
 def _build(builder: Optional[str], run_base: Path, seed_grid: Path, cache: Path,
-           pickle_file: Path):
+           pickle_file: Path, run_label: Optional[str] = None):
     label = builder or "default"
-    rundir = run_base / label.lower()
+    rundir = run_base / (run_label or label.lower())
     command = [
         sys.executable, str(PSEUDO_PIPE),
         "--use-rundir", str(rundir),
@@ -91,8 +91,8 @@ def _build(builder: Optional[str], run_base: Path, seed_grid: Path, cache: Path,
         "--fmin-template", "20",
         "--internal-force-iterations", "2",
         "--internal-n-evaluations-per-iteration", "4",
-        "--n-output-samples", "6",
-        "--n-output-samples-last", "6",
+        "--n-output-samples", "7",
+        "--n-output-samples-last", "7",
         "--ile-jobs-per-worker", "3",
         "--cip-explode-jobs", "1",
         "--cip-explode-jobs-last", "1",
@@ -152,6 +152,17 @@ def _assert_shared_semantics(basic: Path, hyper: Path):
         assert not missing, "{} is missing submit executables {}".format(
             label, sorted(missing))
 
+    # Executable presence is insufficient: validate the real rendered CLI
+    # contracts that historically failed while the DAG still built cleanly.
+    basic_convert = (basic / "Convert_ascii2h5.sub").read_text()
+    hyper_convert = (hyper / "TERMINAL_posterior_hdf5.sub").read_text()
+    assert "--posterior-samples" in basic_convert
+    assert "--posterior-file" not in basic_convert
+    assert "--posterior-samples" in hyper_convert
+    basic_rotation = (basic / "fix_frame_rot.sh").read_text()
+    assert "extrinsic_posterior_samples_orig.dat" in basic_rotation
+    assert "extrinsic_posterior_samples_orig .dat" not in basic_rotation
+
 
 def _dag_jobs_and_edges(path: Path):
     jobs = {}
@@ -204,7 +215,8 @@ def _assert_hyperpipe_terminal_chain(hyper: Path):
     assert stages["extrinsic_collect"]["depends_on"] == ["extrinsic_samples"]
     assert stages["frame_rotation"]["depends_on"] == ["extrinsic_collect"]
     assert stages["calibration_reweight"]["depends_on"] == ["frame_rotation"]
-    assert len(stages["calibration_reweight"]["instances"]) == 3
+    assert len(stages["calibration_reweight"]["instances"]) == 4
+    assert stages["extrinsic_samples"]["fanout"]["group_sizes"] == [3, 3, 1]
     assert stages["calibration_merge"]["depends_on"] == ["calibration_reweight"]
     assert stages["posterior_hdf5"]["depends_on"] == ["calibration_merge"]
     assert stages["comoving_distance_reweight"]["depends_on"] == ["posterior_hdf5"]
@@ -216,7 +228,7 @@ def _assert_hyperpipe_terminal_chain(hyper: Path):
     hdf5 = _nodes_for_submit(jobs, "TERMINAL_posterior_hdf5.sub")
     comoving = _nodes_for_submit(
         jobs, "TERMINAL_comoving_distance_reweight.sub")
-    assert len(batches) == 3 and len(merge) == len(hdf5) == len(comoving) == 1
+    assert len(batches) == 4 and len(merge) == len(hdf5) == len(comoving) == 1
     assert all((batch, next(iter(merge))) in edges for batch in batches)
     assert (next(iter(merge)), next(iter(hdf5))) in edges
     assert (next(iter(hdf5)), next(iter(comoving))) in edges
@@ -234,7 +246,7 @@ def _assert_basic_reweighting_chain(basic: Path):
     merge = _nodes_for_submit(jobs, "CAL_REWEIGHT_COMBINE.sub")
     hdf5 = _nodes_for_submit(jobs, "Convert_ascii2h5.sub")
     comoving = _nodes_for_submit(jobs, "Comov_dist.sub")
-    assert len(batches) == 3 and len(merge) == len(hdf5) == len(comoving) == 1
+    assert len(batches) == 4 and len(merge) == len(hdf5) == len(comoving) == 1
     assert all((batch, next(iter(merge))) in edges for batch in batches)
     assert (next(iter(merge)), next(iter(hdf5))) in edges
     assert (next(iter(hdf5)), next(iter(comoving))) in edges
@@ -257,6 +269,19 @@ def _assert_unsupported_gates(run_base: Path):
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         assert result.returncode != 0
         assert expected in result.stdout
+
+
+def _assert_invalid_hyperpipe_grid_fails(run_base: Path, cache: Path,
+                                         pickle_file: Path):
+    bad_grid = run_base / "headerless-grid.dat"
+    bad_grid.write_text("0 0 36 29 0 0 0 0 0 0\n")
+    try:
+        _build("Hyperpipe", run_base, bad_grid, cache, pickle_file,
+               run_label="invalid-hyperpipe-grid")
+    except RuntimeError as exc:
+        assert "self-describing hyperpipeline ASCII grid" in str(exc)
+    else:
+        raise AssertionError("headerless Hyperpipe grid unexpectedly built")
 
 
 def main(argv=None):
@@ -286,6 +311,7 @@ def main(argv=None):
         _assert_basic_reweighting_chain(basic)
         _assert_hyperpipe_terminal_chain(hyper)
         _assert_unsupported_gates(run_base)
+        _assert_invalid_hyperpipe_grid_fails(run_base, cache, pickle_file)
         print("pseudo build gate: PASS")
         if not cleanup:
             print("outputs retained at {}".format(run_base))

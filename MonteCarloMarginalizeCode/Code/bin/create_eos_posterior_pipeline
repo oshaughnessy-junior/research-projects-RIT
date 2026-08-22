@@ -366,7 +366,9 @@ if marg_job_specs is not None:
         request_memory_here = int(execution.get("request_memory", opts.request_memory_marg))
         request_disk_here = execution.get("request_disk", opts.general_request_disk)
         copies_here = int(execution.get("copies", 1))
-        transfer_here = list(transfer_file_names) + list(execution.get("transfer_files", []))
+        transfer_here = list(dict.fromkeys(
+            list(transfer_file_names) +
+            list(execution.get("transfer_files", []))))
 
         def _configure_marg_job(job, puff=False):
             job.add_condor_cmd("initialdir", opts.working_directory+"/iteration_$(macroiteration)_marg/event_$(macroid)")
@@ -381,9 +383,15 @@ if marg_job_specs is not None:
 
         def _make_marg_job(puff=False):
             grid_name = "grid_puff-$(macroiteration).dat" if puff else "grid-$(macroiteration).dat"
-            grid_path = working_dir_inside + "/" + grid_name
+            remote_here = use_osg_here or use_singularity_here
+            worker_root = "." if remote_here else opts.working_directory
+            grid_path = worker_root + "/" + grid_name
+            event_path = worker_root + '/event-$(macroid).net'
+            output_dir = ("./" if remote_here else
+                          opts.working_directory +
+                          "/iteration_$(macroiteration)_marg/event_$(macroid)/")
             transfer_inputs = list(transfer_here)
-            if use_osg_here or use_singularity_here:
+            if remote_here:
                 transfer_inputs.append(opts.working_directory + "/" + grid_name)
 
             if spec.protocol == INDEXED_GRID_V1:
@@ -423,8 +431,8 @@ if marg_job_specs is not None:
                 request_memory=request_memory_here,
                 request_disk=request_disk_here,
                 ncopies=copies_here,
-                input_net=working_dir_inside+'/event-$(macroid).net',
-                output=output, out_dir=out_dir_inside_marg,
+                input_net=event_path,
+                output=output, out_dir=output_dir,
                 universe=main_worker_universe, no_grid=not(use_osg_here),
                 use_osg=use_osg_here,
                 use_singularity=use_singularity_here,
@@ -684,7 +692,8 @@ if opts.test_args:
 #  - joins together all files into one
 with open("unify.sh",'w') as f:
     f.write("""#! /bin/bash
-ls -1 *.net_marg | head -n 1 | xargs head -n 1  > all.marg_net
+first_net=$(ls -1 *.net_marg | head -n 1)
+awk '/^#/ {print; next} {exit}' "$first_net" > all.marg_net
 grep -h ^[[:space:]][0-9] *.net_marg | sort -nr >> all.marg_net
 grep -h ^[[:space:]][-] *.net_marg | grep -v "inf" | sort -nr >> all.marg_net
 """)
@@ -802,8 +811,9 @@ for terminal_stage in terminal_stage_specs:
         use_singularity_here = bool(
             execution.get("use_singularity", opts.use_singularity))
         singularity_image_here = execution.get("singularity_image") or singularity_image
-        transfer_here = list(transfer_file_names) + list(
-            execution.get("transfer_files", []))
+        transfer_here = list(dict.fromkeys(
+            list(transfer_file_names) + list(
+                execution.get("transfer_files", []))))
         grid_arg = terminal_stage.grid
         if use_osg_here or use_singularity_here:
             transfer_here.append(terminal_stage.grid)
@@ -812,7 +822,7 @@ for terminal_stage in terminal_stage_specs:
         if terminal_stage.args_append:
             terminal_args += " " + terminal_stage.args_append
         terminal_args += " --sim-grid " + grid_arg
-        if terminal_stage.group_size > 1:
+        if max(terminal_stage.group_sizes) > 1:
             terminal_args += " --n-events-to-analyze $(macrongroup)"
         terminal_job, _ = dag_utils.write_ILE_sub_simple(
             tag="TERMINAL_" + terminal_stage.name,
@@ -843,12 +853,22 @@ for terminal_stage in terminal_stage_specs:
             condor_commands=execution.get("condor_commands"),
         )
     elif terminal_stage.kind == COMMAND_V1:
+        command_execution = terminal_stage.execution
         terminal_job, _ = dag_utils.write_command_sub(
             tag="TERMINAL_" + terminal_stage.name,
             exe=terminal_stage.exe, log_dir=None,
             arg_str=terminal_stage.args,
             universe=terminal_stage.universe,
             no_grid=terminal_stage.no_grid,
+            use_osg=bool(command_execution.get("use_osg", False)),
+            use_singularity=bool(
+                command_execution.get("use_singularity", False)),
+            singularity_image=command_execution.get("singularity_image"),
+            use_simple_osg_requirements=bool(
+                command_execution.get("use_simple_osg_requirements", False)),
+            transfer_files=command_execution.get("transfer_files"),
+            transfer_output_files=command_execution.get(
+                "transfer_output_files"),
             max_runtime_minutes=terminal_stage.execution_value(
                 "max_runtime_minutes", 120))
         request_memory = terminal_stage.execution_value("request_memory")
@@ -885,8 +905,19 @@ for terminal_stage in terminal_stage_specs:
 # worker join job
 with open("join_post.sh",'w') as f:
     f.write("""#! /bin/bash
-head -n 1 grid-0.dat > $2
-cat $1/output*.dat  | sort -r | uniq | shuf >> $2
+awk '/^#/ {print; next} {exit}' grid-0.dat > $2
+shuffle=$(command -v shuf || command -v gshuf)
+if [ -z "$shuffle" ]; then
+    echo "join_post.sh requires shuf or gshuf" >&2
+    exit 1
+fi
+for sample_file in "$1"/output-*.dat; do
+    sample_name=$(basename "$sample_file")
+    case "$sample_name" in
+        *+*|*_*) continue ;;
+    esac
+    grep -v '^#' "$sample_file"
+done | sort -r | uniq | "$shuffle" >> $2
 """)
     os.system("chmod a+x join_post.sh")
 # In tracer mode the tracer node owns grid-{k+1}.dat; EOS_POST output goes to a
@@ -1177,10 +1208,12 @@ for terminal_stage in terminal_stage_specs:
         terminal_node.add_macro("macroiterationprev", opts.n_iterations - 1)
         terminal_node.add_macro("macroiterationnext", opts.n_iterations + 1)
         if terminal_stage.kind == INDEXED_GRID_FANOUT_V1:
+            group_size_here = terminal_stage.group_sizes[terminal_index]
+            start_here = sum(terminal_stage.group_sizes[:terminal_index])
             terminal_node.add_macro(
-                "macroevent", terminal_index * terminal_stage.group_size)
+                "macroevent", start_here)
             terminal_node.add_macro(
-                "macrongroup", terminal_stage.group_size)
+                "macrongroup", group_size_here)
         elif terminal_stage.kind == COMMAND_V1:
             for key, value in terminal_stage.instances[terminal_index].items():
                 terminal_node.add_macro("macro" + key, value)

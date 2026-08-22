@@ -34,3 +34,17 @@ conversion stage. A small local executor reads the generated DAG and submit
 files, expands their macros, follows terminal dependencies, runs stub jobs, and
 checks the final artifact. This validates filesystem and argument behavior that
 pure DAG inspection cannot exercise.
+
+The lightweight full-pipeline gate also needs no running scheduler:
+
+```sh
+python MonteCarloMarginalizeCode/Code/test/hyperpipe/integration/run_constant_likelihood_pipeline_gate.py
+```
+
+It drives `util_RIFT_pseudo_pipe.py --pipeline-builder Hyperpipe` with a
+zero-spin grid and real ILE's opt-in data-free zero-likelihood mode, then runs
+the complete generated DAG sequentially. Real consolidation, CIP posterior
+generation, convergence, prior integration, and evidence normalization must
+all complete. The gate verifies nine constant-likelihood MARG rows, a non-empty
+posterior, and that ILE never attempts detector-data access. Use
+`--keep-output` to retain the pipeline and per-node execution logs.

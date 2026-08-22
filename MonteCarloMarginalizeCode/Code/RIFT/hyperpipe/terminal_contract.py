@@ -21,6 +21,12 @@ from .marg_contract import INDEXED_GRID_V1, MargJobSpec
 INDEXED_GRID_FANOUT_V1 = "indexed-grid-fanout-v1"
 COMMAND_V1 = "command-v1"
 SUPPORTED_KINDS = (INDEXED_GRID_FANOUT_V1, COMMAND_V1)
+COMMAND_EXECUTION_KEYS = {
+    "request_memory", "request_disk", "retries", "max_runtime_minutes",
+    "use_osg", "use_singularity", "singularity_image",
+    "use_simple_osg_requirements", "transfer_files",
+    "transfer_output_files", "condor_commands",
+}
 
 
 def _expand_path(value, base_dir):
@@ -107,6 +113,7 @@ class TerminalStageSpec(object):
         self.output_file = None
         self.count = 1
         self.group_size = 1
+        self.group_sizes = [1]
         self.args_append = ""
         self.exe = None
         self.args = ""
@@ -138,6 +145,25 @@ class TerminalStageSpec(object):
                 raise ValueError(
                     "indexed terminal stage {!r} fanout values must be positive"
                     .format(self.name))
+            raw_group_sizes = fanout.get("group_sizes")
+            if raw_group_sizes is None:
+                self.group_sizes = [self.group_size] * self.count
+            else:
+                if not isinstance(raw_group_sizes, list) or not raw_group_sizes:
+                    raise ValueError(
+                        "indexed terminal stage {!r} fanout group_sizes must "
+                        "be a non-empty list".format(self.name))
+                self.group_sizes = [int(value) for value in raw_group_sizes]
+                if any(value <= 0 for value in self.group_sizes):
+                    raise ValueError(
+                        "indexed terminal stage {!r} fanout group_sizes must "
+                        "be positive".format(self.name))
+                if "count" in fanout and self.count != len(self.group_sizes):
+                    raise ValueError(
+                        "indexed terminal stage {!r} fanout count does not "
+                        "match group_sizes".format(self.name))
+                self.count = len(self.group_sizes)
+                self.group_size = self.group_sizes[0]
             self.args_append = str(raw.get("args_append") or "").strip()
         else:
             if not raw.get("exe"):
@@ -145,6 +171,21 @@ class TerminalStageSpec(object):
                     "command terminal stage {!r} requires exe".format(self.name))
             self.exe = _resolve_exe(raw["exe"], base_dir)
             self.args, self.args_file = _read_args(raw, base_dir, self.name)
+            unknown_execution = set(self.execution) - COMMAND_EXECUTION_KEYS
+            if unknown_execution:
+                raise ValueError(
+                    "command terminal stage {!r} has unsupported execution "
+                    "settings {}".format(
+                        self.name, sorted(unknown_execution)))
+            self.execution["transfer_files"] = [
+                _expand_path(item, base_dir)
+                for item in self.execution.get("transfer_files", [])]
+            self.execution["transfer_output_files"] = list(
+                self.execution.get("transfer_output_files", []))
+            image = self.execution.get("singularity_image")
+            if image and "://" not in str(image):
+                self.execution["singularity_image"] = _expand_path(
+                    image, base_dir)
             instances = raw.get("instances")
             if instances is not None:
                 if not isinstance(instances, list) or not instances:

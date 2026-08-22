@@ -2661,7 +2661,13 @@ echo Starting ...
             ile_job.add_opt(opt.replace("_", "-"), str(param))
 
     if cache_file:
-        ile_job.add_opt("cache-file",cache_file)
+        # Condor transfers an absolute submit-side source into the execute
+        # sandbox under its basename.  Passing the source path to ILE works on
+        # shared filesystems but fails remotely, and can override an already
+        # correct ``--cache local.cache`` in arg_str.
+        cache_arg = (os.path.basename(cache_file)
+                     if use_osg or use_singularity else cache_file)
+        ile_job.add_opt("cache-file", cache_arg)
 
     ile_job.add_var_opt("event")
 
@@ -3491,7 +3497,11 @@ def write_convert_sub(tag='convert', exe=None, file_input=None,file_output=None,
 
 def write_command_sub(tag='command', exe=None, arg_str='', universe="vanilla",
                       log_dir=None, ncopies=1, no_grid=False,
-                      max_runtime_minutes=120, **kwargs):
+                      max_runtime_minutes=120, use_osg=False,
+                      use_singularity=False, singularity_image=None,
+                      transfer_files=None, transfer_output_files=None,
+                      use_simple_osg_requirements=False,
+                      condor_commands=None, **kwargs):
     """Write a generic command submit file, preserving arguments verbatim.
 
     Unlike :func:`write_convert_sub`, this helper does not reinterpret the
@@ -3501,6 +3511,21 @@ def write_command_sub(tag='command', exe=None, arg_str='', universe="vanilla",
     """
     if exe is None:
         raise ValueError("write_command_sub requires an executable")
+    if use_singularity:
+        if not singularity_image:
+            raise ValueError(
+                "write_command_sub requires singularity_image when "
+                "use_singularity is enabled")
+        singularity_base_exe_path = os.environ.get(
+            'SINGULARITY_BASE_EXE_DIR', '/usr/bin/')
+        exe = os.path.join(singularity_base_exe_path, os.path.basename(exe))
+    elif use_osg:
+        # A non-container OSG command must be transferred explicitly.  Preserve
+        # the caller's source path while invoking the execute-side basename.
+        transfer_files = list(dict.fromkeys(
+            list(transfer_files or []) + [exe]))
+        exe = os.path.basename(exe)
+
     command_job = CondorDAGJob(universe=universe, executable=exe)
     command_job._CondorJob__queue = ncopies
     requirements = []
@@ -3516,7 +3541,26 @@ def write_command_sub(tag='command', exe=None, arg_str='', universe="vanilla",
     command_job.set_log_file("%s%s-%s.log" % (log_dir, tag, uniq_str))
     command_job.set_stderr_file("%s%s-%s.err" % (log_dir, tag, uniq_str))
     command_job.set_stdout_file("%s%s-%s.out" % (log_dir, tag, uniq_str))
-    command_job.add_condor_cmd('getenv', default_getenv_value)
+    command_job.add_condor_cmd(
+        'getenv', '*RIFT*' if use_osg else default_getenv_value)
+
+    if use_singularity:
+        command_job.add_condor_cmd('transfer_executable', 'False')
+        command_job.add_condor_cmd('MY.SingularityBindCVMFS', 'True')
+        command_job.add_condor_cmd(
+            'MY.SingularityImage', '"{}"'.format(singularity_image))
+        requirements.append("HAS_SINGULARITY=?=TRUE")
+    if use_osg and not use_simple_osg_requirements:
+        requirements.append("IS_GLIDEIN=?=TRUE")
+
+    if transfer_files:
+        command_job.add_condor_cmd(
+            'transfer_input_files', ','.join(map(str, transfer_files)))
+        command_job.add_condor_cmd('should_transfer_files', 'YES')
+        command_job.add_condor_cmd('when_to_transfer_output', 'ON_EXIT')
+    if transfer_output_files is not None:
+        command_job.add_condor_cmd(
+            'transfer_output_files', ','.join(map(str, transfer_output_files)))
 
     if no_grid:
         command_job.add_condor_cmd("MY.DESIRED_SITES", '"none"')
@@ -3538,6 +3582,8 @@ def write_command_sub(tag='command', exe=None, arg_str='', universe="vanilla",
             'periodic_remove',
             'JobStatus =?= 2 && (CurrentTime - JobStartDate) > ( {})'.format(
                 60 * max_runtime_minutes))
+    for key, value in (condor_commands or {}).items():
+        command_job.add_condor_cmd(str(key), str(value))
     return command_job, sub_name
 
 
@@ -5026,7 +5072,7 @@ def write_convert_ascii_to_h5_sub(tag='Convert_ascii2h5', convert_ascii_to_h5_ex
 
     # Add manual options for input, output
     ile_job.add_opt('output-file', str(output_file))
-    ile_job.add_opt('posterior-file', str(posterior_file))
+    ile_job.add_opt('posterior-samples', str(posterior_file))
 #    ile_job.add_arg(str(posterior_file)) # needs to be a bilby ini file for the particular event being analyzed
 
     #

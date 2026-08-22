@@ -11,6 +11,7 @@ import os
 import numpy as np
 import RIFT.misc.weight_simulations as weight_simulations
 import scipy.special
+from RIFT.misc import hyperpipeline_io
 
 import fileinput
 #import StringIO
@@ -31,6 +32,14 @@ enforce_length=False
 if opts.combination != 'average':
     enforce_length=True
 
+# Detect the self-describing Hyperpipe format once and require every readable
+# input to carry the same named columns.  Legacy files retain the historical
+# first-comment-line passthrough below.
+first_input = opts.fname[0][0]
+hyperpipe_columns = None
+if hyperpipeline_io.sniff(first_input):
+    hyperpipe_columns = hyperpipeline_io.read_header(first_input)
+
 #print opts.fname
 from pathlib import Path
 for fname in opts.fname[0]: #sys.argv[1:]:
@@ -39,6 +48,16 @@ for fname in opts.fname[0]: #sys.argv[1:]:
         continue
     if os.stat(fname).st_size==0:  # skip files of zero length
         continue
+    if hyperpipe_columns is not None:
+        if not hyperpipeline_io.sniff(str(fname)):
+            raise ValueError(
+                "util_HyperCombine: mixed Hyperpipe/legacy inputs: {}".format(
+                    fname))
+        columns_here = hyperpipeline_io.read_header(str(fname))
+        if columns_here != hyperpipe_columns:
+            raise ValueError(
+                "util_HyperCombine: Hyperpipe column mismatch in {}: {} != {}"
+                .format(fname, columns_here, hyperpipe_columns))
     sys.stderr.write(str(fname)+"\n")
 #    data = np.loadtxt(fname)  # this will FAIL if we have a heterogeneous data source!  BE CAREFUL
     data = np.genfromtxt(fname,invalid_raise=False)  #  Protect against inhomogeneous data
@@ -57,13 +76,15 @@ for fname in opts.fname[0]: #sys.argv[1:]:
       except:
           continue
 
-header_str=''
-with open(opts.fname[0][0],'r') as f:
-    header_str = f.readline()
-    header_str = header_str.rstrip()
-
-if header_str.startswith('#'):
-    print(header_str)  # repeat the header, so we recapture al the syntax
+if hyperpipe_columns is not None:
+    print("# " + hyperpipeline_io.MAGIC)
+    print("# " + " ".join(hyperpipe_columns))
+else:
+    header_str=''
+    with open(first_input,'r') as f:
+        header_str = f.readline().rstrip()
+    if header_str.startswith('#'):
+        print(header_str)  # repeat legacy single-line headers verbatim
 for key in data_at_intrinsic:
     if len(key) < 1: 
         # sometimes we get spaces showing up, which is weird. Skip these. Should not happen

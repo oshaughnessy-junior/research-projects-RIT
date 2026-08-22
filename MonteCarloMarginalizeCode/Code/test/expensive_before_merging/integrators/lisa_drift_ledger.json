@@ -344,6 +344,10 @@
     "OPTION:--srate-resample-time-marginalization": {
       "decision": "PORT",
       "reason": "Interpolate the lnL time series onto a finer grid before time resampling. LISA already has --resample-time-marginalization and its own time-resampling block, so this is the matching resolution knob and applies directly."
+    },
+    "OPTION:--zero-likelihood-data-free": {
+      "decision": "PORT",
+      "reason": "Explicit indexed-grid validation mode layered on --zero-likelihood. LISA already supports --zero-likelihood and --sim-grid, so the same data-free pipeline gate is applicable, but should be ported with a LISA end-to-end consumer rather than as an untested parser-only option."
     }
   }
 }

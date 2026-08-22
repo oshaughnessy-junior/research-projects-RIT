@@ -25,6 +25,7 @@ import sys
 import lal
 import lalsimulation as lalsim
 import RIFT.lalsimutils as lalsimutils
+from RIFT.misc import hyperpipeline_io
 import configparser as ConfigParser
 
 if ( 'RIFT_LOWLATENCY'  in os.environ):
@@ -598,6 +599,12 @@ parser.add_argument("--internal-cip-use-lnL",action='store_true')
 parser.add_argument("--manual-initial-grid",default=None,type=str,help="Filename (full path) to initial grid. Copied into proposed-grid.<suffix>, overwriting any grid assignment done here. Suffix is .xml.gz by default and .dat when RIFT_HYPERPIPELINE_FORMAT is set; the source file's format must match the active mode.")
 parser.add_argument("--manual-initial-grid-supplements",action='store_true', help="Manual inital grid used to SUPPLEMENT output of the default helper grid.")
 parser.add_argument("--manual-extra-ile-args",default=None,type=str,help="Avenue to adjoin extra ILE arguments.  Needed for unusual configurations (e.g., if channel names are not being selected, etc)")
+parser.add_argument(
+    "--ile-zero-likelihood-data-free", action='store_true',
+    help=("Hyperpipe-only lightweight validation mode: run indexed ILE with "
+          "--zero-likelihood --zero-likelihood-data-free so MARG shards are "
+          "produced without frame or PSD access. Intended for small local "
+          "end-to-end pipeline tests, not scientific analysis."))
 parser.add_argument("--internal-ile-force-adapt-all",action='store_true', help="Syntactic sugar to prevent need to add manual-extra-ile-args for this: easier on user")
 parser.add_argument("--internal-puff-transverse",action='store_true', help=" appends the following arguments: --parameter phi1 --parameter phi2 --parameter chi1_perp_u --parameter chi2_perp_u ")
 parser.add_argument("--manual-extra-puff-args",default=None,type=str,help="Avenue to adjoin extra PUFF arguments.  ")
@@ -622,7 +629,7 @@ parser.add_argument("--use-osg-public",action='store_true',help="Activate public
 parser.add_argument("--archive-pesummary-label",default=None,help="If provided, creates a 'pesummary' directory and fills it with this run's final output at the end of the run")
 parser.add_argument("--archive-pesummary-event-label",default="this_event",help="Label to use on the pesummary page itself")
 parser.add_argument("--internal-mitigate-fd-J-frame",default="L_frame",help="L_frame|rotate, choose method to deal with ChooseFDWaveform being in wrong frame. Default is to request L frame for inputs")
-parser.add_argument("--internal-force-puff-iterations", default=4, type=int, help="Number of iterations to be puffed")
+parser.add_argument("--internal-force-puff-iterations", default=None, type=int, help="Explicitly override the helper-selected number of puffed iterations. Use -1 to disable puff nodes.")
 opts=  parser.parse_args()
 
 # Resolve the sub-sample stencil request IMMEDIATELY, so a bare flag / retired 'True' / typo
@@ -744,6 +751,8 @@ if opts.pipeline_builder == "Hyperpipe":
          "--export-marginal-distance-grid without --add-extrinsic"),
         (bool(opts.export_distance_slices) and not opts.add_extrinsic,
          "--export-distance-slices without --add-extrinsic"),
+        (opts.ile_zero_likelihood_data_free and opts.add_extrinsic,
+         "--ile-zero-likelihood-data-free with --add-extrinsic"),
     ]
     for active, label in _hyperpipe_feature_checks:
         if active:
@@ -754,6 +763,10 @@ if opts.pipeline_builder == "Hyperpipe":
             "Use BasicIteration/AlternateIteration or disable these features; "
             "the Hyperpipe writer refuses to silently omit them.".format(
                 ", ".join(_unsupported_hyperpipe)))
+elif opts.ile_zero_likelihood_data_free:
+    raise SystemExit(
+        "pseudo_pipe: --ile-zero-likelihood-data-free requires "
+        "--pipeline-builder Hyperpipe")
 
 
 
@@ -1458,6 +1471,8 @@ if not(opts.manual_extra_ile_args is None):
     line += " {} ".format(opts.manual_extra_ile_args)  # embed with space on each side, avoid collisions
     if '--declination ' in opts.manual_extra_ile_args:   # if we are pinning dec, we aren't using a cosine coordinate. Don't mess up.
         line = line.replace('--declination-cosine-sampler', '')
+if opts.ile_zero_likelihood_data_free:
+    line += " --zero-likelihood --zero-likelihood-data-free "
 if opts.internal_ile_force_adapt_all:
     line += " --force-adapt-all "
 # NOTE on per-distance export (grid/slices): the --last-iteration-export-*
@@ -1899,13 +1914,15 @@ with open("args_cip_list.txt",'w') as f:
 
 # Write puff file
 #puff_params = " --parameter mc --parameter delta_mc --parameter chieff_aligned "
-puff_max_it = opts.internal_force_puff_iterations
+puff_max_it = 4
 #  Read puff args from file, if present
 try:
     with open("helper_puff_max_it.txt",'r') as f:
         puff_max_it = int(f.readline())
 except:
     print( " No puff file ")
+if opts.internal_force_puff_iterations is not None:
+    puff_max_it = opts.internal_force_puff_iterations
 
 instructions_puff = np.loadtxt("helper_puff_args.txt", dtype=str)  # should be one line
 puff_params = ' '.join(instructions_puff)
@@ -2021,6 +2038,32 @@ if not (opts.manual_initial_grid is None):
         # shutil.copyfile is format-agnostic: works for either .xml.gz or
         # .dat as long as the source matches the active mode.
         shutil.copyfile(opts.manual_initial_grid, "proposed-grid." + grid_suffix_pp)
+        if _use_hpip_pp:
+            proposed_grid = "proposed-grid.dat"
+            if not hyperpipeline_io.sniff(proposed_grid):
+                raise SystemExit(
+                    "pseudo_pipe: Hyperpipe --manual-initial-grid must be a "
+                    "self-describing hyperpipeline ASCII grid with a "
+                    "RIFT_HYPERPIPELINE_V1 marker or '# lnL sigma_lnL ...' "
+                    "header: {}".format(opts.manual_initial_grid))
+            try:
+                table, columns = hyperpipeline_io.read_table(proposed_grid)
+            except (OSError, ValueError, TypeError) as exc:
+                raise SystemExit(
+                    "pseudo_pipe: unable to read Hyperpipe manual grid {}: {}"
+                    .format(opts.manual_initial_grid, exc))
+            if tuple(columns[:2]) != ("lnL", "sigma_lnL"):
+                raise SystemExit(
+                    "pseudo_pipe: Hyperpipe manual grid must begin with "
+                    "lnL sigma_lnL columns; got {}".format(columns))
+            missing = [name for name in ("m1", "m2") if name not in columns]
+            if missing:
+                raise SystemExit(
+                    "pseudo_pipe: Hyperpipe manual grid is missing required "
+                    "ILE columns {}".format(missing))
+            if len(np.atleast_1d(table)) == 0:
+                raise SystemExit(
+                    "pseudo_pipe: Hyperpipe manual grid contains no data rows")
 
 # override npts_it if needed
 if opts.internal_n_evaluations_per_iteration:
@@ -2552,8 +2595,15 @@ if opts.pipeline_builder == "Hyperpipe":
             terminal_worker_spec.get("execution") or {})
         terminal_worker_spec["execution"]["copies"] = 1
         terminal_worker_spec["execution"]["request_memory"] = int(ile_mem) * 2
+        n_extrinsic_points = int(opts.n_output_samples_last)
         n_extrinsic_jobs = max(
-            1, int(opts.n_output_samples_last / float(n_jobs_per_worker)))
+            1, (n_extrinsic_points + int(n_jobs_per_worker) - 1) //
+            int(n_jobs_per_worker))
+        extrinsic_group_sizes = [
+            min(int(n_jobs_per_worker),
+                max(1, n_extrinsic_points - start))
+            for start in range(
+                0, max(1, n_extrinsic_points), int(n_jobs_per_worker))]
         terminal_command_common = {
             "initial_dir": os.getcwd(),
             "log_dir": terminal_extrinsic_dir + "/logs",
@@ -2576,6 +2626,7 @@ if opts.pipeline_builder == "Hyperpipe":
                 "fanout": {
                     "count": n_extrinsic_jobs,
                     "group_size": int(n_jobs_per_worker),
+                    "group_sizes": extrinsic_group_sizes,
                 },
                 "initial_dir": terminal_extrinsic_dir,
                 "log_dir": terminal_extrinsic_dir + "/logs",

@@ -83,7 +83,8 @@ drivers_base = _load("RIFT.hyperpipe.drivers.base", HP / "drivers" / "base.py")
 
 
 def _check_pipeline_render(terminal_evidence: bool = False,
-                           terminal_stages: bool = False) -> None:
+                           terminal_stages: bool = False,
+                           osg: bool = False) -> None:
     """Render a tiny indexed-grid DAG without importing the LAL stack."""
     with tempfile.TemporaryDirectory(prefix="rift-hyperpipe-render-") as tmpd:
         run = Path(tmpd)
@@ -92,18 +93,26 @@ def _check_pipeline_render(terminal_evidence: bool = False,
             "2 --parameter m1 --parameter m2\n")
         (run / "args_ile.txt").write_text("X --cache local.cache\n")
         (run / "local.cache").write_text("cache\n")
+        execution = {
+            "cache_file": "local.cache",
+            "request_memory": 4096,
+            "request_disk": "2G",
+            "retries": 3,
+        }
+        if osg:
+            execution.update({
+                "use_osg": True,
+                "use_singularity": True,
+                "singularity_image": "/tmp/test-rift.sif",
+                "transfer_files": ["local.cache"],
+            })
         (run / "jobs.json").write_text(json.dumps([{
             "name": "ile",
             "protocol": "indexed-grid-v1",
             "exe": "/bin/true",
             "args_file": "args_ile.txt",
             "n_chunk": 2,
-            "execution": {
-                "cache_file": "local.cache",
-                "request_memory": 4096,
-                "request_disk": "2G",
-                "retries": 3,
-            },
+            "execution": execution,
         }]))
         if terminal_stages:
             (run / "terminal").mkdir()
@@ -126,7 +135,11 @@ def _check_pipeline_render(terminal_evidence: bool = False,
                         },
                         "grid": str(run / "grid-$(macroiteration).dat"),
                         "output_file": "EXTR_out.xml",
-                        "fanout": {"count": 3, "group_size": 2},
+                        "fanout": {
+                            "count": 3,
+                            "group_size": 2,
+                            "group_sizes": [2, 2, 1],
+                        },
                         "initial_dir": str(run / "terminal"),
                         "log_dir": str(run / "terminal"),
                     },
@@ -137,6 +150,11 @@ def _check_pipeline_render(terminal_evidence: bool = False,
                         "exe": "/bin/true",
                         "args": "--collect $(macroiteration)",
                         "initial_dir": str(run),
+                        "execution": {
+                            "use_osg": True,
+                            "transfer_files": [str(run / "local.cache")],
+                            "transfer_output_files": ["collected.dat"],
+                        },
                     },
                     {
                         "name": "positional",
@@ -151,6 +169,8 @@ def _check_pipeline_render(terminal_evidence: bool = False,
             }))
         old_cwd = os.getcwd()
         old_argv = sys.argv[:]
+        old_image = os.environ.get("SINGULARITY_RIFT_IMAGE")
+        old_base_exe = os.environ.get("SINGULARITY_BASE_EXE_DIR")
         try:
             os.chdir(run)
             sys.argv = [
@@ -171,6 +191,10 @@ def _check_pipeline_render(terminal_evidence: bool = False,
             if terminal_stages:
                 sys.argv.extend([
                     "--terminal-stage-spec-file", str(run / "terminal.json")])
+            if osg:
+                sys.argv.extend(["--use-osg", "--use-singularity"])
+                os.environ["SINGULARITY_RIFT_IMAGE"] = "/tmp/test-rift.sif"
+                os.environ["SINGULARITY_BASE_EXE_DIR"] = "/usr/bin/"
             runpy.run_path(
                 str(RIFT_PY / "bin" / "create_eos_posterior_pipeline"),
                 run_name="__main__",
@@ -178,6 +202,14 @@ def _check_pipeline_render(terminal_evidence: bool = False,
         finally:
             sys.argv = old_argv
             os.chdir(old_cwd)
+            if old_image is None:
+                os.environ.pop("SINGULARITY_RIFT_IMAGE", None)
+            else:
+                os.environ["SINGULARITY_RIFT_IMAGE"] = old_image
+            if old_base_exe is None:
+                os.environ.pop("SINGULARITY_BASE_EXE_DIR", None)
+            else:
+                os.environ["SINGULARITY_BASE_EXE_DIR"] = old_base_exe
 
         dag = (run / "marginalize_hyperparameters.dag").read_text()
         sub = (run / "MARG_0.sub").read_text()
@@ -191,6 +223,13 @@ def _check_pipeline_render(terminal_evidence: bool = False,
         assert "--output-file" in sub
         assert "request_memory = 4096" in sub
         assert "request_disk = 2G" in sub
+        if osg:
+            arguments_line = next(
+                line for line in sub.splitlines()
+                if line.startswith("arguments ="))
+            assert "--cache-file=local.cache" in arguments_line
+            assert str(run / "local.cache") not in arguments_line
+            assert str(run / "local.cache") in sub
         assert "util_CleanILE_hyperpipeline.py" in consolidator
         if terminal_evidence:
             prior_sub = (run / "EOS_POST_prior.sub").read_text()
@@ -224,10 +263,16 @@ def _check_pipeline_render(terminal_evidence: bool = False,
             assert "request_memory = 6144M" in terminal_sub
             assert "request_disk = 3G" in terminal_sub
             assert "--collect $(macroiteration)" in collect_sub
+            assert "executable = true" in collect_sub
+            assert "transfer_input_files" in collect_sub
+            assert str(run / "local.cache") in collect_sub
+            assert "/bin/true" in collect_sub
+            assert "transfer_output_files = collected.dat" in collect_sub
             assert 'arguments = "input.dat --start $(macrostart)' in positional_sub
             assert '--input.dat' not in positional_sub
             assert dag.count("TERMINAL_samples.sub") == 3
             assert dag.count("macrongroup=\"2\"") >= 3
+            assert 'macroevent="4" macrongroup="1"' in dag
             assert "TERMINAL_collect.sub" in dag
             assert "TERMINAL_positional.sub" in dag
             assert dag.count("TERMINAL_positional.sub") == 2
@@ -343,6 +388,7 @@ def run_checks() -> None:
     _check_pipeline_render()
     _check_pipeline_render(terminal_evidence=True)
     _check_pipeline_render(terminal_stages=True)
+    _check_pipeline_render(osg=True)
 
     print(f"standalone_check: ALL OK  (RIFT_ROOT={RIFT_ROOT})")
 

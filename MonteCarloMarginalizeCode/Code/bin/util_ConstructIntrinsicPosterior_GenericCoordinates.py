@@ -3169,7 +3169,7 @@ if neff < opts.n_eff:
         # filled with 0 because these are posterior draws, not measurements;
         # ILE's --sim-grid reader ignores them via the lalsimutils.valid_params
         # intersection.
-        if _hpio.is_active():
+        if _use_hpip:
             _cols_out = _hpio.build_column_list(
                 use_eccentricity=opts.use_eccentricity, use_meanPerAno=opts.use_meanPerAno,
                 use_tides=opts.input_tides, use_eos_index=opts.input_eos_index,
@@ -3724,7 +3724,7 @@ np.savetxt(opts.fname_output_samples+"+annotation_export.dat", [[opts.n_output_s
 lnL_list = np.array(lnL_list,dtype=internal_dtype) + supplemental_ln_likelihood_offset
 # Hyperpipeline ASCII grid writer (opt-in via env var).  See note above the
 # earlier identical writer site -- same rationale.
-if _hpio.is_active():
+if _use_hpip:
     _cols_out = _hpio.build_column_list(
         use_eccentricity=opts.use_eccentricity, use_meanPerAno=opts.use_meanPerAno,
         use_tides=opts.input_tides, use_eos_index=opts.input_eos_index,
