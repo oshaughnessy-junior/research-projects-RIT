@@ -358,6 +358,10 @@ RULES = [
      "supports --zero-likelihood and --sim-grid, so the same data-free pipeline gate is "
      "applicable, but should be ported with a LISA end-to-end consumer rather than as an "
      "untested parser-only option."),
+    (r"^FUNC:(_load_hyperpipeline_io|_run_data_free_early_exit)$", "PORT",
+     "Implementation helpers for --zero-likelihood-data-free. They are detector-neutral "
+     "indexed-grid and output plumbing and therefore travel with that option when its "
+     "LISA end-to-end consumer is ported."),
     (r"^OPTION:--random-event$", "PORT",
      "Pick a random event from the input file. Detector-agnostic; flagged dangerous in "
      "its own help text for oversampling reasons that apply equally to LISA."),
