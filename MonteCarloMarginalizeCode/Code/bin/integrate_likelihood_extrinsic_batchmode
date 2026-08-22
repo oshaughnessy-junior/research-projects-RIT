@@ -15,6 +15,67 @@ from optparse import OptionParser, OptionGroup
 import numpy
 import numpy as np
 import os
+import importlib.util
+
+
+def _load_hyperpipeline_io():
+  """Load the grid helper from RIFT or beside a staged worker executable."""
+  try:
+    from RIFT.misc import hyperpipeline_io
+    return hyperpipeline_io
+  except ImportError:
+    helper_path = os.path.join(os.getcwd(), "hyperpipeline_io.py")
+    if not os.path.isfile(helper_path):
+      raise
+    spec = importlib.util.spec_from_file_location(
+        "rift_staged_hyperpipeline_io", helper_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _run_data_free_early_exit():
+  """Handle constant-lnL indexed grids before importing the RIFT runtime."""
+  if "--zero-likelihood-data-free" not in sys.argv:
+    return
+  import argparse
+  early = argparse.ArgumentParser(add_help=False)
+  early.add_argument("--zero-likelihood-data-free", action="store_true")
+  early.add_argument("--zero-likelihood", action="store_true")
+  early.add_argument("--sim-grid")
+  early.add_argument("--output-file")
+  early.add_argument("--event", type=int, default=0)
+  early.add_argument("--n-events-to-analyze", type=int, default=1)
+  early.add_argument("--save-samples", action="store_true")
+  early.add_argument("--fairdraw-extrinsic-output", action="store_true")
+  opts, _ = early.parse_known_args()
+  if not opts.zero_likelihood:
+    raise ValueError(
+        "--zero-likelihood-data-free requires --zero-likelihood")
+  if not opts.sim_grid or not opts.output_file:
+    raise ValueError(
+        "--zero-likelihood-data-free requires --sim-grid and --output-file")
+  if opts.save_samples or opts.fairdraw_extrinsic_output:
+    raise ValueError(
+        "--zero-likelihood-data-free cannot produce extrinsic samples")
+  hpio = _load_hyperpipeline_io()
+  if not hpio.sniff(opts.sim_grid):
+    raise ValueError(
+        "--zero-likelihood-data-free requires a Hyperpipe ASCII --sim-grid")
+  grid, names = hpio.read_table(opts.sim_grid)
+  stop = min(len(grid), opts.event + opts.n_events_to_analyze)
+  for local_index, row in enumerate(np.atleast_1d(grid)[opts.event:stop]):
+    values = [float(row[name]) for name in names]
+    values[names.index("lnL")] = 0.0
+    values[names.index("sigma_lnL")] = 0.0
+    event_index = opts.event + local_index
+    output = opts.output_file + "_" + str(event_index) + "_.dat"
+    hpio.write_row(output, names, values)
+    print("Data-free zero likelihood output:", output)
+  sys.exit(0)
+
+
+_run_data_free_early_exit()
 try:
   import cupy
   xpy_default=cupy
@@ -838,7 +899,7 @@ elif opts.sim_grid:
   # The legacy genfromtxt branch is kept byte-identical for backward
   # compatibility with existing --sim-grid files.
   # ----------------------------------------------------------------------
-  from RIFT.misc import hyperpipeline_io as _hpio
+  _hpio = _load_hyperpipeline_io()
   _hpip_grid = _hpio.is_active() or _hpio.sniff(opts.sim_grid)
   if _hpip_grid:
       print(" Hyperpipeline ASCII grid detected for ", opts.sim_grid)
@@ -936,35 +997,6 @@ else:
     taper= taper_default
     )
  P_list= [P]
-
-# Lightweight, data-free validation path.  This deliberately lives after the
-# real indexed-grid parser and ChooseWaveformParams conversion, but before any
-# waveform-duration estimate, frame read, or PSD setup.  It therefore tests
-# the production ILE grid contract without pretending to validate detector
-# conditioning or the extrinsic integrator.
-if opts.zero_likelihood_data_free:
-  if not opts.zero_likelihood:
-    raise ValueError(
-        "--zero-likelihood-data-free requires --zero-likelihood")
-  if not opts.sim_grid or not opts.output_file:
-    raise ValueError(
-        "--zero-likelihood-data-free requires --sim-grid and --output-file")
-  if not _hpip_grid:
-    raise ValueError(
-        "--zero-likelihood-data-free requires a Hyperpipe ASCII --sim-grid")
-  if opts.save_samples or opts.fairdraw_extrinsic_output:
-    raise ValueError(
-        "--zero-likelihood-data-free cannot produce extrinsic samples")
-  from RIFT.misc import hyperpipeline_io as _hpio_data_free
-  for local_index, row in enumerate(np.atleast_1d(grid_in)):
-    values = [float(row[name]) for name in grid_names]
-    values[grid_names.index("lnL")] = 0.0
-    values[grid_names.index("sigma_lnL")] = 0.0
-    event_index = int(opts.event) + local_index
-    fname_output = opts.output_file + "_" + str(event_index) + "_.dat"
-    _hpio_data_free.write_row(fname_output, grid_names, values)
-    print("Data-free zero likelihood output:", fname_output)
-  sys.exit(0)
 
 # User requested bounds for data segment
 if not (opts.data_start_time == None) and  not (opts.data_end_time == None):
@@ -4473,7 +4505,7 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
         # by parameter columns.  All legacy branches below are bypassed so
         # the file layout is determined by hyperpipeline_io.build_column_list.
         # ------------------------------------------------------------------
-        from RIFT.misc import hyperpipeline_io as _hpio
+        _hpio = _load_hyperpipeline_io()
         if _hpio.is_active():
             _use_ecc = bool(opts.save_eccentricity)
             _use_mpa = bool(_use_ecc and opts.save_meanPerAno)

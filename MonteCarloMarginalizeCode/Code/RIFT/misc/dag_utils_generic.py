@@ -2494,7 +2494,7 @@ def write_puff_sub(tag='puffball', exe=None, base=None,input_net='output-ILE-sam
     return ile_job, ile_sub_name
 
 
-def write_ILE_sub_simple(tag='integrate', exe=None, log_dir=None, use_eos=False,simple_unique=False,ncopies=1,arg_str=None,request_memory=4096,request_gpu=False,request_cross_platform=False,request_disk=False,arg_vals=None, transfer_files=None,transfer_output_files=None,use_singularity=False,use_osg=False,use_simple_osg_requirements=False,singularity_image=None,use_cvmfs_frames=False,use_oauth_files=False,frames_dir=None,cache_file=None,fragile_hold=False,max_runtime_minutes=None,condor_commands=None,request_cpus=1,requires_data_inputs=True,**kwargs):
+def write_ILE_sub_simple(tag='integrate', exe=None, log_dir=None, use_eos=False,simple_unique=False,ncopies=1,arg_str=None,request_memory=4096,request_gpu=False,request_cross_platform=False,request_disk=False,arg_vals=None, transfer_files=None,transfer_output_files=None,use_singularity=False,use_osg=False,use_simple_osg_requirements=False,singularity_image=None,use_cvmfs_frames=False,use_oauth_files=False,frames_dir=None,cache_file=None,fragile_hold=False,max_runtime_minutes=None,condor_commands=None,request_cpus=1,requires_data_inputs=True,transfer_executable=False,**kwargs):
     """
     Write a submit file for launching jobs to marginalize the likelihood over intrinsic parameters.
 
@@ -2586,8 +2586,11 @@ def write_ILE_sub_simple(tag='integrate', exe=None, log_dir=None, use_eos=False,
         else:
 #            singularity_base_exe_path = "/opt/lscsoft/rift/MonteCarloMarginalizeCode/Code/"  # should not hardcode this ...!
             singularity_base_exe_path = "/usr/bin/"  # should not hardcode this ...!
-        exe = os.path.join(singularity_base_exe_path, exe_base)
-        singularity_inner_exe = exe
+        if transfer_executable:
+            singularity_inner_exe = "./" + exe_base
+        else:
+            exe = os.path.join(singularity_base_exe_path, exe_base)
+            singularity_inner_exe = exe
         if not(frames_dir is None):
             frames_local = frames_dir.split("/")[-1]
     elif use_osg:  # NOT using singularity!
@@ -2756,7 +2759,7 @@ echo Starting ...
             # and it invokes apptainer itself, so do not ask HTCondor to enter
             # singularity or suppress executable transfer.
             pass
-        else:
+        elif not transfer_executable:
             ile_job.add_condor_cmd('transfer_executable', 'False')
         if singularity_container_universe:
             # Container universe: the per-machine image is delivered via

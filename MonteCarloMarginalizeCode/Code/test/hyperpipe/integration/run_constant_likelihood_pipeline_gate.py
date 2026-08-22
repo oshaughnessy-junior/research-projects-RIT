@@ -112,6 +112,10 @@ def _assert_osg_data_free_contract(rundir: Path):
         assert token not in transferred, (token, transferred)
     assert "precmd" not in commands
     assert "+precmd" not in commands
+    assert "hyperpipeline_io.py" in transferred
+    assert commands.get("transfer_executable", "true").lower() != "false"
+    assert commands["executable"] == str(
+        BIN / "integrate_likelihood_extrinsic_batchmode")
     assert "--zero-likelihood-data-free" in marg_submit
     assert "use_oauth_services = scitokens" in marg_submit
     assert "rift-test.sif" in marg_submit

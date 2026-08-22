@@ -439,6 +439,8 @@ if marg_job_specs is not None:
                     cache_file=execution.get("cache_file"),
                     requires_data_inputs=bool(
                         execution.get("requires_data_inputs", True)),
+                    transfer_executable=bool(
+                        execution.get("transfer_executable", False)),
                     transfer_files=transfer_inputs,
                     transfer_output_files=execution.get("transfer_output_files"),
                     max_runtime_minutes=execution.get("max_runtime_minutes"),

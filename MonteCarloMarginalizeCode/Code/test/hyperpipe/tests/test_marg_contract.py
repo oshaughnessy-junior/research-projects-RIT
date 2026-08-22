@@ -172,6 +172,26 @@ def test_ile_submit_builder_allows_explicit_data_free_container(
     assert "ile_pre.sh" not in submit
 
 
+def test_ile_submit_builder_can_stage_candidate_executable(
+    hp_modules, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SINGULARITY_BASE_EXE_DIR", "/container/bin")
+    worker = tmp_path / "candidate-worker"
+    worker.write_text("#!/bin/sh\nexit 0\n")
+    job, _ = hp_modules.dag_utils_generic.write_ILE_sub_simple(
+        tag="staged", exe=str(worker), arg_str="--constant",
+        use_singularity=True, singularity_image="/tmp/rift.sif",
+        transfer_files=[], requires_data_inputs=False,
+        transfer_executable=True)
+    job.set_sub_file(str(tmp_path / "staged.sub"))
+    job.write_sub_file()
+    submit = (tmp_path / "staged.sub").read_text()
+    assert "executable = {}".format(worker) in submit
+    assert "executable = /container/bin/candidate-worker" not in submit
+    assert "transfer_executable = False" not in submit
+
+
 def test_container_executable_base_does_not_require_trailing_slash(
     hp_modules, tmp_path, monkeypatch
 ):
