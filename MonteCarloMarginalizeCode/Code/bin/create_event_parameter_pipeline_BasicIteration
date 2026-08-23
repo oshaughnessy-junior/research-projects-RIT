@@ -2336,10 +2336,33 @@ if final_evidence_job is not None and final_evidence_parent_node is not None:
 last_node= parent_fit_node # backstop
 if opts.last_iteration_extrinsic:
     # Check if 'it' is defined : it will not always be, if done later
-    if not ('it' in globals()):
-        it = opts.n_iterations  # last iteration
-    elif it < opts.n_iterations and 'Z' in cip_args_prefixes:
-        it += 1   # deal with an offset/fencepost issue that can happen when using subdags for some reason
+    # Which grid the extrinsic stage reads.  `it` is the iteration loop's
+    # leftover value, so it is n_iterations-1 here; the grid the LAST CIP wrote
+    # is overlap-grid-<n_iterations> (CIP at iteration k writes k+1).  That is
+    # the one to read: the last CIP is explicitly sized for this stage above
+    # ("on last iteration, doing extrinsic phase" -> --n-output-samples
+    # last_iteration_extrinsic_nsamples), and the fan-out below partitions
+    # exactly that many rows.
+    #
+    # This used to be corrected only when 'Z' was in the CIP schedule, which
+    # left the two branches of this same conditional disagreeing about what
+    # "last iteration" means: the no-loop branch said n_iterations, the loop
+    # branch said n_iterations-1 unless Z.  On the non-Z path the extrinsic
+    # stage therefore read overlap-grid-<n_iterations-1> -- the grid the last
+    # ILE ran on, i.e. the PREVIOUS iteration's posterior after puffball --
+    # while the final CIP's output went unread, even though the extrinsic nodes
+    # take that CIP as their parent.  With --internal-force-iterations 1 that
+    # degenerates to the raw seed grid, so the extrinsic posterior carried no
+    # information from the data at all.
+    #
+    # Found by running both builders to completion and matching the extrinsic
+    # posterior's intrinsic points against each candidate grid: they matched
+    # overlap-grid-0 to 4e-7 (ASCII round-off) and were 0.9 Msun from
+    # overlap-grid-1.  Hyperpipe read the final CIP posterior and was right.
+    # The Z path already computed n_iterations, so this is a no-op there --
+    # which is where the production ini templates live, and is checked by
+    # diffing a Z build's DAG across this change.
+    it = opts.n_iterations
     print(" Extrinsic information being pulled from iteration {} ".format(it))
 
     # Create nodes for followup tasks

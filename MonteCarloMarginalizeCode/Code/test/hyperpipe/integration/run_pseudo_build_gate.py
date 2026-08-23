@@ -24,6 +24,7 @@ import lal
 
 from RIFT import lalsimutils
 from RIFT.misc import hyperpipeline_io
+from RIFT.misc import terminal_stage_products
 
 
 HERE = Path(__file__).resolve()
@@ -76,7 +77,8 @@ def _build(builder: Optional[str], run_base: Path, seed_grid: Path, cache: Path,
            pickle_file: Optional[Path], run_label: Optional[str] = None,
            bilby_ini: Optional[Path] = None,
            osg_calibration: bool = False,
-           z_convergence: bool = False):
+           z_convergence: bool = False,
+           extra_stage_file: Optional[Path] = None):
     label = builder or "default"
     rundir = run_base / (run_label or label.lower())
     command = [
@@ -132,6 +134,9 @@ def _build(builder: Optional[str], run_base: Path, seed_grid: Path, cache: Path,
             "--internal-propose-converge-last-stage",
             "--internal-n-iterations-subdag-max", "3",
         ])
+    if extra_stage_file is not None:
+        command.extend(
+            ["--terminal-stage-extra-file", str(extra_stage_file)])
     result = subprocess.run(
         command, cwd=str(run_base), env=env,
         text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -276,6 +281,21 @@ def _dag_jobs_and_edges(path: Path):
     return jobs, edges
 
 
+def _dag_node_macros(path: Path):
+    """node name -> {macro: value} from the DAG's VARS lines."""
+    macros = {}
+    for line in path.read_text().splitlines():
+        fields = line.split()
+        if not fields or fields[0] != "VARS":
+            continue
+        entry = macros.setdefault(fields[1], {})
+        for token in fields[2:]:
+            key, sep, value = token.partition("=")
+            if sep:
+                entry[key] = value.strip('"')
+    return macros
+
+
 def _nodes_for_submit(jobs, submit_name):
     return {node for node, submit in jobs.items() if submit == submit_name}
 
@@ -393,6 +413,218 @@ def _assert_osg_calibration_contract(hyper: Path):
     assert "use_oauth_services = scitokens" in submit
     assert "weight_files" in submit
     assert "test-rift.sif" in submit
+
+
+def _assert_stage_product_table_matches(*hyper_dirs):
+    """The pinned stage-name/product table must describe what we actually build.
+
+    `RIFT.misc.terminal_stage_products` promises users two things about every
+    generated stage: its name, and the file it writes.  Nothing at build time
+    reads that table, so without this check the promise is a comment.  The
+    check is deliberately grounded in manifests from real pseudo_pipe builds
+    rather than in a static scan of the source, because a static scan cannot
+    see the stages whose names come from a loop variable.
+
+    Both directions matter.  A stage we emit but do not list is an undocumented
+    name users will discover and depend on anyway; a name we list but never
+    emit is a promise about a stage that does not exist.  The union across the
+    gate's builds is what covers every option-conditional stage -- no single
+    build produces all of them, because bilby_pickle exists only when
+    --bilby-pickle-file is absent.
+    """
+    products = terminal_stage_products.TERMINAL_STAGE_PRODUCTS
+    emitted = {}
+    for hyper in hyper_dirs:
+        manifest_path = hyper / "terminal_stage_specs.json"
+        if not manifest_path.exists():
+            continue
+        for stage in json.loads(manifest_path.read_text())["stages"]:
+            emitted.setdefault(str(stage["name"]), (hyper, stage))
+
+    undocumented = sorted(set(emitted) - set(products))
+    assert not undocumented, (
+        "pseudo_pipe emits terminal stages missing from "
+        "RIFT.misc.terminal_stage_products: {}".format(undocumented))
+    unemitted = sorted(set(products) - set(emitted))
+    assert not unemitted, (
+        "RIFT.misc.terminal_stage_products names stages no build in this gate "
+        "emits, so the promise is unverified: {}".format(unemitted))
+
+    for name, (hyper, stage) in sorted(emitted.items()):
+        product = products[name].product
+        if product is None:
+            continue
+        basename = os.path.basename(product)
+        haystack = json.dumps(stage)
+        if basename not in haystack:
+            # extrinsic_collect and frame_rotation carry no args -- the product
+            # name lives inside the generated script the stage executes.
+            exe = stage.get("exe") or ""
+            if exe and os.path.isfile(exe):
+                haystack = Path(exe).read_text()
+        assert basename in haystack, (
+            "terminal stage {!r} is documented as producing {} but neither its "
+            "manifest entry nor its executable mentions that file; the table "
+            "and the pipeline have drifted".format(name, product))
+
+
+def _assert_extra_terminal_stages_merge(
+        run_base: Path, ascii_grid: Path, cache, pickle_file):
+    """A user manifest attaches to the generated graph, and its errors are loud.
+
+    This is the whole point of --terminal-stage-extra-file: a stage that names
+    a generated stage in depends_on and reads the file that stage writes.  The
+    three rejections below are each a mistake that would otherwise produce a
+    pipeline that builds, exits zero, and does the wrong thing.
+    """
+    extra_dir = run_base / "extra-stages"
+    extra_dir.mkdir(exist_ok=True)
+    extra_path = extra_dir / "user_stages.json"
+    extra_path.write_text(json.dumps({
+        "version": 1,
+        "stages": [
+            {
+                "name": "user_summary",
+                "kind": "command-v1",
+                "depends_on": ["frame_rotation"],
+                "exe": "/bin/cat",
+                "args": "extrinsic_posterior_samples.dat",
+                "initial_dir": ".",
+            },
+            {
+                "name": "user_second",
+                "kind": "command-v1",
+                "depends_on": ["user_summary"],
+                "exe": "/bin/echo",
+                "args": "done",
+                "initial_dir": ".",
+            },
+        ],
+    }, indent=2))
+    hyper_extra = _build(
+        "Hyperpipe", run_base, ascii_grid, cache, pickle_file,
+        run_label="hyperpipe-extra-stages",
+        extra_stage_file=extra_path)
+    manifest = json.loads(
+        (hyper_extra / "terminal_stage_specs.json").read_text())
+    names = [stage["name"] for stage in manifest["stages"]]
+    assert names[-2:] == ["user_summary", "user_second"], names
+    assert "frame_rotation" in names
+
+    dag = hyper_extra / "marginalize_hyperparameters.dag"
+    jobs, edges = _dag_jobs_and_edges(dag)
+    summary = _nodes_for_submit(jobs, "TERMINAL_user_summary.sub")
+    second = _nodes_for_submit(jobs, "TERMINAL_user_second.sub")
+    rotation = _nodes_for_submit(jobs, "TERMINAL_frame_rotation.sub")
+    assert len(summary) == len(second) == len(rotation) == 1
+    assert (next(iter(rotation)), next(iter(summary))) in edges
+    assert (next(iter(summary)), next(iter(second))) in edges
+
+    for index, (label, stages, needle) in enumerate([
+            ("collision", [{
+                "name": "frame_rotation", "kind": "command-v1",
+                "exe": "/bin/true"}], "collides with a stage this build"),
+            ("absent dependency", [{
+                "name": "user_x", "kind": "command-v1", "exe": "/bin/true",
+                "depends_on": ["no_such_stage"]}], "does not emit"),
+            ("duplicate", [
+                {"name": "user_y", "kind": "command-v1", "exe": "/bin/true"},
+                {"name": "user_y", "kind": "command-v1", "exe": "/bin/true"}],
+             "twice")]):
+        bad = extra_dir / "bad-{}.json".format(index)
+        bad.write_text(json.dumps({"version": 1, "stages": stages}))
+        try:
+            _build("Hyperpipe", run_base, ascii_grid, cache,
+                   pickle_file,
+                   run_label="hyperpipe-extra-bad-{}".format(index),
+                   extra_stage_file=bad)
+        except RuntimeError as exc:
+            assert needle in str(exc), (label, str(exc)[-2000:])
+        else:
+            raise AssertionError(
+                "--terminal-stage-extra-file accepted a {} it must "
+                "reject".format(label))
+
+    # Offered to a builder that cannot consume it, the option must fail rather
+    # than build a pipeline silently missing the user's stages.
+    proc = subprocess.run(
+        [sys.executable, str(PSEUDO_PIPE),
+         "--pipeline-builder", "BasicIteration",
+         "--terminal-stage-extra-file", str(extra_path)],
+        cwd=str(run_base), env=_environment(run_base),
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    assert proc.returncode != 0
+    assert "requires --pipeline-builder Hyperpipe" in proc.stdout, (
+        proc.stdout[-2000:])
+
+
+def _assert_extrinsic_reads_the_final_grid(basic: Path, hyper: Path):
+    """The extrinsic stage must read the grid the LAST CIP wrote.
+
+    Stated as an invariant rather than a number, so it holds for any iteration
+    count: whichever grid index the final grid-writing node produces is the one
+    the extrinsic nodes must consume.  In BasicIteration the writer is
+    `join_grids`, whose `macroiterationnext` is the index it writes; the
+    extrinsic ILE nodes read `overlap-grid-$(macroiteration)`.
+
+    This exists because those two disagreed.  `it` is the iteration loop's
+    leftover value, n_iterations-1, and it was corrected to n_iterations only
+    when 'Z' was in the CIP schedule -- so on the default non-Z path the
+    extrinsic stage read the grid the last ILE ran on (the previous
+    iteration's posterior, after puffball) while the final CIP's output, which
+    is explicitly sized for this stage, went unread.  The extrinsic nodes take
+    that CIP as their parent, so the workflow waited for a job whose output it
+    then ignored.
+
+    Found by running, not reading: the extrinsic posterior's intrinsic points
+    matched overlap-grid-0 to 4e-7 and sat ~0.9 Msun from overlap-grid-1.  A
+    build-time gate can state it exactly, which is why it lives here.
+    """
+    dag = basic / "marginalize_intrinsic_parameters_BasicIterationWorkflow.dag"
+    jobs, _ = _dag_jobs_and_edges(dag)
+    macros = _dag_node_macros(dag)
+
+    extrinsic = {
+        macros[node].get("macroiteration")
+        for node, submit in jobs.items()
+        if submit.endswith("ILE_extr.sub")}
+    written = {
+        macros[node].get("macroiterationnext")
+        for node, submit in jobs.items()
+        if submit.endswith("join_grids.sub")}
+    extrinsic.discard(None)
+    written.discard(None)
+    assert extrinsic, "no ILE_extr nodes found in {}".format(dag)
+    assert written, "no join_grids nodes found in {}".format(dag)
+    assert len(extrinsic) == 1, (
+        "extrinsic nodes disagree about which grid to read: "
+        + repr(sorted(extrinsic)))
+    last_written = max(written, key=int)
+    assert next(iter(extrinsic)) == last_written, (
+        "BasicIteration extrinsic stage reads overlap-grid-{} but the last "
+        "grid written is overlap-grid-{}; the final CIP's output -- which is "
+        "sized for exactly this stage -- would go unread".format(
+            next(iter(extrinsic)), last_written))
+
+    # The Hyperpipe writer states the same thing declaratively, so check it in
+    # its own terms rather than assuming the two agree.
+    manifest = json.loads((hyper / "terminal_stage_specs.json").read_text())
+    stages = {stage["name"]: stage for stage in manifest["stages"]}
+    assert stages["extrinsic_samples"]["grid"].endswith(
+        "grid-$(macroiteration).dat"), stages["extrinsic_samples"]["grid"]
+    hyper_dag = hyper / "marginalize_hyperparameters.dag"
+    hyper_macros = _dag_node_macros(hyper_dag)
+    hyper_jobs, _ = _dag_jobs_and_edges(hyper_dag)
+    hyper_extrinsic = {
+        hyper_macros[node].get("macroiteration")
+        for node, submit in hyper_jobs.items()
+        if "TERMINAL_extrinsic_samples" in submit}
+    hyper_extrinsic.discard(None)
+    assert len(hyper_extrinsic) == 1, sorted(hyper_extrinsic)
+    assert next(iter(hyper_extrinsic)) == last_written, (
+        "the two builders' extrinsic stages read different grids: Hyperpipe "
+        "grid-{}, BasicIteration overlap-grid-{}".format(
+            next(iter(hyper_extrinsic)), last_written))
 
 
 def _assert_z_subworkflow_contract(hyper: Path):
@@ -679,6 +911,11 @@ def main(argv=None):
         _assert_automatic_bilby_chain(hyper_auto)
         _assert_osg_calibration_contract(hyper_osg)
         _assert_z_subworkflow_contract(hyper_z)
+        _assert_extrinsic_reads_the_final_grid(basic, hyper)
+        _assert_stage_product_table_matches(
+            hyper, hyper_auto, hyper_osg, hyper_z)
+        _assert_extra_terminal_stages_merge(
+            run_base, ascii_grid, cache, pickle_file)
         _assert_unsupported_gates(run_base)
         _assert_invalid_hyperpipe_grid_fails(run_base, cache, pickle_file)
         print("pseudo build gate: PASS")

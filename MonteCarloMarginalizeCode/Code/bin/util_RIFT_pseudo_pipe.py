@@ -110,6 +110,87 @@ def _job_condor_commands(job):
     return {str(key): value for key, value in job.condor_cmds}
 
 
+def _load_extra_terminal_stages(path, generated_stages):
+    """Read a user terminal-stage manifest and check it against ours.
+
+    The generated manifest is pseudo_pipe's alone; this is the one place a user
+    may add to it.  Two things are checked here rather than in the contract
+    loader, because only here do we know which stages we generated:
+
+    * a user stage may not take a generated stage's name.  The loader would
+      catch the duplicate, but it would report it as "names must be unique"
+      over a list of eleven, which tells the user nothing about which side is
+      theirs or that renaming their own stage is the fix.
+    * a user stage naming a generated stage in `depends_on` must name one that
+      this build actually emitted.  Most generated stages are conditional on an
+      option, so `depends_on: ["calibration_reweight"]` in a run without
+      `--calibration-reweighting` is a live mistake, and the loader would say
+      only "unknown or forward dependencies".
+
+    Paths in the extra file resolve exactly as they do in the generated one:
+    relative to the RUN DIRECTORY, not to the extra file.  That is the only
+    self-consistent rule, because a stage's `args` string is text we cannot
+    rewrite and its paths are necessarily run-relative; splitting the rule by
+    key would make `exe: ./x.sh` and `args: ./x.dat` mean different directories.
+    """
+    path = os.path.abspath(os.path.expanduser(path))
+    if not os.path.isfile(path):
+        raise SystemExit(
+            "pseudo_pipe: --terminal-stage-extra-file does not exist: "
+            + path)
+    try:
+        with open(path) as stream:
+            raw = json.load(stream)
+    except ValueError as exc:
+        raise SystemExit(
+            "pseudo_pipe: --terminal-stage-extra-file is not valid JSON ({}): "
+            "{}".format(path, exc))
+    if not isinstance(raw, dict) or raw.get("version") != 1:
+        raise SystemExit(
+            "pseudo_pipe: --terminal-stage-extra-file must be an object with "
+            "version 1: " + path)
+    extra = raw.get("stages")
+    if not isinstance(extra, list) or not extra:
+        raise SystemExit(
+            "pseudo_pipe: --terminal-stage-extra-file requires a non-empty "
+            "stages list: " + path)
+
+    generated = [str(stage.get("name")) for stage in generated_stages]
+    known = set(generated) | {"pipeline"}
+    seen = set()
+    for stage in extra:
+        if not isinstance(stage, dict) or not stage.get("name"):
+            raise SystemExit(
+                "pseudo_pipe: every stage in --terminal-stage-extra-file "
+                "requires a name: " + path)
+        name = str(stage["name"])
+        if name in generated:
+            raise SystemExit(
+                "pseudo_pipe: --terminal-stage-extra-file stage {!r} collides "
+                "with a stage this build generates. Rename your stage; the "
+                "generated names are an interface (see "
+                "RIFT.misc.terminal_stage_products) and are not yours to "
+                "reuse.".format(name))
+        if name in seen:
+            raise SystemExit(
+                "pseudo_pipe: --terminal-stage-extra-file defines stage {!r} "
+                "twice".format(name))
+        seen.add(name)
+        depends_on = stage.get("depends_on", ["pipeline"])
+        if isinstance(depends_on, str):
+            depends_on = [depends_on]
+        missing = [str(item) for item in depends_on
+                   if str(item) not in known and str(item) not in seen]
+        if missing:
+            raise SystemExit(
+                "pseudo_pipe: --terminal-stage-extra-file stage {!r} depends "
+                "on {} which this build does not emit. Stages generated here: "
+                "{}. Most are conditional on an option -- see "
+                "RIFT.misc.terminal_stage_products for which.".format(
+                    name, missing, generated or ["(none)"]))
+    return list(extra)
+
+
     
 import shutil
 
@@ -397,6 +478,7 @@ parser.add_argument("--skip-reproducibility",action='store_true')
 parser.add_argument("--use-production-defaults",action='store_true',help="Use production defaults. Intended for use with tools like asimov or by nonexperts who just want something to run on a real event.  Will require manual setting of other arguments!")
 parser.add_argument("--use-subdags",action='store_true',help="Use CEPP_Alternate instead of CEPP_BasicIteration. Note this writes an adaptively-sized DAG each iteration, but doesn't otherwise optimize yet.")
 parser.add_argument("--pipeline-builder",default=None,choices=["BasicIteration","AlternateIteration","Hyperpipe"],help="Explicitly select the low-level iteration builder. Hyperpipe is opt-in and uses the generic .dat pipeline with ILE as its indexed-grid MARG evaluator. Overrides the implicit --use-subdags routing.")
+parser.add_argument("--terminal-stage-extra-file",default=None,type=str,help="Path to a user terminal-stage manifest (version 1, same schema as the generated terminal_stage_specs.json) whose stages are appended to the ones this pipeline generates. Its stages may name generated stages in depends_on; see RIFT.misc.terminal_stage_products for the stable stage names and the file each writes. Relative paths resolve against the run directory. Requires --pipeline-builder Hyperpipe.")
 parser.add_argument("--use-ile-subdags",action='store_true',help="Use ILE subdag system (new)")
 parser.add_argument("--bilby-ini-file",default=None,type=str,help="Pass ini file for parsing. Intended to use for calibration reweighting. Full path recommended")
 parser.add_argument("--bilby-pickle-file",default=None,type=str,help="Bilby Pickle file with event settings. Intended to use for calibration reweighting. Full path recommended")
@@ -797,6 +879,15 @@ if opts.pipeline_builder == "Hyperpipe":
 elif opts.ile_zero_likelihood_data_free:
     raise SystemExit(
         "pseudo_pipe: --ile-zero-likelihood-data-free requires "
+        "--pipeline-builder Hyperpipe")
+
+if (opts.terminal_stage_extra_file
+        and opts.pipeline_builder != "Hyperpipe"):
+    # Only the Hyperpipe writer consumes a terminal-stage manifest.  Accepting
+    # the option elsewhere would build a pipeline missing the user's stages and
+    # exit zero, which is the worst of the available failures.
+    raise SystemExit(
+        "pseudo_pipe: --terminal-stage-extra-file requires "
         "--pipeline-builder Hyperpipe")
 
 
@@ -2546,6 +2637,7 @@ if opts.pipeline_builder == "Hyperpipe":
         stream.write("\n")
 
     terminal_stage_spec_path = None
+    terminal_stages = []
     if opts.add_extrinsic:
         # The maintained pseudo-pipe path uses ILE's time-resampled fairdraw
         # mode. Express it as generic terminal indexed-grid fan-out followed
@@ -2688,7 +2780,7 @@ if opts.pipeline_builder == "Hyperpipe":
                 "retries": int(opts.general_retries),
             },
         }
-        terminal_stages = [
+        terminal_stages.extend([
             {
                 "name": "extrinsic_samples",
                 "kind": "indexed-grid-fanout-v1",
@@ -2710,7 +2802,7 @@ if opts.pipeline_builder == "Hyperpipe":
                 "depends_on": ["extrinsic_samples"],
                 "exe": terminal_collect_script,
             }, **terminal_command_common),
-        ]
+        ])
         if terminal_rotation_script:
             terminal_stages.append(dict({
                 "name": "frame_rotation",
@@ -2922,6 +3014,15 @@ if opts.pipeline_builder == "Hyperpipe":
                             terminal_extrinsic_dir, postfix,
                             os.getcwd(), output)),
                 }, **terminal_command_common))
+    # The user's stages come last and are never reordered among themselves, so
+    # a manifest read on its own runs in the order it is written.  They are
+    # merged outside the --add-extrinsic block on purpose: a stage that only
+    # post-processes the final posterior_samples-N.dat needs no extrinsic
+    # stage, and refusing to build one would be an arbitrary coupling.
+    if opts.terminal_stage_extra_file:
+        terminal_stages.extend(_load_extra_terminal_stages(
+            opts.terminal_stage_extra_file, terminal_stages))
+    if terminal_stages:
         terminal_manifest = {"version": 1, "stages": terminal_stages}
         terminal_stage_spec_path = os.path.abspath(
             "terminal_stage_specs.json")
