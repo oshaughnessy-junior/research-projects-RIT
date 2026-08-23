@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import json
 from pathlib import Path
 import re
 import shlex
@@ -52,8 +53,58 @@ def _write_zero_spin_grid(path: Path):
         str(path), hyperpipeline_io.DEFAULT_BASE_COLUMNS, rows)
 
 
+def _write_user_terminal_stage(run_base: Path):
+    """A third-party terminal stage, written the way a user would write one.
+
+    The plan for composable flows argues the manifest is already the extension
+    surface and that no plugin framework is needed -- a user stage is JSON
+    naming an executable and what it depends on.  That claim is only worth
+    anything if such a stage actually runs, so this gate builds one and
+    executes the workflow.  Note it uses no --add-extrinsic: the manifest here
+    contains ONLY the user's stages, which is the case a user hits first and
+    the one most likely to be broken by an implementation that assumes the
+    generated stages are always present.
+    """
+    script = run_base / "user_stage.sh"
+    script.write_text(
+        "#!/bin/bash\n"
+        "set -euo pipefail\n"
+        "# Read the pipeline's final grid and write a summary beside it.  The\n"
+        "# point is to prove a user stage sees the finished product, so this\n"
+        "# fails loudly rather than writing an empty file.\n"
+        "test -s \"$1\" || { echo \"user stage: $1 missing or empty\" >&2; exit 1; }\n"
+        "printf 'rows %s\\n' \"$(grep -vc '^#' \"$1\")\" > \"$2\"\n")
+    script.chmod(0o755)
+    manifest = run_base / "user_stages.json"
+    manifest.write_text(json.dumps({
+        "version": 1,
+        "stages": [{
+            "name": "user_summary",
+            "kind": "command-v1",
+            "depends_on": ["pipeline"],
+            "exe": str(script),
+            "args": "{0}/grid-1.dat {0}/user_summary.txt".format(
+                run_base / "run"),
+            "initial_dir": ".",
+            "universe": "local",
+        }],
+    }, indent=2))
+    return manifest
+
+
+def _assert_user_terminal_stage_ran(rundir: Path):
+    product = rundir / "user_summary.txt"
+    assert product.exists(), (
+        "the user terminal stage did not run; a manifest containing only user "
+        "stages must still produce a terminal graph")
+    text = product.read_text().strip()
+    assert text.startswith("rows ") and int(text.split()[1]) > 0, text
+    manifest = json.loads((rundir / "terminal_stage_specs.json").read_text())
+    assert [stage["name"] for stage in manifest["stages"]] == ["user_summary"]
+
+
 def _build(run_base: Path, osg_contract=False, backend: str = "htcondor",
-           builder: str = "Hyperpipe"):
+           builder: str = "Hyperpipe", user_stages: Path = None):
     seed = run_base / "zero-spin-grid.dat"
     cache = run_base / "empty.cache"
     rundir = run_base / "run"
@@ -97,6 +148,8 @@ def _build(run_base: Path, osg_contract=False, backend: str = "htcondor",
     if builder != "Hyperpipe":
         # BasicIteration only speaks the ASCII grid contract when asked.
         env["RIFT_HYPERPIPELINE_FORMAT"] = "1"
+    if user_stages is not None:
+        command.extend(["--terminal-stage-extra-file", str(user_stages)])
     if osg_contract:
         command.extend([
             "--use-osg",
@@ -373,8 +426,15 @@ def main(argv=None):
             raise SystemExit(
                 "--builder BasicIteration is only supported with "
                 "--backend local; the htcondor lane parses Hyperpipe's DAG.")
+        # The user-stage lane only makes sense where the workflow actually
+        # runs, and only for the writer that consumes a terminal manifest.
+        user_stages = None
+        if (args.backend == "local" and args.builder == "Hyperpipe"
+                and not args.osg_build_contract_only):
+            user_stages = _write_user_terminal_stage(run_base)
         rundir = _build(run_base, osg_contract=args.osg_build_contract_only,
-                        backend=args.backend, builder=args.builder)
+                        backend=args.backend, builder=args.builder,
+                        user_stages=user_stages)
         if args.osg_build_contract_only:
             _assert_osg_data_free_contract(rundir)
             print("constant-likelihood OSG build contract gate: PASS")
@@ -392,6 +452,8 @@ def main(argv=None):
             logs, completed = _execute_without_condor(rundir, env)
         if args.builder == "Hyperpipe":
             _assert_outputs(rundir, logs, completed)
+            if user_stages is not None:
+                _assert_user_terminal_stage_ran(rundir)
         else:
             _assert_legacy_outputs(rundir, logs)
         print("constant-likelihood pipeline gate ({} builder, {} backend): "

@@ -473,9 +473,16 @@ def _assert_extra_terminal_stages_merge(
     """A user manifest attaches to the generated graph, and its errors are loud.
 
     This is the whole point of --terminal-stage-extra-file: a stage that names
-    a generated stage in depends_on and reads the file that stage writes.  The
-    three rejections below are each a mistake that would otherwise produce a
-    pipeline that builds, exits zero, and does the wrong thing.
+    a generated stage in depends_on and reads the file that stage writes.
+
+    The three rejections below are each checked for the SPECIFIC message
+    pseudo_pipe emits, not merely for a nonzero exit.  Mutation-testing showed
+    why that matters: with pseudo_pipe's check removed, the contract loader
+    still rejects the manifest, so an exit-code assertion would pass while the
+    user got "terminal stage names must be unique" over a list of eleven
+    instead of "your stage collides with one this build generates; rename it".
+    Message quality is the whole deliverable here, so it is what the gate
+    asserts.
     """
     extra_dir = run_base / "extra-stages"
     extra_dir.mkdir(exist_ok=True)

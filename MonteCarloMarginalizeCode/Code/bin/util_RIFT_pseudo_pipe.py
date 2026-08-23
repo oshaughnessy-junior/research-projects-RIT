@@ -114,8 +114,14 @@ def _load_extra_terminal_stages(path, generated_stages):
     """Read a user terminal-stage manifest and check it against ours.
 
     The generated manifest is pseudo_pipe's alone; this is the one place a user
-    may add to it.  Two things are checked here rather than in the contract
-    loader, because only here do we know which stages we generated:
+    may add to it.
+
+    These checks buy MESSAGE QUALITY, not safety.  Mutation-testing them showed
+    the contract loader already rejects every one of these manifests
+    downstream, so removing a check here does not produce a pipeline that
+    builds and does the wrong thing -- it produces a build that fails with a
+    worse explanation.  Two things are checked here rather than there because
+    only here do we know which stages we generated:
 
     * a user stage may not take a generated stage's name.  The loader would
       catch the duplicate, but it would report it as "names must be unique"
