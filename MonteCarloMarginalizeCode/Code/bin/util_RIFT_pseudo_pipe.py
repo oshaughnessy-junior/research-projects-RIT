@@ -2988,7 +2988,16 @@ if opts.pipeline_builder == "Hyperpipe":
     subprocess.run(hyperpipe_cmd, check=True, env=os.environ.copy())
 else:
     print(cmd)
-    os.system(cmd)
+    # os.system() discards the child's exit status, so a builder that died with
+    # a traceback left pseudo_pipe reporting success and an empty run directory
+    # -- the failure only surfaced later as "there is no DAG".  The Hyperpipe
+    # branch above already uses check=True; the legacy branch must too.
+    _builder = subprocess.run(cmd, shell=True)
+    if _builder.returncode:
+        raise SystemExit(
+            "pseudo_pipe: pipeline builder failed with exit {}; see the output "
+            "above. The run directory is incomplete.".format(
+                _builder.returncode))
 
 if opts.internal_ile_check_good_enough:
     # Populate 'ile_check_good_enough' through all subdirectories

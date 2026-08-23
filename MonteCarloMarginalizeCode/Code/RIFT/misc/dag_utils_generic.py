@@ -1892,7 +1892,12 @@ class LocalBackend(WorkflowBackend):
     def emit_job(self, job, path):
         if not job.executable:
             raise RuntimeError("LocalBackend.emit_job: job has no executable")
-        lines = ["#!/bin/bash", "set -e", ""]
+        # `set -u` is load-bearing, not hygiene.  The two defects this backend
+        # exists to expose -- an unresolved per-node macro and a working
+        # directory that was never entered -- both produce a job that runs to a
+        # ZERO exit status with something silently missing.  Without -u, an
+        # unassigned macro expands to the empty string and the job "succeeds".
+        lines = ["#!/bin/bash", "set -euo pipefail", ""]
         for key, value in job.resources.items():
             lines.append("# resource {} = {} (no local equivalent)".format(key, value))
         if job.condor_cmds:
@@ -1913,13 +1918,49 @@ class LocalBackend(WorkflowBackend):
                 quoted = self.shell_word(stream)
                 lines.append("mkdir -p \"$(dirname {})\"".format(quoted))
                 redirect += " {} {}".format(operator, quoted)
-        lines.append("exec {}{}".format(self.shell_command(job), redirect))
+        # HTCondor's `queue N` runs the job N times with a distinct $(process).
+        # Dropping that would silently under-produce -- ILE's --n-copies is
+        # exactly this -- so run the loop here rather than pretend N == 1.
+        copies = max(1, int(job.queue_count or 1))
+        command = "{}{}".format(self.shell_command(job), redirect)
+        if copies == 1:
+            lines.append("exec {}".format(command))
+        else:
+            lines.append("# HTCondor 'queue {}': one process per iteration".format(copies))
+            lines.append("for RIFT_PROCESS in $(seq 0 {}); do".format(copies - 1))
+            lines.append("  export RIFT_PROCESS")
+            lines.append("  {}".format(command))
+            lines.append("done")
         with open(path, "w") as fh:
             fh.write("\n".join(lines) + "\n")
         try:
             os.chmod(path, 0o755)
         except OSError:
             pass
+
+    # Callers add SCRIPT POST / ABORT-DAG-ON *after* write_concrete_dag() --
+    # create_event_parameter_pipeline_BasicIteration does exactly that -- and
+    # the base class then appends raw DAGMan text to whatever the backend
+    # wrote.  In a bash driver that is a syntax error at best; worse, the
+    # confirm_exist.sh POST guards and the convergence ABORT-DAG-ON would be
+    # lost.  Re-emit instead, exactly as the Slurm backend does.
+    def _reemit(self, dag):
+        self.emit_dag(dag, dag.dag_file)
+
+    def append_script_pre(self, dag, name, exe, args_str):
+        self._reemit(dag)
+
+    def append_script_post(self, dag, name, exe, args_str):
+        self._reemit(dag)
+
+    def append_abort_on(self, dag, name, exit_code, return_value):
+        self._reemit(dag)
+
+    def append_dot_file(self, dag, path):
+        self._reemit(dag)
+
+    def append_extra_directive(self, dag, line):
+        self._reemit(dag)
 
     def output_path_for_dag(self, dag_file):
         if dag_file.endswith(".sh"):
@@ -1941,7 +1982,10 @@ class LocalBackend(WorkflowBackend):
             "#!/bin/bash",
             "# Local driver: runs this workflow's nodes in dependency order",
             "# as ordinary processes.  No scheduler is involved.",
-            "set -uo pipefail",
+            "# -e is deliberate and load-bearing: anything this driver runs",
+            "# outside run_node -- a SCRIPT PRE/POST hook, a sub-workflow --",
+            "# must stop the workflow when it fails, the way DAGMan would.",
+            "set -euo pipefail",
             "",
         ]
         for key, value in dag.environment.items():
@@ -1949,28 +1993,56 @@ class LocalBackend(WorkflowBackend):
         if dag.environment:
             lines.append("")
         lines.extend([
+            'run_step() {',
+            '  # A pre/post script or a sub-workflow.  DAGMan treats a failing',
+            '  # one as a failed node; a bare command in a driver without -e',
+            '  # would let the workflow carry on as if nothing happened.',
+            '  local label="$1"; shift',
+            '  echo "[local] ${label}"',
+            '  if ! "$@"; then',
+            '    echo "[local] FAILED ${label}" >&2',
+            '    exit 1',
+            '  fi',
+            '}',
+            "",
             'run_node() {',
-            '  local name="$1"; local retries="$2"; local script="$3"; shift 3',
-            '  local attempt=0',
+            '  # abort_code/abort_return implement DAGMan ABORT-DAG-ON: that',
+            '  # exit status ends the workflow immediately with the declared',
+            '  # return value, and is NOT retried.  RIFT uses it for the',
+            '  # convergence test, where exit 1 means "converged, stop" -- a',
+            '  # driver that retried it would turn success into failure.',
+            '  local name="$1"; local retries="$2"; local abort_code="$3"',
+            '  local abort_return="$4"; local script="$5"; shift 5',
+            '  local attempt=0 rc=0',
             '  while :; do',
             '    echo "[local] running ${name} (attempt $((attempt+1)))"',
-            '    if env "$@" bash "${script}"; then return 0; fi',
+            '    rc=0',
+            '    env "$@" bash "${script}" || rc=$?',
+            '    if [ "${rc}" -eq 0 ]; then return 0; fi',
+            '    if [ -n "${abort_code}" ] && [ "${rc}" -eq "${abort_code}" ]; then',
+            '      echo "[local] ABORT-DAG-ON ${name}: exit ${rc}, workflow returns ${abort_return}"',
+            '      exit "${abort_return}"',
+            '    fi',
             '    attempt=$((attempt+1))',
             '    if [ "${attempt}" -gt "${retries}" ]; then',
-            '      echo "[local] FAILED ${name} after $((retries+1)) attempt(s)" >&2',
+            '      echo "[local] FAILED ${name} after $((retries+1)) attempt(s), exit ${rc}" >&2',
             '      exit 1',
             '    fi',
             '  done',
             '}',
             "",
         ])
+        abort_by_name = {}
+        for entry in dag.abort_on:
+            abort_by_name[_GenericDAG._node_name(entry[0])] = (entry[1], entry[2])
         for node in order:
             for exe, args in pre_by_name.get(node.name, []):
-                lines.append("{} {}".format(exe, args).rstrip())
+                lines.append("run_step {} {} {}".format(
+                    shlex.quote("SCRIPT PRE " + node.name), exe, args).rstrip())
             if isinstance(node, _GenericSubdagNode):
-                lines.append('echo "[local] sub-workflow {}"'.format(node.subdag_file))
-                lines.append("bash {}".format(
-                    self.output_path_for_dag(node.subdag_file)))
+                lines.append("run_step {} bash {}".format(
+                    shlex.quote("sub-workflow " + node.subdag_file),
+                    shlex.quote(self.output_path_for_dag(node.subdag_file))))
             else:
                 script = node.job.get_sub_file()
                 if script is None:
@@ -1979,12 +2051,20 @@ class LocalBackend(WorkflowBackend):
                 env_pairs = " ".join(
                     "{}={}".format(self.local_var_name(k), shlex.quote(str(v)))
                     for k, v in node.macros.items())
-                lines.append('run_node {} {} {}{}'.format(
+                abort_code, abort_return = abort_by_name.get(node.name, ("", 0))
+                lines.append('run_node {} {} {} {} {}{}'.format(
                     shlex.quote(node.name), int(node.retry or 0),
+                    shlex.quote(str(abort_code)), int(abort_return),
                     shlex.quote(script),
                     (" " + env_pairs) if env_pairs else ""))
             for exe, args in post_by_name.get(node.name, []):
-                lines.append("{} {}".format(exe, args).rstrip())
+                lines.append("run_step {} {} {}".format(
+                    shlex.quote("SCRIPT POST " + node.name), exe, args).rstrip())
+        if dag.dot_file is not None:
+            lines.append("# DOT {} (no local equivalent)".format(dag.dot_file))
+        for directive in dag.extra_directives:
+            lines.append("# DAGMan directive, inert here: {}".format(
+                directive.rstrip()))
         lines.append('echo "[local] workflow complete"')
         with open(path, "w") as fh:
             fh.write("\n".join(lines) + "\n")

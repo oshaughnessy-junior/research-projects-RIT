@@ -81,13 +81,115 @@ def test_frames_are_paired_in_time_order(tmp_path, monkeypatch):
             "cache entry paired with a frame from a different GPS time: " + line)
 
 
-def test_refuses_to_pair_a_mismatched_directory(tmp_path, monkeypatch):
-    """A positional pairing is only safe if the counts match; say so loudly."""
-    _, frames = _make_run_dir(tmp_path, n=3)
-    (frames / "H-H1_HOFT_C00-9999999999-4096.gwf").write_text("extra")
+def _make_multi_ifo(tmp_path, cache_order, frame_ifos=("H1", "L1", "V1")):
+    """A cache in *cache_order* against one merged frame per detector.
+
+    This is the shape util_ForOSG_MakeTruncatedLocalFramesDir.sh actually
+    produces: one frame per IFO, whose GPS span is slightly wider than the
+    cache entry it serves.
+    """
+    frames = tmp_path / "frames_dir"
+    frames.mkdir()
+    for ifo in frame_ifos:
+        (frames / "{}-O4MDC-1372203665-1186.gwf".format(ifo)).write_text("f")
+    cache = tmp_path / "local.cache"
+    cache.write_text("\n".join(
+        "{} O4MDC 1372203666 1184 /submit/host/{}.gwf".format(ifo, ifo)
+        for ifo in cache_order) + "\n")
+    return cache, frames
+
+
+@pytest.mark.parametrize("cache_order", [
+    ("H1", "L1", "V1"),
+    ("H1", "V1", "L1"),   # the common real ordering, and the one that broke
+    ("V1", "L1", "H1"),
+    ("L1", "H1"),
+])
+def test_entries_are_matched_by_detector_not_by_position(tmp_path, monkeypatch,
+                                                         cache_order):
+    """Zipping the cache against sorted(listdir) mispairs, and does it silently.
+
+    Caches are frequently ordered H1 V1 L1 while a sorted directory listing is
+    H1 L1 V1.  A count check cannot see the swap -- the counts agree -- so the
+    cache would name a frame from the wrong detector and only fail much later,
+    on a worker, if at all.
+    """
+    _make_multi_ifo(tmp_path, cache_order)
+    monkeypatch.chdir(tmp_path)
+    lines = rewrite_cache_for_worker_transfer("local.cache", "frames_dir")
+    assert len(lines) == len(cache_order)
+    for line in lines:
+        fields = line.split()
+        observatory, frame = fields[0], os.path.basename(fields[4])
+        assert frame.startswith(observatory + "-"), (
+            "cache entry for {} was paired with {}".format(observatory, frame))
+
+
+def test_several_segments_per_detector_share_the_merged_frame(tmp_path,
+                                                              monkeypatch):
+    """More cache lines than frames is legitimate, not an error.
+
+    The truncation script writes ONE merged frame per detector, so a cache with
+    two segments for V1 has four lines and three frames.  A count check would
+    reject this run at build time.
+    """
+    frames = tmp_path / "frames_dir"
+    frames.mkdir()
+    for ifo in ("H1", "L1", "V1"):
+        (frames / "{}-O4MDC-1372203665-1186.gwf".format(ifo)).write_text("f")
+    (tmp_path / "local.cache").write_text(
+        "H1 O4MDC 1372203666 500 /submit/a.gwf\n"
+        "L1 O4MDC 1372203666 500 /submit/b.gwf\n"
+        "V1 O4MDC 1372203666 500 /submit/c.gwf\n"
+        "V1 O4MDC 1372204200 500 /submit/d.gwf\n")
+    monkeypatch.chdir(tmp_path)
+    lines = rewrite_cache_for_worker_transfer("local.cache", "frames_dir")
+    assert len(lines) == 4
+    assert sum(1 for line in lines if line.startswith("V1 ")) == 2
+    for line in lines:
+        assert os.path.basename(line.split()[4]).startswith(line.split()[0])
+
+
+def test_single_letter_observatory_column_still_matches(tmp_path, monkeypatch):
+    """Caches spell the observatory 'H' or 'H1' depending on their origin."""
+    frames = tmp_path / "frames_dir"
+    frames.mkdir()
+    (frames / "H-H1_HOFT_C00-1000000000-4096.gwf").write_text("f")
+    (tmp_path / "local.cache").write_text(
+        "H H1_HOFT_C00 1000000000 4096 /submit/x.gwf\n")
+    monkeypatch.chdir(tmp_path)
+    lines = rewrite_cache_for_worker_transfer("local.cache", "frames_dir")
+    assert lines[0].endswith("frames_dir/H-H1_HOFT_C00-1000000000-4096.gwf")
+
+
+def test_refuses_when_no_frame_matches(tmp_path, monkeypatch):
+    """An unmatched detector must fail loudly, not pick something plausible."""
+    _make_multi_ifo(tmp_path, ("H1", "L1", "K1"))
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(ValueError) as excinfo:
+        rewrite_cache_for_worker_transfer("local.cache", "frames_dir")
+    assert "K1" in str(excinfo.value)
+
+
+def test_refuses_an_ambiguous_multi_frame_detector(tmp_path, monkeypatch):
+    """Two frames for one detector, neither covering the entry: do not guess."""
+    frames = tmp_path / "frames_dir"
+    frames.mkdir()
+    (frames / "H1-O4MDC-1000000000-16.gwf").write_text("f")
+    (frames / "H1-O4MDC-1000000100-16.gwf").write_text("f")
+    (tmp_path / "local.cache").write_text(
+        "H1 O4MDC 1000000050 16 /submit/x.gwf\n")
     monkeypatch.chdir(tmp_path)
     with pytest.raises(ValueError):
         rewrite_cache_for_worker_transfer("local.cache", "frames_dir")
+
+
+def test_missing_frames_directory_is_a_clear_error(tmp_path, monkeypatch):
+    (tmp_path / "local.cache").write_text("H1 O4MDC 1 2 /submit/x.gwf\n")
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(ValueError) as excinfo:
+        rewrite_cache_for_worker_transfer("local.cache", "frames_dir")
+    assert "does not exist" in str(excinfo.value)
 
 
 def test_absolute_frames_dir_yields_absolute_entries(tmp_path):

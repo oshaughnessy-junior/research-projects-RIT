@@ -21,6 +21,7 @@ more than a stock python interpreter.
 
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -440,6 +441,189 @@ class GlueBackendTests(unittest.TestCase):
                 text = _fh.read()
             self.assertIn("PARENT", text)
             self.assertIn("ENV SET RIFT_HYPERPIPELINE_FORMAT=1", text)
+
+
+class LocalBackendTests(unittest.TestCase):
+    """The local backend RUNS things, so these tests run them.
+
+    Every case here is a way a workflow can fail while still reporting
+    success -- the failure mode this backend exists to eliminate, and the one
+    a static inspection of the emitted scripts cannot see.
+    """
+
+    def setUp(self):
+        self.m = _load_with_stubs()
+        self.m.set_backend("local")
+
+    def _script_job(self, td, name, body, retry=0):
+        """A node whose payload is a real script file.
+
+        Deliberately NOT `/bin/bash -c "<body>"`: HTCondor's argument syntax
+        splits on whitespace unless a group is single-quoted, so a body passed
+        as one add_arg would arrive as several argv elements -- and the test
+        would exercise the quoting rules rather than the thing under test.
+        """
+        payload = os.path.join(td, name + "_payload.sh")
+        with open(payload, "w") as fh:
+            fh.write("#!/bin/bash\n" + body + "\n")
+        os.chmod(payload, 0o755)
+        job = self.m.CondorDAGJob(executable=payload)
+        job.set_sub_file(os.path.join(td, name + ".sh"))
+        job.write_sub_file()
+        node = self.m.CondorDAGNode(job)
+        node.set_retry(retry)
+        return job, node
+
+    def _run(self, td, dag):
+        dag.set_dag_file(os.path.join(td, "wf.dag"))
+        dag.write_concrete_dag()
+        return subprocess.run(["bash", dag.dag_file], cwd=td, text=True,
+                              stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, timeout=120)
+
+    def test_failing_subdag_stops_the_workflow(self):
+        """A bare `bash child.sh` in a driver without -e ignores the failure."""
+        with tempfile.TemporaryDirectory() as td:
+            child = os.path.join(td, "child_local.sh")
+            with open(child, "w") as fh:
+                fh.write("#!/bin/bash\nexit 3\n")
+            _job, after = self._script_job(
+                td, "after", "echo AFTER-SUBDAG > " + os.path.join(td, "after.txt"))
+            subdag = self.m.CondorDAGManJob(os.path.join(td, "child.dag"))
+            sub_node = subdag.create_node()
+            after.add_parent(sub_node)
+            dag = self.m.CondorDAG()
+            dag.add_node(sub_node)
+            dag.add_node(after)
+            result = self._run(td, dag)
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertFalse(os.path.exists(os.path.join(td, "after.txt")),
+                             "a downstream node ran after a failed sub-workflow")
+
+    def test_abort_dag_on_ends_the_workflow_with_its_return_value(self):
+        """RIFT's convergence test exits 1 to mean "converged, stop".
+
+        Without ABORT-DAG-ON that is an ordinary failure, and the run ends
+        with no posterior -- success turned into failure by the driver.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            _job, converge = self._script_job(td, "converge", "exit 1")
+            _job2, after = self._script_job(
+                td, "after", "echo RAN > " + os.path.join(td, "after.txt"))
+            after.add_parent(converge)
+            dag = self.m.CondorDAG()
+            dag.add_node(converge)
+            dag.add_node(after)
+            dag.set_dag_file(os.path.join(td, "wf.dag"))
+            dag.write_concrete_dag()
+            # Added AFTER the write, exactly as BasicIteration does it.
+            dag.add_abort_on(converge, 1, 0)
+            result = subprocess.run(["bash", dag.dag_file], cwd=td, text=True,
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, timeout=120)
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertIn("ABORT-DAG-ON", result.stdout)
+            self.assertFalse(os.path.exists(os.path.join(td, "after.txt")))
+
+    def test_control_logic_added_after_writing_is_not_pasted_verbatim(self):
+        """DAGMan text appended to a bash driver is a syntax error, or worse.
+
+        BasicIteration calls write_concrete_dag() and only then adds its
+        SCRIPT POST guards.  If the backend does not re-emit, those guards
+        vanish silently and the driver ends up with `SCRIPT POST ...` lines
+        that bash tries to execute.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            guard = os.path.join(td, "guard.sh")
+            with open(guard, "w") as fh:
+                fh.write("#!/bin/bash\ntouch " + os.path.join(td, "guard.txt") + "\n")
+            os.chmod(guard, 0o755)
+            _job, node = self._script_job(td, "work", "true")
+            dag = self.m.CondorDAG()
+            dag.add_node(node)
+            dag.set_dag_file(os.path.join(td, "wf.dag"))
+            dag.write_concrete_dag()
+            dag.add_script_post(node, guard)
+            dag.set_dot_file("vis.dot")
+
+            text = open(dag.dag_file).read()
+            for directive in ("SCRIPT POST ", "DOT ", "ABORT-DAG-ON "):
+                for line in text.splitlines():
+                    self.assertFalse(
+                        line.startswith(directive),
+                        "DAGMan directive pasted into a bash driver: " + line)
+            result = subprocess.run(["bash", dag.dag_file], cwd=td, text=True,
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, timeout=120)
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertTrue(os.path.exists(os.path.join(td, "guard.txt")),
+                            "the SCRIPT POST guard was dropped")
+
+    def test_failing_post_script_fails_the_workflow(self):
+        """Belt and braces, and deliberately so.
+
+        Two independent mechanisms stop the workflow here: run_step checks the
+        hook's status, and the driver runs under `set -e`.  That means this
+        test is NOT lethal to removing either one alone -- I checked -- so it
+        is a behaviour assertion rather than a guard on one line of emission.
+        The guard on the hook actually being emitted is
+        test_control_logic_added_after_writing_is_not_pasted_verbatim.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            guard = os.path.join(td, "guard.sh")
+            with open(guard, "w") as fh:
+                fh.write("#!/bin/bash\nexit 4\n")
+            os.chmod(guard, 0o755)
+            _job, node = self._script_job(td, "work", "true")
+            _job2, after = self._script_job(
+                td, "after", "echo RAN > " + os.path.join(td, "after.txt"))
+            after.add_parent(node)
+            dag = self.m.CondorDAG()
+            dag.add_node(node)
+            dag.add_node(after)
+            dag.add_script_post(node, guard)
+            result = self._run(td, dag)
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            # The status alone is weak: an unchecked failing command can leave
+            # a nonzero status behind while the workflow carries on.  What
+            # must not happen is the next node running.
+            self.assertFalse(os.path.exists(os.path.join(td, "after.txt")),
+                             "a downstream node ran after a failed POST script")
+
+    def test_queue_count_runs_every_process(self):
+        """`queue N` is ILE's --n-copies; running it once under-produces."""
+        with tempfile.TemporaryDirectory() as td:
+            out = os.path.join(td, "copies.txt")
+            job, node = self._script_job(
+                td, "copies", "echo COPY >> " + out)
+            job._CondorJob__queue = 5
+            job.write_sub_file()
+            dag = self.m.CondorDAG()
+            dag.add_node(node)
+            result = self._run(td, dag)
+            self.assertEqual(result.returncode, 0, result.stdout)
+            with open(out) as fh:
+                self.assertEqual(len(fh.read().split()), 5)
+
+    def test_an_unassigned_macro_is_fatal_not_empty(self):
+        """The defect this backend exists to expose must not be survivable.
+
+        A job that reads a macro its node never assigned would, without
+        `set -u`, run with an empty argument and exit zero.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            job = self.m.CondorDAGJob(executable="/bin/echo")
+            job.add_opt("event", "$(macroevent)")
+            job.set_sub_file(os.path.join(td, "j.sh"))
+            job.write_sub_file()
+            node = self.m.CondorDAGNode(job)   # no add_macro at all
+            dag = self.m.CondorDAG()
+            dag.add_node(node)
+            result = self._run(td, dag)
+            self.assertNotEqual(
+                result.returncode, 0,
+                "a job read an unassigned macro and still succeeded:\n"
+                + result.stdout)
 
 
 class SlurmBackendTests(unittest.TestCase):
