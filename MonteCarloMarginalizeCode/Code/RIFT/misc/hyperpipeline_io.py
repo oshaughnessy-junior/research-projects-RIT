@@ -49,6 +49,7 @@ from __future__ import absolute_import, division, print_function
 
 import os
 import shutil
+import warnings
 import numpy as np
 
 
@@ -65,6 +66,80 @@ ENV_FLAG = "RIFT_HYPERPIPELINE_FORMAT"
 #: prepend ``# `` so the on-disk first line is ``# RIFT_HYPERPIPELINE_V1``.
 #: Sniff/read code strips any leading ``#`` and whitespace before matching.
 MAGIC = "RIFT_HYPERPIPELINE_V1"
+
+#: Marker for the optional per-grid metadata line.
+META_MAGIC = "RIFT_HYPERPIPELINE_META"
+
+#: Waveform-generation settings that are properties of the ANALYSIS, not of a
+#: point, and that the ligolw sim_inspiral table carries but this format's
+#: columns do not.
+#:
+#: They are here because leaving them out is not neutral.  ``ampO`` is the
+#: amplitude PN order: the XML path carries -1 ("all orders"), while a fresh
+#: ``ChooseWaveformParams`` defaults to 0, which generates ONLY the (2,+-2)
+#: modes.  ILE then raises ``KeyError: (2, -1)`` for every point, reports
+#: "FAILED ANALYSIS", writes no output -- and exits 0.  An analysis run from an
+#: ASCII grid therefore evaluated a different waveform from the same analysis
+#: run from an XML grid, and said nothing.
+GRID_METADATA_FIELDS = ("ampO", "phaseO", "fmin", "fref", "taper", "radec",
+                        "approx")
+
+
+def _format_metadata(P):
+    """Render the per-grid waveform settings of *P* as a header line."""
+    items = []
+    for name in GRID_METADATA_FIELDS:
+        if not hasattr(P, name):
+            continue
+        value = getattr(P, name)
+        if value is None:
+            continue
+        items.append("{}={}".format(name, value))
+    return " ".join(items)
+
+
+def parse_metadata(fname):
+    """Return the per-grid metadata dict, or ``{}`` if the file carries none.
+
+    An empty result is meaningful: it says the producer did not record what
+    waveform settings the grid was written under, so a consumer that needs
+    them has to warn rather than quietly adopt its own defaults.
+    """
+    try:
+        with open(fname, "r") as fp:
+            for raw in fp:
+                line = raw.strip()
+                if not line:
+                    continue
+                if not line.startswith("#"):
+                    break
+                payload = _strip_comment(line)
+                if not payload.startswith(META_MAGIC):
+                    continue
+                out = {}
+                for token in payload[len(META_MAGIC):].split():
+                    key, _, value = token.partition("=")
+                    if key:
+                        out[key] = value
+                return out
+    except (OSError, IOError, UnicodeDecodeError):
+        return {}
+    return {}
+
+
+def _coerce_metadata_value(name, text):
+    if name in ("ampO", "phaseO", "approx"):
+        return int(text)
+    if name in ("fmin", "fref"):
+        return float(text)
+    if name == "radec":
+        return text.strip().lower() in ("1", "true", "yes")
+    if name == "taper":
+        try:
+            return int(text)
+        except ValueError:
+            return text
+    return text
 
 #: Default base columns -- always present, in this order, for every file.
 DEFAULT_BASE_COLUMNS = (
@@ -256,6 +331,25 @@ def write_table(fname, columns, data):
     np.savetxt(fname, arr, header=header)
 
 
+def write_table_with_metadata(fname, columns, data, P=None):
+    """:func:`write_table`, plus the per-grid waveform settings taken from *P*."""
+    columns = tuple(columns)
+    arr = np.asarray(data, dtype=float)
+    if arr.ndim == 1:
+        arr = arr.reshape(1, -1)
+    if arr.shape[1] != len(columns):
+        raise ValueError(
+            "hyperpipeline_io.write_table_with_metadata: data has {} cols, "
+            "header has {}".format(arr.shape[1], len(columns)))
+    header = MAGIC
+    if P is not None:
+        rendered = _format_metadata(P)
+        if rendered:
+            header += "\n" + META_MAGIC + " " + rendered
+    header += "\n" + " ".join(columns)
+    np.savetxt(fname, arr, header=header)
+
+
 # ---------------------------------------------------------------------------
 # Reader
 # ---------------------------------------------------------------------------
@@ -296,6 +390,8 @@ def sniff(fname):
                 if not line.startswith("#"):
                     return False
                 payload = _strip_comment(line)
+                if payload.startswith(META_MAGIC):
+                    continue
                 if payload.startswith(MAGIC):
                     return True
                 # Fallback: a header line listing the canonical first columns.
@@ -322,7 +418,7 @@ def read_header(fname):
             if not line.startswith("#"):
                 break  # Hit data without finding a header.
             payload = _strip_comment(line)
-            if payload.startswith(MAGIC):
+            if payload.startswith(META_MAGIC) or payload.startswith(MAGIC):
                 continue
             return tuple(payload.split())
     raise ValueError(
@@ -651,7 +747,8 @@ def write_grid_from_P_list(fname, P_list, columns,
                 mat[i, j] = _si_to_disk(name, raw, lal_module)
             else:
                 mat[i, j] = float(raw)
-    write_table(fname, columns, mat)
+    write_table_with_metadata(fname, columns, mat,
+                              P=P_list[0] if len(P_list) else None)
 
 
 def read_grid_to_P_list(fname, P_factory, lal_module=None,
@@ -679,6 +776,15 @@ def read_grid_to_P_list(fname, P_factory, lal_module=None,
         intersection behaviour.
     """
     arr, columns = read_table(fname)
+    metadata = parse_metadata(fname)
+    if not metadata:
+        warnings.warn(
+            "hyperpipeline_io.read_grid_to_P_list: {} carries no {} line, so "
+            "the waveform-generation settings it was written under are "
+            "unknown and ChooseWaveformParams defaults will be used. That is "
+            "not neutral: the default ampO=0 generates only the (2,+-2) modes "
+            "and ILE fails every point with KeyError: (2, -1) while exiting 0."
+            .format(fname, META_MAGIC), UserWarning)
     if valid_params is not None:
         valid_params = set(valid_params)
         # A column is "active" if its disk-name OR its alias-resolved
@@ -692,6 +798,15 @@ def read_grid_to_P_list(fname, P_factory, lal_module=None,
     P_list = []
     for row in arr:
         P = P_factory()
+        for name, text in metadata.items():
+            if name not in GRID_METADATA_FIELDS or not hasattr(P, name):
+                continue
+            try:
+                setattr(P, name, _coerce_metadata_value(name, text))
+            except (TypeError, ValueError):
+                warnings.warn(
+                    "hyperpipeline_io: ignoring unreadable grid metadata "
+                    "{}={!r} in {}".format(name, text, fname), UserWarning)
         for name in active:
             raw = float(row[name])
             if lal_module is not None:

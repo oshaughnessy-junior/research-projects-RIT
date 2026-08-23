@@ -939,9 +939,19 @@ elif opts.sim_grid:
       else: # slightly slower version
         P.assign_param(name, grid_in[grid_names_params[indx]])
     P_list_seed.append(P)
-  # Common per-P setup (formerly inlined in the legacy for-loop; both
-  # paths now share it so hyperpipeline-loaded P_lists get the same
-  # radec / fref / fmin / tref / distance overrides).
+  # Common per-P setup.  This list must stay in step with the --sim-xml
+  # branch above: anything that branch does to a loaded P and this one does
+  # not is a way for the SAME analysis to mean different things depending on
+  # which grid format it was handed.
+  #
+  # That is not hypothetical.  --approximant was applied only on the XML side,
+  # so an ILE run from a --sim-grid grid ignored the requested waveform and
+  # used whatever the grid's P carried -- in practice ChooseWaveformParams'
+  # TaylorT4 default.  With PR #181 making the ASCII grid the only format the
+  # Hyperpipe builder emits, every real-likelihood run would have been
+  # analyzed with the wrong waveform; where TaylorT4 then produced too few
+  # modes, ILE raised KeyError: (2, -1), reported "FAILED ANALYSIS", wrote no
+  # output and exited 0.
   P_list = []
   for P in P_list_seed:
     # Set required properties for all - note distance must be fixed here !
@@ -949,6 +959,15 @@ elif opts.sim_grid:
     P.fref = opts.reference_freq
     P.fmin = template_min_freq
     P.tref = fiducial_epoch  # the XML table
+    # ILE marginalizes over the extrinsic parameters, so the template is
+    # generated in a fixed frame; the XML branch pins these explicitly.
+    P.phiref = 0.0
+    P.psi = 0.0
+    P.incl = 0.0
+    if opts.approximant != "TaylorT4":  # not the default setting
+        P.approx = lalsimutils.lalsim.GetApproximantFromString(opts.approximant)
+    if opts.approximant == "EccentricTD":
+        P.phaseO = 3
     # fix mass scale
     if P.m1 < 1e15:  #
       P.m1 *= lal.MSUN_SI
