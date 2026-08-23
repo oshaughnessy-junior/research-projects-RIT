@@ -2651,7 +2651,7 @@ def write_hyperpost_sub(tag='HYPER', exe=None, input_net='all.marg_net',output='
         singularity_base_exe_path = "/usr/bin/"  # should not hardcode this ...!
         if 'SINGULARITY_BASE_EXE_DIR' in list(os.environ.keys()) :
             singularity_base_exe_path = os.environ['SINGULARITY_BASE_EXE_DIR']
-        exe=singularity_base_exe_path + path_split[-1]
+        exe = os.path.join(singularity_base_exe_path, path_split[-1])
         if path_split[-1] == 'true':  # special universal path for /bin/true, don't override it!
             exe = "/usr/bin/true"
     ile_job = pipeline.CondorDAGJob(universe=universe, executable=exe)
