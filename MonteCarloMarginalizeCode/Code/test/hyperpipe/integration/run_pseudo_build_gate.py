@@ -13,6 +13,7 @@ import argparse
 from collections import Counter
 import json
 import os
+import shlex
 from pathlib import Path
 import subprocess
 import sys
@@ -507,6 +508,95 @@ def _assert_pesummary_publishes_both_posteriors(basic: Path, hyper: Path):
         "merge, so it can publish a posterior file that does not exist yet")
 
 
+#: Arguments the SUBMIT WRITER adds per node, not the extrinsic policy: which
+#: grid, which slice of it, where the output goes.  They differ between the two
+#: builders because their topologies differ -- BasicIteration fans out inside
+#: its per-iteration ILE directory, Hyperpipe from a terminal stage -- and that
+#: difference is structural.
+_PER_NODE_EXTRINSIC_ARGS = {
+    "--sim-grid", "--sim-xml", "--n-events-to-analyze", "--event",
+    "--output-file", "--cache", "--cache-file",
+}
+
+
+def _extrinsic_argument_set(tokens):
+    """Physics/convergence arguments only, with per-node plumbing removed."""
+    keep, skip_value = set(), False
+    for token in tokens:
+        if skip_value:
+            skip_value = False
+            continue
+        if token in (">", "2>", "X"):
+            skip_value = token in (">", "2>")
+            continue
+        flag = token.split("=", 1)[0]
+        if flag in _PER_NODE_EXTRINSIC_ARGS:
+            skip_value = "=" not in token
+            continue
+        keep.add(token)
+    return keep
+
+
+def _assert_extrinsic_arguments_agree(basic: Path, hyper: Path):
+    """Both builders must ask ILE for the SAME extrinsic computation.
+
+    They did not.  BasicIteration took the last `--n-eff` in the argument
+    string; the Hyperpipe branch took the maximum over every `--n-eff` in the
+    string and the `--ile-n-eff` option.  When those disagree the two builders
+    request a different number of extrinsic samples per job -- which is the
+    deliverable, not an implementation detail.  Both now derive the arguments
+    from RIFT.misc.extrinsic_stage, and this pins that they still agree.
+
+    Only the per-node plumbing may differ, because the two topologies differ.
+
+    **What this cannot see:** it compares the two builders to EACH OTHER, so a
+    change to the shared policy moves both and still passes.  That case is
+    covered by test_extrinsic_stage_shared.py, whose semantic assertions pin
+    the values themselves -- verified by mutation: perturbing
+    `extrinsic_n_eff` leaves this gate green and fails three unit tests, while
+    perturbing only the Hyperpipe side fails this gate.  Two instruments, two
+    failure modes; neither alone is sufficient.
+    """
+    basic_sub = (basic / "ILE_extr.sub").read_text()
+    exec_lines = [l for l in basic_sub.splitlines()
+                  if l.startswith("exec ") or l.startswith("arguments")]
+    assert exec_lines, "no argument line in ILE_extr.sub"
+    line = exec_lines[0]
+    if line.startswith("exec "):
+        value = line[len("exec "):]
+    else:
+        # HTCondor's "new arguments syntax" wraps the WHOLE list in one pair of
+        # double quotes.  Splitting that with shlex without stripping them
+        # first yields a single token, and the comparison then reports every
+        # argument as a difference -- which is what the first version of this
+        # check did.
+        value = line.split("=", 1)[1].strip()
+        if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+            value = value[1:-1]
+    basic_tokens = shlex.split(value, posix=True)
+    if basic_tokens and "integrate_likelihood" in basic_tokens[0]:
+        basic_tokens = basic_tokens[1:]
+
+    hyper_tokens = shlex.split((hyper / "args_ile_extrinsic.txt").read_text())
+
+    def _generic(tokens, root):
+        return {t.replace(str(root), "<RUN>") for t in tokens}
+
+    only_basic = _generic(_extrinsic_argument_set(basic_tokens), basic) - \
+        _generic(_extrinsic_argument_set(hyper_tokens), hyper)
+    only_hyper = _generic(_extrinsic_argument_set(hyper_tokens), hyper) - \
+        _generic(_extrinsic_argument_set(basic_tokens), basic)
+    # Path-valued arguments still differ by run directory; drop anything that
+    # still looks like a path after the substitution above.
+    only_basic = {t for t in only_basic if not t.startswith("/")}
+    only_hyper = {t for t in only_hyper if not t.startswith("/")}
+    assert not only_basic and not only_hyper, (
+        "the two builders ask ILE for different extrinsic computations.\n"
+        "  only BasicIteration: {}\n  only Hyperpipe: {}\n"
+        "Both should derive these from RIFT.misc.extrinsic_stage.".format(
+            sorted(only_basic), sorted(only_hyper)))
+
+
 def _assert_unsupported_gates(run_base: Path):
     cases = [
         (["--calibration-reweighting"],
@@ -582,6 +672,7 @@ def main(argv=None):
         _assert_default_basic_unchanged(basic, default)
         _assert_shared_semantics(basic, hyper)
         _assert_terminal_parity(basic, hyper)
+        _assert_extrinsic_arguments_agree(basic, hyper)
         _assert_basic_reweighting_chain(basic)
         _assert_pesummary_publishes_both_posteriors(basic, hyper)
         _assert_hyperpipe_terminal_chain(hyper)

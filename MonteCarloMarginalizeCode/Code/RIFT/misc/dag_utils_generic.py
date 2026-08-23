@@ -1041,18 +1041,29 @@ class WorkflowBackend(abc.ABC):
     # Making every backend render every emitted field through this one hook
     # removes the per-backend substitution helpers entirely.
 
-    def macro_ref(self, name):
+    def macro_ref(self, name, lenient=False):
         """Translate one canonical macro name into this backend's notation.
 
         The default is HTCondor's own notation, i.e. the identity.
+
+        *lenient* asks for a reference that tolerates the macro being
+        unassigned.  It exists because HTCondor itself is lenient: an
+        unassigned ``$(macroevent)`` in a LOG filename expands to nothing and
+        the job runs.  Several RIFT nodes rely on that -- BasicIteration's
+        `convert_extr` names `batchconvert-$(macroevent).err` and never
+        assigns `macroevent`.  A shell backend that is strict everywhere turns
+        those into hard failures, which is a difference in behaviour, not a
+        stricter check.  Strictness belongs on the arguments and the working
+        directory, where an empty expansion changes what runs.
         """
         return "$({})".format(name)
 
-    def render_macros(self, text):
+    def render_macros(self, text, lenient=False):
         """Rewrite every ``$(name)`` in *text* into this backend's notation."""
         if text is None:
             return text
-        return MACRO_REF.sub(lambda m: self.macro_ref(m.group(1)), str(text))
+        return MACRO_REF.sub(
+            lambda m: self.macro_ref(m.group(1), lenient=lenient), str(text))
 
     @staticmethod
     def _topological_sort(nodes):
@@ -1123,7 +1134,7 @@ class WorkflowBackend(abc.ABC):
         """Escape the characters bash treats specially inside double quotes."""
         return re.sub(r'([\\`"$])', r"\\\1", text)
 
-    def shell_word(self, token):
+    def shell_word(self, token, lenient=False):
         """One argv element as a bash word, with macros still expandable.
 
         Double quotes suppress globbing and word splitting -- which is the
@@ -1136,7 +1147,8 @@ class WorkflowBackend(abc.ABC):
         out, pos = [], 0
         for match in MACRO_REF.finditer(token):
             out.append(self._escape_shell_literal(token[pos:match.start()]))
-            out.append(self.macro_ref(match.group(1).lower()))
+            out.append(self.macro_ref(match.group(1).lower(),
+                                      lenient=lenient))
             pos = match.end()
         out.append(self._escape_shell_literal(token[pos:]))
         return '"' + "".join(out) + '"'
@@ -1504,7 +1516,7 @@ class SlurmBackend(WorkflowBackend):
         # silently override Condor on misconfigured machines.
         return False
 
-    def macro_ref(self, name):
+    def macro_ref(self, name, lenient=False):
         """Map a canonical macro to the shell variable the driver exports.
 
         ``emit_dag`` exports one variable per node macro, named from the macro
@@ -1518,6 +1530,8 @@ class SlurmBackend(WorkflowBackend):
             return "${SLURM_JOB_ID:-0}"
         if name == "process":
             return "${SLURM_ARRAY_TASK_ID:-0}"
+        if lenient:
+            return "${" + self.slurm_var_name(name) + ":-}"
         return "${" + self.slurm_var_name(name) + "}"
 
     @staticmethod
@@ -1545,10 +1559,10 @@ class SlurmBackend(WorkflowBackend):
             directives.append("--array=0-{}".format(int(job.queue_count) - 1))
         if job.stdout_file:
             directives.append("--output={}".format(
-                self.render_macros(job.stdout_file)))
+                self.render_macros(job.stdout_file, lenient=True)))
         if job.stderr_file:
             directives.append("--error={}".format(
-                self.render_macros(job.stderr_file)))
+                self.render_macros(job.stderr_file, lenient=True)))
         # Job name from the executable, useful in squeue
         if job.executable:
             directives.append("--job-name={}".format(os.path.basename(str(job.executable))))
@@ -1889,11 +1903,13 @@ class LocalBackend(WorkflowBackend):
     def local_var_name(macro_name):
         return "RIFT_VAR_" + re.sub(r"\W+", "_", str(macro_name)).upper()
 
-    def macro_ref(self, name):
+    def macro_ref(self, name, lenient=False):
         if name == "cluster":
             return "${RIFT_CLUSTER:-0}"
         if name == "process":
             return "${RIFT_PROCESS:-0}"
+        if lenient:
+            return "${" + self.local_var_name(name) + ":-}"
         return "${" + self.local_var_name(name) + "}"
 
     def emit_job(self, job, path):
@@ -1922,7 +1938,9 @@ class LocalBackend(WorkflowBackend):
         redirect = ""
         for stream, operator in ((job.stdout_file, ">"), (job.stderr_file, "2>")):
             if stream:
-                quoted = self.shell_word(stream)
+                # Lenient: a log filename with an unassigned macro is what
+                # HTCondor does too, and must not fail the job.
+                quoted = self.shell_word(stream, lenient=True)
                 lines.append("mkdir -p \"$(dirname {})\"".format(quoted))
                 redirect += " {} {}".format(operator, quoted)
         # HTCondor's `queue N` runs the job N times with a distinct $(process).

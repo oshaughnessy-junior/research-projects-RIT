@@ -605,11 +605,40 @@ class LocalBackendTests(unittest.TestCase):
             with open(out) as fh:
                 self.assertEqual(len(fh.read().split()), 5)
 
+    def test_an_unassigned_macro_in_a_LOG_PATH_is_not_fatal(self):
+        """HTCondor is lenient here, and RIFT depends on it.
+
+        BasicIteration's `convert_extr` node names its log
+        `batchconvert-$(macroevent).err` and never assigns `macroevent`;
+        HTCondor expands that to nothing and the job runs.  A shell backend
+        that is strict everywhere turns it into a hard failure -- which is a
+        behaviour difference, not a stricter check.  Found by running the
+        legacy builder's extrinsic path, where it killed both arms of a
+        comparison.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            out = os.path.join(td, "ran.txt")
+            job, node = self._script_job(td, "work", "echo ok > " + out)
+            job.set_stdout_file(os.path.join(
+                td, "logs", "work-$(macroevent).out"))
+            job.set_stderr_file(os.path.join(
+                td, "logs", "work-$(macroevent).err"))
+            job.write_sub_file()
+            node.add_macro("macroiteration", 0)   # but NOT macroevent
+            dag = self.m.CondorDAG()
+            dag.add_node(node)
+            result = self._run(td, dag)
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertTrue(os.path.exists(out),
+                            "the job did not run:\n" + result.stdout)
+
     def test_an_unassigned_macro_is_fatal_not_empty(self):
         """The defect this backend exists to expose must not be survivable.
 
         A job that reads a macro its node never assigned would, without
-        `set -u`, run with an empty argument and exit zero.
+        `set -u`, run with an empty argument and exit zero.  Note the contrast
+        with the log-path case above: strictness belongs where an empty
+        expansion changes WHAT RUNS, and not where it only changes a filename.
         """
         with tempfile.TemporaryDirectory() as td:
             job = self.m.CondorDAGJob(executable="/bin/echo")
