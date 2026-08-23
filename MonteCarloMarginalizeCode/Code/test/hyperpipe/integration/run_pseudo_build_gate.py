@@ -451,6 +451,42 @@ def _assert_basic_reweighting_chain(basic: Path):
     assert (basic / "allinone_convert.sh").is_file()
 
 
+def _assert_pesummary_source_divergence(basic: Path, hyper: Path):
+    """The two builders publish DIFFERENT posteriors, and that is not yet a decision.
+
+    With `--calibration-reweighting` enabled and otherwise identical flags:
+
+      BasicIteration  --samples .../extrinsic_posterior_samples.dat   (PRE-calibration)
+      Hyperpipe       --samples .../reweighted_posterior_samples.dat  (POST-calibration)
+
+    BasicIteration builds its plot arguments before calibration policy has
+    selected a final posterior, and never revisits them; PR #181 rebinds them
+    on the Hyperpipe side only.  Hyperpipe's choice looks like the intended one
+    -- if you paid for calibration reweighting, the archived page should show
+    the reweighted posterior -- but changing what the established builder
+    publishes is a science decision, not a refactor, and it reaches published
+    PESummary pages.
+
+    So this test pins BOTH behaviours rather than asserting one.  It fails if
+    either changes, which forces the change to be deliberate.  Delete this
+    function when the divergence is resolved, and say which way in the commit.
+    """
+    basic_plot = (basic / "plot.sub").read_text()
+    assert "extrinsic_posterior_samples.dat" in basic_plot, (
+        "BasicIteration's PESummary no longer reads the pre-calibration "
+        "posterior. If that was intended, resolve the divergence and remove "
+        "this test; if not, something moved underneath it.")
+    assert "reweighted_posterior_samples.dat" not in basic_plot
+
+    manifest = json.loads((hyper / "terminal_stage_specs.json").read_text())
+    stages = {stage["name"]: stage for stage in manifest["stages"]}
+    assert "pesummary" in stages
+    pesummary = stages["pesummary"]
+    assert "reweighted_posterior_samples.dat" in pesummary.get("args", ""), (
+        "Hyperpipe's PESummary no longer reads the reweighted posterior")
+    assert "calibration_merge" in pesummary["depends_on"]
+
+
 def _assert_unsupported_gates(run_base: Path):
     cases = [
         (["--calibration-reweighting"],
@@ -527,6 +563,7 @@ def main(argv=None):
         _assert_shared_semantics(basic, hyper)
         _assert_terminal_parity(basic, hyper)
         _assert_basic_reweighting_chain(basic)
+        _assert_pesummary_source_divergence(basic, hyper)
         _assert_hyperpipe_terminal_chain(hyper)
         _assert_automatic_bilby_chain(hyper_auto)
         _assert_osg_calibration_contract(hyper_osg)
