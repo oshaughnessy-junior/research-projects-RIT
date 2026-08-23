@@ -2519,7 +2519,13 @@ if plot_args:
         plot_node = pipeline.CondorDAGNode(plot_job)
         plot_node.add_macro("macroiteration", it)
         plot_node.add_macro("macroiterationlast", it-1)
-        plot_node.add_parent(parent_fit_node)
+        # The archived page now publishes every posterior the run produced,
+        # including the calibration-reweighted one, so it has to wait for
+        # whatever produced the last of them.  `last_node` is the end of the
+        # terminal chain (calibration merge, then comoving reweighting when
+        # those run) and falls back to the fit node when neither does.
+        plot_node.add_parent(last_node if last_node is not None
+                             else parent_fit_node)
         plot_node.set_category("PLOT")
         dag.add_node(plot_node)
 

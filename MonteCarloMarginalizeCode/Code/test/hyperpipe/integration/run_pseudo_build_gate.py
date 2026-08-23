@@ -451,40 +451,60 @@ def _assert_basic_reweighting_chain(basic: Path):
     assert (basic / "allinone_convert.sh").is_file()
 
 
-def _assert_pesummary_source_divergence(basic: Path, hyper: Path):
-    """The two builders publish DIFFERENT posteriors, and that is not yet a decision.
+def _assert_pesummary_publishes_both_posteriors(basic: Path, hyper: Path):
+    """Both builders must archive the pre- AND post-calibration posteriors.
 
-    With `--calibration-reweighting` enabled and otherwise identical flags:
+    This replaces a test that pinned a DIVERGENCE: BasicIteration published
+    `extrinsic_posterior_samples.dat` (pre-calibration) while Hyperpipe
+    published `reweighted_posterior_samples.dat` (post-calibration), under
+    identical flags.  BasicIteration assembled its plot arguments before
+    calibration policy had selected a final posterior; PR #181 rebound them on
+    the Hyperpipe side only.
 
-      BasicIteration  --samples .../extrinsic_posterior_samples.dat   (PRE-calibration)
-      Hyperpipe       --samples .../reweighted_posterior_samples.dat  (POST-calibration)
+    Resolved by publishing both rather than choosing: the question a reviewer
+    asks of a calibration-marginalized run is what calibration did to the
+    posterior, and that needs both on one page.  `args_plot.txt` -- which both
+    builders consume -- now names both with distinct labels, so the two cannot
+    diverge again without this failing.
 
-    BasicIteration builds its plot arguments before calibration policy has
-    selected a final posterior, and never revisits them; PR #181 rebinds them
-    on the Hyperpipe side only.  Hyperpipe's choice looks like the intended one
-    -- if you paid for calibration reweighting, the archived page should show
-    the reweighted posterior -- but changing what the established builder
-    publishes is a science decision, not a refactor, and it reaches published
-    PESummary pages.
-
-    So this test pins BOTH behaviours rather than asserting one.  It fails if
-    either changes, which forces the change to be deliberate.  Delete this
-    function when the divergence is resolved, and say which way in the commit.
+    The ordering half matters as much as the arguments: a page that names a
+    file produced by a stage it does not wait for is a race, not a comparison.
     """
-    basic_plot = (basic / "plot.sub").read_text()
-    assert "extrinsic_posterior_samples.dat" in basic_plot, (
-        "BasicIteration's PESummary no longer reads the pre-calibration "
-        "posterior. If that was intended, resolve the divergence and remove "
-        "this test; if not, something moved underneath it.")
-    assert "reweighted_posterior_samples.dat" not in basic_plot
+    for label, path in (("BasicIteration", basic / "plot.sub"),
+                        ("Hyperpipe", None)):
+        if path is None:
+            continue
+        text = path.read_text()
+        assert "extrinsic_posterior_samples.dat" in text, label
+        assert "reweighted_posterior_samples.dat" in text, (
+            "{} does not publish the calibration-reweighted posterior".format(
+                label))
+        assert text.count("--samples") >= 2, label
+        assert "_calmarg" in text, (
+            "{} publishes both posteriors under one label, so the page cannot "
+            "tell them apart".format(label))
 
     manifest = json.loads((hyper / "terminal_stage_specs.json").read_text())
     stages = {stage["name"]: stage for stage in manifest["stages"]}
     assert "pesummary" in stages
-    pesummary = stages["pesummary"]
-    assert "reweighted_posterior_samples.dat" in pesummary.get("args", ""), (
-        "Hyperpipe's PESummary no longer reads the reweighted posterior")
-    assert "calibration_merge" in pesummary["depends_on"]
+    pesummary_args = stages["pesummary"].get("args", "")
+    assert "extrinsic_posterior_samples.dat" in pesummary_args
+    assert "reweighted_posterior_samples.dat" in pesummary_args
+    assert "_calmarg" in pesummary_args
+    assert stages["pesummary"]["depends_on"] == ["calibration_merge"], (
+        "the Hyperpipe archive stage must wait for the calibration product it "
+        "names: " + str(stages["pesummary"]["depends_on"]))
+
+    # BasicIteration: the archive node must be downstream of the calibration
+    # merge, or it can run before reweighted_posterior_samples.dat exists.
+    dag = basic / "marginalize_intrinsic_parameters_BasicIterationWorkflow.dag"
+    jobs, edges = _dag_jobs_and_edges(dag)
+    plot_nodes = _nodes_for_submit(jobs, "plot.sub")
+    merge = _nodes_for_submit(jobs, "CAL_REWEIGHT_COMBINE.sub")
+    assert len(plot_nodes) == 1 and len(merge) == 1
+    assert _is_reachable(edges, next(iter(merge)), next(iter(plot_nodes))), (
+        "BasicIteration's archive node is not downstream of the calibration "
+        "merge, so it can publish a posterior file that does not exist yet")
 
 
 def _assert_unsupported_gates(run_base: Path):
@@ -563,7 +583,7 @@ def main(argv=None):
         _assert_shared_semantics(basic, hyper)
         _assert_terminal_parity(basic, hyper)
         _assert_basic_reweighting_chain(basic)
-        _assert_pesummary_source_divergence(basic, hyper)
+        _assert_pesummary_publishes_both_posteriors(basic, hyper)
         _assert_hyperpipe_terminal_chain(hyper)
         _assert_automatic_bilby_chain(hyper_auto)
         _assert_osg_calibration_contract(hyper_osg)

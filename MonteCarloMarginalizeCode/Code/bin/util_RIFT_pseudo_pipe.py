@@ -2030,11 +2030,22 @@ with open("args_puff.txt",'w') as f:
 if opts.archive_pesummary_label:
     os.mkdir("pesummary")
     rundir = base_dir+"/"+dirname_run
+    # When calibration reweighting runs, BOTH posteriors are published: the
+    # extrinsic samples as produced, and the calibration-reweighted ones.  A
+    # single page carrying both is what a reviewer actually wants -- the
+    # question is nearly always "what did calibration do to this?" -- and it
+    # removes a divergence between the two pipeline builders, which had been
+    # publishing different single posteriors under identical flags.
+    labels = [opts.archive_pesummary_label]
     if opts.add_extrinsic:
-        samplestr = " --samples " + rundir +"/extrinsic_posterior_samples.dat "
+        samples = [rundir + "/extrinsic_posterior_samples.dat"]
+        if opts.calibration_reweighting:
+            samples.append(rundir + "/reweighted_posterior_samples.dat")
+            labels.append(opts.archive_pesummary_label + "_calmarg")
     else:
-        samplestr = " --samples " + rundir + "/posterior_samples-$(macroiteration).dat "
-    labelstr = " --labels {} ".format(opts.archive_pesummary_label)
+        samples = [rundir + "/posterior_samples-$(macroiteration).dat"]
+    samplestr = "".join(" --samples " + item + " " for item in samples)
+    labelstr = " --labels {} ".format(" ".join(labels))
     configstr=""
     if opts.use_ini:
         configstr = " -c " +opts.use_ini
@@ -2892,13 +2903,10 @@ if opts.pipeline_builder == "Hyperpipe":
         if opts.archive_pesummary_label:
             with open("args_plot.txt") as stream:
                 pesummary_args = stream.read().strip()
-            # The legacy pseudo-pipe string is assembled before calibration
-            # policy selects the final posterior.  Bind the Hyperpipe terminal
-            # stage to that final product explicitly.
-            pesummary_args = re.sub(
-                r"--samples\s+\S+",
-                "--samples {}".format(terminal_posterior_file),
-                pesummary_args)
+            # args_plot.txt already names every posterior to publish, including
+            # the calibration-reweighted one when that stage runs, so there is
+            # nothing to rewrite here.  The stage still depends on the final
+            # product, which is what makes those files exist.
             terminal_stages.append(dict({
                 "name": "pesummary",
                 "kind": "command-v1",
