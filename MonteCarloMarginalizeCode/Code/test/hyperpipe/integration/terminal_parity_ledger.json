@@ -11,7 +11,20 @@
     "implementations are independent -- those are the entries that can drift",
     "silently, and the ones a reviewer should look at first.",
     "",
-    "Last verified 2026-08-22 against PR #181 head ba171c5."
+    "Last verified 2026-08-22 against PR #181 head ba171c5.",
+    "",
+    "WHAT THIS CHECK DOES NOT COVER, so nobody reads more into a green run:",
+    "  * It compares executable BASENAMES of jobs in the TOP-LEVEL DAG. It does",
+    "    not descend into SUBDAG EXTERNAL nodes, so a stage that lives only",
+    "    inside a sub-workflow is invisible to it.",
+    "  * A new stage added under an ALREADY-PRESENT basename does not change",
+    "    the difference set and will not be reported.",
+    "  * It says nothing about the CONTENTS of the generated .sh wrappers",
+    "    (con_marg.sh, con_prod.sh, join_post.sh, terminal_collect_extrinsic.sh).",
+    "    That is exactly where the 'role' equivalences below live, so those",
+    "    entries can drift without this gate noticing.",
+    "  In short: it catches a builder growing a new top-level stage, which is",
+    "  the drift that has actually happened. It is not a proof of parity."
   ],
   "only_basic": {
     "allinone_convert.sh": {
