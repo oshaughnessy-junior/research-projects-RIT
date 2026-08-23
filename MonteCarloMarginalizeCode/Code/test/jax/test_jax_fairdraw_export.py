@@ -417,6 +417,76 @@ def test_export_rng_is_independent_of_the_science_stream(tmp_path):
     assert not np.array_equal(read_export(o2, 1)[0], outs[0])
 
 
+def test_default_mode_is_flowmc_phimarg_and_is_announced(capsys):
+    """The default moved off laplace-is (which exported 9 usable rows on a real
+    BNS).  That is a behaviour change for every command line without --mode, so
+    the driver must SAY which mode it picked -- a silent default change is the
+    thing this repo's compat layer exists to prevent."""
+    assert drv._DEFAULT_MODE == "flowmc-phimarg"
+    o = types.SimpleNamespace(mode=None)
+    mode, defaulted = drv.resolve_mode(o)
+    assert (mode, defaulted) == ("flowmc-phimarg", True)
+    assert o.mode == "flowmc-phimarg"
+    out = capsys.readouterr().out
+    assert "flowmc-phimarg" in out and "default" in out.lower(), out
+    # explicit choice must be preserved AND echoed
+    o2 = types.SimpleNamespace(mode="laplace-is")
+    assert drv.resolve_mode(o2) == ("laplace-is", False)
+    assert "laplace-is" in capsys.readouterr().out
+
+
+def test_new_default_needs_distance_marginalization_listed():
+    """The new default cannot run without --distance-marginalization; main()
+    fails early on that, so the mode must be in the set main() checks."""
+    assert drv._DEFAULT_MODE in drv._NEEDS_DISTANCE_MARG
+    for m in ("laplace-is", "prior-mc", "map"):
+        assert m not in drv._NEEDS_DISTANCE_MARG
+
+
+# --------------------------------------------------------------------------
+# WIRING tests.  The default-mode feature lives in main(), so unit-testing
+# resolve_mode() in isolation cannot see it being disconnected: deleting the
+# resolve_mode() call, deleting the early gate, or silencing the announcement
+# all leave a helper-level suite green.  These drive main() itself.  They are
+# cheap because main() resolves the mode and gates BEFORE it touches any data.
+# --------------------------------------------------------------------------
+
+def test_main_announces_the_defaulted_mode_and_gates_on_it(capsys):
+    """No --mode and no --distance-marginalization: main() must (a) resolve the
+    default, (b) SAY it did, and (c) fail on the distance requirement before
+    loading anything.  Kills 'delete the resolve_mode() call' and 'echo=False'."""
+    with pytest.raises(SystemExit) as e:
+        drv.main(["--event-time", "0"])
+    assert e.value.code == 2
+    cap = capsys.readouterr()
+    assert "flowmc-phimarg" in cap.out, \
+        "main() did not announce the mode it selected: %r" % cap.out
+    assert "default" in cap.out.lower(), cap.out
+    assert "--distance-marginalization" in cap.err, \
+        "main() did not gate on the distance requirement: %r" % cap.err
+
+
+def test_explicit_mode_is_gated_too(capsys):
+    """The gate must key on the MODE, not on whether it was defaulted.  Every
+    script in this project passes --mode explicitly, so a gate that only fires
+    for the defaulted case never reaches a real user -- they die deep in
+    analyze_one after the frames are loaded instead."""
+    with pytest.raises(SystemExit):
+        drv.main(["--event-time", "0", "--mode", "flowmc-phimarg"])
+    err = capsys.readouterr().err
+    assert "--distance-marginalization" in err, err
+    assert "DEFAULT" not in err, "explicit choice reported as a default problem"
+
+
+def test_modes_not_needing_distance_marg_are_not_gated(capsys):
+    """Guard against over-gating: laplace-is must still run without it."""
+    with pytest.raises(SystemExit):
+        drv.main(["--event-time", "0", "--mode", "laplace-is"])
+    err = capsys.readouterr().err
+    assert "--distance-marginalization" not in err, err
+    assert "cache-file" in err or "channel-name" in err, err
+
+
 def test_mode_sets_exclude_non_importance_weights():
     """multistart-nuts / nuts-phimarg report post_weight as a per-chain Laplace
     MODE-EVIDENCE weight (samplers.py: np.full(n_per[k], mass[k]/n_per[k])), not

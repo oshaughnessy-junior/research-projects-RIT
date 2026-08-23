@@ -18,6 +18,50 @@ development tree is rift_O4d.
    defaults to 5, as in ILE, so passing ``--fairdraw-extrinsic-output`` without
    an explicit maximum now yields 5 rows where it previously yielded the whole
    cloud.
+
+** BEHAVIOUR CHANGE (jax ILE): the default ``--mode`` of
+   ``integrate_likelihood_extrinsic_jax`` is now ``flowmc-phimarg``, was
+   ``laplace-is``.  ANY existing command line that does not pass ``--mode``
+   gets different science.  Pass ``--mode laplace-is`` to restore the old
+   behaviour.  The driver prints which mode it selected, and errors out early
+   -- before loading frames -- when the selected mode's
+   ``--distance-marginalization`` requirement is unmet.
+
+   THE EXPORTED COLUMN SET CHANGES WITH THE MODE.  ``laplace-is`` wrote six
+   columns (``right_ascension declination inclination psi phi_orb
+   loglikelihood``); ``flowmc-phimarg`` writes five, with no ``phi_orb``,
+   because phi_ref is marginalized rather than sampled.  ``loglikelihood``
+   correspondingly changes meaning (phi_ref-marginalized rather than
+   phi_ref-conditional), and the seven-column variant carrying ``distance`` is
+   unreachable without an explicit ``--mode``.  Any consumer reading these
+   files by COLUMN POSITION must be updated; read by header name instead.
+
+   Measured on a zero-noise BNS injection, each mode at its own defaults,
+   scored against an independent defensive-importance-sampling reference
+   (sd/reference for ra, dec, psi, incl):
+
+   ===============  ========  ======  ==============================
+   mode             wall      rows    sd/ref  ra / dec / psi / incl
+   ===============  ========  ======  ==============================
+   laplace-is        59 s        9    0.14 / 0.34 / 0.05 / 0.22
+   flowmc-phimarg   138 s     3200    1.10 / 1.08 / 0.78 / 0.85
+   prior-mc          36 s        5    0.24 / 0.24 / 0.50 / 0.49
+   nuts-phimarg     did not finish in 33 min
+   multistart-nuts  did not finish in 21 min
+   ===============  ========  ======  ==============================
+
+   ``laplace-is`` is disqualified on its own terms: its Gaussian proposal
+   reached ESS 5.5 of 300000 on this event, so the fair-draw export leaves NINE
+   rows and its mean is off by ~0.5 sigma.  The two NUTS modes are an order of
+   magnitude too slow to serve as a default.
+
+   CAVEAT, and it is not yet discharged: this bake-off measured ONE event, ONE
+   seed, with a FRESH flow.  ``flowmc-phimarg`` inherits flow re-use, which is
+   ON by default across an intrinsic batch, and re-used slots in the same
+   campaign measured sd_psi/reference = 0.21 with inclination biased -0.91
+   sigma -- worse on those parameters than the ~0.5 sigma used to disqualify
+   ``laplace-is``.  Do not treat the table above as characterizing the new
+   default as it will actually run.
   - (rc0) O4d base refresh, from rift_O4c to rift_O4d: Python/numpy CI modernization (py3.10-py3.13,
     numpy 2.x checks), Asimov/RIFT smoke tests, docs deployment, pluggable workflow backends and
     simulation-manager prototypes, distance-grid/distance-slice likelihood export, container-family and pixi/SWIG

@@ -8,6 +8,17 @@
 > before trusting a file**: a low-ESS export is not a usable posterior sample
 > however it is drawn, and the driver warns on stderr when it is below 200.
 
+> **Default `--mode` changed to `flowmc-phimarg`** (was `laplace-is`).
+> Any command line that does not pass `--mode` now runs a different sampler,
+> gets different numbers, **and writes a different column set** — `laplace-is`
+> wrote 6 columns including `phi_orb`, `flowmc-phimarg` writes 5 without it, and
+> `loglikelihood` changes meaning (phi_ref-marginalized, not conditional). Read
+> these files by header name, never by column position. The driver prints the
+> mode it selected. `--mode laplace-is` restores the old behaviour, but on a
+> zero-noise BNS its proposal reached ESS 5.5 of 300000 and the export came to
+> **9 rows**. See `CHANGES.rst` for the bake-off *and its unfinished caveat*.
+
+
 A `jax.numpy`, automatic-differentiation-compatible reimplementation of RIFT's
 ILE extrinsic likelihood, mirroring the production
 `factored_likelihood.DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop`

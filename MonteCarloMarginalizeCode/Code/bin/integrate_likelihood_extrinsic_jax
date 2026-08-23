@@ -94,6 +94,9 @@ FULL_NAMES = ("ra", "dec", "psi", "incl", "phiref", "distMpc")
 # extrinsic_batchmode: --fairdraw-extrinsic-output-n-max default=5).
 _FAIRDRAW_N_MAX_DEFAULT = 5
 
+# DEFAULT --mode.  Chosen on measurement, not preference: see resolve_mode().
+_DEFAULT_MODE = "flowmc-phimarg"
+
 # Modes whose sampler reports a TEMPERED state plus a genuine importance weight
 # (post_weight = L^(1-inv_T)); only these honour --adapt-weight-exponent, and
 # only these consume post_weight at export.
@@ -103,6 +106,9 @@ _TEMPERED_MODES = frozenset((
 # fair-draw count options do anything; elsewhere the export is the sampler's own
 # chain and the count flags are inert (and must be reported as ignored).
 _FAIRDRAW_MODES = _TEMPERED_MODES | frozenset(("prior-mc", "laplace-is"))
+# Modes that cannot run without --distance-marginalization.
+_NEEDS_DISTANCE_MARG = _TEMPERED_MODES | frozenset(
+    ("nuts", "nuts-phimarg", "multistart-nuts"))
 
 # Boolean (zero-argument) ILE options (action=store_true/false).
 _ILE_BOOL_OPTS = {
@@ -205,6 +211,42 @@ def _register_compat_options(optp):
         else:
             g.add_option(name, default=None, help=optparse.SUPPRESS_HELP)
     optp.add_option_group(g)
+
+
+def resolve_mode(opts, echo=True):
+    """Fill in --mode if the user did not give one, and SAY SO.
+
+    The default moved from ``laplace-is`` to ``flowmc-phimarg``.  That is a
+    behaviour change: an existing command line without --mode gets different
+    science, so it must not be silent.
+
+    Measured on a zero-noise BNS (chunk-0 event 0), each mode at its own
+    defaults, scored against an independent defensive-IS reference
+    (sd/ref for ra, dec, psi, incl; wall time; exported rows):
+
+        laplace-is        59 s      9 rows   0.14 / 0.34 / 0.05 / 0.22
+        flowmc-phimarg   138 s   3200 rows   1.10 / 1.08 / 0.78 / 0.85
+        prior-mc          36 s      5 rows   0.24 / 0.24 / 0.50 / 0.49
+        nuts-phimarg     did not finish in 33 min
+        multistart-nuts  did not finish in 21 min
+
+    laplace-is is not merely less accurate: its proposal misses so badly that
+    the 1.5*ESS cap leaves NINE rows, and its mean is off by ~0.5 sigma.  The
+    two NUTS modes are an order of magnitude too slow to be a default.  So
+    flowmc-phimarg it is -- the only mode that is both affordable and usable.
+
+    Returns ``(mode, was_defaulted)``.
+    """
+    was_defaulted = getattr(opts, "mode", None) is None
+    if was_defaulted:
+        opts.mode = _DEFAULT_MODE
+        if echo:
+            print("--mode not given; using the default: %s\n"
+                  "    (the default changed from laplace-is -- see CHANGES.rst. "
+                  "Pass --mode explicitly to pin it.)" % _DEFAULT_MODE)
+    elif echo:
+        print("--mode %s (explicit)" % opts.mode)
+    return opts.mode, was_defaulted
 
 
 def _dest(name):
@@ -341,11 +383,14 @@ def build_parser():
     optp.add_option_group(g)
 
     g = OptionGroup(optp, "Extrinsic exploration / sampling")
-    g.add_option("--mode", default="laplace-is",
+    g.add_option("--mode", default=None,
                  choices=["prior-mc", "laplace-is", "map", "nuts",
                           "multistart-nuts", "flowmc", "flowmc-phimarg",
                           "flowmc-phipsimarg", "flowmc-dpsimarg", "nuts-phimarg"],
-                 help="Extrinsic exploration: prior-mc | laplace-is | map | "
+                 help="Extrinsic exploration.  DEFAULT: " + _DEFAULT_MODE +
+                      " (changed from laplace-is; see CHANGES.rst -- laplace-is "
+                      "exported 9 usable rows on a real BNS where flowmc-phimarg "
+                      "gave 3200).  Options: prior-mc | laplace-is | map | "
                       "nuts (single-chain) | multistart-nuts (mode-covering) | "
                       "flowmc (normalizing-flow, 5-D) | "
                       "flowmc-phimarg (phi_ref-marginalised flowMC, 4-D — removes "
@@ -1255,6 +1300,22 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
 def main(argv=None):
     optp = build_parser()
     opts, _ = optp.parse_args(argv)
+    _, mode_was_defaulted = resolve_mode(opts)
+    # Fail EARLY and actionably: the new default needs distance marginalization,
+    # and discovering that after the frames are loaded wastes minutes.
+    # Gate on the MODE, not on how the mode was chosen.  Gating on
+    # mode_was_defaulted meant every caller that passes --mode explicitly -- which
+    # is all of them in practice -- still died deep inside analyze_one after the
+    # frames were loaded, so the improvement never reached a real user.
+    if opts.mode in _NEEDS_DISTANCE_MARG and not opts.distance_marginalization:
+        optp.error(
+            "--mode %s requires --distance-marginalization (it samples the "
+            "distance-marginalized angular posterior).  Add "
+            "--distance-marginalization, or choose a mode that does not need "
+            "it (laplace-is, prior-mc, map).%s"
+            % (opts.mode,
+               "  NOTE %s is the new DEFAULT (was laplace-is) -- see "
+               "CHANGES.rst." % opts.mode if mode_was_defaulted else ""))
     check_critical_and_report(opts, optp)
 
     if opts.event_time is None:
