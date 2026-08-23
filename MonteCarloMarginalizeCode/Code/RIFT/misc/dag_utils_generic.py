@@ -1142,8 +1142,15 @@ class WorkflowBackend(abc.ABC):
         return '"' + "".join(out) + '"'
 
     def shell_command(self, job):
-        """The job's executable and arguments, ready to paste into a script."""
-        words = [self.shell_word(job.executable)]
+        """The job's executable and arguments, ready to paste into a script.
+
+        The executable is stripped: HTCondor's submit parser discards
+        whitespace around the value of ``executable``, and several RIFT
+        writers build that value by concatenation and leave a leading space
+        (``write_unify_sub_simple`` is one).  Harmless there, fatal in a
+        shell, where `` /path/unify.sh`` is a command that does not exist.
+        """
+        words = [self.shell_word(str(job.executable).strip())]
         words += [self.shell_word(arg)
                   for arg in self.condor_args_to_argv(
                       self._build_argument_string(job))]
@@ -4891,7 +4898,23 @@ def write_joingrids_sub(tag='join_grids', exe=None, universe='vanilla', input_pa
 {extra}
 set -e
 shopt -s nullglob
-SHARDS=({work}/{out}*.{suf})
+# The glob is deliberately followed by a filter.  CIP writes a family of
+# sidecars beside each grid shard -- +annotation, +annotation_ESS,
+# +annotation_export, _lnL, _withpriorchange -- and in ASCII mode they share
+# the shard suffix, so `overlap-grid-1*.dat` matches eleven files of which two
+# are grids.  Concatenating them produces a "grid" whose rows have 1, 3, 4 and
+# 10 columns; numpy's reader drops the short ones with a warning and hands the
+# caller a plausible-looking table.  In XML mode this never bit because the
+# sidecars were .dat and the shards were .xml.gz.
+CANDIDATES=({work}/{out}*.{suf})
+SHARDS=()
+for shard in "${{CANDIDATES[@]}}"; do
+  base=$(basename "$shard")
+  case "$base" in
+    *+*|*_*) continue ;;
+  esac
+  SHARDS+=("$shard")
+done
 if [ ${{#SHARDS[@]}} -eq 0 ]; then
   echo "join_grids.sh: no input shards matched {work}/{out}*.{suf}" >&2
   exit 1

@@ -52,7 +52,8 @@ def _write_zero_spin_grid(path: Path):
         str(path), hyperpipeline_io.DEFAULT_BASE_COLUMNS, rows)
 
 
-def _build(run_base: Path, osg_contract=False, backend: str = "htcondor"):
+def _build(run_base: Path, osg_contract=False, backend: str = "htcondor",
+           builder: str = "Hyperpipe"):
     seed = run_base / "zero-spin-grid.dat"
     cache = run_base / "empty.cache"
     rundir = run_base / "run"
@@ -61,7 +62,7 @@ def _build(run_base: Path, osg_contract=False, backend: str = "htcondor"):
     command = [
         sys.executable, str(PSEUDO_PIPE),
         "--use-rundir", str(rundir),
-        "--pipeline-builder", "Hyperpipe",
+        "--pipeline-builder", builder,
         "--manual-initial-grid", str(seed),
         "--fake-data-cache", str(cache),
         "--event-time", "1126259462.391",
@@ -80,11 +81,22 @@ def _build(run_base: Path, osg_contract=False, backend: str = "htcondor"):
         "--cip-explode-jobs", "1",
         "--cip-explode-jobs-last", "1",
         "--ile-no-gpu",
-        "--ile-zero-likelihood-data-free",
         "--manual-extra-test-args=--always-succeed",
         "--skip-reproducibility",
     ]
+    if builder == "Hyperpipe":
+        command.append("--ile-zero-likelihood-data-free")
+    else:
+        # The legacy builder has no data-free convenience flag, but the same
+        # ILE mode is reachable through its ordinary argument passthrough --
+        # which is the point: this lane must exercise the REAL legacy builder,
+        # not a Hyperpipe-shaped stand-in.
+        command.append(
+            "--manual-extra-ile-args=--zero-likelihood --zero-likelihood-data-free")
     env = _environment(run_base, backend=backend)
+    if builder != "Hyperpipe":
+        # BasicIteration only speaks the ASCII grid contract when asked.
+        env["RIFT_HYPERPIPELINE_FORMAT"] = "1"
     if osg_contract:
         command.extend([
             "--use-osg",
@@ -200,7 +212,8 @@ def _execute_without_condor(rundir: Path, env):
     return logs, completed
 
 
-def _execute_via_local_backend(rundir: Path, env):
+def _execute_via_local_backend(rundir: Path, env,
+                               driver_name="marginalize_hyperparameters_local.sh"):
     """Run the workflow through the registered `local` backend.
 
     This lane deliberately does NOT parse the workflow: it runs the driver the
@@ -209,7 +222,7 @@ def _execute_via_local_backend(rundir: Path, env):
     the artefact under test.  Between them the two lanes cover both "the
     submit description is right" and "the emitted scripts actually run".
     """
-    driver = rundir / "marginalize_hyperparameters_local.sh"
+    driver = rundir / driver_name
     if not driver.is_file():
         raise RuntimeError(
             "local backend emitted no driver at {}".format(driver))
@@ -226,6 +239,46 @@ def _execute_via_local_backend(rundir: Path, env):
     completed = set(re.findall(r"^\[local\] running (\S+) ", result.stdout,
                                re.M))
     return transcript, completed
+
+
+def _assert_legacy_outputs(rundir: Path, logs: Path):
+    """The BasicIteration equivalents of the Hyperpipe products below.
+
+    This lane exists to test the LOCAL BACKEND, not the legacy builder: the
+    re-emit hooks and ABORT-DAG-ON handling exist because BasicIteration adds
+    control logic after write_concrete_dag, and until this ran, only Hyperpipe
+    workflows had ever been executed through the backend.  The generality was
+    advertised and untested.
+    """
+    shards = sorted((rundir / "iteration_0_ile").glob("CME_out*.dat"))
+    assert len(shards) == 9, [p.name for p in shards]
+    composite = rundir / "all.net"
+    assert composite.is_file() and composite.stat().st_size > 0
+    grid = rundir / "overlap-grid-1.dat"
+    assert grid.is_file() and grid.stat().st_size > 0
+    # Every data row must have the header's width.  The first version of this
+    # assertion only checked that the table was non-empty, and it PASSED on a
+    # grid whose rows had 1, 3, 4 and 10 columns -- numpy drops the short ones
+    # with a warning and returns something that looks fine.
+    header = [line for line in grid.read_text().splitlines()
+              if line.startswith("#")]
+    columns_expected = header[-1].lstrip("#").split()
+    data_lines = [line for line in grid.read_text().splitlines()
+                  if line.strip() and not line.startswith("#")]
+    widths = sorted({len(line.split()) for line in data_lines})
+    assert widths == [len(columns_expected)], (
+        "joined grid has rows of differing width {} against a {}-column header;"
+        " the shard glob is picking up annotation sidecars".format(
+            widths, len(columns_expected)))
+    table, columns = hyperpipeline_io.read_table(str(grid))
+    table = np.atleast_1d(table)
+    assert len(table) == len(data_lines)
+    assert np.allclose(table["lnL"], 0.0)
+    combined = "\n".join(
+        path.read_text(errors="replace")
+        for path in [logs] + sorted(rundir.glob("iteration_*/logs/*.out"))
+        if path.is_file())
+    assert "Reading channel" not in combined
 
 
 def _assert_outputs(rundir: Path, logs: Path, completed):
@@ -291,6 +344,12 @@ def main(argv=None):
         "--keep-output", action="store_true",
         help="Keep the generated pipeline, local execution logs, and outputs")
     parser.add_argument(
+        "--builder", default="Hyperpipe",
+        choices=["Hyperpipe", "BasicIteration"],
+        help=("which pipeline builder to drive. BasicIteration is only "
+              "meaningful with --backend local: it is how the local backend's "
+              "builder-agnostic claim is tested."))
+    parser.add_argument(
         "--backend", default="htcondor", choices=["htcondor", "local"],
         help=("htcondor: build submit files and drive them with this gate's "
               "own executor. local: build and run through the registered "
@@ -310,8 +369,12 @@ def main(argv=None):
         run_base = Path(temporary.name)
     try:
         env = _environment(run_base, backend=args.backend)
+        if args.builder != "Hyperpipe" and args.backend != "local":
+            raise SystemExit(
+                "--builder BasicIteration is only supported with "
+                "--backend local; the htcondor lane parses Hyperpipe's DAG.")
         rundir = _build(run_base, osg_contract=args.osg_build_contract_only,
-                        backend=args.backend)
+                        backend=args.backend, builder=args.builder)
         if args.osg_build_contract_only:
             _assert_osg_data_free_contract(rundir)
             print("constant-likelihood OSG build contract gate: PASS")
@@ -319,12 +382,20 @@ def main(argv=None):
                 print("outputs retained at {}".format(run_base))
             return 0
         if args.backend == "local":
-            logs, completed = _execute_via_local_backend(rundir, env)
+            dag_name = ("marginalize_hyperparameters_local.sh"
+                        if args.builder == "Hyperpipe" else
+                        "marginalize_intrinsic_parameters_"
+                        "BasicIterationWorkflow_local.sh")
+            logs, completed = _execute_via_local_backend(
+                rundir, env, driver_name=dag_name)
         else:
             logs, completed = _execute_without_condor(rundir, env)
-        _assert_outputs(rundir, logs, completed)
-        print("constant-likelihood pipeline gate ({} backend): PASS".format(
-            args.backend))
+        if args.builder == "Hyperpipe":
+            _assert_outputs(rundir, logs, completed)
+        else:
+            _assert_legacy_outputs(rundir, logs)
+        print("constant-likelihood pipeline gate ({} builder, {} backend): "
+              "PASS".format(args.builder, args.backend))
         if args.keep_output:
             print("outputs retained at {}".format(run_base))
     finally:
