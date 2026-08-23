@@ -28,6 +28,7 @@ import RIFT.lalsimutils as lalsimutils
 from RIFT.misc import hyperpipeline_io
 from RIFT.misc import dag_utils_generic
 from RIFT.misc import cip_pipeline
+from RIFT.misc import extrinsic_stage
 import configparser as ConfigParser
 
 if ( 'RIFT_LOWLATENCY'  in os.environ):
@@ -2556,54 +2557,44 @@ if opts.pipeline_builder == "Hyperpipe":
         # batched converter, so no distinct Hyperpipe topology is required.
         with open("args_ile.txt") as stream:
             extrinsic_ile_args = stream.read()
-        extrinsic_ile_args = extrinsic_ile_args.replace(
-            "--no-adapt-after-first", "")
-        extrinsic_ile_args = extrinsic_ile_args.replace(
-            "--distance-marginalization ", " ")
         samples_per_point = int(
             opts.internal_last_iteration_extrinsic_samples_per_ile or 5)
-        configured_neff = [
-            int(float(value)) for value in re.findall(
-                r"--n-eff(?:=|\s+)([0-9.eE+-]+)", extrinsic_ile_args)]
-        extrinsic_neff = max(
-            [int(opts.ile_n_eff or 0), samples_per_point] + configured_neff)
-        extrinsic_ile_args += (
-            " --save-P 0.01 --save-samples --n-eff {neff}"
-            " --resample-time-marginalization"
-            " --fairdraw-extrinsic-output"
-            " --fairdraw-extrinsic-output-n-max {nmax} "
-        ).format(neff=extrinsic_neff, nmax=samples_per_point)
-        if opts.export_marginal_distance_grid:
-            extrinsic_ile_args += " --export-marginal-distance-grid "
-        if opts.export_distance_slices and opts.export_distance_slices > 0:
-            extrinsic_ile_args += " --export-distance-slices {} ".format(
-                opts.export_distance_slices)
-            if opts.export_distance_slices_all_fresh:
-                extrinsic_ile_args += " --distance-slice-all-fresh "
-            if opts.export_distance_slices_randomize:
-                extrinsic_ile_args += " --distance-slice-randomize "
-            if opts.export_distance_slices_wing_neff is not None:
-                extrinsic_ile_args += " --distance-slice-wing-neff {} ".format(
-                    opts.export_distance_slices_wing_neff)
-            if opts.export_distance_slices_wing_nmax is not None:
-                extrinsic_ile_args += " --distance-slice-wing-nmax {} ".format(
-                    opts.export_distance_slices_wing_nmax)
-            if opts.export_distance_slices_n_core:
-                extrinsic_ile_args += " --n-distance-slice-core {} ".format(
-                    opts.export_distance_slices_n_core)
-            if opts.export_distance_slices_n_wing:
-                extrinsic_ile_args += " --n-distance-slice-wing {} ".format(
-                    opts.export_distance_slices_n_wing)
-            if opts.export_distance_slices_wing_delta_lnL is not None:
-                extrinsic_ile_args += (
-                    " --distance-slice-wing-delta-lnL {} ".format(
-                        opts.export_distance_slices_wing_delta_lnL))
-            if opts.export_distance_slices_skip_threshold is not None:
-                extrinsic_ile_args += (
-                    " --distance-slice-skip-threshold {} ".format(
-                        opts.export_distance_slices_skip_threshold))
-            if "--internal-use-lnL" not in extrinsic_ile_args:
-                extrinsic_ile_args += " --internal-use-lnL "
+        # One implementation, shared with BasicIteration.  This block used to
+        # re-derive the same transform with regular expressions over the args
+        # file pseudo_pipe had just written, and the two had already drifted on
+        # --n-eff: BasicIteration takes the LAST value in the string, this took
+        # the maximum over every value AND the --ile-n-eff option.  They agree
+        # only when the option and the string agree.
+        extrinsic_ile_args, extrinsic_neff = (
+            extrinsic_stage.derive_extrinsic_ile_args(
+                extrinsic_ile_args, samples_per_point,
+                export_marginal_distance_grid=opts.export_marginal_distance_grid,
+                export_distance_slices=(
+                    opts.export_distance_slices
+                    if (opts.export_distance_slices
+                        and opts.export_distance_slices > 0) else None),
+                distance_slice_options={
+                    "--distance-slice-all-fresh":
+                        opts.export_distance_slices_all_fresh,
+                    "--distance-slice-randomize":
+                        opts.export_distance_slices_randomize,
+                    "--distance-slice-wing-neff":
+                        opts.export_distance_slices_wing_neff,
+                    "--distance-slice-wing-nmax":
+                        opts.export_distance_slices_wing_nmax,
+                    # Truthiness upstream, so 0 is omitted -- see
+                    # extrinsic_stage.derive_extrinsic_ile_args.
+                    "--n-distance-slice-core":
+                        opts.export_distance_slices_n_core or None,
+                    "--n-distance-slice-wing":
+                        opts.export_distance_slices_n_wing or None,
+                    "--distance-slice-wing-delta-lnL":
+                        opts.export_distance_slices_wing_delta_lnL,
+                    "--distance-slice-skip-threshold":
+                        opts.export_distance_slices_skip_threshold,
+                },
+                time_resampling=True))
+
         extrinsic_args_path = os.path.abspath("args_ile_extrinsic.txt")
         with open(extrinsic_args_path, "w") as stream:
             stream.write(extrinsic_ile_args.strip() + "\n")
@@ -2630,21 +2621,18 @@ if opts.pipeline_builder == "Hyperpipe":
             "terminal_collect_extrinsic.sh")
         with open(terminal_collect_script, "w") as stream:
             stream.write("#!/bin/bash\nset -e\n")
-            stream.write(
-                "{} '{}/EXTR_out-*.xml_*_.xml.gz' --output {}/tmp_extrinsic.xml.gz\n"
-                .format(shlex.quote(join_extrinsic), terminal_extrinsic_dir,
-                        os.getcwd()))
-            stream.write(
-                "{} {} {}/tmp_extrinsic.xml.gz > {}/tmp_extrinsic.dat\n"
-                .format(shlex.quote(convert_extrinsic),
-                        convert_args_extrinsic, os.getcwd(), os.getcwd()))
-            stream.write(
-                "head -n 1 {0}/tmp_extrinsic.dat > "
-                "{0}/extrinsic_posterior_samples.dat\n".format(os.getcwd()))
-            stream.write(
-                "sed 1d {0}/tmp_extrinsic.dat {1} >> "
-                "{0}/extrinsic_posterior_samples.dat\n".format(
-                    os.getcwd(), shuffle_clause))
+            # Shared with BasicIteration's allinone_convert.sh: two generators
+            # of the same four shell lines is how a stray space made the frame
+            # rotation inert for months.
+            for line in extrinsic_stage.extrinsic_collect_commands(
+                    shlex.quote(join_extrinsic), shlex.quote(convert_extrinsic),
+                    convert_args_extrinsic,
+                    "'{}/EXTR_out-*.xml_*_.xml.gz'".format(terminal_extrinsic_dir),
+                    "{}/tmp_extrinsic.xml.gz".format(os.getcwd()),
+                    "{}/tmp_extrinsic.dat".format(os.getcwd()),
+                    "{}/extrinsic_posterior_samples.dat".format(os.getcwd()),
+                    shuffle_clause):
+                stream.write(line + "\n")
         os.chmod(terminal_collect_script, 0o755)
 
         terminal_rotation_script = None
