@@ -16,7 +16,14 @@ builds to compare a single emitted number, and the property at issue really is
 the order of three statements.  What it cannot see is a change that preserves
 the order but breaks the semantics, so the constant-likelihood gate's use of
 `--internal-force-puff-iterations -1` (which must produce no puff nodes) is the
-companion evidence.
+companion evidence -- `_assert_no_puff_nodes`, which reads the built workflow
+and fails if any node runs PUFF.sub.
+
+That delegation was empty when first written: the gate asserted nothing about
+puff, so an order-preserving semantic break -- assigning the parsed value to a
+dead variable -- passed this test AND the gate, and `helper_puff_max_it.txt`
+silently won again. Naming evidence that does not exist is worse than naming
+none, because it stops the next reader looking.
 """
 
 import os

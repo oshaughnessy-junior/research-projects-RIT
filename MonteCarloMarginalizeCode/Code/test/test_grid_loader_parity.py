@@ -104,3 +104,72 @@ def test_exception_list_is_not_a_dumping_ground():
     assert len(DECLARED_EXCEPTIONS) <= 4, (
         "the declared-exceptions list has grown; each entry is a place the two "
         "loaders are allowed to disagree, so it should shrink, not grow")
+
+
+# ---------------------------------------------------------------------------
+# The runtime half.
+#
+# Everything above reads the source, and the docstring justified that on cost:
+# "a runtime test would need frames, a PSD and a minute of CPU per point".
+# That was wrong.  ILE configures the templates and prints them BEFORE it needs
+# any data, so `--zero-likelihood` with an empty cache reaches `P.print_params()`
+# in a couple of seconds, and the approximant it actually chose is on stdout.
+#
+# The cost mattered because the source checks are defeatable by a one-line
+# change that leaves the text intact: replacing the guard with `if False:`
+# keeps both the substring the first test looks for and the `P.approx`
+# assignment target the second one walks, and the suite stays green while every
+# ASCII-grid run reverts to the TaylorT4 default.  Asking the program is not
+# defeatable that way.
+# ---------------------------------------------------------------------------
+
+import subprocess
+import sys
+
+
+def _write_ascii_grid(path):
+    import lal
+    import RIFT.lalsimutils as lalsimutils
+    from RIFT.misc import hyperpipeline_io
+
+    point = lalsimutils.ChooseWaveformParams()
+    point.m1 = 35.0 * lal.MSUN_SI
+    point.m2 = 30.0 * lal.MSUN_SI
+    point.fref = 20.0
+    point.fmin = 20.0
+    hyperpipeline_io.write_grid_from_P_list(
+        str(path), [point], hyperpipeline_io.DEFAULT_BASE_COLUMNS,
+        lal_module=lal, lalsimutils_module=lalsimutils)
+    return str(path)
+
+
+def _approximant_ile_configured(tmp_path, requested):
+    grid = _write_ascii_grid(tmp_path / "grid.dat")
+    cache = tmp_path / "empty.cache"
+    cache.write_text("")
+    result = subprocess.run(
+        [sys.executable, os.path.abspath(ILE),
+         "--sim-grid", grid, "--approximant", requested,
+         "--cache", str(cache), "--event-time", "1000000000",
+         "--zero-likelihood", "--n-max", "10", "--n-eff", "1",
+         "--fmin-template", "20"],
+        cwd=str(tmp_path), capture_output=True, text=True, timeout=600)
+    for line in (result.stdout + result.stderr).splitlines():
+        if "approximant is" in line:
+            return line.split("=", 1)[1].strip()
+    raise AssertionError(
+        "ILE never reported an approximant; it did not reach template setup:\n"
+        + (result.stdout + result.stderr)[-3000:])
+
+
+@pytest.mark.parametrize("requested", ["IMRPhenomD", "SEOBNRv4"])
+def test_the_grid_branch_honours_the_requested_approximant(tmp_path, requested):
+    """Ask ILE what it chose, rather than reading the line that chooses.
+
+    The defect this pins analysed with ChooseWaveformParams' TaylorT4 default
+    regardless of --approximant, and where that produced too few modes ILE
+    raised KeyError: (2,-1), printed "FAILED ANALYSIS", wrote no output and
+    exited zero.  Two approximants, so a test that happened to agree with the
+    default cannot pass by coincidence.
+    """
+    assert _approximant_ile_configured(tmp_path, requested) == requested

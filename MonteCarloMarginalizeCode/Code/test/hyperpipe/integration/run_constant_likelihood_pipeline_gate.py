@@ -401,6 +401,40 @@ def _assert_legacy_outputs(rundir: Path, logs: Path):
     assert "Reading channel" not in combined
 
 
+def _assert_no_puff_nodes(rundir: Path):
+    """`--internal-force-puff-iterations -1` must actually produce no puff.
+
+    The unit test for this option checks the ORDER of two lines in pseudo_pipe
+    and names this gate as the evidence that the order means something.  That
+    delegation was empty: the gate asserted nothing about puff, so an
+    order-preserving semantic break -- assigning the parsed value to a dead
+    variable -- passed both, and `helper_puff_max_it.txt` silently won again,
+    which is the pre-#181 bug.
+
+    Interleaved control when this was written: the clean build has 10 JOB nodes
+    and no puff node; with the option made inert it has 11, the extra one being
+    PUFF.sub.  So the count is not incidental -- it moves with the defect.
+    """
+    # Whichever driver this backend wrote; both lanes are checked the same way.
+    drivers = sorted(rundir.glob("*.dag")) + sorted(rundir.glob("*_local.sh"))
+    assert drivers, "no workflow driver found in {}".format(rundir)
+    text = "\n".join(path.read_text() for path in drivers)
+    offenders = [line.strip() for line in text.splitlines()
+                 if "PUFF" in line.upper() and (
+                     line.strip().startswith("JOB")
+                     or line.strip().startswith("run_unit")
+                     or line.strip().startswith("run_node"))]
+    assert not offenders, (
+        "--internal-force-puff-iterations -1 was requested but the workflow "
+        "still contains puff nodes, so the option is inert and "
+        "helper_puff_max_it.txt won:\n  " + "\n  ".join(offenders))
+    # NOT asserted: that PUFF.sub is absent.  The submit file is written
+    # unconditionally, whether or not any node uses it -- checked on a clean
+    # build, where PUFF.sub exists and no node references it.  Asserting on the
+    # file would fail on correct output, which is how a check gets weakened
+    # back out again.
+
+
 def _assert_outputs(rundir: Path, logs: Path, completed):
     marg_files = sorted((rundir / "iteration_0_marg" / "event_0").glob(
         "MARG*.dat"))
@@ -521,6 +555,7 @@ def main(argv=None):
                 rundir, env, driver_name=dag_name)
         else:
             logs, completed = _execute_without_condor(rundir, env)
+        _assert_no_puff_nodes(rundir)
         if args.builder == "Hyperpipe":
             _assert_outputs(rundir, logs, completed)
             if user_stages is not None:

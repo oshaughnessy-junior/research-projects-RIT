@@ -201,7 +201,6 @@ def _assert_container_executable_contract(pipeline_dir):
         if not exe_lines or "SingularityImage" not in text:
             continue
         exe = exe_lines[0].split(" = ", 1)[1].strip()
-        checked += 1
         if not os.path.isabs(exe):
             # A wrapper resolved relative to the sandbox; it is transferred by
             # construction, so there is nothing to check here.
@@ -214,6 +213,12 @@ def _assert_container_executable_contract(pipeline_dir):
             item.rstrip("/").endswith("/RIFT")
             for item in transfers.split(","))
         inside_container = exe.startswith("/usr/") or exe.startswith("/opt/")
+        # Counted HERE, past every `continue`, so it records submits that were
+        # actually ASSERTED on rather than merely looked at.  It used to be
+        # incremented before the skips, which made the empty-set guard below
+        # unable to tell "inspected eleven" from "inspected none" -- a filter
+        # broken so that it matched nothing still reported eleven and passed.
+        checked += 1
         if inside_container:
             continue
         if not ships_rift:
@@ -225,8 +230,8 @@ def _assert_container_executable_contract(pipeline_dir):
                     submit.name, exe))
     if not checked:
         raise AssertionError(
-            "no containerised submit files found in {}; this check silently "
-            "passed on nothing".format(pipeline_dir))
+            "no containerised submit file reached the executable assertion in "
+            "{}; this check would have passed on nothing".format(pipeline_dir))
     return checked
 
 

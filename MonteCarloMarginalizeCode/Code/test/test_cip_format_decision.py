@@ -71,3 +71,67 @@ def test_every_use_is_the_shared_decision(source):
     assert len(uses) >= 3, (
         "expected the decision to be consulted by the reader and both writers; "
         "found {} references".format(len(uses)))
+
+
+# ---------------------------------------------------------------------------
+# Two mutations defeated the checks above, and both left the text intact:
+#
+#   * inverting ONE writer's guard (`if _use_hpip:` -> `if not _use_hpip:`)
+#     restores exactly the pre-#181 split -- read one format, write the other --
+#     while every mention count is unchanged;
+#   * deleting the other writer's guard (`if _use_hpip:` -> `if False:`) drops
+#     the mentions from 4 to 3, and the floor was `>= 3`.
+#
+# A count of mentions cannot see either. What distinguishes them is the SHAPE
+# of each guard: the invariant is not "the name appears" but "every branch on
+# it branches the same way".
+# ---------------------------------------------------------------------------
+
+
+def test_every_guard_on_the_decision_has_the_same_polarity(source):
+    """`if _use_hpip:` everywhere -- never `not`, never a comparison.
+
+    An inverted guard is the original defect verbatim: the reader and one
+    writer then disagree about the format for the same input, which is how a
+    CIP handed a hyperpipeline composite consumed one layout and emitted the
+    other.
+    """
+    tree = ast.parse(source)
+    guards = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If):
+            continue
+        names = {child.id for child in ast.walk(node.test)
+                 if isinstance(child, ast.Name)}
+        if DECISION_NAME in names:
+            guards.append(node.test)
+    assert guards, "no branch on {} at all".format(DECISION_NAME)
+    for test in guards:
+        assert isinstance(test, ast.Name) and test.id == DECISION_NAME, (
+            "a guard on {name} at line {line} is not the bare name but {kind}."
+            " Every branch must read `if {name}:` -- an inverted or compound "
+            "guard splits the read and write decisions again, which is the "
+            "defect this file exists for.".format(
+                name=DECISION_NAME, line=getattr(test, "lineno", "?"),
+                kind=type(test).__name__))
+
+
+def test_the_number_of_guards_is_pinned_exactly(source):
+    """An exact count, not a floor.
+
+    With a floor, deleting a writer's guard is invisible: the mentions drop
+    from four to three and `>= 3` still holds, so the format decision silently
+    stops applying to one of the two writers. If a guard is legitimately added
+    or removed, update this number deliberately -- that is the point.
+    """
+    tree = ast.parse(source)
+    guards = [node for node in ast.walk(tree)
+              if isinstance(node, ast.If)
+              and any(isinstance(child, ast.Name)
+                      and child.id == DECISION_NAME
+                      for child in ast.walk(node.test))]
+    assert len(guards) == 3, (
+        "expected exactly 3 branches on {} (one reader, two writers); found "
+        "{} at lines {}".format(
+            DECISION_NAME, len(guards),
+            [getattr(node, "lineno", "?") for node in guards]))

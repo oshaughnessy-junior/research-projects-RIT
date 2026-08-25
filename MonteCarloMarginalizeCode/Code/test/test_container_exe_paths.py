@@ -34,7 +34,14 @@ WRITER_MODULES = [
 #: `<base> + <exe>` where base is one of the container prefix variables.
 CONCAT = re.compile(
     r"singularity_base_exe_path\s*\+|"
-    r"\+\s*singularity_base_exe_path")
+    r"\+\s*singularity_base_exe_path|"
+    # f-string interpolation is concatenation by another spelling, and the
+    # original pattern could not see it: rewriting os.path.join(base, exe) as
+    # f"{base}{exe}" reintroduces the exact defect -- `/usr/binile.py` -- with
+    # this file green.
+    r"f['\"][^'\"]*\{\s*singularity_base_exe_path\s*\}|"
+    r"['\"]\s*\.format\([^)]*singularity_base_exe_path|"
+    r"%\s*\(?\s*singularity_base_exe_path")
 
 
 @pytest.mark.parametrize("relative", WRITER_MODULES)

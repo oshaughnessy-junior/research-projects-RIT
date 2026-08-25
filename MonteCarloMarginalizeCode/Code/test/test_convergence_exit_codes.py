@@ -85,13 +85,18 @@ def test_a_crash_exits_2_not_1(tmp_path):
     b = _samples(tmp_path / "b.dat", seed=2)
     result = _run(["--samples", a, "--samples", b, "--method", "js_lame",
                    "--parameter", "not_a_column", "--threshold", "0.5"])
-    assert result.returncode != 1, (
-        "a failing convergence test exited 1, which the DAG treats as "
-        "'converged' and converts into a successful workflow:\n"
+    # Asserted unconditionally.  These used to sit under `if returncode != 0`,
+    # so making crashes exit 0 skipped them entirely and the test stayed green
+    # -- benign in effect, since 0 is not "converged", but the assertion
+    # silently stopped existing, which is the failure mode this file is about.
+    assert result.returncode == 2, (
+        "a failing convergence test must exit 2. Exit 1 is claimed by "
+        "'converged' and the DAG converts it into a successful workflow; "
+        "exit 0 loses the distinction between a crash and a clean run:\n"
         + result.stdout[-2000:])
-    if result.returncode != 0:
-        assert result.returncode == 2, result.stdout[-2000:]
-        assert "exiting 2, NOT 1" in result.stdout
+    assert "exiting 2, NOT 1" in result.stdout, (
+        "the exit-2 path ran but did not explain itself; the message is what "
+        "tells a reader why 1 is unavailable:\n" + result.stdout[-2000:])
 
 
 def test_an_unknown_method_still_never_converges(tmp_path):

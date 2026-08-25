@@ -117,3 +117,79 @@ def test_the_flag_requires_its_companions_and_says_so():
     result = _run(["--zero-likelihood-data-free"])
     assert result.returncode != 0
     assert "requires --zero-likelihood" in result.stdout, result.stdout[-2000:]
+
+
+# ---------------------------------------------------------------------------
+# A correction, and the behavioural check that replaces a claim.
+#
+# The order property above was stated as "the data-free path runs before the
+# heavy imports, so a worker without that stack can produce shards".  Measured,
+# that is false: the path calls `_load_hyperpipeline_io`, and importing
+# anything under `RIFT.` executes `RIFT/__init__.py`, which imports
+# `lalsimutils` and therefore `lalsimulation`.  Blocking `lalsimulation` makes
+# the data-free path fail.
+#
+# What IS true, and is what the mode is for, is narrower: it needs no GPU stack
+# and no data.  With `cupy` unimportable it still writes its shard.  That is
+# also the half a source check cannot hold on to -- the reviewer's mutation put
+# `import cupy` inside the early-exit function, and the import-order walker
+# skips function bodies by design (a lazy import there is legitimate; this one
+# is not).  Blocking the module and running is indifferent to where the import
+# is written.
+#
+# It matters that this blocks cupy explicitly rather than relying on the host:
+# cupy happens to be absent here, so a test that merely ran would pass for the
+# wrong reason and stop meaning anything on a GPU worker.
+# ---------------------------------------------------------------------------
+
+import subprocess
+import sys
+import textwrap
+
+
+def _run_data_free_with_blocked_modules(tmp_path, blocked):
+    grid = tmp_path / "grid.dat"
+    grid.write_text(
+        "# lnL sigma_lnL m1 m2 a1x a1y a1z a2x a2y a2z\n"
+        "0 0 35 30 0 0 0 0 0 0\n")
+    runner = tmp_path / "run_blocked.py"
+    runner.write_text(textwrap.dedent('''\
+        import os, sys, runpy
+        BLOCKED = tuple(x for x in os.environ["BLOCK"].split(",") if x)
+        class Blocker:
+            def find_spec(self, name, path=None, target=None):
+                if name in BLOCKED:
+                    raise ImportError("blocked: " + name)
+                return None
+        sys.meta_path.insert(0, Blocker())
+        script = os.environ["ILE_SCRIPT"]
+        sys.argv = [script] + sys.argv[1:]
+        runpy.run_path(script, run_name="__main__")
+        '''))
+    environment = dict(os.environ)
+    environment["BLOCK"] = ",".join(blocked)
+    environment["ILE_SCRIPT"] = os.path.abspath(ILE)
+    environment["OMP_NUM_THREADS"] = "1"
+    result = subprocess.run(
+        [sys.executable, str(runner),
+         "--zero-likelihood", "--zero-likelihood-data-free",
+         "--sim-grid", str(grid), "--n-events-to-analyze", "1",
+         "--event", "0", "--output-file", "out.xml"],
+        cwd=str(tmp_path), env=environment,
+        capture_output=True, text=True, timeout=600)
+    products = sorted(p.name for p in tmp_path.glob("out.xml*"))
+    return result, products
+
+
+def test_the_data_free_path_needs_no_gpu_stack(tmp_path):
+    """Blocked cupy, shard still written.
+
+    This is the mode's whole purpose: a constant-likelihood shard that a worker
+    can produce without a GPU. If the early exit ever reaches code that imports
+    cupy -- wherever that import is written -- this fails.
+    """
+    result, products = _run_data_free_with_blocked_modules(tmp_path, ["cupy"])
+    assert result.returncode == 0, (
+        "the data-free path failed with cupy unimportable:\n"
+        + (result.stdout + result.stderr)[-3000:])
+    assert products, "no shard written:\n" + (result.stdout + result.stderr)[-2000:]
