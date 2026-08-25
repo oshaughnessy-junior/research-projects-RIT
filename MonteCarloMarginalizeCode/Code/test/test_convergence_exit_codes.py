@@ -102,3 +102,52 @@ def test_an_unknown_method_still_never_converges(tmp_path):
                    "--parameter", "m1", "--threshold", "0.5"])
     assert result.returncode == 0, result.stdout[-1500:]
     assert "UNKNOWN METHOD" in result.stdout
+
+
+def test_always_succeed_still_reports_the_diagnostic(tmp_path):
+    """The flag means "never fail the workflow", not "do not compute".
+
+    Its own help says "Use for plotting convergence diagnostics", and
+    `helper_LDG_Events.py` appends it to EVERY generated run -- so a version
+    that short-circuits before the test runs removes the per-iteration
+    convergence metric from the logs of every top-level production run, which
+    is the one thing the flag exists to produce.
+
+    Both the value and the exit code are asserted here: reporting the number is
+    worthless if it costs the never-fail guarantee, and the guarantee is
+    worthless if the number is gone.
+    """
+    first = _samples(tmp_path / "a.dat", seed=1)
+    second = _samples(tmp_path / "b.dat", shift=0.3, seed=2)
+    result = _run([
+        "--samples", first, "--samples", second,
+        "--parameter", "mc", "--parameter", "eta",
+        "--method", "lame", "--threshold", "0.02", "--always-succeed"])
+    assert result.returncode == 0, result.stdout
+    numeric = [line for line in result.stdout.splitlines()
+               if line.strip() and line.strip()[0].isdigit()]
+    assert numeric, (
+        "no convergence value in the output; --always-succeed must still run "
+        "the test:\n" + result.stdout)
+
+
+def test_always_succeed_survives_an_unreadable_input(tmp_path):
+    """The never-fail half, kept honest now that the test actually runs.
+
+    Making the flag compute reintroduces every failure path it used to skip by
+    exiting first.  Each of them must still exit 0 under the flag -- otherwise
+    the fix trades a missing diagnostic for a workflow that dies on bad input.
+    """
+    second = _samples(tmp_path / "b.dat", seed=2)
+    result = _run([
+        "--samples", str(tmp_path / "absent.dat"), "--samples", second,
+        "--parameter", "mc", "--method", "lame", "--threshold", "0.02",
+        "--always-succeed"])
+    assert result.returncode == 0, result.stdout
+
+    without = _run([
+        "--samples", str(tmp_path / "absent.dat"), "--samples", second,
+        "--parameter", "mc", "--method", "lame", "--threshold", "0.02"])
+    assert without.returncode == 2, (
+        "without the flag an unreadable input must still exit 2, not 1: "
+        + without.stdout)

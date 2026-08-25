@@ -543,12 +543,15 @@ def read_and_prepare(fname):
             samples['chi2'] = np.sqrt(samples['a2x']**2+samples['a2y']**2 + samples['a2z']**2)
     return samples
 
-if opts.always_succeed:
-    # Before reading anything.  The flag promises the test always succeeds, so
-    # it must survive a malformed input and a method that raises alike; when it
-    # sat after the dispatch it survived neither.
-    print(" --always-succeed: reporting success without running the test")
-    sys.exit(0)
+# --always-succeed is BEST EFFORT, not skip.  The flag promises the test never
+# fails the workflow; it does not promise to stop computing.  Its own help says
+# "Use for plotting convergence diagnostics", and `helper_LDG_Events.py` appends
+# it to every generated run -- so short-circuiting here removed the
+# per-iteration convergence metric from the logs of every top-level production
+# run.  Instead: run the test, print what it found, and swallow the exit code.
+# Every failure path below consults this, so a malformed input or a method that
+# raises still cannot take the process down, which is what the flag is for.
+_ALWAYS_SUCCEED_EXIT = 0 if opts.always_succeed else 2
 
 try:
     samples1 = read_and_prepare(opts.samples[0])
@@ -560,7 +563,7 @@ except Exception as exc:
     print(" exiting 2, NOT 1: exit 1 means 'converged' and the DAG converts it")
     print(" into overall success, so a failure reported as 1 ends the run early")
     print(" and looks like convergence.")
-    sys.exit(2)
+    sys.exit(_ALWAYS_SUCCEED_EXIT)
 
 
 param_names1 = samples1.dtype.names; param_names2 = samples2.dtype.names
@@ -580,7 +583,7 @@ except Exception as exc:
     print(" convergence test: requested parameter not present in the samples:"
           " %s" % exc)
     print(" exiting 2, NOT 1 (see above)")
-    sys.exit(2)
+    sys.exit(_ALWAYS_SUCCEED_EXIT)
 
 
 # Perform test.  Method-name ALIASES: the pipeline wiring (helper_LDG_Events
@@ -589,15 +592,6 @@ except Exception as exc:
 # converge, with no loud diagnostic.)
 _METHOD_ALIASES = {'ks1d': 'KS_1d', 'kl1d': 'KL_1d', 'kl_1d': 'KL_1d', 'js': 'JS', 'js_additive': 'JS'}
 method = _METHOD_ALIASES.get(opts.method, opts.method)
-
-# --always-succeed is checked HERE, before the test runs, not after it.  It was
-# evaluated only once val_test had been computed, so a method that raised took
-# the process down regardless -- which is the opposite of what the flag says,
-# and exactly what happened when numpy removed np.asscalar under `--method
-# lame`.
-if opts.always_succeed:
-    print(" --always-succeed: reporting success without running the test")
-    sys.exit(0)
 
 # EXIT-CODE CONTRACT.  A deliberate "converged, stop" is exit 1, and the DAG is
 # wired to treat exit 1 as success (DAGMan ABORT-DAG-ON ... RETURN 0).  That
@@ -627,11 +621,16 @@ except Exception as exc:
   print(" exiting 2, NOT 1: exit 1 means 'converged' and the DAG treats it as")
   print(" success, so a crash reported as 1 would end the run early and look")
   print(" like convergence.")
-  sys.exit(2)
+  sys.exit(_ALWAYS_SUCCEED_EXIT)
 if val_test is None:   # e.g. KL_1d is unimplemented; treat as 'no information -> keep going'
     print(" Method '%s' returned no value; treating as not converged" % opts.method)
     val_test = np.inf
 print(val_test)
+
+if opts.always_succeed:
+    # The diagnostic above is the point of the flag; the verdict is not.
+    print(" --always-succeed: reporting success regardless of the value above")
+    sys.exit(0)
 
 if opts.threshold is None:
     sys.exit(0)
