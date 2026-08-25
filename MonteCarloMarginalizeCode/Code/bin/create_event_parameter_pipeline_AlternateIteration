@@ -1336,8 +1336,14 @@ if opts.last_iteration_extrinsic:
     # exemption here, so it reached every configuration.  Per-configuration
     # DAG evidence is in the commit message and RIFT PR #187.
     #
-    # `it` also feeds the trailing plot node, so the summary page follows the
-    # same grid; that only happens when --last-iteration-extrinsic is set.
+    # `it` also sets the trailing plot node's log directory
+    # (iteration_N_plot/logs).  It does NOT change what that node summarises:
+    # `samples_files` is empty above, so no macro reaches the plot arguments,
+    # and the page is built from the fixed filename
+    # extrinsic_posterior_samples.dat.  An earlier version of this comment
+    # said the summary page follows the grid -- that was inferred from the
+    # node's VARS moving and is measurably false; the built plot.sub is
+    # byte-identical across this change.
     it = opts.n_iterations
 
     # Create nodes for followup tasks
