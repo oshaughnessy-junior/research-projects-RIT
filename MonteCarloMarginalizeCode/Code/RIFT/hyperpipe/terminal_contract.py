@@ -21,7 +21,14 @@ from .execution_contract import normalize_execution
 
 INDEXED_GRID_FANOUT_V1 = "indexed-grid-fanout-v1"
 COMMAND_V1 = "command-v1"
-SUPPORTED_KINDS = (INDEXED_GRID_FANOUT_V1, COMMAND_V1)
+#: Run an already-written workflow as one stage of this one.  The composable
+#: primitive the manifest was missing: fan-out and barrier were already
+#: expressible (a stage name denotes every node of its fan-out, so `depends_on`
+#: wires all of them), and a sub-workflow is the third.  It carries no loop
+#: semantics -- a bounded loop is a sub-workflow plus a convergence rule, and
+#: that is deliberately not this.
+SUBWORKFLOW_V1 = "subworkflow-v1"
+SUPPORTED_KINDS = (INDEXED_GRID_FANOUT_V1, COMMAND_V1, SUBWORKFLOW_V1)
 COMMAND_EXECUTION_KEYS = {
     "request_memory", "request_disk", "request_cpus", "request_gpu",
     "retries", "max_runtime_minutes",
@@ -126,10 +133,36 @@ class TerminalStageSpec(object):
         self.args = ""
         self.args_file = None
         self.instances = [{}]
+        self.dag = None
         self.universe = str(raw.get("universe") or "vanilla")
         self.no_grid = bool(raw.get("no_grid", False))
 
-        if self.kind == INDEXED_GRID_FANOUT_V1:
+        if self.kind == SUBWORKFLOW_V1:
+            # A sub-workflow contributes exactly one node, and the writer hands
+            # the whole file to the backend rather than building a job for it,
+            # so none of the job/command fields apply.
+            dag_file = raw.get("dag")
+            if not dag_file:
+                raise ValueError(
+                    "subworkflow terminal stage {!r} requires dag".format(
+                        self.name))
+            # The LOGICAL workflow name, not necessarily a file that exists
+            # under it.  Each backend lands a workflow at its own path --
+            # `child.dag` on HTCondor, `child_local.sh` on the shell backend,
+            # `child_dag.sh` on Slurm -- so this module, which is
+            # backend-agnostic by design, cannot check existence without
+            # rejecting valid manifests on three backends out of four.  The
+            # writer does the check, through the backend's own path mapping,
+            # and still at build time.
+            self.dag = _expand_path(dag_file, base_dir)
+            for unsupported in ("job", "exe", "args", "args_file", "grid",
+                                "fanout", "instances", "args_append"):
+                if raw.get(unsupported) is not None:
+                    raise ValueError(
+                        "subworkflow terminal stage {!r} does not take {!r}; "
+                        "the sub-workflow's own manifest configures its jobs"
+                        .format(self.name, unsupported))
+        elif self.kind == INDEXED_GRID_FANOUT_V1:
             job_raw = raw.get("job")
             if not isinstance(job_raw, dict):
                 raise ValueError(

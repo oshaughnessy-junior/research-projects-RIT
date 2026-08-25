@@ -217,3 +217,83 @@ def test_invalid_command_instances_fail_early(tmp_path, instances):
     }])
     with pytest.raises(ValueError, match="instances|unsafe or reserved"):
         load_terminal_stage_specs(str(path))
+
+
+SUBWORKFLOW_V1 = _CONTRACT.SUBWORKFLOW_V1
+
+
+def test_subworkflow_stage_round_trip(tmp_path):
+    """A sub-workflow is a stage: one node, wired by depends_on like any other.
+
+    This is the composability primitive the manifest was missing.  Fan-out and
+    barrier were already expressible -- a stage name denotes every node of its
+    fan-out, so naming it in `depends_on` wires all of them -- and this is the
+    third.  It carries no loop semantics on purpose: a bounded loop is a
+    sub-workflow plus a convergence rule, and conflating them would make the
+    simple case pay for the complicated one.
+    """
+    child = tmp_path / "child.dag"
+    child.write_text("JOB a a.sub\n")
+    exe = tmp_path / "post"
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    path = _write_manifest(tmp_path, [
+        {"name": "inner", "kind": SUBWORKFLOW_V1, "dag": "child.dag"},
+        {"name": "after", "kind": COMMAND_V1, "depends_on": ["inner"],
+         "exe": str(exe), "args": "--x 1"},
+    ])
+
+    stages = load_terminal_stage_specs(str(path))
+
+    assert [stage.name for stage in stages] == ["inner", "after"]
+    assert stages[0].kind == SUBWORKFLOW_V1
+    # Resolved against the manifest's directory, like every other path here.
+    assert stages[0].dag == str(child)
+    assert stages[0].count == 1
+    assert stages[1].depends_on == ["inner"]
+
+
+def test_subworkflow_stage_requires_a_dag_but_not_an_existing_one(tmp_path):
+    """`dag` is required here; whether the file exists is the writer's call.
+
+    Each backend lands a workflow at its own path -- `child.dag` on HTCondor,
+    `child_local.sh` on the shell backend, `child_dag.sh` on Slurm -- so an
+    existence check on the literal name in this backend-agnostic module would
+    reject valid manifests on three backends out of four.  The writer checks
+    it through the backend's own path mapping, still at build time.  This test
+    pins the division, so a later "helpful" existence check here fails rather
+    than quietly breaking every non-HTCondor manifest.
+    """
+    path = _write_manifest(tmp_path, [
+        {"name": "inner", "kind": SUBWORKFLOW_V1, "dag": "no_such.dag"}])
+    stages = load_terminal_stage_specs(str(path))
+    assert stages[0].dag == str(tmp_path / "no_such.dag")
+
+    path = _write_manifest(tmp_path, [
+        {"name": "inner", "kind": SUBWORKFLOW_V1}])
+    with pytest.raises(ValueError, match="requires dag"):
+        load_terminal_stage_specs(str(path))
+
+
+@pytest.mark.parametrize("field,value", [
+    ("exe", "/bin/true"),
+    ("args", "--x"),
+    ("grid", "grid.dat"),
+    ("fanout", {"count": 2}),
+    ("instances", [{"a": "1"}]),
+])
+def test_subworkflow_stage_rejects_job_fields(tmp_path, field, value):
+    """Silently ignoring these is how a stage does less than its author asked.
+
+    Every one of them configures a job, and a sub-workflow stage has no job --
+    its children are configured by the sub-workflow's own manifest.  Accepting
+    and dropping them would leave an author with a workflow that builds, runs,
+    and does not do what the file says.
+    """
+    child = tmp_path / "child.dag"
+    child.write_text("JOB a a.sub\n")
+    stage = {"name": "inner", "kind": SUBWORKFLOW_V1, "dag": "child.dag",
+             field: value}
+    path = _write_manifest(tmp_path, [stage])
+    with pytest.raises(ValueError, match="does not take"):
+        load_terminal_stage_specs(str(path))

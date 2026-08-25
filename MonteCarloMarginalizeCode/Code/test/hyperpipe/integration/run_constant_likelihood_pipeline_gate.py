@@ -53,7 +53,7 @@ def _write_zero_spin_grid(path: Path):
         str(path), hyperpipeline_io.DEFAULT_BASE_COLUMNS, rows)
 
 
-def _write_user_terminal_stage(run_base: Path):
+def _write_user_terminal_stage(run_base: Path, child_dag: Path = None):
     """A third-party terminal stage, written the way a user would write one.
 
     The plan for composable flows argues the manifest is already the extension
@@ -75,21 +75,83 @@ def _write_user_terminal_stage(run_base: Path):
         "test -s \"$1\" || { echo \"user stage: $1 missing or empty\" >&2; exit 1; }\n"
         "printf 'rows %s\\n' \"$(grep -vc '^#' \"$1\")\" > \"$2\"\n")
     script.chmod(0o755)
+    stages = [{
+        "name": "user_summary",
+        "kind": "command-v1",
+        "depends_on": ["pipeline"],
+        "exe": str(script),
+        "args": "{0}/grid-1.dat {0}/user_summary.txt".format(
+            run_base / "run"),
+        "initial_dir": ".",
+        "universe": "local",
+    }]
+    if child_dag is not None:
+        # Composition, which is the whole claim: a command stage, then a whole
+        # separate workflow that depends on it.  `depends_on` wires the two
+        # kinds together without either knowing what the other is.
+        stages.append({
+            "name": "inner_workflow",
+            "kind": "subworkflow-v1",
+            "depends_on": ["user_summary"],
+            "dag": str(child_dag),
+        })
     manifest = run_base / "user_stages.json"
-    manifest.write_text(json.dumps({
-        "version": 1,
-        "stages": [{
-            "name": "user_summary",
-            "kind": "command-v1",
-            "depends_on": ["pipeline"],
-            "exe": str(script),
-            "args": "{0}/grid-1.dat {0}/user_summary.txt".format(
-                run_base / "run"),
-            "initial_dir": ".",
-            "universe": "local",
-        }],
-    }, indent=2))
+    manifest.write_text(json.dumps({"version": 1, "stages": stages}, indent=2))
     return manifest
+
+
+def _write_child_workflow(run_base: Path, env):
+    """Build a small standalone workflow for a subworkflow-v1 stage to run.
+
+    Written with the SAME backend as the outer workflow, because that is what a
+    user does and because the backends disagree about where a workflow lands --
+    `child.dag` on HTCondor, `child_local.sh` on the shell backend,
+    `child_dag.sh` on Slurm.  The manifest names the logical `child.dag` and the
+    writer resolves it; if that resolution were wrong this would fail here
+    rather than at submit time on someone's cluster.
+    """
+    child_dir = run_base / "child-workflow"
+    child_dir.mkdir(exist_ok=True)
+    script = child_dir / "child_job.sh"
+    script.write_text(
+        "#!/bin/bash\nset -euo pipefail\n"
+        "printf 'child ran\\n' > " + str(child_dir / "child_ran.txt") + "\n")
+    script.chmod(0o755)
+    builder = child_dir / "build_child.py"
+    builder.write_text(
+        "import os, sys\n"
+        "sys.path.insert(0, {code!r})\n"
+        "from RIFT.misc import dag_utils_generic as m\n"
+        "d = {child!r}\n"
+        "job = m.CondorDAGJob(universe='vanilla', executable={script!r})\n"
+        "job.set_sub_file(os.path.join(d, 'child_job.sub'))\n"
+        "job.set_log_file(os.path.join(d, 'child.log'))\n"
+        "job.set_stdout_file(os.path.join(d, 'child.out'))\n"
+        "job.set_stderr_file(os.path.join(d, 'child.err'))\n"
+        "job.write_sub_file()\n"
+        "dag = m.CondorDAG()\n"
+        "dag.add_node(m.CondorDAGNode(job))\n"
+        "dag.set_dag_file(os.path.join(d, 'child'))\n"
+        "dag.write_concrete_dag()\n".format(
+            code=str(CODE), child=str(child_dir), script=str(script)))
+    result = subprocess.run(
+        [sys.executable, str(builder)], cwd=str(child_dir), env=env,
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    if result.returncode:
+        raise RuntimeError(
+            "child workflow build failed:\n" + result.stdout)
+    return child_dir / "child.dag", child_dir / "child_ran.txt"
+
+
+def _assert_child_workflow_ran(marker: Path, rundir: Path):
+    assert marker.exists(), (
+        "the subworkflow-v1 stage did not run its child workflow; a "
+        "sub-workflow stage that builds but never executes is the failure this "
+        "lane exists to catch")
+    assert marker.read_text().strip() == "child ran", marker.read_text()
+    manifest = json.loads((rundir / "terminal_stage_specs.json").read_text())
+    kinds = {stage["name"]: stage["kind"] for stage in manifest["stages"]}
+    assert kinds.get("inner_workflow") == "subworkflow-v1", kinds
 
 
 def _assert_user_terminal_stage_ran(rundir: Path):
@@ -100,7 +162,12 @@ def _assert_user_terminal_stage_ran(rundir: Path):
     text = product.read_text().strip()
     assert text.startswith("rows ") and int(text.split()[1]) > 0, text
     manifest = json.loads((rundir / "terminal_stage_specs.json").read_text())
-    assert [stage["name"] for stage in manifest["stages"]] == ["user_summary"]
+    names = [stage["name"] for stage in manifest["stages"]]
+    # Only the user's stages: this lane runs without --add-extrinsic, so
+    # nothing generated should appear.  Order is the order they were written.
+    assert names[0] == "user_summary", names
+    assert all(name.startswith("user_") or name == "inner_workflow"
+               for name in names), names
 
 
 def _build(run_base: Path, osg_contract=False, backend: str = "htcondor",
@@ -429,9 +496,13 @@ def main(argv=None):
         # The user-stage lane only makes sense where the workflow actually
         # runs, and only for the writer that consumes a terminal manifest.
         user_stages = None
+        child_marker = None
         if (args.backend == "local" and args.builder == "Hyperpipe"
                 and not args.osg_build_contract_only):
-            user_stages = _write_user_terminal_stage(run_base)
+            child_dag, child_marker = _write_child_workflow(
+                run_base, _environment(run_base, backend=args.backend))
+            user_stages = _write_user_terminal_stage(
+                run_base, child_dag=child_dag)
         rundir = _build(run_base, osg_contract=args.osg_build_contract_only,
                         backend=args.backend, builder=args.builder,
                         user_stages=user_stages)
@@ -454,6 +525,7 @@ def main(argv=None):
             _assert_outputs(rundir, logs, completed)
             if user_stages is not None:
                 _assert_user_terminal_stage_ran(rundir)
+                _assert_child_workflow_ran(child_marker, rundir)
         else:
             _assert_legacy_outputs(rundir, logs)
         print("constant-likelihood pipeline gate ({} builder, {} backend): "
