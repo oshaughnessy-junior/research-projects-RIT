@@ -691,6 +691,70 @@ def _assert_basic_reweighting_chain(basic: Path):
     assert (basic / "allinone_convert.sh").is_file()
 
 
+def _assert_pesummary_honours_the_arguments(label, text):
+    """Ask pesummary's parser what it would actually do with this command line.
+
+    Returns quietly if pesummary is not importable -- this gate must not become
+    conditional on an optional dependency -- but when it is present, this is the
+    only check here that can tell "names both files" from "publishes both".
+    """
+    try:
+        from pesummary.core.cli.parser import ArgumentParser
+    except Exception:
+        return
+    # `text` is either a submit file or a bare argument string.  A submit file
+    # must have its `arguments = "..."` value extracted and unwrapped first;
+    # shlex over the whole file yields submit syntax, and the parser then sees
+    # no --samples at all and reports None rather than a count -- which is how
+    # the first version of this helper failed, silently accepting nothing.
+    argument_line = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("arguments") and "=" in stripped:
+            argument_line = stripped.split("=", 1)[1].strip()
+            break
+    if argument_line is not None:
+        if len(argument_line) >= 2 and argument_line[0] == argument_line[-1] == '"':
+            argument_line = argument_line[1:-1]
+        text = argument_line
+    words = shlex.split(text)
+    argv, keep = [], False
+    for index, word in enumerate(words):
+        if word in ("--samples", "--labels"):
+            keep = True
+        elif word.startswith("--"):
+            keep = False
+        if keep:
+            argv.append(word)
+    # The files do not exist in the gate's tree; pesummary's action checks that,
+    # so point every path at a real empty file and keep only the count/shape.
+    with tempfile.TemporaryDirectory() as scratch:
+        rewritten = []
+        for word in argv:
+            if word.endswith(".dat"):
+                stand_in = os.path.join(
+                    scratch, os.path.basename(word).replace("$", "_"))
+                with open(stand_in, "w") as handle:
+                    handle.write("# lnL\n")
+                rewritten.append(stand_in)
+            else:
+                rewritten.append(word)
+        parser = ArgumentParser()
+        parser.add_known_options_to_parser(["--samples", "--labels"])
+        namespace, _ = parser.parse_known_args(rewritten)
+    assert namespace.samples and namespace.labels, (
+        "{}: no --samples/--labels found to check. This helper must never pass "
+        "on an empty parse -- that is how it would go quiet.".format(label))
+    assert len(namespace.samples) == len(namespace.labels), (
+        "{}: pesummary would receive {} posterior(s) and {} label(s) from this "
+        "command line. A repeated --samples flag REPLACES the previous one; "
+        "pass one --samples taking every file.".format(
+            label, len(namespace.samples), len(namespace.labels)))
+    assert len(namespace.samples) >= 2, (
+        "{}: pesummary would publish only {} posterior".format(
+            label, len(namespace.samples)))
+
+
 def _assert_pesummary_publishes_both_posteriors(basic: Path, hyper: Path):
     """Both builders must archive the pre- AND post-calibration posteriors.
 
@@ -709,6 +773,15 @@ def _assert_pesummary_publishes_both_posteriors(basic: Path, hyper: Path):
 
     The ordering half matters as much as the arguments: a page that names a
     file produced by a stage it does not wait for is a race, not a comparison.
+
+    **The arguments are checked by PARSING them with pesummary's own parser,
+    not by inspecting the string.**  The first version of this check asserted
+    that both filenames appeared and that `--samples` occurred at least twice,
+    and it passed on a command line that publishes one posterior: pesummary's
+    `--samples` is a plain store action with `nargs='+'`, not `append`, so a
+    second occurrence REPLACES the first.  Both filenames were present, in a
+    form pesummary would not honour.  A string check cannot see that; asking
+    the parser can.
     """
     for label, path in (("BasicIteration", basic / "plot.sub"),
                         ("Hyperpipe", None)):
@@ -719,10 +792,10 @@ def _assert_pesummary_publishes_both_posteriors(basic: Path, hyper: Path):
         assert "reweighted_posterior_samples.dat" in text, (
             "{} does not publish the calibration-reweighted posterior".format(
                 label))
-        assert text.count("--samples") >= 2, label
         assert "_calmarg" in text, (
             "{} publishes both posteriors under one label, so the page cannot "
             "tell them apart".format(label))
+        _assert_pesummary_honours_the_arguments(label, text)
 
     manifest = json.loads((hyper / "terminal_stage_specs.json").read_text())
     stages = {stage["name"]: stage for stage in manifest["stages"]}
@@ -731,6 +804,7 @@ def _assert_pesummary_publishes_both_posteriors(basic: Path, hyper: Path):
     assert "extrinsic_posterior_samples.dat" in pesummary_args
     assert "reweighted_posterior_samples.dat" in pesummary_args
     assert "_calmarg" in pesummary_args
+    _assert_pesummary_honours_the_arguments("Hyperpipe", pesummary_args)
     assert stages["pesummary"]["depends_on"] == ["calibration_merge"], (
         "the Hyperpipe archive stage must wait for the calibration product it "
         "names: " + str(stages["pesummary"]["depends_on"]))

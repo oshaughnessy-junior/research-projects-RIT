@@ -2357,8 +2357,11 @@ if opts.last_iteration_extrinsic:
     #
     # Found by running both builders to completion and matching the extrinsic
     # posterior's intrinsic points against each candidate grid: they matched
-    # overlap-grid-0 to 4e-7 (ASCII round-off) and were 0.9 Msun from
-    # overlap-grid-1.  Hyperpipe read the final CIP posterior and was right.
+    # overlap-grid-0 to 4e-7 (ASCII round-off) and were several solar masses
+    # from overlap-grid-1.  Hyperpipe read the final CIP posterior and was
+    # right.  (This was a pre-fix measurement; the run no longer exists, so the
+    # separation is stated as an order rather than a figure -- two records of
+    # it disagreed by a factor of five, and neither can now be checked.)
     # The Z path already computed n_iterations, so this is a no-op there --
     # which is where the production ini templates live, and is checked by
     # diffing a Z build's DAG across this change.

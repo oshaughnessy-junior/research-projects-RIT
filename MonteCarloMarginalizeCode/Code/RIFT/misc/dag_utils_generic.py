@@ -177,8 +177,23 @@ if 'RIFT_GETENV_OSG' in os.environ:
 # RIFT writers embed HTCondor-style ``$(macroiteration)`` references directly
 # into option values, paths and filenames.  ``cluster`` and ``process`` are
 # supplied by the scheduler itself rather than by the workflow.
-MACRO_REF = re.compile(r"\$\((macro[A-Za-z0-9_]*|cluster|process)\)",
-                       re.IGNORECASE)
+#
+# ANY identifier in ``$(...)`` is a macro reference.  It used to be only
+# ``macro*``/``cluster``/``process``, which missed the ones RIFT assigns under
+# other names -- ``add_macro`` takes any key, and the BayesWave nodes use
+# ``$(ifo)``.  The shell backends then emitted the token literally, so
+# ``initialdir = <dir>/$(ifo)`` created a directory NAMED ``$(ifo)`` that every
+# detector shared, and ``mkdir -p`` made it succeed, so neither ``set -u`` nor
+# ``set -e`` could see it.  That is the silent-wrong-directory failure the
+# strict rendering exists to prevent, walking straight past the strictness
+# because the token never reached ``macro_ref``.
+#
+# Broadening is safe: in an HTCondor submit file ``$(name)`` is macro
+# expansion, never shell command substitution.  ``$$(...)`` (machine-ad
+# substitution, used for per-GPU container selection) does not match, because
+# what follows ``$(`` there is not an identifier.  Neither does ``$(dirname
+# ...)``-style shell text, which has a space before the closing paren.
+MACRO_REF = re.compile(r"\$\(([A-Za-z_][A-Za-z0-9_]*)\)")
 
 #: Macro names the scheduler provides; a workflow never assigns them.
 SCHEDULER_SUPPLIED_MACROS = ("cluster", "process")
@@ -850,10 +865,39 @@ class _GenericDAG(object):
             or str(node_or_name)
         )
 
+    @staticmethod
+    def _join_script_args(args):
+        """Join hook arguments without losing the caller's word boundaries.
+
+        The API takes ``*args`` -- the caller has already told us where each
+        argument ends -- and this used to `" ".join` them, so an argument
+        containing a space became two.  DAGMan's own SCRIPT line is
+        whitespace-separated, so the joined form is still what goes into the
+        .dag; quoting the ones that need it keeps the information alive for
+        backends that can honour it, and matches how DAGMan reads quoted
+        arguments back.
+
+        Macro references are left bare, because a backend has to be able to
+        find and substitute them: quoting `$(macroiteration)` would hide it
+        from MACRO_REF.  An argument that is exactly one macro reference is
+        therefore never quoted, which is the common case by far.
+        """
+        out = []
+        for arg in args:
+            text = str(arg)
+            if text and not any(ch.isspace() for ch in text):
+                out.append(text)
+            elif MACRO_REF.fullmatch(text or ""):
+                out.append(text)
+            else:
+                out.append('"' + text.replace('\\', '\\\\')
+                           .replace('"', '\\"') + '"')
+        return " ".join(out)
+
     def add_script_pre(self, node, executable, *args):
         """Add a SCRIPT PRE hook for *node* (executable + args)."""
         entry = (self._node_name(node), str(executable),
-                 " ".join(str(a) for a in args))
+                 self._join_script_args(args))
         self.script_pre.append(entry)
         if self._already_written:
             get_backend().append_script_pre(self, *entry)
@@ -861,7 +905,7 @@ class _GenericDAG(object):
     def add_script_post(self, node, executable, *args):
         """Add a SCRIPT POST hook for *node* (executable + args)."""
         entry = (self._node_name(node), str(executable),
-                 " ".join(str(a) for a in args))
+                 self._join_script_args(args))
         self.script_post.append(entry)
         if self._already_written:
             get_backend().append_script_post(self, *entry)
@@ -2019,15 +2063,71 @@ class LocalBackend(WorkflowBackend):
             lines.append("")
         lines.extend([
             'run_step() {',
-            '  # A pre/post script or a sub-workflow.  DAGMan treats a failing',
-            '  # one as a failed node; a bare command in a driver without -e',
-            '  # would let the workflow carry on as if nothing happened.',
+            '  # A sub-workflow, or a hook on a node that has no retry.',
             '  local label="$1"; shift',
             '  echo "[local] ${label}"',
             '  if ! "$@"; then',
             '    echo "[local] FAILED ${label}" >&2',
             '    exit 1',
             '  fi',
+            '}',
+            "",
+            'run_unit() {',
+            '  # DAGMan retries the PRE + JOB + POST triple as ONE unit, and',
+            '  # the POST script -- not the job -- decides whether the node',
+            '  # succeeded.  Emulating that matters: RIFT\'s cip-explode design',
+            '  # pairs RETRY 1000 with a POST script whose own comment says it',
+            '  # "will USUALLY FAIL and get retried A LARGE NUMBER OF TIMES,',
+            '  # until we complete work". A driver that exits on the first POST',
+            '  # failure makes that adaptive batching inert.',
+            '  #',
+            '  # pre/post are names of generated functions, or the empty',
+            '  # string.  DAGMan\'s script variables are passed the same way',
+            '  # every other macro is -- exported here, referenced as',
+            '  # ${RIFT_VAR_*} in the generated hook -- so one mechanism covers',
+            '  # $(JOB), $(JOBID), $(RETURN) and the node\'s own VARS alike.',
+            '  local name="$1"; local retries="$2"; local abort_code="$3"',
+            '  local abort_return="$4"; local script="$5"',
+            '  local pre="$6"; local post="$7"; shift 7',
+            '  local attempt=0 rc=0 job_rc=0',
+            '  export RIFT_VAR_JOB="${name}"',
+            '  export RIFT_VAR_JOBID="${name}.0.0"',
+            '  # The node VARS, exported for the whole unit rather than only',
+            '  # for the job: DAGMan substitutes a node\'s VARS into its PRE',
+            '  # and POST argument lists too, and a hook that referenced one',
+            '  # would otherwise die on `unbound variable` under set -u.',
+            '  local _pair',
+            '  for _pair in "$@"; do export "${_pair}"; done',
+            '  while :; do',
+            '    rc=0',
+            '    export RIFT_VAR_RETURN=0',
+            '    if [ -n "${pre}" ]; then',
+            '      echo "[local] SCRIPT PRE ${name}"',
+            '      "${pre}" || rc=$?',
+            '    fi',
+            '    job_rc=0',
+            '    if [ "${rc}" -eq 0 ]; then',
+            '      echo "[local] running ${name} (attempt $((attempt+1)))"',
+            '      env "$@" bash "${script}" || job_rc=$?',
+            '      if [ -n "${abort_code}" ] && [ "${job_rc}" -eq "${abort_code}" ]; then',
+            '        echo "[local] ABORT-DAG-ON ${name}: exit ${job_rc}, workflow returns ${abort_return}"',
+            '        exit "${abort_return}"',
+            '      fi',
+            '      rc=${job_rc}',
+            '    fi',
+            '    if [ -n "${post}" ]; then',
+            '      echo "[local] SCRIPT POST ${name}"',
+            '      export RIFT_VAR_RETURN="${job_rc}"',
+            '      rc=0',
+            '      "${post}" || rc=$?',
+            '    fi',
+            '    if [ "${rc}" -eq 0 ]; then return 0; fi',
+            '    attempt=$((attempt+1))',
+            '    if [ "${attempt}" -gt "${retries}" ]; then',
+            '      echo "[local] FAILED ${name} after $((retries+1)) attempt(s), exit ${rc}" >&2',
+            '      exit 1',
+            '    fi',
+            '  done',
             '}',
             "",
             'run_node() {',
@@ -2060,31 +2160,70 @@ class LocalBackend(WorkflowBackend):
         abort_by_name = {}
         for entry in dag.abort_on:
             abort_by_name[_GenericDAG._node_name(entry[0])] = (entry[1], entry[2])
+        hook_index = [0]
+
+        def _emit_hook(node, kind, hooks):
+            """Emit one bash function per node's PRE/POST hooks, or "".
+
+            Quoting and macro rendering happen HERE, once, at generation.  The
+            hook command used to be pasted into the driver as raw text, so
+            `$(JOBID)` became bash command substitution -- `JOBID: command not
+            found`, and every later argument shifted down two positions -- and
+            a path containing a space split into two words.  Both are silent:
+            the POST script simply receives the wrong argv.
+
+            DAGMan's script variables resolve to what DAGMan resolves them
+            to -- $(JOB) the node name, $(RETURN) the job's exit status,
+            $(JOBID) a job identifier -- via the same mechanism as every other
+            macro: run_unit exports them, and shell_word leaves the reference
+            live inside double quotes.  Going through shell_word rather than
+            shlex.quote is what makes that work; quoting the whole word would
+            escape the `$` and hand the script the literal text.
+            """
+            if not hooks:
+                return ""
+            name = "_hook_{}_{}".format(kind, hook_index[0])
+            hook_index[0] += 1
+            body = []
+            for exe, args in hooks:
+                words = [str(exe).strip()] + shlex.split(args or "")
+                body.append("  " + " ".join(
+                    self.shell_word(word) for word in words) + " || return $?")
+            lines.append("{}() {{".format(name))
+            lines.extend(body)
+            lines.append("}")
+            lines.append("")
+            return name
+
         for node in order:
-            for exe, args in pre_by_name.get(node.name, []):
-                lines.append("run_step {} {} {}".format(
-                    shlex.quote("SCRIPT PRE " + node.name), exe, args).rstrip())
+            pre_name = _emit_hook(node, "pre", pre_by_name.get(node.name, []))
+            post_name = _emit_hook(node, "post", post_by_name.get(node.name, []))
+            retries = int(node.retry or 0)
             if isinstance(node, _GenericSubdagNode):
-                lines.append("run_step {} bash {}".format(
-                    shlex.quote("sub-workflow " + node.subdag_file),
-                    shlex.quote(self.output_path_for_dag(node.subdag_file))))
-            else:
-                script = node.job.get_sub_file()
-                if script is None:
-                    raise RuntimeError(
-                        "LocalBackend: node {} has no script".format(node.name))
-                env_pairs = " ".join(
-                    "{}={}".format(self.local_var_name(k), shlex.quote(str(v)))
-                    for k, v in node.macros.items())
-                abort_code, abort_return = abort_by_name.get(node.name, ("", 0))
-                lines.append('run_node {} {} {} {} {}{}'.format(
-                    shlex.quote(node.name), int(node.retry or 0),
-                    shlex.quote(str(abort_code)), int(abort_return),
-                    shlex.quote(script),
-                    (" " + env_pairs) if env_pairs else ""))
-            for exe, args in post_by_name.get(node.name, []):
-                lines.append("run_step {} {} {}".format(
-                    shlex.quote("SCRIPT POST " + node.name), exe, args).rstrip())
+                # A sub-workflow is a node: it carries RETRY like any other, and
+                # a `subworkflow-v1` stage's declared `retries` reaches here.
+                # It used to be run through run_step, which has no retry loop,
+                # so the declared value was a silent no-op.
+                driver = self.output_path_for_dag(node.subdag_file)
+                lines.append('run_unit {} {} {} {} {} {} {}'.format(
+                    shlex.quote(node.name), retries, shlex.quote(""), 0,
+                    shlex.quote(driver), shlex.quote(pre_name),
+                    shlex.quote(post_name)))
+                continue
+            script = node.job.get_sub_file()
+            if script is None:
+                raise RuntimeError(
+                    "LocalBackend: node {} has no script".format(node.name))
+            env_pairs = " ".join(
+                "{}={}".format(self.local_var_name(k), shlex.quote(str(v)))
+                for k, v in node.macros.items())
+            abort_code, abort_return = abort_by_name.get(node.name, ("", 0))
+            lines.append('run_unit {} {} {} {} {} {} {}{}'.format(
+                shlex.quote(node.name), retries,
+                shlex.quote(str(abort_code)), int(abort_return),
+                shlex.quote(script), shlex.quote(pre_name),
+                shlex.quote(post_name),
+                (" " + env_pairs) if env_pairs else ""))
         if dag.dot_file is not None:
             lines.append("# DOT {} (no local equivalent)".format(dag.dot_file))
         for directive in dag.extra_directives:

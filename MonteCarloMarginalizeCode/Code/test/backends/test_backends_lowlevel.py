@@ -605,6 +605,102 @@ class LocalBackendTests(unittest.TestCase):
             with open(out) as fh:
                 self.assertEqual(len(fh.read().split()), 5)
 
+    def test_script_hooks_get_the_argv_the_caller_wrote(self):
+        """PRE/POST hook arguments must survive to the script's argv intact.
+
+        Three separate ways this was wrong, all silent -- the hook ran and
+        received different arguments than the caller passed:
+
+        * `$(JOBID)` / `$(RETURN)` were pasted as raw text, so bash treated
+          them as command substitution: "JOBID: command not found", and every
+          later argument shifted down two positions;
+        * an argument containing a space split into two, because the API
+          `" ".join`ed the `*args` it was given and threw the boundaries away;
+        * a `$(macro)` reference was not substituted at all.
+
+        The production call site is the ILE post script, which is passed
+        exactly `$(JOBID) $(RETURN) <iteration> <target>`.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            out = os.path.join(td, "argv.txt")
+            hook = os.path.join(td, "post.sh")
+            with open(hook, "w") as fh:
+                fh.write("#!/bin/bash\nprintf '[%s]' \"$@\" > " + out + "\n")
+            os.chmod(hook, 0o755)
+            spacey = os.path.join(td, "a dir", "file.txt")
+            os.makedirs(os.path.dirname(spacey))
+            job, node = self._script_job(td, "work", "true")
+            job.write_sub_file()
+            node.add_macro("macroiteration", 7)
+            dag = self.m.CondorDAG()
+            dag.add_node(node)
+            dag.add_script_post(node, hook, "$(JOBID)", "$(RETURN)",
+                                "$(macroiteration)", spacey, "plain")
+            result = self._run(td, dag)
+            self.assertEqual(result.returncode, 0, result.stdout)
+            with open(out) as fh:
+                argv = fh.read()
+            self.assertNotIn("command not found", result.stdout)
+            self.assertIn("[7]", argv)                 # macro substituted
+            self.assertIn("[" + spacey + "]", argv)    # one arg, not two
+            self.assertIn("[plain]", argv)
+            self.assertIn("[0]", argv)                 # $(RETURN) of a success
+
+    def test_a_failing_POST_script_is_retried_with_the_node(self):
+        """DAGMan retries PRE+JOB+POST as one unit; the POST decides success.
+
+        RIFT depends on it: the cip-explode design pairs RETRY 1000 with a POST
+        script whose own comment says it "will USUALLY FAIL and get retried A
+        LARGE NUMBER OF TIMES, until we complete work".  A driver that exits on
+        the first POST failure makes that adaptive batching inert -- the
+        workflow dies on attempt one instead of converging.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            counter = os.path.join(td, "count")
+            hook = os.path.join(td, "post.sh")
+            with open(hook, "w") as fh:
+                # Fails twice, then succeeds -- exactly the shape RIFT relies on.
+                fh.write(
+                    "#!/bin/bash\n"
+                    "n=$(cat {0} 2>/dev/null || echo 0); n=$((n+1));"
+                    " echo $n > {0}\n"
+                    "[ \"$n\" -ge 3 ]\n".format(counter))
+            os.chmod(hook, 0o755)
+            job, node = self._script_job(td, "work", "true")
+            job.write_sub_file()
+            node.set_retry(5)
+            dag = self.m.CondorDAG()
+            dag.add_node(node)
+            dag.add_script_post(node, hook)
+            result = self._run(td, dag)
+            self.assertEqual(result.returncode, 0, result.stdout)
+            with open(counter) as fh:
+                self.assertEqual(fh.read().strip(), "3")
+
+    def test_a_macro_that_is_not_named_macroSomething_still_resolves(self):
+        """`add_macro` takes any key, and RIFT uses `ifo`.
+
+        The macro layer used to recognise only `macro*`/`cluster`/`process`, so
+        `initialdir = <dir>/$(ifo)` was emitted literally and every detector
+        shared one directory NAMED `$(ifo)`.  `mkdir -p` made that succeed, so
+        neither `set -u` nor `set -e` could see it -- the silent wrong-directory
+        failure the strict rendering exists to prevent, walking past the
+        strictness because the token never reached `macro_ref`.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            job, node = self._script_job(td, "work", "pwd > out.txt")
+            job.add_condor_cmd("initialdir", os.path.join(td, "$(ifo)"))
+            job.write_sub_file()
+            node.add_macro("ifo", "H1")
+            dag = self.m.CondorDAG()
+            dag.add_node(node)
+            result = self._run(td, dag)
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertTrue(os.path.isdir(os.path.join(td, "H1")),
+                            "expected a per-IFO directory; got "
+                            + repr(sorted(os.listdir(td))))
+            self.assertFalse(os.path.exists(os.path.join(td, "$(ifo)")))
+
     def test_an_unassigned_macro_in_a_LOG_PATH_is_not_fatal(self):
         """HTCondor is lenient here, and RIFT depends on it.
 

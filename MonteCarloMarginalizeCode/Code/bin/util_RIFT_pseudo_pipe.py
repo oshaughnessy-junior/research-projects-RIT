@@ -2142,8 +2142,19 @@ if opts.archive_pesummary_label:
             labels.append(opts.archive_pesummary_label + "_calmarg")
     else:
         samples = [rundir + "/posterior_samples-$(macroiteration).dat"]
-    samplestr = "".join(" --samples " + item + " " for item in samples)
+    # ONE --samples taking every file, not one flag per file.  pesummary's
+    # --samples is a plain store action with nargs='+', not append, so a second
+    # occurrence REPLACES the first: `--samples A --samples B` publishes only B
+    # while --labels still carries two names, so the page is one posterior
+    # wearing the wrong label and the counts silently disagree.  Verified
+    # against pesummary's own parser rather than its documentation.
+    samplestr = " --samples {} ".format(" ".join(samples))
     labelstr = " --labels {} ".format(" ".join(labels))
+    if len(labels) != len(samples):
+        raise SystemExit(
+            "pseudo_pipe: internal error -- {} pesummary labels for {} sample "
+            "files. The archived page would mislabel its posteriors.".format(
+                len(labels), len(samples)))
     configstr=""
     if opts.use_ini:
         configstr = " -c " +opts.use_ini
