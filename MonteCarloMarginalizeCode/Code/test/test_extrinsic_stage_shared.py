@@ -105,27 +105,39 @@ def test_the_collector_shuffles_the_body_but_keeps_the_header():
     assert lines[3].startswith("sed 1d ") and "| shuf" in lines[3]
 
 
-def test_frame_rotation_is_guarded_against_a_second_pass():
-    lines = extrinsic_stage.frame_rotation_commands(
-        "rotate", "post.dat", "post_orig.dat", 20)
-    body = "\n".join(lines)
-    assert body.startswith("if [ ! -e post_orig.dat ]; then")
-    assert "post_orig.dat" in body
-    assert "post_orig .dat" not in body   # the stray space that made it inert
-
-
-# ------------------------------------------------------------- both callers
-
 @pytest.mark.parametrize("label", sorted(BUILDERS))
 def test_the_builder_uses_the_shared_module(label):
+    """Each builder must CALL the shared transform, not merely mention it.
+
+    This was a substring check, and a substring check is satisfied by a
+    comment: replacing the real call with a lambda while leaving
+    `# extrinsic_stage.derive_extrinsic_ile_args.` a few lines below kept it
+    green.  A shared helper nobody calls is worse than no helper, because the
+    tests then assert a single source of truth that does not exist.
+
+    So this parses the builder and looks for actual Call nodes.  It is checked
+    against the source rather than by importing, because these are argv-driven
+    scripts that run their pipeline at import time.
+    """
     with open(BUILDERS[label]) as stream:
-        text = stream.read()
-    assert "extrinsic_stage" in text, (
+        source = stream.read()
+    tree = ast.parse(source)
+    called = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute):
+            called.add(func.attr)
+        elif isinstance(func, ast.Name):
+            called.add(func.id)
+    for required in ("derive_extrinsic_ile_args", "extrinsic_collect_commands"):
+        assert required in called, (
+            "{} never CALLS {} -- it is mentioned in the file but not "
+            "invoked, so the shared policy is not what this builder uses"
+            .format(label, required))
+    assert "extrinsic_stage" in source, (
         "{} does not import RIFT.misc.extrinsic_stage".format(label))
-    assert "derive_extrinsic_ile_args" in text, (
-        "{} does not call the shared argument transform".format(label))
-    assert "extrinsic_collect_commands" in text, (
-        "{} does not call the shared collector generator".format(label))
 
 
 def _regex_literals_mentioning(text, needle):

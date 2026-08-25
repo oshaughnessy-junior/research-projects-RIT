@@ -25,14 +25,27 @@ def worker_partition(n_points, group_size, clamp_last=False):
     ``create_event_parameter_pipeline_BasicIteration``, and the Hyperpipe
     terminal fan-out assembled in ``util_RIFT_pseudo_pipe.py``.
 
-    The historical ILE form was ``int(n/g)`` guarded by ``if indx_max*n < g:
-    indx_max += 1``.  That guard fires only when ``n < g`` (where ``int(n/g)``
-    is 0), which is the one case it does rescue.  For ``n > g`` with a
-    remainder, ``indx_max >= 1`` and ``indx_max*n >= n >= g``, so the guard
-    never fires and the request silently allocated too FEW workers, leaving the
-    tail of the requested points unevaluated -- with no error and no log line.
-    A production configuration was therefore affected only if its
-    points-per-iteration exceeded its jobs-per-worker AND did not divide by it.
+    **Correction (2026-08-25).** An earlier version of this docstring said the
+    line replaced in ``create_event_parameter_pipeline_BasicIteration`` was
+    ``int(n/g)`` and that it under-allocated workers in production.  It was
+    not: that call site already read ``int(np.ceil(n/g))``, which is exactly
+    equivalent to this function, verified over ``n in [0,200) x g in [1,40)``
+    with zero mismatches.  Converting it changed nothing, which is the right
+    outcome for a refactor but is not what the docstring claimed.
+
+    The buggy form is real, and it is elsewhere: ``int(n/g)`` guarded by ``if
+    indx_max*n < g: indx_max += 1`` still stands in
+    ``create_event_parameter_pipeline_AlternateIteration``,
+    ``cepp_basic_htcondor``,
+    ``create_event_parameter_pipeline_BasicMultiApproxIteration`` and
+    ``create_event_nr_pipeline_with_cip``.  That guard fires only when ``n <
+    g`` (where ``int(n/g)`` is 0).  For ``n > g`` with a remainder, ``indx_max
+    >= 1`` and ``indx_max*n >= n >= g``, so it never fires and the request
+    allocates too FEW workers, leaving the tail of the requested points
+    unevaluated with no error and no log line.  **None of those four builders
+    is converted here**, so the "places that must agree" still do not all
+    agree -- converting them is a separate change with its own blast radius,
+    and claiming otherwise would suggest a coverage this module does not have.
 
     ``clamp_last`` controls the tail:
 

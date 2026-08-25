@@ -155,19 +155,16 @@ def extrinsic_collect_commands(join_exe, convert_exe, convert_args,
         "sed 1d {} {} >> {}".format(tmp_dat, shuffle_clause, output_dat),
     ]
 
-
-def frame_rotation_commands(rotate_exe, posterior, original, reference_freq):
-    """Rotate the extrinsic posterior out of the J frame, once.
-
-    Guarded on the ``_orig`` file so a DAG retry does not rotate twice.  The
-    guard is why this is worth sharing: BasicIteration's copy carried a stray
-    space in that filename (``..._orig .dat``) and the stage was therefore
-    inert -- it "ran" on every calibration analysis and did nothing.
-    """
-    return [
-        "if [ ! -e {} ]; then".format(original),
-        "  mv {} {}".format(posterior, original),
-        "  {} --extrinsic-posterior-file {} --fname-out {} --fref {}".format(
-            rotate_exe, original, posterior, reference_freq),
-        "fi",
-    ]
+# `frame_rotation_commands` used to live here and has been removed.  It was
+# never called: both builders hand-write their own rotation script, and they
+# cannot share one, because BasicIteration's runs with `initialdir` set and
+# uses relative paths while pseudo_pipe's uses absolute paths under the run
+# directory.  Unifying them would be a behaviour change on the legacy path, not
+# a refactor.
+#
+# Its docstring also asserted a defect that does not exist in this branch --
+# that BasicIteration's copy carried a stray space in `..._orig .dat` and the
+# rotation was therefore inert.  That was true before PR #181 and was fixed
+# there, so by this branch's base the claim was already false.  A dead helper
+# is bad; a dead helper that documents a live bug is worse, because the next
+# reader goes looking for it.

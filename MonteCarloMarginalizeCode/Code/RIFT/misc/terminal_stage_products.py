@@ -12,8 +12,11 @@ that is now stale or absent.
 Nothing consumes this table at build time; pseudo_pipe does not read it to
 decide anything.  It exists so that a *test* can fail when a name changes,
 which is the only mechanism that makes the promise real.  Keep it in step with
-the manifest emitted by pseudo_pipe -- `test_terminal_stage_products.py`
-compares the two and fails on either direction of drift.
+the manifest emitted by pseudo_pipe -- `run_pseudo_build_gate.py`
+compares the table against manifests from real builds
+and fails on either direction of drift.  (It is an integration gate, not part
+of the fast unit suite; an earlier version of this note named a
+`test_terminal_stage_products.py` that does not exist.)
 
 `product` is relative to the run directory, or None where a stage's output is
 not a single named file (a fan-out, or a directory of pages).  Stages appear
