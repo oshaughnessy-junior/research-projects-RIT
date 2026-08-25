@@ -950,16 +950,38 @@ def rewrite_cache_for_worker_transfer(cache_path, frames_dir, backup_path=None):
                 "malformed cache line (expected >=4 columns): {}".format(
                     " ".join(fields)))
         observatory, frame_type = fields[0], fields[1]
-        candidates = frames_by_key.get((observatory, frame_type))
-        if candidates is None and len(observatory) > 1:
-            # Caches spell the observatory either 'H' or 'H1' depending on
-            # their origin; frame filenames do the same, and the two need not
-            # agree within one run.
-            candidates = frames_by_key.get((observatory[0], frame_type))
+        # DETECTOR is the join key; the frame TYPE is not, and using it was a
+        # defect.  A datafind cache carries the datafind frame type
+        # (`H1_HOFT_AR01`), while the staging script names its merged output
+        # after the CHANNEL (`util_ForOSG_MakeTruncatedLocalFramesDir.sh`
+        # writes `${IFO}-${CHANNEL_NO_DASH}-${TSTART}-${SEGLEN}.gwf`, e.g.
+        # `H1-GDS_CALIB_STRAIN_CLEAN_AR-...`).  Those two strings have no
+        # reason to agree and in production never do, so keying on the pair
+        # matched nothing and aborted the build.  It survived testing because
+        # fake-data runs name the frame after the same string the cache uses,
+        # and because the fixtures assumed that shape.
+        #
+        # Tiers, most specific first, so a cache and frames that DO agree on
+        # the type still disambiguate on it -- which is what separates H1 from
+        # a hypothetical H2 sharing the observatory letter.
+        candidates = None
+        for key in ((observatory, frame_type),
+                    (observatory[:1], frame_type)):
+            if frames_by_key.get(key):
+                candidates = frames_by_key[key]
+                break
+        if not candidates:
+            candidates = [
+                name for key, names in sorted(frames_by_key.items())
+                if key[0][:1] == observatory[:1]
+                for name in names]
         if not candidates:
             raise ValueError(
-                "no staged frame for cache entry {} {}; staged frames are {}"
-                .format(observatory, frame_type,
+                "no staged frame for detector {!r} (cache entry {} {}); "
+                "staged frames are {}. The join is on the DETECTOR, not the "
+                "frame type -- a staged frame is usually named after the "
+                "channel, which the cache does not record."
+                .format(observatory, observatory, frame_type,
                         sorted(frames_by_key)))
         if len(candidates) > 1:
             try:
@@ -982,6 +1004,11 @@ def rewrite_cache_for_worker_transfer(cache_path, frames_dir, backup_path=None):
                     .format(observatory, frame_type, entry_start, entry_stop,
                             len(covering), len(candidates)))
             candidates = covering
+        elif len(candidates) == 1 and len(entries) > 1:
+            # One frame per detector is the normal case for the truncation
+            # script, which merges every segment into a single file.  Nothing
+            # to disambiguate.
+            pass
         lines.append(" ".join(
             list(fields[:4]) + [os.path.join(frames_dir, candidates[0])]))
 

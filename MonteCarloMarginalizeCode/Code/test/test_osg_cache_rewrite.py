@@ -228,3 +228,76 @@ def test_legacy_shell_was_broken(tmp_path):
     assert "/submit/host/path/" in legacy
     # 3. the prefix is doubled
     assert "frames_local/frames_dir/" in legacy
+
+
+# ---------------------------------------------------------------------------
+# The shape production actually produces.
+#
+# The tests above pair a cache against frames named after the cache's own
+# frame TYPE.  Real runs never look like that: a datafind cache carries the
+# datafind type (`H1_HOFT_AR01`) while
+# `util_ForOSG_MakeTruncatedLocalFramesDir.sh` names its merged output after
+# the CHANNEL -- `${IFO}-${CHANNEL_NO_DASH}-${TSTART}-${SEGLEN}.gwf`.  Keying
+# the join on (observatory, type) therefore matched nothing on every real OSG
+# run and aborted the build, while the fixtures and fake-data runs passed.
+# These pin the real shape so the fixtures cannot drift back to a convenient one.
+# ---------------------------------------------------------------------------
+
+def _write(path, text=""):
+    with open(path, "w") as handle:
+        handle.write(text)
+
+
+def test_real_datafind_cache_against_channel_named_frames(tmp_path):
+    frames = tmp_path / "frames_dir"
+    frames.mkdir()
+    _write(str(frames / "H1-GDS_CALIB_STRAIN_CLEAN_AR-1398132736-4096.gwf"))
+    _write(str(frames / "L1-GDS_CALIB_STRAIN_CLEAN_AR-1398132736-4096.gwf"))
+    cache = tmp_path / "local.cache"
+    _write(str(cache),
+           "H H1_HOFT_AR01 1398132736 4096 file://localhost/ceph/a.gwf\n"
+           "L L1_HOFT_AR01 1398132736 4096 file://localhost/ceph/b.gwf\n")
+
+    lines = rewrite_cache_for_worker_transfer(str(cache), str(frames))
+
+    assert len(lines) == 2
+    assert lines[0].startswith("H H1_HOFT_AR01 1398132736 4096 ")
+    assert lines[0].endswith("H1-GDS_CALIB_STRAIN_CLEAN_AR-1398132736-4096.gwf")
+    assert lines[1].startswith("L L1_HOFT_AR01 1398132736 4096 ")
+    assert lines[1].endswith("L1-GDS_CALIB_STRAIN_CLEAN_AR-1398132736-4096.gwf")
+
+
+def test_detectors_are_never_crossed_even_when_only_the_letter_matches(tmp_path):
+    """The failure that matters most here is a SILENT one: pairing H's cache
+    entry with L's frame would analyse the wrong detector's data and report
+    nothing. Order the listing so a positional or first-match implementation
+    would cross them."""
+    frames = tmp_path / "frames_dir"
+    frames.mkdir()
+    _write(str(frames / "L1-CHAN-1000000000-64.gwf"))
+    _write(str(frames / "H1-CHAN-1000000000-64.gwf"))
+    _write(str(frames / "V1-CHAN-1000000000-64.gwf"))
+    cache = tmp_path / "local.cache"
+    _write(str(cache),
+           "H H1_TYPE 1000000000 64 file://x/a.gwf\n"
+           "V V1_TYPE 1000000000 64 file://x/b.gwf\n"
+           "L L1_TYPE 1000000000 64 file://x/c.gwf\n")
+
+    lines = rewrite_cache_for_worker_transfer(str(cache), str(frames))
+
+    for line in lines:
+        observatory = line.split()[0]
+        assert "/" + observatory + "1-" in line, line
+
+
+def test_an_unstaged_detector_is_named_in_the_error(tmp_path):
+    frames = tmp_path / "frames_dir"
+    frames.mkdir()
+    _write(str(frames / "H1-CHAN-1000000000-64.gwf"))
+    cache = tmp_path / "local.cache"
+    _write(str(cache),
+           "H H1_TYPE 1000000000 64 file://x/a.gwf\n"
+           "L L1_TYPE 1000000000 64 file://x/c.gwf\n")
+
+    with pytest.raises(ValueError, match="no staged frame for detector 'L'"):
+        rewrite_cache_for_worker_transfer(str(cache), str(frames))
