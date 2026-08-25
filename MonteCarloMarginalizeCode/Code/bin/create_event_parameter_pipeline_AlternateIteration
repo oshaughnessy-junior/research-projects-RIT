@@ -1321,9 +1321,24 @@ for it in np.arange(it_start,opts.n_iterations):
 
 # Create export stages for extrinsic samples
 if opts.last_iteration_extrinsic:
-    # Check if 'it' is defined : it will not always be, if done later
-    if not ('it' in globals()):
-        it = opts.n_iterations  # last iteration
+    # Which grid the extrinsic stage reads.  The iteration loop above leaves
+    # `it` at n_iterations-1, but the CIP node at iteration k carries
+    # macroiterationnext=k+1 and CIP writes overlap-grid-$(macroiterationnext),
+    # so the run's final posterior is overlap-grid-<n_iterations>.  That is the
+    # grid this stage must read, and the one it already waits for: the node
+    # writing the largest grid index is an ancestor of every ILE_extr node.
+    #
+    # Do not "restore" the leftover `it` -- reading n_iterations-1 gets the
+    # grid the last ILE ran on, i.e. the previous iteration's posterior, and at
+    # one iteration the raw seed grid, while the final CIP's output goes
+    # unread.  Same defect as the one fixed in
+    # create_event_parameter_pipeline_BasicIteration, but with no 'Z'
+    # exemption here, so it reached every configuration.  Per-configuration
+    # DAG evidence is in the commit message and RIFT PR #187.
+    #
+    # `it` also feeds the trailing plot node, so the summary page follows the
+    # same grid; that only happens when --last-iteration-extrinsic is set.
+    it = opts.n_iterations
 
     # Create nodes for followup tasks
     cat_node = pipeline.CondorDAGNode(cat_job)
