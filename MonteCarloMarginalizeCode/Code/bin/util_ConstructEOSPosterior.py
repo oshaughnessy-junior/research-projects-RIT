@@ -213,11 +213,27 @@ col_lnL = 0
 dat_orig = dat = np.loadtxt(opts.fname)
 dat_orig = dat[dat[:,col_lnL].argsort()] # sort  http://stackoverflow.com/questions/2828059/sorting-arrays-in-numpy-by-column
 print(" Original data size = ", len(dat), dat.shape)
+# Column names come from the header, and the header is not always the FIRST
+# line.  A hyperpipeline-format table opens with `# RIFT_HYPERPIPELINE_V1` and
+# may carry a `# RIFT_HYPERPIPELINE_META ...` line, with the column names after
+# them; reading line one then yielded ['RIFT_HYPERPIPELINE_V1'][2:] == [] and
+# the run died with "'x' is not in list" several steps later, pointing at the
+# --parameter the user asked for rather than at the file.  RIFT.misc's reader
+# already skips those lines correctly, so use it and keep one implementation.
 dat_orig_names = None
-with open(opts.fname,'r') as f:
-    header_str = f.readline()
-    header_str = header_str.rstrip()
-dat_orig_names = header_str.replace('#','').split()[2:]
+try:
+    from RIFT.misc import hyperpipeline_io as _hpio_header
+    dat_orig_names = list(_hpio_header.read_header(opts.fname))[2:]
+except Exception:
+    # Plain table, or RIFT.misc unavailable: the historical behaviour.
+    with open(opts.fname,'r') as f:
+        header_str = f.readline()
+        header_str = header_str.rstrip()
+    dat_orig_names = header_str.replace('#','').split()[2:]
+if not dat_orig_names:
+    raise ValueError(
+        "no column names found in the header of {}. Expected a '#'-prefixed "
+        "line naming lnL, sigma_lnL and the parameters.".format(opts.fname))
 
 ###
 ### Parameters in use
