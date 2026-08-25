@@ -75,9 +75,7 @@ PYEOF
 # reports FAIL is not a gate, and deleting the lane hides the failure -- so name
 # it, and flip the sweep to FAIL if it ever starts PASSING, which means someone
 # fixed it and this entry should go.
-declare -A KNOWN_FAIL=(
-  [cit-profile]="pre-existing on PR head ba171c53: MARG_0.sub emits the host executable path where the profile expects the in-container /usr/bin path. See development/OPEN_hyperpipe_pipeline_builder.md."
-)
+declare -A KNOWN_FAIL=()
 
 score_exit() {  # $1=name $2=rc   (for gates that are not pytest)
   local verdict=PASS
@@ -160,6 +158,7 @@ for name in "${!KNOWN_FAIL[@]}"; do
   echo
   echo "XFAIL $name: ${KNOWN_FAIL[$name]}"
 done
+
 echo
 if [ "$FAILED" -ne 0 ]; then echo "SWEEP FAILED (logs in $OUT)"; else echo "SWEEP PASS ($OUT)"; fi
 exit "$FAILED"
