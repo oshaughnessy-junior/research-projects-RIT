@@ -148,6 +148,108 @@ def _build(builder: Optional[str], run_base: Path, seed_grid: Path, cache: Path,
     return rundir
 
 
+ALTERNATE_ITERATIONS = (1, 3)
+
+
+def _build_alternate(run_base: Path, seed_grid: Path, cache: Path,
+                     n_iterations: int):
+    """Build AlternateIteration, the builder --use-subdags / AMR route to.
+
+    Its option surface is a subset of BasicIteration's -- it has no
+    --calibration-reweighting, --comov-distance-reweighting or
+    --frame-rotation, and rejects them outright -- so this cannot reuse
+    _build's argument list.  What it keeps is everything the terminal
+    extrinsic stage depends on: --add-extrinsic with time resampling and
+    batched convert, an exploded final CIP, and the summary page (whose node
+    also reads the iteration counter this gate is about).
+    """
+    label = "alternate-it{}".format(n_iterations)
+    rundir = run_base / label
+    command = [
+        sys.executable, str(PSEUDO_PIPE),
+        "--use-rundir", str(rundir),
+        "--pipeline-builder", "AlternateIteration",
+        "--manual-initial-grid", str(seed_grid),
+        "--fake-data-cache", str(cache),
+        "--event-time", "1126259462.391",
+        "--manual-ifo-list", "H1,L1",
+        "--approx", "IMRPhenomXPHM",
+        "--assume-precessing",
+        "--fmin-template", "20",
+        "--internal-force-iterations", str(n_iterations),
+        "--internal-n-evaluations-per-iteration", "4",
+        "--n-output-samples", "7",
+        "--n-output-samples-last", "7",
+        "--ile-jobs-per-worker", "3",
+        "--cip-explode-jobs", "1",
+        "--cip-explode-jobs-last", "1",
+        "--add-extrinsic",
+        "--add-extrinsic-time-resampling",
+        "--batch-extrinsic",
+        "--archive-pesummary-label", "rift-test",
+        "--archive-pesummary-event-label", "test-event",
+        "--skip-reproducibility",
+    ]
+    result = subprocess.run(
+        command, cwd=str(run_base), env=_environment(run_base),
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    if result.returncode:
+        raise RuntimeError("{} build failed ({}):\n{}".format(
+            label, result.returncode, result.stdout))
+    (rundir / "pipeline-build.log").write_text(result.stdout)
+    return rundir
+
+
+def _assert_alternate_extrinsic_reads_the_final_grid(rundirs):
+    """Same invariant as _assert_extrinsic_reads_the_final_grid, other builder.
+
+    AlternateIteration is reachable via --pipeline-builder AlternateIteration
+    and, implicitly, via --use-subdags -- which --internal-use-amr force-sets
+    in util_RIFT_pseudo_pipe.py.  It carried the same leftover-`it` defect as
+    BasicIteration and none of the 'Z' correction that exempted
+    BasicIteration's run-to-convergence path, so every configuration reaching
+    it read the previous iteration's grid; per-configuration evidence is in
+    RIFT PR #187.
+
+    Stated as an invariant, not a number: whichever index the last
+    grid-writing node produces is the one the extrinsic nodes must read.  It
+    is checked at more than one iteration count precisely because an
+    off-by-one passes a single hardcoded expectation half the time.
+    """
+    for rundir in rundirs:
+        dag = rundir / "marginalize_intrinsic_parameters_BasicIterationWorkflow.dag"
+        jobs, _ = _dag_jobs_and_edges(dag)
+        macros = _dag_node_macros(dag)
+
+        extrinsic = {
+            macros.get(node, {}).get("macroiteration")
+            for node, submit in jobs.items()
+            if submit.endswith("ILE_extr.sub")}
+        # CIP, its exploded workers, and the join that combines them all
+        # carry macroiterationnext as the index they write.  Take the union:
+        # with --internal-use-amr there is no explode and hence no
+        # join_grids.sub at all, so a join-only rule would find no writers.
+        written = {
+            macros.get(node, {}).get("macroiterationnext")
+            for node, submit in jobs.items()
+            if submit.endswith("join_grids.sub")
+            or submit.startswith("CIP")}
+        extrinsic.discard(None)
+        written.discard(None)
+        assert extrinsic, "no ILE_extr nodes found in {}".format(dag)
+        assert written, "no grid-writing nodes found in {}".format(dag)
+        assert len(extrinsic) == 1, (
+            "AlternateIteration extrinsic nodes disagree about which grid to "
+            "read: {}".format(sorted(extrinsic)))
+        last_written = max(written, key=int)
+        assert next(iter(extrinsic)) == last_written, (
+            "AlternateIteration extrinsic stage reads overlap-grid-{} but the "
+            "last grid written is overlap-grid-{} ({}); the final CIP's "
+            "output would go unread, and the extrinsic posterior would come "
+            "from the previous iteration".format(
+                next(iter(extrinsic)), last_written, rundir.name))
+
+
 def _submit_executables(rundir: Path):
     executables = set()
     for submit in rundir.glob("*.sub"):
@@ -972,6 +1074,8 @@ def main(argv=None):
             "waveform-approximant = IMRPhenomXPHM\n")
         basic = _build("BasicIteration", run_base, xml_grid, cache, pickle_file)
         default = _build(None, run_base, xml_grid, cache, pickle_file)
+        alternate = [_build_alternate(run_base, xml_grid, cache, n)
+                     for n in ALTERNATE_ITERATIONS]
         hyper = _build("Hyperpipe", run_base, ascii_grid, cache, pickle_file)
         hyper_auto = _build(
             "Hyperpipe", run_base, ascii_grid, cache, None,
@@ -993,6 +1097,7 @@ def main(argv=None):
         _assert_osg_calibration_contract(hyper_osg)
         _assert_z_subworkflow_contract(hyper_z)
         _assert_extrinsic_reads_the_final_grid(basic, hyper)
+        _assert_alternate_extrinsic_reads_the_final_grid(alternate)
         _assert_stage_product_table_matches(
             hyper, hyper_auto, hyper_osg, hyper_z)
         _assert_extra_terminal_stages_merge(
