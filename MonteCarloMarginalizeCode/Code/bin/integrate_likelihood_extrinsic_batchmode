@@ -5084,10 +5084,14 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
             #
             #   1. IT READ THE FAIR DRAW.  sampler._rvs has been rebound to
             #      min(n_extr, 1.5*eff_samp, 1.5*neff) rows resampled WITH REPLACEMENT for
-            #      EXPORT.  --fairdraw-extrinsic-output is not an exotic setting: every
-            #      extrinsic stage built by create_event_parameter_pipeline_BasicIteration,
-            #      cepp_basic_htcondor and create_event_nr_pipeline_with_cip passes it
-            #      unconditionally.  So on the collapsed high-amplitude pass this feature is
+            #      EXPORT.  --fairdraw-extrinsic-output is not an exotic setting: the
+            #      extrinsic stage built by create_event_parameter_pipeline_BasicIteration
+            #      (via RIFT.misc.extrinsic_stage) and by create_event_nr_pipeline_with_cip
+            #      adds it whenever --last-iteration-extrinsic-time-resampling is set, which
+            #      util_RIFT_pseudo_pipe.py --add-extrinsic-time-resampling sets.  (This said
+            #      "unconditionally" and named cepp_basic_htcondor, since removed; the flag
+            #      has always been inside the time-resampling branch.)  So on the collapsed
+            #      high-amplitude pass this feature is
             #      most wanted for, the seed for the NEXT intrinsic point was a handful of
             #      rows -- one, in the rho_net 146.8 logs -- several of them the same point
             #      twice, while the live set held a thousand.

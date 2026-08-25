@@ -46,9 +46,13 @@ the rebind's own right-hand side or the element-wise cupy→numpy conversion loo
 it.  That is a real result and it narrows the search: the hazard lives entirely in the
 consumers, not in the samplers.
 
-`--fairdraw-extrinsic-output` is not exotic.  `create_event_parameter_pipeline_BasicIteration`,
-`cepp_basic_htcondor` and `create_event_nr_pipeline_with_cip` all append it to the extrinsic
-stage unconditionally, so every one of these paths runs on the resample in production.
+`--fairdraw-extrinsic-output` is not exotic.  `create_event_parameter_pipeline_BasicIteration`
+(through `RIFT.misc.extrinsic_stage`) and `create_event_nr_pipeline_with_cip` append it to the
+extrinsic stage whenever `--last-iteration-extrinsic-time-resampling` is set, which is what
+`util_RIFT_pseudo_pipe.py --add-extrinsic-time-resampling` sets -- so these paths do run on the
+resample in production.  (This previously read "unconditionally" and also named
+`cepp_basic_htcondor`, since removed; the flag has always been inside the time-resampling
+branch.)
 
 ## Measured, not asserted
 

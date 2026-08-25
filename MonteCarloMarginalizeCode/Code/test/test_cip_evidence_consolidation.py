@@ -16,9 +16,16 @@ HERE = os.path.dirname(__file__)
 CODE = os.path.abspath(os.path.join(HERE, os.pardir))
 SUMMARIZER = os.path.join(CODE, "bin", "util_CIPDirSummarizeEvidence.py")
 CIP = os.path.join(CODE, "bin", "util_ConstructIntrinsicPosterior_GenericCoordinates.py")
+#: Builders carrying the terminal-prior-then-strict-final-evidence structure.
+#: `cepp_basic_htcondor` was the second entry until it was removed (RIFT PR
+#: #189) as an unfinished htcondor2 port that could not emit a DAG.  Nothing
+#: replaces it: of the remaining builders, none of AlternateIteration,
+#: BasicMultiApproxIteration or create_event_nr_pipeline_with_cip has this
+#: structure at all -- checked, not assumed -- so a one-element list is the
+#: honest state, not an oversight.  Add the second entry back when a second
+#: builder grows the structure.
 PIPELINES = [
     os.path.join(CODE, "bin", "create_event_parameter_pipeline_BasicIteration"),
-    os.path.join(CODE, "bin", "cepp_basic_htcondor"),
 ]
 
 
