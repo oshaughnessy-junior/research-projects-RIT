@@ -89,7 +89,8 @@ def test_lame(dat1,dat2):
     sigma_1 = np.cov(dat1.T)
     sigma_2 = np.cov(dat2.T)
     if np.isscalar(mu_1) or len(mu_1)==1:
-        return np.asscalar(calc_kl_scalar(mu_1, mu_2, sigma_1, sigma_2))
+        # np.asscalar was removed in numpy 1.23; it was defined as a.item().
+        return float(np.asarray(calc_kl_scalar(mu_1, mu_2, sigma_1, sigma_2)).item())
     else:
         sigma_1_inv = np.linalg.inv(sigma_1)
         sigma_2_inv = np.linalg.inv(sigma_2)
@@ -542,8 +543,27 @@ def read_and_prepare(fname):
             samples['chi2'] = np.sqrt(samples['a2x']**2+samples['a2y']**2 + samples['a2z']**2)
     return samples
 
-samples1 = read_and_prepare(opts.samples[0])
-samples2 = read_and_prepare(opts.samples[1])
+# --always-succeed is BEST EFFORT, not skip.  The flag promises the test never
+# fails the workflow; it does not promise to stop computing.  Its own help says
+# "Use for plotting convergence diagnostics", and `helper_LDG_Events.py` appends
+# it to every generated run -- so short-circuiting here removed the
+# per-iteration convergence metric from the logs of every top-level production
+# run.  Instead: run the test, print what it found, and swallow the exit code.
+# Every failure path below consults this, so a malformed input or a method that
+# raises still cannot take the process down, which is what the flag is for.
+_ALWAYS_SUCCEED_EXIT = 0 if opts.always_succeed else 2
+
+try:
+    samples1 = read_and_prepare(opts.samples[0])
+    samples2 = read_and_prepare(opts.samples[1])
+except Exception as exc:
+    import traceback
+    traceback.print_exc()
+    print(" convergence test could not read its inputs: %s" % exc)
+    print(" exiting 2, NOT 1: exit 1 means 'converged' and the DAG converts it")
+    print(" into overall success, so a failure reported as 1 ends the run early")
+    print(" and looks like convergence.")
+    sys.exit(_ALWAYS_SUCCEED_EXIT)
 
 
 param_names1 = samples1.dtype.names; param_names2 = samples2.dtype.names
@@ -554,10 +574,16 @@ npts2 = len(samples2[param_names2[0]])
 dat1 = np.empty( (npts1,len(opts.parameter)))
 dat2 = np.empty( (npts2,len(opts.parameter)))
 indx=0
-for param in opts.parameter:
-    dat1[:,indx] = samples1[param]
-    dat2[:,indx] = samples2[param]
-    indx+=1
+try:
+    for param in opts.parameter:
+        dat1[:,indx] = samples1[param]
+        dat2[:,indx] = samples2[param]
+        indx+=1
+except Exception as exc:
+    print(" convergence test: requested parameter not present in the samples:"
+          " %s" % exc)
+    print(" exiting 2, NOT 1 (see above)")
+    sys.exit(_ALWAYS_SUCCEED_EXIT)
 
 
 # Perform test.  Method-name ALIASES: the pipeline wiring (helper_LDG_Events
@@ -567,26 +593,46 @@ for param in opts.parameter:
 _METHOD_ALIASES = {'ks1d': 'KS_1d', 'kl1d': 'KL_1d', 'kl_1d': 'KL_1d', 'js': 'JS', 'js_additive': 'JS'}
 method = _METHOD_ALIASES.get(opts.method, opts.method)
 
+# EXIT-CODE CONTRACT.  A deliberate "converged, stop" is exit 1, and the DAG is
+# wired to treat exit 1 as success (DAGMan ABORT-DAG-ON ... RETURN 0).  That
+# means a CRASH which also exits 1 is indistinguishable from convergence: the
+# workflow ends early and reports success.  That is not hypothetical -- numpy
+# removing np.asscalar broke `--method lame` and every run using it terminated
+# "successfully" one iteration in.  An unexpected exception therefore exits 2.
 val_test = np.inf
-if method == 'lame':
+try:
+  if method == 'lame':
     val_test = test_lame(dat1,dat2)
-elif method == 'KS_1d':
+  elif method == 'KS_1d':
     val_test = test_ks1d(dat1[:,0],dat2[:,0])
-elif method == 'KL_1d':
+  elif method == 'KL_1d':
     val_test = test_KL1d(dat1[:,0],dat2[:,0])
-elif method == 'JS':
+  elif method == 'JS':
     val_test = test_js_additive(dat1,dat2)
-elif method == 'js_lame':
+  elif method == 'js_lame':
     val_test = test_js_lame(dat1, dat2, list(opts.parameter), opts,
                             samples_path_current=opts.samples[0])
-else:
+  else:
     print(" UNKNOWN METHOD '%s' (known: lame KS_1d/ks1d KL_1d JS/js_additive js_lame) -- test value inf, will NEVER report convergence" % opts.method)
+except Exception as exc:
+  import traceback
+  traceback.print_exc()
+  print(" convergence test '%s' FAILED to evaluate: %s" % (opts.method, exc))
+  print(" exiting 2, NOT 1: exit 1 means 'converged' and the DAG treats it as")
+  print(" success, so a crash reported as 1 would end the run early and look")
+  print(" like convergence.")
+  sys.exit(_ALWAYS_SUCCEED_EXIT)
 if val_test is None:   # e.g. KL_1d is unimplemented; treat as 'no information -> keep going'
     print(" Method '%s' returned no value; treating as not converged" % opts.method)
     val_test = np.inf
 print(val_test)
 
-if opts.always_succeed or (opts.threshold is None):
+if opts.always_succeed:
+    # The diagnostic above is the point of the flag; the verdict is not.
+    print(" --always-succeed: reporting success regardless of the value above")
+    sys.exit(0)
+
+if opts.threshold is None:
     sys.exit(0)
 
 if (val_test < opts.threshold):

@@ -49,6 +49,7 @@ from __future__ import absolute_import, division, print_function
 
 import os
 import shutil
+import warnings
 import numpy as np
 
 
@@ -65,6 +66,80 @@ ENV_FLAG = "RIFT_HYPERPIPELINE_FORMAT"
 #: prepend ``# `` so the on-disk first line is ``# RIFT_HYPERPIPELINE_V1``.
 #: Sniff/read code strips any leading ``#`` and whitespace before matching.
 MAGIC = "RIFT_HYPERPIPELINE_V1"
+
+#: Marker for the optional per-grid metadata line.
+META_MAGIC = "RIFT_HYPERPIPELINE_META"
+
+#: Waveform-generation settings that are properties of the ANALYSIS, not of a
+#: point, and that the ligolw sim_inspiral table carries but this format's
+#: columns do not.
+#:
+#: They are here because leaving them out is not neutral.  ``ampO`` is the
+#: amplitude PN order: the XML path carries -1 ("all orders"), while a fresh
+#: ``ChooseWaveformParams`` defaults to 0, which generates ONLY the (2,+-2)
+#: modes.  ILE then raises ``KeyError: (2, -1)`` for every point, reports
+#: "FAILED ANALYSIS", writes no output -- and exits 0.  An analysis run from an
+#: ASCII grid therefore evaluated a different waveform from the same analysis
+#: run from an XML grid, and said nothing.
+GRID_METADATA_FIELDS = ("ampO", "phaseO", "fmin", "fref", "taper", "radec",
+                        "approx")
+
+
+def _format_metadata(P):
+    """Render the per-grid waveform settings of *P* as a header line."""
+    items = []
+    for name in GRID_METADATA_FIELDS:
+        if not hasattr(P, name):
+            continue
+        value = getattr(P, name)
+        if value is None:
+            continue
+        items.append("{}={}".format(name, value))
+    return " ".join(items)
+
+
+def parse_metadata(fname):
+    """Return the per-grid metadata dict, or ``{}`` if the file carries none.
+
+    An empty result is meaningful: it says the producer did not record what
+    waveform settings the grid was written under, so a consumer that needs
+    them has to warn rather than quietly adopt its own defaults.
+    """
+    try:
+        with open(fname, "r") as fp:
+            for raw in fp:
+                line = raw.strip()
+                if not line:
+                    continue
+                if not line.startswith("#"):
+                    break
+                payload = _strip_comment(line)
+                if not payload.startswith(META_MAGIC):
+                    continue
+                out = {}
+                for token in payload[len(META_MAGIC):].split():
+                    key, _, value = token.partition("=")
+                    if key:
+                        out[key] = value
+                return out
+    except (OSError, IOError, UnicodeDecodeError):
+        return {}
+    return {}
+
+
+def _coerce_metadata_value(name, text):
+    if name in ("ampO", "phaseO", "approx"):
+        return int(text)
+    if name in ("fmin", "fref"):
+        return float(text)
+    if name == "radec":
+        return text.strip().lower() in ("1", "true", "yes")
+    if name == "taper":
+        try:
+            return int(text)
+        except ValueError:
+            return text
+    return text
 
 #: Default base columns -- always present, in this order, for every file.
 DEFAULT_BASE_COLUMNS = (
@@ -256,6 +331,25 @@ def write_table(fname, columns, data):
     np.savetxt(fname, arr, header=header)
 
 
+def write_table_with_metadata(fname, columns, data, P=None):
+    """:func:`write_table`, plus the per-grid waveform settings taken from *P*."""
+    columns = tuple(columns)
+    arr = np.asarray(data, dtype=float)
+    if arr.ndim == 1:
+        arr = arr.reshape(1, -1)
+    if arr.shape[1] != len(columns):
+        raise ValueError(
+            "hyperpipeline_io.write_table_with_metadata: data has {} cols, "
+            "header has {}".format(arr.shape[1], len(columns)))
+    header = MAGIC
+    if P is not None:
+        rendered = _format_metadata(P)
+        if rendered:
+            header += "\n" + META_MAGIC + " " + rendered
+    header += "\n" + " ".join(columns)
+    np.savetxt(fname, arr, header=header)
+
+
 # ---------------------------------------------------------------------------
 # Reader
 # ---------------------------------------------------------------------------
@@ -296,6 +390,8 @@ def sniff(fname):
                 if not line.startswith("#"):
                     return False
                 payload = _strip_comment(line)
+                if payload.startswith(META_MAGIC):
+                    continue
                 if payload.startswith(MAGIC):
                     return True
                 # Fallback: a header line listing the canonical first columns.
@@ -322,7 +418,7 @@ def read_header(fname):
             if not line.startswith("#"):
                 break  # Hit data without finding a header.
             payload = _strip_comment(line)
-            if payload.startswith(MAGIC):
+            if payload.startswith(META_MAGIC) or payload.startswith(MAGIC):
                 continue
             return tuple(payload.split())
     raise ValueError(
@@ -651,7 +747,8 @@ def write_grid_from_P_list(fname, P_list, columns,
                 mat[i, j] = _si_to_disk(name, raw, lal_module)
             else:
                 mat[i, j] = float(raw)
-    write_table(fname, columns, mat)
+    write_table_with_metadata(fname, columns, mat,
+                              P=P_list[0] if len(P_list) else None)
 
 
 def read_grid_to_P_list(fname, P_factory, lal_module=None,
@@ -679,6 +776,15 @@ def read_grid_to_P_list(fname, P_factory, lal_module=None,
         intersection behaviour.
     """
     arr, columns = read_table(fname)
+    metadata = parse_metadata(fname)
+    if not metadata:
+        warnings.warn(
+            "hyperpipeline_io.read_grid_to_P_list: {} carries no {} line, so "
+            "the waveform-generation settings it was written under are "
+            "unknown and ChooseWaveformParams defaults will be used. That is "
+            "not neutral: the default ampO=0 generates only the (2,+-2) modes "
+            "and ILE fails every point with KeyError: (2, -1) while exiting 0."
+            .format(fname, META_MAGIC), UserWarning)
     if valid_params is not None:
         valid_params = set(valid_params)
         # A column is "active" if its disk-name OR its alias-resolved
@@ -692,6 +798,15 @@ def read_grid_to_P_list(fname, P_factory, lal_module=None,
     P_list = []
     for row in arr:
         P = P_factory()
+        for name, text in metadata.items():
+            if name not in GRID_METADATA_FIELDS or not hasattr(P, name):
+                continue
+            try:
+                setattr(P, name, _coerce_metadata_value(name, text))
+            except (TypeError, ValueError):
+                warnings.warn(
+                    "hyperpipeline_io: ignoring unreadable grid metadata "
+                    "{}={!r} in {}".format(name, text, fname), UserWarning)
         for name in active:
             raw = float(row[name])
             if lal_module is not None:
@@ -748,3 +863,155 @@ def legacy_column_indices(use_eccentricity=False, use_meanPerAno=False,
     out["lnL"] = idx
     out["sigma_lnL"] = idx + 1
     return out
+
+
+def _frame_key(basename):
+    """(observatory, type) from a LIGO-T010150 frame filename, or None."""
+    stem = basename[:-4] if basename.endswith(".gwf") else basename
+    fields = stem.split("-")
+    if len(fields) < 4:
+        return None
+    return (fields[0], "-".join(fields[1:-2]))
+
+
+def _frame_span(basename):
+    """(start, stop) GPS seconds from a frame filename, or None."""
+    stem = basename[:-4] if basename.endswith(".gwf") else basename
+    fields = stem.split("-")
+    try:
+        start = int(fields[-2])
+        return (start, start + int(fields[-1]))
+    except (IndexError, ValueError):
+        return None
+
+
+def rewrite_cache_for_worker_transfer(cache_path, frames_dir, backup_path=None):
+    """Rewrite a LIGO cache so its paths are the ones a worker will see.
+
+    With ``--use-osg-file-transfer --internal-truncate-files-for-osg-file-transfer``
+    the frames are shipped into the job sandbox, so the cache must name them by
+    the relative path they land at, not by their submit-host path.
+
+    This replaces four ``os.system`` calls, one of which was
+    ``cat local.cache > awk '{print $1,$2,$3,$4}' > local_stripped.cache``.
+    That redirects ``cat`` into a file literally named ``awk``, passes the awk
+    program to ``cat`` as a nonexistent filename, and leaves EVERY column in
+    ``local_stripped.cache`` -- so the pasted result still carried the
+    submit-host path.  A second call emitted
+    ``frames_local/frames_dir/<name>.gwf``, doubling the prefix.  Neither
+    failed loudly: ``os.system`` discards the exit status, and the malformed
+    cache only surfaced later, on a worker.
+
+    **Entries are matched by observatory and frame type, never by position.**
+    The obvious replacement -- zip the cache lines against ``sorted(listdir)``
+    -- is wrong on real data and wrong SILENTLY.  Caches are commonly ordered
+    ``H1 V1 L1`` while a sorted directory listing is ``H1 L1 V1``, so two of
+    three entries would name a frame from the wrong detector; a count check
+    cannot see it because the counts agree.  Matching on the cache's own
+    observatory/type columns also handles the case a count check gets
+    positively wrong: ``util_ForOSG_MakeTruncatedLocalFramesDir.sh`` writes ONE
+    merged frame per detector, so a cache with several segments per detector
+    legitimately has more lines than there are frames.
+
+    Returns the list of cache lines written.
+    """
+    cache_path = str(cache_path)
+    frames_dir = str(frames_dir)
+    if not os.path.isdir(frames_dir):
+        raise ValueError(
+            "frames directory {!r} does not exist; the cache rewrite runs "
+            "after the frames have been staged".format(frames_dir))
+    if backup_path:
+        shutil.copyfile(cache_path, str(backup_path))
+
+    frames_by_key = {}
+    for name in sorted(os.listdir(frames_dir)):
+        if not name.endswith(".gwf"):
+            continue
+        key = _frame_key(name)
+        if key is None:
+            raise ValueError(
+                "frame {!r} does not follow the <obs>-<type>-<start>-<dur>.gwf "
+                "convention, so it cannot be matched to a cache entry"
+                .format(name))
+        frames_by_key.setdefault(key, []).append(name)
+    if not frames_by_key:
+        raise ValueError("no .gwf files in {!r}".format(frames_dir))
+
+    with open(cache_path) as stream:
+        entries = [line.split() for line in stream if line.strip()]
+    if not entries:
+        raise ValueError("cache {!r} is empty".format(cache_path))
+
+    lines = []
+    for fields in entries:
+        if len(fields) < 4:
+            raise ValueError(
+                "malformed cache line (expected >=4 columns): {}".format(
+                    " ".join(fields)))
+        observatory, frame_type = fields[0], fields[1]
+        # DETECTOR is the join key; the frame TYPE is not, and using it was a
+        # defect.  A datafind cache carries the datafind frame type
+        # (`H1_HOFT_AR01`), while the staging script names its merged output
+        # after the CHANNEL (`util_ForOSG_MakeTruncatedLocalFramesDir.sh`
+        # writes `${IFO}-${CHANNEL_NO_DASH}-${TSTART}-${SEGLEN}.gwf`, e.g.
+        # `H1-GDS_CALIB_STRAIN_CLEAN_AR-...`).  Those two strings have no
+        # reason to agree and in production never do, so keying on the pair
+        # matched nothing and aborted the build.  It survived testing because
+        # fake-data runs name the frame after the same string the cache uses,
+        # and because the fixtures assumed that shape.
+        #
+        # Tiers, most specific first, so a cache and frames that DO agree on
+        # the type still disambiguate on it -- which is what separates H1 from
+        # a hypothetical H2 sharing the observatory letter.
+        candidates = None
+        for key in ((observatory, frame_type),
+                    (observatory[:1], frame_type)):
+            if frames_by_key.get(key):
+                candidates = frames_by_key[key]
+                break
+        if not candidates:
+            candidates = [
+                name for key, names in sorted(frames_by_key.items())
+                if key[0][:1] == observatory[:1]
+                for name in names]
+        if not candidates:
+            raise ValueError(
+                "no staged frame for detector {!r} (cache entry {} {}); "
+                "staged frames are {}. The join is on the DETECTOR, not the "
+                "frame type -- a staged frame is usually named after the "
+                "channel, which the cache does not record."
+                .format(observatory, observatory, frame_type,
+                        sorted(frames_by_key)))
+        if len(candidates) > 1:
+            try:
+                entry_start = int(float(fields[2]))
+                entry_stop = entry_start + int(float(fields[3]))
+            except ValueError:
+                raise ValueError(
+                    "cache entry {} {} matches {} staged frames and its GPS "
+                    "columns are unreadable, so it cannot be resolved: {}"
+                    .format(observatory, frame_type, len(candidates),
+                            " ".join(fields)))
+            covering = [
+                name for name in candidates
+                if (_frame_span(name) or (0, 0))[0] <= entry_start
+                and entry_stop <= (_frame_span(name) or (0, 0))[1]]
+            if len(covering) != 1:
+                raise ValueError(
+                    "cache entry {} {} [{}, {}) is covered by {} of the {} "
+                    "staged frames for that detector; refusing to guess"
+                    .format(observatory, frame_type, entry_start, entry_stop,
+                            len(covering), len(candidates)))
+            candidates = covering
+        elif len(candidates) == 1 and len(entries) > 1:
+            # One frame per detector is the normal case for the truncation
+            # script, which merges every segment into a single file.  Nothing
+            # to disambiguate.
+            pass
+        lines.append(" ".join(
+            list(fields[:4]) + [os.path.join(frames_dir, candidates[0])]))
+
+    with open(cache_path, "w") as stream:
+        stream.write("\n".join(lines) + ("\n" if lines else ""))
+    return lines

@@ -27,6 +27,8 @@ import lalsimulation as lalsim
 import RIFT.lalsimutils as lalsimutils
 from RIFT.misc import hyperpipeline_io
 from RIFT.misc import dag_utils_generic
+from RIFT.misc import cip_pipeline
+from RIFT.misc import extrinsic_stage
 import configparser as ConfigParser
 
 if ( 'RIFT_LOWLATENCY'  in os.environ):
@@ -106,6 +108,93 @@ def _render_generic_job_arguments(job):
 def _job_condor_commands(job):
     """Return last-value-wins HTCondor commands from a generic job."""
     return {str(key): value for key, value in job.condor_cmds}
+
+
+def _load_extra_terminal_stages(path, generated_stages):
+    """Read a user terminal-stage manifest and check it against ours.
+
+    The generated manifest is pseudo_pipe's alone; this is the one place a user
+    may add to it.
+
+    These checks buy MESSAGE QUALITY, not safety.  Mutation-testing them showed
+    the contract loader already rejects every one of these manifests
+    downstream, so removing a check here does not produce a pipeline that
+    builds and does the wrong thing -- it produces a build that fails with a
+    worse explanation.  Two things are checked here rather than there because
+    only here do we know which stages we generated:
+
+    * a user stage may not take a generated stage's name.  The loader would
+      catch the duplicate, but it would report it as "names must be unique"
+      over a list of eleven, which tells the user nothing about which side is
+      theirs or that renaming their own stage is the fix.
+    * a user stage naming a generated stage in `depends_on` must name one that
+      this build actually emitted.  Most generated stages are conditional on an
+      option, so `depends_on: ["calibration_reweight"]` in a run without
+      `--calibration-reweighting` is a live mistake, and the loader would say
+      only "unknown or forward dependencies".
+
+    Paths in the extra file resolve exactly as they do in the generated one:
+    relative to the RUN DIRECTORY, not to the extra file.  That is the only
+    self-consistent rule, because a stage's `args` string is text we cannot
+    rewrite and its paths are necessarily run-relative; splitting the rule by
+    key would make `exe: ./x.sh` and `args: ./x.dat` mean different directories.
+    """
+    path = os.path.abspath(os.path.expanduser(path))
+    if not os.path.isfile(path):
+        raise SystemExit(
+            "pseudo_pipe: --terminal-stage-extra-file does not exist: "
+            + path)
+    try:
+        with open(path) as stream:
+            raw = json.load(stream)
+    except ValueError as exc:
+        raise SystemExit(
+            "pseudo_pipe: --terminal-stage-extra-file is not valid JSON ({}): "
+            "{}".format(path, exc))
+    if not isinstance(raw, dict) or raw.get("version") != 1:
+        raise SystemExit(
+            "pseudo_pipe: --terminal-stage-extra-file must be an object with "
+            "version 1: " + path)
+    extra = raw.get("stages")
+    if not isinstance(extra, list) or not extra:
+        raise SystemExit(
+            "pseudo_pipe: --terminal-stage-extra-file requires a non-empty "
+            "stages list: " + path)
+
+    generated = [str(stage.get("name")) for stage in generated_stages]
+    known = set(generated) | {"pipeline"}
+    seen = set()
+    for stage in extra:
+        if not isinstance(stage, dict) or not stage.get("name"):
+            raise SystemExit(
+                "pseudo_pipe: every stage in --terminal-stage-extra-file "
+                "requires a name: " + path)
+        name = str(stage["name"])
+        if name in generated:
+            raise SystemExit(
+                "pseudo_pipe: --terminal-stage-extra-file stage {!r} collides "
+                "with a stage this build generates. Rename your stage; the "
+                "generated names are an interface (see "
+                "RIFT.misc.terminal_stage_products) and are not yours to "
+                "reuse.".format(name))
+        if name in seen:
+            raise SystemExit(
+                "pseudo_pipe: --terminal-stage-extra-file defines stage {!r} "
+                "twice".format(name))
+        seen.add(name)
+        depends_on = stage.get("depends_on", ["pipeline"])
+        if isinstance(depends_on, str):
+            depends_on = [depends_on]
+        missing = [str(item) for item in depends_on
+                   if str(item) not in known and str(item) not in seen]
+        if missing:
+            raise SystemExit(
+                "pseudo_pipe: --terminal-stage-extra-file stage {!r} depends "
+                "on {} which this build does not emit. Stages generated here: "
+                "{}. Most are conditional on an option -- see "
+                "RIFT.misc.terminal_stage_products for which.".format(
+                    name, missing, generated or ["(none)"]))
+    return list(extra)
 
 
     
@@ -395,6 +484,7 @@ parser.add_argument("--skip-reproducibility",action='store_true')
 parser.add_argument("--use-production-defaults",action='store_true',help="Use production defaults. Intended for use with tools like asimov or by nonexperts who just want something to run on a real event.  Will require manual setting of other arguments!")
 parser.add_argument("--use-subdags",action='store_true',help="Use CEPP_Alternate instead of CEPP_BasicIteration. Note this writes an adaptively-sized DAG each iteration, but doesn't otherwise optimize yet.")
 parser.add_argument("--pipeline-builder",default=None,choices=["BasicIteration","AlternateIteration","Hyperpipe"],help="Explicitly select the low-level iteration builder. Hyperpipe is opt-in and uses the generic .dat pipeline with ILE as its indexed-grid MARG evaluator. Overrides the implicit --use-subdags routing.")
+parser.add_argument("--terminal-stage-extra-file",default=None,type=str,help="Path to a user terminal-stage manifest (version 1, same schema as the generated terminal_stage_specs.json) whose stages are appended to the ones this pipeline generates. Its stages may name generated stages in depends_on; see RIFT.misc.terminal_stage_products for the stable stage names and the file each writes. Relative paths resolve against the run directory. Requires --pipeline-builder Hyperpipe.")
 parser.add_argument("--use-ile-subdags",action='store_true',help="Use ILE subdag system (new)")
 parser.add_argument("--bilby-ini-file",default=None,type=str,help="Pass ini file for parsing. Intended to use for calibration reweighting. Full path recommended")
 parser.add_argument("--bilby-pickle-file",default=None,type=str,help="Bilby Pickle file with event settings. Intended to use for calibration reweighting. Full path recommended")
@@ -795,6 +885,15 @@ if opts.pipeline_builder == "Hyperpipe":
 elif opts.ile_zero_likelihood_data_free:
     raise SystemExit(
         "pseudo_pipe: --ile-zero-likelihood-data-free requires "
+        "--pipeline-builder Hyperpipe")
+
+if (opts.terminal_stage_extra_file
+        and opts.pipeline_builder != "Hyperpipe"):
+    # Only the Hyperpipe writer consumes a terminal-stage manifest.  Accepting
+    # the option elsewhere would build a pipeline missing the user's stages and
+    # exit zero, which is the worst of the available failures.
+    raise SystemExit(
+        "pseudo_pipe: --terminal-stage-extra-file requires "
         "--pipeline-builder Hyperpipe")
 
 
@@ -2029,11 +2128,33 @@ with open("args_puff.txt",'w') as f:
 if opts.archive_pesummary_label:
     os.mkdir("pesummary")
     rundir = base_dir+"/"+dirname_run
+    # When calibration reweighting runs, BOTH posteriors are published: the
+    # extrinsic samples as produced, and the calibration-reweighted ones.  A
+    # single page carrying both is what a reviewer actually wants -- the
+    # question is nearly always "what did calibration do to this?" -- and it
+    # removes a divergence between the two pipeline builders, which had been
+    # publishing different single posteriors under identical flags.
+    labels = [opts.archive_pesummary_label]
     if opts.add_extrinsic:
-        samplestr = " --samples " + rundir +"/extrinsic_posterior_samples.dat "
+        samples = [rundir + "/extrinsic_posterior_samples.dat"]
+        if opts.calibration_reweighting:
+            samples.append(rundir + "/reweighted_posterior_samples.dat")
+            labels.append(opts.archive_pesummary_label + "_calmarg")
     else:
-        samplestr = " --samples " + rundir + "/posterior_samples-$(macroiteration).dat "
-    labelstr = " --labels {} ".format(opts.archive_pesummary_label)
+        samples = [rundir + "/posterior_samples-$(macroiteration).dat"]
+    # ONE --samples taking every file, not one flag per file.  pesummary's
+    # --samples is a plain store action with nargs='+', not append, so a second
+    # occurrence REPLACES the first: `--samples A --samples B` publishes only B
+    # while --labels still carries two names, so the page is one posterior
+    # wearing the wrong label and the counts silently disagree.  Verified
+    # against pesummary's own parser rather than its documentation.
+    samplestr = " --samples {} ".format(" ".join(samples))
+    labelstr = " --labels {} ".format(" ".join(labels))
+    if len(labels) != len(samples):
+        raise SystemExit(
+            "pseudo_pipe: internal error -- {} pesummary labels for {} sample "
+            "files. The archived page would mislabel its posteriors.".format(
+                len(labels), len(samples)))
     configstr=""
     if opts.use_ini:
         configstr = " -c " +opts.use_ini
@@ -2421,12 +2542,8 @@ if opts.use_osg_file_transfer and opts.use_online_psd_file:
 
 # Make copy of local.cache for use in file transfer
 if opts.use_osg_file_transfer and opts.internal_truncate_files_for_osg_file_transfer and os.path.exists('local.cache'):
-    shutil.copyfile('local.cache', 'local_orig.cache')
-    # Move contents of ile_pre.sh here
-    os.system("awk '{print $1, $2, $3, $4}' local.cache > local_stripped.cache")
-    os.system('for i in frames_dir/*.gwf; do echo ${i}; done > base_paths.dat')
-    os.system("paste local_stripped.cache base_paths.dat > local_relative.cache ")
-    os.system("cp local_relative.cache local.cache")
+    hyperpipeline_io.rewrite_cache_for_worker_transfer(
+        'local.cache', 'frames_dir', backup_path='local_orig.cache')
 
 if not(ile_condor_commands is None):
     # create file
@@ -2537,6 +2654,7 @@ if opts.pipeline_builder == "Hyperpipe":
         stream.write("\n")
 
     terminal_stage_spec_path = None
+    terminal_stages = []
     if opts.add_extrinsic:
         # The maintained pseudo-pipe path uses ILE's time-resampled fairdraw
         # mode. Express it as generic terminal indexed-grid fan-out followed
@@ -2548,54 +2666,44 @@ if opts.pipeline_builder == "Hyperpipe":
         # batched converter, so no distinct Hyperpipe topology is required.
         with open("args_ile.txt") as stream:
             extrinsic_ile_args = stream.read()
-        extrinsic_ile_args = extrinsic_ile_args.replace(
-            "--no-adapt-after-first", "")
-        extrinsic_ile_args = extrinsic_ile_args.replace(
-            "--distance-marginalization ", " ")
         samples_per_point = int(
             opts.internal_last_iteration_extrinsic_samples_per_ile or 5)
-        configured_neff = [
-            int(float(value)) for value in re.findall(
-                r"--n-eff(?:=|\s+)([0-9.eE+-]+)", extrinsic_ile_args)]
-        extrinsic_neff = max(
-            [int(opts.ile_n_eff or 0), samples_per_point] + configured_neff)
-        extrinsic_ile_args += (
-            " --save-P 0.01 --save-samples --n-eff {neff}"
-            " --resample-time-marginalization"
-            " --fairdraw-extrinsic-output"
-            " --fairdraw-extrinsic-output-n-max {nmax} "
-        ).format(neff=extrinsic_neff, nmax=samples_per_point)
-        if opts.export_marginal_distance_grid:
-            extrinsic_ile_args += " --export-marginal-distance-grid "
-        if opts.export_distance_slices and opts.export_distance_slices > 0:
-            extrinsic_ile_args += " --export-distance-slices {} ".format(
-                opts.export_distance_slices)
-            if opts.export_distance_slices_all_fresh:
-                extrinsic_ile_args += " --distance-slice-all-fresh "
-            if opts.export_distance_slices_randomize:
-                extrinsic_ile_args += " --distance-slice-randomize "
-            if opts.export_distance_slices_wing_neff is not None:
-                extrinsic_ile_args += " --distance-slice-wing-neff {} ".format(
-                    opts.export_distance_slices_wing_neff)
-            if opts.export_distance_slices_wing_nmax is not None:
-                extrinsic_ile_args += " --distance-slice-wing-nmax {} ".format(
-                    opts.export_distance_slices_wing_nmax)
-            if opts.export_distance_slices_n_core:
-                extrinsic_ile_args += " --n-distance-slice-core {} ".format(
-                    opts.export_distance_slices_n_core)
-            if opts.export_distance_slices_n_wing:
-                extrinsic_ile_args += " --n-distance-slice-wing {} ".format(
-                    opts.export_distance_slices_n_wing)
-            if opts.export_distance_slices_wing_delta_lnL is not None:
-                extrinsic_ile_args += (
-                    " --distance-slice-wing-delta-lnL {} ".format(
-                        opts.export_distance_slices_wing_delta_lnL))
-            if opts.export_distance_slices_skip_threshold is not None:
-                extrinsic_ile_args += (
-                    " --distance-slice-skip-threshold {} ".format(
-                        opts.export_distance_slices_skip_threshold))
-            if "--internal-use-lnL" not in extrinsic_ile_args:
-                extrinsic_ile_args += " --internal-use-lnL "
+        # One implementation, shared with BasicIteration.  This block used to
+        # re-derive the same transform with regular expressions over the args
+        # file pseudo_pipe had just written, and the two had already drifted on
+        # --n-eff: BasicIteration takes the LAST value in the string, this took
+        # the maximum over every value AND the --ile-n-eff option.  They agree
+        # only when the option and the string agree.
+        extrinsic_ile_args, extrinsic_neff = (
+            extrinsic_stage.derive_extrinsic_ile_args(
+                extrinsic_ile_args, samples_per_point,
+                export_marginal_distance_grid=opts.export_marginal_distance_grid,
+                export_distance_slices=(
+                    opts.export_distance_slices
+                    if (opts.export_distance_slices
+                        and opts.export_distance_slices > 0) else None),
+                distance_slice_options={
+                    "--distance-slice-all-fresh":
+                        opts.export_distance_slices_all_fresh,
+                    "--distance-slice-randomize":
+                        opts.export_distance_slices_randomize,
+                    "--distance-slice-wing-neff":
+                        opts.export_distance_slices_wing_neff,
+                    "--distance-slice-wing-nmax":
+                        opts.export_distance_slices_wing_nmax,
+                    # Truthiness upstream, so 0 is omitted -- see
+                    # extrinsic_stage.derive_extrinsic_ile_args.
+                    "--n-distance-slice-core":
+                        opts.export_distance_slices_n_core or None,
+                    "--n-distance-slice-wing":
+                        opts.export_distance_slices_n_wing or None,
+                    "--distance-slice-wing-delta-lnL":
+                        opts.export_distance_slices_wing_delta_lnL,
+                    "--distance-slice-skip-threshold":
+                        opts.export_distance_slices_skip_threshold,
+                },
+                time_resampling=True))
+
         extrinsic_args_path = os.path.abspath("args_ile_extrinsic.txt")
         with open(extrinsic_args_path, "w") as stream:
             stream.write(extrinsic_ile_args.strip() + "\n")
@@ -2622,21 +2730,18 @@ if opts.pipeline_builder == "Hyperpipe":
             "terminal_collect_extrinsic.sh")
         with open(terminal_collect_script, "w") as stream:
             stream.write("#!/bin/bash\nset -e\n")
-            stream.write(
-                "{} '{}/EXTR_out-*.xml_*_.xml.gz' --output {}/tmp_extrinsic.xml.gz\n"
-                .format(shlex.quote(join_extrinsic), terminal_extrinsic_dir,
-                        os.getcwd()))
-            stream.write(
-                "{} {} {}/tmp_extrinsic.xml.gz > {}/tmp_extrinsic.dat\n"
-                .format(shlex.quote(convert_extrinsic),
-                        convert_args_extrinsic, os.getcwd(), os.getcwd()))
-            stream.write(
-                "head -n 1 {0}/tmp_extrinsic.dat > "
-                "{0}/extrinsic_posterior_samples.dat\n".format(os.getcwd()))
-            stream.write(
-                "sed 1d {0}/tmp_extrinsic.dat {1} >> "
-                "{0}/extrinsic_posterior_samples.dat\n".format(
-                    os.getcwd(), shuffle_clause))
+            # Shared with BasicIteration's allinone_convert.sh: two generators
+            # of the same four shell lines is how a stray space made the frame
+            # rotation inert for months.
+            for line in extrinsic_stage.extrinsic_collect_commands(
+                    shlex.quote(join_extrinsic), shlex.quote(convert_extrinsic),
+                    convert_args_extrinsic,
+                    "'{}/EXTR_out-*.xml_*_.xml.gz'".format(terminal_extrinsic_dir),
+                    "{}/tmp_extrinsic.xml.gz".format(os.getcwd()),
+                    "{}/tmp_extrinsic.dat".format(os.getcwd()),
+                    "{}/extrinsic_posterior_samples.dat".format(os.getcwd()),
+                    shuffle_clause):
+                stream.write(line + "\n")
         os.chmod(terminal_collect_script, 0o755)
 
         terminal_rotation_script = None
@@ -2674,14 +2779,13 @@ if opts.pipeline_builder == "Hyperpipe":
         terminal_worker_spec["execution"]["copies"] = 1
         terminal_worker_spec["execution"]["request_memory"] = int(ile_mem) * 2
         n_extrinsic_points = int(opts.n_output_samples_last)
-        n_extrinsic_jobs = max(
-            1, (n_extrinsic_points + int(n_jobs_per_worker) - 1) //
-            int(n_jobs_per_worker))
-        extrinsic_group_sizes = [
-            min(int(n_jobs_per_worker),
-                max(1, n_extrinsic_points - start))
-            for start in range(
-                0, max(1, n_extrinsic_points), int(n_jobs_per_worker))]
+        # Same partition BasicIteration uses for its extrinsic fan-out; see
+        # RIFT.misc.cip_pipeline.worker_partition for why this must not be
+        # re-derived per builder.
+        extrinsic_batches = cip_pipeline.worker_partition(
+            n_extrinsic_points, int(n_jobs_per_worker), clamp_last=True)
+        n_extrinsic_jobs = max(1, len(extrinsic_batches))
+        extrinsic_group_sizes = [count for _start, count in extrinsic_batches]
         terminal_command_common = {
             "initial_dir": os.getcwd(),
             "log_dir": terminal_extrinsic_dir + "/logs",
@@ -2693,7 +2797,7 @@ if opts.pipeline_builder == "Hyperpipe":
                 "retries": int(opts.general_retries),
             },
         }
-        terminal_stages = [
+        terminal_stages.extend([
             {
                 "name": "extrinsic_samples",
                 "kind": "indexed-grid-fanout-v1",
@@ -2715,7 +2819,7 @@ if opts.pipeline_builder == "Hyperpipe":
                 "depends_on": ["extrinsic_samples"],
                 "exe": terminal_collect_script,
             }, **terminal_command_common),
-        ]
+        ])
         if terminal_rotation_script:
             terminal_stages.append(dict({
                 "name": "frame_rotation",
@@ -2896,13 +3000,10 @@ if opts.pipeline_builder == "Hyperpipe":
         if opts.archive_pesummary_label:
             with open("args_plot.txt") as stream:
                 pesummary_args = stream.read().strip()
-            # The legacy pseudo-pipe string is assembled before calibration
-            # policy selects the final posterior.  Bind the Hyperpipe terminal
-            # stage to that final product explicitly.
-            pesummary_args = re.sub(
-                r"--samples\s+\S+",
-                "--samples {}".format(terminal_posterior_file),
-                pesummary_args)
+            # args_plot.txt already names every posterior to publish, including
+            # the calibration-reweighted one when that stage runs, so there is
+            # nothing to rewrite here.  The stage still depends on the final
+            # product, which is what makes those files exist.
             terminal_stages.append(dict({
                 "name": "pesummary",
                 "kind": "command-v1",
@@ -2930,6 +3031,15 @@ if opts.pipeline_builder == "Hyperpipe":
                             terminal_extrinsic_dir, postfix,
                             os.getcwd(), output)),
                 }, **terminal_command_common))
+    # The user's stages come last and are never reordered among themselves, so
+    # a manifest read on its own runs in the order it is written.  They are
+    # merged outside the --add-extrinsic block on purpose: a stage that only
+    # post-processes the final posterior_samples-N.dat needs no extrinsic
+    # stage, and refusing to build one would be an arbitrary coupling.
+    if opts.terminal_stage_extra_file:
+        terminal_stages.extend(_load_extra_terminal_stages(
+            opts.terminal_stage_extra_file, terminal_stages))
+    if terminal_stages:
         terminal_manifest = {"version": 1, "stages": terminal_stages}
         terminal_stage_spec_path = os.path.abspath(
             "terminal_stage_specs.json")
@@ -2992,7 +3102,16 @@ if opts.pipeline_builder == "Hyperpipe":
     subprocess.run(hyperpipe_cmd, check=True, env=os.environ.copy())
 else:
     print(cmd)
-    os.system(cmd)
+    # os.system() discards the child's exit status, so a builder that died with
+    # a traceback left pseudo_pipe reporting success and an empty run directory
+    # -- the failure only surfaced later as "there is no DAG".  The Hyperpipe
+    # branch above already uses check=True; the legacy branch must too.
+    _builder = subprocess.run(cmd, shell=True)
+    if _builder.returncode:
+        raise SystemExit(
+            "pseudo_pipe: pipeline builder failed with exit {}; see the output "
+            "above. The run directory is incomplete.".format(
+                _builder.returncode))
 
 if opts.internal_ile_check_good_enough:
     # Populate 'ile_check_good_enough' through all subdirectories

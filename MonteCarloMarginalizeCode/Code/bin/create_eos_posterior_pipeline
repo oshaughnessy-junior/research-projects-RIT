@@ -33,6 +33,7 @@ from RIFT.hyperpipe.marg_contract import (
 from RIFT.hyperpipe.terminal_contract import (
     COMMAND_V1,
     INDEXED_GRID_FANOUT_V1,
+    SUBWORKFLOW_V1,
     load_terminal_stage_specs,
 )
 from RIFT.hyperpipe.execution_contract import (
@@ -663,9 +664,9 @@ with open("con_prod.sh",'w') as f:
 
 con_prod_job, con_prod_job_name = dag_utils.write_convert_sub(exe=opts.working_directory+"/con_prod.sh",tag='CON_PROD',log_dir=None,arg_str='',file_input="$(macroiteration)  ", out_dir=opts.working_directory,universe=local_worker_universe,no_grid=no_worker_grid)
 con_prod_job.add_condor_cmd("initialdir",opts.working_directory)
-con_prod_job.set_log_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/con_prod-$(macroevent)-$(process).log")
-con_prod_job.set_stdout_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/con_prod-$(macroevent)-$(process).out")
-con_prod_job.set_stderr_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/con_prod-$(macroevent)-$(process).err")
+con_prod_job.set_log_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/con_prod-$(process).log")
+con_prod_job.set_stdout_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/con_prod-$(process).out")
+con_prod_job.set_stderr_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/con_prod-$(process).err")
 con_prod_job.add_condor_cmd('request_disk',opts.general_request_disk)
 if opts.use_full_submit_paths:
     fname = opts.working_directory+"/"+con_prod_job.get_sub_file()
@@ -874,6 +875,30 @@ terminal_stage_jobs = {}
 for terminal_stage in terminal_stage_specs:
     mkdir(terminal_stage.initial_dir)
     mkdir(terminal_stage.log_dir)
+    if terminal_stage.kind == SUBWORKFLOW_V1:
+        # Existence is checked HERE rather than in the contract, because only
+        # here do we know which backend is writing and therefore what file the
+        # sub-workflow actually landed at: `child.dag` on HTCondor,
+        # `child_local.sh` on the shell backend, `child_dag.sh` on Slurm.  A
+        # backend-agnostic check on the literal name would reject valid
+        # manifests on three backends out of four.  Still at build time, which
+        # is the point -- a missing SUBDAG discovered after submission costs a
+        # queue slot and a hold to learn about a typo.
+        resolved_subworkflow = dag_utils.get_backend().output_path_for_dag(
+            terminal_stage.dag)
+        if not os.path.isfile(resolved_subworkflow):
+            raise SystemExit(
+                "terminal stage {!r} names sub-workflow {}, which this backend "
+                "expects to find at {} -- and that file does not exist. Build "
+                "the sub-workflow before the workflow that runs it.".format(
+                    terminal_stage.name, terminal_stage.dag,
+                    resolved_subworkflow))
+        # Nothing else to write: the sub-workflow already has its own submit
+        # files, and the backend emits a reference to its driver.  Deliberately
+        # not given a submit file of its own -- a stage that both wrapped a
+        # workflow and ran a job would have two failure modes and one retry
+        # count.
+        continue
     if terminal_stage.kind == INDEXED_GRID_FANOUT_V1:
         execution = terminal_stage.job.execution
         use_osg_here = bool(execution.get("use_osg", opts.use_osg))
@@ -1025,9 +1050,9 @@ _join_post_output_path = opts.working_directory + (
     else "/grid-$(macroiterationnext).dat")
 join_post_job, join_post_job_name = dag_utils.write_convert_sub(exe=opts.working_directory+"/join_post.sh",tag='JOIN_POST',log_dir=None,arg_str='',file_input=opts.working_directory+"/iteration_$(macroiteration)_post/    "+_join_post_output_path, out_dir=opts.working_directory,universe=local_worker_universe,no_grid=no_worker_grid)
 join_post_job.add_condor_cmd("initialdir",opts.working_directory)
-join_post_job.set_log_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/unify-$(macroevent).log")
-join_post_job.set_stdout_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/unify-$(macroevent).out")
-join_post_job.set_stderr_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/unify-$(macroevent).err")
+join_post_job.set_log_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/unify.log")
+join_post_job.set_stdout_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/unify.out")
+join_post_job.set_stderr_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/unify.err")
 join_post_job.add_condor_cmd('request_disk',opts.general_request_disk)
 if opts.use_full_submit_paths:
     fname = opts.working_directory+"/"+join_post_job.get_sub_file()
@@ -1451,6 +1476,17 @@ for terminal_stage in terminal_stage_specs:
     for dependency in terminal_stage.depends_on:
         parent_nodes.extend(terminal_stage_nodes[dependency])
     nodes_here = []
+    if terminal_stage.kind == SUBWORKFLOW_V1:
+        subdag_node = pipeline.CondorDAGManJob(terminal_stage.dag).create_node()
+        subdag_node.set_category("TERMINAL_" + terminal_stage.name)
+        subdag_node.set_retry(int(terminal_stage.execution_value(
+            "retries", opts.general_retries)))
+        for parent_node in parent_nodes:
+            if parent_node is not None:
+                subdag_node.add_parent(parent_node)
+        dag.add_node(subdag_node)
+        terminal_stage_nodes[terminal_stage.name] = [subdag_node]
+        continue
     count = terminal_stage.count
     for terminal_index in range(count):
         terminal_node = pipeline.CondorDAGNode(

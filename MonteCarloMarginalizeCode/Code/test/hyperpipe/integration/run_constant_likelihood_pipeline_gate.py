@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import json
 from pathlib import Path
 import re
 import shlex
@@ -24,10 +25,10 @@ BIN = CODE / "bin"
 PSEUDO_PIPE = BIN / "util_RIFT_pseudo_pipe.py"
 
 
-def _environment(run_base: Path):
+def _environment(run_base: Path, backend: str = "htcondor"):
     env = os.environ.copy()
     env.pop("RIFT_HYPERPIPELINE_FORMAT", None)
-    env["RIFT_DAG_BACKEND"] = "htcondor"
+    env["RIFT_DAG_BACKEND"] = backend
     env["RIFT_ROOT"] = str(RIFT_ROOT)
     env["PYTHONPATH"] = os.pathsep.join(
         [str(CODE), env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
@@ -52,7 +53,125 @@ def _write_zero_spin_grid(path: Path):
         str(path), hyperpipeline_io.DEFAULT_BASE_COLUMNS, rows)
 
 
-def _build(run_base: Path, osg_contract=False):
+def _write_user_terminal_stage(run_base: Path, child_dag: Path = None):
+    """A third-party terminal stage, written the way a user would write one.
+
+    The plan for composable flows argues the manifest is already the extension
+    surface and that no plugin framework is needed -- a user stage is JSON
+    naming an executable and what it depends on.  That claim is only worth
+    anything if such a stage actually runs, so this gate builds one and
+    executes the workflow.  Note it uses no --add-extrinsic: the manifest here
+    contains ONLY the user's stages, which is the case a user hits first and
+    the one most likely to be broken by an implementation that assumes the
+    generated stages are always present.
+    """
+    script = run_base / "user_stage.sh"
+    script.write_text(
+        "#!/bin/bash\n"
+        "set -euo pipefail\n"
+        "# Read the pipeline's final grid and write a summary beside it.  The\n"
+        "# point is to prove a user stage sees the finished product, so this\n"
+        "# fails loudly rather than writing an empty file.\n"
+        "test -s \"$1\" || { echo \"user stage: $1 missing or empty\" >&2; exit 1; }\n"
+        "printf 'rows %s\\n' \"$(grep -vc '^#' \"$1\")\" > \"$2\"\n")
+    script.chmod(0o755)
+    stages = [{
+        "name": "user_summary",
+        "kind": "command-v1",
+        "depends_on": ["pipeline"],
+        "exe": str(script),
+        "args": "{0}/grid-1.dat {0}/user_summary.txt".format(
+            run_base / "run"),
+        "initial_dir": ".",
+        "universe": "local",
+    }]
+    if child_dag is not None:
+        # Composition, which is the whole claim: a command stage, then a whole
+        # separate workflow that depends on it.  `depends_on` wires the two
+        # kinds together without either knowing what the other is.
+        stages.append({
+            "name": "inner_workflow",
+            "kind": "subworkflow-v1",
+            "depends_on": ["user_summary"],
+            "dag": str(child_dag),
+        })
+    manifest = run_base / "user_stages.json"
+    manifest.write_text(json.dumps({"version": 1, "stages": stages}, indent=2))
+    return manifest
+
+
+def _write_child_workflow(run_base: Path, env):
+    """Build a small standalone workflow for a subworkflow-v1 stage to run.
+
+    Written with the SAME backend as the outer workflow, because that is what a
+    user does and because the backends disagree about where a workflow lands --
+    `child.dag` on HTCondor, `child_local.sh` on the shell backend,
+    `child_dag.sh` on Slurm.  The manifest names the logical `child.dag` and the
+    writer resolves it; if that resolution were wrong this would fail here
+    rather than at submit time on someone's cluster.
+    """
+    child_dir = run_base / "child-workflow"
+    child_dir.mkdir(exist_ok=True)
+    script = child_dir / "child_job.sh"
+    script.write_text(
+        "#!/bin/bash\nset -euo pipefail\n"
+        "printf 'child ran\\n' > " + str(child_dir / "child_ran.txt") + "\n")
+    script.chmod(0o755)
+    builder = child_dir / "build_child.py"
+    builder.write_text(
+        "import os, sys\n"
+        "sys.path.insert(0, {code!r})\n"
+        "from RIFT.misc import dag_utils_generic as m\n"
+        "d = {child!r}\n"
+        "job = m.CondorDAGJob(universe='vanilla', executable={script!r})\n"
+        "job.set_sub_file(os.path.join(d, 'child_job.sub'))\n"
+        "job.set_log_file(os.path.join(d, 'child.log'))\n"
+        "job.set_stdout_file(os.path.join(d, 'child.out'))\n"
+        "job.set_stderr_file(os.path.join(d, 'child.err'))\n"
+        "job.write_sub_file()\n"
+        "dag = m.CondorDAG()\n"
+        "dag.add_node(m.CondorDAGNode(job))\n"
+        "dag.set_dag_file(os.path.join(d, 'child'))\n"
+        "dag.write_concrete_dag()\n".format(
+            code=str(CODE), child=str(child_dir), script=str(script)))
+    result = subprocess.run(
+        [sys.executable, str(builder)], cwd=str(child_dir), env=env,
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    if result.returncode:
+        raise RuntimeError(
+            "child workflow build failed:\n" + result.stdout)
+    return child_dir / "child.dag", child_dir / "child_ran.txt"
+
+
+def _assert_child_workflow_ran(marker: Path, rundir: Path):
+    assert marker.exists(), (
+        "the subworkflow-v1 stage did not run its child workflow; a "
+        "sub-workflow stage that builds but never executes is the failure this "
+        "lane exists to catch")
+    assert marker.read_text().strip() == "child ran", marker.read_text()
+    manifest = json.loads((rundir / "terminal_stage_specs.json").read_text())
+    kinds = {stage["name"]: stage["kind"] for stage in manifest["stages"]}
+    assert kinds.get("inner_workflow") == "subworkflow-v1", kinds
+
+
+def _assert_user_terminal_stage_ran(rundir: Path):
+    product = rundir / "user_summary.txt"
+    assert product.exists(), (
+        "the user terminal stage did not run; a manifest containing only user "
+        "stages must still produce a terminal graph")
+    text = product.read_text().strip()
+    assert text.startswith("rows ") and int(text.split()[1]) > 0, text
+    manifest = json.loads((rundir / "terminal_stage_specs.json").read_text())
+    names = [stage["name"] for stage in manifest["stages"]]
+    # Only the user's stages: this lane runs without --add-extrinsic, so
+    # nothing generated should appear.  Order is the order they were written.
+    assert names[0] == "user_summary", names
+    assert all(name.startswith("user_") or name == "inner_workflow"
+               for name in names), names
+
+
+def _build(run_base: Path, osg_contract=False, backend: str = "htcondor",
+           builder: str = "Hyperpipe", user_stages: Path = None):
     seed = run_base / "zero-spin-grid.dat"
     cache = run_base / "empty.cache"
     rundir = run_base / "run"
@@ -61,7 +180,7 @@ def _build(run_base: Path, osg_contract=False):
     command = [
         sys.executable, str(PSEUDO_PIPE),
         "--use-rundir", str(rundir),
-        "--pipeline-builder", "Hyperpipe",
+        "--pipeline-builder", builder,
         "--manual-initial-grid", str(seed),
         "--fake-data-cache", str(cache),
         "--event-time", "1126259462.391",
@@ -80,11 +199,24 @@ def _build(run_base: Path, osg_contract=False):
         "--cip-explode-jobs", "1",
         "--cip-explode-jobs-last", "1",
         "--ile-no-gpu",
-        "--ile-zero-likelihood-data-free",
         "--manual-extra-test-args=--always-succeed",
         "--skip-reproducibility",
     ]
-    env = _environment(run_base)
+    if builder == "Hyperpipe":
+        command.append("--ile-zero-likelihood-data-free")
+    else:
+        # The legacy builder has no data-free convenience flag, but the same
+        # ILE mode is reachable through its ordinary argument passthrough --
+        # which is the point: this lane must exercise the REAL legacy builder,
+        # not a Hyperpipe-shaped stand-in.
+        command.append(
+            "--manual-extra-ile-args=--zero-likelihood --zero-likelihood-data-free")
+    env = _environment(run_base, backend=backend)
+    if builder != "Hyperpipe":
+        # BasicIteration only speaks the ASCII grid contract when asked.
+        env["RIFT_HYPERPIPELINE_FORMAT"] = "1"
+    if user_stages is not None:
+        command.extend(["--terminal-stage-extra-file", str(user_stages)])
     if osg_contract:
         command.extend([
             "--use-osg",
@@ -200,6 +332,109 @@ def _execute_without_condor(rundir: Path, env):
     return logs, completed
 
 
+def _execute_via_local_backend(rundir: Path, env,
+                               driver_name="marginalize_hyperparameters_local.sh"):
+    """Run the workflow through the registered `local` backend.
+
+    This lane deliberately does NOT parse the workflow: it runs the driver the
+    backend emitted, exactly as a user on a laptop or a login node would.  The
+    HTCondor lane below does the parsing, because there the submit files are
+    the artefact under test.  Between them the two lanes cover both "the
+    submit description is right" and "the emitted scripts actually run".
+    """
+    driver = rundir / driver_name
+    if not driver.is_file():
+        raise RuntimeError(
+            "local backend emitted no driver at {}".format(driver))
+    result = subprocess.run(
+        ["bash", str(driver)], cwd=str(rundir), env=env, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=1800)
+    transcript = rundir / "local-driver.log"
+    transcript.write_text(result.stdout)
+    if result.returncode:
+        tail = "\n".join(result.stdout.splitlines()[-60:])
+        raise RuntimeError(
+            "local backend driver failed ({}):\n{}".format(
+                result.returncode, tail))
+    completed = set(re.findall(r"^\[local\] running (\S+) ", result.stdout,
+                               re.M))
+    return transcript, completed
+
+
+def _assert_legacy_outputs(rundir: Path, logs: Path):
+    """The BasicIteration equivalents of the Hyperpipe products below.
+
+    This lane exists to test the LOCAL BACKEND, not the legacy builder: the
+    re-emit hooks and ABORT-DAG-ON handling exist because BasicIteration adds
+    control logic after write_concrete_dag, and until this ran, only Hyperpipe
+    workflows had ever been executed through the backend.  The generality was
+    advertised and untested.
+    """
+    shards = sorted((rundir / "iteration_0_ile").glob("CME_out*.dat"))
+    assert len(shards) == 9, [p.name for p in shards]
+    composite = rundir / "all.net"
+    assert composite.is_file() and composite.stat().st_size > 0
+    grid = rundir / "overlap-grid-1.dat"
+    assert grid.is_file() and grid.stat().st_size > 0
+    # Every data row must have the header's width.  The first version of this
+    # assertion only checked that the table was non-empty, and it PASSED on a
+    # grid whose rows had 1, 3, 4 and 10 columns -- numpy drops the short ones
+    # with a warning and returns something that looks fine.
+    header = [line for line in grid.read_text().splitlines()
+              if line.startswith("#")]
+    columns_expected = header[-1].lstrip("#").split()
+    data_lines = [line for line in grid.read_text().splitlines()
+                  if line.strip() and not line.startswith("#")]
+    widths = sorted({len(line.split()) for line in data_lines})
+    assert widths == [len(columns_expected)], (
+        "joined grid has rows of differing width {} against a {}-column header;"
+        " the shard glob is picking up annotation sidecars".format(
+            widths, len(columns_expected)))
+    table, columns = hyperpipeline_io.read_table(str(grid))
+    table = np.atleast_1d(table)
+    assert len(table) == len(data_lines)
+    assert np.allclose(table["lnL"], 0.0)
+    combined = "\n".join(
+        path.read_text(errors="replace")
+        for path in [logs] + sorted(rundir.glob("iteration_*/logs/*.out"))
+        if path.is_file())
+    assert "Reading channel" not in combined
+
+
+def _assert_no_puff_nodes(rundir: Path):
+    """`--internal-force-puff-iterations -1` must actually produce no puff.
+
+    The unit test for this option checks the ORDER of two lines in pseudo_pipe
+    and names this gate as the evidence that the order means something.  That
+    delegation was empty: the gate asserted nothing about puff, so an
+    order-preserving semantic break -- assigning the parsed value to a dead
+    variable -- passed both, and `helper_puff_max_it.txt` silently won again,
+    which is the pre-#181 bug.
+
+    Interleaved control when this was written: the clean build has 10 JOB nodes
+    and no puff node; with the option made inert it has 11, the extra one being
+    PUFF.sub.  So the count is not incidental -- it moves with the defect.
+    """
+    # Whichever driver this backend wrote; both lanes are checked the same way.
+    drivers = sorted(rundir.glob("*.dag")) + sorted(rundir.glob("*_local.sh"))
+    assert drivers, "no workflow driver found in {}".format(rundir)
+    text = "\n".join(path.read_text() for path in drivers)
+    offenders = [line.strip() for line in text.splitlines()
+                 if "PUFF" in line.upper() and (
+                     line.strip().startswith("JOB")
+                     or line.strip().startswith("run_unit")
+                     or line.strip().startswith("run_node"))]
+    assert not offenders, (
+        "--internal-force-puff-iterations -1 was requested but the workflow "
+        "still contains puff nodes, so the option is inert and "
+        "helper_puff_max_it.txt won:\n  " + "\n  ".join(offenders))
+    # NOT asserted: that PUFF.sub is absent.  The submit file is written
+    # unconditionally, whether or not any node uses it -- checked on a clean
+    # build, where PUFF.sub exists and no node references it.  Asserting on the
+    # file would fail on correct output, which is how a check gets weakened
+    # back out again.
+
+
 def _assert_outputs(rundir: Path, logs: Path, completed):
     marg_files = sorted((rundir / "iteration_0_marg" / "event_0").glob(
         "MARG*.dat"))
@@ -242,8 +477,16 @@ def _assert_outputs(rundir: Path, logs: Path, completed):
     # independent L=1 prior integral, modulo the two Monte Carlo estimates.
     assert abs(normalized_evidence[4]) < max(
         0.1, 5.0 * normalized_evidence[5])
+    if logs.is_dir():
+        sources = sorted(logs.glob("*.log"))
+    else:
+        # The local lane redirects each job's stdout/stderr to the paths the
+        # submit description names, so the driver transcript alone is not
+        # enough -- collect the per-job streams too.
+        sources = [logs] + sorted(rundir.glob("iteration_*/logs/*.out")) \
+                         + sorted(rundir.glob("iteration_*/*/logs/*.out"))
     combined_logs = "\n".join(
-        path.read_text(errors="replace") for path in logs.glob("*.log"))
+        path.read_text(errors="replace") for path in sources if path.is_file())
     assert "Data-free zero likelihood output:" in combined_logs
     assert "Reading channel" not in combined_logs
     assert len(completed) >= 8
@@ -254,6 +497,17 @@ def main(argv=None):
     parser.add_argument(
         "--keep-output", action="store_true",
         help="Keep the generated pipeline, local execution logs, and outputs")
+    parser.add_argument(
+        "--builder", default="Hyperpipe",
+        choices=["Hyperpipe", "BasicIteration"],
+        help=("which pipeline builder to drive. BasicIteration is only "
+              "meaningful with --backend local: it is how the local backend's "
+              "builder-agnostic claim is tested."))
+    parser.add_argument(
+        "--backend", default="htcondor", choices=["htcondor", "local"],
+        help=("htcondor: build submit files and drive them with this gate's "
+              "own executor. local: build and run through the registered "
+              "no-scheduler backend, i.e. what a user would actually do."))
     parser.add_argument(
         "--osg-build-contract-only", action="store_true",
         help="Build and inspect the OSG data-free transfer contract without running jobs")
@@ -268,17 +522,49 @@ def main(argv=None):
             prefix="rift-constant-likelihood-gate-")
         run_base = Path(temporary.name)
     try:
-        env = _environment(run_base)
-        rundir = _build(run_base, osg_contract=args.osg_build_contract_only)
+        env = _environment(run_base, backend=args.backend)
+        if args.builder != "Hyperpipe" and args.backend != "local":
+            raise SystemExit(
+                "--builder BasicIteration is only supported with "
+                "--backend local; the htcondor lane parses Hyperpipe's DAG.")
+        # The user-stage lane only makes sense where the workflow actually
+        # runs, and only for the writer that consumes a terminal manifest.
+        user_stages = None
+        child_marker = None
+        if (args.backend == "local" and args.builder == "Hyperpipe"
+                and not args.osg_build_contract_only):
+            child_dag, child_marker = _write_child_workflow(
+                run_base, _environment(run_base, backend=args.backend))
+            user_stages = _write_user_terminal_stage(
+                run_base, child_dag=child_dag)
+        rundir = _build(run_base, osg_contract=args.osg_build_contract_only,
+                        backend=args.backend, builder=args.builder,
+                        user_stages=user_stages)
         if args.osg_build_contract_only:
             _assert_osg_data_free_contract(rundir)
             print("constant-likelihood OSG build contract gate: PASS")
             if args.keep_output:
                 print("outputs retained at {}".format(run_base))
             return 0
-        logs, completed = _execute_without_condor(rundir, env)
-        _assert_outputs(rundir, logs, completed)
-        print("constant-likelihood local pipeline gate: PASS")
+        if args.backend == "local":
+            dag_name = ("marginalize_hyperparameters_local.sh"
+                        if args.builder == "Hyperpipe" else
+                        "marginalize_intrinsic_parameters_"
+                        "BasicIterationWorkflow_local.sh")
+            logs, completed = _execute_via_local_backend(
+                rundir, env, driver_name=dag_name)
+        else:
+            logs, completed = _execute_without_condor(rundir, env)
+        _assert_no_puff_nodes(rundir)
+        if args.builder == "Hyperpipe":
+            _assert_outputs(rundir, logs, completed)
+            if user_stages is not None:
+                _assert_user_terminal_stage_ran(rundir)
+                _assert_child_workflow_ran(child_marker, rundir)
+        else:
+            _assert_legacy_outputs(rundir, logs)
+        print("constant-likelihood pipeline gate ({} builder, {} backend): "
+              "PASS".format(args.builder, args.backend))
         if args.keep_output:
             print("outputs retained at {}".format(run_base))
     finally:

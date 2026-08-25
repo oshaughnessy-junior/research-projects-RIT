@@ -169,6 +169,72 @@ def _reachable(edges, source, target):
     return False
 
 
+def _assert_container_executable_contract(pipeline_dir):
+    """Every containerised job must name an executable that exists where it runs.
+
+    Two ways to satisfy that, and the submit file has to pick one consistently:
+
+    * **not** transferring the executable -- `executable` is the in-container
+      path (`$SINGULARITY_BASE_EXE_DIR/<basename>`, `/usr/bin/...` here), which
+      requires the image to already carry a compatible RIFT;
+    * transferring it -- `executable` is the submit host's path so HTCondor
+      ships the file, and the RIFT **package** must ship with it, because a
+      script and the library it imports are one unit: dropping a newer script
+      into an older image's RIFT is how you get a failure with no traceback.
+
+    The illegal combination is the third one: a host path with no RIFT
+    alongside. On a worker that path does not exist, or exists as a different
+    version, and the job dies for a reason the submit file does not explain.
+
+    This replaces two literal `executable = /usr/bin/...` tokens in the
+    profile. Those were correct when written and became wrong 2.5 hours later,
+    when the transfer-executable branch landed and made every `--use-osg` run
+    take the other arm -- and nothing noticed, because this gate was not in the
+    sweep anyone was running. A literal cannot express "one of two, matched to
+    the flag"; this can, and it holds for either arm.
+    """
+    checked = 0
+    for submit in sorted(pipeline_dir.glob("*.sub")):
+        text = submit.read_text()
+        exe_lines = [line for line in text.splitlines()
+                     if line.startswith("executable = ")]
+        if not exe_lines or "SingularityImage" not in text:
+            continue
+        exe = exe_lines[0].split(" = ", 1)[1].strip()
+        if not os.path.isabs(exe):
+            # A wrapper resolved relative to the sandbox; it is transferred by
+            # construction, so there is nothing to check here.
+            continue
+        transfers = ""
+        for line in text.splitlines():
+            if line.startswith("transfer_input_files"):
+                transfers = line.split(" = ", 1)[-1]
+        ships_rift = any(
+            item.rstrip("/").endswith("/RIFT")
+            for item in transfers.split(","))
+        inside_container = exe.startswith("/usr/") or exe.startswith("/opt/")
+        # Counted HERE, past every `continue`, so it records submits that were
+        # actually ASSERTED on rather than merely looked at.  It used to be
+        # incremented before the skips, which made the empty-set guard below
+        # unable to tell "inspected eleven" from "inspected none" -- a filter
+        # broken so that it matched nothing still reported eleven and passed.
+        checked += 1
+        if inside_container:
+            continue
+        if not ships_rift:
+            raise AssertionError(
+                "{}: executable is the submit-host path {!r}, which does not "
+                "exist on a worker, and the RIFT package is not in "
+                "transfer_input_files. Either name the in-container path or "
+                "ship the script and its library together.".format(
+                    submit.name, exe))
+    if not checked:
+        raise AssertionError(
+            "no containerised submit file reached the executable assertion in "
+            "{}; this check would have passed on nothing".format(pipeline_dir))
+    return checked
+
+
 def _assert_topology(profile, pipeline_dir):
     dag = pipeline_dir / "marginalize_hyperparameters.dag"
     jobs, subdags, edges = _dag_graph(dag)
@@ -206,11 +272,13 @@ def _assert_topology(profile, pipeline_dir):
         raise AssertionError("missing Z fetch or terminal extrinsic nodes")
     if not all(_reachable(edges, fetch[0], node) for node in terminal):
         raise AssertionError("terminal exports are not downstream of Z fetch")
+    containerised = _assert_container_executable_contract(pipeline_dir)
     return {
         "dag": dag.name,
         "jobs": len(jobs),
         "subdags": len(subdags),
         "terminal_stages": sorted(stage_names),
+        "containerised_submits_checked": containerised,
     }
 
 

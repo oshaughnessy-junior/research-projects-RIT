@@ -71,6 +71,8 @@ import json
 from RIFT.misc.dag_utils_generic import pipeline
 
 import RIFT.misc.dag_utils_generic as dag_utils
+from RIFT.misc import cip_pipeline
+from RIFT.misc import extrinsic_stage
 from RIFT.misc.dag_utils_generic import mkdir
 from RIFT.misc.dag_utils_generic import which
 
@@ -867,52 +869,41 @@ if not (fetch_args is None):
 
 if  (opts.last_iteration_extrinsic):
     n_points_per_ILE = opts.last_iteration_extrinsic_samples_per_ile
-    neff_orig = parse_ile_args_lazy(ile_args_orig,'n-eff') # parse to get originally requested n_eff, as string
-    print(" Orig n_eff ", neff_orig, n_points_per_ILE)
-    n_eff_last = np.min([2*n_points_per_ILE,opts.last_iteration_extrinsic_samples_per_ile])  # make n_eff large enough to get all samples requested. Provide cap in case user requests very vew extrinsic workers.
-    if isinstance(neff_orig,str):
-        n_eff_last  = np.max([n_eff_last, int(neff_orig)]) 
-    # # ILE job with modified output format
-    # #  - note we *double* the memory request, because we need space to save samples
-    # #  - note
-    # opts_ile = parse_ile_args_flexible(ile_args_orig) # parse to get originally requested n_eff, cache-file
-    # n_eff_last = np.min([2*n_points_per_ILE,opts.last_iteration_extrinsic_samples_per_ile])  # make n_eff large enough to get all samples requested. Provide cap in case user requests very vew extrinsic workers.
-    # if hasattr(opts_ile, 'n_eff'):
-    #     n_eff_last  = np.max([n_eff_last, opts_ile.n_eff]) # NEVER USE FEWER n_eff THAN WAS USED FOR intrinsic run. Fallback to no change in case (never happens) not in arg list
-    ile_args_extr = ile_args + " --save-P 0.01 --save-samples --n-eff  "  +str(n_eff_last)  # modify convergence criteria so output of reasonable size/matching needs of extrinsic output
-    #  - note we *disable* --no-adapt-after-first (if present), so each point is independent (e.g., in sky location)
-    ile_args_extr = ile_args_extr.replace('--no-adapt-after-first','')
-    if opts.last_iteration_export_marginal_distance_grid:
-        ile_args_extr += " --export-marginal-distance-grid "
-        ile_args_extr = ile_args_extr.replace("--distance-marginalization ", ' ')  # *currently* cannot use distance marginalization in the last step if we want distance grid output
-    if opts.last_iteration_export_distance_slices and opts.last_iteration_export_distance_slices > 0:
-        # Plan-B distance slices: K independent fixed-d extrinsic integrals per
-        # intrinsic point, emitted as a .dslice file. Requires lnL mode and no
-        # distance marginalization (same constraints as the grid export above).
-        ile_args_extr += " --export-distance-slices {} ".format(opts.last_iteration_export_distance_slices)
-        if opts.last_iteration_export_distance_slices_all_fresh:
-            ile_args_extr += " --distance-slice-all-fresh "
-        if opts.last_iteration_export_distance_slices_randomize:
-            ile_args_extr += " --distance-slice-randomize "
-        if opts.last_iteration_export_distance_slices_wing_neff is not None:
-            ile_args_extr += " --distance-slice-wing-neff {} ".format(opts.last_iteration_export_distance_slices_wing_neff)
-        if opts.last_iteration_export_distance_slices_wing_nmax is not None:
-            ile_args_extr += " --distance-slice-wing-nmax {} ".format(opts.last_iteration_export_distance_slices_wing_nmax)
-        if opts.last_iteration_export_distance_slices_n_core:
-            ile_args_extr += " --n-distance-slice-core {} ".format(opts.last_iteration_export_distance_slices_n_core)
-        if opts.last_iteration_export_distance_slices_n_wing:
-            ile_args_extr += " --n-distance-slice-wing {} ".format(opts.last_iteration_export_distance_slices_n_wing)
-        if opts.last_iteration_export_distance_slices_wing_delta_lnL is not None:
-            ile_args_extr += " --distance-slice-wing-delta-lnL {} ".format(opts.last_iteration_export_distance_slices_wing_delta_lnL)
-        if opts.last_iteration_export_distance_slices_skip_threshold is not None:
-            ile_args_extr += " --distance-slice-skip-threshold {} ".format(opts.last_iteration_export_distance_slices_skip_threshold)
-        if "--internal-use-lnL" not in ile_args_extr:
-            ile_args_extr += " --internal-use-lnL "
-        ile_args_extr = ile_args_extr.replace("--distance-marginalization ", ' ')
-    if opts.last_iteration_extrinsic_time_resampling:
-        ile_args_extr += " --resample-time-marginalization --fairdraw-extrinsic-output --fairdraw-extrinsic-output-n-max {} ".format(n_points_per_ILE)
-        print(" Time resampling in extraction iteration: **DISABLING** distance marginalization if present ")
-        ile_args_extr = ile_args_extr.replace("--distance-marginalization ", ' ')  # *currently* cannot use distance marginalization in the last step if we want fairdraw output.  Note the *unfairdraw* output can ignore this ...
+    # The extrinsic argument transform lives in RIFT.misc.extrinsic_stage so
+    # the Hyperpipe writer cannot re-derive a different one; it had.
+    ile_args_extr, n_eff_last = extrinsic_stage.derive_extrinsic_ile_args(
+        ile_args, n_points_per_ILE,
+        export_marginal_distance_grid=opts.last_iteration_export_marginal_distance_grid,
+        export_distance_slices=(
+            opts.last_iteration_export_distance_slices
+            if (opts.last_iteration_export_distance_slices
+                and opts.last_iteration_export_distance_slices > 0) else None),
+        distance_slice_options={
+            "--distance-slice-all-fresh":
+                opts.last_iteration_export_distance_slices_all_fresh,
+            "--distance-slice-randomize":
+                opts.last_iteration_export_distance_slices_randomize,
+            "--distance-slice-wing-neff":
+                opts.last_iteration_export_distance_slices_wing_neff,
+            "--distance-slice-wing-nmax":
+                opts.last_iteration_export_distance_slices_wing_nmax,
+            # These two are guarded on truthiness upstream, not on "is not
+            # None", so a value of 0 is OMITTED.  The wing/threshold options
+            # just above are guarded on "is not None" and a 0 IS emitted.  The
+            # predicates differ per option and always have; normalising them
+            # here would change the emitted command line.
+            "--n-distance-slice-core":
+                opts.last_iteration_export_distance_slices_n_core or None,
+            "--n-distance-slice-wing":
+                opts.last_iteration_export_distance_slices_n_wing or None,
+            "--distance-slice-wing-delta-lnL":
+                opts.last_iteration_export_distance_slices_wing_delta_lnL,
+            "--distance-slice-skip-threshold":
+                opts.last_iteration_export_distance_slices_skip_threshold,
+        },
+        time_resampling=opts.last_iteration_extrinsic_time_resampling)
+    print(" Extrinsic stage n_eff ", n_eff_last, " points per ILE ",
+          n_points_per_ILE)
     ileExtr_job, ileExtr_job_name = dag_utils.write_ILE_sub_simple(tag='ILE_extr',log_dir=None,arg_str=ile_args_extr,output_file="EXTR_out.xml",simple_unique=True,ncopies=1,exe=ile_exe,transfer_files=transfer_file_names,request_memory=opts.request_memory_ILE*2,request_gpu=opts.request_gpu_ILE,request_cross_platform=opts.request_xpu_ILE,use_cvmfs_frames=opts.use_cvmfs_frames,request_disk=request_disk,use_singularity=opts.use_singularity,singularity_image=singularity_image,use_osg=opts.use_osg,simple_osg_requirements=opts.use_osg_simple_requirements,use_oauth_files=opts.use_oauth_files,frames_dir=opts.frames_dir,cache_file=opts.cache_file)
     ileExtr_job.add_condor_cmd("initialdir",opts.working_directory+"/iteration_$(macroiteration)_ile")
     ileExtr_job.set_log_file(opts.working_directory+"/iteration_$(macroiteration)_ile/logs/ILEextr-$(macroevent)-$(cluster)-$(process).log")
@@ -943,14 +934,21 @@ if  (opts.last_iteration_extrinsic):
             extra_shuffle_command = ' | {} '.format(which_shuf)
         elif isinstance(which_sort, str):
             extra_shuffle_command  = ' | {} -R '.format(which_sort)
+        # Same four commands the Hyperpipe writer emits, from the same
+        # generator.  Only the paths differ: this collector runs with
+        # initialdir at the working directory and reads the per-iteration ILE
+        # subdirectory, while Hyperpipe's reads its terminal stage directory.
         with open("allinone_convert.sh",'w') as f:
-            f.write(f"""#! /bin/bash
-{extra_text}
-{relevant_path} ./iteration_$1_ile/'EXTR_out-*.xml_*_.xml.gz' --output ./tmp_converted.xml.gz
-{relevant_path_2} {convert_args_extr} ./tmp_converted.xml.gz  > ./tmp_converted.dat
-head -n 1 ./tmp_converted.dat > ./extrinsic_posterior_samples.dat
-sed 1d ./tmp_converted.dat  {extra_shuffle_command} >> ./extrinsic_posterior_samples.dat
-""")#.format(extra_text,relevant_path,'.','.',relevant_path_2,convert_args_extr,opts.working_directory,extra_shuffle_command,opts.working_directory))
+            f.write("#! /bin/bash\n")
+            if extra_text:
+                f.write(extra_text + "\n")
+            for _line in extrinsic_stage.extrinsic_collect_commands(
+                    relevant_path, relevant_path_2, convert_args_extr,
+                    "./iteration_$1_ile/'EXTR_out-*.xml_*_.xml.gz'",
+                    "./tmp_converted.xml.gz", "./tmp_converted.dat",
+                    "./extrinsic_posterior_samples.dat",
+                    extra_shuffle_command):
+                f.write(_line + "\n")
         os.system("chmod a+x allinone_convert.sh")
         # Create job submit file
         batchConvertExtr_job, batchConvertExtr_job_name = dag_utils.write_convert_sub(exe=opts.working_directory+"/allinone_convert.sh",tag='convert_extr',log_dir=None,arg_str='',file_input="$(macroiteration) ",file_output="/dev/null", out_dir=opts.working_directory,universe=local_worker_universe,no_grid=no_worker_grid)
@@ -1872,7 +1870,7 @@ for it in np.arange(it_start,opts.n_iterations):
     n_jobs_this_time = opts.n_samples_per_job
     if it ==it_start:
         n_jobs_this_time = n_initial
-    indx_max = int(np.ceil((1.0*n_jobs_this_time)/n_group_here))
+    indx_max = len(cip_pipeline.worker_partition(n_jobs_this_time, n_group_here))
     if not(it==it_start and opts.first_iteration_jumpstart):   # if on first iteration ,don't do this for jumpstart
         if opts.ile_group_subdag:
             # Write the subdag
@@ -2338,10 +2336,36 @@ if final_evidence_job is not None and final_evidence_parent_node is not None:
 last_node= parent_fit_node # backstop
 if opts.last_iteration_extrinsic:
     # Check if 'it' is defined : it will not always be, if done later
-    if not ('it' in globals()):
-        it = opts.n_iterations  # last iteration
-    elif it < opts.n_iterations and 'Z' in cip_args_prefixes:
-        it += 1   # deal with an offset/fencepost issue that can happen when using subdags for some reason
+    # Which grid the extrinsic stage reads.  `it` is the iteration loop's
+    # leftover value, so it is n_iterations-1 here; the grid the LAST CIP wrote
+    # is overlap-grid-<n_iterations> (CIP at iteration k writes k+1).  That is
+    # the one to read: the last CIP is explicitly sized for this stage above
+    # ("on last iteration, doing extrinsic phase" -> --n-output-samples
+    # last_iteration_extrinsic_nsamples), and the fan-out below partitions
+    # exactly that many rows.
+    #
+    # This used to be corrected only when 'Z' was in the CIP schedule, which
+    # left the two branches of this same conditional disagreeing about what
+    # "last iteration" means: the no-loop branch said n_iterations, the loop
+    # branch said n_iterations-1 unless Z.  On the non-Z path the extrinsic
+    # stage therefore read overlap-grid-<n_iterations-1> -- the grid the last
+    # ILE ran on, i.e. the PREVIOUS iteration's posterior after puffball --
+    # while the final CIP's output went unread, even though the extrinsic nodes
+    # take that CIP as their parent.  With --internal-force-iterations 1 that
+    # degenerates to the raw seed grid, so the extrinsic posterior carried no
+    # information from the data at all.
+    #
+    # Found by running both builders to completion and matching the extrinsic
+    # posterior's intrinsic points against each candidate grid: they matched
+    # overlap-grid-0 to 4e-7 (ASCII round-off) and were several solar masses
+    # from overlap-grid-1.  Hyperpipe read the final CIP posterior and was
+    # right.  (This was a pre-fix measurement; the run no longer exists, so the
+    # separation is stated as an order rather than a figure -- two records of
+    # it disagreed by a factor of five, and neither can now be checked.)
+    # The Z path already computed n_iterations, so this is a no-op there --
+    # which is where the production ini templates live, and is checked by
+    # diffing a Z build's DAG across this change.
+    it = opts.n_iterations
     print(" Extrinsic information being pulled from iteration {} ".format(it))
 
     # Create nodes for followup tasks
@@ -2365,8 +2389,9 @@ if opts.last_iteration_extrinsic:
     # Need to perform number of events CONSISTENT WITH TARGET SAMPLE SIZE
     #    - *not* always same as number of ILE events being analyzed
     #    - *assumes* grid files have sufficiently large numbers of samples to allow this! (as in many other cases)
-    n_jobs_extrinsic = int(np.ceil(
-        opts.last_iteration_extrinsic_nsamples/(1.0*n_group)))
+    extrinsic_batches = cip_pipeline.worker_partition(
+        opts.last_iteration_extrinsic_nsamples, n_group, clamp_last=True)
+    n_jobs_extrinsic = len(extrinsic_batches)
 
     if opts.last_iteration_extrinsic_time_resampling:
         convert_node = pipeline.CondorDAGNode(batchConvertExtr_job)
@@ -2375,9 +2400,7 @@ if opts.last_iteration_extrinsic:
 
 
     for event in np.arange(n_jobs_extrinsic):
-        start_event = int(event*n_group)
-        n_group_here = min(
-            n_group, opts.last_iteration_extrinsic_nsamples - start_event)
+        start_event, n_group_here = extrinsic_batches[int(event)]
         # Add task per ILE operation
         ile_node = pipeline.CondorDAGNode(ileExtr_job)
 #        ile_node.set_priority(JOB_PRIORITIES["ILE"])
@@ -2519,7 +2542,13 @@ if plot_args:
         plot_node = pipeline.CondorDAGNode(plot_job)
         plot_node.add_macro("macroiteration", it)
         plot_node.add_macro("macroiterationlast", it-1)
-        plot_node.add_parent(parent_fit_node)
+        # The archived page now publishes every posterior the run produced,
+        # including the calibration-reweighted one, so it has to wait for
+        # whatever produced the last of them.  `last_node` is the end of the
+        # terminal chain (calibration merge, then comoving reweighting when
+        # those run) and falls back to the fit node when neither does.
+        plot_node.add_parent(last_node if last_node is not None
+                             else parent_fit_node)
         plot_node.set_category("PLOT")
         dag.add_node(plot_node)
 

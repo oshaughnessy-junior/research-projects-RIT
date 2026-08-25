@@ -21,6 +21,7 @@ more than a stock python interpreter.
 
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -45,6 +46,32 @@ DAG_PATH = os.path.normpath(os.path.join(
 # real packages installed.  The tests fall back to these stubs only if the
 # real package is not importable.
 # ---------------------------------------------------------------------------
+
+def _strip_comments(script):
+    """Drop comment lines that are not sbatch directives.
+
+    The Slurm backend deliberately preserves the original HTCondor submit
+    commands as comments, and those contain ``$(macro...)`` text.  Auditing
+    them would report every preserved comment as a defect.
+    """
+    kept = []
+    for line in script.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#") and not stripped.startswith("#SBATCH"):
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
+def _has_classad(text, name, value):
+    """True if *text* declares custom ClassAd *name* under either spelling.
+
+    ``+Name = v`` (submit-file syntax) and ``MY.Name = v`` (the modern
+    equivalent the htcondor python bindings emit) are the same thing.
+    """
+    return ("+{} = {}".format(name, value) in text
+            or "MY.{} = {}".format(name, value) in text)
+
 
 def _install_htcondor_stub():
     """Provide a tiny `htcondor` shim if the real package isn't available."""
@@ -336,8 +363,14 @@ class HTCondorBackendTests(unittest.TestCase):
             self.assertIn("--event=$(macroevent)", text)
             self.assertIn("hello", text)
             self.assertIn("request_memory = 2048M", text)
-            self.assertIn('+Campaign = "GWTC5"', text)
-            self.assertIn('+PreCmd = "ile_pre.sh"', text)
+            # HTCondor accepts a custom ClassAd as either `+Name` or `MY.Name`,
+            # and the real python bindings normalize the former to the latter.
+            # This suite runs against a *stub* htcondor whenever the real
+            # package is absent (which is the case in CI), so asserting one
+            # spelling passes in CI and fails on every host that actually has
+            # HTCondor installed.  Accept either.
+            self.assertTrue(_has_classad(text, "Campaign", '"GWTC5"'), text)
+            self.assertTrue(_has_classad(text, "PreCmd", '"ile_pre.sh"'), text)
             self.assertNotIn("not-for-condor", text)
             self.assertIn("queue 3", text)
 
@@ -410,6 +443,314 @@ class GlueBackendTests(unittest.TestCase):
             self.assertIn("ENV SET RIFT_HYPERPIPELINE_FORMAT=1", text)
 
 
+class LocalBackendTests(unittest.TestCase):
+    """The local backend RUNS things, so these tests run them.
+
+    Every case here is a way a workflow can fail while still reporting
+    success -- the failure mode this backend exists to eliminate, and the one
+    a static inspection of the emitted scripts cannot see.
+    """
+
+    def setUp(self):
+        self.m = _load_with_stubs()
+        self.m.set_backend("local")
+
+    def _script_job(self, td, name, body, retry=0):
+        """A node whose payload is a real script file.
+
+        Deliberately NOT `/bin/bash -c "<body>"`: HTCondor's argument syntax
+        splits on whitespace unless a group is single-quoted, so a body passed
+        as one add_arg would arrive as several argv elements -- and the test
+        would exercise the quoting rules rather than the thing under test.
+        """
+        payload = os.path.join(td, name + "_payload.sh")
+        with open(payload, "w") as fh:
+            fh.write("#!/bin/bash\n" + body + "\n")
+        os.chmod(payload, 0o755)
+        job = self.m.CondorDAGJob(executable=payload)
+        job.set_sub_file(os.path.join(td, name + ".sh"))
+        job.write_sub_file()
+        node = self.m.CondorDAGNode(job)
+        node.set_retry(retry)
+        return job, node
+
+    def _run(self, td, dag):
+        dag.set_dag_file(os.path.join(td, "wf.dag"))
+        dag.write_concrete_dag()
+        return subprocess.run(["bash", dag.dag_file], cwd=td, text=True,
+                              stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, timeout=120)
+
+    def test_failing_subdag_stops_the_workflow(self):
+        """A bare `bash child.sh` in a driver without -e ignores the failure."""
+        with tempfile.TemporaryDirectory() as td:
+            child = os.path.join(td, "child_local.sh")
+            with open(child, "w") as fh:
+                fh.write("#!/bin/bash\nexit 3\n")
+            _job, after = self._script_job(
+                td, "after", "echo AFTER-SUBDAG > " + os.path.join(td, "after.txt"))
+            subdag = self.m.CondorDAGManJob(os.path.join(td, "child.dag"))
+            sub_node = subdag.create_node()
+            after.add_parent(sub_node)
+            dag = self.m.CondorDAG()
+            dag.add_node(sub_node)
+            dag.add_node(after)
+            result = self._run(td, dag)
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertFalse(os.path.exists(os.path.join(td, "after.txt")),
+                             "a downstream node ran after a failed sub-workflow")
+
+    def test_abort_dag_on_ends_the_workflow_with_its_return_value(self):
+        """RIFT's convergence test exits 1 to mean "converged, stop".
+
+        Without ABORT-DAG-ON that is an ordinary failure, and the run ends
+        with no posterior -- success turned into failure by the driver.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            _job, converge = self._script_job(td, "converge", "exit 1")
+            _job2, after = self._script_job(
+                td, "after", "echo RAN > " + os.path.join(td, "after.txt"))
+            after.add_parent(converge)
+            dag = self.m.CondorDAG()
+            dag.add_node(converge)
+            dag.add_node(after)
+            dag.set_dag_file(os.path.join(td, "wf.dag"))
+            dag.write_concrete_dag()
+            # Added AFTER the write, exactly as BasicIteration does it.
+            dag.add_abort_on(converge, 1, 0)
+            result = subprocess.run(["bash", dag.dag_file], cwd=td, text=True,
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, timeout=120)
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertIn("ABORT-DAG-ON", result.stdout)
+            self.assertFalse(os.path.exists(os.path.join(td, "after.txt")))
+
+    def test_control_logic_added_after_writing_is_not_pasted_verbatim(self):
+        """DAGMan text appended to a bash driver is a syntax error, or worse.
+
+        BasicIteration calls write_concrete_dag() and only then adds its
+        SCRIPT POST guards.  If the backend does not re-emit, those guards
+        vanish silently and the driver ends up with `SCRIPT POST ...` lines
+        that bash tries to execute.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            guard = os.path.join(td, "guard.sh")
+            with open(guard, "w") as fh:
+                fh.write("#!/bin/bash\ntouch " + os.path.join(td, "guard.txt") + "\n")
+            os.chmod(guard, 0o755)
+            _job, node = self._script_job(td, "work", "true")
+            dag = self.m.CondorDAG()
+            dag.add_node(node)
+            dag.set_dag_file(os.path.join(td, "wf.dag"))
+            dag.write_concrete_dag()
+            dag.add_script_post(node, guard)
+            dag.set_dot_file("vis.dot")
+
+            text = open(dag.dag_file).read()
+            for directive in ("SCRIPT POST ", "DOT ", "ABORT-DAG-ON "):
+                for line in text.splitlines():
+                    self.assertFalse(
+                        line.startswith(directive),
+                        "DAGMan directive pasted into a bash driver: " + line)
+            result = subprocess.run(["bash", dag.dag_file], cwd=td, text=True,
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, timeout=120)
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertTrue(os.path.exists(os.path.join(td, "guard.txt")),
+                            "the SCRIPT POST guard was dropped")
+
+    def test_failing_post_script_fails_the_workflow(self):
+        """Belt and braces, and deliberately so.
+
+        Two independent mechanisms stop the workflow here: run_step checks the
+        hook's status, and the driver runs under `set -e`.  That means this
+        test is NOT lethal to removing either one alone -- I checked -- so it
+        is a behaviour assertion rather than a guard on one line of emission.
+        The guard on the hook actually being emitted is
+        test_control_logic_added_after_writing_is_not_pasted_verbatim.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            guard = os.path.join(td, "guard.sh")
+            with open(guard, "w") as fh:
+                fh.write("#!/bin/bash\nexit 4\n")
+            os.chmod(guard, 0o755)
+            _job, node = self._script_job(td, "work", "true")
+            _job2, after = self._script_job(
+                td, "after", "echo RAN > " + os.path.join(td, "after.txt"))
+            after.add_parent(node)
+            dag = self.m.CondorDAG()
+            dag.add_node(node)
+            dag.add_node(after)
+            dag.add_script_post(node, guard)
+            result = self._run(td, dag)
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            # The status alone is weak: an unchecked failing command can leave
+            # a nonzero status behind while the workflow carries on.  What
+            # must not happen is the next node running.
+            self.assertFalse(os.path.exists(os.path.join(td, "after.txt")),
+                             "a downstream node ran after a failed POST script")
+
+    def test_queue_count_runs_every_process(self):
+        """`queue N` is ILE's --n-copies; running it once under-produces."""
+        with tempfile.TemporaryDirectory() as td:
+            out = os.path.join(td, "copies.txt")
+            job, node = self._script_job(
+                td, "copies", "echo COPY >> " + out)
+            job._CondorJob__queue = 5
+            job.write_sub_file()
+            dag = self.m.CondorDAG()
+            dag.add_node(node)
+            result = self._run(td, dag)
+            self.assertEqual(result.returncode, 0, result.stdout)
+            with open(out) as fh:
+                self.assertEqual(len(fh.read().split()), 5)
+
+    def test_script_hooks_get_the_argv_the_caller_wrote(self):
+        """PRE/POST hook arguments must survive to the script's argv intact.
+
+        Three separate ways this was wrong, all silent -- the hook ran and
+        received different arguments than the caller passed:
+
+        * `$(JOBID)` / `$(RETURN)` were pasted as raw text, so bash treated
+          them as command substitution: "JOBID: command not found", and every
+          later argument shifted down two positions;
+        * an argument containing a space split into two, because the API
+          `" ".join`ed the `*args` it was given and threw the boundaries away;
+        * a `$(macro)` reference was not substituted at all.
+
+        The production call site is the ILE post script, which is passed
+        exactly `$(JOBID) $(RETURN) <iteration> <target>`.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            out = os.path.join(td, "argv.txt")
+            hook = os.path.join(td, "post.sh")
+            with open(hook, "w") as fh:
+                fh.write("#!/bin/bash\nprintf '[%s]' \"$@\" > " + out + "\n")
+            os.chmod(hook, 0o755)
+            spacey = os.path.join(td, "a dir", "file.txt")
+            os.makedirs(os.path.dirname(spacey))
+            job, node = self._script_job(td, "work", "true")
+            job.write_sub_file()
+            node.add_macro("macroiteration", 7)
+            dag = self.m.CondorDAG()
+            dag.add_node(node)
+            dag.add_script_post(node, hook, "$(JOBID)", "$(RETURN)",
+                                "$(macroiteration)", spacey, "plain")
+            result = self._run(td, dag)
+            self.assertEqual(result.returncode, 0, result.stdout)
+            with open(out) as fh:
+                argv = fh.read()
+            self.assertNotIn("command not found", result.stdout)
+            self.assertIn("[7]", argv)                 # macro substituted
+            self.assertIn("[" + spacey + "]", argv)    # one arg, not two
+            self.assertIn("[plain]", argv)
+            self.assertIn("[0]", argv)                 # $(RETURN) of a success
+
+    def test_a_failing_POST_script_is_retried_with_the_node(self):
+        """DAGMan retries PRE+JOB+POST as one unit; the POST decides success.
+
+        RIFT depends on it: the cip-explode design pairs RETRY 1000 with a POST
+        script whose own comment says it "will USUALLY FAIL and get retried A
+        LARGE NUMBER OF TIMES, until we complete work".  A driver that exits on
+        the first POST failure makes that adaptive batching inert -- the
+        workflow dies on attempt one instead of converging.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            counter = os.path.join(td, "count")
+            hook = os.path.join(td, "post.sh")
+            with open(hook, "w") as fh:
+                # Fails twice, then succeeds -- exactly the shape RIFT relies on.
+                fh.write(
+                    "#!/bin/bash\n"
+                    "n=$(cat {0} 2>/dev/null || echo 0); n=$((n+1));"
+                    " echo $n > {0}\n"
+                    "[ \"$n\" -ge 3 ]\n".format(counter))
+            os.chmod(hook, 0o755)
+            job, node = self._script_job(td, "work", "true")
+            job.write_sub_file()
+            node.set_retry(5)
+            dag = self.m.CondorDAG()
+            dag.add_node(node)
+            dag.add_script_post(node, hook)
+            result = self._run(td, dag)
+            self.assertEqual(result.returncode, 0, result.stdout)
+            with open(counter) as fh:
+                self.assertEqual(fh.read().strip(), "3")
+
+    def test_a_macro_that_is_not_named_macroSomething_still_resolves(self):
+        """`add_macro` takes any key, and RIFT uses `ifo`.
+
+        The macro layer used to recognise only `macro*`/`cluster`/`process`, so
+        `initialdir = <dir>/$(ifo)` was emitted literally and every detector
+        shared one directory NAMED `$(ifo)`.  `mkdir -p` made that succeed, so
+        neither `set -u` nor `set -e` could see it -- the silent wrong-directory
+        failure the strict rendering exists to prevent, walking past the
+        strictness because the token never reached `macro_ref`.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            job, node = self._script_job(td, "work", "pwd > out.txt")
+            job.add_condor_cmd("initialdir", os.path.join(td, "$(ifo)"))
+            job.write_sub_file()
+            node.add_macro("ifo", "H1")
+            dag = self.m.CondorDAG()
+            dag.add_node(node)
+            result = self._run(td, dag)
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertTrue(os.path.isdir(os.path.join(td, "H1")),
+                            "expected a per-IFO directory; got "
+                            + repr(sorted(os.listdir(td))))
+            self.assertFalse(os.path.exists(os.path.join(td, "$(ifo)")))
+
+    def test_an_unassigned_macro_in_a_LOG_PATH_is_not_fatal(self):
+        """HTCondor is lenient here, and RIFT depends on it.
+
+        BasicIteration's `convert_extr` node names its log
+        `batchconvert-$(macroevent).err` and never assigns `macroevent`;
+        HTCondor expands that to nothing and the job runs.  A shell backend
+        that is strict everywhere turns it into a hard failure -- which is a
+        behaviour difference, not a stricter check.  Found by running the
+        legacy builder's extrinsic path, where it killed both arms of a
+        comparison.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            out = os.path.join(td, "ran.txt")
+            job, node = self._script_job(td, "work", "echo ok > " + out)
+            job.set_stdout_file(os.path.join(
+                td, "logs", "work-$(macroevent).out"))
+            job.set_stderr_file(os.path.join(
+                td, "logs", "work-$(macroevent).err"))
+            job.write_sub_file()
+            node.add_macro("macroiteration", 0)   # but NOT macroevent
+            dag = self.m.CondorDAG()
+            dag.add_node(node)
+            result = self._run(td, dag)
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertTrue(os.path.exists(out),
+                            "the job did not run:\n" + result.stdout)
+
+    def test_an_unassigned_macro_is_fatal_not_empty(self):
+        """The defect this backend exists to expose must not be survivable.
+
+        A job that reads a macro its node never assigned would, without
+        `set -u`, run with an empty argument and exit zero.  Note the contrast
+        with the log-path case above: strictness belongs where an empty
+        expansion changes WHAT RUNS, and not where it only changes a filename.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            job = self.m.CondorDAGJob(executable="/bin/echo")
+            job.add_opt("event", "$(macroevent)")
+            job.set_sub_file(os.path.join(td, "j.sh"))
+            job.write_sub_file()
+            node = self.m.CondorDAGNode(job)   # no add_macro at all
+            dag = self.m.CondorDAG()
+            dag.add_node(node)
+            result = self._run(td, dag)
+            self.assertNotEqual(
+                result.returncode, 0,
+                "a job read an unassigned macro and still succeeded:\n"
+                + result.stdout)
+
+
 class SlurmBackendTests(unittest.TestCase):
 
     def setUp(self):
@@ -451,9 +792,117 @@ class SlurmBackendTests(unittest.TestCase):
             self.assertIn("#SBATCH --constraint=x86_64", text)
             self.assertNotIn("ile_pre.sh", text)
             self.assertIn("#SBATCH --export=ALL", text)
-            self.assertIn("exec /bin/echo hello", text)
+            # Each argv element is a separate double-quoted bash word: the
+            # shell must not glob or word-split what HTCondor would have
+            # passed to exec() verbatim.
+            self.assertIn('exec "/bin/echo" "hello"', text)
             # Original Condor commands should be preserved as comments.
             self.assertIn("# Original HTCondor submit-file commands", text)
+
+    # ------------------------------------------------------------------
+    # Per-node parameterization
+    # ------------------------------------------------------------------
+    # These are round-trip tests on purpose.  Asserting that a particular
+    # string appears in the sbatch script cannot catch the failure mode that
+    # matters here: a reference the script makes and the driver never
+    # satisfies.  Bash expands an unset variable to the empty string, so such
+    # a job runs to a zero exit status with an argument silently missing.
+
+    @staticmethod
+    def _shell_references(text):
+        """Every ``${NAME}`` / ``$NAME`` the script depends on."""
+        refs = set(re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-[^}]*)?\}", text))
+        refs |= set(re.findall(r"\$([A-Za-z_][A-Za-z0-9_]*)", text))
+        return refs
+
+    #: Supplied by Slurm itself, never by the workflow.
+    SLURM_BUILTINS = {
+        "SLURM_JOB_ID", "SLURM_ARRAY_TASK_ID", "SLURM_ARRAY_JOB_ID",
+        "SLURM_PROCID", "SLURM_NTASKS", "SLURM_SUBMIT_DIR", "HOME", "USER",
+        "PATH", "TMPDIR",
+    }
+
+    def _build_parameterized_workflow(self, td):
+        """A job whose per-node parameters appear in every field that matters.
+
+        This mirrors what RIFT's own writers do: macros are baked into option
+        values, log paths and the working directory, *not* only into the
+        var-opt list.
+        """
+        job = self.m.CondorDAGJob(universe="vanilla", executable="/bin/echo")
+        job.set_sub_file(os.path.join(td, "marg.sbatch"))
+        job.set_stdout_file(os.path.join(
+            td, "iteration_$(macroiteration)_marg/logs",
+            "marg-$(macroevent)-$(cluster)-$(process).out"))
+        job.set_stderr_file(os.path.join(
+            td, "iteration_$(macroiteration)_marg/logs",
+            "marg-$(macroevent)-$(cluster)-$(process).err"))
+        job.add_opt("sim-grid", os.path.join(td, "grid-$(macroiteration).dat"))
+        job.add_opt("output-file", "MARG-$(macroevent)-$(cluster)-$(process).dat")
+        job.add_var_opt("event")
+        job.add_condor_cmd("initialdir", os.path.join(
+            td, "iteration_$(macroiteration)_marg/event_$(macroid)"))
+        job.add_condor_cmd("getenv", "True")
+        job.write_sub_file()
+
+        node = self.m.CondorDAGNode(job)
+        for key, value in (("macroiteration", 0), ("macroevent", 3),
+                           ("macroid", 0), ("macrongroup", 3)):
+            node.add_macro(key, value)
+        dag = self.m.CondorDAG()
+        dag.add_node(node)
+        dag.set_dag_file(os.path.join(td, "wf.dag"))
+        dag.write_concrete_dag()
+        with open(os.path.join(td, "marg.sbatch")) as _fh:
+            script = _fh.read()
+        with open(os.path.join(td, "wf_dag.sh")) as _fh:
+            driver = _fh.read()
+        return script, driver
+
+    def test_sbatch_leaves_no_unrendered_condor_macro(self):
+        with tempfile.TemporaryDirectory() as td:
+            script, _ = self._build_parameterized_workflow(td)
+        leftovers = sorted(set(re.findall(r"\$\((macro[A-Za-z0-9_]*|cluster|process)\)",
+                                          _strip_comments(script))))
+        self.assertEqual(leftovers, [], (
+            "HTCondor macro syntax survived into an sbatch script; under bash "
+            "$(...) is command substitution, not a variable reference: "
+            "{}".format(leftovers)))
+
+    def test_every_sbatch_reference_is_supplied(self):
+        with tempfile.TemporaryDirectory() as td:
+            script, driver = self._build_parameterized_workflow(td)
+        exported = set(re.findall(r"(SLURM_VAR_[A-Za-z0-9_]+)=", driver))
+        self.assertTrue(exported, "driver exported no per-node variables")
+        referenced = self._shell_references(_strip_comments(script))
+        unsatisfied = sorted(
+            name for name in referenced
+            if name.startswith("SLURM_VAR_") and name not in exported)
+        self.assertEqual(unsatisfied, [], (
+            "sbatch script reads variables the driver never exports; bash "
+            "expands these to the empty string rather than failing: "
+            "{}\nexported: {}".format(unsatisfied, sorted(exported))))
+        stray = sorted(
+            name for name in referenced
+            if not name.startswith("SLURM_VAR_")
+            and name not in self.SLURM_BUILTINS)
+        self.assertEqual(stray, [], "unexpected shell references: {}".format(stray))
+
+    def test_job_enters_its_initialdir(self):
+        """HTCondor's initialdir is the job's cwd; Slurm has no equivalent.
+
+        RIFT puts per-iteration outputs under it, so a script that does not cd
+        writes them where the next stage will not look -- and still exits 0.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            script, _ = self._build_parameterized_workflow(td)
+        body = _strip_comments(script)
+        self.assertRegex(body, r"(?m)^cd \S*iteration_.*_marg/event_",
+                         "sbatch script never enters its initialdir")
+        self.assertRegex(body, r"(?m)^mkdir -p \S*iteration_",
+                         "sbatch script does not create its initialdir")
+        # The cd must precede the payload, or it does nothing useful.
+        self.assertLess(body.index("\ncd "), body.index("\nexec "))
 
     def test_emit_dag_writes_shell_driver(self):
         with tempfile.TemporaryDirectory() as td:

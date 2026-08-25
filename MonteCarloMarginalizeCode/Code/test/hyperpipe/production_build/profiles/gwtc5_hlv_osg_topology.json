@@ -85,7 +85,7 @@
     ],
     "submit_tokens": {
       "MARG_0.sub": [
-        "executable = /usr/bin/integrate_likelihood_extrinsic_batchmode",
+        "integrate_likelihood_extrinsic_batchmode",
         "request_disk = 4G",
         "use_oauth_services = scitokens",
         "MY.SingularityBindCVMFS = True",
@@ -94,7 +94,7 @@
         "Reviewed-GWTC5-RIFT.sif"
       ],
       "EOS_POST_worker_0.sub": [
-        "executable = /usr/bin/util_ConstructIntrinsicPosterior_GenericCoordinates.py",
+        "util_ConstructIntrinsicPosterior_GenericCoordinates.py",
         "request_disk = 4G",
         "use_oauth_services = scitokens",
         "should_transfer_files = YES",

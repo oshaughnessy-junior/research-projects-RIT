@@ -16,6 +16,66 @@ import numpy as np
 POSTERIOR_UNIQUE_FLAG = "--posterior-unique-draw"
 
 
+def worker_partition(n_points, group_size, clamp_last=False):
+    """Split *n_points* indices into worker batches of at most *group_size*.
+
+    Returns a list of ``(start, count)`` pairs.  Three places in RIFT decide
+    how many workers an iteration gets and which slice each one takes, and
+    they must agree: the ILE fan-out and the terminal extrinsic fan-out in
+    ``create_event_parameter_pipeline_BasicIteration``, and the Hyperpipe
+    terminal fan-out assembled in ``util_RIFT_pseudo_pipe.py``.
+
+    **Correction (2026-08-25).** An earlier version of this docstring said the
+    line replaced in ``create_event_parameter_pipeline_BasicIteration`` was
+    ``int(n/g)`` and that it under-allocated workers in production.  It was
+    not: that call site already read ``int(np.ceil(n/g))``, which is exactly
+    equivalent to this function, verified over ``n in [0,200) x g in [1,40)``
+    with zero mismatches.  Converting it changed nothing, which is the right
+    outcome for a refactor but is not what the docstring claimed.
+
+    The buggy form is real, and it is elsewhere: ``int(n/g)`` guarded by ``if
+    indx_max*n < g: indx_max += 1`` still stands in
+    ``create_event_parameter_pipeline_AlternateIteration``,
+    ``cepp_basic_htcondor``,
+    ``create_event_parameter_pipeline_BasicMultiApproxIteration`` and
+    ``create_event_nr_pipeline_with_cip``.  That guard fires only when ``n <
+    g`` (where ``int(n/g)`` is 0).  For ``n > g`` with a remainder, ``indx_max
+    >= 1`` and ``indx_max*n >= n >= g``, so it never fires and the request
+    allocates too FEW workers, leaving the tail of the requested points
+    unevaluated with no error and no log line.  **None of those four builders
+    is converted here**, so the "places that must agree" still do not all
+    agree -- converting them is a separate change with its own blast radius,
+    and claiming otherwise would suggest a coverage this module does not have.
+
+    ``clamp_last`` controls the tail:
+
+    * ``False`` (the ILE fan-out): every batch is a full ``group_size``, so the
+      last one can ask for indices past the end.  ILE tolerates that -- it
+      stops at the end of the grid -- and the uniform ``macrongroup`` is what
+      the historical DAG emitted.  Kept as-is deliberately: changing it would
+      change the shape of every production DAG.
+    * ``True`` (the extrinsic fan-outs): the last batch is truncated so the
+      total is exactly ``n_points``.  Here the count IS the deliverable --
+      it is how many posterior samples the run produces -- so over-requesting
+      is not free.
+    """
+    n_points = int(n_points)
+    group_size = int(group_size)
+    if group_size <= 0:
+        raise ValueError("group_size must be positive, got {}".format(group_size))
+    if n_points <= 0:
+        return []
+    n_workers = -(-n_points // group_size)   # ceil, without float rounding
+    batches = []
+    for index in range(n_workers):
+        start = index * group_size
+        count = group_size
+        if clamp_last:
+            count = min(group_size, n_points - start)
+        batches.append((start, count))
+    return batches
+
+
 def expand_argument_schedule(lines, n_iterations, allow_special=False,
                              include_prefix=False):
     """Expand a grouped CIP/posterior argument schedule by iteration.

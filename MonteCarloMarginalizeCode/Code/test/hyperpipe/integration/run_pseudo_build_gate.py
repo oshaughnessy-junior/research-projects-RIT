@@ -13,6 +13,7 @@ import argparse
 from collections import Counter
 import json
 import os
+import shlex
 from pathlib import Path
 import subprocess
 import sys
@@ -23,6 +24,7 @@ import lal
 
 from RIFT import lalsimutils
 from RIFT.misc import hyperpipeline_io
+from RIFT.misc import terminal_stage_products
 
 
 HERE = Path(__file__).resolve()
@@ -75,7 +77,8 @@ def _build(builder: Optional[str], run_base: Path, seed_grid: Path, cache: Path,
            pickle_file: Optional[Path], run_label: Optional[str] = None,
            bilby_ini: Optional[Path] = None,
            osg_calibration: bool = False,
-           z_convergence: bool = False):
+           z_convergence: bool = False,
+           extra_stage_file: Optional[Path] = None):
     label = builder or "default"
     rundir = run_base / (run_label or label.lower())
     command = [
@@ -131,6 +134,9 @@ def _build(builder: Optional[str], run_base: Path, seed_grid: Path, cache: Path,
             "--internal-propose-converge-last-stage",
             "--internal-n-iterations-subdag-max", "3",
         ])
+    if extra_stage_file is not None:
+        command.extend(
+            ["--terminal-stage-extra-file", str(extra_stage_file)])
     result = subprocess.run(
         command, cwd=str(run_base), env=env,
         text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -188,6 +194,78 @@ def _assert_shared_semantics(basic: Path, hyper: Path):
     assert "extrinsic_posterior_samples_orig .dat" not in basic_rotation
 
 
+def _dag_executables(rundir: Path, dag_name: str):
+    """Executables reachable from the workflow, via each JOB's submit file."""
+    dag = rundir / dag_name
+    assert dag.is_file(), "no DAG at {}".format(dag)
+    jobs, _ = _dag_jobs_and_edges(dag)
+    executables = set()
+    for submit_name in set(jobs.values()):
+        submit = rundir / submit_name
+        if not submit.is_file():
+            continue
+        for line in submit.read_text().splitlines():
+            if line.lower().startswith("executable") and "=" in line:
+                executables.add(Path(line.split("=", 1)[1].strip()).name)
+    return executables
+
+
+LEDGER_PATH = HERE.parent / "terminal_parity_ledger.json"
+
+
+def _assert_terminal_parity(basic: Path, hyper: Path):
+    """Every executable one builder runs and the other does not must be declared.
+
+    This is the drift guard.  Hyperpipe reconstructs the post-final-iteration
+    pipeline -- extrinsic fan-out, calibration reweighting, distance products,
+    archival pages -- from its own manifest, in code that lives in
+    util_RIFT_pseudo_pipe.py rather than in the builder BasicIteration uses.
+    Two implementations of one policy drift, and the dangerous direction is
+    silent: someone adds a terminal stage to BasicIteration, Hyperpipe simply
+    does not emit it, and a Hyperpipe run quietly produces less than it claims.
+
+    A fixed allowlist of "executables both must have" cannot catch that -- the
+    allowlist does not grow when the pipeline does.  So instead we compare the
+    two builders' actual executable sets and require every DIFFERENCE to carry
+    a written reason in terminal_parity_ledger.json.  Adding a stage to either
+    builder then forces an explicit decision: port it, or record why not.
+    """
+    # Executables of jobs the DAG actually RUNS, not every .sub written.
+    # Both builders emit submit templates they may never instantiate; counting
+    # those would fill the ledger with stages nobody executes and hide the
+    # real ones.
+    basic_exes = _dag_executables(
+        basic, "marginalize_intrinsic_parameters_BasicIterationWorkflow.dag")
+    hyper_exes = _dag_executables(hyper, "marginalize_hyperparameters.dag")
+    ledger = json.loads(LEDGER_PATH.read_text())
+
+    if os.environ.get("RIFT_PARITY_LEDGER_DUMP"):
+        Path(os.environ["RIFT_PARITY_LEDGER_DUMP"]).write_text(json.dumps({
+            "only_basic": sorted(basic_exes - hyper_exes),
+            "only_hyper": sorted(hyper_exes - basic_exes),
+            "shared": sorted(basic_exes & hyper_exes),
+        }, indent=2))
+
+    problems = []
+    for key, observed, owner, other in (
+            ("only_basic", basic_exes - hyper_exes, "BasicIteration", "Hyperpipe"),
+            ("only_hyper", hyper_exes - basic_exes, "Hyperpipe", "BasicIteration")):
+        declared = ledger.get(key, {})
+        for name in sorted(observed):
+            if name not in declared:
+                problems.append(
+                    "{} runs {!r} and {} does not, and the parity ledger does "
+                    "not say why. Either emit it from {} too, or add an entry "
+                    "to {} recording the decision.".format(
+                        owner, name, other, other, LEDGER_PATH.name))
+        for name in sorted(set(declared) - observed):
+            problems.append(
+                "parity ledger declares {!r} as {}-only, but this build does "
+                "not show that. A stale ledger entry hides the next real "
+                "divergence; remove it.".format(name, owner))
+    assert not problems, "terminal parity drift:\n  " + "\n  ".join(problems)
+
+
 def _dag_jobs_and_edges(path: Path):
     jobs = {}
     edges = set()
@@ -201,6 +279,21 @@ def _dag_jobs_and_edges(path: Path):
                 for child in fields[split_at + 1:]:
                     edges.add((parent, child))
     return jobs, edges
+
+
+def _dag_node_macros(path: Path):
+    """node name -> {macro: value} from the DAG's VARS lines."""
+    macros = {}
+    for line in path.read_text().splitlines():
+        fields = line.split()
+        if not fields or fields[0] != "VARS":
+            continue
+        entry = macros.setdefault(fields[1], {})
+        for token in fields[2:]:
+            key, sep, value = token.partition("=")
+            if sep:
+                entry[key] = value.strip('"')
+    return macros
 
 
 def _nodes_for_submit(jobs, submit_name):
@@ -322,6 +415,225 @@ def _assert_osg_calibration_contract(hyper: Path):
     assert "test-rift.sif" in submit
 
 
+def _assert_stage_product_table_matches(*hyper_dirs):
+    """The pinned stage-name/product table must describe what we actually build.
+
+    `RIFT.misc.terminal_stage_products` promises users two things about every
+    generated stage: its name, and the file it writes.  Nothing at build time
+    reads that table, so without this check the promise is a comment.  The
+    check is deliberately grounded in manifests from real pseudo_pipe builds
+    rather than in a static scan of the source, because a static scan cannot
+    see the stages whose names come from a loop variable.
+
+    Both directions matter.  A stage we emit but do not list is an undocumented
+    name users will discover and depend on anyway; a name we list but never
+    emit is a promise about a stage that does not exist.  The union across the
+    gate's builds is what covers every option-conditional stage -- no single
+    build produces all of them, because bilby_pickle exists only when
+    --bilby-pickle-file is absent.
+    """
+    products = terminal_stage_products.TERMINAL_STAGE_PRODUCTS
+    emitted = {}
+    for hyper in hyper_dirs:
+        manifest_path = hyper / "terminal_stage_specs.json"
+        if not manifest_path.exists():
+            continue
+        for stage in json.loads(manifest_path.read_text())["stages"]:
+            emitted.setdefault(str(stage["name"]), (hyper, stage))
+
+    undocumented = sorted(set(emitted) - set(products))
+    assert not undocumented, (
+        "pseudo_pipe emits terminal stages missing from "
+        "RIFT.misc.terminal_stage_products: {}".format(undocumented))
+    unemitted = sorted(set(products) - set(emitted))
+    assert not unemitted, (
+        "RIFT.misc.terminal_stage_products names stages no build in this gate "
+        "emits, so the promise is unverified: {}".format(unemitted))
+
+    for name, (hyper, stage) in sorted(emitted.items()):
+        product = products[name].product
+        if product is None:
+            continue
+        basename = os.path.basename(product)
+        haystack = json.dumps(stage)
+        if basename not in haystack:
+            # extrinsic_collect and frame_rotation carry no args -- the product
+            # name lives inside the generated script the stage executes.
+            exe = stage.get("exe") or ""
+            if exe and os.path.isfile(exe):
+                haystack = Path(exe).read_text()
+        assert basename in haystack, (
+            "terminal stage {!r} is documented as producing {} but neither its "
+            "manifest entry nor its executable mentions that file; the table "
+            "and the pipeline have drifted".format(name, product))
+
+
+def _assert_extra_terminal_stages_merge(
+        run_base: Path, ascii_grid: Path, cache, pickle_file):
+    """A user manifest attaches to the generated graph, and its errors are loud.
+
+    This is the whole point of --terminal-stage-extra-file: a stage that names
+    a generated stage in depends_on and reads the file that stage writes.
+
+    The three rejections below are each checked for the SPECIFIC message
+    pseudo_pipe emits, not merely for a nonzero exit.  Mutation-testing showed
+    why that matters: with pseudo_pipe's check removed, the contract loader
+    still rejects the manifest, so an exit-code assertion would pass while the
+    user got "terminal stage names must be unique" over a list of eleven
+    instead of "your stage collides with one this build generates; rename it".
+    Message quality is the whole deliverable here, so it is what the gate
+    asserts.
+    """
+    extra_dir = run_base / "extra-stages"
+    extra_dir.mkdir(exist_ok=True)
+    extra_path = extra_dir / "user_stages.json"
+    extra_path.write_text(json.dumps({
+        "version": 1,
+        "stages": [
+            {
+                "name": "user_summary",
+                "kind": "command-v1",
+                "depends_on": ["frame_rotation"],
+                "exe": "/bin/cat",
+                "args": "extrinsic_posterior_samples.dat",
+                "initial_dir": ".",
+            },
+            {
+                "name": "user_second",
+                "kind": "command-v1",
+                "depends_on": ["user_summary"],
+                "exe": "/bin/echo",
+                "args": "done",
+                "initial_dir": ".",
+            },
+        ],
+    }, indent=2))
+    hyper_extra = _build(
+        "Hyperpipe", run_base, ascii_grid, cache, pickle_file,
+        run_label="hyperpipe-extra-stages",
+        extra_stage_file=extra_path)
+    manifest = json.loads(
+        (hyper_extra / "terminal_stage_specs.json").read_text())
+    names = [stage["name"] for stage in manifest["stages"]]
+    assert names[-2:] == ["user_summary", "user_second"], names
+    assert "frame_rotation" in names
+
+    dag = hyper_extra / "marginalize_hyperparameters.dag"
+    jobs, edges = _dag_jobs_and_edges(dag)
+    summary = _nodes_for_submit(jobs, "TERMINAL_user_summary.sub")
+    second = _nodes_for_submit(jobs, "TERMINAL_user_second.sub")
+    rotation = _nodes_for_submit(jobs, "TERMINAL_frame_rotation.sub")
+    assert len(summary) == len(second) == len(rotation) == 1
+    assert (next(iter(rotation)), next(iter(summary))) in edges
+    assert (next(iter(summary)), next(iter(second))) in edges
+
+    for index, (label, stages, needle) in enumerate([
+            ("collision", [{
+                "name": "frame_rotation", "kind": "command-v1",
+                "exe": "/bin/true"}], "collides with a stage this build"),
+            ("absent dependency", [{
+                "name": "user_x", "kind": "command-v1", "exe": "/bin/true",
+                "depends_on": ["no_such_stage"]}], "does not emit"),
+            ("duplicate", [
+                {"name": "user_y", "kind": "command-v1", "exe": "/bin/true"},
+                {"name": "user_y", "kind": "command-v1", "exe": "/bin/true"}],
+             "twice")]):
+        bad = extra_dir / "bad-{}.json".format(index)
+        bad.write_text(json.dumps({"version": 1, "stages": stages}))
+        try:
+            _build("Hyperpipe", run_base, ascii_grid, cache,
+                   pickle_file,
+                   run_label="hyperpipe-extra-bad-{}".format(index),
+                   extra_stage_file=bad)
+        except RuntimeError as exc:
+            assert needle in str(exc), (label, str(exc)[-2000:])
+        else:
+            raise AssertionError(
+                "--terminal-stage-extra-file accepted a {} it must "
+                "reject".format(label))
+
+    # Offered to a builder that cannot consume it, the option must fail rather
+    # than build a pipeline silently missing the user's stages.
+    proc = subprocess.run(
+        [sys.executable, str(PSEUDO_PIPE),
+         "--pipeline-builder", "BasicIteration",
+         "--terminal-stage-extra-file", str(extra_path)],
+        cwd=str(run_base), env=_environment(run_base),
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    assert proc.returncode != 0
+    assert "requires --pipeline-builder Hyperpipe" in proc.stdout, (
+        proc.stdout[-2000:])
+
+
+def _assert_extrinsic_reads_the_final_grid(basic: Path, hyper: Path):
+    """The extrinsic stage must read the grid the LAST CIP wrote.
+
+    Stated as an invariant rather than a number, so it holds for any iteration
+    count: whichever grid index the final grid-writing node produces is the one
+    the extrinsic nodes must consume.  In BasicIteration the writer is
+    `join_grids`, whose `macroiterationnext` is the index it writes; the
+    extrinsic ILE nodes read `overlap-grid-$(macroiteration)`.
+
+    This exists because those two disagreed.  `it` is the iteration loop's
+    leftover value, n_iterations-1, and it was corrected to n_iterations only
+    when 'Z' was in the CIP schedule -- so on the default non-Z path the
+    extrinsic stage read the grid the last ILE ran on (the previous
+    iteration's posterior, after puffball) while the final CIP's output, which
+    is explicitly sized for this stage, went unread.  The extrinsic nodes take
+    that CIP as their parent, so the workflow waited for a job whose output it
+    then ignored.
+
+    Found by running, not reading: the extrinsic posterior's intrinsic points
+    matched overlap-grid-0 to 4e-7 and sat ~0.9 Msun from overlap-grid-1.  A
+    build-time gate can state it exactly, which is why it lives here.
+    """
+    dag = basic / "marginalize_intrinsic_parameters_BasicIterationWorkflow.dag"
+    jobs, _ = _dag_jobs_and_edges(dag)
+    macros = _dag_node_macros(dag)
+
+    extrinsic = {
+        macros[node].get("macroiteration")
+        for node, submit in jobs.items()
+        if submit.endswith("ILE_extr.sub")}
+    written = {
+        macros[node].get("macroiterationnext")
+        for node, submit in jobs.items()
+        if submit.endswith("join_grids.sub")}
+    extrinsic.discard(None)
+    written.discard(None)
+    assert extrinsic, "no ILE_extr nodes found in {}".format(dag)
+    assert written, "no join_grids nodes found in {}".format(dag)
+    assert len(extrinsic) == 1, (
+        "extrinsic nodes disagree about which grid to read: "
+        + repr(sorted(extrinsic)))
+    last_written = max(written, key=int)
+    assert next(iter(extrinsic)) == last_written, (
+        "BasicIteration extrinsic stage reads overlap-grid-{} but the last "
+        "grid written is overlap-grid-{}; the final CIP's output -- which is "
+        "sized for exactly this stage -- would go unread".format(
+            next(iter(extrinsic)), last_written))
+
+    # The Hyperpipe writer states the same thing declaratively, so check it in
+    # its own terms rather than assuming the two agree.
+    manifest = json.loads((hyper / "terminal_stage_specs.json").read_text())
+    stages = {stage["name"]: stage for stage in manifest["stages"]}
+    assert stages["extrinsic_samples"]["grid"].endswith(
+        "grid-$(macroiteration).dat"), stages["extrinsic_samples"]["grid"]
+    hyper_dag = hyper / "marginalize_hyperparameters.dag"
+    hyper_macros = _dag_node_macros(hyper_dag)
+    hyper_jobs, _ = _dag_jobs_and_edges(hyper_dag)
+    hyper_extrinsic = {
+        hyper_macros[node].get("macroiteration")
+        for node, submit in hyper_jobs.items()
+        if "TERMINAL_extrinsic_samples" in submit}
+    hyper_extrinsic.discard(None)
+    assert len(hyper_extrinsic) == 1, sorted(hyper_extrinsic)
+    assert next(iter(hyper_extrinsic)) == last_written, (
+        "the two builders' extrinsic stages read different grids: Hyperpipe "
+        "grid-{}, BasicIteration overlap-grid-{}".format(
+            next(iter(hyper_extrinsic)), last_written))
+
+
 def _assert_z_subworkflow_contract(hyper: Path):
     outer_dag = hyper / "marginalize_hyperparameters.dag"
     lines = outer_dag.read_text().splitlines()
@@ -377,6 +689,225 @@ def _assert_basic_reweighting_chain(basic: Path):
     # per-output converter.  Hyperpipe mirrors this production combination.
     assert len(_nodes_for_submit(jobs, "convert_extr.sub")) == 1
     assert (basic / "allinone_convert.sh").is_file()
+
+
+def _assert_pesummary_honours_the_arguments(label, text):
+    """Ask pesummary's parser what it would actually do with this command line.
+
+    Returns quietly if pesummary is not importable -- this gate must not become
+    conditional on an optional dependency -- but when it is present, this is the
+    only check here that can tell "names both files" from "publishes both".
+    """
+    try:
+        from pesummary.core.cli.parser import ArgumentParser
+    except Exception:
+        return
+    # `text` is either a submit file or a bare argument string.  A submit file
+    # must have its `arguments = "..."` value extracted and unwrapped first;
+    # shlex over the whole file yields submit syntax, and the parser then sees
+    # no --samples at all and reports None rather than a count -- which is how
+    # the first version of this helper failed, silently accepting nothing.
+    argument_line = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("arguments") and "=" in stripped:
+            argument_line = stripped.split("=", 1)[1].strip()
+            break
+    if argument_line is not None:
+        if len(argument_line) >= 2 and argument_line[0] == argument_line[-1] == '"':
+            argument_line = argument_line[1:-1]
+        text = argument_line
+    words = shlex.split(text)
+    argv, keep = [], False
+    for index, word in enumerate(words):
+        if word in ("--samples", "--labels"):
+            keep = True
+        elif word.startswith("--"):
+            keep = False
+        if keep:
+            argv.append(word)
+    # The files do not exist in the gate's tree; pesummary's action checks that,
+    # so point every path at a real empty file and keep only the count/shape.
+    with tempfile.TemporaryDirectory() as scratch:
+        rewritten = []
+        for word in argv:
+            if word.endswith(".dat"):
+                stand_in = os.path.join(
+                    scratch, os.path.basename(word).replace("$", "_"))
+                with open(stand_in, "w") as handle:
+                    handle.write("# lnL\n")
+                rewritten.append(stand_in)
+            else:
+                rewritten.append(word)
+        parser = ArgumentParser()
+        parser.add_known_options_to_parser(["--samples", "--labels"])
+        namespace, _ = parser.parse_known_args(rewritten)
+    assert namespace.samples and namespace.labels, (
+        "{}: no --samples/--labels found to check. This helper must never pass "
+        "on an empty parse -- that is how it would go quiet.".format(label))
+    assert len(namespace.samples) == len(namespace.labels), (
+        "{}: pesummary would receive {} posterior(s) and {} label(s) from this "
+        "command line. A repeated --samples flag REPLACES the previous one; "
+        "pass one --samples taking every file.".format(
+            label, len(namespace.samples), len(namespace.labels)))
+    assert len(namespace.samples) >= 2, (
+        "{}: pesummary would publish only {} posterior".format(
+            label, len(namespace.samples)))
+
+
+def _assert_pesummary_publishes_both_posteriors(basic: Path, hyper: Path):
+    """Both builders must archive the pre- AND post-calibration posteriors.
+
+    This replaces a test that pinned a DIVERGENCE: BasicIteration published
+    `extrinsic_posterior_samples.dat` (pre-calibration) while Hyperpipe
+    published `reweighted_posterior_samples.dat` (post-calibration), under
+    identical flags.  BasicIteration assembled its plot arguments before
+    calibration policy had selected a final posterior; PR #181 rebound them on
+    the Hyperpipe side only.
+
+    Resolved by publishing both rather than choosing: the question a reviewer
+    asks of a calibration-marginalized run is what calibration did to the
+    posterior, and that needs both on one page.  `args_plot.txt` -- which both
+    builders consume -- now names both with distinct labels, so the two cannot
+    diverge again without this failing.
+
+    The ordering half matters as much as the arguments: a page that names a
+    file produced by a stage it does not wait for is a race, not a comparison.
+
+    **The arguments are checked by PARSING them with pesummary's own parser,
+    not by inspecting the string.**  The first version of this check asserted
+    that both filenames appeared and that `--samples` occurred at least twice,
+    and it passed on a command line that publishes one posterior: pesummary's
+    `--samples` is a plain store action with `nargs='+'`, not `append`, so a
+    second occurrence REPLACES the first.  Both filenames were present, in a
+    form pesummary would not honour.  A string check cannot see that; asking
+    the parser can.
+    """
+    for label, path in (("BasicIteration", basic / "plot.sub"),
+                        ("Hyperpipe", None)):
+        if path is None:
+            continue
+        text = path.read_text()
+        assert "extrinsic_posterior_samples.dat" in text, label
+        assert "reweighted_posterior_samples.dat" in text, (
+            "{} does not publish the calibration-reweighted posterior".format(
+                label))
+        assert "_calmarg" in text, (
+            "{} publishes both posteriors under one label, so the page cannot "
+            "tell them apart".format(label))
+        _assert_pesummary_honours_the_arguments(label, text)
+
+    manifest = json.loads((hyper / "terminal_stage_specs.json").read_text())
+    stages = {stage["name"]: stage for stage in manifest["stages"]}
+    assert "pesummary" in stages
+    pesummary_args = stages["pesummary"].get("args", "")
+    assert "extrinsic_posterior_samples.dat" in pesummary_args
+    assert "reweighted_posterior_samples.dat" in pesummary_args
+    assert "_calmarg" in pesummary_args
+    _assert_pesummary_honours_the_arguments("Hyperpipe", pesummary_args)
+    assert stages["pesummary"]["depends_on"] == ["calibration_merge"], (
+        "the Hyperpipe archive stage must wait for the calibration product it "
+        "names: " + str(stages["pesummary"]["depends_on"]))
+
+    # BasicIteration: the archive node must be downstream of the calibration
+    # merge, or it can run before reweighted_posterior_samples.dat exists.
+    dag = basic / "marginalize_intrinsic_parameters_BasicIterationWorkflow.dag"
+    jobs, edges = _dag_jobs_and_edges(dag)
+    plot_nodes = _nodes_for_submit(jobs, "plot.sub")
+    merge = _nodes_for_submit(jobs, "CAL_REWEIGHT_COMBINE.sub")
+    assert len(plot_nodes) == 1 and len(merge) == 1
+    assert _is_reachable(edges, next(iter(merge)), next(iter(plot_nodes))), (
+        "BasicIteration's archive node is not downstream of the calibration "
+        "merge, so it can publish a posterior file that does not exist yet")
+
+
+#: Arguments the SUBMIT WRITER adds per node, not the extrinsic policy: which
+#: grid, which slice of it, where the output goes.  They differ between the two
+#: builders because their topologies differ -- BasicIteration fans out inside
+#: its per-iteration ILE directory, Hyperpipe from a terminal stage -- and that
+#: difference is structural.
+_PER_NODE_EXTRINSIC_ARGS = {
+    "--sim-grid", "--sim-xml", "--n-events-to-analyze", "--event",
+    "--output-file", "--cache", "--cache-file",
+}
+
+
+def _extrinsic_argument_set(tokens):
+    """Physics/convergence arguments only, with per-node plumbing removed."""
+    keep, skip_value = set(), False
+    for token in tokens:
+        if skip_value:
+            skip_value = False
+            continue
+        if token in (">", "2>", "X"):
+            skip_value = token in (">", "2>")
+            continue
+        flag = token.split("=", 1)[0]
+        if flag in _PER_NODE_EXTRINSIC_ARGS:
+            skip_value = "=" not in token
+            continue
+        keep.add(token)
+    return keep
+
+
+def _assert_extrinsic_arguments_agree(basic: Path, hyper: Path):
+    """Both builders must ask ILE for the SAME extrinsic computation.
+
+    They did not.  BasicIteration took the last `--n-eff` in the argument
+    string; the Hyperpipe branch took the maximum over every `--n-eff` in the
+    string and the `--ile-n-eff` option.  When those disagree the two builders
+    request a different number of extrinsic samples per job -- which is the
+    deliverable, not an implementation detail.  Both now derive the arguments
+    from RIFT.misc.extrinsic_stage, and this pins that they still agree.
+
+    Only the per-node plumbing may differ, because the two topologies differ.
+
+    **What this cannot see:** it compares the two builders to EACH OTHER, so a
+    change to the shared policy moves both and still passes.  That case is
+    covered by test_extrinsic_stage_shared.py, whose semantic assertions pin
+    the values themselves -- verified by mutation: perturbing
+    `extrinsic_n_eff` leaves this gate green and fails three unit tests, while
+    perturbing only the Hyperpipe side fails this gate.  Two instruments, two
+    failure modes; neither alone is sufficient.
+    """
+    basic_sub = (basic / "ILE_extr.sub").read_text()
+    exec_lines = [l for l in basic_sub.splitlines()
+                  if l.startswith("exec ") or l.startswith("arguments")]
+    assert exec_lines, "no argument line in ILE_extr.sub"
+    line = exec_lines[0]
+    if line.startswith("exec "):
+        value = line[len("exec "):]
+    else:
+        # HTCondor's "new arguments syntax" wraps the WHOLE list in one pair of
+        # double quotes.  Splitting that with shlex without stripping them
+        # first yields a single token, and the comparison then reports every
+        # argument as a difference -- which is what the first version of this
+        # check did.
+        value = line.split("=", 1)[1].strip()
+        if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+            value = value[1:-1]
+    basic_tokens = shlex.split(value, posix=True)
+    if basic_tokens and "integrate_likelihood" in basic_tokens[0]:
+        basic_tokens = basic_tokens[1:]
+
+    hyper_tokens = shlex.split((hyper / "args_ile_extrinsic.txt").read_text())
+
+    def _generic(tokens, root):
+        return {t.replace(str(root), "<RUN>") for t in tokens}
+
+    only_basic = _generic(_extrinsic_argument_set(basic_tokens), basic) - \
+        _generic(_extrinsic_argument_set(hyper_tokens), hyper)
+    only_hyper = _generic(_extrinsic_argument_set(hyper_tokens), hyper) - \
+        _generic(_extrinsic_argument_set(basic_tokens), basic)
+    # Path-valued arguments still differ by run directory; drop anything that
+    # still looks like a path after the substitution above.
+    only_basic = {t for t in only_basic if not t.startswith("/")}
+    only_hyper = {t for t in only_hyper if not t.startswith("/")}
+    assert not only_basic and not only_hyper, (
+        "the two builders ask ILE for different extrinsic computations.\n"
+        "  only BasicIteration: {}\n  only Hyperpipe: {}\n"
+        "Both should derive these from RIFT.misc.extrinsic_stage.".format(
+            sorted(only_basic), sorted(only_hyper)))
 
 
 def _assert_unsupported_gates(run_base: Path):
@@ -453,11 +984,19 @@ def main(argv=None):
             run_label="hyperpipe-z-convergence", z_convergence=True)
         _assert_default_basic_unchanged(basic, default)
         _assert_shared_semantics(basic, hyper)
+        _assert_terminal_parity(basic, hyper)
+        _assert_extrinsic_arguments_agree(basic, hyper)
         _assert_basic_reweighting_chain(basic)
+        _assert_pesummary_publishes_both_posteriors(basic, hyper)
         _assert_hyperpipe_terminal_chain(hyper)
         _assert_automatic_bilby_chain(hyper_auto)
         _assert_osg_calibration_contract(hyper_osg)
         _assert_z_subworkflow_contract(hyper_z)
+        _assert_extrinsic_reads_the_final_grid(basic, hyper)
+        _assert_stage_product_table_matches(
+            hyper, hyper_auto, hyper_osg, hyper_z)
+        _assert_extra_terminal_stages_merge(
+            run_base, ascii_grid, cache, pickle_file)
         _assert_unsupported_gates(run_base)
         _assert_invalid_hyperpipe_grid_fails(run_base, cache, pickle_file)
         print("pseudo build gate: PASS")
