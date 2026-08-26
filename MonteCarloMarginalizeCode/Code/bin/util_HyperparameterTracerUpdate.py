@@ -191,11 +191,17 @@ def _force_away_decimate(X_kept, X_pool, cov, threshold):
 
 def _read_dat(path):
     """Return (column_names, raw_rows ndarray)."""
-    with open(path) as f:
-        header = f.readline().rstrip("\n")
-    if not header.startswith("#"):
-        sys.exit(f"util_HyperparameterTracerUpdate: input {path!r} missing '#' header")
-    cols = header.lstrip("#").split()
+    # Same rule as every other reader of these tables.  This used to parse line
+    # one, so it aborted on a hyperpipeline table (magic marker) and on a
+    # np.savetxt('# '+names) table (leading '# #') -- and it consumes the same
+    # all.marg_net the posterior step does, in the same workflow, so the two
+    # disagreeing about the header shape broke one lane of a run the other
+    # completed.
+    from RIFT.misc.hyperpipeline_io import read_column_names
+    try:
+        cols = list(read_column_names(path))
+    except ValueError as exc:
+        sys.exit("util_HyperparameterTracerUpdate: {}".format(exc))
     if len(cols) < 3 or cols[0] != "lnL" or cols[1] not in ("sigma_lnL", "sigma"):
         sys.exit(f"util_HyperparameterTracerUpdate: header must start with "
                  f"'lnL sigma_lnL ...', got {cols!r}")

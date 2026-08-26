@@ -1,94 +1,115 @@
-"""The hyperparameter posterior tool must find its column names.
+"""The hyperparameter posterior tool must map its columns correctly.
 
-`util_ConstructEOSPosterior.py` read them from the FIRST line of its input.
-A hyperpipeline-format table opens with a `# RIFT_HYPERPIPELINE_V1` marker and
-may carry a `# RIFT_HYPERPIPELINE_META ...` line before the column header, so
-the parse returned `[]` and the run died several steps later with
-`ValueError: 'x' is not in list` -- naming the parameter the user asked for
-rather than the file that lacked it.
+`util_ConstructEOSPosterior.py` reads column names from its input's header.  A
+hyperpipeline-format table opens with `# RIFT_HYPERPIPELINE_V1` and may carry a
+metadata line before the header, so a first-line-only read returned `[]` and the
+run died several steps later with `ValueError: 'x' is not in list` -- naming the
+parameter the user asked for rather than the file that lacked it.
 
-Found by running the hyperpipeline demonstration disseminated with paper 4,
-which is the first thing to feed this tool a magic-prefixed table.  The format
-dates from May 2026, so the defect is old and simply unexercised.
-
-These tests go through the tool's own parsing path rather than asserting on
-source, because the failure was a parse returning the wrong answer, not a line
-being absent.
+**These tests assert the parsed column MAPPING, not the absence of an error
+string.**  The first version asserted only that two strings did not appear in
+the output, and an adversarial review showed it passed on a byte-identical
+revert of the fix: without `--integration-parameter-range` the tool aborts
+before it reaches the column lookup, so neither string appeared whatever the
+parse did.  Any unrelated failure -- an import error, a timeout -- satisfied it
+too.  The tool prints the mapping it derived, so that is what is checked.
 """
 
 import os
+import re
 import subprocess
 import sys
 
+import numpy as np
 import pytest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CODE = os.path.abspath(os.path.join(HERE, ".."))
 TOOL = os.path.join(CODE, "bin", "util_ConstructEOSPosterior.py")
 
-pytest.importorskip("RIFT.misc.hyperpipeline_io")
+#: Header shapes a RIFT table can legitimately carry.  The double-hash form is
+#: what `np.savetxt(..., header='# ' + names)` writes, the idiom used by
+#: `util_shuffle_file.py` and `convert_ascii_framechange_xphm.py`.
+HEADERS = {
+    "plain": ["# lnL sigma_lnL x y z"],
+    "magic": ["# RIFT_HYPERPIPELINE_V1", "# lnL sigma_lnL x y z"],
+    "magic+meta": ["# RIFT_HYPERPIPELINE_V1",
+                   "# RIFT_HYPERPIPELINE_META ampO=-1 fmin=20.0",
+                   "# lnL sigma_lnL x y z"],
+    "double-hash": ["# # lnL sigma_lnL x y z"],
+}
+EXPECTED_MAP = {"x": 2, "y": 3, "z": 4}
 
 
-def _table(path, header_lines, rows=6):
+def _write(path, header_lines, n=60):
+    rng = np.random.default_rng(3)
+    points = rng.uniform(0.0, 1.0, (n, 3))
+    lnL = -10.0 * ((points - 0.5) ** 2).sum(axis=1)
     with open(path, "w") as handle:
         for line in header_lines:
             handle.write(line + "\n")
-        for i in range(rows):
-            handle.write("{} 0.01 {} {} {}\n".format(
-                -0.5 * i, 0.1 * i, 0.2 * i, 0.3 * i))
+        for value, row in zip(lnL, points):
+            handle.write("{:.6f} 0.010000 {}\n".format(
+                value, " ".join("{:.6f}".format(v) for v in row)))
     return path
 
 
-@pytest.mark.parametrize("header_lines,label", [
-    (["# lnL sigma_lnL x y z"], "plain"),
-    (["# RIFT_HYPERPIPELINE_V1", "# lnL sigma_lnL x y z"], "magic"),
-    (["# RIFT_HYPERPIPELINE_V1",
-      "# RIFT_HYPERPIPELINE_META ampO=-1 fmin=20.0",
-      "# lnL sigma_lnL x y z"], "magic+metadata"),
-])
-def test_the_column_names_are_found_whatever_precedes_them(
-        tmp_path, header_lines, label):
-    """Every header shape the writer can emit must parse to the same names.
-
-    The tool is invoked for real and only its *diagnosis* is inspected: a
-    successful fit needs far more setup than this, but the parse happens first,
-    and its failure is unambiguous in the output.
-    """
-    fname = _table(str(tmp_path / "in.dat"), header_lines)
+def _column_map(tmp_path, header_lines):
+    """Run the tool and return the column mapping it reports."""
+    fname = _write(str(tmp_path / "in.dat"), header_lines)
     result = subprocess.run(
         [sys.executable, TOOL, "--fname", fname,
          "--parameter", "x", "--parameter", "y", "--parameter", "z",
+         "--integration-parameter-range", "x:[0,1]",
+         "--integration-parameter-range", "y:[0,1]",
+         "--integration-parameter-range", "z:[0,1]",
          "--n-output-samples", "4",
          "--fname-output-samples", str(tmp_path / "out"),
          "--fname-output-integral", str(tmp_path / "out_int")],
-        cwd=str(tmp_path), capture_output=True, text=True, timeout=900)
+        cwd=str(tmp_path), capture_output=True, text=True, timeout=1800)
     combined = result.stdout + result.stderr
-    assert "is not in list" not in combined, (
-        "the {} header did not parse; the tool looked for the requested "
-        "parameters among the wrong strings:\n{}".format(
-            label, combined[-2500:]))
-    assert "no column names found in the header" not in combined, combined[-2000:]
+    match = re.search(r"indexed as\s+(\{[^}]*\})", combined)
+    assert match, (
+        "the tool never reported a column mapping, so this test cannot say "
+        "whether the parse was right:\n" + combined[-3000:])
+    return eval(match.group(1)), combined      # noqa: S307 - our own output
 
 
-def test_a_table_with_no_column_header_says_so(tmp_path):
-    """The failure that remains must name the file, not a parameter.
+@pytest.mark.parametrize("label", sorted(HEADERS))
+def test_the_columns_map_correctly_for_every_header_shape(tmp_path, label):
+    """Same table, four header spellings, one correct answer.
 
-    Silently proceeding with no column names is what produced a message
-    pointing at `--parameter x`; a table that genuinely lacks a header should
-    say that instead.
+    `double-hash` is the case the format-aware reader gets WRONG: it strips a
+    single leading '#', so the names come out shifted one column right. It is
+    here because the historical parse handled it correctly, and a fix that
+    breaks it is a regression on files two shipped tools produce.
+    """
+    mapping, output = _column_map(tmp_path, HEADERS[label])
+    assert mapping == EXPECTED_MAP, (
+        "{} header parsed to {} instead of {}; every parameter is read from "
+        "the wrong column:\n{}".format(
+            label, mapping, EXPECTED_MAP, output[-2000:]))
+
+
+def test_a_table_with_no_header_at_all_is_refused(tmp_path):
+    """The remaining failure must name the file, not a parameter.
+
+    With no `#` line the historical parse reads a DATA row, gets a non-empty
+    list of numbers, and dies with the same `'x' is not in list` the fix was
+    meant to replace -- so an explicit refusal is the point, and it has to fire
+    for a table with no comment line at all, not only for one with a magic
+    marker.
     """
     fname = str(tmp_path / "headerless.dat")
-    with open(fname, "w") as handle:
-        handle.write("# RIFT_HYPERPIPELINE_V1\n")
-        for i in range(4):
-            handle.write("{} 0.01 {} {} {}\n".format(-0.5 * i, i, i, i))
+    _write(fname, [])
     result = subprocess.run(
         [sys.executable, TOOL, "--fname", fname,
-         "--parameter", "x", "--n-output-samples", "4",
+         "--parameter", "x", "--integration-parameter-range", "x:[0,1]",
+         "--n-output-samples", "4",
          "--fname-output-samples", str(tmp_path / "out"),
          "--fname-output-integral", str(tmp_path / "out_int")],
-        cwd=str(tmp_path), capture_output=True, text=True, timeout=900)
+        cwd=str(tmp_path), capture_output=True, text=True, timeout=1800)
     combined = result.stdout + result.stderr
-    assert "no column names found in the header" in combined, combined[-2500:]
+    assert "no column header in" in combined, combined[-3000:]
     assert os.path.basename(fname) in combined, (
-        "the error does not name the offending file:\n" + combined[-2000:])
+        "the refusal does not name the offending file:\n" + combined[-2000:])

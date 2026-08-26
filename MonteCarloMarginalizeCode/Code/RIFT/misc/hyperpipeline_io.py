@@ -425,6 +425,40 @@ def read_header(fname):
         "hyperpipeline_io.read_header: no column header found in {}".format(fname))
 
 
+def read_column_names(fname):
+    """Column names of a RIFT likelihood table, whatever its header shape.
+
+    ONE rule, used by every tool that reads these tables, because the rule is
+    not obvious and each tool got it wrong differently:
+
+    * a hyperpipeline table opens with the magic marker and may carry a
+      metadata line before the column header -- reading line one yields the
+      marker, not the columns;
+    * a table written with ``np.savetxt(..., header='# ' + names)`` -- the
+      idiom in ``util_shuffle_file.py`` and ``convert_ascii_framechange_xphm.py``
+      -- opens ``# # lnL ...``, where :func:`read_header` strips only ONE '#'
+      and every name comes out shifted one column right;
+    * a table with no comment line at all has no header, and a parser that
+      splits its first line gets a list of numbers, which is not empty and so
+      survives an emptiness check.
+
+    So: use the format-aware reader only for tables that declare the format,
+    fall back to the historical parse otherwise, and refuse anything whose
+    first line is not a header rather than returning something plausible.
+    """
+    if sniff(fname):
+        return tuple(read_header(fname))
+    with open(fname) as stream:
+        first = stream.readline().rstrip("\n")
+    tokens = first.replace("#", "").split()
+    if not first.lstrip().startswith("#") or tokens[:1] != ["lnL"]:
+        raise ValueError(
+            "no column header in {}: expected a '#'-prefixed first line "
+            "naming lnL, sigma_lnL and the parameters; got {!r}".format(
+                fname, first[:120]))
+    return tuple(tokens)
+
+
 def read_table(fname):
     """Read *fname* and return ``(structured_array, column_names_tuple)``.
 
