@@ -217,8 +217,9 @@ print(" Original data size = ", len(dat), dat.shape)
 # line: a hyperpipeline table opens with a magic marker, and a table written by
 # np.savetxt(header='# '+names) opens '# # lnL ...'.  Both shapes reach this
 # tool, and getting either wrong shifts every parameter to the wrong column.
-# The rule lives in RIFT.misc so the tools reading these tables cannot disagree
-# about it -- see read_column_names for why it is not simply "parse line one".
+# The rule lives in RIFT.misc so this tool and the tracer cannot disagree
+# about it -- see read_column_names for why it is not simply "parse line one",
+# and for which other readers still do.
 from RIFT.misc.hyperpipeline_io import read_column_names as _read_column_names
 dat_orig_names = list(_read_column_names(opts.fname))[2:]
 if not dat_orig_names:

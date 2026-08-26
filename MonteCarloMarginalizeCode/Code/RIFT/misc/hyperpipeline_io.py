@@ -428,8 +428,18 @@ def read_header(fname):
 def read_column_names(fname):
     """Column names of a RIFT likelihood table, whatever its header shape.
 
-    ONE rule, used by every tool that reads these tables, because the rule is
-    not obvious and each tool got it wrong differently:
+    The rule for turning a header into column names, in one place because it
+    is not obvious and the tools that need it each got it wrong differently.
+
+    **Two readers use it today**, not every reader: this tool and
+    ``util_HyperparameterTracerUpdate``.  :func:`read_header` and
+    :func:`read_table` keep the double-hash defect described below, which
+    affects their own five callers; fixing that is a change to those callers'
+    behaviour and belongs in its own commit.  Do not read this docstring as a
+    claim that the codebase now has one header parser -- it has two, and this
+    is the correct one.
+
+    The cases:
 
     * a hyperpipeline table opens with the magic marker and may carry a
       metadata line before the column header -- reading line one yields the

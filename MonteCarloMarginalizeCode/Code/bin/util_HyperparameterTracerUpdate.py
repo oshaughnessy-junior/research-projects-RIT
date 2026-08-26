@@ -189,6 +189,12 @@ def _force_away_decimate(X_kept, X_pool, cov, threshold):
 
 # ----------------------- .dat <-> arrays ----------------------------------- #
 
+#: Format preamble (magic marker, metadata) of the most recently read table,
+#: so the writer can reproduce it.  A module-level value rather than a return
+#: value because `_read_dat`'s two-tuple contract has several callers.
+_LAST_PREAMBLE = []
+
+
 def _read_dat(path):
     """Return (column_names, raw_rows ndarray)."""
     # Same rule as every other reader of these tables.  This used to parse line
@@ -202,6 +208,27 @@ def _read_dat(path):
         cols = list(read_column_names(path))
     except ValueError as exc:
         sys.exit("util_HyperparameterTracerUpdate: {}".format(exc))
+    # Carry the format preamble through.  Routing this reader through the
+    # shared rule newly lets it CONSUME a hyperpipeline table, where before it
+    # refused one -- and a reader that consumes a format it cannot write turns
+    # a round trip into silent data loss: the magic marker and, worse, the
+    # RIFT_HYPERPIPELINE_META waveform settings would be dropped from the
+    # output.  Those settings exist because their absence made ILE generate
+    # templates from defaults.  So preserve every comment line ahead of the
+    # column header and hand it back to the writer.
+    _preamble = []
+    with open(path) as _fp:
+        for _raw in _fp:
+            _line = _raw.rstrip("\n")
+            if not _line.strip():
+                continue
+            if not _line.lstrip().startswith("#"):
+                break
+            if _line.replace("#", "").split()[:1] == ["lnL"]:
+                break
+            _preamble.append(_line)
+    global _LAST_PREAMBLE
+    _LAST_PREAMBLE = _preamble
     if len(cols) < 3 or cols[0] != "lnL" or cols[1] not in ("sigma_lnL", "sigma"):
         sys.exit(f"util_HyperparameterTracerUpdate: header must start with "
                  f"'lnL sigma_lnL ...', got {cols!r}")
@@ -217,6 +244,19 @@ def _extract_X(cols, rows, parameter_order):
 
 
 def _write_dat(path, cols, rows):
+    """Write the table, reproducing any format preamble the input carried.
+
+    `np.savetxt(header=...)` prefixes "# ", so the preamble lines are written
+    by hand and the column header left to savetxt, matching what the readers
+    expect: marker first, metadata next, column names last.
+    """
+    if _LAST_PREAMBLE:
+        with open(path, "w") as handle:
+            for line in _LAST_PREAMBLE:
+                handle.write(line + "\n")
+        with open(path, "a") as handle:
+            np.savetxt(handle, rows, header=" ".join(cols))
+        return
     np.savetxt(path, rows, header=" ".join(cols))
 
 
