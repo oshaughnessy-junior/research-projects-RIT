@@ -384,6 +384,110 @@ def _assert_nr_extrinsic_reads_the_final_grid(rundirs):
             "execute node".format(logs))
 
 
+MULTIAPPROX_ITERATIONS = (1, 2)
+
+
+def _build_multiapprox(run_base: Path, basic_rundir: Path, n_iterations: int):
+    """Build BasicMultiApproxIteration -- directly, because nothing routes to it.
+
+    util_RIFT_pseudo_pipe.py's --pipeline-builder only accepts BasicIteration,
+    AlternateIteration and Hyperpipe, and asimov drives pseudo_pipe, so this
+    builder has no caller anywhere: it is a shipped bin/ script a user runs by
+    hand.  That is exactly why it kept the leftover-`it` defect after the other
+    two were fixed -- there was no build path to see it on.  The path used here
+    is the one a user has: take the args_*.txt and proposed-grid that a
+    pseudo_pipe run already wrote, and invoke the builder on them.
+
+    Its option surface is narrower than BasicIteration's: no
+    --last-iteration-extrinsic-time-resampling, no --cip-explode-jobs-last, no
+    --cip-explode-jobs-dag, no --n-iterations-subdag-max.  What it keeps is the
+    terminal extrinsic stage this gate is about, on the older
+    convert+resample+cat path.
+    """
+    label = "multiapprox-it{}".format(n_iterations)
+    rundir = run_base / label
+    rundir.mkdir(parents=True, exist_ok=True)
+    for name in ("args_ile.txt", "args_cip_list.txt", "args_test.txt",
+                 "proposed-grid.xml.gz"):
+        shutil.copy(basic_rundir / name, rundir / name)
+    command = [
+        sys.executable,
+        str(BIN / "create_event_parameter_pipeline_BasicMultiApproxIteration"),
+        "--approx", "IMRPhenomXPHM",
+        "--input-grid", "proposed-grid.xml.gz",
+        "--ile-exe", str(BIN / "integrate_likelihood_extrinsic_batchmode"),
+        "--ile-args", str(rundir / "args_ile.txt"),
+        "--cip-args-list", "args_cip_list.txt",
+        "--test-args", "args_test.txt",
+        "--ile-n-events-to-analyze", "3",
+        "--n-samples-per-job", "4",
+        "--request-memory-CIP", "30000",
+        "--request-memory-ILE", "4096",
+        "--working-directory", str(rundir),
+        "--n-iterations", str(n_iterations),
+        "--n-copies", "1",
+        "--ile-retries", "3",
+        "--general-retries", "3",
+        "--cip-explode-jobs", "1",
+        "--last-iteration-extrinsic",
+        "--last-iteration-extrinsic-nsamples", "7",
+    ]
+    result = subprocess.run(
+        command, cwd=str(rundir), env=_environment(run_base),
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    if result.returncode:
+        raise RuntimeError("{} build failed ({}):\n{}".format(
+            label, result.returncode, result.stdout))
+    (rundir / "pipeline-build.log").write_text(result.stdout)
+    return rundir
+
+
+def _assert_multiapprox_extrinsic_reads_the_final_grid(rundirs):
+    """Same invariant as the other two builders, third builder.
+
+    BasicMultiApproxIteration carried the identical no-Z shape that
+    AlternateIteration had before RIFT PR #187: the iteration loop leaves `it`
+    at n_iterations-1 and the extrinsic block's ``if not ('it' in globals())``
+    never fires, so the terminal ILE read overlap-grid-<n_iterations-1> while
+    CIP wrote overlap-grid-<n_iterations>.  Evidence, and the arms it was
+    measured on, are in RIFT PR #188.
+
+    Stated as an invariant, not a number, and checked at more than one
+    iteration count, because an off-by-one passes a single hardcoded
+    expectation half the time.  One-iteration is included deliberately: that is
+    the arm where the defect read overlap-grid-0, the raw seed grid.
+    """
+    for rundir in rundirs:
+        dag = rundir / "marginalize_intrinsic_parameters_BasicIterationWorkflow.dag"
+        jobs, _ = _dag_jobs_and_edges(dag)
+        macros = _dag_node_macros(dag)
+
+        extrinsic = {
+            macros.get(node, {}).get("macroiteration")
+            for node, submit in jobs.items()
+            if submit.endswith("ILE_extr.sub")}
+        written = {
+            macros.get(node, {}).get("macroiterationnext")
+            for node, submit in jobs.items()
+            if submit.endswith("join_grids.sub")
+            or submit.startswith("CIP")}
+        extrinsic.discard(None)
+        written.discard(None)
+        assert extrinsic, "no ILE_extr nodes found in {}".format(dag)
+        assert written, "no grid-writing nodes found in {}".format(dag)
+        assert len(extrinsic) == 1, (
+            "BasicMultiApproxIteration extrinsic nodes disagree about which "
+            "grid to read: {}".format(sorted(extrinsic)))
+        last_written = max(written, key=int)
+        assert next(iter(extrinsic)) == last_written, (
+            "BasicMultiApproxIteration extrinsic stage reads overlap-grid-{} "
+            "but the last grid written is overlap-grid-{} ({}); the final "
+            "CIP's output would go unread, and the extrinsic posterior would "
+            "come from the previous iteration".format(
+                next(iter(extrinsic)), last_written, rundir.name))
+
+
+
 def _submit_executables(rundir: Path):
     executables = set()
     for submit in rundir.glob("*.sub"):
@@ -1211,6 +1315,8 @@ def main(argv=None):
         alternate = [_build_alternate(run_base, xml_grid, cache, n)
                      for n in ALTERNATE_ITERATIONS]
         nr = [_build_nr(run_base, basic, n) for n in NR_ITERATIONS]
+        multiapprox = [_build_multiapprox(run_base, basic, n)
+                       for n in MULTIAPPROX_ITERATIONS]
         hyper = _build("Hyperpipe", run_base, ascii_grid, cache, pickle_file)
         hyper_auto = _build(
             "Hyperpipe", run_base, ascii_grid, cache, None,
@@ -1234,6 +1340,7 @@ def main(argv=None):
         _assert_extrinsic_reads_the_final_grid(basic, hyper)
         _assert_alternate_extrinsic_reads_the_final_grid(alternate)
         _assert_nr_extrinsic_reads_the_final_grid(nr)
+        _assert_multiapprox_extrinsic_reads_the_final_grid(multiapprox)
         _assert_stage_product_table_matches(
             hyper, hyper_auto, hyper_osg, hyper_z)
         _assert_extra_terminal_stages_merge(

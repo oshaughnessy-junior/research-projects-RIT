@@ -998,9 +998,23 @@ for it in np.arange(it_start,opts.n_iterations):
 
 # Create export stages for extrinsic samples
 if opts.last_iteration_extrinsic:
-    # Check if 'it' is defined : it will not always be, if done later
-    if not ('it' in globals()):
-        it = opts.n_iterations  # last iteration
+    # Which grid the extrinsic stage reads.  The iteration loop above leaves
+    # `it` at n_iterations-1, but the CIP node at iteration k carries
+    # macroiterationnext=k+1 and CIP writes overlap-grid-$(macroiterationnext),
+    # so the run's final posterior is overlap-grid-<n_iterations>.  That is the
+    # grid this stage must read, and the one it already waits for: the node
+    # writing the largest grid index is an ancestor of every ILE_extr node.
+    #
+    # Do not "restore" the leftover `it` -- reading n_iterations-1 gets the
+    # grid the last ILE ran on, i.e. the previous iteration's posterior, and at
+    # one iteration the raw seed grid.  Same defect, and the same fix, as in
+    # create_event_parameter_pipeline_BasicIteration and
+    # create_event_parameter_pipeline_AlternateIteration; this builder has no
+    # 'Z' correction either, so it reached every configuration, including the
+    # run-to-convergence schedule.  Per-configuration DAG evidence is in the
+    # commit message and RIFT PR #188; the state of all five builders with
+    # respect to this invariant is in RIFT/misc/DESIGN_terminal_extrinsic_grid.md.
+    it = opts.n_iterations
 
     # Create nodes for followup tasks
     cat_node = pipeline.CondorDAGNode(cat_job)
