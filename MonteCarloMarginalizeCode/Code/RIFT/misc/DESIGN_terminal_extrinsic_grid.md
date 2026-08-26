@@ -1,7 +1,7 @@
 # Which grid the terminal extrinsic stage reads
 
 Status of the DAG builders in `bin/` against one invariant, as of 2026-08-25
-(RIFT PR #181/#182, #187, #189).
+(RIFT PR #181/#182, #187, #189, #192).
 
 **The invariant.** When `--last-iteration-extrinsic` is set, the terminal ILE
 runs on `overlap-grid-$(macroiteration)`, and it must read the grid the run
@@ -29,7 +29,7 @@ inspected.
 | `create_event_parameter_pipeline_BasicIteration` | yes (default) | fixed, 925fc49a (PR #181/#182) |
 | `create_event_parameter_pipeline_AlternateIteration` | yes (`--use-subdags`, `--internal-use-amr`, explicit) | fixed, PR #187 |
 | `create_event_nr_pipeline_with_cip` | no | fixed, PR #189 — a *different* change; see below |
-| `create_event_parameter_pipeline_BasicMultiApproxIteration` | no | fixed here; left development-only, see below |
+| `create_event_parameter_pipeline_BasicMultiApproxIteration` | no | fixed, PR #192 — and left development-only; see below |
 | `cepp_basic_htcondor` | no | removed in PR #189 (unfinished port, could not emit a DAG) |
 
 `--pipeline-builder` accepts only `BasicIteration`, `AlternateIteration` and
@@ -80,7 +80,7 @@ never unpacks the `(main, worker)` job pair the way
 
 ## `create_event_parameter_pipeline_BasicMultiApproxIteration`: fixed, and left development-only
 
-The extrinsic defect is real and the one-line fix lands here. The builder is
+The extrinsic defect is real and the one-line fix landed in PR #192. The builder is
 **not** promoted to `--pipeline-builder` and is **not** described in the O4d
 paper set. Both halves of that were decided on evidence, 2026-08-25; this
 section is the record.

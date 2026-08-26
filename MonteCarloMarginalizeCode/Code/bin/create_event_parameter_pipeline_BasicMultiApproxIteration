@@ -1012,7 +1012,7 @@ if opts.last_iteration_extrinsic:
     # create_event_parameter_pipeline_AlternateIteration; this builder has no
     # 'Z' correction either, so it reached every configuration, including the
     # run-to-convergence schedule.  Per-configuration DAG evidence is in the
-    # commit message and RIFT PR #188; the state of all five builders with
+    # commit message and RIFT PR #192; the state of all five builders with
     # respect to this invariant is in RIFT/misc/DESIGN_terminal_extrinsic_grid.md.
     it = opts.n_iterations
 
