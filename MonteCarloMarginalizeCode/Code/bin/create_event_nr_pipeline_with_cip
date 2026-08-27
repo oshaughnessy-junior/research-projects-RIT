@@ -1418,8 +1418,10 @@ if opts.last_iteration_extrinsic:
     # already set to opts.n_iterations unconditionally just above the terminal
     # CIP, so the `if not ('it' in globals())` branch was dead and the `elif it <
     # opts.n_iterations` could never be true.  Applying the one-line fix from
-    # RIFT PR #187 here produced a byte-identical DAG in seven configurations;
-    # this is the different change that was actually needed.  Evidence in the
+    # RIFT PR #187 here produced an identical DAG in seven configurations, once
+    # DAGMan's md5 node ids are normalised (they are seeded from the clock and a
+    # random draw, so a raw byte diff of two builds is noise either way).  This
+    # is the different change that was actually needed.  Evidence in the
     # commit message and RIFT PR #189; the state of every builder against
     # this invariant is in RIFT/misc/DESIGN_terminal_extrinsic_grid.md.
     it = opts.n_iterations + 1

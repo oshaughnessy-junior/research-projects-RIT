@@ -36,7 +36,9 @@ inspected.
 `Hyperpipe`, and asimov's RIFT pipeline drives `util_RIFT_pseudo_pipe.py` and
 nothing else, so the last three are hand-run `bin/` scripts. `setup.py` globs
 `bin/*`, so being unreachable from the driver is not the same as being absent:
-the released `rift-0.0.17.8` ships the NR and MultiApprox builders on `PATH`.
+the NR and MultiApprox builders are on `PATH` in every RIFT install checked here
+(`rift-0.0.17.9rc0`, `rift-0.0.18.0rc1`; MultiApprox as far back as
+`RIFT-0.0.15.6`), read from the installed-file manifests.
 
 ## `create_event_nr_pipeline_with_cip`: same invariant, different arithmetic
 
@@ -54,6 +56,15 @@ posterior is `overlap-grid-<n_iterations+1>`, while the last REFINE grid is
 proposal grid — and the terminal CIP was not an ancestor of it at all, because
 `parent_fit_node` is never advanced past the loop (the line that would do it is
 commented out in the CIP block).
+
+One consequence worth being explicit about, because it changes what the stage
+computes and not just which file it names: the terminal ILE now runs on the CIP
+posterior draw rather than on the REFINE spoke grid. Under `--nr-lookup`, which
+an NR run's `args_ile.txt` carries and which is passed through to `ILE_extr.sub`
+verbatim, those posterior points are matched to NR simulations, where the REFINE
+grid's points already were simulations. This is the intended behaviour — it is
+what makes the extrinsic samples a posterior draw, as in `BasicIteration` — but
+it is a change in the physics of the stage, not a path correction.
 
 The fix is therefore three coupled edits, not one:
 
@@ -108,8 +119,10 @@ recreated by the same route:
   `pipeline = _PipelineNamespace()` and the htcondor copy was made without it.
 
 **`RIFT/misc/dag_utils_htcondor.py` is left in place and now has no importer.**
-It is kept only because a future htcondor2 port might start from it. Note that
-its module header claims it "retains all original functionality", which is false
-— 21 of its writers raise `NameError` on the first call. The real htcondor
+Retained deliberately, for future consideration rather than because anything
+needs it; RO's read (2026-08-27) is that it is probably completely stale. Note
+that its module header claims it "retains all original functionality", which is
+false — 21 of its writers raise `NameError` on the first call. Anyone picking it
+up should treat it as an unfinished port, not as a working backend. The real htcondor
 backend is the one inside `dag_utils_generic.py`, selected by
 `RIFT_DAG_BACKEND=htcondor`; that one works and is what every builder uses.
