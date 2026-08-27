@@ -89,3 +89,34 @@ def test_legacy_only_still_echoes_its_own_header(tmp_path):
     lines = [l for l in result.stdout.splitlines() if l.strip()]
     assert lines[0].strip() == "# m1 m2 lnL sigma_lnL", lines[:3]
     assert "RIFT_HYPERPIPELINE_V1" not in result.stdout
+
+
+def test_empty_first_shard_does_not_disable_the_format_contract(tmp_path):
+    """Format detection keys off the first READABLE input, not argv[1].
+
+    An empty first shard (a failed worker) used to make the merge fall back
+    to the legacy path: mixed-input and column-mismatch checks silently
+    disabled, and the output emitted with no header at all -- downstream
+    sniffs it as legacy and column zero changes meaning.
+    """
+    dead = tmp_path / "dead.dat"; dead.touch()
+    b = tmp_path / "b.dat"; _write_hyperpipe(b, [[2.0, 0.2, 31.0, 21.0]])
+    result = _run([str(dead), str(b)], tmp_path)
+    assert result.returncode == 0, result.stderr[-2000:]
+    lines = [l for l in result.stdout.splitlines() if l.strip()]
+    assert lines[0].strip() == "# RIFT_HYPERPIPELINE_V1", lines[:3]
+    assert lines[1].strip() == "# lnL sigma_lnL m1 m2", lines[:3]
+
+    legacy = tmp_path / "c.dat"; _write_legacy(legacy, [[30.0, 20.0, 1.0, 0.1]])
+    mixed = _run([str(dead), str(b), str(legacy)], tmp_path)
+    assert mixed.returncode != 0, (
+        "an empty first shard disabled the mixed-format check:\n"
+        + mixed.stdout[:2000])
+
+
+def test_no_readable_inputs_is_an_error_not_an_empty_success(tmp_path):
+    dead = tmp_path / "dead.dat"; dead.touch()
+    result = _run([str(dead), str(tmp_path / "absent.dat")], tmp_path)
+    assert result.returncode != 0, (
+        "a merge with zero readable inputs exited 0 with empty output:\n"
+        + result.stdout[:500])

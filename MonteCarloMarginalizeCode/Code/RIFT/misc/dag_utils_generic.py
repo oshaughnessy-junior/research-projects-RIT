@@ -1652,6 +1652,13 @@ class SlurmBackend(WorkflowBackend):
         # and writes its outputs where the next stage will not find them --
         # a failure that leaves a zero exit status.
         lines.append("")
+        # Enforce the strict half of the macro contract at runtime: a strict
+        # macro renders as ${SLURM_VAR_X} (no default), and without `set -u`
+        # bash expands an unassigned one to the empty string and the job runs
+        # with a silently mangled argument list.  Lenient (log-path) macros
+        # render with :- defaults and are unaffected.  `set -e` makes the
+        # mkdir/cd failures fatal instead of running in the wrong directory.
+        lines.append("set -eu")
         if initial_dir:
             quoted_dir = self.shell_word(initial_dir)
             lines.append("mkdir -p {}".format(quoted_dir))

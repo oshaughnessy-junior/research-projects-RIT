@@ -477,6 +477,12 @@ def _assert_outputs(rundir: Path, logs: Path, completed):
     # independent L=1 prior integral, modulo the two Monte Carlo estimates.
     assert abs(normalized_evidence[4]) < max(
         0.1, 5.0 * normalized_evidence[5])
+    # The 5-sigma arm above is unbounded in sigma: a regression that inflates
+    # the reported MC error would widen its own acceptance without limit.  On
+    # this 9-point constant-likelihood problem the error must itself be small.
+    assert normalized_evidence[5] < 0.1, (
+        "sigma_lnB_H = {} on a constant-likelihood problem; the reported MC "
+        "error itself has regressed".format(normalized_evidence[5]))
     if logs.is_dir():
         sources = sorted(logs.glob("*.log"))
     else:

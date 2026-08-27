@@ -796,6 +796,11 @@ class SlurmBackendTests(unittest.TestCase):
             # shell must not glob or word-split what HTCondor would have
             # passed to exec() verbatim.
             self.assertIn('exec "/bin/echo" "hello"', text)
+            # The strict half of the macro contract is only real at runtime
+            # with `set -u`: a strict ${SLURM_VAR_X} reference must fail on
+            # an unassigned macro, not expand to the empty string and run
+            # with a mangled argument list.
+            self.assertIn("set -eu", text)
             # Original Condor commands should be preserved as comments.
             self.assertIn("# Original HTCondor submit-file commands", text)
 

@@ -156,3 +156,25 @@ def test_always_succeed_survives_an_unreadable_input(tmp_path):
     assert without.returncode == 2, (
         "without the flag an unreadable input must still exit 2, not 1: "
         + without.stdout)
+
+
+def test_too_few_samples_is_a_crash_not_convergence(tmp_path):
+    """A wiring error that supplies <2 --samples must exit 2, never 1.
+
+    This guard sits ABOVE the method dispatch and predates the exit-code
+    contract; it used to exit 1, so a write_test_sub/macro regression that
+    emitted a single samples path made every run abort "successfully" at its
+    first convergence test.  Same masquerade class as the np.asscalar crash.
+    """
+    only = _samples(tmp_path / "only.dat")
+    one = _run(["--samples", only, "--parameter", "mc", "--method", "lame",
+                "--threshold", "0.02"])
+    assert one.returncode == 2, (
+        "one --samples must exit 2 (crash), not {}:\n{}".format(
+            one.returncode, one.stdout))
+
+    none = _run(["--parameter", "mc", "--method", "lame",
+                 "--threshold", "0.02"])
+    assert none.returncode == 2, (
+        "zero --samples must exit 2 (crash), not {}:\n{}".format(
+            none.returncode, none.stdout))

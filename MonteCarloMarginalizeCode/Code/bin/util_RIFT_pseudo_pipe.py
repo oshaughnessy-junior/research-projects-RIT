@@ -2515,7 +2515,7 @@ if opts.external_fetch_native_from:
     fetch_dict = {}
     fetch_dict['method'] = 'native'
     fetch_dict['source'] = opts.external_fetch_native_from
-    fetch_dict['n_max'] = 1000  # should tune this to grid structure needs; 1000 is probably safe; not yet implemented
+    fetch_dict['n_max'] = 1000  # NOW ENFORCED by util_FetchExternalGrid (it was previously computed and discarded): every native fetch is capped at the 1000 newest points, sorted by basename index.  Tune to grid structure needs.
     with open("my_dict.json",'w') as f:
         json.dump(fetch_dict,f)
     with open("fetch_args.txt",'w') as f:
@@ -3192,6 +3192,13 @@ if opts.pipeline_builder == "Hyperpipe":
         "--eos-post-explode-jobs-last", str(opts.cip_explode_jobs_last or opts.cip_explode_jobs or 1),
         "--general-retries", str(opts.general_retries),
         "--terminal-evidence",
+        # Mirror BasicIteration's unconditional ABORT-DAG-ON wiring: a live
+        # convergence test exits 1 on success, and without the abort wiring
+        # DAGMan reads that as a plain node failure -- convergence and crash
+        # become indistinguishable.  With --add-extrinsic the test args carry
+        # --always-succeed and the abort wiring is inert, exactly as in
+        # BasicIteration.
+        "--test-convergence-abort",
         "--working-directory", os.getcwd(),
         "--use-full-submit-paths",
     ]

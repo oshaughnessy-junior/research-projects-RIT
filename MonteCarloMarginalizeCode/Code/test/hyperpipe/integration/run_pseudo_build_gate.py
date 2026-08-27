@@ -650,6 +650,22 @@ def _assert_osg_calibration_contract(hyper: Path):
     assert "weight_files" in submit
     assert "test-rift.sif" in submit
 
+    # Staging parity: a run whose MARG iterations stage the candidate ILE
+    # must not let the terminal extrinsic fan-out silently run the
+    # image-installed one -- that is version skew in exactly the final
+    # stage the staging mechanism exists to protect.  A staged sub carries
+    # no `transfer_executable = False` line (HTCondor's default True
+    # transfers the executable) and invokes ./<basename> in the container.
+    marg_submit = (hyper / "MARG_0.sub").read_text()
+    term_submit = (hyper / "TERMINAL_extrinsic_samples.sub").read_text()
+    marg_staged = "transfer_executable = False" not in marg_submit
+    term_staged = "transfer_executable = False" not in term_submit
+    assert marg_staged, "OSG lane no longer stages the MARG executable"
+    assert term_staged == marg_staged, (
+        "terminal extrinsic fan-out does not inherit the MARG staging "
+        "contract: MARG staged={}, TERMINAL staged={}".format(
+            marg_staged, term_staged))
+
 
 def _assert_stage_product_table_matches(*hyper_dirs):
     """The pinned stage-name/product table must describe what we actually build.

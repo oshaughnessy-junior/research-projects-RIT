@@ -25,13 +25,16 @@ def worker_partition(n_points, group_size, clamp_last=False):
     ``create_event_parameter_pipeline_BasicIteration``, and the Hyperpipe
     terminal fan-out assembled in ``util_RIFT_pseudo_pipe.py``.
 
-    **Correction (2026-08-25).** An earlier version of this docstring said the
-    line replaced in ``create_event_parameter_pipeline_BasicIteration`` was
-    ``int(n/g)`` and that it under-allocated workers in production.  It was
-    not: that call site already read ``int(np.ceil(n/g))``, which is exactly
-    equivalent to this function, verified over ``n in [0,200) x g in [1,40)``
-    with zero mismatches.  Converting it changed nothing, which is the right
-    outcome for a refactor but is not what the docstring claimed.
+    **Correction (2026-08-25, amended 2026-08-27).** Relative to this
+    branch's own earlier state (commit 48295bb8) the BasicIteration ILE call
+    site already read ``int(np.ceil(n/g))``, so converting it to this
+    function changed nothing.  But relative to the ``rift_O4d`` base this
+    branch merges against (00c0eadc), that call site was still the buggy
+    ``int(n/g)`` + never-firing guard described below -- so against the
+    base, this branch DOES change BasicIteration's ILE fan-out from floor
+    to ceil, and tail points of a non-divisible request that were
+    previously silently unevaluated are now evaluated.  A deliberate fix,
+    not a no-op refactor.
 
     The buggy form is real, and it is elsewhere: ``int(n/g)`` guarded by ``if
     indx_max*n < g: indx_max += 1`` still stands in

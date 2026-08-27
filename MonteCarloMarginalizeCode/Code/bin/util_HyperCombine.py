@@ -35,7 +35,18 @@ if opts.combination != 'average':
 # Detect the self-describing Hyperpipe format once and require every readable
 # input to carry the same named columns.  Legacy files retain the historical
 # first-comment-line passthrough below.
-first_input = opts.fname[0][0]
+# Key the detection off the first READABLE, NON-EMPTY input, not literally
+# the first argument: an empty first shard (a failed worker) would otherwise
+# silently disable the mixed-input and column-mismatch checks for the whole
+# merge and emit a headerless output that downstream sniffs as legacy.
+first_input = next(
+    (f for f in opts.fname[0]
+     if os.path.exists(os.path.realpath(f))
+     and os.stat(os.path.realpath(f)).st_size > 0),
+    None)
+if first_input is None:
+    raise ValueError(
+        "util_HyperCombine: no readable, non-empty input files")
 hyperpipe_columns = None
 if hyperpipeline_io.sniff(first_input):
     hyperpipe_columns = hyperpipeline_io.read_header(first_input)

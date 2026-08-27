@@ -51,9 +51,13 @@ parser.add_argument("--write-file-on-success",type=str,default="INTRINSIC_CONVER
 parser.add_argument("--verbose", action='store_true')
 opts=  parser.parse_args()
 
-if len(opts.samples)<2:
+# Exit 2, not 1: under ABORT-DAG-ON, exit 1 means "converged, stop the DAG
+# successfully", so a wiring error that supplies fewer than two --samples must
+# use the crash code or the run aborts reporting success.  (opts.samples is
+# None when no --samples was passed at all -- same wiring-error class.)
+if opts.samples is None or len(opts.samples)<2:
     print(" Need at least two sets of samples")
-    sys.exit(1)
+    sys.exit(2)
 
 if opts.iteration < opts.iteration_threshold:
     sys.exit(0)
