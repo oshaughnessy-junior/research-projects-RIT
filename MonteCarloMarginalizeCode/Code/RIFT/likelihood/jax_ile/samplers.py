@@ -55,6 +55,129 @@ _PI = float(np.pi)
 
 
 # ---------------------------------------------------------------------------
+# Likelihood tempering: what --adapt-weight-exponent costs on THIS path
+# ---------------------------------------------------------------------------
+# Decision + provenance: DESIGN_jax_tempering.md, beside this module (2026-08-23).
+# The short version, because it is the thing that gets ported wrong:
+#
+#   non-JAX RIFT  beta shapes only the adaptive sampling PRIOR
+#                 (mcsamplerGPU: log_weights = beta*lnL + ln p - ln p_s, while the
+#                 estimator stays log_integrand = lnL + ln p - ln p_s).  Unbiased
+#                 at any beta; beta costs nothing in exported samples.
+#   JAX flowMC    beta = inv_T is the exponent of the target the MCMC SAMPLES.
+#                 The draws are the deliverable, so the export must be reweighted
+#                 by L^(1-beta) (post_weight) -- and that reweight has an ESS cost
+#                 the non-JAX path never pays.
+#
+# helper_LDG_Events.py keys its beta on SNR.  That is right there and wrong here:
+# the cost below is set by the SAMPLED DIMENSION and is independent of lnLmax.
+# Measured ratio (measured ESS/N) / (Gaussian law) at dim=4, as a CONSERVATIVE
+# piecewise-linear envelope: every knot sits at or below every measured point of
+# the sweep in DESIGN_jax_tempering.md.  The law is optimistic and increasingly so
+# at small beta, so a single flat factor is the wrong shape -- a flat 0.79 would
+# also make any target above 0.79 unachievable, since it never reaches 1.
+#
+# MEASURED AT dim=4 ONLY.  Applying the same ratio at other dimensions is an
+# assumption, not a measurement; it is the conservative direction (the law is
+# optimistic in dim too, since the exponent grows), but it is not verified.
+_ESS_CAL_BETA = (0.05, 0.20, 0.40, 0.60, 0.80, 1.00)
+_ESS_CAL_RATIO = (0.79, 0.79, 0.83, 0.91, 0.97, 1.00)
+_TEMPER_ESS_LAW_CAL = _ESS_CAL_RATIO[0]   # worst case, retained for reference
+
+
+def export_ess_fraction(beta, n_dim):
+    """Fraction of a beta-tempered cloud that survives the post_weight reweight.
+
+    For a locally Gaussian peak ``ln Z_g = g lnLmax - (n_dim/2) ln g + const``,
+    so the self-normalised reweight ``L^(1-beta)`` from the tempered target
+    ``L^beta pi`` back to the posterior has
+
+        ESS/N = Z_1^2 / (Z_beta Z_{2-beta}) = [beta (2 - beta)]^(n_dim/2)
+
+    **It depends on n_dim and NOT on lnLmax** -- i.e. not on SNR.  That is the
+    whole reason the non-JAX helper's SNR-keyed exponent must not be carried
+    over to this path.
+
+    Measured against the real phi-marginalised BNS likelihood (SNR 23.8, 4-D),
+    the law holds to a ratio 0.79-1.00 over beta in [0.05, 1]; it is therefore a
+    slightly OPTIMISTIC closed form.  Callers sizing a budget should apply
+    ``_TEMPER_ESS_LAW_CAL``.  Provenance and the full sweep: DESIGN_jax_tempering.md.
+    """
+    beta = float(beta)
+    if not (0.0 < beta <= 1.0):
+        raise ValueError("beta must be in (0, 1]; got %r" % (beta,))
+    return float((beta * (2.0 - beta)) ** (0.5 * int(n_dim)))
+
+
+def _ess_law_calibration(beta):
+    """Conservative lower-bound ratio (measured/law) at this beta, from the sweep."""
+    beta = float(beta)
+    if beta <= _ESS_CAL_BETA[0]:
+        return _ESS_CAL_RATIO[0]
+    if beta >= _ESS_CAL_BETA[-1]:
+        return _ESS_CAL_RATIO[-1]
+    return float(np.interp(beta, _ESS_CAL_BETA, _ESS_CAL_RATIO))
+
+
+def export_ess_estimate(beta, n_dim):
+    """Calibrated ESTIMATE of the surviving export fraction.  NOT a bound.
+
+    ``export_ess_fraction`` is the Gaussian-peak law; the SNR-23.8 sweep shows it
+    optimistic by up to 21% (ratio 0.79 at beta=0.05, rising to 1.00 at beta=1),
+    and this applies that ratio.
+
+    IT IS NOT A GUARANTEE, AND THIS FUNCTION WAS ONCE NAMED AS IF IT WERE.  The
+    calibration is fitted at SNR ~= 23.8 only, and the shortfall grows with SNR:
+    the SNR ladder in DESIGN_jax_tempering.md measures ESS/N = 0.00823 at
+    beta=0.1, d=4, SNR ~= 67, against 0.0285 from this estimate -- a factor 3.5
+    the wrong way.  A real bound needs a calibration in (beta, SNR), and this
+    driver has no trustworthy SNR at the point the choice is made (`guess_snr` is
+    an explicit guesstimate: 10.32 against a true network 23.78 on the study
+    event).  So callers must treat the result as advisory and must not refuse a
+    run on it.  Reported by review on #186.
+    """
+    return _ess_law_calibration(beta) * export_ess_fraction(beta, n_dim)
+
+
+def beta_for_export_ess(target_frac, n_dim):
+    """Inverse of :func:`export_ess_fraction`: the SMALLEST beta meeting a target.
+
+    Solves ``[beta(2-beta)]^(n_dim/2) = target_frac`` on ``beta in (0, 1]``:
+
+        beta = 1 - sqrt(1 - target_frac^(2/n_dim))
+
+    Smallest is the useful root: beta is a breadth knob, so among exponents that
+    meet the export budget the broadest target is the one that explores most.
+
+    Solves against :func:`export_ess_estimate`, so the returned beta meets
+    ``target_frac`` **on the SNR ~= 23.8 calibration**.  That is not a guarantee
+    at other SNRs -- the shortfall grows with SNR (see that function) -- which is
+    why ``--auto-adapt-weight-exponent`` is documented as experimental and why
+    nothing refuses a run on this number.
+    """
+    t = float(target_frac)
+    if not (0.0 < t <= 1.0):
+        raise ValueError("target_frac must be in (0, 1]; got %r" % (t,))
+    # Solve on the CALIBRATED lower bound, not the bare law.  Both factors are
+    # non-decreasing in beta, so the product is monotone and bisection is safe.
+    # There is no closed form once the piecewise-linear calibration is included,
+    # and the previous closed-form inverse of the optimistic law returned betas
+    # that retained less than the caller asked for.
+    if export_ess_estimate(1.0, n_dim) < t:
+        raise ValueError(
+            "target_frac %g is unreachable in %d-D even at beta=1 (lower bound "
+            "%.4f)" % (t, int(n_dim), export_ess_estimate(1.0, n_dim)))
+    lo, hi = 1e-6, 1.0
+    for _ in range(200):
+        mid = 0.5 * (lo + hi)
+        if export_ess_estimate(mid, n_dim) >= t:
+            hi = mid
+        else:
+            lo = mid
+    return float(hi)
+
+
+# ---------------------------------------------------------------------------
 # Prior (physical, uniform sky + orientation), numpy + JAX flavors
 # ---------------------------------------------------------------------------
 def sample_prior(n, rng):
@@ -655,10 +778,19 @@ def flowmc_sample(like, d_min, d_max, n_chains=20, n_local_steps=20,
 
     For a *batch* of nearby intrinsic templates (``--n-events-to-analyze``) the
     posterior geometry changes only slowly, so the re-used flow is a strong
-    initialization -- the partial-flow-reuse efficiency gain (most visible at
-    scale, and at high SNR where peaks are narrow).  Re-use degrades gracefully:
-    a model-shape/version mismatch falls back to a fresh flow, mismatched
-    ``positions`` fall back to a high-lnL prior draw.
+    initialization.  Re-use degrades gracefully: a model-shape/version mismatch
+    falls back to a fresh flow, mismatched ``positions`` fall back to a high-lnL
+    prior draw.
+
+    **RE-USE IS OFF BY DEFAULT AND SHOULD STAY OFF FOR SAMPLE-PRODUCING RUNS.**
+    It CONTRACTS the extrinsic posterior in later slots -- psi to ~40% of its
+    no-re-use width by slot 7 of an 8-event batch, on both of two seeds, with
+    slot 0 as a control at ~1.0 -- and the efficiency argument that used to sit
+    here does not survive production settings: 1589 s mean wall with re-use
+    against 1567 s without, a difference smaller than the seed-to-seed spread and
+    of flipping sign.  The ~2x speed-up reported in this module's README is
+    specific to the small-budget SNR-sequence benchmark.  Enable it only where
+    the EVIDENCE, not the samples, is the product.
 
     Returns
     -------
@@ -1489,8 +1621,12 @@ def smc_puffball_sample(like, d_min, d_max, n_walkers=2000, seed=0,
     collapse).  This is the SMC analogue of RIFT-AV's "sample -> puffball -> sample"
     and of nested sampling's hill-climb; robust at LISA-loud SNR.
 
-    Returns the same dict shape as :func:`flowmc_sample_phimarg`.  Evidence is the
-    standard SMC normalizing-constant estimator logZ = sum_t logmeanexp(dbeta_t lnL).
+    Returns the same dict shape as :func:`flowmc_sample_phimarg`, plus ``inv_T``:
+    the tempering exponent the ladder ACTUALLY reached (< 1 when it stopped at
+    ``max_stages``), with ``post_weight`` the matching ``L**(1-inv_T)`` correction
+    to the posterior.  Evidence is the standard SMC normalizing-constant estimator
+    logZ = sum_t logmeanexp(dbeta_t lnL) -- which is log Z(inv_T), not log Z, on a
+    ladder that stopped short.
     """
     _param_order = getattr(like, "ANGULAR_PARAM_ORDER", ("ra", "dec", "psi", "incl"))
     n_dim = len(_param_order)
@@ -1535,7 +1671,11 @@ def smc_puffball_sample(like, d_min, d_max, n_walkers=2000, seed=0,
             return (s * s) / np.sum(w * w) if s > 0 else 0.0
 
         target = float(ess_frac) * W
-        hi_db = min(1.0 - inv_T, float(max_dbeta))
+        # Largest rung allowed here: never past inv_T == 1, and never past the
+        # per-stage cap (max_dbeta <= 0 disables that cap, as on the flowMC path).
+        hi_db = 1.0 - inv_T
+        if float(max_dbeta) > 0:
+            hi_db = min(hi_db, float(max_dbeta))
         if _ess(hi_db) >= target:
             db = hi_db
         else:
@@ -1546,7 +1686,13 @@ def smc_puffball_sample(like, d_min, d_max, n_walkers=2000, seed=0,
                     a = mid
                 else:
                     b = mid
-            db = max(a, 1e-4)
+            # The floor keeps a stalled bisection moving, but it must never
+            # carry the rung PAST the rung cap: db > hi_db advances inv_T beyond
+            # 1 (or beyond max_dbeta), and the resample/Metropolis moves below
+            # then target L**inv_T with inv_T > 1 -- an OVER-tempered cloud that
+            # the final min(inv_T, 1) would report as temper=1 with uniform
+            # post_weight, i.e. exactly the mislabelling the tail guards against.
+            db = min(max(a, 1e-4), hi_db)
         # SMC evidence increment: logZ += logmeanexp(db * lnL)
         z = db * lnL
         z = z[np.isfinite(z)]
@@ -1632,9 +1778,37 @@ def smc_puffball_sample(like, d_min, d_max, n_walkers=2000, seed=0,
             if verbose:
                 print("  [smc-IS-Z] failed (%r); keeping SMC logZ" % e)
 
+    # THE LADDER CAN STOP SHORT OF THE POSTERIOR.  The loop above also exits on
+    # ``stage == max_stages`` (and on a cloud with fewer than two finite lnL), and
+    # the cloud then still targets ``L**inv_T * prior`` with ``inv_T < 1``.
+    # Reporting ``temper=1.0`` with uniform ``post_weight`` in that case handed the
+    # caller a TEMPERED cloud labelled as a posterior draw.  Report the exponent
+    # actually reached, plus the correction weight ``L**(1-inv_T)`` that carries
+    # the cloud to the posterior -- the same contract flowmc_sample_phimarg uses.
+    # The weight is identically uniform once inv_T == 1, so the converged path is
+    # unchanged.  Each rung is capped at the distance left to 1, so the clip
+    # below only absorbs the rounding of the accumulated sum -- it must never be
+    # covering for a ladder that genuinely ran past 1 (see the ``db`` cap above).
+    lnL = np.asarray(lnL, dtype=float)
+    inv_T_final = float(min(inv_T, 1.0))
+    if len(lnL) and inv_T_final < 1.0:
+        lw = (1.0 - inv_T_final) * lnL
+        lw = np.where(np.isfinite(lw), lw, -np.inf)
+        mx = np.max(lw)
+        # All -inf stays all-zero: a cloud whose correction cannot be normalised
+        # must be REFUSED by the caller, not quietly restored to uniform weights,
+        # which is the mislabelling this block exists to prevent.
+        post_weight = np.exp(lw - mx) if np.isfinite(mx) else np.zeros(len(lnL))
+        s = post_weight.sum()
+        if s > 0:
+            post_weight = post_weight / s
+    else:
+        post_weight = np.ones(W) / W
     return dict(theta=cloud, lnL=lnL, logZ=float(logZ),
                 sigma_over_Z=float(sigma_over_Z), neff=float(neff),
-                flow_state=None, post_weight=np.ones(W) / W, temper=1.0,
+                flow_state=None, post_weight=post_weight, inv_T=inv_T_final,
+                temper=(float(1.0 / inv_T_final) if inv_T_final > 0
+                        else float("inf")),
                 logZ_laplace=float(logZ_smc),
                 lnL_map=float(np.max(lnL)) if len(lnL) else np.nan)
 
