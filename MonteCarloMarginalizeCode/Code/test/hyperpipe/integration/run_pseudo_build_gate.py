@@ -16,6 +16,7 @@ import os
 import shlex
 import shutil
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -405,6 +406,8 @@ def _build_multiapprox(run_base: Path, basic_rundir: Path, n_iterations: int):
     convert+resample+cat path.
     """
     label = "multiapprox-it{}".format(n_iterations)
+    # TWO approximants: with one, every cross-model path in this builder is
+    # trivially satisfied and the workflow it exists for goes unexercised.
     rundir = run_base / label
     rundir.mkdir(parents=True, exist_ok=True)
     for name in ("args_ile.txt", "args_cip_list.txt", "args_test.txt",
@@ -414,6 +417,7 @@ def _build_multiapprox(run_base: Path, basic_rundir: Path, n_iterations: int):
         sys.executable,
         str(BIN / "create_event_parameter_pipeline_BasicMultiApproxIteration"),
         "--approx", "IMRPhenomXPHM",
+        "--approx", "SEOBNRv4PHM",
         "--input-grid", "proposed-grid.xml.gz",
         "--ile-exe", str(BIN / "integrate_likelihood_extrinsic_batchmode"),
         "--ile-args", str(rundir / "args_ile.txt"),
@@ -486,6 +490,134 @@ def _assert_multiapprox_extrinsic_reads_the_final_grid(rundirs):
             "come from the previous iteration".format(
                 next(iter(extrinsic)), last_written, rundir.name))
 
+
+
+def _assert_multiapprox_shares_one_grid_and_forks_at_the_end(rundirs):
+    """The cross-model contract: merge in the loop, fork at the end.
+
+    Every model's ILE must read the SAME grid, one fit per iteration must be
+    made over the pooled+marginalized net, and only the terminal stage may
+    split per model.  Checked on a two-approximant build, because with one
+    approximant all of this is vacuously true -- which is how the builder kept
+    a severed grid handoff for six years.
+    """
+    for rundir in rundirs:
+        dag = rundir / "marginalize_intrinsic_parameters_BasicIterationWorkflow.dag"
+        jobs, edges = _dag_jobs_and_edges(dag)
+        macros = _dag_node_macros(dag)
+        parents = {}
+        for parent, child in edges:
+            parents.setdefault(child, set()).add(parent)
+
+        def of(suffix):
+            return [n for n, sub in jobs.items() if sub.endswith(suffix)]
+
+        models = {macros.get(n, {}).get("macroapprox") for n in of("ILE.sub")}
+        models.discard(None)
+        assert len(models) == 2, (
+            "{}: expected 2 approximants on the loop ILE nodes, got {}".format(
+                rundir.name, sorted(models)))
+
+        # (1) one shared grid: the loop ILE submit file must not be per model
+        ile_sub = (rundir / "ILE.sub").read_text()
+        # the value only -- the same `arguments` line legitimately carries
+        # `--approx $(macroapprox)`, which is per model by design
+        grid = re.search(r"--sim-xml\s+(\S+)", ile_sub)
+        assert grid, "{}: no --sim-xml in ILE.sub".format(rundir.name)
+        assert "$(macroapprox)" not in grid.group(1), (
+            "{}: the loop ILE grid is approximant-tagged, so the models do NOT "
+            "share a grid and nothing is being marginalized: {}".format(
+                rundir.name, grid.group(1)))
+
+        # (2) the marginalization is actually switched on
+        unify_sh = (rundir / "unify.sh").read_text()
+        assert "--model-group-regex" in unify_sh, (
+            "{}: unify.sh pools composites without --model-group-regex, so "
+            "replica counts act as model weights".format(rundir.name))
+
+        # (3) one fit per iteration, NOT one per model
+        loop_cip = [n for n in jobs if jobs[n].startswith("CIP")
+                    and not jobs[n].startswith("CIP_terminal")]
+        for node in loop_cip:
+            assert "macroapprox" not in macros.get(node, {}), (
+                "{}: in-loop CIP node carries macroapprox; the loop must fit "
+                "the marginalized net once, not once per model".format(rundir.name))
+
+        # (4) unify waits for EVERY model to consolidate, or it marginalizes
+        #     over whatever happened to finish
+        for node in of("unify.sub"):
+            con_models = {macros.get(par, {}).get("macroapprox")
+                          for par in parents.get(node, set())
+                          if jobs.get(par, "").endswith("join.sub")}
+            con_models.discard(None)
+            assert con_models == models, (
+                "{}: unify waits on {} but the run has models {}".format(
+                    rundir.name, sorted(con_models), sorted(models)))
+
+        # (5) the terminal stage forks: one terminal CIP and one cat per model
+        for suffix in ("CIP_terminal.sub", "cat.sub"):
+            got = {macros.get(n, {}).get("macroapprox") for n in of(suffix)}
+            got.discard(None)
+            assert got == models, (
+                "{}: {} covers {} but the run has models {}".format(
+                    rundir.name, suffix, sorted(got), sorted(models)))
+
+        # (6) and is recombined exactly once
+        combine = of("combine_models.sub")
+        assert len(combine) == 1, (
+            "{}: expected exactly one combine node, got {}".format(
+                rundir.name, len(combine)))
+        cat_models = {macros.get(par, {}).get("macroapprox")
+                      for par in parents.get(combine[0], set())
+                      if jobs.get(par, "").endswith("cat.sub")}
+        cat_models.discard(None)
+        assert cat_models == models, (
+            "{}: the combine node waits on {}, not every model {}; the mixture "
+            "would be built from a subset".format(
+                rundir.name, sorted(cat_models), sorted(models)))
+
+
+def _assert_multiapprox_job_directories_exist(rundirs):
+    """Every initialdir/log path, with this DAG's own macros substituted in.
+
+    A submit file naming a directory the builder never created holds the job on
+    the execute node.  No DAG-shape assertion sees that, and it is exactly how
+    this builder failed: the mkdir loop made approx_<A>_iteration_N_cip while
+    CIP.sub named iteration_N_cip.  An unresolved $(macro) is also a failure --
+    that is how ILE_extr came to interpolate an empty approximant into both
+    --approx and its initialdir.
+    """
+    for rundir in rundirs:
+        dag = rundir / "marginalize_intrinsic_parameters_BasicIterationWorkflow.dag"
+        jobs, _ = _dag_jobs_and_edges(dag)
+        macros = _dag_node_macros(dag)
+        cache = {}
+        problems = []
+        for node, submit in jobs.items():
+            path = rundir / submit
+            if submit not in cache:
+                # initialdir IS a directory; output/error/log are FILES whose
+                # directory must exist.  Taking dirname of both checks
+                # initialdir's parent instead of initialdir, which passes a
+                # submit file naming a directory that was never created.
+                text = path.read_text()
+                cache[submit] = (
+                    [(v, True) for v in re.findall(r"^initialdir\s*=\s*(\S+)", text, re.M)]
+                    + [(v, False) for v in re.findall(r"^(?:output|error|log)\s*=\s*(\S+)", text, re.M)])
+            for raw, is_dir in cache[submit]:
+                resolved = raw
+                for key, value in macros.get(node, {}).items():
+                    resolved = resolved.replace("$({})".format(key), value)
+                resolved = re.sub(r"\$\((?:cluster|process|macromassid)\)",
+                                   "X", resolved)
+                if "$(" in resolved:
+                    problems.append("{}: unresolved macro in {}".format(submit, resolved))
+                    continue
+                target = resolved if is_dir else os.path.dirname(resolved)
+                if target and not os.path.isdir(target):
+                    problems.append("{}: missing directory {}".format(submit, target))
+        assert not problems, "{}:\n  {}".format(
+            rundir.name, "\n  ".join(sorted(set(problems))))
 
 
 def _submit_executables(rundir: Path):
@@ -1341,6 +1473,8 @@ def main(argv=None):
         _assert_alternate_extrinsic_reads_the_final_grid(alternate)
         _assert_nr_extrinsic_reads_the_final_grid(nr)
         _assert_multiapprox_extrinsic_reads_the_final_grid(multiapprox)
+        _assert_multiapprox_shares_one_grid_and_forks_at_the_end(multiapprox)
+        _assert_multiapprox_job_directories_exist(multiapprox)
         _assert_stage_product_table_matches(
             hyper, hyper_auto, hyper_osg, hyper_z)
         _assert_extra_terminal_stages_merge(

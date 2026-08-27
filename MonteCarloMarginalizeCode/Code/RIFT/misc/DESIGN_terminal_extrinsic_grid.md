@@ -29,7 +29,7 @@ inspected.
 | `create_event_parameter_pipeline_BasicIteration` | yes (default) | fixed, 925fc49a (PR #181/#182) |
 | `create_event_parameter_pipeline_AlternateIteration` | yes (`--use-subdags`, `--internal-use-amr`, explicit) | fixed, PR #187 |
 | `create_event_nr_pipeline_with_cip` | no | fixed, PR #189 — a *different* change; see below |
-| `create_event_parameter_pipeline_BasicMultiApproxIteration` | no | fixed, PR #192 — and left development-only; see below |
+| `create_event_parameter_pipeline_BasicMultiApproxIteration` | no | fixed, PR #192; built out into a cross-model marginalization workflow — see below |
 | `cepp_basic_htcondor` | no | removed in PR #189 (unfinished port, could not emit a DAG) |
 
 `--pipeline-builder` accepts only `BasicIteration`, `AlternateIteration` and
@@ -78,88 +78,41 @@ page moved.)
 never unpacks the `(main, worker)` job pair the way
 `BasicMultiApproxIteration` does.
 
-## `create_event_parameter_pipeline_BasicMultiApproxIteration`: fixed, and left development-only
+## `create_event_parameter_pipeline_BasicMultiApproxIteration`: fixed, then built out
 
-The extrinsic defect is real and the one-line fix landed in PR #192. The builder is
-**not** promoted to `--pipeline-builder` and is **not** described in the O4d
-paper set. Both halves of that were decided on evidence, 2026-08-25; this
-section is the record.
+The extrinsic defect was real and the one-line fix landed in PR #192.
 
-**The defect, and its fix.** Identical no-`Z` shape to AlternateIteration
-before PR #187, and confirmed off by one on emitted DAGs in eight
-configurations — including the run-to-convergence `Z` schedule, and including
-one iteration, where it read `overlap-grid-0`, the raw seed grid. `it =
-opts.n_iterations` repairs it; the gate assertion is
-`_assert_multiapprox_extrinsic_reads_the_final_grid`. Blast radius measured:
-only the `.dag` differs, JOB/PARENT counts unchanged, and with
-`--last-iteration-extrinsic` off the build is byte-identical.
+**The verdict in the first version of this section was wrong and is retracted.**
+It read that the builder "does not couple the approximants" and so "buys one DAG
+instead of N", and recommended leaving it development-only. That was inferred
+from the per-model CIP and per-model `all.net` visible in the emitted DAG. It
+missed the combine step: `util_CleanILE.py` keys on the intrinsic parameters, so
+the same lambda evaluated under several models collapses to one entry and is
+combined **linearly in L** — which is model marginalization. Together with an
+untagged (shared) ILE input grid, the workflow was a half-finished shared-grid
+cross-model marginalization, not N independent runs. The per-model CIP fork
+inside the loop was the part that did not belong.
 
-**Why it is not promoted.** Promotion was considered and rejected: the
-workflow this builder implements is already done a different way, and this
-builder cannot execute the workflow it claims to.
+Several things this note listed as defects were that design, half-built: the
+untagged ILE grid is correct, and a single terminal extrinsic stage is correct
+in shape (it is now forked per model for a different reason — see below).
 
-*It is redundant.* `util_RIFT_pseudo_pipe.py --approx` is `type=str` and
-required — one waveform per run, by design. asimov's RIFT pipeline reads
-`production.meta["waveform"]["approximant"]`, also one per production, and
-asimov's model is several productions per event (`bootstrap:` reuses a
-converged run's grid for the next waveform) combined by PESummary as a separate
-postprocessing analysis. That is the multi-waveform comparison RIFT actually
-performs in O4, it is already the documented interface, and it produces
-independent posteriors — which is what a systematics comparison needs. This
-builder does not couple the approximants either: separate `all.net`, separate
-CIP, separate grid per approximant. It buys one DAG instead of N and nothing
-else, so there is no method to describe.
+The builder was therefore completed rather than shelved. What that took, and
+the science it implements, is in
+**`RIFT/misc/DESIGN_multiapprox_marginalization.md`**; in outline:
 
-*It has never run.* Six defects, all read off emitted submit files from a
-two-approximant build (`--approx IMRPhenomXPHM --approx SEOBNRv4PHM`,
-`--n-iterations 2`), any one of which stops the run:
+* the iteration loop merges — one shared grid, one pooled marginalized net, one
+  fit — so grid refinement follows the model-marginalized posterior;
+* the terminal stage forks — per-model fit, posterior and `ln Z`, recombined by
+  `util_CombineApproximantPosteriors.py` as a mixture weighted by `p(m) Z_m`;
+* `p(m)` is a prior over waveform models, and is not the same thing as the
+  sampling effort `ntot` that flat pooling was implicitly using.
 
-1. **The grid handoff is severed.** ILE reads
-   `<W>/overlap-grid-$(macroiteration).xml.gz`, untagged — the same name
-   BasicIteration uses. Only the seed `overlap-grid-0.xml.gz` ever exists at
-   that path. The main CIP writes inside its own directory
-   (`<cipdir>/overlap-grid-$(macroiterationnext)`) and nothing promotes it;
-   `join_grids.sh`, which would, is a **shell script containing
-   `$(macroapprox)`** — bash command substitution, not a condor macro, because
-   `join_grids.sub` passes only `$(macroiteration) $(macroiterationnext)` as
-   arguments. It therefore globs `approx__iteration_1_cip/approx__overlap-grid-2*`
-   and writes `approx__overlap-grid-2.xml.gz`. Iteration 1 has no input.
-2. **CIP's `initialdir` is a directory that is never created.** The mkdir loop
-   makes `approx_<A>_iteration_N_cip`; `CIP.sub` names
-   `iteration_$(macroiteration)_cip`. Every CIP job is held at iteration 0.
-   `join_grids.sub` names the tagged form — the two disagree.
-3. **`con`/`unify` log directories are the mirror image**: the loop makes
-   `iteration_N_con` (untagged), the subs write to
-   `approx_$(macroapprox)_iteration_N_con/logs/`.
-4. **The terminal extrinsic chain is approximant-blind.** `ILE_extr`,
-   `convert_extr`, `resample` and `cat` carry no `macroapprox`, and the chain is
-   emitted **once for the whole DAG**, not once per approximant. `ILE_extr.sub`
-   interpolates `$(macroapprox)` into both `--approx` and its `initialdir`, so
-   it resolves to an empty `--approx` and `approx__iteration_2_ile`; `cat`
-   writes `extrinsic_posterior_samples_.dat`. With two approximants, 30 nodes
-   are approximant-tagged and these are not among them.
-5. **The terminal convert clobbers across approximants.** `convert.sub` writes
-   `posterior_samples-$(macroiteration).dat`, untagged, from both approximants'
-   nodes; `test.sub` reads `approx_$(macroapprox)_posterior_samples-N.dat`,
-   which nothing writes.
-6. **The approximants are serialized and cross-coupled.** `parent_fit_node` is
-   one variable spanning `for it: for approx:`, so approximant B's
-   iteration-0 ILE waits on approximant A's iteration-1 `convert`, and A's
-   iteration-1 ILE waits on B's. There is no parallelism and the edges are
-   semantically wrong — the opposite of the "simultaneous coordinated
-   multi-approximant operation" the original commit (cdc1acfc, 2020-06-04)
-   claimed. The builder has not been touched since its 2020 py3 port except by
-   sweeps that changed every builder at once.
-
-The header is still BasicIteration's, down to naming `args_cip.txt` and
-`create_event_parameter_pipeline_BasicIteration.py` in its own EXAMPLES block.
-
-**What this means for the fix.** The extrinsic index is now right in a builder
-that still cannot reach iteration 1. That is worth landing anyway — it removes
-the last instance of a defect fixed in three sibling builders, so nobody
-re-derives it, and it is a measured no-op on every other emitted file. It is
-not a claim that the builder works. Anyone reviving multi-approximant DAGs
-should treat items 1–6 as the actual work and this fix as already done.
+Genuinely-broken things that were also fixed on the way: `join_grids.sh`
+interpolating `$(macroapprox)` inside a bash script (command substitution, not a
+condor macro); `CIP.sub` naming a directory the mkdir loop never created;
+`parent_fit_node` spanning `for it: for approx:` and cross-coupling the models
+into one serial chain.
 
 ## `cepp_basic_htcondor`: removed
 
