@@ -151,7 +151,7 @@ def test_the_tracer_reads_every_header_shape(tmp_path, label):
     while another aborts on the same file.
     """
     fname = _write(str(tmp_path / "in.dat"), HEADERS[label])
-    cols, rows = _tracer()._read_dat(fname)
+    cols, rows, _ = _tracer()._read_dat(fname)
     assert list(cols) == ["lnL", "sigma_lnL", "x", "y", "z"], (
         "{} header parsed to {}".format(label, list(cols)))
     assert rows.shape[1] == 5
@@ -175,9 +175,9 @@ def test_the_tracer_round_trip_keeps_the_format_preamble(tmp_path):
     hyperpipeline_io = pytest.importorskip("RIFT.misc.hyperpipeline_io")
     fname = _write(str(tmp_path / "in.dat"), HEADERS["magic+meta"])
     module = _tracer()
-    cols, rows = module._read_dat(fname)
+    cols, rows, preamble = module._read_dat(fname)
     out = str(tmp_path / "out.dat")
-    module._write_dat(out, cols, rows)
+    module._write_dat(out, cols, rows, preamble)
 
     assert hyperpipeline_io.sniff(out), (
         "the output no longer declares the format the input did:\n"
@@ -264,3 +264,37 @@ def test_a_header_naming_no_parameters_is_refused(tmp_path):
     combined = result.stdout + result.stderr
     assert "no parameters" in combined, combined[-2500:]
     assert os.path.basename(fname) in combined, combined[-2000:]
+
+
+def test_a_second_read_cannot_steal_the_first_grids_metadata(tmp_path):
+    """`--inj-file-prev` makes `main` read TWO grids before it writes one.
+
+    The preamble was briefly a module-level "most recently read" value, so the
+    second read overwrote the first and the output carried the PREVIOUS
+    iteration's waveform settings.  Not merely losing the current ones:
+    attaching different ones, and `ampO=0` -- leading order only -- is exactly
+    the value whose silent use made ILE generate too few modes.
+
+    This drives the two reads in the order `main` does and asserts the output
+    describes the grid it is actually about.
+    """
+    hyperpipeline_io = pytest.importorskip("RIFT.misc.hyperpipeline_io")
+    current = _write(str(tmp_path / "cur.dat"),
+                     ["# RIFT_HYPERPIPELINE_V1",
+                      "# RIFT_HYPERPIPELINE_META ampO=-1 fmin=20.0",
+                      "# lnL sigma_lnL x y z"])
+    previous = _write(str(tmp_path / "prev.dat"),
+                      ["# RIFT_HYPERPIPELINE_V1",
+                       "# RIFT_HYPERPIPELINE_META ampO=0 fmin=99.0",
+                       "# lnL sigma_lnL x y z"])
+    module = _tracer()
+    cols, rows, preamble = module._read_dat(current)
+    module._read_dat(previous)            # as --inj-file-prev does
+    out = str(tmp_path / "out.dat")
+    module._write_dat(out, cols, rows, preamble)
+
+    assert hyperpipeline_io.parse_metadata(out) == \
+        hyperpipeline_io.parse_metadata(current), (
+            "the output carries {} but describes the grid whose settings are "
+            "{}".format(hyperpipeline_io.parse_metadata(out),
+                        hyperpipeline_io.parse_metadata(current)))
