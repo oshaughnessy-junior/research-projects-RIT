@@ -434,6 +434,61 @@ def read_header(fname):
         "hyperpipeline_io.read_header: no column header found in {}".format(fname))
 
 
+def read_column_names(fname):
+    """Column names of a RIFT likelihood table, whatever its header shape.
+
+    The rule for turning a header into column names, in one place because it is
+    not obvious and the tools that need it each got it wrong differently.
+
+    **Three readers use it today**, not every reader: the hyperparameter
+    posterior step, the tracer update, and the driver grid contract.
+    :func:`read_header` and :func:`read_table` keep the double-hash behaviour
+    described below, which affects their own callers; changing that changes
+    those callers and belongs in its own commit.  Do not read this as a claim
+    that the codebase has one header parser -- it has two, and this is the one
+    that handles every shape a RIFT writer produces.
+
+    The cases, all of which occur:
+
+    * a hyperpipeline table opens with the magic marker and may carry a
+      metadata line before the column header, so line one is neither;
+    * a table written with ``np.savetxt(..., header='# ' + names)`` -- the
+      idiom in ``util_shuffle_file.py`` and ``convert_ascii_framechange_xphm.py``
+      -- opens ``# # lnL ...``, two hash marks;
+    * both at once, which no shipped writer produces today but which the two
+      rules above imply;
+    * a table with no comment line at all has no header, and splitting its
+      first line yields numbers, which is not empty and so survives an
+      emptiness check;
+    * a provenance comment can sit where the header belongs.
+
+    So: scan comment lines, skip the format preamble, strip EVERY leading hash
+    rather than one, and require what remains to start with ``lnL``.  Refuse
+    anything else by name instead of returning something plausible -- returning
+    plausible nonsense is what produced ``'x' is not in list`` several steps
+    downstream, pointing at the user's parameter rather than at the file.
+    """
+    with open(fname) as stream:
+        for raw in stream:
+            line = raw.strip()
+            if not line:
+                continue
+            if not line.startswith("#"):
+                break                    # data before any header
+            payload = line.replace("#", "").strip()
+            if not payload:
+                continue                 # a bare '#' separator line
+            first = payload.split()[:1]
+            if first == [MAGIC] or first == [META_MAGIC]:
+                continue                 # format preamble
+            if first == ["lnL"]:
+                return tuple(payload.split())
+            break                        # a comment, but not a header
+    raise ValueError(
+        "no column header in {}: expected a '#'-prefixed line naming lnL, "
+        "sigma_lnL and the parameters".format(fname))
+
+
 def read_table(fname):
     """Read *fname* and return ``(structured_array, column_names_tuple)``.
 
