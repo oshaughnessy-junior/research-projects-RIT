@@ -14,6 +14,7 @@ from collections import Counter
 import json
 import os
 import shlex
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -248,6 +249,139 @@ def _assert_alternate_extrinsic_reads_the_final_grid(rundirs):
             "output would go unread, and the extrinsic posterior would come "
             "from the previous iteration".format(
                 next(iter(extrinsic)), last_written, rundir.name))
+
+
+NR_ITERATIONS = (1, 2)
+
+
+def _build_nr(run_base: Path, basic_rundir: Path, n_iterations: int):
+    """Build create_event_nr_pipeline_with_cip -- directly; nothing routes to it.
+
+    util_RIFT_pseudo_pipe.py's --pipeline-builder accepts only BasicIteration,
+    AlternateIteration and Hyperpipe, and asimov drives pseudo_pipe, so this
+    builder is a hand-run bin/ script.  Its one documented caller, the
+    demo/nr_w_rift Makefile, does not pass --last-iteration-extrinsic, so the
+    terminal stage this gate is about was never built by anything.  The inputs
+    come from a pseudo_pipe run, which is how a user assembles them.
+
+    --cip-explode-jobs is deliberately NOT passed: this builder does not unpack
+    the (main, worker) job pair the way BasicMultiApproxIteration does, and dies
+    in write_concrete_dag with "'list' object has no attribute 'get_sub_file'".
+    That is a separate defect, still open; asking for it here would only make
+    this gate fail for a reason it is not testing.
+    """
+    label = "nr-it{}".format(n_iterations)
+    rundir = run_base / label
+    rundir.mkdir(parents=True, exist_ok=True)
+    for name in ("args_ile.txt", "args_cip_list.txt", "args_test.txt",
+                 "proposed-grid.xml.gz"):
+        shutil.copy(basic_rundir / name, rundir / name)
+    (rundir / "args_refine.txt").write_text("X --test-refinement\n")
+    command = [
+        sys.executable, str(BIN / "create_event_nr_pipeline_with_cip"),
+        "--input-grid", str(rundir / "proposed-grid.xml.gz"),
+        "--ile-exe", str(BIN / "integrate_likelihood_extrinsic_batchmode"),
+        "--ile-args", str(rundir / "args_ile.txt"),
+        "--cip-args-list", "args_cip_list.txt",
+        "--test-args", "args_test.txt",
+        "--nr-refine-args", "args_refine.txt",
+        "--nr-refine-exe", str(BIN / "util_TestSpokesIO.py"),
+        "--nr-group", "Sequence-RIT-All",
+        "--ile-n-events-to-analyze", "3",
+        "--n-samples-per-job", "4",
+        "--request-memory-CIP", "30000",
+        "--request-memory-ILE", "4096",
+        "--working-directory", str(rundir),
+        "--n-iterations", str(n_iterations),
+        "--n-copies", "1",
+        "--ile-retries", "3",
+        "--general-retries", "3",
+        "--last-iteration-extrinsic",
+        "--last-iteration-extrinsic-nsamples", "7",
+        "--last-iteration-extrinsic-samples-per-ile", "5",
+        "--last-iteration-extrinsic-batched-convert",
+    ]
+    result = subprocess.run(
+        command, cwd=str(rundir), env=_environment(run_base),
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    if result.returncode:
+        raise RuntimeError("{} build failed ({}):\n{}".format(
+            label, result.returncode, result.stdout))
+    (rundir / "pipeline-build.log").write_text(result.stdout)
+    return rundir
+
+
+def _assert_nr_extrinsic_reads_the_final_grid(rundirs):
+    """The same invariant as the other builders, on a workflow shaped differently.
+
+    Here the iteration loop writes its grid with REFINE and the terminal CIP is
+    created OUTSIDE the loop, so the final grid is overlap-grid-<n+1>, not
+    overlap-grid-<n>.  Before RIFT PR #189 the extrinsic ILE read the last
+    REFINE grid -- the NR proposal grid -- rather than the CIP posterior that
+    `convert` turns into posterior_samples-<n+1>.dat, and the terminal CIP was
+    not even an ancestor of it.
+
+    So this checks BOTH halves, because the index alone would have passed a
+    build in which the extrinsic jobs raced the CIP that writes their input:
+
+      * the index the extrinsic nodes read is the largest index written, and
+      * every node writing that index is an ancestor of every ILE_extr node.
+
+    It also checks that the directory those nodes name as initialdir was
+    created.  Moving the index without extending the mkdir loop builds a
+    perfectly well-formed DAG whose extrinsic jobs then fail on the execute
+    node, which no DAG-only assertion would catch.
+    """
+    for rundir in rundirs:
+        dag = rundir / "marginalize_intrinsic_parameters_NRWorkflow.dag"
+        jobs, edges = _dag_jobs_and_edges(dag)
+        macros = _dag_node_macros(dag)
+
+        extrinsic_nodes = {node for node, submit in jobs.items()
+                           if submit.endswith("ILE_extr.sub")}
+        extrinsic = {macros.get(node, {}).get("macroiteration")
+                     for node in extrinsic_nodes}
+        writers = {}
+        for node, submit in jobs.items():
+            if submit.endswith("refine.sub") or submit.startswith("CIP"):
+                index = macros.get(node, {}).get("macroiterationnext")
+                if index is not None:
+                    writers.setdefault(index, set()).add(node)
+        extrinsic.discard(None)
+        assert extrinsic_nodes, "no ILE_extr nodes found in {}".format(dag)
+        assert writers, "no grid-writing nodes found in {}".format(dag)
+        assert len(extrinsic) == 1, (
+            "NR extrinsic nodes disagree about which grid to read: "
+            "{}".format(sorted(extrinsic)))
+        read = next(iter(extrinsic))
+        last_written = max(writers, key=int)
+        assert read == last_written, (
+            "NR extrinsic stage reads overlap-grid-{} but the last grid "
+            "written is overlap-grid-{} ({}); that is the REFINE proposal "
+            "grid, not the terminal CIP posterior".format(
+                read, last_written, rundir.name))
+
+        children = {}
+        for parent, child in edges:
+            children.setdefault(parent, set()).add(child)
+        reachable = set()
+        for writer in writers[last_written]:
+            pending = [writer]
+            while pending:
+                for child in children.get(pending.pop(), ()):
+                    if child not in reachable:
+                        reachable.add(child)
+                        pending.append(child)
+        assert extrinsic_nodes <= reachable, (
+            "the node writing overlap-grid-{} is not an ancestor of every "
+            "ILE_extr node in {}; the extrinsic jobs would race the CIP that "
+            "writes their input".format(last_written, rundir.name))
+
+        logs = rundir / "iteration_{}_ile".format(read) / "logs"
+        assert logs.is_dir(), (
+            "{} does not exist, but ILE_extr.sub names it as initialdir and "
+            "log directory; the DAG would build and the jobs would fail on the "
+            "execute node".format(logs))
 
 
 def _submit_executables(rundir: Path):
@@ -1076,6 +1210,7 @@ def main(argv=None):
         default = _build(None, run_base, xml_grid, cache, pickle_file)
         alternate = [_build_alternate(run_base, xml_grid, cache, n)
                      for n in ALTERNATE_ITERATIONS]
+        nr = [_build_nr(run_base, basic, n) for n in NR_ITERATIONS]
         hyper = _build("Hyperpipe", run_base, ascii_grid, cache, pickle_file)
         hyper_auto = _build(
             "Hyperpipe", run_base, ascii_grid, cache, None,
@@ -1098,6 +1233,7 @@ def main(argv=None):
         _assert_z_subworkflow_contract(hyper_z)
         _assert_extrinsic_reads_the_final_grid(basic, hyper)
         _assert_alternate_extrinsic_reads_the_final_grid(alternate)
+        _assert_nr_extrinsic_reads_the_final_grid(nr)
         _assert_stage_product_table_matches(
             hyper, hyper_auto, hyper_osg, hyper_z)
         _assert_extra_terminal_stages_merge(
