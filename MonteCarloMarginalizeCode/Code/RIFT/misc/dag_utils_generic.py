@@ -171,6 +171,43 @@ if 'RIFT_GETENV_OSG' in os.environ:
     default_getenv_osg_value = os.environ['RIFT_GETENV_OSG']
 
 
+# ---------------------------------------------------------------------------
+# Canonical per-node macro notation
+# ---------------------------------------------------------------------------
+# RIFT writers embed HTCondor-style ``$(macroiteration)`` references directly
+# into option values, paths and filenames.  ``cluster`` and ``process`` are
+# supplied by the scheduler itself rather than by the workflow.
+#
+# ANY identifier in ``$(...)`` is a macro reference.  It used to be only
+# ``macro*``/``cluster``/``process``, which missed the ones RIFT assigns under
+# other names -- ``add_macro`` takes any key, and the BayesWave nodes use
+# ``$(ifo)``.  The shell backends then emitted the token literally, so
+# ``initialdir = <dir>/$(ifo)`` created a directory NAMED ``$(ifo)`` that every
+# detector shared, and ``mkdir -p`` made it succeed, so neither ``set -u`` nor
+# ``set -e`` could see it.  That is the silent-wrong-directory failure the
+# strict rendering exists to prevent, walking straight past the strictness
+# because the token never reached ``macro_ref``.
+#
+# Broadening is safe: in an HTCondor submit file ``$(name)`` is macro
+# expansion, never shell command substitution.  ``$$(...)`` (machine-ad
+# substitution, used for per-GPU container selection) does not match, because
+# what follows ``$(`` there is not an identifier.  Neither does ``$(dirname
+# ...)``-style shell text, which has a space before the closing paren.
+MACRO_REF = re.compile(r"\$\(([A-Za-z_][A-Za-z0-9_]*)\)")
+
+#: Macro names the scheduler provides; a workflow never assigns them.
+SCHEDULER_SUPPLIED_MACROS = ("cluster", "process")
+
+
+def canonical_macro_ref(name):
+    """Spell a variable-opt name as the canonical macro token.
+
+    ``add_var_opt("event")`` and a hand-written ``$(macroevent)`` must produce
+    the same token, or a backend can resolve one and not the other.
+    """
+    return "$(macro{})".format(str(name).replace("-", "_"))
+
+
 def is_exe(fpath):
     return os.path.exists(fpath) and os.access(fpath, os.X_OK)
 
@@ -508,6 +545,7 @@ class _GenericJob(object):
         self.environment = {}            # explicit env: dict of name -> value
         self.inherit_environment = False # condor's "getenv = True" / slurm's "--export=ALL"
         self.condor_cmds = []            # raw Condor submit-file commands (escape hatch / passthrough)
+        self.backend_cmds = {}           # open backend-name -> native command mapping
         self.resources = {}              # structured: memory, disk, cpus, gpus, runtime_minutes
         # Files
         self.sub_file = None
@@ -598,6 +636,21 @@ class _GenericJob(object):
                 self.resources[mapped] = value
         self.condor_cmds.append((key, value))
 
+    def add_backend_cmd(self, backend, key, value):
+        """Record a native command owned by a named execution backend."""
+        self.backend_cmds.setdefault(str(backend), []).append((key, value))
+
+    def iter_backend_cmds(self, *backends):
+        """Yield default commands followed by commands for named backends."""
+        names = ["default"]
+        for backend in backends:
+            backend = str(backend)
+            if backend not in names:
+                names.append(backend)
+        for name in names:
+            for item in self.backend_cmds.get(name, []):
+                yield item
+
     def _merge_environment_string(self, value):
         """Best-effort parse of a Condor 'environment = ...' string."""
         s = str(value).strip()
@@ -635,6 +688,8 @@ class _GenericJob(object):
             "environment": dict(self.environment),
             "inherit_environment": self.inherit_environment,
             "condor_cmds": list(self.condor_cmds),
+            "backend_cmds": {
+                key: list(value) for key, value in self.backend_cmds.items()},
             "resources": dict(self.resources),
             "sub_file": self.sub_file,
             "log_file": self.log_file,
@@ -764,6 +819,11 @@ class _GenericDAG(object):
         self.log = log
         self.dag_file = None
         self.nodes = []
+        # Environment required by the workflow manager and inherited by
+        # node jobs that use ``getenv``.  This is deliberately DAG-level:
+        # setting a variable only in the shell which writes/submits a DAG is
+        # not sufficient once the workflow manager submits its children.
+        self.environment = {}
         # Control-logic overlays
         self.script_pre = []        # list of (node_or_name, exe, args_str)
         self.script_post = []       # list of (node_or_name, exe, args_str)
@@ -778,6 +838,20 @@ class _GenericDAG(object):
     def add_node(self, node):
         self.nodes.append(node)
 
+    def set_environment(self, name, value):
+        """Set a workflow-wide environment variable.
+
+        Backends translate this into their workflow-manager contract
+        (DAGMan ``ENV SET`` or a shell ``export`` in the Slurm driver).
+        """
+        name = str(name)
+        if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
+            raise ValueError("invalid environment variable name: {}".format(name))
+        value = str(value)
+        if "\n" in value or "\r" in value:
+            raise ValueError("environment variable values cannot contain newlines")
+        self.environment[name] = value
+
     @staticmethod
     def _node_name(node_or_name):
         """Accept either a node instance or its bare name string."""
@@ -791,10 +865,39 @@ class _GenericDAG(object):
             or str(node_or_name)
         )
 
+    @staticmethod
+    def _join_script_args(args):
+        """Join hook arguments without losing the caller's word boundaries.
+
+        The API takes ``*args`` -- the caller has already told us where each
+        argument ends -- and this used to `" ".join` them, so an argument
+        containing a space became two.  DAGMan's own SCRIPT line is
+        whitespace-separated, so the joined form is still what goes into the
+        .dag; quoting the ones that need it keeps the information alive for
+        backends that can honour it, and matches how DAGMan reads quoted
+        arguments back.
+
+        Macro references are left bare, because a backend has to be able to
+        find and substitute them: quoting `$(macroiteration)` would hide it
+        from MACRO_REF.  An argument that is exactly one macro reference is
+        therefore never quoted, which is the common case by far.
+        """
+        out = []
+        for arg in args:
+            text = str(arg)
+            if text and not any(ch.isspace() for ch in text):
+                out.append(text)
+            elif MACRO_REF.fullmatch(text or ""):
+                out.append(text)
+            else:
+                out.append('"' + text.replace('\\', '\\\\')
+                           .replace('"', '\\"') + '"')
+        return " ".join(out)
+
     def add_script_pre(self, node, executable, *args):
         """Add a SCRIPT PRE hook for *node* (executable + args)."""
         entry = (self._node_name(node), str(executable),
-                 " ".join(str(a) for a in args))
+                 self._join_script_args(args))
         self.script_pre.append(entry)
         if self._already_written:
             get_backend().append_script_pre(self, *entry)
@@ -802,7 +905,7 @@ class _GenericDAG(object):
     def add_script_post(self, node, executable, *args):
         """Add a SCRIPT POST hook for *node* (executable + args)."""
         entry = (self._node_name(node), str(executable),
-                 " ".join(str(a) for a in args))
+                 self._join_script_args(args))
         self.script_post.append(entry)
         if self._already_written:
             get_backend().append_script_post(self, *entry)
@@ -901,6 +1004,19 @@ class WorkflowBackend(abc.ABC):
             return dag_file
         return dag_file + ".dag"
 
+    @staticmethod
+    def format_dag_environment(environment):
+        """Render the DAGMan workflow-environment directive."""
+        if not environment:
+            return ""
+        assignments = []
+        for key, value in environment.items():
+            if ";" in value:
+                raise ValueError(
+                    "DAGMan ENV SET values cannot contain semicolons: {}".format(key))
+            assignments.append("{}={}".format(key, value))
+        return "ENV SET {}\n".format(";".join(assignments))
+
     def format_script_pre(self, name, exe, args_str):
         return "SCRIPT PRE {} {} {}\n".format(name, exe, args_str).rstrip(" \n") + "\n"
 
@@ -939,6 +1055,9 @@ class WorkflowBackend(abc.ABC):
         """Helper for emit_dag implementations that produce a single
         text artefact: write all the captured control-logic overlays
         appended to the workflow body."""
+        env_line = self.format_dag_environment(dag.environment)
+        if env_line:
+            fh.write(env_line)
         for name, exe, args_str in dag.script_pre:
             fh.write(self.format_script_pre(name, exe, args_str))
         for name, exe, args_str in dag.script_post:
@@ -952,14 +1071,178 @@ class WorkflowBackend(abc.ABC):
                 line = line + "\n"
             fh.write(line)
 
+    # ------------------------------------------------------------------
+    # Per-node macro rendering
+    # ------------------------------------------------------------------
+    # There is exactly ONE macro notation in this module -- HTCondor's
+    # ``$(name)`` -- and exactly one place it is translated: ``render_macros``.
+    #
+    # This is deliberate.  RIFT's ``write_*_sub`` helpers bake ``$(macroX)``
+    # into option values, paths, log filenames, and initialdir strings, not
+    # only into the ``var_opts`` list.  A backend that substitutes only
+    # ``var_opts`` therefore emits a submit description that still contains
+    # raw ``$(macroX)`` text, which no scheduler but HTCondor understands.
+    # Making every backend render every emitted field through this one hook
+    # removes the per-backend substitution helpers entirely.
+
+    def macro_ref(self, name, lenient=False):
+        """Translate one canonical macro name into this backend's notation.
+
+        The default is HTCondor's own notation, i.e. the identity.
+
+        *lenient* asks for a reference that tolerates the macro being
+        unassigned.  It exists because HTCondor itself is lenient: an
+        unassigned ``$(macroevent)`` in a LOG filename expands to nothing and
+        the job runs.  Several RIFT nodes rely on that -- BasicIteration's
+        `convert_extr` names `batchconvert-$(macroevent).err` and never
+        assigns `macroevent`.  A shell backend that is strict everywhere turns
+        those into hard failures, which is a difference in behaviour, not a
+        stricter check.  Strictness belongs on the arguments and the working
+        directory, where an empty expansion changes what runs.
+        """
+        return "$({})".format(name)
+
+    def render_macros(self, text, lenient=False):
+        """Rewrite every ``$(name)`` in *text* into this backend's notation."""
+        if text is None:
+            return text
+        return MACRO_REF.sub(
+            lambda m: self.macro_ref(m.group(1), lenient=lenient), str(text))
+
+    @staticmethod
+    def _topological_sort(nodes):
+        """Dependency order for backends that submit or run nodes themselves.
+
+        DAGMan does its own ordering; every other backend has to.
+        """
+        # Kahn's algorithm
+        in_edges = {id(n): set(id(p) for p in n.parents) for n in nodes}
+        node_by_id = {id(n): n for n in nodes}
+        out = []
+        ready = [n for n in nodes if not in_edges[id(n)]]
+        while ready:
+            n = ready.pop(0)
+            out.append(n)
+            for m in nodes:
+                if id(n) in in_edges[id(m)]:
+                    in_edges[id(m)].remove(id(n))
+                    if not in_edges[id(m)]:
+                        ready.append(m)
+        if len(out) != len(nodes):
+            # Cycle, just emit in input order
+            return list(nodes)
+        return out
+
+    # ------------------------------------------------------------------
+    # Emitting a command line for a SHELL
+    # ------------------------------------------------------------------
+    # HTCondor hands the argument string to exec() itself: no shell is
+    # involved, so a `*` is a literal asterisk and a space inside a quoted
+    # group stays inside it.  A backend that writes a shell script gets
+    # neither for free.  RIFT relies on both -- `--annotation-glob
+    # .../output-1-*+annotation.dat` is passed to a python glob, and
+    # `--mc-range '[18,30]'` is one token -- so a shell backend that simply
+    # pastes the argument string produces a DIFFERENT command line, and
+    # usually a failing one.  Everything below exists to make the shell see
+    # exactly the argv HTCondor would have passed.
+
+    @staticmethod
+    def condor_args_to_argv(text):
+        """Split an HTCondor "new syntax" argument string into argv.
+
+        Rules implemented (see the HTCondor submit-file manual): whitespace
+        separates arguments except inside a single-quoted group; `''` inside
+        such a group is a literal quote; `""` is a literal double quote.
+        """
+        argv, current, in_quotes, started = [], [], False, False
+        i, n = 0, len(text)
+        while i < n:
+            ch = text[i]
+            if ch == '"' and i + 1 < n and text[i + 1] == '"':
+                current.append('"'); started = True; i += 2; continue
+            if ch == "'":
+                if in_quotes and i + 1 < n and text[i + 1] == "'":
+                    current.append("'"); i += 2; continue
+                in_quotes = not in_quotes; started = True; i += 1; continue
+            if ch.isspace() and not in_quotes:
+                if started:
+                    argv.append("".join(current)); current, started = [], False
+                i += 1; continue
+            current.append(ch); started = True; i += 1
+        if started:
+            argv.append("".join(current))
+        return argv
+
+    @staticmethod
+    def _escape_shell_literal(text):
+        """Escape the characters bash treats specially inside double quotes."""
+        return re.sub(r'([\\`"$])', r"\\\1", text)
+
+    def shell_word(self, token, lenient=False):
+        """One argv element as a bash word, with macros still expandable.
+
+        Double quotes suppress globbing and word splitting -- which is the
+        whole point -- while leaving the ``${VAR}`` references this backend
+        emits live.  Literal text is escaped first and the macro reference
+        substituted after, so a stray ``$`` or ``$(...)`` in the original
+        argument cannot become a shell expansion.
+        """
+        token = str(token)
+        out, pos = [], 0
+        for match in MACRO_REF.finditer(token):
+            out.append(self._escape_shell_literal(token[pos:match.start()]))
+            out.append(self.macro_ref(match.group(1).lower(),
+                                      lenient=lenient))
+            pos = match.end()
+        out.append(self._escape_shell_literal(token[pos:]))
+        return '"' + "".join(out) + '"'
+
+    def shell_command(self, job):
+        """The job's executable and arguments, ready to paste into a script.
+
+        The executable is stripped: HTCondor's submit parser discards
+        whitespace around the value of ``executable``, and several RIFT
+        writers build that value by concatenation and leave a leading space
+        (``write_unify_sub_simple`` is one).  Harmless there, fatal in a
+        shell, where `` /path/unify.sh`` is a command that does not exist.
+        """
+        words = [self.shell_word(str(job.executable).strip())]
+        words += [self.shell_word(arg)
+                  for arg in self.condor_args_to_argv(
+                      self._build_argument_string(job))]
+        return " ".join(words)
+
+    @staticmethod
+    def _unquote(s):
+        """Strip the quoting HTCondor submit values carry (e.g. ``"compute"``)."""
+        s = str(s)
+        if len(s) >= 2 and s[0] == s[-1] and s[0] in ('"', "'"):
+            s = s[1:-1]
+        return s
+
+    @staticmethod
+    def initial_dir_of(job):
+        """The job's working directory, from HTCondor's ``initialdir``.
+
+        Backends that emit a script rather than a submit description have to
+        ``cd`` there themselves: a job that runs in the wrong directory still
+        exits zero, and writes its outputs where the next stage will not look.
+        """
+        for key, value in job.condor_cmds:
+            if str(key).lower() == "initialdir":
+                return WorkflowBackend._unquote(str(value)).strip()
+        return None
+
     # Defaults useful for sub-classes
     @staticmethod
-    def _build_argument_string(job, var_ref):
-        """Render a job's argument list as a single command-line string.
+    def _build_argument_string(job):
+        """Render a job's argument list in the canonical ``$(name)`` notation.
 
-        *var_ref* is a callable mapping a variable-opt name to whatever string
-        should be substituted at submit time (e.g. ``"$(macroevent)"`` for
-        Condor, ``"${event}"`` for Slurm).
+        The caller is responsible for passing the result through
+        :meth:`render_macros`.  Variable opts are emitted as
+        ``$(macro<name>)`` -- the same token RIFT's writers already embed by
+        hand elsewhere -- so both sources of a per-node reference are spelled
+        identically and cannot drift apart.
         """
         parts = []
         for name, value in job.opts:
@@ -972,7 +1255,7 @@ class WorkflowBackend(abc.ABC):
         for name, value in job.file_opts:
             parts.append("--{}={}".format(name, value))
         for name in job.var_opts:
-            parts.append("--{}={}".format(name, var_ref(name)))
+            parts.append("--{}={}".format(name, canonical_macro_ref(name)))
         for arg in job.arguments:
             parts.append(str(arg))
         return " ".join(parts)
@@ -1007,9 +1290,10 @@ class HTCondorBackend(WorkflowBackend):
         except Exception:
             self._htcondor = None
 
-    @staticmethod
-    def _var_ref(name):
-        return "$(macro{})".format(name.replace("-", "_"))
+    # HTCondor needs no translation: the canonical notation IS its notation,
+    # so ``macro_ref`` keeps the base-class identity and every rendered field
+    # is byte-identical to what this backend emitted before the canonical
+    # notation existed.
 
     def _build_submit_dict(self, job):
         sub = {}
@@ -1017,7 +1301,7 @@ class HTCondorBackend(WorkflowBackend):
             sub["universe"] = job.universe
         if job.executable is not None:
             sub["executable"] = str(job.executable)
-        args = self._build_argument_string(job, self._var_ref)
+        args = self.render_macros(self._build_argument_string(job))
         if args:
             # Condor "new arguments syntax": the entire argument string must
             # be wrapped in double quotes.  glue.pipeline.CondorDAGJob's
@@ -1038,6 +1322,8 @@ class HTCondorBackend(WorkflowBackend):
             sub["error"] = job.stderr_file
         # condor_cmds includes both well-known and custom commands; pass them all through.
         for key, value in job.condor_cmds:
+            sub[key] = "" if value is None else str(value)
+        for key, value in job.iter_backend_cmds(self.name):
             sub[key] = "" if value is None else str(value)
         return sub
 
@@ -1174,7 +1460,12 @@ class GluePipelineBackend(WorkflowBackend):
             gjob.add_var_opt(n)
         for arg in job.arguments:
             gjob.add_arg(arg)
+        submit_commands = {}
         for k, v in job.condor_cmds:
+            submit_commands[k] = v
+        for k, v in job.iter_backend_cmds("htcondor", self.name):
+            submit_commands[k] = v
+        for k, v in submit_commands.items():
             gjob.add_condor_cmd(k, v)
         try:
             # glue.pipeline stores the queue count in this private attribute.
@@ -1269,11 +1560,35 @@ class SlurmBackend(WorkflowBackend):
         # silently override Condor on misconfigured machines.
         return False
 
+    def macro_ref(self, name, lenient=False):
+        """Map a canonical macro to the shell variable the driver exports.
+
+        ``emit_dag`` exports one variable per node macro, named from the macro
+        key itself, so the two halves cannot disagree: both are derived here.
+        ``cluster``/``process`` come from Slurm rather than from the workflow.
+        The ``:-0`` default matters -- a non-array job has no
+        ``SLURM_ARRAY_TASK_ID``, and an unset variable would otherwise expand
+        to an empty string and silently produce a filename like ``out--.log``.
+        """
+        if name == "cluster":
+            return "${SLURM_JOB_ID:-0}"
+        if name == "process":
+            return "${SLURM_ARRAY_TASK_ID:-0}"
+        if lenient:
+            return "${" + self.slurm_var_name(name) + ":-}"
+        return "${" + self.slurm_var_name(name) + "}"
+
+    @staticmethod
+    def slurm_var_name(macro_name):
+        """The environment-variable name carrying one node macro."""
+        return "SLURM_VAR_" + re.sub(r"\W+", "_", str(macro_name)).upper()
+
     def emit_job(self, job, path):
         lines = ["#!/bin/bash", ""]
 
         # Map structured resources / common semantics to #SBATCH directives.
         directives = []
+        initial_dir = self.initial_dir_of(job)
         if job.resources.get("memory"):
             directives.append("--mem={}".format(self._coerce_mem(job.resources["memory"])))
         if job.resources.get("cpus"):
@@ -1287,9 +1602,11 @@ class SlurmBackend(WorkflowBackend):
         if job.queue_count and int(job.queue_count) > 1:
             directives.append("--array=0-{}".format(int(job.queue_count) - 1))
         if job.stdout_file:
-            directives.append("--output={}".format(job.stdout_file))
+            directives.append("--output={}".format(
+                self.render_macros(job.stdout_file, lenient=True)))
         if job.stderr_file:
-            directives.append("--error={}".format(job.stderr_file))
+            directives.append("--error={}".format(
+                self.render_macros(job.stderr_file, lenient=True)))
         # Job name from the executable, useful in squeue
         if job.executable:
             directives.append("--job-name={}".format(os.path.basename(str(job.executable))))
@@ -1302,8 +1619,17 @@ class SlurmBackend(WorkflowBackend):
             elif key == "+SlurmQOS" or key == "MY.SlurmQOS":
                 directives.append("--qos={}".format(self._unquote(value)))
 
+
         for d in directives:
             lines.append("#SBATCH {}".format(d))
+
+        for key, value in job.iter_backend_cmds(self.name):
+            key = str(key).lstrip("-").replace("_", "-")
+            if value is None or value == "":
+                lines.append("#SBATCH --{}".format(key))
+            else:
+                lines.append("#SBATCH --{}={}".format(
+                    key, self.render_macros(value)))
 
         # Environment
         if job.inherit_environment:
@@ -1319,22 +1645,28 @@ class SlurmBackend(WorkflowBackend):
             for k, v in job.condor_cmds:
                 lines.append("#   {} = {}".format(k, v))
 
-        # When queue_count > 1, the per-task variable opt substitution should
-        # use SLURM_ARRAY_TASK_ID; when there's only one task we still pass
-        # macros via per-job environment variables (the dag driver script
-        # will set them via --export when submitting).
-        def slurm_var(name):
-            ev = "SLURM_VAR_" + re.sub(r"\W+", "_", name).upper()
-            return "${" + ev + "}"
-
-        args = self._build_argument_string(job, slurm_var)
+        # HTCondor's `initialdir` is the job's working directory, and RIFT
+        # relies on it (iteration_N_marg/event_K, and every relative output
+        # path underneath).  Slurm has no equivalent submit directive, so the
+        # script must cd itself.  Without this the job runs in the submit CWD
+        # and writes its outputs where the next stage will not find them --
+        # a failure that leaves a zero exit status.
         lines.append("")
+        # Enforce the strict half of the macro contract at runtime: a strict
+        # macro renders as ${SLURM_VAR_X} (no default), and without `set -u`
+        # bash expands an unassigned one to the empty string and the job runs
+        # with a silently mangled argument list.  Lenient (log-path) macros
+        # render with :- defaults and are unaffected.  `set -e` makes the
+        # mkdir/cd failures fatal instead of running in the wrong directory.
+        lines.append("set -eu")
+        if initial_dir:
+            quoted_dir = self.shell_word(initial_dir)
+            lines.append("mkdir -p {}".format(quoted_dir))
+            lines.append("cd {}".format(quoted_dir))
+
         if not job.executable:
             raise RuntimeError("SlurmBackend.emit_job: job has no executable")
-        if args:
-            lines.append("exec {} {}".format(job.executable, args))
-        else:
-            lines.append("exec {}".format(job.executable))
+        lines.append("exec {}".format(self.shell_command(job)))
         text = "\n".join(lines) + "\n"
         with open(path, "w") as fh:
             fh.write(text)
@@ -1399,6 +1731,10 @@ class SlurmBackend(WorkflowBackend):
             "set -euo pipefail",
             "",
         ]
+        for key, value in dag.environment.items():
+            lines.append("export {}={}".format(key, shlex.quote(value)))
+        if dag.environment:
+            lines.append("")
         # Track post-script jobs we submitted so subsequent abort-on checks
         # can wait for them too.
         for node in order:
@@ -1409,12 +1745,21 @@ class SlurmBackend(WorkflowBackend):
                 lines.append("{} {}".format(exe, args).rstrip())
 
             if isinstance(node, _GenericSubdagNode):
+                # Resolve the LOGICAL dag name to what this backend actually
+                # wrote (foo.dag -> foo_dag.sh), exactly as the local backend
+                # does.  Callers hand every backend the same logical name; the
+                # build-time existence check in the pipeline writer validates
+                # the resolved path, so running the unresolved one meant a
+                # valid manifest passed validation and then failed at
+                # execution with `bash foo.dag`.  Idempotent for names that
+                # are already resolved.
+                subdag_driver = self.output_path_for_dag(node.subdag_file)
                 lines.append("# Sub-DAG: {}".format(node.subdag_file))
                 lines.append('echo "Slurm backend: SUBDAG nodes are not supported natively; '
-                             'driving sub-script {} via bash" >&2'.format(node.subdag_file))
+                             'driving sub-script {} via bash" >&2'.format(subdag_driver))
                 deps = self._dep_clause(node, var_for_node_id)
                 lines.append("{}=$(sbatch{} --wrap=\"bash {}\" | awk '{{print $4}}')".format(
-                    var, deps, node.subdag_file))
+                    var, deps, subdag_driver))
             else:
                 sub = node.job.get_sub_file()
                 if sub is None:
@@ -1423,8 +1768,8 @@ class SlurmBackend(WorkflowBackend):
                 # Per-node variable opts get exported via --export=ALL,VAR=val
                 export_args = ""
                 if node.macros:
-                    kvs = ",".join("SLURM_VAR_{}={}".format(
-                        re.sub(r"\W+", "_", k).upper(), v)
+                    kvs = ",".join(
+                        "{}={}".format(self.slurm_var_name(k), v)
                         for k, v in node.macros.items())
                     export_args = " --export=ALL,{}".format(kvs)
                 deps = self._dep_clause(node, var_for_node_id)
@@ -1551,26 +1896,6 @@ class SlurmBackend(WorkflowBackend):
         return " --dependency=afterok:" + ids
 
     @staticmethod
-    def _topological_sort(nodes):
-        # Kahn's algorithm
-        in_edges = {id(n): set(id(p) for p in n.parents) for n in nodes}
-        node_by_id = {id(n): n for n in nodes}
-        out = []
-        ready = [n for n in nodes if not in_edges[id(n)]]
-        while ready:
-            n = ready.pop(0)
-            out.append(n)
-            for m in nodes:
-                if id(n) in in_edges[id(m)]:
-                    in_edges[id(m)].remove(id(n))
-                    if not in_edges[id(m)]:
-                        ready.append(m)
-        if len(out) != len(nodes):
-            # Cycle, just emit in input order
-            return list(nodes)
-        return out
-
-    @staticmethod
     def _coerce_mem(value):
         # Accept "2048M", "2G", "1024", 1024
         s = str(value).strip()
@@ -1588,13 +1913,6 @@ class SlurmBackend(WorkflowBackend):
         h, mm = divmod(m, 60)
         return "{}:{:02d}:00".format(h, mm)
 
-    @staticmethod
-    def _unquote(s):
-        s = str(s)
-        if len(s) >= 2 and s[0] == s[-1] and s[0] in ('"', "'"):
-            s = s[1:-1]
-        return s
-
 
 # ===========================================================================
 # Backend registry & selection
@@ -1603,6 +1921,338 @@ class SlurmBackend(WorkflowBackend):
 # Registry of backend instances, keyed by name.
 _BACKENDS = {}
 _ACTIVE_BACKEND_NAME = None
+
+
+# ---------------------------------------------------------------------------
+# Local backend (no scheduler)
+# ---------------------------------------------------------------------------
+
+class LocalBackend(WorkflowBackend):
+    """Run a workflow as ordinary local processes -- no batch system at all.
+
+    This exists because "you need an HTCondor pool" is the single largest
+    barrier to running RIFT anywhere: a laptop, a CI runner, a bare VM, or an
+    HPC login node while you debug a workflow before submitting it.  The
+    hyperpipeline's own test gates already executed workflows this way with a
+    private DAG parser; making it a registered backend means the capability is
+    a deployment target rather than test scaffolding.
+
+    Emission mirrors the Slurm backend -- one shell script per job, one driver
+    script for the workflow -- minus the scheduler.  The driver runs nodes in
+    dependency order, honours per-node ``RETRY``, and stops at the first node
+    that exhausts its retries.  Concurrency is deliberately NOT implemented:
+    a local run is for correctness and debugging, and a sequential driver has
+    no scheduling semantics of its own to get wrong.
+
+    Resource requests (memory, disk, GPUs) have no local meaning and are
+    recorded as comments rather than silently discarded.  File-transfer lists
+    are likewise inert: like the Slurm backend, this one assumes every path in
+    the workflow is visible to the process that runs it.
+    """
+
+    name = "local"
+
+    @classmethod
+    def is_available(cls):
+        # Runnable anywhere, but never auto-selected: silently running a
+        # thousand-job production workflow on a login node would be worse
+        # than failing to find a scheduler.
+        return False
+
+    @staticmethod
+    def local_var_name(macro_name):
+        return "RIFT_VAR_" + re.sub(r"\W+", "_", str(macro_name)).upper()
+
+    def macro_ref(self, name, lenient=False):
+        if name == "cluster":
+            return "${RIFT_CLUSTER:-0}"
+        if name == "process":
+            return "${RIFT_PROCESS:-0}"
+        if lenient:
+            return "${" + self.local_var_name(name) + ":-}"
+        return "${" + self.local_var_name(name) + "}"
+
+    def emit_job(self, job, path):
+        if not job.executable:
+            raise RuntimeError("LocalBackend.emit_job: job has no executable")
+        # `set -u` is load-bearing, not hygiene.  The two defects this backend
+        # exists to expose -- an unresolved per-node macro and a working
+        # directory that was never entered -- both produce a job that runs to a
+        # ZERO exit status with something silently missing.  Without -u, an
+        # unassigned macro expands to the empty string and the job "succeeds".
+        lines = ["#!/bin/bash", "set -euo pipefail", ""]
+        for key, value in job.resources.items():
+            lines.append("# resource {} = {} (no local equivalent)".format(key, value))
+        if job.condor_cmds:
+            lines.append("# Original HTCondor submit-file commands (preserved for reference):")
+            for key, value in job.condor_cmds:
+                lines.append("#   {} = {}".format(key, value))
+        initial_dir = self.initial_dir_of(job)
+        for key, value in job.environment.items():
+            lines.append("export {}={}".format(key, shlex.quote(str(value))))
+        lines.append("")
+        if initial_dir:
+            quoted_dir = self.shell_word(initial_dir)
+            lines.append("mkdir -p {}".format(quoted_dir))
+            lines.append("cd {}".format(quoted_dir))
+        redirect = ""
+        for stream, operator in ((job.stdout_file, ">"), (job.stderr_file, "2>")):
+            if stream:
+                # Lenient: a log filename with an unassigned macro is what
+                # HTCondor does too, and must not fail the job.
+                quoted = self.shell_word(stream, lenient=True)
+                lines.append("mkdir -p \"$(dirname {})\"".format(quoted))
+                redirect += " {} {}".format(operator, quoted)
+        # HTCondor's `queue N` runs the job N times with a distinct $(process).
+        # Dropping that would silently under-produce -- ILE's --n-copies is
+        # exactly this -- so run the loop here rather than pretend N == 1.
+        copies = max(1, int(job.queue_count or 1))
+        command = "{}{}".format(self.shell_command(job), redirect)
+        if copies == 1:
+            lines.append("exec {}".format(command))
+        else:
+            lines.append("# HTCondor 'queue {}': one process per iteration".format(copies))
+            lines.append("for RIFT_PROCESS in $(seq 0 {}); do".format(copies - 1))
+            lines.append("  export RIFT_PROCESS")
+            lines.append("  {}".format(command))
+            lines.append("done")
+        with open(path, "w") as fh:
+            fh.write("\n".join(lines) + "\n")
+        try:
+            os.chmod(path, 0o755)
+        except OSError:
+            pass
+
+    # Callers add SCRIPT POST / ABORT-DAG-ON *after* write_concrete_dag() --
+    # create_event_parameter_pipeline_BasicIteration does exactly that -- and
+    # the base class then appends raw DAGMan text to whatever the backend
+    # wrote.  In a bash driver that is a syntax error at best; worse, the
+    # confirm_exist.sh POST guards and the convergence ABORT-DAG-ON would be
+    # lost.  Re-emit instead, exactly as the Slurm backend does.
+    def _reemit(self, dag):
+        self.emit_dag(dag, dag.dag_file)
+
+    def append_script_pre(self, dag, name, exe, args_str):
+        self._reemit(dag)
+
+    def append_script_post(self, dag, name, exe, args_str):
+        self._reemit(dag)
+
+    def append_abort_on(self, dag, name, exit_code, return_value):
+        self._reemit(dag)
+
+    def append_dot_file(self, dag, path):
+        self._reemit(dag)
+
+    def append_extra_directive(self, dag, line):
+        self._reemit(dag)
+
+    def output_path_for_dag(self, dag_file):
+        if dag_file.endswith(".sh"):
+            return dag_file
+        if dag_file.endswith(".dag"):
+            return dag_file[:-4] + "_local.sh"
+        return dag_file + "_local.sh"
+
+    def emit_dag(self, dag, path):
+        path = self.output_path_for_dag(path)
+        order = self._topological_sort(dag.nodes)
+        pre_by_name, post_by_name = {}, {}
+        for name, exe, args in dag.script_pre:
+            pre_by_name.setdefault(name, []).append((exe, args))
+        for name, exe, args in dag.script_post:
+            post_by_name.setdefault(name, []).append((exe, args))
+
+        lines = [
+            "#!/bin/bash",
+            "# Local driver: runs this workflow's nodes in dependency order",
+            "# as ordinary processes.  No scheduler is involved.",
+            "# -e is deliberate and load-bearing: anything this driver runs",
+            "# outside run_node -- a SCRIPT PRE/POST hook, a sub-workflow --",
+            "# must stop the workflow when it fails, the way DAGMan would.",
+            "set -euo pipefail",
+            "",
+        ]
+        for key, value in dag.environment.items():
+            lines.append("export {}={}".format(key, shlex.quote(str(value))))
+        if dag.environment:
+            lines.append("")
+        lines.extend([
+            'run_step() {',
+            '  # A sub-workflow, or a hook on a node that has no retry.',
+            '  local label="$1"; shift',
+            '  echo "[local] ${label}"',
+            '  if ! "$@"; then',
+            '    echo "[local] FAILED ${label}" >&2',
+            '    exit 1',
+            '  fi',
+            '}',
+            "",
+            'run_unit() {',
+            '  # DAGMan retries the PRE + JOB + POST triple as ONE unit, and',
+            '  # the POST script -- not the job -- decides whether the node',
+            '  # succeeded.  Emulating that matters: RIFT\'s cip-explode design',
+            '  # pairs RETRY 1000 with a POST script whose own comment says it',
+            '  # "will USUALLY FAIL and get retried A LARGE NUMBER OF TIMES,',
+            '  # until we complete work". A driver that exits on the first POST',
+            '  # failure makes that adaptive batching inert.',
+            '  #',
+            '  # pre/post are names of generated functions, or the empty',
+            '  # string.  DAGMan\'s script variables are passed the same way',
+            '  # every other macro is -- exported here, referenced as',
+            '  # ${RIFT_VAR_*} in the generated hook -- so one mechanism covers',
+            '  # $(JOB), $(JOBID), $(RETURN) and the node\'s own VARS alike.',
+            '  local name="$1"; local retries="$2"; local abort_code="$3"',
+            '  local abort_return="$4"; local script="$5"',
+            '  local pre="$6"; local post="$7"; shift 7',
+            '  local attempt=0 rc=0 job_rc=0',
+            '  export RIFT_VAR_JOB="${name}"',
+            '  export RIFT_VAR_JOBID="${name}.0.0"',
+            '  # The node VARS, exported for the whole unit rather than only',
+            '  # for the job: DAGMan substitutes a node\'s VARS into its PRE',
+            '  # and POST argument lists too, and a hook that referenced one',
+            '  # would otherwise die on `unbound variable` under set -u.',
+            '  local _pair',
+            '  for _pair in "$@"; do export "${_pair}"; done',
+            '  while :; do',
+            '    rc=0',
+            '    export RIFT_VAR_RETURN=0',
+            '    if [ -n "${pre}" ]; then',
+            '      echo "[local] SCRIPT PRE ${name}"',
+            '      "${pre}" || rc=$?',
+            '    fi',
+            '    job_rc=0',
+            '    if [ "${rc}" -eq 0 ]; then',
+            '      echo "[local] running ${name} (attempt $((attempt+1)))"',
+            '      env "$@" bash "${script}" || job_rc=$?',
+            '      if [ -n "${abort_code}" ] && [ "${job_rc}" -eq "${abort_code}" ]; then',
+            '        echo "[local] ABORT-DAG-ON ${name}: exit ${job_rc}, workflow returns ${abort_return}"',
+            '        exit "${abort_return}"',
+            '      fi',
+            '      rc=${job_rc}',
+            '    fi',
+            '    if [ -n "${post}" ]; then',
+            '      echo "[local] SCRIPT POST ${name}"',
+            '      export RIFT_VAR_RETURN="${job_rc}"',
+            '      rc=0',
+            '      "${post}" || rc=$?',
+            '    fi',
+            '    if [ "${rc}" -eq 0 ]; then return 0; fi',
+            '    attempt=$((attempt+1))',
+            '    if [ "${attempt}" -gt "${retries}" ]; then',
+            '      echo "[local] FAILED ${name} after $((retries+1)) attempt(s), exit ${rc}" >&2',
+            '      exit 1',
+            '    fi',
+            '  done',
+            '}',
+            "",
+            'run_node() {',
+            '  # abort_code/abort_return implement DAGMan ABORT-DAG-ON: that',
+            '  # exit status ends the workflow immediately with the declared',
+            '  # return value, and is NOT retried.  RIFT uses it for the',
+            '  # convergence test, where exit 1 means "converged, stop" -- a',
+            '  # driver that retried it would turn success into failure.',
+            '  local name="$1"; local retries="$2"; local abort_code="$3"',
+            '  local abort_return="$4"; local script="$5"; shift 5',
+            '  local attempt=0 rc=0',
+            '  while :; do',
+            '    echo "[local] running ${name} (attempt $((attempt+1)))"',
+            '    rc=0',
+            '    env "$@" bash "${script}" || rc=$?',
+            '    if [ "${rc}" -eq 0 ]; then return 0; fi',
+            '    if [ -n "${abort_code}" ] && [ "${rc}" -eq "${abort_code}" ]; then',
+            '      echo "[local] ABORT-DAG-ON ${name}: exit ${rc}, workflow returns ${abort_return}"',
+            '      exit "${abort_return}"',
+            '    fi',
+            '    attempt=$((attempt+1))',
+            '    if [ "${attempt}" -gt "${retries}" ]; then',
+            '      echo "[local] FAILED ${name} after $((retries+1)) attempt(s), exit ${rc}" >&2',
+            '      exit 1',
+            '    fi',
+            '  done',
+            '}',
+            "",
+        ])
+        abort_by_name = {}
+        for entry in dag.abort_on:
+            abort_by_name[_GenericDAG._node_name(entry[0])] = (entry[1], entry[2])
+        hook_index = [0]
+
+        def _emit_hook(node, kind, hooks):
+            """Emit one bash function per node's PRE/POST hooks, or "".
+
+            Quoting and macro rendering happen HERE, once, at generation.  The
+            hook command used to be pasted into the driver as raw text, so
+            `$(JOBID)` became bash command substitution -- `JOBID: command not
+            found`, and every later argument shifted down two positions -- and
+            a path containing a space split into two words.  Both are silent:
+            the POST script simply receives the wrong argv.
+
+            DAGMan's script variables resolve to what DAGMan resolves them
+            to -- $(JOB) the node name, $(RETURN) the job's exit status,
+            $(JOBID) a job identifier -- via the same mechanism as every other
+            macro: run_unit exports them, and shell_word leaves the reference
+            live inside double quotes.  Going through shell_word rather than
+            shlex.quote is what makes that work; quoting the whole word would
+            escape the `$` and hand the script the literal text.
+            """
+            if not hooks:
+                return ""
+            name = "_hook_{}_{}".format(kind, hook_index[0])
+            hook_index[0] += 1
+            body = []
+            for exe, args in hooks:
+                words = [str(exe).strip()] + shlex.split(args or "")
+                body.append("  " + " ".join(
+                    self.shell_word(word) for word in words) + " || return $?")
+            lines.append("{}() {{".format(name))
+            lines.extend(body)
+            lines.append("}")
+            lines.append("")
+            return name
+
+        for node in order:
+            pre_name = _emit_hook(node, "pre", pre_by_name.get(node.name, []))
+            post_name = _emit_hook(node, "post", post_by_name.get(node.name, []))
+            retries = int(node.retry or 0)
+            if isinstance(node, _GenericSubdagNode):
+                # A sub-workflow is a node: it carries RETRY like any other, and
+                # a `subworkflow-v1` stage's declared `retries` reaches here.
+                # It used to be run through run_step, which has no retry loop,
+                # so the declared value was a silent no-op.
+                driver = self.output_path_for_dag(node.subdag_file)
+                lines.append('run_unit {} {} {} {} {} {} {}'.format(
+                    shlex.quote(node.name), retries, shlex.quote(""), 0,
+                    shlex.quote(driver), shlex.quote(pre_name),
+                    shlex.quote(post_name)))
+                continue
+            script = node.job.get_sub_file()
+            if script is None:
+                raise RuntimeError(
+                    "LocalBackend: node {} has no script".format(node.name))
+            env_pairs = " ".join(
+                "{}={}".format(self.local_var_name(k), shlex.quote(str(v)))
+                for k, v in node.macros.items())
+            abort_code, abort_return = abort_by_name.get(node.name, ("", 0))
+            lines.append('run_unit {} {} {} {} {} {} {}{}'.format(
+                shlex.quote(node.name), retries,
+                shlex.quote(str(abort_code)), int(abort_return),
+                shlex.quote(script), shlex.quote(pre_name),
+                shlex.quote(post_name),
+                (" " + env_pairs) if env_pairs else ""))
+        if dag.dot_file is not None:
+            lines.append("# DOT {} (no local equivalent)".format(dag.dot_file))
+        for directive in dag.extra_directives:
+            lines.append("# DAGMan directive, inert here: {}".format(
+                directive.rstrip()))
+        lines.append('echo "[local] workflow complete"')
+        with open(path, "w") as fh:
+            fh.write("\n".join(lines) + "\n")
+        try:
+            os.chmod(path, 0o755)
+        except OSError:
+            pass
+        dag.dag_file = path
 
 
 def register_backend(backend):
@@ -1693,6 +2343,7 @@ if GluePipelineBackend.is_available():
     except Exception:
         pass
 register_backend(SlurmBackend())
+register_backend(LocalBackend())
 
 _auto_select_backend()
 
@@ -2110,7 +2761,7 @@ def write_CIP_single_iteration_subdag(cip_worker_job,it,unique_postfix,subdag_di
 
 
 
-def write_CIP_sub(tag='integrate', exe=None, input_net='all.net',output='output-ILE-samples',universe="vanilla",out_dir=None,log_dir=None, use_eos=False,ncopies=1,arg_str=None,request_memory=8192,request_memory_flex=False, arg_vals=None, no_grid=False,request_disk=False, transfer_files=None,transfer_output_files=None,use_singularity=False,use_osg=False,use_oauth_files=False,use_simple_osg_requirements=False,singularity_image=None,max_runtime_minutes=None,condor_commands=None,**kwargs):
+def write_CIP_sub(tag='integrate', exe=None, input_net='all.net',output='output-ILE-samples',universe="vanilla",out_dir=None,log_dir=None, use_eos=False,ncopies=1,arg_str=None,request_memory=8192,request_memory_flex=False, arg_vals=None, no_grid=False,request_disk=False, transfer_files=None,transfer_output_files=None,use_singularity=False,use_osg=False,use_oauth_files=False,use_simple_osg_requirements=False,singularity_image=None,max_runtime_minutes=None,condor_commands=None,request_cpus=1,**kwargs):
     """
     Write a submit file for launching jobs to marginalize the likelihood over intrinsic parameters.
 
@@ -2166,7 +2817,7 @@ def write_CIP_sub(tag='integrate', exe=None, input_net='all.net',output='output-
             singularity_base_exe_path = os.environ['SINGULARITY_BASE_EXE_DIR_HYPERPIPE']
         elif 'SINGULARITY_BASE_EXE_DIR' in list(os.environ.keys()) :
             singularity_base_exe_path = os.environ['SINGULARITY_BASE_EXE_DIR']
-        exe=singularity_base_exe_path + exe_base
+        exe = os.path.join(singularity_base_exe_path, exe_base)
         if exe_base == 'true':  # special universal path for /bin/true, don't override it!
             exe = "/usr/bin/true"
     # Container universe (opt-in) runs the job inside container_image directly.
@@ -2269,7 +2920,7 @@ def write_CIP_sub(tag='integrate', exe=None, input_net='all.net',output='output-
     requirements = []
     if use_singularity:
         # Compare to https://github.com/lscsoft/lalsuite/blob/master/lalinference/python/lalinference/lalinference_pipe_utils.py
-        ile_job.add_condor_cmd('request_CPUs', str(1))
+        ile_job.add_condor_cmd('request_CPUs', str(request_cpus))
         ile_job.add_condor_cmd('transfer_executable', 'False')
         if singularity_container_universe:
             # CPU-only CIP: a SINGLE fixed container (the fallback image) -- no
@@ -2462,7 +3113,7 @@ def write_puff_sub(tag='puffball', exe=None, base=None,input_net='output-ILE-sam
     return ile_job, ile_sub_name
 
 
-def write_ILE_sub_simple(tag='integrate', exe=None, log_dir=None, use_eos=False,simple_unique=False,ncopies=1,arg_str=None,request_memory=4096,request_gpu=False,request_cross_platform=False,request_disk=False,arg_vals=None, transfer_files=None,transfer_output_files=None,use_singularity=False,use_osg=False,use_simple_osg_requirements=False,singularity_image=None,use_cvmfs_frames=False,use_oauth_files=False,frames_dir=None,cache_file=None,fragile_hold=False,max_runtime_minutes=None,condor_commands=None,**kwargs):
+def write_ILE_sub_simple(tag='integrate', exe=None, log_dir=None, use_eos=False,simple_unique=False,ncopies=1,arg_str=None,request_memory=4096,request_gpu=False,request_cross_platform=False,request_disk=False,arg_vals=None, transfer_files=None,transfer_output_files=None,use_singularity=False,use_osg=False,use_simple_osg_requirements=False,singularity_image=None,use_cvmfs_frames=False,use_oauth_files=False,frames_dir=None,cache_file=None,fragile_hold=False,max_runtime_minutes=None,condor_commands=None,request_cpus=1,requires_data_inputs=True,transfer_executable=False,**kwargs):
     """
     Write a submit file for launching jobs to marginalize the likelihood over intrinsic parameters.
 
@@ -2471,14 +3122,18 @@ def write_ILE_sub_simple(tag='integrate', exe=None, log_dir=None, use_eos=False,
         - An instance of the CondorDAGJob that was generated for ILE
     """
     if use_singularity and (singularity_image == None)  :
-        print(" FAIL : Need to specify singularity_image to use singularity ")
-        sys.exit(0)
-    if use_singularity and (frames_dir == None)  and (cache_file == None) :
-        print(" FAIL : Need to specify frames_dir or cache_file to use singularity (at present) ")
-        sys.exit(0)
+        raise ValueError(
+            "write_ILE_sub_simple requires singularity_image when "
+            "use_singularity is enabled")
+    if (use_singularity and requires_data_inputs
+            and (frames_dir == None) and (cache_file == None)):
+        raise ValueError(
+            "write_ILE_sub_simple requires frames_dir or cache_file when "
+            "use_singularity is enabled")
     if use_singularity and (transfer_files == None)  :
-        print(" FAIL : Need to specify transfer_files to use singularity at present!  (we will append the prescript; you should transfer any PSDs as well as the grid file ")
-        sys.exit(0)
+        raise ValueError(
+            "write_ILE_sub_simple requires transfer_files when "
+            "use_singularity is enabled")
 
     singularity_image_used = "{}".format(singularity_image) # make copy
     extra_files = []
@@ -2550,8 +3205,11 @@ def write_ILE_sub_simple(tag='integrate', exe=None, log_dir=None, use_eos=False,
         else:
 #            singularity_base_exe_path = "/opt/lscsoft/rift/MonteCarloMarginalizeCode/Code/"  # should not hardcode this ...!
             singularity_base_exe_path = "/usr/bin/"  # should not hardcode this ...!
-        exe=singularity_base_exe_path + exe_base
-        singularity_inner_exe = exe
+        if transfer_executable:
+            singularity_inner_exe = "./" + exe_base
+        else:
+            exe = os.path.join(singularity_base_exe_path, exe_base)
+            singularity_inner_exe = exe
         if not(frames_dir is None):
             frames_local = frames_dir.split("/")[-1]
     elif use_osg:  # NOT using singularity!
@@ -2661,7 +3319,13 @@ echo Starting ...
             ile_job.add_opt(opt.replace("_", "-"), str(param))
 
     if cache_file:
-        ile_job.add_opt("cache-file",cache_file)
+        # Condor transfers an absolute submit-side source into the execute
+        # sandbox under its basename.  Passing the source path to ILE works on
+        # shared filesystems but fails remotely, and can override an already
+        # correct ``--cache local.cache`` in arg_str.
+        cache_arg = (os.path.basename(cache_file)
+                     if use_osg or use_singularity else cache_file)
+        ile_job.add_opt("cache-file", cache_arg)
 
     ile_job.add_var_opt("event")
 
@@ -2684,7 +3348,7 @@ echo Starting ...
         ile_job.add_condor_cmd('request_disk', str(request_disk)) 
     nGPUs =0
     requirements = []
-    ile_gpu_cpus = 1   # CPUs to drive the ILE GPU job(s); >1 for multi-GPU fan-out
+    ile_gpu_cpus = request_cpus  # CPUs to drive ILE; fan-out may override
     if request_gpu:
         nGPUs=1
         if request_cross_platform:
@@ -2701,9 +3365,9 @@ echo Starting ...
             if req_g != 1:
                 nGPUs = req_g
                 ile_gpu_cpus = req_c
-                if not use_singularity:
-                    ile_job.add_condor_cmd('request_CPUs', str(req_c))
         ile_job.add_condor_cmd('request_GPUs', str(nGPUs))
+    if not use_singularity and ile_gpu_cpus != 1:
+        ile_job.add_condor_cmd('request_CPUs', str(ile_gpu_cpus))
 # Claim we don't need to make this request anymore to avoid out-of-memory errors. Also, no longer in 'requirements'
 #        requirements.append("CUDAGlobalMemoryMb >= 2048")
     if use_singularity:
@@ -2714,7 +3378,7 @@ echo Starting ...
             # and it invokes apptainer itself, so do not ask HTCondor to enter
             # singularity or suppress executable transfer.
             pass
-        else:
+        elif not transfer_executable:
             ile_job.add_condor_cmd('transfer_executable', 'False')
         if singularity_container_universe:
             # Container universe: the per-machine image is delivered via
@@ -2814,7 +3478,14 @@ echo Starting ...
         if not(pre_needed):
             transfer_files += ['../local.cache']
         else:            
-          transfer_files += ["../ile_pre.sh"]  # assuming default working directory setup
+          # Submit files may set an arbitrarily nested initialdir (Hyperpipe
+          # uses iteration_N_marg/event_K).  HTCondor resolves relative
+          # transfer inputs from that IWD, so preserve the submit-side
+          # absolute path; the sandbox still receives basename ile_pre.sh.
+          transfer_files += [os.path.abspath(cmdname)]
+          has_pre_cmd = any(
+              str(key).lower() in ("+precmd", "precmd")
+              for key in (condor_commands or {}))
           with open(cmdname,'w') as f:
             f.write("#! /bin/bash -xe \n")
             f.write( "ls "+frames_local+" | {lalapps_path2cache} 1> local.cache \n".format(lalapps_path2cache=lalapps_path2cache))  # Danger: need user to correctly specify local.cache directory
@@ -2825,10 +3496,18 @@ echo Starting ...
             f.write("cp local_relative.cache local.cache \n")
             # Only GPU ILE jobs fan out; a CPU-only ILE job bakes '1' so the default
             # 'all' policy never makes a non-GPU job grab the node's GPUs.
-            f.write(ile_invocation_shell(exe, fanout=(ile_gpu_fanout_value() if request_gpu else '1')))
+            if not has_pre_cmd:
+                f.write(ile_invocation_shell(
+                    exe, fanout=(ile_gpu_fanout_value()
+                                 if request_gpu else '1')))
             os.system("chmod a+x ile_pre.sh")
-            ile_job.set_executable("ile_pre.sh")  # transferred, used as executable
-            singularity_inner_exe = "./ile_pre.sh"
+            # Production sites may prefer a scheduler-native PreCmd so the
+            # science executable remains visible in the submit description.
+            # Preserve the historical wrapper-as-executable behavior unless
+            # the caller explicitly supplied that backend command.
+            if not has_pre_cmd:
+                ile_job.set_executable("ile_pre.sh")
+                singularity_inner_exe = "./ile_pre.sh"
 #          ile_job.add_condor_cmd('+PreCmd', '"ile_pre.sh"')
 
 
@@ -3487,6 +4166,98 @@ def write_convert_sub(tag='convert', exe=None, file_input=None,file_output=None,
         ile_job.add_condor_cmd('periodic_remove', remove_str)
 
     return ile_job, ile_sub_name
+
+
+def write_command_sub(tag='command', exe=None, arg_str='', universe="vanilla",
+                      log_dir=None, ncopies=1, no_grid=False,
+                      max_runtime_minutes=120, use_osg=False,
+                      use_singularity=False, singularity_image=None,
+                      transfer_files=None, transfer_output_files=None,
+                      use_simple_osg_requirements=False,
+                      condor_commands=None, **kwargs):
+    """Write a generic command submit file, preserving arguments verbatim.
+
+    Unlike :func:`write_convert_sub`, this helper does not reinterpret the
+    first argument as a long option.  It is therefore suitable for generic
+    terminal stages whose executable protocols may begin with either options
+    or positional arguments.
+    """
+    if exe is None:
+        raise ValueError("write_command_sub requires an executable")
+    if use_singularity:
+        if not singularity_image:
+            raise ValueError(
+                "write_command_sub requires singularity_image when "
+                "use_singularity is enabled")
+        singularity_base_exe_path = os.environ.get(
+            'SINGULARITY_BASE_EXE_DIR', '/usr/bin/')
+        exe = os.path.join(singularity_base_exe_path, os.path.basename(exe))
+    elif use_osg:
+        # A non-container OSG command must be transferred explicitly.  Preserve
+        # the caller's source path while invoking the execute-side basename.
+        transfer_files = list(dict.fromkeys(
+            list(transfer_files or []) + [exe]))
+        exe = os.path.basename(exe)
+
+    command_job = CondorDAGJob(universe=universe, executable=exe)
+    command_job._CondorJob__queue = ncopies
+    requirements = []
+    if universe == 'local':
+        requirements.append("IS_GLIDEIN=?=undefined")
+
+    sub_name = tag + '.sub'
+    command_job.set_sub_file(sub_name)
+    if arg_str:
+        command_job.add_arg(str(arg_str).strip())
+
+    uniq_str = "$(macromassid)-$(cluster)-$(process)"
+    command_job.set_log_file("%s%s-%s.log" % (log_dir, tag, uniq_str))
+    command_job.set_stderr_file("%s%s-%s.err" % (log_dir, tag, uniq_str))
+    command_job.set_stdout_file("%s%s-%s.out" % (log_dir, tag, uniq_str))
+    command_job.add_condor_cmd(
+        'getenv', '*RIFT*' if use_osg else default_getenv_value)
+
+    if use_singularity:
+        command_job.add_condor_cmd('transfer_executable', 'False')
+        command_job.add_condor_cmd('MY.SingularityBindCVMFS', 'True')
+        command_job.add_condor_cmd(
+            'MY.SingularityImage', '"{}"'.format(singularity_image))
+        requirements.append("HAS_SINGULARITY=?=TRUE")
+    if use_osg and not use_simple_osg_requirements:
+        requirements.append("IS_GLIDEIN=?=TRUE")
+
+    if transfer_files:
+        command_job.add_condor_cmd(
+            'transfer_input_files', ','.join(map(str, transfer_files)))
+        command_job.add_condor_cmd('should_transfer_files', 'YES')
+        command_job.add_condor_cmd('when_to_transfer_output', 'ON_EXIT')
+    if transfer_output_files is not None:
+        command_job.add_condor_cmd(
+            'transfer_output_files', ','.join(map(str, transfer_output_files)))
+
+    if no_grid:
+        command_job.add_condor_cmd("MY.DESIRED_SITES", '"none"')
+        command_job.add_condor_cmd("MY.flock_local", 'true')
+    requirements += _nonworker_extra_requirements()
+    command_job.add_condor_cmd(
+        'requirements',
+        '&&'.join('({0})'.format(item) for item in requirements))
+
+    try:
+        command_job.add_condor_cmd('accounting_group', os.environ['LIGO_ACCOUNTING'])
+        command_job.add_condor_cmd(
+            'accounting_group_user', os.environ['LIGO_USER_NAME'])
+    except KeyError:
+        print(" LIGO accounting information not available.  You must add this manually to integrate.sub !")
+
+    if max_runtime_minutes is not None:
+        command_job.add_condor_cmd(
+            'periodic_remove',
+            'JobStatus =?= 2 && (CurrentTime - JobStartDate) > ( {})'.format(
+                60 * max_runtime_minutes))
+    for key, value in (condor_commands or {}).items():
+        command_job.add_condor_cmd(str(key), str(value))
+    return command_job, sub_name
 
 
 def write_test_sub(tag='converge', exe=None,samples_files=None, base=None,target=None,universe="target",arg_str=None,log_dir=None, use_eos=False,ncopies=1, no_grid=False,**kwargs):
@@ -4187,10 +4958,8 @@ def write_consolidate_distance_grids_sub(tag='consolidate_dgrid', exe=None,
     with open(cmdname, 'w') as f:
         f.write("#! /bin/bash\n")
         f.write("set -e\n")
-        # --allow-empty keeps the post-extrinsic job from failing the DAG if a
-        # re-run already consumed the per-event files or none were produced.
         f.write(exe + " --input-glob '" + search_pattern + "'"
-                " --output " + file_output + " --allow-empty\n")
+                " --output " + file_output + "\n")
     os.system("chmod a+x " + cmdname)
 
     ile_job = CondorDAGJob(universe=universe, executable=cmdname)
@@ -4302,7 +5071,23 @@ def write_joingrids_sub(tag='join_grids', exe=None, universe='vanilla', input_pa
 {extra}
 set -e
 shopt -s nullglob
-SHARDS=({work}/{out}*.{suf})
+# The glob is deliberately followed by a filter.  CIP writes a family of
+# sidecars beside each grid shard -- +annotation, +annotation_ESS,
+# +annotation_export, _lnL, _withpriorchange -- and in ASCII mode they share
+# the shard suffix, so `overlap-grid-1*.dat` matches eleven files of which two
+# are grids.  Concatenating them produces a "grid" whose rows have 1, 3, 4 and
+# 10 columns; numpy's reader drops the short ones with a warning and hands the
+# caller a plausible-looking table.  In XML mode this never bit because the
+# sidecars were .dat and the shards were .xml.gz.
+CANDIDATES=({work}/{out}*.{suf})
+SHARDS=()
+for shard in "${{CANDIDATES[@]}}"; do
+  base=$(basename "$shard")
+  case "$base" in
+    *+*|*_*) continue ;;
+  esac
+  SHARDS+=("$shard")
+done
 if [ ${{#SHARDS[@]}} -eq 0 ]; then
   echo "join_grids.sh: no input shards matched {work}/{out}*.{suf}" >&2
   exit 1
@@ -4469,7 +5254,7 @@ def write_calibration_uncertainty_reweighting_sub(tag='Calib_reweight', exe=None
         else:
 #            singularity_base_exe_path = "/opt/lscsoft/rift/MonteCarloMarginalizeCode/Code/"  # should not hardcode this ...!
             singularity_base_exe_path = "/usr/bin/"  # should not hardcode this ...!
-        exe=singularity_base_exe_path + exe_base
+        exe = os.path.join(singularity_base_exe_path, exe_base)
 
     ile_job = CondorDAGJob(universe="vanilla", executable=exe)
     # This is a hack since CondorDAGJob hides the queue property
@@ -4751,7 +5536,7 @@ def write_bilby_pickle_sub(tag='Bilby_pickle', exe=None, universe='local', log_d
         ile_args_split = ile_args.split('--')
         start_time =None
         end_time=None
-        trigger_time =None
+        event_time =None
         rift_window_shape=None    # remember this is a dimensionless number, not a time
         rift_srate =None
         fmin_list = []
@@ -4781,11 +5566,16 @@ def write_bilby_pickle_sub(tag='Bilby_pickle', exe=None, universe='local', log_d
         ile_job.add_arg(" --waveform-approximant {} ".format(approx))
         if rift_srate:
             ile_job.add_arg(" --sampling-frequency {} ".format(rift_srate))
-        if event_time:
+        if event_time is not None:
             ile_job.add_arg(" --trigger-time {} ".format(event_time))
         # t_tukey
-        t_tukey = (end_time-start_time)*rift_window_shape/2   # basically the fraction of time not in the window; see formula in helper
-        ile_job.add_arg(" --tukey-roll-off {} ".format(t_tukey))
+        if (start_time is not None and end_time is not None and
+                rift_window_shape is not None):
+            # This override is useful when RIFT supplied all three values.  If
+            # any are absent, retain the Bilby ini setting instead of failing
+            # while constructing the workflow.
+            t_tukey = (end_time-start_time)*rift_window_shape/2
+            ile_job.add_arg(" --tukey-roll-off {} ".format(t_tukey))
         # channel list
         channel_dict ={}
         for channel_id in channel_list:
@@ -4974,7 +5764,7 @@ def write_convert_ascii_to_h5_sub(tag='Convert_ascii2h5', convert_ascii_to_h5_ex
 
     # Add manual options for input, output
     ile_job.add_opt('output-file', str(output_file))
-    ile_job.add_opt('posterior-file', str(posterior_file))
+    ile_job.add_opt('posterior-samples', str(posterior_file))
 #    ile_job.add_arg(str(posterior_file)) # needs to be a bilby ini file for the particular event being analyzed
 
     #
@@ -5031,7 +5821,7 @@ def write_convert_ascii_to_h5_sub(tag='Convert_ascii2h5', convert_ascii_to_h5_ex
     return ile_job, ile_sub_name
 
 
-def write_hyperpost_sub(tag='HYPER', exe=None, input_net='all.marg_net',output='output-samples',universe="vanilla",out_dir=None,log_dir=None, ncopies=1,arg_str=None,request_memory=8192,arg_vals=None, no_grid=False,request_disk=False, transfer_files=None,transfer_output_files=None,use_singularity=False,use_osg=False,use_simple_osg_requirements=False,singularity_image=None,max_runtime_minutes=None,condor_commands=None,**kwargs):
+def write_hyperpost_sub(tag='HYPER', exe=None, input_net='all.marg_net',output='output-samples',universe="vanilla",out_dir=None,log_dir=None, ncopies=1,arg_str=None,request_memory=8192,arg_vals=None, no_grid=False,request_disk=False, transfer_files=None,transfer_output_files=None,use_singularity=False,use_osg=False,use_oauth_files=False,use_simple_osg_requirements=False,singularity_image=None,max_runtime_minutes=None,condor_commands=None,transfer_executable=False,**kwargs):
     """
     Write a submit file for launching jobs to marginalize the likelihood over hyperparameters.
     Almost identical to CIP 
@@ -5049,6 +5839,13 @@ def write_hyperpost_sub(tag='HYPER', exe=None, input_net='all.marg_net',output='
         sys.exit(0)
 
 
+    transfer_files_here = list(transfer_files or [])
+    singularity_image_used = singularity_image
+    if singularity_image and 'osdf:' in singularity_image:
+        singularity_image_used = "./{}".format(
+            singularity_image.split('/')[-1])
+        transfer_files_here.append(singularity_image)
+
     exe = exe or which("util_ConstructEOSPosterior.py")
     if use_singularity:
         path_split = exe.split("/")
@@ -5056,9 +5853,10 @@ def write_hyperpost_sub(tag='HYPER', exe=None, input_net='all.marg_net',output='
         singularity_base_exe_path = "/usr/bin/"  # should not hardcode this ...!
         if 'SINGULARITY_BASE_EXE_DIR' in list(os.environ.keys()) :
             singularity_base_exe_path = os.environ['SINGULARITY_BASE_EXE_DIR']
-        exe=singularity_base_exe_path + path_split[-1]
-        if path_split[-1] == 'true':  # special universal path for /bin/true, don't override it!
-            exe = "/usr/bin/true"
+        if not transfer_executable:
+            exe = os.path.join(singularity_base_exe_path, path_split[-1])
+            if path_split[-1] == 'true':  # special universal path for /bin/true, don't override it!
+                exe = "/usr/bin/true"
     ile_job = CondorDAGJob(universe=universe, executable=exe)
     # This is a hack since CondorDAGJob hides the queue property
     ile_job._CondorJob__queue = ncopies
@@ -5146,10 +5944,15 @@ def write_hyperpost_sub(tag='HYPER', exe=None, input_net='all.marg_net',output='
     if use_singularity:
         # Compare to https://github.com/lscsoft/lalsuite/blob/master/lalinference/python/lalinference/lalinference_pipe_utils.py
         ile_job.add_condor_cmd('request_CPUs', str(1))
-        ile_job.add_condor_cmd('transfer_executable', 'False')
+        if not transfer_executable:
+            ile_job.add_condor_cmd('transfer_executable', 'False')
         ile_job.add_condor_cmd("MY.SingularityBindCVMFS", 'True')
-        ile_job.add_condor_cmd("MY.SingularityImage", '"' + singularity_image + '"')
+        ile_job.add_condor_cmd(
+            "MY.SingularityImage", '"' + singularity_image_used + '"')
         requirements.append("HAS_SINGULARITY=?=TRUE")
+
+    if use_oauth_files:
+        ile_job.add_condor_cmd('use_oauth_services', use_oauth_files)
 
     if use_osg:
            # avoid black-holing jobs to specific machines that consistently fail. Uses history attribute for ad
@@ -5188,11 +5991,11 @@ def write_hyperpost_sub(tag='HYPER', exe=None, input_net='all.marg_net',output='
         print(" LIGO accounting information not available.  You must add this manually to integrate.sub !")
         
     
-    if not transfer_files is None:
-        if not isinstance(transfer_files, list):
-            fname_str=transfer_files
+    if transfer_files_here:
+        if not isinstance(transfer_files_here, list):
+            fname_str=transfer_files_here
         else:
-            fname_str = ','.join(transfer_files)
+            fname_str = ','.join(dict.fromkeys(transfer_files_here))
         fname_str=fname_str.strip()
         ile_job.add_condor_cmd('transfer_input_files', fname_str)
         ile_job.add_condor_cmd('should_transfer_files','YES')

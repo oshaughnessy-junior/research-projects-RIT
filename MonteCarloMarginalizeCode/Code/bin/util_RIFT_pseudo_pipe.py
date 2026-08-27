@@ -16,19 +16,42 @@
 
 import numpy as np
 import argparse
+import json
 import os
+import re
 import shlex
 import subprocess
 import sys
 import lal
 import lalsimulation as lalsim
 import RIFT.lalsimutils as lalsimutils
+from RIFT.misc import hyperpipeline_io
+from RIFT.misc import dag_utils_generic
+from RIFT.misc import cip_pipeline
+from RIFT.misc import extrinsic_stage
 import configparser as ConfigParser
 
 if ( 'RIFT_LOWLATENCY'  in os.environ):
     assume_lowlatency = True
 else:
     assume_lowlatency=False
+
+# Selecting the alternate hyperpipe writer is itself an opt-in to the
+# hyperpipeline ASCII contract.  Detect it before argparse and before any grid
+# is materialized; waiting until the final builder dispatch would leave the
+# earlier pseudo-pipe stages producing XML for a .dat-only workflow.
+def _argv_requests_hyperpipe(argv):
+    for indx, token in enumerate(argv):
+        if token == "--pipeline-builder" and indx + 1 < len(argv):
+            return argv[indx + 1] == "Hyperpipe"
+        if token.startswith("--pipeline-builder="):
+            return token.split("=", 1)[1] == "Hyperpipe"
+    return False
+
+
+if _argv_requests_hyperpipe(sys.argv[1:]):
+    os.environ["RIFT_HYPERPIPELINE_FORMAT"] = "1"
+
 
 # ----------------------------------------------------------------------
 # Hyperpipeline ASCII grid format (opt-in via env var).  When set, every
@@ -61,6 +84,117 @@ from RIFT.likelihood.time_interp_choice import (
 ligolw_prefix = 'igwn_'
 if not(which(ligolw_prefix + "ligolw_add")):
     ligolw_prefix = ''
+
+
+def _render_generic_job_arguments(job):
+    """Render a dag_utils_generic job as a backend-neutral argument string."""
+    parts = []
+    for name, value in job.opts:
+        if value is None or value == "":
+            parts.append("--{}".format(name))
+        else:
+            parts.append("--{}={}".format(name, value))
+    for name, value in job.short_opts:
+        parts.append("-{} {}".format(name, value))
+    for name, value in job.file_opts:
+        parts.append("--{}={}".format(name, value))
+    if job.var_opts:
+        raise ValueError(
+            "cannot adapt a generic job with unresolved variable options")
+    parts.extend(str(arg) for arg in job.arguments)
+    return " ".join(parts)
+
+
+def _job_condor_commands(job):
+    """Return last-value-wins HTCondor commands from a generic job."""
+    return {str(key): value for key, value in job.condor_cmds}
+
+
+def _load_extra_terminal_stages(path, generated_stages):
+    """Read a user terminal-stage manifest and check it against ours.
+
+    The generated manifest is pseudo_pipe's alone; this is the one place a user
+    may add to it.
+
+    These checks buy MESSAGE QUALITY, not safety.  Mutation-testing them showed
+    the contract loader already rejects every one of these manifests
+    downstream, so removing a check here does not produce a pipeline that
+    builds and does the wrong thing -- it produces a build that fails with a
+    worse explanation.  Two things are checked here rather than there because
+    only here do we know which stages we generated:
+
+    * a user stage may not take a generated stage's name.  The loader would
+      catch the duplicate, but it would report it as "names must be unique"
+      over a list of eleven, which tells the user nothing about which side is
+      theirs or that renaming their own stage is the fix.
+    * a user stage naming a generated stage in `depends_on` must name one that
+      this build actually emitted.  Most generated stages are conditional on an
+      option, so `depends_on: ["calibration_reweight"]` in a run without
+      `--calibration-reweighting` is a live mistake, and the loader would say
+      only "unknown or forward dependencies".
+
+    Paths in the extra file resolve exactly as they do in the generated one:
+    relative to the RUN DIRECTORY, not to the extra file.  That is the only
+    self-consistent rule, because a stage's `args` string is text we cannot
+    rewrite and its paths are necessarily run-relative; splitting the rule by
+    key would make `exe: ./x.sh` and `args: ./x.dat` mean different directories.
+    """
+    path = os.path.abspath(os.path.expanduser(path))
+    if not os.path.isfile(path):
+        raise SystemExit(
+            "pseudo_pipe: --terminal-stage-extra-file does not exist: "
+            + path)
+    try:
+        with open(path) as stream:
+            raw = json.load(stream)
+    except ValueError as exc:
+        raise SystemExit(
+            "pseudo_pipe: --terminal-stage-extra-file is not valid JSON ({}): "
+            "{}".format(path, exc))
+    if not isinstance(raw, dict) or raw.get("version") != 1:
+        raise SystemExit(
+            "pseudo_pipe: --terminal-stage-extra-file must be an object with "
+            "version 1: " + path)
+    extra = raw.get("stages")
+    if not isinstance(extra, list) or not extra:
+        raise SystemExit(
+            "pseudo_pipe: --terminal-stage-extra-file requires a non-empty "
+            "stages list: " + path)
+
+    generated = [str(stage.get("name")) for stage in generated_stages]
+    known = set(generated) | {"pipeline"}
+    seen = set()
+    for stage in extra:
+        if not isinstance(stage, dict) or not stage.get("name"):
+            raise SystemExit(
+                "pseudo_pipe: every stage in --terminal-stage-extra-file "
+                "requires a name: " + path)
+        name = str(stage["name"])
+        if name in generated:
+            raise SystemExit(
+                "pseudo_pipe: --terminal-stage-extra-file stage {!r} collides "
+                "with a stage this build generates. Rename your stage; the "
+                "generated names are an interface (see "
+                "RIFT.misc.terminal_stage_products) and are not yours to "
+                "reuse.".format(name))
+        if name in seen:
+            raise SystemExit(
+                "pseudo_pipe: --terminal-stage-extra-file defines stage {!r} "
+                "twice".format(name))
+        seen.add(name)
+        depends_on = stage.get("depends_on", ["pipeline"])
+        if isinstance(depends_on, str):
+            depends_on = [depends_on]
+        missing = [str(item) for item in depends_on
+                   if str(item) not in known and str(item) not in seen]
+        if missing:
+            raise SystemExit(
+                "pseudo_pipe: --terminal-stage-extra-file stage {!r} depends "
+                "on {} which this build does not emit. Stages generated here: "
+                "{}. Most are conditional on an option -- see "
+                "RIFT.misc.terminal_stage_products for which.".format(
+                    name, missing, generated or ["(none)"]))
+    return list(extra)
 
 
     
@@ -358,7 +492,8 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--skip-reproducibility",action='store_true')
 parser.add_argument("--use-production-defaults",action='store_true',help="Use production defaults. Intended for use with tools like asimov or by nonexperts who just want something to run on a real event.  Will require manual setting of other arguments!")
 parser.add_argument("--use-subdags",action='store_true',help="Use CEPP_Alternate instead of CEPP_BasicIteration. Note this writes an adaptively-sized DAG each iteration, but doesn't otherwise optimize yet.")
-parser.add_argument("--pipeline-builder",default=None,choices=["BasicIteration","AlternateIteration"],help="Explicitly select the create_event_parameter_pipeline_* iteration builder, as a drop-in hot-swap for side-by-side A/B testing. Overrides the implicit --use-subdags routing. If unset, the builder is chosen by --use-subdags (Alternate) vs. the default (Basic).")
+parser.add_argument("--pipeline-builder",default=None,choices=["BasicIteration","AlternateIteration","Hyperpipe"],help="Explicitly select the low-level iteration builder. Hyperpipe is opt-in and uses the generic .dat pipeline with ILE as its indexed-grid MARG evaluator. Overrides the implicit --use-subdags routing.")
+parser.add_argument("--terminal-stage-extra-file",default=None,type=str,help="Path to a user terminal-stage manifest (version 1, same schema as the generated terminal_stage_specs.json) whose stages are appended to the ones this pipeline generates. Its stages may name generated stages in depends_on; see RIFT.misc.terminal_stage_products for the stable stage names and the file each writes. Relative paths resolve against the run directory. Requires --pipeline-builder Hyperpipe.")
 parser.add_argument("--use-ile-subdags",action='store_true',help="Use ILE subdag system (new)")
 parser.add_argument("--bilby-ini-file",default=None,type=str,help="Pass ini file for parsing. Intended to use for calibration reweighting. Full path recommended")
 parser.add_argument("--bilby-pickle-file",default=None,type=str,help="Bilby Pickle file with event settings. Intended to use for calibration reweighting. Full path recommended")
@@ -598,6 +733,12 @@ parser.add_argument("--internal-cip-use-lnL",action='store_true')
 parser.add_argument("--manual-initial-grid",default=None,type=str,help="Filename (full path) to initial grid. Copied into proposed-grid.<suffix>, overwriting any grid assignment done here. Suffix is .xml.gz by default and .dat when RIFT_HYPERPIPELINE_FORMAT is set; the source file's format must match the active mode.")
 parser.add_argument("--manual-initial-grid-supplements",action='store_true', help="Manual inital grid used to SUPPLEMENT output of the default helper grid.")
 parser.add_argument("--manual-extra-ile-args",default=None,type=str,help="Avenue to adjoin extra ILE arguments.  Needed for unusual configurations (e.g., if channel names are not being selected, etc)")
+parser.add_argument(
+    "--ile-zero-likelihood-data-free", action='store_true',
+    help=("Hyperpipe-only lightweight validation mode: run indexed ILE with "
+          "--zero-likelihood --zero-likelihood-data-free so MARG shards are "
+          "produced without frame or PSD access. Intended for small local "
+          "end-to-end pipeline tests, not scientific analysis."))
 parser.add_argument("--internal-ile-force-adapt-all",action='store_true', help="Syntactic sugar to prevent need to add manual-extra-ile-args for this: easier on user")
 parser.add_argument("--internal-puff-transverse",action='store_true', help=" appends the following arguments: --parameter phi1 --parameter phi2 --parameter chi1_perp_u --parameter chi2_perp_u ")
 parser.add_argument("--manual-extra-puff-args",default=None,type=str,help="Avenue to adjoin extra PUFF arguments.  ")
@@ -622,7 +763,7 @@ parser.add_argument("--use-osg-public",action='store_true',help="Activate public
 parser.add_argument("--archive-pesummary-label",default=None,help="If provided, creates a 'pesummary' directory and fills it with this run's final output at the end of the run")
 parser.add_argument("--archive-pesummary-event-label",default="this_event",help="Label to use on the pesummary page itself")
 parser.add_argument("--internal-mitigate-fd-J-frame",default="L_frame",help="L_frame|rotate, choose method to deal with ChooseFDWaveform being in wrong frame. Default is to request L frame for inputs")
-parser.add_argument("--internal-force-puff-iterations", default=4, type=int, help="Number of iterations to be puffed")
+parser.add_argument("--internal-force-puff-iterations", default=None, type=int, help="Explicitly override the helper-selected number of puffed iterations. Use -1 to disable puff nodes.")
 parser.add_argument("--first-iteration-jumpstart",action='store_true',help="No ILE jobs the first iteration.  Assumes you already have .composite files and want to get going. Particularly helpful for subdag systems")
 parser.add_argument("--use-mtot-coords",action='store_true',help="Passed to the helper to configure CIP and PUFF for mtot instead of mc.")
 parser.add_argument("--force-scatter-grids",action='store_true',help="Eliminates all non-scatter intrinsic points from hyperbolic grids throughout the workflow.")
@@ -721,6 +862,73 @@ if opts.ile_gpu_fanout is not None:
 if opts.lisa_known_sky:
     run_lisa_known_sky_surface(opts)
     sys.exit(0)
+
+if opts.pipeline_builder == "Hyperpipe":
+    _unsupported_hyperpipe = []
+    _hyperpipe_feature_checks = [
+        (opts.use_subdags, "--use-subdags"),
+        (opts.use_ile_subdags, "--use-ile-subdags"),
+        (opts.internal_use_amr, "--internal-use-amr"),
+        (opts.use_gauss_early, "--use-gauss-early (G schedule groups)"),
+        (opts.calmarg_pilot, "--calmarg-pilot"),
+        (opts.extrinsic_handoff, "--extrinsic-handoff"),
+        (opts.external_fetch_native_from is not None, "--external-fetch-native-from"),
+        (opts.add_extrinsic and not opts.add_extrinsic_time_resampling,
+         "--add-extrinsic without --add-extrinsic-time-resampling"),
+        (opts.batch_extrinsic and not opts.add_extrinsic_time_resampling,
+         "--batch-extrinsic without --add-extrinsic-time-resampling"),
+        (opts.calibration_reweighting and not opts.add_extrinsic,
+         "--calibration-reweighting without --add-extrinsic"),
+        (opts.calibration_reweighting and not opts.bilby_pickle_file and
+         not opts.bilby_ini_file,
+         "--calibration-reweighting without either --bilby-pickle-file "
+         "or --bilby-ini-file"),
+        (opts.calibration_reweighting and
+         opts.calibration_reweighting_batchsize is not None and
+         opts.calibration_reweighting_batchsize <= 0,
+         "non-positive --calibration-reweighting-batchsize"),
+        (opts.calibration_reweighting and
+         opts.calibration_reweighting_count is not None and
+         opts.calibration_reweighting_count <= 0,
+         "non-positive --calibration-reweighting-count"),
+        (opts.distance_reweighting and not opts.add_extrinsic,
+         "--distance-reweighting without --add-extrinsic"),
+        (opts.archive_pesummary_label is not None and not opts.add_extrinsic,
+         "--archive-pesummary-label without --add-extrinsic"),
+        (opts.export_marginal_distance_grid and not opts.add_extrinsic,
+         "--export-marginal-distance-grid without --add-extrinsic"),
+        (bool(opts.export_distance_slices) and not opts.add_extrinsic,
+         "--export-distance-slices without --add-extrinsic"),
+        (opts.ile_zero_likelihood_data_free and opts.add_extrinsic,
+         "--ile-zero-likelihood-data-free with --add-extrinsic"),
+    ]
+    for active, label in _hyperpipe_feature_checks:
+        if active:
+            _unsupported_hyperpipe.append(label)
+    if _unsupported_hyperpipe:
+        raise SystemExit(
+            "pseudo_pipe: --pipeline-builder Hyperpipe does not yet support: {}. "
+            "Use BasicIteration/AlternateIteration or disable these features; "
+            "the Hyperpipe writer refuses to silently omit them.".format(
+                ", ".join(_unsupported_hyperpipe)))
+    if (opts.calibration_reweighting and opts.calibration_reweighting_osg and
+            not os.environ.get("SINGULARITY_RIFT_IMAGE")):
+        raise SystemExit(
+            "pseudo_pipe: Hyperpipe OSG calibration reweighting requires "
+            "SINGULARITY_RIFT_IMAGE")
+elif opts.ile_zero_likelihood_data_free:
+    raise SystemExit(
+        "pseudo_pipe: --ile-zero-likelihood-data-free requires "
+        "--pipeline-builder Hyperpipe")
+
+if (opts.terminal_stage_extra_file
+        and opts.pipeline_builder != "Hyperpipe"):
+    # Only the Hyperpipe writer consumes a terminal-stage manifest.  Accepting
+    # the option elsewhere would build a pipeline missing the user's stages and
+    # exit zero, which is the worst of the available failures.
+    raise SystemExit(
+        "pseudo_pipe: --terminal-stage-extra-file requires "
+        "--pipeline-builder Hyperpipe")
 
 
 
@@ -975,6 +1183,13 @@ if opts.use_rundir:
     dirname_run = opts.use_rundir
 os.mkdir(dirname_run)
 os.chdir(dirname_run)
+
+# Manual-time analyses do not obtain detector metadata from GraceDB/coinc.
+# Preserve the explicitly supplied list in the same event-dictionary field
+# used by helper setup, file-transfer checks, and optional terminal stages.
+if "IFOs" not in event_dict and opts.manual_ifo_list:
+    event_dict["IFOs"] = [
+        ifo.strip() for ifo in opts.manual_ifo_list.split(",") if ifo.strip()]
 
 
 if not(opts.use_ini is None):
@@ -1466,6 +1681,8 @@ if not(opts.manual_extra_ile_args is None):
     line += " {} ".format(opts.manual_extra_ile_args)  # embed with space on each side, avoid collisions
     if '--declination ' in opts.manual_extra_ile_args:   # if we are pinning dec, we aren't using a cosine coordinate. Don't mess up.
         line = line.replace('--declination-cosine-sampler', '')
+if opts.ile_zero_likelihood_data_free:
+    line += " --zero-likelihood --zero-likelihood-data-free "
 if opts.internal_ile_force_adapt_all:
     line += " --force-adapt-all "
 # NOTE on per-distance export (grid/slices): the --last-iteration-export-*
@@ -1927,13 +2144,15 @@ with open("args_cip_list.txt",'w') as f:
 
 # Write puff file
 #puff_params = " --parameter mc --parameter delta_mc --parameter chieff_aligned "
-puff_max_it = opts.internal_force_puff_iterations
+puff_max_it = 4
 #  Read puff args from file, if present
 try:
     with open("helper_puff_max_it.txt",'r') as f:
         puff_max_it = int(f.readline())
 except:
     print( " No puff file ")
+if opts.internal_force_puff_iterations is not None:
+    puff_max_it = opts.internal_force_puff_iterations
 
 instructions_puff = np.loadtxt("helper_puff_args.txt", dtype=str)  # should be one line
 puff_params = ' '.join(instructions_puff)
@@ -2027,11 +2246,33 @@ with open("args_puff.txt",'w') as f:
 if opts.archive_pesummary_label:
     os.mkdir("pesummary")
     rundir = base_dir+"/"+dirname_run
+    # When calibration reweighting runs, BOTH posteriors are published: the
+    # extrinsic samples as produced, and the calibration-reweighted ones.  A
+    # single page carrying both is what a reviewer actually wants -- the
+    # question is nearly always "what did calibration do to this?" -- and it
+    # removes a divergence between the two pipeline builders, which had been
+    # publishing different single posteriors under identical flags.
+    labels = [opts.archive_pesummary_label]
     if opts.add_extrinsic:
-        samplestr = " --samples " + rundir +"/extrinsic_posterior_samples.dat "
+        samples = [rundir + "/extrinsic_posterior_samples.dat"]
+        if opts.calibration_reweighting:
+            samples.append(rundir + "/reweighted_posterior_samples.dat")
+            labels.append(opts.archive_pesummary_label + "_calmarg")
     else:
-        samplestr = " --samples " + rundir + "/posterior_samples-$(macroiteration).dat "
-    labelstr = " --labels {} ".format(opts.archive_pesummary_label)
+        samples = [rundir + "/posterior_samples-$(macroiteration).dat"]
+    # ONE --samples taking every file, not one flag per file.  pesummary's
+    # --samples is a plain store action with nargs='+', not append, so a second
+    # occurrence REPLACES the first: `--samples A --samples B` publishes only B
+    # while --labels still carries two names, so the page is one posterior
+    # wearing the wrong label and the counts silently disagree.  Verified
+    # against pesummary's own parser rather than its documentation.
+    samplestr = " --samples {} ".format(" ".join(samples))
+    labelstr = " --labels {} ".format(" ".join(labels))
+    if len(labels) != len(samples):
+        raise SystemExit(
+            "pseudo_pipe: internal error -- {} pesummary labels for {} sample "
+            "files. The archived page would mislabel its posteriors.".format(
+                len(labels), len(samples)))
     configstr=""
     if opts.use_ini:
         configstr = " -c " +opts.use_ini
@@ -2065,6 +2306,32 @@ if not (opts.manual_initial_grid is None):
         # shutil.copyfile is format-agnostic: works for either .xml.gz or
         # .dat as long as the source matches the active mode.
         shutil.copyfile(opts.manual_initial_grid, "proposed-grid." + grid_suffix_pp)
+        if _use_hpip_pp:
+            proposed_grid = "proposed-grid.dat"
+            if not hyperpipeline_io.sniff(proposed_grid):
+                raise SystemExit(
+                    "pseudo_pipe: Hyperpipe --manual-initial-grid must be a "
+                    "self-describing hyperpipeline ASCII grid with a "
+                    "RIFT_HYPERPIPELINE_V1 marker or '# lnL sigma_lnL ...' "
+                    "header: {}".format(opts.manual_initial_grid))
+            try:
+                table, columns = hyperpipeline_io.read_table(proposed_grid)
+            except (OSError, ValueError, TypeError) as exc:
+                raise SystemExit(
+                    "pseudo_pipe: unable to read Hyperpipe manual grid {}: {}"
+                    .format(opts.manual_initial_grid, exc))
+            if tuple(columns[:2]) != ("lnL", "sigma_lnL"):
+                raise SystemExit(
+                    "pseudo_pipe: Hyperpipe manual grid must begin with "
+                    "lnL sigma_lnL columns; got {}".format(columns))
+            missing = [name for name in ("m1", "m2") if name not in columns]
+            if missing:
+                raise SystemExit(
+                    "pseudo_pipe: Hyperpipe manual grid is missing required "
+                    "ILE columns {}".format(missing))
+            if len(np.atleast_1d(table)) == 0:
+                raise SystemExit(
+                    "pseudo_pipe: Hyperpipe manual grid contains no data rows")
 
 # override npts_it if needed
 if opts.internal_n_evaluations_per_iteration:
@@ -2087,8 +2354,11 @@ if opts.pipeline_builder:  # explicit override wins, for clean side-by-side A/B 
     if opts.use_subdags and opts.pipeline_builder != "AlternateIteration":
         # use_subdags is set either by the user or force-set by --internal-use-amr (which REQUIRES the Alternate builder)
         print(" WARNING: --pipeline-builder {} overrides --use-subdags routing; AMR/subdag runs require AlternateIteration ".format(opts.pipeline_builder))
-    cepp = "create_event_parameter_pipeline_" + opts.pipeline_builder
-print(" Pipeline builder (create_event_parameter_pipeline_*): ", cepp)
+    if opts.pipeline_builder == "Hyperpipe":
+        cepp = "create_eos_posterior_pipeline"
+    else:
+        cepp = "create_event_parameter_pipeline_" + opts.pipeline_builder
+print(" Pipeline builder: ", cepp)
 cmd =cepp+ "  --ile-n-events-to-analyze {} --input-grid proposed-grid.{} --ile-exe  `which integrate_likelihood_extrinsic_batchmode`   --ile-args `pwd`/args_ile.txt --cip-args-list args_cip_list.txt --test-args args_test.txt --request-memory-CIP {} --request-memory-ILE {} --n-samples-per-job ".format(n_jobs_per_worker,grid_suffix_pp,cip_mem,ile_mem) + str(npts_it) + " --working-directory `pwd` --n-iterations " + str(n_iterations) + " --n-iterations-subdag-max {} ".format(opts.internal_n_iterations_subdag_max) + "  --n-copies {} ".format(opts.ile_copies) + "   --ile-retries "+ str(opts.ile_retries) + " --general-retries " + str(opts.general_retries)
 if opts.ile_jobs_per_worker_first:
     cmd += " --ile-n-events-to-analyze-first {} ".format(opts.ile_jobs_per_worker_first)
@@ -2147,18 +2417,25 @@ if opts.calibration_reweighting and (not opts.bilby_pickle_file):
         cmd += " --calibration-reweighting-extra-args '{}' ".format(opts.calibration_reweighting_extra_args)
     if opts.calibration_reweighting_osg:
         cmd += " --calibration-reweighting-osg "
-        opts.calibration_reweighting_initial_extra_args += " --use_local_cal_files "
+        opts.calibration_reweighting_initial_extra_args = (
+            (opts.calibration_reweighting_initial_extra_args or "") +
+            " --use_local_cal_files ")
     if opts.calibration_reweighting_initial_extra_args:
         cmd += " --calibration-reweighting-initial-extra-args '{}' ".format(opts.calibration_reweighting_initial_extra_args)
 elif opts.calibration_reweighting and opts.bilby_pickle_file:
     cmd += " --calibration-reweighting --calibration-reweighting-exe `which calibration_reweighting.py` --bilby-pickle-file {} ".format(str(opts.bilby_pickle_file))
     if opts.calibration_reweighting_count:
         cmd+= " --calibration-reweighting-count {} ".format(opts.calibration_reweighting_count)
+    if opts.calibration_reweighting_batchsize:
+        cmd += " --calibration-reweighting-batchsize {} ".format(
+            opts.calibration_reweighting_batchsize)
     if opts.calibration_reweighting_extra_args:
         cmd += " --calibration-reweighting-extra-args '{}' ".format(opts.calibration_reweighting_extra_args)
     if opts.calibration_reweighting_osg:
         cmd += " --calibration-reweighting-osg "
-        opts.calibration_reweighting_initial_extra_args += " --use_local_cal_files "
+        opts.calibration_reweighting_initial_extra_args = (
+            (opts.calibration_reweighting_initial_extra_args or "") +
+            " --use_local_cal_files ")
     if opts.calibration_reweighting_initial_extra_args:
         cmd += " --calibration-reweighting-initial-extra-args '{}' ".format(opts.calibration_reweighting_initial_extra_args)
 if opts.internal_tabular_eos_file:
@@ -2238,7 +2515,7 @@ if opts.external_fetch_native_from:
     fetch_dict = {}
     fetch_dict['method'] = 'native'
     fetch_dict['source'] = opts.external_fetch_native_from
-    fetch_dict['n_max'] = 1000  # should tune this to grid structure needs; 1000 is probably safe; not yet implemented
+    fetch_dict['n_max'] = 1000  # NOW ENFORCED by util_FetchExternalGrid (it was previously computed and discarded): every native fetch is capped at the 1000 newest points, sorted by basename index.  Tune to grid structure needs.
     with open("my_dict.json",'w') as f:
         json.dump(fetch_dict,f)
     with open("fetch_args.txt",'w') as f:
@@ -2376,14 +2653,21 @@ if opts.calibration_reweighting:
 if opts.condor_local_nonworker_igwn_prefix:
     cmd += " --condor-local-nonworker-igwn-prefix "
 
+# An explicitly supplied PSD can live outside the new run directory on the
+# submit host.  OSG file-transfer workers see only sandbox basenames, so stage
+# the file now and make both current and legacy ILE argument records use that
+# execute-side name.  CVMFS and non-transfer paths retain their old behavior.
+if opts.use_osg_file_transfer and opts.use_online_psd_file:
+    hyperpipeline_io.stage_file_for_worker_arguments(
+        opts.use_online_psd_file,
+        os.getcwd(),
+        ["args_ile.txt", "helper_ile_args.txt"],
+    )
+
 # Make copy of local.cache for use in file transfer
 if opts.use_osg_file_transfer and opts.internal_truncate_files_for_osg_file_transfer and os.path.exists('local.cache'):
-    shutil.copyfile('local.cache', 'local_orig.cache')
-    # Move contents of ile_pre.sh here
-    os.system("cat local.cache > awk '{print $1, $2, $3, $4}' > local_stripped.cache")
-    os.system('for i in `ls frames_dir/*.gwf`; do echo frames_local/${i} ; done > base_paths.dat') # yes probably easier to do the ls myself
-    os.system("paste local_stripped.cache base_paths.dat > local_relative.cache ")
-    os.system("cp local_relative.cache local.cache")
+    hyperpipeline_io.rewrite_cache_for_worker_transfer(
+        'local.cache', 'frames_dir', backup_path='local_orig.cache')
 
 if not(ile_condor_commands is None):
     # create file
@@ -2417,8 +2701,565 @@ if opts.export_distance_slices and opts.export_distance_slices > 0:
     if opts.export_distance_slices_skip_threshold is not None:
         cmd += " --last-iteration-export-distance-slices-skip-threshold {} ".format(opts.export_distance_slices_skip_threshold)
 
-print(cmd)
-os.system(cmd)
+if opts.pipeline_builder == "Hyperpipe":
+    transfer_files = []
+    if os.path.isfile("helper_transfer_files.txt"):
+        with open("helper_transfer_files.txt") as stream:
+            transfer_files = [line.strip() for line in stream if line.strip()]
+    # A data-free constant-likelihood MARG job must not retain detector-data
+    # inputs synthesized by helper_LDG_Events.  Besides being unnecessary,
+    # those paths can be absent by construction and would make Condor reject
+    # the job before ILE reaches its data-free early exit.  Preserve only
+    # files the caller explicitly requested for transfer.
+    if opts.ile_zero_likelihood_data_free:
+        transfer_files = [
+            item
+            for group in (opts.ile_additional_files_to_transfer or "").split(",")
+            for item in group.split()
+            if item
+        ]
+        if opts.use_osg:
+            transfer_files.append(os.path.abspath(os.path.join(
+                os.path.dirname(__file__), "..", "RIFT", "misc",
+                "hyperpipeline_io.py")))
+    elif opts.use_osg:
+        # Hyperpipe's indexed-grid protocol is newer than production
+        # containers that remain valid for the heavy likelihood stack. Stage
+        # the candidate ILE and its in-tree RIFT package while retaining the
+        # container for LAL, numpy, and site runtime dependencies.
+        transfer_files.append(os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "RIFT")))
+    ile_request_disk = opts.internal_ile_request_disk or "10M"
+    general_request_disk = opts.internal_general_request_disk or "10M"
+    frames_dir = None
+    cache_file = None
+    if opts.use_osg and not opts.ile_zero_likelihood_data_free:
+        if opts.use_osg_file_transfer:
+            frames_dir, cache_file, transfer_files = (
+                hyperpipeline_io.stage_prepared_frame_cache(
+                    "frames_dir", "local.cache", transfer_files))
+        else:
+            cache_file = os.path.abspath("local.cache")
+    marg_spec = [{
+        "name": "ile",
+        "protocol": "indexed-grid-v1",
+        "exe": shutil.which("integrate_likelihood_extrinsic_batchmode") or "integrate_likelihood_extrinsic_batchmode",
+        "args_file": os.path.abspath("args_ile.txt"),
+        "event_file": None,
+        "n_chunk": int(n_jobs_per_worker),
+        "execution": {
+            "request_memory": int(ile_mem),
+            "request_disk": ile_request_disk,
+            "request_gpu": not opts.ile_no_gpu,
+            "request_cross_platform": bool(opts.ile_xpu),
+            "copies": int(opts.ile_copies),
+            "retries": int(opts.ile_retries),
+            "max_runtime_minutes": opts.ile_runtime_max_minutes,
+            "use_osg": bool(opts.use_osg),
+            "use_singularity": bool(opts.use_osg),
+            "singularity_image": os.environ.get("SINGULARITY_RIFT_IMAGE"),
+            "use_simple_osg_requirements": bool(opts.use_osg_simple_requirements),
+            "use_cvmfs_frames": bool(opts.use_osg and not opts.use_osg_file_transfer),
+            "use_oauth_files": opts.internal_use_oauth_files or False,
+            "frames_dir": frames_dir,
+            "cache_file": cache_file,
+            "requires_data_inputs": not opts.ile_zero_likelihood_data_free,
+            "transfer_executable": bool(opts.use_osg),
+            "transfer_files": transfer_files,
+            "condor_commands": dict(ile_condor_commands or []),
+            "backend_commands": ({
+                "htcondor": {"+PreCmd": '"ile_pre.sh"'},
+            } if frames_dir is not None else {}),
+        },
+    }]
+    marg_spec_path = os.path.abspath("marg_job_specs.json")
+    with open(marg_spec_path, "w") as stream:
+        json.dump(marg_spec, stream, indent=2, sort_keys=True)
+        stream.write("\n")
+
+    terminal_stage_spec_path = None
+    terminal_stages = []
+    if opts.add_extrinsic:
+        # The maintained pseudo-pipe path uses ILE's time-resampled fairdraw
+        # mode. Express it as generic terminal indexed-grid fan-out followed
+        # by a command-stage collector; the low-level writer remains unaware
+        # of ILE/extrinsic executable names and postprocessing policy.  This
+        # also implements pseudo_pipe's production --batch-extrinsic +
+        # --add-extrinsic-time-resampling combination: BasicIteration gives
+        # the time-resampling all-in-one collector precedence over its other
+        # batched converter, so no distinct Hyperpipe topology is required.
+        with open("args_ile.txt") as stream:
+            extrinsic_ile_args = stream.read()
+        samples_per_point = int(
+            opts.internal_last_iteration_extrinsic_samples_per_ile or 5)
+        # One implementation, shared with BasicIteration.  This block used to
+        # re-derive the same transform with regular expressions over the args
+        # file pseudo_pipe had just written, and the two had already drifted on
+        # --n-eff: BasicIteration takes the LAST value in the string, this took
+        # the maximum over every value AND the --ile-n-eff option.  They agree
+        # only when the option and the string agree.
+        extrinsic_ile_args, extrinsic_neff = (
+            extrinsic_stage.derive_extrinsic_ile_args(
+                extrinsic_ile_args, samples_per_point,
+                export_marginal_distance_grid=opts.export_marginal_distance_grid,
+                export_distance_slices=(
+                    opts.export_distance_slices
+                    if (opts.export_distance_slices
+                        and opts.export_distance_slices > 0) else None),
+                distance_slice_options={
+                    "--distance-slice-all-fresh":
+                        opts.export_distance_slices_all_fresh,
+                    "--distance-slice-randomize":
+                        opts.export_distance_slices_randomize,
+                    "--distance-slice-wing-neff":
+                        opts.export_distance_slices_wing_neff,
+                    "--distance-slice-wing-nmax":
+                        opts.export_distance_slices_wing_nmax,
+                    # Truthiness upstream, so 0 is omitted -- see
+                    # extrinsic_stage.derive_extrinsic_ile_args.
+                    "--n-distance-slice-core":
+                        opts.export_distance_slices_n_core or None,
+                    "--n-distance-slice-wing":
+                        opts.export_distance_slices_n_wing or None,
+                    "--distance-slice-wing-delta-lnL":
+                        opts.export_distance_slices_wing_delta_lnL,
+                    "--distance-slice-skip-threshold":
+                        opts.export_distance_slices_skip_threshold,
+                },
+                time_resampling=True))
+
+        extrinsic_args_path = os.path.abspath("args_ile_extrinsic.txt")
+        with open(extrinsic_args_path, "w") as stream:
+            stream.write(extrinsic_ile_args.strip() + "\n")
+
+        join_extrinsic = shutil.which("util_JoinExtrXML.py") or "util_JoinExtrXML.py"
+        convert_extrinsic = (
+            shutil.which("convert_output_format_ile2inference")
+            or "convert_output_format_ile2inference")
+        convert_args_extrinsic = (
+            "--convention LI --export-cosmology --use-interpolated-cosmology")
+        if opts.assume_matter or opts.assume_eccentric:
+            with open("helper_convert_args.txt") as stream:
+                convert_args_extrinsic += " " + stream.read().strip()
+        shuffle_extrinsic = shutil.which("shuf")
+        shuffle_clause = " | cat"
+        if shuffle_extrinsic:
+            shuffle_clause = " | {}".format(shlex.quote(shuffle_extrinsic))
+        elif shutil.which("sort"):
+            shuffle_clause = " | {} -R".format(
+                shlex.quote(shutil.which("sort")))
+
+        terminal_extrinsic_dir = os.path.abspath("terminal_extrinsic")
+        terminal_collect_script = os.path.abspath(
+            "terminal_collect_extrinsic.sh")
+        with open(terminal_collect_script, "w") as stream:
+            stream.write("#!/bin/bash\nset -e\n")
+            # Shared with BasicIteration's allinone_convert.sh: two generators
+            # of the same four shell lines is how a stray space made the frame
+            # rotation inert for months.
+            for line in extrinsic_stage.extrinsic_collect_commands(
+                    shlex.quote(join_extrinsic), shlex.quote(convert_extrinsic),
+                    convert_args_extrinsic,
+                    "'{}/EXTR_out-*.xml_*_.xml.gz'".format(terminal_extrinsic_dir),
+                    "{}/tmp_extrinsic.xml.gz".format(os.getcwd()),
+                    "{}/tmp_extrinsic.dat".format(os.getcwd()),
+                    "{}/extrinsic_posterior_samples.dat".format(os.getcwd()),
+                    shuffle_clause):
+                stream.write(line + "\n")
+        os.chmod(terminal_collect_script, 0o755)
+
+        terminal_rotation_script = None
+        if opts.internal_mitigate_fd_J_frame == "rotate":
+            reference_frequencies = re.findall(
+                r"--(?:reference-freq|fref)(?:=|\s+)([0-9.eE+-]+)",
+                extrinsic_ile_args)
+            reference_frequency = (
+                reference_frequencies[-1] if reference_frequencies else "20")
+            rotate_extrinsic = (
+                shutil.which("convert_ascii_framechange_xphm.py")
+                or "convert_ascii_framechange_xphm.py")
+            terminal_rotation_script = os.path.abspath(
+                "terminal_rotate_extrinsic.sh")
+            with open(terminal_rotation_script, "w") as stream:
+                stream.write("#!/bin/bash\nset -e\n")
+                stream.write(
+                    "if [ ! -e {0}/extrinsic_posterior_samples_orig.dat ]; then\n"
+                    "  mv {0}/extrinsic_posterior_samples.dat "
+                    "{0}/extrinsic_posterior_samples_orig.dat\n"
+                    "  {1} --extrinsic-posterior-file "
+                    "{0}/extrinsic_posterior_samples_orig.dat "
+                    "--fname-out {0}/extrinsic_posterior_samples.dat "
+                    "--fref {2}\n"
+                    "fi\n".format(
+                        os.getcwd(), shlex.quote(rotate_extrinsic),
+                        reference_frequency))
+            os.chmod(terminal_rotation_script, 0o755)
+
+        terminal_worker_spec = dict(marg_spec[0])
+        terminal_worker_spec["args_file"] = extrinsic_args_path
+        terminal_worker_spec.pop("args", None)
+        terminal_worker_spec["execution"] = dict(
+            terminal_worker_spec.get("execution") or {})
+        terminal_worker_spec["execution"]["copies"] = 1
+        terminal_worker_spec["execution"]["request_memory"] = int(ile_mem) * 2
+        n_extrinsic_points = int(opts.n_output_samples_last)
+        # Same partition BasicIteration uses for its extrinsic fan-out; see
+        # RIFT.misc.cip_pipeline.worker_partition for why this must not be
+        # re-derived per builder.
+        extrinsic_batches = cip_pipeline.worker_partition(
+            n_extrinsic_points, int(n_jobs_per_worker), clamp_last=True)
+        n_extrinsic_jobs = max(1, len(extrinsic_batches))
+        extrinsic_group_sizes = [count for _start, count in extrinsic_batches]
+        terminal_command_common = {
+            "initial_dir": os.getcwd(),
+            "log_dir": terminal_extrinsic_dir + "/logs",
+            "universe": (
+                "local" if opts.condor_local_nonworker else "vanilla"),
+            "no_grid": bool(opts.condor_nogrid_nonworker),
+            "execution": {
+                "request_disk": general_request_disk,
+                "retries": int(opts.general_retries),
+            },
+        }
+        terminal_stages.extend([
+            {
+                "name": "extrinsic_samples",
+                "kind": "indexed-grid-fanout-v1",
+                "job": terminal_worker_spec,
+                "grid": os.path.abspath(
+                    "grid-$(macroiteration).dat"),
+                "output_file": "EXTR_out.xml",
+                "fanout": {
+                    "count": n_extrinsic_jobs,
+                    "group_size": int(n_jobs_per_worker),
+                    "group_sizes": extrinsic_group_sizes,
+                },
+                "initial_dir": terminal_extrinsic_dir,
+                "log_dir": terminal_extrinsic_dir + "/logs",
+            },
+            dict({
+                "name": "extrinsic_collect",
+                "kind": "command-v1",
+                "depends_on": ["extrinsic_samples"],
+                "exe": terminal_collect_script,
+            }, **terminal_command_common),
+        ])
+        if terminal_rotation_script:
+            terminal_stages.append(dict({
+                "name": "frame_rotation",
+                "kind": "command-v1",
+                "depends_on": ["extrinsic_collect"],
+                "exe": terminal_rotation_script,
+            }, **terminal_command_common))
+        terminal_extrinsic_product = (
+            "frame_rotation" if terminal_rotation_script
+            else "extrinsic_collect")
+        terminal_posterior_product = terminal_extrinsic_product
+        terminal_posterior_file = os.path.abspath(
+            "extrinsic_posterior_samples.dat")
+        if opts.calibration_reweighting:
+            calibration_dependency = terminal_extrinsic_product
+            calibration_pickle_file = opts.bilby_pickle_file
+            if not calibration_pickle_file:
+                os.makedirs(os.path.abspath("calmarg/data"), exist_ok=True)
+                os.makedirs(os.path.abspath("calmarg/logs"), exist_ok=True)
+                pickle_template, _ = dag_utils_generic.write_bilby_pickle_sub(
+                    tag="Bilby_pickle", log_dir=None,
+                    bilby_ini_file=os.path.abspath(opts.bilby_ini_file),
+                    exe=(shutil.which("bilby_pipe_generation")
+                         or "bilby_pipe_generation"),
+                    universe="local", no_grid=False,
+                    cache_file=(os.path.abspath("local.cache")
+                                if os.path.isfile("local.cache") else None),
+                    frames_dir=(os.path.abspath("frames_dir")
+                                if os.path.isdir("frames_dir") else None),
+                    ile_args=extrinsic_ile_args)
+                terminal_stages.append(dict({
+                    "name": "bilby_pickle",
+                    "kind": "command-v1",
+                    "depends_on": [terminal_extrinsic_product],
+                    "exe": pickle_template.executable,
+                    "args": _render_generic_job_arguments(pickle_template),
+                    "log_dir": os.path.abspath("calmarg/logs"),
+                }, **{
+                    key: value for key, value in terminal_command_common.items()
+                    if key != "log_dir"}))
+                calibration_dependency = "bilby_pickle"
+                calibration_pickle_file = os.path.abspath(
+                    "calmarg/data/calmarg_data_dump.pickle")
+
+            calibration_reweight = (
+                shutil.which("calibration_reweighting.py")
+                or "calibration_reweighting.py")
+            calibration_args = None
+            calibration_execution = dict(
+                terminal_command_common["execution"], request_memory=8192)
+            calibration_universe = terminal_command_common["universe"]
+            calibration_no_grid = terminal_command_common["no_grid"]
+            if opts.calibration_reweighting_osg:
+                calibration_transfer_files = [
+                    item for item in transfer_files if item.endswith(".h5")]
+                calibration_template, _ = (
+                    dag_utils_generic
+                    .write_calibration_uncertainty_reweighting_sub(
+                        tag="Calib_reweight", log_dir=None,
+                        posterior_file=terminal_posterior_file,
+                        exe=calibration_reweight,
+                        ile_args=extrinsic_ile_args,
+                        n_cal=(opts.calibration_reweighting_count
+                               if opts.calibration_reweighting_count is not None
+                               else 100),
+                        pickle_file=calibration_pickle_file,
+                        use_osg=True,
+                        use_oauth_files=(opts.internal_use_oauth_files or False),
+                        use_singularity=True,
+                        singularity_image=os.environ.get(
+                            "SINGULARITY_RIFT_IMAGE"),
+                        transfer_files=calibration_transfer_files))
+                calibration_reweight = calibration_template.executable
+                calibration_args = _render_generic_job_arguments(
+                    calibration_template)
+                calibration_execution["backend_commands"] = {
+                    "htcondor": _job_condor_commands(calibration_template)}
+                calibration_universe = "vanilla"
+                calibration_no_grid = False
+            else:
+                calibration_arg_list = [
+                    "--data_dump_file", str(calibration_pickle_file),
+                    "--posterior_sample_file", terminal_posterior_file,
+                    "--number_of_calibration_curves",
+                    str(opts.calibration_reweighting_count
+                        if opts.calibration_reweighting_count is not None
+                        else 100),
+                    "--reevaluate_likelihood", "True",
+                    "--use_rift_samples", "True",
+                ]
+                for option, pattern in [
+                        ("--fmin", r"--fmin-template(?:=|\s+)([^\s]+)"),
+                        ("--l-max", r"--l-max(?:=|\s+)([^\s]+)"),
+                        ("--waveform_approximant",
+                         r"--approx(?:=|\s+)([^\s]+)")]:
+                    values = re.findall(pattern, extrinsic_ile_args)
+                    if values:
+                        calibration_arg_list.extend([option, values[-1]])
+                calibration_args = " ".join(calibration_arg_list)
+            if opts.calibration_reweighting_initial_extra_args:
+                calibration_args += (
+                    " " +
+                    opts.calibration_reweighting_initial_extra_args.strip())
+            calibration_stage = dict(terminal_command_common)
+            calibration_stage["execution"] = calibration_execution
+            calibration_stage.update({
+                "name": "calibration_reweight",
+                "kind": "command-v1",
+                "depends_on": [calibration_dependency],
+                "exe": calibration_reweight,
+                "args": calibration_args,
+                "universe": calibration_universe,
+                "no_grid": calibration_no_grid,
+            })
+            calibration_batchsize = opts.calibration_reweighting_batchsize
+            if calibration_batchsize:
+                calibration_stage["args"] += (
+                    " --start_index $(macrostartidx)"
+                    " --end_index $(macroendidx)")
+                calibration_stage["instances"] = [
+                    {"startidx": start,
+                     "endidx": start + int(calibration_batchsize)}
+                    for start in range(
+                        0, int(opts.n_output_samples_last),
+                        int(calibration_batchsize))
+                ]
+            terminal_stages.append(calibration_stage)
+            terminal_posterior_product = "calibration_reweight"
+            terminal_posterior_file = os.path.abspath(
+                "reweighted_posterior_samples.dat")
+            if calibration_batchsize:
+                combine_calibration = (
+                    shutil.which("combine_weights_and_rejection_sample.py")
+                    or "combine_weights_and_rejection_sample.py")
+                merge_args = "{} {}/weight_files/".format(
+                    os.path.abspath("extrinsic_posterior_samples.dat"),
+                    os.getcwd())
+                if opts.calibration_reweighting_extra_args:
+                    merge_args += (
+                        " " + opts.calibration_reweighting_extra_args.strip())
+                terminal_stages.append(dict({
+                    "name": "calibration_merge",
+                    "kind": "command-v1",
+                    "depends_on": ["calibration_reweight"],
+                    "exe": combine_calibration,
+                    "args": merge_args,
+                }, **terminal_command_common))
+                terminal_posterior_product = "calibration_merge"
+        if opts.distance_reweighting:
+            convert_ascii_to_h5 = (
+                shutil.which("convert_output_format_ascii2h5.py")
+                or "convert_output_format_ascii2h5.py")
+            comoving_distance_reweight = (
+                shutil.which("make_uni_comov_skymap.py")
+                or "make_uni_comov_skymap.py")
+            terminal_stages.extend([
+                dict({
+                    "name": "posterior_hdf5",
+                    "kind": "command-v1",
+                    "depends_on": [terminal_posterior_product],
+                    "exe": convert_ascii_to_h5,
+                    "args": (
+                        "--posterior-samples {0} "
+                        "--output-file {1}/posterior_samples.h5"
+                    ).format(terminal_posterior_file, os.getcwd()),
+                }, **terminal_command_common),
+                dict({
+                    "name": "comoving_distance_reweight",
+                    "kind": "command-v1",
+                    "depends_on": ["posterior_hdf5"],
+                    "exe": comoving_distance_reweight,
+                    "args": (
+                        "{0}/posterior_samples.h5 "
+                        "--resampled-file {0}/cosmo_reweight.h5"
+                    ).format(os.getcwd()),
+                }, **terminal_command_common),
+            ])
+        if opts.archive_pesummary_label:
+            with open("args_plot.txt") as stream:
+                pesummary_args = stream.read().strip()
+            # args_plot.txt already names every posterior to publish, including
+            # the calibration-reweighted one when that stage runs, so there is
+            # nothing to rewrite here.  The stage still depends on the final
+            # product, which is what makes those files exist.
+            terminal_stages.append(dict({
+                "name": "pesummary",
+                "kind": "command-v1",
+                "depends_on": [terminal_posterior_product],
+                "exe": shutil.which("summarypages") or "summarypages",
+                "args": pesummary_args,
+            }, **terminal_command_common))
+        consolidate_distance = (
+            shutil.which("util_ConsolidateDistanceGrids.py")
+            or "util_ConsolidateDistanceGrids.py")
+        for label, enabled, postfix, output in [
+                ("distance_grid", opts.export_marginal_distance_grid,
+                 "dgrid", "all_dgrid.dat"),
+                ("distance_slices", bool(opts.export_distance_slices),
+                 "dslice", "all_dslice.dat")]:
+            if enabled:
+                terminal_stages.append(dict({
+                    "name": label,
+                    "kind": "command-v1",
+                    "depends_on": ["extrinsic_samples"],
+                    "exe": consolidate_distance,
+                    "args": (
+                        "--input-glob {}/EXTR_out*.xml_*_.{}"
+                        " --output {}/{}".format(
+                            terminal_extrinsic_dir, postfix,
+                            os.getcwd(), output)),
+                }, **terminal_command_common))
+    # The user's stages come last and are never reordered among themselves, so
+    # a manifest read on its own runs in the order it is written.  They are
+    # merged outside the --add-extrinsic block on purpose: a stage that only
+    # post-processes the final posterior_samples-N.dat needs no extrinsic
+    # stage, and refusing to build one would be an arbitrary coupling.
+    if opts.terminal_stage_extra_file:
+        terminal_stages.extend(_load_extra_terminal_stages(
+            opts.terminal_stage_extra_file, terminal_stages))
+    if terminal_stages:
+        terminal_manifest = {"version": 1, "stages": terminal_stages}
+        terminal_stage_spec_path = os.path.abspath(
+            "terminal_stage_specs.json")
+        with open(terminal_stage_spec_path, "w") as stream:
+            json.dump(terminal_manifest, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+
+    # The Hyperpipe route ALWAYS requests --terminal-evidence (and usually
+    # terminal stages), and its convergence nodes carry ABORT-DAG-ON.  A live
+    # test converging early would return whole-DAG success while skipping
+    # every terminal product, so the outer tests must never terminate the
+    # schedule -- the same reasoning BasicIteration applies under
+    # --add-extrinsic.  Give the Hyperpipe builder its own test-args file
+    # with --always-succeed guaranteed; args_test.txt (the legacy builders'
+    # file) is deliberately untouched.  The Z child strips --always-succeed
+    # again: it is the intended live-test user and requests no products.
+    hyperpipe_test_args_path = os.path.abspath("args_test_hyperpipe.txt")
+    with open("args_test.txt") as stream:
+        _test_line = stream.read().rstrip("\n")
+    if "--always-succeed" not in _test_line:
+        _test_line += " --always-succeed "
+    with open(hyperpipe_test_args_path, "w") as stream:
+        stream.write(_test_line + "\n")
+
+    hyperpipe_cmd = [
+        shutil.which("create_eos_posterior_pipeline") or "create_eos_posterior_pipeline",
+        "--marg-job-spec-file", marg_spec_path,
+        "--input-grid", os.path.abspath("proposed-grid.dat"),
+        "--eos-post-args-list", os.path.abspath("args_cip_list.txt"),
+        "--eos-post-exe", shutil.which("util_ConstructIntrinsicPosterior_GenericCoordinates.py") or "util_ConstructIntrinsicPosterior_GenericCoordinates.py",
+        "--puff-exe", shutil.which("util_ParameterPuffball.py") or "util_ParameterPuffball.py",
+        "--puff-args", os.path.abspath("args_puff.txt"),
+        "--puff-max-it", str(puff_max_it),
+        "--test-args", hyperpipe_test_args_path,
+        "--test-exe", shutil.which("convergence_test_samples.py") or "convergence_test_samples.py",
+        "--request-memory-marg", str(cip_mem),
+        "--general-request-disk", str(general_request_disk),
+        "--n-samples-per-job", str(npts_it),
+        "--n-iterations", str(n_iterations),
+        "--n-iterations-subdag-max",
+        str(opts.internal_n_iterations_subdag_max),
+        "--eos-post-explode-jobs", str(opts.cip_explode_jobs or 1),
+        "--eos-post-explode-jobs-last", str(opts.cip_explode_jobs_last or opts.cip_explode_jobs or 1),
+        "--general-retries", str(opts.general_retries),
+        "--terminal-evidence",
+        # Mirror BasicIteration's unconditional ABORT-DAG-ON wiring: a live
+        # convergence test exits 1 on success, and without the abort wiring
+        # DAGMan reads that as a plain node failure -- convergence and crash
+        # become indistinguishable.  With --add-extrinsic the test args carry
+        # --always-succeed and the abort wiring is inert, exactly as in
+        # BasicIteration.
+        "--test-convergence-abort",
+        "--working-directory", os.getcwd(),
+        "--use-full-submit-paths",
+    ]
+    if terminal_stage_spec_path:
+        hyperpipe_cmd += [
+            "--terminal-stage-spec-file", terminal_stage_spec_path]
+    if (os.path.isfile("helper_transfer_files.txt")
+            and not opts.ile_zero_likelihood_data_free):
+        hyperpipe_cmd += ["--transfer-file-list", os.path.abspath("helper_transfer_files.txt")]
+    if opts.use_osg:
+        hyperpipe_cmd += ["--use-osg", "--use-singularity"]
+    if opts.internal_use_oauth_files:
+        hyperpipe_cmd += [
+            "--use-oauth-files", opts.internal_use_oauth_files]
+    if opts.use_osg:
+        # The Hyperpipe posterior protocol consumes the same new .dat contract
+        # as its MARG workers.  Production images may predate that contract,
+        # regardless of whether ILE used real data or a constant likelihood.
+        hyperpipe_cmd += [
+            "--eos-post-transfer-executable",
+            "--eos-post-transfer-file",
+            os.path.abspath(os.path.join(
+                os.path.dirname(__file__), "..", "RIFT")),
+        ]
+    if opts.condor_local_nonworker:
+        hyperpipe_cmd.append("--condor-local-nonworker")
+    if opts.condor_local_nonworker_igwn_prefix:
+        hyperpipe_cmd.append("--condor-local-nonworker-igwn-prefix")
+    if opts.condor_nogrid_nonworker:
+        hyperpipe_cmd.append("--condor-nogrid-nonworker")
+    print(" ".join(shlex.quote(item) for item in hyperpipe_cmd))
+    subprocess.run(hyperpipe_cmd, check=True, env=os.environ.copy())
+else:
+    print(cmd)
+    # os.system() discards the child's exit status, so a builder that died with
+    # a traceback left pseudo_pipe reporting success and an empty run directory
+    # -- the failure only surfaced later as "there is no DAG".  The Hyperpipe
+    # branch above already uses check=True; the legacy branch must too.
+    _builder = subprocess.run(cmd, shell=True)
+    if _builder.returncode:
+        raise SystemExit(
+            "pseudo_pipe: pipeline builder failed with exit {}; see the output "
+            "above. The run directory is incomplete.".format(
+                _builder.returncode))
 
 if opts.internal_ile_check_good_enough:
     # Populate 'ile_check_good_enough' through all subdirectories

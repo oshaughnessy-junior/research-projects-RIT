@@ -16,6 +16,125 @@ import numpy as np
 POSTERIOR_UNIQUE_FLAG = "--posterior-unique-draw"
 
 
+def worker_partition(n_points, group_size, clamp_last=False):
+    """Split *n_points* indices into worker batches of at most *group_size*.
+
+    Returns a list of ``(start, count)`` pairs.  Three places in RIFT decide
+    how many workers an iteration gets and which slice each one takes, and
+    they must agree: the ILE fan-out and the terminal extrinsic fan-out in
+    ``create_event_parameter_pipeline_BasicIteration``, and the Hyperpipe
+    terminal fan-out assembled in ``util_RIFT_pseudo_pipe.py``.
+
+    **Correction (2026-08-25, amended 2026-08-27).** Relative to this
+    branch's own earlier state (commit 48295bb8) the BasicIteration ILE call
+    site already read ``int(np.ceil(n/g))``, so converting it to this
+    function changed nothing.  But relative to the ``rift_O4d`` base this
+    branch merges against (00c0eadc), that call site was still the buggy
+    ``int(n/g)`` + never-firing guard described below -- so against the
+    base, this branch DOES change BasicIteration's ILE fan-out from floor
+    to ceil, and tail points of a non-divisible request that were
+    previously silently unevaluated are now evaluated.  A deliberate fix,
+    not a no-op refactor.
+
+    The buggy form is real, and it is elsewhere: ``int(n/g)`` guarded by ``if
+    indx_max*n < g: indx_max += 1`` still stands in
+    ``create_event_parameter_pipeline_AlternateIteration``,
+    ``create_event_parameter_pipeline_BasicMultiApproxIteration`` and
+    ``create_event_nr_pipeline_with_cip``.  That guard fires only when ``n <
+    g`` (where ``int(n/g)`` is 0).  For ``n > g`` with a remainder, ``indx_max
+    >= 1`` and ``indx_max*n >= n >= g``, so it never fires and the request
+    allocates too FEW workers, leaving the tail of the requested points
+    unevaluated with no error and no log line.  **None of those three builders
+    is converted here**, so the "places that must agree" still do not all
+    agree -- converting them is a separate change with its own blast radius,
+    and claiming otherwise would suggest a coverage this module does not have.
+
+    ``clamp_last`` controls the tail:
+
+    * ``False`` (the ILE fan-out): every batch is a full ``group_size``, so the
+      last one can ask for indices past the end.  ILE tolerates that -- it
+      stops at the end of the grid -- and the uniform ``macrongroup`` is what
+      the historical DAG emitted.  Kept as-is deliberately: changing it would
+      change the shape of every production DAG.
+    * ``True`` (the extrinsic fan-outs): the last batch is truncated so the
+      total is exactly ``n_points``.  Here the count IS the deliverable --
+      it is how many posterior samples the run produces -- so over-requesting
+      is not free.
+    """
+    n_points = int(n_points)
+    group_size = int(group_size)
+    if group_size <= 0:
+        raise ValueError("group_size must be positive, got {}".format(group_size))
+    if n_points <= 0:
+        return []
+    n_workers = -(-n_points // group_size)   # ceil, without float rounding
+    batches = []
+    for index in range(n_workers):
+        start = index * group_size
+        count = group_size
+        if clamp_last:
+            count = min(group_size, n_points - start)
+        batches.append((start, count))
+    return batches
+
+
+def expand_argument_schedule(lines, n_iterations, allow_special=False,
+                             include_prefix=False):
+    """Expand a grouped CIP/posterior argument schedule by iteration.
+
+    Each non-empty line begins with an integer repeat count.  The legacy event
+    pipeline also accepts ``G<count>`` (alternate Gaussian-resampling
+    executable) and ``Z`` (run-to-convergence subdag).  Callers that cannot
+    reproduce those execution semantics must leave ``allow_special`` false;
+    the parser then fails explicitly instead of silently changing an analysis.
+
+    If the schedule is shorter than ``n_iterations``, its final ordinary group
+    is extended to cover the requested iterations. Longer schedules are
+    truncated to the requested iteration count.
+    """
+    n_iterations = int(n_iterations)
+    if n_iterations <= 0:
+        raise ValueError("n_iterations must be positive")
+    groups = []
+    for raw in lines:
+        raw = raw.strip()
+        if not raw or raw.startswith("#"):
+            continue
+        words = raw.split()
+        prefix = words[0]
+        args = " ".join(words[1:]).strip()
+        if prefix == "Z" or prefix.startswith("G"):
+            if not allow_special:
+                raise ValueError(
+                    "special CIP schedule prefix {!r} is not supported by this pipeline writer".format(prefix))
+            repeat = 1 if prefix == "Z" else int(prefix[1:])
+        else:
+            try:
+                repeat = int(prefix)
+            except ValueError:
+                raise ValueError("invalid CIP schedule prefix {!r}".format(prefix))
+        if repeat <= 0:
+            raise ValueError("CIP schedule repeat must be positive: {!r}".format(prefix))
+        groups.append((prefix, repeat, args))
+    if not groups:
+        raise ValueError("CIP argument schedule is empty")
+
+    expanded = []
+    for prefix, repeat, args in groups:
+        expanded.extend([(prefix, args)] * repeat)
+    if len(expanded) < n_iterations:
+        prefix = groups[-1][0]
+        if prefix == "Z" or prefix.startswith("G"):
+            raise ValueError("cannot extend a special final CIP schedule group")
+        expanded.extend(
+            [(groups[-1][0], groups[-1][2])] *
+            (n_iterations - len(expanded)))
+    expanded = expanded[:n_iterations]
+    if include_prefix:
+        return expanded
+    return [args for _prefix, args in expanded]
+
+
 def _validated_scaled_weights(weights):
     """Validate weights and return them scaled by their maximum, in the input dtype.
 

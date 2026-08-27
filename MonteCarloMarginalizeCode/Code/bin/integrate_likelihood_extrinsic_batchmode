@@ -15,6 +15,67 @@ from optparse import OptionParser, OptionGroup
 import numpy
 import numpy as np
 import os
+import importlib.util
+
+
+def _load_hyperpipeline_io():
+  """Load the grid helper from RIFT or beside a staged worker executable."""
+  try:
+    from RIFT.misc import hyperpipeline_io
+    return hyperpipeline_io
+  except ImportError:
+    helper_path = os.path.join(os.getcwd(), "hyperpipeline_io.py")
+    if not os.path.isfile(helper_path):
+      raise
+    spec = importlib.util.spec_from_file_location(
+        "rift_staged_hyperpipeline_io", helper_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _run_data_free_early_exit():
+  """Handle constant-lnL indexed grids before importing the RIFT runtime."""
+  if "--zero-likelihood-data-free" not in sys.argv:
+    return
+  import argparse
+  early = argparse.ArgumentParser(add_help=False)
+  early.add_argument("--zero-likelihood-data-free", action="store_true")
+  early.add_argument("--zero-likelihood", action="store_true")
+  early.add_argument("--sim-grid")
+  early.add_argument("--output-file")
+  early.add_argument("--event", type=int, default=0)
+  early.add_argument("--n-events-to-analyze", type=int, default=1)
+  early.add_argument("--save-samples", action="store_true")
+  early.add_argument("--fairdraw-extrinsic-output", action="store_true")
+  opts, _ = early.parse_known_args()
+  if not opts.zero_likelihood:
+    raise ValueError(
+        "--zero-likelihood-data-free requires --zero-likelihood")
+  if not opts.sim_grid or not opts.output_file:
+    raise ValueError(
+        "--zero-likelihood-data-free requires --sim-grid and --output-file")
+  if opts.save_samples or opts.fairdraw_extrinsic_output:
+    raise ValueError(
+        "--zero-likelihood-data-free cannot produce extrinsic samples")
+  hpio = _load_hyperpipeline_io()
+  if not hpio.sniff(opts.sim_grid):
+    raise ValueError(
+        "--zero-likelihood-data-free requires a Hyperpipe ASCII --sim-grid")
+  grid, names = hpio.read_table(opts.sim_grid)
+  stop = min(len(grid), opts.event + opts.n_events_to_analyze)
+  for local_index, row in enumerate(np.atleast_1d(grid)[opts.event:stop]):
+    values = [float(row[name]) for name in names]
+    values[names.index("lnL")] = 0.0
+    values[names.index("sigma_lnL")] = 0.0
+    event_index = opts.event + local_index
+    output = opts.output_file + "_" + str(event_index) + "_.dat"
+    hpio.write_row(output, names, values)
+    print("Data-free zero likelihood output:", output)
+  sys.exit(0)
+
+
+_run_data_free_early_exit()
 try:
   import cupy
   xpy_default=cupy
@@ -187,6 +248,13 @@ def sampler_param_tuple(sampler,args):
 optp = OptionParser()
 optp.add_option("--check-good-enough", action='store_true', help="If active, tests if a file 'ile_good_enough' in the current directory exists and has content of nonzero length. Terminates with 'success' if the file exists and has nonzero length ")
 optp.add_option( "--zero-likelihood", action='store_true', help="Run with exactly zero likelihood.  Prior test (e.g., alternative distance priors)")
+optp.add_option(
+    "--zero-likelihood-data-free", action='store_true',
+    help=("With --zero-likelihood, --sim-grid, and --output-file, emit "
+          "constant Hyperpipe likelihood shards before frame/PSD setup. "
+          "This lightweight pipeline-validation mode does not produce "
+          "extrinsic samples and leaves ordinary --zero-likelihood behavior "
+          "unchanged."))
 optp.add_option("-c", "--cache-file", default=None, help="LIGO cache file containing all data needed.")
 optp.add_option("-C", "--channel-name", action="append", help="instrument=channel-name, e.g. H1=FAKE-STRAIN. Can be given multiple times for different instruments.")
 optp.add_option("-p", "--psd-file", action="append", help="instrument=psd-file, e.g. H1=H1_PSD.xml.gz. Can be given multiple times for different instruments.")
@@ -786,6 +854,7 @@ fiducial_epoch = event_time.seconds + 1e-9*event_time.nanoseconds   # no more di
 P_list = None
 P=None # force allocation so I can use the preferred event later
 grid_in = None
+_hpip_grid = False
 if opts.sim_xml:
     print( "====Loading injection XML:", opts.sim_xml, opts.event, " =======")
     P_list = lalsimutils.xml_to_ChooseWaveformParams_array(str(opts.sim_xml))
@@ -833,7 +902,7 @@ elif opts.sim_grid:
   # The legacy genfromtxt branch is kept byte-identical for backward
   # compatibility with existing --sim-grid files.
   # ----------------------------------------------------------------------
-  from RIFT.misc import hyperpipeline_io as _hpio
+  _hpio = _load_hyperpipeline_io()
   _hpip_grid = _hpio.is_active() or _hpio.sniff(opts.sim_grid)
   if _hpip_grid:
       print(" Hyperpipeline ASCII grid detected for ", opts.sim_grid)
@@ -873,9 +942,19 @@ elif opts.sim_grid:
       else: # slightly slower version
         P.assign_param(name, grid_in[grid_names_params[indx]])
     P_list_seed.append(P)
-  # Common per-P setup (formerly inlined in the legacy for-loop; both
-  # paths now share it so hyperpipeline-loaded P_lists get the same
-  # radec / fref / fmin / tref / distance overrides).
+  # Common per-P setup.  This list must stay in step with the --sim-xml
+  # branch above: anything that branch does to a loaded P and this one does
+  # not is a way for the SAME analysis to mean different things depending on
+  # which grid format it was handed.
+  #
+  # That is not hypothetical.  --approximant was applied only on the XML side,
+  # so an ILE run from a --sim-grid grid ignored the requested waveform and
+  # used whatever the grid's P carried -- in practice ChooseWaveformParams'
+  # TaylorT4 default.  With PR #181 making the ASCII grid the only format the
+  # Hyperpipe builder emits, every real-likelihood run would have been
+  # analyzed with the wrong waveform; where TaylorT4 then produced too few
+  # modes, ILE raised KeyError: (2, -1), reported "FAILED ANALYSIS", wrote no
+  # output and exited 0.
   P_list = []
   for P in P_list_seed:
     # Set required properties for all - note distance must be fixed here !
@@ -883,6 +962,15 @@ elif opts.sim_grid:
     P.fref = opts.reference_freq
     P.fmin = template_min_freq
     P.tref = fiducial_epoch  # the XML table
+    # ILE marginalizes over the extrinsic parameters, so the template is
+    # generated in a fixed frame; the XML branch pins these explicitly.
+    P.phiref = 0.0
+    P.psi = 0.0
+    P.incl = 0.0
+    if opts.approximant != "TaylorT4":  # not the default setting
+        P.approx = lalsimutils.lalsim.GetApproximantFromString(opts.approximant)
+    if opts.approximant == "EccentricTD":
+        P.phaseO = 3
     # fix mass scale
     if P.m1 < 1e15:  #
       P.m1 *= lal.MSUN_SI
@@ -4443,7 +4531,7 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
         # by parameter columns.  All legacy branches below are bypassed so
         # the file layout is determined by hyperpipeline_io.build_column_list.
         # ------------------------------------------------------------------
-        from RIFT.misc import hyperpipeline_io as _hpio
+        _hpio = _load_hyperpipeline_io()
         # Which optional parameter groups this row carries.  The hyperpipeline
         # writer and the legacy writer below consume the SAME flags, so a run
         # that enables several groups at once emits all of them in either
@@ -5035,10 +5123,14 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
             #
             #   1. IT READ THE FAIR DRAW.  sampler._rvs has been rebound to
             #      min(n_extr, 1.5*eff_samp, 1.5*neff) rows resampled WITH REPLACEMENT for
-            #      EXPORT.  --fairdraw-extrinsic-output is not an exotic setting: every
-            #      extrinsic stage built by create_event_parameter_pipeline_BasicIteration,
-            #      cepp_basic_htcondor and create_event_nr_pipeline_with_cip passes it
-            #      unconditionally.  So on the collapsed high-amplitude pass this feature is
+            #      EXPORT.  --fairdraw-extrinsic-output is not an exotic setting: the
+            #      extrinsic stage built by create_event_parameter_pipeline_BasicIteration
+            #      (via RIFT.misc.extrinsic_stage) and by create_event_nr_pipeline_with_cip
+            #      adds it whenever --last-iteration-extrinsic-time-resampling is set, which
+            #      util_RIFT_pseudo_pipe.py --add-extrinsic-time-resampling sets.  (This said
+            #      "unconditionally" and named cepp_basic_htcondor, since removed; the flag
+            #      has always been inside the time-resampling branch.)  So on the collapsed
+            #      high-amplitude pass this feature is
             #      most wanted for, the seed for the NEXT intrinsic point was a handful of
             #      rows -- one, in the rho_net 146.8 logs -- several of them the same point
             #      twice, while the live set held a thousand.

@@ -33,6 +33,10 @@
       "decision": "NA",
       "reason": "Calibration-envelope internals; see the --calibration-* reason."
     },
+    "FUNC:_load_hyperpipeline_io": {
+      "decision": "PORT",
+      "reason": "Implementation helpers for --zero-likelihood-data-free. They are detector-neutral indexed-grid and output plumbing and therefore travel with that option when its LISA end-to-end consumer is ported."
+    },
     "FUNC:_normalize_interpolate_time_argv": {
       "decision": "PORT",
       "reason": "Normalizes --interpolate-time argv forms. LISA exposes --interpolate-time, so the same normalization applies."
@@ -40,6 +44,10 @@
     "FUNC:_reparam_A_of_incl": {
       "decision": "PORT",
       "reason": "Implementation of --internal-reparam-dl-incl; ports with it, measured before default-on."
+    },
+    "FUNC:_run_data_free_early_exit": {
+      "decision": "PORT",
+      "reason": "Implementation helpers for --zero-likelihood-data-free. They are detector-neutral indexed-grid and output plumbing and therefore travel with that option when its LISA end-to-end consumer is ported."
     },
     "FUNC:_truthy_option": {
       "decision": "PORT",
@@ -356,6 +364,10 @@
     "OPTION:--srate-resample-time-marginalization": {
       "decision": "PORT",
       "reason": "Interpolate the lnL time series onto a finer grid before time resampling. LISA already has --resample-time-marginalization and its own time-resampling block, so this is the matching resolution knob and applies directly."
+    },
+    "OPTION:--zero-likelihood-data-free": {
+      "decision": "PORT",
+      "reason": "Explicit indexed-grid validation mode layered on --zero-likelihood. LISA already supports --zero-likelihood and --sim-grid, so the same data-free pipeline gate is applicable, but should be ported with a LISA end-to-end consumer rather than as an untested parser-only option."
     }
   }
 }
