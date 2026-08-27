@@ -16,9 +16,14 @@ HERE = os.path.dirname(__file__)
 CODE = os.path.abspath(os.path.join(HERE, os.pardir))
 SUMMARIZER = os.path.join(CODE, "bin", "util_CIPDirSummarizeEvidence.py")
 CIP = os.path.join(CODE, "bin", "util_ConstructIntrinsicPosterior_GenericCoordinates.py")
+#: Builders carrying the in-loop evidence structure this file pins.
+#: `cepp_basic_htcondor` was the second entry until it was removed as an
+#: unfinished htcondor2 port that could not emit a DAG.  Nothing replaces it --
+#: no other builder in bin/ has this structure -- so a one-element list is the
+#: honest state, not an oversight.  Add an entry back when a second builder
+#: grows the structure.
 PIPELINES = [
     os.path.join(CODE, "bin", "create_event_parameter_pipeline_BasicIteration"),
-    os.path.join(CODE, "bin", "cepp_basic_htcondor"),
 ]
 
 
@@ -119,9 +124,11 @@ def test_pipeline_points_in_loop_evidence_at_non_exploded_cip_output(pipeline):
     source = open(pipeline).read()
     assert 'evidence_source = " --cip-dir iteration_$(macroiteration)_cip"' in source
     assert 'evidence_source = " --cip-dir . --cip-prefix overlap-grid-$(macroiterationnext)"' in source
-    macro_api = ("add_variable" if os.path.basename(pipeline) == "cepp_basic_htcondor"
-                 else "add_macro")
-    assert 'evidence_node.{}("macroiterationnext",it)'.format(macro_api) in source
+    # This was a branch on the builder: cepp_basic_htcondor used htcondor2's
+    # add_variable, everything else uses glue's add_macro.  With that builder
+    # removed only add_macro remains, and a branch with one live arm hides
+    # which API is actually being asserted.
+    assert 'evidence_node.add_macro("macroiterationnext",it)' in source
 
 
 def test_prior_mode_is_independent_and_reweighted_evidence_restores_shift():

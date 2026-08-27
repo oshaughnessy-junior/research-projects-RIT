@@ -438,6 +438,19 @@ jobs:
           python -m pip install --editable . --break-system-packages
       - name: Run integration sampler check
         run: bash .travis/test-integrate.sh
+      - name: Terminal extrinsic grid, NR pipeline
+        # Listed explicitly because this workflow runs named files, not a
+        # directory: a test nothing invokes cannot fail, and the defect this one
+        # pins survived precisely because nothing built the pipeline it lives in
+        # (create_event_nr_pipeline_with_cip is not reachable from
+        # util_RIFT_pseudo_pipe.py, and demo/nr_w_rift does not pass
+        # --last-iteration-extrinsic).  It rides in this job because it builds a
+        # real DAG through the installed bin/ script, so it needs the editable
+        # install above; it submits nothing and evaluates no likelihood, and
+        # takes a few seconds.
+        run: |
+          python -m pytest -q \
+            MonteCarloMarginalizeCode/Code/test/test_nr_pipeline_terminal_grid.py
 
   asimov-integration:
     needs: install
