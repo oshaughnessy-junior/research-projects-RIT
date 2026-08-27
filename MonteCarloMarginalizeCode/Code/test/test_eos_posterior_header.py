@@ -32,6 +32,8 @@ TOOL = os.path.join(CODE, "bin", "util_ConstructEOSPosterior.py")
 #: `util_shuffle_file.py` and `convert_ascii_framechange_xphm.py`.
 HEADERS = {
     "plain": ["# lnL sigma_lnL x y z"],
+    "magic+double-hash": ["# RIFT_HYPERPIPELINE_V1",
+                          "# # lnL sigma_lnL x y z"],
     "magic": ["# RIFT_HYPERPIPELINE_V1", "# lnL sigma_lnL x y z"],
     "magic+meta": ["# RIFT_HYPERPIPELINE_V1",
                    "# RIFT_HYPERPIPELINE_META ampO=-1 fmin=20.0",
@@ -236,3 +238,29 @@ def test_the_driver_grid_reader_refuses_a_headerless_grid(tmp_path):
     fname = _write(str(tmp_path / "grid.dat"), [])
     with pytest.raises(ValueError, match="read_grid"):
         base.read_grid("file:" + fname)
+
+
+def test_a_header_naming_no_parameters_is_refused(tmp_path):
+    """`# lnL sigma_lnL` and nothing else is a header, but not a usable one.
+
+    Untested until now, so disabling the guard passed: the tool would carry an
+    empty parameter list forward and fail later somewhere less informative.
+    Distinct from the no-header case -- here the line IS a header, it just
+    declares no parameters, and the message says so rather than claiming the
+    header is missing.
+    """
+    fname = str(tmp_path / "noparams.dat")
+    with open(fname, "w") as handle:
+        handle.write("# lnL sigma_lnL\n")
+        for index in range(20):
+            handle.write("{:.4f} 0.0100\n".format(-0.1 * index))
+    result = subprocess.run(
+        [sys.executable, TOOL, "--fname", fname,
+         "--parameter", "x", "--integration-parameter-range", "x:[0,1]",
+         "--n-output-samples", "4",
+         "--fname-output-samples", str(tmp_path / "out"),
+         "--fname-output-integral", str(tmp_path / "out_int")],
+        cwd=str(tmp_path), capture_output=True, text=True, timeout=1800)
+    combined = result.stdout + result.stderr
+    assert "no parameters" in combined, combined[-2500:]
+    assert os.path.basename(fname) in combined, combined[-2000:]
