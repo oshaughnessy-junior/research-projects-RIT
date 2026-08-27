@@ -1745,12 +1745,21 @@ class SlurmBackend(WorkflowBackend):
                 lines.append("{} {}".format(exe, args).rstrip())
 
             if isinstance(node, _GenericSubdagNode):
+                # Resolve the LOGICAL dag name to what this backend actually
+                # wrote (foo.dag -> foo_dag.sh), exactly as the local backend
+                # does.  Callers hand every backend the same logical name; the
+                # build-time existence check in the pipeline writer validates
+                # the resolved path, so running the unresolved one meant a
+                # valid manifest passed validation and then failed at
+                # execution with `bash foo.dag`.  Idempotent for names that
+                # are already resolved.
+                subdag_driver = self.output_path_for_dag(node.subdag_file)
                 lines.append("# Sub-DAG: {}".format(node.subdag_file))
                 lines.append('echo "Slurm backend: SUBDAG nodes are not supported natively; '
-                             'driving sub-script {} via bash" >&2'.format(node.subdag_file))
+                             'driving sub-script {} via bash" >&2'.format(subdag_driver))
                 deps = self._dep_clause(node, var_for_node_id)
                 lines.append("{}=$(sbatch{} --wrap=\"bash {}\" | awk '{{print $4}}')".format(
-                    var, deps, node.subdag_file))
+                    var, deps, subdag_driver))
             else:
                 sub = node.job.get_sub_file()
                 if sub is None:

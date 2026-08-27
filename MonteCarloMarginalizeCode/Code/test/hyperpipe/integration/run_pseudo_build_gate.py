@@ -897,9 +897,31 @@ def _assert_z_subworkflow_contract(hyper: Path):
     child_text = child_dag.read_text()
     assert "JUMPSTART_MARG_NET.sub" in child_text
     assert "ABORT-DAG-ON" in child_text
-    assert "EOS_POST_prior.sub" in child_text
-    assert "evidence_final.sub" in child_text
+    # The child must NOT build an evidence pair: its live tests abort the
+    # child DAG on convergence, so a child evidence pair anchored to the
+    # final iteration would run exactly when the child failed to converge
+    # early -- fake assurance.  The outer post-Z iteration owns terminal
+    # evidence (asserted below via the outer evidence submits).
+    assert "EOS_POST_prior.sub" not in child_text
+    assert "evidence_final.sub" not in child_text
     assert "MARG_" in child_text
+    # The outer evidence pair must exist in the Z build -- it is the only
+    # evidence this shape produces.
+    outer_text = outer_dag.read_text()
+    assert "EOS_POST_prior.sub" in outer_text
+    assert "evidence_final.sub" in outer_text
+
+    # The live/inert test split that makes ABORT-DAG-ON safe: the OUTER
+    # tests must carry --always-succeed (products are downstream of the
+    # final iteration, so early termination would skip them), while the
+    # CHILD's stripped test args must NOT (the child is the run-to-
+    # convergence half; if stripping regressed, every Z run would silently
+    # burn its full iteration budget).
+    outer_args = (hyper / "args_test_hyperpipe.txt").read_text()
+    assert "--always-succeed" in outer_args
+    child_args_files = list(child_dag.parent.glob("args_test.txt"))
+    assert len(child_args_files) == 1
+    assert "--always-succeed" not in child_args_files[0].read_text()
 
     jobs, edges = _dag_jobs_and_edges(outer_dag)
     fetch_submits = sorted(hyper.glob("FETCH_Z_*.sub"))

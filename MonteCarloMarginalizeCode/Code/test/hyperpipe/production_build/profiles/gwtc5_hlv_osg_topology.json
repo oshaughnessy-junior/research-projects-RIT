@@ -66,8 +66,6 @@
     "child_dag_tokens": [
       "JUMPSTART_MARG_NET.sub",
       "ABORT-DAG-ON",
-      "EOS_POST_prior.sub",
-      "evidence_final.sub",
       "MARG_0.sub"
     ],
     "terminal_stages": [

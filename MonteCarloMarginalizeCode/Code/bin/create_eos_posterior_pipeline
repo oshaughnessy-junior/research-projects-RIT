@@ -1187,7 +1187,13 @@ def build_z_subworkflow(iteration, posterior_args):
         "--jumpstart-marg-net", os.path.abspath(os.path.join(
             opts.working_directory, "all.marg_net")),
         "--test-convergence-abort",
-        "--terminal-evidence",
+        # Deliberately NO --terminal-evidence: the child's live tests abort
+        # the child DAG on convergence, which would skip a child evidence
+        # pair anchored to the final iteration -- the evidence would exist
+        # exactly when the child failed to converge early, fake assurance.
+        # The OUTER post-Z iteration owns the terminal evidence in every
+        # shape that requests it (and the outer builder refuses to build a
+        # Z-last schedule with --terminal-evidence).
         "--use-full-submit-paths",
     ]
     if child_test_args:
@@ -1224,7 +1230,10 @@ def build_z_subworkflow(iteration, posterior_args):
     subprocess.run(command, cwd=child_dir, check=True, env=os.environ.copy())
 
     child_dag = os.path.join(child_dir, "marginalize_hyperparameters.dag")
-    subdag_node = pipeline.CondorDAGManJob(child_dag).create_node()
+    # Same backend-resolution as the terminal subworkflow stage: the child
+    # build above wrote the backend's own driver file, not necessarily a .dag.
+    subdag_node = pipeline.CondorDAGManJob(
+        dag_utils.get_backend().output_path_for_dag(child_dag)).create_node()
     subdag_node.set_category("Z_SUBWORKFLOW")
     subdag_node.set_retry(opts.general_retries)
 
@@ -1492,7 +1501,13 @@ for terminal_stage in terminal_stage_specs:
         parent_nodes.extend(terminal_stage_nodes[dependency])
     nodes_here = []
     if terminal_stage.kind == SUBWORKFLOW_V1:
-        subdag_node = pipeline.CondorDAGManJob(terminal_stage.dag).create_node()
+        # Run the file the build-time existence check actually validated: the
+        # backend-resolved path (child.dag on HTCondor, child_dag.sh on Slurm,
+        # child_local.sh locally).  Identity on HTCondor, so SUBDAG EXTERNAL
+        # semantics are unchanged there.
+        subdag_node = pipeline.CondorDAGManJob(
+            dag_utils.get_backend().output_path_for_dag(
+                terminal_stage.dag)).create_node()
         subdag_node.set_category("TERMINAL_" + terminal_stage.name)
         subdag_node.set_retry(int(terminal_stage.execution_value(
             "retries", opts.general_retries)))
@@ -1533,7 +1548,29 @@ for terminal_stage in terminal_stage_specs:
 
 
 dag_name="marginalize_hyperparameters"
-if opts.test_convergence_abort:
+if opts.test_convergence_abort and test_node_list:
+    # ABORT-DAG-ON converts ANY convergence node's exit 1 into a successful
+    # whole-DAG abort, while terminal evidence and declarative terminal stages
+    # hang off the final iteration only.  A LIVE test converging early would
+    # therefore return success while silently skipping every requested
+    # terminal product.  Refuse to build that combination: either the tests
+    # carry --always-succeed (the full schedule runs and the abort is inert,
+    # BasicIteration's add-extrinsic convention), or the caller drops the
+    # abort or the products.  The Z child is the intended live-test+abort
+    # user, and it requests no terminal products.
+    live_tests = (test_args is not None
+                  and "--always-succeed" not in test_args)
+    has_products = bool(terminal_stage_specs) or (
+        terminal_prior_job is not None
+        and terminal_evidence_job is not None)
+    if live_tests and has_products:
+        raise ValueError(
+            "--test-convergence-abort with live convergence tests (no "
+            "--always-succeed) would skip the requested terminal products "
+            "(terminal evidence and/or terminal stages) whenever a test "
+            "converges before the final iteration.  Add --always-succeed to "
+            "the test arguments to run the full schedule, or drop "
+            "--test-convergence-abort or the terminal products.")
     for convergence_node in test_node_list:
         dag.add_abort_on(convergence_node, exit_code=1, return_value=0)
 dag.set_dag_file(dag_name)

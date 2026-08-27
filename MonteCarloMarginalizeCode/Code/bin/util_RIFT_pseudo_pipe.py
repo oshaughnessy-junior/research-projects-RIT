@@ -3171,6 +3171,23 @@ if opts.pipeline_builder == "Hyperpipe":
             json.dump(terminal_manifest, stream, indent=2, sort_keys=True)
             stream.write("\n")
 
+    # The Hyperpipe route ALWAYS requests --terminal-evidence (and usually
+    # terminal stages), and its convergence nodes carry ABORT-DAG-ON.  A live
+    # test converging early would return whole-DAG success while skipping
+    # every terminal product, so the outer tests must never terminate the
+    # schedule -- the same reasoning BasicIteration applies under
+    # --add-extrinsic.  Give the Hyperpipe builder its own test-args file
+    # with --always-succeed guaranteed; args_test.txt (the legacy builders'
+    # file) is deliberately untouched.  The Z child strips --always-succeed
+    # again: it is the intended live-test user and requests no products.
+    hyperpipe_test_args_path = os.path.abspath("args_test_hyperpipe.txt")
+    with open("args_test.txt") as stream:
+        _test_line = stream.read().rstrip("\n")
+    if "--always-succeed" not in _test_line:
+        _test_line += " --always-succeed "
+    with open(hyperpipe_test_args_path, "w") as stream:
+        stream.write(_test_line + "\n")
+
     hyperpipe_cmd = [
         shutil.which("create_eos_posterior_pipeline") or "create_eos_posterior_pipeline",
         "--marg-job-spec-file", marg_spec_path,
@@ -3180,7 +3197,7 @@ if opts.pipeline_builder == "Hyperpipe":
         "--puff-exe", shutil.which("util_ParameterPuffball.py") or "util_ParameterPuffball.py",
         "--puff-args", os.path.abspath("args_puff.txt"),
         "--puff-max-it", str(puff_max_it),
-        "--test-args", os.path.abspath("args_test.txt"),
+        "--test-args", hyperpipe_test_args_path,
         "--test-exe", shutil.which("convergence_test_samples.py") or "convergence_test_samples.py",
         "--request-memory-marg", str(cip_mem),
         "--general-request-disk", str(general_request_disk),

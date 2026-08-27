@@ -937,6 +937,29 @@ class SlurmBackendTests(unittest.TestCase):
             self.assertIn("JOBID_1=$(sbatch --dependency=afterok:${JOBID_0}", text)
             self.assertIn("--requeue", text)
 
+    def test_emit_dag_resolves_subdag_driver(self):
+        """A SUBDAG node must run the file this backend actually wrote.
+
+        The build-time existence check in the pipeline writer validates
+        output_path_for_dag(child.dag) = child_dag.sh; emitting
+        `bash child.dag` meant a valid subworkflow-v1 manifest passed
+        validation and then failed at execution.  [External review of RIFT
+        PR 181, P1.]
+        """
+        with tempfile.TemporaryDirectory() as td:
+            child = self.m.CondorDAGManJob(
+                os.path.join(td, "child.dag")).create_node()
+            dag = self.m.CondorDAG()
+            dag.add_node(child)
+            dag.set_dag_file(os.path.join(td, "outer.dag"))
+            dag.write_concrete_dag()
+            with open(os.path.join(td, "outer_dag.sh")) as _fh:
+                text = _fh.read()
+            self.assertIn('--wrap="bash {}"'.format(
+                os.path.join(td, "child_dag.sh")), text)
+            self.assertNotIn('--wrap="bash {}"'.format(
+                os.path.join(td, "child.dag")), text)
+
     def test_topological_sort_handles_deep_chains(self):
         with tempfile.TemporaryDirectory() as td:
             jobs = []
