@@ -120,5 +120,10 @@ def test_prior_mode_is_independent_and_reweighted_evidence_restores_shift():
     assert "replacing the fitted likelihood by L=1" in source
     assert 'indx_ok = samples["joint_s_prior"] > 0' in source
     assert "sigma_reweighted /= np.sqrt(len(weights))" in source
+    # The integrator must not prune the sample cache in this mode: mean(weights)
+    # and its 1/sqrt(N) error need every importance sample drawn.
+    assert "igrand_threshold_p=igrand_threshold_p" in source
+    assert "igrand_threshold_p = -np.inf" in source
+    assert "extra_args['L_cutoff'] = None" in source
     assert ("log_res_reweighted = lnLmax + np.log(np.mean(weights)) + "
             "lnL_shift") in source

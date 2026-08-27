@@ -2728,6 +2728,10 @@ if opts.sampler_method == "GMM" or (opts.sampler_method == 'portfolio' and 'GMM'
     else:
         lnL_offset_saving = opts.lnL_offset
     extra_args = {'n_comp':n_comp,'max_iter':n_max_blocks,'L_cutoff': (np.exp(max_lnL-lnL_shift - lnL_offset_saving)),'gmm_dict':gmm_dict,'max_err':50}  # made up for now, should adjust
+    if opts.integrate_prior:
+        # L=1 for every sample, so a likelihood floor set by the fitted lnL scale
+        # would discard the entire population instead of trimming its tail.
+        extra_args['L_cutoff'] = None
 extra_args.update({
     "n_adapt": 100, # Number of chunks to allow adaption over
     "history_mult": 10, # Multiplier on 'n' - number of samples to estimate marginalized 1D histograms with, 
@@ -2789,7 +2793,14 @@ if sampler_oracle:  # NON-PORTFOLIO SCENARIO TARGET
 
     
 
-res, var, neff, dict_return = sampler.integrate(fn_passed, *low_level_coord_names,  verbose=True,nmax=int(opts.n_max),n=n_step,neff=opts.n_eff, save_intg=True,tempering_adapt=tempering_adapt, floor_level=1e-3,igrand_threshold_p=1e-3,convergence_tests=test_converged,tempering_exp=my_exp,no_protect_names=True, **extra_args)  # weight ecponent needs better choice. We are using arbitrary-name functions
+# Pruning the sample cache by cumulative importance weight is a posterior-memory
+# optimization.  For L=1 the discarded low-weight draws are genuine prior support:
+# removing them inflates mean(weights) and shrinks the sample count used for its
+# Monte Carlo error, so keep the full population for the prior normalization.
+igrand_threshold_p = 1e-3
+if opts.integrate_prior:
+    igrand_threshold_p = -np.inf
+res, var, neff, dict_return = sampler.integrate(fn_passed, *low_level_coord_names,  verbose=True,nmax=int(opts.n_max),n=n_step,neff=opts.n_eff, save_intg=True,tempering_adapt=tempering_adapt, floor_level=1e-3,igrand_threshold_p=igrand_threshold_p,convergence_tests=test_converged,tempering_exp=my_exp,no_protect_names=True, **extra_args)  # weight ecponent needs better choice. We are using arbitrary-name functions
 
 # Test n_eff threshold
 if not (opts.fail_unless_n_eff is None):
