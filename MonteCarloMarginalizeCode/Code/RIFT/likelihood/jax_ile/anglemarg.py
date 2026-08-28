@@ -53,12 +53,18 @@ laplace : marginalize psi ANALYTICALLY by Laplace's method at every
           O(1/amplitude) error SHRINKS as SNR grows.  Best at high amplitude.
 
 Both schemes marginalize distance with the same quadrature machinery as the
-grid path (:func:`core._logsumexp_grid_blocked`, or the adaptive
-:func:`core._distmarg_gh_logL` when JAX_ILE_DISTMARG_GH is set -- exact
-scheme only), and use the same normalization convention (mean over uniform
-angle grids, i.e. the uniform priors dphi/2pi, dpsi/pi), so they are
-drop-in replacements for the grid function and agree with it wherever the
-grid is converged (pinned in test/jax/test_angle_marg_exact.py).
+grid path by default (:func:`core._logsumexp_grid_blocked`, or the
+:func:`core._distmarg_gh_logL` GH machinery when JAX_ILE_DISTMARG_GH is set
+-- exact scheme only), and use the same normalization convention (mean over
+uniform angle grids, i.e. the uniform priors dphi/2pi, dpsi/pi), so they
+are drop-in replacements for the grid function and agree with it wherever
+the grid is converged (pinned in test/jax/test_angle_marg_exact.py).
+Both additionally accept ``dist_quad='adaptive'``: a per-point COMPOSITE
+distance quadrature (campaign-cost contract change; see the adaptive-
+distance section comment below) that replaces the fixed grid with ~4x
+fewer nodes at equal-or-better accuracy -- including regimes where the
+fixed grid is measurably wrong (narrow railed peaks; the d^2-prior bulk
+that the GH machinery misses).
 
 Everything here is jit/vmap/grad-compatible: no numpy in the hot path, no
 scipy special functions, lax.scan (checkpointed) bounds memory by CHUNK, not
@@ -1444,8 +1450,13 @@ def _laplace_adaptive_impl(data, C_A, C_B, meta, x_min, x_max,
     xh = jnp.clip(M_A / jnp.maximum(B0g, 1e-300), x_min, x_max)
     key_s = jnp.max(jnp.clip(xh * M_A - 0.5 * jnp.square(xh) * B0g,
                              0.0, None), axis=1)          # (S,)
-    order = jax.lax.stop_gradient(jnp.argsort(key_s))
-    inv_order = jax.lax.stop_gradient(jnp.argsort(order))
+    # NOT jnp.argsort: under x64 its s64 iota trips an XLA-GPU verifier bug
+    # (jax 0.9.2: "accumulator shape s32[] vs s64[]" after
+    # permutation_sort_simplifier).  sort_key_val with an int32 payload
+    # lowers cleanly and is the same permutation.
+    _iota = jnp.arange(S, dtype=jnp.int32)
+    _, order = jax.lax.sort_key_val(jax.lax.stop_gradient(key_s), _iota)
+    _, inv_order = jax.lax.sort_key_val(order, _iota)
     C_A = C_A[:, :, order]
     C_B = C_B[:, :, order]
 

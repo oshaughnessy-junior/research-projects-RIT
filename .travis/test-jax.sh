@@ -186,6 +186,24 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         driver actually CALLS the dispatcher
 #                                         (wiring).  Each fails under a verified
 #                                         mutation (see the PR).  Seconds.
+#   test_angle_marg_dist_adaptive.py  8  the dense schemes' ADAPTIVE DISTANCE (~2 min CPU)
+#                                         quadrature (2026-08-28 campaign-cost
+#                                         contract change): dist_quad resolution
+#                                         (legacy env behavior when None; explicit
+#                                         + env refuses), the composite rule's
+#                                         agreement with converged references at a
+#                                         tolerance the coarse fixed grid
+#                                         measurably FAILS (a silent fall-back-to-
+#                                         grid mutation cannot pass), the exact
+#                                         scheme beating the env-GH machinery at
+#                                         prior-dominated points (its documented
+#                                         1.2-2.3 nat d^2-prior-bulk defect), the
+#                                         psi-marginal placement covering the
+#                                         analytic peak family, tile/sort
+#                                         invariance incl. AD-vs-FD gradients, the
+#                                         coverage fail-safe, and the wrapper
+#                                         passthrough/refusal.  Each fails under a
+#                                         verified mutation (see the PR).
 #   test_angle_marg_sizing_rule.py    1  the m_max-aware dense phi sizing rule.
 #                                         Pure numpy, milliseconds, closed-form I0
 #                                         reference.  FAILS under the old m_max-blind
@@ -237,6 +255,7 @@ FILES=(
   "${JAXDIR}/test_angle_marg_smoke.py"
   "${JAXDIR}/test_angle_marg_compile_cost.py"
   "${JAXDIR}/test_angle_marg_block_dispatch.py"
+  "${JAXDIR}/test_angle_marg_dist_adaptive.py"
 )
 
 # EXCLUDED: files in JAXDIR matching test_*.py that are deliberately NOT gated.  The
@@ -316,7 +335,7 @@ fi
 # collection" must mean collection IN THE GATE'S ENVIRONMENT -- a local count has
 # tripped this floor twice.  When in doubt, take the number from a CI log line
 # ("collected N tests from M files") rather than from your shell.
-EXPECTED_TESTS=157
+EXPECTED_TESTS=165
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
