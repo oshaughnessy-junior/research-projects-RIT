@@ -18,8 +18,12 @@ same inputs give different `lnL`.  The JAX driver builds its weights from scipy
 (`jax_ile.core._simpson_weights`), so it sits with the CPU path: three code
 paths, two conventions.
 
-Measured 2026-08-27/28 on `rift_O4d`; scripts and the full sweeps are in the PR
-that added this file.
+Measured 2026-08-27/28 on `rift_O4d` (PR #204).  The reproduction scripts --
+the weight-vector readout, the Gaussian and band-limited-`kappa` accuracy
+sweeps, the extrinsic-Monte-Carlo impact study, and the numpy-vs-cupy check
+through the shipped likelihood -- are `~/simps_study/` on the LVK-CIT
+interactive nodes; the sweeps take minutes on one core, apart from the GPU
+check.
 
 ## What actually differs
 
