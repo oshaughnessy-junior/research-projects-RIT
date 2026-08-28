@@ -359,3 +359,22 @@ def test_composite_rule_matches_quad_reference_including_railed_peaks():
     # the accuracy half of the contract change (and the reason converged
     # references, not the old fixed-grid output, pin the tests above)
     assert worst_fix_railed > 1.0
+
+
+# ---------------------------------------------------------------------------
+# 9. driver wiring of the coverage fail-safe: per-event reset + artifact label
+#    (source-level pin, the smoke suite's convention for driver wiring; it is
+#    a WIRING check, not behavior coverage -- the behavior is tested at the
+#    module level in test_dist_cover_failsafe above)
+# ---------------------------------------------------------------------------
+
+def test_driver_wires_dist_cover_failsafe():
+    import pathlib
+    drv = (pathlib.Path(AM.__file__).resolve().parents[3] / "bin"
+           / "integrate_likelihood_extrinsic_jax").read_text()
+    # per-event reset, right next to the amp fail-safe's
+    assert "reset_dist_cover_failsafe()" in drv
+    # the artifact label consults the record and emits a SUSPECT label naming
+    # the recourse
+    assert "dist_cover_failsafe_state()" in drv
+    assert "SUSPECT-DIST-NODES" in drv and "dist_adapt_n" in drv

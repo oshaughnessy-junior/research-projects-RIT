@@ -1014,6 +1014,13 @@ def angle_grid_suspect_note(scheme=None):
                 "amp_sizing=%.6g scheme=%s"
                 % (st.get("worst_amp", float("nan")),
                    st.get("amp_sizing", float("nan")), st.get("scheme")))
+    std = _anglemarg.dist_cover_failsafe_state()
+    if std.get("tripped"):
+        # adaptive distance quadrature (--angle-marg-dist-quad adaptive):
+        # envelope spacing exceeded the narrowest relevant width somewhere
+        return ("SUSPECT-DIST-NODES dist_cover_failsafe=TRIPPED "
+                "worst_ratio=%.4g (rebuild with a larger dist_adapt_n)"
+                % std.get("worst_ratio", float("nan")))
     if scheme in ("exact", "laplace"):
         return ("ANGLE-GRID-CHECK=BEST-EFFORT (no undersizing detected; the "
                 "detector may be dropped under jax transformation, so this is "
@@ -1518,6 +1525,7 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
     # Per-EVENT state: a batch run analyzes several events in one process, and
     # an undersizing on event 0 must not label event 1.
     _anglemarg.reset_amp_failsafe()
+    _anglemarg.reset_dist_cover_failsafe()
     print("Building JAX likelihood (PrecomputeLikelihoodTerms + pack)...")
     like_data, extras = build_data_from_precompute(
         P.copy(), data_dict, psd_dict, fiducial_epoch,

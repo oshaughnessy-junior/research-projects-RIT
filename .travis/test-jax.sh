@@ -186,7 +186,7 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         driver actually CALLS the dispatcher
 #                                         (wiring).  Each fails under a verified
 #                                         mutation (see the PR).  Seconds.
-#   test_angle_marg_dist_adaptive.py  8  the dense schemes' ADAPTIVE DISTANCE (~2 min CPU)
+#   test_angle_marg_dist_adaptive.py  9  the dense schemes' ADAPTIVE DISTANCE (~2 min CPU)
 #                                         quadrature (2026-08-28 campaign-cost
 #                                         contract change): dist_quad resolution
 #                                         (legacy env behavior when None; explicit
@@ -335,7 +335,7 @@ fi
 # collection" must mean collection IN THE GATE'S ENVIRONMENT -- a local count has
 # tripped this floor twice.  When in doubt, take the number from a CI log line
 # ("collected N tests from M files") rather than from your shell.
-EXPECTED_TESTS=165
+EXPECTED_TESTS=166
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
