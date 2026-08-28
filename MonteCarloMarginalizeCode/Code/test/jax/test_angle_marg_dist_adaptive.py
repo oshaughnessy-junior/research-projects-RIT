@@ -51,11 +51,12 @@ def _grids(data, n):
 
 def _richardson(f, data, *args, **kw):
     """Converged fixed-grid reference: the uniform-in-d trapezoid error is
-    O(N^-2), so Richardson over N=512, 1024 cancels it to the next order
+    O(N^-2), so Richardson over N=1024, 2048 cancels it to the next order
     (residual well under every tolerance here; a bare 1024-node grid still
-    carries ~4e-5 and would contaminate the comparison)."""
-    f1 = np.asarray(f(data, *args, *_grids(data, 512), **kw))
-    f2 = np.asarray(f(data, *args, *_grids(data, 1024), **kw))
+    carries ~4e-5, and a (512,1024) pair leaves a residual above TOL_ADAPT
+    at the scale-6 amplitude -- both measured, both would contaminate)."""
+    f1 = np.asarray(f(data, *args, *_grids(data, 1024), **kw))
+    f2 = np.asarray(f(data, *args, *_grids(data, 2048), **kw))
     return f2 + (f2 - f1) / 3.0
 
 
