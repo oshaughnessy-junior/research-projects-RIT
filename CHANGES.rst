@@ -81,8 +81,8 @@ development tree is rift_O4d.
     callers can select a family once with ``--using-eos-branch`` while keeping the legacy
     ``lambda_from_m(m)`` surface. Native NMB v1 files retain their primary-branch contract,
     but disconnected stable runs are split before interpolation instead of being mixed. The
-    CIP piecewise-polytrope constructor keyword is also corrected, restoring that Kedia-style
-    parametric path.
+    CIP piecewise-polytrope constructor keyword and four-parameter row guards are also corrected,
+    restoring the Kedia-style parametric paths.
   - ILE 'fanout' submission can use multiple GPUs on one host (RIFT_ILE_GPU_FANOUT)
   - Qlm interpolated in factored_likelihood...NoLoop (option)
 
