@@ -453,6 +453,18 @@ def build_parser():
                       "high SNR), or 'auto' (select exact/laplace from the "
                       "run's SNR estimate).  The scheme that actually ran is "
                       "printed.  See RIFT.likelihood.jax_ile.anglemarg.")
+    g.add_option("--angle-marg-dist-quad", type=str, default=None,
+                 help="Distance quadrature INSIDE the dense angle-marg "
+                      "schemes (exact/laplace/auto only; refused for 'grid'): "
+                      "'grid' (the fixed --distance-grid-points quadrature, "
+                      "the dense schemes' default), or 'adaptive' (per-point "
+                      "data-derived nodes centred on each point's distance "
+                      "peak: ~5-8x fewer nodes at equal-or-better accuracy; "
+                      "values differ from 'grid' by the fixed grid's own "
+                      "quadrature error).  Absent = legacy behavior "
+                      "(JAX_ILE_DISTMARG_GH env decides, exact scheme only). "
+                      "See the adaptive-distance section of "
+                      "RIFT.likelihood.jax_ile.anglemarg.")
     # flowMC tuning (modes flowmc / flowmc-phimarg).  Defaults match
     # samplers.flowmc_sample*; exposed so pipeline Makefiles can tune them.
     g.add_option("--n-training-loops", type=int, default=4,
@@ -1545,12 +1557,14 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
         nphi = getattr(opts, "n_phi", 32)
         npsi = getattr(opts, "n_psi", 16)
         angle_marg = getattr(opts, "angle_marg_scheme", "grid")
+        angle_marg_dist_quad = getattr(opts, "angle_marg_dist_quad", None)
         print("Distance + phi_ref + psi marginalization: ON (grid=%d, nphi=%d, npsi=%d, d in [%g,%g] Mpc)"
               % (opts.distance_grid_points, nphi, npsi, opts.d_min, opts.d_max))
         like = JAXDistPhiPsiMargLikelihood(
             like_data, opts.d_min, opts.d_max, nphi=nphi, npsi=npsi,
             n_grid=opts.distance_grid_points, interp=opts.interp,
-            guess_snr=extras["guess_snr"], angle_marg=angle_marg)
+            guess_snr=extras["guess_snr"], angle_marg=angle_marg,
+            angle_marg_dist_quad=angle_marg_dist_quad)
         # ALWAYS report the resolved scheme (requested may be 'auto'; this
         # pipeline has a documented history of silently-inert flags).
         print("  angle-marg scheme: %s (requested %s): %s"

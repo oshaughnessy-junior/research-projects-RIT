@@ -479,7 +479,7 @@ class JAXDistPhiPsiMargLikelihood:
 
     def __init__(self, data, d_min, d_max, nphi=32, npsi=16, n_grid=256,
                  d_prior="euclidean", interp=JAX_INTERP_DEFAULT, guess_snr=None,
-                 angle_marg="grid"):
+                 angle_marg="grid", angle_marg_dist_quad=None):
         self.data = data
         self.interp = interp   # the instance's stencil; sample_phi_ref defaults to it
         self.nphi = int(nphi)
@@ -501,6 +501,16 @@ class JAXDistPhiPsiMargLikelihood:
         if angle_marg not in ("grid", "exact", "laplace", "auto"):
             raise ValueError("angle_marg must be one of grid/exact/laplace/"
                              "auto, got %r" % (angle_marg,))
+        if angle_marg_dist_quad not in (None, "grid", "adaptive"):
+            raise ValueError("angle_marg_dist_quad must be None, 'grid' or "
+                             "'adaptive', got %r" % (angle_marg_dist_quad,))
+        if angle_marg_dist_quad is not None and angle_marg == "grid":
+            # the grid scheme would silently ignore it -- refuse instead
+            # (documented silently-inert-flag history)
+            raise ValueError(
+                "angle_marg_dist_quad=%r has no effect on the 'grid' scheme; "
+                "it applies to the dense schemes only (exact/laplace/auto)."
+                % (angle_marg_dist_quad,))
         from . import anglemarg as _anglemarg
         if int(os.environ.get("JAX_ILE_DISTGRID_ADAPTIVE", "0")) and guess_snr:
             # interp= must be forwarded: this sizes the distance grid the likelihood then
@@ -550,6 +560,10 @@ class JAXDistPhiPsiMargLikelihood:
             self.angle_marg_info["sample_grid"] = tuple(
                 _anglemarg.angle_sample_grid_sizes(
                     _anglemarg._data_m_max(data)))
+            self.angle_marg_info["dist_quad"] = (
+                "adaptive" if angle_marg_dist_quad == "adaptive" else
+                ("gh-env" if _anglemarg._core._DISTMARG_GH_N > 0 and scheme == "exact"
+                 else "grid"))
 
         if scheme == "grid":
             def _fused(data_, ra, dec, incl):
@@ -559,12 +573,12 @@ class JAXDistPhiPsiMargLikelihood:
             def _fused(data_, ra, dec, incl):
                 return _anglemarg.fused_log_likelihood_distphipsimarg_exact(
                     data_, ra, dec, incl, xg, lwg, interp=interp,
-                    amp_sizing=amp_sizing)
+                    amp_sizing=amp_sizing, dist_quad=angle_marg_dist_quad)
         else:   # laplace
             def _fused(data_, ra, dec, incl):
                 return _anglemarg.fused_log_likelihood_distphipsimarg_laplace(
                     data_, ra, dec, incl, xg, lwg, interp=interp,
-                    amp_sizing=amp_sizing)
+                    amp_sizing=amp_sizing, dist_quad=angle_marg_dist_quad)
 
         def _batched(ra, dec, incl):
             return _fused(data, ra, dec, incl)

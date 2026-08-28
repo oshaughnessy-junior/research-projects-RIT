@@ -81,6 +81,8 @@ __all__ = [
     "fused_log_likelihood_distphipsimarg_exact",
     "fused_log_likelihood_distphipsimarg_laplace",
     "choose_angle_marg_scheme",
+    "reset_dist_cover_failsafe",
+    "dist_cover_failsafe_state",
     "ANGLE_MARG_CROSSOVER_AMPLITUDE",
 ]
 
@@ -641,7 +643,7 @@ def _pad_chunks(values, chunk):
 def fused_log_likelihood_distphipsimarg_exact(
         data, ra, dec, incl, x_grid, log_w_grid,
         interp=JAX_INTERP_DEFAULT, amp_sizing=None,
-        dense_chunk=8, grid_block=32):
+        dense_chunk=8, grid_block=32, dist_quad=None, dist_adapt_n=None):
     """Distance-, phi_ref- AND psi-marginalized lnL: exact-coefficient scheme.
 
     Drop-in replacement for :func:`core.fused_log_likelihood_distphipsimarg`
@@ -654,7 +656,12 @@ def fused_log_likelihood_distphipsimarg_exact(
     :func:`estimate_angle_amplitude` (the wrapper does this automatically).
     There is no default: a silently-undersized grid is the defect this
     module exists to fix.  Honors JAX_ILE_DISTMARG_GH exactly as the grid
-    path does.
+    path does when ``dist_quad`` is None; ``dist_quad='adaptive'`` selects
+    the per-point COMPOSITE quadrature instead (``dist_adapt_n`` envelope
+    nodes, default _DIST_ADAPT_N_ENV -- see the adaptive-distance section
+    comment: unlike the env GH machinery it also integrates the d^2-prior
+    bulk, measured 1.2-2.3 nats at prior-dominated points), and
+    ``dist_quad='grid'`` explicitly refuses the env var.
 
     Memory is bounded by ``dense_chunk`` (points per scan step), never by the
     dense grid size: the largest transient is the inner distance-quadrature
@@ -680,11 +687,12 @@ def fused_log_likelihood_distphipsimarg_exact(
 
     a_g = x_grid
     b_g = -0.5 * jnp.square(x_grid)
-    _use_gh = _core._DISTMARG_GH_N > 0
-    if _use_gh:
-        gh_xi, gh_logw = make_distance_gh(_core._DISTMARG_GH_N)
+    _dq_mode, _dq_n = _resolve_dist_quad(dist_quad, dist_adapt_n)
+    if _dq_mode != "grid":
         x_min = jnp.min(x_grid)
         x_max = jnp.max(x_grid)
+        if _dq_mode == "gh-env":
+            gh_xi, gh_logw = make_distance_gh(_dq_n)
 
     def _step(carry, x):
         m, s = carry
@@ -693,7 +701,9 @@ def fused_log_likelihood_distphipsimarg_exact(
         B = _reconstruct_field(C_B, phw, uw)
         K2 = A.reshape(c * S, npts)
         R2 = B.reshape(c * S, npts)
-        if _use_gh:
+        if _dq_mode == "adaptive":
+            lnL = _exact_adaptive_lnE(K2, R2, x_min, x_max, _dq_n)
+        elif _dq_mode == "gh-env":
             lnL = _distmarg_gh_logL(K2, R2, gh_xi, gh_logw, x_min, x_max)
         else:
             lnL = _logsumexp_grid_blocked(K2, R2, a_g, b_g, log_w_grid,
@@ -1076,10 +1086,467 @@ def _laplace_psi_lnI_block(a, c1, c2):
     return jax.lax.switch(idx, branches, None)
 
 
+# ---------------------------------------------------------------------------
+# Adaptive distance quadrature for the DENSE schemes (2026-08-28 campaign-
+# cost work).  CONTRACT CHANGE, stated plainly: with dist_quad="adaptive" the
+# distance integral is no longer the caller's fixed (x_grid, log_w_grid)
+# quadrature shared with the grid scheme; it is a per-point COMPOSITE node
+# set placed from the data (same normalized d^2 prior, same [x_min, x_max]
+# support -- x_grid is still used for its support bounds).  The old contract
+# guaranteed "same distance quadrature as the grid path"; the new one
+# guarantees "same distance INTEGRAL to a validated tolerance, resolved at
+# every SNR".  Values therefore DIFFER from the fixed grid by the fixed
+# grid's own quadrature error -- which is NOT small everywhere: a peak
+# railed near d_min at high amplitude is missed by the uniform-in-d grid by
+# up to ~48 nats on the offline stress family (~/anglemarg_prof/
+# quad_proto.py, 210 cases), while the composite rule below stays <= 3.7e-4
+# nats on the same family.  Agreement is pinned against CONVERGED
+# references, not bit-for-bit against the old path
+# (test_angle_marg_dist_adaptive.py).
+#
+# THE COMPOSITE RULE (offline-calibrated in ~/anglemarg_prof/quad_proto.py;
+# design "glw 8/48/8 ns9"): per (dense-point, sample, time) the integrand in
+# x = dref/d is  prior(x) * F(x),  prior = 3 x^-4 / (x_min^-3 - x_max^-3),
+# and F is a single Gaussian exp(K x - R x^2/2) (exact scheme) or the
+# psi-marginal u-FAMILY of such Gaussians (laplace scheme).  Three segments:
+#
+#   below  [x_min, lo] : n=8  Gauss-Legendre in s = 1/x (proportional to d).
+#       In s the prior is the polynomial s^2 -- GL integrates it exactly --
+#       and the segment's exponent is bounded by the envelope edge value, so
+#       where GL-in-s cannot follow the exponent (amp >> 45) the segment's
+#       contribution is itself negligible (<= e^-40.5 of the peak).
+#   envelope [lo, hi]  : n=48 Gauss-Legendre, PARAMETERIZATION ROUTED by the
+#       width ratio hi/lo (a stop_gradient scalar per point):
+#         narrow (hi/lo <= 2): GL in x.  The exponent is EXACTLY quadratic
+#             in x, so GL converges like a Gaussian integral; the x^-4
+#             prior varies by <= 2^4 across the interval and is absorbed.
+#         wide  (hi/lo > 2) : GL in t = ln x.  The prior becomes the pure
+#             exponential e^-3t (GL-friendly at any width; a wide uniform-x
+#             or GL-x rule fails on the x^-4 boundary layer -- measured
+#             0.3-1.6 nats), and a wide envelope means the exponent varies
+#             on a RELATIVE scale (sigma >~ x/9.5 whenever amp <~ 45), which
+#             ln x resolves uniformly.
+#   above  [hi, x_max] : n=8  GL in s, as below.
+#
+#   lo, hi = the union over RELEVANT family members (within
+#   _DIST_ADAPT_DROP = 45 nats of the local family max -- e^-45 is below
+#   f64 roundoff of the sum) of [x*_j - 9 sig_j, x*_j + 9 sig_j], clipped
+#   to the support, floored at one sigma_min half-width so a boundary-
+#   railed family keeps a resolved boundary layer.  +-9 sigma (not 7) so
+#   that even a completely mis-integrated outer segment, at the amplitude
+#   where GL-in-s stops following the exponent, contributes < ~1e-7
+#   relative (the e^-40.5 tail bound above).
+#
+# Offline stress evidence (210 cases: amp 0.1..4000, peaks across and
+# beyond the support, 1- and 6-member families with up to 8-sigma spread):
+#     rule                p50       p90       p99       max
+#     fixed 256 grid    8.6e-06   4.0e+00   2.1e+01   4.8e+01
+#     composite 8/48/8  2.5e-14   3.2e-08   1.8e-04   3.7e-04   (nats)
+# The in-tree ladder tests re-pin this against converged references on real
+# coefficient tables; the numbers above are the DESIGN calibration record.
+#
+# WHY NOT core._distmarg_gh_logL (the JAX_ILE_DISTMARG_GH machinery): its
+# +-7 sigma peak-centred nodes do not cover the d^2-prior bulk, which
+# DOMINATES the integral at prior-dominated points (weak signal, quiet sky
+# positions): measured 1.2-2.3 nats of error on the fused marginal at
+# amp ~ 6.6 (adapt_check.log) -- for BOTH this module's schemes and the env
+# path itself.  The env path's contract is core's and is left untouched
+# (never change core defaults); the dense schemes' "adaptive" mode uses the
+# composite rule instead.
+#
+# The placement is an ESTIMATOR in exactly the amp_sizing sense (finite
+# u-sample of a continuous family): mechanisms --
+#   1. the family is a trig polynomial of order <= 2 in u, so
+#      _DIST_PLACE_NU = 32 deterministic samples oversample it 8x;
+#   2. margins: +-9 sigma, 45-nat relevance drop, and an envelope node count
+#      ~ 2x the census requirement (~/anglemarg_prof/census_xgeom.log:
+#      required nodes at 1-per-sigma_min spacing max 22.2 at the production
+#      amplitude scale);
+#   3. a RUNTIME fail-safe: every call checks the envelope's central node
+#      spacing against the narrowest relevant width sigma_min and
+#      records/warns through the same droppable-callback channel as the
+#      amplitude fail-safe.  Same caveat: a clean read is not proof of
+#      adequacy; consumers LABEL, not gate.
+# ---------------------------------------------------------------------------
+_DIST_ADAPT_NSIGMA = 9.0       # envelope half-width per family member
+_DIST_ADAPT_DROP = 45.0        # family members within 45 nats are covered
+_DIST_PLACE_NU = 32            # u samples for placement (order <= 2 content)
+_DIST_ADAPT_N_ENV = 48         # envelope GL nodes (design "glw 8/48/8")
+_DIST_ADAPT_N_OUTER = 8        # GL-in-s nodes per outer segment
+_DIST_ADAPT_WIDE_RATIO = 2.0   # hi/lo above this routes the envelope to ln x
+
+
+def _resolve_dist_quad(dist_quad, dist_adapt_n):
+    """('grid'|'gh-env'|'adaptive', n_env) from the dist_quad contract.
+
+    dist_quad=None keeps the LEGACY behavior byte-for-byte: the process-wide
+    JAX_ILE_DISTMARG_GH env var decides (exact scheme only; the laplace
+    caller rejects the env var before calling this).  An EXPLICIT dist_quad
+    refuses to coexist with the env var rather than silently picking a
+    winner (documented silently-inert-flag history).
+    """
+    if dist_quad not in (None, "grid", "adaptive"):
+        raise ValueError("dist_quad must be None, 'grid' or 'adaptive', "
+                         "got %r" % (dist_quad,))
+    if dist_quad is None:
+        n_env = _core._DISTMARG_GH_N
+        return ("gh-env", n_env) if n_env > 0 else ("grid", 0)
+    if _core._DISTMARG_GH_N > 0:
+        raise ValueError(
+            "both JAX_ILE_DISTMARG_GH and an explicit dist_quad=%r are set; "
+            "refusing to pick a winner silently.  Unset the env var or drop "
+            "the argument." % (dist_quad,))
+    if dist_quad == "grid":
+        return "grid", 0
+    n = int(dist_adapt_n) if dist_adapt_n is not None else _DIST_ADAPT_N_ENV
+    if n < 2:
+        raise ValueError("dist_adapt_n must be >= 2, got %d" % n)
+    return "adaptive", n
+
+
+_DIST_COVER_FAILSAFE = {"tripped": False, "n_calls": 0, "worst_ratio": 0.0}
+
+
+def reset_dist_cover_failsafe():
+    """Clear the adaptive-distance coverage record (once per event)."""
+    try:
+        jax.effects_barrier()
+    except Exception:
+        pass
+    _DIST_COVER_FAILSAFE.update(tripped=False, n_calls=0, worst_ratio=0.0)
+
+
+def dist_cover_failsafe_state(barrier=True):
+    """Host-side record: did any adaptive-distance call under-resolve the
+    narrowest relevant width?  Same contract and caveats as
+    :func:`amp_failsafe_state` (droppable callback channel; LABEL, don't
+    gate; a clean read is not proof)."""
+    if barrier:
+        try:
+            jax.effects_barrier()
+        except Exception:
+            pass
+    return dict(_DIST_COVER_FAILSAFE)
+
+
+def _record_dist_cover_failsafe(tripped, ratio):
+    _DIST_COVER_FAILSAFE["n_calls"] += 1
+    if bool(tripped):
+        _DIST_COVER_FAILSAFE["tripped"] = True
+        _DIST_COVER_FAILSAFE["worst_ratio"] = max(
+            _DIST_COVER_FAILSAFE["worst_ratio"], float(ratio))
+
+
+def _composite_dist_nodes(lo, hi, x_min, x_max, n_env):
+    """Composite GL node set for one point-family envelope [lo, hi].
+
+    Returns ``(x_k, lw_k)`` of shape ``(2*_DIST_ADAPT_N_OUTER + n_env,) +
+    lo.shape``; ``lw_k`` carries the FULL normalized-prior weights (no
+    separate C0).  See the section comment for the three segments and the
+    width-ratio routing.  All node positions and weights are functions of
+    (lo, hi) only, which the callers pass under stop_gradient -- nodes are
+    FROZEN; gradients flow through the integrand alone (the core GH
+    convention).
+    """
+    n_out = _DIST_ADAPT_N_OUTER
+    xi_o, wq_o = np.polynomial.legendre.leggauss(n_out)
+    xi_e, wq_e = np.polynomial.legendre.leggauss(int(n_env))
+    ndim = lo.ndim
+    sh_o = (n_out,) + (1,) * ndim
+    sh_e = (int(n_env),) + (1,) * ndim
+    ln_zn = jnp.log(3.0) - jnp.log(x_min ** (-3.0) - x_max ** (-3.0))
+
+    def _gl_seg_s(sa, sb, xi, wq, sh):
+        """GL in s = 1/x over [sa, sb] (prior = s^2 ds, polynomial)."""
+        half = 0.5 * jnp.maximum(sb - sa, 0.0)
+        mid = 0.5 * (sa + sb)
+        s = mid[None] + half[None] * jnp.asarray(xi).reshape(sh)
+        w_pos = half > 0
+        lw = jnp.where(w_pos[None],
+                       jnp.log(jnp.asarray(wq).reshape(sh))
+                       + jnp.log(jnp.where(w_pos, half, 1.0))[None]
+                       + 2.0 * jnp.log(s) + ln_zn,
+                       -jnp.inf)
+        return 1.0 / s, lw
+
+    # below [x_min, lo] <-> s in [1/lo, 1/x_min]; above [hi, x_max] likewise
+    xb, lwb = _gl_seg_s(1.0 / lo, 1.0 / x_min, xi_o, wq_o, sh_o)
+    xa, lwa = _gl_seg_s(1.0 / x_max, 1.0 / hi, xi_o, wq_o, sh_o)
+
+    # envelope: routed between GL-in-x (narrow) and GL-in-lnx (wide)
+    wide = (hi / lo) > _DIST_ADAPT_WIDE_RATIO
+    half_x = 0.5 * (hi - lo)
+    x_n = 0.5 * (lo + hi)[None] + half_x[None] * jnp.asarray(xi_e).reshape(sh_e)
+    lw_n = (jnp.log(jnp.asarray(wq_e).reshape(sh_e))
+            + jnp.log(jnp.maximum(half_x, 1e-300))[None]
+            - 4.0 * jnp.log(x_n) + ln_zn)
+    t_lo = jnp.log(lo)
+    t_hi = jnp.log(hi)
+    half_t = 0.5 * (t_hi - t_lo)
+    x_w = jnp.exp(0.5 * (t_lo + t_hi)[None]
+                  + half_t[None] * jnp.asarray(xi_e).reshape(sh_e))
+    lw_w = (jnp.log(jnp.asarray(wq_e).reshape(sh_e))
+            + jnp.log(jnp.maximum(half_t, 1e-300))[None]
+            - 3.0 * jnp.log(x_w) + ln_zn)
+    xe = jnp.where(wide[None], x_w, x_n)
+    lwe = jnp.where(wide[None], lw_w, lw_n)
+
+    x_k = jnp.concatenate([xb, xe, xa], axis=0)
+    lw_k = jnp.concatenate([lwb, lwe, lwa], axis=0)
+    return x_k, lw_k
+
+
+def _exact_adaptive_lnE(K, R, x_min, x_max, n_env):
+    """Per-point composite distance quadrature for the exact scheme's
+    single-Gaussian integrand exp(K x - R x^2/2) under the d^2 prior.
+    K, R: any common shape X.  Returns log E, shape X.  The single-member
+    envelope needs no coverage fail-safe: (hi - lo) <= 18 sigma + the width
+    floor by construction, and n_env >= 48 GL nodes resolve 18 sigma with a
+    > 2x margin at their central spacing.
+    """
+    R = jnp.maximum(R, 1e-300)
+    sig = 1.0 / jnp.sqrt(R)
+    xh = jnp.clip(K / R, x_min, x_max)
+    ns = _DIST_ADAPT_NSIGMA
+    lo = jnp.clip(xh - ns * sig, x_min, x_max)
+    hi = jnp.clip(xh + ns * sig, x_min, x_max)
+    rng_x = x_max - x_min
+    half = jnp.maximum(0.5 * (hi - lo), jnp.minimum(sig, 0.5 * rng_x))
+    center = 0.5 * (lo + hi)
+    w = jnp.minimum(2.0 * half, rng_x)
+    lo = jnp.clip(center - half, x_min, x_max - w)
+    hi = lo + w
+    lo = jax.lax.stop_gradient(lo)
+    hi = jax.lax.stop_gradient(hi)
+    x_k, lw_k = _composite_dist_nodes(lo, hi, x_min, x_max, n_env)
+    expo = K[None] * x_k - 0.5 * R[None] * jnp.square(x_k) + lw_k
+    m = jnp.max(expo, axis=0)
+    m_safe = jnp.where(jnp.isfinite(m), m, 0.0)
+    s = jnp.sum(jnp.exp(expo - m_safe[None]), axis=0)
+    return jnp.where(jnp.isfinite(m), m_safe + jnp.log(s), -jnp.inf)
+
+
+def _laplace_adaptive_dist_nodes(A0, A1, B0, B1, B2, x_min, x_max, n_env):
+    """Per-point composite distance nodes for the PSI-MARGINAL integrand.
+
+    Inputs are the psi-Fourier coefficient fields at the dense phi points
+    (any common shape X, typically (c, Sb, Tb)); returns ``(x_k, lw_k)``
+    with shape ``(2*_DIST_ADAPT_N_OUTER + n_env,) + X``.  The envelope
+    [lo, hi] is the union over RELEVANT u-family members of their
+    +-9 sigma windows (see the section comment); the composite segments and
+    weights come from :func:`_composite_dist_nodes`.  Everything is under
+    stop_gradient (nodes FROZEN; gradients flow through the integrand).
+    """
+    n_u = _DIST_PLACE_NU
+    u = np.linspace(0.0, 2.0 * np.pi, n_u, endpoint=False)
+    sh = (n_u,) + (1,) * A0.ndim
+    e1 = jnp.asarray(np.exp(1j * u)).reshape(sh)
+    e2 = jnp.asarray(np.exp(2j * u)).reshape(sh)
+    A_u = A0[None] + (A1[None] * e1).real
+    B_u = jnp.maximum(B0[None] + (B1[None] * e1).real
+                      + (B2[None] * e2).real, 0.0)
+    Bs = jnp.maximum(B_u, 1e-300)
+    xh = jnp.clip(A_u / Bs, x_min, x_max)
+    amp_u = xh * A_u - 0.5 * jnp.square(xh) * B_u   # per-member max exponent
+    rel = amp_u >= jnp.max(amp_u, axis=0)[None] - _DIST_ADAPT_DROP
+    sig = 1.0 / jnp.sqrt(Bs)
+    ns = _DIST_ADAPT_NSIGMA
+    lo = jnp.min(jnp.where(rel, jnp.clip(xh - ns * sig, x_min, x_max),
+                           jnp.inf), axis=0)
+    hi = jnp.max(jnp.where(rel, jnp.clip(xh + ns * sig, x_min, x_max),
+                           -jnp.inf), axis=0)
+    sig_min = jnp.min(jnp.where(rel, sig, jnp.inf), axis=0)
+    # width floor: a boundary-railed family (every relevant peak clipped to
+    # one endpoint) still gets a sigma_min-deep interval INSIDE the support,
+    # so the boundary-dominated integral is resolved instead of collapsing
+    # to a zero-width point mass.
+    rng_x = x_max - x_min
+    half = jnp.maximum(0.5 * (hi - lo), jnp.minimum(sig_min, 0.5 * rng_x))
+    center = 0.5 * (lo + hi)
+    w = jnp.minimum(2.0 * half, rng_x)
+    lo = jnp.clip(center - half, x_min, x_max - w)
+    hi = lo + w
+    lo = jax.lax.stop_gradient(lo)
+    hi = jax.lax.stop_gradient(hi)
+    sig_min = jax.lax.stop_gradient(sig_min)
+    x_k, lw_k = _composite_dist_nodes(lo, hi, x_min, x_max, n_env)
+
+    # runtime coverage fail-safe (mechanism 3 of the section comment): the
+    # envelope's CENTRAL GL spacing ~ pi*(hi-lo)/(2*n_env) must resolve the
+    # narrowest RELEVANT family width.  Same droppable-callback channel,
+    # cond-gated so the ordinary path pays no host transfer, non-fatal for
+    # the reasons documented at _runtime_amp_failsafe (labels beat
+    # mutilation and dead runs).
+    ratio = jax.lax.stop_gradient(jnp.max(
+        (hi - lo) * (np.pi / (2.0 * float(n_env))) / sig_min))
+    jax.lax.cond(
+        ratio > 1.0,
+        lambda r_: jax.debug.print(
+            "WARNING anglemarg/dist-adaptive: envelope node spacing exceeds "
+            "the narrowest relevant distance width by x{r:.3g}; the "
+            "psi-marginal distance integral may be under-resolved at such "
+            "points.  Rebuild with a larger dist_adapt_n.", r=r_),
+        lambda r_: None,
+        ratio)
+    jax.lax.cond(
+        ratio > 1.0,
+        lambda r_: jax.debug.callback(_record_dist_cover_failsafe, True, r_),
+        lambda r_: None,
+        ratio)
+    return x_k, lw_k
+
+
+def _laplace_adaptive_impl(data, C_A, C_B, meta, x_min, x_max,
+                           n_env, nphi_d, phi_chunk, dist_block,
+                           s_block, t_block):
+    """Adaptive-distance execution of the laplace scheme.
+
+    Same mathematics as the fixed-grid body of
+    :func:`fused_log_likelihood_distphipsimarg_laplace` except for the
+    distance quadrature (see the section comment for the contract), plus two
+    COST-ONLY restructurings that the adaptive nodes make necessary for the
+    block dispatch to keep working:
+
+    * the (S, npts) axes are processed in (s_block, t_block) tiles, scanned
+      sequentially, so the lax.switch bounds of t = b + 2d are taken over a
+      TILE instead of the whole batch.  With per-point nodes the distance
+      axis is t-homogeneous (envelope nodes sit within +-9 sigma of each
+      point's own peaks, where t varies by ~1/sqrt(amp)), so all
+      t-heterogeneity lives in (S, npts); un-tiled bounds would send every
+      block to the straddle branch and both kernel branches would execute
+      everywhere again -- the exact regression PR #210 removed.
+    * samples are SORTED by a cheap response-scale key (the amp fail-safe's
+      analytic expression, max over t) so s-tiles are t-homogeneous, and the
+      outputs are unsorted before returning.  Ordering changes which points
+      share a tile-reduction, so tile sums can differ from the unsorted
+      order at roundoff (~1e-15 relative); values are otherwise identical.
+
+    Tiles are edge-padded (repeated rows) and cropped after the scan --
+    padded rows never mix into real rows (there is no cross-(S,t) coupling
+    before _time_marginalize).
+    """
+    m_max = meta["m_max"]
+    S = C_A.shape[2]
+    npts = C_A.shape[3]
+    c = int(phi_chunk)
+    phi_d = np.linspace(0.0, 2.0 * np.pi, nphi_d, endpoint=False)
+    phi_x, lw_x = _pad_chunks([phi_d], c)
+
+    wA = _kp_weights(m_max + 1)
+    wB = _kp_weights(2 * m_max + 1)
+    kpA = jnp.arange(m_max + 1, dtype=jnp.float64)
+    kpB = jnp.arange(2 * m_max + 1, dtype=jnp.float64)
+
+    # ---- sample ordering by response scale (cost-only; unsorted below)
+    ks0 = (C_B.shape[1] - 1) // 2
+    M_A = jnp.einsum("k,kqst->st", wA, jnp.abs(C_A))
+    B0g = jnp.maximum(C_B[0, ks0].real, 0.0)
+    xh = jnp.clip(M_A / jnp.maximum(B0g, 1e-300), x_min, x_max)
+    key_s = jnp.max(jnp.clip(xh * M_A - 0.5 * jnp.square(xh) * B0g,
+                             0.0, None), axis=1)          # (S,)
+    order = jax.lax.stop_gradient(jnp.argsort(key_s))
+    inv_order = jax.lax.stop_gradient(jnp.argsort(order))
+    C_A = C_A[:, :, order]
+    C_B = C_B[:, :, order]
+
+    # ---- (S, npts) tiling, edge-padded
+    Sb = min(int(s_block), S)
+    Tb = min(int(t_block), npts)
+    nSb = (S + Sb - 1) // Sb
+    nTb = (npts + Tb - 1) // Tb
+    pad_S = nSb * Sb - S
+    pad_T = nTb * Tb - npts
+    if pad_S or pad_T:
+        C_A = jnp.pad(C_A, ((0, 0), (0, 0), (0, pad_S), (0, pad_T)),
+                      mode="edge")
+        C_B = jnp.pad(C_B, ((0, 0), (0, 0), (0, pad_S), (0, pad_T)),
+                      mode="edge")
+    KPA, QA = C_A.shape[0], C_A.shape[1]
+    KPB, QB = C_B.shape[0], C_B.shape[1]
+
+    def _tile(Ct, KP, Q):
+        t = Ct.reshape(KP, Q, nSb, Sb, nTb, Tb)
+        return jnp.transpose(t, (2, 4, 0, 1, 3, 5)).reshape(
+            nSb * nTb, KP, Q, Sb, Tb)
+
+    C_At = _tile(C_A, KPA, QA)
+    C_Bt = _tile(C_B, KPB, QB)
+
+    G = 2 * _DIST_ADAPT_N_OUTER + int(n_env)
+    blk = int(dist_block)
+    n_gblk = (G + blk - 1) // blk
+    pad_G = n_gblk * blk - G
+
+    def _tile_body(carry, tables):
+        CAb, CBb = tables            # (KPA,QA,Sb,Tb), (KPB,QB,Sb,Tb)
+
+        def _step(carry2, xph):
+            m, s = carry2            # (c, Sb, Tb)
+            phw, lww = xph
+            EA = jnp.exp(1j * phw[:, None] * kpA[None, :]) * wA[None, :]
+            EB = jnp.exp(1j * phw[:, None] * kpB[None, :]) * wB[None, :]
+
+            def MA(q):
+                return jnp.einsum("ck,kst->cst", EA, CAb[:, q])
+
+            def MB(q):
+                return jnp.einsum("ck,kst->cst", EB, CBb[:, q])
+
+            A0 = MA(1).real
+            A1 = MA(2) + jnp.conj(MA(0))
+            B0 = MB(2).real
+            B1 = MB(3) + jnp.conj(MB(1))
+            B2 = MB(4) + jnp.conj(MB(0))
+
+            x_k, lw_k = _laplace_adaptive_dist_nodes(
+                A0, A1, B0, B1, B2, x_min, x_max, int(n_env))  # (G,c,Sb,Tb)
+            if pad_G:
+                x_k = jnp.concatenate(
+                    [x_k, jnp.broadcast_to(x_k[-1:],
+                                           (pad_G,) + x_k.shape[1:])])
+                lw_k = jnp.concatenate(
+                    [lw_k, jnp.full((pad_G,) + lw_k.shape[1:], -jnp.inf)])
+            xg_blk = x_k.reshape((n_gblk, blk) + x_k.shape[1:])
+            lwg_blk = lw_k.reshape((n_gblk, blk) + lw_k.shape[1:])
+
+            def _dist_step(carry3, xw):
+                mx, sx = carry3
+                xgb, lwgb = xw                        # (blk,c,Sb,Tb)
+                av = xgb * A0[None] - 0.5 * jnp.square(xgb) * B0[None]
+                c1 = xgb * A1[None] - 0.5 * jnp.square(xgb) * B1[None]
+                c2 = -0.5 * jnp.square(xgb) * B2[None]
+                e = _laplace_psi_lnI_block(av, c1, c2) + lwgb
+                return _lse_update(mx, sx, e, axis=0), None
+
+            mx0 = jnp.full((c, Sb, Tb), -jnp.inf, dtype=jnp.float64)
+            sx0 = jnp.zeros((c, Sb, Tb), dtype=jnp.float64)
+            (mx, sx), _ = jax.lax.scan(_dist_step, (mx0, sx0),
+                                       (xg_blk, lwg_blk))
+            lnI = (mx + jnp.where(sx > 0,
+                                  jnp.log(jnp.maximum(sx, 1e-300)),
+                                  -jnp.inf)
+                   + lww[:, None, None])
+            return _lse_update(m, s, lnI, axis=0), None
+
+        m0 = jnp.full((Sb, Tb), -jnp.inf, dtype=jnp.float64)
+        s0 = jnp.zeros((Sb, Tb), dtype=jnp.float64)
+        (m, s), _ = jax.lax.scan(jax.checkpoint(_step), (m0, s0),
+                                 (phi_x, lw_x))
+        return carry, m + jnp.log(s) - jnp.log(float(nphi_d))
+
+    _, lnLt_tiles = jax.lax.scan(_tile_body, 0, (C_At, C_Bt))
+    lnL_t = jnp.transpose(
+        lnLt_tiles.reshape(nSb, nTb, Sb, Tb),
+        (0, 2, 1, 3)).reshape(nSb * Sb, nTb * Tb)[:S, :npts]
+    lnL_t = lnL_t[inv_order]
+    return _time_marginalize(lnL_t, data.w_t)
+
+
 def fused_log_likelihood_distphipsimarg_laplace(
         data, ra, dec, incl, x_grid, log_w_grid,
         interp=JAX_INTERP_DEFAULT, amp_sizing=None,
-        phi_chunk=16, dist_block=4):
+        phi_chunk=16, dist_block=4, dist_quad=None, dist_adapt_n=None,
+        s_block=64, t_block=64):
     """Distance-, phi_ref- AND psi-marginalized lnL: analytic psi-Laplace scheme.
 
     Same contract and normalization as
@@ -1094,19 +1561,26 @@ def fused_log_likelihood_distphipsimarg_laplace(
 
     so no additional likelihood evaluations are needed.  Cost scales ~sqrt(A)
     (the dense phi axis) instead of ~A; the Laplace error is O(1/A) and
-    SHRINKS with SNR.  The adaptive distance quadrature
-    (JAX_ILE_DISTMARG_GH) is NOT supported on this path -- it would need a
-    psi-marginal node-placement rule this PR does not validate -- and raises
-    rather than being silently ignored.
+    SHRINKS with SNR.  core's per-(S,t) GH distance quadrature
+    (JAX_ILE_DISTMARG_GH) is NOT supported on this path -- its node
+    placement is defined per fixed-psi exponent -- and raises rather than
+    being silently ignored.  This path's OWN adaptive distance quadrature
+    (``dist_quad='adaptive'``: psi-marginal node placement,
+    :func:`_laplace_adaptive_dist_nodes`) IS supported; ``s_block`` /
+    ``t_block`` are its cost/memory tile knobs (no effect beyond tile-sum
+    roundoff, ~1e-15).
 
     Memory is bounded by ``phi_chunk`` x ``dist_block``, never by grid sizes.
     """
     if _core._DISTMARG_GH_N > 0:
         raise ValueError(
             "JAX_ILE_DISTMARG_GH is set, but the 'laplace' angle-marg scheme "
-            "does not support the adaptive distance quadrature (its node "
-            "placement is defined per fixed-psi exponent).  Use "
-            "--angle-marg-scheme exact, or unset JAX_ILE_DISTMARG_GH.")
+            "does not support core's per-(S,t) GH distance quadrature (its "
+            "node placement is defined per fixed-psi exponent).  Use "
+            "--angle-marg-scheme exact, unset JAX_ILE_DISTMARG_GH, or select "
+            "this path's own psi-marginal placement with "
+            "dist_quad='adaptive'.")
+    _dq_mode, _dq_n = _resolve_dist_quad(dist_quad, dist_adapt_n)
     x_grid = jnp.asarray(x_grid, dtype=jnp.float64)
     log_w_grid = jnp.asarray(log_w_grid, dtype=jnp.float64)
     C_A, C_B, meta = angle_coefficient_tables(data, ra, dec, incl, interp)
@@ -1117,6 +1591,10 @@ def fused_log_likelihood_distphipsimarg_laplace(
     amp_sizing = _require_amp_sizing(amp_sizing)
     _runtime_amp_failsafe(C_A, C_B, x_grid, amp_sizing, "laplace")
     nphi_d, _ = _dense_grid_sizes(amp_sizing, m_max=m_max)
+    if _dq_mode == "adaptive":
+        return _laplace_adaptive_impl(
+            data, C_A, C_B, meta, jnp.min(x_grid), jnp.max(x_grid),
+            _dq_n, nphi_d, phi_chunk, dist_block, s_block, t_block)
     phi_d = np.linspace(0.0, 2.0 * np.pi, nphi_d, endpoint=False)
     c = int(phi_chunk)
     phi_x, lw_x = _pad_chunks([phi_d], c)
