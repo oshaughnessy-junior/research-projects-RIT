@@ -133,19 +133,21 @@ the computation of the likelihood of gravitational wave signals given detector d
 <p>Author: Daniel Wysocki (<a class="reference external" href="mailto:daniel&#46;m&#46;wysocki&#37;&#52;&#48;gmail&#46;com">daniel<span>&#46;</span>m<span>&#46;</span>wysocki<span>&#64;</span>gmail<span>&#46;</span>com</a>)</p>
 <dl class="py function">
 <dt class="sig sig-object py" id="RIFT.likelihood.SphericalHarmonics_gpu.SphericalHarmonicsVectorized">
-<span class="sig-prename descclassname"><span class="pre">RIFT.likelihood.SphericalHarmonics_gpu.</span></span><span class="sig-name descname"><span class="pre">SphericalHarmonicsVectorized</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">lm</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">theta</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">phi</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">xpy=&lt;module</span> <span class="pre">'numpy'</span> <span class="pre">from</span> <span class="pre">'/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/numpy/__init__.py'&gt;</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dtype=&lt;class</span> <span class="pre">'numpy.complex128'&gt;</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">l_max=8</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.likelihood.SphericalHarmonics_gpu.SphericalHarmonicsVectorized" title="Link to this definition"></a></dt>
+<span class="sig-prename descclassname"><span class="pre">RIFT.likelihood.SphericalHarmonics_gpu.</span></span><span class="sig-name descname"><span class="pre">SphericalHarmonicsVectorized</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">lm</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">theta</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">phi</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">xpy=None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dtype=&lt;class</span> <span class="pre">'numpy.complex128'&gt;</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">l_max=8</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.likelihood.SphericalHarmonics_gpu.SphericalHarmonicsVectorized" title="Link to this definition"></a></dt>
 <dd><p>Compute spherical harmonics Y_{lm}(theta, phi) for a given set of lm’s,
 thetas, and phis.</p>
 <section id="parameters">
 <h3>Parameters<a class="headerlink" href="#parameters" title="Link to this heading"></a></h3>
-<dl class="simple">
+<dl>
 <dt>lm<span class="classifier">array_like, shape = (n_indices, 2)</span></dt><dd><p>Array of pairs of <cite>l, m</cite> values to evaluate harmonics for.</p>
 </dd>
 <dt>theta<span class="classifier">array_like, shape = (n_params,)</span></dt><dd><p>Array of polar angles to evaluate harmonics at.</p>
 </dd>
 <dt>phi<span class="classifier">array_like, shape = (n_params,)</span></dt><dd><p>Array of azimuth angles to evaluate harmonics at.</p>
 </dd>
-<dt>xpy<span class="classifier">numpy or cupy (default is cupy if loaded, else numpy)</span></dt><dd><p>Numpy implementation to use.</p>
+<dt>xpy<span class="classifier">numpy or cupy (default: inferred from <cite>theta</cite>)</span></dt><dd><p>Numpy implementation to use.  If left as None, cupy is used when <cite>theta</cite>
+is a cupy array and numpy otherwise, so host arrays never reach a GPU
+kernel.</p>
 </dd>
 <dt>dtype<span class="classifier">numpy.dtype (default is numpy.complex128)</span></dt><dd><p>Datatype to use for output.  Must be complex.</p>
 </dd>
