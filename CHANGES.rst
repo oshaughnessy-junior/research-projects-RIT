@@ -118,7 +118,12 @@ development tree is rift_O4d.
   - EOSManager compatibility for the reviewed LALSimulation multipart/multibranch TOV
     interface while retaining released LALSimulation and NuclearMatter-Backend sequence
     support. Twin-star masses require an explicit branch; branch-aware M-R-Lambda curve
-    construction is available without silently collapsing stable branches.
+    construction is available without silently collapsing stable branches. Fixed-EOS CIP
+    callers can select a family once with ``--using-eos-branch`` while keeping the legacy
+    ``lambda_from_m(m)`` surface. Native NMB v1 files retain their primary-branch contract,
+    but disconnected stable runs are split before interpolation instead of being mixed. The
+    CIP piecewise-polytrope constructor keyword is also corrected, restoring that Kedia-style
+    parametric path.
   - ILE 'fanout' submission can use multiple GPUs on one host (RIFT_ILE_GPU_FANOUT)
   - Qlm interpolated in factored_likelihood...NoLoop (option)
 

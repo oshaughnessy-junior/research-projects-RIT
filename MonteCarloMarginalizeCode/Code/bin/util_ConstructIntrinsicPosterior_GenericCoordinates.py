@@ -353,6 +353,7 @@ parser.add_argument("--tabular-eos-file",type=str,default=None,help="Tabular fil
 parser.add_argument("--tabular-eos-file-format",type=str,default=None,help="Format of tabular file of EOS to use.  The default prior will be UNIFORM in this table!")
 parser.add_argument("--tabular-eos-order-statistic",type=str,default=None,help="Order statistic to use.  Options will include R1p4, LambdaTildeQ1, and ...}")
 parser.add_argument("--using-eos", type=str, default=None, help="Name of EOS.  Fit parameter list should physically use lambda1, lambda2 information (but need not). If starts with 'file:', uses a filename with EOS parameters ")
+parser.add_argument("--using-eos-branch", type=int, default=None, help="Select one stable LALSimulation family branch while preserving the fixed-EOS lambda_from_m(m) interface. Required for an explicitly chosen twin-star branch; not applicable to the primary-branch nmbseq v1 contract.")
 parser.add_argument("--using-eos-for-prior", action='store_true', default=None, help="Alternate (hacky) implementation, which overrides using-eos and using-eos-index, to handle loading in a hyperprior")
 parser.add_argument("--using-eos-index", type=int, default=None, help="Index of EOS parameters in file.")
 parser.add_argument("--no-use-lal-eos",action='store_true',help="Do not use LAL EOS interface. Used for spectral EOS. Do not use this.")
@@ -469,6 +470,8 @@ if opts.using_eos and opts.using_eos.startswith('file:') and not(opts.using_eos_
     except Exception as e:
         print(" Fail: EOS index out of range:\n   ",e)
         sys.exit(0)
+if opts.using_eos_branch is not None and opts.using_eos is None:
+    raise ValueError("--using-eos-branch also requires --using-eos")
 
 my_eos=None
 #option to be used if gridded values not calculated assuming EOS
@@ -515,7 +518,7 @@ elif opts.using_eos!=None and not(opts.using_eos_for_prior):
             spec_params['gamma1'] = spec_param_array[1]
             spec_params['gamma2'] = spec_param_array[2]
             spec_params['gamma3'] = spec_param_array[3]
-            eos_base = EOSManager.EOSPiecewisePolytrope(name=eos_name,params_dict=spec_params)
+            eos_base = EOSManager.EOSPiecewisePolytrope(name=eos_name,param_dict=spec_params)
             my_eos = eos_base
         else:
             raise Exception("Unknown method for parametric EOS data file {} : {} ".format(eos_name,opts.eos_param))
@@ -579,6 +582,16 @@ elif opts.using_eos!=None and not(opts.using_eos_for_prior):
         my_eos = EOSManager.EOSFromTabularData(name=eos_name,eos_data=my_eos_dat)
     else:
         my_eos = EOSManager.EOSFromDataFile(name=eos_name,fname =EOSManager.dirEOSTablesBase+"/" + eos_name+".dat")
+
+    if opts.using_eos_branch is not None:
+        if not hasattr(my_eos, "for_branch"):
+            raise ValueError(
+                "--using-eos-branch requires a LALSimulation-backed EOS. "
+                "The nmbseq v1 interface intentionally exposes its primary "
+                "stable branch; multi-branch NMB inference requires the "
+                "central-enthalpy sequence path."
+            )
+        my_eos = my_eos.for_branch(opts.using_eos_branch)
 
 
 with open('args.txt','w') as fp:
