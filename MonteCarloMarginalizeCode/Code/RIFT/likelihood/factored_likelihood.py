@@ -109,14 +109,19 @@ def time_quadrature_rule(xpy=np, kind=None):
     cache = {}
 
     def rule(y, dx=1.0, axis=-1):
-        if axis not in (-1, y.ndim-1):
-            raise NotImplementedError("time quadrature integrates the last axis")
-        npts = y.shape[-1]
+        # Any axis, not just the last: factored_likelihood_LISA integrates on
+        # axis=0.  A rule that silently works on one axis only is how a
+        # "consistent everywhere" claim quietly becomes false.
+        npts = y.shape[axis]
         key = (npts, float(dx))
         w = cache.get(key)
         if w is None:
             w = cache[key] = time_quadrature_weights(npts, dx, kind, xpy=xpy)
-        return (y*w).sum(axis=-1)
+        if axis in (-1, y.ndim-1):
+            return (y*w).sum(axis=-1)
+        shape = [1]*y.ndim
+        shape[axis] = npts
+        return (y*w.reshape(tuple(shape))).sum(axis=axis)
 
     return rule
 

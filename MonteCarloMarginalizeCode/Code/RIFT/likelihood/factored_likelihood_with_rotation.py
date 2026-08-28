@@ -931,6 +931,9 @@ def DiscreteFactoredLogLikelihoodViaArrayVectorNoLoopWithRotation(
     if array_output:
         return lnL_t
     lnLmax = xpy.max(lnL_t, axis=-1, keepdims=True)
-    simps = FL.optimized_gpu_tools.simps if on_gpu else FL.my_simps
+    # One selector for every backend and every likelihood path; under the default
+    # TIME_QUADRATURE='auto' this is the historical backend-dependent choice,
+    # returned verbatim.  See RIFT/likelihood/DESIGN_time_quadrature.md.
+    simps = FL.time_quadrature_rule(xpy)
     L = simps(xpy.exp(lnL_t - lnLmax), dx=P_vec.deltaT, axis=-1)
     return lnLmax[..., 0] + xpy.log(L)

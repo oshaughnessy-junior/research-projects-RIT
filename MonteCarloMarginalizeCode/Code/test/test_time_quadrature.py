@@ -119,6 +119,14 @@ def test_default_is_auto_and_reproduces_the_historical_choice():
         assert fl.time_quadrature_rule(_NotNumpy()) is fl.optimized_gpu_tools.simps
 
 
+def test_default_numpy_weights_are_scipys():
+    """Numeric, not just identity: the default CPU rule IS scipy's, weight for weight."""
+    w = weights(fl.time_quadrature_rule(np), NPTS_EVEN, DX)
+    assert np.array_equal(w, weights(fl.my_simps, NPTS_EVEN, DX))
+    # and it is NOT the GPU rule -- the divergence this file exists to pin
+    assert not np.allclose(w, weights(vendored_simps_avg, NPTS_EVEN, DX), rtol=0, atol=1e-14)
+
+
 @pytest.mark.parametrize("npts", (NPTS_ODD, NPTS_EVEN))
 def test_named_rules_are_what_they_claim(npts):
     y = np.random.default_rng(0).random((5, npts))
@@ -188,3 +196,185 @@ def test_transliteration_matches_shipped_cupy_rule():
         y = rng.random((3, npts))
         got = cupy.asnumpy(fl.optimized_gpu_tools.simps(cupy.asarray(y), dx=DX, axis=-1))
         assert np.allclose(got, vendored_simps_avg(y, dx=DX, axis=-1), rtol=0, atol=1e-15)
+
+
+def test_default_cupy_weights_are_the_vendored_rules():
+    """The GPU half of the no-op claim, numerically: 'auto' on cupy is still even='avg'.
+
+    This is the assertion a "let's just unify the backends" edit has to break, and
+    it is checked in the units that matter (weights), not by object identity.
+    """
+    try:
+        import cupy
+    except Exception as exc:
+        pytest.skip("cupy unavailable: {}".format(type(exc).__name__))
+    if fl.optimized_gpu_tools is None:
+        pytest.skip("optimized_gpu_tools unavailable")
+    rule = fl.time_quadrature_rule(cupy)
+    w = cupy.asnumpy(rule(cupy.eye(NPTS_EVEN), dx=DX, axis=-1))
+    assert np.allclose(w, weights(vendored_simps_avg, NPTS_EVEN, DX), rtol=0, atol=1e-15)
+    assert np.allclose(w[2:-2], DX, rtol=0, atol=1e-16)          # trapezoid, not Simpson
+    assert not np.allclose(w, weights(fl.my_simps, NPTS_EVEN, DX), rtol=0, atol=1e-14)
+
+
+# ============================================================================
+# Wide-radius routing: every time-quadrature site goes through the ONE selector
+# ============================================================================
+#
+# Three instruments, because no single one is sufficient:
+#
+#   (1) VALUE IDENTITY of each substitution -- for every routed site, the new
+#       expression and the ORIGINAL expression (written out literally here) are
+#       run on representative arrays, on both backends, and must agree bit for
+#       bit.  Mutating the selector breaks all of these.
+#   (2) A SOURCE GUARD -- no unrouted quadrature expression survives in the
+#       routed modules.  (1) cannot catch a site that was never routed, because
+#       the two expressions agree whether or not the site calls either of them;
+#       this is what catches partial routing and re-introduction.
+#   (3) DIRECT DRIVES where the enclosing site is cheaply callable
+#       (jax_ile._simpson_weights, study_stencil.time_marginalize).  The three
+#       array-vector likelihood functions need a full PSD/waveform precompute,
+#       so they are covered by (1)+(2) rather than driven here.
+
+ROUTED_MODULES = (
+    "factored_likelihood.py",
+    "factored_likelihood_freqresponse.py",
+    "factored_likelihood_with_rotation.py",
+    "factored_likelihood_LISA.py",
+    "study_stencil_lnL_sensitivity.py",
+    "jax_ile/core.py",
+)
+
+
+def _cupy_or_skip():
+    try:
+        import cupy
+    except Exception as exc:
+        pytest.skip("cupy unavailable: {}".format(type(exc).__name__))
+    if fl.optimized_gpu_tools is None:
+        pytest.skip("optimized_gpu_tools unavailable")
+    return cupy
+
+
+@pytest.mark.parametrize("npts", (NPTS_ODD, NPTS_EVEN))
+def test_routing_noop_numpy_sites(npts):
+    """Sites whose original expression resolved to scipy on numpy.
+
+    Covers factored_likelihood_{freqresponse,with_rotation} at xpy=np,
+    factored_likelihood_LISA, and study_stencil_lnL_sensitivity.
+    """
+    rng = np.random.default_rng(1)
+    y = rng.random((4, npts))
+    on_gpu = False
+    # ORIGINAL expressions, transcribed from the pre-routing source:
+    orig_flfr = fl.optimized_gpu_tools.simps if on_gpu else fl.my_simps
+    orig_lisa = __import__("scipy.integrate", fromlist=["integrate"]).simpson
+    orig_stencil = fl.my_simps
+    routed = fl.time_quadrature_rule(np)
+    assert np.array_equal(routed(y, dx=DX, axis=-1), orig_flfr(y, dx=DX, axis=-1))
+    assert np.array_equal(routed(y, dx=DX, axis=-1), orig_stencil(y, dx=DX, axis=-1))
+    # LISA integrates axis=0 -- the axis the routed rule previously could not do
+    yT = np.ascontiguousarray(y.T)
+    assert np.array_equal(routed(yT, dx=DX, axis=0), orig_lisa(yT, dx=DX, axis=0))
+
+
+@pytest.mark.parametrize("npts", (NPTS_ODD, NPTS_EVEN))
+def test_routing_noop_cupy_sites(npts):
+    """The GPU half: on cupy the original expression was the VENDORED rule, not scipy.
+
+    This is the assertion that fails if a routing edit quietly standardises the
+    freqresponse / with_rotation GPU paths on scipy.
+    """
+    cupy = _cupy_or_skip()
+    rng = np.random.default_rng(2)
+    y = rng.random((4, npts))
+    yg = cupy.asarray(y)
+    on_gpu = True
+    orig = fl.optimized_gpu_tools.simps if on_gpu else fl.my_simps   # ORIGINAL expression
+    routed = fl.time_quadrature_rule(cupy)
+    assert np.array_equal(cupy.asnumpy(routed(yg, dx=DX, axis=-1)),
+                          cupy.asnumpy(orig(yg, dx=DX, axis=-1)))
+
+
+def test_rule_supports_axis_0_as_well_as_the_last_axis():
+    """The axis fix.  factored_likelihood_LISA integrates on axis=0; a rule that
+    silently worked on the last axis only would make 'consistent everywhere' false."""
+    rng = np.random.default_rng(3)
+    y = rng.random((NPTS_EVEN, 7))
+    for kind in ('simpson', 'trapezoid'):
+        rule = fl.time_quadrature_rule(np, kind)
+        got = rule(y, dx=DX, axis=0)
+        assert got.shape == (7,)
+        # Same rule applied to the transpose on the last axis.  NOT bit-identical:
+        # summing down axis 0 and along the last axis visit memory in different
+        # orders, so this is float reassociation, not a different rule.  (The
+        # substitution tests above DO demand bit-identity -- same array, same axis.)
+        assert np.allclose(got, rule(np.ascontiguousarray(y.T), dx=DX, axis=-1),
+                           rtol=1e-14, atol=0)
+    # and 'simpson' on axis=0 reproduces scipy on axis=0
+    assert np.allclose(fl.time_quadrature_rule(np, 'simpson')(y, dx=DX, axis=0),
+                       fl.my_simps(y, dx=DX, axis=0), rtol=1e-11, atol=0)
+
+
+def test_no_unrouted_time_quadrature_expression_survives():
+    """Source guard: catches a site that was never routed, or a re-introduced one.
+
+    The value-identity tests above cannot see an unrouted site -- the two
+    expressions agree whether or not the site calls either.  Only this does.
+    """
+    import os
+    import RIFT.likelihood as _pkg
+    root = os.path.dirname(_pkg.__file__)
+    # Bare NAMES, not call syntax.  The original defect's form was a callable
+    # REFERENCE -- `FL.optimized_gpu_tools.simps if on_gpu else FL.my_simps` --
+    # which a "(" -terminated pattern does not match; a mutation that un-routed
+    # freqresponse back to exactly that line sailed through the first version of
+    # this guard.  Match the name, not the call.
+    banned = ("my_simps", "optimized_gpu_tools.simps", "integrate.simpson",
+              "integrate.simps")
+    offenders = []
+    for rel in ROUTED_MODULES:
+        path = os.path.join(root, rel)
+        # Exemption is STRUCTURAL, not a string allowlist: the bodies of the
+        # time_quadrature_* functions are where the rules are DEFINED, so calling
+        # my_simps there is the point.  A string allowlist would silently stop
+        # matching if those lines were reworded, and the guard would go quiet.
+        inside_selector = False
+        for i, line in enumerate(open(path), 1):
+            stripped = line.lstrip()
+            if line and not line[:1].isspace() and stripped.startswith(("def ", "class ")):
+                inside_selector = stripped.startswith("def time_quadrature_")
+            if inside_selector:
+                continue
+            code = line.split("#", 1)[0]
+            # `my_simps = ...` is the DEFINITION of the scipy handle, not a use.
+            if code.lstrip().startswith("my_simps ="):
+                continue
+            if any(b in code for b in banned):
+                offenders.append("%s:%d: %s" % (rel, i, code.strip()))
+    assert not offenders, "unrouted time-quadrature call(s):\n  " + "\n  ".join(offenders)
+
+
+def test_jax_simpson_weights_is_routed_and_a_noop():
+    """Direct drive of the jax_ile site."""
+    try:
+        from RIFT.likelihood.jax_ile import core as jcore
+    except Exception as exc:
+        pytest.skip("jax_ile unavailable: {}".format(type(exc).__name__))
+    for npts in (NPTS_ODD, NPTS_EVEN):
+        got = np.asarray(jcore._simpson_weights(npts, DX))
+        assert np.array_equal(got, np.asarray(fl.my_simps(np.eye(npts), dx=DX, axis=-1)))
+
+
+def test_study_stencil_time_marginalize_is_routed_and_a_noop():
+    """Direct drive of the study_stencil site."""
+    try:
+        import RIFT.likelihood.study_stencil_lnL_sensitivity as ss
+    except Exception as exc:
+        pytest.skip("study_stencil unavailable: {}".format(type(exc).__name__))
+    rng = np.random.default_rng(4)
+    for npts in (NPTS_ODD, NPTS_EVEN):
+        lnL_t = rng.normal(size=(6, npts))
+        m = np.max(lnL_t, axis=-1, keepdims=True)
+        want = m[:, 0] + np.log(fl.my_simps(np.exp(lnL_t - m), dx=DX, axis=-1))
+        assert np.array_equal(ss.time_marginalize(lnL_t, DX), want)

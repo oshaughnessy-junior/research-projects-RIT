@@ -390,11 +390,12 @@ def build_fine_rho(packs, M):
 def time_marginalize(lnL_t, deltaT):
     """One lnL per extrinsic point: log int dt exp(lnL_t), Simpson weights, dx=deltaT.
 
-    Uses fl.my_simps (the same quadrature the production reduction uses) applied here so
-    every method gets bit-identical weights and the quadrature drops out of the comparison.
+    Uses fl.time_quadrature_rule (the same selector the production reduction uses) applied
+    here so every method gets bit-identical weights and the quadrature drops out of the
+    comparison -- including if the production default is ever changed.
     """
     m = np.max(lnL_t, axis=-1, keepdims=True)
-    return m[:, 0] + np.log(fl.my_simps(np.exp(lnL_t - m), dx=deltaT, axis=-1))
+    return m[:, 0] + np.log(fl.time_quadrature_rule(np)(np.exp(lnL_t - m), dx=deltaT, axis=-1))
 
 
 def ln_evidence(lnL):

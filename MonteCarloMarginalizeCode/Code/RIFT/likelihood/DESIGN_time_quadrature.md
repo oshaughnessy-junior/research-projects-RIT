@@ -135,6 +135,38 @@ an internal rate deliberately too low for the signal -- and it is the same
 mechanism behind the standing advice to set `--srate-internal` well above the
 data rate for low-mass sources.
 
+## Where the rule is chosen: one selector, every path
+
+The default is picked in many places, so making it consistent means changing it
+in many places.  Every TIME-quadrature site now goes through
+``factored_likelihood.time_quadrature_rule``:
+
+| site | original expression | note |
+|---|---|---|
+| `factored_likelihood.py` `...ViaArrayVectorNoLoop` | `my_simps` / `optimized_gpu_tools.simps` by backend | the site the divergence was found in |
+| `factored_likelihood.py` (3 other marginalization sites) | `my_simps` | CPU paths |
+| `factored_likelihood_freqresponse.py` | `optimized_gpu_tools.simps if on_gpu else my_simps` | same defect, both backends |
+| `factored_likelihood_with_rotation.py` | same line, verbatim | same defect, both backends |
+| `factored_likelihood_LISA.py` | `integrate.simpson(..., axis=0)` | **axis=0**; CPU only |
+| `jax_ile/core.py` `_simpson_weights` | `scipy.integrate.simpson` on the identity | lazy import keeps `core` lal-free at import |
+| `study_stencil_lnL_sensitivity.py` | `fl.my_simps` | mirrors production by design, so it must follow |
+| `Q_fused_calmarg` `w_t` | inherits via `simps(xpy.eye(npts))` | verified, not assumed |
+
+Routing was a **no-op**: under the default ``'auto'`` the selector returns the
+same callables the old expressions did, so every one of these still computes
+bit-identical numbers.  Its value is that the eventual default change becomes a
+one-line edit to one default, instead of a six-file edit made under pressure --
+and a partially-routed tree cannot claim the divergence is fixed while three
+likelihood paths still carry it.
+
+Routing LISA required a real fix: the weight-vector rule integrated the last
+axis only and would have raised on ``axis=0``.  A rule that silently works on
+one axis is how "consistent everywhere" quietly becomes false.
+
+Knowingly NOT routed, because they are DISTANCE quadratures rather than time:
+``misc/distance_grid.py``, ``misc/distance_slices.py``, and the JAX distance
+marginalization (``jax_ile.core.make_distance_gh`` / ``_distmarg_gh_logL``).
+
 ## What is shipped here, and what is not
 
 `TIME_QUADRATURE` (env `RIFT_TIME_QUADRATURE`) selects the rule:

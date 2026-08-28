@@ -45,10 +45,11 @@ see the note under ``sinc``:
   ``RIFT.likelihood.time_interp_choice.CROSSOVER_GUIDANCE``.  Both are
   differentiable in ``pos``.
 
-Time marginalization uses a precomputed Simpson quadrature weight vector
-(``scipy.integrate.simpson`` applied to the identity, exactly as the production
-fused kernel does), so the time integral matches the reference numerically while
-remaining a constant-weight (hence trivially differentiable) sum.
+Time marginalization uses a precomputed quadrature weight vector, obtained from
+``factored_likelihood.time_quadrature_rule`` applied to the identity (exactly as
+the production fused kernel does), so the time integral matches the reference
+numerically -- under whichever rule production selects -- while remaining a
+constant-weight (hence trivially differentiable) sum.
 
 Conventions / "epoch" handling
 -------------------------------
@@ -68,7 +69,6 @@ import os
 import numpy as np
 import jax
 import jax.numpy as jnp
-from scipy import integrate as _scipy_integrate
 
 # The 'sinc' stencil half-width, shared with the numpy/cupy/CUDA backends.  Imported from the
 # leaf module rather than from factored_likelihood so this stays free of numba and lal.
@@ -96,20 +96,23 @@ from . import response_freqresponse as _rf
 # Fiducial template distance (Mpc); identical to factored_likelihood.distMpcRef.
 DIST_MPC_REF = 1000.0
 
-try:
-    _simpson = _scipy_integrate.simpson
-except AttributeError:  # older scipy
-    _simpson = _scipy_integrate.simps
-
-
 def _simpson_weights(npts, deltaT):
-    """Simpson quadrature weights w_t such that sum_t w_t f_t == simps(f, dx=deltaT).
+    """Time-quadrature weights w_t such that sum_t w_t f_t == the production rule.
 
     Obtained (as in the production fused kernel) by applying the linear
-    ``simps`` operator to the identity matrix, guaranteeing the JAX time
-    integral matches ``factored_likelihood``'s ``my_simps`` exactly.
+    quadrature operator to the identity matrix, so the JAX time integral matches
+    ``factored_likelihood``'s exactly -- including if its default is ever changed.
+    Routed through the ONE selector rather than calling scipy directly, because
+    a JAX driver that silently kept scipy's rule while the numpy/cupy paths moved
+    would reintroduce exactly the divergence this selector exists to remove.
+
+    The import is lazy: ``core`` is deliberately free of lal/numba at IMPORT time
+    (see the time_interp_choice note above), and this runs once per
+    :class:`JAXLikelihoodData` build, by which point ``jax_ile.wrapper`` has
+    already imported ``factored_likelihood`` anyway.
     """
-    return _simpson(np.eye(npts), dx=deltaT, axis=-1)
+    from RIFT.likelihood import factored_likelihood as _FL
+    return _FL.time_quadrature_rule(np)(np.eye(npts), dx=deltaT, axis=-1)
 
 
 class JAXLikelihoodData:
