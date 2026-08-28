@@ -129,6 +129,11 @@ test_run:
     # numpy/scipy, seconds). Runs before the heavy scripts so a wrong prior fails
     # fast rather than after the end-to-end runs.
     - python -m pytest -q MonteCarloMarginalizeCode/Code/test/test_cip_priors.py
+    # The time-marginalization quadrature: the CPU and GPU likelihood paths run two
+    # DIFFERENT Simpson conventions whenever npts is even (srate 4096 and 8192).
+    # Pure numpy/scipy characterisation of that divergence and of the rule selector;
+    # the cupy cross-check inside it skips off a GPU host.
+    - python -m pytest -q MonteCarloMarginalizeCode/Code/test/test_time_quadrature.py
     - . .travis/test-coord.sh
     - bash .travis/test-integrate.sh
     - . .travis/test-posterior.sh
