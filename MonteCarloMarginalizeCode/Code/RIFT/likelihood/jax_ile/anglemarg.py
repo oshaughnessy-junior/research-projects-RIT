@@ -1148,8 +1148,22 @@ def _laplace_psi_lnI_block(a, c1, c2):
 #     rule                p50       p90       p99       max
 #     fixed 256 grid    8.6e-06   4.0e+00   2.1e+01   4.8e+01
 #     composite 8/48/8  2.5e-14   3.2e-08   1.8e-04   3.7e-04   (nats)
-# The in-tree ladder tests re-pin this against converged references on real
+# The in-tree tests re-pin this against converged references on real
 # coefficient tables; the numbers above are the DESIGN calibration record.
+#
+# Fused-marginal convergence ladder at the production amplitude scale
+# (exact scheme, amp ~ 752, ~/anglemarg_prof/adapt_diag_hi.log): the
+# composite rule is SELF-CONVERGED at n_env = 48 (48 vs 96 vs 144 agree to
+# 1e-10), while the fixed uniform-in-d grids march monotonically TOWARD the
+# composite value and have not arrived even at N = 16384 (successive
+# doublings move 0.69, 0.64, 0.49, 0.30 nats; N=16384 still 0.35 from the
+# composite).  The production n_grid = 256 is ~2.5-3.9 nats from converged
+# on that configuration: at high amplitude the fixed grid's node spacing at
+# the short-distance rail (~0.8 in x at N=4096) is comparable to the
+# distance-peak width sigma_x = x*/sqrt(2 amp), i.e. the same
+# under-resolved-quadrature defect this module exists to fix, one axis
+# over.  "adaptive" is therefore an ACCURACY change at high amplitude, not
+# only a cost change -- stated in the driver help and the PR.
 #
 # WHY NOT core._distmarg_gh_logL (the JAX_ILE_DISTMARG_GH machinery): its
 # +-7 sigma peak-centred nodes do not cover the d^2-prior bulk, which
