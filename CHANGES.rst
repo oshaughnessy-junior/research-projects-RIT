@@ -115,6 +115,10 @@ development tree is rift_O4d.
     single-EOS-index evidence support, coordinate-plugin hooks for posterior plotting and puffing, Morisaki-frame
     and aligned-spin coordinate helpers for GP/JAX studies, container-universe/OSDF scitokens support, and
     per-machine container image selection.
+  - EOSManager compatibility for the reviewed LALSimulation multipart/multibranch TOV
+    interface while retaining released LALSimulation and NuclearMatter-Backend sequence
+    support. Twin-star masses require an explicit branch; branch-aware M-R-Lambda curve
+    construction is available without silently collapsing stable branches.
   - ILE 'fanout' submission can use multiple GPUs on one host (RIFT_ILE_GPU_FANOUT)
   - Qlm interpolated in factored_likelihood...NoLoop (option)
 
