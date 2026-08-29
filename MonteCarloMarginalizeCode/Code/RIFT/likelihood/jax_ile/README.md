@@ -224,6 +224,80 @@ degenerate.  The command above previously omitted the flag and could not run.)
 Output: `out_0_.dat` (`event_id m1 m2 s1x..s2z lnL sigma_lnL ntotal neff`) and,
 with `--save-samples`, `out_0_samples.dat`.
 
+### Persistent compilation cache
+
+The shipped driver enables JAX's cross-process compilation cache by default.
+RIFT disables JAX's auxiliary per-fusion autotune cache while doing so. In JAX
+0.9.2 that auxiliary cache places its absolute directory in the executable
+cache key, so leaving it enabled makes an otherwise compatible exported bundle
+miss after import at a different filesystem path. The persistent compiled-
+executable cache remains enabled and is the transferable cache described here.
+It selects a stable directory under `$RIFT_JAX_CACHE_ROOT` (or
+`$XDG_CACHE_HOME/rift/jax`, normally `~/.cache/rift/jax`) and adds a
+compatibility namespace derived from Python, JAX/JAXLIB, the CUDA plugin,
+backend/platform version, GPU kind, and compute capability. JAX's own keys then
+separate static argument shapes and compiler options inside that namespace.
+
+Use `--jax-cache-dir /shared/rift-jax-cache` to choose a shared root, or
+`--no-jax-persistent-cache` for a diagnostic cold run. The standard
+`JAX_COMPILATION_CACHE_DIR` variable remains an exact-directory expert
+override. The selected directory contains its provenance manifest.
+Runtime identity and durable imported-bundle profile/static-shape provenance
+are stored separately. Each distinct contributing bundle gets an atomic record
+keyed by its manifest digest, so neither a later ordinary startup nor a second
+compatible bundle import can erase the earlier provenance.
+On Condor, an unset root falls back to
+`$_CONDOR_SCRATCH_DIR/.rift_cache/jax`; transfer that directory or set a shared
+root to reuse it across jobs. An unwritable cache disables itself with a warning
+rather than failing the ILE calculation.
+
+Condor scratch is job-local, so default enablement there avoids duplicate
+compilation only within that job; it does not provide automatic cross-job
+persistence. To reuse a survey/full-run cache, transfer the bundle as an input
+and append `--jax-cache-bundle rift-o4-laplace.zip --jax-cache-profile
+o4-laplace` to the ordinary ILE arguments. The driver validates and imports it
+before importing modules that construct ILE JITs. Sites with a genuinely shared
+writable filesystem can instead set `RIFT_JAX_CACHE_ROOT` in the submit
+environment.
+
+Warm with the real production command, then package that active namespace and
+record the important static shapes:
+
+```sh
+integrate_likelihood_extrinsic_jax --jax-cache-dir /scratch/rift-cache \
+  <the production ILE arguments>
+rift_jax_cache --cache-root /scratch/rift-cache export rift-o4-laplace.zip \
+  --profile o4-laplace --shape detectors=3 --shape l_max=2 \
+  --shape n_chunk=8000 --shape distance_grid=256 --shape n_phi=8
+```
+
+On a compatible target host/container, import and reuse it:
+
+```sh
+rift_jax_cache --cache-root /shared/rift-cache import rift-o4-laplace.zip \
+  --expect-profile o4-laplace
+integrate_likelihood_extrinsic_jax --jax-cache-dir /shared/rift-cache \
+  <the same production ILE arguments>
+```
+
+Import rejects a different JAX/JAXLIB/CUDA backend, GPU kind/capability,
+Python, requested profile, unexpected archive members, or checksum failure.
+Different static shapes safely miss JAX's inner cache and compile normally;
+the bundle's shape metadata makes those misses explainable.
+Import also bounds member count, individual/total uncompressed size, and
+compression ratio and streams entries through their checksum, so a corrupt or
+hostile archive cannot expand without limit. Cache bundles contain compiler
+artifacts and should still be accepted only from a trusted build workflow.
+
+The exact/Laplace amplitude-adequacy diagnostic is deliberately data returned
+by a pure JIT, not a `jax.debug.callback`: JAX does not persist graphs with host
+callbacks. The driver synchronously accumulates the maximum over every pilot,
+reweight, and final production/output-cloud batch and records that deterministic
+scope in result provenance. Transient flow-training-only proposals are not
+claimed; they do not enter the reported evidence or exported cloud. A tripped
+check still leaves likelihood values finite and labels the artifacts
+`SUSPECT-ANGLE-GRID` rather than silently excising the affected region.
+
 ## Status and next steps
 
 **Done & validated:** the AD likelihood core (1e-13 vs reference), gradients,

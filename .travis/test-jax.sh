@@ -147,16 +147,17 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         wrapper against the production driver, and
 #                                         because 16384 is the rate test_jax_endtoend
 #                                         (4096) structurally cannot cover.
-#   test_angle_marg_smoke.py          8  CHEAP mutation-bearing floor for the whole
+#   test_angle_marg_smoke.py          9  CHEAP mutation-bearing floor for the whole
 #                                         angle-marg feature: scheme selection (a
 #                                         previous head could never return 'exact'),
 #                                         both dense-sizing levers, required
-#                                         amp_sizing, the host failsafe record and
-#                                         its cond-guard, the driver AST guard on the
+#                                         amp_sizing, synchronous output-cloud
+#                                         recording with training-call exclusion,
+#                                         the driver AST guard on the
 #                                         VALUE node (hardcoding angle_marg="grid"
 #                                         passes a weaker guard), and that BOTH
-#                                         artifacts are labelled and never imply
-#                                         verification.  Seconds, not minutes.
+#                                         artifacts carry the deterministic checked
+#                                         scope.  Seconds, not minutes.
 #   test_angle_marg_compile_cost.py   6  the laplace path's COMPILE- and RUN-cost
 #                                         structure (2026-08-28: an unrolled kernel
 #                                         x 64 distance blocks put a production
@@ -172,6 +173,19 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         cap must stay WIRED in samplers and the
 #                                         driver.  Each fails under a verified
 #                                         mutation (see the PR).  Seconds.
+#   test_jax_cache.py                17  the shipped ILE selects a stable
+#                                         compatibility namespace, Condor uses
+#                                         scratch by default, unwritable caches
+#                                         fail open, and transferred bundles
+#                                         round-trip while rejecting profile,
+#                                         runtime, checksum, and archive-member
+#                                         mismatches; concurrent manifest
+#                                         writers and imported-entry readers
+#                                         cannot race; import provenance survives
+#                                         later startup; accelerator
+#                                         plugin identity is recorded; and two
+#                                         fresh real JAX processes prove an
+#                                         actual persistent-cache reuse.
 #   test_angle_marg_block_dispatch.py 4  the laplace path's EXECUTION-cost
 #                                         structure (2026-08-28: with compilation
 #                                         fixed, the kernel executed ~2,950x the
@@ -282,6 +296,7 @@ FILES=(
   "${JAXDIR}/test_angle_marg_smoke.py"
   "${JAXDIR}/test_angle_marg_compile_cost.py"
   "${JAXDIR}/test_angle_marg_block_dispatch.py"
+  "${JAXDIR}/test_jax_cache.py"
 )
 
 # EXCLUDED: files in JAXDIR matching test_*.py that are deliberately NOT gated.  The
@@ -368,10 +383,17 @@ fi
 # no default guard; the band-limited path widens the accumulation window).
 # PR #209 then adds six test_angle_marg_compile_cost.py pins, raising 160 -> 166,
 # and PR #210 adds five test_angle_marg_block_dispatch.py pins, raising 166 -> 171.
+# The persistent-cache namespace/transfer guard adds seventeen test_jax_cache.py
+# cases (sixteen tests, one exact/Laplace parametrization) and the production
+# wrapper wiring adds one smoke pin, raising 171 -> 189.  The final cache cases
+# run both real anglemarg batch graphs
+# in two fresh processes and transfer a compiled executable between different
+# absolute roots, so host callbacks or path-valued cache keys cannot silently
+# disable persistence.
 # Raising the floor
 # by exactly the number of tests ADDED is safe whatever the environment delta above,
 # since it preserves the margin the previous floor already had.
-EXPECTED_TESTS=171
+EXPECTED_TESTS=189
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"

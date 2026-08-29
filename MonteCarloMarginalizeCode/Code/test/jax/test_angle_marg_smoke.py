@@ -24,6 +24,7 @@ from RIFT.likelihood.jax_ile.core import (
     _accumulate_unit, _time_marginalize, _logsumexp_grid_blocked,
     fused_log_likelihood_distphipsimarg, phi_ref_grid, psi_grid,
     make_distance_grid)
+from RIFT.likelihood.jax_ile.wrapper import JAXDistPhiPsiMargLikelihood
 
 RA, DEC, INCL = 1.1, -0.35, 0.9
 INTERP = "sinc"
@@ -62,19 +63,24 @@ def test_amp_sizing_is_required_not_defaulted():
         raise AssertionError("a missing amp_sizing must raise, not default")
 
 
-def test_failsafe_record_roundtrips_and_barriers():
-    """The host record must reset, report, and barrier -- without it the driver
-    cannot label an artifact and the condition dies with the log line."""
+def test_failsafe_record_roundtrips_without_host_effects():
+    """The host record spans calls while the persistable JIT stays pure."""
     import inspect
     AM.reset_amp_failsafe()
+    AM.record_amp_failsafe(10.0, 100.0, "exact")
+    AM.record_amp_failsafe(250.0, 100.0, "exact")
+    AM.record_amp_failsafe(50.0, 100.0, "exact")
     st = AM.amp_failsafe_state()
-    assert st["tripped"] is False
-    for fn in (AM.amp_failsafe_state, AM.reset_amp_failsafe):
-        assert "effects_barrier" in inspect.getsource(fn)
+    assert st["tripped"] is True
+    assert st["n_calls"] == 3
+    assert st["worst_amp"] == 250.0
     src = inspect.getsource(AM._runtime_amp_failsafe)
-    assert src.find("lax.cond") < src.find("debug.callback"), (
-        "the callback must sit inside lax.cond; an unconditional callback fires "
-        "on every likelihood evaluation and destroys throughput")
+    assert "debug.callback" not in src and "debug.print" not in src
+    assert "return amp_call" in src
+    AM.reset_amp_failsafe()
+    assert AM.amp_failsafe_state() == {
+        "tripped": False, "n_calls": 0, "worst_amp": 0.0,
+        "amp_sizing": None, "scheme": None}
 
 
 def _driver_src():
@@ -99,7 +105,7 @@ def test_driver_actually_passes_the_scheme_through():
         "angle_marg must be forwarded as the parsed option, not a constant")
 
 
-def test_driver_labels_both_artifacts_and_never_implies_verification():
+def test_driver_labels_both_artifacts_with_exact_checked_scope():
     src = _driver_src()
     assert "def angle_grid_suspect_note(" in src
     # The note is computed ONCE in analyze_one from the RESOLVED scheme and
@@ -117,11 +123,56 @@ def test_driver_labels_both_artifacts_and_never_implies_verification():
         "argument it silently degrades to the empty string")
     assert ao.count("angle_note=_ev_note") >= 2, (
         "both writers must receive the same computed note")
-    assert "BEST-EFFORT" in src, (
-        "artifacts must state that no-detection is NOT verification: the "
-        "detector is a droppable jax callback, so silence cannot be read as "
-        "an adequate grid")
+    assert "ANGLE-GRID-CHECK=OUTPUT-CLOUD-PASS" in src
+    assert "deterministic over pilot/reweight/" in src
+    assert "transient training-only" in src, (
+        "the artifact must not claim coverage of proposals that do not enter "
+        "the reported evidence or exported output cloud")
     assert "SUSPECT-ANGLE-GRID" in src
+
+
+def test_public_wrapper_records_output_calls_not_training_and_drives_note():
+    """Pin the production wire from public batches to artifact provenance."""
+    like = JAXDistPhiPsiMargLikelihood(
+        make_synth(), 30.0, 3000.0, n_grid=16, nphi=8, npsi=4,
+        interp=INTERP, guess_snr=5.0, angle_marg="exact")
+    assert like._amp_record is not None
+    amplitudes = iter((10.0, 1000.0))
+    like._batched = lambda ra, dec, incl: (
+        jnp.zeros_like(jnp.atleast_1d(ra)), jnp.asarray(next(amplitudes)))
+
+    AM.reset_amp_failsafe()
+    like.log_likelihood([RA], [DEC], [INCL])
+    like.log_likelihood([RA], [DEC], [INCL])
+    state = AM.amp_failsafe_state()
+    assert state["n_calls"] == 2
+    assert state["worst_amp"] == 1000.0
+    assert state["tripped"] is True
+
+    # Scalar/gradient calls model transient flow-training proposals and must
+    # not mutate the artifact-producing output-cloud record.
+    like._scalar = lambda theta: jnp.asarray(1.0)
+    like._value_and_grad = lambda theta: (jnp.asarray(1.0), jnp.zeros(3))
+    like.value([RA, DEC, INCL])
+    like.value_and_grad([RA, DEC, INCL])
+    assert AM.amp_failsafe_state() == state
+
+    tree = ast.parse(_driver_src())
+    note_fn = next(node for node in tree.body
+                   if isinstance(node, ast.FunctionDef)
+                   and node.name == "angle_grid_suspect_note")
+    namespace = {"_anglemarg": AM}
+    exec(compile(ast.Module(body=[note_fn], type_ignores=[]),
+                 "<angle-grid-note>", "exec"), namespace)
+    note = namespace["angle_grid_suspect_note"]("exact")
+    assert note.startswith("SUSPECT-ANGLE-GRID")
+
+    AM.reset_amp_failsafe()
+    like._amp_record(10.0)
+    note = namespace["angle_grid_suspect_note"]("exact")
+    assert note.startswith("ANGLE-GRID-CHECK=OUTPUT-CLOUD-PASS")
+    assert "deterministic over pilot/reweight/final output-cloud" in note
+    assert "transient training-only proposals not inspected" in note
 
 
 def make_synth(scale=1.0, seed=3, modes=((2, 2), (2, -2)), npts=32,

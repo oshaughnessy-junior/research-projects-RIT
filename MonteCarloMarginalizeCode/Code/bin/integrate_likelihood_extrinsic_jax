@@ -66,6 +66,22 @@ import numpy as np
 import jax
 jax.config.update("jax_enable_x64", True)
 
+# Configure the persistent cache before importing modules that construct ILE
+# JITs.  RIFT selects a compatibility-keyed child directory, so a shared cache
+# root is safe across heterogeneous GPU/JAX installations.
+from RIFT.jax_cache import (argv_option, configure_persistent_cache,
+                            import_bundle, runtime_compatibility)
+_JAX_CACHE_DIR = configure_persistent_cache(jax, sys.argv[1:])
+_JAX_CACHE_BUNDLE = (argv_option(sys.argv[1:], "--jax-cache-bundle")
+                     or os.environ.get("RIFT_JAX_CACHE_BUNDLE"))
+_JAX_CACHE_PROFILE = argv_option(sys.argv[1:], "--jax-cache-profile")
+if _JAX_CACHE_BUNDLE:
+    if _JAX_CACHE_DIR is None:
+        raise RuntimeError("a cache bundle was requested but no writable JAX cache is available")
+    import_bundle(_JAX_CACHE_BUNDLE, _JAX_CACHE_DIR.parent,
+                  runtime_compatibility(jax), _JAX_CACHE_PROFILE,
+                  destination=_JAX_CACHE_DIR)
+
 import lal
 import lalsimulation as lalsim
 
@@ -312,6 +328,20 @@ def check_critical_and_report(opts, optp):
 # ---------------------------------------------------------------------------
 def build_parser():
     optp = OptionParser(usage="%prog [options]", description=__doc__)
+
+    g = OptionGroup(optp, "JAX compilation cache")
+    g.add_option("--jax-cache-dir", default=None,
+                 help="Persistent cache root. RIFT adds a JAX/JAXLIB/backend/"
+                      "GPU compatibility namespace (default: $RIFT_JAX_CACHE_ROOT "
+                      "or $XDG_CACHE_HOME/rift/jax).")
+    g.add_option("--no-jax-persistent-cache", action="store_true", default=False,
+                 help="Disable cross-process JAX compilation caching for this run.")
+    g.add_option("--jax-cache-bundle", default=None,
+                 help="Validate and import a warmed rift_jax_cache bundle before "
+                      "constructing any ILE JIT (also $RIFT_JAX_CACHE_BUNDLE).")
+    g.add_option("--jax-cache-profile", default=None,
+                 help="Require --jax-cache-bundle to declare this warmup profile.")
+    optp.add_option_group(g)
 
     g = OptionGroup(optp, "Data input (frame mode)")
     g.add_option("--cache-file", default=None)
@@ -976,25 +1006,19 @@ def samples_path(opts, out_index):
 def angle_grid_suspect_note(scheme=None):
     """Label describing the angle-grid amplitude check for this event.
 
-    Returns one of three things, and the THIRD is the point:
+    Returns one of three things, and the THIRD states the exact coverage:
 
       ""                              -- the grid schemes were not used
       "SUSPECT-ANGLE-GRID ..."        -- undersizing was DETECTED
-      "ANGLE-GRID-CHECK=BEST-EFFORT"  -- schemes used, nothing detected
+      "ANGLE-GRID-CHECK=OUTPUT-CLOUD-PASS ..." -- checked cloud was adequate
 
-    The third case exists because absence of a detection is NOT evidence of
-    adequacy.  The detector is a jax.debug.callback, and JAX explicitly permits
-    such callbacks to be dropped under transformation -- in which case the host
-    state stays clean, effects_barrier has nothing to wait for, and the artifact
-    would otherwise be published looking verified.  That is a scientific false
-    negative, and calling it "best effort" in a docstring does not fix it for a
-    consumer reading the file six months later.
-
-    So every artifact produced by the exact/laplace schemes carries a standing
-    statement that this check CANNOT distinguish an adequate grid from an
-    undetected undersizing.  A reader is then never entitled to infer
-    verification from silence.  The honest recourse, named in the artifact, is
-    to rebuild at a larger amp_sizing if the result matters.
+    The pure JIT returns its amplitude metric as ordinary data, and the Python
+    boundary synchronously accumulates the maximum over every pilot, reweight,
+    and final production/output-cloud batch.  That deterministic coverage is
+    enough to label the points used for the published flow evidence and sample
+    export.  Transient flow-training-only proposals (which do not enter those
+    artifacts) are deliberately NOT claimed.  This split also keeps host
+    callbacks out of the expensive graph so JAX can persistently cache it.
     """
     st = _anglemarg.amp_failsafe_state()
     if st.get("tripped"):
@@ -1003,9 +1027,12 @@ def angle_grid_suspect_note(scheme=None):
                 % (st.get("worst_amp", float("nan")),
                    st.get("amp_sizing", float("nan")), st.get("scheme")))
     if scheme in ("exact", "laplace"):
-        return ("ANGLE-GRID-CHECK=BEST-EFFORT (no undersizing detected; the "
-                "detector may be dropped under jax transformation, so this is "
-                "NOT a verification -- rebuild at larger amp_sizing if it matters)")
+        return ("ANGLE-GRID-CHECK=OUTPUT-CLOUD-PASS worst_amp=%.6g "
+                "amp_sizing=%.6g scheme=%s (deterministic over pilot/reweight/"
+                "final output-cloud evaluations; transient training-only "
+                "proposals not inspected)"
+                % (st.get("worst_amp", float("nan")),
+                   st.get("amp_sizing", float("nan")), st.get("scheme")))
     return ""
 
 
@@ -1766,7 +1793,7 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
     # otherwise get no warning and no persistent label at all.
     # Compute ONCE from the RESOLVED scheme and hand the same string to both
     # writers.  Recomputing inside each writer with no argument left `scheme`
-    # None, so the standing BEST-EFFORT label never emitted and every artifact
+    # None, so the standing output-cloud label never emitted and every artifact
     # stayed silent -- an inert guard, which is the exact failure mode this
     # label exists to prevent.
     _scheme = getattr(like, "angle_marg_scheme", None)
@@ -1780,9 +1807,8 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
             "NOT aborted and no points were discarded -- discarding would excise "
             "exactly the region the estimator missed.\n" % _ev_note)
     elif _ev_note:
-        # BEST-EFFORT: nothing detected.  Say so WITHOUT claiming a clean run --
-        # announcing "UNDERSIZED" here would be a false alarm, and saying
-        # nothing would let silence read as verification.
+        # Deterministic pass over the artifact-producing cloud, with scope
+        # stated in the label (training-only proposals are not claimed).
         sys.stderr.write(
             "NOTE integrate_likelihood_extrinsic_jax: %s\n" % _ev_note)
     write_samples(opts, out_index, theta, lnL, with_distance, angle_note=_ev_note,
@@ -1796,6 +1822,8 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
 # Main
 # ---------------------------------------------------------------------------
 def main(argv=None):
+    if _JAX_CACHE_DIR is not None:
+        print("JAX persistent compilation cache:", _JAX_CACHE_DIR)
     optp = build_parser()
     opts, _ = optp.parse_args(argv)
     # BEFORE anything reads an option: which tokens did the user actually type?
