@@ -196,10 +196,16 @@ def test_bundle_round_trip_and_profile_guard(tmp_path):
     assert len(list(destination.glob(
         cache.IMPORT_MANIFEST_PREFIX + "*.json"))) == 2
 
+    # A cache warmed by an older PR may still contain the former singular
+    # import record. Neither legacy nor current provenance is compiler data.
+    (destination / cache.IMPORT_MANIFEST_NAME).write_text("{}\n")
     reexport = tmp_path / "reexport.zip"
     reexport_manifest = cache.export_bundle(destination, reexport, COMPAT)
-    assert not any(Path(rel).name.startswith(cache.IMPORT_MANIFEST_PREFIX)
-                   for rel in reexport_manifest["files"])
+    exported_names = {Path(rel).name for rel in reexport_manifest["files"]}
+    assert cache.MANIFEST_NAME not in exported_names
+    assert cache.IMPORT_MANIFEST_NAME not in exported_names
+    assert not any(name.startswith(cache.IMPORT_MANIFEST_PREFIX)
+                   for name in exported_names)
     with pytest.raises(ValueError, match="profile"):
         cache.import_bundle(bundle, tmp_path / "wrong-profile", COMPAT, "other")
 
