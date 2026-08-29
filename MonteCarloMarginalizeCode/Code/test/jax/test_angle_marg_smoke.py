@@ -62,19 +62,22 @@ def test_amp_sizing_is_required_not_defaulted():
         raise AssertionError("a missing amp_sizing must raise, not default")
 
 
-def test_failsafe_record_roundtrips_and_barriers():
-    """The host record must reset, report, and barrier -- without it the driver
-    cannot label an artifact and the condition dies with the log line."""
+def test_failsafe_record_roundtrips_without_host_effects():
+    """The host record spans calls while the persistable JIT stays pure."""
     import inspect
     AM.reset_amp_failsafe()
+    AM.record_amp_failsafe(10.0, 100.0, "exact")
+    AM.record_amp_failsafe(250.0, 100.0, "exact")
+    AM.record_amp_failsafe(50.0, 100.0, "exact")
     st = AM.amp_failsafe_state()
-    assert st["tripped"] is False
-    for fn in (AM.amp_failsafe_state, AM.reset_amp_failsafe):
-        assert "effects_barrier" in inspect.getsource(fn)
+    assert st["tripped"] is True
+    assert st["n_calls"] == 3
+    assert st["worst_amp"] == 250.0
     src = inspect.getsource(AM._runtime_amp_failsafe)
-    assert src.find("lax.cond") < src.find("debug.callback"), (
-        "the callback must sit inside lax.cond; an unconditional callback fires "
-        "on every likelihood evaluation and destroys throughput")
+    assert "debug.callback" not in src and "debug.print" not in src
+    assert "return amp_call" in src
+    AM.reset_amp_failsafe()
+    assert AM.amp_failsafe_state()["tripped"] is False
 
 
 def _driver_src():
@@ -99,7 +102,7 @@ def test_driver_actually_passes_the_scheme_through():
         "angle_marg must be forwarded as the parsed option, not a constant")
 
 
-def test_driver_labels_both_artifacts_and_never_implies_verification():
+def test_driver_labels_both_artifacts_with_exact_checked_scope():
     src = _driver_src()
     assert "def angle_grid_suspect_note(" in src
     # The note is computed ONCE in analyze_one from the RESOLVED scheme and
@@ -117,10 +120,11 @@ def test_driver_labels_both_artifacts_and_never_implies_verification():
         "argument it silently degrades to the empty string")
     assert ao.count("angle_note=_ev_note") >= 2, (
         "both writers must receive the same computed note")
-    assert "BEST-EFFORT" in src, (
-        "artifacts must state that no-detection is NOT verification: the "
-        "detector is a droppable jax callback, so silence cannot be read as "
-        "an adequate grid")
+    assert "ANGLE-GRID-CHECK=OUTPUT-CLOUD-PASS" in src
+    assert "deterministic over pilot/reweight/" in src
+    assert "transient training-only" in src, (
+        "the artifact must not claim coverage of proposals that do not enter "
+        "the reported evidence or exported output cloud")
     assert "SUSPECT-ANGLE-GRID" in src
 
 
