@@ -227,6 +227,11 @@ with `--save-samples`, `out_0_samples.dat`.
 ### Persistent compilation cache
 
 The shipped driver enables JAX's cross-process compilation cache by default.
+RIFT disables JAX's auxiliary per-fusion autotune cache while doing so. In JAX
+0.9.2 that auxiliary cache places its absolute directory in the executable
+cache key, so leaving it enabled makes an otherwise compatible exported bundle
+miss after import at a different filesystem path. The persistent compiled-
+executable cache remains enabled and is the transferable cache described here.
 It selects a stable directory under `$RIFT_JAX_CACHE_ROOT` (or
 `$XDG_CACHE_HOME/rift/jax`, normally `~/.cache/rift/jax`) and adds a
 compatibility namespace derived from Python, JAX/JAXLIB, the CUDA plugin,

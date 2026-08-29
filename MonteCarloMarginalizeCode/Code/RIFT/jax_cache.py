@@ -203,6 +203,15 @@ def configure_persistent_cache(jax_module, argv=None):
         jax_module.config.update("jax_enable_compilation_cache", False)
         return None
     os.environ["JAX_COMPILATION_CACHE_DIR"] = str(directory.resolve())
+    # JAX 0.9.2's auxiliary per-fusion GPU autotune cache embeds its absolute
+    # directory in CompileOptions, but does not exclude that field from the
+    # persistent-executable cache key.  A bundle imported under a different
+    # absolute root would therefore miss every executable it contains.  Keep
+    # the portable executable cache enabled, but disable only that auxiliary
+    # path-valued cache.  Deliberately let config.update fail loudly if a future
+    # JAX stops accepting this setting: silently restoring non-portable keys
+    # would make a successful-looking cache transfer useless.
+    jax_module.config.update("jax_persistent_cache_enable_xla_caches", "")
     jax_module.config.update("jax_enable_compilation_cache", True)
     jax_module.config.update("jax_compilation_cache_dir", str(directory.resolve()))
     return directory.resolve()

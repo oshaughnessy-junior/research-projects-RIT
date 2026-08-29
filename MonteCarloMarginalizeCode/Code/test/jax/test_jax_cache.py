@@ -43,6 +43,7 @@ def test_configure_uses_compatibility_namespace(tmp_path, monkeypatch):
     assert os.environ["JAX_COMPILATION_CACHE_DIR"] == str(selected)
     manifest = json.loads((selected / cache.MANIFEST_NAME).read_text())
     assert manifest["compatibility"] == COMPAT
+    assert ("jax_persistent_cache_enable_xla_caches", "") in fake.config.updates
     assert ("jax_enable_compilation_cache", True) in fake.config.updates
 
 
@@ -269,6 +270,69 @@ def test_real_jax_cache_reused_across_fresh_processes(tmp_path):
     assert first, "the first fresh process did not populate JAX's persistent cache"
     run()
     assert entries() == first, "the second fresh process recompiled or rewrote cache entries"
+
+
+def test_real_jax_cache_bundle_reused_from_different_absolute_root(tmp_path):
+    """A transferred executable must not be keyed by its original cache path."""
+    jax = pytest.importorskip("jax")
+    source_root = tmp_path / "producer" / "cache"
+    target_root = tmp_path / "consumer-at-a-different-path" / "cache"
+    code = textwrap.dedent("""
+        import jax
+        import jax.numpy as jnp
+        from RIFT.jax_cache import configure_persistent_cache
+        configure_persistent_cache(jax, ["--jax-cache-dir", r"%s"])
+        @jax.jit
+        def transferred_work(x):
+            for _ in range(8):
+                x = jnp.sin(x @ x + 0.01)
+            return x.sum()
+        print(float(transferred_work(jnp.eye(64)).block_until_ready()))
+    """)
+    env = os.environ.copy()
+    env.pop("JAX_COMPILATION_CACHE_DIR", None)
+    env.update({
+        "JAX_PLATFORMS": "cpu",
+        "JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS": "0",
+        "JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES": "0",
+        "JAX_DEBUG_LOG_MODULES": "jax._src.compiler,jax._src.compilation_cache",
+        "OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1", "NUMEXPR_NUM_THREADS": "1",
+        "TF_NUM_INTRAOP_THREADS": "1", "TF_NUM_INTEROP_THREADS": "1",
+        "XLA_FLAGS": "--xla_cpu_multi_thread_eigen=false --xla_force_host_platform_device_count=1",
+    })
+
+    producer = subprocess.run(
+        [sys.executable, "-c", code % source_root], env=env, check=True,
+        capture_output=True, text=True, timeout=120)
+    compatibility = cache.runtime_compatibility(jax)
+    source = source_root / cache.compatibility_key(compatibility)
+    bundle = tmp_path / "portable.zip"
+    cache.export_bundle(source, bundle, compatibility, "different-root-test")
+    target = cache.import_bundle(bundle, target_root, compatibility,
+                                 "different-root-test")
+
+    def entries():
+        return {
+            str(path.relative_to(target)): (hashlib.sha256(path.read_bytes()).hexdigest(),
+                                            path.stat().st_mtime_ns)
+            for path in target.rglob("*")
+            if path.is_file() and path.name not in (
+                cache.MANIFEST_NAME, cache.IMPORT_MANIFEST_NAME)
+            and not path.name.endswith(".tmp")
+        }
+
+    imported = entries()
+    assert imported, "producer did not create any persistent executable entry"
+    consumer = subprocess.run(
+        [sys.executable, "-c", code % target_root], env=env, check=True,
+        capture_output=True, text=True, timeout=120)
+    assert consumer.stdout == producer.stdout
+    # JAX publishes an executable cache entry atomically after compilation.  A
+    # fresh compile would therefore replace it and change its mtime; preserving
+    # every imported byte and mtime pins an actual persistent-cache load without
+    # depending on JAX's version-specific debug-log formatting.
+    assert entries() == imported, "consumer recompiled after cache-root transfer"
 
 
 def test_exact_angle_batched_kernel_persists_without_host_effects(tmp_path):
