@@ -66,6 +66,22 @@ import numpy as np
 import jax
 jax.config.update("jax_enable_x64", True)
 
+# Configure the persistent cache before importing modules that construct ILE
+# JITs.  RIFT selects a compatibility-keyed child directory, so a shared cache
+# root is safe across heterogeneous GPU/JAX installations.
+from RIFT.jax_cache import (argv_option, configure_persistent_cache,
+                            import_bundle, runtime_compatibility)
+_JAX_CACHE_DIR = configure_persistent_cache(jax, sys.argv[1:])
+_JAX_CACHE_BUNDLE = (argv_option(sys.argv[1:], "--jax-cache-bundle")
+                     or os.environ.get("RIFT_JAX_CACHE_BUNDLE"))
+_JAX_CACHE_PROFILE = argv_option(sys.argv[1:], "--jax-cache-profile")
+if _JAX_CACHE_BUNDLE:
+    if _JAX_CACHE_DIR is None:
+        raise RuntimeError("a cache bundle was requested but no writable JAX cache is available")
+    import_bundle(_JAX_CACHE_BUNDLE, _JAX_CACHE_DIR.parent,
+                  runtime_compatibility(jax), _JAX_CACHE_PROFILE,
+                  destination=_JAX_CACHE_DIR)
+
 import lal
 import lalsimulation as lalsim
 
@@ -312,6 +328,20 @@ def check_critical_and_report(opts, optp):
 # ---------------------------------------------------------------------------
 def build_parser():
     optp = OptionParser(usage="%prog [options]", description=__doc__)
+
+    g = OptionGroup(optp, "JAX compilation cache")
+    g.add_option("--jax-cache-dir", default=None,
+                 help="Persistent cache root. RIFT adds a JAX/JAXLIB/backend/"
+                      "GPU compatibility namespace (default: $RIFT_JAX_CACHE_ROOT "
+                      "or $XDG_CACHE_HOME/rift/jax).")
+    g.add_option("--no-jax-persistent-cache", action="store_true", default=False,
+                 help="Disable cross-process JAX compilation caching for this run.")
+    g.add_option("--jax-cache-bundle", default=None,
+                 help="Validate and import a warmed rift_jax_cache bundle before "
+                      "constructing any ILE JIT (also $RIFT_JAX_CACHE_BUNDLE).")
+    g.add_option("--jax-cache-profile", default=None,
+                 help="Require --jax-cache-bundle to declare this warmup profile.")
+    optp.add_option_group(g)
 
     g = OptionGroup(optp, "Data input (frame mode)")
     g.add_option("--cache-file", default=None)
@@ -1796,6 +1826,8 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
 # Main
 # ---------------------------------------------------------------------------
 def main(argv=None):
+    if _JAX_CACHE_DIR is not None:
+        print("JAX persistent compilation cache:", _JAX_CACHE_DIR)
     optp = build_parser()
     opts, _ = optp.parse_args(argv)
     # BEFORE anything reads an option: which tokens did the user actually type?

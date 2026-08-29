@@ -172,6 +172,19 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         cap must stay WIRED in samplers and the
 #                                         driver.  Each fails under a verified
 #                                         mutation (see the PR).  Seconds.
+#   test_jax_cache.py                12  the shipped ILE selects a stable
+#                                         compatibility namespace, Condor uses
+#                                         scratch by default, unwritable caches
+#                                         fail open, and transferred bundles
+#                                         round-trip while rejecting profile,
+#                                         runtime, checksum, and archive-member
+#                                         mismatches; concurrent manifest
+#                                         writers and imported-entry readers
+#                                         cannot race; import provenance survives
+#                                         later startup; accelerator
+#                                         plugin identity is recorded; and two
+#                                         fresh real JAX processes prove an
+#                                         actual persistent-cache reuse.
 #   test_angle_marg_block_dispatch.py 4  the laplace path's EXECUTION-cost
 #                                         structure (2026-08-28: with compilation
 #                                         fixed, the kernel executed ~2,950x the
@@ -282,6 +295,7 @@ FILES=(
   "${JAXDIR}/test_angle_marg_smoke.py"
   "${JAXDIR}/test_angle_marg_compile_cost.py"
   "${JAXDIR}/test_angle_marg_block_dispatch.py"
+  "${JAXDIR}/test_jax_cache.py"
 )
 
 # EXCLUDED: files in JAXDIR matching test_*.py that are deliberately NOT gated.  The
@@ -368,10 +382,12 @@ fi
 # no default guard; the band-limited path widens the accumulation window).
 # PR #209 then adds six test_angle_marg_compile_cost.py pins, raising 160 -> 166,
 # and PR #210 adds five test_angle_marg_block_dispatch.py pins, raising 166 -> 171.
+# The persistent-cache namespace/transfer guard adds twelve test_jax_cache.py pins,
+# raising 171 -> 183.
 # Raising the floor
 # by exactly the number of tests ADDED is safe whatever the environment delta above,
 # since it preserves the margin the previous floor already had.
-EXPECTED_TESTS=171
+EXPECTED_TESTS=183
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
