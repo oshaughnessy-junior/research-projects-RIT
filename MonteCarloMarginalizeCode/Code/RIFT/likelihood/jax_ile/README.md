@@ -1,5 +1,20 @@
 # `jax_ile` — an AD-compatible JAX reimplementation of the ILE extrinsic likelihood
 
+> **`--save-samples` output is a FAIR DRAW**, not the raw sampler cloud:
+> equal-weight rows, no weight column, and the same columns as before *for a
+> given `--mode`* (different modes export different column sets — see the Driver
+> section). A second header line records the mode and the export ESS, e.g.
+> `# mode=laplace-is fairdraw: ESS=5.5 n_in=300000 n_out=9`. **Check that ESS
+> before trusting a file**: a low-ESS export is not a usable posterior sample
+> however it is drawn, and the driver warns on stderr when it is below 200.
+> When the weights admit no fair draw at all (degenerate/unnormalizable), the
+> event fails and **no samples file is written** (any stale one at that path is
+> removed) — there is no mode in which this product holds unreweighted rows.
+> That refusal is checked *before* the `<output>_<index>_.dat` result row is
+> written, so a failed event leaves **no result row either** (a stale one is
+> removed too): with `--soft-fail-event-range` the batch goes on, and a row left
+> behind would be collected as a successful integration.
+
 A `jax.numpy`, automatic-differentiation-compatible reimplementation of RIFT's
 ILE extrinsic likelihood, mirroring the production
 `factored_likelihood.DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop`
@@ -136,13 +151,27 @@ Modes (`--mode`):
 sample the 5-D angular posterior).  Implemented in `samplers.py`.
 
 **Efficiency / robustness options:**
-- **Flow re-use across a batch** (`--mode flowmc` + `--n-events-to-analyze`):
-  the trained normalizing flow is bootstrapped from one intrinsic template to
-  the next (its NF weights warm-start the next event and its posterior draws
-  initialize the chains).  For nearby templates the posterior changes slowly, so
-  this is the partial-flow-reuse win — most visible at scale and at high SNR.
-  `--no-flow-reuse` disables it (re-train each event).  Validated: a re-used run
-  recovers the truth sky with neff ≥ the fresh run (`test/jax/test_flow_reuse.py`).
+- **Flow re-use across a batch** (`--mode flowmc` + `--n-events-to-analyze`) —
+  **OFF by default; opt in with `--flow-reuse`.**  When enabled, the trained
+  normalizing flow is bootstrapped from one intrinsic template to the next (its
+  NF weights warm-start the next event and its posterior draws initialize the
+  chains).  `--no-flow-reuse` is accepted and now restates the default.
+
+  **Do not enable it for any run whose extrinsic SAMPLES are used.**  Re-use
+  contracts the posterior in later slots: across an 8-event batch at two seeds,
+  psi fell to ~40% of its no-re-use width by slot 7 on both seeds, with slot 0
+  (no re-use yet) at ~1.0 as a control, and inclination to 0.49/0.61.  Confirmed
+  against independent per-slot references, not just arm-vs-arm.  It also
+  reproduces an earlier, independent measurement (mean incl 0.5795 → 0.3465,
+  sd(psi) 0.9122 → 0.3738) that caused an amortization claim to be retracted from
+  the companion paper.
+
+  *What the earlier validation actually showed.* `test/jax/test_flow_reuse.py`
+  checks that a re-used run **recovers the truth sky with neff ≥ the fresh run**.
+  That remains true and is not contradicted here — it tests sky location and an
+  evidence-side neff, neither of which is posterior *width*.  The contraction is
+  in the width of the orientation parameters, an observable that check does not
+  look at.
 - **Network sky coordinates** (`--sky-coordinates network`, `multistart-nuts`
   only): sample the sky in the two-detector baseline frame `(cosθ_n, φ_n)` to
   fold the time-delay ring (the prior stays uniform there).  Falls back to
@@ -158,8 +187,14 @@ neff / wall time — the data for the skymap-vs-SNR figure and the high-SNR
 efficiency comparison vs the adaptive (AV) integrator.  Preliminary small-budget
 run (H1/L1/V1): the flow **recovers the truth sky at every SNR through 640**, the
 90% sky credible area shrinks with SNR (≈0.05 deg² at 40 → 3.6e-5 deg² at 80 →
-sub-sample-resolution above), and **flow re-use cuts the per-event wall time ~2×**
-(first event ≈114 s, warm-started events ≈60 s).  The simple moment-matched
+sub-sample-resolution above), and in **that small-budget configuration** flow
+re-use cut the per-event wall time ~2× (first event ≈114 s, warm-started events
+≈60 s).  **That saving does not carry to production settings:** on an 8-event BNS
+batch at full settings it measured 1589 s with re-use against 1567 s without
+(1549/1629 vs 1644/1489 across two seeds) — a difference smaller than the
+seed-to-seed spread, with its sign flipping.  Treat the ~2× as specific to the
+small-budget benchmark, not as a general amortization argument, and see the
+accuracy warning above before enabling re-use at all.  The simple moment-matched
 Gaussian importance evidence is reliable only at moderate SNR (it is flagged
 `nan` once `neff` collapses, since `logZ ≤ lnL_max` is violated by an
 ill-conditioned proposal at sub-resolution peaks) — a robust narrow-peak evidence
@@ -178,8 +213,13 @@ Self-test (no frames needed):
 ```
 PYTHONPATH=<...>/Code python bin/integrate_likelihood_extrinsic_jax \
    --inj-mode --mass1 35 --mass2 30 --spin1z 0.1 --spin2z -0.2 \
-   --mode nuts --d-max 5000 --save-samples --output-file out
+   --mode nuts --distance-marginalization --d-max 5000 \
+   --save-samples --output-file out
 ```
+
+(`--mode nuts` requires `--distance-marginalization`: `run_nuts` raises
+`SystemExit` without it, because the bare 5-D angular+distance likelihood is
+degenerate.  The command above previously omitted the flag and could not run.)
 
 Output: `out_0_.dat` (`event_id m1 m2 s1x..s2z lnL sigma_lnL ntotal neff`) and,
 with `--save-samples`, `out_0_samples.dat`.
