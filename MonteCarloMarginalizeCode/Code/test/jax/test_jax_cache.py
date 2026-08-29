@@ -23,6 +23,8 @@ COMPAT = {
 
 
 class _Config:
+    jax_persistent_cache_enable_xla_caches = None
+
     def __init__(self):
         self.updates = []
 
@@ -45,6 +47,28 @@ def test_configure_uses_compatibility_namespace(tmp_path, monkeypatch):
     assert manifest["compatibility"] == COMPAT
     assert ("jax_persistent_cache_enable_xla_caches", "") in fake.config.updates
     assert ("jax_enable_compilation_cache", True) in fake.config.updates
+
+
+def test_configure_supports_jax_before_auxiliary_xla_caches(tmp_path, monkeypatch):
+    """JAX 0.4.24 has executable caching but not the path-valued XLA option."""
+    class LegacyConfig:
+        def __init__(self):
+            self.updates = []
+
+        def update(self, name, value):
+            if name == "jax_persistent_cache_enable_xla_caches":
+                raise AttributeError("Unrecognized config option")
+            self.updates.append((name, value))
+
+    class LegacyJax:
+        config = LegacyConfig()
+
+    monkeypatch.delenv("JAX_COMPILATION_CACHE_DIR", raising=False)
+    monkeypatch.setattr(cache, "runtime_compatibility", lambda unused: COMPAT)
+    selected = cache.configure_persistent_cache(
+        LegacyJax(), ["--jax-cache-dir", str(tmp_path)])
+    assert selected == (tmp_path / cache.compatibility_key(COMPAT)).resolve()
+    assert ("jax_enable_compilation_cache", True) in LegacyJax.config.updates
 
 
 def test_disable_does_not_create_cache(tmp_path, monkeypatch):
@@ -335,8 +359,9 @@ def test_real_jax_cache_bundle_reused_from_different_absolute_root(tmp_path):
     assert entries() == imported, "consumer recompiled after cache-root transfer"
 
 
-def test_exact_angle_batched_kernel_persists_without_host_effects(tmp_path):
-    """Pin the real exact-anglemarg graph, not a toy matmul cache entry.
+@pytest.mark.parametrize("scheme", ["exact", "laplace"])
+def test_angle_batched_kernel_persists_without_host_effects(tmp_path, scheme):
+    """Pin both real anglemarg graphs, not a toy matmul cache entry.
 
     JAX refuses to persist any graph containing debug callbacks.  This test
     executes the shipped exact coefficient/reconstruction/scan kernel in two
@@ -356,15 +381,23 @@ def test_exact_angle_batched_kernel_persists_without_host_effects(tmp_path):
         from RIFT.likelihood.jax_ile import anglemarg as AM
         data = make_synth(npts=16)
         xg, lwg = _dist_grid(data, n=16)
-        @jax.jit
-        def exact_work(ra, dec, incl):
-            return AM.fused_log_likelihood_distphipsimarg_exact(
-                data, ra, dec, incl, xg, lwg, interp=INTERP,
-                amp_sizing=AM.ANGLE_MARG_CROSSOVER_AMPLITUDE,
-                dense_chunk=8, grid_block=8, return_amp=True)
-        value, amp = exact_work(jnp.asarray(RA), jnp.asarray(DEC), jnp.asarray(INCL))
+        if %r == "exact":
+            @jax.jit
+            def persisted_work(ra, dec, incl):
+                return AM.fused_log_likelihood_distphipsimarg_exact(
+                    data, ra, dec, incl, xg, lwg, interp=INTERP,
+                    amp_sizing=AM.ANGLE_MARG_CROSSOVER_AMPLITUDE,
+                    dense_chunk=8, grid_block=8, return_amp=True)
+        else:
+            @jax.jit
+            def persisted_work(ra, dec, incl):
+                return AM.fused_log_likelihood_distphipsimarg_laplace(
+                    data, ra, dec, incl, xg, lwg, interp=INTERP,
+                    amp_sizing=AM.ANGLE_MARG_CROSSOVER_AMPLITUDE,
+                    phi_chunk=8, dist_block=8, return_amp=True)
+        value, amp = persisted_work(jnp.asarray(RA), jnp.asarray(DEC), jnp.asarray(INCL))
         print(float(value.block_until_ready()[0]), float(amp.block_until_ready()))
-    """ % (test_dir, tmp_path))
+    """ % (test_dir, tmp_path, scheme))
     env = os.environ.copy()
     env.update({
         "JAX_PLATFORMS": "cpu",
@@ -381,18 +414,19 @@ def test_exact_angle_batched_kernel_persists_without_host_effects(tmp_path):
         return subprocess.run([sys.executable, "-c", code], env=env, check=True,
                               capture_output=True, text=True, timeout=180)
 
-    def exact_entries():
+    def persisted_entries():
         return {
             str(path.relative_to(tmp_path)): (hashlib.sha256(path.read_bytes()).hexdigest(),
                                               path.stat().st_mtime_ns)
             for path in tmp_path.rglob("*")
-            if path.is_file() and "jit_exact_work-" in path.name
+            if path.is_file() and "jit_persisted_work-" in path.name
         }
 
     first_run = run()
     assert "because it uses host callbacks" not in first_run.stderr
-    first = exact_entries()
-    assert first, "the shipped exact-angle batch graph was not persisted"
+    first = persisted_entries()
+    assert first, "the shipped %s-angle batch graph was not persisted" % scheme
     second_run = run()
     assert "because it uses host callbacks" not in second_run.stderr
-    assert exact_entries() == first, "fresh-process exact kernel cache entry changed"
+    assert persisted_entries() == first, (
+        "fresh-process %s kernel cache entry changed" % scheme)

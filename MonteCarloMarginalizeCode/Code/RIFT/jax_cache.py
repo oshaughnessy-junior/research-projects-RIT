@@ -209,9 +209,12 @@ def configure_persistent_cache(jax_module, argv=None):
     # absolute root would therefore miss every executable it contains.  Keep
     # the portable executable cache enabled, but disable only that auxiliary
     # path-valued cache.  Deliberately let config.update fail loudly if a future
-    # JAX stops accepting this setting: silently restoring non-portable keys
-    # would make a successful-looking cache transfer useless.
-    jax_module.config.update("jax_persistent_cache_enable_xla_caches", "")
+    # JAX stops accepting a setting it advertises: silently restoring
+    # non-portable keys would make a successful-looking transfer useless.
+    # Older supported JAX (for example 0.4.24) predates this auxiliary cache and
+    # does not advertise the option, so there is nothing path-valued to disable.
+    if hasattr(jax_module.config, "jax_persistent_cache_enable_xla_caches"):
+        jax_module.config.update("jax_persistent_cache_enable_xla_caches", "")
     jax_module.config.update("jax_enable_compilation_cache", True)
     jax_module.config.update("jax_compilation_cache_dir", str(directory.resolve()))
     return directory.resolve()
