@@ -6,8 +6,6 @@ import json
 import os
 import sys
 
-import jax
-
 from RIFT.jax_cache import (
     compatibility_key,
     configure_persistent_cache,
@@ -30,6 +28,11 @@ def main(argv=None):
     ingest.add_argument("bundle")
     ingest.add_argument("--expect-profile")
     args = parser.parse_args(argv)
+
+    # Keep ``--help`` usable in RIFT's base installation, where JAX is an
+    # optional dependency.  Operational subcommands require JAX, but argparse
+    # exits for help before this import is reached.
+    import jax
 
     compatibility = runtime_compatibility(jax)
     if args.command == "fingerprint":

@@ -67,6 +67,21 @@ def test_bundle_option_scan_uses_last_cli_value():
                              "--jax-cache-bundle") == "new.zip"
 
 
+def test_cache_cli_help_does_not_require_optional_jax():
+    script = Path(__file__).resolve().parents[2] / "bin" / "rift_jax_cache"
+    code = textwrap.dedent("""
+        import runpy
+        import sys
+        sys.modules["jax"] = None
+        sys.argv = ["rift_jax_cache", "--help"]
+        runpy.run_path(%r, run_name="__main__")
+    """ % str(script))
+    completed = subprocess.run([sys.executable, "-c", code], check=False,
+                               capture_output=True, text=True, timeout=30)
+    assert completed.returncode == 0, completed.stderr
+    assert "Inspect, export, and safely import" in completed.stdout
+
+
 def test_unwritable_cache_disables_without_failing(monkeypatch, capsys):
     monkeypatch.delenv("JAX_COMPILATION_CACHE_DIR", raising=False)
     monkeypatch.setattr(cache, "runtime_compatibility", lambda unused: COMPAT)
