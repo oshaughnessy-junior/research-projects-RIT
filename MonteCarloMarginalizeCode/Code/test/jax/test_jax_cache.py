@@ -172,10 +172,34 @@ def test_bundle_round_trip_and_profile_guard(tmp_path):
     cache.export_bundle(source, bundle, COMPAT, "o4-laplace", {"n_chunk": 8000})
     destination = cache.import_bundle(bundle, tmp_path / "target", COMPAT, "o4-laplace")
     assert (destination / "nested" / "compiled-entry").read_bytes() == b"compiled"
-    manifest = json.loads((destination / cache.IMPORT_MANIFEST_NAME).read_text())
+    records = sorted(destination.glob(cache.IMPORT_MANIFEST_PREFIX + "*.json"))
+    assert len(records) == 1
+    manifest = json.loads(records[0].read_text())
     assert manifest["static_shapes"] == {"n_chunk": 8000}
     cache._write_manifest(destination, COMPAT)
-    assert json.loads((destination / cache.IMPORT_MANIFEST_NAME).read_text()) == manifest
+    assert json.loads(records[0].read_text()) == manifest
+
+    # Compatible bundles merge compiler entries, so provenance must retain
+    # every contributor rather than silently replacing the previous profile.
+    (source / "nested" / "second-entry").write_bytes(b"second")
+    second_bundle = tmp_path / "second.zip"
+    cache.export_bundle(source, second_bundle, COMPAT, "o4-exact",
+                        {"n_chunk": 1000})
+    cache.import_bundle(second_bundle, tmp_path / "target", COMPAT,
+                        "o4-exact")
+    records = sorted(destination.glob(cache.IMPORT_MANIFEST_PREFIX + "*.json"))
+    assert len(records) == 2
+    imported_profiles = {
+        json.loads(path.read_text())["imported_profile"] for path in records}
+    assert imported_profiles == {"o4-laplace", "o4-exact"}
+    cache.import_bundle(bundle, tmp_path / "target", COMPAT, "o4-laplace")
+    assert len(list(destination.glob(
+        cache.IMPORT_MANIFEST_PREFIX + "*.json"))) == 2
+
+    reexport = tmp_path / "reexport.zip"
+    reexport_manifest = cache.export_bundle(destination, reexport, COMPAT)
+    assert not any(Path(rel).name.startswith(cache.IMPORT_MANIFEST_PREFIX)
+                   for rel in reexport_manifest["files"])
     with pytest.raises(ValueError, match="profile"):
         cache.import_bundle(bundle, tmp_path / "wrong-profile", COMPAT, "other")
 
@@ -341,8 +365,7 @@ def test_real_jax_cache_bundle_reused_from_different_absolute_root(tmp_path):
             str(path.relative_to(target)): (hashlib.sha256(path.read_bytes()).hexdigest(),
                                             path.stat().st_mtime_ns)
             for path in target.rglob("*")
-            if path.is_file() and path.name not in (
-                cache.MANIFEST_NAME, cache.IMPORT_MANIFEST_NAME)
+            if path.is_file() and not cache._is_provenance_file(path)
             and not path.name.endswith(".tmp")
         }
 

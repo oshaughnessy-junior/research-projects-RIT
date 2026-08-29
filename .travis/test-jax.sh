@@ -173,7 +173,7 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         cap must stay WIRED in samplers and the
 #                                         driver.  Each fails under a verified
 #                                         mutation (see the PR).  Seconds.
-#   test_jax_cache.py                15  the shipped ILE selects a stable
+#   test_jax_cache.py                17  the shipped ILE selects a stable
 #                                         compatibility namespace, Condor uses
 #                                         scratch by default, unwritable caches
 #                                         fail open, and transferred bundles

@@ -243,7 +243,9 @@ Use `--jax-cache-dir /shared/rift-jax-cache` to choose a shared root, or
 `JAX_COMPILATION_CACHE_DIR` variable remains an exact-directory expert
 override. The selected directory contains its provenance manifest.
 Runtime identity and durable imported-bundle profile/static-shape provenance
-are stored separately, so a later ordinary startup cannot erase the latter.
+are stored separately. Each distinct contributing bundle gets an atomic record
+keyed by its manifest digest, so neither a later ordinary startup nor a second
+compatible bundle import can erase the earlier provenance.
 On Condor, an unset root falls back to
 `$_CONDOR_SCRATCH_DIR/.rift_cache/jax`; transfer that directory or set a shared
 root to reuse it across jobs. An unwritable cache disables itself with a warning

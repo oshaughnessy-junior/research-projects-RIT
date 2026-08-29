@@ -21,6 +21,7 @@ from pathlib import Path, PurePosixPath
 
 MANIFEST_NAME = "rift-jax-cache-manifest.json"
 IMPORT_MANIFEST_NAME = "rift-jax-cache-import.json"
+IMPORT_MANIFEST_PREFIX = "rift-jax-cache-import-"
 FORMAT_VERSION = 1
 MAX_BUNDLE_FILES = 100_000
 MAX_BUNDLE_MEMBER_BYTES = 4 * 1024**3
@@ -124,14 +125,27 @@ def _write_manifest(directory, compatibility, extra=None):
 
 
 def _write_import_manifest(directory, compatibility, bundle_manifest):
-    """Persist bundle provenance separately from per-startup runtime identity."""
-    return _write_json_atomic(directory / IMPORT_MANIFEST_NAME, {
+    """Persist one immutable record per contributing bundle manifest."""
+    manifest_raw = json.dumps(
+        bundle_manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    manifest_digest = hashlib.sha256(manifest_raw).hexdigest()
+    record = {
         "format_version": FORMAT_VERSION,
         "compatibility": compatibility,
         "compatibility_key": compatibility_key(compatibility),
+        "bundle_manifest_sha256": manifest_digest,
         "imported_profile": bundle_manifest.get("profile"),
         "static_shapes": bundle_manifest.get("static_shapes", {}),
-    })
+    }
+    target = directory / (IMPORT_MANIFEST_PREFIX + manifest_digest + ".json")
+    return _write_json_atomic(target, record)
+
+
+def _is_provenance_file(path):
+    """Return whether *path* is runtime/import metadata, not compiler data."""
+    return (path.name in (MANIFEST_NAME, IMPORT_MANIFEST_NAME)
+            or (path.name.startswith(IMPORT_MANIFEST_PREFIX)
+                and path.name.endswith(".json")))
 
 
 def _write_json_atomic(target, value):
@@ -239,7 +253,7 @@ def export_bundle(cache_dir, output, compatibility, profile=None, static_shapes=
     for path in sorted(cache_dir.rglob("*")):
         is_manifest_temp = (path.name.startswith(".rift-jax-cache-")
                             and path.name.endswith(".tmp"))
-        is_provenance = path.name in (MANIFEST_NAME, IMPORT_MANIFEST_NAME)
+        is_provenance = _is_provenance_file(path)
         if path.is_file() and not is_provenance and not is_manifest_temp:
             rel = path.relative_to(cache_dir).as_posix()
             size = path.stat().st_size
