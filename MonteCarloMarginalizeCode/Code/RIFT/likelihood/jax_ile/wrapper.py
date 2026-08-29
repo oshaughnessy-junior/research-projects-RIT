@@ -552,26 +552,36 @@ class JAXDistPhiPsiMargLikelihood:
                     _anglemarg._data_m_max(data)))
 
         if scheme == "grid":
-            def _fused(data_, ra, dec, incl):
+            def _fused(data_, ra, dec, incl, report_amp=False):
                 return fused_log_likelihood_distphipsimarg(
                     data_, ra, dec, incl, xg, lwg, pg, sg, interp=interp)
         elif scheme == "exact":
-            def _fused(data_, ra, dec, incl):
+            def _fused(data_, ra, dec, incl, report_amp=False):
                 return _anglemarg.fused_log_likelihood_distphipsimarg_exact(
                     data_, ra, dec, incl, xg, lwg, interp=interp,
-                    amp_sizing=amp_sizing)
+                    amp_sizing=amp_sizing, return_amp=report_amp)
         else:   # laplace
-            def _fused(data_, ra, dec, incl):
+            def _fused(data_, ra, dec, incl, report_amp=False):
                 return _anglemarg.fused_log_likelihood_distphipsimarg_laplace(
                     data_, ra, dec, incl, xg, lwg, interp=interp,
-                    amp_sizing=amp_sizing)
+                    amp_sizing=amp_sizing, return_amp=report_amp)
 
         def _batched(ra, dec, incl):
-            return _fused(data, ra, dec, incl)
+            return _fused(data, ra, dec, incl,
+                          report_amp=scheme in ("exact", "laplace"))
         self._batched = jax.jit(_batched)
+        self._amp_record = None
+        if scheme in ("exact", "laplace"):
+            self._amp_record = lambda amp: _anglemarg.record_amp_failsafe(
+                amp, amp_sizing, scheme)
 
         def _scalar(theta3):
-            v = _fused(data, theta3[0:1], theta3[1:2], theta3[2:3])
+            # Pure value-only graph for AD/flow-training calls.  The artifact-
+            # producing batched path above returns its amplitude diagnostic as
+            # ordinary data; neither graph contains a host callback, so both
+            # remain eligible for JAX's persistent compilation cache.
+            v = _fused(data, theta3[0:1], theta3[1:2], theta3[2:3],
+                       report_amp=False)
             return v[0]
         self._scalar = _scalar
         self._value_and_grad = jax.jit(jax.value_and_grad(_scalar))
@@ -579,7 +589,15 @@ class JAXDistPhiPsiMargLikelihood:
 
     def log_likelihood(self, ra, dec, incl):
         """lnL for arrays of 3 angular parameters (ra, dec, incl), shape (S,)."""
-        return self._batched(jnp.asarray(ra), jnp.asarray(dec), jnp.asarray(incl))
+        out = self._batched(jnp.asarray(ra), jnp.asarray(dec), jnp.asarray(incl))
+        if self._amp_record is not None:
+            values, amp_call = out
+            # This device->host boundary is deliberate and deterministic.  It
+            # covers every pilot/reweight/final output-cloud batch and records
+            # the maximum across calls, while leaving the persisted JIT pure.
+            self._amp_record(amp_call)
+            return values
+        return out
 
     def value(self, theta3):
         return float(self._scalar(jnp.asarray(theta3, dtype=jnp.float64)))

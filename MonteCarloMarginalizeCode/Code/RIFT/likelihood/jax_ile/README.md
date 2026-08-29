@@ -282,6 +282,15 @@ compression ratio and streams entries through their checksum, so a corrupt or
 hostile archive cannot expand without limit. Cache bundles contain compiler
 artifacts and should still be accepted only from a trusted build workflow.
 
+The exact/Laplace amplitude-adequacy diagnostic is deliberately data returned
+by a pure JIT, not a `jax.debug.callback`: JAX does not persist graphs with host
+callbacks. The driver synchronously accumulates the maximum over every pilot,
+reweight, and final production/output-cloud batch and records that deterministic
+scope in result provenance. Transient flow-training-only proposals are not
+claimed; they do not enter the reported evidence or exported cloud. A tripped
+check still leaves likelihood values finite and labels the artifacts
+`SUSPECT-ANGLE-GRID` rather than silently excising the affected region.
+
 ## Status and next steps
 
 **Done & validated:** the AD likelihood core (1e-13 vs reference), gradients,

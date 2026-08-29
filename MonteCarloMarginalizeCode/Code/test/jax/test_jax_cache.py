@@ -269,3 +269,66 @@ def test_real_jax_cache_reused_across_fresh_processes(tmp_path):
     assert first, "the first fresh process did not populate JAX's persistent cache"
     run()
     assert entries() == first, "the second fresh process recompiled or rewrote cache entries"
+
+
+def test_exact_angle_batched_kernel_persists_without_host_effects(tmp_path):
+    """Pin the real exact-anglemarg graph, not a toy matmul cache entry.
+
+    JAX refuses to persist any graph containing debug callbacks.  This test
+    executes the shipped exact coefficient/reconstruction/scan kernel in two
+    fresh processes and requires its named cache entry to survive unchanged;
+    reintroducing the former amplitude callback therefore fails behaviorally.
+    """
+    pytest.importorskip("jax")
+    test_dir = Path(__file__).resolve().parent
+    code = textwrap.dedent("""
+        import sys
+        sys.path.insert(0, r"%s")
+        import jax
+        import jax.numpy as jnp
+        from RIFT.jax_cache import configure_persistent_cache
+        configure_persistent_cache(jax, ["--jax-cache-dir", r"%s"])
+        from test_angle_marg_exact import make_synth, _dist_grid, RA, DEC, INCL, INTERP
+        from RIFT.likelihood.jax_ile import anglemarg as AM
+        data = make_synth(npts=16)
+        xg, lwg = _dist_grid(data, n=16)
+        @jax.jit
+        def exact_work(ra, dec, incl):
+            return AM.fused_log_likelihood_distphipsimarg_exact(
+                data, ra, dec, incl, xg, lwg, interp=INTERP,
+                amp_sizing=AM.ANGLE_MARG_CROSSOVER_AMPLITUDE,
+                dense_chunk=8, grid_block=8, return_amp=True)
+        value, amp = exact_work(jnp.asarray(RA), jnp.asarray(DEC), jnp.asarray(INCL))
+        print(float(value.block_until_ready()[0]), float(amp.block_until_ready()))
+    """ % (test_dir, tmp_path))
+    env = os.environ.copy()
+    env.update({
+        "JAX_PLATFORMS": "cpu",
+        "JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS": "0",
+        "JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES": "0",
+        "JAX_DEBUG_LOG_MODULES": "jax._src.compiler,jax._src.compilation_cache",
+        "OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1", "NUMEXPR_NUM_THREADS": "1",
+        "TF_NUM_INTRAOP_THREADS": "1", "TF_NUM_INTEROP_THREADS": "1",
+        "XLA_FLAGS": "--xla_cpu_multi_thread_eigen=false --xla_force_host_platform_device_count=1",
+    })
+
+    def run():
+        return subprocess.run([sys.executable, "-c", code], env=env, check=True,
+                              capture_output=True, text=True, timeout=180)
+
+    def exact_entries():
+        return {
+            str(path.relative_to(tmp_path)): (hashlib.sha256(path.read_bytes()).hexdigest(),
+                                              path.stat().st_mtime_ns)
+            for path in tmp_path.rglob("*")
+            if path.is_file() and "jit_exact_work-" in path.name
+        }
+
+    first_run = run()
+    assert "because it uses host callbacks" not in first_run.stderr
+    first = exact_entries()
+    assert first, "the shipped exact-angle batch graph was not persisted"
+    second_run = run()
+    assert "because it uses host callbacks" not in second_run.stderr
+    assert exact_entries() == first, "fresh-process exact kernel cache entry changed"
