@@ -554,6 +554,7 @@ class JAXDistPhiPsiMargLikelihood:
             raise ValueError("angle_marg must be one of grid/exact/laplace/"
                              "auto, got %r" % (angle_marg,))
         from . import anglemarg as _anglemarg
+        from . import core as _core
         if int(os.environ.get("JAX_ILE_DISTGRID_ADAPTIVE", "0")) and guess_snr:
             # interp= must be forwarded: this sizes the distance grid the likelihood then
             # integrates on, so leaving it at the module default silently mixes stencils --
@@ -602,6 +603,17 @@ class JAXDistPhiPsiMargLikelihood:
             self.angle_marg_info["sample_grid"] = tuple(
                 _anglemarg.angle_sample_grid_sizes(
                     _anglemarg._data_m_max(data)))
+        # Surface the distance-quadrature switches ONLY when the adaptive
+        # quadrature is on, so the default run log is unchanged.  Both are env
+        # flags, and this pipeline has a documented history of silently-inert
+        # ones: with 'laplace' the reordered angle-first / distance-GH path is
+        # reachable only if BOTH are set, and the reader must be able to see
+        # which construction actually ran.
+        if _core._DISTMARG_GH_N > 0:
+            self.angle_marg_info["distmarg_gh_nodes"] = int(
+                _core._DISTMARG_GH_N)
+            self.angle_marg_info["laplace_gh_optin"] = bool(
+                _anglemarg.laplace_gh_enabled())
 
         if scheme == "grid":
             def _fused(data_, ra, dec, incl, return_lnLt=False):

@@ -521,7 +521,13 @@ def build_parser():
                       "Laplace in psi + dense phi; error O(1/SNR^2), best at "
                       "high SNR), or 'auto' (select exact/laplace from the "
                       "run's SNR estimate).  The scheme that actually ran is "
-                      "printed.  See RIFT.likelihood.jax_ile.anglemarg.")
+                      "printed.  NOTE: with the adaptive distance quadrature "
+                      "(env JAX_ILE_DISTMARG_GH) 'laplace' refuses and 'auto' "
+                      "resolves to 'exact', unless the reordered angle-first / "
+                      "distance-GH path is opted in with env "
+                      "JAX_ILE_LAPLACE_GH=1 (both switches are reported in the "
+                      "angle-marg line above).  See "
+                      "RIFT.likelihood.jax_ile.anglemarg.")
     # flowMC tuning (modes flowmc / flowmc-phimarg).  Defaults match
     # samplers.flowmc_sample*; exposed so pipeline Makefiles can tune them.
     g.add_option("--n-training-loops", type=int, default=4,

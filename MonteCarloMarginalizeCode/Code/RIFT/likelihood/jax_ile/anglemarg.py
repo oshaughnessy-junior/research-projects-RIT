@@ -65,6 +65,8 @@ scipy special functions, lax.scan (checkpointed) bounds memory by CHUNK, not
 by grid size.
 """
 
+import os
+
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -82,6 +84,7 @@ __all__ = [
     "fused_log_likelihood_distphipsimarg_exact",
     "fused_log_likelihood_distphipsimarg_laplace",
     "choose_angle_marg_scheme",
+    "laplace_gh_enabled",
     "ANGLE_MARG_CROSSOVER_AMPLITUDE",
 ]
 
@@ -1092,6 +1095,200 @@ def _laplace_psi_lnI_block(a, c1, c2):
     return jax.lax.switch(idx, branches, None)
 
 
+# ---------------------------------------------------------------------------
+# Reordered angle-first / distance-GH path  (opt-in: JAX_ILE_LAPLACE_GH=1)
+#
+# WHY THIS EXISTS.  The adaptive distance quadrature (JAX_ILE_DISTMARG_GH,
+# core.make_distance_gh / core._distmarg_gh_logL) places its nodes from the
+# FIXED-PSI exponent  x*K - x^2/2*R: peak clip(K/R, x_min, x_max), width
+# 1/sqrt(R).  On the laplace scheme psi has already been integrated, so the
+# quantity being integrated over distance is the PSI-MARGINAL
+#
+#     lnI(x) = log <exp( a(x) + Re(c1(x) e^{iu}) + Re(c2(x) e^{2iu}) )>_u
+#     a  = x A0 - x^2/2 B0,   c1 = x A1 - x^2/2 B1,   c2 = - x^2/2 B2,
+#
+# whose peak and curvature are NOT those of any single fixed-psi exponent.
+# The laplace scheme therefore REFUSED JAX_ILE_DISTMARG_GH outright.  Since a
+# uniform distance grid must resolve a peak of width ~1/rho, that refusal left
+# the distance axis costing O(rho) even though the angle axes had been brought
+# down to O(rho) -- i.e. it blocked a genuinely O(rho) extrinsic stage.
+#
+# THE REORDERING (R. O'Shaughnessy, 2026-08-31): do the ANGLE marginalization
+# first, then the distance Gauss-Hermite quadrature ON the angle-marginalized
+# integrand, then time.  Structurally the laplace driver already integrates psi
+# before distance; what was missing is a node-placement rule for the psi-
+# marginal.  This block supplies one, and the fused driver below wraps it in
+# place of the uniform distance sum (the outer time marginalization is
+# untouched) -- the "double-wrapped" construction: placement wraps the psi
+# kernel, and the terminal time quadrature wraps that.
+#
+# THE PLACEMENT RULE.  Approximate each fixed-u exponent by its own Gaussian in
+# x -- peak m(u) = clip(A(u)/B(u), x_min, x_max), width s(u) = 1/sqrt(B(u)),
+# log-height phi(u) = m A - m^2 B/2 (the EXACT parabola maximum on the support,
+# so A(u) < 0 and rail-to-boundary cases are regular).  The psi-marginal is then
+# a MIXTURE over u with log-weights phi(u) - 1/2 log B(u), and the distance
+# nodes are placed on its moment-matched Gaussian:
+#
+#     center = <m>_w,    sigma^2 = <s^2>_w + Var_w(m) + (<|dm/du|>_w * du)^2.
+#
+# The first two terms are the exact mean/variance of that Gaussian mixture; the
+# third is a SUB-GRID term.  The u-weight has width ~1/rho, which falls below
+# the placement grid's spacing du at production amplitude, so the discrete
+# weights collapse onto the nearest node and Var_w(m) under-reads the true
+# spread of peak positions; |dm/du| du is an upper bound on the variation the
+# grid cannot see.  It vanishes as du -> 0 and is exactly zero in the fixed-psi
+# limit.
+#
+# EXACT REDUCTION, which is what makes this testable: at A1 = B1 = B2 = 0 the
+# mixture is a point mass, so center = clip(A0/B0, x_min, x_max) and
+# sigma = 1/sqrt(B0) -- literally core._distmarg_gh_logL's rule -- and the whole
+# construction reproduces that function to roundoff (pinned in
+# test_angle_marg_laplace_gh.py, both at the placement rule and at the value).
+#
+# WHAT IS NOT ESTABLISHED HERE.  The +-n_sigma window of a moment-matched
+# Gaussian is not a proof of coverage for a strongly multi-modal mixture (a
+# psi-profile with two well-separated, comparably-weighted A/B ratios): the
+# variance widens the window, but with a FIXED node count a wider window is a
+# coarser one.  Nothing above bounds that case, and no run has been made at
+# production amplitude.  Hence the opt-in gate: this is not, and must not
+# become, a default.
+# ---------------------------------------------------------------------------
+
+# Opt-in for the reordered path.  DEFAULT 0 -> every existing configuration is
+# untouched: laplace + JAX_ILE_DISTMARG_GH still refuses, and `auto` under
+# JAX_ILE_DISTMARG_GH still resolves to `exact`.  Read through the module
+# global (not captured at def time) so tests can set it.
+_LAPLACE_GH = int(os.environ.get("JAX_ILE_LAPLACE_GH", "0"))
+
+# u-grid for the placement rule only -- NOT a quadrature.  Fixed (never scaled
+# with amplitude): the whole point of the laplace scheme is that no axis costs
+# O(rho), and the sub-grid term above is what makes a fixed, coarse grid safe.
+_PSIMARG_PLACE_NU = 64
+_PSIMARG_PLACE_CHUNK = 8      # u points per scan step; memory knob only
+
+
+def _psimarg_gh_placement(A0, A1, B0, B1, B2, x_min, x_max,
+                          n_u=_PSIMARG_PLACE_NU, chunk=_PSIMARG_PLACE_CHUNK):
+    """(center, sigma) for the psi-marginal distance integrand; see the block
+    comment above for the rule and its exact fixed-psi reduction.
+
+    ``A0, B0`` real and ``A1, B1, B2`` complex, all broadcastable to the point
+    shape; returns two real arrays of that shape, both under stop_gradient (the
+    node placement carries no gradient, exactly as core._distmarg_gh_logL's
+    does).  Memory is bounded by ``chunk``, never by ``n_u``.
+    """
+    A0, B0 = jax.lax.stop_gradient(A0), jax.lax.stop_gradient(B0)
+    A1 = jax.lax.stop_gradient(A1)
+    B1, B2 = jax.lax.stop_gradient(B1), jax.lax.stop_gradient(B2)
+    n_u = int(n_u)
+    chunk = int(chunk)
+    if n_u % chunk:
+        raise ValueError("n_u=%d must be a multiple of chunk=%d" % (n_u, chunk))
+    du = 2.0 * np.pi / n_u
+    uq = np.linspace(0.0, 2.0 * np.pi, n_u, endpoint=False)
+    e1 = np.exp(1j * uq).reshape(-1, chunk)
+    p1 = jnp.asarray(e1)
+    p2 = jnp.asarray(e1 * e1)
+    bshape = jnp.broadcast_shapes(jnp.shape(A0), jnp.shape(B0),
+                                  jnp.shape(A1), jnp.shape(B1), jnp.shape(B2))
+    pshape = (chunk,) + (1,) * len(bshape)
+
+    def _step(carry, phases):
+        mm, ss = carry
+        q1, q2 = phases
+        ph1 = q1.reshape(pshape)
+        ph2 = q2.reshape(pshape)
+        A = A0[None] + (A1[None] * ph1).real                       # (chunk,...)
+        B = B0[None] + (B1[None] * ph1).real + (B2[None] * ph2).real
+        B = jnp.maximum(B, 1e-30)
+        m = jnp.clip(A / B, x_min, x_max)
+        s2 = 1.0 / B
+        lphi = m * A - 0.5 * jnp.square(m) * B - 0.5 * jnp.log(B)
+        # |dm/du| du: sub-grid variation of the peak position (A' = -Im(A1 e^iu))
+        Ap = -(A1[None] * ph1).imag
+        Bp = -(B1[None] * ph1).imag - 2.0 * (B2[None] * ph2).imag
+        dm = jnp.abs(Ap / B - A * Bp / jnp.square(B)) * du
+        # five nonnegative moments accumulated by running log-sum-exp:
+        #   [1, m, m^2, s^2, |dm|]  weighted by exp(lphi)
+        q = jnp.stack([jnp.ones_like(m), m, jnp.square(m), s2, dm], axis=0)
+        e = lphi[None] + jnp.log(jnp.where(q > 0, q, 1.0))
+        e = jnp.where(q > 0, e, -jnp.inf)                          # (5,chunk,...)
+        return _lse_update(mm, ss, e, axis=1), None
+
+    m0 = jnp.full((5,) + bshape, -jnp.inf, dtype=jnp.float64)
+    s0 = jnp.zeros((5,) + bshape, dtype=jnp.float64)
+    (mm, ss), _ = jax.lax.scan(_step, (m0, s0), (p1, p2))
+    lsum = jnp.where(ss > 0, mm + jnp.log(jnp.maximum(ss, 1e-300)), -jnp.inf)
+    ratio = jnp.exp(lsum - lsum[0][None])                          # (5,...)
+    center = ratio[1]
+    var = (ratio[3] + jnp.maximum(ratio[2] - jnp.square(center), 0.0)
+           + jnp.square(ratio[4]))
+    sigma = jnp.sqrt(jnp.maximum(var, 1e-300))
+    return (jax.lax.stop_gradient(jnp.clip(center, x_min, x_max)),
+            jax.lax.stop_gradient(sigma))
+
+
+def _distmarg_gh_psimarg_lnI(A0, A1, B0, B1, B2, z_off, x_min, x_max,
+                             node_block=4):
+    """log <exp(lnI(x))>_{p(d)} : distance marginal of the PSI-MARGINAL kernel,
+    on adaptive nodes placed by :func:`_psimarg_gh_placement`.
+
+    Same node/measure convention as :func:`core._distmarg_gh_logL` -- the nodes
+    are ``clip(center + sigma z_k)`` with composite-trapezoid weights times the
+    volumetric ``x^-4`` measure and its normalization -- so at
+    ``A1 = B1 = B2 = 0`` this returns that function's value (to roundoff) with
+    ``K = A0, R = B0``.
+
+    ``node_block`` nodes are evaluated per scan step, so memory is bounded by
+    the block and never by the node count.  The block halo is EDGE-REPLICATED
+    (``z_ext``), which reproduces core's endpoint weights exactly, and the tail
+    padding replicates the last node so its width -- hence its weight -- is 0.
+    """
+    center, sigma = _psimarg_gh_placement(A0, A1, B0, B1, B2, x_min, x_max)
+    G = int(z_off.shape[0])
+    blk = int(node_block)
+    n_blk = (G + blk - 1) // blk
+    pad = n_blk * blk - G
+    # halo of one node on each side + edge-replicated tail padding
+    z_ext = jnp.concatenate([z_off[:1], z_off,
+                             jnp.broadcast_to(z_off[-1:], (pad + 1,))])
+    bshape = jnp.broadcast_shapes(jnp.shape(A0), jnp.shape(B0))
+
+    def _step(carry, b):
+        mm, ss = carry
+        z_blk = jax.lax.dynamic_slice_in_dim(z_ext, b * blk, blk + 2)
+        x_ext = jnp.clip(center[..., None] + sigma[..., None] * z_blk,
+                         x_min, x_max)                          # (...,blk+2)
+        x_ext = jax.lax.stop_gradient(x_ext)
+        dx = jnp.diff(x_ext, axis=-1)                           # (...,blk+1)
+        w = 0.5 * (dx[..., :-1] + dx[..., 1:])                  # (...,blk)
+        x_k = x_ext[..., 1:-1]
+        pos = w > 0
+        log_w = jnp.where(pos, jnp.log(jnp.where(pos, w, 1.0))
+                          - 4.0 * jnp.log(x_k), -jnp.inf)
+        xg = jnp.moveaxis(x_k, -1, 0)                           # (blk,...)
+        lwg = jnp.moveaxis(log_w, -1, 0)
+        av = xg * A0[None] - 0.5 * jnp.square(xg) * B0[None]
+        c1 = xg * A1[None] - 0.5 * jnp.square(xg) * B1[None]
+        c2 = -0.5 * jnp.square(xg) * B2[None]
+        e = _laplace_psi_lnI_block(av, c1, c2) + lwg
+        return _lse_update(mm, ss, e, axis=0), None
+
+    m0 = jnp.full(bshape, -jnp.inf, dtype=jnp.float64)
+    s0 = jnp.zeros(bshape, dtype=jnp.float64)
+    (mm, ss), _ = jax.lax.scan(_step, (m0, s0), jnp.arange(n_blk))
+    lse = jnp.where(ss > 0, mm + jnp.log(jnp.maximum(ss, 1e-300)), -jnp.inf)
+    return jnp.where(ss > 0, _core.dist_prior_log_norm(x_min, x_max) + lse,
+                     -jnp.inf)
+
+
+def laplace_gh_enabled():
+    """True when the reordered angle-first / distance-GH path is opted in
+    (JAX_ILE_LAPLACE_GH).  Read at CALL time so the run log reports what the
+    process is actually configured for, not what it imported with."""
+    return bool(_LAPLACE_GH)
+
+
 def fused_log_likelihood_distphipsimarg_laplace(
         data, ra, dec, incl, x_grid, log_w_grid,
         interp=JAX_INTERP_DEFAULT, amp_sizing=None,
@@ -1111,19 +1308,31 @@ def fused_log_likelihood_distphipsimarg_laplace(
 
     so no additional likelihood evaluations are needed.  Cost scales ~sqrt(A)
     (the dense phi axis) instead of ~A; the Laplace error is O(1/A) and
-    SHRINKS with SNR.  The adaptive distance quadrature
-    (JAX_ILE_DISTMARG_GH) is NOT supported on this path -- it would need a
-    psi-marginal node-placement rule this PR does not validate -- and raises
-    rather than being silently ignored.
+    SHRINKS with SNR.
+
+    DISTANCE AXIS.  By default the distance integral is the caller's uniform
+    ``x_grid``/``log_w_grid`` sum, and the adaptive distance quadrature
+    (JAX_ILE_DISTMARG_GH) is REFUSED rather than silently ignored -- its node
+    placement is defined per fixed-psi exponent, which is not the integrand
+    this path evaluates.  Setting JAX_ILE_LAPLACE_GH=1 opts in to the
+    REORDERED construction instead: psi is marginalized first, the adaptive
+    nodes are then placed on the psi-MARGINAL by
+    :func:`_psimarg_gh_placement`, and time marginalization wraps that
+    unchanged.  See the block comment above that function for the rule, its
+    exact fixed-psi reduction, and what it does NOT establish.  The opt-in
+    defaults off: with it unset this function is unchanged in every respect.
 
     Memory is bounded by ``phi_chunk`` x ``dist_block``, never by grid sizes.
     """
-    if _core._DISTMARG_GH_N > 0:
+    _use_gh = _core._DISTMARG_GH_N > 0
+    if _use_gh and not _LAPLACE_GH:
         raise ValueError(
             "JAX_ILE_DISTMARG_GH is set, but the 'laplace' angle-marg scheme "
-            "does not support the adaptive distance quadrature (its node "
-            "placement is defined per fixed-psi exponent).  Use "
-            "--angle-marg-scheme exact, or unset JAX_ILE_DISTMARG_GH.")
+            "does not support the adaptive distance quadrature by default "
+            "(its node placement is defined per fixed-psi exponent).  Set "
+            "JAX_ILE_LAPLACE_GH=1 to opt in to the reordered angle-first / "
+            "distance-GH path, or use --angle-marg-scheme exact, or unset "
+            "JAX_ILE_DISTMARG_GH.")
     x_grid = jnp.asarray(x_grid, dtype=jnp.float64)
     log_w_grid = jnp.asarray(log_w_grid, dtype=jnp.float64)
     C_A, C_B, meta = angle_coefficient_tables(data, ra, dec, incl, interp)
@@ -1153,17 +1362,25 @@ def fused_log_likelihood_distphipsimarg_laplace(
     # is 64 copies of an already-large kernel, and XLA compile time/memory on
     # the resulting graph was the >1 h, >20 GiB wall the 2026-08-28 bake-off
     # hit.  The scan traces the kernel ONCE.  Numerics are unchanged.
-    n_dblk = (G + blk - 1) // blk
-    pad_d = n_dblk * blk - G
-    if pad_d:
-        x_pad = jnp.concatenate(
-            [x_grid, jnp.broadcast_to(x_grid[-1], (pad_d,))])
-        lw_pad = jnp.concatenate(
-            [log_w_grid, jnp.full((pad_d,), -jnp.inf, dtype=jnp.float64)])
+    if _use_gh:
+        # Reordered path: the distance nodes are per-point and are built inside
+        # the phi step from the psi-marginal placement, so the static grid is
+        # used only for the support bounds (exactly as the exact scheme does).
+        gh_z, _ = make_distance_gh(_core._DISTMARG_GH_N)
+        x_min = jnp.min(x_grid)
+        x_max = jnp.max(x_grid)
     else:
-        x_pad, lw_pad = x_grid, log_w_grid
-    xg_blk = x_pad.reshape(n_dblk, blk)
-    lwg_blk = lw_pad.reshape(n_dblk, blk)
+        n_dblk = (G + blk - 1) // blk
+        pad_d = n_dblk * blk - G
+        if pad_d:
+            x_pad = jnp.concatenate(
+                [x_grid, jnp.broadcast_to(x_grid[-1], (pad_d,))])
+            lw_pad = jnp.concatenate(
+                [log_w_grid, jnp.full((pad_d,), -jnp.inf, dtype=jnp.float64)])
+        else:
+            x_pad, lw_pad = x_grid, log_w_grid
+        xg_blk = x_pad.reshape(n_dblk, blk)
+        lwg_blk = lw_pad.reshape(n_dblk, blk)
 
     def _step(carry, x):
         m, s = carry
@@ -1188,22 +1405,31 @@ def fused_log_likelihood_distphipsimarg_laplace(
         # distance quadrature: blocked, vectorized over the block (AD-fast),
         # running log-sum-exp across blocks (a lax.scan; see the packing note
         # above -- one traced kernel instead of G/blk unrolled copies)
-        def _dist_step(carry, xw):
-            mx, sx = carry
-            xgb, lwgb = xw                                    # (blk,)
-            xg = xgb[:, None, None, None]                     # (g,1,1,1)
-            lwg = lwgb[:, None, None, None]
-            av = xg * A0[None] - 0.5 * jnp.square(xg) * B0[None]
-            c1 = xg * A1[None] - 0.5 * jnp.square(xg) * B1[None]
-            c2 = -0.5 * jnp.square(xg) * B2[None]
-            e = _laplace_psi_lnI_block(av, c1, c2) + lwg        # (g,c,S,npts)
-            return _lse_update(mx, sx, e, axis=0), None
+        if _use_gh:
+            # ANGLE FIRST, THEN DISTANCE: the psi marginal above defines the
+            # integrand whose peak the adaptive nodes resolve.
+            lnI = _distmarg_gh_psimarg_lnI(A0, A1, B0, B1, B2, gh_z,
+                                           x_min, x_max, node_block=blk)
+            lnI = lnI + lww[:, None, None]                     # (c,S,npts)
+        else:
+            def _dist_step(carry, xw):
+                mx, sx = carry
+                xgb, lwgb = xw                                # (blk,)
+                xg = xgb[:, None, None, None]                 # (g,1,1,1)
+                lwg = lwgb[:, None, None, None]
+                av = xg * A0[None] - 0.5 * jnp.square(xg) * B0[None]
+                c1 = xg * A1[None] - 0.5 * jnp.square(xg) * B1[None]
+                c2 = -0.5 * jnp.square(xg) * B2[None]
+                e = _laplace_psi_lnI_block(av, c1, c2) + lwg    # (g,c,S,npts)
+                return _lse_update(mx, sx, e, axis=0), None
 
-        mx0 = jnp.full((c, S, npts), -jnp.inf, dtype=jnp.float64)
-        sx0 = jnp.zeros((c, S, npts), dtype=jnp.float64)
-        (mx, sx), _ = jax.lax.scan(_dist_step, (mx0, sx0), (xg_blk, lwg_blk))
-        lnI = (mx + jnp.where(sx > 0, jnp.log(jnp.maximum(sx, 1e-300)), -jnp.inf)
-               + lww[:, None, None])                          # (c,S,npts)
+            mx0 = jnp.full((c, S, npts), -jnp.inf, dtype=jnp.float64)
+            sx0 = jnp.zeros((c, S, npts), dtype=jnp.float64)
+            (mx, sx), _ = jax.lax.scan(_dist_step, (mx0, sx0),
+                                       (xg_blk, lwg_blk))
+            lnI = (mx + jnp.where(sx > 0,
+                                  jnp.log(jnp.maximum(sx, 1e-300)), -jnp.inf)
+                   + lww[:, None, None])                      # (c,S,npts)
         m_new, s_new = _lse_update(m, s, lnI, axis=0)
         return (m_new, s_new), None
 
@@ -1216,7 +1442,8 @@ def fused_log_likelihood_distphipsimarg_laplace(
     return _time_marginalize_terminal(lnL_t, data, time_quadrature)
 
 
-def choose_angle_marg_scheme(amplitude, gh_enabled=None):
+def choose_angle_marg_scheme(amplitude, gh_enabled=None,
+                             laplace_gh_enabled=None):
     """Select 'exact' or 'laplace' from a measured amplitude bound.
 
     ``amplitude`` is the DATA-DERIVED bound from
@@ -1239,16 +1466,19 @@ def choose_angle_marg_scheme(amplitude, gh_enabled=None):
     """
     if gh_enabled is None:
         gh_enabled = _core._DISTMARG_GH_N > 0
+    if laplace_gh_enabled is None:
+        laplace_gh_enabled = bool(_LAPLACE_GH)
     if amplitude is None:
         return "exact", dict(reason="no amplitude bound available; exact "
                                     "scheme is the conservative branch",
                              amplitude=None,
                              crossover=ANGLE_MARG_CROSSOVER_AMPLITUDE)
     amp = float(amplitude)
-    if gh_enabled:
+    if gh_enabled and not laplace_gh_enabled:
         return "exact", dict(reason="JAX_ILE_DISTMARG_GH set: laplace does "
                                     "not support the adaptive distance "
-                                    "quadrature", amplitude=amp,
+                                    "quadrature (JAX_ILE_LAPLACE_GH not set)",
+                             amplitude=amp,
                              crossover=ANGLE_MARG_CROSSOVER_AMPLITUDE)
     scheme = "laplace" if amp >= ANGLE_MARG_CROSSOVER_AMPLITUDE else "exact"
     return scheme, dict(reason="measured amplitude bound %s crossover"

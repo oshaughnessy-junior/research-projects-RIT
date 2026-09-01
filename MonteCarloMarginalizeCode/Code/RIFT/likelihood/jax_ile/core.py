@@ -1441,24 +1441,51 @@ def _distmarg_gh_logL(K, R, z_off, _dz_unused, x_min, x_max):
     # Width = 1/sqrt(R).  Both FROZEN: the node placement carries no gradient.
     center = jax.lax.stop_gradient(jnp.clip(K / R, x_min, x_max))   # (S,npts)
     sigma = jax.lax.stop_gradient(1.0 / jnp.sqrt(R))               # (S,npts)
-    x_k = center[..., None] + sigma[..., None] * z_off            # (S,npts,G), monotone in k
-    x_k = jax.lax.stop_gradient(jnp.clip(x_k, x_min, x_max))
-    # composite-trapezoid node weights from adjacent spacing (nodes increasing in k)
-    dx = jnp.diff(x_k, axis=-1)                                # (S,npts,G-1)
-    w = jnp.concatenate([0.5 * dx[..., :1],
-                         0.5 * (dx[..., 1:] + dx[..., :-1]),
-                         0.5 * dx[..., -1:]], axis=-1)          # (S,npts,G)
-    pos = w > 0                                                # live (non-clipped) nodes
-    log_w = jnp.where(pos, jnp.log(jnp.where(pos, w, 1.0))
-                      - 4.0 * jnp.log(x_k), -jnp.inf)          # trapz dx * x^{-4} prior
+    # (S,npts,G) nodes + log measure; shared with the psi-marginal placement of
+    # anglemarg._distmarg_gh_psimarg_lnI so the two cannot drift apart.
+    x_k, log_w, any_w = _gh_nodes_and_log_weights(center, sigma, z_off,
+                                                  x_min, x_max)
     expo = K[..., None] * x_k - 0.5 * R[..., None] * jnp.square(x_k) + log_w
-    any_w = jnp.any(pos, axis=-1)                              # (S,npts)
     # all-clipped rows: dummy expo to finite so the backward pass is finite, then
     # override to -inf below (both where-branches finite -> finite gradient).
     expo = jnp.where(any_w[..., None], expo, 0.0)
     lse = jax.scipy.special.logsumexp(expo, axis=-1)           # (S,npts)
-    C0 = jnp.log(3.0) - jnp.log(x_min ** (-3.0) - x_max ** (-3.0))
-    return jnp.where(any_w, C0 + lse, -jnp.inf)
+    return jnp.where(any_w, dist_prior_log_norm(x_min, x_max) + lse, -jnp.inf)
+
+
+def _gh_nodes_and_log_weights(center, sigma, z_off, x_min, x_max):
+    """Frozen trapezoid nodes and their log measure for the distance integral.
+
+    ``x_k = clip(center + sigma * z_k, x_min, x_max)`` with composite-trapezoid
+    node weights from the adjacent spacing, times the volumetric prior measure
+    ``x^-4`` (see :func:`_distmarg_gh_logL` for the derivation and for why the
+    placement is frozen).  Returns ``(x_k, log_w, any_w)`` with a trailing node
+    axis; ``log_w`` is ``-inf`` at clipped (zero-width) nodes and ``any_w`` is
+    False for rows whose whole node set collapsed onto a support boundary.
+
+    Code motion out of :func:`_distmarg_gh_logL` (same operations, same order,
+    so the grid path is bit-identical) so that a marginalized-in-psi integrand
+    can reuse the SAME node/measure convention with its own (center, sigma) --
+    see ``anglemarg._distmarg_gh_psimarg_lnI``.
+    """
+    x_k = center[..., None] + sigma[..., None] * z_off            # monotone in k
+    x_k = jax.lax.stop_gradient(jnp.clip(x_k, x_min, x_max))
+    # composite-trapezoid node weights from adjacent spacing (nodes increasing in k)
+    dx = jnp.diff(x_k, axis=-1)                                # (...,G-1)
+    w = jnp.concatenate([0.5 * dx[..., :1],
+                         0.5 * (dx[..., 1:] + dx[..., :-1]),
+                         0.5 * dx[..., -1:]], axis=-1)          # (...,G)
+    pos = w > 0                                                # live (non-clipped) nodes
+    log_w = jnp.where(pos, jnp.log(jnp.where(pos, w, 1.0))
+                      - 4.0 * jnp.log(x_k), -jnp.inf)          # trapz dx * x^{-4} prior
+    return x_k, log_w, jnp.any(pos, axis=-1)
+
+
+def dist_prior_log_norm(x_min, x_max):
+    """``C0`` of :func:`_distmarg_gh_logL`: log-normalization of the volumetric
+    distance prior in x = d_ref/d, so that the node sum is a proper distance
+    AVERAGE (the same convention :func:`make_distance_grid` normalizes to)."""
+    return jnp.log(3.0) - jnp.log(x_min ** (-3.0) - x_max ** (-3.0))
 
 
 # ─────────────────────────────────────────────────────────────────────────────

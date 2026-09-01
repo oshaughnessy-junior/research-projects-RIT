@@ -186,6 +186,24 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         driver actually CALLS the dispatcher
 #                                         (wiring).  Each fails under a verified
 #                                         mutation (see the PR).  Seconds.
+#   test_angle_marg_laplace_gh.py     8  the REORDERED angle-first / distance-GH
+#                                         path (JAX_ILE_LAPLACE_GH).  Three
+#                                         tests pin that the opt-in is really
+#                                         opt-in (the refusal still fires, the
+#                                         `auto` selector still says exact
+#                                         under JAX_ILE_DISTMARG_GH, and the
+#                                         flag alone is bit-inert); two pin the
+#                                         EQUIVALENCE -- in the fixed-psi limit
+#                                         the new placement rule and the whole
+#                                         reordered quadrature reproduce the
+#                                         shipped core._distmarg_gh_logL to
+#                                         4e-14 nats; two go through the fused
+#                                         driver, asserting a property FALSE of
+#                                         the uniform sum it replaces (the
+#                                         result does not depend on the uniform
+#                                         grid size) plus a 3.7e-4-nat match to
+#                                         a dense reference at A ~ 200.  ~35 s
+#                                         of call time.
 #   test_angle_marg_sizing_rule.py    1  the m_max-aware dense phi sizing rule.
 #                                         Pure numpy, milliseconds, closed-form I0
 #                                         reference.  FAILS under the old m_max-blind
@@ -293,6 +311,7 @@ FILES=(
   "${JAXDIR}/test_angle_marg_smoke.py"
   "${JAXDIR}/test_angle_marg_compile_cost.py"
   "${JAXDIR}/test_angle_marg_block_dispatch.py"
+  "${JAXDIR}/test_angle_marg_laplace_gh.py"
 )
 
 # EXCLUDED: files in JAXDIR matching test_*.py that are deliberately NOT gated.  The
@@ -380,10 +399,12 @@ fi
 # PR #209 then adds six test_angle_marg_compile_cost.py pins, raising 160 -> 166,
 # and PR #210 adds five test_angle_marg_block_dispatch.py pins, raising 166 -> 171.
 # PR #216 adds eighteen adaptive primitive-time pins, raising 171 -> 189.
+# The reordered angle-first / distance-GH path adds eight
+# test_angle_marg_laplace_gh.py pins, raising 189 -> 197.
 # Raising the floor
 # by exactly the number of tests ADDED is safe whatever the environment delta above,
 # since it preserves the margin the previous floor already had.
-EXPECTED_TESTS=189
+EXPECTED_TESTS=197
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
