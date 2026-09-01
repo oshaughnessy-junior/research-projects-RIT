@@ -63,6 +63,17 @@ from scipy import special
 from itertools import product, combinations
 import math
 
+from . import time_marginalization_quadrature as time_quadrature_module
+from .time_marginalization_quadrature import TIME_QUADRATURE_CHOICES
+
+#: Time-marginalization quadrature used when a caller does not pass
+#: ``time_quadrature`` explicitly.  'simpson' is the historical fixed-deltaT
+#: Simpson rule and remains the DEFAULT; 'bandlimited' refines the time grid to
+#: the integrand actually present, using only the samples already computed (see
+#: RIFT.likelihood.time_marginalization_quadrature).  Drivers set this once from
+#: their CLI so every call site inherits it; tests pass the kwarg directly.
+TIME_QUADRATURE_DEFAULT = 'simpson'
+
 from .vectorized_lal_tools import ComputeDetAMResponse,TimeDelayFromEarthCenter
 
 import os
@@ -2405,6 +2416,55 @@ def _q_inner_product_gpu(Q, A, start_indices, fractional_offsets, npts, time_int
                      % (time_interp, TIME_INTERP_CHOICES))
 
 
+_Q_EXPLICIT_TEMP_MAX_BYTES = 64 * 1024 * 1024
+
+
+def _q_inner_product_explicit_times(Q, A, start_indices, fractional_offsets,
+                                    time_interp, xpy=np):
+    """Evaluate a Q-window stencil at every explicitly supplied time.
+
+    ``start_indices`` has shape ``(n_extrinsic, n_time)``.  Work is chunked on
+    BOTH axes so neither one very finely refined row nor many fair-draw rows can
+    allocate the full ``n_extrinsic*n_time*n_modes`` gather at once.  Each
+    flattened entry asks the existing, tested stencil for one sample; unlike
+    the historical window gather, no implicit ``+j*deltaT`` is introduced.
+    """
+    if start_indices.ndim != 2:
+        raise ValueError("explicit start_indices must have shape (n_extrinsic, n_time)")
+    n_ext, n_time = start_indices.shape
+    n_modes = A.shape[-1]
+    # Q gather + repeated antenna/mode row + interpolation workspace, kept
+    # below ~64 MiB even when n_time alone is enormous.  The previous row-only
+    # chunk had a minimum of one row, so a 2.5M-time, 21-mode row still made
+    # >800 MiB A_rows and Q_one temporaries apiece.
+    max_cells = max(1, _Q_EXPLICIT_TEMP_MAX_BYTES //
+                    max(1, n_modes * 16 * 3))
+    time_chunk = max(1, min(n_time, max_cells))
+    ext_chunk = max(1, min(n_ext, max_cells // time_chunk))
+    out = xpy.empty((n_ext, n_time), dtype=np.complex128)
+    for ext_start in range(0, n_ext, ext_chunk):
+        ext_stop = min(n_ext, ext_start + ext_chunk)
+        for time_start in range(0, n_time, time_chunk):
+            time_stop = min(n_time, time_start + time_chunk)
+            starts = start_indices[ext_start:ext_stop,
+                                    time_start:time_stop].reshape(-1)
+            fracs = (None if fractional_offsets is None else
+                     fractional_offsets[ext_start:ext_stop,
+                                        time_start:time_stop].reshape(-1))
+            width = time_stop - time_start
+            A_rows = xpy.repeat(A[ext_start:ext_stop], width, axis=0)
+            if xpy is np:
+                Q_one = _q_window_numpy_interp(
+                    Q, starts, fracs, 1, time_interp, xpy=xpy)[:, 0, :]
+                values = np.einsum("ej,ej->e", A_rows, Q_one)
+            else:
+                values = _q_inner_product_gpu(
+                    Q, A_rows, starts, fracs, 1, time_interp)[:, 0]
+            out[ext_start:ext_stop, time_start:time_stop] = values.reshape(
+                (ext_stop - ext_start, width))
+    return out
+
+
 def _nearest_Q_window_numpy(Q_block, start_indices, npts, xpy=np):
     """Return nearest-grid Q windows with zero extension."""
     npts_extrinsic = len(start_indices)
@@ -2419,7 +2479,7 @@ def _nearest_Q_window_numpy(Q_block, start_indices, npts, xpy=np):
     return Qlms
 
 
-def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDict, rholmsArrayDict, ctUArrayDict,ctVArrayDict,epochDict,Lmax=2,array_output=False,xpy=np, loglikelihood=_factored_lnL_helper,return_lnLt=False,phase_marginalization=False,n_cal=1,cal_method='loop',cal_distmarg=None,cal_log_weights=None,return_cal_components=False,time_interp='nearest',ctUArrayDict_cal=None,ctVArrayDict_cal=None):
+def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDict, rholmsArrayDict, ctUArrayDict,ctVArrayDict,epochDict,Lmax=2,array_output=False,xpy=np, loglikelihood=_factored_lnL_helper,return_lnLt=False,phase_marginalization=False,n_cal=1,cal_method='loop',cal_distmarg=None,cal_log_weights=None,return_cal_components=False,time_interp='nearest',ctUArrayDict_cal=None,ctVArrayDict_cal=None,time_quadrature=None,explicit_time_values=False,return_time_draw=False,time_draw_uniforms=None):
     """
     DiscreteFactoredLogLikelihoodViaArray uses the array-ized data structures to compute the log likelihood,
     either as an array vs time *or* marginalized in time.
@@ -2493,12 +2553,75 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
         --interpolate-time value maps to.  Ask for a stencil explicitly if you want one.
         All three stencils have CPU and GPU implementations.  See _sinc_Q_window_numpy and
         RIFT/likelihood/DESIGN_q_window_stencil.md for the measured tables.
+
+    time_quadrature : {'simpson', 'bandlimited'} or None
+        Rule used for the time integral.  None (the default) defers to the
+        module-level ``TIME_QUADRATURE_DEFAULT``, which is 'simpson'.
+
+        'simpson' is the historical rule: Simpson's rule at the FIXED spacing
+        deltaT=1/srate.  The integrand's width, however, is set by the signal --
+        sigma_t = 1/(2 pi rho sigma_f) -- not by the data's sample rate, so this
+        under-resolves its own integrand at high SNR, and Simpson's (4T_h-T_2h)/3
+        form makes an under-resolved peak worse than trapezoid rather than better.
+
+        'bandlimited' refines the grid to the integrand using ONLY the samples
+        already computed: kappa(t) is band-limited below Nyquist by construction
+        and rho_sq is time-independent on this path, so the continuous lnL(t) is
+        recovered exactly by a zero-padded FFT per row.  The refinement factor is
+        DERIVED from the measured peak width and re-asserted on the refined grid;
+        it is not a settable accuracy knob.  Restricted to n_cal==1 and to the
+        integrated outputs and continuous posterior draws (not return_lnLt /
+        return_cal_components); anything else raises rather than quietly falling
+        back.  A time draw returns ``(time_offset, lnL_at_draw)`` and uses the
+        same validated dense representation as the integral.  Rationale, measured
+        before/after and the exclusions: RIFT.likelihood.time_marginalization_quadrature.
     """
     global distMpcRef
 
     validate_time_interp(time_interp, on_gpu=not (xpy is np))
     if time_interp != 'nearest' and cal_method == 'fused':
         raise NotImplementedError("time_interp='{}' is not implemented for cal_method='fused'".format(time_interp))
+
+    _time_quadrature_explicit = time_quadrature is not None
+    if time_quadrature is None:
+        time_quadrature = TIME_QUADRATURE_DEFAULT
+    time_quadrature_module.validate_time_quadrature(time_quadrature)
+    if return_time_draw and return_lnLt:
+        raise ValueError("return_time_draw and return_lnLt are mutually exclusive")
+    if return_time_draw and return_cal_components:
+        raise ValueError("return_time_draw and return_cal_components are mutually exclusive")
+    if return_time_draw and time_quadrature != 'bandlimited':
+        raise ValueError(
+            "return_time_draw requires time_quadrature='bandlimited'; the continuous "
+            "draw must share the quadrature's validated reconstruction")
+    if time_quadrature == 'bandlimited':
+        # Refuse loudly wherever the band-limited argument does not hold, rather
+        # than falling back to Simpson: a silently inert accuracy option is worse
+        # than an unavailable one.
+        if n_cal != 1:
+            raise NotImplementedError(
+                "time_quadrature='bandlimited' is not implemented for calibration "
+                "marginalization (n_cal=%d).  The cal reduction sums exp() over "
+                "realizations, so each realization's kappa row must be refined and the "
+                "derived factor reconciled across them; that is untested." % n_cal)
+        if return_cal_components:
+            raise NotImplementedError(
+                "time_quadrature='bandlimited' is not implemented for "
+                "return_cal_components, which takes a per-realization time integral.")
+        if return_lnLt and _time_quadrature_explicit:
+            # Explicitly ASKING for a quadrature on a call that takes no integral is
+            # a caller error and is refused.  Merely INHERITING the module default is
+            # not: return_lnLt hands back lnL(t) on the original grid and never
+            # integrates, so the quadrature is inapplicable rather than ignored.
+            # Raising on the inherited default instead broke the group's standard
+            # extrinsic stage -- --add-extrinsic --add-extrinsic-time-resampling maps
+            # to --resample-time-marginalization, whose resample_samples() calls this
+            # function with return_lnLt=True and no explicit quadrature -- so enabling
+            # the option ran the whole integration and then died at the export step.
+            raise NotImplementedError(
+                "time_quadrature='bandlimited' was requested explicitly on a "
+                "return_lnLt call, which returns lnL(t) on the original grid and takes "
+                "no time integral.  Drop the argument.")
 
     detectors = rholmsArrayDict.keys()
     npts = len(tvals)
@@ -2611,15 +2734,24 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
             float(greenwich_mean_sidereal_time_tref),
             xpy=xpy
         )
-        tfirst = t_det + tvals[0]
-
-        sample_first = tfirst / deltaT
-        if time_interp == 'nearest':
-            ifirst = (xpy.rint(sample_first) + 0.5).astype(np.int32)  # C uses 32 bit integers : be careful
-            frac_first = None
+        if explicit_time_values:
+            sample_at_times = ((t_det[:, None] +
+                                xpy.asarray(tvals)[None, :]) / deltaT)
+            if time_interp == 'nearest':
+                ifirst = (xpy.rint(sample_at_times) + 0.5).astype(np.int32)
+                frac_first = None
+            else:
+                ifirst = xpy.floor(sample_at_times).astype(np.int32)
+                frac_first = (sample_at_times - xpy.floor(sample_at_times)).astype(np.float64)
         else:
-            ifirst = xpy.floor(sample_first).astype(np.int32)
-            frac_first = (sample_first - xpy.floor(sample_first)).astype(np.float64)
+            tfirst = t_det + tvals[0]
+            sample_first = tfirst / deltaT
+            if time_interp == 'nearest':
+                ifirst = (xpy.rint(sample_first) + 0.5).astype(np.int32)  # C uses 32 bit integers : be careful
+                frac_first = None
+            else:
+                ifirst = xpy.floor(sample_first).astype(np.int32)
+                frac_first = (sample_first - xpy.floor(sample_first)).astype(np.float64)
 #        ilast = ifirst + npts
 
 
@@ -2720,25 +2852,39 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
             # Shape Q = (npts_time_full, nlms)
             # Shape A=FY_conj = (npts_extrinsic, nlms)
             # shape result = (npts_extrinsic, npts_time_*window* = npts)
-            Q_prod_result = _q_inner_product_gpu(
-                Q, FY_conj, ifirst, frac_first, npts, time_interp)
+            if explicit_time_values:
+                Q_prod_result = _q_inner_product_explicit_times(
+                    Q, FY_conj, ifirst, frac_first, time_interp, xpy=xpy)
+            else:
+                Q_prod_result = _q_inner_product_gpu(
+                    Q, FY_conj, ifirst, frac_first, npts, time_interp)
           else:
             # Use old code completely unchanged ... very wasteful on memory management!
             Q_block = rholmsArrayDict[det].T
-            Qlms = _q_window_numpy_interp(Q_block, ifirst, frac_first, npts, time_interp,
-                                          xpy=xpy)
+            if explicit_time_values:
+                Q_prod_result = _q_inner_product_explicit_times(
+                    Q_block, np.conj(F_vec_dummy_lm * Ylms_vec), ifirst,
+                    frac_first, time_interp, xpy=xpy)
+                Qlms = None
+            else:
+                Qlms = _q_window_numpy_interp(Q_block, ifirst, frac_first, npts, time_interp,
+                                              xpy=xpy)
             if phase_marginalization:
+                if explicit_time_values:
+                    raise NotImplementedError(
+                        "explicit time values with CPU phase marginalization are untested")
                 Qlms[:, :, 1] = xpy.conj(Qlms[:, :, 1])
 
-            FY_dummy_t = np.broadcast_to(
-              (F_vec_dummy_lm * Ylms_vec)[:, np.newaxis],
-              Qlms.shape,
-              )
+            if not explicit_time_values:
+                FY_dummy_t = np.broadcast_to(
+                  (F_vec_dummy_lm * Ylms_vec)[:, np.newaxis],
+                  Qlms.shape,
+                  )
 
-            Q_prod_result =  np.einsum(
-              "...i,...i",
-              np.conj(FY_dummy_t), Qlms,
-              )
+                Q_prod_result =  np.einsum(
+                  "...i,...i",
+                  np.conj(FY_dummy_t), Qlms,
+                  )
 
           kappa_sq += Q_prod_result * (distMpcRef/distMpc)[..., np.newaxis]
         else:
@@ -2783,6 +2929,34 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
         lnLmax  = xpy.max(lnL_t)
         if return_lnLt:
           return lnL_t  #- lnLmax    # we want the verbatim lnL_t values, no shift
+
+        if time_quadrature == 'bandlimited':
+            # Same integrand and the same closed domain [tvals[0], tvals[-1]] --
+            # ONLY the resolution and the rule change, so a before/after difference
+            # is attributable to the quadrature and to nothing else.  (The internal
+            # log-sum-exp offset does differ: it must be taken on the refined grid,
+            # whose maximum can exceed the coarse one by hundreds of nats.  That is
+            # a numerical detail of an offset-invariant expression, not a second
+            # change of estimator.)
+            # Hand over THIS path's Simpson rule, not a private copy.  On GPU
+            # that is optimized_gpu_tools.simps and on CPU it is scipy's, and the
+            # two are NOT interchangeable: the vendored GPU copy is an old scipy
+            # with even='avg' while modern scipy uses the Cartwright correction,
+            # so for EVEN npts (production is 614 at srate 4096) they disagree --
+            # by 0.405 nats on an under-resolved peak.  Rows that fall back must
+            # reproduce what the run they are in would have returned.  Omitting
+            # this also made the module default to scipy, which RAISES on a cupy
+            # array: every --vectorized --gpu run of this option crashed.
+            _time_result = time_quadrature_module.time_marginalize_bandlimited(
+                kappa_sq, rho_sq_here, float(deltaT), loglikelihood,
+                phase_marginalization=phase_marginalization, simps=simps,
+                lnL_coarse=lnL_t, return_time_draw=return_time_draw,
+                draw_uniforms=time_draw_uniforms, t0=float(tvals[0]), xpy=xpy)
+            if return_time_draw:
+                _, _drawn_t, _drawn_lnL = _time_result
+                return _drawn_t, _drawn_lnL
+            return _time_result
+
         L_t = xpy.exp(lnL_t - lnLmax, out=lnL_t)
 
         L = simps(L_t, dx=deltaT, axis=-1)
@@ -2878,13 +3052,23 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
             Q_block = Q_det[c*N_window_block:(c+1)*N_window_block]   # (N_window, n_lms)
             ifirst_within = ifirst_det.astype(np.int32)
             if not (xpy is np):
-                Q_prod_result = _q_inner_product_gpu(
-                    Q_block, FY_conj_det, ifirst_within, frac_first_det, npts, time_interp)
+                if explicit_time_values:
+                    Q_prod_result = _q_inner_product_explicit_times(
+                        Q_block, FY_conj_det, ifirst_within, frac_first_det,
+                        time_interp, xpy=xpy)
+                else:
+                    Q_prod_result = _q_inner_product_gpu(
+                        Q_block, FY_conj_det, ifirst_within, frac_first_det, npts, time_interp)
             else:
-                Qlms = _q_window_numpy_interp(Q_block, ifirst_within, frac_first_det, npts,
-                                              time_interp, xpy=xpy)
-                # Q_det and FY_conj_det already encode any phase-marg conjugation
-                Q_prod_result = np.einsum("ej,etj->et", FY_conj_det, Qlms)
+                if explicit_time_values:
+                    Q_prod_result = _q_inner_product_explicit_times(
+                        Q_block, FY_conj_det, ifirst_within, frac_first_det,
+                        time_interp, xpy=xpy)
+                else:
+                    Qlms = _q_window_numpy_interp(Q_block, ifirst_within, frac_first_det, npts,
+                                                  time_interp, xpy=xpy)
+                    # Q_det and FY_conj_det already encode any phase-marg conjugation
+                    Q_prod_result = np.einsum("ej,etj->et", FY_conj_det, Qlms)
             kappa_sq_c += Q_prod_result * invDistMpc[..., np.newaxis]
 
         # Fused-calmarg self-term fix: use this realization's rho_sq_c = <C_c h|C_c h>

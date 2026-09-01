@@ -197,6 +197,14 @@ jobs:
           python -m pip install coverage pytest --break-system-packages
           python -m pip install --editable . --break-system-packages
       - name: Run probe confirm-on-fail accounting and CIP intrinsic-prior tests
+        # The multi-approximant marginalization suite rides along too (~11 s, and it
+        # builds its own DAG from synthetic inputs, so it needs no rundir).  It guards a
+        # combination that is silently wrong rather than loud: pooling several waveform
+        # models flat weights them by REPLICA COUNT instead of by p(m), which shifts lnL
+        # by a few tenths of a nat and raises nothing.  Its DAG cases build with TWO
+        # approximants deliberately -- with one, every cross-model path is vacuously
+        # satisfied, which is how that builder kept a severed grid handoff for years.
+        #
         # The CIP prior suite rides along here for the same reason: it is pure logic that
         # runs in seconds (it reads CIP's source with ast instead of importing it, so it
         # needs only numpy/scipy), and a wrong prior density or a mis-wired
@@ -207,7 +215,9 @@ jobs:
             MonteCarloMarginalizeCode/Code/test/expensive_before_merging/integrators/test_probe_confirm.py \
             MonteCarloMarginalizeCode/Code/test/test_cip_priors.py \
             MonteCarloMarginalizeCode/Code/test/test_cip_gp_kernel_bounds.py \
-            MonteCarloMarginalizeCode/Code/test/test_cosmology_single_source.py
+            MonteCarloMarginalizeCode/Code/test/test_cosmology_single_source.py \
+            MonteCarloMarginalizeCode/Code/test/test_multiapprox_marginalization.py \
+            MonteCarloMarginalizeCode/Code/test/test_multiapprox_pseudo_pipe.py
 
   q-window-stencil-check:
     needs: install
@@ -330,7 +340,11 @@ jobs:
     # and means a breaking upstream jax release can redden this job outside any PR's
     # control. If that becomes noisy, pin here rather than deleting the job.
     #
-    # Cost.  CURRENT (EXPECTED_TESTS=148 in .travis/test-jax.sh): 148 tests, the 139
+    # Cost.  CURRENT (EXPECTED_TESTS=144 in .travis/test-jax.sh): 144 tests, measured
+    # 859 s of pytest on ldas-pcdev11 pinned to 16 cores (jax 0.9.2,
+    # JAX_PLATFORMS=cpu, OMP_NUM_THREADS=1).  The count grew 27 -> 48 -> 64
+    # (#180, fair-draw export) -> 95 (this PR, the tempering chooser), and #190
+    # Cost.  CURRENT (EXPECTED_TESTS=153 in .travis/test-jax.sh): 153 tests, the 139
     # previously measured at 859 s of pytest on ldas-pcdev11 pinned to 16 cores
     # (jax 0.9.2, JAX_PLATFORMS=cpu, OMP_NUM_THREADS=1) plus test_angle_marg_exact.py
     # (30 tests, ~600 s local on ldas-grid, 16 cores, same stack -- the sizing

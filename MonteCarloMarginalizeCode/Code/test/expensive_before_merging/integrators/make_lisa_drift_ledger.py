@@ -223,6 +223,11 @@ RULES = [
      "is 5, so adopting main's default verbatim would silently shrink every LISA "
      "export by orders of magnitude. Port the flag with LISA's present behaviour as "
      "its default."),
+    (r"^FUNC:_equal_weight_fairdraw_for_serialization$", "PORT",
+     "Completes a sampler-side fair draw that intentionally did not fire because it "
+     "would not shrink a tiny retained record, but only on the copy written to XML. "
+     "LISA has the same skip-on-no-shrink and serialization boundary, so port this "
+     "with --fairdraw-extrinsic-output-n-max while preserving its larger LISA default."),
 
     # ------------------------------------------------------- LIGO/Virgo calibration envelopes
     (r"^OPTION:--calibration-", "NA",
@@ -344,6 +349,22 @@ RULES = [
     (r"^FUNC:_normalize_interpolate_time_argv$", "PORT",
      "Normalizes --interpolate-time argv forms. LISA exposes --interpolate-time, so "
      "the same normalization applies."),
+    (r"^OPTION:--time-marginalization-quadrature$", "PORT",
+     "Selects the rule for the TIME integral of the marginalized likelihood "
+     "(simpson, the unchanged default, or the opt-in band-limited refinement). LISA "
+     "carries the SAME defect this addresses: factored_likelihood_LISA.py integrates "
+     "exp(lnL(t)) with Simpson at the fixed data spacing, while the integrand's width "
+     "sigma_t = 1/(2 pi rho sigma_f) is set by the signal and shrinks as 1/rho -- so it "
+     "under-resolves its own integrand, worse at higher SNR. PORT, not NA. But porting "
+     "is NOT just wiring the flag through, and the prerequisite is the whole question: "
+     "the band-limited argument needs kappa band-limited below Nyquist AND rho_sq "
+     "time-INDEPENDENT. The main driver refuses --rotation-slow and --freqresponse for "
+     "exactly that second condition, and a response that varies across the observation "
+     "is the normal case for LISA, not an exotic one. So the LISA port must first "
+     "establish whether its self-term is time-independent over the integration window; "
+     "if it is not, the honest outcome is a documented refusal on that path rather than "
+     "a flag that silently integrates the wrong thing. Note also that the LISA site "
+     "integrates on axis=0, not the last axis."),
     (r"^OPTION:--internal-precompute-ignore-threshold$", "PORT",
      "Drops negligible modes during precompute. LISA is mode-heavy (--modes, "
      "--restricted-mode-list-file) and pays more per mode than a ground-based run, so "

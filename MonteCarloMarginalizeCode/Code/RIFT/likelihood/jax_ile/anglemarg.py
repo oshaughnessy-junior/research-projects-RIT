@@ -70,7 +70,8 @@ import jax
 import jax.numpy as jnp
 
 from . import core as _core
-from .core import (JAX_INTERP_DEFAULT, _accumulate_unit, _time_marginalize,
+from .core import (JAX_INTERP_DEFAULT, TIME_QUAD_DEFAULT, _accumulate_unit,
+                   _time_marginalize_terminal,
                    _logsumexp_grid_blocked, _distmarg_gh_logL,
                    make_distance_gh)
 
@@ -641,7 +642,8 @@ def _pad_chunks(values, chunk):
 def fused_log_likelihood_distphipsimarg_exact(
         data, ra, dec, incl, x_grid, log_w_grid,
         interp=JAX_INTERP_DEFAULT, amp_sizing=None,
-        dense_chunk=8, grid_block=32):
+        dense_chunk=8, grid_block=32,
+        time_quadrature=TIME_QUAD_DEFAULT, return_lnLt=False):
     """Distance-, phi_ref- AND psi-marginalized lnL: exact-coefficient scheme.
 
     Drop-in replacement for :func:`core.fused_log_likelihood_distphipsimarg`
@@ -707,7 +709,9 @@ def fused_log_likelihood_distphipsimarg_exact(
     (m, s), _ = jax.lax.scan(jax.checkpoint(_step), (m0, s0),
                              (phi_x, u_x, lw_x))
     lnL_t = m + jnp.log(s) - jnp.log(float(n_dense))
-    return _time_marginalize(lnL_t, data.w_t)
+    if return_lnLt:
+        return lnL_t
+    return _time_marginalize_terminal(lnL_t, data, time_quadrature)
 
 
 # ---------------------------------------------------------------------------
@@ -757,40 +761,22 @@ _LAPLACE_BRACKET_CELLS = 24   # sign-scan cells for the stationary points of
 _LAPLACE_MAX_ROOTS = 4
 
 
-def _laplace_psi_lnI(a, c1, c2):
-    """log[(1/pi) int_0^pi exp(a + Re(c1 e^{iu}) + Re(c2 e^{2iu})) dpsi], u = 2 psi.
-
-    Two regimes, C^1-blended on t = b + 2d (b = |c1|, d = |c2|); see the
-    constants block above for the placement rationale and review history.
-
-    t < BLEND_HI: fixed-N trapezoid quadrature of exp(f) over u -- machine-
-    accurate for a periodic band-limited exponent up to the handover, which
-    is what makes the kernel's LOCAL error small at every reachable bin (a
-    global-amplitude subdominance argument is not available: the kernel runs
-    at every proposed sky position, review 3).
-
-    t > BLEND_LO: Laplace's method with ALL maxima enumerated.  An early
-    revision seeded Newton only at the extrema of the FIRST harmonic, which
-    fails outright when that harmonic cancels (c1 = 0, c2 = -d: both seeds
-    are minima; -inf was returned for a finite integral -- review 1).  Every
-    transversal zero of f' is bracketed by a sign scan (interval-based, so
-    coincident roots cannot be double-counted), bisected under
-    stop_gradient, polished by one differentiable Newton step (a contraction
-    step from the converged point carries the implicit derivative without a
-    deep 1/H^2 gradient chain); near-degenerate maxima are kept with floored
-    curvature rather than dropped, so -inf is impossible for a finite
-    integral.  Angle-free throughout: f, f', f'' are evaluated directly from
-    c1, c2, so arg(0) never appears and b = 0 is a regular point.
-
-    Elementary functions only (no scipy, no eigensolvers); differentiable;
-    any input shape (elementwise over broadcast a, c1, c2).
-    """
+def _psi_lnI_amplitudes(c1, c2):
+    """(b, d, t_amp) for the kernel and the block dispatcher: harmonic
+    magnitudes and the blend variable t = b + 2 d.  Factored out so the
+    dispatcher can bound t without tracing either branch."""
     mag1 = jnp.square(c1.real) + jnp.square(c1.imag)
     mag2 = jnp.square(c2.real) + jnp.square(c2.imag)
     b = jnp.sqrt(mag1 + 1e-300)
     d = jnp.sqrt(mag2 + 1e-300)
+    return b, d, b + 2.0 * d
 
-    t_amp = b + 2.0 * d
+
+def _psi_lnI_lap_branch(a, c1, c2, b, t_amp):
+    """The enumerated-maxima Laplace branch of :func:`_laplace_psi_lnI`
+    (verbatim code motion; see that docstring for the contract).  Returns
+    ln_laplace; -inf is impossible for a finite integral by the tolerant
+    acceptance, and hypothetical nonfinite values are guarded by callers."""
     lap_dummy = t_amp < _LAPLACE_BLEND_LO      # blend weight is exactly 1 here
     # jnp.where's VJP sends a ZERO cotangent through the unselected branch,
     # and 0 * inf = nan: the Laplace branch must have BOUNDED derivatives
@@ -830,109 +816,185 @@ def _laplace_psi_lnI(a, c1, c2):
     # registers in encounter order.  Interval-based bracketing cannot yield
     # duplicate roots: the sign sequence flips exactly once per transversal
     # crossing, including a crossing that sits exactly on a grid node.
+    #
+    # STRUCTURE, not mathematics: the cell walk is a lax.scan and the slot
+    # registers are one stacked (_LAPLACE_MAX_ROOTS, X) array rather than a
+    # Python loop over cells and slots.  The elementwise updates are the
+    # same; the Python version unrolled ~24 x 4 select chains into the traced
+    # graph, and this kernel is instantiated once per distance block, which
+    # multiplied that unroll into an XLA graph that took over an hour (and
+    # >20 GiB) to compile at production sizes.  Same fix pattern below for
+    # the bisection and the fixed-N quadrature.
     N = _LAPLACE_BRACKET_CELLS
     ug = np.linspace(0.0, 2.0 * np.pi, N + 1)
     cell = ug[1] - ug[0]
-    zero_f = jnp.zeros_like(b)
-    false_x = jnp.zeros_like(b, dtype=bool)
-    s_prev = fp(jnp.asarray(ug[0])) >= 0
-    count = zero_f
-    los = [zero_f for _ in range(_LAPLACE_MAX_ROOTS)]
-    s_los = [false_x for _ in range(_LAPLACE_MAX_ROOTS)]
-    filled = [false_x for _ in range(_LAPLACE_MAX_ROOTS)]
-    for k in range(N):
-        s_next = fp(jnp.asarray(ug[k + 1])) >= 0
+    # a, c1 and c2 may have different but broadcast-compatible shapes.  The
+    # scan carry must start at their combined shape: lax.scan forbids the
+    # Python-loop behaviour of expanding a scalar carry on the first step.
+    zero_f = jnp.zeros_like(t_amp)
+    false_x = jnp.zeros_like(t_amp, dtype=bool)
+    nR = _LAPLACE_MAX_ROOTS
+    slot_ids = jnp.arange(nR, dtype=zero_f.dtype).reshape(
+        (nR,) + (1,) * zero_f.ndim)
+    s_prev0 = fp(jnp.asarray(ug[0])) >= 0
+    los0 = jnp.stack([zero_f] * nR)
+    s_los0 = jnp.stack([false_x] * nR)
+    filled0 = jnp.stack([false_x] * nR)
+
+    def _bracket_step(carry, edges):
+        s_prev, count, los, s_los, filled = carry
+        u_left, u_right = edges
+        s_next = fp(u_right) >= 0
         flip = s_prev != s_next
-        for j in range(_LAPLACE_MAX_ROOTS):
-            take = flip & (count == j)
-            los[j] = jnp.where(take, ug[k], los[j])
-            s_los[j] = jnp.where(take, s_prev, s_los[j])
-            filled[j] = filled[j] | take
+        take = flip[None] & (count[None] == slot_ids)
+        los = jnp.where(take, u_left, los)
+        s_los = jnp.where(take, s_prev[None], s_los)
+        filled = filled | take
         count = count + flip.astype(count.dtype)
-        s_prev = s_next
+        return (s_next, count, los, s_los, filled), None
+
+    (_, _, los, s_los, filled), _ = jax.lax.scan(
+        _bracket_step, (s_prev0, zero_f, los0, s_los0, filled0),
+        (jnp.asarray(ug[:-1]), jnp.asarray(ug[1:])))
 
     # ---- per-slot bisection (value-only) + one differentiable polish step
-    terms = []
-    for j in range(_LAPLACE_MAX_ROOTS):
-        lo = los[j]
-        hi = lo + cell
-        slo = s_los[j]
-        for _ in range(20):           # cell/2^20 ~ 2.5e-7, then Newton
-            mid = 0.5 * (lo + hi)
-            go_right = (fp(mid) >= 0) == slo
-            lo = jnp.where(go_right, mid, lo)
-            hi = jnp.where(go_right, hi, mid)
-        u0 = jax.lax.stop_gradient(0.5 * (lo + hi))
-        u = u0 - fp(u0) / _guard(fpp(u0))
-        H = fpp(u)
-        # tolerant acceptance: a maximum with H in [-h_floor, +h_floor) is a
-        # (near-)degenerate flat top; drop it and a finite integral could
-        # come back -inf, so keep it with the floored curvature instead
-        # (its Laplace weight is then merely inaccurate, never absent).
-        ok = filled[j] & (H < h_floor)
-        Hm = jnp.minimum(H, -h_floor)
-        # Peak width: the Gaussian factor sqrt(2 pi/|H|) OVERESTIMATES a
-        # near-degenerate (quartic-flat) maximum by nats -- at the exactly
-        # aligned b = 4d configuration the floored-curvature form was ~5
-        # nats high (review 3's local-error standard).  The quartic width
-        # int exp(f4 u^4/24) du = Gamma(1/4)/2 * (24/|f4|)^(1/4) is closed
-        # form (f'''' is elementary for a trig polynomial).  The widths are
-        # combined as W = W_g (1 + rho)^-1/2 with rho = (W_g/W_q)^2 -- exact
-        # at both ends and at most 0.083 nats off on the scale-free
-        # Gaussian x quartic family (vs 0.26 for min() and ~5 for the
-        # floored Gaussian alone) -- but GATED on rho: for a REGULAR
-        # maximum rho ~ 1/sqrt(b) and the ungated correction would inject
-        # an O(1/sqrt(A)) systematic where plain Laplace errs only O(1/A)
-        # (measured: sweep worst at t = 1000 rose 3.7e-3 -> 4.6e-2
-        # ungated).  The gate turns the correction on smoothly over
-        # rho in [0.2, 0.8], i.e. only where the peak is genuinely
-        # quartic-contaminated.
-        F4 = fpppp(u)
-        f4_floor = 1e-6 * (bl + 16.0 * dl)
-        F4m = jnp.minimum(F4, -f4_floor)
-        lnW_gauss = 0.5 * jnp.log(2.0 * jnp.pi / (-Hm))
-        lnW_quart = 0.5949217316 + 0.25 * jnp.log(24.0 / (-F4m))
-        rho = jnp.exp(jnp.clip(2.0 * (lnW_gauss - lnW_quart), -50.0, 50.0))
-        g8 = jnp.clip((rho - 0.2) / 0.6, 0.0, 1.0)
-        g8 = g8 * g8 * (3.0 - 2.0 * g8)
-        lnW = lnW_gauss - 0.5 * jnp.log1p(rho * g8)
-        t = jnp.where(ok,
+    # (batched over the slot axis; the 20 halvings are a fori_loop)
+    slo = s_los
+    def _bisect_step(_, lohi):        # cell/2^20 ~ 2.5e-7, then Newton
+        lo, hi = lohi
+        mid = 0.5 * (lo + hi)
+        go_right = (fp(mid) >= 0) == slo
+        return (jnp.where(go_right, mid, lo), jnp.where(go_right, hi, mid))
+    lo, hi = jax.lax.fori_loop(0, 20, _bisect_step, (los, los + cell))
+    u0 = jax.lax.stop_gradient(0.5 * (lo + hi))
+    u = u0 - fp(u0) / _guard(fpp(u0))
+    H = fpp(u)
+    # tolerant acceptance: a maximum with H in [-h_floor, +h_floor) is a
+    # (near-)degenerate flat top; drop it and a finite integral could
+    # come back -inf, so keep it with the floored curvature instead
+    # (its Laplace weight is then merely inaccurate, never absent).
+    ok = filled & (H < h_floor)
+    Hm = jnp.minimum(H, -h_floor)
+    # Peak width: the Gaussian factor sqrt(2 pi/|H|) OVERESTIMATES a
+    # near-degenerate (quartic-flat) maximum by nats -- at the exactly
+    # aligned b = 4d configuration the floored-curvature form was ~5
+    # nats high (review 3's local-error standard).  The quartic width
+    # int exp(f4 u^4/24) du = Gamma(1/4)/2 * (24/|f4|)^(1/4) is closed
+    # form (f'''' is elementary for a trig polynomial).  The widths are
+    # combined as W = W_g (1 + rho)^-1/2 with rho = (W_g/W_q)^2 -- exact
+    # at both ends and at most 0.083 nats off on the scale-free
+    # Gaussian x quartic family (vs 0.26 for min() and ~5 for the
+    # floored Gaussian alone) -- but GATED on rho: for a REGULAR
+    # maximum rho ~ 1/sqrt(b) and the ungated correction would inject
+    # an O(1/sqrt(A)) systematic where plain Laplace errs only O(1/A)
+    # (measured: sweep worst at t = 1000 rose 3.7e-3 -> 4.6e-2
+    # ungated).  The gate turns the correction on smoothly over
+    # rho in [0.2, 0.8], i.e. only where the peak is genuinely
+    # quartic-contaminated.
+    F4 = fpppp(u)
+    f4_floor = 1e-6 * (bl + 16.0 * dl)
+    F4m = jnp.minimum(F4, -f4_floor)
+    lnW_gauss = 0.5 * jnp.log(2.0 * jnp.pi / (-Hm))
+    lnW_quart = 0.5949217316 + 0.25 * jnp.log(24.0 / (-F4m))
+    rho = jnp.exp(jnp.clip(2.0 * (lnW_gauss - lnW_quart), -50.0, 50.0))
+    g8 = jnp.clip((rho - 0.2) / 0.6, 0.0, 1.0)
+    g8 = g8 * g8 * (3.0 - 2.0 * g8)
+    lnW = lnW_gauss - 0.5 * jnp.log1p(rho * g8)
+    terms = jnp.where(ok,
                       a + fval(u) + lnW
                       - jnp.log(2.0 * jnp.pi),      # (1/2 du/dpsi) * (1/pi)
-                      -jnp.inf)
-        terms.append(t)
+                      -jnp.inf)                     # (nR,) + X
 
     # guarded log-add-exp over the root slots: an all--inf slot set has a NaN
     # backward pass under the naive form, and the NaN leaks through jnp.where.
+    # Explicit left fold (not jnp.max/sum) preserves the pre-restructure
+    # accumulation order bit for bit.
     mt = terms[0]
-    for t in terms[1:]:
-        mt = jnp.maximum(mt, t)
+    for j in range(1, nR):
+        mt = jnp.maximum(mt, terms[j])
     mts = jnp.where(jnp.isfinite(mt), mt, 0.0)
     ssum = zero_f
-    for t in terms:
-        ssum = ssum + jnp.exp(t - mts)
+    for j in range(nR):
+        ssum = ssum + jnp.exp(terms[j] - mts)
     ln_laplace = jnp.where(ssum > 0,
                            mts + jnp.log(jnp.maximum(ssum, 1e-300)),
                            -jnp.inf)
+    return ln_laplace
 
+
+def _psi_lnI_quad_branch(a, c1, c2, b, n_quad):
+    """The fixed-N trapezoid u-quadrature branch of :func:`_laplace_psi_lnI`
+    (verbatim code motion, N parameterized; n_quad must be a multiple of the
+    16-point scan chunk).  Bit-identical to the pre-split code at
+    n_quad = _LAPLACE_QUAD_N.
+    """
     # ---- fixed-N u-quadrature branch: mean of exp(f) over a uniform u grid
     # equals (1/pi) int dpsi.  Uses the TRUE c1, c2 (no dummies needed: no
     # divisions, and the running-max log-sum-exp keeps exp() in range even
-    # for the huge-t bins whose blend weight is 0).  Chunked so the
-    # transient stays a few X-sized arrays.
-    uq = np.linspace(0.0, 2.0 * np.pi, _LAPLACE_QUAD_N, endpoint=False)
-    mq = jnp.full_like(b, -jnp.inf)
-    sq = jnp.zeros_like(b)
+    # for the huge-t bins whose blend weight is 0).  Chunked (as a lax.scan
+    # over precomputed host phase tables, one traced body instead of
+    # n_quad unrolled evaluations) so the transient stays a few
+    # X-sized arrays.
+    uq = np.linspace(0.0, 2.0 * np.pi, n_quad, endpoint=False)
     QCH = 16
-    for s0 in range(0, _LAPLACE_QUAD_N, QCH):
-        blk = []
-        for u_val in uq[s0:s0 + QCH]:
-            eiu = np.exp(1j * u_val)          # host scalar phase
-            blk.append((c1 * eiu).real + (c2 * (eiu * eiu)).real)
-        mq, sq = _lse_update(mq, sq, jnp.stack(blk, axis=0), axis=0)
-    ln_quad = (a + mq + jnp.log(jnp.maximum(sq, 1e-300))
-               - jnp.log(float(_LAPLACE_QUAD_N)))
+    e1 = np.exp(1j * uq)                       # host phases, as before
+    e2 = e1 * e1                               # == eiu * eiu elementwise
+    p1 = jnp.asarray(e1.reshape(-1, QCH))      # (nq, QCH)
+    p2 = jnp.asarray(e2.reshape(-1, QCH))
+    bshape = jnp.broadcast_shapes(jnp.shape(c1), jnp.shape(c2))
+    pshape = (QCH,) + (1,) * len(bshape)
 
+    def _quad_step(carry, phases):
+        mq, sq = carry
+        p1k, p2k = phases                      # (QCH,) complex
+        blk = ((c1[None] * p1k.reshape(pshape)).real
+               + (c2[None] * p2k.reshape(pshape)).real)
+        return _lse_update(mq, sq, blk, axis=0), None
+
+    mq0 = jnp.full(bshape, -jnp.inf, dtype=b.dtype)
+    sq0 = jnp.zeros(bshape, dtype=b.dtype)
+    (mq, sq), _ = jax.lax.scan(_quad_step, (mq0, sq0), (p1, p2))
+    ln_quad = (a + mq + jnp.log(jnp.maximum(sq, 1e-300))
+               - jnp.log(float(n_quad)))
+    return ln_quad
+
+
+def _laplace_psi_lnI(a, c1, c2):
+    """log[(1/pi) int_0^pi exp(a + Re(c1 e^{iu}) + Re(c2 e^{2iu})) dpsi], u = 2 psi.
+
+    Two regimes, C^1-blended on t = b + 2d (b = |c1|, d = |c2|); see the
+    constants block above for the placement rationale and review history.
+
+    t < BLEND_HI: fixed-N trapezoid quadrature of exp(f) over u -- machine-
+    accurate for a periodic band-limited exponent up to the handover, which
+    is what makes the kernel's LOCAL error small at every reachable bin (a
+    global-amplitude subdominance argument is not available: the kernel runs
+    at every proposed sky position, review 3).
+
+    t > BLEND_LO: Laplace's method with ALL maxima enumerated.  An early
+    revision seeded Newton only at the extrema of the FIRST harmonic, which
+    fails outright when that harmonic cancels (c1 = 0, c2 = -d: both seeds
+    are minima; -inf was returned for a finite integral -- review 1).  Every
+    transversal zero of f' is bracketed by a sign scan (interval-based, so
+    coincident roots cannot be double-counted), bisected under
+    stop_gradient, polished by one differentiable Newton step (a contraction
+    step from the converged point carries the implicit derivative without a
+    deep 1/H^2 gradient chain); near-degenerate maxima are kept with floored
+    curvature rather than dropped, so -inf is impossible for a finite
+    integral.  Angle-free throughout: f, f', f'' are evaluated directly from
+    c1, c2, so arg(0) never appears and b = 0 is a regular point.
+
+    Elementary functions only (no scipy, no eigensolvers); differentiable;
+    any input shape (elementwise over broadcast a, c1, c2).
+    """
+    # Materialize the documented elementwise broadcast before introducing
+    # the leading root-slot axis.  Otherwise a data axis contributed only by
+    # ``a`` can collide with the four-root axis (silently when its length is
+    # four, or as a shape error for any other length).
+    a, c1, c2 = jnp.broadcast_arrays(a, c1, c2)
+    b, d, t_amp = _psi_lnI_amplitudes(c1, c2)
+    ln_laplace = _psi_lnI_lap_branch(a, c1, c2, b, t_amp)
+    ln_quad = _psi_lnI_quad_branch(a, c1, c2, b, _LAPLACE_QUAD_N)
     # ---- C^1 blend: pure quadrature below LO, pure Laplace above HI
     r = jnp.clip((_LAPLACE_BLEND_HI - t_amp)
                  / (_LAPLACE_BLEND_HI - _LAPLACE_BLEND_LO), 0.0, 1.0)
@@ -944,10 +1006,97 @@ def _laplace_psi_lnI(a, c1, c2):
     return wgt * ln_quad + (1.0 - wgt) * ln_lap
 
 
+# ---------------------------------------------------------------------------
+# Block-dispatched execution of the kernel (2026-08-28 execution-cost fix).
+#
+# The C^1 blend evaluates BOTH branches at every lattice point, and the
+# quadrature is sized for the handover amplitude (N = 320 at t = 300)
+# regardless of the local t.  Measured on the production-shaped lattice
+# (amp_sizing ~ 1109, SNR-40 scale), 99.5% of (distance x dense-phi x sample
+# x time) points sit at t < BLEND_LO -- 89% at t < 20 -- while every point
+# that carries posterior weight sits at t > 900: each branch does needed
+# work on a small, DISJOINT part of the lattice, yet both were paid
+# everywhere (quad 55% / root-finding 39% of execution, additively).
+#
+# Per-point branching cannot save work under SIMD (select evaluates both
+# sides), but the fused driver already evaluates the kernel in blocks
+# (dist_block x phi_chunk x S x npts), and a block-level scalar bound on
+# t = b + 2d makes the choice discrete via lax.switch (one branch executes):
+#   - every point has t >= BLEND_HI  -> Laplace branch only;
+#   - every point has t <  BLEND_LO  -> quadrature only (weight is exactly
+#     1 and the blend gradient exactly 0 there, so values AND derivatives
+#     equal the shipped kernel's), with N from the ladder below;
+#   - otherwise -> the full blended kernel, unchanged.
+#
+# The N ladder applies the SHIPPED sizing rule locally: the aliasing error
+# of the N-point trapezoid rule on exp(f) is ~ I_{N/2}(t)/I_0(t), and the
+# shipped pair (N = 320, t = 300) fixes the accepted exponent
+#   E(N, t) = sqrt(nu^2 + t^2) - nu asinh(nu/t) - t = -41.73   (nu = N/2)
+# (the constants block above quotes e^-40 for the same pair).  Each rung's
+# threshold t_ok is rounded DOWN from the exact E = -41.73 contour, so every
+# rung is at least as accurate as the shipped band edge: relative aliasing
+# <= e^-41.7 ~ 8e-19, i.e. below f64 roundoff of the result.  Rungs are
+# multiples of the 16-point scan chunk.  Exact contour values:
+# N=32: 0.918, 48: 3.583, 64: 8.101, 96: 22.38, 128: 43.27, 160: 70.54,
+# 224: 143.8, 320: 300 (test_angle_marg_block_dispatch.py recomputes these).
+_QUAD_LADDER_N = (32, 48, 64, 96, 128, 160, 224, 320)
+_QUAD_LADDER_TOK = (0.9, 3.5, 8.0, 22.0, 43.0, 70.0, 143.0,
+                    _LAPLACE_BLEND_HI)
+
+
+def _laplace_psi_lnI_block(a, c1, c2):
+    """Same value and derivatives as :func:`_laplace_psi_lnI` (see the
+    dispatch comment above for the exact equivalence statement), evaluated
+    with one lax.switch branch chosen by scalar bounds of t over the WHOLE
+    input block.  Intended for the fused driver's per-(distance-block,
+    phi-chunk) kernel calls; for pointwise use, call _laplace_psi_lnI.
+
+    Two deliberate differences from the shipped kernel, both confined to
+    cases the review history establishes as unreachable or sub-roundoff:
+    (1) in the pure-Laplace branch a hypothetical nonfinite ln_laplace
+    falls back to ``a`` instead of ln_quad (ln_quad is not computed there;
+    the fallback cannot fire for t >= BLEND_LO, see the blend comment);
+    (2) pure-quadrature blocks use the ladder N instead of N = 320, with
+    relative aliasing <= e^-41.7 at every rung edge (vs e^-41.7 at the
+    shipped band edge itself).
+    """
+    # Keep the data axes distinct from the dispatcher's root-slot axis just
+    # as _laplace_psi_lnI does.  The block dispatcher is the production call
+    # path, so it must preserve the same three-input broadcast contract.
+    a, c1, c2 = jnp.broadcast_arrays(a, c1, c2)
+    b, d, t_amp = _psi_lnI_amplitudes(c1, c2)
+    tmin = jnp.min(t_amp)
+    tmax = jnp.max(t_amp)
+
+    def _pure_lap(_):
+        ln_l = _psi_lnI_lap_branch(a, c1, c2, b, t_amp)
+        return jnp.where(jnp.isfinite(ln_l), ln_l, a)
+
+    def _quad_rung(nq):
+        def _q(_):
+            return _psi_lnI_quad_branch(a, c1, c2, b, nq)
+        return _q
+
+    def _full(_):
+        return _laplace_psi_lnI(a, c1, c2)
+
+    branches = ([_pure_lap] + [_quad_rung(n) for n in _QUAD_LADDER_N]
+                + [_full])
+    n_rungs = len(_QUAD_LADDER_N)
+    rung = jnp.zeros((), dtype=jnp.int32)
+    for tok in _QUAD_LADDER_TOK[:-1]:
+        rung = rung + (tmax > tok).astype(jnp.int32)
+    idx = jnp.where(tmin >= _LAPLACE_BLEND_HI, jnp.int32(0),
+                    jnp.where(tmax < _LAPLACE_BLEND_LO,
+                              jnp.int32(1) + rung, jnp.int32(1 + n_rungs)))
+    return jax.lax.switch(idx, branches, None)
+
+
 def fused_log_likelihood_distphipsimarg_laplace(
         data, ra, dec, incl, x_grid, log_w_grid,
         interp=JAX_INTERP_DEFAULT, amp_sizing=None,
-        phi_chunk=16, dist_block=4):
+        phi_chunk=16, dist_block=4,
+        time_quadrature=TIME_QUAD_DEFAULT, return_lnLt=False):
     """Distance-, phi_ref- AND psi-marginalized lnL: analytic psi-Laplace scheme.
 
     Same contract and normalization as
@@ -995,6 +1144,26 @@ def fused_log_likelihood_distphipsimarg_laplace(
     kpB = jnp.arange(2 * m_max + 1, dtype=jnp.float64)
     G = x_grid.shape[0]
     blk = int(dist_block)
+    # Distance nodes packed into (n_dblk, blk) for the lax.scan below; the
+    # tail block (if G % blk) is edge-padded with -inf log-weights, exactly
+    # the _pad_chunks convention, so padded nodes contribute exactly 0 to the
+    # running log-sum-exp.  A Python loop here instantiated the FULL
+    # _laplace_psi_lnI kernel once per distance block inside the (already
+    # checkpointed) phi scan body -- at the production n_grid=256, blk=4 that
+    # is 64 copies of an already-large kernel, and XLA compile time/memory on
+    # the resulting graph was the >1 h, >20 GiB wall the 2026-08-28 bake-off
+    # hit.  The scan traces the kernel ONCE.  Numerics are unchanged.
+    n_dblk = (G + blk - 1) // blk
+    pad_d = n_dblk * blk - G
+    if pad_d:
+        x_pad = jnp.concatenate(
+            [x_grid, jnp.broadcast_to(x_grid[-1], (pad_d,))])
+        lw_pad = jnp.concatenate(
+            [log_w_grid, jnp.full((pad_d,), -jnp.inf, dtype=jnp.float64)])
+    else:
+        x_pad, lw_pad = x_grid, log_w_grid
+    xg_blk = x_pad.reshape(n_dblk, blk)
+    lwg_blk = lw_pad.reshape(n_dblk, blk)
 
     def _step(carry, x):
         m, s = carry
@@ -1017,18 +1186,22 @@ def fused_log_likelihood_distphipsimarg_laplace(
         B2 = MB(4) + jnp.conj(MB(0))
 
         # distance quadrature: blocked, vectorized over the block (AD-fast),
-        # running log-sum-exp across blocks
-        mx = jnp.full((c, S, npts), -jnp.inf, dtype=jnp.float64)
-        sx = jnp.zeros((c, S, npts), dtype=jnp.float64)
-        for start in range(0, G, blk):
-            sl = slice(start, min(start + blk, G))
-            xg = x_grid[sl][:, None, None, None]              # (g,1,1,1)
-            lwg = log_w_grid[sl][:, None, None, None]
+        # running log-sum-exp across blocks (a lax.scan; see the packing note
+        # above -- one traced kernel instead of G/blk unrolled copies)
+        def _dist_step(carry, xw):
+            mx, sx = carry
+            xgb, lwgb = xw                                    # (blk,)
+            xg = xgb[:, None, None, None]                     # (g,1,1,1)
+            lwg = lwgb[:, None, None, None]
             av = xg * A0[None] - 0.5 * jnp.square(xg) * B0[None]
             c1 = xg * A1[None] - 0.5 * jnp.square(xg) * B1[None]
             c2 = -0.5 * jnp.square(xg) * B2[None]
-            e = _laplace_psi_lnI(av, c1, c2) + lwg            # (g,c,S,npts)
-            mx, sx = _lse_update(mx, sx, e, axis=0)
+            e = _laplace_psi_lnI_block(av, c1, c2) + lwg        # (g,c,S,npts)
+            return _lse_update(mx, sx, e, axis=0), None
+
+        mx0 = jnp.full((c, S, npts), -jnp.inf, dtype=jnp.float64)
+        sx0 = jnp.zeros((c, S, npts), dtype=jnp.float64)
+        (mx, sx), _ = jax.lax.scan(_dist_step, (mx0, sx0), (xg_blk, lwg_blk))
         lnI = (mx + jnp.where(sx > 0, jnp.log(jnp.maximum(sx, 1e-300)), -jnp.inf)
                + lww[:, None, None])                          # (c,S,npts)
         m_new, s_new = _lse_update(m, s, lnI, axis=0)
@@ -1038,7 +1211,9 @@ def fused_log_likelihood_distphipsimarg_laplace(
     s0 = jnp.zeros((S, npts), dtype=jnp.float64)
     (m, s), _ = jax.lax.scan(jax.checkpoint(_step), (m0, s0), (phi_x, lw_x))
     lnL_t = m + jnp.log(s) - jnp.log(float(nphi_d))
-    return _time_marginalize(lnL_t, data.w_t)
+    if return_lnLt:
+        return lnL_t
+    return _time_marginalize_terminal(lnL_t, data, time_quadrature)
 
 
 def choose_angle_marg_scheme(amplitude, gh_enabled=None):
