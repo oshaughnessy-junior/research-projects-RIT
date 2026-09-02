@@ -277,10 +277,16 @@ class EOSConcrete:
             speed_of_sound = lalsim.SimNeutronStarEOSSpeedOfSoundGeometerized
         if not test_only_under_mmax:
             if multipart:
-                # The reviewed multipart API has no global max-enthalpy
-                # accessor; do not silently test a legacy object instead.
-                return False
-            hmax = lalsim.SimNeutronStarEOSMaxPseudoEnthalpy(eos)
+                max_enthalpy = getattr(
+                    lalsim,
+                    "SimNeutronStarEOSMultiPartsMaxPseudoEnthalpy",
+                    None,
+                )
+                if max_enthalpy is None:
+                    return False
+                hmax = max_enthalpy(eos)
+            else:
+                hmax = lalsim.SimNeutronStarEOSMaxPseudoEnthalpy(eos)
         else:
             try:
                 pmax = family.central_pressure(m_max_SI, branch_id=branch_id)
@@ -397,7 +403,8 @@ class EOSLALSimulationFromFile(EOSConcrete):
     """
 
     def __init__(self, fname, name=None, dirty_phase_transitions=False,
-                 skip_family=False, minimal_family=True):
+                 skip_family=False, minimal_family=True,
+                 phase_transition_aware=False):
         self.name = name or os.path.basename(fname)
         self.fname = fname
         self.eos = None
@@ -405,16 +412,20 @@ class EOSLALSimulationFromFile(EOSConcrete):
         phase_transition_reader = getattr(
             lalsim, "SimNeutronStarEOSFromFilePhaseTransition", None
         )
-        multipart = phase_transition_reader is not None
+        multipart = bool(
+            phase_transition_aware
+            or dirty_phase_transitions
+            or not minimal_family
+        )
         self._lalsim_multipart = multipart
         if multipart:
+            if phase_transition_reader is None:
+                raise NotImplementedError(
+                    "the requested multipart EOS family requires the reviewed "
+                    "LALSimulation phase-transition interface"
+                )
             self.eos = phase_transition_reader(fname)
         else:
-            if dirty_phase_transitions:
-                raise NotImplementedError(
-                    "phase-transition tables require the reviewed "
-                    "LALSimulation multipart EOS interface"
-                )
             self.eos = lalsim.SimNeutronStarEOSFromFile(fname)
         if not skip_family:
             self._set_lalsim_family(
@@ -1283,7 +1294,8 @@ def epsilon(x, p0, eps0, coeffs,use_ode=True):
 ###
 
 # Les-like
-def make_mr_lambda_lal(eos, n_bins=100, branch_id=None):
+def make_mr_lambda_lal(eos, n_bins=100, branch_id=None, multipart=False,
+                       family_adapter=None):
     '''
     Construct mass-radius curve from EOS
     Based on modern code resources (https://git.ligo.org/publications/gw170817/bns-eos/blob/master/scripts/eos-params.py) which access low-level structures
@@ -1292,7 +1304,7 @@ def make_mr_lambda_lal(eos, n_bins=100, branch_id=None):
     required for a multibranch family so an overlapping twin-star interval is
     never collapsed silently.
     '''
-    family = create_family(eos)
+    family = family_adapter or create_family(eos, multipart=multipart)
     if family.number_of_branches > 1 and branch_id is None:
         raise ValueError(
             "multibranch LAL family requires branch_id; use "
@@ -1314,9 +1326,10 @@ def make_mr_lambda_lal(eos, n_bins=100, branch_id=None):
     return mrL_dat
 
 
-def make_mr_lambda_lal_branches(eos, n_bins=100):
+def make_mr_lambda_lal_branches(eos, n_bins=100, multipart=False,
+                                family_adapter=None):
     """Return ``{branch_id: [M, R, Lambda]}`` for every stable LAL branch."""
-    family = create_family(eos)
+    family = family_adapter or create_family(eos, multipart=multipart)
     return {
         branch_id: _make_mr_lambda_for_family(family, n_bins, branch_id)
         for branch_id in range(family.number_of_branches)

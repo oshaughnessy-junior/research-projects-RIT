@@ -11,6 +11,9 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
+import sys
+import tempfile
 
 import numpy as np
 import pytest
@@ -19,6 +22,7 @@ import pytest
 MANIFEST_ENV = "RIFT_REVIEWED_LALSIM_MANIFEST"
 REQUIRED_SYMBOLS = (
     "SimulationVCSInfo",
+    "SimNeutronStarEOSMultiPartsByName",
     "SimNeutronStarEOSFromFilePhaseTransition",
     "CreateSimNeutronStarFamilyPT",
     "SimNeutronStarFamNumberOfBranches",
@@ -29,6 +33,7 @@ REQUIRED_SYMBOLS = (
     "SimNeutronStarFamBranchCentralPressure",
     "SimNeutronStarEOSMultiPartsPseudoEnthalpyOfPressure",
     "SimNeutronStarEOSMultiPartsSpeedOfSoundOfPseudoEnthalpy",
+    "SimNeutronStarEOSMultiPartsMaxPseudoEnthalpy",
 )
 
 
@@ -72,120 +77,138 @@ def _load_adapter_module():
     return module
 
 
-def test_actual_reviewed_lalsimulation_tables(record_property):
-    import lal
-    import lalsimulation as lalsim
-    adapter_module = _load_adapter_module()
-    AmbiguousFamilyBranchError = adapter_module.AmbiguousFamilyBranchError
-    LALSimNeutronStarFamilyAdapter = (
-        adapter_module.LALSimNeutronStarFamilyAdapter
-    )
-
-    manifest_path, manifest = _load_manifest()
+def _validate_reviewed_build(lalsim, manifest, record_property):
     missing = [name for name in REQUIRED_SYMBOLS if not hasattr(lalsim, name)]
     assert not missing, "reviewed LALSimulation symbols missing: {}".format(missing)
     vcs_info = lalsim.SimulationVCSInfo
-    assert vcs_info.vcsId == manifest["lalsuite_ref"], (
-        "manifest ref {} does not match imported LALSimulation build {}".format(
-            manifest["lalsuite_ref"], vcs_info.vcsId
-        )
-    )
-    assert vcs_info.vcsClean == "CLEAN", (
-        "reviewed LALSimulation build has uncommitted source modifications: {}"
-        .format(vcs_info.vcsStatus)
-    )
-    record_property("lalsuite_ref", manifest["lalsuite_ref"])
-    record_property(
-        "lalsimulation_version",
-        getattr(lalsim, "LALSIMULATION_VERSION", "unknown"),
-    )
+    assert vcs_info.vcsId == manifest["lalsuite_ref"]
+    assert vcs_info.vcsClean == "CLEAN"
+    record_property("lalsuite_ref", vcs_info.vcsId)
     record_property("lalsimulation_vcs_status", vcs_info.vcsStatus)
     record_property("lalsimulation_vcs_tag", vcs_info.vcsTag)
-    fixtures = manifest.get("fixtures", {})
-    assert set(fixtures) == {"two_column", "nine_column", "twin_star"}
-    loaded = {}
-    expected_columns = {"two_column": 2, "nine_column": 9, "twin_star": None}
-    for name in ("two_column", "nine_column", "twin_star"):
+
+
+def _run_fixture_subprocess(command):
+    """Run native table parsing with no output pipe and a compact status file."""
+    with tempfile.TemporaryDirectory(prefix="rift-reviewed-eos-") as tmpdir:
+        status = Path(tmpdir) / "status.json"
+        result = subprocess.run(
+            command + ["--status", str(status)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=120, check=False,
+        )
+        detail = status.read_text()[:65536] if status.exists() else ""
+    assert result.returncode == 0, detail or (
+        "fixture subprocess failed with return code {}".format(
+            result.returncode
+        )
+    )
+
+
+def test_actual_reviewed_lalsimulation_builtin(record_property):
+    """Safe acceptance test using LALSuite's trusted built-in SLY table."""
+    import gc
+    import lal
+    import lalsimulation as lalsim
+
+    _, manifest = _load_manifest()
+    _validate_reviewed_build(lalsim, manifest, record_property)
+    Adapter = _load_adapter_module().LALSimNeutronStarFamilyAdapter
+
+    multipart_eos = lalsim.SimNeutronStarEOSMultiPartsByName("SLY")
+    minimal = Adapter(
+        multipart_eos, minimal=True, multipart=True, lalsim_module=lalsim
+    )
+    assert minimal.number_of_branches >= 1
+    mass = 0.5 * (minimal.minimum_mass(0) + minimal.maximum_mass(0))
+    radius = minimal.radius(mass, branch_id=0)
+    love = minimal.love_number_k2(mass, branch_id=0)
+    pressure = minimal.central_pressure(mass, branch_id=0)
+    enthalpy = lalsim.SimNeutronStarEOSMultiPartsPseudoEnthalpyOfPressure(
+        pressure, multipart_eos
+    )
+    sound_si = lalsim.SimNeutronStarEOSMultiPartsSpeedOfSoundOfPseudoEnthalpy(
+        enthalpy, multipart_eos
+    )
+    assert all(np.isfinite(value) and value > 0 for value in (
+        radius, love, pressure, enthalpy, sound_si,
+        lalsim.SimNeutronStarEOSMultiPartsMaxPseudoEnthalpy(multipart_eos),
+    ))
+    assert sound_si > 1.0
+    assert sound_si / lal.C_SI < 1.1
+
+    # Reviewed builds must keep the released named-EOS family path working.
+    legacy_eos = lalsim.SimNeutronStarEOSByName("SLY")
+    legacy = Adapter(legacy_eos, multipart=False, lalsim_module=lalsim)
+    assert legacy.radius(mass, branch_id=0) > 0
+
+    # Extended-only fields must be populated there and unavailable cleanly on
+    # minimal families when the reviewed SWIG build exposes those callables.
+    extended = Adapter(
+        multipart_eos, minimal=False, multipart=True, lalsim_module=lalsim
+    )
+    for name in (
+        "SimNeutronStarFamBranchBaryonMass",
+        "SimNeutronStarFamBranchLoveNumberK3",
+        "SimNeutronStarFamBranchLoveNumberK4",
+    ):
+        fn = getattr(lalsim, name, None)
+        if fn is None:
+            continue
+        assert np.isfinite(fn(mass, 0, extended.family))
+        with pytest.raises(Exception):
+            fn(mass, 0, minimal.family)
+
+    for _ in range(8):
+        eos_here = lalsim.SimNeutronStarEOSMultiPartsByName("SLY")
+        family_here = Adapter(
+            eos_here, multipart=True, lalsim_module=lalsim
+        )
+        assert family_here.number_of_branches >= 1
+        del family_here, eos_here
+        gc.collect()
+
+
+def test_actual_reviewed_lalsimulation_tables(record_property):
+    import lalsimulation as lalsim
+
+    manifest_path, manifest = _load_manifest()
+    _validate_reviewed_build(lalsim, manifest, record_property)
+    fixtures = manifest.get("fixtures")
+    if not fixtures:
+        pytest.skip("external reviewed EOS fixtures not supplied in manifest")
+    assert {"two_column", "nine_column"}.issubset(fixtures)
+    runner = Path(__file__).with_name("run_lalsim_eos_reviewed_fixture.py")
+    fixture_specs = [("two_column", 2), ("nine_column", 9)]
+    if "twin_star" in fixtures:
+        fixture_specs.append(
+            ("twin_star", int(fixtures["twin_star"]["columns"]))
+        )
+    for name, expected_columns in fixture_specs:
+        assert expected_columns in (2, 9), (
+            "file-loader fixtures must have 2 or 9 columns; four-column wiki "
+            "arrays require a separately provenance-recorded transform"
+        )
         fixture = fixtures[name]
         path = (manifest_path.parent / fixture["path"]).resolve()
         assert path.is_file(), "missing {} fixture: {}".format(name, path)
         assert _sha256(path) == fixture["sha256"]
         data = np.loadtxt(str(path))
         columns = 1 if data.ndim == 1 else data.shape[1]
-        if expected_columns[name] is not None:
-            assert columns == expected_columns[name]
-        multipart_eos = lalsim.SimNeutronStarEOSFromFilePhaseTransition(
-            str(path)
-        )
-        loaded[name] = LALSimNeutronStarFamilyAdapter(
-            multipart_eos, minimal=True, multipart=True,
-            lalsim_module=lalsim,
-        )
-        assert loaded[name].number_of_branches >= 1
+        assert columns == expected_columns
+        command = [
+            sys.executable, str(runner), "--fixture", str(path),
+            "--columns", str(expected_columns),
+        ]
+        if name == "twin_star":
+            command.append("--twin")
+        _run_fixture_subprocess(command)
 
-    # Exercise the reviewed CreateFamilyPT min_fam argument in both modes.
+    # Exercise extended construction and EOSManager routing in isolated
+    # processes too; malformed native inputs cannot hang the pytest worker.
     nine_path = (manifest_path.parent / fixtures["nine_column"]["path"]).resolve()
-    nine_eos = lalsim.SimNeutronStarEOSFromFilePhaseTransition(str(nine_path))
-    nine_extended = LALSimNeutronStarFamilyAdapter(
-        nine_eos, minimal=False, multipart=True, lalsim_module=lalsim
-    )
-    assert nine_extended.number_of_branches >= 1
-
-    family = loaded["twin_star"]
-    assert family.number_of_branches >= 2
-    overlaps = []
-    for left in range(family.number_of_branches):
-        for right in range(left + 1, family.number_of_branches):
-            lower = max(family.minimum_mass(left), family.minimum_mass(right))
-            upper = min(family.maximum_mass(left), family.maximum_mass(right))
-            if lower < upper:
-                overlaps.append((left, right, 0.5 * (lower + upper)))
-    assert overlaps, "twin_star fixture has no overlapping stable mass branches"
-    left, right, mass = overlaps[0]
-    with pytest.raises(AmbiguousFamilyBranchError):
-        family.radius(mass)
-    with pytest.raises(ValueError, match="branch_id .* outside"):
-        family.radius(mass, branch_id=family.number_of_branches)
-    outside_left = np.nextafter(family.maximum_mass(left), np.inf)
-    with pytest.raises(ValueError, match="outside stable branch"):
-        family.radius(outside_left, branch_id=left)
-    radii = [family.radius(mass, branch_id=branch) for branch in (left, right)]
-    love = [
-        family.love_number_k2(mass, branch_id=branch)
-        for branch in (left, right)
-    ]
-    pressure = [
-        family.central_pressure(mass, branch_id=branch)
-        for branch in (left, right)
-    ]
-    pseudo_enthalpy = [
-        lalsim.SimNeutronStarEOSMultiPartsPseudoEnthalpyOfPressure(
-            pressure_here, family.eos
+    for extra in ("--extended", "--eosmanager"):
+        _run_fixture_subprocess(
+            [sys.executable, str(runner), "--fixture", str(nine_path),
+             "--columns", "9", extra]
         )
-        for pressure_here in pressure
-    ]
-    sound_speed = [
-        lalsim.SimNeutronStarEOSMultiPartsSpeedOfSoundOfPseudoEnthalpy(
-            enthalpy_here, family.eos
-        )
-        for enthalpy_here in pseudo_enthalpy
-    ]
-    sound_speed_over_c = [value / lal.C_SI for value in sound_speed]
-    tidal_lambda = [
-        (2.0 / 3.0) * love_here * (radius_here * lal.C_SI**2 /
-                                   (mass * lal.G_SI))**5
-        for love_here, radius_here in zip(love, radii)
-    ]
-    assert all(
-        np.isfinite(value) and value > 0
-        for value in radii + love + pressure + pseudo_enthalpy
-        + sound_speed + sound_speed_over_c + tidal_lambda
-    )
-    assert all(value > 1.0 for value in sound_speed), (
-        "multipart sound-speed accessor must return SI m/s"
-    )
-    assert all(value < 1.1 for value in sound_speed_over_c)
-    assert not np.isclose(radii[0], radii[1], rtol=1e-10, atol=0)
-    assert not np.isclose(love[0], love[1], rtol=1e-10, atol=0)
-    assert not np.isclose(pressure[0], pressure[1], rtol=1e-10, atol=0)
-    assert not np.isclose(tidal_lambda[0], tidal_lambda[1], rtol=1e-10, atol=0)

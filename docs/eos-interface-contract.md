@@ -32,8 +32,10 @@ Reviewed two- or nine-column tables use:
     [--using-eos-extended-family] [--using-eos-branch <integer>]
 ```
 
-On a reviewed build, `lalsim_file:` uses
-`SimNeutronStarEOSFromFilePhaseTransition` followed by
+By default, `lalsim_file:` preserves released
+`SimNeutronStarEOSFromFile` behavior even on a reviewed build. Requesting a
+branch, the compatibility dirty-phase-transition option, or the extended
+family opts into `SimNeutronStarEOSFromFilePhaseTransition` followed by
 `CreateSimNeutronStarFamilyPT(eos, min_fam)`. The historical
 `--using-eos-dirty-phase-transitions` spelling is retained as a compatibility
 request, but the reviewed SWIG interface has one phase-transition reader; it
@@ -47,9 +49,9 @@ Branch-specific causality checks dispatch to the multipart accessors
 `SimEOSMultiParts` object to a legacy single-EOS accessor. The multipart
 sound-speed accessor returns SI metres per second, so RIFT
 divides by `lal.C_SI` before applying its historical dimensionless `v/c < 1.1`
-test. A full-table
-causality request fails closed because the reviewed interface does not expose a
-global multipart maximum-pseudo-enthalpy operation.
+test. Full-table causality uses
+`SimNeutronStarEOSMultiPartsMaxPseudoEnthalpy`; it fails closed if that reviewed
+symbol is unavailable.
 
 For pseudo-pipe workflows, forward the flag with
 `--manual-extra-cip-args`.  On O4d, Hydra hyperpipe configurations can put it
@@ -99,8 +101,10 @@ this restriction can be relaxed.
 ## Reviewed-LALSimulation integration gate
 
 The fake-backed compatibility tests check RIFT's dispatch logic, but do not
-certify the reviewed SWIG interface. To run the real-build gate, build the
-exact reviewed LALSuite commit, activate that Python environment, and set
+certify the reviewed SWIG interface. Fixture-free acceptance uses trusted
+`SimNeutronStarEOSMultiPartsByName("SLY")`, checks coexistence with the legacy
+named-EOS API, and repeatedly constructs and destroys families. To run it,
+build the exact reviewed LALSuite commit, activate that Python environment, and set
 `RIFT_REVIEWED_LALSIM_MANIFEST` to a JSON file with this shape:
 
 ```json
@@ -109,17 +113,32 @@ exact reviewed LALSuite commit, activate that Python environment, and set
   "fixtures": {
     "two_column": {"path": "two-column.dat", "sha256": "..."},
     "nine_column": {"path": "nine-column.dat", "sha256": "..."},
-    "twin_star": {"path": "twin-star.dat", "sha256": "..."}
+    "twin_star": {"path": "twin-star.dat", "sha256": "...", "columns": 9}
   }
 }
 ```
+
+The `fixtures` object is optional, and `twin_star` is optional within it.
+Without fixtures, builtin acceptance runs and external-table coverage is an
+explicit skip. File-loader fixtures must be explicit two- or nine-column
+numeric tables. Four-column wiki arrays require a separate, provenance-recorded
+unit conversion and are not passed to the native file reader. Each external
+table is loaded in a subprocess with a 120-second timeout, output sent to
+`DEVNULL`, and only a compact JSON status file returned to pytest.
+
+The authoritative two-transition four-column array fixture currently exits
+with signal 11 (shell return code 139) inside the reviewed native implementation.
+That is an upstream acceptance blocker, not a passing RIFT fixture. It must be
+rerun through a separately provenance-recorded array conversion after the
+native crash is fixed; this gate does not silently reinterpret it as a file
+reader input.
 
 Run
 `pytest MonteCarloMarginalizeCode/Code/test/test_lalsim_eos_reviewed_integration.py`.
 Paths are relative to the manifest. The ref must be the full 40-character
 commit actually built by the job: the gate requires it to equal
 `lalsimulation.SimulationVCSInfo.vcsId` and requires a clean VCS build. Every
-fixture hash is mandatory. Once the manifest enables the gate, missing modern
+supplied fixture hash is mandatory. Once the manifest enables the gate, missing modern
 symbols, malformed or mismatched build provenance, missing fixtures, wrong
 column counts, or absence of distinct overlapping twin-star solutions are
 failures. The gate exercises the real phase-transition reader on two- and
