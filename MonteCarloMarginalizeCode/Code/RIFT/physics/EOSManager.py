@@ -15,6 +15,7 @@ rosDebug=False
 import numpy as np
 import os
 import sys
+import warnings
 import lal
 import lalsimulation as lalsim
 from scipy.integrate import quad
@@ -1306,6 +1307,12 @@ def epsilon(x, p0, eps0, coeffs,use_ode=True):
 # Les-like
 def _resolve_multipart_keyword(multipart, reviewed_multibranch):
     """Resolve the canonical keyword and its O4c compatibility alias."""
+    if reviewed_multibranch is not None:
+        warnings.warn(
+            "reviewed_multibranch is deprecated; use multipart",
+            DeprecationWarning,
+            stacklevel=3,
+        )
     if multipart is None and reviewed_multibranch is None:
         return False
     if multipart is None:
