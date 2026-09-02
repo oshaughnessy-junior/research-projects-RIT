@@ -23,6 +23,7 @@ MANIFEST_ENV = "RIFT_REVIEWED_LALSIM_MANIFEST"
 REQUIRED_SYMBOLS = (
     "SimulationVCSInfo",
     "SimNeutronStarEOSMultiPartsByName",
+    "SimNeutronStarEOSFromArraysPhaseTransition",
     "SimNeutronStarEOSFromFilePhaseTransition",
     "CreateSimNeutronStarFamilyPT",
     "SimNeutronStarFamNumberOfBranches",
@@ -95,7 +96,7 @@ def _run_fixture_subprocess(command):
         result = subprocess.run(
             command + ["--status", str(status)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            timeout=120, check=False,
+            timeout=60, check=False,
         )
         detail = status.read_text()[:65536] if status.exists() else ""
     assert result.returncode == 0, detail or (
@@ -103,6 +104,22 @@ def _run_fixture_subprocess(command):
             result.returncode
         )
     )
+
+
+def _run_expected_upstream_crash(command):
+    result = subprocess.run(
+        command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        timeout=60, check=False,
+    )
+    if result.returncode == 0:
+        pytest.fail(
+            "known two-transition native crash is fixed; promote this fixture "
+            "to a required passing gate"
+        )
+    assert result.returncode in (-11, 139), (
+        "expected SIGSEGV/139, got {}".format(result.returncode)
+    )
+    pytest.xfail("upstream reviewed LALSimulation two-transition SIGSEGV")
 
 
 def test_actual_reviewed_lalsimulation_builtin(record_property):
@@ -140,7 +157,8 @@ def test_actual_reviewed_lalsimulation_builtin(record_property):
     # Reviewed builds must keep the released named-EOS family path working.
     legacy_eos = lalsim.SimNeutronStarEOSByName("SLY")
     legacy = Adapter(legacy_eos, multipart=False, lalsim_module=lalsim)
-    assert legacy.radius(mass, branch_id=0) > 0
+    legacy_mass = 0.5 * (legacy.minimum_mass() + legacy.maximum_mass())
+    assert legacy.radius(legacy_mass, branch_id=0) > 0
 
     # Extended-only fields must be populated there and unavailable cleanly on
     # minimal families when the reviewed SWIG build exposes those callables.
@@ -148,7 +166,7 @@ def test_actual_reviewed_lalsimulation_builtin(record_property):
         multipart_eos, minimal=False, multipart=True, lalsim_module=lalsim
     )
     for name in (
-        "SimNeutronStarFamBranchBaryonMass",
+        "SimNeutronStarFamBranchBaryonicMass",
         "SimNeutronStarFamBranchLoveNumberK3",
         "SimNeutronStarFamBranchLoveNumberK4",
     ):
@@ -212,3 +230,14 @@ def test_actual_reviewed_lalsimulation_tables(record_property):
             [sys.executable, str(runner), "--fixture", str(nine_path),
              "--columns", "9", extra]
         )
+
+    crash = manifest.get("known_upstream_crash")
+    if crash:
+        crash_path = (manifest_path.parent / crash["path"]).resolve()
+        assert _sha256(crash_path) == crash["sha256"]
+        crash_data = np.loadtxt(str(crash_path))
+        assert crash_data.ndim == 2 and crash_data.shape[1] == 4
+        _run_expected_upstream_crash([
+            sys.executable, str(runner), "--fixture", str(crash_path),
+            "--columns", "4", "--arrays", "--status", os.devnull,
+        ])

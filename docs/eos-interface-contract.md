@@ -114,6 +114,10 @@ build the exact reviewed LALSuite commit, activate that Python environment, and 
     "two_column": {"path": "two-column.dat", "sha256": "..."},
     "nine_column": {"path": "nine-column.dat", "sha256": "..."},
     "twin_star": {"path": "twin-star.dat", "sha256": "...", "columns": 9}
+  },
+  "known_upstream_crash": {
+    "path": "eos_2pt.dat",
+    "sha256": "..."
   }
 }
 ```
@@ -123,10 +127,13 @@ Without fixtures, builtin acceptance runs and external-table coverage is an
 explicit skip. File-loader fixtures must be explicit two- or nine-column
 numeric tables. Four-column wiki arrays require a separate, provenance-recorded
 unit conversion and are not passed to the native file reader. Each external
-table is loaded in a subprocess with a 120-second timeout, output sent to
+table is loaded in a subprocess with a 60-second timeout, output sent to
 `DEVNULL`, and only a compact JSON status file returned to pytest.
 
-The authoritative two-transition four-column array fixture currently exits
+The optional `known_upstream_crash` entry is converted through
+`SimNeutronStarEOSFromArraysPhaseTransition` using the reviewed geometrized
+factor `1.602176634e32 * G / c^4`. The authoritative two-transition
+four-column array fixture currently exits
 with signal 11 (shell return code 139) inside the reviewed native implementation.
 That is an upstream acceptance blocker, not a passing RIFT fixture. It must be
 rerun through a separately provenance-recorded array conversion after the
