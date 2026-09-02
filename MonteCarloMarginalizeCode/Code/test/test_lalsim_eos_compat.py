@@ -98,7 +98,7 @@ class StellarMassMultibranchLALSimulation(MultibranchLALSimulation):
     def SimNeutronStarEOSMultiPartsSpeedOfSoundOfPseudoEnthalpy(
         self, enthalpy, eos
     ):
-        return 0.5
+        return 0.5 * lal.C_SI
 
     def SimNeutronStarEOSPseudoEnthalpyOfPressure(self, pressure, eos):
         raise AssertionError("multipart causality used the legacy EOS accessor")

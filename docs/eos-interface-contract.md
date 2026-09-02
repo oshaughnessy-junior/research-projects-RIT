@@ -44,7 +44,10 @@ phase transition.
 Branch-specific causality checks dispatch to the multipart accessors
 `SimNeutronStarEOSMultiPartsPseudoEnthalpyOfPressure` and
 `SimNeutronStarEOSMultiPartsSpeedOfSoundOfPseudoEnthalpy`; they never pass a
-`SimEOSMultiParts` object to a legacy single-EOS accessor. A full-table
+`SimEOSMultiParts` object to a legacy single-EOS accessor. The multipart
+sound-speed accessor returns SI metres per second, so RIFT
+divides by `lal.C_SI` before applying its historical dimensionless `v/c < 1.1`
+test. A full-table
 causality request fails closed because the reviewed interface does not expose a
 global multipart maximum-pseudo-enthalpy operation.
 

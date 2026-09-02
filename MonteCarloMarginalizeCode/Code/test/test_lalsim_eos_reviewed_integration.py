@@ -170,6 +170,7 @@ def test_actual_reviewed_lalsimulation_tables(record_property):
         )
         for enthalpy_here in pseudo_enthalpy
     ]
+    sound_speed_over_c = [value / lal.C_SI for value in sound_speed]
     tidal_lambda = [
         (2.0 / 3.0) * love_here * (radius_here * lal.C_SI**2 /
                                    (mass * lal.G_SI))**5
@@ -178,8 +179,12 @@ def test_actual_reviewed_lalsimulation_tables(record_property):
     assert all(
         np.isfinite(value) and value > 0
         for value in radii + love + pressure + pseudo_enthalpy
-        + sound_speed + tidal_lambda
+        + sound_speed + sound_speed_over_c + tidal_lambda
     )
+    assert all(value > 1.0 for value in sound_speed), (
+        "multipart sound-speed accessor must return SI m/s"
+    )
+    assert all(value < 1.1 for value in sound_speed_over_c)
     assert not np.isclose(radii[0], radii[1], rtol=1e-10, atol=0)
     assert not np.isclose(love[0], love[1], rtol=1e-10, atol=0)
     assert not np.isclose(pressure[0], pressure[1], rtol=1e-10, atol=0)

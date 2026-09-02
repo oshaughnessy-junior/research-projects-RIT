@@ -257,13 +257,19 @@ class EOSConcrete:
                 "SimNeutronStarEOSMultiPartsPseudoEnthalpyOfPressure",
                 None,
             )
-            speed_of_sound = getattr(
+            multipart_speed_of_sound = getattr(
                 lalsim,
                 "SimNeutronStarEOSMultiPartsSpeedOfSoundOfPseudoEnthalpy",
                 None,
             )
-            if pseudo_enthalpy_of_pressure is None or speed_of_sound is None:
+            if (pseudo_enthalpy_of_pressure is None
+                    or multipart_speed_of_sound is None):
                 return False
+            # Unlike the legacy Geometerized callable, the multipart accessor
+            # returns SI m/s. Preserve the dimensionless v/c threshold below.
+            speed_of_sound = lambda h, eos_here: (
+                multipart_speed_of_sound(h, eos_here) / lal.C_SI
+            )
         else:
             pseudo_enthalpy_of_pressure = (
                 lalsim.SimNeutronStarEOSPseudoEnthalpyOfPressure
