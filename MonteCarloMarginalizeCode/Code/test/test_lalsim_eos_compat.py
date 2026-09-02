@@ -1,4 +1,6 @@
+import ast
 import json
+import os
 
 import lal
 import numpy as np
@@ -9,6 +11,38 @@ from RIFT.physics.lalsim_eos_compat import (
     LALSimNeutronStarFamilyAdapter,
     validate_fixed_eos_branch_request,
 )
+
+# The fixed-EOS consumer of the branch bounds.  CIP is a script -- importing it
+# parses argv and runs the whole fit -- so the tests below read its source with
+# ast and exec only the one function they exercise, which keeps them running the
+# shipped code rather than a copy that can silently drift away from it.
+CIP_SCRIPT = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "..",
+    "bin",
+    "util_ConstructIntrinsicPosterior_GenericCoordinates.py",
+)
+
+
+def _cip_source_tree():
+    with open(CIP_SCRIPT) as stream:
+        return ast.parse(stream.read())
+
+
+def _load_cip_function(name):
+    for node in _cip_source_tree().body:
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            namespace = {"np": np}
+            exec(
+                compile(
+                    ast.Module(body=[node], type_ignores=[]),
+                    CIP_SCRIPT,
+                    "exec",
+                ),
+                namespace,
+            )
+            return namespace[name]
+    raise AssertionError("CIP no longer defines {}".format(name))
 
 
 class LegacyLALSimulation:
@@ -344,6 +378,82 @@ def test_selected_branch_view_flags_masses_below_the_branch_minimum(monkeypatch)
     assert flagged[0] == -np.inf
     assert np.isfinite(flagged[1])
     assert flagged[2] == pytest.approx(1e-8)
+
+
+def test_cip_fit_guard_drops_out_of_support_rows_and_keeps_the_rest():
+    protect = _load_cip_function("protect_fit_against_out_of_support")
+
+    batches = []
+
+    def picky_fit(x):
+        # Stands in for the sklearn-backed fits, which raise on nonfinite input.
+        assert np.all(np.isfinite(x)), "the fit was handed an out-of-support row"
+        batches.append(np.array(x, copy=True))
+        return x[:, 0]
+
+    guarded = protect(picky_fit)
+
+    # Row 1 is the flagged draw: the branch view returns -inf for a mass with no
+    # stable star, and the coordinate conversion carries that into the fit
+    # coordinates.  Row 2 is the nan that an inf-inf coordinate combination
+    # (lambda_plus / delta_lambda_tilde, say) produces from the same flag.
+    values = guarded(
+        np.array([[1.0, 2.0], [-np.inf, 2.0], [np.nan, 2.0], [3.0, 4.0]])
+    )
+    assert values[1] == -np.inf and values[2] == -np.inf
+    assert np.exp(values[1]) == 0.0  # zero probability, not an aborted batch
+    assert values[0] == pytest.approx(1.0)
+    assert values[3] == pytest.approx(3.0)
+
+    # The valid rows must survive, and in ONE call: a batched fit backend cannot
+    # be turned into a per-row loop by the presence of a rejected draw.
+    assert len(batches) == 1
+    assert batches[0].shape == (2, 2)
+
+    # A batch with no support at all must not reach the fit at all.
+    empty = guarded(np.array([[-np.inf, 2.0]]))
+    assert empty.shape == (1,) and empty[0] == -np.inf
+    assert len(batches) == 1
+
+
+def test_cip_applies_the_fit_guard_unconditionally_for_a_fixed_eos():
+    tree = _cip_source_tree()
+
+    wraps = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "my_fit"
+            for target in node.targets
+        )
+        and isinstance(node.value, ast.Call)
+        and getattr(node.value.func, "id", None)
+        == "protect_fit_against_out_of_support"
+    ]
+    assert len(wraps) == 1
+
+    # It must be applied in the fixed-EOS branch of the coordinate-conversion
+    # setup ...
+    eos_blocks = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.If)
+        and "using_eos" in ast.dump(node.test)
+        and any(
+            isinstance(stmt, ast.FunctionDef) and stmt.name == "convert_coords"
+            for stmt in node.orelse
+        )
+    ]
+    assert len(eos_blocks) == 1
+    assert any(stmt is wraps[0] for stmt in eos_blocks[0].orelse)
+
+    # ... and not underneath the optional --protect-coordinate-conversions flag,
+    # because out-of-support draws are ordinary with a fixed EOS.
+    optional = set()
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.If)
+                and "protect_coordinate_conversions" in ast.dump(node.test)):
+            optional.update(id(child) for child in ast.walk(node))
+    assert id(wraps[0]) not in optional
 
 
 def test_selected_branch_view_preserves_branch_sensitive_helpers(monkeypatch):

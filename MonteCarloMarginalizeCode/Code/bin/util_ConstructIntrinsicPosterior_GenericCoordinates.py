@@ -2814,6 +2814,27 @@ if not no_plots:
 ###
 ### Coordinate conversion tool
 ###
+def protect_fit_against_out_of_support(fn, val=-np.inf):
+    """Wrap a fit so rows with a nonfinite coordinate get ``val`` instead of being fit.
+
+    A fixed EOS has bounded support: no stable star exists above ``mMaxMsun``,
+    and none below ``mMinMsun`` on a selected branch either.  Those draws come
+    back from the EOS with a nonfinite lambda, which the coordinate conversion
+    propagates into the fit coordinates, and the usual fitting backends
+    (sklearn in particular) raise on nonfinite input.  Such draws are routine
+    in every integration batch, so they must be assigned zero probability here
+    rather than aborting the batch that carried them.  Rows that are in support
+    are still fit together, in one call, so batched backends are unaffected.
+    """
+    def my_protected_fit(x_in):
+        x_in = np.atleast_2d(x_in)
+        indx_ok = np.all(np.isfinite(x_in), axis=1)
+        val_out = np.full(len(x_in), val, dtype=float)
+        if np.any(indx_ok):
+            val_out[indx_ok] = np.reshape(fn(x_in[indx_ok]), -1)
+        return val_out
+    return my_protected_fit
+
 if not opts.using_eos or (fake_eos):
  def convert_coords(x_in):
     return lalsimutils.convert_waveform_coordinates(x_in, coord_names=coord_names,low_level_coord_names=low_level_coord_names,source_redshift=source_redshift,enforce_kerr=opts.downselect_enforce_kerr)
@@ -2821,6 +2842,11 @@ else:
  def convert_coords(x_in):
     x_out = lalsimutils.convert_waveform_coordinates_with_eos(x_in, coord_names=coord_names,low_level_coord_names=low_level_coord_names,eos_class=my_eos,no_matter1=opts.no_matter1, no_matter2=opts.no_matter2,source_redshift=source_redshift,enforce_kerr=opts.downselect_enforce_kerr)
     return x_out
+
+ # --protect-coordinate-conversions offers the same guard for the general case,
+ # but out-of-support draws are not exceptional with a fixed EOS, so the guard
+ # is not optional on this path.
+ my_fit = protect_fit_against_out_of_support(my_fit)
 
 
 ###

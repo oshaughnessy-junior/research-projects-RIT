@@ -33,6 +33,13 @@ therefore `lambda_from_m_vector`) returns `-inf` for a mass with no stable star
 on the selected branch rather than raising, so a single out-of-branch draw
 flags itself instead of aborting the batch it arrived in.
 
+The flag is only useful if the consumer acts on it, so with a fixed EOS CIP
+rejects nonfinite converted coordinates before the likelihood fit
+unconditionally -- not only under `--protect-coordinate-conversions` -- giving
+those draws zero probability while the rest of the batch is fit normally, and
+drops the corresponding samples on export rather than writing a meaningless
+tidal parameter.
+
 Reviewed two- or nine-column tables use:
 
 ```text

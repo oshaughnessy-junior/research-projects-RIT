@@ -333,8 +333,10 @@ class EOSBranchView:
     #: lambda_from_m value for a mass with no stable star on this branch.
     #: Legacy consumers mask only on mMaxMsun, so masses below mMinMsun still
     #: reach us; returning the same flag lalsimutils uses for its own failed
-    #: conversions keeps one such draw from aborting an entire batch, while any
-    #: downstream lambda range check still rejects the point.
+    #: conversions keeps one such draw from aborting an entire batch.  It is a
+    #: flag, not a tidal deformability: the consumer must reject the row, which
+    #: is why CIP filters nonfinite converted coordinates ahead of the
+    #: likelihood fit and drops such samples on export.
     LAMBDA_OUT_OF_BRANCH = -np.inf
 
     def __init__(self, source, branch_id):
