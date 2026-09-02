@@ -1824,6 +1824,20 @@ pinned_params.update({
 })
 if opts.sampler_method == "adaptive_cartesian_gpu":
   pinned_params.update({"save_no_samples":True})   # do not exhaust GPU memory with MC samples!
+# An export request has to carry its OWN retention.  The .dgrid exporter reads the sampler's
+# importance-weight record ('integrand'/'log_integrand' plus the joint priors) and the retained
+# distance coordinate, but retention is otherwise decided by --save-samples and -- in mcsampler --
+# turned on as a SIDE EFFECT of adaptation (save_intg is forced when n_adapt>0 and tempering_exp>0).
+# So `--sampler-method adaptive_cartesian --no-adapt --export-marginal-distance-grid` without
+# --save-samples reached the exporter with coordinates but no weights, and the requested grid died
+# in ln_weights_for_posterior instead of being written.  Mirrors the exporter's own gate (see
+# 'Per-intrinsic likelihood-vs-distance grid' below): when that gate cannot fire there is nothing to
+# retain for, and the memory-saving defaults stand untouched.
+export_dgrid_requested = bool(opts.output_file) and bool(opts.export_marginal_distance_grid) and not(opts.distance_marginalization)
+if export_dgrid_requested:
+  # save_no_samples has to go with it: it suppresses the per-draw coordinate cache in
+  # mcsamplerGPU.draw, so the export would fail on the distance column instead of on the weights.
+  pinned_params.update({"save_intg":True,"save_no_samples":False})
 # GMM-specific argument blocks must run for a STANDALONE GMM *or* for a portfolio carrying a GMM
 # member (whose config still has to be forwarded).  This used to be achieved by clobbering
 # opts.sampler_method='GMM' during portfolio setup, which broke every downstream 'portfolio' test;
@@ -5168,9 +5182,13 @@ for indx in numpy.arange(len(P_list)):
       params_adapt = sampler.adaptive
       params_adapt  = list(set(params_adapt) - set(['right_ascension','declination']))
       sampler.adaptive = params_adapt
-      # Disable saving of the integrand -- saves on memory and will reduce speed. 
+      # Disable saving of the integrand -- saves on memory and will reduce speed.
       # Note this needs to be done in a few places
-      pinned_params.update({"force_no_adapt":True,"save_intg":False, "igrand_threshold_deltalnL":20})  # massively reduce memory usage in logic branch, don't save all. Highly redundant sequence to self-document all related logic branches
+      # Skipped when a .dgrid was requested: this fires after an event, so it would drop the
+      # weight record out from under EVERY LATER event's exporter (force_no_adapt suppresses the
+      # record in mcsampler even when save_intg is set).  Sky adaptation is still switched off above.
+      if not export_dgrid_requested:
+        pinned_params.update({"force_no_adapt":True,"save_intg":False, "igrand_threshold_deltalnL":20})  # massively reduce memory usage in logic branch, don't save all. Highly redundant sequence to self-document all related logic branches
  except Exception as exception_failure:
   print( "  ===> FAILED ANALYSIS <==== ")
   print( exception_failure)
