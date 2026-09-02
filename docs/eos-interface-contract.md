@@ -25,6 +25,14 @@ The fixed-EOS CIP driver exposes the same operation as:
 --using-eos lal_<name> --using-eos-branch <integer>
 ```
 
+A selected branch is bounded at both ends, so the view publishes `mMinMsun`
+alongside `mMaxMsun`; a twin-star branch can begin well above the family
+minimum mass. Consumers that mask draws should mask against both bounds.
+Because the historical consumers mask only on `mMaxMsun`, `lambda_from_m` (and
+therefore `lambda_from_m_vector`) returns `-inf` for a mass with no stable star
+on the selected branch rather than raising, so a single out-of-branch draw
+flags itself instead of aborting the batch it arrived in.
+
 Reviewed two- or nine-column tables use:
 
 ```text

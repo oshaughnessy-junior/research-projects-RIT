@@ -3871,6 +3871,12 @@ for indx_here in indx_list:
             else:
                 Pgrid.lambda1 = 0 # BH
             Pgrid.lambda2 = my_eos.lambda_from_m(Pgrid.m2/lal.MSUN_SI)
+            # A selected EOS branch is bounded below as well as above, so a mass
+            # can have no star on it at all.  That is flagged with a nonfinite
+            # lambda: the draw is outside this EOS model's support, so drop it
+            # instead of exporting a sample with a meaningless tidal parameter.
+            if not (np.isfinite(Pgrid.lambda1) and np.isfinite(Pgrid.lambda2)):
+                include_item = False
         elif opts.tabular_eos_file:
             # save the index of the SORTED SIMULATION (because that's how I'll be accessing it!)
             eos_indx_here = my_eos_sequence.lookup_closest(samples['ordering'][indx_here])

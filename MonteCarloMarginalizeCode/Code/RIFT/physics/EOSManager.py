@@ -324,7 +324,18 @@ class EOSBranchView:
     family are delegated to the source EOS, while all mass-radius-tidal queries
     are pinned to ``branch_id``.  It is the compatibility bridge for callers
     such as CIP and hyperpipe that cannot pass a branch keyword on every lookup.
+
+    A branch is bounded at BOTH ends: a twin-star branch typically starts well
+    above the family minimum mass, so ``mMinMsun`` is published next to
+    ``mMaxMsun`` and consumers that mask draws should mask against both.
     """
+
+    #: lambda_from_m value for a mass with no stable star on this branch.
+    #: Legacy consumers mask only on mMaxMsun, so masses below mMinMsun still
+    #: reach us; returning the same flag lalsimutils uses for its own failed
+    #: conversions keeps one such draw from aborting an entire batch, while any
+    #: downstream lambda range check still rejects the point.
+    LAMBDA_OUT_OF_BRANCH = -np.inf
 
     def __init__(self, source, branch_id):
         self.source = source
@@ -334,6 +345,9 @@ class EOSBranchView:
         self.name = "{}[branch={}]".format(source.name, self.branch_id)
         self.eos = source.eos
         self.eos_fam = source.eos_fam
+        self.mMinMsun = (
+            adapter.minimum_mass(self.branch_id) / lal.MSUN_SI
+        )
         self.mMaxMsun = (
             adapter.maximum_mass(self.branch_id) / lal.MSUN_SI
         )
@@ -349,7 +363,16 @@ class EOSBranchView:
         m_msun = m / lal.MSUN_SI if m > 10**15 else m
         if m_msun > 0.999 * self.mMaxMsun:
             return 1e-8
-        return self.source.lambda_from_m(m, branch_id=self.branch_id)
+        if m_msun < self.mMinMsun:
+            return self.LAMBDA_OUT_OF_BRANCH
+        try:
+            return self.source.lambda_from_m(m, branch_id=self.branch_id)
+        except ValueError:
+            # The Msun <-> SI round trip inside that call can put a mass quoted
+            # exactly at the branch edge a fraction outside it.  That is still
+            # an out-of-branch draw, not a caller error, so flag it rather than
+            # raising through a batch conversion.
+            return self.LAMBDA_OUT_OF_BRANCH
 
     def lambda_from_m_vector(self, m):
         if not isinstance(m, np.ndarray):

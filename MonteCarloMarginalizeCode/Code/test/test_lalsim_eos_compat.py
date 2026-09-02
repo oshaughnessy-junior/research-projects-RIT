@@ -323,6 +323,29 @@ def test_selected_branch_view_preserves_legacy_scalar_consumer_api(monkeypatch):
     assert primary.lambda_from_m(2.5) == pytest.approx(1e-8)
 
 
+def test_selected_branch_view_flags_masses_below_the_branch_minimum(monkeypatch):
+    from RIFT.physics import EOSManager
+
+    fake_lalsim = StellarMassMultibranchLALSimulation()
+    monkeypatch.setattr(EOSManager, "lalsim", fake_lalsim)
+    secondary = EOSManager.EOSLALSimulationFromFile(
+        "twin-star.dat", phase_transition_aware=True
+    ).for_branch(1)
+
+    # This branch starts above the family minimum, so consumers that mask only
+    # against mMaxMsun still hand it lighter masses.  Those must be flagged,
+    # not raised through the caller's batch.
+    assert secondary.mMinMsun == pytest.approx(1.3)
+    assert secondary.branches_for_m(1.1) == []
+    assert secondary.lambda_from_m(1.1) == -np.inf
+    assert secondary.lambda_from_m(1.1 * lal.MSUN_SI) == -np.inf
+
+    flagged = secondary.lambda_from_m_vector(np.array([1.1, 1.75, 3.5]))
+    assert flagged[0] == -np.inf
+    assert np.isfinite(flagged[1])
+    assert flagged[2] == pytest.approx(1e-8)
+
+
 def test_selected_branch_view_preserves_branch_sensitive_helpers(monkeypatch):
     from RIFT.physics import EOSManager
 
