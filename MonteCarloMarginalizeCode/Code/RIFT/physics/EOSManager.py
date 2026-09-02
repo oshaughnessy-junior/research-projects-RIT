@@ -77,12 +77,13 @@ class EOSConcrete:
         self.eos_fam = None
         return None
 
-    def _set_lalsim_family(self, minimal=True, multipart=False):
+    def _set_lalsim_family(self, minimal=True, multipart=False,
+                            log_pressure_min=None):
         """Create and cache a released-or-multibranch LAL family."""
         self._lalsim_multipart = bool(multipart)
         self._lalsim_family_adapter = create_family(
             self.eos, minimal=minimal, multipart=multipart,
-            lalsim_module=lalsim
+            lalsim_module=lalsim, log_pressure_min=log_pressure_min
         )
         self.eos_fam = self._lalsim_family_adapter.family
         self.mMaxMsun = self._lalsim_family_adapter.maximum_mass() / lal.MSUN_SI
@@ -404,7 +405,8 @@ class EOSLALSimulationFromFile(EOSConcrete):
 
     def __init__(self, fname, name=None, dirty_phase_transitions=False,
                  skip_family=False, minimal_family=True,
-                 phase_transition_aware=False):
+                 phase_transition_aware=False,
+                 family_log_pressure_min=None):
         self.name = name or os.path.basename(fname)
         self.fname = fname
         self.eos = None
@@ -412,10 +414,17 @@ class EOSLALSimulationFromFile(EOSConcrete):
         phase_transition_reader = getattr(
             lalsim, "SimNeutronStarEOSFromFilePhaseTransition", None
         )
+        if family_log_pressure_min is not None:
+            family_log_pressure_min = float(family_log_pressure_min)
+            if not np.isfinite(family_log_pressure_min):
+                raise ValueError(
+                    "family_log_pressure_min must be finite ln(Pc / Pa)"
+                )
         multipart = bool(
             phase_transition_aware
             or dirty_phase_transitions
             or not minimal_family
+            or family_log_pressure_min is not None
         )
         self._lalsim_multipart = multipart
         if multipart:
@@ -429,7 +438,8 @@ class EOSLALSimulationFromFile(EOSConcrete):
             self.eos = lalsim.SimNeutronStarEOSFromFile(fname)
         if not skip_family:
             self._set_lalsim_family(
-                minimal=minimal_family, multipart=multipart
+                minimal=minimal_family, multipart=multipart,
+                log_pressure_min=family_log_pressure_min
             )
         else:
             self.mMaxMsun = None
@@ -1294,8 +1304,23 @@ def epsilon(x, p0, eps0, coeffs,use_ode=True):
 ###
 
 # Les-like
-def make_mr_lambda_lal(eos, n_bins=100, branch_id=None, multipart=False,
-                       family_adapter=None):
+def _resolve_multipart_keyword(multipart, reviewed_multibranch):
+    """Resolve the canonical keyword and its O4c compatibility alias."""
+    if multipart is None and reviewed_multibranch is None:
+        return False
+    if multipart is None:
+        return bool(reviewed_multibranch)
+    if reviewed_multibranch is None:
+        return bool(multipart)
+    if bool(multipart) != bool(reviewed_multibranch):
+        raise ValueError(
+            "multipart and reviewed_multibranch specify conflicting values"
+        )
+    return bool(multipart)
+
+
+def make_mr_lambda_lal(eos, n_bins=100, branch_id=None, multipart=None,
+                       family_adapter=None, reviewed_multibranch=None):
     '''
     Construct mass-radius curve from EOS
     Based on modern code resources (https://git.ligo.org/publications/gw170817/bns-eos/blob/master/scripts/eos-params.py) which access low-level structures
@@ -1304,6 +1329,7 @@ def make_mr_lambda_lal(eos, n_bins=100, branch_id=None, multipart=False,
     required for a multibranch family so an overlapping twin-star interval is
     never collapsed silently.
     '''
+    multipart = _resolve_multipart_keyword(multipart, reviewed_multibranch)
     family = family_adapter or create_family(eos, multipart=multipart)
     if family.number_of_branches > 1 and branch_id is None:
         raise ValueError(
@@ -1326,9 +1352,11 @@ def make_mr_lambda_lal(eos, n_bins=100, branch_id=None, multipart=False,
     return mrL_dat
 
 
-def make_mr_lambda_lal_branches(eos, n_bins=100, multipart=False,
-                                family_adapter=None):
+def make_mr_lambda_lal_branches(eos, n_bins=100, multipart=None,
+                                family_adapter=None,
+                                reviewed_multibranch=None):
     """Return ``{branch_id: [M, R, Lambda]}`` for every stable LAL branch."""
+    multipart = _resolve_multipart_keyword(multipart, reviewed_multibranch)
     family = family_adapter or create_family(eos, multipart=multipart)
     return {
         branch_id: _make_mr_lambda_for_family(family, n_bins, branch_id)

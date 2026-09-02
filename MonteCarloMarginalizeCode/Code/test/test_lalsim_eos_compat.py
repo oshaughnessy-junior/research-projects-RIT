@@ -63,6 +63,14 @@ class MultibranchLALSimulation:
         self.create_calls.append(("multipart", eos, min_fam))
         return "multibranch-family"
 
+    def CreateSimNeutronStarFamilyPTWithPcmin(
+        self, eos, min_fam, log_pressure_min
+    ):
+        self.create_calls.append(
+            ("multipart-pcmin", eos, min_fam, log_pressure_min)
+        )
+        return "multibranch-family-pcmin"
+
     def SimNeutronStarFamNumberOfBranches(self, family):
         return len(self.bounds)
 
@@ -223,6 +231,20 @@ def test_eosmanager_file_loader_routes_reviewed_phase_transition_api(monkeypatch
         "multipart", "multipart-eos", 0
     )
 
+    pressure_floor = EOSManager.EOSLALSimulationFromFile(
+        "pressure-floor.dat", family_log_pressure_min=12.5
+    )
+    assert pressure_floor.eos_fam == "multibranch-family-pcmin"
+    assert fake_lalsim.create_calls[-1] == (
+        "multipart-pcmin", "multipart-eos", 1, 12.5
+    )
+
+    for invalid in (np.inf, -np.inf, np.nan):
+        with pytest.raises(ValueError, match=r"finite ln\(Pc / Pa\)"):
+            EOSManager.EOSLALSimulationFromFile(
+                "pressure-floor.dat", family_log_pressure_min=invalid
+            )
+
 
 def test_eosmanager_file_loader_preserves_legacy_default(monkeypatch):
     from RIFT.physics import EOSManager
@@ -344,6 +366,16 @@ def test_mr_lambda_helpers_accept_explicit_multipart_adapter(monkeypatch):
     assert set(branches) == {0, 1}
     assert branches[1].shape == (4, 3)
     assert one_branch.shape == (4, 3)
+
+    alias_branch = EOSManager.make_mr_lambda_lal(
+        eos.eos, n_bins=3, branch_id=1, reviewed_multibranch=True
+    )
+    assert alias_branch.shape == (3, 3)
+    with pytest.raises(ValueError, match="conflicting values"):
+        EOSManager.make_mr_lambda_lal(
+            eos.eos, branch_id=1, multipart=True,
+            reviewed_multibranch=False,
+        )
 
 
 def test_selected_branch_helpers_fail_closed_when_branch_data_are_missing(monkeypatch):

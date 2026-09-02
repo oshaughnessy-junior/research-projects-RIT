@@ -43,6 +43,13 @@ does not expose a separate dirty-table boolean. On released LALSimulation,
 that flag fails explicitly rather than pretending the legacy reader repaired a
 phase transition.
 
+The Python API also accepts `family_log_pressure_min=<value>` on
+`EOSLALSimulationFromFile`. This opts into
+`CreateSimNeutronStarFamilyPTWithPcmin(eos, min_fam, logPcmin)`; the value must
+be finite and is the natural logarithm `ln(Pc / Pa)`. Mass-radius helpers use
+the canonical `multipart=` keyword and retain `reviewed_multibranch=` as a
+deprecated O4c compatibility alias; conflicting explicit values raise.
+
 Branch-specific causality checks dispatch to the multipart accessors
 `SimNeutronStarEOSMultiPartsPseudoEnthalpyOfPressure` and
 `SimNeutronStarEOSMultiPartsSpeedOfSoundOfPseudoEnthalpy`; they never pass a

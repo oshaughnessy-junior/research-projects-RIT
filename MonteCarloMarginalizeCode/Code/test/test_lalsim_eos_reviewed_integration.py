@@ -26,6 +26,7 @@ REQUIRED_SYMBOLS = (
     "SimNeutronStarEOSFromArraysPhaseTransition",
     "SimNeutronStarEOSFromFilePhaseTransition",
     "CreateSimNeutronStarFamilyPT",
+    "CreateSimNeutronStarFamilyPTWithPcmin",
     "SimNeutronStarFamNumberOfBranches",
     "SimNeutronStarFamBranchMinMass",
     "SimNeutronStarFamBranchMaxMass",
@@ -153,6 +154,12 @@ def test_actual_reviewed_lalsimulation_builtin(record_property):
     ))
     assert sound_si > 1.0
     assert sound_si / lal.C_SI < 1.1
+    pressure_floor = Adapter(
+        multipart_eos, minimal=True, multipart=True,
+        lalsim_module=lalsim,
+        log_pressure_min=float(np.log(pressure) - 2.0),
+    )
+    assert pressure_floor.number_of_branches >= 1
 
     # Reviewed builds must keep the released named-EOS family path working.
     legacy_eos = lalsim.SimNeutronStarEOSByName("SLY")

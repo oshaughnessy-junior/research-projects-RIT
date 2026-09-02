@@ -8,6 +8,8 @@ EOSManager a scalar interface which fails explicitly when a mass has twin-star
 solutions.
 """
 
+import math
+
 
 class AmbiguousFamilyBranchError(ValueError):
     """Raised when a mass belongs to more than one stable family branch."""
@@ -74,7 +76,8 @@ class LALSimNeutronStarFamilyAdapter:
             )
         return True
 
-    def __init__(self, eos, minimal=True, multipart=False, lalsim_module=None):
+    def __init__(self, eos, minimal=True, multipart=False, lalsim_module=None,
+                 log_pressure_min=None):
         if lalsim_module is None:
             import lalsimulation as lalsim_module
         self.lalsim = lalsim_module
@@ -84,9 +87,29 @@ class LALSimNeutronStarFamilyAdapter:
             self._require_multibranch_api(self.lalsim)
             # The reviewed API requires ``min_fam``: 1 selects the PE-oriented
             # M/R/k2 solver, while 0 also constructs baryonic mass, k3, and k4.
-            self.family = self.lalsim.CreateSimNeutronStarFamilyPT(
-                eos, int(bool(minimal))
-            )
+            if log_pressure_min is None:
+                self.family = self.lalsim.CreateSimNeutronStarFamilyPT(
+                    eos, int(bool(minimal))
+                )
+            else:
+                log_pressure_min = float(log_pressure_min)
+                if not math.isfinite(log_pressure_min):
+                    raise ValueError(
+                        "log_pressure_min must be finite ln(Pc / Pa)"
+                    )
+                constructor = getattr(
+                    self.lalsim,
+                    "CreateSimNeutronStarFamilyPTWithPcmin",
+                    None,
+                )
+                if constructor is None:
+                    raise NotImplementedError(
+                        "reviewed LALSimulation build does not expose "
+                        "CreateSimNeutronStarFamilyPTWithPcmin"
+                    )
+                self.family = constructor(
+                    eos, int(bool(minimal)), log_pressure_min
+                )
         else:
             self.family = self.lalsim.CreateSimNeutronStarFamily(eos)
 
@@ -219,8 +242,10 @@ class LALSimNeutronStarFamilyAdapter:
             raise ValueError("released LALSimulation family exposes only branch 0")
 
 
-def create_family(eos, minimal=True, multipart=False, lalsim_module=None):
+def create_family(eos, minimal=True, multipart=False, lalsim_module=None,
+                  log_pressure_min=None):
     """Return a :class:`LALSimNeutronStarFamilyAdapter` for ``eos``."""
     return LALSimNeutronStarFamilyAdapter(
-        eos, minimal=minimal, multipart=multipart, lalsim_module=lalsim_module
+        eos, minimal=minimal, multipart=multipart,
+        lalsim_module=lalsim_module, log_pressure_min=log_pressure_min
     )
