@@ -6,6 +6,7 @@ manifest and fails closed once the gate is enabled.
 """
 
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -18,13 +19,16 @@ import pytest
 MANIFEST_ENV = "RIFT_REVIEWED_LALSIM_MANIFEST"
 REQUIRED_SYMBOLS = (
     "SimulationVCSInfo",
-    "SimNeutronStarEOSFromFileChoiceDirtyPT",
+    "SimNeutronStarEOSFromFilePhaseTransition",
+    "CreateSimNeutronStarFamilyPT",
     "SimNeutronStarFamNumberOfBranches",
-    "SimNeutronStarFamMinMassPerBranch",
-    "SimNeutronStarFamMaxMassPerBranch",
-    "SimNeutronStarFamRadiusOfMassPerBranch",
-    "SimNeutronStarFamLoveNumberK2OfMassPerBranch",
-    "SimNeutronStarFamCentralPressureOfMassPerBranch",
+    "SimNeutronStarFamBranchMinMass",
+    "SimNeutronStarFamBranchMaxMass",
+    "SimNeutronStarFamBranchRadius",
+    "SimNeutronStarFamBranchLoveNumberK2",
+    "SimNeutronStarFamBranchCentralPressure",
+    "SimNeutronStarEOSMultiPartsPseudoEnthalpyOfPressure",
+    "SimNeutronStarEOSMultiPartsSpeedOfSoundOfPseudoEnthalpy",
 )
 
 
@@ -54,10 +58,28 @@ def _load_manifest():
     return manifest_path, manifest
 
 
+def _load_adapter_module():
+    """Load the pure adapter without importing RIFT's heavyweight __init__."""
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "RIFT" / "physics" / "lalsim_eos_compat.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "rift_lalsim_eos_compat_gate", str(source)
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_actual_reviewed_lalsimulation_tables(record_property):
+    import lal
     import lalsimulation as lalsim
-    from RIFT.physics import EOSManager
-    from RIFT.physics.lalsim_eos_compat import AmbiguousFamilyBranchError
+    adapter_module = _load_adapter_module()
+    AmbiguousFamilyBranchError = adapter_module.AmbiguousFamilyBranchError
+    LALSimNeutronStarFamilyAdapter = (
+        adapter_module.LALSimNeutronStarFamilyAdapter
+    )
 
     manifest_path, manifest = _load_manifest()
     missing = [name for name in REQUIRED_SYMBOLS if not hasattr(lalsim, name)]
@@ -92,28 +114,24 @@ def test_actual_reviewed_lalsimulation_tables(record_property):
         columns = 1 if data.ndim == 1 else data.shape[1]
         if expected_columns[name] is not None:
             assert columns == expected_columns[name]
-        loaded[name] = EOSManager.EOSLALSimulationFromFile(
-            str(path),
-            dirty_phase_transitions=bool(
-                fixture.get("dirty_phase_transitions", False)
-            ),
+        multipart_eos = lalsim.SimNeutronStarEOSFromFilePhaseTransition(
+            str(path)
         )
-        assert loaded[name]._get_lalsim_family_adapter().number_of_branches >= 1
+        loaded[name] = LALSimNeutronStarFamilyAdapter(
+            multipart_eos, minimal=True, multipart=True,
+            lalsim_module=lalsim,
+        )
+        assert loaded[name].number_of_branches >= 1
 
-    # The reviewed contract changes both the table loader and CreateFamily's
-    # second argument. Exercise clean/dirty readers and minimal/extended family
-    # construction on the real nine-column fixture rather than on a fake.
+    # Exercise the reviewed CreateFamilyPT min_fam argument in both modes.
     nine_path = (manifest_path.parent / fixtures["nine_column"]["path"]).resolve()
-    nine_dirty = EOSManager.EOSLALSimulationFromFile(
-        str(nine_path), dirty_phase_transitions=True
+    nine_eos = lalsim.SimNeutronStarEOSFromFilePhaseTransition(str(nine_path))
+    nine_extended = LALSimNeutronStarFamilyAdapter(
+        nine_eos, minimal=False, multipart=True, lalsim_module=lalsim
     )
-    nine_extended = EOSManager.EOSLALSimulationFromFile(
-        str(nine_path), minimal_family=False
-    )
-    assert nine_dirty._get_lalsim_family_adapter().number_of_branches >= 1
-    assert nine_extended._get_lalsim_family_adapter().number_of_branches >= 1
+    assert nine_extended.number_of_branches >= 1
 
-    family = loaded["twin_star"]._get_lalsim_family_adapter()
+    family = loaded["twin_star"]
     assert family.number_of_branches >= 2
     overlaps = []
     for left in range(family.number_of_branches):
@@ -140,11 +158,28 @@ def test_actual_reviewed_lalsimulation_tables(record_property):
         family.central_pressure(mass, branch_id=branch)
         for branch in (left, right)
     ]
-    tidal_lambda = [
-        loaded["twin_star"].lambda_from_m(mass, branch_id=branch)
-        for branch in (left, right)
+    pseudo_enthalpy = [
+        lalsim.SimNeutronStarEOSMultiPartsPseudoEnthalpyOfPressure(
+            pressure_here, family.eos
+        )
+        for pressure_here in pressure
     ]
-    assert all(value > 0 for value in radii + love + pressure + tidal_lambda)
+    sound_speed = [
+        lalsim.SimNeutronStarEOSMultiPartsSpeedOfSoundOfPseudoEnthalpy(
+            enthalpy_here, family.eos
+        )
+        for enthalpy_here in pseudo_enthalpy
+    ]
+    tidal_lambda = [
+        (2.0 / 3.0) * love_here * (radius_here * lal.C_SI**2 /
+                                   (mass * lal.G_SI))**5
+        for love_here, radius_here in zip(love, radii)
+    ]
+    assert all(
+        np.isfinite(value) and value > 0
+        for value in radii + love + pressure + pseudo_enthalpy
+        + sound_speed + tidal_lambda
+    )
     assert not np.isclose(radii[0], radii[1], rtol=1e-10, atol=0)
     assert not np.isclose(love[0], love[1], rtol=1e-10, atol=0)
     assert not np.isclose(pressure[0], pressure[1], rtol=1e-10, atol=0)

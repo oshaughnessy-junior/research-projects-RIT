@@ -77,10 +77,12 @@ class EOSConcrete:
         self.eos_fam = None
         return None
 
-    def _set_lalsim_family(self, minimal=True):
+    def _set_lalsim_family(self, minimal=True, multipart=False):
         """Create and cache a released-or-multibranch LAL family."""
+        self._lalsim_multipart = bool(multipart)
         self._lalsim_family_adapter = create_family(
-            self.eos, minimal=minimal, lalsim_module=lalsim
+            self.eos, minimal=minimal, multipart=multipart,
+            lalsim_module=lalsim
         )
         self.eos_fam = self._lalsim_family_adapter.family
         self.mMaxMsun = self._lalsim_family_adapter.maximum_mass() / lal.MSUN_SI
@@ -90,7 +92,9 @@ class EOSConcrete:
         adapter = getattr(self, "_lalsim_family_adapter", None)
         if adapter is None or adapter.family is not self.eos_fam:
             adapter = LALSimNeutronStarFamilyAdapter.from_family(
-                self.eos_fam, lalsim_module=lalsim
+                self.eos_fam,
+                multipart=getattr(self, "_lalsim_multipart", False),
+                lalsim_module=lalsim
             )
             self._lalsim_family_adapter = adapter
         return adapter
@@ -246,19 +250,42 @@ class EOSConcrete:
         # Largest NS provides largest attained central pressure
         family = self._get_lalsim_family_adapter()
         m_max_SI = family.maximum_mass(branch_id) if branch_id is not None else self.mMaxMsun*lal.MSUN_SI
+        multipart = getattr(self, "_lalsim_multipart", False)
+        if multipart:
+            pseudo_enthalpy_of_pressure = getattr(
+                lalsim,
+                "SimNeutronStarEOSMultiPartsPseudoEnthalpyOfPressure",
+                None,
+            )
+            speed_of_sound = getattr(
+                lalsim,
+                "SimNeutronStarEOSMultiPartsSpeedOfSoundOfPseudoEnthalpy",
+                None,
+            )
+            if pseudo_enthalpy_of_pressure is None or speed_of_sound is None:
+                return False
+        else:
+            pseudo_enthalpy_of_pressure = (
+                lalsim.SimNeutronStarEOSPseudoEnthalpyOfPressure
+            )
+            speed_of_sound = lalsim.SimNeutronStarEOSSpeedOfSoundGeometerized
         if not test_only_under_mmax:
+            if multipart:
+                # The reviewed multipart API has no global max-enthalpy
+                # accessor; do not silently test a legacy object instead.
+                return False
             hmax = lalsim.SimNeutronStarEOSMaxPseudoEnthalpy(eos)
         else:
             try:
                 pmax = family.central_pressure(m_max_SI, branch_id=branch_id)
-                hmax = lalsim.SimNeutronStarEOSPseudoEnthalpyOfPressure(pmax,eos)
+                hmax = pseudo_enthalpy_of_pressure(pmax, eos)
             except:
                 # gatch gsl interpolation errors for example
                 return False  
         if fast_test: 
             # https://git.ligo.org/lscsoft/lalsuite/blob/lalinference_o2/lalinference/src/LALInference.c#L2513
             try:
-                vsmax = lalsim.SimNeutronStarEOSSpeedOfSoundGeometerized(hmax, eos)
+                vsmax = speed_of_sound(hmax, eos)
                 return vsmax <1.1
             except:
                 # catch gsl interpolation errors for example
@@ -270,7 +297,7 @@ class EOSConcrete:
 #        h = np.linspace(0.0001,lalsim.SimNeutronStarEOSMinAcausalPseudoEnthalpy(eos),npts_internal)
         vs_internal = np.zeros(npts_internal)
         for indx in np.arange(npts_internal):
-            vs_internal[indx] =  lalsim.SimNeutronStarEOSSpeedOfSoundGeometerized(h[indx],eos)
+            vs_internal[indx] = speed_of_sound(h[indx], eos)
             if rosDebug:
                 print(h[indx], vs_internal[indx])
         return not np.any(vs_internal>1.1)   # allow buffer, so we have some threshold
@@ -369,20 +396,24 @@ class EOSLALSimulationFromFile(EOSConcrete):
         self.fname = fname
         self.eos = None
         self.eos_fam = None
-        dirty_reader = getattr(
-            lalsim, "SimNeutronStarEOSFromFileChoiceDirtyPT", None
+        phase_transition_reader = getattr(
+            lalsim, "SimNeutronStarEOSFromFilePhaseTransition", None
         )
-        if dirty_phase_transitions:
-            if dirty_reader is None:
+        multipart = phase_transition_reader is not None
+        self._lalsim_multipart = multipart
+        if multipart:
+            self.eos = phase_transition_reader(fname)
+        else:
+            if dirty_phase_transitions:
                 raise NotImplementedError(
-                    "dirty phase-transition correction requires the reviewed "
+                    "phase-transition tables require the reviewed "
                     "LALSimulation multipart EOS interface"
                 )
-            self.eos = dirty_reader(fname, 1)
-        else:
             self.eos = lalsim.SimNeutronStarEOSFromFile(fname)
         if not skip_family:
-            self._set_lalsim_family(minimal=minimal_family)
+            self._set_lalsim_family(
+                minimal=minimal_family, multipart=multipart
+            )
         else:
             self.mMaxMsun = None
 

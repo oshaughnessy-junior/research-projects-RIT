@@ -354,7 +354,7 @@ parser.add_argument("--tabular-eos-file-format",type=str,default=None,help="Form
 parser.add_argument("--tabular-eos-order-statistic",type=str,default=None,help="Order statistic to use.  Options will include R1p4, LambdaTildeQ1, and ...}")
 parser.add_argument("--using-eos", type=str, default=None, help="Name of EOS.  Fit parameter list should physically use lambda1, lambda2 information (but need not). If starts with 'file:', uses a filename with EOS parameters ")
 parser.add_argument("--using-eos-branch", type=int, default=None, help="Select one stable LALSimulation family branch while preserving the fixed-EOS lambda_from_m(m) interface. Required for an explicitly chosen twin-star branch; not applicable to the primary-branch nmbseq v1 contract.")
-parser.add_argument("--using-eos-dirty-phase-transitions", action='store_true', help="With --using-eos lalsim_file:<path>, request the reviewed LALSimulation correction for numerically imperfect pressure plateaus.")
+parser.add_argument("--using-eos-dirty-phase-transitions", action='store_true', help="With --using-eos lalsim_file:<path>, require the reviewed LALSimulation phase-transition reader (retained compatibility spelling; the reviewed API has no separate dirty-table boolean).")
 parser.add_argument("--using-eos-extended-family", action='store_true', help="With --using-eos lalsim_file:<path>, build the reviewed extended family instead of the PE-oriented minimal M/R/k2 family.")
 parser.add_argument("--using-eos-for-prior", action='store_true', default=None, help="Alternate (hacky) implementation, which overrides using-eos and using-eos-index, to handle loading in a hyperprior")
 parser.add_argument("--using-eos-index", type=int, default=None, help="Index of EOS parameters in file.")

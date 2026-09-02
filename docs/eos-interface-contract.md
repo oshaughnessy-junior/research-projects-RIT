@@ -32,6 +32,22 @@ Reviewed two- or nine-column tables use:
     [--using-eos-extended-family] [--using-eos-branch <integer>]
 ```
 
+On a reviewed build, `lalsim_file:` uses
+`SimNeutronStarEOSFromFilePhaseTransition` followed by
+`CreateSimNeutronStarFamilyPT(eos, min_fam)`. The historical
+`--using-eos-dirty-phase-transitions` spelling is retained as a compatibility
+request, but the reviewed SWIG interface has one phase-transition reader; it
+does not expose a separate dirty-table boolean. On released LALSimulation,
+that flag fails explicitly rather than pretending the legacy reader repaired a
+phase transition.
+
+Branch-specific causality checks dispatch to the multipart accessors
+`SimNeutronStarEOSMultiPartsPseudoEnthalpyOfPressure` and
+`SimNeutronStarEOSMultiPartsSpeedOfSoundOfPseudoEnthalpy`; they never pass a
+`SimEOSMultiParts` object to a legacy single-EOS accessor. A full-table
+causality request fails closed because the reviewed interface does not expose a
+global multipart maximum-pseudo-enthalpy operation.
+
 For pseudo-pipe workflows, forward the flag with
 `--manual-extra-cip-args`.  On O4d, Hydra hyperpipe configurations can put it
 in the post driver's `extra-args` when that driver is the fixed-EOS CIP
@@ -86,11 +102,11 @@ exact reviewed LALSuite commit, activate that Python environment, and set
 
 ```json
 {
-  "lalsuite_ref": "0123456789abcdef0123456789abcdef01234567",
+  "lalsuite_ref": "974c0ef468b76e8298e67fd8baf71ed259cc5fee",
   "fixtures": {
     "two_column": {"path": "two-column.dat", "sha256": "..."},
     "nine_column": {"path": "nine-column.dat", "sha256": "..."},
-    "twin_star": {"path": "twin-star.dat", "sha256": "...", "dirty_phase_transitions": true}
+    "twin_star": {"path": "twin-star.dat", "sha256": "..."}
   }
 }
 ```
@@ -103,8 +119,9 @@ commit actually built by the job: the gate requires it to equal
 fixture hash is mandatory. Once the manifest enables the gate, missing modern
 symbols, malformed or mismatched build provenance, missing fixtures, wrong
 column counts, or absence of distinct overlapping twin-star solutions are
-failures. The gate exercises clean and phase-transition-correcting readers,
-minimal and extended family construction, and branch-indexed radius, Love
+failures. The gate exercises the real phase-transition reader on two- and
+nine-column inputs, minimal and extended family construction, and
+branch-indexed radius, Love
 number, central pressure, and tidal deformability. Ordinary CI skips this
 private-build gate explicitly.
 
