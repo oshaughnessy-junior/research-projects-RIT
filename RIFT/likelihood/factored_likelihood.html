@@ -362,7 +362,7 @@ nats at SNR 100, reaching 1 nat by SNR 2-6); ‘cubic’ is only what a legacy t
 All three stencils have CPU and GPU implementations.  See _sinc_Q_window_numpy and
 RIFT/likelihood/DESIGN_q_window_stencil.md for the measured tables.</p>
 </dd>
-<dt>time_quadrature<span class="classifier">{‘simpson’, ‘bandlimited’} or None</span></dt><dd><p>Rule used for the time integral.  None (the default) defers to the
+<dt>time_quadrature<span class="classifier">{‘simpson’, ‘bandlimited’, ‘peak-local’} or None</span></dt><dd><p>Rule used for the time integral.  None (the default) defers to the
 module-level <code class="docutils literal notranslate"><span class="pre">TIME_QUADRATURE_DEFAULT</span></code>, which is ‘simpson’.</p>
 <p>‘simpson’ is the historical rule: Simpson’s rule at the FIXED spacing
 deltaT=1/srate.  The integrand’s width, however, is set by the signal –
@@ -380,6 +380,15 @@ return_cal_components); anything else raises rather than quietly falling
 back.  A time draw returns <code class="docutils literal notranslate"><span class="pre">(time_offset,</span> <span class="pre">lnL_at_draw)</span></code> and uses the
 same validated dense representation as the integral.  Rationale, measured
 before/after and the exclusions: RIFT.likelihood.time_marginalization_quadrature.</p>
+<p>‘peak-local’ is the same argument with the refined grid placed only where
+the integrand has support: kappa’s extrema are ENUMERATED on a small,
+SNR-independent upsample, an interval of a few sigma_t is built around each,
+overlapping intervals are MERGED into disjoint ones, and each is integrated
+at its own derived spacing.  The mass left outside is bounded per row and
+checked, not assumed; a row whose bound is not small enough, or whose local
+grid would cost more than the dense one, is given the ‘bandlimited’ value.
+Same exclusions as ‘bandlimited’, PLUS phase marginalization, which it
+refuses.  RIFT.likelihood.time_marginalization_peak_local.</p>
 </dd>
 </dl>
 </section>
