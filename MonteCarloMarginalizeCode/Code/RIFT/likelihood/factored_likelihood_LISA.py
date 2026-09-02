@@ -428,7 +428,11 @@ def FactoredLogLikelihoodAlignedSpinLISA(Q_lm, U_lm_pq, beta, lam, psi, inclinat
     # shape (time terms, extrinsic_params), integrating in time --> axis 0
     Q_lm_term = list(Q_lm.keys())[0]
     L_t = np.exp(total_lnL - np.max(total_lnL, axis=0))
-    L = integrate.simpson(L_t, dx = Q_lm[Q_lm_term].deltaT, axis=0) #P.deltaT
+    # Route through the shared selector (lazy import: this module is not otherwise
+    # a factored_likelihood consumer).  Under the default TIME_QUADRATURE='auto'
+    # on numpy this IS integrate.simpson, verbatim.  NB axis=0 here.
+    from . import factored_likelihood as _FL
+    L = _FL.time_quadrature_rule(np)(L_t, dx=Q_lm[Q_lm_term].deltaT, axis=0)  #P.deltaT
     lnL  = np.max(total_lnL, axis=0) + np.log(L)
     return lnL
 

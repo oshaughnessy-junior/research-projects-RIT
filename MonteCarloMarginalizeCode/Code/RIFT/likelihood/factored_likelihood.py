@@ -59,6 +59,73 @@ if hasattr(integrate, 'simpson'):
 else:
   my_simps = integrate.simps  # old name
 
+# Which rule integrates exp(lnL(t)) over the marginalization window.
+#   'auto'      -- scipy on numpy, the vendored optimized_gpu_tools.simps on cupy.
+#                  This is what RIFT has always shipped, and it is the DEFAULT.
+#                  The two are bit-identical for ODD npts and are DIFFERENT RULES
+#                  for even npts (which is what marginalization_time_grid returns
+#                  at srate 4096 and 8192).
+#   'simpson'   -- scipy's convention on both backends.
+#   'trapezoid' -- trapezoid on both backends; no even/odd ambiguity.
+# Rationale, the measured accuracy of each rule, and why the default has not been
+# changed: RIFT/likelihood/DESIGN_time_quadrature.md.
+import os as _os
+TIME_QUADRATURE = _os.environ.get('RIFT_TIME_QUADRATURE', 'auto')
+
+
+def time_quadrature_weights(npts, deltaT, kind, xpy=np):
+    """Quadrature weights w_t with ``sum_t w_t f_t`` == the ``kind`` rule on f.
+
+    Both rules are LINEAR in f, so applying them to the identity recovers their
+    weights exactly; that is also how ``jax_ile.core._simpson_weights`` and the
+    fused-calmarg kernel already obtain theirs, so all paths stay in step.
+    """
+    if kind == 'trapezoid':
+        w = np.full(npts, float(deltaT))
+        w[0] = w[-1] = 0.5*float(deltaT)
+    elif kind == 'simpson':
+        w = np.asarray(my_simps(np.eye(npts), dx=float(deltaT), axis=-1), dtype=np.float64)
+    else:
+        raise ValueError("unknown time quadrature {!r}".format(kind))
+    return xpy.asarray(w, dtype=np.float64)
+
+
+def time_quadrature_rule(xpy=np, kind=None):
+    """The callable that integrates exp(lnL(t)) over the window, ``rule(y, dx, axis)``.
+
+    ``kind=None`` takes :data:`TIME_QUADRATURE`.  Under the default ``'auto'``
+    this returns the historical, BACKEND-DEPENDENT choice verbatim -- scipy on
+    numpy, the vendored ``optimized_gpu_tools.simps`` on cupy -- so the shipped
+    numbers are unchanged.  The named rules are backend-independent.
+    """
+    kind = TIME_QUADRATURE if kind is None else kind
+    if kind == 'auto':
+        if (xpy is np) or (optimized_gpu_tools is None):
+            return my_simps
+        return optimized_gpu_tools.simps
+    if kind not in ('simpson', 'trapezoid'):
+        raise ValueError("RIFT_TIME_QUADRATURE must be 'auto', 'simpson' or 'trapezoid',"
+                         " not {!r}".format(kind))
+    cache = {}
+
+    def rule(y, dx=1.0, axis=-1):
+        # Any axis, not just the last: factored_likelihood_LISA integrates on
+        # axis=0.  A rule that silently works on one axis only is how a
+        # "consistent everywhere" claim quietly becomes false.
+        npts = y.shape[axis]
+        key = (npts, float(dx))
+        w = cache.get(key)
+        if w is None:
+            w = cache[key] = time_quadrature_weights(npts, dx, kind, xpy=xpy)
+        if axis in (-1, y.ndim-1):
+            return (y*w).sum(axis=-1)
+        shape = [1]*y.ndim
+        shape[axis] = npts
+        return (y*w.reshape(tuple(shape))).sum(axis=axis)
+
+    return rule
+
+
 from scipy import special
 from itertools import product, combinations
 import math
@@ -826,7 +893,7 @@ def FactoredLogLikelihoodTimeMarginalized(tvals, extr_params, rholms_intp, rholm
         lnL += SingleDetectorLogLikelihood(det_rholms, CT, CTV, Ylms, F, dist)
 
     maxlnL = np.max(lnL)
-    return maxlnL + np.log(my_simps(np.exp(lnL - maxlnL), dx=tvals[1]-tvals[0]))
+    return maxlnL + np.log(time_quadrature_rule(np)(np.exp(lnL - maxlnL), dx=tvals[1]-tvals[0]))
 
 
 #
@@ -1986,7 +2053,7 @@ def  DiscreteFactoredLogLikelihoodViaArray(tvals, P, lookupNKDict, rholmsArrayDi
         return lnL
     else:  # return the marginalized lnL in time
         lnLmax = np.max(lnL)
-        lnLmargT = np.log(my_simps(np.exp(lnL-lnLmax), dx=deltaT)) + lnLmax
+        lnLmargT = np.log(time_quadrature_rule(np)(np.exp(lnL-lnLmax), dx=deltaT)) + lnLmax
         return lnLmargT
 
 def  DiscreteFactoredLogLikelihoodViaArrayVector(tvals, P_vec, lookupNKDict, rholmsArrayDict, ctUArrayDict,ctVArrayDict,epochDict,Lmax=2,array_output=False,xpy=xpy_default):
@@ -2072,7 +2139,7 @@ def  DiscreteFactoredLogLikelihoodViaArrayVector(tvals, P_vec, lookupNKDict, rho
             lnL = term1+term2
             lnL_array[indx_ex] += lnL  #  copy into array.  Add, because we will get terms from other IFOs
             maxlnL = np.max(lnL)
-            lnLmargOut[indx_ex] = maxlnL + np.log(my_simps(np.exp(lnL_array[indx_ex] - maxlnL), dx=deltaT))  # integrate term by term, minmize overflows
+            lnLmargOut[indx_ex] = maxlnL + np.log(time_quadrature_rule(np)(np.exp(lnL_array[indx_ex] - maxlnL), dx=deltaT))  # integrate term by term, minmize overflows
 
     return lnLmargOut
 
@@ -2183,7 +2250,7 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoopOrig(tvals, P_vec, lookupN
         
     # Integrate out the time dimension.  We now have an array of shape
     # (npts_extrinsic,)
-    L = my_simps(L_t, dx=deltaT, axis=-1)
+    L = time_quadrature_rule(np)(L_t, dx=deltaT, axis=-1)
     # Compute log likelihood in-place.
     lnL = lnLmax+ np.log(L, out=L)
 
@@ -2706,12 +2773,11 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
     _use_rho_sq_cal = (ctUArrayDict_cal is not None) and (ctVArrayDict_cal is not None)
     rho_sq_cal = xpy.zeros((n_cal, npts_extrinsic), dtype=np.float64) if _use_rho_sq_cal else None
 
-    if (xpy is np) or (optimized_gpu_tools is None):
-        simps = my_simps
-    elif not (xpy is np):
-        simps = optimized_gpu_tools.simps
-    else:
-        raise NotImplementedError("Backend not supported: {}".format(xpy))
+    # Under the default TIME_QUADRATURE='auto' this is the historical
+    # backend-dependent choice, unchanged: scipy on numpy, the vendored
+    # optimized_gpu_tools.simps on cupy.  Those are DIFFERENT RULES whenever npts
+    # is even -- see DESIGN_time_quadrature.md.
+    simps = time_quadrature_rule(xpy)
 
     # strings right now - need to change to make ufunc-able
     for det in detectors:
