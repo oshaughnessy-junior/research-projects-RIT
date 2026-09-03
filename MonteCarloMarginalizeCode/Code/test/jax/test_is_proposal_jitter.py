@@ -4,12 +4,14 @@ was DRAWN from.
 
 WHAT WENT WRONG.  Seven sites drew ``theta ~ N(mu, cov + 1e-12 I)`` by Cholesky
 and then evaluated ``logq`` under bare ``cov``.  The regularizer is ABSOLUTE, so
-it is negligible only while ``cov`` is O(1).  RIFT extrinsic posteriors at
-rho ~ 50-80 are ~1e-5 rad wide (variances ~1e-10), and ``run_laplace_is``'s
-adaptation contracts further: on real S250114ax H1/L1 data ``cov`` reached
-3e-21, the Mahalanobis term became ``(1e-6/sqrt(3e-21))**2 ~ 3e8`` per
-dimension, and ``--mode laplace-is`` -- the driver's DEFAULT -- returned
-``lnZ = 5.85e9`` with ``neff = 1.0`` and exited 0.
+it is negligible only while ``cov`` is O(1).  MEASURED on the real S250114ax
+H1/L1 point this was found on (rho ~ 49): ``--mode map`` reports a Fisher
+diagonal of [5.5e5 9.8e4 5.3e5 5.3e5 1.6e4 1.6], i.e. angular scales ~1e-3 rad
+(the issue quotes ~1e-5; 1e-3 is what the Fisher there actually gives, and the
+argument does not need the smaller number).  ``run_laplace_is``'s adaptation then
+contracts far below that: ``cov`` reached 3e-21, the Mahalanobis term became
+``(1e-6/sqrt(3e-21))**2 ~ 3e8`` per dimension, and ``--mode laplace-is`` -- the
+driver's DEFAULT -- returned ``lnZ = 5.85e9`` with ``neff = 1.0`` and exited 0.
 
 WHY THESE TESTS LOOK LIKE THIS.  A unit test of the jitter helper cannot see the
 defect: the defect is not in either matrix, it is in the two of them being
@@ -20,8 +22,8 @@ because a fix at one of seven sites is not a fix.
 
 FLOATING POINT.  Nothing in this file is precision-sensitive: the synthetic
 likelihood, the proposal algebra and the reference integral are all numpy
-float64 regardless of jax's x64 flag, and the tolerances (0.05 nats, 0.1 rad)
-are far above float32 resolution.  x64 is still requested below so that running
+float64 regardless of jax's x64 flag, and the 0.1-nat tolerance on the reference
+comparison is far above float32 resolution.  x64 is still requested below so that running
 this file FIRST in a session cannot change what any later file sees.
 """
 
