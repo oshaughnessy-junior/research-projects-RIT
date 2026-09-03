@@ -74,6 +74,10 @@ from RIFT.likelihood.jax_ile import build_data_from_precompute
 from RIFT.likelihood.jax_ile.wrapper import bandlimited_storage_requirement
 from RIFT.likelihood.jax_ile import anglemarg as _anglemarg
 from RIFT.likelihood.jax_ile.samplers import angle_marg_eval_chunk as _angle_marg_eval_chunk
+from RIFT.likelihood.jax_ile.samplers import regularize_cov as _regularize_cov
+# ONE definition, imported rather than re-typed: a second copy of the
+# "is this evidence trustworthy" rule is a copy that drifts.
+from RIFT.likelihood.jax_ile.samplers import _finalize_evidence
 from RIFT.likelihood.jax_ile.core import _GATHERERS as _JAX_GATHERERS, JAX_INTERP_DEFAULT
 from RIFT.likelihood.jax_ile.anglemarg import (ANGLE_MARG_DEFAULT, ANGLE_MARG_LEGACY,
                                                ANGLE_MARG_CHOICES)
@@ -1008,6 +1012,43 @@ def eval_lnL(like, theta, opts, with_distance):
 # ---------------------------------------------------------------------------
 # Evidence helpers
 # ---------------------------------------------------------------------------
+def require_finite_evidence(logZ, neff, mode):
+    """A NON-FINITE evidence is a FAILED event, not a result.
+
+    The estimators return nan when the proposal never bracketed the peak (see
+    ``_finalize_evidence``), and publishing that as an ILE row hands a
+    downstream CIP fit a nan ``lnL`` for a template that simply was not
+    integrated -- the same "leave no artifact behind" rule ``write_samples``
+    already enforces for a cloud that admits no fair draw.  Raising here means
+    ``--soft-fail-event-range`` skips to the next event, and without it the run
+    exits nonzero: on the #227 configuration the shipped code exited 0.
+    """
+    if np.isfinite(logZ):
+        return
+    raise RuntimeError(
+        "extrinsic integration produced a non-finite evidence (logZ=%r, "
+        "neff=%.3g, mode=%s): the proposal did not bracket the likelihood peak, "
+        "so no result row is written for this event.  Try a different --mode "
+        "(flowmc-phimarg / multistart-nuts resolve narrow, high-SNR extrinsic "
+        "posteriors that a prior-seeded Gaussian cannot)." % (logZ, neff, mode))
+
+
+def _weight_ess(logw):
+    """Effective sample size of ``exp(logw)``; 0.0 if nothing is finite.
+
+    Used as a PRECONDITION on moment matching: a ``dim``-dimensional covariance
+    cannot be estimated from fewer than ``dim + 1`` effective points, and fitting
+    one anyway is how the laplace-is proposal contracted to a point mass in #227.
+    """
+    fin = np.isfinite(logw)
+    if not fin.any():
+        return 0.0
+    lw = logw[fin] - np.max(logw[fin])
+    w = np.exp(lw)
+    s = np.sum(w)
+    return float(s * s / np.sum(w * w)) if s > 0 else 0.0
+
+
 def evidence_from_logweights(logw):
     """(logZ, sigma/Z, neff) for Z = E[w] from log importance weights."""
     fin = np.isfinite(logw)
@@ -1065,13 +1106,31 @@ def run_laplace_is(like, opts, rng, dim, with_distance, n_adapt=2):
     theta_p, _ = sample_prior(n_pilot, opts, rng, with_distance)
     lnL_p = eval_lnL(like, theta_p, opts, with_distance)
     logL_p = lnL_p + log_prior(theta_p, opts, with_distance)
-    mu, cov = _moment_match(theta_p, logL_p)
+    # A prior pilot cannot resolve a peak narrower than its own spacing: at
+    # rho ~ 50 the extrinsic posterior is ~1e-5 rad wide and every one of these
+    # weights but one underflows, so the moment match returns a POINT MASS at
+    # the single best pilot draw.  Refuse it and keep the pilot's own (broad)
+    # unweighted moments, which at least cover the prior; the low neff then
+    # propagates to _finalize_evidence, which reports nan rather than a number.
+    if _weight_ess(logL_p) >= dim + 1:
+        mu, cov = _moment_match(theta_p, logL_p)
+    else:
+        print("  [laplace-is] pilot ESS %.2f < dim+1 = %d: the prior pilot did not "
+              "resolve the peak, so the proposal is NOT moment-matched to it."
+              % (_weight_ess(logL_p), dim + 1))
+        mu = theta_p.mean(axis=0)
+        cov = np.atleast_2d(np.cov(theta_p.T))
 
     per_round = max(opts.n_max // (n_adapt + 1), 1)
     all_theta, all_logw, all_lnL = [], [], []
     for r in range(n_adapt + 1):
-        cov_use = cov * opts.proposal_inflate
-        Lc = np.linalg.cholesky(cov_use + 1e-12 * np.eye(dim))
+        # ONE matrix for the draw AND the density.  Drawing from
+        # ``cov_use + 1e-12*I`` and scoring under bare ``cov_use`` is issue #227:
+        # once the adapted covariance falls below the absolute jitter the weights
+        # are computed against a distribution that was never sampled, and this
+        # mode returned lnZ = 5.8e9 on real O4 data while exiting 0.
+        cov_use = _regularize_cov(cov * opts.proposal_inflate)
+        Lc = np.linalg.cholesky(cov_use)
         z = rng.standard_normal((per_round, dim))
         theta = mu[None, :] + z @ Lc.T
         logq = _gaussian_logq(theta, mu, cov_use)
@@ -1083,12 +1142,26 @@ def run_laplace_is(like, opts, rng, dim, with_distance, n_adapt=2):
         logw = np.where(valid, lnL + logp - logq, -np.inf)
         all_theta.append(theta); all_logw.append(logw); all_lnL.append(lnL)
         good = np.isfinite(logw)
+        # Same precondition as the pilot: re-fitting from a round whose weights
+        # are dominated by one sample contracts the proposal toward zero, and the
+        # next round contracts again.  Degrade to the PREVIOUS proposal instead.
         if r < n_adapt and good.sum() > 50:
-            mu, cov = _moment_match(theta[good], logw[good])
+            ess_r = _weight_ess(logw[good])
+            if ess_r >= dim + 1:
+                mu, cov = _moment_match(theta[good], logw[good])
+            else:
+                print("  [laplace-is] round %d ESS %.2f < dim+1 = %d: keeping the "
+                      "previous proposal rather than collapsing onto it."
+                      % (r, ess_r, dim + 1))
 
     theta = np.concatenate(all_theta); logw = np.concatenate(all_logw)
     lnL = np.concatenate(all_lnL)
     logZ, sig, neff = evidence_from_logweights(logw)
+    # log Z <= max lnL for a normalized prior, and a low neff means the proposal
+    # never bracketed the peak.  Same rule the library samplers already apply;
+    # this driver applied none, which is why #227 exited 0 on lnZ = 5.8e9.
+    logZ, sig, neff = _finalize_evidence(
+        logZ, sig, neff, float(np.max(lnL)) if np.isfinite(lnL).any() else np.nan)
     # theta follows the GAUSSIAN PROPOSAL q, not the posterior; logw is what
     # turns it into one.  Returned so write_samples() can fair-draw.
     return logZ, sig, neff, len(theta), theta, lnL, logw
@@ -1161,10 +1234,11 @@ def run_nuts(like, opts, rng, with_distance):
     # moment-matched to the posterior draws -> high neff vs prior seeding).
     mu, cov = _moment_match(theta, np.zeros(len(theta)))  # posterior moments
     n_is = min(opts.n_max, 40000)
-    Lc = np.linalg.cholesky(cov * opts.proposal_inflate + 1e-12 * np.eye(5))
+    cov_is = _regularize_cov(cov * opts.proposal_inflate)   # one matrix (#227)
+    Lc = np.linalg.cholesky(cov_is)
     z = rng.standard_normal((n_is, 5))
     th_is = mu[None, :] + z @ Lc.T
-    logq = _gaussian_logq(th_is, mu, cov * opts.proposal_inflate)
+    logq = _gaussian_logq(th_is, mu, cov_is)
     logp = log_prior(th_is, opts, with_distance=False)
     valid = np.isfinite(logp)
     lnL_is = np.full(n_is, -np.inf)
@@ -1172,6 +1246,8 @@ def run_nuts(like, opts, rng, with_distance):
         lnL_is[valid] = eval_lnL(like, th_is[valid], opts, with_distance=False)
     logw = np.where(valid, lnL_is + logp - logq, -np.inf)
     logZ, sig, neff = evidence_from_logweights(logw)
+    logZ, sig, neff = _finalize_evidence(
+        logZ, sig, neff, float(np.max(lnL_is)) if np.isfinite(lnL_is).any() else np.nan)
     # theta/lnL are the NUTS chain (already targets the posterior); the IS cloud
     # th_is/logw is only the evidence estimator, so there is nothing to reweight.
     # `neff` below therefore describes th_is, NOT the exported chain -- it must
@@ -2101,6 +2177,7 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
     print("\n==== Result (event %d) ====" % event_id)
     print("  log evidence (lnL marginal over extrinsic) = %.5f" % logZ)
     print("  sigma_lnL = %.4g    neff = %.1f    ntotal = %d" % (sig, neff, ntot))
+    require_finite_evidence(logZ, neff, opts.mode)
     # EXPORT FIRST, THEN PUBLISH THE RESULT ROW.  write_samples raises when the
     # cloud admits no fair draw, and that refusal means the integration itself
     # collapsed -- so the event must leave NO artifact behind.  Writing the

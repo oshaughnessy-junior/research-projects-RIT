@@ -425,6 +425,34 @@ def _moment_match(theta, logL):
     return mu, cov
 
 
+def regularize_cov(cov, rel=1e-12):
+    """The covariance a Gaussian proposal must use for BOTH its Cholesky draw
+    and its density.
+
+    Two properties, and each one alone was a live defect (issue #227):
+
+    RELATIVE, not absolute.  An ``+ eps*I`` regularizer with a fixed ``eps``
+    is only negligible if the covariance is O(1).  RIFT extrinsic posteriors at
+    rho ~ 50-80 have angular scales ~1e-5 rad, i.e. variances ~1e-10, and an
+    adapting proposal contracts below that; ``1e-12`` then stops being a
+    conditioning nudge and becomes the proposal.  Scaling by ``trace(cov)/dim``
+    makes the nudge a fixed fraction of the covariance at every scale.
+
+    ONE matrix.  Callers must pass this return value to the Cholesky *and* to
+    ``_gaussian_logq``/``_mixture_logq``.  Drawing from ``cov + eps*I`` while
+    scoring under bare ``cov`` computes importance weights against a
+    distribution that was never sampled; with ``cov ~ 3e-21`` and ``eps=1e-12``
+    the Mahalanobis term is ``(1e-6/sqrt(3e-21))**2 ~ 3e8`` per dimension, which
+    is how ``--mode laplace-is`` returned ``lnZ = 5.8e9`` and exited 0.
+    """
+    cov = np.asarray(cov, dtype=float)
+    d = cov.shape[-1]
+    scale = float(np.trace(cov)) / d
+    if not np.isfinite(scale) or scale <= 0.0:
+        scale = 1.0        # degenerate/zero covariance: fall back to absolute
+    return cov + (rel * scale) * np.eye(d)
+
+
 def _finalize_evidence(logZ, sigma_over_Z, neff, max_lnL):
     """Flag an importance-evidence estimate as unreliable (nan) when it cannot
     be trusted: log Z must satisfy ``log Z <= lnL_max`` for a normalized prior
@@ -757,6 +785,8 @@ def multistart_nuts(like, d_min, d_max, n_starts=8, num_warmup=300,
         mus, covs = [mu], [cov * proposal_inflate]
     n_comp = len(mus)
     weights = np.full(n_comp, 1.0 / n_comp)
+    # ONE matrix per component for both the draw and _mixture_logq below (#227).
+    covs = [regularize_cov(cv) for cv in covs]
 
     # draw from the mixture
     counts = rng.multinomial(n_is, weights)
@@ -764,7 +794,7 @@ def multistart_nuts(like, d_min, d_max, n_starts=8, num_warmup=300,
     for c in range(n_comp):
         if counts[c] == 0:
             continue
-        Lc = np.linalg.cholesky(covs[c] + 1e-12 * np.eye(5))
+        Lc = np.linalg.cholesky(covs[c])
         z = rng.standard_normal((counts[c], 5))
         draws.append(mus[c][None, :] + z @ Lc.T)
     th_is = np.concatenate(draws, axis=0)
@@ -926,8 +956,8 @@ def flowmc_sample(like, d_min, d_max, n_chains=20, n_local_steps=20,
     logZ = sigma_over_Z = neff = np.nan
     if len(theta) >= 6:
         mu, cov = _moment_match(theta, np.zeros(len(theta)))
-        cov = cov * 2.0
-        Lc = np.linalg.cholesky(cov + 1e-12 * np.eye(n_dim))
+        cov = regularize_cov(cov * 2.0)   # ONE matrix: draw and density (#227)
+        Lc = np.linalg.cholesky(cov)
         n_is = 40000
         z = rng.standard_normal((n_is, n_dim))
         th_is = mu[None, :] + z @ Lc.T
@@ -1574,8 +1604,8 @@ def flowmc_sample_phimarg(like, d_min, d_max, n_chains=20, n_local_steps=20,
                     print("  [evidence] Laplace diag failed: %r" % e)
     elif len(theta) >= 6:
         mu, cov = _moment_match(theta, np.zeros(len(theta)))
-        cov = cov * 2.0
-        Lc = np.linalg.cholesky(cov + 1e-12 * np.eye(n_dim))
+        cov = regularize_cov(cov * 2.0)   # ONE matrix: draw and density (#227)
+        Lc = np.linalg.cholesky(cov)
         n_is = 40000
         z = rng.standard_normal((n_is, n_dim))
         th_is = mu[None, :] + z @ Lc.T
@@ -1608,8 +1638,10 @@ def flowmc_sample_phimarg(like, d_min, d_max, n_chains=20, n_local_steps=20,
         if mapT is not None:
             cov_is = (float(fisher_is_inflate) ** 2) * (A_is @ A_is.T)
             cov_is = 0.5 * (cov_is + cov_is.T)
+            # ONE matrix: this is what _gaussian_logq is given below (#227).
+            cov_is = regularize_cov(cov_is)
             try:
-                Lc = np.linalg.cholesky(cov_is + 1e-12 * np.eye(n_dim))
+                Lc = np.linalg.cholesky(cov_is)
                 N = int(fisher_is_samples)
                 z = rng.standard_normal((N, n_dim))
                 th_is = mapT[None, :] + z @ Lc.T
@@ -1949,11 +1981,15 @@ def fisher_is_sample(like, n_samples=20000, n_starts=16, n_prior_pilot=20000,
     var = inflate / np.clip(w, inflate / max_std ** 2, None)   # cap variance
     cov = (V * var) @ V.T
     cov = 0.5 * (cov + cov.T)
-    Lc = np.linalg.cholesky(cov + 1e-12 * np.eye(5) * np.trace(cov) / 5)
+    # Already relative before #227 -- routed through the helper so that the
+    # draw and the density are literally the same object at every site, and so
+    # the grep for the defect pattern returns nothing.
+    cov_q = regularize_cov(cov)
+    Lc = np.linalg.cholesky(cov_q)
 
     z = rng.standard_normal((n_samples, 5))
     theta = _wrap_angles(th0[None, :] + z @ Lc.T)
-    logq = _gaussian_logq(th0[None, :] + z @ Lc.T, th0, cov)  # q on the raw draw
+    logq = _gaussian_logq(th0[None, :] + z @ Lc.T, th0, cov_q)  # q on the raw draw
     logp = log_prior(theta)
     valid = np.isfinite(logp)
     lnL = np.full(n_samples, -np.inf)
@@ -2205,13 +2241,15 @@ def fisher_nuts_sample_phimarg(like, num_warmup=300, num_samples=1000,
         mu, cov = _moment_match(theta, np.zeros(len(theta)))
         mus, covs = [mu], [cov * 2.0]
     weights = np.full(len(mus), 1.0 / len(mus))
+    # ONE matrix per component for both the draw and _mixture_logq below (#227).
+    covs = [regularize_cov(cv) for cv in covs]
 
     counts = rng.multinomial(n_is, weights)
     draws, comp_of_draw = [], []
     for c in range(len(mus)):
         if counts[c] == 0:
             continue
-        Lc = np.linalg.cholesky(covs[c] + 1e-12 * np.eye(4))
+        Lc = np.linalg.cholesky(covs[c])
         z = rng.standard_normal((counts[c], 4))
         draws.append(mus[c][None, :] + z @ Lc.T)
         comp_of_draw.append(np.full(counts[c], c))

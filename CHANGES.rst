@@ -3,6 +3,40 @@
 ------------
 development tree is rift_O4d.
 
+** BUG FIX, jax ILE (issue #227): a Gaussian importance proposal is now SCORED
+   under the matrix it was DRAWN from.  Seven sites drew
+   ``theta ~ N(mu, cov + 1e-12 I)`` by Cholesky and then evaluated the proposal
+   density under bare ``cov``.  That regularizer is ABSOLUTE, so it is negligible
+   only while ``cov`` is O(1); RIFT extrinsic posteriors at rho ~ 50 are ~1e-3 rad
+   wide and ``run_laplace_is``'s adaptation contracts far below that.  On real
+   S250114ax H1/L1 strain, ``--mode laplace-is`` -- the driver's DEFAULT -- returned
+   ``lnZ = 5,848,741,051.60`` with ``neff = 1.0`` and exited 0, writing that number
+   into the ILE result row as ``lnL``.  ``RIFT.likelihood.jax_ile.samplers.regularize_cov``
+   now produces ONE relatively-regularized matrix (``1e-12 * trace(cov)/dim``, the
+   form already used at ``fisher_is_sample``) and every site hands that same object
+   to the Cholesky and to the density.  Well-conditioned proposals are unaffected to
+   ~1e-12 relative; ``--mode prior-mc`` is untouched and reproduces bit-for-bit.
+
+** BEHAVIOUR CHANGE, jax ILE: an extrinsic integration that cannot stand behind its
+   evidence now says so instead of publishing a number.  Three changes, all on the
+   ``laplace-is``/``nuts`` driver paths, which previously applied none of the checks
+   the library samplers already applied:
+   (a) ``run_laplace_is`` refuses to moment-match a proposal from weights whose ESS
+   is below ``dim + 1`` -- a ``dim``-dimensional covariance cannot be estimated from
+   fewer effective points, and fitting one anyway is what collapsed the proposal to a
+   point mass.  It keeps the previous (covering) proposal and says so in the log.
+   (b) ``run_laplace_is`` and ``run_nuts`` route their evidence through
+   ``_finalize_evidence``, which returns ``nan`` when ``logZ > max lnL`` (impossible
+   for a normalized prior) or ``neff < 1.5``.
+   (c) ``analyze_one`` raises on a non-finite evidence BEFORE writing either
+   artifact, so a failed event leaves no ``.dat`` row and the run exits nonzero;
+   ``--soft-fail-event-range`` still skips to the next event.
+   CONSEQUENCE, and it is not a small one: on high-SNR real data ``--mode laplace-is``
+   now FAILS where it used to report a number.  It was not reporting a right one --
+   see the S250114ax comparison in the PR that closes #227, where the
+   ``--n-max 40000`` run the issue called "sane" (888.34) sits ~900 nats below both
+   a prior-MC estimate (1792.78) and a Laplace-at-MAP bound (>= 1758.3).
+
 ** BEHAVIOUR CHANGE, jax ILE: flow re-use across ``--n-events-to-analyze`` is now
    OFF by default.  ``--flow-reuse`` restores the old behaviour; ``--no-flow-reuse``
    is kept and now restates the default, so existing command lines keep working.

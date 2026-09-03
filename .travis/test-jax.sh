@@ -233,6 +233,19 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         is the only gated check that distinguishes
 #                                         the corrected sizing.  The rest of the
 #                                         angle-marg suite is EXCLUDED; see below.
+#   test_is_proposal_jitter.py        15  issue #227: a Gaussian IS proposal must be
+#                                         SCORED under the matrix it was DRAWN from.
+#                                         Seven sites drew from cov + 1e-12*I and
+#                                         scored under bare cov; the DEFAULT --mode
+#                                         laplace-is returned lnZ = 5.85e9 on real O4
+#                                         data and exited 0.  Pure numpy synthetic
+#                                         likelihood -- no frames, no PSDs, ~8 s.
+#                                         Eleven of the first thirteen FAIL on the parent
+#                                         commit (4c4f6492); the two that pass are the
+#                                         detector's own self-test and the
+#                                         "the fix changed nothing where the estimator
+#                                         works" reference comparison, which must pass
+#                                         on both sides by construction.
 #   test_limit_distance_jax.py        21  --limit-distance on this arm: the distance
 #                                         QUADRATURE narrows while the prior keeps its
 #                                         [d_min,d_max] normalization.  Includes the
@@ -348,6 +361,7 @@ FILES=(
   "${JAXDIR}/test_angle_marg_gh_selection.py"
   "${JAXDIR}/test_joint_anglemarg_peaklocal.py"
   "${JAXDIR}/test_limit_distance_jax.py"
+  "${JAXDIR}/test_is_proposal_jitter.py"
 )
 
 # EXCLUDED: files in JAXDIR matching test_*.py that are deliberately NOT gated.  The
@@ -468,7 +482,10 @@ fi
 # THREE branches have now raised this constant, so it is the single place this
 # merge is most likely to go quietly wrong; the FILES array above is the other.
 # Taken from a collection RUN, never by adding the three accountings.
-EXPECTED_TESTS=293
+# Raised 293 -> 308 by the 15 test_is_proposal_jitter.py pins (#227).  Counted from
+# a collection RUN in the gate's own environment (RIFT_JAX_PYTHON=~/.cache/jaxci_venv),
+# not by adding 13 to the constant: see the note above about the local/CI delta.
+EXPECTED_TESTS=308
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
