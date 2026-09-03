@@ -21,10 +21,14 @@ development tree is rift_O4d.
    evidence now says so instead of publishing a number.  Three changes, all on the
    ``laplace-is``/``nuts`` driver paths, which previously applied none of the checks
    the library samplers already applied:
-   (a) ``run_laplace_is`` refuses to moment-match a proposal from weights whose ESS
-   is below ``dim + 1`` -- a ``dim``-dimensional covariance cannot be estimated from
-   fewer effective points, and fitting one anyway is what collapsed the proposal to a
-   point mass.  It keeps the previous (covering) proposal and says so in the log.
+   (a) ``run_laplace_is`` keeps the prior pilot's own evidence estimate as a
+   reference and reports ``nan`` when the adapted estimate lands far BELOW it.  The
+   pilot is crude (often ESS ~ 1) but its proposal covers the prior by construction,
+   and importance sampling from a proposal that MISSES mass is biased low, so a large
+   downward move means the adaptation walked off the peak.  It catches the
+   catastrophic band completely and the boundary band partially: at a synthetic
+   width of 0.05 rad two seeds in five escape it, 6 and 9 nats wrong at neff 5.3 and
+   41.9.  It stops a nine-orders-of-magnitude error; it is not a warranty.
    (b) ``run_laplace_is`` and ``run_nuts`` route their evidence through
    ``_finalize_evidence``, which returns ``nan`` when ``logZ > max lnL`` (impossible
    for a normalized prior) or ``neff < 1.5``.
