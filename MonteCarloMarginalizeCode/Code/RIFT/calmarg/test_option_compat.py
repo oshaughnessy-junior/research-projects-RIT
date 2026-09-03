@@ -56,6 +56,9 @@ class _Opts(object):
         # default=100)).  NOT an opt-in; it is the prerequisite for the two options
         # whose consumers sit behind n_cal > 1.
         self.calibration_n_realizations = 100
+        # the RESOLVED stencil the driver writes before the gate runs (absent
+        # --interpolate-time it resolves to 'nearest'), not the raw option.
+        self._noloop_time_interp = 'nearest'
         for k, v in kw.items():
             if not hasattr(self, k):
                 raise AttributeError("no such driver option: %s" % k)
@@ -314,6 +317,54 @@ def test_conjugate_and_global_norm_are_NOT_refused_at_one_realization():
         assert r == [], (kw, r)
 
 
+# ------------------------------- R9: the fused kernel needs the 'nearest' stencil
+
+def test_fused_kernel_with_a_sub_sample_stencil_is_refused():
+    """The OTHER way --calibration-fused-kernel is silently replaced, and the one the
+    n_cal rule above cannot see: the production call sites select the reduction as
+    `'fused' if <fused requested> and opts._noloop_time_interp == 'nearest' else 'loop'`,
+    because the fused reduction raises NotImplementedError on a sub-sample stencil.  With
+    --interpolate-time cubic/sinc the flag is accepted, advertised, and then not used."""
+    for stencil in ('cubic', 'sinc'):
+        r = oc.refusals_from_opts(_honoured(calibration_fused_kernel=True,
+                                            _noloop_time_interp=stencil))
+        match = [x for x in r if x.options == ('--calibration-fused-kernel',
+                                               '--interpolate-time')]
+        assert len(match) == 1, (stencil, r)
+        assert match[0].kind == oc.KIND_INERT, (stencil, match)
+        assert stencil in match[0].message, (stencil, match)
+
+
+def test_fused_kernel_with_the_nearest_stencil_is_accepted():
+    """The nearest legal neighbour of R9, in both spellings that reach it: the stencil
+    named explicitly, and the default the driver resolves when --interpolate-time is
+    absent.  A rule keyed on the flag rather than on the resolved stencil fails here."""
+    assert oc.refusals_from_opts(
+        _honoured(calibration_fused_kernel=True, _noloop_time_interp='nearest')) == []
+    assert oc.refusals_from_opts(_honoured(calibration_fused_kernel=True)) == []
+
+
+def test_the_stencil_rule_does_not_fire_without_the_fused_kernel():
+    """--interpolate-time cubic/sinc is the maintained NoLoop path's own option and is
+    perfectly legal alongside calibration marginalization; only the FUSED kernel is
+    unreachable there.  Refusing the stencil itself would break every calmarg run that
+    asks for sub-sample time interpolation."""
+    for stencil in ('cubic', 'sinc'):
+        assert oc.refusals_from_opts(_honoured(_noloop_time_interp=stencil)) == [], stencil
+
+
+def test_the_pilot_is_exempt_from_the_stencil_rule():
+    """The pilot passes cal_method='loop' unconditionally and returns before any
+    production call site, so the stencil has nothing to do with it: inheriting
+    --calibration-fused-kernel from a wide stage that also asks for --interpolate-time
+    cubic must stay a NOTICE, exactly as it is at the 'nearest' stencil."""
+    opts = _honoured(calibration_fused_kernel=True,
+                     calibration_dump_responsibilities='resp.npz',
+                     _noloop_time_interp='cubic')
+    assert oc.refusals_from_opts(opts) == [], oc.refusals_from_opts(opts)
+    assert len(oc.notices_from_opts(opts)) == 1
+
+
 def test_numeric_default_options_are_not_treated_as_opt_ins():
     """--calibration-n-realizations and friends have non-None DEFAULTS, so a rule over
     them would refuse every run that merely left the defaults alone.  They are
@@ -378,6 +429,18 @@ def test_the_gate_runs_after_the_gpu_downgrade():
     assert downgrade < call < precompute, (downgrade, call, precompute)
 
 
+def test_the_gate_runs_after_the_stencil_is_resolved():
+    """--interpolate-time is a stencil NAME or a legacy boolean; only the resolved
+    opts._noloop_time_interp says which stencil the call sites will read.  The gate
+    defaults a missing attribute to 'nearest' (the driver's own default), so a call placed
+    above the resolution would not fail loudly -- it would quietly accept
+    --calibration-fused-kernel on the cubic/sinc configuration that downgrades it."""
+    src = open(DRIVER).read()
+    resolve = src.index('opts._noloop_time_interp = ')
+    call = src.index('refuse_incompatible_calibration_options(opts)')
+    assert resolve < call, (resolve, call)
+
+
 # ------------------------------------------------------- the CLI seam, in subprocesses
 
 def _run(args, timeout=300):
@@ -429,6 +492,32 @@ def test_driver_accepts_the_honoured_calmarg_configuration():
     out = _run(['--calibration-envelope-directory', ENV_DIR] + _HONOURED_CLI)
     assert _REFUSED not in out, out[-600:]
     print('driver accepts the honoured calmarg configuration : OK')
+
+
+def test_driver_refuses_the_fused_kernel_on_a_sub_sample_stencil():
+    """R9 through the real CLI, which is the half that matters here: the stencil the rule
+    reads is not the option the user typed but the value the driver resolves from it, so a
+    predicate wired to opts.interpolate_time instead of opts._noloop_time_interp would
+    pass the unit tests above and still accept this command line."""
+    for stencil in ('cubic', 'sinc'):
+        out = _run(['--calibration-envelope-directory', ENV_DIR,
+                    '--calibration-fused-kernel', '--interpolate-time', stencil]
+                   + _HONOURED_CLI)
+        assert _REFUSED in out, (stencil, out[-600:])
+        assert '--calibration-fused-kernel with --interpolate-time %s:' % stencil in out, \
+            (stencil, out[-600:])
+        print('driver refuses the fused kernel on --interpolate-time %-6s : OK' % stencil)
+
+
+def test_driver_accepts_the_fused_kernel_on_the_nearest_stencil():
+    """The over-broadness half of R9 at the CLI, in both spellings: the stencil named
+    explicitly, and the default the driver resolves when --interpolate-time is absent.
+    This is the command line a fused-kernel calmarg campaign actually runs."""
+    for extra in (['--interpolate-time', 'nearest'], []):
+        out = _run(['--calibration-envelope-directory', ENV_DIR,
+                    '--calibration-fused-kernel'] + extra + _HONOURED_CLI)
+        assert _REFUSED not in out, (extra, out[-600:])
+    print('driver accepts the fused kernel on the nearest stencil : OK')
 
 
 def test_driver_accepts_the_burn_in_cap_with_its_target():

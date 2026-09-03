@@ -116,7 +116,8 @@ def calibration_refusals(calibration_envelope_directory=None,
                          burn_in_neff=None,
                          burn_in_nmax=None,
                          n_realizations=None,
-                         fused_kernel=False):
+                         fused_kernel=False,
+                         time_interp="nearest"):
     """Return the list of Refusals for one resolved ILE configuration (possibly empty).
 
     Pure: booleans in, Refusals out.  No option namespace, no I/O, no raising.
@@ -153,8 +154,15 @@ def calibration_refusals(calibration_envelope_directory=None,
         over its mere presence would refuse every run), but it is a PREREQUISITE for the
         two options whose consumers sit behind `n_cal > 1`.  None means "not supplied";
         the caller passes the resolved value.
+    time_interp : str
+        The RESOLVED sub-sample stencil, i.e. ``opts._noloop_time_interp`` after the driver
+        has turned --interpolate-time (a stencil name OR a legacy boolean) into one of
+        nearest/cubic/sinc.  It must be the resolved value, for the same reason
+        ``xpy_evaluator`` must: the raw option is not what the call sites read.  None (or
+        empty) is read as 'nearest', the driver's default when --interpolate-time is absent.
     """
     out = []
+    stencil = "nearest" if not time_interp else str(time_interp).strip().lower()
 
     if not calibration_envelope_directory:
         # Calibration marginalization is OFF.  Every calibration opt-in is then a silent
@@ -270,10 +278,32 @@ def calibration_refusals(calibration_envelope_directory=None,
             "ignored.  Add --vectorized, or drop %s." % (_ENVELOPE, _ENVELOPE)))
 
     if not dump_responsibilities:
-        # The cal PILOT (--calibration-dump-responsibilities) is exempt from both of
+        # The cal PILOT (--calibration-dump-responsibilities) is exempt from all of
         # these: it returns 0.0 from inside the precompute block, before the driver
         # picks a production likelihood_function at all.  Its own prerequisite
-        # (--vectorized) is checked above and is NOT exempted.
+        # (--vectorized) is checked above and is NOT exempted.  (The pilot's own
+        # fused-kernel inertness is announced by calibration_notices instead: it uses
+        # cal_method='loop' unconditionally, whatever the stencil.)
+        if fused_kernel and stencil != "nearest":
+            # The SECOND way --calibration-fused-kernel is silently replaced, and it is
+            # invisible to the n_cal rule above: every production call site selects the
+            # reduction as `'fused' if <fused requested> and
+            # opts._noloop_time_interp == 'nearest' else 'loop'`, because
+            # DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop raises NotImplementedError
+            # for `time_interp != 'nearest' and cal_method == 'fused'`.  So the stencil,
+            # not the flag, decides -- and the mismatch is a silent downgrade, not a crash.
+            out.append(_inert(
+                ("--calibration-fused-kernel", "--interpolate-time"),
+                "--calibration-fused-kernel with --interpolate-time %s: the driver hands "
+                "the likelihood cal_method='fused' only when the resolved stencil is "
+                "'nearest' -- every production call site spells it `'fused' if <fused "
+                "requested> and opts._noloop_time_interp == 'nearest' else 'loop'` -- "
+                "because the fused reduction raises NotImplementedError on a sub-sample "
+                "stencil.  On %s the flag is therefore silently replaced by the loop "
+                "reduction: the answer is right, but the run pays the loop cost and "
+                "advertises a kernel it did not use.  Use --interpolate-time nearest (the "
+                "default) to get the fused kernel, or drop --calibration-fused-kernel to "
+                "ask for the reduction you are already getting." % (stencil, stencil)))
         if not time_marginalization:
             out.append(_inert(
                 (_ENVELOPE, "--time-marginalization"),
@@ -342,7 +372,8 @@ def refusals_from_opts(opts):
     (there is no such option, so both always evaluated False).  So this adapter is
     covered by subprocess tests through the real CLI, not only by unit calls.
 
-    ``opts.gpu`` MUST already be resolved (see calibration_refusals).
+    ``opts.gpu`` and ``opts._noloop_time_interp`` MUST already be resolved (see
+    calibration_refusals).
     """
     return calibration_refusals(
         calibration_envelope_directory=getattr(opts, "calibration_envelope_directory", None),
@@ -357,6 +388,7 @@ def refusals_from_opts(opts):
         burn_in_nmax=getattr(opts, "calibration_burn_in_nmax", None),
         n_realizations=getattr(opts, "calibration_n_realizations", None),
         fused_kernel=bool(getattr(opts, "calibration_fused_kernel", False)),
+        time_interp=getattr(opts, "_noloop_time_interp", "nearest"),
     )
 
 
