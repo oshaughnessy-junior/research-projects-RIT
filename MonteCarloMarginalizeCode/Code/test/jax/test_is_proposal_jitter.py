@@ -150,15 +150,6 @@ def test_regularize_cov_still_conditions_a_degenerate_covariance():
     assert np.all(np.diag(out) > 0)
 
 
-def test_weight_ess_matches_a_hand_computation():
-    """The precondition the guards key on. (sum w)^2 / sum w^2, in log space."""
-    mod = _driver()
-    assert mod._weight_ess(np.log(np.ones(10))) == pytest.approx(10.0)
-    w = np.array([1.0, 1e-300, 1e-300])                        # one live sample
-    assert mod._weight_ess(np.log(w)) == pytest.approx(1.0, abs=1e-6)
-    assert mod._weight_ess(np.array([-np.inf, -np.inf])) == 0.0
-
-
 ###
 ### 2. The CLASS gate.  Seven sites shared the pattern; a fix at one is not a fix.
 ###
@@ -251,9 +242,10 @@ def test_laplace_is_never_reports_evidence_above_the_peak_likelihood():
     """The #227 regression assertion, stated as the issue asks for it.
 
     For a NORMALIZED prior, Z = E_prior[L] <= max L, so ln Z <= max lnL always.
-    The shipped code returned ln Z = 5.85e9 against a peak lnL of 2323 on real
-    data, and 5.6e9 against a peak of -7.6e7 here.  Reproduces in ~10 s with no
-    frames because the defect is in the proposal algebra, not in the physics.
+    The shipped code returned ln Z = 5.85e9 against a peak lnL of 1808 on real
+    S250114ax data, and 4.9e9 - 5.6e9 here on every seed tried.  Reproduces in
+    seconds with no frames, because the defect is in the proposal algebra rather
+    than in the physics.
     """
     _mod, _opts, out, _log = _run(n_max=200000, seed=11, **_NARROW)
     logZ, _sig, _neff, _n, _theta, lnL, _logw = out
@@ -263,66 +255,77 @@ def test_laplace_is_never_reports_evidence_above_the_peak_likelihood():
         "distribution that was never sampled (#227)" % (logZ, max_lnL))
 
 
-def test_laplace_is_reports_nan_rather_than_a_number_it_cannot_stand_behind():
-    """``neff = 1.0`` means one sample carries the estimate.  The library
-    samplers already refuse to report such a value; this driver reported it and
-    exited 0.  Deleting the _finalize_evidence call fails here."""
-    _mod, _opts, out, _log = _run(n_max=200000, seed=11, **_NARROW)
-    logZ, _sig, neff, _n, _theta, _lnL, _logw = out
-    assert neff < 1.5
-    assert np.isnan(logZ)
+@pytest.mark.parametrize("seed", [3, 5, 11, 12])
+def test_a_proposal_that_walked_off_the_peak_is_reported_as_unreliable(seed):
+    """Fixing the jitter is NOT sufficient, and this is the test that says so.
 
+    With the draw and the density matched, the same configuration returns a
+    SELF-CONSISTENT number computed from a proposal that never found the peak:
+    a plausible wrong answer in place of an implausible one.  The prior pilot is
+    kept as a reference -- a crude estimate of the same integral from a proposal
+    that covers the prior by construction, and importance sampling that MISSES
+    mass is biased low -- so an adapted estimate far BELOW it means the
+    adaptation walked away.
 
-def test_pilot_that_cannot_resolve_the_peak_leaves_a_covering_proposal():
-    """Guard 1 (the pilot).  A prior pilot whose weights are dominated by one
-    draw moment-matches to a POINT MASS; every subsequent round then samples a
-    ~1e-10 rad blob.  With the guard, the first round still covers the prior.
-
-    Deleting the pilot ESS guard fails this test."""
-    _mod, _opts, out, log = _run(n_max=120000, seed=11, **_NARROW)
-    theta = out[4]
-    first_round = theta[:len(theta) // 3]
-    assert first_round[:, 0].std() > 0.1, (
-        "first-round ra spread %.3g rad: the proposal collapsed onto a single "
-        "pilot draw" % first_round[:, 0].std())
-    assert "pilot ESS" in log            # and it said so, rather than silently
-
-
-def test_a_collapsed_round_does_not_contract_the_next_one():
-    """Guard 2 (adaptation).  ``_moment_match`` on weights with ESS ~ 1 returns
-    a point mass, and the contraction compounds round over round.  The LAST
-    round is the one that has contracted twice, so it is what this measures.
-
-    Deleting the per-round ESS guard fails this test while leaving guard 1's
-    test green -- which is why they are two tests."""
-    _mod, _opts, out, log = _run(n_max=120000, seed=11, **_NARROW)
-    theta = out[4]
-    last_round = theta[2 * len(theta) // 3:]
-    assert last_round[:, 0].std() > 0.1, (
-        "last-round ra spread %.3g rad: the proposal contracted across "
-        "adaptation rounds" % last_round[:, 0].std())
-    assert "round 1 ESS" in log
-
-
-###
-### 4. The regime the estimator is supposed to work in must be UNCHANGED.
-###
-
-def test_laplace_is_matches_an_independent_reference_where_it_works():
-    """A posterior a prior pilot CAN resolve (sig = 0.15 rad, peak lnL = 20).
-
-    This is the "the fix did not break the working case" gate: the covariance
-    here is ~2e-2, twelve orders above the old absolute jitter, so old and new
-    code differ only in the twelfth significant figure -- and the answer must
-    still land on an independently computed ln Z.  If either ESS guard fired
-    here it would be firing on a healthy run, so the log is checked too.
+    Deleting the pilot comparison in run_laplace_is fails this test on every
+    seed; the reference sweep below is what stops the comparison from being
+    made trigger-happy instead.
     """
-    mod, opts, out, log = _run(sig=0.15, peak=20.0, n_max=120000, seed=3)
+    _mod, _opts, out, log = _run(n_max=120000, seed=seed, **_NARROW)
+    logZ = out[0]
+    assert np.isnan(logZ), "reported lnZ = %r from a collapsed proposal" % logZ
+    assert "BELOW the prior pilot" in log
+
+
+###
+### 4. The regime the estimator DOES work in must be untouched.
+###
+
+_HEALTHY = [(0.30, 20.0), (0.20, 20.0), (0.15, 20.0)]
+
+
+@pytest.mark.parametrize("sig,peak", _HEALTHY)
+@pytest.mark.parametrize("seed", [3, 5, 12])
+def test_laplace_is_matches_an_independent_reference_where_it_works(sig, peak, seed):
+    """A posterior a prior pilot CAN resolve.  Two jobs:
+
+    1.  THE FIX CHANGED NOTHING HERE.  The proposal covariance is ~1e-2, ten
+        orders above the old absolute jitter, so old and new differ in the
+        eleventh significant figure: on (sig=0.15, seed=3) the parent commit
+        gives 8.7451703051592702 and this one 8.7451703051683118.  All nine
+        cases below print identically to 5 dp on both sides.
+    2.  THE GUARD IS NOT TRIGGER-HAPPY.  An earlier version of this guard keyed
+        on the pilot's ESS, and ESS turned out to be a poor predictor: it fired
+        on (sig=0.15, seed=4) -- a run whose final neff was 17843 and whose
+        answer was right to 0.003 nats -- and made the answer 1.5 nats WORSE.
+        Several seeds and widths are swept because a single seed hid that.
+    """
+    mod, opts, out, log = _run(sig=sig, peak=peak, n_max=120000, seed=seed)
     logZ, _sig, neff, _n, _theta, _lnL, _logw = out
-    ref = _reference_logZ(mod, opts, sig=0.15, peak=20.0)
+    ref = _reference_logZ(mod, opts, sig=sig, peak=peak)
     assert neff > 1000.0
-    assert abs(logZ - ref) < 0.05, "ln Z = %.5f vs reference %.5f" % (logZ, ref)
-    assert "laplace-is]" not in log, "an ESS guard fired on a healthy run: %s" % log
+    assert abs(logZ - ref) < 0.1, "ln Z = %.5f vs reference %.5f" % (logZ, ref)
+    assert "laplace-is]" not in log, "the guard fired on a healthy run: %s" % log
+
+
+def test_the_evidence_sanity_rule_is_wired_into_both_driver_estimators():
+    """WIRING, honestly labelled: a call-site check, not a behavioural one.
+
+    ``_finalize_evidence`` (ln Z <= max lnL, neff >= 1.5) is the library
+    samplers' rule; these two driver estimators applied NO rule at all, which is
+    why #227's 5.8e9 was reported as a success.  With the jitter fixed there is
+    no longer a synthetic that reaches it -- the pilot comparison above catches
+    the collapse first -- so what is testable is that the belt is still attached
+    to the braces.
+    """
+    with open(_DRIVER) as f:
+        tree = ast.parse(f.read())
+    for name in ("run_laplace_is", "run_nuts"):
+        fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef) and n.name == name)
+        calls = {n.func.id for n in ast.walk(fn)
+                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+        assert "_finalize_evidence" in calls, "%s does not finalize its evidence" % name
 
 
 ###

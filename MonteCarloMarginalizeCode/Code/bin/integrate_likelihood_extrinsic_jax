@@ -1028,25 +1028,11 @@ def require_finite_evidence(logZ, neff, mode):
     raise RuntimeError(
         "extrinsic integration produced a non-finite evidence (logZ=%r, "
         "neff=%.3g, mode=%s): the proposal did not bracket the likelihood peak, "
-        "so no result row is written for this event.  Try a different --mode "
-        "(flowmc-phimarg / multistart-nuts resolve narrow, high-SNR extrinsic "
-        "posteriors that a prior-seeded Gaussian cannot)." % (logZ, neff, mode))
-
-
-def _weight_ess(logw):
-    """Effective sample size of ``exp(logw)``; 0.0 if nothing is finite.
-
-    Used as a PRECONDITION on moment matching: a ``dim``-dimensional covariance
-    cannot be estimated from fewer than ``dim + 1`` effective points, and fitting
-    one anyway is how the laplace-is proposal contracted to a point mass in #227.
-    """
-    fin = np.isfinite(logw)
-    if not fin.any():
-        return 0.0
-    lw = logw[fin] - np.max(logw[fin])
-    w = np.exp(lw)
-    s = np.sum(w)
-    return float(s * s / np.sum(w * w)) if s > 0 else 0.0
+        "so no result row is written for this event.  Every --mode whose evidence "
+        "comes from a single moment-matched Gaussian fitted to its own draws can "
+        "fail this way on a narrow, high-SNR extrinsic posterior; try another "
+        "--mode, and check its reported neff rather than only its lnZ."
+        % (logZ, neff, mode))
 
 
 def evidence_from_logweights(logw):
@@ -1106,20 +1092,15 @@ def run_laplace_is(like, opts, rng, dim, with_distance, n_adapt=2):
     theta_p, _ = sample_prior(n_pilot, opts, rng, with_distance)
     lnL_p = eval_lnL(like, theta_p, opts, with_distance)
     logL_p = lnL_p + log_prior(theta_p, opts, with_distance)
-    # A prior pilot cannot resolve a peak narrower than its own spacing: at
-    # rho ~ 50 the extrinsic posterior is ~1e-5 rad wide and every one of these
-    # weights but one underflows, so the moment match returns a POINT MASS at
-    # the single best pilot draw.  Refuse it and keep the pilot's own (broad)
-    # unweighted moments, which at least cover the prior; the low neff then
-    # propagates to _finalize_evidence, which reports nan rather than a number.
-    if _weight_ess(logL_p) >= dim + 1:
-        mu, cov = _moment_match(theta_p, logL_p)
-    else:
-        print("  [laplace-is] pilot ESS %.2f < dim+1 = %d: the prior pilot did not "
-              "resolve the peak, so the proposal is NOT moment-matched to it."
-              % (_weight_ess(logL_p), dim + 1))
-        mu = theta_p.mean(axis=0)
-        cov = np.atleast_2d(np.cov(theta_p.T))
+    mu, cov = _moment_match(theta_p, logL_p)
+    # KEEP the pilot's own (prior-proposal) evidence estimate.  It is crude -- one
+    # prior scan, often with an ESS of order 1 -- but it estimates the SAME integral
+    # from a proposal that is guaranteed to cover the prior, and importance sampling
+    # from a proposal that MISSES mass is biased low.  So an adapted estimate coming
+    # out far BELOW this one is evidence that the adaptation walked away from the
+    # peak: the failure mode that remains once #227's draw/density mismatch is fixed.
+    logZ_pilot, _, _ = evidence_from_logweights(
+        lnL_p - log_distance_box_correction(opts, with_distance))
 
     per_round = max(opts.n_max // (n_adapt + 1), 1)
     all_theta, all_logw, all_lnL = [], [], []
@@ -1142,17 +1123,8 @@ def run_laplace_is(like, opts, rng, dim, with_distance, n_adapt=2):
         logw = np.where(valid, lnL + logp - logq, -np.inf)
         all_theta.append(theta); all_logw.append(logw); all_lnL.append(lnL)
         good = np.isfinite(logw)
-        # Same precondition as the pilot: re-fitting from a round whose weights
-        # are dominated by one sample contracts the proposal toward zero, and the
-        # next round contracts again.  Degrade to the PREVIOUS proposal instead.
         if r < n_adapt and good.sum() > 50:
-            ess_r = _weight_ess(logw[good])
-            if ess_r >= dim + 1:
-                mu, cov = _moment_match(theta[good], logw[good])
-            else:
-                print("  [laplace-is] round %d ESS %.2f < dim+1 = %d: keeping the "
-                      "previous proposal rather than collapsing onto it."
-                      % (r, ess_r, dim + 1))
+            mu, cov = _moment_match(theta[good], logw[good])
 
     theta = np.concatenate(all_theta); logw = np.concatenate(all_logw)
     lnL = np.concatenate(all_lnL)
@@ -1162,6 +1134,12 @@ def run_laplace_is(like, opts, rng, dim, with_distance, n_adapt=2):
     # this driver applied none, which is why #227 exited 0 on lnZ = 5.8e9.
     logZ, sig, neff = _finalize_evidence(
         logZ, sig, neff, float(np.max(lnL)) if np.isfinite(lnL).any() else np.nan)
+    if np.isfinite(logZ) and np.isfinite(logZ_pilot) and logZ < logZ_pilot - 5.0:
+        print("  [laplace-is] adapted proposal gives lnZ = %.3f, %.1f nats BELOW the "
+              "prior pilot's own estimate (%.3f): the adaptation moved off the peak, "
+              "so this evidence is reported as unreliable."
+              % (logZ, logZ_pilot - logZ, logZ_pilot))
+        logZ, sig = np.nan, np.nan
     # theta follows the GAUSSIAN PROPOSAL q, not the posterior; logw is what
     # turns it into one.  Returned so write_samples() can fair-draw.
     return logZ, sig, neff, len(theta), theta, lnL, logw
