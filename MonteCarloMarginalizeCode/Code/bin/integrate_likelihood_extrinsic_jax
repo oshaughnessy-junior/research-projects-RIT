@@ -1224,8 +1224,12 @@ def run_nuts(like, opts, rng, with_distance):
         lnL_is[valid] = eval_lnL(like, th_is[valid], opts, with_distance=False)
     logw = np.where(valid, lnL_is + logp - logq, -np.inf)
     logZ, sig, neff = evidence_from_logweights(logw)
+    # Bound with the NUTS CHAIN's peak, not the IS cloud's.  Both are valid upper
+    # bounds on ln Z, the chain's is the larger (it sits ON the peak), and using the
+    # smaller one would fail a correct run whose IS cloud happened to be broad.  This
+    # is also the argument samplers.py passes at its own _finalize_evidence sites.
     logZ, sig, neff = _finalize_evidence(
-        logZ, sig, neff, float(np.max(lnL_is)) if np.isfinite(lnL_is).any() else np.nan)
+        logZ, sig, neff, float(np.max(lnL)) if np.isfinite(lnL).any() else np.nan)
     # theta/lnL are the NUTS chain (already targets the posterior); the IS cloud
     # th_is/logw is only the evidence estimator, so there is nothing to reweight.
     # `neff` below therefore describes th_is, NOT the exported chain -- it must
