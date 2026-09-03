@@ -18,9 +18,9 @@ development tree is rift_O4d.
    ~1e-12 relative; ``--mode prior-mc`` is untouched and reproduces bit-for-bit.
 
 ** BEHAVIOUR CHANGE, jax ILE: an extrinsic integration that cannot stand behind its
-   evidence now says so instead of publishing a number.  Three changes, all on the
-   ``laplace-is``/``nuts`` driver paths, which previously applied none of the checks
-   the library samplers already applied:
+   evidence now says so instead of publishing a number.  (a) and (b) below are on
+   the ``laplace-is``/``nuts`` driver paths, which previously applied none of the
+   checks the library samplers already applied; **(c) applies to EVERY mode**:
    (a) ``run_laplace_is`` keeps the prior pilot's own evidence estimate as a
    reference and reports ``nan`` when the adapted estimate lands far BELOW it.  The
    pilot is crude (often ESS ~ 1) but its proposal covers the prior by construction,
@@ -34,7 +34,11 @@ development tree is rift_O4d.
    for a normalized prior) or ``neff < 1.5``.
    (c) ``analyze_one`` raises on a non-finite evidence BEFORE writing either
    artifact, so a failed event leaves no ``.dat`` row and the run exits nonzero;
-   ``--soft-fail-event-range`` still skips to the next event.
+   ``--soft-fail-event-range`` still skips to the next event.  THIS IS NOT CONFINED
+   TO ``laplace-is``: the flowMC/NUTS modes already returned ``nan`` from
+   ``_finalize_evidence`` and the driver published it.  Measured: ``--mode
+   flowmc-phimarg --distance-marginalization`` on real S250114ax (rho ~ 49) returns
+   ``nan`` at both seeds tried (``neff`` 1.0 and 1.4) and now exits 1 instead of 0.
    CONSEQUENCE, and it is not a small one: on high-SNR real data ``--mode laplace-is``
    now FAILS where it used to report a number.  It was not reporting a right one --
    see the S250114ax comparison in the PR that closes #227, where the
