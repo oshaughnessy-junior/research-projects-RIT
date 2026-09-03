@@ -432,11 +432,12 @@ def regularize_cov(cov, rel=1e-12):
     Two properties, and each one alone was a live defect (issue #227):
 
     RELATIVE, not absolute.  An ``+ eps*I`` regularizer with a fixed ``eps``
-    is only negligible if the covariance is O(1).  RIFT extrinsic posteriors at
-    rho ~ 50-80 have angular scales ~1e-5 rad, i.e. variances ~1e-10, and an
-    adapting proposal contracts below that; ``1e-12`` then stops being a
-    conditioning nudge and becomes the proposal.  Scaling by ``trace(cov)/dim``
-    makes the nudge a fixed fraction of the covariance at every scale.
+    is only negligible if the covariance is O(1).  A production extrinsic
+    posterior is not: on the real S250114ax point in #227 (rho ~ 49) the driver's
+    own Fisher gives angular scales ~1e-3 rad, and an ADAPTING proposal contracts
+    far below that -- to 3e-21 there.  ``1e-12`` then stops being a conditioning
+    nudge and becomes the proposal.  Scaling by ``trace(cov)/dim`` makes the nudge
+    a fixed fraction of the covariance at every scale.
 
     ONE matrix.  Callers must pass this return value to the Cholesky *and* to
     ``_gaussian_logq``/``_mixture_logq``.  Drawing from ``cov + eps*I`` while
