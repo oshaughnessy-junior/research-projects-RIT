@@ -361,8 +361,12 @@ jobs:
     # pattern, so the marker's SCOPE_GLOBS check -- the half that makes a marker fail-closed --
     # would have nothing to scope over.  The census job above is what keeps this set honest.
     #
-    # Python 3.10 to match the sibling numpy jobs.  timeout-minutes is a runaway backstop, an
-    # order of magnitude above the 49 s measured on CIT, not a budget.
+    # Python 3.10 to match the sibling numpy jobs.  timeout-minutes is a runaway backstop,
+    # not a budget -- but the margin is no longer large: the gate measures 350 s on CIT
+    # (was 49 s when this comment first claimed 'an order of magnitude'), because the
+    # per-file collection loop spawns one RIFT-importing interpreter per manifest entry and
+    # grows with the manifest.  20 min is ~3.4x that, not 20x.  Re-measure before adding
+    # many more files, and see .travis/test-core-units.sh for the breakdown.
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4

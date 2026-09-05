@@ -11,8 +11,11 @@
 # distance grid, a container manifest, a parameter port.  A wrong number there is still a
 # plausible number.
 #
-# Every file listed here was run individually on CIT (IGWN conda python 3.11, numpy 1.26.4,
-# lal 7.7.0) before it was added; the measured collection counts are the floors below.
+# The original manifest was run file by file on CIT (IGWN conda python 3.11, numpy 1.26.4,
+# lal 7.7.0) before it was added; the measured collection counts are the floors below.  Later
+# entries are verified by this gate itself, which collects every file individually before the
+# combined run, so an addition that collects nothing or fails is caught here rather than
+# trusted on a quoted number.
 #
 # SHAPE.  Modelled on .travis/test-slowrot.sh, and it keeps that script's defences, because
 # the trap it documents is live in this very set: several files elsewhere in these directories
@@ -58,6 +61,7 @@ FILES=(
   "$C/RIFT/likelihood/test_td_dispatch_epoch.py"
   "$C/test/test_ile_scalar_edge_cases.py"
   "$C/test/test_srate_resample_time_marginalization.py"
+  "$C/test/test_vectorized_lal_tools_split.py"
   # -- integrators: seeding, allocation, weight derivation
   "$C/test/integrators/test_convergence_sample_order.py"
   "$C/test/integrators/test_gmm_adaptive.py"
@@ -124,27 +128,36 @@ done
 
 # Pinned TOTAL floor, so a renamed file or a dropped test_* entry point goes red rather than
 # green-on-fewer-tests.  MEASURED 2026-09-03 on CIT with the IGWN conda python (3.11, numpy
-# 1.26.4, scipy 1.14.1, lal 7.7.0), whole manifest in one run: 316 collected, 304 passed,
-# 12 skipped (11 pytest.skip + 1 xfail), ~65 s.  History: 278/266 -> 296/284 when
-# test_replica_pooling.py and test_marg_list.py joined (both rostered BROKEN until their
-# defects were fixed) -> 326/314 when test_teobresums_compat.py and test_rimsky_integration.py
-# joined (both rostered OPTDEP on prose until test-roster-verify.py caught them passing
-# completely with nothing missing; its companion test_rimsky_integration.py was reverted, see
-# above) -> 316/304 with test_integrator_studies.py, which wraps the five integrator studies that
-# collect nothing themselves (+29 s).  RAISE these when files are added: a floor left at the old
-# value passes while covering less, which is the failure this gate exists to catch.
-EXPECTED_TESTS=316
-# Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
-# asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 12 skips are
-# environment legs -- cupy in test_seeding_reproducibility, device legs in
-# test_dslice_device_native, and the xfail in test_uv_symmetry -- and a GitHub runner has no
-# GPU either, so they skip there too.
+# 1.26.4, scipy 1.14.1, lal 7.7.0), whole manifest in one run: 319 collected,
+# 307 passed, 12 skipped (11 pytest.skip + 1 xfail).
 #
-# CONFIRMED ON A RUNNER.  The first CI run of this job (PR #243, ubuntu-latest, python 3.10 +
-# editable install) reported the same 278 / 266 / 12, in 24.7 s.  So these floors are exact on
-# both stacks, not merely the CIT numbers copied across, and a future divergence is a real
-# change rather than an environment difference to be explained away.
-EXPECTED_PASSED=304
+# COST: 350 s total on CIT, of which the pytest run is ~100 s.  The rest is the per-file
+# collection loop below -- one interpreter per manifest entry, each importing RIFT (lal,
+# numpy, numba), so it grows linearly with the manifest and now dominates.  That is the
+# price of the exit-5 defence and it is worth paying, but it is why this job's
+# timeout-minutes is 20 rather than something tight: measure before trimming the budget.
+#
+# History, because both branches of a merge moved these numbers and the arithmetic is NOT the
+# way to combine them -- this gate collects every file individually before the combined run, so
+# the merged floor is re-measured, never added up:
+#   278/266  original manifest
+#   296/284  + test_replica_pooling.py, test_marg_list.py (rostered BROKEN until fixed)
+#   299/287  + test_vectorized_lal_tools_split.py (from rift_O4d)
+#   +        + test_teobresums_compat.py (rostered OPTDEP on prose until test-roster-verify.py
+#            caught it collecting and passing completely with nothing missing; its companion
+#            test_rimsky_integration.py was promoted alongside and REVERTED -- see the note by
+#            the manifest entry)
+#   +        + test_integrator_studies.py, wrapping the five integrator studies that collect
+#            nothing themselves (+29 s)
+#
+# RAISE these when files are added: a floor left at the old value passes while covering less,
+# which is the failure this gate exists to catch.
+EXPECTED_TESTS=319
+# Outcomes, not just exit status: a collection floor cannot see a test that collects, runs
+# and asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 12 skips are
+# environment legs -- cupy in test_seeding_reproducibility, device legs in
+# test_dslice_device_native, and the xfail in test_uv_symmetry.
+EXPECTED_PASSED=307
 MAX_SKIPPED=12
 
 junit="$(mktemp -t core-units-junit-XXXXXX.xml)"
