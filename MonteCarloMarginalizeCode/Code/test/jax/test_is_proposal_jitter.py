@@ -363,3 +363,140 @@ def test_analyze_one_refuses_before_it_writes_either_artifact():
         assert name in seen, "analyze_one never calls %s" % name
     assert seen["require_finite_evidence"] < seen["write_samples"]
     assert seen["require_finite_evidence"] < seen["write_dat"]
+
+
+###
+### 6. The pilot and the adapted estimator must integrate the SAME quantity.
+###
+
+def test_pilot_and_explicit_weights_share_one_normalization_under_limit_distance():
+    """THE MATH, not the wiring -- the wiring is the AST test below, and this
+    test is deliberately unable to see a caller that drops the term.  (It was
+    written as a behavioural test first, and a mutation that deleted the term
+    from run_laplace_is left it green: it reimplements the two weight
+    expressions rather than reaching them, which is the same "tests the helper,
+    not the call site" mistake the #227 defect itself is an instance of.)
+
+    What it does establish is why the term has to be there at all: the 5-nat
+    collapse guard compares two DIFFERENT estimators, and it means nothing
+    unless both are on the same normalization.
+
+    They are built differently on purpose.  The adapted loop forms
+    ``ln w = lnL + ln p - ln q`` explicitly, and ``log_prior`` is normalized over
+    the physical ``[d_min,d_max]``; the prior pilot draws from ``sample_prior``,
+    which samples the prior RESTRICTED to the ``--limit-distance`` box, so its
+    weights need ``-log_distance_box_correction`` to land on that same scale.
+    Drop that term -- which the docstring of ``log_distance_box_correction`` used
+    to tell a reader to do, because it named ``run_laplace_is`` as an estimator
+    that must not subtract -- and the two differ by a CONSTANT.  A constant
+    offset does not make the guard noisy, it makes it wrong in one direction:
+    the box here is a factor of 17.86 in prior mass, i.e. 2.88 nats, and a wider
+    limit silently walks past the 5-nat threshold and disables the guard
+    entirely while every existing test still passes.
+
+    Taking L == 1 makes both estimators exactly computable: Z = int_box p_full
+    = the box's prior mass fraction, so the assertion is against a number
+    derived on paper rather than against the other estimator.
+    """
+    mod = _driver()
+    optp = mod.build_parser()
+    opts, _ = optp.parse_args(["--inj-mode", "--d-min", "10.0", "--d-max", "1000.0",
+                               "--limit-distance", "200.0,400.0"])
+    lo, hi = mod.resolve_distance_limit(opts)
+    assert (lo, hi) == (200.0, 400.0), "the box did not narrow; test is vacuous"
+
+    mass = (hi ** 3 - lo ** 3) / (opts.d_max ** 3 - opts.d_min ** 3)
+    assert 0.0 < mass < 0.1                      # a box small enough to matter
+
+    rng = np.random.default_rng(7)
+    n = 400000
+    theta_p, _ = mod.sample_prior(n, opts, rng, True)
+
+    # (a) the PILOT form: proposal == restricted prior, lnL == 0
+    lw_pilot = np.zeros(n) - mod.log_distance_box_correction(opts, True)
+    Z_pilot = np.exp(lw_pilot).mean()
+
+    # (b) the ADAPTED form: ln w = lnL + ln p - ln q, written out against a
+    #     uniform-in-d proposal over the same box (q is known exactly here).
+    #     The angles keep their prior draw, so q's angular factor IS the driver's
+    #     own angles-only log_prior -- taken from the code rather than re-derived
+    #     here, since a hand-written copy of a density is the mistake this whole
+    #     file is about.  Only the distance proposal differs (uniform on the box).
+    th = np.array(theta_p, dtype=float, copy=True)
+    th[:, 5] = rng.uniform(lo, hi, size=n)
+    logq = mod.log_prior(th, opts, False) - np.log(hi - lo)
+    lw_adapt = mod.log_prior(th, opts, True) - logq
+    Z_adapt = np.exp(lw_adapt[np.isfinite(lw_adapt)]).mean()
+
+    assert Z_pilot == pytest.approx(mass, rel=1e-12), (
+        "pilot weights do not carry the full-range normalization: %r vs %r"
+        % (Z_pilot, mass))
+    assert Z_adapt == pytest.approx(mass, rel=0.02), (
+        "explicit lnL+lnp-lnq weights are on a different scale: %r vs %r"
+        % (Z_adapt, mass))
+    # and therefore on the same scale as each other, which is the guard's premise
+    assert abs(np.log(Z_pilot) - np.log(Z_adapt)) < 0.05
+
+
+def test_the_pilot_normalization_test_would_catch_the_dropped_correction():
+    """The mutation the test above exists to stop, stated so it is visible: with
+    the box correction dropped the pilot is low by ln(1/mass) -- 2.7 nats here,
+    and larger for a wider box, which is how it would slip past a 5-nat guard."""
+    mod = _driver()
+    optp = mod.build_parser()
+    opts, _ = optp.parse_args(["--inj-mode", "--d-min", "10.0", "--d-max", "1000.0",
+                               "--limit-distance", "200.0,400.0"])
+    corr = mod.log_distance_box_correction(opts, True)
+    assert corr > 0.0
+    assert corr == pytest.approx(2.8824, abs=0.01)
+
+
+def test_the_pilot_reference_is_wired_to_the_box_correction():
+    """WIRING, and the test that actually holds run_laplace_is to the maths above.
+
+    The numerical test cannot: it writes the two weight expressions out itself,
+    so deleting ``- log_distance_box_correction(...)`` from run_laplace_is left
+    it green.  This one reads the call site.  ``evidence_from_logweights`` is
+    called twice in the file -- once in run_prior_mc, once for this pilot -- and
+    BOTH are "proposal == prior" estimators, so both arguments must carry the
+    correction.  The adapted loop must not, and that is asserted too, because
+    the failure mode is symmetric: adding the term where ln w is already
+    explicit breaks the comparison just as thoroughly as dropping it here.
+    """
+    with open(_DRIVER) as f:
+        src = f.read()
+    tree = ast.parse(src)
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "run_laplace_is")
+
+    calls = [n for n in ast.walk(fn)
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+             and n.func.id == "evidence_from_logweights"]
+    # TWO, and they are the two halves of the comparison: the pilot (raw prior
+    # draws, needs the correction) and the adapted estimate (ln w already
+    # explicit, must not have it).  Pinning the count is what makes "the pilot
+    # is the one with the correction" a statement rather than a search.
+    assert len(calls) == 2, (
+        "expected exactly two evidence estimates in run_laplace_is (prior pilot "
+        "and adapted), found %d" % len(calls))
+    pilot = [c for c in calls if "log_distance_box_correction" in ast.dump(c.args[0])]
+    assert len(pilot) == 1, (
+        "the prior pilot's weights do not subtract log_distance_box_correction, so "
+        "under --limit-distance it sits ln(1/box mass) BELOW the adapted estimate it "
+        "is compared against -- 2.88 nats for the box in the test above, and a wider "
+        "limit walks straight past the 5-nat guard and disables it (#227).")
+    arg = pilot[0].args[0]
+    assert isinstance(arg, ast.BinOp) and isinstance(arg.op, ast.Sub), (
+        "the correction must be SUBTRACTED from the pilot weights, not added")
+    other = [c for c in calls if c is not pilot[0]]
+    assert isinstance(other[0].args[0], ast.Name) and other[0].args[0].id == "logw", (
+        "the adapted estimate should be taken on the explicit ln w array")
+
+    # ... and the adapted loop, which forms ln w explicitly, must NOT correct again.
+    for node in ast.walk(fn):
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id == "logw"):
+            assert "log_distance_box_correction" not in ast.dump(node.value), (
+                "the adapted loop already forms lnL + ln p - ln q against a "
+                "full-range-normalized log_prior; correcting again double-counts")

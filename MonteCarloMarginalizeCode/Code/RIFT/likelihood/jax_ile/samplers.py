@@ -259,16 +259,43 @@ def angle_marg_eval_chunk(like, chunk):
     # chunk for every likelihood that does not need it.  Two independent things
     # that happened to be the same string; the last default move on this path
     # (interp linear -> sinc) was bitten by exactly that.
-    if getattr(like, "angle_marg_scheme", "grid") not in ("exact", "laplace"):
+    # 'peak-local' is capped WITH the dense schemes, not exempted from them.  Its u
+    # axis is localized, but it still nests sample/time vmaps over the distance grid,
+    # phi chunks, four cells and a streamed u-node block, so the batch multiplies the
+    # same way the dense schemes do.  Leaving it out kept an uncapped 8000-sample batch
+    # and reopened the 36.4 GiB failure documented above.
+    if getattr(like, "angle_marg_scheme", "grid") not in ("exact", "laplace",
+                                                          "peak-local"):
         return chunk
     npts = int(getattr(getattr(like, "data", None), "npts", 0) or 0)
     if npts <= 0:
         return chunk
+    bytes_per = _ANGLE_MARG_BYTES_PER_SAMPLE_PT
+    if getattr(like, "angle_marg_scheme", None) == "peak-local":
+        # ITS COST MODEL IS NOT THE DENSE ONE, and enrolling it in the cap without
+        # saying so was a review finding.  peak-local carries the WHOLE distance grid
+        # inside every phi chunk, so its live slab is
+        #     phi_chunk * n_x * (4 cells) * (live u nodes) * 8 bytes
+        # per (sample, time-point) -- about 1.0 MB at phi_chunk=16, n_x=256 and an
+        # 8-node stream block, roughly 128x the 8192-byte dense model before
+        # intermediates.  Using the dense
+        # constant would have applied a cap that looks protective and is not.
+        from . import joint_anglemarg_peaklocal as _jp
+        n_x = int(np.size(getattr(like, "x_grid", ())) or 1)
+        # The kernel requests the accurate amplitude-derived TOTAL but streams its node
+        # axis.  Model the live block, not the total work: using all 896 production-floor
+        # nodes here would be safe but would collapse the batch cap as though the old
+        # 67-GiB materialization still existed.  The same amp_sizing is nevertheless read
+        # here so this guard remains coupled to the production policy.
+        amp_sizing = (getattr(like, "angle_marg_info", None) or {}).get("amp_sizing")
+        n_u_live = min(_jp.u_nodes_in_use(amp_sizing), _jp.U_NODE_STREAM_CHUNK)
+        bytes_per = max(
+            bytes_per,
+            _jp.PHI_CHUNK_DEFAULT * n_x * 4 * n_u_live * 8)
+    cap = max(1, _ANGLE_MARG_BUFFER_TARGET // (bytes_per * npts))
+    return min(chunk, cap)
     # A floor larger than one defeats the memory bound for long, valid time
     # windows (for example npts=65537 made a floor of 64 request ~32 GiB).
-    cap = max(1, _ANGLE_MARG_BUFFER_TARGET
-              // (_ANGLE_MARG_BYTES_PER_SAMPLE_PT * npts))
-    return min(chunk, cap)
 
 
 def eval_lnL(like, theta, chunk=_EVAL_CHUNK):

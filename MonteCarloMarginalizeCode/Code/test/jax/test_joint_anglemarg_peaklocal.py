@@ -110,3 +110,105 @@ def test_required_n_phi_grows_like_sqrt_amplitude():
     a, b = JP.required_n_phi(100.0), JP.required_n_phi(10000.0)
     assert b > a
     assert 5.0 < (b / a) / np.sqrt(100.0) * 10.0 < 20.0
+
+
+# ------------------------------------------------------- differentiability
+
+def test_hessian_works_and_the_gradient_is_still_correct():
+    """P1 from review.  jnp.linalg.eigvals has NO second derivative in JAX, so any
+    Hessian through this kernel raised -- and the caller that matters, _fisher_whitening,
+    swallows that in an `except Exception` and returns None, so --fisher-precondition
+    would silently degrade to raw coordinates with the flag still recorded as supplied.
+
+    The fix cuts the tangent before the eigensolve.  That CHANGES the derivative, so the
+    gradient must be re-validated, not assumed: these angles are cell boundaries of an
+    exact partition, so a boundary shift adds to one cell exactly what it removes from
+    its neighbour and cancels."""
+    F = lambda x: JP.log_inner_u_integral(0.0, x + 1j, 0.7 - 0.3j)
+    assert np.isfinite(float(jax.hessian(F)(2.0)))
+    g = jax.grad(F)
+    for x in (0.3, 2.0, 7.0, 25.0):
+        h = 1e-5
+        fd = (float(F(x + h)) - float(F(x - h))) / (2 * h)
+        ad = float(g(x))
+        assert abs(ad - fd) < 1e-4 * max(abs(fd), 1.0), (x, ad, fd)
+
+
+def test_gradient_is_finite_as_the_quartic_leading_coefficient_vanishes():
+    """P1 from review.  The old guard caught only an EXACT zero; at c2 = 1e-20 the
+    companion matrix acquires ~1e20 entries and the eig JVP degenerates -- measured grad
+    0.567 at c2=1, -1.2e14 at 1e-20 and nan at 1e-30, while the VALUE stayed fine.  c2 is
+    the B-table q=+-2 coefficient and passes through small values at special geometries;
+    one nan gradient poisons a MALA/flowMC chain."""
+    g = jax.grad(lambda c: JP.log_inner_u_integral(0.0, 2.0 + 1j, c * (1.0 + 0j)))
+    vals = [float(g(c2)) for c2 in (1.0, 1e-6, 1e-20, 1e-30)]
+    assert all(np.isfinite(v) for v in vals), vals
+    # and stable, not merely finite, across 24 orders of magnitude in c2
+    assert abs(vals[1] - vals[3]) < 1e-3, vals
+
+
+def test_required_u_nodes_is_derived_and_grows_like_sqrt_amplitude():
+    """P1 from review: the fallback (whole-cell) branch integrates with the SAME fixed
+    node count spread over the entire cell, so rejecting a stalled Newton centre makes
+    the resolution worse rather than safer.  JAX cannot adapt the count -- shapes may not
+    depend on traced values -- so the sizing is exposed as a caller-side helper, derived
+    from the exact bound |d2g/du2| <= M2u ~ 5A.
+
+    Production uses this count because fallback is data-dependent.  It is intentionally
+    uncapped: memory is bounded by streaming the node axis, not by truncating an accuracy
+    request inside a region the omitted-mass certificate cannot inspect.
+    """
+    lo = JP.required_u_nodes(1.0)
+    mid = JP.required_u_nodes(100.0)
+    hi = JP.required_u_nodes(1.0e4)
+    assert lo == JP.U_NODES_PER_CELL          # never below the windowed default
+    assert lo < mid < hi                       # grows with amplitude
+    assert JP.u_nodes_in_use(450.0) == JP.required_u_nodes(450.0)
+    assert hi > 2048                           # production does not silently cap accuracy
+    # the growth is the sqrt law, not something steeper
+    assert 5.0 < mid / np.sqrt(100.0) < 60.0, mid
+
+
+def test_a_fallback_cell_is_resolved_when_the_caller_sizes_it():
+    """The helper must actually buy resolution: a whole-cell integration at a raised node
+    count must agree with a much finer one."""
+    rng = np.random.default_rng(0)
+    worst = 0.0
+    for _ in range(6):
+        sc = 10.0 ** rng.uniform(0.5, 2.0)
+        c1 = sc * (rng.normal() + 1j * rng.normal())
+        c2 = sc * (rng.normal() + 1j * rng.normal())
+        amp = abs(c1) + 2 * abs(c2)
+        n = JP.required_u_nodes(amp)
+        a = float(JP.log_inner_u_integral(0.0, c1, c2, n_nodes=n))
+        b = float(JP.log_inner_u_integral(0.0, c1, c2, n_nodes=min(4 * n, 4096)))
+        worst = max(worst, abs(a - b))
+    assert worst < 1e-4, worst
+
+
+def test_large_fallback_policy_streams_a_fixed_live_node_block():
+    """The accurate production count must not reappear as a materialized node axis.
+
+    At the sizing floor the policy requests hundreds of nodes.  Observe the shape handed
+    to the exponent evaluator while tracing the rolled loop: its live last axis must stay
+    at the stream chunk, independent of the total quadrature count.
+    """
+    n = JP.u_nodes_in_use(450.0)
+    assert n > JP.U_NODE_STREAM_CHUNK
+    shapes = []
+    real_g = JP._g_u
+
+    def _spy_g(a, c1, c2, u, order=0):
+        if order == 0 and getattr(u, "ndim", 0) == 2:
+            shapes.append(tuple(u.shape))
+        return real_g(a, c1, c2, u, order)
+
+    JP._g_u = _spy_g
+    try:
+        out = JP.log_inner_u_integral(0.0, 2.0 + 1j, 0.7 - 0.3j, n_nodes=n)
+        assert np.isfinite(float(out))
+    finally:
+        JP._g_u = real_g
+
+    assert shapes, "stream body never reached the exponent evaluator"
+    assert max(shape[-1] for shape in shapes) <= JP.U_NODE_STREAM_CHUNK, shapes

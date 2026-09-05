@@ -233,7 +233,7 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         is the only gated check that distinguishes
 #                                         the corrected sizing.  The rest of the
 #                                         angle-marg suite is EXCLUDED; see below.
-#   test_is_proposal_jitter.py        24  issue #227: a Gaussian IS proposal must be
+#   test_is_proposal_jitter.py        27  issue #227: a Gaussian IS proposal must be
 #                                         SCORED under the matrix it was DRAWN from.
 #                                         Seven sites drew from cov + 1e-12*I and
 #                                         scored under bare cov; the DEFAULT --mode
@@ -362,6 +362,7 @@ FILES=(
   "${JAXDIR}/test_angle_marg_default.py"
   "${JAXDIR}/test_angle_marg_gh_selection.py"
   "${JAXDIR}/test_joint_anglemarg_peaklocal.py"
+  "${JAXDIR}/test_angle_marg_peaklocal_wiring.py"
   "${JAXDIR}/test_limit_distance_jax.py"
   "${JAXDIR}/test_is_proposal_jitter.py"
 )
@@ -484,10 +485,40 @@ fi
 # THREE branches have now raised this constant, so it is the single place this
 # merge is most likely to go quietly wrong; the FILES array above is the other.
 # Taken from a collection RUN, never by adding the three accountings.
-# Raised 293 -> 317 by the 24 test_is_proposal_jitter.py pins (#227).  Counted from
-# a collection RUN in the gate's own environment (RIFT_JAX_PYTHON=~/.cache/jaxci_venv),
-# not by adding 13 to the constant: see the note above about the local/CI delta.
-EXPECTED_TESTS=317
+#
+# The peak-local ILE WIRING branch adds 13: 11 in
+# test_angle_marg_peaklocal_wiring.py (the scheme reaches the likelihood,
+# matches exact, is absent from 'auto', joins the amp failsafe / batch-memory
+# cap / artifact label, and the CLI rejects a misspelling) and 2 in
+# test_joint_anglemarg_peaklocal.py (twice differentiable, and the gradient stays
+# finite as the quartic leading coefficient vanishes).  293 + 13 = 306, re-derived
+# by RUNNING the gate's own collection after rebasing over #221/#238/#223.
+#
+# The u-FALLBACK branch adds 2 in test_joint_anglemarg_peaklocal.py (required_u_nodes
+# is derived and follows the sqrt-A law under a cap, and a whole-cell integration sized
+# by it agrees with a 4x finer one).  The floor is 310, READ FROM THIS JOB'S OWN LOG.
+# Two wrong numbers preceded it, failing in opposite directions:
+#   308 -- by adding 2 to the previous 306, which is exactly what the paragraph above
+#          says not to do.  The base is 309 after #239 merged, so 308 would still have
+#          PASSED while silently under-promising three tests.
+#   311 -- by running the collection on a dev host.  Wrong by exactly one, because the
+#          harness sliced this script by line number to reuse FILES and stopped before
+#          the loop that populates DESELECT from DESELECTED_TESTS -- so it counted
+#          test_gpu_gather_parity_against_numpy_window, which THIS job deselects.
+# Arithmetic lands below the truth and passes; a mis-set-up local collection lands above
+# it and fails.  Read the floor off this job's "collected N tests from 27 files" line --
+# the only source that is not a guess.
+# The production-policy follow-up adds one mutation-bearing streaming test; this job's
+# own collection reports 312.
+# The #227 IS-proposal branch adds the 27 pins in test_is_proposal_jitter.py.  339 is
+# READ OFF THIS JOB'S OWN "collected N tests from 28 files" LINE after merging
+# rift_O4d, which is the only source the paragraphs above accept.  Recording what the
+# merge looked like, because it is the case this constant is built to survive: the two
+# sides disagreed (the branch had 293 + 24 = 317, main had moved on to 312), so the
+# branch's own number was stale by four merges before this merge was even attempted.
+# Adding 24 to main's 312 happens to give 336 here; that agreement is a coincidence of
+# this merge and not a licence to do the arithmetic next time.
+EXPECTED_TESTS=339
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"

@@ -328,8 +328,8 @@ def check_critical_and_report(opts, optp):
             fatal.append(
                 "--distance-grid-scheme %s requires --angle-marg-scheme "
                 "exact/laplace/auto: the log-uniform grid is sized from the "
-                "data-derived angle amplitude, which the default 'grid' scheme "
-                "does not compute" % dgs)
+                "data-derived angle amplitude, which the 'grid' scheme you "
+                "asked for does not compute" % dgs)
         if getattr(opts, "distance_grid_points", None) is not None:
             fatal.append("--distance-grid-points and --distance-grid-scheme %s "
                          "both set the distance node count; pass one or the "
@@ -934,10 +934,17 @@ def log_distance_box_correction(opts, with_distance):
     --limit-distance narrowed the box.
 
     sample_prior() draws distance from the prior RESTRICTED to the box, so its
-    density is the prior divided by that mass.  Estimators that assume
-    "proposal == prior" (run_prior_mc) must subtract this; estimators that form
-    ln w = lnL + ln p - ln q explicitly (run_laplace_is) already have it right
-    and must NOT subtract it again.
+    density is the prior divided by that mass.  The rule is per ESTIMATOR, not
+    per function: an estimator that assumes "proposal == prior" must subtract
+    this, and one that forms ln w = lnL + ln p - ln q explicitly must NOT,
+    because log_prior() is already normalized over the physical [d_min,d_max].
+
+    run_laplace_is contains ONE OF EACH, which is why this docstring no longer
+    names functions.  Its adapted loop forms ln w explicitly and does not
+    subtract; its prior pilot (kept as the collapse reference, #227) draws from
+    sample_prior and therefore does.  Both then estimate the SAME integral on
+    the SAME full-range normalization, which is the only reason the two are
+    comparable and the 5-nat guard means anything.
     """
     if not with_distance:
         return 0.0
@@ -1300,7 +1307,11 @@ def angle_grid_suspect_note(scheme=None):
                 "amp_sizing=%.6g scheme=%s"
                 % (st.get("worst_amp", float("nan")),
                    st.get("amp_sizing", float("nan")), st.get("scheme")))
-    if scheme in ("exact", "laplace"):
+    # 'peak-local' belongs here for the same reason it belongs in the failsafe: its phi
+    # axis is dense and amp-sized, so its artifacts are entitled to no more confidence
+    # than the other two, and a scheme missing from this list would publish output with
+    # NO standing label at all -- the silence a reader would read as verification.
+    if scheme in ("exact", "laplace", "peak-local"):
         return ("ANGLE-GRID-CHECK=BEST-EFFORT (no undersizing detected; the "
                 "detector may be dropped under jax transformation, so this is "
                 "NOT a verification -- rebuild at larger amp_sizing if it matters)")

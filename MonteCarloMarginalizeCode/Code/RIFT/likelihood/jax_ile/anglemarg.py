@@ -88,6 +88,7 @@ __all__ = [
     "fused_log_likelihood_distphipsimarg_exact",
     "fused_log_likelihood_distphipsimarg_laplace",
     "choose_angle_marg_scheme",
+    "fused_log_likelihood_distphipsimarg_peaklocal",
     "gh_laplace_supported",
     "ANGLE_MARG_CROSSOVER_AMPLITUDE",
 ]
@@ -127,7 +128,8 @@ __all__ = [
 # angle_marg=ANGLE_MARG_LEGACY) to reproduce a pre-2026-09-02 run.
 #
 # Why 'exact' and not 'auto': 'auto' selects 'laplace' above
-# ANGLE_MARG_CROSSOVER_AMPLITUDE (rho ~21-30), which is an ACCURACY crossover.
+# ANGLE_MARG_CROSSOVER_AMPLITUDE (rho ~26-30; see that constant's note for why
+# 26 and not the 21 this line used to say), which is an ACCURACY crossover.
 # But 'laplace' cannot use the per-sample adaptive distance quadrature and the
 # log-uniform distance grid is opt-in, so on the default uniform grid 'laplace'
 # was measured 43.2 nats from 'exact'+GH16 at rho 163 (mean; 16.3 median) -- an
@@ -148,14 +150,76 @@ __all__ = [
 # RESULTS_phigrid_2026-09-02.md (commit 3f1f66f).
 ANGLE_MARG_DEFAULT = "exact"
 ANGLE_MARG_LEGACY = "grid"      # the spelling that reproduces pre-2026-09-02 runs
-ANGLE_MARG_CHOICES = ("grid", "exact", "laplace", "auto")
+ANGLE_MARG_CHOICES = ("grid", "exact", "laplace", "peak-local", "auto")
+
+#: 'peak-local' is deliberately NOT reachable from 'auto' yet.  It agrees with 'exact'
+#: to 1e-13 nats on the tables measured so far and is device-independent (the same answer
+#: on CPU and on an NVIDIA Blackwell GPU), but nothing has yet compared the two head to
+#: head on a production campaign, and a scheme that changes the likelihood must not
+#: become reachable by default on the strength of unit tests.  Explicit-only is what lets
+#: a pilot run both and decide; promoting it into `choose_angle_marg_scheme` is a
+#: separate change with its own evidence.
 
 # ---------------------------------------------------------------------------
 ANGLE_MARG_CROSSOVER_AMPLITUDE = 450.0     # A = rho^2/2; rho = 30.  NOTE the
-# auto selector compares the MARGINED data-derived bound (~2x the true
-# amplitude) to this, so laplace engages from true A ~ 225 (SNR ~ 21).  That
-# early engagement is safe by measurement: laplace is at -1.8e-4 nats by
-# A = 200 on the injection ladder and improves upward, while exact remains
+# auto selector compares the MARGINED data-derived bound to this, so laplace
+# engages below rho = 30.  TWO DIFFERENT NUMBERS LIVE HERE and an earlier version
+# of this comment ran them together:
+#   * the INTENDED margin is the `margin=2.0` argument of
+#     estimate_angle_amplitude -- a deliberate parameter, not an estimate;
+#   * the ratio the SWITCH actually keys on was measured AT THE LADDER INJECTION
+#     (rho = 40.77): bound 1109.17 against the nominal rho^2/2 = 831.1, i.e.
+#     1.335, not 2.
+# That gives 450 / 1.335 -> engagement at nominal A ~ 337, rho ~ 26.0, which is
+# what the manuscript quotes; this comment previously said rho ~ 21 by assuming
+# the factor equalled the margin.  Keep the two distinct or the code and the
+# paper quote different crossovers for the same switch.
+#
+# THREE LIMITS ON 1.335, so it is not read as more than it is:
+#   (a) the denominator is the NOMINAL rho^2/2, not a measured maximum of the
+#       (phi,psi) exponent.  Reading "the raw estimator sits at 0.667x TRUE A"
+#       goes through the identification true A == rho^2/2, which is this file's
+#       own convention but is not a measurement.
+#   (b) the ratio is constant to 6e-5 across rungs rho = 40.77 ... 652.31.  That
+#       is ARITHMETIC, NOT EVIDENCE: the ladder is one injection replayed at
+#       scaled amplitudes, so the exponent rescales uniformly and the ratio is
+#       forced.  Four decades of agreement validate nothing about the margin.
+#   (c) it is ONE injection's sky-sample realization.  The shortfall's size is
+#       set by how sharp the sky peak is relative to the sample -- the sample is
+#       random draws plus a coarse uniform grid and does not contain the
+#       injection's sky position, while the exponent is sharp enough that 1 of
+#       9824 (sky, time) points sits within 23 nats of the peak.  A shortfall is
+#       expected by design there, and nothing here bounds it for another event.
+# So: at this injection the margin is load-bearing rather than decorative -- by
+# about 1.5x -- and that is the whole claim.
+#
+# TWO OTHER RATIOS CIRCULATE FOR THIS LADDER AND NEITHER IS THE MARGIN.  Measured
+# on it: raw-estimator/(rho^2/2) = 0.1888 and margined-bound/guess = 7.069.  Both
+# are the SNR-GUESS DEFICIT SQUARED -- guess_amp == guess_snr^2/2 exactly, and
+# rho/guess_snr = 2.3014 constant, so 0.1888 = 1/2.3014^2 and 7.069 =
+# 2.3014^2 * 1.33465.  guess_snr is the ABANDONED sizing route (external review
+# removed it precisely because an underestimated SNR silently under-resolved the
+# dense quadrature).  If 7.069 lands here as "the margin" it inflates a ~1.5x
+# effect to 7x and credits the live estimator with the dead route's deficit.
+# They are easy to accept because they AGREE with the conclusion above -- for an
+# unrelated reason -- so they read as corroboration and are not.
+# The genuinely reportable fact in them: on this ladder guess_snr sits 2.30x
+# below the true rho, so the abandoned route would have sized the dense grids
+# from an amplitude too small BY A FACTOR THAT DEPENDS ON WHAT YOU DIVIDE BY --
+#     7.069x against the LIVE data-derived bound (the thing that sizes grids
+#            today, so this is the operative figure), and
+#     5.296x against the nominal rho^2/2,
+# the two differing by exactly the 1.335 above.  A reader handed "7.069x" with no
+# denominator cannot tell which, and will be off by 1.335 either way: that is the
+# same unnamed-denominator defect this block exists to guard against, and I
+# shipped it here one commit before fixing it.  The docstring's stated failure
+# mode, measured on a real configuration.  One injection, one guess_snr.  What actually protects the general case is
+# _runtime_amp_failsafe, which recomputes the amplitude from the tables at the
+# point of use and warns if it exceeds amp_sizing -- independent of whether the
+# margin was well chosen.  (Ratios measured by the paper-1 ladder session.)
+# Early engagement is safe by measurement either way: laplace is at -1.8e-04 nats
+# by A = 200 on the injection ladder (the table above, spelled to match it so a
+# grep finds both) and improves upward, while exact remains
 # valid (crossover-floored sizing) below.
 # Dense-size rule N = ceil(K * sqrt(A)) points, from the trapezoid aliasing
 # error of exp(trig poly): relative error ~ exp(-c N^2 / A).  The constants
@@ -1888,6 +1952,81 @@ def gh_laplace_supported(C_A, C_B, m_max, feature=None):
                                          identity_A0_over_A1=r_A0,
                                          identity_B1_over_B0=r_B1,
                                          m_max=int(m_max))
+
+
+def fused_log_likelihood_distphipsimarg_peaklocal(
+        data, ra, dec, incl, x_grid, log_w_grid,
+        interp=JAX_INTERP_DEFAULT, amp_sizing=None,
+        time_quadrature=TIME_QUAD_DEFAULT, return_lnLt=False,
+        phi_chunk=None):
+    """Distance-, phi_ref- AND psi-marginalized lnL: PEAK-LOCAL scheme.
+
+    Same contract and normalization as
+    :func:`fused_log_likelihood_distphipsimarg_exact`.  What changes is the psi axis:
+    rather than a dense grid sized ``~sqrt(A)``, the u-stationary points are obtained
+    EXACTLY -- they are the unit-circle roots of a quartic, the u-degree being pinned at
+    2 for any mode set -- the sorted points partition the circle, and each cell is
+    integrated on a window set by its own curvature.  Windowed cells need only 48 nodes,
+    but rejected Newton centres span whole cells, so production sizes the shared static
+    count from ``amp_sizing``.  The node axis is streamed in fixed-size blocks; cost grows
+    as sqrt(amplitude), while its live memory does not.
+
+    THE PHI AXIS IS STILL DENSE HERE and is sized by
+    :func:`~RIFT.likelihood.jax_ile.joint_anglemarg_peaklocal.required_n_phi` from the
+    same ``amp_sizing`` the other schemes use.  Localizing phi as well exists as a numpy
+    reference; it is not in this jitted path.  See DESIGN_peak_local_framework.md.
+
+    Measured against ``..._exact``: -3.6e-05, -7.1e-15 and -9.1e-13 nats at kappa boost
+    1, 10 and 100, and the same figure on a CUDA device as on CPU.
+
+    The adaptive distance quadrature (``JAX_ILE_DISTMARG_GH``) is REFUSED rather than
+    silently ignored, for the reason the laplace branch refuses it: this kernel sums the
+    caller's distance grid directly and implements no psi-marginal node placement.
+    """
+    if _core._DISTMARG_GH_N > 0:
+        raise ValueError(
+            "JAX_ILE_DISTMARG_GH is set, but the 'peak-local' angle-marg scheme does "
+            "not implement the adaptive distance quadrature (it sums the caller's "
+            "distance grid directly).  Use --angle-marg-scheme exact, or unset "
+            "JAX_ILE_DISTMARG_GH.")
+    _require_amp_sizing(amp_sizing)
+    from . import joint_anglemarg_peaklocal as _jp
+
+    C_A, C_B, _meta = angle_coefficient_tables(data, ra, dec, incl, interp=interp)
+
+    # THE RUNTIME AMPLITUDE FAILSAFE APPLIES HERE TOO, and omitting it was a review
+    # finding rather than a judgement call.  The u axis is localized and needs no
+    # sizing, but THE PHI AXIS IS STILL DENSE and is sized from `amp_sizing`, which
+    # `estimate_angle_amplitude` is explicit about being an estimator and NOT a proven
+    # bound -- so a hotter sampled sky location can under-resolve phi exactly as it can
+    # for the exact and laplace schemes.  Skipping the check would publish that
+    # silently, and would also leave the artifact without the standing best-effort
+    # label, which is worse than the undersizing itself.
+    _runtime_amp_failsafe(C_A, C_B, x_grid, amp_sizing, "peak-local")
+
+    n_phi = _jp.required_n_phi(amp_sizing, m_max=_data_m_max(data))
+    # Size the u axis through the SINGLE SOURCE OF TRUTH rather than letting the kernel
+    # fall back to its own constant: the batch-memory guard in samplers.py models this
+    # same number from the same amp_sizing, and the two live in different files.  Passing
+    # it explicitly is what makes them provably the same value rather than two defaults
+    # that happen to agree.  The derived count is streamed inside the kernel, so raising
+    # accuracy does not materialize that entire axis across the outer batches.
+    kw = {"n_nodes": _jp.u_nodes_in_use(amp_sizing)}
+    if phi_chunk is not None:
+        kw["phi_chunk"] = int(phi_chunk)
+
+    # tables are (KP, 2KS+1, S, npts); move the batch axes to the front so one nested
+    # vmap covers both and the kernel sees a plain 2-D table per (sample, time).
+    A = jnp.moveaxis(jnp.asarray(C_A), (2, 3), (0, 1))
+    B = jnp.moveaxis(jnp.asarray(C_B), (2, 3), (0, 1))
+
+    def _one(a, b):
+        return _jp.joint_lnL_phi_dense(a, b, x_grid, log_w_grid, n_phi=n_phi, **kw)
+
+    lnL_t = jax.vmap(jax.vmap(_one))(A, B)          # (S, npts)
+    if return_lnLt:
+        return lnL_t
+    return _time_marginalize_terminal(lnL_t, data, time_quadrature)
 
 
 def choose_angle_marg_scheme(amplitude, gh_enabled=None,
