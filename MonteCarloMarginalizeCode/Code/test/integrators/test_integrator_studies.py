@@ -4,7 +4,11 @@ WHY A WRAPPER, AND WHY IN ORDINARY CI.  These five scripts carry the only assert
 written about AV warm-starting and portfolio allocation -- a 4-sigma bias gate, an anti-bias
 ordering under a mis-placed proposal, a draw-allocation comparison against standalone AV, safety
 under a decoy member, and an oracle finding a needle.  Each ends in `raise SystemExit(1)` on
-failure, so the pass/fail signal is real and machine-readable.  None of them ran in CI: they have
+failure UNDER `--as-test`, so the pass/fail signal is real and machine-readable.  That flag is not
+optional here: every one of these scripts keeps its scientific comparisons and its `SystemExit(1)`
+behind `if args.as_test`, and without it a biased or otherwise invalid result still prints and exits
+0 -- the wrapper would then detect only crashes, not the behaviour it claims to gate.  None of them
+ran in CI at all before this: they have
 a __main__ and argparse and no test functions, so pytest collects ZERO items and exits 5 -- "no
 tests ran", which reads as a pass -- and .travis/ci_roster.txt carried them as HANDRUN.
 
@@ -52,8 +56,9 @@ def test_study_exits_clean(script, _secs):
     env["PYTHONPATH"] = CODE + os.pathsep + env.get("PYTHONPATH", "")
     env.setdefault("OMP_NUM_THREADS", "1")
     env.setdefault("MPLBACKEND", "Agg")
-    pr = subprocess.run([sys.executable, path], env=env, timeout=900,
+    # --as-test is what turns each study from a printout into a gate; see module docstring.
+    pr = subprocess.run([sys.executable, path, "--as-test"], env=env, timeout=900,
                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     out = pr.stdout.decode("utf-8", "replace")
-    assert pr.returncode == 0, "%s exited %d; its own gate failed.\n%s" % (
+    assert pr.returncode == 0, "%s --as-test exited %d; its own gate failed.\n%s" % (
         script, pr.returncode, out[-3000:])
