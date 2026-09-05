@@ -9,12 +9,16 @@ and prose is what this whole census exists to stop being mistaken for coverage.
 
 So each status carries a FALSIFIABLE, direction-checked predicate, and this job runs it:
 
-  LEGACY     must FAIL to import.  If it collects, the pre-package module names it supposedly
-             needs are resolving, and the file is a candidate for real gating.
+  LEGACY     must FAIL to import, and only a collection/import ERROR shows that.  A clean
+             collection satisfies nothing -- neither one that finds tests nor one that finds
+             none -- because both mean the pre-package module names it supposedly needs are
+             resolving, and the file is a candidate for real gating.
   HANDRUN    must collect NO tests.  If it collects some, it is a pytest suite wearing the
              wrong label -- and one that no job runs.
-  EXPENSIVE  must collect tests AND pass none of them without RIFT_RUN_EXPENSIVE.  Catches
-             both a suite that stopped collecting and an opt-in guard that stopped guarding.
+  EXPENSIVE  must collect tests AND, without RIFT_RUN_EXPENSIVE, SKIP them in a run that exits
+             cleanly.  Passing none is NOT the predicate: a suite that fails or errors passes
+             none too, and a broken suite is not a guarded one.  Catches both a suite that
+             stopped collecting and an opt-in guard that stopped guarding.
   OPTDEP     must declare its dependencies as `needs:<mod>[,<mod>]` or `needs:env:VAR`, none of
              which may appear in requirements.txt -- if CI installs it, it is not optional.  The
              behavioural half is keyed off whether those deps are ACTUALLY present in the running
@@ -42,6 +46,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ROSTER = os.path.join(".travis", "ci_roster.txt")
 CODE = os.path.join("MonteCarloMarginalizeCode", "Code")
 TIMEOUT = 300
+CLEAN_RCS = (0, 5)   # pytest: 0 = collected/ran without error, 5 = imported fine, no tests here
 
 
 def _read_roster():
@@ -89,7 +94,11 @@ def _dep_present(dep):
 
 
 def _pytest(path, extra_env=None, collect_only=True):
-    """Return (rc, n_collected, n_passed).  n_passed is -1 when not run."""
+    """Return (rc, n, n_passed), or (None, None, None) on timeout.
+
+    n is the collected count under --collect-only and the SKIPPED count for a real run, since
+    that is what tells a guarded suite apart from a broken one.  n_passed is -1 when not run.
+    """
     env = dict(os.environ)
     env["PYTHONPATH"] = os.path.join(REPO, CODE) + os.pathsep + env.get("PYTHONPATH", "")
     env.setdefault("OMP_NUM_THREADS", "1")
@@ -106,10 +115,12 @@ def _pytest(path, extra_env=None, collect_only=True):
         return None, None, None
     text = pr.stdout.decode("utf-8", "replace")
     if collect_only:
-        return pr.returncode, len(re.findall(r"::", text)), -1
+        # -q prints one `path::id` line per collected test; count lines, not `::` occurrences,
+        # so a class-based id does not count twice.
+        return pr.returncode, sum(1 for ln in text.splitlines() if "::" in ln), -1
     m = re.search(r"(\d+) passed", text)
-    c = re.search(r"(\d+) (?:passed|failed|skipped|error)", text)
-    return pr.returncode, (1 if c else 0), (int(m.group(1)) if m else 0)
+    s = re.search(r"(\d+) skipped", text)
+    return pr.returncode, (int(s.group(1)) if s else 0), (int(m.group(1)) if m else 0)
 
 
 def main():
@@ -126,6 +137,13 @@ def main():
                 errs.append("%s:%d: %s is LEGACY (\"cannot be imported\") but COLLECTS %d "
                             "tests.\n    Whatever it needed now resolves. Re-check the reason: "
                             "it is probably gateable." % (ROSTER, lineno, path, n))
+            elif rc in CLEAN_RCS:
+                errs.append("%s:%d: %s is LEGACY (\"cannot be imported\") but pytest collected it "
+                            "WITHOUT error (exit %d) and found no tests.\n    Collecting nothing "
+                            "is not evidence of a failed import -- only a collection error is -- "
+                            "so the reason is stale: whatever it needed now resolves. Re-check it; "
+                            "the file is HANDRUN at most, and probably gateable."
+                            % (ROSTER, lineno, path, rc))
         elif status == "HANDRUN":
             rc, n, _ = _pytest(path)
             if rc is None:
@@ -140,11 +158,23 @@ def main():
                 errs.append("%s:%d: %s is EXPENSIVE but collects nothing.\n    The opt-in "
                             "suite is gone or stopped importing." % (ROSTER, lineno, path))
             else:
-                rc2, _, passed = _pytest(path, collect_only=False)
-                if passed > 0:
+                rc2, skipped, passed = _pytest(path, collect_only=False)
+                if rc2 is None:
+                    errs.append("%s:%d: %s is EXPENSIVE but the run WITHOUT RIFT_RUN_EXPENSIVE "
+                                "timed out after %ds.\n    Opting out should cost nothing, so "
+                                "something is executing: the guard is not holding."
+                                % (ROSTER, lineno, path, TIMEOUT))
+                elif passed > 0:
                     errs.append("%s:%d: %s is EXPENSIVE (\"skips unless RIFT_RUN_EXPENSIVE=1\") "
                                 "but %d test(s) PASSED without it.\n    The opt-in guard stopped "
                                 "guarding." % (ROSTER, lineno, path, passed))
+                elif rc2 != 0 or skipped < n:
+                    errs.append("%s:%d: %s is EXPENSIVE (\"skips unless RIFT_RUN_EXPENSIVE=1\") "
+                                "but the run WITHOUT it exited %d with %d of %d collected test(s) "
+                                "skipped.\n    Passing nothing is not the same as being guarded: "
+                                "a suite that fails or errors passes nothing either. Opting out "
+                                "must be a CLEAN skip of every collected test."
+                                % (ROSTER, lineno, path, rc2, skipped, n))
         elif status == "OPTDEP":
             deps = _declared_deps(reason)
             if not deps:
