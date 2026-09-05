@@ -419,6 +419,16 @@ path is the fallback for everything (incl. distmarg, on CPU and GPU).</p>
 <dt>cal_distmarg<span class="classifier">dict or None</span></dt><dd><p>Distance-marginalization table+params for the fused distmarg kernel; see
 RIFT.likelihood.Q_fused_calmarg.Q_fused_calmarg_distmarg_cupy.</p>
 </dd>
+<dt>loglikelihood<span class="classifier">callable(kappa_sq, rho_sq) -&gt; lnL(t)</span></dt><dd><p>MUST NOT WRITE INTO <code class="docutils literal notranslate"><span class="pre">rho_sq</span></code>.  rho_sq is time-independent, so it is passed as
+a stride-0 <code class="docutils literal notranslate"><span class="pre">broadcast_to</span></code> view over an <code class="docutils literal notranslate"><span class="pre">(npts_extrinsic,)</span></code> vector rather than
+as a materialized <code class="docutils literal notranslate"><span class="pre">(npts_extrinsic,</span> <span class="pre">npts)</span></code> array.  Every <code class="docutils literal notranslate"><span class="pre">npts</span></code> column
+therefore aliases one address: on CPU an in-place write raises
+<code class="docutils literal notranslate"><span class="pre">ValueError:</span> <span class="pre">output</span> <span class="pre">array</span> <span class="pre">is</span> <span class="pre">read-only</span></code>, but on GPU cupy’s broadcast is
+WRITABLE and an in-place write races, giving a wrong and irreproducible answer
+with no error.  Every in-tree callback allocates (<code class="docutils literal notranslate"><span class="pre">_factored_lnL_helper</span></code> and the
+driver’s <code class="docutils literal notranslate"><span class="pre">distmarg_loglikelihood</span></code>), so nothing is broken today; a caller
+supplying its own must allocate too, or call <code class="docutils literal notranslate"><span class="pre">xpy.ascontiguousarray</span></code> first.</p>
+</dd>
 <dt>time_interp<span class="classifier">{‘nearest’, ‘cubic’, ‘sinc’}</span></dt><dd><p>Detector-time sampling convention for the data term.  ‘nearest’
 preserves the historical NoLoop integer-bin gather.  ‘cubic’ evaluates
 the precomputed Q_lm time series at the fractional detector arrival time
