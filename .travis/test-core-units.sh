@@ -83,12 +83,12 @@ FILES=(
   "$C/test/hyperpipe/tests/test_drivers.py"
   "$C/test/hyperpipe/tests/test_marg_list.py"
   "$C/test/test_hyperpipeline_io.py"
-  # -- waveform / orchestration compat suites promoted out of the roster.  Both were
-  # rostered OPTDEP on prose ("unverified on a runner", "belongs in another job") and
-  # .travis/test-roster-verify.py caught them collecting and passing COMPLETELY with
-  # nothing missing -- i.e. gateable, and gated by nothing.
+  # -- promoted out of the roster: it was OPTDEP on prose ("unverified on a runner") and
+  # .travis/test-roster-verify.py caught it collecting and passing COMPLETELY with nothing
+  # missing.  (test_rimsky_integration.py was promoted alongside it and REVERTED: it
+  # importorskips asimov, which CIT has and this job does not, so it collected 15 here and
+  # 0 on the runner.  The per-file collection floor below caught that -- see the roster.)
   "$C/test/test_teobresums_compat.py"
-  "$C/test/test_rimsky_integration.py"
   # -- packaging / config contracts / waveform conventions
   "$C/test/test_advanced_parameter_ports.py"
   "$C/test/test_container_manifest.py"
@@ -124,16 +124,16 @@ done
 
 # Pinned TOTAL floor, so a renamed file or a dropped test_* entry point goes red rather than
 # green-on-fewer-tests.  MEASURED 2026-09-03 on CIT with the IGWN conda python (3.11, numpy
-# 1.26.4, scipy 1.14.1, lal 7.7.0), whole manifest in one run: 331 collected, 319 passed,
+# 1.26.4, scipy 1.14.1, lal 7.7.0), whole manifest in one run: 316 collected, 304 passed,
 # 12 skipped (11 pytest.skip + 1 xfail), ~65 s.  History: 278/266 -> 296/284 when
 # test_replica_pooling.py and test_marg_list.py joined (both rostered BROKEN until their
 # defects were fixed) -> 326/314 when test_teobresums_compat.py and test_rimsky_integration.py
 # joined (both rostered OPTDEP on prose until test-roster-verify.py caught them passing
-# completely with nothing missing) -> 331/319 when test_integrator_studies.py joined, wrapping
-# the five integrator studies that collect nothing themselves (+29 s).  RAISE these when files
-# are added: a floor left at the old
+# completely with nothing missing; its companion test_rimsky_integration.py was reverted, see
+# above) -> 316/304 with test_integrator_studies.py, which wraps the five integrator studies that
+# collect nothing themselves (+29 s).  RAISE these when files are added: a floor left at the old
 # value passes while covering less, which is the failure this gate exists to catch.
-EXPECTED_TESTS=331
+EXPECTED_TESTS=316
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 12 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -144,7 +144,7 @@ EXPECTED_TESTS=331
 # editable install) reported the same 278 / 266 / 12, in 24.7 s.  So these floors are exact on
 # both stacks, not merely the CIT numbers copied across, and a future divergence is a real
 # change rather than an environment difference to be explained away.
-EXPECTED_PASSED=319
+EXPECTED_PASSED=304
 MAX_SKIPPED=12
 
 junit="$(mktemp -t core-units-junit-XXXXXX.xml)"

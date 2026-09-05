@@ -115,6 +115,16 @@ MonteCarloMarginalizeCode/Code/test/backends/test_backends_lowlevel.py         O
 MonteCarloMarginalizeCode/Code/test/hyperpipe/tests/test_hydra_integration.py  OPTDEP  needs:hydra,omegaconf -- skips cleanly without them
 MonteCarloMarginalizeCode/Code/test/test_gwsignal_teob_mode_sign.py            OPTDEP  needs:EOBRun_module -- the gwsignal TEOB route; 2 collected, 1 passes and 1 skips without it
 MonteCarloMarginalizeCode/Code/test/test_gwsignal_teob_near_aligned.py         OPTDEP  needs:EOBRun_module -- 1 collected, skips without it
+# test_rimsky_integration.py is the worked example of why OPTDEP entries must DECLARE their
+# dependencies rather than describe them.  Its old reason was prose ("belongs in the
+# rimsky-integration job"), test-roster-verify.py rightly refused it, and I resolved that by
+# gating the file -- which was wrong: it collects 15 on CIT and 0 on a runner, because CIT's
+# IGWN environment happens to carry asimov.  core-unit-check's per-file collection floor caught
+# it.  With the deps named, the same check now keys off their real presence and stays quiet
+# here while remaining meaningful on a runner.  Its proper home is a job that installs asimov
+# (rimsky-integration already runs test_rimsky_end_to_end.py); that move needs a collection
+# floor there so a skip cannot pass silently, and is not attempted in this PR.
+MonteCarloMarginalizeCode/Code/test/test_rimsky_integration.py                OPTDEP  needs:asimov,liquid -- 15 collected where asimov is installed, 0 without it
 MonteCarloMarginalizeCode/Code/test/integrators/test_NF_reuse.py               OPTDEP  needs:nflows -- the normalizing-flow store; collection errors without it
 MonteCarloMarginalizeCode/Code/test/integrators/test_mcsamp_vegas.py           OPTDEP  needs:vegas -- commented out of requirements.txt; NameError at import without it
 MonteCarloMarginalizeCode/Code/test/integrators/test_mcsampler_rosenbrock.py   HANDRUN  Rosenbrock sampler study; its docstring pairs it with plot_posterior_corner.py by hand
