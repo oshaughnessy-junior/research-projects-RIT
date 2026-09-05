@@ -87,6 +87,13 @@ FILES=(
   "$C/test/hyperpipe/tests/test_drivers.py"
   "$C/test/hyperpipe/tests/test_marg_list.py"
   "$C/test/test_hyperpipeline_io.py"
+  # -- promoted out of the roster after roster-verify-check caught its reason being false ON
+  # THE RUNNER: it was OPTDEP needs:glue,htcondor, and with htcondor absent there it still
+  # collected 15 and passed 15.  Confirmed locally with BOTH blocked via a sys.meta_path
+  # finder: 15/15.  Its `import htcondor` / `from glue import pipeline` are capability
+  # probes inside the tests, not requirements.  CIT has both, which is exactly why CIT could
+  # not see this and a runner could.
+  "$C/test/backends/test_backends_lowlevel.py"
   # -- promoted out of the roster: it was OPTDEP on prose ("unverified on a runner") and
   # .travis/test-roster-verify.py caught it collecting and passing COMPLETELY with nothing
   # missing.  (test_rimsky_integration.py was promoted alongside it and REVERTED: it

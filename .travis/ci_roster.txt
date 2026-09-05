@@ -117,7 +117,6 @@ MonteCarloMarginalizeCode/Code/RIFT/interpolators/jax_gp/test_interpolators.py B
 # the marker.  That is a better home than this file: the decision sits beside the gate it
 # belongs to.  Their roster lines were deleted when #242 merged, exactly as the census
 # demanded ("listed as GPU but IS now reachable -- delete it").
-MonteCarloMarginalizeCode/Code/test/backends/test_backends_lowlevel.py         OPTDEP  needs:glue,htcondor -- 15 collected, 15 pass where both are installed
 MonteCarloMarginalizeCode/Code/test/hyperpipe/tests/test_hydra_integration.py  OPTDEP  needs:hydra,omegaconf -- skips cleanly without them
 MonteCarloMarginalizeCode/Code/test/test_gwsignal_teob_mode_sign.py            OPTDEP  needs:EOBRun_module -- the gwsignal TEOB route; 2 collected, 1 passes and 1 skips without it
 MonteCarloMarginalizeCode/Code/test/test_gwsignal_teob_near_aligned.py         OPTDEP  needs:EOBRun_module -- 1 collected, skips without it
