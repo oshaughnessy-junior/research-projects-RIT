@@ -162,33 +162,65 @@ def test_error_changes_sign_so_convergence_must_not_be_read_at_one_anchor():
     assert errs[2.0] < 0.0 < errs[8.0], errs
 
 
-def test_minus_inf_does_not_poison_the_row():
-    """-inf is legitimate in a log-likelihood; Simpson handles it natively.
+def test_non_finite_rows_are_handled_or_refused_but_never_silently_wrong():
+    """Four cases, and the middle one is a deliberate refusal.
 
-    It reaches the slopes as -inf - -inf = nan, and one nan takes the whole row.
-    Regression for that: the result must be finite.
+    A mixed -inf row cannot be represented in log space: flooring -inf to
+    row_max-700 makes Catmull-Rom overshoot to +51.85 and return +43.10 where the
+    truth is just below -6.24, and no floor depth is safe (the overshoot scales
+    with it, a shallow floor contributes spuriously).  Returning NaN is the honest
+    answer -- callers needing those rows should use `simpson`, which is linear in
+    exp(lnL) and drops a -inf sample cleanly.
     """
     deltaT = 1.0 / 4096
-    bad = np.full((1, 9), -np.inf)
-    bad[0, 4] = 0.0
-    out = float(_time_marginalize_log_hermite(jnp.asarray(bad), deltaT)[0])
-    assert np.isfinite(out), out
+    finite = float(_time_marginalize_log_hermite(jnp.zeros((1, 9)), deltaT)[0])
+    assert np.isfinite(finite)
+
+    allneg = np.full((1, 9), -np.inf)
+    assert float(_time_marginalize_log_hermite(jnp.asarray(allneg), deltaT)[0]) == -np.inf
+
+    mixed = np.zeros((1, 9)); mixed[0, 3] = -np.inf
+    assert np.isnan(float(_time_marginalize_log_hermite(jnp.asarray(mixed), deltaT)[0])), \
+        "a mixed -inf row must be REFUSED, not given a plausible-looking value"
+
+    nan = np.zeros((1, 9)); nan[0, 3] = np.nan
+    assert np.isnan(float(_time_marginalize_log_hermite(jnp.asarray(nan), deltaT)[0])), \
+        "NaN must propagate; hiding a numerical failure is worse than the failure"
+
+    pos = np.zeros((1, 9)); pos[0, 3] = np.inf
+    assert float(_time_marginalize_log_hermite(jnp.asarray(pos), deltaT)[0]) == np.inf
 
 
-def test_n_sub_is_not_exact_and_the_default_is_converged_enough():
-    """The per-interval rule is NOT exact -- exp of a cubic is not a polynomial.
+def test_quadratic_lnL_is_reproduced_far_better_than_a_cubic_one():
+    """The corrected claim, pinned on a physical observable.
 
-    Pins that the default sits close to a refined n_sub, so the quadrature is not
-    the dominant term, without claiming it contributes nothing.
+    Centered differences are exact for a quadratic and not for a cubic, so a
+    cubic Hermite segment fed them reproduces quadratics and NOT cubics -- the
+    original docstring said cubics.  A purely quadratic lnL is a Gaussian, which
+    the rule integrates essentially exactly at h/sigma = 1; adding a cubic term at
+    the same resolution must degrade it by orders of magnitude.
+
+    Deliberately NOT a convergence-order test: the error crosses zero near
+    h/sigma ~ 3 (see the docstring), so a slope fitted across that region would be
+    meaningless.  The order O(h^3.01) quoted there was measured on the interpolant
+    directly, not end-to-end.
     """
     npts, deltaT = 513, 1.0 / 4096
     t = (np.arange(npts) - npts // 2) * deltaT
-    y = jnp.asarray((-((t - 0.3 * deltaT) ** 2) / (2 * (deltaT / 2) ** 2))[None, :])
-    v4 = float(_time_marginalize_log_hermite(y, deltaT, n_sub=4)[0])
-    v10 = float(_time_marginalize_log_hermite(y, deltaT, n_sub=10)[0])
-    v2 = float(_time_marginalize_log_hermite(y, deltaT, n_sub=2)[0])
-    assert abs(v2 - v10) > 1e-4, "n_sub has no effect; the exactness claim would be true"
-    assert abs(v4 - v10) < 1e-4, (v4, v10)
+    sigma = deltaT                      # h/sigma = 1, the resolved regime
+
+    quad = lambda tt: -(tt ** 2) / (2 * sigma ** 2)
+    e_quad = abs(float(_time_marginalize_log_hermite(jnp.asarray(quad(t)[None, :]), deltaT)[0])
+                 - (0.5 * np.log(2 * np.pi) + np.log(sigma)))
+
+    cubic = lambda tt: -(tt ** 2) / (2 * sigma ** 2) + 0.35 * (tt / sigma) ** 3
+    ref = _log_integral_reference(cubic, t)
+    e_cubic = abs(float(_time_marginalize_log_hermite(jnp.asarray(cubic(t)[None, :]), deltaT)[0]) - ref)
+
+    assert e_quad < 1e-9, e_quad
+    assert e_cubic > 1e3 * e_quad, (e_quad, e_cubic,
+                                    "cubic is now as accurate as quadratic; the "
+                                    "docstring's reproduction claim needs revisiting")
 
 
 def test_real_jax_vmap_not_just_a_stacked_batch():

@@ -988,7 +988,16 @@ def _time_marginalize_log_hermite(lnL_t, deltaT, n_sub=_LOG_HERMITE_SUB_DEFAULT)
     ``(S,)``, the same quantity and normalization as :func:`_time_marginalize`
     (an integral in seconds), so the two are drop-in comparable.
 
-    The interpolant is C^1 and reproduces cubics exactly.  The per-interval rule
+    The interpolant is C^1 and reproduces polynomials up to QUADRATIC exactly --
+    not cubics.  A cubic Hermite segment reproduces cubics only when handed exact
+    endpoint derivatives; these are centered finite differences, which are exact
+    for a quadratic and not for a cubic.  Measured on interior intervals: linear
+    0.0, quadratic 0.0, cubic 9.4e-02, quartic 2.8.  The convergence order is
+    likewise third, not fourth: on exp(-t^2/2)cos(3t) with h from 0.25 to 0.0156
+    the error ratios are 9.63, 8.39, 8.13, 8.04, i.e. O(h^3.01).  An earlier
+    version of this docstring claimed cubic reproduction; it was wrong.
+
+    The per-interval rule
     is NOT exact: Gauss-Legendre is exact for polynomials, and ``exp`` of a cubic
     is not one, so ``n_sub`` carries its own error.  Measured at h/sigma = 2
     (sigma = deltaT/2), value vs ``n_sub``: 2 -> -8.093045, 3 -> -8.091875,
@@ -1009,13 +1018,35 @@ def _time_marginalize_log_hermite(lnL_t, deltaT, n_sub=_LOG_HERMITE_SUB_DEFAULT)
         x, w = np.polynomial.legendre.leggauss(int(n_sub))
         s_nodes, s_w = 0.5 * (x + 1.0), 0.5 * w
 
-    # -inf IS LEGITIMATE in a log-likelihood and Simpson handles it natively
-    # (exp(-inf) = 0).  Here it poisons the SLOPES: -inf - -inf = nan, and one nan
-    # takes the whole row.  Floor it far enough below the row max that exp
-    # underflows anyway -- the same contribution, with finite differences.
+    # NON-FINITE HANDLING, and the middle case is a REFUSAL rather than a value.
+    #
+    # A row that is entirely -inf integrates to zero: well defined, returns -inf.
+    # A row containing NaN or +inf is a numerical failure and must stay visible.
+    # But a row MIXING -inf with finite samples cannot be represented in log space
+    # at all, and this was got wrong twice before it was got right:
+    #
+    #   * originally -inf poisoned the slopes (-inf - -inf = nan) and took the row.
+    #   * "fixing" that by flooring -inf to row_max - 700 was WORSE: the floor
+    #     creates a 700-per-sample slope and Catmull-Rom overshoots on the way
+    #     down.  Measured, one -inf in an otherwise-zero row of 9: the interpolant
+    #     peaks at +51.85 and the rule returns +43.10 where the true answer is just
+    #     below -6.24.  The overshoot scales with the floor: depth 5/10/20/50/100
+    #     overshoots to +0.37/+0.74/+1.48/+3.70/+7.41.  A shallow floor instead
+    #     contributes exp(-depth) spuriously.  There is no safe depth -- the method
+    #     genuinely cannot express this input.
+    #
+    # So it returns NaN for that case, deliberately.  A caller that needs those
+    # rows should use `simpson`, which is linear in exp(lnL) and drops a -inf
+    # sample cleanly.  A wrong number that looks fine is worse than a NaN.
     y = lnL_t
-    row_max = jnp.max(jnp.where(jnp.isfinite(y), y, -jnp.inf), axis=-1, keepdims=True)
-    y = jnp.where(jnp.isfinite(y), y, row_max - 700.0)
+    neg_inf = jnp.isneginf(y)
+    all_neg_inf = jnp.all(neg_inf, axis=-1)
+    any_neg_inf = jnp.any(neg_inf, axis=-1)
+    mixed_neg_inf = jnp.logical_and(any_neg_inf, jnp.logical_not(all_neg_inf))
+    has_pos_inf = jnp.any(jnp.isposinf(y), axis=-1)
+    # Substitute a harmless finite value so the arithmetic below cannot produce a
+    # spurious result; every affected row is overwritten by the guards at the end.
+    y = jnp.where(neg_inf, 0.0, y)
     dy = jnp.diff(y, axis=-1)                                   # (S, N-1)
     # Per-sample slopes: central inside, one-sided at the ends.  These are
     # h * dy/dt, which is exactly what the Hermite basis wants, so h cancels.
@@ -1040,7 +1071,16 @@ def _time_marginalize_log_hermite(lnL_t, deltaT, n_sub=_LOG_HERMITE_SUB_DEFAULT)
 
     mx = jnp.max(flat, axis=(-2, -1), keepdims=True)
     tot = jnp.sum(jnp.exp(flat - mx), axis=(-2, -1))
-    return jnp.squeeze(mx, axis=(-2, -1)) + jnp.log(tot)
+    out = jnp.squeeze(mx, axis=(-2, -1)) + jnp.log(tot)
+
+    # Two cases the max-subtraction cannot express, made explicit rather than
+    # left as NaN.  A row that is entirely -inf integrates to zero, so its log is
+    # -inf (the subtraction gives exp(-inf - -inf) = nan).  A row containing +inf
+    # integrates to infinity; returning +inf keeps the failure visible, where NaN
+    # would look like a different kind of fault.  NaN input still propagates.
+    out = jnp.where(all_neg_inf, -jnp.inf, out)          # integral of zero
+    out = jnp.where(mixed_neg_inf, jnp.nan, out)         # REFUSED, see above
+    return jnp.where(has_pos_inf, jnp.inf, out)
 
 
 def _reflected_fft_upsample(x, factor):

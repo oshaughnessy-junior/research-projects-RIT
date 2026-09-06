@@ -512,7 +512,16 @@ fi
 # it counted the one test this job deselects.  That was a one-off setup bug, not a property
 # of the environment, and subtracting for it would under-promise by one -- which is the
 # failure direction this whole comment exists to warn about, because a low floor PASSES.
-EXPECTED_TESTS=438
+# The log-hermite time-quadrature branch adds test_time_log_hermite.py, 13 tests, and the
+# floor is 437 -- read off THIS JOB'S OWN "collected N tests from 31 files" line, with base
+# rift_O4d reporting "collected 424 tests from 30 files" and "424 passed, 1 deselected".
+# It was first set to 438, which is the 311 mistake documented above repeated exactly: the
+# local measurement was taken without the DESELECT loop having run, so it counted
+# test_gpu_gather_parity_against_numpy_window and read the PRE-deselect 425 + 13.  A floor
+# measured before the deselect applies is one too high and reds a perfectly healthy
+# collection.  Measure by RUNNING THIS SCRIPT and reading its own line -- never by pointing
+# pytest at FILES yourself, and never by adding to the previous number.
+EXPECTED_TESTS=437
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
