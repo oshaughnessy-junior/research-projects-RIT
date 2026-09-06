@@ -764,7 +764,7 @@ def _accumulate_unit_banded(data, ra, dec, psi, incl, phiref, interp,
 
 
 TIME_QUAD_DEFAULT = "simpson"        # unchanged behaviour; "bandlimited" is opt-in
-_TIME_QUAD_CHOICES = ("simpson", "bandlimited")
+_TIME_QUAD_CHOICES = ("simpson", "bandlimited", "log-hermite")
 _TIME_UPSAMPLE_DEFAULT = 8
 _TIME_ADAPTIVE_FACTOR_MAX = 1024
 _TIME_ADAPTIVE_SAFETY = 2.0
@@ -944,6 +944,87 @@ def _time_marginalize(lnL_t, w_t):
     m = jnp.max(lnL_t, axis=-1, keepdims=True)
     L = jnp.sum(w_t[None, :] * jnp.exp(lnL_t - m), axis=-1)
     return m[:, 0] + jnp.log(L)
+
+
+# ---------------------------------------------------------------------------
+# Log-space cubic-Hermite time quadrature
+# ---------------------------------------------------------------------------
+# WHY THIS EXISTS.  The terminal time integral is the binding error term on the
+# differentiable arm, and the band-limited rule cannot fix it: `bandlimited_safe`
+# is `not phase_marginalization`, and this arm marginalizes (phi_ref, psi), so
+# exp(lnL_t) is NOT band-limited even though kappa(t) is.  Reconstructing it with
+# an FFT is the wrong operation, which `_time_marginalize_terminal` refuses.
+#
+# But band-limitedness is the condition for EXACT reconstruction, not for good
+# interpolation.  lnL(t) near its peak is smooth and very nearly quadratic --
+# `-(t-t0)^2 / 2 sigma^2 + const` -- while exp(lnL_t) is sharply peaked with width
+# sigma ~ 1/rho.  So interpolate in LOG space, where the function is easy, and
+# integrate in LINEAR space, where the mass is:
+#
+#   * local cubic Hermite (Catmull-Rom) through lnL_t.  Local, so no global
+#     tridiagonal solve, fixed shapes, jit/vmap/grad-safe.  The `h` in the
+#     Hermite basis cancels against per-sample slopes, so deltaT enters only in
+#     the quadrature weight.
+#   * Gauss-Legendre sub-nodes per interval on exp(interpolant), accumulated by
+#     log-sum-exp so the dynamic range never leaves log space.
+#
+# This makes NO band-limited claim and so carries no `bandlimited_safe` gate.  It
+# is an approximation with a convergence order, not a reconstruction -- which is
+# exactly the honest thing to offer here.
+#
+# Simpson, by contrast, applies a fixed low-order rule directly to exp(lnL_t):
+# once the peak is narrower than deltaT the samples straddle it and the rule
+# integrates a function it never resolved.
+_LOG_HERMITE_SUB_DEFAULT = 4
+_GL_X, _GL_W_RAW = np.polynomial.legendre.leggauss(_LOG_HERMITE_SUB_DEFAULT)
+_LOG_HERMITE_S = 0.5 * (_GL_X + 1.0)          # Gauss-Legendre nodes mapped to [0, 1]
+_LOG_HERMITE_W = 0.5 * _GL_W_RAW              # ...and their weights
+
+
+def _time_marginalize_log_hermite(lnL_t, deltaT, n_sub=_LOG_HERMITE_SUB_DEFAULT):
+    """log integral_t exp(lnL_t) dt by cubic Hermite in log space.
+
+    ``lnL_t`` is ``(S, npts)`` on a uniform grid of spacing ``deltaT``.  Returns
+    ``(S,)``, the same quantity and normalization as :func:`_time_marginalize`
+    (an integral in seconds), so the two are drop-in comparable.
+
+    The interpolant is C^1 and reproduces cubics exactly; the per-interval
+    Gauss-Legendre rule is exact through degree ``2*n_sub - 1`` for the
+    *exponential* of it, so the residual is the Hermite error in lnL, not the
+    quadrature.
+    """
+    if n_sub == _LOG_HERMITE_SUB_DEFAULT:
+        s_nodes, s_w = _LOG_HERMITE_S, _LOG_HERMITE_W
+    else:
+        x, w = np.polynomial.legendre.leggauss(int(n_sub))
+        s_nodes, s_w = 0.5 * (x + 1.0), 0.5 * w
+
+    y = lnL_t
+    dy = jnp.diff(y, axis=-1)                                   # (S, N-1)
+    # Per-sample slopes: central inside, one-sided at the ends.  These are
+    # h * dy/dt, which is exactly what the Hermite basis wants, so h cancels.
+    m_mid = 0.5 * (dy[..., :-1] + dy[..., 1:])                  # (S, N-2)
+    m = jnp.concatenate([dy[..., :1], m_mid, dy[..., -1:]], axis=-1)   # (S, N)
+
+    y0, y1 = y[..., :-1], y[..., 1:]
+    m0, m1 = m[..., :-1], m[..., 1:]
+
+    s = jnp.asarray(s_nodes, dtype=y.dtype)
+    s2, s3 = s * s, s * s * s
+    h00 = 2.0 * s3 - 3.0 * s2 + 1.0
+    h10 = s3 - 2.0 * s2 + s
+    h01 = -2.0 * s3 + 3.0 * s2
+    h11 = s3 - s2
+
+    # (S, N-1, K): the interpolated lnL at every sub-node of every interval.
+    p = (y0[..., None] * h00 + m0[..., None] * h10
+         + y1[..., None] * h01 + m1[..., None] * h11)
+    log_w = jnp.log(jnp.asarray(s_w, dtype=y.dtype) * deltaT)   # (K,)
+    flat = p + log_w
+
+    mx = jnp.max(flat, axis=(-2, -1), keepdims=True)
+    tot = jnp.sum(jnp.exp(flat - mx), axis=(-2, -1))
+    return jnp.squeeze(mx, axis=(-2, -1)) + jnp.log(tot)
 
 
 def _reflected_fft_upsample(x, factor):
@@ -1189,6 +1270,14 @@ def _time_marginalize_terminal(lnL_t, data, time_quadrature=TIME_QUAD_DEFAULT,
                          % (_TIME_QUAD_CHOICES, time_quadrature))
     if time_quadrature == "simpson":
         return _time_marginalize(lnL_t, data.w_t)
+    if time_quadrature == "log-hermite":
+        # DELIBERATELY NOT GATED ON `bandlimited_safe`.  That guard exists because
+        # FFT reconstruction asserts band-limitedness, which exp(lnL_t) does not
+        # have after a nonlinear marginalization.  This rule asserts no such
+        # thing: it interpolates lnL in log space and integrates exp of the
+        # interpolant, so it is valid exactly where Simpson is valid and simply
+        # more accurate.  Opt-in; the default is unchanged.
+        return _time_marginalize_log_hermite(lnL_t, data.deltaT)
     if not bandlimited_safe:
         raise ValueError(
             "bandlimited terminal interpolation is invalid after nonlinear "
