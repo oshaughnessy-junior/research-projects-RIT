@@ -80,6 +80,8 @@ __all__ = [
     "joint_lnL_phi_local",
     "X_CHUNK_DEFAULT",
     "PT_CHUNK_DEFAULT",
+    "phi_bound_plan",
+    "PhiBoundPlan",
     "PHI_SEEDS",
     "PHI_WINDOW_SIGMA",
     "PHI_NODES_PER_REGION",
@@ -663,6 +665,67 @@ def sup_g_bound(C, phi):
     return jnp.log(2.0 * jnp.pi) + gmax
 
 
+class PhiBoundPlan(object):
+    """Host-built exact plan for the phi outside bound.  See :func:`phi_bound_plan`."""
+
+    __slots__ = ("nodes", "certified", "report")
+
+    def __init__(self, nodes, certified, report):
+        self.nodes = nodes
+        self.certified = bool(certified)
+        self.report = report
+
+    def __repr__(self):
+        return "PhiBoundPlan(n=%d, certified=%s)" % (len(self.nodes), self.certified)
+
+
+def phi_bound_plan(C, capacity=None):
+    """The phi at which ``h(phi) = max_u g`` can attain a local maximum.  EXACT, and a
+    FINITE set whose size is fixed by the mode content rather than by amplitude.
+
+    EVERY LOCAL MAXIMUM OF ``h`` IS A 2-D STATIONARY POINT OF ``g``.  Let ``phi0`` be a
+    local max of ``h`` and ``u0`` attain it.  Then ``g(., u0) <= h`` everywhere with
+    equality at ``phi0``, so ``phi0`` is a local max of ``g(., u0)`` and ``d_phi g = 0``
+    there; and ``u0`` maximizes ``g(phi0, .)`` so ``d_u g = 0``.  Hence ``(phi0, u0)`` is
+    2-D stationary, and :mod:`RIFT.likelihood.bivariate_trig_stationary` enumerates those
+    algebraically, fail-closed.
+
+    The converse fails harmlessly, which is the part worth checking rather than assuming.
+    ``h`` is an upper envelope, so where the maximizing ``u`` switches branches it has an
+    UPWARD kink -- a local MINIMUM -- and a minimum cannot carry a supremum.  Measured at
+    KP=3: ``h`` had 4 maxima and 4 minima; all four maxima sat on the algebraic set to
+    1.9e-05, and the two critical points that did NOT (0.0916 and 0.1112 rad away) were
+    both minima.
+
+    So the supremum over any arc is attained at an interior local maximum -- in this set --
+    or at an arc endpoint, which is a region edge.  Evaluating both sets IS the supremum:
+    no Lipschitz lift, no grid, and
+
+        THE COUNT DOES NOT TRACK AMPLITUDE.  Measured 22 stationary phi at KP=3 and 40 at
+        KP=5, IDENTICAL at amplitudes 1108, 70916 and 283672.
+
+    The grid it replaces needed ``pi M10 / tol`` points -- growing as ``rho^2`` -- and
+    carried a lift of tens to hundreds of nats.  At amplitude 2.8e5 the grid declines with
+    16384 points (margin +60) where this accepts with 22 (margin -57).
+
+    ``certified`` IS REQUIRED here, unlike the seed plan.  A missed stationary phi is a
+    missed candidate maximum, so the bound would UNDER-estimate -- unsound, not merely
+    loose.  :func:`phi_local_lnI` falls back to the Lipschitz grid when no certified plan
+    is supplied, and the caller must not pass an uncertified one.
+    """
+    from RIFT.likelihood.bivariate_trig_stationary import enumerate_torus_maxima
+    en = enumerate_torus_maxima(np.asarray(C))
+    pts = np.asarray(en.stationary_points)
+    if pts.size == 0:
+        return None
+    phi = np.unique(np.mod(np.asarray(pts)[:, 0].real, 2.0 * np.pi))
+    if capacity is not None:
+        if phi.size > capacity:      # truncation would DROP candidate maxima
+            return PhiBoundPlan(phi[:capacity], False, en.report)
+        phi = np.concatenate([phi, np.full(capacity - phi.size, phi[0])])
+    return PhiBoundPlan(phi, en.ok, en.report)
+
+
 def required_bound_grid(amplitude, tol_nats=5.0, m_max=2):
     """Bound-grid points that keep the Lipschitz lift ``M10 * delta`` under ``tol_nats``.
 
@@ -878,7 +941,7 @@ def required_phi_nodes(width, m2f, pts_per_sigma=PHI_PTS_PER_SIGMA):
 def phi_local_lnI(C, n_seed=PHI_SEEDS, w_sigma=PHI_WINDOW_SIGMA,
                   n_nodes=PHI_NODES_PER_REGION, u_nodes=U_NODES_PER_CELL,
                   n_bound=PHI_BOUND_GRID, tol_nats=OUTSIDE_TOL_NATS,
-                  n_slots=None, pt_chunk=PT_CHUNK_DEFAULT):
+                  n_slots=None, pt_chunk=PT_CHUNK_DEFAULT, bound_nodes=None):
     """``log int dphi int du exp(g)`` with BOTH axes localized, jittable.
 
     Returns ``(value, ok, info)``.  ``ok`` is False when the omitted-mass bound on the phi
@@ -1192,14 +1255,27 @@ def phi_local_lnI(C, n_seed=PHI_SEEDS, w_sigma=PHI_WINDOW_SIGMA,
     hb = jax.vmap(lambda q: sup_g_bound(C, q))(gb)
     ub = hb + m1f * delta
 
-    # A GRID POINT COUNTS AS OUTSIDE UNLESS ITS WHOLE delta-BALL IS COVERED.  Testing the
-    # point alone leaves a band of width delta beside every region boundary belonging to
-    # no test at all, and the bound would then be a bound on the wrong set.  Regions are
-    # therefore ERODED by delta before the test, which over-estimates the outside -- the
-    # safe direction.  A region already spanning the circle stays covering: that is the
-    # low-amplitude case where the rule has degenerated into the dense grid on purpose,
-    # and eroding it would report an uncovered band and decline every such row.
+    # A POINT COUNTS AS OUTSIDE UNLESS ITS WHOLE delta-BALL IS COVERED.  Testing the point
+    # alone leaves a band of width delta beside every region boundary belonging to no test
+    # at all, and the bound would then be a bound on the wrong set.  Regions are therefore
+    # ERODED by delta before the test, which over-estimates the outside -- the safe
+    # direction.  A region already spanning the circle stays covering: that is the low
+    # amplitude case where the rule has degenerated into the dense grid on purpose, and
+    # eroding it would report an uncovered band and decline every such row.
+    #
+    # A FUNCTION OF THE HALF-WIDTH, because the exact path below tests candidate POINTS
+    # rather than grid cells and must erode by zero, not by the grid's delta.
     full = width >= 2.0 * jnp.pi - 1e-12
+
+    def cover_test(pts, d_half):
+        eff_lo = jnp.where(full, -1.0, seg_lo + d_half)
+        eff_hi = jnp.where(full, 2.0 * jnp.pi + 1.0, seg_lo + width - d_half)
+        q = jnp.mod(pts, 2.0 * jnp.pi)
+        d = q[None, :] - eff_lo[:, None]
+        return (((d >= 0.0) & (q[None, :] <= eff_hi[:, None]))
+                | ((d + 2.0 * jnp.pi >= 0.0)
+                   & (q[None, :] + 2.0 * jnp.pi <= eff_hi[:, None]))).any(axis=0)
+
     eff_lo = jnp.where(full, -1.0, seg_lo + delta)
     eff_hi = jnp.where(full, 2.0 * jnp.pi + 1.0, seg_lo + width - delta)
     d = gb[None, :] - eff_lo[:, None]
@@ -1208,7 +1284,33 @@ def phi_local_lnI(C, n_seed=PHI_SEEDS, w_sigma=PHI_WINDOW_SIGMA,
                   & (gb[None, :] + 2.0 * jnp.pi <= eff_hi[:, None]))).any(axis=0)
 
     area_outside = jnp.clip(2.0 * jnp.pi - width.sum(), 0.0, 2.0 * jnp.pi)
-    sup_outside = jnp.max(jnp.where(covered, -jnp.inf, ub))
+    if bound_nodes is None:
+        # NO CERTIFIED PLAN: the Lipschitz grid.  Sound for any table, and the term whose
+        # cost grows as rho^2 because delta must shrink with M10.
+        sup_outside = jnp.max(jnp.where(covered, -jnp.inf, ub))
+        bound_exact_phi = jnp.asarray(False)
+    else:
+        # THE EXACT BOUND.  sup over an uncovered arc is attained at an interior local
+        # maximum of h -- necessarily one of these phi, see phi_bound_plan -- or at an arc
+        # endpoint, which is a region edge.  Evaluating both sets IS the supremum, so
+        # there is no lift and no grid, and the cost is fixed by the mode content.
+        #
+        # Edges are ALWAYS candidates: they are exactly where the uncovered arcs end.  The
+        # enumerated phi are candidates only where they fall outside, tested with zero
+        # erosion because these are points and not cells.  An empty slot contributes
+        # nothing; a region spanning the circle leaves area_outside = 0, where the margin
+        # is -inf regardless of what this returns.
+        nodes = jnp.mod(jnp.asarray(bound_nodes, dtype=jnp.float64), 2.0 * jnp.pi)
+        h_nodes = jax.vmap(lambda q: sup_g_bound(C, q))(nodes)
+        h_nodes = jnp.where(cover_test(nodes, 0.0), -jnp.inf, h_nodes)
+
+        live = width > 0
+        edges = jnp.mod(jnp.concatenate([seg_lo, seg_lo + width]), 2.0 * jnp.pi)
+        h_edges = jax.vmap(lambda q: sup_g_bound(C, q))(edges)
+        h_edges = jnp.where(jnp.concatenate([live, live]), h_edges, -jnp.inf)
+
+        sup_outside = jnp.maximum(h_nodes.max(), h_edges.max())
+        bound_exact_phi = jnp.asarray(True)
     outside = jnp.where(area_outside > 0.0,
                         jnp.log(jnp.where(area_outside > 0.0, area_outside, 1.0))
                         + sup_outside,
@@ -1327,6 +1429,10 @@ def phi_local_lnI(C, n_seed=PHI_SEEDS, w_sigma=PHI_WINDOW_SIGMA,
             "area_outside": area_outside,
             "sup_outside": sup_outside,
             "n_phi_regions": (width > 0).sum(),
+            # True when the outside bound was the EXACT enumerated one rather than the
+            # Lipschitz grid.  Not a gate -- both are sound -- but the exact path carries
+            # no lift, so a caller comparing margins across rows needs to know which.
+            "bound_exact_phi": bound_exact_phi,
             # the cover itself, so the outside bound can be tested against the set it is a
             # bound ON.  A soundness check that compares it to the GLOBAL sup of h instead
             # reads ~w_sigma^2/2 = 72 nats low and condemns a correct bound -- which is
