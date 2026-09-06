@@ -354,6 +354,7 @@ FILES=(
   "${JAXDIR}/test_jax_stencil_parity.py"
   "${JAXDIR}/test_flow_reuse_default.py"
   "${JAXDIR}/test_angle_marg_sizing_rule.py"
+  "${JAXDIR}/test_anglemarg_buffer_cap.py"
   "${JAXDIR}/test_angle_marg_smoke.py"
   "${JAXDIR}/test_angle_marg_compile_cost.py"
   "${JAXDIR}/test_angle_marg_block_dispatch.py"
@@ -364,6 +365,8 @@ FILES=(
   "${JAXDIR}/test_joint_anglemarg_peaklocal.py"
   "${JAXDIR}/test_angle_marg_peaklocal_wiring.py"
   "${JAXDIR}/test_limit_distance_jax.py"
+  "${JAXDIR}/test_direct_marginalization_planner.py"
+  "${JAXDIR}/test_time_first_peaklocal.py"
   "${JAXDIR}/test_is_proposal_jitter.py"
 )
 
@@ -510,15 +513,35 @@ fi
 # the only source that is not a guess.
 # The production-policy follow-up adds one mutation-bearing streaming test; this job's
 # own collection reports 312.
-# The #227 IS-proposal branch adds the 27 pins in test_is_proposal_jitter.py.  339 is
-# READ OFF THIS JOB'S OWN "collected N tests from 28 files" LINE after merging
-# rift_O4d, which is the only source the paragraphs above accept.  Recording what the
-# merge looked like, because it is the case this constant is built to survive: the two
-# sides disagreed (the branch had 293 + 24 = 317, main had moved on to 312), so the
-# branch's own number was stale by four merges before this merge was even attempted.
-# Adding 24 to main's 312 happens to give 336 here; that agreement is a coincidence of
-# this merge and not a licence to do the arithmetic next time.
-EXPECTED_TESTS=339
+# PR #250 adds test_anglemarg_buffer_cap.py, test_direct_marginalization_planner.py and
+# test_time_first_peaklocal.py; 247 adds four tests to test_joint_anglemarg_peaklocal.py
+# and REMOVES test_joint_angle_algebraic.py with the duplicate enumerator it covered.
+# Neither branch guessed well: 250 derived a provisional 408 from arithmetic and said to
+# replace it with a real collection, and 247 measured 329 against a different file set.
+# This number is the MERGED collection, run over this job own FILES/DESELECT with the
+# DESELECT loop actually applied (the run reports "424/425 tests collected (1 deselected)").
+#
+# 250 also inferred a standing "this environment collects one more than CI" offset and
+# subtracted it.  There is no such offset: the 311 case documented above was wrong by one
+# because a harness sliced this script by line number and never ran the DESELECT loop, so
+# it counted the one test this job deselects.  That was a one-off setup bug, not a property
+# of the environment, and subtracting for it would under-promise by one -- which is the
+# failure direction this whole comment exists to warn about, because a low floor PASSES.
+#
+# The #227 IS-proposal branch then adds the 27 pins in test_is_proposal_jitter.py, and
+# the FILES array above takes the UNION of both sides of this merge (250's two files and
+# this branch's one).  The number below is the MERGED collection, re-run after merging
+# rift_O4d a second time; this job reports "451/452 tests collected (1 deselected)" from
+# 31 files.
+#
+# This branch has now hit this conflict TWICE: 339 was itself a merged collection, read
+# off a real run, and it was stale inside a day.  That is the standing evidence for the
+# rule the paragraphs above state -- the constant does not go stale because someone was
+# careless, it goes stale because rift_O4d moves faster than any one branch.  Note also
+# that BOTH times the arithmetic would have landed on the right answer (312+24+3 = 339,
+# 424+27 = 451).  That is precisely what makes it an unreliable shortcut: it is usually
+# right, so the one time it is wrong there is no habit of checking left to catch it.
+EXPECTED_TESTS=451
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
