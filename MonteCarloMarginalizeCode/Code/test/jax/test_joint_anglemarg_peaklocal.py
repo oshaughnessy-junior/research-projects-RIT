@@ -736,3 +736,92 @@ def test_empty_slots_do_not_vote_on_the_u_sizing_gate():
     assert len({v[0] for v in seen.values()}) == 1, ("regions moved", seen)
     assert len({v[1] for v in seen.values()}) == 1, ("risky tracked slots", seen)
     assert len({v[2] for v in seen.values()}) == 1, ("fallback tracked slots", seen)
+
+
+def _AB(scale, seed=3, KP=3, KS=2):
+    rng = np.random.default_rng(seed)
+    A = (rng.normal(size=(KP, 2 * KS + 1)) + 1j * rng.normal(size=(KP, 2 * KS + 1))) * scale
+    B = (rng.normal(size=(KP + 2, 2 * KS + 1))
+         + 1j * rng.normal(size=(KP + 2, 2 * KS + 1))) * scale
+    B[0, KS] = abs(B[0, KS].real) + 3.0 * scale
+    return jnp.asarray(A), jnp.asarray(B)
+
+
+def test_phi_local_distance_combiner_matches_the_dense_scheme():
+    """The wiring's correctness condition.  ``joint_lnL_phi_local`` must reproduce the
+    shipping ``joint_lnL_phi_dense`` on the same inputs, or the normalization split
+    between the per-node seam (bare torus integral) and the combiner (the ``(2 pi)^-2``
+    prior factor) is wrong -- and that error is invisible in the per-node value.
+    """
+    # deliberately small: the claim is about NORMALIZATION, which a 6-node grid tests as
+    # well as a 32-node one, and the full-size version cannot run beside the rest of this
+    # file -- 640 MB of eval_g2 intermediate per chunk kills the process.
+    for scale in (1.0, 4.0, 12.0):
+        A, B = _AB(scale)
+        x = jnp.linspace(0.5, 2.0, 6)
+        lw = jnp.full(6, -np.log(6.0))
+        d = JP.joint_lnL_phi_dense(A, B, x, lw, n_phi=512, n_nodes=48)
+        v, _, _ = JP.joint_lnL_phi_local(A, B, x, lw, u_nodes=48, n_slots=8,
+                                         n_nodes=97, x_chunk=2)
+        assert abs(float(d) - float(v)) < 1e-5, (scale, float(d), float(v))
+
+
+def test_an_arbitrary_distance_rule_stacks_on_the_seam():
+    """RO asked for this to be stackable, so it is asserted rather than described.
+
+    ``phi_local_lnI_at_distance`` is the unit; the distance rule is entirely a matter of
+    which ``x`` a caller evaluates and what weights it applies.  A 5-node Gauss-Legendre
+    rule -- nothing grid-shaped about it -- driven by hand through the seam must equal the
+    same nodes routed through the default combiner.  If those ever diverge, the combiner
+    has grown an assumption about the rule and stacking is broken.
+    """
+    A, B = _AB(4.0)
+    gx, gw = np.polynomial.legendre.leggauss(5)
+    xs = 0.5 * (gx + 1.0) * 1.5 + 0.5
+    lws = np.log(gw * 0.75)
+    kw = dict(u_nodes=48, n_slots=8, n_nodes=97)
+    vals = np.array([float(JP.phi_local_lnI_at_distance(A, B, float(z), **kw)[0])
+                     for z in xs])
+    from scipy.special import logsumexp
+    stacked = logsumexp(vals + lws) - 2.0 * np.log(2.0 * np.pi)
+    through, _, _ = JP.joint_lnL_phi_local(A, B, jnp.asarray(xs), jnp.asarray(lws),
+                                           x_chunk=1, **kw)
+    assert abs(stacked - float(through)) < 1e-9, (stacked, float(through))
+
+
+def test_rolling_the_quadrature_axis_does_not_move_the_value():
+    """``pt_chunk`` exists to bound memory and must be invisible in the answer -- the same
+    contract ``phi_chunk`` has on the dense path.  Bit-identical, not merely close: a scan
+    that reassociated the reduction would show up here as a last-digit drift and would
+    mean the chunking is not a pure refactor."""
+    KS = 2
+    rng = np.random.default_rng(7)
+    C = rng.normal(size=(3, 2 * KS + 1)) + 1j * rng.normal(size=(3, 2 * KS + 1))
+    C = jnp.asarray(C * (3e3 / np.sum(np.abs(C))))
+    kw = dict(n_bound=int(JP.required_bound_grid(3e3)), u_nodes=96,
+              n_slots=4, n_nodes=97)
+    # The unrolled reference asks for a chunk of exactly the grid, not 1e6: `_prof_scan`
+    # now clamps, but a test should not depend on that and external review measured
+    # 6.56 GB of temporaries when it padded 388 points to a million.
+    n_pts = 4 * 97
+    ref = float(JP.phi_local_lnI(C, pt_chunk=n_pts, **kw)[0])
+    for pc in (16, 32, 256):
+        got = float(JP.phi_local_lnI(C, pt_chunk=pc, **kw)[0])
+        # NOT exact equality.  This asserted bit-identity and passed here, but external
+        # review measured 4.55e-13 nats of spread across chunk sizes on another CPU: the
+        # scan's reduction IS reassociated on some platforms, so bit-identity was a claim
+        # about this machine rather than about the code.  The contract that matters is
+        # that chunking is invisible at the scale anything downstream cares about.
+        assert abs(got - ref) < 1e-9, (pc, got, ref)
+
+
+def test_the_distance_combiner_is_fail_closed_across_nodes():
+    """``ok`` is the CONJUNCTION over distance nodes.  A declining node still returns a
+    finite number that would otherwise be summed in silently, so one bad node must sink
+    the row.  Asserted by starving a single node's slot budget."""
+    A, B = _AB(4.0)
+    x = jnp.linspace(0.5, 2.0, 4)
+    lw = jnp.full(4, -np.log(4.0))
+    _, ok_starved, _ = JP.joint_lnL_phi_local(A, B, x, lw, u_nodes=48, n_slots=1,
+                                              n_nodes=97, x_chunk=2)
+    assert not bool(ok_starved), "a starved node must sink the distance sum"

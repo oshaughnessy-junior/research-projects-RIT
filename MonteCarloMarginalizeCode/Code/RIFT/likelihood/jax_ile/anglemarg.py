@@ -150,7 +150,8 @@ __all__ = [
 # RESULTS_phigrid_2026-09-02.md (commit 3f1f66f).
 ANGLE_MARG_DEFAULT = "exact"
 ANGLE_MARG_LEGACY = "grid"      # the spelling that reproduces pre-2026-09-02 runs
-ANGLE_MARG_CHOICES = ("grid", "exact", "laplace", "peak-local", "auto")
+ANGLE_MARG_CHOICES = ("grid", "exact", "laplace", "peak-local", "phi-local",
+                      "auto")
 
 #: 'peak-local' is deliberately NOT reachable from 'auto' yet.  It agrees with 'exact'
 #: to 1e-13 nats on the tables measured so far and is device-independent (the same answer
@@ -2084,6 +2085,76 @@ def fused_log_likelihood_distphipsimarg_peaklocal(
         return _jp.joint_lnL_phi_dense(a, b, x_grid, log_w_grid, n_phi=n_phi, **kw)
 
     lnL_t = jax.vmap(jax.vmap(_one))(A, B)          # (S, npts)
+    if return_lnLt:
+        return lnL_t
+    return _time_marginalize_terminal(lnL_t, data, time_quadrature)
+
+
+def fused_log_likelihood_distphipsimarg_phi_local(
+        data, ra, dec, incl, x_grid, log_w_grid,
+        interp=JAX_INTERP_DEFAULT, amp_sizing=None,
+        time_quadrature=TIME_QUAD_DEFAULT, return_lnLt=False,
+        x_chunk=None, pt_chunk=None, n_slots=None, return_ok=False):
+    """Distance-, phi_ref- AND psi-marginalized lnL with BOTH ANGLE AXES LOCALIZED.
+
+    Same contract and normalization as the other ``fused_log_likelihood_distphipsimarg_*``
+    entries.  What changes against ``peak-local`` is the phi axis: rather than a dense grid
+    sized ``~sqrt(A)``, phi is localized around the maxima of the u-profile and the omitted
+    mass is BOUNDED, so cost stops growing with amplitude.
+
+    IT DECLINES, AND THE CALLER GETS THE DENSE ANSWER WHEN IT DOES.  ``phi_local_lnI`` is
+    fail-closed: a row whose omitted-mass bound, convergence probes or u sizing do not pass
+    returns ``ok = False``, and across a distance grid ``ok`` is the CONJUNCTION over nodes.
+    This entry evaluates the dense peak-local scheme as well and selects elementwise, so a
+    decline costs time and never accuracy.  Pass ``return_ok=True`` to get the mask and
+    account for how often the localized path actually carried the row -- a scheme that
+    silently fell back on every sample would otherwise look like it worked.
+
+    THAT MAKES THIS SLOWER THAN ``peak-local`` UNTIL THE FALLBACK CAN BE SKIPPED, which
+    needs an acceptance rate measured on production tables rather than assumed.  It is
+    therefore reachable only by name and is not in ``auto``.
+
+    ``JAX_ILE_DISTMARG_GH`` is REFUSED for the same reason the dense peak-local branch
+    refuses it: no psi-marginal node placement exists yet.  The seam it will attach to,
+    :func:`~RIFT.likelihood.jax_ile.joint_anglemarg_peaklocal.phi_local_lnI_at_distance`,
+    is public and takes one distance node, so that work does not have to modify this
+    function.
+    """
+    if _core._DISTMARG_GH_N > 0:
+        raise ValueError(
+            "JAX_ILE_DISTMARG_GH is set, but the 'phi-local' angle-marg scheme does "
+            "not implement the adaptive distance quadrature (it sums the caller's "
+            "distance grid directly).  Use --angle-marg-scheme exact, or unset "
+            "JAX_ILE_DISTMARG_GH.")
+    _require_amp_sizing(amp_sizing)
+    from . import joint_anglemarg_peaklocal as _jp
+
+    C_A, C_B, _meta = angle_coefficient_tables(data, ra, dec, incl, interp=interp)
+    _runtime_amp_failsafe(C_A, C_B, x_grid, amp_sizing, "phi-local")
+
+    n_phi = _jp.required_n_phi(amp_sizing, m_max=_data_m_max(data))
+    u_nodes = _jp.u_nodes_in_use(amp_sizing)
+    kw = {"u_nodes": u_nodes,
+          "n_bound": int(_jp.required_bound_grid(amp_sizing)),
+          "pt_chunk": int(pt_chunk if pt_chunk is not None else _jp.PT_CHUNK_DEFAULT)}
+    if n_slots is not None:
+        kw["n_slots"] = int(n_slots)
+
+    A = jnp.moveaxis(jnp.asarray(C_A), (2, 3), (0, 1))
+    B = jnp.moveaxis(jnp.asarray(C_B), (2, 3), (0, 1))
+    xc = int(x_chunk if x_chunk is not None else _jp.X_CHUNK_DEFAULT)
+
+    def _one(a, b):
+        loc, ok, _ = _jp.joint_lnL_phi_local(a, b, x_grid, log_w_grid,
+                                             x_chunk=xc, **kw)
+        dense = _jp.joint_lnL_phi_dense(a, b, x_grid, log_w_grid, n_phi=n_phi,
+                                        n_nodes=u_nodes)
+        return jnp.where(ok, loc, dense), ok
+
+    lnL_t, ok_t = jax.vmap(jax.vmap(_one))(A, B)          # (S, npts) each
+    if return_ok:
+        return (lnL_t, ok_t) if return_lnLt else (
+            _time_marginalize_terminal(lnL_t, data, time_quadrature), ok_t)
     if return_lnLt:
         return lnL_t
     return _time_marginalize_terminal(lnL_t, data, time_quadrature)
