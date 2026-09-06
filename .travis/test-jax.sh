@@ -233,7 +233,7 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         is the only gated check that distinguishes
 #                                         the corrected sizing.  The rest of the
 #                                         angle-marg suite is EXCLUDED; see below.
-#   test_is_proposal_jitter.py        27  issue #227: a Gaussian IS proposal must be
+#   test_is_proposal_jitter.py        29  issue #227: a Gaussian IS proposal must be
 #                                         SCORED under the matrix it was DRAWN from.
 #                                         Seven sites drew from cov + 1e-12*I and
 #                                         scored under bare cov; the DEFAULT --mode
@@ -530,9 +530,10 @@ fi
 #
 # The #227 IS-proposal branch then adds the 27 pins in test_is_proposal_jitter.py, and
 # the FILES array above takes the UNION of both sides of this merge (250's two files and
-# this branch's one).  The number below is the MERGED collection, re-run after merging
-# rift_O4d a second time; this job reports "451/452 tests collected (1 deselected)" from
-# 31 files.
+# this branch's one).  External review's P1 added two more (the Markov floor and the
+# inflated-pilot regression case), taking the file to 29 and the floor to 453.  The number below is the MERGED collection, re-run after merging
+# rift_O4d a second time; this job reported "451/452 tests collected (1 deselected)" from
+# 31 files, and 453 after the two review tests -- re-read, not incremented.
 #
 # This branch has now hit this conflict TWICE: 339 was itself a merged collection, read
 # off a real run, and it was stale inside a day.  That is the standing evidence for the
@@ -541,7 +542,7 @@ fi
 # that BOTH times the arithmetic would have landed on the right answer (312+24+3 = 339,
 # 424+27 = 451).  That is precisely what makes it an unreliable shortcut: it is usually
 # right, so the one time it is wrong there is no habit of checking left to catch it.
-EXPECTED_TESTS=451
+EXPECTED_TESTS=453
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
