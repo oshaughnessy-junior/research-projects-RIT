@@ -624,3 +624,71 @@ def test_the_bound_grid_adequacy_gate_fires_and_is_cleared_by_sizing():
     assert fired > 0, "an adequacy gate that never fires cannot protect the bound"
     assert cleared == 12, "sizing the quadrature must clear it, or it is not a requirement"
     assert JP.required_u_nodes(1.0e4) > 48
+
+
+def test_the_host_seed_plan_is_complete_where_a_uniform_grid_only_hopes():
+    """The honest route back to algebraic seeds: build them on the HOST from
+    ``bivariate_trig_stationary`` -- the enumerator of record, fail-closed on the BKK root
+    count, Jacobian conditioning, torus classification and two-projection agreement -- and
+    hand the kernel a fixed-capacity plan.  An in-kernel resultant seeder used to live in
+    this module and was removed because solving inside a traced function is exactly what
+    that module's header forbids, and because it had no ``ok`` at all.
+
+    Non-vacuity is the point: the plan must find seeds a 32-point uniform grid does not,
+    and it must not change an answer the grid already got right.
+    """
+    plan_mod = pytest.importorskip("RIFT.likelihood.bivariate_trig_stationary")
+    assert plan_mod is not None
+    KS = 2
+    rng = np.random.default_rng(101)
+    C = rng.normal(size=(3, 2 * KS + 1)) + 1j * rng.normal(size=(3, 2 * KS + 1))
+    C = C * (19.0 / np.sum(np.abs(C)))
+
+    plan = JP.phi_seed_plan(C)
+    assert plan is not None
+    assert plan.certified, plan.report          # KP=3 is certifiable; pin that it is
+    assert plan.n_slots == 2 * len(plan.seeds)
+    assert np.all(plan.seeds >= 0.0) and np.all(plan.seeds < 2 * np.pi)
+    assert np.all(np.diff(plan.seeds) > 0)      # sorted and deduplicated
+
+    Cj = jnp.asarray(C)
+    v_grid, ok_grid, _ = JP.phi_local_lnI(Cj)
+    v_plan, ok_plan, _ = JP.phi_local_lnI(Cj, seeds=plan.seeds, n_slots=plan.n_slots)
+    assert bool(ok_grid) and bool(ok_plan)
+    assert abs(float(v_plan) - float(v_grid)) < 1e-6, (float(v_plan), float(v_grid))
+
+
+def test_the_seed_plan_does_not_pretend_to_cut_the_empty_slot_cost():
+    """It buys completeness, NOT cost, and the first version of this claimed otherwise.
+
+    The module docstring's "2-4" is the count of MERGED REGIONS; slots are sized by SEEDS,
+    and the true stationary-point count is nothing like 2-4.  So a plan generally asks for
+    MORE slots than the 32-seed default, not fewer, and the kernel does more work.  Pinned
+    because the wrong version of this reasoning was written down once already.
+    """
+    pytest.importorskip("RIFT.likelihood.bivariate_trig_stationary")
+    KS = 2
+    counts = {}
+    for KP in (3, 5, 9):
+        rng = np.random.default_rng(101)
+        C = rng.normal(size=(KP, 2 * KS + 1)) + 1j * rng.normal(size=(KP, 2 * KS + 1))
+        C = C * (30.0 / np.sum(np.abs(C)))
+        plan = JP.phi_seed_plan(C)
+        assert plan is not None
+        counts[KP] = len(plan.seeds)
+    assert counts[3] < counts[5] < counts[9], counts     # grows with mode content
+    assert counts[9] > JP.PHI_SEEDS, (counts, JP.PHI_SEEDS)
+
+
+def test_a_smaller_slot_budget_declines_rather_than_returning_a_wrong_answer():
+    """The caller's lever for the cost is ``n_slots``, and it must be fail-closed: regions
+    that do not fit are dropped, which leaves mass uncovered, raises ``area_outside`` and
+    declines.  Speed may be traded for declines, never for a wrong answer."""
+    KS = 2
+    rng = np.random.default_rng(101)
+    C = rng.normal(size=(9, 2 * KS + 1)) + 1j * rng.normal(size=(9, 2 * KS + 1))
+    C = jnp.asarray(C * (1e2 / np.sum(np.abs(C))))
+    _, _, wide = JP.phi_local_lnI(C)
+    _, ok_tight, tight = JP.phi_local_lnI(C, n_slots=1)
+    assert float(tight["area_outside"]) >= float(wide["area_outside"])
+    assert not bool(ok_tight), "a starved slot budget must decline"

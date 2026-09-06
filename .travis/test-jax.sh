@@ -511,7 +511,9 @@ fi
 # it counted the one test this job deselects.  That was a one-off setup bug, not a property
 # of the environment, and subtracting for it would under-promise by one -- which is the
 # failure direction this whole comment exists to warn about, because a low floor PASSES.
-EXPECTED_TESTS=424
+# The host phi seed plan adds three tests to test_joint_anglemarg_peaklocal.py.  MEASURED
+# over this job own FILES/DESELECT, not incremented.
+EXPECTED_TESTS=427
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"

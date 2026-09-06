@@ -76,6 +76,8 @@ __all__ = [
     "u_profile",
     "eval_g2",
     "phi_local_lnI",
+    "phi_seed_plan",
+    "PhiSeedPlan",
     "PHI_SEEDS",
     "PHI_WINDOW_SIGMA",
     "PHI_NODES_PER_REGION",
@@ -673,10 +675,92 @@ def required_phi_nodes(width, m2f, pts_per_sigma=PHI_PTS_PER_SIGMA):
     return width * jnp.sqrt(jnp.maximum(m2f, 0.0)) * pts_per_sigma
 
 
+class PhiSeedPlan(object):
+    """A host-built, fixed-capacity phi seed plan for :func:`phi_local_lnI`.
+
+    ``seeds`` are phi angles, ``n_slots`` the merge capacity they need, and
+    ``certified`` is the enumerator's own ``ok``.  See :func:`phi_seed_plan`.
+    """
+
+    __slots__ = ("seeds", "n_slots", "certified", "report")
+
+    def __init__(self, seeds, n_slots, certified, report):
+        self.seeds = seeds
+        self.n_slots = int(n_slots)
+        self.certified = bool(certified)
+        self.report = report
+
+    def __repr__(self):
+        return ("PhiSeedPlan(n_seeds=%d, n_slots=%d, certified=%s)"
+                % (len(self.seeds), self.n_slots, self.certified))
+
+
+def phi_seed_plan(C, dedupe_tol=1e-8):
+    """Build phi seeds on the HOST from the authoritative algebraic enumerator.
+
+    :mod:`RIFT.likelihood.bivariate_trig_stationary` is the enumerator of record for
+    ``g`` on the torus: it is fail-closed on the BKK root count, complex Jacobian
+    conditioning, unit-torus classification and agreement between two independent
+    projections.  It is host side because none of those has an honest static-shape JAX
+    transcription, and its own header says a JAX adapter must consume a fixed-capacity
+    plan rather than re-solve the system inside a traced function.  This is that adapter.
+
+    An in-kernel resultant seeder used to live in this module and was removed for exactly
+    that reason.  The difference is not cosmetic: that one had no ``ok`` at all and
+    returned silently empty on a degenerate table.
+
+    EVERY stationary phi is a seed, not only the maxima of ``g``.  ``phi_local_lnI``
+    iterates on the maxima of the PROFILE ``F(phi) = log int du exp(g)``, which are near
+    but not equal to the phi of maxima of ``g``, so the superset is the safe seed set.
+
+    ``certified`` is REPORTED, NOT REQUIRED.  When the enumerator cannot certify it still
+    returns its definitely-on-torus roots as targeting data, and its docstring says a
+    caller may use them if an independent outside-cover bound passes.  ``phi_local_lnI``
+    has exactly that bound: a seed the plan misses leaves mass uncovered, raises
+    ``area_outside`` and declines the row.  So an uncertified plan is still better
+    targeting than a uniform grid, and neither is trusted for completeness on its own.
+
+    Returns ``None`` when the enumerator yields nothing at all, which is the caller's
+    signal to use the default grid.
+    """
+    from RIFT.likelihood.bivariate_trig_stationary import enumerate_torus_maxima
+    enum = enumerate_torus_maxima(np.asarray(C))
+    pts = np.asarray(enum.stationary_points)
+    if pts.size == 0:
+        return None
+    phi = np.mod(np.asarray(pts)[:, 0].real, 2.0 * np.pi)
+    phi = np.sort(phi)
+    if phi.size > 1:                       # drop duplicates, including across the seam
+        keep = np.concatenate([[True], np.diff(phi) > dedupe_tol])
+        if phi[-1] - phi[0] > 2.0 * np.pi - dedupe_tol:
+            keep[-1] = False
+        phi = phi[keep]
+    if phi.size == 0:
+        return None
+    # SLOT CAPACITY.  A seed contributes at most two pieces -- its window can straddle the
+    # seam -- so 2 * n_seeds is the exact bound, the same rule the uniform path uses.
+    #
+    # THIS DOES NOT FIX THE EMPTY-SLOT WASTE, and an earlier version of this comment
+    # claimed it did.  That claim conflated two different counts: the module docstring's
+    # "2-4" is the number of MERGED REGIONS, while slots are sized by SEEDS, and the true
+    # stationary-point count is nothing like 2-4.  Measured on this enumerator: 18 seeds
+    # at KP=3, 42 at KP=5, 67 at KP=9 -- so against the 32-seed default this plan makes
+    # the kernel do MORE work, not less (1.5x faster at KP=3, 0.4x at KP=5 and KP=9).
+    #
+    # What this buys is COMPLETENESS, which is what a uniform grid cannot claim at all,
+    # and at KP=3 the enumerator certifies it.  Fixing the waste needs a different object:
+    # a host-built REGION plan -- run the profile and the merge on the host too and hand
+    # the kernel the merged intervals -- so the slot count is the region count rather than
+    # a bound on it.  A caller that wants the cost back today can pass a smaller
+    # ``n_slots`` than this: dropped regions raise ``area_outside`` and decline, so it
+    # trades speed for declines and never for a wrong answer.
+    return PhiSeedPlan(phi, 2 * phi.size, enum.ok, enum.report)
+
+
 def phi_local_lnI(C, n_seed=PHI_SEEDS, w_sigma=PHI_WINDOW_SIGMA,
                   n_nodes=PHI_NODES_PER_REGION, u_nodes=U_NODES_PER_CELL,
                   n_bound=PHI_BOUND_GRID, tol_nats=OUTSIDE_TOL_NATS,
-                  n_slots=None):
+                  n_slots=None, seeds=None):
     """``log int dphi int du exp(g)`` with BOTH axes localized, jittable.
 
     Returns ``(value, ok, info)``.  ``ok`` is False when the omitted-mass bound on the phi
@@ -802,7 +886,15 @@ def phi_local_lnI(C, n_seed=PHI_SEEDS, w_sigma=PHI_WINDOW_SIGMA,
     # The honest way back to algebraic seeds is a host-built fixed-capacity plan passed IN
     # as ``seeds``, built from ``enumerate_torus_maxima`` and declining when its ``ok`` is
     # false.  That is not implemented; until it is, these are a grid and are labelled one.
-    seeds = jnp.linspace(0.0, 2.0 * jnp.pi, n_seed, endpoint=False)
+    # A host-built plan from :func:`phi_seed_plan` arrives here as a concrete array, so
+    # its length is static at trace time and nothing about the shapes becomes data
+    # dependent.  Without one these are a uniform grid, which is targeting and not an
+    # enumeration -- the omitted-mass bound is what stands behind either.
+    if seeds is None:
+        seeds = jnp.linspace(0.0, 2.0 * jnp.pi, n_seed, endpoint=False)
+    else:
+        seeds = jnp.asarray(seeds)
+        n_seed = int(seeds.shape[0])
 
     def _newton(p, _):
         _, d1, d2, _, _, _ = jax.vmap(prof)(p)
@@ -834,7 +926,7 @@ def phi_local_lnI(C, n_seed=PHI_SEEDS, w_sigma=PHI_WINDOW_SIGMA,
                            jnp.where(crosses, 0.0, big)])
     hi2 = jnp.concatenate([jnp.where(crosses, 2.0 * jnp.pi, a0 + wdt),
                            jnp.where(crosses, a0 + wdt - 2.0 * jnp.pi, big)])
-    n_out = int(2 * PHI_SEEDS if n_slots is None else n_slots)
+    n_out = int(2 * n_seed if n_slots is None else n_slots)
     seg_lo, seg_hi = _merge_sorted_intervals(lo2, hi2, n_out)
     n_seed = n_out
     # There are always more slots than groups, and an EMPTY slot comes back from the
