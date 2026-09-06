@@ -681,3 +681,58 @@ def test_the_bound_grid_adequacy_gate_fires_and_is_cleared_by_sizing():
     assert fired > 0, "an adequacy gate that never fires cannot protect the bound"
     assert cleared == 12, "sizing the quadrature must clear it, or it is not a requirement"
     assert JP.required_u_nodes(1.0e4) > 48
+
+
+def test_sup_g_bound_survives_a_degenerate_u_quartic():
+    """Adversarial review, and the worst defect in this branch.
+
+    ``sup_g_bound`` took ``max`` over ``u_stationary_roots`` as if that set contained the
+    maximizer.  A max over a candidate set is a LOWER bound unless it provably does, and
+    ``u_stationary_roots`` substitutes ``lead = 1`` when ``c2 == 0`` -- solving a different
+    polynomial -- so for a table with no ``q = +-2`` content it need not.  The whole outside
+    certificate rests on ``bound >= F``, so this made margins understated rather than loose.
+
+    Measured before the fix: 0.024 to 0.092 nats BELOW ``log(2 pi) + max_u g``.  The
+    fixture is the degenerate table, because every table in the rest of this file carries
+    full mode content and none of them can see it.
+    """
+    KS = 2
+    for trial in range(4):
+        rng = np.random.default_rng(trial)
+        C = np.zeros((3, 2 * KS + 1), dtype=complex)
+        C[:, KS + 0] = rng.normal(size=3) + 1j * rng.normal(size=3)
+        C[:, KS + 1] = rng.normal(size=3) + 1j * rng.normal(size=3)   # no q = +-2
+        C = jnp.asarray(C * (50.0 / np.sum(np.abs(C))))
+        for phi in np.linspace(0.0, 2 * np.pi, 13, endpoint=False):
+            H = float(JP.sup_g_bound(C, float(phi)))
+            u = np.linspace(0.0, 2 * np.pi, 8000, endpoint=False)
+            g = np.asarray(JP.eval_g2(C, jnp.full(u.shape, float(phi)),
+                                      jnp.asarray(u), (0, 0)))
+            assert H >= float(np.log(2 * np.pi) + g.max()) - 1e-9, (trial, phi)
+
+
+def test_empty_slots_do_not_vote_on_the_u_sizing_gate():
+    """Adversarial review, found by this session and by external review independently.
+
+    Empty merged-region slots are neutralized for the VALUE -- position zeroed, weight
+    masked -- but their nodes are still evaluated at phi = 0, and their fallback counts
+    were summed into the gate and the reported counters.  A risky cell at that artificial
+    point could decline a row whose every contributing node was adequate.
+
+    The tell is that the counts tracked the SLOT ALLOCATION rather than the regions:
+    5 risky at n_slots=2 and 176 at n_slots=8 while the region count only went 2 -> 4.
+    So the invariant to pin is that the counters do not move once the slots exceed the
+    regions, which no amount of real structure could cause.
+    """
+    KS = 2
+    rng = np.random.default_rng(101)
+    C = rng.normal(size=(3, 2 * KS + 1)) + 1j * rng.normal(size=(3, 2 * KS + 1))
+    C = jnp.asarray(C * (1000.0 / np.sum(np.abs(C))))
+    seen = {}
+    for ns in (8, 32, 64):
+        _, _, i = JP.phi_local_lnI(C, u_nodes=96, n_slots=ns, n_nodes=97)
+        seen[ns] = (int(i["n_phi_regions"]), int(i["n_u_risky_quad"]),
+                    int(i["n_u_fallback_quad"]))
+    assert len({v[0] for v in seen.values()}) == 1, ("regions moved", seen)
+    assert len({v[1] for v in seen.values()}) == 1, ("risky tracked slots", seen)
+    assert len({v[2] for v in seen.values()}) == 1, ("fallback tracked slots", seen)

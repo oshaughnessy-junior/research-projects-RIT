@@ -489,7 +489,10 @@ def sup_g_bound(C, phi):
     amplitude.  Measured: at amplitude 3e4 that is 8192 * 4 * 7302 evaluations and the
     process is killed outright.
 
-    It is also strictly better as a bound, not merely cheaper.  Its Lipschitz constant is
+    It is CHEAPER and BETTER-CONDITIONED, though not uniformly tighter: it discards the
+    Laplace width (see the slack note below), so on a grid fine enough for the profile
+    route's second-order term to vanish that route would win.  What matters is that no
+    affordable grid is that fine.  Its Lipschitz constant is
     ``M10``, by the envelope inequality
     ``|max_u g(phi1,.) - max_u g(phi2,.)| <= max_u |g(phi1,u) - g(phi2,u)| <= M10 |dphi|``,
     so refining the grid buys a LINEAR reduction where the profile route is pinned at second
@@ -509,8 +512,29 @@ def sup_g_bound(C, phi):
     a = D(0).real
     c1 = D(1) + jnp.conj(D(-1))
     c2 = D(2) + jnp.conj(D(-2))
+    # A MAX OVER ROOTS IS A LOWER BOUND UNLESS THE ROOTS ARE RIGHT, and this returned one
+    # as if it were the maximum.  ``u_stationary_roots`` builds a companion matrix for
+    # ``c2 z^4 + ...`` and substitutes ``lead = 1`` when ``c2 = 0``, which solves a
+    # DIFFERENT polynomial, so for a table with no q = +-2 content the returned angles need
+    # not contain the maximizer.  Measured over four such draws, this came back 0.024 to
+    # 0.092 nats BELOW ``log(2 pi) + max_u g``: not a loose bound, an invalid one, and the
+    # whole outside certificate rests on this inequality.  Adversarial review, found by
+    # constructing the degenerate table rather than by reading the algebra.
+    #
+    # ``a + |c1| + |c2| >= max_u g`` holds for every table and needs no roots.  It is used
+    # wherever the quartic cannot be trusted -- and in exactly that regime it is also TIGHT,
+    # since ``c2 -> 0`` makes ``max_u g -> a + |c1|``.  Where c2 is healthy the roots are
+    # exact, and the argmax must still pass a stationarity test against the axis's own
+    # derivative bound before it is believed.
+    m1u = jnp.abs(c1) + 2.0 * jnp.abs(c2)
     u = u_stationary_roots(c1, c2)
-    return jnp.log(2.0 * jnp.pi) + jnp.max(_g_u(a, c1, c2, u, 0))
+    gv = _g_u(a, c1, c2, u, 0)
+    i = jnp.argmax(gv)
+    resid = jnp.abs(_g_u(a, c1, c2, u[i], 1))
+    bad = ((jnp.abs(c2) <= 1e-8 * jnp.abs(c1))
+           | (resid > 1e-6 * jnp.maximum(m1u, 1e-300)))
+    gmax = jnp.where(bad, a + jnp.abs(c1) + jnp.abs(c2), gv[i])
+    return jnp.log(2.0 * jnp.pi) + gmax
 
 
 def required_bound_grid(amplitude, tol_nats=5.0, m_max=2):
@@ -915,6 +939,18 @@ def phi_local_lnI(C, n_seed=PHI_SEEDS, w_sigma=PHI_WINDOW_SIGMA,
     s = jnp.linspace(0.0, 1.0, n_nodes)
     pp = (seg_lo[:, None] + width[:, None] * s[None, :]).ravel()
     Fv, _, _, nfb_v, nrisk_v, nstrict_v = jax.vmap(prof)(jnp.mod(pp, 2.0 * jnp.pi))
+    # EMPTY SLOTS MUST NOT VOTE.  A slot with no region is neutralized for the VALUE by
+    # zeroing its position and masking its weight, but its nodes are still evaluated -- at
+    # the artificial point phi = 0 -- and their fallback counts were summed with the rest.
+    # A risky cell there could decline a row whose every contributing node was adequate,
+    # and the reported counters were contaminated the same way.  Measured: 5 risky at
+    # n_slots=2 rising to 176 at n_slots=8 while the region count only went 2 -> 4, so the
+    # growth was entirely empty slots and raising the allocation alone could flip a row.
+    # Found independently by this session's review and by external review.
+    live_pt = jnp.repeat(width > 0, n_nodes)
+    nfb_v = jnp.where(live_pt, nfb_v, 0)
+    nrisk_v = jnp.where(live_pt, nrisk_v, 0)
+    nstrict_v = jnp.where(live_pt, nstrict_v, 0)
     wq = jnp.full(n_nodes, 1.0 / (n_nodes - 1)).at[0].mul(0.5).at[-1].mul(0.5)
     lw = (jnp.log(jnp.where(width > 0, width, 1e-300))[:, None]
           + jnp.log(wq)[None, :]).ravel()
@@ -1159,6 +1195,12 @@ def phi_local_lnI(C, n_seed=PHI_SEEDS, w_sigma=PHI_WINDOW_SIGMA,
             "area_outside": area_outside,
             "sup_outside": sup_outside,
             "n_phi_regions": (width > 0).sum(),
+            # the cover itself, so the outside bound can be tested against the set it is a
+            # bound ON.  A soundness check that compares it to the GLOBAL sup of h instead
+            # reads ~w_sigma^2/2 = 72 nats low and condemns a correct bound -- which is
+            # exactly what happened here before these were exported.
+            "seg_lo": seg_lo,
+            "seg_width": width,
             # INTERNAL accuracy, which the certificate above CANNOT see: it bounds the
             # mass left OUTSIDE the regions and says nothing about the quadrature inside
             # one.  Reported separately and never folded into `margin`.
