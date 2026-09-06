@@ -302,6 +302,14 @@ class MCSampler(SamplerOutputMixin, object):
         # parameter -> cdf^{-1} function object
         # params for left and right limits
         self.llim, self.rlim = {}, {}
+        # parameter -> PRIOR density callable, mirrored from member 0 in add_parameter.  The
+        # portfolio delegates prior_pdf to its members and never kept a copy, so any consumer
+        # that asks the sampler what it integrated against -- the .dgrid marginal-distance-grid
+        # exporter is the one that bites, `sampler.prior_pdf["distance"]` -- died with
+        # AttributeError AFTER a completed portfolio integration.  Member 0 is the designated
+        # full-support member and interval narrowing leaves prior callables untouched
+        # (see restrict_member_range), so member 0's priors ARE the portfolio's priors.
+        self.prior_pdf = {}
 
 
         self.n_chunk = n_chunk
@@ -393,6 +401,7 @@ class MCSampler(SamplerOutputMixin, object):
             if indx == 0:
                 self.llim.update( member.llim)
                 self.rlim.update(member.rlim)
+                self.prior_pdf.update(member.prior_pdf)
             # set master list of adaptive parameters
             self.adaptive = member.adaptive  # top level list of adaptive coordinates
 

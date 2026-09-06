@@ -101,6 +101,42 @@ rosDebugMessages = True
 # integration domain.  Override at module level for controlled experiments.
 HIST_FLOOR_LEVEL_MIN = 1e-2
 
+def fold_zero_weight_draws(existingLogAggregate, n_zero, xpy_special=special, xpy=numpy):
+    """Add n_zero draws of weight EXACTLY zero to a running log-scale aggregate.
+
+    update_log() cannot be used for this: a batch of zero weights has reference scale
+    log_ref = -inf, and the first thing update_log does with it is  values - log_ref, i.e.
+    -inf - (-inf) = nan, which then poisons the mean, the second moment and every chunk
+    that follows.  Zero-weight draws still have to be COUNTED -- they are draws, and lnZ is
+    the mean over all of them -- so this applies the exact limit of update_log's own algebra
+    for a batch of zeros:
+        n    -> nA + nB
+        mean -> mean_A * nA/(nA+nB)
+        M2   -> M2_A + mean_A^2 * nA*nB/(nA+nB)     (the zeros contribute no M2 of their own)
+    with the reference scale unchanged, since max(log_refA, -inf) = log_refA.
+
+    Aggregate entries follow statutils' convention: host (numpy) values in the scipy
+    fallback mode, device values when a device logsumexp is supplied.
+    """
+    logsumexp = xpy_special.logsumexp
+    xpy_here = xpy
+    if xpy_special is special and xpy != numpy:
+        # fallback mode: init_log/update_log have already brought the aggregate to the host
+        xpy_here = numpy
+
+    (nA, log_xAmean, log_M2A, log_refA) = existingLogAggregate
+    nB = int(n_zero)
+    if nB <= 0:
+        return existingLogAggregate
+
+    log_nA = xpy_here.log(nA); log_nB = xpy_here.log(nB); log_nAB = xpy_here.log(nA+nB)
+    log_xNewMean = log_xAmean + log_nA - log_nAB
+    # delta = mean_A - 0, so the cross term is  mean_A^2 * nA*nB/(nA+nB)
+    log_delta_term = 2*log_xAmean + log_nA + log_nB - log_nAB
+    log_M2New = logsumexp(xpy_here.array([log_M2A, log_delta_term]))
+
+    return (nA+nB, log_xNewMean, log_M2New, log_refA)
+
 class NanOrInf(Exception):
     def __init__(self, value):
         self.value = value
@@ -692,9 +728,19 @@ class MCSampler(SamplerOutputMixin, object):
         current_log_aggregate = None
         eff_samp = 0  # ratio of max weight to sum of weights
         maxlnL = -np.inf  # max lnL
-        maxval=0   # max weight
+        # LOG-scale running max (of log_integrand), so its identity element is -inf, the same
+        # one integrate() -- the linear sibling -- uses.  The old initializer 0 was a
+        # LINEAR-weight idiom: on a log scale it asserts max w >= 1, so eff_samp = sum(w)/max(w)
+        # came back floored by 1/max w whenever the largest weight was below 1.  A constant log
+        # integrand of -5 then reported n*exp(-5) instead of n and kept drawing to nmax.  That
+        # is reachable on any run whose log weights are shifted down, --manual-logarithm-offset
+        # among them, so eff_samp must not depend on where the integrand's offset happens to sit.
+        maxval=-np.inf   # max log weight
         outvals=None  # define in top level scope
         self.ntotal = 0
+        # draws of weight exactly zero seen BEFORE any aggregate exists: they cannot start one
+        # (see fold_zero_weight_draws), but they are draws and must be counted
+        n_zero_weight_pending = 0
         # per-chunk lnZ record: each chunk used a (different) adapted proposal, so the
         # between-chunk scatter is an error floor the pooled variance cannot see
         lnZ_chunk_list = []; n_chunk_list = []
@@ -779,35 +825,85 @@ class MCSampler(SamplerOutputMixin, object):
                     self._rvs["log_joint_prior"] = self.xpy.log(joint_p_prior)
                     self._rvs["log_joint_s_prior"] = self.xpy.log(joint_p_s)
                     self._rvs["log_weights"] = log_weights
-            # maxlnL
-            maxlnL_now = identity_convert(xpy.max(lnL))
-            maxlnL = identity_convert(maxlnL)
+            # maxlnL.  float(), for the same reason as maxval below: under cupy these
+            # converters return 0-d HOST arrays, and on the FIRST chunk the isinf branch
+            # assigns one straight to maxlnL -- which then meets a device value in
+            # `outvals[0]-maxlnL` (the verbose per-iteration line) and in
+            # `self._rvs["log_integrand"] > maxlnL - deltalnL` (the deltalnL cut), both of
+            # which cupy refuses.  The else branch was already safe only by accident:
+            # np.max over a list returns a numpy SCALAR, which cupy does accept.
+            maxlnL_now = float(identity_convert(xpy.max(lnL)))
+            maxlnL = float(identity_convert(maxlnL))
             if np.isinf(maxlnL ):
               maxlnL = maxlnL_now
             else:
-              maxlnL = np.max([maxlnL, maxlnL_now,-100])
+              maxlnL = float(np.max([maxlnL, maxlnL_now,-100]))
 
 
-            # n, Mean, error tracked by statutils structure
-            if current_log_aggregate is None:
+            # n, Mean, error tracked by statutils structure.
+            # A chunk in which EVERY draw has zero weight (log_integrand all -inf) must not go
+            # through init_log/update_log: both start from  values - max(values) = -inf - (-inf),
+            # so one such chunk turns the running mean, the running M2 and hence every later
+            # chunk into nan -- a permanently poisoned estimator (and, through the adaptation
+            # weights below, a poisoned proposal), not a slow start.  Those draws are still
+            # draws, so they are folded in with their exact zero weight instead: they raise n
+            # and dilute the mean without contributing to the sum.
+            maxval_chunk = float(identity_convert(self.xpy.max(log_integrand)))
+            n_this_chunk = len(log_integrand)
+            if maxval_chunk == -np.inf:
+              if current_log_aggregate is None:
+                # nothing with nonzero weight has been seen yet: there is no aggregate to
+                # dilute, so carry these draws until the first chunk that can start one
+                n_zero_weight_pending += n_this_chunk
+              else:
+                current_log_aggregate = fold_zero_weight_draws(current_log_aggregate, n_this_chunk,xpy=xpy,xpy_special=xpy_special_default)
+            elif current_log_aggregate is None:
               current_log_aggregate = init_log(log_integrand,xpy=xpy,special=xpy_special_default)
+              if n_zero_weight_pending > 0:
+                current_log_aggregate = fold_zero_weight_draws(current_log_aggregate, n_zero_weight_pending,xpy=xpy,xpy_special=xpy_special_default)
+                n_zero_weight_pending = 0
             else:
               current_log_aggregate = update_log(current_log_aggregate, log_integrand,xpy=xpy,special=xpy_special_default)
-            outvals = finalize_log(current_log_aggregate,xpy=xpy)
+            outvals = None
+            if current_log_aggregate is not None:
+              outvals = finalize_log(current_log_aggregate,xpy=xpy)
             # per-chunk lnZ for the between-chunk error floor (init_log returns
-            # (n, log_mean, log_M2, log_ref) so lnZ_chunk = log_mean + log_ref)
-            try:
-              _chunk_agg = init_log(log_integrand,xpy=xpy,special=xpy_special_default)
-              lnZ_chunk_list.append(float(identity_convert(_chunk_agg[1])) + float(identity_convert(_chunk_agg[3])))
-              n_chunk_list.append(int(_chunk_agg[0]))
-            except Exception:
-              pass
-            self.ntotal = current_log_aggregate[0]
-            # effective samples
-            maxval = max(maxval, identity_convert(self.xpy.max(log_integrand) ))
+            # (n, log_mean, log_M2, log_ref) so lnZ_chunk = log_mean + log_ref).
+            # An all-zero-weight chunk has lnZ_chunk = -inf exactly; record it as such
+            # (block_scatter_sigma drops non-finite chunks) rather than asking init_log.
+            if maxval_chunk == -np.inf:
+              lnZ_chunk_list.append(-np.inf)
+              n_chunk_list.append(n_this_chunk)
+            else:
+              try:
+                _chunk_agg = init_log(log_integrand,xpy=xpy,special=xpy_special_default)
+                lnZ_chunk_list.append(float(identity_convert(_chunk_agg[1])) + float(identity_convert(_chunk_agg[3])))
+                n_chunk_list.append(int(_chunk_agg[0]))
+              except Exception:
+                pass
+            # ntotal counts EVERY draw, including the zero-weight ones still waiting for an
+            # aggregate to be folded into -- otherwise the nmax test below never advances and
+            # a run whose weights are all zero loops forever.
+            self.ntotal = current_log_aggregate[0] if current_log_aggregate is not None else n_zero_weight_pending
+            # effective samples.  maxval_chunk above is a python float, via float() and not
+            # just identity_convert(): under cupy, identity_convert is cupy.asnumpy and
+            # self.xpy.max returns a 0-d DEVICE array, so asnumpy hands back a 0-d
+            # numpy.ndarray.  Python's max() would then make maxval a HOST ARRAY, and the
+            # eff_samp line below mixes it into a device expression -- which cupy refuses
+            # ("TypeError: Unsupported type <class 'numpy.ndarray'>"), taking down every
+            # --internal-use-lnL run on the default adaptive_cartesian_gpu sampler.
+            # A python float is accepted by both backends.
+            maxval = max(maxval, maxval_chunk)
 
             # sum of weights is the integral * the number of points
-            eff_samp = xpy.exp(  outvals[0]+np.log(self.ntotal) - maxval)   # integral value minus floating point, which is maximum
+            if current_log_aggregate is None or maxval == -np.inf:
+              # no draw has a nonzero weight yet (every sample zero-prior or zero-likelihood):
+              # report no effective samples and draw again, as the 0 initializer did by accident,
+              # rather than form -inf - (-inf) = nan.  Only this one case is intercepted, so a
+              # genuine nan still reaches the guard below.
+              eff_samp = 0
+            else:
+              eff_samp = xpy.exp(  outvals[0]+np.log(self.ntotal) - maxval)   # integral value minus floating point, which is maximum
 
 
             # Throw exception if we get infinity or nan
@@ -815,7 +911,10 @@ class MCSampler(SamplerOutputMixin, object):
                 raise NanOrInf("Effective samples = nan")
 
             if bShowEvaluationLog:
-                print(" :",  self.ntotal, eff_samp, numpy.sqrt(2*maxlnL), numpy.sqrt(2*outvals[0]), outvals[0]-maxlnL, np.exp(outvals[1]/2  - outvals[0]  - np.log(self.ntotal)/2 ))
+                if outvals is None:
+                    print(" :",  self.ntotal, eff_samp, " (no draw with nonzero weight yet)")
+                else:
+                    print(" :",  self.ntotal, eff_samp, numpy.sqrt(2*maxlnL), numpy.sqrt(2*outvals[0]), outvals[0]-maxlnL, np.exp(outvals[1]/2  - outvals[0]  - np.log(self.ntotal)/2 ))
 
             if (not convergence_tests) and self.ntotal >= nmax and neff != float("inf"):
                 print("WARNING: User requested maximum number of samples reached... bailing.", file=sys.stderr)
@@ -855,7 +954,19 @@ class MCSampler(SamplerOutputMixin, object):
             # proposal's sampling noise, a multiplicative random walk that collapses the
             # proposal onto a comb of surviving bins.)
             weights_alt = self._rvs["log_weights"][-n_history:]
-            weights_alt = self.xpy.exp(weights_alt - self.xpy.max(weights_alt))
+            # A zero-weight draw arrives here either as -inf or -- when tempering_exp is 0, so
+            # the product is 0*(-inf) -- as nan.  Both mean the same thing, a draw that must not
+            # enter the histogram, so map them to -inf and let the shift below send them to
+            # weight 0.  Without this a single such draw makes the WHOLE histogram nan and
+            # destroys the proposal for the rest of the run.
+            weights_alt = self.xpy.where(self.xpy.isfinite(weights_alt), weights_alt, -np.inf)
+            # float(), for the same host/device reason as maxval above.  If NOTHING in the
+            # adaptation history has nonzero weight the shift is -inf - (-inf) = nan, so keep
+            # the current proposal and draw again rather than adapt to noise.
+            max_log_weight = float(identity_convert(self.xpy.max(weights_alt)))
+            if max_log_weight == -np.inf:
+                continue
+            weights_alt = self.xpy.exp(weights_alt - max_log_weight)
             weights_alt = weights_alt/(weights_alt.sum())
             if weights_alt.dtype == RiftFloat:
               weights_alt = weights_alt.astype(numpy.float64,copy=False)

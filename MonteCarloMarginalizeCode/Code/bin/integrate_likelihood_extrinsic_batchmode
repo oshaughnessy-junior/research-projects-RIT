@@ -2201,6 +2201,20 @@ pinned_params.update({
 })
 if opts.sampler_method == "adaptive_cartesian_gpu":
   pinned_params.update({"save_no_samples":True})   # do not exhaust GPU memory with MC samples!
+# An export request has to carry its OWN retention.  The .dgrid exporter reads the sampler's
+# importance-weight record ('integrand'/'log_integrand' plus the joint priors) and the retained
+# distance coordinate, but retention is otherwise decided by --save-samples and -- in mcsampler --
+# turned on as a SIDE EFFECT of adaptation (save_intg is forced when n_adapt>0 and tempering_exp>0).
+# So `--sampler-method adaptive_cartesian --no-adapt --export-marginal-distance-grid` without
+# --save-samples reached the exporter with coordinates but no weights, and the requested grid died
+# in ln_weights_for_posterior instead of being written.  Mirrors the exporter's own gate (see
+# 'Per-intrinsic likelihood-vs-distance grid' below): when that gate cannot fire there is nothing to
+# retain for, and the memory-saving defaults stand untouched.
+export_dgrid_requested = bool(opts.output_file) and bool(opts.export_marginal_distance_grid) and not(opts.distance_marginalization)
+if export_dgrid_requested:
+  # save_no_samples has to go with it: it suppresses the per-draw coordinate cache in
+  # mcsamplerGPU.draw, so the export would fail on the distance column instead of on the weights.
+  pinned_params.update({"save_intg":True,"save_no_samples":False})
 # GMM-specific argument blocks must run for a STANDALONE GMM *or* for a portfolio carrying a GMM
 # member (whose config still has to be forwarded).  This used to be achieved by clobbering
 # opts.sampler_method='GMM' during portfolio setup, which broke every downstream 'portfolio' test;
@@ -4259,7 +4273,11 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
     # if exactly zero likelihood function
     like_to_integrate = likelihood_function
     if opts.zero_likelihood:
-              if opts.internal_use_lnL:
+              # Same predicate question as log_res below: the stand-in must match the convention
+              # the INTEGRAND uses (ln L = 0 versus L = 1), which is return_lnL.  Under
+              # `--internal-use-lnL --sampler-method adaptive_cartesian` the option is True while
+              # the integrand is linear, so this handed a linear sampler a log-convention zero.
+              if return_lnL:
                    like_to_integrate = zero_like
               else:
                    like_to_integrate = unit_like
@@ -4546,7 +4564,16 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
     if not(res): # no resut
       raise ValueError(" No integral result returned")
 
-    if not(opts.internal_use_lnL):
+    # WHICH CONVENTION THE SAMPLER RETURNED -- `return_lnL`, not opts.internal_use_lnL.  This is
+    # the same distinction the rvs_integrand_is_lnL derivation above spells out, applied to the
+    # RETURN value: --internal-use-lnL is accepted for every method in ok_lnL_methods, but
+    # `adaptive_cartesian` (mcsampler.py) has no use_lnL handling at all, so the driver never
+    # hands it use_lnL and it returns a LINEAR integral no matter what the option says.  Reading
+    # the option here skipped the logarithm on exactly that pairing and wrote the linear integral
+    # into the lnL column: the ILE-GPU-Paper demo reported lnL = 1.3e29 (= e^67) with sigma inf,
+    # and the .dgrid built from it inherited that.  return_lnL and opts.internal_use_lnL agree for
+    # GMM / adaptive_cartesian_gpu / AV / portfolio, so this changes nothing else.
+    if not(return_lnL):
       log_res = numpy.log(res)
       sqrt_var_over_res =  numpy.sqrt(var)/res
     else:
@@ -4692,7 +4719,7 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
             if (_r2 is None) or (_r2[0] is None):
                 continue
             _res2, _var2, _neff2, _dd2 = _r2
-            if not(opts.internal_use_lnL):
+            if not(return_lnL):   # the sampler's convention, not the option -- see the main pass
                 _lr2 = numpy.log(_res2); _sig2 = numpy.sqrt(_var2)/_res2
             else:
                 _lr2 = _res2; _sig2 = numpy.exp(_var2/2 - _lr2)
@@ -5085,7 +5112,13 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
         # Per-intrinsic likelihood-vs-distance grid. Pure extrinsic-marginalized
         # likelihood as a function of d_L: divides out the distance sampling
         # prior so downstream can re-marginalize with any prior of choice.
-        if opts.output_file and opts.export_marginal_distance_grid and not(opts.distance_marginalization) and opts.internal_use_lnL:
+        # NOT gated on --internal-use-lnL.  That flag decided nothing here -- every quantity
+        # this block reads is already convention-aware (ln_weights_for_posterior is passed
+        # rvs_integrand_is_lnL, and log_res is now derived through return_lnL) -- it only made
+        # --export-marginal-distance-grid silently do nothing unless a SECOND, unrelated flag
+        # was also set, which is how a .dgrid request could be honoured on AV and dropped on
+        # the identical command line with --sampler-method GMM.
+        if opts.output_file and opts.export_marginal_distance_grid and not(opts.distance_marginalization):
           from RIFT.misc.distance_grid import build_distance_grid, save_distance_grid
           fname_output_dgrid = opts.output_file +"_"+str(indx_event)+"_" + ".dgrid"
           dL = np.array(sampler._rvs["distance"])
@@ -5760,9 +5793,13 @@ for indx in numpy.arange(len(P_list)):
       params_adapt = sampler.adaptive
       params_adapt  = list(set(params_adapt) - set(['right_ascension','declination']))
       sampler.adaptive = params_adapt
-      # Disable saving of the integrand -- saves on memory and will reduce speed. 
+      # Disable saving of the integrand -- saves on memory and will reduce speed.
       # Note this needs to be done in a few places
-      pinned_params.update({"force_no_adapt":True,"save_intg":False, "igrand_threshold_deltalnL":20})  # massively reduce memory usage in logic branch, don't save all. Highly redundant sequence to self-document all related logic branches
+      # Skipped when a .dgrid was requested: this fires after an event, so it would drop the
+      # weight record out from under EVERY LATER event's exporter (force_no_adapt suppresses the
+      # record in mcsampler even when save_intg is set).  Sky adaptation is still switched off above.
+      if not export_dgrid_requested:
+        pinned_params.update({"force_no_adapt":True,"save_intg":False, "igrand_threshold_deltalnL":20})  # massively reduce memory usage in logic branch, don't save all. Highly redundant sequence to self-document all related logic branches
  except Exception as exception_failure:
   print( "  ===> FAILED ANALYSIS <==== ")
   print( exception_failure)
