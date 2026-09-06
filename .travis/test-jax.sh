@@ -320,7 +320,7 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         honest phase-marginalized sky/psi export,
 #                                         K=14/K=88 independent guarded references,
 #                                         and executable baseline/banded support refusal.
-#   test_all_axis_peaklocal.py          20  fail-closed four-axis peak-local prototype:
+#   test_all_axis_peaklocal.py          21  fail-closed four-axis peak-local prototype:
 #                                         U,V-guided time ranking and algebraic angular
 #                                         starts, JAX refinement, fixed-shape multimode
 #                                         quadrature, exact selected-time reconstruction,
@@ -329,7 +329,8 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         jit/grad/hessian/vmap transform compatibility,
 #                                         two-guard primitive support/convergence,
 #                                         harmonic-order U,V/Q starts, and the
-#                                         empirical enrichment/fallback gate.
+#                                         empirical enrichment/exact-reserve
+#                                         disposition gate.
 
 FILES=(
   "${JAXDIR}/test_jax_time_quadrature.py"
@@ -522,9 +523,9 @@ fi
 # it counted the one test this job deselects.  That was a one-off setup bug, not a property
 # of the environment, and subtracting for it would under-promise by one -- which is the
 # failure direction this whole comment exists to warn about, because a low floor PASSES.
-# The all-axis peak-local prototype adds 20 tests.  Its focused collection reports
-# exactly 20, so the gate floor rises from the merged 432 to 452.
-EXPECTED_TESTS=452
+# The all-axis peak-local prototype adds 21 tests.  Its focused collection reports
+# exactly 21, so the gate floor rises from the merged 432 to 453.
+EXPECTED_TESTS=453
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"

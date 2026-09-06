@@ -59,6 +59,7 @@ __all__ = [
     "make_all_axis_mode_plan",
     "all_axis_peak_local_marginalize",
     "empirical_enrichment_marginalize",
+    "empirical_enrichment_with_exact_reserve",
 ]
 
 
@@ -1250,3 +1251,143 @@ def empirical_enrichment_marginalize(
             enriched["workspace_bytes_peak_bound_hi"]),
     }
     return enriched_value, accepted, ledger
+
+
+def empirical_enrichment_with_exact_reserve(
+        C_A_t, C_B, base_plan, enriched_plan, x_min, x_max, *,
+        reserve_x_grid, reserve_log_weights, time_weights,
+        reserve_amp_sizing, reserve_m_max=None,
+        reserve_dense_chunk=8, reserve_grid_block=32,
+        base_order=13, base_check_order=19,
+        enriched_order=19, enriched_check_order=25,
+        convergence_tol_nats=1.0e-3, time_guard=0,
+        time_guard_tol_nats=1.0e-3, local_log_normalization=0.0,
+        reserve_log_offset=0.0, node_concentration=1.0,
+        mode_match_tol=(0.25, 1.0e-4, 1.0e-4, 1.0e-5)):
+    """Select an accepted local value or execute the exact table reserve.
+
+    This is the first operational fixed-point composition seam.  Planning is
+    intentionally still host-side: the caller supplies two immutable mode
+    plans, while this device function evaluates the empirical gate and uses
+    :func:`anglemarg.coefficient_table_distphipsimarg_exact` only on a decline.
+    Thus accepted high-SNR rows pay fixed local work per retained mode; broad,
+    unresolved, capacity-limited, or otherwise unhealthy rows retain the sample
+    through the established dense/exact coefficient reserve.
+
+    Measures remain explicit.  ``reserve_log_weights`` owns the fixed-grid
+    distance quadrature measure and ``time_weights`` owns the target time
+    integral.  If ``JAX_ILE_DISTMARG_GH`` is active, the established reserve
+    instead reads the support from ``reserve_x_grid`` and uses its normalized
+    volumetric ``x**-4`` measure.  The
+    local branch owns a continuous ``x**-4 dx dtime_sample dphi du`` integral,
+    so ``local_log_normalization`` must convert that measure to the reserve's
+    normalization.  ``reserve_log_offset`` is a separately recorded constant;
+    neither is inferred from a distance-prior name.  This prevents an
+    unnormalized prototype value from silently replacing a production result.
+
+    Ledger field ``accepted_local`` is the empirical local disposition, while
+    the returned ``usable`` describes the selected result after reserve
+    execution.  A local
+    decline is never a waveform failure.  A nonfinite reserve is reported as an
+    integration failure and remains unusable; it is not relabeled as a missed
+    waveform evaluation.
+    """
+    from . import anglemarg as _anglemarg
+    from .core import _time_marginalize
+
+    C_A_t = jnp.asarray(C_A_t, dtype=jnp.complex128)
+    C_B = jnp.asarray(C_B, dtype=jnp.complex128)
+    time_guard = int(time_guard)
+    n_target = C_A_t.shape[-1] - 2 * time_guard
+    time_weights = jnp.asarray(time_weights, dtype=jnp.float64)
+    if time_weights.ndim != 1 or time_weights.shape[0] != n_target:
+        raise ValueError("time_weights must match the unguarded target window")
+    if reserve_m_max is None:
+        reserve_m_max = int(C_A_t.shape[0] - 1)
+    reserve_m_max = int(reserve_m_max)
+
+    local_value, accepted_local, local_ledger = empirical_enrichment_marginalize(
+        C_A_t, C_B, base_plan, enriched_plan, x_min, x_max,
+        base_order=int(base_order), base_check_order=int(base_check_order),
+        enriched_order=int(enriched_order),
+        enriched_check_order=int(enriched_check_order),
+        convergence_tol_nats=float(convergence_tol_nats),
+        time_guard=time_guard,
+        time_guard_tol_nats=float(time_guard_tol_nats),
+        log_normalization=float(local_log_normalization),
+        node_concentration=float(node_concentration),
+        mode_match_tol=mode_match_tol)
+
+    if time_guard:
+        target_table = C_A_t[..., time_guard:-time_guard]
+    else:
+        target_table = C_A_t
+
+    def _accepted(_):
+        return local_value, jnp.asarray(jnp.nan, dtype=jnp.float64)
+
+    def _reserve(_):
+        lnL_t = _anglemarg.coefficient_table_distphipsimarg_exact(
+            target_table, C_B, reserve_x_grid, reserve_log_weights,
+            amp_sizing=float(reserve_amp_sizing), m_max=reserve_m_max,
+            dense_chunk=int(reserve_dense_chunk),
+            grid_block=int(reserve_grid_block))
+        reserve_value = (_time_marginalize(lnL_t, time_weights)[0]
+                         + float(reserve_log_offset))
+        return reserve_value, reserve_value
+
+    selected_value, reserve_value = jax.lax.cond(
+        accepted_local, _accepted, _reserve, operand=None)
+    reserve_executed = ~accepted_local
+    reserve_finite = jnp.isfinite(reserve_value)
+    reserve_failed = reserve_executed & (~reserve_finite)
+    usable = accepted_local | (reserve_executed & reserve_finite)
+    nphi_reserve, nu_reserve = _anglemarg._dense_grid_sizes(
+        float(reserve_amp_sizing), m_max=reserve_m_max)
+    reserve_gh_nodes = int(_anglemarg._core._DISTMARG_GH_N)
+    reserve_input_distance_points = int(jnp.asarray(reserve_x_grid).size)
+    ledger = dict(local_ledger)
+    ledger.update({
+        "local_fallback_required": local_ledger["fallback_required"],
+        "local_reconciles": local_ledger["reconciles"],
+    })
+    ledger.update({
+        "accepted": usable,
+        "fallback_required": reserve_failed,
+        "reconciles": (
+            usable.astype(jnp.int32)
+            + reserve_failed.astype(jnp.int32)) == 1,
+        "accepted_local": accepted_local,
+        "selected_value_is_local": accepted_local,
+        "selected_value_is_exact_reserve": reserve_executed & reserve_finite,
+        "reserve_executed": reserve_executed,
+        "reserve_value": reserve_value,
+        "reserve_finite": reserve_finite,
+        "reserve_failed": reserve_failed,
+        "usable": usable,
+        "sample_retained_after_local_decline": (
+            reserve_executed & reserve_finite),
+        "decline_is_waveform_failure": jnp.asarray(False),
+        "selected_nonfinite_is_integration_failure": reserve_failed,
+        "reserve_nphi": jnp.asarray(nphi_reserve),
+        "reserve_nu": jnp.asarray(nu_reserve),
+        "reserve_angle_points": jnp.asarray(nphi_reserve * nu_reserve),
+        "reserve_distance_support_points": jnp.asarray(
+            reserve_input_distance_points),
+        "reserve_distance_points": jnp.asarray(
+            reserve_gh_nodes if reserve_gh_nodes
+            else reserve_input_distance_points),
+        "reserve_uses_adaptive_distance": jnp.asarray(
+            reserve_gh_nodes > 0),
+        "reserve_distance_gh_nodes": jnp.asarray(reserve_gh_nodes),
+        "reserve_time_points": jnp.asarray(n_target),
+        "reserve_dense_chunk": jnp.asarray(int(reserve_dense_chunk)),
+        "reserve_grid_block": jnp.asarray(int(reserve_grid_block)),
+        "local_log_normalization": jnp.asarray(
+            float(local_log_normalization)),
+        "reserve_log_offset": jnp.asarray(float(reserve_log_offset)),
+        "disposition_reconciles": (
+            accepted_local.astype(jnp.int32)
+            + reserve_executed.astype(jnp.int32)) == 1,
+    })
+    return selected_value, usable, ledger

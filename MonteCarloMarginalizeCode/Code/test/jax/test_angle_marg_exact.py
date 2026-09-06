@@ -202,6 +202,31 @@ def test_time_marginalization_destroys_the_invariant():
     assert C[3:].max() > 1e-9 * C.max()
 
 
+def test_exact_reserve_reuses_batched_and_collapsed_coefficient_tables():
+    """Peak-local declines can reach the exact reserve without recomputing Q/U/V."""
+    data = make_synth(scale=0.1, npts=9)
+    x_grid, log_w = _dist_grid(data, n=16)
+    C_A, C_B, meta = AM.angle_coefficient_tables(
+        data, jnp.asarray(RA), jnp.asarray(DEC), jnp.asarray(INCL), INTERP)
+    assert np.max(np.abs(np.asarray(C_B[..., 0, :])
+                         - np.asarray(C_B[..., 0, :1]))) < 1.0e-12
+
+    from_tables = AM.coefficient_table_distphipsimarg_exact(
+        C_A, C_B, x_grid, log_w, amp_sizing=30.0,
+        m_max=meta["m_max"], dense_chunk=8, grid_block=8)
+    collapsed = AM.coefficient_table_distphipsimarg_exact(
+        C_A[:, :, 0, :], C_B[:, :, 0, 0], x_grid, log_w,
+        amp_sizing=30.0, m_max=meta["m_max"],
+        dense_chunk=8, grid_block=8)
+    wrapped = AM.fused_log_likelihood_distphipsimarg_exact(
+        data, jnp.asarray(RA), jnp.asarray(DEC), jnp.asarray(INCL),
+        x_grid, log_w, interp=INTERP, amp_sizing=30.0,
+        dense_chunk=8, grid_block=8, return_lnLt=True)
+
+    np.testing.assert_allclose(from_tables, wrapped, rtol=0.0, atol=2.0e-12)
+    np.testing.assert_allclose(collapsed, from_tables, rtol=0.0, atol=2.0e-12)
+
+
 # ---------------------------------------------------------------------------
 # 2. sample-grid sizing is derived and asserted, not settable
 # ---------------------------------------------------------------------------

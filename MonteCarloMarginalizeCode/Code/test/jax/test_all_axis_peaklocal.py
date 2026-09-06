@@ -337,6 +337,57 @@ def test_empirical_enrichment_accepts_without_claiming_global_proof():
     assert bool(capacity_ledger["reconciles"])
 
 
+def test_empirical_controller_executes_exact_reserve_on_local_decline():
+    C_A, C_B, constants = _problem(33)
+    C_A *= 0.1
+    x_min, x_max = 0.5, 2.0
+    centers = np.asarray([[
+        constants["span"] / 2.0, np.pi, np.pi,
+        0.5 * (x_min + x_max)]])
+    transforms = np.asarray([np.diag([
+        constants["span"] / 2.0, np.pi, np.pi,
+        0.5 * (x_max - x_min)])])
+    declined_plan = AAP.make_all_axis_mode_plan(
+        centers, max_modes=2, local_transforms=transforms,
+        local_radius=1.0, time_reconstruction_certified=True,
+        discovery_capacity_ok=False)
+
+    x_grid = np.linspace(x_min, x_max, 129)
+    dx = np.empty_like(x_grid)
+    dx[1:-1] = 0.5 * (x_grid[2:] - x_grid[:-2])
+    dx[0] = x_grid[1] - x_grid[0]
+    dx[-1] = x_grid[-1] - x_grid[-2]
+    log_w = np.log(dx * x_grid ** -4)
+    time_weights = np.ones(C_A.shape[-1])
+    selected, usable, ledger = AAP.empirical_enrichment_with_exact_reserve(
+        C_A, C_B, declined_plan, declined_plan, x_min, x_max,
+        reserve_x_grid=x_grid, reserve_log_weights=log_w,
+        time_weights=time_weights, reserve_amp_sizing=30.0,
+        reserve_dense_chunk=8, reserve_grid_block=16)
+
+    lnL_t = AM.coefficient_table_distphipsimarg_exact(
+        C_A, C_B, x_grid, log_w, amp_sizing=30.0,
+        dense_chunk=8, grid_block=16)
+    m = np.max(np.asarray(lnL_t)[0])
+    expected = m + np.log(np.sum(
+        time_weights * np.exp(np.asarray(lnL_t)[0] - m)))
+    assert float(selected) == pytest.approx(expected, abs=2.0e-12)
+    assert bool(usable)
+    assert not bool(ledger["accepted_local"])
+    assert bool(ledger["decline_capacity"])
+    assert bool(ledger["reserve_executed"])
+    assert bool(ledger["reserve_finite"])
+    assert bool(ledger["selected_value_is_exact_reserve"])
+    assert bool(ledger["sample_retained_after_local_decline"])
+    assert not bool(ledger["decline_is_waveform_failure"])
+    assert bool(ledger["local_fallback_required"])
+    assert not bool(ledger["fallback_required"])
+    assert bool(ledger["accepted"])
+    assert bool(ledger["reconciles"])
+    assert bool(ledger["disposition_reconciles"])
+    assert int(ledger["reserve_distance_points"]) == x_grid.size
+
+
 def test_missing_completeness_declines_to_reserve_not_waveform_failure():
     C_A, C_B, constants = _problem(33)
     centers, hessian = _joint_peak(constants)
