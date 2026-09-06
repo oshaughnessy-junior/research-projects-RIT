@@ -293,6 +293,14 @@
       "decision": "PORT",
       "reason": "ANSWERED (RO 2026-08-16): LISA and LIGO are never overlapping use cases, so follow the convention already in this driver, document it in the help string, and DO NOT rename the options. VERIFIED that convention is ECLIPTIC: the sampled right_ascension/declination columns flow to P.phi/P.theta and then to lisa_sky_lamda/lisa_sky_beta, i.e. ecliptic longitude/latitude, under the historical key names. So --limit-right-ascension bounds lambda and --limit-declination bounds beta; say exactly that in the help text. Port the post-PR#58 form including the cos(iota)/cos(dec) endpoint swap under the cosine samplers."
     },
+    "OPTION:--log-noise-evidence-only": {
+      "decision": "NA",
+      "reason": "Writes the fixed-PSD Gaussian noise likelihood from the ground-based detector data_dict/psd_dict and ComplexIP conditioning path. The LISA driver uses a different response and likelihood construction, so this implementation cannot be ported by exposing the same options; a LISA-specific normalization mechanism would need its own convention and implementation."
+    },
+    "OPTION:--log-noise-evidence-output": {
+      "decision": "NA",
+      "reason": "Writes the fixed-PSD Gaussian noise likelihood from the ground-based detector data_dict/psd_dict and ComplexIP conditioning path. The LISA driver uses a different response and likelihood construction, so this implementation cannot be ported by exposing the same options; a LISA-specific normalization mechanism would need its own convention and implementation."
+    },
     "OPTION:--n-distance-slice-core": {
       "decision": "NA",
       "reason": "The .dslice export and its placement/tuning knobs. This is a data product for a downstream LIGO CIP distance workflow that the LISA pipeline does not run; there is no consumer. If a LISA distance workflow is ever built, note that the .dslice reweight core was the third Finding-2 site and must not be revived in its pre-#87 form."
