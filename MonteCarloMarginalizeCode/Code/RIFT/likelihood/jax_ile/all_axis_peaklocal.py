@@ -325,6 +325,7 @@ def _scalar_log_density(theta, coeff, frequency, offset, C_A_shape, C_B,
 
 
 def refine_all_axis_starts(C_A_t, C_B, starts, x_min, x_max, *,
+                           time_guard=0,
                            iterations=12, ridge=1.0e-8,
                            max_step=(2.0, 0.5, 0.5, 0.25)):
     """Refine four-axis starts with fixed-iteration JAX gradient/Hessian steps.
@@ -341,10 +342,15 @@ def refine_all_axis_starts(C_A_t, C_B, starts, x_min, x_max, *,
         raise ValueError("starts must have shape (N,4)")
     if int(iterations) < 1:
         raise ValueError("iterations must be positive")
+    time_guard = int(time_guard)
+    n_time = C_A_t.shape[-1] - 2 * time_guard
+    if time_guard < 0 or n_time < 2:
+        raise ValueError("time_guard must leave at least two integration samples")
     coeff, frequency, offset = _time_primitive_spectrum(
-        C_A_t.reshape((-1, C_A_t.shape[-1])), 0)
+        C_A_t.reshape((-1, C_A_t.shape[-1])), time_guard)
+    model_shape = C_A_t.shape[:-1] + (n_time,)
     fn = lambda th: _scalar_log_density(
-        th, coeff, frequency, offset, C_A_t.shape, C_B,
+        th, coeff, frequency, offset, model_shape, C_B,
         float(x_min), float(x_max))
     grad_fn = jax.grad(fn)
     hess_fn = jax.hessian(fn)
@@ -352,7 +358,7 @@ def refine_all_axis_starts(C_A_t, C_B, starts, x_min, x_max, *,
 
     def _project(th):
         return jnp.asarray([
-            jnp.clip(th[0], 0.0, C_A_t.shape[-1] - 1.0),
+            jnp.clip(th[0], 0.0, n_time - 1.0),
             jnp.mod(th[1], 2.0 * jnp.pi),
             jnp.mod(th[2], 2.0 * jnp.pi),
             jnp.clip(th[3], float(x_min), float(x_max)),
@@ -625,18 +631,21 @@ def _mode_integral(coeff, frequency, offset, C_A_shape, C_B, center,
                      jax.scipy.special.logsumexp(exponent + logw), -jnp.inf)
 
 
-def _evaluate_plan_at_order(C_A_t, C_B, plan, order, concentration):
+def _evaluate_plan_at_order(C_A_t, C_B, plan, order, concentration,
+                            time_guard):
     nodes, weights = _legendre_rule(order)
     log_weights = jnp.log(weights)
     coeff, frequency, offset = _time_primitive_spectrum(
-        C_A_t.reshape((-1, C_A_t.shape[-1])), 0)
+        C_A_t.reshape((-1, C_A_t.shape[-1])), int(time_guard))
+    model_shape = C_A_t.shape[:-1] + (
+        C_A_t.shape[-1] - 2 * int(time_guard),)
 
     def _step(total, args):
         center, transform, live = args
         def _live_mode(local_args):
             local_center, local_transform = local_args
             return _mode_integral(
-                coeff, frequency, offset, C_A_t.shape, C_B,
+                coeff, frequency, offset, model_shape, C_B,
                 local_center, local_transform, plan.local_radius, nodes,
                 log_weights, concentration)
 
@@ -675,7 +684,8 @@ def all_axis_peak_local_marginalize(
         C_A_t, C_B, plan, x_min, x_max, *, local_order=5,
         check_order=9, quadrature_tol_nats=1.0e-5,
         outside_tol_nats=-23.0, log_normalization=0.0,
-        node_concentration=1.0):
+        node_concentration=1.0, time_guard=0,
+        time_guard_tol_nats=1.0e-3):
     """Marginalize a padded multi-mode plan with explicit fail-closed ledger.
 
     ``C_A_t`` is the primitive data table ``(mmax+1,3,Ntime)`` and ``C_B`` is
@@ -685,6 +695,14 @@ def all_axis_peak_local_marginalize(
     certificate.  On any decline the caller must use the
     dense/exact reserve; ``fallback_required`` is provided to make that branch
     hard to omit accidentally.
+
+    With ``time_guard >= 2``, ``C_A_t`` contains support on both sides of the
+    target window.  The high-order local integral is repeated after trimming to
+    ``time_guard//2`` support and acceptance requires their difference to meet
+    ``time_guard_tol_nats``.  A guarded input must pass that comparison and
+    cannot be rescued by the plan's external warrant; an unguarded input needs
+    the external warrant.  This is an operational convergence validation, not
+    a rigorous interpolation-error bound, and the ledger labels it accordingly.
     """
     C_A_t = jnp.asarray(C_A_t, dtype=jnp.complex128)
     C_B = jnp.asarray(C_B, dtype=jnp.complex128)
@@ -697,13 +715,44 @@ def all_axis_peak_local_marginalize(
         raise ValueError("need 2 <= local_order < check_order")
     if float(node_concentration) < 0.0:
         raise ValueError("node_concentration must be non-negative")
+    time_guard = int(time_guard)
+    n_time = C_A_t.shape[-1] - 2 * time_guard
+    if time_guard < 0 or n_time < 2:
+        raise ValueError("time_guard must leave at least two integration samples")
+    if time_guard == 1:
+        raise ValueError("two-guard validation requires time_guard=0 or >=2")
+    if float(time_guard_tol_nats) <= 0.0:
+        raise ValueError("time_guard_tol_nats must be positive")
 
     (value_lo, eval_lo, bytes_lo, time_lo,
      time_terms_lo, angle_terms_lo) = _evaluate_plan_at_order(
-        C_A_t, C_B, plan, int(local_order), float(node_concentration))
+        C_A_t, C_B, plan, int(local_order), float(node_concentration),
+        time_guard)
     (value_hi, eval_hi, bytes_hi, time_hi,
      time_terms_hi, angle_terms_hi) = _evaluate_plan_at_order(
-        C_A_t, C_B, plan, int(check_order), float(node_concentration))
+        C_A_t, C_B, plan, int(check_order), float(node_concentration),
+        time_guard)
+    if time_guard:
+        inner_guard = time_guard // 2
+        trim = time_guard - inner_guard
+        inner_table = C_A_t[..., trim:-trim]
+        (value_guard_inner, guard_eval_hi, guard_bytes_hi, guard_time_hi,
+         guard_time_terms_hi, guard_angle_terms_hi) = _evaluate_plan_at_order(
+            inner_table, C_B, plan, int(check_order),
+            float(node_concentration), inner_guard)
+        guard_error = jnp.abs(value_hi - value_guard_inner)
+        guard_validated = (jnp.isfinite(value_guard_inner)
+                           & (guard_error <= float(time_guard_tol_nats)))
+    else:
+        inner_guard = 0
+        value_guard_inner = jnp.asarray(jnp.nan)
+        guard_error = jnp.asarray(jnp.inf)
+        guard_validated = jnp.asarray(False)
+        guard_eval_hi = jnp.asarray(0)
+        guard_bytes_hi = jnp.asarray(0)
+        guard_time_hi = jnp.asarray(0)
+        guard_time_terms_hi = jnp.asarray(0)
+        guard_angle_terms_hi = jnp.asarray(0)
     value_lo = value_lo + float(log_normalization)
     value_hi = value_hi + float(log_normalization)
     outside = plan.outside_log_bound + float(log_normalization)
@@ -712,7 +761,7 @@ def all_axis_peak_local_marginalize(
     widths = plan.half_widths
     inside_time_distance = (
         (centers[:, 0] - widths[:, 0] >= 0.0)
-        & (centers[:, 0] + widths[:, 0] <= C_A_t.shape[-1] - 1.0)
+        & (centers[:, 0] + widths[:, 0] <= n_time - 1.0)
         & (centers[:, 3] - widths[:, 3] >= float(x_min))
         & (centers[:, 3] + widths[:, 3] <= float(x_max)))
     angular_single_cover = jnp.all(widths[:, 1:3] <= jnp.pi, axis=1)
@@ -732,14 +781,17 @@ def all_axis_peak_local_marginalize(
     # warrant.  Requiring the algebraic root report as well would incorrectly
     # reject an otherwise bounded missed root.  Conversely, a perfect root
     # report cannot replace an integral bound outside the local regions.
-    cover_warranted = (plan.outside_bound_certified
-                       & plan.time_reconstruction_certified)
+    # A supplied guarded reconstruction owns its own convergence check.  Do not
+    # let a stale external warrant mask a failed outer/inner comparison.
+    time_warranted = (guard_validated if time_guard
+                       else plan.time_reconstruction_certified)
+    cover_warranted = plan.outside_bound_certified & time_warranted
 
     decline_nonfinite = ~finite
     decline_incomplete = finite & (~plan.outside_bound_certified)
     decline_time_reconstruction = (
         finite & plan.outside_bound_certified
-        & (~plan.time_reconstruction_certified))
+        & (~time_warranted))
     decline_overlap = finite & cover_warranted & (~plan.boxes_disjoint)
     decline_support = (finite & cover_warranted & plan.boxes_disjoint
                        & (~support_ok))
@@ -774,6 +826,14 @@ def all_axis_peak_local_marginalize(
         "enumeration_complete": plan.enumeration_complete,
         "outside_bound_certified": plan.outside_bound_certified,
         "time_reconstruction_certified": plan.time_reconstruction_certified,
+        "time_guard_validated": guard_validated,
+        "time_reconstruction_warranted": time_warranted,
+        "time_guard_error_certified": jnp.asarray(False),
+        "time_guard": jnp.asarray(time_guard),
+        "time_guard_inner": jnp.asarray(inner_guard),
+        "time_guard_error": guard_error,
+        "time_guard_tol_nats": jnp.asarray(float(time_guard_tol_nats)),
+        "time_guard_inner_value": value_guard_inner + float(log_normalization),
         "boxes_disjoint": plan.boxes_disjoint,
         "support_ok": support_ok,
         "quadrature_ok": quadrature_ok,
@@ -787,13 +847,23 @@ def all_axis_peak_local_marginalize(
         "n_mode_capacity": jnp.asarray(plan.live.size),
         "n_local_evaluations_lo": eval_lo,
         "n_local_evaluations_hi": eval_hi,
+        "n_guard_local_evaluations_hi": guard_eval_hi,
+        "n_total_local_evaluations_hi": eval_hi + guard_eval_hi,
         "n_selected_time_points_lo": time_lo,
         "n_selected_time_points_hi": time_hi,
+        "n_guard_selected_time_points_hi": guard_time_hi,
+        "n_total_selected_time_points_hi": time_hi + guard_time_hi,
         "n_time_frequency_terms_lo": time_terms_lo,
         "n_time_frequency_terms_hi": time_terms_hi,
+        "n_guard_time_frequency_terms_hi": guard_time_terms_hi,
+        "n_total_time_frequency_terms_hi": time_terms_hi + guard_time_terms_hi,
         "n_angle_harmonic_terms_lo": angle_terms_lo,
         "n_angle_harmonic_terms_hi": angle_terms_hi,
+        "n_guard_angle_harmonic_terms_hi": guard_angle_terms_hi,
+        "n_total_angle_harmonic_terms_hi": angle_terms_hi + guard_angle_terms_hi,
         "workspace_bytes_lo": bytes_lo,
         "workspace_bytes_hi": bytes_hi,
+        "workspace_bytes_guard_hi": guard_bytes_hi,
+        "workspace_bytes_peak_bound_hi": jnp.maximum(bytes_hi, guard_bytes_hi),
     }
     return value_hi, ok, ledger

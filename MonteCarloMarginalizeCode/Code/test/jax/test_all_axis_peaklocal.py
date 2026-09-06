@@ -1,5 +1,7 @@
 """Tests for fixed-shape all-variable multi-peak marginalization."""
 
+import types
+
 import numpy as np
 import pytest
 from scipy import integrate, special
@@ -10,6 +12,7 @@ import jax.numpy as jnp
 jax.config.update("jax_enable_x64", True)
 
 from RIFT.likelihood.jax_ile import all_axis_peaklocal as AAP
+from RIFT.likelihood.jax_ile import anglemarg as AM
 
 
 def _problem(n=129):
@@ -64,6 +67,26 @@ def _analytic_log_integral(constants, x_min, x_max):
         epsabs=1.0e-13, epsrel=1.0e-13, limit=500)[0]
     return (shift + np.log(value) + np.log(c["span"])
             + 2.0 * np.log(2.0 * np.pi))
+
+
+def test_angle_tables_forward_primitive_guard_and_report_support(monkeypatch):
+    data = types.SimpleNamespace(lms=np.asarray([[2, 2]]), npts=5)
+    seen = []
+
+    def fake_accumulate(data, ra, dec, psi, incl, phi, interp,
+                        phase_marginalization, guard=0):
+        seen.append(int(guard))
+        shape = (ra.shape[0], data.npts + 2 * int(guard))
+        return jnp.ones(shape, dtype=jnp.complex128), jnp.ones(shape)
+
+    monkeypatch.setattr(AM, "_accumulate_unit", fake_accumulate)
+    C_A, C_B, meta = AM.angle_coefficient_tables(
+        data, jnp.asarray([0.1]), jnp.asarray([0.2]), jnp.asarray([0.3]),
+        guard=3)
+    assert C_A.shape == (3, 3, 1, 11)
+    assert C_B.shape == (5, 5, 1, 11)
+    assert meta["guard"] == 3 and meta["ntime"] == 11
+    assert seen and set(seen) == {3}
 
 
 def test_uv_summary_bounds_the_exact_norm_and_collapses_time():
@@ -198,6 +221,62 @@ def test_missing_completeness_declines_to_reserve_not_waveform_failure():
     assert bool(ledger["decline_incomplete"])
     assert not bool(ledger["decline_is_waveform_failure"])
     assert bool(ledger["reconciles"])
+
+
+def test_two_guard_local_integral_validates_same_target_window():
+    C_A, C_B, constants = _problem(33)
+    guard = 32
+    support_time = np.arange(-guard, C_A.shape[-1] + guard, dtype=float)
+    guarded = np.zeros(C_A.shape[:-1] + (support_time.size,), dtype=np.complex128)
+    guarded[0, 1] = (constants["k0"] - constants["kt"]
+                     * np.cos(2.0 * np.pi * support_time / constants["span"]))
+    guarded[2, 1] = 0.5 * constants["kp"]
+    guarded[0, 0] = 0.5 * constants["ku"]
+    guarded[0, 2] = 0.5 * constants["ku"]
+    np.testing.assert_allclose(guarded[..., guard:-guard], C_A, atol=1e-14)
+
+    centers, hessian = _joint_peak(constants)
+    transforms, _ = AAP.mode_local_geometry(hessian, w_sigma=3.0)
+    plan = AAP.make_all_axis_mode_plan(
+        centers, max_modes=4, local_transforms=transforms,
+        local_radius=3.0, outside_bound_certified=False,
+        time_reconstruction_certified=True)
+    value, ok, ledger = AAP.all_axis_peak_local_marginalize(
+        guarded, C_B, plan, 0.2, 7.0,
+        local_order=7, check_order=11, time_guard=guard,
+        time_guard_tol_nats=1.0e-3)
+
+    assert np.isfinite(float(value))
+    assert not bool(ok)  # outside mass is deliberately still unwarranted
+    assert bool(ledger["time_guard_validated"])
+    assert bool(ledger["time_reconstruction_warranted"])
+    assert int(ledger["time_guard"]) == 32
+    assert int(ledger["time_guard_inner"]) == 16
+    assert float(ledger["time_guard_error"]) <= 1.0e-3
+    assert int(ledger["n_guard_local_evaluations_hi"]) == 2 * 11 ** 4
+    assert int(ledger["n_total_local_evaluations_hi"]) == 4 * 11 ** 4
+    assert int(ledger["n_total_time_frequency_terms_hi"]) == (
+        int(ledger["n_time_frequency_terms_hi"])
+        + int(ledger["n_guard_time_frequency_terms_hi"]))
+    assert int(ledger["workspace_bytes_peak_bound_hi"]) == max(
+        int(ledger["workspace_bytes_hi"]),
+        int(ledger["workspace_bytes_guard_hi"]))
+    assert bool(ledger["decline_incomplete"])
+    assert bool(ledger["reconciles"])
+
+    # Corrupt only support discarded by the inner guard.  Integer target
+    # samples remain unchanged, but the outer Fourier seam rings into the local
+    # nodes; the two-guard comparison must see it rather than blessing exact
+    # retained-sample parity or trusting the plan's stale external warrant.
+    bad = guarded.copy()
+    bad[0, 1, :guard // 2] += 1.0e4
+    _, _, bad_ledger = AAP.all_axis_peak_local_marginalize(
+        bad, C_B, plan, 0.2, 7.0,
+        local_order=7, check_order=11, time_guard=guard,
+        time_guard_tol_nats=1.0e-3)
+    assert not bool(bad_ledger["time_guard_validated"])
+    assert not bool(bad_ledger["time_reconstruction_warranted"])
+    assert float(bad_ledger["time_guard_error"]) > 1.0e-3
 
 
 def test_certified_omitted_mass_can_cover_an_incomplete_root_report():

@@ -258,7 +258,7 @@ def _data_m_max(data):
 
 
 def angle_coefficient_tables(data, ra, dec, incl, interp=JAX_INTERP_DEFAULT,
-                             sample_chunk=None):
+                             sample_chunk=None, guard=0):
     """Exact 2-D Fourier coefficient tables of A = Re kappa_unit, B = rho^2_unit.
 
     Samples :func:`core._accumulate_unit` on the Nyquist-sized
@@ -274,15 +274,24 @@ def angle_coefficient_tables(data, ra, dec, incl, interp=JAX_INTERP_DEFAULT,
     kp = 0 and 2 for kp > 0 (the kp = 0 row stores both ks signs, whose
     conjugate pairing is already real).
 
-    Memory: the tables are (m_max+1, 3, S, npts) and (2*m_max+1, 5, S, npts)
+    ``guard`` requests primitive-only reconstruction support from the same
+    accumulation operation as the terminal band-limited path.  The returned
+    time axis then has ``data.npts + 2*guard`` samples; callers must discard the
+    support after reconstruction and compare two guard widths before accepting.
+
+    Memory: the tables are (m_max+1, 3, S, ntime) and (2*m_max+1, 5, S, ntime)
     complex -- independent of every grid size.  The sample scan runs in
     chunks of ``sample_chunk`` grid points (default npsi_s, i.e. one phi row
     per step), checkpointed so reverse-mode AD does not store per-step
     intermediates.
 
-    Returns ``(C_A, C_B, meta)`` with ``meta = dict(m_max, nphi_s, npsi_s)``.
+    Returns ``(C_A, C_B, meta)`` with grid sizes and the effective ``guard``
+    and ``ntime`` support recorded in ``meta``.
     """
     m_max = _data_m_max(data)
+    guard = int(guard)
+    if guard < 0:
+        raise ValueError("guard must be non-negative")
     nphi_s, npsi_s = angle_sample_grid_sizes(m_max)
     if sample_chunk is None:
         sample_chunk = npsi_s
@@ -311,7 +320,7 @@ def angle_coefficient_tables(data, ra, dec, incl, interp=JAX_INTERP_DEFAULT,
     dec = jnp.asarray(dec, dtype=jnp.float64)
     incl = jnp.asarray(incl, dtype=jnp.float64)
     S = ra.shape[0]
-    npts = data.npts
+    npts = data.npts + 2 * guard
     c = int(sample_chunk)
     nsteps = Ns // c
 
@@ -329,7 +338,7 @@ def angle_coefficient_tables(data, ra, dec, incl, interp=JAX_INTERP_DEFAULT,
         phi_b = jnp.broadcast_to(prs[:, 0][:, None], (c, S)).reshape(-1)
         psi_b = jnp.broadcast_to(prs[:, 1][:, None], (c, S)).reshape(-1)
         ku, rs = _accumulate_unit(data, ra_b, dec_b, psi_b, incl_b, phi_b,
-                                  interp, False)
+                                  interp, False, guard=guard)
         A = ku.real.reshape(c, S, npts)
         B = rs.reshape(c, S, npts)
         CA = CA + jnp.einsum("ckq,cst->kqst", pA, A)
@@ -339,7 +348,8 @@ def angle_coefficient_tables(data, ra, dec, incl, interp=JAX_INTERP_DEFAULT,
     CA0 = jnp.zeros((KPA, 2 * KSA + 1, S, npts), dtype=jnp.complex128)
     CB0 = jnp.zeros((KPB, 2 * KSB + 1, S, npts), dtype=jnp.complex128)
     (C_A, C_B), _ = jax.lax.scan(jax.checkpoint(_step), (CA0, CB0), xs)
-    meta = dict(m_max=m_max, nphi_s=nphi_s, npsi_s=npsi_s)
+    meta = dict(m_max=m_max, nphi_s=nphi_s, npsi_s=npsi_s,
+                guard=guard, ntime=npts)
     return C_A, C_B, meta
 
 

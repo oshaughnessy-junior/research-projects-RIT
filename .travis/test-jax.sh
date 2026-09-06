@@ -320,13 +320,14 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         honest phase-marginalized sky/psi export,
 #                                         K=14/K=88 independent guarded references,
 #                                         and executable baseline/banded support refusal.
-#   test_all_axis_peaklocal.py          12  fail-closed four-axis peak-local prototype:
+#   test_all_axis_peaklocal.py          14  fail-closed four-axis peak-local prototype:
 #                                         U,V-guided time ranking and algebraic angular
 #                                         starts, JAX refinement, fixed-shape multimode
 #                                         quadrature, exact selected-time reconstruction,
 #                                         explicit omitted-mass/time-reconstruction
 #                                         warrants, geometry/capacity refusal, and outer
-#                                         jit/grad/hessian/vmap transform compatibility.
+#                                         jit/grad/hessian/vmap transform compatibility,
+#                                         and two-guard primitive support/convergence.
 
 FILES=(
   "${JAXDIR}/test_jax_time_quadrature.py"
@@ -519,9 +520,9 @@ fi
 # it counted the one test this job deselects.  That was a one-off setup bug, not a property
 # of the environment, and subtracting for it would under-promise by one -- which is the
 # failure direction this whole comment exists to warn about, because a low floor PASSES.
-# The all-axis peak-local prototype adds 12 tests.  Its focused collection reports
-# exactly 12, so the gate floor rises from the merged 432 to 444.
-EXPECTED_TESTS=444
+# The all-axis peak-local prototype adds 14 tests.  Its focused collection reports
+# exactly 14, so the gate floor rises from the merged 432 to 446.
+EXPECTED_TESTS=446
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
