@@ -361,16 +361,25 @@ def test_phi_local_returns_a_certificate_that_actually_declines():
         val, ok, info = JP.phi_local_lnI(jnp.asarray(C))
         assert np.isfinite(float(val))
         for key in ("margin", "area_outside", "sup_outside", "n_phi_regions",
-                    "n_u_fallback"):
+                    "n_u_fallback", "n_u_risky_quad"):
             assert key in info, key
         # THE CONTRACT CHANGED AND THIS TEST USED TO PIN THE DEFECT.  It asserted that ok
         # was exactly the margin test and that a full cover MUST be accepted -- which is
         # precisely the conflation test_a_full_cover_no_longer_accepts_unconditionally
         # exists to remove.  Both assertions passed only because this test's four fixtures
         # all happen to converge; adversarial review found them contradicting each other
-        # across files.  ok is now the margin test AND the resolution test.
+        # across files.  ok is the margin test AND the resolution test AND the u sizing
+        # test -- three independent ways to be wrong, and the contract is their conjunction.
+        #
+        # u_sizing_ok used to be read off the BOUND grid, where it was near-vacuous: that
+        # grid's job was to bound F from outside, not to produce `value`.  It now reads the
+        # QUADRATURE grid, so it reports whether the integration that produced the returned
+        # number was adequately sampled -- and it does fire here, on a fixture whose margin
+        # (-29.3) and resolution both pass at the default 48 u nodes.  Omitting it from
+        # this identity is what made the test fail when the gate moved to the right grid.
         assert bool(ok) == (float(info["margin"]) < JP.OUTSIDE_TOL_NATS
-                            and bool(info["phi_resolved"]))
+                            and bool(info["phi_resolved"])
+                            and bool(info["u_sizing_ok"]))
         if float(info["area_outside"]) == 0.0:
             # nothing omitted, so the margin is -inf; whether that ACCEPTS now depends on
             # the integration having converged, which is the whole point of the change.
@@ -559,7 +568,11 @@ def test_the_phi_grid_is_nested_so_no_evaluation_is_spent_on_a_probe_alone():
         _, _, info = JP.phi_local_lnI(C, n_slots=4, n_seed=4)
     finally:
         JP.u_profile = real
-    assert len(calls) == 4, (len(calls), "a fifth grid means a probe is paying its own way")
+    # THREE, not four: the Newton step, the seed evaluation and the quadrature grid.  The
+    # bound grid used to be a fourth, and no longer calls the profile at all -- sup_g_bound
+    # needs four quartic roots per point and no u quadrature.  A fifth would mean a probe
+    # is paying its own way; a fourth would mean the bound grid is back on the profile.
+    assert len(calls) == 3, (len(calls), "the bound grid must not run the u quadrature")
     assert "phi_convergence_shift" in info
 
     # and the striding is exact only for an odd count: the even indices must span the same
@@ -567,36 +580,80 @@ def test_the_phi_grid_is_nested_so_no_evaluation_is_spent_on_a_probe_alone():
     assert JP.PHI_NODES_PER_REGION % 2 == 1
 
 
-def test_the_outside_bound_gates_on_the_fallback_that_can_invert_it():
-    """Adversarial review: ``Fb`` and ``d1b`` were taken from ``u_profile`` with its
-    whole-cell fallback and the count was DISCARDED at that call, so a row could be
-    accepted on a lift applied to an underestimated profile with no signal it had
-    happened.  ``info["n_u_fallback"]`` carried only the Newton-seed evaluation.
+def test_the_outside_bound_does_not_depend_on_the_u_quadrature_at_all():
+    """The review finding this replaces is retired BY CONSTRUCTION, not by a gate.
 
-    The remedy as stated -- decline whenever any bound-grid profile falls back -- is not
-    implementable: every generic table has four u-stationary points of which two are
-    minima, so the fallback count is never zero and that gate declines universally
-    (measured: 0 of 2 accepted on cases accurate to 1e-5).  A minimum cell has no peak to
-    window and is exponentially subdominant in F; the cells that can invert the bound are
-    those with ``g'' < 0`` that failed the stationarity or interior test, because a real
-    maximum may sit in one unresolved.
+    ``Fb`` and ``d1b`` used to come from ``u_profile`` on the bound grid, so a whole-cell
+    fallback there could underestimate ``F`` and a lift applied to an underestimate bounds
+    nothing.  The fix was a gate on that fallback.  :func:`sup_g_bound` removes the
+    exposure instead: the outside bound is ``log(2 pi) + max_u g``, four quartic roots per
+    point, and never touches the quadrature.
 
-    Nor is "did a max-bearing cell fall back" the question: an 8-step Newton misses the
-    1e-8 relative residual on plenty of ordinary maxima, and that test fired on 127 of 256
-    bound-grid points for tables accurate to 1e-5.  What the bound needs is review's other
-    remedy -- whether the whole-cell quadrature was ADEQUATE -- and that is exact here,
-    because the u spectrum has two terms so ``|d2g/du2| <= |c1| + 4|c2|`` everywhere and a
-    cell of ``width`` needs ``width sqrt(M2u) U_PTS_PER_SIGMA`` nodes.
-
-    So this test pins BOTH directions: a case that must accept with a non-zero fallback
-    count, and a case where the gate fires and is CLEARED by sizing the quadrature.
+    So the property to assert is not "the gate fires" but "the bound cannot move": vary
+    ``u_nodes`` over a factor of 8 and ``sup_outside`` must be bit-identical.  That is a
+    much stronger statement than the gate ever made, and it cannot pass by accident.
     """
-    C, exact = _separable_phi_table(1000.0, np.pi / 96)
-    v, ok, info = JP.phi_local_lnI(C, w_sigma=200.0, n_nodes=385)
-    assert abs(float(v) - exact) < 1e-4
-    assert int(info["n_u_fallback_bound"]) > 0, "the naive gate would have fired here"
-    assert int(info["n_u_risky_bound"]) == 0
-    assert bool(ok), "gating on the whole-cell count declines every table there is"
+    KS = 2
+    rng = np.random.default_rng(101)
+    C = rng.normal(size=(3, 2 * KS + 1)) + 1j * rng.normal(size=(3, 2 * KS + 1))
+    C = jnp.asarray(C * (1e3 / np.sum(np.abs(C))))
+    sups = [float(JP.phi_local_lnI(C, u_nodes=un)[2]["sup_outside"])
+            for un in (48, 96, 384)]
+    assert sups[0] == sups[1] == sups[2], sups
+
+
+def test_sup_g_bound_is_actually_an_upper_bound_on_the_profile():
+    """The whole certificate now rests on ``F(phi) <= log(2 pi) + max_u g(phi,u)``.  If that
+    is ever violated the outside bound is not a bound and every accepted row is suspect, so
+    it is checked directly against the profile rather than assumed from the algebra.
+
+    Measured slack is 1.2-5.5 nats across the range -- small enough that the bound is
+    usable, and the reason the certificate stopped declining rows whose true margin was
+    already tens of nats clear.
+    """
+    KS = 2
+    worst = 1e9
+    for KP, amp in ((3, 30.0), (3, 3e3), (5, 1e3), (9, 1e4)):
+        rng = np.random.default_rng(7)
+        C = rng.normal(size=(KP, 2 * KS + 1)) + 1j * rng.normal(size=(KP, 2 * KS + 1))
+        C = jnp.asarray(C * (amp / np.sum(np.abs(C))))
+        un = min(JP.required_u_nodes(amp), 512)
+        for phi in np.linspace(0.0, 2 * np.pi, 41, endpoint=False):
+            F = float(JP.u_profile(C, float(phi), n_nodes=un)[0])
+            H = float(JP.sup_g_bound(C, float(phi)))
+            worst = min(worst, H - F)
+    assert worst >= 0.0, ("sup_g_bound is NOT an upper bound", worst)
+    assert worst < 20.0, ("bound is sound but so loose it cannot certify", worst)
+
+
+def test_the_localized_regime_now_accepts_and_is_right():
+    """What the whole exercise was for.  Before the bound was rebuilt, a sweep over
+    KP x amplitude found exactly ONE case in 36 that both localized (area_outside > 0) and
+    accepted, at amplitude 100 -- the cost win of localizing phi was real and the
+    certificate refused every row that realized it.  The Taylor lift sat 2.7e5 nats above
+    the integral at amplitude 3e4 while the true margin was about -66.
+
+    These cases localize into several regions AND accept AND are right to machine
+    precision.  If this test starts declining, the certificate has regressed to refusing
+    the regime it exists to serve.
+    """
+    KS = 2
+    # u_nodes 256 and 8 slots, not required_u_nodes(amp) = 2310 and 16.  The sizing helper
+    # is a conservative UPPER bound derived from amplitude; the gate that actually decides,
+    # u_sizing_ok, measures risky cells and passes here at 9x fewer nodes.  Sizing this
+    # test from the helper costs 5.9 GB in eval_g2's intermediate and is killed when the
+    # file runs as a whole -- a guard that cannot run in CI guards nothing.
+    for KP, amp in ((3, 3e3), (9, 1e3)):
+        rng = np.random.default_rng(7)
+        C = rng.normal(size=(KP, 2 * KS + 1)) + 1j * rng.normal(size=(KP, 2 * KS + 1))
+        C = C * (amp / np.sum(np.abs(C)))
+        v, ok, info = JP.phi_local_lnI(jnp.asarray(C),
+                                       n_bound=int(JP.required_bound_grid(amp)),
+                                       u_nodes=256, n_slots=8, n_nodes=97)
+        assert float(info["area_outside"]) > 0.0, "not localized -- fixture is degenerate"
+        assert int(info["n_phi_regions"]) >= 4, int(info["n_phi_regions"])
+        assert bool(ok), (KP, amp, float(info["margin"]))
+        assert abs(float(v) - _torus_ref(np.asarray(C))) < 1e-3, float(v)
 
 
 def test_the_bound_grid_adequacy_gate_fires_and_is_cleared_by_sizing():

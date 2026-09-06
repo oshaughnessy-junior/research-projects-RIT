@@ -473,6 +473,58 @@ def phi_derivative_bound(C, order=0):
     return (w * jnp.abs(C) * (jnp.abs(k) ** order)).sum()
 
 
+def sup_g_bound(C, phi):
+    """``log(2 pi) + max_u g(phi, u)``: an EXACT upper bound on ``F(phi)``, with no u
+    quadrature in it at all.
+
+        F(phi) = log int_0^{2pi} exp(g) du  <=  log(2 pi) + max_u g(phi, u)
+
+    and ``max_u g`` is exact: on a phi slice ``g`` is ``a + Re(c1 e^{iu}) + Re(c2 e^{2iu})``,
+    whose maximum over the circle is attained at one of the four stationary angles
+    :func:`u_stationary_roots` already returns.
+
+    WHY THIS EXISTS RATHER THAN A FINER PROFILE GRID.  The outside certificate needs an
+    upper bound on ``F``, not ``F`` itself, and buying accuracy through the profile costs a
+    full u quadrature at every bound-grid point -- ``n_bound * u_nodes``, and BOTH grow with
+    amplitude.  Measured: at amplitude 3e4 that is 8192 * 4 * 7302 evaluations and the
+    process is killed outright.
+
+    It is also strictly better as a bound, not merely cheaper.  Its Lipschitz constant is
+    ``M10``, by the envelope inequality
+    ``|max_u g(phi1,.) - max_u g(phi2,.)| <= max_u |g(phi1,u) - g(phi2,u)| <= M10 |dphi|``,
+    so refining the grid buys a LINEAR reduction where the profile route is pinned at second
+    order by ``M2F ~ M10^2``.  And it cannot be corrupted by the u-quadrature fallback that
+    adversarial review flagged for the profile route, because it never calls it.
+
+    The slack is the Laplace width it discards: ``F ~ max_u g + log(sigma_u sqrt(2 pi))``
+    with ``sigma_u = |g_uu|^-1/2``, so it over-estimates by ``log(sqrt(2 pi) / sigma_u)`` --
+    about 6 nats at amplitude 3e4, against a threshold with tens of nats of headroom.
+    """
+    KP = C.shape[0]
+    KS = (C.shape[1] - 1) // 2
+    k = jnp.arange(KP)
+    w = jnp.where(k > 0, 2.0, 1.0)
+    ph = jnp.exp(1j * phi * k) * w
+    D = lambda q: (ph * C[:, KS + q]).sum()
+    a = D(0).real
+    c1 = D(1) + jnp.conj(D(-1))
+    c2 = D(2) + jnp.conj(D(-2))
+    u = u_stationary_roots(c1, c2)
+    return jnp.log(2.0 * jnp.pi) + jnp.max(_g_u(a, c1, c2, u, 0))
+
+
+def required_bound_grid(amplitude, tol_nats=5.0, m_max=2):
+    """Bound-grid points that keep the Lipschitz lift ``M10 * delta`` under ``tol_nats``.
+
+    Derived, not tuned, and the same shape as :func:`required_u_nodes`.  The lift on a grid
+    of half-spacing ``delta = pi / n`` is ``M10 * delta``, and ``M10 <= 2 * m_max * A`` for
+    a table of amplitude ``A``, so ``n >= pi * 2 * m_max * A / tol_nats``.  Host side and
+    static, because JAX needs the shape before it sees the table.
+    """
+    a = max(float(amplitude), 1.0)
+    return int(np.ceil(np.pi * 2.0 * float(m_max) * a / float(tol_nats))) + 1
+
+
 def profile_derivative_bounds(C):
     """Exact bounds ``(M1F, M2F)`` on ``|F'|`` and ``|F''|`` for the u-profile ``F``.
 
@@ -862,7 +914,7 @@ def phi_local_lnI(C, n_seed=PHI_SEEDS, w_sigma=PHI_WINDOW_SIGMA,
 
     s = jnp.linspace(0.0, 1.0, n_nodes)
     pp = (seg_lo[:, None] + width[:, None] * s[None, :]).ravel()
-    Fv, _, _, nfb_v, _, _ = jax.vmap(prof)(jnp.mod(pp, 2.0 * jnp.pi))
+    Fv, _, _, nfb_v, nrisk_v, nstrict_v = jax.vmap(prof)(jnp.mod(pp, 2.0 * jnp.pi))
     wq = jnp.full(n_nodes, 1.0 / (n_nodes - 1)).at[0].mul(0.5).at[-1].mul(0.5)
     lw = (jnp.log(jnp.where(width > 0, width, 1e-300))[:, None]
           + jnp.log(wq)[None, :]).ravel()
@@ -953,9 +1005,24 @@ def phi_local_lnI(C, n_seed=PHI_SEEDS, w_sigma=PHI_WINDOW_SIGMA,
     # amplitude -- it put the bound above the integral by +1225 nats.
     gb = jnp.linspace(0.0, 2.0 * jnp.pi, n_bound, endpoint=False)
     delta = jnp.pi / n_bound                      # half of the grid spacing
-    Fb, d1b, _, nfb_b, nrisk_b, nstrict_b = jax.vmap(prof)(gb)
     m1f, m2f = profile_derivative_bounds(C)
-    ub = Fb + jnp.abs(d1b) * delta + 0.5 * m2f * delta * delta
+    # THE BOUND GRID NO LONGER RUNS THE U QUADRATURE, and that is what makes this
+    # certificate usable rather than merely correct.  It used to call the full profile at
+    # every point and lift by ``|F'| delta + M2F delta^2 / 2``, which failed twice over.
+    # M2F is ~99.5% the ``M10^2`` variance term -- a worst-case bound on a variance that
+    # CONCENTRATES as amplitude rises, so it is loosest exactly where the physics is
+    # tightest.  Measured at amplitude 3e4: that lift sat 2.7e5 nats above the integral
+    # while the TRUE margin was about -66, i.e. the row deserved to be accepted by a wide
+    # margin and was declined by five orders of magnitude.  Refining the grid to fix it is
+    # what kills the process, because ``n_bound * u_nodes`` both grow with amplitude.
+    #
+    # :func:`sup_g_bound` replaces the whole construction: an exact upper bound on F for
+    # four quartic roots per point, Lipschitz in M10 rather than M10^2 so refinement is
+    # linear, and independent of the u quadrature -- which also retires the review finding
+    # that the lift could be applied to a profile the fallback had underestimated.  There
+    # is no longer a profile value on this grid to underestimate.
+    hb = jax.vmap(lambda q: sup_g_bound(C, q))(gb)
+    ub = hb + m1f * delta
 
     # A GRID POINT COUNTS AS OUTSIDE UNLESS ITS WHOLE delta-BALL IS COVERED.  Testing the
     # point alone leaves a band of width delta beside every region boundary belonging to
@@ -1085,7 +1152,7 @@ def phi_local_lnI(C, n_seed=PHI_SEEDS, w_sigma=PHI_WINDOW_SIGMA,
     # amplitude-19 case that is accurate to 1e-5, so it would be a wall rather than a
     # requirement -- which is exactly the evidence that this axis is empirically gated and
     # not certified, and it belongs in the info dict where a caller can see it.
-    u_sizing_ok = nrisk_b.sum() == 0
+    u_sizing_ok = nrisk_v.sum() == 0
     ok = (margin < tol_nats) & resolved & u_sizing_ok
 
     info = {"margin": margin,
@@ -1096,13 +1163,15 @@ def phi_local_lnI(C, n_seed=PHI_SEEDS, w_sigma=PHI_WINDOW_SIGMA,
             # mass left OUTSIDE the regions and says nothing about the quadrature inside
             # one.  Reported separately and never folded into `margin`.
             "n_u_fallback": n_fb.sum(),
-            # the other two were invisible: the bound grid GATES (it decides whether the
-            # certificate is an upper bound at all), the quadrature grid is reported.
-            "n_u_fallback_bound": nfb_b.sum(),
-            "n_u_risky_bound": nrisk_b.sum(),
-            # the stricter 1/M1u criterion: reported, never gated.  See u_profile.
-            "n_u_understood_bound": nstrict_b.sum(),
+            # THE QUADRATURE GRID IS WHERE THIS BELONGS NOW.  It used to be read off the
+            # bound grid, because that was where an underestimated profile could invert an
+            # upper bound.  sup_g_bound removed that exposure entirely, so the remaining
+            # question is whether the quadrature that produced `value` was adequate -- and
+            # that is a property of the grid `value` came from.
             "n_u_fallback_quad": nfb_v.sum(),
+            "n_u_risky_quad": nrisk_v.sum(),
+            # the stricter 1/M1u criterion: reported, never gated.  See u_profile.
+            "n_u_understood_quad": nstrict_v.sum(),
             "u_sizing_ok": u_sizing_ok,
             # INTERNAL accuracy, reported beside the omitted-mass margin and never folded
             # into it: they are independent failures and both are needed.
