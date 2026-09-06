@@ -77,10 +77,50 @@ def test_symmetric_angle_reduction_adversary_reconstructs_before_logsumexp():
     assert abs(wrong - want) > 1.0
 
     # Pin the ordering structurally as well as numerically: the evaluator has
-    # explicit primitive -> gather -> downstream-reduction stages.
+    # explicit selected-point primitive reconstruction -> downstream-reduction
+    # stages and never creates the globally refined primitive.
     source = inspect.getsource(TFP._evaluate_cover_at_factor)
-    assert source.index("reconstruct_time_primitive") < source.index(
+    assert source.index("_evaluate_time_spectrum") < source.index(
         "_lane_log_integrand")
+    assert "reconstruct_time_primitive" not in source
+
+
+def test_selected_point_reconstruction_matches_the_dense_fft_grid():
+    """The local DFT is the same reflected interpolant, evaluated sparsely."""
+    rng = np.random.default_rng(390)
+    lanes = (rng.normal(size=(3, 41))
+             + 1j * rng.normal(size=(3, 41)))
+    factor = 16
+    dense = np.asarray(TFP.reconstruct_time_primitive(
+        jnp.asarray(lanes), factor))
+    index = np.array([0, 1, 7, 31, 117, dense.shape[-1] - 1])
+    sparse = np.asarray(TFP.evaluate_time_primitive_points(
+        jnp.asarray(lanes), jnp.asarray(index / factor)))
+    np.testing.assert_allclose(sparse, dense[:, index], atol=3e-12, rtol=0)
+
+
+def test_local_evaluator_live_shape_does_not_contain_the_dense_factor():
+    """The fine factor changes positions, not a materialized array dimension."""
+    n = 33
+    lanes = jnp.asarray(_cosine_samples(n, 14.0, 3)[None, :],
+                        dtype=jnp.complex128)
+    rho = jnp.zeros(1)
+    logw = jnp.zeros(1)
+    enum_factor = 4
+    k_enum = TFP.reconstruct_time_primitive(lanes, enum_factor)
+    m1 = TFP.spectral_time_derivative_bound(lanes, 1.0)
+    plan = TFP.plan_time_cover(
+        k_enum, rho, logw, m1, 1.0 / enum_factor, keep_nats=12.0)
+
+    # The output's conceptual dense count grows, while every explicit phasor
+    # evaluated by the implementation has only sub+1 selected positions.
+    source = inspect.getsource(TFP._evaluate_cover_at_factor)
+    assert "positions[:, None]" not in source  # phasor is isolated in the helper
+    for factor in (16, 128):
+        value, n_local, ok, n_dense = TFP._evaluate_cover_at_factor(
+            lanes, rho, logw, plan, 1.0, enum_factor, factor, 0, 65536)
+        assert np.isfinite(float(value)) and bool(ok)
+        assert int(n_local) < int(n_dense)
 
 
 def test_cell_upper_bound_dominates_a_much_finer_reconstruction():

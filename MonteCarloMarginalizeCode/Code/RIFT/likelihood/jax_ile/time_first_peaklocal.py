@@ -66,6 +66,7 @@ from .core import _upsample_bandlimited
 __all__ = [
     "TimeCoverPlan",
     "reconstruct_time_primitive",
+    "evaluate_time_primitive_points",
     "spectral_time_derivative_bound",
     "plan_time_cover",
     "time_first_peak_local_marginalize",
@@ -153,6 +154,52 @@ def reconstruct_time_primitive(kappa_t, factor, guard=0):
     forward = dense[..., :(kappa_t.shape[-1] - 1) * factor + 1]
     start = guard * factor
     return forward[..., start:start + (n_keep - 1) * factor + 1]
+
+
+def _time_primitive_spectrum(kappa_t, guard):
+    """Coefficients of the exact reflected series and the unguarded offset."""
+    series = _reflected_series(kappa_t, guard)
+    n = series.shape[-1]
+    coeff = jnp.fft.fft(series, axis=-1) / float(n)
+    frequency = jnp.fft.fftfreq(n)
+    return coeff, frequency, int(guard)
+
+
+def _evaluate_time_spectrum(coeff, frequency, positions, offset):
+    """Evaluate a reflected finite Fourier series at selected sample positions."""
+    positions = jnp.asarray(positions, dtype=jnp.float64).ravel()
+    shifted = positions + float(offset)
+    phase = jnp.exp(
+        2j * jnp.pi * shifted[:, None] * frequency[None, :])
+    if coeff.shape[-1] % 2 == 0:
+        # ``core._upsample_bandlimited`` splits the even-length Nyquist bin
+        # evenly between +Nyquist and -Nyquist.  Its continuous contribution
+        # is therefore c_N cos(pi x), rather than the one-sided
+        # c_N exp(-i pi x) represented by fftfreq's Nyquist entry.
+        phase = phase.at[:, coeff.shape[-1] // 2].set(
+            jnp.cos(jnp.pi * shifted))
+    return jnp.einsum("lk,pk->lp", coeff, phase)
+
+
+def evaluate_time_primitive_points(kappa_t, positions, guard=0):
+    """Reconstruct raw correlations only at selected unguarded positions.
+
+    ``positions`` is measured in input-sample units from the first unguarded
+    sample, so integers reproduce the original row.  Unlike
+    :func:`reconstruct_time_primitive`, the returned shape depends only on the
+    requested point count, never on a global refinement factor.  This is the
+    memory-bounded primitive used by the local-cover evaluator.
+    """
+    guard = int(guard)
+    kappa_t = jnp.asarray(kappa_t, dtype=jnp.complex128)
+    if kappa_t.ndim != 2:
+        raise ValueError("kappa_t must have shape (n_lanes, n_support)")
+    n_keep = kappa_t.shape[-1] - 2 * guard
+    if n_keep < 2:
+        raise ValueError("guard must leave at least two integration samples")
+    positions = jnp.asarray(positions, dtype=jnp.float64).ravel()
+    coeff, frequency, offset = _time_primitive_spectrum(kappa_t, guard)
+    return _evaluate_time_spectrum(coeff, frequency, positions, offset)
 
 
 def spectral_time_derivative_bound(kappa_t, delta_t, guard=0, order=1):
@@ -253,23 +300,62 @@ def _node_weights(live_cells, fine_factor, enum_factor, delta_t):
 
 def _evaluate_cover_at_factor(kappa_t, rho_sq, log_lane_weight, plan,
                               delta_t, enum_factor, factor, guard, max_nodes):
-    weights = jax.lax.stop_gradient(
-        _node_weights(plan.live_cells, factor, enum_factor, delta_t))
-    n_local = jnp.count_nonzero(weights > 0.0)
+    sub = int(factor) // int(enum_factor)
+    nodes_per_cell = sub + 1
+    live = jax.lax.stop_gradient(jnp.asarray(plan.live_cells, dtype=bool))
+    n_live = jnp.count_nonzero(live)
+    # Cells are integrated independently.  Shared endpoints therefore appear
+    # twice with half weight from each neighbour, exactly reproducing composite
+    # trapezoid weights without constructing the global refined grid.
+    n_local = n_live * nodes_per_cell
     capacity_ok = n_local <= int(max_nodes)
-    index = jnp.nonzero(weights > 0.0, size=int(max_nodes), fill_value=0)[0]
-    slot_live = jnp.arange(int(max_nodes)) < n_local
-    index = jax.lax.stop_gradient(index)
-    slot_live = jax.lax.stop_gradient(slot_live)
+    dense_nodes = (kappa_t.shape[-1] - 2 * int(guard) - 1) * int(factor) + 1
+    # Static shape refusal: do not construct even one local node vector when a
+    # single cell is larger than the declared memory capacity.  Reporting the
+    # decline only after evaluating that cell would make ``max_nodes`` advisory
+    # rather than a hard bound.
+    if nodes_per_cell > int(max_nodes):
+        return (jnp.asarray(-jnp.inf), n_local, jnp.asarray(False),
+                dense_nodes)
+    # Compact the selected cells into a fixed-capacity vector.  The mask and
+    # count remain discrete planner outputs, while every compiled scan body has
+    # the same small local-node shape.  Avoiding a conditional around the
+    # Fourier evaluator is important on accelerators: the conditional/FFT
+    # combination produces a disproportionately large compiled program.
+    cell_capacity = min(live.size,
+                        max(1, int(max_nodes) // nodes_per_cell))
+    cell_index = jnp.nonzero(live, size=cell_capacity, fill_value=0)[0]
+    active = jnp.arange(cell_capacity) < n_live
 
-    # Reconstruct FIRST, gather SECOND, marginalize other axes LAST.  Keeping
-    # these as three explicit operations is the load-bearing ordering contract.
-    primitive_fine = reconstruct_time_primitive(kappa_t, factor, guard=guard)
-    primitive_local = primitive_fine[:, index]
-    log_t = _lane_log_integrand(primitive_local, rho_sq, log_lane_weight)
-    local_weight = jnp.where(slot_live, weights[index], 1.0)
-    terms = jnp.where(slot_live, log_t + jnp.log(local_weight), -jnp.inf)
-    return jax.scipy.special.logsumexp(terms), n_local, capacity_ok, weights.shape[0]
+    coeff, frequency, offset = _time_primitive_spectrum(kappa_t, guard)
+    local_index = jnp.arange(nodes_per_cell, dtype=jnp.float64)
+    log_trap = jnp.where(
+        (local_index == 0) | (local_index == sub),
+        -jnp.log(2.0), 0.0)
+    log_h = jnp.log(float(delta_t) / float(factor))
+
+    def _cell_value(cell_index):
+        positions = ((cell_index * sub + local_index) / float(factor))
+        # Reconstruct primitive values FIRST and apply the nonlinear reduction
+        # over lanes only at these local nodes.  No globally refined primitive
+        # or marginalized time row exists on this path.
+        primitive_local = _evaluate_time_spectrum(
+            coeff, frequency, positions, offset)
+        log_t = _lane_log_integrand(
+            primitive_local, rho_sq, log_lane_weight)
+        return jax.scipy.special.logsumexp(log_t + log_trap) + log_h
+
+    def _step(total, args):
+        selected_cell, cell_live = args
+        contribution = jax.lax.cond(
+            cell_live, _cell_value, lambda _: jnp.asarray(-jnp.inf),
+            selected_cell)
+        return jnp.logaddexp(total, contribution), None
+
+    value, _ = jax.lax.scan(
+        _step, jnp.asarray(-jnp.inf),
+        (cell_index.astype(jnp.float64), active))
+    return value, n_local, capacity_ok, dense_nodes
 
 
 def time_first_peak_local_marginalize(
@@ -328,7 +414,13 @@ def time_first_peak_local_marginalize(
         2 * fine_factor, guard, max_nodes)
 
     quadrature_error = jnp.abs(value_hi - value_lo)
-    tail_margin = plan.outside_log_bound - value_hi
+    # A capacity refusal must never masquerade as zero likelihood.  Preserve a
+    # finite diagnostic lower-resolution value when available; if neither rule
+    # could be evaluated, the finite nodal peak is explicitly diagnostic only.
+    diagnostic_value = jnp.where(
+        jnp.isfinite(value_hi), value_hi,
+        jnp.where(jnp.isfinite(value_lo), value_lo, plan.peak_lower))
+    tail_margin = plan.outside_log_bound - diagnostic_value
     finite_inputs = (jnp.all(jnp.isfinite(kappa_t.real))
                      & jnp.all(jnp.isfinite(kappa_t.imag))
                      & jnp.all(jnp.isfinite(rho_sq))
@@ -360,6 +452,7 @@ def time_first_peak_local_marginalize(
         "decline_tail": decline_tail,
         "reconciles": reconciles,
         "capacity_ok": capacity_ok,
+        "returned_high_order": jnp.isfinite(value_hi),
         "quadrature_ok": quadrature_ok,
         "tail_ok": tail_ok,
         "finite_inputs": finite_inputs,
@@ -374,7 +467,7 @@ def time_first_peak_local_marginalize(
         "n_dense_lo": jnp.asarray(dense_lo),
         "n_dense_hi": jnp.asarray(dense_hi),
     }
-    return value_hi, ok, ledger
+    return diagnostic_value, ok, ledger
 
 
 def time_first_distance_peak_local_marginalize(
