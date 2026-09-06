@@ -133,8 +133,21 @@ done
 # run, so the merged floor is RE-MEASURED, never added up:
 #   278/266  original manifest
 #   296/284  + test_replica_pooling.py, test_marg_list.py (rostered BROKEN until fixed)
-#   299/287  + test_vectorized_lal_tools_split.py (from rift_O4d)
-#   307/295  + test_noloop_accumulator_shapes.py (from rift_O4d)
+#   299/287  + test_vectorized_lal_tools_split.py (from rift_O4d, then 3 -> 7 tests: its
+#            original comparison pitted the combined wrapper against the composition of its own
+#            two halves, which after the split IS the wrapper, so it could not fail.  Rewritten
+#            against a FROZEN copy of the pre-split bodies, parametrized per detector -- #256)
+#   307/295  + test_noloop_accumulator_shapes.py (from rift_O4d, then 8 -> 9 tests: the added
+#            one asserts the synthetic inputs actually exercise the data term, after the first
+#            version put the Q window entirely outside the buffer and left kappa_sq identically
+#            zero -- an assertion that held for the wrong reason)
+#   312/300  rift_O4d #258, a pure FLOOR correction: the growth above had already landed in the
+#            files while the floors still said 299/287, so 312 collected was clearing a 307
+#            floor -- the silent under-coverage this gate exists to prevent, appearing in the
+#            gate's own bookkeeping.  Worth noting how the two branches differed here: #258
+#            reconstructed 312 by arithmetic (299 + 4 + 9) and this branch measured 347 with
+#            those same files already grown, because it never adds.  Merging changed this
+#            manifest's numbers by ZERO.
 #   +        + test_teobresums_compat.py (OPTDEP on prose until test-roster-verify.py caught it
 #            passing completely with nothing missing; its companion test_rimsky_integration.py
 #            was promoted alongside and REVERTED -- see the note by the manifest entry)
