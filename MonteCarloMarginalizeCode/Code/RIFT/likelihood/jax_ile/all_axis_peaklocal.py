@@ -1117,15 +1117,23 @@ def empirical_enrichment_marginalize(
         convergence_tol_nats=1.0e-3, time_guard=0,
         time_guard_tol_nats=1.0e-3, log_normalization=0.0,
         node_concentration=1.0,
-        mode_match_tol=(0.25, 1.0e-4, 1.0e-4, 1.0e-5)):
+        mode_match_tol=(0.25, 1.0e-4, 1.0e-4, 1.0e-5),
+        geometry_match_rtol=1.0e-3, geometry_match_atol=1.0e-8):
     """Apply the operational one-step enrichment gate to two fixed plans.
 
     ``enriched_plan`` must come from a strictly stronger discovery portfolio
     that includes the base starts, and uses the stronger quadrature orders
     supplied here.  Acceptance requires finite values, explicit start capacity,
     disjoint in-support regions, healthy nested quadrature and time-guard
-    diagnostics, and agreement within ``convergence_tol_nats``.  It does not
-    claim formal global completeness or derivative accuracy.
+    diagnostics, and agreement within ``convergence_tol_nats``.  Every base
+    mode must recur with matching local geometry.  Additional enriched basins
+    are probes, not automatically part of the accepted cover: if a probe has
+    broad/overlapping geometry but changes the positive local integral by less
+    than the same convergence budget, the valid base cover is retained and its
+    value returned.  This prevents a manifestly negligible low-curvature HM
+    basin from forcing dense reserve while still making a changed relevant
+    basin or an invalid base cover decline.  It does not claim formal global
+    completeness or derivative accuracy.
 
     Any decline returns the finite enriched diagnostic with
     ``fallback_required=True``.  The caller must execute and retain the
@@ -1141,6 +1149,8 @@ def empirical_enrichment_marginalize(
     mode_match_tol = np.asarray(mode_match_tol, dtype=float)
     if mode_match_tol.shape != (4,) or np.any(mode_match_tol <= 0.0):
         raise ValueError("mode_match_tol must contain four positive values")
+    if float(geometry_match_rtol) < 0.0 or float(geometry_match_atol) < 0.0:
+        raise ValueError("geometry match tolerances must be non-negative")
 
     base_value, _, base = all_axis_peak_local_marginalize(
         C_A_t, C_B, base_plan, x_min, x_max,
@@ -1163,8 +1173,9 @@ def empirical_enrichment_marginalize(
                    & enriched_plan.discovery_capacity_ok)
     time_ok = (base["time_reconstruction_warranted"]
                & enriched["time_reconstruction_warranted"])
-    geometry_ok = (base["boxes_disjoint"] & enriched["boxes_disjoint"]
-                   & base["support_ok"] & enriched["support_ok"])
+    base_geometry_ok = base["boxes_disjoint"] & base["support_ok"]
+    enriched_geometry_ok = (enriched["boxes_disjoint"]
+                            & enriched["support_ok"])
     quadrature_ok = base["quadrature_ok"] & enriched["quadrature_ok"]
     has_modes = (base["n_modes"] > 0) & (enriched["n_modes"] > 0)
     delta = jnp.abs(base_plan.centers[:, None, :]
@@ -1174,10 +1185,28 @@ def empirical_enrichment_marginalize(
     delta = delta.at[..., 1:3].set(angular_delta)
     matches = (jnp.all(delta <= jnp.asarray(mode_match_tol), axis=-1)
                & enriched_plan.live[None, :])
+    width_scale = (float(geometry_match_atol)
+                   + float(geometry_match_rtol)
+                   * jnp.abs(base_plan.half_widths[:, None, :]))
+    width_matches = jnp.all(
+        jnp.abs(base_plan.half_widths[:, None, :]
+                - enriched_plan.half_widths[None, :, :]) <= width_scale,
+        axis=-1)
+    transform_scale = (float(geometry_match_atol)
+                       + float(geometry_match_rtol)
+                       * jnp.abs(base_plan.local_transforms[:, None, :, :]))
+    transform_matches = jnp.all(
+        jnp.abs(base_plan.local_transforms[:, None, :, :]
+                - enriched_plan.local_transforms[None, :, :, :])
+        <= transform_scale, axis=(-2, -1))
+    geometry_matches = matches & width_matches & transform_matches
     # Padded base rows are vacuously retained.  A stronger plan may add modes,
     # but it may not silently lose one that contributed to the base value.
     mode_nesting_ok = jnp.all(
         jnp.where(base_plan.live, jnp.any(matches, axis=1), True))
+    geometry_nesting_ok = jnp.all(jnp.where(
+        base_plan.live, jnp.any(geometry_matches, axis=1), True))
+    geometry_ok = base_geometry_ok & geometry_nesting_ok
     convergence_error = jnp.abs(enriched_value - base_value)
     converged = convergence_error <= float(convergence_tol_nats)
 
@@ -1199,6 +1228,9 @@ def empirical_enrichment_marginalize(
                           & geometry_ok & quadrature_ok & (~converged))
     accepted = (finite & capacity_ok & has_modes & mode_nesting_ok & time_ok
                 & geometry_ok & quadrature_ok & converged)
+    accepted_value_uses_base_geometry = accepted & (~enriched_geometry_ok)
+    accepted_value = jnp.where(
+        accepted_value_uses_base_geometry, base_value, enriched_value)
     reconciles = (
         accepted.astype(jnp.int32)
         + decline_nonfinite.astype(jnp.int32)
@@ -1235,6 +1267,11 @@ def empirical_enrichment_marginalize(
         "base_n_modes": base["n_modes"],
         "enriched_n_modes": enriched["n_modes"],
         "mode_nesting_ok": mode_nesting_ok,
+        "geometry_nesting_ok": geometry_nesting_ok,
+        "base_geometry_ok": base_geometry_ok,
+        "enriched_geometry_ok": enriched_geometry_ok,
+        "accepted_value_uses_base_geometry":
+            accepted_value_uses_base_geometry,
         "base_quadrature_error": base["quadrature_error"],
         "enriched_quadrature_error": enriched["quadrature_error"],
         "base_time_guard_error": base["time_guard_error"],
@@ -1250,7 +1287,7 @@ def empirical_enrichment_marginalize(
             base["workspace_bytes_peak_bound_hi"],
             enriched["workspace_bytes_peak_bound_hi"]),
     }
-    return enriched_value, accepted, ledger
+    return accepted_value, accepted, ledger
 
 
 def empirical_enrichment_with_exact_reserve(

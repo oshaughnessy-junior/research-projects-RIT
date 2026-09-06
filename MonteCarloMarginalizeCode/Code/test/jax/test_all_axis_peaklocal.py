@@ -310,6 +310,29 @@ def test_empirical_enrichment_accepts_without_claiming_global_proof():
     assert not bool(ledger["fallback_required"])
     assert bool(ledger["reconciles"])
 
+    # A stronger discovery pass may expose a broad diagnostic basin whose
+    # positive integral is negligible.  It must not invalidate the unchanged,
+    # valid base cover when the enrichment delta remains inside the same budget.
+    extra_centers = np.vstack((centers, [[
+        centers[0, 0], 0.1, 0.2, centers[0, 3]]]))
+    extra_transforms = np.concatenate((
+        transforms,
+        np.asarray([np.diag([1.0e-8, 4.0, 4.0, 1.0e-8])])), axis=0)
+    diagnostic_plan = AAP.make_all_axis_mode_plan(
+        extra_centers, max_modes=3, local_transforms=extra_transforms,
+        local_radius=1.0, outside_bound_certified=False,
+        time_reconstruction_certified=True)
+    retained, accepted, diagnostic_ledger = (
+        AAP.empirical_enrichment_marginalize(
+            C_A, C_B, plan, diagnostic_plan, x_min, x_max,
+            convergence_tol_nats=1.0e-3))
+    assert bool(accepted)
+    assert bool(diagnostic_ledger["base_geometry_ok"])
+    assert not bool(diagnostic_ledger["enriched_geometry_ok"])
+    assert bool(diagnostic_ledger["geometry_nesting_ok"])
+    assert bool(diagnostic_ledger["accepted_value_uses_base_geometry"])
+    assert float(retained) == pytest.approx(float(ledger["base_value"]), abs=1e-12)
+
     shifted = centers.copy()
     shifted[:, 1] += 0.1
     shifted_plan = AAP.make_all_axis_mode_plan(
