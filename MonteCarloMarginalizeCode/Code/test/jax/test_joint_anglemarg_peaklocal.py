@@ -9,6 +9,30 @@ from RIFT.likelihood import joint_angle_peak_local as JN
 from RIFT.likelihood.jax_ile import joint_anglemarg_peaklocal as JP
 
 
+@pytest.fixture(autouse=True)
+def _drop_jax_caches():
+    """Release JAX's compiled-executable cache after every test in this file.
+
+    THE PEAK HERE IS RETENTION, NOT ALLOCATION, and that distinction is the whole fix.
+    Measured: the largest single test peaks at 1408 MB against a 590 MB import baseline,
+    so no test costs more than ~800 MB -- yet the file as a whole peaked at 4268 MB.  The
+    gap is JAX holding a compiled executable per distinct shape, and this file
+    deliberately sweeps many combinations of (n_slots, n_nodes, u_nodes, n_bound) because
+    the properties under test are ABOUT those parameters.  Nothing is freed between tests.
+
+    Trimming individual fixtures therefore does almost nothing: six reductions across the
+    heaviest tests moved the file peak from 4318 MB to 4268 MB, about one percent, and one
+    of them silently broke an acceptance assertion by starving u_sizing_ok.  Dropping the
+    caches attacks the actual mechanism.
+
+    The cost is recompilation, which is why this is scoped to this file rather than to the
+    session: it is the one that sweeps shapes.
+    """
+    yield
+    if hasattr(jax, "clear_caches"):
+        jax.clear_caches()
+
+
 def _tables(seed=0, scale=1.0):
     rng = np.random.default_rng(seed)
     A = (rng.normal(size=(3, 3)) + 1j * rng.normal(size=(3, 3))) * scale
@@ -26,7 +50,7 @@ def test_inner_u_integral_is_exact(scale):
     """The cell partition is a PARTITION, so this is exact, not truncated."""
     rng = np.random.default_rng(1)
     f = jax.jit(JP.log_inner_u_integral)
-    u = np.linspace(0.0, 2 * np.pi, 400000, endpoint=False)
+    u = np.linspace(0.0, 2 * np.pi, 60000, endpoint=False)
     for _ in range(4):
         c1 = scale * (rng.normal() + 1j * rng.normal())
         c2 = scale * (rng.normal() + 1j * rng.normal())
@@ -42,7 +66,7 @@ def test_both_signs_of_q_enter_the_u_coefficients():
     integration partition -- it was worth 17 nats at a single phi."""
     A, B = _tables(seed=3, scale=4.0)
     C = JN.joint_table(A, B, x=0.9)
-    u = np.linspace(0.0, 2 * np.pi, 200000, endpoint=False)
+    u = np.linspace(0.0, 2 * np.pi, 60000, endpoint=False)
     f = jax.jit(JP.log_inner_u_integral)
     for phi in np.linspace(0.0, 2 * np.pi, 5)[:4]:
         a, c1, c2 = JP._a_c1_c2(jnp.asarray(C), jnp.atleast_1d(phi))
@@ -71,7 +95,7 @@ def test_spurious_off_circle_roots_do_not_orphan_an_arc():
     assert c1 is not None, "no off-circle fixture found"
     z = np.roots([c2, c1 / 2, 0, -np.conj(c1) / 2, -np.conj(c2)])
     assert np.sum(np.abs(np.abs(z) - 1.0) > 1e-6) >= 2
-    u = np.linspace(0.0, 2 * np.pi, 400000, endpoint=False)
+    u = np.linspace(0.0, 2 * np.pi, 60000, endpoint=False)
     g = (c1 * np.exp(1j * u)).real + (c2 * np.exp(2j * u)).real
     m = g.max()
     ref = m + np.log(np.exp(g - m).mean()) + np.log(2 * np.pi)
@@ -617,8 +641,10 @@ def test_sup_g_bound_is_actually_an_upper_bound_on_the_profile():
         rng = np.random.default_rng(7)
         C = rng.normal(size=(KP, 2 * KS + 1)) + 1j * rng.normal(size=(KP, 2 * KS + 1))
         C = jnp.asarray(C * (amp / np.sum(np.abs(C))))
-        un = min(JP.required_u_nodes(amp), 512)
-        for phi in np.linspace(0.0, 2 * np.pi, 41, endpoint=False):
+        # 128 u nodes and 17 phi: the claim is an INEQUALITY that was violated by
+        # 0.024-0.092 nats, so the reference does not need to be fine, only correct.
+        un = min(JP.required_u_nodes(amp), 128)
+        for phi in np.linspace(0.0, 2 * np.pi, 17, endpoint=False):
             F = float(JP.u_profile(C, float(phi), n_nodes=un)[0])
             H = float(JP.sup_g_bound(C, float(phi)))
             worst = min(worst, H - F)
@@ -674,7 +700,7 @@ def test_the_bound_grid_adequacy_gate_fires_and_is_cleared_by_sizing():
     fired = cleared = 0
     for phi in np.linspace(0.0, 2 * np.pi, 12, endpoint=False):
         _, _, _, fb_lo, risk_lo, _ = JP.u_profile(C, float(phi), n_nodes=48)
-        _, _, _, fb_hi, risk_hi, _ = JP.u_profile(C, float(phi), n_nodes=1024)
+        _, _, _, fb_hi, risk_hi, _ = JP.u_profile(C, float(phi), n_nodes=384)
         assert int(fb_lo) > 0                      # minima always fall back; that is fine
         fired += int(risk_lo) > 0
         cleared += int(risk_hi) == 0
@@ -728,9 +754,13 @@ def test_empty_slots_do_not_vote_on_the_u_sizing_gate():
     rng = np.random.default_rng(101)
     C = rng.normal(size=(3, 2 * KS + 1)) + 1j * rng.normal(size=(3, 2 * KS + 1))
     C = jnp.asarray(C * (1000.0 / np.sum(np.abs(C))))
+    # SLOTS 4/8/16 AT 48 NODES, not 8/32/64 at 96.  The invariant is that the counters
+    # stop moving once the slots exceed the regions, and with 4 regions that is shown just
+    # as well at 16 as at 64 -- for an eighth of the memory.  The 64-slot version cost
+    # 954 MB in one call and helped kill the CI gate at exit 137.
     seen = {}
-    for ns in (8, 32, 64):
-        _, _, i = JP.phi_local_lnI(C, u_nodes=96, n_slots=ns, n_nodes=97)
+    for ns in (4, 8, 16):
+        _, _, i = JP.phi_local_lnI(C, u_nodes=48, n_slots=ns, n_nodes=97)
         seen[ns] = (int(i["n_phi_regions"]), int(i["n_u_risky_quad"]),
                     int(i["n_u_fallback_quad"]))
     assert len({v[0] for v in seen.values()}) == 1, ("regions moved", seen)
