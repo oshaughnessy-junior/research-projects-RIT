@@ -67,19 +67,80 @@ def _declared_deps(reason):
     return [d for d in m.group(1).split(",") if d] if m else []
 
 
+# Import names that installed metadata cannot resolve to their distribution.  Kept SHORT and
+# justified: on CIT, `lalsuite` is a conda metapackage whose dist-info lists no top-level modules
+# at all (its files() shows only __pycache__ and the dist-info), so neither packages_distributions
+# nor a file scan can learn that `lal` comes from it.  A pip-installed lalsuite wheel does declare
+# them, so this table is a fallback for the environment, not a replacement for the lookup.
+# Add an entry only when the two mechanisms below genuinely cannot answer.
+KNOWN_ALIASES = {
+    "lal": "lalsuite", "lalsimulation": "lalsuite", "lalframe": "lalsuite",
+    "lalmetaio": "lalsuite", "lalburst": "lalsuite", "lalinspiral": "lalsuite",
+    "lalpulsar": "lalsuite", "lalinference": "lalsuite",
+}
+
+
+def _distributions_for(mod):
+    """Distribution names that provide this IMPORT name, e.g. sklearn -> {scikit-learn}.
+
+    Three mechanisms, cheapest first: the metadata index, a scan of each distribution's files
+    for a top-level `<mod>/` or `<mod>.py`, and finally KNOWN_ALIASES for distributions whose
+    metadata declares nothing.
+    """
+    top = mod.split(".")[0]
+    out = set()
+    try:
+        from importlib.metadata import packages_distributions, distributions, files
+    except ImportError:      # pragma: no cover - py<3.10
+        return {KNOWN_ALIASES[top]} if top in KNOWN_ALIASES else set()
+    try:
+        out |= set(packages_distributions().get(top, []))
+    except Exception:        # pragma: no cover - defensive
+        pass
+    if not out:
+        try:
+            for d in distributions():
+                name = (d.metadata["Name"] or "")
+                if not name:
+                    continue
+                for f in (files(name) or []):
+                    parts = str(f).split("/")
+                    if parts[0] == top or parts[0] == top + ".py":
+                        out.add(name)
+                        break
+        except Exception:    # pragma: no cover - defensive
+            pass
+    if not out and top in KNOWN_ALIASES:
+        out.add(KNOWN_ALIASES[top])
+    return out
+
+
 def _in_requirements(mod):
-    """True if requirements.txt installs this module -- in which case it is not optional."""
+    """True if requirements.txt installs this module -- in which case it is not optional.
+
+    THE IMPORT NAME IS NOT THE DISTRIBUTION NAME, and comparing them directly made this check
+    fail open: `needs:sklearn` sailed past a requirements.txt that says `scikit-learn`, and so
+    did `needs:lal` against `lalsuite` -- both importable in CI, both therefore NOT optional,
+    both silently accepted as OPTDEP.  Reproduced before this fix for sklearn, lal,
+    lalsimulation and skimage.
+
+    So the import name is resolved to the distributions that provide it, and any of those
+    matching a requirements line counts.  LIMIT, stated because it is real: the mapping comes
+    from installed metadata, so a dependency absent from the CHECKING environment cannot be
+    resolved and falls back to the bare name comparison.  In this job requirements.txt is
+    installed, which is exactly the case that matters.
+    """
     try:
         req = open(os.path.join(REPO, "requirements.txt"), errors="replace").read()
     except OSError:
         return False
-    want = mod.lower().replace("-", "_")
+    want = {n.lower().replace("-", "_") for n in ({mod} | _distributions_for(mod))}
     for line in req.splitlines():
         line = line.split("#", 1)[0].strip()
         if not line:
             continue
         name = re.split(r"[<>=\[]", line)[0].strip().lower().replace("-", "_")
-        if name == want:
+        if name in want:
             return True
     return False
 
@@ -103,7 +164,15 @@ def _pytest(path, extra_env=None, collect_only=True):
     env["PYTHONPATH"] = os.path.join(REPO, CODE) + os.pathsep + env.get("PYTHONPATH", "")
     env.setdefault("OMP_NUM_THREADS", "1")
     env.setdefault("MPLBACKEND", "Agg")
-    env.update(extra_env or {})
+    # A None value REMOVES the variable.  The EXPENSIVE predicate needs a run that genuinely
+    # lacks RIFT_RUN_EXPENSIVE; inheriting it from the caller inverts the whole check -- a
+    # correct guard then runs its tests and is reported as broken, and an inverted guard skips
+    # and is reported as fine.  Reproduced with the variable exported.
+    for k, v in (extra_env or {}).items():
+        if v is None:
+            env.pop(k, None)
+        else:
+            env[k] = v
     cmd = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"]
     if collect_only:
         cmd.append("--collect-only")
@@ -153,12 +222,15 @@ def main():
                             "tests.\n    It is a real suite that no job runs -- gate it, or "
                             "correct the status." % (ROSTER, lineno, path, n))
         elif status == "EXPENSIVE":
-            rc, n, _ = _pytest(path)
+            # Both calls drop RIFT_RUN_EXPENSIVE: collection too, since a module-level skip may
+            # key off it and change what is collected at all.
+            no_optin = {"RIFT_RUN_EXPENSIVE": None}
+            rc, n, _ = _pytest(path, extra_env=no_optin)
             if rc is None or n == 0:
                 errs.append("%s:%d: %s is EXPENSIVE but collects nothing.\n    The opt-in "
                             "suite is gone or stopped importing." % (ROSTER, lineno, path))
             else:
-                rc2, skipped, passed = _pytest(path, collect_only=False)
+                rc2, skipped, passed = _pytest(path, collect_only=False, extra_env=no_optin)
                 if rc2 is None:
                     errs.append("%s:%d: %s is EXPENSIVE but the run WITHOUT RIFT_RUN_EXPENSIVE "
                                 "timed out after %ds.\n    Opting out should cost nothing, so "
@@ -191,9 +263,23 @@ def main():
             missing = [d for d in deps if not _dep_present(d)]
             if missing:
                 rc, n, _ = _pytest(path)
-                if rc is not None and n > 0:
+                if rc is None:
+                    # A timeout is a verification that did NOT happen.  Counting it as checked
+                    # is the same silent pass this file exists to remove: with TIMEOUT dropped
+                    # to 1 s every OPTDEP subprocess timed out and the run still reported
+                    # "OPTDEP 8 checked ... PASS".
+                    errs.append("%s:%d: %s is OPTDEP and its collection TIMED OUT after %ds.\n"
+                                "    Nothing was verified; a timeout is not a pass.  Raise "
+                                "TIMEOUT if the file is legitimately slow, or fix the hang."
+                                % (ROSTER, lineno, path, TIMEOUT))
+                elif n > 0:
                     rc2, _, passed = _pytest(path, collect_only=False)
-                    if rc2 == 0 and passed == n:
+                    if rc2 is None:
+                        errs.append("%s:%d: %s is OPTDEP and its RUN timed out after %ds with "
+                                    "%s missing.\n    Nothing was verified; a timeout is not a "
+                                    "pass."
+                                    % (ROSTER, lineno, path, TIMEOUT, ",".join(missing)))
+                    elif rc2 == 0 and passed == n:
                         errs.append("%s:%d: %s is OPTDEP on missing %s, yet collects %d tests and "
                                     "ALL PASS.\n    It does not actually need what it claims; gate "
                                     "it, or correct the reason."
