@@ -22,13 +22,24 @@ development tree is rift_O4d.
    the ``laplace-is``/``nuts`` driver paths, which previously applied none of the
    checks the library samplers already applied; **(c) applies to EVERY mode**:
    (a) ``run_laplace_is`` keeps the prior pilot's own evidence estimate as a
-   reference and reports ``nan`` when the adapted estimate lands far BELOW it.  The
-   pilot is crude (often ESS ~ 1) but its proposal covers the prior by construction,
-   and importance sampling from a proposal that MISSES mass is biased low, so a large
-   downward move means the adaptation walked off the peak.  It catches the
-   catastrophic band completely and the boundary band partially: at a synthetic
-   width of 0.05 rad two seeds in five escape it, 6 and 9 nats wrong at neff 5.3 and
-   41.9.  It stops a nine-orders-of-magnitude error; it is not a warranty.
+   reference and reports ``nan`` when the adapted estimate falls below a MARKOV LOWER
+   CONFIDENCE BOUND built from it (``prior_pilot_floor``).  The pilot's proposal
+   covers the prior by construction and importance sampling from a proposal that
+   MISSES mass is biased low, so a large downward move means the adaptation walked
+   off the peak.  The bound rather than the estimate is what the comparison uses:
+   the pilot is UNBIASED for Z, not a bound on it, and for a mode of prior mass
+   ``m`` a single lucky draw overshoots by ``1/(n_pilot m)`` -- measured up to
+   +5.46 nats at a synthetic width of 0.05 rad, P = 1.1e-3 over 900 seeds.  Markov
+   needs only non-negativity and unbiasedness, so ``ln Zhat + ln rate`` is a floor
+   at level ``1 - rate`` with no assumption that the pilot resolved anything --
+   which matters, because the pilot's own ESS is ~1 in every regime where this
+   guard does any work.  ``rate = exp(-8)`` is read off a measured operating curve
+   (5400 runs): against ``exp(-5)`` it costs 4.5 points of power and buys a 20x
+   smaller worst-case false-positive rate, and a false positive here fails the
+   event.  It catches the catastrophic band completely and the boundary band
+   partially: at a synthetic width of 0.05 rad two seeds in five escape it, 6 and 9
+   nats wrong at neff 5.3 and 41.9.  It stops a nine-orders-of-magnitude error; it
+   is not a warranty.
    (b) ``run_laplace_is`` and ``run_nuts`` route their evidence through
    ``_finalize_evidence``, which returns ``nan`` when ``logZ > max lnL`` (impossible
    for a normalized prior) or ``neff < 1.5``.

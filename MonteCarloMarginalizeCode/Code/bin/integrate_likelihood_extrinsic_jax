@@ -1042,6 +1042,56 @@ def require_finite_evidence(logZ, neff, mode):
         % (logZ, neff, mode))
 
 
+# The prior pilot is an UNBIASED estimator of the same Z, not a bound on it, and
+# the difference is load-bearing -- see prior_pilot_floor below.
+PILOT_FLOOR_FP_RATE = 3.4e-4          # = exp(-8); see the operating curve below
+
+
+def prior_pilot_floor(logZ_pilot, false_positive_rate=PILOT_FLOOR_FP_RATE):
+    """A lower confidence bound on ln Z built from the prior pilot's estimate.
+
+    WHY A BOUND AND NOT THE ESTIMATE.  The pilot is prior Monte Carlo: unbiased
+    for Z, but with a heavy RIGHT tail once the target occupies a tiny fraction
+    of the prior.  For a mode of prior mass ``m``, a single draw landing near the
+    peak makes the estimate ~``L_max / n_pilot`` while the truth is ~``L_max m``,
+    so it overshoots by ``1/(n_pilot m)`` -- more than ``T`` nats whenever
+    ``n_pilot m < exp(-T)``.  Using the raw estimate as a floor therefore rejects
+    a CORRECT adapted answer at exactly the rate that tail occurs.  That is not
+    hypothetical here: at a synthetic width of 0.05 rad, ``n_pilot m = 1.6e-3``
+    and the pilot was measured above the truth by up to +5.46 nats, P = 1.1e-3
+    over 900 seeds.
+
+    THE BOUND.  Markov is enough and needs nothing but unbiasedness and
+    non-negativity, both of which hold: ``P(Zhat >= Z / rate) <= rate``.  So
+    ``Zhat * rate`` is a lower confidence bound on Z at level ``1 - rate``, and
+    the floor is ``ln Zhat + ln rate``.  The threshold is therefore a CHOSEN
+    false-positive rate rather than a tuned constant, and it is distribution-free
+    -- in particular it does NOT assume the pilot resolved anything.  It cannot:
+    the pilot's own ESS is ~1 in every regime where this guard matters (measured
+    median 1.0-1.3 for widths 0.03-0.08 rad), so "the pilot rests on one draw" is
+    the normal state here, not an exceptional one.
+
+    WHY exp(-8) AND NOT exp(-5).  Measured over 5400 synthetic runs (widths
+    0.03-0.15 rad), sweeping the threshold T:
+
+        T      Markov FP <=    FP measured   power on inaccurate runs
+        5          6.7e-3            0/1180        0.651
+        6          2.5e-3            0/1180        0.636
+        8          3.4e-4            0/1180        0.606
+       10          5.0e-5            0/1180        0.578
+
+    Going from 5 to 8 costs 4.5 points of power and buys a 20x smaller worst-case
+    false-positive rate; a false positive here FAILS THE EVENT and writes no row,
+    so it is worth paying for.  No false positive was observed at any threshold:
+    the largest pilot-minus-adapted gap on an accurate run was +1.654 nats, so 8
+    clears the measured margin by 6.3 nats.  The bound, not the measurement, is
+    what the guarantee rests on.
+    """
+    if not np.isfinite(logZ_pilot):
+        return -np.inf
+    return float(logZ_pilot) + float(np.log(false_positive_rate))
+
+
 def evidence_from_logweights(logw):
     """(logZ, sigma/Z, neff) for Z = E[w] from log importance weights."""
     fin = np.isfinite(logw)
@@ -1106,6 +1156,8 @@ def run_laplace_is(like, opts, rng, dim, with_distance, n_adapt=2):
     # from a proposal that MISSES mass is biased low.  So an adapted estimate coming
     # out far BELOW this one is evidence that the adaptation walked away from the
     # peak: the failure mode that remains once #227's draw/density mismatch is fixed.
+    # It is a REFERENCE, not a floor -- prior_pilot_floor() turns it into one, and
+    # the distinction is the whole of external review's P1 on this PR.
     logZ_pilot, _, _ = evidence_from_logweights(
         lnL_p - log_distance_box_correction(opts, with_distance))
 
@@ -1141,11 +1193,14 @@ def run_laplace_is(like, opts, rng, dim, with_distance, n_adapt=2):
     # this driver applied none, which is why #227 exited 0 on lnZ = 5.8e9.
     logZ, sig, neff = _finalize_evidence(
         logZ, sig, neff, float(np.max(lnL)) if np.isfinite(lnL).any() else np.nan)
-    if np.isfinite(logZ) and np.isfinite(logZ_pilot) and logZ < logZ_pilot - 5.0:
+    pilot_floor = prior_pilot_floor(logZ_pilot)
+    if np.isfinite(logZ) and np.isfinite(pilot_floor) and logZ < pilot_floor:
         print("  [laplace-is] adapted proposal gives lnZ = %.3f, %.1f nats BELOW the "
-              "prior pilot's own estimate (%.3f): the adaptation moved off the peak, "
-              "so this evidence is reported as unreliable."
-              % (logZ, logZ_pilot - logZ, logZ_pilot))
+              "prior pilot's Markov floor (%.3f, from a pilot estimate of %.3f at a "
+              "%.1e false-positive rate): the adaptation moved off the peak, so this "
+              "evidence is reported as unreliable."
+              % (logZ, pilot_floor - logZ, pilot_floor, logZ_pilot,
+                 PILOT_FLOOR_FP_RATE))
         logZ, sig = np.nan, np.nan
     # theta follows the GAUSSIAN PROPOSAL q, not the posterior; logw is what
     # turns it into one.  Returned so write_samples() can fair-draw.

@@ -258,25 +258,86 @@ def test_laplace_is_never_reports_evidence_above_the_peak_likelihood():
 
 
 @pytest.mark.parametrize("seed", [3, 5, 11, 12])
-def test_a_proposal_that_walked_off_the_peak_is_reported_as_unreliable(seed):
+def test_a_proposal_that_walked_off_the_peak_is_never_published(seed):
     """Fixing the jitter is NOT sufficient, and this is the test that says so.
 
     With the draw and the density matched, the same configuration returns a
     SELF-CONSISTENT number computed from a proposal that never found the peak:
-    a plausible wrong answer in place of an implausible one.  The prior pilot is
-    kept as a reference -- a crude estimate of the same integral from a proposal
-    that covers the prior by construction, and importance sampling that MISSES
-    mass is biased low -- so an adapted estimate far BELOW it means the
-    adaptation walked away.
+    a plausible wrong answer in place of an implausible one.
 
-    Deleting the pilot comparison in run_laplace_is fails this test on every
-    seed; the reference sweep below is what stops the comparison from being
-    made trigger-happy instead.
+    THE ASSERTION IS A PROPERTY, NOT AN OUTCOME, and that is a correction from
+    external review.  This test used to assert ``isnan`` on every seed, which
+    quietly made a SUCCESS into a test failure: had the adaptation ever recovered
+    the peak here, the suite would have reported a regression.  A test that can
+    only pass while the code fails cannot witness the guard being too aggressive,
+    which is precisely the risk under review.  So what is pinned is the property
+    that matters -- *no inaccurate number is ever published* -- with a recovered,
+    accurate answer explicitly allowed through.
     """
-    _mod, _opts, out, log = _run(n_max=120000, seed=seed, **_NARROW)
+    mod, opts, out, log = _run(n_max=120000, seed=seed, **_NARROW)
     logZ = out[0]
-    assert np.isnan(logZ), "reported lnZ = %r from a collapsed proposal" % logZ
-    assert "BELOW the prior pilot" in log
+    if np.isnan(logZ):
+        assert "Markov floor" in log
+        return
+    ref = _reference_logZ(mod, opts, **_NARROW)
+    assert abs(logZ - ref) < 0.5, (
+        "published lnZ = %r from a collapsed proposal (reference %r)" % (logZ, ref))
+
+
+def test_the_pilot_floor_is_a_markov_bound_not_the_raw_estimate():
+    """External review, P1: the pilot is UNBIASED for Z, not a bound on it.
+
+    For a mode of prior mass m a single lucky draw gives ~L_max/n_pilot against a
+    truth of ~L_max*m, overshooting by 1/(n_pilot*m).  MEASURED, not argued: at a
+    synthetic width of 0.05 rad (n_pilot*m = 1.6e-3) the pilot ran up to +5.46
+    nats ABOVE the truth, P = 1.1e-3 over 900 seeds -- so a raw-estimate floor
+    set at 5 nats rejects correct answers at about that rate.
+
+    Markov needs only non-negativity and unbiasedness: P(Zhat >= Z/rate) <= rate,
+    so ln Zhat + ln rate is a lower confidence bound at level 1 - rate.  The
+    threshold is a chosen false-positive rate, and it is distribution-free -- it
+    does not assume the pilot resolved anything, which matters because the
+    pilot's ESS is ~1 in every regime where this guard does any work.
+    """
+    mod = _driver()
+    for rate in (3.4e-4, 1e-2, 0.5):
+        for lz in (-3.0, 0.0, 1234.5):
+            assert mod.prior_pilot_floor(lz, rate) == pytest.approx(
+                lz + np.log(rate), rel=0, abs=1e-12)
+            assert mod.prior_pilot_floor(lz, rate) < lz     # always a DISCOUNT
+    # a smaller admitted false-positive rate must push the floor DOWN, never up
+    assert mod.prior_pilot_floor(0.0, 1e-6) < mod.prior_pilot_floor(0.0, 1e-2)
+    # the shipped rate is the one the operating curve was read at
+    assert mod.PILOT_FLOOR_FP_RATE == pytest.approx(np.exp(-8.0), rel=0.02)
+    # a pilot that estimated nothing must not manufacture a floor
+    assert mod.prior_pilot_floor(np.nan) == -np.inf
+    assert mod.prior_pilot_floor(-np.inf) == -np.inf
+
+
+def test_an_inflated_pilot_does_not_reject_an_accurate_high_ess_answer():
+    """The regression case external review asked for, and it is a REAL run.
+
+    Reviewer's scenario: a sparse pilot hit both inflates the pilot's estimate
+    AND seeds a good proposal, so the correct adapted answer is compared against
+    a reference that its own lucky draw pushed up.  Found by sweeping 5400 runs
+    for the shape -- pilot ABOVE truth, adapted accurate, high ESS.  At
+    sig = 0.15, seed = 885 the pilot lands +1.35 nats above the reference while
+    the adapted estimate is right to 0.001 nats at neff ~ 1.4e4.
+
+    The exhaustive sweep is the honest part: over those 5400 runs the largest
+    pilot-minus-adapted gap on an accurate run was +1.654 nats, so this case does
+    NOT reach the shipped threshold and no false positive was ever observed.
+    What this pins is the margin -- lower the threshold under ~1.7 nats, or go
+    back to comparing against the raw pilot at a 5-nat cut without the Markov
+    discount, and a correct high-ESS answer starts being thrown away.
+    """
+    mod, opts, out, log = _run(sig=0.15, peak=100.0, n_max=120000, seed=885)
+    logZ, _s, neff = out[0], out[1], out[2]
+    ref = _reference_logZ(mod, opts, sig=0.15, peak=100.0)
+    assert neff > 1000.0
+    assert abs(logZ - ref) < 0.1, "the case no longer has the reviewer's shape"
+    assert not np.isnan(logZ), "an accurate, high-ESS answer was rejected"
+    assert "Markov floor" not in log
 
 
 ###
