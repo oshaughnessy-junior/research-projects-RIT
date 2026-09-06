@@ -145,6 +145,17 @@ done
 #
 # RAISE these when files are added: a floor left at the old value passes while covering less,
 # which is the failure this gate exists to catch.
+# DO NOT RAISE THESE TO THE RUNNER'S NUMBERS.  The GitHub runner reports 350 collected / 338
+# passed for this same manifest, CIT reports 347 / 335, and the underlying results are IDENTICAL:
+# both say "335 passed, 11 skipped, 1 xfailed".  The gap is pytest-subtests, which is in the
+# runner's dependency closure and not in CIT's IGWN environment; with it, the three `subTest`
+# blocks in test/backends/test_backends_lowlevel.py are counted as separate cases in the junit
+# XML this gate parses.  Per-FILE collection is 347 on both, file by file.
+#
+# So the floors are pinned to the PLUGIN-FREE count.  That is the robust choice in the only
+# direction that matters: 350 >= 347 passes today, and if pytest-subtests ever leaves the
+# runner's closure the count falls back to 347 and still passes.  Pinning 350 would turn an
+# unrelated dependency change into a red gate.
 EXPECTED_TESTS=347
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 12 skips are
