@@ -62,6 +62,7 @@ FILES=(
   "$C/test/test_ile_scalar_edge_cases.py"
   "$C/test/test_srate_resample_time_marginalization.py"
   "$C/test/test_vectorized_lal_tools_split.py"
+  "$C/test/test_noloop_accumulator_shapes.py"
   # -- integrators: seeding, allocation, weight derivation
   "$C/test/integrators/test_convergence_sample_order.py"
   "$C/test/integrators/test_gmm_adaptive.py"
@@ -116,6 +117,60 @@ for f in "${FILES[@]}"; do
 done
 [ "$missing" -eq 0 ] || { echo "  Fix the manifest or restore the file; left as is it covers nothing." >&2; exit 1; }
 
+# Pinned TOTAL floor, so a renamed file or a dropped test_* entry point goes red rather than
+# green-on-fewer-tests.  MEASURED 2026-09-03 on CIT with the IGWN conda python (3.11, numpy
+# 1.26.4, scipy 1.14.1, lal 7.7.0), whole manifest in one run: 319 collected,
+# 307 passed, 12 skipped (11 pytest.skip + 1 xfail).
+#
+# COST: 363 s total on CIT for the 347-test manifest, of which the pytest run is ~145 s.  The
+# rest is the per-file collection loop below -- one interpreter per manifest entry, each
+# importing RIFT (lal, numpy, numba), so it grows linearly with the manifest and now dominates.
+# That is the price of the exit-5 defence and it is worth paying, but it is why this job's
+# timeout-minutes is 20 rather than something tight: measure before trimming the budget.
+#
+# History.  Both branches of a merge have now moved these numbers twice, and the arithmetic is
+# NOT the way to combine them -- this gate collects every file individually before the combined
+# run, so the merged floor is RE-MEASURED, never added up:
+#   278/266  original manifest
+#   296/284  + test_replica_pooling.py, test_marg_list.py (rostered BROKEN until fixed)
+#   299/287  + test_vectorized_lal_tools_split.py (from rift_O4d)
+#   307/295  + test_noloop_accumulator_shapes.py (from rift_O4d)
+#   +        + test_teobresums_compat.py (OPTDEP on prose until test-roster-verify.py caught it
+#            passing completely with nothing missing; its companion test_rimsky_integration.py
+#            was promoted alongside and REVERTED -- see the note by the manifest entry)
+#   +        + test_integrator_studies.py, wrapping the five integrator studies that collect
+#            nothing themselves (+43 s, with --as-test)
+#   +        + test_backends_lowlevel.py (OPTDEP needs:glue,htcondor until roster-verify-check
+#            found it passing 15/15 on a runner with htcondor absent)
+#
+# RAISE these when files are added: a floor left at the old value passes while covering less,
+# which is the failure this gate exists to catch.
+EXPECTED_TESTS=347
+# Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
+# asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 12 skips are
+# environment legs -- cupy in test_seeding_reproducibility, device legs in
+# test_dslice_device_native, and the xfail in test_uv_symmetry.
+EXPECTED_PASSED=335
+MAX_SKIPPED=12
+
+# The floors must be INTEGERS, and this is checked rather than assumed.  `[ 347 -lt FOO ]` does
+# not fail the build: bash prints "integer expression expected", returns 2, and the `if` is
+# simply FALSE -- so a malformed floor silently disables the check it looks like it performs,
+# and the gate goes green having compared nothing.  Observed: a placeholder left in during a
+# merge resolution produced exactly that, and only the stderr line gave it away.  `set -u`
+# catches a MISSING floor; nothing caught a malformed one until this did.
+for _f in EXPECTED_TESTS EXPECTED_PASSED MAX_SKIPPED; do
+  eval "_v=\${${_f}}"
+  case "${_v}" in
+    ''|*[!0-9]*)
+      echo "test-core-units.sh: ${_f}='${_v}' is not a non-negative integer." >&2
+      echo "  A non-numeric floor makes its comparison a silent no-op -- the gate would pass" >&2
+      echo "  while checking nothing.  Set it to the MEASURED value." >&2
+      exit 1
+      ;;
+  esac
+done
+
 # PER-FILE collection floor of 1.  A file that collects nothing is the exit-5 trap arriving
 # through the front door: inside a multi-file run pytest's exit 5 never appears at all, so it
 # has to be checked per file.
@@ -133,39 +188,6 @@ for f in "${FILES[@]}"; do
 done
 [ "$floor_rc" -eq 0 ] || exit 1
 
-# Pinned TOTAL floor, so a renamed file or a dropped test_* entry point goes red rather than
-# green-on-fewer-tests.  MEASURED 2026-09-03 on CIT with the IGWN conda python (3.11, numpy
-# 1.26.4, scipy 1.14.1, lal 7.7.0), whole manifest in one run: 319 collected,
-# 307 passed, 12 skipped (11 pytest.skip + 1 xfail).
-#
-# COST: 350 s total on CIT, of which the pytest run is ~100 s.  The rest is the per-file
-# collection loop below -- one interpreter per manifest entry, each importing RIFT (lal,
-# numpy, numba), so it grows linearly with the manifest and now dominates.  That is the
-# price of the exit-5 defence and it is worth paying, but it is why this job's
-# timeout-minutes is 20 rather than something tight: measure before trimming the budget.
-#
-# History, because both branches of a merge moved these numbers and the arithmetic is NOT the
-# way to combine them -- this gate collects every file individually before the combined run, so
-# the merged floor is re-measured, never added up:
-#   278/266  original manifest
-#   296/284  + test_replica_pooling.py, test_marg_list.py (rostered BROKEN until fixed)
-#   299/287  + test_vectorized_lal_tools_split.py (from rift_O4d)
-#   +        + test_teobresums_compat.py (rostered OPTDEP on prose until test-roster-verify.py
-#            caught it collecting and passing completely with nothing missing; its companion
-#            test_rimsky_integration.py was promoted alongside and REVERTED -- see the note by
-#            the manifest entry)
-#   +        + test_integrator_studies.py, wrapping the five integrator studies that collect
-#            nothing themselves (+29 s)
-#
-# RAISE these when files are added: a floor left at the old value passes while covering less,
-# which is the failure this gate exists to catch.
-EXPECTED_TESTS=319
-# Outcomes, not just exit status: a collection floor cannot see a test that collects, runs
-# and asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 12 skips are
-# environment legs -- cupy in test_seeding_reproducibility, device legs in
-# test_dslice_device_native, and the xfail in test_uv_symmetry.
-EXPECTED_PASSED=307
-MAX_SKIPPED=12
 
 junit="$(mktemp -t core-units-junit-XXXXXX.xml)"
 echo "== running =="
