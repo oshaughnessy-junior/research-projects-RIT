@@ -320,6 +320,12 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         honest phase-marginalized sky/psi export,
 #                                         K=14/K=88 independent guarded references,
 #                                         and executable baseline/banded support refusal.
+#   test_multipeak_planner.py          15  opt-in U,V,Q-guided four-axis multi-peak
+#                                         planner: exact symmetry expansion, strict
+#                                         stationary refinement, two-tier empirical
+#                                         convergence, overlap ownership, finite reserve,
+#                                         and real 22/HM oracle regressions.  CPU-only;
+#                                         no lal, cupy, or GPU required.
 
 FILES=(
   "${JAXDIR}/test_jax_time_quadrature.py"
@@ -352,6 +358,7 @@ FILES=(
   "${JAXDIR}/test_limit_distance_jax.py"
   "${JAXDIR}/test_direct_marginalization_planner.py"
   "${JAXDIR}/test_time_first_peaklocal.py"
+  "${JAXDIR}/test_multipeak_planner.py"
 )
 
 # EXCLUDED: files in JAXDIR matching test_*.py that are deliberately NOT gated.  The
@@ -511,7 +518,7 @@ fi
 # it counted the one test this job deselects.  That was a one-off setup bug, not a property
 # of the environment, and subtracting for it would under-promise by one -- which is the
 # failure direction this whole comment exists to warn about, because a low floor PASSES.
-EXPECTED_TESTS=432
+EXPECTED_TESTS=447
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
