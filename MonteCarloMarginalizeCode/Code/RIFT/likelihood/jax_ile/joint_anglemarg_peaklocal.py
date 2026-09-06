@@ -43,12 +43,21 @@ falls back to a whole cell and needs ``~sqrt(A)`` nodes.  Production uses that c
 count for every cell because fallback is data-dependent; streaming preserves the memory
 economy even though the arithmetic cost is no longer claimed constant.
 
-SCOPE OF THIS KERNEL.  The u axis is localized; the phi axis is a dense grid, scanned
-in chunks.  That is deliberately the same cost shape as the shipped ``laplace`` scheme
-(``~sqrt(A)`` on phi) and a strict improvement on its u treatment, which uses a blended
-O(1/A) width model rather than the exact stationary points.  Localizing phi as well --
-the (phi localized, psi localized) cell of the family -- needs the profile ``F(phi)``
-and its envelope derivative, and is not attempted here.
+SCOPE OF THIS KERNEL, AND IT IS TWO RULES RATHER THAN ONE.  Both localize u exactly on
+the cell partition; they differ on phi.
+
+:func:`joint_lnL_phi_dense` scans phi as a dense grid in chunks -- deliberately the same
+cost shape as the shipped ``laplace`` scheme (``~sqrt(A)`` on phi) and a strict
+improvement on its u treatment, which uses a blended O(1/A) width model rather than the
+exact stationary points.  This is the production path.
+
+:func:`phi_local_lnI` localizes phi as well -- the (phi localized, psi localized) cell of
+the family.  An earlier version of this paragraph said that was "not attempted here",
+which was true when written and stopped being true in the same file: the profile
+``F(phi)`` and its envelope derivatives are :func:`u_profile`, and phi_local_lnI is built
+on them.  Its cost stops growing with amplitude, and it DECLINES rather than returning an
+unbounded number, on a certificate that is one genuine bound plus two empirical gates --
+see that function for exactly which is which.  It is not wired into production.
 
 MEMORY.  Bounded by ``phi_chunk`` and ``U_NODE_STREAM_CHUNK`` through rolled loops, never
 by the full phi or u grids: the largest u transient is
