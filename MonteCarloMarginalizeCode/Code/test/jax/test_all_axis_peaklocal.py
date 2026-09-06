@@ -145,6 +145,84 @@ def test_uv_ranked_time_start_feeds_algebraic_angles_and_analytic_distance():
     assert np.all((starts[:, 3] > 0.2) & (starts[:, 3] < 7.0))
 
 
+def test_joint_start_lattice_is_harmonic_order_sized_not_snr_sized():
+    C_A, C_B, constants = _problem(65)
+    summary = AAP.summarize_uv_norm_table(C_B)
+    low = AAP.rank_joint_starts_from_uvq(
+        C_A, summary, 0.2, 7.0, max_time_starts=1, max_starts=8)
+    high = AAP.rank_joint_starts_from_uvq(
+        32.0 * C_A, summary, 0.2, 7.0,
+        max_time_starts=1, max_starts=8)
+
+    assert low.starts.shape[1] == 4
+    assert low.time_starts[0] == int(constants["span"] // 2)
+    assert low.n_phi_lattice == high.n_phi_lattice == 17
+    assert low.n_u_lattice == high.n_u_lattice == 9
+    assert low.n_lattice_evaluations == high.n_lattice_evaluations == 17 * 9 * 65
+    assert low.n_exact_symmetry_shifts == high.n_exact_symmetry_shifts == 2
+    assert low.capacity_ok and high.capacity_ok
+    assert np.all((low.starts[:, 3] >= 0.2) & (low.starts[:, 3] <= 7.0))
+
+
+def test_joint_start_guard_discards_support_before_ranking():
+    C_A, C_B, constants = _problem(65)
+    guard = 8
+    guarded = np.full(C_A.shape[:-1] + (65 + 2 * guard,),
+                      1.0e8 + 2.0e8j, dtype=np.complex128)
+    guarded[..., guard:-guard] = C_A
+    summary = AAP.summarize_uv_norm_table(C_B)
+    plan = AAP.rank_joint_starts_from_uvq(
+        guarded, summary, 0.2, 7.0, time_guard=guard,
+        max_time_starts=1, max_starts=8)
+
+    assert plan.time_starts.tolist() == [int(constants["span"] // 2)]
+    assert plan.n_lattice_evaluations == 17 * 9 * 65
+
+
+def test_joint_start_capacity_declines_instead_of_silent_truncation():
+    C_A, C_B, _ = _problem(65)
+    summary = AAP.summarize_uv_norm_table(C_B)
+    plan = AAP.rank_joint_starts_from_uvq(
+        C_A, summary, 0.2, 7.0, max_time_starts=1, max_starts=1)
+    assert plan.starts.shape == (1, 4)
+    assert plan.n_candidates_before_cap > 1
+    assert not plan.capacity_ok
+
+
+def test_exact_coefficient_symmetry_completes_quadrupole_orbit():
+    C_A = np.zeros((3, 3, 9), dtype=np.complex128)
+    C_A[2, 0] = 1.0
+    C_A[2, 2] = 0.7
+    C_B = np.zeros((5, 5), dtype=np.complex128)
+    C_B[0, 2] = 2.0
+    shifts = AAP._exact_angular_translation_symmetries(C_A, C_B)
+    want = np.asarray([
+        [0.0, 0.0], [np.pi, 0.0],
+        [0.5 * np.pi, np.pi], [1.5 * np.pi, np.pi]])
+    assert shifts.shape == (4, 2)
+    for shift in want:
+        assert np.min(np.linalg.norm(shifts - shift, axis=1)) < 1.0e-12
+
+
+def test_mode_stationarity_uses_curvature_scaled_displacement_at_high_snr():
+    point = np.asarray([[10.0, 1.0, 2.0, 1.5]])
+    value = np.asarray([10000.0])
+    gradient = np.asarray([[2.0e-4, 0.0, 0.0, 0.0]])
+    curvature = np.asarray([[35.0, 200.0, 1000.0, 100000.0]])
+    selected, stationary = AAP.select_refined_modes(
+        point, value, gradient, curvature, max_modes=1,
+        gradient_tol=2.0e-6)
+    assert stationary.tolist() == [True]
+    assert selected.tolist() == [0]
+
+    curvature[0, 0] = 1.0
+    selected, stationary = AAP.select_refined_modes(
+        point, value, gradient, curvature, max_modes=1,
+        gradient_tol=2.0e-6)
+    assert stationary.tolist() == [False]
+    assert selected.size == 0
+
+
 def test_jax_gradient_hessian_refinement_finds_both_angular_modes():
     C_A, C_B, constants = _problem(65)
     centers, _ = _joint_peak(constants)
@@ -202,6 +280,61 @@ def test_multimode_local_primitive_matches_oracle_but_stays_uncertified():
         2 * 19 ** 3 * (np.prod(C_A.shape[:-1]) + C_B.size))
     assert int(ledger["workspace_bytes_hi"]) < 8_000_000
     assert bool(ledger["reconciles"])
+
+
+def test_empirical_enrichment_accepts_without_claiming_global_proof():
+    C_A, C_B, constants = _problem(33)
+    C_A *= 0.1
+    x_min, x_max = 0.5, 2.0
+    centers = np.asarray([[
+        constants["span"] / 2.0, np.pi, np.pi,
+        0.5 * (x_min + x_max)]])
+    transforms = np.asarray([np.diag([
+        constants["span"] / 2.0, np.pi, np.pi,
+        0.5 * (x_max - x_min)])])
+    plan = AAP.make_all_axis_mode_plan(
+        centers, max_modes=2, local_transforms=transforms,
+        local_radius=1.0, outside_bound_certified=False,
+        time_reconstruction_certified=True)
+    value, accepted, ledger = AAP.empirical_enrichment_marginalize(
+        C_A, C_B, plan, plan, x_min, x_max,
+        convergence_tol_nats=1.0e-3)
+
+    assert np.isfinite(float(value))
+    assert bool(accepted)
+    assert bool(ledger["acceptance_is_empirical_enrichment"])
+    assert not bool(ledger["global_completeness_certified"])
+    assert not bool(ledger["empirical_value_error_certified"])
+    assert float(ledger["convergence_error"]) <= 1.0e-3
+    assert bool(ledger["mode_nesting_ok"])
+    assert not bool(ledger["fallback_required"])
+    assert bool(ledger["reconciles"])
+
+    shifted = centers.copy()
+    shifted[:, 1] += 0.1
+    shifted_plan = AAP.make_all_axis_mode_plan(
+        shifted, max_modes=2, local_transforms=transforms,
+        local_radius=1.0, outside_bound_certified=False,
+        time_reconstruction_certified=True)
+    _, accepted, nesting_ledger = AAP.empirical_enrichment_marginalize(
+        C_A, C_B, plan, shifted_plan, x_min, x_max,
+        convergence_tol_nats=1.0e-3)
+    assert not bool(accepted)
+    assert bool(nesting_ledger["decline_mode_nesting"])
+    assert bool(nesting_ledger["reconciles"])
+
+    truncated_plan = AAP.make_all_axis_mode_plan(
+        centers, max_modes=2, local_transforms=transforms,
+        local_radius=1.0, outside_bound_certified=False,
+        time_reconstruction_certified=True, discovery_capacity_ok=False)
+    _, accepted, capacity_ledger = AAP.empirical_enrichment_marginalize(
+        C_A, C_B, truncated_plan, plan, x_min, x_max,
+        convergence_tol_nats=1.0e-3)
+    assert not bool(accepted)
+    assert bool(capacity_ledger["decline_capacity"])
+    assert bool(capacity_ledger["fallback_required"])
+    assert not bool(capacity_ledger["decline_is_waveform_failure"])
+    assert bool(capacity_ledger["reconciles"])
 
 
 def test_missing_completeness_declines_to_reserve_not_waveform_failure():
