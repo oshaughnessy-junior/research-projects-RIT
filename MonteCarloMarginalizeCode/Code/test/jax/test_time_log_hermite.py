@@ -99,3 +99,104 @@ def test_shift_and_scale_invariances():
     assert abs((shifted - base) - 3.5) < 1e-10
     doubled = float(_time_marginalize_log_hermite(y, 2.0 * deltaT)[0])
     assert abs((doubled - base) - np.log(2.0)) < 1e-10
+
+
+# --------------------------------------------------------------------------
+# Tests added by adversarial review of this file's own first version.  The
+# original suite tested ONE Gaussian, which is the single easiest integrand for
+# a cubic interpolant -- a fixture chosen, unintentionally, to flatter the
+# method.  These pin the cases where the advantage is small or absent.
+# --------------------------------------------------------------------------
+
+# numpy 2 renamed trapz -> trapezoid and REMOVED the old name; CI installs numpy
+# unpinned, and the two interpreters here disagree (IGWN 1.26.4 has only trapz,
+# the dev env 2.4.6 has only trapezoid).  Written against one, this helper failed
+# on the other -- caught only by running the suite under both.
+_TRAPZ = getattr(np, "trapezoid", None) or np.trapz
+
+
+def _log_integral_reference(fn, t, n=400001):
+    """Reference by dense trapezoid.  Converged: identical to 12 digits from
+    n=1e5 to n=8e6 on the skewed case, checked rather than assumed."""
+    tt = np.linspace(t[0], t[-1], n)
+    g = fn(tt)
+    m = g.max()
+    return m + np.log(_TRAPZ(np.exp(g - m), tt))
+
+
+def test_advantage_is_smaller_on_a_skewed_peak():
+    """A skewed lnL is physical and much harder than the suite's Gaussian.
+
+    Pins the ADVANTAGE, not just the direction: on the Gaussian log-hermite is
+    ~4 orders better; skewed it is ~5x.  Quoting the Gaussian figure as if it
+    were general would overstate the method.
+    """
+    npts, deltaT = 513, 1.0 / 4096
+    t = (np.arange(npts) - npts // 2) * deltaT
+    fn = lambda tt: -(tt ** 2) / (2 * (deltaT / 2) ** 2) - 8.0 * np.tanh(tt / deltaT)
+    truth = _log_integral_reference(fn, t)
+    y = jnp.asarray(fn(t)[None, :])
+    w = jnp.asarray(_simpson_weights(npts, deltaT))
+    e_s = abs(float(_time_marginalize(y, w)[0]) - truth)
+    e_h = abs(float(_time_marginalize_log_hermite(y, deltaT)[0]) - truth)
+    assert e_h < e_s, (e_s, e_h)
+    assert e_h > e_s / 100.0, (
+        "skewed advantage is now >100x; if that is real, update the claim in the "
+        "docstring, which says the large factors are the smooth-Gaussian case")
+
+
+def test_error_changes_sign_so_convergence_must_not_be_read_at_one_anchor():
+    """Undershoots while resolved, overshoots once not -- zero-crossing ~h/sigma 3.
+
+    A convergence test anchored near the crossing would report near-perfect
+    accuracy for the wrong reason.
+    """
+    npts, deltaT = 513, 1.0 / 4096
+    t = (np.arange(npts) - npts // 2) * deltaT
+    errs = {}
+    for hs in (2.0, 8.0):
+        sigma = deltaT / hs
+        y = jnp.asarray((-((t - 0.3 * deltaT) ** 2) / (2 * sigma ** 2))[None, :])
+        truth = 0.5 * np.log(2 * np.pi) + np.log(sigma)
+        errs[hs] = float(_time_marginalize_log_hermite(y, deltaT)[0]) - truth
+    assert errs[2.0] < 0.0 < errs[8.0], errs
+
+
+def test_minus_inf_does_not_poison_the_row():
+    """-inf is legitimate in a log-likelihood; Simpson handles it natively.
+
+    It reaches the slopes as -inf - -inf = nan, and one nan takes the whole row.
+    Regression for that: the result must be finite.
+    """
+    deltaT = 1.0 / 4096
+    bad = np.full((1, 9), -np.inf)
+    bad[0, 4] = 0.0
+    out = float(_time_marginalize_log_hermite(jnp.asarray(bad), deltaT)[0])
+    assert np.isfinite(out), out
+
+
+def test_n_sub_is_not_exact_and_the_default_is_converged_enough():
+    """The per-interval rule is NOT exact -- exp of a cubic is not a polynomial.
+
+    Pins that the default sits close to a refined n_sub, so the quadrature is not
+    the dominant term, without claiming it contributes nothing.
+    """
+    npts, deltaT = 513, 1.0 / 4096
+    t = (np.arange(npts) - npts // 2) * deltaT
+    y = jnp.asarray((-((t - 0.3 * deltaT) ** 2) / (2 * (deltaT / 2) ** 2))[None, :])
+    v4 = float(_time_marginalize_log_hermite(y, deltaT, n_sub=4)[0])
+    v10 = float(_time_marginalize_log_hermite(y, deltaT, n_sub=10)[0])
+    v2 = float(_time_marginalize_log_hermite(y, deltaT, n_sub=2)[0])
+    assert abs(v2 - v10) > 1e-4, "n_sub has no effect; the exactness claim would be true"
+    assert abs(v4 - v10) < 1e-4, (v4, v10)
+
+
+def test_real_jax_vmap_not_just_a_stacked_batch():
+    """test_jit_vmap_grad stacks rows; that is not jax.vmap.  This is."""
+    npts, deltaT = 257, 1.0 / 4096
+    t = (np.arange(npts) - npts // 2) * deltaT
+    y = jnp.asarray((-((t - 0.3 * deltaT) ** 2) / (2 * (deltaT / 2) ** 2))[None, :])
+    stacked = jnp.concatenate([y, y + 1.0], axis=0)
+    v = jax.vmap(lambda z: _time_marginalize_log_hermite(z[None, :], deltaT)[0])(stacked)
+    assert v.shape == (2,)
+    assert abs(float(v[1] - v[0]) - 1.0) < 1e-10

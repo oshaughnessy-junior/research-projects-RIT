@@ -988,10 +988,20 @@ def _time_marginalize_log_hermite(lnL_t, deltaT, n_sub=_LOG_HERMITE_SUB_DEFAULT)
     ``(S,)``, the same quantity and normalization as :func:`_time_marginalize`
     (an integral in seconds), so the two are drop-in comparable.
 
-    The interpolant is C^1 and reproduces cubics exactly; the per-interval
-    Gauss-Legendre rule is exact through degree ``2*n_sub - 1`` for the
-    *exponential* of it, so the residual is the Hermite error in lnL, not the
-    quadrature.
+    The interpolant is C^1 and reproduces cubics exactly.  The per-interval rule
+    is NOT exact: Gauss-Legendre is exact for polynomials, and ``exp`` of a cubic
+    is not one, so ``n_sub`` carries its own error.  Measured at h/sigma = 2
+    (sigma = deltaT/2), value vs ``n_sub``: 2 -> -8.093045, 3 -> -8.091875,
+    4 -> -8.091980, 6 -> -8.091975, 10 -> -8.091975.  So the default n_sub = 4 sits
+    ~5e-6 nats from converged, which is below the Hermite error it is integrating
+    but is NOT zero.  An earlier version of this docstring claimed exactness; that
+    was wrong and the numbers above are why.
+
+    ERROR SIGN IS NOT ONE-SIDED.  Catmull-Rom undershoots a peaked lnL while the
+    sampling still resolves it and OVERSHOOTS once it does not: measured
+    -1.8e-12, -4.7e-06, +1.3e-03, +1.2e-01 at h/sigma = 1, 2, 4, 8.  The error
+    passes through zero near h/sigma ~ 3, so a convergence test anchored there
+    would look perfect for the wrong reason.
     """
     if n_sub == _LOG_HERMITE_SUB_DEFAULT:
         s_nodes, s_w = _LOG_HERMITE_S, _LOG_HERMITE_W
@@ -999,7 +1009,13 @@ def _time_marginalize_log_hermite(lnL_t, deltaT, n_sub=_LOG_HERMITE_SUB_DEFAULT)
         x, w = np.polynomial.legendre.leggauss(int(n_sub))
         s_nodes, s_w = 0.5 * (x + 1.0), 0.5 * w
 
+    # -inf IS LEGITIMATE in a log-likelihood and Simpson handles it natively
+    # (exp(-inf) = 0).  Here it poisons the SLOPES: -inf - -inf = nan, and one nan
+    # takes the whole row.  Floor it far enough below the row max that exp
+    # underflows anyway -- the same contribution, with finite differences.
     y = lnL_t
+    row_max = jnp.max(jnp.where(jnp.isfinite(y), y, -jnp.inf), axis=-1, keepdims=True)
+    y = jnp.where(jnp.isfinite(y), y, row_max - 700.0)
     dy = jnp.diff(y, axis=-1)                                   # (S, N-1)
     # Per-sample slopes: central inside, one-sided at the ends.  These are
     # h * dy/dt, which is exactly what the Hermite basis wants, so h cancels.
