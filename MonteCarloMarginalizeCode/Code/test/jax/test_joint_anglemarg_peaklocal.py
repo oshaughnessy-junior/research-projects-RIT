@@ -626,36 +626,77 @@ def test_the_bound_grid_adequacy_gate_fires_and_is_cleared_by_sizing():
     assert JP.required_u_nodes(1.0e4) > 48
 
 
-def test_the_host_seed_plan_is_complete_where_a_uniform_grid_only_hopes():
-    """The honest route back to algebraic seeds: build them on the HOST from
-    ``bivariate_trig_stationary`` -- the enumerator of record, fail-closed on the BKK root
-    count, Jacobian conditioning, torus classification and two-projection agreement -- and
-    hand the kernel a fixed-capacity plan.  An in-kernel resultant seeder used to live in
-    this module and was removed because solving inside a traced function is exactly what
-    that module's header forbids, and because it had no ``ok`` at all.
+def test_the_host_seed_plan_returns_genuine_stationary_phi_of_g():
+    """What the plan actually delivers, asserted rather than asserted-about.
 
-    Non-vacuity is the point: the plan must find seeds a 32-point uniform grid does not,
-    and it must not change an answer the grid already got right.
+    The previous name for this test said "is_complete", and its body checked only that the
+    plan AGREES with the uniform grid -- which is evidence the grid was already adequate,
+    the opposite of the claimed property.  A plan returning a coarse SUBSET of the true
+    stationary set would have passed it.  That is the same failure shape as the FFT-sign
+    defect earlier in this series: a test named for a property its body cannot see.
+
+    The property that is real and checkable: every seed is a phi at which ``g`` genuinely
+    has a 2-D stationary point, i.e. there is a ``u`` with ``dg/du = 0`` AND
+    ``dg/dphi = 0``.  ``u_stationary_roots`` supplies the u roots exactly, so the residual
+    is measured against the axis's own algebra and not against a grid.
+
+    Completeness for ``F``'s maxima is NOT asserted here, because it is not true --
+    see :func:`test_the_seed_plan_does_not_cover_F_maxima_by_construction`.
     """
-    plan_mod = pytest.importorskip("RIFT.likelihood.bivariate_trig_stationary")
-    assert plan_mod is not None
+    pytest.importorskip("RIFT.likelihood.bivariate_trig_stationary")
     KS = 2
-    rng = np.random.default_rng(101)
-    C = rng.normal(size=(3, 2 * KS + 1)) + 1j * rng.normal(size=(3, 2 * KS + 1))
-    C = C * (19.0 / np.sum(np.abs(C)))
+    for KP, amp in ((3, 19.0), (5, 30.0)):
+        rng = np.random.default_rng(101)
+        C = rng.normal(size=(KP, 2 * KS + 1)) + 1j * rng.normal(size=(KP, 2 * KS + 1))
+        C = C * (amp / np.sum(np.abs(C)))
+        plan = JP.phi_seed_plan(C)
+        assert plan is not None
+        assert plan.n_slots == 2 * len(plan.seeds)
+        assert np.all(plan.seeds >= 0.0) and np.all(plan.seeds < 2 * np.pi)
+        assert np.all(np.diff(plan.seeds) > 0)          # sorted and deduplicated
 
+        k = np.arange(KP)
+        w = np.where(k > 0, 2.0, 1.0)
+        scale = float(np.sum(np.abs(C)))
+        worst = 0.0
+        for s in plan.seeds:
+            ph = np.exp(1j * s * k) * w
+            D = lambda q: (ph * C[:, KS + q]).sum()
+            c1, c2 = D(1) + np.conj(D(-1)), D(2) + np.conj(D(-2))
+            us = np.asarray(JP.u_stationary_roots(complex(c1), complex(c2)))
+            gp = np.asarray(JP.eval_g2(jnp.asarray(C), jnp.full(us.shape, float(s)),
+                                       jnp.asarray(us), (1, 0)))
+            worst = max(worst, float(np.abs(gp).min()) / scale)
+        assert worst < 1e-6, (KP, amp, worst)
+
+
+def test_the_seed_plan_does_not_cover_F_maxima_by_construction():
+    """The claim the first version of this branch made and could not support.
+
+    ``phi_local_lnI`` iterates on maxima of ``F(phi) = log int du exp(g)``, whose condition
+    is ``E[d_phi g] = 0`` -- an average under ``exp(g) du``, not pointwise stationarity of
+    ``g``.  So the plan's seeds are NOT guaranteed to sit on F's maxima, and a uniform grid
+    of n seeds actually guarantees a spacing bound (``pi/n``) that the plan does not.
+
+    Pinned so the overclaim cannot come back: at low amplitude the displacement is far
+    larger than the accuracy anyone would infer from the word "complete".
+    """
+    pytest.importorskip("RIFT.likelihood.bivariate_trig_stationary")
+    KS, KP, amp = 2, 3, 2.0
+    rng = np.random.default_rng(7)
+    C = rng.normal(size=(KP, 2 * KS + 1)) + 1j * rng.normal(size=(KP, 2 * KS + 1))
+    C = C * (amp / np.sum(np.abs(C)))
     plan = JP.phi_seed_plan(C)
     assert plan is not None
-    assert plan.certified, plan.report          # KP=3 is certifiable; pin that it is
-    assert plan.n_slots == 2 * len(plan.seeds)
-    assert np.all(plan.seeds >= 0.0) and np.all(plan.seeds < 2 * np.pi)
-    assert np.all(np.diff(plan.seeds) > 0)      # sorted and deduplicated
 
-    Cj = jnp.asarray(C)
-    v_grid, ok_grid, _ = JP.phi_local_lnI(Cj)
-    v_plan, ok_plan, _ = JP.phi_local_lnI(Cj, seeds=plan.seeds, n_slots=plan.n_slots)
-    assert bool(ok_grid) and bool(ok_plan)
-    assert abs(float(v_plan) - float(v_grid)) < 1e-6, (float(v_plan), float(v_grid))
+    grid = np.linspace(0.0, 2 * np.pi, 2048, endpoint=False)
+    F = np.asarray(jax.vmap(lambda p: JP.u_profile(jnp.asarray(C), p)[0])(jnp.asarray(grid)))
+    loc = np.where((F > np.roll(F, 1)) & (F > np.roll(F, -1)))[0]
+    assert len(loc) > 0
+    worst = max(float(np.abs(np.angle(np.exp(1j * (grid[i] - plan.seeds)))).min())
+                for i in loc)
+    assert worst > 1e-2, ("if this ever becomes tight the docstring may be strengthened, "
+                          "but it must be MEASURED, not assumed", worst)
 
 
 def test_the_seed_plan_does_not_pretend_to_cut_the_empty_slot_cost():
@@ -688,7 +729,16 @@ def test_a_smaller_slot_budget_declines_rather_than_returning_a_wrong_answer():
     rng = np.random.default_rng(101)
     C = rng.normal(size=(9, 2 * KS + 1)) + 1j * rng.normal(size=(9, 2 * KS + 1))
     C = jnp.asarray(C * (1e2 / np.sum(np.abs(C))))
-    _, _, wide = JP.phi_local_lnI(C)
+    _, ok_wide, wide = JP.phi_local_lnI(C)
     _, ok_tight, tight = JP.phi_local_lnI(C, n_slots=1)
-    assert float(tight["area_outside"]) >= float(wide["area_outside"])
+    # STRICT, both of them.  The first version asserted `area_outside` with >= and `not
+    # ok_tight` on a fixture whose UNSTARVED call already declines -- so both assertions
+    # held even if n_slots were ignored entirely.  Measured here: 5 regions -> 1, and
+    # area_outside 1.022 -> 4.529, neither of which a no-op could produce.
+    assert int(tight["n_phi_regions"]) < int(wide["n_phi_regions"])
+    assert float(tight["area_outside"]) > float(wide["area_outside"])
     assert not bool(ok_tight), "a starved slot budget must decline"
+    # and the honest caveat: on THIS fixture the wide call declines too, so the line above
+    # is necessary but not sufficient evidence.  The two strict assertions are the ones
+    # that show n_slots took effect.
+    assert not bool(ok_wide)

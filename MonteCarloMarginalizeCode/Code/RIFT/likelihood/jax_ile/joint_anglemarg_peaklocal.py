@@ -695,7 +695,7 @@ class PhiSeedPlan(object):
                 % (len(self.seeds), self.n_slots, self.certified))
 
 
-def phi_seed_plan(C, dedupe_tol=1e-8):
+def phi_seed_plan(C, dedupe_tol=1e-8):        # see the note on dedupe_tol below
     """Build phi seeds on the HOST from the authoritative algebraic enumerator.
 
     :mod:`RIFT.likelihood.bivariate_trig_stationary` is the enumerator of record for
@@ -709,9 +709,24 @@ def phi_seed_plan(C, dedupe_tol=1e-8):
     that reason.  The difference is not cosmetic: that one had no ``ok`` at all and
     returned silently empty on a degenerate table.
 
-    EVERY stationary phi is a seed, not only the maxima of ``g``.  ``phi_local_lnI``
-    iterates on the maxima of the PROFILE ``F(phi) = log int du exp(g)``, which are near
-    but not equal to the phi of maxima of ``g``, so the superset is the safe seed set.
+    WHAT IS COMPLETE HERE IS THE STATIONARY SET OF ``g``, AND THAT IS NOT THE SET THIS
+    KERNEL NEEDS.  ``phi_local_lnI`` iterates on the maxima of the PROFILE
+    ``F(phi) = log int du exp(g)``, whose stationarity condition is ``E[d_phi g] = 0`` --
+    an average under ``exp(g) du``, not pointwise stationarity of ``g``.  The two sets
+    coincide only asymptotically, as the Laplace approximation to the u integral sharpens.
+
+    MEASURED, against F's maxima on a dense 4096-point grid: the worst distance from an
+    F-maximum to the nearest seed is 0.139 rad at KP=3 amplitude 2, falling to 3e-4 rad at
+    amplitude 1e3 -- but at KP=9 it is 0.069 rad and does NOT fall with amplitude.  So this
+    is BETTER-MOTIVATED TARGETING, not a completeness result for ``F``, and an earlier
+    version of this docstring called the stationary set a "safe superset", which it is not.
+    A uniform grid of ``n`` seeds guarantees every angle lies within ``pi/n`` of a seed
+    (0.098 rad at the default 32) and this plan guarantees no such spacing at all.
+
+    The claim that survives is narrower and still worth having: these are the phi at which
+    ``g`` actually has structure, certified when ``certified`` is true, rather than an
+    arbitrary count chosen in advance.  Completeness of the COVER is not claimed by either
+    and is what the omitted-mass bound in ``phi_local_lnI`` exists to decide.
 
     ``certified`` is REPORTED, NOT REQUIRED.  When the enumerator cannot certify it still
     returns its definitely-on-torus roots as targeting data, and its docstring says a
@@ -730,6 +745,12 @@ def phi_seed_plan(C, dedupe_tol=1e-8):
         return None
     phi = np.mod(np.asarray(pts)[:, 0].real, 2.0 * np.pi)
     phi = np.sort(phi)
+    # A TOLERANCE DECIDES MEMBERSHIP HERE, which the u axis of this module explicitly
+    # refuses ("no tolerance decides membership, which is deliberate").  The deviation is
+    # stated rather than hidden: two stationary phi closer than ``dedupe_tol`` collapse to
+    # one seed, so a near-degenerate table -- exactly the case ``certified`` exists to
+    # report -- can lose a seed.  The direction is fail-closed, because a lost seed means a
+    # region is never covered, which raises ``area_outside`` and declines the row.
     if phi.size > 1:                       # drop duplicates, including across the seam
         keep = np.concatenate([[True], np.diff(phi) > dedupe_tol])
         if phi[-1] - phi[0] > 2.0 * np.pi - dedupe_tol:
@@ -762,6 +783,14 @@ def phi_local_lnI(C, n_seed=PHI_SEEDS, w_sigma=PHI_WINDOW_SIGMA,
                   n_bound=PHI_BOUND_GRID, tol_nats=OUTSIDE_TOL_NATS,
                   n_slots=None, seeds=None):
     """``log int dphi int du exp(g)`` with BOTH axes localized, jittable.
+
+    ``seeds`` optionally supplies phi seeds instead of the uniform grid -- pass
+    :attr:`PhiSeedPlan.seeds` from :func:`phi_seed_plan`.  It OVERRIDES ``n_seed``, and
+    because ``n_slots`` defaults to ``2 * n_seed`` it also changes the slot count and
+    therefore the cost: a plan with 67 seeds asks for 134 slots against the default 64.
+    Pass ``n_slots`` explicitly to cap that; regions that do not fit are dropped, which
+    raises ``area_outside`` and declines, so the cap trades speed for declines and never
+    for a wrong answer.
 
     Returns ``(value, ok, info)``.  ``ok`` is False when the omitted-mass bound on the phi
     axis could not be made small enough; the value is returned either way for diagnosis,
@@ -883,13 +912,12 @@ def phi_local_lnI(C, n_seed=PHI_SEEDS, w_sigma=PHI_WINDOW_SIGMA,
     # weaker enumerator with no ``ok`` flag living in this tree was the duplication both
     # integration reviews asked not to carry.
     #
-    # The honest way back to algebraic seeds is a host-built fixed-capacity plan passed IN
-    # as ``seeds``, built from ``enumerate_torus_maxima`` and declining when its ``ok`` is
-    # false.  That is not implemented; until it is, these are a grid and are labelled one.
-    # A host-built plan from :func:`phi_seed_plan` arrives here as a concrete array, so
-    # its length is static at trace time and nothing about the shapes becomes data
-    # dependent.  Without one these are a uniform grid, which is targeting and not an
-    # enumeration -- the omitted-mass bound is what stands behind either.
+    # A host-built plan from :func:`phi_seed_plan` arrives here as a concrete array, so its
+    # length is static at trace time and nothing about the shapes becomes data dependent.
+    # Without one these are a uniform grid.  BOTH ARE TARGETING: the plan enumerates the
+    # stationary points of ``g``, and this function iterates on the maxima of ``F``, which
+    # are a different set (see phi_seed_plan).  The omitted-mass bound is what stands
+    # behind either one, and it is the only thing that does.
     if seeds is None:
         seeds = jnp.linspace(0.0, 2.0 * jnp.pi, n_seed, endpoint=False)
     else:

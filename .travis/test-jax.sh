@@ -513,7 +513,7 @@ fi
 # failure direction this whole comment exists to warn about, because a low floor PASSES.
 # The host phi seed plan adds three tests to test_joint_anglemarg_peaklocal.py.  MEASURED
 # over this job own FILES/DESELECT, not incremented.
-EXPECTED_TESTS=427
+EXPECTED_TESTS=428
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
