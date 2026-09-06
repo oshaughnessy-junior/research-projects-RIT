@@ -85,6 +85,10 @@ __all__ = [
     "u_profile",
     "eval_g2",
     "phi_local_lnI",
+    "phi_local_lnI_at_distance",
+    "joint_lnL_phi_local",
+    "X_CHUNK_DEFAULT",
+    "PT_CHUNK_DEFAULT",
     "PHI_SEEDS",
     "PHI_WINDOW_SIGMA",
     "PHI_NODES_PER_REGION",
@@ -433,6 +437,128 @@ def joint_lnL_phi_dense(C_A, C_B, x_grid, log_w_grid, n_phi=256,
     return jax.scipy.special.logsumexp(per_x + log_w_grid) - 2.0 * jnp.log(2.0 * jnp.pi)
 
 
+#: Distance nodes evaluated at once by :func:`joint_lnL_phi_local`.  The phi-local
+#: quadrature grid is ``n_slots * n_nodes * 4 * u_nodes`` per distance node and NOTHING
+#: about it is streamed, so the distance axis is the one that has to be rolled or the
+#: live slab is multiplied by the whole grid.  This is the analogue of
+#: ``PHI_CHUNK_DEFAULT`` on the dense path, and it exists for the same reason.
+#: ONE, and that is a memory verdict rather than a preference.  The batch guard models
+#: `x_chunk * pt_chunk * 4 * u_nodes * terms * 16` bytes live, and at the production u
+#: count (896) even a chunk of 8 needs 43.8 GiB for a 64-point time window -- the guard
+#: refuses it outright.  Vectorizing the distance axis has to wait for the u axis to be
+#: streamed inside u_profile, or for the u count itself to come down.
+X_CHUNK_DEFAULT = 1
+
+#: Quadrature points evaluated at once inside :func:`phi_local_lnI`.  The grid is
+#: ``n_slots * n_nodes`` phi points, each costing a u profile of ``4 * u_nodes`` -- and
+#: ``eval_g2`` materializes ``(points, KP, 2KS+1)`` COMPLEX, so the live slab is
+#: ``points * 4 * u_nodes * KP * (2KS+1) * 16`` bytes.  At the production u count
+#: (``u_nodes_in_use(450) = 896``) that is about a gigabyte per distance node unrolled,
+#: which is why this axis is rolled and not merely counted.  Same role as
+#: ``PHI_CHUNK_DEFAULT`` on the dense path.
+#: 32, chosen so the guard passes at the production u count rather than by taste:
+#: 32 * 4 * 896 * 25 * 16 = 45.9 MB live per sample-time point, 2.9 GiB across a 64-point
+#: window, against the 4 GiB default allowance.  Raising it is the first thing to try on a
+#: bigger card, and the guard will say so rather than let it OOM.
+PT_CHUNK_DEFAULT = 32
+
+
+def _prof_scan(prof, pts, chunk):
+    """``vmap(prof)`` over ``pts``, rolled in fixed-size blocks.  Values identical.
+
+    Only the profile VALUE and the three fallback counts are kept: the phi derivatives
+    the Newton step needs are not wanted here, and carrying them would defeat the point
+    by keeping a second array of the same length alive.
+    """
+    n = int(pts.shape[0])
+    # CLAMPED, because a chunk larger than the data is not "unrolled", it is PADDED.  A
+    # caller asking for pt_chunk = 1e6 on 388 points was evaluating a million, 999612 of
+    # them padding -- external review measured 6.56 GB of temporaries for one test.  The
+    # natural way to ask for an unrolled reference is a huge chunk, so the function has to
+    # mean it rather than take it literally.
+    chunk = int(min(int(chunk), n))
+    n_chunk = int(np.ceil(n / chunk))
+    pad = n_chunk * chunk - n
+    pp = jnp.concatenate([pts, jnp.zeros(pad)])
+
+    def step(carry, blk):
+        F, _, _, fb, rk, st = jax.vmap(prof)(blk)
+        return carry, (F, fb, rk, st)
+
+    _, (F, fb, rk, st) = lax.scan(jax.checkpoint(step), None,
+                                  pp.reshape(n_chunk, chunk))
+    keep = lambda a: a.reshape(-1)[:n]
+    return keep(F), keep(fb), keep(rk), keep(st)
+
+
+def phi_local_lnI_at_distance(C_A, C_B, x, **kw):
+    """The ``(phi, u)`` torus integral at ONE distance node.  THE STACKABLE UNIT.
+
+    ``log int dphi int du exp(x A - x^2/2 B)`` with both angle axes localized, returned
+    as ``(value, ok, info)`` exactly as :func:`phi_local_lnI` does.
+
+    THIS IS THE SEAM, and it is public so that a distance quadrature does not have to be
+    built into this module to be used with it.  The distance rule is entirely a matter of
+    WHICH ``x`` a caller evaluates and WHAT WEIGHTS it applies; nothing here assumes the
+    caller's nodes are a grid, are equally spaced, or come from any particular rule.  A
+    Gauss-Hermite placement, an adaptive rule, or the plain grid
+    :func:`joint_lnL_phi_local` uses all sit on top of this same call.
+
+    The normalization is the bare torus integral -- NOT the ``(2 pi)^-2`` prior factor,
+    which belongs to whoever closes the distance sum.  Getting that split wrong is how a
+    stacked quadrature would silently double-apply or drop it, so it is stated here and
+    applied in exactly one place, :func:`joint_lnL_phi_local`.
+    """
+    return phi_local_lnI(_joint_table(C_A, C_B, x), **kw)
+
+
+def joint_lnL_phi_local(C_A, C_B, x_grid, log_w_grid, x_chunk=X_CHUNK_DEFAULT, **kw):
+    """Distance-, phi- and psi-marginalized value with BOTH angle axes localized.
+
+    The default combiner over :func:`phi_local_lnI_at_distance`: it sums the caller's
+    distance grid, the same contract :func:`joint_lnL_phi_dense` has, and it is a THIN
+    and replaceable layer.  A caller with its own distance quadrature should call the
+    per-node function directly rather than reach through this one.
+
+    Returns ``(value, ok, info)``.
+
+    ``ok`` IS THE CONJUNCTION OVER NODES, which is the fail-closed reading: the distance
+    sum is only as trustworthy as the least trustworthy node in it, and a declining node
+    still returns a finite number that would otherwise be summed in silently.  A node
+    whose weight makes it negligible cannot currently exempt itself -- deciding that
+    would need the very value the decline says not to trust -- so this is conservative
+    and deliberately so.
+
+    THE DISTANCE AXIS IS ROLLED.  Unlike the dense path there is no streaming inside the
+    phi-local kernel, so its live slab is the whole ``n_slots * n_nodes * 4 * u_nodes``
+    quadrature grid; multiplying that by an unrolled distance grid is what makes the
+    scheme unusable rather than merely expensive.  ``x_chunk`` bounds it, and the batch
+    guard in :mod:`~RIFT.likelihood.jax_ile.samplers` must model the SAME number.
+    """
+    x_grid = jnp.asarray(x_grid, dtype=jnp.float64).ravel()
+    log_w_grid = jnp.asarray(log_w_grid, dtype=jnp.float64).ravel()
+    n_x = int(x_grid.shape[0])
+    n_chunk = int(np.ceil(n_x / x_chunk))
+    pad = n_chunk * x_chunk - n_x
+    xs = jnp.concatenate([x_grid, jnp.zeros(pad)])
+    lw = jnp.concatenate([log_w_grid, jnp.full(pad, -jnp.inf)])
+
+    def step(carry, args):
+        xc, lwc = args
+        v, ok, _ = jax.vmap(
+            lambda z: phi_local_lnI_at_distance(C_A, C_B, z, **kw))(xc)
+        # a padded node is switched off by its weight, and must not vote on `ok`
+        live = jnp.isfinite(lwc)
+        return carry, (jnp.where(live, v, -jnp.inf), jnp.logical_or(ok, ~live))
+
+    _, (vals, oks) = lax.scan(jax.checkpoint(step), None,
+                              (xs.reshape(n_chunk, x_chunk),
+                               lw.reshape(n_chunk, x_chunk)))
+    per_x = vals.reshape(-1)[:n_x]
+    value = jax.scipy.special.logsumexp(per_x + log_w_grid) - 2.0 * jnp.log(2.0 * jnp.pi)
+    return value, oks.reshape(-1)[:n_x].all(), {"per_x": per_x}
+
+
 # ------------------------------------------------------- phi localization
 
 #: phi seeds.  These are SEEDS, not a quadrature grid: Newton moves each to a maximum of
@@ -480,6 +606,82 @@ def phi_derivative_bound(C, order=0):
     k = jnp.arange(KP)[:, None]
     w = jnp.where(k > 0, 2.0, 1.0)          # k>0 stored once, counted twice (real field)
     return (w * jnp.abs(C) * (jnp.abs(k) ** order)).sum()
+
+
+def sup_g_bound(C, phi):
+    """``log(2 pi) + max_u g(phi, u)``: an EXACT upper bound on ``F(phi)``, with no u
+    quadrature in it at all.
+
+        F(phi) = log int_0^{2pi} exp(g) du  <=  log(2 pi) + max_u g(phi, u)
+
+    and ``max_u g`` is exact: on a phi slice ``g`` is ``a + Re(c1 e^{iu}) + Re(c2 e^{2iu})``,
+    whose maximum over the circle is attained at one of the four stationary angles
+    :func:`u_stationary_roots` already returns.
+
+    WHY THIS EXISTS RATHER THAN A FINER PROFILE GRID.  The outside certificate needs an
+    upper bound on ``F``, not ``F`` itself, and buying accuracy through the profile costs a
+    full u quadrature at every bound-grid point -- ``n_bound * u_nodes``, and BOTH grow with
+    amplitude.  Measured: at amplitude 3e4 that is 8192 * 4 * 7302 evaluations and the
+    process is killed outright.
+
+    It is CHEAPER and BETTER-CONDITIONED, though not uniformly tighter: it discards the
+    Laplace width (see the slack note below), so on a grid fine enough for the profile
+    route's second-order term to vanish that route would win.  What matters is that no
+    affordable grid is that fine.  Its Lipschitz constant is
+    ``M10``, by the envelope inequality
+    ``|max_u g(phi1,.) - max_u g(phi2,.)| <= max_u |g(phi1,u) - g(phi2,u)| <= M10 |dphi|``,
+    so refining the grid buys a LINEAR reduction where the profile route is pinned at second
+    order by ``M2F ~ M10^2``.  And it cannot be corrupted by the u-quadrature fallback that
+    adversarial review flagged for the profile route, because it never calls it.
+
+    The slack is the Laplace width it discards: ``F ~ max_u g + log(sigma_u sqrt(2 pi))``
+    with ``sigma_u = |g_uu|^-1/2``, so it over-estimates by ``log(sqrt(2 pi) / sigma_u)`` --
+    about 6 nats at amplitude 3e4, against a threshold with tens of nats of headroom.
+    """
+    KP = C.shape[0]
+    KS = (C.shape[1] - 1) // 2
+    k = jnp.arange(KP)
+    w = jnp.where(k > 0, 2.0, 1.0)
+    ph = jnp.exp(1j * phi * k) * w
+    D = lambda q: (ph * C[:, KS + q]).sum()
+    a = D(0).real
+    c1 = D(1) + jnp.conj(D(-1))
+    c2 = D(2) + jnp.conj(D(-2))
+    # A MAX OVER ROOTS IS A LOWER BOUND UNLESS THE ROOTS ARE RIGHT, and this returned one
+    # as if it were the maximum.  ``u_stationary_roots`` builds a companion matrix for
+    # ``c2 z^4 + ...`` and substitutes ``lead = 1`` when ``c2 = 0``, which solves a
+    # DIFFERENT polynomial, so for a table with no q = +-2 content the returned angles need
+    # not contain the maximizer.  Measured over four such draws, this came back 0.024 to
+    # 0.092 nats BELOW ``log(2 pi) + max_u g``: not a loose bound, an invalid one, and the
+    # whole outside certificate rests on this inequality.  Adversarial review, found by
+    # constructing the degenerate table rather than by reading the algebra.
+    #
+    # ``a + |c1| + |c2| >= max_u g`` holds for every table and needs no roots.  It is used
+    # wherever the quartic cannot be trusted -- and in exactly that regime it is also TIGHT,
+    # since ``c2 -> 0`` makes ``max_u g -> a + |c1|``.  Where c2 is healthy the roots are
+    # exact, and the argmax must still pass a stationarity test against the axis's own
+    # derivative bound before it is believed.
+    m1u = jnp.abs(c1) + 2.0 * jnp.abs(c2)
+    u = u_stationary_roots(c1, c2)
+    gv = _g_u(a, c1, c2, u, 0)
+    i = jnp.argmax(gv)
+    resid = jnp.abs(_g_u(a, c1, c2, u[i], 1))
+    bad = ((jnp.abs(c2) <= 1e-8 * jnp.abs(c1))
+           | (resid > 1e-6 * jnp.maximum(m1u, 1e-300)))
+    gmax = jnp.where(bad, a + jnp.abs(c1) + jnp.abs(c2), gv[i])
+    return jnp.log(2.0 * jnp.pi) + gmax
+
+
+def required_bound_grid(amplitude, tol_nats=5.0, m_max=2):
+    """Bound-grid points that keep the Lipschitz lift ``M10 * delta`` under ``tol_nats``.
+
+    Derived, not tuned, and the same shape as :func:`required_u_nodes`.  The lift on a grid
+    of half-spacing ``delta = pi / n`` is ``M10 * delta``, and ``M10 <= 2 * m_max * A`` for
+    a table of amplitude ``A``, so ``n >= pi * 2 * m_max * A / tol_nats``.  Host side and
+    static, because JAX needs the shape before it sees the table.
+    """
+    a = max(float(amplitude), 1.0)
+    return int(np.ceil(np.pi * 2.0 * float(m_max) * a / float(tol_nats))) + 1
 
 
 def profile_derivative_bounds(C):
@@ -685,7 +887,7 @@ def required_phi_nodes(width, m2f, pts_per_sigma=PHI_PTS_PER_SIGMA):
 def phi_local_lnI(C, n_seed=PHI_SEEDS, w_sigma=PHI_WINDOW_SIGMA,
                   n_nodes=PHI_NODES_PER_REGION, u_nodes=U_NODES_PER_CELL,
                   n_bound=PHI_BOUND_GRID, tol_nats=OUTSIDE_TOL_NATS,
-                  n_slots=None):
+                  n_slots=None, pt_chunk=PT_CHUNK_DEFAULT):
     """``log int dphi int du exp(g)`` with BOTH axes localized, jittable.
 
     Returns ``(value, ok, info)``.  ``ok`` is False when the omitted-mass bound on the phi
@@ -871,7 +1073,25 @@ def phi_local_lnI(C, n_seed=PHI_SEEDS, w_sigma=PHI_WINDOW_SIGMA,
 
     s = jnp.linspace(0.0, 1.0, n_nodes)
     pp = (seg_lo[:, None] + width[:, None] * s[None, :]).ravel()
-    Fv, _, _, nfb_v, _, _ = jax.vmap(prof)(jnp.mod(pp, 2.0 * jnp.pi))
+    # ROLLED, because this is the axis that decides whether the rule is usable.  An
+    # unrolled (n_slots * n_nodes) grid costs `points * 4 * u_nodes * KP * (2KS+1) * 16`
+    # bytes live in eval_g2's intermediate -- about a gigabyte per distance node at the
+    # production u count -- and the distance axis then multiplies it.  Chunking here is
+    # what lets `joint_lnL_phi_local` be wired at all; the values are identical, only the
+    # peak allocation changes.
+    Fv, nfb_v, nrisk_v, nstrict_v = _prof_scan(prof, jnp.mod(pp, 2.0 * jnp.pi), pt_chunk)
+    # EMPTY SLOTS MUST NOT VOTE.  A slot with no region is neutralized for the VALUE by
+    # zeroing its position and masking its weight, but its nodes are still evaluated -- at
+    # the artificial point phi = 0 -- and their fallback counts were summed with the rest.
+    # A risky cell there could decline a row whose every contributing node was adequate,
+    # and the reported counters were contaminated the same way.  Measured: 5 risky at
+    # n_slots=2 rising to 176 at n_slots=8 while the region count only went 2 -> 4, so the
+    # growth was entirely empty slots and raising the allocation alone could flip a row.
+    # Found independently by this session's review and by external review.
+    live_pt = jnp.repeat(width > 0, n_nodes)
+    nfb_v = jnp.where(live_pt, nfb_v, 0)
+    nrisk_v = jnp.where(live_pt, nrisk_v, 0)
+    nstrict_v = jnp.where(live_pt, nstrict_v, 0)
     wq = jnp.full(n_nodes, 1.0 / (n_nodes - 1)).at[0].mul(0.5).at[-1].mul(0.5)
     lw = (jnp.log(jnp.where(width > 0, width, 1e-300))[:, None]
           + jnp.log(wq)[None, :]).ravel()
@@ -962,9 +1182,24 @@ def phi_local_lnI(C, n_seed=PHI_SEEDS, w_sigma=PHI_WINDOW_SIGMA,
     # amplitude -- it put the bound above the integral by +1225 nats.
     gb = jnp.linspace(0.0, 2.0 * jnp.pi, n_bound, endpoint=False)
     delta = jnp.pi / n_bound                      # half of the grid spacing
-    Fb, d1b, _, nfb_b, nrisk_b, nstrict_b = jax.vmap(prof)(gb)
     m1f, m2f = profile_derivative_bounds(C)
-    ub = Fb + jnp.abs(d1b) * delta + 0.5 * m2f * delta * delta
+    # THE BOUND GRID NO LONGER RUNS THE U QUADRATURE, and that is what makes this
+    # certificate usable rather than merely correct.  It used to call the full profile at
+    # every point and lift by ``|F'| delta + M2F delta^2 / 2``, which failed twice over.
+    # M2F is ~99.5% the ``M10^2`` variance term -- a worst-case bound on a variance that
+    # CONCENTRATES as amplitude rises, so it is loosest exactly where the physics is
+    # tightest.  Measured at amplitude 3e4: that lift sat 2.7e5 nats above the integral
+    # while the TRUE margin was about -66, i.e. the row deserved to be accepted by a wide
+    # margin and was declined by five orders of magnitude.  Refining the grid to fix it is
+    # what kills the process, because ``n_bound * u_nodes`` both grow with amplitude.
+    #
+    # :func:`sup_g_bound` replaces the whole construction: an exact upper bound on F for
+    # four quartic roots per point, Lipschitz in M10 rather than M10^2 so refinement is
+    # linear, and independent of the u quadrature -- which also retires the review finding
+    # that the lift could be applied to a profile the fallback had underestimated.  There
+    # is no longer a profile value on this grid to underestimate.
+    hb = jax.vmap(lambda q: sup_g_bound(C, q))(gb)
+    ub = hb + m1f * delta
 
     # A GRID POINT COUNTS AS OUTSIDE UNLESS ITS WHOLE delta-BALL IS COVERED.  Testing the
     # point alone leaves a band of width delta beside every region boundary belonging to
@@ -1094,24 +1329,32 @@ def phi_local_lnI(C, n_seed=PHI_SEEDS, w_sigma=PHI_WINDOW_SIGMA,
     # amplitude-19 case that is accurate to 1e-5, so it would be a wall rather than a
     # requirement -- which is exactly the evidence that this axis is empirically gated and
     # not certified, and it belongs in the info dict where a caller can see it.
-    u_sizing_ok = nrisk_b.sum() == 0
+    u_sizing_ok = nrisk_v.sum() == 0
     ok = (margin < tol_nats) & resolved & u_sizing_ok
 
     info = {"margin": margin,
             "area_outside": area_outside,
             "sup_outside": sup_outside,
             "n_phi_regions": (width > 0).sum(),
+            # the cover itself, so the outside bound can be tested against the set it is a
+            # bound ON.  A soundness check that compares it to the GLOBAL sup of h instead
+            # reads ~w_sigma^2/2 = 72 nats low and condemns a correct bound -- which is
+            # exactly what happened here before these were exported.
+            "seg_lo": seg_lo,
+            "seg_width": width,
             # INTERNAL accuracy, which the certificate above CANNOT see: it bounds the
             # mass left OUTSIDE the regions and says nothing about the quadrature inside
             # one.  Reported separately and never folded into `margin`.
             "n_u_fallback": n_fb.sum(),
-            # the other two were invisible: the bound grid GATES (it decides whether the
-            # certificate is an upper bound at all), the quadrature grid is reported.
-            "n_u_fallback_bound": nfb_b.sum(),
-            "n_u_risky_bound": nrisk_b.sum(),
-            # the stricter 1/M1u criterion: reported, never gated.  See u_profile.
-            "n_u_understood_bound": nstrict_b.sum(),
+            # THE QUADRATURE GRID IS WHERE THIS BELONGS NOW.  It used to be read off the
+            # bound grid, because that was where an underestimated profile could invert an
+            # upper bound.  sup_g_bound removed that exposure entirely, so the remaining
+            # question is whether the quadrature that produced `value` was adequate -- and
+            # that is a property of the grid `value` came from.
             "n_u_fallback_quad": nfb_v.sum(),
+            "n_u_risky_quad": nrisk_v.sum(),
+            # the stricter 1/M1u criterion: reported, never gated.  See u_profile.
+            "n_u_understood_quad": nstrict_v.sum(),
             "u_sizing_ok": u_sizing_ok,
             # INTERNAL accuracy, reported beside the omitted-mass margin and never folded
             # into it: they are independent failures and both are needed.
