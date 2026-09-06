@@ -76,6 +76,10 @@ __all__ = [
     "u_profile",
     "eval_g2",
     "phi_local_lnI",
+    "phi_local_lnI_at_distance",
+    "joint_lnL_phi_local",
+    "X_CHUNK_DEFAULT",
+    "PT_CHUNK_DEFAULT",
     "PHI_SEEDS",
     "PHI_WINDOW_SIGMA",
     "PHI_NODES_PER_REGION",
@@ -424,6 +428,128 @@ def joint_lnL_phi_dense(C_A, C_B, x_grid, log_w_grid, n_phi=256,
     return jax.scipy.special.logsumexp(per_x + log_w_grid) - 2.0 * jnp.log(2.0 * jnp.pi)
 
 
+#: Distance nodes evaluated at once by :func:`joint_lnL_phi_local`.  The phi-local
+#: quadrature grid is ``n_slots * n_nodes * 4 * u_nodes`` per distance node and NOTHING
+#: about it is streamed, so the distance axis is the one that has to be rolled or the
+#: live slab is multiplied by the whole grid.  This is the analogue of
+#: ``PHI_CHUNK_DEFAULT`` on the dense path, and it exists for the same reason.
+#: ONE, and that is a memory verdict rather than a preference.  The batch guard models
+#: `x_chunk * pt_chunk * 4 * u_nodes * terms * 16` bytes live, and at the production u
+#: count (896) even a chunk of 8 needs 43.8 GiB for a 64-point time window -- the guard
+#: refuses it outright.  Vectorizing the distance axis has to wait for the u axis to be
+#: streamed inside u_profile, or for the u count itself to come down.
+X_CHUNK_DEFAULT = 1
+
+#: Quadrature points evaluated at once inside :func:`phi_local_lnI`.  The grid is
+#: ``n_slots * n_nodes`` phi points, each costing a u profile of ``4 * u_nodes`` -- and
+#: ``eval_g2`` materializes ``(points, KP, 2KS+1)`` COMPLEX, so the live slab is
+#: ``points * 4 * u_nodes * KP * (2KS+1) * 16`` bytes.  At the production u count
+#: (``u_nodes_in_use(450) = 896``) that is about a gigabyte per distance node unrolled,
+#: which is why this axis is rolled and not merely counted.  Same role as
+#: ``PHI_CHUNK_DEFAULT`` on the dense path.
+#: 32, chosen so the guard passes at the production u count rather than by taste:
+#: 32 * 4 * 896 * 25 * 16 = 45.9 MB live per sample-time point, 2.9 GiB across a 64-point
+#: window, against the 4 GiB default allowance.  Raising it is the first thing to try on a
+#: bigger card, and the guard will say so rather than let it OOM.
+PT_CHUNK_DEFAULT = 32
+
+
+def _prof_scan(prof, pts, chunk):
+    """``vmap(prof)`` over ``pts``, rolled in fixed-size blocks.  Values identical.
+
+    Only the profile VALUE and the three fallback counts are kept: the phi derivatives
+    the Newton step needs are not wanted here, and carrying them would defeat the point
+    by keeping a second array of the same length alive.
+    """
+    n = int(pts.shape[0])
+    # CLAMPED, because a chunk larger than the data is not "unrolled", it is PADDED.  A
+    # caller asking for pt_chunk = 1e6 on 388 points was evaluating a million, 999612 of
+    # them padding -- external review measured 6.56 GB of temporaries for one test.  The
+    # natural way to ask for an unrolled reference is a huge chunk, so the function has to
+    # mean it rather than take it literally.
+    chunk = int(min(int(chunk), n))
+    n_chunk = int(np.ceil(n / chunk))
+    pad = n_chunk * chunk - n
+    pp = jnp.concatenate([pts, jnp.zeros(pad)])
+
+    def step(carry, blk):
+        F, _, _, fb, rk, st = jax.vmap(prof)(blk)
+        return carry, (F, fb, rk, st)
+
+    _, (F, fb, rk, st) = lax.scan(jax.checkpoint(step), None,
+                                  pp.reshape(n_chunk, chunk))
+    keep = lambda a: a.reshape(-1)[:n]
+    return keep(F), keep(fb), keep(rk), keep(st)
+
+
+def phi_local_lnI_at_distance(C_A, C_B, x, **kw):
+    """The ``(phi, u)`` torus integral at ONE distance node.  THE STACKABLE UNIT.
+
+    ``log int dphi int du exp(x A - x^2/2 B)`` with both angle axes localized, returned
+    as ``(value, ok, info)`` exactly as :func:`phi_local_lnI` does.
+
+    THIS IS THE SEAM, and it is public so that a distance quadrature does not have to be
+    built into this module to be used with it.  The distance rule is entirely a matter of
+    WHICH ``x`` a caller evaluates and WHAT WEIGHTS it applies; nothing here assumes the
+    caller's nodes are a grid, are equally spaced, or come from any particular rule.  A
+    Gauss-Hermite placement, an adaptive rule, or the plain grid
+    :func:`joint_lnL_phi_local` uses all sit on top of this same call.
+
+    The normalization is the bare torus integral -- NOT the ``(2 pi)^-2`` prior factor,
+    which belongs to whoever closes the distance sum.  Getting that split wrong is how a
+    stacked quadrature would silently double-apply or drop it, so it is stated here and
+    applied in exactly one place, :func:`joint_lnL_phi_local`.
+    """
+    return phi_local_lnI(_joint_table(C_A, C_B, x), **kw)
+
+
+def joint_lnL_phi_local(C_A, C_B, x_grid, log_w_grid, x_chunk=X_CHUNK_DEFAULT, **kw):
+    """Distance-, phi- and psi-marginalized value with BOTH angle axes localized.
+
+    The default combiner over :func:`phi_local_lnI_at_distance`: it sums the caller's
+    distance grid, the same contract :func:`joint_lnL_phi_dense` has, and it is a THIN
+    and replaceable layer.  A caller with its own distance quadrature should call the
+    per-node function directly rather than reach through this one.
+
+    Returns ``(value, ok, info)``.
+
+    ``ok`` IS THE CONJUNCTION OVER NODES, which is the fail-closed reading: the distance
+    sum is only as trustworthy as the least trustworthy node in it, and a declining node
+    still returns a finite number that would otherwise be summed in silently.  A node
+    whose weight makes it negligible cannot currently exempt itself -- deciding that
+    would need the very value the decline says not to trust -- so this is conservative
+    and deliberately so.
+
+    THE DISTANCE AXIS IS ROLLED.  Unlike the dense path there is no streaming inside the
+    phi-local kernel, so its live slab is the whole ``n_slots * n_nodes * 4 * u_nodes``
+    quadrature grid; multiplying that by an unrolled distance grid is what makes the
+    scheme unusable rather than merely expensive.  ``x_chunk`` bounds it, and the batch
+    guard in :mod:`~RIFT.likelihood.jax_ile.samplers` must model the SAME number.
+    """
+    x_grid = jnp.asarray(x_grid, dtype=jnp.float64).ravel()
+    log_w_grid = jnp.asarray(log_w_grid, dtype=jnp.float64).ravel()
+    n_x = int(x_grid.shape[0])
+    n_chunk = int(np.ceil(n_x / x_chunk))
+    pad = n_chunk * x_chunk - n_x
+    xs = jnp.concatenate([x_grid, jnp.zeros(pad)])
+    lw = jnp.concatenate([log_w_grid, jnp.full(pad, -jnp.inf)])
+
+    def step(carry, args):
+        xc, lwc = args
+        v, ok, _ = jax.vmap(
+            lambda z: phi_local_lnI_at_distance(C_A, C_B, z, **kw))(xc)
+        # a padded node is switched off by its weight, and must not vote on `ok`
+        live = jnp.isfinite(lwc)
+        return carry, (jnp.where(live, v, -jnp.inf), jnp.logical_or(ok, ~live))
+
+    _, (vals, oks) = lax.scan(jax.checkpoint(step), None,
+                              (xs.reshape(n_chunk, x_chunk),
+                               lw.reshape(n_chunk, x_chunk)))
+    per_x = vals.reshape(-1)[:n_x]
+    value = jax.scipy.special.logsumexp(per_x + log_w_grid) - 2.0 * jnp.log(2.0 * jnp.pi)
+    return value, oks.reshape(-1)[:n_x].all(), {"per_x": per_x}
+
+
 # ------------------------------------------------------- phi localization
 
 #: phi seeds.  These are SEEDS, not a quadrature grid: Newton moves each to a maximum of
@@ -752,7 +878,7 @@ def required_phi_nodes(width, m2f, pts_per_sigma=PHI_PTS_PER_SIGMA):
 def phi_local_lnI(C, n_seed=PHI_SEEDS, w_sigma=PHI_WINDOW_SIGMA,
                   n_nodes=PHI_NODES_PER_REGION, u_nodes=U_NODES_PER_CELL,
                   n_bound=PHI_BOUND_GRID, tol_nats=OUTSIDE_TOL_NATS,
-                  n_slots=None):
+                  n_slots=None, pt_chunk=PT_CHUNK_DEFAULT):
     """``log int dphi int du exp(g)`` with BOTH axes localized, jittable.
 
     Returns ``(value, ok, info)``.  ``ok`` is False when the omitted-mass bound on the phi
@@ -938,7 +1064,13 @@ def phi_local_lnI(C, n_seed=PHI_SEEDS, w_sigma=PHI_WINDOW_SIGMA,
 
     s = jnp.linspace(0.0, 1.0, n_nodes)
     pp = (seg_lo[:, None] + width[:, None] * s[None, :]).ravel()
-    Fv, _, _, nfb_v, nrisk_v, nstrict_v = jax.vmap(prof)(jnp.mod(pp, 2.0 * jnp.pi))
+    # ROLLED, because this is the axis that decides whether the rule is usable.  An
+    # unrolled (n_slots * n_nodes) grid costs `points * 4 * u_nodes * KP * (2KS+1) * 16`
+    # bytes live in eval_g2's intermediate -- about a gigabyte per distance node at the
+    # production u count -- and the distance axis then multiplies it.  Chunking here is
+    # what lets `joint_lnL_phi_local` be wired at all; the values are identical, only the
+    # peak allocation changes.
+    Fv, nfb_v, nrisk_v, nstrict_v = _prof_scan(prof, jnp.mod(pp, 2.0 * jnp.pi), pt_chunk)
     # EMPTY SLOTS MUST NOT VOTE.  A slot with no region is neutralized for the VALUE by
     # zeroing its position and masking its weight, but its nodes are still evaluated -- at
     # the artificial point phi = 0 -- and their fallback counts were summed with the rest.

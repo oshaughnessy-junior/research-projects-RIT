@@ -942,7 +942,7 @@ class JAXDistPhiPsiMargLikelihood:
         # replaces it inside the block above.
         xg, lwg, pg, sg = (self.x_grid, self.log_w_grid,
                            self._phi_grid, self._psi_grid)
-        if scheme in ("exact", "laplace", "peak-local"):
+        if scheme in ("exact", "laplace", "peak-local", "phi-local"):
             self.angle_marg_info["amp_sizing"] = amp_sizing
             self.angle_marg_info["sample_grid"] = tuple(
                 _anglemarg.angle_sample_grid_sizes(
@@ -965,6 +965,16 @@ class JAXDistPhiPsiMargLikelihood:
             # it is not in 'auto' until a head-to-head pilot has run.
             def _fused(data_, ra, dec, incl, return_lnLt=False):
                 return _anglemarg.fused_log_likelihood_distphipsimarg_peaklocal(
+                    data_, ra, dec, incl, xg, lwg, interp=interp,
+                    amp_sizing=amp_sizing, time_quadrature=time_quadrature,
+                    return_lnLt=return_lnLt)
+        elif scheme == "phi-local":
+            # BOTH angle axes localized, with a dense fallback wherever the certificate
+            # declines.  By name only, and deliberately not in 'auto': it is slower than
+            # 'peak-local' until the fallback can be skipped, which needs a measured
+            # acceptance rate on production tables.
+            def _fused(data_, ra, dec, incl, return_lnLt=False):
+                return _anglemarg.fused_log_likelihood_distphipsimarg_phi_local(
                     data_, ra, dec, incl, xg, lwg, interp=interp,
                     amp_sizing=amp_sizing, time_quadrature=time_quadrature,
                     return_lnLt=return_lnLt)
