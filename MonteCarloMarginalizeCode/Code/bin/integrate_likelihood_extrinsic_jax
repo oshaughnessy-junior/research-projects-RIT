@@ -355,6 +355,11 @@ def check_critical_and_report(opts, optp):
         fatal.append("--distance-grid-tol applies only to "
                      "--distance-grid-scheme loguniform; it would be silently "
                      "inert here")
+    if getattr(opts, "q_time_pregrid_factor", 1) != 1:
+        fatal.append(
+            "--q-time-pregrid-factor is implemented only by conventional ILE; "
+            "the JAX likelihood has a separate Q-evaluation path and currently "
+            "accepts only factor 1")
     if fatal:
         optp.error("Cannot run as a faithful drop-in: " + "; ".join(fatal)
                    + ".  (These would silently change the result if ignored.)")
@@ -600,6 +605,11 @@ def build_parser():
                  help="Conventional ILE option; currently unsupported by JAX ILE.")
     g.add_option("--srate-resample-time-marginalization", type="int", default=None,
                  help="Conventional ILE option; currently unsupported by JAX ILE.")
+    g.add_option("--q-time-pregrid-factor", type="int", default=1,
+                 help="Conventional ILE Q-pregrid selector. JAX ILE accepts the "
+                      "default factor 1 for command-line compatibility and "
+                      "refuses other factors because its Q-evaluation path is "
+                      "different.")
     g.add_option("--n-phi", type=int, default=32,
                  help="phi_ref grid size for --mode flowmc-phimarg (default 32; "
                       "use 64-128 for l-max>=4 or production quality).")
