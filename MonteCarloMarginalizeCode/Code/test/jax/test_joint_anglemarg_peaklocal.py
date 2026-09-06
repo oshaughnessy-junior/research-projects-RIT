@@ -3,6 +3,11 @@ import numpy as np
 import pytest
 
 jax = pytest.importorskip("jax")
+# ESTABLISH THE PRECISION HERE.  Several assertions in this file are at 1e-9 to 1e-13 and
+# JAX defaults x64 OFF, so they passed only because some other test module happened to
+# enable it first -- an import-order dependency, and external review saw two of them fail
+# under the default configuration.  A test file that needs f64 has to say so itself.
+jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 
 from RIFT.likelihood import joint_angle_peak_local as JN
@@ -825,3 +830,135 @@ def test_the_distance_combiner_is_fail_closed_across_nodes():
     _, ok_starved, _ = JP.joint_lnL_phi_local(A, B, x, lw, u_nodes=48, n_slots=1,
                                               n_nodes=97, x_chunk=2)
     assert not bool(ok_starved), "a starved node must sink the distance sum"
+
+
+def test_the_outside_bound_needs_no_grid_when_the_stationary_set_is_certified():
+    """The certificate's cost stops depending on amplitude.
+
+    Every local maximum of ``h = max_u g`` is a 2-D stationary point of ``g`` (see
+    :func:`phi_bound_plan` for the two-line argument), and branch-crossing kinks are
+    MINIMA of an upper envelope, so they cannot carry a supremum.  The sup over an
+    uncovered arc is therefore at an enumerated phi or at an arc endpoint, both finite.
+
+    Pinned: the node count does not move with amplitude, and the bound is never above the
+    grid's -- both are upper bounds on the same supremum, so a violation means one is wrong.
+    """
+    pytest.importorskip("RIFT.likelihood.bivariate_trig_stationary")
+    KS, counts, gaps = 2, set(), []
+    for amp in (1108.0, 17730.0, 70916.0, 283672.0):
+        rng = np.random.default_rng(11)
+        C = rng.normal(size=(3, 2 * KS + 1)) + 1j * rng.normal(size=(3, 2 * KS + 1))
+        C = C * (amp / np.sum(np.abs(C)))
+        plan = JP.phi_bound_plan(C)
+        assert plan is not None and plan.certified, (amp, getattr(plan, "report", None))
+        counts.add(len(plan.nodes))
+        kw = dict(u_nodes=256, n_slots=8, n_nodes=193, pt_chunk=32)
+        vg, _, grid = JP.phi_local_lnI(jnp.asarray(C), n_bound=16384, **kw)
+        vx, _, ex = JP.phi_local_lnI(jnp.asarray(C), n_bound=256,
+                                     bound_nodes=jnp.asarray(plan.nodes), **kw)
+        assert float(vg) == float(vx), "the bound must not touch the value"
+        assert bool(ex["bound_exact_phi"]) and not bool(grid["bound_exact_phi"])
+        gaps.append(float(grid["sup_outside"]) - float(ex["sup_outside"]))
+        assert gaps[-1] >= -1e-9, (amp, gaps[-1])
+    assert len(counts) == 1, ("the node count must not track amplitude", counts)
+    assert gaps[-1] > gaps[0], ("the lift the grid pays should grow with amplitude", gaps)
+
+
+def test_the_exact_bound_is_an_upper_bound_on_the_UNCOVERED_set():
+    """Soundness, and the reference is the part that has to be right.
+
+    A first version of this compared ``sup_outside`` to the GLOBAL dense sup of ``h`` and
+    reported UNSOUND by 71.94 nats at every amplitude.  That number is ``w_sigma^2 / 2 =
+    72``: the global sup sits INSIDE a covered region -- it is the peak the windows are
+    built around -- and the bound is supposed to be about 72 nats below it.  The constancy
+    across a 256x amplitude range is what gave it away.
+
+    So the comparison is against ``h`` masked to the ACTUAL uncovered set, which is why
+    the kernel exports the cover.  Measured worst safety margin +0.0325 nats, and the
+    slack stays under 0.9 -- an exact evaluation at a finite candidate set, not a lift.
+    """
+    pytest.importorskip("RIFT.likelihood.bivariate_trig_stationary")
+    KS = 2
+    for KP, amp in ((3, 1108.0), (3, 70916.0)):
+        rng = np.random.default_rng(11)
+        C = rng.normal(size=(KP, 2 * KS + 1)) + 1j * rng.normal(size=(KP, 2 * KS + 1))
+        C = C * (amp / np.sum(np.abs(C)))
+        Cj = jnp.asarray(C)
+        plan = JP.phi_bound_plan(C)
+        # CERTIFIED, asserted.  The first version of this test looped over KP=5, where the
+        # enumerator reports ok=False, and fed that uncertified plan straight into the path
+        # that requires certification -- it passed on luck.  External review caught it.
+        assert plan.certified, (KP, amp, plan.report)
+        _, _, i = JP.phi_local_lnI(Cj, n_bound=256, bound_nodes=jnp.asarray(plan.nodes),
+                                   u_nodes=256, n_slots=8, n_nodes=193, pt_chunk=32)
+        lo, wd = np.asarray(i["seg_lo"]), np.asarray(i["seg_width"])
+        g = np.linspace(0.0, 2 * np.pi, 20000, endpoint=False)
+        h = np.array([float(JP.sup_g_bound(Cj, float(q))) for q in g])
+        inside = np.zeros(g.shape, bool)
+        for a, w in zip(lo, wd):
+            if w > 0:
+                inside |= (np.mod(g - a, 2 * np.pi) <= w)
+        if (~inside).any():
+            assert float(i["sup_outside"]) >= h[~inside].max() - 1e-6, (KP, amp)
+
+
+def test_the_exact_bound_accepts_where_the_grid_declines():
+    """What it is for.  At amplitude 2.8e5 the Lipschitz lift put the margin at +60 with
+    16384 grid points and the row declined; the enumerated bound puts it near -57 with 22
+    evaluations, and the returned value is untouched."""
+    pytest.importorskip("RIFT.likelihood.bivariate_trig_stationary")
+    KS, amp = 2, 283672.0
+    rng = np.random.default_rng(11)
+    C = rng.normal(size=(3, 2 * KS + 1)) + 1j * rng.normal(size=(3, 2 * KS + 1))
+    C = C * (amp / np.sum(np.abs(C)))
+    plan = JP.phi_bound_plan(C)
+    kw = dict(u_nodes=256, n_slots=8, n_nodes=193, pt_chunk=32)
+    _, ok_g, i_g = JP.phi_local_lnI(jnp.asarray(C), n_bound=16384, **kw)
+    _, ok_x, i_x = JP.phi_local_lnI(jnp.asarray(C), n_bound=256,
+                                    bound_nodes=jnp.asarray(plan.nodes), **kw)
+    assert not bool(ok_g), float(i_g["margin"])
+    assert bool(ok_x), float(i_x["margin"])
+    assert float(i_x["margin"]) < JP.OUTSIDE_TOL_NATS
+
+
+def test_an_uncertified_plan_falls_back_instead_of_being_trusted():
+    """External adversarial review, and the defect it names is the dangerous direction.
+
+    ``phi_local_lnI`` took any non-None ``bound_nodes`` into the exact path and set
+    ``bound_exact_phi = True`` regardless; ``PhiBoundPlan.certified`` was never consumed
+    anywhere.  A plan the enumerator REFUSED to certify may be missing a stationary phi,
+    and a missing candidate maximum makes the outside bound an UNDER-estimate -- it can
+    accept a row whose omitted mass was never bounded.
+
+    The kernel cannot enforce this: ``bound_nodes`` is traced and ``certified`` is a host
+    boolean, so the check has to happen before the trace.  :func:`phi_local_lnI_planned`
+    is that boundary.  KP=5 is the fixture because the enumerator genuinely declines to
+    certify there, which is also what made the first version of the soundness test pass
+    on luck.
+    """
+    pytest.importorskip("RIFT.likelihood.bivariate_trig_stationary")
+    KS, KP, amp = 2, 5, 70916.0
+    rng = np.random.default_rng(11)
+    C = rng.normal(size=(KP, 2 * KS + 1)) + 1j * rng.normal(size=(KP, 2 * KS + 1))
+    C = C * (amp / np.sum(np.abs(C)))
+    plan = JP.phi_bound_plan(C)
+    assert plan is not None and not plan.certified, (
+        "fixture must be a table the enumerator refuses to certify", plan)
+
+    kw = dict(u_nodes=256, n_slots=8, n_nodes=193, pt_chunk=32, n_bound=2048)
+    _, _, planned = JP.phi_local_lnI_planned(jnp.asarray(C), plan, **kw)
+    assert not bool(planned["bound_exact_phi"]), (
+        "an uncertified plan must not reach the exact path")
+
+    # and the wrapper is not merely inert: a certified plan DOES reach it
+    rng2 = np.random.default_rng(11)
+    C3 = rng2.normal(size=(3, 2 * KS + 1)) + 1j * rng2.normal(size=(3, 2 * KS + 1))
+    C3 = C3 * (amp / np.sum(np.abs(C3)))
+    p3 = JP.phi_bound_plan(C3)
+    assert p3.certified
+    _, _, ok3 = JP.phi_local_lnI_planned(jnp.asarray(C3), p3, **kw)
+    assert bool(ok3["bound_exact_phi"])
+
+    # passing no plan at all is the grid, not a crash
+    _, _, none3 = JP.phi_local_lnI_planned(jnp.asarray(C3), None, **kw)
+    assert not bool(none3["bound_exact_phi"])
