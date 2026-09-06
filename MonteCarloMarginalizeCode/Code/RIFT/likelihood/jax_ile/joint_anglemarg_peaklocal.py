@@ -81,6 +81,7 @@ __all__ = [
     "X_CHUNK_DEFAULT",
     "PT_CHUNK_DEFAULT",
     "phi_bound_plan",
+    "phi_local_lnI_planned",
     "PhiBoundPlan",
     "PHI_SEEDS",
     "PHI_WINDOW_SIGMA",
@@ -726,6 +727,30 @@ def phi_bound_plan(C, capacity=None):
     return PhiBoundPlan(phi, en.ok, en.report)
 
 
+def phi_local_lnI_planned(C, plan=None, **kw):
+    """:func:`phi_local_lnI` with the plan's CERTIFICATION actually consumed.
+
+    THE KERNEL CANNOT ENFORCE THIS ITSELF.  ``bound_nodes`` is a traced array and
+    ``certified`` is a host-side boolean from a numpy enumerator, so the check has to
+    happen before the trace -- which is exactly why review found the kernel taking any
+    non-None ``bound_nodes`` and setting ``bound_exact_phi = True`` regardless.  A plan the
+    enumerator refused to certify may be MISSING a stationary phi, and a missing candidate
+    maximum makes the outside bound an UNDER-estimate: unsound, not merely loose.  That is
+    the one direction this whole certificate exists to prevent.
+
+    An uncertified plan therefore falls back to the Lipschitz grid, silently and safely.
+    Callers who genuinely have a certified plan and want the exact path may still pass
+    ``bound_nodes`` to :func:`phi_local_lnI` directly, but they own the check.
+
+    This is not hypothetical: the enumerator declines to certify at KP=5, and the first
+    version of this PR's own soundness test fed it an uncertified KP=5 plan and passed on
+    luck.
+    """
+    if plan is not None and getattr(plan, "certified", False):
+        kw = dict(kw, bound_nodes=jnp.asarray(plan.nodes))
+    return phi_local_lnI(C, **kw)
+
+
 def required_bound_grid(amplitude, tol_nats=5.0, m_max=2):
     """Bound-grid points that keep the Lipschitz lift ``M10 * delta`` under ``tol_nats``.
 
@@ -1234,37 +1259,19 @@ def phi_local_lnI(C, n_seed=PHI_SEEDS, w_sigma=PHI_WINDOW_SIGMA,
     # with M2F from profile_derivative_bounds, i.e. from the coefficient table alone.
     # A first-order Lipschitz lift was tried first in the numpy twin and is USELESS at
     # amplitude -- it put the bound above the integral by +1225 nats.
-    gb = jnp.linspace(0.0, 2.0 * jnp.pi, n_bound, endpoint=False)
     delta = jnp.pi / n_bound                      # half of the grid spacing
     m1f, m2f = profile_derivative_bounds(C)
-    # THE BOUND GRID NO LONGER RUNS THE U QUADRATURE, and that is what makes this
-    # certificate usable rather than merely correct.  It used to call the full profile at
-    # every point and lift by ``|F'| delta + M2F delta^2 / 2``, which failed twice over.
-    # M2F is ~99.5% the ``M10^2`` variance term -- a worst-case bound on a variance that
-    # CONCENTRATES as amplitude rises, so it is loosest exactly where the physics is
-    # tightest.  Measured at amplitude 3e4: that lift sat 2.7e5 nats above the integral
-    # while the TRUE margin was about -66, i.e. the row deserved to be accepted by a wide
-    # margin and was declined by five orders of magnitude.  Refining the grid to fix it is
-    # what kills the process, because ``n_bound * u_nodes`` both grow with amplitude.
-    #
-    # :func:`sup_g_bound` replaces the whole construction: an exact upper bound on F for
-    # four quartic roots per point, Lipschitz in M10 rather than M10^2 so refinement is
-    # linear, and independent of the u quadrature -- which also retires the review finding
-    # that the lift could be applied to a profile the fallback had underestimated.  There
-    # is no longer a profile value on this grid to underestimate.
-    hb = jax.vmap(lambda q: sup_g_bound(C, q))(gb)
-    ub = hb + m1f * delta
 
     # A POINT COUNTS AS OUTSIDE UNLESS ITS WHOLE delta-BALL IS COVERED.  Testing the point
     # alone leaves a band of width delta beside every region boundary belonging to no test
     # at all, and the bound would then be a bound on the wrong set.  Regions are therefore
-    # ERODED by delta before the test, which over-estimates the outside -- the safe
-    # direction.  A region already spanning the circle stays covering: that is the low
-    # amplitude case where the rule has degenerated into the dense grid on purpose, and
-    # eroding it would report an uncovered band and decline every such row.
+    # ERODED before the test, which over-estimates the outside -- the safe direction.  A
+    # region already spanning the circle stays covering: that is the low-amplitude case
+    # where the rule has degenerated into the dense grid on purpose, and eroding it would
+    # report an uncovered band and decline every such row.
     #
-    # A FUNCTION OF THE HALF-WIDTH, because the exact path below tests candidate POINTS
-    # rather than grid cells and must erode by zero, not by the grid's delta.
+    # A FUNCTION OF THE HALF-WIDTH, because the exact path tests candidate POINTS rather
+    # than grid cells and must erode by zero, not by the grid's delta.
     full = width >= 2.0 * jnp.pi - 1e-12
 
     def cover_test(pts, d_half):
@@ -1276,39 +1283,32 @@ def phi_local_lnI(C, n_seed=PHI_SEEDS, w_sigma=PHI_WINDOW_SIGMA,
                 | ((d + 2.0 * jnp.pi >= 0.0)
                    & (q[None, :] + 2.0 * jnp.pi <= eff_hi[:, None]))).any(axis=0)
 
-    eff_lo = jnp.where(full, -1.0, seg_lo + delta)
-    eff_hi = jnp.where(full, 2.0 * jnp.pi + 1.0, seg_lo + width - delta)
-    d = gb[None, :] - eff_lo[:, None]
-    covered = (((d >= 0.0) & (gb[None, :] <= eff_hi[:, None]))
-               | ((d + 2.0 * jnp.pi >= 0.0)
-                  & (gb[None, :] + 2.0 * jnp.pi <= eff_hi[:, None]))).any(axis=0)
-
-    area_outside = jnp.clip(2.0 * jnp.pi - width.sum(), 0.0, 2.0 * jnp.pi)
     if bound_nodes is None:
-        # NO CERTIFIED PLAN: the Lipschitz grid.  Sound for any table, and the term whose
-        # cost grows as rho^2 because delta must shrink with M10.
-        sup_outside = jnp.max(jnp.where(covered, -jnp.inf, ub))
+        # THE LIPSCHITZ GRID, built ONLY on this branch.  It used to be constructed above
+        # the test, so the exact path paid for a grid it then discarded -- in eager
+        # execution that is n_bound extra evaluations, and the "22 evaluations" claim was
+        # false wherever XLA did not eliminate it.  Review found it; the tests had hidden
+        # it by dropping n_bound to 256 on the exact path.
+        gb = jnp.linspace(0.0, 2.0 * jnp.pi, n_bound, endpoint=False)
+        ub = jax.vmap(lambda q: sup_g_bound(C, q))(gb) + m1f * delta
+        sup_outside = jnp.max(jnp.where(cover_test(gb, delta), -jnp.inf, ub))
         bound_exact_phi = jnp.asarray(False)
     else:
         # THE EXACT BOUND.  sup over an uncovered arc is attained at an interior local
         # maximum of h -- necessarily one of these phi, see phi_bound_plan -- or at an arc
-        # endpoint, which is a region edge.  Evaluating both sets IS the supremum, so
-        # there is no lift and no grid, and the cost is fixed by the mode content.
+        # endpoint, which is a region edge.  Evaluating both sets IS the supremum: no lift,
+        # no grid, and a cost fixed by the mode content rather than by amplitude.
         #
-        # Edges are ALWAYS candidates: they are exactly where the uncovered arcs end.  The
-        # enumerated phi are candidates only where they fall outside, tested with zero
-        # erosion because these are points and not cells.  An empty slot contributes
-        # nothing; a region spanning the circle leaves area_outside = 0, where the margin
-        # is -inf regardless of what this returns.
+        # THE CALLER OWNS THE CERTIFICATION.  Use phi_local_lnI_planned unless you have
+        # already checked it: an uncertified plan may be missing a stationary phi, which
+        # makes this an UNDER-estimate.
         nodes = jnp.mod(jnp.asarray(bound_nodes, dtype=jnp.float64), 2.0 * jnp.pi)
-        h_nodes = jax.vmap(lambda q: sup_g_bound(C, q))(nodes)
-        h_nodes = jnp.where(cover_test(nodes, 0.0), -jnp.inf, h_nodes)
-
+        h_nodes = jnp.where(cover_test(nodes, 0.0), -jnp.inf,
+                            jax.vmap(lambda q: sup_g_bound(C, q))(nodes))
         live = width > 0
         edges = jnp.mod(jnp.concatenate([seg_lo, seg_lo + width]), 2.0 * jnp.pi)
-        h_edges = jax.vmap(lambda q: sup_g_bound(C, q))(edges)
-        h_edges = jnp.where(jnp.concatenate([live, live]), h_edges, -jnp.inf)
-
+        h_edges = jnp.where(jnp.concatenate([live, live]),
+                            jax.vmap(lambda q: sup_g_bound(C, q))(edges), -jnp.inf)
         sup_outside = jnp.maximum(h_nodes.max(), h_edges.max())
         bound_exact_phi = jnp.asarray(True)
     outside = jnp.where(area_outside > 0.0,

@@ -3,6 +3,11 @@ import numpy as np
 import pytest
 
 jax = pytest.importorskip("jax")
+# ESTABLISH THE PRECISION HERE.  Several assertions in this file are at 1e-9 to 1e-13 and
+# JAX defaults x64 OFF, so they passed only because some other test module happened to
+# enable it first -- an import-order dependency, and external review saw two of them fail
+# under the default configuration.  A test file that needs f64 has to say so itself.
+jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 
 from RIFT.likelihood import joint_angle_peak_local as JN
@@ -874,12 +879,16 @@ def test_the_exact_bound_is_an_upper_bound_on_the_UNCOVERED_set():
     """
     pytest.importorskip("RIFT.likelihood.bivariate_trig_stationary")
     KS = 2
-    for KP, amp in ((3, 1108.0), (5, 70916.0)):
+    for KP, amp in ((3, 1108.0), (3, 70916.0)):
         rng = np.random.default_rng(11)
         C = rng.normal(size=(KP, 2 * KS + 1)) + 1j * rng.normal(size=(KP, 2 * KS + 1))
         C = C * (amp / np.sum(np.abs(C)))
         Cj = jnp.asarray(C)
         plan = JP.phi_bound_plan(C)
+        # CERTIFIED, asserted.  The first version of this test looped over KP=5, where the
+        # enumerator reports ok=False, and fed that uncertified plan straight into the path
+        # that requires certification -- it passed on luck.  External review caught it.
+        assert plan.certified, (KP, amp, plan.report)
         _, _, i = JP.phi_local_lnI(Cj, n_bound=256, bound_nodes=jnp.asarray(plan.nodes),
                                    u_nodes=256, n_slots=8, n_nodes=193, pt_chunk=32)
         lo, wd = np.asarray(i["seg_lo"]), np.asarray(i["seg_width"])
@@ -910,3 +919,46 @@ def test_the_exact_bound_accepts_where_the_grid_declines():
     assert not bool(ok_g), float(i_g["margin"])
     assert bool(ok_x), float(i_x["margin"])
     assert float(i_x["margin"]) < JP.OUTSIDE_TOL_NATS
+
+
+def test_an_uncertified_plan_falls_back_instead_of_being_trusted():
+    """External adversarial review, and the defect it names is the dangerous direction.
+
+    ``phi_local_lnI`` took any non-None ``bound_nodes`` into the exact path and set
+    ``bound_exact_phi = True`` regardless; ``PhiBoundPlan.certified`` was never consumed
+    anywhere.  A plan the enumerator REFUSED to certify may be missing a stationary phi,
+    and a missing candidate maximum makes the outside bound an UNDER-estimate -- it can
+    accept a row whose omitted mass was never bounded.
+
+    The kernel cannot enforce this: ``bound_nodes`` is traced and ``certified`` is a host
+    boolean, so the check has to happen before the trace.  :func:`phi_local_lnI_planned`
+    is that boundary.  KP=5 is the fixture because the enumerator genuinely declines to
+    certify there, which is also what made the first version of the soundness test pass
+    on luck.
+    """
+    pytest.importorskip("RIFT.likelihood.bivariate_trig_stationary")
+    KS, KP, amp = 2, 5, 70916.0
+    rng = np.random.default_rng(11)
+    C = rng.normal(size=(KP, 2 * KS + 1)) + 1j * rng.normal(size=(KP, 2 * KS + 1))
+    C = C * (amp / np.sum(np.abs(C)))
+    plan = JP.phi_bound_plan(C)
+    assert plan is not None and not plan.certified, (
+        "fixture must be a table the enumerator refuses to certify", plan)
+
+    kw = dict(u_nodes=256, n_slots=8, n_nodes=193, pt_chunk=32, n_bound=2048)
+    _, _, planned = JP.phi_local_lnI_planned(jnp.asarray(C), plan, **kw)
+    assert not bool(planned["bound_exact_phi"]), (
+        "an uncertified plan must not reach the exact path")
+
+    # and the wrapper is not merely inert: a certified plan DOES reach it
+    rng2 = np.random.default_rng(11)
+    C3 = rng2.normal(size=(3, 2 * KS + 1)) + 1j * rng2.normal(size=(3, 2 * KS + 1))
+    C3 = C3 * (amp / np.sum(np.abs(C3)))
+    p3 = JP.phi_bound_plan(C3)
+    assert p3.certified
+    _, _, ok3 = JP.phi_local_lnI_planned(jnp.asarray(C3), p3, **kw)
+    assert bool(ok3["bound_exact_phi"])
+
+    # passing no plan at all is the grid, not a crash
+    _, _, none3 = JP.phi_local_lnI_planned(jnp.asarray(C3), None, **kw)
+    assert not bool(none3["bound_exact_phi"])
