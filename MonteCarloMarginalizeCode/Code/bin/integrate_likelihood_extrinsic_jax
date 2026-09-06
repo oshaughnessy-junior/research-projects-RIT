@@ -355,6 +355,11 @@ def check_critical_and_report(opts, optp):
         fatal.append("--distance-grid-tol applies only to "
                      "--distance-grid-scheme loguniform; it would be silently "
                      "inert here")
+    if getattr(opts, "q_time_pregrid_factor", 1) != 1:
+        fatal.append(
+            "--q-time-pregrid-factor is implemented only by conventional ILE; "
+            "the JAX likelihood has a separate Q-evaluation path and currently "
+            "accepts only factor 1")
     if fatal:
         optp.error("Cannot run as a faithful drop-in: " + "; ".join(fatal)
                    + ".  (These would silently change the result if ignored.)")
@@ -600,6 +605,11 @@ def build_parser():
                  help="Conventional ILE option; currently unsupported by JAX ILE.")
     g.add_option("--srate-resample-time-marginalization", type="int", default=None,
                  help="Conventional ILE option; currently unsupported by JAX ILE.")
+    g.add_option("--q-time-pregrid-factor", type="int", default=1,
+                 help="Conventional ILE Q-pregrid selector. JAX ILE accepts the "
+                      "default factor 1 for command-line compatibility and "
+                      "refuses other factors because its Q-evaluation path is "
+                      "different.")
     g.add_option("--n-phi", type=int, default=32,
                  help="phi_ref grid size for --mode flowmc-phimarg (default 32; "
                       "use 64-128 for l-max>=4 or production quality).")
@@ -1246,7 +1256,12 @@ def angle_grid_suspect_note(scheme=None):
     # axis is dense and amp-sized, so its artifacts are entitled to no more confidence
     # than the other two, and a scheme missing from this list would publish output with
     # NO standing label at all -- the silence a reader would read as verification.
-    if scheme in ("exact", "laplace", "peak-local"):
+    # 'phi-local' belongs here too, and its omission was found by external review rather
+    # than by this comment being read.  It runs _runtime_amp_failsafe and evaluates an
+    # amp-sized dense fallback on every row, so it is amplitude-sized in exactly the sense
+    # this label is about; leaving it out published its artifacts with an EMPTY note --
+    # the silence the paragraph above says a reader would take for verification.
+    if scheme in ("exact", "laplace", "peak-local", "phi-local"):
         return ("ANGLE-GRID-CHECK=BEST-EFFORT (no undersizing detected; the "
                 "detector may be dropped under jax transformation, so this is "
                 "NOT a verification -- rebuild at larger amp_sizing if it matters)")

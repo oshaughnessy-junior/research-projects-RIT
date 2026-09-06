@@ -495,6 +495,43 @@ def _peaklocal_bytes_per_sample_pt(like):
     return int(streamed_body + stacked_scan_output)
 
 
+def _philocal_bytes_per_sample_pt(like):
+    """Conservative source-level payload for one phi-local sample/time point.
+
+    THE PHI-LOCAL KERNEL ROLLS TWO AXES AND THE GUARD MUST MODEL BOTH, because unlike the
+    dense path its quadrature grid is not streamed on the u axis: `pt_chunk` phi points
+    are evaluated at once, each costing a u profile of `4 * u_nodes`, and `eval_g2`
+    materializes `(points, KP, 2KS+1)` COMPLEX -- 16 bytes a term, not 8.  `x_chunk`
+    distance nodes are in flight simultaneously.  Miss the complex width or the table
+    terms and this undercounts by ~90x.
+
+    The entry ALSO evaluates the dense peak-local scheme for the fallback, so the dense
+    model is added rather than maxed: both are live in the same trace.
+    """
+    from . import joint_anglemarg_peaklocal as _jp
+    from . import anglemarg as _am
+
+    info = getattr(like, "angle_marg_info", None) or {}
+    amp_sizing = info.get("amp_sizing")
+    if amp_sizing is None:
+        amp_sizing = _am.ANGLE_MARG_CROSSOVER_AMPLITUDE
+    u_nodes = _jp.u_nodes_in_use(amp_sizing)
+
+    data = getattr(like, "data", None)
+    lms = getattr(data, "lms", None)
+    m_max = (int(np.max(np.abs(np.asarray(lms)[:, 1])))
+             if lms is not None else 2)
+    KP = 2 * m_max + 1
+    terms = KP * 5                       # (KP, 2KS+1) with the u degree pinned at 2
+
+    live_pts = _jp.PT_CHUNK_DEFAULT * 4 * u_nodes
+    body = _jp.X_CHUNK_DEFAULT * live_pts * terms * 16
+    # the per-node values the distance scan stacks before its reduction
+    n_x = int(np.size(getattr(like, "x_grid", ())) or 1)
+    stacked = n_x * 8
+    return int(body + stacked + _peaklocal_bytes_per_sample_pt(like))
+
+
 def angle_marg_eval_chunk(like, chunk):
     """Cap the batched-eval chunk when ``like`` runs an anglemarg scheme.
 
@@ -516,13 +553,17 @@ def angle_marg_eval_chunk(like, chunk):
     # same way the dense schemes do.  Leaving it out kept an uncapped 8000-sample batch
     # and reopened the 36.4 GiB failure documented above.
     if getattr(like, "angle_marg_scheme", "grid") not in ("exact", "laplace",
-                                                          "peak-local"):
+                                                          "peak-local", "phi-local"):
         return chunk
     npts = int(getattr(getattr(like, "data", None), "npts", 0) or 0)
     if npts <= 0:
         return chunk
     bytes_per = _ANGLE_MARG_BYTES_PER_SAMPLE_PT
-    if getattr(like, "angle_marg_scheme", None) == "peak-local":
+    if getattr(like, "angle_marg_scheme", None) == "phi-local":
+        # Modelled in the SAME change that added the kernel, because the trap this guard
+        # exists for is a kernel whose sizing moved while the guard kept its old model.
+        bytes_per = max(bytes_per, _philocal_bytes_per_sample_pt(like))
+    elif getattr(like, "angle_marg_scheme", None) == "peak-local":
         # Besides the streamed (phi_chunk,n_x,4,u_live) body, lax.scan returns
         # and stacks every (n_phi,n_x) value before the final reduction.  Omitting
         # that output undercounts high-amplitude calls because n_phi grows as

@@ -512,16 +512,23 @@ fi
 # it counted the one test this job deselects.  That was a one-off setup bug, not a property
 # of the environment, and subtracting for it would under-promise by one -- which is the
 # failure direction this whole comment exists to warn about, because a low floor PASSES.
-# The log-hermite time-quadrature branch adds test_time_log_hermite.py, 13 tests, and the
-# floor is 437 -- read off THIS JOB'S OWN "collected N tests from 31 files" line, with base
-# rift_O4d reporting "collected 424 tests from 30 files" and "424 passed, 1 deselected".
-# It was first set to 438, which is the 311 mistake documented above repeated exactly: the
-# local measurement was taken without the DESELECT loop having run, so it counted
+# MERGE NOTE (this branch merged over rift_O4d at 432).  The base floor moved 424 -> 426
+# -> 428 -> 432 while this branch was open, all of it the joint-phi work in #264 and #265.
+# The log-hermite branch adds test_time_log_hermite.py, 13 tests, so the FILES roster goes
+# 30 -> 31 files.  The new floor is 445, READ OFF THIS SCRIPT'S OWN LINE after the merge --
+# it printed "collected 445 tests from 31 files" on CIT citlogin6 with ~/.cache/jaxci_venv
+# (jax 0.9.2, python 3.13, JAX_PLATFORMS=cpu, JAX_ENABLE_X64=1), the DESELECT loop applied.
+# It is NOT 432 + 13 done as arithmetic, and NOT this branch's pre-merge 437, which was
+# measured against a base that has since moved.  That the measurement happens to agree with
+# the arithmetic here is a coincidence of this merge, not a licence to skip the run.
+# The pre-merge value on this branch was 437, itself a correction of a first attempt at
+# 438: that 438 repeated the 311 mistake documented above exactly -- the local measurement
+# was taken without the DESELECT loop having run, so it counted
 # test_gpu_gather_parity_against_numpy_window and read the PRE-deselect 425 + 13.  A floor
-# measured before the deselect applies is one too high and reds a perfectly healthy
-# collection.  Measure by RUNNING THIS SCRIPT and reading its own line -- never by pointing
-# pytest at FILES yourself, and never by adding to the previous number.
-EXPECTED_TESTS=437
+# measured before the deselect applies is one too high and reds a healthy collection.
+# Measure by RUNNING THIS SCRIPT and reading its own line -- never by pointing pytest at
+# FILES yourself, and never by adding to the previous number.
+EXPECTED_TESTS=445
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"

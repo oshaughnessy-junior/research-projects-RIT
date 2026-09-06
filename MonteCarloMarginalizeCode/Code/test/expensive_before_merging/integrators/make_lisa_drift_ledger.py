@@ -399,6 +399,12 @@ RULES = [
     (r"^FUNC:_normalize_interpolate_time_argv$", "PORT",
      "Normalizes --interpolate-time argv forms. LISA exposes --interpolate-time, so "
      "the same normalization applies."),
+    (r"^OPTION:--q-time-pregrid-factor$", "PORT",
+     "Refines the finite Q time grid before detector-arrival interpolation. LISA uses "
+     "the same NoLoop Q gather and can carry the same interpolation bias, so this is "
+     "not ground-detector-specific. Port only after separate LISA accuracy and memory "
+     "validation: its long observation windows make an unconditional 8x retained grid "
+     "potentially much more expensive than in the ground-based driver."),
     (r"^OPTION:--time-marginalization-quadrature$", "PORT",
      "Selects the rule for the TIME integral of the marginalized likelihood "
      "(simpson, the unchanged default, or the opt-in band-limited refinement). LISA "
