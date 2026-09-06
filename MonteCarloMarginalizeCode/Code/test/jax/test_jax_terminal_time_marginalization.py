@@ -303,6 +303,15 @@ def test_jax_dropin_manifest_covers_every_batchmode_option_with_same_arity():
     assert not missing
     assert not mismatched
 
+    # The conventional factor-8 path is not an inert tuning flag: it changes
+    # how Q is represented and evaluated.  JAX must parse the shared default
+    # while refusing factor 8, not silently ignore it after executable swapping.
+    opts, _ = parser.parse_args(["--q-time-pregrid-factor", "1"])
+    drv.check_critical_and_report(opts, parser)
+    opts, _ = parser.parse_args(["--q-time-pregrid-factor", "8"])
+    with pytest.raises(SystemExit):
+        drv.check_critical_and_report(opts, parser)
+
 
 def _load_driver():
     import importlib.machinery
