@@ -121,10 +121,21 @@ class JAXLikelihoodData:
     """
 
     def __init__(self, detectors, deltaT, gmst, tvals, tref,
-                 distMpcRef=DIST_MPC_REF):
+                 distMpcRef=DIST_MPC_REF, q_time_pregrid_factor=1):
         self.detector_names = list(detectors.keys())
         self.detectors = detectors  # name -> dict (see build_likelihood_data)
         self.deltaT = float(deltaT)
+        # Integer refinement of the stored Q sampling.  1 == the historical
+        # behaviour, Q sampled at deltaT.  With factor f the stored Q arrays are
+        # sampled at deltaT/f, so a position expressed in COARSE samples must be
+        # multiplied by f before it indexes them.  deltaT itself, tvals, and the
+        # Simpson weights below are DELIBERATELY unchanged: the pregrid refines
+        # the interpolation of Q, not the cadence the likelihood integrates on
+        # (mirroring ``--q-time-pregrid-factor`` on the conventional arm).
+        self.q_time_pregrid_factor = int(q_time_pregrid_factor)
+        if self.q_time_pregrid_factor < 1:
+            raise ValueError("q_time_pregrid_factor must be >= 1, got %r"
+                             % (q_time_pregrid_factor,))
         self.gmst = float(gmst)
         self._tref = float(tref)
         self.tvals = jnp.asarray(tvals, dtype=jnp.float64)
@@ -142,8 +153,71 @@ class JAXLikelihoodData:
         return self.detectors[self.detector_names[0]]["lms"]
 
 
+def build_q_time_pregrid(rho, factor):
+    """Refine a packed ``(K, npts_full)`` rholm block onto a ``factor``x time grid.
+
+    THIS IS A THIN WRAPPER, ON PURPOSE.  The arithmetic is
+    ``factored_likelihood.build_reflected_q_pregrid`` -- the SAME host-side
+    builder the conventional NoLoop arm uses for ``--q-time-pregrid-factor``
+    (RIFT PR #261).  Calling it rather than restating it here is the whole point:
+    the two arms are meant to be answering with the same refined Q, and a second
+    implementation of a boundary convention is exactly how the two drivers came
+    to ship opposite stencil defaults (issue #233).  It also inherits that
+    function's round-trip guard -- every ``factor``-th refined sample must
+    reproduce the input to 5e-12 relative -- and its host-side (numpy) execution,
+    so the transient ``2 n factor`` reflection never lands on the accelerator.
+
+    WHICH REFLECTION, and why it is not this module's ``_reflected_fft_upsample``.
+    The two differ, and the difference is measured, not stylistic:
+
+    * ``_reflected_fft_upsample`` periodizes ``[x0..x_{n-1}, x_{n-2}..x_1]``
+      (period ``2(n-1)``).  It is right for what IT is used for -- reconstructing
+      ``kappa`` on the *terminal* integration window, where a series sitting at
+      exactly Nyquist must keep reconstructing ``cos(pi t)``; duplicating the
+      turning samples inserts a flat pair and breaks that.
+    * ``reflected_bandlimited_upsample`` (what this uses, via #261) periodizes
+      ``[x0..x_{n-1}, x_{n-1}..x0]`` (period ``2n``).  That is the right choice
+      HERE, for a different reason: the rholm buffer is a CROP of a longer series
+      (``ComputeModeIPTimeSeries`` ends in ``CutCOMPLEX16TimeSeries(rhoTS, 0,
+      N_window)``), and on crop-shaped fixtures the ``2n`` form measured 2e-8 to
+      2.5e-6 nats against 2e-6 to 2.5e-4 for ``2(n-1)`` -- see
+      DESIGN_time_marginalization_quadrature.md, "Finite-window reconstruction".
+
+    Both docstrings assert their own convention is the correct one; they are
+    describing different problems and both are right about theirs.  Neither is a
+    substitute for the exact-period oracle -- see
+    ``test/jax/test_jax_q_time_pregrid.py``, which measures both against a Q
+    built as a genuine crop of an exactly periodic band-limited series.  MEASURED
+    THERE, on this arm's own fixture: routed through ``_reflected_fft_upsample``
+    the factor-8 pregrid saturates at 7.8e-4 relative and does not improve at
+    factor 16 (7.6e-4); through the ``2n`` form it reaches 4.6e-5 and keeps
+    converging.  Getting this wrong costs a 17x floor and all of the convergence,
+    while every "every factor-th sample reproduces the input" check still passes.
+
+    The ``factor == 1`` short-circuit returns the INPUT OBJECT and does not import
+    ``factored_likelihood`` at all, so the default path is untouched -- bit-identity
+    is a property of the code path, not of an agreement to 1e-15.
+
+    Returns ``(rho_fine, report)`` with ``rho_fine`` shaped
+    ``(K, (npts_full-1)*factor + 1)`` and ``report`` the #261 telemetry dict.
+    """
+    factor = int(factor)
+    if factor < 1:
+        raise ValueError("q_time_pregrid_factor must be >= 1, got %r" % (factor,))
+    if factor == 1:
+        return rho, dict(factor=1)
+    # LOCAL import, deliberately.  factored_likelihood pulls in lalsimutils and numba;
+    # this module is imported by lightweight consumers (the stencil-parity tests, the
+    # coordinate helpers) that never build data, and a module-level import would make
+    # them pay for it.  Data building already imports it via wrapper.py anyway.
+    from RIFT.likelihood import factored_likelihood as _fl
+    dense, report = _fl.build_reflected_q_pregrid(np.asarray(rho), factor=factor,
+                                                 xpy=np)
+    return np.asarray(dense), report
+
+
 def build_likelihood_data(packed_per_detector, deltaT, tref, tvals,
-                          distMpcRef=DIST_MPC_REF):
+                          distMpcRef=DIST_MPC_REF, q_time_pregrid_factor=1):
     """Assemble a :class:`JAXLikelihoodData` from packed numpy arrays.
 
     Parameters
@@ -170,15 +244,24 @@ def build_likelihood_data(packed_per_detector, deltaT, tref, tvals,
         helper ``bin/integrate_likelihood_extrinsic_batchmode`` uses (issue #146).
     """
     gmst = float(lal.GreenwichMeanSiderealTime(tref))
+    q_time_pregrid_factor = int(q_time_pregrid_factor)
     detectors = {}
     for det, d in packed_per_detector.items():
         lms = [(int(l), int(m)) for (l, m) in np.asarray(d["lms"])]
         rho = np.asarray(d["rholmArray"], dtype=np.complex128)  # (K, npts_full)
+        npts_full_coarse = int(rho.shape[-1])
+        # factor 1 returns ``rho`` itself, so the historical path is not merely
+        # numerically equal, it is the SAME array object -- see
+        # test_factor_one_is_bit_identical.
+        rho, q_report = build_q_time_pregrid(rho, q_time_pregrid_factor)
         Q = jnp.asarray(np.ascontiguousarray(rho.T))            # (npts_full, K)
         D = lalsim.DetectorPrefixToLALDetector(det)
         detectors[det] = {
             "lms": lms,
             "Q": Q,
+            "q_time_pregrid_factor": q_time_pregrid_factor,
+            "q_time_pregrid_report": q_report,
+            "npts_full_coarse": npts_full_coarse,
             "U": jnp.asarray(np.asarray(d["U"], dtype=np.complex128)),
             "V": jnp.asarray(np.asarray(d["V"], dtype=np.complex128)),
             "epoch": float(d["epoch"]),
@@ -187,7 +270,8 @@ def build_likelihood_data(packed_per_detector, deltaT, tref, tvals,
             "npts_full": int(Q.shape[0]),
             "l_max": max(l for (l, m) in lms),
         }
-    return JAXLikelihoodData(detectors, deltaT, gmst, tvals, tref, distMpcRef)
+    return JAXLikelihoodData(detectors, deltaT, gmst, tvals, tref, distMpcRef,
+                             q_time_pregrid_factor=q_time_pregrid_factor)
 
 
 def _gather_nearest(Q_col, pos, u=None):
@@ -374,6 +458,128 @@ def _separable_u(p0):
     return (p0 - jnp.floor(p0))[:, None]
 
 
+# Stencil footprint in STORED samples, i.e. how far a gather reaches either side of
+# its base index.  One definition, consumed by both accumulators' support checks.
+_STENCIL_MARGIN = {"nearest": 1, "linear": 2, "cubic": 3,
+                   "sinc": SINC_HALFWIDTH_DEFAULT + 1}
+
+
+def _check_stored_q_length(dd, stored_npts, factor, what):
+    """Fail closed when a stored Q bank was not refined to its declared factor.
+
+    ``_q_sample_positions`` scales every index by ``factor``.  If the array it
+    indexes was never refined, that scaling silently reads the wrong samples --
+    a factor-8 window would cover an eighth of the intended span and land on
+    whatever happens to be there.  Nothing downstream can see it: the shapes
+    still broadcast, the likelihood still returns finite numbers, and they are
+    wrong.
+
+    The shape it guards against is reachable.  ``banded._base_data`` builds the
+    scaffold through :func:`build_likelihood_data`, then attaches an
+    INDEPENDENTLY packed ``Q_bank`` that :func:`build_q_time_pregrid` never sees,
+    and ``_accumulate_unit_banded`` indexes that bank.  ``_base_data`` takes no
+    factor today, so the two cannot disagree yet; giving it one without also
+    refining the bank would produce exactly this.
+
+    Cheap (a python int comparison at trace time), so there is no reason to make
+    it conditional.
+    """
+    declared = dd.get("q_time_pregrid_factor")
+    if declared is not None and int(declared) != int(factor):
+        raise ValueError(
+            "%s was built at q_time_pregrid_factor=%d but is being indexed at "
+            "factor %d" % (what, int(declared), int(factor)))
+    coarse = dd.get("npts_full_coarse")
+    if coarse is None:
+        # A hand-built detector dict (tests, benchmark shims) carrying no
+        # refinement metadata.  At factor 1 there is nothing to check: no index
+        # is scaled, so an unrefined buffer is the correct buffer.
+        #
+        # Above factor 1 the absence of the metadata is itself the fault, and
+        # returning here was a hole.  `build_q_time_pregrid` sets both keys
+        # together, so a dict that declares a factor without `npts_full_coarse`
+        # was not built by it, and its Q is coarse.  `_q_sample_positions` would
+        # still scale every index by the factor, reading an eighth of the
+        # intended span at factor 8.  Shapes broadcast, the likelihood returns
+        # finite numbers, and they are wrong.  Refuse instead.
+        if int(factor) != 1:
+            raise ValueError(
+                "%s is indexed at q_time_pregrid_factor=%d but carries no "
+                "'npts_full_coarse'; refinement metadata is required above "
+                "factor 1, because the stored Q cannot be shown to have been "
+                "refined and every index would be scaled regardless.  Build it "
+                "with build_q_time_pregrid, or index at factor 1."
+                % (what, int(factor)))
+        return
+    expected = (int(coarse) - 1)*int(factor) + 1 if int(factor) != 1 else int(coarse)
+    if int(stored_npts) != expected:
+        raise ValueError(
+            "%s has %d samples but q_time_pregrid_factor=%d over a %d-sample "
+            "coarse buffer requires %d; the stored Q was not refined to the "
+            "declared factor" % (what, int(stored_npts), int(factor),
+                                 int(coarse), expected))
+
+
+def _q_sample_positions(data, p0, t_offsets, interp):
+    """Map a coarse-sample window onto the stored (possibly pre-refined) Q grid.
+
+    ``p0`` (shape ``(S,)``) and ``t_offsets`` (shape ``(npts,)``) are in units of
+    ``data.deltaT``, the cadence the likelihood integrates on.  The STORED Q may be
+    sampled ``f = data.q_time_pregrid_factor`` times finer, so an index into it is
+    ``f`` times larger.  Returns ``(pos, u_sep)`` in stored-sample units.
+
+    ``f == 1`` returns what the accumulators computed inline before the pregrid
+    existed, the same expressions in the same order, so that path is bit-identical.
+    ``test_factor_one_positions_are_bit_identical_to_the_pre_pregrid_expressions``
+    pins these positions bitwise against those expressions; the whole-likelihood
+    identity against base ``bec19ad5`` is in the PR, over 52 toy arrays and 35
+    from a rebuilt production likelihood.
+
+    SEPARABILITY IS THE PRECONDITION.  ``_separable_u`` computes ONE fractional
+    offset per sample and hands it to the gatherer for every time column; that is
+    only legitimate while the time offsets are exact integers in the units the
+    gather indexes, which ``t_offsets * f`` (integer ``t_offsets``, integer ``f``)
+    keeps them.  The form written here is additive to match the factor-1 branch
+    line for line.  That is a readability choice and carries no accuracy claim:
+    ``(p0 + t) * f`` gives bit-identical ``frac`` and ``floor`` at f = 8 for ``p0``
+    from 5e2 to 5e5, 2000 samples and 742 columns per decade (re-measured
+    2026-09-07).
+
+    ``nearest`` is REFUSED with a pregrid rather than quietly allowed.  It would
+    gather correctly (snapping to a finer sample is strictly better), but
+    :func:`_accumulate_unit_banded` reconstructs the arrival time its post-phase
+    applies as ``rint(p0)`` in COARSE samples, which is no longer the sample the
+    gather read; the data term and the model norm would drift apart by up to half a
+    coarse bin.  Refusing costs nothing -- a pregrid exists to buy sub-sample
+    accuracy, which is precisely what 'nearest' declines to use.
+    """
+    # getattr, not attribute access: benchmark shims and several existing tests
+    # duck-type ``data`` as a SimpleNamespace.  The default is the historical
+    # behaviour, and it is SAFE rather than merely convenient -- the paired
+    # ``_check_stored_q_length`` refuses a detector dict whose declared factor
+    # disagrees with the one being indexed, so a refined Q reaching a namespace
+    # that forgot the attribute raises instead of being read at the wrong stride.
+    factor = int(getattr(data, "q_time_pregrid_factor", 1))
+    if factor == 1:
+        pos = p0[:, None] + t_offsets[None, :]
+        # None for 'nearest': it ignores u, and feeding an unused value into this trace
+        # is NOT free -- it cost >60% wall on the banded slow-rotation path (measured:
+        # test_rotation_path_a 69.8 s -> >113 s), which is compile-bound, not arithmetic-
+        # bound.  Only the weight-building stencils get it.  See _separable_u.
+        u_sep = None if interp == "nearest" else _separable_u(p0)
+        return pos, u_sep
+    if interp == "nearest":
+        raise NotImplementedError(
+            "interp='nearest' is not supported with q_time_pregrid_factor=%d: the "
+            "banded post-phase reconstructs the gathered arrival time in COARSE "
+            "samples, so it would no longer match the sample a refined-grid nearest "
+            "gather reads.  Use interp='cubic' (the validated pregrid stencil)."
+            % (factor,))
+    p0_q = p0 * factor
+    pos = p0_q[:, None] + (t_offsets * factor)[None, :]
+    return pos, _separable_u(p0_q)
+
+
 _GATHERERS = {"nearest": _gather_nearest, "linear": _gather_linear,
               "cubic": _gather_cubic,
               "sinc": _make_gather_sinc(SINC_HALFWIDTH_DEFAULT)}
@@ -545,19 +751,16 @@ def _accumulate_unit(data, ra, dec, psi, incl, phiref, interp,
         FY_conj = jnp.conj(F_lm * Y)
         t_det = (data.tref_minus_epoch(det)
                  + time_delay_from_earth_center(dd["location"], ra, dec, gmst))
+        _check_stored_q_length(dd, Q.shape[0],
+                               getattr(data, "q_time_pregrid_factor", 1),
+                               "detector %s Q" % det)
         p0 = (t_det + data.tval0) * inv_deltaT
-        pos = p0[:, None] + t_offsets[None, :]
+        pos, u_sep = _q_sample_positions(data, p0, t_offsets, interp)
         if guard:
-            stencil_margin = {"nearest": 1, "linear": 2, "cubic": 3,
-                              "sinc": SINC_HALFWIDTH_DEFAULT + 1}[interp]
+            stencil_margin = _STENCIL_MARGIN[interp]
             support_valid = support_valid & jnp.all(
                 (pos >= stencil_margin)
                 & (pos <= Q.shape[0] - 1 - stencil_margin), axis=-1)
-        # None for 'nearest': it ignores u, and feeding an unused value into this trace
-        # is NOT free -- it cost >60% wall on the banded slow-rotation path (measured:
-        # test_rotation_path_a 69.8 s -> >113 s), which is compile-bound, not arithmetic-
-        # bound.  Only the weight-building stencils get it.  See _separable_u.
-        u_sep = None if interp == "nearest" else _separable_u(p0)
 
         kappa_det = jnp.zeros((S, npts), dtype=jnp.complex128)
         for k in range(K):
@@ -741,18 +944,18 @@ def _accumulate_unit_banded(data, ra, dec, psi, incl, phiref, interp,
         t_det = (data.tref_minus_epoch(det)
                  + time_delay_from_earth_center(dd["location"], ra, dec, gmst))
         p0 = (t_det + data.tval0) * inv_deltaT
-        pos = p0[:, None] + t_offsets[None, :]              # (S, npts)
+        # ``pos`` indexes the STORED Q (refined by q_time_pregrid_factor); ``p0``
+        # stays in coarse samples, because the post_phase block below converts it to
+        # a physical arrival time via data.deltaT.
+        _check_stored_q_length(dd, Q_bank.shape[1],
+                               getattr(data, "q_time_pregrid_factor", 1),
+                               "detector %s Q_bank" % det)
+        pos, u_sep = _q_sample_positions(data, p0, t_offsets, interp)  # (S, npts)
         if guard:
-            stencil_margin = {"nearest": 1, "linear": 2, "cubic": 3,
-                              "sinc": SINC_HALFWIDTH_DEFAULT + 1}[interp]
+            stencil_margin = _STENCIL_MARGIN[interp]
             support_valid = support_valid & jnp.all(
                 (pos >= stencil_margin)
                 & (pos <= Q_bank.shape[1] - 1 - stencil_margin), axis=-1)
-        # None for 'nearest': it ignores u, and feeding an unused value into this trace
-        # is NOT free -- it cost >60% wall on the banded slow-rotation path (measured:
-        # test_rotation_path_a 69.8 s -> >113 s), which is compile-bound, not arithmetic-
-        # bound.  Only the weight-building stencils get it.  See _separable_u.
-        u_sep = None if interp == "nearest" else _separable_u(p0)
 
         if post_phase:
             # delta_ij = (arrival time of output bin j for sample i) - tref, in seconds.

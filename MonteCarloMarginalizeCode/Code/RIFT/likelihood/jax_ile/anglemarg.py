@@ -85,6 +85,7 @@ __all__ = [
     "angle_sample_grid_sizes",
     "angle_coefficient_tables",
     "estimate_angle_amplitude",
+    "coefficient_table_distphipsimarg_exact",
     "fused_log_likelihood_distphipsimarg_exact",
     "fused_log_likelihood_distphipsimarg_laplace",
     "choose_angle_marg_scheme",
@@ -258,7 +259,7 @@ def _data_m_max(data):
 
 
 def angle_coefficient_tables(data, ra, dec, incl, interp=JAX_INTERP_DEFAULT,
-                             sample_chunk=None):
+                             sample_chunk=None, guard=0):
     """Exact 2-D Fourier coefficient tables of A = Re kappa_unit, B = rho^2_unit.
 
     Samples :func:`core._accumulate_unit` on the Nyquist-sized
@@ -274,15 +275,24 @@ def angle_coefficient_tables(data, ra, dec, incl, interp=JAX_INTERP_DEFAULT,
     kp = 0 and 2 for kp > 0 (the kp = 0 row stores both ks signs, whose
     conjugate pairing is already real).
 
-    Memory: the tables are (m_max+1, 3, S, npts) and (2*m_max+1, 5, S, npts)
+    ``guard`` requests primitive-only reconstruction support from the same
+    accumulation operation as the terminal band-limited path.  The returned
+    time axis then has ``data.npts + 2*guard`` samples; callers must discard the
+    support after reconstruction and compare two guard widths before accepting.
+
+    Memory: the tables are (m_max+1, 3, S, ntime) and (2*m_max+1, 5, S, ntime)
     complex -- independent of every grid size.  The sample scan runs in
     chunks of ``sample_chunk`` grid points (default npsi_s, i.e. one phi row
     per step), checkpointed so reverse-mode AD does not store per-step
     intermediates.
 
-    Returns ``(C_A, C_B, meta)`` with ``meta = dict(m_max, nphi_s, npsi_s)``.
+    Returns ``(C_A, C_B, meta)`` with grid sizes and the effective ``guard``
+    and ``ntime`` support recorded in ``meta``.
     """
     m_max = _data_m_max(data)
+    guard = int(guard)
+    if guard < 0:
+        raise ValueError("guard must be non-negative")
     nphi_s, npsi_s = angle_sample_grid_sizes(m_max)
     if sample_chunk is None:
         sample_chunk = npsi_s
@@ -311,7 +321,7 @@ def angle_coefficient_tables(data, ra, dec, incl, interp=JAX_INTERP_DEFAULT,
     dec = jnp.asarray(dec, dtype=jnp.float64)
     incl = jnp.asarray(incl, dtype=jnp.float64)
     S = ra.shape[0]
-    npts = data.npts
+    npts = data.npts + 2 * guard
     c = int(sample_chunk)
     nsteps = Ns // c
 
@@ -329,7 +339,7 @@ def angle_coefficient_tables(data, ra, dec, incl, interp=JAX_INTERP_DEFAULT,
         phi_b = jnp.broadcast_to(prs[:, 0][:, None], (c, S)).reshape(-1)
         psi_b = jnp.broadcast_to(prs[:, 1][:, None], (c, S)).reshape(-1)
         ku, rs = _accumulate_unit(data, ra_b, dec_b, psi_b, incl_b, phi_b,
-                                  interp, False)
+                                  interp, False, guard=guard)
         A = ku.real.reshape(c, S, npts)
         B = rs.reshape(c, S, npts)
         CA = CA + jnp.einsum("ckq,cst->kqst", pA, A)
@@ -339,7 +349,8 @@ def angle_coefficient_tables(data, ra, dec, incl, interp=JAX_INTERP_DEFAULT,
     CA0 = jnp.zeros((KPA, 2 * KSA + 1, S, npts), dtype=jnp.complex128)
     CB0 = jnp.zeros((KPB, 2 * KSB + 1, S, npts), dtype=jnp.complex128)
     (C_A, C_B), _ = jax.lax.scan(jax.checkpoint(_step), (CA0, CB0), xs)
-    meta = dict(m_max=m_max, nphi_s=nphi_s, npsi_s=npsi_s)
+    meta = dict(m_max=m_max, nphi_s=nphi_s, npsi_s=npsi_s,
+                guard=guard, ntime=npts)
     return C_A, C_B, meta
 
 
@@ -975,6 +986,111 @@ def _pad_chunks(values, chunk):
     return [jnp.asarray(o) for o in out] + [jnp.asarray(lw)]
 
 
+def coefficient_table_distphipsimarg_exact(
+        C_A, C_B, x_grid, log_w_grid, *, amp_sizing=None, m_max=None,
+        dense_chunk=8, grid_block=32):
+    """Stream the exact angle/distance reserve from coefficient tables.
+
+    This is the common fixed-point seam between the dense/exact reserve and
+    all-axis peak-local work.  ``C_A`` and ``C_B`` may be the batched
+    ``(KP,KS,S,Ntime)`` tables returned by :func:`angle_coefficient_tables`, or
+    an unbatched ``C_A`` of shape ``(KP,KS,Ntime)`` together with a collapsed,
+    time-independent ``C_B`` of shape ``(KP,KS)``.  The latter is exactly the
+    compact representation used by ``all_axis_peaklocal``.
+
+    The result has shape ``(S,Ntime)`` and is normalized over the two periodic
+    angles.  With the fixed-grid distance path, normalization is entirely
+    determined by ``log_w_grid``.  When ``JAX_ILE_DISTMARG_GH`` is enabled, the
+    existing adaptive-distance contract instead reads only the support from
+    ``x_grid`` and applies its built-in normalized volumetric ``x**-4`` measure.
+    Time is deliberately not integrated here.  Keeping those measures explicit
+    prevents an empirical local result using continuous ``x**-4 dx`` from being
+    silently compared with a differently normalized production distance prior.
+
+    Dense angle coordinates are generated procedurally from each scan index and
+    distance blocks are streamed, so peak workspace is controlled by
+    ``dense_chunk`` and ``grid_block`` rather than the complete dense angle
+    lattice.  No waveform or packed U,V/Q contraction is repeated.
+    """
+    C_A = jnp.asarray(C_A, dtype=jnp.complex128)
+    C_B = jnp.asarray(C_B, dtype=jnp.complex128)
+    x_grid = jnp.asarray(x_grid, dtype=jnp.float64)
+    log_w_grid = jnp.asarray(log_w_grid, dtype=jnp.float64)
+    if C_A.ndim == 3:
+        C_A = C_A[:, :, None, :]
+    if C_A.ndim != 4:
+        raise ValueError("C_A must have shape (KP,KS[,S],Ntime)")
+    if C_B.ndim == 2:
+        C_B = jnp.broadcast_to(
+            C_B[:, :, None, None],
+            C_B.shape + (C_A.shape[2], C_A.shape[3]))
+    if C_B.ndim != 4 or C_B.shape[2:] != C_A.shape[2:]:
+        raise ValueError(
+            "C_B must be collapsed (KP,KS) or match C_A sample/time axes")
+    if C_A.shape[1] % 2 != 1 or C_B.shape[1] % 2 != 1:
+        raise ValueError("angular harmonic axes must have odd length")
+    if x_grid.ndim != 1 or log_w_grid.shape != x_grid.shape or x_grid.size < 2:
+        raise ValueError("x_grid/log_w_grid must be matching one-dimensional grids")
+    if not (int(dense_chunk) > 0 and int(grid_block) > 0):
+        raise ValueError("dense_chunk and grid_block must be positive")
+    inferred_m_max = int(C_A.shape[0] - 1)
+    if m_max is None:
+        m_max = inferred_m_max
+    m_max = int(m_max)
+    if m_max != inferred_m_max:
+        raise ValueError("m_max does not match the C_A harmonic order")
+    if C_B.shape[0] < 2 * m_max + 1:
+        raise ValueError("C_B does not contain the required norm harmonics")
+
+    S = C_A.shape[2]
+    npts = C_A.shape[3]
+    amp_sizing = _require_amp_sizing(amp_sizing)
+    _runtime_amp_failsafe(C_A, C_B, x_grid, amp_sizing, "exact-tables")
+    nphi_d, nu_d = _dense_grid_sizes(amp_sizing, m_max=m_max)
+    c = int(dense_chunk)
+    n_dense = nphi_d * nu_d
+    nsteps = (n_dense + c - 1) // c
+    lane = jnp.arange(c, dtype=jnp.int32)
+
+    a_g = x_grid
+    b_g = -0.5 * jnp.square(x_grid)
+    _use_gh = _core._DISTMARG_GH_N > 0
+    if _use_gh:
+        gh_xi, gh_logw = make_distance_gh(_core._DISTMARG_GH_N)
+        x_min = jnp.min(x_grid)
+        x_max = jnp.max(x_grid)
+
+    def _step(carry, step):
+        m, s = carry
+        flat = step * c + lane
+        live = flat < n_dense
+        safe = jnp.minimum(flat, n_dense - 1)
+        iphi = safe // nu_d
+        iu = safe - iphi * nu_d
+        phw = (2.0 * jnp.pi / float(nphi_d)) * iphi
+        uw = (2.0 * jnp.pi / float(nu_d)) * iu
+        lww = jnp.where(live, 0.0, -jnp.inf)
+        A = _reconstruct_field(C_A, phw, uw)
+        B = _reconstruct_field(C_B, phw, uw)
+        K2 = A.reshape(c * S, npts)
+        R2 = B.reshape(c * S, npts)
+        if _use_gh:
+            lnL = _distmarg_gh_logL(K2, R2, gh_xi, gh_logw, x_min, x_max)
+        else:
+            lnL = _logsumexp_grid_blocked(
+                K2, R2, a_g, b_g, log_w_grid, grid_block)
+        lnL = lnL.reshape(c, S, npts) + lww[:, None, None]
+        m_new, s_new = _lse_update(m, s, lnL, axis=0)
+        return (m_new, s_new), None
+
+    m0 = jnp.full((S, npts), -jnp.inf, dtype=jnp.float64)
+    s0 = jnp.zeros((S, npts), dtype=jnp.float64)
+    (m, s), _ = jax.lax.scan(
+        jax.checkpoint(_step), (m0, s0),
+        jnp.arange(nsteps, dtype=jnp.int32))
+    return m + jnp.log(s) - jnp.log(float(n_dense))
+
+
 def fused_log_likelihood_distphipsimarg_exact(
         data, ra, dec, incl, x_grid, log_w_grid,
         interp=JAX_INTERP_DEFAULT, amp_sizing=None,
@@ -1003,48 +1119,10 @@ def fused_log_likelihood_distphipsimarg_exact(
     x_grid = jnp.asarray(x_grid, dtype=jnp.float64)
     log_w_grid = jnp.asarray(log_w_grid, dtype=jnp.float64)
     C_A, C_B, meta = angle_coefficient_tables(data, ra, dec, incl, interp)
-    S = ra.shape[0]
-    npts = data.npts
-
-    amp_sizing = _require_amp_sizing(amp_sizing)
-    _runtime_amp_failsafe(C_A, C_B, x_grid, amp_sizing, "exact")
-    nphi_d, nu_d = _dense_grid_sizes(amp_sizing, m_max=meta["m_max"])
-    phi_d = np.linspace(0.0, 2.0 * np.pi, nphi_d, endpoint=False)
-    u_d = np.linspace(0.0, 2.0 * np.pi, nu_d, endpoint=False)   # u = 2 psi
-    PH, UU = np.meshgrid(phi_d, u_d, indexing="ij")
-    c = int(dense_chunk)
-    phi_x, u_x, lw_x = _pad_chunks([PH.ravel(), UU.ravel()], c)
-    n_dense = nphi_d * nu_d
-
-    a_g = x_grid
-    b_g = -0.5 * jnp.square(x_grid)
-    _use_gh = _core._DISTMARG_GH_N > 0
-    if _use_gh:
-        gh_xi, gh_logw = make_distance_gh(_core._DISTMARG_GH_N)
-        x_min = jnp.min(x_grid)
-        x_max = jnp.max(x_grid)
-
-    def _step(carry, x):
-        m, s = carry
-        phw, uw, lww = x
-        A = _reconstruct_field(C_A, phw, uw)                  # (c,S,npts)
-        B = _reconstruct_field(C_B, phw, uw)
-        K2 = A.reshape(c * S, npts)
-        R2 = B.reshape(c * S, npts)
-        if _use_gh:
-            lnL = _distmarg_gh_logL(K2, R2, gh_xi, gh_logw, x_min, x_max)
-        else:
-            lnL = _logsumexp_grid_blocked(K2, R2, a_g, b_g, log_w_grid,
-                                          grid_block)
-        lnL = lnL.reshape(c, S, npts) + lww[:, None, None]
-        m_new, s_new = _lse_update(m, s, lnL, axis=0)
-        return (m_new, s_new), None
-
-    m0 = jnp.full((S, npts), -jnp.inf, dtype=jnp.float64)
-    s0 = jnp.zeros((S, npts), dtype=jnp.float64)
-    (m, s), _ = jax.lax.scan(jax.checkpoint(_step), (m0, s0),
-                             (phi_x, u_x, lw_x))
-    lnL_t = m + jnp.log(s) - jnp.log(float(n_dense))
+    lnL_t = coefficient_table_distphipsimarg_exact(
+        C_A, C_B, x_grid, log_w_grid, amp_sizing=amp_sizing,
+        m_max=meta["m_max"], dense_chunk=dense_chunk,
+        grid_block=grid_block)
     if return_lnLt:
         return lnL_t
     return _time_marginalize_terminal(lnL_t, data, time_quadrature)
