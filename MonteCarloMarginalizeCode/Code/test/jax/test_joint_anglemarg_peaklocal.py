@@ -9,6 +9,30 @@ from RIFT.likelihood import joint_angle_peak_local as JN
 from RIFT.likelihood.jax_ile import joint_anglemarg_peaklocal as JP
 
 
+@pytest.fixture(autouse=True)
+def _drop_jax_caches():
+    """Release JAX's compiled-executable cache after every test in this file.
+
+    THE PEAK HERE IS RETENTION, NOT ALLOCATION, and that distinction is the whole fix.
+    Measured: the largest single test peaks at 1408 MB against a 590 MB import baseline,
+    so no test costs more than ~800 MB -- yet the file as a whole peaked at 4268 MB.  The
+    gap is JAX holding a compiled executable per distinct shape, and this file
+    deliberately sweeps many combinations of (n_slots, n_nodes, u_nodes, n_bound) because
+    the properties under test are ABOUT those parameters.  Nothing is freed between tests.
+
+    Trimming individual fixtures therefore does almost nothing: six reductions across the
+    heaviest tests moved the file peak from 4318 MB to 4268 MB, about one percent, and one
+    of them silently broke an acceptance assertion by starving u_sizing_ok.  Dropping the
+    caches attacks the actual mechanism.
+
+    The cost is recompilation, which is why this is scoped to this file rather than to the
+    session: it is the one that sweeps shapes.
+    """
+    yield
+    if hasattr(jax, "clear_caches"):
+        jax.clear_caches()
+
+
 def _tables(seed=0, scale=1.0):
     rng = np.random.default_rng(seed)
     A = (rng.normal(size=(3, 3)) + 1j * rng.normal(size=(3, 3))) * scale
@@ -26,7 +50,7 @@ def test_inner_u_integral_is_exact(scale):
     """The cell partition is a PARTITION, so this is exact, not truncated."""
     rng = np.random.default_rng(1)
     f = jax.jit(JP.log_inner_u_integral)
-    u = np.linspace(0.0, 2 * np.pi, 400000, endpoint=False)
+    u = np.linspace(0.0, 2 * np.pi, 60000, endpoint=False)
     for _ in range(4):
         c1 = scale * (rng.normal() + 1j * rng.normal())
         c2 = scale * (rng.normal() + 1j * rng.normal())
@@ -42,7 +66,7 @@ def test_both_signs_of_q_enter_the_u_coefficients():
     integration partition -- it was worth 17 nats at a single phi."""
     A, B = _tables(seed=3, scale=4.0)
     C = JN.joint_table(A, B, x=0.9)
-    u = np.linspace(0.0, 2 * np.pi, 200000, endpoint=False)
+    u = np.linspace(0.0, 2 * np.pi, 60000, endpoint=False)
     f = jax.jit(JP.log_inner_u_integral)
     for phi in np.linspace(0.0, 2 * np.pi, 5)[:4]:
         a, c1, c2 = JP._a_c1_c2(jnp.asarray(C), jnp.atleast_1d(phi))
@@ -71,7 +95,7 @@ def test_spurious_off_circle_roots_do_not_orphan_an_arc():
     assert c1 is not None, "no off-circle fixture found"
     z = np.roots([c2, c1 / 2, 0, -np.conj(c1) / 2, -np.conj(c2)])
     assert np.sum(np.abs(np.abs(z) - 1.0) > 1e-6) >= 2
-    u = np.linspace(0.0, 2 * np.pi, 400000, endpoint=False)
+    u = np.linspace(0.0, 2 * np.pi, 60000, endpoint=False)
     g = (c1 * np.exp(1j * u)).real + (c2 * np.exp(2j * u)).real
     m = g.max()
     ref = m + np.log(np.exp(g - m).mean()) + np.log(2 * np.pi)
@@ -361,16 +385,25 @@ def test_phi_local_returns_a_certificate_that_actually_declines():
         val, ok, info = JP.phi_local_lnI(jnp.asarray(C))
         assert np.isfinite(float(val))
         for key in ("margin", "area_outside", "sup_outside", "n_phi_regions",
-                    "n_u_fallback"):
+                    "n_u_fallback", "n_u_risky_quad"):
             assert key in info, key
         # THE CONTRACT CHANGED AND THIS TEST USED TO PIN THE DEFECT.  It asserted that ok
         # was exactly the margin test and that a full cover MUST be accepted -- which is
         # precisely the conflation test_a_full_cover_no_longer_accepts_unconditionally
         # exists to remove.  Both assertions passed only because this test's four fixtures
         # all happen to converge; adversarial review found them contradicting each other
-        # across files.  ok is now the margin test AND the resolution test.
+        # across files.  ok is the margin test AND the resolution test AND the u sizing
+        # test -- three independent ways to be wrong, and the contract is their conjunction.
+        #
+        # u_sizing_ok used to be read off the BOUND grid, where it was near-vacuous: that
+        # grid's job was to bound F from outside, not to produce `value`.  It now reads the
+        # QUADRATURE grid, so it reports whether the integration that produced the returned
+        # number was adequately sampled -- and it does fire here, on a fixture whose margin
+        # (-29.3) and resolution both pass at the default 48 u nodes.  Omitting it from
+        # this identity is what made the test fail when the gate moved to the right grid.
         assert bool(ok) == (float(info["margin"]) < JP.OUTSIDE_TOL_NATS
-                            and bool(info["phi_resolved"]))
+                            and bool(info["phi_resolved"])
+                            and bool(info["u_sizing_ok"]))
         if float(info["area_outside"]) == 0.0:
             # nothing omitted, so the margin is -inf; whether that ACCEPTS now depends on
             # the integration having converged, which is the whole point of the change.
@@ -559,7 +592,11 @@ def test_the_phi_grid_is_nested_so_no_evaluation_is_spent_on_a_probe_alone():
         _, _, info = JP.phi_local_lnI(C, n_slots=4, n_seed=4)
     finally:
         JP.u_profile = real
-    assert len(calls) == 4, (len(calls), "a fifth grid means a probe is paying its own way")
+    # THREE, not four: the Newton step, the seed evaluation and the quadrature grid.  The
+    # bound grid used to be a fourth, and no longer calls the profile at all -- sup_g_bound
+    # needs four quartic roots per point and no u quadrature.  A fifth would mean a probe
+    # is paying its own way; a fourth would mean the bound grid is back on the profile.
+    assert len(calls) == 3, (len(calls), "the bound grid must not run the u quadrature")
     assert "phi_convergence_shift" in info
 
     # and the striding is exact only for an odd count: the even indices must span the same
@@ -567,36 +604,82 @@ def test_the_phi_grid_is_nested_so_no_evaluation_is_spent_on_a_probe_alone():
     assert JP.PHI_NODES_PER_REGION % 2 == 1
 
 
-def test_the_outside_bound_gates_on_the_fallback_that_can_invert_it():
-    """Adversarial review: ``Fb`` and ``d1b`` were taken from ``u_profile`` with its
-    whole-cell fallback and the count was DISCARDED at that call, so a row could be
-    accepted on a lift applied to an underestimated profile with no signal it had
-    happened.  ``info["n_u_fallback"]`` carried only the Newton-seed evaluation.
+def test_the_outside_bound_does_not_depend_on_the_u_quadrature_at_all():
+    """The review finding this replaces is retired BY CONSTRUCTION, not by a gate.
 
-    The remedy as stated -- decline whenever any bound-grid profile falls back -- is not
-    implementable: every generic table has four u-stationary points of which two are
-    minima, so the fallback count is never zero and that gate declines universally
-    (measured: 0 of 2 accepted on cases accurate to 1e-5).  A minimum cell has no peak to
-    window and is exponentially subdominant in F; the cells that can invert the bound are
-    those with ``g'' < 0`` that failed the stationarity or interior test, because a real
-    maximum may sit in one unresolved.
+    ``Fb`` and ``d1b`` used to come from ``u_profile`` on the bound grid, so a whole-cell
+    fallback there could underestimate ``F`` and a lift applied to an underestimate bounds
+    nothing.  The fix was a gate on that fallback.  :func:`sup_g_bound` removes the
+    exposure instead: the outside bound is ``log(2 pi) + max_u g``, four quartic roots per
+    point, and never touches the quadrature.
 
-    Nor is "did a max-bearing cell fall back" the question: an 8-step Newton misses the
-    1e-8 relative residual on plenty of ordinary maxima, and that test fired on 127 of 256
-    bound-grid points for tables accurate to 1e-5.  What the bound needs is review's other
-    remedy -- whether the whole-cell quadrature was ADEQUATE -- and that is exact here,
-    because the u spectrum has two terms so ``|d2g/du2| <= |c1| + 4|c2|`` everywhere and a
-    cell of ``width`` needs ``width sqrt(M2u) U_PTS_PER_SIGMA`` nodes.
-
-    So this test pins BOTH directions: a case that must accept with a non-zero fallback
-    count, and a case where the gate fires and is CLEARED by sizing the quadrature.
+    So the property to assert is not "the gate fires" but "the bound cannot move": vary
+    ``u_nodes`` over a factor of 8 and ``sup_outside`` must be bit-identical.  That is a
+    much stronger statement than the gate ever made, and it cannot pass by accident.
     """
-    C, exact = _separable_phi_table(1000.0, np.pi / 96)
-    v, ok, info = JP.phi_local_lnI(C, w_sigma=200.0, n_nodes=385)
-    assert abs(float(v) - exact) < 1e-4
-    assert int(info["n_u_fallback_bound"]) > 0, "the naive gate would have fired here"
-    assert int(info["n_u_risky_bound"]) == 0
-    assert bool(ok), "gating on the whole-cell count declines every table there is"
+    KS = 2
+    rng = np.random.default_rng(101)
+    C = rng.normal(size=(3, 2 * KS + 1)) + 1j * rng.normal(size=(3, 2 * KS + 1))
+    C = jnp.asarray(C * (1e3 / np.sum(np.abs(C))))
+    sups = [float(JP.phi_local_lnI(C, u_nodes=un)[2]["sup_outside"])
+            for un in (48, 96, 384)]
+    assert sups[0] == sups[1] == sups[2], sups
+
+
+def test_sup_g_bound_is_actually_an_upper_bound_on_the_profile():
+    """The whole certificate now rests on ``F(phi) <= log(2 pi) + max_u g(phi,u)``.  If that
+    is ever violated the outside bound is not a bound and every accepted row is suspect, so
+    it is checked directly against the profile rather than assumed from the algebra.
+
+    Measured slack is 1.2-5.5 nats across the range -- small enough that the bound is
+    usable, and the reason the certificate stopped declining rows whose true margin was
+    already tens of nats clear.
+    """
+    KS = 2
+    worst = 1e9
+    for KP, amp in ((3, 30.0), (3, 3e3), (5, 1e3), (9, 1e4)):
+        rng = np.random.default_rng(7)
+        C = rng.normal(size=(KP, 2 * KS + 1)) + 1j * rng.normal(size=(KP, 2 * KS + 1))
+        C = jnp.asarray(C * (amp / np.sum(np.abs(C))))
+        # 128 u nodes and 17 phi: the claim is an INEQUALITY that was violated by
+        # 0.024-0.092 nats, so the reference does not need to be fine, only correct.
+        un = min(JP.required_u_nodes(amp), 128)
+        for phi in np.linspace(0.0, 2 * np.pi, 17, endpoint=False):
+            F = float(JP.u_profile(C, float(phi), n_nodes=un)[0])
+            H = float(JP.sup_g_bound(C, float(phi)))
+            worst = min(worst, H - F)
+    assert worst >= 0.0, ("sup_g_bound is NOT an upper bound", worst)
+    assert worst < 20.0, ("bound is sound but so loose it cannot certify", worst)
+
+
+def test_the_localized_regime_now_accepts_and_is_right():
+    """What the whole exercise was for.  Before the bound was rebuilt, a sweep over
+    KP x amplitude found exactly ONE case in 36 that both localized (area_outside > 0) and
+    accepted, at amplitude 100 -- the cost win of localizing phi was real and the
+    certificate refused every row that realized it.  The Taylor lift sat 2.7e5 nats above
+    the integral at amplitude 3e4 while the true margin was about -66.
+
+    These cases localize into several regions AND accept AND are right to machine
+    precision.  If this test starts declining, the certificate has regressed to refusing
+    the regime it exists to serve.
+    """
+    KS = 2
+    # u_nodes 256 and 8 slots, not required_u_nodes(amp) = 2310 and 16.  The sizing helper
+    # is a conservative UPPER bound derived from amplitude; the gate that actually decides,
+    # u_sizing_ok, measures risky cells and passes here at 9x fewer nodes.  Sizing this
+    # test from the helper costs 5.9 GB in eval_g2's intermediate and is killed when the
+    # file runs as a whole -- a guard that cannot run in CI guards nothing.
+    for KP, amp in ((3, 3e3), (9, 1e3)):
+        rng = np.random.default_rng(7)
+        C = rng.normal(size=(KP, 2 * KS + 1)) + 1j * rng.normal(size=(KP, 2 * KS + 1))
+        C = C * (amp / np.sum(np.abs(C)))
+        v, ok, info = JP.phi_local_lnI(jnp.asarray(C),
+                                       n_bound=int(JP.required_bound_grid(amp)),
+                                       u_nodes=256, n_slots=8, n_nodes=97)
+        assert float(info["area_outside"]) > 0.0, "not localized -- fixture is degenerate"
+        assert int(info["n_phi_regions"]) >= 4, int(info["n_phi_regions"])
+        assert bool(ok), (KP, amp, float(info["margin"]))
+        assert abs(float(v) - _torus_ref(np.asarray(C))) < 1e-3, float(v)
 
 
 def test_the_bound_grid_adequacy_gate_fires_and_is_cleared_by_sizing():
@@ -617,10 +700,158 @@ def test_the_bound_grid_adequacy_gate_fires_and_is_cleared_by_sizing():
     fired = cleared = 0
     for phi in np.linspace(0.0, 2 * np.pi, 12, endpoint=False):
         _, _, _, fb_lo, risk_lo, _ = JP.u_profile(C, float(phi), n_nodes=48)
-        _, _, _, fb_hi, risk_hi, _ = JP.u_profile(C, float(phi), n_nodes=1024)
+        _, _, _, fb_hi, risk_hi, _ = JP.u_profile(C, float(phi), n_nodes=384)
         assert int(fb_lo) > 0                      # minima always fall back; that is fine
         fired += int(risk_lo) > 0
         cleared += int(risk_hi) == 0
     assert fired > 0, "an adequacy gate that never fires cannot protect the bound"
     assert cleared == 12, "sizing the quadrature must clear it, or it is not a requirement"
     assert JP.required_u_nodes(1.0e4) > 48
+
+
+def test_sup_g_bound_survives_a_degenerate_u_quartic():
+    """Adversarial review, and the worst defect in this branch.
+
+    ``sup_g_bound`` took ``max`` over ``u_stationary_roots`` as if that set contained the
+    maximizer.  A max over a candidate set is a LOWER bound unless it provably does, and
+    ``u_stationary_roots`` substitutes ``lead = 1`` when ``c2 == 0`` -- solving a different
+    polynomial -- so for a table with no ``q = +-2`` content it need not.  The whole outside
+    certificate rests on ``bound >= F``, so this made margins understated rather than loose.
+
+    Measured before the fix: 0.024 to 0.092 nats BELOW ``log(2 pi) + max_u g``.  The
+    fixture is the degenerate table, because every table in the rest of this file carries
+    full mode content and none of them can see it.
+    """
+    KS = 2
+    for trial in range(4):
+        rng = np.random.default_rng(trial)
+        C = np.zeros((3, 2 * KS + 1), dtype=complex)
+        C[:, KS + 0] = rng.normal(size=3) + 1j * rng.normal(size=3)
+        C[:, KS + 1] = rng.normal(size=3) + 1j * rng.normal(size=3)   # no q = +-2
+        C = jnp.asarray(C * (50.0 / np.sum(np.abs(C))))
+        for phi in np.linspace(0.0, 2 * np.pi, 13, endpoint=False):
+            H = float(JP.sup_g_bound(C, float(phi)))
+            u = np.linspace(0.0, 2 * np.pi, 8000, endpoint=False)
+            g = np.asarray(JP.eval_g2(C, jnp.full(u.shape, float(phi)),
+                                      jnp.asarray(u), (0, 0)))
+            assert H >= float(np.log(2 * np.pi) + g.max()) - 1e-9, (trial, phi)
+
+
+def test_empty_slots_do_not_vote_on_the_u_sizing_gate():
+    """Adversarial review, found by this session and by external review independently.
+
+    Empty merged-region slots are neutralized for the VALUE -- position zeroed, weight
+    masked -- but their nodes are still evaluated at phi = 0, and their fallback counts
+    were summed into the gate and the reported counters.  A risky cell at that artificial
+    point could decline a row whose every contributing node was adequate.
+
+    The tell is that the counts tracked the SLOT ALLOCATION rather than the regions:
+    5 risky at n_slots=2 and 176 at n_slots=8 while the region count only went 2 -> 4.
+    So the invariant to pin is that the counters do not move once the slots exceed the
+    regions, which no amount of real structure could cause.
+    """
+    KS = 2
+    rng = np.random.default_rng(101)
+    C = rng.normal(size=(3, 2 * KS + 1)) + 1j * rng.normal(size=(3, 2 * KS + 1))
+    C = jnp.asarray(C * (1000.0 / np.sum(np.abs(C))))
+    # SLOTS 4/8/16 AT 48 NODES, not 8/32/64 at 96.  The invariant is that the counters
+    # stop moving once the slots exceed the regions, and with 4 regions that is shown just
+    # as well at 16 as at 64 -- for an eighth of the memory.  The 64-slot version cost
+    # 954 MB in one call and helped kill the CI gate at exit 137.
+    seen = {}
+    for ns in (4, 8, 16):
+        _, _, i = JP.phi_local_lnI(C, u_nodes=48, n_slots=ns, n_nodes=97)
+        seen[ns] = (int(i["n_phi_regions"]), int(i["n_u_risky_quad"]),
+                    int(i["n_u_fallback_quad"]))
+    assert len({v[0] for v in seen.values()}) == 1, ("regions moved", seen)
+    assert len({v[1] for v in seen.values()}) == 1, ("risky tracked slots", seen)
+    assert len({v[2] for v in seen.values()}) == 1, ("fallback tracked slots", seen)
+
+
+def _AB(scale, seed=3, KP=3, KS=2):
+    rng = np.random.default_rng(seed)
+    A = (rng.normal(size=(KP, 2 * KS + 1)) + 1j * rng.normal(size=(KP, 2 * KS + 1))) * scale
+    B = (rng.normal(size=(KP + 2, 2 * KS + 1))
+         + 1j * rng.normal(size=(KP + 2, 2 * KS + 1))) * scale
+    B[0, KS] = abs(B[0, KS].real) + 3.0 * scale
+    return jnp.asarray(A), jnp.asarray(B)
+
+
+def test_phi_local_distance_combiner_matches_the_dense_scheme():
+    """The wiring's correctness condition.  ``joint_lnL_phi_local`` must reproduce the
+    shipping ``joint_lnL_phi_dense`` on the same inputs, or the normalization split
+    between the per-node seam (bare torus integral) and the combiner (the ``(2 pi)^-2``
+    prior factor) is wrong -- and that error is invisible in the per-node value.
+    """
+    # deliberately small: the claim is about NORMALIZATION, which a 6-node grid tests as
+    # well as a 32-node one, and the full-size version cannot run beside the rest of this
+    # file -- 640 MB of eval_g2 intermediate per chunk kills the process.
+    for scale in (1.0, 4.0, 12.0):
+        A, B = _AB(scale)
+        x = jnp.linspace(0.5, 2.0, 6)
+        lw = jnp.full(6, -np.log(6.0))
+        d = JP.joint_lnL_phi_dense(A, B, x, lw, n_phi=512, n_nodes=48)
+        v, _, _ = JP.joint_lnL_phi_local(A, B, x, lw, u_nodes=48, n_slots=8,
+                                         n_nodes=97, x_chunk=2)
+        assert abs(float(d) - float(v)) < 1e-5, (scale, float(d), float(v))
+
+
+def test_an_arbitrary_distance_rule_stacks_on_the_seam():
+    """RO asked for this to be stackable, so it is asserted rather than described.
+
+    ``phi_local_lnI_at_distance`` is the unit; the distance rule is entirely a matter of
+    which ``x`` a caller evaluates and what weights it applies.  A 5-node Gauss-Legendre
+    rule -- nothing grid-shaped about it -- driven by hand through the seam must equal the
+    same nodes routed through the default combiner.  If those ever diverge, the combiner
+    has grown an assumption about the rule and stacking is broken.
+    """
+    A, B = _AB(4.0)
+    gx, gw = np.polynomial.legendre.leggauss(5)
+    xs = 0.5 * (gx + 1.0) * 1.5 + 0.5
+    lws = np.log(gw * 0.75)
+    kw = dict(u_nodes=48, n_slots=8, n_nodes=97)
+    vals = np.array([float(JP.phi_local_lnI_at_distance(A, B, float(z), **kw)[0])
+                     for z in xs])
+    from scipy.special import logsumexp
+    stacked = logsumexp(vals + lws) - 2.0 * np.log(2.0 * np.pi)
+    through, _, _ = JP.joint_lnL_phi_local(A, B, jnp.asarray(xs), jnp.asarray(lws),
+                                           x_chunk=1, **kw)
+    assert abs(stacked - float(through)) < 1e-9, (stacked, float(through))
+
+
+def test_rolling_the_quadrature_axis_does_not_move_the_value():
+    """``pt_chunk`` exists to bound memory and must be invisible in the answer -- the same
+    contract ``phi_chunk`` has on the dense path.  Bit-identical, not merely close: a scan
+    that reassociated the reduction would show up here as a last-digit drift and would
+    mean the chunking is not a pure refactor."""
+    KS = 2
+    rng = np.random.default_rng(7)
+    C = rng.normal(size=(3, 2 * KS + 1)) + 1j * rng.normal(size=(3, 2 * KS + 1))
+    C = jnp.asarray(C * (3e3 / np.sum(np.abs(C))))
+    kw = dict(n_bound=int(JP.required_bound_grid(3e3)), u_nodes=96,
+              n_slots=4, n_nodes=97)
+    # The unrolled reference asks for a chunk of exactly the grid, not 1e6: `_prof_scan`
+    # now clamps, but a test should not depend on that and external review measured
+    # 6.56 GB of temporaries when it padded 388 points to a million.
+    n_pts = 4 * 97
+    ref = float(JP.phi_local_lnI(C, pt_chunk=n_pts, **kw)[0])
+    for pc in (16, 32, 256):
+        got = float(JP.phi_local_lnI(C, pt_chunk=pc, **kw)[0])
+        # NOT exact equality.  This asserted bit-identity and passed here, but external
+        # review measured 4.55e-13 nats of spread across chunk sizes on another CPU: the
+        # scan's reduction IS reassociated on some platforms, so bit-identity was a claim
+        # about this machine rather than about the code.  The contract that matters is
+        # that chunking is invisible at the scale anything downstream cares about.
+        assert abs(got - ref) < 1e-9, (pc, got, ref)
+
+
+def test_the_distance_combiner_is_fail_closed_across_nodes():
+    """``ok`` is the CONJUNCTION over distance nodes.  A declining node still returns a
+    finite number that would otherwise be summed in silently, so one bad node must sink
+    the row.  Asserted by starving a single node's slot budget."""
+    A, B = _AB(4.0)
+    x = jnp.linspace(0.5, 2.0, 4)
+    lw = jnp.full(4, -np.log(4.0))
+    _, ok_starved, _ = JP.joint_lnL_phi_local(A, B, x, lw, u_nodes=48, n_slots=1,
+                                              n_nodes=97, x_chunk=2)
+    assert not bool(ok_starved), "a starved node must sink the distance sum"

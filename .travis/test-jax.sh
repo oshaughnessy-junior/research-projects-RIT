@@ -528,21 +528,28 @@ fi
 # of the environment, and subtracting for it would under-promise by one -- which is the
 # failure direction this whole comment exists to warn about, because a low floor PASSES.
 #
-# The #227 IS-proposal branch then adds the 27 pins in test_is_proposal_jitter.py, and
-# the FILES array above takes the UNION of both sides of this merge (250's two files and
-# this branch's one).  External review's P1 added two more (the Markov floor and the
-# inflated-pilot regression case), taking the file to 29 and the floor to 453.  The number below is the MERGED collection, re-run after merging
-# rift_O4d a second time; this job reported "451/452 tests collected (1 deselected)" from
-# 31 files, and 453 after the two review tests -- re-read, not incremented.
+# The #227 IS-proposal branch then adds the 29 pins in test_is_proposal_jitter.py (27,
+# plus the two external review's P1 required: the Markov floor and the inflated-pilot
+# regression case).  The FILES array above takes the UNION of every side that has
+# touched it.
 #
-# This branch has now hit this conflict TWICE: 339 was itself a merged collection, read
-# off a real run, and it was stale inside a day.  That is the standing evidence for the
-# rule the paragraphs above state -- the constant does not go stale because someone was
-# careless, it goes stale because rift_O4d moves faster than any one branch.  Note also
-# that BOTH times the arithmetic would have landed on the right answer (312+24+3 = 339,
-# 424+27 = 451).  That is precisely what makes it an unreliable shortcut: it is usually
-# right, so the one time it is wrong there is no habit of checking left to catch it.
-EXPECTED_TESTS=453
+# THIS BRANCH HAS NOW HIT THIS CONFLICT THREE TIMES, on three consecutive days, and
+# every one of its own numbers was read off a real collection run when written:
+#
+#     2026-09-05  339   stale within a day        (main had moved 293 -> 312)
+#     2026-09-06  451   stale within a day        (main had moved 312 -> 424)
+#     2026-09-06  453   stale by the next merge   (main had moved 424 -> 432)
+#
+# So the constant does not go stale because someone was careless.  It goes stale
+# because rift_O4d moves faster than any single branch can hold a global count, and
+# that is a property of the counter, not of the people using it.  Note that the
+# arithmetic would have been RIGHT all three times (312+27 = 339 after the two review
+# tests landed later, 424+27 = 451, 432+29 = 461).  That is exactly what makes it an
+# unreliable shortcut rather than a safe one: it is nearly always right, so the once it
+# is wrong there is no habit of checking left to catch it.  The number below is READ
+# OFF this job's own collection line after this merge: 461/462 collected, 1 deselected,
+# 31 files.
+EXPECTED_TESTS=461
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
