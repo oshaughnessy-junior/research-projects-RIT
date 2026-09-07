@@ -1040,10 +1040,35 @@ def phi_local_lnI(C, n_seed=PHI_SEEDS, w_sigma=PHI_WINDOW_SIGMA,
     # compacted; a piece that does not exist is emitted empty and drops out downstream.
     wdt = jnp.clip(hi - lo, 0.0, 2.0 * jnp.pi)
     a0 = jnp.where(peaked, jnp.mod(lo, 2.0 * jnp.pi), big)
-    crosses = peaked & (a0 + wdt > 2.0 * jnp.pi)
+    # A WINDOW THAT ALREADY SPANS THE CIRCLE IS EMITTED AS [0, 2 pi] AND NOT SPLIT, and
+    # THAT IS A CORRECTNESS FIX, NOT A TIDY-UP.  Splitting it at the seam produced the
+    # halves [a0, 2 pi] and [0, a0 + wdt - 2 pi], and the second endpoint is a ROUND TRIP
+    # -- fl(fl(a0 + 2 pi) - 2 pi) -- which misses a0 by one ulp in a direction nothing in
+    # this file controls.  Both signs were measured on the SAME source at the SAME table,
+    # F = 1000 cos(phi - pi/96) at w_sigma = 200, differing only in the jax minor version
+    # that evaluated the profile curvature four ulps apart:
+    #
+    #   jax 0.9.2   end2 = a0 - 1 ulp   the halves leave a 1-ulp GAP     -> 2 regions
+    #   jax 0.10.2  end2 = a0 + 1 ulp   the halves OVERLAP and merge     -> 1 region
+    #
+    # and the gap branch is not a cosmetic difference in the region count.  It leaves
+    # width.sum() one ulp below 2 pi, so `wrapped` below does not fire, the circle is
+    # integrated as two arcs with a seam instead of as one periodic region, and the
+    # measured cost is a 20x worse value (2.1e-3 nats against 1e-6 at n_nodes = 193) plus
+    # area_outside = 8.9e-16 instead of 0, which turns margin = -inf into -18.6 and
+    # DECLINES a row that is resolved (n_nodes = 769, phi_resolved = 1, ok = False).
+    #
+    # No tolerance is introduced and none is needed: `wdt` is the output of a clip AT
+    # 2 pi, so `wdt >= 2 pi` is an exact test for "the raw window covered the circle",
+    # and the piece it emits has width exactly 2 pi.  Do not replace this with an
+    # epsilon on `wrapped` -- that would also zero area_outside for a genuine uncovered
+    # sliver, which is the accepting direction on the one part of `ok` that is a bound.
+    covers = peaked & (wdt >= 2.0 * jnp.pi)
+    a0 = jnp.where(covers, 0.0, a0)
+    crosses = peaked & (~covers) & (a0 + wdt > 2.0 * jnp.pi)
     lo2 = jnp.concatenate([a0,
                            jnp.where(crosses, 0.0, big)])
-    hi2 = jnp.concatenate([jnp.where(crosses, 2.0 * jnp.pi, a0 + wdt),
+    hi2 = jnp.concatenate([jnp.where(covers | crosses, 2.0 * jnp.pi, a0 + wdt),
                            jnp.where(crosses, a0 + wdt - 2.0 * jnp.pi, big)])
     n_out = int(2 * PHI_SEEDS if n_slots is None else n_slots)
     seg_lo, seg_hi = _merge_sorted_intervals(lo2, hi2, n_out)

@@ -444,6 +444,42 @@ def test_phi_local_matches_a_converged_dense_reference(scale):
     assert abs(val - _ref(C, n=2048)) < 1e-4, (scale, val, rep)
 
 
+def test_a_window_spanning_the_circle_is_one_region_of_width_exactly_two_pi():
+    """A covering window is emitted whole, and the width is an EXACT float.
+
+    It was split at the seam into ``(a, 2 pi)`` and ``(0, a + wdt - 2 pi)``, and that
+    second endpoint is the round trip ``fl(fl(a + 2 pi) - 2 pi)``, which misses ``a`` by
+    one ulp.  The seam-close then joined the halves into ONE region of width 2 pi minus one
+    ulp, the ``sum >= 2 pi`` clamp did not fire, and the certificate saw 8.9e-16 of
+    omitted mass that does not exist.  Measured on ``F = 1000 cos(phi - pi/96)`` at
+    ``w_sigma = 200``: region ``[-0.00864509, 6.27454022]``, margin -0.657, DECLINED.
+
+    The jax port carries the same fix and the same test; there the halves could also fail
+    to merge at all, and which way the ulp fell depended on the jax minor version.
+
+    ``==`` on purpose: ``wdt`` is a min AT 2 pi, so a covering window is emitted as
+    ``(0, 2 pi)`` and the width is exactly the float ``2 * np.pi``.  A tolerance here
+    would let the ulp back in, which is the failure.
+    """
+    KS = 2
+    C = np.zeros((2, 2 * KS + 1), dtype=complex)
+    C[1, KS + 0] = 0.5 * 1000.0 * np.exp(-1j * np.pi / 96)
+    C[0, KS + 2] = 6.0
+    _, ok, rep = J.phi_local_marginalize(C, w_sigma=200.0)
+    reg = np.asarray(rep['phi_regions'], dtype=float)
+    assert rep['n_phi_regions'] == 1, reg
+    assert float(reg[0, 1] - reg[0, 0]) == 2.0 * np.pi, repr(float(reg[0, 1] - reg[0, 0]))
+    assert rep['margin'] == -np.inf, rep
+    assert ok, rep
+
+    # AND IT MUST NOT FIRE ON A WINDOW THAT ONLY WRAPS: the same table at w_sigma = 12
+    # still needs the split, and must still leave something outside for the bound.
+    _, _, rep12 = J.phi_local_marginalize(C, w_sigma=12.0)
+    reg12 = np.asarray(rep12['phi_regions'], dtype=float)
+    assert float((reg12[:, 1] - reg12[:, 0]).sum()) < 2.0 * np.pi, reg12
+    assert rep12['margin'] > -np.inf, rep12
+
+
 def test_phi_local_cost_does_not_grow_with_amplitude():
     """The whole point of localizing BOTH axes: the dense rule spends ~A points on the
     (phi,u) product, this spends a number set by the mode structure, which does not move
