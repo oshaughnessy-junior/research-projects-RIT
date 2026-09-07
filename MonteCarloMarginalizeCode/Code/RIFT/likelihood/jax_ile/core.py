@@ -1444,12 +1444,16 @@ def fused_log_likelihood(data, ra, dec, psi, incl, phiref, distMpc,
         Time-interpolation of the rholm timeseries (see module docstring).
     phase_marginalization : bool
         Marginalize the coalescence phase via ``|kappa|``.
-    time_quad : {"simpson", "bandlimited"}
+    time_quad : one of ``_TIME_QUAD_CHOICES``
         Time quadrature.  ``"simpson"`` (default) is the unchanged behaviour.
         ``"bandlimited"`` integrates a band-limited reconstruction of kappa(t)
         over the SAME interval; it holds the model norm fixed in time and is
         therefore refused for slow-rotation data, whose ``<h|h>`` depends on the
         template arrival time (see :func:`_time_marginalize_bandlimited`).
+        ``"log-hermite"`` interpolates lnL in log space and integrates exp of
+        the interpolant, so it makes no band-limited claim and is available on
+        the nonlinear-marginalization endpoints where ``"bandlimited"`` is
+        refused (see :func:`_time_marginalize_log_hermite`).
     time_upsample : int
         Reconstruction factor for ``time_quad="bandlimited"``; costs no
         likelihood evaluations, so raise it until the answer stops moving.
