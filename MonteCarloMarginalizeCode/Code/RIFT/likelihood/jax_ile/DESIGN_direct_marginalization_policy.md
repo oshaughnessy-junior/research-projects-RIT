@@ -41,7 +41,10 @@ For a batch of extrinsic rows `(ra, dec, incl)`:
    warrant is a convergence statement about the refined rules. The native
    Simpson rule is not the check rule: on a peak narrower than a sample it
    is the unconverged one, and its error is what the refinement removes.
-   The wiring test measures that error on its analytic fixture.
+   The refined rules are trapezoid, not Simpson: Simpson aliases at half the
+   node spacing on a sub-sample peak (0.03 to 1.8 nat at refine 4 for peaks
+   of 0.05 to 0.2 samples), the trapezoid rule converges exponentially.
+   The wiring test measures the native rule's error on its analytic fixture.
 5. The selected value and the ledger come back per row.
 
 Acceptance diagnostics, all required for the local branch:
@@ -62,7 +65,7 @@ Reserve warrant: `reserve_time_guard_validated`,
 `reserve_time_resolution_validated`, `reserve_time_error_budget_ok`, combined
 in `reserve_time_warranted`. A reserve that fails its warrant is escalated:
 the rule is doubled and re-checked against its own half, up to
-`reserve_time_refine_max` (default 16). A row still unwarranted, or whose
+`reserve_time_refine_max` (default 32). A row still unwarranted, or whose
 norm table varies with time, is `usable=False` and its likelihood is `nan`.
 The finite diagnostic stays in the ledger under `selected_value` and never
 reaches the sampler. The driver raises on the first `nan` it evaluates and
@@ -122,6 +125,31 @@ production tables, recorded in the paper repository
 
 ## Known adversarial items
 
+Items 1 and 2 below come from the adversarial review of PR #268 through this
+wiring (2026-09-07) and are verified on synthetic tables only. They are the
+first questions for the production-table ladder.
+
+- On synthetic 22-only carrier tables the base portfolio at angular
+  oversample 1 overflows `max_starts=32`: the 9-point phi lattice's
+  max-over-angles time profile ripples with the rotating carrier phase and
+  produces spurious time peaks, so every row declines on capacity and the
+  local branch never runs. Oversample 2 fits but the same tables then
+  decline on nested quadrature (13 vs 19 nodes, 8e-3 nat). PR #268's real
+  SNR-160 capture reports 4 base candidates with no overflow, so the
+  synthetic result does not transfer directly; the ladder must measure the
+  acceptance rate on production tables before the paper's "local at 160 and
+  320" is quoted from this code. Suggested fix if it does transfer: rank
+  time peaks from the triangle envelope the time-cover step already
+  computes, not from the lattice profile.
+- Sub-sample peaks: at 150 Hz and 4096 Hz the time peak is about 4.35/rho
+  samples wide, so above rho of a few tens the reserve needs refinement well
+  beyond 4. The escalation ceiling and the trapezoid rules address the
+  warrant; the cost (three dense evaluations per tier) is the ladder's to
+  measure. The norm lower bound also loosens with inclination (0.46 of the
+  norm edge-on), which can exhaust the 64 retained time nodes.
+- Capacity at higher harmonic order: random m_max=4 tables show 5 to 12
+  angular lattice maxima per time node against `max_modes=4`, and the u
+  lattice does not grow with oversample, so enrichment refines phi only.
 - The error score double-charged common-mode terms. Base and enriched plans
   measure the same quadrature, guard, and omitted-time discrepancies, and
   the score summed both. On the analytic fixture at 10x amplitude a value

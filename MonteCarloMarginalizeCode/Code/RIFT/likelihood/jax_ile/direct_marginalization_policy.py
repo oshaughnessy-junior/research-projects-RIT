@@ -95,7 +95,7 @@ class PolicyConfig(NamedTuple):
     # Bounded escalation of the reserve rule on a failed warrant: the rule is
     # doubled (and re-checked against its own half) until it is warranted or
     # this factor is reached.  Rows still unwarranted return nan.
-    reserve_time_refine_max: int = 16
+    reserve_time_refine_max: int = 32
     base_max_starts: int = 32
     base_oversample: int = 1
     enriched_oversample: int = 2
@@ -213,21 +213,31 @@ def policy_log_normalization(data, x_grid, log_w_grid, *, d_prior="euclidean",
     return total, info
 
 
-def _simpson_rule(npts, deltaT, refine, scale):
+def _refined_rule(npts, deltaT, refine, scale):
+    """Trapezoid rule on the ``refine``-times finer grid, in seconds.
+
+    Trapezoid, not Simpson: on a peak narrower than the node spacing Simpson's
+    alternating weights alias at half the spacing (review of PR #278 measured
+    0.03 to 1.8 nat at refine 4 for peaks of 0.05 to 0.2 native samples), while
+    the trapezoid rule converges exponentially on a smooth peak as the spacing
+    shrinks, so a passed half-rule check means what it says.
+    """
     n_nodes = (npts - 1) * refine + 1
+    h = deltaT / float(refine)
     nodes = np.arange(n_nodes, dtype=float) / float(refine)
     nodes[-1] = float(npts - 1)
-    weights = _core._simpson_weights(n_nodes, deltaT / refine) * scale
-    return nodes, weights
+    weights = np.full(n_nodes, h)
+    weights[0] = weights[-1] = 0.5 * h
+    return nodes, weights * scale
 
 
 def policy_time_rules(data, refine):
     """Refined reserve rule and its coarser check rule on the target window.
 
     Positions are in native samples of the unguarded window, ``0 .. npts-1``.
-    Weights are Simpson weights in seconds, carrying the same constant as the
-    production ``data.w_t`` (so the reserve lands in production units without a
-    separate offset).  The reserve rule refines the native cadence ``refine``
+    Weights are trapezoid weights in seconds, carrying the same constant as
+    the production ``data.w_t`` (so the reserve lands in production units
+    without a separate offset).  The reserve rule refines the native cadence ``refine``
     times; the check rule refines it ``refine/2`` times (the native production
     rule itself when ``refine == 2``).  Agreement between the two is the
     resolution warrant, so the warrant is a convergence statement about the
@@ -241,11 +251,11 @@ def policy_time_rules(data, refine):
     deltaT = float(data.deltaT)
     w_t = np.asarray(data.w_t, dtype=float)
     scale = float(np.sum(w_t)) / ((npts - 1) * deltaT)
-    nodes, weights = _simpson_rule(npts, deltaT, refine, scale)
+    nodes, weights = _refined_rule(npts, deltaT, refine, scale)
     if refine == 2:
         check_nodes, check_weights = np.arange(npts, dtype=float), w_t
     else:
-        check_nodes, check_weights = _simpson_rule(
+        check_nodes, check_weights = _refined_rule(
             npts, deltaT, refine // 2, scale)
     return (jnp.asarray(nodes), jnp.asarray(weights),
             jnp.asarray(check_nodes), jnp.asarray(check_weights))
