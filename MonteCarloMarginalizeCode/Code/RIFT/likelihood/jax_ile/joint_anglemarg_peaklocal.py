@@ -1039,8 +1039,48 @@ def phi_local_lnI(C, n_seed=PHI_SEEDS, w_sigma=PHI_WINDOW_SIGMA,
     # AT MOST two pieces, so 2*n_seed slots is a static bound and nothing has to be
     # compacted; a piece that does not exist is emitted empty and drops out downstream.
     wdt = jnp.clip(hi - lo, 0.0, 2.0 * jnp.pi)
-    a0 = jnp.where(peaked, jnp.mod(lo, 2.0 * jnp.pi), big)
-    crosses = peaked & (a0 + wdt > 2.0 * jnp.pi)
+    # A WINDOW THAT ALREADY SPANS A FULL CIRCUIT HAS NO SEAM TO SPLIT AT, and splitting
+    # one anyway made the region count -- and the ANSWER -- a one-ulp coin flip.  After the
+    # clip `wdt` is EXACTLY 2 pi, so the two pieces are [a0, 2 pi] and [0, a0 + 2 pi - 2 pi]
+    # and they are adjacent by construction.  In floating point they are adjacent only when
+    # (a0 + 2 pi) - 2 pi comes back >= a0.  ONLY THE LOW SIDE BREAKS, and an earlier version
+    # of this note had the criterion wrong: the round-trip landing one ulp ABOVE a0 is fine,
+    # the pieces then overlap and _merge_sorted_intervals folds them.  The loss is a0's low
+    # bits -- ulp(a0 + 2 pi) is 1.78e-15 whatever a0 is, against ulp(a0) from 6.9e-18 to
+    # 8.9e-16, so the sum is 2x to 64x coarser.  Measured on pure float64, no jax involved:
+    # 34.4% of a0 drawn uniformly on the circle round LOW.
+    #
+    # When they do, the pieces are one ulp apart, the merge (which joins only exactly
+    # touching intervals, by design -- no tolerance decides membership here) leaves them
+    # separate, `total` comes out 8.9e-16 below 2 pi, and the `wrapped` clamp below does not
+    # fire.  The rule then runs a two-region trapezoid with a seam instead of the PERIODIC
+    # trapezoid on the full circle, and a periodic trapezoid is spectrally accurate where a
+    # seamed one is O(h^2): on the harmonic-alias table of
+    # test_the_halving_check_is_blind_at_the_sampling_harmonic, 2.1e-3 nats wrong instead of
+    # 2.1e-8, a factor of 1e5, from a two-ulp difference in the Newton fixed point.
+    #
+    # jax 0.9.2 and 0.10.2 land on opposite sides of it -- same host, same python, same
+    # numpy -- which is how this arrived as an environment-dependent test failure rather
+    # than as a bug.
+    #
+    # THIS PATH IS NOT FAIL-CLOSED AGAINST THE DEFECT, and an earlier version of this note
+    # claimed it was ("both sides return ok=False, so nothing was ever accepted wrong").
+    # That is true of the shipped fixture and false in general.  Sweeping the peak location
+    # pre-fix on jax 0.9.2, the seam fires WITH ok=True: 5 of 96 at kappa=300 and 400, 12 of
+    # 96 at kappa=550 and 700.  What bounds the accepted error is the convergence probe, not
+    # the decline -- the worst accepted case found was 6.0e-06 nats, so the CONCLUSION that
+    # nothing was accepted materially wrong survives, but not for the reason first given.
+    #
+    # The fix is exact and not a tolerance: a full circuit is anchored at 0 and emitted as
+    # the single piece [0, 2 pi].  This is the tree's existing idiom, not a new one --
+    # multipeak_planner._periodic_segments anchors the same way before splitting.  The numpy
+    # twin instead closes the seam AFTER the fact with a 1e-12 tolerance
+    # (_merge_boxes' caller in joint_angle_peak_local); this path had neither.
+    full_circuit = peaked & (wdt >= 2.0 * jnp.pi)
+    a0 = jnp.where(peaked,
+                   jnp.where(full_circuit, 0.0, jnp.mod(lo, 2.0 * jnp.pi)),
+                   big)
+    crosses = peaked & (~full_circuit) & (a0 + wdt > 2.0 * jnp.pi)
     lo2 = jnp.concatenate([a0,
                            jnp.where(crosses, 0.0, big)])
     hi2 = jnp.concatenate([jnp.where(crosses, 2.0 * jnp.pi, a0 + wdt),

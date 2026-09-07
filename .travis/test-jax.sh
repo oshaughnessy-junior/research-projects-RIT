@@ -648,7 +648,14 @@ fi
 # accepts silently -- exactly the drift this comment exists to stop.  Recollected
 # after both: "507/512 tests collected (5 deselected)",
 # "collected 507 tests from 34 files".
-EXPECTED_TESTS=507
+#
+# SIXTH time, on the full-circuit phi-region branch (this merge).  Both sides were
+# stale in the usual way -- 487 on the branch, 507 on rift_O4d -- and the resolution
+# is again a MEASUREMENT.  This branch adds ONE test,
+# test_a_full_circuit_phi_window_is_one_region_at_every_peak_location.  Recollected on
+# the merged tree, citlogin6, ~/.cache/jaxci_venv, DESELECT loop applied:
+# "collected 508 tests from 34 files".
+EXPECTED_TESTS=508
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
