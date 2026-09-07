@@ -320,12 +320,17 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         honest phase-marginalized sky/psi export,
 #                                         K=14/K=88 independent guarded references,
 #                                         and executable baseline/banded support refusal.
-#   test_multipeak_planner.py          15  opt-in U,V,Q-guided four-axis multi-peak
+#   test_multipeak_planner.py          11  opt-in U,V,Q-guided four-axis multi-peak
 #                                         planner: exact symmetry expansion, strict
 #                                         stationary refinement, two-tier empirical
-#                                         convergence, overlap ownership, finite reserve,
-#                                         and real 22/HM oracle regressions.  CPU-only;
-#                                         no lal, cupy, or GPU required.
+#                                         convergence, overlap ownership and finite
+#                                         reserve.  CPU-only; no lal, cupy, or GPU
+#                                         required.  The file defines 15 tests; the four
+#                                         real-table oracle regressions need external
+#                                         validation packets that no fixture in this
+#                                         repository provides, so they are DESELECTED
+#                                         here -- see DESELECTED_TESTS -- and 11 are
+#                                         gated.
 
 FILES=(
   "${JAXDIR}/test_jax_time_quadrature.py"
@@ -367,6 +372,10 @@ FILES=(
 # this gate's own failure mode, one level up.
 DESELECTED_TESTS=(
   "${JAXDIR}/test_jax_stencil_parity.py::test_gpu_gather_parity_against_numpy_window"
+  "${JAXDIR}/test_multipeak_planner.py::test_hm_second_mode_survives_unsafe_proxy_gap"
+  "${JAXDIR}/test_multipeak_planner.py::test_hm_two_tier_integral_matches_overcomplete_oracle"
+  "${JAXDIR}/test_multipeak_planner.py::test_real_low_snr_declines_to_finite_reserve"
+  "${JAXDIR}/test_multipeak_planner.py::test_real_high_snr_two_tier_path_matches_overcomplete_oracle"
 )
 EXCLUDED=(
   # test_angle_marg_exact.py -- the angle-marginalization VALIDATION suite.
@@ -410,6 +419,25 @@ EXCLUDED=(
 #       The cupy leg of the sinc-stencil parity check.  It needs a real CUDA device;
 #       this job has none, so it self-skips.  It is a genuine gate on a GPU host --
 #       run it by hand there when touching Q_inner_product_sinc_cupy.
+#
+#   test_multipeak_planner.py::test_hm_second_mode_survives_unsafe_proxy_gap
+#   test_multipeak_planner.py::test_hm_two_tier_integral_matches_overcomplete_oracle
+#   test_multipeak_planner.py::test_real_low_snr_declines_to_finite_reserve
+#   test_multipeak_planner.py::test_real_high_snr_two_tier_path_matches_overcomplete_oracle
+#       The four real-table oracle regressions of the multi-peak planner.  Each is
+#       skipif-guarded on an external validation packet -- a saved (C_A, C_B) coefficient
+#       table from a real analysis -- and NOTHING in this repository or in the CI setup
+#       supplies one, so on this runner all four skip.  A skip is precisely what the
+#       post-run junit check below refuses, so leaving them selected would redden the
+#       gate on every PR while asserting nothing.  They cannot be made to run from a
+#       synthetic fixture either: they pin numbers measured on those tables (mode
+#       spacings, oracle log-integrals) to ~1e-8, which is a property of the real
+#       tables and not of any stand-in this repo could ship.
+#       The 11 remaining tests in that file are self-contained and stay gated; they
+#       carry the planner's structural coverage (symmetry expansion, strict stationary
+#       refinement, two-tier convergence, overlap ownership, reserve fallback).
+#       RUN THE FOUR BY HAND, with the packets present, when touching
+#       multipeak_planner.py, and record the numbers in the PR per records-protocol.
 DESELECT=()
 for t in "${DESELECTED_TESTS[@]}"; do DESELECT+=( --deselect "$t" ); done
 
@@ -518,7 +546,16 @@ fi
 # it counted the one test this job deselects.  That was a one-off setup bug, not a property
 # of the environment, and subtracting for it would under-promise by one -- which is the
 # failure direction this whole comment exists to warn about, because a low floor PASSES.
-EXPECTED_TESTS=447
+#
+# Lowered 447 -> 443 by the four real-table oracle regressions of
+# test_multipeak_planner.py that this job now DESELECTS (they are skipif-guarded on
+# external validation packets no repository or CI fixture provides; see DESELECTED_TESTS
+# for why they cannot be made to execute here).  447 was measured with those four
+# COLLECTED, and --deselect removes a test from the collection, so the floor has to move
+# with them or it fails on the very run it was set from.  Subtracting exactly the number
+# deselected is the mirror of the rule above: it preserves whatever margin 447 already
+# had, and it is the only adjustment here that does not need a fresh collection.
+EXPECTED_TESTS=443
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
