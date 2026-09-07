@@ -981,6 +981,49 @@ _LOG_HERMITE_S = 0.5 * (_GL_X + 1.0)          # Gauss-Legendre nodes mapped to [
 _LOG_HERMITE_W = 0.5 * _GL_W_RAW              # ...and their weights
 
 
+def _log_hermite_slopes(y):
+    """Per-sample slopes for the log-space Catmull-Rom interpolant, shape ``y``.
+
+    These are ``h * dy/dt``, which is exactly what the Hermite basis below wants,
+    so the spacing ``h`` cancels and enters only the quadrature weight.
+
+    Centered inside; THREE-POINT one-sided at the ends.  The endpoints were plain
+    two-point differences (``dy[..., :1]``, ``dy[..., -1:]``) until it was noticed
+    that those are only FIRST order, which broke the quadratic-reproduction claim
+    exactly at the boundary: on f(x) = x^2 with h = 1 the two-point left slope is
+    1 where f'(0) = 0, and the worst-case interpolation error over ALL intervals
+    was 1.5e-01 instead of 1.4e-14.  The three-point formulas are quadratic-exact,
+    so the claim now holds on every interval, and the cubic error improves as a
+    side effect (3.48 -> 3.8e-01).  Requires ``npts >= 3``; the caller checks.
+    """
+    dy = jnp.diff(y, axis=-1)                                   # (S, N-1)
+    m_mid = 0.5 * (dy[..., :-1] + dy[..., 1:])                  # (S, N-2)
+    m_lo = 0.5 * (-3.0 * y[..., 0:1] + 4.0 * y[..., 1:2] - y[..., 2:3])
+    m_hi = 0.5 * (3.0 * y[..., -1:] - 4.0 * y[..., -2:-1] + y[..., -3:-2])
+    return jnp.concatenate([m_lo, m_mid, m_hi], axis=-1)        # (S, N)
+
+
+def _log_hermite_eval(y, s_nodes):
+    """Evaluate the interpolant of ``y`` (S, N) at ``s_nodes`` in [0, 1].
+
+    Returns ``(S, N-1, K)``: the interpolated value at every sub-node of every
+    interval.  Factored out of the kernel so the accuracy claims in
+    :func:`_time_marginalize_log_hermite` and the tests that pin them measure the
+    code that actually runs, rather than a re-implementation that can drift.
+    """
+    m = _log_hermite_slopes(y)
+    y0, y1 = y[..., :-1], y[..., 1:]
+    m0, m1 = m[..., :-1], m[..., 1:]
+    s = jnp.asarray(s_nodes, dtype=y.dtype)
+    s2, s3 = s * s, s * s * s
+    h00 = 2.0 * s3 - 3.0 * s2 + 1.0
+    h10 = s3 - 2.0 * s2 + s
+    h01 = -2.0 * s3 + 3.0 * s2
+    h11 = s3 - s2
+    return (y0[..., None] * h00 + m0[..., None] * h10
+            + y1[..., None] * h01 + m1[..., None] * h11)
+
+
 def _time_marginalize_log_hermite(lnL_t, deltaT, n_sub=_LOG_HERMITE_SUB_DEFAULT):
     """log integral_t exp(lnL_t) dt by cubic Hermite in log space.
 
@@ -990,54 +1033,106 @@ def _time_marginalize_log_hermite(lnL_t, deltaT, n_sub=_LOG_HERMITE_SUB_DEFAULT)
 
     The interpolant is C^1 and reproduces polynomials up to QUADRATIC exactly --
     not cubics.  A cubic Hermite segment reproduces cubics only when handed exact
-    endpoint derivatives; these are centered finite differences, which are exact
-    for a quadratic and not for a cubic.  Measured on interior intervals: linear
-    0.0, quadratic 0.0, cubic 9.4e-02, quartic 2.8.  The convergence order is
-    likewise third, not fourth: on exp(-t^2/2)cos(3t) with h from 0.25 to 0.0156
-    the error ratios are 9.63, 8.39, 8.13, 8.04, i.e. O(h^3.01).  An earlier
-    version of this docstring claimed cubic reproduction; it was wrong.
+    endpoint derivatives; these are finite differences, which are exact for a
+    quadratic and not for a cubic.  Measured on x^k sampled at npts = 9, h = 1,
+    worst |interp - exact| over EVERY interval, boundary ones included (via
+    :func:`_log_hermite_eval`, i.e. the code that runs, on 201 sub-nodes per
+    interval): linear 3.6e-15, quadratic 1.4e-14, cubic 3.8e-01, quartic 1.1e+01.
+    Over the interior intervals only, the two higher ones are 9.6e-02 and 2.9 --
+    the boundary intervals are the worse ones even now, because the one-sided
+    slopes there are quadratic-exact but not cubic-exact.
 
-    The per-interval rule
-    is NOT exact: Gauss-Legendre is exact for polynomials, and ``exp`` of a cubic
-    is not one, so ``n_sub`` carries its own error.  Measured at h/sigma = 2
+    Two earlier versions of this paragraph were wrong.  The first claimed CUBIC
+    reproduction.  The second corrected that but quoted interior-only numbers
+    beside an unqualified "reproduces quadratics exactly", while the endpoint
+    slopes were two-point differences and only FIRST order -- so the quadratic
+    claim was false precisely where the numbers were not measured (worst case
+    1.5e-01 over all intervals).  The endpoint slopes are now three-point; see
+    :func:`_log_hermite_slopes`.
+
+    The convergence order is third, not fourth: on exp(-t^2/2)cos(3t) over
+    [-4, 4] with h from 0.25 to 0.0156, worst error over all intervals
+    1.15e-02 -> 1.11e-03 -> 1.34e-04 -> 1.66e-05 -> 2.07e-06, ratios 10.30, 8.31,
+    8.09, 8.03 -- asymptotically 2^3, i.e. O(h^3.01).
+
+    The per-interval rule is NOT exact: Gauss-Legendre is exact for polynomials,
+    and ``exp`` of a cubic is not one, so ``n_sub`` carries its own error.
+    Measured at h/sigma = 2
     (sigma = deltaT/2), value vs ``n_sub``: 2 -> -8.093045, 3 -> -8.091875,
     4 -> -8.091980, 6 -> -8.091975, 10 -> -8.091975.  So the default n_sub = 4 sits
     ~5e-6 nats from converged, which is below the Hermite error it is integrating
     but is NOT zero.  An earlier version of this docstring claimed exactness; that
-    was wrong and the numbers above are why.
+    was wrong and the numbers above are why.  (Re-measured after the endpoint-slope
+    change and unchanged to the digits shown: at npts = 1025 the boundary is ~256
+    sigma out, so it carries no mass.  That is a property of this fixture, not a
+    general licence to ignore the boundary.)
 
     ERROR SIGN IS NOT ONE-SIDED.  Catmull-Rom undershoots a peaked lnL while the
     sampling still resolves it and OVERSHOOTS once it does not: measured
     -1.8e-12, -4.7e-06, +1.3e-03, +1.2e-01 at h/sigma = 1, 2, 4, 8.  The error
     passes through zero near h/sigma ~ 3, so a convergence test anchored there
     would look perfect for the wrong reason.
+
+    DOMAIN.  ``npts >= 3`` (the three-point endpoint slopes); below that this
+    raises ``ValueError`` and the caller should use ``simpson``.  Otherwise the
+    rule is valid exactly where Simpson is valid, which is the whole claim: rows
+    mixing ``-inf`` with finite samples -- the ordinary case at high amplitude,
+    where the inner marginalization underflows in the wings -- are integrated
+    row-wise by Simpson rather than refused, because they are well defined and
+    log space, not the integrand, is what cannot express them.  All ``-inf`` ->
+    ``-inf``; ``+inf`` -> ``+inf``; NaN propagates.
     """
+    npts = lnL_t.shape[-1]
+    # PRECONDITION.  The three-point one-sided endpoint slopes read y[0..2] and
+    # y[-3..-1], so npts >= 3 is required; below it there is no second difference
+    # to form and no meaningful cubic interval either (npts = 2 is a single
+    # interval, npts = 1 has none).  Raised rather than silently degraded: npts is
+    # the static time-grid length, so this fires at trace time, not in a hot loop,
+    # and a caller with a 1- or 2-sample time grid wants `simpson`, not this.
+    if npts < 3:
+        raise ValueError(
+            "log-hermite time quadrature needs at least 3 time samples "
+            "(three-point endpoint slopes); got npts=%d.  Use 'simpson'." % npts)
+
     if n_sub == _LOG_HERMITE_SUB_DEFAULT:
         s_nodes, s_w = _LOG_HERMITE_S, _LOG_HERMITE_W
     else:
         x, w = np.polynomial.legendre.leggauss(int(n_sub))
         s_nodes, s_w = 0.5 * (x + 1.0), 0.5 * w
 
-    # NON-FINITE HANDLING, and the middle case is a REFUSAL rather than a value.
+    # NON-FINITE HANDLING, and the middle case FALLS BACK rather than refusing.
     #
     # A row that is entirely -inf integrates to zero: well defined, returns -inf.
     # A row containing NaN or +inf is a numerical failure and must stay visible.
-    # But a row MIXING -inf with finite samples cannot be represented in log space
-    # at all, and this was got wrong twice before it was got right:
+    # A row MIXING -inf with finite samples is a perfectly well-defined integrand
+    # -- the -inf samples contribute exactly zero -- and it is the ORDINARY case
+    # at high amplitude, where the inner angle/distance marginalization underflows
+    # in the wings.  It cannot be represented in LOG space, which is this rule's
+    # problem and not the caller's, so the row is handed to Simpson instead:
+    # Simpson is linear in exp(lnL) and drops a -inf sample cleanly.  That keeps
+    # the promise made above, "valid exactly where Simpson is valid".
     #
-    #   * originally -inf poisoned the slopes (-inf - -inf = nan) and took the row.
-    #   * "fixing" that by flooring -inf to row_max - 700 was WORSE: the floor
-    #     creates a 700-per-sample slope and Catmull-Rom overshoots on the way
-    #     down.  Measured, one -inf in an otherwise-zero row of 9: the interpolant
-    #     peaks at +51.85 and the rule returns +43.10 where the true answer is just
-    #     below -6.24.  The overshoot scales with the floor: depth 5/10/20/50/100
-    #     overshoots to +0.37/+0.74/+1.48/+3.70/+7.41.  A shallow floor instead
-    #     contributes exp(-depth) spuriously.  There is no safe depth -- the method
-    #     genuinely cannot express this input.
+    # The fallback must be a real Simpson evaluation, NOT a clamp.  Flooring -inf
+    # to row_max - 700 was tried and is far worse than either: the floor creates a
+    # 700-per-sample slope and Catmull-Rom overshoots on the way down.  Measured,
+    # one -inf in an otherwise-zero row of 9, the interpolant peaks at +51.85 and
+    # the rule returns +43.10 where the true answer is just below -6.24.  The
+    # overshoot scales with the floor depth (5/10/20/50/100 ->
+    # +0.37/+0.74/+1.48/+3.70/+7.41) and a shallow floor instead contributes
+    # exp(-depth) spuriously, so there is no safe depth.
     #
-    # So it returns NaN for that case, deliberately.  A caller that needs those
-    # rows should use `simpson`, which is linear in exp(lnL) and drops a -inf
-    # sample cleanly.  A wrong number that looks fine is worse than a NaN.
+    # COST.  `mixed_neg_inf` is data-dependent, so the Simpson row is computed
+    # unconditionally and selected with `where` (a `lax.cond` would buy nothing:
+    # under `vmap`, which this kernel is used under, it executes both branches
+    # anyway).  Simpson evaluates `exp` on (S, N) where the Hermite path evaluates
+    # it on (S, N-1, n_sub), so the added work is ~1/n_sub of the kernel.
+    #
+    # Measured, jitted, CPU (IGWN conda jax 0.7.1, x64, taskset 8 cores), median
+    # of 25 calls, against this same kernel at b25611956 which had no fallback:
+    # stacked rows +9.0% (S=4096, npts=1025), +4.5% (16384, 257), +16.4%
+    # (1024, 4097); under jax.vmap, +10.3% and +9.5% on the first two.  The
+    # denominator there is this kernel alone, not a full likelihood call, so it is
+    # the pessimistic framing.
     y = lnL_t
     neg_inf = jnp.isneginf(y)
     all_neg_inf = jnp.all(neg_inf, axis=-1)
@@ -1047,25 +1142,8 @@ def _time_marginalize_log_hermite(lnL_t, deltaT, n_sub=_LOG_HERMITE_SUB_DEFAULT)
     # Substitute a harmless finite value so the arithmetic below cannot produce a
     # spurious result; every affected row is overwritten by the guards at the end.
     y = jnp.where(neg_inf, 0.0, y)
-    dy = jnp.diff(y, axis=-1)                                   # (S, N-1)
-    # Per-sample slopes: central inside, one-sided at the ends.  These are
-    # h * dy/dt, which is exactly what the Hermite basis wants, so h cancels.
-    m_mid = 0.5 * (dy[..., :-1] + dy[..., 1:])                  # (S, N-2)
-    m = jnp.concatenate([dy[..., :1], m_mid, dy[..., -1:]], axis=-1)   # (S, N)
-
-    y0, y1 = y[..., :-1], y[..., 1:]
-    m0, m1 = m[..., :-1], m[..., 1:]
-
-    s = jnp.asarray(s_nodes, dtype=y.dtype)
-    s2, s3 = s * s, s * s * s
-    h00 = 2.0 * s3 - 3.0 * s2 + 1.0
-    h10 = s3 - 2.0 * s2 + s
-    h01 = -2.0 * s3 + 3.0 * s2
-    h11 = s3 - s2
-
     # (S, N-1, K): the interpolated lnL at every sub-node of every interval.
-    p = (y0[..., None] * h00 + m0[..., None] * h10
-         + y1[..., None] * h01 + m1[..., None] * h11)
+    p = _log_hermite_eval(y, s_nodes)
     log_w = jnp.log(jnp.asarray(s_w, dtype=y.dtype) * deltaT)   # (K,)
     flat = p + log_w
 
@@ -1073,13 +1151,22 @@ def _time_marginalize_log_hermite(lnL_t, deltaT, n_sub=_LOG_HERMITE_SUB_DEFAULT)
     tot = jnp.sum(jnp.exp(flat - mx), axis=(-2, -1))
     out = jnp.squeeze(mx, axis=(-2, -1)) + jnp.log(tot)
 
+    # Row-wise Simpson, for the mixed -inf rows only (see above).  Built from the
+    # ORIGINAL lnL_t, not the -inf-substituted `y`.  Simpson weights are linear in
+    # the spacing, so they are built once at dx = 1 (a host constant needing only
+    # the static npts) and scaled by deltaT -- which keeps the fallback traceable
+    # if deltaT ever arrives as a tracer, where `_simpson_weights` could not run.
+    # Same quantity, same normalization (an integral in seconds) as the main path.
+    w_unit = jnp.asarray(_simpson_weights(npts, 1.0), dtype=lnL_t.dtype)
+    simpson_out = _time_marginalize(lnL_t, w_unit * deltaT)
+
     # Two cases the max-subtraction cannot express, made explicit rather than
     # left as NaN.  A row that is entirely -inf integrates to zero, so its log is
     # -inf (the subtraction gives exp(-inf - -inf) = nan).  A row containing +inf
     # integrates to infinity; returning +inf keeps the failure visible, where NaN
     # would look like a different kind of fault.  NaN input still propagates.
     out = jnp.where(all_neg_inf, -jnp.inf, out)          # integral of zero
-    out = jnp.where(mixed_neg_inf, jnp.nan, out)         # REFUSED, see above
+    out = jnp.where(mixed_neg_inf, simpson_out, out)     # FALLBACK, see above
     return jnp.where(has_pos_inf, jnp.inf, out)
 
 

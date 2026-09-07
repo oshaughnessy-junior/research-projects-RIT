@@ -20,7 +20,7 @@ import jax.numpy as jnp  # noqa: E402
 
 from RIFT.likelihood.jax_ile.core import (  # noqa: E402
     _time_marginalize, _time_marginalize_log_hermite, _simpson_weights,
-    _TIME_QUAD_CHOICES)
+    _log_hermite_eval, _TIME_QUAD_CHOICES)
 
 
 def _gaussian_case(h_over_sigma, npts=1025, srate=4096.0, offset_frac=0.3):
@@ -162,15 +162,19 @@ def test_error_changes_sign_so_convergence_must_not_be_read_at_one_anchor():
     assert errs[2.0] < 0.0 < errs[8.0], errs
 
 
-def test_non_finite_rows_are_handled_or_refused_but_never_silently_wrong():
-    """Four cases, and the middle one is a deliberate refusal.
+def test_non_finite_rows_are_handled_but_never_silently_wrong():
+    """Four cases; the mixed -inf one FALLS BACK to Simpson rather than refusing.
 
-    A mixed -inf row cannot be represented in log space: flooring -inf to
-    row_max-700 makes Catmull-Rom overshoot to +51.85 and return +43.10 where the
-    truth is just below -6.24, and no floor depth is safe (the overshoot scales
-    with it, a shallow floor contributes spuriously).  Returning NaN is the honest
-    answer -- callers needing those rows should use `simpson`, which is linear in
-    exp(lnL) and drops a -inf sample cleanly.
+    It used to return NaN.  That was wrong: a mixed -inf row is a well-defined
+    integrand (the -inf samples contribute exactly zero), Simpson gets it right,
+    and NaN turns a valid likelihood row into a fatal sampler value.  See
+    test_mixed_neg_inf_wings_are_integrated_not_refused for the physical case.
+
+    The fallback must be a real Simpson evaluation and NOT a clamp: flooring -inf
+    to row_max-700 makes Catmull-Rom overshoot to +51.85 and return +43.10 where
+    the truth is just below -6.24, and no floor depth is safe (the overshoot
+    scales with it; a shallow floor contributes spuriously).  The equality below
+    is what rules a clamp out.
     """
     deltaT = 1.0 / 4096
     finite = float(_time_marginalize_log_hermite(jnp.zeros((1, 9)), deltaT)[0])
@@ -180,8 +184,13 @@ def test_non_finite_rows_are_handled_or_refused_but_never_silently_wrong():
     assert float(_time_marginalize_log_hermite(jnp.asarray(allneg), deltaT)[0]) == -np.inf
 
     mixed = np.zeros((1, 9)); mixed[0, 3] = -np.inf
-    assert np.isnan(float(_time_marginalize_log_hermite(jnp.asarray(mixed), deltaT)[0])), \
-        "a mixed -inf row must be REFUSED, not given a plausible-looking value"
+    w = jnp.asarray(_simpson_weights(9, deltaT))
+    got = float(_time_marginalize_log_hermite(jnp.asarray(mixed), deltaT)[0])
+    want = float(_time_marginalize(jnp.asarray(mixed), w)[0])
+    assert not np.isnan(got), "a mixed -inf row is valid and must not be refused"
+    assert abs(got - want) < 1e-12, (got, want,
+        "the mixed -inf fallback must BE Simpson, not a floored Hermite: a "
+        "row_max-700 floor returns +43.10 here where the truth is below -6.24")
 
     nan = np.zeros((1, 9)); nan[0, 3] = np.nan
     assert np.isnan(float(_time_marginalize_log_hermite(jnp.asarray(nan), deltaT)[0])), \
@@ -190,30 +199,114 @@ def test_non_finite_rows_are_handled_or_refused_but_never_silently_wrong():
     pos = np.zeros((1, 9)); pos[0, 3] = np.inf
     assert float(_time_marginalize_log_hermite(jnp.asarray(pos), deltaT)[0]) == np.inf
 
+    # a row mixing -inf with +inf is still a failure, and +inf must win
+    both = np.zeros((1, 9)); both[0, 2] = -np.inf; both[0, 6] = np.inf
+    assert float(_time_marginalize_log_hermite(jnp.asarray(both), deltaT)[0]) == np.inf
+
+
+def test_mixed_neg_inf_wings_are_integrated_not_refused():
+    """The physical case, and the reason the refusal had to go.
+
+    Whenever the inner angle/distance marginalization underflows in the wings --
+    the ORDINARY situation at high amplitude, which is the regime this rule exists
+    to serve -- lnL_t arrives with -inf wings and a finite core.  Refusing that
+    row converts a perfectly good likelihood into a fatal sampler value.
+
+    The two rows below differ only in wings carrying 5.4e-32 of the peak, so the
+    correct answer is the SAME analytic number for both, and Simpson gets it to
+    1.1e-13 nats.  Asserted against the analytic truth, not merely against
+    Simpson, so the test cannot pass by agreeing with a broken fallback.
+    """
+    npts, deltaT = 129, 1.0 / 4096
+    sigma = 3 * deltaT
+    t = (np.arange(npts) - npts // 2) * deltaT
+    lnL = 800.0 - (t ** 2) / (2 * sigma ** 2)
+    truth = 800.0 + 0.5 * np.log(2 * np.pi) + np.log(sigma)
+
+    mixed = lnL.copy()
+    mixed[np.abs(t) > 12 * sigma] = -np.inf
+    assert np.isneginf(mixed).any() and np.isfinite(mixed).any(), "fixture is not mixed"
+
+    all_finite = float(_time_marginalize_log_hermite(jnp.asarray(lnL[None, :]), deltaT)[0])
+    got = float(_time_marginalize_log_hermite(jnp.asarray(mixed[None, :]), deltaT)[0])
+    assert abs(all_finite - truth) < 1e-6, all_finite
+    assert not np.isnan(got), "mixed -inf row was refused; it is valid and Simpson-exact"
+    assert abs(got - truth) < 1e-6, (got, truth)
+
+    # ...and it must survive the transforms the likelihood composes.
+    f = lambda z: _time_marginalize_log_hermite(z, deltaT)
+    stacked = jnp.asarray(np.stack([lnL, mixed]))
+    v = np.asarray(jax.jit(f)(stacked))
+    assert np.all(np.abs(v - truth) < 1e-6), v
+    vv = np.asarray(jax.jit(jax.vmap(lambda z: f(z[None, :])[0]))(stacked))
+    assert np.all(np.abs(vv - truth) < 1e-6), vv
+
+    # A NEGATIVE peak, which is the case that discriminates.  Internally the
+    # kernel substitutes 0.0 for -inf so the Hermite arithmetic cannot produce a
+    # spurious value; with a peak at +800 that substitution is 800 nats DOWN and
+    # therefore invisible, so a mutant that returned the substituted Hermite value
+    # instead of Simpson would pass the fixture above.  At a peak of -50 the same
+    # substitution is 50 nats UP -- a spike where the wings were -- and only a
+    # genuine Simpson evaluation still lands on the truth.  (Caught by mutation
+    # testing this file, not by writing it.)
+    lo = -50.0 - (t ** 2) / (2 * sigma ** 2)
+    lo_truth = -50.0 + 0.5 * np.log(2.0 * np.pi) + np.log(sigma)
+    lo_mixed = lo.copy()
+    lo_mixed[np.abs(t) > 12 * sigma] = -np.inf
+    got_lo = float(_time_marginalize_log_hermite(jnp.asarray(lo_mixed[None, :]), deltaT)[0])
+    assert abs(got_lo - lo_truth) < 1e-6, (got_lo, lo_truth)
+
 
 def test_quadratic_lnL_is_reproduced_far_better_than_a_cubic_one():
-    """The corrected claim, pinned on a physical observable.
+    """The corrected claim, pinned on a physical observable -- with a BOUNDED fixture.
 
-    Centered differences are exact for a quadratic and not for a cubic, so a
-    cubic Hermite segment fed them reproduces quadratics and NOT cubics -- the
-    original docstring said cubics.  A purely quadratic lnL is a Gaussian, which
-    the rule integrates essentially exactly at h/sigma = 1; adding a cubic term at
-    the same resolution must degrade it by orders of magnitude.
+    Finite differences are exact for a quadratic and not for a cubic, so a cubic
+    Hermite segment fed them reproduces quadratics and NOT cubics.  A purely
+    quadratic lnL is a Gaussian, which the rule integrates essentially exactly at
+    h/sigma = 1; adding a cubic term at the same resolution must degrade it by
+    orders of magnitude.
+
+    THE FIXTURE IS THE POINT.  The first version of this test used npts = 513 with
+    sigma = deltaT, so t/sigma spanned [-256, 256] and the +0.35 (t/sigma)^3 term
+    reached lnL = 5.8e6 at the right edge.  ALL of the reference integral's mass
+    then sat in the last few samples -- measured, the final five samples carried
+    a fraction 1.000000 of it -- so `e_cubic` measured an exploding boundary layer
+    rather than cubic reproduction near the peak.
+
+    That was demonstrated, not assumed.  Re-running the old fixture with the same
+    quadrature but CUBIC-EXACT endpoint slopes -- an interpolant that reproduces
+    the integrand's cubic exactly, so the assertion should have nothing left to
+    detect -- gives e_cubic = 4753 either way, identical to four figures, and the
+    assertion passes in both worlds.  It could not tell them apart.  On the
+    fixture below the same substitution moves e_cubic from 2.4e-07 to 5.0e-12 and
+    the assertion correctly fails, so it is measuring what it claims to.
+
+    Here the span is +-16 sigma and the cubic coefficient is 0.01, so the tail
+    mass is ~1e-35 and the integral is genuinely peak-dominated.  That condition
+    is asserted below rather than assumed, so the test cannot quietly go vacuous
+    again.
 
     Deliberately NOT a convergence-order test: the error crosses zero near
     h/sigma ~ 3 (see the docstring), so a slope fitted across that region would be
     meaningless.  The order O(h^3.01) quoted there was measured on the interpolant
     directly, not end-to-end.
     """
-    npts, deltaT = 513, 1.0 / 4096
+    npts, deltaT = 33, 1.0 / 4096
     t = (np.arange(npts) - npts // 2) * deltaT
     sigma = deltaT                      # h/sigma = 1, the resolved regime
 
     quad = lambda tt: -(tt ** 2) / (2 * sigma ** 2)
-    e_quad = abs(float(_time_marginalize_log_hermite(jnp.asarray(quad(t)[None, :]), deltaT)[0])
-                 - (0.5 * np.log(2 * np.pi) + np.log(sigma)))
+    cubic = lambda tt: -(tt ** 2) / (2 * sigma ** 2) + 0.01 * (tt / sigma) ** 3
 
-    cubic = lambda tt: -(tt ** 2) / (2 * sigma ** 2) + 0.35 * (tt / sigma) ** 3
+    # FIXTURE GUARD: both integrands must be peak-dominated, not boundary-dominated.
+    for fn in (quad, cubic):
+        wgt = np.exp(fn(t) - fn(t).max())
+        tail = (wgt[:2].sum() + wgt[-2:].sum()) / wgt.sum()
+        assert tail < 1e-10, (tail, "fixture is boundary-dominated; the "
+                              "comparison below would be vacuous")
+
+    e_quad = abs(float(_time_marginalize_log_hermite(jnp.asarray(quad(t)[None, :]), deltaT)[0])
+                 - _log_integral_reference(quad, t))
     ref = _log_integral_reference(cubic, t)
     e_cubic = abs(float(_time_marginalize_log_hermite(jnp.asarray(cubic(t)[None, :]), deltaT)[0]) - ref)
 
@@ -221,6 +314,54 @@ def test_quadratic_lnL_is_reproduced_far_better_than_a_cubic_one():
     assert e_cubic > 1e3 * e_quad, (e_quad, e_cubic,
                                     "cubic is now as accurate as quadratic; the "
                                     "docstring's reproduction claim needs revisiting")
+
+
+def test_quadratic_is_reproduced_on_the_BOUNDARY_intervals_too():
+    """The interpolant itself, at the ends, where the claim used to be false.
+
+    The docstring says the interpolant reproduces quadratics exactly.  The
+    endpoint slopes were two-point differences, which are only FIRST order: on
+    f(x) = x^2 with h = 1 the left slope came out 1 where f'(0) = 0, and the
+    worst error over all intervals was 1.5e-01 rather than 1.4e-14.  Interior
+    intervals were fine, so a test that averaged over the grid, or one written
+    with npts large enough that the ends carry no mass, would never have seen it.
+
+    Measured through `_log_hermite_eval`, the function the kernel itself calls, so
+    this cannot pass against a re-implementation that has drifted.
+    """
+    npts, h = 9, 1.0
+    x = np.arange(npts) * h
+    s = np.linspace(0.0, 1.0, 201)
+
+    def worst(fn, intervals):
+        p = np.asarray(_log_hermite_eval(jnp.asarray(fn(x)[None, :]), s))[0]
+        exact = fn(x[:-1, None] + s[None, :] * h)
+        e = np.abs(p - exact)
+        return float(max(e[i].max() for i in intervals))
+
+    boundary, interior = [0, npts - 2], list(range(1, npts - 2))
+    for label, fn in (("linear", lambda z: 2 * z - 1), ("quadratic", lambda z: z ** 2)):
+        assert worst(fn, boundary) < 1e-12, (label, "boundary", worst(fn, boundary))
+        assert worst(fn, interior) < 1e-12, (label, "interior", worst(fn, interior))
+
+    # ...and a cubic is still NOT reproduced, so the test is not passing because
+    # the interpolant became exact for everything.
+    cube = lambda z: z ** 3
+    assert worst(cube, boundary) > 1e-2, worst(cube, boundary)
+    assert worst(cube, interior) > 1e-2, worst(cube, interior)
+
+
+def test_too_few_samples_is_refused_not_silently_degraded():
+    """The three-point endpoint slopes need npts >= 3; below that, ValueError."""
+    deltaT = 1.0 / 4096
+    for npts in (1, 2):
+        with pytest.raises(ValueError, match="at least 3 time samples"):
+            _time_marginalize_log_hermite(jnp.zeros((1, npts)), deltaT)
+    # 3 is the smallest accepted grid, and it must still be a real integral
+    y = jnp.zeros((1, 3))
+    got = float(_time_marginalize_log_hermite(y, deltaT)[0])
+    want = float(_time_marginalize(y, jnp.asarray(_simpson_weights(3, deltaT)))[0])
+    assert abs(got - want) < 1e-12, (got, want)
 
 
 def test_real_jax_vmap_not_just_a_stacked_batch():

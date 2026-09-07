@@ -528,7 +528,17 @@ fi
 # measured before the deselect applies is one too high and reds a healthy collection.
 # Measure by RUNNING THIS SCRIPT and reading its own line -- never by pointing pytest at
 # FILES yourself, and never by adding to the previous number.
-EXPECTED_TESTS=445
+#
+# 445 -> 448.  The three review fixes to the log-hermite rule (mixed -inf rows fall back
+# to Simpson instead of returning NaN; three-point endpoint slopes; a bounded replacement
+# for a cubic fixture that was boundary-dominated) add three tests to
+# test_time_log_hermite.py: 13 -> 16.  The FILES roster is unchanged at 31 files.  READ
+# OFF THIS SCRIPT'S OWN LINE -- it printed "collected 448 tests from 31 files" on CIT
+# citlogin6 with ~/.cache/jaxci_venv (jax 0.9.2, python 3.13, JAX_PLATFORMS=cpu,
+# JAX_ENABLE_X64=1, JAX_COMPILATION_CACHE_DIR=""), the DESELECT loop applied, i.e. the
+# post-deselect number.  That it also equals 445 + 3 is a coincidence of this change, not
+# a licence to have done the arithmetic.
+EXPECTED_TESTS=448
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
