@@ -274,15 +274,13 @@ def test_dag_chains_levels_per_sim(tmp_path):
     n1 = archive.register(0.1, target_level=2)
     n2 = archive.register(0.2, target_level=3)
     rq.submit(archive, [n1, n2])
-    # Count the DAGs, not the directory.  The comment this replaced assumed
-    # condor_submit_dag was absent; on a host that HAS HTCondor -- i.e. any
-    # submit host, which is where this code runs in anger -- DAGMan drops its
-    # own .condor.sub and .dagman.log next to the .dag and the old
-    # `len(iterdir()) == 1` failed.  The suite passed only where the product
-    # is never used.
+    # *.dag, not iterdir(): where condor_submit_dag IS installed it runs and
+    # drops four companion files beside the DAG (.condor.sub, .dagman.log,
+    # .lib.err, .lib.out), so a directory count is 5 there and 1 on a machine
+    # without HTCondor. This test was green only on the latter.
     dags = sorted((base / "run_queue" / "dags").glob("*.dag"))
-    assert len(dags) == 1, sorted(
-        p.name for p in (base / "run_queue" / "dags").iterdir())
+    assert len(dags) == 1, [p.name for p in
+                            (base / "run_queue" / "dags").iterdir()]
     text = dags[0].read_text()
     assert "PARENT {}_lvl1 CHILD {}_lvl2".format(n1, n1) in text
     assert "PARENT {}_lvl2 CHILD {}_lvl3".format(n2, n2) in text

@@ -3,6 +3,59 @@
 ------------
 development tree is rift_O4d.
 
+** BUG FIX, jax ILE (issue #227): a Gaussian importance proposal is now SCORED
+   under the matrix it was DRAWN from.  Seven sites drew
+   ``theta ~ N(mu, cov + 1e-12 I)`` by Cholesky and then evaluated the proposal
+   density under bare ``cov``.  That regularizer is ABSOLUTE, so it is negligible
+   only while ``cov`` is O(1); RIFT extrinsic posteriors at rho ~ 50 are ~1e-3 rad
+   wide and ``run_laplace_is``'s adaptation contracts far below that.  On real
+   S250114ax H1/L1 strain, ``--mode laplace-is`` -- the driver's DEFAULT -- returned
+   ``lnZ = 5,848,741,051.60`` with ``neff = 1.0`` and exited 0, writing that number
+   into the ILE result row as ``lnL``.  ``RIFT.likelihood.jax_ile.samplers.regularize_cov``
+   now produces ONE relatively-regularized matrix (``1e-12 * trace(cov)/dim``, the
+   form already used at ``fisher_is_sample``) and every site hands that same object
+   to the Cholesky and to the density.  Well-conditioned proposals are unaffected to
+   ~1e-12 relative; ``--mode prior-mc`` is untouched and reproduces bit-for-bit.
+
+** BEHAVIOUR CHANGE, jax ILE: an extrinsic integration that cannot stand behind its
+   evidence now says so instead of publishing a number.  (a) and (b) below are on
+   the ``laplace-is``/``nuts`` driver paths, which previously applied none of the
+   checks the library samplers already applied; **(c) applies to EVERY mode**:
+   (a) ``run_laplace_is`` keeps the prior pilot's own evidence estimate as a
+   reference and reports ``nan`` when the adapted estimate falls below a MARKOV LOWER
+   CONFIDENCE BOUND built from it (``prior_pilot_floor``).  The pilot's proposal
+   covers the prior by construction and importance sampling from a proposal that
+   MISSES mass is biased low, so a large downward move means the adaptation walked
+   off the peak.  The bound rather than the estimate is what the comparison uses:
+   the pilot is UNBIASED for Z, not a bound on it, and for a mode of prior mass
+   ``m`` a single lucky draw overshoots by ``1/(n_pilot m)`` -- measured up to
+   +5.46 nats at a synthetic width of 0.05 rad, P = 1.1e-3 over 900 seeds.  Markov
+   needs only non-negativity and unbiasedness, so ``ln Zhat + ln rate`` is a floor
+   at level ``1 - rate`` with no assumption that the pilot resolved anything --
+   which matters, because the pilot's own ESS is ~1 in every regime where this
+   guard does any work.  ``rate = exp(-8)`` is read off a measured operating curve
+   (5400 runs): against ``exp(-5)`` it costs 4.5 points of power and buys a 20x
+   smaller worst-case false-positive rate, and a false positive here fails the
+   event.  It catches the catastrophic band completely and the boundary band
+   partially: at a synthetic width of 0.05 rad two seeds in five escape it, 6 and 9
+   nats wrong at neff 5.3 and 41.9.  It stops a nine-orders-of-magnitude error; it
+   is not a warranty.
+   (b) ``run_laplace_is`` and ``run_nuts`` route their evidence through
+   ``_finalize_evidence``, which returns ``nan`` when ``logZ > max lnL`` (impossible
+   for a normalized prior) or ``neff < 1.5``.
+   (c) ``analyze_one`` raises on a non-finite evidence BEFORE writing either
+   artifact, so a failed event leaves no ``.dat`` row and the run exits nonzero;
+   ``--soft-fail-event-range`` still skips to the next event.  THIS IS NOT CONFINED
+   TO ``laplace-is``: the flowMC/NUTS modes already returned ``nan`` from
+   ``_finalize_evidence`` and the driver published it.  Measured: ``--mode
+   flowmc-phimarg --distance-marginalization`` on real S250114ax (rho ~ 49) returns
+   ``nan`` at both seeds tried (``neff`` 1.0 and 1.4) and now exits 1 instead of 0.
+   CONSEQUENCE, and it is not a small one: on high-SNR real data ``--mode laplace-is``
+   now FAILS where it used to report a number.  It was not reporting a right one --
+   see the S250114ax comparison in the PR that closes #227, where the
+   ``--n-max 40000`` run the issue called "sane" (888.34) sits ~900 nats below both
+   a prior-MC estimate (1792.78) and a Laplace-at-MAP bound (>= 1758.3).
+
 ** BEHAVIOUR CHANGE, jax ILE: flow re-use across ``--n-events-to-analyze`` is now
    OFF by default.  ``--flow-reuse`` restores the old behaviour; ``--no-flow-reuse``
    is kept and now restates the default, so existing command lines keep working.

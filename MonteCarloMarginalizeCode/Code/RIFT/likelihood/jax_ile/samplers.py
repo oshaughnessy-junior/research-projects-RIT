@@ -231,6 +231,396 @@ def _log_prior_jax(theta5):
 # ---------------------------------------------------------------------------
 # Batched lnL evaluation (chunked to bound memory)
 # ---------------------------------------------------------------------------
+# Historical largest single XLA buffer of the anglemarg laplace path, per sample per
+# time point: the (quad_chunk=16, dist_block=4, phi_chunk=16) stacked
+# quadrature block, 16*4*16*8 = 8192 bytes.  Measured 2026-08-28: at the
+# default chunk 4000 with npts=1193 XLA requested exactly 36.41 GiB for that
+# buffer and the SNR-40 acceptance run died RESOURCE_EXHAUSTED on a 25 GiB
+# cgroup -- the pre-fix code never got past COMPILATION at production size,
+# so this execution-side wall was previously unreachable.  The exact scheme's
+# dense reconstruction has the same batch-multiplied structure (smaller
+# constant); the laplace constant is used for both as the worst case.
+#
+# The laplace kernel now tiles the combined sample-time point axis internally,
+# so this is no longer its literal largest-buffer model.  Keep the outer cap as
+# a conservative bound on still-live coefficient tables and phi fields, and for
+# exact, which does not share that tiler.
+#
+# "BOTH" MEANS EXACT AND LAPLACE, AND NOTHING ELSE.  A reviewer read it as covering
+# every scheme and concluded this constant understates peak-local by ~128x.  It does --
+# peak-local's live slab is about 1 MiB per sample-point, not 8 KiB -- but peak-local
+# does not USE this number as its model: angle_marg_eval_chunk raises `bytes_per` to a
+# scheme-specific peak-local model with max(), so 8192 acts only as a floor there.  The
+# two figures are both right, for different schemes.  Do not "reconcile" them.
+_ANGLE_MARG_BYTES_PER_SAMPLE_PT = 8192
+
+#: Largest single buffer we will let the anglemarg eval request.  4 GiB was chosen on
+#: 2026-08-28 against the 25 GiB per-UID cgroup of the machine the OOM was reproduced on,
+#: with a deliberate ~6x margin.  On a card with more memory it throttles the accurate
+#: schemes for no reason -- at npts=1230 it caps the eval chunk at 426 where the nominal
+#: chunk is 1000, so `exact`/`laplace`/`peak-local` run at under half the batch `grid`
+#: gets, and small batches are exactly where their per-sample cost is worst.
+#: So DERIVE it from the device when we can see one, and keep 4 GiB as the fallback for the
+#: machine we cannot measure.  Deliberately a fraction of free VRAM rather than all of it:
+#: this bounds ONE buffer, and the rest of the graph has to live alongside it.
+#:
+#: THIS IS NOT A FLOOR, and an earlier revision of this file wrongly said it was.  4 GiB is
+#: what we use when we cannot SEE the device; it carries no guarantee about a device we can.
+#: It was measured safe against one 25 GiB cgroup and says nothing about a 6 GiB card.
+_ANGLE_MARG_BUFFER_TARGET_FALLBACK = 4 << 30
+
+#: Fraction of the device's AVAILABLE memory to allow for this ONE buffer.
+#: NOT a fraction of the reported limit, and review caught that it was: `bytes_limit` and
+#: `bytes_reservable_limit` are capacity CEILINGS, not free memory.  These cards are
+#: SHARED -- a contemporaneous survey of the interactive hosts found all four GPUs at 100%
+#: utilisation with 18-22 GiB of 24 GiB already held by other users -- so half of a 24 GiB
+#: ceiling is 12 GiB on a card with 2 GiB left, i.e. exactly the RESOURCE_EXHAUSTED this
+#: cap exists to prevent, wearing device awareness as a costume.  The fraction is HEADROOM
+#: ON WHAT IS FREE; the ceiling never licenses an allowance by itself.
+#: WHY 0.5 RATHER THAN A MEASURED NUMBER: the remaining margin has to cover the rest of the
+#: graph alongside this buffer, and that has NOT been measured -- an attempt was defeated by
+#: the interactive hosts' thread cap.  0.5 is therefore a JUDGEMENT, not a result: it is
+#: twice the first guess and still leaves half the reported limit.  Override it when you
+#: know your card is yours:
+#:     RIFT_ANGLEMARG_BUFFER_FRACTION=0.8
+#: and if you measure the true overhead, replace this constant with the measurement and say
+#: so here.
+_ANGLE_MARG_BUFFER_FRACTION_DEFAULT = 0.5
+
+
+def _read_buffer_fraction(env=None):
+    """Parse RIFT_ANGLEMARG_BUFFER_FRACTION, refusing a value that cannot bound anything.
+
+    Refuses LOUDLY rather than quietly substituting the default.  An override that is
+    silently ignored is worse than no override at all: the caller goes on believing a
+    bound is in force that is not, which is precisely how the buffer gets sized wrong.
+    Not being set is not an error -- only a value we were handed and cannot use.
+
+    Above 1.0 is rejected rather than clamped because it asks for a buffer larger than
+    the device reports FREE, i.e. it asks this function to cause the OOM it exists to
+    prevent.  A caller who really wants everything currently free writes 1.0.
+    """
+    if env is None:
+        env = os.environ
+    raw = env.get("RIFT_ANGLEMARG_BUFFER_FRACTION")
+    if raw is None:
+        return _ANGLE_MARG_BUFFER_FRACTION_DEFAULT
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        raise ValueError(
+            "RIFT_ANGLEMARG_BUFFER_FRACTION=%r is not a number; give a fraction in "
+            "(0, 1], e.g. 0.8" % (raw,))
+    # NaN fails this comparison too, which is the intent.
+    if not (0.0 < val <= 1.0):
+        raise ValueError(
+            "RIFT_ANGLEMARG_BUFFER_FRACTION=%r is outside (0, 1]; above 1 would size this "
+            "buffer larger than the device reports, and at or below 0 it bounds nothing"
+            % (raw,))
+    return val
+
+
+_ANGLE_MARG_BUFFER_FRACTION = _read_buffer_fraction()
+
+
+def _read_buffer_bytes(env=None):
+    """Parse RIFT_ANGLEMARG_BUFFER_BYTES, an ABSOLUTE allowance in bytes, or None.
+
+    WHY A SECOND KNOB EXISTS.  ``angle_marg_eval_chunk`` now REFUSES a configuration
+    whose single sample already exceeds the allowance, because returning a chunk of 1
+    there breaks the bound it advertises.  On a machine whose device we cannot read, the
+    allowance being refused against is ``_ANGLE_MARG_BUFFER_TARGET_FALLBACK`` -- a
+    documented guess that the comment above is explicit carries no guarantee.  Failing
+    closed against a guess with no way to override it turns "we could not see your
+    device" into "you may not run", which is an outage, not a bound.
+
+    RIFT_ANGLEMARG_BUFFER_FRACTION cannot serve this purpose: it is a fraction OF a
+    reported FREE figure, and the paths that need the escape -- no readable device, or a
+    device that reports a ceiling but never says how much of it is free -- are exactly
+    the ones with no such figure to take a fraction of.
+
+    Read per call rather than once at import so a caller can set it before the eval
+    without re-importing the module.  Refused loudly on garbage, for the same reason the
+    fraction is: an override that is silently dropped leaves the caller believing a
+    bound is in force that is not.
+    """
+    if env is None:
+        env = os.environ
+    raw = env.get("RIFT_ANGLEMARG_BUFFER_BYTES")
+    if raw is None:
+        return None
+    try:
+        val = int(float(raw))
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError is in the list because int(float('inf')) raises it and not
+        # ValueError, so 'inf' would otherwise escape as an unhandled OverflowError
+        # instead of the actionable message.  'nan' goes the ValueError route.
+        raise ValueError(
+            "RIFT_ANGLEMARG_BUFFER_BYTES=%r is not a usable number of bytes; give a "
+            "positive integer, e.g. %d for 12 GiB" % (raw, 12 << 30))
+    if val <= 0:
+        raise ValueError(
+            "RIFT_ANGLEMARG_BUFFER_BYTES=%r is not positive; a non-positive allowance "
+            "bounds nothing and refuses every chunk" % (raw,))
+    return val
+
+
+def _device_available_bytes(stats):
+    """Bytes we can actually expect to get from the device NOW, or None if unknowable.
+
+    THE CEILING IS NOT THE ANSWER, which was a review finding on this file.  Neither
+    ``bytes_limit`` nor ``bytes_reservable_limit`` says anything about what is free: they
+    are what the allocator may grow to, on a card another process may already be sitting
+    on.  Sizing off either one returns a 12 GiB allowance on a shared 24 GiB GPU with
+    2 GiB left, which is the failure this cap exists to prevent.
+
+    Only keys that mean "free" are read:
+
+      * ``largest_free_block_bytes`` -- the largest contiguous block the allocator can
+        serve right now.  It answers the question actually being asked, because the thing
+        being bounded is ONE allocation, not a total.
+      * failing that, the reserved pool minus what we hold in it.  Memory already
+        reserved for this process cannot be taken by another one, so ``pool - in_use`` is
+        genuinely ours in a way the ceiling is not.
+
+    Returns None when neither is reported.  The caller must read that as "we could not
+    see how much of this device is free" -- NOT as zero, and emphatically not as the
+    ceiling that is sitting right there in the same dict.
+
+    A pool that is entirely in use returns 0, not None, and that is deliberate: it is a
+    reading, not a failure to read.  Falling back to the 4 GiB guess there would hand out
+    memory we have just been told does not exist.
+    """
+    block = stats.get("largest_free_block_bytes")
+    if block is not None:
+        return max(0, int(block))
+    pool = stats.get("pool_bytes") or stats.get("bytes_reserved")
+    if pool:
+        return max(0, int(pool) - int(stats.get("bytes_in_use") or 0))
+    return None
+
+
+def _angle_marg_buffer_target():
+    """Bytes to allow for the largest single anglemarg buffer.
+
+    Derived from the device's FREE memory rather than assumed, because the constant this
+    replaces was sized on the smallest machine anyone had run on.  Any failure to read the
+    device -- no jax, no GPU, an API that moved, or stats that report a ceiling but no
+    availability -- returns the historical 4 GiB, so a machine we cannot interrogate
+    behaves exactly as before rather than getting a larger number by accident.
+
+    An explicit RIFT_ANGLEMARG_BUFFER_BYTES wins over both, and is read OUTSIDE the
+    try below on purpose: inside it, the blanket `except Exception` would swallow the
+    ValueError from a malformed override and hand back the fallback -- silently ignoring
+    the one number in this function a human asserted about the machine in front of them.
+    """
+    explicit = _read_buffer_bytes()
+    if explicit is not None:
+        return explicit
+    try:
+        import jax
+        devs = [d for d in jax.devices() if getattr(d, "platform", "") == "gpu"]
+        if not devs:
+            return _ANGLE_MARG_BUFFER_TARGET_FALLBACK
+        stats = devs[0].memory_stats() or {}
+        avail = _device_available_bytes(stats)
+        if avail is None:
+            # We can see a device but not how much of it is free.  The conservative
+            # fallback stands; an operator who knows their card asserts otherwise with
+            # RIFT_ANGLEMARG_BUFFER_BYTES.  Reaching for `bytes_limit` here instead is
+            # the exact regression review flagged -- see _device_available_bytes.
+            return _ANGLE_MARG_BUFFER_TARGET_FALLBACK
+        # The ceiling is still worth reading, but only DOWNWARD: availability cannot
+        # legitimately exceed what the allocator may hold, so a runtime reporting a free
+        # block bigger than its own limit is misreporting and must not inflate this.
+        limit = stats.get("bytes_limit") or stats.get("bytes_reservable_limit")
+        if limit:
+            avail = min(avail, int(limit))
+        # NO max() WITH THE FALLBACK HERE.  Flooring at 4 GiB would defeat the whole
+        # point in the one direction that matters for safety: a card with 6 GiB free
+        # would be handed a 4 GiB single buffer, and one with under 4 GiB free would be
+        # handed more than it has.  That is the failure this function exists to prevent,
+        # wearing device awareness as a costume.  A busy device gets a small allowance.
+        #
+        # AN EARLIER VERSION OF THIS COMMENT SAID a device too small for the model merely
+        # "goes slow, not wrong", because angle_marg_eval_chunk floored the chunk at 1.
+        # That was false and review caught it: a chunk of one still requests
+        # bytes_per * npts, so once ONE sample exceeds the allowance the floor returns a
+        # chunk that BREAKS the bound rather than a chunk that is slow.  There is no
+        # kernel-level tiling of that buffer -- the sample axis is the only axis this cap
+        # can divide -- so angle_marg_eval_chunk now refuses instead of pretending.
+        #
+        # max(0, ...), not max(1, ...): a device with nothing free must produce an
+        # allowance of nothing, and let angle_marg_eval_chunk refuse with the message
+        # that names the knobs.  A one-byte floor would be the same lie in miniature.
+        return max(0, int(avail * _ANGLE_MARG_BUFFER_FRACTION))
+    except Exception:
+        return _ANGLE_MARG_BUFFER_TARGET_FALLBACK
+
+
+#: Kept as a module attribute so existing readers (and tests) still see a number.
+_ANGLE_MARG_BUFFER_TARGET = _ANGLE_MARG_BUFFER_TARGET_FALLBACK
+
+
+def _peaklocal_bytes_per_sample_pt(like):
+    """Conservative source-level payload for one peak-local sample/time point.
+
+    The streamed nonlinear body and the phi scan's stacked output have distinct
+    shapes, and both have to be budgeted.  This is still not a CUDA allocator
+    measurement and cannot see an outer transformation such as flowMC's chain
+    ``vmap``; callers of the scalar AD target require separate profiling.
+    """
+    from . import anglemarg as _am
+    from . import joint_anglemarg_peaklocal as _jp
+
+    n_x = int(np.size(getattr(like, "x_grid", ())) or 1)
+    info = getattr(like, "angle_marg_info", None) or {}
+    # Production wrappers record the floored sizing amplitude.  Preserve the
+    # same floor for small test doubles and legacy readers that omit the ledger.
+    amp_sizing = info.get("amp_sizing")
+    if amp_sizing is None:
+        amp_sizing = _am.ANGLE_MARG_CROSSOVER_AMPLITUDE
+    n_u_live = min(_jp.u_nodes_in_use(amp_sizing), _jp.U_NODE_STREAM_CHUNK)
+
+    data = getattr(like, "data", None)
+    lms = getattr(data, "lms", None)
+    m_max = (int(np.max(np.abs(np.asarray(lms)[:, 1])))
+             if lms is not None else 2)
+    n_phi = _jp.required_n_phi(amp_sizing, m_max=m_max)
+
+    streamed_body = _jp.PHI_CHUNK_DEFAULT * n_x * 4 * n_u_live * 8
+    # lax.scan returns every phi chunk before the subsequent reshape/logsumexp;
+    # that stacked output therefore has (n_phi, n_x) f64 payload.
+    stacked_scan_output = n_phi * n_x * 8
+    return int(streamed_body + stacked_scan_output)
+
+
+def _philocal_bytes_per_sample_pt(like):
+    """Conservative source-level payload for one phi-local sample/time point.
+
+    THE PHI-LOCAL KERNEL ROLLS TWO AXES AND THE GUARD MUST MODEL BOTH, because unlike the
+    dense path its quadrature grid is not streamed on the u axis: `pt_chunk` phi points
+    are evaluated at once, each costing a u profile of `4 * u_nodes`, and `eval_g2`
+    materializes `(points, KP, 2KS+1)` COMPLEX -- 16 bytes a term, not 8.  `x_chunk`
+    distance nodes are in flight simultaneously.  Miss the complex width or the table
+    terms and this undercounts by ~90x.
+
+    The entry ALSO evaluates the dense peak-local scheme for the fallback, so the dense
+    model is added rather than maxed: both are live in the same trace.
+    """
+    from . import joint_anglemarg_peaklocal as _jp
+    from . import anglemarg as _am
+
+    info = getattr(like, "angle_marg_info", None) or {}
+    amp_sizing = info.get("amp_sizing")
+    if amp_sizing is None:
+        amp_sizing = _am.ANGLE_MARG_CROSSOVER_AMPLITUDE
+    u_nodes = _jp.u_nodes_in_use(amp_sizing)
+
+    data = getattr(like, "data", None)
+    lms = getattr(data, "lms", None)
+    m_max = (int(np.max(np.abs(np.asarray(lms)[:, 1])))
+             if lms is not None else 2)
+    KP = 2 * m_max + 1
+    terms = KP * 5                       # (KP, 2KS+1) with the u degree pinned at 2
+
+    live_pts = _jp.PT_CHUNK_DEFAULT * 4 * u_nodes
+    body = _jp.X_CHUNK_DEFAULT * live_pts * terms * 16
+    # the per-node values the distance scan stacks before its reduction
+    n_x = int(np.size(getattr(like, "x_grid", ())) or 1)
+    stacked = n_x * 8
+    return int(body + stacked + _peaklocal_bytes_per_sample_pt(like))
+
+
+def angle_marg_eval_chunk(like, chunk):
+    """Cap the batched-eval chunk when ``like`` runs an anglemarg scheme.
+
+    Slices of the batched eval are INDEPENDENT (lnL is elementwise in the
+    sample axis), so this changes peak memory and nothing else -- same
+    pattern as the _GH_NODES shrink above.  Grid-scheme and 4/5-param
+    likelihoods pass through unchanged.
+    """
+    # NOT the scheme default.  "grid" here is a SENTINEL meaning "this object
+    # runs no dense angle scheme" -- it is what a JAXDistanceMarginalized/
+    # JAXExtrinsic likelihood, which has no angle_marg_scheme at all, must fall
+    # back to.  Do NOT sync it to ANGLE_MARG_DEFAULT: that would shrink the eval
+    # chunk for every likelihood that does not need it.  Two independent things
+    # that happened to be the same string; the last default move on this path
+    # (interp linear -> sinc) was bitten by exactly that.
+    # 'peak-local' is capped WITH the dense schemes, not exempted from them.  Its u
+    # axis is localized, but it still nests sample/time vmaps over the distance grid,
+    # phi chunks, four cells and a streamed u-node block, so the batch multiplies the
+    # same way the dense schemes do.  Leaving it out kept an uncapped 8000-sample batch
+    # and reopened the 36.4 GiB failure documented above.
+    if getattr(like, "angle_marg_scheme", "grid") not in ("exact", "laplace",
+                                                          "peak-local", "phi-local"):
+        return chunk
+    npts = int(getattr(getattr(like, "data", None), "npts", 0) or 0)
+    if npts <= 0:
+        return chunk
+    bytes_per = _ANGLE_MARG_BYTES_PER_SAMPLE_PT
+    if getattr(like, "angle_marg_scheme", None) == "phi-local":
+        # Modelled in the SAME change that added the kernel, because the trap this guard
+        # exists for is a kernel whose sizing moved while the guard kept its old model.
+        bytes_per = max(bytes_per, _philocal_bytes_per_sample_pt(like))
+    elif getattr(like, "angle_marg_scheme", None) == "peak-local":
+        # Besides the streamed (phi_chunk,n_x,4,u_live) body, lax.scan returns
+        # and stacks every (n_phi,n_x) value before the final reduction.  Omitting
+        # that output undercounts high-amplitude calls because n_phi grows as
+        # sqrt(A).
+        bytes_per = max(bytes_per, _peaklocal_bytes_per_sample_pt(like))
+    target = _angle_marg_buffer_target()
+    per_sample = bytes_per * npts
+    if per_sample > target:
+        # FAIL CLOSED.  This branch used to be `cap = max(1, target // per_sample)`,
+        # which returns 1 here and therefore hands back a chunk whose buffer is
+        # `per_sample` bytes -- larger than the target this function exists to enforce.
+        # The floor made the bound silently untrue on any device small enough, which is
+        # not the same failure as being slow.  peak-local reaches it at production
+        # dimensions: phi_chunk 16, n_x 256, four cells, an 8-node stream block, the
+        # stacked phi scan and npts 1230 is 2.03 GiB for ONE sample, so a 2 GiB card
+        # (1 GiB allowance at the
+        # default fraction) cannot honour the bound at any chunk size.
+        #
+        # The alternative repair is kernel-level tiling of the buffer itself.  That is a
+        # real option and a much larger change; until someone does it, the honest thing
+        # is to say the bound cannot be met rather than to report a chunk that breaks it.
+        #
+        # MemoryError, matching RIFT.likelihood.time_posterior's
+        # validate_time_posterior_working_set: same shape (a preflight refusal of a
+        # dense working set, with the estimate, the dimensions, the limit and the knobs
+        # in the message), so it gets the same type.  It also lets a caller that wants
+        # to fall back to a cheaper scheme catch this narrowly instead of every
+        # RuntimeError the eval path can raise.
+        raise MemoryError(
+            "angle-marginalization resource preflight: scheme %r cannot honour the "
+            "buffer bound at ANY chunk size: one "
+            "sample needs %d bytes (%.2f GiB) -- %d bytes per sample per time point x "
+            "npts=%d -- against an allowance of %d bytes (%.2f GiB).  Returning a chunk "
+            "of 1 would ask the device for the full %.2f GiB and OOM, so this refuses "
+            "instead.  Act on one of: raise the allowance with "
+            "RIFT_ANGLEMARG_BUFFER_FRACTION (a fraction, at most 1.0, of the memory the "
+            "device reports FREE -- it has no effect when that could not be read, and "
+            "note that the free figure moves with whoever else is on the card) or "
+            "RIFT_ANGLEMARG_BUFFER_BYTES (an absolute byte allowance, which wins over "
+            "both the device probe and the %d-byte fallback); shorten the time window "
+            "(npts); shrink the distance grid (n_x), which drives the peak-local model; "
+            "or run a cheaper angle_marg_scheme.  The sample axis is the only axis this "
+            "cap can divide, so no chunk size is a fix; reducing the outer "
+            "evaluation chunk cannot make this call fit."
+            % (getattr(like, "angle_marg_scheme", None), per_sample,
+               per_sample / float(1 << 30), bytes_per, npts, target,
+               target / float(1 << 30), per_sample / float(1 << 30),
+               _ANGLE_MARG_BUFFER_TARGET_FALLBACK))
+    # No max(..., 1) here, deliberately: the refusal above is what guarantees
+    # `per_sample <= target`, so the floor division is already at least 1.  Restoring the
+    # floor would restore the defect -- it is the floor, not the division, that broke the
+    # bound.  And a floor LARGER than one breaks it in the other direction for long but
+    # valid time windows (npts=65537 with a floor of 64 requested ~32 GiB).
+    cap = target // per_sample
+    return min(chunk, cap)
+
+
 def eval_lnL(like, theta, chunk=_EVAL_CHUNK):
     """Evaluate the distance-marginalized lnL on an ``(N, 5)`` array in chunks.
 
@@ -238,6 +628,7 @@ def eval_lnL(like, theta, chunk=_EVAL_CHUNK):
     dimension inside the likelihood).
     """
     theta = np.atleast_2d(theta)
+    chunk = angle_marg_eval_chunk(like, chunk)
     N = theta.shape[0]
     out = np.empty(N)
     for i in range(0, N, chunk):
@@ -382,6 +773,35 @@ def _moment_match(theta, logL):
     evals = np.clip(evals, floor, None)
     cov = (V * evals) @ V.T
     return mu, cov
+
+
+def regularize_cov(cov, rel=1e-12):
+    """The covariance a Gaussian proposal must use for BOTH its Cholesky draw
+    and its density.
+
+    Two properties, and each one alone was a live defect (issue #227):
+
+    RELATIVE, not absolute.  An ``+ eps*I`` regularizer with a fixed ``eps``
+    is only negligible if the covariance is O(1).  A production extrinsic
+    posterior is not: on the real S250114ax point in #227 (rho ~ 49) the driver's
+    own Fisher gives angular scales ~1e-3 rad, and an ADAPTING proposal contracts
+    far below that -- to 3e-21 there.  ``1e-12`` then stops being a conditioning
+    nudge and becomes the proposal.  Scaling by ``trace(cov)/dim`` makes the nudge
+    a fixed fraction of the covariance at every scale.
+
+    ONE matrix.  Callers must pass this return value to the Cholesky *and* to
+    ``_gaussian_logq``/``_mixture_logq``.  Drawing from ``cov + eps*I`` while
+    scoring under bare ``cov`` computes importance weights against a
+    distribution that was never sampled; with ``cov ~ 3e-21`` and ``eps=1e-12``
+    the Mahalanobis term is ``(1e-6/sqrt(3e-21))**2 ~ 3e8`` per dimension, which
+    is how ``--mode laplace-is`` returned ``lnZ = 5.8e9`` and exited 0.
+    """
+    cov = np.asarray(cov, dtype=float)
+    d = cov.shape[-1]
+    scale = float(np.trace(cov)) / d
+    if not np.isfinite(scale) or scale <= 0.0:
+        scale = 1.0        # degenerate/zero covariance: fall back to absolute
+    return cov + (rel * scale) * np.eye(d)
 
 
 def _finalize_evidence(logZ, sigma_over_Z, neff, max_lnL):
@@ -716,6 +1136,8 @@ def multistart_nuts(like, d_min, d_max, n_starts=8, num_warmup=300,
         mus, covs = [mu], [cov * proposal_inflate]
     n_comp = len(mus)
     weights = np.full(n_comp, 1.0 / n_comp)
+    # ONE matrix per component for both the draw and _mixture_logq below (#227).
+    covs = [regularize_cov(cv) for cv in covs]
 
     # draw from the mixture
     counts = rng.multinomial(n_is, weights)
@@ -723,7 +1145,7 @@ def multistart_nuts(like, d_min, d_max, n_starts=8, num_warmup=300,
     for c in range(n_comp):
         if counts[c] == 0:
             continue
-        Lc = np.linalg.cholesky(covs[c] + 1e-12 * np.eye(5))
+        Lc = np.linalg.cholesky(covs[c])
         z = rng.standard_normal((counts[c], 5))
         draws.append(mus[c][None, :] + z @ Lc.T)
     th_is = np.concatenate(draws, axis=0)
@@ -885,8 +1307,8 @@ def flowmc_sample(like, d_min, d_max, n_chains=20, n_local_steps=20,
     logZ = sigma_over_Z = neff = np.nan
     if len(theta) >= 6:
         mu, cov = _moment_match(theta, np.zeros(len(theta)))
-        cov = cov * 2.0
-        Lc = np.linalg.cholesky(cov + 1e-12 * np.eye(n_dim))
+        cov = regularize_cov(cov * 2.0)   # ONE matrix: draw and density (#227)
+        Lc = np.linalg.cholesky(cov)
         n_is = 40000
         z = rng.standard_normal((n_is, n_dim))
         th_is = mu[None, :] + z @ Lc.T
@@ -957,6 +1379,7 @@ def _log_prior_4_jax(theta4):
 def eval_lnL_4(like, theta, chunk=_EVAL_CHUNK, desc="lnL"):
     """Evaluate the 4-param (phi-marginalised) lnL on an ``(N, 4)`` array."""
     theta = np.atleast_2d(theta)
+    chunk = angle_marg_eval_chunk(like, chunk)
     N = theta.shape[0]
     out = np.empty(N)
     try:
@@ -1053,6 +1476,7 @@ def _log_prior_3_jax(theta3):
 def eval_lnL_3(like, theta, chunk=_EVAL_CHUNK, desc="lnL"):
     """Evaluate the 3-param (phi+psi-marginalised) lnL on an ``(N, 3)`` array."""
     theta = np.atleast_2d(theta)
+    chunk = angle_marg_eval_chunk(like, chunk)
     N = theta.shape[0]
     out = np.empty(N)
     try:
@@ -1531,8 +1955,8 @@ def flowmc_sample_phimarg(like, d_min, d_max, n_chains=20, n_local_steps=20,
                     print("  [evidence] Laplace diag failed: %r" % e)
     elif len(theta) >= 6:
         mu, cov = _moment_match(theta, np.zeros(len(theta)))
-        cov = cov * 2.0
-        Lc = np.linalg.cholesky(cov + 1e-12 * np.eye(n_dim))
+        cov = regularize_cov(cov * 2.0)   # ONE matrix: draw and density (#227)
+        Lc = np.linalg.cholesky(cov)
         n_is = 40000
         z = rng.standard_normal((n_is, n_dim))
         th_is = mu[None, :] + z @ Lc.T
@@ -1565,8 +1989,10 @@ def flowmc_sample_phimarg(like, d_min, d_max, n_chains=20, n_local_steps=20,
         if mapT is not None:
             cov_is = (float(fisher_is_inflate) ** 2) * (A_is @ A_is.T)
             cov_is = 0.5 * (cov_is + cov_is.T)
+            # ONE matrix: this is what _gaussian_logq is given below (#227).
+            cov_is = regularize_cov(cov_is)
             try:
-                Lc = np.linalg.cholesky(cov_is + 1e-12 * np.eye(n_dim))
+                Lc = np.linalg.cholesky(cov_is)
                 N = int(fisher_is_samples)
                 z = rng.standard_normal((N, n_dim))
                 th_is = mapT[None, :] + z @ Lc.T
@@ -1906,11 +2332,15 @@ def fisher_is_sample(like, n_samples=20000, n_starts=16, n_prior_pilot=20000,
     var = inflate / np.clip(w, inflate / max_std ** 2, None)   # cap variance
     cov = (V * var) @ V.T
     cov = 0.5 * (cov + cov.T)
-    Lc = np.linalg.cholesky(cov + 1e-12 * np.eye(5) * np.trace(cov) / 5)
+    # Already relative before #227 -- routed through the helper so that the
+    # draw and the density are literally the same object at every site, and so
+    # the grep for the defect pattern returns nothing.
+    cov_q = regularize_cov(cov)
+    Lc = np.linalg.cholesky(cov_q)
 
     z = rng.standard_normal((n_samples, 5))
     theta = _wrap_angles(th0[None, :] + z @ Lc.T)
-    logq = _gaussian_logq(th0[None, :] + z @ Lc.T, th0, cov)  # q on the raw draw
+    logq = _gaussian_logq(th0[None, :] + z @ Lc.T, th0, cov_q)  # q on the raw draw
     logp = log_prior(theta)
     valid = np.isfinite(logp)
     lnL = np.full(n_samples, -np.inf)
@@ -2162,13 +2592,15 @@ def fisher_nuts_sample_phimarg(like, num_warmup=300, num_samples=1000,
         mu, cov = _moment_match(theta, np.zeros(len(theta)))
         mus, covs = [mu], [cov * 2.0]
     weights = np.full(len(mus), 1.0 / len(mus))
+    # ONE matrix per component for both the draw and _mixture_logq below (#227).
+    covs = [regularize_cov(cv) for cv in covs]
 
     counts = rng.multinomial(n_is, weights)
     draws, comp_of_draw = [], []
     for c in range(len(mus)):
         if counts[c] == 0:
             continue
-        Lc = np.linalg.cholesky(covs[c] + 1e-12 * np.eye(4))
+        Lc = np.linalg.cholesky(covs[c])
         z = rng.standard_normal((counts[c], 4))
         draws.append(mus[c][None, :] + z @ Lc.T)
         comp_of_draw.append(np.full(counts[c], c))
