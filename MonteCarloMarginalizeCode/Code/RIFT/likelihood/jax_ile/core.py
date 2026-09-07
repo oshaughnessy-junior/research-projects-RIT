@@ -472,6 +472,8 @@ def _check_stored_q_length(dd, stored_npts, factor, what):
     a factor-8 window would cover an eighth of the intended span and land on
     whatever happens to be there.  Nothing downstream can see it: the shapes
     still broadcast, the likelihood still returns finite numbers, and they are
+    wrong.
+
     The shape it guards against is reachable.  ``banded._base_data`` builds the
     scaffold through :func:`build_likelihood_data`, then attaches an
     INDEPENDENTLY packed ``Q_bank`` that :func:`build_q_time_pregrid` never sees,
@@ -605,6 +607,61 @@ def _guarded_window(data, guard):
             jnp.arange(-guard, data.npts + guard, dtype=jnp.float64))
 
 
+# The mode order :func:`_accumulate_unit`'s phase-marginalized branch is written
+# against.  That branch is position-dependent -- it conjugates the m=-2 column of
+# Y and Q and pairs it with conj(F) -- but the packed column order is NOT the
+# caller's to choose: it comes from a python dict's iteration order in the
+# precompute upstream, so a correctly-configured run can arrive with the pair the
+# other way round.  Permute to canonical rather than refuse.
+_PHASE_MARG_MODES = ((2, 2), (2, -2))
+
+
+def _phase_marg_permutation(lms):
+    """Index permutation taking ``lms`` to ``[(2,2), (2,-2)]``, or ``None``.
+
+    ``None`` means ``lms`` is ALREADY canonical.  The caller must then skip the
+    permutation entirely rather than apply an identity one, because the ordering
+    that works today has to keep producing bit-for-bit the same numbers, and a
+    ``take`` with an identity index vector is not guaranteed to leave the XLA
+    graph -- and so the rounding -- untouched.
+
+    Only the ORDER is free.  Any other mode SET still raises: the conjugation
+    the accumulator applies is specific to one m=+2 / m=-2 pair, so a third mode
+    is a real gap in the method, not a relabelling.
+
+    The set guard is what makes the DIRECTION of the permutation below safe.  On
+    two modes the only non-canonical order is a transposition, which is its own
+    inverse, so ``order.index(...)`` and its inverse are the same map and no test
+    can tell them apart -- verified by enumerating the accepted inputs.  They
+    diverge at K >= 3.  So if this is ever widened past the pair, the widening
+    must come with a test that pins the direction; today's suite cannot.
+    """
+    order = [(int(l), int(m)) for (l, m) in lms]
+    if sorted(order) != sorted(_PHASE_MARG_MODES):
+        raise NotImplementedError(
+            "phase marginalization currently requires modes "
+            "[(2,2),(2,-2)] (either order); got %r" % (order,))
+    if order == list(_PHASE_MARG_MODES):
+        return None
+    return [order.index(lm) for lm in _PHASE_MARG_MODES]
+
+
+def _permute_modes(lms, Q, U, V, perm):
+    """Reorder one detector's packed mode axis so column k becomes old ``perm[k]``.
+
+    ``Q`` is (npts_full, K) -- mode on axis 1.  ``U`` and ``V`` are (K, K) and
+    carry the mode index on BOTH axes: they are contracted as
+    ``sum_ij Ybar_i Y_j U_ij``, so permuting only one axis pairs each mode's
+    coefficient with the other mode's harmonic and returns a wrong likelihood
+    with no error.  Both axes, or neither.
+    """
+    p = np.asarray(perm, dtype=np.intp)
+    return ([lms[i] for i in perm],
+            jnp.take(Q, p, axis=1),
+            jnp.take(jnp.take(U, p, axis=0), p, axis=1),
+            jnp.take(jnp.take(V, p, axis=0), p, axis=1))
+
+
 def _accumulate_unit(data, ra, dec, psi, incl, phiref, interp,
                      phase_marginalization, guard=0):
     """Network kappa and rho^2 at the *fiducial* distance (invDist == 1).
@@ -653,14 +710,18 @@ def _accumulate_unit(data, ra, dec, psi, incl, phiref, interp,
         V = dd["V"]
         K = len(lms)
 
+        if phase_marginalization:
+            # Canonicalize BEFORE Y is built, so the whole branch below stays the
+            # literal code it was: when the order is already canonical nothing is
+            # touched at all, and the working path is unchanged by construction.
+            perm = _phase_marg_permutation(lms)
+            if perm is not None:
+                lms, Q, U, V = _permute_modes(lms, Q, U, V, perm)
+
         F = compute_detamresponse(dd["response"], ra, dec, psi, gmst)
         Y = spherical_harmonics_vectorized(lms, incl, -phiref, l_max=dd["l_max"])
 
         if phase_marginalization:
-            if [tuple(x) for x in lms] != [(2, 2), (2, -2)]:
-                raise NotImplementedError(
-                    "phase marginalization currently requires modes "
-                    "[(2,2),(2,-2)]; got %r" % (lms,))
             Y = Y.at[:, 1].set(jnp.conj(Y[:, 1]))
             F_lm = jnp.stack([F, jnp.conj(F)], axis=-1)
             Q = jnp.concatenate([Q[:, 0:1], jnp.conj(Q[:, 1:2])], axis=1)

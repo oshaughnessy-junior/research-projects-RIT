@@ -248,6 +248,24 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         they are the gate on the fix (and on the
 #                                         collapse guard) not disturbing the regime
 #                                         where this estimator actually works.
+#   test_jax_phase_marg_mode_order.py 14  phase marginalization must accept EITHER
+#                                         packed order of the (2,+-2) pair.
+#                                         _accumulate_unit hardcoded column 0 = (2,2)
+#                                         and raised NotImplementedError otherwise --
+#                                         but the column order comes from a dict's
+#                                         iteration order in the precompute, not from
+#                                         the caller, so a correctly configured
+#                                         --phase-marginalization run died on valid,
+#                                         complete data.  U and V carry the mode index
+#                                         on BOTH axes, so a half-permutation is a
+#                                         silent wrong answer; one test asserts the
+#                                         fixture can SEE each single-axis mistake, or
+#                                         the equality tests would not gate it.  Two
+#                                         tests defend the ordering that already works
+#                                         by making _permute_modes fatal: the canonical
+#                                         order must take the untouched path, not an
+#                                         identity permutation.  Synthetic packed data,
+#                                         no frames, no PSDs, ~60 s.
 #   test_limit_distance_jax.py        21  --limit-distance on this arm: the distance
 #                                         QUADRATURE narrows while the prior keeps its
 #                                         [d_min,d_max] normalization.  Includes the
@@ -335,6 +353,26 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         honest phase-marginalized sky/psi export,
 #                                         K=14/K=88 independent guarded references,
 #                                         and executable baseline/banded support refusal.
+#   test_multipeak_planner.py          11  opt-in U,V,Q-guided four-axis multi-peak
+#                                         planner: exact symmetry expansion, strict
+#                                         stationary refinement, two-tier empirical
+#                                         convergence, overlap ownership and finite
+#                                         reserve.  CPU-only; no lal, cupy, or GPU
+#                                         required.  The file defines 15 tests; the four
+#                                         real-table oracle regressions need external
+#                                         validation packets that no fixture in this
+#                                         repository provides, so they are DESELECTED
+#                                         here -- see DESELECTED_TESTS -- and 11 are
+#                                         gated.
+#   test_jax_q_time_pregrid.py         19  opt-in reflected Q time pregrid on the JAX
+#                                         arm: factor-1 bit identity (same array object,
+#                                         positions bit-identical to the pre-pregrid
+#                                         expressions), the 2n-vs-2(n-1) reflection
+#                                         choice measured against an exact-period
+#                                         oracle, refined-grid position scaling, the
+#                                         fail-closed length/factor checks, 'nearest'
+#                                         refusal, and wrapper/driver forwarding.
+#                                         Synthetic fixtures; no lal frames, no GPU.
 
 FILES=(
   "${JAXDIR}/test_jax_time_quadrature.py"
@@ -368,6 +406,8 @@ FILES=(
   "${JAXDIR}/test_direct_marginalization_planner.py"
   "${JAXDIR}/test_time_first_peaklocal.py"
   "${JAXDIR}/test_is_proposal_jitter.py"
+  "${JAXDIR}/test_multipeak_planner.py"
+  "${JAXDIR}/test_jax_phase_marg_mode_order.py"
   "${JAXDIR}/test_jax_q_time_pregrid.py"
 )
 
@@ -377,6 +417,10 @@ FILES=(
 # this gate's own failure mode, one level up.
 DESELECTED_TESTS=(
   "${JAXDIR}/test_jax_stencil_parity.py::test_gpu_gather_parity_against_numpy_window"
+  "${JAXDIR}/test_multipeak_planner.py::test_hm_second_mode_survives_unsafe_proxy_gap"
+  "${JAXDIR}/test_multipeak_planner.py::test_hm_two_tier_integral_matches_overcomplete_oracle"
+  "${JAXDIR}/test_multipeak_planner.py::test_real_low_snr_declines_to_finite_reserve"
+  "${JAXDIR}/test_multipeak_planner.py::test_real_high_snr_two_tier_path_matches_overcomplete_oracle"
 )
 EXCLUDED=(
   # test_angle_marg_exact.py -- the angle-marginalization VALIDATION suite.
@@ -420,6 +464,25 @@ EXCLUDED=(
 #       The cupy leg of the sinc-stencil parity check.  It needs a real CUDA device;
 #       this job has none, so it self-skips.  It is a genuine gate on a GPU host --
 #       run it by hand there when touching Q_inner_product_sinc_cupy.
+#
+#   test_multipeak_planner.py::test_hm_second_mode_survives_unsafe_proxy_gap
+#   test_multipeak_planner.py::test_hm_two_tier_integral_matches_overcomplete_oracle
+#   test_multipeak_planner.py::test_real_low_snr_declines_to_finite_reserve
+#   test_multipeak_planner.py::test_real_high_snr_two_tier_path_matches_overcomplete_oracle
+#       The four real-table oracle regressions of the multi-peak planner.  Each is
+#       skipif-guarded on an external validation packet -- a saved (C_A, C_B) coefficient
+#       table from a real analysis -- and NOTHING in this repository or in the CI setup
+#       supplies one, so on this runner all four skip.  A skip is precisely what the
+#       post-run junit check below refuses, so leaving them selected would redden the
+#       gate on every PR while asserting nothing.  They cannot be made to run from a
+#       synthetic fixture either: they pin numbers measured on those tables (mode
+#       spacings, oracle log-integrals) to ~1e-8, which is a property of the real
+#       tables and not of any stand-in this repo could ship.
+#       The 11 remaining tests in that file are self-contained and stay gated; they
+#       carry the planner's structural coverage (symmetry expansion, strict stationary
+#       refinement, two-tier convergence, overlap ownership, reserve fallback).
+#       RUN THE FOUR BY HAND, with the packets present, when touching
+#       multipeak_planner.py, and record the numbers in the PR per records-protocol.
 DESELECT=()
 for t in "${DESELECTED_TESTS[@]}"; do DESELECT+=( --deselect "$t" ); done
 
@@ -534,6 +597,13 @@ fi
 # regression case).  The FILES array above takes the UNION of every side that has
 # touched it.
 #
+# The phase-marginalization mode-order branch then adds the 14 pins in
+# test_jax_phase_marg_mode_order.py.  Its number was NOT derived by adding 14 to the
+# constant above -- that shortcut is what the paragraphs below warn about.  It was read
+# off this job's own line after rebasing on rift_O4d: "collected 475 tests from 32
+# files", with the DESELECT loop applied (the script itself prints it, so there is no
+# way to run this and get the half-configured count).
+#
 # THIS BRANCH HAS NOW HIT THIS CONFLICT THREE TIMES, on three consecutive days, and
 # every one of its own numbers was read off a real collection run when written:
 #
@@ -548,9 +618,25 @@ fi
 # tests landed later, 424+27 = 451, 432+29 = 461).  That is exactly what makes it an
 # unreliable shortcut rather than a safe one: it is nearly always right, so the once it
 # is wrong there is no habit of checking left to catch it.  The number below is READ
-# OFF this job's own collection line after this merge: 480/481 collected, 1 deselected,
-# 32 files.  (461/462 from 31 files before the Q pregrid file was registered.)
-EXPECTED_TESTS=480
+# OFF this job's own collection line after the #227 merge: 461/462 collected,
+# 1 deselected, 31 files. PR #270 adds 15 multipeak tests but deselects the four
+# real-table regressions whose external packets CI does not provide.  The merged
+# gate therefore adds 11 self-contained tests.  Confirmed from the merged
+# collection: 472/477 collected, 5 deselected, 32 files.
+#
+# The phase-marginalization mode-order merge added the 14 pins in
+# test_jax_phase_marg_mode_order.py on top of #270, and hit the same conflict a
+# fourth time: each side of it carried a number the other side had already
+# invalidated (475 vs 472).  Read off the job's own line then: 486 from 33 files.
+#
+# FIFTH time, on the Q time-pregrid branch (this merge).  Both sides were stale
+# again -- 480 on the branch, 486 on rift_O4d -- for the same reason, and the
+# resolution is again a MEASUREMENT, not the sum.  Read off this job's own line
+# after resolving, DESELECT loop applied, on the merged tree:
+# "collected 505 tests from 34 files".  The arithmetic (486 + the 19 in
+# test_jax_q_time_pregrid.py) agrees, and is again not where the number came
+# from.
+EXPECTED_TESTS=505
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
