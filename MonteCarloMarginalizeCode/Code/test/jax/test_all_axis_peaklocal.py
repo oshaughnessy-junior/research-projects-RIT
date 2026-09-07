@@ -208,6 +208,152 @@ def test_joint_start_capacity_declines_instead_of_silent_truncation():
     assert not plan.capacity_ok
 
 
+def test_device_joint_start_portfolio_is_fixed_shape_jittable_and_vmappable():
+    C_A, C_B, _ = _problem(33)
+
+    def rank(table):
+        return AAP.rank_joint_starts_from_uvq_device(
+            table, C_B, 0.2, 7.0, max_starts=8,
+            angular_oversample=2)
+
+    low = jax.jit(rank)(jnp.asarray(C_A))
+    high = jax.jit(rank)(jnp.asarray(64.0 * C_A))
+    assert low.starts.shape == high.starts.shape == (8, 4)
+    assert int(low.n_phi_lattice) == int(high.n_phi_lattice) == 17
+    assert int(low.n_u_lattice) == int(high.n_u_lattice) == 9
+    assert int(low.n_lattice_evaluations) == 17 * 9 * 33
+    assert int(high.n_lattice_evaluations) == 17 * 9 * 33
+    assert bool(low.norm_nonnegative) and bool(high.norm_nonnegative)
+    assert bool(low.capacity_ok) and bool(high.capacity_ok)
+    assert np.all(np.asarray(low.starts)[np.asarray(low.live), 3] >= 0.2)
+    assert np.all(np.asarray(high.starts)[np.asarray(high.live), 3] <= 7.0)
+
+    batch = jax.jit(jax.vmap(rank))(jnp.asarray(
+        np.stack((C_A, 1.01 * C_A))))
+    assert batch.starts.shape == (2, 8, 4)
+    np.testing.assert_array_equal(
+        np.asarray(batch.n_lattice_evaluations), [17 * 9 * 33] * 2)
+
+
+def test_device_joint_start_portfolio_fails_closed_on_capacity_and_norm():
+    C_A, C_B, _ = _problem(33)
+    truncated = jax.jit(lambda table: AAP.rank_joint_starts_from_uvq_device(
+        table, C_B, 0.2, 7.0, max_starts=1))(jnp.asarray(C_A))
+    assert int(truncated.n_candidates_before_cap) > 1
+    assert not bool(truncated.capacity_ok)
+
+    invalid_norm = C_B.copy()
+    invalid_norm[0, 2] = -10.0
+    rejected = jax.jit(lambda table: AAP.rank_joint_starts_from_uvq_device(
+        C_A, table, 0.2, 7.0, max_starts=8))(jnp.asarray(invalid_norm))
+    assert not bool(rejected.norm_nonnegative)
+    assert not bool(rejected.capacity_ok)
+    assert not np.any(np.asarray(rejected.live))
+
+    combined = AAP.combine_device_start_plans(truncated, rejected)
+    assert combined.starts.shape == (9, 4)
+    assert not bool(combined.capacity_ok)
+    assert not bool(combined.norm_nonnegative)
+
+
+def test_device_mode_plan_refines_and_deduplicates_without_host_transfer():
+    C_A, C_B, _ = _problem(33)
+
+    @jax.jit
+    def build(table):
+        starts = AAP.rank_joint_starts_from_uvq_device(
+            table, C_B, 0.2, 7.0, max_starts=8)
+        return AAP.make_all_axis_mode_plan_device(
+            table, C_B, starts, 0.2, 7.0, max_modes=4,
+            local_radius=3.0, iterations=14,
+            time_reconstruction_certified=True)
+
+    plan, ledger = build(jnp.asarray(C_A))
+    assert plan.centers.shape == (4, 4)
+    assert plan.local_transforms.shape == (4, 4, 4)
+    assert int(ledger["n_optimizer_starts"]) >= 2
+    assert int(ledger["n_selected_modes"]) == 2
+    assert int(jnp.count_nonzero(plan.live)) == 2
+    assert bool(ledger["discovery_capacity_ok"])
+    assert not bool(ledger["selection_overflow"])
+    assert not bool(ledger["global_completeness_certified"])
+    assert not bool(ledger["derivative_warrant_certified"])
+    assert bool(plan.time_reconstruction_certified)
+    live_transforms = np.asarray(plan.local_transforms)[np.asarray(plan.live)]
+    assert np.all(np.diagonal(live_transforms, axis1=1, axis2=2) > 0.0)
+
+    plans, ledgers = jax.jit(jax.vmap(build))(jnp.asarray(
+        np.stack((C_A, 1.01 * C_A))))
+    assert plans.centers.shape == (2, 4, 4)
+    assert ledgers["n_selected_modes"].shape == (2,)
+    assert np.all(np.asarray(ledgers["discovery_capacity_ok"]))
+
+    @jax.jit
+    def overflow(table):
+        starts = AAP.rank_joint_starts_from_uvq_device(
+            table, C_B, 0.2, 7.0, max_starts=8)
+        return AAP.make_all_axis_mode_plan_device(
+            table, C_B, starts, 0.2, 7.0, max_modes=1,
+            local_radius=3.0, iterations=14,
+            time_reconstruction_certified=True)
+
+    overflow_plan, overflow_ledger = overflow(jnp.asarray(C_A))
+    assert int(jnp.count_nonzero(overflow_plan.live)) == 1
+    assert bool(overflow_ledger["selection_overflow"])
+    assert not bool(overflow_ledger["discovery_capacity_ok"])
+    assert not bool(overflow_plan.discovery_capacity_ok)
+
+
+def test_device_plans_compose_with_empirical_local_controller_under_vmap():
+    C_A, C_B, _ = _problem(33)
+
+    def evaluate(table):
+        base_starts = AAP.rank_joint_starts_from_uvq_device(
+            table, C_B, 0.2, 7.0, max_starts=8,
+            angular_oversample=1)
+        extra_starts = AAP.rank_joint_starts_from_uvq_device(
+            table, C_B, 0.2, 7.0, max_starts=8,
+            angular_oversample=2)
+        enriched_starts = AAP.combine_device_start_plans(
+            base_starts, extra_starts)
+        base_plan, base_planning = AAP.make_all_axis_mode_plan_device(
+            table, C_B, base_starts, 0.2, 7.0, max_modes=4,
+            local_radius=3.0, iterations=14,
+            time_reconstruction_certified=True)
+        enriched_plan, enriched_planning = AAP.make_all_axis_mode_plan_device(
+            table, C_B, enriched_starts, 0.2, 7.0, max_modes=8,
+            local_radius=3.0, iterations=14,
+            time_reconstruction_certified=True)
+        # Plans are row-local control data.  Until derivative parity is
+        # established, outer differentiation must not interpret the discrete
+        # rank/dedup decisions as a full-marginal derivative certificate.
+        base_plan = jax.tree.map(jax.lax.stop_gradient, base_plan)
+        enriched_plan = jax.tree.map(jax.lax.stop_gradient, enriched_plan)
+        value, accepted, ledger = AAP.empirical_enrichment_marginalize(
+            table, C_B, base_plan, enriched_plan, 0.2, 7.0,
+            base_order=7, base_check_order=9,
+            enriched_order=9, enriched_check_order=11,
+            convergence_tol_nats=1.0e-3)
+        return value, accepted, ledger, base_planning, enriched_planning
+
+    value, accepted, ledger, base_planning, enriched_planning = (
+        jax.jit(evaluate)(jnp.asarray(C_A)))
+    assert np.isfinite(float(value))
+    assert bool(accepted)
+    assert not bool(ledger["fallback_required"])
+    assert bool(ledger["mode_nesting_ok"])
+    assert int(base_planning["n_selected_modes"]) == 2
+    assert int(enriched_planning["n_selected_modes"]) == 2
+    assert int(enriched_planning["n_lattice_evaluations"]) == (
+        9 * 9 * 33 + 17 * 9 * 33)
+
+    batch = jax.jit(jax.vmap(evaluate))(jnp.asarray(
+        np.stack((C_A, 1.01 * C_A))))
+    assert batch[0].shape == batch[1].shape == (2,)
+    assert np.all(np.isfinite(np.asarray(batch[0])))
+    assert np.all(np.asarray(batch[1]))
+
+
 def test_exact_coefficient_symmetry_completes_quadrupole_orbit():
     C_A = np.zeros((3, 3, 9), dtype=np.complex128)
     C_A[2, 0] = 1.0
@@ -221,6 +367,13 @@ def test_exact_coefficient_symmetry_completes_quadrupole_orbit():
     assert shifts.shape == (4, 2)
     for shift in want:
         assert np.min(np.linalg.norm(shifts - shift, axis=1)) < 1.0e-12
+
+    device_shifts, device_live = jax.jit(
+        AAP._exact_angular_translation_symmetries_device)(C_A, C_B)
+    device_shifts = np.asarray(device_shifts)[np.asarray(device_live)]
+    assert device_shifts.shape == (4, 2)
+    for shift in want:
+        assert np.min(np.linalg.norm(device_shifts - shift, axis=1)) < 1.0e-12
 
 
 def test_mode_stationarity_uses_curvature_scaled_displacement_at_high_snr():

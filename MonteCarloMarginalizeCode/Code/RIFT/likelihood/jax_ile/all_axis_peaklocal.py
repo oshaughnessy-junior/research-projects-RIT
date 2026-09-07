@@ -49,14 +49,18 @@ __all__ = [
     "AllAxisModePlan",
     "UVHarmonicSummary",
     "JointStartPlan",
+    "DeviceJointStartPlan",
     "summarize_uv_norm_table",
     "rank_time_starts_from_uv",
     "rank_joint_starts_from_uvq",
+    "rank_joint_starts_from_uvq_device",
+    "combine_device_start_plans",
     "algebraic_angle_starts_from_uv",
     "refine_all_axis_starts",
     "select_refined_modes",
     "mode_local_geometry",
     "make_all_axis_mode_plan",
+    "make_all_axis_mode_plan_device",
     "all_axis_peak_local_marginalize",
     "empirical_enrichment_marginalize",
     "empirical_enrichment_with_exact_reserve",
@@ -142,6 +146,31 @@ class JointStartPlan(NamedTuple):
     n_exact_symmetry_shifts: int
     n_candidates_before_cap: int
     capacity_ok: bool
+
+
+class DeviceJointStartPlan(NamedTuple):
+    """Fixed-capacity U,V/Q basin portfolio produced inside JAX.
+
+    Unlike :class:`JointStartPlan`, every array has a static leading dimension
+    and can therefore cross ``jit`` and ``vmap`` boundaries.  The angular
+    lattice is fixed by the finite harmonic degrees, not by SNR; it is a cheap
+    basin-placement device, not an integration grid or completeness proof.
+    ``capacity_ok`` is false whenever more local lattice maxima exist than fit
+    in ``starts``.  Such a row must enrich or execute the exact reserve.
+    """
+
+    starts: jax.Array
+    scores: jax.Array
+    live: jax.Array
+    n_lattice_candidates_before_symmetry: jax.Array
+    n_candidates_before_cap: jax.Array
+    capacity_ok: jax.Array
+    n_phi_lattice: jax.Array
+    n_u_lattice: jax.Array
+    n_time_lattice: jax.Array
+    n_lattice_evaluations: jax.Array
+    norm_nonnegative: jax.Array
+    n_exact_symmetry_shifts: jax.Array
 
 
 def _kp_weights_numpy(n):
@@ -438,6 +467,239 @@ def rank_joint_starts_from_uvq(
         np.asarray(time_starts, dtype=np.int32), time_profile,
         int(n_phi), int(n_u), int(n_phi * n_u * n_time),
         int(len(shifts)), int(n_candidates), bool(capacity_ok))
+
+
+def _harmonic_lattice_device(table, n_phi, n_u):
+    """JAX counterpart of :func:`_harmonic_lattice` for fixed-shape plans."""
+    table = jnp.asarray(table, dtype=jnp.complex128)
+    kp = jnp.arange(table.shape[0], dtype=jnp.float64)
+    ks = jnp.arange(-(table.shape[1] - 1) // 2,
+                    (table.shape[1] - 1) // 2 + 1, dtype=jnp.float64)
+    weight = jnp.where(kp == 0.0, 1.0, 2.0)
+    phi = (2.0 * jnp.pi / float(n_phi)
+           * jnp.arange(int(n_phi), dtype=jnp.float64))
+    u = (2.0 * jnp.pi / float(n_u)
+         * jnp.arange(int(n_u), dtype=jnp.float64))
+    ep = weight[None, :] * jnp.exp(1j * phi[:, None] * kp[None, :])
+    eu = jnp.exp(1j * u[:, None] * ks[None, :])
+    if table.ndim == 2:
+        field = jnp.einsum("pk,uq,kq->pu", ep, eu, table).real
+    elif table.ndim == 3:
+        field = jnp.einsum("pk,uq,kqt->put", ep, eu, table).real
+    else:
+        raise ValueError("harmonic table must have shape (KP,2KS+1[,Ntime])")
+    return phi, u, field
+
+
+def _distance_profile_device(A, B, x_min, x_max):
+    """JAX support-aware distance maximum used only to rank basins."""
+    A = jnp.asarray(A, dtype=jnp.float64)
+    B = jnp.asarray(B, dtype=jnp.float64)
+    B_safe = jnp.maximum(B, 0.0)
+    x0 = jnp.full_like(A, float(x_min))
+    x1 = jnp.full_like(A, float(x_max))
+
+    def value(x):
+        return x * A - 0.5 * B_safe * x * x - 4.0 * jnp.log(x)
+
+    v0, v1 = value(x0), value(x1)
+    choose_hi = v1 > v0
+    best_x = jnp.where(choose_hi, x1, x0)
+    best_v = jnp.where(choose_hi, v1, v0)
+    discriminant = A * A - 16.0 * B_safe
+    valid = (B_safe > 0.0) & (discriminant >= 0.0)
+    root = ((A + jnp.sqrt(jnp.maximum(discriminant, 0.0)))
+            / jnp.where(B_safe > 0.0, 2.0 * B_safe, 1.0))
+    valid &= (root >= float(x_min)) & (root <= float(x_max))
+    root_safe = jnp.where(valid, root, x0)
+    root_value = value(root_safe)
+    improve = valid & (root_value > best_v)
+    return (jnp.where(improve, root_value, best_v),
+            jnp.where(improve, root_safe, best_x))
+
+
+def _exact_angular_translation_symmetries_device(
+        C_A_t, C_B, *, rtol=1.0e-10):
+    """Return a fixed grid of coefficient-certified translations and a mask."""
+    C_A_t = jnp.asarray(C_A_t, dtype=jnp.complex128)
+    C_B = jnp.asarray(C_B, dtype=jnp.complex128)
+    k_phi = max(C_A_t.shape[0] - 1, C_B.shape[0] - 1)
+    k_u = max((C_A_t.shape[1] - 1) // 2,
+              (C_B.shape[1] - 1) // 2)
+    n_phi = max(1, 2 * k_phi)
+    n_u = max(1, 2 * k_u)
+    dphi = (2.0 * jnp.pi / float(n_phi)
+            * jnp.arange(n_phi, dtype=jnp.float64))
+    du = (2.0 * jnp.pi / float(n_u)
+          * jnp.arange(n_u, dtype=jnp.float64))
+    DPHI, DU = jnp.meshgrid(dphi, du, indexing="ij")
+    shifts = jnp.stack((DPHI.reshape(-1), DU.reshape(-1)), axis=1)
+
+    def invariant(table):
+        kp = jnp.arange(table.shape[0], dtype=jnp.float64)
+        ks = jnp.arange(-(table.shape[1] - 1) // 2,
+                        (table.shape[1] - 1) // 2 + 1,
+                        dtype=jnp.float64)
+        phase = jnp.exp(1j * (
+            shifts[:, 0, None, None] * kp[None, :, None]
+            + shifts[:, 1, None, None] * ks[None, None, :]))
+        if table.ndim == 3:
+            residual = jnp.max(jnp.abs(
+                table[None, ...] * (phase[..., None] - 1.0)), axis=(1, 2, 3))
+        else:
+            residual = jnp.max(jnp.abs(
+                table[None, ...] * (phase - 1.0)), axis=(1, 2))
+        scale = jnp.maximum(1.0, jnp.max(jnp.abs(table)))
+        return residual <= float(rtol) * scale
+
+    live = invariant(C_A_t) & invariant(C_B)
+    return shifts, live
+
+
+def rank_joint_starts_from_uvq_device(
+        C_A_t, C_B, x_min, x_max, *, time_guard=0, max_starts=32,
+        angular_oversample=2, norm_rtol=1.0e-9,
+        symmetry_rtol=1.0e-10):
+    """Rank a static U,V/Q basin portfolio inside ``jit``/``vmap``.
+
+    The finite harmonic orders determine a small ``(phi_ref, 2*psi)`` lattice.
+    At each lattice/time point the distance coordinate is profiled analytically;
+    only joint angular maxima at time-profile maxima become optimizer starts.
+    This is deliberately the device analogue of
+    :func:`rank_joint_starts_from_uvq`, with a fixed padded result rather than a
+    variable host list.  It performs no likelihood-drop pruning and never claims
+    completeness.  Capacity overflow or a negative reconstructed norm is
+    explicit and must force enrichment/reserve downstream.
+    """
+    C_A_t = jnp.asarray(C_A_t, dtype=jnp.complex128)
+    C_B = jnp.asarray(C_B, dtype=jnp.complex128)
+    _validate_tables(C_A_t, C_B)
+    if not (0.0 < float(x_min) < float(x_max)):
+        raise ValueError("need 0 < x_min < x_max")
+    time_guard = int(time_guard)
+    n_time = C_A_t.shape[-1] - 2 * time_guard
+    if time_guard < 0 or n_time < 2:
+        raise ValueError("time_guard must leave at least two target samples")
+    max_starts = int(max_starts)
+    angular_oversample = int(angular_oversample)
+    if max_starts < 1 or angular_oversample < 1:
+        raise ValueError("start capacity and angular oversampling must be positive")
+    if not np.isfinite(float(norm_rtol)) or float(norm_rtol) < 0.0:
+        raise ValueError("norm_rtol must be finite and non-negative")
+    if not np.isfinite(float(symmetry_rtol)) or float(symmetry_rtol) < 0.0:
+        raise ValueError("symmetry_rtol must be finite and non-negative")
+    target = (C_A_t if time_guard == 0
+              else C_A_t[..., time_guard:-time_guard])
+    k_phi = max(C_A_t.shape[0] - 1, C_B.shape[0] - 1)
+    k_u = max((C_A_t.shape[1] - 1) // 2,
+              (C_B.shape[1] - 1) // 2)
+    n_phi = max(9, 2 * angular_oversample * k_phi + 1)
+    n_u = max(9, 2 * angular_oversample * k_u + 1)
+    n_lattice = n_phi * n_u * n_time
+    if max_starts > n_lattice:
+        raise ValueError("max_starts exceeds the structural lattice size")
+
+    phi, u, A = _harmonic_lattice_device(target, n_phi, n_u)
+    _, _, B = _harmonic_lattice_device(C_B, n_phi, n_u)
+    profile, x_best = _distance_profile_device(
+        A, B[..., None], float(x_min), float(x_max))
+    b_scale = jnp.maximum(1.0, jnp.max(jnp.abs(B)))
+    norm_nonnegative = jnp.min(B) >= -float(norm_rtol) * b_scale
+
+    # The structural time profile identifies basins without resolving their
+    # SNR-narrow interior.  The continuous refiner performs that second job.
+    time_profile = jnp.max(profile, axis=(0, 1))
+    time_left = jnp.concatenate((jnp.asarray([-jnp.inf]), time_profile[:-1]))
+    time_right = jnp.concatenate((time_profile[1:], jnp.asarray([-jnp.inf])))
+    time_peak = (time_profile >= time_left) & (time_profile >= time_right)
+    angular_peak = jnp.ones(profile.shape, dtype=bool)
+    for dphi in (-1, 0, 1):
+        for du in (-1, 0, 1):
+            if dphi or du:
+                angular_peak &= profile >= jnp.roll(
+                    jnp.roll(profile, dphi, axis=0), du, axis=1)
+    candidate = angular_peak & time_peak[None, None, :] & norm_nonnegative
+    n_lattice_candidates = jnp.count_nonzero(candidate)
+    ranked = jnp.where(candidate, profile, -jnp.inf).reshape(-1)
+    scores, flat = jax.lax.top_k(ranked, max_starts)
+    live = jnp.isfinite(scores)
+    time_index = flat % n_time
+    angular_flat = flat // n_time
+    u_index = angular_flat % n_u
+    phi_index = angular_flat // n_u
+    representative_starts = jnp.stack((
+        time_index.astype(jnp.float64), phi[phi_index], u[u_index],
+        x_best.reshape(-1)[flat]), axis=1)
+    fallback = jnp.asarray([
+        0.5 * (n_time - 1.0), 0.0, 0.0,
+        0.5 * (float(x_min) + float(x_max))])
+    representative_starts = jnp.where(
+        live[:, None], representative_starts, fallback[None, :])
+
+    # Odd degree-sized targeting lattices need not contain an exact symmetry
+    # translate of their best representative.  Complete its orbit from the
+    # coefficients themselves; otherwise base and enrichment can agree on the
+    # same one-quarter quadrupole cover.  The fixed expansion is small
+    # (<=64 shifts through m_max=4), and overflow remains an explicit decline.
+    shifts, shift_live = _exact_angular_translation_symmetries_device(
+        target, C_B, rtol=float(symmetry_rtol))
+    expanded = jnp.broadcast_to(
+        representative_starts[:, None, :],
+        (max_starts, shifts.shape[0], 4))
+    expanded = expanded.at[..., 1:3].set(jnp.mod(
+        expanded[..., 1:3] + shifts[None, :, :], 2.0 * jnp.pi))
+    expanded_live = live[:, None] & shift_live[None, :]
+    expanded_scores = jnp.where(
+        expanded_live, scores[:, None], -jnp.inf).reshape(-1)
+    final_scores, final_index = jax.lax.top_k(
+        expanded_scores, max_starts)
+    starts = expanded.reshape((-1, 4))[final_index]
+    live = jnp.isfinite(final_scores)
+    starts = jnp.where(live[:, None], starts, fallback[None, :])
+    n_symmetry = jnp.count_nonzero(shift_live)
+    n_candidates = n_lattice_candidates * n_symmetry
+    return DeviceJointStartPlan(
+        starts, final_scores, live, n_lattice_candidates, n_candidates,
+        norm_nonnegative & (n_candidates <= max_starts),
+        jnp.asarray(n_phi), jnp.asarray(n_u), jnp.asarray(n_time),
+        jnp.asarray(n_lattice), norm_nonnegative, n_symmetry)
+
+
+def combine_device_start_plans(base, extra):
+    """Form a stronger fixed portfolio that contains every base start.
+
+    Duplicates are intentionally retained here and removed only after continuous
+    refinement, where basin identity is meaningful.  This construction makes
+    the empirical controller's nesting premise structural: the stronger pass
+    cannot silently omit a base optimizer start.  Either input overflow remains
+    a fail-closed capacity flag.
+    """
+    if not isinstance(base, DeviceJointStartPlan):
+        raise TypeError("base must be DeviceJointStartPlan")
+    if not isinstance(extra, DeviceJointStartPlan):
+        raise TypeError("extra must be DeviceJointStartPlan")
+    for name, plan in (("base", base), ("extra", extra)):
+        if (plan.starts.ndim != 2 or plan.starts.shape[1] != 4
+                or plan.scores.shape != (plan.starts.shape[0],)
+                or plan.live.shape != (plan.starts.shape[0],)):
+            raise ValueError("%s device start plan has inconsistent shapes" % name)
+    same_time_lattice = base.n_time_lattice == extra.n_time_lattice
+    starts = jnp.concatenate((base.starts, extra.starts), axis=0)
+    scores = jnp.concatenate((base.scores, extra.scores), axis=0)
+    live = jnp.concatenate((base.live, extra.live), axis=0)
+    return DeviceJointStartPlan(
+        starts, scores, live,
+        (base.n_lattice_candidates_before_symmetry
+         + extra.n_lattice_candidates_before_symmetry),
+        base.n_candidates_before_cap + extra.n_candidates_before_cap,
+        base.capacity_ok & extra.capacity_ok & same_time_lattice,
+        jnp.maximum(base.n_phi_lattice, extra.n_phi_lattice),
+        jnp.maximum(base.n_u_lattice, extra.n_u_lattice),
+        jnp.maximum(base.n_time_lattice, extra.n_time_lattice),
+        base.n_lattice_evaluations + extra.n_lattice_evaluations,
+        base.norm_nonnegative & extra.norm_nonnegative,
+        jnp.maximum(base.n_exact_symmetry_shifts,
+                    extra.n_exact_symmetry_shifts))
 
 
 def _numpy_angular_field(C, phi, u):
@@ -845,6 +1107,177 @@ def make_all_axis_mode_plan(centers, *, max_modes, local_transforms,
         jnp.asarray(bool(time_reconstruction_certified)),
         jnp.asarray(disjoint),
         jnp.asarray(bool(discovery_capacity_ok)))
+
+
+def _boxes_disjoint_device(centers, half_widths, live):
+    """Fixed-shape periodic counterpart of :func:`_boxes_disjoint`."""
+    delta = jnp.abs(centers[:, None, :] - centers[None, :, :])
+    angular = jnp.abs(jnp.mod(
+        centers[:, None, 1:3] - centers[None, :, 1:3] + jnp.pi,
+        2.0 * jnp.pi) - jnp.pi)
+    delta = delta.at[..., 1:3].set(angular)
+    separated = jnp.any(
+        delta >= half_widths[:, None, :] + half_widths[None, :, :],
+        axis=-1)
+    index = jnp.arange(centers.shape[0])
+    pair = ((index[:, None] > index[None, :])
+            & live[:, None] & live[None, :])
+    return jnp.all((~pair) | separated)
+
+
+def make_all_axis_mode_plan_device(
+        C_A_t, C_B, start_plan, x_min, x_max, *, max_modes,
+        local_radius=6.0, time_guard=0, iterations=12,
+        time_localize_iterations=32, ridge=1.0e-8,
+        max_step=(2.0, 0.5, 0.5, 0.25), gradient_tol=1.0e-6,
+        coordinate_tol=(0.25, 1.0e-4, 1.0e-4, 1.0e-5),
+        scaled_step_tol=None, eigenvalue_floor=1.0e-12,
+        time_reconstruction_certified=False):
+    """Refine and deduplicate a fixed-shape device start portfolio.
+
+    This is the per-row planning seam needed by nested JAX callers.  It never
+    transfers a tracer to NumPy: starts are refined, ranked, deduplicated, and
+    converted to Hessian-whitened local regions entirely on device.  Overflow
+    is recorded in ``discovery_capacity_ok`` rather than silently truncating a
+    mode set.  No outside-mass or derivative certificate is manufactured here;
+    callers must use empirical enrichment plus exact reserve, or supply a
+    separately derived certificate through a future API.
+    """
+    if not isinstance(start_plan, DeviceJointStartPlan):
+        raise TypeError("start_plan must be DeviceJointStartPlan")
+    if (start_plan.starts.ndim != 2 or start_plan.starts.shape[1] != 4
+            or start_plan.scores.shape != (start_plan.starts.shape[0],)
+            or start_plan.live.shape != (start_plan.starts.shape[0],)):
+        raise ValueError("device start plan has inconsistent shapes")
+    max_modes = int(max_modes)
+    if max_modes < 1 or max_modes > start_plan.starts.shape[0]:
+        raise ValueError("max_modes must fit inside the start capacity")
+    if not (float(local_radius) > 0.0):
+        raise ValueError("local_radius must be positive")
+    tolerance = jnp.asarray(coordinate_tol, dtype=jnp.float64)
+    if tolerance.shape != (4,) or np.any(np.asarray(coordinate_tol) <= 0.0):
+        raise ValueError("coordinate_tol must contain four positive values")
+    if scaled_step_tol is None:
+        scaled_step_tol = float(np.min(np.asarray(coordinate_tol)))
+    if float(scaled_step_tol) <= 0.0:
+        raise ValueError("scaled_step_tol must be positive")
+    if (not np.isfinite(float(eigenvalue_floor))
+            or float(eigenvalue_floor) <= 0.0):
+        raise ValueError("eigenvalue_floor must be finite and positive")
+
+    points, values, gradients, hessians, curvatures = refine_all_axis_starts(
+        C_A_t, C_B, start_plan.starts, x_min, x_max,
+        time_guard=int(time_guard), iterations=int(iterations), ridge=float(ridge),
+        max_step=max_step,
+        time_localize_iterations=int(time_localize_iterations))
+    gradient_norm = jnp.linalg.norm(gradients, axis=1)
+    min_curvature = jnp.min(curvatures, axis=1)
+    scaled_stationary = (
+        gradient_norm <= min_curvature * float(scaled_step_tol))
+    stationary = (
+        start_plan.live
+        & jnp.all(jnp.isfinite(points), axis=1)
+        & jnp.isfinite(values)
+        & jnp.all(jnp.isfinite(gradients), axis=1)
+        & ((gradient_norm <= float(gradient_tol)) | scaled_stationary)
+        & jnp.all(curvatures > float(eigenvalue_floor), axis=1))
+
+    fisher = -0.5 * (hessians + jnp.swapaxes(hessians, 1, 2))
+    # Never factor an invalid lane.  Padded/non-stationary starts still exist
+    # in the fixed shape and an indefinite inverse can emit NaNs that leak into
+    # outer AD even when that lane is later masked.  Identity is a finite
+    # tracing placeholder only; such a lane remains non-stationary.
+    safe_fisher = jnp.where(
+        stationary[:, None, None], fisher,
+        jnp.eye(4, dtype=jnp.float64)[None, :, :])
+    covariance = jnp.linalg.inv(safe_fisher)
+    transforms = jnp.linalg.cholesky(covariance)
+    geometry_finite = jnp.all(jnp.isfinite(transforms), axis=(1, 2))
+    stationary &= geometry_finite
+    order = jnp.argsort(jnp.where(stationary, values, -jnp.inf))[::-1]
+
+    n_time = C_A_t.shape[-1] - 2 * int(time_guard)
+    fallback_center = jnp.asarray([
+        0.5 * (n_time - 1.0), 0.0, 0.0,
+        0.5 * (float(x_min) + float(x_max))])
+    fallback_transform = jnp.diag(jnp.asarray([
+        1.0, 0.1, 0.1,
+        max(1.0e-12, 0.1 * (float(x_max) - float(x_min)))],
+        dtype=jnp.float64))
+    selected_centers = jnp.broadcast_to(
+        fallback_center, (max_modes, 4)).copy()
+    selected_transforms = jnp.broadcast_to(
+        fallback_transform, (max_modes, 4, 4)).copy()
+    selected_live = jnp.zeros(max_modes, dtype=bool)
+
+    def _select(index, state):
+        centers, local_transforms, live, n_unique, overflow = state
+        candidate_index = order[index]
+        candidate = points[candidate_index]
+        candidate_transform = transforms[candidate_index]
+        delta = jnp.abs(centers - candidate[None, :])
+        angular = jnp.abs(jnp.mod(
+            centers[:, 1:3] - candidate[None, 1:3] + jnp.pi,
+            2.0 * jnp.pi) - jnp.pi)
+        delta = delta.at[:, 1:3].set(angular)
+        duplicate = jnp.any(live & jnp.all(delta <= tolerance[None, :], axis=1))
+        unique = stationary[candidate_index] & (~duplicate)
+        has_room = n_unique < max_modes
+        add = unique & has_room
+        slot = jnp.minimum(n_unique, max_modes - 1)
+
+        def _write(payload):
+            old_centers, old_transforms, old_live = payload
+            return (old_centers.at[slot].set(candidate),
+                    old_transforms.at[slot].set(candidate_transform),
+                    old_live.at[slot].set(True))
+
+        centers, local_transforms, live = jax.lax.cond(
+            add, _write, lambda payload: payload,
+            (centers, local_transforms, live))
+        return (centers, local_transforms, live, n_unique + add,
+                overflow | (unique & (~has_room)))
+
+    (selected_centers, selected_transforms, selected_live,
+     n_selected, selection_overflow) = jax.lax.fori_loop(
+         0, start_plan.starts.shape[0], _select,
+         (selected_centers, selected_transforms, selected_live,
+          jnp.asarray(0, dtype=jnp.int32), jnp.asarray(False)))
+    half_widths = (float(local_radius)
+                   * jnp.sum(jnp.abs(selected_transforms), axis=2))
+    disjoint = _boxes_disjoint_device(
+        selected_centers, half_widths, selected_live)
+    discovery_capacity_ok = start_plan.capacity_ok & (~selection_overflow)
+    plan = AllAxisModePlan(
+        selected_centers, half_widths, selected_transforms,
+        jnp.asarray(float(local_radius)), selected_live,
+        jnp.asarray(jnp.inf), jnp.asarray(False), jnp.asarray(False),
+        jnp.asarray(bool(time_reconstruction_certified)), disjoint,
+        discovery_capacity_ok)
+    ledger = {
+        "n_optimizer_starts": jnp.count_nonzero(start_plan.live),
+        "n_refined_stationary": jnp.count_nonzero(stationary),
+        "n_selected_modes": n_selected,
+        "selection_overflow": selection_overflow,
+        "start_capacity_ok": start_plan.capacity_ok,
+        "discovery_capacity_ok": discovery_capacity_ok,
+        "norm_nonnegative": start_plan.norm_nonnegative,
+        "n_lattice_candidates_before_symmetry":
+            start_plan.n_lattice_candidates_before_symmetry,
+        "n_candidates_before_cap": start_plan.n_candidates_before_cap,
+        "n_exact_symmetry_shifts": start_plan.n_exact_symmetry_shifts,
+        "n_lattice_evaluations": start_plan.n_lattice_evaluations,
+        "n_phi_lattice": start_plan.n_phi_lattice,
+        "n_u_lattice": start_plan.n_u_lattice,
+        "n_time_lattice": start_plan.n_time_lattice,
+        "max_gradient_norm": jnp.max(jnp.where(
+            stationary, gradient_norm, -jnp.inf)),
+        "min_selected_curvature": jnp.min(jnp.where(
+            stationary, min_curvature, jnp.inf)),
+        "global_completeness_certified": jnp.asarray(False),
+        "derivative_warrant_certified": jnp.asarray(False),
+    }
+    return plan, ledger
 
 
 def _legendre_rule(order):
