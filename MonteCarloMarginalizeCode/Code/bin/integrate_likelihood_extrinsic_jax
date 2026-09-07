@@ -78,7 +78,10 @@ from RIFT.likelihood.jax_ile.samplers import regularize_cov as _regularize_cov
 # ONE definition, imported rather than re-typed: a second copy of the
 # "is this evidence trustworthy" rule is a copy that drifts.
 from RIFT.likelihood.jax_ile.samplers import _finalize_evidence
-from RIFT.likelihood.jax_ile.core import _GATHERERS as _JAX_GATHERERS, JAX_INTERP_DEFAULT
+from RIFT.likelihood.jax_ile.core import (_GATHERERS as _JAX_GATHERERS,
+                                          JAX_INTERP_DEFAULT,
+                                          TIME_QUAD_DEFAULT,
+                                          _TIME_QUAD_CHOICES)
 from RIFT.likelihood.jax_ile.anglemarg import (ANGLE_MARG_DEFAULT, ANGLE_MARG_LEGACY,
                                                ANGLE_MARG_CHOICES)
 _JAX_GATHERER_NAMES = tuple(_JAX_GATHERERS)
@@ -598,12 +601,29 @@ def build_parser():
                       "the box comfortably wider than the posterior.  Must lie "
                       "inside [--d-min,--d-max].")
     g.add_option("--phase-marginalization", action="store_true", default=False)
+    # choices= and default= are DERIVED from the library, never re-typed.  A
+    # hardcoded ("simpson","bandlimited") tuple here made 'log-hermite'
+    # unreachable from every command line, ini and sub file for the life of the
+    # option -- the rule existed, passed its unit tests, and could only be
+    # selected by a direct Python caller.  test_time_log_hermite_selectable.py
+    # pins the derivation so the same gap cannot reopen.
     g.add_option("--time-marginalization-quadrature", type="choice",
-                 choices=("simpson", "bandlimited"), default="simpson",
-                 help="Rule for the terminal time integral: historical fixed-grid "
-                      "Simpson or adaptive reflected-FFT interpolation followed "
-                      "by a converged trapezoid. No resolution knob is exposed; "
-                      "the factor is derived and rechecked from lnL(t).")
+                 choices=list(_TIME_QUAD_CHOICES), default=TIME_QUAD_DEFAULT,
+                 help="Rule for the terminal time integral: %s.  DEFAULT '%s', "
+                      "the historical fixed-grid Simpson rule, so existing "
+                      "command lines reproduce existing runs.  'bandlimited' is "
+                      "adaptive reflected-FFT interpolation followed by a "
+                      "converged trapezoid; no resolution knob is exposed, the "
+                      "factor is derived and rechecked from lnL(t).  It asserts "
+                      "band-limitedness of exp(lnL_t), which does NOT survive a "
+                      "nonlinear (distance/phase/polarization) marginalization, "
+                      "so it is REFUSED -- not silently downgraded -- on those "
+                      "endpoints.  'log-hermite' makes no band-limited claim: it "
+                      "interpolates lnL in LOG space and integrates exp of the "
+                      "interpolant per interval, so it is available exactly "
+                      "where Simpson is, INCLUDING the phase/polarization-"
+                      "marginalized endpoints where 'bandlimited' is refused."
+                      % ("|".join(_TIME_QUAD_CHOICES), TIME_QUAD_DEFAULT))
     g.add_option("--resample-time-marginalization", action="store_true",
                  default=False,
                  help="Conventional ILE option; currently unsupported by JAX ILE.")

@@ -45,7 +45,14 @@ marginalization, and **analytic distance marginalization**.
 ### Time quadrature
 
 All JAX likelihood wrappers accept the conventional ILE keyword
-`time_quadrature={"simpson","bandlimited"}`.  Simpson remains the default.
+`time_quadrature`, whose permitted values are `core._TIME_QUAD_CHOICES` =
+`{"simpson","bandlimited","log-hermite"}`, and
+`bin/integrate_likelihood_extrinsic_jax` derives its `--time-marginalization-quadrature`
+choices from that same tuple.  Simpson remains the default.
+`log-hermite` interpolates lnL in LOG space and integrates exp of the
+interpolant per interval; it claims no band-limitedness, so unlike
+`bandlimited` it is available on the nonlinear (distance / phase /
+polarization) marginalization endpoints.
 The opt-in `bandlimited` path is currently supported by
 `JAXExtrinsicLikelihood`, including analytic phase marginalization.  It forms
 the endpoint-nonduplicating even extension

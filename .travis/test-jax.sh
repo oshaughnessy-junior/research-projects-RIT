@@ -335,6 +335,30 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         honest phase-marginalized sky/psi export,
 #                                         K=14/K=88 independent guarded references,
 #                                         and executable baseline/banded support refusal.
+#   test_time_log_hermite.py          16  the log-space cubic-Hermite terminal time
+#                                         rule ITSELF: agreement with Simpson where
+#                                         Simpson is trustworthy, orders-better where
+#                                         it is not, quadratic reproduction including
+#                                         the boundary intervals, the non-finite
+#                                         table (mixed -inf falls back to Simpson),
+#                                         jit/vmap/grad and two exact identities.
+#   test_time_log_hermite_selectable.py
+#                                     20  the two SEAMS between a command line and
+#                                         that rule, both of which were broken while
+#                                         the file above was fully green: the driver
+#                                         re-typed its optparse choices as
+#                                         (simpson, bandlimited), so 'log-hermite'
+#                                         was unreachable from every command line;
+#                                         and the _time_marginalize_terminal branch
+#                                         was unbound -- `if False:` and a doubled
+#                                         deltaT both left the whole time-quadrature
+#                                         suite green.  Subprocess CLI acceptance for
+#                                         every member of _TIME_QUAD_CHOICES (NOT
+#                                         --help, which exits before validation),
+#                                         bitwise dispatch, and the phi_ref+psi
+#                                         marginalized endpoint where 'bandlimited'
+#                                         is refused and this rule is the only
+#                                         alternative to Simpson.
 
 FILES=(
   "${JAXDIR}/test_jax_time_quadrature.py"
@@ -368,6 +392,8 @@ FILES=(
   "${JAXDIR}/test_direct_marginalization_planner.py"
   "${JAXDIR}/test_time_first_peaklocal.py"
   "${JAXDIR}/test_is_proposal_jitter.py"
+  "${JAXDIR}/test_time_log_hermite.py"
+  "${JAXDIR}/test_time_log_hermite_selectable.py"
 )
 
 # EXCLUDED: files in JAXDIR matching test_*.py that are deliberately NOT gated.  The
@@ -527,29 +553,82 @@ fi
 # it counted the one test this job deselects.  That was a one-off setup bug, not a property
 # of the environment, and subtracting for it would under-promise by one -- which is the
 # failure direction this whole comment exists to warn about, because a low floor PASSES.
+# MERGE NOTE (this branch merged over rift_O4d at 432).  The base floor moved 424 -> 426
+# -> 428 -> 432 while this branch was open, all of it the joint-phi work in #264 and #265.
+# The log-hermite branch adds test_time_log_hermite.py, 13 tests, so the FILES roster goes
+# 30 -> 31 files.  The new floor is 445, READ OFF THIS SCRIPT'S OWN LINE after the merge --
+# it printed "collected 445 tests from 31 files" on CIT citlogin6 with ~/.cache/jaxci_venv
+# (jax 0.9.2, python 3.13, JAX_PLATFORMS=cpu, JAX_ENABLE_X64=1), the DESELECT loop applied.
+# It is NOT 432 + 13 done as arithmetic, and NOT this branch's pre-merge 437, which was
+# measured against a base that has since moved.  That the measurement happens to agree with
+# the arithmetic here is a coincidence of this merge, not a licence to skip the run.
+# The pre-merge value on this branch was 437, itself a correction of a first attempt at
+# 438: that 438 repeated the 311 mistake documented above exactly -- the local measurement
+# was taken without the DESELECT loop having run, so it counted
+# test_gpu_gather_parity_against_numpy_window and read the PRE-deselect 425 + 13.  A floor
+# measured before the deselect applies is one too high and reds a healthy collection.
+# Measure by RUNNING THIS SCRIPT and reading its own line -- never by pointing pytest at
+# FILES yourself, and never by adding to the previous number.
 #
-# The #227 IS-proposal branch then adds the 29 pins in test_is_proposal_jitter.py (27,
-# plus the two external review's P1 required: the Markov floor and the inflated-pilot
-# regression case).  The FILES array above takes the UNION of every side that has
-# touched it.
+# 445 -> 448.  The three review fixes to the log-hermite rule (mixed -inf rows fall back
+# to Simpson instead of returning NaN; three-point endpoint slopes; a bounded replacement
+# for a cubic fixture that was boundary-dominated) add three tests to
+# test_time_log_hermite.py: 13 -> 16.  The FILES roster is unchanged at 31 files.  READ
+# OFF THIS SCRIPT'S OWN LINE -- it printed "collected 448 tests from 31 files" on CIT
+# citlogin6 with ~/.cache/jaxci_venv (jax 0.9.2, python 3.13, JAX_PLATFORMS=cpu,
+# JAX_ENABLE_X64=1, JAX_COMPILATION_CACHE_DIR=""), the DESELECT loop applied, i.e. the
+# post-deselect number.  That it also equals 445 + 3 is a coincidence of this change, not
+# a licence to have done the arithmetic.
 #
-# THIS BRANCH HAS NOW HIT THIS CONFLICT THREE TIMES, on three consecutive days, and
-# every one of its own numbers was read off a real collection run when written:
+# 448 -> 468, and the FILES roster 31 -> 32.  test_time_log_hermite_selectable.py
+# adds 20 tests covering the two seams between a command line and the log-hermite
+# rule (the driver's optparse choices, and the _time_marginalize_terminal dispatch);
+# see the ledger entry above.  READ OFF THIS SCRIPT'S OWN LINE -- it printed
+# "collected 468 tests from 32 files" on CIT citlogin6 with ~/.cache/jaxci_venv
+# (jax 0.9.2, python 3.13, JAX_PLATFORMS=cpu, JAX_ENABLE_X64=1,
+# JAX_COMPILATION_CACHE_DIR=""), the DESELECT loop applied, i.e. the post-deselect
+# number.  That it also equals 448 + 20 is, for the third change running, a
+# coincidence -- and the run is still the only thing that establishes it.
 #
-#     2026-09-05  339   stale within a day        (main had moved 293 -> 312)
-#     2026-09-06  451   stale within a day        (main had moved 312 -> 424)
-#     2026-09-06  453   stale by the next merge   (main had moved 424 -> 432)
+# ---- MERGE 2026-09-06 (second merge of rift_O4d onto this branch) -------------------
+# rift_O4d moved again, and BOTH sides of this constant moved.  From base, quoting the
+# incoming ledger verbatim because its history is the point:
 #
-# So the constant does not go stale because someone was careless.  It goes stale
-# because rift_O4d moves faster than any single branch can hold a global count, and
-# that is a property of the counter, not of the people using it.  Note that the
-# arithmetic would have been RIGHT all three times (312+27 = 339 after the two review
-# tests landed later, 424+27 = 451, 432+29 = 461).  That is exactly what makes it an
-# unreliable shortcut rather than a safe one: it is nearly always right, so the once it
-# is wrong there is no habit of checking left to catch it.  The number below is READ
-# OFF this job's own collection line after this merge: 461/462 collected, 1 deselected,
-# 31 files.
-EXPECTED_TESTS=461
+#     The #227 IS-proposal branch then adds the 29 pins in test_is_proposal_jitter.py
+#     (27, plus the two external review's P1 required: the Markov floor and the
+#     inflated-pilot regression case).  The FILES array above takes the UNION of every
+#     side that has touched it.
+#
+#     THIS BRANCH HAS NOW HIT THIS CONFLICT THREE TIMES, on three consecutive days, and
+#     every one of its own numbers was read off a real collection run when written:
+#
+#         2026-09-05  339   stale within a day        (main had moved 293 -> 312)
+#         2026-09-06  451   stale within a day        (main had moved 312 -> 424)
+#         2026-09-06  453   stale by the next merge   (main had moved 424 -> 432)
+#
+#     So the constant does not go stale because someone was careless.  It goes stale
+#     because rift_O4d moves faster than any single branch can hold a global count, and
+#     that is a property of the counter, not of the people using it.  Note that the
+#     arithmetic would have been RIGHT all three times (312+27 = 339 after the two
+#     review tests landed later, 424+27 = 451, 432+29 = 461).  That is exactly what
+#     makes it an unreliable shortcut rather than a safe one: it is nearly always right,
+#     so the once it is wrong there is no habit of checking left to catch it.  The
+#     number below is READ OFF this job's own collection line after this merge:
+#     461/462 collected, 1 deselected, 31 files.
+#
+# So the two sides of this conflict were 468 (this branch, 32 files) and 461 (base, 31
+# files), and NEITHER is right after the merge: each was measured against a roster the
+# other side has since added to.  The merged FILES array is the UNION -- base's
+# test_is_proposal_jitter.py plus this branch's test_time_log_hermite.py and
+# test_time_log_hermite_selectable.py -- 33 files.  Do NOT resolve this by taking the
+# larger of the two, and do NOT add the deltas: 468 + 29 and 461 + 36 both happen to give
+# the right answer here, which is precisely the trap the ledger above documents.
+#
+# READ OFF THIS SCRIPT'S OWN LINE after this merge: it printed
+# "collected 497 tests from 33 files" on CIT citlogin6 with ~/.cache/jaxci_venv
+# (jax 0.9.2, python 3.13, JAX_PLATFORMS=cpu, JAX_ENABLE_X64=1,
+# JAX_COMPILATION_CACHE_DIR=""), the DESELECT loop applied, i.e. the post-deselect number.
+EXPECTED_TESTS=497
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
