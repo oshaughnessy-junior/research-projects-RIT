@@ -128,7 +128,8 @@ pytest_lane core-unit  "$CODE/test/test_worker_partition.py" \
                        "$CODE/test/test_ile_early_exit_order.py" \
                        "$CODE/test/test_pseudo_pipe_option_precedence.py" \
                        "$CODE/test/test_database.py" \
-                       "$CODE/test/test_eos_posterior_header.py"
+                       "$CODE/test/test_eos_posterior_header.py" \
+                       "$CODE/test/test_pesummary_publishes_both.py"
 pytest_lane lisa       "$CODE/test/test_lisa_driver_drift.py" \
                        "$CODE/test/test_lisa_pseudo_pipe_contract.py"
 pytest_lane calmarg    "$CODE/test/test_calmarg_calibration.py"

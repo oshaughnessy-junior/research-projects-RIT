@@ -88,6 +88,31 @@ FILES=(
   "$C/test/hyperpipe/tests/test_drivers.py"
   "$C/test/hyperpipe/tests/test_marg_list.py"
   "$C/test/test_hyperpipeline_io.py"
+  # -- hyperpipe pseudo-pipe builder (PR 181).  Every file below was run individually under a
+  # runner-like import environment on CIT (IGWN conda python with htcondor/asimov/pesummary
+  # blocked via a sys.meta_path finder, glue present -- pip lalsuite's closure carries
+  # lscsoft-glue) before being added, and the counts matched the unblocked CIT run file for
+  # file.  test_pesummary_publishes_both.py is deliberately NOT here: its module-level
+  # importorskip collects ZERO without pesummary, which the per-file floor below would read
+  # as a dead file -- it is rostered OPTDEP and covered by the hyperpipe gate sweep on CIT.
+  "$C/test/hyperpipe/tests/test_cit_execution_runner.py"
+  "$C/test/hyperpipe/tests/test_marg_contract.py"
+  "$C/test/hyperpipe/tests/test_osg_truncated_frames_helper.py"
+  "$C/test/hyperpipe/tests/test_terminal_contract.py"
+  "$C/test/hyperpipe/tests/test_worker_argument_staging.py"
+  "$C/test/test_cip_format_decision.py"
+  "$C/test/test_container_exe_paths.py"
+  "$C/test/test_convergence_exit_codes.py"
+  "$C/test/test_eos_posterior_header.py"
+  "$C/test/test_external_grid_fetch.py"
+  "$C/test/test_extrinsic_stage_shared.py"
+  "$C/test/test_grid_loader_parity.py"
+  "$C/test/test_hypercombine_formats.py"
+  "$C/test/test_hyperpipeline_grid_metadata.py"
+  "$C/test/test_ile_early_exit_order.py"
+  "$C/test/test_osg_cache_rewrite.py"
+  "$C/test/test_pseudo_pipe_option_precedence.py"
+  "$C/test/test_worker_partition.py"
   # -- promoted out of the roster after roster-verify-check caught its reason being false ON
   # THE RUNNER: it was OPTDEP needs:glue,htcondor, and with htcondor absent there it still
   # collected 15 and passed 15.  Confirmed locally with BOTH blocked via a sys.meta_path
@@ -122,7 +147,7 @@ done
 # 1.26.4, scipy 1.14.1, lal 7.7.0), whole manifest in one run: 319 collected,
 # 307 passed, 12 skipped (11 pytest.skip + 1 xfail).
 #
-# COST: 363 s total on CIT for the 347-test manifest, of which the pytest run is ~145 s.  The
+# COST: ~11 min total on CIT for the 556-test manifest (375 s pytest + the per-file loop), of which the pytest run is ~145 s.  The
 # rest is the per-file collection loop below -- one interpreter per manifest entry, each
 # importing RIFT (lal, numpy, numba), so it grows linearly with the manifest and now dominates.
 # That is the price of the exit-5 defence and it is worth paying, but it is why this job's
@@ -155,6 +180,14 @@ done
 #            nothing themselves (+43 s, with --as-test)
 #   +        + test_backends_lowlevel.py (OPTDEP needs:glue,htcondor until roster-verify-check
 #            found it passing 15/15 on a runner with htcondor absent)
+#   556/544  + the 18 hyperpipe pseudo-pipe builder suites (PR 181) at the rift_O4d merge,
+#            re-measured whole-manifest on CIT (IGWN conda python 3.11) 2026-09-07.  The same
+#            measurement caught test_advanced_parameter_ports.py failing 3 tests at the merge:
+#            its AST extraction anchored the ILE writer block on an ImportFrom, and the
+#            hyperpipe branch binds _hpio via a lazy loader instead -- extraction fragility,
+#            not a writer defect; the anchor now accepts both bindings.  Also the previous
+#            floors' second lesson repeated: the gate PASSED at 556/544 against floors still
+#            saying 347/335, i.e. green while under-floored, which is why this line exists.
 #
 # RAISE these when files are added: a floor left at the old value passes while covering less,
 # which is the failure this gate exists to catch.
@@ -169,12 +202,12 @@ done
 # direction that matters: 350 >= 347 passes today, and if pytest-subtests ever leaves the
 # runner's closure the count falls back to 347 and still passes.  Pinning 350 would turn an
 # unrelated dependency change into a red gate.
-EXPECTED_TESTS=347
+EXPECTED_TESTS=556
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 12 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
 # test_dslice_device_native, and the xfail in test_uv_symmetry.
-EXPECTED_PASSED=335
+EXPECTED_PASSED=544
 MAX_SKIPPED=12
 
 # The floors must be INTEGERS, and this is checked rather than assumed.  `[ 347 -lt FOO ]` does

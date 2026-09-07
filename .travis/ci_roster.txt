@@ -118,6 +118,7 @@ MonteCarloMarginalizeCode/Code/RIFT/interpolators/jax_gp/test_interpolators.py B
 # belongs to.  Their roster lines were deleted when #242 merged, exactly as the census
 # demanded ("listed as GPU but IS now reachable -- delete it").
 MonteCarloMarginalizeCode/Code/test/hyperpipe/tests/test_hydra_integration.py  OPTDEP  needs:hydra,omegaconf -- skips cleanly without them
+MonteCarloMarginalizeCode/Code/test/test_pesummary_publishes_both.py         OPTDEP  needs:pesummary -- module-level importorskip, so it collects ZERO on a runner without it and the core-units per-file floor would read that as a dead file; 5 tests pass on CIT (IGWN conda, 2026-09-07), where the hyperpipe gate sweep core-unit lane runs it
 MonteCarloMarginalizeCode/Code/test/test_gwsignal_teob_mode_sign.py            OPTDEP  needs:EOBRun_module -- the gwsignal TEOB route; 2 collected, 1 passes and 1 skips without it
 MonteCarloMarginalizeCode/Code/test/test_gwsignal_teob_near_aligned.py         OPTDEP  needs:EOBRun_module -- 1 collected, skips without it
 # test_rimsky_integration.py is the worked example of why OPTDEP entries must DECLARE their
