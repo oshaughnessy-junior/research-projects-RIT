@@ -214,11 +214,19 @@ col_lnL = 0
 dat_orig = dat = np.loadtxt(opts.fname)
 dat_orig = dat[dat[:,col_lnL].argsort()] # sort  http://stackoverflow.com/questions/2828059/sorting-arrays-in-numpy-by-column
 print(" Original data size = ", len(dat), dat.shape)
-dat_orig_names = None
-with open(opts.fname,'r') as f:
-    header_str = f.readline()
-    header_str = header_str.rstrip()
-dat_orig_names = header_str.replace('#','').split()[2:]
+# Column names come from the header, and the header is not always the FIRST
+# line: a hyperpipeline table opens with a magic marker, and a table written by
+# np.savetxt(header='# '+names) opens '# # lnL ...'.  Both shapes reach this
+# tool, and getting either wrong shifts every parameter to the wrong column.
+# The rule lives in RIFT.misc so this tool and the tracer cannot disagree
+# about it -- see read_column_names for why it is not simply "parse line one",
+# and for which other readers still do.
+from RIFT.misc.hyperpipeline_io import read_column_names as _read_column_names
+dat_orig_names = list(_read_column_names(opts.fname))[2:]
+if not dat_orig_names:
+    raise ValueError(
+        "the header of {} names lnL and sigma_lnL but no parameters."
+        .format(opts.fname))
 
 ###
 ### Parameters in use

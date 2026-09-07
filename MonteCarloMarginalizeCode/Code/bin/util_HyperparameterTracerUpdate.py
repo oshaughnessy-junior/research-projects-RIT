@@ -190,19 +190,55 @@ def _force_away_decimate(X_kept, X_pool, cov, threshold):
 # ----------------------- .dat <-> arrays ----------------------------------- #
 
 def _read_dat(path):
-    """Return (column_names, raw_rows ndarray)."""
-    with open(path) as f:
-        header = f.readline().rstrip("\n")
-    if not header.startswith("#"):
-        sys.exit(f"util_HyperparameterTracerUpdate: input {path!r} missing '#' header")
-    cols = header.lstrip("#").split()
+    """Return (column_names, raw_rows ndarray, format_preamble list).
+
+    The preamble is RETURNED, not stashed.  It was briefly a module-level
+    "most recently read" value, to avoid changing this two-tuple contract --
+    and that is a bug, not a shortcut: `main` reads the current grid, then
+    reads the PREVIOUS grid under --inj-file-prev, and only then writes.  The
+    write therefore reproduced the previous iteration's metadata.  Not merely
+    dropping the current settings: attaching different ones, and `ampO=0` is
+    exactly the leading-order-only value whose silent use made ILE generate
+    too few modes in the first place.  A value that says "most recent" is
+    wrong the moment there are two of anything.
+    """
+    # Same rule as every other reader of these tables.  This used to parse line
+    # one, so it aborted on a hyperpipeline table (magic marker) and on a
+    # np.savetxt('# '+names) table (leading '# #') -- and it consumes the same
+    # all.marg_net the posterior step does, in the same workflow, so the two
+    # disagreeing about the header shape broke one lane of a run the other
+    # completed.
+    from RIFT.misc.hyperpipeline_io import read_column_names
+    try:
+        cols = list(read_column_names(path))
+    except ValueError as exc:
+        sys.exit("util_HyperparameterTracerUpdate: {}".format(exc))
+    # Carry the format preamble through.  Routing this reader through the
+    # shared rule newly lets it CONSUME a hyperpipeline table, where before it
+    # refused one -- and a reader that consumes a format it cannot write turns
+    # a round trip into silent data loss: the magic marker and, worse, the
+    # RIFT_HYPERPIPELINE_META waveform settings would be dropped from the
+    # output.  Those settings exist because their absence made ILE generate
+    # templates from defaults.  So preserve every comment line ahead of the
+    # column header and hand it back to the writer.
+    _preamble = []
+    with open(path) as _fp:
+        for _raw in _fp:
+            _line = _raw.rstrip("\n")
+            if not _line.strip():
+                continue
+            if not _line.lstrip().startswith("#"):
+                break
+            if _line.replace("#", "").split()[:1] == ["lnL"]:
+                break
+            _preamble.append(_line)
     if len(cols) < 3 or cols[0] != "lnL" or cols[1] not in ("sigma_lnL", "sigma"):
         sys.exit(f"util_HyperparameterTracerUpdate: header must start with "
                  f"'lnL sigma_lnL ...', got {cols!r}")
     rows = np.loadtxt(path)
     if rows.ndim == 1:
         rows = rows[None, :]
-    return cols, rows
+    return cols, rows, _preamble
 
 
 def _extract_X(cols, rows, parameter_order):
@@ -210,7 +246,20 @@ def _extract_X(cols, rows, parameter_order):
     return rows[:, idx]
 
 
-def _write_dat(path, cols, rows):
+def _write_dat(path, cols, rows, preamble=()):
+    """Write the table, reproducing any format preamble the input carried.
+
+    `np.savetxt(header=...)` prefixes "# ", so the preamble lines are written
+    by hand and the column header left to savetxt, matching what the readers
+    expect: marker first, metadata next, column names last.
+    """
+    if preamble:
+        with open(path, "w") as handle:
+            for line in preamble:
+                handle.write(line + "\n")
+        with open(path, "a") as handle:
+            np.savetxt(handle, rows, header=" ".join(cols))
+        return
     np.savetxt(path, rows, header=" ".join(cols))
 
 
@@ -315,7 +364,7 @@ def main(argv=None):
     forward, inverse, in_names = _load_coord_plugin(opts)
     plugin_active = forward is not None
 
-    cols, rows = _read_dat(opts.inj_file)
+    cols, rows, preamble = _read_dat(opts.inj_file)
     if plugin_active:
         X = _extract_X_via_plugin(cols, rows, opts.parameter, forward, in_names)
     else:
@@ -352,7 +401,7 @@ def main(argv=None):
                 out_rows[:, cols.index(name)] = X_out[:, i]
         out_rows[:, 0] = 0.0
         out_rows[:, 1] = 0.0
-        _write_dat(opts.inj_file_out, cols, out_rows)
+        _write_dat(opts.inj_file_out, cols, out_rows, preamble)
         return
 
     # ---- tracer path --------------------------------------------------- #
@@ -366,7 +415,10 @@ def main(argv=None):
     fit_prev = None
 
     if opts.inj_file_prev is not None and os.path.exists(opts.inj_file_prev):
-        cols_p, rows_p = _read_dat(opts.inj_file_prev)
+        # The previous grid's preamble is deliberately discarded: the output
+        # describes the CURRENT grid, and binding the wrong waveform settings
+        # to it is worse than binding none.
+        cols_p, rows_p, _ = _read_dat(opts.inj_file_prev)
         if plugin_active:
             X_prev = _extract_X_via_plugin(cols_p, rows_p, opts.parameter, forward, in_names)
         else:
@@ -465,7 +517,7 @@ def main(argv=None):
             out_rows[:, cols.index(name)] = X_out[:, i]
     out_rows[:, 0] = 0.0
     out_rows[:, 1] = 0.0
-    _write_dat(opts.inj_file_out, cols, out_rows)
+    _write_dat(opts.inj_file_out, cols, out_rows, preamble)
 
 
 if __name__ == "__main__":

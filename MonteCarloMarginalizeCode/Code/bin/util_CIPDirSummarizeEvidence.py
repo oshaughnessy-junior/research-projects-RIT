@@ -33,8 +33,13 @@ def _read_scalar_record(fname, required_fields):
     return values
 
 
-def find_worker_annotations(cip_dir, cip_prefix=None):
+def find_worker_annotations(cip_dir, cip_prefix=None, annotation_glob=None):
     """Return annotations for exploded workers or one non-exploded CIP run."""
+    if annotation_glob is not None:
+        return sorted(
+            fname for fname in glob.glob(annotation_glob)
+            if "_withpriorchange+annotation.dat" not in fname
+        )
     if cip_prefix is not None:
         fname = cip_prefix + "+annotation.dat"
         return [fname] if os.path.isfile(fname) else []
@@ -42,9 +47,11 @@ def find_worker_annotations(cip_dir, cip_prefix=None):
     return sorted(glob.glob(pattern))
 
 
-def consolidate_cip_directory(cip_dir, strict=False, cip_prefix=None):
+def consolidate_cip_directory(cip_dir, strict=False, cip_prefix=None,
+                              annotation_glob=None):
     """Combine worker lnZ values using the established RIFT prescription."""
-    base_files = find_worker_annotations(cip_dir, cip_prefix=cip_prefix)
+    base_files = find_worker_annotations(
+        cip_dir, cip_prefix=cip_prefix, annotation_glob=annotation_glob)
     if not base_files:
         message = "No files for evidence in {}".format(cip_dir)
         if strict:
@@ -99,6 +106,10 @@ def main(argv=None):
     parser.add_argument("--cip-dir", required=True, help="CIP directory")
     parser.add_argument("--cip-prefix", default=None,
                         help="non-exploded CIP output prefix (without .dat)")
+    parser.add_argument(
+        "--annotation-glob", default=None,
+        help=("explicit worker-annotation glob; permits alternate pipeline "
+              "directory and output naming without changing the legacy CIP glob"))
     parser.add_argument("--output", default="evidence.out")
     parser.add_argument("--stream-output", action="store_true")
     parser.add_argument("--strict", action="store_true",
@@ -115,7 +126,8 @@ def main(argv=None):
 
     try:
         evidence = consolidate_cip_directory(
-            opts.cip_dir, strict=opts.strict, cip_prefix=opts.cip_prefix)
+            opts.cip_dir, strict=opts.strict, cip_prefix=opts.cip_prefix,
+            annotation_glob=opts.annotation_glob)
         if evidence is None:
             return 0
         legacy = np.array([[evidence["lnZ"], evidence["sigma_lnZ"]]])

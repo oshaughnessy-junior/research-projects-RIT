@@ -20,6 +20,8 @@ from RIFT.precision import RiftFloat
 
 import argparse
 import sys
+import os
+import importlib.util
 import numpy as np
 import numpy.lib.recfunctions
 import scipy
@@ -2098,7 +2100,16 @@ if opts.use_eccentricity:
 # downstream `for line in dat: line[col_lnL] ...` loop is unchanged.
 # Detection: env var RIFT_HYPERPIPELINE_FORMAT, else file-content sniff.
 # ----------------------------------------------------------------------
-from RIFT.misc import hyperpipeline_io as _hpio
+try:
+    from RIFT.misc import hyperpipeline_io as _hpio
+except ImportError:
+    _helper_path = os.path.join(os.getcwd(), "hyperpipeline_io.py")
+    if not os.path.isfile(_helper_path):
+        raise
+    _helper_spec = importlib.util.spec_from_file_location(
+        "rift_staged_hyperpipeline_io", _helper_path)
+    _hpio = importlib.util.module_from_spec(_helper_spec)
+    _helper_spec.loader.exec_module(_hpio)
 _use_hpip = _hpio.is_active() or _hpio.sniff(opts.fname)
 if _use_hpip:
     print(" Hyperpipeline ASCII input format detected for ", opts.fname)
@@ -3359,7 +3370,7 @@ if neff < opts.n_eff:
         # filled with 0 because these are posterior draws, not measurements;
         # ILE's --sim-grid reader ignores them via the lalsimutils.valid_params
         # intersection.
-        if _hpio.is_active():
+        if _use_hpip:
             _cols_out = _hpio.build_column_list(
                 use_eccentricity=opts.use_eccentricity, use_meanPerAno=opts.use_meanPerAno,
                 use_tides=opts.input_tides, use_eos_index=opts.input_eos_index,
@@ -3950,7 +3961,7 @@ np.savetxt(opts.fname_output_samples+"+annotation_export.dat", [[opts.n_output_s
 lnL_list = np.array(lnL_list,dtype=internal_dtype) + supplemental_ln_likelihood_offset
 # Hyperpipeline ASCII grid writer (opt-in via env var).  See note above the
 # earlier identical writer site -- same rationale.
-if _hpio.is_active():
+if _use_hpip:
     _cols_out = _hpio.build_column_list(
         use_eccentricity=opts.use_eccentricity, use_meanPerAno=opts.use_meanPerAno,
         use_tides=opts.input_tides, use_eos_index=opts.input_eos_index,

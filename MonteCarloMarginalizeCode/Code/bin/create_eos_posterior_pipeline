@@ -11,16 +11,13 @@
 #         Common format for input (with likelihoods) and output
 
 import argparse
+import json
+import re
+import subprocess
 import sys
 import os
 import shutil
 import numpy as np
-import RIFT.lalsimutils as lalsimutils
-import lalsimulation as lalsim
-import lal
-import functools
-import itertools
-import json
 
 # Backend-neutral pipeline namespace (htcondor/glue/slurm) provided by dag_utils_generic
 from RIFT.misc.dag_utils_generic import pipeline
@@ -28,6 +25,20 @@ from RIFT.misc.dag_utils_generic import pipeline
 import RIFT.misc.dag_utils_generic as dag_utils
 from RIFT.misc.dag_utils_generic import mkdir
 from RIFT.misc.dag_utils_generic import which
+from RIFT.hyperpipe.marg_contract import (
+    HYPERPIPE_V1,
+    INDEXED_GRID_V1,
+    load_marg_job_specs,
+)
+from RIFT.hyperpipe.terminal_contract import (
+    COMMAND_V1,
+    INDEXED_GRID_FANOUT_V1,
+    SUBWORKFLOW_V1,
+    load_terminal_stage_specs,
+)
+from RIFT.hyperpipe.execution_contract import (
+    apply_backend_commands, apply_portable_resources, commands_for_backend)
+from RIFT.misc.cip_pipeline import expand_argument_schedule
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--working-directory",default="./")
@@ -38,6 +49,8 @@ parser.add_argument("--marg-event-exe",default=None,help="filename of CIP or equ
 parser.add_argument("--marg-event-exe-list-file",default=None,help="filename of a file containing a LIST of exe ")
 parser.add_argument("--marg-event-args-list-file",default=None,help="filename of a file with one line of arguments per event.  ")
 parser.add_argument("--marg-event-nchunk-list-file",default=None,help="filename of a file with one number per event, indicating the chunk size of its marginalization job (how many points to evaluate per job).  Job must accept --using-eos-index and --n-events-to-analyze arguments, like ILE  ")
+parser.add_argument("--marg-job-spec-file", default=None,
+                    help="JSON array describing generic MARG protocols and execution settings. Overrides the legacy parallel args/exe/nchunk/event lists.")
 parser.add_argument("--request-memory-marg",default=16384,type=int,help="Memory request for condor (in Mb) for fitting jobs.")
 parser.add_argument("--puff-exe",default=None,help="similar to PUFF, but cannot be the same executable since format different")
 parser.add_argument("--puff-args",default=None,help=" argumetns")
@@ -49,8 +62,27 @@ parser.add_argument("--tracer-final-marg-iterations", type=int, default=1,
 parser.add_argument("--puff-input-source", default="posterior", choices=("posterior", "marg_net"),
                     help="Which file feeds the puff/tracer node. 'posterior' (default, legacy) reads grid-{k+1}.dat (EOS_POST posterior samples) and writes grid_puff-{k+1}.dat which MARG_PUFF then evaluates. 'marg_net' wires the puff/tracer node to consume all.marg_net (the cumulative ILE-evaluated (lambda, lnL, sigma) table) and write grid-{k+1}.dat directly, suppressing the MARG_PUFF lane entirely; use with --puff-exe util_*TracerUpdate.py.")
 parser.add_argument("--eos-post-args",default=None,help="filename of args_ile.txt file  which holds ILE arguments.  Should NOT conflict with arguments auto-set by this DAG ... in particular, i/o arguments will be modified")
+parser.add_argument("--eos-post-args-list", default=None,
+                    help="Grouped per-iteration posterior argument schedule using BasicIteration's integer-prefix format. Ordinary repeat groups and recursive Z convergence are supported; G groups fail explicitly.")
 parser.add_argument("--eos-post-exe",default=None,help="filename of ILE or equivalent executable. Will default to `which integrate_likelihood_extrinsic` in low-level code")
+parser.add_argument(
+    "--eos-post-transfer-executable", action="store_true",
+    help="Stage the selected posterior executable instead of using the container-installed basename")
+parser.add_argument(
+    "--eos-post-transfer-file", action="append", default=[],
+    help="Additional generic input required by a staged posterior executable; repeat as needed")
 parser.add_argument("--eos-post-retries",default=0,type=int,help="Number of retry attempts for ILE jobs. (These can fail)")
+parser.add_argument(
+    "--terminal-evidence", action="store_true",
+    help=("Add an independent L=1 posterior-stage run and strict terminal "
+          "prior-normalized evidence consolidation. Off by default for "
+          "backward compatibility with hyperpipe post executables that do "
+          "not emit CIP-style annotation files."))
+parser.add_argument(
+    "--terminal-stage-spec-file", default=None,
+    help=("Versioned JSON manifest of generic indexed-grid fan-out and "
+          "one-shot command stages to append after the iterative pipeline. "
+          "Off by default for legacy Hyperpipe compatibility."))
 parser.add_argument("--eos-post-explode-jobs",default=2,type=int,help="Number of MARG jobs to use in posterior generation.")
 parser.add_argument("--eos-post-explode-jobs-last",default=2,type=int,help="Number of MARG jobs to use in posterior generation on the final stage (if desired).")
 parser.add_argument("--test-args",default=None,help="filename of args_test.txt, which holds test arguments.  Note i/o arguments will be modified, so should NOT specify the samples files or the output file, just the test to be performed and any related arguments")
@@ -60,6 +92,8 @@ parser.add_argument("--general-request-disk",default="10M",type=str,help="Reques
 parser.add_argument("--transfer-file-list",default=None,help="File containing list of *input* filenames to transfer, one name per file. Copied into transfer_files for condor directly.  If provided, also enables attempts to deduce files that need to be transferred for the pipeline to operate, as needed for OSG, etc")
 parser.add_argument("--use-singularity",action='store_true',help="Attempts to use a singularity image in SINGULARITY_RIFT_IMAGE")
 parser.add_argument("--use-osg",action='store_true',help="Attempts to set up an OSG workflow.  Must submit from an osg allowed submit machine")
+parser.add_argument("--use-oauth-files", default=None,
+                    help="OAuth service name for transferred OSG inputs such as osdf containers")
 parser.add_argument("--use-singularity-local",action='store_true',help="Uses the singularity container even for local universe jobs. Note we are NOT doing file transfer, just starting an image")
 parser.add_argument('--n-samples-per-job',default=2000,type=int,help="Number of samples generated each iteration; also, number of marg jobs run each iteration. Should increase with dimension of problem")
 parser.add_argument('--neff-threshold',default=800,type=int,help="Number of samples generated each iteration")
@@ -67,6 +101,12 @@ parser.add_argument("--condor-local-nonworker",action='store_true',help="Uses lo
 parser.add_argument("--condor-local-nonworker-igwn-prefix",action='store_true', help="Adds some prefix text to start up cvmfs igwn environment, so local jobs have access to standard RIFT operators. Required for public OSG.")
 parser.add_argument("--condor-nogrid-nonworker",action='store_true',help="Uses local flocking for non-worker condor jobs. Important to run in non-NFS location, as other jobs don't have file transfer set up.")
 parser.add_argument('--n-iterations',default=3,type=int,help="Number of iterations to perform")
+parser.add_argument('--n-iterations-subdag-max', default=10, type=int,
+                    help="Maximum iterations in a Z convergence subworkflow")
+parser.add_argument('--jumpstart-marg-net', default=None,
+                    help="Internal: seed iteration zero from an existing all.marg_net and skip its MARG lane")
+parser.add_argument('--test-convergence-abort', action='store_true',
+                    help="Treat convergence-test exit 1 as successful early DAG completion")
 parser.add_argument("--start-iteration",default=0,type=int,help="starting iteration. If >0, does not copy over --input-grid. DOES rewrite sub files.  This allows you to change the arguments provided (e.g., use more iterations or settings at late times). Note this overwrites the .sub files ")
 parser.add_argument("--use-full-submit-paths",action='store_true',help="DAG created has full paths to submit files generated. Note this is implemented on a per-file/as-needed basis, mainly to facilitate using this dag as an external subdag")
 
@@ -74,6 +114,14 @@ opts=  parser.parse_args()
 print(opts)
 if not(opts.input_grid):
     raise Exception(" --input-grid FNAME required ")
+
+marg_job_specs = None
+if opts.marg_job_spec_file:
+    marg_job_specs = load_marg_job_specs(opts.marg_job_spec_file)
+terminal_stage_specs = []
+if opts.terminal_stage_spec_file:
+    terminal_stage_specs = load_terminal_stage_specs(
+        opts.terminal_stage_spec_file)
 
 main_worker_universe='vanilla'
 local_worker_universe="vanilla"
@@ -113,11 +161,23 @@ if opts.use_singularity:
 ### Event files : copy, give standard name (naming convention assumes CIP for now)
 ###
 
-indx=0
-for event in opts.event_file:
-    shutil.copyfile(event,opts.working_directory+"/event-{}.net".format(indx))  # put in working directory !
-    indx+=1
-n_events = len(opts.event_file)
+if marg_job_specs is not None:
+    for indx, spec in enumerate(marg_job_specs):
+        event_dest = opts.working_directory+"/event-{}.net".format(indx)
+        if spec.event_file:
+            shutil.copyfile(spec.event_file, event_dest)
+        else:
+            with open(event_dest, "w") as stream:
+                stream.write("empty_event_file\n")
+    n_events = len(marg_job_specs)
+else:
+    if not opts.event_file:
+        raise ValueError("at least one --event-file is required without --marg-job-spec-file")
+    indx=0
+    for event in opts.event_file:
+        shutil.copyfile(event,opts.working_directory+"/event-{}.net".format(indx))  # put in working directory !
+        indx+=1
+    n_events = len(opts.event_file)
 
 
 
@@ -129,7 +189,13 @@ n_events = len(opts.event_file)
 marg_event_args_list=None
 marg_event_exe_list=None
 marg_event_nchunk_list=None
-if opts.marg_event_args:
+if marg_job_specs is not None:
+    marg_event_args_list = [spec.args for spec in marg_job_specs]
+    marg_event_exe_list = [spec.exe for spec in marg_job_specs]
+    marg_event_nchunk_list = [spec.n_chunk for spec in marg_job_specs]
+    for indx, spec in enumerate(marg_job_specs):
+        print("MARG {} {} {} ".format(indx, spec.protocol, spec.exe), spec.args)
+elif opts.marg_event_args:
     with open(opts.marg_event_args) as f:
         marg_event_args_list = f.readlines()
     marg_event_args = ' '.join( [x.replace('\\','') for x in marg_event_args_list] )
@@ -165,7 +231,7 @@ elif opts.marg_event_args_list_file:
 
 marg_exe_master = None
 if opts.marg_event_exe:
-    marg_exe_master = "{}".format(marg_exe) # force clpy, so NOT BY REFERENCE
+    marg_exe_master = "{}".format(opts.marg_event_exe) # force copy, so NOT BY REFERENCE
 
 if opts.marg_event_args:
     with open('command-single.sh','w') as f:
@@ -219,8 +285,32 @@ if opts.test_args:
     print("CONVERGE", test_args)
 
     
-# Load args.txt. Remove first item.  Store
-if True: # not (opts.eos_post_args is None):
+# Load posterior-stage arguments. A grouped schedule is the compatibility
+# bridge for pseudo_pipe's args_cip_list.txt; the historical single args file
+# remains the default hyperpipe interface.
+if bool(opts.eos_post_args) == bool(opts.eos_post_args_list):
+    raise ValueError("set exactly one of --eos-post-args or --eos-post-args-list")
+if opts.eos_post_args_list:
+    with open(opts.eos_post_args_list) as f:
+        eos_post_schedule = expand_argument_schedule(
+            f.readlines(), opts.n_iterations, allow_special=True,
+            include_prefix=True)
+    unsupported_special = sorted({
+        prefix for prefix, _args in eos_post_schedule
+        if prefix.startswith("G")})
+    if unsupported_special:
+        raise ValueError(
+            "special CIP schedule prefixes {} are not supported by this "
+            "pipeline writer".format(", ".join(unsupported_special)))
+    eos_post_prefix_per_iteration = [
+        prefix for prefix, _args in eos_post_schedule]
+    eos_post_args_per_iteration = [
+        args for _prefix, args in eos_post_schedule]
+    eos_post_args_per_iteration = [
+        line.rstrip() + ' --no-plots ' for line in eos_post_args_per_iteration]
+    eos_post_args = eos_post_args_per_iteration[0]
+    print("EOS_POST schedule", len(eos_post_args_per_iteration), "iterations")
+else:
     with open(opts.eos_post_args) as f:
         eos_post_args_list = f.readlines()
     eos_post_args = ' '.join( [x.replace('\\','') for x in eos_post_args_list] )
@@ -231,16 +321,13 @@ if True: # not (opts.eos_post_args is None):
 #    eos_post_args = eos_post_args.replace('] ', ']\' ')
     eos_post_args=eos_post_args.rstrip()
     eos_post_args += ' --no-plots '  
+    eos_post_args_per_iteration = [eos_post_args] * opts.n_iterations
+    eos_post_prefix_per_iteration = ["1"] * opts.n_iterations
     print("EOS_POST", eos_post_args)
 
 eospost_exe = which('util_ConstructEOSPosterior.py')
 if opts.eos_post_exe:
     eospost_exe = "{}".format(opts.eos_post_exe) # force clpy, so NOT BY REFERENCE
-if opts.use_osg:
-    # Correctly use EOS_POST in container location
-    path_split = eospost_exe.split("/")
-    singularity_base_exe_path = os.environ['SINGULARITY_BASE_EXE_DIR']
-    eospost_exe =singularity_base_exe_path + path_split[-1]
 
 
 # Copy seed grid into place as grid-0.dat
@@ -248,7 +335,7 @@ it_start = opts.start_iteration
 n_initial = opts.n_samples_per_job
 if (it_start == 0):
     shutil.copyfile(opts.input_grid,"grid-0.dat")  # put in working directory !
-    n_initial = len(np.loadtxt("grid-0.dat"))
+    n_initial = np.loadtxt("grid-0.dat", ndmin=2).shape[0]
 
 transfer_file_names = []
 if not (opts.transfer_file_list is None):
@@ -267,6 +354,12 @@ transfer_file_names_post = list(transfer_file_names) + ['../all.marg_net'] # mak
 
 
 dag = pipeline.CondorDAG(log=os.getcwd())
+if str(os.environ.get("RIFT_HYPERPIPELINE_FORMAT", "")).strip().lower() in (
+        "1", "true", "yes", "on"):
+    # DAGMan, rather than this process, submits the worker jobs.  Make the
+    # protocol selector part of the workflow itself so all getenv-enabled
+    # stages retain the self-describing Hyperpipeline table contract.
+    dag.set_environment("RIFT_HYPERPIPELINE_FORMAT", "1")
 
 
 # Make directories for all iterations
@@ -275,7 +368,7 @@ for it_indx in np.arange(it_start,opts.n_iterations+1):
     cip_dir = opts.working_directory+"/iteration_"+str(it_indx)+"_post"
     consolidate_dir = opts.working_directory+"/iteration_"+str(it_indx)+"_con"
     mkdir(ile_dir); mkdir(ile_dir+"/logs")
-    for event_indx, _event in enumerate(opts.event_file):
+    for event_indx in range(n_events):
         mkdir(ile_dir + "/event_{}".format(event_indx))
     mkdir(cip_dir);  mkdir(cip_dir+"/logs")
     mkdir(consolidate_dir); mkdir(consolidate_dir+"/logs")
@@ -297,7 +390,112 @@ if opts.use_singularity or opts.use_osg:
 # ++++
 cip_job_list =[]
 cip_puff_job_list =[]
-if opts.marg_event_args:
+if marg_job_specs is not None:
+    for indx, spec in enumerate(marg_job_specs):
+        n_chunk_here = int(spec.n_chunk)
+        execution = spec.execution
+        use_osg_here = bool(execution.get("use_osg", opts.use_osg))
+        use_singularity_here = bool(execution.get("use_singularity", opts.use_singularity))
+        singularity_image_here = execution.get("singularity_image") or singularity_image
+        request_memory_here = int(execution.get("request_memory", opts.request_memory_marg))
+        request_disk_here = execution.get("request_disk", opts.general_request_disk)
+        copies_here = int(execution.get("copies", 1))
+        transfer_here = list(dict.fromkeys(
+            list(transfer_file_names) +
+            list(execution.get("transfer_files", []))))
+
+        def _configure_marg_job(job, puff=False):
+            apply_backend_commands(job, execution)
+            job.add_condor_cmd("initialdir", opts.working_directory+"/iteration_$(macroiteration)_marg/event_$(macroid)")
+            log_stem = "margPuff" if puff else "marg"
+            job.set_log_file(opts.working_directory+"/iteration_$(macroiteration)_marg/logs/{}-$(macroevent)-$(macroid)-$(cluster)-$(process).log".format(log_stem))
+            job.set_stderr_file(opts.working_directory+"/iteration_$(macroiteration)_marg/logs/{}-$(macroevent)-$(macroid)-$(cluster)-$(process).err".format(log_stem))
+            job.set_stdout_file(opts.working_directory+"/iteration_$(macroiteration)_marg/logs/{}-$(macroevent)-$(macroid)-$(cluster)-$(process).out".format(log_stem))
+            job.add_condor_cmd('request_disk', request_disk_here)
+            if opts.use_full_submit_paths:
+                job.set_sub_file(opts.working_directory+"/"+job.get_sub_file())
+            job.write_sub_file()
+
+        def _make_marg_job(puff=False):
+            grid_name = "grid_puff-$(macroiteration).dat" if puff else "grid-$(macroiteration).dat"
+            remote_here = use_osg_here or use_singularity_here
+            worker_root = "." if remote_here else opts.working_directory
+            grid_path = worker_root + "/" + grid_name
+            event_path = worker_root + '/event-$(macroid).net'
+            output_dir = ("./" if remote_here else
+                          opts.working_directory +
+                          "/iteration_$(macroiteration)_marg/event_$(macroid)/")
+            transfer_inputs = list(transfer_here)
+            if remote_here:
+                transfer_inputs.append(opts.working_directory + "/" + grid_name)
+
+            if spec.protocol == INDEXED_GRID_V1:
+                arg_str = spec.args + " --sim-grid " + grid_path
+                if n_chunk_here > 1:
+                    arg_str += " --n-events-to-analyze $(macrongroup)"
+                tag = ("MARG_PUFF_" if puff else "MARG_") + str(indx)
+                job, _ = dag_utils.write_ILE_sub_simple(
+                    tag=tag, log_dir=None, exe=spec.exe, arg_str=arg_str,
+                    output_file="MARG.dat", ncopies=copies_here,
+                    request_memory=request_memory_here,
+                    request_cpus=int(execution.get("request_cpus", 1)),
+                    request_disk=request_disk_here,
+                    request_gpu=bool(execution.get("request_gpu", False)),
+                    request_cross_platform=bool(execution.get("request_cross_platform", False)),
+                    use_singularity=use_singularity_here,
+                    singularity_image=singularity_image_here,
+                    use_osg=use_osg_here,
+                    use_simple_osg_requirements=bool(execution.get("use_simple_osg_requirements", use_osg_here)),
+                    use_cvmfs_frames=bool(execution.get("use_cvmfs_frames", False)),
+                    use_oauth_files=execution.get("use_oauth_files", False),
+                    frames_dir=execution.get("frames_dir"),
+                    cache_file=execution.get("cache_file"),
+                    requires_data_inputs=bool(
+                        execution.get("requires_data_inputs", True)),
+                    transfer_executable=bool(
+                        execution.get("transfer_executable", False)),
+                    transfer_files=transfer_inputs,
+                    transfer_output_files=execution.get("transfer_output_files"),
+                    max_runtime_minutes=execution.get("max_runtime_minutes"),
+                    condor_commands=commands_for_backend(
+                        execution, "htcondor"),
+                )
+                return job
+
+            tag = ("MARG_PUFF_" if puff else "MARG_") + str(indx)
+            output = ("MARG_puff" if puff else "MARG") + "-$(macroid)-$(macroevent)"
+            job, _ = dag_utils.write_CIP_sub(
+                tag=tag, log_dir=None, exe=spec.exe, arg_str=spec.args,
+                using_eos='file:' + grid_path,
+                using_eos_index='$(macroevent)',
+                n_events_to_analyze=n_chunk_here,
+                request_memory=request_memory_here,
+                request_cpus=int(execution.get("request_cpus", 1)),
+                request_disk=request_disk_here,
+                ncopies=copies_here,
+                input_net=event_path,
+                output=output, out_dir=output_dir,
+                universe=main_worker_universe, no_grid=not(use_osg_here),
+                use_osg=use_osg_here,
+                use_singularity=use_singularity_here,
+                singularity_image=singularity_image_here,
+                use_oauth_files=execution.get("use_oauth_files", False),
+                use_simple_osg_requirements=bool(execution.get("use_simple_osg_requirements", use_osg_here)),
+                transfer_files=['../../event-$(macroid).net'] + transfer_inputs,
+                max_runtime_minutes=execution.get("max_runtime_minutes"),
+                condor_commands=commands_for_backend(execution, "htcondor"),
+            )
+            return job
+
+        cip_job = _make_marg_job(puff=False)
+        _configure_marg_job(cip_job, puff=False)
+        cip_job_list.append(cip_job)
+        if puff_args and not puff_uses_marg_net:
+            cipPuff_job = _make_marg_job(puff=True)
+            _configure_marg_job(cipPuff_job, puff=True)
+            cip_puff_job_list.append(cipPuff_job)
+
+elif opts.marg_event_args:
 ##   MARG job (CIP is default)
 #   - issue is that transfer files depend on event
 #   - all output goes into the same iter*_marg directory
@@ -399,8 +597,54 @@ if opts.use_osg:
     con_marg_job.add_condor_cmd("+DESIRED_SITES",'"{}"'.format(desired_sites_name))
     con_marg_job.add_condor_cmd("+flock_local",'true')
 if opts.use_singularity_local:
-    con_marg.add_condor_cmd("+SingularityImage", '"' + singularity_image + '"')
+    con_marg_job.add_condor_cmd("+SingularityImage", '"' + singularity_image + '"')
 con_marg_job.write_sub_file()
+
+# A manifest may mix MARG protocols.  Build one consolidator per entry so the
+# result discovery and normalization contract follows the driver rather than a
+# hard-coded filename convention.
+con_marg_job_list = None
+if marg_job_specs is not None:
+    con_marg_job_list = []
+    for indx, spec in enumerate(marg_job_specs):
+        script_path = opts.working_directory + "/con_marg_{}.sh".format(indx)
+        input_glob = "{}/iteration_$1_marg/event_$2/{}".format(
+            opts.working_directory, spec.result_glob)
+        output_path = "{}/iteration_$1_marg/consolidated_$1_$2.net_marg".format(
+            opts.working_directory)
+        with open(script_path, "w") as stream:
+            stream.write("#! /usr/bin/env bash\nset -e\n")
+            if extra_text:
+                stream.write(extra_text + "\n")
+            if spec.consolidation_mode == "hyperpipeline":
+                relevant_path = (
+                    dag_utils.which('util_CleanILE_hyperpipeline.py')
+                    or 'util_CleanILE_hyperpipeline.py'
+                )
+                stream.write("{} {} --output {}\n".format(
+                    relevant_path, input_glob, output_path))
+            else:
+                relevant_path = (
+                    dag_utils.which('util_HyperCombine.py')
+                    or 'util_HyperCombine.py'
+                )
+                stream.write("{} {} > {}\n".format(
+                    relevant_path, input_glob, output_path))
+        os.chmod(script_path, 0o755)
+        job, _ = dag_utils.write_convert_sub(
+            exe=script_path, tag='CON_{}'.format(indx), log_dir=None,
+            arg_str='', file_input="$(macroiteration) $(macroevent)",
+            out_dir=opts.working_directory, universe=local_worker_universe,
+            no_grid=no_worker_grid)
+        job.add_condor_cmd("initialdir", opts.working_directory)
+        job.set_log_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/con-$(macroevent).log")
+        job.set_stdout_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/con-$(macroevent).out")
+        job.set_stderr_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/con-$(macroevent).err")
+        job.add_condor_cmd('request_disk', opts.general_request_disk)
+        if opts.use_full_submit_paths:
+            job.set_sub_file(opts.working_directory+"/"+job.get_sub_file())
+        job.write_sub_file()
+        con_marg_job_list.append(job)
 
 
 ##   CON job 2 : join multiple events together into a single overall result
@@ -420,9 +664,9 @@ with open("con_prod.sh",'w') as f:
 
 con_prod_job, con_prod_job_name = dag_utils.write_convert_sub(exe=opts.working_directory+"/con_prod.sh",tag='CON_PROD',log_dir=None,arg_str='',file_input="$(macroiteration)  ", out_dir=opts.working_directory,universe=local_worker_universe,no_grid=no_worker_grid)
 con_prod_job.add_condor_cmd("initialdir",opts.working_directory)
-con_prod_job.set_log_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/con_prod-$(macroevent)-$(process).log")
-con_prod_job.set_stdout_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/con_prod-$(macroevent)-$(process).out")
-con_prod_job.set_stderr_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/con_prod-$(macroevent)-$(process).err")
+con_prod_job.set_log_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/con_prod-$(process).log")
+con_prod_job.set_stdout_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/con_prod-$(process).out")
+con_prod_job.set_stderr_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/con_prod-$(process).err")
 con_prod_job.add_condor_cmd('request_disk',opts.general_request_disk)
 if opts.use_full_submit_paths:
     fname = opts.working_directory+"/"+con_prod_job.get_sub_file()
@@ -431,7 +675,7 @@ if opts.use_osg:
     con_prod_job.add_condor_cmd("+DESIRED_SITES",'"{}"'.format(desired_sites_name))
     con_prod_job.add_condor_cmd("+flock_local",'true')
 if opts.use_singularity_local:
-    con_marg.add_condor_cmd("+SingularityImage", '"' + singularity_image + '"')
+    con_prod_job.add_condor_cmd("+SingularityImage", '"' + singularity_image + '"')
 con_prod_job.write_sub_file()
         
 
@@ -490,7 +734,8 @@ if opts.test_args:
 #  - joins together all files into one
 with open("unify.sh",'w') as f:
     f.write("""#! /bin/bash
-ls -1 *.net_marg | head -n 1 | xargs head -n 1  > all.marg_net
+first_net=$(ls -1 *.net_marg | head -n 1)
+awk '/^#/ {print; next} {exit}' "$first_net" > all.marg_net
 grep -h ^[[:space:]][0-9] *.net_marg | sort -nr >> all.marg_net
 grep -h ^[[:space:]][-] *.net_marg | grep -v "inf" | sort -nr >> all.marg_net
 """)
@@ -508,8 +753,33 @@ if opts.use_osg:
     unify_marg_job.add_condor_cmd("+DESIRED_SITES",'"{}"'.format(desired_sites_name))
     unify_marg_job.add_condor_cmd("+flock_local",'true')
 if opts.use_singularity_local:
-    con_marg.add_condor_cmd("+SingularityImage", '"' + singularity_image + '"')
+    unify_marg_job.add_condor_cmd("+SingularityImage", '"' + singularity_image + '"')
 unify_marg_job.write_sub_file()
+
+
+# A recursive Z subworkflow starts after the outer MARG/UNIFY lane has already
+# produced all.marg_net.  Copy that seed as the first node of the child DAG;
+# subsequent child iterations then own and overwrite their local all.marg_net.
+jumpstart_job = None
+if opts.jumpstart_marg_net:
+    jumpstart_source = os.path.abspath(opts.jumpstart_marg_net)
+    jumpstart_target = os.path.abspath(
+        os.path.join(opts.working_directory, "all.marg_net"))
+    jumpstart_job, _ = dag_utils.write_command_sub(
+        tag="JUMPSTART_MARG_NET", exe="/bin/cp",
+        arg_str="{} {}".format(jumpstart_source, jumpstart_target),
+        universe=local_worker_universe, no_grid=no_worker_grid)
+    jumpstart_job.add_condor_cmd("initialdir", opts.working_directory)
+    jumpstart_job.set_log_file(
+        opts.working_directory + "/iteration_0_con/logs/jumpstart-$(cluster)-$(process).log")
+    jumpstart_job.set_stderr_file(
+        opts.working_directory + "/iteration_0_con/logs/jumpstart-$(cluster)-$(process).err")
+    jumpstart_job.set_stdout_file(
+        opts.working_directory + "/iteration_0_con/logs/jumpstart-$(cluster)-$(process).out")
+    if opts.use_full_submit_paths:
+        jumpstart_job.set_sub_file(
+            opts.working_directory + "/" + jumpstart_job.get_sub_file())
+    jumpstart_job.write_sub_file()
 
 
 ##   EOS_POST job  (workers)
@@ -517,26 +787,263 @@ unify_marg_job.write_sub_file()
 eospost_outfile = 'iteration_$(macroiteration)_post/output-$(macroiterationnext)-$(cluster)'
 if opts.use_osg:
     eospost_outfile = 'output-$(macroiterationnext)-$(cluster)'
-eospost_marg_job, eospost_marg_job_name = dag_utils.write_hyperpost_sub(exe=eospost_exe,tag='EOS_POST_worker',arg_str=eos_post_args,out_dir=out_dir_inside_post,output=eospost_outfile,input_net=working_dir_inside + "/all.marg_net",transfer_files=transfer_file_names_post)
-eospost_marg_job.add_condor_cmd("initialdir",opts.working_directory+"/iteration_$(macroiteration)_post")
-if opts.use_singularity:
-    eospost_marg_job.add_condor_cmd("+SingularityImage", '"' + singularity_image + '"')
-    eospost_marg_job.add_condor_cmd("transfer_executable", 'False') # don't copy it
-eospost_marg_job.set_log_file(opts.working_directory+"/iteration_$(macroiteration)_post/logs/post-$(cluster)-$(process).log")
-eospost_marg_job.set_stderr_file(opts.working_directory+"/iteration_$(macroiteration)_post/logs/post-$(cluster)-$(process).err")
-eospost_marg_job.set_stdout_file(opts.working_directory+"/iteration_$(macroiteration)_post/logs/post-$(cluster)-$(process).out")
-eospost_marg_job.add_condor_cmd('request_disk',opts.general_request_disk)
-if opts.use_full_submit_paths:
-    fname = opts.working_directory+"/"+eospost_marg_job.get_sub_file()
-    eospost_marg_job.set_sub_file(fname)
-eospost_marg_job.write_sub_file()
+eospost_marg_job_list = []
+for schedule_indx, eos_post_args_here in enumerate(eos_post_args_per_iteration):
+    eospost_marg_job, eospost_marg_job_name = dag_utils.write_hyperpost_sub(
+        exe=eospost_exe, tag='EOS_POST_worker_{}'.format(schedule_indx),
+        arg_str=eos_post_args_here, out_dir=out_dir_inside_post,
+        output=eospost_outfile, input_net=working_dir_inside + "/all.marg_net",
+        request_memory=opts.request_memory_marg,
+        request_disk=opts.general_request_disk,
+        use_osg=opts.use_osg,
+        use_singularity=opts.use_singularity,
+        singularity_image=singularity_image,
+        use_oauth_files=opts.use_oauth_files,
+        transfer_executable=opts.eos_post_transfer_executable,
+        transfer_files=(list(transfer_file_names_post)
+                        + list(opts.eos_post_transfer_file)))
+    eospost_marg_job.add_condor_cmd("initialdir",opts.working_directory+"/iteration_$(macroiteration)_post")
+    eospost_marg_job.set_log_file(opts.working_directory+"/iteration_$(macroiteration)_post/logs/post-$(cluster)-$(process).log")
+    eospost_marg_job.set_stderr_file(opts.working_directory+"/iteration_$(macroiteration)_post/logs/post-$(cluster)-$(process).err")
+    eospost_marg_job.set_stdout_file(opts.working_directory+"/iteration_$(macroiteration)_post/logs/post-$(cluster)-$(process).out")
+    eospost_marg_job.add_condor_cmd('request_disk',opts.general_request_disk)
+    if opts.use_full_submit_paths:
+        fname = opts.working_directory+"/"+eospost_marg_job.get_sub_file()
+        eospost_marg_job.set_sub_file(fname)
+    eospost_marg_job.write_sub_file()
+    eospost_marg_job_list.append(eospost_marg_job)
+
+
+# Optional terminal evidence jobs. This capability is deliberately opt-in:
+# the long-standing hyperpipe default, util_ConstructEOSPosterior.py, writes a
+# scalar integral rather than the paired CIP annotation records consumed by
+# util_CIPDirSummarizeEvidence.py. The pseudo-pipe Hyperpipe route uses the
+# GenericCoordinates CIP executable and explicitly enables this contract.
+terminal_prior_job = None
+terminal_evidence_job = None
+if opts.terminal_evidence:
+    terminal_prior_args = (
+        eos_post_args_per_iteration[-1]
+        + " --integrate-prior --n-output-samples 1 --no-plots "
+    )
+    terminal_prior_job, _ = dag_utils.write_hyperpost_sub(
+        exe=eospost_exe, tag="EOS_POST_prior",
+        arg_str=terminal_prior_args, out_dir=opts.working_directory,
+        output="prior-integral-$(macroiteration)",
+        input_net=opts.working_directory + "/all.marg_net",
+        request_memory=opts.request_memory_marg,
+        request_disk=opts.general_request_disk,
+        universe=local_worker_universe, no_grid=no_worker_grid)
+    terminal_prior_job.add_condor_cmd("initialdir", opts.working_directory)
+    terminal_prior_job.set_log_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/prior-$(cluster)-$(process).log")
+    terminal_prior_job.set_stderr_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/prior-$(cluster)-$(process).err")
+    terminal_prior_job.set_stdout_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/prior-$(cluster)-$(process).out")
+    if opts.use_full_submit_paths:
+        terminal_prior_job.set_sub_file(
+            opts.working_directory + "/" + terminal_prior_job.get_sub_file())
+    terminal_prior_job.write_sub_file()
+
+    evidence_exe = dag_utils.which("util_CIPDirSummarizeEvidence.py") or "util_CIPDirSummarizeEvidence.py"
+    terminal_evidence_args = (
+        " --cip-dir {wd}"
+        " --annotation-glob {wd}/iteration_$(macroiteration)_post/"
+        "output-$(macroiterationnext)-*+annotation.dat"
+        " --output {wd}/evidence_$(macroiteration) --strict"
+        " --prior-integral {wd}/prior-integral-$(macroiteration)_withpriorchange+annotation.dat"
+        " --normalized-output {wd}/evidence_$(macroiteration)_normalized "
+    ).format(wd=opts.working_directory)
+    terminal_evidence_job, _ = dag_utils.write_convert_sub(
+        tag="evidence_final", exe=evidence_exe, log_dir=None,
+        file_input="", arg_str=terminal_evidence_args,
+        out_dir=opts.working_directory, universe=local_worker_universe,
+        no_grid=no_worker_grid)
+    terminal_evidence_job.add_condor_cmd("initialdir", opts.working_directory)
+    terminal_evidence_job.set_log_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/evidence-final-$(cluster)-$(process).log")
+    terminal_evidence_job.set_stderr_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/evidence-final-$(cluster)-$(process).err")
+    terminal_evidence_job.set_stdout_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/evidence-final-$(cluster)-$(process).out")
+    terminal_evidence_job.add_condor_cmd("request_disk", opts.general_request_disk)
+    if opts.use_full_submit_paths:
+        terminal_evidence_job.set_sub_file(
+            opts.working_directory + "/" + terminal_evidence_job.get_sub_file())
+    terminal_evidence_job.write_sub_file()
+
+
+# Generic terminal jobs. The manifest owns the executable protocols and
+# dependency names; this writer only supplies the final-iteration macros and
+# the reserved ``pipeline`` parent when it materializes DAG nodes below.
+terminal_stage_jobs = {}
+for terminal_stage in terminal_stage_specs:
+    mkdir(terminal_stage.initial_dir)
+    mkdir(terminal_stage.log_dir)
+    if terminal_stage.kind == SUBWORKFLOW_V1:
+        # Existence is checked HERE rather than in the contract, because only
+        # here do we know which backend is writing and therefore what file the
+        # sub-workflow actually landed at: `child.dag` on HTCondor,
+        # `child_local.sh` on the shell backend, `child_dag.sh` on Slurm.  A
+        # backend-agnostic check on the literal name would reject valid
+        # manifests on three backends out of four.  Still at build time, which
+        # is the point -- a missing SUBDAG discovered after submission costs a
+        # queue slot and a hold to learn about a typo.
+        resolved_subworkflow = dag_utils.get_backend().output_path_for_dag(
+            terminal_stage.dag)
+        if not os.path.isfile(resolved_subworkflow):
+            raise SystemExit(
+                "terminal stage {!r} names sub-workflow {}, which this backend "
+                "expects to find at {} -- and that file does not exist. Build "
+                "the sub-workflow before the workflow that runs it.".format(
+                    terminal_stage.name, terminal_stage.dag,
+                    resolved_subworkflow))
+        # Nothing else to write: the sub-workflow already has its own submit
+        # files, and the backend emits a reference to its driver.  Deliberately
+        # not given a submit file of its own -- a stage that both wrapped a
+        # workflow and ran a job would have two failure modes and one retry
+        # count.
+        continue
+    if terminal_stage.kind == INDEXED_GRID_FANOUT_V1:
+        execution = terminal_stage.job.execution
+        use_osg_here = bool(execution.get("use_osg", opts.use_osg))
+        use_singularity_here = bool(
+            execution.get("use_singularity", opts.use_singularity))
+        singularity_image_here = execution.get("singularity_image") or singularity_image
+        transfer_here = list(dict.fromkeys(
+            list(transfer_file_names) + list(
+                execution.get("transfer_files", []))))
+        grid_arg = terminal_stage.grid
+        if use_osg_here or use_singularity_here:
+            transfer_here.append(terminal_stage.grid)
+            grid_arg = os.path.basename(terminal_stage.grid)
+        terminal_args = terminal_stage.job.args
+        if terminal_stage.args_append:
+            terminal_args += " " + terminal_stage.args_append
+        terminal_args += " --sim-grid " + grid_arg
+        if max(terminal_stage.group_sizes) > 1:
+            terminal_args += " --n-events-to-analyze $(macrongroup)"
+        terminal_job, _ = dag_utils.write_ILE_sub_simple(
+            tag="TERMINAL_" + terminal_stage.name,
+            log_dir=None, exe=terminal_stage.job.exe,
+            arg_str=terminal_args, output_file=terminal_stage.output_file,
+            simple_unique=True,
+            ncopies=int(execution.get("copies", 1)),
+            request_memory=int(execution.get(
+                "request_memory", opts.request_memory_marg)),
+            request_cpus=int(execution.get("request_cpus", 1)),
+            request_disk=execution.get(
+                "request_disk", opts.general_request_disk),
+            request_gpu=bool(execution.get("request_gpu", False)),
+            request_cross_platform=bool(
+                execution.get("request_cross_platform", False)),
+            use_singularity=use_singularity_here,
+            singularity_image=singularity_image_here,
+            use_osg=use_osg_here,
+            use_simple_osg_requirements=bool(execution.get(
+                "use_simple_osg_requirements", use_osg_here)),
+            use_cvmfs_frames=bool(
+                execution.get("use_cvmfs_frames", False)),
+            use_oauth_files=execution.get("use_oauth_files", False),
+            frames_dir=execution.get("frames_dir"),
+            cache_file=execution.get("cache_file"),
+            requires_data_inputs=bool(
+                execution.get("requires_data_inputs", True)),
+            transfer_executable=bool(
+                execution.get("transfer_executable", False)),
+            transfer_files=transfer_here,
+            transfer_output_files=execution.get("transfer_output_files"),
+            max_runtime_minutes=execution.get("max_runtime_minutes"),
+            condor_commands=commands_for_backend(execution, "htcondor"),
+        )
+    elif terminal_stage.kind == COMMAND_V1:
+        command_execution = terminal_stage.execution
+        terminal_job, _ = dag_utils.write_command_sub(
+            tag="TERMINAL_" + terminal_stage.name,
+            exe=terminal_stage.exe, log_dir=None,
+            arg_str=terminal_stage.args,
+            universe=terminal_stage.universe,
+            no_grid=terminal_stage.no_grid,
+            use_osg=bool(command_execution.get("use_osg", False)),
+            use_singularity=bool(
+                command_execution.get("use_singularity", False)),
+            singularity_image=command_execution.get("singularity_image"),
+            use_simple_osg_requirements=bool(
+                command_execution.get("use_simple_osg_requirements", False)),
+            transfer_files=command_execution.get("transfer_files"),
+            transfer_output_files=command_execution.get(
+                "transfer_output_files"),
+            max_runtime_minutes=terminal_stage.execution_value(
+                "max_runtime_minutes", 120))
+        request_memory = terminal_stage.execution_value("request_memory")
+        if request_memory is not None:
+            terminal_job.add_condor_cmd("request_memory", str(request_memory))
+        request_disk = terminal_stage.execution_value(
+            "request_disk", opts.general_request_disk)
+        if request_disk is not None:
+            terminal_job.add_condor_cmd("request_disk", str(request_disk))
+    else:
+        raise ValueError("unhandled terminal stage kind {}".format(
+            terminal_stage.kind))
+
+    apply_backend_commands(terminal_job, terminal_stage.execution)
+    if terminal_stage.job is not None:
+        apply_backend_commands(terminal_job, terminal_stage.job.execution)
+    else:
+        apply_portable_resources(terminal_job, terminal_stage.execution)
+
+    terminal_job.add_condor_cmd("initialdir", terminal_stage.initial_dir)
+    terminal_job.set_log_file(
+        terminal_stage.log_dir + "/{}-$(cluster)-$(process).log".format(
+            terminal_stage.name))
+    terminal_job.set_stderr_file(
+        terminal_stage.log_dir + "/{}-$(cluster)-$(process).err".format(
+            terminal_stage.name))
+    terminal_job.set_stdout_file(
+        terminal_stage.log_dir + "/{}-$(cluster)-$(process).out".format(
+            terminal_stage.name))
+    if terminal_stage.job is None:
+        for key, value in commands_for_backend(
+                terminal_stage.execution, "htcondor").items():
+            terminal_job.add_condor_cmd(str(key), str(value))
+    if opts.use_full_submit_paths:
+        terminal_job.set_sub_file(
+            opts.working_directory + "/" + terminal_job.get_sub_file())
+    terminal_job.write_sub_file()
+    terminal_stage_jobs[terminal_stage.name] = terminal_job
 
 
 # worker join job
 with open("join_post.sh",'w') as f:
-    f.write("""#! /bin/bash
-head -n 1 grid-0.dat > $2
-cat $1/output*.dat  | sort -r | uniq | shuf >> $2
+    f.write("""#!/bin/bash
+set -euo pipefail
+input_dir=$1
+output_file=$2
+output_tmp="${output_file}.tmp.$$"
+trap 'rm -f "$output_tmp"' EXIT
+awk '/^#/ {print; next} {exit}' grid-0.dat > "$output_tmp"
+shuffle=$(command -v shuf || command -v gshuf)
+if [ -z "$shuffle" ]; then
+    echo "join_post.sh requires shuf or gshuf" >&2
+    exit 1
+fi
+shopt -s nullglob
+sample_files=()
+for sample_file in "$input_dir"/output-*.dat; do
+    sample_name=$(basename "$sample_file")
+    case "$sample_name" in
+        *+*|*_*) continue ;;
+    esac
+    sample_files+=("$sample_file")
+done
+if [ "${#sample_files[@]}" -eq 0 ]; then
+    echo "join_post.sh found no primary posterior sample files in $input_dir" >&2
+    exit 2
+fi
+for sample_file in "${sample_files[@]}"; do
+    grep -v '^#' "$sample_file"
+done | sort -r | uniq | "$shuffle" >> "$output_tmp"
+if ! awk '!/^#/ && NF {found=1} END {exit found ? 0 : 1}' "$output_tmp"; then
+    echo "join_post.sh found no posterior sample rows in $input_dir" >&2
+    exit 3
+fi
+mv "$output_tmp" "$output_file"
+trap - EXIT
 """)
     os.system("chmod a+x join_post.sh")
 # In tracer mode the tracer node owns grid-{k+1}.dat; EOS_POST output goes to a
@@ -547,9 +1054,9 @@ _join_post_output_path = opts.working_directory + (
     else "/grid-$(macroiterationnext).dat")
 join_post_job, join_post_job_name = dag_utils.write_convert_sub(exe=opts.working_directory+"/join_post.sh",tag='JOIN_POST',log_dir=None,arg_str='',file_input=opts.working_directory+"/iteration_$(macroiteration)_post/    "+_join_post_output_path, out_dir=opts.working_directory,universe=local_worker_universe,no_grid=no_worker_grid)
 join_post_job.add_condor_cmd("initialdir",opts.working_directory)
-join_post_job.set_log_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/unify-$(macroevent).log")
-join_post_job.set_stdout_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/unify-$(macroevent).out")
-join_post_job.set_stderr_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/unify-$(macroevent).err")
+join_post_job.set_log_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/unify.log")
+join_post_job.set_stdout_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/unify.out")
+join_post_job.set_stderr_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/unify.err")
 join_post_job.add_condor_cmd('request_disk',opts.general_request_disk)
 if opts.use_full_submit_paths:
     fname = opts.working_directory+"/"+join_post_job.get_sub_file()
@@ -626,11 +1133,151 @@ if puff_args and puff_cadence:
 
 parent_fit_node = None
 last_node=None
+terminal_evidence_parent_node = None
+final_test_node = None
+
+
+def build_z_subworkflow(iteration, posterior_args):
+    """Build a recursive Hyperpipe convergence DAG and its harvest job."""
+    if not opts.marg_job_spec_file:
+        raise ValueError(
+            "Z convergence currently requires --marg-job-spec-file so the "
+            "child workflow can reproduce the MARG execution contract")
+    child_dir = os.path.abspath(os.path.join(
+        opts.working_directory,
+        "iteration_{}_post".format(iteration),
+        "convergence_subworkflow"))
+    mkdir(child_dir)
+    child_schedule = os.path.join(child_dir, "args_post_schedule.txt")
+    with open(child_schedule, "w") as stream:
+        stream.write("{} {}\n".format(
+            opts.n_iterations_subdag_max, posterior_args.strip()))
+
+    child_test_args = None
+    if opts.test_args:
+        with open(opts.test_args) as stream:
+            child_test_text = " ".join(
+                line.replace("\\", "").strip() for line in stream)
+        child_test_text = re.sub(r"--always-succeed(?:\s+|$)", " ",
+                                 child_test_text)
+        child_test_text = re.sub(
+            r"--iteration-threshold(?:=|\s+)\S+", " ", child_test_text)
+        child_test_args = os.path.join(child_dir, "args_test.txt")
+        with open(child_test_args, "w") as stream:
+            stream.write(" ".join(child_test_text.split()) + "\n")
+
+    command = [
+        os.path.realpath(sys.argv[0]),
+        "--working-directory", child_dir,
+        # The jumpstarted first iteration does not consume grid-0.  Reuse the
+        # real seed file as a build-time placeholder; the child starts from
+        # the outer all.marg_net and creates grid-1 itself at runtime.
+        "--input-grid", os.path.abspath(opts.input_grid),
+        "--marg-job-spec-file", os.path.abspath(opts.marg_job_spec_file),
+        "--eos-post-args-list", child_schedule,
+        "--eos-post-exe", eospost_exe,
+        "--request-memory-marg", str(opts.request_memory_marg),
+        "--general-request-disk", str(opts.general_request_disk),
+        "--n-samples-per-job", str(opts.n_samples_per_job),
+        "--n-iterations", str(opts.n_iterations_subdag_max),
+        "--eos-post-explode-jobs", str(opts.eos_post_explode_jobs),
+        "--eos-post-explode-jobs-last",
+        str(opts.eos_post_explode_jobs_last),
+        "--general-retries", str(opts.general_retries),
+        "--jumpstart-marg-net", os.path.abspath(os.path.join(
+            opts.working_directory, "all.marg_net")),
+        "--test-convergence-abort",
+        # Deliberately NO --terminal-evidence: the child's live tests abort
+        # the child DAG on convergence, which would skip a child evidence
+        # pair anchored to the final iteration -- the evidence would exist
+        # exactly when the child failed to converge early, fake assurance.
+        # The OUTER post-Z iteration owns the terminal evidence in every
+        # shape that requests it (and the outer builder refuses to build a
+        # Z-last schedule with --terminal-evidence).
+        "--use-full-submit-paths",
+    ]
+    if child_test_args:
+        command += ["--test-args", child_test_args,
+                    "--test-exe", opts.test_exe]
+    if opts.puff_args and opts.puff_exe:
+        command += [
+            "--puff-exe", opts.puff_exe,
+            "--puff-args", os.path.abspath(opts.puff_args),
+            "--puff-max-it", str(opts.n_iterations_subdag_max),
+            "--puff-input-source", opts.puff_input_source,
+        ]
+    if opts.transfer_file_list:
+        command += ["--transfer-file-list",
+                    os.path.abspath(opts.transfer_file_list)]
+    if opts.use_osg:
+        command.append("--use-osg")
+    if opts.use_oauth_files:
+        command += ["--use-oauth-files", opts.use_oauth_files]
+    if opts.eos_post_transfer_executable:
+        command.append("--eos-post-transfer-executable")
+    for transfer_file in opts.eos_post_transfer_file:
+        command += ["--eos-post-transfer-file", transfer_file]
+    if opts.use_singularity:
+        command.append("--use-singularity")
+    if opts.use_singularity_local:
+        command.append("--use-singularity-local")
+    if opts.condor_local_nonworker:
+        command.append("--condor-local-nonworker")
+    if opts.condor_local_nonworker_igwn_prefix:
+        command.append("--condor-local-nonworker-igwn-prefix")
+    if opts.condor_nogrid_nonworker:
+        command.append("--condor-nogrid-nonworker")
+    subprocess.run(command, cwd=child_dir, check=True, env=os.environ.copy())
+
+    child_dag = os.path.join(child_dir, "marginalize_hyperparameters.dag")
+    # Same backend-resolution as the terminal subworkflow stage: the child
+    # build above wrote the backend's own driver file, not necessarily a .dag.
+    subdag_node = pipeline.CondorDAGManJob(
+        dag_utils.get_backend().output_path_for_dag(child_dag)).create_node()
+    subdag_node.set_category("Z_SUBWORKFLOW")
+    subdag_node.set_retry(opts.general_retries)
+
+    fetch_spec = os.path.abspath(os.path.join(
+        opts.working_directory,
+        "fetch_z_{}.json".format(iteration)))
+    with open(fetch_spec, "w") as stream:
+        json.dump({
+            "method": "native",
+            "source": child_dir,
+            "base_pattern": "grid-*.dat",
+        }, stream, indent=2, sort_keys=True)
+        stream.write("\n")
+    fetch_exe = (dag_utils.which("util_FetchExternalGrid.py")
+                 or "util_FetchExternalGrid.py")
+    fetch_job, _ = dag_utils.write_command_sub(
+        tag="FETCH_Z_{}".format(iteration), exe=fetch_exe,
+        arg_str="--input-json {} --inj-file-out {}".format(
+            fetch_spec, os.path.abspath(os.path.join(
+                opts.working_directory,
+                "grid-{}.dat".format(iteration + 1)))),
+        universe=local_worker_universe, no_grid=no_worker_grid)
+    fetch_job.add_condor_cmd("initialdir", opts.working_directory)
+    fetch_job.set_log_file(
+        opts.working_directory +
+        "/iteration_{}_con/logs/fetch-z-$(cluster)-$(process).log".format(iteration))
+    fetch_job.set_stderr_file(
+        opts.working_directory +
+        "/iteration_{}_con/logs/fetch-z-$(cluster)-$(process).err".format(iteration))
+    fetch_job.set_stdout_file(
+        opts.working_directory +
+        "/iteration_{}_con/logs/fetch-z-$(cluster)-$(process).out".format(iteration))
+    fetch_job.add_condor_cmd("request_disk", opts.general_request_disk)
+    if opts.use_full_submit_paths:
+        fetch_job.set_sub_file(
+            opts.working_directory + "/" + fetch_job.get_sub_file())
+    fetch_job.write_sub_file()
+    return subdag_node, fetch_job
 
 
 unify_node_list = []
 for it in np.arange(it_start,opts.n_iterations):
     print(it, opts.n_iterations)
+    jumpstart_now = bool(opts.jumpstart_marg_net) and it == it_start
     consolidate_now = None
     fit_node_now = None
     marg_nodes_now =[]
@@ -650,16 +1297,17 @@ for it in np.arange(it_start,opts.n_iterations):
     n_jobs_this_time = opts.n_samples_per_job # hardcode for now?
     if it ==it_start:
         n_jobs_this_time = n_initial
-    indx_max = int((1.0*n_jobs_this_time)/n_group)
-    if indx_max*n_jobs_this_time < n_group:
-        indx_max+=1
+    indx_max = int(np.ceil((1.0*n_jobs_this_time)/n_group))
 
-    if True: #not(it==it_start): # and opts.first_iteration_jumpstart):   # if on first iteration ,don't do this for jumpstart
+    if not jumpstart_now:
         for event in np.arange(n_events):
             n_chunk_here = marg_event_nchunk_list[event]
-            indx_max_event = indx_max/n_chunk_here
+            indx_max_event = int(np.ceil((1.0*indx_max)/n_chunk_here))
             # Create consolidate job 1 for that event
-            con_node = pipeline.CondorDAGNode(con_marg_job)
+            con_job_here = con_marg_job
+            if con_marg_job_list is not None:
+                con_job_here = con_marg_job_list[event]
+            con_node = pipeline.CondorDAGNode(con_job_here)
             con_node.add_macro("macroiteration",it)
             con_node.add_macro("macroevent",int(event))
             con_node.set_retry(opts.general_retries)
@@ -670,9 +1318,14 @@ for it in np.arange(it_start,opts.n_iterations):
                     cip_node = pipeline.CondorDAGNode(cip_job)
                 else:
                     cip_node = pipeline.CondorDAGNode(cip_job_list[event])
-                cip_node.set_retry(opts.general_retries)
+                marg_retries_here = opts.general_retries
+                if marg_job_specs is not None:
+                    marg_retries_here = int(marg_job_specs[event].execution_value(
+                        "retries", opts.general_retries))
+                cip_node.set_retry(marg_retries_here)
                 cip_node.add_macro("macroid",event)
                 cip_node.add_macro("macroevent", int(row*n_chunk_here))
+                cip_node.add_macro("macrongroup", int(n_chunk_here))
                 cip_node.add_macro("macroiteration", it)
                 if not(parent_fit_node is None):
                     cip_node.add_parent(parent_fit_node)
@@ -687,9 +1340,10 @@ for it in np.arange(it_start,opts.n_iterations):
                             cipPuff_node = pipeline.CondorDAGNode(cipPuff_job)
                         else:
                             cipPuff_node = pipeline.CondorDAGNode(cip_puff_job_list[event])
-                        cipPuff_node.set_retry(opts.general_retries)
+                        cipPuff_node.set_retry(marg_retries_here)
                         cipPuff_node.add_macro("macroid",int(event))
                         cipPuff_node.add_macro("macroevent", int(row*n_chunk_here))
+                        cipPuff_node.add_macro("macrongroup", int(n_chunk_here))
                         cipPuff_node.add_macro("macroiteration", it)
                         if not(parent_fit_node is None):
                             cipPuff_node.add_parent(parent_fit_node)
@@ -700,16 +1354,41 @@ for it in np.arange(it_start,opts.n_iterations):
             dag.add_node(con_node)
             # Add node to combine all events.   con_prod requires all con nodes done
             con_prod_node.add_parent(con_node)
-    unify_node.add_parent(con_prod_node)
+    if jumpstart_now:
+        jumpstart_node = pipeline.CondorDAGNode(jumpstart_job)
+        jumpstart_node.set_category("JUMPSTART")
+        jumpstart_node.set_retry(opts.general_retries)
+        dag.add_node(jumpstart_node)
+        parent_fit_node = jumpstart_node
+        # Puff/tracer dependency logic below expects the current data product
+        # under this name; the seed copy is the jumpstarted UNIFY equivalent.
+        unify_node = jumpstart_node
+    else:
+        unify_node.add_parent(con_prod_node)
 
-    # add con job, then unify
-    dag.add_node(con_prod_node)
-    dag.add_node(unify_node)
-    parent_fit_node=unify_node
+        # add con job, then unify
+        dag.add_node(con_prod_node)
+        dag.add_node(unify_node)
+        parent_fit_node=unify_node
 
     # Create EOS_POST nodes. Explode out workers
     # Create fit node, which depends on consolidate node
     print(" Exploding workers out ")
+    if eos_post_prefix_per_iteration[it] == "Z":
+        subdag_node, fetch_z_job = build_z_subworkflow(
+            int(it), eos_post_args_per_iteration[it])
+        subdag_node.add_parent(parent_fit_node)
+        dag.add_node(subdag_node)
+        fetch_z_node = pipeline.CondorDAGNode(fetch_z_job)
+        fetch_z_node.set_category("FETCH_Z")
+        fetch_z_node.set_retry(opts.general_retries)
+        fetch_z_node.add_parent(subdag_node)
+        dag.add_node(fetch_z_node)
+        parent_fit_node = fetch_z_node
+        # The child owns its terminal evidence and operative convergence test.
+        # The outer workflow only harvests its latest completed grid.
+        continue
+
         # Create job to consolidate worker outputs
     join_node =pipeline.CondorDAGNode(join_post_job)
     join_node.add_macro("macroiteration", it)
@@ -724,7 +1403,7 @@ for it in np.arange(it_start,opts.n_iterations):
         print("   Last iteration explode size ", opts.eos_post_explode_jobs_last)
         n_explode = opts.eos_post_explode_jobs_last
     for indx in np.arange(n_explode):
-                worker_node =pipeline.CondorDAGNode(eospost_marg_job)
+                worker_node =pipeline.CondorDAGNode(eospost_marg_job_list[it])
                 worker_node.add_macro("macroiteration", it)
                 worker_node.add_macro("macroiterationnext", it+1)
                 worker_node.set_category("EOS_post_worker")
@@ -734,6 +1413,8 @@ for it in np.arange(it_start,opts.n_iterations):
                 dag.add_node(worker_node)
     dag.add_node(join_node)
     parent_fit_node=join_node
+    if it == opts.n_iterations - 1:
+        terminal_evidence_parent_node = parent_fit_node
 
     # add test here, using output of this most recent iteration
     if opts.test_args and it>0:
@@ -745,6 +1426,9 @@ for it in np.arange(it_start,opts.n_iterations):
         test_node.set_category("CONVERGE")
         dag.add_node(test_node)
         test_node_list.append(test_node)
+
+        if it == opts.n_iterations - 1:
+            final_test_node = test_node
 
         parent_fit_node=test_node
 
@@ -771,8 +1455,123 @@ for it in np.arange(it_start,opts.n_iterations):
         parent_fit_node = puff_node
 
 
+# Terminal evidence must precede a convergence node that may abort the DAG.
+# It summarizes the final exploded posterior workers and divides by an
+# independent L=1 integral using the same physical posterior arguments.
+if (terminal_prior_job is not None and terminal_evidence_job is not None
+        and terminal_evidence_parent_node is None):
+    # Reachable when every schedule line is special (e.g. Z is the last
+    # iteration): the Z branch harvests the child grid and skips the join
+    # that anchors the evidence pair.  Fail at build time rather than
+    # completing a "successful" run that silently produced no evidence.
+    raise ValueError(
+        "--terminal-evidence was requested but no iteration produced a "
+        "posterior join to anchor it (a schedule ending in a Z recursive "
+        "stage has no outer posterior iteration).  Add a post-Z iteration "
+        "to the schedule, or drop --terminal-evidence.")
+if (terminal_prior_job is not None and terminal_evidence_job is not None
+        and terminal_evidence_parent_node is not None):
+    final_iteration = opts.n_iterations - 1
+    prior_node = pipeline.CondorDAGNode(terminal_prior_job)
+    prior_node.add_macro("macroiteration", final_iteration)
+    prior_node.set_category("CIP_PRIOR")
+    prior_node.set_retry(opts.general_retries)
+    prior_node.add_parent(terminal_evidence_parent_node)
+    dag.add_node(prior_node)
+
+    final_evidence_node = pipeline.CondorDAGNode(terminal_evidence_job)
+    final_evidence_node.add_macro("macroiteration", final_iteration)
+    final_evidence_node.add_macro("macroiterationnext", final_iteration + 1)
+    final_evidence_node.set_category("EVIDENCE")
+    final_evidence_node.set_retry(opts.general_retries)
+    final_evidence_node.add_parent(terminal_evidence_parent_node)
+    final_evidence_node.add_parent(prior_node)
+    dag.add_node(final_evidence_node)
+    if final_test_node is not None:
+        final_test_node.add_parent(final_evidence_node)
+
+
+# Materialize the declarative terminal graph after the iterative loop. A stage
+# name denotes all nodes in its fan-out, so a downstream stage naturally forms
+# a barrier without requiring a pipeline-specific join node.
+terminal_stage_nodes = {"pipeline": [parent_fit_node]}
+for terminal_stage in terminal_stage_specs:
+    parent_nodes = []
+    for dependency in terminal_stage.depends_on:
+        parent_nodes.extend(terminal_stage_nodes[dependency])
+    nodes_here = []
+    if terminal_stage.kind == SUBWORKFLOW_V1:
+        # Run the file the build-time existence check actually validated: the
+        # backend-resolved path (child.dag on HTCondor, child_dag.sh on Slurm,
+        # child_local.sh locally).  Identity on HTCondor, so SUBDAG EXTERNAL
+        # semantics are unchanged there.
+        subdag_node = pipeline.CondorDAGManJob(
+            dag_utils.get_backend().output_path_for_dag(
+                terminal_stage.dag)).create_node()
+        subdag_node.set_category("TERMINAL_" + terminal_stage.name)
+        subdag_node.set_retry(int(terminal_stage.execution_value(
+            "retries", opts.general_retries)))
+        for parent_node in parent_nodes:
+            if parent_node is not None:
+                subdag_node.add_parent(parent_node)
+        dag.add_node(subdag_node)
+        terminal_stage_nodes[terminal_stage.name] = [subdag_node]
+        continue
+    count = terminal_stage.count
+    for terminal_index in range(count):
+        terminal_node = pipeline.CondorDAGNode(
+            terminal_stage_jobs[terminal_stage.name])
+        terminal_node.add_macro("macroiteration", opts.n_iterations)
+        terminal_node.add_macro("macroiterationprev", opts.n_iterations - 1)
+        terminal_node.add_macro("macroiterationnext", opts.n_iterations + 1)
+        if terminal_stage.kind == INDEXED_GRID_FANOUT_V1:
+            group_size_here = terminal_stage.group_sizes[terminal_index]
+            start_here = sum(terminal_stage.group_sizes[:terminal_index])
+            terminal_node.add_macro(
+                "macroevent", start_here)
+            terminal_node.add_macro(
+                "macrongroup", group_size_here)
+        elif terminal_stage.kind == COMMAND_V1:
+            for key, value in terminal_stage.instances[terminal_index].items():
+                terminal_node.add_macro("macro" + key, value)
+        terminal_node.set_category("TERMINAL_" + terminal_stage.name)
+        terminal_node.set_retry(int(terminal_stage.execution_value(
+            "retries", opts.general_retries)))
+        for parent_node in parent_nodes:
+            if parent_node is not None:
+                terminal_node.add_parent(parent_node)
+        dag.add_node(terminal_node)
+        nodes_here.append(terminal_node)
+    terminal_stage_nodes[terminal_stage.name] = nodes_here
+
+
 
 
 dag_name="marginalize_hyperparameters"
+if opts.test_convergence_abort and test_node_list:
+    # ABORT-DAG-ON converts ANY convergence node's exit 1 into a successful
+    # whole-DAG abort, while terminal evidence and declarative terminal stages
+    # hang off the final iteration only.  A LIVE test converging early would
+    # therefore return success while silently skipping every requested
+    # terminal product.  Refuse to build that combination: either the tests
+    # carry --always-succeed (the full schedule runs and the abort is inert,
+    # BasicIteration's add-extrinsic convention), or the caller drops the
+    # abort or the products.  The Z child is the intended live-test+abort
+    # user, and it requests no terminal products.
+    live_tests = (test_args is not None
+                  and "--always-succeed" not in test_args)
+    has_products = bool(terminal_stage_specs) or (
+        terminal_prior_job is not None
+        and terminal_evidence_job is not None)
+    if live_tests and has_products:
+        raise ValueError(
+            "--test-convergence-abort with live convergence tests (no "
+            "--always-succeed) would skip the requested terminal products "
+            "(terminal evidence and/or terminal stages) whenever a test "
+            "converges before the final iteration.  Add --always-succeed to "
+            "the test arguments to run the full schedule, or drop "
+            "--test-convergence-abort or the terminal products.")
+    for convergence_node in test_node_list:
+        dag.add_abort_on(convergence_node, exit_code=1, return_value=0)
 dag.set_dag_file(dag_name)
 dag.write_concrete_dag()

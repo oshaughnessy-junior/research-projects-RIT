@@ -71,7 +71,7 @@ if has_glue_pipeline:
                     singularity_base_exe_path = os.environ['SINGULARITY_BASE_EXE_DIR']
                 else:
                     singularity_base_exe_path = "/usr/bin/"  # should not hardcode this ...!
-                exe=singularity_base_exe_path + exe_base
+                exe = os.path.join(singularity_base_exe_path, exe_base)
             else:
                 # Must transfer executable, AND change pathname for later
                 extra_files += [str(exe)]            
