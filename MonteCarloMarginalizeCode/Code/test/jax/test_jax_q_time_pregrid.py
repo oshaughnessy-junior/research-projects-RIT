@@ -435,6 +435,44 @@ def test_unrefined_bank_with_a_declared_factor_fails_closed():
                            jnp.asarray([0.7]), "cubic", True)
 
 
+def test_a_declared_factor_without_refinement_metadata_is_refused():
+    """The metadata-free escape hatch is for factor 1 only.
+
+    ``_check_stored_q_length`` used to return early whenever ``npts_full_coarse``
+    was absent, on the grounds that such a dict cannot have been refined by
+    ``build_q_time_pregrid``.  That is true and it is not the hazard.  A caller
+    can hand-build a detector dict that DECLARES a factor above 1 and omits the
+    metadata; the early return then skipped every check, and
+    ``_q_sample_positions`` scaled each index by the factor over a coarse Q.  A
+    factor-8 window covers an eighth of the intended span, shapes broadcast, and
+    the likelihood returns finite wrong numbers.
+
+    Factor 1 keeps the hatch: no index is scaled, so an unrefined buffer is the
+    correct buffer.
+    """
+    packed, tvals, deltaT, tref = _toy_packed()
+    data = build_likelihood_data(packed, deltaT, tref, tvals)
+    det = data.detector_names[0]
+    bare = {k: v for k, v in data.detectors[det].items()
+            if k not in ("npts_full_coarse", "q_time_pregrid_factor")}
+    assert "npts_full_coarse" not in bare
+
+    # factor 1 is still allowed through with no metadata at all
+    C._check_stored_q_length(bare, bare["Q"].shape[0], 1, "detector Q")
+
+    # above factor 1 the missing metadata is itself the fault
+    for factor in (2, 8):
+        with pytest.raises(ValueError, match="npts_full_coarse"):
+            C._check_stored_q_length(bare, bare["Q"].shape[0], factor, "detector Q")
+
+    # and it is refused even when the stored length would satisfy the arithmetic
+    # a refined bank of that factor requires, so the guard is not accidentally
+    # passing on a length coincidence
+    n = bare["Q"].shape[0]
+    with pytest.raises(ValueError, match="npts_full_coarse"):
+        C._check_stored_q_length(bare, (n - 1)*8 + 1, 8, "detector Q")
+
+
 def test_a_refined_bank_reaching_a_factorless_namespace_is_refused():
     """The paired half of the ``getattr(..., 1)`` default in ``_q_sample_positions``.
 

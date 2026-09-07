@@ -491,10 +491,25 @@ def _check_stored_q_length(dd, stored_npts, factor, what):
             "factor %d" % (what, int(declared), int(factor)))
     coarse = dd.get("npts_full_coarse")
     if coarse is None:
-        # A hand-built detector dict (tests, benchmark shims) that declares
-        # neither key.  Nothing to check -- and nothing to be wrong about either,
-        # because such a dict cannot have been refined by build_q_time_pregrid,
-        # which sets both keys together.
+        # A hand-built detector dict (tests, benchmark shims) carrying no
+        # refinement metadata.  At factor 1 there is nothing to check: no index
+        # is scaled, so an unrefined buffer is the correct buffer.
+        #
+        # Above factor 1 the absence of the metadata is itself the fault, and
+        # returning here was a hole.  `build_q_time_pregrid` sets both keys
+        # together, so a dict that declares a factor without `npts_full_coarse`
+        # was not built by it, and its Q is coarse.  `_q_sample_positions` would
+        # still scale every index by the factor, reading an eighth of the
+        # intended span at factor 8.  Shapes broadcast, the likelihood returns
+        # finite numbers, and they are wrong.  Refuse instead.
+        if int(factor) != 1:
+            raise ValueError(
+                "%s is indexed at q_time_pregrid_factor=%d but carries no "
+                "'npts_full_coarse'; refinement metadata is required above "
+                "factor 1, because the stored Q cannot be shown to have been "
+                "refined and every index would be scaled regardless.  Build it "
+                "with build_q_time_pregrid, or index at factor 1."
+                % (what, int(factor)))
         return
     expected = (int(coarse) - 1)*int(factor) + 1 if int(factor) != 1 else int(coarse)
     if int(stored_npts) != expected:
