@@ -523,5 +523,90 @@ def test_gradient_still_flows_through_the_refined_gather():
     assert np.max(np.abs(np.asarray(g))) > 0.0
 
 
+# --------------------------------------------------------------------------
+# 6.  The SEAMS.  Everything above tests the library; a flag that never reaches
+#     it is still a no-op, and a --help that parses is not a wired option.
+# --------------------------------------------------------------------------
+
+def test_wrapper_forwards_the_factor_to_the_data():
+    """``build_data_from_precompute`` must carry the factor into the built data.
+
+    Exercised through the REAL function with the two expensive production calls
+    stubbed, rather than by reading the source: a keyword that is accepted,
+    documented and then dropped on the floor is exactly the silent-no-op shape
+    this option could most easily take.
+    """
+    from RIFT.likelihood.jax_ile import wrapper as W
+
+    packed, tvals, deltaT, tref = _toy_packed(detectors=("H1", "L1"))
+
+    class _P:
+        deltaT = None
+
+    P = _P()
+    P.deltaT = deltaT
+    dets = list(packed)
+
+    def _fake_precompute(*a, **k):
+        empty = {d: {} for d in dets}
+        return empty, empty, empty, {d: {} for d in dets}, 1.0, None
+
+    def _fake_pack(keys, intp, rho, ct, ctV, _packed=packed, _dets=iter(dets)):
+        det = next(_dets)
+        d = _packed[det]
+        return (d["lms"], None, None, d["U"], d["V"], d["rholmArray"], None,
+                d["epoch"])
+
+    old_pre = W.factored_likelihood.PrecomputeLikelihoodTerms
+    old_pack = W.factored_likelihood.PackLikelihoodDataStructuresAsArrays
+    try:
+        W.factored_likelihood.PrecomputeLikelihoodTerms = _fake_precompute
+        W.factored_likelihood.PackLikelihoodDataStructuresAsArrays = _fake_pack
+        data, _extras = W.build_data_from_precompute(
+            P, {d: None for d in dets}, {d: None for d in dets}, 1126259462.0,
+            0.15, 0.075, 2, 1700.0, tvals=tvals, q_time_pregrid_factor=8)
+    finally:
+        W.factored_likelihood.PrecomputeLikelihoodTerms = old_pre
+        W.factored_likelihood.PackLikelihoodDataStructuresAsArrays = old_pack
+
+    n_coarse = packed[dets[0]]["rholmArray"].shape[-1]
+    assert data.q_time_pregrid_factor == 8
+    for det in dets:
+        dd = data.detectors[det]
+        assert dd["q_time_pregrid_factor"] == 8
+        assert dd["npts_full_coarse"] == n_coarse
+        assert dd["Q"].shape[0] == (n_coarse - 1) * 8 + 1
+
+
+def test_driver_passes_the_factor_at_its_call_site():
+    """The driver's own ``build_data_from_precompute`` call must name the option.
+
+    Parsed with ``ast`` rather than grepped, so a mention in a comment, a help
+    string or a dead branch does not satisfy it.  This is the one seam a library
+    test cannot reach: the driver is a script with no ``.py`` extension and its
+    ``analyze_one`` needs real frames to run.
+    """
+    import ast
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    driver = os.path.join(here, "..", "..", "bin",
+                          "integrate_likelihood_extrinsic_jax")
+    tree = ast.parse(open(driver).read())
+    sites = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", None)
+        if name != "build_data_from_precompute":
+            continue
+        sites.append({k.arg for k in node.keywords if k.arg})
+    assert sites, "driver no longer calls build_data_from_precompute"
+    for kwargs in sites:
+        assert "q_time_pregrid_factor" in kwargs, (
+            "a build_data_from_precompute call site does not forward "
+            "--q-time-pregrid-factor; the flag would parse and do nothing")
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-s", "-q"]))
