@@ -235,30 +235,39 @@ def test_the_seed_lattice_is_offset_off_the_symmetry_points():
 
 def test_the_newton_step_backtracks_rather_than_freezing():
     """Without a line search a rejected step leaves the seed where it is FOREVER -- there
-    is no shorter step to fall back to -- and the locator then reports whatever that seed
-    started near.  Measured on a faithful table, freeze-on-rejection missed the profile
-    maximum by 3.9e-4 of the amplitude at every amplitude, which is 0.2 sigma of distance
-    offset at rho 40 growing to 3.1 sigma at rho 640 because sigma shrinks as 1/rho while
-    the (phi,u) error does not.
+    is no shorter step to fall back to -- and the locator settles for whatever that seed
+    happened to reach.  Measured on a faithful table, freeze-on-rejection missed the
+    profile maximum by 3.9e-4 of the amplitude at EVERY amplitude, which is 0.2 sigma of
+    distance offset at rho 40 growing to 3.1 sigma at rho 640, because sigma shrinks as
+    1/rho while the (phi, u) error does not.
 
-    Asserted by OUTCOME: the located maximum must beat what the raw seed lattice already
-    knows by a wide margin, which a frozen iteration cannot do.
+    ASSERTED AGAINST A DENSE SCAN, and that is the second version of this test: the first
+    asked only that the iteration beat its own seed lattice, which a frozen iteration
+    still does easily -- it SURVIVED the mutation that removes the backtracking.  A
+    relative 4e-4 shortfall is only visible against a reference that is itself close to
+    the maximum.
     """
     A, B, dref = _tables(rho=40.0)
     xlo, xhi = _support(dref)
     _, _, F_c, _ = JP.x_profile_peak(A, B, xlo, xhi)
+    g = jnp.linspace(0.0, 2 * jnp.pi, 720, endpoint=False)
+    PH, UU = jnp.meshgrid(g, g, indexing="ij")
+    a, b = JP._AB_at(A, PH, UU), JP._AB_at(B, PH, UU)
+    xh = jnp.clip(jnp.where(b > 0, a / jnp.where(b > 0, b, 1.0), jnp.inf), xlo, xhi)
+    F_scan = float(jnp.max(xh * a - 0.5 * xh * xh * b))
+    assert float(F_c) >= F_scan, (
+        "a 720x720 scan must not beat the locator; a frozen iteration lets it "
+        "(%r vs %r)" % (float(F_c), F_scan))
+    # and the seed lattice alone must NOT already clear that bar, or the assertion above
+    # is about the seeds rather than about the iteration.
     n = JP.GH_SEED_LATTICE
     cell = 2.0 * np.pi / n
     base = jnp.arange(n) * cell
-    PH, UU = jnp.meshgrid(base + 0.5 * cell, base + 0.3183098861837907 * cell,
+    P2, U2 = jnp.meshgrid(base + 0.5 * cell, base + 0.3183098861837907 * cell,
                           indexing="ij")
-    a = JP._AB_at(A, PH, UU)
-    b = JP._AB_at(B, PH, UU)
-    xh = jnp.clip(jnp.where(b > 0, a / jnp.where(b > 0, b, 1.0), jnp.inf), xlo, xhi)
-    seeded = float(jnp.max(xh * a - 0.5 * xh * xh * b))
-    assert float(F_c) > seeded + 1.0, (
-        "the iteration must actually move the seeds; a frozen one returns the seed "
-        "lattice maximum itself (%r vs %r)" % (float(F_c), seeded))
+    a2, b2 = JP._AB_at(A, P2, U2), JP._AB_at(B, P2, U2)
+    x2 = jnp.clip(jnp.where(b2 > 0, a2 / jnp.where(b2 > 0, b2, 1.0), jnp.inf), xlo, xhi)
+    assert float(jnp.max(x2 * a2 - 0.5 * x2 * x2 * b2)) < F_scan
 
 
 def test_the_window_is_scaled_by_the_local_distance_width():
@@ -276,15 +285,25 @@ def test_the_window_is_scaled_by_the_local_distance_width():
 
 def test_the_placement_carries_no_gradient():
     """Node positions come from an argmax over a seed lattice and from a clip, neither of
-    which has a useful derivative; freezing them is what keeps the AD graph finite.  A
-    lost stop_gradient shows up as a tangent flowing through the node POSITIONS."""
+    which has a useful derivative; freezing them is what keeps the AD graph finite and
+    makes a displaced node harmless (it adds to one trapezoid panel exactly what it
+    removes from its neighbour).
+
+    THE CENTRE AND THE WIDTH ARE PROBED SEPARATELY.  A single probe that scales both at
+    once is satisfied by either freeze alone, and a mutation sweep found exactly that: it
+    could not tell a load-bearing stop_gradient from a redundant one.
+    """
     xlo, xhi = _support(1000.0)
-
-    def f(scale):
-        x_k, _ = JP.distance_gh_nodes(0.3 * scale, 4.0 * scale, xlo, xhi, 16)
-        return jnp.sum(x_k)
-
-    assert float(jax.grad(f)(1.0)) == 0.0
+    centre = lambda c: jnp.sum(JP.distance_gh_nodes(0.3 * c, 4.0, xlo, xhi, 16)[0])
+    width = lambda w: jnp.sum(JP.distance_gh_nodes(0.3, 4.0 * w, xlo, xhi, 16)[0])
+    assert float(jax.grad(centre)(1.0)) == 0.0, "the node CENTRE must be frozen"
+    assert float(jax.grad(width)(1.0)) == 0.0, "the node WIDTH must be frozen"
+    # and both probes must be non-vacuous: without the freeze the node positions really
+    # do move with these arguments.
+    n0 = np.asarray(JP.distance_gh_nodes(0.3, 4.0, xlo, xhi, 16)[0])
+    n1 = np.asarray(JP.distance_gh_nodes(0.33, 4.0, xlo, xhi, 16)[0])
+    n2 = np.asarray(JP.distance_gh_nodes(0.3, 4.4, xlo, xhi, 16)[0])
+    assert not np.allclose(n0, n1) and not np.allclose(n0, n2)
 
 
 # ---------------------------------------------------------------- the certificate
@@ -421,6 +440,52 @@ def test_a_bracket_that_fails_to_enclose_the_peak_is_reported(monkeypatch):
     assert not bool(ok), "and that failure must reach ok"
 
 
+def test_a_peak_at_the_distance_support_still_certifies():
+    """A distance posterior that piles up at d_min or d_max is the CORRECT answer, not an
+    unenclosed peak: there the integral stops because the prior's support does.  Both
+    certificates exempt a pinned end for that reason.
+
+    Without the exemption this fires on most noise-dominated time bins of a real run, and
+    a label that fires everywhere means nothing -- so the exemption is what keeps the
+    label informative, not what weakens it.  The fixture is asserted to actually put the
+    peak outside the support, else it certifies for the ordinary reason.
+    """
+    A, B, dref = _tables(rho=40.0)
+    xlo_full, xhi_full = _support(dref)
+    x_c, B_c, _, _ = JP.x_profile_peak(A, B, xlo_full, xhi_full)
+    # move the support so the peak sits beyond its upper edge
+    xhi = float(x_c) * 0.5
+    xlo = xhi / 1000.0
+    x_c2, _, _, _ = JP.x_profile_peak(A, B, xlo, xhi)
+    assert abs(float(x_c2) - xhi) < 1e-9 * xhi, (
+        "the fixture must clip the peak to the support edge", float(x_c2), xhi)
+    v, ok, info = JP.joint_lnL_phi_dense_gh(A, B, xlo, xhi, 16, n_phi=160, n_nodes=64)
+    assert np.isfinite(float(v))
+    assert bool(info["bracket_ok"]), "a peak pinned at the support is not an escape"
+    assert bool(ok)
+
+
+def test_the_bracket_verdict_reaches_ok_independently_of_the_window(monkeypatch):
+    """The two certificates answer DIFFERENT questions -- did the bracket enclose the
+    peak, and is the resolving window's omitted tail negligible -- and ``ok`` is their
+    conjunction.
+
+    Asserting that on an end-to-end failure does NOT test it: a centre displaced far
+    enough to escape the bracket also produces a resolving window that misses the peak,
+    so the window declines too and dropping the bracket term entirely goes unnoticed --
+    a mutation that removed it SURVIVED the end-to-end test.  So the window certificate
+    is neutralized here and only the bracket can speak.
+    """
+    A, B, dref = _tables(rho=40.0)
+    xlo, xhi = _support(dref)
+    monkeypatch.setattr(JP, "x_profile_peak", _displace(1000.0))
+    monkeypatch.setattr(JP, "gh_window_ok",
+                        lambda *a, **k: (jnp.asarray(True), jnp.asarray(-jnp.inf)))
+    v, ok, info = JP.joint_lnL_phi_dense_gh(A, B, xlo, xhi, 16, n_phi=160, n_nodes=64)
+    assert not bool(info["bracket_ok"])
+    assert not bool(ok), "the bracket's verdict must reach ok on its own"
+
+
 # ---------------------------------------------------------------- the value
 
 def test_gh_agrees_with_a_refined_uniform_grid():
@@ -545,8 +610,13 @@ def test_the_gh_window_record_reaches_the_host():
     for fn in (AM.gh_window_state, AM.reset_gh_window_record):
         assert "effects_barrier" in inspect.getsource(fn)
     src = inspect.getsource(AM._gh_window_failsafe)
-    assert src.find("lax.cond") < src.find("debug.callback"), (
-        "the callback must sit inside lax.cond")
+    # THE CALLBACK ITSELF, not "some lax.cond precedes some callback".  The looser
+    # ordering check was satisfied by the lax.cond around the debug.print, so a mutation
+    # that pulled the callback out of its own cond SURVIVED it -- and an unconditional
+    # host callback fires once per likelihood evaluation, per proposal, per chain.
+    assert "lambda n_: jax.debug.callback(_record_gh_window" in src, (
+        "the host callback must be the body of a lax.cond branch")
+    assert "lambda n_: jax.debug.print(" in src
     AM._record_gh_window(3, 10, "peak-local")
     st = AM.gh_window_state(barrier=False)
     assert st["declined"] is True and st["n_declined"] == 3
@@ -601,6 +671,36 @@ def test_the_batch_memory_model_follows_the_gh_node_count(monkeypatch):
     monkeypatch.setattr(SAMP, "_GH_NODES", 64)
     assert SAMP._peaklocal_bytes_per_sample_pt(like) > on, (
         "and it must still respond to the node count")
+
+
+def test_too_few_nodes_is_refused_rather_than_silently_wrong():
+    """Below four nodes the composite trapezoid has no interior panel and the end-node
+    certificate has no second node to read a decay from.  Returning a number from a rule
+    that is not the rule described is the failure this refuses."""
+    A, B, dref = _tables()
+    xlo, xhi = _support(dref)
+    for n in (1, 2, 3):
+        with pytest.raises(ValueError, match="too few nodes"):
+            JP.joint_lnL_phi_dense_gh(A, B, xlo, xhi, n, n_phi=64, n_nodes=48)
+    JP.joint_lnL_phi_dense_gh(A, B, xlo, xhi, 4, n_phi=64, n_nodes=48)
+
+
+def test_the_driver_resets_and_labels_on_the_distance_window():
+    """A host record with no consumer is an inert guard.  The driver must (a) clear the
+    record per EVENT -- a batch run analyzes several, and a decline on event 0 must not
+    label event 1 -- and (b) turn a decline into an artifact label, kept SEPARATE from
+    the angle-grid label because the angle grids can be perfect while the distance
+    marginal is truncated."""
+    import pathlib
+    src = pathlib.Path(__file__).resolve().parents[2].joinpath(
+        "bin", "integrate_likelihood_extrinsic_jax").read_text()
+    assert "reset_gh_window_record()" in src
+    assert "SUSPECT-DISTANCE-WINDOW" in src
+    assert "gh_window_state()" in src
+    i_reset = src.index("reset_amp_failsafe()")
+    assert abs(src.index("reset_gh_window_record()") - i_reset) < 200, (
+        "the two per-event resets must sit together, or one will be moved without the "
+        "other")
 
 
 def test_no_mode_content_restriction_is_imposed_on_this_branch():

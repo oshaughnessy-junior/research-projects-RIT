@@ -700,10 +700,16 @@ def distance_gh_nodes(x_c, B_c, x_min, x_max, n_nodes, n_sigma=GH_N_SIGMA,
     to one trapezoid panel what it removes from its neighbour, so a frozen placement is
     correct and not merely convenient.
     """
+    # THE ONE PLACE THE PLACEMENT IS FROZEN, and it is here rather than at the call
+    # sites so that the contract belongs to this function: any caller, with any rule for
+    # producing (x_c, B_c), gets a gradient-free placement.  A mutation sweep found the
+    # earlier arrangement had four stop_gradients of which three were redundant -- x_k is
+    # frozen by construction once its centre and width are, and so is the bracket's
+    # argmax node -- and a redundant guard is one no test can hold to account.
     x_c = lax.stop_gradient(jnp.clip(x_c, x_min, x_max))
     sigma = lax.stop_gradient(1.0 / jnp.sqrt(jnp.maximum(B_c, 1e-30)))
     z = jnp.linspace(-float(n_sigma), float(n_sigma), int(n_nodes))
-    x_k = lax.stop_gradient(jnp.clip(x_c + sigma * z, x_min, x_max))
+    x_k = jnp.clip(x_c + sigma * z, x_min, x_max)
     dx = jnp.diff(x_k)
     w = jnp.concatenate([0.5 * dx[:1], 0.5 * (dx[1:] + dx[:-1]), 0.5 * dx[-1:]])
     pos = w > 0
@@ -797,22 +803,43 @@ def joint_lnL_phi_dense_gh(C_A, C_B, x_min, x_max, n_gh, n_phi=256,
        centre is a measurement of the integrand, not an estimate of it, and it is what
        makes the scheme adaptive in the strong sense.
 
-    ``ok`` is :func:`gh_window_ok` on the resolving pass, conjoined with the bracket
-    having found an interior maximum.  ``bracket=False`` runs pass 2 alone about the
-    analytic centre; it exists so the value of pass 1 can be MEASURED by ablation rather
-    than argued, and is not the production setting.
+    ``ok`` conjoins :func:`gh_window_ok` on the resolving pass with the bracket having
+    found an interior maximum -- or an end one PINNED at the distance support, where a
+    maximum at the boundary is the right answer and not an unenclosed peak.  ``info``
+    carries both verdicts separately (``bracket_ok``, ``window_ok``) and the measured
+    omitted fraction (``omitted_log_frac``), because a caller should be able to read the
+    measurement rather than the threshold.
+
+    ``bracket=False`` runs pass 2 alone about the analytic centre.  It exists so the
+    value of pass 1 can be MEASURED by ablation rather than argued, and is not the
+    production setting.
 
     Cost is ``2 * n_gh`` torus integrals per ``(sample, time)`` against ``n_d`` for the
-    uniform grid, and -- this is the whole point -- it does not grow with amplitude.
+    uniform grid, and -- for the DISTANCE axis, which is what this function changes -- it
+    does not grow with amplitude.  The phi axis of this kernel is still dense and still
+    sized as ``sqrt(A)``, so the scheme as a whole goes from ~rho^2 to ~rho; ``rho^0``
+    needs the phi axis localized as well, which is ``phi-local``.
     """
+    n_gh = int(n_gh)
+    if n_gh < 4:
+        # The composite-trapezoid weights are built from ADJACENT SPACINGS, so fewer than
+        # three nodes has no interior panel and the end-node certificate has no second
+        # node to read a decay rate from.  Refuse rather than return a number from a rule
+        # that is not the rule described: at +-7 sigma the spacing only reaches the
+        # ~1 sigma the Euler-Maclaurin argument needs at 15 nodes, so anything below that
+        # is under-resolved and anything below 4 is structurally broken.
+        raise ValueError(
+            "JAX_ILE_DISTMARG_GH=%d is too few nodes for the peak-local adaptive "
+            "distance quadrature: the composite trapezoid needs at least 4, and the "
+            "+-%g sigma window needs about 16 before its spacing reaches the ~1 sigma "
+            "the trapezoid's Gaussian error bound assumes." % (n_gh, GH_N_SIGMA))
     x_min = jnp.asarray(x_min, dtype=jnp.float64)
     x_max = jnp.asarray(x_max, dtype=jnp.float64)
-    n_gh = int(n_gh)
     kw = dict(n_phi=n_phi, phi_chunk=phi_chunk, n_nodes=n_nodes)
 
+    # Not frozen here: `distance_gh_nodes` freezes its own inputs, which is where the
+    # contract lives.  Repeating it would be a guard no mutation can reach.
     x_c, B_c, F_c, ang = x_profile_peak(C_A, C_B, x_min, x_max)
-    x_c = lax.stop_gradient(x_c)
-    B_c = lax.stop_gradient(B_c)
 
     if bracket:
         wide = float(scan_factor) * float(n_gh - 1) * float(n_sigma)
@@ -824,8 +851,17 @@ def joint_lnL_phi_dense_gh(C_A, C_B, x_min, x_max, n_gh, n_phi=256,
         j = jnp.argmax(e_s)
         # An argmax ON an end node means the bracket did not contain the peak; the centre
         # is used anyway (it is still the best available) and `ok` records that it failed.
-        bracket_ok = (j > 0) & (j < n_gh - 1)
-        x_c = lax.stop_gradient(x_s[j])
+        #
+        # UNLESS THAT END IS PINNED AT THE DISTANCE SUPPORT, which is the same exemption
+        # :func:`gh_window_ok` makes and rests on the same fact: there the integral stops
+        # because the PRIOR's support does, and a maximum at the boundary is the correct
+        # answer rather than an unenclosed peak.  Without it every row whose distance
+        # posterior piles up at d_min or d_max declines -- and in a real run that is most
+        # noise-dominated time bins, so the label would fire everywhere and mean nothing.
+        pin_lo = (x_s[0] <= x_min) | (x_s[0] >= x_max)
+        pin_hi = (x_s[-1] <= x_min) | (x_s[-1] >= x_max)
+        bracket_ok = ((j > 0) | pin_lo) & ((j < n_gh - 1) | pin_hi)
+        x_c = x_s[j]
     else:
         bracket_ok = jnp.asarray(True)
 

@@ -1252,6 +1252,24 @@ def angle_grid_suspect_note(scheme=None):
                 "amp_sizing=%.6g scheme=%s"
                 % (st.get("worst_amp", float("nan")),
                    st.get("amp_sizing", float("nan")), st.get("scheme")))
+    # THE DISTANCE AXIS HAS ITS OWN CHECK AND ITS OWN LABEL.  Under
+    # JAX_ILE_DISTMARG_GH the distance nodes are placed per (sample, time) on that
+    # point's own integrand, and the resolving window certifies itself from the
+    # values it already computed.  A decline there is a DIFFERENT failure from an
+    # undersized angle grid -- the angle grids can be perfect while the distance
+    # marginal is truncated -- so folding them into one flag would make a run that
+    # tripped only this one unattributable.  A record with no consumer is an inert
+    # guard, which is why this clause exists rather than only the host state.
+    dw = _anglemarg.gh_window_state()
+    if dw.get("declined"):
+        return ("SUSPECT-DISTANCE-WINDOW gh_window=DECLINED n_declined=%d "
+                "scheme=%s (the adaptive distance quadrature's window did not "
+                "certify at some sample/time points: its bracket did not enclose "
+                "an interior maximum, or an end node's extrapolated tail exceeded "
+                "the omitted-mass tolerance without being pinned at the distance "
+                "support.  Raise JAX_ILE_DISTMARG_GH, or unset it for the uniform "
+                "distance grid.)"
+                % (dw.get("n_declined", -1), dw.get("scheme")))
     # 'peak-local' belongs here for the same reason it belongs in the failsafe: its phi
     # axis is dense and amp-sized, so its artifacts are entitled to no more confidence
     # than the other two, and a scheme missing from this list would publish output with
@@ -1810,6 +1828,7 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
     # Per-EVENT state: a batch run analyzes several events in one process, and
     # an undersizing on event 0 must not label event 1.
     _anglemarg.reset_amp_failsafe()
+    _anglemarg.reset_gh_window_record()
     tq = opts.time_marginalization_quadrature
     if tq == "bandlimited":
         required, g0, gcert = bandlimited_storage_requirement(

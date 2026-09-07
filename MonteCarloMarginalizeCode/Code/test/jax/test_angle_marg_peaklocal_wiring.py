@@ -75,22 +75,36 @@ def test_peak_local_records_its_provenance():
     assert "amp_sizing" in info, info
 
 
-def test_peak_local_refuses_the_adaptive_distance_quadrature():
-    """Refuse rather than silently ignore: this kernel sums the caller's distance grid
-    and implements no psi-marginal node placement, exactly as the laplace branch does
-    not.  The incompatibility is a property of the scheme, declared once."""
+def test_peak_local_implements_the_adaptive_distance_quadrature():
+    """This test asserted the OPPOSITE until the quadrature was written -- it required
+    the raise, so it forbade the fix and had to be replaced rather than deleted.
+
+    What it pins now is the contract that replaced the refusal: with
+    JAX_ILE_DISTMARG_GH set the entry returns finite values through the adaptive nodes,
+    and those values DIFFER from the uniform-grid arm, so the variable is not silently
+    inert -- which is the failure the refusal existed to prevent in the first place.
+    Depth of coverage lives in test_peaklocal_distance_gh.py.
+    """
     from RIFT.likelihood.jax_ile import core as _core
     data = make_synth(scale=2.0)
+    xg = jnp.linspace(0.4, 2.0, 8)
+    lw = jnp.full(8, -np.log(8.0))
+    call = lambda: np.asarray(AM.fused_log_likelihood_distphipsimarg_peaklocal(
+        data, jnp.asarray(RA), jnp.asarray(DEC), jnp.asarray(INCL), xg, lw,
+        interp=INTERP, amp_sizing=AM.ANGLE_MARG_CROSSOVER_AMPLITUDE,
+        return_lnLt=True))
     old = _core._DISTMARG_GH_N
     try:
-        _core._DISTMARG_GH_N = 8
-        with pytest.raises(ValueError, match="peak-local"):
-            AM.fused_log_likelihood_distphipsimarg_peaklocal(
-                data, jnp.asarray(RA), jnp.asarray(DEC), jnp.asarray(INCL),
-                jnp.linspace(0.4, 2.0, 8), jnp.zeros(8), interp=INTERP,
-                amp_sizing=AM.ANGLE_MARG_CROSSOVER_AMPLITUDE)
+        _core._DISTMARG_GH_N = 0
+        plain = call()
+        _core._DISTMARG_GH_N = 16
+        adaptive = call()
     finally:
         _core._DISTMARG_GH_N = old
+    assert np.all(np.isfinite(adaptive)), "the adaptive arm must not be refused"
+    assert adaptive.shape == plain.shape
+    assert not np.array_equal(adaptive, plain), (
+        "JAX_ILE_DISTMARG_GH must actually change the distance rule here")
 
 
 def test_peak_local_requires_amp_sizing_rather_than_guessing_it():

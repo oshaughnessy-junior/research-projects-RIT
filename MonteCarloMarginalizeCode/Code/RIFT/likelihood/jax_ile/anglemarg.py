@@ -2178,11 +2178,18 @@ def fused_log_likelihood_distphipsimarg_peaklocal(
         x_max = jnp.max(jnp.asarray(x_grid))
 
         def _one_gh(a, b):
-            return _jp.joint_lnL_phi_dense_gh(
+            # (value, ok) ONLY.  The kernel's `info` carries per-node arrays -- the
+            # nodes, their torus integrals, the located angles -- and returning them
+            # THROUGH the double vmap makes each an (S, npts, n_gh) output of the traced
+            # function, which is exactly the kind of buffer this scheme exists to stop
+            # allocating.  Dropping them here leaves them dead inside one call, where
+            # XLA removes them, instead of relying on the caller not to look.
+            v, ok, _ = _jp.joint_lnL_phi_dense_gh(
                 a, b, x_min, x_max, _core._DISTMARG_GH_N, n_phi=n_phi,
                 log_w_grid=log_w_grid, **kw)
+            return v, ok
 
-        lnL_t, ok, _info = jax.vmap(jax.vmap(_one_gh))(A, B)   # (S, npts)
+        lnL_t, ok = jax.vmap(jax.vmap(_one_gh))(A, B)          # (S, npts)
         _gh_window_failsafe(ok, "peak-local")
     else:
         def _one(a, b):
