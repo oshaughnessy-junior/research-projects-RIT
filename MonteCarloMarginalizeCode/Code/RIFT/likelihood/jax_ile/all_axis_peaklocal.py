@@ -1001,7 +1001,8 @@ def refine_all_axis_starts(C_A_t, C_B, starts, x_min, x_max, *,
                            time_guard=0,
                            iterations=12, ridge=1.0e-8,
                            max_step=(2.0, 0.5, 0.5, 0.25),
-                           time_localize_iterations=32, live=None):
+                           time_localize_iterations=32, live=None,
+                           optimizer_batch_size=1):
     """Refine four-axis starts with fixed-iteration JAX gradient/Hessian steps.
 
     This is local optimization only.  The return values report stationarity and
@@ -1009,6 +1010,11 @@ def refine_all_axis_starts(C_A_t, C_B, starts, x_min, x_max, *,
     wrapped, while time and distance remain on their physical support.  An
     optional fixed-shape ``live`` mask skips optimizer work for padded starts
     and returns finite geometry placeholders with value ``-inf`` for them.
+    ``optimizer_batch_size`` trades a small, explicit amount of live workspace
+    for device parallelism.  Live lanes are sorted first, processed in bounded
+    chunks, and restored to their original order; fully inactive chunks never
+    enter the optimizer.  The default of one preserves the sequential
+    memory-minimal path.
     """
     C_A_t = jnp.asarray(C_A_t, dtype=jnp.complex128)
     C_B = jnp.asarray(C_B, dtype=jnp.complex128)
@@ -1026,6 +1032,11 @@ def refine_all_axis_starts(C_A_t, C_B, starts, x_min, x_max, *,
         raise ValueError("iterations must be positive")
     if int(time_localize_iterations) < 1:
         raise ValueError("time_localize_iterations must be positive")
+    optimizer_batch_size = int(optimizer_batch_size)
+    if (optimizer_batch_size < 1
+            or optimizer_batch_size > starts.shape[0]):
+        raise ValueError(
+            "optimizer_batch_size must fit inside the start capacity")
     time_guard = int(time_guard)
     n_time = C_A_t.shape[-1] - 2 * time_guard
     if time_guard < 0 or n_time < 2:
@@ -1125,7 +1136,48 @@ def refine_all_axis_starts(C_A_t, C_B, starts, x_min, x_max, *,
         return jax.lax.cond(
             is_live, jax.checkpoint(_one), _inactive, start)
 
-    return jax.lax.map(_mapped, (starts, live))
+    if optimizer_batch_size == 1:
+        return jax.lax.map(_mapped, (starts, live))
+
+    # Packing live lanes before chunking is correctness-neutral but important
+    # for cost: vmap lowers lane-wise conditionals to selects, so a mixed chunk
+    # may evaluate its padded lanes.  Packing confines that overhead to at most
+    # one final live chunk, while the outer conditional skips every wholly
+    # inactive chunk.
+    order = jnp.argsort(~live, stable=True)
+    inverse_order = jnp.argsort(order)
+    packed_starts = starts[order]
+    packed_live = live[order]
+    n_starts = starts.shape[0]
+    n_chunks = ((n_starts + optimizer_batch_size - 1)
+                // optimizer_batch_size)
+    n_padded = n_chunks * optimizer_batch_size
+    padding = n_padded - n_starts
+    if padding:
+        packed_starts = jnp.pad(
+            packed_starts, ((0, padding), (0, 0)), mode="edge")
+        packed_live = jnp.pad(
+            packed_live, ((0, padding),), constant_values=False)
+    chunked_starts = packed_starts.reshape(
+        (n_chunks, optimizer_batch_size, 4))
+    chunked_live = packed_live.reshape((n_chunks, optimizer_batch_size))
+
+    def _inactive_chunk(chunk_starts):
+        return jax.vmap(_inactive)(chunk_starts)
+
+    def _chunk(args):
+        chunk_starts, chunk_live = args
+        return jax.lax.cond(
+            jnp.any(chunk_live),
+            lambda payload: jax.vmap(_mapped)(payload),
+            lambda payload: _inactive_chunk(payload[0]),
+            (chunk_starts, chunk_live))
+
+    chunked = jax.lax.map(_chunk, (chunked_starts, chunked_live))
+    packed_result = tuple(
+        value.reshape((-1,) + value.shape[2:])[:n_starts]
+        for value in chunked)
+    return tuple(value[inverse_order] for value in packed_result)
 
 
 def select_refined_modes(points, values, gradients, curvatures, *,
@@ -1365,7 +1417,7 @@ def _assemble_all_axis_mode_plan_device(
         C_A_t, start_plan, refined, x_min, x_max, *, max_modes,
         local_radius, time_guard, gradient_tol, tolerance,
         scaled_step_tol, eigenvalue_floor,
-        time_reconstruction_certified):
+        time_reconstruction_certified, optimizer_batch_size):
     """Select fixed-shape local geometry from an existing device refinement."""
     points, values, gradients, hessians, curvatures = refined
     if (points.shape != start_plan.starts.shape
@@ -1462,8 +1514,17 @@ def _assemble_all_axis_mode_plan_device(
         start_plan.time_cover_certified,
         disjoint,
         discovery_capacity_ok)
+    n_optimizer_starts = jnp.count_nonzero(start_plan.live)
+    n_optimizer_batches = (
+        n_optimizer_starts + int(optimizer_batch_size) - 1
+    ) // int(optimizer_batch_size)
     ledger = {
-        "n_optimizer_starts": jnp.count_nonzero(start_plan.live),
+        "n_optimizer_starts": n_optimizer_starts,
+        "optimizer_batch_size": jnp.asarray(int(optimizer_batch_size)),
+        "n_optimizer_batches_if_independent": n_optimizer_batches,
+        "n_optimizer_padded_lanes_if_independent": (
+            n_optimizer_batches * int(optimizer_batch_size)
+            - n_optimizer_starts),
         "n_refined_stationary": jnp.count_nonzero(stationary),
         "n_selected_modes": n_selected,
         "selection_overflow": selection_overflow,
@@ -1503,7 +1564,7 @@ def make_all_axis_mode_plan_device(
         max_step=(2.0, 0.5, 0.5, 0.25), gradient_tol=1.0e-6,
         coordinate_tol=(0.25, 1.0e-4, 1.0e-4, 1.0e-5),
         scaled_step_tol=None, eigenvalue_floor=1.0e-12,
-        time_reconstruction_certified=False):
+        time_reconstruction_certified=False, optimizer_batch_size=1):
     """Refine and deduplicate a fixed-shape device start portfolio.
 
     This is the per-row planning seam needed by nested JAX callers.  It never
@@ -1523,14 +1584,16 @@ def make_all_axis_mode_plan_device(
         time_guard=int(time_guard), iterations=int(iterations), ridge=float(ridge),
         max_step=max_step,
         time_localize_iterations=int(time_localize_iterations),
-        live=start_plan.live)
+        live=start_plan.live,
+        optimizer_batch_size=int(optimizer_batch_size))
     return _assemble_all_axis_mode_plan_device(
         C_A_t, start_plan, refined, x_min, x_max,
         max_modes=max_modes, local_radius=float(local_radius),
         time_guard=int(time_guard), gradient_tol=float(gradient_tol),
         tolerance=tolerance, scaled_step_tol=scaled_step_tol,
         eigenvalue_floor=float(eigenvalue_floor),
-        time_reconstruction_certified=time_reconstruction_certified)
+        time_reconstruction_certified=time_reconstruction_certified,
+        optimizer_batch_size=int(optimizer_batch_size))
 
 
 def make_all_axis_mode_plan_pair_device(
@@ -1541,7 +1604,7 @@ def make_all_axis_mode_plan_pair_device(
         max_step=(2.0, 0.5, 0.5, 0.25), gradient_tol=1.0e-6,
         coordinate_tol=(0.25, 1.0e-4, 1.0e-4, 1.0e-5),
         scaled_step_tol=None, eigenvalue_floor=1.0e-12,
-        time_reconstruction_certified=False):
+        time_reconstruction_certified=False, optimizer_batch_size=1):
     """Build nested base/enriched plans with one shared optimizer pass.
 
     ``extra_starts`` is combined with ``base_starts`` structurally before the
@@ -1573,7 +1636,8 @@ def make_all_axis_mode_plan_pair_device(
         time_guard=int(time_guard), iterations=int(iterations), ridge=float(ridge),
         max_step=max_step,
         time_localize_iterations=int(time_localize_iterations),
-        live=combined.live)
+        live=combined.live,
+        optimizer_batch_size=int(optimizer_batch_size))
     base_capacity = base_starts.starts.shape[0]
     base_refined = tuple(value[:base_capacity] for value in refined)
     base_plan, base_ledger = _assemble_all_axis_mode_plan_device(
@@ -1582,20 +1646,32 @@ def make_all_axis_mode_plan_pair_device(
         time_guard=int(time_guard), gradient_tol=float(gradient_tol),
         tolerance=tolerance, scaled_step_tol=scaled_step_tol,
         eigenvalue_floor=float(eigenvalue_floor),
-        time_reconstruction_certified=time_reconstruction_certified)
+        time_reconstruction_certified=time_reconstruction_certified,
+        optimizer_batch_size=int(optimizer_batch_size))
     enriched_plan, enriched_ledger = _assemble_all_axis_mode_plan_device(
         C_A_t, combined, refined, x_min, x_max,
         max_modes=enriched_max_modes, local_radius=float(local_radius),
         time_guard=int(time_guard), gradient_tol=float(gradient_tol),
         tolerance=tolerance, scaled_step_tol=scaled_step_tol,
         eigenvalue_floor=float(eigenvalue_floor),
-        time_reconstruction_certified=time_reconstruction_certified)
+        time_reconstruction_certified=time_reconstruction_certified,
+        optimizer_batch_size=int(optimizer_batch_size))
     base_live = jnp.count_nonzero(base_starts.live)
     extra_live = jnp.count_nonzero(extra_starts.live)
+    shared_live = base_live + extra_live
+    shared_batches = (
+        shared_live + int(optimizer_batch_size) - 1
+    ) // int(optimizer_batch_size)
     shared_ledger = {
-        "n_optimizer_starts_executed": base_live + extra_live,
+        "n_optimizer_starts_executed": shared_live,
         "n_optimizer_starts_avoided": base_live,
         "n_optimizer_starts_previous_two_pass": 2 * base_live + extra_live,
+        "optimizer_batch_size": jnp.asarray(int(optimizer_batch_size)),
+        "n_optimizer_batches_executed": shared_batches,
+        "n_optimizer_lanes_evaluated": (
+            shared_batches * int(optimizer_batch_size)),
+        "n_optimizer_padding_lanes_evaluated": (
+            shared_batches * int(optimizer_batch_size) - shared_live),
         "start_nesting_structural": jnp.asarray(True),
     }
     return (base_plan, enriched_plan, base_ledger, enriched_ledger,
