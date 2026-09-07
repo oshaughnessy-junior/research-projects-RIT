@@ -320,6 +320,30 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         honest phase-marginalized sky/psi export,
 #                                         K=14/K=88 independent guarded references,
 #                                         and executable baseline/banded support refusal.
+#   test_time_log_hermite.py          16  the log-space cubic-Hermite terminal time
+#                                         rule ITSELF: agreement with Simpson where
+#                                         Simpson is trustworthy, orders-better where
+#                                         it is not, quadratic reproduction including
+#                                         the boundary intervals, the non-finite
+#                                         table (mixed -inf falls back to Simpson),
+#                                         jit/vmap/grad and two exact identities.
+#   test_time_log_hermite_selectable.py
+#                                     20  the two SEAMS between a command line and
+#                                         that rule, both of which were broken while
+#                                         the file above was fully green: the driver
+#                                         re-typed its optparse choices as
+#                                         (simpson, bandlimited), so 'log-hermite'
+#                                         was unreachable from every command line;
+#                                         and the _time_marginalize_terminal branch
+#                                         was unbound -- `if False:` and a doubled
+#                                         deltaT both left the whole time-quadrature
+#                                         suite green.  Subprocess CLI acceptance for
+#                                         every member of _TIME_QUAD_CHOICES (NOT
+#                                         --help, which exits before validation),
+#                                         bitwise dispatch, and the phi_ref+psi
+#                                         marginalized endpoint where 'bandlimited'
+#                                         is refused and this rule is the only
+#                                         alternative to Simpson.
 
 FILES=(
   "${JAXDIR}/test_jax_time_quadrature.py"
@@ -353,6 +377,7 @@ FILES=(
   "${JAXDIR}/test_direct_marginalization_planner.py"
   "${JAXDIR}/test_time_first_peaklocal.py"
   "${JAXDIR}/test_time_log_hermite.py"
+  "${JAXDIR}/test_time_log_hermite_selectable.py"
 )
 
 # EXCLUDED: files in JAXDIR matching test_*.py that are deliberately NOT gated.  The
@@ -538,7 +563,17 @@ fi
 # JAX_ENABLE_X64=1, JAX_COMPILATION_CACHE_DIR=""), the DESELECT loop applied, i.e. the
 # post-deselect number.  That it also equals 445 + 3 is a coincidence of this change, not
 # a licence to have done the arithmetic.
-EXPECTED_TESTS=448
+#
+# 448 -> 468, and the FILES roster 31 -> 32.  test_time_log_hermite_selectable.py
+# adds 20 tests covering the two seams between a command line and the log-hermite
+# rule (the driver's optparse choices, and the _time_marginalize_terminal dispatch);
+# see the ledger entry above.  READ OFF THIS SCRIPT'S OWN LINE -- it printed
+# "collected 468 tests from 32 files" on CIT citlogin6 with ~/.cache/jaxci_venv
+# (jax 0.9.2, python 3.13, JAX_PLATFORMS=cpu, JAX_ENABLE_X64=1,
+# JAX_COMPILATION_CACHE_DIR=""), the DESELECT loop applied, i.e. the post-deselect
+# number.  That it also equals 448 + 20 is, for the third change running, a
+# coincidence -- and the run is still the only thing that establishes it.
+EXPECTED_TESTS=468
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
