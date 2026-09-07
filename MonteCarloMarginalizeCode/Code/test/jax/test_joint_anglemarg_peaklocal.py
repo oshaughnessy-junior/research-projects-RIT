@@ -570,23 +570,32 @@ def test_a_full_circuit_phi_window_is_one_region_at_every_peak_location():
     finding: at ``w_sigma = 200`` the window spans a full circuit, so the seam split
     emits ``[a0, 2 pi]`` and ``[0, a0 + 2 pi - 2 pi]``, adjacent BY CONSTRUCTION -- and
     adjacent in floating point only when ``(a0 + 2 pi) - 2 pi`` rounds back to ``a0``.
-    The sum lands in ``[8, 16)`` where the ulp is 1.78e-15, twice the ulp at ``a0``.
-    When it rounds low the pieces sit one ulp apart, the merge (exact-touching, no
+    ONLY THE LOW SIDE BREAKS: a round-trip landing one ulp ABOVE ``a0`` is fine, the
+    pieces overlap and the merge folds them.  What is lost is ``a0``'s low bits --
+    ``ulp(a0 + 2 pi)`` is 1.78e-15 whatever ``a0`` is, against ``ulp(a0)`` from 6.9e-18 to
+    8.9e-16.  In pure float64, no jax involved, 34.4% of ``a0`` uniform on the circle
+    round low.  Then the pieces sit one ulp apart, the merge (exact-touching, no
     tolerance, by design) keeps them separate, ``total`` comes out 8.9e-16 under 2 pi and
-    the ``wrapped`` clamp misses.  The rule then runs a SEAMED two-region trapezoid where
-    the periodic one is spectrally accurate: 2.1e-3 nats wrong instead of 2.1e-8.
+    the ``wrapped`` clamp misses.  The rule runs a SEAMED two-region trapezoid where the
+    periodic one is spectrally accurate: 2.1e-3 nats wrong instead of 2.1e-8.
 
-    Measured through this kernel on jax 0.9.2: 7 of 41 peak locations across one node
-    spacing landed on the bad side.  So the single fixture in
+    So the single fixture in
     :func:`test_the_halving_check_is_blind_at_the_sampling_harmonic` pinned the property
     BY LUCK.  jax 0.9.2 and 0.10.2 put the Newton fixed point two ulp apart on the same
     host, same python 3.13, same numpy 2.4.6; 0.10.2 landed on the good side, which is
-    why CI was green while the local runs failed.  Nothing was ever accepted wrong --
-    both sides return ok=False.
+    why CI was green while the local runs failed.
 
-    Sweeping the peak location is what makes the pin environment-independent.  ``vmap``
-    is what makes it affordable: the per-call cost is host-side tracing, ~1.35 s, and is
-    flat in the node counts, so 64 separate calls would be 90 s against ~20 s batched.
+    THE GRID BELOW IS PART OF THE GUARD, not incidental to it.  Pre-fix it fails on 10 of
+    these 64 shifts under jax 0.9.2 (max error 1.85e-02, 10 of them past the 1e-4
+    assertion) and on 10 under 0.10.2 -- so it catches the bug in the environment where
+    CI was green.  That is a property of THIS grid, though: an equally natural
+    golden-ratio sweep of the same length was measured at 0/64 pre-fix.  Sweeping is
+    necessary and not sufficient; the count above is the evidence, and it should be
+    re-measured rather than assumed if the grid is ever changed.
+
+    ``vmap`` is what makes it affordable: the per-call cost is host-side tracing, ~1.35 s,
+    flat in the node counts, so 64 separate calls run ~85 s against ~20-30 s batched
+    (the spread is host load, not the method).
     """
     shifts = np.linspace(0.0, 2 * np.pi, 64, endpoint=False)
     C = jnp.stack([_separable_phi_table(1000.0, s)[0] for s in shifts])
@@ -605,6 +614,29 @@ def test_a_full_circuit_phi_window_is_one_region_at_every_peak_location():
     # and the seam costs ACCURACY, which is why the count is worth pinning at all
     err = np.abs(np.asarray(v) - exact)
     assert err.max() < 1e-4, (float(err.max()), float(shifts[err.argmax()]))
+
+    # EVERYTHING ABOVE CONSTRAINS WHAT HAPPENS ONCE THE FULL-CIRCUIT BRANCH FIRES, AND
+    # NOTHING CONSTRAINS WHEN.  Every table above is a full circuit by construction
+    # (w_sigma=200, sigma=1/sqrt(1000), so the window is 12.65 rad), so a kernel taking the
+    # branch for EVERY window satisfies all three assertions.  Mutation-tested:
+    # `full_circuit = peaked` leaves this file's two seam tests green.
+    #
+    # WIDTH IS THE WRONG THING TO ASSERT HERE, and a first version of this block asserted
+    # it and was inert.  That mutation preserves the width -- a narrow window stays 0.1265
+    # rad wide either way -- and moves only the LOCATION, anchoring every region at 0.  The
+    # invariant that separates them is that a narrow region sits ON its peak: measured,
+    # 64/64 covered with the fix against 2/64 under the mutation.
+    narrow = jax.vmap(lambda c: JP.phi_local_lnI(c, w_sigma=2.0))(C)[2]
+    nlo = np.asarray(narrow["seg_lo"])
+    nw = np.asarray(narrow["seg_width"])
+    assert (nw.sum(axis=1) < 2 * np.pi).all(), float(nw.sum(axis=1).max())
+    peak = (shifts % (2 * np.pi))[:, None]
+    live = nw > 0
+    on_peak = ((nlo - 1e-9 <= peak) & (peak <= nlo + nw + 1e-9))
+    wrapped_hit = ((nlo - 1e-9 <= peak + 2 * np.pi)
+                   & (peak + 2 * np.pi <= nlo + nw + 1e-9))
+    covered = ((on_peak | wrapped_hit) & live).any(axis=1)
+    assert covered.all(), shifts[~covered][:4]
 
 
 def test_the_phi_grid_is_nested_so_no_evaluation_is_spent_on_a_probe_alone():
