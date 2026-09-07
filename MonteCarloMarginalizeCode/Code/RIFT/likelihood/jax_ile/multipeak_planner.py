@@ -29,13 +29,13 @@ support.  Any local decline returns the reserve, never a waveform failure.
 Returning the reserve because a diagnostic failed its budget and returning it
 because the planner raised are different events, and this module reports them
 separately: see ``MultiPeakResult.decline_kind`` and ``fault``.  Only the
-second warns, and only the second is made fatal by ``fail_on_fallback``.
+second is logged, and only the second is made fatal by ``fail_on_fallback``.
 """
 
 import heapq
+import logging
 import math
-import warnings
-from typing import NamedTuple, Optional
+from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -57,6 +57,18 @@ from .all_axis_peaklocal import (  # noqa: E402
     _validate_tables,
     summarize_uv_norm_table,
 )
+
+
+# A planner FAULT is reported here rather than through ``warnings.warn``.  A
+# warning's delivery and its fatality are both governed by process-global
+# filters that this module does not own: under ``-W error::RuntimeWarning`` the
+# warn call itself raises, which would make the DEFAULT path
+# (``fail_on_fallback=False``) fatal, and under the default filters the warnings
+# registry de-duplicates per call site, so a campaign of identical faults from
+# one call site reports once instead of once per call.  A logger has neither
+# property.  The primary channel is still the returned record
+# (``decline_kind``/``fault``), which no filter can suppress.
+logger = logging.getLogger(__name__)
 
 
 __all__ = [
@@ -168,14 +180,8 @@ class LocalIntegralReport(NamedTuple):
     active_node_fraction: float
 
 
-class MultiPeakResult(NamedTuple):
-    """Two-tier opt-in result with an explicit finite-reserve provenance.
-
-    ``modeled_peak_bytes`` counts explicit planner/evaluator arrays.  It is a
-    portable sizing model, not measured RSS or device high-water memory: JAX
-    compilation caches, allocator retention, host/device duplication, and AD
-    workspace must be measured separately on the production GPU.
-    """
+class _MultiPeakRecord(NamedTuple):
+    """The 13-element tuple record.  Construct :class:`MultiPeakResult`."""
 
     value: float
     accepted: bool
@@ -190,8 +196,79 @@ class MultiPeakResult(NamedTuple):
     total_refinement_steps: int
     total_local_evaluations: int
     modeled_peak_bytes: int
-    decline_kind: Optional[str] = None
-    fault: Optional["FallbackFault"] = None
+
+
+class MultiPeakResult(_MultiPeakRecord):
+    """Two-tier opt-in result with an explicit finite-reserve provenance.
+
+    ``modeled_peak_bytes`` counts explicit planner/evaluator arrays.  It is a
+    portable sizing model, not measured RSS or device high-water memory: JAX
+    compilation caches, allocator retention, host/device duplication, and AD
+    workspace must be measured separately on the production GPU.
+
+    THE TUPLE IS 13 ELEMENTS AND STAYS 13.  ``decline_kind`` and ``fault``
+    annotate the record; they are attributes only, and are not tuple
+    elements.  A ``NamedTuple`` is a tuple, so appending two fields would have
+    changed ``len()``, indexing, and iteration -- and any existing caller
+    writing ``a, b, ..., m = result`` would get ``ValueError: too many values
+    to unpack``.  Defaulted fields prevent that break on CONSTRUCTION, not on
+    UNPACKING, which is the contract callers actually hold.  This is a core
+    path; an existing caller must see exactly the previous behaviour.
+
+    So ``len()``, iteration, indexing, ``_fields`` and ``_asdict()`` all cover
+    the same 13 elements they did before.  The two annotations are reached by
+    attribute, and are preserved across ``_replace``, ``copy`` and ``pickle``.
+    """
+
+    # decline_kind (Optional[str]) and fault (Optional[FallbackFault]) are set
+    # per instance below.  There are no class-level fallbacks: __new__ is the
+    # only door, since _make, _replace, copy and pickle all route through it,
+    # so a fallback would be code no test could distinguish.
+    def __new__(cls, *args, decline_kind=None, fault=None, **kwargs):
+        self = super().__new__(cls, *args, **kwargs)
+        # The tuple payload is immutable, and so are these: set them behind
+        # the __setattr__ guard below.
+        object.__setattr__(self, "decline_kind", decline_kind)
+        object.__setattr__(self, "fault", fault)
+        return self
+
+    def __setattr__(self, name, value):
+        raise AttributeError(
+            "MultiPeakResult is immutable; use _replace(%s=...)" % name)
+
+    def __delattr__(self, name):
+        raise AttributeError("MultiPeakResult is immutable")
+
+    @classmethod
+    def _make(cls, iterable, *, decline_kind=None, fault=None):
+        # namedtuple._make is tuple.__new__ bound as a classmethod: it skips
+        # __new__, so it must be overridden or the annotations go missing.
+        return cls(*iterable, decline_kind=decline_kind, fault=fault)
+
+    # No __reduce__ is needed: this subclass has a __dict__, so the default
+    # pickle/copy protocol carries the annotations as instance state on top of
+    # the namedtuple's __getnewargs__ payload.  Removing an explicit __reduce__
+    # changed no test, which is how it was found to be dead.  The round trip is
+    # pinned by test_annotations_are_attributes_and_survive_replace_copy_pickle.
+    def _replace(self, **kwargs):
+        decline_kind = kwargs.pop("decline_kind", self.decline_kind)
+        fault = kwargs.pop("fault", self.fault)
+        values = dict(zip(_MultiPeakRecord._fields, self))
+        unexpected = set(kwargs) - set(values)
+        if unexpected:
+            raise ValueError(
+                "Got unexpected field names: %r" % sorted(unexpected))
+        values.update(kwargs)
+        return type(self)(
+            *(values[name] for name in _MultiPeakRecord._fields),
+            decline_kind=decline_kind, fault=fault)
+
+    def __repr__(self):
+        return "%s(%s, decline_kind=%r, fault=%r)" % (
+            type(self).__name__,
+            ", ".join("%s=%r" % (name, value)
+                      for name, value in zip(_MultiPeakRecord._fields, self)),
+            self.decline_kind, self.fault)
 
 
 class _DenseReserveError(Exception):
@@ -911,14 +988,18 @@ def multipeak_local_marginalize(
     A *diagnostic* decline (``decline_kind == DECLINE_DIAGNOSTIC``) is a normal
     outcome: the tiers ran and one of their budgets was not met.  A *fault*
     (``decline_kind == DECLINE_FAULT``, ``fault`` populated) means the planner
-    raised, so the reserve is standing in for a step that did not run.  A fault
-    emits one ``RuntimeWarning`` per call naming the stage, the exception, and
-    ``label``; ``fail_on_fallback=True`` raises :class:`MultiPeakFallbackError`
-    instead of evaluating the reserve.  It defaults off: this is a core path
-    and an existing caller must see exactly the previous behaviour.
+    raised, so the reserve is standing in for a step that did not run.  The
+    fault is reported in two places: in the returned record, which is the
+    primary channel because no configuration can suppress it, and on the module
+    logger (``RIFT.likelihood.jax_ile.multipeak_planner``) at WARNING, once per
+    CALL -- not once per call site, which is what ``warnings.warn`` would give.
+    ``fail_on_fallback=True`` raises
+    :class:`MultiPeakFallbackError` instead of evaluating the reserve.  It
+    defaults off: this is a core path and an existing caller must see exactly
+    the previous behaviour, under any logging or warnings configuration.
 
     ``label`` is an opaque caller tag (a row id, an event name) echoed in the
-    warning so a fault in a large campaign is attributable without re-running.
+    log line so a fault in a large campaign is attributable without re-running.
     """
     def evaluate_reserve():
         try:
@@ -991,7 +1072,7 @@ def multipeak_local_marginalize(
             int(result0.n_evaluations + result1.n_evaluations),
             max(result0.modeled_peak_bytes, result1.modeled_peak_bytes,
                 portfolio_bytes(portfolio0), portfolio_bytes(portfolio1)),
-            decline_kind, None)
+            decline_kind=decline_kind, fault=None)
     except (RuntimeError, ValueError, np.linalg.LinAlgError) as error:
         # Keep the return finite even when the local planner itself cannot form
         # a trustworthy report.  Re-run failures should be diagnosed upstream;
@@ -999,22 +1080,32 @@ def multipeak_local_marginalize(
         #
         # This is a FAULT, not a decline: the reserve stands in for a step that
         # did not run.  A whole campaign once read as a conservative controller
-        # because this path was silent, so it warns once per call and can be
-        # made fatal.  The warning precedes the reserve so a fault is still
-        # reported when the reserve itself then fails.
+        # because this path was silent, so it is reported once per call and can
+        # be made fatal.  The report precedes the reserve so a fault is still
+        # visible when the reserve itself then fails.
+        #
+        # A LOGGER, not warnings.warn.  Two properties of the warnings module
+        # are wrong for this: under ``-W error::RuntimeWarning`` the warn call
+        # RAISES, which would make this default (fail_on_fallback=False) path
+        # fatal on a filter the caller may have set for unrelated reasons; and
+        # under the default filters the registry de-duplicates per (message,
+        # category, call site), so N identical faults from one call site report
+        # ONCE.  That is worst in the campaign case this change exists for,
+        # where label=None leaves every message identical.  Neither the
+        # record below nor this logger has either property.
         fault = FallbackFault(
             stage, type(error).__name__, str(error))
-        warnings.warn(
+        logger.warning(
             "multipeak_local_marginalize: the local planner RAISED at stage "
             "%r and fell back to the dense reserve.  This is a fault, not a "
             "budget decline: %s: %s.  label=%r, C_A_t.shape=%s, "
             "C_B_t.shape=%s, x=[%r, %r], tier0=%r, tier1=%r, "
             "refine_iterations=%r.  Diagnose it upstream; pass "
-            "fail_on_fallback=True to make it fatal."
-            % (fault.stage, fault.error_type, fault.message, label,
-               np.shape(C_A_t), np.shape(C_B_t), x_min, x_max,
-               tuple(tier0), tuple(tier1), refine_iterations),
-            RuntimeWarning, stacklevel=2)
+            "fail_on_fallback=True to make it fatal.",
+            fault.stage, fault.error_type, fault.message, label,
+            np.shape(C_A_t), np.shape(C_B_t), x_min, x_max,
+            tuple(tier0), tuple(tier1), refine_iterations,
+            stacklevel=2)
         if fail_on_fallback:
             raise MultiPeakFallbackError(
                 "multipeak_local_marginalize declined by fault at stage %r "
@@ -1037,7 +1128,7 @@ def multipeak_local_marginalize(
             "dense-reserve:planner-exception:%s" % type(error).__name__,
             np.inf,
             empty, empty, empty_portfolio, empty_portfolio, 0, 0, 0, 0,
-            DECLINE_FAULT, fault)
+            decline_kind=DECLINE_FAULT, fault=fault)
 
 
 def _periodic_box_contains(box_center, box_half, mode_center, mode_half):

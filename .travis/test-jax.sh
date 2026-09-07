@@ -387,9 +387,9 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         mode permutation.
 #                                         Synthetic fixtures; no lal frames, no GPU.
 #   test_multipeak_fallback_visibility.py
-#                                       6  the multi-peak planner's fallback must not
+#                                      13  the multi-peak planner's fallback must not
 #                                         read as a policy decline: an exception-driven
-#                                         fallback warns once per call and carries
+#                                         fallback is reported once per call and carries
 #                                         decline_kind/fault in the record, a
 #                                         budget-driven decline does neither,
 #                                         fail_on_fallback is fatal on the first and
@@ -398,6 +398,16 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         pre-change module.  Synthetic tables; the
 #                                         tier faults are injected at the
 #                                         _run_structural_tier seam.  CPU-only.
+#                                         Two of these pin properties that the first
+#                                         version of the change got wrong.  The record
+#                                         is a 13-element tuple, tested by UNPACKING it
+#                                         (13 defaulted-field CONSTRUCTION kept working
+#                                         while `a, ..., m = result` had started to
+#                                         raise, so a construction test could not see
+#                                         it).  And the fault report goes to a logger,
+#                                         tested under `-W error::RuntimeWarning`, where
+#                                         warnings.warn had made the DEFAULT
+#                                         fail_on_fallback=False path raise.
 
 FILES=(
   "${JAXDIR}/test_jax_time_quadrature.py"
@@ -694,8 +704,15 @@ fi
 # adds ONE file, test_multipeak_fallback_visibility.py, and touches no existing
 # test.  Measured, not computed: this job own collection line on ldas-pcdev13
 # with ~/.cache/jaxci_venv (jax 0.9.2, numpyro 0.21.0), DESELECT loop applied,
-# reads "collected 548 tests from 36 files".
-EXPECTED_TESTS=548
+# read "collected 548 tests from 36 files".
+#
+# NINTH time, on the review fixes to that same branch.  test_multipeak_
+# fallback_visibility.py goes 6 -> 13 (two rewritten from warnings to logging
+# capture, five added for the 13-element tuple contract and for reporting under
+# -W error::RuntimeWarning); no file is added or removed.  Re-measured the same
+# way on ldas-grid, DESELECT loop applied: "collected 555 tests from 36 files",
+# and the run reports "555 passed, 5 deselected".
+EXPECTED_TESTS=555
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
