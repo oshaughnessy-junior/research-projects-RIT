@@ -3,6 +3,20 @@
 ------------
 development tree is rift_O4d.
 
+** NEW, jax ILE (opt-in): ``--direct-marginalization-policy auto`` for
+   ``--mode flowmc-phipsimarg`` composes PR #268's four-axis peak-local
+   controller with the exact-angle reserve, per likelihood evaluation, under
+   the controller's acceptance ledger; a decline runs a band-limited reserve
+   warranted by a two-guard comparison and the native rule as its check rule.
+   Default ``off``; ``--angle-marg-scheme auto`` is unchanged.  Refuses any
+   scheme, time rule, prior or grid it cannot compose, any mode other than
+   ``flowmc-phipsimarg``, and its own knobs when off.  A row the controller
+   cannot warrant after escalating the reserve rule is ``nan`` and the run is
+   not published.  Value-only: gradient parity is not validated
+   (``DESIGN_direct_marginalization_policy.md``).
+   ``multipeak_planner`` (PR #270) now imports its shared host primitives from
+   ``all_axis_peaklocal``, which is canonical.
+
 ** BUG FIX, jax ILE (issue #227): a Gaussian importance proposal is now SCORED
    under the matrix it was DRAWN from.  Seven sites drew
    ``theta ~ N(mu, cov + 1e-12 I)`` by Cholesky and then evaluated the proposal

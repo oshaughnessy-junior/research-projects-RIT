@@ -364,17 +364,37 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         harmonic-order U,V/Q starts, and the
 #                                         empirical enrichment/exact-reserve
 #                                         disposition gate.
-#   test_multipeak_planner.py          11  opt-in U,V,Q-guided four-axis multi-peak
+#   test_multipeak_planner.py          15  opt-in U,V,Q-guided four-axis multi-peak
 #                                         planner: exact symmetry expansion, strict
 #                                         stationary refinement, two-tier empirical
 #                                         convergence, overlap ownership and finite
-#                                         reserve.  CPU-only; no lal, cupy, or GPU
-#                                         required.  The file defines 15 tests; the four
-#                                         real-table oracle regressions need external
-#                                         validation packets that no fixture in this
-#                                         repository provides, so they are DESELECTED
-#                                         here -- see DESELECTED_TESTS -- and 11 are
-#                                         gated.
+#                                         reserve, plus FOUR refinement-stall guards:
+#                                         the bounded step's ascent contract, the
+#                                         step-bound sweep, the max_step check the
+#                                         rescale requires, and the symmetry-orbit
+#                                         invariant a campaign write-up misread as
+#                                         degeneracy.  Three of the four use a
+#                                         narrow-time-peak fixture (the ascent contract
+#                                         needs no table): the older _synthetic_tables
+#                                         puts its maximum ON the targeting lattice, so
+#                                         the Newton loop was never exercised and a
+#                                         fixed point in it passed this gate for a
+#                                         month while declining every row of the
+#                                         2026-09-07 ladder campaign.  CPU-only; no
+#                                         lal, cupy, or GPU required.  The file defines
+#                                         19 tests; the four real-table oracle
+#                                         regressions need external validation packets
+#                                         that no fixture in this repository provides,
+#                                         so they are DESELECTED here -- see
+#                                         DESELECTED_TESTS -- and 15 are gated.
+#   test_direct_marginalization_policy.py
+#                                      12  opt-in cross-axis policy WIRING: choices and
+#                                         refusals, measure conversion on both distance
+#                                         paths against the exact scheme, decline to a
+#                                         warranted band-limited reserve that keeps the
+#                                         sample, ledger completeness, wrapper end to
+#                                         end on real synthetic tables with a finite
+#                                         gradient, and the driver CLI (subprocess).
 #   test_jax_q_time_pregrid.py         21  opt-in reflected Q time pregrid on the JAX
 #                                         arm: factor-1 bit identity (same array object,
 #                                         positions bit-identical to the pre-pregrid
@@ -446,6 +466,7 @@ FILES=(
   "${JAXDIR}/test_multipeak_fallback_visibility.py"
   "${JAXDIR}/test_jax_phase_marg_mode_order.py"
   "${JAXDIR}/test_jax_q_time_pregrid.py"
+  "${JAXDIR}/test_direct_marginalization_policy.py"
 )
 
 # EXCLUDED: files in JAXDIR matching test_*.py that are deliberately NOT gated.  The
@@ -515,7 +536,7 @@ EXCLUDED=(
 #       synthetic fixture either: they pin numbers measured on those tables (mode
 #       spacings, oracle log-integrals) to ~1e-8, which is a property of the real
 #       tables and not of any stand-in this repo could ship.
-#       The 11 remaining tests in that file are self-contained and stay gated; they
+#       The 15 remaining tests in that file are self-contained and stay gated; they
 #       carry the planner's structural coverage (symmetry expansion, strict stationary
 #       refinement, two-tier convergence, overlap ownership, reserve fallback).
 #       RUN THE FOUR BY HAND, with the packets present, when touching
@@ -700,19 +721,30 @@ fi
 # test_angle_marg_exact.py + 2 in test_time_first_peaklocal.py = 541) does NOT
 # reproduce it, which is one more reason the constant is measured.
 #
-# EIGHTH time, on the multi-peak fallback-visibility branch (this change).  It
-# adds ONE file, test_multipeak_fallback_visibility.py, and touches no existing
-# test.  Measured, not computed: this job own collection line on ldas-pcdev13
-# with ~/.cache/jaxci_venv (jax 0.9.2, numpyro 0.21.0), DESELECT loop applied,
-# read "collected 548 tests from 36 files".
+# EIGHTH: the cross-axis policy wiring adds test_direct_marginalization_policy.py
+# (15 tests).  Measured on this tree with the DESELECT loop applied, citlogin6,
+# ~/.cache/jaxci_venv (jax 0.9.2): "557/562 tests collected (5 deselected)",
+# gate-style count 557 from 36 files.  Independently recollected with the CVMFS
+# igwn python on ldas-pcdev11 during the same landing: same 557 from 36 files.
 #
-# NINTH time, on the review fixes to that same branch.  test_multipeak_
-# fallback_visibility.py goes 6 -> 13 (two rewritten from warnings to logging
-# capture, five added for the 13-element tuple contract and for reporting under
-# -W error::RuntimeWarning); no file is added or removed.  Re-measured the same
-# way on ldas-grid, DESELECT loop applied: "collected 555 tests from 36 files",
-# and the run reports "555 passed, 5 deselected".
-EXPECTED_TESTS=555
+# NINTH, on the multi-peak refinement-stall branch (this change).  It adds FOUR
+# tests to test_multipeak_planner.py and touches no other test file.  The
+# branch measured 546 against a base of 542; #278 has since taken the base to
+# 557, so 546 is stale and 557+4 would be the arithmetic this comment forbids.
+# Re-measured on the merged tree, DESELECT loop applied, read off the gate's
+# own collection line:
+# "561/566 tests collected (5 deselected)", gate-style count 561 from 36 files.
+#
+# TENTH, on the multi-peak fallback-visibility branch (#277, this merge).  It
+# adds ONE file, test_multipeak_fallback_visibility.py (13 tests), and touches
+# no existing test file.  The branch measured 555 against a base of 542; #278
+# and #279 have since taken the base to 561, so 555 is stale and neither side
+# nor their sum is usable.  Re-measured on the merged tree, ldas-grid,
+# ~/.cache/jaxci_venv (jax 0.9.2, numpyro 0.21.0), DESELECT loop applied, read
+# off this job own collection line:
+# "574/579 tests collected (5 deselected)", gate-style count 574 from 37
+# files.
+EXPECTED_TESTS=574
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"

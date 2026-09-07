@@ -1973,9 +1973,11 @@ def empirical_enrichment_marginalize(
     ``time_outside_tol_nats``, and agreement within ``convergence_tol_nats``.
     The empirical discovery, nested-quadrature, guarded-time, and certified
     omitted-time contributions must also fit one shared
-    ``total_value_error_budget_nats``.  Their cancellation-resistant sum is an
-    operational error score, not a formal global bound: enrichment and
-    quadrature differences remain empirical convergence diagnostics.
+    ``total_value_error_budget_nats``.  Each of the three paired terms is
+    charged once, as the maximum over the base and enriched plans; their
+    cancellation-resistant sum is an operational error score, not a formal
+    global bound: enrichment and quadrature differences remain empirical
+    convergence diagnostics.
     Every base
     mode must recur with matching local geometry.  Additional enriched basins
     are probes, not automatically part of the accepted cover: if a probe has
@@ -2099,11 +2101,21 @@ def empirical_enrichment_marginalize(
         0.0, base_time_tail_margin)
     enriched_time_tail_correction = jnp.logaddexp(
         0.0, enriched_time_tail_margin)
+    # Each paired term is the same physical quantity measured on the two
+    # nested plans (same table, same recurring modes, same G vs G/2
+    # comparison).  Charging both against the budget double-counted a
+    # common-mode error: on the analytic wiring fixture at ten times the
+    # unit amplitude a value correct to 1.5e-4 nat was refused at a score of
+    # 1.06e-3, of which 2 x 5.27e-4 was one guard discrepancy counted twice.
+    # The maximum over the pair bounds whichever plan's value is selected and
+    # counts it once.  The per-plan terms stay in the ledger.
+    quadrature_score = jnp.maximum(
+        base["quadrature_error"], enriched["quadrature_error"])
+    guard_score = jnp.maximum(base_guard_score, enriched_guard_score)
+    tail_score = jnp.maximum(
+        base_time_tail_correction, enriched_time_tail_correction)
     empirical_value_error_score = (
-        convergence_error
-        + base["quadrature_error"] + enriched["quadrature_error"]
-        + base_guard_score + enriched_guard_score
-        + base_time_tail_correction + enriched_time_tail_correction)
+        convergence_error + quadrature_score + guard_score + tail_score)
     error_budget_complete = time_cover_pair & time_ok
     error_budget_ok = (
         error_budget_complete
@@ -2193,6 +2205,10 @@ def empirical_enrichment_marginalize(
         "value_error_budget_is_empirical": jnp.asarray(True),
         "value_error_budget_is_formal_bound": jnp.asarray(False),
         "error_score_discovery_nats": convergence_error,
+        "error_score_quadrature_nats": quadrature_score,
+        "error_score_time_guard_nats": guard_score,
+        "error_score_omitted_time_nats": tail_score,
+        "error_score_pairs_charged_as_max": jnp.asarray(True),
         "error_score_base_quadrature_nats": base["quadrature_error"],
         "error_score_enriched_quadrature_nats":
             enriched["quadrature_error"],
@@ -2243,6 +2259,7 @@ def empirical_enrichment_with_exact_reserve(
         reserve_dense_chunk=8, reserve_grid_block=32,
         reserve_time_nodes=None, reserve_time_resolution_warranted=False,
         reserve_time_check_value=np.nan,
+        reserve_time_check_nodes=None, reserve_time_check_weights=None,
         reserve_time_resolution_tol_nats=1.0e-3,
         base_order=13, base_check_order=19,
         enriched_order=19, enriched_check_order=25,
@@ -2283,6 +2300,13 @@ def empirical_enrichment_with_exact_reserve(
     warrant is a scalar JAX boolean so callers may bind it to a per-row
     convergence record; the caller remains responsible for proving that it
     describes the exact nodes, weights, and full interval passed here.
+    Alternatively ``reserve_time_check_nodes``/``reserve_time_check_weights``
+    name a strictly coarser rule on the same target window.  The controller
+    then evaluates that rule itself, inside the declined branch only, and the
+    resolution warrant is structural: both rules come from the same reflected
+    primitive, the check rule is coarser, and the two values must agree within
+    ``reserve_time_resolution_tol_nats``.  An accepted local row never pays
+    for either reserve evaluation.
 
     If ``JAX_ILE_DISTMARG_GH`` is active, the established reserve
     instead reads the support from ``reserve_x_grid`` and uses its normalized
@@ -2335,6 +2359,24 @@ def empirical_enrichment_with_exact_reserve(
         reserve_time_check_value, dtype=jnp.float64)
     if reserve_time_check_value.ndim != 0:
         raise ValueError("reserve_time_check_value must be scalar")
+    use_internal_check = reserve_time_check_nodes is not None
+    if use_internal_check:
+        if not use_bandlimited_time:
+            raise ValueError(
+                "reserve_time_check_nodes requires reserve_time_nodes")
+        if reserve_time_check_weights is None:
+            raise ValueError(
+                "reserve_time_check_nodes requires reserve_time_check_weights")
+        reserve_time_check_nodes = jnp.asarray(
+            reserve_time_check_nodes, dtype=jnp.float64)
+        reserve_time_check_weights = jnp.asarray(
+            reserve_time_check_weights, dtype=jnp.float64)
+        if (reserve_time_check_nodes.ndim != 1
+                or reserve_time_check_nodes.size < 2
+                or reserve_time_check_weights.shape
+                != reserve_time_check_nodes.shape):
+            raise ValueError(
+                "reserve_time_check_nodes/weights must be one matching rule")
     if (not np.isfinite(float(reserve_time_resolution_tol_nats))
             or not float(reserve_time_resolution_tol_nats) > 0.0):
         raise ValueError(
@@ -2356,10 +2398,6 @@ def empirical_enrichment_with_exact_reserve(
         log_normalization=float(local_log_normalization),
         node_concentration=float(node_concentration),
         mode_match_tol=mode_match_tol)
-
-    def _accepted(_):
-        nan = jnp.asarray(jnp.nan, dtype=jnp.float64)
-        return local_value, nan, nan
 
     def _reserve(_):
         if use_bandlimited_time:
@@ -2400,10 +2438,45 @@ def empirical_enrichment_with_exact_reserve(
                            + float(reserve_log_offset))
         else:
             guard_value = jnp.asarray(jnp.nan, dtype=jnp.float64)
-        return reserve_value, reserve_value, guard_value
+        if use_internal_check:
+            check_table = _evaluate_time_spectrum(
+                coeff, frequency, reserve_time_check_nodes, offset).reshape(
+                    C_A_t.shape[:-1] + (reserve_time_check_nodes.size,))
+            lnL_check = _anglemarg.coefficient_table_distphipsimarg_exact(
+                check_table, C_B, reserve_x_grid, reserve_log_weights,
+                amp_sizing=float(reserve_amp_sizing), m_max=reserve_m_max,
+                dense_chunk=int(reserve_dense_chunk),
+                grid_block=int(reserve_grid_block))
+            check_value = (
+                _time_marginalize(lnL_check, reserve_time_check_weights)[0]
+                + float(reserve_log_offset))
+        else:
+            check_value = reserve_time_check_value
+        return reserve_value, reserve_value, guard_value, check_value
 
-    selected_value, reserve_value, reserve_guard_value = jax.lax.cond(
+    def _accepted(_):
+        nan = jnp.asarray(jnp.nan, dtype=jnp.float64)
+        return local_value, nan, nan, reserve_time_check_value
+
+    (selected_value, reserve_value, reserve_guard_value,
+     reserve_time_check_value) = jax.lax.cond(
         accepted_local, _accepted, _reserve, operand=None)
+    if use_internal_check:
+        # Structural warrant: same primitive, same window, strictly coarser
+        # check rule with a valid measure.  The value comparison itself is
+        # still applied below through reserve_time_resolution_validated.
+        check_rule_valid = (
+            jnp.all(jnp.isfinite(reserve_time_check_nodes))
+            & jnp.all(jnp.diff(reserve_time_check_nodes) > 0.0)
+            & (reserve_time_check_nodes[0] == reserve_time_nodes[0])
+            & (reserve_time_check_nodes[-1] == reserve_time_nodes[-1])
+            & (jnp.max(jnp.diff(reserve_time_check_nodes))
+               > jnp.max(jnp.diff(reserve_time_nodes)))
+            & jnp.all(jnp.isfinite(reserve_time_check_weights))
+            & jnp.all(reserve_time_check_weights >= 0.0)
+            & (jnp.sum(reserve_time_check_weights) > 0.0))
+        reserve_time_resolution_warranted = (
+            reserve_time_resolution_warranted | check_rule_valid)
     reserve_executed = ~accepted_local
     reserve_finite = jnp.isfinite(reserve_value)
     if use_bandlimited_time:
@@ -2557,6 +2630,7 @@ def empirical_enrichment_with_exact_reserve(
         "reserve_native_time_warranted": jnp.asarray(False),
         "reserve_time_resolution_warranted": (
             reserve_time_resolution_warranted),
+        "reserve_time_check_rule_internal": jnp.asarray(use_internal_check),
         "reserve_time_check_value": reserve_time_check_value,
         "reserve_time_resolution_error_nats": (
             reserve_time_resolution_error),
@@ -2629,6 +2703,7 @@ def empirical_enrichment_with_exact_reserve_sequential_batch(
         reserve_dense_chunk=8, reserve_grid_block=32,
         reserve_time_nodes=None, reserve_time_resolution_warranted=False,
         reserve_time_check_value=np.nan,
+        reserve_time_check_nodes=None, reserve_time_check_weights=None,
         reserve_time_resolution_tol_nats=1.0e-3,
         base_order=13, base_check_order=19,
         enriched_order=19, enriched_check_order=25,
@@ -2696,6 +2771,8 @@ def empirical_enrichment_with_exact_reserve_sequential_batch(
             reserve_time_nodes=reserve_time_nodes,
             reserve_time_resolution_warranted=row_warrant,
             reserve_time_check_value=row_check_value,
+            reserve_time_check_nodes=reserve_time_check_nodes,
+            reserve_time_check_weights=reserve_time_check_weights,
             reserve_time_resolution_tol_nats=(
                 reserve_time_resolution_tol_nats),
             base_order=base_order, base_check_order=base_check_order,
