@@ -60,8 +60,15 @@ Acceptance diagnostics, all required for the local branch:
 
 Reserve warrant: `reserve_time_guard_validated`,
 `reserve_time_resolution_validated`, `reserve_time_error_budget_ok`, combined
-in `reserve_time_warranted`. A reserve that fails its warrant still returns
-its value; the row is `usable=False` and the driver labels the run.
+in `reserve_time_warranted`. A reserve that fails its warrant is escalated:
+the rule is doubled and re-checked against its own half, up to
+`reserve_time_refine_max` (default 16). A row still unwarranted, or whose
+norm table varies with time, is `usable=False` and its likelihood is `nan`.
+The finite diagnostic stays in the ledger under `selected_value` and never
+reaches the sampler. The driver raises on the first `nan` it evaluates and
+refuses to publish samples or evidence that contain one (external review of
+PR #278, P1). A MALA step onto a `nan` target is rejected, so chains do not
+carry such rows either.
 
 No SNR threshold appears anywhere. The transitions reported in the paper
 (reserve at 40 and 80, local at 160 and 320) emerge from these diagnostics.
@@ -88,8 +95,11 @@ paths):
 The policy refuses, with a message, any of: a resolved angle scheme other
 than `exact`; a time rule other than `simpson`; a distance prior other than
 volumetric; a distance grid other than uniform-in-d; a `time_guard` below 2;
-a reserve refinement below 2; a request for `lnL(t)`. Refusal rather than
-silence is the standing rule on this arm.
+a reserve refinement that is not an even integer of at least 2; a request
+for `lnL(t)`. The driver refuses at parse time a policy request in any mode
+other than `flowmc-phipsimarg`, and any of the three policy knobs when the
+policy is off (external review of PR #278, P1). Refusal rather than silence
+is the standing rule on this arm.
 
 ## Cost
 
@@ -127,4 +137,5 @@ production tables, recorded in the paper repository
   tables before the ladder result is trusted.
 - The audit ledger is evaluated on a subsample of exported rows after
   sampling. It describes the exported cloud, not every evaluation the
-  sampler made.
+  sampler made. Unwarranted rows are not a labelling matter: they are `nan`
+  and stop the run.

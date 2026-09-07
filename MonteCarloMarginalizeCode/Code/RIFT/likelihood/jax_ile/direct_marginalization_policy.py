@@ -17,8 +17,12 @@ established exact-angle reserve:
 
 No SNR threshold is coded.  Which branch runs is decided by the diagnostics
 listed in :func:`policy_acceptance_diagnostics`.  A local decline is never a
-waveform failure; a reserve that fails its own warrant still returns its
-finite value, flagged ``usable=False`` so the driver can label the run.
+waveform failure.  A reserve that fails its own warrant is escalated once per
+doubling of the time rule up to ``reserve_time_refine_max``; a row that is
+still unwarranted, or whose norm table varies with time, returns ``nan``.
+The driver refuses to publish a run containing such rows.  The ledger keeps
+the finite diagnostic value under ``selected_value`` for the record; it is
+never handed to the sampler.
 
 Measures.  The local branch integrates ``x**-4 dx  dt_sample  dphi  du``.
 The reserve, and the production exact scheme it must agree with, average the
@@ -88,6 +92,10 @@ class PolicyConfig(NamedTuple):
 
     time_guard: int = 16
     reserve_time_refine: int = 4
+    # Bounded escalation of the reserve rule on a failed warrant: the rule is
+    # doubled (and re-checked against its own half) until it is warranted or
+    # this factor is reached.  Rows still unwarranted return nan.
+    reserve_time_refine_max: int = 16
     base_max_starts: int = 32
     base_oversample: int = 1
     enriched_oversample: int = 2
@@ -259,6 +267,13 @@ def policy_acceptance_diagnostics():
         declines=_DECLINE_KEYS)
 
 
+def _strong(tree):
+    """Strip weak types so both branches of a ``lax.cond`` agree."""
+    return jax.tree.map(
+        lambda x: jax.lax.convert_element_type(jnp.asarray(x),
+                                               jnp.asarray(x).dtype), tree)
+
+
 def fused_log_likelihood_four_axis_policy(
         data, ra, dec, incl, x_grid, log_w_grid, *, interp, amp_sizing,
         config=None, local_log_normalization=None, return_ledger=False):
@@ -335,9 +350,20 @@ def fused_log_likelihood_four_axis_policy(
 
     base_plans, enriched_plans, planning = jax.vmap(_plan_row)(rows_A, norm0)
 
-    selected, usable, ledger = (
-        _aap.empirical_enrichment_with_exact_reserve_sequential_batch(
-            rows_A, norm0, base_plans, enriched_plans, x_min, x_max,
+    refine0 = int(config.reserve_time_refine)
+    refine_max = int(config.reserve_time_refine_max)
+    if refine_max < refine0:
+        raise ValueError("reserve_time_refine_max must be >= reserve_time_refine")
+    tiers = []
+    f = refine0
+    while f <= refine_max:
+        tiers.append((f,) + tuple(policy_time_rules(data, f)))
+        f *= 2
+
+    def _controller(table, norm, base_plan, enriched_plan, tier):
+        refine, nodes, weights, check_nodes, check_weights = tier
+        sel, ok, led = _aap.empirical_enrichment_with_exact_reserve(
+            table, norm, base_plan, enriched_plan, x_min, x_max,
             reserve_x_grid=x_grid, reserve_log_weights=log_w_grid,
             time_weights=weights,
             reserve_amp_sizing=float(amp_sizing),
@@ -360,17 +386,49 @@ def fused_log_likelihood_four_axis_policy(
             time_outside_tol_nats=float(config.time_outside_tol_nats),
             total_value_error_budget_nats=float(
                 config.total_value_error_budget_nats),
-            reserve_log_offset=0.0))
-    usable = usable & norm_time_invariant
+            reserve_log_offset=0.0)
+        led = dict(led)
+        led["reserve_time_refine_used"] = jnp.asarray(refine)
+        return _strong((sel, ok, led))
+
+    def _row(args):
+        table, norm, base_plan, enriched_plan = args
+        state = _controller(table, norm, base_plan, enriched_plan, tiers[0])
+        escalations = jnp.asarray(0)
+        for tier in tiers[1:]:
+            sel, ok, led = state
+            need = (led["reserve_executed"] & led["reserve_finite"]
+                    & (~led["reserve_time_warranted"]))
+            state = jax.lax.cond(
+                need,
+                lambda _: _controller(table, norm, base_plan, enriched_plan,
+                                      tier),
+                lambda st: st, state)
+            escalations = escalations + need.astype(escalations.dtype)
+        sel, ok, led = state
+        led = dict(led)
+        led["reserve_escalations"] = escalations
+        return sel, ok, led
+
+    selected, usable, ledger = jax.lax.map(
+        _row, (rows_A, norm0, base_plans, enriched_plans))
     ledger = dict(ledger)
+    ledger["reserve_batch_execution_sequential"] = jnp.ones(
+        (rows_A.shape[0],), dtype=bool)
+    usable = usable & norm_time_invariant
+    # Fail closed: a value the controller could not warrant is not a
+    # likelihood.  nan, never the finite diagnostic, reaches the sampler; the
+    # driver refuses to publish a run that contains such rows.
+    lnL = jnp.where(usable, selected, jnp.nan)
     ledger.update(planning)
     ledger["norm_time_invariant"] = norm_time_invariant
     ledger["norm_time_deviation"] = norm_dev
     ledger["usable"] = usable
     ledger["selected_value"] = selected
+    ledger["lnL"] = lnL
     if return_ledger:
-        return selected, ledger
-    return selected
+        return lnL, ledger
+    return lnL
 
 
 def summarize_policy_ledger(ledger):
@@ -396,6 +454,12 @@ def summarize_policy_ledger(ledger):
             if c:
                 declines[key] = c
     out["declines"] = declines
+    if "reserve_escalations" in ledger:
+        out["reserve_escalations"] = int(np.sum(
+            np.asarray(ledger["reserve_escalations"])))
+    if "lnL" in ledger:
+        out["nan_rows"] = int(np.sum(~np.isfinite(
+            np.asarray(ledger["lnL"], dtype=float))))
     score = np.asarray(ledger["empirical_value_error_score_nats"], dtype=float)
     finite = score[np.isfinite(score)]
     out["max_local_error_score_nats"] = (

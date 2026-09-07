@@ -256,6 +256,9 @@ def test_declined_row_executes_warranted_bandlimited_reserve_and_keeps_sample(
     assert L["reserve_time_warranted"]
     assert L["selected_value_is_warranted_reserve"]
     assert L["usable"] and L["reconciles"] and L["disposition_reconciles"]
+    assert int(L["reserve_escalations"]) == 0
+    assert int(L["reserve_time_refine_used"]) == cfg.reserve_time_refine
+    assert np.isfinite(float(value[0]))
     assert not L["decline_is_waveform_failure"]
     fine = _fine_reference(constants, C_B, data, x_grid, log_w, 40.0)
     assert abs(float(value[0]) - fine) <= 2.0e-3, (float(value[0]), fine)
@@ -284,6 +287,11 @@ def test_ledger_carries_every_named_acceptance_diagnostic(monkeypatch):
         for key in names[group]:
             assert key in ledger, (group, key)
             assert np.asarray(ledger[key]).shape == (1,), key
+    for key in ("lnL", "selected_value", "reserve_escalations",
+                "reserve_time_refine_used"):
+        assert key in ledger and np.asarray(ledger[key]).shape == (1,), key
+    L = {k: np.asarray(v)[0] for k, v in ledger.items()}
+    assert (np.isfinite(L["lnL"]) == bool(L["usable"]))
     with pytest.raises(ValueError, match="time_guard must be >= 2"):
         DP.fused_log_likelihood_four_axis_policy(
             data, jnp.zeros(1), jnp.zeros(1), jnp.zeros(1), x_grid, log_w,
@@ -310,9 +318,11 @@ def test_wrapper_policy_on_real_synthetic_tables_fails_closed_and_labels():
     the reserve at guard 16 and guard 8 disagree by ~0.06 nat and the
     refine-4 and refine-2 rules by ~0.2 nat, so nothing here is converged.
     The composite must then (a) decline the local branch or fail the reserve
-    warrant, (b) still return the finite reserve value, (c) say why in the
-    ledger, and (d) count the row as unusable for the run label.  A row it
-    does warrant must agree with the 8x-refined exact-angle reference."""
+    warrant even after escalating the rule to the configured maximum, (b)
+    return nan for that row while keeping the finite diagnostic in the ledger,
+    (c) say why in the ledger, and (d) count the row as unusable for the run
+    label.  A row it does warrant must agree with the 8x-refined exact-angle
+    reference."""
     from RIFT.likelihood.jax_ile.time_first_peaklocal import (
         _evaluate_time_spectrum, _time_primitive_spectrum)
     data = make_synth(scale=2.0, kappa_boost=10.0)
@@ -320,7 +330,8 @@ def test_wrapper_policy_on_real_synthetic_tables_fails_closed_and_labels():
     exact = JAXDistPhiPsiMargLikelihood(data, 30.0, 3000.0,
                                         angle_marg="exact", **kw)
     guard = 16
-    cfg = DP.PolicyConfig(time_guard=guard, reserve_time_refine=4)
+    cfg = DP.PolicyConfig(time_guard=guard, reserve_time_refine=4,
+                          reserve_time_refine_max=8)
     pol = JAXDistPhiPsiMargLikelihood(data, 30.0, 3000.0, angle_marg="exact",
                                       direct_marginalization_policy="auto",
                                       policy_config=cfg, **kw)
@@ -339,22 +350,28 @@ def test_wrapper_policy_on_real_synthetic_tables_fails_closed_and_labels():
                                 jnp.asarray(INCL)))
     L = {k: np.asarray(v) for k, v in ledger.items()}
     summary = DP.summarize_policy_ledger(ledger)
-    np.testing.assert_allclose(b, c, rtol=0.0, atol=1e-12)
-    assert np.all(np.isfinite(b)), (summary, b, L["reserve_value"])
+    np.testing.assert_allclose(b, c, rtol=0.0, atol=1e-12, equal_nan=True)
     assert np.all(L["reconciles"]) and np.all(L["disposition_reconciles"])
     assert np.all(L["norm_time_invariant"])
     assert not np.any(L["decline_is_waveform_failure"])
     tol = float(cfg.total_value_error_budget_nats)
     unusable = ~L["usable"]
     assert summary["unusable"] == int(np.sum(unusable))
-    # (b)+(c): an unwarranted reserve keeps its finite value and names the
-    # failed check; on this window that is the time reconstruction.
+    assert summary["nan_rows"] == int(np.sum(unusable))
+    # (a)-(c): an unwarranted reserve was escalated to the maximum rule, keeps
+    # its finite diagnostic in the ledger, returns nan, and names the failed
+    # check; on this window that is the time reconstruction.
     for i in np.flatnonzero(unusable):
         assert L["reserve_executed"][i] and L["reserve_time_failed"][i]
-        assert float(b[i]) == pytest.approx(float(L["reserve_value"][i]))
+        assert np.isnan(b[i])
+        assert np.isfinite(L["selected_value"][i])
+        assert np.isfinite(L["reserve_value"][i])
+        assert int(L["reserve_time_refine_used"][i]) == cfg.reserve_time_refine_max
+        assert int(L["reserve_escalations"][i]) == 1
         assert (float(L["reserve_time_guard_error"][i]) > tol
                 or float(L["reserve_time_resolution_error_nats"][i]) > tol), (
             {k: L[k][i] for k in L if k.startswith("reserve_time_")})
+    assert np.all(np.isfinite(b[L["usable"]]))
     assert np.any(unusable), ("the 32-sample window became warrantable; "
                               "move this test's fail-closed claim", summary)
     # (d) a warranted row, if any, against the 8x refined exact reference.
@@ -378,8 +395,13 @@ def test_wrapper_policy_on_real_synthetic_tables_fails_closed_and_labels():
 
     theta = jnp.asarray([RA[0], DEC[0], INCL[0]])
     v, g = pol._value_and_grad(theta)
-    assert np.isfinite(float(v)) and np.all(np.isfinite(np.asarray(g)))
-    assert float(v) == pytest.approx(float(b[0]), abs=1e-9)
+    if np.isfinite(b[0]):
+        assert np.isfinite(float(v)) and np.all(np.isfinite(np.asarray(g)))
+        assert float(v) == pytest.approx(float(b[0]), abs=1e-9)
+    else:
+        # nan is the fail-closed value on the AD path too: a MALA step on it
+        # is rejected rather than accepted on a number nobody stands behind.
+        assert np.isnan(float(v))
 
 
 def test_wrapper_policy_has_no_lnLt_path():
@@ -421,6 +443,18 @@ def test_the_driver_CLI_offers_the_policy_and_rejects_a_typo():
     rc, out = run("--direct-marginalization-policy", "autp")
     assert rc != 0 and "invalid choice" in out, out[-1500:]
     assert "auto" in out, out[-1500:]
+    # Scope (external review P1): the policy outside its one mode, and its
+    # knobs without the policy, are refused at parse time, not ignored.
+    rc, out = run("--mode", "laplace-is", "--direct-marginalization-policy",
+                  "auto")
+    assert rc != 0 and "flowmc-phipsimarg" in out, out[-1500:]
+    rc, out = run("--mode", "flowmc-phipsimarg",
+                  "--direct-marginalization-time-guard", "8")
+    assert rc != 0 and "inert" in out, out[-1500:]
+    rc, out = run("--mode", "flowmc-phipsimarg",
+                  "--direct-marginalization-policy", "auto",
+                  "--direct-marginalization-reserve-time-refine", "3")
+    assert rc != 0 and "even" in out, out[-1500:]
     rc, out = run("--help")
     assert "--direct-marginalization-policy" in out
     assert "--direct-marginalization-time-guard" in out

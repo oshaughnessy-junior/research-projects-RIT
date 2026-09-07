@@ -320,6 +320,41 @@ def check_critical_and_report(opts, optp):
         fatal.append("--zero-likelihood is not implemented")
     if is_set("--maximize-only"):
         fatal.append("--maximize-only is not implemented (this driver integrates)")
+    # Cross-axis policy scope, at parse time (external review of #278, P1):
+    # only --mode flowmc-phipsimarg reads the policy, so a request anywhere
+    # else would otherwise complete on the ordinary likelihood, and the
+    # policy's knobs are inert unless the policy is on.
+    _policy = getattr(opts, "direct_marginalization_policy",
+                      DIRECT_MARG_POLICY_DEFAULT)
+    _policy_knobs = ("--direct-marginalization-time-guard",
+                     "--direct-marginalization-reserve-time-refine",
+                     "--direct-marginalization-error-budget-nats")
+    if _policy != "off":
+        if getattr(opts, "mode", None) != "flowmc-phipsimarg":
+            fatal.append("--direct-marginalization-policy %s applies only to "
+                         "--mode flowmc-phipsimarg; --mode %s would run the "
+                         "ordinary likelihood and silently ignore the request"
+                         % (_policy, getattr(opts, "mode", None)))
+        _g = int(getattr(opts, "direct_marginalization_time_guard", 16))
+        if _g < 2:
+            fatal.append("--direct-marginalization-time-guard must be >= 2 "
+                         "(the two-guard comparison needs a half guard)")
+        _f = int(getattr(opts, "direct_marginalization_reserve_time_refine", 4))
+        if _f < 2 or _f % 2:
+            fatal.append("--direct-marginalization-reserve-time-refine must be "
+                         "an even integer >= 2 (the check rule is the "
+                         "half-refined rule)")
+        _b = float(getattr(opts, "direct_marginalization_error_budget_nats",
+                           1.0e-3))
+        if not (np.isfinite(_b) and _b > 0.0):
+            fatal.append("--direct-marginalization-error-budget-nats must be "
+                         "finite and positive")
+    else:
+        for _k in _policy_knobs:
+            if was_supplied(opts, _k):
+                fatal.append("%s is inert without --direct-marginalization-"
+                             "policy auto; pass the policy or drop the option"
+                             % _k)
     # Distance-grid option combinations that the wrapper would reject anyway --
     # caught HERE, at parse time, so the user is not made to sit through a full
     # precompute first (F8 of external review).
@@ -728,7 +763,10 @@ def build_parser():
                       "DESIGN_direct_marginalization_policy.md), so keep this "
                       "off for production until that ladder is recorded.  The "
                       "branch statistics of the exported samples are printed and "
-                      "labelled in the output headers."
+                      "labelled in the output headers.  A row the controller "
+                      "cannot warrant (after doubling the reserve rule up to "
+                      "16x) is nan and the run is NOT published.  Applies only "
+                      "to --mode flowmc-phipsimarg; any other mode is refused."
                       % DIRECT_MARG_POLICY_DEFAULT)
     g.add_option("--direct-marginalization-time-guard", type=int, default=16,
                  help="Primitive-only support samples added at each end of the "
@@ -1112,6 +1150,18 @@ def eval_lnL(like, theta, opts, with_distance):
         sl = slice(i, min(i + chunk, N))
         cols = [theta[sl, j] for j in range(theta.shape[1])]
         out[sl] = np.asarray(like.log_likelihood(*cols))
+        if (getattr(like, "direct_marginalization_policy", "off") != "off"
+                and np.any(np.isnan(out[sl]))):
+            raise RuntimeError(
+                "--direct-marginalization-policy %s: %d of %d evaluated rows "
+                "could not be warranted (local gate declined AND the escalated "
+                "band-limited reserve failed its guard/resolution check, or the "
+                "norm table varies with time).  No coarse likelihood is "
+                "substituted and the run is not published.  Raise "
+                "--direct-marginalization-time-guard, raise the reserve "
+                "refinement, or run with the policy off."
+                % (like.direct_marginalization_policy,
+                   int(np.sum(np.isnan(out[sl]))), int(sl.stop - sl.start)))
         if (getattr(like, "time_quadrature", "simpson") == "bandlimited"
                 and np.any(np.isnan(out[sl]))):
             raise RuntimeError(
@@ -1468,10 +1518,11 @@ def direct_marginalization_policy_note(like, theta, n_max=256, chunk=32):
     declines = ",".join("%s:%d" % (k.replace("decline_", ""), v)
                         for k, v in sorted(summary["declines"].items()))
     return ("DIRECT-MARG-POLICY=%s rows=%d local=%d reserve=%d "
-            "warranted-reserve=%d unusable=%d reconciles=%d declines=[%s] "
-            "max-local-error-score-nats=%.3g"
+            "warranted-reserve=%d escalations=%d unusable=%d reconciles=%d "
+            "declines=[%s] max-local-error-score-nats=%.3g"
             % (policy, summary["rows"], summary["accepted_local"],
                summary["reserve_executed"], summary["reserve_warranted"],
+               summary.get("reserve_escalations", 0),
                summary["unusable"], summary["reconciles"], declines,
                summary["max_local_error_score_nats"]))
 
@@ -2173,10 +2224,12 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
                          DIRECT_MARG_POLICY_DEFAULT)
         policy_config = None
         if policy != "off":
+            _f0 = int(opts.direct_marginalization_reserve_time_refine)
             policy_config = DirectMargPolicyConfig(
                 time_guard=int(opts.direct_marginalization_time_guard),
-                reserve_time_refine=int(
-                    opts.direct_marginalization_reserve_time_refine),
+                reserve_time_refine=_f0,
+                reserve_time_refine_max=max(
+                    _f0, DirectMargPolicyConfig().reserve_time_refine_max),
                 total_value_error_budget_nats=float(
                     opts.direct_marginalization_error_budget_nats))
         try:
@@ -2433,6 +2486,16 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
     # Cross-axis policy audit: which branch the exported rows actually took.
     # Evaluated on a subsample AFTER sampling because the sampler consumes the
     # value-only path; the ledger is the same computation with its record kept.
+    if (getattr(like, "direct_marginalization_policy", "off") != "off"
+            and not np.all(np.isfinite(np.asarray(lnL)))):
+        raise SystemExit(
+            "--direct-marginalization-policy %s: %d of %d exported rows have a "
+            "non-finite likelihood because the controller could not warrant "
+            "them; refusing to publish samples or evidence.  See the ledger "
+            "note: %s" % (like.direct_marginalization_policy,
+                          int(np.sum(~np.isfinite(np.asarray(lnL)))),
+                          int(np.size(lnL)),
+                          direct_marginalization_policy_note(like, theta)))
     _policy_note = direct_marginalization_policy_note(like, theta)
     if _policy_note:
         sys.stderr.write("NOTE integrate_likelihood_extrinsic_jax: %s\n"

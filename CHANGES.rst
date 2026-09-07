@@ -9,8 +9,11 @@ development tree is rift_O4d.
    the controller's acceptance ledger; a decline runs a band-limited reserve
    warranted by a two-guard comparison and the native rule as its check rule.
    Default ``off``; ``--angle-marg-scheme auto`` is unchanged.  Refuses any
-   scheme, time rule, prior or grid it cannot compose.  Value-only: gradient
-   parity is not validated (``DESIGN_direct_marginalization_policy.md``).
+   scheme, time rule, prior or grid it cannot compose, any mode other than
+   ``flowmc-phipsimarg``, and its own knobs when off.  A row the controller
+   cannot warrant after escalating the reserve rule is ``nan`` and the run is
+   not published.  Value-only: gradient parity is not validated
+   (``DESIGN_direct_marginalization_policy.md``).
    ``multipeak_planner`` (PR #270) now imports its shared host primitives from
    ``all_axis_peaklocal``, which is canonical.
 
