@@ -42,7 +42,8 @@ import jax.numpy as jnp
 import numpy as np
 
 from .time_first_peaklocal import (_evaluate_time_spectrum,
-                                   _time_primitive_spectrum)
+                                   _time_primitive_spectrum,
+                                   spectral_time_derivative_bound)
 
 
 __all__ = [
@@ -81,6 +82,10 @@ class AllAxisModePlan(NamedTuple):
     ``time_reconstruction_certified`` is a separate guard/seam warrant.  Real
     unguarded captures must leave it false; an outside-mass certificate cannot
     certify the noninteger reflected-time reconstruction inside a region.
+    ``time_outside_log_bound`` has a deliberately narrower meaning: it bounds
+    the full angle/distance integral in time cells discarded before basin
+    localization.  It is not a bound on missing angular modes inside retained
+    cells and can only augment, never replace, the global outside-cover warrant.
     ``enumeration_complete`` is a separate
     diagnostic statement about the supplied root set.  It is deliberately not
     an acceptance requirement: a missed algebraic root is scientifically
@@ -101,6 +106,8 @@ class AllAxisModePlan(NamedTuple):
     enumeration_complete: jax.Array
     outside_bound_certified: jax.Array
     time_reconstruction_certified: jax.Array
+    time_outside_log_bound: jax.Array
+    time_outside_bound_certified: jax.Array
     boxes_disjoint: jax.Array
     discovery_capacity_ok: jax.Array
 
@@ -168,7 +175,15 @@ class DeviceJointStartPlan(NamedTuple):
     n_phi_lattice: jax.Array
     n_u_lattice: jax.Array
     n_time_lattice: jax.Array
+    n_retained_time_samples: jax.Array
     n_lattice_evaluations: jax.Array
+    n_time_scout_evaluations: jax.Array
+    n_time_cells_retained: jax.Array
+    n_time_nodes_retained: jax.Array
+    time_outside_log_bound: jax.Array
+    time_scout_peak_lower: jax.Array
+    time_cover_certified: jax.Array
+    time_capacity_ok: jax.Array
     norm_nonnegative: jax.Array
     n_exact_symmetry_shifts: jax.Array
 
@@ -518,6 +533,105 @@ def _distance_profile_device(A, B, x_min, x_max):
             jnp.where(improve, root_safe, best_x))
 
 
+def _distance_upper_profile_device(A_upper, B_lower, x_min, x_max):
+    """Maximize a likelihood upper envelope with a possibly negative B bound."""
+    A_upper = jnp.asarray(A_upper, dtype=jnp.float64)
+    B_lower = jnp.asarray(B_lower, dtype=jnp.float64)
+    x0 = jnp.full_like(A_upper, float(x_min))
+    x1 = jnp.full_like(A_upper, float(x_max))
+
+    def value(x):
+        return x * A_upper - 0.5 * B_lower * x * x - 4.0 * jnp.log(x)
+
+    v0, v1 = value(x0), value(x1)
+    best = jnp.maximum(v0, v1)
+    discriminant = A_upper * A_upper - 16.0 * B_lower
+    valid = (B_lower > 0.0) & (discriminant >= 0.0)
+    root = ((A_upper + jnp.sqrt(jnp.maximum(discriminant, 0.0)))
+            / jnp.where(B_lower > 0.0, 2.0 * B_lower, 1.0))
+    valid &= (root >= float(x_min)) & (root <= float(x_max))
+    return jnp.where(valid, jnp.maximum(best, value(root)), best)
+
+
+def _time_cell_cover_device(
+        C_A_t, C_B, x_min, x_max, *, time_guard, keep_nats,
+        scout_size):
+    """Certify omitted full-angle/distance mass for discarded time cells.
+
+    A constant-size angular scout supplies only a lower reference used to choose
+    cells.  Correctness comes instead from a spectral derivative bound on every
+    Q coefficient, the angular triangle inequality, and a triangle lower bound
+    on the U,V norm polynomial.  Thus a poor scout can retain extra cells but
+    cannot make the omitted-time integral optimistic.
+    """
+    time_guard = int(time_guard)
+    scout_size = int(scout_size)
+    target = (C_A_t if time_guard == 0
+              else C_A_t[..., time_guard:-time_guard])
+    n_time = target.shape[-1]
+    _, _, scout_A = _harmonic_lattice_device(
+        target, scout_size, scout_size)
+    _, _, scout_B = _harmonic_lattice_device(
+        C_B, scout_size, scout_size)
+    scout_profile, _ = _distance_profile_device(
+        scout_A, scout_B[..., None], float(x_min), float(x_max))
+    scout_peak_lower = jnp.max(scout_profile)
+
+    kp_weight = jnp.where(
+        jnp.arange(C_A_t.shape[0]) == 0, 1.0, 2.0)
+    lane_derivative = spectral_time_derivative_bound(
+        C_A_t.reshape((-1, C_A_t.shape[-1])), 1.0,
+        guard=time_guard, order=1)
+    coefficient_derivative_bound = jnp.sum(
+        kp_weight[:, None]
+        * lane_derivative.reshape(C_A_t.shape[:-1]))
+    a_upper_node = jnp.sum(
+        kp_weight[:, None, None] * jnp.abs(target), axis=(0, 1))
+    a_cell_upper = jnp.minimum(
+        a_upper_node[:-1] + coefficient_derivative_bound,
+        a_upper_node[1:] + coefficient_derivative_bound)
+
+    ks0 = (C_B.shape[1] - 1) // 2
+    b_weight = jnp.where(
+        jnp.arange(C_B.shape[0]) == 0, 1.0, 2.0)[:, None]
+    b_magnitude = b_weight * jnp.abs(C_B)
+    b_centre = C_B[0, ks0].real
+    b_remainder = jnp.sum(b_magnitude) - jnp.abs(C_B[0, ks0])
+    b_triangle_lower = b_centre - b_remainder
+    cell_peak_upper = _distance_upper_profile_device(
+        a_cell_upper, jnp.full_like(a_cell_upper, b_triangle_lower),
+        float(x_min), float(x_max))
+    cell_mass_upper = (cell_peak_upper
+                       + jnp.log((2.0 * jnp.pi) ** 2
+                                 * (float(x_max) - float(x_min))))
+    finite = (jnp.all(jnp.isfinite(C_A_t.real))
+              & jnp.all(jnp.isfinite(C_A_t.imag))
+              & jnp.all(jnp.isfinite(C_B.real))
+              & jnp.all(jnp.isfinite(C_B.imag))
+              & jnp.isfinite(coefficient_derivative_bound)
+              & jnp.isfinite(scout_peak_lower)
+              & jnp.all(jnp.isfinite(cell_mass_upper)))
+    live_cells = cell_mass_upper >= scout_peak_lower - float(keep_nats)
+    # Invalid arithmetic retains the full time support and then fails the
+    # explicit certificate/capacity gates downstream.
+    live_cells = jnp.where(finite, live_cells, jnp.ones_like(live_cells))
+    outside_log_bound = jax.scipy.special.logsumexp(jnp.where(
+        live_cells, -jnp.inf, cell_mass_upper))
+    live_nodes = jnp.concatenate((
+        live_cells[:1], live_cells[:-1] | live_cells[1:], live_cells[-1:]))
+    return {
+        "live_cells": live_cells,
+        "live_nodes": live_nodes,
+        "cell_mass_upper": cell_mass_upper,
+        "outside_log_bound": outside_log_bound,
+        "scout_peak_lower": scout_peak_lower,
+        "coefficient_derivative_bound": coefficient_derivative_bound,
+        "b_triangle_lower": b_triangle_lower,
+        "certified": finite,
+        "n_scout_evaluations": jnp.asarray(scout_size * scout_size * n_time),
+    }
+
+
 def _exact_angular_translation_symmetries_device(
         C_A_t, C_B, *, rtol=1.0e-10):
     """Return a fixed grid of coefficient-certified translations and a mask."""
@@ -559,12 +673,16 @@ def _exact_angular_translation_symmetries_device(
 def rank_joint_starts_from_uvq_device(
         C_A_t, C_B, x_min, x_max, *, time_guard=0, max_starts=32,
         angular_oversample=2, norm_rtol=1.0e-9,
-        symmetry_rtol=1.0e-10):
+        symmetry_rtol=1.0e-10, time_keep_nats=30.0,
+        max_time_nodes=64, time_scout_size=4):
     """Rank a static U,V/Q basin portfolio inside ``jit``/``vmap``.
 
     The finite harmonic orders determine a small ``(phi_ref, 2*psi)`` lattice.
-    At each lattice/time point the distance coordinate is profiled analytically;
-    only joint angular maxima at time-profile maxima become optimizer starts.
+    A constant-size angular scout and a spectral coefficient derivative bound
+    first retain complete time cells and certify an upper bound on all discarded
+    time-cell mass.  The full harmonic lattice is then evaluated only at a
+    fixed-capacity set of retained time nodes; only joint angular maxima at
+    time-profile maxima become optimizer starts.
     This is deliberately the device analogue of
     :func:`rank_joint_starts_from_uvq`, with a fixed padded result rather than a
     variable host list.  It performs no likelihood-drop pruning and never claims
@@ -582,8 +700,14 @@ def rank_joint_starts_from_uvq_device(
         raise ValueError("time_guard must leave at least two target samples")
     max_starts = int(max_starts)
     angular_oversample = int(angular_oversample)
+    max_time_nodes = int(max_time_nodes)
+    time_scout_size = int(time_scout_size)
     if max_starts < 1 or angular_oversample < 1:
         raise ValueError("start capacity and angular oversampling must be positive")
+    if max_time_nodes < 2 or time_scout_size < 1:
+        raise ValueError("time capacity and scout size must be positive")
+    if not np.isfinite(float(time_keep_nats)) or float(time_keep_nats) <= 0.0:
+        raise ValueError("time_keep_nats must be finite and positive")
     if not np.isfinite(float(norm_rtol)) or float(norm_rtol) < 0.0:
         raise ValueError("norm_rtol must be finite and non-negative")
     if not np.isfinite(float(symmetry_rtol)) or float(symmetry_rtol) < 0.0:
@@ -595,11 +719,39 @@ def rank_joint_starts_from_uvq_device(
               (C_B.shape[1] - 1) // 2)
     n_phi = max(9, 2 * angular_oversample * k_phi + 1)
     n_u = max(9, 2 * angular_oversample * k_u + 1)
-    n_lattice = n_phi * n_u * n_time
+    time_capacity = min(max_time_nodes, n_time)
+    n_lattice = n_phi * n_u * time_capacity
     if max_starts > n_lattice:
         raise ValueError("max_starts exceeds the structural lattice size")
 
-    phi, u, A = _harmonic_lattice_device(target, n_phi, n_u)
+    time_cover = _time_cell_cover_device(
+        C_A_t, C_B, float(x_min), float(x_max), time_guard=time_guard,
+        keep_nats=float(time_keep_nats), scout_size=time_scout_size)
+    n_live_time_nodes = jnp.count_nonzero(time_cover["live_nodes"])
+    time_capacity_ok = n_live_time_nodes <= time_capacity
+    cell_upper = time_cover["cell_mass_upper"]
+    node_priority = jnp.maximum(
+        jnp.concatenate((jnp.asarray([-jnp.inf]), cell_upper)),
+        jnp.concatenate((cell_upper, jnp.asarray([-jnp.inf]))))
+    node_priority = jnp.where(
+        time_cover["live_nodes"], node_priority, -jnp.inf)
+    selected_priority, selected_time_index = jax.lax.top_k(
+        node_priority, time_capacity)
+    selected_time_live = jnp.isfinite(selected_priority)
+    # Restore chronological order so adjacency in the compact vector retains
+    # its time meaning.  Inactive padding sorts after every physical sample.
+    sort_key = jnp.where(
+        selected_time_live, selected_time_index,
+        n_time + jnp.arange(time_capacity))
+    chronological = jnp.argsort(sort_key)
+    selected_time_index = selected_time_index[chronological]
+    selected_time_live = selected_time_live[chronological]
+    selected_time_index_safe = jnp.where(
+        selected_time_live, selected_time_index, 0)
+    selected_target = jnp.take(
+        target, selected_time_index_safe, axis=-1)
+
+    phi, u, A = _harmonic_lattice_device(selected_target, n_phi, n_u)
     _, _, B = _harmonic_lattice_device(C_B, n_phi, n_u)
     profile, x_best = _distance_profile_device(
         A, B[..., None], float(x_min), float(x_max))
@@ -609,8 +761,20 @@ def rank_joint_starts_from_uvq_device(
     # The structural time profile identifies basins without resolving their
     # SNR-narrow interior.  The continuous refiner performs that second job.
     time_profile = jnp.max(profile, axis=(0, 1))
-    time_left = jnp.concatenate((jnp.asarray([-jnp.inf]), time_profile[:-1]))
-    time_right = jnp.concatenate((time_profile[1:], jnp.asarray([-jnp.inf])))
+    compact_index = jnp.arange(time_capacity)
+    left_adjacent = (
+        selected_time_live
+        & (compact_index > 0)
+        & jnp.roll(selected_time_live, 1)
+        & (selected_time_index == jnp.roll(selected_time_index, 1) + 1))
+    right_adjacent = (
+        selected_time_live
+        & (compact_index + 1 < time_capacity)
+        & jnp.roll(selected_time_live, -1)
+        & (jnp.roll(selected_time_index, -1) == selected_time_index + 1))
+    time_left = jnp.where(left_adjacent, jnp.roll(time_profile, 1), -jnp.inf)
+    time_right = jnp.where(
+        right_adjacent, jnp.roll(time_profile, -1), -jnp.inf)
     time_peak = (time_profile >= time_left) & (time_profile >= time_right)
     angular_peak = jnp.ones(profile.shape, dtype=bool)
     for dphi in (-1, 0, 1):
@@ -618,17 +782,19 @@ def rank_joint_starts_from_uvq_device(
             if dphi or du:
                 angular_peak &= profile >= jnp.roll(
                     jnp.roll(profile, dphi, axis=0), du, axis=1)
-    candidate = angular_peak & time_peak[None, None, :] & norm_nonnegative
+    candidate = (angular_peak & time_peak[None, None, :]
+                 & selected_time_live[None, None, :] & norm_nonnegative)
     n_lattice_candidates = jnp.count_nonzero(candidate)
     ranked = jnp.where(candidate, profile, -jnp.inf).reshape(-1)
     scores, flat = jax.lax.top_k(ranked, max_starts)
     live = jnp.isfinite(scores)
-    time_index = flat % n_time
-    angular_flat = flat // n_time
+    compact_time_index = flat % time_capacity
+    angular_flat = flat // time_capacity
     u_index = angular_flat % n_u
     phi_index = angular_flat // n_u
     representative_starts = jnp.stack((
-        time_index.astype(jnp.float64), phi[phi_index], u[u_index],
+        selected_time_index_safe[compact_time_index].astype(jnp.float64),
+        phi[phi_index], u[u_index],
         x_best.reshape(-1)[flat]), axis=1)
     fallback = jnp.asarray([
         0.5 * (n_time - 1.0), 0.0, 0.0,
@@ -660,9 +826,15 @@ def rank_joint_starts_from_uvq_device(
     n_candidates = n_lattice_candidates * n_symmetry
     return DeviceJointStartPlan(
         starts, final_scores, live, n_lattice_candidates, n_candidates,
-        norm_nonnegative & (n_candidates <= max_starts),
-        jnp.asarray(n_phi), jnp.asarray(n_u), jnp.asarray(n_time),
-        jnp.asarray(n_lattice), norm_nonnegative, n_symmetry)
+        (norm_nonnegative & time_cover["certified"] & time_capacity_ok
+         & (n_candidates <= max_starts)),
+        jnp.asarray(n_phi), jnp.asarray(n_u), jnp.asarray(time_capacity),
+        jnp.asarray(n_time), jnp.asarray(n_lattice),
+        time_cover["n_scout_evaluations"],
+        jnp.count_nonzero(time_cover["live_cells"]), n_live_time_nodes,
+        time_cover["outside_log_bound"], time_cover["scout_peak_lower"],
+        time_cover["certified"], time_capacity_ok,
+        norm_nonnegative, n_symmetry)
 
 
 def combine_device_start_plans(base, extra):
@@ -683,7 +855,8 @@ def combine_device_start_plans(base, extra):
                 or plan.scores.shape != (plan.starts.shape[0],)
                 or plan.live.shape != (plan.starts.shape[0],)):
             raise ValueError("%s device start plan has inconsistent shapes" % name)
-    same_time_lattice = base.n_time_lattice == extra.n_time_lattice
+    same_time_support = (
+        base.n_retained_time_samples == extra.n_retained_time_samples)
     starts = jnp.concatenate((base.starts, extra.starts), axis=0)
     scores = jnp.concatenate((base.scores, extra.scores), axis=0)
     live = jnp.concatenate((base.live, extra.live), axis=0)
@@ -692,11 +865,22 @@ def combine_device_start_plans(base, extra):
         (base.n_lattice_candidates_before_symmetry
          + extra.n_lattice_candidates_before_symmetry),
         base.n_candidates_before_cap + extra.n_candidates_before_cap,
-        base.capacity_ok & extra.capacity_ok & same_time_lattice,
+        base.capacity_ok & extra.capacity_ok & same_time_support,
         jnp.maximum(base.n_phi_lattice, extra.n_phi_lattice),
         jnp.maximum(base.n_u_lattice, extra.n_u_lattice),
         jnp.maximum(base.n_time_lattice, extra.n_time_lattice),
+        jnp.maximum(base.n_retained_time_samples,
+                    extra.n_retained_time_samples),
         base.n_lattice_evaluations + extra.n_lattice_evaluations,
+        base.n_time_scout_evaluations + extra.n_time_scout_evaluations,
+        base.n_time_cells_retained + extra.n_time_cells_retained,
+        base.n_time_nodes_retained + extra.n_time_nodes_retained,
+        jnp.minimum(base.time_outside_log_bound,
+                    extra.time_outside_log_bound),
+        jnp.maximum(base.time_scout_peak_lower,
+                    extra.time_scout_peak_lower),
+        base.time_cover_certified & extra.time_cover_certified,
+        base.time_capacity_ok & extra.time_capacity_ok,
         base.norm_nonnegative & extra.norm_nonnegative,
         jnp.maximum(base.n_exact_symmetry_shifts,
                     extra.n_exact_symmetry_shifts))
@@ -1046,6 +1230,8 @@ def make_all_axis_mode_plan(centers, *, max_modes, local_transforms,
                             enumeration_complete=False,
                             outside_bound_certified=False,
                             time_reconstruction_certified=False,
+                            time_outside_log_bound=np.inf,
+                            time_outside_bound_certified=False,
                             discovery_capacity_ok=True):
     """Pad a host mode set and freeze its independent acceptance warrants."""
     centers = np.asarray(centers, dtype=float)
@@ -1105,6 +1291,8 @@ def make_all_axis_mode_plan(centers, *, max_modes, local_transforms,
         jnp.asarray(bool(enumeration_complete)),
         jnp.asarray(bool(outside_bound_certified)),
         jnp.asarray(bool(time_reconstruction_certified)),
+        jnp.asarray(float(time_outside_log_bound)),
+        jnp.asarray(bool(time_outside_bound_certified)),
         jnp.asarray(disjoint),
         jnp.asarray(bool(discovery_capacity_ok)))
 
@@ -1252,7 +1440,10 @@ def make_all_axis_mode_plan_device(
         selected_centers, half_widths, selected_transforms,
         jnp.asarray(float(local_radius)), selected_live,
         jnp.asarray(jnp.inf), jnp.asarray(False), jnp.asarray(False),
-        jnp.asarray(bool(time_reconstruction_certified)), disjoint,
+        jnp.asarray(bool(time_reconstruction_certified)),
+        start_plan.time_outside_log_bound,
+        start_plan.time_cover_certified,
+        disjoint,
         discovery_capacity_ok)
     ledger = {
         "n_optimizer_starts": jnp.count_nonzero(start_plan.live),
@@ -1267,9 +1458,17 @@ def make_all_axis_mode_plan_device(
         "n_candidates_before_cap": start_plan.n_candidates_before_cap,
         "n_exact_symmetry_shifts": start_plan.n_exact_symmetry_shifts,
         "n_lattice_evaluations": start_plan.n_lattice_evaluations,
+        "n_time_scout_evaluations": start_plan.n_time_scout_evaluations,
         "n_phi_lattice": start_plan.n_phi_lattice,
         "n_u_lattice": start_plan.n_u_lattice,
         "n_time_lattice": start_plan.n_time_lattice,
+        "n_retained_time_samples": start_plan.n_retained_time_samples,
+        "n_time_cells_retained": start_plan.n_time_cells_retained,
+        "n_time_nodes_retained": start_plan.n_time_nodes_retained,
+        "time_outside_log_bound": start_plan.time_outside_log_bound,
+        "time_scout_peak_lower": start_plan.time_scout_peak_lower,
+        "time_cover_certified": start_plan.time_cover_certified,
+        "time_capacity_ok": start_plan.time_capacity_ok,
         "max_gradient_norm": jnp.max(jnp.where(
             stationary, gradient_norm, -jnp.inf)),
         "min_selected_curvature": jnp.min(jnp.where(
@@ -1476,6 +1675,7 @@ def all_axis_peak_local_marginalize(
     value_lo = value_lo + float(log_normalization)
     value_hi = value_hi + float(log_normalization)
     outside = plan.outside_log_bound + float(log_normalization)
+    time_outside = plan.time_outside_log_bound + float(log_normalization)
 
     centers = plan.centers
     widths = plan.half_widths
@@ -1546,6 +1746,9 @@ def all_axis_peak_local_marginalize(
         "enumeration_complete": plan.enumeration_complete,
         "outside_bound_certified": plan.outside_bound_certified,
         "time_reconstruction_certified": plan.time_reconstruction_certified,
+        "time_outside_bound_certified": plan.time_outside_bound_certified,
+        "time_outside_log_bound": time_outside,
+        "time_outside_tail_margin": time_outside - value_hi,
         "time_guard_validated": guard_validated,
         "time_reconstruction_warranted": time_warranted,
         "time_guard_error_certified": jnp.asarray(False),
@@ -1595,6 +1798,7 @@ def empirical_enrichment_marginalize(
         enriched_order=19, enriched_check_order=25,
         convergence_tol_nats=1.0e-3, time_guard=0,
         time_guard_tol_nats=1.0e-3, log_normalization=0.0,
+        time_outside_tol_nats=-23.0,
         node_concentration=1.0,
         mode_match_tol=(0.25, 1.0e-4, 1.0e-4, 1.0e-5),
         geometry_match_rtol=1.0e-3, geometry_match_atol=1.0e-8):
@@ -1604,7 +1808,9 @@ def empirical_enrichment_marginalize(
     that includes the base starts, and uses the stronger quadrature orders
     supplied here.  Acceptance requires finite values, explicit start capacity,
     disjoint in-support regions, healthy nested quadrature and time-guard
-    diagnostics, and agreement within ``convergence_tol_nats``.  Every base
+    diagnostics, any supplied certified omitted-time bound to clear
+    ``time_outside_tol_nats``, and agreement within ``convergence_tol_nats``.
+    Every base
     mode must recur with matching local geometry.  Additional enriched basins
     are probes, not automatically part of the accepted cover: if a probe has
     broad/overlapping geometry but changes the positive local integral by less
@@ -1625,6 +1831,9 @@ def empirical_enrichment_marginalize(
             "< enriched_check_order")
     if float(convergence_tol_nats) <= 0.0:
         raise ValueError("convergence_tol_nats must be positive")
+    if (not np.isfinite(float(time_outside_tol_nats))
+            or float(time_outside_tol_nats) >= 0.0):
+        raise ValueError("time_outside_tol_nats must be finite and negative")
     mode_match_tol = np.asarray(mode_match_tol, dtype=float)
     if mode_match_tol.shape != (4,) or np.any(mode_match_tol <= 0.0):
         raise ValueError("mode_match_tol must contain four positive values")
@@ -1652,6 +1861,19 @@ def empirical_enrichment_marginalize(
                    & enriched_plan.discovery_capacity_ok)
     time_ok = (base["time_reconstruction_warranted"]
                & enriched["time_reconstruction_warranted"])
+    any_time_cover = (base_plan.time_outside_bound_certified
+                      | enriched_plan.time_outside_bound_certified)
+    time_cover_pair = (base_plan.time_outside_bound_certified
+                       & enriched_plan.time_outside_bound_certified)
+    base_time_tail_margin = (base["time_outside_log_bound"] - base_value)
+    enriched_time_tail_margin = (
+        enriched["time_outside_log_bound"] - enriched_value)
+    time_omitted_ok = ((~any_time_cover)
+                       | (time_cover_pair
+                          & (base_time_tail_margin
+                             < float(time_outside_tol_nats))
+                          & (enriched_time_tail_margin
+                             < float(time_outside_tol_nats))))
     base_geometry_ok = base["boxes_disjoint"] & base["support_ok"]
     enriched_geometry_ok = (enriched["boxes_disjoint"]
                             & enriched["support_ok"])
@@ -1696,17 +1918,20 @@ def empirical_enrichment_marginalize(
                             & (~mode_nesting_ok))
     decline_time = (finite & capacity_ok & has_modes & mode_nesting_ok
                     & (~time_ok))
+    decline_time_omitted = (
+        finite & capacity_ok & has_modes & mode_nesting_ok & time_ok
+        & (~time_omitted_ok))
     decline_geometry = (finite & capacity_ok & has_modes & mode_nesting_ok
-                        & time_ok
+                        & time_ok & time_omitted_ok
                         & (~geometry_ok))
     decline_quadrature = (finite & capacity_ok & has_modes & mode_nesting_ok
-                          & time_ok
+                          & time_ok & time_omitted_ok
                           & geometry_ok & (~quadrature_ok))
     decline_enrichment = (finite & capacity_ok & has_modes & mode_nesting_ok
-                          & time_ok
+                          & time_ok & time_omitted_ok
                           & geometry_ok & quadrature_ok & (~converged))
     accepted = (finite & capacity_ok & has_modes & mode_nesting_ok & time_ok
-                & geometry_ok & quadrature_ok & converged)
+                & time_omitted_ok & geometry_ok & quadrature_ok & converged)
     accepted_value_uses_base_geometry = accepted & (~enriched_geometry_ok)
     accepted_value = jnp.where(
         accepted_value_uses_base_geometry, base_value, enriched_value)
@@ -1717,6 +1942,7 @@ def empirical_enrichment_marginalize(
         + decline_no_modes.astype(jnp.int32)
         + decline_mode_nesting.astype(jnp.int32)
         + decline_time.astype(jnp.int32)
+        + decline_time_omitted.astype(jnp.int32)
         + decline_geometry.astype(jnp.int32)
         + decline_quadrature.astype(jnp.int32)
         + decline_enrichment.astype(jnp.int32)) == 1
@@ -1733,6 +1959,7 @@ def empirical_enrichment_marginalize(
         "decline_no_modes": decline_no_modes,
         "decline_mode_nesting": decline_mode_nesting,
         "decline_time_reconstruction": decline_time,
+        "decline_time_omitted_mass": decline_time_omitted,
         "decline_geometry": decline_geometry,
         "decline_quadrature": decline_quadrature,
         "decline_enrichment": decline_enrichment,
@@ -1755,6 +1982,12 @@ def empirical_enrichment_marginalize(
         "enriched_quadrature_error": enriched["quadrature_error"],
         "base_time_guard_error": base["time_guard_error"],
         "enriched_time_guard_error": enriched["time_guard_error"],
+        "time_outside_cover_used": any_time_cover,
+        "time_outside_cover_pair": time_cover_pair,
+        "time_omitted_mass_ok": time_omitted_ok,
+        "time_outside_tol_nats": jnp.asarray(float(time_outside_tol_nats)),
+        "base_time_outside_tail_margin": base_time_tail_margin,
+        "enriched_time_outside_tail_margin": enriched_time_tail_margin,
         "base_total_local_evaluations_hi":
             base["n_total_local_evaluations_hi"],
         "enriched_total_local_evaluations_hi":
@@ -1778,15 +2011,17 @@ def empirical_enrichment_with_exact_reserve(
         enriched_order=19, enriched_check_order=25,
         convergence_tol_nats=1.0e-3, time_guard=0,
         time_guard_tol_nats=1.0e-3, local_log_normalization=0.0,
+        time_outside_tol_nats=-23.0,
         reserve_log_offset=0.0, node_concentration=1.0,
         mode_match_tol=(0.25, 1.0e-4, 1.0e-4, 1.0e-5)):
     """Select an accepted local value or execute the exact table reserve.
 
-    This is the first operational fixed-point composition seam.  Planning is
-    intentionally still host-side: the caller supplies two immutable mode
-    plans, while this device function evaluates the empirical gate and uses
+    This is the first operational fixed-point composition seam.  The caller
+    supplies two immutable host- or device-built mode plans; this device
+    function evaluates the empirical gate and uses
     :func:`anglemarg.coefficient_table_distphipsimarg_exact` only on a decline.
-    Thus accepted high-SNR rows pay fixed local work per retained mode; broad,
+    Thus accepted high-SNR rows pay fixed local work per retained mode after
+    bounded discovery; broad,
     unresolved, capacity-limited, or otherwise unhealthy rows retain the sample
     through the established dense/exact coefficient reserve.
 
@@ -1830,6 +2065,7 @@ def empirical_enrichment_with_exact_reserve(
         convergence_tol_nats=float(convergence_tol_nats),
         time_guard=time_guard,
         time_guard_tol_nats=float(time_guard_tol_nats),
+        time_outside_tol_nats=float(time_outside_tol_nats),
         log_normalization=float(local_log_normalization),
         node_concentration=float(node_concentration),
         mode_match_tol=mode_match_tol)

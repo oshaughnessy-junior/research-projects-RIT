@@ -213,16 +213,20 @@ def test_device_joint_start_portfolio_is_fixed_shape_jittable_and_vmappable():
 
     def rank(table):
         return AAP.rank_joint_starts_from_uvq_device(
-            table, C_B, 0.2, 7.0, max_starts=8,
+            table, C_B, 0.2, 7.0, max_starts=32,
             angular_oversample=2)
 
     low = jax.jit(rank)(jnp.asarray(C_A))
     high = jax.jit(rank)(jnp.asarray(64.0 * C_A))
-    assert low.starts.shape == high.starts.shape == (8, 4)
+    assert low.starts.shape == high.starts.shape == (32, 4)
     assert int(low.n_phi_lattice) == int(high.n_phi_lattice) == 17
     assert int(low.n_u_lattice) == int(high.n_u_lattice) == 9
     assert int(low.n_lattice_evaluations) == 17 * 9 * 33
     assert int(high.n_lattice_evaluations) == 17 * 9 * 33
+    assert int(low.n_time_scout_evaluations) == 4 * 4 * 33
+    assert int(low.n_retained_time_samples) == 33
+    assert bool(low.time_cover_certified) and bool(high.time_cover_certified)
+    assert bool(low.time_capacity_ok) and bool(high.time_capacity_ok)
     assert bool(low.norm_nonnegative) and bool(high.norm_nonnegative)
     assert bool(low.capacity_ok) and bool(high.capacity_ok)
     assert np.all(np.asarray(low.starts)[np.asarray(low.live), 3] >= 0.2)
@@ -230,9 +234,53 @@ def test_device_joint_start_portfolio_is_fixed_shape_jittable_and_vmappable():
 
     batch = jax.jit(jax.vmap(rank))(jnp.asarray(
         np.stack((C_A, 1.01 * C_A))))
-    assert batch.starts.shape == (2, 8, 4)
+    assert batch.starts.shape == (2, 32, 4)
     np.testing.assert_array_equal(
         np.asarray(batch.n_lattice_evaluations), [17 * 9 * 33] * 2)
+
+
+def test_device_time_cover_bounds_discarded_cells_and_limits_full_lattice():
+    n_time = 129
+    t = np.arange(n_time, dtype=float)
+    C_A = np.zeros((1, 1, n_time), dtype=np.complex128)
+    C_A[0, 0] = 5.0 - 15.0 * np.cos(2.0 * np.pi * t / (n_time - 1.0))
+    C_B = np.asarray([[10.0 + 0.0j]])
+    cover = jax.jit(lambda table: AAP._time_cell_cover_device(
+        table, C_B, 0.5, 2.0, time_guard=0, keep_nats=5.0,
+        scout_size=4))(jnp.asarray(C_A))
+    live = np.asarray(cover["live_cells"])
+    cell_upper = np.asarray(cover["cell_mass_upper"])
+    assert bool(cover["certified"])
+    assert 0 < np.count_nonzero(live) < live.size
+    assert float(cover["outside_log_bound"]) == pytest.approx(
+        special.logsumexp(cell_upper[~live]))
+
+    coeff, frequency, offset = AAP._time_primitive_spectrum(
+        jnp.asarray(C_A.reshape((1, n_time))), 0)
+    x = np.linspace(0.5, 2.0, 129)
+    log_volume = np.log((2.0 * np.pi) ** 2 * (2.0 - 0.5))
+    for cell in np.flatnonzero(~live):
+        position = np.linspace(cell, cell + 1.0, 33)
+        amplitude = np.asarray(AAP._evaluate_time_spectrum(
+            coeff, frequency, jnp.asarray(position), offset))[0].real
+        sampled = (amplitude[:, None] * x[None, :]
+                   - 5.0 * x[None, :] ** 2 - 4.0 * np.log(x[None, :]))
+        assert sampled.max() + log_volume <= cell_upper[cell] + 1.0e-10
+
+    plan = jax.jit(lambda table: AAP.rank_joint_starts_from_uvq_device(
+        table, C_B, 0.5, 2.0, max_starts=32, max_time_nodes=64,
+        time_keep_nats=5.0))(jnp.asarray(C_A))
+    assert int(plan.n_retained_time_samples) == n_time
+    assert int(plan.n_time_lattice) == 64
+    assert int(plan.n_lattice_evaluations) == 9 * 9 * 64
+    assert int(plan.n_time_scout_evaluations) == 4 * 4 * n_time
+    assert int(plan.n_time_nodes_retained) <= 64
+    assert bool(plan.time_capacity_ok)
+    # The angle-constant fixture is deliberately degenerate: every angular
+    # lattice point is a maximum, so the independent start-capacity gate still
+    # declines even though the time cover itself fits and is certified.
+    assert int(plan.n_candidates_before_cap) > 32
+    assert not bool(plan.capacity_ok)
 
 
 def test_device_joint_start_portfolio_fails_closed_on_capacity_and_norm():
@@ -250,6 +298,13 @@ def test_device_joint_start_portfolio_fails_closed_on_capacity_and_norm():
     assert not bool(rejected.capacity_ok)
     assert not np.any(np.asarray(rejected.live))
 
+    time_overflow = jax.jit(
+        lambda table: AAP.rank_joint_starts_from_uvq_device(
+            table, C_B, 0.2, 7.0, max_starts=8, max_time_nodes=2))(
+                jnp.asarray(C_A))
+    assert not bool(time_overflow.time_capacity_ok)
+    assert not bool(time_overflow.capacity_ok)
+
     combined = AAP.combine_device_start_plans(truncated, rejected)
     assert combined.starts.shape == (9, 4)
     assert not bool(combined.capacity_ok)
@@ -262,7 +317,7 @@ def test_device_mode_plan_refines_and_deduplicates_without_host_transfer():
     @jax.jit
     def build(table):
         starts = AAP.rank_joint_starts_from_uvq_device(
-            table, C_B, 0.2, 7.0, max_starts=8)
+            table, C_B, 0.2, 7.0, max_starts=32)
         return AAP.make_all_axis_mode_plan_device(
             table, C_B, starts, 0.2, 7.0, max_modes=4,
             local_radius=3.0, iterations=14,
@@ -291,7 +346,7 @@ def test_device_mode_plan_refines_and_deduplicates_without_host_transfer():
     @jax.jit
     def overflow(table):
         starts = AAP.rank_joint_starts_from_uvq_device(
-            table, C_B, 0.2, 7.0, max_starts=8)
+            table, C_B, 0.2, 7.0, max_starts=32)
         return AAP.make_all_axis_mode_plan_device(
             table, C_B, starts, 0.2, 7.0, max_modes=1,
             local_radius=3.0, iterations=14,
@@ -309,10 +364,10 @@ def test_device_plans_compose_with_empirical_local_controller_under_vmap():
 
     def evaluate(table):
         base_starts = AAP.rank_joint_starts_from_uvq_device(
-            table, C_B, 0.2, 7.0, max_starts=8,
+            table, C_B, 0.2, 7.0, max_starts=32,
             angular_oversample=1)
         extra_starts = AAP.rank_joint_starts_from_uvq_device(
-            table, C_B, 0.2, 7.0, max_starts=8,
+            table, C_B, 0.2, 7.0, max_starts=32,
             angular_oversample=2)
         enriched_starts = AAP.combine_device_start_plans(
             base_starts, extra_starts)
@@ -481,6 +536,21 @@ def test_empirical_enrichment_accepts_without_claiming_global_proof():
     assert bool(ledger["mode_nesting_ok"])
     assert not bool(ledger["fallback_required"])
     assert bool(ledger["reconciles"])
+
+    loose_time_plan = AAP.make_all_axis_mode_plan(
+        centers, max_modes=2, local_transforms=transforms,
+        local_radius=1.0, outside_bound_certified=False,
+        time_reconstruction_certified=True,
+        time_outside_log_bound=1.0e6,
+        time_outside_bound_certified=True)
+    _, accepted, time_tail_ledger = AAP.empirical_enrichment_marginalize(
+        C_A, C_B, loose_time_plan, loose_time_plan, x_min, x_max,
+        convergence_tol_nats=1.0e-3)
+    assert not bool(accepted)
+    assert bool(time_tail_ledger["time_outside_cover_used"])
+    assert not bool(time_tail_ledger["time_omitted_mass_ok"])
+    assert bool(time_tail_ledger["decline_time_omitted_mass"])
+    assert bool(time_tail_ledger["reconciles"])
 
     # A stronger discovery pass may expose a broad diagnostic basin whose
     # positive integral is negligible.  It must not invalidate the unchanged,
