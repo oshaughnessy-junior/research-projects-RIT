@@ -1,7 +1,12 @@
 """Diagnostic planner for joint peak-local JAX marginalization.
 
 This module deliberately exposes an opt-in seam rather than changing the
-production likelihood dispatch.  Its primary path tests whether a small,
+production likelihood dispatch.  The fixed-shape device controller in
+:mod:`all_axis_peaklocal` is the canonical four-axis path; the shared host
+primitives (norm-table summary, harmonic lattice, distance profile, angular
+field) are imported from there.  What remains here is the diagnostic variant:
+symmetry-orbit start ranking, strict sequential Newton/polish refinement,
+axis-aligned overlap partition, and the frozen hierarchical cover.  Its primary path tests whether a small,
 mode-order-sized start portfolio plus empirical enrichment can replace global
 time/angle/distance work while retaining a finite exact/dense reserve.
 
@@ -31,6 +36,22 @@ import jax.numpy as jnp
 import numpy as np
 from scipy.special import logsumexp as scipy_logsumexp
 
+# The host-side primitives shared with the device controller live in
+# all_axis_peaklocal, which is canonical.  This module keeps only the
+# diagnostic-seam variants that differ in semantics (symmetry-orbit start
+# ranking, strict sequential Newton/polish refinement, axis-aligned overlap
+# partition, and the frozen hierarchical cover).
+from .all_axis_peaklocal import (  # noqa: E402
+    UVHarmonicSummary as UVQSummary,
+    _angular_field as _angular_field_jax,
+    _distance_profile_numpy as _distance_profile,
+    _harmonic_lattice,
+    _kp_weights_numpy as _kp_weights,
+    _periodic_distance,
+    _validate_tables,
+    summarize_uv_norm_table,
+)
+
 
 __all__ = [
     "UVQSummary",
@@ -49,19 +70,6 @@ __all__ = [
     "multipeak_local_marginalize",
     "hierarchical_union_cover",
 ]
-
-
-class UVQSummary(NamedTuple):
-    """Cached structural summary of the U,V-derived norm harmonics."""
-
-    C_B: np.ndarray
-    b_lower: float
-    b_upper: float
-    phi_derivative_bound: float
-    u_derivative_bound: float
-    time_invariant: bool
-    time_max_deviation: float
-    input_harmonic_coefficients: int
 
 
 class HarmonicSymmetry(NamedTuple):
@@ -178,50 +186,6 @@ class _DenseReserveError(Exception):
     """A caller-supplied reserve failed; do not relabel it as planner decline."""
 
 
-def _kp_weights(n):
-    weight = np.ones(int(n), dtype=float)
-    weight[1:] = 2.0
-    return weight
-
-
-def _validate_tables(C_A_t, C_B):
-    if C_A_t.ndim != 3:
-        raise ValueError("C_A_t must have shape (KP,2KS+1,Ntime)")
-    if C_B.ndim != 2:
-        raise ValueError("C_B must have shape (KP,2KS+1)")
-    if C_A_t.shape[1] % 2 != 1 or C_B.shape[1] % 2 != 1:
-        raise ValueError("angular harmonic axes must have odd length")
-    if C_A_t.shape[0] > C_B.shape[0] or C_A_t.shape[1] > C_B.shape[1]:
-        raise ValueError("C_B must contain every harmonic represented by C_A")
-
-
-def summarize_uv_norm_table(C_B_t, *, invariance_atol=1.0e-10):
-    """Collapse a repeated U,V norm table and form exact harmonic bounds."""
-    table = np.asarray(C_B_t, dtype=np.complex128)
-    if table.ndim == 2:
-        base = table
-        deviation = 0.0
-    elif table.ndim == 3:
-        base = table[..., 0]
-        deviation = float(np.max(np.abs(table - base[..., None])))
-    else:
-        raise ValueError("C_B_t must have shape (KP,2KS+1[,Ntime])")
-    scale = max(1.0, float(np.max(np.abs(base))))
-    invariant = bool(np.isfinite(deviation)
-                     and deviation <= float(invariance_atol) * scale)
-    kp = np.arange(base.shape[0], dtype=float)[:, None]
-    ks = np.arange(-(base.shape[1] - 1) // 2,
-                   (base.shape[1] - 1) // 2 + 1, dtype=float)[None, :]
-    magnitude = _kp_weights(base.shape[0])[:, None] * np.abs(base)
-    dc = float(base[0, (base.shape[1] - 1) // 2].real)
-    remainder = float(np.sum(magnitude) - abs(dc))
-    return UVQSummary(
-        np.ascontiguousarray(base), max(0.0, dc - remainder),
-        abs(dc) + remainder, float(np.sum(magnitude * np.abs(kp))),
-        float(np.sum(magnitude * np.abs(ks))), invariant, deviation,
-        int(table.size))
-
-
 def infer_harmonic_symmetry(C_A_t, C_B, *, support_rtol=1.0e-12,
                             invariance_rtol=1.0e-12):
     """Infer and verify the finite angular translation group of U,V and Q.
@@ -282,61 +246,6 @@ def infer_harmonic_symmetry(C_A_t, C_B, *, support_rtol=1.0e-12,
         shifts = np.zeros((1, 2))
     return HarmonicSymmetry(
         shifts, int(len(shifts)), int(index), maximum, relative, certified)
-
-
-def _harmonic_lattice(table, n_phi, n_u):
-    table = np.asarray(table, dtype=np.complex128)
-    kp = np.arange(table.shape[0], dtype=float)
-    ks = np.arange(-(table.shape[1] - 1) // 2,
-                   (table.shape[1] - 1) // 2 + 1, dtype=float)
-    phi = 2.0 * np.pi * np.arange(int(n_phi), dtype=float) / int(n_phi)
-    u = 2.0 * np.pi * np.arange(int(n_u), dtype=float) / int(n_u)
-    ep = (_kp_weights(table.shape[0])[None, :]
-          * np.exp(1j * phi[:, None] * kp[None, :]))
-    eu = np.exp(1j * u[:, None] * ks[None, :])
-    if table.ndim == 2:
-        value = np.einsum("pk,uq,kq->pu", ep, eu, table,
-                          optimize=True).real
-    elif table.ndim == 3:
-        value = np.einsum("pk,uq,kqt->put", ep, eu, table,
-                          optimize=True).real
-    else:
-        raise ValueError("harmonic table must have shape (KP,2KS+1[,Ntime])")
-    return phi, u, value
-
-
-def _distance_profile(A, B, x_min, x_max):
-    """Maximize ``x*A-x**2*B/2-4log(x)`` elementwise on a finite interval."""
-    A = np.asarray(A, dtype=float)
-    B = np.asarray(B, dtype=float)
-    tolerance = 1.0e-9 * max(1.0, float(np.max(np.abs(B))))
-    if float(np.min(B)) < -tolerance:
-        raise ValueError("U,V norm table is negative on the planning lattice")
-    B = np.maximum(B, 0.0)
-
-    def value(x):
-        return x * A - 0.5 * B * x * x - 4.0 * np.log(x)
-
-    x0 = np.full_like(A, float(x_min))
-    x1 = np.full_like(A, float(x_max))
-    v0, v1 = value(x0), value(x1)
-    best_x = np.where(v1 > v0, x1, x0)
-    best_v = np.maximum(v0, v1)
-    discriminant = A * A - 16.0 * B
-    valid = (B > 0.0) & (discriminant >= 0.0)
-    root = np.where(
-        valid,
-        (A + np.sqrt(np.maximum(discriminant, 0.0)))
-        / np.where(B > 0.0, 2.0 * B, 1.0),
-        x0)
-    valid &= (root >= float(x_min)) & (root <= float(x_max))
-    # Evaluate only on the positive support even for algebraically valid roots
-    # that lie outside it; ``np.where`` would otherwise still take ``log`` of a
-    # negative discarded root and pollute a clean planning run with warnings.
-    root_value = value(np.clip(root, float(x_min), float(x_max)))
-    improve = valid & (root_value > best_v)
-    return np.where(improve, root_value, best_v), np.where(
-        improve, root, best_x)
 
 
 def rank_joint_starts_from_uvq(
@@ -506,15 +415,6 @@ def _evaluate_spectrum(coeff, frequency, time):
     return jnp.einsum("kqn,n->kq", coeff, phase)
 
 
-def _angular_field_jax(table, phi, u):
-    kp = jnp.arange(table.shape[0], dtype=jnp.float64)
-    ks = jnp.arange(-(table.shape[1] - 1) // 2,
-                    (table.shape[1] - 1) // 2 + 1, dtype=jnp.float64)
-    weight = jnp.where(kp == 0.0, 1.0, 2.0)
-    phase = jnp.exp(1j * (kp[:, None] * phi + ks[None, :] * u))
-    return jnp.sum(weight[:, None] * table * phase).real
-
-
 def refine_joint_starts_jax(
         C_A_t, C_B, starts, x_min, x_max, *, iterations=12,
         ridge=1.0e-8, max_step=(2.0, 0.5, 0.5, 0.25)):
@@ -606,10 +506,6 @@ def refine_joint_starts_jax(
         return point, value, gradient, hessian, curvature
 
     return jax.lax.map(jax.checkpoint(one), starts)
-
-
-def _periodic_distance(a, b):
-    return abs((float(a) - float(b) + np.pi) % (2.0 * np.pi) - np.pi)
 
 
 def select_refined_modes(points, values, gradients, curvatures, *,

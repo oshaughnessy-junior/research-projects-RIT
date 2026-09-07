@@ -353,6 +353,17 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         honest phase-marginalized sky/psi export,
 #                                         K=14/K=88 independent guarded references,
 #                                         and executable baseline/banded support refusal.
+#   test_all_axis_peaklocal.py          30  fail-closed four-axis peak-local prototype:
+#                                         U,V-guided time ranking and algebraic angular
+#                                         starts, JAX refinement, fixed-shape multimode
+#                                         quadrature, exact selected-time reconstruction,
+#                                         explicit omitted-mass/time-reconstruction
+#                                         warrants, geometry/capacity refusal, and outer
+#                                         jit/grad/hessian/vmap transform compatibility,
+#                                         two-guard primitive support/convergence,
+#                                         harmonic-order U,V/Q starts, and the
+#                                         empirical enrichment/exact-reserve
+#                                         disposition gate.
 #   test_multipeak_planner.py          11  opt-in U,V,Q-guided four-axis multi-peak
 #                                         planner: exact symmetry expansion, strict
 #                                         stationary refinement, two-tier empirical
@@ -407,6 +418,7 @@ FILES=(
   "${JAXDIR}/test_limit_distance_jax.py"
   "${JAXDIR}/test_direct_marginalization_planner.py"
   "${JAXDIR}/test_time_first_peaklocal.py"
+  "${JAXDIR}/test_all_axis_peaklocal.py"
   "${JAXDIR}/test_is_proposal_jitter.py"
   "${JAXDIR}/test_multipeak_planner.py"
   "${JAXDIR}/test_jax_phase_marg_mode_order.py"
@@ -655,7 +667,16 @@ fi
 # test_a_full_circuit_phi_window_is_one_region_at_every_peak_location.  Recollected on
 # the merged tree, citlogin6, ~/.cache/jaxci_venv, DESELECT loop applied:
 # "collected 508 tests from 34 files".
-EXPECTED_TESTS=508
+# SEVENTH time, on the four-axis peak-local branch (#268, this merge).  Both
+# sides stale again: 453 on the branch, 507 and then 508 on rift_O4d.
+# Resolution is again a measurement on the merged tree with the DESELECT loop
+# applied, read off this
+# job's own collection line on citlogin6 (~/.cache/jaxci_venv, jax 0.9.2):
+# "542/547 tests collected (5 deselected)", gate-style count 542 from 35
+# files.  Def-count arithmetic (508 + 30 in test_all_axis_peaklocal.py + 1 in
+# test_angle_marg_exact.py + 2 in test_time_first_peaklocal.py = 541) does NOT
+# reproduce it, which is one more reason the constant is measured.
+EXPECTED_TESTS=542
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
