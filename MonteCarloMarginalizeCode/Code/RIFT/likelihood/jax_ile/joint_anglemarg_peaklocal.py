@@ -86,6 +86,8 @@ __all__ = [
     "eval_g2",
     "phi_local_lnI",
     "phi_local_lnI_at_distance",
+    "phi_start_candidates",
+    "PhiStartSet",
     "joint_lnL_phi_local",
     "X_CHUNK_DEFAULT",
     "PT_CHUNK_DEFAULT",
@@ -670,6 +672,81 @@ def sup_g_bound(C, phi):
            | (resid > 1e-6 * jnp.maximum(m1u, 1e-300)))
     gmax = jnp.where(bad, a + jnp.abs(c1) + jnp.abs(c2), gv[i])
     return jnp.log(2.0 * jnp.pi) + gmax
+
+
+class PhiStartSet(object):
+    """Candidate phi from :func:`phi_start_candidates`, with its provenance attached.
+
+    ``certified`` records whether the algebraic enumerator could prove the set complete.
+    It is metadata for the caller's ledger.  NOTHING IN THIS MODULE GATES ON IT, and that
+    is deliberate -- see the function docstring.
+    """
+
+    __slots__ = ("nodes", "certified", "report")
+
+    def __init__(self, nodes, certified, report):
+        self.nodes = np.asarray(nodes, dtype=float)
+        self.certified = bool(certified)
+        self.report = report
+
+    def __len__(self):
+        return int(self.nodes.size)
+
+    def __repr__(self):
+        return "PhiStartSet(n=%d, certified=%s)" % (self.nodes.size, self.certified)
+
+
+def phi_start_candidates(C):
+    """Phi worth starting a local optimizer from.  A PROPOSAL, never a certificate.
+
+    WHY THESE PHI.  Write ``h(phi) = max_u g(phi, u)``.  Every local maximum of ``h`` is a
+    2-D stationary point of ``g``: if ``phi0`` is a local max of ``h`` attained at ``u0``,
+    then ``g(., u0) <= h`` with equality at ``phi0``, so ``d_phi g = 0`` there, and ``u0``
+    maximizes ``g(phi0, .)`` so ``d_u g = 0``.  The converse fails only upward -- ``h`` is
+    an upper envelope, so where the maximizing ``u`` switches branches it has an UPWARD
+    kink, a local minimum, which cannot carry a supremum.
+    :mod:`RIFT.likelihood.bivariate_trig_stationary` enumerates the 2-D stationary set
+    algebraically, so its phi projection contains every candidate for the supremum.
+
+    WHY IT IS NOT A CERTIFICATE, AND WHY THAT IS FINE HERE.  The enumerator certifies
+    completeness only when two independent resultant projections agree.  Measured on
+    ``seed 7, KS=2`` tables, that holds at ``KP=3`` and fails from ``KP=5`` up with
+    "fewer than two algebraically complete projections" -- so at production mode order
+    there is no completeness proof, and a bound built on this set would be an
+    UNDER-estimate, which is unsound.  #267 tried exactly that and is closed.
+
+    An optimizer start set has no such requirement: a missing start costs accuracy that a
+    downstream consistency check can still catch, not soundness.  On the decline path the
+    enumerator returns the union of its definitely-on-torus roots, so the set is non-empty
+    and useful precisely where certification is not available.
+
+    MEASURED (seed 7, KS=2, amplitudes 1108 and 283672, ``sup_h`` over the candidates
+    versus over a 32768-point uniform phi grid; negative means the candidates win)::
+
+        KP  certified  n_cand   sup_h(grid) - sup_h(candidates)      enumerator cost
+         3       yes       14   -3.0e-05 / -7.6e-03 nat              0.06 - 0.15 s
+         5       no        48   -4.8e-04 / -1.2e-01 nat              0.32 - 0.33 s
+         7       no     47/49   -1.5e-03 / -3.8e-01 nat                        --
+         9       no     59/66   -1.5e-03 / -3.9e-01 nat              8.7 - 9.6 s
+
+    The candidates beat the dense grid at every mode order, certified or not, because they
+    sit ON the peak while a uniform grid straddles it.  The gap widens with amplitude
+    because the peak sharpens, which is the regime this whole line of work targets.
+
+    COST DOES NOT TRACK AMPLITUDE.  Both the candidate count and the enumerator's wall time
+    are flat across the 256x amplitude range above; they track MODE ORDER instead, and the
+    KP=9 cost of ~9 s is real and is the thing to watch.  Contrast the Lipschitz bound grid
+    it descends from, which needed ``pi * M10 / tol`` points and therefore grew as ``rho^2``.
+
+    Returns ``None`` when the enumerator produces nothing at all.
+    """
+    from RIFT.likelihood.bivariate_trig_stationary import enumerate_torus_maxima
+    en = enumerate_torus_maxima(np.asarray(C))
+    pts = np.asarray(en.stationary_points)
+    if pts.size == 0:
+        return None
+    phi = np.unique(np.mod(np.asarray(pts)[:, 0].real, 2.0 * np.pi))
+    return PhiStartSet(phi, en.ok, en.report)
 
 
 def required_bound_grid(amplitude, tol_nats=5.0, m_max=2):

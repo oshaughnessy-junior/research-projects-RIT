@@ -549,7 +549,7 @@ fi
 # is wrong there is no habit of checking left to catch it.  The number below is READ
 # OFF this job's own collection line after this merge: 461/462 collected, 1 deselected,
 # 31 files.
-EXPECTED_TESTS=461
+EXPECTED_TESTS=464
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"

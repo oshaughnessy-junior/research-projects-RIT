@@ -855,3 +855,74 @@ def test_the_distance_combiner_is_fail_closed_across_nodes():
     _, ok_starved, _ = JP.joint_lnL_phi_local(A, B, x, lw, u_nodes=48, n_slots=1,
                                               n_nodes=97, x_chunk=2)
     assert not bool(ok_starved), "a starved node must sink the distance sum"
+
+
+# ---------------------------------------------------------------------------
+# phi_start_candidates: the part of the closed #267 that survives.  The exact
+# outside bound built on this set was UNSOUND at production mode order, because
+# the enumerator cannot certify completeness there.  As an optimizer PROPOSAL
+# the same set needs no completeness proof, and these tests pin what it does
+# deliver: it beats a dense grid at the supremum, and its cost is flat in
+# amplitude.
+# ---------------------------------------------------------------------------
+
+def _h_at(C, phi, nu=4096):
+    """``h(phi) = max_u g(phi, u)`` in the kernel's own (a, c1, c2) convention."""
+    KP, W = C.shape
+    KS = (W - 1) // 2
+    k = np.arange(KP)
+    w = np.where(k > 0, 2.0, 1.0)
+    ph = np.exp(1j * np.atleast_1d(phi)[:, None] * k[None, :]) * w[None, :]
+    D = lambda q: (ph * C[:, KS + q][None, :]).sum(axis=1)      # noqa: E731
+    a = D(0).real
+    c1 = D(1) + np.conj(D(-1))
+    c2 = D(2) + np.conj(D(-2))
+    u = np.linspace(0.0, 2.0 * np.pi, nu, endpoint=False)
+    g = (a[:, None] + (c1[:, None] * np.exp(1j * u)).real
+         + (c2[:, None] * np.exp(2j * u)).real)
+    return g.max(axis=1)
+
+
+def _seeded_table(KP, KS=2, seed=7):
+    rng = np.random.default_rng(seed)
+    return rng.normal(size=(KP, 2 * KS + 1)) + 1j * rng.normal(size=(KP, 2 * KS + 1))
+
+
+def test_the_phi_start_candidates_beat_a_dense_grid_at_the_supremum():
+    """The point of the algebraic set is that it sits ON the peaks of ``h`` while a
+    uniform grid straddles them.  Measured at KP=3 (certified) and KP=5 (NOT certified):
+    the candidate supremum is at least as high as a 32768-point grid's at both.  This is
+    what makes it a good start set even where it cannot be a certificate."""
+    dense = np.linspace(0.0, 2.0 * np.pi, 32768, endpoint=False)
+    for KP in (3, 5):
+        base = _seeded_table(KP)
+        for amp in (1108.0, 283672.0):
+            C = base * amp
+            st = JP.phi_start_candidates(C)
+            assert st is not None and len(st) > 0, (KP, amp)
+            gap = float(_h_at(C, dense).max() - _h_at(C, st.nodes).max())
+            assert gap <= 0.0, (KP, amp, gap, st.certified)
+
+
+def test_the_start_candidate_cost_does_not_track_amplitude():
+    """The Lipschitz bound grid this descends from needed ``pi * M10 / tol`` points and
+    so grew as ``rho^2``.  The algebraic set does not: over a 256x amplitude range the
+    candidate count is IDENTICAL at KP=3 and KP=5.  That invariance is the reason the
+    approach is worth keeping at all after the certificate was abandoned."""
+    for KP in (3, 5):
+        base = _seeded_table(KP)
+        counts = {len(JP.phi_start_candidates(base * amp))
+                  for amp in (1108.0, 70916.0, 283672.0)}
+        assert len(counts) == 1, (KP, counts)
+
+
+def test_an_uncertified_start_set_is_still_returned_and_labelled():
+    """The failure that closed #267, turned into a contract.  At KP=5 the enumerator
+    declines with "fewer than two algebraically complete projections" -- fatal for a
+    bound, harmless for a proposal -- and must still hand back its on-torus roots with
+    ``certified`` FALSE rather than an empty set."""
+    st = JP.phi_start_candidates(_seeded_table(5) * 1108.0)
+    assert st is not None
+    assert not st.certified, "KP=5 is the documented decline; a pass here is a fixture drift"
+    assert len(st) > 0, "a declining enumerator must still propose starts"
+    assert "complete projections" in str(st.report.get("decline", ""))
