@@ -513,13 +513,19 @@ def test_bad_factors_are_rejected():
     """
     packed, tvals, deltaT, tref = _toy_packed()
     rho = packed["H1"]["rholmArray"]
+    # ``match=`` IS THE ASSERTION.  A bare ``pytest.raises(ValueError)`` cannot see
+    # this guard at all: delete it and #261's own "Q pregrid factor must be
+    # positive" raises ValueError one frame down, so the test passes on a
+    # different rejection.  Measured 2026-09-07 by mutation -- the bare form
+    # survives deleting BOTH guards, because the value is refused deeper still.
+    # Defense in depth is fine; a test that cannot tell which layer refused is not.
     for bad in (0, -3):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="q_time_pregrid_factor must be"):
             C.build_q_time_pregrid(rho, bad)
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="q_time_pregrid_factor must be"):
             C.JAXLikelihoodData({}, deltaT, 0.0, tvals, tref,
                                 q_time_pregrid_factor=bad)
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="q_time_pregrid_factor must be"):
             build_likelihood_data(packed, deltaT, tref, tvals,
                                   q_time_pregrid_factor=bad)
 
@@ -661,6 +667,53 @@ def test_driver_passes_the_factor_at_its_call_site():
         assert "q_time_pregrid_factor" in kwargs, (
             "a build_data_from_precompute call site does not forward "
             "--q-time-pregrid-factor; the flag would parse and do nothing")
+
+
+def test_pregrid_and_the_phase_marg_mode_permutation_compose():
+    """Both packings of the (2,+-2) pair must agree ON A REFINED GRID.
+
+    This path is born at the merge and neither side covers it.  #272 made
+    ``_accumulate_unit`` permute ``lms``, ``Q``, ``U`` and ``V`` to canonical
+    order under phase marginalization; its fixtures never set
+    ``q_time_pregrid_factor``.  This file exercises the pregrid; its fixtures
+    never pack the pair the other way round.  The permutation takes ``Q`` on
+    axis 1 while every pregrid index acts on axis 0, so the two are expected to
+    be independent -- but "expected to be independent" is the claim, and the
+    merge is where it first has to hold.
+
+    The last assertion is what stops this being vacuous.  Permuting a mode axis
+    would agree at every factor even if the pregrid were doing nothing at all,
+    so the refined answer must first be shown to DIFFER from the coarse one.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import test_jax_phase_marg_mode_order as M
+
+    pk = M._packed()
+    swapped = M._relabel(pk, [1, 0])
+    th = M._angles()
+
+    def acc(packed, factor):
+        tw = 32 * (1.0 / 1024) / 2.0
+        data = build_likelihood_data(packed, 1.0 / 1024, M.TREF,
+                                     np.linspace(-tw, tw, 32),
+                                     q_time_pregrid_factor=factor)
+        k, r = C._accumulate_unit(data, *th, "cubic", True, guard=0)
+        return np.asarray(k), np.asarray(r)
+
+    for factor in (1, 2, 8):
+        k0, r0 = acc(pk, factor)
+        k1, r1 = acc(swapped, factor)
+        scale = max(np.abs(k0).max(), 1.0)
+        assert np.abs(k0 - k1).max() <= 1e-12 * scale, (
+            "packing order changes kappa at q_time_pregrid_factor=%d" % factor)
+        assert np.abs(r0 - r1).max() <= 1e-12 * max(np.abs(r0).max(), 1.0), (
+            "packing order changes rho^2 at q_time_pregrid_factor=%d" % factor)
+
+    k1c, _ = acc(pk, 1)
+    k8c, _ = acc(pk, 8)
+    assert np.abs(k1c - k8c).max() / max(np.abs(k1c).max(), 1.0) > 1e-9, (
+        "factor 8 reproduces factor 1 on this fixture, so the agreement above "
+        "says nothing about the refined grid")
 
 
 if __name__ == "__main__":
