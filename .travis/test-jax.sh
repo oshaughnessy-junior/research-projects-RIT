@@ -364,17 +364,29 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         harmonic-order U,V/Q starts, and the
 #                                         empirical enrichment/exact-reserve
 #                                         disposition gate.
-#   test_multipeak_planner.py          11  opt-in U,V,Q-guided four-axis multi-peak
+#   test_multipeak_planner.py          15  opt-in U,V,Q-guided four-axis multi-peak
 #                                         planner: exact symmetry expansion, strict
 #                                         stationary refinement, two-tier empirical
 #                                         convergence, overlap ownership and finite
-#                                         reserve.  CPU-only; no lal, cupy, or GPU
-#                                         required.  The file defines 15 tests; the four
-#                                         real-table oracle regressions need external
-#                                         validation packets that no fixture in this
-#                                         repository provides, so they are DESELECTED
-#                                         here -- see DESELECTED_TESTS -- and 11 are
-#                                         gated.
+#                                         reserve, plus FOUR refinement-stall guards:
+#                                         the bounded step's ascent contract, the
+#                                         step-bound sweep, the max_step check the
+#                                         rescale requires, and the symmetry-orbit
+#                                         invariant a campaign write-up misread as
+#                                         degeneracy.  Three of the four use a
+#                                         narrow-time-peak fixture (the ascent contract
+#                                         needs no table): the older _synthetic_tables
+#                                         puts its maximum ON the targeting lattice, so
+#                                         the Newton loop was never exercised and a
+#                                         fixed point in it passed this gate for a
+#                                         month while declining every row of the
+#                                         2026-09-07 ladder campaign.  CPU-only; no
+#                                         lal, cupy, or GPU required.  The file defines
+#                                         19 tests; the four real-table oracle
+#                                         regressions need external validation packets
+#                                         that no fixture in this repository provides,
+#                                         so they are DESELECTED here -- see
+#                                         DESELECTED_TESTS -- and 15 are gated.
 #   test_direct_marginalization_policy.py
 #                                      12  opt-in cross-axis policy WIRING: choices and
 #                                         refusals, measure conversion on both distance
@@ -501,7 +513,7 @@ EXCLUDED=(
 #       synthetic fixture either: they pin numbers measured on those tables (mode
 #       spacings, oracle log-integrals) to ~1e-8, which is a property of the real
 #       tables and not of any stand-in this repo could ship.
-#       The 11 remaining tests in that file are self-contained and stay gated; they
+#       The 15 remaining tests in that file are self-contained and stay gated; they
 #       carry the planner's structural coverage (symmetry expansion, strict stationary
 #       refinement, two-tier convergence, overlap ownership, reserve fallback).
 #       RUN THE FOUR BY HAND, with the packets present, when touching
@@ -691,7 +703,15 @@ fi
 # ~/.cache/jaxci_venv (jax 0.9.2): "557/562 tests collected (5 deselected)",
 # gate-style count 557 from 36 files.  Independently recollected with the CVMFS
 # igwn python on ldas-pcdev11 during the same landing: same 557 from 36 files.
-EXPECTED_TESTS=557
+#
+# NINTH, on the multi-peak refinement-stall branch (this change).  It adds FOUR
+# tests to test_multipeak_planner.py and touches no other test file.  The
+# branch measured 546 against a base of 542; #278 has since taken the base to
+# 557, so 546 is stale and 557+4 would be the arithmetic this comment forbids.
+# Re-measured on the merged tree, DESELECT loop applied, read off the gate's
+# own collection line:
+# "561/566 tests collected (5 deselected)", gate-style count 561 from 36 files.
+EXPECTED_TESTS=561
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
