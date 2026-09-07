@@ -391,14 +391,15 @@ def test_device_plans_compose_with_empirical_local_controller_under_vmap():
         extra_starts = AAP.rank_joint_starts_from_uvq_device(
             table, C_B, 0.2, 7.0, max_starts=32,
             angular_oversample=2)
-        enriched_starts = AAP.combine_device_start_plans(
-            base_starts, extra_starts)
-        base_plan, base_planning = AAP.make_all_axis_mode_plan_device(
-            table, C_B, base_starts, 0.2, 7.0, max_modes=4,
-            local_radius=3.0, iterations=14,
-            time_reconstruction_certified=True)
-        enriched_plan, enriched_planning = AAP.make_all_axis_mode_plan_device(
-            table, C_B, enriched_starts, 0.2, 7.0, max_modes=8,
+        separate_base_plan, separate_base_planning = (
+            AAP.make_all_axis_mode_plan_device(
+                table, C_B, base_starts, 0.2, 7.0, max_modes=4,
+                local_radius=3.0, iterations=14,
+                time_reconstruction_certified=True))
+        (base_plan, enriched_plan, base_planning, enriched_planning,
+         shared_planning) = AAP.make_all_axis_mode_plan_pair_device(
+            table, C_B, base_starts, extra_starts, 0.2, 7.0,
+            max_modes=4, enriched_max_modes=8,
             local_radius=3.0, iterations=14,
             time_reconstruction_certified=True)
         # Plans are row-local control data.  Until derivative parity is
@@ -411,10 +412,13 @@ def test_device_plans_compose_with_empirical_local_controller_under_vmap():
             base_order=7, base_check_order=9,
             enriched_order=9, enriched_check_order=11,
             convergence_tol_nats=1.0e-3)
-        return value, accepted, ledger, base_planning, enriched_planning
+        return (value, accepted, ledger, base_planning, enriched_planning,
+                shared_planning, separate_base_plan,
+                separate_base_planning, base_plan)
 
-    value, accepted, ledger, base_planning, enriched_planning = (
-        jax.jit(evaluate)(jnp.asarray(C_A)))
+    (value, accepted, ledger, base_planning, enriched_planning,
+     shared_planning, separate_base_plan, separate_base_planning,
+     paired_base_plan) = jax.jit(evaluate)(jnp.asarray(C_A))
     assert np.isfinite(float(value))
     assert bool(accepted)
     assert not bool(ledger["fallback_required"])
@@ -423,6 +427,18 @@ def test_device_plans_compose_with_empirical_local_controller_under_vmap():
     assert int(enriched_planning["n_selected_modes"]) == 2
     assert int(enriched_planning["n_lattice_evaluations"]) == (
         9 * 9 * 33 + 17 * 9 * 33)
+    n_base = int(base_planning["n_optimizer_starts"])
+    n_enriched = int(enriched_planning["n_optimizer_starts"])
+    assert int(shared_planning["n_optimizer_starts_executed"]) == n_enriched
+    assert int(shared_planning["n_optimizer_starts_avoided"]) == n_base
+    assert int(shared_planning["n_optimizer_starts_previous_two_pass"]) == (
+        n_base + n_enriched)
+    assert bool(shared_planning["start_nesting_structural"])
+    assert int(separate_base_planning["n_selected_modes"]) == 2
+    for separate, paired in zip(jax.tree.leaves(separate_base_plan),
+                                jax.tree.leaves(paired_base_plan)):
+        np.testing.assert_allclose(np.asarray(separate), np.asarray(paired),
+                                   rtol=0.0, atol=1.0e-12)
 
     batch = jax.jit(jax.vmap(evaluate))(jnp.asarray(
         np.stack((C_A, 1.01 * C_A))))

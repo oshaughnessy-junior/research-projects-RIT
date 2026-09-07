@@ -62,6 +62,7 @@ __all__ = [
     "mode_local_geometry",
     "make_all_axis_mode_plan",
     "make_all_axis_mode_plan_device",
+    "make_all_axis_mode_plan_pair_device",
     "all_axis_peak_local_marginalize",
     "empirical_enrichment_marginalize",
     "empirical_enrichment_with_exact_reserve",
@@ -1333,24 +1334,9 @@ def _boxes_disjoint_device(centers, half_widths, live):
     return jnp.all((~pair) | separated)
 
 
-def make_all_axis_mode_plan_device(
-        C_A_t, C_B, start_plan, x_min, x_max, *, max_modes,
-        local_radius=6.0, time_guard=0, iterations=12,
-        time_localize_iterations=32, ridge=1.0e-8,
-        max_step=(2.0, 0.5, 0.5, 0.25), gradient_tol=1.0e-6,
-        coordinate_tol=(0.25, 1.0e-4, 1.0e-4, 1.0e-5),
-        scaled_step_tol=None, eigenvalue_floor=1.0e-12,
-        time_reconstruction_certified=False):
-    """Refine and deduplicate a fixed-shape device start portfolio.
-
-    This is the per-row planning seam needed by nested JAX callers.  It never
-    transfers a tracer to NumPy: starts are refined, ranked, deduplicated, and
-    converted to Hessian-whitened local regions entirely on device.  Overflow
-    is recorded in ``discovery_capacity_ok`` rather than silently truncating a
-    mode set.  No outside-mass or derivative certificate is manufactured here;
-    callers must use empirical enrichment plus exact reserve, or supply a
-    separately derived certificate through a future API.
-    """
+def _validate_device_mode_plan_arguments(
+        start_plan, max_modes, local_radius, coordinate_tol,
+        scaled_step_tol, eigenvalue_floor):
     if not isinstance(start_plan, DeviceJointStartPlan):
         raise TypeError("start_plan must be DeviceJointStartPlan")
     if (start_plan.starts.ndim != 2 or start_plan.starts.shape[1] != 4
@@ -1372,13 +1358,23 @@ def make_all_axis_mode_plan_device(
     if (not np.isfinite(float(eigenvalue_floor))
             or float(eigenvalue_floor) <= 0.0):
         raise ValueError("eigenvalue_floor must be finite and positive")
+    return max_modes, tolerance, float(scaled_step_tol)
 
-    points, values, gradients, hessians, curvatures = refine_all_axis_starts(
-        C_A_t, C_B, start_plan.starts, x_min, x_max,
-        time_guard=int(time_guard), iterations=int(iterations), ridge=float(ridge),
-        max_step=max_step,
-        time_localize_iterations=int(time_localize_iterations),
-        live=start_plan.live)
+
+def _assemble_all_axis_mode_plan_device(
+        C_A_t, start_plan, refined, x_min, x_max, *, max_modes,
+        local_radius, time_guard, gradient_tol, tolerance,
+        scaled_step_tol, eigenvalue_floor,
+        time_reconstruction_certified):
+    """Select fixed-shape local geometry from an existing device refinement."""
+    points, values, gradients, hessians, curvatures = refined
+    if (points.shape != start_plan.starts.shape
+            or values.shape != (start_plan.starts.shape[0],)
+            or gradients.shape != start_plan.starts.shape
+            or hessians.shape != (start_plan.starts.shape[0], 4, 4)
+            or curvatures.shape != start_plan.starts.shape):
+        raise ValueError("refinement arrays do not match the start plan")
+
     gradient_norm = jnp.linalg.norm(gradients, axis=1)
     min_curvature = jnp.min(curvatures, axis=1)
     scaled_stationary = (
@@ -1498,6 +1494,112 @@ def make_all_axis_mode_plan_device(
         "derivative_warrant_certified": jnp.asarray(False),
     }
     return plan, ledger
+
+
+def make_all_axis_mode_plan_device(
+        C_A_t, C_B, start_plan, x_min, x_max, *, max_modes,
+        local_radius=6.0, time_guard=0, iterations=12,
+        time_localize_iterations=32, ridge=1.0e-8,
+        max_step=(2.0, 0.5, 0.5, 0.25), gradient_tol=1.0e-6,
+        coordinate_tol=(0.25, 1.0e-4, 1.0e-4, 1.0e-5),
+        scaled_step_tol=None, eigenvalue_floor=1.0e-12,
+        time_reconstruction_certified=False):
+    """Refine and deduplicate a fixed-shape device start portfolio.
+
+    This is the per-row planning seam needed by nested JAX callers.  It never
+    transfers a tracer to NumPy: starts are refined, ranked, deduplicated, and
+    converted to Hessian-whitened local regions entirely on device.  Overflow
+    is recorded in ``discovery_capacity_ok`` rather than silently truncating a
+    mode set.  No outside-mass or derivative certificate is manufactured here;
+    callers must use empirical enrichment plus exact reserve, or supply a
+    separately derived certificate through a future API.
+    """
+    max_modes, tolerance, scaled_step_tol = (
+        _validate_device_mode_plan_arguments(
+            start_plan, max_modes, local_radius, coordinate_tol,
+            scaled_step_tol, eigenvalue_floor))
+    refined = refine_all_axis_starts(
+        C_A_t, C_B, start_plan.starts, x_min, x_max,
+        time_guard=int(time_guard), iterations=int(iterations), ridge=float(ridge),
+        max_step=max_step,
+        time_localize_iterations=int(time_localize_iterations),
+        live=start_plan.live)
+    return _assemble_all_axis_mode_plan_device(
+        C_A_t, start_plan, refined, x_min, x_max,
+        max_modes=max_modes, local_radius=float(local_radius),
+        time_guard=int(time_guard), gradient_tol=float(gradient_tol),
+        tolerance=tolerance, scaled_step_tol=scaled_step_tol,
+        eigenvalue_floor=float(eigenvalue_floor),
+        time_reconstruction_certified=time_reconstruction_certified)
+
+
+def make_all_axis_mode_plan_pair_device(
+        C_A_t, C_B, base_starts, extra_starts, x_min, x_max, *, max_modes,
+        enriched_max_modes=None,
+        local_radius=6.0, time_guard=0, iterations=12,
+        time_localize_iterations=32, ridge=1.0e-8,
+        max_step=(2.0, 0.5, 0.5, 0.25), gradient_tol=1.0e-6,
+        coordinate_tol=(0.25, 1.0e-4, 1.0e-4, 1.0e-5),
+        scaled_step_tol=None, eigenvalue_floor=1.0e-12,
+        time_reconstruction_certified=False):
+    """Build nested base/enriched plans with one shared optimizer pass.
+
+    ``extra_starts`` is combined with ``base_starts`` structurally before the
+    refinement, so the enriched portfolio contains every base lane.  The
+    independent per-lane optimizer means the prefix of the shared result is
+    exactly the refinement that a separate base call would have produced.
+    Reusing it removes the otherwise duplicated base hill-climbing work without
+    changing either mode selection or any completeness warrant.
+    ``enriched_max_modes`` may raise the stronger plan's output capacity; it
+    defaults to the base ``max_modes``.
+
+    The fifth return value records actual shared optimizer work and the work
+    avoided relative to two separate base-plus-enriched refinements.  This is a
+    cost transformation only: neither start nesting nor optimizer convergence
+    supplies a global omitted-mass or derivative certificate.
+    """
+    base_max_modes, tolerance, scaled_step_tol = (
+        _validate_device_mode_plan_arguments(
+            base_starts, max_modes, local_radius, coordinate_tol,
+            scaled_step_tol, eigenvalue_floor))
+    combined = combine_device_start_plans(base_starts, extra_starts)
+    if enriched_max_modes is None:
+        enriched_max_modes = base_max_modes
+    enriched_max_modes, _, _ = _validate_device_mode_plan_arguments(
+        combined, enriched_max_modes, local_radius, coordinate_tol,
+        scaled_step_tol, eigenvalue_floor)
+    refined = refine_all_axis_starts(
+        C_A_t, C_B, combined.starts, x_min, x_max,
+        time_guard=int(time_guard), iterations=int(iterations), ridge=float(ridge),
+        max_step=max_step,
+        time_localize_iterations=int(time_localize_iterations),
+        live=combined.live)
+    base_capacity = base_starts.starts.shape[0]
+    base_refined = tuple(value[:base_capacity] for value in refined)
+    base_plan, base_ledger = _assemble_all_axis_mode_plan_device(
+        C_A_t, base_starts, base_refined, x_min, x_max,
+        max_modes=base_max_modes, local_radius=float(local_radius),
+        time_guard=int(time_guard), gradient_tol=float(gradient_tol),
+        tolerance=tolerance, scaled_step_tol=scaled_step_tol,
+        eigenvalue_floor=float(eigenvalue_floor),
+        time_reconstruction_certified=time_reconstruction_certified)
+    enriched_plan, enriched_ledger = _assemble_all_axis_mode_plan_device(
+        C_A_t, combined, refined, x_min, x_max,
+        max_modes=enriched_max_modes, local_radius=float(local_radius),
+        time_guard=int(time_guard), gradient_tol=float(gradient_tol),
+        tolerance=tolerance, scaled_step_tol=scaled_step_tol,
+        eigenvalue_floor=float(eigenvalue_floor),
+        time_reconstruction_certified=time_reconstruction_certified)
+    base_live = jnp.count_nonzero(base_starts.live)
+    extra_live = jnp.count_nonzero(extra_starts.live)
+    shared_ledger = {
+        "n_optimizer_starts_executed": base_live + extra_live,
+        "n_optimizer_starts_avoided": base_live,
+        "n_optimizer_starts_previous_two_pass": 2 * base_live + extra_live,
+        "start_nesting_structural": jnp.asarray(True),
+    }
+    return (base_plan, enriched_plan, base_ledger, enriched_ledger,
+            shared_ledger)
 
 
 def _legendre_rule(order):
