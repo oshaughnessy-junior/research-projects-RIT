@@ -462,8 +462,25 @@ def test_a_refined_bank_reaching_a_factorless_namespace_is_refused():
 
 
 def test_bad_factors_are_rejected():
+    """Each rejection at ITS OWN entry point, not just through the builder.
+
+    There are two: ``build_q_time_pregrid`` and ``JAXLikelihoodData.__init__``.
+    Going through ``build_likelihood_data`` exercises neither in isolation --
+    it calls the first, so the second is unreachable that way, and the second
+    would have caught a hole in the first.  Mutation-testing showed BOTH
+    survived a test written that way: two redundant guards, each masking the
+    other, and the pair reads as coverage.  ``build_q_time_pregrid`` is also
+    public (`banded` and offline analysis call it directly), so its own
+    rejection is not a formality.
+    """
     packed, tvals, deltaT, tref = _toy_packed()
+    rho = packed["H1"]["rholmArray"]
     for bad in (0, -3):
+        with pytest.raises(ValueError):
+            C.build_q_time_pregrid(rho, bad)
+        with pytest.raises(ValueError):
+            C.JAXLikelihoodData({}, deltaT, 0.0, tvals, tref,
+                                q_time_pregrid_factor=bad)
         with pytest.raises(ValueError):
             build_likelihood_data(packed, deltaT, tref, tvals,
                                   q_time_pregrid_factor=bad)

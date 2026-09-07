@@ -350,6 +350,18 @@ def test_jax_dropin_manifest_covers_every_batchmode_option_with_same_arity():
     with pytest.raises(SystemExit):
         _check(["--q-time-pregrid-factor", "0"])
 
+    # WITHOUT a supplied-option record, which is how every caller that builds an
+    # options object directly reaches this code.  was_supplied() FAILS OPEN there
+    # ("no record -> assume not supplied"), so relying on it alone would silently
+    # replace a stencil the caller chose; the check also treats a non-default
+    # interp as explicit.  Every case above records, so without this one that
+    # clause is unexercised -- found by mutation-testing the guard, not by review.
+    argv = ["--q-time-pregrid-factor", "8", "--interp", "linear"]
+    opts, _ = parser.parse_args(argv)
+    assert not hasattr(opts, "_supplied_options")
+    with pytest.raises(SystemExit):
+        drv.check_critical_and_report(opts, parser)
+
 
 def _load_driver():
     import importlib.machinery
