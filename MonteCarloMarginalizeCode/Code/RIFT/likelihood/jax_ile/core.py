@@ -472,10 +472,12 @@ def _check_stored_q_length(dd, stored_npts, factor, what):
     a factor-8 window would cover an eighth of the intended span and land on
     whatever happens to be there.  Nothing downstream can see it: the shapes
     still broadcast, the likelihood still returns finite numbers, and they are
-    wrong.  This is not hypothetical -- ``banded._base_data`` builds the scaffold
-    through :func:`build_likelihood_data` and then OVERWRITES the detector's Q
-    with an independently packed ``Q_bank``, so forwarding a factor there without
-    also refining the bank would produce exactly this.
+    The shape it guards against is reachable.  ``banded._base_data`` builds the
+    scaffold through :func:`build_likelihood_data`, then attaches an
+    INDEPENDENTLY packed ``Q_bank`` that :func:`build_q_time_pregrid` never sees,
+    and ``_accumulate_unit_banded`` indexes that bank.  ``_base_data`` takes no
+    factor today, so the two cannot disagree yet; giving it one without also
+    refining the bank would produce exactly this.
 
     Cheap (a python int comparison at trace time), so there is no reason to make
     it conditional.
@@ -509,20 +511,22 @@ def _q_sample_positions(data, p0, t_offsets, interp):
     sampled ``f = data.q_time_pregrid_factor`` times finer, so an index into it is
     ``f`` times larger.  Returns ``(pos, u_sep)`` in stored-sample units.
 
-    ``f == 1`` returns exactly what the accumulators computed inline before the
-    pregrid existed -- the same expressions, in the same order -- so that path is
-    bit-identical rather than merely close.  ``test_factor_one_is_bit_identical``
-    pins that against a pre-pregrid recomputation of the whole likelihood.
+    ``f == 1`` returns what the accumulators computed inline before the pregrid
+    existed, the same expressions in the same order, so that path is bit-identical.
+    ``test_factor_one_positions_are_bit_identical_to_the_pre_pregrid_expressions``
+    pins these positions bitwise against those expressions; the whole-likelihood
+    identity against base ``bec19ad5`` is in the PR, over 52 toy arrays and 35
+    from a rebuilt production likelihood.
 
     SEPARABILITY IS THE PRECONDITION.  ``_separable_u`` computes ONE fractional
     offset per sample and hands it to the gatherer for every time column; that is
     only legitimate while the time offsets are exact integers in the units the
     gather indexes, which ``t_offsets * f`` (integer ``t_offsets``, integer ``f``)
     keeps them.  The form written here is additive to match the factor-1 branch
-    line for line.  MEASURED, so it is not claimed as a reason: ``(p0 + t) * f``
-    is numerically indistinguishable from it at production magnitudes -- identical
-    ``frac`` and identical ``floor`` strides for ``p0`` from 5e2 to 5e5 at f = 8 --
-    so the additive form is a readability choice, not an accuracy one.
+    line for line.  That is a readability choice and carries no accuracy claim:
+    ``(p0 + t) * f`` gives bit-identical ``frac`` and ``floor`` at f = 8 for ``p0``
+    from 5e2 to 5e5, 2000 samples and 742 columns per decade (re-measured
+    2026-09-07).
 
     ``nearest`` is REFUSED with a pregrid rather than quietly allowed.  It would
     gather correctly (snapping to a finer sample is strictly better), but
