@@ -1989,7 +1989,13 @@ def empirical_enrichment_marginalize(
         node_concentration=float(node_concentration), time_guard=int(time_guard),
         time_guard_tol_nats=float(time_guard_tol_nats))
 
-    finite = jnp.isfinite(base_value) & jnp.isfinite(enriched_value)
+    has_modes = (base["n_modes"] > 0) & (enriched["n_modes"] > 0)
+    values_finite = jnp.isfinite(base_value) & jnp.isfinite(enriched_value)
+    # An empty padded plan evaluates to -inf by construction.  That is a
+    # discovery disposition, not numerical corruption: keep it eligible for
+    # the explicit ``decline_no_modes`` branch below.  A nonfinite value from
+    # a plan that does contain modes remains a numerical decline.
+    finite = values_finite | (~has_modes)
     capacity_ok = (base_plan.discovery_capacity_ok
                    & enriched_plan.discovery_capacity_ok)
     time_ok = (base["time_reconstruction_warranted"]
@@ -2009,7 +2015,6 @@ def empirical_enrichment_marginalize(
     enriched_geometry_ok = (enriched["boxes_disjoint"]
                             & enriched["support_ok"])
     quadrature_ok = base["quadrature_ok"] & enriched["quadrature_ok"]
-    has_modes = (base["n_modes"] > 0) & (enriched["n_modes"] > 0)
     delta = jnp.abs(base_plan.centers[:, None, :]
                     - enriched_plan.centers[None, :, :])
     angular_delta = jnp.abs(jnp.mod(
@@ -2140,6 +2145,7 @@ def empirical_enrichment_marginalize(
         "reconciles": reconciles,
         "base_value": base_value,
         "enriched_value": enriched_value,
+        "base_and_enriched_values_finite": values_finite,
         "convergence_error": convergence_error,
         "convergence_tol_nats": jnp.asarray(float(convergence_tol_nats)),
         "empirical_value_error_score_nats": empirical_value_error_score,

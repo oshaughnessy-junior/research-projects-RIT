@@ -741,6 +741,23 @@ def test_empirical_enrichment_accepts_without_claiming_global_proof():
     assert not bool(capacity_ledger["decline_is_waveform_failure"])
     assert bool(capacity_ledger["reconciles"])
 
+    empty_plan = AAP.make_all_axis_mode_plan(
+        np.empty((0, 4)), max_modes=2,
+        local_transforms=np.empty((0, 4, 4)), local_radius=1.0,
+        outside_bound_certified=False,
+        time_reconstruction_certified=True,
+        time_outside_log_bound=-np.inf,
+        time_outside_bound_certified=True)
+    _, accepted, empty_ledger = AAP.empirical_enrichment_marginalize(
+        C_A, C_B, empty_plan, empty_plan, x_min, x_max,
+        convergence_tol_nats=1.0e-3)
+    assert not bool(accepted)
+    assert not bool(empty_ledger["base_and_enriched_values_finite"])
+    assert bool(empty_ledger["decline_no_modes"])
+    assert not bool(empty_ledger["decline_nonfinite"])
+    assert bool(empty_ledger["fallback_required"])
+    assert bool(empty_ledger["reconciles"])
+
 
 def test_empirical_controller_executes_exact_reserve_on_local_decline():
     C_A, C_B, constants = _problem(33)
