@@ -13,6 +13,7 @@ jax.config.update("jax_enable_x64", True)
 
 from RIFT.likelihood.jax_ile import all_axis_peaklocal as AAP
 from RIFT.likelihood.jax_ile import anglemarg as AM
+from RIFT.likelihood.jax_ile import core as JCORE
 
 
 def _problem(n=129):
@@ -759,7 +760,7 @@ def test_empirical_enrichment_accepts_without_claiming_global_proof():
     assert bool(empty_ledger["reconciles"])
 
 
-def test_empirical_controller_executes_exact_reserve_on_local_decline():
+def test_native_time_reserve_is_diagnostic_on_local_decline():
     C_A, C_B, constants = _problem(33)
     C_A *= 0.1
     x_min, x_max = 0.5, 2.0
@@ -794,20 +795,305 @@ def test_empirical_controller_executes_exact_reserve_on_local_decline():
     expected = m + np.log(np.sum(
         time_weights * np.exp(np.asarray(lnL_t)[0] - m)))
     assert float(selected) == pytest.approx(expected, abs=2.0e-12)
-    assert bool(usable)
+    assert not bool(usable)
     assert not bool(ledger["accepted_local"])
     assert bool(ledger["decline_capacity"])
     assert bool(ledger["reserve_executed"])
     assert bool(ledger["reserve_finite"])
-    assert bool(ledger["selected_value_is_exact_reserve"])
-    assert bool(ledger["sample_retained_after_local_decline"])
+    assert not bool(ledger["selected_value_is_warranted_reserve"])
+    assert not bool(ledger["sample_retained_after_local_decline"])
     assert not bool(ledger["decline_is_waveform_failure"])
     assert bool(ledger["local_fallback_required"])
-    assert not bool(ledger["fallback_required"])
-    assert bool(ledger["accepted"])
+    assert bool(ledger["fallback_required"])
+    assert not bool(ledger["accepted"])
     assert bool(ledger["reconciles"])
     assert bool(ledger["disposition_reconciles"])
     assert int(ledger["reserve_distance_points"]) == x_grid.size
+    assert bool(ledger["reserve_uses_native_time"])
+    assert not bool(ledger["reserve_native_time_warranted"])
+    assert not bool(ledger["reserve_time_warranted"])
+
+
+def test_declined_controller_can_execute_guarded_bandlimited_time_reserve():
+    C_A, C_B, constants = _problem(33)
+    C_A *= 0.1
+    guard = 8
+    support_time = np.arange(-guard, C_A.shape[-1] + guard, dtype=float)
+    guarded = np.zeros(C_A.shape[:-1] + (support_time.size,),
+                       dtype=np.complex128)
+    guarded[0, 1] = 0.1 * (
+        constants["k0"] - constants["kt"]
+        * np.cos(2.0 * np.pi * support_time / constants["span"]))
+    guarded[2, 1] = 0.05 * constants["kp"]
+    guarded[0, 0] = 0.05 * constants["ku"]
+    guarded[0, 2] = 0.05 * constants["ku"]
+    np.testing.assert_allclose(guarded[..., guard:-guard], C_A, atol=1e-14)
+
+    x_min, x_max = 0.5, 2.0
+    centers = np.asarray([[
+        constants["span"] / 2.0, np.pi, np.pi,
+        0.5 * (x_min + x_max)]])
+    transforms = np.asarray([np.diag([
+        constants["span"] / 2.0, np.pi, np.pi,
+        0.5 * (x_max - x_min)])])
+    declined_plan = AAP.make_all_axis_mode_plan(
+        centers, max_modes=2, local_transforms=transforms,
+        local_radius=1.0, time_reconstruction_certified=False,
+        time_outside_log_bound=-np.inf,
+        time_outside_bound_certified=True,
+        discovery_capacity_ok=False)
+    x_grid = np.linspace(x_min, x_max, 65)
+    dx = np.empty_like(x_grid)
+    dx[1:-1] = 0.5 * (x_grid[2:] - x_grid[:-2])
+    dx[0] = x_grid[1] - x_grid[0]
+    dx[-1] = x_grid[-1] - x_grid[-2]
+    log_w = np.log(dx * x_grid ** -4)
+    time_nodes = np.linspace(0.0, constants["span"], 65)
+    time_weights = np.full(time_nodes.size, 0.5)
+    time_weights[[0, -1]] *= 0.5
+
+    selected, usable, ledger = AAP.empirical_enrichment_with_exact_reserve(
+        guarded, C_B, declined_plan, declined_plan, x_min, x_max,
+        reserve_x_grid=x_grid, reserve_log_weights=log_w,
+        time_weights=time_weights, reserve_amp_sizing=30.0,
+        reserve_dense_chunk=8, reserve_grid_block=16,
+        reserve_time_nodes=time_nodes,
+        reserve_time_resolution_warranted=True, time_guard=guard,
+        time_guard_tol_nats=1.0e-3)
+
+    coeff, frequency, offset = AAP._time_primitive_spectrum(
+        guarded.reshape((-1, guarded.shape[-1])), guard)
+    fine = AAP._evaluate_time_spectrum(
+        coeff, frequency, time_nodes, offset).reshape(
+            C_A.shape[:-1] + (time_nodes.size,))
+    lnL_t = AM.coefficient_table_distphipsimarg_exact(
+        fine, C_B, x_grid, log_w, amp_sizing=30.0,
+        dense_chunk=8, grid_block=16)
+    m = np.max(np.asarray(lnL_t)[0])
+    expected = m + np.log(np.sum(
+        time_weights * np.exp(np.asarray(lnL_t)[0] - m)))
+    assert float(selected) == pytest.approx(expected, abs=2.0e-12)
+    assert bool(usable)
+    assert not bool(ledger["accepted_local"])
+    assert bool(ledger["reserve_executed"])
+    assert bool(ledger["reserve_uses_bandlimited_time"])
+    assert not bool(ledger["reserve_uses_native_time"])
+    assert bool(ledger["reserve_time_resolution_warranted"])
+    assert bool(ledger["reserve_time_nodes_finite"])
+    assert bool(ledger["reserve_time_nodes_increasing"])
+    assert bool(ledger["reserve_time_weights_valid"])
+    assert bool(ledger["reserve_time_nodes_in_support"])
+    assert bool(ledger["reserve_time_nodes_cover_target"])
+    assert bool(ledger["reserve_time_guard_validated"])
+    assert float(ledger["reserve_time_guard_error"]) <= 1.0e-3
+    assert bool(ledger["reserve_time_warranted"])
+    assert not bool(ledger["reserve_time_failed"])
+    assert bool(ledger["sample_retained_after_local_decline"])
+    assert bool(ledger["reconciles"])
+
+    _, uncertified_usable, uncertified = (
+        AAP.empirical_enrichment_with_exact_reserve(
+            guarded, C_B, declined_plan, declined_plan, x_min, x_max,
+            reserve_x_grid=x_grid, reserve_log_weights=log_w,
+            time_weights=time_weights, reserve_amp_sizing=30.0,
+            reserve_dense_chunk=8, reserve_grid_block=16,
+            reserve_time_nodes=time_nodes,
+            reserve_time_resolution_warranted=False, time_guard=guard,
+            time_guard_tol_nats=1.0e-3))
+    assert not bool(uncertified_usable)
+    assert bool(uncertified["reserve_time_failed"])
+    assert not bool(uncertified["sample_retained_after_local_decline"])
+    assert bool(uncertified["fallback_required"])
+    assert bool(uncertified["reconciles"])
+
+    clipped_nodes = np.linspace(1.0, constants["span"] - 1.0, 65)
+    _, clipped_usable, clipped = (
+        AAP.empirical_enrichment_with_exact_reserve(
+            guarded, C_B, declined_plan, declined_plan, x_min, x_max,
+            reserve_x_grid=x_grid, reserve_log_weights=log_w,
+            time_weights=time_weights, reserve_amp_sizing=30.0,
+            reserve_dense_chunk=8, reserve_grid_block=16,
+            reserve_time_nodes=clipped_nodes,
+            reserve_time_resolution_warranted=True, time_guard=guard,
+            time_guard_tol_nats=1.0e-3))
+    assert not bool(clipped_usable)
+    assert not bool(clipped["reserve_time_nodes_cover_target"])
+    assert bool(clipped["reserve_time_failed"])
+    assert bool(clipped["fallback_required"])
+    assert bool(clipped["reconciles"])
+
+    accepted_plan = AAP.make_all_axis_mode_plan(
+        centers, max_modes=2, local_transforms=transforms,
+        local_radius=1.0, time_reconstruction_certified=False,
+        time_outside_log_bound=-np.inf,
+        time_outside_bound_certified=True)
+    batched_plans = jax.tree.map(
+        lambda accepted, declined: jnp.stack((accepted, declined)),
+        accepted_plan, declined_plan)
+    batched = jax.jit(
+        lambda tables, warrants:
+        AAP.empirical_enrichment_with_exact_reserve_sequential_batch(
+            tables, C_B, batched_plans, batched_plans, x_min, x_max,
+            reserve_x_grid=x_grid, reserve_log_weights=log_w,
+            time_weights=time_weights, reserve_amp_sizing=30.0,
+            reserve_dense_chunk=8, reserve_grid_block=16,
+            reserve_time_nodes=time_nodes,
+            reserve_time_resolution_warranted=warrants,
+            time_guard=guard, time_guard_tol_nats=1.0e-3))
+    batch_selected, batch_usable, batch_ledger = batched(
+        jnp.stack((guarded, guarded)), jnp.asarray([False, True]))
+    assert np.all(np.asarray(batch_usable))
+    assert bool(batch_ledger["accepted_local"][0])
+    assert not bool(batch_ledger["reserve_executed"][0])
+    assert not bool(batch_ledger["accepted_local"][1])
+    assert bool(batch_ledger["reserve_executed"][1])
+    assert float(batch_selected[1]) == pytest.approx(expected, abs=2.0e-12)
+    assert np.all(np.asarray(
+        batch_ledger["reserve_batch_execution_sequential"]))
+    assert np.all(np.asarray(batch_ledger["reconciles"]))
+
+
+def test_native_time_reserve_cannot_be_warranted():
+    C_A, C_B, constants = _problem(17)
+    x_min, x_max = 0.5, 2.0
+    centers = np.asarray([[
+        constants["span"] / 2.0, np.pi, np.pi,
+        0.5 * (x_min + x_max)]])
+    transforms = np.asarray([np.diag([
+        constants["span"] / 2.0, np.pi, np.pi,
+        0.5 * (x_max - x_min)])])
+    declined_plan = AAP.make_all_axis_mode_plan(
+        centers, max_modes=2, local_transforms=transforms,
+        local_radius=1.0, time_reconstruction_certified=False,
+        discovery_capacity_ok=False)
+    x_grid = np.linspace(x_min, x_max, 33)
+    dx = np.empty_like(x_grid)
+    dx[1:-1] = 0.5 * (x_grid[2:] - x_grid[:-2])
+    dx[0] = x_grid[1] - x_grid[0]
+    dx[-1] = x_grid[-1] - x_grid[-2]
+    log_w = np.log(dx * x_grid ** -4)
+    time_weights = np.ones(C_A.shape[-1])
+
+    _, usable, ledger = AAP.empirical_enrichment_with_exact_reserve(
+        C_A, C_B, declined_plan, declined_plan, x_min, x_max,
+        reserve_x_grid=x_grid, reserve_log_weights=log_w,
+        time_weights=time_weights, reserve_amp_sizing=30.0,
+        reserve_dense_chunk=8, reserve_grid_block=16)
+
+    assert not bool(usable)
+    assert not bool(ledger["reserve_native_time_warranted"])
+    assert not bool(ledger["reserve_time_warranted"])
+    assert bool(ledger["reserve_time_failed"])
+    assert bool(ledger["fallback_required"])
+    assert not bool(ledger["sample_retained_after_local_decline"])
+    assert not bool(ledger["selected_nonfinite_is_integration_failure"])
+    assert bool(ledger["reconciles"])
+
+
+def test_bandlimited_reserve_rejects_invalid_time_rules(monkeypatch):
+    C_A, C_B, constants = _problem(9)
+    guard = 2
+    guarded = np.pad(C_A, ((0, 0), (0, 0), (guard, guard)), mode="edge")
+    n_target = C_A.shape[-1]
+    x_min, x_max = 0.5, 2.0
+    centers = np.asarray([[
+        constants["span"] / 2.0, np.pi, np.pi,
+        0.5 * (x_min + x_max)]])
+    transforms = np.asarray([np.diag([
+        constants["span"] / 2.0, np.pi, np.pi,
+        0.5 * (x_max - x_min)])])
+    declined_plan = AAP.make_all_axis_mode_plan(
+        centers, max_modes=2, local_transforms=transforms,
+        local_radius=1.0, time_reconstruction_certified=False,
+        time_outside_log_bound=-np.inf,
+        time_outside_bound_certified=True,
+        discovery_capacity_ok=False)
+
+    def fake_exact(table, _norm, _x_grid, _log_w_grid, **_kwargs):
+        return jnp.zeros((1, table.shape[-1]), dtype=jnp.float64)
+
+    monkeypatch.setattr(AM, "coefficient_table_distphipsimarg_exact",
+                        fake_exact)
+    fine = np.linspace(0.0, n_target - 1.0, 2 * n_target - 1)
+    valid_weights = np.ones(fine.size)
+    cases = []
+    duplicate = fine.copy()
+    duplicate[4] = duplicate[3]
+    cases.append((duplicate, valid_weights, "reserve_time_nodes_increasing"))
+    cases.append((fine[::-1], valid_weights,
+                  "reserve_time_nodes_increasing"))
+    nan_node = fine.copy()
+    nan_node[4] = np.nan
+    cases.append((nan_node, valid_weights, "reserve_time_nodes_finite"))
+    outside = fine.copy()
+    outside[0] = -0.25
+    cases.append((outside, valid_weights, "reserve_time_nodes_in_support"))
+    negative = valid_weights.copy()
+    negative[3] = -1.0
+    cases.append((fine, negative, "reserve_time_weights_valid"))
+    not_finite = valid_weights.copy()
+    not_finite[3] = np.nan
+    cases.append((fine, not_finite, "reserve_time_weights_valid"))
+    cases.append((fine, np.zeros_like(valid_weights),
+                  "reserve_time_weights_valid"))
+    cases.append((np.linspace(0.25, n_target - 1.25, fine.size),
+                  valid_weights, "reserve_time_nodes_cover_target"))
+    cases.append((np.arange(n_target, dtype=float), np.ones(n_target),
+                  "reserve_time_subsampled"))
+
+    for nodes, weights, failed_field in cases:
+        _, usable, ledger = AAP.empirical_enrichment_with_exact_reserve(
+            guarded, C_B, declined_plan, declined_plan, x_min, x_max,
+            reserve_x_grid=np.asarray([x_min, x_max]),
+            reserve_log_weights=np.zeros(2), time_weights=weights,
+            reserve_amp_sizing=30.0, reserve_dense_chunk=8,
+            reserve_grid_block=16, reserve_time_nodes=nodes,
+            reserve_time_resolution_warranted=True, time_guard=guard,
+            time_guard_tol_nats=1.0e-3)
+        assert not bool(usable)
+        assert not bool(ledger[failed_field])
+        assert bool(ledger["reserve_time_failed"])
+        assert bool(ledger["fallback_required"])
+        assert bool(ledger["reconciles"])
+
+    delta_t = 0.25
+    physical_weights = JCORE._simpson_weights(
+        fine.size, delta_t / 2.0)
+    value, usable, ledger = AAP.empirical_enrichment_with_exact_reserve(
+        guarded, C_B, declined_plan, declined_plan, x_min, x_max,
+        reserve_x_grid=np.asarray([x_min, x_max]),
+        reserve_log_weights=np.zeros(2), time_weights=physical_weights,
+        reserve_amp_sizing=30.0, reserve_dense_chunk=8,
+        reserve_grid_block=16, reserve_time_nodes=fine,
+        reserve_time_resolution_warranted=True, time_guard=guard,
+        time_guard_tol_nats=1.0e-3)
+    assert bool(usable)
+    assert float(value) == pytest.approx(
+        np.log((n_target - 1) * delta_t), abs=2.0e-12)
+    assert bool(ledger["reserve_time_warranted"])
+
+    def table_dependent_exact(table, _norm, _x_grid, _log_w_grid,
+                              **_kwargs):
+        return jnp.real(table[0, 1])[None, :]
+
+    monkeypatch.setattr(AM, "coefficient_table_distphipsimarg_exact",
+                        table_dependent_exact)
+    corrupt_guard = guarded.copy()
+    corrupt_guard[0, 1, 0] += 100.0
+    _, usable, ledger = AAP.empirical_enrichment_with_exact_reserve(
+        corrupt_guard, C_B, declined_plan, declined_plan, x_min, x_max,
+        reserve_x_grid=np.asarray([x_min, x_max]),
+        reserve_log_weights=np.zeros(2), time_weights=physical_weights,
+        reserve_amp_sizing=30.0, reserve_dense_chunk=8,
+        reserve_grid_block=16, reserve_time_nodes=fine,
+        reserve_time_resolution_warranted=True, time_guard=guard,
+        time_guard_tol_nats=1.0e-3)
+    assert not bool(usable)
+    assert float(ledger["reserve_time_guard_error"]) > 1.0e-3
+    assert not bool(ledger["reserve_time_guard_validated"])
+    assert bool(ledger["reserve_time_failed"])
+    assert bool(ledger["fallback_required"])
+    assert bool(ledger["reconciles"])
 
 
 def test_missing_completeness_declines_to_reserve_not_waveform_failure():

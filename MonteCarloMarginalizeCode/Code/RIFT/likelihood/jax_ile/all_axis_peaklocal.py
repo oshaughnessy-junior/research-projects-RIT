@@ -66,6 +66,7 @@ __all__ = [
     "all_axis_peak_local_marginalize",
     "empirical_enrichment_marginalize",
     "empirical_enrichment_with_exact_reserve",
+    "empirical_enrichment_with_exact_reserve_sequential_batch",
 ]
 
 
@@ -2204,6 +2205,7 @@ def empirical_enrichment_with_exact_reserve(
         reserve_x_grid, reserve_log_weights, time_weights,
         reserve_amp_sizing, reserve_m_max=None,
         reserve_dense_chunk=8, reserve_grid_block=32,
+        reserve_time_nodes=None, reserve_time_resolution_warranted=False,
         base_order=13, base_check_order=19,
         enriched_order=19, enriched_check_order=25,
         convergence_tol_nats=1.0e-3, time_guard=0,
@@ -2224,8 +2226,22 @@ def empirical_enrichment_with_exact_reserve(
     through the established dense/exact coefficient reserve.
 
     Measures remain explicit.  ``reserve_log_weights`` owns the fixed-grid
-    distance quadrature measure and ``time_weights`` owns the target time
-    integral.  If ``JAX_ILE_DISTMARG_GH`` is active, the established reserve
+    distance quadrature measure and ``time_weights`` owns the reserve time
+    integral.  If ``reserve_time_nodes`` is supplied, it names sub-sample
+    positions in the unguarded target window and the coefficient table is
+    reconstructed there only inside the declined branch.  This band-limited
+    reserve must cover the complete target window with spacing everywhere
+    finer than one native sample and carry both an external
+    resolution warrant through ``reserve_time_resolution_warranted`` and the
+    same two-guard convergence comparison used by the local path.  Without
+    nodes, the legacy reserve uses native target samples only as a diagnostic
+    and is always fail-closed.  Native-sample angular exactness does not certify
+    a time integral once its peak is narrower than a sample.  The external
+    warrant is a scalar JAX boolean so callers may bind it to a per-row
+    convergence record; the caller remains responsible for proving that it
+    describes the exact nodes, weights, and full interval passed here.
+
+    If ``JAX_ILE_DISTMARG_GH`` is active, the established reserve
     instead reads the support from ``reserve_x_grid`` and uses its normalized
     volumetric ``x**-4`` measure.  The
     local branch owns a continuous ``x**-4 dx dtime_sample dphi du`` integral,
@@ -2249,8 +2265,26 @@ def empirical_enrichment_with_exact_reserve(
     time_guard = int(time_guard)
     n_target = C_A_t.shape[-1] - 2 * time_guard
     time_weights = jnp.asarray(time_weights, dtype=jnp.float64)
-    if time_weights.ndim != 1 or time_weights.shape[0] != n_target:
+    use_bandlimited_time = reserve_time_nodes is not None
+    if use_bandlimited_time:
+        if time_guard < 2:
+            raise ValueError(
+                "band-limited reserve requires time_guard >= 2")
+        reserve_time_nodes = jnp.asarray(
+            reserve_time_nodes, dtype=jnp.float64)
+        if reserve_time_nodes.ndim != 1 or reserve_time_nodes.size < 2:
+            raise ValueError(
+                "reserve_time_nodes must be a one-dimensional rule")
+        if (time_weights.ndim != 1
+                or time_weights.shape[0] != reserve_time_nodes.shape[0]):
+            raise ValueError(
+                "time_weights must match reserve_time_nodes")
+    elif time_weights.ndim != 1 or time_weights.shape[0] != n_target:
         raise ValueError("time_weights must match the unguarded target window")
+    reserve_time_resolution_warranted = jnp.asarray(
+        reserve_time_resolution_warranted, dtype=bool)
+    if reserve_time_resolution_warranted.ndim != 0:
+        raise ValueError("reserve_time_resolution_warranted must be scalar")
     if reserve_m_max is None:
         reserve_m_max = int(C_A_t.shape[0] - 1)
     reserve_m_max = int(reserve_m_max)
@@ -2269,15 +2303,22 @@ def empirical_enrichment_with_exact_reserve(
         node_concentration=float(node_concentration),
         mode_match_tol=mode_match_tol)
 
-    if time_guard:
-        target_table = C_A_t[..., time_guard:-time_guard]
-    else:
-        target_table = C_A_t
-
     def _accepted(_):
-        return local_value, jnp.asarray(jnp.nan, dtype=jnp.float64)
+        nan = jnp.asarray(jnp.nan, dtype=jnp.float64)
+        return local_value, nan, nan
 
     def _reserve(_):
+        if use_bandlimited_time:
+            flat_table = C_A_t.reshape((-1, C_A_t.shape[-1]))
+            coeff, frequency, offset = _time_primitive_spectrum(
+                flat_table, time_guard)
+            target_table = _evaluate_time_spectrum(
+                coeff, frequency, reserve_time_nodes, offset).reshape(
+                    C_A_t.shape[:-1] + (reserve_time_nodes.size,))
+        elif time_guard:
+            target_table = C_A_t[..., time_guard:-time_guard]
+        else:
+            target_table = C_A_t
         lnL_t = _anglemarg.coefficient_table_distphipsimarg_exact(
             target_table, C_B, reserve_x_grid, reserve_log_weights,
             amp_sizing=float(reserve_amp_sizing), m_max=reserve_m_max,
@@ -2285,14 +2326,87 @@ def empirical_enrichment_with_exact_reserve(
             grid_block=int(reserve_grid_block))
         reserve_value = (_time_marginalize(lnL_t, time_weights)[0]
                          + float(reserve_log_offset))
-        return reserve_value, reserve_value
+        if use_bandlimited_time:
+            inner_guard = time_guard // 2
+            trim = time_guard - inner_guard
+            inner_table = C_A_t[..., trim:-trim]
+            inner_flat = inner_table.reshape((-1, inner_table.shape[-1]))
+            coeff_inner, frequency_inner, offset_inner = (
+                _time_primitive_spectrum(inner_flat, inner_guard))
+            target_inner = _evaluate_time_spectrum(
+                coeff_inner, frequency_inner, reserve_time_nodes,
+                offset_inner).reshape(
+                    C_A_t.shape[:-1] + (reserve_time_nodes.size,))
+            lnL_inner = _anglemarg.coefficient_table_distphipsimarg_exact(
+                target_inner, C_B, reserve_x_grid, reserve_log_weights,
+                amp_sizing=float(reserve_amp_sizing), m_max=reserve_m_max,
+                dense_chunk=int(reserve_dense_chunk),
+                grid_block=int(reserve_grid_block))
+            guard_value = (_time_marginalize(lnL_inner, time_weights)[0]
+                           + float(reserve_log_offset))
+        else:
+            guard_value = jnp.asarray(jnp.nan, dtype=jnp.float64)
+        return reserve_value, reserve_value, guard_value
 
-    selected_value, reserve_value = jax.lax.cond(
+    selected_value, reserve_value, reserve_guard_value = jax.lax.cond(
         accepted_local, _accepted, _reserve, operand=None)
     reserve_executed = ~accepted_local
     reserve_finite = jnp.isfinite(reserve_value)
-    reserve_failed = reserve_executed & (~reserve_finite)
-    usable = accepted_local | (reserve_executed & reserve_finite)
+    if use_bandlimited_time:
+        reserve_time_nodes_finite = jnp.all(jnp.isfinite(reserve_time_nodes))
+        reserve_time_nodes_increasing = jnp.all(
+            jnp.diff(reserve_time_nodes) > 0.0)
+        reserve_time_subsampled = jnp.max(
+            jnp.diff(reserve_time_nodes)) < 1.0
+        reserve_time_weights_valid = (
+            jnp.all(jnp.isfinite(time_weights))
+            & jnp.all(time_weights >= 0.0)
+            & (jnp.sum(time_weights) > 0.0))
+        reserve_time_nodes_in_support = jnp.all(
+            (reserve_time_nodes >= 0.0)
+            & (reserve_time_nodes <= float(n_target - 1)))
+        reserve_time_nodes_cover_target = (
+            (reserve_time_nodes[0] == 0.0)
+            & (reserve_time_nodes[-1] == float(n_target - 1)))
+        reserve_time_guard_error = jnp.abs(
+            reserve_value - reserve_guard_value)
+        reserve_time_guard_validated = (
+            reserve_executed & reserve_finite
+            & jnp.isfinite(reserve_guard_value)
+            & (reserve_time_guard_error <= float(time_guard_tol_nats)))
+        reserve_time_warranted = (
+            reserve_time_nodes_finite
+            & reserve_time_nodes_increasing
+            & reserve_time_subsampled
+            & reserve_time_weights_valid
+            & reserve_time_nodes_in_support
+            & reserve_time_nodes_cover_target
+            & reserve_time_resolution_warranted
+            & reserve_time_guard_validated)
+        reserve_time_points = reserve_time_nodes.size
+        reserve_time_min = jnp.min(reserve_time_nodes)
+        reserve_time_max = jnp.max(reserve_time_nodes)
+    else:
+        reserve_time_nodes_finite = jnp.asarray(True)
+        reserve_time_nodes_increasing = jnp.asarray(True)
+        reserve_time_subsampled = jnp.asarray(False)
+        reserve_time_weights_valid = (
+            jnp.all(jnp.isfinite(time_weights))
+            & jnp.all(time_weights >= 0.0)
+            & (jnp.sum(time_weights) > 0.0))
+        reserve_time_nodes_in_support = jnp.asarray(True)
+        reserve_time_nodes_cover_target = jnp.asarray(True)
+        reserve_time_guard_error = jnp.asarray(jnp.nan)
+        reserve_time_guard_validated = jnp.asarray(False)
+        reserve_time_warranted = jnp.asarray(False)
+        reserve_time_points = n_target
+        reserve_time_min = jnp.asarray(0.0)
+        reserve_time_max = jnp.asarray(float(n_target - 1))
+    reserve_time_failed = reserve_executed & (~reserve_time_warranted)
+    reserve_failed = reserve_executed & (
+        (~reserve_finite) | reserve_time_failed)
+    usable = accepted_local | (
+        reserve_executed & reserve_finite & reserve_time_warranted)
     nphi_reserve, nu_reserve = _anglemarg._dense_grid_sizes(
         float(reserve_amp_sizing), m_max=reserve_m_max)
     reserve_gh_nodes = int(_anglemarg._core._DISTMARG_GH_N)
@@ -2310,16 +2424,36 @@ def empirical_enrichment_with_exact_reserve(
             + reserve_failed.astype(jnp.int32)) == 1,
         "accepted_local": accepted_local,
         "selected_value_is_local": accepted_local,
-        "selected_value_is_exact_reserve": reserve_executed & reserve_finite,
+        "selected_value_is_warranted_reserve": (
+            reserve_executed & reserve_finite & reserve_time_warranted),
         "reserve_executed": reserve_executed,
         "reserve_value": reserve_value,
         "reserve_finite": reserve_finite,
         "reserve_failed": reserve_failed,
+        "reserve_time_failed": reserve_time_failed,
+        "reserve_uses_bandlimited_time": jnp.asarray(use_bandlimited_time),
+        "reserve_uses_native_time": jnp.asarray(not use_bandlimited_time),
+        "reserve_native_time_warranted": jnp.asarray(False),
+        "reserve_time_resolution_warranted": (
+            reserve_time_resolution_warranted),
+        "reserve_time_nodes_finite": reserve_time_nodes_finite,
+        "reserve_time_nodes_increasing": reserve_time_nodes_increasing,
+        "reserve_time_subsampled": reserve_time_subsampled,
+        "reserve_time_weights_valid": reserve_time_weights_valid,
+        "reserve_time_nodes_in_support": reserve_time_nodes_in_support,
+        "reserve_time_nodes_cover_target": reserve_time_nodes_cover_target,
+        "reserve_time_guard_validated": reserve_time_guard_validated,
+        "reserve_time_guard_error": reserve_time_guard_error,
+        "reserve_time_guard_value": reserve_guard_value,
+        "reserve_time_warranted": reserve_time_warranted,
+        "reserve_time_min_sample": reserve_time_min,
+        "reserve_time_max_sample": reserve_time_max,
         "usable": usable,
         "sample_retained_after_local_decline": (
-            reserve_executed & reserve_finite),
+            reserve_executed & reserve_finite & reserve_time_warranted),
         "decline_is_waveform_failure": jnp.asarray(False),
-        "selected_nonfinite_is_integration_failure": reserve_failed,
+        "selected_nonfinite_is_integration_failure": (
+            reserve_executed & (~reserve_finite)),
         "reserve_nphi": jnp.asarray(nphi_reserve),
         "reserve_nu": jnp.asarray(nu_reserve),
         "reserve_angle_points": jnp.asarray(nphi_reserve * nu_reserve),
@@ -2331,7 +2465,7 @@ def empirical_enrichment_with_exact_reserve(
         "reserve_uses_adaptive_distance": jnp.asarray(
             reserve_gh_nodes > 0),
         "reserve_distance_gh_nodes": jnp.asarray(reserve_gh_nodes),
-        "reserve_time_points": jnp.asarray(n_target),
+        "reserve_time_points": jnp.asarray(reserve_time_points),
         "reserve_dense_chunk": jnp.asarray(int(reserve_dense_chunk)),
         "reserve_grid_block": jnp.asarray(int(reserve_grid_block)),
         "local_log_normalization": jnp.asarray(
@@ -2342,3 +2476,87 @@ def empirical_enrichment_with_exact_reserve(
             + reserve_executed.astype(jnp.int32)) == 1,
     })
     return selected_value, usable, ledger
+
+
+def empirical_enrichment_with_exact_reserve_sequential_batch(
+        C_A_t, C_B, base_plans, enriched_plans, x_min, x_max, *,
+        reserve_x_grid, reserve_log_weights, time_weights,
+        reserve_amp_sizing, reserve_m_max=None,
+        reserve_dense_chunk=8, reserve_grid_block=32,
+        reserve_time_nodes=None, reserve_time_resolution_warranted=False,
+        base_order=13, base_check_order=19,
+        enriched_order=19, enriched_check_order=25,
+        convergence_tol_nats=1.0e-3, time_guard=0,
+        time_guard_tol_nats=1.0e-3, local_log_normalization=0.0,
+        time_outside_tol_nats=-23.0,
+        total_value_error_budget_nats=1.0e-3,
+        reserve_log_offset=0.0, node_concentration=1.0,
+        mode_match_tol=(0.25, 1.0e-4, 1.0e-4, 1.0e-5)):
+    """Apply the scalar controller sequentially to a fixed-size batch.
+
+    A direct ``vmap`` of :func:`empirical_enrichment_with_exact_reserve`
+    rewrites its scalar conditional as a batched selection and can therefore
+    execute the dense reserve for accepted rows.  This wrapper deliberately
+    uses ``lax.map`` so each row reaches the scalar conditional independently;
+    reserve workspace scales with one row rather than the batch size.  For a
+    sparse, variable-size decline set, a host controller should instead vmap
+    only :func:`empirical_enrichment_marginalize`, compact the declined rows,
+    and invoke the reserve on that compact set.
+
+    ``C_B`` and the time/distance rules are shared across the batch.  Every
+    leaf of ``base_plans`` and ``enriched_plans`` must have a leading batch
+    dimension.  ``reserve_time_resolution_warranted`` may be either one scalar
+    policy value or one scalar per row.
+    """
+    C_A_t = jnp.asarray(C_A_t, dtype=jnp.complex128)
+    C_B = jnp.asarray(C_B, dtype=jnp.complex128)
+    if C_A_t.ndim != 4:
+        raise ValueError("C_A_t must have shape (batch,KP,KS,Ntime)")
+    batch = C_A_t.shape[0]
+    if C_B.ndim == 2:
+        C_B = jnp.broadcast_to(C_B, (batch,) + C_B.shape)
+    elif C_B.ndim != 3 or C_B.shape[0] != batch:
+        raise ValueError("C_B must be shared or have a leading batch axis")
+    for name, plans in (("base_plans", base_plans),
+                        ("enriched_plans", enriched_plans)):
+        for leaf in jax.tree.leaves(plans):
+            if jnp.asarray(leaf).ndim < 1 or jnp.asarray(leaf).shape[0] != batch:
+                raise ValueError("%s must have a leading batch axis" % name)
+    warrant = jnp.asarray(reserve_time_resolution_warranted, dtype=bool)
+    if warrant.ndim == 0:
+        warrant = jnp.broadcast_to(warrant, (batch,))
+    elif warrant.shape != (batch,):
+        raise ValueError(
+            "reserve_time_resolution_warranted must be scalar or per-row")
+
+    def _row(args):
+        table, norm, base_plan, enriched_plan, row_warrant = args
+        return empirical_enrichment_with_exact_reserve(
+            table, norm, base_plan, enriched_plan, x_min, x_max,
+            reserve_x_grid=reserve_x_grid,
+            reserve_log_weights=reserve_log_weights,
+            time_weights=time_weights,
+            reserve_amp_sizing=reserve_amp_sizing,
+            reserve_m_max=reserve_m_max,
+            reserve_dense_chunk=reserve_dense_chunk,
+            reserve_grid_block=reserve_grid_block,
+            reserve_time_nodes=reserve_time_nodes,
+            reserve_time_resolution_warranted=row_warrant,
+            base_order=base_order, base_check_order=base_check_order,
+            enriched_order=enriched_order,
+            enriched_check_order=enriched_check_order,
+            convergence_tol_nats=convergence_tol_nats,
+            time_guard=time_guard, time_guard_tol_nats=time_guard_tol_nats,
+            local_log_normalization=local_log_normalization,
+            time_outside_tol_nats=time_outside_tol_nats,
+            total_value_error_budget_nats=total_value_error_budget_nats,
+            reserve_log_offset=reserve_log_offset,
+            node_concentration=node_concentration,
+            mode_match_tol=mode_match_tol)
+
+    selected, usable, ledger = jax.lax.map(
+        _row, (C_A_t, C_B, base_plans, enriched_plans, warrant))
+    ledger = dict(ledger)
+    ledger["reserve_batch_execution_sequential"] = jnp.ones(
+        (batch,), dtype=bool)
+    return selected, usable, ledger
