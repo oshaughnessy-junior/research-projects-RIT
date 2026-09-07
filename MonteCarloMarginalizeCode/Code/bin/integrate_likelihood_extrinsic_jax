@@ -74,6 +74,10 @@ from RIFT.likelihood.jax_ile import build_data_from_precompute
 from RIFT.likelihood.jax_ile.wrapper import bandlimited_storage_requirement
 from RIFT.likelihood.jax_ile import anglemarg as _anglemarg
 from RIFT.likelihood.jax_ile.samplers import angle_marg_eval_chunk as _angle_marg_eval_chunk
+from RIFT.likelihood.jax_ile.samplers import regularize_cov as _regularize_cov
+# ONE definition, imported rather than re-typed: a second copy of the
+# "is this evidence trustworthy" rule is a copy that drifts.
+from RIFT.likelihood.jax_ile.samplers import _finalize_evidence
 from RIFT.likelihood.jax_ile.core import _GATHERERS as _JAX_GATHERERS, JAX_INTERP_DEFAULT
 from RIFT.likelihood.jax_ile.anglemarg import (ANGLE_MARG_DEFAULT, ANGLE_MARG_LEGACY,
                                                ANGLE_MARG_CHOICES)
@@ -940,10 +944,17 @@ def log_distance_box_correction(opts, with_distance):
     --limit-distance narrowed the box.
 
     sample_prior() draws distance from the prior RESTRICTED to the box, so its
-    density is the prior divided by that mass.  Estimators that assume
-    "proposal == prior" (run_prior_mc) must subtract this; estimators that form
-    ln w = lnL + ln p - ln q explicitly (run_laplace_is) already have it right
-    and must NOT subtract it again.
+    density is the prior divided by that mass.  The rule is per ESTIMATOR, not
+    per function: an estimator that assumes "proposal == prior" must subtract
+    this, and one that forms ln w = lnL + ln p - ln q explicitly must NOT,
+    because log_prior() is already normalized over the physical [d_min,d_max].
+
+    run_laplace_is contains ONE OF EACH, which is why this docstring no longer
+    names functions.  Its adapted loop forms ln w explicitly and does not
+    subtract; its prior pilot (kept as the collapse reference, #227) draws from
+    sample_prior and therefore does.  Both then estimate the SAME integral on
+    the SAME full-range normalization, which is the only reason the two are
+    comparable and the 5-nat guard means anything.
     """
     if not with_distance:
         return 0.0
@@ -1018,6 +1029,79 @@ def eval_lnL(like, theta, opts, with_distance):
 # ---------------------------------------------------------------------------
 # Evidence helpers
 # ---------------------------------------------------------------------------
+def require_finite_evidence(logZ, neff, mode):
+    """A NON-FINITE evidence is a FAILED event, not a result.
+
+    The estimators return nan when the proposal never bracketed the peak (see
+    ``_finalize_evidence``), and publishing that as an ILE row hands a
+    downstream CIP fit a nan ``lnL`` for a template that simply was not
+    integrated -- the same "leave no artifact behind" rule ``write_samples``
+    already enforces for a cloud that admits no fair draw.  Raising here means
+    ``--soft-fail-event-range`` skips to the next event, and without it the run
+    exits nonzero: on the #227 configuration the shipped code exited 0.
+    """
+    if np.isfinite(logZ):
+        return
+    raise RuntimeError(
+        "extrinsic integration produced a non-finite evidence (logZ=%r, "
+        "neff=%.3g, mode=%s): the proposal did not bracket the likelihood peak, "
+        "so no result row is written for this event.  Every --mode whose evidence "
+        "comes from a single moment-matched Gaussian fitted to its own draws can "
+        "fail this way on a narrow, high-SNR extrinsic posterior; try another "
+        "--mode, and check its reported neff rather than only its lnZ."
+        % (logZ, neff, mode))
+
+
+# The prior pilot is an UNBIASED estimator of the same Z, not a bound on it, and
+# the difference is load-bearing -- see prior_pilot_floor below.
+PILOT_FLOOR_FP_RATE = 3.4e-4          # = exp(-8); see the operating curve below
+
+
+def prior_pilot_floor(logZ_pilot, false_positive_rate=PILOT_FLOOR_FP_RATE):
+    """A lower confidence bound on ln Z built from the prior pilot's estimate.
+
+    WHY A BOUND AND NOT THE ESTIMATE.  The pilot is prior Monte Carlo: unbiased
+    for Z, but with a heavy RIGHT tail once the target occupies a tiny fraction
+    of the prior.  For a mode of prior mass ``m``, a single draw landing near the
+    peak makes the estimate ~``L_max / n_pilot`` while the truth is ~``L_max m``,
+    so it overshoots by ``1/(n_pilot m)`` -- more than ``T`` nats whenever
+    ``n_pilot m < exp(-T)``.  Using the raw estimate as a floor therefore rejects
+    a CORRECT adapted answer at exactly the rate that tail occurs.  That is not
+    hypothetical here: at a synthetic width of 0.05 rad, ``n_pilot m = 1.6e-3``
+    and the pilot was measured above the truth by up to +5.46 nats, P = 1.1e-3
+    over 900 seeds.
+
+    THE BOUND.  Markov is enough and needs nothing but unbiasedness and
+    non-negativity, both of which hold: ``P(Zhat >= Z / rate) <= rate``.  So
+    ``Zhat * rate`` is a lower confidence bound on Z at level ``1 - rate``, and
+    the floor is ``ln Zhat + ln rate``.  The threshold is therefore a CHOSEN
+    false-positive rate rather than a tuned constant, and it is distribution-free
+    -- in particular it does NOT assume the pilot resolved anything.  It cannot:
+    the pilot's own ESS is ~1 in every regime where this guard matters (measured
+    median 1.0-1.3 for widths 0.03-0.08 rad), so "the pilot rests on one draw" is
+    the normal state here, not an exceptional one.
+
+    WHY exp(-8) AND NOT exp(-5).  Measured over 5400 synthetic runs (widths
+    0.03-0.15 rad), sweeping the threshold T:
+
+        T      Markov FP <=    FP measured   power on inaccurate runs
+        5          6.7e-3            0/1180        0.651
+        6          2.5e-3            0/1180        0.636
+        8          3.4e-4            0/1180        0.606
+       10          5.0e-5            0/1180        0.578
+
+    Going from 5 to 8 costs 4.5 points of power and buys a 20x smaller worst-case
+    false-positive rate; a false positive here FAILS THE EVENT and writes no row,
+    so it is worth paying for.  No false positive was observed at any threshold:
+    the largest pilot-minus-adapted gap on an accurate run was +1.654 nats, so 8
+    clears the measured margin by 6.3 nats.  The bound, not the measurement, is
+    what the guarantee rests on.
+    """
+    if not np.isfinite(logZ_pilot):
+        return -np.inf
+    return float(logZ_pilot) + float(np.log(false_positive_rate))
+
+
 def evidence_from_logweights(logw):
     """(logZ, sigma/Z, neff) for Z = E[w] from log importance weights."""
     fin = np.isfinite(logw)
@@ -1076,12 +1160,27 @@ def run_laplace_is(like, opts, rng, dim, with_distance, n_adapt=2):
     lnL_p = eval_lnL(like, theta_p, opts, with_distance)
     logL_p = lnL_p + log_prior(theta_p, opts, with_distance)
     mu, cov = _moment_match(theta_p, logL_p)
+    # KEEP the pilot's own (prior-proposal) evidence estimate.  It is crude -- one
+    # prior scan, often with an ESS of order 1 -- but it estimates the SAME integral
+    # from a proposal that is guaranteed to cover the prior, and importance sampling
+    # from a proposal that MISSES mass is biased low.  So an adapted estimate coming
+    # out far BELOW this one is evidence that the adaptation walked away from the
+    # peak: the failure mode that remains once #227's draw/density mismatch is fixed.
+    # It is a REFERENCE, not a floor -- prior_pilot_floor() turns it into one, and
+    # the distinction is the whole of external review's P1 on this PR.
+    logZ_pilot, _, _ = evidence_from_logweights(
+        lnL_p - log_distance_box_correction(opts, with_distance))
 
     per_round = max(opts.n_max // (n_adapt + 1), 1)
     all_theta, all_logw, all_lnL = [], [], []
     for r in range(n_adapt + 1):
-        cov_use = cov * opts.proposal_inflate
-        Lc = np.linalg.cholesky(cov_use + 1e-12 * np.eye(dim))
+        # ONE matrix for the draw AND the density.  Drawing from
+        # ``cov_use + 1e-12*I`` and scoring under bare ``cov_use`` is issue #227:
+        # once the adapted covariance falls below the absolute jitter the weights
+        # are computed against a distribution that was never sampled, and this
+        # mode returned lnZ = 5.8e9 on real O4 data while exiting 0.
+        cov_use = _regularize_cov(cov * opts.proposal_inflate)
+        Lc = np.linalg.cholesky(cov_use)
         z = rng.standard_normal((per_round, dim))
         theta = mu[None, :] + z @ Lc.T
         logq = _gaussian_logq(theta, mu, cov_use)
@@ -1099,6 +1198,20 @@ def run_laplace_is(like, opts, rng, dim, with_distance, n_adapt=2):
     theta = np.concatenate(all_theta); logw = np.concatenate(all_logw)
     lnL = np.concatenate(all_lnL)
     logZ, sig, neff = evidence_from_logweights(logw)
+    # log Z <= max lnL for a normalized prior, and a low neff means the proposal
+    # never bracketed the peak.  Same rule the library samplers already apply;
+    # this driver applied none, which is why #227 exited 0 on lnZ = 5.8e9.
+    logZ, sig, neff = _finalize_evidence(
+        logZ, sig, neff, float(np.max(lnL)) if np.isfinite(lnL).any() else np.nan)
+    pilot_floor = prior_pilot_floor(logZ_pilot)
+    if np.isfinite(logZ) and np.isfinite(pilot_floor) and logZ < pilot_floor:
+        print("  [laplace-is] adapted proposal gives lnZ = %.3f, %.1f nats BELOW the "
+              "prior pilot's Markov floor (%.3f, from a pilot estimate of %.3f at a "
+              "%.1e false-positive rate): the adaptation moved off the peak, so this "
+              "evidence is reported as unreliable."
+              % (logZ, pilot_floor - logZ, pilot_floor, logZ_pilot,
+                 PILOT_FLOOR_FP_RATE))
+        logZ, sig = np.nan, np.nan
     # theta follows the GAUSSIAN PROPOSAL q, not the posterior; logw is what
     # turns it into one.  Returned so write_samples() can fair-draw.
     return logZ, sig, neff, len(theta), theta, lnL, logw
@@ -1171,10 +1284,11 @@ def run_nuts(like, opts, rng, with_distance):
     # moment-matched to the posterior draws -> high neff vs prior seeding).
     mu, cov = _moment_match(theta, np.zeros(len(theta)))  # posterior moments
     n_is = min(opts.n_max, 40000)
-    Lc = np.linalg.cholesky(cov * opts.proposal_inflate + 1e-12 * np.eye(5))
+    cov_is = _regularize_cov(cov * opts.proposal_inflate)   # one matrix (#227)
+    Lc = np.linalg.cholesky(cov_is)
     z = rng.standard_normal((n_is, 5))
     th_is = mu[None, :] + z @ Lc.T
-    logq = _gaussian_logq(th_is, mu, cov * opts.proposal_inflate)
+    logq = _gaussian_logq(th_is, mu, cov_is)
     logp = log_prior(th_is, opts, with_distance=False)
     valid = np.isfinite(logp)
     lnL_is = np.full(n_is, -np.inf)
@@ -1182,6 +1296,12 @@ def run_nuts(like, opts, rng, with_distance):
         lnL_is[valid] = eval_lnL(like, th_is[valid], opts, with_distance=False)
     logw = np.where(valid, lnL_is + logp - logq, -np.inf)
     logZ, sig, neff = evidence_from_logweights(logw)
+    # Bound with the NUTS CHAIN's peak, not the IS cloud's.  Both are valid upper
+    # bounds on ln Z, the chain's is the larger (it sits ON the peak), and using the
+    # smaller one would fail a correct run whose IS cloud happened to be broad.  This
+    # is also the argument samplers.py passes at its own _finalize_evidence sites.
+    logZ, sig, neff = _finalize_evidence(
+        logZ, sig, neff, float(np.max(lnL)) if np.isfinite(lnL).any() else np.nan)
     # theta/lnL are the NUTS chain (already targets the posterior); the IS cloud
     # th_is/logw is only the evidence estimator, so there is nothing to reweight.
     # `neff` below therefore describes th_is, NOT the exported chain -- it must
@@ -2120,6 +2240,7 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
     print("\n==== Result (event %d) ====" % event_id)
     print("  log evidence (lnL marginal over extrinsic) = %.5f" % logZ)
     print("  sigma_lnL = %.4g    neff = %.1f    ntotal = %d" % (sig, neff, ntot))
+    require_finite_evidence(logZ, neff, opts.mode)
     # EXPORT FIRST, THEN PUBLISH THE RESULT ROW.  write_samples raises when the
     # cloud admits no fair draw, and that refusal means the integration itself
     # collapsed -- so the event must leave NO artifact behind.  Writing the
