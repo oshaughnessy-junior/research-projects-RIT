@@ -364,6 +364,17 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         repository provides, so they are DESELECTED
 #                                         here -- see DESELECTED_TESTS -- and 11 are
 #                                         gated.
+#   test_jax_q_time_pregrid.py         21  opt-in reflected Q time pregrid on the JAX
+#                                         arm: factor-1 bit identity (same array object,
+#                                         positions bit-identical to the pre-pregrid
+#                                         expressions), the 2n-vs-2(n-1) reflection
+#                                         choice measured against an exact-period
+#                                         oracle, refined-grid position scaling, the
+#                                         fail-closed length/factor checks, 'nearest'
+#                                         refusal, wrapper/driver forwarding, and the
+#                                         merge interaction with #272's phase-marginalized
+#                                         mode permutation.
+#                                         Synthetic fixtures; no lal frames, no GPU.
 
 FILES=(
   "${JAXDIR}/test_jax_time_quadrature.py"
@@ -399,6 +410,7 @@ FILES=(
   "${JAXDIR}/test_is_proposal_jitter.py"
   "${JAXDIR}/test_multipeak_planner.py"
   "${JAXDIR}/test_jax_phase_marg_mode_order.py"
+  "${JAXDIR}/test_jax_q_time_pregrid.py"
 )
 
 # EXCLUDED: files in JAXDIR matching test_*.py that are deliberately NOT gated.  The
@@ -614,14 +626,29 @@ fi
 # gate therefore adds 11 self-contained tests.  Confirmed from the merged
 # collection: 472/477 collected, 5 deselected, 32 files.
 #
-# This merge adds the 14 pins in test_jax_phase_marg_mode_order.py on top of #270,
-# and hit the same conflict a fourth time: each side of it carried a number the
-# other side had already invalidated (475 vs 472), which is the failure this whole
-# comment exists to describe.  READ OFF this job's own line after resolving:
-# "collected 486 tests from 33 files", DESELECT loop applied.  The arithmetic
-# (472+14) would also have given 486 -- noted because that is precisely what makes
-# it an unreliable shortcut rather than a safe one, not a reason to trust it.
-EXPECTED_TESTS=486
+# The phase-marginalization mode-order merge added the 14 pins in
+# test_jax_phase_marg_mode_order.py on top of #270, and hit the same conflict a
+# fourth time: each side of it carried a number the other side had already
+# invalidated (475 vs 472).  Read off the job's own line then: 486 from 33 files.
+#
+# FIFTH time, on the Q time-pregrid branch (this merge).  Both sides were stale
+# again -- 480 on the branch, 486 on rift_O4d -- for the same reason, and the
+# resolution is again a MEASUREMENT, not the sum.  Read off this job's own line
+# after resolving, DESELECT loop applied, on the merged tree:
+# "collected 505 tests from 34 files".  The arithmetic (486 + the 19 in
+# test_jax_q_time_pregrid.py) agrees, and is again not where the number came
+# from.  Independently recollected on citlogin6 with ~/.cache/jaxci_venv
+# (jax 0.9.2, numpyro 0.21.0) during the landing review: the same 505 from the
+# same 34 files.
+#
+# 507, not 505, and the gap is two tests added after that measurement: the P2
+# review's no-metadata refusal, and one for a path the merge creates that
+# neither side covers (#272's phase-marginalized mode permutation acting on a
+# REFINED Q grid).  The P2 commit left this constant at 505, which the >= floor
+# accepts silently -- exactly the drift this comment exists to stop.  Recollected
+# after both: "507/512 tests collected (5 deselected)",
+# "collected 507 tests from 34 files".
+EXPECTED_TESTS=507
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"

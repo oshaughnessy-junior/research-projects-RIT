@@ -186,6 +186,7 @@ def build_data_from_precompute(P, data_dict, psd_dict, fiducial_epoch,
                                analyticPSD_Q=False, inv_spec_trunc_Q=False,
                                T_spec=0.0, tvals=None, verbose=False,
                                skip_interpolation=True,
+                               q_time_pregrid_factor=1,
                                **precompute_kwargs):
     """Run the production precompute + packing, return a JAXLikelihoodData.
 
@@ -209,6 +210,12 @@ def build_data_from_precompute(P, data_dict, psd_dict, fiducial_epoch,
       spaced ``2*iwh/(npts-1)``).  Anything that compares this data object
       against the numpy reference should still pass ``data.tvals`` to the
       reference rather than rebuild a grid.
+
+    ``q_time_pregrid_factor`` (``--q-time-pregrid-factor``) refines the sampling
+    of the STORED rholm buffers by that integer factor before they reach the
+    device, leaving ``deltaT``, ``tvals`` and the Simpson weights alone.  1 is the
+    default and the historical behaviour; see
+    :func:`RIFT.likelihood.jax_ile.core.build_q_time_pregrid`.
 
     Returns
     -------
@@ -244,7 +251,8 @@ def build_data_from_precompute(P, data_dict, psd_dict, fiducial_epoch,
         tvals = factored_likelihood.marginalization_time_grid(
             integration_window_half, deltaT, xpy=np)
 
-    data = build_likelihood_data(packed, deltaT, float(fiducial_epoch), tvals)
+    data = build_likelihood_data(packed, deltaT, float(fiducial_epoch), tvals,
+                                 q_time_pregrid_factor=q_time_pregrid_factor)
     extras = dict(rholms=rholms, cross_terms=cross_terms,
                   cross_terms_V=cross_terms_V, guess_snr=guess_snr,
                   rholms_intp=rholms_intp)
