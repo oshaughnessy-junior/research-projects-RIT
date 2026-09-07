@@ -343,16 +343,12 @@ def test_device_mode_plan_refines_and_deduplicates_without_host_transfer():
         return AAP.make_all_axis_mode_plan_device(
             table, C_B, starts, 0.2, 7.0, max_modes=4,
             local_radius=3.0, iterations=14,
-            time_reconstruction_certified=True, optimizer_batch_size=4)
+            time_reconstruction_certified=True)
 
     plan, ledger = build(jnp.asarray(C_A))
     assert plan.centers.shape == (4, 4)
     assert plan.local_transforms.shape == (4, 4, 4)
     assert int(ledger["n_optimizer_starts"]) >= 2
-    assert int(ledger["optimizer_batch_size"]) == 4
-    assert int(ledger["n_optimizer_batches_if_independent"]) == int(np.ceil(
-        int(ledger["n_optimizer_starts"]) / 4))
-    assert int(ledger["n_optimizer_padded_lanes_if_independent"]) < 4
     assert int(ledger["n_selected_modes"]) == 2
     assert int(jnp.count_nonzero(plan.live)) == 2
     assert bool(ledger["discovery_capacity_ok"])
@@ -376,42 +372,13 @@ def test_device_mode_plan_refines_and_deduplicates_without_host_transfer():
         return AAP.make_all_axis_mode_plan_device(
             table, C_B, starts, 0.2, 7.0, max_modes=1,
             local_radius=3.0, iterations=14,
-            time_reconstruction_certified=True, optimizer_batch_size=4)
+            time_reconstruction_certified=True)
 
     overflow_plan, overflow_ledger = overflow(jnp.asarray(C_A))
     assert int(jnp.count_nonzero(overflow_plan.live)) == 1
     assert bool(overflow_ledger["selection_overflow"])
     assert not bool(overflow_ledger["discovery_capacity_ok"])
     assert not bool(overflow_plan.discovery_capacity_ok)
-
-
-def test_bounded_optimizer_batch_matches_sequential_with_mask_and_padding():
-    C_A, C_B, _ = _problem(33)
-    starts = jnp.asarray([
-        [15.7, 0.10, 0.08, 2.0],
-        [12.0, 1.20, 0.70, 1.0],
-        [16.3, 3.05, 0.12, 2.0],
-        [15.9, 0.15, 6.20, 2.0],
-        [20.0, 4.00, 2.00, 1.0],
-    ])
-    live = jnp.asarray([True, False, True, True, False])
-
-    @jax.jit
-    def compare(table):
-        keywords = dict(
-            iterations=6, time_localize_iterations=8, live=live)
-        sequential = AAP.refine_all_axis_starts(
-            table, C_B, starts, 0.2, 7.0,
-            optimizer_batch_size=1, **keywords)
-        batched = AAP.refine_all_axis_starts(
-            table, C_B, starts, 0.2, 7.0,
-            optimizer_batch_size=3, **keywords)
-        return sequential, batched
-
-    sequential, batched = compare(jnp.asarray(C_A))
-    for expected, got in zip(sequential, batched):
-        np.testing.assert_allclose(
-            np.asarray(got), np.asarray(expected), rtol=0.0, atol=1.0e-11)
 
 
 def test_device_plans_compose_with_empirical_local_controller_under_vmap():
@@ -434,7 +401,7 @@ def test_device_plans_compose_with_empirical_local_controller_under_vmap():
             table, C_B, base_starts, extra_starts, 0.2, 7.0,
             max_modes=4, enriched_max_modes=8,
             local_radius=3.0, iterations=14,
-            time_reconstruction_certified=True, optimizer_batch_size=4)
+            time_reconstruction_certified=True)
         # Plans are row-local control data.  Until derivative parity is
         # established, outer differentiation must not interpret the discrete
         # rank/dedup decisions as a full-marginal derivative certificate.
@@ -466,12 +433,6 @@ def test_device_plans_compose_with_empirical_local_controller_under_vmap():
     assert int(shared_planning["n_optimizer_starts_avoided"]) == n_base
     assert int(shared_planning["n_optimizer_starts_previous_two_pass"]) == (
         n_base + n_enriched)
-    assert int(shared_planning["optimizer_batch_size"]) == 4
-    assert int(shared_planning["n_optimizer_batches_executed"]) == int(
-        np.ceil(n_enriched / 4))
-    assert int(shared_planning["n_optimizer_lanes_evaluated"]) == (
-        4 * int(shared_planning["n_optimizer_batches_executed"]))
-    assert int(shared_planning["n_optimizer_padding_lanes_evaluated"]) < 4
     assert bool(shared_planning["start_nesting_structural"])
     assert int(separate_base_planning["n_selected_modes"]) == 2
     for separate, paired in zip(jax.tree.leaves(separate_base_plan),
