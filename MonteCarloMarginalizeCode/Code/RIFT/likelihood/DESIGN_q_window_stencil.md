@@ -741,3 +741,98 @@ not a shared checkout, so a branch switch could not move code mid-run. Its fmin-
 reproduces #97's shipped numbers bit-for-bit, and the analysis code was validated by re-deriving
 #97's published bracket from the original 9 points alone. No row is reference-limited (per-stencil
 reference floors ≥ 400× below the smallest measured error; M→2M reference checks ≤ 5.7e-5 nats).
+
+
+### 9.7 The JAX arm gained `--q-time-pregrid-factor` (2026-09-07)
+
+Refining the stored Q once, at build time, beats every choice of local stencil on the
+coarse grid, and the JAX arm could not do it: PR #262 made the driver REFUSE any factor
+but 1, because at that point the arm had no refined-Q path.  It has one now.  Factor 1
+remains the default and is bit-identical: 52 toy arrays (four stencils x phase
+marginalization on/off x guard 0/8, covering `fused_log_likelihood`, its `return_lnLt`
+form, both accumulator outputs and `fused_log_likelihood_distmarg`) plus 35 arrays from a
+REBUILT production likelihood, all SHA256-equal to base `bec19ad5`.
+
+`build_q_time_pregrid` calls `factored_likelihood.build_reflected_q_pregrid` -- the same
+host-side builder #261 ships -- rather than restating the arithmetic, so both arms answer
+with the same refined Q and inherit its round-trip guard.
+
+**Where the accuracy comes from, and where it stops.**  Measured against an EXACT oracle
+(`test/jax/test_jax_q_time_pregrid.py`: a band-limited series with a known finite Fourier
+sum, cropped exactly as `ComputeModeIPTimeSeries` crops `rhoTS`, evaluated at arbitrary
+real times by direct summation), at production geometry -- 1229-sample buffer, positions
+~300 samples clear of its ends:
+
+| stencil | relative max error |
+|---|---|
+| `nearest`, coarse | 4.88e-1 |
+| `linear`, coarse | 1.98e-1 |
+| `cubic`, coarse | 1.25e-1 |
+| `sinc` a=8, coarse (**production default**) | 1.88e-2 |
+| `cubic`, pregrid 2 | 1.09e-2 |
+| `cubic`, pregrid 4 | 8.0e-4 |
+| **`cubic`, pregrid 8** | **4.62e-5** |
+| `cubic`, pregrid 16 | 4.88e-6 |
+| `cubic`, pregrid 32 | 3.46e-6 |
+| `sinc` a=8, pregrid 8 | 4.86e-4 |
+
+Three things in that table are decisions:
+
+1. **Cubic, not the arm's `sinc` default.**  A fixed 2a-tap Lanczos window does not gain
+   from a finer grid the way a 4th-order stencil does: on the same factor-8 grid cubic is
+   10x more accurate than `sinc` a=8, at a quarter of the taps.  The driver therefore
+   selects `cubic` with the pregrid and REFUSES a different explicit stencil, exactly as
+   conventional ILE does (#261).
+2. **Factor 8, not more.**  The error falls ~16x per doubling (13.5x for 2->4, 17.4x for
+   4->8) and then SATURATES: 8->16 is 9.5x and 16->32 only 1.4x.  The residual past ~8 is
+   the reflection boundary condition, which no factor reduces.
+3. **Not the default.**  As in #261 for the conventional arm, promotion is a separate
+   discussion.
+
+**The residual is a BOUNDARY error, not a step error, and that is easy to measure wrongly.**
+Error against clearance from the buffer end, `cubic` on pregrid 8: 2.5e-3 at 8 samples,
+8.3e-4 at 16, 2.4e-4 at 32, 1.0e-4 at 64, 4.7e-5 at 128, 4.0e-5 at 256.  A fixture that
+gathers near the ends measures the reflection, not the stencil, while every assertion in
+it still passes.
+
+**Which reflection, settled by measurement.**  This repo contains two reflected upsamplers
+whose docstrings each assert their own convention is correct:
+`jax_ile.core._reflected_fft_upsample` omits the duplicate turning samples (period 2(n-1));
+`time_marginalization_quadrature.reflected_bandlimited_upsample` duplicates them (period
+2n).  They are answering different questions -- the 2(n-1) form is right for reconstructing
+`kappa` on the *terminal* integration window, where a series at exactly Nyquist must keep
+reconstructing `cos(pi t)` -- so neither docstring is wrong.  For a CROPPED Q the 2n form
+wins against the oracle by 15.0x in the interior and 6.7x near the ends, consistent with
+the conventional arm's independent finding (`DESIGN_time_marginalization_quadrature.md`,
+"Finite-window reconstruction").  This is not a stylistic preference: routed through
+`_reflected_fft_upsample` the factor-8 pregrid saturates at 7.8e-4 in the table above and
+stops improving at factor 16 (7.6e-4), i.e. a 17x worse floor and no convergence.
+`test_duplicated_reflection_is_the_right_one_for_a_crop` fails if a later change reroutes
+it "for consistency".
+
+**`nearest` is refused with a pregrid.**  It would gather correctly, but
+`_accumulate_unit_banded` reconstructs the arrival time its post-phase applies as
+`rint(p0)` in COARSE samples, which is no longer the sample a refined-grid nearest gather
+reads; the data term and the model norm would drift apart by up to half a coarse bin.
+
+**What it buys on real rows, and what it does not.**  On the phase-marginalized JAX
+endpoint at 4096 Hz, SEOBNRv4 35+30, the time-axis error splits exactly into a stencil
+term and a quadrature term.  Against a converged reference (see the PR), max over 6 rows:
+
+| rho | stencil, `sinc` a=8 coarse | stencil, `cubic` pregrid 8 | Simpson quadrature |
+|---|---:|---:|---:|
+| 40.77 | 0.15 | < 1e-6 | 1.62 |
+| 163.08 | 3.03 | 0.0005 | 33.96 |
+| 652.31 | 27.31 | 0.0088 | 105.73 |
+
+The stencil term is removed; the quadrature term is untouched, as it must be -- the
+pregrid refines how Q is interpolated, not what the likelihood integrates over.  Above
+rho ~ 100 the time integral is now quadrature-limited and nothing else.
+
+**Cost.**  The pregrid is a one-off host-side FFT (0.03 s for a 3-detector 2-mode bank)
+and multiplies only the stored Q: 0.112 -> 0.899 MiB here.  On GPU it is FASTER than the
+production default, because four taps replace sixteen: matched at S=20000, npts=614,
+interleaved A/B, `f1_sinc` 0.0823 s/eval, `f1_cubic` 0.0160, `f8_cubic` 0.0160 -- the
+refinement itself costs nothing measurable and the stencil change buys 5.1x.  On CPU the
+ordering is different and the pregrid is not free: 0.2319 / 0.2020 / 0.2520 s/eval at
+S=4000, i.e. 1.09x the production default, from the strided gather's cache behaviour.

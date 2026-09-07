@@ -368,6 +368,7 @@ FILES=(
   "${JAXDIR}/test_direct_marginalization_planner.py"
   "${JAXDIR}/test_time_first_peaklocal.py"
   "${JAXDIR}/test_is_proposal_jitter.py"
+  "${JAXDIR}/test_jax_q_time_pregrid.py"
 )
 
 # EXCLUDED: files in JAXDIR matching test_*.py that are deliberately NOT gated.  The

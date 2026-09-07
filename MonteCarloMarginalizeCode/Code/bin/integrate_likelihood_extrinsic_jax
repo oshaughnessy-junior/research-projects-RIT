@@ -359,11 +359,47 @@ def check_critical_and_report(opts, optp):
         fatal.append("--distance-grid-tol applies only to "
                      "--distance-grid-scheme loguniform; it would be silently "
                      "inert here")
-    if getattr(opts, "q_time_pregrid_factor", 1) != 1:
-        fatal.append(
-            "--q-time-pregrid-factor is implemented only by conventional ILE; "
-            "the JAX likelihood has a separate Q-evaluation path and currently "
-            "accepts only factor 1")
+    # NOT ``... or 1``: 0 is falsy, so that idiom would silently promote an invalid
+    # ``--q-time-pregrid-factor 0`` to the default and report nothing.  (It did, until
+    # test_jax_dropin_manifest... caught it.)
+    _qf = getattr(opts, "q_time_pregrid_factor", 1)
+    _qf = 1 if _qf is None else int(_qf)
+    if _qf < 1:
+        fatal.append("--q-time-pregrid-factor must be >= 1, got %d" % _qf)
+    elif _qf != 1:
+        # NOT a blanket refusal any more (it was, before the JAX Q path grew a
+        # pregrid).  What survives is the narrower, still-true refusal, and it
+        # mirrors conventional ILE's (#261): the pregrid buys sub-sample accuracy
+        # with a FOUR-tap cubic, so a stencil that cannot use a sub-sample position
+        # ('nearest') or a different stencil chosen behind the user's back would
+        # both make the two arms answer differently for the same command line --
+        # which is exactly how they came to ship opposite stencil defaults (#233).
+        #
+        # 'nearest' is separately UNIMPLEMENTED, not merely suboptimal: see
+        # core._q_sample_positions -- a refined-grid nearest gather no longer reads
+        # the sample the banded post-phase reconstructs from the coarse index, so
+        # the data term and the model norm would drift apart by up to half a coarse
+        # bin.
+        # The ``!= JAX_INTERP_DEFAULT`` clause is not redundant with was_supplied:
+        # was_supplied() FAILS OPEN by design ("no record -> assume not supplied"),
+        # which is the safe direction for the conflict checks it was written for and
+        # the WRONG one here, where the consequence of guessing "not supplied" is
+        # silently replacing a stencil the caller chose.  A caller with no supplied
+        # record whose interp is not the module default has demonstrably chosen it,
+        # so treat that as explicit too.
+        _explicit_interp = (was_supplied(opts, "--interp")
+                            or was_supplied(opts, "--interpolate-time")
+                            or getattr(opts, "interp", None) != JAX_INTERP_DEFAULT)
+        if _explicit_interp and getattr(opts, "interp", None) != "cubic":
+            fatal.append(
+                "--q-time-pregrid-factor %d uses four-tap cubic interpolation "
+                "(--interp %r was requested); remove the explicit stencil option "
+                "or set it to cubic" % (_qf, getattr(opts, "interp", None)))
+        else:
+            opts._q_pregrid_fallback_interp = getattr(opts, "interp", None)
+            opts.interp = "cubic"
+            print(" Q_lm pregrid: ENABLED factor=%d boundary=even-reflection "
+                  "arrival_stencil=cubic integration_grid=unchanged" % _qf)
     if fatal:
         optp.error("Cannot run as a faithful drop-in: " + "; ".join(fatal)
                    + ".  (These would silently change the result if ignored.)")
@@ -610,10 +646,22 @@ def build_parser():
     g.add_option("--srate-resample-time-marginalization", type="int", default=None,
                  help="Conventional ILE option; currently unsupported by JAX ILE.")
     g.add_option("--q-time-pregrid-factor", type="int", default=1,
-                 help="Conventional ILE Q-pregrid selector. JAX ILE accepts the "
-                      "default factor 1 for command-line compatibility and "
-                      "refuses other factors because its Q-evaluation path is "
-                      "different.")
+                 help="OPT-IN. Refine the STORED rholm buffers onto a factor-x finer "
+                      "time grid ONCE, before sampling, by even reflection plus a "
+                      "band-limited FFT interpolation, and evaluate detector arrival "
+                      "times on it with the four-tap cubic stencil.  The integration "
+                      "cadence -- deltaT, tvals and the Simpson weights -- is "
+                      "UNCHANGED: this refines how Q is INTERPOLATED, not what the "
+                      "likelihood integrates over.  Default 1 is the historical "
+                      "behaviour and is bit-identical.  8 is the validated value on "
+                      "both arms (RIFT PR #261 for conventional ILE); larger factors "
+                      "are accepted but buy little, because past ~8 the residual is "
+                      "the reflection boundary condition rather than the stencil "
+                      "step.  Selects --interp cubic and REFUSES an explicit "
+                      "different stencil, exactly as conventional ILE does.  Costs "
+                      "factor-x device memory for Q (only Q -- not the per-sample "
+                      "gather scratch, which is the large term).  Measured accuracy "
+                      "and cost: RIFT/likelihood/DESIGN_q_window_stencil.md 9.7.")
     g.add_option("--n-phi", type=int, default=32,
                  help="phi_ref grid size for --mode flowmc-phimarg (default 32; "
                       "use 64-128 for l-max>=4 or production quality).")
@@ -1948,9 +1996,21 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
         opts.internal_data_storage_window_half, opts.data_integration_window_half,
         opts.l_max, opts.fmax,
         analyticPSD_Q=analyticPSD_Q, verbose=opts.verbose,
+        q_time_pregrid_factor=(1 if getattr(opts, "q_time_pregrid_factor", 1) is None
+                               else int(opts.q_time_pregrid_factor)),
         use_gwsignal=bool(getattr(opts, "use_gwsignal", False)),
         use_gwsignal_approx=(opts.approximant if getattr(opts, "use_gwsignal", False) else None))
     print("  modes:", like_data.lms, "  guessed SNR:", extras["guess_snr"])
+    if like_data.q_time_pregrid_factor != 1:
+        _d0 = like_data.detectors[like_data.detector_names[0]]
+        _bytes = sum(int(like_data.detectors[d]["Q"].nbytes)
+                     for d in like_data.detector_names)
+        print("  [q-pregrid] factor %d: Q sampled at deltaT/%d, %d -> %d samples, "
+              "%.1f MB of Q on device (%d detectors); integration cadence "
+              "unchanged at deltaT=%.6g s"
+              % (like_data.q_time_pregrid_factor, like_data.q_time_pregrid_factor,
+                 _d0["npts_full_coarse"], _d0["Q"].shape[0], _bytes/2.0**20,
+                 len(like_data.detector_names), like_data.deltaT))
 
     with_distance = not opts.distance_marginalization
     # --limit-distance: (d_lo,d_hi) is what is SAMPLED / quadratured; the prior is
