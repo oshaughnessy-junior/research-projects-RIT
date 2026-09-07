@@ -1973,9 +1973,11 @@ def empirical_enrichment_marginalize(
     ``time_outside_tol_nats``, and agreement within ``convergence_tol_nats``.
     The empirical discovery, nested-quadrature, guarded-time, and certified
     omitted-time contributions must also fit one shared
-    ``total_value_error_budget_nats``.  Their cancellation-resistant sum is an
-    operational error score, not a formal global bound: enrichment and
-    quadrature differences remain empirical convergence diagnostics.
+    ``total_value_error_budget_nats``.  Each of the three paired terms is
+    charged once, as the maximum over the base and enriched plans; their
+    cancellation-resistant sum is an operational error score, not a formal
+    global bound: enrichment and quadrature differences remain empirical
+    convergence diagnostics.
     Every base
     mode must recur with matching local geometry.  Additional enriched basins
     are probes, not automatically part of the accepted cover: if a probe has
@@ -2099,11 +2101,21 @@ def empirical_enrichment_marginalize(
         0.0, base_time_tail_margin)
     enriched_time_tail_correction = jnp.logaddexp(
         0.0, enriched_time_tail_margin)
+    # Each paired term is the same physical quantity measured on the two
+    # nested plans (same table, same recurring modes, same G vs G/2
+    # comparison).  Charging both against the budget double-counted a
+    # common-mode error: on the analytic wiring fixture at ten times the
+    # unit amplitude a value correct to 1.5e-4 nat was refused at a score of
+    # 1.06e-3, of which 2 x 5.27e-4 was one guard discrepancy counted twice.
+    # The maximum over the pair bounds whichever plan's value is selected and
+    # counts it once.  The per-plan terms stay in the ledger.
+    quadrature_score = jnp.maximum(
+        base["quadrature_error"], enriched["quadrature_error"])
+    guard_score = jnp.maximum(base_guard_score, enriched_guard_score)
+    tail_score = jnp.maximum(
+        base_time_tail_correction, enriched_time_tail_correction)
     empirical_value_error_score = (
-        convergence_error
-        + base["quadrature_error"] + enriched["quadrature_error"]
-        + base_guard_score + enriched_guard_score
-        + base_time_tail_correction + enriched_time_tail_correction)
+        convergence_error + quadrature_score + guard_score + tail_score)
     error_budget_complete = time_cover_pair & time_ok
     error_budget_ok = (
         error_budget_complete
@@ -2193,6 +2205,10 @@ def empirical_enrichment_marginalize(
         "value_error_budget_is_empirical": jnp.asarray(True),
         "value_error_budget_is_formal_bound": jnp.asarray(False),
         "error_score_discovery_nats": convergence_error,
+        "error_score_quadrature_nats": quadrature_score,
+        "error_score_time_guard_nats": guard_score,
+        "error_score_omitted_time_nats": tail_score,
+        "error_score_pairs_charged_as_max": jnp.asarray(True),
         "error_score_base_quadrature_nats": base["quadrature_error"],
         "error_score_enriched_quadrature_nats":
             enriched["quadrature_error"],

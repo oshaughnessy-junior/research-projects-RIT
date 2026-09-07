@@ -122,6 +122,17 @@ production tables, recorded in the paper repository
 
 ## Known adversarial items
 
+- The error score double-charged common-mode terms. Base and enriched plans
+  measure the same quadrature, guard, and omitted-time discrepancies, and
+  the score summed both. On the analytic fixture at 10x amplitude a value
+  correct to 1.5e-4 nat was refused at a score of 1.06e-3 (two copies of one
+  5.27e-4 guard discrepancy). Fixed in PR #278: each pair is charged once as
+  its maximum; the per-plan terms stay in the ledger.
+- A distance peak below the prior's support pins every optimizer lane to the
+  boundary with an identical gradient norm growing like rho^2. PR #268
+  declines such a row (`decline_no_modes`); the signature matches the one
+  the PR #270 ladder reported for its enriched tier, which points at a
+  distance-support problem in that harness rather than a refinement defect.
 - The local box radius is a common-mode term. Base and enriched plans use
   the same whitened radius, so mass outside the box is invisible to the
   enrichment gate and to the error score. At radius 3 the accepted value on
