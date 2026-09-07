@@ -1922,6 +1922,7 @@ def empirical_enrichment_marginalize(
         convergence_tol_nats=1.0e-3, time_guard=0,
         time_guard_tol_nats=1.0e-3, log_normalization=0.0,
         time_outside_tol_nats=-23.0,
+        total_value_error_budget_nats=1.0e-3,
         node_concentration=1.0,
         mode_match_tol=(0.25, 1.0e-4, 1.0e-4, 1.0e-5),
         geometry_match_rtol=1.0e-3, geometry_match_atol=1.0e-8):
@@ -1931,8 +1932,13 @@ def empirical_enrichment_marginalize(
     that includes the base starts, and uses the stronger quadrature orders
     supplied here.  Acceptance requires finite values, explicit start capacity,
     disjoint in-support regions, healthy nested quadrature and time-guard
-    diagnostics, any supplied certified omitted-time bound to clear
+    diagnostics, certified omitted-time bounds for both plans to clear
     ``time_outside_tol_nats``, and agreement within ``convergence_tol_nats``.
+    The empirical discovery, nested-quadrature, guarded-time, and certified
+    omitted-time contributions must also fit one shared
+    ``total_value_error_budget_nats``.  Their cancellation-resistant sum is an
+    operational error score, not a formal global bound: enrichment and
+    quadrature differences remain empirical convergence diagnostics.
     Every base
     mode must recur with matching local geometry.  Additional enriched basins
     are probes, not automatically part of the accepted cover: if a probe has
@@ -1954,6 +1960,10 @@ def empirical_enrichment_marginalize(
             "< enriched_check_order")
     if float(convergence_tol_nats) <= 0.0:
         raise ValueError("convergence_tol_nats must be positive")
+    if (not np.isfinite(float(total_value_error_budget_nats))
+            or float(total_value_error_budget_nats) <= 0.0):
+        raise ValueError(
+            "total_value_error_budget_nats must be finite and positive")
     if (not np.isfinite(float(time_outside_tol_nats))
             or float(time_outside_tol_nats) >= 0.0):
         raise ValueError("time_outside_tol_nats must be finite and negative")
@@ -1991,12 +2001,10 @@ def empirical_enrichment_marginalize(
     base_time_tail_margin = (base["time_outside_log_bound"] - base_value)
     enriched_time_tail_margin = (
         enriched["time_outside_log_bound"] - enriched_value)
-    time_omitted_ok = ((~any_time_cover)
-                       | (time_cover_pair
-                          & (base_time_tail_margin
-                             < float(time_outside_tol_nats))
-                          & (enriched_time_tail_margin
-                             < float(time_outside_tol_nats))))
+    time_tail_bounds_ok = (
+        (base_time_tail_margin < float(time_outside_tol_nats))
+        & (enriched_time_tail_margin < float(time_outside_tol_nats)))
+    time_omitted_ok = time_cover_pair & time_tail_bounds_ok
     base_geometry_ok = base["boxes_disjoint"] & base["support_ok"]
     enriched_geometry_ok = (enriched["boxes_disjoint"]
                             & enriched["support_ok"])
@@ -2033,6 +2041,33 @@ def empirical_enrichment_marginalize(
     geometry_ok = base_geometry_ok & geometry_nesting_ok
     convergence_error = jnp.abs(enriched_value - base_value)
     converged = convergence_error <= float(convergence_tol_nats)
+    # A single operational allowance prevents several individually acceptable
+    # diagnostics from silently spending the full science tolerance apiece.
+    # Sums, rather than maxima, are deliberate: base/enriched quadrature or
+    # guard errors can cancel in their observed difference.  Unguarded plans
+    # contribute zero here only after their external reconstruction warrants
+    # have passed ``time_ok`` above.  The discarded-time terms are genuine
+    # integral bounds, converted to maximum log-integral corrections, while
+    # the other terms remain empirical diagnostics.
+    base_guard_score = jnp.where(
+        int(time_guard) > 0, base["time_guard_error"], 0.0)
+    enriched_guard_score = jnp.where(
+        int(time_guard) > 0, enriched["time_guard_error"], 0.0)
+    base_time_tail_correction = jnp.logaddexp(
+        0.0, base_time_tail_margin)
+    enriched_time_tail_correction = jnp.logaddexp(
+        0.0, enriched_time_tail_margin)
+    empirical_value_error_score = (
+        convergence_error
+        + base["quadrature_error"] + enriched["quadrature_error"]
+        + base_guard_score + enriched_guard_score
+        + base_time_tail_correction + enriched_time_tail_correction)
+    error_budget_complete = time_cover_pair & time_ok
+    error_budget_ok = (
+        error_budget_complete
+        & jnp.isfinite(empirical_value_error_score)
+        & (empirical_value_error_score
+           <= float(total_value_error_budget_nats)))
 
     decline_nonfinite = ~finite
     decline_capacity = finite & (~capacity_ok)
@@ -2041,9 +2076,15 @@ def empirical_enrichment_marginalize(
                             & (~mode_nesting_ok))
     decline_time = (finite & capacity_ok & has_modes & mode_nesting_ok
                     & (~time_ok))
-    decline_time_omitted = (
+    decline_time_cover = (
         finite & capacity_ok & has_modes & mode_nesting_ok & time_ok
-        & (~time_omitted_ok))
+        & (~time_cover_pair))
+    decline_time_omitted_bound = (
+        finite & capacity_ok & has_modes & mode_nesting_ok & time_ok
+        & time_cover_pair & (~time_tail_bounds_ok))
+    # Umbrella science diagnostic retained for callers that need only the
+    # broad reason.  The two exclusive fields above own reconciliation.
+    decline_time_omitted = decline_time_cover | decline_time_omitted_bound
     decline_geometry = (finite & capacity_ok & has_modes & mode_nesting_ok
                         & time_ok & time_omitted_ok
                         & (~geometry_ok))
@@ -2053,8 +2094,13 @@ def empirical_enrichment_marginalize(
     decline_enrichment = (finite & capacity_ok & has_modes & mode_nesting_ok
                           & time_ok & time_omitted_ok
                           & geometry_ok & quadrature_ok & (~converged))
+    decline_error_budget = (
+        finite & capacity_ok & has_modes & mode_nesting_ok
+        & time_ok & time_omitted_ok & geometry_ok & quadrature_ok & converged
+        & (~error_budget_ok))
     accepted = (finite & capacity_ok & has_modes & mode_nesting_ok & time_ok
-                & time_omitted_ok & geometry_ok & quadrature_ok & converged)
+                & time_omitted_ok & geometry_ok & quadrature_ok & converged
+                & error_budget_ok)
     accepted_value_uses_base_geometry = accepted & (~enriched_geometry_ok)
     accepted_value = jnp.where(
         accepted_value_uses_base_geometry, base_value, enriched_value)
@@ -2065,10 +2111,12 @@ def empirical_enrichment_marginalize(
         + decline_no_modes.astype(jnp.int32)
         + decline_mode_nesting.astype(jnp.int32)
         + decline_time.astype(jnp.int32)
-        + decline_time_omitted.astype(jnp.int32)
+        + decline_time_cover.astype(jnp.int32)
+        + decline_time_omitted_bound.astype(jnp.int32)
         + decline_geometry.astype(jnp.int32)
         + decline_quadrature.astype(jnp.int32)
-        + decline_enrichment.astype(jnp.int32)) == 1
+        + decline_enrichment.astype(jnp.int32)
+        + decline_error_budget.astype(jnp.int32)) == 1
     ledger = {
         "accepted": accepted,
         "fallback_required": ~accepted,
@@ -2082,15 +2130,34 @@ def empirical_enrichment_marginalize(
         "decline_no_modes": decline_no_modes,
         "decline_mode_nesting": decline_mode_nesting,
         "decline_time_reconstruction": decline_time,
+        "decline_time_cover_incomplete": decline_time_cover,
+        "decline_time_omitted_mass_bound": decline_time_omitted_bound,
         "decline_time_omitted_mass": decline_time_omitted,
         "decline_geometry": decline_geometry,
         "decline_quadrature": decline_quadrature,
         "decline_enrichment": decline_enrichment,
+        "decline_error_budget": decline_error_budget,
         "reconciles": reconciles,
         "base_value": base_value,
         "enriched_value": enriched_value,
         "convergence_error": convergence_error,
         "convergence_tol_nats": jnp.asarray(float(convergence_tol_nats)),
+        "empirical_value_error_score_nats": empirical_value_error_score,
+        "total_value_error_budget_nats": jnp.asarray(
+            float(total_value_error_budget_nats)),
+        "value_error_budget_complete": error_budget_complete,
+        "value_error_budget_ok": error_budget_ok,
+        "value_error_budget_is_empirical": jnp.asarray(True),
+        "value_error_budget_is_formal_bound": jnp.asarray(False),
+        "error_score_discovery_nats": convergence_error,
+        "error_score_base_quadrature_nats": base["quadrature_error"],
+        "error_score_enriched_quadrature_nats":
+            enriched["quadrature_error"],
+        "error_score_base_time_guard_nats": base_guard_score,
+        "error_score_enriched_time_guard_nats": enriched_guard_score,
+        "error_score_base_omitted_time_nats": base_time_tail_correction,
+        "error_score_enriched_omitted_time_nats":
+            enriched_time_tail_correction,
         "base_capacity_ok": base_plan.discovery_capacity_ok,
         "enriched_capacity_ok": enriched_plan.discovery_capacity_ok,
         "base_n_modes": base["n_modes"],
@@ -2105,7 +2172,8 @@ def empirical_enrichment_marginalize(
         "enriched_quadrature_error": enriched["quadrature_error"],
         "base_time_guard_error": base["time_guard_error"],
         "enriched_time_guard_error": enriched["time_guard_error"],
-        "time_outside_cover_used": any_time_cover,
+        "time_outside_cover_used": time_cover_pair,
+        "time_outside_cover_any": any_time_cover,
         "time_outside_cover_pair": time_cover_pair,
         "time_omitted_mass_ok": time_omitted_ok,
         "time_outside_tol_nats": jnp.asarray(float(time_outside_tol_nats)),
@@ -2135,6 +2203,7 @@ def empirical_enrichment_with_exact_reserve(
         convergence_tol_nats=1.0e-3, time_guard=0,
         time_guard_tol_nats=1.0e-3, local_log_normalization=0.0,
         time_outside_tol_nats=-23.0,
+        total_value_error_budget_nats=1.0e-3,
         reserve_log_offset=0.0, node_concentration=1.0,
         mode_match_tol=(0.25, 1.0e-4, 1.0e-4, 1.0e-5)):
     """Select an accepted local value or execute the exact table reserve.
@@ -2189,6 +2258,7 @@ def empirical_enrichment_with_exact_reserve(
         time_guard=time_guard,
         time_guard_tol_nats=float(time_guard_tol_nats),
         time_outside_tol_nats=float(time_outside_tol_nats),
+        total_value_error_budget_nats=float(total_value_error_budget_nats),
         log_normalization=float(local_log_normalization),
         node_concentration=float(node_concentration),
         mode_match_tol=mode_match_tol)

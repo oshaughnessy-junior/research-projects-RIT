@@ -560,7 +560,9 @@ def test_empirical_enrichment_accepts_without_claiming_global_proof():
     plan = AAP.make_all_axis_mode_plan(
         centers, max_modes=2, local_transforms=transforms,
         local_radius=1.0, outside_bound_certified=False,
-        time_reconstruction_certified=True)
+        time_reconstruction_certified=True,
+        time_outside_log_bound=-np.inf,
+        time_outside_bound_certified=True)
     value, accepted, ledger = AAP.empirical_enrichment_marginalize(
         C_A, C_B, plan, plan, x_min, x_max,
         convergence_tol_nats=1.0e-3)
@@ -571,6 +573,25 @@ def test_empirical_enrichment_accepts_without_claiming_global_proof():
     assert not bool(ledger["global_completeness_certified"])
     assert not bool(ledger["empirical_value_error_certified"])
     assert float(ledger["convergence_error"]) <= 1.0e-3
+    assert bool(ledger["value_error_budget_complete"])
+    assert bool(ledger["value_error_budget_ok"])
+    assert bool(ledger["value_error_budget_is_empirical"])
+    assert not bool(ledger["value_error_budget_is_formal_bound"])
+    assert (float(ledger["empirical_value_error_score_nats"])
+            <= float(ledger["total_value_error_budget_nats"]))
+    score_components = [
+        "error_score_discovery_nats",
+        "error_score_base_quadrature_nats",
+        "error_score_enriched_quadrature_nats",
+        "error_score_base_time_guard_nats",
+        "error_score_enriched_time_guard_nats",
+        "error_score_base_omitted_time_nats",
+        "error_score_enriched_omitted_time_nats",
+    ]
+    components = np.asarray([float(ledger[key]) for key in score_components])
+    score = float(ledger["empirical_value_error_score_nats"])
+    assert score == pytest.approx(float(np.sum(components)), abs=1.0e-15)
+    assert components[3] == components[4] == 0.0
     assert bool(ledger["mode_nesting_ok"])
     assert not bool(ledger["fallback_required"])
     assert bool(ledger["reconciles"])
@@ -588,7 +609,81 @@ def test_empirical_enrichment_accepts_without_claiming_global_proof():
     assert bool(time_tail_ledger["time_outside_cover_used"])
     assert not bool(time_tail_ledger["time_omitted_mass_ok"])
     assert bool(time_tail_ledger["decline_time_omitted_mass"])
+    assert bool(time_tail_ledger["decline_time_omitted_mass_bound"])
+    assert not bool(time_tail_ledger["decline_time_cover_incomplete"])
     assert bool(time_tail_ledger["reconciles"])
+
+    missing_time_plan = AAP.make_all_axis_mode_plan(
+        centers, max_modes=2, local_transforms=transforms,
+        local_radius=1.0, outside_bound_certified=False,
+        time_reconstruction_certified=True)
+    _, accepted, missing_time_ledger = AAP.empirical_enrichment_marginalize(
+        C_A, C_B, missing_time_plan, missing_time_plan, x_min, x_max,
+        convergence_tol_nats=1.0e-3)
+    assert not bool(accepted)
+    assert not bool(missing_time_ledger["time_outside_cover_used"])
+    assert not bool(missing_time_ledger["value_error_budget_complete"])
+    assert bool(missing_time_ledger["decline_time_omitted_mass"])
+    assert bool(missing_time_ledger["decline_time_cover_incomplete"])
+    assert not bool(missing_time_ledger["decline_time_omitted_mass_bound"])
+    assert not bool(missing_time_ledger["decline_error_budget"])
+    assert bool(missing_time_ledger["reconciles"])
+
+    _, accepted, one_time_ledger = AAP.empirical_enrichment_marginalize(
+        C_A, C_B, plan, missing_time_plan, x_min, x_max,
+        convergence_tol_nats=1.0e-3)
+    assert not bool(accepted)
+    assert bool(one_time_ledger["time_outside_cover_any"])
+    assert not bool(one_time_ledger["time_outside_cover_used"])
+    assert bool(one_time_ledger["decline_time_cover_incomplete"])
+    assert bool(one_time_ledger["reconciles"])
+
+    # Each legacy diagnostic can clear its individual gate while their
+    # cancellation-resistant sum exceeds one shared allowance.
+    aggregate_budget = 0.5 * (float(np.max(components)) + score)
+    assert float(np.max(components)) < aggregate_budget < score
+    _, accepted, aggregate_ledger = AAP.empirical_enrichment_marginalize(
+        C_A, C_B, plan, plan, x_min, x_max,
+        convergence_tol_nats=1.0e-3,
+        total_value_error_budget_nats=aggregate_budget)
+    assert not bool(accepted)
+    assert bool(aggregate_ledger["base_quadrature_error"] <= 1.0e-3)
+    assert bool(aggregate_ledger["enriched_quadrature_error"] <= 1.0e-3)
+    assert bool(aggregate_ledger["convergence_error"] <= 1.0e-3)
+    assert not bool(aggregate_ledger["value_error_budget_ok"])
+    assert bool(aggregate_ledger["decline_error_budget"])
+    assert bool(aggregate_ledger["reconciles"])
+
+    _, accepted_at_budget, boundary_ledger = (
+        AAP.empirical_enrichment_marginalize(
+            C_A, C_B, plan, plan, x_min, x_max,
+            convergence_tol_nats=1.0e-3,
+            total_value_error_budget_nats=score))
+    assert bool(accepted_at_budget)
+    assert bool(boundary_ledger["value_error_budget_ok"])
+    _, accepted_below_budget, below_ledger = (
+        AAP.empirical_enrichment_marginalize(
+            C_A, C_B, plan, plan, x_min, x_max,
+            convergence_tol_nats=1.0e-3,
+            total_value_error_budget_nats=np.nextafter(score, -np.inf)))
+    assert not bool(accepted_below_budget)
+    assert bool(below_ledger["decline_error_budget"])
+    assert bool(below_ledger["reconciles"])
+
+    _, accepted, ordered_ledger = AAP.empirical_enrichment_marginalize(
+        C_A, C_B, plan, plan, x_min, x_max,
+        convergence_tol_nats=1.0e-12,
+        total_value_error_budget_nats=1.0e-15)
+    assert not bool(accepted)
+    assert bool(ordered_ledger["decline_quadrature"])
+    assert not bool(ordered_ledger["decline_error_budget"])
+    assert bool(ordered_ledger["reconciles"])
+
+    for invalid_budget in (0.0, -1.0, np.nan, np.inf):
+        with pytest.raises(ValueError, match="total_value_error_budget_nats"):
+            AAP.empirical_enrichment_marginalize(
+                C_A, C_B, plan, plan, x_min, x_max,
+                total_value_error_budget_nats=invalid_budget)
 
     # A stronger discovery pass may expose a broad diagnostic basin whose
     # positive integral is negligible.  It must not invalidate the unchanged,
@@ -601,7 +696,9 @@ def test_empirical_enrichment_accepts_without_claiming_global_proof():
     diagnostic_plan = AAP.make_all_axis_mode_plan(
         extra_centers, max_modes=3, local_transforms=extra_transforms,
         local_radius=1.0, outside_bound_certified=False,
-        time_reconstruction_certified=True)
+        time_reconstruction_certified=True,
+        time_outside_log_bound=-np.inf,
+        time_outside_bound_certified=True)
     retained, accepted, diagnostic_ledger = (
         AAP.empirical_enrichment_marginalize(
             C_A, C_B, plan, diagnostic_plan, x_min, x_max,
@@ -618,7 +715,9 @@ def test_empirical_enrichment_accepts_without_claiming_global_proof():
     shifted_plan = AAP.make_all_axis_mode_plan(
         shifted, max_modes=2, local_transforms=transforms,
         local_radius=1.0, outside_bound_certified=False,
-        time_reconstruction_certified=True)
+        time_reconstruction_certified=True,
+        time_outside_log_bound=-np.inf,
+        time_outside_bound_certified=True)
     _, accepted, nesting_ledger = AAP.empirical_enrichment_marginalize(
         C_A, C_B, plan, shifted_plan, x_min, x_max,
         convergence_tol_nats=1.0e-3)
@@ -629,7 +728,10 @@ def test_empirical_enrichment_accepts_without_claiming_global_proof():
     truncated_plan = AAP.make_all_axis_mode_plan(
         centers, max_modes=2, local_transforms=transforms,
         local_radius=1.0, outside_bound_certified=False,
-        time_reconstruction_certified=True, discovery_capacity_ok=False)
+        time_reconstruction_certified=True,
+        time_outside_log_bound=-np.inf,
+        time_outside_bound_certified=True,
+        discovery_capacity_ok=False)
     _, accepted, capacity_ledger = AAP.empirical_enrichment_marginalize(
         C_A, C_B, truncated_plan, plan, x_min, x_max,
         convergence_tol_nats=1.0e-3)
@@ -727,7 +829,9 @@ def test_two_guard_local_integral_validates_same_target_window():
     plan = AAP.make_all_axis_mode_plan(
         centers, max_modes=4, local_transforms=transforms,
         local_radius=3.0, outside_bound_certified=False,
-        time_reconstruction_certified=True)
+        time_reconstruction_certified=True,
+        time_outside_log_bound=-np.inf,
+        time_outside_bound_certified=True)
     value, ok, ledger = AAP.all_axis_peak_local_marginalize(
         guarded, C_B, plan, 0.2, 7.0,
         local_order=7, check_order=11, time_guard=guard,
@@ -751,6 +855,24 @@ def test_two_guard_local_integral_validates_same_target_window():
     assert bool(ledger["decline_incomplete"])
     assert bool(ledger["reconciles"])
 
+    _, empirical_ok, empirical_ledger = (
+        AAP.empirical_enrichment_marginalize(
+            guarded, C_B, plan, plan, 0.2, 7.0,
+            base_order=7, base_check_order=9,
+            enriched_order=9, enriched_check_order=11,
+            convergence_tol_nats=1.0e-3, time_guard=guard,
+            time_guard_tol_nats=1.0e-3,
+            total_value_error_budget_nats=1.0e-2))
+    assert bool(empirical_ok)
+    assert float(empirical_ledger["error_score_base_time_guard_nats"]) == (
+        pytest.approx(float(empirical_ledger["base_time_guard_error"])))
+    assert float(empirical_ledger[
+        "error_score_enriched_time_guard_nats"]) == pytest.approx(
+            float(empirical_ledger["enriched_time_guard_error"]))
+    assert float(empirical_ledger["error_score_base_time_guard_nats"]) > 0.0
+    assert bool(empirical_ledger["value_error_budget_ok"])
+    assert bool(empirical_ledger["reconciles"])
+
     # Corrupt only support discarded by the inner guard.  Integer target
     # samples remain unchanged, but the outer Fourier seam rings into the local
     # nodes; the two-guard comparison must see it rather than blessing exact
@@ -764,6 +886,18 @@ def test_two_guard_local_integral_validates_same_target_window():
     assert not bool(bad_ledger["time_guard_validated"])
     assert not bool(bad_ledger["time_reconstruction_warranted"])
     assert float(bad_ledger["time_guard_error"]) > 1.0e-3
+    _, bad_empirical_ok, bad_empirical_ledger = (
+        AAP.empirical_enrichment_marginalize(
+            bad, C_B, plan, plan, 0.2, 7.0,
+            base_order=7, base_check_order=9,
+            enriched_order=9, enriched_check_order=11,
+            convergence_tol_nats=1.0e-3, time_guard=guard,
+            time_guard_tol_nats=1.0e-3,
+            total_value_error_budget_nats=1.0e-15))
+    assert not bool(bad_empirical_ok)
+    assert bool(bad_empirical_ledger["decline_time_reconstruction"])
+    assert not bool(bad_empirical_ledger["decline_error_budget"])
+    assert bool(bad_empirical_ledger["reconciles"])
 
 
 def test_certified_omitted_mass_can_cover_an_incomplete_root_report():
