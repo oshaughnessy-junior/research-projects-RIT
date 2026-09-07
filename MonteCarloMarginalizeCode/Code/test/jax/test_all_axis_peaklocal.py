@@ -141,6 +141,28 @@ def test_loud_off_lattice_refiner_enters_narrow_coupled_basin():
     assert np.all(curvatures[selected] > 0.0)
 
 
+def test_refiner_mask_skips_padding_without_changing_live_modes():
+    C_A, C_B, constants = _problem(33)
+    centers, _ = _joint_peak(constants)
+    starts = np.vstack((
+        centers + np.asarray([[0.4, 0.1, 0.1, -0.05],
+                              [-0.4, -0.1, 0.1, 0.05]]),
+        np.repeat([[0.0, 0.0, 0.0, 0.2]], 6, axis=0)))
+    live = np.asarray([True, True] + [False] * 6)
+    masked = jax.jit(lambda seed, mask: AAP.refine_all_axis_starts(
+        C_A, C_B, seed, 0.2, 7.0, iterations=14, live=mask))(
+            jnp.asarray(starts), jnp.asarray(live))
+    direct = AAP.refine_all_axis_starts(
+        C_A, C_B, starts[:2], 0.2, 7.0, iterations=14)
+    for masked_value, direct_value in zip(masked, direct):
+        np.testing.assert_allclose(
+            np.asarray(masked_value)[:2], np.asarray(direct_value),
+            rtol=1.0e-12, atol=1.0e-12)
+    assert np.all(np.isneginf(np.asarray(masked[1])[2:]))
+    assert np.all(np.asarray(masked[2])[2:] == 0.0)
+    assert np.all(np.asarray(masked[4])[2:] == 1.0)
+
+
 def test_uv_ranked_time_start_feeds_algebraic_angles_and_analytic_distance():
     C_A, C_B, constants = _problem(65)
     summary = AAP.summarize_uv_norm_table(C_B)

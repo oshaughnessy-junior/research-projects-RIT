@@ -1000,12 +1000,14 @@ def refine_all_axis_starts(C_A_t, C_B, starts, x_min, x_max, *,
                            time_guard=0,
                            iterations=12, ridge=1.0e-8,
                            max_step=(2.0, 0.5, 0.5, 0.25),
-                           time_localize_iterations=32):
+                           time_localize_iterations=32, live=None):
     """Refine four-axis starts with fixed-iteration JAX gradient/Hessian steps.
 
     This is local optimization only.  The return values report stationarity and
     local curvature; they do not assert completeness.  Angular coordinates are
-    wrapped, while time and distance remain on their physical support.
+    wrapped, while time and distance remain on their physical support.  An
+    optional fixed-shape ``live`` mask skips optimizer work for padded starts
+    and returns finite geometry placeholders with value ``-inf`` for them.
     """
     C_A_t = jnp.asarray(C_A_t, dtype=jnp.complex128)
     C_B = jnp.asarray(C_B, dtype=jnp.complex128)
@@ -1013,6 +1015,12 @@ def refine_all_axis_starts(C_A_t, C_B, starts, x_min, x_max, *,
     _validate_tables(C_A_t, C_B)
     if starts.ndim != 2 or starts.shape[1] != 4:
         raise ValueError("starts must have shape (N,4)")
+    if live is None:
+        live = jnp.ones(starts.shape[0], dtype=bool)
+    else:
+        live = jnp.asarray(live, dtype=bool)
+        if live.shape != (starts.shape[0],):
+            raise ValueError("live must match the start capacity")
     if int(iterations) < 1:
         raise ValueError("iterations must be positive")
     if int(time_localize_iterations) < 1:
@@ -1104,7 +1112,19 @@ def refine_all_axis_starts(C_A_t, C_B, starts, x_min, x_max, *,
         curvature = jnp.linalg.eigvalsh(-hessian)
         return point, value, gradient, hessian, curvature
 
-    return jax.lax.map(jax.checkpoint(_one), starts)
+    def _inactive(start):
+        point = _project(start)
+        return (point, jnp.asarray(-jnp.inf, dtype=start.dtype),
+                jnp.zeros(4, dtype=start.dtype),
+                -jnp.eye(4, dtype=start.dtype),
+                jnp.ones(4, dtype=start.dtype))
+
+    def _mapped(args):
+        start, is_live = args
+        return jax.lax.cond(
+            is_live, jax.checkpoint(_one), _inactive, start)
+
+    return jax.lax.map(_mapped, (starts, live))
 
 
 def select_refined_modes(points, values, gradients, curvatures, *,
@@ -1357,7 +1377,8 @@ def make_all_axis_mode_plan_device(
         C_A_t, C_B, start_plan.starts, x_min, x_max,
         time_guard=int(time_guard), iterations=int(iterations), ridge=float(ridge),
         max_step=max_step,
-        time_localize_iterations=int(time_localize_iterations))
+        time_localize_iterations=int(time_localize_iterations),
+        live=start_plan.live)
     gradient_norm = jnp.linalg.norm(gradients, axis=1)
     min_curvature = jnp.min(curvatures, axis=1)
     scaled_stationary = (
