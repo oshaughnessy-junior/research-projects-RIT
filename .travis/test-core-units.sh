@@ -87,6 +87,19 @@ FILES=(
   "$C/test/hyperpipe/tests/test_coords.py"
   "$C/test/hyperpipe/tests/test_drivers.py"
   "$C/test/hyperpipe/tests/test_marg_list.py"
+  # CONSTRAINT (pytest 9, measured 2026-09-07): every file from a conftest-bearing
+  # directory must be listed CONTIGUOUSLY.  Under pytest 9's collection model a
+  # directory revisited non-contiguously in the arg list loses its conftest for the
+  # second block -- on the runner (pytest 9.1.1) test_marg_contract.py's 21 tests all
+  # errored "fixture 'hp_modules' not found" while its four siblings, listed before
+  # the revisit, passed.  CIT's pytest 8.3.5 does not reproduce it; the runner is the
+  # instrument.  Minimal repro: [tests/test_config.py, test/test_hyperpipeline_io.py,
+  # tests/test_marg_contract.py] fails; any contiguous order passes.
+  "$C/test/hyperpipe/tests/test_cit_execution_runner.py"
+  "$C/test/hyperpipe/tests/test_marg_contract.py"
+  "$C/test/hyperpipe/tests/test_osg_truncated_frames_helper.py"
+  "$C/test/hyperpipe/tests/test_terminal_contract.py"
+  "$C/test/hyperpipe/tests/test_worker_argument_staging.py"
   "$C/test/test_hyperpipeline_io.py"
   # -- hyperpipe pseudo-pipe builder (PR 181).  Every file below was run individually under a
   # runner-like import environment on CIT (IGWN conda python with htcondor/asimov/pesummary
@@ -95,11 +108,6 @@ FILES=(
   # file.  test_pesummary_publishes_both.py is deliberately NOT here: its module-level
   # importorskip collects ZERO without pesummary, which the per-file floor below would read
   # as a dead file -- it is rostered OPTDEP and covered by the hyperpipe gate sweep on CIT.
-  "$C/test/hyperpipe/tests/test_cit_execution_runner.py"
-  "$C/test/hyperpipe/tests/test_marg_contract.py"
-  "$C/test/hyperpipe/tests/test_osg_truncated_frames_helper.py"
-  "$C/test/hyperpipe/tests/test_terminal_contract.py"
-  "$C/test/hyperpipe/tests/test_worker_argument_staging.py"
   "$C/test/test_cip_format_decision.py"
   "$C/test/test_container_exe_paths.py"
   "$C/test/test_convergence_exit_codes.py"
