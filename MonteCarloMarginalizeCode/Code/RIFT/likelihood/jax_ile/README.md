@@ -42,6 +42,21 @@ response, geometric time delay, spin-(-2) spherical harmonics, the
 `kappa`/`rho^2` assembly, continuous time-shift interpolation, time
 marginalization, and **analytic distance marginalization**.
 
+### Phase marginalization and the packed mode set
+
+`phase_marginalization=True` is implemented for the `(2,2)`/`(2,-2)` pair only:
+the reduction conjugates the `m = -2` component of the harmonic, the antenna
+response and the `rholm` timeseries, which is specific to a single
+`m = +2`/`m = -2` pair.  Any other mode set raises `NotImplementedError` rather
+than silently dropping a mode.
+
+**Either packed ORDER is accepted.**  The column order of `lms`, `Q`, `U` and `V`
+follows the iteration order of the precompute's mode dictionary, not anything the
+caller chooses, so both `[(2,2), (2,-2)]` and `[(2,-2), (2,2)]` arrive in practice;
+the accumulator canonicalizes internally.  Note that `U` and `V` carry the mode
+index on BOTH axes -- any code reordering a packed bank by hand must permute both,
+or it returns a wrong likelihood with no error.
+
 ### Time quadrature
 
 All JAX likelihood wrappers accept the conventional ILE keyword
