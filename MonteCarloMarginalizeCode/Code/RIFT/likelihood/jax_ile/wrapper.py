@@ -555,9 +555,17 @@ class JAXDistPhiPsiMargLikelihood:
                  d_prior="euclidean", interp=JAX_INTERP_DEFAULT, guess_snr=None,
                  angle_marg=ANGLE_MARG_DEFAULT, *,
                  time_quadrature=TIME_QUAD_DEFAULT, d_prior_range=None,
-                 dist_grid="uniform", dist_grid_tol=DIST_GRID_TOL_DEFAULT):
+                 dist_grid="uniform", dist_grid_tol=DIST_GRID_TOL_DEFAULT,
+                 direct_marginalization_policy=None, policy_config=None):
         self.data = data
         self.interp = interp   # the instance's stencil; sample_phi_ref defaults to it
+        from . import direct_marginalization_policy as _policy
+        if direct_marginalization_policy is None:
+            direct_marginalization_policy = _policy.POLICY_DEFAULT
+        if direct_marginalization_policy not in _policy.POLICY_CHOICES:
+            raise ValueError("direct_marginalization_policy must be one of %r, "
+                             "got %r" % (_policy.POLICY_CHOICES,
+                                         direct_marginalization_policy))
         _validate_nonlinear_time_quadrature(
             time_quadrature, "distance/phase/polarization marginalization")
         self.time_quadrature = time_quadrature
@@ -992,6 +1000,57 @@ class JAXDistPhiPsiMargLikelihood:
                     data_, ra, dec, incl, xg, lwg, interp=interp,
                     amp_sizing=amp_sizing, time_quadrature=time_quadrature,
                     return_lnLt=return_lnLt)
+
+        # Cross-axis policy (opt-in).  It REPLACES the per-scheme _fused above:
+        # the composite owns time, distance and both angles per row, and uses
+        # the exact scheme only as its reserve.  Every combination it cannot
+        # honour is refused here, not ignored.
+        self.direct_marginalization_policy = direct_marginalization_policy
+        self.policy_info = None
+        self.policy_config = None
+        self._batched_ledger = None
+        if direct_marginalization_policy != "off":
+            _policy.validate_policy_request(
+                direct_marginalization_policy, angle_marg_scheme=scheme,
+                time_quadrature=time_quadrature, d_prior=d_prior,
+                dist_grid=dist_grid)
+            cfg = policy_config if policy_config is not None else (
+                _policy.PolicyConfig())
+            if not isinstance(cfg, _policy.PolicyConfig):
+                raise TypeError("policy_config must be a PolicyConfig")
+            lln, norm_info = _policy.policy_log_normalization(
+                data, xg, lwg, d_prior=d_prior)
+            self.policy_config = cfg
+            self.policy_info = dict(
+                norm_info, policy=direct_marginalization_policy,
+                reserve_scheme=scheme,
+                time_guard=int(cfg.time_guard),
+                reserve_time_refine=int(cfg.reserve_time_refine),
+                reserve_distance_gh_nodes=int(_core._DISTMARG_GH_N),
+                total_value_error_budget_nats=float(
+                    cfg.total_value_error_budget_nats))
+            self.angle_marg_info["direct_marginalization_policy"] = (
+                direct_marginalization_policy)
+
+            def _fused(data_, ra, dec, incl, return_lnLt=False):
+                if return_lnLt:
+                    raise ValueError(
+                        "direct_marginalization_policy=%r marginalizes time "
+                        "inside the composite; there is no lnL(t) to return"
+                        % (direct_marginalization_policy,))
+                return _policy.fused_log_likelihood_four_axis_policy(
+                    data_, ra, dec, incl, xg, lwg, interp=interp,
+                    amp_sizing=amp_sizing, config=cfg,
+                    local_log_normalization=lln)
+
+            def _batched_ledger(ra, dec, incl):
+                return _policy.fused_log_likelihood_four_axis_policy(
+                    data, ra, dec, incl, xg, lwg, interp=interp,
+                    amp_sizing=amp_sizing, config=cfg,
+                    local_log_normalization=lln, return_ledger=True)
+            self._batched_ledger = jax.jit(_batched_ledger)
+
+        self._fused = _fused
 
         def _batched(ra, dec, incl):
             return _fused(data, ra, dec, incl)

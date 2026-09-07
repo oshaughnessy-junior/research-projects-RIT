@@ -595,19 +595,33 @@ def test_empirical_enrichment_accepts_without_claiming_global_proof():
     assert not bool(ledger["value_error_budget_is_formal_bound"])
     assert (float(ledger["empirical_value_error_score_nats"])
             <= float(ledger["total_value_error_budget_nats"]))
+    # Paired terms are charged ONCE, as the max over the two plans: they are
+    # the same quantity measured on nested plans, and summing them double
+    # counted a common-mode error (refused a correct value at 10x amplitude).
     score_components = [
         "error_score_discovery_nats",
-        "error_score_base_quadrature_nats",
-        "error_score_enriched_quadrature_nats",
-        "error_score_base_time_guard_nats",
-        "error_score_enriched_time_guard_nats",
-        "error_score_base_omitted_time_nats",
-        "error_score_enriched_omitted_time_nats",
+        "error_score_quadrature_nats",
+        "error_score_time_guard_nats",
+        "error_score_omitted_time_nats",
     ]
     components = np.asarray([float(ledger[key]) for key in score_components])
     score = float(ledger["empirical_value_error_score_nats"])
     assert score == pytest.approx(float(np.sum(components)), abs=1.0e-15)
-    assert components[3] == components[4] == 0.0
+    assert bool(ledger["error_score_pairs_charged_as_max"])
+    for pair, charged in (
+            (("error_score_base_quadrature_nats",
+              "error_score_enriched_quadrature_nats"),
+             "error_score_quadrature_nats"),
+            (("error_score_base_time_guard_nats",
+              "error_score_enriched_time_guard_nats"),
+             "error_score_time_guard_nats"),
+            (("error_score_base_omitted_time_nats",
+              "error_score_enriched_omitted_time_nats"),
+             "error_score_omitted_time_nats")):
+        assert float(ledger[charged]) == pytest.approx(
+            max(float(ledger[pair[0]]), float(ledger[pair[1]])), abs=1e-15)
+    assert (float(ledger["error_score_base_time_guard_nats"])
+            == float(ledger["error_score_enriched_time_guard_nats"]) == 0.0)
     assert bool(ledger["mode_nesting_ok"])
     assert not bool(ledger["fallback_required"])
     assert bool(ledger["reconciles"])
