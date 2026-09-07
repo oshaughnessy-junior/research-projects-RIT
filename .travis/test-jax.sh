@@ -548,9 +548,9 @@ fi
 # tests landed later, 424+27 = 451, 432+29 = 461).  That is exactly what makes it an
 # unreliable shortcut rather than a safe one: it is nearly always right, so the once it
 # is wrong there is no habit of checking left to catch it.  The number below is READ
-# OFF this job's own collection line after this merge: 461/462 collected, 1 deselected,
-# 31 files.
-EXPECTED_TESTS=461
+# OFF this job's own collection line after this merge: 480/481 collected, 1 deselected,
+# 32 files.  (461/462 from 31 files before the Q pregrid file was registered.)
+EXPECTED_TESTS=480
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
