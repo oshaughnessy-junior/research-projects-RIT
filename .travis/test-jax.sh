@@ -233,6 +233,21 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         is the only gated check that distinguishes
 #                                         the corrected sizing.  The rest of the
 #                                         angle-marg suite is EXCLUDED; see below.
+#   test_is_proposal_jitter.py        29  issue #227: a Gaussian IS proposal must be
+#                                         SCORED under the matrix it was DRAWN from.
+#                                         Seven sites drew from cov + 1e-12*I and
+#                                         scored under bare cov; the DEFAULT --mode
+#                                         laplace-is returned lnZ = 5.85e9 on real O4
+#                                         data and exited 0.  Pure numpy synthetic
+#                                         likelihood -- no frames, no PSDs, ~8 s.
+#                                         14 of the 24 FAIL on the parent commit
+#                                         (4c4f6492).  The 10 that pass there are the
+#                                         AST detector's own self-test and the nine
+#                                         healthy-regime reference comparisons, which
+#                                         must pass on BOTH sides by construction --
+#                                         they are the gate on the fix (and on the
+#                                         collapse guard) not disturbing the regime
+#                                         where this estimator actually works.
 #   test_limit_distance_jax.py        21  --limit-distance on this arm: the distance
 #                                         QUADRATURE narrows while the prior keeps its
 #                                         [d_min,d_max] normalization.  Includes the
@@ -376,6 +391,7 @@ FILES=(
   "${JAXDIR}/test_limit_distance_jax.py"
   "${JAXDIR}/test_direct_marginalization_planner.py"
   "${JAXDIR}/test_time_first_peaklocal.py"
+  "${JAXDIR}/test_is_proposal_jitter.py"
   "${JAXDIR}/test_time_log_hermite.py"
   "${JAXDIR}/test_time_log_hermite_selectable.py"
 )
@@ -573,7 +589,46 @@ fi
 # JAX_COMPILATION_CACHE_DIR=""), the DESELECT loop applied, i.e. the post-deselect
 # number.  That it also equals 448 + 20 is, for the third change running, a
 # coincidence -- and the run is still the only thing that establishes it.
-EXPECTED_TESTS=468
+#
+# ---- MERGE 2026-09-06 (second merge of rift_O4d onto this branch) -------------------
+# rift_O4d moved again, and BOTH sides of this constant moved.  From base, quoting the
+# incoming ledger verbatim because its history is the point:
+#
+#     The #227 IS-proposal branch then adds the 29 pins in test_is_proposal_jitter.py
+#     (27, plus the two external review's P1 required: the Markov floor and the
+#     inflated-pilot regression case).  The FILES array above takes the UNION of every
+#     side that has touched it.
+#
+#     THIS BRANCH HAS NOW HIT THIS CONFLICT THREE TIMES, on three consecutive days, and
+#     every one of its own numbers was read off a real collection run when written:
+#
+#         2026-09-05  339   stale within a day        (main had moved 293 -> 312)
+#         2026-09-06  451   stale within a day        (main had moved 312 -> 424)
+#         2026-09-06  453   stale by the next merge   (main had moved 424 -> 432)
+#
+#     So the constant does not go stale because someone was careless.  It goes stale
+#     because rift_O4d moves faster than any single branch can hold a global count, and
+#     that is a property of the counter, not of the people using it.  Note that the
+#     arithmetic would have been RIGHT all three times (312+27 = 339 after the two
+#     review tests landed later, 424+27 = 451, 432+29 = 461).  That is exactly what
+#     makes it an unreliable shortcut rather than a safe one: it is nearly always right,
+#     so the once it is wrong there is no habit of checking left to catch it.  The
+#     number below is READ OFF this job's own collection line after this merge:
+#     461/462 collected, 1 deselected, 31 files.
+#
+# So the two sides of this conflict were 468 (this branch, 32 files) and 461 (base, 31
+# files), and NEITHER is right after the merge: each was measured against a roster the
+# other side has since added to.  The merged FILES array is the UNION -- base's
+# test_is_proposal_jitter.py plus this branch's test_time_log_hermite.py and
+# test_time_log_hermite_selectable.py -- 33 files.  Do NOT resolve this by taking the
+# larger of the two, and do NOT add the deltas: 468 + 29 and 461 + 36 both happen to give
+# the right answer here, which is precisely the trap the ledger above documents.
+#
+# READ OFF THIS SCRIPT'S OWN LINE after this merge: it printed
+# "collected 497 tests from 33 files" on CIT citlogin6 with ~/.cache/jaxci_venv
+# (jax 0.9.2, python 3.13, JAX_PLATFORMS=cpu, JAX_ENABLE_X64=1,
+# JAX_COMPILATION_CACHE_DIR=""), the DESELECT loop applied, i.e. the post-deselect number.
+EXPECTED_TESTS=497
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
