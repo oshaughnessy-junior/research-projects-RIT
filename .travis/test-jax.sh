@@ -661,15 +661,22 @@ fi
 # after both: "507/512 tests collected (5 deselected)",
 # "collected 507 tests from 34 files".
 #
-# SIXTH time, on the four-axis peak-local branch (#268, this merge).  Both sides
-# stale again: 453 on the branch, 507 on rift_O4d.  Resolution is again a
-# measurement on the merged tree with the DESELECT loop applied, read off this
+# SIXTH time, on the full-circuit phi-region branch (this merge).  Both sides were
+# stale in the usual way -- 487 on the branch, 507 on rift_O4d -- and the resolution
+# is again a MEASUREMENT.  This branch adds ONE test,
+# test_a_full_circuit_phi_window_is_one_region_at_every_peak_location.  Recollected on
+# the merged tree, citlogin6, ~/.cache/jaxci_venv, DESELECT loop applied:
+# "collected 508 tests from 34 files".
+# SEVENTH time, on the four-axis peak-local branch (#268, this merge).  Both
+# sides stale again: 453 on the branch, 507 and then 508 on rift_O4d.
+# Resolution is again a measurement on the merged tree with the DESELECT loop
+# applied, read off this
 # job's own collection line on citlogin6 (~/.cache/jaxci_venv, jax 0.9.2):
-# "541/546 tests collected (5 deselected)" from 35 files.  The def-count
-# arithmetic (507 + 30 in test_all_axis_peaklocal.py + 1 in
-# test_angle_marg_exact.py + 2 in test_time_first_peaklocal.py = 540) does
-# NOT reproduce it, which is one more reason the constant is measured.
-EXPECTED_TESTS=541
+# "542/547 tests collected (5 deselected)", gate-style count 542 from 35
+# files.  Def-count arithmetic (508 + 30 in test_all_axis_peaklocal.py + 1 in
+# test_angle_marg_exact.py + 2 in test_time_first_peaklocal.py = 541) does NOT
+# reproduce it, which is one more reason the constant is measured.
+EXPECTED_TESTS=542
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
