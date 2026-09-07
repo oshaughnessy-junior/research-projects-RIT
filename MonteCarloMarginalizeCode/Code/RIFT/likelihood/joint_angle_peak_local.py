@@ -882,7 +882,20 @@ def phi_local_marginalize(C, n_seed=64, w_sigma=12.0, n_nodes=64,
     for a, b in zip(lo, hi):
         wdt = min(float(b - a), 2.0 * np.pi)
         a = float(np.mod(a, 2.0 * np.pi))
-        if a + wdt <= 2.0 * np.pi:
+        if wdt >= 2.0 * np.pi:
+            # A WINDOW THAT ALREADY SPANS THE CIRCLE IS NOT SPLIT.  Splitting it emits
+            # (a, 2 pi) and (0, a + wdt - 2 pi), and that second endpoint is the round
+            # trip fl(fl(a + 2 pi) - 2 pi), which misses `a` by one ulp in a direction
+            # nothing here controls.  The seam-close below then joins the halves into one
+            # region of width 2 pi MINUS ONE ULP, the clamp `sum >= 2 pi` does not fire,
+            # and the certificate sees area_outside = 8.9e-16 instead of 0.  Measured on
+            # F = 1000 cos(phi - pi/96) at w_sigma = 200: one region [-0.00864509,
+            # 6.27454022], margin -0.657, DECLINED on omitted mass that does not exist.
+            # `wdt` is a min AT 2 pi, so this test is exact and needs no tolerance.  The
+            # jax port carries the same fix in phi_local_lnI, where the halves could also
+            # fail to merge at all and cost 20x in the value.
+            pieces.append((0.0, 2.0 * np.pi))
+        elif a + wdt <= 2.0 * np.pi:
             pieces.append((a, a + wdt))
         else:
             pieces.append((a, 2.0 * np.pi))

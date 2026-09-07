@@ -144,7 +144,7 @@ fi
 # complete enumeration, and keeps the NumPy fallback independent of optional JAX.
 _JOINT_PL_TESTS=MonteCarloMarginalizeCode/Code/test/test_joint_angle_peak_local.py
 # Raise EXPECTED by RUNNING collection, never by arithmetic.
-_JOINT_PL_EXPECTED=36
+_JOINT_PL_EXPECTED=37
 _JOINT_PL_FOUND=$(python -m pytest -q --collect-only "$_JOINT_PL_TESTS" 2>/dev/null | grep -c '::' || true)
 if [ "$_JOINT_PL_FOUND" -ne "$_JOINT_PL_EXPECTED" ]; then
     echo "joint peak-local gate: collected $_JOINT_PL_FOUND tests, expected $_JOINT_PL_EXPECTED" >&2
