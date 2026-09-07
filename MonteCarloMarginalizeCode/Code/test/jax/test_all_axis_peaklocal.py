@@ -122,6 +122,25 @@ def test_uv_envelope_ranks_the_interior_time_mode_without_dense_starts():
     assert envelope[starts[0]] == pytest.approx(envelope.max())
 
 
+def test_loud_off_lattice_refiner_enters_narrow_coupled_basin():
+    """A fixed structural lattice remains useful as the peak narrows."""
+    C_A, C_B, _ = _problem(33)
+    scale = 64.0
+    starts = np.asarray([[15.3, 0.2, 0.2, 5.0 / scale],
+                         [16.7, 3.0, 0.1, 5.0 / scale]])
+    result = tuple(np.asarray(item) for item in AAP.refine_all_axis_starts(
+        scale * C_A, scale * scale * C_B, starts,
+        0.2 / scale, 7.0 / scale, iterations=18))
+    points, values, gradients, _, curvatures = result
+    selected, stationary = AAP.select_refined_modes(
+        points, values, gradients, curvatures, max_modes=2,
+        gradient_tol=2.0e-6)
+    assert stationary.any()
+    assert len(selected) >= 1
+    assert np.max(np.linalg.norm(gradients[selected], axis=1)) < 2.0e-6
+    assert np.all(curvatures[selected] > 0.0)
+
+
 def test_uv_ranked_time_start_feeds_algebraic_angles_and_analytic_distance():
     C_A, C_B, constants = _problem(65)
     summary = AAP.summarize_uv_norm_table(C_B)

@@ -553,7 +553,8 @@ def _scalar_log_density(theta, coeff, frequency, offset, C_A_shape, C_B,
 def refine_all_axis_starts(C_A_t, C_B, starts, x_min, x_max, *,
                            time_guard=0,
                            iterations=12, ridge=1.0e-8,
-                           max_step=(2.0, 0.5, 0.5, 0.25)):
+                           max_step=(2.0, 0.5, 0.5, 0.25),
+                           time_localize_iterations=32):
     """Refine four-axis starts with fixed-iteration JAX gradient/Hessian steps.
 
     This is local optimization only.  The return values report stationarity and
@@ -568,6 +569,8 @@ def refine_all_axis_starts(C_A_t, C_B, starts, x_min, x_max, *,
         raise ValueError("starts must have shape (N,4)")
     if int(iterations) < 1:
         raise ValueError("iterations must be positive")
+    if int(time_localize_iterations) < 1:
+        raise ValueError("time_localize_iterations must be positive")
     time_guard = int(time_guard)
     n_time = C_A_t.shape[-1] - 2 * time_guard
     if time_guard < 0 or n_time < 2:
@@ -591,16 +594,59 @@ def refine_all_axis_starts(C_A_t, C_B, starts, x_min, x_max, *,
         ])
 
     def _one(start):
+        # The U,V/Q portfolio is ranked on native time samples.  Localize the
+        # continuous time maximum inside that basin before the coupled Newton
+        # solve; the basin narrows with SNR while this work remains fixed.
+        left = jnp.maximum(0.0, start[0] - 1.0)
+        right = jnp.minimum(float(n_time - 1), start[0] + 1.0)
+        golden_ratio = 0.5 * (jnp.sqrt(5.0) - 1.0)
+        c = right - golden_ratio * (right - left)
+        d = left + golden_ratio * (right - left)
+
+        def _at_time(value):
+            return fn(start.at[0].set(value))
+
+        fc, fd = _at_time(c), _at_time(d)
+
+        def _golden_step(_, state):
+            lo, hi, ca, da, fca, fda = state
+            choose_left = fca >= fda
+            new_hi = jnp.where(choose_left, da, hi)
+            new_lo = jnp.where(choose_left, lo, ca)
+            new_c = jnp.where(
+                choose_left,
+                new_hi - golden_ratio * (new_hi - new_lo), da)
+            new_d = jnp.where(
+                choose_left, ca,
+                new_lo + golden_ratio * (new_hi - new_lo))
+            new_fc = jnp.where(choose_left, _at_time(new_c), fda)
+            new_fd = jnp.where(choose_left, fca, _at_time(new_d))
+            return new_lo, new_hi, new_c, new_d, new_fc, new_fd
+
+        left, right, c, d, fc, fd = jax.lax.fori_loop(
+            0, int(time_localize_iterations), _golden_step,
+            (left, right, c, d, fc, fd))
+        localized = start.at[0].set(jnp.where(fc >= fd, c, d))
+        candidates = jnp.stack((start, localized), axis=0)
+        start = candidates[jnp.argmax(jax.vmap(fn)(candidates))]
+
         def _step(th, _):
             g = grad_fn(th)
             H = hess_fn(th)
             eigenvalue, eigenvector = jnp.linalg.eigh(-H)
             safe = jnp.maximum(eigenvalue, float(ridge))
             step = eigenvector @ ((eigenvector.T @ g) / safe)
-            step = jnp.clip(step, -max_step, max_step)
+            # Keep the coupled Newton direction.  Component-wise clipping can
+            # reverse its directional derivative for the narrow correlated
+            # time/angle basins seen in the matched SNR ladder.
+            ratio = max_step / jnp.maximum(
+                jnp.abs(step), jnp.finfo(jnp.float64).tiny)
+            step = step * jnp.minimum(1.0, jnp.min(ratio))
             proposals = jax.vmap(
                 lambda scale: _project(th + scale * step))(
-                    jnp.asarray([1.0, 0.5, 0.25, 0.125, 0.0]))
+                    jnp.concatenate((
+                        jnp.exp2(-jnp.arange(13, dtype=jnp.float64)),
+                        jnp.zeros(1, dtype=jnp.float64))))
             values = jax.vmap(fn)(proposals)
             return proposals[jnp.argmax(values)], None
 
