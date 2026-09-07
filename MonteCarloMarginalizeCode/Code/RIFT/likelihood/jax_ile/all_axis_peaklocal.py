@@ -1144,8 +1144,16 @@ def refine_all_axis_starts(C_A_t, C_B, starts, x_min, x_max, *,
     # may evaluate its padded lanes.  Packing confines that overhead to at most
     # one final live chunk, while the outer conditional skips every wholly
     # inactive chunk.
-    order = jnp.argsort(~live, stable=True)
-    inverse_order = jnp.argsort(order)
+    lane_index = jnp.arange(starts.shape[0], dtype=jnp.int32)
+    # Avoid argsort's mixed s32/s64 inverse-permutation lowering under x64 on
+    # CUDA.  These unique int32 keys put live lanes first and preserve original
+    # order within both live and inactive groups.
+    packing_key = jnp.where(
+        live, 2 * starts.shape[0] - lane_index,
+        starts.shape[0] - lane_index)
+    _, order = jax.lax.top_k(packing_key, starts.shape[0])
+    inverse_order = jnp.zeros(
+        starts.shape[0], dtype=jnp.int32).at[order].set(lane_index)
     packed_starts = starts[order]
     packed_live = live[order]
     n_starts = starts.shape[0]
