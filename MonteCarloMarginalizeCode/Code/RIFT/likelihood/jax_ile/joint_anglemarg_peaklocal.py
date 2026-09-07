@@ -82,6 +82,14 @@ __all__ = [
     "u_stationary_roots",
     "log_inner_u_integral",
     "joint_lnL_phi_dense",
+    "joint_lnL_phi_dense_gh",
+    "x_profile_peak",
+    "distance_gh_nodes",
+    "gh_window_ok",
+    "GH_N_SIGMA",
+    "GH_SEED_LATTICE",
+    "GH_SCAN_SIGMA_FACTOR",
+    "GH_OMITTED_MASS_TOL",
     "u_profile",
     "eval_g2",
     "phi_local_lnI",
@@ -385,7 +393,7 @@ def _joint_table(C_A, C_B, x):
 
 def joint_lnL_phi_dense(C_A, C_B, x_grid, log_w_grid, n_phi=256,
                         phi_chunk=PHI_CHUNK_DEFAULT,
-                        n_nodes=None):
+                        n_nodes=None, return_per_x=False):
     """Distance-, phi- and psi-marginalized value at one ``(sample, time)``.
 
     Same normalization as ``anglemarg.fused_log_likelihood_distphipsimarg_*``: uniform
@@ -434,7 +442,405 @@ def joint_lnL_phi_dense(C_A, C_B, x_grid, log_w_grid, n_phi=256,
     # phi is a periodic trapezoid == plain mean; then the distance sum; then (2pi)^-2
     per_x = jax.scipy.special.logsumexp(vals, axis=0) - jnp.log(n_phi) \
         + jnp.log(2.0 * jnp.pi)
-    return jax.scipy.special.logsumexp(per_x + log_w_grid) - 2.0 * jnp.log(2.0 * jnp.pi)
+    value = jax.scipy.special.logsumexp(per_x + log_w_grid) \
+        - 2.0 * jnp.log(2.0 * jnp.pi)
+    # `per_x` IS the seam quantity: log int dphi int du exp(x A - x^2/2 B) at each node,
+    # WITHOUT the (2 pi)^-2 prior factor, exactly as phi_local_lnI_at_distance returns it.
+    # Returning it is a pure addition -- `value` is computed by the same expression it
+    # always was -- and it is what lets a stacked distance quadrature certify its own
+    # window from the values it already paid for.
+    if return_per_x:
+        return value, per_x
+    return value
+
+
+# ------------------------------------------------- adaptive distance quadrature
+#
+# WHY THIS EXISTS: A UNIFORM DISTANCE GRID IS A THIRD DENSE AXIS.
+#
+# The distance integrand at fixed angles is exp(x A - x^2/2 B), a Gaussian of width
+# 1/sqrt(B) ~ 1/rho, and marginalizing the angles does not widen it (the curvature of
+# log I(x) is -E[B] + Var(A - xB), and the second term is O(1) where the first is
+# O(rho^2)).  A grid uniform in d therefore needs n_d ~ rho.  Measured by differencing
+# the campaign ladder's own records at n_d = 256: the uniform grid is low by 0.006 nats
+# at rho 40.8, 19.7 nats at rho 163 and 6055 nats at rho 652, and the coarsest still-
+# accurate spacing scales as 1/rho (39.2 Mpc at rho 40.8, 9.77 at rho 163 -- ratio 4.01
+# against an amplitude ratio of 4.00).
+#
+# That is fatal for THIS scheme in particular.  peak-local exists to make cost flat in
+# amplitude by localizing both angle axes; inheriting n_d ~ rho from the distance axis
+# puts a factor of rho straight back.  A campaign run on 2026-09-06 hit the wall in
+# memory rather than in time: without GH, RESOURCE_EXHAUSTED at rho 160 and requests of
+# 20.03 / 39.96 GiB at rho 320 / 640.
+#
+# THE ATTACHMENT.  Nothing below changes how the (phi, u) torus integral is computed.
+# `joint_lnL_phi_dense` already takes an arbitrary (x_grid, log_w_grid) and returns the
+# bare torus integral per node (`return_per_x`), so a distance rule is entirely a matter
+# of WHICH x to evaluate and WHAT weights to apply -- the same seam
+# `phi_local_lnI_at_distance` is for the phi-local kernel.  The (2 pi)^-2 prior factor is
+# applied in exactly ONE place, at the end of `joint_lnL_phi_dense`, and this file adds
+# no second application: a stacked quadrature that double-applies or drops it is off by
+# 3.6 nats, which is large enough to matter and small enough to look plausible.
+
+#: Half-width of the resolving window in units of the local sigma.  7.0, the same value
+#: :func:`~RIFT.likelihood.jax_ile.core.make_distance_gh` uses, and for the same reason:
+#: +-7 sigma captures a Gaussian to ~1e-11, and the trapezoid rule on a Gaussian
+#: converges by Euler-Maclaurin at 2 exp(-2 pi^2 sigma^2 / h^2) in the spacing h -- 16
+#: nodes over +-7 sigma is h = 0.93 sigma, i.e. ~1e-8.  Sharing the constant with the
+#: `exact` path is deliberate: the two schemes are cross-checked against each other where
+#: a uniform grid is still adequate, and a different window would make that comparison
+#: about the window rather than about the kernels.
+GH_N_SIGMA = 7.0
+
+#: Seed lattice per angle axis for :func:`x_profile_peak`.  It is a SEED count, not a
+#: quadrature: Newton moves each seed to a maximum of the constrained x-profile, and what
+#: it has to cover is the number of BASINS, which is set by the bidegree of the
+#: coefficient tables -- mode content, not amplitude.  Measured on a faithful synthetic
+#: (KP = 3, KS = 2) table the profile has 16 local maxima on the torus, so 8 x 8 is four
+#: seeds per basin.
+GH_SEED_LATTICE = 8
+
+#: Newton iterations per seed, and backtracking halvings per iteration.
+#: THE BACKTRACKING IS NOT A REFINEMENT.  Without it a rejected step leaves the seed
+#: frozen forever -- there is no shorter step to fall back to -- and the locator then
+#: reports whatever point that seed happened to start near.  Measured on the same table:
+#: a freeze-on-rejection iteration missed the profile maximum by 3.9e-4 of the amplitude
+#: at EVERY amplitude (0.32 nats at rho 40, 81 nats at rho 640), which is 0.2 sigma of
+#: distance offset at rho 40 growing to 3.1 sigma at rho 640, because sigma shrinks as
+#: 1/rho while the (phi, u) error does not.
+GH_NEWTON_STEPS = 20
+GH_NEWTON_BACKTRACK = 6
+
+#: Window multiplier for the BRACKETING pass.  The locator is an estimator, not a proven
+#: bound (see :func:`x_profile_peak`), so the placement does not rest on it: a first pass
+#: covers +- GH_SCAN_SIGMA_FACTOR * (n-1)/2 * GH_N_SIGMA sigma and the resolving window is
+#: re-centred on ITS argmax node, which is a measurement of the integrand rather than a
+#: property of the estimate.  0.25 gives a scan half-width of 26 sigma at 16 nodes with a
+#: node spacing of 3.5 sigma, so the argmax node is within 1.75 sigma of the true peak and
+#: the +-7 sigma resolving window contains it with 5.25 sigma to spare.  Raising it widens
+#: the capture range and coarsens the bracket in the same proportion; 0.5 is the largest
+#: value for which the bracket still lands inside the resolving window at all.
+GH_SCAN_SIGMA_FACTOR = 0.25
+
+#: Largest omitted distance mass, as a fraction of the window's own integral, that
+#: :func:`gh_window_ok` will certify.  It is a REPORTING threshold, not a correctness
+#: boundary: the measured tail itself is returned in `info['omitted_log_frac']`, so a
+#: caller never has to take this constant's word for anything.
+#:
+#: 1e-5 -- i.e. 1e-5 nats of truncation error.  Two orders below the 6e-3 nats a
+#: CONVERGED 256-node uniform grid is already low by at rho 40.8, so it cannot certify
+#: something the rule it replaces would call exact; and loose enough that a distance
+#: marginal up to ~1.5x wider than the placement's own Gaussian scale still passes at
+#: +-7 sigma with 16 nodes (the omitted fraction there is
+#: exp(-0.5 (7/c)^2) / (c sqrt(2 pi) * 7/(n-1) * ...) -- 1.4x omits 5e-6, 1.7x omits
+#: 5e-5, so the crossing is between them).  That headroom is not slack -- marginalizing the angles can only BROADEN
+#: the distance marginal relative to the 1/sqrt(B_c) the window is scaled by, so a
+#: threshold with no room for it declines correct rows.
+#:
+#: A FIXED NATS THRESHOLD WAS THE FIRST DRAFT AND IT WAS WRONG IN BOTH DIRECTIONS.  A
+#: +-7 sigma Gaussian is 0.5*7^2 = 24.5 nats down at its edge, so a 25-nat clearance
+#: requirement is UNREACHABLE and declined every correctly-placed window (measured: every
+#: row at rho 20 declined while agreeing with a 16384-node uniform grid to 9e-5 nats).
+#: Lowering it to any fixed number then has the opposite failure: the angle-MARGINAL
+#: distance width is broader than the 1/sqrt(B_c) the window is scaled by -- marginalizing
+#: can only widen -- so the edge of a perfectly good window sits at 0.5*(7/c)^2 nats for
+#: an unknown c > 1, and no constant separates "wide integrand" from "missed peak".  The
+#: quantity that does is the omitted mass itself, extrapolated from the two end nodes,
+#: which needs no constant to compare against a width it does not know.
+GH_OMITTED_MASS_TOL = 1.0e-5
+
+
+def _AB_at(C, phi, u):
+    """``Re sum_{k,q} w_k C[k, KS+q] e^{i(k phi + q u)}`` with ``w_k = 2`` for ``k > 0``.
+
+    The same convention :func:`_a_c1_c2` uses -- only the k > 0 harmonics are stored, the
+    conjugate half being implied -- evaluated at an arbitrary ``(phi, u)`` rather than
+    reduced to the three u-coefficients.  Used ONLY by the node placement.
+    """
+    KP = C.shape[0]
+    KS = (C.shape[1] - 1) // 2
+    k = jnp.arange(KP)
+    q = jnp.arange(-KS, KS + 1)
+    w = jnp.where(k > 0, 2.0, 1.0)
+    ph = jnp.exp(1j * (phi[..., None, None] * k[:, None]
+                       + u[..., None, None] * q[None, :]))
+    return jnp.real(jnp.sum(ph * (C * w[:, None]), axis=(-2, -1)))
+
+
+def x_profile_peak(C_A, C_B, x_min, x_max, n_seed=GH_SEED_LATTICE,
+                   n_newton=GH_NEWTON_STEPS, n_back=GH_NEWTON_BACKTRACK):
+    """Where the joint ``(x, phi, u)`` exponent is largest, and how sharp it is there.
+
+    Returns ``(x_c, B_c, F_c, (phi, u))``: the maximizer over the torus of the
+    CONSTRAINED x-profile
+
+        F(phi, u) = max_{x in [x_min, x_max]}  x A(phi, u) - x^2/2 B(phi, u),
+
+    the ``x`` attaining it, and the curvature ``B`` there.  ``1/sqrt(B_c)`` is the width
+    of the distance integrand at that angle, and is what sizes the quadrature window.
+
+    CONSTRAINED, and that word is load-bearing.  The unconstrained profile is
+    ``A^2/(2B)``, which DIVERGES wherever ``B -> 0`` -- a direction of the sky/polarization
+    torus with no detector response.  Ranking angles by it selects those directions and
+    nothing else: measured on a faithful table it reported a profile maximum of 2.6e7
+    against a true constrained maximum of 117.  Clipping x into the physical support first
+    is what makes the objective bounded, and it is the same device
+    :func:`~RIFT.likelihood.jax_ile.core._distmarg_gh_logL` uses on the node centre.
+
+    THIS IS AN ESTIMATOR AND NOT A PROVEN BOUND, exactly as
+    :func:`~RIFT.likelihood.jax_ile.anglemarg.estimate_angle_amplitude` is.  Newton finds
+    a local maximum of each seed's basin; whether the seed lattice covers the basin
+    containing the global maximum is a property of the coefficient tables.  Nothing in
+    this module trusts it on its own: :func:`joint_lnL_phi_dense_gh` brackets the peak on
+    the integrand itself and certifies the window it ends up using.
+
+    Everything here runs under ``stop_gradient`` at the call site: the placement carries
+    no tangent, so the sub-differentiability of ``clip`` and of ``argmax`` is not in the
+    AD graph.  See :func:`distance_gh_nodes`.
+    """
+    # NOT padded into C_B's bidegree.  `_a_c1_c2` has to be, because it reads the fixed
+    # columns KS+q for |q| <= 2 off whatever table it is handed and JAX CLAMPS an
+    # out-of-range index rather than raising.  `_AB_at` derives the u degree from the
+    # table's OWN shape, so it evaluates a narrow C_A correctly and padding would be a
+    # no-op wearing the name of a guard.
+    def F(p):
+        a = _AB_at(C_A, p[0][None], p[1][None])[0]
+        b = _AB_at(C_B, p[0][None], p[1][None])[0]
+        # B > 0 physically (it is <h|h> at the reference distance); the guard is for
+        # synthetic/degenerate tables, where an unbounded-above exponent is maximized at
+        # the far end of the support.
+        xh = jnp.clip(jnp.where(b > 0, a / jnp.where(b > 0, b, 1.0), jnp.inf),
+                      x_min, x_max)
+        return xh * a - 0.5 * xh * xh * b
+
+    grad_F = jax.grad(F)
+    hess_F = jax.hessian(F)
+
+    def _step(p, _):
+        f0 = F(p)
+        G = grad_F(p)
+        H = hess_F(p)
+        h11, h12, h22 = H[0, 0], H[0, 1], H[1, 1]
+        tr = h11 + h22
+        dsc = jnp.sqrt(jnp.maximum((h11 - h22) ** 2 + 4.0 * h12 * h12, 0.0))
+        # shift the Hessian below its largest eigenvalue so the modified system is
+        # negative definite and the step is an ASCENT direction even at a saddle
+        s = 0.5 * (tr + dsc) + 1e-12 + 1e-8 * jnp.abs(tr)
+        m11, m22 = h11 - s, h22 - s
+        det = m11 * m22 - h12 * h12
+        d = -jnp.stack([m22 * G[0] - h12 * G[1],
+                        -h12 * G[0] + m11 * G[1]]) / det
+        d = jnp.where(jnp.all(jnp.isfinite(d)), d, G)
+        nr = jnp.sqrt(jnp.sum(d * d))
+        d = jnp.where(nr > 0.5, d * 0.5 / jnp.maximum(nr, 1e-300), d)
+        alpha = 0.5 ** jnp.arange(n_back)
+        cand = p[None, :] + alpha[:, None] * d[None, :]
+        fv = jax.vmap(F)(cand)
+        fv = jnp.where(jnp.isfinite(fv), fv, -jnp.inf)
+        j = jnp.argmax(fv)
+        return jnp.where(fv[j] > f0, cand[j], p), None
+
+    # OFFSET LATTICE.  A seed placed on a symmetry point of the torus sits at a stationary
+    # point, so its gradient vanishes and it never moves -- and for a 2-mode table those
+    # points are exactly the multiples of pi/2 that an unshifted 8x8 or 16x16 lattice lands
+    # on.  Measured: unshifted 8x8 and 16x16 lattices missed the peak by 5.3 and 0.9 sigma
+    # at rho 640 while 6x6 and 12x12, which avoid those angles, were within 0.05 sigma.
+    # The u shift is an irrational fraction of the cell so that no lattice size recreates
+    # the coincidence.
+    cell = 2.0 * jnp.pi / n_seed
+    base = jnp.arange(n_seed) * cell
+    PH, UU = jnp.meshgrid(base + 0.5 * cell,
+                          base + 0.3183098861837907 * cell, indexing="ij")
+    seeds = jnp.stack([PH.ravel(), UU.ravel()], axis=-1)
+    pts = jax.vmap(lambda p: lax.scan(_step, p, None, length=n_newton)[0])(seeds)
+    vals = jax.vmap(F)(pts)
+    vals = jnp.where(jnp.isfinite(vals), vals, -jnp.inf)
+    best = pts[jnp.argmax(vals)]
+    a = _AB_at(C_A, best[0][None], best[1][None])[0]
+    b = _AB_at(C_B, best[0][None], best[1][None])[0]
+    x_c = jnp.clip(jnp.where(b > 0, a / jnp.where(b > 0, b, 1.0), jnp.inf),
+                   x_min, x_max)
+    return x_c, jnp.maximum(b, 1e-30), jnp.max(vals), best
+
+
+def distance_gh_nodes(x_c, B_c, x_min, x_max, n_nodes, n_sigma=GH_N_SIGMA,
+                      log_w_grid=None):
+    """Adaptive distance nodes and their log quadrature weights, for ONE ``(sample, time)``.
+
+    ``(x_k, log_w_k)`` such that ``logsumexp_k(log I(x_k) + log_w_k)`` is the distance
+    average of the bare torus integral under the volumetric prior -- i.e. a DROP-IN
+    replacement for the ``(x_grid, log_w_grid)`` pair :func:`joint_lnL_phi_dense` takes,
+    so the kernel itself is untouched and the ``(2 pi)^-2`` factor stays applied exactly
+    once, there.
+
+    Nodes are a composite trapezoid on ``x_c + z/sqrt(B_c)`` for uniform ``z`` over
+    ``[-n_sigma, n_sigma]``, CLIPPED into ``[x_min, x_max]``; clipped (zero-width) nodes
+    drop out through their own weight.  The weights are the same ones
+    :func:`~RIFT.likelihood.jax_ile.core._distmarg_gh_logL` builds --
+    ``dx * x^-4 * 3 / (x_min^-3 - x_max^-3)`` -- which is exactly ``p(d) |dd/dx| dx`` for
+    the volumetric prior normalized over the support, i.e. the continuum limit of what
+    :func:`~RIFT.likelihood.jax_ile.core.make_distance_grid` builds discretely.  Sharing
+    that construction is what makes the two schemes comparable at an amplitude where a
+    uniform grid is still adequate.
+
+    ``log_w_grid``, when given, supplies the ONE piece of the caller's normalization this
+    reconstruction cannot see: ``--limit-distance`` narrows the integration range while
+    leaving the prior normalized over the wider physical range, and ``make_distance_grid``
+    records that as a total weight BELOW one.  Passing the caller's weights folds
+    ``log sum_g exp(log_w_g)`` into the constant, which is identically zero (to
+    floating-point) in the ordinary case and the exact offset otherwise.  Without it a
+    narrowed range silently renormalizes the prior onto the box -- worth several nats of
+    evidence, and invisible in the marginal.
+
+    THE PLACEMENT CARRIES NO GRADIENT.  ``x_c`` and ``B_c`` come from an argmax over a
+    seed lattice and from a clip, neither of which has a useful derivative, and the node
+    positions are frozen under ``stop_gradient`` so the tangent flows only through the
+    integrand evaluated AT them -- the same argument, and the same device,
+    ``core._distmarg_gh_logL`` and :func:`u_stationary_roots` use.  A displaced node adds
+    to one trapezoid panel what it removes from its neighbour, so a frozen placement is
+    correct and not merely convenient.
+    """
+    x_c = lax.stop_gradient(jnp.clip(x_c, x_min, x_max))
+    sigma = lax.stop_gradient(1.0 / jnp.sqrt(jnp.maximum(B_c, 1e-30)))
+    z = jnp.linspace(-float(n_sigma), float(n_sigma), int(n_nodes))
+    x_k = lax.stop_gradient(jnp.clip(x_c + sigma * z, x_min, x_max))
+    dx = jnp.diff(x_k)
+    w = jnp.concatenate([0.5 * dx[:1], 0.5 * (dx[1:] + dx[:-1]), 0.5 * dx[-1:]])
+    pos = w > 0
+    C0 = jnp.log(3.0) - jnp.log(x_min ** (-3.0) - x_max ** (-3.0))
+    if log_w_grid is not None:
+        C0 = C0 + jax.scipy.special.logsumexp(
+            jnp.asarray(log_w_grid, dtype=jnp.float64).ravel())
+    log_w = jnp.where(pos,
+                      jnp.log(jnp.where(pos, w, 1.0)) - 4.0 * jnp.log(x_k) + C0,
+                      -jnp.inf)
+    return x_k, log_w
+
+
+def gh_window_ok(per_x, log_w, x_k, x_min, x_max, tol=GH_OMITTED_MASS_TOL):
+    """Did the window actually contain the distance mass?  MEASURED, not assumed.
+
+    ``per_x + log_w`` is the per-node contribution the sum is about to reduce, so this
+    costs nothing beyond a reduction over values already paid for.  From the two nodes at
+    each end it extrapolates the omitted tail GEOMETRICALLY -- the contributions beyond
+    the edge continue to fall by the ratio the last two nodes exhibit -- and requires the
+    total omitted mass to be below ``tol`` of the window's own INTEGRAL.  Relative to the
+    integral, which is the half a fixed nats clearance cannot express.  Returns
+    ``(ok, log_fraction)`` -- the fraction is the MEASUREMENT, and it is what a caller
+    should read; ``ok`` is only that measurement compared against a reporting threshold.
+
+    An end at which the contribution is NOT decreasing outward fails outright: the
+    extrapolation has nothing to extrapolate, and a non-decreasing edge is exactly the
+    signature of a peak at or beyond it.
+
+    A node PINNED at ``x_min`` or ``x_max`` is EXEMPT at that end.  There the integral
+    stops because the prior's support does, not because the window does, and there is no
+    omitted tail to bound -- the same reason
+    :func:`~RIFT.likelihood.jax_ile.core._distmarg_gh_logL` lets clipped nodes drop out
+    through their own zero width.
+
+    WHAT THIS IS NOT.  The extrapolation assumes the integrand keeps decaying at least
+    geometrically outside the window, which is a log-concavity assumption, not a theorem;
+    a second peak beyond the edge that happens to sit below the tolerance is
+    indistinguishable from no peak at all.  Nor can a widening test supply the missing
+    proof, because a window that misses the peak entirely reads clean at EVERY width.
+    What makes the composite trustworthy is that :func:`joint_lnL_phi_dense_gh` LOCATES
+    the peak on a wide bracket first; this certifies the resolving step that follows.
+    """
+    e = per_x + log_w
+    e = jnp.where(jnp.isfinite(e), e, -jnp.inf)
+    total = jax.scipy.special.logsumexp(e)
+    log_tol = jnp.log(tol)
+
+    def _end(e_edge, e_next, pinned):
+        # decay per node step, outward; > 0 means the edge is falling outward
+        drop = e_next - e_edge
+        falling = drop > 0.0
+        # sum of the geometric continuation beyond the edge, in log space:
+        #   e_edge + e_edge*r + ... = e_edge - log(1 - exp(-drop))
+        safe = jnp.where(falling, drop, 1.0)
+        tail = e_edge - jnp.log1p(-jnp.exp(-safe))
+        # NOT falling and NOT pinned means the tail is UNBOUNDED, not zero.  Reporting
+        # -inf there would make the returned fraction look better the worse the window
+        # is, which is the one direction a diagnostic must never fail in.
+        tail = jnp.where(falling, tail, jnp.inf)
+        ok = pinned | (falling & (tail - total <= log_tol))
+        return ok, jnp.where(pinned, -jnp.inf, tail)
+
+    pinned_lo = (x_k[0] <= x_min) | (x_k[0] >= x_max)
+    pinned_hi = (x_k[-1] <= x_min) | (x_k[-1] >= x_max)
+    ok_lo, t_lo = _end(e[0], e[1], pinned_lo)
+    ok_hi, t_hi = _end(e[-1], e[-2], pinned_hi)
+    frac = jnp.logaddexp(t_lo, t_hi) - total
+    return jnp.isfinite(total) & ok_lo & ok_hi, frac
+
+
+def joint_lnL_phi_dense_gh(C_A, C_B, x_min, x_max, n_gh, n_phi=256,
+                           phi_chunk=PHI_CHUNK_DEFAULT, n_nodes=None,
+                           n_sigma=GH_N_SIGMA,
+                           scan_factor=GH_SCAN_SIGMA_FACTOR,
+                           log_w_grid=None, bracket=True):
+    """:func:`joint_lnL_phi_dense` with the distance grid replaced by an adaptive one.
+
+    Returns ``(value, ok, info)``.  ``value`` has the SAME normalization and the same
+    meaning as ``joint_lnL_phi_dense`` -- it is literally that function's return, called
+    with different nodes -- so the ``(2 pi)^-2`` prior factor is applied there and only
+    there.
+
+    TWO PASSES, and the first one is why the answer does not rest on the locator.
+
+    1. BRACKET.  Nodes over ``+- scan_factor * (n_gh - 1) * n_sigma`` sigma about the
+       analytic estimate :func:`x_profile_peak`.  At the defaults and 16 nodes that is
+       +-26 sigma at a spacing of 3.5 sigma, so the peak -- wherever in that range it
+       actually is -- is within 1.75 sigma of some node.
+    2. RESOLVE.  Nodes over ``+- n_sigma`` sigma about the bracket's ARGMAX NODE.  This
+       centre is a measurement of the integrand, not an estimate of it, and it is what
+       makes the scheme adaptive in the strong sense.
+
+    ``ok`` is :func:`gh_window_ok` on the resolving pass, conjoined with the bracket
+    having found an interior maximum.  ``bracket=False`` runs pass 2 alone about the
+    analytic centre; it exists so the value of pass 1 can be MEASURED by ablation rather
+    than argued, and is not the production setting.
+
+    Cost is ``2 * n_gh`` torus integrals per ``(sample, time)`` against ``n_d`` for the
+    uniform grid, and -- this is the whole point -- it does not grow with amplitude.
+    """
+    x_min = jnp.asarray(x_min, dtype=jnp.float64)
+    x_max = jnp.asarray(x_max, dtype=jnp.float64)
+    n_gh = int(n_gh)
+    kw = dict(n_phi=n_phi, phi_chunk=phi_chunk, n_nodes=n_nodes)
+
+    x_c, B_c, F_c, ang = x_profile_peak(C_A, C_B, x_min, x_max)
+    x_c = lax.stop_gradient(x_c)
+    B_c = lax.stop_gradient(B_c)
+
+    if bracket:
+        wide = float(scan_factor) * float(n_gh - 1) * float(n_sigma)
+        x_s, lw_s = distance_gh_nodes(x_c, B_c, x_min, x_max, n_gh,
+                                      n_sigma=wide, log_w_grid=log_w_grid)
+        _, per_s = joint_lnL_phi_dense(C_A, C_B, x_s, lw_s,
+                                       return_per_x=True, **kw)
+        e_s = jnp.where(jnp.isfinite(per_s + lw_s), per_s + lw_s, -jnp.inf)
+        j = jnp.argmax(e_s)
+        # An argmax ON an end node means the bracket did not contain the peak; the centre
+        # is used anyway (it is still the best available) and `ok` records that it failed.
+        bracket_ok = (j > 0) & (j < n_gh - 1)
+        x_c = lax.stop_gradient(x_s[j])
+    else:
+        bracket_ok = jnp.asarray(True)
+
+    x_k, lw_k = distance_gh_nodes(x_c, B_c, x_min, x_max, n_gh,
+                                  n_sigma=n_sigma, log_w_grid=log_w_grid)
+    value, per_x = joint_lnL_phi_dense(C_A, C_B, x_k, lw_k,
+                                       return_per_x=True, **kw)
+    win_ok, frac = gh_window_ok(per_x, lw_k, x_k, x_min, x_max)
+    ok = bracket_ok & win_ok
+    return value, ok, {"x_c": x_c, "sigma": 1.0 / jnp.sqrt(B_c),
+                       "profile_max": F_c, "peak_angles": ang,
+                       "x_nodes": x_k, "per_x": per_x,
+                       "bracket_ok": bracket_ok, "window_ok": win_ok,
+                       "omitted_log_frac": frac}
+
 
 
 #: Distance nodes evaluated at once by :func:`joint_lnL_phi_local`.  The phi-local

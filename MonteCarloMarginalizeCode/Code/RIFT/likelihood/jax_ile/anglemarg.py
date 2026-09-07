@@ -90,6 +90,8 @@ __all__ = [
     "choose_angle_marg_scheme",
     "fused_log_likelihood_distphipsimarg_peaklocal",
     "gh_laplace_supported",
+    "gh_window_state",
+    "reset_gh_window_record",
     "ANGLE_MARG_CROSSOVER_AMPLITUDE",
 ]
 
@@ -845,6 +847,85 @@ def _record_amp_failsafe(tripped, amp_call, amp_sizing, scheme_name):
         _AMP_FAILSAFE["worst_amp"] = max(_AMP_FAILSAFE["worst_amp"], float(amp_call))
         _AMP_FAILSAFE["amp_sizing"] = float(amp_sizing)
         _AMP_FAILSAFE["scheme"] = scheme_name
+
+
+#: Host-side record of the adaptive distance window's own certificate, the analogue of
+#: :data:`_AMP_FAILSAFE` for :func:`~RIFT.likelihood.jax_ile.joint_anglemarg_peaklocal.gh_window_ok`.
+#: SEPARATE from the amplitude failsafe on purpose: they are independent failures (an
+#: under-resolved ANGLE grid and a mis-placed DISTANCE window), and folding them into one
+#: flag would make a run that tripped only one of them unattributable.
+_GH_WINDOW = {"declined": False, "n_calls": 0, "n_declined": 0, "scheme": None}
+
+
+def reset_gh_window_record():
+    """Clear the adaptive-distance-window record (call once per event)."""
+    try:
+        jax.effects_barrier()
+    except Exception:
+        pass
+    _GH_WINDOW.update(declined=False, n_calls=0, n_declined=0, scheme=None)
+
+
+def gh_window_state(barrier=True):
+    """Host-side record of whether any adaptive distance window failed to certify.
+
+    Same contract, and the same caveats, as :func:`amp_failsafe_state`: the callback is
+    a best-effort DIAGNOSTIC LABEL, jax may drop, duplicate or reorder it, and a clean
+    read is NOT proof that every window contained its mass.  ``declined`` is the
+    load-bearing field; consumers should LABEL their output, not discard it.
+    """
+    if barrier:
+        try:
+            jax.effects_barrier()
+        except Exception:
+            pass
+    return dict(_GH_WINDOW)
+
+
+def _record_gh_window(n_declined, n_total, scheme_name):
+    """Host callback.  Runs outside the traced graph; never alters a value."""
+    _GH_WINDOW["n_calls"] += 1
+    _GH_WINDOW["n_declined"] += int(n_declined)
+    _GH_WINDOW["scheme"] = scheme_name
+    if int(n_declined) > 0:
+        _GH_WINDOW["declined"] = True
+
+
+def _gh_window_failsafe(ok, scheme_name):
+    """Report, from inside jit, any ``(sample, time)`` whose distance window declined.
+
+    Structured exactly like :func:`_runtime_amp_failsafe`, for the reasons recorded
+    there: the callback sits INSIDE ``lax.cond`` so the ordinary path pays no host
+    transfer, the value is never altered and never poisoned to NaN (every consumer
+    filters non-finite lnL, so a NaN would silently EXCISE the affected region and
+    publish a clean-looking posterior over the rest), and the condition is recorded on
+    the HOST so the driver can label the artifact.
+    """
+    n_bad = jax.lax.stop_gradient(jnp.sum(~ok))
+    n_tot = int(np.prod(ok.shape))
+    jax.lax.cond(
+        n_bad > 0,
+        lambda n_: jax.debug.print(
+            "WARNING anglemarg/" + scheme_name + ": the adaptive distance window "
+            "({n:.0f} of " + "%d" % n_tot + " sample/time points) did not certify: "
+            "its bracket did not enclose an interior maximum, or an end node was "
+            "an end node's extrapolated tail exceeded %g of the window integral "
+            "without that end being pinned at the distance support.  The distance "
+            "marginal at those points may be truncated.  Raise JAX_ILE_DISTMARG_GH, or "
+            "unset it to fall back to the uniform distance grid."
+            % _jp_omitted_mass_tol(), n=n_),
+        lambda n_: None,
+        n_bad)
+    jax.lax.cond(
+        n_bad > 0,
+        lambda n_: jax.debug.callback(_record_gh_window, n_, n_tot, scheme_name),
+        lambda n_: None,
+        n_bad)
+
+
+def _jp_omitted_mass_tol():
+    from . import joint_anglemarg_peaklocal as _jp
+    return _jp.GH_OMITTED_MASS_TOL
 
 
 def _runtime_amp_failsafe(C_A, C_B, x_grid, amp_sizing, scheme_name):
@@ -2040,16 +2121,23 @@ def fused_log_likelihood_distphipsimarg_peaklocal(
     Measured against ``..._exact``: -3.6e-05, -7.1e-15 and -9.1e-13 nats at kappa boost
     1, 10 and 100, and the same figure on a CUDA device as on CPU.
 
-    The adaptive distance quadrature (``JAX_ILE_DISTMARG_GH``) is REFUSED rather than
-    silently ignored, for the reason the laplace branch refuses it: this kernel sums the
-    caller's distance grid directly and implements no psi-marginal node placement.
+    ``JAX_ILE_DISTMARG_GH`` IS IMPLEMENTED HERE and is what makes the scheme's cost claim
+    reachable in practice.  A grid uniform in distance is a THIRD dense axis -- its
+    required size scales as rho, measured 0.006 / 19.7 / 6055 nats low at rho 40.8 / 163 /
+    652 at 256 nodes -- so summing the caller's grid put a factor of rho back into a
+    scheme whose whole purpose is to be flat in amplitude.  With GH set, the distance
+    nodes are placed per ``(sample, time)`` on the peak of that point's own distance
+    integrand and the count stops growing with amplitude; see
+    :func:`~RIFT.likelihood.jax_ile.joint_anglemarg_peaklocal.joint_lnL_phi_dense_gh`.
+    The uniform-grid path is untouched and is what runs when the variable is unset.
+
+    The psi-marginal node placement the ``laplace`` scheme needs (and refuses without) is
+    NOT needed here: this kernel does not marginalize psi analytically, so its distance
+    node placement rests on the joint ``(x, phi, u)`` profile maximum and not on the
+    ``A0 == 0 / B1 == 0`` identity that placement is derived from.  The ``m_max <= 2``
+    precondition attached to :func:`_gh_psi_node_offsets` therefore does not apply, and
+    this branch carries no mode-content restriction.
     """
-    if _core._DISTMARG_GH_N > 0:
-        raise ValueError(
-            "JAX_ILE_DISTMARG_GH is set, but the 'peak-local' angle-marg scheme does "
-            "not implement the adaptive distance quadrature (it sums the caller's "
-            "distance grid directly).  Use --angle-marg-scheme exact, or unset "
-            "JAX_ILE_DISTMARG_GH.")
     _require_amp_sizing(amp_sizing)
     from . import joint_anglemarg_peaklocal as _jp
 
@@ -2081,10 +2169,27 @@ def fused_log_likelihood_distphipsimarg_peaklocal(
     A = jnp.moveaxis(jnp.asarray(C_A), (2, 3), (0, 1))
     B = jnp.moveaxis(jnp.asarray(C_B), (2, 3), (0, 1))
 
-    def _one(a, b):
-        return _jp.joint_lnL_phi_dense(a, b, x_grid, log_w_grid, n_phi=n_phi, **kw)
+    if _core._DISTMARG_GH_N > 0:
+        # The support is all the adaptive rule reads off the caller's grid -- the node
+        # positions are its own.  The WEIGHTS are read too, for their total: that is the
+        # only place a narrowed --limit-distance range is visible, and reconstructing the
+        # prior constant without it renormalizes onto the box.
+        x_min = jnp.min(jnp.asarray(x_grid))
+        x_max = jnp.max(jnp.asarray(x_grid))
 
-    lnL_t = jax.vmap(jax.vmap(_one))(A, B)          # (S, npts)
+        def _one_gh(a, b):
+            return _jp.joint_lnL_phi_dense_gh(
+                a, b, x_min, x_max, _core._DISTMARG_GH_N, n_phi=n_phi,
+                log_w_grid=log_w_grid, **kw)
+
+        lnL_t, ok, _info = jax.vmap(jax.vmap(_one_gh))(A, B)   # (S, npts)
+        _gh_window_failsafe(ok, "peak-local")
+    else:
+        def _one(a, b):
+            return _jp.joint_lnL_phi_dense(a, b, x_grid, log_w_grid,
+                                           n_phi=n_phi, **kw)
+
+        lnL_t = jax.vmap(jax.vmap(_one))(A, B)      # (S, npts)
     if return_lnLt:
         return lnL_t
     return _time_marginalize_terminal(lnL_t, data, time_quadrature)

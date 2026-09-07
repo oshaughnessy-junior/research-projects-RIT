@@ -349,6 +349,7 @@ FILES=(
   "${JAXDIR}/test_angle_marg_gh_selection.py"
   "${JAXDIR}/test_joint_anglemarg_peaklocal.py"
   "${JAXDIR}/test_angle_marg_peaklocal_wiring.py"
+  "${JAXDIR}/test_peaklocal_distance_gh.py"
   "${JAXDIR}/test_limit_distance_jax.py"
   "${JAXDIR}/test_direct_marginalization_planner.py"
   "${JAXDIR}/test_time_first_peaklocal.py"
@@ -511,6 +512,11 @@ fi
 # it counted the one test this job deselects.  That was a one-off setup bug, not a property
 # of the environment, and subtracting for it would under-promise by one -- which is the
 # failure direction this whole comment exists to warn about, because a low floor PASSES.
+# The adaptive distance quadrature for peak-local adds test_peaklocal_distance_gh.py.
+# READ FROM THIS JOB'S OWN "collected N tests from M files" LINE with the DESELECT loop
+# applied, not by adding that file's count to 432 -- the paragraph above records two
+# previous numbers that were wrong in opposite directions for exactly that reason, and
+# arithmetic lands BELOW the truth, which passes.
 EXPECTED_TESTS=432
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="

@@ -473,7 +473,20 @@ def _peaklocal_bytes_per_sample_pt(like):
     from . import anglemarg as _am
     from . import joint_anglemarg_peaklocal as _jp
 
+    # UNDER THE ADAPTIVE DISTANCE QUADRATURE THE KERNEL DOES NOT EVALUATE `x_grid`.
+    # `JAX_ILE_DISTMARG_GH` replaces it with `_GH_NODES` per-sample nodes and reads only
+    # the grid's SUPPORT, so modelling `n_x` here would over-read by n_x/_GH_NODES -- 16x
+    # at the production 256-node grid -- and this guard refuses outright above its
+    # allowance.  That refusal is what the GH branch exists to lift, so a guard that kept
+    # the old model would have made the kernel change inert.  This is the same trap
+    # `u_nodes_in_use` was written for, in the other direction.
+    #
+    # TWO node sets are live: the bracketing pass and the resolving pass.  They are
+    # sequential, but `lax.scan`'s stacked outputs from the first are still alive while
+    # the second runs, so budget both.
     n_x = int(np.size(getattr(like, "x_grid", ())) or 1)
+    if _GH_NODES > 0:
+        n_x = 2 * _GH_NODES
     info = getattr(like, "angle_marg_info", None) or {}
     # Production wrappers record the floored sizing amplitude.  Preserve the
     # same floor for small test doubles and legacy readers that omit the ledger.
