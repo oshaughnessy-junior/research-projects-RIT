@@ -1039,8 +1039,34 @@ def phi_local_lnI(C, n_seed=PHI_SEEDS, w_sigma=PHI_WINDOW_SIGMA,
     # AT MOST two pieces, so 2*n_seed slots is a static bound and nothing has to be
     # compacted; a piece that does not exist is emitted empty and drops out downstream.
     wdt = jnp.clip(hi - lo, 0.0, 2.0 * jnp.pi)
-    a0 = jnp.where(peaked, jnp.mod(lo, 2.0 * jnp.pi), big)
-    crosses = peaked & (a0 + wdt > 2.0 * jnp.pi)
+    # A WINDOW THAT ALREADY SPANS A FULL CIRCUIT HAS NO SEAM TO SPLIT AT, and splitting
+    # one anyway made the region count -- and the ANSWER -- a one-ulp coin flip.  After the
+    # clip `wdt` is EXACTLY 2 pi, so the two pieces are [a0, 2 pi] and [0, a0 + 2 pi - 2 pi]
+    # and they are adjacent by construction.  In floating point they are adjacent only when
+    # (a0 + 2 pi) - 2 pi rounds back to a0, which for a0 near 2 pi is a coin flip at the
+    # last bit: the sum lands in [8, 16) where the ulp is 1.78e-15, twice the ulp at a0.
+    # When it rounds LOW the pieces are one ulp apart, the merge (which joins only exactly
+    # touching intervals, by design -- no tolerance decides membership here) leaves them
+    # separate, `total` comes out 8.9e-16 below 2 pi, and the `wrapped` clamp below does not
+    # fire.  The rule then runs a two-region trapezoid with a seam instead of the PERIODIC
+    # trapezoid on the full circle, and a periodic trapezoid is spectrally accurate where a
+    # seamed one is O(h^2): measured on the harmonic-alias table of
+    # test_the_halving_check_is_blind_at_the_sampling_harmonic, 2.1e-3 nats wrong instead of
+    # 2.1e-8, a factor of 1e5, from a two-ulp difference in the Newton fixed point.
+    #
+    # jax 0.9.2 and 0.10.2 land on opposite sides of it -- same host, same python, same
+    # numpy -- which is how this arrived as an environment-dependent test failure rather
+    # than as a bug.  Both sides return ok=False, so nothing was ever accepted wrong.
+    #
+    # The fix is exact and not a tolerance: a full circuit is anchored at 0 and emitted as
+    # the single piece [0, 2 pi].  The numpy twin is protected from the same family by an
+    # explicit 1e-12 seam-closing step (_merge_boxes' caller in joint_angle_peak_local);
+    # this path had no equivalent.
+    full_circuit = peaked & (wdt >= 2.0 * jnp.pi)
+    a0 = jnp.where(peaked,
+                   jnp.where(full_circuit, 0.0, jnp.mod(lo, 2.0 * jnp.pi)),
+                   big)
+    crosses = peaked & (~full_circuit) & (a0 + wdt > 2.0 * jnp.pi)
     lo2 = jnp.concatenate([a0,
                            jnp.where(crosses, 0.0, big)])
     hi2 = jnp.concatenate([jnp.where(crosses, 2.0 * jnp.pi, a0 + wdt),

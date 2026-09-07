@@ -565,6 +565,48 @@ def test_the_halving_check_is_blind_at_the_sampling_harmonic():
     assert bool(ok2), dict(info2)
 
 
+def test_a_full_circuit_phi_window_is_one_region_at_every_peak_location():
+    """This is the pin the test above could not be, and the reason it could not is the
+    finding: at ``w_sigma = 200`` the window spans a full circuit, so the seam split
+    emits ``[a0, 2 pi]`` and ``[0, a0 + 2 pi - 2 pi]``, adjacent BY CONSTRUCTION -- and
+    adjacent in floating point only when ``(a0 + 2 pi) - 2 pi`` rounds back to ``a0``.
+    The sum lands in ``[8, 16)`` where the ulp is 1.78e-15, twice the ulp at ``a0``.
+    When it rounds low the pieces sit one ulp apart, the merge (exact-touching, no
+    tolerance, by design) keeps them separate, ``total`` comes out 8.9e-16 under 2 pi and
+    the ``wrapped`` clamp misses.  The rule then runs a SEAMED two-region trapezoid where
+    the periodic one is spectrally accurate: 2.1e-3 nats wrong instead of 2.1e-8.
+
+    Measured through this kernel on jax 0.9.2: 7 of 41 peak locations across one node
+    spacing landed on the bad side.  So the single fixture in
+    :func:`test_the_halving_check_is_blind_at_the_sampling_harmonic` pinned the property
+    BY LUCK.  jax 0.9.2 and 0.10.2 put the Newton fixed point two ulp apart on the same
+    host, same python 3.13, same numpy 2.4.6; 0.10.2 landed on the good side, which is
+    why CI was green while the local runs failed.  Nothing was ever accepted wrong --
+    both sides return ok=False.
+
+    Sweeping the peak location is what makes the pin environment-independent.  ``vmap``
+    is what makes it affordable: the per-call cost is host-side tracing, ~1.35 s, and is
+    flat in the node counts, so 64 separate calls would be 90 s against ~20 s batched.
+    """
+    shifts = np.linspace(0.0, 2 * np.pi, 64, endpoint=False)
+    C = jnp.stack([_separable_phi_table(1000.0, s)[0] for s in shifts])
+    exact = _separable_phi_table(1000.0, 0.0)[1]        # shift-independent
+    v, _, info = jax.vmap(lambda c: JP.phi_local_lnI(c, w_sigma=200.0))(C)
+
+    regions = np.asarray(info["n_phi_regions"])
+    bad = shifts[regions != 1]
+    assert bad.size == 0, (regions[regions != 1][:4], bad[:4])
+
+    # EXACTLY 2 pi, not approximately: one ulp short IS the failure, and a tolerance here
+    # would pass the very state this test exists to forbid.
+    total = np.asarray(info["seg_width"]).sum(axis=1)
+    assert (total == 2 * np.pi).all(), total[total != 2 * np.pi][:4] - 2 * np.pi
+
+    # and the seam costs ACCURACY, which is why the count is worth pinning at all
+    err = np.abs(np.asarray(v) - exact)
+    assert err.max() < 1e-4, (float(err.max()), float(shifts[err.argmax()]))
+
+
 def test_the_phi_grid_is_nested_so_no_evaluation_is_spent_on_a_probe_alone():
     """The first version of the companion evaluated a SECOND grid of n-1 midpoints, used
     only for the probe and then discarded: 1.85x the cost for a diagnostic.  With an odd

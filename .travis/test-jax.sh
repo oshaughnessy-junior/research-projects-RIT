@@ -621,7 +621,12 @@ fi
 # "collected 486 tests from 33 files", DESELECT loop applied.  The arithmetic
 # (472+14) would also have given 486 -- noted because that is precisely what makes
 # it an unreliable shortcut rather than a safe one, not a reason to trust it.
-EXPECTED_TESTS=486
+#
+# The full-circuit phi-region fix adds ONE test,
+# test_a_full_circuit_phi_window_is_one_region_at_every_peak_location.  Read off this
+# job's own line after the change: "collected 487 tests from 33 files", DESELECT loop
+# applied, RIFT_JAX_PYTHON=~/.cache/jaxci_venv/bin/python on citlogin6.
+EXPECTED_TESTS=487
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
