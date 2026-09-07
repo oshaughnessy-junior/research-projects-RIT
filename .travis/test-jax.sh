@@ -248,6 +248,24 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         they are the gate on the fix (and on the
 #                                         collapse guard) not disturbing the regime
 #                                         where this estimator actually works.
+#   test_jax_phase_marg_mode_order.py 14  phase marginalization must accept EITHER
+#                                         packed order of the (2,+-2) pair.
+#                                         _accumulate_unit hardcoded column 0 = (2,2)
+#                                         and raised NotImplementedError otherwise --
+#                                         but the column order comes from a dict's
+#                                         iteration order in the precompute, not from
+#                                         the caller, so a correctly configured
+#                                         --phase-marginalization run died on valid,
+#                                         complete data.  U and V carry the mode index
+#                                         on BOTH axes, so a half-permutation is a
+#                                         silent wrong answer; one test asserts the
+#                                         fixture can SEE each single-axis mistake, or
+#                                         the equality tests would not gate it.  Two
+#                                         tests defend the ordering that already works
+#                                         by making _permute_modes fatal: the canonical
+#                                         order must take the untouched path, not an
+#                                         identity permutation.  Synthetic packed data,
+#                                         no frames, no PSDs, ~60 s.
 #   test_limit_distance_jax.py        21  --limit-distance on this arm: the distance
 #                                         QUADRATURE narrows while the prior keeps its
 #                                         [d_min,d_max] normalization.  Includes the
@@ -368,6 +386,7 @@ FILES=(
   "${JAXDIR}/test_direct_marginalization_planner.py"
   "${JAXDIR}/test_time_first_peaklocal.py"
   "${JAXDIR}/test_is_proposal_jitter.py"
+  "${JAXDIR}/test_jax_phase_marg_mode_order.py"
 )
 
 # EXCLUDED: files in JAXDIR matching test_*.py that are deliberately NOT gated.  The
@@ -533,6 +552,13 @@ fi
 # regression case).  The FILES array above takes the UNION of every side that has
 # touched it.
 #
+# The phase-marginalization mode-order branch then adds the 14 pins in
+# test_jax_phase_marg_mode_order.py.  Its number was NOT derived by adding 14 to the
+# constant above -- that shortcut is what the paragraphs below warn about.  It was read
+# off this job's own line after rebasing on rift_O4d: "collected 475 tests from 32
+# files", with the DESELECT loop applied (the script itself prints it, so there is no
+# way to run this and get the half-configured count).
+#
 # THIS BRANCH HAS NOW HIT THIS CONFLICT THREE TIMES, on three consecutive days, and
 # every one of its own numbers was read off a real collection run when written:
 #
@@ -549,7 +575,7 @@ fi
 # is wrong there is no habit of checking left to catch it.  The number below is READ
 # OFF this job's own collection line after this merge: 461/462 collected, 1 deselected,
 # 31 files.
-EXPECTED_TESTS=461
+EXPECTED_TESTS=475
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
