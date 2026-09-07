@@ -25,11 +25,17 @@ loose after 5,000 boxes, so it is deliberately absent from the runtime
 decision.  It bounds only the finite reflected coefficient model; a real ILE
 caller still owns the guard-sample warrant connecting that model to physical
 support.  Any local decline returns the reserve, never a waveform failure.
+
+Returning the reserve because a diagnostic failed its budget and returning it
+because the planner raised are different events, and this module reports them
+separately: see ``MultiPeakResult.decline_kind`` and ``fault``.  Only the
+second warns, and only the second is made fatal by ``fail_on_fallback``.
 """
 
 import heapq
 import math
-from typing import NamedTuple
+import warnings
+from typing import NamedTuple, Optional
 
 import jax
 import jax.numpy as jnp
@@ -60,6 +66,10 @@ __all__ = [
     "CoverReport",
     "LocalIntegralReport",
     "MultiPeakResult",
+    "FallbackFault",
+    "MultiPeakFallbackError",
+    "DECLINE_DIAGNOSTIC",
+    "DECLINE_FAULT",
     "summarize_uv_norm_table",
     "infer_harmonic_symmetry",
     "rank_joint_starts_from_uvq",
@@ -180,10 +190,43 @@ class MultiPeakResult(NamedTuple):
     total_refinement_steps: int
     total_local_evaluations: int
     modeled_peak_bytes: int
+    decline_kind: Optional[str] = None
+    fault: Optional["FallbackFault"] = None
 
 
 class _DenseReserveError(Exception):
     """A caller-supplied reserve failed; do not relabel it as planner decline."""
+
+
+class MultiPeakFallbackError(Exception):
+    """A planner fault was converted to a reserve under ``fail_on_fallback``.
+
+    Deliberately outside the ``(RuntimeError, ValueError, LinAlgError)`` set the
+    planner catches, for the same reason as :class:`_DenseReserveError`: a
+    nested or repeated call must not swallow it back into a decline.
+    """
+
+
+class FallbackFault(NamedTuple):
+    """Why a fallback was a fault rather than a diagnostic decline.
+
+    ``stage`` names the planner step that raised, so a tier-specific defect is
+    attributable without re-running.  ``error_type``/``message`` carry the
+    exception itself.  ``None`` in ``MultiPeakResult.fault`` means no fault.
+    """
+
+    stage: str
+    error_type: str
+    message: str
+
+
+#: ``MultiPeakResult.decline_kind`` values.  ``None`` means the local branch was
+#: accepted.  A diagnostic decline is a normal outcome -- a diagnostic
+#: legitimately failed its budget.  A fault means something raised, and the
+#: reserve is standing in for a planner that could not run.  These are separate
+#: values so downstream analysis never has to parse ``provenance``.
+DECLINE_DIAGNOSTIC = "diagnostic"
+DECLINE_FAULT = "fault"
 
 
 def infer_harmonic_symmetry(C_A_t, C_B, *, support_rtol=1.0e-12,
@@ -851,7 +894,7 @@ def multipeak_local_marginalize(
         log_integral_tol=1.0e-3, tier0=(2, 3, 24), tier1=(3, 5, 48),
         refine_iterations=18, contribution_cutoff_nats=-18.0,
         cell_sigma=5.0, quadrature_order=7, chunk_size=64,
-        log_measure=0.0):
+        log_measure=0.0, fail_on_fallback=False, label=None):
     """Two-tier empirical four-axis marginal with a finite reserve fallback.
 
     The tuple for each tier is ``(angular_oversample, time_starts, start_cap)``.
@@ -863,6 +906,19 @@ def multipeak_local_marginalize(
     accepted when a caller already has the reserve value.  ``log_measure`` is
     the caller-owned constant measure/normalization for time, angles, and the
     inverse-distance prior; both paths must use the same convention.
+
+    Two different things return the reserve and they are reported separately.
+    A *diagnostic* decline (``decline_kind == DECLINE_DIAGNOSTIC``) is a normal
+    outcome: the tiers ran and one of their budgets was not met.  A *fault*
+    (``decline_kind == DECLINE_FAULT``, ``fault`` populated) means the planner
+    raised, so the reserve is standing in for a step that did not run.  A fault
+    emits one ``RuntimeWarning`` per call naming the stage, the exception, and
+    ``label``; ``fail_on_fallback=True`` raises :class:`MultiPeakFallbackError`
+    instead of evaluating the reserve.  It defaults off: this is a core path
+    and an existing caller must see exactly the previous behaviour.
+
+    ``label`` is an opaque caller tag (a row id, an event name) echoed in the
+    warning so a fault in a large campaign is attributable without re-running.
     """
     def evaluate_reserve():
         try:
@@ -877,6 +933,9 @@ def multipeak_local_marginalize(
             # never retried or mislabeled as a local-planner exception.
             raise _DenseReserveError("dense reserve evaluation failed") from error
 
+    # Names the planner step in flight, so a fault reports WHERE it happened
+    # rather than only that something raised.  Read only in the handler below.
+    stage = "uv-summary"
     try:
         uv_summary = summarize_uv_norm_table(C_B_t)
         if not uv_summary.time_invariant:
@@ -887,27 +946,34 @@ def multipeak_local_marginalize(
             contribution_cutoff_nats=contribution_cutoff_nats,
             cell_sigma=cell_sigma, quadrature_order=quadrature_order,
             chunk_size=chunk_size, log_measure=log_measure)
+        stage = "tier0"
         portfolio0, result0 = _run_structural_tier(
             C_A_t, uv_summary, x_min, x_max,
             angular_oversample=int(tier0[0]),
             max_time_starts=int(tier0[1]), max_starts=int(tier0[2]),
             refine_iterations=int(refine_iterations),
             integral_kwargs=integral_kwargs)
+        stage = "tier1"
         portfolio1, result1 = _run_structural_tier(
             C_A_t, uv_summary, x_min, x_max,
             angular_oversample=int(tier1[0]),
             max_time_starts=int(tier1[1]), max_starts=int(tier1[2]),
             refine_iterations=int(refine_iterations),
             integral_kwargs=integral_kwargs)
+        stage = "acceptance"
         delta = abs(result1.value - result0.value)
         accepted = bool(result0.ok and result1.ok and np.isfinite(delta)
                         and delta <= float(log_integral_tol))
         if accepted:
             value = result1.value
             provenance = "uvq-multipeak-tier1"
+            decline_kind = None
         else:
+            # Both tiers ran and reported.  This is a budget outcome, not a
+            # fault: it is silent by design and must stay silent.
             value = evaluate_reserve()
             provenance = "dense-reserve:enrichment-or-local-diagnostic"
+            decline_kind = DECLINE_DIAGNOSTIC
         input_bytes = (np.asarray(C_A_t).nbytes
                        + np.asarray(uv_summary.C_B).nbytes)
 
@@ -924,11 +990,37 @@ def multipeak_local_marginalize(
                                             + len(portfolio1.starts)),
             int(result0.n_evaluations + result1.n_evaluations),
             max(result0.modeled_peak_bytes, result1.modeled_peak_bytes,
-                portfolio_bytes(portfolio0), portfolio_bytes(portfolio1)))
+                portfolio_bytes(portfolio0), portfolio_bytes(portfolio1)),
+            decline_kind, None)
     except (RuntimeError, ValueError, np.linalg.LinAlgError) as error:
         # Keep the return finite even when the local planner itself cannot form
         # a trustworthy report.  Re-run failures should be diagnosed upstream;
         # they must never be reclassified as waveform failures.
+        #
+        # This is a FAULT, not a decline: the reserve stands in for a step that
+        # did not run.  A whole campaign once read as a conservative controller
+        # because this path was silent, so it warns once per call and can be
+        # made fatal.  The warning precedes the reserve so a fault is still
+        # reported when the reserve itself then fails.
+        fault = FallbackFault(
+            stage, type(error).__name__, str(error))
+        warnings.warn(
+            "multipeak_local_marginalize: the local planner RAISED at stage "
+            "%r and fell back to the dense reserve.  This is a fault, not a "
+            "budget decline: %s: %s.  label=%r, C_A_t.shape=%s, "
+            "C_B_t.shape=%s, x=[%r, %r], tier0=%r, tier1=%r, "
+            "refine_iterations=%r.  Diagnose it upstream; pass "
+            "fail_on_fallback=True to make it fatal."
+            % (fault.stage, fault.error_type, fault.message, label,
+               np.shape(C_A_t), np.shape(C_B_t), x_min, x_max,
+               tuple(tier0), tuple(tier1), refine_iterations),
+            RuntimeWarning, stacklevel=2)
+        if fail_on_fallback:
+            raise MultiPeakFallbackError(
+                "multipeak_local_marginalize declined by fault at stage %r "
+                "(%s: %s), label=%r; fail_on_fallback is set"
+                % (fault.stage, fault.error_type, fault.message, label)
+            ) from error
         empty = LocalIntegralReport(
             np.nan, np.nan, np.inf, False, False, False, False, False, False,
             False, False, 0, 0, 0, 0, 0, np.empty(0, dtype=np.int32),
@@ -944,7 +1036,8 @@ def multipeak_local_marginalize(
             evaluate_reserve(), False, True,
             "dense-reserve:planner-exception:%s" % type(error).__name__,
             np.inf,
-            empty, empty, empty_portfolio, empty_portfolio, 0, 0, 0, 0)
+            empty, empty, empty_portfolio, empty_portfolio, 0, 0, 0, 0,
+            DECLINE_FAULT, fault)
 
 
 def _periodic_box_contains(box_center, box_half, mode_center, mode_half):

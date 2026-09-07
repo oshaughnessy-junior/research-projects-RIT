@@ -386,6 +386,18 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         merge interaction with #272's phase-marginalized
 #                                         mode permutation.
 #                                         Synthetic fixtures; no lal frames, no GPU.
+#   test_multipeak_fallback_visibility.py
+#                                       6  the multi-peak planner's fallback must not
+#                                         read as a policy decline: an exception-driven
+#                                         fallback warns once per call and carries
+#                                         decline_kind/fault in the record, a
+#                                         budget-driven decline does neither,
+#                                         fail_on_fallback is fatal on the first and
+#                                         inert on the second, and the default path is
+#                                         value- and provenance-identical to the
+#                                         pre-change module.  Synthetic tables; the
+#                                         tier faults are injected at the
+#                                         _run_structural_tier seam.  CPU-only.
 
 FILES=(
   "${JAXDIR}/test_jax_time_quadrature.py"
@@ -421,6 +433,7 @@ FILES=(
   "${JAXDIR}/test_all_axis_peaklocal.py"
   "${JAXDIR}/test_is_proposal_jitter.py"
   "${JAXDIR}/test_multipeak_planner.py"
+  "${JAXDIR}/test_multipeak_fallback_visibility.py"
   "${JAXDIR}/test_jax_phase_marg_mode_order.py"
   "${JAXDIR}/test_jax_q_time_pregrid.py"
 )
@@ -676,7 +689,13 @@ fi
 # files.  Def-count arithmetic (508 + 30 in test_all_axis_peaklocal.py + 1 in
 # test_angle_marg_exact.py + 2 in test_time_first_peaklocal.py = 541) does NOT
 # reproduce it, which is one more reason the constant is measured.
-EXPECTED_TESTS=542
+#
+# EIGHTH time, on the multi-peak fallback-visibility branch (this change).  It
+# adds ONE file, test_multipeak_fallback_visibility.py, and touches no existing
+# test.  Measured, not computed: this job own collection line on ldas-pcdev13
+# with ~/.cache/jaxci_venv (jax 0.9.2, numpyro 0.21.0), DESELECT loop applied,
+# reads "collected 548 tests from 36 files".
+EXPECTED_TESTS=548
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
