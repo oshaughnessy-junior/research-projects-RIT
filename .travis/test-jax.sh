@@ -335,6 +335,17 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         honest phase-marginalized sky/psi export,
 #                                         K=14/K=88 independent guarded references,
 #                                         and executable baseline/banded support refusal.
+#   test_multipeak_planner.py          11  opt-in U,V,Q-guided four-axis multi-peak
+#                                         planner: exact symmetry expansion, strict
+#                                         stationary refinement, two-tier empirical
+#                                         convergence, overlap ownership and finite
+#                                         reserve.  CPU-only; no lal, cupy, or GPU
+#                                         required.  The file defines 15 tests; the four
+#                                         real-table oracle regressions need external
+#                                         validation packets that no fixture in this
+#                                         repository provides, so they are DESELECTED
+#                                         here -- see DESELECTED_TESTS -- and 11 are
+#                                         gated.
 
 FILES=(
   "${JAXDIR}/test_jax_time_quadrature.py"
@@ -368,6 +379,7 @@ FILES=(
   "${JAXDIR}/test_direct_marginalization_planner.py"
   "${JAXDIR}/test_time_first_peaklocal.py"
   "${JAXDIR}/test_is_proposal_jitter.py"
+  "${JAXDIR}/test_multipeak_planner.py"
 )
 
 # EXCLUDED: files in JAXDIR matching test_*.py that are deliberately NOT gated.  The
@@ -376,6 +388,10 @@ FILES=(
 # this gate's own failure mode, one level up.
 DESELECTED_TESTS=(
   "${JAXDIR}/test_jax_stencil_parity.py::test_gpu_gather_parity_against_numpy_window"
+  "${JAXDIR}/test_multipeak_planner.py::test_hm_second_mode_survives_unsafe_proxy_gap"
+  "${JAXDIR}/test_multipeak_planner.py::test_hm_two_tier_integral_matches_overcomplete_oracle"
+  "${JAXDIR}/test_multipeak_planner.py::test_real_low_snr_declines_to_finite_reserve"
+  "${JAXDIR}/test_multipeak_planner.py::test_real_high_snr_two_tier_path_matches_overcomplete_oracle"
 )
 EXCLUDED=(
   # test_angle_marg_exact.py -- the angle-marginalization VALIDATION suite.
@@ -419,6 +435,25 @@ EXCLUDED=(
 #       The cupy leg of the sinc-stencil parity check.  It needs a real CUDA device;
 #       this job has none, so it self-skips.  It is a genuine gate on a GPU host --
 #       run it by hand there when touching Q_inner_product_sinc_cupy.
+#
+#   test_multipeak_planner.py::test_hm_second_mode_survives_unsafe_proxy_gap
+#   test_multipeak_planner.py::test_hm_two_tier_integral_matches_overcomplete_oracle
+#   test_multipeak_planner.py::test_real_low_snr_declines_to_finite_reserve
+#   test_multipeak_planner.py::test_real_high_snr_two_tier_path_matches_overcomplete_oracle
+#       The four real-table oracle regressions of the multi-peak planner.  Each is
+#       skipif-guarded on an external validation packet -- a saved (C_A, C_B) coefficient
+#       table from a real analysis -- and NOTHING in this repository or in the CI setup
+#       supplies one, so on this runner all four skip.  A skip is precisely what the
+#       post-run junit check below refuses, so leaving them selected would redden the
+#       gate on every PR while asserting nothing.  They cannot be made to run from a
+#       synthetic fixture either: they pin numbers measured on those tables (mode
+#       spacings, oracle log-integrals) to ~1e-8, which is a property of the real
+#       tables and not of any stand-in this repo could ship.
+#       The 11 remaining tests in that file are self-contained and stay gated; they
+#       carry the planner's structural coverage (symmetry expansion, strict stationary
+#       refinement, two-tier convergence, overlap ownership, reserve fallback).
+#       RUN THE FOUR BY HAND, with the packets present, when touching
+#       multipeak_planner.py, and record the numbers in the PR per records-protocol.
 DESELECT=()
 for t in "${DESELECTED_TESTS[@]}"; do DESELECT+=( --deselect "$t" ); done
 
@@ -547,9 +582,12 @@ fi
 # tests landed later, 424+27 = 451, 432+29 = 461).  That is exactly what makes it an
 # unreliable shortcut rather than a safe one: it is nearly always right, so the once it
 # is wrong there is no habit of checking left to catch it.  The number below is READ
-# OFF this job's own collection line after this merge: 461/462 collected, 1 deselected,
-# 31 files.
-EXPECTED_TESTS=461
+# OFF this job's own collection line after the #227 merge: 461/462 collected,
+# 1 deselected, 31 files. PR #270 adds 15 multipeak tests but deselects the four
+# real-table regressions whose external packets CI does not provide.  The merged
+# gate therefore adds 11 self-contained tests.  Confirmed from the merged
+# collection: 472/477 collected, 5 deselected, 32 files.
+EXPECTED_TESTS=472
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
