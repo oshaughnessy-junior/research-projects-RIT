@@ -819,7 +819,7 @@ to half a coarse bin.
 
 | rho | stencil, `sinc` a=8 coarse | stencil, `cubic` pregrid 8 | Simpson quadrature |
 |---|---:|---:|---:|
-| 40.77 | 0.15 | < 1e-6 | 1.62 |
+| 40.77 | 0.15 | 3.2e-5 | 1.62 |
 | 163.08 | 3.03 | 0.0005 | 33.96 |
 | 652.31 | 27.31 | 0.0088 | 105.73 |
 
