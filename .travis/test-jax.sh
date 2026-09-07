@@ -375,6 +375,14 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         repository provides, so they are DESELECTED
 #                                         here -- see DESELECTED_TESTS -- and 11 are
 #                                         gated.
+#   test_direct_marginalization_policy.py
+#                                      12  opt-in cross-axis policy WIRING: choices and
+#                                         refusals, measure conversion on both distance
+#                                         paths against the exact scheme, decline to a
+#                                         warranted band-limited reserve that keeps the
+#                                         sample, ledger completeness, wrapper end to
+#                                         end on real synthetic tables with a finite
+#                                         gradient, and the driver CLI (subprocess).
 #   test_jax_q_time_pregrid.py         21  opt-in reflected Q time pregrid on the JAX
 #                                         arm: factor-1 bit identity (same array object,
 #                                         positions bit-identical to the pre-pregrid
@@ -423,6 +431,7 @@ FILES=(
   "${JAXDIR}/test_multipeak_planner.py"
   "${JAXDIR}/test_jax_phase_marg_mode_order.py"
   "${JAXDIR}/test_jax_q_time_pregrid.py"
+  "${JAXDIR}/test_direct_marginalization_policy.py"
 )
 
 # EXCLUDED: files in JAXDIR matching test_*.py that are deliberately NOT gated.  The
@@ -676,7 +685,13 @@ fi
 # files.  Def-count arithmetic (508 + 30 in test_all_axis_peaklocal.py + 1 in
 # test_angle_marg_exact.py + 2 in test_time_first_peaklocal.py = 541) does NOT
 # reproduce it, which is one more reason the constant is measured.
-EXPECTED_TESTS=542
+#
+# EIGHTH: the cross-axis policy wiring adds test_direct_marginalization_policy.py
+# (15 tests).  Measured on this tree with the DESELECT loop applied, citlogin6,
+# ~/.cache/jaxci_venv (jax 0.9.2): "557/562 tests collected (5 deselected)",
+# gate-style count 557 from 36 files.  Independently recollected with the CVMFS
+# igwn python on ldas-pcdev11 during the same landing: same 557 from 36 files.
+EXPECTED_TESTS=557
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"

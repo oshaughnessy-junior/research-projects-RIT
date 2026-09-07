@@ -143,6 +143,11 @@ executables without dying during option parsing.
   - `make_distance_grid(...)`, `JAXLikelihoodData`, `build_likelihood_data`.
 - `time_first_peaklocal.py` — experimental primitive-first time-cover planner
   and distance adapter; not selected by any production endpoint.
+- `direct_marginalization_policy.py` — opt-in cross-axis policy
+  (`--direct-marginalization-policy auto`): per evaluation, the four-axis
+  peak-local controller of `all_axis_peaklocal.py` under its acceptance
+  ledger, with the band-limited exact-angle reserve on decline.  Value-only;
+  see `DESIGN_direct_marginalization_policy.md`.
 - `../bivariate_trig_stationary.py` — host reference for complete finite-order
   `(phi_ref, 2 psi)` stationary enumeration by a Sylvester resultant and
   generalized eigenproblem.  It records BKK expected/found counts,

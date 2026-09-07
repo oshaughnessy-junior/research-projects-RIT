@@ -81,6 +81,11 @@ from RIFT.likelihood.jax_ile.samplers import _finalize_evidence
 from RIFT.likelihood.jax_ile.core import _GATHERERS as _JAX_GATHERERS, JAX_INTERP_DEFAULT
 from RIFT.likelihood.jax_ile.anglemarg import (ANGLE_MARG_DEFAULT, ANGLE_MARG_LEGACY,
                                                ANGLE_MARG_CHOICES)
+from RIFT.likelihood.jax_ile.direct_marginalization_policy import (
+    POLICY_CHOICES as DIRECT_MARG_POLICY_CHOICES,
+    POLICY_DEFAULT as DIRECT_MARG_POLICY_DEFAULT,
+    PolicyConfig as DirectMargPolicyConfig,
+    summarize_policy_ledger as _summarize_policy_ledger)
 _JAX_GATHERER_NAMES = tuple(_JAX_GATHERERS)
 from RIFT.likelihood.jax_ile.wrapper import (
     JAXExtrinsicLikelihood, JAXDistanceMarginalizedLikelihood,
@@ -702,6 +707,49 @@ def build_parser():
                       "ran is printed.  See RIFT.likelihood.jax_ile.anglemarg."
                       % (ANGLE_MARG_DEFAULT, ANGLE_MARG_LEGACY,
                          ANGLE_MARG_LEGACY, ANGLE_MARG_LEGACY))
+    g.add_option("--direct-marginalization-policy",
+                 default=DIRECT_MARG_POLICY_DEFAULT,
+                 choices=sorted(DIRECT_MARG_POLICY_CHOICES),
+                 help="OPT-IN cross-axis policy for --mode flowmc-phipsimarg "
+                      "(default '%s').  'auto': per likelihood evaluation, "
+                      "build the bounded U,V,Q start portfolios, attempt the "
+                      "four-axis peak-local integral over (t, phi_ref, psi, D), "
+                      "and keep it only if every acceptance diagnostic passes "
+                      "(capacity, finite stationary modes, nested geometry, "
+                      "base/enriched agreement, nested quadrature, two-guard "
+                      "time, omitted-time mass, total error score under "
+                      "--direct-marginalization-error-budget-nats); otherwise "
+                      "run the band-limited exact-angle reserve.  No SNR "
+                      "threshold is coded.  Requires --angle-marg-scheme exact "
+                      "(its reserve), the simpson time rule (its check rule), "
+                      "the volumetric distance prior and a uniform distance "
+                      "grid; anything else is refused, not ignored.  Value-only: "
+                      "gradient parity is not yet validated (see "
+                      "DESIGN_direct_marginalization_policy.md), so keep this "
+                      "off for production until that ladder is recorded.  The "
+                      "branch statistics of the exported samples are printed and "
+                      "labelled in the output headers."
+                      % DIRECT_MARG_POLICY_DEFAULT)
+    g.add_option("--direct-marginalization-time-guard", type=int, default=16,
+                 help="Primitive-only support samples added at each end of the "
+                      "time window for the policy's guarded reconstruction "
+                      "(default 16; must be >= 2).  Both the local integral and "
+                      "the reserve are re-evaluated at half this guard and must "
+                      "agree within the error budget; a too-small guard declines "
+                      "to the reserve rather than biasing.")
+    g.add_option("--direct-marginalization-reserve-time-refine", type=int,
+                 default=4,
+                 help="Refinement factor of the reserve's band-limited time rule "
+                      "over the native cadence (default 4; even, >= 2).  The "
+                      "half-refined rule is the check rule the reserve must "
+                      "agree with, so the warrant is a convergence statement "
+                      "about the refined rules; the native Simpson rule's own "
+                      "error is what the refinement removes.")
+    g.add_option("--direct-marginalization-error-budget-nats", type=float,
+                 default=1.0e-3,
+                 help="Shared empirical value-error allowance, in nats, for the "
+                      "policy's local acceptance and reserve warrant (default "
+                      "1e-3).")
     # flowMC tuning (modes flowmc / flowmc-phimarg).  Defaults match
     # samplers.flowmc_sample*; exposed so pipeline Makefiles can tune them.
     g.add_option("--n-training-loops", type=int, default=4,
@@ -1389,6 +1437,43 @@ def dat_path(opts, out_index):
 def samples_path(opts, out_index):
     """Path of this event's exported extrinsic samples."""
     return opts.output_file + "_" + str(out_index) + "_samples.dat"
+
+
+def direct_marginalization_policy_note(like, theta, n_max=256, chunk=32):
+    """Label the branch statistics of the exported rows under the policy.
+
+    Returns "" when the policy is off.  Otherwise evaluates the ledger on up to
+    ``n_max`` evenly spaced exported rows and reports how many took the local
+    branch, the warranted reserve, or came back unusable (reserve failed its
+    own warrant; the value is retained and the run is labelled).  The note is
+    written into the sample and evidence headers next to the angle-grid label.
+    """
+    policy = getattr(like, "direct_marginalization_policy", "off")
+    ledger_fn = getattr(like, "_batched_ledger", None)
+    if policy == "off" or ledger_fn is None:
+        return ""
+    theta = np.asarray(theta)
+    if theta.ndim != 2 or theta.shape[0] == 0:
+        return "DIRECT-MARG-POLICY=%s rows=0" % policy
+    n = int(theta.shape[0])
+    idx = np.unique(np.linspace(0, n - 1, min(n, int(n_max))).astype(int))
+    parts = []
+    for start in range(0, idx.size, int(chunk)):
+        sub = theta[idx[start:start + int(chunk)]]
+        cols = [jnp.asarray(sub[:, j]) for j in range(sub.shape[1])]
+        _, ledger = ledger_fn(*cols)
+        parts.append({k: np.asarray(v) for k, v in ledger.items()})
+    ledger = {k: np.concatenate([p[k] for p in parts]) for k in parts[0]}
+    summary = _summarize_policy_ledger(ledger)
+    declines = ",".join("%s:%d" % (k.replace("decline_", ""), v)
+                        for k, v in sorted(summary["declines"].items()))
+    return ("DIRECT-MARG-POLICY=%s rows=%d local=%d reserve=%d "
+            "warranted-reserve=%d unusable=%d reconciles=%d declines=[%s] "
+            "max-local-error-score-nats=%.3g"
+            % (policy, summary["rows"], summary["accepted_local"],
+               summary["reserve_executed"], summary["reserve_warranted"],
+               summary["unusable"], summary["reconciles"], declines,
+               summary["max_local_error_score_nats"]))
 
 
 def angle_grid_suspect_note(scheme=None):
@@ -2084,12 +2169,30 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
             raise SystemExit(
                 "--distance-grid-tol only applies to --distance-grid-scheme "
                 "loguniform; it would be silently inert here.")
-        like = JAXDistPhiPsiMargLikelihood(
-            like_data, d_lo, d_hi, nphi=nphi, npsi=npsi,
-            n_grid=n_dist_grid, interp=opts.interp,
-            guess_snr=extras["guess_snr"], angle_marg=angle_marg,
-            time_quadrature=tq, d_prior_range=(opts.d_min, opts.d_max),
-            dist_grid=dist_grid, dist_grid_tol=dist_tol)
+        policy = getattr(opts, "direct_marginalization_policy",
+                         DIRECT_MARG_POLICY_DEFAULT)
+        policy_config = None
+        if policy != "off":
+            policy_config = DirectMargPolicyConfig(
+                time_guard=int(opts.direct_marginalization_time_guard),
+                reserve_time_refine=int(
+                    opts.direct_marginalization_reserve_time_refine),
+                total_value_error_budget_nats=float(
+                    opts.direct_marginalization_error_budget_nats))
+        try:
+            like = JAXDistPhiPsiMargLikelihood(
+                like_data, d_lo, d_hi, nphi=nphi, npsi=npsi,
+                n_grid=n_dist_grid, interp=opts.interp,
+                guess_snr=extras["guess_snr"], angle_marg=angle_marg,
+                time_quadrature=tq, d_prior_range=(opts.d_min, opts.d_max),
+                dist_grid=dist_grid, dist_grid_tol=dist_tol,
+                direct_marginalization_policy=policy,
+                policy_config=policy_config)
+        except ValueError as e:
+            if policy == "off":
+                raise
+            raise SystemExit("--direct-marginalization-policy %s refused: %s"
+                             % (policy, e))
         # ALWAYS report the resolved scheme (requested may be 'auto'; this
         # pipeline has a documented history of silently-inert flags).
         print("  angle-marg scheme: %s (requested %s): %s"
@@ -2097,6 +2200,10 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
                  "; ".join("%s=%s" % kv for kv in
                            sorted(like.angle_marg_info.items())
                            if kv[0] not in ("scheme", "requested"))))
+        print("  direct-marginalization policy: %s%s"
+              % (like.direct_marginalization_policy,
+                 "" if like.policy_info is None else ": " + "; ".join(
+                     "%s=%s" % kv for kv in sorted(like.policy_info.items()))))
         print("  distance grid: %s"
               % "; ".join("%s=%s" % kv
                           for kv in sorted(getattr(like, "dist_grid_info", {}).items())))
@@ -2323,6 +2430,14 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
     # label exists to prevent.
     _scheme = getattr(like, "angle_marg_scheme", None)
     _ev_note = angle_grid_suspect_note(_scheme)
+    # Cross-axis policy audit: which branch the exported rows actually took.
+    # Evaluated on a subsample AFTER sampling because the sampler consumes the
+    # value-only path; the ledger is the same computation with its record kept.
+    _policy_note = direct_marginalization_policy_note(like, theta)
+    if _policy_note:
+        sys.stderr.write("NOTE integrate_likelihood_extrinsic_jax: %s\n"
+                         % _policy_note)
+        _ev_note = (_ev_note + " " + _policy_note).strip()
     if _ev_note.startswith("SUSPECT-ANGLE-GRID"):
         sys.stderr.write(
             "WARNING integrate_likelihood_extrinsic_jax: angle-marginalization "
