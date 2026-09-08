@@ -438,6 +438,15 @@ jobs:
   jax-ile-check:
     needs: install
     runs-on: ubuntu-latest
+    # Sharded 2026-09-08: the suite outgrew the 60-minute cap below.  Only the
+    # execute step splits; the FILES manifest, the collection floor against
+    # EXPECTED_TESTS and the deselect-resolution check run in full in every
+    # shard, so a shard cannot go green on a partial view.  Raise `shard` to
+    # add capacity; the split is round-robin by index in test-jax.sh.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     # test/jax/ was run by NOTHING in this workflow until this job landed (the file had
     # zero matches for "jax"), and two real defects survived a month each behind that
     # gap. See .travis/test-jax.sh for why the gate counts tests instead of just
@@ -529,6 +538,9 @@ jobs:
         env:
           JAX_PLATFORMS: cpu
           OMP_NUM_THREADS: 1
+        env:
+          JAX_GATE_SHARDS: 3
+          JAX_GATE_SHARD: ${{ matrix.shard }}
         run: bash .travis/test-jax.sh
       # always(): a FAILING gate is the case the record is for, so it must upload
       # after a red run too, not only after a green one.
