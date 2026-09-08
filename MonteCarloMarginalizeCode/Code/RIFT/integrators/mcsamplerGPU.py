@@ -415,7 +415,11 @@ class MCSampler(SamplerOutputMixin, object):
         def dP_cdf(p, x):
             if x > self.rlim[param] or x < self.llim[param]:
                 return 0
-            return self.pdf[param](x)
+            # odeint probes with a python float, but every pdf in this module is
+            # vectorized on xpy_default (ones(len(x)), xpy.sin(x), ...): evaluate
+            # on a length-1 backend array and hand odeint back a float.
+            val = self.pdf[param](xpy_default.asarray([x], dtype=numpy.float64))
+            return float(val[0]) if hasattr(val, '__len__') else float(val)
         x_i = numpy.linspace(self.llim[param], self.rlim[param], 1000)
         # Integrator needs to have a step size which doesn't step over the
         # probability mass
