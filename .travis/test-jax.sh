@@ -506,6 +506,7 @@ FILES=(
   "${JAXDIR}/test_direct_marginalization_policy.py"
   "${JAXDIR}/test_jax_cache.py"
   "${JAXDIR}/test_jax_bandlimited_distmarg.py"
+  "${JAXDIR}/test_jax_bandlimited_6d_blind.py"
 )
 
 # EXCLUDED: files in JAXDIR matching test_*.py that are deliberately NOT gated.  The
@@ -887,7 +888,14 @@ fi
 # 596 against a base of 577; rift_O4d reached 628 meanwhile.  Re-measured by
 # running this script on the MERGED tree, ldas-grid, ~/.cache/jaxci_venv,
 # DESELECT loop applied, read off its own collection line: MEASURED-LINE
-EXPECTED_TESTS=647
+#
+# SEVENTEENTH, the fixed-distance blind-draw follow-up (endpoint gap off on the
+# 6-D field; parse-time window refusal).  ONE new file,
+# test_jax_bandlimited_6d_blind.py, nothing deselected.  Re-measured by running
+# this script on this tree, ldas-grid, ~/.cache/jaxci_venv, DESELECT loop
+# applied, read off its own collection line:
+#   "collected 657 tests from 40 files" (the gate's own line; 647 + 10)
+EXPECTED_TESTS=657
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"

@@ -76,12 +76,13 @@ the sampler batch.  There is deliberately no public factor knob; a row that
 cannot meet the criterion fails closed.
 
 The supported signal regime assumes spectral headroom below the sampled
-Nyquist frequency and negligible likelihood mass at both ends of the short
-integration window.  The latter is checked on the refined grid: either endpoint
-must be at least 15 natural-log units below the peak, otherwise `bandlimited`
-fails closed rather than trusting a boundary extension that can affect the
-answer.  Increase the physical time window or use Simpson when this diagnostic
-fires.
+Nyquist frequency.  Likelihood mass at the ends of the short integration window
+is covered by the guard-agreement certificate below, not by an endpoint gap.
+The 15-nat endpoint gap of 2026-08-29 was switched off on 2026-09-08.  A row's
+peak-to-endpoint contrast is bounded by its own amplitude, so the gap rejected
+every blind or far draw whatever the quadrature did.  The rows it rejected
+alone agree with an independent reference to 1e-4 nat (DESIGN record, "The
+endpoint certificate").
 
 The primitive gather includes support outside that window.  Its initial guard
 is the established half-window default rounded up to a power of two; one guard
@@ -114,13 +115,13 @@ the trapezoid.  The block count for the fine grid is derived from the refined ro
 length rather than inherited from `grid_block`, so a 2048x row does not scale the
 working set with it.  Three of the fixed-distance certificates -- factor
 doubling, two-guard agreement, and remeasured resolution -- apply to the
-distance-marginalized field.  The endpoint gap does not: the marginal field has
-a floor (the far-distance prior mass), so its peak-to-endpoint contrast is
-bounded by its peak height and a fixed gap rejects every low-contrast row,
-converged or not, which is most blind prior draws.  With a full-sky prior the
-integration half-window must contain the detector arrival shifts of a wrong-sky
-draw (up to 2 R_earth / c, about 43 ms); a row whose arrival peak sits at the
-window edge fails the doubling or guard certificate and stops the driver.
+distance-marginalized field, and the endpoint gap applies to neither.  With a
+full-sky prior the integration half-window must contain the detector arrival
+shifts of a wrong-sky draw (up to 2 R_earth / c, 42.6 ms).  A row whose arrival
+peak sits at the window edge fails the doubling or guard certificate and stops
+the driver.  The driver therefore refuses the modes that push full-sky draws
+through that stop (`prior-mc`, `laplace-is`, `map`, `nuts`) at parse time when
+the half-window is below that bound.
 `return_lnLt` is refused under `bandlimited`: there is no reduced field on the
 data grid to return.
 

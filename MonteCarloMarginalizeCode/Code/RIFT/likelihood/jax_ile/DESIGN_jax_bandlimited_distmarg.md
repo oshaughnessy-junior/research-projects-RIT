@@ -175,6 +175,46 @@ WIDE-WINDOW-NUMBERS
 The driver's stop is unchanged. Its message now counts the failed rows in the
 chunk, prints the first three, and names the window as the usual cause.
 
+### The fixed-distance kernel (follow-up, 2026-09-08)
+
+The 6-D kernel kept the gap when the rows above were measured. Re-measured on
+rift_O4d `d84597c2a` (92 / 256 at 20 ms, unchanged by this branch) and on this
+branch with the gap switched per row: same injection, seeds 0-3 of the driver's
+prior with distance, 64 rows each, ldas-grid, `~/.cache/jaxci_venv`.
+
+| half-window | gap on | gap off | gap alone |
+|---|---|---|---|
+| 20 ms | 92 / 256 | 35 / 256 | 57 |
+| 50 ms | 32 / 256 | 0 / 256 | 32 |
+
+Twenty-four gap-only rows per window against the reference (periodic FFT,
+guard twice the certified value, factor 512): worst 1.1e-04 nat at 20 ms and
+6.1e-06 nat at 50 ms, all 54-128 nat below the batch maximum, at 1600-3900 Mpc.
+
+The floor argument has a fixed-distance twin. The field is Re kappa(t) -
+rho^2/2, so its contrast is at most 2 max|kappa|, which scales with the row's
+own amplitude. A far or wrong-sky draw has no 15 nat to give up, converged or
+not. The gap certifies the row's amplitude, not the quadrature.
+
+Decision: the endpoint certificate is off on both fields. The kernel's
+`endpoint_log_gap` defaults to `None`; the threshold constant stays for the
+tests that pin what it rejected. The other three certificates are unchanged,
+and the 35 edge-peak rows at 20 ms still stop the driver.
+
+The driver refuses `--mode prior-mc`, `laplace-is`, `map` and `nuts` with
+`bandlimited` at parse time when `--data-integration-window-half` is below
+2 R_earth / c = 42.6 ms. Those modes push full-sky draws through `eval_lnL`,
+which stops on one uncertified row; the flowMC family and `multistart-nuts`
+pilot through the samplers' own draw and are not refused. Before the change,
+`--mode prior-mc` without distance marginalization at 50 ms stopped in its
+first chunk with 30 of 400 rows failed, every one at the gap.
+
+Test: `test/jax/test_jax_bandlimited_6d_blind.py`, ten tests. The end-to-end
+runs cover `prior-mc` and `map`; `laplace-is` at this injection walks off the
+peak and fails `require_finite_evidence` at pilots of 100, 250 and 500, on the
+distance-marginalized field of the unchanged base as well, so it is covered
+by the parse-time test only.
+
 ## Memory
 
 Peak RSS, one JAX process, same data. `vmap 8` is eight chains of

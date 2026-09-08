@@ -1031,6 +1031,9 @@ _TIME_UPSAMPLE_DEFAULT = 8
 _TIME_ADAPTIVE_FACTOR_MAX = 1024
 _TIME_ADAPTIVE_SAFETY = 2.0
 _TIME_ADAPTIVE_RTOL = 1e-3
+# Threshold of the endpoint certificate.  No production caller applies it since
+# 2026-09-08 (kernel default None); kept for the tests that pin what it rejected.
+# Evidence: DESIGN_jax_bandlimited_distmarg.md, "The endpoint certificate".
 _TIME_ENDPOINT_LOG_GAP_MIN = 15.0
 # Element budget for one distance-quadrature block on the refined time grid.
 # The refined row is up to 2048x the data grid, so the block count is derived
@@ -1343,15 +1346,19 @@ def _time_marginalize_reflected_fft(lnL_t, deltaT, w_t):
 def _time_marginalize_reflected_primitive(kappa_t, rho_sq, deltaT,
                                            phase_marginalization=False,
                                            guard=0, reduce_fn=None,
-                                           endpoint_log_gap=_TIME_ENDPOINT_LOG_GAP_MIN):
+                                           endpoint_log_gap=None):
     """Adaptive integral after refining the band-limited complex primitive.
 
     This is required for phase marginalization: interpolating ``abs(kappa)``
     cannot recover intersample structure lost to that nonlinear operation.
     Arrival-time-dependent norms remain unsupported by the bandlimited mode.
-    A refined row whose endpoint is within 15 nats of its peak fails closed:
-    the even-extension boundary condition is not trustworthy when the finite
-    window carries appreciable posterior mass at either turn.
+    Endpoint mass is covered by the guard-agreement certificate, not by an
+    endpoint gap.  The 15-nat gap of 2026-08-29 was switched off on 2026-09-08:
+    a row's peak-to-endpoint contrast is bounded by its own amplitude (at most
+    2 max|kappa| on the fixed-distance field; a prior-mass floor on the
+    distance-marginalized one), so a fixed gap rejected every blind or far draw
+    whatever the trapezoid did, and the rows it rejected alone agree with an
+    independent reference to 1e-4 nat on both fields.
 
     ``reduce_fn(kappa, rho_sq) -> lnL`` is the shape-preserving nonlinear
     reduction applied AFTER refinement.  ``None`` is the fixed-distance
@@ -1364,11 +1371,10 @@ def _time_marginalize_reflected_primitive(kappa_t, rho_sq, deltaT,
     inside the ``lax.map`` body, so scratch is set by one row and not by the
     sampler batch.
 
-    ``endpoint_log_gap`` is the endpoint certificate's threshold in nats;
-    ``None`` switches that certificate off and leaves the resolution, doubling
-    and guard-agreement certificates in force.  The fixed-distance reduction
-    keeps the default.  A reduction with a floor (the distance quadrature) must
-    pass ``None``: see :func:`fused_log_likelihood_distmarg`.
+    ``endpoint_log_gap`` is the endpoint certificate's threshold in nats, or
+    ``None`` (the default) for no endpoint certificate; the resolution,
+    doubling and guard-agreement certificates are in force either way.  No
+    production caller passes a threshold.
     """
     guard = int(guard)
     if guard < 0 or 2 * guard >= kappa_t.shape[-1] - 1:

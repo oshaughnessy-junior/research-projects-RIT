@@ -496,12 +496,16 @@ def test_the_endpoint_gap_was_rejecting_converged_rows(blind):
             % (i, blind["gap_off"][i], ref))
 
 
-def test_the_fixed_distance_kernel_keeps_its_endpoint_gap():
-    """Only the floored reduction opts out.  The 6-D kernel's certificate and
-    its threshold are base-branch behaviour and are pinned here so a later
-    edit cannot widen the opt-out without failing a test."""
+def test_no_production_caller_applies_the_endpoint_gap():
+    """Both fields run without the endpoint gap.  The fixed-distance kernel
+    kept it when this file was written; the follow-up of 2026-09-08 measured
+    the same signature there (test_jax_bandlimited_6d_blind.py; DESIGN record,
+    "The fixed-distance kernel").  The kernel default is ``None``, the
+    threshold constant stays for the tests that pin what the gap rejected, and
+    no production caller passes one."""
     sig = inspect.signature(core._time_marginalize_reflected_primitive)
-    assert sig.parameters["endpoint_log_gap"].default == core._TIME_ENDPOINT_LOG_GAP_MIN == 15.0
+    assert sig.parameters["endpoint_log_gap"].default is None
+    assert core._TIME_ENDPOINT_LOG_GAP_MIN == 15.0
     assert "endpoint_log_gap" not in inspect.getsource(core.fused_log_likelihood)
     assert "endpoint_log_gap=None" in inspect.getsource(core.fused_log_likelihood_distmarg)
 

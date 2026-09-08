@@ -150,6 +150,15 @@ _TEMPERED_MODES = frozenset((
 # fair-draw count options do anything; elsewhere the export is the sampler's own
 # chain and the count flags are inert (and must be reported as ignored).
 _FAIRDRAW_MODES = _TEMPERED_MODES | frozenset(("prior-mc", "laplace-is"))
+# Modes whose blind full-sky prior draws go through eval_lnL, which stops the
+# run on one uncertified bandlimited row.  The flowMC family and multistart-nuts
+# pilot through the samplers' own draw and are not on this list.
+_EVAL_LNL_STOP_MODES = frozenset(("prior-mc", "laplace-is", "map", "nuts"))
+# Largest shift a wrong-sky draw makes to one detector's arrival time: the
+# window must contain it or a blind row's arrival peak sits beyond the edge,
+# which no certificate can converge on (measured 35/256 rows at 20 ms, 0/256 at
+# 50 ms; DESIGN_jax_bandlimited_distmarg.md, "The endpoint certificate").
+_BANDLIMITED_FULLSKY_HALF_WINDOW_MIN = 2.0 * lal.REARTH_SI / lal.C_SI
 
 # Boolean (zero-argument) ILE options (action=store_true/false).
 _ILE_BOOL_OPTS = {
@@ -483,6 +492,26 @@ def check_critical_and_report(opts, optp):
             opts.interp = "cubic"
             print(" Q_lm pregrid: ENABLED factor=%d boundary=even-reflection "
                   "arrival_stencil=cubic integration_grid=unchanged" % _qf)
+    # Refused HERE, before precompute: with a full-sky prior the stop below is
+    # not a chance event but the first chunk (see _EVAL_LNL_STOP_MODES).
+    _tq = getattr(opts, "time_marginalization_quadrature", "simpson")
+    _hw = getattr(opts, "data_integration_window_half", None)
+    if (_tq == "bandlimited" and getattr(opts, "mode", None) in _EVAL_LNL_STOP_MODES
+            and _hw is not None
+            and float(_hw) < _BANDLIMITED_FULLSKY_HALF_WINDOW_MIN):
+        optp.error(
+            "--time-marginalization-quadrature bandlimited with --mode %s "
+            "evaluates full-sky prior draws and stops on one uncertified row, and "
+            "--data-integration-window-half %.4g s is below 2 R_earth / c = %.4f s, "
+            "the largest arrival shift a wrong-sky draw makes at one detector: a "
+            "row whose arrival peak lies beyond the window edge cannot be "
+            "certified, and the first chunk contains such rows (measured 35 of 256 "
+            "blind rows at 0.02 s, 0 of 256 at 0.05 s).  Raise "
+            "--data-integration-window-half to at least %.4f s plus the "
+            "event-time uncertainty (0.05 s is the measured clean value), or use "
+            "--time-marginalization-quadrature simpson."
+            % (opts.mode, float(_hw), _BANDLIMITED_FULLSKY_HALF_WINDOW_MIN,
+               _BANDLIMITED_FULLSKY_HALF_WINDOW_MIN))
     if fatal:
         optp.error("Cannot run as a faithful drop-in: " + "; ".join(fatal)
                    + ".  (These would silently change the result if ignored.)")
@@ -740,9 +769,12 @@ def build_parser():
                       "'bandlimited' is honoured by the 6-D modes and, under "
                       "--distance-marginalization, by every mode except the "
                       "phi/psi-marginalized ones, which refuse it and say so. "
-                      "One uncertified row stops the run; with a full-sky prior "
-                      "use --data-integration-window-half >= ~0.045 s so a "
-                      "wrong-sky draw's arrival peak stays inside the window.")
+                      "One uncertified row stops the run.  The modes that push "
+                      "full-sky prior draws through that stop (prior-mc, "
+                      "laplace-is, map, nuts) are refused at parse time unless "
+                      "--data-integration-window-half is at least 2 R_earth / c "
+                      "(0.0426 s), the largest arrival shift of a wrong-sky "
+                      "draw; 0.05 s is the measured clean value.")
     g.add_option("--resample-time-marginalization", action="store_true",
                  default=False,
                  help="Conventional ILE option; currently unsupported by JAX ILE.")
@@ -1282,9 +1314,11 @@ def eval_lnL(like, theta, opts, with_distance):
                 "substituted and the run stops.  First failing rows: %s.  A "
                 "peak at the window edge is the common cause under a full-sky "
                 "prior; raise --data-integration-window-half to cover the "
-                "detector arrival shifts (>= ~0.045 s), or raise the input/rholm "
-                "sample rate."
-                % (len(bad), int(sl.stop - sl.start), rows))
+                "detector arrival shifts (>= 2 R_earth / c = %.4f s plus the "
+                "event-time uncertainty; 0.05 s measured clean), or raise the "
+                "input/rholm sample rate."
+                % (len(bad), int(sl.stop - sl.start), rows,
+                   _BANDLIMITED_FULLSKY_HALF_WINDOW_MIN))
     return out
 
 
