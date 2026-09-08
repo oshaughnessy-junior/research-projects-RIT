@@ -54,6 +54,7 @@ Acceptance diagnostics, all required for the local branch:
 | norm table time-independent | `norm_time_invariant` |
 | no capacity truncation, base and enriched | `base_capacity_ok`, `enriched_capacity_ok` |
 | finite stationary modes | `base_and_enriched_values_finite`, `decline_no_modes` |
+| no competitive start pinned to the time or distance boundary | `boundary_maximum_ok`, `decline_boundary_maximum` |
 | valid, nested local geometry | `geometry_nesting_ok`, `decline_geometry` |
 | base/enriched mode agreement | `mode_nesting_ok` |
 | nested quadrature convergence | `decline_quadrature`, `decline_enrichment` |
@@ -75,6 +76,50 @@ carry such rows either.
 
 No SNR threshold appears anywhere. The transitions reported in the paper
 (reserve at 40 and 80, local at 160 and 320) emerge from these diagnostics.
+
+## Operating point
+
+`PolicyConfig` defaults follow the configuration that accepted on production
+tables at rho 163 and 326 (RIFT_roboto_paper
+`analyses/va_sequence_20260902/RESULTS_20260907_aap268_ladder.md`): angular
+oversample 2 and 4, 16 modes, radius 6, guard 128, 14 refine iterations.
+PR #268's test values (oversample 1 and 2, 4 and 8 modes) overflowed capacity
+on synthetic carrier tables and were never a measured production point.
+
+The guard is data, not a knob: the gather returns nonfinite samples past the
+stored buffer with no error. The wrapper probes a coarse sky grid at
+construction and refuses a guard the buffer cannot supply, and every row
+carries `tables_finite`; a nonfinite row is `input_nonfinite`, `nan`, and
+never a method decline.
+
+## Gradient memory
+
+Measured with XLA's compile-time memory analysis of `value_and_grad` on a
+rho 163 production row (614-sample window, guard 128, 83200 dense angles,
+16 GH distance nodes):
+
+| stage | temp memory |
+|---|---|
+| production exact scheme | 2.6 GiB |
+| tables, planning, local gate (base and enriched) | under 0.02 GiB |
+| one reserve tier at refine 4, inside `lax.cond`, dense chunk 8 | 10.5 GiB |
+| full policy, tiers to refine 32, dense chunk 8 | 84.9 GiB (158 before the branches were rematerialized) |
+| reserve at refine 2 / 4 / 8, dense chunk 8 | 5.3 / 10.5 / 21.0 GiB |
+| reserve at refine 2 / 4 / 8, dense chunk 64 | 0.73 / 1.46 / 2.92 GiB |
+
+The local branch is essentially free to differentiate. The cost is the dense
+reserve's reverse pass: one carry per dense-angle scan step, so it is
+proportional to the refined time nodes and inversely to the dense chunk, and
+`lax.cond` reserves memory for the largest tier whether or not it runs. The
+policy's reserve chunk is therefore 64 (the kernel default is 8), which
+brings the full policy at ceiling 32 to about 12 GiB per evaluated row.
+The controller's branches and every tier are under `jax.checkpoint` and the
+planning inputs are under `stop_gradient` (planning is control data). The
+escalation ceiling is exposed as
+`--direct-marginalization-reserve-time-refine-max` because it bounds gradient
+memory; the value path does not depend on it below the ceiling. A cropped
+reserve over the plans' certified time cover would cut both cost and memory
+by the ratio of window to cover and is the follow-up.
 
 ## Measures
 
@@ -125,6 +170,22 @@ production tables, recorded in the paper repository
 
 ## Known adversarial items
 
+- Acceptance was not completeness at a support boundary. On the 32-sample
+  synthetic window the exact lnL(t) peaks at the first sample; the planner's
+  boundary starts were rejected as non-stationary, the interior modes were
+  accepted with every diagnostic passing, and the value was 22.86 nat
+  against an exact 45.5. The plan now records a live start pinned to the
+  time or distance boundary within 30 nat of the best value, and the gate
+  declines on it (`decline_boundary_maximum`). A one-sided local region for
+  boundary maxima is the eventual fix; the decline is the fail-closed one.
+- Sampler cost (wiring review): flowMC vmaps the scalar AD target over
+  chains, and under `vmap` a `lax.cond` with a batched predicate lowers to
+  `select_n`, so every chain executes the local branch and every reserve
+  tier whatever its own disposition. The `lax.map` batch is also sequential
+  in rows, so an 8000-row pilot is hours. Neither is a correctness problem;
+  both make the policy impractical as the sampler's target until a
+  host-compacted path exists (vmap the local gate, run the reserve on the
+  declined subset).
 Items 1 and 2 below come from the adversarial review of PR #268 through this
 wiring (2026-09-07) and are verified on synthetic tables only. They are the
 first questions for the production-table ladder.

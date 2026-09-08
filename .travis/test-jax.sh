@@ -402,7 +402,7 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         so they are DESELECTED here -- see
 #                                         DESELECTED_TESTS -- and 15 are gated.
 #   test_direct_marginalization_policy.py
-#                                      12  opt-in cross-axis policy WIRING: choices and
+#                                      18  opt-in cross-axis policy WIRING: choices and
 #                                         refusals, measure conversion on both distance
 #                                         paths against the exact scheme, decline to a
 #                                         warranted band-limited reserve that keeps the
@@ -760,22 +760,47 @@ fi
 # "574/579 tests collected (5 deselected)", gate-style count 574 from 37
 # files.
 #
-# ELEVENTH, on the JAX persistent/transferable compilation cache (#214, this
-# merge).  It adds ONE file, test_jax_cache.py, and does not add or remove a
-# test in any existing file: the amplitude failsafe changes HOW it reports
-# (returned value instead of a host callback, so the angle-marg graph is
-# eligible for JAX's persistent cache at all) but not how many pins cover it.
-# The branch carried 189 against a base of 171, both stale by months -- neither
-# side's number, nor their sum, is usable, which is the eleventh time in a row
-# that has been true.  MEASURED on the merged tree,
-# ldas-grid, ~/.cache/jaxci_venv (jax 0.9.2), DESELECT loop applied, read off
-# this job own collection line:
-#   "600/605 tests collected (5 deselected)", gate-style count 600 from 38
-#   files.  The base was 574 from 37, and the arithmetic
-#   does NOT reproduce it, which is the usual reason this constant is measured.
-#   PYTHONPATH had to be pinned to the merged tree first: the conda env
-#   otherwise resolves RIFT to ~/RIFT_ralph and collection fails on imports.
-EXPECTED_TESTS=600
+# The policy follow-up PR (this branch, numbered NINTH on its own side before the
+# merge) adds three wiring tests (guard preflight,
+# operating-point defaults, and a parametrized fail-closed case).  Measured on
+# the follow-up tree with the DESELECT loop applied, ldas-grid, CVMFS igwn
+# python: "560/565 tests collected (5 deselected)", gate-style count 560 from
+# 36 files.
+# Both sides stale again after PR #279 (multipeak planner Newton step) landed
+# under this branch: re-measured on the merged tree, ldas-grid, CVMFS igwn
+# python, DESELECT applied: "564/569 tests collected (5 deselected)", gate-style
+# count 564 from 36 files.
+#
+# ELEVENTH, reconciling the policy follow-ups with #277 (this merge).  Both sides
+# were stale in the usual way -- 564 on the branch, 574 on rift_O4d -- and neither
+# number nor their difference describes the merged tree, because each side counted
+# a file set the other had already changed.  The FILES array is again the UNION,
+# now 37 files.  Re-measured on the merged tree with the DESELECT loop applied,
+# ldas-grid, CVMFS igwn python
+# (/cvmfs/software.igwn.org/conda/envs/igwn/bin/python), read off this job's own
+# collection line: "577/582 tests collected (5 deselected)", gate-style count 577
+# from 37 files.
+#
+# TWELFTH, on the JAX persistent/transferable compilation cache (#214, this
+# merge).  It adds ONE file, test_jax_cache.py, and changes no test count in an
+# existing file: the amplitude failsafe changes HOW it reports -- a returned
+# value instead of a host callback, which is what makes the angle-marg graph
+# eligible for JAX's persistent cache at all -- but not how many pins cover it.
+# The branch opened carrying 189 against a base of 171, both months stale.
+# It was then measured at 600 against a base of 574, and rift_O4d moved to 577
+# (#283, #287) between that measurement and the push, so 600 was stale within
+# the hour.  Neither side's number is usable, for the twelfth time running.
+# Re-measured on the merged tree, ldas-grid, ~/.cache/jaxci_venv (jax 0.9.2),
+# DESELECT loop applied, read off this job's own collection line:
+#   "603/608 tests collected (5 deselected)", gate-style count 603 from 38
+#   files.
+#
+# One practical note for whoever hits this next, because it cost a wasted run:
+# PYTHONPATH must be pinned to the tree under test before collecting.  The
+# conda environment on the CIT interactive hosts resolves RIFT to a DIFFERENT
+# checkout (~/RIFT_ralph), and collection then fails on imports that have
+# nothing to do with the branch.
+EXPECTED_TESTS=603
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"

@@ -1025,10 +1025,10 @@ class JAXDistPhiPsiMargLikelihood:
                 dist_grid=dist_grid)
             cfg = policy_config if policy_config is not None else (
                 _policy.PolicyConfig())
-            if not isinstance(cfg, _policy.PolicyConfig):
-                raise TypeError("policy_config must be a PolicyConfig")
+            _policy.validate_policy_config(cfg)
             lln, norm_info = _policy.policy_log_normalization(
                 data, xg, lwg, d_prior=d_prior)
+            _policy.probe_guarded_tables(data, interp, int(cfg.time_guard))
             self.policy_config = cfg
             self.policy_info = dict(
                 norm_info, policy=direct_marginalization_policy,

@@ -344,6 +344,7 @@ def check_critical_and_report(opts, optp):
                       DIRECT_MARG_POLICY_DEFAULT)
     _policy_knobs = ("--direct-marginalization-time-guard",
                      "--direct-marginalization-reserve-time-refine",
+                     "--direct-marginalization-reserve-time-refine-max",
                      "--direct-marginalization-error-budget-nats")
     if _policy != "off":
         if getattr(opts, "mode", None) != "flowmc-phipsimarg":
@@ -360,11 +361,26 @@ def check_critical_and_report(opts, optp):
             fatal.append("--direct-marginalization-reserve-time-refine must be "
                          "an even integer >= 2 (the check rule is the "
                          "half-refined rule)")
+        _fm = int(getattr(opts, "direct_marginalization_reserve_time_refine_max",
+                          32))
+        if _fm < _f or _fm % 2:
+            fatal.append("--direct-marginalization-reserve-time-refine-max must "
+                         "be an even integer >= the refine factor")
         _b = float(getattr(opts, "direct_marginalization_error_budget_nats",
                            1.0e-3))
         if not (np.isfinite(_b) and _b > 0.0):
             fatal.append("--direct-marginalization-error-budget-nats must be "
                          "finite and positive")
+        # --d-prior is accepted by the parser but not forwarded to the JAX
+        # wrapper (which is always volumetric); refuse a non-volumetric request
+        # under the policy here rather than let the wrapper's refusal be
+        # unreachable (wiring review, item 6).
+        _dp = getattr(opts, "d_prior", None)
+        if _dp not in (None, "", "euclidean", "volumetric"):
+            fatal.append("--direct-marginalization-policy %s derives its "
+                         "measure from the volumetric distance prior; "
+                         "--d-prior %s is not supported by the composite"
+                         % (_policy, _dp))
     else:
         for _k in _policy_knobs:
             if was_supplied(opts, _k):
@@ -813,6 +829,16 @@ def build_parser():
                       "agree with, so the warrant is a convergence statement "
                       "about the refined rules; the native Simpson rule's own "
                       "error is what the refinement removes.")
+    g.add_option("--direct-marginalization-reserve-time-refine-max", type=int,
+                 default=32,
+                 help="Ceiling of the reserve rule's escalation on a failed "
+                      "warrant (default 32; even, >= the refine factor).  It "
+                      "also bounds REVERSE-MODE GRADIENT MEMORY: the dense "
+                      "reserve's backward pass costs ~2.6 GiB per unit of "
+                      "refinement per evaluated row on a 614-sample window "
+                      "(measured, rho 163), and lax.cond reserves memory for the "
+                      "largest tier whether or not it runs; 32 asked for 85 GiB. "
+                      "Lower it on small cards; the value path is unaffected.")
     g.add_option("--direct-marginalization-error-budget-nats", type=float,
                  default=1.0e-3,
                  help="Shared empirical value-error allowance, in nats, for the "
@@ -2255,8 +2281,8 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
             policy_config = DirectMargPolicyConfig(
                 time_guard=int(opts.direct_marginalization_time_guard),
                 reserve_time_refine=_f0,
-                reserve_time_refine_max=max(
-                    _f0, DirectMargPolicyConfig().reserve_time_refine_max),
+                reserve_time_refine_max=int(
+                    opts.direct_marginalization_reserve_time_refine_max),
                 total_value_error_budget_nats=float(
                     opts.direct_marginalization_error_budget_nats))
         try:
@@ -2522,7 +2548,8 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
             "note: %s" % (like.direct_marginalization_policy,
                           int(np.sum(~np.isfinite(np.asarray(lnL)))),
                           int(np.size(lnL)),
-                          direct_marginalization_policy_note(like, theta)))
+                          direct_marginalization_policy_note(
+                              like, theta, n_max=32)))
     _policy_note = direct_marginalization_policy_note(like, theta)
     if _policy_note:
         sys.stderr.write("NOTE integrate_likelihood_extrinsic_jax: %s\n"
