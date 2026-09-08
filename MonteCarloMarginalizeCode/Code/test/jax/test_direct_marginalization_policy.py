@@ -460,3 +460,146 @@ def test_the_driver_CLI_offers_the_policy_and_rejects_a_typo():
     assert "--direct-marginalization-time-guard" in out
     assert "--direct-marginalization-reserve-time-refine" in out
     assert "--direct-marginalization-error-budget-nats" in out
+
+
+# ------------------------------------------- row batching is a COST knob only
+
+def _policy_like(batch_rows, data, **kw):
+    cfg = DP.PolicyConfig(time_guard=16, reserve_time_refine=4,
+                          reserve_time_refine_max=8,
+                          reserve_batch_rows=batch_rows)
+    return JAXDistPhiPsiMargLikelihood(
+        data, 30.0, 3000.0, angle_marg="exact",
+        direct_marginalization_policy="auto", policy_config=cfg, **kw)
+
+
+def test_row_batch_size_changes_cost_not_values_decisions_or_gradients():
+    """``reserve_batch_rows`` may only move cost.
+
+    Executing B rows together turns the controller's tier-escalation
+    ``lax.cond`` into a ``select`` under ``vmap``, so EVERY reserve tier runs
+    for EVERY row in the batch instead of only for the rows that failed their
+    warrant.  That is a real change to the executed graph, and it must leave
+    the selected value, every branch decision in the ledger, the summary
+    counts, and the reverse-mode gradient exactly where the row-at-a-time path
+    put them.  The gradient is checked separately from the value because a
+    ``select`` propagates the untaken branch's nan into the cotangent even
+    when it discards the untaken branch's value -- the classic ``where``
+    nan-gradient trap, which a value-only comparison cannot see.
+    """
+    S = 6
+    ra = np.linspace(0.55, 1.35, S)
+    dec = np.linspace(0.05, 0.75, S)
+    incl = np.linspace(0.35, 2.45, S)
+    data = make_synth(scale=2.0, kappa_boost=10.0)
+    kw = dict(nphi=32, npsi=8, interp=INTERP)
+    args = (jnp.asarray(ra), jnp.asarray(dec), jnp.asarray(incl))
+
+    ref_like = _policy_like(1, data, **kw)
+    ref_lnL, ref_led = ref_like._batched_ledger(*args)
+    ref_lnL = np.asarray(ref_lnL)
+    ref_led = {k: np.asarray(v) for k, v in ref_led.items()}
+    ref_sum = DP.summarize_policy_ledger(ref_led)
+    assert ref_sum["reserve_batch_execution_sequential"] is True
+    assert ref_sum["reserve_batch_rows"] == 1
+
+    # The comparison is only meaningful if the escalation predicate is
+    # actually mixed across the batch: with a uniform predicate the select
+    # would agree with the cond for trivial reasons.  Assert the fixture
+    # still produces both, so a future retune cannot silently blind this.
+    esc = ref_led["reserve_escalations"]
+    assert esc.min() != esc.max(), (
+        "fixture no longer mixes escalating and non-escalating rows "
+        "(escalations=%r); the batched/sequential comparison would be blind"
+        % (esc,))
+
+    mid = np.array([ra[S // 2], dec[S // 2], incl[S // 2]])
+    ref_v, ref_g = ref_like.value_and_grad(mid)
+    assert np.all(np.isfinite(ref_g)), ref_g
+
+    for B in (2, 4, 0):          # 0 == one full batch of all S rows
+        like = _policy_like(B, data, **kw)
+        lnL, led = like._batched_ledger(*args)
+        lnL = np.asarray(lnL)
+        led = {k: np.asarray(v) for k, v in led.items()}
+
+        np.testing.assert_array_equal(np.isnan(lnL), np.isnan(ref_lnL))
+        np.testing.assert_allclose(lnL, ref_lnL, rtol=0.0, atol=1e-13,
+                                   equal_nan=True)
+
+        assert set(led) == set(ref_led)
+        for key, want in sorted(ref_led.items()):
+            if key in ("reserve_batch_execution_sequential",
+                       "reserve_batch_rows_requested"):
+                continue
+            got = led[key]
+            if want.dtype == bool or np.issubdtype(want.dtype, np.integer):
+                np.testing.assert_array_equal(
+                    got, want, err_msg="batch_rows=%d moved ledger key %r"
+                    % (B, key))
+            else:
+                np.testing.assert_array_equal(
+                    np.isfinite(got), np.isfinite(want),
+                    err_msg="batch_rows=%d moved finiteness of %r" % (B, key))
+                np.testing.assert_allclose(
+                    got, want, rtol=0.0, atol=1e-13, equal_nan=True,
+                    err_msg="batch_rows=%d moved ledger key %r" % (B, key))
+
+        summ = DP.summarize_policy_ledger(led)
+        for key in ref_sum:
+            if key in ("reserve_batch_rows",
+                       "reserve_batch_execution_sequential"):
+                continue
+            assert summ[key] == ref_sum[key], (B, key, summ[key], ref_sum[key])
+
+        # The ledger key must state what actually happened.  It read True
+        # unconditionally before the batch size was a knob.
+        assert summ["reserve_batch_execution_sequential"] is False
+        assert summ["reserve_batch_rows"] == (B if B else S)
+        assert not np.any(led["reserve_batch_execution_sequential"])
+
+        # The gradient is compared at EVERY batch size.  Dropping it to one
+        # size, and halving nphi, were both tried and neither moved the test's
+        # cost (640.8 s against 641.6 s on the ldas-grid CPU runner), so the
+        # cheaper variants bought nothing and this keeps the coverage.
+        v, g = like.value_and_grad(mid)
+        assert np.all(np.isfinite(g)), (B, g)
+        assert abs(v - ref_v) <= 1e-13, (B, v, ref_v)   # measured exactly 0
+        # Relative, not absolute: the select re-associates the cotangent sum,
+        # so the gradient is equal to ~1 ulp rather than bitwise (measured
+        # 2.8e-14 on a Blackwell GPU and 5.6e-14 on CPU against |dlnL/dincl|
+        # ~ 141).  A branch decision that actually moved would be O(1) nats.
+        np.testing.assert_allclose(g, ref_g, rtol=1e-12, atol=1e-12,
+                                   err_msg="batch_rows=%d moved the gradient" % B)
+
+
+@pytest.mark.parametrize("bad", [-1, -8, 2.5, "4", None])
+def test_row_batch_size_refuses_what_it_cannot_execute(bad):
+    with pytest.raises(ValueError):
+        DP.validate_batch_rows(bad)
+
+
+def test_driver_offers_the_batch_rows_knob_and_scopes_it():
+    root = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))))
+    driver = os.path.join(root, "bin", "integrate_likelihood_extrinsic_jax")
+    env = dict(os.environ)
+    env["PYTHONPATH"] = root + os.pathsep + env.get("PYTHONPATH", "")
+    env["JAX_PLATFORMS"] = "cpu"
+
+    def run(*args):
+        p = subprocess.run([sys.executable, driver] + list(args), env=env,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           timeout=600)
+        return p.returncode, p.stdout.decode("utf-8", "replace")
+
+    rc, out = run("--help")
+    assert "--direct-marginalization-batch-rows" in out
+    # Inert without the policy, and refused rather than clamped when negative.
+    rc, out = run("--mode", "flowmc-phipsimarg",
+                  "--direct-marginalization-batch-rows", "8")
+    assert rc != 0 and "inert" in out, out[-1500:]
+    rc, out = run("--mode", "flowmc-phipsimarg",
+                  "--direct-marginalization-policy", "auto",
+                  "--direct-marginalization-batch-rows", "-1")
+    assert rc != 0 and "batch-rows" in out, out[-1500:]

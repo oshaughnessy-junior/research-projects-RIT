@@ -744,7 +744,17 @@ fi
 # off this job own collection line:
 # "574/579 tests collected (5 deselected)", gate-style count 574 from 37
 # files.
-EXPECTED_TESTS=574
+#
+# ELEVENTH, on the four-axis policy row-batching branch (this change).  It adds
+# SEVEN tests to test_direct_marginalization_policy.py (the batched/sequential
+# equivalence test, five parametrized validate_batch_rows cases, and the driver
+# knob test) and adds no file, so the file count is unchanged at 37.  Measured
+# on this tree, ldas-grid, ~/.cache/jaxci_venv, by running THIS script and
+# reading its own collection line rather than adding 7 to the base:
+# "collected 581 tests from 37 files".  (The script captures pytest's own
+# "N/M tests collected" line into collect_out and only prints it on failure,
+# so the gate-style count is the number quoted here.)
+EXPECTED_TESTS=581
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"

@@ -119,7 +119,37 @@ class PolicyConfig(NamedTuple):
     time_outside_tol_nats: float = -23.0
     reserve_dense_chunk: int = 8
     reserve_grid_block: int = 32
+    # Rows the controller executes together under one ``vmap``.  1 is the
+    # row-at-a-time path (``lax.map`` with no ``batch_size``), whose reserve
+    # workspace is one row's.  Above 1, ``B`` rows share a scan step, peak
+    # device memory scales with ``B`` times one row's reserve workspace, and
+    # the tier-escalation ``lax.cond`` inside the controller becomes a
+    # ``select`` that evaluates EVERY tier for EVERY row in the batch -- so
+    # arithmetic per row rises with the tier count while wall time falls with
+    # occupancy.  Values, branch decisions and gradients are unchanged; only
+    # cost is.  0 means one full batch of all rows.
+    reserve_batch_rows: int = 1
     norm_invariance_rtol: float = 1.0e-10
+
+
+def validate_batch_rows(batch_rows):
+    """Refuse a row-batch size the controller cannot execute.
+
+    Returns the integer.  Negative sizes and non-integers are refused here so
+    the driver and the library agree on the same rule.
+    """
+    try:
+        b = int(batch_rows)
+    except (TypeError, ValueError):
+        raise ValueError("PolicyConfig.reserve_batch_rows must be an integer, "
+                         "got %r" % (batch_rows,))
+    if b != batch_rows:
+        raise ValueError("PolicyConfig.reserve_batch_rows must be an integer, "
+                         "got %r" % (batch_rows,))
+    if b < 0:
+        raise ValueError("PolicyConfig.reserve_batch_rows must be >= 0 "
+                         "(1 = row at a time, 0 = one full batch), got %d" % b)
+    return b
 
 
 def validate_policy_request(policy, *, angle_marg_scheme, time_quadrature,
@@ -297,6 +327,7 @@ def fused_log_likelihood_four_axis_policy(
     if config is None:
         config = PolicyConfig()
     guard = int(config.time_guard)
+    batch_rows = validate_batch_rows(config.reserve_batch_rows)
     if guard < 2:
         raise ValueError("PolicyConfig.time_guard must be >= 2: the local "
                          "path and the reserve both need the two-guard "
@@ -420,11 +451,34 @@ def fused_log_likelihood_four_axis_policy(
         led["reserve_escalations"] = escalations
         return sel, ok, led
 
-    selected, usable, ledger = jax.lax.map(
-        _row, (rows_A, norm0, base_plans, enriched_plans))
+    n_rows = int(rows_A.shape[0])
+    xs = (rows_A, norm0, base_plans, enriched_plans)
+    if batch_rows == 1:
+        # Row at a time.  Kept as a distinct call rather than batch_size=1 so
+        # the graph is the one PR #268 measured: batch_size=1 would still wrap
+        # the body in a vmap, paying the cond-to-select cost for no occupancy.
+        selected, usable, ledger = jax.lax.map(_row, xs)
+    elif batch_rows == 0 or batch_rows >= n_rows:
+        # One full batch.  Spelled as an explicit vmap rather than delegated
+        # to batch_size: jax 0.9.2 documents batch_size=0 as a full vmap, but
+        # the IGWN environment's jax 0.7.1 computes n // batch_size first and
+        # raises ZeroDivisionError, and a batch_size above the row count is a
+        # zero-length scan plus a remainder in both.  The explicit vmap is the
+        # same computation in every version.
+        selected, usable, ledger = jax.vmap(_row)(xs)
+    else:
+        selected, usable, ledger = jax.lax.map(_row, xs,
+                                               batch_size=batch_rows)
     ledger = dict(ledger)
-    ledger["reserve_batch_execution_sequential"] = jnp.ones(
-        (rows_A.shape[0],), dtype=bool)
+    # Truthful, not decorative: this key read True unconditionally before the
+    # batch size was a knob.  A row is executed sequentially only when the
+    # requested batch is 1; at any other size no row is guaranteed to be, and
+    # lax.map's trailing remainder means the batch a given row landed in is
+    # not recoverable per row -- so the requested size is recorded alongside.
+    ledger["reserve_batch_execution_sequential"] = jnp.full(
+        (n_rows,), batch_rows == 1, dtype=bool)
+    ledger["reserve_batch_rows_requested"] = jnp.full(
+        (n_rows,), batch_rows if batch_rows else n_rows, dtype=jnp.int32)
     usable = usable & norm_time_invariant
     # Fail closed: a value the controller could not warrant is not a
     # likelihood.  nan, never the finite diagnostic, reaches the sampler; the
@@ -467,6 +521,12 @@ def summarize_policy_ledger(ledger):
     if "reserve_escalations" in ledger:
         out["reserve_escalations"] = int(np.sum(
             np.asarray(ledger["reserve_escalations"])))
+    if "reserve_batch_rows_requested" in ledger:
+        req = np.asarray(ledger["reserve_batch_rows_requested"])
+        out["reserve_batch_rows"] = int(req[0]) if req.size else 0
+        out["reserve_batch_execution_sequential"] = bool(np.all(
+            np.asarray(ledger["reserve_batch_execution_sequential"],
+                       dtype=bool)))
     if "lnL" in ledger:
         out["nan_rows"] = int(np.sum(~np.isfinite(
             np.asarray(ledger["lnL"], dtype=float))))

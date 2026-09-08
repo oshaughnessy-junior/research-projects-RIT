@@ -328,7 +328,8 @@ def check_critical_and_report(opts, optp):
                       DIRECT_MARG_POLICY_DEFAULT)
     _policy_knobs = ("--direct-marginalization-time-guard",
                      "--direct-marginalization-reserve-time-refine",
-                     "--direct-marginalization-error-budget-nats")
+                     "--direct-marginalization-error-budget-nats",
+                     "--direct-marginalization-batch-rows")
     if _policy != "off":
         if getattr(opts, "mode", None) != "flowmc-phipsimarg":
             fatal.append("--direct-marginalization-policy %s applies only to "
@@ -349,6 +350,10 @@ def check_critical_and_report(opts, optp):
         if not (np.isfinite(_b) and _b > 0.0):
             fatal.append("--direct-marginalization-error-budget-nats must be "
                          "finite and positive")
+        _br = int(getattr(opts, "direct_marginalization_batch_rows", 1))
+        if _br < 0:
+            fatal.append("--direct-marginalization-batch-rows must be >= 0 "
+                         "(1 = row at a time, 0 = one full batch)")
     else:
         for _k in _policy_knobs:
             if was_supplied(opts, _k):
@@ -788,6 +793,18 @@ def build_parser():
                  help="Shared empirical value-error allowance, in nats, for the "
                       "policy's local acceptance and reserve warrant (default "
                       "1e-3).")
+    g.add_option("--direct-marginalization-batch-rows", type=int, default=1,
+                 help="Rows the policy's controller executes together under "
+                      "one vmap (default 1: row at a time; 0: one full batch). "
+                      "COST ONLY -- values, branch decisions and gradients are "
+                      "identical at every size, which is pinned by a test.  "
+                      "Above 1 the tier-escalation branch becomes a select "
+                      "that evaluates every reserve tier for every row, so "
+                      "arithmetic per row rises while wall time falls with GPU "
+                      "occupancy, and peak device memory scales with this "
+                      "number times one row's reserve workspace.  See "
+                      "DESIGN_direct_marginalization_policy.md for the "
+                      "measured rows/s and memory against this knob.")
     # flowMC tuning (modes flowmc / flowmc-phimarg).  Defaults match
     # samplers.flowmc_sample*; exposed so pipeline Makefiles can tune them.
     g.add_option("--n-training-loops", type=int, default=4,
@@ -2231,7 +2248,9 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
                 reserve_time_refine_max=max(
                     _f0, DirectMargPolicyConfig().reserve_time_refine_max),
                 total_value_error_budget_nats=float(
-                    opts.direct_marginalization_error_budget_nats))
+                    opts.direct_marginalization_error_budget_nats),
+                reserve_batch_rows=int(
+                    opts.direct_marginalization_batch_rows))
         try:
             like = JAXDistPhiPsiMargLikelihood(
                 like_data, d_lo, d_hi, nphi=nphi, npsi=npsi,
