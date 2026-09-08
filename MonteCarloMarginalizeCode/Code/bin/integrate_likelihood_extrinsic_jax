@@ -352,7 +352,9 @@ def check_critical_and_report(opts, optp):
                      "--direct-marginalization-reserve-time-refine",
                      "--direct-marginalization-reserve-time-refine-max",
                      "--direct-marginalization-error-budget-nats",
-                     "--direct-marginalization-batch-rows")
+                     "--direct-marginalization-batch-rows",
+                     "--direct-marginalization-policy-probe-rows",
+                     "--direct-marginalization-policy-probe-only")
     if _policy != "off":
         if getattr(opts, "mode", None) != "flowmc-phipsimarg":
             fatal.append("--direct-marginalization-policy %s applies only to "
@@ -392,6 +394,15 @@ def check_critical_and_report(opts, optp):
         if _br < 0:
             fatal.append("--direct-marginalization-batch-rows must be >= 0 "
                          "(1 = row at a time, 0 = one full batch)")
+        _pr = int(getattr(opts, "direct_marginalization_policy_probe_rows", 0))
+        if _pr < 0:
+            fatal.append("--direct-marginalization-policy-probe-rows must be "
+                         ">= 0 (0 disables the pre-sampling probe)")
+        if getattr(opts, "direct_marginalization_policy_probe_only", False) \
+                and _pr <= 0:
+            fatal.append("--direct-marginalization-policy-probe-only needs "
+                         "--direct-marginalization-policy-probe-rows > 0; "
+                         "otherwise it would exit having measured nothing")
     else:
         for _k in _policy_knobs:
             if was_supplied(opts, _k):
@@ -880,6 +891,25 @@ def build_parser():
                       "card holds 32 rows and not 64.  Raise it only with a "
                       "measurement that says it helps; see "
                       "DESIGN_direct_marginalization_policy.md.")
+    g.add_option("--direct-marginalization-policy-probe-rows", type=int,
+                 default=0,
+                 help="Evaluate the policy ledger on this many prior draws "
+                      "BEFORE sampling and print the accept/decline counts "
+                      "(default 0 = off).  The end-of-run note reports the same "
+                      "counts on the exported rows, but only a run that reaches "
+                      "the export can be classified that way, and a declining "
+                      "run is exactly the one that does not get there: each "
+                      "declined row pays three exact reserve evaluations and "
+                      "rows execute one at a time under jax.lax.map.  The probe "
+                      "answers 'local or reserve' in one compile plus this many "
+                      "rows.  The compile is not extra work for a policy run -- "
+                      "the end-of-run note jits the identical function.")
+    g.add_option("--direct-marginalization-policy-probe-only",
+                 action="store_true", default=False,
+                 help="Exit after the probe above, before any sampling.  For "
+                      "surveying operating points: it reports which acceptance "
+                      "diagnostic is declining without paying for a posterior.  "
+                      "Writes no samples and no evidence.")
     # flowMC tuning (modes flowmc / flowmc-phimarg).  Defaults match
     # samplers.flowmc_sample*; exposed so pipeline Makefiles can tune them.
     g.add_option("--n-training-loops", type=int, default=4,
@@ -2415,6 +2445,45 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
         print("  time guard: derived_initial=%d samples certified=%d samples; "
               "fine factor is curvature-derived per row with one doubling certificate"
               % (like.time_guard_initial, like.time_guard_certified))
+
+    # In-flight branch classification, BEFORE any sampling.
+    #
+    # direct_marginalization_policy_note() below reports the same counts, but it
+    # runs on the EXPORTED rows, so only a run that reaches the export can be
+    # classified -- and a declining run is precisely the one that does not get
+    # there.  A declined row executes the exact reserve (three evaluations: the
+    # refined rule, its half-refined check, and the guard comparison) and rows
+    # run one at a time under jax.lax.map, so declining costs enough that the
+    # 32-row prior pilot itself does not finish.  "Did the controller accept"
+    # was therefore unanswerable until the end of a run that never ends.
+    #
+    # The probe draws from the same prior the pilot draws from and calls the
+    # same ledger, so it predicts the pilot rather than describing something
+    # else.  Its compile is not extra work for a policy run: the end-of-run note
+    # jits the identical _batched_ledger.
+    _probe_rows = int(getattr(opts, "direct_marginalization_policy_probe_rows", 0))
+    if (getattr(like, "direct_marginalization_policy", "off") != "off"
+            and _probe_rows > 0):
+        import time as _time
+        from RIFT.likelihood.jax_ile.samplers import sample_prior_3 as _sp3
+        _theta_probe = _sp3(_probe_rows, np.random.default_rng(opts.seed))
+        _t0 = _time.time()
+        _probe_note = direct_marginalization_policy_note(
+            like, _theta_probe, n_max=_probe_rows, chunk=_probe_rows)
+        _dt = _time.time() - _t0
+        # stderr AND stdout: the surveys read one or the other, and an
+        # unclassifiable run is the failure this whole probe exists to remove.
+        _msg = ("PROBE integrate_likelihood_extrinsic_jax: prior-draw policy "
+                "ledger on %d rows in %.1f s (%.2f s/row incl. compile): %s"
+                % (_probe_rows, _dt, _dt / max(_probe_rows, 1), _probe_note))
+        print(_msg)
+        sys.stderr.write(_msg + "\n")
+        sys.stdout.flush()
+        sys.stderr.flush()
+        if getattr(opts, "direct_marginalization_policy_probe_only", False):
+            print("--direct-marginalization-policy-probe-only: exiting before "
+                  "sampling; no samples and no evidence were written.")
+            return None, None
 
     if opts.mode == "map":
         theta_map, lnL_map = run_map(like, opts, rng, dim, with_distance)
