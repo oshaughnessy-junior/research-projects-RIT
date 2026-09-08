@@ -1038,7 +1038,18 @@ class JAXDistPhiPsiMargLikelihood:
                 reserve_distance_gh_nodes=int(_core._DISTMARG_GH_N),
                 reserve_batch_rows=int(cfg.reserve_batch_rows),
                 total_value_error_budget_nats=float(
-                    cfg.total_value_error_budget_nats))
+                    cfg.total_value_error_budget_nats),
+                # The plan-sizing and tolerance knobs are reported for the same
+                # reason the resolved angle scheme is: they decide whether the
+                # controller can accept at all, and a caller that passed one and
+                # got the default back had no way to see it from the log.
+                max_modes=int(cfg.max_modes),
+                enriched_max_modes=int(cfg.enriched_max_modes),
+                base_oversample=int(cfg.base_oversample),
+                enriched_oversample=int(cfg.enriched_oversample),
+                base_max_starts=int(cfg.base_max_starts),
+                convergence_tol_nats=float(cfg.convergence_tol_nats),
+                time_guard_tol_nats=float(cfg.time_guard_tol_nats))
             self.angle_marg_info["direct_marginalization_policy"] = (
                 direct_marginalization_policy)
 
