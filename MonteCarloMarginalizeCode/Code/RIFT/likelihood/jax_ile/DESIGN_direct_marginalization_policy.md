@@ -106,13 +106,62 @@ is the standing rule on this arm.
 
 ## Cost
 
-The batch runs the controller row by row (`lax.map`), so reserve workspace
-is one row's. Planning is vectorized. Accepted rows pay fixed local work per
-retained mode; declined rows pay three exact reserve evaluations (refined
-rule at two guards, plus the half-refined check). The sampler's angle-scheme chunk
-cap applies because the resolved scheme is `exact`. The policy has not been
-profiled on a GPU under the sampler; PR #268 records single-row device
-timings only.
+Planning is vectorized. Accepted rows pay fixed local work per retained mode;
+declined rows pay three exact reserve evaluations (refined rule at two guards,
+plus the half-refined check). The sampler's angle-scheme chunk cap applies.
+
+`PolicyConfig.reserve_batch_rows` sets how many rows the controller executes
+under one `vmap`; `--direct-marginalization-batch-rows` exposes it. At 1 the
+rows run one at a time under `lax.map`, the graph PR #268 measured. Above 1
+the tier-escalation `lax.cond` becomes a `select`, so every reserve tier runs
+for every row in the batch. Nothing else changes:
+`test_row_batch_size_changes_cost_not_values_decisions_or_gradients` requires
+`lnL` bitwise equal, every ledger key and summary count equal, and the
+gradient equal to about one ulp, over the full-batch, whole-multiple and
+remainder paths.
+
+### Device workspace
+
+XLA buffer assignment, ladder-2 tables, NVIDIA RTX PRO 4000 Blackwell,
+jax 0.9.2, `--n-phi 32 --n-psi 8 --distance-grid-points 256`,
+`reserve_time_refine_max` 32:
+
+| `reserve_batch_rows` | temp GiB at rho 40.8 | temp GiB at rho 652.3 |
+|---|---|---|
+| 1  |  0.425 |  0.432 |
+| 2  |  0.812 |  0.822 |
+| 4  |  1.588 |  1.592 |
+| 8  |  3.132 |  3.132 |
+| 16 |  6.212 |  6.212 |
+| 32 | 12.371 | 12.371 |
+| 64 | 24.692 | 24.692 |
+
+The fit is `0.046 + 0.385 B` GiB, maximum residual 6 MiB. The rung does not
+enter: the reserve grids take their shape from the three grid options and only
+their sizing scalar from the amplitude. Measured device use at B=32 was
+23.3 GiB against the 12.4 GiB analysis figure, so buffer assignment understates
+the card about twofold. A 24 GiB card holds B=32 and not B=64.
+
+The tier count multiplies it. At B=8, `reserve_time_refine_max` 32 costs
+3.114 GiB and 138 s to compile; at 4 (one tier) the same batch costs
+0.415 GiB and 29 s. A batched row pays every tier.
+
+### Throughput
+
+Batching does not pay. Same idle card, rho 40.8,
+`reserve_time_refine_max` 4, `_batched_ledger`, second timed call:
+
+| `reserve_batch_rows` | rows | wall s | s per row | workspace GiB |
+|---|---|---|---|---|
+| 1 | 2 | 192.6 | 96.3 | 0.103 |
+| 8 | 8 | 799.3 | 99.9 | 0.415 |
+
+The first timed call gave 110.3 and 87.5 s per row, a spread of about 13%,
+wider than the gap between the two batch sizes. One row already fills the card,
+leaving a batch no occupancy to recover. The row loop is not why the
+Section VI.A cells stall. Every row here declined to the reserve
+(`accepted_local` 0 of 8), so the per-row cost is one reserve evaluation.
+Profile that next. `reserve_batch_rows` defaults to 1.
 
 ## Gate before this can be a default
 

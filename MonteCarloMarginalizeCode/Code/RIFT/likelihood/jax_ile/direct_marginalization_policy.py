@@ -121,13 +121,19 @@ class PolicyConfig(NamedTuple):
     reserve_grid_block: int = 32
     # Rows the controller executes together under one ``vmap``.  1 is the
     # row-at-a-time path (``lax.map`` with no ``batch_size``), whose reserve
-    # workspace is one row's.  Above 1, ``B`` rows share a scan step, peak
-    # device memory scales with ``B`` times one row's reserve workspace, and
-    # the tier-escalation ``lax.cond`` inside the controller becomes a
-    # ``select`` that evaluates EVERY tier for EVERY row in the batch -- so
-    # arithmetic per row rises with the tier count while wall time falls with
-    # occupancy.  Values, branch decisions and gradients are unchanged; only
-    # cost is.  0 means one full batch of all rows.
+    # workspace is one row's.  Above 1, ``B`` rows share a scan step, device
+    # workspace grows linearly in ``B``, and the tier-escalation ``lax.cond``
+    # becomes a ``select`` that evaluates EVERY tier for EVERY row in the
+    # batch.  Values, branch decisions and gradients are unchanged at every
+    # size; only cost is.  0 means one full batch of all rows.
+    #
+    # The default is 1 because batching was measured and does not pay.  On the
+    # ladder-2 tables at rho 40.8, one reserve tier, an idle RTX PRO 4000
+    # Blackwell: 96.3 s per row at B=1 and 99.9 s per row at B=8, for 4x the
+    # workspace (0.103 -> 0.415 GiB).  One row already saturates the card, so
+    # there is no occupancy for a batch to recover.  The row loop was not the
+    # reason the Section VI.A sampler cells stall; the per-row reserve is.
+    # See DESIGN_direct_marginalization_policy.md.
     reserve_batch_rows: int = 1
     norm_invariance_rtol: float = 1.0e-10
 
