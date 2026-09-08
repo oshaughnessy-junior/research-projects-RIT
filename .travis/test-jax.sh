@@ -428,6 +428,34 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         tested under `-W error::RuntimeWarning`, where
 #                                         warnings.warn had made the DEFAULT
 #                                         fail_on_fallback=False path raise.
+#   test_distance_gh_nodes_cli.py      23  --distance-gh-nodes: makes the per-sample
+#                                         Gauss-Hermite distance quadrature (previously
+#                                         reachable only via JAX_ILE_DISTMARG_GH) an ILE
+#                                         argument, and the warn-not-silently-ignore
+#                                         compatibility notes for --phase-marginalization
+#                                         on the four phi_ref-analytic modes,
+#                                         --sky-coordinates on the modes that do not
+#                                         implement it, and --d-prior (always volumetric).
+#                                         Parse-time CLI/env resolution and refusal run the
+#                                         real check_critical_and_report in-process (no
+#                                         subprocess), including that a CLI/env conflict on
+#                                         DIFFERENT nonzero values is REFUSED rather than
+#                                         reconciled, and that a refused command line never
+#                                         mutates core._DISTMARG_GH_N.  A numeric liveness
+#                                         check on cheap synthetic packed data (no lal, no
+#                                         frames) pins that the resolved count actually
+#                                         changes the constructed likelihood's VALUE, not
+#                                         just an echoed CLI flag, with a fresh jax.jit
+#                                         closure per setting so no stale trace can mask the
+#                                         difference; and that 0 reproduces the untouched
+#                                         legacy grid bit-for-bit.  Two subprocess checks
+#                                         against the real driver entry point (--inj-mode,
+#                                         tiny budget, stopped at the same known
+#                                         post-construction validation error
+#                                         test_distance_grid_loguniform.py's own subprocess
+#                                         test relies on) confirm the resolved count reaches
+#                                         the run log end to end.  Needs no lal beyond what
+#                                         build_likelihood_data already requires; no GPU.
 
 FILES=(
   "${JAXDIR}/test_jax_time_quadrature.py"
@@ -467,6 +495,7 @@ FILES=(
   "${JAXDIR}/test_jax_phase_marg_mode_order.py"
   "${JAXDIR}/test_jax_q_time_pregrid.py"
   "${JAXDIR}/test_direct_marginalization_policy.py"
+  "${JAXDIR}/test_distance_gh_nodes_cli.py"
 )
 
 # EXCLUDED: files in JAXDIR matching test_*.py that are deliberately NOT gated.  The
@@ -765,7 +794,11 @@ fi
 # (/cvmfs/software.igwn.org/conda/envs/igwn/bin/python), read off this job's own
 # collection line: "577/582 tests collected (5 deselected)", gate-style count 577
 # from 37 files.
-EXPECTED_TESTS=577
+#
+# TWELFTH, adding test_distance_gh_nodes_cli.py (--distance-gh-nodes, this branch).
+# 20 test_* entry points, one parametrized x4, so 23 collected; none deselected.
+# FILES is now 38 files, EXPECTED_TESTS raised by exactly that: 577 + 23 = 600.
+EXPECTED_TESTS=600
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"

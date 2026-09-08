@@ -82,9 +82,30 @@ from RIFT.likelihood.time_interp_choice import (SINC_HALFWIDTH_DEFAULT,
 # Nodes centred per-sample on x* with scale 1/sqrt(R) (trapezoid, gradient-stable
 # placement via stop_gradient) integrate it to machine precision at any SNR with
 # a few dozen nodes -- removing the evidence bias.  Enable with env
-# JAX_ILE_DISTMARG_GH=<n_nodes> (e.g. 64); 0 keeps the legacy uniform grid.
+# JAX_ILE_DISTMARG_GH=<n_nodes> (e.g. 64), or the driver's --distance-gh-nodes,
+# which calls set_distmarg_gh_nodes() below; 0 keeps the legacy uniform grid.
 # See make_distance_gh / _distmarg_gh_logL.
 _DISTMARG_GH_N = int(os.environ.get("JAX_ILE_DISTMARG_GH", "0"))
+
+
+def set_distmarg_gh_nodes(n):
+    """Set the per-sample Gauss-Hermite distance-quadrature node count.
+
+    Every reader of ``_DISTMARG_GH_N`` in this module (a bare global lookup)
+    and in the sibling modules that hold a reference to this one (``_core.
+    _DISTMARG_GH_N``, an attribute lookup) resolves it dynamically at CALL
+    time, not at import time -- so calling this after those modules have
+    already been imported is sufficient; nothing needs to be re-imported.
+    This is what makes the driver's ``--distance-gh-nodes`` option reachable
+    without import-order fragility.  ``n=0`` restores the legacy uniform grid.
+    """
+    global _DISTMARG_GH_N
+    _DISTMARG_GH_N = int(n)
+
+
+def get_distmarg_gh_nodes():
+    """Return the currently active per-sample Gauss-Hermite node count."""
+    return _DISTMARG_GH_N
 
 import lal
 import lalsimulation as lalsim
