@@ -58,6 +58,44 @@ def _fast_ini(tmp_path):
     return out
 
 
+def _fast_ini_with_osg(tmp_path):
+    """The reference ini with OSG left ON and a tiny initial grid.
+
+    Unlike _fast_ini, use_osg/use_osg_file_transfer/use_osg_cip are NOT
+    disabled: this is deliberately the "OSG/singularity deployment this
+    repository's own reference ini defaults to" that the --use-jax-ile +
+    --use-osg BLOCKER (util_RIFT_pseudo_pipe.py's OSG/SINGULARITY refusal)
+    is about.  Used only to exercise the refusal itself, which fires before
+    any of use_osg_file_transfer's downstream branching is reached.
+    """
+    text = REF_INI.read_text()
+    text = re.sub(r"force-initial-grid-size=\d+", "force-initial-grid-size=4", text)
+    out = tmp_path / "ref_fast_osg.ini"
+    out.write_text(text)
+    return out
+
+
+def _fast_ini_with_osg_cvmfs(tmp_path):
+    """OSG/singularity ON, but use_osg_file_transfer=False (CVMFS frames).
+
+    With use_osg_file_transfer=True (the reference ini's own default, see
+    _fast_ini_with_osg), write_ILE_sub_simple additionally wraps the job in a
+    generated ile_pre.sh that builds local.cache at runtime -- ILE.sub's
+    "executable" line then names that wrapper, not the ILE driver, and the
+    driver path only appears inside the wrapper's body.  --use-cvmfs-frames
+    (added by pseudo_pipe when use_osg_file_transfer=False) skips that
+    wrapper, so this variant isolates exactly the mechanism the BLOCKER
+    finding is about: write_ILE_sub_simple's SINGULARITY_BASE_EXE_DIR +
+    basename(exe) rewrite of ILE.sub's own "executable" line.
+    """
+    text = REF_INI.read_text()
+    text = text.replace("use_osg_file_transfer=True", "use_osg_file_transfer=False")
+    text = re.sub(r"force-initial-grid-size=\d+", "force-initial-grid-size=4", text)
+    out = tmp_path / "ref_fast_osg_cvmfs.ini"
+    out.write_text(text)
+    return out
+
+
 def _shim_path_dir(tmp_path):
     """A directory with 'python' -> this interpreter.
 
@@ -90,8 +128,8 @@ def _env(tmp_path):
     return env
 
 
-def _build(tmp_path, rundir_name, extra_args):
-    ini = _fast_ini(tmp_path)
+def _build(tmp_path, rundir_name, extra_args, ini_fn=_fast_ini, extra_env=None):
+    ini = ini_fn(tmp_path)
     cache = tmp_path / "fake.cache"
     cache.write_text("")
     rundir = tmp_path / rundir_name
@@ -100,7 +138,10 @@ def _build(tmp_path, rundir_name, extra_args):
            "--use-coinc", str(COINC),
            "--use-rundir", str(rundir),
            "--fake-data-cache", str(cache)] + list(extra_args)
-    out = subprocess.run(cmd, cwd=str(tmp_path), env=_env(tmp_path), text=True,
+    env = _env(tmp_path)
+    if extra_env:
+        env.update(extra_env)
+    out = subprocess.run(cmd, cwd=str(tmp_path), env=env, text=True,
                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     return out, rundir
 
@@ -153,3 +194,57 @@ def test_use_jax_ile_and_ile_exe_are_mutually_exclusive(tmp_path):
         "--use-jax-ile", "--ile-exe", "/bin/true"])
     assert out.returncode != 0, "--use-jax-ile + --ile-exe was accepted"
     assert "--use-jax-ile and --ile-exe are mutually exclusive" in out.stdout
+
+
+def test_use_jax_ile_with_osg_is_refused_without_override(tmp_path):
+    """BLOCKER regression: --use-osg always adds --use-singularity, and
+    write_ILE_sub_simple then rewrites the condor executable under
+    SINGULARITY_BASE_EXE_DIR/"/usr/bin/", discarding the JAX resolution.  No
+    container this repo builds carries JAX, so this must be refused at
+    DAG-build time, not left to fail at every ILE job.
+    """
+    out, _rundir = _build(tmp_path, "run_osg_refused",
+                           ["--use-jax-ile"], ini_fn=_fast_ini_with_osg)
+    assert out.returncode != 0, "--use-jax-ile + --use-osg was accepted without --jax-ile-container-ok"
+    assert "--use-jax-ile with --use-osg is REFUSED at DAG-build time" in out.stdout
+    assert "--jax-ile-container-ok" in out.stdout
+
+
+def test_use_jax_ile_with_osg_override_rewrites_to_jax_exe_basename(tmp_path):
+    """With --jax-ile-container-ok, the refusal is bypassed and the existing
+    write_ILE_sub_simple singularity rewrite (SINGULARITY_BASE_EXE_DIR +
+    basename(exe)) resolves to the JAX driver's basename, not the batchmode
+    driver's -- i.e. the override does not silently fall back to batchmode.
+    """
+    extra_env = {
+        "SINGULARITY_RIFT_IMAGE": "/fake/rift.sif",
+        # write_ILE_sub_simple concatenates this directly with basename(exe)
+        # (no separator inserted), so it must carry its own trailing slash --
+        # exactly as every real caller sets it (env, ini singularity_base_exe_dir).
+        "SINGULARITY_BASE_EXE_DIR": "/fake/base_exe_dir/",
+    }
+    out, rundir = _build(tmp_path, "run_osg_override",
+                          ["--use-jax-ile", "--jax-ile-container-ok"],
+                          ini_fn=_fast_ini_with_osg_cvmfs, extra_env=extra_env)
+    assert out.returncode == 0, out.stdout[-4000:]
+    line = _executable_line(rundir / "ILE.sub")
+    assert line.endswith("/fake/base_exe_dir/integrate_likelihood_extrinsic_jax"), line
+    assert "integrate_likelihood_extrinsic_batchmode" not in line
+
+
+def test_use_jax_ile_with_lisa_known_sky_is_refused(tmp_path):
+    """MINOR regression: run_lisa_known_sky_surface hardcodes
+    integrate_likelihood_extrinsic_batchmode_lisa and never reads
+    opts.use_jax_ile -- a separate driver, not "the same code" as the LDG/
+    OSG ILE selection under test above, so silently ignoring the flag would
+    mislead the user into thinking they got the JAX driver.  Refused instead.
+    """
+    rundir = tmp_path / "run_lisa_jax_refused"
+    cmd = [sys.executable, str(PSEUDO_PIPE),
+           "--lisa-known-sky", "--use-jax-ile",
+           "--use-rundir", str(rundir), "--approx", "IMRPhenomD"]
+    out = subprocess.run(cmd, cwd=str(tmp_path), env=_env(tmp_path), text=True,
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    assert out.returncode != 0, "--lisa-known-sky --use-jax-ile was accepted"
+    assert "--use-jax-ile has no effect on --lisa-known-sky" in out.stdout
+    assert not rundir.exists(), "LISA workdir was created despite the refusal"
