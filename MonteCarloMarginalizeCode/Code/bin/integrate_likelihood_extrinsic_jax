@@ -177,6 +177,7 @@ _ILE_BOOL_OPTS = {
     "--internal-reparam-dl-incl", "--internal-use-lnL",
     "--distance-slice-all-fresh",
     "--distance-slice-randomize",
+    "--psi-marginalization",
 }
 # ILE options taking repeated values (action=append).
 _ILE_APPEND_OPTS = {
@@ -250,7 +251,7 @@ _ILE_ALL_OPTS = {
     "--portfolio-revive-period", "--portfolio-varaha-can-freeze",
     "--portfolio-varaha-max-frac", "--portfolio-varaha-min-frac",
     "--portfolio-varaha-never-freeze", "--portfolio-weight-clip", "--psd-file",
-    "--psd-window-shape", "--random-event", "--reference-freq",
+    "--psd-window-shape", "--psi-marginalization", "--random-event", "--reference-freq",
     "--resample-time-marginalization", "--restricted-mode-list-file",
     "--rom-group", "--rom-integrate-intrinsic", "--rom-limit-basis-size-to",
     "--reject-collapsed-live-volume", "--rom-param", "--rom-use-basis",
@@ -360,6 +361,11 @@ def check_critical_and_report(opts, optp):
         fatal.append("--zero-likelihood is not implemented")
     if is_set("--maximize-only"):
         fatal.append("--maximize-only is not implemented (this driver integrates)")
+    if is_set("--psi-marginalization"):
+        fatal.append("--psi-marginalization (analytic polarization-angle "
+                     "marginalization) is not implemented for psi-sampling modes "
+                     "on this driver; use --mode flowmc-phipsimarg or "
+                     "flowmc-dpsimarg, which marginalize psi by construction")
     # Cross-axis policy scope, at parse time (external review of #278, P1):
     # only --mode flowmc-phipsimarg reads the policy, so a request anywhere
     # else would otherwise complete on the ordinary likelihood, and the

@@ -221,12 +221,97 @@ def test_a_busy_shared_card_is_not_sized_from_its_ceiling(monkeypatch):
     assert got == 1 * GIB
 
 
-def test_a_zero_largest_free_block_is_a_known_full_device(monkeypatch):
-    """A reported zero is availability data, not a missing probe result."""
+def test_a_zero_largest_free_block_alone_is_not_known_full(monkeypatch):
+    """A zero largest-free-block reading by itself is NOT proof the device is full.
+
+    Regression (2026-09-08, jax 0.9.2, ldas-pcdev11, idle 24 GiB RTX PRO 4000):
+    ``largest_free_block_bytes`` is simply never populated on this jax version -- it
+    reads 0 both before any allocation and after one.  Treating a bare 0 as "full"
+    made the exact scheme's preflight refuse on an idle card with
+    "allowance of 0 bytes".  With no pool information either, this is an unknown, not
+    a full device: fall back to the conservative 4 GiB, same as an unreadable device.
+    """
     _fake_jax(monkeypatch, devices=[_Dev("gpu", 24 * GIB, free=0)])
+    assert sam._angle_marg_buffer_target() == 4 * GIB
+    # cap = target // (8192 bytes/sample-pt * 1193) = 4 GiB // 9773056 = 439; the
+    # requested 4000 does not fit whole, so the point proven here is "no MemoryError",
+    # not "chunk unchanged".
+    assert sam.angle_marg_eval_chunk(_Like("laplace", 1193), 4000) == 439
+
+
+def test_a_zero_largest_free_block_with_a_full_pool_is_still_known_full(monkeypatch):
+    """The pool signal can still report a genuinely full device even when the
+    free-block signal is uninformative (as on jax 0.9.2): the "full" case in the
+    docstring is real and must survive the fix to the "unreported" case above."""
+    _fake_jax(monkeypatch,
+              devices=[_Dev("gpu", 24 * GIB, free=0, pool=24 * GIB, in_use=24 * GIB)])
     assert sam._angle_marg_buffer_target() == 0
     with pytest.raises(MemoryError):
         sam.angle_marg_eval_chunk(_Like("laplace", 1193), 4000)
+
+
+# --- jax 0.9.2 default-preallocation dicts, measured 2026-09-08 on ldas-pcdev11 -----
+# largest_free_block_bytes is 0 in all three (never populated on this jax version);
+# pool_bytes is 0 until the first allocation.  This is the actual reproduction: PR #250
+# made 0 mean "full" for both signals, so `integrate_likelihood_extrinsic_jax
+# --mode flowmc-phipsimarg --angle-marg-scheme exact` (exact is that mode's default)
+# refused at the preflight on an idle, otherwise-healthy GPU.
+
+JAX092_BEFORE_ALLOC = {
+    "bytes_limit": 18895355904,
+    "bytes_in_use": 0,
+    "pool_bytes": 0,
+    "largest_free_block_bytes": 0,
+    "bytes_reservable_limit": None,
+}
+
+JAX092_AFTER_8MB = {
+    "bytes_limit": 18895355904,
+    "bytes_in_use": 8388608,
+    "pool_bytes": 1259690240,
+    "largest_free_block_bytes": 0,
+}
+
+JAX092_AFTER_512MB = {
+    "bytes_limit": 18895355904,
+    "bytes_in_use": 545259520,
+    "pool_bytes": 1259690240,
+    "largest_free_block_bytes": 0,
+}
+
+
+class _StatsDev(object):
+    """A device whose memory_stats() returns one exact dict, verbatim."""
+    def __init__(self, platform, stats):
+        self.platform = platform
+        self._stats = stats
+
+    def memory_stats(self):
+        return dict(self._stats)
+
+
+def test_device_available_bytes_before_any_allocation_is_unknown():
+    """Both signals report 0 before the pool exists; neither is a real reading."""
+    assert sam._device_available_bytes(JAX092_BEFORE_ALLOC) is None
+
+
+def test_device_available_bytes_after_8mb_is_positive():
+    assert sam._device_available_bytes(JAX092_AFTER_8MB) == 1259690240 - 8388608
+
+
+def test_device_available_bytes_after_512mb_is_positive():
+    assert sam._device_available_bytes(JAX092_AFTER_512MB) == 1259690240 - 545259520
+
+
+def test_jax092_before_allocation_falls_back_not_refuses(monkeypatch):
+    """THE reproduction.  614 points at the module's 8192 bytes/sample-point is
+    5029888 bytes -- the exact figure the preflight quoted in the failure this PR
+    fixes -- and now fits under the 4 GiB fallback once 0 stops meaning "full",
+    capping the requested chunk of 4000 down to 853 (= 4 GiB // 5029888) instead
+    of refusing outright."""
+    _fake_jax(monkeypatch, devices=[_StatsDev("gpu", JAX092_BEFORE_ALLOC)])
+    assert sam._angle_marg_buffer_target() == 4 * GIB
+    assert sam.angle_marg_eval_chunk(_Like("exact", 614), 4000) == 853
 
 
 def test_a_ceiling_with_no_free_report_falls_back_rather_than_guessing_up(monkeypatch):
@@ -529,3 +614,98 @@ def test_a_malformed_bytes_override_is_not_swallowed_by_the_probe(monkeypatch):
     monkeypatch.setenv("RIFT_ANGLEMARG_BUFFER_BYTES", "24GiB")
     with pytest.raises(ValueError):
         sam._angle_marg_buffer_target()
+
+
+# --- forced probe allocation, review MAJOR (2026-09-08) ---------------------
+# The tests above all fake `jax.devices()` but never touch `jax.device_put` or
+# `jax.numpy`, so `_probe_allocate` fails with AttributeError against every fake
+# device above and is silently swallowed -- which is exactly why none of those
+# tests needed to change for this fix.  The tests below drive the post-probe LOGIC
+# directly: `_probe_allocate` is monkeypatched to a no-op and the fake device's
+# `memory_stats()` is set to the dict a real probe would have produced, so a real
+# GPU is never touched.
+#
+# Without a forced allocation, `_angle_marg_buffer_target()` on jax 0.9.2 read
+# `pool_bytes=0` before this process's first allocation and returned the blind
+# 4 GiB fallback even on a busy shared card with ~0.5 GiB truly free -- 8x too
+# much (review MAJOR).  The fix forces one tiny allocation first so the pool
+# signal exists, then trusts `pool - bytes_in_use` only when the resulting pool is
+# not small next to `bytes_limit` (the on-demand-allocator ambiguity, handled
+# separately below).
+
+def _mock_probe(monkeypatch):
+    """Replace the real device-allocation probe with a no-op, so these tests
+    exercise the post-probe branch in `_angle_marg_buffer_target` without ever
+    calling into a real jax runtime."""
+    monkeypatch.setattr(sam, "_probe_allocate", lambda jax_module, dev: None)
+
+
+def test_probe_allocation_is_attempted_before_reading_stats(monkeypatch):
+    """The probe call itself must run: it is what makes the pool signal legible on
+    jax 0.9.2, where both `pool_bytes` and `largest_free_block_bytes` read 0 before
+    this process's first allocation (see JAX092_BEFORE_ALLOC above)."""
+    calls = []
+    monkeypatch.setattr(sam, "_probe_allocate",
+                         lambda jax_module, dev: calls.append(dev))
+    dev = _Dev("gpu", 24 * GIB, free=0)
+    _fake_jax(monkeypatch, devices=[dev])
+    sam._angle_marg_buffer_target()
+    assert calls == [dev]
+
+
+def test_a_successful_probe_on_a_busy_card_is_trusted_not_blind(monkeypatch):
+    """THE MAJOR REVIEW FINDING, fixed.  A PLAUSIBLE (not independently measured --
+    see PR #285 reply) post-probe dict for a busy shared card under jax 0.9.2's
+    default preallocating allocator: the forced allocation only succeeds because
+    ~384 MiB genuinely was free, so `pool_bytes` reports memory this process
+    actually holds and `bytes_limit` (reported once the pool exists) tracks it, so
+    the pool is not "small" by the half-of-limit rule below.  Before this fix, the
+    same before-probe state (`pool_bytes=0`) returned the blind 4 GiB fallback --
+    8x the true free memory."""
+    _mock_probe(monkeypatch)
+    stats = {"bytes_limit": 402653184, "bytes_in_use": 4096,
+             "pool_bytes": 402653184, "largest_free_block_bytes": 0}
+    _fake_jax(monkeypatch, devices=[_StatsDev("gpu", stats)])
+    got = sam._angle_marg_buffer_target()
+    assert got == int((402653184 - 4096) * sam._ANGLE_MARG_BUFFER_FRACTION)
+    assert got < 4 * GIB, "must not fall back to the blind guess once probed"
+
+
+def test_a_small_pool_next_to_a_large_limit_is_unknown_not_free(monkeypatch):
+    """The on-demand allocator (`XLA_PYTHON_CLIENT_PREALLOCATE=false`): the pool
+    grows only to fit what has actually been requested, so after the forced probe
+    it can stay tiny next to a `bytes_limit` that reports the device's full
+    capacity regardless.  `pool - bytes_in_use` would read as ~fully free here,
+    which is not a real measurement -- bound the blind guess by `bytes_limit -
+    bytes_in_use` instead of trusting it.  Could not measure ldas-pcdev11 GPU 3 for
+    this PR (thread count 431 >= the 380 dispatch ceiling both times checked); this
+    dict is PLAUSIBLE, labelled as such, not measured."""
+    _mock_probe(monkeypatch)
+    stats = {"bytes_limit": 18895355904, "bytes_in_use": 4096,
+             "pool_bytes": 2097152, "largest_free_block_bytes": 0}
+    _fake_jax(monkeypatch, devices=[_StatsDev("gpu", stats)])
+    got = sam._angle_marg_buffer_target()
+    assert got == min(4 * GIB, 18895355904 - 4096)
+
+
+def test_missing_bytes_in_use_is_unknown_not_free(monkeypatch):
+    """Review MINOR: a pool reported with no occupancy figure at all must not read
+    as fully free, through either entry point."""
+    assert sam._device_available_bytes({"pool_bytes": 16 * GIB}) is None
+    _mock_probe(monkeypatch)
+    stats = {"bytes_limit": 24 * GIB, "pool_bytes": 16 * GIB}
+    _fake_jax(monkeypatch, devices=[_StatsDev("gpu", stats)])
+    assert sam._angle_marg_buffer_target() == 4 * GIB
+
+
+def test_a_full_pool_still_refuses_after_the_probe_fix(monkeypatch):
+    """Design item 4: the genuinely-full-pool refusal must survive the probe and
+    the new small-pool/large-limit branch must not swallow it -- `pool == limit`
+    here, so the half-of-limit rule does not divert it."""
+    _mock_probe(monkeypatch)
+    stats = {"bytes_limit": 24 * GIB, "bytes_in_use": 24 * GIB,
+             "pool_bytes": 24 * GIB, "largest_free_block_bytes": 0}
+    _fake_jax(monkeypatch, devices=[_StatsDev("gpu", stats)])
+    assert sam._angle_marg_buffer_target() == 0
+    with pytest.raises(MemoryError):
+        sam.angle_marg_eval_chunk(_Like("laplace", 1193), 4000)

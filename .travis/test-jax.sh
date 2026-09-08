@@ -816,7 +816,23 @@ fi
 # mutation-target regression test for the reversed-priority case.  24 test_*
 # entry points now, one parametrized x4, so 27 collected; none deselected.
 # EXPECTED_TESTS raised by exactly that: 600 + 4 = 604.
-EXPECTED_TESTS=604
+#
+# FOURTEENTH, on rift_O4d (#285, not this branch): the jax 0.9.2 empty-pool cap fix
+# touches only test_anglemarg_buffer_cap.py: removes 1 test
+# (test_a_zero_largest_free_block_is_a_known_full_device, whose "0 means full" premise
+# was the bug) and adds 6, net +5, none parametrized.  577 + 5 = 582.
+#
+# FIFTEENTH, same file, the review-MAJOR follow-up (forced probe allocation before
+# reading memory_stats(), plus the on-demand-allocator bound): adds 5 tests, none
+# parametrized, no removals.  582 + 5 = 587.
+#
+# SIXTEENTH, reconciling TWELFTH/THIRTEENTH (this branch, test_distance_gh_nodes_cli.py,
+# +27 off the 577 base) with FOURTEENTH/FIFTEENTH (rift_O4d #285,
+# test_anglemarg_buffer_cap.py, +10 off the same 577 base) at this merge.  The two
+# deltas land in disjoint files, so unlike the earlier reconciliations in this history
+# the sum is exact, not a guess: 577 + 27 + 10 = 614.  FILES is 38 (37 + this branch's
+# one new file; #285 added no file).
+EXPECTED_TESTS=614
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
