@@ -1696,7 +1696,8 @@ def samples_path(opts, out_index):
     return opts.output_file + "_" + str(out_index) + "_samples.dat"
 
 
-def direct_marginalization_policy_note(like, theta, n_max=256, chunk=32):
+def direct_marginalization_policy_note(like, theta, n_max=256, chunk=32,
+                                       return_values=False):
     """Label the branch statistics of the exported rows under the policy.
 
     Returns "" when the policy is off.  Otherwise evaluates the ledger on up to
@@ -1708,10 +1709,11 @@ def direct_marginalization_policy_note(like, theta, n_max=256, chunk=32):
     policy = getattr(like, "direct_marginalization_policy", "off")
     ledger_fn = getattr(like, "_batched_ledger", None)
     if policy == "off" or ledger_fn is None:
-        return ""
+        return ("", None) if return_values else ""
     theta = np.asarray(theta)
     if theta.ndim != 2 or theta.shape[0] == 0:
-        return "DIRECT-MARG-POLICY=%s rows=0" % policy
+        _empty = "DIRECT-MARG-POLICY=%s rows=0" % policy
+        return (_empty, None) if return_values else _empty
     n = int(theta.shape[0])
     idx = np.unique(np.linspace(0, n - 1, min(n, int(n_max))).astype(int))
     parts = []
@@ -1724,7 +1726,7 @@ def direct_marginalization_policy_note(like, theta, n_max=256, chunk=32):
     summary = _summarize_policy_ledger(ledger)
     declines = ",".join("%s:%d" % (k.replace("decline_", ""), v)
                         for k, v in sorted(summary["declines"].items()))
-    return ("DIRECT-MARG-POLICY=%s rows=%d local=%d reserve=%d "
+    note = ("DIRECT-MARG-POLICY=%s rows=%d local=%d reserve=%d "
             "warranted-reserve=%d escalations=%d unusable=%d reconciles=%d "
             "declines=[%s] max-local-error-score-nats=%.3g"
             % (policy, summary["rows"], summary["accepted_local"],
@@ -1732,6 +1734,13 @@ def direct_marginalization_policy_note(like, theta, n_max=256, chunk=32):
                summary.get("reserve_escalations", 0),
                summary["unusable"], summary["reconciles"], declines,
                summary["max_local_error_score_nats"]))
+    if return_values:
+        # The per-row selected value, so two probes at ONE seed -- one whose
+        # config accepts, one forced onto the reserve -- can be differenced on
+        # exactly the same prior draws.  An accepted row never evaluates the
+        # reserve, so this is the only way to price the local branch against it.
+        return note, np.asarray(ledger["lnL"], dtype=float)
+    return note
 
 
 def angle_grid_suspect_note(scheme=None):
@@ -2565,14 +2574,19 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
         from RIFT.likelihood.jax_ile.samplers import sample_prior_3 as _sp3
         _theta_probe = _sp3(_probe_rows, np.random.default_rng(opts.seed))
         _t0 = _time.time()
-        _probe_note = direct_marginalization_policy_note(
-            like, _theta_probe, n_max=_probe_rows, chunk=_probe_rows)
+        _probe_note, _probe_vals = direct_marginalization_policy_note(
+            like, _theta_probe, n_max=_probe_rows, chunk=_probe_rows,
+            return_values=True)
         _dt = _time.time() - _t0
         # stderr AND stdout: the surveys read one or the other, and an
         # unclassifiable run is the failure this whole probe exists to remove.
         _msg = ("PROBE integrate_likelihood_extrinsic_jax: prior-draw policy "
                 "ledger on %d rows in %.1f s (%.2f s/row incl. compile): %s"
                 % (_probe_rows, _dt, _dt / max(_probe_rows, 1), _probe_note))
+        if _probe_vals is not None:
+            _msg += ("\nPROBE-VALUES seed=%d rows=%d lnL=[%s]"
+                     % (int(opts.seed), _probe_rows,
+                        ",".join("%.10g" % v for v in _probe_vals)))
         print(_msg)
         sys.stderr.write(_msg + "\n")
         sys.stdout.flush()
