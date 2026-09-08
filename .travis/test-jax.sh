@@ -765,7 +765,18 @@ fi
 # (/cvmfs/software.igwn.org/conda/envs/igwn/bin/python), read off this job's own
 # collection line: "577/582 tests collected (5 deselected)", gate-style count 577
 # from 37 files.
-EXPECTED_TESTS=577
+#
+# TWELFTH, the jax 0.9.2 empty-pool cap fix touches only test_anglemarg_buffer_cap.py:
+# removes 1 test (test_a_zero_largest_free_block_is_a_known_full_device, whose "0 means
+# full" premise was the bug) and adds 6, net +5, none parametrized -- so the file-local
+# delta is exact and this is a direct bump, not an arithmetic guess across a merge (the
+# failure mode the paragraphs above document).  577 + 5 = 582.
+#
+# THIRTEENTH, the review-MAJOR follow-up (forced probe allocation before reading
+# memory_stats(), plus the on-demand-allocator bound) again touches only
+# test_anglemarg_buffer_cap.py: adds 5 tests, none parametrized, no removals.
+# 582 + 5 = 587.
+EXPECTED_TESTS=587
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
