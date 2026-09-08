@@ -388,7 +388,7 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         so they are DESELECTED here -- see
 #                                         DESELECTED_TESTS -- and 15 are gated.
 #   test_direct_marginalization_policy.py
-#                                      12  opt-in cross-axis policy WIRING: choices and
+#                                      18  opt-in cross-axis policy WIRING: choices and
 #                                         refusals, measure conversion on both distance
 #                                         paths against the exact scheme, decline to a
 #                                         warranted band-limited reserve that keeps the
@@ -744,7 +744,28 @@ fi
 # off this job own collection line:
 # "574/579 tests collected (5 deselected)", gate-style count 574 from 37
 # files.
-EXPECTED_TESTS=574
+#
+# The policy follow-up PR (this branch, numbered NINTH on its own side before the
+# merge) adds three wiring tests (guard preflight,
+# operating-point defaults, and a parametrized fail-closed case).  Measured on
+# the follow-up tree with the DESELECT loop applied, ldas-grid, CVMFS igwn
+# python: "560/565 tests collected (5 deselected)", gate-style count 560 from
+# 36 files.
+# Both sides stale again after PR #279 (multipeak planner Newton step) landed
+# under this branch: re-measured on the merged tree, ldas-grid, CVMFS igwn
+# python, DESELECT applied: "564/569 tests collected (5 deselected)", gate-style
+# count 564 from 36 files.
+#
+# ELEVENTH, reconciling the policy follow-ups with #277 (this merge).  Both sides
+# were stale in the usual way -- 564 on the branch, 574 on rift_O4d -- and neither
+# number nor their difference describes the merged tree, because each side counted
+# a file set the other had already changed.  The FILES array is again the UNION,
+# now 37 files.  Re-measured on the merged tree with the DESELECT loop applied,
+# ldas-grid, CVMFS igwn python
+# (/cvmfs/software.igwn.org/conda/envs/igwn/bin/python), read off this job's own
+# collection line: "577/582 tests collected (5 deselected)", gate-style count 577
+# from 37 files.
+EXPECTED_TESTS=577
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"

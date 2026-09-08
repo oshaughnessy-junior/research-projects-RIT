@@ -102,6 +102,13 @@ class AllAxisModePlan(NamedTuple):
     separate here.  ``discovery_capacity_ok`` freezes whether the upstream
     bounded start portfolio fit without truncation; the empirical gate declines
     rather than trusting a caller-supplied boolean at evaluation time.
+    ``boundary_maximum_pinned`` records that a live start with a competitive
+    value ended on the time or distance boundary of the support after
+    refinement and was rejected by the stationarity filter.  Such a start is
+    a constrained maximum the local integral does not cover: on a synthetic
+    window whose exact lnL(t) peaks at the first sample, the plans that
+    ignored it accepted a value 22.7 nat below the exact reserve with every
+    other diagnostic passing.  The gate declines on it.
     """
 
     centers: jax.Array
@@ -119,6 +126,7 @@ class AllAxisModePlan(NamedTuple):
     time_cover_max_sample: jax.Array
     boxes_disjoint: jax.Array
     discovery_capacity_ok: jax.Array
+    boundary_maximum_pinned: jax.Array
 
 
 class UVHarmonicSummary(NamedTuple):
@@ -1284,7 +1292,8 @@ def make_all_axis_mode_plan(centers, *, max_modes, local_transforms,
                             time_outside_bound_certified=False,
                             time_cover_min_sample=np.nan,
                             time_cover_max_sample=np.nan,
-                            discovery_capacity_ok=True):
+                            discovery_capacity_ok=True,
+                            boundary_maximum_pinned=False):
     """Pad a host mode set and freeze its independent acceptance warrants."""
     centers = np.asarray(centers, dtype=float)
     if centers.ndim != 2 or centers.shape[1] != 4:
@@ -1348,7 +1357,8 @@ def make_all_axis_mode_plan(centers, *, max_modes, local_transforms,
         jnp.asarray(float(time_cover_min_sample)),
         jnp.asarray(float(time_cover_max_sample)),
         jnp.asarray(disjoint),
-        jnp.asarray(bool(discovery_capacity_ok)))
+        jnp.asarray(bool(discovery_capacity_ok)),
+        jnp.asarray(bool(boundary_maximum_pinned)))
 
 
 def _boxes_disjoint_device(centers, half_widths, live):
@@ -1398,7 +1408,7 @@ def _assemble_all_axis_mode_plan_device(
         C_A_t, start_plan, refined, x_min, x_max, *, max_modes,
         local_radius, time_guard, gradient_tol, tolerance,
         scaled_step_tol, eigenvalue_floor,
-        time_reconstruction_certified):
+        time_reconstruction_certified, boundary_keep_nats=30.0):
     """Select fixed-shape local geometry from an existing device refinement."""
     points, values, gradients, hessians, curvatures = refined
     if (points.shape != start_plan.starts.shape
@@ -1435,6 +1445,22 @@ def _assemble_all_axis_mode_plan_device(
     order = jnp.argsort(jnp.where(stationary, values, -jnp.inf))[::-1]
 
     n_time = C_A_t.shape[-1] - 2 * int(time_guard)
+    # A live start that refinement pinned to the support boundary and the
+    # stationarity filter then rejected is a constrained maximum no mode
+    # covers.  If its value is within ``boundary_keep_nats`` of the best live
+    # value it can carry the integral, so the plan records it and the gate
+    # declines rather than integrating the interior modes alone.
+    x_span = max(1.0e-300, float(x_max) - float(x_min))
+    at_time_bound = ((points[:, 0] <= 1.0e-9)
+                     | (points[:, 0] >= n_time - 1.0 - 1.0e-9))
+    at_x_bound = ((points[:, 3] <= float(x_min) + 1.0e-9 * x_span)
+                  | (points[:, 3] >= float(x_max) - 1.0e-9 * x_span))
+    live_finite = (start_plan.live & jnp.all(jnp.isfinite(points), axis=1)
+                   & jnp.isfinite(values))
+    best_live_value = jnp.max(jnp.where(live_finite, values, -jnp.inf))
+    pinned = (live_finite & (~stationary) & (at_time_bound | at_x_bound)
+              & (values >= best_live_value - float(boundary_keep_nats)))
+    boundary_maximum_pinned = jnp.any(pinned)
     fallback_center = jnp.asarray([
         0.5 * (n_time - 1.0), 0.0, 0.0,
         0.5 * (float(x_min) + float(x_max))])
@@ -1496,8 +1522,11 @@ def _assemble_all_axis_mode_plan_device(
         start_plan.time_cover_min_sample,
         start_plan.time_cover_max_sample,
         disjoint,
-        discovery_capacity_ok)
+        discovery_capacity_ok,
+        boundary_maximum_pinned)
     ledger = {
+        "boundary_maximum_pinned": boundary_maximum_pinned,
+        "n_boundary_pinned_starts": jnp.count_nonzero(pinned),
         "n_optimizer_starts": jnp.count_nonzero(start_plan.live),
         "n_refined_stationary": jnp.count_nonzero(stationary),
         "n_selected_modes": n_selected,
@@ -2037,6 +2066,8 @@ def empirical_enrichment_marginalize(
     finite = values_finite | (~has_modes)
     capacity_ok = (base_plan.discovery_capacity_ok
                    & enriched_plan.discovery_capacity_ok)
+    boundary_ok = ~(base_plan.boundary_maximum_pinned
+                    | enriched_plan.boundary_maximum_pinned)
     time_ok = (base["time_reconstruction_warranted"]
                & enriched["time_reconstruction_warranted"])
     any_time_cover = (base_plan.time_outside_bound_certified
@@ -2126,35 +2157,37 @@ def empirical_enrichment_marginalize(
     decline_nonfinite = ~finite
     decline_capacity = finite & (~capacity_ok)
     decline_no_modes = finite & capacity_ok & (~has_modes)
-    decline_mode_nesting = (finite & capacity_ok & has_modes
+    decline_boundary_maximum = (finite & capacity_ok & has_modes
+                                & (~boundary_ok))
+    decline_mode_nesting = (finite & capacity_ok & has_modes & boundary_ok
                             & (~mode_nesting_ok))
-    decline_time = (finite & capacity_ok & has_modes & mode_nesting_ok
-                    & (~time_ok))
+    decline_time = (finite & capacity_ok & has_modes & boundary_ok
+                    & mode_nesting_ok & (~time_ok))
     decline_time_cover = (
-        finite & capacity_ok & has_modes & mode_nesting_ok & time_ok
-        & (~time_cover_pair))
+        finite & capacity_ok & has_modes & boundary_ok & mode_nesting_ok
+        & time_ok & (~time_cover_pair))
     decline_time_omitted_bound = (
-        finite & capacity_ok & has_modes & mode_nesting_ok & time_ok
-        & time_cover_pair & (~time_tail_bounds_ok))
+        finite & capacity_ok & has_modes & boundary_ok & mode_nesting_ok
+        & time_ok & time_cover_pair & (~time_tail_bounds_ok))
     # Umbrella science diagnostic retained for callers that need only the
     # broad reason.  The two exclusive fields above own reconciliation.
     decline_time_omitted = decline_time_cover | decline_time_omitted_bound
-    decline_geometry = (finite & capacity_ok & has_modes & mode_nesting_ok
-                        & time_ok & time_omitted_ok
+    decline_geometry = (finite & capacity_ok & has_modes & boundary_ok
+                        & mode_nesting_ok & time_ok & time_omitted_ok
                         & (~geometry_ok))
-    decline_quadrature = (finite & capacity_ok & has_modes & mode_nesting_ok
-                          & time_ok & time_omitted_ok
+    decline_quadrature = (finite & capacity_ok & has_modes & boundary_ok
+                          & mode_nesting_ok & time_ok & time_omitted_ok
                           & geometry_ok & (~quadrature_ok))
-    decline_enrichment = (finite & capacity_ok & has_modes & mode_nesting_ok
-                          & time_ok & time_omitted_ok
+    decline_enrichment = (finite & capacity_ok & has_modes & boundary_ok
+                          & mode_nesting_ok & time_ok & time_omitted_ok
                           & geometry_ok & quadrature_ok & (~converged))
     decline_error_budget = (
-        finite & capacity_ok & has_modes & mode_nesting_ok
+        finite & capacity_ok & has_modes & boundary_ok & mode_nesting_ok
         & time_ok & time_omitted_ok & geometry_ok & quadrature_ok & converged
         & (~error_budget_ok))
-    accepted = (finite & capacity_ok & has_modes & mode_nesting_ok & time_ok
-                & time_omitted_ok & geometry_ok & quadrature_ok & converged
-                & error_budget_ok)
+    accepted = (finite & capacity_ok & has_modes & boundary_ok
+                & mode_nesting_ok & time_ok & time_omitted_ok & geometry_ok
+                & quadrature_ok & converged & error_budget_ok)
     accepted_value_uses_base_geometry = accepted & (~enriched_geometry_ok)
     accepted_value = jnp.where(
         accepted_value_uses_base_geometry, base_value, enriched_value)
@@ -2163,6 +2196,7 @@ def empirical_enrichment_marginalize(
         + decline_nonfinite.astype(jnp.int32)
         + decline_capacity.astype(jnp.int32)
         + decline_no_modes.astype(jnp.int32)
+        + decline_boundary_maximum.astype(jnp.int32)
         + decline_mode_nesting.astype(jnp.int32)
         + decline_time.astype(jnp.int32)
         + decline_time_cover.astype(jnp.int32)
@@ -2182,6 +2216,8 @@ def empirical_enrichment_marginalize(
         "decline_nonfinite": decline_nonfinite,
         "decline_capacity": decline_capacity,
         "decline_no_modes": decline_no_modes,
+        "decline_boundary_maximum": decline_boundary_maximum,
+        "boundary_maximum_ok": boundary_ok,
         "decline_mode_nesting": decline_mode_nesting,
         "decline_time_reconstruction": decline_time,
         "decline_time_cover_incomplete": decline_time_cover,
@@ -2458,9 +2494,16 @@ def empirical_enrichment_with_exact_reserve(
         nan = jnp.asarray(jnp.nan, dtype=jnp.float64)
         return local_value, nan, nan, reserve_time_check_value
 
+    # Both branches are rematerialized.  Reverse-mode AD through ``lax.cond``
+    # stores backward residuals for BOTH branches whatever the predicate, and
+    # the dense reserve's residuals at production amplitude are tens of GiB
+    # (a 158 GiB allocation was requested on a rho 163 production row, PR #278
+    # follow-up).  With checkpointing the backward pass recomputes the taken
+    # branch instead, so gradient memory is one forward evaluation.
     (selected_value, reserve_value, reserve_guard_value,
      reserve_time_check_value) = jax.lax.cond(
-        accepted_local, _accepted, _reserve, operand=None)
+        accepted_local, jax.checkpoint(_accepted), jax.checkpoint(_reserve),
+        operand=None)
     if use_internal_check:
         # Structural warrant: same primitive, same window, strictly coarser
         # check rule with a valid measure.  The value comparison itself is

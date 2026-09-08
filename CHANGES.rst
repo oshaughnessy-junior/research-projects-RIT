@@ -7,13 +7,21 @@ development tree is rift_O4d.
    ``--mode flowmc-phipsimarg`` composes PR #268's four-axis peak-local
    controller with the exact-angle reserve, per likelihood evaluation, under
    the controller's acceptance ledger; a decline runs a band-limited reserve
-   warranted by a two-guard comparison and the native rule as its check rule.
+   warranted by a two-guard comparison and its half-refined rule as the check rule.
    Default ``off``; ``--angle-marg-scheme auto`` is unchanged.  Refuses any
    scheme, time rule, prior or grid it cannot compose, any mode other than
    ``flowmc-phipsimarg``, and its own knobs when off.  A row the controller
    cannot warrant after escalating the reserve rule is ``nan`` and the run is
-   not published.  Value-only: gradient parity is not validated
-   (``DESIGN_direct_marginalization_policy.md``).
+   not published.  Defaults are the production-measured operating point
+   (oversample 2/4, 16 modes, guard 128); a guard the stored buffer cannot
+   supply is refused at construction.  The controller's branches are
+   rematerialized so reverse-mode gradients fit in memory at production
+   amplitude.  The peak-local gate now declines a row whose planner pinned a
+   competitive start to the time or distance boundary
+   (``decline_boundary_maximum``): a synthetic window with its mass on the
+   first sample had been ACCEPTED 22.7 nat low.  Gradient gate on rho 163
+   production rows: AD matches a re-planned finite difference to 1e-3 or
+   better on every accepted row (``DESIGN_direct_marginalization_policy.md``).
    ``multipeak_planner`` (PR #270) now imports its shared host primitives from
    ``all_axis_peaklocal``, which is canonical.
 

@@ -54,8 +54,10 @@ __all__ = [
     "POLICY_DEFAULT",
     "PolicyConfig",
     "validate_policy_request",
+    "validate_policy_config",
     "policy_log_normalization",
     "policy_time_rules",
+    "probe_guarded_tables",
     "policy_acceptance_diagnostics",
     "fused_log_likelihood_four_axis_policy",
     "summarize_policy_ledger",
@@ -70,6 +72,7 @@ _DECLINE_KEYS = (
     "decline_nonfinite",
     "decline_capacity",
     "decline_no_modes",
+    "decline_boundary_maximum",
     "decline_mode_nesting",
     "decline_time_reconstruction",
     "decline_time_cover_incomplete",
@@ -90,17 +93,26 @@ class PolicyConfig(NamedTuple):
     measured production operating point yet.
     """
 
-    time_guard: int = 16
+    # Guard: the ladder record (RIFT_roboto_paper analyses/va_sequence_20260902/
+    # RESULTS_20260907_aap268_ladder.md) accepted identically at guard 128 and
+    # 1024 on production tables; 128 is the largest the driver's default
+    # 0.15 s storage window supports.  A guard past the stored buffer is
+    # refused at construction (see the wrapper's probe), not read as a decline.
+    time_guard: int = 128
     reserve_time_refine: int = 4
     # Bounded escalation of the reserve rule on a failed warrant: the rule is
     # doubled (and re-checked against its own half) until it is warranted or
     # this factor is reached.  Rows still unwarranted return nan.
     reserve_time_refine_max: int = 32
     base_max_starts: int = 32
-    base_oversample: int = 1
-    enriched_oversample: int = 2
-    max_modes: int = 4
-    enriched_max_modes: int = 8
+    # Angular oversample 2/4 and 16 modes are the configuration that accepted
+    # on production tables at rho 163 and 326 (same record as above; 8 to 12
+    # candidates against 32 starts).  PR #268's test values 1/2 and 4/8
+    # overflowed capacity on synthetic carrier tables.
+    base_oversample: int = 2
+    enriched_oversample: int = 4
+    max_modes: int = 16
+    enriched_max_modes: int = 16
     # 6 whitened sigmas, the library default.  PR #268's composition test used
     # 3.0; on the wiring test's analytic fixture that truncated ~1% of the
     # four-dimensional mass and read 0.015 nat LOW against an independent
@@ -117,9 +129,45 @@ class PolicyConfig(NamedTuple):
     time_guard_tol_nats: float = 1.0e-3
     total_value_error_budget_nats: float = 1.0e-3
     time_outside_tol_nats: float = -23.0
-    reserve_dense_chunk: int = 8
+    # 64, not the kernel's 8: the reserve's reverse pass keeps one carry per
+    # dense-angle scan step, so gradient memory falls ~7x from 8 to 64
+    # (5.3 -> 0.73 GiB at refine 2, 21 -> 2.9 GiB at refine 8 on a rho 163
+    # production row).  The value is unchanged; per-step forward memory grows
+    # with the chunk.
+    reserve_dense_chunk: int = 64
     reserve_grid_block: int = 32
     norm_invariance_rtol: float = 1.0e-10
+
+
+def validate_policy_config(config):
+    """Refuse a PolicyConfig the composite would only reject at trace time."""
+    if not isinstance(config, PolicyConfig):
+        raise TypeError("policy_config must be a PolicyConfig")
+    if int(config.time_guard) < 2:
+        raise ValueError("PolicyConfig.time_guard must be >= 2: the local "
+                         "path and the reserve both need the two-guard "
+                         "comparison")
+    f, fm = int(config.reserve_time_refine), int(config.reserve_time_refine_max)
+    if f < 2 or f % 2:
+        raise ValueError("reserve_time_refine must be an even integer >= 2 "
+                         "so the check rule is the half-refined rule")
+    if fm < f or fm % 2:
+        raise ValueError("reserve_time_refine_max must be an even integer >= "
+                         "reserve_time_refine")
+    if not (np.isfinite(float(config.total_value_error_budget_nats))
+            and float(config.total_value_error_budget_nats) > 0.0):
+        raise ValueError("total_value_error_budget_nats must be finite and "
+                         "positive")
+    if int(config.base_oversample) < 1 or int(config.enriched_oversample) <= int(
+            config.base_oversample):
+        raise ValueError("enriched_oversample must exceed base_oversample "
+                         "(the enriched portfolio must be strictly stronger)")
+    if int(config.max_modes) < 1 or int(config.enriched_max_modes) < int(
+            config.max_modes):
+        raise ValueError("enriched_max_modes must be >= max_modes >= 1")
+    if not float(config.local_radius) > 0.0:
+        raise ValueError("local_radius must be positive")
+    return config
 
 
 def validate_policy_request(policy, *, angle_marg_scheme, time_quadrature,
@@ -231,6 +279,39 @@ def _refined_rule(npts, deltaT, refine, scale):
     return nodes, weights * scale
 
 
+def probe_guarded_tables(data, interp, guard, n_ra=6, decs=(-1.0, 0.0, 1.0)):
+    """Refuse a guard the stored data buffer cannot supply.
+
+    ``core._guarded_window`` gathers from ``-guard`` to ``npts+guard-1``;
+    samples the build never stored come back nonfinite with no error, and a
+    nonfinite table empties the start plan and reads as a method decline
+    (ladder record, aap268_ladder README).  The reachable guard depends on the
+    storage window and on the per-detector arrival offsets, which vary with the
+    sky position, so the probe sweeps a coarse sky grid at construction and
+    raises with the remedy if any table is nonfinite.  This is a preflight,
+    not a certificate: the per-row ``tables_finite`` flag still gates every
+    evaluation.
+    """
+    ra = jnp.asarray(np.tile(np.linspace(0.0, 2.0 * np.pi, int(n_ra),
+                                         endpoint=False), len(decs)))
+    dec = jnp.asarray(np.repeat(np.asarray(decs, dtype=float), int(n_ra)))
+    incl = jnp.full(ra.shape, 0.5 * np.pi)
+    C_A, C_B, _ = _anglemarg.angle_coefficient_tables(
+        data, ra, dec, incl, interp, guard=int(guard))
+    finite = bool(jnp.all(jnp.isfinite(C_A)) and jnp.all(jnp.isfinite(C_B)))
+    if not finite:
+        raise ValueError(
+            "direct-marginalization policy: the guarded coefficient tables are "
+            "not finite at time_guard=%d for this build.  The guard gathers "
+            "%d samples beyond each end of the %d-sample window, and the "
+            "stored data buffer (--internal-data-storage-window-half, minus "
+            "the per-detector arrival offsets) does not reach that far.  "
+            "Lower --direct-marginalization-time-guard or widen the storage "
+            "window; a nonfinite table is not a likelihood decline."
+            % (int(guard), int(guard), int(data.npts)))
+    return True
+
+
 def policy_time_rules(data, refine):
     """Refined reserve rule and its coarser check rule on the target window.
 
@@ -265,8 +346,9 @@ def policy_acceptance_diagnostics():
     """Names of the per-row booleans that must all hold for local acceptance,
     then the reserve warrant flags.  Documentation and audit order only."""
     return dict(
-        local=("norm_time_invariant", "base_capacity_ok",
-               "enriched_capacity_ok", "base_and_enriched_values_finite",
+        local=("tables_finite", "norm_time_invariant", "base_capacity_ok",
+               "enriched_capacity_ok", "boundary_maximum_ok",
+               "base_and_enriched_values_finite",
                "mode_nesting_ok", "geometry_nesting_ok",
                "time_omitted_mass_ok", "value_error_budget_ok",
                "accepted_local"),
@@ -296,11 +378,8 @@ def fused_log_likelihood_four_axis_policy(
     """
     if config is None:
         config = PolicyConfig()
+    validate_policy_config(config)
     guard = int(config.time_guard)
-    if guard < 2:
-        raise ValueError("PolicyConfig.time_guard must be >= 2: the local "
-                         "path and the reserve both need the two-guard "
-                         "comparison")
     if local_log_normalization is None:
         local_log_normalization, _ = policy_log_normalization(
             data, x_grid, log_w_grid)
@@ -323,6 +402,11 @@ def fused_log_likelihood_four_axis_policy(
     norm_dev = jnp.max(jnp.abs(rows_B - norm0[..., None]), axis=(1, 2, 3))
     norm_scale = jnp.maximum(1.0, jnp.max(jnp.abs(norm0), axis=(1, 2)))
     norm_time_invariant = norm_dev <= float(config.norm_invariance_rtol) * norm_scale
+    # A guard past the stored data buffer gathers samples the build never
+    # stored; they come back nonfinite with no error, empty the plan and would
+    # read as a method decline.  Name it as the input error it is.
+    tables_finite = (jnp.all(jnp.isfinite(rows_A), axis=(1, 2, 3))
+                     & jnp.all(jnp.isfinite(rows_B), axis=(1, 2, 3)))
 
     def _plan_row(table, norm):
         base = _aap.rank_joint_starts_from_uvq_device(
@@ -341,9 +425,10 @@ def fused_log_likelihood_four_axis_policy(
             local_radius=float(config.local_radius),
             time_guard=guard, iterations=int(config.refine_iterations),
             time_reconstruction_certified=False)
-        # Row-local control data.  Until derivative parity is established the
-        # discrete rank/dedup decisions are not part of the differentiated
-        # graph (PR #268's own composition test does the same).
+        # Row-local control data (inputs are already under stop_gradient; the
+        # output cut is kept so a direct caller of _plan_row gets the same
+        # contract).  Until derivative parity is established the discrete
+        # rank/dedup decisions are not part of the differentiated graph.
         base_plan = jax.tree.map(jax.lax.stop_gradient, base_plan)
         enriched_plan = jax.tree.map(jax.lax.stop_gradient, enriched_plan)
         planning = dict(
@@ -358,7 +443,13 @@ def fused_log_likelihood_four_axis_policy(
                 "n_lattice_evaluations"])
         return base_plan, enriched_plan, planning
 
-    base_plans, enriched_plans, planning = jax.vmap(_plan_row)(rows_A, norm0)
+    # Planning is control data.  Cutting the tangents at its INPUTS, not only
+    # at the plan outputs, keeps reverse-mode AD from tracing the 14-step
+    # Newton refinement over ~100 starts and stacking its residuals: with the
+    # cut at the outputs only, a rho 163 production row still asked for 85 GiB
+    # (158 GiB before the branches were rematerialized).
+    base_plans, enriched_plans, planning = jax.vmap(_plan_row)(
+        jax.lax.stop_gradient(rows_A), jax.lax.stop_gradient(norm0))
 
     refine0 = int(config.reserve_time_refine)
     refine_max = int(config.reserve_time_refine_max)
@@ -403,17 +494,20 @@ def fused_log_likelihood_four_axis_policy(
 
     def _row(args):
         table, norm, base_plan, enriched_plan = args
-        state = _controller(table, norm, base_plan, enriched_plan, tiers[0])
+        # Each tier is rematerialized: reverse-mode AD otherwise keeps the
+        # residuals of every tier's dense reserve alive at once.
+        state = jax.checkpoint(
+            lambda t, nm, bp, ep: _controller(t, nm, bp, ep, tiers[0]))(
+                table, norm, base_plan, enriched_plan)
         escalations = jnp.asarray(0)
         for tier in tiers[1:]:
             sel, ok, led = state
             need = (led["reserve_executed"] & led["reserve_finite"]
                     & (~led["reserve_time_warranted"]))
-            state = jax.lax.cond(
-                need,
-                lambda _: _controller(table, norm, base_plan, enriched_plan,
-                                      tier),
-                lambda st: st, state)
+            run_tier = jax.checkpoint(
+                lambda _, tier=tier: _controller(
+                    table, norm, base_plan, enriched_plan, tier))
+            state = jax.lax.cond(need, run_tier, lambda st: st, state)
             escalations = escalations + need.astype(escalations.dtype)
         sel, ok, led = state
         led = dict(led)
@@ -425,7 +519,7 @@ def fused_log_likelihood_four_axis_policy(
     ledger = dict(ledger)
     ledger["reserve_batch_execution_sequential"] = jnp.ones(
         (rows_A.shape[0],), dtype=bool)
-    usable = usable & norm_time_invariant
+    usable = usable & norm_time_invariant & tables_finite
     # Fail closed: a value the controller could not warrant is not a
     # likelihood.  nan, never the finite diagnostic, reaches the sampler; the
     # driver refuses to publish a run that contains such rows.
@@ -433,6 +527,8 @@ def fused_log_likelihood_four_axis_policy(
     ledger.update(planning)
     ledger["norm_time_invariant"] = norm_time_invariant
     ledger["norm_time_deviation"] = norm_dev
+    ledger["tables_finite"] = tables_finite
+    ledger["input_nonfinite"] = ~tables_finite
     ledger["usable"] = usable
     ledger["selected_value"] = selected
     ledger["lnL"] = lnL
@@ -454,6 +550,7 @@ def summarize_policy_ledger(ledger):
         usable=_count("usable"),
         unusable=n - _count("usable"),
         norm_time_invariant=_count("norm_time_invariant"),
+        tables_finite=_count("tables_finite"),
         reconciles=_count("reconciles"),
         disposition_reconciles=_count("disposition_reconciles"),
     )
