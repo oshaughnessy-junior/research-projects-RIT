@@ -665,6 +665,14 @@ def test_row_batch_size_changes_cost_not_values_decisions_or_gradients():
         # size, and halving nphi, were both tried and neither moved the test's
         # cost (640.8 s against 641.6 s on the ldas-grid CPU runner), so the
         # cheaper variants bought nothing and this keeps the coverage.
+        # Nor is the cost the four JAXDistPhiPsiMargLikelihood constructions
+        # rebuilding the dense angle grids, which was the standing guess:
+        # timed on ldas-grid, they are 3.4 s of 425.4 s (0.8%), so sharing one
+        # set of tables across the four saves 2.6 s.  The cost is the four
+        # _batched_ledger traces, 383.3 s of 425.4 s (90%), one per batch size
+        # because the batch size is what changes the graph -- which is the
+        # thing this test exists to compare, so there is nothing to share.
+        # The scalar-path pins add 25.8 s and value_and_grad 13.0 s.
         # A single row has nothing to batch, and value_and_grad evaluates
         # exactly one.  If a batch request reached it, both the accept/reserve
         # cond and every escalation tier would become selects and the gradient
