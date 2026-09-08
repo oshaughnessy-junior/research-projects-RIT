@@ -249,6 +249,7 @@ optp.add_option("--resample-time-marginalization",action='store_true', help="If 
 optp.add_option("--srate-resample-time-marginalization",type=int, default=None, help="For --time-posterior-export grid under the historical Simpson quadrature, interpolate lnL(t) onto a lattice at this rate before drawing. Band-limited quadrature derives its own resolution and mandates a continuous draw, so the combination is refused.")
 optp.add_option("--time-posterior-export", type="choice", choices=["auto", "continuous", "grid"], default="auto",
                 help="How --resample-time-marginalization exports geocenter time. auto (default) draws continuously from the interpolated lnL(t) posterior when the active likelihood exposes a faithful arbitrary-time evaluator, otherwise preserves the grid; continuous requests an off-grid draw and is refused on unsupported likelihood paths; grid is the explicit legacy compatibility mode. --time-marginalization-quadrature bandlimited always resolves to continuous and refuses grid because sub-sample integration carries a sub-sample export contract.")
+optp.add_option("--psi-marginalization", action="store_true", default=False, help="Opt-in: analytically marginalize the polarization angle psi over its uniform [0,pi) prior with factored_likelihood.NetworkLogLikelihoodPolarizationMarginalized, instead of sampling it. Only reachable on the legacy scalar (non-vectorized, non-GPU, non-time-marginalized) likelihood path, which is the only call site this function fits; REFUSED (not ignored) with --time-marginalization, --vectorized, --gpu, --distance-marginalization, --rotation-slow, --freqresponse, calibration marginalization, an explicit --interpolate-time, --sampler-method GMM/portfolio, --internal-rotate-phase, --limit-psi, and --zero-likelihood. Default is false (unreachable previously; see issue tracking marginalization-audit).")
 optp.add_option("-d", "--distance-marginalization", action="store_true", help="Perform marginalization over distance via a look-up table. Default is false.")
 optp.add_option("-l", "--distance-marginalization-lookup-table", default=None, help="Look-up table for distance marginalization.")
 optp.add_option("--calibration-envelope-directory",default=None, help="Name of directory")
@@ -897,6 +898,52 @@ if opts._time_quadrature != 'simpson' and _tq_missing:
         "honour it: %s. Refusing rather than running the historical Simpson quadrature while "
         "reporting that you asked for something else."
         % (opts._time_quadrature, "; ".join(_tq_missing)))
+# --psi-marginalization: analytic polarization-angle marginalization, reachable only on the
+# legacy SCALAR likelihood path (factored_likelihood.NetworkLogLikelihoodPolarizationMarginalized
+# has no vectorized/GPU/NoLoop counterpart) and only alone -- it marginalizes psi ALONE, with no
+# joint sum over time, so it cannot stand in for --time-marginalization's likelihood.  Refuse
+# rather than silently ignore, same discipline as --time-marginalization-quadrature above.
+if opts.psi_marginalization:
+    _psi_marg_prereqs = (
+        ('not --time-marginalization (the analytic psi marginal has no joint time-sum form)',
+         not bool(opts.time_marginalization)),
+        ('not --vectorized (the analytic marginal exists only on the legacy scalar path)',
+         not bool(opts.vectorized)),
+        ('not --gpu (same restriction: scalar path only)', not bool(opts.gpu)),
+        ('not --distance-marginalization (the scalar path this needs does not implement the '
+         'distance lookup table)', not bool(opts.distance_marginalization)),
+        ('not --rotation-slow (separate likelihood, not audited for this)',
+         not bool(opts.rotation_slow)),
+        ('not --freqresponse (separate likelihood, not audited for this)',
+         not bool(opts.freqresponse)),
+        ('no calibration marginalization (--calibration-envelope-directory)',
+         not bool(opts.calibration_envelope_directory)),
+        ('default --interpolate-time (the scalar path always evaluates rholm(t) through its '
+         'own interpolator, independent of the sinc/cubic/nearest NoLoop stencil choice, so an '
+         'explicit request here would be silently ignored)', opts.interpolate_time is None),
+        ('not --sampler-method GMM/portfolio (their adaptive phi/psi pairing indexes "psi" '
+         'directly in sampler.params, which this option removes -- ValueError at sampler setup, '
+         'not audited as a combination)',
+         opts.sampler_method not in ('GMM', 'portfolio')),
+        ('not --internal-rotate-phase (its phi_orb/psi joint reparam reads a per-sample psi '
+         'that no longer exists; the exported "psi"/"polarization" columns would be a silently '
+         'wrong reconstruction rather than the fiducial placeholder this option writes)',
+         not bool(opts.internal_rotate_phase)),
+        ('not --limit-psi (there is no psi sampler left to apply the box to; the box would be '
+         'silently ignored)', not bool(opts.limit_psi)),
+        ('not --zero-likelihood (its debug likelihood keys results off a "psi" kwarg that this '
+         'option removes from the call signature)', not bool(opts.zero_likelihood)),
+    )
+    _psi_marg_missing = [name for name, ok in _psi_marg_prereqs if not ok]
+    if _psi_marg_missing:
+        raise ValueError(
+            "--psi-marginalization was requested, but this configuration cannot honour it: %s. "
+            "Refusing rather than silently running the ordinary sampled-psi likelihood while "
+            "reporting that psi was analytically marginalized." % "; ".join(_psi_marg_missing))
+    print(" Polarization angle: ANALYTICALLY MARGINALIZED (--psi-marginalization). psi is "
+          "removed from the sampled extrinsic parameters; "
+          "NetworkLogLikelihoodPolarizationMarginalized replaces it with an exact quadrature "
+          "over its uniform [0, pi) prior at each extrinsic point.")
 if opts._time_quadrature == 'bandlimited':
     if opts.time_posterior_export == 'grid':
         raise ValueError(
@@ -1790,17 +1837,22 @@ else:
 # Psi -- polarization angle
 # sampler: uniform in [0, pi)
 #
-psi_sampler = mcsampler.ret_uniform_samp_vector_alt( 
-    param_limits["psi"][0], param_limits["psi"][1])
-psi_sampler_cdf_inv = functools.partial(mcsampler.uniform_samp_cdf_inv_vector, 
-    param_limits["psi"][0], param_limits["psi"][1])
-sampler.add_parameter("psi", 
-    pdf = psi_sampler, 
-    cdf_inv = psi_sampler_cdf_inv, 
-    left_limit = param_limits["psi"][0], 
-    right_limit = param_limits["psi"][1],
-    prior_pdf = mcsampler.uniform_samp_psi,
-    adaptive_sampling=opts.internal_rotate_phase or opts.force_adapt_all)
+if not opts.psi_marginalization:
+    psi_sampler = mcsampler.ret_uniform_samp_vector_alt(
+        param_limits["psi"][0], param_limits["psi"][1])
+    psi_sampler_cdf_inv = functools.partial(mcsampler.uniform_samp_cdf_inv_vector,
+        param_limits["psi"][0], param_limits["psi"][1])
+    sampler.add_parameter("psi",
+        pdf = psi_sampler,
+        cdf_inv = psi_sampler_cdf_inv,
+        left_limit = param_limits["psi"][0],
+        right_limit = param_limits["psi"][1],
+        prior_pdf = mcsampler.uniform_samp_psi,
+        adaptive_sampling=opts.internal_rotate_phase or opts.force_adapt_all)
+# else: psi is not a sampled dimension at all -- --psi-marginalization integrates it out
+# analytically inside the likelihood (see the likelihood_function branch below), matching the
+# --distance-marginalization precedent of skipping add_parameter entirely for a parameter that
+# is marginalized rather than sampled.
 
 #
 # Phi - orbital phase
@@ -2357,6 +2409,8 @@ if use_gmm_args:   # standalone GMM, or a portfolio carrying a GMM member (see u
       unpinned_params.remove('distance')
       if lookup_table["phase_marginalization"]:
         unpinned_params.remove('phi_orb')
+    if opts.psi_marginalization:
+      unpinned_params.remove('psi')
 if opts.sampler_method == "AV":
   return_lnL=True
   pinned_params.update( { 'enforce_bounds':True})  # don't go out of range : choose integer bin sizes
@@ -3797,6 +3851,53 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
     # Likelihood
     if not opts.time_marginalization:
 
+      if opts.psi_marginalization:
+
+        # psi is not one of the sampled parameters (see the sampler.add_parameter("psi", ...)
+        # guard above) -- it is integrated out analytically at every extrinsic point by
+        # factored_likelihood.NetworkLogLikelihoodPolarizationMarginalized, which sums the
+        # closed-form quadrature over its uniform [0, pi) prior.  The value handed to the
+        # 'psi' argument below is a placeholder: the antenna pattern is periodic with period
+        # pi (F(psi) = F(0)*exp(-2i*psi)) and the function integrates over one full period, so
+        # its return value does not depend on which reference psi the placeholder names --
+        # verified in test/test_psi_marginalization.py.
+        _psi_marg_detectors = list(rholms_intp.keys())
+
+        def likelihood_function(right_ascension, declination, t_ref, phi_orb,
+                inclination, distance):
+
+            dec = numpy.copy(declination).astype(numpy.float64)
+            if opts.declination_cosine_sampler:
+                dec = numpy.pi/2 - numpy.arccos(dec)
+            incl = numpy.copy(inclination).astype(numpy.float64)
+            if opts.inclination_cosine_sampler:
+                incl = numpy.arccos(incl)
+            if opts.d_prior_redshift:
+                distance = redshift_to_distance(distance)
+
+            # use EXTREMELY many bits
+            lnL = numpy.zeros(right_ascension.shape,dtype=RiftFloat)
+            i = 0
+            for ph, th, tr, phr, ic, di in zip(right_ascension, dec,
+                    t_ref, phi_orb, incl, distance):
+                P.phi = ph # right ascension
+                P.theta = th # declination
+                P.tref = fiducial_epoch + tr # ref. time (rel to epoch for data taking)
+                P.phiref = phr # ref. orbital phase
+                P.incl = ic # inclination
+                P.dist = di* 1.e6 * lalsimutils.lsu_PC # luminosity distance
+
+                lnL[i] = factored_likelihood.NetworkLogLikelihoodPolarizationMarginalized(
+                        fiducial_epoch, rholms_intp, cross_terms, cross_terms_V,
+                        P.tref, P.phi, P.theta, P.incl, P.phiref, 0.0, P.dist,
+                        opts.l_max, _psi_marg_detectors)
+                i+=1
+            if return_lnL:
+              return lnL - manual_avoid_overflow_logarithm
+            return numpy.exp(lnL - manual_avoid_overflow_logarithm)
+
+      else:
+
         def likelihood_function(right_ascension, declination, t_ref, phi_orb,
                 inclination, psi, distance):
 
@@ -3827,7 +3928,7 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
                         opts.l_max)
                 i+=1
             if return_lnL:
-              return lnL - manual_avoid_overflow_logarithm 
+              return lnL - manual_avoid_overflow_logarithm
             return numpy.exp(lnL - manual_avoid_overflow_logarithm)
 
     else: # Sum over time for every point in other extrinsic params
@@ -5341,6 +5442,15 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
           samples, sampler,
           min(opts.fairdraw_extrinsic_output_n_max, opts.n_eff),
           convert=identity_convert, use_lnL=rvs_integrand_is_lnL)
+      # Insert a placeholder polarization angle if it was marginalized over
+      # analytically (--psi-marginalization): there is no per-sample psi draw to
+      # report -- NetworkLogLikelihoodPolarizationMarginalized never sampled one --
+      # so fill a fiducial value, matching the existing convention for phi_orb and
+      # distance below when THEY are marginalized instead of sampled.  Shaped off
+      # 'right_ascension' (always a sampled dimension on this path) rather than off
+      # 'psi' itself, since 'psi' is exactly the key that may be missing.
+      if "psi" not in samples:
+        samples["psi"] = np.full_like(samples["right_ascension"], 0.)
       # Insert reference distance if it was marginalized over
       if "distance" not in samples:
         # Not distance output is the same as internal calculations: in *Mpc*

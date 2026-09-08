@@ -1064,7 +1064,7 @@ def NetworkLogLikelihoodPolarizationMarginalized(epoch,rholmsDictionary,crossTer
         for pair1 in rholmsDictionary[det]:
             for pair2 in rholmsDictionary[det]:
                 term2a += F[det] * np.conj(F[det]) * ( crossTerms[det][(pair1,pair2)])* np.conj(Ylms[pair1]) * Ylms[pair2] 
-                term2b += F[det]*F[det]*Ylms[pair1]*Ylms[pair2]*crossTermsV[(pair1,pair2)] #((-1)**pair1[0])*crossTerms[det][((pair1[0],-pair1[1]),pair2)]
+                term2b += F[det]*F[det]*Ylms[pair1]*Ylms[pair2]*crossTermsV[det][(pair1,pair2)] #((-1)**pair1[0])*crossTerms[det][((pair1[0],-pair1[1]),pair2)]
     term2a = -np.real(term2a) / 4. /(distMpc/distMpcRef)**2
     term2b = -term2b/4./(distMpc/distMpcRef)**2   # coefficient of exp(-4ipsi)
 

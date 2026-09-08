@@ -44,6 +44,13 @@ python -m pytest -q MonteCarloMarginalizeCode/Code/test/test_limit_cosine_sample
 python -m pytest -q MonteCarloMarginalizeCode/Code/test/test_limit_distance.py
 python -m pytest -q MonteCarloMarginalizeCode/Code/test/test_mcsampler_ensemble_log_contract.py
 
+# --psi-marginalization: analytic polarization-angle marginalization made reachable on
+# the legacy scalar likelihood path (factored_likelihood.NetworkLogLikelihoodPolarizationMarginalized
+# was previously dead code, unreachable from any driver and untested by any importable
+# test).  Covers the analytic marginal against a brute-force quadrature, the driver's
+# refuse-don't-ignore prerequisite checks, and a real subprocess run on synthetic data.
+python -m pytest -q MonteCarloMarginalizeCode/Code/test/test_psi_marginalization.py
+
 # Supplementary-likelihood plugin hook: the NAL reader/evaluator (pure numpy, no data) and the
 # static guard on the drivers' prepare-hook wiring, which is what makes the plugin receive the
 # SAMPLING basis at all. Both are seconds-long and protect a silent-wrong-answer path.
