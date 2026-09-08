@@ -868,18 +868,23 @@ def build_parser():
     g.add_option("--direct-marginalization-batch-rows", type=int, default=1,
                  help="Rows the policy's controller executes together under "
                       "one vmap (default 1: row at a time; 0: one full batch). "
-                      "COST ONLY -- values, branch decisions and gradients are "
-                      "identical at every size, which is pinned by a test.  "
-                      "MEASURED NOT TO PAY: on the ladder-2 tables at rho 40.8 "
-                      "on an idle RTX PRO 4000 Blackwell, 96.3 s per row at 1 "
-                      "and 99.9 s per row at 8, for 4x the device workspace.  "
-                      "One row already saturates the card.  Above 1 the "
-                      "tier-escalation branch also becomes a select that "
-                      "evaluates every reserve tier for every row, and "
-                      "workspace grows as 0.046 + 0.385 B GiB, so a 24 GiB "
-                      "card holds 32 rows and not 64.  Raise it only with a "
-                      "measurement that says it helps; see "
-                      "DESIGN_direct_marginalization_policy.md.")
+                      "VALUES are identical at every size -- lnL, every branch "
+                      "decision and the gradients -- and a test pins that.  "
+                      "COST IS A REGRESSION, not neutral: under vmap the "
+                      "accept/reserve cond becomes a select, so a locally "
+                      "ACCEPTED row also executes the dense reserve it would "
+                      "otherwise skip, and every escalation tier runs for "
+                      "every row.  The penalty therefore scales with the "
+                      "locally accepted fraction.  Device workspace grows as "
+                      "0.046 + 0.385 B GiB, so a 24 GiB card holds 32 rows and "
+                      "not 64.  Leave it at 1 unless a measurement on YOUR "
+                      "rows says otherwise; see "
+                      "DESIGN_direct_marginalization_policy.md.  "
+                      "WITHDRAWN: an earlier version of this text said COST "
+                      "ONLY and quoted 96.3 s per row at 1 against 99.9 at 8. "
+                      "Those rows all declined (accepted_local 0), so they "
+                      "priced the decline path, and 37-50% of them were nan "
+                      "under a reserve-refine ceiling of 4.  Do not cite them.")
     # flowMC tuning (modes flowmc / flowmc-phimarg).  Defaults match
     # samplers.flowmc_sample*; exposed so pipeline Makefiles can tune them.
     g.add_option("--n-training-loops", type=int, default=4,
