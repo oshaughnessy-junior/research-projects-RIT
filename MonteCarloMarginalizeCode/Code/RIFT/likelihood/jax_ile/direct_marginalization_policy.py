@@ -484,9 +484,18 @@ def fused_log_likelihood_four_axis_policy(
             # count there is no way to tell a row that missed by one from a row
             # that would need ten times the cap, and therefore no way to judge
             # whether raising the cap would recover anything.
+            #
+            # SCOPE, because the name would otherwise mislead exactly as the
+            # sibling `enriched_*` keys misled a reader on 2026-09-08: the
+            # second plan is built from `combine_device_start_plans(base, extra)`
+            # (all_axis_peaklocal.py:1602 onward), so its count is base PLUS
+            # extra (`:901`), while `capacity_ok` ANDs the two plans' own flags,
+            # each already compared against base_max_starts separately (`:902`).
+            # Comparing the combined count against the cap is therefore not a
+            # test of anything.  Named `combined_` so the units travel with it.
             base_n_candidates_before_cap=base_planning[
                 "n_candidates_before_cap"],
-            enriched_n_candidates_before_cap=enriched_planning[
+            combined_n_candidates_before_cap=enriched_planning[
                 "n_candidates_before_cap"])
         return base_plan, enriched_plan, planning
 
