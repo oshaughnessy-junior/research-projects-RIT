@@ -819,7 +819,17 @@ def build_parser():
                       "refinement per evaluated row on a 614-sample window "
                       "(measured, rho 163), and lax.cond reserves memory for the "
                       "largest tier whether or not it runs; 32 asked for 85 GiB. "
-                      "Lower it on small cards; the value path is unaffected.")
+                      "LOWERING IT IS NOT FREE.  It does not change any value "
+                      "that gets computed, but it changes which rows get a "
+                      "value at all: a declined row gets one reserve attempt "
+                      "per tier, and a row still unwarranted at the ceiling "
+                      "returns nan, which this driver refuses to publish.  "
+                      "Measured on full-sky prior draws at rho 163, refine-max "
+                      "4 left 6 of 8 rows nan and the run could not complete; "
+                      "at the default 32 the same rows escalated and all were "
+                      "usable.  So on a small card the run fails rather than "
+                      "returning a slightly worse number.  Lower it only with "
+                      "the nan count in the ledger in front of you.")
     g.add_option("--direct-marginalization-error-budget-nats", type=float,
                  default=1.0e-3,
                  help="Shared empirical value-error allowance, in nats, for the "
