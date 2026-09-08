@@ -139,3 +139,10 @@ current cap and nominal 1000/4000, and exercise value, gradient, and
 Fisher/Hessian calls while recording allocator peak statistics. Profile the
 flowMC outer-vmap path separately: explicit point tiling does not bound that
 hidden chain axis.
+
+## 2026-09-08: jax 0.9.2 never populates `largest_free_block_bytes`
+
+On jax 0.9.2 (ldas-pcdev11, idle 24 GiB card) `largest_free_block_bytes` and
+`pool_bytes` both read 0 before the first allocation, so `_device_available_bytes`
+now treats a bare 0 in either field as "not reported" and falls through, rather
+than as a full device.

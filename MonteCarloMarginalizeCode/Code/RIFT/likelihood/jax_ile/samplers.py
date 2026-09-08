@@ -378,21 +378,28 @@ def _device_available_bytes(stats):
 
       * ``largest_free_block_bytes`` -- the largest contiguous block the allocator can
         serve right now.  It answers the question actually being asked, because the thing
-        being bounded is ONE allocation, not a total.
+        being bounded is ONE allocation, not a total.  But on jax 0.9.2 (measured
+        2026-09-08) this key is simply never populated: it reads 0 both before any
+        allocation and after one, on an otherwise-idle card.  A bare 0 here is therefore
+        read as "not reported", not "the device is full", and falls through to the pool
+        signal below.
       * failing that, the reserved pool minus what we hold in it.  Memory already
         reserved for this process cannot be taken by another one, so ``pool - in_use`` is
-        genuinely ours in a way the ceiling is not.
+        genuinely ours in a way the ceiling is not.  ``pool_bytes`` is also 0 on jax 0.9.2
+        until the first allocation grows the pool, which is likewise "not yet known", not
+        "nothing is free" -- a 0 pool falls through the same way a 0 block does.
 
-    Returns None when neither is reported.  The caller must read that as "we could not
-    see how much of this device is free" -- NOT as zero, and emphatically not as the
-    ceiling that is sitting right there in the same dict.
+    Returns None when neither is reported (or both report 0).  The caller must read that
+    as "we could not see how much of this device is free" -- NOT as zero, and emphatically
+    not as the ceiling that is sitting right there in the same dict.
 
-    A pool that is entirely in use returns 0, not None, and that is deliberate: it is a
-    reading, not a failure to read.  Falling back to the 4 GiB guess there would hand out
-    memory we have just been told does not exist.
+    A device that genuinely has nothing left -- a nonzero pool fully consumed
+    (``pool_bytes > 0`` and ``pool_bytes - bytes_in_use == 0``) -- still returns 0, not
+    None, and that is deliberate: it is a reading, not a failure to read.  Falling back to
+    the 4 GiB guess there would hand out memory we have just been told does not exist.
     """
     block = stats.get("largest_free_block_bytes")
-    if block is not None:
+    if block:
         return max(0, int(block))
     pool = stats.get("pool_bytes") or stats.get("bytes_reserved")
     if pool:
