@@ -1035,6 +1035,16 @@ def build_parser():
                  help="SMC puffball: number of walkers in the cloud (default 2000).")
     g.add_option("--smc-move-steps", type=int, default=10,
                  help="SMC puffball: random-walk Metropolis moves per temperature rung.")
+    g.add_option("--smc-is-samples", type=int, default=60000,
+                 help="Draws in the SMC cloud-Gaussian importance-sampling "
+                      "evidence stage (default 60000, the sampler's own value). "
+                      "This stage is a FIXED cost paid after the ladder "
+                      "finishes, and on a likelihood whose rows execute one at "
+                      "a time -- the direct-marginalization policy -- it "
+                      "dominates the whole run.  Lowering it trades the IS "
+                      "evidence for the raw SMC evidence: the ESS gate then "
+                      "declines the IS value and the reported logZ falls back "
+                      "to the SMC estimator, which the run already prints.")
     g.add_option("--smc-puff-scale", type=float, default=1.0,
                  help="SMC puffball: proposal scale x sqrt(cloud covariance) (~1.0).")
     g.add_option("--fisher-is-samples", type=int, default=0,
@@ -2592,6 +2602,7 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
             res = _samplers.smc_puffball_sample(
                 like, opts.d_min, opts.d_max,
                 n_walkers=opts.smc_walkers, n_move=opts.smc_move_steps,
+                is_samples=opts.smc_is_samples,
                 ess_frac=opts.temper_ess_frac, max_dbeta=opts.temper_max_dbeta,
                 max_stages=max(opts.temper_max_stages, 80),
                 puff_scale=opts.smc_puff_scale,
