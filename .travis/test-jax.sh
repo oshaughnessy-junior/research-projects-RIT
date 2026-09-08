@@ -857,6 +857,14 @@ fi
 # Re-measured on the MERGED tree by running this script and reading its own
 # line: "collected 628 tests from 38 files" (ldas-grid, ~/.cache/jaxci_venv,
 # DESELECT loop applied).
+#
+# SIXTEENTH, the accept_truncated_plans branch merged rift_O4d after #290
+# landed there.  #290's merge commit is this branch's own parent, so the
+# merge changed no file and added no test, and the count was expected to
+# hold.  Expected is not measured: re-derived anyway by running this script
+# on the merged tree and reading its own line, "collected 628 tests from 38
+# files" (ldas-grid, /scratch/.../envs/jaxci-py311, jax 0.10.2,
+# DESELECT loop applied).
 EXPECTED_TESTS=628
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="

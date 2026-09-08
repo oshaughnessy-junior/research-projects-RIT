@@ -159,6 +159,19 @@ class PolicyConfig(NamedTuple):
     # declines 36 of 43 capacity-declined rows and the start cap 37, while
     # only 7 are count-limited alone, so the two gates together are what send
     # prior-drawn rows to the exact reserve.
+    #
+    # The default is False because the truncated value does not meet the error
+    # budget.  Rung 40, rho 40.7691, the same 8 rows under both settings:
+    # exactly three switch from the exact reserve to the truncated local value
+    # (decline_capacity 3 -> 0), and all three move -- by 3.3e-4, 2.6e-3 and
+    # 4.4e-3 nats.  The other five are bitwise identical, so the flag touches
+    # only the rows it is supposed to touch.  Two of the three exceed
+    # total_value_error_budget_nats (1e-3), and every delta is POSITIVE: a
+    # truncated plan biases the value high rather than scattering it, which is
+    # what dropping the lowest-priority modes and time nodes should do to a
+    # locally normalized integral.  Until an accuracy term catches that bias,
+    # this flag measures the cost of the capacity declines; it does not yet
+    # earn them.
     accept_truncated_plans: bool = False
     reserve_batch_rows: int = 1
     norm_invariance_rtol: float = 1.0e-10
