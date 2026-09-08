@@ -15,11 +15,13 @@ rimsky-integration, test-run, container-dep-canary, container-swig-canary, docs.
 `.gitlab-ci.yml`'s default pipeline (coord/integrate/posterior/run/run-alts/build).
 
 RECOMMENDATION for RO'S: `jax-ile-check` runs on every push, and its cost argues for tier 2 or
-a schedule instead. `.travis/test-jax.sh`'s own comments measure ~859s for 139 tests plus
-~600s for `test_angle_marg_exact.py`'s 30, against a 60-minute timeout; the suite has since
-grown to 577 tests. Moving it to a nightly schedule would return that time to every push,
-since nothing else in tier 1 imports jax. This PR leaves it in place: moving a job is a
-behavior change and belongs in its own PR.
+a schedule instead. `.travis/test-jax.sh:494` measures the gated 139-test baseline at 13m53s
+(833s), against a 60-minute timeout; the suite has since grown to 577 tests
+(`.travis/test-jax.sh:766`). `test_angle_marg_exact.py` (36 tests, excluded from this gate at
+`.travis/test-jax.sh:484`) does not add to that per-push cost; run it by hand per the comment
+there. Moving `jax-ile-check` to a nightly schedule would return the 833s to every push, since
+nothing else in tier 1 imports jax. This PR leaves it in place: moving a job is a behavior
+change and belongs in its own PR.
 
 ## Tier 2 -- strongly recommended before merging into rift_O4d, by hand on a GPU/big node
 
@@ -37,7 +39,9 @@ The script exits 1 when cupy/CUDA or the jax stack is absent; it does not skip.
 
 ## Tier 3 -- scheduled or manual only
 
-`.gitlab-ci.yml`'s `gpu_integration` job: a real GPU runner, `when: manual`, web-triggered
-only, running `test-integrate.sh` + `test-calmarg-gpu.sh` + `test-lisa-gpu.sh` under CUDA.
-Nothing else is scheduled-only today; a nightly `jax-ile-check` would belong here if RO'S
-takes the tier-1 recommendation above.
+`.gitlab-ci.yml`'s `gpu_integration` job: a real GPU runner, running `test-integrate.sh` +
+`test-calmarg-gpu.sh` + `test-lisa-gpu.sh` under CUDA. Its `rules:` block
+(`.gitlab-ci.yml:180-184`) has two branches: web-triggered `when: manual`, and
+`$CI_PIPELINE_SOURCE == "schedule"` with `when: on_success`. So it also runs automatically on a
+scheduled pipeline. A nightly `jax-ile-check` would belong on the same schedule if RO'S takes
+the tier-1 recommendation above.
