@@ -1532,6 +1532,13 @@ def _assemble_all_axis_mode_plan_device(
         "n_selected_modes": n_selected,
         "selection_overflow": selection_overflow,
         "start_capacity_ok": start_plan.capacity_ok,
+        # start_capacity_ok is an AND of four terms (:862): the candidate count
+        # against max_starts, and these three.  Exposing only the conjunction
+        # makes decline_capacity a single label for four different failures,
+        # three of which no cap value can repair.  Additive; nothing reads a
+        # planning dict by position.
+        "time_cover_certified": start_plan.time_cover_certified,
+        "time_capacity_ok": start_plan.time_capacity_ok,
         "discovery_capacity_ok": discovery_capacity_ok,
         "norm_nonnegative": start_plan.norm_nonnegative,
         "n_lattice_candidates_before_symmetry":

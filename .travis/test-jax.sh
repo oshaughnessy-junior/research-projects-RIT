@@ -841,7 +841,23 @@ fi
 # conda environment on the CIT interactive hosts resolves RIFT to a DIFFERENT
 # checkout (~/RIFT_ralph), and collection then fails on imports that have
 # nothing to do with the branch.
-EXPECTED_TESTS=621
+#
+#
+# FIFTEENTH, the four-axis policy row-batching branch (this merge).  It adds
+# SEVEN tests to test_direct_marginalization_policy.py (the batched/sequential
+# equivalence test, five parametrized validate_batch_rows cases, and the driver
+# knob test) and adds no file.  Its own side measured 581 against a base of 574;
+# rift_O4d has since reached 587, so neither number nor their sum describes the
+# merged tree.  Re-measured by running THIS script on the merged tree,
+# ldas-grid, ~/.cache/jaxci_venv, DESELECT loop applied, read off its own
+# collection line: "collected 594 tests from 37 files".
+# Both sides were stale in the usual way: 594 on this branch against a base of
+# 587, and 621 on rift_O4d, and neither number nor their difference describes
+# the merged tree because each counted a file set the other had changed.
+# Re-measured on the MERGED tree by running this script and reading its own
+# line: "collected 628 tests from 38 files" (ldas-grid, ~/.cache/jaxci_venv,
+# DESELECT loop applied).
+EXPECTED_TESTS=628
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"

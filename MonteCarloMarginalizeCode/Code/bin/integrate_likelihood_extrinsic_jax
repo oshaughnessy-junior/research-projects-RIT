@@ -351,7 +351,8 @@ def check_critical_and_report(opts, optp):
     _policy_knobs = ("--direct-marginalization-time-guard",
                      "--direct-marginalization-reserve-time-refine",
                      "--direct-marginalization-reserve-time-refine-max",
-                     "--direct-marginalization-error-budget-nats")
+                     "--direct-marginalization-error-budget-nats",
+                     "--direct-marginalization-batch-rows")
     if _policy != "off":
         if getattr(opts, "mode", None) != "flowmc-phipsimarg":
             fatal.append("--direct-marginalization-policy %s applies only to "
@@ -387,6 +388,10 @@ def check_critical_and_report(opts, optp):
                          "measure from the volumetric distance prior; "
                          "--d-prior %s is not supported by the composite"
                          % (_policy, _dp))
+        _br = int(getattr(opts, "direct_marginalization_batch_rows", 1))
+        if _br < 0:
+            fatal.append("--direct-marginalization-batch-rows must be >= 0 "
+                         "(1 = row at a time, 0 = one full batch)")
     else:
         for _k in _policy_knobs:
             if was_supplied(opts, _k):
@@ -844,12 +849,37 @@ def build_parser():
                       "refinement per evaluated row on a 614-sample window "
                       "(measured, rho 163), and lax.cond reserves memory for the "
                       "largest tier whether or not it runs; 32 asked for 85 GiB. "
-                      "Lower it on small cards; the value path is unaffected.")
+                      "LOWERING IT IS NOT FREE.  It does not change any value "
+                      "that gets computed, but it changes which rows get a "
+                      "value at all: a declined row gets one reserve attempt "
+                      "per tier, and a row still unwarranted at the ceiling "
+                      "returns nan, which this driver refuses to publish.  "
+                      "Measured on full-sky prior draws at rho 163, refine-max "
+                      "4 left 6 of 8 rows nan and the run could not complete; "
+                      "at the default 32 the same rows escalated and all were "
+                      "usable.  So on a small card the run fails rather than "
+                      "returning a slightly worse number.  Lower it only with "
+                      "the nan count in the ledger in front of you.")
     g.add_option("--direct-marginalization-error-budget-nats", type=float,
                  default=1.0e-3,
                  help="Shared empirical value-error allowance, in nats, for the "
                       "policy's local acceptance and reserve warrant (default "
                       "1e-3).")
+    g.add_option("--direct-marginalization-batch-rows", type=int, default=1,
+                 help="Rows the policy's controller executes together under "
+                      "one vmap (default 1: row at a time; 0: one full batch). "
+                      "COST ONLY -- values, branch decisions and gradients are "
+                      "identical at every size, which is pinned by a test.  "
+                      "MEASURED NOT TO PAY: on the ladder-2 tables at rho 40.8 "
+                      "on an idle RTX PRO 4000 Blackwell, 96.3 s per row at 1 "
+                      "and 99.9 s per row at 8, for 4x the device workspace.  "
+                      "One row already saturates the card.  Above 1 the "
+                      "tier-escalation branch also becomes a select that "
+                      "evaluates every reserve tier for every row, and "
+                      "workspace grows as 0.046 + 0.385 B GiB, so a 24 GiB "
+                      "card holds 32 rows and not 64.  Raise it only with a "
+                      "measurement that says it helps; see "
+                      "DESIGN_direct_marginalization_policy.md.")
     # flowMC tuning (modes flowmc / flowmc-phimarg).  Defaults match
     # samplers.flowmc_sample*; exposed so pipeline Makefiles can tune them.
     g.add_option("--n-training-loops", type=int, default=4,
@@ -2308,7 +2338,9 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
                 reserve_time_refine_max=int(
                     opts.direct_marginalization_reserve_time_refine_max),
                 total_value_error_budget_nats=float(
-                    opts.direct_marginalization_error_budget_nats))
+                    opts.direct_marginalization_error_budget_nats),
+                reserve_batch_rows=int(
+                    opts.direct_marginalization_batch_rows))
         try:
             like = JAXDistPhiPsiMargLikelihood(
                 like_data, d_lo, d_hi, nphi=nphi, npsi=npsi,

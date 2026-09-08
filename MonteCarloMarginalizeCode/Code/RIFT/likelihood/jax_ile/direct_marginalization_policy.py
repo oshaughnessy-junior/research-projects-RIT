@@ -136,7 +136,43 @@ class PolicyConfig(NamedTuple):
     # with the chunk.
     reserve_dense_chunk: int = 64
     reserve_grid_block: int = 32
+    # Rows the controller executes together under one ``vmap``.  1 is the
+    # row-at-a-time path (``lax.map`` with no ``batch_size``), whose reserve
+    # workspace is one row's.  Above 1, ``B`` rows share a scan step, device
+    # workspace grows linearly in ``B``, and the tier-escalation ``lax.cond``
+    # becomes a ``select`` that evaluates EVERY tier for EVERY row in the
+    # batch.  Values, branch decisions and gradients are unchanged at every
+    # size; only cost is.  0 means one full batch of all rows.
+    #
+    # The default is 1 because batching was measured and does not pay.  On the
+    # ladder-2 tables at rho 40.8, one reserve tier, an idle RTX PRO 4000
+    # Blackwell: 96.3 s per row at B=1 and 99.9 s per row at B=8, for 4x the
+    # workspace (0.103 -> 0.415 GiB).  One row already saturates the card, so
+    # there is no occupancy for a batch to recover.  The row loop was not the
+    # reason the Section VI.A sampler cells stall; the per-row reserve is.
+    # See DESIGN_direct_marginalization_policy.md.
+    reserve_batch_rows: int = 1
     norm_invariance_rtol: float = 1.0e-10
+
+
+def validate_batch_rows(batch_rows):
+    """Refuse a row-batch size the controller cannot execute.
+
+    Returns the integer.  Negative sizes and non-integers are refused here so
+    the driver and the library agree on the same rule.
+    """
+    try:
+        b = int(batch_rows)
+    except (TypeError, ValueError):
+        raise ValueError("PolicyConfig.reserve_batch_rows must be an integer, "
+                         "got %r" % (batch_rows,))
+    if b != batch_rows:
+        raise ValueError("PolicyConfig.reserve_batch_rows must be an integer, "
+                         "got %r" % (batch_rows,))
+    if b < 0:
+        raise ValueError("PolicyConfig.reserve_batch_rows must be >= 0 "
+                         "(1 = row at a time, 0 = one full batch), got %d" % b)
+    return b
 
 
 def validate_policy_config(config):
@@ -167,6 +203,7 @@ def validate_policy_config(config):
         raise ValueError("enriched_max_modes must be >= max_modes >= 1")
     if not float(config.local_radius) > 0.0:
         raise ValueError("local_radius must be positive")
+    validate_batch_rows(config.reserve_batch_rows)
     return config
 
 
@@ -380,6 +417,7 @@ def fused_log_likelihood_four_axis_policy(
         config = PolicyConfig()
     validate_policy_config(config)
     guard = int(config.time_guard)
+    batch_rows = validate_batch_rows(config.reserve_batch_rows)
     if local_log_normalization is None:
         local_log_normalization, _ = policy_log_normalization(
             data, x_grid, log_w_grid)
@@ -440,7 +478,47 @@ def fused_log_likelihood_four_axis_policy(
                 "n_optimizer_starts_executed"],
             base_n_lattice_evaluations=base_planning["n_lattice_evaluations"],
             enriched_n_lattice_evaluations=enriched_planning[
-                "n_lattice_evaluations"])
+                "n_lattice_evaluations"],
+            # How far over the cap a declining row actually was.  decline_capacity
+            # says only that n_candidates exceeded base_max_starts; without the
+            # count there is no way to tell a row that missed by one from a row
+            # that would need ten times the cap, and therefore no way to judge
+            # whether raising the cap would recover anything.
+            #
+            # SCOPE, because the name would otherwise mislead exactly as the
+            # sibling `enriched_*` keys misled a reader on 2026-09-08: the
+            # second plan is built from `combine_device_start_plans(base, extra)`
+            # (all_axis_peaklocal.py:1602 onward), so its count is base PLUS
+            # extra (`:901`), while `capacity_ok` ANDs the two plans' own flags,
+            # each already compared against base_max_starts separately (`:902`).
+            # Comparing the combined count against the cap is therefore not a
+            # test of anything.  Named `combined_` so the units travel with it.
+            base_n_candidates_before_cap=base_planning[
+                "n_candidates_before_cap"],
+            combined_n_candidates_before_cap=enriched_planning[
+                "n_candidates_before_cap"],
+            # decline_capacity is charged for THREE different causes and the
+            # ledger named only the union.  `capacity_ok` at :2067 is
+            # discovery_capacity_ok on both plans; :1514 makes that
+            # start_capacity_ok & ~selection_overflow; and the combined plan's
+            # start_capacity_ok at :902 is itself
+            # base.capacity_ok & extra.capacity_ok & same_time_support.  So a
+            # row can carry decline_capacity with every candidate count under
+            # the cap, and raising the cap cannot recover it.  Without these
+            # two flags a count-based estimate of what a larger cap buys is an
+            # upper bound and reads as if it were the answer.
+            base_start_capacity_ok=base_planning["start_capacity_ok"],
+            combined_start_capacity_ok=enriched_planning["start_capacity_ok"],
+            base_selection_overflow=base_planning["selection_overflow"],
+            combined_selection_overflow=enriched_planning[
+                "selection_overflow"],
+            base_norm_nonnegative=base_planning["norm_nonnegative"],
+            combined_norm_nonnegative=enriched_planning["norm_nonnegative"],
+            base_time_cover_certified=base_planning["time_cover_certified"],
+            combined_time_cover_certified=enriched_planning[
+                "time_cover_certified"],
+            base_time_capacity_ok=base_planning["time_capacity_ok"],
+            combined_time_capacity_ok=enriched_planning["time_capacity_ok"])
         return base_plan, enriched_plan, planning
 
     # Planning is control data.  Cutting the tangents at its INPUTS, not only
@@ -514,11 +592,52 @@ def fused_log_likelihood_four_axis_policy(
         led["reserve_escalations"] = escalations
         return sel, ok, led
 
-    selected, usable, ledger = jax.lax.map(
-        _row, (rows_A, norm0, base_plans, enriched_plans))
+    n_rows = int(rows_A.shape[0])
+    xs = (rows_A, norm0, base_plans, enriched_plans)
+    if batch_rows == 1 or n_rows == 1:
+        # Row at a time.  Kept as a distinct call rather than batch_size=1 so
+        # the graph is the one PR #268 measured: batch_size=1 would still wrap
+        # the body in a vmap, paying the cond-to-select cost for no occupancy.
+        #
+        # n_rows == 1 takes this path whatever was requested.  The wrapper's
+        # _scalar evaluates ONE row, so value_and_grad and hessian always land
+        # here; a vmap over a single row would convert both conds to selects
+        # and pay every reserve tier and both accept/reserve branches with no
+        # second row to amortize them.  Requesting a batch must not make the
+        # gradient path more expensive than not requesting one.
+        selected, usable, ledger = jax.lax.map(_row, xs)
+    elif batch_rows == 0 or batch_rows >= n_rows:
+        # One full batch.  Spelled as an explicit vmap rather than delegated
+        # to batch_size: jax 0.9.2 documents batch_size=0 as a full vmap, but
+        # the IGWN environment's jax 0.7.1 computes n // batch_size first and
+        # raises ZeroDivisionError, and a batch_size above the row count is a
+        # zero-length scan plus a remainder in both.  The explicit vmap is the
+        # same computation in every version.
+        selected, usable, ledger = jax.vmap(_row)(xs)
+    else:
+        selected, usable, ledger = jax.lax.map(_row, xs,
+                                               batch_size=batch_rows)
     ledger = dict(ledger)
-    ledger["reserve_batch_execution_sequential"] = jnp.ones(
-        (rows_A.shape[0],), dtype=bool)
+    # Truthful, not decorative: this key read True unconditionally before the
+    # batch size was a knob.  Record what EXECUTED, not what was asked for:
+    # a request of 8 against 6 rows runs a 6-row vmap, and a request of 8 on
+    # the single-row gradient path runs sequentially.  Reporting the request
+    # on the one key whose purpose is truthfulness is how the old hardcoded
+    # True happened.  lax.map's trailing remainder means the batch a given row
+    # landed in is still not recoverable per row, so this is the size of the
+    # scanned batch; the request is kept beside it.
+    if batch_rows == 1 or n_rows == 1:
+        batch_executed = 1
+    elif batch_rows == 0 or batch_rows >= n_rows:
+        batch_executed = n_rows
+    else:
+        batch_executed = batch_rows
+    ledger["reserve_batch_execution_sequential"] = jnp.full(
+        (n_rows,), batch_executed == 1, dtype=bool)
+    ledger["reserve_batch_rows_executed"] = jnp.full(
+        (n_rows,), batch_executed, dtype=jnp.int32)
+    ledger["reserve_batch_rows_requested"] = jnp.full(
+        (n_rows,), batch_rows, dtype=jnp.int32)
     usable = usable & norm_time_invariant & tables_finite
     # Fail closed: a value the controller could not warrant is not a
     # likelihood.  nan, never the finite diagnostic, reaches the sampler; the
@@ -564,6 +683,14 @@ def summarize_policy_ledger(ledger):
     if "reserve_escalations" in ledger:
         out["reserve_escalations"] = int(np.sum(
             np.asarray(ledger["reserve_escalations"])))
+    if "reserve_batch_rows_executed" in ledger:
+        ex = np.asarray(ledger["reserve_batch_rows_executed"])
+        req = np.asarray(ledger["reserve_batch_rows_requested"])
+        out["reserve_batch_rows"] = int(ex[0]) if ex.size else 0
+        out["reserve_batch_rows_requested"] = int(req[0]) if req.size else 0
+        out["reserve_batch_execution_sequential"] = bool(np.all(
+            np.asarray(ledger["reserve_batch_execution_sequential"],
+                       dtype=bool)))
     if "lnL" in ledger:
         out["nan_rows"] = int(np.sum(~np.isfinite(
             np.asarray(ledger["lnL"], dtype=float))))

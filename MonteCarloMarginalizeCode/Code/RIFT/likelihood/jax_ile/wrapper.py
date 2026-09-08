@@ -1036,6 +1036,7 @@ class JAXDistPhiPsiMargLikelihood:
                 time_guard=int(cfg.time_guard),
                 reserve_time_refine=int(cfg.reserve_time_refine),
                 reserve_distance_gh_nodes=int(_core._DISTMARG_GH_N),
+                reserve_batch_rows=int(cfg.reserve_batch_rows),
                 total_value_error_budget_nats=float(
                     cfg.total_value_error_budget_nats))
             self.angle_marg_info["direct_marginalization_policy"] = (
