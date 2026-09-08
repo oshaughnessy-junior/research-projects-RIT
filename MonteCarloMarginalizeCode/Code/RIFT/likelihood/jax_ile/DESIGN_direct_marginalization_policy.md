@@ -110,15 +110,14 @@ Planning is vectorized. Accepted rows pay fixed local work per retained mode;
 declined rows pay three exact reserve evaluations (refined rule at two guards,
 plus the half-refined check). The sampler's angle-scheme chunk cap applies.
 
-`PolicyConfig.reserve_batch_rows` sets how many rows the controller executes
-under one `vmap`; `--direct-marginalization-batch-rows` exposes it. At 1 the
-rows run one at a time under `lax.map`, the graph PR #268 measured. Above 1
-the tier-escalation `lax.cond` becomes a `select`, so every reserve tier runs
-for every row in the batch. Nothing else changes:
+`PolicyConfig.reserve_batch_rows` sets how many rows run under one `vmap`;
+`--direct-marginalization-batch-rows` exposes it. At 1 the rows run one at a
+time under `lax.map`, the graph PR #268 measured. Above 1 the tier-escalation
+`lax.cond` becomes a `select`, so every reserve tier runs for every row. Nothing else changes:
 `test_row_batch_size_changes_cost_not_values_decisions_or_gradients` requires
 `lnL` bitwise equal, every ledger key and summary count equal, and the
-gradient equal to about one ulp, over the full-batch, whole-multiple and
-remainder paths.
+gradient equal to one ulp, over the full-batch, whole-multiple and remainder
+paths.
 
 ### Device workspace
 
@@ -148,20 +147,21 @@ The tier count multiplies it. At B=8, `reserve_time_refine_max` 32 costs
 
 ### Throughput
 
-Batching does not pay. Same idle card, rho 40.8,
-`reserve_time_refine_max` 4, `_batched_ledger`, second timed call:
+Batching does not pay. Idle card, rho 40.8, `reserve_time_refine_max` 4,
+`_batched_ledger`, second timed call:
 
 | `reserve_batch_rows` | rows | wall s | s per row | workspace GiB |
 |---|---|---|---|---|
 | 1 | 2 | 192.6 | 96.3 | 0.103 |
 | 8 | 8 | 799.3 | 99.9 | 0.415 |
 
-The first timed call gave 110.3 and 87.5 s per row, a spread of about 13%,
-wider than the gap between the two batch sizes. One row already fills the card,
-leaving a batch no occupancy to recover. The row loop is not why the
-Section VI.A cells stall. Every row here declined to the reserve
-(`accepted_local` 0 of 8), so the per-row cost is one reserve evaluation.
-Profile that next. `reserve_batch_rows` defaults to 1.
+At `reserve_time_refine_max` 32, B=8 had not finished one pass after 8000 s,
+above 980 s per row; that point was stopped, not completed. First calls gave
+110.3 and 87.5 s per row, a spread of 13%, wider than the gap between the
+batch sizes. One row already fills the card, leaving a batch no occupancy to
+recover. The row loop is not why the Section VI.A cells stall. Every row here
+declined to the reserve (`accepted_local` 0 of 8), so the per-row cost is one
+reserve evaluation. Profile that next. `reserve_batch_rows` defaults to 1.
 
 ## Gate before this can be a default
 
