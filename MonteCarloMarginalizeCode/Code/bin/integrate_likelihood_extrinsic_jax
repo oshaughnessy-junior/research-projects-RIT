@@ -311,28 +311,39 @@ def check_critical_and_report(opts, optp):
         return bool(v) if name in _ILE_BOOL_OPTS else (v is not None and v != [])
 
     fatal = []
-    # --distance-gh-nodes / JAX_ILE_DISTMARG_GH resolution (RO'S 2026-09-08:
-    # the per-sample Gauss-Hermite distance quadrature must be reachable by an
-    # ILE argument, not only the environment variable core.py reads at
-    # import).  CLI wins; the environment variable is still honoured for
-    # compatibility; the two are REFUSED, not silently reconciled, when both
-    # are set to DIFFERENT nonzero values, since picking one silently is
-    # exactly the drift a compatibility path exists to prevent.  Only the
-    # RESOLUTION happens here (needed below by the distance-grid-scheme
-    # combination check); the actual global mutation and banner are deferred
-    # until after the fatal gate below, so a refused command line never
-    # mutates core's module-level GH state.
-    _gh_cli = int(getattr(opts, "distance_gh_nodes", 0) or 0)
+    # --distance-gh-nodes / JAX_ILE_DISTMARG_GH resolution (RO'S 2026-09-08,
+    # revised same day per adversarial review: the option must default to
+    # None, not 0, or an explicit ``--distance-gh-nodes 0`` is indistinguish-
+    # able from "not passed" and a nonzero JAX_ILE_DISTMARG_GH silently wins
+    # -- the exact opposite of the documented "CLI wins").  The per-sample
+    # Gauss-Hermite distance quadrature must be reachable by an ILE argument,
+    # not only the environment variable core.py reads at import.  Resolution:
+    # the CLI flag, when GIVEN (including an explicit 0), always wins over
+    # the environment variable; the environment variable is consulted only
+    # when the CLI flag was not given at all.  The two are REFUSED, not
+    # silently reconciled, whenever BOTH are given and differ -- including an
+    # explicit CLI 0 against a nonzero env, which is a conflict like any
+    # other: silently keeping either value would hide the disagreement.
+    # Only the RESOLUTION happens here (needed below by the
+    # distance-grid-scheme combination check); the actual global mutation and
+    # banner are deferred until after the fatal gate below, so a refused
+    # command line never mutates core's module-level GH state.
+    _gh_cli = getattr(opts, "distance_gh_nodes", None)
     _gh_env_raw = os.environ.get("JAX_ILE_DISTMARG_GH")
-    _gh_env = int(_gh_env_raw) if _gh_env_raw not in (None, "") else 0
-    if _gh_cli < 0:
+    _gh_env = int(_gh_env_raw) if _gh_env_raw not in (None, "") else None
+    if _gh_cli is not None and _gh_cli < 0:
         fatal.append("--distance-gh-nodes must be >= 0, got %d" % _gh_cli)
-    elif _gh_cli and _gh_env and _gh_cli != _gh_env:
+    elif _gh_cli is not None and _gh_env is not None and _gh_cli != _gh_env:
         fatal.append(
             "--distance-gh-nodes %d conflicts with JAX_ILE_DISTMARG_GH=%d in "
             "the environment; unset the environment variable or pass the "
             "same value on the command line" % (_gh_cli, _gh_env))
-    _gh_resolved = _gh_cli or _gh_env
+    if _gh_cli is not None:
+        _gh_resolved = _gh_cli
+    elif _gh_env is not None:
+        _gh_resolved = _gh_env
+    else:
+        _gh_resolved = 0
     if getattr(opts, "calibration_n_realizations", None) not in (None, 1) \
             or is_set("--calibration-export-posterior") \
             or is_set("--calibration-envelope-directory"):
@@ -496,7 +507,7 @@ def check_critical_and_report(opts, optp):
     opts._distance_gh_nodes_resolved = _gh_resolved
     print("  distance quadrature: per-sample Gauss-Hermite nodes=%d%s"
           % (_gh_resolved, " (legacy uniform grid)" if _gh_resolved == 0 else
-             " (source: %s)" % ("--distance-gh-nodes" if _gh_cli
+             " (source: %s)" % ("--distance-gh-nodes" if _gh_cli is not None
                                 else "JAX_ILE_DISTMARG_GH")))
 
     # Report accepted-but-ignored options that were actually passed.
@@ -737,7 +748,7 @@ def build_parser():
                       "the node count follows from it in closed form.  "
                       "Default %g.  Only valid with that scheme."
                       % _jax_core_dist_tol_default())
-    g.add_option("--distance-gh-nodes", type=int, default=0,
+    g.add_option("--distance-gh-nodes", type=int, default=None,
                  help="Node count for the per-sample Gauss-Hermite-style "
                       "distance quadrature (RIFT.likelihood.jax_ile.core."
                       "make_distance_gh / _distmarg_gh_logL): nodes centred "
@@ -745,12 +756,19 @@ def build_parser():
                       "integrand, resolving it to machine precision at any "
                       "SNR with a few dozen nodes, instead of the legacy "
                       "fixed grid (see --distance-grid-points) which "
-                      "under-resolves that peak at high SNR.  Default 0 keeps "
-                      "the legacy uniform grid (current behaviour, no change). "
-                      "Equivalent to the environment variable "
-                      "JAX_ILE_DISTMARG_GH, which is still honoured for "
-                      "compatibility; setting both to DIFFERENT nonzero "
-                      "values is REFUSED rather than silently picking one. "
+                      "under-resolves that peak at high SNR.  Not passing "
+                      "this flag keeps the legacy uniform grid (current "
+                      "behaviour, no change).  Equivalent to the environment "
+                      "variable JAX_ILE_DISTMARG_GH, which is still honoured "
+                      "for compatibility, but ONLY when this flag is not "
+                      "given: when the flag IS given -- including an "
+                      "explicit 0 -- it wins over the environment variable, "
+                      "and a DIFFERENT nonzero JAX_ILE_DISTMARG_GH is "
+                      "REFUSED rather than silently picked (an explicit "
+                      "--distance-gh-nodes 0 against a nonzero "
+                      "JAX_ILE_DISTMARG_GH is a conflict too, and is refused "
+                      "the same way: silently choosing 0 or the environment "
+                      "value would both hide the disagreement). "
                       "Not compatible with --distance-grid-scheme loguniform "
                       "(the per-sample quadrature reads only the SUPPORT of "
                       "that grid, so combining them would be silently inert "

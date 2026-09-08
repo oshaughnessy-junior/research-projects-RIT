@@ -114,13 +114,20 @@ def _run_refused(mod, args):
 # CLI/env resolution and refusal
 # ---------------------------------------------------------------------------
 
-def test_option_is_registered_with_default_zero():
+def test_option_is_registered_with_default_none():
+    """Default must be None, not 0: 0 is a legal explicit value (BLOCKER,
+    external review of this PR) and a 0-default makes an explicit
+    ``--distance-gh-nodes 0`` indistinguishable from "not passed", so a
+    nonzero JAX_ILE_DISTMARG_GH would silently win instead of losing to the
+    explicit CLI 0."""
     mod = _driver_module()
     optp = mod.build_parser()
     opt = next(o for g in ([optp] + optp.option_groups)
               for o in getattr(g, "option_list", [])
               if "--distance-gh-nodes" in (o._long_opts or []))
-    assert opt.default == 0, "unreachable feature (a) must default OFF: %r" % (opt.default,)
+    assert opt.default is None, (
+        "unreachable feature (a) must default to None, not 0, so an "
+        "explicit 0 is distinguishable from not-passed: got %r" % (opt.default,))
     assert opt.type == "int"
 
 
@@ -200,6 +207,58 @@ def test_cli_route_still_trips_the_loguniform_incompatibility(saved_gh_env):
         "--angle-marg-scheme", "auto", "--distance-gh-nodes", "32"])
     assert "distance-gh-nodes" in text or "JAX_ILE_DISTMARG_GH" in text
     assert "inert" in text
+
+
+def test_explicit_cli_zero_with_nonzero_env_is_REFUSED(saved_gh_env):
+    """The BLOCKER this file exists to close: with the old ``0``-default,
+    ``getattr(opts, "distance_gh_nodes", 0) or 0`` could not tell an explicit
+    ``--distance-gh-nodes 0`` apart from "not passed", so JAX_ILE_DISTMARG_GH
+    silently won.  An explicit 0 against a nonzero env is a conflict like any
+    other -- it must refuse, not resolve to 0 and not resolve to 64."""
+    mod = _driver_module()
+    os.environ["JAX_ILE_DISTMARG_GH"] = "64"
+    text = _run_refused(mod, ["--distance-gh-nodes", "0"])
+    assert "--distance-gh-nodes" in text
+    assert "JAX_ILE_DISTMARG_GH" in text
+    assert "conflicts" in text
+
+
+def test_explicit_cli_16_with_agreeing_env_16_is_accepted(saved_gh_env):
+    mod = _driver_module()
+    os.environ["JAX_ILE_DISTMARG_GH"] = "16"
+    opts, text = _run_checked(mod, ["--distance-gh-nodes", "16"])
+    assert opts._distance_gh_nodes_resolved == 16
+    assert core_mod.get_distmarg_gh_nodes() == 16
+    assert "nodes=16" in text
+
+
+def test_env_16_with_no_cli_resolves_to_16_and_banner_says_so(saved_gh_env):
+    mod = _driver_module()
+    os.environ["JAX_ILE_DISTMARG_GH"] = "16"
+    opts, text = _run_checked(mod, [])
+    assert opts._distance_gh_nodes_resolved == 16
+    assert core_mod.get_distmarg_gh_nodes() == 16
+    assert "nodes=16" in text and "JAX_ILE_DISTMARG_GH" in text
+
+
+def test_cli_wins_regression_env_16_cli_32_must_refuse(saved_gh_env):
+    """Mutation-test target: a priority reversal (env wins over CLI) passes
+    every OTHER test in this file just as readily as "CLI wins" does, because
+    most cases here use only one of the two knobs.  This is the one case that
+    tells them apart: CLI 32 disagrees with env 16, so the correct policy
+    (CLI wins when given; conflicts are refused, never silently reconciled)
+    must refuse.  A reversed-priority implementation that silently resolves
+    to the env value (16) instead of refusing passes _run_refused's
+    SystemExit check trivially only if it also refuses -- if it does not,
+    _run_refused raises AssertionError itself, so this test fails loudly
+    rather than passing on an unresolved value."""
+    mod = _driver_module()
+    os.environ["JAX_ILE_DISTMARG_GH"] = "16"
+    text = _run_refused(mod, ["--distance-gh-nodes", "32"])
+    assert "--distance-gh-nodes" in text
+    assert "32" in text and "16" in text
+    assert "JAX_ILE_DISTMARG_GH" in text
+    assert "conflicts" in text
 
 
 # ---------------------------------------------------------------------------

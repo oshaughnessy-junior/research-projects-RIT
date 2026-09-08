@@ -428,7 +428,7 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         tested under `-W error::RuntimeWarning`, where
 #                                         warnings.warn had made the DEFAULT
 #                                         fail_on_fallback=False path raise.
-#   test_distance_gh_nodes_cli.py      23  --distance-gh-nodes: makes the per-sample
+#   test_distance_gh_nodes_cli.py      27  --distance-gh-nodes: makes the per-sample
 #                                         Gauss-Hermite distance quadrature (previously
 #                                         reachable only via JAX_ILE_DISTMARG_GH) an ILE
 #                                         argument, and the warn-not-silently-ignore
@@ -441,7 +441,17 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         subprocess), including that a CLI/env conflict on
 #                                         DIFFERENT nonzero values is REFUSED rather than
 #                                         reconciled, and that a refused command line never
-#                                         mutates core._DISTMARG_GH_N.  A numeric liveness
+#                                         mutates core._DISTMARG_GH_N.  BLOCKER fix (external
+#                                         review, same day): the option now defaults to None,
+#                                         not 0, so an explicit --distance-gh-nodes 0 is
+#                                         distinguishable from not-passed; four tests pin
+#                                         this -- explicit 0 against a nonzero env refuses,
+#                                         explicit 16 against agreeing env 16 is accepted,
+#                                         env 16 alone resolves and is named in the banner,
+#                                         and env 16 against CLI 32 refuses (the mutation
+#                                         target: a reversed CLI/env priority passes every
+#                                         other test in this file, since most cases here
+#                                         exercise only one of the two knobs).  A numeric liveness
 #                                         check on cheap synthetic packed data (no lal, no
 #                                         frames) pins that the resolved count actually
 #                                         changes the constructed likelihood's VALUE, not
@@ -798,7 +808,15 @@ fi
 # TWELFTH, adding test_distance_gh_nodes_cli.py (--distance-gh-nodes, this branch).
 # 20 test_* entry points, one parametrized x4, so 23 collected; none deselected.
 # FILES is now 38 files, EXPECTED_TESTS raised by exactly that: 577 + 23 = 600.
-EXPECTED_TESTS=600
+#
+# THIRTEENTH, same branch, same day: adversarial review found a BLOCKER (the
+# 0-default made an explicit --distance-gh-nodes 0 indistinguishable from
+# not-passed, so a nonzero JAX_ILE_DISTMARG_GH silently won).  Fixed with a
+# None default and four new tests pinning CLI-given-including-0 wins, plus a
+# mutation-target regression test for the reversed-priority case.  24 test_*
+# entry points now, one parametrized x4, so 27 collected; none deselected.
+# EXPECTED_TESTS raised by exactly that: 600 + 4 = 604.
+EXPECTED_TESTS=604
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
