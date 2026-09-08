@@ -99,10 +99,58 @@ def test_explicit_cubic_stencil_is_accepted_by_both():
     assert missing == [], missing
 
 
-def test_illegal_factor_is_refused_by_both():
-    proc = _run_driver("--vectorized", factor=3)
+# The single case the shipped test used (factor=3) is invisible to a driver that silently
+# starts accepting a NEARBY factor: widening the driver's legal set to (1, 4, 8) left this
+# test at 3 with nothing to say about 4 (PR #291 review, MAJOR #2, mutation-tested).
+# Parametrized over several illegal values on both sides of the legal set.
+@pytest.mark.parametrize("factor", [2, 3, 4, 16])
+def test_illegal_factor_is_refused_by_both(factor):
+    proc = _run_driver("--vectorized", factor=factor)
     assert proc.returncode != 0, proc.stdout[-2000:]
-    assert "--q-time-pregrid-factor currently accepts only 1 or 8" in proc.stdout, \
-        proc.stdout[-2000:]
-    with pytest.raises(ValueError):
-        validate_q_time_pregrid_factor(3)
+    # Compare against the SHARED validator's own message rather than a retyped literal, so a
+    # wording change on either side is caught here rather than silently drifting (same
+    # discipline as test_stencil_conflict_wording_matches_the_shared_constant above): the
+    # driver now calls this exact function (bin/integrate_likelihood_extrinsic_batchmode),
+    # not an independent tuple+message, so this is a WIRING check, not a tautology.
+    with pytest.raises(ValueError) as exc:
+        validate_q_time_pregrid_factor(factor)
+    assert str(exc.value) in proc.stdout, (factor, proc.stdout[-2000:])
+
+
+# (label, driver extra args, builder ILE-argument-string tokens, candidate flags the token is
+# ambiguous between).  Measured on pcdev11 against the real driver (PR #291 review, MAJOR #1):
+# neither token names an actual driver option, but each is an unambiguous-looking PREFIX of
+# more than one -- optparse itself refuses these with 'ambiguous option: ...' before reaching
+# ANY of the guards in _GUARD_CASES above, and the old prefix-of-one-flag _matches() attributed
+# the refusal to whichever guard flag it happened to be checking instead.
+_AMBIGUOUS_CASES = [
+    ("rotation",
+     ["--vectorized", "--rotation", "0.1"], "--vectorized --rotation 0.1",
+     ["--rotation-n-harmonics", "--rotation-p-max", "--rotation-slow"]),
+    ("calibration_e",
+     ["--vectorized", "--calibration-e", "/tmp/cal"], "--vectorized --calibration-e /tmp/cal",
+     ["--calibration-envelope-directory", "--calibration-export-posterior"]),
+]
+
+
+@pytest.mark.parametrize("label,driver_args,builder_ile_args,candidates", _AMBIGUOUS_CASES,
+                          ids=[c[0] for c in _AMBIGUOUS_CASES])
+def test_ambiguous_abbreviation_refuses_on_both_sides_with_matching_classification(
+        label, driver_args, builder_ile_args, candidates):
+    proc = _run_driver(*driver_args)
+    assert proc.returncode != 0, proc.stdout[-2000:]
+    assert "ambiguous option:" in proc.stdout, proc.stdout[-2000:]
+    # The driver's optparse refuses BEFORE reaching the vectorized/rotation-slow/freqresponse/
+    # calibration exclusion branch -- confirms this refusal is the ambiguity, not a coincidental
+    # hit of the OTHER guard.
+    assert _DRIVER_EXCLUSION_MESSAGE not in proc.stdout, proc.stdout[-2000:]
+    for candidate in candidates:
+        assert candidate in proc.stdout, (candidate, proc.stdout[-2000:])
+
+    missing = q_time_pregrid_pipeline_prereqs(8, "X " + builder_ile_args)
+    assert missing, (label, "builder approved an ambiguous token")
+    assert any("ambiguous option:" in m for m in missing), missing
+    # And NOT misattributed to one of the ordinary exclusion guards (the bug this test is for):
+    assert not any(m.startswith("incompatible") for m in missing), missing
+    for candidate in candidates:
+        assert any(candidate in m for m in missing), (candidate, missing)

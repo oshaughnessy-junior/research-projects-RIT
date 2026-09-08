@@ -51,6 +51,13 @@ import glue.lal
 import RIFT.lalsimutils as lalsimutils
 from RIFT.likelihood.time_interp_choice import CROSSOVER_GUIDANCE as _CROSSOVER_GUIDANCE
 from RIFT.likelihood.time_interp_choice import TIME_INTERP_DEFAULT
+# Q_TIME_PREGRID_CHOICES (RIFT/likelihood/q_time_pregrid.py) is the SINGLE definition of the
+# legal --q-time-pregrid-factor set; this driver calls the shared validator below rather than
+# retyping its own tuple+message, so the pipeline-side mirror (q_time_pregrid.py) and this
+# driver cannot silently drift apart (PR #291 review, MAJOR #2: this used to be an independent
+# literal here, and a pipeline-side docstring claimed drift was impossible while nothing
+# enforced it).
+from RIFT.likelihood.q_time_pregrid import validate_q_time_pregrid_factor
 from RIFT.precision import RiftFloat
 import RIFT.integrators.mcsampler as mcsampler
 from RIFT.integrators.rvs_record import (RvsRecord as _RvsRecord,   # see DESIGN_rvs_naming.md
@@ -503,8 +510,7 @@ else:
             "--interpolate-time: unrecognised value %r. Use a stencil name (nearest|cubic|sinc) "
             "or a legacy boolean (%s)." % (opts.interpolate_time,
                                            "|".join(_TI_LEGACY_BOOLEAN)))
-if opts.q_time_pregrid_factor not in (1, 8):
-    raise ValueError("--q-time-pregrid-factor currently accepts only 1 or 8")
+opts.q_time_pregrid_factor = validate_q_time_pregrid_factor(opts.q_time_pregrid_factor)
 if opts.q_time_pregrid_factor == 8:
     if not opts.vectorized or opts.rotation_slow or opts.freqresponse or opts.calibration_envelope_directory:
         raise NotImplementedError(

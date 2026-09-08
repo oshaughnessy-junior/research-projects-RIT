@@ -53,6 +53,30 @@ def _fast_ini(tmp_path):
     return out
 
 
+def _fast_ini_with_osg_cvmfs(tmp_path):
+    """OSG/singularity ON, but use_osg_file_transfer=False (CVMFS frames).
+
+    Mirrors test_jax_ile_selectable.py's helper of the same name: with
+    use_osg_file_transfer left at the reference ini's own True,
+    write_ILE_sub_simple additionally wraps the job in a generated ile_pre.sh
+    that builds local.cache at runtime, which is orthogonal to what this test
+    checks.  --use-cvmfs-frames (added by pseudo_pipe when
+    use_osg_file_transfer=False) skips that wrapper.  Used for the MINOR
+    finding this PR fixes (PR #291 review, MINOR #4): _fast_ini above
+    disables OSG entirely, so --use-osg's own .sub-generation path
+    (write_ILE_sub_simple's SINGULARITY_BASE_EXE_DIR + basename(exe) rewrite
+    of the "executable" line) was untested for this flag.  The "arguments"
+    line the flag actually lands in is untouched by that rewrite, but nothing
+    exercised the combination before this test.
+    """
+    text = REF_INI.read_text()
+    text = text.replace("use_osg_file_transfer=True", "use_osg_file_transfer=False")
+    text = re.sub(r"force-initial-grid-size=\d+", "force-initial-grid-size=4", text)
+    out = tmp_path / "ref_fast_osg_cvmfs.ini"
+    out.write_text(text)
+    return out
+
+
 def _shim_path_dir(tmp_path):
     """A directory with 'python' -> this interpreter, for CEPP's os.system(...) hop.
 
@@ -84,8 +108,8 @@ def _env(tmp_path):
     return env
 
 
-def _build(tmp_path, rundir_name, extra_args):
-    ini = _fast_ini(tmp_path)
+def _build(tmp_path, rundir_name, extra_args, ini_fn=_fast_ini, extra_env=None):
+    ini = ini_fn(tmp_path)
     cache = tmp_path / "fake.cache"
     cache.write_text("")
     rundir = tmp_path / rundir_name
@@ -94,7 +118,10 @@ def _build(tmp_path, rundir_name, extra_args):
            "--use-coinc", str(COINC),
            "--use-rundir", str(rundir),
            "--fake-data-cache", str(cache)] + list(extra_args)
-    out = subprocess.run(cmd, cwd=str(tmp_path), env=_env(tmp_path), text=True,
+    env = _env(tmp_path)
+    if extra_env:
+        env.update(extra_env)
+    out = subprocess.run(cmd, cwd=str(tmp_path), env=env, text=True,
                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     return out, rundir
 
@@ -123,6 +150,34 @@ def test_q_time_pregrid_factor_8_reaches_every_ile_stage_sub(tmp_path):
     sets no --rotation-slow, --freqresponse, or calibration marginalization, so
     nothing excludes it either."""
     out, rundir = _build(tmp_path, "run_q8", [Q_TIME_PREGRID_FLAG, "8"])
+    assert out.returncode == 0, out.stdout[-4000:]
+    for name in ("ILE.sub", "ILE_extr.sub", "ILE_puff.sub"):
+        text = _sub_text(rundir, name)
+        assert ILE_Q_TIME_PREGRID_FLAG + " 8" in text, (name, text)
+
+
+def test_q_time_pregrid_factor_8_reaches_every_ile_stage_sub_under_osg(tmp_path):
+    """The MINOR gap PR #291 review left open: _fast_ini above forces OSG off, so the
+    --use-osg .sub-build variant of this flag was never exercised.  write_ILE_sub_simple
+    rewrites the "executable" line under --use-osg (SINGULARITY_BASE_EXE_DIR +
+    basename(exe)), but --q-time-pregrid-factor lands in the "arguments" line, which that
+    rewrite does not touch -- this asserts that directly against a real OSG build rather
+    than by inference.
+
+    --use-osg always adds --use-singularity (see test_jax_ile_selectable.py), and
+    create_event_parameter_pipeline_BasicIteration reads SINGULARITY_RIFT_IMAGE /
+    SINGULARITY_BASE_EXE_DIR unconditionally once that flag is set -- both are set here to
+    fake values, exactly as test_jax_ile_selectable.py's OSG-cvmfs test does, so the build
+    reaches .sub-file generation instead of a KeyError first.
+    """
+    extra_env = {
+        "SINGULARITY_RIFT_IMAGE": "/fake/rift.sif",
+        # write_ILE_sub_simple concatenates this directly with basename(exe) (no separator
+        # inserted), so it must carry its own trailing slash.
+        "SINGULARITY_BASE_EXE_DIR": "/fake/base_exe_dir/",
+    }
+    out, rundir = _build(tmp_path, "run_q8_osg", [Q_TIME_PREGRID_FLAG, "8"],
+                          ini_fn=_fast_ini_with_osg_cvmfs, extra_env=extra_env)
     assert out.returncode == 0, out.stdout[-4000:]
     for name in ("ILE.sub", "ILE_extr.sub", "ILE_puff.sub"):
         text = _sub_text(rundir, name)

@@ -180,14 +180,18 @@ python MonteCarloMarginalizeCode/Code/test/test_mcsamplerEnsemble_extended.py --
 # The real DAG-build regression (--internal-ile-q-time-pregrid-factor reaching ILE.sub /
 # ILE_extr.sub / ILE_puff.sub, PR #281 review MAJOR #1) is test_q_time_pregrid_dag.py,
 # registered in .github/workflows/ci.yml's test-run job next to test_jax_ile_selectable.py
-# rather than here: it is a full subprocess DAG build (~3 minutes), not a fast unit gate.
+# rather than here: it is a full subprocess DAG build, not a fast unit gate.  test-run is
+# matrixed over TWO lanes (legacy py3.9, modern py3.12), so this step runs twice per push,
+# measured at ~236s/lane -- ~8 minutes total, not ~3 (PR #291 review, NOTE #5: the single-run
+# figure this comment used to state undercounted the per-lane doubling every step in that
+# job already pays).
 _QPREGRID_TESTS=(
     MonteCarloMarginalizeCode/Code/test/test_q_time_pregrid.py
     MonteCarloMarginalizeCode/Code/test/test_q_time_pregrid_pipeline.py
     MonteCarloMarginalizeCode/Code/test/test_q_time_pregrid_driver_parity.py
 )
 # Raise EXPECTED by RUNNING collection, never by arithmetic.
-_QPREGRID_EXPECTED=72
+_QPREGRID_EXPECTED=77
 _QPREGRID_FOUND=$(python -m pytest -q --collect-only "${_QPREGRID_TESTS[@]}" 2>/dev/null | grep -c '::' || true)
 if [ "$_QPREGRID_FOUND" -ne "$_QPREGRID_EXPECTED" ]; then
     echo "q-time-pregrid gate: collected $_QPREGRID_FOUND tests, expected $_QPREGRID_EXPECTED" >&2
