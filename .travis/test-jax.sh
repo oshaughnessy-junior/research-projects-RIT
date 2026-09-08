@@ -821,13 +821,20 @@ fi
 # the two refusals that keep an unsized scheme from inventing a metric.
 # test_jax_cache.py collects 30, not the 17 the branch's per-file line claimed.
 #
-# The gate cannot be run to completion in ~/.cache/jaxci_venv on the CIT
-# interactive hosts, on this branch OR on pristine rift_O4d f3cc09af: the full
-# suite aborts (134/139) around test_jax_slowrot.py, and
-# test_laplace_high_amplitude_accuracy_and_trend fails on identical numbers
-# (4.170033207628876e-10 vs 5.684341886080802e-14, a trend assertion at the
-# noise floor).  Base CI at that SHA is green, so both are local-environment
-# artifacts.  Verify per-file locally; let CI run the whole gate.
+# READ THIS BEFORE TREATING A LOCAL RED AS A BRANCH DEFECT.  jax and numpyro
+# are installed UNPINNED here (see ci.yml for why), so CI and your shell can be
+# on different jax versions at the same time, and which one is newer changes
+# over time -- do not infer it from this comment.  Landing #214, two failures
+# reproduced in a local venv on the branch AND on its pristine base while CI
+# was green on the whole gate: a trend assertion at the noise floor, and a
+# full-suite abort (134/139) in a file the branch never touched.  Both were the
+# environment, and finding that out cost two runs.
+#
+# So: check the jax version each side actually ran (the gate prints it as its
+# second line), and reproduce any local failure on the PRISTINE BASE in the SAME
+# environment before believing it.  The collected COUNT has been stable across
+# versions; pass/fail has not.  Issue #292 tracks the environment spread and
+# what to do about it.
 #
 # One practical note for whoever hits this next, because it cost a wasted run:
 # PYTHONPATH must be pinned to the tree under test before collecting.  The
