@@ -8,9 +8,10 @@ WHICH KERNEL THIS IS.  ``four_axis_local`` localizes time, phi_ref, psi and
 distance together.  It is not ``--angle-marg-scheme peak-local``, which localizes
 psi alone and keeps phi dense, and it is not any of the six other kernels in
 :mod:`RIFT.likelihood.peak_local_names`.  Accuracy and cost measured for one do
-not transfer to the other: on the paper-1 ladder the psi-local kernel was refused
-at 19.99 GiB per sample at rung 160, while this one ran the same rung at 0.146 s
-per selected call.  A run's own log names the kernel, so no reader has to know
+not transfer to the other: the psi-local kernel's per-sample buffer grows as
+sqrt(amplitude), modelled at 5.4 GiB at rho 163 rising to 18.0 GiB at rho 652
+(DESIGN_anglemarg_memory.md), while this one ran rho 163 at 0.146 s per selected
+call.  A run's own log names the kernel, so no reader has to know
 that history.
 
 1. build the guarded coefficient tables once (the same U,V/Q contraction the

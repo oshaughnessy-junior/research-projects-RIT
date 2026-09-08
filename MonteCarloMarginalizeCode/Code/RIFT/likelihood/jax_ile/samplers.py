@@ -38,6 +38,8 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
+from .. import peak_local_names as _names
+
 # Default chunk for the batched lnL evals.  The per-sample distance quadrature
 # (JAX_ILE_DISTMARG_GH=G) materialises a (chunk, npts, G) array, ~G/ (grid_block)
 # more device memory than the legacy grid, so a 4000-row chunk OOMs the 11GB
@@ -678,23 +680,36 @@ def angle_marg_eval_chunk(like, chunk):
     # phi chunks, four cells and a streamed u-node block, so the batch multiplies the
     # same way the dense schemes do.  Leaving it out kept an uncapped 8000-sample batch
     # and reopened the 36.4 GiB failure documented above.
-    if getattr(like, "angle_marg_scheme", "grid") not in ("exact", "laplace",
-                                                          "peak-local", "phi-local"):
+    # CANONICALIZE BEFORE COMPARING.  The wrapper folds the descriptive spellings onto
+    # the historical values, but a caller that builds a likelihood by hand and sets
+    # `angle_marg_scheme = "psi-local-phi-dense"` would otherwise miss every branch
+    # below and get an UNCAPPED batch -- the failure this guard exists for, reached by
+    # spelling rather than by scheme.  Internal review found it latent: no in-tree
+    # caller does that today.  Fail closed by resolving the string here.
+    scheme = _names.canonical_angle_marg_scheme(
+        getattr(like, "angle_marg_scheme", "grid"))
+    if scheme not in ("exact", "laplace", "peak-local", "phi-local"):
         return chunk
     npts = int(getattr(getattr(like, "data", None), "npts", 0) or 0)
     if npts <= 0:
         return chunk
     bytes_per = _ANGLE_MARG_BYTES_PER_SAMPLE_PT
-    if getattr(like, "angle_marg_scheme", None) == "phi-local":
+    if scheme == "phi-local":
         # Modelled in the SAME change that added the kernel, because the trap this guard
         # exists for is a kernel whose sizing moved while the guard kept its old model.
         bytes_per = max(bytes_per, _philocal_bytes_per_sample_pt(like))
-    elif getattr(like, "angle_marg_scheme", None) == "peak-local":
+    elif scheme == "peak-local":
         # Besides the streamed (phi_chunk,n_x,4,u_live) body, lax.scan returns
         # and stacks every (n_phi,n_x) value before the final reduction.  Omitting
         # that output undercounts high-amplitude calls because n_phi grows as
         # sqrt(A).
         bytes_per = max(bytes_per, _peaklocal_bytes_per_sample_pt(like))
+    # Clear before the call so a monkeypatched or otherwise non-recording
+    # `_angle_marg_buffer_target` yields "not recorded" rather than the source of
+    # whatever call ran last.  _angle_marg_buffer_provenance's docstring promised
+    # this; without the clear it held only on the first call.
+    global _ANGLE_MARG_BUFFER_SOURCE
+    _ANGLE_MARG_BUFFER_SOURCE = None
     target = _angle_marg_buffer_target()
     per_sample = bytes_per * npts
     if per_sample > target:
@@ -734,7 +749,7 @@ def angle_marg_eval_chunk(like, chunk):
             "or run a cheaper angle_marg_scheme.  The sample axis is the only axis this "
             "cap can divide, so no chunk size is a fix; reducing the outer "
             "evaluation chunk cannot make this call fit.  ALLOWANCE SOURCE: %s."
-            % (getattr(like, "angle_marg_scheme", None), per_sample,
+            % (scheme, per_sample,
                per_sample / float(1 << 30), bytes_per, npts, target,
                target / float(1 << 30), per_sample / float(1 << 30),
                _ANGLE_MARG_BUFFER_TARGET_FALLBACK,

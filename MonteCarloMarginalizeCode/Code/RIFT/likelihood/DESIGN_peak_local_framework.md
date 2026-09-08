@@ -30,8 +30,9 @@ none of it shipped; both statements have since expired.
 
 Read the table before quoting any measurement of "peak-local". A profiling run on
 2026-09-08 measured `psi_local_phi_dense` and published the result as a claim about
-`four_axis_local`. The two disagreed in direction: the first was refused at 19.99 GiB
-per sample at ladder rungs 160 and 640, the second ran those rungs at 0.146 s per
+`four_axis_local`. The two disagreed in direction: the first is refused on a 24 GiB
+card at the top of the ladder, its per-sample buffer growing as `sqrt(A)` to a
+modelled 18.0 GiB at rho 652, while the second ran rho 163 and 326 at 0.146 s per
 selected call.
 
 | kernel id | module | localized | dense | selected by | from `auto`? |

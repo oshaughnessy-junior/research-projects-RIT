@@ -56,6 +56,9 @@ class KernelIdentity(NamedTuple):
     reachable_from_auto: bool
     memory_model: str
     status: str
+    #: Free text for an axis fact the two tuples cannot carry, e.g. a library whose
+    #: rules differ on one axis.  Empty for a kernel whose axes are fully described.
+    axis_note: str = ""
 
 
 #: Every peak-local kernel in the package, keyed by an id that names its axes.
@@ -93,8 +96,17 @@ KERNELS = OrderedDict((k.kernel_id, k) for k in (
         kernel_id="phi_psi_cell_kernel_jax",
         module="RIFT.likelihood.jax_ile.joint_anglemarg_peaklocal",
         entry="joint_lnL_phi_dense, joint_lnL_phi_local",
+        # THE AXES COMMON TO BOTH RULES, and no more.  This entry offers two:
+        # joint_lnL_phi_dense localizes psi with phi dense, joint_lnL_phi_local
+        # localizes both.  An earlier revision declared dense=("phi_ref",), which is
+        # a false claim about the second rule -- caught by internal review, because
+        # describe() then emitted it.  psi is localized by both; D is dense in both.
+        # The phi axis differs between the rules, so it appears in neither tuple and
+        # is stated in axis_note instead.
         localized=("psi",),
-        dense=("phi_ref",),
+        dense=("D",),
+        axis_note=("two rules: joint_lnL_phi_dense keeps phi_ref dense, "
+                   "joint_lnL_phi_local localizes it"),
         selector=None,
         reachable_from_auto=False,
         memory_model=("bounded by phi_chunk and U_NODE_STREAM_CHUNK; the callers "
@@ -216,6 +228,11 @@ def angle_marg_kernel_id(scheme):
     return ANGLE_MARG_KERNEL.get(canonical_angle_marg_scheme(scheme))
 
 
-#: Names that mean more than one kernel, and must never appear alone in output.
-#: Read by test_peak_local_names.py, which greps the shipped log lines for them.
+#: Names that mean more than one kernel, and must never appear alone as a kernel id.
+#: An earlier revision of this comment said a test "greps the shipped log lines for
+#: them"; no such test existed, and internal review caught the claim.  What is
+#: enforced is narrower and is what the tuple is for: no kernel id may equal one of
+#: these (test_no_kernel_id_is_one_of_the_ambiguous_names), and the driver's own
+#: emitted format strings must pair the word with a kernel id
+#: (test_the_driver_log_lines_never_emit_a_bare_ambiguous_name).
 AMBIGUOUS_NAMES = ("peak-local", "peaklocal", "peak_local", "local")

@@ -147,25 +147,38 @@ number and no account of it.
 Two operating-point errors here produce messages that read like code faults.
 
 **The absolute override does not track the card.** It wins over every probe, so a
-value copied between hosts is wrong on the second one. A runner carrying a hardcoded
+value copied between hosts is wrong on the second one; a runner carrying a hardcoded
 6 GiB on a 24 GiB card was found on 2026-09-08. Size it as half of what `nvidia-smi`
-shows free to you, matching the fraction the probe uses: 12 GiB on a 24 GiB card you
-hold alone, less when you share it. Set it only when you know the card is yours; the
-probe is the better answer when it can read the device.
+shows free to you: 12 GiB on a 24 GiB card you hold alone. Set it only when the probe
+cannot read the device.
 
 **A zero allowance now means what it says.** Before #285, `largest_free_block_bytes`
 reading 0 on jax 0.9.2 was taken for a full card, so the preflight refused the default
-`exact` scheme on an idle 24 GiB device. That is fixed: an unreadable key falls through
-to the pool signal, and a probe allocation makes the pool exist before the read. A zero
-that survives all of that is a pool genuinely consumed, so check `nvidia-smi` for who
-holds the card rather than reaching for the override.
+`exact` scheme on an idle 24 GiB device. That is fixed. A zero surviving the probe
+allocation is a consumed pool, so check `nvidia-smi` for who holds the card.
 
-**A large allowance does not make every call fit.** At `T=1193`, `N_x=256`,
-`m_max=2`, `psi_local_phi_dense` asked for 19.99 GiB for a single sample at ladder
-rungs 160 and 640 (measured 2026-09-08). No allowance a 24 GiB card can give at the
-default fraction covers that, and the sample axis is the only axis this cap divides,
-so no chunk size is a fix either. Shorten the time window, shrink the distance grid,
-or run a different kernel.
+**A large allowance does not make every call fit.** `psi_local_phi_dense` sizes
+`n_phi` from the amplitude, so its per-sample buffer grows as `sqrt(A)`. Evaluating
+the model above at `T=1193`, `N_x=256`, `m_max=2`:
+
+| rho | n_phi | per-sample model |
+|---:|---:|---:|
+| 40.8 | 464 | 2.22 GiB |
+| 81.5 | 928 | 3.28 GiB |
+| 163.1 | 1856 | 5.39 GiB |
+| 326.2 | 3696 | 9.58 GiB |
+| 652.3 | 7392 | 17.99 GiB |
+
+A 24 GiB card at the default fraction allows about 12 GiB, so the top two rows fit
+at no chunk size: the sample axis is the only one this cap divides. Shorten the time
+window, shrink the distance grid, or run another kernel.
+
+These are MODEL values from `samplers._peaklocal_bytes_per_sample_pt`, reproducible
+from this file. A 2026-09-08 sampler-arms probe recorded an observed refusal of
+19.99 GiB, but its configuration survives in neither repository, and that figure
+implies `rho ~ 731` at the dimensions above. An earlier revision attached it to
+rungs 160 and 640, which the model contradicts by 3.7x at rung 160. Quote the model,
+or quote a run whose dimensions you have.
 
 ## Validation boundary
 

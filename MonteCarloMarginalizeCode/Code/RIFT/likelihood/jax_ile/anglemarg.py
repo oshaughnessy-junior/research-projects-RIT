@@ -201,11 +201,14 @@ ANGLE_MARG_LOCAL_SCHEMES = ("peak-local", "phi-local")
 #: a pilot run both and decide; promoting it into `choose_angle_marg_scheme` is a
 #: separate change with its own evidence.
 #:
-#: MEASURED LIMIT of this kernel, which the four-axis kernel does not share: its phi
-#: axis is dense and amp-sized, so its per-sample buffer grows as sqrt(amplitude).  On
-#: 2026-09-08 rungs 160 and 640 of the paper-1 ladder each asked for 19.99 GiB on a
-#: 24 GiB card and were refused by angle_marg_eval_chunk.  Evidence:
-#: RIFT_roboto_paper development/BREADCRUMB_sampler_arms_6B_20260908.md.
+#: MODELLED LIMIT of this kernel, which the four-axis kernel does not share: its phi
+#: axis is dense and amp-sized, so its per-sample buffer grows as sqrt(amplitude).  At
+#: T=1193, N_x=256, m_max=2 that model gives 5.4 GiB per sample at rho 163 and
+#: 18.0 GiB at rho 652, against the ~12 GiB a 24 GiB card allows, so the top of the
+#: paper-1 ladder is refused by angle_marg_eval_chunk.  Table and derivation:
+#: jax_ile/DESIGN_anglemarg_memory.md.  An observed 19.99 GiB refusal is recorded in
+#: RIFT_roboto_paper development/BREADCRUMB_sampler_arms_6B_20260908.md, but that
+#: run's dimensions are recorded nowhere, so do not quote it against a rung.
 
 # ---------------------------------------------------------------------------
 ANGLE_MARG_CROSSOVER_AMPLITUDE = 450.0     # A = rho^2/2; rho = 30.  NOTE the

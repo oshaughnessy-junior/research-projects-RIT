@@ -4,6 +4,23 @@ KERNEL ID ``four_axis_local_diagnostic`` (RIFT.likelihood.peak_local_names).  Sa
 four axes as ``four_axis_local``, different placement and cover.  No driver flag
 selects it.
 
+RENAME PENDING: this file should be called ``four_axis_local_diagnostic.py``.  Its current name says
+"peaklocal", which names eight kernels in this package.  The KERNEL ID above is the
+disambiguation that shipped; the file name is the part still to do, and it was NOT done
+in the same change.
+
+WHY IT WAITS, and how to tell when it can go.  A rename rewrites every hunk header, so
+it conflicts with every in-flight branch touching this file.  As of 2026-09-08 that is:
+
+  * PR #214 (codex/jax-cache-transfer).  This name is ambiguous the other way
+    too: "multipeak" does not say which axes, and this is the DIAGNOSTIC
+    four-axis path, not the production one in all_axis_peaklocal.py.
+
+Do it once those land or close, in a commit that does nothing else, so the diff reads as
+a pure rename: ``git mv multipeak_planner.py four_axis_local_diagnostic.py``.  Update the ``module`` field of this kernel's entry in
+``RIFT/likelihood/peak_local_names.py`` and the roster in ``.travis/test-jax.sh`` in the
+same commit, and rename the test file to match.
+
 This module deliberately exposes an opt-in seam rather than changing the
 production likelihood dispatch.  The fixed-shape device controller in
 :mod:`all_axis_peaklocal` is the canonical four-axis path; the shared host
@@ -1151,7 +1168,8 @@ def multipeak_local_marginalize(
         fault = FallbackFault(
             stage, type(error).__name__, str(error))
         logger.warning(
-            "multipeak_local_marginalize: the local planner RAISED at stage "
+            "multipeak_local_marginalize [kernel four_axis_local_diagnostic]: "
+            "the local planner RAISED at stage "
             "%r and fell back to the dense reserve.  This is a fault, not a "
             "budget decline: %s: %s.  label=%r, C_A_t.shape=%s, "
             "C_B_t.shape=%s, x=[%r, %r], tier0=%r, tier1=%r, "

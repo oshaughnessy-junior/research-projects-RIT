@@ -210,6 +210,146 @@ def test_the_driver_accepts_the_descriptive_spelling(spelling, accepted):
     assert rejected is not accepted, (spelling, out.stderr[-400:])
 
 
+def test_the_numpy_time_kernel_names_itself_in_its_diagnostics():
+    """The OTHER flag that spells "peak-local".  `--time-marginalization-quadrature
+    peak-local` selects a TIME kernel on the numpy/cupy arm; a dump of its diagnostics
+    must say so, because the identical word on `--angle-marg-scheme` selects an angle
+    kernel with a different cost and a different accuracy."""
+    T = pytest.importorskip("RIFT.likelihood.time_marginalization_peak_local")
+    assert T.last_report is not None
+    src = pathlib.Path(T.__file__).read_text()
+    # The stats dict is built in one place; assert the field is seeded there rather
+    # than running a full marginalization for a string.
+    assert 'kernel=_names.kernel("time_local_numpy").kernel_id' in src
+    assert N.kernel("time_local_numpy").selector == (
+        "--time-marginalization-quadrature peak-local")
+
+
+def test_the_diagnostic_four_axis_planner_names_itself_when_it_faults():
+    """Its fault line is the one thing this module prints to a human, and
+    "multipeak" does not say which axes or which of the two four-axis paths."""
+    pytest.importorskip("jax")
+    from RIFT.likelihood.jax_ile import multipeak_planner
+    src = pathlib.Path(multipeak_planner.__file__).read_text()
+    assert "[kernel four_axis_local_diagnostic]" in src
+    assert N.kernel("four_axis_local_diagnostic").selector is None
+
+
+@pytest.mark.parametrize("module_name,proposed", [
+    ("all_axis_peaklocal", "four_axis_local.py"),
+    ("joint_anglemarg_peaklocal", "phi_psi_cell_kernel.py"),
+    ("time_first_peaklocal", "time_local.py"),
+    ("multipeak_planner", "four_axis_local_diagnostic.py"),
+])
+def test_the_rename_notes_still_describe_a_rename_not_yet_done(module_name, proposed):
+    """The four modules carry a RENAME PENDING note naming their replacement.  If the
+    rename happens and the note survives, the note becomes a lie that reads as a
+    to-do; if the note is dropped without the rename, the plan is lost.  Fail on
+    either."""
+    pytest.importorskip("jax")
+    mod = importlib.import_module("RIFT.likelihood.jax_ile." + module_name)
+    path = pathlib.Path(mod.__file__)
+    assert path.name == module_name + ".py"
+    assert path.name != proposed, "renamed; delete the RENAME PENDING note"
+    doc = mod.__doc__ or ""
+    assert "RENAME PENDING" in doc, module_name
+    assert proposed in doc, (module_name, proposed)
+
+
+def test_the_axis_contract_matches_the_kernel_entry_points():
+    """M4 from the internal mutation sweep SURVIVED: declaring a false axis contract
+    for a kernel failed nothing.  It was not hypothetical -- `phi_psi_cell_kernel_jax`
+    shipped `dense=("phi_ref",)` while naming a rule that localizes phi_ref.
+
+    A kernel that names an entry point with `phi_local` in it cannot call phi_ref
+    dense, and one whose only entries are `phi_dense` cannot call it localized.  That
+    is checkable from the registry alone, so it is checked here.
+    """
+    for kid, k in N.KERNELS.items():
+        entries = k.entry.lower()
+        if "phi_local" in entries and "phi_dense" not in entries:
+            assert "phi_ref" in k.localized, (kid, "localizes phi but does not say so")
+            assert "phi_ref" not in k.dense, (kid, "calls a localized phi dense")
+        if "phi_dense" in entries and "phi_local" not in entries:
+            assert "phi_ref" not in k.localized, (kid, "phi is dense in its only rule")
+        if "phi_local" in entries and "phi_dense" in entries:
+            # Two rules that disagree on phi.  The axis tuples cannot carry that, so
+            # the entry must say so in prose instead of picking one and being wrong.
+            assert "phi_ref" not in k.localized and "phi_ref" not in k.dense, kid
+            assert "phi" in k.axis_note.lower(), (kid, "two rules, no axis_note")
+
+
+def test_the_buffer_cap_resolves_the_spelling_before_it_compares():
+    """D3 from the internal review.  `angle_marg_eval_chunk` matched a hardcoded
+    scheme list, so a caller setting `angle_marg_scheme = "psi-local-phi-dense"` by
+    hand fell through every branch and got an UNCAPPED batch -- the exact failure the
+    guard exists for, reached by spelling.  Latent, but fail-open.
+    """
+    pytest.importorskip("jax")
+    import numpy as _np
+    from RIFT.likelihood.jax_ile import samplers as S
+
+    def refuses(spelling, monkey_target):
+        class D: pass
+        class L: pass
+        d = D(); d.npts = 1193; d.lms = _np.array([[2, 2], [2, -2]])
+        like = L(); like.data = d; like.x_grid = _np.zeros(256)
+        like.angle_marg_info = {"amp_sizing": 12500.0}
+        like.angle_marg_scheme = spelling
+        saved = S._angle_marg_buffer_target
+        S._angle_marg_buffer_target = monkey_target
+        try:
+            S.angle_marg_eval_chunk(like, 8000)
+            return False
+        except MemoryError:
+            return True
+        finally:
+            S._angle_marg_buffer_target = saved
+
+    tiny = lambda: 1 << 30
+    for spelling in ("peak-local", "psi-local-phi-dense",
+                     "phi-local", "psi-local-phi-local"):
+        assert refuses(spelling, tiny), spelling
+    # 'grid' is the sentinel for "runs no dense angle scheme" and must pass through.
+    assert not refuses("grid", tiny)
+
+
+def test_the_driver_log_lines_never_emit_a_bare_ambiguous_name():
+    """What AMBIGUOUS_NAMES is for.  Every driver line that prints one of those words
+    must print a kernel id in the same statement, or a reader is back where they
+    started.  Reads the driver's own format strings; comments are stripped first,
+    because a comment is not something a run prints."""
+    code = pathlib.Path(__file__).resolve().parents[2]
+    driver = code / "bin" / "integrate_likelihood_extrinsic_jax"
+    if not driver.exists():
+        pytest.skip("driver script not present in this checkout")
+    # ast, not tokenize: the driver builds its help text from adjacent string
+    # literals, and a tokenizer sees each FRAGMENT.  Half a sentence is not the unit
+    # a reader sees, and checking fragments failed on one that merely lacked the
+    # word.  ast folds implicit concatenation into one Constant, which is the unit
+    # the run actually prints.
+    import ast
+    tree = ast.parse(driver.read_text())
+    # A bare "peak-local" with no whitespace is a COMPARISON OPERAND -- the scheme
+    # value itself, in `if scheme in (...)` -- not something a run prints.  Requiring
+    # it to carry a kernel id would be requiring the flag's own value to rename
+    # itself, which is the compatibility surface this change preserves on purpose.
+    # Messages are the literals with whitespace in them.
+    suspects = [n.value for n in ast.walk(tree)
+                if isinstance(n, ast.Constant) and isinstance(n.value, str)
+                and any(c.isspace() for c in n.value)
+                and ("peak-local" in n.value.lower()
+                     or "peaklocal" in n.value.lower())]
+    assert suspects, "no driver string mentions the word; test has gone blind"
+    # REQUIRE THE WORD "kernel", and nothing weaker.  An earlier version also accepted
+    # a message that merely named a flag.  That let a mutation through: the
+    # --direct-marginalization-policy help mentions --angle-marg-scheme in an
+    # unrelated clause, so deleting its kernel id still satisfied the check.  A guard
+    # that passes for a reason unrelated to what it tests is not a guard.
+    for text in suspects:
+        assert "kernel" in text.lower(), text[:300]
+
+
 def test_the_dense_schemes_record_no_kernel():
     """kernel=None is the honest answer for 'exact': it is not a peak-local kernel,
     and inventing an id for it would make the field meaningless."""

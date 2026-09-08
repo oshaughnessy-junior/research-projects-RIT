@@ -2309,9 +2309,14 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
               % (like.angle_marg_scheme, angle_marg,
                  "" if _kernel_id is None else " -> kernel %s"
                  % _peak_local_names.describe(_kernel_id),
+                 # "kernel" is excluded because the clause above already prints it
+                 # with its axes.  Leaving it in printed the id twice on a local
+                 # scheme, and printed a bare "kernel=None" on exact/laplace/grid,
+                 # which reads as a missing value rather than as "not a peak-local
+                 # kernel".  Internal review, 2026-09-08.
                  "; ".join("%s=%s" % kv for kv in
                            sorted(like.angle_marg_info.items())
-                           if kv[0] not in ("scheme", "requested"))))
+                           if kv[0] not in ("scheme", "requested", "kernel"))))
         print("  direct-marginalization policy: %s%s%s"
               % (like.direct_marginalization_policy,
                  "" if like.direct_marginalization_policy == "off"

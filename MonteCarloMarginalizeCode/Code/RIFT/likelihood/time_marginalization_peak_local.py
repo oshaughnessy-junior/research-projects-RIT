@@ -157,6 +157,8 @@ unavailable.
 
 import numpy as np
 
+from . import peak_local_names as _names
+
 from . import time_marginalization_quadrature as _tmq
 from .time_marginalization_quadrature import (
     UPSAMPLE_SAFETY,
@@ -354,6 +356,8 @@ def last_report():
     ``n_wrap_exposed_rows``, ``n_unmeasurable_rows``, ``n_flat_rows``,
     ``n_refined_rows`` -- which mean exactly what they mean there, and adds:
 
+    ``kernel``  the kernel id, ``time_local_numpy``.  Present so a dump of this
+        dict names which of the eight peak-local kernels ran.
     ``n_peak_local_rows``  rows actually integrated by this module's rule.
     ``n_dense_fallback_rows``  refined rows handed to the dense band-limited path.
     ``n_dense_fallback_cost_pregate`` / ``n_dense_fallback_cost``  cost declines, split
@@ -974,7 +978,8 @@ def time_marginalize_peak_local(kappa, rho_sq, deltaT, loglikelihood,
     period = npts * deltaT
     t_last = (npts - 1) * deltaT
 
-    _require_time_independent_rho_sq(rho_sq, xpy=xpy, rule='peak-local')
+    _require_time_independent_rho_sq(
+        rho_sq, xpy=xpy, rule=_names.kernel("time_local_numpy").kernel_id)
     rho_col = rho_sq[..., :1]
 
     _term = lambda k: k.real            # phase marginalization is refused above
@@ -993,7 +998,11 @@ def time_marginalize_peak_local(kappa, rho_sq, deltaT, loglikelihood,
     out = _log_simps_rows(lnL_coarse, deltaT, simps, xpy=xpy)
     peaks_out = [None] * n_rows if return_peaks else None
 
-    stats = dict(n_peak_local_rows=0, n_dense_fallback_cost=0,
+    # kernel= so a diagnostics dump says WHICH peak-local kernel produced it.
+    # This module is the TIME one on the numpy/cupy arm; the JAX arm has an
+    # ANGLE kernel selected by the same word on a different flag.
+    stats = dict(kernel=_names.kernel("time_local_numpy").kernel_id,
+                 n_peak_local_rows=0, n_dense_fallback_cost=0,
                  n_dense_fallback_cost_pregate=0, n_dense_fallback_nopeak=0,
                  n_dense_fallback_tail=0, n_dense_fallback_structure=0,
                  n_dense_fallback_ceiling=0, n_dense_fallback_localise=0,

@@ -5,6 +5,24 @@ u=2 psi on the cell partition; phi is dense in :func:`joint_lnL_phi_dense` and l
 in :func:`phi_local_lnI`.  Time and distance are the caller's.  This is a library:
 the two ``anglemarg`` entries select it, and no driver flag names it.
 
+RENAME PENDING: this file should be called ``phi_psi_cell_kernel.py``.  Its current name says
+"peaklocal", which names eight kernels in this package.  The KERNEL ID above is the
+disambiguation that shipped; the file name is the part still to do, and it was NOT done
+in the same change.
+
+WHY IT WAITS, and how to tell when it can go.  A rename rewrites every hunk header, so
+it conflicts with every in-flight branch touching this file.  As of 2026-09-08 that is:
+
+  * PRs #273, #260, #266, #181 and #214, plus branches
+    rift_O4d_joint_phi_exact_bound and wip/peaklocal-adaptive-distance-rescued,
+    which have no open PR.  SEVEN branches carry edits here, so rename this one
+    LAST of the four.
+
+Do it once those land or close, in a commit that does nothing else, so the diff reads as
+a pure rename: ``git mv joint_anglemarg_peaklocal.py phi_psi_cell_kernel.py``.  Update the ``module`` field of this kernel's entry in
+``RIFT/likelihood/peak_local_names.py`` and the roster in ``.travis/test-jax.sh`` in the
+same commit, and rename the test file to match.
+
 The NumPy reference ``RIFT.likelihood.joint_angle_peak_local`` obtains BOTH-angle targets
 from the finite algebraic stationary set implemented in
 ``RIFT.likelihood.bivariate_trig_stationary``.  This device kernel is NOT a transcription

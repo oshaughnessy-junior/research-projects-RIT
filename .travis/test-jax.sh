@@ -387,7 +387,7 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         that no fixture in this repository provides,
 #                                         so they are DESELECTED here -- see
 #                                         DESELECTED_TESTS -- and 15 are gated.
-#   test_peak_local_names.py             26  the peak-local kernel registry: eight kernels
+#   test_peak_local_names.py             35  the peak-local kernel registry: eight kernels
 #                                         share that word, two are selected by it on two
 #                                         different flags, and a 2026-09-08 profiling run
 #                                         published a measurement of one as a claim about
@@ -792,9 +792,10 @@ fi
 # existing file moves one assertion's expected string in
 # test_angle_marg_peaklocal_wiring.py.  So this is a direct bump like the twelfth and
 # thirteenth, not an arithmetic guess across a merge.  Measured on this branch,
-# ldas-grid, CVMFS igwn python, JAX_PLATFORMS=cpu: the new file collects 26 (24
-# in-process plus 2 subprocess driver-seam cases).  587 + 26 = 613.
-EXPECTED_TESTS=613
+# ldas-grid, CVMFS igwn python, JAX_PLATFORMS=cpu: the new file collects 35 (33
+# in-process plus 2 subprocess driver-seam cases).  587 + 35 = 622.  The three added
+# after the first CI run close internal-review defects D1-D3 and are mutation-checked.
+EXPECTED_TESTS=622
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
