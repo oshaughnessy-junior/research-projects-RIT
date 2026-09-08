@@ -860,13 +860,13 @@ fi
 # DESELECT loop applied).
 #
 # NEXT, the policy observability branch (this change).  It adds ONE file,
-# test_direct_marginalization_policy_cli.py, with nineteen tests: sixteen
+# test_direct_marginalization_policy_cli.py, with twenty tests: seventeen
 # driver-seam refusals and three that pin the return arity of
 # direct_marginalization_policy_note.  File count 38 -> 39.  Measured on the
 # REBASED tree with /scratch/richard.oshaughnessy/envs/jaxci-py311 (python
 # 3.11.13, jax 0.10.2) by running the collection and reading its own line, not
-# by adding 19 to 628: "647/652 tests collected (5 deselected)".
-EXPECTED_TESTS=647
+# by adding 20 to 628: "648/653 tests collected (5 deselected)".
+EXPECTED_TESTS=648
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"

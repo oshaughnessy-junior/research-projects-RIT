@@ -338,6 +338,11 @@ def check_critical_and_report(opts, optp):
         fatal.append("--zero-likelihood is not implemented")
     if is_set("--maximize-only"):
         fatal.append("--maximize-only is not implemented (this driver integrates)")
+    _is_n = int(getattr(opts, "smc_is_samples", 60000))
+    if _is_n < 0:
+        fatal.append("--smc-is-samples must be >= 0; a negative count reaches "
+                     "the SMC proposal draw, whose exception handler would "
+                     "silently fall back to the raw SMC evidence")
     if is_set("--psi-marginalization"):
         fatal.append("--psi-marginalization (analytic polarization-angle "
                      "marginalization) is not implemented for psi-sampling modes "
@@ -2586,6 +2591,16 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
             and _probe_rows > 0):
         import time as _time
         from RIFT.likelihood.jax_ile.samplers import sample_prior_3 as _sp3
+        # sample_prior_3 is correct here ONLY because the policy is refused
+        # outside --mode flowmc-phipsimarg, whose parameter order is
+        # (ra, dec, incl).  Check rather than assume: another order would hand
+        # the ledger rows of the wrong width.
+        _order = tuple(getattr(like, "ANGULAR_PARAM_ORDER", ()))
+        if len(_order) != 3:
+            raise RuntimeError(
+                "policy probe expects the 3-parameter (ra, dec, incl) "
+                "likelihood the policy is restricted to; this one is %r"
+                % (_order,))
         _theta_probe = _sp3(_probe_rows, np.random.default_rng(opts.seed))
         _t0 = _time.time()
         _probe_note, _probe_vals, _probe_acc = (

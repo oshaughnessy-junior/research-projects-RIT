@@ -79,6 +79,15 @@ def test_a_policy_knob_without_the_policy_is_refused_not_ignored(flag, value):
     assert "inert" in out, out[-1500:]
 
 
+def test_a_negative_smc_is_sample_count_is_refused():
+    """A negative count reaches the SMC proposal draw, whose bare exception
+    handler would swallow it and publish the raw SMC evidence instead of the IS
+    evidence, with nothing in the output saying the estimator changed."""
+    rc, out = _run("--mode", "flowmc-phipsimarg", "--smc-is-samples", "-1")
+    assert rc != 0, out[-1500:]
+    assert "smc-is-samples" in out, out[-1500:]
+
+
 def test_probe_only_without_probe_rows_is_refused():
     """--probe-only with zero rows would exit having measured nothing."""
     rc, out = _run(*(_POLICY + ("--direct-marginalization-policy-probe-only",)))
