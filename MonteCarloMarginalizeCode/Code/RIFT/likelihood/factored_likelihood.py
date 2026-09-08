@@ -64,6 +64,7 @@ from itertools import product, combinations
 import math
 
 from . import time_marginalization_quadrature as time_quadrature_module
+from . import time_marginalization_peak_local as time_peak_local_module
 from .time_marginalization_quadrature import TIME_QUADRATURE_CHOICES
 
 #: Time-marginalization quadrature used when a caller does not pass
@@ -75,6 +76,9 @@ from .time_marginalization_quadrature import TIME_QUADRATURE_CHOICES
 TIME_QUADRATURE_DEFAULT = 'simpson'
 
 from .vectorized_lal_tools import ComputeDetAMResponse,TimeDelayFromEarthCenter
+from .vectorized_lal_tools import (SourcePolarizationBasis, SourcePropagationDirection,
+                                   ComputeDetAMResponsePrecomputed,
+                                   TimeDelayFromEarthCenterPrecomputed)
 
 import os
 if 'PROFILE' not in os.environ:
@@ -201,6 +205,100 @@ else:
   useNR=False
 
 distMpcRef = 1000 # a fiducial distance for the template source.
+
+# --- per-detector constants, cached across likelihood calls -------------------
+# DetectorPrefixToLALDetector() plus two host->device transfers of a 3-vector and a
+# 3x3 matrix were being redone on EVERY likelihood evaluation, once per detector.
+# The values are fixed properties of the interferometer, so cache them keyed by
+# (prefix, backend).  Keyed on id(xpy) rather than the module object so numpy and
+# cupy arrays never get mixed.
+_DETECTOR_GEOMETRY_CACHE = {}
+
+
+def _detector_geometry(det, xpy):
+    """(location, response) for detector prefix ``det`` as ``xpy`` arrays, cached."""
+    key = (det, id(xpy))
+    hit = _DETECTOR_GEOMETRY_CACHE.get(key)
+    if hit is None:
+        detector = lalsim.DetectorPrefixToLALDetector(det)
+        hit = (xpy.asarray(detector.location), xpy.asarray(detector.response))
+        _DETECTOR_GEOMETRY_CACHE[key] = hit
+    return hit
+
+
+# --- Simpson quadrature weights, cached across likelihood calls ---------------
+# The time integral is a FIXED linear functional at fixed dx, so simps(y) == y . w with
+# w = simps(I).  Evaluating it as one matrix-vector product reads the (npts_extrinsic,
+# npts) integrand once, instead of the several strided slices and full-size temporaries
+# the composite-Simpson implementation builds; measured 1.765 ms -> 0.049 ms at
+# production shapes.  npts and deltaT are fixed for a run, so the weights are built once.
+#
+# NOT bitwise against simps(): a gemv reassociates the summation.  The RULE is identical
+# -- the weights come from the very same simps implementation the call site would have
+# used, so the even='avg'-vs-Cartwright distinction that separates the vendored GPU copy
+# from scipy's is preserved, and only the order of the additions changes.  The measured
+# discrepancy is at the floating-point noise floor; see
+# DESIGN_noloop_per_detector_glue.md for the number.
+_SIMPS_WEIGHTS_CACHE = {}
+
+
+def _simps_weights(simps, npts, deltaT, xpy, block=256):
+    """Quadrature weight vector w with simps(y, dx=deltaT, axis=-1) == y . w.
+
+    Built a BLOCK OF ROWS AT A TIME rather than from a full (npts, npts) identity.
+    npts is 2*data_integration_window_half*srate, and the batch driver's DEFAULT srate
+    is 16384, so npts is 2457 in the default configuration, not the 614 of an
+    srate-4096 run: a whole identity is then 48 MB, and cupy's pool holds ~97 MB
+    across the simps call -- a transient that lands inside the first likelihood
+    evaluation of every --vectorized --gpu run, in a function whose n_chunk is already
+    bounded by device memory.  Blocking caps it at block*npts*8 bytes (5 MB at the
+    default).  simps reduces along axis=-1, so rows are independent and the blocked
+    result is bitwise identical to the whole-identity one.
+
+    Keyed on the quadrature FUNCTION as well as (npts, dx, backend): on GPU `simps` is
+    the vendored old-scipy copy with even='avg' and on CPU it is scipy's Cartwright
+    form, and those two disagree by 0.405 nats on an under-resolved peak.  Today the
+    rule is a pure function of the backend so id(xpy) would suffice, but this helper is
+    module-level and nothing stops a future caller passing a different rule at the same
+    shape -- which would silently serve the other rule's weights.
+    """
+    key = (int(npts), float(deltaT), id(xpy), id(simps))
+    w = _SIMPS_WEIGHTS_CACHE.get(key)
+    if w is None:
+        n = int(npts)
+        parts = []
+        for lo in range(0, n, int(block)):
+            hi = min(lo + int(block), n)
+            rows = xpy.zeros((hi - lo, n), dtype=np.float64)
+            idx = xpy.arange(hi - lo)
+            rows[idx, idx + lo] = 1.0
+            parts.append(simps(rows, dx=deltaT, axis=-1))
+        w = xpy.concatenate(parts) if len(parts) > 1 else parts[0]
+        _SIMPS_WEIGHTS_CACHE[key] = w
+    return w
+
+
+# --- mode-list identity, cached across likelihood calls -----------------------
+# The Ylm array depends only on (modes, inclination, phiref) -- NOT on the detector --
+# but was recomputed once per detector per call.  To share it we need to know which
+# detectors carry the same mode list, and lookupNKDict[det] may be a DEVICE array, so
+# comparing it per call would force a synchronization.  Instead memoize a hashable
+# host-side key per array OBJECT.  The array itself is kept in the cache so its id()
+# cannot be recycled onto a different object while the entry lives; the dicts are built
+# once per event by ILE, so this stays a handful of entries.
+_MODE_KEY_CACHE = {}
+
+
+def _mode_list_key(lms):
+    """Hashable host-side key identifying a mode list, memoized on the array object."""
+    hit = _MODE_KEY_CACHE.get(id(lms))
+    if hit is not None and hit[0] is lms:
+        return hit[1]
+    host = lms.get() if hasattr(lms, "get") else lms
+    key = tuple(map(tuple, np.asarray(host).tolist()))
+    _MODE_KEY_CACHE[id(lms)] = (lms, key)
+    return key
+
 tWindowExplore = [-0.15, 0.15] # Not used in main code.  Provided for backward compatibility for ROS. Should be consistent with t_ref_wind in ILE.
 rosDebugMessages = True
 rosDebugMessagesDictionary = {}   # Mutable after import (passed by reference). Not clear if it can be used by caling routines
@@ -2197,7 +2295,113 @@ def _factored_lnL_helper(kappa_sq, rho_sq):
     return kappa_sq - 0.5 * rho_sq
 
 
-def _cubic_Q_window_numpy(Q_block, start_indices, fractional_offsets, npts):
+def build_reflected_q_pregrid(rholms, factor=8, xpy=np):
+    """Build a one-time finer Q grid without changing the likelihood time grid.
+
+    The finite cut Q window is reflected before FFT interpolation so its unlike
+    endpoints are never identified.  Only the forward interval is retained;
+    consequently the epoch is unchanged and every ``factor``-th sample must
+    reproduce the input.  This helper is intentionally opt-in at the driver.
+    """
+    factor = int(factor)
+    if factor < 1:
+        raise ValueError("Q pregrid factor must be positive")
+    if factor == 1:
+        return rholms, dict(factor=1, input_bytes=int(rholms.nbytes),
+                            output_bytes=int(rholms.nbytes), roundtrip_max=0.0)
+    retained_view = time_quadrature_module.reflected_bandlimited_upsample(
+        xpy.asarray(rholms), factor, xpy=xpy)
+    # reflected_bandlimited_upsample returns a short VIEW into the full 2*N*factor
+    # inverse FFT.  Copy it so retaining the useful forward interval does not pin
+    # the much larger backing allocation for the whole ILE run.
+    dense = xpy.array(retained_view, copy=True)
+    del retained_view
+    scale = float(xpy.max(xpy.abs(rholms)))
+    mismatch = float(xpy.max(xpy.abs(dense[..., ::factor] - rholms)))
+    relative = mismatch / scale if scale else mismatch
+    if not np.isfinite(relative) or relative > 5e-12:
+        raise RuntimeError("Q pregrid round-trip failed: %.3g" % relative)
+    full_dense_bytes = int(rholms.nbytes)*2*factor
+    peak_bytes = (int(rholms.nbytes)*4 + 2*full_dense_bytes + int(dense.nbytes))
+    return dense, dict(factor=factor, input_bytes=int(rholms.nbytes),
+                       retained_bytes=int(dense.nbytes), output_bytes=int(dense.nbytes),
+                       peak_allocation_bytes=peak_bytes, roundtrip_max=relative)
+
+
+def prepare_reflected_q_pregrid(rholms_by_detector, factor=8, transfer=None,
+                                cleanup=None):
+    """Transactionally build and optionally transfer a detector Q pregrid.
+
+    A backend OOM after one detector transfer cannot leave a mixed host/device,
+    coarse/fine dictionary.  Partial temporaries are dropped, ``cleanup`` is
+    invoked (normally CuPy's memory-pool release), and the original coarse Q
+    dictionary is transferred instead.  The caller can then restore its prior
+    stencil and continue with an explicit fallback telemetry record.
+    """
+    original = dict(rholms_by_detector)
+    transfer = (lambda value: value) if transfer is None else transfer
+    prepared = {}
+    reports = []
+    try:
+        host_fine = {}
+        for det, values in original.items():
+            host_fine[det], report = build_reflected_q_pregrid(values, factor=factor)
+            report['detector'] = det
+            reports.append(report)
+        for det, values in host_fine.items():
+            prepared[det] = transfer(values)
+        return prepared, reports, None
+    except Exception as error:
+        allocation_failure = (isinstance(error, (MemoryError, RuntimeError)) or
+                              error.__class__.__name__ == 'OutOfMemoryError')
+        if not allocation_failure:
+            raise
+        failure = dict(type=error.__class__.__name__, repr=repr(error))
+        prepared.clear()
+        reports[:] = []
+        try:
+            host_fine.clear()
+        except UnboundLocalError:
+            pass
+        if cleanup is not None:
+            cleanup()
+        fallback = {}
+        for det, values in original.items():
+            fallback[det] = transfer(values)
+        # Never return ``error`` itself: its traceback retains this frame and
+        # therefore the last expanded host Q array that triggered backend OOM.
+        return fallback, reports, failure
+
+
+def _q_sample_positions(t_det, tvals, integration_delta_t, q_delta_t,
+                        time_interp, explicit_time_values, xpy=np):
+    """Map geocentric integration nodes onto an independently spaced Q grid."""
+    q_delta_t = float(q_delta_t)
+    integration_delta_t = float(integration_delta_t)
+    if q_delta_t <= 0 or integration_delta_t <= 0:
+        raise ValueError("time-grid spacings must be positive")
+    separate_grid = not np.isclose(q_delta_t, integration_delta_t,
+                                   rtol=0.0, atol=1e-15*integration_delta_t)
+    ratio = integration_delta_t/q_delta_t
+    stride = int(round(ratio)) if separate_grid else 1
+    regular_stride = (not separate_grid or
+                      abs(ratio - stride) <= 1e-12*max(1.0, abs(ratio)))
+    per_time = bool(explicit_time_values or not regular_stride)
+    if per_time:
+        samples = ((t_det[:, None] + xpy.asarray(tvals)[None, :]) / q_delta_t)
+    else:
+        samples = (t_det + tvals[0]) / q_delta_t
+    if time_interp == 'nearest':
+        starts = (xpy.rint(samples) + 0.5).astype(np.int32)
+        fractions = None
+    else:
+        starts = xpy.floor(samples).astype(np.int32)
+        fractions = (samples - xpy.floor(samples)).astype(np.float64)
+    return starts, fractions, per_time, stride
+
+
+def _cubic_Q_window_numpy(Q_block, start_indices, fractional_offsets, npts,
+                          time_stride=1):
     """Return cubic-interpolated Q windows with zero extension.
 
     Q_block has shape (n_time, n_lm).  The returned array has shape
@@ -2211,7 +2415,7 @@ def _cubic_Q_window_numpy(Q_block, start_indices, fractional_offsets, npts):
     tgrid = np.arange(npts)
     n_time = Q_block.shape[0]
     for i in range(npts_extrinsic):
-        idxs = int(start_indices[i]) + tgrid
+        idxs = int(start_indices[i]) + tgrid*int(time_stride)
         u = float(fractional_offsets[i])
         u2 = u*u
         u3 = u2*u
@@ -2319,10 +2523,13 @@ def _sinc_Q_window_numpy(Q_block, start_indices, fractional_offsets, npts,
     RIFT/likelihood/DESIGN_q_window_stencil.md.  Automatic selection was removed as measurably
     unreliable.
 
-    NO stencil is applied by default -- time_interp defaults to 'nearest', as does
-    --interpolate-time when omitted, so a caller who asks for nothing gets the nearest-bin gather
-    and neither interpolating stencil; 'cubic' is only the legacy truthy --interpolate-time
-    mapping.
+    THE LIBRARY DEFAULT AND THE DRIVER DEFAULT ARE DIFFERENT, deliberately.  This function's
+    own ``time_interp`` argument still defaults to 'nearest', so a library caller who asks for
+    nothing gets the nearest-bin gather and no interpolating stencil -- every existing caller is
+    unaffected.  bin/integrate_likelihood_extrinsic_batchmode's --interpolate-time, by contrast,
+    defaults to ``time_interp_choice.TIME_INTERP_DEFAULT`` as of 2026-09-02 (issue #233), which is
+    what an ILE run now gets when the flag is omitted; 'cubic' remains only the legacy truthy
+    --interpolate-time mapping.
 
     COST, measured (not estimated from the tap count):
       CPU  ~4.2-4.5x cubic -- 2a=16 taps against 4, and this path IS tap-count bound.
@@ -2378,7 +2585,7 @@ def validate_time_interp(time_interp, on_gpu=False):
 
 
 def _q_window_numpy_interp(Q_block, start_indices, fractional_offsets, npts, time_interp,
-                           xpy=np):
+                           xpy=np, time_stride=1):
     """CPU Q-window dispatch.  start_indices must already match the stencil: 'nearest' rounds,
     the interpolating stencils floor and carry the fractional part separately."""
     if time_interp == 'nearest':
@@ -2386,7 +2593,8 @@ def _q_window_numpy_interp(Q_block, start_indices, fractional_offsets, npts, tim
     if time_interp == 'sinc':
         return _sinc_Q_window_numpy(Q_block, start_indices, fractional_offsets, npts)
     if time_interp == 'cubic':
-        return _cubic_Q_window_numpy(Q_block, start_indices, fractional_offsets, npts)
+        return _cubic_Q_window_numpy(Q_block, start_indices, fractional_offsets, npts,
+                                     time_stride=time_stride)
     # Named explicitly rather than falling through to cubic.  A bare `return cubic` here would
     # reinstate exactly the silent-wrong-stencil behaviour this work exists to remove: callers
     # reaching the dispatcher directly (the tests do) would get cubic for a typo and never find
@@ -2395,7 +2603,8 @@ def _q_window_numpy_interp(Q_block, start_indices, fractional_offsets, npts, tim
                      % (time_interp, TIME_INTERP_CHOICES))
 
 
-def _q_inner_product_gpu(Q, A, start_indices, fractional_offsets, npts, time_interp):
+def _q_inner_product_gpu(Q, A, start_indices, fractional_offsets, npts, time_interp,
+                         time_stride=1):
     """GPU Q-product dispatch: the device-side counterpart of _q_window_numpy_interp.
 
     Same stencil contract as the CPU dispatch, deliberately: the four GPU call sites (here x2,
@@ -2410,10 +2619,60 @@ def _q_inner_product_gpu(Q, A, start_indices, fractional_offsets, npts, time_int
             Q, A, start_indices, fractional_offsets, npts)
     if time_interp == 'cubic':
         return Q_inner_product.Q_inner_product_cubic_cupy(
-            Q, A, start_indices, fractional_offsets, npts)
+            Q, A, start_indices, fractional_offsets, npts,
+            time_stride=time_stride)
     # Explicit, for the same reason as the CPU dispatcher above: no silent fallthrough to cubic.
     raise ValueError("unknown time_interp %r; expected one of %r"
                      % (time_interp, TIME_INTERP_CHOICES))
+
+
+_Q_EXPLICIT_TEMP_MAX_BYTES = 64 * 1024 * 1024
+
+
+def _q_inner_product_explicit_times(Q, A, start_indices, fractional_offsets,
+                                    time_interp, xpy=np):
+    """Evaluate a Q-window stencil at every explicitly supplied time.
+
+    ``start_indices`` has shape ``(n_extrinsic, n_time)``.  Work is chunked on
+    BOTH axes so neither one very finely refined row nor many fair-draw rows can
+    allocate the full ``n_extrinsic*n_time*n_modes`` gather at once.  Each
+    flattened entry asks the existing, tested stencil for one sample; unlike
+    the historical window gather, no implicit ``+j*deltaT`` is introduced.
+    """
+    if start_indices.ndim != 2:
+        raise ValueError("explicit start_indices must have shape (n_extrinsic, n_time)")
+    n_ext, n_time = start_indices.shape
+    n_modes = A.shape[-1]
+    # Q gather + repeated antenna/mode row + interpolation workspace, kept
+    # below ~64 MiB even when n_time alone is enormous.  The previous row-only
+    # chunk had a minimum of one row, so a 2.5M-time, 21-mode row still made
+    # >800 MiB A_rows and Q_one temporaries apiece.
+    max_cells = max(1, _Q_EXPLICIT_TEMP_MAX_BYTES //
+                    max(1, n_modes * 16 * 3))
+    time_chunk = max(1, min(n_time, max_cells))
+    ext_chunk = max(1, min(n_ext, max_cells // time_chunk))
+    out = xpy.empty((n_ext, n_time), dtype=np.complex128)
+    for ext_start in range(0, n_ext, ext_chunk):
+        ext_stop = min(n_ext, ext_start + ext_chunk)
+        for time_start in range(0, n_time, time_chunk):
+            time_stop = min(n_time, time_start + time_chunk)
+            starts = start_indices[ext_start:ext_stop,
+                                    time_start:time_stop].reshape(-1)
+            fracs = (None if fractional_offsets is None else
+                     fractional_offsets[ext_start:ext_stop,
+                                        time_start:time_stop].reshape(-1))
+            width = time_stop - time_start
+            A_rows = xpy.repeat(A[ext_start:ext_stop], width, axis=0)
+            if xpy is np:
+                Q_one = _q_window_numpy_interp(
+                    Q, starts, fracs, 1, time_interp, xpy=xpy)[:, 0, :]
+                values = np.einsum("ej,ej->e", A_rows, Q_one)
+            else:
+                values = _q_inner_product_gpu(
+                    Q, A_rows, starts, fracs, 1, time_interp)[:, 0]
+            out[ext_start:ext_stop, time_start:time_stop] = values.reshape(
+                (ext_stop - ext_start, width))
+    return out
 
 
 def _nearest_Q_window_numpy(Q_block, start_indices, npts, xpy=np):
@@ -2430,7 +2689,7 @@ def _nearest_Q_window_numpy(Q_block, start_indices, npts, xpy=np):
     return Qlms
 
 
-def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDict, rholmsArrayDict, ctUArrayDict,ctVArrayDict,epochDict,Lmax=2,array_output=False,xpy=np, loglikelihood=_factored_lnL_helper,return_lnLt=False,phase_marginalization=False,n_cal=1,cal_method='loop',cal_distmarg=None,cal_log_weights=None,return_cal_components=False,time_interp='nearest',ctUArrayDict_cal=None,ctVArrayDict_cal=None,time_quadrature=None):
+def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDict, rholmsArrayDict, ctUArrayDict,ctVArrayDict,epochDict,Lmax=2,array_output=False,xpy=np, loglikelihood=_factored_lnL_helper,return_lnLt=False,phase_marginalization=False,n_cal=1,cal_method='loop',cal_distmarg=None,cal_log_weights=None,return_cal_components=False,time_interp='nearest',ctUArrayDict_cal=None,ctVArrayDict_cal=None,time_quadrature=None,explicit_time_values=False,return_time_draw=False,time_draw_uniforms=None,q_deltaT=None):
     """
     DiscreteFactoredLogLikelihoodViaArray uses the array-ized data structures to compute the log likelihood,
     either as an array vs time *or* marginalized in time.
@@ -2481,6 +2740,17 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
         Distance-marginalization table+params for the fused distmarg kernel; see
         RIFT.likelihood.Q_fused_calmarg.Q_fused_calmarg_distmarg_cupy.
 
+    loglikelihood : callable(kappa_sq, rho_sq) -> lnL(t)
+        MUST NOT WRITE INTO ``rho_sq``.  rho_sq is time-independent, so it is passed as
+        a stride-0 ``broadcast_to`` view over an ``(npts_extrinsic,)`` vector rather than
+        as a materialized ``(npts_extrinsic, npts)`` array.  Every ``npts`` column
+        therefore aliases one address: on CPU an in-place write raises
+        ``ValueError: output array is read-only``, but on GPU cupy's broadcast is
+        WRITABLE and an in-place write races, giving a wrong and irreproducible answer
+        with no error.  Every in-tree callback allocates (``_factored_lnL_helper`` and the
+        driver's ``distmarg_loglikelihood``), so nothing is broken today; a caller
+        supplying its own must allocate too, or call ``xpy.ascontiguousarray`` first.
+
     time_interp : {'nearest', 'cubic', 'sinc'}
         Detector-time sampling convention for the data term.  'nearest'
         preserves the historical NoLoop integer-bin gather.  'cubic' evaluates
@@ -2505,7 +2775,7 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
         All three stencils have CPU and GPU implementations.  See _sinc_Q_window_numpy and
         RIFT/likelihood/DESIGN_q_window_stencil.md for the measured tables.
 
-    time_quadrature : {'simpson', 'bandlimited'} or None
+    time_quadrature : {'simpson', 'bandlimited', 'peak-local'} or None
         Rule used for the time integral.  None (the default) defers to the
         module-level ``TIME_QUADRATURE_DEFAULT``, which is 'simpson'.
 
@@ -2521,9 +2791,21 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
         recovered exactly by a zero-padded FFT per row.  The refinement factor is
         DERIVED from the measured peak width and re-asserted on the refined grid;
         it is not a settable accuracy knob.  Restricted to n_cal==1 and to the
-        integrated (not return_lnLt / return_cal_components) outputs; anything
-        else raises rather than quietly falling back.  Rationale, measured
+        integrated outputs and continuous posterior draws (not return_lnLt /
+        return_cal_components); anything else raises rather than quietly falling
+        back.  A time draw returns ``(time_offset, lnL_at_draw)`` and uses the
+        same validated dense representation as the integral.  Rationale, measured
         before/after and the exclusions: RIFT.likelihood.time_marginalization_quadrature.
+
+        'peak-local' is the same argument with the refined grid placed only where
+        the integrand has support: kappa's extrema are ENUMERATED on a small,
+        SNR-independent upsample, an interval of a few sigma_t is built around each,
+        overlapping intervals are MERGED into disjoint ones, and each is integrated
+        at its own derived spacing.  The mass left outside is bounded per row and
+        checked, not assumed; a row whose bound is not small enough, or whose local
+        grid would cost more than the dense one, is given the 'bandlimited' value.
+        Same exclusions as 'bandlimited', PLUS phase marginalization, which it
+        refuses.  RIFT.likelihood.time_marginalization_peak_local.
     """
     global distMpcRef
 
@@ -2535,20 +2817,41 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
     if time_quadrature is None:
         time_quadrature = TIME_QUADRATURE_DEFAULT
     time_quadrature_module.validate_time_quadrature(time_quadrature)
-    if time_quadrature == 'bandlimited':
+    if return_time_draw and return_lnLt:
+        raise ValueError("return_time_draw and return_lnLt are mutually exclusive")
+    if return_time_draw and return_cal_components:
+        raise ValueError("return_time_draw and return_cal_components are mutually exclusive")
+    if return_time_draw and time_quadrature != 'bandlimited':
+        raise ValueError(
+            "return_time_draw requires time_quadrature='bandlimited'; the continuous "
+            "draw must share the quadrature's validated reconstruction")
+    if time_quadrature != 'simpson':
         # Refuse loudly wherever the band-limited argument does not hold, rather
         # than falling back to Simpson: a silently inert accuracy option is worse
-        # than an unavailable one.
+        # than an unavailable one.  'peak-local' rests on exactly the same argument
+        # as 'bandlimited' -- it only moves WHERE the refined grid is placed -- so it
+        # inherits the same exclusions rather than getting a parallel set.
         if n_cal != 1:
             raise NotImplementedError(
-                "time_quadrature='bandlimited' is not implemented for calibration "
+                "time_quadrature=%r is not implemented for calibration " % time_quadrature +
                 "marginalization (n_cal=%d).  The cal reduction sums exp() over "
                 "realizations, so each realization's kappa row must be refined and the "
                 "derived factor reconciled across them; that is untested." % n_cal)
         if return_cal_components:
             raise NotImplementedError(
-                "time_quadrature='bandlimited' is not implemented for "
-                "return_cal_components, which takes a per-realization time integral.")
+                "time_quadrature=%r is not implemented for return_cal_components, "
+                "which takes a per-realization time integral." % time_quadrature)
+        if time_quadrature == 'peak-local' and phase_marginalization:
+            # Refused BEFORE the integration runs, for the same reason the
+            # return_lnLt guard above is scoped the way it is: raising late means the
+            # whole run happens and then dies.  Production marginalizes over
+            # distance, not phase; under phase marginalization the peak's Laplace
+            # width picks up an (I1/I0)(|kappa|/D) factor that does not reduce.
+            # 'bandlimited' supports it and is unchanged.
+            raise NotImplementedError(
+                "time_quadrature='peak-local' does not support phase marginalization "
+                "(the local width is no longer derivable from rho_sq and the curvature "
+                "alone).  Use time_quadrature='bandlimited', which does.")
         if return_lnLt and _time_quadrature_explicit:
             # Explicitly ASKING for a quadrature on a call that takes no integral is
             # a caller error and is refused.  Merely INHERITING the module default is
@@ -2560,9 +2863,9 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
             # function with return_lnLt=True and no explicit quadrature -- so enabling
             # the option ran the whole integration and then died at the export step.
             raise NotImplementedError(
-                "time_quadrature='bandlimited' was requested explicitly on a "
-                "return_lnLt call, which returns lnL(t) on the original grid and takes "
-                "no time integral.  Drop the argument.")
+                "time_quadrature=%r was requested explicitly on a return_lnLt call, "
+                "which returns lnL(t) on the original grid and takes no time integral.  "
+                "Drop the argument." % time_quadrature)
 
     detectors = rholmsArrayDict.keys()
     npts = len(tvals)
@@ -2586,6 +2889,16 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
 
 
     deltaT = float(P_vec.deltaT) # this is stored as a scalar
+    q_deltaT = (float(getattr(P_vec, 'q_deltaT', deltaT))
+                if q_deltaT is None else float(q_deltaT))
+    if q_deltaT <= 0:
+        raise ValueError("q_deltaT must be positive")
+    if q_deltaT != deltaT and n_cal != 1:
+        raise NotImplementedError("an independently spaced Q pregrid is not implemented for calibration marginalization")
+    if q_deltaT != deltaT and time_interp != 'cubic':
+        raise NotImplementedError(
+            "an independently spaced Q pregrid currently implements only the "
+            "strided cubic gather; nearest/sinc would silently use the wrong stride")
 
 
     # Convert tref to greenwich mean sidereal time
@@ -2601,8 +2914,23 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
 
     # Used to accumulate kappa^2 and rho^2 over all detectors.  They are just
     # the sum in quadrature of the individual detector contributions.
-    kappa_sq = xpy.zeros((npts_extrinsic, npts), dtype=np.complex128)
-    rho_sq = xpy.zeros((npts_extrinsic, npts), dtype=np.float64)
+    # kappa_sq is the (npts_extrinsic, npts) data term: 98 MB of complex128 at production
+    # shapes, and the single most expensive thing in this function.  It used to be
+    # zero-filled and then read-modify-written once per detector, with the distance scaling
+    # allocating a further full-size temporary each time.  Start from the first detector's
+    # own output buffer and scale it in place instead: same arithmetic, three fewer
+    # full-size passes over 98 MB for a three-detector network.
+    kappa_sq = None
+    # rho_sq is the <h|h> term.  It is TIME-INDEPENDENT: every detector contributes
+    # rho_sq_det of shape (npts_extrinsic,), which used to be broadcast into a dense
+    # (npts_extrinsic, npts) accumulator.  At production shapes that is ~49 MB of float64
+    # zero-filled once and read-modify-written once per detector, to store npts identical
+    # copies of each value.  Accumulate the vector instead and expose the 2-D shape as a
+    # stride-0 view after the loop; downstream arithmetic is elementwise and sees no
+    # difference, and the additions happen in the same order on the same scalars, so the
+    # result is bitwise unchanged.  (The calibration path already did exactly this with
+    # broadcast_to for rho_sq_cal; this brings the ordinary path in line.)
+    rho_sq_vec = xpy.zeros(npts_extrinsic, dtype=np.float64)
 
     # When marginalizing over calibration (n_cal>1), cache the per-detector data
     # term inputs here; the calibration-independent rho_sq is still accumulated
@@ -2630,12 +2958,32 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
     else:
         raise NotImplementedError("Backend not supported: {}".format(xpy))
 
+    # ---- source-only geometry: built ONCE, shared by every detector -------------
+    # None of this depends on the interferometer, only on the extrinsic samples, but it
+    # used to be rebuilt inside the detector loop.  At production n_extrinsic these are
+    # small arrays, so the cost is launch-bound: ~30 kernels per detector, all but the
+    # response/location contractions redundant.  The per-detector calls below consume
+    # these and perform exactly the same contractions as before, so results are bitwise
+    # unchanged.
+    XY_basis = SourcePolarizationBasis(
+        RA, DEC, psi, greenwich_mean_sidereal_time_tref,
+        xpy=xpy,
+    )
+    ehat_src = SourcePropagationDirection(
+        RA, DEC, float(greenwich_mean_sidereal_time_tref),
+        xpy=xpy,
+    )
+
+    # Ylm depends on (modes, incl, phiref) only.  Detectors that share a mode list --
+    # in practice all of them, since the modes come from one waveform -- share the
+    # array.  Keyed by mode list so a genuinely heterogeneous dict still gets a correct
+    # (merely unshared) result rather than a wrong shared one.
+    _ylm_by_modes = {}
+
     # strings right now - need to change to make ufunc-able
     for det in detectors:
-        # Compute the detector's location and response matrix
-        detector = lalsim.DetectorPrefixToLALDetector(det)
-        detector_location = xpy.asarray(detector.location)
-        detector_response = xpy.asarray(detector.response)
+        # Compute the detector's location and response matrix (cached; fixed per IFO)
+        detector_location, detector_response = _detector_geometry(det, xpy)
 
         # These do not depend on extrinsic params.
         # Arrays of shape (n_lms, n_lms).
@@ -2648,19 +2996,27 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
 
         # These do depend on extrinsic params
         # Array of shape (npts_extrinsic, n_lms,)
-        Ylms_vec = SphericalHarmonicsVectorized(
-            lms, incl, -phiref,
-            xpy=xpy,
-            l_max=Lmax,
-        )
+        _mode_key = _mode_list_key(lms)
+        Ylms_vec = _ylm_by_modes.get(_mode_key)
+        if Ylms_vec is None:
+            Ylms_vec = SphericalHarmonicsVectorized(
+                lms, incl, -phiref,
+                xpy=xpy,
+                l_max=Lmax,
+            )
+            _ylm_by_modes[_mode_key] = Ylms_vec
+        if phase_marginalization:
+            # The phase-marginalization branch below CONJUGATES Ylms_vec in place, and
+            # rho_sq_det above must see the un-conjugated array.  Hand each detector its
+            # own copy so sharing cannot leak one detector's conjugation into the next
+            # detector's self-term.  A copy of an (n_extrinsic, n_lms) array is still far
+            # cheaper than rebuilding the harmonics.
+            Ylms_vec = Ylms_vec.copy()
 
         # Array of shape (npts_extrinsic,)
 #        F_vec_old = xpy.asarray(lalF(det, RA, DEC, psi, tref))
-        F_vec = ComputeDetAMResponse(
-            detector_response,
-            RA, DEC, psi,
-            greenwich_mean_sidereal_time_tref,
-            xpy=xpy
+        F_vec = ComputeDetAMResponsePrecomputed(
+            detector_response, XY_basis[0], XY_basis[1], xpy=xpy,
         )
 
         # Scalar -- is constant for each IFO
@@ -2670,20 +3026,12 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
         # Note that to save on precision compared to ...NoLoopOrig, we CHANGE the t_det definition to be relative to the IFO statt time t_ref
         #    ... this means we don't keep a 1e9 out in front, so we have more significant digits in the event time (and can if needed reduce precision in GPU ops)
         # an array of shape (npts_extrinsic,)
-        t_det = float(tref - float(t_ref)) + TimeDelayFromEarthCenter(
-            detector_location, RA, DEC,
-            float(greenwich_mean_sidereal_time_tref),
-            xpy=xpy
+        t_det = float(tref - float(t_ref)) + TimeDelayFromEarthCenterPrecomputed(
+            detector_location, ehat_src, xpy=xpy,
         )
-        tfirst = t_det + tvals[0]
-
-        sample_first = tfirst / deltaT
-        if time_interp == 'nearest':
-            ifirst = (xpy.rint(sample_first) + 0.5).astype(np.int32)  # C uses 32 bit integers : be careful
-            frac_first = None
-        else:
-            ifirst = xpy.floor(sample_first).astype(np.int32)
-            frac_first = (sample_first - xpy.floor(sample_first)).astype(np.float64)
+        ifirst, frac_first, _q_per_time, _q_time_stride = _q_sample_positions(
+            t_det, tvals, deltaT, q_deltaT, time_interp,
+            explicit_time_values, xpy=xpy)
 #        ilast = ifirst + npts
 
 
@@ -2784,27 +3132,47 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
             # Shape Q = (npts_time_full, nlms)
             # Shape A=FY_conj = (npts_extrinsic, nlms)
             # shape result = (npts_extrinsic, npts_time_*window* = npts)
-            Q_prod_result = _q_inner_product_gpu(
-                Q, FY_conj, ifirst, frac_first, npts, time_interp)
+            if _q_per_time:
+                Q_prod_result = _q_inner_product_explicit_times(
+                    Q, FY_conj, ifirst, frac_first, time_interp, xpy=xpy)
+            else:
+                Q_prod_result = _q_inner_product_gpu(
+                    Q, FY_conj, ifirst, frac_first, npts, time_interp,
+                    time_stride=_q_time_stride)
           else:
             # Use old code completely unchanged ... very wasteful on memory management!
-            Q_block = rholmsArrayDict[det].T
-            Qlms = _q_window_numpy_interp(Q_block, ifirst, frac_first, npts, time_interp,
-                                          xpy=xpy)
-            if phase_marginalization:
+            Q_block = (Q if phase_marginalization and _q_per_time
+                       else rholmsArrayDict[det].T)
+            if _q_per_time:
+                Q_prod_result = _q_inner_product_explicit_times(
+                    Q_block, np.conj(F_vec_dummy_lm * Ylms_vec), ifirst,
+                    frac_first, time_interp, xpy=xpy)
+                Qlms = None
+            else:
+                Qlms = _q_window_numpy_interp(Q_block, ifirst, frac_first, npts, time_interp,
+                                              xpy=xpy, time_stride=_q_time_stride)
+            if phase_marginalization and not _q_per_time:
                 Qlms[:, :, 1] = xpy.conj(Qlms[:, :, 1])
 
-            FY_dummy_t = np.broadcast_to(
-              (F_vec_dummy_lm * Ylms_vec)[:, np.newaxis],
-              Qlms.shape,
-              )
+            if not _q_per_time:
+                FY_dummy_t = np.broadcast_to(
+                  (F_vec_dummy_lm * Ylms_vec)[:, np.newaxis],
+                  Qlms.shape,
+                  )
 
-            Q_prod_result =  np.einsum(
-              "...i,...i",
-              np.conj(FY_dummy_t), Qlms,
-              )
+                Q_prod_result =  np.einsum(
+                  "...i,...i",
+                  np.conj(FY_dummy_t), Qlms,
+                  )
 
-          kappa_sq += Q_prod_result * (distMpcRef/distMpc)[..., np.newaxis]
+          # Scale in place into the buffer the Q kernel just handed us -- it is freshly
+          # allocated per detector and not aliased anywhere -- rather than allocating a
+          # full-size temporary for the product.
+          xpy.multiply(Q_prod_result, invDistMpc[..., np.newaxis], out=Q_prod_result)
+          if kappa_sq is None:
+              kappa_sq = Q_prod_result
+          else:
+              kappa_sq += Q_prod_result
         else:
           # ---- calibration-marginalization path (Option B): cache pieces ----
           # The rholm timeseries hold n_cal contiguous realizations; realization c
@@ -2825,7 +3193,7 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
 
         # Accumulate term2 into the time-dependent log likelihood.
         # Have to create a view with an extra axis so they broadcast.
-        rho_sq += rho_sq_det[..., np.newaxis]
+        rho_sq_vec += rho_sq_det
         # lnL_t_accum += term2[..., np.newaxis]
 
 #        print lnL_t_accum.shape, lnL_t.shape
@@ -2833,10 +3201,24 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
 #        lnL_t_accum += lnL_t
 
 
+    # The (npts_extrinsic, npts) shape every consumer below expects, as a stride-0 view
+    # over the vector accumulated above.  Consumers that need real backing memory -- the
+    # fused CUDA kernels, which index raw device pointers, and the non-Simpson quadrature
+    # helpers, which are free to write -- go through _dense_rho_sq() and pay exactly what
+    # they paid before.
+    rho_sq = xpy.broadcast_to(rho_sq_vec[:, np.newaxis], (npts_extrinsic, npts))
+
+    def _dense_rho_sq(a):
+        """A writable, contiguous copy of a possibly stride-0 rho_sq view."""
+        return a if getattr(a, "flags", None) is not None and a.flags.c_contiguous \
+            else xpy.ascontiguousarray(a)
+
     if n_cal == 1:
         # Fused-calmarg self-term fix also applies to a SINGLE calibration draw: the data
         # carries C_0, so its self-term is rho_sq_c = <C_0 h|C_0 h> = rho_sq_cal[0], not the
         # cal-independent <h|h>.  Falls back to rho_sq for the ordinary (no-cal) likelihood.
+        if kappa_sq is None:   # no detectors: preserve the old all-zeros behaviour
+            kappa_sq = xpy.zeros((npts_extrinsic, npts), dtype=np.complex128)
         rho_sq_here = rho_sq if not _use_rho_sq_cal else xpy.broadcast_to(rho_sq_cal[0][:, np.newaxis], (npts_extrinsic, npts))
         if phase_marginalization:
             lnL_t = loglikelihood(xpy.abs(kappa_sq), rho_sq_here)
@@ -2844,7 +3226,15 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
             lnL_t = loglikelihood(kappa_sq.real, rho_sq_here)
 
         # Take exponential of the log likelihood in-place.
-        lnLmax  = xpy.max(lnL_t)
+        # PER-ROW offset, not the batch max: lnL_t is (npts_extrinsic, npts_time), and a
+        # single scalar max shifts every extrinsic sample by the LOUDEST sample's peak.
+        # Any row more than ~745 nats below it then underflows exp() to 0 across the whole
+        # time axis -> L=0 -> lnL=-inf where the likelihood is finite.  With lnL~rho^2/2 at
+        # the peak and ~0 for a typical prior draw that fires above rho~40 and takes out the
+        # BULK of the prior, collapsing mcsamplerAV.  keepdims=True is load-bearing: with a
+        # bare axis=-1 the (n,) result broadcasts along the TIME axis instead, silently.
+        # See oshaughnessy-junior/research-projects-RIT#232.
+        lnLmax  = xpy.max(lnL_t, axis=-1, keepdims=True)
         if return_lnLt:
           return lnL_t  #- lnLmax    # we want the verbatim lnL_t values, no shift
 
@@ -2865,17 +3255,37 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
             # reproduce what the run they are in would have returned.  Omitting
             # this also made the module default to scipy, which RAISES on a cupy
             # array: every --vectorized --gpu run of this option crashed.
-            return time_quadrature_module.time_marginalize_bandlimited(
-                kappa_sq, rho_sq_here, float(deltaT), loglikelihood,
+            _time_result = time_quadrature_module.time_marginalize_bandlimited(
+                kappa_sq, _dense_rho_sq(rho_sq_here), float(deltaT), loglikelihood,
+                phase_marginalization=phase_marginalization, simps=simps,
+                lnL_coarse=lnL_t, return_time_draw=return_time_draw,
+                draw_uniforms=time_draw_uniforms, t0=float(tvals[0]), xpy=xpy)
+            if return_time_draw:
+                _, _drawn_t, _drawn_lnL = _time_result
+                return _drawn_t, _drawn_lnL
+            return _time_result
+
+        if time_quadrature == 'peak-local':
+            # Same integrand, same closed domain, same derived resolution criterion
+            # and the same fallback-to-Simpson row classification as 'bandlimited';
+            # what changes is that the refined grid is placed only around the
+            # enumerated peaks instead of over the whole window.  Rows this rule
+            # declines -- on its cost estimate, or because it could not bound the
+            # mass it left out -- are given the 'bandlimited' value, so the reviewed
+            # dense implementation is the backstop rather than Simpson.
+            return time_peak_local_module.time_marginalize_peak_local(
+                kappa_sq, _dense_rho_sq(rho_sq_here), float(deltaT), loglikelihood,
                 phase_marginalization=phase_marginalization, simps=simps,
                 lnL_coarse=lnL_t, xpy=xpy)
 
         L_t = xpy.exp(lnL_t - lnLmax, out=lnL_t)
 
-        L = simps(L_t, dx=deltaT, axis=-1)
+        # simps(L_t, dx, axis=-1) as a single matrix-vector product; see _simps_weights.
+        L = L_t.dot(_simps_weights(simps, npts, deltaT, xpy))
 
-        # Compute log likelihood in-place.
-        lnL = lnLmax + xpy.log(L, out=L)
+        # Compute log likelihood in-place.  lnLmax carries the kept trailing axis; drop it
+        # so the add-back lines up with L, which simps has already reduced over that axis.
+        lnL = lnLmax[..., 0] + xpy.log(L, out=L)
 
         return lnL
 
@@ -2920,7 +3330,7 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
         N_window_block = cal_cache[dets[0]][3]
         # Simpson quadrature weight vector (incl. dx=deltaT), so time integration
         # matches the loop path's simps() exactly.  simps is linear -> weights = simps(I).
-        w_t = simps(xpy.eye(npts, dtype=np.float64), dx=deltaT, axis=-1)
+        w_t = _simps_weights(simps, npts, deltaT, xpy)
         # invDistMpc is a scalar when distance is marginalized (P.dist fixed at the
         # fiducial) and a vector when distance is sampled; the kernel wants one value
         # per extrinsic sample, so broadcast to (npts_extrinsic,).
@@ -2931,17 +3341,17 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
         if xpy is np:
             # CPU: pure-numpy fused (no CUDA); independent cross-check of the kernel
             return Q_fused_calmarg.Q_fused_calmarg_numpy(
-                Q_stack, A_stack, ifirst_stack, invDist_vec, rho_sq, w_t,
+                Q_stack, A_stack, ifirst_stack, invDist_vec, _dense_rho_sq(rho_sq), w_t,
                 n_cal, N_window_block, distmarg=cal_distmarg, cal_log_weights=cal_log_weights,
                 phase_marginalization=phase_marginalization, rho_sq_cal=rho_sq_cal)
         if cal_distmarg is None:
             return Q_fused_calmarg.Q_fused_calmarg_cupy(
-                Q_stack, A_stack, ifirst_stack, invDist_vec, rho_sq, w_t,
+                Q_stack, A_stack, ifirst_stack, invDist_vec, _dense_rho_sq(rho_sq), w_t,
                 n_cal, N_window_block, cal_log_weights=cal_log_weights,
                 phase_marginalization=phase_marginalization, rho_sq_cal=rho_sq_cal)
         else:
             return Q_fused_calmarg.Q_fused_calmarg_distmarg_cupy(
-                Q_stack, A_stack, ifirst_stack, invDist_vec, rho_sq, w_t,
+                Q_stack, A_stack, ifirst_stack, invDist_vec, _dense_rho_sq(rho_sq), w_t,
                 n_cal, N_window_block, cal_distmarg, cal_log_weights=cal_log_weights,
                 phase_marginalization=phase_marginalization, rho_sq_cal=rho_sq_cal)
 
@@ -2965,13 +3375,23 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
             Q_block = Q_det[c*N_window_block:(c+1)*N_window_block]   # (N_window, n_lms)
             ifirst_within = ifirst_det.astype(np.int32)
             if not (xpy is np):
-                Q_prod_result = _q_inner_product_gpu(
-                    Q_block, FY_conj_det, ifirst_within, frac_first_det, npts, time_interp)
+                if explicit_time_values:
+                    Q_prod_result = _q_inner_product_explicit_times(
+                        Q_block, FY_conj_det, ifirst_within, frac_first_det,
+                        time_interp, xpy=xpy)
+                else:
+                    Q_prod_result = _q_inner_product_gpu(
+                        Q_block, FY_conj_det, ifirst_within, frac_first_det, npts, time_interp)
             else:
-                Qlms = _q_window_numpy_interp(Q_block, ifirst_within, frac_first_det, npts,
-                                              time_interp, xpy=xpy)
-                # Q_det and FY_conj_det already encode any phase-marg conjugation
-                Q_prod_result = np.einsum("ej,etj->et", FY_conj_det, Qlms)
+                if explicit_time_values:
+                    Q_prod_result = _q_inner_product_explicit_times(
+                        Q_block, FY_conj_det, ifirst_within, frac_first_det,
+                        time_interp, xpy=xpy)
+                else:
+                    Qlms = _q_window_numpy_interp(Q_block, ifirst_within, frac_first_det, npts,
+                                                  time_interp, xpy=xpy)
+                    # Q_det and FY_conj_det already encode any phase-marg conjugation
+                    Q_prod_result = np.einsum("ej,etj->et", FY_conj_det, Qlms)
             kappa_sq_c += Q_prod_result * invDistMpc[..., np.newaxis]
 
         # Fused-calmarg self-term fix: use this realization's rho_sq_c = <C_c h|C_c h>
@@ -2991,16 +3411,39 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
             # RAW per-realization time-integrated log L (no importance weight), stable:
             #   log( simps_t exp(lnL_t,c) ) = m + log( simps_t exp(lnL_t,c - m) )
             m_raw = xpy.max(lnL_t_c, axis=-1, keepdims=True)
-            cal_components[:, c] = m_raw[:, 0] + xpy.log(simps(xpy.exp(lnL_t_c - m_raw), dx=deltaT, axis=-1))
+            cal_components[:, c] = m_raw[:, 0] + xpy.log(
+                xpy.exp(lnL_t_c - m_raw).dot(_simps_weights(simps, npts, deltaT, xpy)))
         # fold in this realization's importance log-weight
         lnL_t_c = lnL_t_c + cal_log_w[c]
 
-        m_c = xpy.max(lnL_t_c)
+        # PER-EXTRINSIC-SAMPLE offset, not the batch max.  lnL_t_c is
+        # (npts_extrinsic, npts_time) and `running_max` is the streaming log-sum-exp
+        # offset for S.  A SCALAR running_max shifts every extrinsic sample by the
+        # LOUDEST sample's peak, so any row more than ~745 nats below it underflows
+        # exp() to 0 across its whole time axis and every realization -> S row 0 ->
+        # lnL = -inf where the likelihood is finite.  With lnL~rho^2/2 at the peak and
+        # ~0 for a typical prior draw that fires above rho~40 and takes out the BULK of
+        # the prior, collapsing mcsamplerAV.  keepdims=True is load-bearing: a bare
+        # axis=-1 gives (n,), which broadcasts along the TIME axis instead -- silently,
+        # when npts_extrinsic == npts_time.  Same defect and same fix as the n_cal==1
+        # offset above, and as the return_cal_components branch a few lines up, which
+        # was already per-row.  See oshaughnessy-junior/research-projects-RIT#232.
+        m_c = xpy.max(lnL_t_c, axis=-1, keepdims=True)      # (npts_extrinsic, 1)
+        # A row that is -inf at every time (e.g. a distance-marginalization callback
+        # that rejects the whole row) has no finite offset of its own.  Offset it by 0
+        # instead: exp(-inf - 0) = 0 keeps its S row at 0 and its lnL at -inf, whereas
+        # exp(-inf - -inf) = nan would poison the running sum for that row for good.
+        # The scalar offset was shielded from this by any other finite row in the batch;
+        # a per-row offset is not, so the guard ships with the per-row offset.
+        m_c = xpy.where(xpy.isfinite(m_c), m_c, 0.0)
         if running_max is None:
             running_max = m_c
-        elif m_c > running_max:
-            S *= xpy.exp(running_max - m_c)
-            running_max = m_c
+        else:
+            # Elementwise: each row rescales S by its OWN change of offset (a no-op
+            # multiply by 1 for rows whose running max did not move).
+            new_max = xpy.maximum(running_max, m_c)
+            S *= xpy.exp(running_max - new_max)
+            running_max = new_max
         S += xpy.exp(lnL_t_c - running_max)
 
     if return_cal_components:
@@ -3015,9 +3458,12 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
         # (the time integral is NOT taken; downstream resamples this timeseries).
         return running_max + xpy.log(S) - cal_log_w_norm
 
-    L = simps(S, dx=deltaT, axis=-1)
+    L = S.dot(_simps_weights(simps, npts, deltaT, xpy))
     # lnL = max + log( sum_c exp(log_w[c]) \int dt exp(lnL_t - max) ) - log(n_cal)
-    lnL = running_max + xpy.log(L) - cal_log_w_norm
+    # running_max carries the kept trailing axis; drop it so the add-back lines up with
+    # L, which simps has already reduced over that axis.  (The return_lnLt branch above
+    # keeps the axis on purpose -- there S is still (npts_extrinsic, npts_time).)
+    lnL = running_max[..., 0] + xpy.log(L) - cal_log_w_norm
 
     return lnL
 

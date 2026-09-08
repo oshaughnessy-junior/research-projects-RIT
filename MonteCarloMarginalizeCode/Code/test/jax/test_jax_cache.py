@@ -459,3 +459,227 @@ def test_angle_batched_kernel_persists_without_host_effects(tmp_path, scheme):
     assert "because it uses host callbacks" not in second_run.stderr
     assert persisted_entries() == first, (
         "fresh-process %s kernel cache entry changed" % scheme)
+
+
+# ---------------------------------------------------------------------------
+# Bundle-validation guards.  Every test below was added because the guard it
+# covers SURVIVED a mutation sweep: its condition could be replaced with
+# ``False`` and the whole file still passed.  A limit nothing reaches is not a
+# limit, and this module's whole job is refusing a bundle it should not trust.
+# ---------------------------------------------------------------------------
+
+
+def _one_entry_bundle(tmp_path, name="warm.zip", payload=b"compiled"):
+    source = tmp_path / "source"
+    source.mkdir(exist_ok=True)
+    (source / "entry").write_bytes(payload)
+    bundle = tmp_path / name
+    cache.export_bundle(source, bundle, COMPAT)
+    return source, bundle
+
+
+def _rebuild(bundle, target, *, manifest=None, members=None, drop=()):
+    """Write a modified copy of *bundle*: patched manifest, extra/dropped members."""
+    with zipfile.ZipFile(bundle) as old:
+        original = json.loads(old.read(cache.MANIFEST_NAME))
+        data = {n: old.read(n) for n in old.namelist()}
+    if manifest is not None:
+        original = manifest(original)
+    with zipfile.ZipFile(target, "w") as new:
+        new.writestr(cache.MANIFEST_NAME,
+                     json.dumps(original, indent=2, sort_keys=True) + "\n")
+        for name, blob in data.items():
+            if name == cache.MANIFEST_NAME or name in drop:
+                continue
+            new.writestr(name, blob)
+        for name, blob in (members or {}).items():
+            new.writestr(name, blob)
+    return target
+
+
+def test_import_refuses_a_member_path_escaping_the_cache(tmp_path):
+    """A '..' member must be refused, not written outside the destination.
+
+    The manifest is what names the files, so a hostile bundle controls those
+    strings.  Without the traversal guard ``temp_root / rel`` resolves above
+    the extraction directory and the write lands wherever the relative path
+    points -- while the publication walk, which only rglobs INSIDE temp_root,
+    never sees the file and reports nothing.
+    """
+    _, bundle = _one_entry_bundle(tmp_path)
+    escaped = tmp_path / "escape.zip"
+    with zipfile.ZipFile(bundle) as old:
+        manifest = json.loads(old.read(cache.MANIFEST_NAME))
+        blob = old.read("cache/entry")
+    digest = manifest["files"].pop("entry")
+    manifest["files"]["../../escaped-entry"] = digest
+    with zipfile.ZipFile(escaped, "w") as new:
+        new.writestr(cache.MANIFEST_NAME,
+                     json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+        new.writestr("cache/../../escaped-entry", blob)
+    with pytest.raises(ValueError, match="unsafe"):
+        cache.import_bundle(escaped, tmp_path / "target", COMPAT)
+    assert not (tmp_path.parent / "escaped-entry").exists()
+
+    absolute = tmp_path / "absolute.zip"
+    manifest["files"] = {"/etc/escaped": digest}
+    with zipfile.ZipFile(absolute, "w") as new:
+        new.writestr(cache.MANIFEST_NAME,
+                     json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+        new.writestr("cache//etc/escaped", blob)
+    with pytest.raises(ValueError, match="unsafe"):
+        cache.import_bundle(absolute, tmp_path / "target-abs", COMPAT)
+
+
+def test_import_refuses_an_unknown_format_version(tmp_path):
+    """A future bundle layout must fail closed, not be read with today's rules."""
+    _, bundle = _one_entry_bundle(tmp_path)
+    future = _rebuild(bundle, tmp_path / "future.zip",
+                      manifest=lambda m: dict(m, format_version=
+                                              cache.FORMAT_VERSION + 1))
+    with pytest.raises(ValueError, match="unsupported cache bundle format"):
+        cache.import_bundle(future, tmp_path / "target", COMPAT)
+
+
+def test_import_refuses_a_bundle_with_no_manifest(tmp_path):
+    """Without the manifest there is nothing to check compatibility against."""
+    _, bundle = _one_entry_bundle(tmp_path)
+    headless = tmp_path / "headless.zip"
+    with zipfile.ZipFile(bundle) as old, zipfile.ZipFile(headless, "w") as new:
+        for name in old.namelist():
+            if name != cache.MANIFEST_NAME:
+                new.writestr(name, old.read(name))
+    with pytest.raises(ValueError, match=cache.MANIFEST_NAME):
+        cache.import_bundle(headless, tmp_path / "target", COMPAT)
+
+
+def test_import_refuses_duplicate_archive_members(tmp_path):
+    """Two members with one name: readers disagree about which is the content.
+
+    zipfile resolves a duplicate name to the LAST entry, while the checksum
+    walk and the name-set comparison both see the name only once, so a
+    duplicate is exactly how a validated bundle and an extracted bundle come
+    apart.
+    """
+    _, bundle = _one_entry_bundle(tmp_path)
+    duplicated = tmp_path / "duplicated.zip"
+    with zipfile.ZipFile(bundle) as old:
+        data = {n: old.read(n) for n in old.namelist()}
+    with zipfile.ZipFile(duplicated, "w") as new:
+        for name, blob in data.items():
+            new.writestr(name, blob)
+        new.writestr("cache/entry", b"second copy")
+    with pytest.raises(ValueError, match="duplicate"):
+        cache.import_bundle(duplicated, tmp_path / "target", COMPAT)
+
+
+def test_import_refuses_a_manifest_naming_absent_members(tmp_path):
+    """Declared-but-missing is the mirror of the extra-member case.
+
+    The suite already covered an UNEXPECTED member; a manifest that promises a
+    file the archive does not carry took the same branch's other side, and
+    nothing exercised it.
+    """
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "one").write_bytes(b"a")
+    (source / "two").write_bytes(b"b")
+    bundle = tmp_path / "pair.zip"
+    cache.export_bundle(source, bundle, COMPAT)
+    truncated = _rebuild(bundle, tmp_path / "truncated.zip",
+                         drop=("cache/two",))
+    with pytest.raises(ValueError, match="do not match its manifest"):
+        cache.import_bundle(truncated, tmp_path / "target", COMPAT)
+
+
+def test_import_bounds_member_count_and_total_size(tmp_path, monkeypatch):
+    """Both import-side aggregate limits, each on its own.
+
+    They are separate guards with separate messages, and neither was reached:
+    the file-count ceiling is 100k and the total-size ceiling 16 GiB, so no
+    honest fixture gets near either.  Lower the constants instead of building
+    a hostile archive.
+    """
+    source = tmp_path / "source"
+    source.mkdir()
+    for i in range(4):
+        (source / ("entry%d" % i)).write_bytes(b"0" * 64)
+    bundle = tmp_path / "many.zip"
+    cache.export_bundle(source, bundle, COMPAT)
+
+    monkeypatch.setattr(cache, "MAX_BUNDLE_FILES", 2)
+    with pytest.raises(ValueError, match="too many archive members"):
+        cache.import_bundle(bundle, tmp_path / "count", COMPAT)
+
+    monkeypatch.setattr(cache, "MAX_BUNDLE_FILES", 100_000)
+    monkeypatch.setattr(cache, "MAX_BUNDLE_TOTAL_BYTES", 100)
+    with pytest.raises(ValueError, match="total size limit"):
+        cache.import_bundle(bundle, tmp_path / "total", COMPAT)
+
+
+def test_import_member_size_is_checked_before_and_during_extraction(tmp_path,
+                                                                    monkeypatch):
+    """The declared size and the streamed size are two guards, not one.
+
+    Each masked the other in the sweep: defeating either alone still raised
+    "size limit" from its partner, so both read as covered while neither was.
+    The header check refuses a member whose DECLARED size is too large; the
+    streaming check refuses one that lies about it and keeps producing bytes.
+    """
+    _, bundle = _one_entry_bundle(tmp_path, payload=b"0" * 4_000)
+
+    # Header guard alone.  Matching "size limit" is NOT enough to pin it: the
+    # streaming guard raises the same message, so that assertion passes with
+    # this guard deleted.  What only the header guard can do is refuse BEFORE
+    # any extraction begins, so make reaching extraction an error.
+    monkeypatch.setattr(cache, "MAX_BUNDLE_MEMBER_BYTES", 100)
+
+    class _ExtractionReached(Exception):
+        pass
+
+    def _no_extraction(*args, **kwargs):
+        raise _ExtractionReached("import began extracting an oversized member")
+
+    monkeypatch.setattr(cache.tempfile, "TemporaryDirectory", _no_extraction)
+    with pytest.raises(ValueError, match="size limit"):
+        cache.import_bundle(bundle, tmp_path / "declared", COMPAT)
+    monkeypatch.undo()
+
+    # Streaming guard alone: headers pass, extraction must still stop.  A
+    # ZipInfo reporting a small file_size passes _validate_member, so only the
+    # byte counter in the extraction loop can catch the real length.
+    monkeypatch.setattr(cache, "MAX_BUNDLE_MEMBER_BYTES", 1_000)
+    real_validate = cache._validate_member
+    monkeypatch.setattr(cache, "_validate_member",
+                        lambda info, **kw: None if not kw else
+                        real_validate(info, **kw))
+    with pytest.raises(ValueError, match="size limit"):
+        cache.import_bundle(bundle, tmp_path / "streamed", COMPAT)
+
+
+def test_export_refuses_a_cache_too_large_or_too_numerous_to_bundle(tmp_path,
+                                                                    monkeypatch):
+    """The export-side ceilings, which no fixture came near either.
+
+    Export builds the bundle from a directory this process already trusts, so
+    these are resource guards rather than security ones -- but an unbounded
+    export is how a 16 GiB cache becomes an OOM on a submit node.
+    """
+    source = tmp_path / "source"
+    source.mkdir()
+    for i in range(3):
+        (source / ("entry%d" % i)).write_bytes(b"0" * 512)
+
+    monkeypatch.setattr(cache, "MAX_BUNDLE_MEMBER_BYTES", 100)
+    with pytest.raises(ValueError, match="member exceeds the bundle size"):
+        cache.export_bundle(source, tmp_path / "a.zip", COMPAT)
+
+    monkeypatch.setattr(cache, "MAX_BUNDLE_MEMBER_BYTES", 4 * 1024**3)
+    monkeypatch.setattr(cache, "MAX_BUNDLE_TOTAL_BYTES", 600)
+    with pytest.raises(ValueError, match="total bundle size limit"):
+        cache.export_bundle(source, tmp_path / "b.zip", COMPAT)
+
+    monkeypatch.setattr(cache, "MAX_BUNDLE_TOTAL_BYTES", 16 * 1024**3)
+    monkeypatch.setattr(cache, "MAX_BUNDLE_FILES", 2)
+    with pytest.raises(ValueError, match="too many files"):
+        cache.export_bundle(source, tmp_path / "c.zip", COMPAT)

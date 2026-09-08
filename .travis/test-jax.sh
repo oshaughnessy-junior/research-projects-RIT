@@ -200,7 +200,46 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         driver actually CALLS the dispatcher
 #                                         (wiring).  Each fails under a verified
 #                                         mutation (see the PR).  Seconds.
+#   test_distance_grid_loguniform.py 33  the OPT-IN log-uniform ("peak-resolving")
+#                                         distance quadrature for the dense
+#                                         angle-marg schemes.  Pins the spacing
+#                                         contract (Delta ln d <= c/rho_max), the
+#                                         TWO-SIDED calibration of c against the
+#                                         Gaussian trapezoid error law it is
+#                                         derived from (a one-sided check is
+#                                         satisfied by c -> 0, which is accurate
+#                                         and arbitrarily expensive), that
+#                                         --distance-grid-scheme still DEFAULTS to
+#                                         the historical uniform grid node for
+#                                         node, and -- the safety property -- that
+#                                         the dense angle lattice is sized from the
+#                                         amplitude on the FULL prior support, so
+#                                         no distance grid can shrink it.  Includes
+#                                         driver AST guards on the option VALUE
+#                                         node, on the forwarded (not hardcoded)
+#                                         keyword, and on the fail-closed refusal
+#                                         when the flag is set on a mode that does
+#                                         not implement it.  One numerical
+#                                         execution test against a 1024-node
+#                                         uniform reference; the rest are numpy or
+#                                         AST.  ~19 s.  Each fails under a verified
+#                                         mutation (matrix in the PR).
 #   test_angle_marg_sizing_rule.py    1  the m_max-aware dense phi sizing rule.
+#
+#   test_angle_marg_gh_laplace.py    15  the psi-marginal distance-node placement
+#                                        that lets 'laplace' honour
+#                                        JAX_ILE_DISTMARG_GH.  GATED despite
+#                                        costing ~3.5 min: it is a NEW numerical
+#                                        path, and every constant in it is
+#                                        pinned by MUTATION (collapse the
+#                                        half-span, drop the node floor, force
+#                                        the sigma cap) rather than by a
+#                                        pass-through assertion.  The two
+#                                        agreement legs (converged uniform grid,
+#                                        exact scheme under the same quadrature)
+#                                        are the expensive ones; they are also
+#                                        the only ones that would catch a wiring
+#                                        error, so they stay.
 #                                         Pure numpy, milliseconds, closed-form I0
 #                                         reference.  FAILS under the old m_max-blind
 #                                         rule (0.498 nats vs 1.17e-10), which every
@@ -208,6 +247,49 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         is the only gated check that distinguishes
 #                                         the corrected sizing.  The rest of the
 #                                         angle-marg suite is EXCLUDED; see below.
+#   test_is_proposal_jitter.py        29  issue #227: a Gaussian IS proposal must be
+#                                         SCORED under the matrix it was DRAWN from.
+#                                         Seven sites drew from cov + 1e-12*I and
+#                                         scored under bare cov; the DEFAULT --mode
+#                                         laplace-is returned lnZ = 5.85e9 on real O4
+#                                         data and exited 0.  Pure numpy synthetic
+#                                         likelihood -- no frames, no PSDs, ~8 s.
+#                                         14 of the 24 FAIL on the parent commit
+#                                         (4c4f6492).  The 10 that pass there are the
+#                                         AST detector's own self-test and the nine
+#                                         healthy-regime reference comparisons, which
+#                                         must pass on BOTH sides by construction --
+#                                         they are the gate on the fix (and on the
+#                                         collapse guard) not disturbing the regime
+#                                         where this estimator actually works.
+#   test_jax_phase_marg_mode_order.py 14  phase marginalization must accept EITHER
+#                                         packed order of the (2,+-2) pair.
+#                                         _accumulate_unit hardcoded column 0 = (2,2)
+#                                         and raised NotImplementedError otherwise --
+#                                         but the column order comes from a dict's
+#                                         iteration order in the precompute, not from
+#                                         the caller, so a correctly configured
+#                                         --phase-marginalization run died on valid,
+#                                         complete data.  U and V carry the mode index
+#                                         on BOTH axes, so a half-permutation is a
+#                                         silent wrong answer; one test asserts the
+#                                         fixture can SEE each single-axis mistake, or
+#                                         the equality tests would not gate it.  Two
+#                                         tests defend the ordering that already works
+#                                         by making _permute_modes fatal: the canonical
+#                                         order must take the untouched path, not an
+#                                         identity permutation.  Synthetic packed data,
+#                                         no frames, no PSDs, ~60 s.
+#   test_limit_distance_jax.py        21  --limit-distance on this arm: the distance
+#                                         QUADRATURE narrows while the prior keeps its
+#                                         [d_min,d_max] normalization.  Includes the
+#                                         bitwise no-op of the default call (both the
+#                                         uniform and the adaptive grid), the ACCEPTANCE
+#                                         comparison (narrowed vs full-range lnZ at equal
+#                                         n_grid: 0.0 nats, measured 2.8e-14), and its
+#                                         power check -- the pre-change call signature on
+#                                         the same box moves lnZ by +4.16 nats.  ~110 s,
+#                                         CPU, one synthetic precompute.
 
 #   test_nuts_phimarg_injection.py  Not a pytest file at all: it runs the whole study at
 #                                 module scope and calls sys.exit() there.  WITHOUT numpyro
@@ -275,9 +357,95 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         accumulation window (while Simpson
 #                                         does not).  Pure numpy
 #                                         and jax, no lal, no GPU.
+#   test_jax_terminal_time_marginalization.py
+#                                      18  adaptive primitive-field integration:
+#                                         odd/even reflection, exact normalization,
+#                                         Event-B high-SNR convergence, AD, bounded
+#                                         batch-independent dispatch, a near-Nyquist
+#                                         phase-marginalization counterexample, explicit
+#                                         nonlinear-endpoint refusal, driver wiring, and
+#                                         honest phase-marginalized sky/psi export,
+#                                         K=14/K=88 independent guarded references,
+#                                         and executable baseline/banded support refusal.
+#   test_all_axis_peaklocal.py          30  fail-closed four-axis peak-local prototype:
+#                                         U,V-guided time ranking and algebraic angular
+#                                         starts, JAX refinement, fixed-shape multimode
+#                                         quadrature, exact selected-time reconstruction,
+#                                         explicit omitted-mass/time-reconstruction
+#                                         warrants, geometry/capacity refusal, and outer
+#                                         jit/grad/hessian/vmap transform compatibility,
+#                                         two-guard primitive support/convergence,
+#                                         harmonic-order U,V/Q starts, and the
+#                                         empirical enrichment/exact-reserve
+#                                         disposition gate.
+#   test_multipeak_planner.py          15  opt-in U,V,Q-guided four-axis multi-peak
+#                                         planner: exact symmetry expansion, strict
+#                                         stationary refinement, two-tier empirical
+#                                         convergence, overlap ownership and finite
+#                                         reserve, plus FOUR refinement-stall guards:
+#                                         the bounded step's ascent contract, the
+#                                         step-bound sweep, the max_step check the
+#                                         rescale requires, and the symmetry-orbit
+#                                         invariant a campaign write-up misread as
+#                                         degeneracy.  Three of the four use a
+#                                         narrow-time-peak fixture (the ascent contract
+#                                         needs no table): the older _synthetic_tables
+#                                         puts its maximum ON the targeting lattice, so
+#                                         the Newton loop was never exercised and a
+#                                         fixed point in it passed this gate for a
+#                                         month while declining every row of the
+#                                         2026-09-07 ladder campaign.  CPU-only; no
+#                                         lal, cupy, or GPU required.  The file defines
+#                                         19 tests; the four real-table oracle
+#                                         regressions need external validation packets
+#                                         that no fixture in this repository provides,
+#                                         so they are DESELECTED here -- see
+#                                         DESELECTED_TESTS -- and 15 are gated.
+#   test_direct_marginalization_policy.py
+#                                      12  opt-in cross-axis policy WIRING: choices and
+#                                         refusals, measure conversion on both distance
+#                                         paths against the exact scheme, decline to a
+#                                         warranted band-limited reserve that keeps the
+#                                         sample, ledger completeness, wrapper end to
+#                                         end on real synthetic tables with a finite
+#                                         gradient, and the driver CLI (subprocess).
+#   test_jax_q_time_pregrid.py         21  opt-in reflected Q time pregrid on the JAX
+#                                         arm: factor-1 bit identity (same array object,
+#                                         positions bit-identical to the pre-pregrid
+#                                         expressions), the 2n-vs-2(n-1) reflection
+#                                         choice measured against an exact-period
+#                                         oracle, refined-grid position scaling, the
+#                                         fail-closed length/factor checks, 'nearest'
+#                                         refusal, wrapper/driver forwarding, and the
+#                                         merge interaction with #272's phase-marginalized
+#                                         mode permutation.
+#                                         Synthetic fixtures; no lal frames, no GPU.
+#   test_multipeak_fallback_visibility.py
+#                                      13  the multi-peak planner's fallback must not
+#                                         read as a policy decline: an exception-driven
+#                                         fallback is reported once per call and carries
+#                                         decline_kind/fault in the record, a
+#                                         budget-driven decline does neither,
+#                                         fail_on_fallback is fatal on the first and
+#                                         inert on the second, and the default path is
+#                                         value- and provenance-identical to the
+#                                         pre-change module.  Synthetic tables; the
+#                                         tier faults are injected at the
+#                                         _run_structural_tier seam.  CPU-only.
+#                                         Two of these pin properties that the first
+#                                         version of the change got wrong.  The record
+#                                         is a 13-element tuple, tested by UNPACKING it
+#                                         (13 defaulted-field CONSTRUCTION kept working
+#                                         while `a, ..., m = result` had started to
+#                                         raise, so a construction test could not see
+#                                         it).  And the fault report goes to a logger,
+#                                         tested under `-W error::RuntimeWarning`, where
+#                                         warnings.warn had made the DEFAULT
+#                                         fail_on_fallback=False path raise.
 
 FILES=(
   "${JAXDIR}/test_jax_time_quadrature.py"
+  "${JAXDIR}/test_jax_terminal_time_marginalization.py"
   "${JAXDIR}/test_jax_likelihood.py"
   "${JAXDIR}/test_jax_endtoend.py"
   "${JAXDIR}/test_jax_slowrot_coeffs.py"
@@ -293,9 +461,26 @@ FILES=(
   "${JAXDIR}/test_jax_stencil_parity.py"
   "${JAXDIR}/test_flow_reuse_default.py"
   "${JAXDIR}/test_angle_marg_sizing_rule.py"
+  "${JAXDIR}/test_anglemarg_buffer_cap.py"
   "${JAXDIR}/test_angle_marg_smoke.py"
   "${JAXDIR}/test_angle_marg_compile_cost.py"
   "${JAXDIR}/test_angle_marg_block_dispatch.py"
+  "${JAXDIR}/test_distance_grid_loguniform.py"
+  "${JAXDIR}/test_angle_marg_gh_laplace.py"
+  "${JAXDIR}/test_angle_marg_default.py"
+  "${JAXDIR}/test_angle_marg_gh_selection.py"
+  "${JAXDIR}/test_joint_anglemarg_peaklocal.py"
+  "${JAXDIR}/test_angle_marg_peaklocal_wiring.py"
+  "${JAXDIR}/test_limit_distance_jax.py"
+  "${JAXDIR}/test_direct_marginalization_planner.py"
+  "${JAXDIR}/test_time_first_peaklocal.py"
+  "${JAXDIR}/test_all_axis_peaklocal.py"
+  "${JAXDIR}/test_is_proposal_jitter.py"
+  "${JAXDIR}/test_multipeak_planner.py"
+  "${JAXDIR}/test_multipeak_fallback_visibility.py"
+  "${JAXDIR}/test_jax_phase_marg_mode_order.py"
+  "${JAXDIR}/test_jax_q_time_pregrid.py"
+  "${JAXDIR}/test_direct_marginalization_policy.py"
   "${JAXDIR}/test_jax_cache.py"
 )
 
@@ -305,6 +490,10 @@ FILES=(
 # this gate's own failure mode, one level up.
 DESELECTED_TESTS=(
   "${JAXDIR}/test_jax_stencil_parity.py::test_gpu_gather_parity_against_numpy_window"
+  "${JAXDIR}/test_multipeak_planner.py::test_hm_second_mode_survives_unsafe_proxy_gap"
+  "${JAXDIR}/test_multipeak_planner.py::test_hm_two_tier_integral_matches_overcomplete_oracle"
+  "${JAXDIR}/test_multipeak_planner.py::test_real_low_snr_declines_to_finite_reserve"
+  "${JAXDIR}/test_multipeak_planner.py::test_real_high_snr_two_tier_path_matches_overcomplete_oracle"
 )
 EXCLUDED=(
   # test_angle_marg_exact.py -- the angle-marginalization VALIDATION suite.
@@ -348,6 +537,25 @@ EXCLUDED=(
 #       The cupy leg of the sinc-stencil parity check.  It needs a real CUDA device;
 #       this job has none, so it self-skips.  It is a genuine gate on a GPU host --
 #       run it by hand there when touching Q_inner_product_sinc_cupy.
+#
+#   test_multipeak_planner.py::test_hm_second_mode_survives_unsafe_proxy_gap
+#   test_multipeak_planner.py::test_hm_two_tier_integral_matches_overcomplete_oracle
+#   test_multipeak_planner.py::test_real_low_snr_declines_to_finite_reserve
+#   test_multipeak_planner.py::test_real_high_snr_two_tier_path_matches_overcomplete_oracle
+#       The four real-table oracle regressions of the multi-peak planner.  Each is
+#       skipif-guarded on an external validation packet -- a saved (C_A, C_B) coefficient
+#       table from a real analysis -- and NOTHING in this repository or in the CI setup
+#       supplies one, so on this runner all four skip.  A skip is precisely what the
+#       post-run junit check below refuses, so leaving them selected would redden the
+#       gate on every PR while asserting nothing.  They cannot be made to run from a
+#       synthetic fixture either: they pin numbers measured on those tables (mode
+#       spacings, oracle log-integrals) to ~1e-8, which is a property of the real
+#       tables and not of any stand-in this repo could ship.
+#       The 15 remaining tests in that file are self-contained and stay gated; they
+#       carry the planner's structural coverage (symmetry expansion, strict stationary
+#       refinement, two-tier convergence, overlap ownership, reserve fallback).
+#       RUN THE FOUR BY HAND, with the packets present, when touching
+#       multipeak_planner.py, and record the numbers in the PR per records-protocol.
 DESELECT=()
 for t in "${DESELECTED_TESTS[@]}"; do DESELECT+=( --deselect "$t" ); done
 
@@ -383,17 +591,191 @@ fi
 # no default guard; the band-limited path widens the accumulation window).
 # PR #209 then adds six test_angle_marg_compile_cost.py pins, raising 160 -> 166,
 # and PR #210 adds five test_angle_marg_block_dispatch.py pins, raising 166 -> 171.
-# The persistent-cache namespace/transfer guard adds seventeen test_jax_cache.py
-# cases (sixteen tests, one exact/Laplace parametrization) and the production
-# wrapper wiring adds one smoke pin, raising 171 -> 189.  The final cache cases
-# run both real anglemarg batch graphs
-# in two fresh processes and transfer a compiled executable between different
-# absolute roots, so host callbacks or path-valued cache keys cannot silently
-# disable persistence.
+# PR #216 adds eighteen adaptive primitive-time pins, raising 171 -> 189.
+# The psi-marginal GH placement (#225) adds 36, raising 189 -> 225: 15 in
+# test_angle_marg_gh_laplace.py, 5 in test_angle_marg_default.py, 8 in
+# test_angle_marg_gh_selection.py, plus 4 answering external review on the
+# identity gate (imaginary-A0 coefficient, B1 in the conjugate slice, the gate
+# applying to an explicit laplace, the kernel guard staying trace-safe).
+# The log-uniform distance quadrature adds 37 on top of the base, raising
+# it by that amount wherever the base then sat: 30 for the scheme itself, 3 from external re-review (the
+# zero-clipped-amplitude extreme of the F1 detector, the DRIVER half of the F2
+# refusal, and a guard on the sky-doubling path -- each because a mutation
+# SURVIVED the 33-mutation matrix without it), and 3 covering the truncated-
+# endpoint precondition added by the automated review pass, which shipped with
+# none (the estimator against an independent numpy measurement, the
+# interior-but-too-close refusal, and the non-positive-clearance window that
+# built at 6.7x tol).
 # Raising the floor
 # by exactly the number of tests ADDED is safe whatever the environment delta above,
 # since it preserves the margin the previous floor already had.
-EXPECTED_TESTS=189
+# Raised 189 -> 217 by the 28 tests added in the angle-marg GH branch (#225); then
+# 217 -> 225 by the tests answering external review on its identity gate; then
+# 225 -> 234 while this branch was open, by the peak-local framework (#224), the
+# joint (phi,psi) peak-local kernel (#230) and the AV batch-max change (#234);
+# then 234 -> 272 by the adaptive distance quadrature branch's own 37 (#221).
+# Raised 272 -> 293 on merging --limit-distance, by that branch's 21
+# test_limit_distance_jax.py pins: 15 shipped; 4 added after an adversarial
+# mutation sweep found two INERT guards (the adaptive grid's d_prior_range branch
+# could be deleted with the suite green, worth +5.5 nats silently, and
+# sample_prior could draw over the full range while the box correction stayed);
+# and 2 more for this merge's own interactions with the #221 distance quadrature
+# -- the box must not shrink the angle lattice, and the log-uniform grid must
+# refuse a box rather than renormalize the prior onto it.
+# THREE branches have now raised this constant, so it is the single place this
+# merge is most likely to go quietly wrong; the FILES array above is the other.
+# Taken from a collection RUN, never by adding the three accountings.
+#
+# The peak-local ILE WIRING branch adds 13: 11 in
+# test_angle_marg_peaklocal_wiring.py (the scheme reaches the likelihood,
+# matches exact, is absent from 'auto', joins the amp failsafe / batch-memory
+# cap / artifact label, and the CLI rejects a misspelling) and 2 in
+# test_joint_anglemarg_peaklocal.py (twice differentiable, and the gradient stays
+# finite as the quartic leading coefficient vanishes).  293 + 13 = 306, re-derived
+# by RUNNING the gate's own collection after rebasing over #221/#238/#223.
+#
+# The u-FALLBACK branch adds 2 in test_joint_anglemarg_peaklocal.py (required_u_nodes
+# is derived and follows the sqrt-A law under a cap, and a whole-cell integration sized
+# by it agrees with a 4x finer one).  The floor is 310, READ FROM THIS JOB'S OWN LOG.
+# Two wrong numbers preceded it, failing in opposite directions:
+#   308 -- by adding 2 to the previous 306, which is exactly what the paragraph above
+#          says not to do.  The base is 309 after #239 merged, so 308 would still have
+#          PASSED while silently under-promising three tests.
+#   311 -- by running the collection on a dev host.  Wrong by exactly one, because the
+#          harness sliced this script by line number to reuse FILES and stopped before
+#          the loop that populates DESELECT from DESELECTED_TESTS -- so it counted
+#          test_gpu_gather_parity_against_numpy_window, which THIS job deselects.
+# Arithmetic lands below the truth and passes; a mis-set-up local collection lands above
+# it and fails.  Read the floor off this job's "collected N tests from 27 files" line --
+# the only source that is not a guess.
+# The production-policy follow-up adds one mutation-bearing streaming test; this job's
+# own collection reports 312.
+# PR #250 adds test_anglemarg_buffer_cap.py, test_direct_marginalization_planner.py and
+# test_time_first_peaklocal.py; 247 adds four tests to test_joint_anglemarg_peaklocal.py
+# and REMOVES test_joint_angle_algebraic.py with the duplicate enumerator it covered.
+# Neither branch guessed well: 250 derived a provisional 408 from arithmetic and said to
+# replace it with a real collection, and 247 measured 329 against a different file set.
+# This number is the MERGED collection, run over this job own FILES/DESELECT with the
+# DESELECT loop actually applied (the run reports "424/425 tests collected (1 deselected)").
+#
+# 250 also inferred a standing "this environment collects one more than CI" offset and
+# subtracted it.  There is no such offset: the 311 case documented above was wrong by one
+# because a harness sliced this script by line number and never ran the DESELECT loop, so
+# it counted the one test this job deselects.  That was a one-off setup bug, not a property
+# of the environment, and subtracting for it would under-promise by one -- which is the
+# failure direction this whole comment exists to warn about, because a low floor PASSES.
+#
+# The #227 IS-proposal branch then adds the 29 pins in test_is_proposal_jitter.py (27,
+# plus the two external review's P1 required: the Markov floor and the inflated-pilot
+# regression case).  The FILES array above takes the UNION of every side that has
+# touched it.
+#
+# The phase-marginalization mode-order branch then adds the 14 pins in
+# test_jax_phase_marg_mode_order.py.  Its number was NOT derived by adding 14 to the
+# constant above -- that shortcut is what the paragraphs below warn about.  It was read
+# off this job's own line after rebasing on rift_O4d: "collected 475 tests from 32
+# files", with the DESELECT loop applied (the script itself prints it, so there is no
+# way to run this and get the half-configured count).
+#
+# THIS BRANCH HAS NOW HIT THIS CONFLICT THREE TIMES, on three consecutive days, and
+# every one of its own numbers was read off a real collection run when written:
+#
+#     2026-09-05  339   stale within a day        (main had moved 293 -> 312)
+#     2026-09-06  451   stale within a day        (main had moved 312 -> 424)
+#     2026-09-06  453   stale by the next merge   (main had moved 424 -> 432)
+#
+# So the constant does not go stale because someone was careless.  It goes stale
+# because rift_O4d moves faster than any single branch can hold a global count, and
+# that is a property of the counter, not of the people using it.  Note that the
+# arithmetic would have been RIGHT all three times (312+27 = 339 after the two review
+# tests landed later, 424+27 = 451, 432+29 = 461).  That is exactly what makes it an
+# unreliable shortcut rather than a safe one: it is nearly always right, so the once it
+# is wrong there is no habit of checking left to catch it.  The number below is READ
+# OFF this job's own collection line after the #227 merge: 461/462 collected,
+# 1 deselected, 31 files. PR #270 adds 15 multipeak tests but deselects the four
+# real-table regressions whose external packets CI does not provide.  The merged
+# gate therefore adds 11 self-contained tests.  Confirmed from the merged
+# collection: 472/477 collected, 5 deselected, 32 files.
+#
+# The phase-marginalization mode-order merge added the 14 pins in
+# test_jax_phase_marg_mode_order.py on top of #270, and hit the same conflict a
+# fourth time: each side of it carried a number the other side had already
+# invalidated (475 vs 472).  Read off the job's own line then: 486 from 33 files.
+#
+# FIFTH time, on the Q time-pregrid branch (this merge).  Both sides were stale
+# again -- 480 on the branch, 486 on rift_O4d -- for the same reason, and the
+# resolution is again a MEASUREMENT, not the sum.  Read off this job's own line
+# after resolving, DESELECT loop applied, on the merged tree:
+# "collected 505 tests from 34 files".  The arithmetic (486 + the 19 in
+# test_jax_q_time_pregrid.py) agrees, and is again not where the number came
+# from.  Independently recollected on citlogin6 with ~/.cache/jaxci_venv
+# (jax 0.9.2, numpyro 0.21.0) during the landing review: the same 505 from the
+# same 34 files.
+#
+# 507, not 505, and the gap is two tests added after that measurement: the P2
+# review's no-metadata refusal, and one for a path the merge creates that
+# neither side covers (#272's phase-marginalized mode permutation acting on a
+# REFINED Q grid).  The P2 commit left this constant at 505, which the >= floor
+# accepts silently -- exactly the drift this comment exists to stop.  Recollected
+# after both: "507/512 tests collected (5 deselected)",
+# "collected 507 tests from 34 files".
+#
+# SIXTH time, on the full-circuit phi-region branch (this merge).  Both sides were
+# stale in the usual way -- 487 on the branch, 507 on rift_O4d -- and the resolution
+# is again a MEASUREMENT.  This branch adds ONE test,
+# test_a_full_circuit_phi_window_is_one_region_at_every_peak_location.  Recollected on
+# the merged tree, citlogin6, ~/.cache/jaxci_venv, DESELECT loop applied:
+# "collected 508 tests from 34 files".
+# SEVENTH time, on the four-axis peak-local branch (#268, this merge).  Both
+# sides stale again: 453 on the branch, 507 and then 508 on rift_O4d.
+# Resolution is again a measurement on the merged tree with the DESELECT loop
+# applied, read off this
+# job's own collection line on citlogin6 (~/.cache/jaxci_venv, jax 0.9.2):
+# "542/547 tests collected (5 deselected)", gate-style count 542 from 35
+# files.  Def-count arithmetic (508 + 30 in test_all_axis_peaklocal.py + 1 in
+# test_angle_marg_exact.py + 2 in test_time_first_peaklocal.py = 541) does NOT
+# reproduce it, which is one more reason the constant is measured.
+#
+# EIGHTH: the cross-axis policy wiring adds test_direct_marginalization_policy.py
+# (15 tests).  Measured on this tree with the DESELECT loop applied, citlogin6,
+# ~/.cache/jaxci_venv (jax 0.9.2): "557/562 tests collected (5 deselected)",
+# gate-style count 557 from 36 files.  Independently recollected with the CVMFS
+# igwn python on ldas-pcdev11 during the same landing: same 557 from 36 files.
+#
+# NINTH, on the multi-peak refinement-stall branch (this change).  It adds FOUR
+# tests to test_multipeak_planner.py and touches no other test file.  The
+# branch measured 546 against a base of 542; #278 has since taken the base to
+# 557, so 546 is stale and 557+4 would be the arithmetic this comment forbids.
+# Re-measured on the merged tree, DESELECT loop applied, read off the gate's
+# this job own collection line:
+# "561/566 tests collected (5 deselected)", gate-style count 561 from 36 files.
+#
+# TENTH, on the multi-peak fallback-visibility branch (#277, this merge).  It
+# adds ONE file, test_multipeak_fallback_visibility.py (13 tests), and touches
+# no existing test file.  The branch measured 555 against a base of 542; #278
+# and #279 have since taken the base to 561, so 555 is stale and neither side
+# nor their sum is usable.  Re-measured on the merged tree, ldas-grid,
+# ~/.cache/jaxci_venv (jax 0.9.2, numpyro 0.21.0), DESELECT loop applied, read
+# off this job own collection line:
+# "574/579 tests collected (5 deselected)", gate-style count 574 from 37
+# files.
+#
+# ELEVENTH, on the JAX persistent/transferable compilation cache (#214, this
+# merge).  It adds ONE file, test_jax_cache.py, and does not add or remove a
+# test in any existing file: the amplitude failsafe changes HOW it reports
+# (returned value instead of a host callback, so the angle-marg graph is
+# eligible for JAX's persistent cache at all) but not how many pins cover it.
+# The branch carried 189 against a base of 171, both stale by months -- neither
+# side's number, nor their sum, is usable, which is the eleventh time in a row
+# that has been true.  MEASURED on the merged tree,
+# ldas-grid, ~/.cache/jaxci_venv (jax 0.9.2), DESELECT loop applied, read off
+# this job own collection line:
+#   "600/605 tests collected (5 deselected)", gate-style count 600 from 38
+#   files.  The base was 574 from 37, and the arithmetic
+#   does NOT reproduce it, which is the usual reason this constant is measured.
+#   PYTHONPATH had to be pinned to the merged tree first: the conda env
+#   otherwise resolves RIFT to ~/RIFT_ralph and collection fails on imports.
+EXPECTED_TESTS=600
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"

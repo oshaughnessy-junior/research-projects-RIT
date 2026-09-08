@@ -42,6 +42,91 @@ response, geometric time delay, spin-(-2) spherical harmonics, the
 `kappa`/`rho^2` assembly, continuous time-shift interpolation, time
 marginalization, and **analytic distance marginalization**.
 
+### Phase marginalization and the packed mode set
+
+`phase_marginalization=True` is implemented for the `(2,2)`/`(2,-2)` pair only:
+the reduction conjugates the `m = -2` component of the harmonic, the antenna
+response and the `rholm` timeseries, which is specific to a single
+`m = +2`/`m = -2` pair.  Any other mode set raises `NotImplementedError` rather
+than silently dropping a mode.
+
+**Either packed ORDER is accepted.**  The column order of `lms`, `Q`, `U` and `V`
+follows the iteration order of the precompute's mode dictionary, not anything the
+caller chooses, so both `[(2,2), (2,-2)]` and `[(2,-2), (2,2)]` arrive in practice;
+the accumulator canonicalizes internally.  Note that `U` and `V` carry the mode
+index on BOTH axes -- any code reordering a packed bank by hand must permute both,
+or it returns a wrong likelihood with no error.
+
+### Time quadrature
+
+All JAX likelihood wrappers accept the conventional ILE keyword
+`time_quadrature={"simpson","bandlimited"}`.  Simpson remains the default.
+The opt-in `bandlimited` path is currently supported by
+`JAXExtrinsicLikelihood`, including analytic phase marginalization.  It forms
+the endpoint-nonduplicating even extension
+`[kappa[0], ..., kappa[-1], kappa[-2], ..., kappa[1]]`, FFT-interpolates it,
+applies the phase reduction on the
+fine grid, and integrates the original closed interval with a stable trapezoid
+rule.  The per-row power-of-two factor is derived from fine-grid peak curvature,
+remeasured after interpolation, and doubled until the integral agrees within
+1e-3 nat.  Row-local `lax.map` execution bounds scratch memory independently of
+the sampler batch.  There is deliberately no public factor knob; a row that
+cannot meet the criterion fails closed.
+
+The supported signal regime assumes spectral headroom below the sampled
+Nyquist frequency and negligible likelihood mass at both ends of the short
+integration window.  The latter is checked on the refined grid: either endpoint
+must be at least 15 natural-log units below the peak, otherwise `bandlimited`
+fails closed rather than trusting a boundary extension that can affect the
+answer.  Increase the physical time window or use Simpson when this diagnostic
+fires.
+
+The primitive gather includes support outside that window.  Its initial guard
+is the established half-window default rounded up to a power of two; one guard
+doubling is gathered at the same time.  A raised-cosine pad acts only across
+the support samples, reaching exactly one at the integration crop and zero
+with zero slope at the remote even-reflection turns.  The value is accepted
+only when both guard widths agree within 1e-3 nat, independently of the fine
+quadrature-factor doubling check.  Thus short-window truncation and fine-grid
+resolution have separate certificates.
+
+The JAX driver derives this support requirement before waveform precompute and
+widens `--internal-data-storage-window-half` when necessary.  It includes the
+full certified guard, a conservative 50 ms detector-delay allowance (larger
+than the Earth-diameter light time), and the
+largest shipped interpolation stencil.  The accumulator also validates every
+guarded gather index per row; missing support produces a fail-closed likelihood
+instead of inheriting the ordinary gatherer's out-of-buffer zero fill.  The
+baseline and banded finite-size/frequency-response accumulators enforce the
+same check; rotation remains refused because its norm depends on arrival time.
+The
+curvature-derived starting fine factor is capped at 1024 and certified once at
+2048; a sharper row is refused with guidance to increase the input/rholm sample
+rate rather than allocating multi-gigabyte FFT branches.
+
+Distance, phi, psi, exact-angle, and Laplace-marginalized wrappers currently
+refuse `bandlimited`.  Those nonlinear reductions generate time harmonics, so
+interpolating their already-reduced `lnL(t)` can converge to the wrong function;
+they require endpoint-specific primitive refinement before they can safely opt
+in.  They continue to use the unchanged Simpson default.
+`time_first_peaklocal.py` contains an unwired, fixed-shape prototype of that
+primitive-first composition: it reconstructs one raw complex correlation per
+downstream distance/angle quadrature state, builds a certified time-cell cover,
+and only then performs the nonlinear reduction on local nodes.  It returns an
+explicit validity ledger and changes no wrapper or CLI default.  Production
+wiring still needs a tighter Hermite certificate, two-guard convergence, and an
+adapter from the coefficient-table angle kernels.
+The driver exposes the same public spelling as conventional ILE:
+`--time-marginalization-quadrature`.  `--interpolate-time` is an alias for the
+JAX-native `--interp` with conflict detection.  Conditional nuisance recovery
+is outside this implementation.  For drop-in CLI compatibility,
+`--resample-time-marginalization`, `--srate-resample-time-marginalization`, and
+`--time-posterior-export` are accepted and reported as ignored: JAX ILE's
+sample export keeps time terminally marginalized rather than reconstructing one
+conditional time per exported row.  This intentionally differs from
+conventional ILE's XML export semantics, but a high-level DAG can swap
+executables without dying during option parsing.
+
 ## Modules
 
 - `detector.py` — `compute_detamresponse`, `time_delay_from_earth_center`
@@ -56,6 +141,19 @@ marginalization, and **analytic distance marginalization**.
     lnL over the 5 angular parameters (regulates the amplitude degeneracy; see
     below).
   - `make_distance_grid(...)`, `JAXLikelihoodData`, `build_likelihood_data`.
+- `time_first_peaklocal.py` — experimental primitive-first time-cover planner
+  and distance adapter; not selected by any production endpoint.
+- `direct_marginalization_policy.py` — opt-in cross-axis policy
+  (`--direct-marginalization-policy auto`): per evaluation, the four-axis
+  peak-local controller of `all_axis_peaklocal.py` under its acceptance
+  ledger, with the band-limited exact-angle reserve on decline.  Value-only;
+  see `DESIGN_direct_marginalization_policy.md`.
+- `../bivariate_trig_stationary.py` — host reference for complete finite-order
+  `(phi_ref, 2 psi)` stationary enumeration by a Sylvester resultant and
+  generalized eigenproblem.  It records BKK expected/found counts,
+  conditioning, cross-projection agreement, and supplies best-effort targets
+  only behind an outside-cover bound; no sampled phi grid is called
+  enumeration.  A fixed-capacity JAX plan adapter remains future work.
 - `wrapper.py` — `build_data_from_precompute` (runs the production precompute +
   packing and returns a device-resident `JAXLikelihoodData`), and the
   convenience classes `JAXExtrinsicLikelihood` (6-D, value/grad/Fisher) and
@@ -289,12 +387,29 @@ compression ratio and streams entries through their checksum, so a corrupt or
 hostile archive cannot expand without limit. Cache bundles contain compiler
 artifacts and should still be accepted only from a trusted build workflow.
 
-The exact/Laplace amplitude-adequacy diagnostic is deliberately data returned
+The compatibility namespace does NOT cover `XLA_FLAGS`. JAX hashes the compile
+options it builds, and deliberately excludes a list of flags that cannot change
+the compiled result, but the `XLA_FLAGS` environment variable is read by the
+XLA C++ layer and is part of no key. A flag that changes numerics (fast
+min/max, excess precision, TF32 controls) must therefore be held fixed for a
+given cache root, or the root varied alongside it. Performance-only flags are
+safe to vary.
+
+Cache entries are written by JAX, not by RIFT, and JAX writes them in place
+rather than through a temporary file. Two processes racing on one key write the
+same bytes, because the key is a hash of everything that determines them, and a
+torn read fails to deserialize and recompiles. So a shared cache root degrades
+to recompilation under contention; it does not hand back a wrong kernel.
+
+The amplitude-adequacy diagnostic of the amp-sized schemes (exact, Laplace,
+peak-local, phi-local) is deliberately data returned
 by a pure JIT, not a `jax.debug.callback`: JAX does not persist graphs with host
 callbacks. The driver synchronously accumulates the maximum over every pilot,
 reweight, and final production/output-cloud batch and records that deterministic
 scope in result provenance. Transient flow-training-only proposals are not
-claimed; they do not enter the reported evidence or exported cloud. A tripped
+claimed; they do not enter the reported evidence or exported cloud. The
+`direct-marginalization-policy` composite exposes no such metric and is
+therefore unlabelled. A tripped
 check still leaves likelihood values finite and labels the artifacts
 `SUSPECT-ANGLE-GRID` rather than silently excising the affected region.
 

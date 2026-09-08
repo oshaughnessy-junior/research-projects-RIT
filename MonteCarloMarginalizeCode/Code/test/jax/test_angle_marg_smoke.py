@@ -16,6 +16,7 @@ import ast
 import pathlib
 
 import numpy as np
+import jax
 import jax.numpy as jnp
 
 from RIFT.likelihood.jax_ile import anglemarg as AM
@@ -150,7 +151,32 @@ def test_public_wrapper_records_output_calls_not_training_and_drives_note():
     assert state["tripped"] is True
 
     # Scalar/gradient calls model transient flow-training proposals and must
-    # not mutate the artifact-producing output-cloud record.
+    # not mutate the artifact-producing output-cloud record.  Exercise the REAL
+    # graph before any stub.  A mutation sweep found that stubbing _scalar and
+    # _value_and_grad first, then asserting the record is unchanged, passes even
+    # when the scalar path IS wired to request the amplitude -- the stub
+    # replaces exactly the code the assertion is about.  Requesting it there
+    # would also make the scalar path return a tuple, so value_and_grad would be
+    # differentiating the wrong object; both are caught below.
+    # theta3 is three SCALARS; the module-level RA/DEC/INCL are 1-element
+    # arrays for the batched entry points, and passing them here would build a
+    # (3,1) theta and fail inside the coefficient scan.
+    # The scalar/AD path must stay a pure value graph.  Traced with eval_shape
+    # rather than executed: this is a shape contract, and tracing costs no
+    # compile and no device memory.  Asking that path for the amplitude makes
+    # _fused return a TUPLE, so v[0] becomes the (1,)-shaped lnL instead of the
+    # scalar, and value_and_grad would differentiate the wrong object.  A
+    # mutation sweep found the stub-then-assert check below cannot see that:
+    # it replaces exactly the code it is meant to be testing.
+    theta3 = jnp.zeros(3, dtype=jnp.float64)
+    real_state = AM.amp_failsafe_state()
+    out_shape = jax.eval_shape(like._scalar, theta3)
+    assert out_shape.shape == (), (
+        "the scalar/AD path must return a scalar, not a (value, amplitude) "
+        "pair; got %r" % (out_shape,))
+    assert AM.amp_failsafe_state() == real_state, (
+        "tracing the AD path must not enter the output-cloud record")
+
     like._scalar = lambda theta: jnp.asarray(1.0)
     like._value_and_grad = lambda theta: (jnp.asarray(1.0), jnp.zeros(3))
     like.value([RA, DEC, INCL])

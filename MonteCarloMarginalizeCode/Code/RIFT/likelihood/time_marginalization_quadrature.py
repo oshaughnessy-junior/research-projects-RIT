@@ -125,7 +125,10 @@ is the original defect.
 WHAT "EXACTLY" IS EXACT ABOUT (read before quoting the accuracy numbers)
 -----------------------------------------------------------------------
 The reconstruction is exact for the integrand THE CODE ACTUALLY FORMS, which is
-the true ``kappa(t)`` only when ``time_interp='nearest'`` -- the default -- where
+the true ``kappa(t)`` only when ``time_interp='nearest'`` -- which since 2026-09-02
+is no longer the ILE driver's default (issue #233; the driver now defaults to
+``time_interp_choice.TIME_INTERP_DEFAULT``), so the paragraph below is now the
+ORDINARY case rather than the exceptional one -- where
 the gathered values are exact samples of ``Q`` (on a grid offset by up to
 deltaT/2, which is a pre-existing property of that stencil).
 
@@ -140,7 +143,10 @@ Measured at srate 4096, peak lnL ~5300, peak centred: with 'nearest' this path i
 wins about half the cases.  Neither number says the quadrature is wrong -- they
 say that once a stencil is in use its own error dominates, and fixing the
 quadrature exposes it rather than adding to it.  The advantages quoted above are
-for the default stencil.
+for ``time_interp='nearest'``, which is NOT the driver default any more: pass
+``--interpolate-time nearest`` alongside ``--time-marginalization-quadrature
+bandlimited`` to reproduce them.  Re-measuring this pairing under the new default
+is an OPEN item, not a settled result.
 
 SCOPE
 -----
@@ -154,6 +160,9 @@ refuse-rather-than-guess reason: the reduction sums ``exp`` over realizations, s
 each realization's kappa row would have to be upsampled and the derived factor
 reconciled across realizations, which is untested here.
 """
+
+import os
+import warnings
 
 import numpy as np
 
@@ -172,11 +181,18 @@ __all__ = [
     "refuse_unless_time_quadrature_emitted",
     "refuse_unhonourable_time_quadrature",
     "find_time_quadrature_in_ile_args",
+    "draw_piecewise_linear_log_posterior",
     "time_marginalize_bandlimited",
     "last_report",
 ]
 
-TIME_QUADRATURE_CHOICES = ("simpson", "bandlimited")
+TIME_QUADRATURE_CHOICES = ("simpson", "bandlimited", "peak-local")
+
+#: 'peak-local' lives in RIFT.likelihood.time_marginalization_peak_local and
+#: reuses this module's helpers wholesale (width estimator, derived factor, row
+#: classification, edge guard, Simpson hand-over).  It is named here rather than
+#: there so that validate_time_quadrature stays the single place a quadrature name
+#: is checked; the import runs the other way, so there is no cycle.
 
 #: ``h_dense <= sigma_t / UPSAMPLE_SAFETY``.  See the module docstring: at this
 #: value the trapezoidal rule's Poisson-summation error on a Gaussian peak is
@@ -247,6 +263,245 @@ CURVATURE_STENCIL_HALFWIDTHS = (1, 2, 4, 8)
 #: is not floating-point noise.
 _DENSE_CHUNK_BYTES = 128 * 1024 * 1024
 
+
+def _cpu_fft_workers():
+    """Bounded CPU FFT parallelism, respecting scheduler CPU affinity.
+
+    The reflected transforms have awkward production lengths (for example
+    ``2*307``), and dominate the AV band-limited path.  SciPy's pocketfft can
+    parallelize the independent row transforms, while NumPy's public FFT API
+    cannot.  Never request more CPUs than the process affinity mask exposes;
+    ``RIFT_TIME_FFT_WORKERS`` can lower the cap or raise the default cap of four.
+    """
+    try:
+        available = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        available = os.cpu_count() or 1
+    requested = int(os.environ.get("RIFT_TIME_FFT_WORKERS", "4"))
+    return max(1, min(requested, available))
+
+
+def _fft_rows(x, inverse=False, n=None, xpy=np):
+    if xpy is np:
+        from scipy import fft as scipy_fft
+        fn = scipy_fft.ifft if inverse else scipy_fft.fft
+        return fn(x, n=n, axis=-1, workers=_cpu_fft_workers())
+    fn = xpy.fft.ifft if inverse else xpy.fft.fft
+    return fn(x, n=n, axis=-1)
+
+
+class _RetainedFFTUnsupported(RuntimeError):
+    """The optional retained-grid transform cannot honour this input."""
+
+
+def _retained_fft_backend(xpy):
+    """Return the supported backend name without moving an array to the host."""
+    if xpy is np:
+        return "numpy"
+    if getattr(xpy, "__name__", None) == "cupy":
+        return "cupy"
+    raise _RetainedFFTUnsupported(
+        "retained-grid FFT supports only the numpy and cupy backends")
+
+
+def _retained_fft_plan(period, factor, dtype, xpy=np):
+    """Build stable Bluestein chirps for the forward half of a reflected row.
+
+    The plan evaluates the same Fourier polynomial as zero padding to
+    ``period * factor``, but only at the ``(period/2 - 1)*factor + 1`` samples
+    consumed by the finite-window integral.  Integer modular phases avoid the
+    unit-circle drift of forming a high power of one approximate complex root.
+    Plans live only for one marginalization call, so large GPU chirps cannot
+    become an unbounded process-wide cache.
+    """
+    _retained_fft_backend(xpy)
+    period = int(period)
+    factor = int(factor)
+    dtype = np.dtype(dtype)
+    if period < 4 or period % 2:
+        raise _RetainedFFTUnsupported(
+            "reflected FFT period must be even and at least four")
+    if factor <= 1 or factor & (factor - 1):
+        raise _RetainedFFTUnsupported(
+            "retained-grid FFT requires a power-of-two factor above one")
+    if dtype != np.dtype(np.complex128):
+        raise _RetainedFFTUnsupported(
+            "retained-grid FFT is certified only for complex128 spectra, got %s"
+            % dtype)
+
+    # The Nyquist coefficient is represented at both signed endpoints, hence
+    # period+1 input coefficients.  Linear Bluestein convolution needs the sum
+    # of input and output lengths minus one.  next_fast_len is a host-side
+    # integer calculation only; all arrays and FFTs stay on xpy's device.
+    n_coeff = period + 1
+    n_out = (period // 2 - 1) * factor + 1
+    n_chirp = max(n_coeff, n_out)
+    if n_chirp > 3037000499 or period * factor > np.iinfo(np.int64).max // 2:
+        raise _RetainedFFTUnsupported(
+            "retained-grid dimensions exceed the exact int64 chirp-phase range")
+    from scipy.fft import next_fast_len
+    n_fft = int(next_fast_len(n_coeff + n_out - 1))
+
+    k = xpy.arange(n_chirp, dtype=np.int64)
+    denominator = period * factor
+    # exp(+i*pi*k**2/denominator), reduced exactly modulo 2*denominator
+    # before conversion to float.  The largest supported production grid is
+    # safely within int64 (roughly 1e14 at npts=2457, factor=4096).
+    phase_index = (k * k) % (2 * denominator)
+    wk2 = xpy.exp((1j * np.pi / denominator) * phase_index)
+    wk2 = xpy.asarray(wk2, dtype=np.complex128)
+    kernel = 1.0 / xpy.concatenate(
+        (wk2[n_coeff - 1:0:-1], wk2[:n_out]))
+    kernel_fft = _fft_rows(kernel, n=n_fft, xpy=xpy)
+
+    j = xpy.arange(n_out, dtype=np.int64)
+    shift_index = j % (2 * factor)
+    signed_frequency_shift = xpy.exp(
+        (-1j * np.pi / factor) * shift_index)
+    post = (wk2[:n_out] * signed_frequency_shift) / float(period)
+    return {
+        "input_chirp": wk2[:n_coeff],
+        "kernel_fft": kernel_fft,
+        "post_chirp": post,
+        "n_fft": n_fft,
+        "n_out": n_out,
+        "period": period,
+        "factor": factor,
+    }
+
+
+def _reflected_bandlimited_upsample_retained(x, factor, plan_cache=None,
+                                               xpy=np):
+    """Evaluate exactly the retained forward grid of the reflected interpolant.
+
+    This is a pruned *evaluation* of :func:`reflected_bandlimited_upsample`, not
+    a different interpolant.  It preserves the literal ``[x, flip(x)]``
+    boundary condition and the half-weight split of the even-period Nyquist bin.
+    """
+    x = xpy.asarray(x)
+    factor = int(factor)
+    if factor == 1:
+        return x
+    n = int(x.shape[-1])
+    period = 2 * n
+    reflected = xpy.concatenate((x, xpy.flip(x, axis=-1)), axis=-1)
+    spectrum = _fft_rows(reflected, xpy=xpy)
+    dtype = np.dtype(spectrum.dtype)
+    cache_key = (period, factor, dtype.str)
+    if plan_cache is None:
+        plan_cache = {}
+    plan = plan_cache.get(cache_key)
+    if plan is None:
+        plan = _retained_fft_plan(period, factor, dtype, xpy=xpy)
+        plan_cache[cache_key] = plan
+
+    half = period // 2
+    # Consecutive signed-frequency coefficients k=-half,...,+half.  Splitting
+    # the Nyquist bin across the two endpoints is exactly what the full padded
+    # inverse FFT does in bandlimited_upsample for an even-length row.
+    coeff = xpy.empty(spectrum.shape[:-1] + (period + 1,), dtype=spectrum.dtype)
+    coeff[..., 0] = 0.5 * spectrum[..., half]
+    coeff[..., 1:half] = spectrum[..., half + 1:]
+    coeff[..., half] = spectrum[..., 0]
+    coeff[..., half + 1:period] = spectrum[..., 1:half]
+    coeff[..., period] = 0.5 * spectrum[..., half]
+
+    transformed = _fft_rows(
+        coeff * plan["input_chirp"], n=plan["n_fft"], xpy=xpy)
+    transformed *= plan["kernel_fft"]
+    convolved = _fft_rows(transformed, inverse=True, xpy=xpy)
+    retained = convolved[..., period:period + plan["n_out"]]
+    retained *= plan["post_chirp"]
+    if retained.shape[-1] != (n - 1) * factor + 1:
+        raise RuntimeError("retained-grid FFT returned an inconsistent shape")
+    return retained
+
+
+def _record_transform(report, key, n_rows, period, factor, plan=None):
+    report[key + "_batches"] += 1
+    report[key + "_rows"] += int(n_rows)
+    report["max_reflected_period"] = max(report["max_reflected_period"],
+                                         int(period))
+    report["max_dense_factor"] = max(report["max_dense_factor"], int(factor))
+    report["max_reference_full_fft_length"] = max(
+        report["max_reference_full_fft_length"], int(period) * int(factor))
+    if plan is not None:
+        report["max_retained_fft_length"] = max(
+            report["max_retained_fft_length"], int(plan["n_fft"]))
+        report["max_retained_grid_length"] = max(
+            report["max_retained_grid_length"], int(plan["n_out"]))
+
+
+def _new_transform_report():
+    return dict(
+        retained_fft_batches=0,
+        retained_fft_rows=0,
+        full_fft_selected_batches=0,
+        full_fft_selected_rows=0,
+        full_fft_selected_reasons={},
+        full_fft_fallback_batches=0,
+        full_fft_fallback_rows=0,
+        full_fft_fallback_reasons={},
+        warned_fallback_reasons=set(),
+        max_reflected_period=0,
+        max_dense_factor=1,
+        max_reference_full_fft_length=0,
+        max_retained_fft_length=0,
+        max_retained_grid_length=0,
+    )
+
+
+def _reflected_upsample_for_integration(x, factor, plan_cache,
+                                         transform_report, xpy=np):
+    """Use the retained-grid transform, visibly falling back to the reference.
+
+    An optimization failure is not a waveform or likelihood failure.  Any
+    unsupported input or transform exception therefore retries the established
+    full-padding implementation and records why.  The likelihood callback is
+    deliberately outside this function, so its failures are never mislabeled or
+    swallowed as FFT fallbacks.
+    """
+    period = 2 * int(x.shape[-1])
+    # Pocketfft measurements across all production npts found the retained
+    # convolution neutral-to-slower at factors 2 and 4; that small dense grid is
+    # not the bottleneck.  Preserve the cheaper reference algorithm there.  On
+    # CuPy the retained path won at every tested factor 2--64.
+    if xpy is np and int(factor) in (2, 4):
+        reason = "numpy factor %d is below the measured retained-FFT crossover" % factor
+        reasons = transform_report["full_fft_selected_reasons"]
+        reasons[reason] = reasons.get(reason, 0) + int(x.shape[0])
+        _record_transform(transform_report, "full_fft_selected", x.shape[0],
+                          period, factor)
+        return reflected_bandlimited_upsample(x, factor, xpy=xpy)
+    try:
+        out = _reflected_bandlimited_upsample_retained(
+            x, factor, plan_cache=plan_cache, xpy=xpy)
+        plan = next((value for (plan_period, plan_factor, _), value
+                     in plan_cache.items()
+                     if plan_period == period and plan_factor == int(factor)), None)
+        _record_transform(transform_report, "retained_fft", x.shape[0],
+                          period, factor, plan)
+        return out
+    except Exception as exc:
+        reason = "%s: %s" % (type(exc).__name__, str(exc))
+        reasons = transform_report["full_fft_fallback_reasons"]
+        reasons[reason] = reasons.get(reason, 0) + int(x.shape[0])
+        _record_transform(transform_report, "full_fft_fallback", x.shape[0],
+                          period, factor)
+        if reason not in transform_report["warned_fallback_reasons"]:
+            # Warning filters are allowed to promote RuntimeWarning to an
+            # exception.  Diagnostics must not turn a successful reference-path
+            # retry into a dropped likelihood point, so contain that policy here.
+            try:
+                warnings.warn(
+                    "retained-grid band-limited FFT unavailable ({}); using the "
+                    "established full-padding sinc reconstruction for these rows"
+                    .format(reason), RuntimeWarning, stacklevel=2)
+            except Exception:
+                pass
+            transform_report["warned_fallback_reasons"].add(reason)
+        return reflected_bandlimited_upsample(x, factor, xpy=xpy)
+
 _LAST_REPORT = {}
 
 
@@ -256,7 +511,16 @@ def last_report():
     Keys: ``upsample_factor`` (the largest used), ``factor_histogram``
     (factor -> row count, over the rows that were refined), ``n_refinements``,
     ``sigma_t_min``, ``n_rows``, ``n_wrap_exposed_rows``, ``n_unmeasurable_rows``,
-    ``n_flat_rows``, ``n_refined_rows``.
+    ``n_flat_rows``, ``n_refined_rows``, and retained-transform provenance.
+
+    ``bandlimited_fft_strategy`` says whether the production-only optimization
+    used the retained-grid ZoomFFT, intentionally selected the established full
+    transform below a measured CPU crossover, fell back to it after a transform
+    decline, used a mixture, or needed no dense transform.  The corresponding
+    ``*_batches`` and ``*_rows`` fields distinguish these cases; the reason maps
+    make a cost selection or declined optimization auditable without converting
+    either into a failed waveform point.  The reported reference, retained-grid,
+    and convolution lengths expose the padding mismatch for performance records.
 
     The diagnostic row counts are deliberately kept apart because they mean
     different things:
@@ -514,7 +778,7 @@ def bandlimited_upsample(x, factor, xpy=np):
         return x
     n = x.shape[-1]
     lead = x.shape[:-1]
-    X = xpy.fft.fft(x, axis=-1)
+    X = _fft_rows(x, xpy=xpy)
     Xup = xpy.zeros(lead + (n * factor,), dtype=xpy.asarray(X).dtype)
     n_pos = (n - 1) // 2                 # DC plus n_pos strictly-positive bins
     Xup[..., :n_pos + 1] = X[..., :n_pos + 1]
@@ -525,7 +789,7 @@ def bandlimited_upsample(x, factor, xpy=np):
         Xup[..., -n_pos:] = X[..., n // 2 + 1:]
     else:
         Xup[..., -n_pos:] = X[..., n_pos + 1:]
-    return xpy.fft.ifft(Xup, axis=-1) * factor
+    return _fft_rows(Xup, inverse=True, xpy=xpy) * factor
 
 
 def reflected_bandlimited_upsample(x, factor, xpy=np):
@@ -574,7 +838,13 @@ def peak_width_from_lnL(lnL_t, dx, xpy=np):
     if n < 3:
         raise ValueError("need at least 3 time samples to measure a peak width")
     jmax = xpy.argmax(xpy.where(xpy.isfinite(lnL_t), lnL_t, -np.inf), axis=-1)
-    take = lambda j: xpy.take_along_axis(lnL_t, j[..., None], axis=-1)[..., 0]
+    # numpy.take_along_axis was introduced in 1.15, while RIFT still declares a
+    # NumPy >=1.14 floor.  Flatten the leading axes and use ordinary advanced
+    # indexing, which has the same semantics on NumPy and CuPy at that floor.
+    lead_shape = jmax.shape
+    flat_lnL = lnL_t.reshape((-1, n))
+    row_index = xpy.arange(flat_lnL.shape[0])
+    take = lambda j: flat_lnL[row_index, j.reshape(-1)].reshape(lead_shape)
 
     sigma = xpy.full(jmax.shape, np.inf, dtype=np.float64)
     measurable = xpy.zeros(jmax.shape, dtype=bool)
@@ -627,6 +897,105 @@ def required_upsample_factors(sigma, dx, xpy=np):
     factor = xpy.where(factor > UPSAMPLE_FACTOR_MAX,
                        float(2 * UPSAMPLE_FACTOR_MAX), factor)
     return factor.astype(np.int64)
+
+
+def _default_simps(simps, xpy):
+    """The caller's Simpson rule, defaulting to scipy's ONLY on the numpy backend.
+
+    scipy's ``simpson`` raises ``TypeError: Implicit conversion to a NumPy array is
+    not allowed`` on a cupy array, and that default is exactly how every
+    ``--vectorized --gpu`` run of this option crashed.  Refuse rather than leave the
+    trap armed -- and note the two rules are not interchangeable even where both run
+    (the vendored GPU copy is an old scipy with ``even='avg'``), so a fallback row
+    must be integrated by the rule the caller's own likelihood uses.
+    """
+    if simps is not None:
+        return simps
+    if xpy is not np:
+        raise ValueError(
+            "time marginalization: `simps` must be supplied for a non-numpy backend "
+            "-- scipy's Simpson rule cannot consume a device array, and the fallback "
+            "rows must use the rule the caller's own likelihood uses (on GPU, "
+            "optimized_gpu_tools.simps).")
+    from scipy import integrate
+    return getattr(integrate, 'simpson', None) or integrate.simps
+
+
+def _require_time_independent_rho_sq(rho_sq, xpy=np, rule='band-limited'):
+    """Verify the load-bearing precondition rather than trusting the caller.
+
+    A time-dependent self-term (the banded / slow-rotation response) would make the
+    refined ``lnL`` wrong in a way no downstream check would catch.
+
+    Compare only where both sides are finite.  A NaN self-term is NORMAL: the
+    defensive proposal component deliberately draws physically-extreme points where
+    the likelihood is NaN, and the historical path just returns NaN for that row and
+    lets the sampler move on.  A bare ``==`` makes ``nan != nan`` trip this tripwire
+    and abort the whole ILE process, blaming a rotating-response path that is not
+    even in use.
+    """
+    rho_col = rho_sq[..., :1]
+    _cmp = xpy.isfinite(rho_sq) & xpy.isfinite(xpy.broadcast_to(rho_col, rho_sq.shape))
+    if not bool(xpy.all(xpy.where(_cmp, rho_sq == rho_col, True))):
+        raise NotImplementedError(
+            "%s time marginalization requires a time-independent rho_sq; the supplied "
+            "self-term varies with time (banded / rotating-response path)" % rule)
+    return rho_col
+
+
+def _classify_rows(lnL_coarse, deltaT, npts, xpy=np):
+    """Which rule each row gets.  THE SINGLE DEFINITION, shared with 'peak-local'.
+
+    Returns ``(sigma, jmax, measurable, has_peak, flat, exposed, unmeasurable,
+    factors)``.  A row is REFINED by the caller iff ``has_peak & (factors > 1)``.
+
+    It lives here, and is called rather than copied, because
+    :mod:`RIFT.likelihood.time_marginalization_peak_local` promises to change WHERE the
+    refined grid is placed and nothing about WHICH rows get one.  That promise was made
+    good by duplication and it did not survive: three clauses below -- reflection's
+    demotion of the edge guard, ``boundary_unresolved``, and the guard's Simpson routing
+    -- reached this module and not that one, and each showed up as peak-local silently
+    returning a lower-accuracy value than this function for the same row.  Duplicated
+    policy that MUST agree is policy that will eventually not.
+
+    The boundary diagnostic applies only to rows that HAVE a resolvable peak: a row whose
+    lnL(t) is constant -- an extrinsic sample in an antenna null, where kappa is
+    numerically zero -- has an argmax of 0 by convention and would otherwise be reported
+    as boundary-exposed.  That is harmless numerically (Simpson is exact on a constant)
+    but it makes the diagnostic lie: measured on a random-sky batch of 4000, it reported
+    810 "wrap-exposed" rows, which in a production log reads as a mis-centred window
+    rather than as 810 rows with no signal in them.
+
+    ``boundary_unresolved``: at the first/last sample the centred stencil is clipped
+    inward, so for a severely under-resolved endpoint peak it can see positive curvature
+    away from the maximum and label a strongly varying row "flat".  That would silently
+    retain Simpson for exactly the truncated-boundary case we intend to report and
+    reconstruct.  Such rows get a small seed factor; dense-grid remeasurement takes over
+    as soon as the reflected peak is measurable.
+
+    ``exposed`` REPORTS possible physical truncation and selects nothing.  Reflection
+    removes the endpoint value jump, so neither boundary proximity nor a tail threshold
+    may select a Simpson fallback: crossing an arbitrary threshold cannot silently change
+    likelihood quality, and raising on such a row can be read upstream as a waveform
+    failure and silently excise that configuration.
+    """
+    sigma, jmax, measurable = peak_width_from_lnL(lnL_coarse, deltaT, xpy=xpy)
+    guard = max(1, int(npts * EDGE_GUARD_FRACTION))
+    finite_lnL = xpy.isfinite(lnL_coarse)
+    row_max = xpy.max(xpy.where(finite_lnL, lnL_coarse, -np.inf), axis=-1)
+    row_min = xpy.min(xpy.where(finite_lnL, lnL_coarse, np.inf), axis=-1)
+    varies = xpy.isfinite(row_max) & xpy.isfinite(row_min) & (row_max > row_min)
+    boundary_unresolved = (measurable & (~xpy.isfinite(sigma)) & varies
+                           & ((jmax == 0) | (jmax == npts - 1)))
+    has_peak = measurable & (xpy.isfinite(sigma) | boundary_unresolved)
+    flat = measurable & (~xpy.isfinite(sigma)) & (~boundary_unresolved)
+    exposed = has_peak & ((jmax < guard) | (jmax > npts - 1 - guard))
+    # Counted unconditionally, NOT `& ~exposed`: an all -inf row also has an argmax of 0,
+    # so a conditional counter would hide it behind the edge guard.
+    unmeasurable = ~measurable
+    factors = xpy.maximum(required_upsample_factors(sigma, deltaT, xpy=xpy), 1)
+    factors = xpy.where(boundary_unresolved, xpy.maximum(factors, 4), factors)
+    return (sigma, jmax, measurable, has_peak, flat, exposed, unmeasurable, factors)
 
 
 def _safe_offset(off, xpy=np):
@@ -682,9 +1051,100 @@ def _log_trapz_over_window(lnL_dense, dx_dense, npts_coarse, factor, xpy=np):
     return off[..., 0] + xpy.log(xpy.sum(xpy.exp(v - off) * w, axis=-1))
 
 
+def draw_piecewise_linear_log_posterior(lnL_t, dx, t0=0.0,
+                                        uniforms=None, xpy=np):
+    """Draw one continuous time per row from a nodal log density.
+
+    Between adjacent nodes the *density* ``exp(lnL)`` is linear.  Its interval
+    mass is therefore exactly the trapezoid used by the refined quadrature.  We
+    first choose an interval by those masses, then invert the linear-density CDF
+    analytically inside it.  The result has no output lattice: ``dx`` describes
+    the representation's knots, not the support of the returned variate.
+
+    ``uniforms`` may be supplied as shape ``(n_rows, 2)``.  The first variate
+    selects the interval and the second selects the position inside it.  This is
+    both the reproducibility seam and the way CPU/GPU tests ask the two backends
+    exactly the same question.  If omitted, numpy's global generator is used,
+    preserving the driver's existing ``--seed`` contract.
+
+    Returns ``(times, lnL_at_times)`` in the input backend.  ``-inf`` nodes are
+    supported and carry zero density.  NaN/+inf nodes and rows with no positive
+    finite mass are rejected rather than assigned an invented timestamp.
+    """
+    values = xpy.asarray(lnL_t)
+    if values.ndim == 1:
+        values = values[xpy.newaxis, :]
+    if values.ndim != 2 or values.shape[-1] < 2:
+        raise ValueError("lnL_t must have shape (n_rows, n_time>=2)")
+    if not bool(xpy.all((~xpy.isnan(values)) & (~xpy.isposinf(values)))):
+        raise ValueError("continuous time posterior contains NaN or +inf")
+
+    n_rows, n_time = values.shape
+    if uniforms is None:
+        uniforms = np.random.random((n_rows, 2))
+    uniforms = xpy.asarray(uniforms, dtype=np.float64)
+    if uniforms.shape != (n_rows, 2):
+        raise ValueError("uniforms must have shape (n_rows, 2)")
+    if not bool(xpy.all((uniforms >= 0.0) & (uniforms < 1.0))):
+        raise ValueError("uniforms must lie in [0, 1)")
+
+    finite = xpy.isfinite(values)
+    off = xpy.max(xpy.where(finite, values, -np.inf), axis=-1)
+    if not bool(xpy.all(xpy.isfinite(off))):
+        raise ValueError("time posterior has no finite positive mass")
+    density = xpy.where(finite, xpy.exp(values - off[:, xpy.newaxis]), 0.0)
+    interval_mass = 0.5 * float(dx) * (density[:, :-1] + density[:, 1:])
+    total = xpy.sum(interval_mass, axis=-1)
+    if not bool(xpy.all(xpy.isfinite(total) & (total > 0.0))):
+        raise ValueError("time posterior has no finite positive mass")
+
+    cdf = xpy.cumsum(interval_mass, axis=-1) / total[:, xpy.newaxis]
+    # `uniforms < 1` guarantees an interval, but clip defensively against a
+    # backend whose final cumsum rounds a hair below one.
+    # `<=` skips a leading/embedded zero-mass plateau even when the supplied
+    # variate is exactly zero or exactly on a cumulative boundary.  `<` would
+    # select a zero-density interval at u=0 and return lnL=-inf for a posterior
+    # that has positive mass later in the window.
+    interval = xpy.sum(cdf <= uniforms[:, :1], axis=-1).astype(np.int64)
+    interval = xpy.minimum(interval, n_time - 2)
+    row = xpy.arange(n_rows)
+    a = density[row, interval]
+    b = density[row, interval + 1]
+    delta = b - a
+    # A pseudo-random float can (very rarely) be exactly zero.  On an interval
+    # whose left endpoint has zero density, the literal inverse-CDF endpoint
+    # would then return lnL=-inf and could be silently excised downstream.  Use
+    # the centre of the lowest float64 RNG bin for that one endpoint, matching
+    # the open-interval variate required by a continuous posterior draw.
+    r = xpy.maximum(uniforms[:, 1], 0.5 * np.finfo(float).eps)
+
+    # For density p(u)=a+(b-a)u on u in [0,1], inverse-CDF sampling gives
+    # p(u)^2 = a^2 + r*(b^2-a^2).  Use the uniform limit when the interval is
+    # numerically flat to avoid cancellation in (p-a)/(b-a).
+    scale = xpy.maximum(xpy.maximum(xpy.abs(a), xpy.abs(b)), 1.0)
+    flat = xpy.abs(delta) <= 16.0 * np.finfo(float).eps * scale
+    # Scale locally before squaring.  A selected far-tail interval can have
+    # representable endpoint densities whose squares underflow; the CDF inverse
+    # must not turn that positive interval into zero density.
+    local_scale = xpy.maximum(a, b)
+    a_scaled = a / local_scale
+    b_scaled = b / local_scale
+    endpoint_density = local_scale * xpy.sqrt(xpy.maximum(
+        0.0, a_scaled * a_scaled
+        + r * (b_scaled * b_scaled - a_scaled * a_scaled)))
+    frac = xpy.where(flat, r, (endpoint_density - a) /
+                     xpy.where(flat, 1.0, delta))
+    frac = xpy.clip(frac, 0.0, 1.0)
+    drawn_density = a + delta * frac
+    times = float(t0) + (interval.astype(np.float64) + frac) * float(dx)
+    lnL_draw = off + xpy.log(drawn_density)
+    return times, lnL_draw
+
+
 def time_marginalize_bandlimited(kappa, rho_sq, deltaT, loglikelihood,
                                  phase_marginalization=False, simps=None,
-                                 lnL_coarse=None, xpy=np):
+                                 lnL_coarse=None, return_time_draw=False,
+                                 draw_uniforms=None, t0=0.0, xpy=np):
     """``log \\int dt exp(lnL(t))`` with the time grid refined to the integrand.
 
     Parameters
@@ -710,24 +1170,24 @@ def time_marginalize_bandlimited(kappa, rho_sq, deltaT, loglikelihood,
         callback is a table interpolation over millions of points and is the
         difference between "no extra likelihood evaluations" being true and
         being nearly true.
+    return_time_draw : bool, optional
+        Also return one continuous conditional-posterior draw per row and its
+        instantaneous log likelihood.  Refined rows use the exact same validated
+        dense representation as the trapezoid integral.  Unrefined rows are
+        already resolved and are drawn continuously between their coarse knots.
+    draw_uniforms : array, optional
+        Shape ``(n_extrinsic, 2)`` uniforms for deterministic draws.  Omit to use
+        numpy's global RNG, matching the batch driver's ``--seed`` behavior.
+    t0 : float, optional
+        Time of the first coarse knot; returned draws are in this coordinate.
 
     Returns
     -------
     lnL : (n_extrinsic,) float
+        With ``return_time_draw=True``, returns
+        ``(lnL, time_draw, lnL_at_draw)``.
     """
-    if simps is None:
-        # Default ONLY for the numpy backend.  scipy's simpson raises
-        # `TypeError: Implicit conversion to a NumPy array is not allowed` on a
-        # cupy array, and that default is exactly how every --vectorized --gpu run
-        # of this option crashed.  Refuse rather than leave the trap armed.
-        if xpy is not np:
-            raise ValueError(
-                "time_marginalize_bandlimited: `simps` must be supplied for a "
-                "non-numpy backend -- scipy's Simpson rule cannot consume a device "
-                "array, and the fallback rows must use the rule the caller's own "
-                "likelihood uses (on GPU, optimized_gpu_tools.simps).")
-        from scipy import integrate
-        simps = getattr(integrate, 'simpson', None) or integrate.simps
+    simps = _default_simps(simps, xpy)
 
     kappa = xpy.asarray(kappa)
     rho_sq = xpy.asarray(rho_sq)
@@ -735,60 +1195,16 @@ def time_marginalize_bandlimited(kappa, rho_sq, deltaT, loglikelihood,
     n_rows = kappa.shape[0]
     deltaT = float(deltaT)
 
-    # rho_sq time-independence is the load-bearing precondition, so verify it
-    # rather than trusting the caller: a time-dependent self-term (the banded /
-    # slow-rotation response) would make the upsampled lnL wrong in a way no
-    # downstream check would catch.
+    _require_time_independent_rho_sq(rho_sq, xpy=xpy, rule='band-limited')
     rho_col = rho_sq[..., :1]
-    # Compare only where both sides are finite.  A NaN self-term is NORMAL: the
-    # defensive proposal component deliberately draws physically-extreme points
-    # where the likelihood is NaN, and the historical path just returns NaN for
-    # that row and lets the sampler move on.  A bare `==` makes `nan != nan` trip
-    # this tripwire and abort the whole ILE process, blaming a rotating-response
-    # path that is not even in use.
-    _cmp = xpy.isfinite(rho_sq) & xpy.isfinite(xpy.broadcast_to(rho_col, rho_sq.shape))
-    if not bool(xpy.all(xpy.where(_cmp, rho_sq == rho_col, True))):
-        raise NotImplementedError(
-            "band-limited time marginalization requires a time-independent rho_sq; "
-            "the supplied self-term varies with time (banded / rotating-response path)")
 
     _term = (lambda k: xpy.abs(k)) if phase_marginalization else (lambda k: k.real)
     if lnL_coarse is None:
         lnL_coarse = loglikelihood(_term(kappa), rho_sq)
 
-    sigma, jmax, measurable = peak_width_from_lnL(lnL_coarse, deltaT, xpy=xpy)
-
-    # Classify the rows.  The boundary diagnostic applies only to rows that HAVE a
-    # resolvable peak: a row whose lnL(t) is constant -- an extrinsic sample in an
-    # antenna null, where kappa is numerically zero -- has an argmax of 0 by
-    # convention and would otherwise be reported as boundary-exposed.  That is
-    # harmless numerically (Simpson is exact on a constant) but it makes the
-    # diagnostic lie: measured on a random-sky batch of 4000, it reported 810
-    # "wrap-exposed" rows (the compatibility report key), which in a production
-    # log reads as a mis-centred window rather than as 810 rows with no signal
-    # in them.
-    guard = max(1, int(npts * EDGE_GUARD_FRACTION))
-    finite_lnL = xpy.isfinite(lnL_coarse)
-    row_max = xpy.max(xpy.where(finite_lnL, lnL_coarse, -np.inf), axis=-1)
-    row_min = xpy.min(xpy.where(finite_lnL, lnL_coarse, np.inf), axis=-1)
-    varies = xpy.isfinite(row_max) & xpy.isfinite(row_min) & (row_max > row_min)
-    # At the first/last sample the centred stencil is clipped inward.  For a
-    # severely under-resolved endpoint peak it can then see positive curvature
-    # away from the maximum and label a strongly varying row "flat".  That would
-    # silently retain Simpson for exactly the truncated-boundary case we intend
-    # to report and reconstruct.  Give such rows a small seed factor; dense-grid
-    # remeasurement takes over as soon as the reflected peak is measurable.
-    boundary_unresolved = (measurable & (~xpy.isfinite(sigma)) & varies
-                           & ((jmax == 0) | (jmax == npts - 1)))
-    has_peak = measurable & (xpy.isfinite(sigma) | boundary_unresolved)
-    flat = measurable & (~xpy.isfinite(sigma)) & (~boundary_unresolved)
-    exposed = has_peak & ((jmax < guard) | (jmax > npts - 1 - guard))
-    # Counted unconditionally, NOT `& ~exposed`: an all -inf row also has an
-    # argmax of 0, so a conditional counter would hide it behind the edge guard.
-    unmeasurable = ~measurable
-
-    factors = xpy.maximum(required_upsample_factors(sigma, deltaT, xpy=xpy), 1)
-    factors = xpy.where(boundary_unresolved, xpy.maximum(factors, 4), factors)
+    # THE SINGLE DEFINITION, shared with 'peak-local' -- see _classify_rows.
+    (sigma, jmax, measurable, has_peak, flat, exposed, unmeasurable,
+     factors) = _classify_rows(lnL_coarse, deltaT, npts, xpy=xpy)
 
     # A row is REFINED only if it has a trustworthy peak AND the derivation
     # actually asks for a finer grid.  Reflection removes the endpoint value
@@ -807,11 +1223,41 @@ def time_marginalize_bandlimited(kappa, rho_sq, deltaT, loglikelihood,
     # auditable claim.)
     refined = has_peak & (factors > 1)
 
-    out = _log_simps_rows(lnL_coarse, deltaT, simps, xpy=xpy)
+    # Do not pay for the historical coarse-grid integral on rows that we already
+    # know will be overwritten by the dense reconstruction below.  In ordinary
+    # AV ILE the coarse likelihood has already been evaluated for classification;
+    # the old unconditional call added another exp/reduction over every
+    # extrinsic×time point even when every row required refinement.  Allocate the
+    # result once and run Simpson only on the rows for which it is the answer.
+    out = xpy.empty((n_rows,), dtype=xpy.asarray(lnL_coarse).dtype)
+    unrefined = ~refined
+    if bool(xpy.any(unrefined)):
+        idx_unrefined = xpy.where(unrefined)[0]
+        out[idx_unrefined] = _log_simps_rows(
+            lnL_coarse[idx_unrefined], deltaT, simps, xpy=xpy)
+    time_draw = None
+    lnL_at_draw = None
+    if return_time_draw:
+        if draw_uniforms is None:
+            draw_uniforms = np.random.random((n_rows, 2))
+        draw_uniforms = xpy.asarray(draw_uniforms, dtype=np.float64)
+        if draw_uniforms.shape != (n_rows, 2):
+            raise ValueError("draw_uniforms must have shape (n_rows, 2)")
+        # Seed every row from the already-resolved coarse representation.  Rows
+        # refined below are overwritten with draws from their final validated
+        # dense representation; flat/already-resolved rows remain continuous
+        # rather than being snapped back to a coarse knot.
+        time_draw, lnL_at_draw = draw_piecewise_linear_log_posterior(
+            lnL_coarse, deltaT, t0=t0, uniforms=draw_uniforms, xpy=xpy)
 
     hist = {}
     n_refine_total = 0
     sigma_seen = np.inf
+    # Reuse chirps across every batch at a given factor, but only for this
+    # marginalization call.  In particular, do not pin successively larger GPU
+    # plans in a process-global cache after a high-SNR cell has finished.
+    retained_plan_cache = {}
+    transform_report = _new_transform_report()
     for f in xpy.unique(xpy.where(refined, factors, 1)):
         f = int(f)
         if f == 1:
@@ -821,12 +1267,35 @@ def time_marginalize_bandlimited(kappa, rho_sq, deltaT, loglikelihood,
         if not n_sel:
             continue
         idx = xpy.where(sel)[0]
-        vals, f_used, n_ref, s_min = _integrate_group(
-            kappa[idx], rho_col[idx], npts, deltaT, f, loglikelihood, _term, xpy=xpy)
+        vals, group_hist, n_ref, s_min, drawn_t, drawn_lnL = _integrate_group(
+            kappa[idx], rho_col[idx], npts, deltaT, f, loglikelihood, _term,
+            draw_uniforms_rows=(draw_uniforms[idx] if return_time_draw else None),
+            t0=t0, retained_plan_cache=retained_plan_cache,
+            transform_report=transform_report, xpy=xpy)
         out[idx] = vals
-        hist[int(f_used)] = hist.get(int(f_used), 0) + n_sel
+        if return_time_draw:
+            time_draw[idx] = drawn_t
+            lnL_at_draw[idx] = drawn_lnL
+        for f_used, n_used in group_hist.items():
+            hist[int(f_used)] = hist.get(int(f_used), 0) + int(n_used)
         n_refine_total += n_ref
         sigma_seen = min(sigma_seen, s_min)
+
+    strategies = []
+    if transform_report["retained_fft_batches"]:
+        strategies.append("retained-grid-zoomfft")
+    if transform_report["full_fft_selected_batches"]:
+        strategies.append("full-padding-selected")
+    if transform_report["full_fft_fallback_batches"]:
+        strategies.append("full-padding-fallback")
+    transform_strategy = (strategies[0] if len(strategies) == 1 else
+                          ("mixed:" + ",".join(strategies) if strategies
+                           else "not-used"))
+    transform_report.pop("warned_fallback_reasons")
+    transform_report.update(
+        bandlimited_fft_strategy=transform_strategy,
+        n_retained_fft_plans=len(retained_plan_cache),
+    )
 
     _LAST_REPORT.clear()
     _LAST_REPORT.update(
@@ -839,19 +1308,38 @@ def time_marginalize_bandlimited(kappa, rho_sq, deltaT, loglikelihood,
         n_unmeasurable_rows=int(xpy.sum(unmeasurable)),
         n_flat_rows=int(xpy.sum(flat)),
         n_refined_rows=int(xpy.sum(refined)),
+        cpu_fft_workers=(_cpu_fft_workers() if xpy is np else None),
+        **transform_report
     )
+    if return_time_draw:
+        return out, time_draw, lnL_at_draw
     return out
 
 
 def _integrate_group(kappa_rows, rho_col_rows, npts, deltaT, factor,
-                     loglikelihood, _term, xpy=np):
+                     loglikelihood, _term, draw_uniforms_rows=None, t0=0.0,
+                     retained_plan_cache=None, transform_report=None, xpy=np):
     """Refine and integrate one group of rows that share a derived factor.
 
-    Returns ``(values, factor_used, n_refinements, sigma_dense_min)``.
+    Returns ``(values, factor_histogram, n_refinements, sigma_dense_min,
+    time_draws, lnL_at_draws)``.  The final two entries are ``None`` unless
+    ``draw_uniforms_rows`` is supplied.
     """
     n_rows = kappa_rows.shape[0]
+    if retained_plan_cache is None:
+        retained_plan_cache = {}
+    if transform_report is None:
+        transform_report = _new_transform_report()
     n_refine = 0
-    while True:
+    remaining = xpy.arange(n_rows)
+    values = xpy.empty((n_rows,), dtype=np.float64)
+    time_values = (xpy.empty((n_rows,), dtype=np.float64)
+                   if draw_uniforms_rows is not None else None)
+    draw_lnL_values = (xpy.empty((n_rows,), dtype=np.float64)
+                       if draw_uniforms_rows is not None else None)
+    factor_hist = {}
+    sigma_seen = np.inf
+    while int(remaining.size):
         if factor > UPSAMPLE_FACTOR_MAX:
             raise RuntimeError(
                 "band-limited time marginalization needs an upsampling factor above "
@@ -865,28 +1353,58 @@ def _integrate_group(kappa_rows, rho_col_rows, npts, deltaT, factor,
         # The FFT period is 2*n after reflection; budget for it and the forward
         # kappa/rho/lnL temporaries.
         per_row = npts * factor * 16 * 8
-        chunk = max(1, min(n_rows, int(_DENSE_CHUNK_BYTES // max(per_row, 1))))
+        n_remaining = int(remaining.size)
+        chunk = max(1, min(n_remaining, int(_DENSE_CHUNK_BYTES // max(per_row, 1))))
 
         pieces = []
-        sigma_dense_min = np.inf
-        for start in range(0, n_rows, chunk):
-            k_up = reflected_bandlimited_upsample(
-                kappa_rows[start:start + chunk], factor, xpy=xpy)
-            rho_up = xpy.broadcast_to(rho_col_rows[start:start + chunk], k_up.shape)
+        draw_time_pieces = []
+        draw_lnL_pieces = []
+        sigma_pieces = []
+        for start in range(0, n_remaining, chunk):
+            take = remaining[start:start + chunk]
+            k_up = _reflected_upsample_for_integration(
+                kappa_rows[take], factor, retained_plan_cache,
+                transform_report, xpy=xpy)
+            rho_up = xpy.broadcast_to(rho_col_rows[take], k_up.shape)
             lnL_up = loglikelihood(_term(k_up), rho_up)
             s_d, _, meas = peak_width_from_lnL(lnL_up, dx_dense, xpy=xpy)
             s_d = xpy.where(meas, s_d, np.inf)
-            sigma_dense_min = min(sigma_dense_min, float(xpy.min(s_d)))
+            sigma_pieces.append(s_d)
             pieces.append(_log_trapz_over_window(lnL_up, dx_dense, npts, factor, xpy=xpy))
+            if draw_uniforms_rows is not None:
+                drawn_t, drawn_lnL = draw_piecewise_linear_log_posterior(
+                    lnL_up, dx_dense, t0=t0,
+                    uniforms=draw_uniforms_rows[take], xpy=xpy)
+                draw_time_pieces.append(drawn_t)
+                draw_lnL_pieces.append(drawn_lnL)
 
         # The assertion that turns the derivation into a guarantee: the width
         # remeasured on the grid we actually integrated on must still satisfy the
         # criterion.  A coarse-grid estimate can be optimistic when the peak is
         # strongly non-Gaussian; this catches that and pays for another doubling
         # instead of reporting a number it cannot defend.
-        if (not np.isfinite(sigma_dense_min)) or dx_dense <= sigma_dense_min / UPSAMPLE_SAFETY:
-            return (xpy.concatenate(pieces) if len(pieces) > 1 else pieces[0],
-                    factor, n_refine, sigma_dense_min)
-
+        current_values = xpy.concatenate(pieces) if len(pieces) > 1 else pieces[0]
+        current_sigma = (xpy.concatenate(sigma_pieces)
+                         if len(sigma_pieces) > 1 else sigma_pieces[0])
+        finite_sigma = xpy.isfinite(current_sigma)
+        if bool(xpy.any(finite_sigma)):
+            sigma_seen = min(sigma_seen, float(xpy.min(current_sigma[finite_sigma])))
+        resolved = (~finite_sigma) | (dx_dense <= current_sigma / UPSAMPLE_SAFETY)
+        accepted = remaining[resolved]
+        values[accepted] = current_values[resolved]
+        n_accepted = int(xpy.sum(resolved))
+        if n_accepted:
+            factor_hist[int(factor)] = factor_hist.get(int(factor), 0) + n_accepted
+        if draw_uniforms_rows is not None:
+            current_t = (xpy.concatenate(draw_time_pieces) if len(draw_time_pieces) > 1
+                         else draw_time_pieces[0])
+            current_draw_lnL = (xpy.concatenate(draw_lnL_pieces)
+                                if len(draw_lnL_pieces) > 1 else draw_lnL_pieces[0])
+            time_values[accepted] = current_t[resolved]
+            draw_lnL_values[accepted] = current_draw_lnL[resolved]
+        remaining = remaining[~resolved]
+        if not int(remaining.size):
+            return (values, factor_hist, n_refine, sigma_seen,
+                    time_values, draw_lnL_values)
         factor *= 2
         n_refine += 1
