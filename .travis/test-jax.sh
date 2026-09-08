@@ -886,7 +886,9 @@ fi
 # fails the OUTCOME check), so +19 over the merged base.  Its own side carried
 # 596 against a base of 577; rift_O4d reached 628 meanwhile.  Re-measured by
 # running this script on the MERGED tree, ldas-grid, ~/.cache/jaxci_venv,
-# DESELECT loop applied, read off its own collection line: MEASURED-LINE
+# DESELECT loop applied, read off its own collection line:
+#   "647/653 tests collected (6 deselected)", gate-style count 647 from 39 files
+#   (the new file alone: "19/20 tests collected (1 deselected)").
 EXPECTED_TESTS=647
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
