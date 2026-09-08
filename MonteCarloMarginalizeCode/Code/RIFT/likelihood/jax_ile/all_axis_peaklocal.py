@@ -127,6 +127,11 @@ class AllAxisModePlan(NamedTuple):
     boxes_disjoint: jax.Array
     discovery_capacity_ok: jax.Array
     boundary_maximum_pinned: jax.Array
+    # The INTEGRITY half of discovery_capacity_ok: a nonnegative norm and a
+    # certified time cover.  Separated so a caller can tell "this plan cannot
+    # be trusted" from "this plan was truncated to its capacity", which the
+    # conjunction cannot express and which decide differently.
+    discovery_integrity_ok: jax.Array
 
 
 class UVHarmonicSummary(NamedTuple):
@@ -1293,7 +1298,8 @@ def make_all_axis_mode_plan(centers, *, max_modes, local_transforms,
                             time_cover_min_sample=np.nan,
                             time_cover_max_sample=np.nan,
                             discovery_capacity_ok=True,
-                            boundary_maximum_pinned=False):
+                            boundary_maximum_pinned=False,
+                            discovery_integrity_ok=True):
     """Pad a host mode set and freeze its independent acceptance warrants."""
     centers = np.asarray(centers, dtype=float)
     if centers.ndim != 2 or centers.shape[1] != 4:
@@ -1358,7 +1364,8 @@ def make_all_axis_mode_plan(centers, *, max_modes, local_transforms,
         jnp.asarray(float(time_cover_max_sample)),
         jnp.asarray(disjoint),
         jnp.asarray(bool(discovery_capacity_ok)),
-        jnp.asarray(bool(boundary_maximum_pinned)))
+        jnp.asarray(bool(boundary_maximum_pinned)),
+        jnp.asarray(bool(discovery_integrity_ok)))
 
 
 def _boxes_disjoint_device(centers, half_widths, live):
@@ -1523,7 +1530,8 @@ def _assemble_all_axis_mode_plan_device(
         start_plan.time_cover_max_sample,
         disjoint,
         discovery_capacity_ok,
-        boundary_maximum_pinned)
+        boundary_maximum_pinned,
+        start_plan.norm_nonnegative & start_plan.time_cover_certified)
     ledger = {
         "boundary_maximum_pinned": boundary_maximum_pinned,
         "n_boundary_pinned_starts": jnp.count_nonzero(pinned),
@@ -1996,6 +2004,7 @@ def empirical_enrichment_marginalize(
         time_guard_tol_nats=1.0e-3, log_normalization=0.0,
         time_outside_tol_nats=-23.0,
         total_value_error_budget_nats=1.0e-3,
+        accept_truncated_plans=False,
         node_concentration=1.0,
         mode_match_tol=(0.25, 1.0e-4, 1.0e-4, 1.0e-5),
         geometry_match_rtol=1.0e-3, geometry_match_atol=1.0e-8):
@@ -2073,6 +2082,24 @@ def empirical_enrichment_marginalize(
     finite = values_finite | (~has_modes)
     capacity_ok = (base_plan.discovery_capacity_ok
                    & enriched_plan.discovery_capacity_ok)
+    # discovery_capacity_ok ANDs four things (see the device plan at :862).
+    # Two are INTEGRITY -- a nonnegative norm and a certified time cover --
+    # and mean the plan cannot be trusted.  Two are TRUNCATION: more start
+    # candidates than max_starts, or more live time nodes than the time
+    # capacity.  Both truncation sites ALREADY keep the best entries
+    # (`orbit[:max_starts]` and `lax.top_k(node_priority, time_capacity)`) and
+    # then decline the row for having had more than would fit.
+    #
+    # With accept_truncated_plans the row proceeds on the kept subset, and the
+    # ordinary accuracy diagnostics -- convergence, quadrature, geometry, the
+    # error budget -- decide whether its value is good enough.  A truncated
+    # plan that cannot meet the budget still declines, on the accuracy term
+    # that actually failed rather than on a count.  Integrity failures still
+    # decline either way.
+    plan_integrity_ok = (base_plan.discovery_integrity_ok
+                         & enriched_plan.discovery_integrity_ok)
+    plan_truncated = (~capacity_ok) & plan_integrity_ok
+    capacity_gate = plan_integrity_ok if accept_truncated_plans else capacity_ok
     boundary_ok = ~(base_plan.boundary_maximum_pinned
                     | enriched_plan.boundary_maximum_pinned)
     time_ok = (base["time_reconstruction_warranted"]
@@ -2162,37 +2189,37 @@ def empirical_enrichment_marginalize(
            <= float(total_value_error_budget_nats)))
 
     decline_nonfinite = ~finite
-    decline_capacity = finite & (~capacity_ok)
-    decline_no_modes = finite & capacity_ok & (~has_modes)
-    decline_boundary_maximum = (finite & capacity_ok & has_modes
+    decline_capacity = finite & (~capacity_gate)
+    decline_no_modes = finite & capacity_gate & (~has_modes)
+    decline_boundary_maximum = (finite & capacity_gate & has_modes
                                 & (~boundary_ok))
-    decline_mode_nesting = (finite & capacity_ok & has_modes & boundary_ok
+    decline_mode_nesting = (finite & capacity_gate & has_modes & boundary_ok
                             & (~mode_nesting_ok))
-    decline_time = (finite & capacity_ok & has_modes & boundary_ok
+    decline_time = (finite & capacity_gate & has_modes & boundary_ok
                     & mode_nesting_ok & (~time_ok))
     decline_time_cover = (
-        finite & capacity_ok & has_modes & boundary_ok & mode_nesting_ok
+        finite & capacity_gate & has_modes & boundary_ok & mode_nesting_ok
         & time_ok & (~time_cover_pair))
     decline_time_omitted_bound = (
-        finite & capacity_ok & has_modes & boundary_ok & mode_nesting_ok
+        finite & capacity_gate & has_modes & boundary_ok & mode_nesting_ok
         & time_ok & time_cover_pair & (~time_tail_bounds_ok))
     # Umbrella science diagnostic retained for callers that need only the
     # broad reason.  The two exclusive fields above own reconciliation.
     decline_time_omitted = decline_time_cover | decline_time_omitted_bound
-    decline_geometry = (finite & capacity_ok & has_modes & boundary_ok
+    decline_geometry = (finite & capacity_gate & has_modes & boundary_ok
                         & mode_nesting_ok & time_ok & time_omitted_ok
                         & (~geometry_ok))
-    decline_quadrature = (finite & capacity_ok & has_modes & boundary_ok
+    decline_quadrature = (finite & capacity_gate & has_modes & boundary_ok
                           & mode_nesting_ok & time_ok & time_omitted_ok
                           & geometry_ok & (~quadrature_ok))
-    decline_enrichment = (finite & capacity_ok & has_modes & boundary_ok
+    decline_enrichment = (finite & capacity_gate & has_modes & boundary_ok
                           & mode_nesting_ok & time_ok & time_omitted_ok
                           & geometry_ok & quadrature_ok & (~converged))
     decline_error_budget = (
-        finite & capacity_ok & has_modes & boundary_ok & mode_nesting_ok
+        finite & capacity_gate & has_modes & boundary_ok & mode_nesting_ok
         & time_ok & time_omitted_ok & geometry_ok & quadrature_ok & converged
         & (~error_budget_ok))
-    accepted = (finite & capacity_ok & has_modes & boundary_ok
+    accepted = (finite & capacity_gate & has_modes & boundary_ok
                 & mode_nesting_ok & time_ok & time_omitted_ok & geometry_ok
                 & quadrature_ok & converged & error_budget_ok)
     accepted_value_uses_base_geometry = accepted & (~enriched_geometry_ok)
@@ -2260,6 +2287,8 @@ def empirical_enrichment_marginalize(
         "error_score_base_omitted_time_nats": base_time_tail_correction,
         "error_score_enriched_omitted_time_nats":
             enriched_time_tail_correction,
+        "plan_truncated": plan_truncated,
+        "plan_integrity_ok": plan_integrity_ok,
         "base_capacity_ok": base_plan.discovery_capacity_ok,
         "enriched_capacity_ok": enriched_plan.discovery_capacity_ok,
         "base_n_modes": base["n_modes"],
@@ -2299,7 +2328,7 @@ def empirical_enrichment_with_exact_reserve(
         C_A_t, C_B, base_plan, enriched_plan, x_min, x_max, *,
         reserve_x_grid, reserve_log_weights, time_weights,
         reserve_amp_sizing, reserve_m_max=None,
-        reserve_dense_chunk=8, reserve_grid_block=32,
+        reserve_dense_chunk=8, reserve_grid_block=32, accept_truncated_plans=False,
         reserve_time_nodes=None, reserve_time_resolution_warranted=False,
         reserve_time_check_value=np.nan,
         reserve_time_check_nodes=None, reserve_time_check_weights=None,
@@ -2438,6 +2467,7 @@ def empirical_enrichment_with_exact_reserve(
         time_guard_tol_nats=float(time_guard_tol_nats),
         time_outside_tol_nats=float(time_outside_tol_nats),
         total_value_error_budget_nats=float(total_value_error_budget_nats),
+        accept_truncated_plans=bool(accept_truncated_plans),
         log_normalization=float(local_log_normalization),
         node_concentration=float(node_concentration),
         mode_match_tol=mode_match_tol)
@@ -2750,7 +2780,7 @@ def empirical_enrichment_with_exact_reserve_sequential_batch(
         C_A_t, C_B, base_plans, enriched_plans, x_min, x_max, *,
         reserve_x_grid, reserve_log_weights, time_weights,
         reserve_amp_sizing, reserve_m_max=None,
-        reserve_dense_chunk=8, reserve_grid_block=32,
+        reserve_dense_chunk=8, reserve_grid_block=32, accept_truncated_plans=False,
         reserve_time_nodes=None, reserve_time_resolution_warranted=False,
         reserve_time_check_value=np.nan,
         reserve_time_check_nodes=None, reserve_time_check_weights=None,

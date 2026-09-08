@@ -151,6 +151,15 @@ class PolicyConfig(NamedTuple):
     # there is no occupancy for a batch to recover.  The row loop was not the
     # reason the Section VI.A sampler cells stall; the per-row reserve is.
     # See DESIGN_direct_marginalization_policy.md.
+    # Both plan-sizing gates already keep the best entries and then decline
+    # the row for having had more than would fit.  With this set, a truncated
+    # plan proceeds and the accuracy diagnostics decide; a plan that fails on
+    # integrity (nonnegative norm, certified time cover) still declines.
+    # Measured at rho 652 on full-sky prior draws: the time-node capacity
+    # declines 36 of 43 capacity-declined rows and the start cap 37, while
+    # only 7 are count-limited alone, so the two gates together are what send
+    # prior-drawn rows to the exact reserve.
+    accept_truncated_plans: bool = False
     reserve_batch_rows: int = 1
     norm_invariance_rtol: float = 1.0e-10
 
@@ -560,6 +569,7 @@ def fused_log_likelihood_four_axis_policy(
             enriched_check_order=int(config.enriched_check_order),
             convergence_tol_nats=float(config.convergence_tol_nats),
             time_guard=guard,
+            accept_truncated_plans=bool(config.accept_truncated_plans),
             time_guard_tol_nats=float(config.time_guard_tol_nats),
             local_log_normalization=float(local_log_normalization),
             time_outside_tol_nats=float(config.time_outside_tol_nats),

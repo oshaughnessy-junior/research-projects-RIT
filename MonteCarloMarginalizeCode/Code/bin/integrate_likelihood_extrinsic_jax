@@ -352,7 +352,8 @@ def check_critical_and_report(opts, optp):
                      "--direct-marginalization-reserve-time-refine",
                      "--direct-marginalization-reserve-time-refine-max",
                      "--direct-marginalization-error-budget-nats",
-                     "--direct-marginalization-batch-rows")
+                     "--direct-marginalization-batch-rows",
+                     "--direct-marginalization-accept-truncated-plans")
     if _policy != "off":
         if getattr(opts, "mode", None) != "flowmc-phipsimarg":
             fatal.append("--direct-marginalization-policy %s applies only to "
@@ -865,6 +866,23 @@ def build_parser():
                  help="Shared empirical value-error allowance, in nats, for the "
                       "policy's local acceptance and reserve warrant (default "
                       "1e-3).")
+    g.add_option("--direct-marginalization-accept-truncated-plans",
+                 action="store_true", default=False,
+                 help="Let the local path proceed when a plan was truncated "
+                      "instead of declining to the exact reserve.  Both sizing "
+                      "gates already keep the best entries and then refuse the "
+                      "row for having had more than would fit: the start "
+                      "portfolio keeps orbit[:max_starts], and the time cover "
+                      "keeps top_k(node_priority, time_capacity).  With this "
+                      "flag the row proceeds on the kept subset and the "
+                      "accuracy diagnostics decide; a truncated plan that "
+                      "cannot meet --direct-marginalization-error-budget-nats "
+                      "still declines, on the term that actually failed.  A "
+                      "plan that fails integrity (nonnegative norm, certified "
+                      "time cover) declines either way.  NOT value-neutral: it "
+                      "changes which rows take the local branch, so a run with "
+                      "it set is not comparable to one without.  The ledger "
+                      "reports plan_truncated per row.")
     g.add_option("--direct-marginalization-batch-rows", type=int, default=1,
                  help="Rows the policy's controller executes together under "
                       "one vmap (default 1: row at a time; 0: one full batch). "
@@ -2340,7 +2358,9 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
                 total_value_error_budget_nats=float(
                     opts.direct_marginalization_error_budget_nats),
                 reserve_batch_rows=int(
-                    opts.direct_marginalization_batch_rows))
+                    opts.direct_marginalization_batch_rows),
+                accept_truncated_plans=bool(
+                    opts.direct_marginalization_accept_truncated_plans))
         try:
             like = JAXDistPhiPsiMargLikelihood(
                 like_data, d_lo, d_hi, nphi=nphi, npsi=npsi,
