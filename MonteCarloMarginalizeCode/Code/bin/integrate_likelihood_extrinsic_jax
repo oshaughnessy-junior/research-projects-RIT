@@ -66,6 +66,22 @@ import numpy as np
 import jax
 jax.config.update("jax_enable_x64", True)
 
+# Configure the persistent cache before importing modules that construct ILE
+# JITs.  RIFT selects a compatibility-keyed child directory, so a shared cache
+# root is safe across heterogeneous GPU/JAX installations.
+from RIFT.jax_cache import (argv_option, configure_persistent_cache,
+                            import_bundle, runtime_compatibility)
+_JAX_CACHE_DIR = configure_persistent_cache(jax, sys.argv[1:])
+_JAX_CACHE_BUNDLE = (argv_option(sys.argv[1:], "--jax-cache-bundle")
+                     or os.environ.get("RIFT_JAX_CACHE_BUNDLE"))
+_JAX_CACHE_PROFILE = argv_option(sys.argv[1:], "--jax-cache-profile")
+if _JAX_CACHE_BUNDLE:
+    if _JAX_CACHE_DIR is None:
+        raise RuntimeError("a cache bundle was requested but no writable JAX cache is available")
+    import_bundle(_JAX_CACHE_BUNDLE, _JAX_CACHE_DIR.parent,
+                  runtime_compatibility(jax), _JAX_CACHE_PROFILE,
+                  destination=_JAX_CACHE_DIR)
+
 import lal
 import lalsimulation as lalsim
 
@@ -170,6 +186,7 @@ _ILE_BOOL_OPTS = {
     "--internal-reparam-dl-incl", "--internal-use-lnL",
     "--distance-slice-all-fresh",
     "--distance-slice-randomize",
+    "--psi-marginalization",
 }
 # ILE options taking repeated values (action=append).
 _ILE_APPEND_OPTS = {
@@ -243,7 +260,7 @@ _ILE_ALL_OPTS = {
     "--portfolio-revive-period", "--portfolio-varaha-can-freeze",
     "--portfolio-varaha-max-frac", "--portfolio-varaha-min-frac",
     "--portfolio-varaha-never-freeze", "--portfolio-weight-clip", "--psd-file",
-    "--psd-window-shape", "--random-event", "--reference-freq",
+    "--psd-window-shape", "--psi-marginalization", "--random-event", "--reference-freq",
     "--resample-time-marginalization", "--restricted-mode-list-file",
     "--rom-group", "--rom-integrate-intrinsic", "--rom-limit-basis-size-to",
     "--reject-collapsed-live-volume", "--rom-param", "--rom-use-basis",
@@ -320,6 +337,11 @@ def check_critical_and_report(opts, optp):
         fatal.append("--zero-likelihood is not implemented")
     if is_set("--maximize-only"):
         fatal.append("--maximize-only is not implemented (this driver integrates)")
+    if is_set("--psi-marginalization"):
+        fatal.append("--psi-marginalization (analytic polarization-angle "
+                     "marginalization) is not implemented for psi-sampling modes "
+                     "on this driver; use --mode flowmc-phipsimarg or "
+                     "flowmc-dpsimarg, which marginalize psi by construction")
     # Cross-axis policy scope, at parse time (external review of #278, P1):
     # only --mode flowmc-phipsimarg reads the policy, so a request anywhere
     # else would otherwise complete on the ordinary likelihood, and the
@@ -329,7 +351,8 @@ def check_critical_and_report(opts, optp):
     _policy_knobs = ("--direct-marginalization-time-guard",
                      "--direct-marginalization-reserve-time-refine",
                      "--direct-marginalization-reserve-time-refine-max",
-                     "--direct-marginalization-error-budget-nats")
+                     "--direct-marginalization-error-budget-nats",
+                     "--direct-marginalization-batch-rows")
     if _policy != "off":
         if getattr(opts, "mode", None) != "flowmc-phipsimarg":
             fatal.append("--direct-marginalization-policy %s applies only to "
@@ -365,6 +388,10 @@ def check_critical_and_report(opts, optp):
                          "measure from the volumetric distance prior; "
                          "--d-prior %s is not supported by the composite"
                          % (_policy, _dp))
+        _br = int(getattr(opts, "direct_marginalization_batch_rows", 1))
+        if _br < 0:
+            fatal.append("--direct-marginalization-batch-rows must be >= 0 "
+                         "(1 = row at a time, 0 = one full batch)")
     else:
         for _k in _policy_knobs:
             if was_supplied(opts, _k):
@@ -527,6 +554,20 @@ def _jax_core_dist_tol_default():
 
 def build_parser():
     optp = OptionParser(usage="%prog [options]", description=__doc__)
+
+    g = OptionGroup(optp, "JAX compilation cache")
+    g.add_option("--jax-cache-dir", default=None,
+                 help="Persistent cache root. RIFT adds a JAX/JAXLIB/backend/"
+                      "GPU compatibility namespace (default: $RIFT_JAX_CACHE_ROOT "
+                      "or $XDG_CACHE_HOME/rift/jax).")
+    g.add_option("--no-jax-persistent-cache", action="store_true", default=False,
+                 help="Disable cross-process JAX compilation caching for this run.")
+    g.add_option("--jax-cache-bundle", default=None,
+                 help="Validate and import a warmed rift_jax_cache bundle before "
+                      "constructing any ILE JIT (also $RIFT_JAX_CACHE_BUNDLE).")
+    g.add_option("--jax-cache-profile", default=None,
+                 help="Require --jax-cache-bundle to declare this warmup profile.")
+    optp.add_option_group(g)
 
     g = OptionGroup(optp, "Data input (frame mode)")
     g.add_option("--cache-file", default=None)
@@ -814,12 +855,37 @@ def build_parser():
                       "refinement per evaluated row on a 614-sample window "
                       "(measured, rho 163), and lax.cond reserves memory for the "
                       "largest tier whether or not it runs; 32 asked for 85 GiB. "
-                      "Lower it on small cards; the value path is unaffected.")
+                      "LOWERING IT IS NOT FREE.  It does not change any value "
+                      "that gets computed, but it changes which rows get a "
+                      "value at all: a declined row gets one reserve attempt "
+                      "per tier, and a row still unwarranted at the ceiling "
+                      "returns nan, which this driver refuses to publish.  "
+                      "Measured on full-sky prior draws at rho 163, refine-max "
+                      "4 left 6 of 8 rows nan and the run could not complete; "
+                      "at the default 32 the same rows escalated and all were "
+                      "usable.  So on a small card the run fails rather than "
+                      "returning a slightly worse number.  Lower it only with "
+                      "the nan count in the ledger in front of you.")
     g.add_option("--direct-marginalization-error-budget-nats", type=float,
                  default=1.0e-3,
                  help="Shared empirical value-error allowance, in nats, for the "
                       "policy's local acceptance and reserve warrant (default "
                       "1e-3).")
+    g.add_option("--direct-marginalization-batch-rows", type=int, default=1,
+                 help="Rows the policy's controller executes together under "
+                      "one vmap (default 1: row at a time; 0: one full batch). "
+                      "COST ONLY -- values, branch decisions and gradients are "
+                      "identical at every size, which is pinned by a test.  "
+                      "MEASURED NOT TO PAY: on the ladder-2 tables at rho 40.8 "
+                      "on an idle RTX PRO 4000 Blackwell, 96.3 s per row at 1 "
+                      "and 99.9 s per row at 8, for 4x the device workspace.  "
+                      "One row already saturates the card.  Above 1 the "
+                      "tier-escalation branch also becomes a select that "
+                      "evaluates every reserve tier for every row, and "
+                      "workspace grows as 0.046 + 0.385 B GiB, so a 24 GiB "
+                      "card holds 32 rows and not 64.  Raise it only with a "
+                      "measurement that says it helps; see "
+                      "DESIGN_direct_marginalization_policy.md.")
     # flowMC tuning (modes flowmc / flowmc-phimarg).  Defaults match
     # samplers.flowmc_sample*; exposed so pipeline Makefiles can tune them.
     g.add_option("--n-training-loops", type=int, default=4,
@@ -1580,25 +1646,20 @@ def direct_marginalization_policy_note(like, theta, n_max=256, chunk=32):
 def angle_grid_suspect_note(scheme=None):
     """Label describing the angle-grid amplitude check for this event.
 
-    Returns one of three things, and the THIRD is the point:
+    Returns one of three things, and the THIRD states the exact coverage:
 
       ""                              -- the grid schemes were not used
       "SUSPECT-ANGLE-GRID ..."        -- undersizing was DETECTED
-      "ANGLE-GRID-CHECK=BEST-EFFORT"  -- schemes used, nothing detected
+      "ANGLE-GRID-CHECK=OUTPUT-CLOUD-PASS ..." -- checked cloud was adequate
+      "ANGLE-GRID-CHECK=NOT-PERFORMED ..."     -- amp-sized scheme, NO check ran
 
-    The third case exists because absence of a detection is NOT evidence of
-    adequacy.  The detector is a jax.debug.callback, and JAX explicitly permits
-    such callbacks to be dropped under transformation -- in which case the host
-    state stays clean, effects_barrier has nothing to wait for, and the artifact
-    would otherwise be published looking verified.  That is a scientific false
-    negative, and calling it "best effort" in a docstring does not fix it for a
-    consumer reading the file six months later.
-
-    So every artifact produced by the exact/laplace schemes carries a standing
-    statement that this check CANNOT distinguish an adequate grid from an
-    undetected undersizing.  A reader is then never entitled to infer
-    verification from silence.  The honest recourse, named in the artifact, is
-    to rebuild at a larger amp_sizing if the result matters.
+    The pure JIT returns its amplitude metric as ordinary data, and the Python
+    boundary synchronously accumulates the maximum over every pilot, reweight,
+    and final production/output-cloud batch.  That deterministic coverage is
+    enough to label the points used for the published flow evidence and sample
+    export.  Transient flow-training-only proposals (which do not enter those
+    artifacts) are deliberately NOT claimed.  This split also keeps host
+    callbacks out of the expensive graph so JAX can persistently cache it.
     """
     st = _anglemarg.amp_failsafe_state()
     if st.get("tripped"):
@@ -1616,9 +1677,29 @@ def angle_grid_suspect_note(scheme=None):
     # this label is about; leaving it out published its artifacts with an EMPTY note --
     # the silence the paragraph above says a reader would take for verification.
     if scheme in ("exact", "laplace", "peak-local", "phi-local"):
-        return ("ANGLE-GRID-CHECK=BEST-EFFORT (no undersizing detected; the "
-                "detector may be dropped under jax transformation, so this is "
-                "NOT a verification -- rebuild at larger amp_sizing if it matters)")
+        # A PASS may only be claimed when a batch was actually inspected.  The
+        # recorder is wired ONLY for direct_marginalization_policy="off"
+        # (wrapper.py sets self._amp_record under that condition), while
+        # self.angle_marg_scheme still names the amp-sized reserve scheme.  So
+        # `--angle-marg-scheme exact --direct-marginalization-policy auto`
+        # reaches here with n_calls == 0 and amp_sizing None.  Without this
+        # branch that formatted "%.6g" % None and raised TypeError, killing the
+        # event AFTER integration and BEFORE either writer -- and had amp_sizing
+        # merely been 0.0 it would instead have published OUTPUT-CLOUD-PASS
+        # worst_amp=0, an affirmative adequacy claim backed by zero checks,
+        # which is the exact false negative this label exists to prevent.
+        if not st.get("n_calls"):
+            return ("ANGLE-GRID-CHECK=NOT-PERFORMED scheme=%s (no batched "
+                    "amp-sized evaluation was recorded for this event, so the "
+                    "adequacy of the dense (phi,psi) grids is UNKNOWN -- this "
+                    "is NOT a pass; rebuild at a larger amp_sizing if it "
+                    "matters)" % (scheme,))
+        return ("ANGLE-GRID-CHECK=OUTPUT-CLOUD-PASS worst_amp=%.6g "
+                "amp_sizing=%.6g scheme=%s (deterministic over pilot/reweight/"
+                "final output-cloud evaluations; transient training-only "
+                "proposals not inspected)"
+                % (st.get("worst_amp", float("nan")),
+                   st.get("amp_sizing", float("nan")), st.get("scheme")))
     return ""
 
 
@@ -2281,7 +2362,9 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
                 reserve_time_refine_max=int(
                     opts.direct_marginalization_reserve_time_refine_max),
                 total_value_error_budget_nats=float(
-                    opts.direct_marginalization_error_budget_nats))
+                    opts.direct_marginalization_error_budget_nats),
+                reserve_batch_rows=int(
+                    opts.direct_marginalization_batch_rows))
         try:
             like = JAXDistPhiPsiMargLikelihood(
                 like_data, d_lo, d_hi, nphi=nphi, npsi=npsi,
@@ -2528,7 +2611,7 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
     # otherwise get no warning and no persistent label at all.
     # Compute ONCE from the RESOLVED scheme and hand the same string to both
     # writers.  Recomputing inside each writer with no argument left `scheme`
-    # None, so the standing BEST-EFFORT label never emitted and every artifact
+    # None, so the standing output-cloud label never emitted and every artifact
     # stayed silent -- an inert guard, which is the exact failure mode this
     # label exists to prevent.
     _scheme = getattr(like, "angle_marg_scheme", None)
@@ -2561,9 +2644,8 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
             "NOT aborted and no points were discarded -- discarding would excise "
             "exactly the region the estimator missed.\n" % _ev_note)
     elif _ev_note:
-        # BEST-EFFORT: nothing detected.  Say so WITHOUT claiming a clean run --
-        # announcing "UNDERSIZED" here would be a false alarm, and saying
-        # nothing would let silence read as verification.
+        # Deterministic pass over the artifact-producing cloud, with scope
+        # stated in the label (training-only proposals are not claimed).
         sys.stderr.write(
             "NOTE integrate_likelihood_extrinsic_jax: %s\n" % _ev_note)
     write_samples(opts, out_index, theta, lnL, with_distance, angle_note=_ev_note,
@@ -2577,6 +2659,8 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
 # Main
 # ---------------------------------------------------------------------------
 def main(argv=None):
+    if _JAX_CACHE_DIR is not None:
+        print("JAX persistent compilation cache:", _JAX_CACHE_DIR)
     optp = build_parser()
     argv = _normalize_interpolate_time_argv(argv)
     opts, _ = optp.parse_args(argv)

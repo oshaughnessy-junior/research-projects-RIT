@@ -147,16 +147,21 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         wrapper against the production driver, and
 #                                         because 16384 is the rate test_jax_endtoend
 #                                         (4096) structurally cannot cover.
-#   test_angle_marg_smoke.py          8  CHEAP mutation-bearing floor for the whole
+#   test_angle_marg_smoke.py         12  CHEAP mutation-bearing floor for the whole
 #                                         angle-marg feature: scheme selection (a
 #                                         previous head could never return 'exact'),
 #                                         both dense-sizing levers, required
-#                                         amp_sizing, the host failsafe record and
-#                                         its cond-guard, the driver AST guard on the
+#                                         amp_sizing, synchronous output-cloud
+#                                         recording with training-call exclusion,
+#                                         that an amp-sized scheme which recorded
+#                                         NOTHING is labelled NOT-PERFORMED and
+#                                         never OUTPUT-CLOUD-PASS (the composite
+#                                         policy leaves the recorder unwired),
+#                                         the driver AST guard on the
 #                                         VALUE node (hardcoding angle_marg="grid"
 #                                         passes a weaker guard), and that BOTH
-#                                         artifacts are labelled and never imply
-#                                         verification.  Seconds, not minutes.
+#                                         artifacts carry the deterministic checked
+#                                         scope.  Seconds, not minutes.
 #   test_angle_marg_compile_cost.py   6  the laplace path's COMPILE- and RUN-cost
 #                                         structure (2026-08-28: an unrolled kernel
 #                                         x 64 distance blocks put a production
@@ -172,6 +177,22 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         cap must stay WIRED in samplers and the
 #                                         driver.  Each fails under a verified
 #                                         mutation (see the PR).  Seconds.
+#   test_jax_cache.py                30  the shipped ILE selects a stable
+#                                         compatibility namespace, Condor uses
+#                                         scratch by default, unwritable caches
+#                                         fail open, and transferred bundles
+#                                         round-trip while rejecting profile,
+#                                         runtime, checksum, and archive-member
+#                                         mismatches; concurrent manifest
+#                                         writers and imported-entry readers
+#                                         cannot race; import provenance survives
+#                                         later startup; accelerator
+#                                         plugin identity is recorded; a device
+#                                         probe that raises disables the cache
+#                                         instead of escaping driver import;
+#                                         and two fresh real JAX processes
+#                                         prove an actual persistent-cache
+#                                         reuse.
 #   test_angle_marg_block_dispatch.py 4  the laplace path's EXECUTION-cost
 #                                         structure (2026-08-28: with compilation
 #                                         fixed, the kernel executed ~2,950x the
@@ -483,6 +504,7 @@ FILES=(
   "${JAXDIR}/test_jax_phase_marg_mode_order.py"
   "${JAXDIR}/test_jax_q_time_pregrid.py"
   "${JAXDIR}/test_direct_marginalization_policy.py"
+  "${JAXDIR}/test_jax_cache.py"
   "${JAXDIR}/test_jax_bandlimited_distmarg.py"
 )
 
@@ -788,16 +810,84 @@ fi
 # collection line: "577/582 tests collected (5 deselected)", gate-style count 577
 # from 37 files.
 #
-# TWELFTH, this branch: test_jax_bandlimited_distmarg.py adds 14 tests (38 files),
-# none deselected.  577 + 14 = 591; the collect-only line on ldas-grid for the new
-# file alone read "14 tests collected".
+# TWELFTH, the jax 0.9.2 empty-pool cap fix touches only test_anglemarg_buffer_cap.py:
+# removes 1 test (test_a_zero_largest_free_block_is_a_known_full_device, whose "0 means
+# full" premise was the bug) and adds 6, net +5, none parametrized -- so the file-local
+# delta is exact and this is a direct bump, not an arithmetic guess across a merge (the
+# failure mode the paragraphs above document).  577 + 5 = 582.
 #
-# THIRTEENTH, same branch: the same file grows by 6 (endpoint certificate on the
-# floored field, the driver's fail-closed message, and prior-mc / laplace-is
-# end-to-end under --distance-marginalization bandlimited), and its flowMC driver
-# test is DESELECTED here (it would skip, and a skip fails the OUTCOME check).
-# 591 + 6 - 1 = 596.
-EXPECTED_TESTS=596
+# THIRTEENTH, the review-MAJOR follow-up (forced probe allocation before reading
+# memory_stats(), plus the on-demand-allocator bound) again touches only
+# test_anglemarg_buffer_cap.py: adds 5 tests, none parametrized, no removals.
+# 582 + 5 = 587.
+# FOURTEENTH, on the JAX persistent/transferable compilation cache (#214, this
+# merge).  It adds ONE file, test_jax_cache.py, and changes no test count in an
+# existing file: the amplitude failsafe changes HOW it reports -- a returned
+# value instead of a host callback, which is what makes the angle-marg graph
+# eligible for JAX's persistent cache at all -- but not how many pins cover it.
+# The branch opened carrying 189 against a base of 171, both months stale, was
+# then measured at 600 against a base of 574, and pushed 603 against a base of
+# 577.  rift_O4d has since moved to 587 (#285 and its review follow-up) and
+# again with #284, so every number either side carries is stale, for the
+# fourteenth time running.  Re-measured on the merged tree, DESELECT loop
+# applied, read off this job's own collection line:
+#   "621/626 tests collected (5 deselected)", gate-style count 621 from 38
+#   files.  Independently recollected on citlogin6 and on ldas-grid, same
+#   interpreter, same 621/626.
+#
+# The +8 over the branch's own 613 are ALL from this landing, not from the
+# branch.  Three pin defects found reviewing it (the NOT-PERFORMED label, the
+# policy-composite wiring, and a device probe that raised out of driver
+# import), and five close mutation survivors: both --jax-cache-dir spellings,
+# both cache opt-outs separately, a member declaring zero compressed size, and
+# the two refusals that keep an unsized scheme from inventing a metric.
+# test_jax_cache.py collects 30, not the 17 the branch's per-file line claimed.
+#
+# READ THIS BEFORE TREATING A LOCAL RED AS A BRANCH DEFECT.  jax and numpyro
+# are installed UNPINNED here (see ci.yml for why), so CI and your shell can be
+# on different jax versions at the same time, and which one is newer changes
+# over time -- do not infer it from this comment.  Landing #214, two failures
+# reproduced in a local venv on the branch AND on its pristine base while CI
+# was green on the whole gate: a trend assertion at the noise floor, and a
+# full-suite abort (134/139) in a file the branch never touched.  Both were the
+# environment, and finding that out cost two runs.
+#
+# So: check the jax version each side actually ran (the gate prints it as its
+# second line), and reproduce any local failure on the PRISTINE BASE in the SAME
+# environment before believing it.  The collected COUNT has been stable across
+# versions; pass/fail has not.  Issue #292 tracks the environment spread and
+# what to do about it.
+#
+# One practical note for whoever hits this next, because it cost a wasted run:
+# PYTHONPATH must be pinned to the tree under test before collecting.  The
+# conda environment on the CIT interactive hosts resolves RIFT to a DIFFERENT
+# checkout (~/RIFT_ralph), and collection then fails on imports that have
+# nothing to do with the branch.
+#
+#
+# FIFTEENTH, the four-axis policy row-batching branch (this merge).  It adds
+# SEVEN tests to test_direct_marginalization_policy.py (the batched/sequential
+# equivalence test, five parametrized validate_batch_rows cases, and the driver
+# knob test) and adds no file.  Its own side measured 581 against a base of 574;
+# rift_O4d has since reached 587, so neither number nor their sum describes the
+# merged tree.  Re-measured by running THIS script on the merged tree,
+# ldas-grid, ~/.cache/jaxci_venv, DESELECT loop applied, read off its own
+# collection line: "collected 594 tests from 37 files".
+# Both sides were stale in the usual way: 594 on this branch against a base of
+# 587, and 621 on rift_O4d, and neither number nor their difference describes
+# the merged tree because each counted a file set the other had changed.
+# Re-measured on the MERGED tree by running this script and reading its own
+# line: "collected 628 tests from 38 files" (ldas-grid, ~/.cache/jaxci_venv,
+# DESELECT loop applied).
+#
+# SIXTEENTH, the bandlimited distance-marginalization branch (this merge).  It
+# adds ONE file, test_jax_bandlimited_distmarg.py, which collects 20 and has one
+# test DESELECTED here (its flowMC driver run would importorskip, and a skip
+# fails the OUTCOME check), so +19 over the merged base.  Its own side carried
+# 596 against a base of 577; rift_O4d reached 628 meanwhile.  Re-measured by
+# running this script on the MERGED tree, ldas-grid, ~/.cache/jaxci_venv,
+# DESELECT loop applied, read off its own collection line: MEASURED-LINE
+EXPECTED_TESTS=647
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"

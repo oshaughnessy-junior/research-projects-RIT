@@ -347,6 +347,112 @@ degenerate.  The command above previously omitted the flag and could not run.)
 Output: `out_0_.dat` (`event_id m1 m2 s1x..s2z lnL sigma_lnL ntotal neff`) and,
 with `--save-samples`, `out_0_samples.dat`.
 
+### Persistent compilation cache
+
+The shipped driver enables JAX's cross-process compilation cache by default.
+RIFT disables JAX's auxiliary per-fusion autotune cache while doing so. In JAX
+0.9.2 that auxiliary cache places its absolute directory in the executable
+cache key, so leaving it enabled makes an otherwise compatible exported bundle
+miss after import at a different filesystem path. The persistent compiled-
+executable cache remains enabled and is the transferable cache described here.
+It selects a stable directory under `$RIFT_JAX_CACHE_ROOT` (or
+`$XDG_CACHE_HOME/rift/jax`, normally `~/.cache/rift/jax`) and adds a
+compatibility namespace derived from Python, JAX/JAXLIB, the CUDA plugin,
+backend/platform version, GPU kind, and compute capability. JAX's own keys then
+separate static argument shapes and compiler options inside that namespace.
+
+Use `--jax-cache-dir /shared/rift-jax-cache` to choose a shared root, or
+`--no-jax-persistent-cache` for a diagnostic cold run. The standard
+`JAX_COMPILATION_CACHE_DIR` variable remains an exact-directory expert
+override. The selected directory contains its provenance manifest.
+Runtime identity and durable imported-bundle profile/static-shape provenance
+are stored separately. Each distinct contributing bundle gets an atomic record
+keyed by its manifest digest, so neither a later ordinary startup nor a second
+compatible bundle import can erase the earlier provenance.
+On Condor, an unset root falls back to
+`$_CONDOR_SCRATCH_DIR/.rift_cache/jax`; transfer that directory or set a shared
+root to reuse it across jobs. An unwritable cache disables itself with a warning
+rather than failing the ILE calculation.
+
+Condor scratch is job-local, so default enablement there avoids duplicate
+compilation only within that job; it does not provide automatic cross-job
+persistence. To reuse a survey/full-run cache, transfer the bundle as an input
+and append `--jax-cache-bundle rift-o4-laplace.zip --jax-cache-profile
+o4-laplace` to the ordinary ILE arguments. The driver validates and imports it
+before importing modules that construct ILE JITs. Sites with a genuinely shared
+writable filesystem can instead set `RIFT_JAX_CACHE_ROOT` in the submit
+environment.
+
+Warm with the real production command, then package that active namespace and
+record the important static shapes:
+
+```sh
+integrate_likelihood_extrinsic_jax --jax-cache-dir /scratch/rift-cache \
+  <the production ILE arguments>
+rift_jax_cache --cache-root /scratch/rift-cache export rift-o4-laplace.zip \
+  --profile o4-laplace --shape detectors=3 --shape l_max=2 \
+  --shape n_chunk=8000 --shape distance_grid=256 --shape n_phi=8
+```
+
+On a compatible target host/container, import and reuse it:
+
+```sh
+rift_jax_cache --cache-root /shared/rift-cache import rift-o4-laplace.zip \
+  --expect-profile o4-laplace
+integrate_likelihood_extrinsic_jax --jax-cache-dir /shared/rift-cache \
+  <the same production ILE arguments>
+```
+
+Import rejects a different JAX/JAXLIB/CUDA backend, GPU kind/capability,
+Python, requested profile, unexpected archive members, or checksum failure.
+Different static shapes safely miss JAX's inner cache and compile normally;
+the bundle's shape metadata makes those misses explainable.
+Import also bounds member count, individual/total uncompressed size, and
+compression ratio and streams entries through their checksum, so a corrupt or
+hostile archive cannot expand without limit. Cache bundles contain compiler
+artifacts and should still be accepted only from a trusted build workflow.
+
+The compatibility namespace does not cover `XLA_FLAGS`, and does not need to:
+JAX covers it. `jax/_src/cache_key.py::_hash_xla_flags` reads the `XLA_FLAGS`
+and `LIBTPU_INIT_ARGS` environment variables and every `--xla*` token in
+`sys.argv`, and hashes each into the key, skipping only the dump/debug flags in
+`xla_flags_to_exclude_from_cache_key`. Measured on jax 0.9.2: adding
+`--xla_cpu_enable_fast_math=true` to `XLA_FLAGS` produced a second, distinct
+`jit_work-*` entry rather than reusing the first, and rerunning with unchanged
+flags reused it. So a numerics-affecting flag varies the key rather than
+silently reusing a kernel compiled under a different one, and flags need not be
+held fixed per cache root.
+
+Cache entries are written by JAX, not by RIFT, and `LRUCache.put` writes them
+with a plain `write_bytes` rather than through a temporary file, so a reader can
+observe a partial entry. Measured on jax 0.9.2 against a populated cache: an
+entry truncated to 60%, an entry with one byte flipped mid-blob, and an entry
+with 4 KiB of random bytes spliced in each produced the same lnL as the
+uncorrupted run, via a `UserWarning: Error reading persistent compilation cache
+entry` and a recompile. Corruption therefore fails CLOSED: a shared root
+degrades to recompilation under contention and does not hand back a wrong
+kernel.
+
+It does not self-heal, and that is the operational cost. `LRUCache.put` returns
+early when the path already exists, so a process killed mid-write -- a node
+reboot, an OOM, a thread-budget abort -- leaves a truncated entry that no later
+process rewrites. In the measurement above the file stayed at its truncated
+2943 bytes across reruns. That key then recompiles forever while only warning.
+If a warm cache stops saving time, delete the compatibility-keyed directory
+(`rift_jax_cache fingerprint` names it) and re-warm; there is no partial repair.
+
+The amplitude-adequacy diagnostic of the amp-sized schemes (exact, Laplace,
+peak-local, phi-local) is deliberately data returned
+by a pure JIT, not a `jax.debug.callback`: JAX does not persist graphs with host
+callbacks. The driver synchronously accumulates the maximum over every pilot,
+reweight, and final production/output-cloud batch and records that deterministic
+scope in result provenance. Transient flow-training-only proposals are not
+claimed; they do not enter the reported evidence or exported cloud. The
+`direct-marginalization-policy` composite exposes no such metric and is
+therefore unlabelled. A tripped
+check still leaves likelihood values finite and labels the artifacts
+`SUSPECT-ANGLE-GRID` rather than silently excising the affected region.
+
 ## Status and next steps
 
 **Done & validated:** the AD likelihood core (1e-13 vs reference), gradients,

@@ -501,11 +501,44 @@ jobs:
           python -m pip install --upgrade pip --break-system-packages
           python -m pip install -r requirements.txt coverage pytest "jax[cpu]" numpyro --break-system-packages
           python -m pip install --editable . --break-system-packages
+      # WHY THIS EXISTS.  jax is installed UNPINNED above, so this job's stack is
+      # whatever pip resolved the day it ran, and no developer environment
+      # necessarily has that version.  Without a record, a red gate six weeks old
+      # cannot be reproduced -- you cannot even tell which jax produced it.  Two
+      # failures during the #214 landing were chased locally before a
+      # pristine-base control showed they were the environment, not the branch
+      # (issue #292).  The gate prints jax and numpyro; this captures the rest,
+      # jaxlib and lal included.
+      - name: Record the resolved jax stack
+        run: |
+          python -m pip freeze > pip-freeze-jax-ile.txt
+          echo "== resolved stack (full list in the jax-ile-resolved-stack artifact) =="
+          # importlib.metadata, not a grep of pip freeze: freeze reports a URL
+          # rather than a version for anything not installed from PyPI, so the
+          # grep prints a wheel path in exactly the environments someone is most
+          # likely to be comparing against.
+          python -c "
+          import importlib.metadata as md
+          for n in ('jax', 'jaxlib', 'numpyro', 'numpy', 'scipy', 'numba', 'lal'):
+              try:
+                  print('%-10s %s' % (n, md.version(n)))
+              except Exception:
+                  print('%-10s (absent)' % n)
+          "
       - name: Run jax_ile CPU regression gate
         env:
           JAX_PLATFORMS: cpu
           OMP_NUM_THREADS: 1
         run: bash .travis/test-jax.sh
+      # always(): a FAILING gate is the case the record is for, so it must upload
+      # after a red run too, not only after a green one.
+      - name: Upload the resolved jax stack
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jax-ile-resolved-stack
+          path: pip-freeze-jax-ile.txt
+          if-no-files-found: warn
 
   # CPU ONLY.  GitHub runners have no GPU and no cupy, so this lane cannot
   # exercise the cupy branch of RIFT/likelihood/SphericalHarmonics_gpu.py -- the
@@ -760,6 +793,20 @@ jobs:
           bash .travis/test-run.sh
           bash .travis/test-run-alts.sh
           bash .travis/test-build.sh
+      - name: Run ILE executable selection tests (--use-jax-ile / --ile-exe)
+        # Full subprocess DAG builds against the same reference ini/coinc as
+        # test-build.sh, so the pseudo_pipe CLI wiring is what is exercised:
+        # --use-jax-ile and --ile-exe land in ILE.sub/ILE_puff.sub/ILE_extr.sub,
+        # and --use-jax-ile is refused at DAG-build time with --calmarg-envelope-directory.
+        run: |
+          python -m pytest -q MonteCarloMarginalizeCode/Code/test/test_jax_ile_selectable.py
+      - name: Run q-time-pregrid DAG-build test (--internal-ile-q-time-pregrid-factor)
+        # Full subprocess DAG build against the same reference ini/coinc, same reason as
+        # the step above (PR #281 follow-up review, MAJOR #1): asserts
+        # --internal-ile-q-time-pregrid-factor 8 lands in ILE.sub, ILE_extr.sub, and
+        # ILE_puff.sub, not only in helper_ile_args.txt / args_ile.txt.
+        run: |
+          python -m pytest -q MonteCarloMarginalizeCode/Code/test/test_q_time_pregrid_dag.py
       - name: Upload test logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
