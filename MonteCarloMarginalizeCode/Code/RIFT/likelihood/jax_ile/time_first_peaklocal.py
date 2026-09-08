@@ -1,4 +1,23 @@
-"""Time-first peak-local marginalization of band-limited JAX primitives.
+"""Time-local marginalization of band-limited JAX primitives.
+
+KERNEL ID ``time_local_jax`` (RIFT.likelihood.peak_local_names).  Localizes the TIME
+axis only; the caller owns every downstream axis.  No driver flag selects it.
+``all_axis_peaklocal`` imports its spectrum helpers, not its marginalizer.
+
+RENAME PENDING: this file should be called ``time_local.py``.  Its current name says
+"peaklocal", which names eight kernels in this package.  The KERNEL ID above is the
+disambiguation that shipped; the file name is the part still to do, and it was NOT done
+in the same change.
+
+WHY IT WAITS, and how to tell when it can go.  A rename rewrites every hunk header, so
+it conflicts with every in-flight branch touching this file.  As of 2026-09-08 that is:
+
+  * PRs #181 (codex/hyperpipe-pseudo-pipe-builder) and #214.
+
+Do it once those land or close, in a commit that does nothing else, so the diff reads as
+a pure rename: ``git mv time_first_peaklocal.py time_local.py``.  Update the ``module`` field of this kernel's entry in
+``RIFT/likelihood/peak_local_names.py`` and the roster in ``.travis/test-jax.sh`` in the
+same commit, and rename the test file to match.
 
 This module is the deliberately small composition seam missing from the JAX
 likelihood.  A caller supplies one *primitive correlation* row for every fixed

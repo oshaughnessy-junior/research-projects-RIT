@@ -38,6 +38,8 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
+from .. import peak_local_names as _names
+
 # Default chunk for the batched lnL evals.  The per-sample distance quadrature
 # (JAX_ILE_DISTMARG_GH=G) materialises a (chunk, npts, G) array, ~G/ (grid_block)
 # more device memory than the legacy grid, so a 4000-row chunk OOMs the 11GB
@@ -462,12 +464,16 @@ def _angle_marg_buffer_target():
     """
     explicit = _read_buffer_bytes()
     if explicit is not None:
-        return explicit
+        return _record_buffer_source(
+            explicit,
+            "RIFT_ANGLEMARG_BUFFER_BYTES, an absolute assertion that OVERRODE "
+            "the device probe")
     try:
         import jax
         devs = [d for d in jax.devices() if getattr(d, "platform", "") == "gpu"]
         if not devs:
-            return _ANGLE_MARG_BUFFER_TARGET_FALLBACK
+            return _record_buffer_source(_ANGLE_MARG_BUFFER_TARGET_FALLBACK,
+                                         "no GPU device visible; blind fallback")
         dev = devs[0]
         try:
             _probe_allocate(jax, dev)
@@ -490,15 +496,21 @@ def _angle_marg_buffer_target():
             # support.
             in_use = stats.get("bytes_in_use")
             in_use = int(in_use) if in_use is not None else 0
-            return max(0, min(_ANGLE_MARG_BUFFER_TARGET_FALLBACK,
-                               int(limit) - in_use))
+            return _record_buffer_source(
+                max(0, min(_ANGLE_MARG_BUFFER_TARGET_FALLBACK,
+                           int(limit) - in_use)),
+                "on-demand allocator: blind fallback bounded by "
+                "bytes_limit - bytes_in_use [%s]" % _fmt_memory_stats(stats))
         avail = _device_available_bytes(stats)
         if avail is None:
             # We can see a device but not how much of it is free.  The conservative
             # fallback stands; an operator who knows their card asserts otherwise with
             # RIFT_ANGLEMARG_BUFFER_BYTES.  Reaching for `bytes_limit` here instead is
             # the exact regression review flagged -- see _device_available_bytes.
-            return _ANGLE_MARG_BUFFER_TARGET_FALLBACK
+            return _record_buffer_source(
+                _ANGLE_MARG_BUFFER_TARGET_FALLBACK,
+                "device visible but no free-memory key readable; blind fallback "
+                "[%s]" % _fmt_memory_stats(stats))
         # The ceiling is still worth reading, but only DOWNWARD: availability cannot
         # legitimately exceed what the allocator may hold, so a runtime reporting a free
         # block bigger than its own limit is misreporting and must not inflate this.
@@ -521,13 +533,61 @@ def _angle_marg_buffer_target():
         # max(0, ...), not max(1, ...): a device with nothing free must produce an
         # allowance of nothing, and let angle_marg_eval_chunk refuse with the message
         # that names the knobs.  A one-byte floor would be the same lie in miniature.
-        return max(0, int(avail * _ANGLE_MARG_BUFFER_FRACTION))
-    except Exception:
-        return _ANGLE_MARG_BUFFER_TARGET_FALLBACK
+        return _record_buffer_source(
+            max(0, int(avail * _ANGLE_MARG_BUFFER_FRACTION)),
+            "device probe: %.3f GiB readable free x fraction %.3g [%s]"
+            % (avail / float(1 << 30), _ANGLE_MARG_BUFFER_FRACTION,
+               _fmt_memory_stats(stats)))
+    except Exception as exc:
+        return _record_buffer_source(
+            _ANGLE_MARG_BUFFER_TARGET_FALLBACK,
+            "device probe raised %s; blind fallback" % type(exc).__name__)
 
 
 #: Kept as a module attribute so existing readers (and tests) still see a number.
 _ANGLE_MARG_BUFFER_TARGET = _ANGLE_MARG_BUFFER_TARGET_FALLBACK
+
+#: How the LAST allowance was derived, set by _record_buffer_source at every return
+#: site of _angle_marg_buffer_target and printed by the angle_marg_eval_chunk refusal.
+_ANGLE_MARG_BUFFER_SOURCE = None
+
+
+def _fmt_memory_stats(stats):
+    """The device keys this file reasons about, verbatim, for a refusal message."""
+    return ", ".join(
+        "%s=%s" % (k, stats.get(k))
+        for k in ("largest_free_block_bytes", "pool_bytes", "bytes_reserved",
+                  "bytes_in_use", "bytes_limit"))
+
+
+def _record_buffer_source(value, source):
+    """Remember HOW the allowance was derived, and return it unchanged.
+
+    WHY THIS IS NOT A SECOND COPY OF THE LOGIC.  ``_angle_marg_buffer_target`` has
+    four paths, and a provenance function that re-derived which one ran would be a
+    reimplementation free to drift from the original.  Recording at the return site
+    cannot drift: the string and the number leave together.
+
+    The refusal in ``angle_marg_eval_chunk`` prints this.  Without it "an allowance
+    of 0 bytes" is a number with no account of itself, and the two things an
+    operator would do next -- move hosts, or set RIFT_ANGLEMARG_BUFFER_BYTES --
+    depend on which path produced it.
+    """
+    global _ANGLE_MARG_BUFFER_SOURCE
+    _ANGLE_MARG_BUFFER_SOURCE = source
+    return value
+
+
+def _angle_marg_buffer_provenance():
+    """Where the last allowance came from, or a note that nothing recorded one.
+
+    Tests monkeypatch ``_angle_marg_buffer_target`` with a plain lambda, which
+    records nothing; say so rather than reporting a stale source from an earlier
+    call.
+    """
+    return (_ANGLE_MARG_BUFFER_SOURCE
+            or "not recorded (the allowance did not come from "
+               "_angle_marg_buffer_target)")
 
 
 def _peaklocal_bytes_per_sample_pt(like):
@@ -620,23 +680,36 @@ def angle_marg_eval_chunk(like, chunk):
     # phi chunks, four cells and a streamed u-node block, so the batch multiplies the
     # same way the dense schemes do.  Leaving it out kept an uncapped 8000-sample batch
     # and reopened the 36.4 GiB failure documented above.
-    if getattr(like, "angle_marg_scheme", "grid") not in ("exact", "laplace",
-                                                          "peak-local", "phi-local"):
+    # CANONICALIZE BEFORE COMPARING.  The wrapper folds the descriptive spellings onto
+    # the historical values, but a caller that builds a likelihood by hand and sets
+    # `angle_marg_scheme = "psi-local-phi-dense"` would otherwise miss every branch
+    # below and get an UNCAPPED batch -- the failure this guard exists for, reached by
+    # spelling rather than by scheme.  Internal review found it latent: no in-tree
+    # caller does that today.  Fail closed by resolving the string here.
+    scheme = _names.canonical_angle_marg_scheme(
+        getattr(like, "angle_marg_scheme", "grid"))
+    if scheme not in ("exact", "laplace", "peak-local", "phi-local"):
         return chunk
     npts = int(getattr(getattr(like, "data", None), "npts", 0) or 0)
     if npts <= 0:
         return chunk
     bytes_per = _ANGLE_MARG_BYTES_PER_SAMPLE_PT
-    if getattr(like, "angle_marg_scheme", None) == "phi-local":
+    if scheme == "phi-local":
         # Modelled in the SAME change that added the kernel, because the trap this guard
         # exists for is a kernel whose sizing moved while the guard kept its old model.
         bytes_per = max(bytes_per, _philocal_bytes_per_sample_pt(like))
-    elif getattr(like, "angle_marg_scheme", None) == "peak-local":
+    elif scheme == "peak-local":
         # Besides the streamed (phi_chunk,n_x,4,u_live) body, lax.scan returns
         # and stacks every (n_phi,n_x) value before the final reduction.  Omitting
         # that output undercounts high-amplitude calls because n_phi grows as
         # sqrt(A).
         bytes_per = max(bytes_per, _peaklocal_bytes_per_sample_pt(like))
+    # Clear before the call so a monkeypatched or otherwise non-recording
+    # `_angle_marg_buffer_target` yields "not recorded" rather than the source of
+    # whatever call ran last.  _angle_marg_buffer_provenance's docstring promised
+    # this; without the clear it held only on the first call.
+    global _ANGLE_MARG_BUFFER_SOURCE
+    _ANGLE_MARG_BUFFER_SOURCE = None
     target = _angle_marg_buffer_target()
     per_sample = bytes_per * npts
     if per_sample > target:
@@ -675,11 +748,12 @@ def angle_marg_eval_chunk(like, chunk):
             "(npts); shrink the distance grid (n_x), which drives the peak-local model; "
             "or run a cheaper angle_marg_scheme.  The sample axis is the only axis this "
             "cap can divide, so no chunk size is a fix; reducing the outer "
-            "evaluation chunk cannot make this call fit."
-            % (getattr(like, "angle_marg_scheme", None), per_sample,
+            "evaluation chunk cannot make this call fit.  ALLOWANCE SOURCE: %s."
+            % (scheme, per_sample,
                per_sample / float(1 << 30), bytes_per, npts, target,
                target / float(1 << 30), per_sample / float(1 << 30),
-               _ANGLE_MARG_BUFFER_TARGET_FALLBACK))
+               _ANGLE_MARG_BUFFER_TARGET_FALLBACK,
+               _angle_marg_buffer_provenance()))
     # No max(..., 1) here, deliberately: the refusal above is what guarantees
     # `per_sample <= target`, so the floor division is already at least 1.  Restoring the
     # floor would restore the defect -- it is the floor, not the division, that broke the

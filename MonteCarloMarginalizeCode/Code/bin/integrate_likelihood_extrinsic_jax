@@ -74,6 +74,7 @@ from RIFT.likelihood.jax_ile import build_data_from_precompute
 from RIFT.likelihood.jax_ile.wrapper import bandlimited_storage_requirement
 from RIFT.likelihood.jax_ile import anglemarg as _anglemarg
 from RIFT.likelihood.jax_ile.samplers import angle_marg_eval_chunk as _angle_marg_eval_chunk
+from RIFT.likelihood import peak_local_names as _peak_local_names
 from RIFT.likelihood.jax_ile.samplers import regularize_cov as _regularize_cov
 # ONE definition, imported rather than re-typed: a second copy of the
 # "is this evidence trustworthy" rule is a copy that drifts.
@@ -760,8 +761,20 @@ def build_parser():
                       "adaptive distance quadrature, so on the default uniform "
                       "distance grid it was measured 43 nats from 'exact' at "
                       "rho 163.  'auto': select exact/laplace from the run's "
-                      "own data-derived amplitude.  The scheme that actually "
-                      "ran is printed.  See RIFT.likelihood.jax_ile.anglemarg."
+                      "own data-derived amplitude.  'peak-local' (spell it "
+                      "'psi-local-phi-dense' in new configurations): psi "
+                      "localized exactly on its cell partition, phi still dense "
+                      "and amplitude-sized, so its per-sample buffer grows as "
+                      "sqrt(amplitude).  'phi-local' ('psi-local-phi-local'): "
+                      "both angles localized, with the dense kernel evaluated as "
+                      "a per-row fallback.  NEITHER is the four-axis kernel that "
+                      "--direct-marginalization-policy auto accepts, which also "
+                      "localizes time and distance; measurements of one do not "
+                      "transfer to the other.  The scheme AND the kernel id that "
+                      "actually ran are printed.  See "
+                      "RIFT.likelihood.peak_local_names for the eight kernels "
+                      "that share the words 'peak-local', and "
+                      "RIFT.likelihood.jax_ile.anglemarg for these schemes."
                       % (ANGLE_MARG_DEFAULT, ANGLE_MARG_LEGACY,
                          ANGLE_MARG_LEGACY, ANGLE_MARG_LEGACY))
     g.add_option("--direct-marginalization-policy",
@@ -770,7 +783,9 @@ def build_parser():
                  help="OPT-IN cross-axis policy for --mode flowmc-phipsimarg "
                       "(default '%s').  'auto': per likelihood evaluation, "
                       "build the bounded U,V,Q start portfolios, attempt the "
-                      "four-axis peak-local integral over (t, phi_ref, psi, D), "
+                      "four-axis local integral over (t, phi_ref, psi, D) "
+                      "(kernel id 'four_axis_local'; NOT --angle-marg-scheme "
+                      "peak-local, which localizes psi alone), "
                       "and keep it only if every acceptance diagnostic passes "
                       "(capacity, finite stationary modes, nested geometry, "
                       "base/enriched agreement, nested quadrature, two-guard "
@@ -1549,10 +1564,14 @@ def direct_marginalization_policy_note(like, theta, n_max=256, chunk=32):
     summary = _summarize_policy_ledger(ledger)
     declines = ",".join("%s:%d" % (k.replace("decline_", ""), v)
                         for k, v in sorted(summary["declines"].items()))
-    return ("DIRECT-MARG-POLICY=%s rows=%d local=%d reserve=%d "
+    # local-kernel= is in the header because "local=%d" is otherwise a count with no
+    # kernel attached, and this file's own history shows those counts being read as
+    # the angle scheme's.
+    return ("DIRECT-MARG-POLICY=%s local-kernel=%s rows=%d local=%d reserve=%d "
             "warranted-reserve=%d escalations=%d unusable=%d reconciles=%d "
             "declines=[%s] max-local-error-score-nats=%.3g"
-            % (policy, summary["rows"], summary["accepted_local"],
+            % (policy, summary["local_kernel"],
+               summary["rows"], summary["accepted_local"],
                summary["reserve_executed"], summary["reserve_warranted"],
                summary.get("reserve_escalations", 0),
                summary["unusable"], summary["reconciles"], declines,
@@ -1584,8 +1603,11 @@ def angle_grid_suspect_note(scheme=None):
     """
     st = _anglemarg.amp_failsafe_state()
     if st.get("tripped"):
+        # path=, not scheme=: the failsafe label is the KERNEL id for the two local
+        # kernels and the internal path name for exact/laplace.  Calling all four
+        # "scheme" is how a kernel id gets read as a command-line value.
         return ("SUSPECT-ANGLE-GRID amp_failsafe=TRIPPED worst_amp=%.6g "
-                "amp_sizing=%.6g scheme=%s"
+                "amp_sizing=%.6g path=%s"
                 % (st.get("worst_amp", float("nan")),
                    st.get("amp_sizing", float("nan")), st.get("scheme")))
     # 'peak-local' belongs here for the same reason it belongs in the failsafe: its phi
@@ -1598,9 +1620,13 @@ def angle_grid_suspect_note(scheme=None):
     # this label is about; leaving it out published its artifacts with an EMPTY note --
     # the silence the paragraph above says a reader would take for verification.
     if scheme in ("exact", "laplace", "peak-local", "phi-local"):
-        return ("ANGLE-GRID-CHECK=BEST-EFFORT (no undersizing detected; the "
-                "detector may be dropped under jax transformation, so this is "
-                "NOT a verification -- rebuild at larger amp_sizing if it matters)")
+        kernel_id = _peak_local_names.angle_marg_kernel_id(scheme)
+        return ("ANGLE-GRID-CHECK=BEST-EFFORT scheme=%s%s (no undersizing "
+                "detected; the detector may be dropped under jax "
+                "transformation, so this is NOT a verification -- rebuild at "
+                "larger amp_sizing if it matters)"
+                % (scheme,
+                   "" if kernel_id is None else " kernel=%s" % kernel_id))
     return ""
 
 
@@ -2279,14 +2305,30 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
             raise SystemExit("--direct-marginalization-policy %s refused: %s"
                              % (policy, e))
         # ALWAYS report the resolved scheme (requested may be 'auto'; this
-        # pipeline has a documented history of silently-inert flags).
-        print("  angle-marg scheme: %s (requested %s): %s"
+        # pipeline has a documented history of silently-inert flags).  The KERNEL
+        # is reported next to it because the scheme string is ambiguous on its own:
+        # 'peak-local' names eight kernels across this package, and reading a
+        # measurement of one as a claim about another cost a wrong published
+        # conclusion on 2026-09-08.
+        _kernel_id = like.angle_marg_info.get("kernel")
+        print("  angle-marg scheme: %s (requested %s)%s: %s"
               % (like.angle_marg_scheme, angle_marg,
+                 "" if _kernel_id is None else " -> kernel %s"
+                 % _peak_local_names.describe(_kernel_id),
+                 # "kernel" is excluded because the clause above already prints it
+                 # with its axes.  Leaving it in printed the id twice on a local
+                 # scheme, and printed a bare "kernel=None" on exact/laplace/grid,
+                 # which reads as a missing value rather than as "not a peak-local
+                 # kernel".  Internal review, 2026-09-08.
                  "; ".join("%s=%s" % kv for kv in
                            sorted(like.angle_marg_info.items())
-                           if kv[0] not in ("scheme", "requested"))))
-        print("  direct-marginalization policy: %s%s"
+                           if kv[0] not in ("scheme", "requested", "kernel"))))
+        print("  direct-marginalization policy: %s%s%s"
               % (like.direct_marginalization_policy,
+                 "" if like.direct_marginalization_policy == "off"
+                 else " -> local branch is kernel %s"
+                 % _peak_local_names.describe(
+                     _peak_local_names.FOUR_AXIS_LOCAL),
                  "" if like.policy_info is None else ": " + "; ".join(
                      "%s=%s" % kv for kv in sorted(like.policy_info.items()))))
         print("  distance grid: %s"

@@ -1,4 +1,7 @@
-"""Joint (phi, psi) peak-local marginalization: numpy reference kernel.
+"""Joint (phi, psi) local marginalization: numpy reference kernel.
+
+KERNEL ID ``phi_psi_cell_kernel_numpy`` (RIFT.likelihood.peak_local_names).  Localizes
+both angles only.  Not wired to any driver.
 
 WHAT THIS COMPUTES
 

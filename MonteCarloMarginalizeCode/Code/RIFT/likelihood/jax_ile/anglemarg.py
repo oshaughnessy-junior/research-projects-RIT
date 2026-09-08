@@ -35,8 +35,15 @@ lnL_t(phi, psi | x) = x*A - 0.5*x^2*B (x = distMpcRef/d) is pure arithmetic.
 The number of expensive evaluations is fixed by MODE CONTENT, never by SNR,
 and is asserted -- there is no accuracy-vs-cost knob to set too small.
 
-TWO MARGINALIZATION SCHEMES (plus a selector, see the wrapper/driver)
+FOUR MARGINALIZATION SCHEMES (plus a selector, see the wrapper/driver)
 ---------------------------------------------------------------------
+The names.  Two of these localize an angle and are called "peak-local" in older
+text.  So are six other kernels in this package, including the FOUR-AXIS one that
+``--direct-marginalization-policy auto`` accepts, which localizes time and distance
+too and is a different kernel with different cost.  Nothing in this module is that
+kernel.  :mod:`RIFT.likelihood.peak_local_names` holds the full registry, and the
+kernel ids below are what run logs and records print.
+
 exact   : reconstruct lnL_t on a dense (phi, u) product grid from the
           coefficient tables and average exp(.) over it.  The dense grid is
           free (no likelihood calls); its size is derived from a DATA-DERIVED
@@ -52,7 +59,15 @@ laplace : marginalize psi ANALYTICALLY by Laplace's method at every
           removes the psi axis entirely (cost ~SNR instead of ~SNR^2) and its
           O(1/amplitude) error SHRINKS as SNR grows.  Best at high amplitude.
 
-Both schemes marginalize distance with the same quadrature machinery as the
+psi_local_phi_dense (``--angle-marg-scheme peak-local``) :
+          localize psi EXACTLY on the cell partition of the u-quartic's roots,
+          keep phi_ref dense at ~sqrt(A) nodes.  Distance and time stay dense.
+psi_local_phi_local (``--angle-marg-scheme phi-local``) :
+          localize both angles, with a bounded omitted mass, and fall back to
+          psi_local_phi_dense on any row whose certificate declines.  Distance
+          and time stay dense.
+
+Both dense schemes marginalize distance with the same quadrature machinery as the
 grid path (:func:`core._logsumexp_grid_blocked`, or the adaptive
 :func:`core._distmarg_gh_logL` when JAX_ILE_DISTMARG_GH is set; the laplace
 scheme cannot call that function, whose nodes are placed per FIXED psi, and
@@ -72,6 +87,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
+from .. import peak_local_names as _names
 from . import core as _core
 from .core import (JAX_INTERP_DEFAULT, TIME_QUAD_DEFAULT, _accumulate_unit,
                    _time_marginalize_terminal,
@@ -89,7 +105,13 @@ __all__ = [
     "fused_log_likelihood_distphipsimarg_exact",
     "fused_log_likelihood_distphipsimarg_laplace",
     "choose_angle_marg_scheme",
+    "fused_log_likelihood_distphipsimarg_psi_local_phi_dense",
+    "fused_log_likelihood_distphipsimarg_psi_local_phi_local",
+    # Compatibility aliases for the two names above.  Kept because archived
+    # branches and tests import them; new code should use the descriptive names,
+    # which say which axes are localized.  See RIFT.likelihood.peak_local_names.
     "fused_log_likelihood_distphipsimarg_peaklocal",
+    "fused_log_likelihood_distphipsimarg_phi_local",
     "gh_laplace_supported",
     "ANGLE_MARG_CROSSOVER_AMPLITUDE",
 ]
@@ -151,16 +173,42 @@ __all__ = [
 # RESULTS_phigrid_2026-09-02.md (commit 3f1f66f).
 ANGLE_MARG_DEFAULT = "exact"
 ANGLE_MARG_LEGACY = "grid"      # the spelling that reproduces pre-2026-09-02 runs
+#: Accepted --angle-marg-scheme values.  'peak-local' and 'phi-local' are the
+#: historical spellings and stay accepted forever, because they appear in archived
+#: run records and submit files.  'psi-local-phi-dense' and 'psi-local-phi-local'
+#: are the same two kernels under names that say which axes they localize; new
+#: configurations should use those.  RIFT.likelihood.peak_local_names resolves any
+#: of the four to one internal value, and it is the only place that mapping lives.
 ANGLE_MARG_CHOICES = ("grid", "exact", "laplace", "peak-local", "phi-local",
-                      "auto")
+                      "psi-local-phi-dense", "psi-local-phi-local", "auto")
 
-#: 'peak-local' is deliberately NOT reachable from 'auto' yet.  It agrees with 'exact'
+#: The two internal values the peak-local spellings resolve to.
+ANGLE_MARG_LOCAL_SCHEMES = ("peak-local", "phi-local")
+
+#: WHICH 'peak-local' THIS IS.  The string 'peak-local' names eight kernels in this
+#: package (RIFT.likelihood.peak_local_names.KERNELS).  Everything in this note is
+#: about ONE of them: the scheme selected here, kernel id 'psi_local_phi_dense',
+#: which localizes psi on the exact cell partition and keeps phi_ref dense.  It is
+#: NOT the four-axis kernel that --direct-marginalization-policy auto accepts
+#: (kernel id 'four_axis_local', RIFT.likelihood.jax_ile.all_axis_peaklocal), whose
+#: accuracy and cost are different and are recorded separately.
+#:
+#: 'peak-local' here is NOT reachable from 'auto'.  It agrees with 'exact'
 #: to 1e-13 nats on the tables measured so far and is device-independent (the same answer
 #: on CPU and on an NVIDIA Blackwell GPU), but nothing has yet compared the two head to
 #: head on a production campaign, and a scheme that changes the likelihood must not
 #: become reachable by default on the strength of unit tests.  Explicit-only is what lets
 #: a pilot run both and decide; promoting it into `choose_angle_marg_scheme` is a
 #: separate change with its own evidence.
+#:
+#: MODELLED LIMIT of this kernel, which the four-axis kernel does not share: its phi
+#: axis is dense and amp-sized, so its per-sample buffer grows as sqrt(amplitude).  At
+#: T=1193, N_x=256, m_max=2 that model gives 5.4 GiB per sample at rho 163 and
+#: 18.0 GiB at rho 652, against the ~12 GiB a 24 GiB card allows, so the top of the
+#: paper-1 ladder is refused by angle_marg_eval_chunk.  Table and derivation:
+#: jax_ile/DESIGN_anglemarg_memory.md.  An observed 19.99 GiB refusal is recorded in
+#: RIFT_roboto_paper development/BREADCRUMB_sampler_arms_6B_20260908.md, but that
+#: run's dimensions are recorded nowhere, so do not quote it against a rung.
 
 # ---------------------------------------------------------------------------
 ANGLE_MARG_CROSSOVER_AMPLITUDE = 450.0     # A = rho^2/2; rho = 30.  NOTE the
@@ -2093,12 +2141,19 @@ def gh_laplace_supported(C_A, C_B, m_max, feature=None):
                                          m_max=int(m_max))
 
 
-def fused_log_likelihood_distphipsimarg_peaklocal(
+def fused_log_likelihood_distphipsimarg_psi_local_phi_dense(
         data, ra, dec, incl, x_grid, log_w_grid,
         interp=JAX_INTERP_DEFAULT, amp_sizing=None,
         time_quadrature=TIME_QUAD_DEFAULT, return_lnLt=False,
         phi_chunk=None):
-    """Distance-, phi_ref- AND psi-marginalized lnL: PEAK-LOCAL scheme.
+    """Distance-, phi_ref- AND psi-marginalized lnL: PSI LOCAL, PHI DENSE.
+
+    Kernel id ``psi_local_phi_dense``; selected by ``--angle-marg-scheme
+    peak-local`` (or its descriptive spelling ``psi-local-phi-dense``).  This is
+    NOT the four-axis kernel of :mod:`all_axis_peaklocal`, which localizes time and
+    distance as well and is reached only through
+    ``--direct-marginalization-policy auto``.  See
+    :mod:`RIFT.likelihood.peak_local_names`.
 
     Same contract and normalization as
     :func:`fused_log_likelihood_distphipsimarg_exact`.  What changes is the psi axis:
@@ -2141,7 +2196,8 @@ def fused_log_likelihood_distphipsimarg_peaklocal(
     # for the exact and laplace schemes.  Skipping the check would publish that
     # silently, and would also leave the artifact without the standing best-effort
     # label, which is worse than the undersizing itself.
-    _runtime_amp_failsafe(C_A, C_B, x_grid, amp_sizing, "peak-local")
+    _runtime_amp_failsafe(C_A, C_B, x_grid, amp_sizing,
+                          _names.ANGLE_MARG_KERNEL["peak-local"])
 
     n_phi = _jp.required_n_phi(amp_sizing, m_max=_data_m_max(data))
     # Size the u axis through the SINGLE SOURCE OF TRUTH rather than letting the kernel
@@ -2168,31 +2224,35 @@ def fused_log_likelihood_distphipsimarg_peaklocal(
     return _time_marginalize_terminal(lnL_t, data, time_quadrature)
 
 
-def fused_log_likelihood_distphipsimarg_phi_local(
+def fused_log_likelihood_distphipsimarg_psi_local_phi_local(
         data, ra, dec, incl, x_grid, log_w_grid,
         interp=JAX_INTERP_DEFAULT, amp_sizing=None,
         time_quadrature=TIME_QUAD_DEFAULT, return_lnLt=False,
         x_chunk=None, pt_chunk=None, n_slots=None, return_ok=False):
     """Distance-, phi_ref- AND psi-marginalized lnL with BOTH ANGLE AXES LOCALIZED.
 
+    Kernel id ``psi_local_phi_local``; selected by ``--angle-marg-scheme phi-local``
+    (or ``psi-local-phi-local``).  Time and distance stay dense here, so this is
+    still not the four-axis kernel of :mod:`all_axis_peaklocal`.
+
     Same contract and normalization as the other ``fused_log_likelihood_distphipsimarg_*``
-    entries.  What changes against ``peak-local`` is the phi axis: rather than a dense grid
+    entries.  What changes against ``psi_local_phi_dense`` is the phi axis: rather than a dense grid
     sized ``~sqrt(A)``, phi is localized around the maxima of the u-profile and the omitted
     mass is BOUNDED, so cost stops growing with amplitude.
 
     IT DECLINES, AND THE CALLER GETS THE DENSE ANSWER WHEN IT DOES.  ``phi_local_lnI`` is
     fail-closed: a row whose omitted-mass bound, convergence probes or u sizing do not pass
     returns ``ok = False``, and across a distance grid ``ok`` is the CONJUNCTION over nodes.
-    This entry evaluates the dense peak-local scheme as well and selects elementwise, so a
+    This entry evaluates ``psi_local_phi_dense`` as well and selects elementwise, so a
     decline costs time and never accuracy.  Pass ``return_ok=True`` to get the mask and
     account for how often the localized path actually carried the row -- a scheme that
     silently fell back on every sample would otherwise look like it worked.
 
-    THAT MAKES THIS SLOWER THAN ``peak-local`` UNTIL THE FALLBACK CAN BE SKIPPED, which
+    THAT MAKES THIS SLOWER THAN ``psi_local_phi_dense`` UNTIL THE FALLBACK CAN BE SKIPPED, which
     needs an acceptance rate measured on production tables rather than assumed.  It is
     therefore reachable only by name and is not in ``auto``.
 
-    ``JAX_ILE_DISTMARG_GH`` is REFUSED for the same reason the dense peak-local branch
+    ``JAX_ILE_DISTMARG_GH`` is REFUSED for the same reason ``psi_local_phi_dense``
     refuses it: no psi-marginal node placement exists yet.  The seam it will attach to,
     :func:`~RIFT.likelihood.jax_ile.joint_anglemarg_peaklocal.phi_local_lnI_at_distance`,
     is public and takes one distance node, so that work does not have to modify this
@@ -2208,7 +2268,8 @@ def fused_log_likelihood_distphipsimarg_phi_local(
     from . import joint_anglemarg_peaklocal as _jp
 
     C_A, C_B, _meta = angle_coefficient_tables(data, ra, dec, incl, interp=interp)
-    _runtime_amp_failsafe(C_A, C_B, x_grid, amp_sizing, "phi-local")
+    _runtime_amp_failsafe(C_A, C_B, x_grid, amp_sizing,
+                          _names.ANGLE_MARG_KERNEL["phi-local"])
 
     n_phi = _jp.required_n_phi(amp_sizing, m_max=_data_m_max(data))
     u_nodes = _jp.u_nodes_in_use(amp_sizing)
@@ -2236,6 +2297,16 @@ def fused_log_likelihood_distphipsimarg_phi_local(
     if return_lnLt:
         return lnL_t
     return _time_marginalize_terminal(lnL_t, data, time_quadrature)
+
+
+# Compatibility aliases.  The names above say which axes each kernel localizes; these
+# are the spellings that shipped first and that archived branches and tests import.
+# They are the same function objects, so a caller cannot get a different kernel by
+# choosing a different spelling.
+fused_log_likelihood_distphipsimarg_peaklocal = (
+    fused_log_likelihood_distphipsimarg_psi_local_phi_dense)
+fused_log_likelihood_distphipsimarg_phi_local = (
+    fused_log_likelihood_distphipsimarg_psi_local_phi_local)
 
 
 def choose_angle_marg_scheme(amplitude, gh_enabled=None,

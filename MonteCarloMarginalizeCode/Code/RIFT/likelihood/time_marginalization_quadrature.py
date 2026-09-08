@@ -188,6 +188,16 @@ __all__ = [
 
 TIME_QUADRATURE_CHOICES = ("simpson", "bandlimited", "peak-local")
 
+#: WHICH 'peak-local' THIS IS.  The TIME kernel, id ``time_local_numpy``, on the
+#: numpy/cupy ILE arm.  A DIFFERENT flag, ``--angle-marg-scheme peak-local``, selects
+#: an ANGLE kernel on the JAX arm (id ``psi_local_phi_dense``), and six more kernels
+#: share the words.  RIFT.likelihood.peak_local_names is the registry; a measurement
+#: of one of them says nothing about another.  This spelling is a compatibility
+#: surface -- archived run records and args_ile.txt carry it -- so it stays as is, and
+#: no synonym is offered here: unlike the JAX angle path, this string is compared at
+#: several sites across factored_likelihood, the batchmode driver and two pipeline
+#: builders, and a synonym would need canonicalizing at each of them.
+#:
 #: 'peak-local' lives in RIFT.likelihood.time_marginalization_peak_local and
 #: reuses this module's helpers wholesale (width estimator, derived factor, row
 #: classification, edge guard, Simpson hand-over).  It is named here rather than

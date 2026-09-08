@@ -1,5 +1,26 @@
 """Fixed-shape multi-peak marginalization over time, polarization, phase and distance.
 
+KERNEL ID ``four_axis_local`` (RIFT.likelihood.peak_local_names).  Localizes ALL
+FOUR axes (t, phi_ref, u=2 psi, x=Dref/D).  Reached only through
+``--direct-marginalization-policy auto``.  Seven other kernels in this package are
+also called "peak-local" and localize fewer axes; their measured accuracy and cost
+do not apply here, and this one's do not apply to them.
+
+RENAME PENDING: this file should be called ``four_axis_local.py``.  Its current name says
+"peaklocal", which names eight kernels in this package.  The KERNEL ID above is the
+disambiguation that shipped; the file name is the part still to do, and it was NOT done
+in the same change.
+
+WHY IT WAITS, and how to tell when it can go.  A rename rewrites every hunk header, so
+it conflicts with every in-flight branch touching this file.  As of 2026-09-08 that is:
+
+  * PR #214 (codex/jax-cache-transfer), 2 commits touching this file.
+
+Do it once those land or close, in a commit that does nothing else, so the diff reads as
+a pure rename: ``git mv all_axis_peaklocal.py four_axis_local.py``.  Update the ``module`` field of this kernel's entry in
+``RIFT/likelihood/peak_local_names.py`` and the roster in ``.travis/test-jax.sh`` in the
+same commit, and rename the test file to match.
+
 This module is the device-evaluation half of the all-variable peak-local design.
 It deliberately separates three jobs which must not be conflated:
 
