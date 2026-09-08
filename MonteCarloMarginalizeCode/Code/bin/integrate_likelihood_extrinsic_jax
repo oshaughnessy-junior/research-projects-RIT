@@ -1739,7 +1739,8 @@ def direct_marginalization_policy_note(like, theta, n_max=256, chunk=32,
         # config accepts, one forced onto the reserve -- can be differenced on
         # exactly the same prior draws.  An accepted row never evaluates the
         # reserve, so this is the only way to price the local branch against it.
-        return note, np.asarray(ledger["lnL"], dtype=float)
+        return (note, np.asarray(ledger["lnL"], dtype=float),
+                np.asarray(ledger["accepted_local"], dtype=bool))
     return note
 
 
@@ -2574,9 +2575,10 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
         from RIFT.likelihood.jax_ile.samplers import sample_prior_3 as _sp3
         _theta_probe = _sp3(_probe_rows, np.random.default_rng(opts.seed))
         _t0 = _time.time()
-        _probe_note, _probe_vals = direct_marginalization_policy_note(
-            like, _theta_probe, n_max=_probe_rows, chunk=_probe_rows,
-            return_values=True)
+        _probe_note, _probe_vals, _probe_acc = (
+            direct_marginalization_policy_note(
+                like, _theta_probe, n_max=_probe_rows, chunk=_probe_rows,
+                return_values=True))
         _dt = _time.time() - _t0
         # stderr AND stdout: the surveys read one or the other, and an
         # unclassifiable run is the failure this whole probe exists to remove.
@@ -2584,9 +2586,16 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
                 "ledger on %d rows in %.1f s (%.2f s/row incl. compile): %s"
                 % (_probe_rows, _dt, _dt / max(_probe_rows, 1), _probe_note))
         if _probe_vals is not None:
-            _msg += ("\nPROBE-VALUES seed=%d rows=%d lnL=[%s]"
+            # lnL PAIRED WITH THE DISPOSITION, per row.  The counts alone
+            # cannot say whether the rows that decline are rows that matter:
+            # capacity declines concentrate far from truth, where the
+            # likelihood is negligible, and a decline fraction quoted without
+            # the likelihood of the declining rows overstates what it costs
+            # the posterior.
+            _msg += ("\nPROBE-VALUES seed=%d rows=%d lnL=[%s] local=[%s]"
                      % (int(opts.seed), _probe_rows,
-                        ",".join("%.10g" % v for v in _probe_vals)))
+                        ",".join("%.10g" % v for v in _probe_vals),
+                        ",".join("1" if a else "0" for a in _probe_acc)))
         print(_msg)
         sys.stderr.write(_msg + "\n")
         sys.stdout.flush()
