@@ -767,6 +767,13 @@ jobs:
         # and --use-jax-ile is refused at DAG-build time with --calmarg-envelope-directory.
         run: |
           python -m pytest -q MonteCarloMarginalizeCode/Code/test/test_jax_ile_selectable.py
+      - name: Run q-time-pregrid DAG-build test (--internal-ile-q-time-pregrid-factor)
+        # Full subprocess DAG build against the same reference ini/coinc, same reason as
+        # the step above (PR #281 follow-up review, MAJOR #1): asserts
+        # --internal-ile-q-time-pregrid-factor 8 lands in ILE.sub, ILE_extr.sub, and
+        # ILE_puff.sub, not only in helper_ile_args.txt / args_ile.txt.
+        run: |
+          python -m pytest -q MonteCarloMarginalizeCode/Code/test/test_q_time_pregrid_dag.py
       - name: Upload test logs on failure
         if: failure()
         uses: actions/upload-artifact@v4

@@ -34,6 +34,7 @@ Q_TIME_PREGRID_CHOICES = (1, 8)
 
 ILE_Q_TIME_PREGRID_FLAG = '--q-time-pregrid-factor'
 ILE_INTERPOLATE_TIME_FLAG = '--interpolate-time'
+ILE_CALIBRATION_ENVELOPE_DIRECTORY_FLAG = '--calibration-envelope-directory'
 
 # Legacy --interpolate-time spellings the ILE driver itself still accepts (see
 # bin/integrate_likelihood_extrinsic_batchmode's _TI_LEGACY_BOOLEAN): a truthy value meant
@@ -53,13 +54,24 @@ _PIPELINE_REQUIRED_ILE_FLAGS = (
     ('--vectorized',
      'the driver restricts --q-time-pregrid-factor 8 to ordinary vectorized NoLoop'),
 )
+# Pure boolean flags: the driver reads these as opts.rotation_slow / opts.freqresponse
+# directly, so presence on the command line is exactly the excluded condition.
 _PIPELINE_EXCLUDING_ILE_FLAGS = (
     ('--rotation-slow',
      'the driver restricts --q-time-pregrid-factor 8 to ordinary vectorized NoLoop without rotation'),
     ('--freqresponse',
      'the driver restricts --q-time-pregrid-factor 8 to ordinary vectorized NoLoop without '
      'frequency-dependent response'),
-    ('--calibration-envelope-directory',
+)
+# --calibration-envelope-directory takes a VALUE, and the driver's own guard
+# (bin/integrate_likelihood_extrinsic_batchmode:509, and the same idiom at lines 774/880/920)
+# reads it as `opts.calibration_envelope_directory` truthiness, not presence: an empty string
+# is falsy, so the driver treats `--calibration-envelope-directory ""` as "not set" and does
+# NOT refuse.  Matching that (rather than refusing on token presence alone, as this module did
+# before PR #281's follow-up review) keeps this module an exact mirror of the driver instead of
+# a stricter one.
+_PIPELINE_EXCLUDING_VALUE_ILE_FLAGS = (
+    (ILE_CALIBRATION_ENVELOPE_DIRECTORY_FLAG,
      'the driver restricts --q-time-pregrid-factor 8 to ordinary vectorized NoLoop without '
      'calibration marginalization'),
 )
@@ -135,6 +147,16 @@ def find_interpolate_time_in_ile_args(ile_args):
     return out
 
 
+def find_calibration_envelope_directory_in_ile_args(ile_args):
+    """Every value given to ``--calibration-envelope-directory`` in ``ile_args``, in order."""
+    toks = _ile_tokens(ile_args)
+    out = []
+    for n, t in enumerate(toks):
+        if _matches(ILE_CALIBRATION_ENVELOPE_DIRECTORY_FLAG, t):
+            out.append(toks[n + 1] if n + 1 < len(toks) else None)
+    return out
+
+
 def _resolve_stencil_token(value):
     """Canonical stencil name for an --interpolate-time VALUE, or None if unrecognised.
 
@@ -171,6 +193,13 @@ def q_time_pregrid_pipeline_prereqs(factor, ile_args):
     for flag, why in _PIPELINE_EXCLUDING_ILE_FLAGS:
         if any(_matches(flag, t) for t in toks):
             missing.append("incompatible {} ({})".format(flag, why))
+    for flag, why in _PIPELINE_EXCLUDING_VALUE_ILE_FLAGS:
+        values = [toks[n + 1] if n + 1 < len(toks) else '' for n, t in enumerate(toks)
+                  if _matches(flag, t)]
+        # optparse takes the LAST occurrence, matching find_calibration_envelope_directory_in_
+        # ile_args / find_interpolate_time_in_ile_args elsewhere in this module.
+        if values and values[-1]:
+            missing.append("incompatible {} (value {!r}) ({})".format(flag, values[-1], why))
     interp_values = find_interpolate_time_in_ile_args(ile_args)
     if interp_values:
         # optparse takes the LAST occurrence, so that is the one the driver will actually see.

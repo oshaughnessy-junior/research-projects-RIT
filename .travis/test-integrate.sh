@@ -173,13 +173,21 @@ python MonteCarloMarginalizeCode/Code/test/test_mcsamplerEnsemble_extended.py --
 # calibration marginalization excluded), the forced-cubic-stencil conflict (factor 8 refuses
 # an explicit --interpolate-time other than cubic, with the driver's OWN wording), the
 # two-stage refuse-not-ignore emission guard, and that the option actually reaches
-# helper_ile_args.txt / args_ile.txt rather than being inert.
+# helper_ile_args.txt / args_ile.txt rather than being inert.  test_q_time_pregrid_driver_
+# parity.py (PR #281 follow-up review, MAJOR #2) adds the piece those two files left
+# untested: it EXECUTES bin/integrate_likelihood_extrinsic_batchmode as a subprocess for
+# every prerequisite above and asserts the builder refuses exactly when the driver refuses.
+# The real DAG-build regression (--internal-ile-q-time-pregrid-factor reaching ILE.sub /
+# ILE_extr.sub / ILE_puff.sub, PR #281 review MAJOR #1) is test_q_time_pregrid_dag.py,
+# registered in .github/workflows/ci.yml's test-run job next to test_jax_ile_selectable.py
+# rather than here: it is a full subprocess DAG build (~3 minutes), not a fast unit gate.
 _QPREGRID_TESTS=(
     MonteCarloMarginalizeCode/Code/test/test_q_time_pregrid.py
     MonteCarloMarginalizeCode/Code/test/test_q_time_pregrid_pipeline.py
+    MonteCarloMarginalizeCode/Code/test/test_q_time_pregrid_driver_parity.py
 )
 # Raise EXPECTED by RUNNING collection, never by arithmetic.
-_QPREGRID_EXPECTED=63
+_QPREGRID_EXPECTED=72
 _QPREGRID_FOUND=$(python -m pytest -q --collect-only "${_QPREGRID_TESTS[@]}" 2>/dev/null | grep -c '::' || true)
 if [ "$_QPREGRID_FOUND" -ne "$_QPREGRID_EXPECTED" ]; then
     echo "q-time-pregrid gate: collected $_QPREGRID_FOUND tests, expected $_QPREGRID_EXPECTED" >&2
