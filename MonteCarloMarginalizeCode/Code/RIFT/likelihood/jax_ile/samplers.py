@@ -38,7 +38,18 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from . import core as _core
+# ``core`` pulls in lal/lalsimulation (see core.py's own module-level import).
+# test/jax/test_nuts_phimarg.py deliberately loads *this* file standalone, by
+# path, with no lal on hand -- so the relative import below must not run in
+# that context. A module loaded via importlib.util.spec_from_file_location()
+# with no parent package gets __package__ == "" (falsy); a normal package
+# import (``import RIFT.likelihood.jax_ile.samplers``) gets the real dotted
+# package name (truthy). Gate on that instead of a bare ``from . import
+# core``, which raises ImportError unconditionally outside a package.
+if __package__:
+    from . import core as _core
+else:
+    _core = None
 
 # Default chunk for the batched lnL evals.  The per-sample distance quadrature
 # (JAX_ILE_DISTMARG_GH=G, or the driver's --distance-gh-nodes) materialises a
@@ -52,8 +63,11 @@ from . import core as _core
 # (core.set_distmarg_gh_nodes(), called from the driver's option parsing) runs
 # AFTER this module is first imported, so a module-level constant read from
 # os.environ here would miss a node count set only via --distance-gh-nodes.
+# Standalone-loaded (_core is None): fall back to the env var directly, same
+# as the pre-CLI behaviour, since there is no driver to call set_ from.
 def _default_eval_chunk():
-    n = _core.get_distmarg_gh_nodes()
+    n = (_core.get_distmarg_gh_nodes() if _core is not None
+         else int(os.environ.get("JAX_ILE_DISTMARG_GH", "0")))
     return max(500, 4000 * 16 // max(16, n)) if n > 0 else 4000
 
 # Parameter order used everywhere in this module.
