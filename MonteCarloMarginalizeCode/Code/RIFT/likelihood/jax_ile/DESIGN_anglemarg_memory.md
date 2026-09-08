@@ -146,3 +146,12 @@ On jax 0.9.2 (ldas-pcdev11, idle 24 GiB card) `largest_free_block_bytes` and
 `pool_bytes` both read 0 before the first allocation, so `_device_available_bytes`
 now treats a bare 0 in either field as "not reported" and falls through, rather
 than as a full device.
+
+Adversarial review of that fix found it reachable on a *busy* card too, before
+this process's own first allocation, where 0/0 read the same as idle but the 4 GiB
+fallback it falls through to is not safe. `_angle_marg_buffer_target` now forces
+one tiny allocation with `_probe_allocate` before reading `memory_stats()`, so the
+pool signal exists to read; if the resulting pool is small next to `bytes_limit`
+(the on-demand-allocator shape, where the pool only grows to fit what has been
+requested so far), availability is bounded by `bytes_limit - bytes_in_use` rather
+than trusted. A missing `bytes_in_use` key is now read as unknown, not 0.

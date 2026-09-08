@@ -771,7 +771,12 @@ fi
 # full" premise was the bug) and adds 6, net +5, none parametrized -- so the file-local
 # delta is exact and this is a direct bump, not an arithmetic guess across a merge (the
 # failure mode the paragraphs above document).  577 + 5 = 582.
-EXPECTED_TESTS=582
+#
+# THIRTEENTH, the review-MAJOR follow-up (forced probe allocation before reading
+# memory_stats(), plus the on-demand-allocator bound) again touches only
+# test_anglemarg_buffer_cap.py: adds 5 tests, none parametrized, no removals.
+# 582 + 5 = 587.
+EXPECTED_TESTS=587
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"

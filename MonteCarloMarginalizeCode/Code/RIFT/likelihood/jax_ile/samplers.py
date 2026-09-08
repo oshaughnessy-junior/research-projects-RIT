@@ -397,14 +397,45 @@ def _device_available_bytes(stats):
     (``pool_bytes > 0`` and ``pool_bytes - bytes_in_use == 0``) -- still returns 0, not
     None, and that is deliberate: it is a reading, not a failure to read.  Falling back to
     the 4 GiB guess there would hand out memory we have just been told does not exist.
+
+    A missing ``bytes_in_use`` key (review MINOR, 2026-09-08) is read as unknown
+    occupancy, not as 0: ``stats.get(...) or 0`` could not tell "reported zero" from
+    "never reported", so a pool with no occupancy figure at all was read as entirely
+    free.  ``stats.get("bytes_in_use")`` is None in both cases; only the missing-key
+    case must fall through to "unknown" here.
     """
     block = stats.get("largest_free_block_bytes")
     if block:
         return max(0, int(block))
     pool = stats.get("pool_bytes") or stats.get("bytes_reserved")
     if pool:
-        return max(0, int(pool) - int(stats.get("bytes_in_use") or 0))
+        in_use = stats.get("bytes_in_use")
+        if in_use is None:
+            return None
+        return max(0, int(pool) - int(in_use))
     return None
+
+
+def _probe_allocate(jax_module, dev):
+    """Force one tiny allocation on `dev` so the allocator's pool actually exists
+    before `_angle_marg_buffer_target` reads `memory_stats()`.
+
+    Review MAJOR, 2026-09-08: `_angle_marg_buffer_target` is called before this
+    process's first device allocation, so on jax 0.9.2 `pool_bytes` and
+    `largest_free_block_bytes` both read 0 -- not because the device is busy, but
+    because the allocator has not been asked to reserve anything yet.  `#285` made
+    that unread state fall through to the blind 4 GiB fallback, which is safe on an
+    idle card but is 8x too generous on a busy shared one (~0.5 GiB truly free,
+    simulated in the review).  A tiny real allocation is the only way to make the
+    pool signal exist: under JAX's default preallocating allocator it only succeeds
+    because the memory it reserves genuinely was free, so a successful probe means
+    `pool_bytes` afterward is memory this process actually holds, not a ceiling.
+
+    Exceptions are the caller's problem on purpose: a device with no room even for
+    this allocation is exactly the "we could not read this device" case the
+    fallback already exists for.
+    """
+    jax_module.device_put(jax_module.numpy.zeros(1), dev).block_until_ready()
 
 
 def _angle_marg_buffer_target():
@@ -420,6 +451,14 @@ def _angle_marg_buffer_target():
     try below on purpose: inside it, the blanket `except Exception` would swallow the
     ValueError from a malformed override and hand back the fallback -- silently ignoring
     the one number in this function a human asserted about the machine in front of them.
+
+    Before reading stats, `_probe_allocate` forces one tiny allocation so the pool
+    signal exists at all on jax 0.9.2 (review MAJOR, 2026-09-08).  A small pool next
+    to a much larger `bytes_limit` (below half of it) means the on-demand allocator
+    is in play, where the pool grows only to fit what has actually been requested so
+    far and `pool - bytes_in_use` is not a free-memory reading; that case is bounded
+    by `bytes_limit - bytes_in_use` instead of trusted, same fallback ceiling as an
+    unreadable device.
     """
     explicit = _read_buffer_bytes()
     if explicit is not None:
@@ -429,7 +468,30 @@ def _angle_marg_buffer_target():
         devs = [d for d in jax.devices() if getattr(d, "platform", "") == "gpu"]
         if not devs:
             return _ANGLE_MARG_BUFFER_TARGET_FALLBACK
-        stats = devs[0].memory_stats() or {}
+        dev = devs[0]
+        try:
+            _probe_allocate(jax, dev)
+        except Exception:
+            # No room even for this allocation, or a fake/incomplete jax in tests --
+            # either way, still try to read whatever memory_stats() reports below
+            # rather than giving up immediately.
+            pass
+        stats = dev.memory_stats() or {}
+        limit = stats.get("bytes_limit") or stats.get("bytes_reservable_limit")
+        pool = stats.get("pool_bytes") or stats.get("bytes_reserved")
+        block = stats.get("largest_free_block_bytes")
+        if not block and pool and limit and int(pool) < 0.5 * int(limit):
+            # On-demand allocator (XLA_PYTHON_CLIENT_PREALLOCATE=false): the pool
+            # grows incrementally with each request instead of claiming a big
+            # fraction up front, so a small pool relative to the limit does not mean
+            # little is free -- it means pool - bytes_in_use cannot be trusted here.
+            # Bound the blind guess by what the device could still give this
+            # process rather than reach for a figure this allocator shape cannot
+            # support.
+            in_use = stats.get("bytes_in_use")
+            in_use = int(in_use) if in_use is not None else 0
+            return max(0, min(_ANGLE_MARG_BUFFER_TARGET_FALLBACK,
+                               int(limit) - in_use))
         avail = _device_available_bytes(stats)
         if avail is None:
             # We can see a device but not how much of it is free.  The conservative
@@ -440,7 +502,6 @@ def _angle_marg_buffer_target():
         # The ceiling is still worth reading, but only DOWNWARD: availability cannot
         # legitimately exceed what the allocator may hold, so a runtime reporting a free
         # block bigger than its own limit is misreporting and must not inflate this.
-        limit = stats.get("bytes_limit") or stats.get("bytes_reservable_limit")
         if limit:
             avail = min(avail, int(limit))
         # NO max() WITH THE FALLBACK HERE.  Flooring at 4 GiB would defeat the whole
