@@ -405,6 +405,20 @@ def test_driver_runs_flowmc_distance_marginalized_bandlimited(tmp_path):
     cannot see the storage-window widening, the option plumbing, or the fact
     that the run publishes a row rather than a NaN.
 
+    flowMC is an optional dependency the CI ``jax-ile-check`` job does not
+    install, so ``pytest.importorskip`` below is a real skip there, not a
+    pass; this is still full executable coverage on any host that has flowMC
+    (e.g. local development).  A non-flowMC ``--mode`` (laplace-is, prior-mc,
+    map, nuts) was tried here first and dropped: all four reach the SAME
+    ``JAXDistanceMarginalizedLikelihood(..., time_quadrature="bandlimited")``
+    construction (driver ``analyze_one``, the ``elif
+    opts.distance_marginalization:`` branch) via a blind full-sky prior draw,
+    and MEASURED against this exact injection that draw's reflected-FFT
+    convergence check hard-fails (no coarse likelihood substituted, by
+    design) on roughly a quarter of blind draws regardless of seed -- so a
+    small ``--n-max`` does not make the combination reliable, only rarer to
+    catch in one CI run.  See the flagged follow-up on this fragility.
+
     The budget is set by memory, not by wall clock.  flowMC unrolls its
     per-step proposal, so the compiled graph -- already eleven refinement
     branches wide -- is multiplied by ``--n-local-steps``; at twenty steps this
@@ -413,6 +427,7 @@ def test_driver_runs_flowmc_distance_marginalized_bandlimited(tmp_path):
     ``--internal-data-storage-window-half`` is set BELOW the band-limited
     requirement on purpose, so the auto-widening has something to do and the
     assertion on it is not vacuous."""
+    pytest.importorskip("flowMC")
     import os
     out = tmp_path / "ile"
     env = dict(os.environ, PYTHONPATH=str(_CODE), OMP_NUM_THREADS="1",
