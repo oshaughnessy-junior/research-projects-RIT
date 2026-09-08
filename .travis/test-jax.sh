@@ -376,7 +376,7 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         here -- see DESELECTED_TESTS -- and 11 are
 #                                         gated.
 #   test_direct_marginalization_policy.py
-#                                      12  opt-in cross-axis policy WIRING: choices and
+#                                      18  opt-in cross-axis policy WIRING: choices and
 #                                         refusals, measure conversion on both distance
 #                                         paths against the exact scheme, decline to a
 #                                         warranted band-limited reserve that keeps the
@@ -691,7 +691,13 @@ fi
 # ~/.cache/jaxci_venv (jax 0.9.2): "557/562 tests collected (5 deselected)",
 # gate-style count 557 from 36 files.  Independently recollected with the CVMFS
 # igwn python on ldas-pcdev11 during the same landing: same 557 from 36 files.
-EXPECTED_TESTS=557
+#
+# NINTH: the policy follow-up PR adds three wiring tests (guard preflight,
+# operating-point defaults, and a parametrized fail-closed case).  Measured on
+# the follow-up tree with the DESELECT loop applied, ldas-grid, CVMFS igwn
+# python: "560/565 tests collected (5 deselected)", gate-style count 560 from
+# 36 files.
+EXPECTED_TESTS=560
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
