@@ -15,11 +15,22 @@ detector, then by mode pair) -- fixed alongside this PR.
    two amplitudes, with a convergence sequence (the memory-known invariant: lnL(psi)
    is exactly two harmonics, so a coarse trapezoid on the LOG-likelihood would be
    exact, but exp(lnL) is not band-limited, so exp(lnL(psi)) needs many nodes).
-2. test_flag_reaches_help: the option is registered.
-3. test_refuses_incompatible_combinations: every documented refusal actually fires,
+2. test_matches_reference_above_overflow: the same comparison at max_psi lnL ~ 1100,
+   ABOVE ln(DBL_MAX) = 709, where the un-subtracted integrand returned nan.  The
+   trapezoid of exp(lnL) cannot be the reference there (it overflows too), so this uses
+   an independent max-subtracted midpoint rule on the two-harmonic DFT fit of lnL(psi).
+3. test_psi_prior_mass_matches_the_sampler: the analytic marginal is normalized, this
+   driver's psi prior is NOT (1/pi over (0, 2 pi), mass 2), and the driver restores that
+   mass from the sampler's own objects rather than a hardcoded ln 2.
+4. test_flag_reaches_help: the option is registered.
+5. test_refuses_incompatible_combinations: every documented refusal actually fires,
    with no data files needed (the refusal runs before any data is read).
-4. test_driver_runs_end_to_end: the driver actually completes a tiny run on
-   synthetic zero-signal data and writes a result row.
+6. test_driver_runs_end_to_end: the driver actually completes a tiny run on
+   synthetic zero-signal data, writes a result row, keeps psi out of the sampled
+   dimensions, and writes the NaN (not fiducial) polarization column.
+7. test_marginalized_and_sampled_lnZ_agree: the whole point of (3) end to end -- the
+   flag must not move lnZ, so a marginalized and a sampled run of the same fixture
+   agree within Monte Carlo error rather than differing by ln 2.
 """
 
 import os
@@ -126,6 +137,123 @@ def test_matches_bruteforce_quadrature(dist_mpc, label):
         "%s: a 16-node trapezoid over exp(lnL(psi)) should NOT already be converged "
         "to 1e-3 nat -- if it is, this test's coarse/dense contrast proves nothing"
         % label)
+
+
+###
+### 1a. Correctness ABOVE the exp() overflow cliff
+###
+
+def _dft_reference_psi_marginal(rholms_intp, cross_terms, cross_terms_V, P, Lmax, nnodes=1 << 20):
+    """An OVERFLOW-IMMUNE reference for (1/pi) int_0^pi exp(lnL(psi)) dpsi.
+
+    lnL(psi) is exactly two harmonics (the memory-known invariant, and the review
+    measured every harmonic above cos/sin(4 psi) at <= 2.4e-13 across seven
+    configurations), so 16 calls into the ordinary FactoredLogLikelihood determine it
+    exactly by DFT.  The marginal is then a midpoint rule -- exact to machine precision
+    for a periodic analytic integrand -- taken on exp(lnL - max lnL) and shifted back.
+    That subtraction is why this route stays finite where a trapezoid of exp(lnL) does
+    not: it is an INDEPENDENT construction from
+    NetworkLogLikelihoodPolarizationMarginalized, which never calls FactoredLogLikelihood.
+    """
+    nfit = 16
+    psis = np.arange(nfit)*np.pi/nfit
+    extr = lalsimutils.ChooseWaveformParams()
+    extr.phi, extr.theta = P.phi, P.theta
+    extr.incl, extr.phiref, extr.dist, extr.tref = P.incl, P.phiref, P.dist, P.tref
+    y = np.empty(nfit)
+    for i, psi in enumerate(psis):
+        extr.psi = psi
+        y[i] = FL.FactoredLogLikelihood(
+            extr, None, rholms_intp, cross_terms, cross_terms_V, Lmax, interpolate=True)
+    Y = np.fft.rfft(y)/nfit
+    c, A, B = Y[0].real, 2*Y[1], 2*Y[2]
+    residual_harmonics = float(np.max(np.abs(Y[3:])*2)) if len(Y) > 3 else 0.0
+    assert residual_harmonics < 1e-9*max(1.0, np.max(np.abs(y))), (
+        "lnL(psi) is not two harmonics (max |k>=3| = %.3e); this reference is invalid"
+        % residual_harmonics)
+    p = (np.arange(nnodes) + 0.5)*np.pi/nnodes
+    v = c + (A*np.exp(-2j*p)).real + (B*np.exp(-4j*p)).real
+    m = float(v.max())
+    return m + np.log(np.mean(np.exp(v - m))), m
+
+
+def test_matches_reference_above_overflow():
+    """F1: exp() of the raw exponent overflows to inf, and log(inf) is nan, once
+    max_psi lnL passes ln(DBL_MAX) = 709 -- a network SNR near 38, well inside the
+    range this option is FOR.  Measured on this branch before the max subtraction:
+    max lnL 663.80 returned 659.508, 725.42 and 1095.38 returned nan.  This fixture
+    sits at max lnL ~ 1100, past the cliff, and is checked to 1e-6 nat.
+    """
+    detectors = ["H1", "L1"]
+    P, data_dict, psd_dict, fiducial_epoch = _make_injection(detectors, 300.0)
+    Lmax, fMax, t_window = 2, 1000.0, 0.15
+
+    rholms_intp, cross_terms, cross_terms_V, rholms, guess_snr, _rest = FL.PrecomputeLikelihoodTerms(
+        fiducial_epoch, t_window, P, data_dict, psd_dict, Lmax, fMax,
+        analyticPSD_Q=True, verbose=False, quiet=True, ignore_threshold=None)
+
+    reference, lnL_max = _dft_reference_psi_marginal(
+        rholms_intp, cross_terms, cross_terms_V, P, Lmax)
+    assert lnL_max > 709.0, (
+        "fixture must sit ABOVE the overflow cliff to test anything: max lnL = %.2f" % lnL_max)
+
+    lnL_analytic = FL.NetworkLogLikelihoodPolarizationMarginalized(
+        fiducial_epoch, rholms_intp, cross_terms, cross_terms_V,
+        P.tref, P.phi, P.theta, P.incl, P.phiref, P.psi, P.dist, Lmax, detectors)
+    assert np.isfinite(lnL_analytic), (
+        "analytic marginal returned %r at max lnL %.2f -- the max subtraction is gone"
+        % (lnL_analytic, lnL_max))
+    assert abs(lnL_analytic - reference) < 1e-6, (
+        "max lnL %.2f: analytic %.10f vs independent reference %.10f (diff %.3e)"
+        % (lnL_max, lnL_analytic, reference, lnL_analytic - reference))
+
+    # the return value must not depend on the reference psi handed in, at this amplitude too
+    vals = [FL.NetworkLogLikelihoodPolarizationMarginalized(
+                fiducial_epoch, rholms_intp, cross_terms, cross_terms_V,
+                P.tref, P.phi, P.theta, P.incl, P.phiref, psi_ref, P.dist, Lmax, detectors)
+            for psi_ref in (0.0, 0.7, 2.0, 5.5)]
+    assert np.ptp(vals) < 1e-6, vals
+
+
+###
+### 1b. Prior-mass normalization: the flag must not move lnZ
+###
+
+def test_psi_prior_mass_matches_the_sampler():
+    """F2.  NetworkLogLikelihoodPolarizationMarginalized returns the NORMALIZED marginal,
+    (1/pi) int_0^pi, mass 1.  The driver's sampled psi path does NOT use a normalized psi
+    prior: mcsampler.uniform_samp_psi is 1/pi over param_limits["psi"] = (0, 2 pi), mass 2.
+    So every ordinary lnZ on this path carries +ln 2 that the analytic marginal does not,
+    and the driver has to add it back or the flag reports lnZ - 0.693 nat (measured 0.7027
+    and 0.6602 +/- 0.036 on two fixtures before the fix).
+
+    This pins BOTH halves: the library function's own normalization, and that the driver
+    derives the compensating mass from the sampler's objects instead of writing ln 2.
+    """
+    import RIFT.integrators.mcsampler as mcsampler
+
+    # the incumbent sampled-path measure, read off the same two objects the driver reads
+    lo, hi = 0.0, 2*np.pi                       # param_limits["psi"] on the conventional path
+    density = float(np.atleast_1d(mcsampler.uniform_samp_psi(np.atleast_1d(0.5*(lo+hi))))[0])
+    mass = density*(hi - lo)
+    assert density == pytest.approx(1.0/np.pi)
+    assert mass == pytest.approx(2.0), (
+        "the conventional driver's psi prior no longer integrates to 2 (got %r); the "
+        "compensation in integrate_likelihood_extrinsic_batchmode must move with it" % mass)
+
+    # The driver must DERIVE that mass, not write ln 2.  This half can only be a source
+    # check: at the default operating point the derived value IS ln 2 to the last bit, so
+    # no runtime observation can separate a derivation from a literal.  What it pins is the
+    # expression, so that changing either input (limits or density) moves the correction.
+    text = BIN.read_text()
+    assert "mcsampler.uniform_samp_psi" in text, \
+        "the psi prior density is no longer read from the sampler"
+    assert "_psi_prior_mass = _psi_prior_density*(param_limits[\"psi\"][1]-param_limits[\"psi\"][0])" in text, \
+        "the psi prior MASS is no longer derived from the sampler's own limits and density"
+    assert "psi_marginalization_ln_prior_mass = float(numpy.log(_psi_prior_mass))" in text, \
+        "the correction is not ln(the derived mass) -- a hardcoded ln 2 will not track the sampler"
+    assert "lnL += _psi_marg_ln_prior_mass" in text, \
+        "the derived prior mass is never applied to the marginalized likelihood"
 
 
 ###
@@ -248,10 +376,22 @@ def synthetic_fixture(tmp_path_factory):
                 event_time=event_time, seg_start=seg_start, seg_end=seg_end)
 
 
-def test_driver_runs_end_to_end(synthetic_fixture):
-    outdir = synthetic_fixture["outdir"]
+def _driver_env():
+    """CUDA_VISIBLE_DEVICES="" is REQUIRED, and is not this option's problem (review F5):
+    on any host where cupy sees a GPU, the AV scalar path raises
+    "ValueError: Unsupported dtype float128" at mcsamplerAdaptiveVolume.py's
+    identity_convert_togpu(lnL), because the scalar likelihood builds lnL as RiftFloat.
+    Reproduced on the base tree with and without this flag.  Without this the driver
+    tests here are green only on GPU-less runners.
+    """
     env = dict(os.environ)
-    cmd = [
+    env["CUDA_VISIBLE_DEVICES"] = ""
+    env.setdefault("OMP_NUM_THREADS", "1")
+    return env
+
+
+def _driver_cmd(synthetic_fixture, *extra):
+    return [
         sys.executable, str(BIN),
         "--cache-file", str(synthetic_fixture["cache"]),
         "--channel-name", "H1=FAKE-STRAIN",
@@ -263,14 +403,38 @@ def test_driver_runs_end_to_end(synthetic_fixture):
         "--l-max", "2", "--reference-freq", "40", "--fmin-template", "40",
         "--srate", "2048", "--inv-spec-trunc-time", "0",
         "--sampler-method", "AV",
-        "--psi-marginalization", "--n-max", "8", "--n-eff", "2",
-        "--output-file", "out.xml.gz", "--save-samples",
-    ]
-    proc = subprocess.run(cmd, cwd=str(outdir), env=env,
+    ] + list(extra)
+
+
+def test_driver_runs_end_to_end(synthetic_fixture):
+    outdir = synthetic_fixture["outdir"]
+    cmd = _driver_cmd(
+        synthetic_fixture,
+        "--psi-marginalization", "--n-max", "20000", "--n-eff", "50",
+        "--output-file", "out.xml.gz", "--save-samples", "--fairdraw-extrinsic-output",
+    )
+    proc = subprocess.run(cmd, cwd=str(outdir), env=_driver_env(),
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                           universal_newlines=True, timeout=180)
+                           universal_newlines=True, timeout=600)
     assert proc.returncode == 0, proc.stdout[-4000:]
     assert "ANALYTICALLY MARGINALIZED (--psi-marginalization)" in proc.stdout
+
+    # F4/M5: psi must be gone from the integration dimensions, and the driver must SAY so
+    # at the one place unpinned_params is built.  Reading the printed list rather than
+    # trusting the absence of a crash: a psi left in would be integrated twice.
+    dim_lines = [ln for ln in proc.stdout.splitlines()
+                 if "psi is NOT a sampled dimension" in ln]
+    assert len(dim_lines) == 1, proc.stdout[-4000:]
+    assert "'psi'" not in dim_lines[0], dim_lines[0]
+    for expected in ("right_ascension", "declination", "phi_orb", "inclination", "distance"):
+        assert expected in dim_lines[0], dim_lines[0]
+
+    # F2: the compensating prior mass is announced, and it is the sampler's own mass
+    mass_lines = [ln for ln in proc.stdout.splitlines()
+                  if "sampled-path psi prior mass is" in ln]
+    assert len(mass_lines) == 1, proc.stdout[-4000:]
+    assert "2.000000" in mass_lines[0], mass_lines[0]
+    assert "+0.693147" in mass_lines[0], mass_lines[0]
 
     result_dat = outdir / "out.xml.gz_0_.dat"
     assert result_dat.exists(), "driver did not write a result row\n" + proc.stdout[-4000:]
@@ -290,3 +454,78 @@ def test_driver_runs_end_to_end(synthetic_fixture):
         status = json.loads(status_path.read_text())
         assert status["lnL"] == pytest.approx(lnL_row)
         assert np.isfinite(status["lnL"])
+
+    # F3/F6/M6/M7: --save-samples was requested, so the samples XML must EXIST (dropping the
+    # placeholder used to KeyError past it, leaving the .dat this test already reads intact),
+    # and its polarization column must be NaN.  It is NOT a psi sample -- psi was integrated
+    # out -- and bin/convert_output_format_ile2inference copies this column straight into the
+    # PE 'psi' column under a header that does not mark it, so a fiducial 0.0 would reach a
+    # consumer as a delta function that reads like a polarization measurement.
+    samples_xml = outdir / "out.xml.gz_0_.xml.gz"
+    assert samples_xml.exists(), (
+        "--save-samples was requested but no samples XML was written\n" + proc.stdout[-4000:])
+    from igwn_ligolw import lsctables, ligolw
+    from igwn_ligolw import utils as _ligolw_utils
+
+    class _ContentHandler(ligolw.LIGOLWContentHandler):
+        pass
+    lsctables.use_in(_ContentHandler)
+    xmldoc = _ligolw_utils.load_filename(str(samples_xml), contenthandler=_ContentHandler)
+    tbl = lsctables.SimInspiralTable.get_table(xmldoc)
+    psi_col = np.array([r.polarization for r in tbl], dtype=float)
+    assert len(psi_col) > 0, "samples XML has no rows"
+    assert np.all(np.isnan(psi_col)), (
+        "exported polarization column must be NaN under --psi-marginalization, got %r"
+        % np.unique(psi_col)[:5])
+    # a genuinely sampled column, as a control that the file is not simply all NaN
+    ra_col = np.array([r.longitude for r in tbl], dtype=float)
+    assert np.all(np.isfinite(ra_col)) and len(np.unique(ra_col)) > 1, ra_col
+    assert "exported 'psi'/'polarization' column is NaN" in proc.stdout
+
+
+###
+### 5. Evidence neutrality: the flag must not move lnZ (review F2)
+###
+
+def _run_driver_lnL(synthetic_fixture, tmpdir, marginalize):
+    extra = ["--psi-marginalization"] if marginalize else []
+    cmd = _driver_cmd(synthetic_fixture, "--n-max", "40000", "--n-eff", "200",
+                      "--output-file", "out.xml.gz", *extra)
+    proc = subprocess.run(cmd, cwd=str(tmpdir), env=_driver_env(),
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           universal_newlines=True, timeout=900)
+    assert proc.returncode == 0, proc.stdout[-4000:]
+    row = (tmpdir / "out.xml.gz_0_.dat").read_text().split()
+    return float(row[9]), float(row[10])          # lnL, sigma_lnL
+
+
+def test_marginalized_and_sampled_lnZ_agree(synthetic_fixture, tmp_path):
+    """F2, end to end.  --psi-marginalization must be evidence-NEUTRAL against the
+    sampled-psi path it replaces, or its rows cannot share an all.net with ordinary rows.
+    Before the prior-mass fix the marginalized run sat ln 2 = 0.693 nat low: the review
+    measured 0.7027 (zero data, 3 seeds, n_eff > 4100) and 0.6602 +/- 0.036 (injected).
+
+    Two replicates per mode, judged on the SPREAD rather than on one run: at this budget
+    the per-run scatter is ~0.02 nat, and six replicates during development gave a
+    difference of means of 0.005 nat.  The tolerance is set well inside ln 2 so the test
+    cannot pass a reverted fix.
+    """
+    lnLs = {}
+    for mode in ("marg", "samp"):
+        vals, sigmas = [], []
+        for seed in (1, 2):
+            d = tmp_path / ("%s_%d" % (mode, seed))
+            d.mkdir()
+            v, sg = _run_driver_lnL(synthetic_fixture, d, mode == "marg")
+            vals.append(v); sigmas.append(sg)
+        lnLs[mode] = (np.array(vals), np.array(sigmas))
+
+    diff = float(np.mean(lnLs["marg"][0]) - np.mean(lnLs["samp"][0]))
+    se = float(np.sqrt(np.sum(lnLs["marg"][1]**2 + lnLs["samp"][1]**2))/2.0)
+    tol = max(4.0*se, 0.15)
+    assert tol < 0.5*np.log(2.0), (
+        "tolerance %.4f is too loose to distinguish a missing ln 2" % tol)
+    assert abs(diff) < tol, (
+        "psi-marginalized lnZ %s vs sampled %s: difference %.4f nat exceeds %.4f "
+        "(ln 2 = %.4f -- a difference that size means the psi prior mass is not matched)"
+        % (lnLs["marg"][0], lnLs["samp"][0], diff, tol, np.log(2.0)))
