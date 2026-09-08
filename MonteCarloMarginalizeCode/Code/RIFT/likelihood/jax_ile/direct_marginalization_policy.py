@@ -478,7 +478,16 @@ def fused_log_likelihood_four_axis_policy(
                 "n_optimizer_starts_executed"],
             base_n_lattice_evaluations=base_planning["n_lattice_evaluations"],
             enriched_n_lattice_evaluations=enriched_planning[
-                "n_lattice_evaluations"])
+                "n_lattice_evaluations"],
+            # How far over the cap a declining row actually was.  decline_capacity
+            # says only that n_candidates exceeded base_max_starts; without the
+            # count there is no way to tell a row that missed by one from a row
+            # that would need ten times the cap, and therefore no way to judge
+            # whether raising the cap would recover anything.
+            base_n_candidates_before_cap=base_planning[
+                "n_candidates_before_cap"],
+            enriched_n_candidates_before_cap=enriched_planning[
+                "n_candidates_before_cap"])
         return base_plan, enriched_plan, planning
 
     # Planning is control data.  Cutting the tangents at its INPUTS, not only
