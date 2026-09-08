@@ -1722,11 +1722,11 @@ def direct_marginalization_policy_note(like, theta, n_max=256, chunk=32,
     policy = getattr(like, "direct_marginalization_policy", "off")
     ledger_fn = getattr(like, "_batched_ledger", None)
     if policy == "off" or ledger_fn is None:
-        return ("", None) if return_values else ""
+        return ("", None, None) if return_values else ""
     theta = np.asarray(theta)
     if theta.ndim != 2 or theta.shape[0] == 0:
         _empty = "DIRECT-MARG-POLICY=%s rows=0" % policy
-        return (_empty, None) if return_values else _empty
+        return (_empty, None, None) if return_values else _empty
     n = int(theta.shape[0])
     idx = np.unique(np.linspace(0, n - 1, min(n, int(n_max))).astype(int))
     parts = []

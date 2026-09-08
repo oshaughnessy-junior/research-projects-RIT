@@ -134,3 +134,52 @@ def test_the_recorded_accepting_operating_point_is_not_refused():
     assert rc != 0, out[-1500:]
     assert "event-time" in out, out[-1500:]
     assert "direct-marginalization" not in out.split("error:")[-1], out[-1500:]
+
+
+# --------------------------------------------------- the note's return arity
+
+def _load_driver():
+    """Import the driver script as a module (it has no .py extension)."""
+    import importlib.util
+    spec = importlib.util.spec_from_loader(
+        "ile_jax_driver",
+        importlib.machinery.SourceFileLoader("ile_jax_driver", _DRIVER))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.mark.parametrize("policy,ledger,theta_rows", [
+    ("off", object(), 4),      # policy disabled
+    ("auto", None, 4),         # no ledger built
+    ("auto", object(), 0),     # no rows to evaluate
+])
+def test_the_note_returns_three_values_on_every_early_path(policy, ledger,
+                                                           theta_rows):
+    """``return_values=True`` must return the same NUMBER of values on every
+    path, including the ones that give up early.
+
+    The caller unpacks three.  Two early returns handed back two, so any caller
+    reaching them died on an unpacking error rather than on the condition the
+    early return was written to handle.  None of the three is reachable from
+    the probe today, which is exactly why it needs pinning: the guard is
+    unexercised, so nothing else would notice it drifting.
+    """
+    import numpy as np
+    mod = _load_driver()
+
+    class _Like(object):
+        pass
+
+    like = _Like()
+    like.direct_marginalization_policy = policy
+    like._batched_ledger = ledger
+    theta = np.zeros((theta_rows, 3))
+
+    out = mod.direct_marginalization_policy_note(like, theta,
+                                                 return_values=True)
+    assert isinstance(out, tuple) and len(out) == 3, out
+    assert isinstance(out[0], str)
+
+    plain = mod.direct_marginalization_policy_note(like, theta)
+    assert isinstance(plain, str), plain
