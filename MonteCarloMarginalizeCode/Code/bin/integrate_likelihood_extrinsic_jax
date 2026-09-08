@@ -360,7 +360,9 @@ def check_critical_and_report(opts, optp):
                      "--direct-marginalization-enriched-max-modes",
                      "--direct-marginalization-base-oversample",
                      "--direct-marginalization-enriched-oversample",
-                     "--direct-marginalization-max-starts")
+                     "--direct-marginalization-max-starts",
+                     "--direct-marginalization-convergence-tol-nats",
+                     "--direct-marginalization-time-guard-tol-nats")
     if _policy != "off":
         if getattr(opts, "mode", None) != "flowmc-phipsimarg":
             fatal.append("--direct-marginalization-policy %s applies only to "
@@ -421,6 +423,13 @@ def check_critical_and_report(opts, optp):
                         "direct_marginalization_max_starts")):
             if int(getattr(opts, _d, 1)) < 1:
                 fatal.append("%s must be >= 1" % _k)
+        for _k, _d in (("--direct-marginalization-convergence-tol-nats",
+                        "direct_marginalization_convergence_tol_nats"),
+                       ("--direct-marginalization-time-guard-tol-nats",
+                        "direct_marginalization_time_guard_tol_nats")):
+            _v = float(getattr(opts, _d, 1.0e-3))
+            if not (np.isfinite(_v) and _v > 0.0):
+                fatal.append("%s must be finite and positive" % _k)
         if (int(getattr(opts, "direct_marginalization_enriched_max_modes", 8))
                 < int(getattr(opts, "direct_marginalization_max_modes", 4))):
             fatal.append("--direct-marginalization-enriched-max-modes must be "
@@ -961,6 +970,21 @@ def build_parser():
                  help="Cap on ranked optimizer starts per plan (default 32).  "
                       "A row with more candidates than this declines on "
                       "capacity.")
+    g.add_option("--direct-marginalization-convergence-tol-nats", type=float,
+                 default=1.0e-3,
+                 help="Agreement required between the base and enriched plans, "
+                      "and between each plan's own two quadrature orders, in "
+                      "nats (default 1e-3).  This is the tolerance the "
+                      "'enrichment' and 'quadrature' declines are measured "
+                      "against; it is SEPARATE from "
+                      "--direct-marginalization-error-budget-nats, which is the "
+                      "total value allowance.")
+    g.add_option("--direct-marginalization-time-guard-tol-nats", type=float,
+                 default=1.0e-3,
+                 help="Agreement required between the full-guard and half-guard "
+                      "evaluations, in nats (default 1e-3).  This is the "
+                      "tolerance the two-guard time warrant is measured "
+                      "against, for the local branch and the reserve alike.")
     # flowMC tuning (modes flowmc / flowmc-phimarg).  Defaults match
     # samplers.flowmc_sample*; exposed so pipeline Makefiles can tune them.
     g.add_option("--n-training-loops", type=int, default=4,
@@ -2439,7 +2463,11 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
                     opts.direct_marginalization_base_oversample),
                 enriched_oversample=int(
                     opts.direct_marginalization_enriched_oversample),
-                base_max_starts=int(opts.direct_marginalization_max_starts))
+                base_max_starts=int(opts.direct_marginalization_max_starts),
+                convergence_tol_nats=float(
+                    opts.direct_marginalization_convergence_tol_nats),
+                time_guard_tol_nats=float(
+                    opts.direct_marginalization_time_guard_tol_nats))
         try:
             like = JAXDistPhiPsiMargLikelihood(
                 like_data, d_lo, d_hi, nphi=nphi, npsi=npsi,
