@@ -776,7 +776,21 @@ fi
 # memory_stats(), plus the on-demand-allocator bound) again touches only
 # test_anglemarg_buffer_cap.py: adds 5 tests, none parametrized, no removals.
 # 582 + 5 = 587.
-EXPECTED_TESTS=587
+#
+# FOURTEENTH, the peak-local phi-scan reduction (joint_lnL_phi_dense reduces into its
+# lax.scan carry instead of stacking the phi axis).  Touches only
+# test_angle_marg_peaklocal_wiring.py: replaces
+# test_peak_local_model_includes_streamed_body_and_scan_output (2 params) with
+# test_peak_local_model_is_flat_in_n_phi_because_the_scan_reduces (the same 2 params)
+# and adds test_peak_local_model_does_not_grow_with_the_phi_axis.  Net +1, and the
+# file-local delta is exact.  587 + 1 = 588, measured at 588 collected.
+#
+# NOT AN ARITHMETIC ADDITION ACROSS A MERGE.  This branch is cut from rift_O4d
+# f3cc09af (587); the sampler-preflight branch is cut from bfd60442 (584), a different
+# lineage, and merging the two conflicts HERE by design.  Whoever merges must RE-MEASURE
+# the collected count rather than add the two deltas: measured on one such merge, the
+# union came to 598 where the arithmetic predicted 597.
+EXPECTED_TESTS=588
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
