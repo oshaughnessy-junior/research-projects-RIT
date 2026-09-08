@@ -297,3 +297,13 @@ def test_rift_liquid_template_randomized_ledger_sanity():
         for ifo in ifos:
             assert f'"{ifo}":"{ifo}_TEST_FRAME"' in parser.get("datafind", "types")
             assert f'"{ifo}":"{ifo}:TEST-STRAIN"' in parser.get("data", "channels")
+
+
+def test_rift_liquid_template_use_jax_ile_defaults_false_and_follows_ledger():
+    meta = _base_meta()
+    _rendered, parser = _render(meta)
+    assert parser.get("rift-pseudo-pipe", "use-jax-ile").strip() == "False"
+
+    meta["sampler"]["ile"]["use jax ile"] = True
+    _rendered, parser = _render(meta)
+    assert parser.get("rift-pseudo-pipe", "use-jax-ile").strip() == "True"

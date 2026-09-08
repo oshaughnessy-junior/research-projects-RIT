@@ -517,6 +517,8 @@ parser.add_argument("--ile-no-gpu",action='store_true')
 parser.add_argument("--ile-xpu",action='store_true',help='Request ILE run on both GPU and CPU. Disables ile_force_gpu, if provided!')
 parser.add_argument("--ile-force-gpu",action='store_true')
 parser.add_argument("--ile-gpu-fanout",default=None,help="Multi-GPU ILE fan-out: split each ILE batch's intrinsic-grid range across N GPUs on the node (one shard per GPU).  Integer N (also requests N GPUs+CPUs) or 'auto' (split across whatever GPUs are visible at runtime).  Baked into the generated ile_pre.sh, so it needs no runtime environment.  Equivalent to setting RIFT_ILE_GPU_FANOUT.  Requires --ile-force-gpu.")
+parser.add_argument("--ile-exe",default=None,type=str,help="Path to the ILE executable used for this workflow's ILE/ILE_puff/ILE_fetch/ILE_extr jobs (forwarded to create_event_parameter_pipeline_* as --ile-exe).  Default: `which integrate_likelihood_extrinsic_batchmode`, or `which integrate_likelihood_extrinsic_jax` if --use-jax-ile is set.  Mutually exclusive with --use-jax-ile.")
+parser.add_argument("--use-jax-ile",action='store_true',help="Use `which integrate_likelihood_extrinsic_jax` as the ILE executable in place of the default batchmode driver, for every ILE/ILE_puff/ILE_fetch/ILE_extr job.  The JAX driver does not implement calibration marginalization, ROM/NR-lookup templates, supplementary likelihood factors, --zero-likelihood, or --maximize-only (see check_critical_and_report in bin/integrate_likelihood_extrinsic_jax); combining it with --calmarg-envelope-directory is REFUSED at DAG-build time rather than left to fail at the first ILE job.  Mode-specific JAX options (--mode, --angle-marg-scheme, and the rest of that driver's surface) are not separate pseudo_pipe options -- pass them through --manual-extra-ile-args.")
 parser.add_argument("--fake-data-cache",type=str)
 parser.add_argument("--spin-magnitude-prior",default='default',type=str,help="options are default [uniform mag for precessing, zprior for aligned], volumetric, uniform_mag_prec, uniform_mag_aligned, zprior_aligned")
 parser.add_argument("--eccentricity-prior",default='uniform',type=str,choices=['uniform','log_uniform'],help="options are uniform in e ('uniform') and uniform in log(e) ('log_uniform')")  # constrained: the value is forwarded verbatim to CIP, which only branches on the exact string 'log_uniform', so an unrecognized value here would silently run the uniform prior instead of failing
@@ -730,6 +732,21 @@ if (opts.use_ini):
 # size request_GPUs/CPUs and bake the value into ile_pre.sh.
 if opts.ile_gpu_fanout is not None:
     os.environ['RIFT_ILE_GPU_FANOUT'] = str(opts.ile_gpu_fanout)
+
+# JAX ILE selection.  Placed AFTER the --use-ini block above: the ini can set both
+# use-jax-ile and calmarg-envelope-directory via [rift-pseudo-pipe], and a check
+# above that block would validate values the ini is about to replace.
+if opts.use_jax_ile and opts.ile_exe:
+    raise ValueError(
+        "--use-jax-ile and --ile-exe are mutually exclusive: --use-jax-ile already "
+        "resolves to `which integrate_likelihood_extrinsic_jax`.  Pass that "
+        "executable's path via --ile-exe directly instead of setting both.")
+if opts.use_jax_ile and opts.calmarg_envelope_directory:
+    raise ValueError(
+        "--use-jax-ile is incompatible with in-loop calibration marginalization "
+        "(--calmarg-envelope-directory): bin/integrate_likelihood_extrinsic_jax does "
+        "not implement --calibration-* options (see check_critical_and_report in "
+        "that driver).  Drop --calmarg-envelope-directory or drop --use-jax-ile.")
 
 # TIME-MARGINALIZATION QUADRATURE, part 1 of 2: everything refusable WITHOUT running the
 # helper.  Deliberately placed AFTER the --use-ini block above: the ini parser OVERRIDES the
@@ -2235,7 +2252,15 @@ if opts.pipeline_builder:  # explicit override wins, for clean side-by-side A/B 
         print(" WARNING: --pipeline-builder {} overrides --use-subdags routing; AMR/subdag runs require AlternateIteration ".format(opts.pipeline_builder))
     cepp = "create_event_parameter_pipeline_" + opts.pipeline_builder
 print(" Pipeline builder (create_event_parameter_pipeline_*): ", cepp)
-cmd =cepp+ "  --ile-n-events-to-analyze {} --input-grid proposed-grid.{} --ile-exe  `which integrate_likelihood_extrinsic_batchmode`   --ile-args `pwd`/args_ile.txt --cip-args-list args_cip_list.txt --test-args args_test.txt --request-memory-CIP {} --request-memory-ILE {} --n-samples-per-job ".format(n_jobs_per_worker,grid_suffix_pp,cip_mem,ile_mem) + str(npts_it) + " --working-directory `pwd` --n-iterations " + str(n_iterations) + ("" if use_multiapprox else " --n-iterations-subdag-max {} ".format(opts.internal_n_iterations_subdag_max)) + "  --n-copies {} ".format(opts.ile_copies) + "   --ile-retries "+ str(opts.ile_retries) + " --general-retries " + str(opts.general_retries)
+# Resolve the ILE executable: --use-jax-ile wins (mutual exclusion with --ile-exe was
+# already enforced above), then an explicit --ile-exe, then the historical default.
+if opts.use_jax_ile:
+    resolved_ile_exe = "`which integrate_likelihood_extrinsic_jax`"
+elif opts.ile_exe:
+    resolved_ile_exe = "'{}'".format(opts.ile_exe)
+else:
+    resolved_ile_exe = "`which integrate_likelihood_extrinsic_batchmode`"
+cmd =cepp+ "  --ile-n-events-to-analyze {} --input-grid proposed-grid.{} --ile-exe  {}   --ile-args `pwd`/args_ile.txt --cip-args-list args_cip_list.txt --test-args args_test.txt --request-memory-CIP {} --request-memory-ILE {} --n-samples-per-job ".format(n_jobs_per_worker,grid_suffix_pp,resolved_ile_exe,cip_mem,ile_mem) + str(npts_it) + " --working-directory `pwd` --n-iterations " + str(n_iterations) + ("" if use_multiapprox else " --n-iterations-subdag-max {} ".format(opts.internal_n_iterations_subdag_max)) + "  --n-copies {} ".format(opts.ile_copies) + "   --ile-retries "+ str(opts.ile_retries) + " --general-retries " + str(opts.general_retries)
 if use_multiapprox:
     # Every model on the SAME grid.  --approx is the primary; --approx-extra the
     # rest.  The builder marginalizes over them point by point in the loop and
