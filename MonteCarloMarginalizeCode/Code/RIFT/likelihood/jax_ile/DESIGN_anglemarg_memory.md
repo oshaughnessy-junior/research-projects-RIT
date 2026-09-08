@@ -108,7 +108,12 @@ returning a fictitious chunk size of one. This remains a source-level working-se
 model, not a bound on total allocator use; direct `log_likelihood` calls bypass
 the helper altogether.
 
-## Peak-local
+## psi_local_phi_dense (`--angle-marg-scheme peak-local`)
+
+Kernel id `psi_local_phi_dense` (`RIFT/likelihood/peak_local_names.py`). This
+section is about that kernel and not about `four_axis_local`, the four-axis
+controller branch, which has no dense angle axis and whose workspace is
+`O(local_order**4)` per mode.
 
 The u-node axis is already streamed with `U_live<=8`, and phi with `F=16`.
 The node body per sample-time point is `8 F N_x 4 U_live` bytes: 1 MiB at
@@ -124,6 +129,43 @@ multiplies the body and scan result by explicit `S T`, and flowMC applies an
 additional outer chain `vmap` to the scalar likelihood that this preflight
 cannot see. A follow-up must roll those axes around `_one` and GPU-profile a
 suitably smaller point tile before peak-local can claim a total-memory bound.
+
+## The buffer allowance, and how to set it per card
+
+`angle_marg_eval_chunk` compares the per-sample model above against an allowance.
+`_angle_marg_buffer_target` derives it by one of four paths, and records which one at
+the return site. The refusal prints that record, so a reader is never left with a
+number and no account of it.
+
+| path | allowance | when |
+|---|---|---|
+| `RIFT_ANGLEMARG_BUFFER_BYTES` | the value, absolute | whenever it is set |
+| device probe | `RIFT_ANGLEMARG_BUFFER_FRACTION` (default 0.5) times readable free memory | a GPU reports a usable free-memory key |
+| on-demand allocator | 4 GiB, bounded by `bytes_limit - bytes_in_use` | small pool beside a much larger limit |
+| blind fallback | 4 GiB | no GPU, no readable key, or the probe raised |
+
+Two operating-point errors here produce messages that read like code faults.
+
+**The absolute override does not track the card.** It wins over every probe, so a
+value copied between hosts is wrong on the second one. A runner carrying a hardcoded
+6 GiB on a 24 GiB card was found on 2026-09-08. Size it as half of what `nvidia-smi`
+shows free to you, matching the fraction the probe uses: 12 GiB on a 24 GiB card you
+hold alone, less when you share it. Set it only when you know the card is yours; the
+probe is the better answer when it can read the device.
+
+**A zero allowance now means what it says.** Before #285, `largest_free_block_bytes`
+reading 0 on jax 0.9.2 was taken for a full card, so the preflight refused the default
+`exact` scheme on an idle 24 GiB device. That is fixed: an unreadable key falls through
+to the pool signal, and a probe allocation makes the pool exist before the read. A zero
+that survives all of that is a pool genuinely consumed, so check `nvidia-smi` for who
+holds the card rather than reaching for the override.
+
+**A large allowance does not make every call fit.** At `T=1193`, `N_x=256`,
+`m_max=2`, `psi_local_phi_dense` asked for 19.99 GiB for a single sample at ladder
+rungs 160 and 640 (measured 2026-09-08). No allowance a 24 GiB card can give at the
+default fraction covers that, and the sample axis is the only axis this cap divides,
+so no chunk size is a fix either. Shorten the time window, shrink the distance grid,
+or run a different kernel.
 
 ## Validation boundary
 

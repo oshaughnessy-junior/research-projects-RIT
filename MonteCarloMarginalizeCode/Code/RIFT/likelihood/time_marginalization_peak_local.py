@@ -1,5 +1,11 @@
 """Peak-local time marginalization: enumerate the peaks, integrate only near them.
 
+KERNEL ID ``time_local_numpy`` (RIFT.likelihood.peak_local_names).  Localizes the
+TIME axis only, on the numpy/cupy ILE arm, selected by
+``--time-marginalization-quadrature peak-local``.  A DIFFERENT flag,
+``--angle-marg-scheme peak-local``, selects an angle kernel on the JAX arm; the
+shared word is the only thing they share.
+
 READ ``time_marginalization_quadrature.py`` FIRST.  That module states the defect
 (Simpson at the fixed spacing ``deltaT = 1/srate`` against an integrand of width
 ``sigma_t = 1/(2 pi rho sigma_f)``), the reason the existing samples already

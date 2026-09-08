@@ -11,6 +11,7 @@ import pytest
 jax = pytest.importorskip("jax")
 import jax.numpy as jnp
 
+from RIFT.likelihood import peak_local_names as _names
 from RIFT.likelihood.jax_ile import anglemarg as AM
 from RIFT.likelihood.jax_ile.wrapper import JAXDistPhiPsiMargLikelihood
 from test_angle_marg_exact import make_synth, RA, DEC, INCL, INTERP
@@ -152,7 +153,11 @@ def test_peak_local_runs_the_runtime_amplitude_failsafe():
         interp=INTERP, amp_sizing=1.0)
     st = AM.amp_failsafe_state(barrier=True)
     assert st.get("tripped"), st
-    assert st.get("scheme") == "peak-local", st
+    # The failsafe label is the KERNEL id, not the scheme string: this artifact
+    # label is one of the places "peak-local" was ambiguous.  See
+    # RIFT.likelihood.peak_local_names.
+    assert st.get("scheme") == _names.ANGLE_MARG_KERNEL["peak-local"], st
+    assert st.get("scheme") == "psi_local_phi_dense", st
     AM.reset_amp_failsafe()
 
 

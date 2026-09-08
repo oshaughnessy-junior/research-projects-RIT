@@ -1,4 +1,8 @@
-"""Time-first peak-local marginalization of band-limited JAX primitives.
+"""Time-local marginalization of band-limited JAX primitives.
+
+KERNEL ID ``time_local_jax`` (RIFT.likelihood.peak_local_names).  Localizes the TIME
+axis only; the caller owns every downstream axis.  No driver flag selects it.
+``all_axis_peaklocal`` imports its spectrum helpers, not its marginalizer.
 
 This module is the deliberately small composition seam missing from the JAX
 likelihood.  A caller supplies one *primitive correlation* row for every fixed

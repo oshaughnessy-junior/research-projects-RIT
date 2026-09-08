@@ -1,4 +1,9 @@
-"""Joint (phi, psi) peak-local angle marginalization, JAX kernel.
+"""Joint (phi, psi) local angle marginalization, JAX kernel library.
+
+KERNEL ID ``phi_psi_cell_kernel_jax`` (RIFT.likelihood.peak_local_names).  Localizes
+u=2 psi on the cell partition; phi is dense in :func:`joint_lnL_phi_dense` and local
+in :func:`phi_local_lnI`.  Time and distance are the caller's.  This is a library:
+the two ``anglemarg`` entries select it, and no driver flag names it.
 
 The NumPy reference ``RIFT.likelihood.joint_angle_peak_local`` obtains BOTH-angle targets
 from the finite algebraic stationary set implemented in

@@ -44,6 +44,7 @@ _ANGLE_MARG_PROBE_RA = [1.0]
 _ANGLE_MARG_PROBE_DEC = [0.3]
 _ANGLE_MARG_PROBE_INCL = [1.0]
 from . import core as _core
+from .. import peak_local_names as _names
 from .anglemarg import (ANGLE_MARG_DEFAULT, ANGLE_MARG_LEGACY,  # noqa: F401
                         ANGLE_MARG_CHOICES)
 
@@ -586,8 +587,16 @@ class JAXDistPhiPsiMargLikelihood:
         # (external-review defect 2).  self.angle_marg_info records what
         # actually ran -- callers must surface it in the run log.
         if angle_marg not in ANGLE_MARG_CHOICES:
-            raise ValueError("angle_marg must be one of grid/exact/laplace/"
-                             "peak-local/auto, got %r" % (angle_marg,))
+            raise ValueError("angle_marg must be one of %s, got %r"
+                             % ("/".join(sorted(ANGLE_MARG_CHOICES)),
+                                angle_marg))
+        # Fold the descriptive spellings onto the historical internal values BEFORE
+        # anything compares the string.  'psi-local-phi-dense' and 'peak-local' name
+        # the same kernel, and every comparison downstream (here, samplers.py, the
+        # driver's labels) must see one value, not two.  requested= below keeps the
+        # caller's spelling for the record.
+        angle_marg_requested = angle_marg
+        angle_marg = _names.canonical_angle_marg_scheme(angle_marg)
         if dist_grid not in DIST_GRID_SCHEMES:
             # An unrecognised value must NEVER fall through to the default: a
             # typo that silently returns the old answer is precisely the
@@ -952,8 +961,14 @@ class JAXDistPhiPsiMargLikelihood:
                     crossover=_anglemarg.ANGLE_MARG_CROSSOVER_AMPLITUDE)
                 sel_info.update(gh_info)
         self.angle_marg_scheme = scheme
-        self.angle_marg_info = dict(sel_info, requested=angle_marg,
-                                    scheme=scheme)
+        # kernel= names WHICH peak-local kernel ran.  The scheme string alone does
+        # not: 'peak-local' is one of eight names in RIFT.likelihood.peak_local_names,
+        # and a 2026-09-08 profiling run published a measurement of this one as a
+        # claim about the four-axis kernel.  None for the dense schemes, which are
+        # not peak-local at all.
+        self.angle_marg_info = dict(sel_info, requested=angle_marg_requested,
+                                    scheme=scheme,
+                                    kernel=_names.angle_marg_kernel_id(scheme))
         # Bound AFTER the distance grid is final: dist_grid="loguniform"
         # replaces it inside the block above.
         xg, lwg, pg, sg = (self.x_grid, self.log_w_grid,

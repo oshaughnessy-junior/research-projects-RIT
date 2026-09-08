@@ -1,8 +1,17 @@
 """Opt-in cross-axis direct-marginalization policy for the JAX ILE arm.
 
 ``--direct-marginalization-policy auto`` composes, per likelihood evaluation,
-the four-axis peak-local controller of :mod:`all_axis_peaklocal` with the
-established exact-angle reserve:
+the FOUR-AXIS local controller of :mod:`all_axis_peaklocal` (kernel id
+``four_axis_local``) with the established exact-angle reserve:
+
+WHICH KERNEL THIS IS.  ``four_axis_local`` localizes time, phi_ref, psi and
+distance together.  It is not ``--angle-marg-scheme peak-local``, which localizes
+psi alone and keeps phi dense, and it is not any of the six other kernels in
+:mod:`RIFT.likelihood.peak_local_names`.  Accuracy and cost measured for one do
+not transfer to the other: on the paper-1 ladder the psi-local kernel was refused
+at 19.99 GiB per sample at rung 160, while this one ran the same rung at 0.146 s
+per selected call.  A run's own log names the kernel, so no reader has to know
+that history.
 
 1. build the guarded coefficient tables once (the same U,V/Q contraction the
    exact scheme uses), collapse the time-independent norm table per row;
@@ -45,6 +54,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from .. import peak_local_names as _names
 from . import all_axis_peaklocal as _aap
 from . import anglemarg as _anglemarg
 from . import core as _core
@@ -543,6 +553,10 @@ def summarize_policy_ledger(ledger):
         return int(np.sum(np.asarray(ledger[key], dtype=bool)))
     n = int(np.asarray(ledger["usable"]).shape[0])
     out = dict(
+        # NAME THE KERNEL IN THE SUMMARY, not just the policy.  "accepted_local"
+        # counts rows carried by four_axis_local and by nothing else; a reader who
+        # takes it for the psi-local angle scheme gets a different kernel's cost.
+        local_kernel=_names.FOUR_AXIS_LOCAL,
         rows=n,
         accepted_local=_count("accepted_local"),
         reserve_executed=_count("reserve_executed"),

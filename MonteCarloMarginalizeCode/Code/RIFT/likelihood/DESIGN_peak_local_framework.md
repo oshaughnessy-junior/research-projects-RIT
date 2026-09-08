@@ -21,6 +21,44 @@ falsified this note's first bracketing claim; `psi_backstop.py` the trapezoid al
 table and the calibrated-vs-certified sizing cost.  Each runs standalone with `PYTHONPATH` set to `MonteCarloMarginalizeCode/Code`,
 so a reviewer can re-run rather than take the tables on assertion.
 
+## The eight shipped instances, and which axes each localizes
+
+Written 2026-09-08, from the code at `bfd60442`. `RIFT/likelihood/peak_local_names.py`
+holds this table as data, and every log line and run record takes its kernel name from
+there. The section below this one was written when the method existed three times and
+none of it shipped; both statements have since expired.
+
+Read the table before quoting any measurement of "peak-local". A profiling run on
+2026-09-08 measured `psi_local_phi_dense` and published the result as a claim about
+`four_axis_local`. The two disagreed in direction: the first was refused at 19.99 GiB
+per sample at ladder rungs 160 and 640, the second ran those rungs at 0.146 s per
+selected call.
+
+| kernel id | module | localized | dense | selected by | from `auto`? |
+|---|---|---|---|---|---|
+| `psi_local_phi_dense` | `jax_ile/anglemarg.py` | psi | phi_ref, D, t | `--angle-marg-scheme peak-local` | no |
+| `psi_local_phi_local` | `jax_ile/anglemarg.py` | psi, phi_ref | D, t | `--angle-marg-scheme phi-local` | no |
+| `phi_psi_cell_kernel_jax` | `jax_ile/joint_anglemarg_peaklocal.py` | psi | phi_ref | library for the two above | no |
+| `phi_psi_cell_kernel_numpy` | `joint_angle_peak_local.py` | psi, phi_ref | | nothing | no |
+| `four_axis_local` | `jax_ile/all_axis_peaklocal.py` | t, phi_ref, psi, D | | `--direct-marginalization-policy auto` | yes, this is that branch |
+| `four_axis_local_diagnostic` | `jax_ile/multipeak_planner.py` | t, phi_ref, psi, D | | nothing | no |
+| `time_local_jax` | `jax_ile/time_first_peaklocal.py` | t | | nothing | no |
+| `time_local_numpy` | `time_marginalization_peak_local.py` | t | | `--time-marginalization-quadrature peak-local` | no |
+
+Per-sample memory models differ by more than the axis lists suggest.
+`psi_local_phi_dense` keeps a dense phi axis sized as `sqrt(amplitude)`, so its
+per-sample buffer grows with SNR; `DESIGN_anglemarg_memory.md` gives the model.
+`psi_local_phi_local` adds the dense kernel's model to its own, because it evaluates
+that kernel as a per-row fallback in the same trace. `four_axis_local` holds
+`O(local_order**4)` per mode and is independent of every dense resolution.
+
+Two flags spell `peak-local` and select different kernels:
+`--angle-marg-scheme peak-local` on the JAX arm and
+`--time-marginalization-quadrature peak-local` on the numpy/cupy arm. Both spellings
+stay accepted, because archived run records and submit files carry them. New
+configurations should use `--angle-marg-scheme psi-local-phi-dense` and
+`psi-local-phi-local`, which resolve to the same kernels.
+
 ## The method has been written three times, independently
 
 | | **time**<br>`time_marginalization_peak_local` | **angle**<br>`jax_ile/anglemarg.py` | **distance**<br>`jax_ile/core.py` |

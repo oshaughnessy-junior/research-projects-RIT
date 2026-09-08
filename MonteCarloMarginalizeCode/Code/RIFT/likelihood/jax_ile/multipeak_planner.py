@@ -1,4 +1,8 @@
-"""Diagnostic planner for joint peak-local JAX marginalization.
+"""Diagnostic planner for four-axis local JAX marginalization.
+
+KERNEL ID ``four_axis_local_diagnostic`` (RIFT.likelihood.peak_local_names).  Same
+four axes as ``four_axis_local``, different placement and cover.  No driver flag
+selects it.
 
 This module deliberately exposes an opt-in seam rather than changing the
 production likelihood dispatch.  The fixed-shape device controller in

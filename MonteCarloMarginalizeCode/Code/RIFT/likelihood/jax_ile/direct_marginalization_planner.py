@@ -1047,7 +1047,8 @@ _JAX_PROFILE_LIST = (
                  "the A0==0/B1==0 identity must hold on concrete tables"),)),
     _profile("angle", "peak-local",
              _warrant(WarrantKind.EFFECTIVE_BANDWIDTH_WITH_MARGIN,
-                      "exact-trig-degree psi cells but amplitude-sized dense phi",
+                      "kernel psi_local_phi_dense: exact-trig-degree psi cells "
+                      "but amplitude-sized dense phi",
                       False, _FRAMEWORK), _ANGLE,
              requires=("angle-amplitude-estimate",
                        "angle-peak-local-warranted"),

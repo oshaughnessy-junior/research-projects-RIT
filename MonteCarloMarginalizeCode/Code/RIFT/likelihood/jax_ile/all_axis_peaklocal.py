@@ -1,5 +1,11 @@
 """Fixed-shape multi-peak marginalization over time, polarization, phase and distance.
 
+KERNEL ID ``four_axis_local`` (RIFT.likelihood.peak_local_names).  Localizes ALL
+FOUR axes (t, phi_ref, u=2 psi, x=Dref/D).  Reached only through
+``--direct-marginalization-policy auto``.  Seven other kernels in this package are
+also called "peak-local" and localize fewer axes; their measured accuracy and cost
+do not apply here, and this one's do not apply to them.
+
 This module is the device-evaluation half of the all-variable peak-local design.
 It deliberately separates three jobs which must not be conflated:
 
