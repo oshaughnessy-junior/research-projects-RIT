@@ -489,6 +489,7 @@ FILES=(
   "${JAXDIR}/test_jax_q_time_pregrid.py"
   "${JAXDIR}/test_direct_marginalization_policy.py"
   "${JAXDIR}/test_jax_cache.py"
+  "${JAXDIR}/test_direct_marginalization_policy_cli.py"
 )
 
 # EXCLUDED: files in JAXDIR matching test_*.py that are deliberately NOT gated.  The
