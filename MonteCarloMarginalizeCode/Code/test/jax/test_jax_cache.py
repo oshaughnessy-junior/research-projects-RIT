@@ -71,12 +71,61 @@ def test_configure_supports_jax_before_auxiliary_xla_caches(tmp_path, monkeypatc
     assert ("jax_enable_compilation_cache", True) in LegacyJax.config.updates
 
 
-def test_disable_does_not_create_cache(tmp_path, monkeypatch):
+@pytest.mark.parametrize("argv,env", [
+    (["--no-jax-persistent-cache"], None),
+    ([], "RIFT_DISABLE_JAX_CACHE"),
+])
+def test_disable_does_not_create_cache(tmp_path, monkeypatch, argv, env):
+    """Each opt-out separately, against a fake that COULD have succeeded.
+
+    A mutation sweep replaced the whole disable condition with ``False`` and
+    this test still passed.  The reason is that the bare ``_Jax()`` fake has no
+    default_backend/devices, so with the early return gone the run instead hit
+    the device-probe fail-open handler -- which ALSO returns None, ALSO records
+    jax_enable_compilation_cache=False, and ALSO leaves tmp_path empty.  Every
+    observable the test checked was reproduced by a different code path, so it
+    was pinning nothing.  Stubbing runtime_compatibility gives the fake a
+    working probe, and naming a cache root means a non-disabled run must create
+    a directory.  Both halves of the condition get their own case, because the
+    sweep flipped them together.
+    """
     monkeypatch.delenv("JAX_COMPILATION_CACHE_DIR", raising=False)
+    monkeypatch.setattr(cache, "runtime_compatibility", lambda unused: COMPAT)
+    if env:
+        monkeypatch.setenv(env, "1")
     fake = _Jax()
-    assert cache.configure_persistent_cache(fake, ["--no-jax-persistent-cache"]) is None
+    assert cache.configure_persistent_cache(
+        fake, argv + ["--jax-cache-dir", str(tmp_path)]) is None
     assert ("jax_enable_compilation_cache", False) in fake.config.updates
-    assert not list(tmp_path.iterdir())
+    assert not list(tmp_path.iterdir()), (
+        "a disabled cache must not create its namespace directory")
+
+
+@pytest.mark.parametrize("spelling", ["separate", "equals"])
+def test_cache_root_is_read_from_either_cli_spelling(tmp_path, monkeypatch,
+                                                     spelling):
+    """optparse accepts --jax-cache-dir X and --jax-cache-dir=X; so must this.
+
+    configure_persistent_cache scans sys.argv itself, before the option parser
+    exists, so the two spellings are two separate branches.  Only the separate
+    form was covered: a mutation sweep deleted the "=" branch and the whole
+    file still passed.  With it gone, `--jax-cache-dir=/shared/cache` silently
+    selects the DEFAULT root instead -- no error, and no reuse of the shared
+    cache the operator asked for.
+    """
+    monkeypatch.delenv("JAX_COMPILATION_CACHE_DIR", raising=False)
+    monkeypatch.delenv("RIFT_JAX_CACHE_ROOT", raising=False)
+    monkeypatch.setattr(cache, "runtime_compatibility", lambda unused: COMPAT)
+    # a default root that is NOT tmp_path, so falling back is visible
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "default"))
+    argv = ([str(tmp_path / "asked")] if spelling == "separate" else [])
+    argv = (["--jax-cache-dir"] + argv if spelling == "separate"
+            else ["--jax-cache-dir=" + str(tmp_path / "asked")])
+    selected = cache.configure_persistent_cache(_Jax(), argv)
+    assert selected == (
+        tmp_path / "asked" / cache.compatibility_key(COMPAT)).resolve(), selected
+    assert not (tmp_path / "default").exists(), (
+        "the requested root was ignored and the default was used")
 
 
 def test_condor_scratch_is_the_default_root(tmp_path, monkeypatch):
@@ -555,6 +604,32 @@ def test_import_refuses_a_member_path_escaping_the_cache(tmp_path):
         new.writestr("cache//etc/escaped", blob)
     with pytest.raises(ValueError, match="unsafe"):
         cache.import_bundle(absolute, tmp_path / "target-abs", COMPAT)
+
+
+def test_a_member_declaring_zero_compressed_size_is_refused(tmp_path):
+    """A member claiming N uncompressed bytes in 0 compressed bytes.
+
+    Reachability, stated because it decides how much this guard is worth: the
+    ratio check below it short-circuits on compress_size == 0, so removing this
+    one raises no ZeroDivisionError, and such a member then fails the checksum
+    during extraction instead.  It is defence in depth -- refuse at the header,
+    with a message naming the reason, rather than reporting a checksum failure
+    for an archive whose real defect is a lying header.  A mutation sweep found
+    it survived: nothing reached it at all.
+
+    Unit-level on purpose.  zipfile writes consistent sizes, so producing this
+    member end to end means forging central-directory fields; the guard is a
+    pure predicate on ZipInfo, so drive it directly and say so.
+    """
+    info = zipfile.ZipInfo("cache/entry")
+    info.file_size = 4096
+    info.compress_size = 0
+    with pytest.raises(ValueError, match="invalid compressed size"):
+        cache._validate_member(info)
+
+    # and the honest member with the same declared size passes
+    info.compress_size = 4096
+    cache._validate_member(info)
 
 
 def test_import_refuses_an_unknown_format_version(tmp_path):

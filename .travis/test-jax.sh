@@ -147,7 +147,7 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         wrapper against the production driver, and
 #                                         because 16384 is the rate test_jax_endtoend
 #                                         (4096) structurally cannot cover.
-#   test_angle_marg_smoke.py         11  CHEAP mutation-bearing floor for the whole
+#   test_angle_marg_smoke.py         12  CHEAP mutation-bearing floor for the whole
 #                                         angle-marg feature: scheme selection (a
 #                                         previous head could never return 'exact'),
 #                                         both dense-sizing levers, required
@@ -177,7 +177,7 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         cap must stay WIRED in samplers and the
 #                                         driver.  Each fails under a verified
 #                                         mutation (see the PR).  Seconds.
-#   test_jax_cache.py                26  the shipped ILE selects a stable
+#   test_jax_cache.py                30  the shipped ILE selects a stable
 #                                         compatibility namespace, Condor uses
 #                                         scratch by default, unwritable caches
 #                                         fail open, and transferred bundles
@@ -809,14 +809,17 @@ fi
 # again with #284, so every number either side carries is stale, for the
 # fourteenth time running.  Re-measured on the merged tree, DESELECT loop
 # applied, read off this job's own collection line:
-#   "616/621 tests collected (5 deselected)", gate-style count 616 from 38
+#   "621/626 tests collected (5 deselected)", gate-style count 621 from 38
 #   files.  Independently recollected on citlogin6 and on ldas-grid, same
-#   interpreter, same 616/621.
+#   interpreter, same 621/626.
 #
-# The +3 over the branch's own 613 are ALL from this landing, not from the
-# branch: a NOT-PERFORMED label pin, a policy-composite wiring pin, and a
-# fail-open pin for a device probe that raised out of driver import.
-# test_jax_cache.py collects 26, not the 17 the branch's per-file line claimed.
+# The +8 over the branch's own 613 are ALL from this landing, not from the
+# branch.  Three pin defects found reviewing it (the NOT-PERFORMED label, the
+# policy-composite wiring, and a device probe that raised out of driver
+# import), and five close mutation survivors: both --jax-cache-dir spellings,
+# both cache opt-outs separately, a member declaring zero compressed size, and
+# the two refusals that keep an unsized scheme from inventing a metric.
+# test_jax_cache.py collects 30, not the 17 the branch's per-file line claimed.
 #
 # The gate cannot be run to completion in ~/.cache/jaxci_venv on the CIT
 # interactive hosts, on this branch OR on pristine rift_O4d f3cc09af: the full
@@ -831,7 +834,7 @@ fi
 # conda environment on the CIT interactive hosts resolves RIFT to a DIFFERENT
 # checkout (~/RIFT_ralph), and collection then fails on imports that have
 # nothing to do with the branch.
-EXPECTED_TESTS=616
+EXPECTED_TESTS=621
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"

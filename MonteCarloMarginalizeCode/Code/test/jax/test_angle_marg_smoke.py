@@ -15,6 +15,7 @@ must run in seconds, or it belongs in the excluded file instead.
 import ast
 import pathlib
 
+import pytest
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -243,6 +244,34 @@ def test_an_unchecked_amp_sized_scheme_is_labelled_not_performed():
     AM.reset_amp_failsafe()
 
 
+
+
+def test_schemes_without_amp_sizing_refuse_to_invent_a_metric():
+    """Asking an unsized scheme for the amplitude metric must raise.
+
+    'grid' has no amp_sizing and runs no failsafe, and the composite policy
+    exposes no metric either.  Neither is reachable from the wrapper now that
+    the metric rides on a separate _batched_amp built only for the amp-sized
+    schemes, so a mutation sweep found both refusals survived: they could be
+    deleted and nothing failed.  They still guard a direct caller, and the
+    failure they prevent is a silent one -- returning a metric that stands for
+    no check, which is what the NOT-PERFORMED label exists to keep out of
+    artifacts.
+    """
+    data = make_synth()
+    kw = dict(n_grid=16, nphi=8, npsi=4, interp=INTERP, guess_snr=5.0)
+    ra = jnp.asarray([RA]); dec = jnp.asarray([DEC]); incl = jnp.asarray([INCL])
+
+    grid = JAXDistPhiPsiMargLikelihood(data, 30.0, 3000.0,
+                                       angle_marg="grid", **kw)
+    with pytest.raises(ValueError, match="no amp_sizing"):
+        grid._fused(data, ra, dec, incl, return_amp=True)
+
+    pol = JAXDistPhiPsiMargLikelihood(data, 30.0, 3000.0, angle_marg="exact",
+                                      direct_marginalization_policy="auto",
+                                      **kw)
+    with pytest.raises(ValueError, match="does not expose"):
+        pol._fused(data, ra, dec, incl, return_amp=True)
 
 def test_the_policy_composite_leaves_the_amp_record_unwired():
     """The wiring fact that makes the case above reachable in production."""
