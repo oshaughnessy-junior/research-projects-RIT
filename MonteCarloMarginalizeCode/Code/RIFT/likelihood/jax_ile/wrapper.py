@@ -1086,11 +1086,24 @@ class JAXDistPhiPsiMargLikelihood:
             self._amp_record = lambda amp: _anglemarg.record_amp_failsafe(
                 amp, amp_sizing, scheme)
 
-        _report_amp = self._amp_record is not None
-
+        # _batched KEEPS its lnL-only contract, and the metric-bearing graph is
+        # a SEPARATE jit.  Folding the amplitude into _batched made its arity
+        # depend on the construction options, so `np.asarray(like._batched(...))`
+        # -- which test_angle_marg_peaklocal_wiring.py and
+        # test_direct_marginalization_policy.py both do, on the SAME line as a
+        # policy-enabled sibling whose _batched still returned one array --
+        # raised "inhomogeneous shape" for the amp-sized schemes only.  Both jits
+        # are lazy, and production reaches only the one log_likelihood calls, so
+        # nothing is compiled or cached twice.
         def _batched(ra, dec, incl):
-            return _fused(data, ra, dec, incl, return_amp=_report_amp)
+            return _fused(data, ra, dec, incl)
         self._batched = jax.jit(_batched)
+
+        self._batched_amp = None
+        if self._amp_record is not None:
+            def _batched_amp(ra, dec, incl):
+                return _fused(data, ra, dec, incl, return_amp=True)
+            self._batched_amp = jax.jit(_batched_amp)
 
         def _scalar(theta3):
             v = _fused(data, theta3[0:1], theta3[1:2], theta3[2:3])
@@ -1101,14 +1114,14 @@ class JAXDistPhiPsiMargLikelihood:
 
     def log_likelihood(self, ra, dec, incl):
         """lnL for arrays of 3 angular parameters (ra, dec, incl), shape (S,)."""
-        out = self._batched(jnp.asarray(ra), jnp.asarray(dec),
-                            jnp.asarray(incl))
-        if self._amp_record is None:
-            return out
+        if self._batched_amp is None:
+            return self._batched(jnp.asarray(ra), jnp.asarray(dec),
+                                 jnp.asarray(incl))
         # One deliberate device->host read per batch, after the values are
         # already required on the host anyway.  The maximum accumulates across
         # calls for the whole event; the values are returned unchanged.
-        values, amp_call = out
+        values, amp_call = self._batched_amp(
+            jnp.asarray(ra), jnp.asarray(dec), jnp.asarray(incl))
         self._amp_record(amp_call)
         return values
 

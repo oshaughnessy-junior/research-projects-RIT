@@ -214,6 +214,17 @@ def run_lisa_known_sky_surface(opts):
     if opts.approx is None:
         print(" --lisa-known-sky requires --approx ")
         sys.exit(1)
+    if opts.use_jax_ile:
+        # This path hardcodes integrate_likelihood_extrinsic_batchmode_lisa below
+        # (a separate, LISA-specific driver) and never reads opts.use_jax_ile; it is
+        # not "the same code" as the LDG/OSG ILE selection, so silently ignoring the
+        # flag would leave a user believing they got the JAX driver when they did
+        # not.  Refuse rather than run the wrong driver silently.
+        print(" --use-jax-ile has no effect on --lisa-known-sky: this path always "
+              "runs integrate_likelihood_extrinsic_batchmode_lisa, a separate "
+              "LISA-specific driver with no JAX equivalent in this repository.  "
+              "Drop --use-jax-ile for LISA runs.")
+        sys.exit(1)
     if opts.use_ini is not None:
         # LISA production-ini path: scalars/algorithm options come from the
         # generic [rift-pseudo-pipe] parser; fill the per-channel data products
@@ -522,6 +533,9 @@ parser.add_argument("--ile-no-gpu",action='store_true')
 parser.add_argument("--ile-xpu",action='store_true',help='Request ILE run on both GPU and CPU. Disables ile_force_gpu, if provided!')
 parser.add_argument("--ile-force-gpu",action='store_true')
 parser.add_argument("--ile-gpu-fanout",default=None,help="Multi-GPU ILE fan-out: split each ILE batch's intrinsic-grid range across N GPUs on the node (one shard per GPU).  Integer N (also requests N GPUs+CPUs) or 'auto' (split across whatever GPUs are visible at runtime).  Baked into the generated ile_pre.sh, so it needs no runtime environment.  Equivalent to setting RIFT_ILE_GPU_FANOUT.  Requires --ile-force-gpu.")
+parser.add_argument("--ile-exe",default=None,type=str,help="Path to the ILE executable used for this workflow's ILE/ILE_puff/ILE_fetch/ILE_extr jobs (forwarded to create_event_parameter_pipeline_* as --ile-exe).  Default: `which integrate_likelihood_extrinsic_batchmode`, or `which integrate_likelihood_extrinsic_jax` if --use-jax-ile is set.  Mutually exclusive with --use-jax-ile.")
+parser.add_argument("--use-jax-ile",action='store_true',help="Use `which integrate_likelihood_extrinsic_jax` as the ILE executable in place of the default batchmode driver, for every ILE/ILE_puff/ILE_fetch/ILE_extr job.  The JAX driver does not implement calibration marginalization, ROM/NR-lookup templates, supplementary likelihood factors, --zero-likelihood, or --maximize-only (see check_critical_and_report in bin/integrate_likelihood_extrinsic_jax); combining it with --calmarg-envelope-directory is REFUSED at DAG-build time rather than left to fail at the first ILE job.  Mode-specific JAX options (--mode, --angle-marg-scheme, and the rest of that driver's surface) are not separate pseudo_pipe options -- pass them through --manual-extra-ile-args.  OSG/SINGULARITY CAVEAT: --use-osg unconditionally adds --use-singularity, and write_ILE_sub_simple then rewrites the condor executable to <SINGULARITY_BASE_EXE_DIR or /usr/bin/>/integrate_likelihood_extrinsic_jax (basename preserved) -- but no container this repository builds (Dockerfile, containers/rift_container.def.in, rift_container_family.yaml) installs JAX or that driver, so every ILE job would fail at runtime.  --use-jax-ile with --use-osg is therefore REFUSED at DAG-build time unless --jax-ile-container-ok is also given, which asserts the named SINGULARITY_RIFT_IMAGE/SINGULARITY_BASE_EXE_DIR image actually provides integrate_likelihood_extrinsic_jax and JAX.  Also REFUSED with --lisa-known-sky, which always runs the separate integrate_likelihood_extrinsic_batchmode_lisa driver and has no JAX equivalent.")
+parser.add_argument("--jax-ile-container-ok",action='store_true',help="Override the --use-jax-ile + --use-osg refusal (see --use-jax-ile help).  Pass this ONLY when the container named by SINGULARITY_RIFT_IMAGE / resolved via SINGULARITY_BASE_EXE_DIR actually provides both a JAX installation and the integrate_likelihood_extrinsic_jax executable -- no container built by this repository does.  Has no effect without --use-jax-ile, and does not affect the separate --lisa-known-sky refusal.")
 parser.add_argument("--fake-data-cache",type=str)
 parser.add_argument("--spin-magnitude-prior",default='default',type=str,help="options are default [uniform mag for precessing, zprior for aligned], volumetric, uniform_mag_prec, uniform_mag_aligned, zprior_aligned")
 parser.add_argument("--eccentricity-prior",default='uniform',type=str,choices=['uniform','log_uniform'],help="options are uniform in e ('uniform') and uniform in log(e) ('log_uniform')")  # constrained: the value is forwarded verbatim to CIP, which only branches on the exact string 'log_uniform', so an unrecognized value here would silently run the uniform prior instead of failing
@@ -736,6 +750,21 @@ if (opts.use_ini):
 if opts.ile_gpu_fanout is not None:
     os.environ['RIFT_ILE_GPU_FANOUT'] = str(opts.ile_gpu_fanout)
 
+# JAX ILE selection.  Placed AFTER the --use-ini block above: the ini can set both
+# use-jax-ile and calmarg-envelope-directory via [rift-pseudo-pipe], and a check
+# above that block would validate values the ini is about to replace.
+if opts.use_jax_ile and opts.ile_exe:
+    raise ValueError(
+        "--use-jax-ile and --ile-exe are mutually exclusive: --use-jax-ile already "
+        "resolves to `which integrate_likelihood_extrinsic_jax`.  Pass that "
+        "executable's path via --ile-exe directly instead of setting both.")
+if opts.use_jax_ile and opts.calmarg_envelope_directory:
+    raise ValueError(
+        "--use-jax-ile is incompatible with in-loop calibration marginalization "
+        "(--calmarg-envelope-directory): bin/integrate_likelihood_extrinsic_jax does "
+        "not implement --calibration-* options (see check_critical_and_report in "
+        "that driver).  Drop --calmarg-envelope-directory or drop --use-jax-ile.")
+
 # TIME-MARGINALIZATION QUADRATURE, part 1 of 2: everything refusable WITHOUT running the
 # helper.  Deliberately placed AFTER the --use-ini block above: the ini parser OVERRIDES the
 # command line for non-boolean options, so a validate above it checks a value that the ini is
@@ -816,6 +845,26 @@ if opts.use_osg_public:
     opts.condor_local_nonworker=True
     opts.condor_local_nonworker_igwn_prefix=False
     opts.condor_nogrid_nonworker=False
+
+# --use-jax-ile + --use-osg: --use-osg unconditionally pairs with --use-singularity
+# (see the cmd built below), and write_ILE_sub_simple then rewrites the condor
+# executable to <SINGULARITY_BASE_EXE_DIR or /usr/bin/>/<basename>, discarding the
+# `which integrate_likelihood_extrinsic_jax` resolution above.  No container this
+# repository builds carries JAX or that driver, so every ILE job would fail at
+# runtime, silently at build time.  Placed here (after opts.use_osg_public is
+# folded into opts.use_osg) so it sees the final value of opts.use_osg regardless
+# of which flag or ini key set it.
+if opts.use_jax_ile and opts.use_osg and not opts.jax_ile_container_ok:
+    raise ValueError(
+        "--use-jax-ile with --use-osg is REFUSED at DAG-build time: --use-osg "
+        "always adds --use-singularity, and write_ILE_sub_simple rewrites the "
+        "condor executable to <SINGULARITY_BASE_EXE_DIR or /usr/bin/>/<basename>, "
+        "but no container this repository builds (Dockerfile, "
+        "containers/rift_container.def.in, rift_container_family.yaml) installs "
+        "JAX or integrate_likelihood_extrinsic_jax -- every ILE job would fail at "
+        "runtime.  If SINGULARITY_RIFT_IMAGE/SINGULARITY_BASE_EXE_DIR names an "
+        "image you have verified provides both, pass --jax-ile-container-ok to "
+        "proceed.  Otherwise drop --use-jax-ile or --use-osg.")
 
 if opts.ile_copies <=0:
     raise Exception(" Must have 1 or more ILE instances per intrinsic point")
@@ -2280,7 +2329,15 @@ if opts.pipeline_builder:  # explicit override wins, for clean side-by-side A/B 
         print(" WARNING: --pipeline-builder {} overrides --use-subdags routing; AMR/subdag runs require AlternateIteration ".format(opts.pipeline_builder))
     cepp = "create_event_parameter_pipeline_" + opts.pipeline_builder
 print(" Pipeline builder (create_event_parameter_pipeline_*): ", cepp)
-cmd =cepp+ "  --ile-n-events-to-analyze {} --input-grid proposed-grid.{} --ile-exe  `which integrate_likelihood_extrinsic_batchmode`   --ile-args `pwd`/args_ile.txt --cip-args-list args_cip_list.txt --test-args args_test.txt --request-memory-CIP {} --request-memory-ILE {} --n-samples-per-job ".format(n_jobs_per_worker,grid_suffix_pp,cip_mem,ile_mem) + str(npts_it) + " --working-directory `pwd` --n-iterations " + str(n_iterations) + ("" if use_multiapprox else " --n-iterations-subdag-max {} ".format(opts.internal_n_iterations_subdag_max)) + "  --n-copies {} ".format(opts.ile_copies) + "   --ile-retries "+ str(opts.ile_retries) + " --general-retries " + str(opts.general_retries)
+# Resolve the ILE executable: --use-jax-ile wins (mutual exclusion with --ile-exe was
+# already enforced above), then an explicit --ile-exe, then the historical default.
+if opts.use_jax_ile:
+    resolved_ile_exe = "`which integrate_likelihood_extrinsic_jax`"
+elif opts.ile_exe:
+    resolved_ile_exe = "'{}'".format(opts.ile_exe)
+else:
+    resolved_ile_exe = "`which integrate_likelihood_extrinsic_batchmode`"
+cmd =cepp+ "  --ile-n-events-to-analyze {} --input-grid proposed-grid.{} --ile-exe  {}   --ile-args `pwd`/args_ile.txt --cip-args-list args_cip_list.txt --test-args args_test.txt --request-memory-CIP {} --request-memory-ILE {} --n-samples-per-job ".format(n_jobs_per_worker,grid_suffix_pp,resolved_ile_exe,cip_mem,ile_mem) + str(npts_it) + " --working-directory `pwd` --n-iterations " + str(n_iterations) + ("" if use_multiapprox else " --n-iterations-subdag-max {} ".format(opts.internal_n_iterations_subdag_max)) + "  --n-copies {} ".format(opts.ile_copies) + "   --ile-retries "+ str(opts.ile_retries) + " --general-retries " + str(opts.general_retries)
 if use_multiapprox:
     # Every model on the SAME grid.  --approx is the primary; --approx-extra the
     # rest.  The builder marginalizes over them point by point in the loop and

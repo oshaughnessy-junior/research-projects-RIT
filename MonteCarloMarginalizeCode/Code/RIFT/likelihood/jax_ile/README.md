@@ -387,19 +387,34 @@ compression ratio and streams entries through their checksum, so a corrupt or
 hostile archive cannot expand without limit. Cache bundles contain compiler
 artifacts and should still be accepted only from a trusted build workflow.
 
-The compatibility namespace does NOT cover `XLA_FLAGS`. JAX hashes the compile
-options it builds, and deliberately excludes a list of flags that cannot change
-the compiled result, but the `XLA_FLAGS` environment variable is read by the
-XLA C++ layer and is part of no key. A flag that changes numerics (fast
-min/max, excess precision, TF32 controls) must therefore be held fixed for a
-given cache root, or the root varied alongside it. Performance-only flags are
-safe to vary.
+The compatibility namespace does not cover `XLA_FLAGS`, and does not need to:
+JAX covers it. `jax/_src/cache_key.py::_hash_xla_flags` reads the `XLA_FLAGS`
+and `LIBTPU_INIT_ARGS` environment variables and every `--xla*` token in
+`sys.argv`, and hashes each into the key, skipping only the dump/debug flags in
+`xla_flags_to_exclude_from_cache_key`. Measured on jax 0.9.2: adding
+`--xla_cpu_enable_fast_math=true` to `XLA_FLAGS` produced a second, distinct
+`jit_work-*` entry rather than reusing the first, and rerunning with unchanged
+flags reused it. So a numerics-affecting flag varies the key rather than
+silently reusing a kernel compiled under a different one, and flags need not be
+held fixed per cache root.
 
-Cache entries are written by JAX, not by RIFT, and JAX writes them in place
-rather than through a temporary file. Two processes racing on one key write the
-same bytes, because the key is a hash of everything that determines them, and a
-torn read fails to deserialize and recompiles. So a shared cache root degrades
-to recompilation under contention; it does not hand back a wrong kernel.
+Cache entries are written by JAX, not by RIFT, and `LRUCache.put` writes them
+with a plain `write_bytes` rather than through a temporary file, so a reader can
+observe a partial entry. Measured on jax 0.9.2 against a populated cache: an
+entry truncated to 60%, an entry with one byte flipped mid-blob, and an entry
+with 4 KiB of random bytes spliced in each produced the same lnL as the
+uncorrupted run, via a `UserWarning: Error reading persistent compilation cache
+entry` and a recompile. Corruption therefore fails CLOSED: a shared root
+degrades to recompilation under contention and does not hand back a wrong
+kernel.
+
+It does not self-heal, and that is the operational cost. `LRUCache.put` returns
+early when the path already exists, so a process killed mid-write -- a node
+reboot, an OOM, a thread-budget abort -- leaves a truncated entry that no later
+process rewrites. In the measurement above the file stayed at its truncated
+2943 bytes across reruns. That key then recompiles forever while only warning.
+If a warm cache stops saving time, delete the compatibility-keyed directory
+(`rift_jax_cache fingerprint` names it) and re-warm; there is no partial repair.
 
 The amplitude-adequacy diagnostic of the amp-sized schemes (exact, Laplace,
 peak-local, phi-local) is deliberately data returned

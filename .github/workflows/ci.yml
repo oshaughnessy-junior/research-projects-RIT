@@ -760,6 +760,13 @@ jobs:
           bash .travis/test-run.sh
           bash .travis/test-run-alts.sh
           bash .travis/test-build.sh
+      - name: Run ILE executable selection tests (--use-jax-ile / --ile-exe)
+        # Full subprocess DAG builds against the same reference ini/coinc as
+        # test-build.sh, so the pseudo_pipe CLI wiring is what is exercised:
+        # --use-jax-ile and --ile-exe land in ILE.sub/ILE_puff.sub/ILE_extr.sub,
+        # and --use-jax-ile is refused at DAG-build time with --calmarg-envelope-directory.
+        run: |
+          python -m pytest -q MonteCarloMarginalizeCode/Code/test/test_jax_ile_selectable.py
       - name: Upload test logs on failure
         if: failure()
         uses: actions/upload-artifact@v4

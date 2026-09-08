@@ -186,6 +186,7 @@ _ILE_BOOL_OPTS = {
     "--internal-reparam-dl-incl", "--internal-use-lnL",
     "--distance-slice-all-fresh",
     "--distance-slice-randomize",
+    "--psi-marginalization",
 }
 # ILE options taking repeated values (action=append).
 _ILE_APPEND_OPTS = {
@@ -259,7 +260,7 @@ _ILE_ALL_OPTS = {
     "--portfolio-revive-period", "--portfolio-varaha-can-freeze",
     "--portfolio-varaha-max-frac", "--portfolio-varaha-min-frac",
     "--portfolio-varaha-never-freeze", "--portfolio-weight-clip", "--psd-file",
-    "--psd-window-shape", "--random-event", "--reference-freq",
+    "--psd-window-shape", "--psi-marginalization", "--random-event", "--reference-freq",
     "--resample-time-marginalization", "--restricted-mode-list-file",
     "--rom-group", "--rom-integrate-intrinsic", "--rom-limit-basis-size-to",
     "--reject-collapsed-live-volume", "--rom-param", "--rom-use-basis",
@@ -336,6 +337,11 @@ def check_critical_and_report(opts, optp):
         fatal.append("--zero-likelihood is not implemented")
     if is_set("--maximize-only"):
         fatal.append("--maximize-only is not implemented (this driver integrates)")
+    if is_set("--psi-marginalization"):
+        fatal.append("--psi-marginalization (analytic polarization-angle "
+                     "marginalization) is not implemented for psi-sampling modes "
+                     "on this driver; use --mode flowmc-phipsimarg or "
+                     "flowmc-dpsimarg, which marginalize psi by construction")
     # Cross-axis policy scope, at parse time (external review of #278, P1):
     # only --mode flowmc-phipsimarg reads the policy, so a request anywhere
     # else would otherwise complete on the ordinary likelihood, and the
@@ -1591,6 +1597,7 @@ def angle_grid_suspect_note(scheme=None):
       ""                              -- the grid schemes were not used
       "SUSPECT-ANGLE-GRID ..."        -- undersizing was DETECTED
       "ANGLE-GRID-CHECK=OUTPUT-CLOUD-PASS ..." -- checked cloud was adequate
+      "ANGLE-GRID-CHECK=NOT-PERFORMED ..."     -- amp-sized scheme, NO check ran
 
     The pure JIT returns its amplitude metric as ordinary data, and the Python
     boundary synchronously accumulates the maximum over every pilot, reweight,
@@ -1616,6 +1623,23 @@ def angle_grid_suspect_note(scheme=None):
     # this label is about; leaving it out published its artifacts with an EMPTY note --
     # the silence the paragraph above says a reader would take for verification.
     if scheme in ("exact", "laplace", "peak-local", "phi-local"):
+        # A PASS may only be claimed when a batch was actually inspected.  The
+        # recorder is wired ONLY for direct_marginalization_policy="off"
+        # (wrapper.py sets self._amp_record under that condition), while
+        # self.angle_marg_scheme still names the amp-sized reserve scheme.  So
+        # `--angle-marg-scheme exact --direct-marginalization-policy auto`
+        # reaches here with n_calls == 0 and amp_sizing None.  Without this
+        # branch that formatted "%.6g" % None and raised TypeError, killing the
+        # event AFTER integration and BEFORE either writer -- and had amp_sizing
+        # merely been 0.0 it would instead have published OUTPUT-CLOUD-PASS
+        # worst_amp=0, an affirmative adequacy claim backed by zero checks,
+        # which is the exact false negative this label exists to prevent.
+        if not st.get("n_calls"):
+            return ("ANGLE-GRID-CHECK=NOT-PERFORMED scheme=%s (no batched "
+                    "amp-sized evaluation was recorded for this event, so the "
+                    "adequacy of the dense (phi,psi) grids is UNKNOWN -- this "
+                    "is NOT a pass; rebuild at a larger amp_sizing if it "
+                    "matters)" % (scheme,))
         return ("ANGLE-GRID-CHECK=OUTPUT-CLOUD-PASS worst_amp=%.6g "
                 "amp_sizing=%.6g scheme=%s (deterministic over pilot/reweight/"
                 "final output-cloud evaluations; transient training-only "

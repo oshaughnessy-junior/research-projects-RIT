@@ -117,6 +117,32 @@ def test_unwritable_cache_disables_without_failing(monkeypatch, capsys):
     assert ("jax_enable_compilation_cache", False) in fake.config.updates
 
 
+def test_an_unusable_backend_disables_the_cache_instead_of_raising(tmp_path,
+                                                                   monkeypatch,
+                                                                   capsys):
+    """A device probe that fails must not kill the driver.
+
+    runtime_compatibility() calls default_backend()/devices(), which force
+    backend init; unloadable CUDA libraries, or a card busy for every tenant,
+    raise there.  configure_persistent_cache runs at driver IMPORT, before the
+    option parser exists, so an escaping exception makes the ILE unable even to
+    print --help.  Verified against the real jaxlib: with JAX_PLATFORMS=cuda on
+    a CPU-only host, jax.devices() raised and this function propagated it.
+    """
+    monkeypatch.delenv("JAX_COMPILATION_CACHE_DIR", raising=False)
+
+    def _explode(unused):
+        raise RuntimeError("cuInit(0) failed: Unknown CUDA error 303")
+
+    monkeypatch.setattr(cache, "runtime_compatibility", _explode)
+    fake = _Jax()
+    assert cache.configure_persistent_cache(
+        fake, ["--jax-cache-dir", str(tmp_path)]) is None
+    assert "disabling JAX persistent cache" in capsys.readouterr().err
+    assert ("jax_enable_compilation_cache", False) in fake.config.updates
+    assert not list(tmp_path.iterdir()), "a failed probe must not create a cache"
+
+
 def test_manifest_updates_use_unique_atomic_temporary_files(tmp_path, monkeypatch):
     sources = []
     lock = threading.Lock()

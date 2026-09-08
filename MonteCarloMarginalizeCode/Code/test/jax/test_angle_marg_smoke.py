@@ -138,8 +138,9 @@ def test_public_wrapper_records_output_calls_not_training_and_drives_note():
         make_synth(), 30.0, 3000.0, n_grid=16, nphi=8, npsi=4,
         interp=INTERP, guess_snr=5.0, angle_marg="exact")
     assert like._amp_record is not None
+    assert like._batched_amp is not None
     amplitudes = iter((10.0, 1000.0))
-    like._batched = lambda ra, dec, incl: (
+    like._batched_amp = lambda ra, dec, incl: (
         jnp.zeros_like(jnp.atleast_1d(ra)), jnp.asarray(next(amplitudes)))
 
     AM.reset_amp_failsafe()
@@ -200,6 +201,61 @@ def test_public_wrapper_records_output_calls_not_training_and_drives_note():
     assert "deterministic over pilot/reweight/final output-cloud" in note
     assert "transient training-only proposals not inspected" in note
 
+
+
+def test_an_unchecked_amp_sized_scheme_is_labelled_not_performed():
+    """A PASS label may only be published when a batch was actually checked.
+
+    The recorder is wired ONLY for direct_marginalization_policy="off", while
+    ``angle_marg_scheme`` still names the amp-sized reserve scheme, so
+    ``--angle-marg-scheme exact --direct-marginalization-policy auto`` reaches
+    angle_grid_suspect_note("exact") having recorded nothing.  As merged, that
+    formatted "%.6g" % None and raised TypeError -- killing the event after the
+    integration and before either writer.  Had amp_sizing merely defaulted to
+    0.0 it would instead have published OUTPUT-CLOUD-PASS worst_amp=0: an
+    adequacy claim backed by zero checks, which is the false negative the whole
+    label exists to prevent.
+
+    Behavioural on purpose.  The sibling checks in this file grep the driver
+    source; a source grep cannot see either failure, because the string it
+    matches is present in both the broken and the fixed driver.
+    """
+    tree = ast.parse(_driver_src())
+    note_fn = next(node for node in tree.body
+                   if isinstance(node, ast.FunctionDef)
+                   and node.name == "angle_grid_suspect_note")
+    namespace = {"_anglemarg": AM}
+    exec(compile(ast.Module(body=[note_fn], type_ignores=[]),
+                 "<angle-grid-note>", "exec"), namespace)
+    note = namespace["angle_grid_suspect_note"]
+
+    AM.reset_amp_failsafe()
+    assert AM.amp_failsafe_state()["n_calls"] == 0
+    for scheme in ("exact", "laplace", "peak-local", "phi-local"):
+        label = note(scheme)
+        assert label.startswith("ANGLE-GRID-CHECK=NOT-PERFORMED"), label
+        assert "OUTPUT-CLOUD-PASS" not in label
+        assert "UNKNOWN" in label and "NOT a pass" in label
+
+    # one recorded batch, and the same call is entitled to claim the pass
+    AM.record_amp_failsafe(1.0, 100.0, "exact")
+    assert note("exact").startswith("ANGLE-GRID-CHECK=OUTPUT-CLOUD-PASS")
+    AM.reset_amp_failsafe()
+
+
+
+def test_the_policy_composite_leaves_the_amp_record_unwired():
+    """The wiring fact that makes the case above reachable in production."""
+    data = make_synth()
+    like = JAXDistPhiPsiMargLikelihood(
+        data, 30.0, 3000.0, n_grid=16, nphi=8, npsi=4, interp=INTERP,
+        guess_snr=5.0, angle_marg="exact",
+        direct_marginalization_policy="auto")
+    assert like.angle_marg_scheme == "exact", (
+        "the composite still names an amp-sized reserve scheme, which is what "
+        "sends angle_grid_suspect_note down the labelled branch")
+    assert like._amp_record is None, (
+        "the composite exposes no amplitude metric, so nothing records")
 
 def make_synth(scale=1.0, seed=3, modes=((2, 2), (2, -2)), npts=32,
                deltaT=1.0 / 1024, kappa_boost=1.0):

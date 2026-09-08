@@ -199,7 +199,24 @@ def configure_persistent_cache(jax_module, argv=None):
         jax_module.config.update("jax_enable_compilation_cache", False)
         return None
 
-    compatibility = runtime_compatibility(jax_module)
+    # runtime_compatibility() PROBES THE DEVICE, and that probe can fail on a
+    # perfectly ordinary execute node: jax.default_backend()/jax.devices() force
+    # backend init, so unloadable CUDA libraries or a card that is busy for every
+    # tenant raise here.  This function runs at driver IMPORT, before the option
+    # parser exists, so an escaping exception turns "no usable accelerator" into
+    # a driver that cannot even print --help -- a performance optimization
+    # failing a scientific run, which is the thing the OSError handler below
+    # exists to prevent.  Catch it in the same place and for the same reason.
+    try:
+        compatibility = runtime_compatibility(jax_module)
+    except Exception as exc:
+        print("WARNING: disabling JAX persistent cache, cannot identify the "
+              "JAX runtime/device: %s" % exc, file=sys.stderr)
+        try:
+            jax_module.config.update("jax_enable_compilation_cache", False)
+        except Exception:
+            pass
+        return None
     exact = os.environ.get("JAX_COMPILATION_CACHE_DIR")
     if exact and not cli_root:
         directory = Path(exact).expanduser()
