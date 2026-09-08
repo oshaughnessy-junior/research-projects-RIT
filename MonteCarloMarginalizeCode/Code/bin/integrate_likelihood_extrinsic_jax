@@ -1194,11 +1194,29 @@ def eval_lnL(like, theta, opts, with_distance):
                    int(np.sum(np.isnan(out[sl]))), int(sl.stop - sl.start)))
         if (getattr(like, "time_quadrature", "simpson") == "bandlimited"
                 and np.any(np.isnan(out[sl]))):
+            bad = np.where(np.isnan(out[sl]))[0]
+            names = FULL_NAMES if with_distance else ANG_NAMES
+            rows = "; ".join(
+                ", ".join("%s=%.4f" % (nm, v) for nm, v in zip(names, theta[sl][j]))
+                for j in bad[:3])
+            # One uncertified row fails the run: no coarse likelihood is
+            # substituted, and a row's contribution cannot be bounded without a
+            # value.  With a full-sky prior the usual cause is a blind draw whose
+            # detector arrival peak lies at or beyond the window edge (a wrong
+            # sky shifts arrival by up to 2 R_earth/c ~ 43 ms), which the
+            # trapezoid and guard certificates cannot converge on; the
+            # integration window has to contain those shifts.  Measured rates:
+            # DESIGN_jax_bandlimited_distmarg.md.
             raise RuntimeError(
-                "adaptive reflected-FFT time marginalization failed its width/"
-                "doubling convergence or endpoint-mass check; no coarse "
-                "likelihood is substituted. Increase the input/rholm sample "
-                "rate or integration/storage window.")
+                "--time-marginalization-quadrature bandlimited: %d of %d rows in "
+                "this chunk failed a certificate (peak-width resolution, factor "
+                "doubling, or guard agreement); no coarse likelihood is "
+                "substituted and the run stops.  First failing rows: %s.  A "
+                "peak at the window edge is the common cause under a full-sky "
+                "prior; raise --data-integration-window-half to cover the "
+                "detector arrival shifts (>= ~0.045 s), or raise the input/rholm "
+                "sample rate."
+                % (len(bad), int(sl.stop - sl.start), rows))
     return out
 
 

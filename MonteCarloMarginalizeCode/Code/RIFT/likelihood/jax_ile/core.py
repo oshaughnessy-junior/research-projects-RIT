@@ -1342,7 +1342,8 @@ def _time_marginalize_reflected_fft(lnL_t, deltaT, w_t):
 
 def _time_marginalize_reflected_primitive(kappa_t, rho_sq, deltaT,
                                            phase_marginalization=False,
-                                           guard=0, reduce_fn=None):
+                                           guard=0, reduce_fn=None,
+                                           endpoint_log_gap=_TIME_ENDPOINT_LOG_GAP_MIN):
     """Adaptive integral after refining the band-limited complex primitive.
 
     This is required for phase marginalization: interpolating ``abs(kappa)``
@@ -1362,6 +1363,12 @@ def _time_marginalize_reflected_primitive(kappa_t, rho_sq, deltaT,
     Every per-row quantity -- probe, factor selection, refinement -- is built
     inside the ``lax.map`` body, so scratch is set by one row and not by the
     sampler batch.
+
+    ``endpoint_log_gap`` is the endpoint certificate's threshold in nats;
+    ``None`` switches that certificate off and leaves the resolution, doubling
+    and guard-agreement certificates in force.  The fixed-distance reduction
+    keeps the default.  A reduction with a floor (the distance quadrature) must
+    pass ``None``: see :func:`fused_log_likelihood_distmarg`.
     """
     guard = int(guard)
     if guard < 0 or 2 * guard >= kappa_t.shape[-1] - 1:
@@ -1425,9 +1432,12 @@ def _time_marginalize_reflected_primitive(kappa_t, rho_sq, deltaT,
             width, measured = _peak_width_from_lnL_jax(dense, deltaT / float(f))
             resolved = ((~measured) | (~jnp.isfinite(width))
                         | (deltaT / float(f) <= width / _TIME_ADAPTIVE_SAFETY))
-            peak = jnp.max(dense)
-            endpoint = jnp.maximum(dense[0], dense[-1])
-            boundary_ok = endpoint <= peak - _TIME_ENDPOINT_LOG_GAP_MIN
+            if endpoint_log_gap is None:
+                boundary_ok = True
+            else:
+                peak = jnp.max(dense)
+                endpoint = jnp.maximum(dense[0], dense[-1])
+                boundary_ok = endpoint <= peak - float(endpoint_log_gap)
             return value, resolved, boundary_ok
 
         def branch(args):
@@ -1692,10 +1702,20 @@ def fused_log_likelihood_distmarg(data, ra, dec, psi, incl, phiref,
                 k.reshape(n), rho.reshape(n), a, b, log_w_grid, block)
             return out.reshape(shape)
 
+        # The endpoint certificate is OFF here, and only here.  The marginal
+        # field has a floor: at every node the distance sum is at least the
+        # far-distance prior mass, so a row's peak-to-endpoint contrast is
+        # bounded by its own peak height, and a fixed 15-nat gap rejects every
+        # low-contrast row outright, converged or not.  Those rows are exactly
+        # the blind sky/orientation draws a prior-seeded mode evaluates by the
+        # thousand.  The reconstruction at the window edge is still certified
+        # by the guard-agreement check, and the value by the doubling check.
+        # Numbers: DESIGN_jax_bandlimited_distmarg.md, "The endpoint
+        # certificate".  The fixed-distance kernel keeps the gap.
         return _time_marginalize_reflected_primitive(
             kappa_unit, rho_sq_unit, data.deltaT,
             phase_marginalization=phase_marginalization, guard=guard,
-            reduce_fn=_reduce)
+            reduce_fn=_reduce, endpoint_log_gap=None)
     K = jnp.abs(kappa_unit) if phase_marginalization else kappa_unit.real
     lnL_t = _logsumexp_grid_blocked(K, rho_sq_unit, a, b, log_w_grid, grid_block)
     if return_lnLt:
