@@ -155,3 +155,27 @@ python -m pytest -q "$_JOINT_PL_TESTS"
 python MonteCarloMarginalizeCode/Code/test/test_mcsamplerEnsemble_extended.py --as-test --n-max 100000
 
 python MonteCarloMarginalizeCode/Code/test/test_mcsamplerEnsemble_extended.py --as-test --n-max 100000 --use-lnL
+
+# Q_lm pregrid factor (PR #261), pipeline passthrough.  --q-time-pregrid-factor had NO
+# helper/pseudo_pipe wiring at all until this option was added -- it was reachable only
+# through --manual-extra-ile-args, which RO'S directive 2026-09-08 says is too easy to get
+# wrong for the time-stencil/time-quadrature family.  Same discipline as the
+# time-marginalization-quadrature gate above: an unlisted test file is simply never run, so
+# wiring the file in is part of shipping the wiring.  What these files protect: the
+# driver-mirroring prerequisite check (--vectorized required; --rotation-slow/--freqresponse/
+# calibration marginalization excluded), the forced-cubic-stencil conflict (factor 8 refuses
+# an explicit --interpolate-time other than cubic, with the driver's OWN wording), the
+# two-stage refuse-not-ignore emission guard, and that the option actually reaches
+# helper_ile_args.txt / args_ile.txt rather than being inert.
+_QPREGRID_TESTS=(
+    MonteCarloMarginalizeCode/Code/test/test_q_time_pregrid.py
+    MonteCarloMarginalizeCode/Code/test/test_q_time_pregrid_pipeline.py
+)
+# Raise EXPECTED by RUNNING collection, never by arithmetic.
+_QPREGRID_EXPECTED=63
+_QPREGRID_FOUND=$(python -m pytest -q --collect-only "${_QPREGRID_TESTS[@]}" 2>/dev/null | grep -c '::' || true)
+if [ "$_QPREGRID_FOUND" -ne "$_QPREGRID_EXPECTED" ]; then
+    echo "q-time-pregrid gate: collected $_QPREGRID_FOUND tests, expected $_QPREGRID_EXPECTED" >&2
+    exit 1
+fi
+python -m pytest -q "${_QPREGRID_TESTS[@]}"

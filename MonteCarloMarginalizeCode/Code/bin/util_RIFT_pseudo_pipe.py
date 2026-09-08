@@ -65,6 +65,10 @@ from RIFT.likelihood.time_interp_choice import (
 from RIFT.likelihood.time_marginalization_quadrature import (
     TIME_QUADRATURE_CHOICES, validate_time_quadrature,
     refuse_unhonourable_time_quadrature, refuse_unless_time_quadrature_emitted)
+# Same reason, same leaf-module discipline, for the Q_lm pregrid factor.
+from RIFT.likelihood.q_time_pregrid import (
+    Q_TIME_PREGRID_CHOICES, validate_q_time_pregrid_factor,
+    refuse_unhonourable_q_time_pregrid, refuse_unless_q_time_pregrid_emitted)
 ligolw_prefix = 'igwn_'
 if not(which(ligolw_prefix + "ligolw_add")):
     ligolw_prefix = ''
@@ -495,6 +499,7 @@ parser.add_argument("--internal-ile-srate-time-resampling",default=None, help=" 
 parser.add_argument("--internal-ile-srate-internal",default=None, help=" Adds --srate-internal to ILE, modifying how calculations are performed internally to use a higher sampling rate ")
 parser.add_argument("--internal-ile-interpolate-time",nargs='?',const=BARE_FLAG_SENTINEL,default=None,type=str,help="Enable sub-sample interpolation of Q_lm at fractional detector arrival times in the maintained NoLoop likelihood. REQUIRES AN EXPLICIT STENCIL: nearest|cubic|sinc -- automatic selection was removed as measurably unreliable, and a bare flag is rejected rather than silently doing nothing. MEASURED GUIDANCE (SEOBNRv4, an IMR model): %s. Forwarded verbatim to helper_LDG_Events.py, which validates it. Full tables, limitations and provenance: RIFT/likelihood/DESIGN_q_window_stencil.md." % CROSSOVER_GUIDANCE)
 parser.add_argument("--internal-ile-time-marginalization-quadrature",default=None,type=str,choices=list(TIME_QUADRATURE_CHOICES),help="Rule for the TIME integral of the marginalized likelihood in ILE: %s. Default None = pass nothing, so the ILE default ('simpson', the historical fixed-deltaT Simpson rule) is unchanged and the emitted args_ile.txt is byte-identical to today. 'bandlimited' resolves the integrand instead of the data: exp(lnL(t)) is a peak of width sigma_t = 1/(2 pi rho sigma_f), which SHRINKS AS 1/rho, while the grid spacing deltaT=1/srate is fixed by the data -- so production under-resolves its own integrand, worse at higher SNR (measured: rigidly scanning the grid phase moves the reported lnL by 1.649 nats at srate 4096, rho=40). Forwarded verbatim to helper_LDG_Events.py, which validates it and puts --time-marginalization-quadrature on the ILE command line; from args_ile.txt it reaches every ILE*.sub INCLUDING ILE_extr.sub. REFUSED, not ignored, at DAG-BUILD TIME if this workflow cannot honour it (calibration marginalization, --rotation-slow, --freqresponse, or a configuration without --time-marginalization/--vectorized/--gpu). IMPORTANT -- INI OVERRIDE: the RIFT ini parser OVERRIDES the command line for non-boolean options, and this is a string option, so NEVER set it in a --use-ini that a Makefile or wrapper also sets on the command line; the ini value would win silently. Rationale, measured tables and exclusions: RIFT/likelihood/DESIGN_time_marginalization_quadrature.md." % ("|".join(TIME_QUADRATURE_CHOICES),))
+parser.add_argument("--internal-ile-q-time-pregrid-factor",default=None,type=int,choices=list(Q_TIME_PREGRID_CHOICES),help="OPT-IN certified Q_lm pregrid in ILE (PR #261): %s. Default None = pass nothing, so the ILE default (factor 1, the historical unchanged path) is unchanged and the emitted args_ile.txt is byte-identical to today. Factor 8 reflects each finite Q window, FFT-interpolates it onto an 8x finer grid once after packing, and evaluates detector arrival times off that grid with four-tap CUBIC interpolation -- the geocentric time-integration grid is left at the data deltaT. Forwarded verbatim to helper_LDG_Events.py, which validates it and puts --q-time-pregrid-factor on the ILE command line. REFUSED, not ignored, at DAG-BUILD TIME if this workflow cannot honour it (calibration marginalization, --rotation-slow, --freqresponse, a configuration without --vectorized, or an explicit --internal-ile-interpolate-time naming a stencil other than cubic -- factor 8 forces cubic and will not silently override a different explicit request). IMPORTANT -- INI OVERRIDE: the RIFT ini parser OVERRIDES the command line for non-boolean options, so NEVER set this in a --use-ini that a Makefile or wrapper also sets on the command line. Rationale: bin/integrate_likelihood_extrinsic_batchmode (grep q_time_pregrid)." % ("|".join(str(c) for c in Q_TIME_PREGRID_CHOICES),))
 parser.add_argument("--internal-ile-n-chunk",default=None,type=int,help="Override the extrinsic chunk size (--n-chunk) passed to ILE, via the helper. Default behaviour (helper): 40000, scaled linearly with SNR above 40 and capped at 160000, because at high SNR the posterior is a vanishing fraction of the prior volume and a small chunk gives few informative samples per adaptation step. Larger chunks cost GPU memory but measured HOST memory (what RequestMemory governs) is flat, so no memory-request change is normally needed. EXPERTS ONLY.")
 parser.add_argument("--batch-extrinsic",action='store_true')
 parser.add_argument("--fmin",default=20,type=int,help="Mininum frequency for integration. template minimum frequency (we hope) so all modes resolved at this frequency")  # should be 23 for the BNS
@@ -762,6 +767,38 @@ if opts.internal_ile_time_marginalization_quadrature is not None:
         refuse_unhonourable_time_quadrature(
             opts.internal_ile_time_marginalization_quadrature,
             "--time-marginalization --vectorized --gpu " + _tq_early,
+            "this pipeline's own options (checked before the helper runs, so the failure is "
+            "immediate rather than after a workflow has been built)")
+
+# Q_lm PREGRID FACTOR, part 1 of 2: everything refusable WITHOUT running the helper.  Same
+# placement reasoning as the quadrature block just above (after --use-ini, so a bad ini value
+# is not checked before the ini is about to replace it).
+if opts.internal_ile_q_time_pregrid_factor is not None:
+    # Validate through the LIBRARY function as well as argparse `choices`, so this script and
+    # the ILE driver can never disagree about what the legal set is.
+    validate_q_time_pregrid_factor(opts.internal_ile_q_time_pregrid_factor)
+    if opts.lisa_known_sky:
+        # Same reasoning as the quadrature check: --lisa-known-sky builds args_ile.txt through
+        # helper_LISA_Events.py, which does not carry this option either.
+        raise ValueError(
+            "--internal-ile-q-time-pregrid-factor is not supported on the --lisa-known-sky "
+            "path: that path builds args_ile.txt through helper_LISA_Events.py, which does not "
+            "carry the option, so the request would be silently dropped.")
+    # What this script knows before the helper runs: calibration marginalization is added HERE,
+    # not by the helper, and --manual-extra-ile-args can carry any ILE flag at all (including a
+    # conflicting explicit --interpolate-time).
+    _qp_early = ""
+    if opts.calmarg_envelope_directory:
+        _qp_early += " --calibration-envelope-directory " + str(opts.calmarg_envelope_directory)
+    if opts.manual_extra_ile_args:
+        _qp_early += " " + str(opts.manual_extra_ile_args)
+    if _qp_early:
+        # Only the EXCLUSIONS (and a manually-passed stencil conflict) are checkable this early
+        # -- the required --vectorized is added by the helper -- so append it to keep the
+        # message about what is actually wrong.
+        refuse_unhonourable_q_time_pregrid(
+            opts.internal_ile_q_time_pregrid_factor,
+            "--vectorized " + _qp_early,
             "this pipeline's own options (checked before the helper runs, so the failure is "
             "immediate rather than after a workflow has been built)")
 
@@ -1430,6 +1467,9 @@ if opts.internal_ile_time_marginalization_quadrature is not None:
     # ILE argument construction, so the flag must enter args_ile.txt where every other ILE
     # argument does.  `is not None` rather than a truthiness test -- the option takes a VALUE.
     cmd += " --internal-ile-time-marginalization-quadrature " + str(opts.internal_ile_time_marginalization_quadrature) + " "
+if opts.internal_ile_q_time_pregrid_factor is not None:
+    # HELPER passthrough, exactly like the two options above and for the same reason.
+    cmd += " --internal-ile-q-time-pregrid-factor " + str(opts.internal_ile_q_time_pregrid_factor) + " "
 if not(opts.internal_ile_n_chunk is None):
     cmd += " --internal-ile-n-chunk {} ".format(int(opts.internal_ile_n_chunk))
 # If user provides ini file *and* ini file has fake-cache field, generate a local.cache file, and pass it as argument
@@ -1712,6 +1752,11 @@ if opts.extrinsic_handoff:
 # opts-keyed version skipped entirely.  Called unconditionally for that reason.
 refuse_unless_time_quadrature_emitted(
     opts.internal_ile_time_marginalization_quadrature, line, "args_ile.txt")
+# Same discipline, same reason, for the Q_lm pregrid factor -- including the forced-cubic-stencil
+# conflict, which can only be checked here: --interpolate-time is resolved and emitted by the
+# helper, so it is not visible to this script until `line` is fully assembled.
+refuse_unless_q_time_pregrid_emitted(
+    opts.internal_ile_q_time_pregrid_factor, line, "args_ile.txt")
 
 with open('args_ile.txt','w') as f:
         f.write(line)
