@@ -68,6 +68,8 @@ scipy special functions, lax.scan (checkpointed) bounds memory by CHUNK, not
 by grid size.
 """
 
+import sys
+
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -817,45 +819,60 @@ _AMP_FAILSAFE = {"tripped": False, "n_calls": 0, "worst_amp": 0.0,
 def reset_amp_failsafe():
     """Clear the undersizing record (call once per event, before sampling).
 
-    Barriers first: an in-flight callback from the PREVIOUS event must not land
-    after the reset and mislabel this one.
+    No barrier is needed: the record is written synchronously at the Python
+    boundary by :func:`record_amp_failsafe`, never by a queued device effect.
     """
-    try:
-        jax.effects_barrier()
-    except Exception:
-        pass
     _AMP_FAILSAFE.update(tripped=False, n_calls=0, worst_amp=0.0,
                          amp_sizing=None, scheme=None)
 
 
 def amp_failsafe_state(barrier=True):
-    """Host-side record of whether the dense grids were ever undersized.
+    """Host-side record of the deterministic output-cloud amplitude checks.
 
-    ``barrier=True`` calls :func:`jax.effects_barrier` first, so queued debug
-    callbacks have landed before the record is read.  Without it a caller can
-    read CLEAN while a tripped callback is still in flight, or reset for the
-    next event before the previous event's callback arrives.
+    ``barrier`` is accepted for API compatibility and ignored: there are no
+    queued device effects left to drain.  The jitted kernels RETURN their
+    amplitude metric as ordinary data and the wrapper accumulates it
+    synchronously once each batch is ready, so a read here is already
+    ordered after every batch the caller has taken delivery of.
+
+    Keeping host effects out of these graphs is load-bearing beyond tidiness:
+    ``jax/_src/compiler.py::_cache_write`` refuses to write a persistent cache
+    entry for any module carrying host callbacks ("because it uses host
+    callbacks"), so a ``jax.debug.print``/``jax.debug.callback`` anywhere in
+    the angle-marginalization graph makes the most expensive compile in RIFT
+    permanently uncacheable.
 
     Returns a dict; ``tripped`` is the load-bearing field.  Consumers should
     LABEL their output rather than discard it -- see the note in
     :func:`_runtime_amp_failsafe` about why this is not fatal and not a NaN.
     """
-    if barrier:
-        try:
-            jax.effects_barrier()
-        except Exception:
-            pass
     return dict(_AMP_FAILSAFE)
 
 
-def _record_amp_failsafe(tripped, amp_call, amp_sizing, scheme_name):
-    """Host callback.  Runs outside the traced graph; never alters a value."""
+def record_amp_failsafe(amp_call, amp_sizing, scheme_name):
+    """Accumulate one already-evaluated batch's amplitude maximum.
+
+    Runs at the Python boundary after the device result is ready, never inside
+    a JIT.  Maxima accumulate across chunks and calls for the whole event; the
+    likelihood values are neither altered nor filtered.
+    """
+    amp_call = float(np.max(np.asarray(amp_call)))
+    amp_sizing = float(amp_sizing)
+    tripped = amp_call > AMP_FAILSAFE_TRIP_FACTOR * amp_sizing
     _AMP_FAILSAFE["n_calls"] += 1
-    if bool(tripped):
+    _AMP_FAILSAFE["worst_amp"] = max(_AMP_FAILSAFE["worst_amp"], amp_call)
+    _AMP_FAILSAFE["amp_sizing"] = amp_sizing
+    _AMP_FAILSAFE["scheme"] = scheme_name
+    if tripped:
         _AMP_FAILSAFE["tripped"] = True
-        _AMP_FAILSAFE["worst_amp"] = max(_AMP_FAILSAFE["worst_amp"], float(amp_call))
-        _AMP_FAILSAFE["amp_sizing"] = float(amp_sizing)
-        _AMP_FAILSAFE["scheme"] = scheme_name
+        sys.stderr.write(
+            "WARNING anglemarg/%s: this batch's coefficient tables reach an "
+            "amplitude scale ~%.4g (analytic over-reading expression), above "
+            "%gx the amp_sizing=%.4g the dense (phi,psi) grids were built "
+            "for.  estimate_angle_amplitude underestimated the sky maximum; "
+            "the marginal may be under-resolved at such points.  Rebuild the "
+            "likelihood with amp_sizing >= the reported amplitude.\n"
+            % (scheme_name, amp_call, AMP_FAILSAFE_TRIP_FACTOR, amp_sizing))
 
 
 def _runtime_amp_failsafe(C_A, C_B, x_grid, amp_sizing, scheme_name):
@@ -870,10 +887,11 @@ def _runtime_amp_failsafe(C_A, C_B, x_grid, amp_sizing, scheme_name):
     trigger threshold is 2*amp_sizing: it fires when the true local
     amplitude exceeds ~1.3-2x the sizing bound -- comfortably BEFORE the
     dense grids actually degrade (their calibrated constants carry a 2x
-    margin in N, i.e. 4x in amplitude).  The warning prints from inside jit
-    via jax.debug.print (no value is altered; the recourse is named in the
-    message).  Everything under stop_gradient: the check must not appear in
-    the AD graph.
+    margin in N, i.e. 4x in amplitude).  It RETURNS the metric as ordinary JAX
+    data; no value is altered and there are deliberately no host effects here,
+    because such effects make this graph ineligible for JAX's persistent
+    compilation cache.  Everything under stop_gradient: the check must not
+    appear in the AD graph.
     """
     w = _kp_weights(C_A.shape[0])
     M_A = jnp.einsum("k,kqst->st", jnp.asarray(w), jnp.abs(C_A))
@@ -889,21 +907,9 @@ def _runtime_amp_failsafe(C_A, C_B, x_grid, amp_sizing, scheme_name):
     # anything, so a production run could finish and publish biased likelihoods, samples
     # and evidence while the "fail-safe" scrolled past in a log.  The recourse chosen is
     # a HOST-RECORDED LABEL, not a poisoned value -- see the block below, which gives the
-    # reasoning and the two rejected alternatives.  This function returns None; it alters
-    # no value.  Everything is under stop_gradient so the check never enters the AD graph.
-    jax.lax.cond(
-        amp_call > AMP_FAILSAFE_TRIP_FACTOR * amp_sizing,
-        lambda a_: jax.debug.print(
-            "WARNING anglemarg/" + scheme_name + ": this call's coefficient "
-            "tables reach an amplitude scale ~{a:.4g} (analytic over-reading "
-            "expression), above "
-            + "%gx the amp_sizing=%.4g" % (AMP_FAILSAFE_TRIP_FACTOR, amp_sizing)
-            + " the dense (phi,psi) grids were built for.  "
-            "estimate_angle_amplitude underestimated the sky maximum; the "
-            "marginal may be under-resolved at such points.  Rebuild the "
-            "likelihood with amp_sizing >= the reported amplitude.", a=a_),
-        lambda a_: None,
-        amp_call)
+    # reasoning and the two rejected alternatives.  This function alters no value; it
+    # RETURNS the metric as ordinary JAX data and the caller records it at the Python
+    # boundary.  Everything is under stop_gradient so the check never enters the AD graph.
     # DELIBERATELY NOT FATAL, AND DELIBERATELY NOT A NaN.
     #
     # An earlier version returned NaN to "fail closed".  That was worse than the
@@ -918,29 +924,30 @@ def _runtime_amp_failsafe(C_A, C_B, x_grid, amp_sizing, scheme_name):
     # Aborting is also wrong here: this is a configuration estimate, and hard
     # failure would destroy a multi-hour run over a recoverable condition.
     #
-    # So: the value is untouched, the run completes, and the condition is
-    # recorded on the HOST so the driver can LABEL the result as suspect in its
-    # provenance.  A labelled result an operator can judge beats both a vanished
-    # region and a dead run.
-    # The callback sits INSIDE lax.cond so the ORDINARY path has no host
-    # callback at all.  An unconditional callback fires once per likelihood
-    # evaluation -- once per MALA/flowMC proposal, per chain -- transferring to
-    # the host and destroying accelerator throughput even when undersizing never
-    # happens.  Only the rare tripped branch pays.
+    # So: the value is untouched, the run completes, and the metric is RETURNED
+    # for the host to record, so the driver can LABEL the result as suspect in
+    # its provenance.  A labelled result an operator can judge beats both a
+    # vanished region and a dead run.
     #
-    # Reliability caveat, stated because it bounds what this record can be used
-    # for: jax.debug.callback effects may be dropped, duplicated or reordered
-    # under transformation, and may land AFTER the result is ready.  So this is
-    # a best-effort DIAGNOSTIC LABEL, not a correctness gate -- consumers must
-    # call jax.effects_barrier() before reading or resetting the state, and must
-    # not treat a clean read as proof of adequacy.
-    jax.lax.cond(
-        amp_call > AMP_FAILSAFE_TRIP_FACTOR * amp_sizing,
-        lambda a_: jax.debug.callback(
-            _record_amp_failsafe, True, a_,
-            jnp.asarray(amp_sizing, dtype=jnp.float64), scheme_name),
-        lambda a_: None,
-        amp_call)
+    # WHY THIS IS RETURNED RATHER THAN REPORTED FROM INSIDE THE GRAPH, which is
+    # what it used to be.  Two reasons, and the second is why it changed.
+    # (1) Reliability: debug-callback effects may be dropped, duplicated or
+    # reordered under transformation, so a clean read never proved adequacy and
+    # every consumer had to say so.  (2) Cacheability, which is load-bearing:
+    # jax/_src/compiler.py::_cache_write declines to write a persistent cache
+    # entry for any module that carries host callbacks.  With one in this
+    # function the whole angle-marginalization graph -- the most expensive
+    # compile in RIFT, minutes for peak-local -- could never be persistently
+    # cached, on any scheme, in any run.  Returning the metric fixes both: the
+    # record is now synchronous and exact for every batch the caller takes
+    # delivery of.
+    #
+    # The COVERAGE that buys is narrower than "every traced call", and is stated
+    # rather than implied: the wrapper records on the BATCHED path (pilot,
+    # reweight and final output-cloud evaluations, i.e. every point that reaches
+    # a published artifact) and deliberately not on the scalar AD/flow-training
+    # path, whose proposals do not enter those artifacts.
+    return amp_call
 
 
 def _require_amp_sizing(amp_sizing):
@@ -988,7 +995,7 @@ def _pad_chunks(values, chunk):
 
 def coefficient_table_distphipsimarg_exact(
         C_A, C_B, x_grid, log_w_grid, *, amp_sizing=None, m_max=None,
-        dense_chunk=8, grid_block=32):
+        dense_chunk=8, grid_block=32, return_amp=False):
     """Stream the exact angle/distance reserve from coefficient tables.
 
     This is the common fixed-point seam between the dense/exact reserve and
@@ -1045,7 +1052,8 @@ def coefficient_table_distphipsimarg_exact(
     S = C_A.shape[2]
     npts = C_A.shape[3]
     amp_sizing = _require_amp_sizing(amp_sizing)
-    _runtime_amp_failsafe(C_A, C_B, x_grid, amp_sizing, "exact-tables")
+    amp_call = _runtime_amp_failsafe(C_A, C_B, x_grid, amp_sizing,
+                                     "exact-tables")
     nphi_d, nu_d = _dense_grid_sizes(amp_sizing, m_max=m_max)
     c = int(dense_chunk)
     n_dense = nphi_d * nu_d
@@ -1088,14 +1096,16 @@ def coefficient_table_distphipsimarg_exact(
     (m, s), _ = jax.lax.scan(
         jax.checkpoint(_step), (m0, s0),
         jnp.arange(nsteps, dtype=jnp.int32))
-    return m + jnp.log(s) - jnp.log(float(n_dense))
+    lnL_t = m + jnp.log(s) - jnp.log(float(n_dense))
+    return (lnL_t, amp_call) if return_amp else lnL_t
 
 
 def fused_log_likelihood_distphipsimarg_exact(
         data, ra, dec, incl, x_grid, log_w_grid,
         interp=JAX_INTERP_DEFAULT, amp_sizing=None,
         dense_chunk=8, grid_block=32,
-        time_quadrature=TIME_QUAD_DEFAULT, return_lnLt=False):
+        time_quadrature=TIME_QUAD_DEFAULT, return_lnLt=False,
+        return_amp=False):
     """Distance-, phi_ref- AND psi-marginalized lnL: exact-coefficient scheme.
 
     Drop-in replacement for :func:`core.fused_log_likelihood_distphipsimarg`
@@ -1119,13 +1129,13 @@ def fused_log_likelihood_distphipsimarg_exact(
     x_grid = jnp.asarray(x_grid, dtype=jnp.float64)
     log_w_grid = jnp.asarray(log_w_grid, dtype=jnp.float64)
     C_A, C_B, meta = angle_coefficient_tables(data, ra, dec, incl, interp)
-    lnL_t = coefficient_table_distphipsimarg_exact(
+    lnL_t, amp_call = coefficient_table_distphipsimarg_exact(
         C_A, C_B, x_grid, log_w_grid, amp_sizing=amp_sizing,
         m_max=meta["m_max"], dense_chunk=dense_chunk,
-        grid_block=grid_block)
-    if return_lnLt:
-        return lnL_t
-    return _time_marginalize_terminal(lnL_t, data, time_quadrature)
+        grid_block=grid_block, return_amp=True)
+    out = lnL_t if return_lnLt else _time_marginalize_terminal(
+        lnL_t, data, time_quadrature)
+    return (out, amp_call) if return_amp else out
 
 
 # ---------------------------------------------------------------------------
@@ -1637,7 +1647,8 @@ def fused_log_likelihood_distphipsimarg_laplace(
         data, ra, dec, incl, x_grid, log_w_grid,
         interp=JAX_INTERP_DEFAULT, amp_sizing=None,
         phi_chunk=16, dist_block=4, point_block=LAPLACE_POINT_BLOCK,
-        time_quadrature=TIME_QUAD_DEFAULT, return_lnLt=False):
+        time_quadrature=TIME_QUAD_DEFAULT, return_lnLt=False,
+        return_amp=False):
     """Distance-, phi_ref- AND psi-marginalized lnL: analytic psi-Laplace scheme.
 
     Same contract and normalization as
@@ -1726,7 +1737,7 @@ def fused_log_likelihood_distphipsimarg_laplace(
     # x_grid is still the right argument under GH: the adaptive nodes are
     # CLIPPED into [min x_grid, max x_grid], so the amplitude bound the
     # failsafe computes over x_grid bounds the nodes actually used.
-    _runtime_amp_failsafe(C_A, C_B, x_grid, amp_sizing, "laplace")
+    amp_call = _runtime_amp_failsafe(C_A, C_B, x_grid, amp_sizing, "laplace")
     nphi_d, _ = _dense_grid_sizes(amp_sizing, m_max=m_max)
     phi_d = np.linspace(0.0, 2.0 * np.pi, nphi_d, endpoint=False)
     c = int(phi_chunk)
@@ -1912,9 +1923,9 @@ def fused_log_likelihood_distphipsimarg_laplace(
     s0 = jnp.zeros((S, npts), dtype=jnp.float64)
     (m, s), _ = jax.lax.scan(jax.checkpoint(_step), (m0, s0), (phi_x, lw_x))
     lnL_t = m + jnp.log(s) - jnp.log(float(nphi_d))
-    if return_lnLt:
-        return lnL_t
-    return _time_marginalize_terminal(lnL_t, data, time_quadrature)
+    out = lnL_t if return_lnLt else _time_marginalize_terminal(
+        lnL_t, data, time_quadrature)
+    return (out, amp_call) if return_amp else out
 
 
 # Relative size at which A0 / B1 count as nonzero.  The identity the psi-marginal
@@ -2097,7 +2108,7 @@ def fused_log_likelihood_distphipsimarg_peaklocal(
         data, ra, dec, incl, x_grid, log_w_grid,
         interp=JAX_INTERP_DEFAULT, amp_sizing=None,
         time_quadrature=TIME_QUAD_DEFAULT, return_lnLt=False,
-        phi_chunk=None):
+        phi_chunk=None, return_amp=False):
     """Distance-, phi_ref- AND psi-marginalized lnL: PEAK-LOCAL scheme.
 
     Same contract and normalization as
@@ -2141,7 +2152,8 @@ def fused_log_likelihood_distphipsimarg_peaklocal(
     # for the exact and laplace schemes.  Skipping the check would publish that
     # silently, and would also leave the artifact without the standing best-effort
     # label, which is worse than the undersizing itself.
-    _runtime_amp_failsafe(C_A, C_B, x_grid, amp_sizing, "peak-local")
+    amp_call = _runtime_amp_failsafe(C_A, C_B, x_grid, amp_sizing,
+                                     "peak-local")
 
     n_phi = _jp.required_n_phi(amp_sizing, m_max=_data_m_max(data))
     # Size the u axis through the SINGLE SOURCE OF TRUTH rather than letting the kernel
@@ -2163,16 +2175,17 @@ def fused_log_likelihood_distphipsimarg_peaklocal(
         return _jp.joint_lnL_phi_dense(a, b, x_grid, log_w_grid, n_phi=n_phi, **kw)
 
     lnL_t = jax.vmap(jax.vmap(_one))(A, B)          # (S, npts)
-    if return_lnLt:
-        return lnL_t
-    return _time_marginalize_terminal(lnL_t, data, time_quadrature)
+    out = lnL_t if return_lnLt else _time_marginalize_terminal(
+        lnL_t, data, time_quadrature)
+    return (out, amp_call) if return_amp else out
 
 
 def fused_log_likelihood_distphipsimarg_phi_local(
         data, ra, dec, incl, x_grid, log_w_grid,
         interp=JAX_INTERP_DEFAULT, amp_sizing=None,
         time_quadrature=TIME_QUAD_DEFAULT, return_lnLt=False,
-        x_chunk=None, pt_chunk=None, n_slots=None, return_ok=False):
+        x_chunk=None, pt_chunk=None, n_slots=None, return_ok=False,
+        return_amp=False):
     """Distance-, phi_ref- AND psi-marginalized lnL with BOTH ANGLE AXES LOCALIZED.
 
     Same contract and normalization as the other ``fused_log_likelihood_distphipsimarg_*``
@@ -2208,7 +2221,8 @@ def fused_log_likelihood_distphipsimarg_phi_local(
     from . import joint_anglemarg_peaklocal as _jp
 
     C_A, C_B, _meta = angle_coefficient_tables(data, ra, dec, incl, interp=interp)
-    _runtime_amp_failsafe(C_A, C_B, x_grid, amp_sizing, "phi-local")
+    amp_call = _runtime_amp_failsafe(C_A, C_B, x_grid, amp_sizing,
+                                     "phi-local")
 
     n_phi = _jp.required_n_phi(amp_sizing, m_max=_data_m_max(data))
     u_nodes = _jp.u_nodes_in_use(amp_sizing)
@@ -2230,12 +2244,13 @@ def fused_log_likelihood_distphipsimarg_phi_local(
         return jnp.where(ok, loc, dense), ok
 
     lnL_t, ok_t = jax.vmap(jax.vmap(_one))(A, B)          # (S, npts) each
+    # return_amp appends the amplitude metric as the LAST element whatever the
+    # other flags select, so the three optional returns compose unambiguously.
+    out = lnL_t if return_lnLt else _time_marginalize_terminal(
+        lnL_t, data, time_quadrature)
     if return_ok:
-        return (lnL_t, ok_t) if return_lnLt else (
-            _time_marginalize_terminal(lnL_t, data, time_quadrature), ok_t)
-    if return_lnLt:
-        return lnL_t
-    return _time_marginalize_terminal(lnL_t, data, time_quadrature)
+        return (out, ok_t, amp_call) if return_amp else (out, ok_t)
+    return (out, amp_call) if return_amp else out
 
 
 def choose_angle_marg_scheme(amplitude, gh_enabled=None,

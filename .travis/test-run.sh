@@ -35,9 +35,18 @@ make test_workflow_batch_gpu_lowlatency
 cd test_workflow_batch_gpu_lowlatency
 # Exercise the maintained NoLoop path explicitly (see banner above).
 switcheroo '--maximize-only '  ' --vectorized --gpu --force-xpy ' command-single.sh
-# Reduce number of analyses for this worker to 1, to reduce runtime
+# Reduce number of analyses for this worker to 1, to reduce runtime.
+# create_event_parameter_pipeline_BasicIteration replaces $(macrongroup) with the literal
+# '5' at command-single.sh GENERATION time (bin/create_event_parameter_pipeline_
+# BasicIteration, arg_list.replace('$(macrongroup)','5')), before this script ever runs --
+# so the line below targeted a token this file no longer carries, a silent no-op (PR #283
+# review, MINOR).  Target the literal value actually written instead.
+switcheroo '--n-events-to-analyze  5 ' '--n-events-to-analyze  1 '  command-single.sh
+# Backstop for an older create_event_parameter_pipeline_BasicIteration that still leaves
+# $(macrongroup) as a literal token: bash would then treat it as command substitution
+# (running a command named macrongroup) when command-single.sh executes, so make that
+# resolve to 1 too rather than failing with "macrongroup: command not found".
 switcheroo '\$\(macrongroup\)' 1  command-single.sh
-# new format for n-events-to-analyze.  Backstop
 alias macrongroup='echo 1'
 echo 'echo 1' > macrongroup; chmod a+x macrongroup; PATH=${PATH}:`pwd`
 # Reduce the number of points investigated by x100
