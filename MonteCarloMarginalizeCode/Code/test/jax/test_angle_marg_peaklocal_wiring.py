@@ -156,7 +156,7 @@ def test_peak_local_runs_the_runtime_amplitude_failsafe():
     AM.reset_amp_failsafe()
 
 
-def test_peak_local_is_capped_by_the_batch_memory_rule():
+def test_peak_local_is_capped_by_the_batch_memory_rule(monkeypatch):
     """P1 from review.  peak-local still nests sample/time vmaps over the distance grid,
     phi chunks, four cells and the streamed u-node block, and its scan returns every
     ``(phi,distance)`` value, so the batch multiplies the same way the dense schemes do.
@@ -181,19 +181,29 @@ def test_peak_local_is_capped_by_the_batch_memory_rule():
     assert capped < 8000
     # NOT "same cap as exact" -- that was the earlier assertion and review rightly
     # objected that it pins the wrong invariant.  peak-local carries the WHOLE distance
-    # grid inside every phi chunk and stacks the full phi-scan result; its production-
-    # floor model is ~216x the dense model's 8192 bytes/sample/time-point.  A cap equal
-    # to exact's would look protective and would not be.  The scheme-specific model must
+    # grid inside every phi chunk, so its production-floor model is many times the dense
+    # model's 8192 bytes/sample/time-point even now that the phi scan reduces into its
+    # carry rather than stacking.  A cap equal to exact's would look protective and
+    # would not be.  The scheme-specific model must
     # therefore be STRICTLY tighter.
     assert capped < S.angle_marg_eval_chunk(_Exact(), 8000), capped
     # and it must scale with the distance grid, which is what makes it a model rather
-    # than a constant
+    # than a constant.  Asserted on the model directly: every term in it is linear in
+    # n_x, so a 4x grid is a 4x model.
     class _Wide(_Like):
         x_grid = np.zeros(1024)
-    # At this width the corrected body+scan model exceeds the fallback target
-    # even at S=1.  Returning a cap of one would claim protection it cannot give.
+    assert (S._peaklocal_bytes_per_sample_pt(_Wide())
+            == 4 * S._peaklocal_bytes_per_sample_pt(_Like()))
+    # Fail-closed is pinned against an EXPLICIT target rather than the device probe.
+    # It used to ride on _Wide exceeding whatever the fallback guess was; the phi-scan
+    # fix shrank the model by ~4x and that incidental refusal stopped firing, which is
+    # a test measuring a magnitude while claiming to measure a behaviour.
+    one_sample = S._peaklocal_bytes_per_sample_pt(_Wide()) * _Data.npts
+    monkeypatch.setattr(S, "_angle_marg_buffer_target", lambda: one_sample - 1)
     with pytest.raises(MemoryError, match="resource preflight"):
         S.angle_marg_eval_chunk(_Wide(), 8000)
+    monkeypatch.setattr(S, "_angle_marg_buffer_target", lambda: one_sample)
+    assert S.angle_marg_eval_chunk(_Wide(), 8000) == 1
     # the "grid" sentinel means "runs no dense angle scheme" and must stay uncapped
     assert S.angle_marg_eval_chunk(_NoScheme(), 8000) == 8000
 
@@ -215,9 +225,18 @@ def test_known_four_gib_device_uses_configured_fraction(monkeypatch):
 
 
 @pytest.mark.parametrize("amplitude,n_phi", [(450.0, 352), (12500.0, 1792)])
-def test_peak_local_model_includes_streamed_body_and_scan_output(
+def test_peak_local_model_is_flat_in_n_phi_because_the_scan_reduces(
         amplitude, n_phi):
-    """The cap must account for both source-visible peak-local payloads."""
+    """The cap must account for every source-visible peak-local payload, and must NOT
+    carry an `n_phi * n_x` term any more.
+
+    That term was the stacked phi-scan output, and it was real: 19.97 GiB predicted
+    against 19.99 requested at ladder-2 rung 640.  `joint_lnL_phi_dense` now reduces
+    into its scan carry, so the live phi footprint is one chunk plus an (n_x,)
+    accumulator.  The assertion is written as an EQUALITY against the enumerated terms
+    and, separately, as independence from `n_phi`: a model that silently regrew an
+    n_phi term would pass a loose inequality.
+    """
     from RIFT.likelihood.jax_ile import samplers as S
 
     class _Data(object):
@@ -230,32 +249,84 @@ def test_peak_local_model_includes_streamed_body_and_scan_output(
         x_grid = np.zeros(256)
         angle_marg_info = {"amp_sizing": amplitude}
 
+    from RIFT.likelihood.jax_ile import joint_anglemarg_peaklocal as _jp
+    live = min(_jp.u_nodes_in_use(amplitude), _jp.U_NODE_STREAM_CHUNK)
+    expected = (16 * 256 * 4 * live * 8      # streamed u body, one phi chunk
+                + 16 * 256 * 8               # one chunk of (phi, distance) values
+                + 256 * 8                    # the (n_x,) phi accumulator
+                + 256 * 5 * 5 * 16)          # the per-distance-node joint tables
     per_point = S._peaklocal_bytes_per_sample_pt(_Like())
-    assert per_point == 16 * 256 * 4 * 8 * 8 + n_phi * 256 * 8
+    assert per_point == expected, (per_point, expected, n_phi)
 
 
-def test_peak_local_resource_preflight_refuses_an_unfit_single_sample(
-        monkeypatch):
-    """A=12500 needs 5.242 GiB/sample; a cap of one would still OOM 4 GiB."""
+def test_peak_local_model_does_not_grow_with_the_phi_axis():
+    """The defect this guards: a model that tracks n_phi means a kernel that
+    materializes the phi axis.  Two amplitudes 256x apart put n_phi 16x apart and must
+    leave the per-point model unchanged."""
     from RIFT.likelihood.jax_ile import samplers as S
+    from RIFT.likelihood.jax_ile import joint_anglemarg_peaklocal as _jp
 
     class _Data(object):
         npts = 1193
         lms = ((2, 2), (2, -2))
 
+    def _like(amp):
+        class _L(object):
+            data = _Data()
+            angle_marg_scheme = "peak-local"
+            x_grid = np.zeros(256)
+            angle_marg_info = {"amp_sizing": amp}
+        return _L()
+
+    lo, hi = 450.0, 450.0 * 256
+    # NOT `== 16 *`: _dense_grid_sizes rounds n_phi up to a multiple of 16, so a 256x
+    # amplitude gives 352 -> 5440, a factor 15.45.  The premise only needs n_phi to
+    # move a lot.
+    assert _jp.required_n_phi(hi) > 10 * _jp.required_n_phi(lo), "premise"
+    # the streamed u block is min(u_nodes, U_NODE_STREAM_CHUNK) and is already at the
+    # 8-node stream cap at both amplitudes, so the whole model must be identical
+    assert (min(_jp.u_nodes_in_use(lo), _jp.U_NODE_STREAM_CHUNK)
+            == min(_jp.u_nodes_in_use(hi), _jp.U_NODE_STREAM_CHUNK)), "premise"
+    assert (S._peaklocal_bytes_per_sample_pt(_like(lo))
+            == S._peaklocal_bytes_per_sample_pt(_like(hi)))
+
+
+def test_peak_local_resource_preflight_refuses_an_unfit_single_sample(
+        monkeypatch):
+    """One sample over the allowance must REFUSE, not floor the chunk at one.
+
+    The size no longer comes from the amplitude.  This used to read "A=12500 needs
+    5.242 GiB/sample", which was true only while the model carried the stacked
+    `n_phi * n_x` term; with the phi scan reducing into its carry the model is flat in
+    amplitude, so the unfit sample is built from the dimensions that do still drive it.
+    """
+    from RIFT.likelihood.jax_ile import samplers as S
+
+    class _Data(object):
+        npts = 8192
+        lms = ((2, 2), (2, -2))
+
     class _Like(object):
         data = _Data()
         angle_marg_scheme = "peak-local"
-        x_grid = np.zeros(256)
+        x_grid = np.zeros(1024)
         angle_marg_info = {"amp_sizing": 12500.0}
 
+    one_sample = S._peaklocal_bytes_per_sample_pt(_Like()) * _Data.npts
+    assert one_sample > (4 << 30), "premise: one sample must not fit"
     monkeypatch.setattr(S, "_angle_marg_buffer_target", lambda: 4 << 30)
     with pytest.raises(MemoryError, match="reducing the outer evaluation chunk"):
         S.angle_marg_eval_chunk(_Like(), 8000)
 
 
 def test_peak_local_floor_amplitude_fits_one_sample_at_two_gib(monkeypatch):
-    """A=450 needs 1.966 GiB/sample, so the known-4-GiB target admits only one."""
+    """At the floor amplitude a 2 GiB target admits exactly one sample.
+
+    The docstring used to say "A=450 needs 1.966 GiB/sample".  That number was the
+    stacked-phi-scan model; it is now 1.32 GiB and does not depend on the amplitude at
+    all.  The test still passed at the new size, which is how a stale measured number
+    survives in a green suite -- so the size is asserted here rather than narrated.
+    """
     from RIFT.likelihood.jax_ile import samplers as S
 
     class _Data(object):
@@ -268,6 +339,8 @@ def test_peak_local_floor_amplitude_fits_one_sample_at_two_gib(monkeypatch):
         x_grid = np.zeros(256)
         angle_marg_info = {"amp_sizing": 450.0}
 
+    one_sample = S._peaklocal_bytes_per_sample_pt(_Like()) * _Data.npts
+    assert (2 << 30) // one_sample == 1, "premise: exactly one sample fits"
     monkeypatch.setattr(S, "_angle_marg_buffer_target", lambda: 2 << 30)
     assert S.angle_marg_eval_chunk(_Like(), 8000) == 1
 
