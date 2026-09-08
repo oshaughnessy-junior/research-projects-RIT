@@ -406,6 +406,28 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         merge interaction with #272's phase-marginalized
 #                                         mode permutation.
 #                                         Synthetic fixtures; no lal frames, no GPU.
+#   test_multipeak_fallback_visibility.py
+#                                      13  the multi-peak planner's fallback must not
+#                                         read as a policy decline: an exception-driven
+#                                         fallback is reported once per call and carries
+#                                         decline_kind/fault in the record, a
+#                                         budget-driven decline does neither,
+#                                         fail_on_fallback is fatal on the first and
+#                                         inert on the second, and the default path is
+#                                         value- and provenance-identical to the
+#                                         pre-change module.  Synthetic tables; the
+#                                         tier faults are injected at the
+#                                         _run_structural_tier seam.  CPU-only.
+#                                         Two of these pin properties that the first
+#                                         version of the change got wrong.  The record
+#                                         is a 13-element tuple, tested by UNPACKING it
+#                                         (13 defaulted-field CONSTRUCTION kept working
+#                                         while `a, ..., m = result` had started to
+#                                         raise, so a construction test could not see
+#                                         it).  And the fault report goes to a logger,
+#                                         tested under `-W error::RuntimeWarning`, where
+#                                         warnings.warn had made the DEFAULT
+#                                         fail_on_fallback=False path raise.
 
 FILES=(
   "${JAXDIR}/test_jax_time_quadrature.py"
@@ -441,6 +463,7 @@ FILES=(
   "${JAXDIR}/test_all_axis_peaklocal.py"
   "${JAXDIR}/test_is_proposal_jitter.py"
   "${JAXDIR}/test_multipeak_planner.py"
+  "${JAXDIR}/test_multipeak_fallback_visibility.py"
   "${JAXDIR}/test_jax_phase_marg_mode_order.py"
   "${JAXDIR}/test_jax_q_time_pregrid.py"
   "${JAXDIR}/test_direct_marginalization_policy.py"
@@ -711,7 +734,19 @@ fi
 # Re-measured on the merged tree, DESELECT loop applied, read off the gate's
 # own collection line:
 # "561/566 tests collected (5 deselected)", gate-style count 561 from 36 files.
-# NINTH: the policy follow-up PR adds three wiring tests (guard preflight,
+#
+# TENTH, on the multi-peak fallback-visibility branch (#277, this merge).  It
+# adds ONE file, test_multipeak_fallback_visibility.py (13 tests), and touches
+# no existing test file.  The branch measured 555 against a base of 542; #278
+# and #279 have since taken the base to 561, so 555 is stale and neither side
+# nor their sum is usable.  Re-measured on the merged tree, ldas-grid,
+# ~/.cache/jaxci_venv (jax 0.9.2, numpyro 0.21.0), DESELECT loop applied, read
+# off this job own collection line:
+# "574/579 tests collected (5 deselected)", gate-style count 574 from 37
+# files.
+#
+# The policy follow-up PR (this branch, numbered NINTH on its own side before the
+# merge) adds three wiring tests (guard preflight,
 # operating-point defaults, and a parametrized fail-closed case).  Measured on
 # the follow-up tree with the DESELECT loop applied, ldas-grid, CVMFS igwn
 # python: "560/565 tests collected (5 deselected)", gate-style count 560 from
@@ -720,7 +755,17 @@ fi
 # under this branch: re-measured on the merged tree, ldas-grid, CVMFS igwn
 # python, DESELECT applied: "564/569 tests collected (5 deselected)", gate-style
 # count 564 from 36 files.
-EXPECTED_TESTS=564
+#
+# ELEVENTH, reconciling the policy follow-ups with #277 (this merge).  Both sides
+# were stale in the usual way -- 564 on the branch, 574 on rift_O4d -- and neither
+# number nor their difference describes the merged tree, because each side counted
+# a file set the other had already changed.  The FILES array is again the UNION,
+# now 37 files.  Re-measured on the merged tree with the DESELECT loop applied,
+# ldas-grid, CVMFS igwn python
+# (/cvmfs/software.igwn.org/conda/envs/igwn/bin/python), read off this job's own
+# collection line: "577/582 tests collected (5 deselected)", gate-style count 577
+# from 37 files.
+EXPECTED_TESTS=577
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
