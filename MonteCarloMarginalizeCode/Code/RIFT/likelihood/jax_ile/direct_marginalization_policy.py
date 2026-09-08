@@ -496,7 +496,29 @@ def fused_log_likelihood_four_axis_policy(
             base_n_candidates_before_cap=base_planning[
                 "n_candidates_before_cap"],
             combined_n_candidates_before_cap=enriched_planning[
-                "n_candidates_before_cap"])
+                "n_candidates_before_cap"],
+            # decline_capacity is charged for THREE different causes and the
+            # ledger named only the union.  `capacity_ok` at :2067 is
+            # discovery_capacity_ok on both plans; :1514 makes that
+            # start_capacity_ok & ~selection_overflow; and the combined plan's
+            # start_capacity_ok at :902 is itself
+            # base.capacity_ok & extra.capacity_ok & same_time_support.  So a
+            # row can carry decline_capacity with every candidate count under
+            # the cap, and raising the cap cannot recover it.  Without these
+            # two flags a count-based estimate of what a larger cap buys is an
+            # upper bound and reads as if it were the answer.
+            base_start_capacity_ok=base_planning["start_capacity_ok"],
+            combined_start_capacity_ok=enriched_planning["start_capacity_ok"],
+            base_selection_overflow=base_planning["selection_overflow"],
+            combined_selection_overflow=enriched_planning[
+                "selection_overflow"],
+            base_norm_nonnegative=base_planning["norm_nonnegative"],
+            combined_norm_nonnegative=enriched_planning["norm_nonnegative"],
+            base_time_cover_certified=base_planning["time_cover_certified"],
+            combined_time_cover_certified=enriched_planning[
+                "time_cover_certified"],
+            base_time_capacity_ok=base_planning["time_capacity_ok"],
+            combined_time_capacity_ok=enriched_planning["time_capacity_ok"])
         return base_plan, enriched_plan, planning
 
     # Planning is control data.  Cutting the tangents at its INPUTS, not only
