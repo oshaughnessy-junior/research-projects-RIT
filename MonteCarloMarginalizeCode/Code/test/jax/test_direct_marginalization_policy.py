@@ -557,7 +557,10 @@ def _policy_like(batch_rows, data, **kw):
 
 
 def test_row_batch_size_changes_cost_not_values_decisions_or_gradients():
-    """``reserve_batch_rows`` may only move cost.
+    """``reserve_batch_rows`` may only move VALUES, never cost.
+
+    Cost it does move, and against the change: see the design note. This test
+    is about the values, decisions and gradients only.
 
     Executing B rows together turns the controller's tier-escalation
     ``lax.cond`` into a ``select`` under ``vmap``, so EVERY reserve tier runs
@@ -613,7 +616,8 @@ def test_row_batch_size_changes_cost_not_values_decisions_or_gradients():
         assert set(led) == set(ref_led)
         for key, want in sorted(ref_led.items()):
             if key in ("reserve_batch_execution_sequential",
-                       "reserve_batch_rows_requested"):
+                       "reserve_batch_rows_requested",
+                       "reserve_batch_rows_executed"):
                 continue
             got = led[key]
             if want.dtype == bool or np.issubdtype(want.dtype, np.integer):
@@ -630,21 +634,50 @@ def test_row_batch_size_changes_cost_not_values_decisions_or_gradients():
 
         summ = DP.summarize_policy_ledger(led)
         for key in ref_sum:
+            # The three batch keys are the ones that MUST differ; they are
+            # asserted explicitly below.
             if key in ("reserve_batch_rows",
+                       "reserve_batch_rows_requested",
                        "reserve_batch_execution_sequential"):
                 continue
-            assert summ[key] == ref_sum[key], (B, key, summ[key], ref_sum[key])
+            want, got = ref_sum[key], summ[key]
+            # Counts must be exact.  max_local_error_score_nats is not a count:
+            # it is a max over a per-row float diagnostic that is itself a
+            # reduction, so the select reassociates it.  Measured 3.553e-15 on
+            # 2 of 6 rows (2.4e-13 relative) while lnL stayed bitwise equal and
+            # every branch decision held, so it is compared as a float.
+            if isinstance(want, float):
+                assert np.isclose(got, want, rtol=1e-11, atol=0.0,
+                                  equal_nan=True), (B, key, got, want)
+            else:
+                assert got == want, (B, key, got, want)
 
         # The ledger key must state what actually happened.  It read True
         # unconditionally before the batch size was a knob.
+        # The ledger reports what EXECUTED, not what was requested: a request
+        # above the row count runs a vmap of S, not of B.
         assert summ["reserve_batch_execution_sequential"] is False
-        assert summ["reserve_batch_rows"] == (B if B else S)
+        assert summ["reserve_batch_rows"] == (S if (B == 0 or B >= S) else B)
+        assert summ["reserve_batch_rows_requested"] == B
         assert not np.any(led["reserve_batch_execution_sequential"])
 
         # The gradient is compared at EVERY batch size.  Dropping it to one
         # size, and halving nphi, were both tried and neither moved the test's
         # cost (640.8 s against 641.6 s on the ldas-grid CPU runner), so the
         # cheaper variants bought nothing and this keeps the coverage.
+        # A single row has nothing to batch, and value_and_grad evaluates
+        # exactly one.  If a batch request reached it, both the accept/reserve
+        # cond and every escalation tier would become selects and the gradient
+        # would cost more than at batch 1 for no amortization.  Pin that the
+        # scalar path stays sequential whatever was asked for.
+        _, sled = like._batched_ledger(jnp.asarray(mid[0:1]),
+                                       jnp.asarray(mid[1:2]),
+                                       jnp.asarray(mid[2:3]))
+        ssum = DP.summarize_policy_ledger({k: np.asarray(v_)
+                                           for k, v_ in sled.items()})
+        assert ssum["reserve_batch_rows"] == 1, (B, ssum["reserve_batch_rows"])
+        assert ssum["reserve_batch_execution_sequential"] is True
+
         v, g = like.value_and_grad(mid)
         assert np.all(np.isfinite(g)), (B, g)
         assert abs(v - ref_v) <= 1e-13, (B, v, ref_v)   # measured exactly 0

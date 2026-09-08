@@ -151,6 +151,11 @@ is the standing rule on this arm.
 
 ## Cost
 
+<!-- LENGTH: this file is over the 1500-word DESIGN budget in the plain-prose
+gate.  RO authorised the length on 2026-09-08: the cost record matters more
+than the budget here.  Do not trim it back to pass the gate. -->
+
+
 Planning is vectorized. Accepted rows pay fixed local work per retained mode;
 declined rows pay three exact reserve evaluations (refined rule at two guards,
 plus the half-refined check). The sampler's angle-scheme chunk cap applies.
@@ -180,11 +185,10 @@ jax 0.9.2, `--n-phi 32 --n-psi 8 --distance-grid-points 256`,
 | 32 | 12.371 | 12.371 |
 | 64 | 24.692 | 24.692 |
 
-The fit is `0.046 + 0.385 B` GiB, maximum residual 6 MiB. The rung does not
-enter: the reserve grids take their shape from the three grid options and only
-their sizing scalar from the amplitude. Measured device use at B=32 was
-23.3 GiB against the 12.4 GiB analysis figure, so buffer assignment understates
-the card about twofold. A 24 GiB card holds B=32 and not B=64.
+The fit is `0.046 + 0.385 B` GiB, maximum residual 6 MiB, at the grid sizes in
+the caption. The rung does not enter. Measured device use at B=32 was 23.3 GiB
+against the 12.4 GiB analysis figure, so buffer assignment understates the card
+about twofold: a 24 GiB card holds B=32 and not B=64.
 
 The tier count multiplies it. At B=8, `reserve_time_refine_max` 32 costs
 3.114 GiB and 138 s to compile; at 4 (one tier) the same batch costs
@@ -192,21 +196,34 @@ The tier count multiplies it. At B=8, `reserve_time_refine_max` 32 costs
 
 ### Throughput
 
-Batching does not pay. Idle card, rho 40.8, `reserve_time_refine_max` 4,
-`_batched_ledger`, second timed call:
+Batching is a REGRESSION, not a saving. It converts three `lax.cond`s to
+selects, not the one the knob's first version named:
 
-| `reserve_batch_rows` | rows | wall s | s per row | workspace GiB |
-|---|---|---|---|---|
-| 1 | 2 | 192.6 | 96.3 | 0.103 |
-| 8 | 8 | 799.3 | 99.9 | 0.415 |
+| site | becomes, under vmap |
+|---|---|
+| tier escalation in `_row` | every reserve tier runs for every row |
+| `all_axis_peaklocal.py:2504` accept/reserve | every ACCEPTED row also runs the dense reserve |
+| `all_axis_peaklocal.py:1760` per-mode live | every dead mode slot runs a 4-D quadrature |
 
-At `reserve_time_refine_max` 32, B=8 had not finished one pass after 8000 s,
-above 980 s per row; that point was stopped, not completed. First calls gave
-110.3 and 87.5 s per row, a spread of 13%, wider than the gap between the
-batch sizes. One row already fills the card, leaving a batch no occupancy to
-recover. The row loop is not why the Section VI.A cells stall. Every row here
-declined to the reserve (`accepted_local` 0 of 8), so the per-row cost is one
-reserve evaluation. Profile that next. `reserve_batch_rows` defaults to 1.
+So the penalty scales with the locally accepted fraction and the tier count.
+Measured on the wiring fixture, 2 of 6 rows accepting, second timed call:
+
+| tiers | B=1 | B=2 | B=6 |
+|---|---|---|---|
+| 1 (`reserve_time_refine_max` 4) | 2.50 s/row | 3.28 (+31%) | 4.08 (+63%) |
+| 2 (`reserve_time_refine_max` 8) | 6.49 s/row | | 7.81 (+20%) |
+
+An earlier production-table point read 96.3 s/row at B=1 against 99.9 at B=8
+and was reported as cost-neutral. It ran at `reserve_time_refine_max` 4, where
+`tiers` has length one and the escalation cond is absent, with `accepted_local`
+0 of 8, so the accept/reserve cond took its cheap branch everywhere. Both
+penalties were inert, making it the best case. The docstring at
+`all_axis_peaklocal.py:2344` is false above B=1.
+
+`reserve_batch_rows` defaults to 1, kept for the equivalence it pins rather
+than for a saving. A single row takes the sequential path whatever is
+requested: `_scalar` evaluates one row, so `value_and_grad` and `hessian`
+would otherwise pay every select with nothing to amortize.
 
 ## Gate before this can be a default
 

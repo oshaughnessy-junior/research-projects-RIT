@@ -554,10 +554,17 @@ def fused_log_likelihood_four_axis_policy(
 
     n_rows = int(rows_A.shape[0])
     xs = (rows_A, norm0, base_plans, enriched_plans)
-    if batch_rows == 1:
+    if batch_rows == 1 or n_rows == 1:
         # Row at a time.  Kept as a distinct call rather than batch_size=1 so
         # the graph is the one PR #268 measured: batch_size=1 would still wrap
         # the body in a vmap, paying the cond-to-select cost for no occupancy.
+        #
+        # n_rows == 1 takes this path whatever was requested.  The wrapper's
+        # _scalar evaluates ONE row, so value_and_grad and hessian always land
+        # here; a vmap over a single row would convert both conds to selects
+        # and pay every reserve tier and both accept/reserve branches with no
+        # second row to amortize them.  Requesting a batch must not make the
+        # gradient path more expensive than not requesting one.
         selected, usable, ledger = jax.lax.map(_row, xs)
     elif batch_rows == 0 or batch_rows >= n_rows:
         # One full batch.  Spelled as an explicit vmap rather than delegated
@@ -572,14 +579,25 @@ def fused_log_likelihood_four_axis_policy(
                                                batch_size=batch_rows)
     ledger = dict(ledger)
     # Truthful, not decorative: this key read True unconditionally before the
-    # batch size was a knob.  A row is executed sequentially only when the
-    # requested batch is 1; at any other size no row is guaranteed to be, and
-    # lax.map's trailing remainder means the batch a given row landed in is
-    # not recoverable per row -- so the requested size is recorded alongside.
+    # batch size was a knob.  Record what EXECUTED, not what was asked for:
+    # a request of 8 against 6 rows runs a 6-row vmap, and a request of 8 on
+    # the single-row gradient path runs sequentially.  Reporting the request
+    # on the one key whose purpose is truthfulness is how the old hardcoded
+    # True happened.  lax.map's trailing remainder means the batch a given row
+    # landed in is still not recoverable per row, so this is the size of the
+    # scanned batch; the request is kept beside it.
+    if batch_rows == 1 or n_rows == 1:
+        batch_executed = 1
+    elif batch_rows == 0 or batch_rows >= n_rows:
+        batch_executed = n_rows
+    else:
+        batch_executed = batch_rows
     ledger["reserve_batch_execution_sequential"] = jnp.full(
-        (n_rows,), batch_rows == 1, dtype=bool)
+        (n_rows,), batch_executed == 1, dtype=bool)
+    ledger["reserve_batch_rows_executed"] = jnp.full(
+        (n_rows,), batch_executed, dtype=jnp.int32)
     ledger["reserve_batch_rows_requested"] = jnp.full(
-        (n_rows,), batch_rows if batch_rows else n_rows, dtype=jnp.int32)
+        (n_rows,), batch_rows, dtype=jnp.int32)
     usable = usable & norm_time_invariant & tables_finite
     # Fail closed: a value the controller could not warrant is not a
     # likelihood.  nan, never the finite diagnostic, reaches the sampler; the
@@ -625,9 +643,11 @@ def summarize_policy_ledger(ledger):
     if "reserve_escalations" in ledger:
         out["reserve_escalations"] = int(np.sum(
             np.asarray(ledger["reserve_escalations"])))
-    if "reserve_batch_rows_requested" in ledger:
+    if "reserve_batch_rows_executed" in ledger:
+        ex = np.asarray(ledger["reserve_batch_rows_executed"])
         req = np.asarray(ledger["reserve_batch_rows_requested"])
-        out["reserve_batch_rows"] = int(req[0]) if req.size else 0
+        out["reserve_batch_rows"] = int(ex[0]) if ex.size else 0
+        out["reserve_batch_rows_requested"] = int(req[0]) if req.size else 0
         out["reserve_batch_execution_sequential"] = bool(np.all(
             np.asarray(ledger["reserve_batch_execution_sequential"],
                        dtype=bool)))
