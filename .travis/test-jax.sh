@@ -428,6 +428,22 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         tested under `-W error::RuntimeWarning`, where
 #                                         warnings.warn had made the DEFAULT
 #                                         fail_on_fallback=False path raise.
+#   test_jax_bandlimited_distmarg.py   14  time_quadrature="bandlimited" on the
+#                                         DISTANCE-marginalized wrapper: agreement at
+#                                         two amplitudes with an independently
+#                                         reconstructed fine-grid reference (plain
+#                                         periodic FFT + numpy reduction + numpy
+#                                         trapezoid, converged in its own guard and
+#                                         factor), the sample-rate ladder closing on
+#                                         that value, the reduce-then-refine order
+#                                         being a different number, the refusal set
+#                                         still refusing, the two fail-closed doors
+#                                         (return_lnLt, rotation norms), the single
+#                                         definitions of the guard pair and the
+#                                         distance reduction, and one subprocess run
+#                                         of the driver through --mode flowmc
+#                                         --distance-marginalization.  Real
+#                                         precompute; needs lal, no GPU.
 
 FILES=(
   "${JAXDIR}/test_jax_time_quadrature.py"
@@ -467,6 +483,7 @@ FILES=(
   "${JAXDIR}/test_jax_phase_marg_mode_order.py"
   "${JAXDIR}/test_jax_q_time_pregrid.py"
   "${JAXDIR}/test_direct_marginalization_policy.py"
+  "${JAXDIR}/test_jax_bandlimited_distmarg.py"
 )
 
 # EXCLUDED: files in JAXDIR matching test_*.py that are deliberately NOT gated.  The
@@ -765,7 +782,11 @@ fi
 # (/cvmfs/software.igwn.org/conda/envs/igwn/bin/python), read off this job's own
 # collection line: "577/582 tests collected (5 deselected)", gate-style count 577
 # from 37 files.
-EXPECTED_TESTS=577
+#
+# TWELFTH, this branch: test_jax_bandlimited_distmarg.py adds 14 tests (38 files),
+# none deselected.  577 + 14 = 591; the collect-only line on ldas-grid for the new
+# file alone read "14 tests collected".
+EXPECTED_TESTS=591
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"

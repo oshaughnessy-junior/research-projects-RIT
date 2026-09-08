@@ -692,10 +692,14 @@ def build_parser():
     g.add_option("--phase-marginalization", action="store_true", default=False)
     g.add_option("--time-marginalization-quadrature", type="choice",
                  choices=("simpson", "bandlimited"), default="simpson",
-                 help="Rule for the terminal time integral: historical fixed-grid "
-                      "Simpson or adaptive reflected-FFT interpolation followed "
+                 help="Rule for the time integral: historical fixed-grid "
+                      "Simpson or adaptive reflected-FFT refinement followed "
                       "by a converged trapezoid. No resolution knob is exposed; "
-                      "the factor is derived and rechecked from lnL(t).")
+                      "the factor is derived and rechecked per row. "
+                      "'bandlimited' is honoured by the 6-D modes and, under "
+                      "--distance-marginalization, by --mode nuts / "
+                      "multistart-nuts / flowmc; the phi/psi-marginalized modes "
+                      "still refuse it and say so.")
     g.add_option("--resample-time-marginalization", action="store_true",
                  default=False,
                  help="Conventional ILE option; currently unsupported by JAX ILE.")

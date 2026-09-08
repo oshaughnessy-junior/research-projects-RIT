@@ -62,7 +62,9 @@ or it returns a wrong likelihood with no error.
 All JAX likelihood wrappers accept the conventional ILE keyword
 `time_quadrature={"simpson","bandlimited"}`.  Simpson remains the default.
 The opt-in `bandlimited` path is currently supported by
-`JAXExtrinsicLikelihood`, including analytic phase marginalization.  It forms
+`JAXExtrinsicLikelihood` (6-D, including analytic phase marginalization) and by
+`JAXDistanceMarginalizedLikelihood` (5-D, the wrapper `--mode nuts`,
+`multistart-nuts` and `flowmc` use under `--distance-marginalization`).  It forms
 the endpoint-nonduplicating even extension
 `[kappa[0], ..., kappa[-1], kappa[-2], ..., kappa[1]]`, FFT-interpolates it,
 applies the phase reduction on the
@@ -104,11 +106,26 @@ curvature-derived starting fine factor is capped at 1024 and certified once at
 2048; a sharper row is refused with guidance to increase the input/rholm sample
 rate rather than allocating multi-gigabyte FFT branches.
 
-Distance, phi, psi, exact-angle, and Laplace-marginalized wrappers currently
-refuse `bandlimited`.  Those nonlinear reductions generate time harmonics, so
-interpolating their already-reduced `lnL(t)` can converge to the wrong function;
-they require endpoint-specific primitive refinement before they can safely opt
-in.  They continue to use the unchanged Simpson default.
+The distance reduction runs on the refined nodes, not on an interpolated
+`lnL(t)`.  `fused_log_likelihood_distmarg` gathers the guarded primitive, hands
+the refiner the same blocked distance quadrature the Simpson path uses, and that
+quadrature is evaluated inside the row-local `lax.map` at every fine node before
+the trapezoid.  The block count for the fine grid is derived from the refined row
+length rather than inherited from `grid_block`, so a 2048x row does not scale the
+working set with it.  All four certificates -- factor doubling, endpoint gap,
+two-guard agreement, and remeasured resolution -- are the ones the fixed-distance
+path uses, applied to the distance-marginalized field.  `return_lnLt` is refused
+under `bandlimited`: there is no reduced field on the data grid to return.
+
+The phi, psi, exact-angle, and Laplace-marginalized wrappers still refuse
+`bandlimited`, and the reason is now specific rather than generic.  The phi_ref
+grid sum streams one primitive per grid point through a `lax.scan` that carries
+only `(S, npts)`; refining first means carrying `(nphi, n_fine)` per row, which
+at the shipped `nphi` and the certified factor is two orders of magnitude more
+scratch than the row-local budget allows.  The psi and exact-angle wrappers
+reach the coefficient-table kernels in `anglemarg.py`, which return an
+already-reduced `lnL(t)`: there is no primitive at that seam to refine without
+an adapter.  Both continue to use the unchanged Simpson default.
 `time_first_peaklocal.py` contains an unwired, fixed-shape prototype of that
 primitive-first composition: it reconstructs one raw complex correlation per
 downstream distance/angle quadrature state, builds a certified time-cell cover,
@@ -139,7 +156,8 @@ executables without dying during option parsing.
     `(ra, dec, psi, incl, phiref, distMpc)`.
   - `fused_log_likelihood_distmarg(...)` — **distance- and time-marginalized**
     lnL over the 5 angular parameters (regulates the amplitude degeneracy; see
-    below).
+    below).  Honours `time_quadrature="bandlimited"` by refining the primitive
+    first.
   - `make_distance_grid(...)`, `JAXLikelihoodData`, `build_likelihood_data`.
 - `time_first_peaklocal.py` — experimental primitive-first time-cover planner
   and distance adapter; not selected by any production endpoint.
