@@ -428,7 +428,7 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         tested under `-W error::RuntimeWarning`, where
 #                                         warnings.warn had made the DEFAULT
 #                                         fail_on_fallback=False path raise.
-#   test_jax_bandlimited_distmarg.py   14  time_quadrature="bandlimited" on the
+#   test_jax_bandlimited_distmarg.py   20  time_quadrature="bandlimited" on the
 #                                         DISTANCE-marginalized wrapper: agreement at
 #                                         two amplitudes with an independently
 #                                         reconstructed fine-grid reference (plain
@@ -491,6 +491,11 @@ FILES=(
 # test_*.py to test/jax/ forces a decision instead of being silently unrun -- which is
 # this gate's own failure mode, one level up.
 DESELECTED_TESTS=(
+  # importorskip("flowMC"): flowMC is deliberately not installed in jax-ile-check
+  # (ci.yml), and the OUTCOME check below rejects a skip.  The prior-mc and
+  # laplace-is driver tests in the same file are the executable coverage that
+  # runs here; run the flowMC one by hand where flowMC is installed.
+  "${JAXDIR}/test_jax_bandlimited_distmarg.py::test_driver_runs_flowmc_distance_marginalized_bandlimited"
   "${JAXDIR}/test_jax_stencil_parity.py::test_gpu_gather_parity_against_numpy_window"
   "${JAXDIR}/test_multipeak_planner.py::test_hm_second_mode_survives_unsafe_proxy_gap"
   "${JAXDIR}/test_multipeak_planner.py::test_hm_two_tier_integral_matches_overcomplete_oracle"
@@ -786,7 +791,13 @@ fi
 # TWELFTH, this branch: test_jax_bandlimited_distmarg.py adds 14 tests (38 files),
 # none deselected.  577 + 14 = 591; the collect-only line on ldas-grid for the new
 # file alone read "14 tests collected".
-EXPECTED_TESTS=591
+#
+# THIRTEENTH, same branch: the same file grows by 6 (endpoint certificate on the
+# floored field, the driver's fail-closed message, and prior-mc / laplace-is
+# end-to-end under --distance-marginalization bandlimited), and its flowMC driver
+# test is DESELECTED here (it would skip, and a skip fails the OUTCOME check).
+# 591 + 6 - 1 = 596.
+EXPECTED_TESTS=596
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"

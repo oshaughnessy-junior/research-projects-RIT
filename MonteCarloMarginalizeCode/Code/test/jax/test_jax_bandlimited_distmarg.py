@@ -187,9 +187,10 @@ def _taper_guard(kappa, guard):
     return kappa * w
 
 
-def _fine_grid_reference(data, x_grid, log_w, guard, factor):
+def _fine_grid_reference(data, x_grid, log_w, guard, factor, angles=None):
+    angles = _angles() if angles is None else angles
     kappa, rho = core._accumulate_unit(
-        data, *_angles(), core.JAX_INTERP_DEFAULT, False, guard=guard)
+        data, *angles, core.JAX_INTERP_DEFAULT, False, guard=guard)
     kappa = np.asarray(kappa)[0]
     rho = np.asarray(rho)[0]
     npts = int(data.npts)
@@ -398,7 +399,188 @@ def test_the_guard_pair_has_one_definition(cases):
 
 
 # --------------------------------------------------------------------------
-# (d) the driver
+# (d) the endpoint certificate on a floored field
+# --------------------------------------------------------------------------
+# The distance-marginalized field has a floor: at every node the distance sum
+# is at least the far-distance prior mass, so a row's peak-to-endpoint contrast
+# is bounded by its own peak height and the fixed-distance kernel's 15-nat
+# endpoint gap rejects every low-contrast row -- converged or not.  Blind
+# full-sky draws, which every prior-seeded driver mode evaluates by the
+# thousand, are mostly low-contrast rows.  Measured on 256 such rows at 20 ms
+# half-window: 35% rejected by the gap alone, all of them agreeing with the
+# independent reference to 1e-4 nat.  The distance path therefore runs with
+# that certificate off and the guard-agreement and doubling certificates on.
+# Numbers: the DESIGN record, "The endpoint certificate".
+N_BLIND = 64
+
+
+def _blind_draws(n, seed):
+    """The driver's ``sample_prior`` for the five angles, re-typed on purpose:
+    the point is a full-sky, isotropic-orientation draw, not a driver import."""
+    rng = np.random.default_rng(seed)
+    return [rng.uniform(0.0, 2 * np.pi, n), np.arcsin(rng.uniform(-1.0, 1.0, n)),
+            rng.uniform(0.0, np.pi, n), np.arccos(rng.uniform(-1.0, 1.0, n)),
+            rng.uniform(0.0, 2 * np.pi, n)]
+
+
+def _primitive_with_gap(like, angles, endpoint_log_gap):
+    """The shipped refinement on the distance field with a CHOSEN endpoint gap.
+
+    Rebuilds ``fused_log_likelihood_distmarg``'s reduction so the certificate
+    can be switched without touching the module; the wrapper's own value is
+    asserted equal to the ``None`` setting below, so this helper cannot drift
+    from the code silently."""
+    import jax.numpy as jnp
+    data = like.data
+    guard = like.time_guard_certified
+    kappa, rho = core._accumulate_unit(
+        data, *[jnp.asarray(v) for v in angles], like.interp, False, guard=guard)
+    a = jnp.asarray(like.x_grid)
+    b = -0.5 * jnp.square(a)
+    log_w = jnp.asarray(like.log_w_grid)
+
+    def reduce_fn(k, r):
+        kk = k.real
+        n = int(np.prod(kk.shape))
+        block = min(max(1, core._BANDLIMITED_GRID_ELEMENTS // max(n, 1)),
+                    int(a.shape[0]))
+        return core._logsumexp_grid_scanned(
+            kk.reshape(n), r.reshape(n), a, b, log_w, block).reshape(kk.shape)
+
+    return np.asarray(core._time_marginalize_reflected_primitive(
+        kappa, rho, data.deltaT, False, guard=guard, reduce_fn=reduce_fn,
+        endpoint_log_gap=endpoint_log_gap))
+
+
+@pytest.fixture(scope="module")
+def blind(cases):
+    data = cases["quiet"]["data"]
+    like = _like(data, "bandlimited")
+    angles = _blind_draws(N_BLIND, seed=0)
+    return dict(
+        data=data, like=like, angles=angles,
+        shipped=np.asarray(like.log_likelihood(*angles)),
+        gap_off=_primitive_with_gap(like, angles, None),
+        gap_on=_primitive_with_gap(like, angles, core._TIME_ENDPOINT_LOG_GAP_MIN))
+
+
+def test_blind_draws_are_certified_without_the_endpoint_gap(blind):
+    """Every blind row gets a number from the shipped wrapper, and that number
+    is the ``endpoint_log_gap=None`` refinement and nothing else."""
+    assert np.all(np.isfinite(blind["shipped"])), (
+        "%d of %d blind rows uncertified with the endpoint gap off"
+        % (int(np.sum(~np.isfinite(blind["shipped"]))), N_BLIND))
+    np.testing.assert_array_equal(blind["shipped"], blind["gap_off"])
+
+
+def test_the_endpoint_gap_was_rejecting_converged_rows(blind):
+    """The certificate is live on this field (it rejects a material fraction),
+    and what it rejects agrees with the independent reference.  Without the
+    first assertion the second would be vacuous; without the second the first
+    would only show the gate is loud."""
+    rejected = np.where(np.isnan(blind["gap_on"]) & np.isfinite(blind["gap_off"]))[0]
+    assert len(rejected) >= 0.05 * N_BLIND, (
+        "the 15-nat gap rejected only %d of %d blind rows; the floor argument "
+        "is not exercised by this draw" % (len(rejected), N_BLIND))
+    guard = _reference_guard()
+    like = blind["like"]
+    worst = 0.0
+    for i in rejected[:8]:
+        angles = [np.atleast_1d(v[i]) for v in blind["angles"]]
+        ref = _fine_grid_reference(blind["data"], np.asarray(like.x_grid),
+                                   np.asarray(like.log_w_grid), guard,
+                                   REF_FACTOR, angles=angles)
+        worst = max(worst, abs(blind["gap_off"][i] - ref))
+        assert abs(blind["gap_off"][i] - ref) < TOL_REFERENCE, (
+            "rejected row %d: refinement %.6f vs reference %.6f"
+            % (i, blind["gap_off"][i], ref))
+
+
+def test_the_fixed_distance_kernel_keeps_its_endpoint_gap():
+    """Only the floored reduction opts out.  The 6-D kernel's certificate and
+    its threshold are base-branch behaviour and are pinned here so a later
+    edit cannot widen the opt-out without failing a test."""
+    sig = inspect.signature(core._time_marginalize_reflected_primitive)
+    assert sig.parameters["endpoint_log_gap"].default == core._TIME_ENDPOINT_LOG_GAP_MIN == 15.0
+    assert "endpoint_log_gap" not in inspect.getsource(core.fused_log_likelihood)
+    assert "endpoint_log_gap=None" in inspect.getsource(core.fused_log_likelihood_distmarg)
+
+
+# --------------------------------------------------------------------------
+# (e) the driver
+# --------------------------------------------------------------------------
+def _load_driver():
+    import importlib.machinery
+    import importlib.util
+    path = _CODE / "bin" / "integrate_likelihood_extrinsic_jax"
+    loader = importlib.machinery.SourceFileLoader("_jax_bl_distmarg_driver", str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+def test_driver_eval_lnL_still_fails_closed_and_names_the_rows():
+    """The hard stop on an uncertified row is kept (no coarse likelihood is
+    substituted); what changed is that the message counts the rows and prints
+    their parameters, so a failed run says where it failed."""
+    import types
+    drv = _load_driver()
+    like = types.SimpleNamespace(
+        time_quadrature="bandlimited",
+        log_likelihood=lambda *cols: np.array([1.0, np.nan, 3.0]))
+    opts = types.SimpleNamespace(n_chunk=8000)
+    theta = np.array([[0.1, 0.2, 0.3, 0.4, 0.5]] * 3)
+    theta[1, 0] = 2.5
+    with pytest.raises(RuntimeError) as err:
+        drv.eval_lnL(like, theta, opts, with_distance=False)
+    msg = str(err.value)
+    assert "1 of 3 rows" in msg and "ra=2.5000" in msg
+    assert "no coarse likelihood is substituted" in msg
+
+
+@pytest.mark.parametrize("mode", ["prior-mc", "laplace-is"])
+def test_driver_prior_seeded_modes_run_distance_marginalized_bandlimited(
+        tmp_path, mode):
+    """The modes that evaluate blind prior draws through the driver's own
+    ``eval_lnL`` -- which stops the run on one uncertified row.  Before the
+    endpoint change, every seed of this command failed inside the first chunk
+    (measured: 2-7 uncertified rows per 16 draws, seeds 0-29).  No flowMC
+    dependency, so this is the executable coverage the CI ``jax-ile-check``
+    job actually runs.
+
+    The half-window is 50 ms, not the 20 ms of the flowMC test above: a
+    wrong-sky draw shifts a detector's arrival by up to 2 R_earth / c, about
+    43 ms, and a row whose arrival peak sits at the window edge is one the
+    trapezoid and guard certificates legitimately cannot converge on."""
+    import os
+    out = tmp_path / "ile"
+    env = dict(os.environ, PYTHONPATH=str(_CODE), OMP_NUM_THREADS="1",
+               JAX_PLATFORMS="cpu", JAX_ENABLE_X64="1")
+    proc = subprocess.run(
+        [sys.executable, str(_CODE / "bin" / "integrate_likelihood_extrinsic_jax"),
+         "--inj-mode", "--mass1", "35", "--mass2", "30",
+         "--inj-deltaF", "0.25", "--inj-detectors", "H1,L1",
+         "--inj-distance", "900",
+         "--fmin-template", "40", "--reference-freq", "40", "--fmax", "300",
+         "--l-max", "2", "--approximant", "IMRPhenomD", "--srate", "1024",
+         "--data-integration-window-half", "0.05",
+         "--internal-data-storage-window-half", "0.08",
+         "--d-min", "50", "--d-max", "4000", "--distance-grid-points", "32",
+         "--distance-marginalization", "--mode", mode,
+         "--time-marginalization-quadrature", "bandlimited",
+         "--n-max", "400", "--seed", "3", "--output-file", str(out)],
+        capture_output=True, text=True, env=env, cwd=str(tmp_path), timeout=3600)
+    log = proc.stdout + proc.stderr
+    assert proc.returncode == 0, log[-3000:]
+    assert "failed a certificate" not in log, log[-3000:]
+    assert "time-marginalization quadrature: bandlimited" in log, log[-3000:]
+    row = np.atleast_2d(np.loadtxt(str(out) + "_0_.dat"))
+    assert row.shape[1] == 13 and np.isfinite(row[0, 9]), row
+
+
+# --------------------------------------------------------------------------
+# (f) the flowMC driver path
 # --------------------------------------------------------------------------
 def test_driver_runs_flowmc_distance_marginalized_bandlimited(tmp_path):
     """End to end through the shipped executable, small budget.  A library test

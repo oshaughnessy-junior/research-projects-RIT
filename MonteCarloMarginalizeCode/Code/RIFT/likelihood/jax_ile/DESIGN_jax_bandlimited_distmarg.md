@@ -29,10 +29,12 @@ is unchanged, and the distance reduction then runs on `(npts-1)*f+1` nodes
 instead of the guard-padded `2*(npts+2g-1)*f`. Reducing first cost 6.50 GB for
 one scalar `value_and_grad`; cropping first costs 2.56 GB.
 
-Certificates are the fixed-distance ones applied to the distance-marginalized
-field: factor doubling to 1e-3 nat, remeasured peak-width resolution, a 15-nat
-endpoint gap, and agreement between the certified guard and half of it. A row
-that fails any of them returns NaN and the driver refuses the run.
+Certificates are three of the fixed-distance four, applied to the
+distance-marginalized field: factor doubling to 1e-3 nat, remeasured peak-width
+resolution, and agreement between the certified guard and half of it. The
+fourth, the 15-nat endpoint gap, is off on this path; the section "The endpoint
+certificate" below records why. A row that fails any certificate returns NaN and
+the driver refuses the run.
 
 `bandlimited_time_guard` is new and is the single definition of the
 `(initial, certified)` guard pair. The fixed-distance kernel, the
@@ -127,6 +129,52 @@ makes the rho 20 agreement test fail by -3.366 nat, about 3400 times its
 tolerance, and makes the rho 160 row return NaN. The resolution and doubling
 certificates reject the wrong-order field on their own.
 
+## The endpoint certificate
+
+The fixed-distance kernel refuses a row whose refined endpoint is within 15 nat
+of its peak. On the distance-marginalized field that rule rejects rows whose
+integral is converged, and it rejects most blind draws.
+
+The reason is a floor. At every node the distance sum is at least the
+far-distance prior mass, so the field never falls below about the value it takes
+where the template is orthogonal to the data. A row's peak-to-endpoint contrast
+is therefore bounded by its own peak height, and a fixed 15-nat gap cannot be met
+by any row with a peak under about 15 nat, however well the trapezoid has
+converged. The fixed-distance field has no floor: it falls to -rho^2/2 away from
+the peak, so the same gap measures something there.
+
+Blind full-sky, isotropic-orientation draws are exactly the low-contrast rows.
+Every prior-seeded driver mode evaluates them by the thousand (`--mode map` and
+`nuts` pilot on 4000, `laplace-is` on `n_max/4`, `prior-mc` on `n_max`), and the
+driver stops the run on one NaN.
+
+Measured, same injection as above at 900 Mpc (rho 8.7), 20 ms half-window,
+seeds 0-3 of the driver's prior, 64 rows each:
+
+| certificate set | uncertified rows |
+|---|---|
+| all four (gap on) | 90 / 256 |
+| gap off | 36 / 256 |
+| fixed-distance 6-D kernel, blind distance, gap on (unchanged) | 92 / 256 |
+
+Every one of the 90 failed the endpoint gap and nothing else. Twenty-four of
+them, six per seed, against the independent reference (periodic FFT, guard 128,
+factor 512): worst disagreement 1.06e-04 nat, and all of them 130-180 nat below
+the batch maximum.
+
+The 36 that remain with the gap off all have a detector arrival peak at or beyond
+the window edge. A wrong sky moves a detector's arrival by up to 2 R_earth / c,
+about 43 ms, past a 20 ms half-window. Two signatures: the trapezoid value drops
+by ln 2 per doubling (the integrand is an edge sliver narrower than a sample), or
+the two guards disagree at 1e-3 to 1e-2 nat with the doubling converged to 1e-14
+(structure under the taper, outside the window). Neither is a certificate the
+path should drop; the window has to contain the shifts.
+
+WIDE-WINDOW-NUMBERS
+
+The driver's stop is unchanged. Its message now counts the failed rows in the
+chunk, prints the first three, and names the window as the usual cause.
+
 ## Memory
 
 Peak RSS, one JAX process, same data. `vmap 8` is eight chains of
@@ -166,4 +214,5 @@ brackets the peak with `--n-prior-pilot` instead.
   `_logsumexp_grid_scanned`, `fused_log_likelihood_distmarg`.
 - `wrapper.py`: `JAXDistanceMarginalizedLikelihood` accepts the option and
   publishes `time_guard_initial` and `time_guard_certified`.
-- `test/jax/test_jax_bandlimited_distmarg.py`: 14 tests, 181 s on `ldas-grid`.
+- `bin/integrate_likelihood_extrinsic_jax`: `eval_lnL` failure message.
+- `test/jax/test_jax_bandlimited_distmarg.py`: 20 tests. TEST-TIMING

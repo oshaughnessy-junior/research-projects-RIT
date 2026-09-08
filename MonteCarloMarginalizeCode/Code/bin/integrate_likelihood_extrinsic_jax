@@ -697,9 +697,11 @@ def build_parser():
                       "by a converged trapezoid. No resolution knob is exposed; "
                       "the factor is derived and rechecked per row. "
                       "'bandlimited' is honoured by the 6-D modes and, under "
-                      "--distance-marginalization, by --mode nuts / "
-                      "multistart-nuts / flowmc; the phi/psi-marginalized modes "
-                      "still refuse it and say so.")
+                      "--distance-marginalization, by every mode except the "
+                      "phi/psi-marginalized ones, which refuse it and say so. "
+                      "One uncertified row stops the run; with a full-sky prior "
+                      "use --data-integration-window-half >= ~0.045 s so a "
+                      "wrong-sky draw's arrival peak stays inside the window.")
     g.add_option("--resample-time-marginalization", action="store_true",
                  default=False,
                  help="Conventional ILE option; currently unsupported by JAX ILE.")

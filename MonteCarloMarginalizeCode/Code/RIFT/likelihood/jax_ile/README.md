@@ -112,10 +112,17 @@ the refiner the same blocked distance quadrature the Simpson path uses, and that
 quadrature is evaluated inside the row-local `lax.map` at every fine node before
 the trapezoid.  The block count for the fine grid is derived from the refined row
 length rather than inherited from `grid_block`, so a 2048x row does not scale the
-working set with it.  All four certificates -- factor doubling, endpoint gap,
-two-guard agreement, and remeasured resolution -- are the ones the fixed-distance
-path uses, applied to the distance-marginalized field.  `return_lnLt` is refused
-under `bandlimited`: there is no reduced field on the data grid to return.
+working set with it.  Three of the fixed-distance certificates -- factor
+doubling, two-guard agreement, and remeasured resolution -- apply to the
+distance-marginalized field.  The endpoint gap does not: the marginal field has
+a floor (the far-distance prior mass), so its peak-to-endpoint contrast is
+bounded by its peak height and a fixed gap rejects every low-contrast row,
+converged or not, which is most blind prior draws.  With a full-sky prior the
+integration half-window must contain the detector arrival shifts of a wrong-sky
+draw (up to 2 R_earth / c, about 43 ms); a row whose arrival peak sits at the
+window edge fails the doubling or guard certificate and stops the driver.
+`return_lnLt` is refused under `bandlimited`: there is no reduced field on the
+data grid to return.
 
 The phi, psi, exact-angle, and Laplace-marginalized wrappers still refuse
 `bandlimited`, and the reason is now specific rather than generic.  The phi_ref
