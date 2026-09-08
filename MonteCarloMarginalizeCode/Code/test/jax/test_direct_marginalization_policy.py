@@ -311,18 +311,24 @@ def test_ledger_carries_every_named_acceptance_diagnostic(monkeypatch):
 
 # ---------------------------------------------------- end to end, real tables
 
-def test_wrapper_policy_on_real_synthetic_tables_fails_closed_and_labels():
+@pytest.mark.parametrize("force_decline", [False, True])
+def test_wrapper_policy_on_real_synthetic_tables_fails_closed_and_labels(
+        force_decline):
     """Real coefficient tables from the accumulate path with a guard, the
     wrapper's own distance grid and amplitude sizing, on the 32-sample
-    synthetic window.  That window is too short for the reflected primitive:
-    the reserve at guard 16 and guard 8 disagree by ~0.06 nat and the
-    refine-4 and refine-2 rules by ~0.2 nat, so nothing here is converged.
-    The composite must then (a) decline the local branch or fail the reserve
-    warrant even after escalating the rule to the configured maximum, (b)
-    return nan for that row while keeping the finite diagnostic in the ledger,
-    (c) say why in the ledger, and (d) count the row as unusable for the run
-    label.  A row it does warrant must agree with the 8x-refined exact-angle
-    reference."""
+    synthetic window.  The exact lnL(t) on this window peaks at the FIRST
+    sample and falls monotonically, so the mass sits on the time boundary;
+    the planner's boundary starts are non-stationary and the interior modes
+    it keeps integrate to 22.86 nat against an exact 45.5.  Under the
+    production operating point the row must therefore decline on
+    ``decline_boundary_maximum`` (before this flag existed it ACCEPTED that
+    value with every diagnostic passing).  With capacity forced to one mode
+    it declines on capacity first.  Either way the window is too short for
+    the reflected primitive (the reserve at guard 16 and 8 disagree by
+    ~0.06 nat, refine 4 and 2 by ~0.2 nat), so the composite must (a) fail
+    the reserve warrant even after escalating to the ceiling, (b) return nan
+    while keeping the finite diagnostic in the ledger, (c) say why, and (d)
+    count the row as unusable for the run label."""
     from RIFT.likelihood.jax_ile.time_first_peaklocal import (
         _evaluate_time_spectrum, _time_primitive_spectrum)
     data = make_synth(scale=2.0, kappa_boost=10.0)
@@ -332,6 +338,8 @@ def test_wrapper_policy_on_real_synthetic_tables_fails_closed_and_labels():
     guard = 16
     cfg = DP.PolicyConfig(time_guard=guard, reserve_time_refine=4,
                           reserve_time_refine_max=8)
+    if force_decline:
+        cfg = cfg._replace(max_modes=1, enriched_max_modes=1)
     pol = JAXDistPhiPsiMargLikelihood(data, 30.0, 3000.0, angle_marg="exact",
                                       direct_marginalization_policy="auto",
                                       policy_config=cfg, **kw)
@@ -374,6 +382,14 @@ def test_wrapper_policy_on_real_synthetic_tables_fails_closed_and_labels():
     assert np.all(np.isfinite(b[L["usable"]]))
     assert np.any(unusable), ("the 32-sample window became warrantable; "
                               "move this test's fail-closed claim", summary)
+    if force_decline:
+        assert np.all(L["decline_capacity"]), summary
+    else:
+        assert np.all(L["decline_boundary_maximum"]), summary
+        assert not np.any(L["accepted_local"]), summary
+        # the interior-only local diagnostic is the 22.7 nat miss
+        assert np.all(L["enriched_value"] < L["reserve_value"] - 10.0), (
+            L["enriched_value"], L["reserve_value"])
     # (d) a warranted row, if any, against the 8x refined exact reference.
     usable = L["usable"]
     if np.any(usable):
@@ -386,8 +402,10 @@ def test_wrapper_policy_on_real_synthetic_tables_fails_closed_and_labels():
             jnp.asarray(C_A).reshape((-1, C_A.shape[-1])), guard)
         fine = _evaluate_time_spectrum(coeff, freq, jnp.asarray(t), off).reshape(
             C_A.shape[:-1] + (t.size,))
+        C_Bf = jnp.broadcast_to(jnp.asarray(C_B)[..., :1],
+                                tuple(C_B.shape[:-1]) + (t.size,))
         lnL_t = AM.coefficient_table_distphipsimarg_exact(
-            fine, jnp.asarray(C_B)[..., 0], pol.x_grid, pol.log_w_grid,
+            fine, C_Bf, pol.x_grid, pol.log_w_grid,
             amp_sizing=pol.angle_marg_info["amp_sizing"], m_max=meta["m_max"])
         w = jnp.asarray(_core._simpson_weights(t.size, data.deltaT / refine))
         ref = np.asarray(_core._time_marginalize(lnL_t, w))
@@ -420,6 +438,66 @@ def test_wrapper_policy_has_no_lnLt_path():
     with pytest.raises(ValueError, match="no lnL"):
         pol._fused(data, jnp.asarray(RA[:1]), jnp.asarray(DEC[:1]),
                    jnp.asarray(INCL[:1]), return_lnLt=True)
+
+
+# ------------------------------------------------------- guard vs stored buffer
+
+def test_guard_past_the_stored_buffer_is_refused_at_construction(monkeypatch):
+    """A guard the data buffer cannot supply yields a nonfinite table with no
+    error from the gather; the wrapper must refuse it with the remedy, not let
+    it read as a method decline.  Per row, the same condition is a distinct
+    input flag."""
+    data = make_synth(scale=2.0)
+    real = AM.angle_coefficient_tables
+
+    def poisoned(d, ra, dec, incl, interp=None, sample_chunk=None, guard=0):
+        C_A, C_B, meta = real(d, ra, dec, incl, interp, sample_chunk=sample_chunk,
+                              guard=guard)
+        if guard >= 8:
+            C_A = C_A.at[..., 0].set(jnp.nan)
+        return C_A, C_B, meta
+
+    monkeypatch.setattr(AM, "angle_coefficient_tables", poisoned)
+    kw = dict(nphi=32, npsi=8, interp=INTERP, angle_marg="exact")
+    with pytest.raises(ValueError, match="not finite at time_guard=8"):
+        JAXDistPhiPsiMargLikelihood(
+            data, 30.0, 3000.0, direct_marginalization_policy="auto",
+            policy_config=DP.PolicyConfig(time_guard=8), **kw)
+    # guard 4 passes the probe; the row-level flag is true
+    pol = JAXDistPhiPsiMargLikelihood(
+        data, 30.0, 3000.0, direct_marginalization_policy="auto",
+        policy_config=DP.PolicyConfig(time_guard=4), **kw)
+    lnL, ledger = pol._batched_ledger(jnp.asarray(RA[:1]), jnp.asarray(DEC[:1]),
+                                      jnp.asarray(INCL[:1]))
+    assert bool(np.asarray(ledger["tables_finite"])[0])
+    assert not bool(np.asarray(ledger["input_nonfinite"])[0])
+    # a nonfinite row at evaluation time is nan with the input flag set (the
+    # policy function is called directly so the poisoned table reaches it)
+    def poison_all(d, ra, dec, incl, interp=None, sample_chunk=None, guard=0):
+        C_A, C_B, meta = real(d, ra, dec, incl, interp, sample_chunk=sample_chunk,
+                              guard=guard)
+        return C_A.at[..., 0].set(jnp.nan), C_B, meta
+
+    monkeypatch.setattr(AM, "angle_coefficient_tables", poison_all)
+    lnL2, ledger2 = DP.fused_log_likelihood_four_axis_policy(
+        data, jnp.asarray(RA[:1]), jnp.asarray(DEC[:1]), jnp.asarray(INCL[:1]),
+        pol.x_grid, pol.log_w_grid, interp=INTERP,
+        amp_sizing=pol.angle_marg_info["amp_sizing"],
+        config=pol.policy_config, return_ledger=True)
+    assert bool(np.asarray(ledger2["input_nonfinite"])[0])
+    assert not bool(np.asarray(ledger2["usable"])[0])
+    assert np.isnan(float(lnL2[0]))
+
+
+def test_defaults_are_the_production_measured_operating_point():
+    """The defaults follow the ladder record that accepted on production
+    tables, not PR #268's test fixture values."""
+    cfg = DP.PolicyConfig()
+    assert (cfg.base_oversample, cfg.enriched_oversample) == (2, 4)
+    assert (cfg.max_modes, cfg.enriched_max_modes) == (16, 16)
+    assert cfg.local_radius == 6.0
+    assert cfg.time_guard == 128
+    assert cfg.reserve_time_refine_max >= cfg.reserve_time_refine
 
 
 # ------------------------------------------------------------------- the CLI
@@ -455,10 +533,15 @@ def test_the_driver_CLI_offers_the_policy_and_rejects_a_typo():
                   "--direct-marginalization-policy", "auto",
                   "--direct-marginalization-reserve-time-refine", "3")
     assert rc != 0 and "even" in out, out[-1500:]
+    rc, out = run("--mode", "flowmc-phipsimarg",
+                  "--direct-marginalization-policy", "auto",
+                  "--direct-marginalization-reserve-time-refine-max", "2")
+    assert rc != 0 and "refine-max" in out, out[-1500:]
     rc, out = run("--help")
     assert "--direct-marginalization-policy" in out
     assert "--direct-marginalization-time-guard" in out
     assert "--direct-marginalization-reserve-time-refine" in out
+    assert "--direct-marginalization-reserve-time-refine-max" in out
     assert "--direct-marginalization-error-budget-nats" in out
 
 

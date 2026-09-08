@@ -388,7 +388,7 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         so they are DESELECTED here -- see
 #                                         DESELECTED_TESTS -- and 15 are gated.
 #   test_direct_marginalization_policy.py
-#                                      12  opt-in cross-axis policy WIRING: choices and
+#                                      18  opt-in cross-axis policy WIRING: choices and
 #                                         refusals, measure conversion on both distance
 #                                         paths against the exact scheme, decline to a
 #                                         warranted band-limited reserve that keeps the
@@ -745,16 +745,47 @@ fi
 # "574/579 tests collected (5 deselected)", gate-style count 574 from 37
 # files.
 #
-# ELEVENTH, on the four-axis policy row-batching branch (this change).  It adds
+# The policy follow-up PR (this branch, numbered NINTH on its own side before the
+# merge) adds three wiring tests (guard preflight,
+# operating-point defaults, and a parametrized fail-closed case).  Measured on
+# the follow-up tree with the DESELECT loop applied, ldas-grid, CVMFS igwn
+# python: "560/565 tests collected (5 deselected)", gate-style count 560 from
+# 36 files.
+# Both sides stale again after PR #279 (multipeak planner Newton step) landed
+# under this branch: re-measured on the merged tree, ldas-grid, CVMFS igwn
+# python, DESELECT applied: "564/569 tests collected (5 deselected)", gate-style
+# count 564 from 36 files.
+#
+# ELEVENTH, reconciling the policy follow-ups with #277 (this merge).  Both sides
+# were stale in the usual way -- 564 on the branch, 574 on rift_O4d -- and neither
+# number nor their difference describes the merged tree, because each side counted
+# a file set the other had already changed.  The FILES array is again the UNION,
+# now 37 files.  Re-measured on the merged tree with the DESELECT loop applied,
+# ldas-grid, CVMFS igwn python
+# (/cvmfs/software.igwn.org/conda/envs/igwn/bin/python), read off this job's own
+# collection line: "577/582 tests collected (5 deselected)", gate-style count 577
+# from 37 files.
+#
+# TWELFTH, the jax 0.9.2 empty-pool cap fix touches only test_anglemarg_buffer_cap.py:
+# removes 1 test (test_a_zero_largest_free_block_is_a_known_full_device, whose "0 means
+# full" premise was the bug) and adds 6, net +5, none parametrized -- so the file-local
+# delta is exact and this is a direct bump, not an arithmetic guess across a merge (the
+# failure mode the paragraphs above document).  577 + 5 = 582.
+#
+# THIRTEENTH, the review-MAJOR follow-up (forced probe allocation before reading
+# memory_stats(), plus the on-demand-allocator bound) again touches only
+# test_anglemarg_buffer_cap.py: adds 5 tests, none parametrized, no removals.
+# 582 + 5 = 587.
+#
+# FOURTEENTH, the four-axis policy row-batching branch (this merge).  It adds
 # SEVEN tests to test_direct_marginalization_policy.py (the batched/sequential
 # equivalence test, five parametrized validate_batch_rows cases, and the driver
-# knob test) and adds no file, so the file count is unchanged at 37.  Measured
-# on this tree, ldas-grid, ~/.cache/jaxci_venv, by running THIS script and
-# reading its own collection line rather than adding 7 to the base:
-# "collected 581 tests from 37 files".  (The script captures pytest's own
-# "N/M tests collected" line into collect_out and only prints it on failure,
-# so the gate-style count is the number quoted here.)
-EXPECTED_TESTS=581
+# knob test) and adds no file.  Its own side measured 581 against a base of 574;
+# rift_O4d has since reached 587, so neither number nor their sum describes the
+# merged tree.  Re-measured by running THIS script on the merged tree,
+# ldas-grid, ~/.cache/jaxci_venv, DESELECT loop applied, read off its own
+# collection line: "collected 594 tests from 37 files".
+EXPECTED_TESTS=594
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
