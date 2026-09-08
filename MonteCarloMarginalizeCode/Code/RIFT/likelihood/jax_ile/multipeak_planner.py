@@ -415,6 +415,49 @@ def _evaluate_spectrum(coeff, frequency, time):
     return jnp.einsum("kqn,n->kq", coeff, phase)
 
 
+def _bounded_ascent_direction(gradient, hessian, ridge, max_step=None):
+    """Modified-Newton direction, bounded WITHOUT losing the ascent property.
+
+    ``eigenvector @ ((eigenvector.T @ g) / safe)`` always ascends:
+    ``g . d = sum_i (v_i . g)^2 / safe_i > 0`` because every ``safe_i`` is
+    positive.  Bounding it by clipping each COORDINATE independently does not
+    preserve that, because the clip rescales the coordinates by different
+    factors.  Measured on the row that declined the 2026-09-07 ladder
+    campaign, where ``eigh(-H)`` is indefinite and the raw step is therefore
+    about 1e8 gradients long, so every coordinate saturates:
+
+        g       = [-54.47, +51.02, +28.92,  0]
+        clipped = [ +2.00,  -0.50,  +0.50, +0.25]     g . d = -119.9
+
+    A descent direction has no improving lane, the value-only search takes its
+    zero lane, and the iterate is a fixed point of the whole loop.  Scaling by
+    one factor instead keeps every ratio, hence the sign of ``g . d``, while
+    respecting the same per-coordinate cap.
+
+    Written as ``min(max_step / |d|)`` to match
+    ``all_axis_peaklocal.refine_all_axis_starts``, which bounds its own step
+    this way for the same reason.  Measured, so that the next reader does not
+    have to re-derive it: the two spellings are equivalent here, and BOTH
+    return a zero step once ``|d|`` reaches about 1e308, because the scale
+    factor is then denormal and the product underflows.  That needs
+    ``|g| >~ 1e299`` at the default ridge, which this likelihood cannot reach.
+    ``tiny`` is defensive, not load-bearing: ``max_step`` is validated positive
+    below, so ``max_step / 0`` is ``+inf`` rather than a NaN, and the step for
+    a zero direction is zero either way.
+
+    Returns the eigenvalues of ``-H`` alongside the direction so a caller that
+    needs both does not decompose the same 4x4 twice.
+    """
+    eigenvalue, eigenvector = jnp.linalg.eigh(-hessian)
+    safe = jnp.maximum(eigenvalue, float(ridge))
+    direction = eigenvector @ ((eigenvector.T @ gradient) / safe)
+    if max_step is None:
+        return direction, eigenvalue
+    ratio = max_step / jnp.maximum(jnp.abs(direction),
+                                   jnp.finfo(jnp.float64).tiny)
+    return direction * jnp.minimum(1.0, jnp.min(ratio)), eigenvalue
+
+
 def refine_joint_starts_jax(
         C_A_t, C_B, starts, x_min, x_max, *, iterations=12,
         ridge=1.0e-8, max_step=(2.0, 0.5, 0.5, 0.25)):
@@ -434,6 +477,13 @@ def refine_joint_starts_jax(
         raise ValueError("iterations must be positive")
     coeff, frequency = _reflected_spectrum(C_A_t)
     max_step = jnp.asarray(max_step, dtype=jnp.float64)
+    # The rescale below is meaningless for a non-positive bound, and fails
+    # QUIETLY rather than loudly: a zero bound scales every step to exactly
+    # zero, which is the stall this function exists to prevent, and a negative
+    # bound is silently exceeded (bound -0.5 returns a component of -3.5).
+    # Neither is non-finite, so nothing downstream would notice.
+    if max_step.shape != (4,) or not bool(jnp.all(max_step > 0.0)):
+        raise ValueError("max_step must be four positive coordinate bounds")
 
     def log_density(theta):
         time, phi, u, x = theta
@@ -461,10 +511,8 @@ def refine_joint_starts_jax(
         def step(theta, _):
             gradient = gradient_fn(theta)
             hessian = hessian_fn(theta)
-            eigenvalue, eigenvector = jnp.linalg.eigh(-hessian)
-            safe = jnp.maximum(eigenvalue, float(ridge))
-            direction = eigenvector @ ((eigenvector.T @ gradient) / safe)
-            direction = jnp.clip(direction, -max_step, max_step)
+            direction, _ = _bounded_ascent_direction(
+                gradient, hessian, ridge, max_step)
             proposal = jax.vmap(
                 lambda scale: project(theta + scale * direction))(
                     jnp.asarray([1.0, 0.5, 0.25, 0.125, 0.0]))
@@ -483,9 +531,11 @@ def refine_joint_starts_jax(
         def polish(theta, _):
             gradient = gradient_fn(theta)
             hessian = hessian_fn(theta)
-            eigenvalue, eigenvector = jnp.linalg.eigh(-hessian)
-            safe = jnp.maximum(eigenvalue, float(ridge))
-            direction = eigenvector @ ((eigenvector.T @ gradient) / safe)
+            # Unbounded, as before: the polish's own guard below accepts a
+            # step only at a strict maximum with a smaller gradient.  One
+            # decomposition serves both the step and that guard.
+            direction, eigenvalue = _bounded_ascent_direction(
+                gradient, hessian, ridge)
             proposal = project(theta + direction)
             proposal_gradient = gradient_fn(proposal)
             value = log_density(theta)
@@ -839,7 +889,8 @@ def _run_structural_tier(C_A_t, uv_summary, x_min, x_max, *,
     selected, _ = select_refined_modes(
         points, values, gradients, curvatures, max_modes=max_starts)
     if not len(selected):
-        raise RuntimeError("structural tier found no strict stationary maximum")
+        raise RuntimeError(
+            "structural tier found no strict stationary maximum")
     integral = integrate_refined_modes_tensor(
         C_A_t, uv_summary.C_B, points[selected], values[selected],
         hessians[selected], x_min, x_max, **integral_kwargs)
