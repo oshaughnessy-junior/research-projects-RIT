@@ -968,8 +968,21 @@ def build_parser():
                       "(default 2).")
     g.add_option("--direct-marginalization-max-starts", type=int, default=32,
                  help="Cap on ranked optimizer starts per plan (default 32).  "
-                      "A row with more candidates than this declines on "
-                      "capacity.")
+                      "TWO THINGS THIS IS NOT.  (1) It is not the whole of "
+                      "decline_capacity.  That ledger key reports the "
+                      "conjunction at all_axis_peaklocal.py:862 -- "
+                      "norm_nonnegative, a certified time cover, the time-node "
+                      "capacity, AND this cap -- so a row is charged to "
+                      "'capacity' for four different reasons.  Measured at rho "
+                      "652 on 43 such rows, 36 failed the TIME-NODE capacity "
+                      "and only 7 were count-driven, so raising this recovers "
+                      "~16% and then plateaus at any value.  (2) It is not a "
+                      "cost knob: it selects which modes are retained, so it "
+                      "moves the integral.  Measured on identical rows at rho "
+                      "163, 32 -> 128 shifted already-accepted values by 4.8e-4 "
+                      "and 3.5e-3 nats, at and above the 1e-3 error budget.  "
+                      "An A/B on this may not treat its value difference as "
+                      "noise.")
     g.add_option("--direct-marginalization-convergence-tol-nats", type=float,
                  default=1.0e-3,
                  help="Agreement required between the base and enriched plans, "
