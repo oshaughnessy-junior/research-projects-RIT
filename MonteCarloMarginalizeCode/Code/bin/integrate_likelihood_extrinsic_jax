@@ -2780,9 +2780,20 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
                             "reserve is measured at 43.2 nats of error at "
                             "rho 163")
             else:
-                _lap_ok, _lap_info = _anglemarg.gh_laplace_supported_for_data(
-                    like_data, getattr(like, "interp", None)
-                    or JAX_INTERP_DEFAULT)
+                # The wrapper has already measured this whenever the ANGLE
+                # scheme could use the placement, and stored it.  Reuse that
+                # answer rather than measuring a second time: two measurements
+                # of one property can disagree, and the one the run reports
+                # should be the one the run is gated on.
+                _am_info = getattr(like, "angle_marg_info", None) or {}
+                if "gh_laplace_ok" in _am_info:
+                    _lap_ok, _lap_info = _am_info["gh_laplace_ok"], _am_info
+                else:
+                    _lap_ok, _lap_info = (
+                        _anglemarg.gh_laplace_supported_for_data(
+                            like_data,
+                            getattr(like, "interp", None)
+                            or JAX_INTERP_DEFAULT))
                 if not _lap_ok:
                     _lap_why = _lap_info.get("gh_laplace_reason",
                                              "identity absent")
