@@ -617,12 +617,13 @@ class JAXDistPhiPsiMargLikelihood:
             # only the support on every dense path -- so do not re-tie this
             # comment to a particular selector outcome.
             raise ValueError(
-                "dist_grid=%r cannot be combined with JAX_ILE_DISTMARG_GH=%d: "
-                "the per-sample Gauss-Hermite distance quadrature places its "
-                "own nodes and uses only the SUPPORT of x_grid, so this option "
-                "would be bit-identically inert while still being reported as "
-                "active.  Unset JAX_ILE_DISTMARG_GH, or use "
-                "dist_grid='uniform'." % (dist_grid, _core._DISTMARG_GH_N))
+                "dist_grid=%r cannot be combined with distance-GH-nodes=%d "
+                "(--distance-gh-nodes / JAX_ILE_DISTMARG_GH): the per-sample "
+                "Gauss-Hermite distance quadrature places its own nodes and "
+                "uses only the SUPPORT of x_grid, so this option would be "
+                "bit-identically inert while still being reported as active.  "
+                "Pass --distance-gh-nodes 0 (or unset JAX_ILE_DISTMARG_GH), or "
+                "use dist_grid='uniform'." % (dist_grid, _core._DISTMARG_GH_N))
         if dist_grid != "uniform" and d_prior_range is not None and (
                 float(d_prior_range[0]) != float(d_min)
                 or float(d_prior_range[1]) != float(d_max)):
@@ -949,13 +950,14 @@ class JAXDistPhiPsiMargLikelihood:
                 if angle_marg == "laplace" and gh_ok is False:
                     raise ValueError(
                         "--angle-marg-scheme laplace was requested with "
-                        "JAX_ILE_DISTMARG_GH set, but its psi-marginal "
+                        "distance-GH-nodes set (--distance-gh-nodes / "
+                        "JAX_ILE_DISTMARG_GH), but its psi-marginal "
                         "distance-node placement is not valid for this data: "
                         "%s.  The placement is DERIVED from A0 == 0 and "
                         "B1 == 0 (that is what reduces stationarity to "
                         "z^2 w = conj(w)), so it must not be used where they "
-                        "do not hold.  Use --angle-marg-scheme exact, or unset "
-                        "JAX_ILE_DISTMARG_GH."
+                        "do not hold.  Use --angle-marg-scheme exact, or pass "
+                        "--distance-gh-nodes 0 (or unset JAX_ILE_DISTMARG_GH)."
                         % gh_info.get("gh_laplace_reason", "identity absent"))
                 scheme, sel_info = angle_marg, dict(
                     reason="forced by caller", amplitude=amp_data,

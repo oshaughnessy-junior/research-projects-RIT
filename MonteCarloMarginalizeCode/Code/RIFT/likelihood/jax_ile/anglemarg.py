@@ -1702,13 +1702,15 @@ def fused_log_likelihood_distphipsimarg_laplace(
         _feature = getattr(data, "feature", None)
         if _feature not in _GH_PSI_STATIC_FEATURES:
             raise ValueError(
-                "JAX_ILE_DISTMARG_GH is set, but the 'laplace' angle-marg "
+                "distance-GH-nodes is set (--distance-gh-nodes / "
+                "JAX_ILE_DISTMARG_GH), but the 'laplace' angle-marg "
                 "scheme's psi-marginal distance-node placement requires the "
                 "static detector response: it is DERIVED from A0 == 0 and "
                 "B1 == 0, which follow from F+(psi) + i Fx(psi) = "
                 "(F+(0) + i Fx(0)) e^{-2i psi}.  This data has feature=%r, "
                 "which does not have that factorization.  Use "
-                "--angle-marg-scheme exact, or unset JAX_ILE_DISTMARG_GH."
+                "--angle-marg-scheme exact, or pass --distance-gh-nodes 0 "
+                "(or unset JAX_ILE_DISTMARG_GH)."
                 % (_feature,))
     x_grid = jnp.asarray(x_grid, dtype=jnp.float64)
     log_w_grid = jnp.asarray(log_w_grid, dtype=jnp.float64)
@@ -1726,11 +1728,13 @@ def fused_log_likelihood_distphipsimarg_laplace(
     # m_max test below is the only check available at trace time.
     if _use_gh and int(m_max) > _GH_PSI_M_MAX:
         raise ValueError(
-            "JAX_ILE_DISTMARG_GH is set and the 'laplace' angle-marg scheme's "
+            "distance-GH-nodes is set (--distance-gh-nodes / "
+            "JAX_ILE_DISTMARG_GH) and the 'laplace' angle-marg scheme's "
             "psi-marginal distance-node placement is validated for mode "
             "content m_max <= %d only (it rests on the A0 == 0 / B1 == 0 "
             "identity); this data has m_max = %d.  Use --angle-marg-scheme "
-            "exact, or unset JAX_ILE_DISTMARG_GH."
+            "exact, or pass --distance-gh-nodes 0 (or unset "
+            "JAX_ILE_DISTMARG_GH)."
             % (_GH_PSI_M_MAX, int(m_max)))
 
     amp_sizing = _require_amp_sizing(amp_sizing)
@@ -2135,10 +2139,12 @@ def fused_log_likelihood_distphipsimarg_peaklocal(
     """
     if _core._DISTMARG_GH_N > 0:
         raise ValueError(
-            "JAX_ILE_DISTMARG_GH is set, but the 'peak-local' angle-marg scheme does "
-            "not implement the adaptive distance quadrature (it sums the caller's "
-            "distance grid directly).  Use --angle-marg-scheme exact, or unset "
-            "JAX_ILE_DISTMARG_GH.")
+            "distance-GH-nodes is set (--distance-gh-nodes / "
+            "JAX_ILE_DISTMARG_GH), but the 'peak-local' angle-marg scheme "
+            "does not implement the adaptive distance quadrature (it sums "
+            "the caller's distance grid directly).  Use --angle-marg-scheme "
+            "exact, or pass --distance-gh-nodes 0 (or unset "
+            "JAX_ILE_DISTMARG_GH).")
     _require_amp_sizing(amp_sizing)
     from . import joint_anglemarg_peaklocal as _jp
 
@@ -2213,10 +2219,12 @@ def fused_log_likelihood_distphipsimarg_phi_local(
     """
     if _core._DISTMARG_GH_N > 0:
         raise ValueError(
-            "JAX_ILE_DISTMARG_GH is set, but the 'phi-local' angle-marg scheme does "
-            "not implement the adaptive distance quadrature (it sums the caller's "
-            "distance grid directly).  Use --angle-marg-scheme exact, or unset "
-            "JAX_ILE_DISTMARG_GH.")
+            "distance-GH-nodes is set (--distance-gh-nodes / "
+            "JAX_ILE_DISTMARG_GH), but the 'phi-local' angle-marg scheme "
+            "does not implement the adaptive distance quadrature (it sums "
+            "the caller's distance grid directly).  Use --angle-marg-scheme "
+            "exact, or pass --distance-gh-nodes 0 (or unset "
+            "JAX_ILE_DISTMARG_GH).")
     _require_amp_sizing(amp_sizing)
     from . import joint_anglemarg_peaklocal as _jp
 

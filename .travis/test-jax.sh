@@ -465,6 +465,44 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         of the driver through --mode flowmc
 #                                         --distance-marginalization.  Real
 #                                         precompute; needs lal, no GPU.
+#   test_distance_gh_nodes_cli.py      27  --distance-gh-nodes: makes the per-sample
+#                                         Gauss-Hermite distance quadrature (previously
+#                                         reachable only via JAX_ILE_DISTMARG_GH) an ILE
+#                                         argument, and the warn-not-silently-ignore
+#                                         compatibility notes for --phase-marginalization
+#                                         on the four phi_ref-analytic modes,
+#                                         --sky-coordinates on the modes that do not
+#                                         implement it, and --d-prior (always volumetric).
+#                                         Parse-time CLI/env resolution and refusal run the
+#                                         real check_critical_and_report in-process (no
+#                                         subprocess), including that a CLI/env conflict on
+#                                         DIFFERENT nonzero values is REFUSED rather than
+#                                         reconciled, and that a refused command line never
+#                                         mutates core._DISTMARG_GH_N.  BLOCKER fix (external
+#                                         review, same day): the option now defaults to None,
+#                                         not 0, so an explicit --distance-gh-nodes 0 is
+#                                         distinguishable from not-passed; four tests pin
+#                                         this -- explicit 0 against a nonzero env refuses,
+#                                         explicit 16 against agreeing env 16 is accepted,
+#                                         env 16 alone resolves and is named in the banner,
+#                                         and env 16 against CLI 32 refuses (the mutation
+#                                         target: a reversed CLI/env priority passes every
+#                                         other test in this file, since most cases here
+#                                         exercise only one of the two knobs).  A numeric liveness
+#                                         check on cheap synthetic packed data (no lal, no
+#                                         frames) pins that the resolved count actually
+#                                         changes the constructed likelihood's VALUE, not
+#                                         just an echoed CLI flag, with a fresh jax.jit
+#                                         closure per setting so no stale trace can mask the
+#                                         difference; and that 0 reproduces the untouched
+#                                         legacy grid bit-for-bit.  Two subprocess checks
+#                                         against the real driver entry point (--inj-mode,
+#                                         tiny budget, stopped at the same known
+#                                         post-construction validation error
+#                                         test_distance_grid_loguniform.py's own subprocess
+#                                         test relies on) confirm the resolved count reaches
+#                                         the run log end to end.  Needs no lal beyond what
+#                                         build_likelihood_data already requires; no GPU.
 
 FILES=(
   "${JAXDIR}/test_jax_time_quadrature.py"
@@ -504,6 +542,7 @@ FILES=(
   "${JAXDIR}/test_jax_phase_marg_mode_order.py"
   "${JAXDIR}/test_jax_q_time_pregrid.py"
   "${JAXDIR}/test_direct_marginalization_policy.py"
+  "${JAXDIR}/test_distance_gh_nodes_cli.py"
   "${JAXDIR}/test_jax_cache.py"
   "${JAXDIR}/test_direct_marginalization_policy_cli.py"
   "${JAXDIR}/test_jax_bandlimited_distmarg.py"
@@ -812,12 +851,33 @@ fi
 # collection line: "577/582 tests collected (5 deselected)", gate-style count 577
 # from 37 files.
 #
-# TWELFTH, the jax 0.9.2 empty-pool cap fix touches only test_anglemarg_buffer_cap.py:
-# removes 1 test (test_a_zero_largest_free_block_is_a_known_full_device, whose "0 means
-# full" premise was the bug) and adds 6, net +5, none parametrized -- so the file-local
-# delta is exact and this is a direct bump, not an arithmetic guess across a merge (the
-# failure mode the paragraphs above document).  577 + 5 = 582.
+# TWELFTH, adding test_distance_gh_nodes_cli.py (--distance-gh-nodes, this branch).
+# 20 test_* entry points, one parametrized x4, so 23 collected; none deselected.
+# FILES is now 38 files, EXPECTED_TESTS raised by exactly that: 577 + 23 = 600.
 #
+# THIRTEENTH, same branch, same day: adversarial review found a BLOCKER (the
+# 0-default made an explicit --distance-gh-nodes 0 indistinguishable from
+# not-passed, so a nonzero JAX_ILE_DISTMARG_GH silently won).  Fixed with a
+# None default and four new tests pinning CLI-given-including-0 wins, plus a
+# mutation-target regression test for the reversed-priority case.  24 test_*
+# entry points now, one parametrized x4, so 27 collected; none deselected.
+# EXPECTED_TESTS raised by exactly that: 600 + 4 = 604.
+#
+# FOURTEENTH, on rift_O4d (#285, not this branch): the jax 0.9.2 empty-pool cap fix
+# touches only test_anglemarg_buffer_cap.py: removes 1 test
+# (test_a_zero_largest_free_block_is_a_known_full_device, whose "0 means full" premise
+# was the bug) and adds 6, net +5, none parametrized.  577 + 5 = 582.
+#
+# FIFTEENTH, same file, the review-MAJOR follow-up (forced probe allocation before
+# reading memory_stats(), plus the on-demand-allocator bound): adds 5 tests, none
+# parametrized, no removals.  582 + 5 = 587.
+#
+# SIXTEENTH, reconciling TWELFTH/THIRTEENTH (this branch, test_distance_gh_nodes_cli.py,
+# +27 off the 577 base) with FOURTEENTH/FIFTEENTH (rift_O4d #285,
+# test_anglemarg_buffer_cap.py, +10 off the same 577 base) at this merge.  The two
+# deltas land in disjoint files, so unlike the earlier reconciliations in this history
+# the sum is exact, not a guess: 577 + 27 + 10 = 614.  FILES is 38 (37 + this branch's
+# one new file; #285 added no file).
 # THIRTEENTH, the review-MAJOR follow-up (forced probe allocation before reading
 # memory_stats(), plus the on-demand-allocator bound) again touches only
 # test_anglemarg_buffer_cap.py: adds 5 tests, none parametrized, no removals.
@@ -919,6 +979,12 @@ EXPECTED_TESTS=629
 # applied, read off its own collection line:
 #   "collected 657 tests from 40 files" (the gate's own line; 647 + 10)
 EXPECTED_TESTS=657
+# SEVENTEENTH, merging rift_O4d (#214's test_jax_cache.py, gate count 621 from 38
+# files) into this branch (test_distance_gh_nodes_cli.py, +27): the two deltas
+# land in disjoint files, so 621 + 27 = 648 from 39 files.  Re-measured on the
+# merged tree with the CI-equivalent /scratch jaxci-py311 interpreter before
+# this commit.
+EXPECTED_TESTS=648
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"

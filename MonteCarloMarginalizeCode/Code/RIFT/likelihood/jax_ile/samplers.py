@@ -38,13 +38,37 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
+# ``core`` pulls in lal/lalsimulation (see core.py's own module-level import).
+# test/jax/test_nuts_phimarg.py deliberately loads *this* file standalone, by
+# path, with no lal on hand -- so the relative import below must not run in
+# that context. A module loaded via importlib.util.spec_from_file_location()
+# with no parent package gets __package__ == "" (falsy); a normal package
+# import (``import RIFT.likelihood.jax_ile.samplers``) gets the real dotted
+# package name (truthy). Gate on that instead of a bare ``from . import
+# core``, which raises ImportError unconditionally outside a package.
+if __package__:
+    from . import core as _core
+else:
+    _core = None
+
 # Default chunk for the batched lnL evals.  The per-sample distance quadrature
-# (JAX_ILE_DISTMARG_GH=G) materialises a (chunk, npts, G) array, ~G/ (grid_block)
-# more device memory than the legacy grid, so a 4000-row chunk OOMs the 11GB
-# 2080Ti.  Shrink the chunk when per-sample is active so the per-sample path fits
-# small-VRAM GPUs too (don't force every high-SNR job onto a 24GB node).
-_GH_NODES = int(os.environ.get("JAX_ILE_DISTMARG_GH", "0"))
-_EVAL_CHUNK = max(500, 4000 * 16 // max(16, _GH_NODES)) if _GH_NODES > 0 else 4000
+# (JAX_ILE_DISTMARG_GH=G, or the driver's --distance-gh-nodes) materialises a
+# (chunk, npts, G) array, ~G/(grid_block) more device memory than the legacy
+# grid, so a 4000-row chunk OOMs the 11GB 2080Ti.  Shrink the chunk when
+# per-sample is active so the per-sample path fits small-VRAM GPUs too (don't
+# force every high-SNR job onto a 24GB node).
+#
+# Resolved through _core.get_distmarg_gh_nodes() at CALL time (see
+# _default_eval_chunk below), not baked in here at import time: the CLI path
+# (core.set_distmarg_gh_nodes(), called from the driver's option parsing) runs
+# AFTER this module is first imported, so a module-level constant read from
+# os.environ here would miss a node count set only via --distance-gh-nodes.
+# Standalone-loaded (_core is None): fall back to the env var directly, same
+# as the pre-CLI behaviour, since there is no driver to call set_ from.
+def _default_eval_chunk():
+    n = (_core.get_distmarg_gh_nodes() if _core is not None
+         else int(os.environ.get("JAX_ILE_DISTMARG_GH", "0")))
+    return max(500, 4000 * 16 // max(16, n)) if n > 0 else 4000
 
 # Parameter order used everywhere in this module.
 ANG_NAMES = ("ra", "dec", "psi", "incl", "phiref")
@@ -613,7 +637,7 @@ def angle_marg_eval_chunk(like, chunk):
 
     Slices of the batched eval are INDEPENDENT (lnL is elementwise in the
     sample axis), so this changes peak memory and nothing else -- same
-    pattern as the _GH_NODES shrink above.  Grid-scheme and 4/5-param
+    pattern as the _default_eval_chunk() shrink above.  Grid-scheme and 4/5-param
     likelihoods pass through unchanged.
     """
     # NOT the scheme default.  "grid" here is a SENTINEL meaning "this object
@@ -696,12 +720,14 @@ def angle_marg_eval_chunk(like, chunk):
     return min(chunk, cap)
 
 
-def eval_lnL(like, theta, chunk=_EVAL_CHUNK):
+def eval_lnL(like, theta, chunk=None):
     """Evaluate the distance-marginalized lnL on an ``(N, 5)`` array in chunks.
 
     Chunking bounds peak device memory (the distance grid multiplies the batch
     dimension inside the likelihood).
     """
+    if chunk is None:
+        chunk = _default_eval_chunk()
     theta = np.atleast_2d(theta)
     chunk = angle_marg_eval_chunk(like, chunk)
     N = theta.shape[0]
@@ -1451,8 +1477,10 @@ def _log_prior_4_jax(theta4):
     return jnp.where(inb, logp, -1e30)
 
 
-def eval_lnL_4(like, theta, chunk=_EVAL_CHUNK, desc="lnL"):
+def eval_lnL_4(like, theta, chunk=None, desc="lnL"):
     """Evaluate the 4-param (phi-marginalised) lnL on an ``(N, 4)`` array."""
+    if chunk is None:
+        chunk = _default_eval_chunk()
     theta = np.atleast_2d(theta)
     chunk = angle_marg_eval_chunk(like, chunk)
     N = theta.shape[0]
@@ -1548,8 +1576,10 @@ def _log_prior_3_jax(theta3):
     return jnp.where(inb, logp, -1e30)
 
 
-def eval_lnL_3(like, theta, chunk=_EVAL_CHUNK, desc="lnL"):
+def eval_lnL_3(like, theta, chunk=None, desc="lnL"):
     """Evaluate the 3-param (phi+psi-marginalised) lnL on an ``(N, 3)`` array."""
+    if chunk is None:
+        chunk = _default_eval_chunk()
     theta = np.atleast_2d(theta)
     chunk = angle_marg_eval_chunk(like, chunk)
     N = theta.shape[0]

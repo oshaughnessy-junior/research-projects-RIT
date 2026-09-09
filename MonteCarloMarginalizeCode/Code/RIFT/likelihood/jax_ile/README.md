@@ -234,6 +234,16 @@ integral — exactly the ordering of the production `distmarg_loglikelihood`.  T
 result is smooth, bounded, and peaks at the correct sky location, and is the
 right object for gradient-based exploration.
 
+The fixed distance grid under-resolves the per-sample integrand's peak (width
+`~d0/SNR`) at high SNR.  The driver's `--distance-gh-nodes N` places `N`
+Gauss-Hermite-style nodes centred on that peak, PER SAMPLE, resolving it to
+machine precision at any SNR with a few dozen nodes; `N=0` (default) keeps the
+legacy fixed grid.  Equivalent to the environment variable
+`JAX_ILE_DISTMARG_GH`, still honoured for compatibility (`core.
+set_distmarg_gh_nodes`); the two are refused, not silently reconciled, if set
+to different nonzero values.  See `core.make_distance_gh` /
+`core._distmarg_gh_logL` and `DESIGN_jax_distance_quadrature.md`.
+
 ## Driver
 
 `bin/integrate_likelihood_extrinsic_jax` mirrors the ILE CLI/output conventions
