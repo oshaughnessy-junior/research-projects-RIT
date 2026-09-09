@@ -170,10 +170,46 @@ the two guards disagree at 1e-3 to 1e-2 nat with the doubling converged to 1e-14
 (structure under the taper, outside the window). Neither is a certificate the
 path should drop; the window has to contain the shifts.
 
-WIDE-WINDOW-NUMBERS
+With the window widened to contain the shifts, same seeds and rows, gap off:
+
+| half-window | gap on | gap off | 6-D kernel, gap on |
+|---|---|---|---|
+| 20 ms | 90 / 256 | 36 / 256 | 92 / 256 |
+| 50 ms | 14 / 256 | 0 / 256 | 32 / 256 |
+| 75 ms | 14 / 256 | 0 / 256 | 30 / 256 |
+
+The 14 rows the gap alone rejects at 50 and 75 ms agree with the reference to
+1.0e-06 and 3.8e-07 nat at worst, and sit 137-169 nat below the batch maximum.
+
+The 6-D kernel's column is base-branch behaviour and is unchanged by this
+branch. Its blind-draw stop is a separate follow-up.
 
 The driver's stop is unchanged. Its message now counts the failed rows in the
 chunk, prints the first three, and names the window as the usual cause.
+
+Driver runs on the merged tree, same injection, 50 ms half-window, 32 distance
+nodes, seed 3, `--n-max 400` unless stated:
+
+| mode | quadrature | result |
+|---|---|---|
+| prior-mc | bandlimited | row written, lnZ 167.4, neff 2.0, 11 s |
+| map | bandlimited | row written, peak lnL 186.3, 47 s |
+| laplace-is, n_max 4000 | bandlimited | refused: adapted lnZ 165.3 is 6.3 nat below the prior pilot's Markov floor, neff 6.1 |
+| laplace-is, n_max 4000 | simpson | row written, lnZ 166.5, neff 16.4 |
+
+The laplace-is refusal is the estimator's own gate, reached after every
+evaluation certified: the resolved peak is narrower than one moment-matched
+Gaussian covers. It is not a certificate failure. The default mode therefore
+needs a larger budget or another mode under `bandlimited` on a narrow posterior.
+
+Two labels in this record need a caveat. The "rho" values above are
+`extras["guess_snr"]` from `build_data_from_precompute`. On the 900 Mpc
+injection that quantity is 8.72 while the likelihood maximum implies about 19.5,
+and the injected polarization and reference phase are not where the likelihood
+peaks (95.4 nat at the injection against 189.5 on a scan of either angle at the
+injected sky). The agreement tests compare two reconstructions at one fixed
+point, so they stand; the amplitude labels do not. That convention question is
+a separate follow-up.
 
 ### The fixed-distance kernel (follow-up, 2026-09-08)
 
@@ -255,4 +291,4 @@ brackets the peak with `--n-prior-pilot` instead.
 - `wrapper.py`: `JAXDistanceMarginalizedLikelihood` accepts the option and
   publishes `time_guard_initial` and `time_guard_certified`.
 - `bin/integrate_likelihood_extrinsic_jax`: `eval_lnL` failure message.
-- `test/jax/test_jax_bandlimited_distmarg.py`: 20 tests. TEST-TIMING
+- `test/jax/test_jax_bandlimited_distmarg.py`: 20 tests, about 3.5 min on `ldas-grid` (the flowMC driver run is 100 s of it; CI deselects that one).
