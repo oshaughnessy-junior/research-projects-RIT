@@ -426,9 +426,8 @@ import numpy as np
 
 #: Streamed body plus the stacked phi-scan output at the production floor:
 #: 16*256*4*8*8 + 352*256*8.
-PEAKLOCAL_BYTES_PER_PT = 1769472
-#: ... and one sample of it at production npts=1230.  2.027 GiB.
-PEAKLOCAL_ONE_SAMPLE = 2176450560
+PEAKLOCAL_BYTES_PER_PT = 1185792
+PEAKLOCAL_ONE_SAMPLE = 1458524160
 
 
 class _PeakLocalLike(object):
@@ -451,9 +450,24 @@ def test_the_peak_local_slab_really_is_that_big():
     from RIFT.likelihood.jax_ile import joint_anglemarg_peaklocal as jp
     from RIFT.likelihood.jax_ile import anglemarg
     streamed = jp.PHI_CHUNK_DEFAULT * 256 * 4 * jp.U_NODE_STREAM_CHUNK * 8
-    n_phi = jp.required_n_phi(anglemarg.ANGLE_MARG_CROSSOVER_AMPLITUDE,
-                              m_max=2)
-    modeled = streamed + n_phi * 256 * 8
+    modeled = (streamed
+               + jp.PHI_CHUNK_DEFAULT * 256 * 8    # one chunk of (phi, distance) values
+               + 256 * 8                           # the (n_x,) phi accumulator
+               + 256 * 5 * 5 * 16)                 # per-distance-node joint tables
+    # NO n_phi TERM.  It used to read `streamed + n_phi * 256 * 8`, the stacked phi
+    # scan, and that term was the 19.97 GiB that OOMed ladder-2 rung 640.  The kernel
+    # now reduces into its scan carry, so the whole phi axis is never live.  Keeping
+    # this as an explicit literal makes a regrown n_phi term a failing test rather than
+    # a silently larger buffer.
+    # The retired term GROWS as sqrt(amplitude) while everything left is flat in it, so
+    # the saving is small at the crossover and large in production.  Both ends are
+    # pinned, because "it got smaller" at one amplitude would not show that.
+    n_phi_floor = jp.required_n_phi(anglemarg.ANGLE_MARG_CROSSOVER_AMPLITUDE, m_max=2)
+    n_phi_prod = jp.required_n_phi(283980.0, m_max=2)     # ladder-2 rung 640
+    assert n_phi_floor * 256 * 8 < modeled, (
+        "at the crossover the retired stacked term was the smaller half")
+    assert n_phi_prod * 256 * 8 > 10 * modeled, (
+        "at rung 640 the retired stacked term dominated by more than 10x")
     assert modeled == PEAKLOCAL_BYTES_PER_PT, (
         "the peak-local live-slab model moved: kernel constants now imply %d bytes per "
         "sample-time-point, the P1 review example assumed %d" % (modeled,
@@ -575,11 +589,13 @@ def test_the_bytes_override_beats_the_fallback_and_lifts_a_refusal(monkeypatch):
     """The case the knob exists for: no readable device, and the 4 GiB guess refuses a
     configuration the operator knows their machine can hold."""
     _fake_jax(monkeypatch, raises=RuntimeError("no device"))
-    big = _PeakLocalLike(npts=8192)         # 13.5 GiB per sample, over the 4 GiB guess
+    big = _PeakLocalLike(npts=8192)         # 9.05 GiB per sample, over the 4 GiB guess
+    one_sample = PEAKLOCAL_BYTES_PER_PT * 8192
+    assert one_sample > 4 * GIB, "premise: the guess must refuse this"
     with pytest.raises(MemoryError):
         sam.angle_marg_eval_chunk(big, 4000)
     monkeypatch.setenv("RIFT_ANGLEMARG_BUFFER_BYTES", str(32 * GIB))
-    assert sam.angle_marg_eval_chunk(big, 4000) == 2
+    assert sam.angle_marg_eval_chunk(big, 4000) == (32 * GIB) // one_sample == 3
 
 
 # ---------------------------------------------------------------------------

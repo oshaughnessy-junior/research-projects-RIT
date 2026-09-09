@@ -38,13 +38,37 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
+# ``core`` pulls in lal/lalsimulation (see core.py's own module-level import).
+# test/jax/test_nuts_phimarg.py deliberately loads *this* file standalone, by
+# path, with no lal on hand -- so the relative import below must not run in
+# that context. A module loaded via importlib.util.spec_from_file_location()
+# with no parent package gets __package__ == "" (falsy); a normal package
+# import (``import RIFT.likelihood.jax_ile.samplers``) gets the real dotted
+# package name (truthy). Gate on that instead of a bare ``from . import
+# core``, which raises ImportError unconditionally outside a package.
+if __package__:
+    from . import core as _core
+else:
+    _core = None
+
 # Default chunk for the batched lnL evals.  The per-sample distance quadrature
-# (JAX_ILE_DISTMARG_GH=G) materialises a (chunk, npts, G) array, ~G/ (grid_block)
-# more device memory than the legacy grid, so a 4000-row chunk OOMs the 11GB
-# 2080Ti.  Shrink the chunk when per-sample is active so the per-sample path fits
-# small-VRAM GPUs too (don't force every high-SNR job onto a 24GB node).
-_GH_NODES = int(os.environ.get("JAX_ILE_DISTMARG_GH", "0"))
-_EVAL_CHUNK = max(500, 4000 * 16 // max(16, _GH_NODES)) if _GH_NODES > 0 else 4000
+# (JAX_ILE_DISTMARG_GH=G, or the driver's --distance-gh-nodes) materialises a
+# (chunk, npts, G) array, ~G/(grid_block) more device memory than the legacy
+# grid, so a 4000-row chunk OOMs the 11GB 2080Ti.  Shrink the chunk when
+# per-sample is active so the per-sample path fits small-VRAM GPUs too (don't
+# force every high-SNR job onto a 24GB node).
+#
+# Resolved through _core.get_distmarg_gh_nodes() at CALL time (see
+# _default_eval_chunk below), not baked in here at import time: the CLI path
+# (core.set_distmarg_gh_nodes(), called from the driver's option parsing) runs
+# AFTER this module is first imported, so a module-level constant read from
+# os.environ here would miss a node count set only via --distance-gh-nodes.
+# Standalone-loaded (_core is None): fall back to the env var directly, same
+# as the pre-CLI behaviour, since there is no driver to call set_ from.
+def _default_eval_chunk():
+    n = (_core.get_distmarg_gh_nodes() if _core is not None
+         else int(os.environ.get("JAX_ILE_DISTMARG_GH", "0")))
+    return max(500, 4000 * 16 // max(16, n)) if n > 0 else 4000
 
 # Parameter order used everywhere in this module.
 ANG_NAMES = ("ra", "dec", "psi", "incl", "phiref")
@@ -533,8 +557,8 @@ _ANGLE_MARG_BUFFER_TARGET = _ANGLE_MARG_BUFFER_TARGET_FALLBACK
 def _peaklocal_bytes_per_sample_pt(like):
     """Conservative source-level payload for one peak-local sample/time point.
 
-    The streamed nonlinear body and the phi scan's stacked output have distinct
-    shapes, and both have to be budgeted.  This is still not a CUDA allocator
+    The streamed nonlinear body, one phi chunk's values, the phi accumulator and the
+    per-distance-node joint tables have distinct shapes, and all have to be budgeted.  This is still not a CUDA allocator
     measurement and cannot see an outer transformation such as flowMC's chain
     ``vmap``; callers of the scalar AD target require separate profiling.
     """
@@ -554,13 +578,21 @@ def _peaklocal_bytes_per_sample_pt(like):
     lms = getattr(data, "lms", None)
     m_max = (int(np.max(np.abs(np.asarray(lms)[:, 1])))
              if lms is not None else 2)
-    n_phi = _jp.required_n_phi(amp_sizing, m_max=m_max)
 
     streamed_body = _jp.PHI_CHUNK_DEFAULT * n_x * 4 * n_u_live * 8
-    # lax.scan returns every phi chunk before the subsequent reshape/logsumexp;
-    # that stacked output therefore has (n_phi, n_x) f64 payload.
-    stacked_scan_output = n_phi * n_x * 8
-    return int(streamed_body + stacked_scan_output)
+    # The phi scan REDUCES into its carry rather than returning a value per chunk, so
+    # what is live is one chunk's (phi_chunk, n_x) block and the (n_x,) accumulator --
+    # not the whole phi axis.  This term used to read `n_phi * n_x * 8`, the stacked
+    # output, and that was the real 19.97 GiB at ladder-2 rung 640.  The model moves in
+    # the same commit as the kernel: this file's own history is a guard that kept an old
+    # model while the kernel's sizing moved.
+    phi_chunk_values = _jp.PHI_CHUNK_DEFAULT * n_x * 8
+    accumulator = n_x * 8
+    # `tables` in joint_lnL_phi_dense: one complex (KP, 2KS+1) per distance node, live
+    # for the whole call.  Previously unmodelled, and small against the streamed body
+    # (~10% at n_x 256), but it is live and cheap to state.
+    joint_tables = n_x * (2 * m_max + 1) * 5 * 16
+    return int(streamed_body + phi_chunk_values + accumulator + joint_tables)
 
 
 def _philocal_bytes_per_sample_pt(like):
@@ -605,7 +637,7 @@ def angle_marg_eval_chunk(like, chunk):
 
     Slices of the batched eval are INDEPENDENT (lnL is elementwise in the
     sample axis), so this changes peak memory and nothing else -- same
-    pattern as the _GH_NODES shrink above.  Grid-scheme and 4/5-param
+    pattern as the _default_eval_chunk() shrink above.  Grid-scheme and 4/5-param
     likelihoods pass through unchanged.
     """
     # NOT the scheme default.  "grid" here is a SENTINEL meaning "this object
@@ -632,10 +664,9 @@ def angle_marg_eval_chunk(like, chunk):
         # exists for is a kernel whose sizing moved while the guard kept its old model.
         bytes_per = max(bytes_per, _philocal_bytes_per_sample_pt(like))
     elif getattr(like, "angle_marg_scheme", None) == "peak-local":
-        # Besides the streamed (phi_chunk,n_x,4,u_live) body, lax.scan returns
-        # and stacks every (n_phi,n_x) value before the final reduction.  Omitting
-        # that output undercounts high-amplitude calls because n_phi grows as
-        # sqrt(A).
+        # The streamed (phi_chunk,n_x,4,u_live) body, one chunk's (phi_chunk,n_x)
+        # values, the (n_x,) phi accumulator and the per-distance-node joint tables.
+        # None of these grows with n_phi now that the scan reduces into its carry.
         bytes_per = max(bytes_per, _peaklocal_bytes_per_sample_pt(like))
     target = _angle_marg_buffer_target()
     per_sample = bytes_per * npts
@@ -689,12 +720,14 @@ def angle_marg_eval_chunk(like, chunk):
     return min(chunk, cap)
 
 
-def eval_lnL(like, theta, chunk=_EVAL_CHUNK):
+def eval_lnL(like, theta, chunk=None):
     """Evaluate the distance-marginalized lnL on an ``(N, 5)`` array in chunks.
 
     Chunking bounds peak device memory (the distance grid multiplies the batch
     dimension inside the likelihood).
     """
+    if chunk is None:
+        chunk = _default_eval_chunk()
     theta = np.atleast_2d(theta)
     chunk = angle_marg_eval_chunk(like, chunk)
     N = theta.shape[0]
@@ -1444,8 +1477,10 @@ def _log_prior_4_jax(theta4):
     return jnp.where(inb, logp, -1e30)
 
 
-def eval_lnL_4(like, theta, chunk=_EVAL_CHUNK, desc="lnL"):
+def eval_lnL_4(like, theta, chunk=None, desc="lnL"):
     """Evaluate the 4-param (phi-marginalised) lnL on an ``(N, 4)`` array."""
+    if chunk is None:
+        chunk = _default_eval_chunk()
     theta = np.atleast_2d(theta)
     chunk = angle_marg_eval_chunk(like, chunk)
     N = theta.shape[0]
@@ -1541,8 +1576,10 @@ def _log_prior_3_jax(theta3):
     return jnp.where(inb, logp, -1e30)
 
 
-def eval_lnL_3(like, theta, chunk=_EVAL_CHUNK, desc="lnL"):
+def eval_lnL_3(like, theta, chunk=None, desc="lnL"):
     """Evaluate the 3-param (phi+psi-marginalised) lnL on an ``(N, 3)`` array."""
+    if chunk is None:
+        chunk = _default_eval_chunk()
     theta = np.atleast_2d(theta)
     chunk = angle_marg_eval_chunk(like, chunk)
     N = theta.shape[0]

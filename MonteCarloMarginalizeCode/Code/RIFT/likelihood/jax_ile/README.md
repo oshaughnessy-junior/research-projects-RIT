@@ -62,7 +62,9 @@ or it returns a wrong likelihood with no error.
 All JAX likelihood wrappers accept the conventional ILE keyword
 `time_quadrature={"simpson","bandlimited"}`.  Simpson remains the default.
 The opt-in `bandlimited` path is currently supported by
-`JAXExtrinsicLikelihood`, including analytic phase marginalization.  It forms
+`JAXExtrinsicLikelihood` (6-D, including analytic phase marginalization) and by
+`JAXDistanceMarginalizedLikelihood` (5-D, the wrapper `--mode nuts`,
+`multistart-nuts` and `flowmc` use under `--distance-marginalization`).  It forms
 the endpoint-nonduplicating even extension
 `[kappa[0], ..., kappa[-1], kappa[-2], ..., kappa[1]]`, FFT-interpolates it,
 applies the phase reduction on the
@@ -74,12 +76,13 @@ the sampler batch.  There is deliberately no public factor knob; a row that
 cannot meet the criterion fails closed.
 
 The supported signal regime assumes spectral headroom below the sampled
-Nyquist frequency and negligible likelihood mass at both ends of the short
-integration window.  The latter is checked on the refined grid: either endpoint
-must be at least 15 natural-log units below the peak, otherwise `bandlimited`
-fails closed rather than trusting a boundary extension that can affect the
-answer.  Increase the physical time window or use Simpson when this diagnostic
-fires.
+Nyquist frequency.  Likelihood mass at the ends of the short integration window
+is covered by the guard-agreement certificate below, not by an endpoint gap.
+The 15-nat endpoint gap of 2026-08-29 was switched off on 2026-09-08.  A row's
+peak-to-endpoint contrast is bounded by its own amplitude, so the gap rejected
+every blind or far draw whatever the quadrature did.  The rows it rejected
+alone agree with an independent reference to 1e-4 nat (DESIGN record, "The
+endpoint certificate").
 
 The primitive gather includes support outside that window.  Its initial guard
 is the established half-window default rounded up to a power of two; one guard
@@ -104,11 +107,33 @@ curvature-derived starting fine factor is capped at 1024 and certified once at
 2048; a sharper row is refused with guidance to increase the input/rholm sample
 rate rather than allocating multi-gigabyte FFT branches.
 
-Distance, phi, psi, exact-angle, and Laplace-marginalized wrappers currently
-refuse `bandlimited`.  Those nonlinear reductions generate time harmonics, so
-interpolating their already-reduced `lnL(t)` can converge to the wrong function;
-they require endpoint-specific primitive refinement before they can safely opt
-in.  They continue to use the unchanged Simpson default.
+The distance reduction runs on the refined nodes, not on an interpolated
+`lnL(t)`.  `fused_log_likelihood_distmarg` gathers the guarded primitive, hands
+the refiner the same blocked distance quadrature the Simpson path uses, and that
+quadrature is evaluated inside the row-local `lax.map` at every fine node before
+the trapezoid.  The block count for the fine grid is derived from the refined row
+length rather than inherited from `grid_block`, so a 2048x row does not scale the
+working set with it.  Three of the fixed-distance certificates -- factor
+doubling, two-guard agreement, and remeasured resolution -- apply to the
+distance-marginalized field, and the endpoint gap applies to neither.  With a
+full-sky prior the integration half-window must contain the detector arrival
+shifts of a wrong-sky draw (up to 2 R_earth / c, 42.6 ms).  A row whose arrival
+peak sits at the window edge fails the doubling or guard certificate and stops
+the driver.  The driver therefore refuses the modes that push full-sky draws
+through that stop (`prior-mc`, `laplace-is`, `map`, `nuts`) at parse time when
+the half-window is below that bound.
+`return_lnLt` is refused under `bandlimited`: there is no reduced field on the
+data grid to return.
+
+The phi, psi, exact-angle, and Laplace-marginalized wrappers still refuse
+`bandlimited`, and the reason is now specific rather than generic.  The phi_ref
+grid sum streams one primitive per grid point through a `lax.scan` that carries
+only `(S, npts)`; refining first means carrying `(nphi, n_fine)` per row, which
+at the shipped `nphi` and the certified factor is two orders of magnitude more
+scratch than the row-local budget allows.  The psi and exact-angle wrappers
+reach the coefficient-table kernels in `anglemarg.py`, which return an
+already-reduced `lnL(t)`: there is no primitive at that seam to refine without
+an adapter.  Both continue to use the unchanged Simpson default.
 `time_first_peaklocal.py` contains an unwired, fixed-shape prototype of that
 primitive-first composition: it reconstructs one raw complex correlation per
 downstream distance/angle quadrature state, builds a certified time-cell cover,
@@ -139,7 +164,8 @@ executables without dying during option parsing.
     `(ra, dec, psi, incl, phiref, distMpc)`.
   - `fused_log_likelihood_distmarg(...)` — **distance- and time-marginalized**
     lnL over the 5 angular parameters (regulates the amplitude degeneracy; see
-    below).
+    below).  Honours `time_quadrature="bandlimited"` by refining the primitive
+    first.
   - `make_distance_grid(...)`, `JAXLikelihoodData`, `build_likelihood_data`.
 - `time_first_peaklocal.py` — experimental primitive-first time-cover planner
   and distance adapter; not selected by any production endpoint.
@@ -207,6 +233,16 @@ quadrature over a distance grid with the `p(d) ∝ d^2` prior) **before** the ti
 integral — exactly the ordering of the production `distmarg_loglikelihood`.  The
 result is smooth, bounded, and peaks at the correct sky location, and is the
 right object for gradient-based exploration.
+
+The fixed distance grid under-resolves the per-sample integrand's peak (width
+`~d0/SNR`) at high SNR.  The driver's `--distance-gh-nodes N` places `N`
+Gauss-Hermite-style nodes centred on that peak, PER SAMPLE, resolving it to
+machine precision at any SNR with a few dozen nodes; `N=0` (default) keeps the
+legacy fixed grid.  Equivalent to the environment variable
+`JAX_ILE_DISTMARG_GH`, still honoured for compatibility (`core.
+set_distmarg_gh_nodes`); the two are refused, not silently reconciled, if set
+to different nonzero values.  See `core.make_distance_gh` /
+`core._distmarg_gh_logL` and `DESIGN_jax_distance_quadrature.md`.
 
 ## Driver
 

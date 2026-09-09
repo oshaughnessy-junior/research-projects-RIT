@@ -151,6 +151,22 @@ _TEMPERED_MODES = frozenset((
 # fair-draw count options do anything; elsewhere the export is the sampler's own
 # chain and the count flags are inert (and must be reported as ignored).
 _FAIRDRAW_MODES = _TEMPERED_MODES | frozenset(("prior-mc", "laplace-is"))
+# Modes whose blind full-sky prior draws go through eval_lnL, which stops the
+# run on one uncertified bandlimited row.  The flowMC family and multistart-nuts
+# pilot through the samplers' own draw and are not on this list.
+_EVAL_LNL_STOP_MODES = frozenset(("prior-mc", "laplace-is", "map", "nuts"))
+# Largest shift a wrong-sky draw makes to one detector's arrival time: the
+# window must contain it or a blind row's arrival peak sits beyond the edge,
+# which no certificate can converge on (measured 35/256 rows at 20 ms, 0/256 at
+# 50 ms; DESIGN_jax_bandlimited_distmarg.md, "The endpoint certificate").
+_BANDLIMITED_FULLSKY_HALF_WINDOW_MIN = 2.0 * lal.REARTH_SI / lal.C_SI
+# Modes whose posterior is already phi_ref-marginalised ANALYTICALLY (a grid
+# sum baked into the likelihood, not a sampled axis): --phase-marginalization
+# has nothing left to do on these and is reported IGNORED rather than refused
+# (RO'S 2026-09-08: missing knobs are fine to no-op for compatibility, but
+# must warn).
+_PHASE_ANALYTIC_MODES = frozenset((
+    "flowmc-phimarg", "flowmc-phipsimarg", "flowmc-dpsimarg", "nuts-phimarg"))
 
 # Boolean (zero-argument) ILE options (action=store_true/false).
 _ILE_BOOL_OPTS = {
@@ -322,6 +338,39 @@ def check_critical_and_report(opts, optp):
         return bool(v) if name in _ILE_BOOL_OPTS else (v is not None and v != [])
 
     fatal = []
+    # --distance-gh-nodes / JAX_ILE_DISTMARG_GH resolution (RO'S 2026-09-08,
+    # revised same day per adversarial review: the option must default to
+    # None, not 0, or an explicit ``--distance-gh-nodes 0`` is indistinguish-
+    # able from "not passed" and a nonzero JAX_ILE_DISTMARG_GH silently wins
+    # -- the exact opposite of the documented "CLI wins").  The per-sample
+    # Gauss-Hermite distance quadrature must be reachable by an ILE argument,
+    # not only the environment variable core.py reads at import.  Resolution:
+    # the CLI flag, when GIVEN (including an explicit 0), always wins over
+    # the environment variable; the environment variable is consulted only
+    # when the CLI flag was not given at all.  The two are REFUSED, not
+    # silently reconciled, whenever BOTH are given and differ -- including an
+    # explicit CLI 0 against a nonzero env, which is a conflict like any
+    # other: silently keeping either value would hide the disagreement.
+    # Only the RESOLUTION happens here (needed below by the
+    # distance-grid-scheme combination check); the actual global mutation and
+    # banner are deferred until after the fatal gate below, so a refused
+    # command line never mutates core's module-level GH state.
+    _gh_cli = getattr(opts, "distance_gh_nodes", None)
+    _gh_env_raw = os.environ.get("JAX_ILE_DISTMARG_GH")
+    _gh_env = int(_gh_env_raw) if _gh_env_raw not in (None, "") else None
+    if _gh_cli is not None and _gh_cli < 0:
+        fatal.append("--distance-gh-nodes must be >= 0, got %d" % _gh_cli)
+    elif _gh_cli is not None and _gh_env is not None and _gh_cli != _gh_env:
+        fatal.append(
+            "--distance-gh-nodes %d conflicts with JAX_ILE_DISTMARG_GH=%d in "
+            "the environment; unset the environment variable or pass the "
+            "same value on the command line" % (_gh_cli, _gh_env))
+    if _gh_cli is not None:
+        _gh_resolved = _gh_cli
+    elif _gh_env is not None:
+        _gh_resolved = _gh_env
+    else:
+        _gh_resolved = 0
     if getattr(opts, "calibration_n_realizations", None) not in (None, 1) \
             or is_set("--calibration-export-posterior") \
             or is_set("--calibration-envelope-directory"):
@@ -480,13 +529,13 @@ def check_critical_and_report(opts, optp):
                          "values: c(tol) diverges as tol -> 2, so 1.999 asks "
                          "for a 2-node grid.  The shipped default is %g."
                          % (_tol, _jax_core_dist_tol_default()))
-        if int(os.environ.get("JAX_ILE_DISTMARG_GH", "0")) > 0:
+        if _gh_resolved > 0:
             fatal.append(
                 "--distance-grid-scheme %s cannot be combined with "
-                "JAX_ILE_DISTMARG_GH: the per-sample Gauss-Hermite distance "
-                "quadrature uses only the SUPPORT of the grid, so the option "
-                "would be bit-identically inert while still being reported as "
-                "active" % dgs)
+                "--distance-gh-nodes/JAX_ILE_DISTMARG_GH: the per-sample "
+                "Gauss-Hermite distance quadrature uses only the SUPPORT of "
+                "the grid, so the option would be bit-identically inert "
+                "while still being reported as active" % dgs)
     elif getattr(opts, "distance_grid_tol", None) is not None:
         fatal.append("--distance-grid-tol applies only to "
                      "--distance-grid-scheme loguniform; it would be silently "
@@ -532,9 +581,39 @@ def check_critical_and_report(opts, optp):
             opts.interp = "cubic"
             print(" Q_lm pregrid: ENABLED factor=%d boundary=even-reflection "
                   "arrival_stencil=cubic integration_grid=unchanged" % _qf)
+    # Refused HERE, before precompute: with a full-sky prior the stop below is
+    # not a chance event but the first chunk (see _EVAL_LNL_STOP_MODES).
+    _tq = getattr(opts, "time_marginalization_quadrature", "simpson")
+    _hw = getattr(opts, "data_integration_window_half", None)
+    if (_tq == "bandlimited" and getattr(opts, "mode", None) in _EVAL_LNL_STOP_MODES
+            and _hw is not None
+            and float(_hw) < _BANDLIMITED_FULLSKY_HALF_WINDOW_MIN):
+        optp.error(
+            "--time-marginalization-quadrature bandlimited with --mode %s "
+            "evaluates full-sky prior draws and stops on one uncertified row, and "
+            "--data-integration-window-half %.4g s is below 2 R_earth / c = %.4f s, "
+            "the largest arrival shift a wrong-sky draw makes at one detector: a "
+            "row whose arrival peak lies beyond the window edge cannot be "
+            "certified, and the first chunk contains such rows (measured 35 of 256 "
+            "blind rows at 0.02 s, 0 of 256 at 0.05 s).  Raise "
+            "--data-integration-window-half to at least %.4f s plus the "
+            "event-time uncertainty (0.05 s is the measured clean value), or use "
+            "--time-marginalization-quadrature simpson."
+            % (opts.mode, float(_hw), _BANDLIMITED_FULLSKY_HALF_WINDOW_MIN,
+               _BANDLIMITED_FULLSKY_HALF_WINDOW_MIN))
     if fatal:
         optp.error("Cannot run as a faithful drop-in: " + "; ".join(fatal)
                    + ".  (These would silently change the result if ignored.)")
+
+    # Nothing above raised: safe to APPLY the resolved distance-GH-nodes count
+    # (deferred from the resolution comment above) and report it, once, here.
+    from RIFT.likelihood.jax_ile.core import set_distmarg_gh_nodes
+    set_distmarg_gh_nodes(_gh_resolved)
+    opts._distance_gh_nodes_resolved = _gh_resolved
+    print("  distance quadrature: per-sample Gauss-Hermite nodes=%d%s"
+          % (_gh_resolved, " (legacy uniform grid)" if _gh_resolved == 0 else
+             " (source: %s)" % ("--distance-gh-nodes" if _gh_cli is not None
+                                else "JAX_ILE_DISTMARG_GH")))
 
     # Report accepted-but-ignored options that were actually passed.
     ignored = []
@@ -546,7 +625,7 @@ def check_critical_and_report(opts, optp):
                    "--reference-freq", "--fmax", "--srate",
                    "--data-integration-window-half",
                    "--internal-data-storage-window-half", "--d-min", "--d-max",
-                   "--d-prior", "--limit-distance",
+                   "--limit-distance",
                    "--n-max", "--n-chunk", "--output-file",
                    "--event", "--save-samples", "--verbose", "--seed",
                    "--sim-xml", "--sim-grid", "--n-events-to-analyze",
@@ -566,7 +645,10 @@ def check_critical_and_report(opts, optp):
         implemented |= {"--fairdraw-extrinsic-output",
                         "--fairdraw-extrinsic-output-n-max",
                         "--n-fairdraw-extrinsic-samples"}
-    for name in sorted(_ILE_ALL_OPTS - implemented):
+    # --d-prior is handled separately below with a substantive message (the
+    # JAX driver's distance prior, not merely "not yet implemented"), so it is
+    # excluded from the generic bag here rather than lumped into it.
+    for name in sorted(_ILE_ALL_OPTS - implemented - {"--d-prior"}):
         if is_set(name):
             ignored.append(name)
     # JAX-NATIVE tempering flags.  These are not in _ILE_ALL_OPTS (they have no ILE
@@ -583,6 +665,33 @@ def check_critical_and_report(opts, optp):
             print("Note: %s only act on the tempered modes (%s); --mode %s ignores "
                   "them." % (" ".join(sorted(set(inert))),
                              " ".join(sorted(_TEMPERED_MODES)), mode))
+    # --d-prior (RO'S 2026-09-08: missing knobs no-op for compatibility, but
+    # must warn).  --d-prior is accepted (ILE compatibility) but never
+    # forwarded: the JAX driver always integrates against the volumetric d^2
+    # prior on [--d-min, --d-max].  'Euclidean'/'volumetric' (any case) IS
+    # that prior, so passing it explicitly is not a deviation and gets no note.
+    _dp = getattr(opts, "d_prior", None)
+    if _dp not in (None, "") and str(_dp).strip().lower() not in (
+            "euclidean", "volumetric"):
+        print("Note: --d-prior %r is accepted but IGNORED by the JAX driver: "
+              "it always integrates distance against the volumetric d^2 "
+              "prior on [--d-min, --d-max]." % (_dp,))
+    # --phase-marginalization: forwarded on the 6-D/5-D likelihoods, but the
+    # four phi_ref-marginalised modes already integrate phase out analytically
+    # (a grid sum baked into the likelihood, not a sampled axis) -- outside
+    # _ILE_ALL_OPTS, so the generic loop above cannot see it either.
+    if getattr(opts, "phase_marginalization", False) and mode in _PHASE_ANALYTIC_MODES:
+        print("Note: --phase-marginalization is accepted but IGNORED for "
+              "--mode %s (phase is already marginalized analytically)." % mode)
+    # --sky-coordinates network: wired only for --mode multistart-nuts (the
+    # other modes' samplers assume the equatorial (ra, sin(dec)) parameterization
+    # end to end -- reparameterizing them is more than plumbing, see the PR).
+    _skyc = getattr(opts, "sky_coordinates", "equatorial")
+    if _skyc != "equatorial" and mode != "multistart-nuts":
+        print("Note: --sky-coordinates %s is accepted but IGNORED for --mode "
+              "%s (only --mode multistart-nuts samples the sky in network-"
+              "frame coordinates; other modes use the default equatorial "
+              "parameterization)." % (_skyc, mode))
     if ignored:
         print("Note: the following ILE options are accepted but IGNORED by the "
               "JAX driver (not yet implemented; behavior may differ from ILE):")
@@ -758,6 +867,31 @@ def build_parser():
                       "the node count follows from it in closed form.  "
                       "Default %g.  Only valid with that scheme."
                       % _jax_core_dist_tol_default())
+    g.add_option("--distance-gh-nodes", type=int, default=None,
+                 help="Node count for the per-sample Gauss-Hermite-style "
+                      "distance quadrature (RIFT.likelihood.jax_ile.core."
+                      "make_distance_gh / _distmarg_gh_logL): nodes centred "
+                      "PER SAMPLE on the Gaussian peak of the distance "
+                      "integrand, resolving it to machine precision at any "
+                      "SNR with a few dozen nodes, instead of the legacy "
+                      "fixed grid (see --distance-grid-points) which "
+                      "under-resolves that peak at high SNR.  Not passing "
+                      "this flag keeps the legacy uniform grid (current "
+                      "behaviour, no change).  Equivalent to the environment "
+                      "variable JAX_ILE_DISTMARG_GH, which is still honoured "
+                      "for compatibility, but ONLY when this flag is not "
+                      "given: when the flag IS given -- including an "
+                      "explicit 0 -- it wins over the environment variable, "
+                      "and a DIFFERENT nonzero JAX_ILE_DISTMARG_GH is "
+                      "REFUSED rather than silently picked (an explicit "
+                      "--distance-gh-nodes 0 against a nonzero "
+                      "JAX_ILE_DISTMARG_GH is a conflict too, and is refused "
+                      "the same way: silently choosing 0 or the environment "
+                      "value would both hide the disagreement). "
+                      "Not compatible with --distance-grid-scheme loguniform "
+                      "(the per-sample quadrature reads only the SUPPORT of "
+                      "that grid, so combining them would be silently inert "
+                      "while reporting as active -- see --distance-grid-tol).")
     g.add_option("--limit-distance", default=None,
                  help="Restrict distance SAMPLING (and, when distance is "
                       "marginalized, the distance QUADRATURE) to 'LO,HI' in Mpc, "
@@ -782,10 +916,19 @@ def build_parser():
     g.add_option("--phase-marginalization", action="store_true", default=False)
     g.add_option("--time-marginalization-quadrature", type="choice",
                  choices=("simpson", "bandlimited"), default="simpson",
-                 help="Rule for the terminal time integral: historical fixed-grid "
-                      "Simpson or adaptive reflected-FFT interpolation followed "
+                 help="Rule for the time integral: historical fixed-grid "
+                      "Simpson or adaptive reflected-FFT refinement followed "
                       "by a converged trapezoid. No resolution knob is exposed; "
-                      "the factor is derived and rechecked from lnL(t).")
+                      "the factor is derived and rechecked per row. "
+                      "'bandlimited' is honoured by the 6-D modes and, under "
+                      "--distance-marginalization, by every mode except the "
+                      "phi/psi-marginalized ones, which refuse it and say so. "
+                      "One uncertified row stops the run.  The modes that push "
+                      "full-sky prior draws through that stop (prior-mc, "
+                      "laplace-is, map, nuts) are refused at parse time unless "
+                      "--data-integration-window-half is at least 2 R_earth / c "
+                      "(0.0426 s), the largest arrival shift of a wrong-sky "
+                      "draw; 0.05 s is the measured clean value.")
     g.add_option("--resample-time-marginalization", action="store_true",
                  default=False,
                  help="Conventional ILE option; currently unsupported by JAX ILE.")
@@ -917,18 +1060,23 @@ def build_parser():
     g.add_option("--direct-marginalization-batch-rows", type=int, default=1,
                  help="Rows the policy's controller executes together under "
                       "one vmap (default 1: row at a time; 0: one full batch). "
-                      "COST ONLY -- values, branch decisions and gradients are "
-                      "identical at every size, which is pinned by a test.  "
-                      "MEASURED NOT TO PAY: on the ladder-2 tables at rho 40.8 "
-                      "on an idle RTX PRO 4000 Blackwell, 96.3 s per row at 1 "
-                      "and 99.9 s per row at 8, for 4x the device workspace.  "
-                      "One row already saturates the card.  Above 1 the "
-                      "tier-escalation branch also becomes a select that "
-                      "evaluates every reserve tier for every row, and "
-                      "workspace grows as 0.046 + 0.385 B GiB, so a 24 GiB "
-                      "card holds 32 rows and not 64.  Raise it only with a "
-                      "measurement that says it helps; see "
-                      "DESIGN_direct_marginalization_policy.md.")
+                      "VALUES are identical at every size -- lnL, every branch "
+                      "decision and the gradients -- and a test pins that.  "
+                      "COST IS A REGRESSION, not neutral: under vmap the "
+                      "accept/reserve cond becomes a select, so a locally "
+                      "ACCEPTED row also executes the dense reserve it would "
+                      "otherwise skip, and every escalation tier runs for "
+                      "every row.  The penalty therefore scales with the "
+                      "locally accepted fraction.  Device workspace grows as "
+                      "0.046 + 0.385 B GiB, so a 24 GiB card holds 32 rows and "
+                      "not 64.  Leave it at 1 unless a measurement on YOUR "
+                      "rows says otherwise; see "
+                      "DESIGN_direct_marginalization_policy.md.  "
+                      "WITHDRAWN: an earlier version of this text said COST "
+                      "ONLY and quoted 96.3 s per row at 1 against 99.9 at 8. "
+                      "Those rows all declined (accepted_local 0), so they "
+                      "priced the decline path, and 37-50% of them were nan "
+                      "under a reserve-refine ceiling of 4.  Do not cite them.")
     g.add_option("--direct-marginalization-policy-probe-rows", type=int,
                  default=0,
                  help="Evaluate the policy ledger on this many prior draws "
@@ -1389,11 +1537,31 @@ def eval_lnL(like, theta, opts, with_distance):
                    int(np.sum(np.isnan(out[sl]))), int(sl.stop - sl.start)))
         if (getattr(like, "time_quadrature", "simpson") == "bandlimited"
                 and np.any(np.isnan(out[sl]))):
+            bad = np.where(np.isnan(out[sl]))[0]
+            names = FULL_NAMES if with_distance else ANG_NAMES
+            rows = "; ".join(
+                ", ".join("%s=%.4f" % (nm, v) for nm, v in zip(names, theta[sl][j]))
+                for j in bad[:3])
+            # One uncertified row fails the run: no coarse likelihood is
+            # substituted, and a row's contribution cannot be bounded without a
+            # value.  With a full-sky prior the usual cause is a blind draw whose
+            # detector arrival peak lies at or beyond the window edge (a wrong
+            # sky shifts arrival by up to 2 R_earth/c ~ 43 ms), which the
+            # trapezoid and guard certificates cannot converge on; the
+            # integration window has to contain those shifts.  Measured rates:
+            # DESIGN_jax_bandlimited_distmarg.md.
             raise RuntimeError(
-                "adaptive reflected-FFT time marginalization failed its width/"
-                "doubling convergence or endpoint-mass check; no coarse "
-                "likelihood is substituted. Increase the input/rholm sample "
-                "rate or integration/storage window.")
+                "--time-marginalization-quadrature bandlimited: %d of %d rows in "
+                "this chunk failed a certificate (peak-width resolution, factor "
+                "doubling, or guard agreement); no coarse likelihood is "
+                "substituted and the run stops.  First failing rows: %s.  A "
+                "peak at the window edge is the common cause under a full-sky "
+                "prior; raise --data-integration-window-half to cover the "
+                "detector arrival shifts (>= 2 R_earth / c = %.4f s plus the "
+                "event-time uncertainty; 0.05 s measured clean), or raise the "
+                "input/rholm sample rate."
+                % (len(bad), int(sl.stop - sl.start), rows,
+                   _BANDLIMITED_FULLSKY_HALF_WINDOW_MIN))
     return out
 
 
@@ -2810,6 +2978,13 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
     # label exists to prevent.
     _scheme = getattr(like, "angle_marg_scheme", None)
     _ev_note = angle_grid_suspect_note(_scheme)
+    # Record the resolved distance-GH-nodes count in the same artifact header
+    # line as the angle-marg/policy notes and (via write_samples' provenance
+    # line) the mode/ESS record, so a reader of either artifact can see
+    # whether the per-sample quadrature ran without re-deriving it from the
+    # command line or the environment.
+    _gh_n = int(getattr(opts, "_distance_gh_nodes_resolved", 0) or 0)
+    _ev_note = (_ev_note + " gh_nodes=%d" % _gh_n).strip()
     # Cross-axis policy audit: which branch the exported rows actually took.
     # Evaluated on a subsample AFTER sampling because the sampler consumes the
     # value-only path; the ledger is the same computation with its record kept.
