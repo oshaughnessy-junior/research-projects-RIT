@@ -48,10 +48,15 @@ import numpy as np
 from . import all_axis_peaklocal as _aap
 from . import anglemarg as _anglemarg
 from . import core as _core
+from . import peaklocal_time_reserve as _plr
 
 __all__ = [
     "POLICY_CHOICES",
     "POLICY_DEFAULT",
+    "RESERVE_SCHEME_TEST_ONLY",
+    "reserve_pair",
+    "resolve_reserve_angular_kernel",
+    "q_bandwidth_cycles_per_sample",
     "PolicyConfig",
     "validate_policy_request",
     "validate_policy_config",
@@ -71,9 +76,22 @@ __all__ = [
 
 POLICY_CHOICES = ("off", "auto")
 POLICY_DEFAULT = "off"
+_LAPLACE_TABLE_KERNEL = "coefficient_table_distphipsimarg_laplace"
 
 RESERVE_SCHEME_CHOICES = ("auto", "exact", "laplace", "peaklocal")
 RESERVE_SCHEME_DEFAULT = "exact"
+# A reserve scheme names a PAIR (angular kernel, time rule).  "auto" is
+# resolved by predict_reserve_pair BEFORE construction; the composite refuses
+# it.  "peaklocal-exact" is the peak-local time rule with the exact angular
+# kernel: the accuracy reference the tests need, accepted on PolicyConfig
+# and not offered on the command line.
+_RESERVE_PAIRS = {
+    "exact": ("exact", "window"),
+    "laplace": ("laplace", "window"),
+    "peaklocal": ("laplace", "peaklocal"),
+    "peaklocal-exact": ("exact", "peaklocal"),
+}
+RESERVE_SCHEME_TEST_ONLY = ("peaklocal-exact",)
 
 # WHICH OF THOSE THE COMPOSITE CAN ACTUALLY EXECUTE TODAY.  Kept separate from
 # the choices tuple, and checked in validate_policy_config, because a config
@@ -86,7 +104,10 @@ RESERVE_SCHEME_DEFAULT = "exact"
 # extracted from the fused laplace path in this same PR) but no dispatch: the
 # selector may CHOOSE it, and a run that needs it is refused with that reason
 # rather than carried by exact.  'peaklocal' belongs to RIFT PR #304.
-RESERVE_SCHEME_EXECUTABLE = ("exact",)
+# Executable = dispatched by the composite through reserve_pair: the exact
+# and psi-Laplace kernels on the whole-window rule, and the peak-local time
+# rule (peaklocal_time_reserve) under the psi-Laplace kernel.
+RESERVE_SCHEME_EXECUTABLE = ("exact", "laplace", "peaklocal")
 
 
 # The controller's own decline reasons, in the order they gate acceptance.
@@ -235,6 +256,33 @@ class PolicyConfig(NamedTuple):
     # in without touching the composite.
     reserve_scheme: str = RESERVE_SCHEME_DEFAULT
     norm_invariance_rtol: float = 1.0e-10
+    # Peak-local time rule (reserve schemes 'peaklocal', 'peaklocal-exact'):
+    # fine nodes per plan mode block (49 = 8 sigma either side at 3 nodes per
+    # predicted sigma), the coarse scan refinement of the window, the number
+    # of warrant escalations (each doubles the fine lattice at fixed span),
+    # and an override of the predicted width (nan = predict per row from
+    # rho and the Q bandwidth; an experiment knob, printed in the ledger).
+    # Measured operating point: DESIGN_direct_marginalization_policy.md,
+    # "Peak-local time reserve".
+    reserve_peaklocal_fine_nodes: int = 73
+    reserve_peaklocal_scan_refine: int = 2
+    reserve_peaklocal_escalations: int = 2
+    # The row's time maxima come from the primitive (locate_time_maxima):
+    # this many candidates, on a search grid of this many nodes per native
+    # sample, over this angular lattice.  The local branch's plan is only a
+    # cross-check in the ledger.
+    reserve_peaklocal_blocks: int = 4
+    reserve_peaklocal_search_refine: int = 8
+    reserve_peaklocal_angular_lattice: int = 8
+    # The coarse scan is support-limited: this many nodes across the hull of
+    # the live maxima widened by this many predicted sigma each side; the
+    # mass outside is bounded from the locator's search profile plus this
+    # slack and charged to the warrant.  Node count never grows with the
+    # window (RO, 2026-09-09).
+    reserve_peaklocal_scan_nodes: int = 65
+    reserve_peaklocal_scan_margin_sigmas: float = 16.0
+    reserve_peaklocal_outside_slack_nats: float = 5.0
+    reserve_peaklocal_sigma_t_override_samples: float = float("nan")
 
 
 def validate_batch_rows(batch_rows):
@@ -255,6 +303,63 @@ def validate_batch_rows(batch_rows):
         raise ValueError("PolicyConfig.reserve_batch_rows must be >= 0 "
                          "(1 = row at a time, 0 = one full batch), got %d" % b)
     return b
+
+
+def reserve_pair(scheme):
+    """``(angular_kernel, time_rule)`` named by a reserve scheme.
+
+    ``auto`` is not a pair: it is resolved by :func:`predict_reserve_pair`
+    before the likelihood is built, and the composite refuses it.
+    """
+    if scheme not in _RESERVE_PAIRS:
+        if scheme == "auto":
+            raise ValueError(
+                "reserve_scheme='auto' must be resolved by predict_reserve_pair "
+                "before construction; the composite takes a concrete scheme")
+        raise ValueError("reserve scheme must be one of %r (plus %r for tests), "
+                         "got %r" % (tuple(k for k in RESERVE_SCHEME_CHOICES
+                                           if k != "auto"),
+                                     RESERVE_SCHEME_TEST_ONLY, scheme))
+    return _RESERVE_PAIRS[scheme]
+
+
+def q_bandwidth_cycles_per_sample(data):
+    """:func:`q_effective_bandwidth_hz` in cycles per native sample, or nan
+    when the data carries no stored Q (synthetic tables)."""
+    try:
+        hz = float(q_effective_bandwidth_hz(data))
+    except (AttributeError, KeyError, TypeError):
+        return float("nan")
+    return hz * float(data.deltaT) if np.isfinite(hz) else float("nan")
+
+
+def resolve_reserve_angular_kernel(name, x_grid, log_w_grid, *, amp_sizing,
+                                   m_max, dense_chunk, grid_block):
+    """``None`` for the kernel's own exact default, else a table callable.
+
+    The psi-Laplace table kernel is provided by ``anglemarg`` under the name
+    ``coefficient_table_distphipsimarg_laplace`` (the --direct-marginalization-
+    reserve-scheme laplace work); a tree without it refuses the request here,
+    at construction, rather than at trace time.
+    """
+    if name not in ("exact", "laplace"):
+        raise ValueError("angular kernel must be exact or laplace, got %r" % (name,))
+    if name == "exact":
+        return None
+    fn = getattr(_anglemarg, _LAPLACE_TABLE_KERNEL, None)
+    if fn is None:
+        raise ValueError(
+            "the laplace angular kernel needs anglemarg.%s, which this tree "
+            "does not provide; use reserve scheme exact or peaklocal-exact"
+            % _LAPLACE_TABLE_KERNEL)
+    x_grid = jnp.asarray(x_grid, dtype=jnp.float64)
+    log_w_grid = jnp.asarray(log_w_grid, dtype=jnp.float64)
+
+    def kernel(table, norm_table):
+        return fn(table, norm_table, x_grid, log_w_grid,
+                  amp_sizing=float(amp_sizing), m_max=int(m_max),
+                  dense_chunk=int(dense_chunk), grid_block=int(grid_block))
+    return kernel
 
 
 def validate_policy_config(config):
@@ -292,14 +397,15 @@ def validate_policy_config(config):
         raise ValueError("local_radius must be positive")
     validate_batch_rows(config.reserve_batch_rows)
     scheme = config.reserve_scheme
-    if scheme not in RESERVE_SCHEME_CHOICES:
+    if scheme not in RESERVE_SCHEME_CHOICES + RESERVE_SCHEME_TEST_ONLY:
         raise ValueError("PolicyConfig.reserve_scheme must be one of %r, got %r"
                          % (RESERVE_SCHEME_CHOICES, scheme))
     # 'auto' is resolved by predict_reserve_pair against the precomputed inputs,
     # before this config ever reaches the composite; it is not a value the
     # composite executes, so it is admitted here and refused there if the
     # analysis lands on something unimplemented.
-    if scheme != "auto" and scheme not in RESERVE_SCHEME_EXECUTABLE:
+    if (scheme != "auto" and scheme not in RESERVE_SCHEME_EXECUTABLE
+            and scheme not in RESERVE_SCHEME_TEST_ONLY):
         raise ValueError(
             "PolicyConfig.reserve_scheme=%r is a declared choice but is NOT "
             "WIRED into the composite: the reserve is dispatched through "
@@ -308,6 +414,38 @@ def validate_policy_config(config):
             "silently ignored field would do -- the run would report the "
             "scheme you asked for and compute the other one."
             % (scheme, RESERVE_SCHEME_EXECUTABLE))
+    if int(config.max_time_nodes) < 2:
+        raise ValueError("max_time_nodes must be >= 2")
+    if scheme == "auto":
+        return config
+    angular, time_rule = reserve_pair(scheme)
+    if (angular == "laplace"
+            and getattr(_anglemarg, _LAPLACE_TABLE_KERNEL, None) is None):
+        raise ValueError(
+            "reserve scheme %r needs anglemarg.%s, which this tree does not "
+            "provide" % (config.reserve_scheme, _LAPLACE_TABLE_KERNEL))
+    if time_rule == "peaklocal":
+        _plr.validate_peaklocal_rule_arguments(
+            2, config.reserve_peaklocal_fine_nodes,
+            config.reserve_peaklocal_scan_refine)
+        if int(config.reserve_peaklocal_escalations) < 0:
+            raise ValueError("reserve_peaklocal_escalations must be >= 0")
+        if (int(config.reserve_peaklocal_blocks) < 1
+                or int(config.reserve_peaklocal_search_refine) < 1
+                or int(config.reserve_peaklocal_angular_lattice) < 2):
+            raise ValueError("reserve_peaklocal_blocks >= 1, search_refine >= 1 "
+                             "and angular_lattice >= 2 are required")
+        ns = int(config.reserve_peaklocal_scan_nodes)
+        if ns < 3 or ns % 2 == 0:
+            raise ValueError("reserve_peaklocal_scan_nodes must be an odd integer >= 3")
+        if not (float(config.reserve_peaklocal_scan_margin_sigmas) > 0.0
+                and float(config.reserve_peaklocal_outside_slack_nats) >= 0.0):
+            raise ValueError("reserve_peaklocal_scan_margin_sigmas must be positive "
+                             "and reserve_peaklocal_outside_slack_nats >= 0")
+        ov = float(config.reserve_peaklocal_sigma_t_override_samples)
+        if np.isfinite(ov) and ov <= 0.0:
+            raise ValueError("reserve_peaklocal_sigma_t_override_samples must "
+                             "be positive or nan")
     return config
 
 
@@ -947,18 +1085,170 @@ def fused_log_likelihood_four_axis_policy(
     base_plans, enriched_plans, planning = jax.vmap(_plan_row)(
         jax.lax.stop_gradient(rows_A), jax.lax.stop_gradient(norm0))
 
-    refine0 = int(config.reserve_time_refine)
-    refine_max = int(config.reserve_time_refine_max)
-    if refine_max < refine0:
-        raise ValueError("reserve_time_refine_max must be >= reserve_time_refine")
-    tiers = []
-    f = refine0
-    while f <= refine_max:
-        tiers.append((f,) + tuple(policy_time_rules(data, f)))
-        f *= 2
+    angular_name, time_rule = reserve_pair(config.reserve_scheme)
+    angular_kernel = resolve_reserve_angular_kernel(
+        angular_name, x_grid, log_w_grid,
+        amp_sizing=float(amp_sizing), m_max=int(meta["m_max"]),
+        dense_chunk=int(config.reserve_dense_chunk),
+        grid_block=int(config.reserve_grid_block))
+    peaklocal = time_rule == "peaklocal"
+    if peaklocal:
+        # Tiers refine the fine lattice at fixed span (m -> 2m, n -> 2n-1);
+        # the scan is fixed.  Node counts never depend on the row.  The
+        # first tier is sized from the PREDICTED width; a tier beyond it is
+        # a report on the prediction, counted in reserve_escalations.
+        n0 = int(config.reserve_peaklocal_fine_nodes)
+        tiers = []
+        n_fine, mult = n0, 1
+        for _ in range(int(config.reserve_peaklocal_escalations) + 1):
+            tiers.append(("peaklocal", n_fine, mult))
+            n_fine, mult = 2 * n_fine - 1, 2 * mult
+        # Seconds per native sample carrying the production w_t constant, as
+        # policy_time_rules does.
+        dt_scale = float(np.sum(np.asarray(data.w_t, dtype=float))) / (
+            int(data.npts) - 1)
+        # Bandwidth of the stored Q, cycles per sample (nan without a Q; the
+        # row's own table then supplies it, and both are in the ledger).
+        sigma_f_q = q_bandwidth_cycles_per_sample(data)
+        sigma_t_override = float(config.reserve_peaklocal_sigma_t_override_samples)
+    else:
+        refine0 = int(config.reserve_time_refine)
+        refine_max = int(config.reserve_time_refine_max)
+        if refine_max < refine0:
+            raise ValueError("reserve_time_refine_max must be >= reserve_time_refine")
+        tiers = []
+        f = refine0
+        while f <= refine_max:
+            tiers.append((f,) + tuple(policy_time_rules(data, f)))
+            f *= 2
+
+    def _predict_row(table, norm, rho_located):
+        # rho from the located profile maximum (rho^2 = 2 P_max); the angular
+        # triangle bound is the fallback and is reported beside it (it ran
+        # 2.8x over on a rung-160 row, 453 against 157).
+        rho_bound = _plr.row_amplitude(table, norm, guard)
+        rho = jnp.where(jnp.isfinite(rho_located) & (rho_located > 0.0),
+                        rho_located, rho_bound)
+        sigma_f_table = _plr.table_bandwidth_cycles(table, guard)
+        sigma_f = jnp.where(jnp.isfinite(sigma_f_q), sigma_f_q, sigma_f_table)
+        sigma_t = _plr.predicted_width_samples(rho, sigma_f)
+        if np.isfinite(sigma_t_override):
+            sigma_t = jnp.asarray(sigma_t_override, dtype=jnp.float64)
+        return dict(rho=rho, rho_bound=rho_bound, sigma_f_table=sigma_f_table,
+                    sigma_f=sigma_f, sigma_t=sigma_t)
+
+    def _rule_for_tier(tier, table, norm, base_plan, enriched_plan):
+        if tier[0] == "peaklocal":
+            found = _plr.locate_time_maxima(
+                table, norm, guard, int(data.npts), x_min, x_max,
+                n_candidates=int(config.reserve_peaklocal_blocks),
+                search_refine=int(config.reserve_peaklocal_search_refine),
+                angular_lattice=int(config.reserve_peaklocal_angular_lattice))
+            pred = _predict_row(table, norm, found["rho_located"])
+            sigma_for_margin = jnp.minimum(
+                jnp.where(jnp.isfinite(pred["sigma_t"]), pred["sigma_t"], jnp.inf),
+                jnp.min(jnp.where(found["live"] & (found["widths"] > 0.0),
+                                  found["widths"], jnp.inf)))
+            sigma_for_margin = jnp.where(jnp.isfinite(sigma_for_margin),
+                                         sigma_for_margin, 1.0)
+            margin = float(config.reserve_peaklocal_scan_margin_sigmas) * sigma_for_margin
+            rule = _plr.peaklocal_time_rule(
+                found["centres"], found["widths"], found["live"],
+                int(data.npts), dt_scale,
+                sigma_t_samples=pred["sigma_t"], n_fine=int(tier[1]),
+                scan_refine=int(config.reserve_peaklocal_scan_refine),
+                fine_refine_multiplier=int(tier[2]),
+                n_scan=int(config.reserve_peaklocal_scan_nodes),
+                margin_samples=margin,
+                search_positions=found["search_positions"],
+                search_profile=found["search_profile"],
+                outside_slack_nats=float(config.reserve_peaklocal_outside_slack_nats))
+            # The local branch's plan, as a cross-check only: its narrowest
+            # live Newton width and the distance from its first live centre
+            # to the locator's first block.
+            plan_live = jnp.concatenate((base_plan.live, enriched_plan.live)).astype(bool)
+            plan_c = jnp.concatenate((base_plan.centers[:, 0], enriched_plan.centers[:, 0]))
+            plan_w = jnp.abs(jnp.concatenate((base_plan.local_transforms[:, 0, 0],
+                                              enriched_plan.local_transforms[:, 0, 0])))
+            plan_width = jnp.min(jnp.where(plan_live & (plan_w > 0.0), plan_w, jnp.inf))
+            plan_centre = jnp.where(jnp.any(plan_live),
+                                    plan_c[jnp.argmax(plan_live)], jnp.nan)
+            ratio = rule["sigma_t_located_samples"] / rule["sigma_t_pred_samples"]
+            extra = dict(
+                reserve_time_refine_used=jnp.asarray(0),
+                reserve_time_rule_peaklocal=jnp.asarray(True),
+                reserve_peaklocal_fine_nodes_used=jnp.asarray(int(tier[1])),
+                reserve_peaklocal_fine_refine=rule["fine_refine"],
+                reserve_peaklocal_fine_spacing_samples=rule["fine_spacing_samples"],
+                reserve_peaklocal_block_span_samples=rule["block_span_samples"],
+                reserve_peaklocal_live_blocks=rule["n_live_blocks"],
+                reserve_peaklocal_first_block_centre_samples=rule[
+                    "first_block_centre_samples"],
+                reserve_peaklocal_rho_pred=pred["rho"],
+                reserve_peaklocal_rho_bound=pred["rho_bound"],
+                # Where the rule is fine: the kernel's focus certificate.
+                reserve_peaklocal_focus_centre_samples=rule["first_block_centre_samples"],
+                reserve_peaklocal_focus_half_width_samples=0.25 * rule["block_span_samples"],
+                reserve_peaklocal_scan_lo_samples=rule["scan_lo_samples"],
+                reserve_peaklocal_scan_hi_samples=rule["scan_hi_samples"],
+                reserve_peaklocal_scan_margin_samples=margin,
+                reserve_peaklocal_outside_log_bound=rule["outside_log_bound"],
+                reserve_peaklocal_outside_search_nodes=rule["n_outside_search_nodes"],
+                reserve_peaklocal_sigma_f_q_cycles=jnp.asarray(
+                    sigma_f_q, dtype=jnp.float64),
+                reserve_peaklocal_sigma_f_table_cycles=pred["sigma_f_table"],
+                reserve_peaklocal_sigma_t_pred_samples=rule["sigma_t_pred_samples"],
+                reserve_peaklocal_sigma_t_located_samples=rule["sigma_t_located_samples"],
+                reserve_peaklocal_sigma_t_used_samples=rule["sigma_t_used_samples"],
+                reserve_peaklocal_sigma_t_plan_samples=plan_width,
+                reserve_peaklocal_plan_centre_offset_samples=jnp.abs(
+                    plan_centre - rule["first_block_centre_samples"]),
+                reserve_peaklocal_prediction_finite=rule["prediction_finite"],
+                # The located curvature width against the prediction.  The
+                # prediction is the NARROWEST peak the primitive can make at
+                # this amplitude (raw rms frequency), so a face-on envelope
+                # is legitimately wider, by the raw-to-central moment ratio:
+                # consistent means located / predicted in [0.5, 4].  Outside
+                # it the prediction is reported as disagreeing; the warrant
+                # decides the row either way.
+                reserve_peaklocal_prediction_consistent=(
+                    jnp.isfinite(ratio) & (ratio >= 0.5) & (ratio <= 4.0)))
+            return (rule["nodes"], rule["weights"], rule["check_nodes"],
+                    rule["check_weights"], extra)
+        refine, nodes, weights, check_nodes, check_weights = tier
+        nan = jnp.asarray(jnp.nan, dtype=jnp.float64)
+        extra = dict(
+            reserve_time_refine_used=jnp.asarray(int(refine)),
+            reserve_time_rule_peaklocal=jnp.asarray(False),
+            reserve_peaklocal_fine_nodes_used=jnp.asarray(0),
+            reserve_peaklocal_fine_refine=jnp.asarray(0, dtype=jnp.int32),
+            reserve_peaklocal_fine_spacing_samples=nan,
+            reserve_peaklocal_block_span_samples=nan,
+            reserve_peaklocal_live_blocks=jnp.asarray(0, dtype=jnp.int32),
+            reserve_peaklocal_first_block_centre_samples=nan,
+            reserve_peaklocal_rho_pred=nan,
+            reserve_peaklocal_rho_bound=nan,
+            reserve_peaklocal_focus_centre_samples=nan,
+            reserve_peaklocal_focus_half_width_samples=nan,
+            reserve_peaklocal_scan_lo_samples=nan,
+            reserve_peaklocal_scan_hi_samples=nan,
+            reserve_peaklocal_scan_margin_samples=nan,
+            reserve_peaklocal_outside_log_bound=nan,
+            reserve_peaklocal_outside_search_nodes=jnp.asarray(0, dtype=jnp.int32),
+            reserve_peaklocal_sigma_f_q_cycles=nan,
+            reserve_peaklocal_sigma_f_table_cycles=nan,
+            reserve_peaklocal_sigma_t_pred_samples=nan,
+            reserve_peaklocal_sigma_t_located_samples=nan,
+            reserve_peaklocal_sigma_t_used_samples=nan,
+            reserve_peaklocal_sigma_t_plan_samples=nan,
+            reserve_peaklocal_plan_centre_offset_samples=nan,
+            reserve_peaklocal_prediction_finite=jnp.asarray(False),
+            reserve_peaklocal_prediction_consistent=jnp.asarray(False))
+        return nodes, weights, check_nodes, check_weights, extra
 
     def _controller(table, norm, base_plan, enriched_plan, tier):
-        refine, nodes, weights, check_nodes, check_weights = tier
+        nodes, weights, check_nodes, check_weights, extra = _rule_for_tier(
+            tier, table, norm, base_plan, enriched_plan)
         sel, ok, led = _aap.empirical_enrichment_with_exact_reserve(
             table, norm, base_plan, enriched_plan, x_min, x_max,
             reserve_x_grid=x_grid, reserve_log_weights=log_w_grid,
@@ -983,9 +1273,19 @@ def fused_log_likelihood_four_axis_policy(
             time_outside_tol_nats=float(config.time_outside_tol_nats),
             total_value_error_budget_nats=float(
                 config.total_value_error_budget_nats),
-            reserve_log_offset=0.0)
+            reserve_log_offset=0.0,
+            reserve_angular_kernel=angular_kernel,
+            reserve_time_focus=(
+                None if not peaklocal else
+                (extra["reserve_peaklocal_focus_centre_samples"],
+                 extra["reserve_peaklocal_focus_half_width_samples"])),
+            reserve_time_cover=(
+                None if not peaklocal else
+                (extra["reserve_peaklocal_scan_lo_samples"],
+                 extra["reserve_peaklocal_scan_hi_samples"],
+                 extra["reserve_peaklocal_outside_log_bound"])))
         led = dict(led)
-        led["reserve_time_refine_used"] = jnp.asarray(refine)
+        led.update(extra)
         return _strong((sel, ok, led))
 
     def _row(args):

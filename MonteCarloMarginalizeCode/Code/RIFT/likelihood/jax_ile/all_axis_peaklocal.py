@@ -2311,7 +2311,9 @@ def empirical_enrichment_with_exact_reserve(
         time_outside_tol_nats=-23.0,
         total_value_error_budget_nats=1.0e-3,
         reserve_log_offset=0.0, node_concentration=1.0,
-        mode_match_tol=(0.25, 1.0e-4, 1.0e-4, 1.0e-5)):
+        mode_match_tol=(0.25, 1.0e-4, 1.0e-4, 1.0e-5),
+        reserve_angular_kernel=None, reserve_time_focus=None,
+        reserve_time_cover=None):
     """Select an accepted local value or execute the exact table reserve.
 
     This is the first operational fixed-point composition seam.  The caller
@@ -2362,6 +2364,24 @@ def empirical_enrichment_with_exact_reserve(
     their omitted/included ratio is invariant to that conversion.  Neither
     conversion is inferred from a distance-prior name.  This prevents an
     unnormalized prototype value from silently replacing a production result.
+
+    ``reserve_angular_kernel(target_table, C_B) -> lnL_t`` is the angular
+    and distance kernel evaluated on the reserve's time nodes; ``None`` is
+    :func:`anglemarg.coefficient_table_distphipsimarg_exact` with the
+    arguments above.  ``reserve_time_focus=(centre, half_width)`` (samples)
+    names where the rule is fine; the node carrying the largest evaluated
+    ``lnL_t`` must then lie within ``half_width`` of ``centre`` or the rule
+    is unwarranted (``reserve_time_focus_ok``).  A peak-local rule and its
+    check share the block, so a misplaced block agrees with itself; this is
+    the certificate that sees it (measured: 0.22 nat, warranted, on a
+    rung-160 row with the block 0.17 samples off the maximum).
+    ``reserve_time_cover=(lo, hi, outside_log_bound)`` replaces the plans'
+    time cover in the cropped-cover warrant: the rule must span ``[lo, hi]``
+    (samples) and ``outside_log_bound`` (already in the reserve's units) is
+    charged as the omitted mass.  It is how a support-limited reserve rule
+    certifies what it left out without leaning on the local branch's plan.  A peak-local time rule (``peaklocal_time_reserve``)
+    may repeat a position; a repeated position carries zero weight, so the
+    node checks below ask for a NON-DECREASING rule.
 
     Ledger field ``accepted_local`` is the empirical local disposition, while
     the returned ``usable`` describes the selected result after reserve
@@ -2427,6 +2447,13 @@ def empirical_enrichment_with_exact_reserve(
     if reserve_m_max is None:
         reserve_m_max = int(C_A_t.shape[0] - 1)
     reserve_m_max = int(reserve_m_max)
+    if reserve_angular_kernel is None:
+        def reserve_angular_kernel(table, norm_table):
+            return _anglemarg.coefficient_table_distphipsimarg_exact(
+                table, norm_table, reserve_x_grid, reserve_log_weights,
+                amp_sizing=float(reserve_amp_sizing), m_max=reserve_m_max,
+                dense_chunk=int(reserve_dense_chunk),
+                grid_block=int(reserve_grid_block))
 
     local_value, accepted_local, local_ledger = empirical_enrichment_marginalize(
         C_A_t, C_B, base_plan, enriched_plan, x_min, x_max,
@@ -2454,11 +2481,7 @@ def empirical_enrichment_with_exact_reserve(
             target_table = C_A_t[..., time_guard:-time_guard]
         else:
             target_table = C_A_t
-        lnL_t = _anglemarg.coefficient_table_distphipsimarg_exact(
-            target_table, C_B, reserve_x_grid, reserve_log_weights,
-            amp_sizing=float(reserve_amp_sizing), m_max=reserve_m_max,
-            dense_chunk=int(reserve_dense_chunk),
-            grid_block=int(reserve_grid_block))
+        lnL_t = reserve_angular_kernel(target_table, C_B)
         reserve_value = (_time_marginalize(lnL_t, time_weights)[0]
                          + float(reserve_log_offset))
         if use_bandlimited_time:
@@ -2472,11 +2495,7 @@ def empirical_enrichment_with_exact_reserve(
                 coeff_inner, frequency_inner, reserve_time_nodes,
                 offset_inner).reshape(
                     C_A_t.shape[:-1] + (reserve_time_nodes.size,))
-            lnL_inner = _anglemarg.coefficient_table_distphipsimarg_exact(
-                target_inner, C_B, reserve_x_grid, reserve_log_weights,
-                amp_sizing=float(reserve_amp_sizing), m_max=reserve_m_max,
-                dense_chunk=int(reserve_dense_chunk),
-                grid_block=int(reserve_grid_block))
+            lnL_inner = reserve_angular_kernel(target_inner, C_B)
             guard_value = (_time_marginalize(lnL_inner, time_weights)[0]
                            + float(reserve_log_offset))
         else:
@@ -2485,21 +2504,21 @@ def empirical_enrichment_with_exact_reserve(
             check_table = _evaluate_time_spectrum(
                 coeff, frequency, reserve_time_check_nodes, offset).reshape(
                     C_A_t.shape[:-1] + (reserve_time_check_nodes.size,))
-            lnL_check = _anglemarg.coefficient_table_distphipsimarg_exact(
-                check_table, C_B, reserve_x_grid, reserve_log_weights,
-                amp_sizing=float(reserve_amp_sizing), m_max=reserve_m_max,
-                dense_chunk=int(reserve_dense_chunk),
-                grid_block=int(reserve_grid_block))
+            lnL_check = reserve_angular_kernel(check_table, C_B)
             check_value = (
                 _time_marginalize(lnL_check, reserve_time_check_weights)[0]
                 + float(reserve_log_offset))
         else:
             check_value = reserve_time_check_value
-        return reserve_value, reserve_value, guard_value, check_value
+        if use_bandlimited_time:
+            peak_node = reserve_time_nodes[jnp.argmax(lnL_t[0])]
+        else:
+            peak_node = jnp.asarray(jnp.nan, dtype=jnp.float64)
+        return reserve_value, reserve_value, guard_value, check_value, peak_node
 
     def _accepted(_):
         nan = jnp.asarray(jnp.nan, dtype=jnp.float64)
-        return local_value, nan, nan, reserve_time_check_value
+        return local_value, nan, nan, reserve_time_check_value, nan
 
     # Both branches are rematerialized.  Reverse-mode AD through ``lax.cond``
     # stores backward residuals for BOTH branches whatever the predicate, and
@@ -2508,16 +2527,27 @@ def empirical_enrichment_with_exact_reserve(
     # follow-up).  With checkpointing the backward pass recomputes the taken
     # branch instead, so gradient memory is one forward evaluation.
     (selected_value, reserve_value, reserve_guard_value,
-     reserve_time_check_value) = jax.lax.cond(
+     reserve_time_check_value, reserve_time_peak_node) = jax.lax.cond(
         accepted_local, jax.checkpoint(_accepted), jax.checkpoint(_reserve),
         operand=None)
+    if reserve_time_focus is None:
+        reserve_time_focus_ok = jnp.asarray(True)
+        reserve_time_focus_offset = jnp.asarray(jnp.nan, dtype=jnp.float64)
+    else:
+        focus_centre = jnp.asarray(reserve_time_focus[0], dtype=jnp.float64)
+        focus_half = jnp.asarray(reserve_time_focus[1], dtype=jnp.float64)
+        reserve_time_focus_offset = jnp.abs(reserve_time_peak_node - focus_centre)
+        reserve_time_focus_ok = (
+            (~(~accepted_local))
+            | (jnp.isfinite(reserve_time_focus_offset)
+               & (reserve_time_focus_offset <= focus_half)))
     if use_internal_check:
         # Structural warrant: same primitive, same window, strictly coarser
         # check rule with a valid measure.  The value comparison itself is
         # still applied below through reserve_time_resolution_validated.
         check_rule_valid = (
             jnp.all(jnp.isfinite(reserve_time_check_nodes))
-            & jnp.all(jnp.diff(reserve_time_check_nodes) > 0.0)
+            & jnp.all(reserve_time_check_nodes[1:] >= reserve_time_check_nodes[:-1])
             & (reserve_time_check_nodes[0] == reserve_time_nodes[0])
             & (reserve_time_check_nodes[-1] == reserve_time_nodes[-1])
             & (jnp.max(jnp.diff(reserve_time_check_nodes))
@@ -2531,8 +2561,14 @@ def empirical_enrichment_with_exact_reserve(
     reserve_finite = jnp.isfinite(reserve_value)
     if use_bandlimited_time:
         reserve_time_nodes_finite = jnp.all(jnp.isfinite(reserve_time_nodes))
+        # Non-decreasing: a peak-local rule repeats a position where a mode
+        # slot is dead or a block is clipped, and the repeat carries no weight.
+        # Compared as slices, not as ``diff >= 0``: under jit XLA fuses the
+        # subtraction of two bitwise-equal products into a multiply-add that
+        # rounds to -1e-15 (measured), which would fail a rule numpy calls
+        # sorted.
         reserve_time_nodes_increasing = jnp.all(
-            jnp.diff(reserve_time_nodes) > 0.0)
+            reserve_time_nodes[1:] >= reserve_time_nodes[:-1])
         reserve_time_subsampled = jnp.max(
             jnp.diff(reserve_time_nodes)) < 1.0
         reserve_time_weights_valid = (
@@ -2545,12 +2581,26 @@ def empirical_enrichment_with_exact_reserve(
         reserve_time_nodes_cover_target = (
             (reserve_time_nodes[0] == 0.0)
             & (reserve_time_nodes[-1] == float(n_target - 1)))
-        reserve_required_time_min = jnp.minimum(
-            base_plan.time_cover_min_sample,
-            enriched_plan.time_cover_min_sample)
-        reserve_required_time_max = jnp.maximum(
-            base_plan.time_cover_max_sample,
-            enriched_plan.time_cover_max_sample)
+        if reserve_time_cover is None:
+            reserve_required_time_min = jnp.minimum(
+                base_plan.time_cover_min_sample,
+                enriched_plan.time_cover_min_sample)
+            reserve_required_time_max = jnp.maximum(
+                base_plan.time_cover_max_sample,
+                enriched_plan.time_cover_max_sample)
+            reserve_time_plan_cover_certified = (
+                base_plan.time_outside_bound_certified
+                & enriched_plan.time_outside_bound_certified)
+            cover_outside_log_bound = (
+                jnp.minimum(base_plan.time_outside_log_bound,
+                            enriched_plan.time_outside_log_bound)
+                + float(local_log_normalization)
+                + float(reserve_log_offset))
+        else:
+            reserve_required_time_min = jnp.asarray(reserve_time_cover[0], dtype=jnp.float64)
+            reserve_required_time_max = jnp.asarray(reserve_time_cover[1], dtype=jnp.float64)
+            reserve_time_plan_cover_certified = jnp.asarray(True)
+            cover_outside_log_bound = jnp.asarray(reserve_time_cover[2], dtype=jnp.float64)
         reserve_time_plan_cover_finite = (
             jnp.isfinite(reserve_required_time_min)
             & jnp.isfinite(reserve_required_time_max)
@@ -2558,9 +2608,6 @@ def empirical_enrichment_with_exact_reserve(
         reserve_time_nodes_cover_plans = (
             (reserve_time_nodes[0] <= reserve_required_time_min)
             & (reserve_time_nodes[-1] >= reserve_required_time_max))
-        reserve_time_plan_cover_certified = (
-            base_plan.time_outside_bound_certified
-            & enriched_plan.time_outside_bound_certified)
         reserve_time_cropped_cover_warranted = (
             reserve_time_plan_cover_finite
             & reserve_time_nodes_cover_plans
@@ -2569,11 +2616,7 @@ def empirical_enrichment_with_exact_reserve(
             reserve_time_nodes_cover_target
             | reserve_time_cropped_cover_warranted)
         reserve_time_outside_log_bound = jnp.where(
-            reserve_time_nodes_cover_target, -jnp.inf,
-            jnp.minimum(base_plan.time_outside_log_bound,
-                        enriched_plan.time_outside_log_bound)
-            + float(local_log_normalization)
-            + float(reserve_log_offset))
+            reserve_time_nodes_cover_target, -jnp.inf, cover_outside_log_bound)
         reserve_time_tail_margin = (
             reserve_time_outside_log_bound - reserve_value)
         reserve_time_tail_correction = jnp.logaddexp(
@@ -2602,7 +2645,8 @@ def empirical_enrichment_with_exact_reserve(
             & (reserve_time_error_score
                <= float(total_value_error_budget_nats)))
         reserve_time_warranted = (
-            reserve_time_nodes_finite
+            reserve_time_focus_ok
+            & reserve_time_nodes_finite
             & reserve_time_nodes_increasing
             & reserve_time_subsampled
             & reserve_time_weights_valid
@@ -2681,6 +2725,9 @@ def empirical_enrichment_with_exact_reserve(
         "reserve_time_resolution_warranted": (
             reserve_time_resolution_warranted),
         "reserve_time_check_rule_internal": jnp.asarray(use_internal_check),
+        "reserve_time_peak_node": reserve_time_peak_node,
+        "reserve_time_focus_offset_samples": reserve_time_focus_offset,
+        "reserve_time_focus_ok": reserve_time_focus_ok,
         "reserve_time_check_value": reserve_time_check_value,
         "reserve_time_resolution_error_nats": (
             reserve_time_resolution_error),
@@ -2762,7 +2809,9 @@ def empirical_enrichment_with_exact_reserve_sequential_batch(
         time_outside_tol_nats=-23.0,
         total_value_error_budget_nats=1.0e-3,
         reserve_log_offset=0.0, node_concentration=1.0,
-        mode_match_tol=(0.25, 1.0e-4, 1.0e-4, 1.0e-5)):
+        mode_match_tol=(0.25, 1.0e-4, 1.0e-4, 1.0e-5),
+        reserve_angular_kernel=None, reserve_time_focus=None,
+        reserve_time_cover=None):
     """Apply the scalar controller sequentially to a fixed-size batch.
 
     A direct ``vmap`` of :func:`empirical_enrichment_with_exact_reserve`
@@ -2835,7 +2884,10 @@ def empirical_enrichment_with_exact_reserve_sequential_batch(
             total_value_error_budget_nats=total_value_error_budget_nats,
             reserve_log_offset=reserve_log_offset,
             node_concentration=node_concentration,
-            mode_match_tol=mode_match_tol)
+            mode_match_tol=mode_match_tol,
+            reserve_angular_kernel=reserve_angular_kernel,
+            reserve_time_focus=reserve_time_focus,
+            reserve_time_cover=reserve_time_cover)
 
     selected, usable, ledger = jax.lax.map(
         _row, (C_A_t, C_B, base_plans, enriched_plans, warrant,

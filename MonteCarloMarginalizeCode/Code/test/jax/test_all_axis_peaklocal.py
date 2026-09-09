@@ -1157,9 +1157,6 @@ def test_bandlimited_reserve_rejects_invalid_time_rules(monkeypatch):
     fine = np.linspace(0.0, n_target - 1.0, 2 * n_target - 1)
     valid_weights = np.ones(fine.size)
     cases = []
-    duplicate = fine.copy()
-    duplicate[4] = duplicate[3]
-    cases.append((duplicate, valid_weights, "reserve_time_nodes_increasing"))
     cases.append((fine[::-1], valid_weights,
                   "reserve_time_nodes_increasing"))
     nan_node = fine.copy()
@@ -1195,6 +1192,22 @@ def test_bandlimited_reserve_rejects_invalid_time_rules(monkeypatch):
         assert bool(ledger["reserve_time_failed"])
         assert bool(ledger["fallback_required"])
         assert bool(ledger["reconciles"])
+
+    # A REPEATED position is a non-decreasing rule and is accepted: the
+    # peak-local time rule (peaklocal_time_reserve) repeats a position where
+    # a mode slot is dead or a block is clipped, and the repeat carries no
+    # trapezoid weight.  Only a decreasing rule fails the node check.
+    duplicate = fine.copy()
+    duplicate[4] = duplicate[3]
+    _, _, ledger = AAP.empirical_enrichment_with_exact_reserve(
+        guarded, C_B, declined_plan, declined_plan, x_min, x_max,
+        reserve_x_grid=np.asarray([x_min, x_max]),
+        reserve_log_weights=np.zeros(2), time_weights=valid_weights,
+        reserve_amp_sizing=30.0, reserve_dense_chunk=8,
+        reserve_grid_block=16, reserve_time_nodes=duplicate,
+        reserve_time_resolution_warranted=True, time_guard=guard,
+        time_guard_tol_nats=1.0e-3)
+    assert bool(ledger["reserve_time_nodes_increasing"])
 
     delta_t = 0.25
     physical_weights = JCORE._simpson_weights(

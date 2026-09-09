@@ -172,8 +172,19 @@ executables without dying during option parsing.
 - `direct_marginalization_policy.py` — opt-in cross-axis policy
   (`--direct-marginalization-policy auto`): per evaluation, the four-axis
   peak-local controller of `all_axis_peaklocal.py` under its acceptance
-  ledger, with the band-limited exact-angle reserve on decline.  Value-only;
-  see `DESIGN_direct_marginalization_policy.md`.
+  ledger, with a reserve on decline.  The reserve is a pair named by
+  `--direct-marginalization-reserve-scheme`: exact angles on the whole-window
+  refined rule (default), psi-Laplace angles on that rule, or `peaklocal`,
+  psi-Laplace angles on a fixed-count time rule sized from the predicted
+  peak width `1 / (2 pi rho sigma_f)` around maxima located on the primitive
+  (`peaklocal_time_reserve.py`), with the coarse scan limited to the
+  support of the located maxima, so the node count grows with neither rho
+  nor the window.
+  Value-only; see `DESIGN_direct_marginalization_policy.md`.
+- `peaklocal_time_reserve.py` — the peak-local time rule: width prediction
+  from the row's table and the stored Q's bandwidth, primitive-based maxima
+  locator, one commensurate lattice, and the pair selector's node-count
+  prediction.
 - `../bivariate_trig_stationary.py` — host reference for complete finite-order
   `(phi_ref, 2 psi)` stationary enumeration by a Sylvester resultant and
   generalized eigenproblem.  It records BKK expected/found counts,

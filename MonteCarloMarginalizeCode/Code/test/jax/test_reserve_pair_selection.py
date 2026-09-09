@@ -295,20 +295,31 @@ def test_a_roster_absence_is_not_overridable_by_an_explicit_request(data):
 def test_an_unwired_reserve_scheme_is_refused_not_run_as_exact():
     """A config field the composite never reads is worse than a missing one.
 
-    ``PolicyConfig.reserve_scheme`` is validated against the CHOICES tuple, but
-    the composite dispatches through ``empirical_enrichment_with_exact_reserve``
-    and executes only 'exact'.  Without this refusal, asking for 'laplace' would
-    be accepted, reported in the policy line, and computed as exact.
+    ``PolicyConfig.reserve_scheme`` is validated against the CHOICES tuple, and
+    the composite dispatches through ``reserve_pair``.  A scheme declared in
+    CHOICES but absent from the pair table must be refused, not accepted,
+    reported in the policy line, and computed as exact.
     """
     DP.validate_policy_config(DP.PolicyConfig(reserve_scheme="exact"))
     # 'auto' is resolved before the composite sees it, so it is admitted here.
     DP.validate_policy_config(DP.PolicyConfig(reserve_scheme="auto"))
 
+    # laplace and peaklocal are wired through the pair table (#304), so every
+    # declared scheme executes today; the refusal is exercised by declaring a
+    # scheme the pair table does not carry.
     for scheme in ("laplace", "peaklocal"):
         assert scheme in DP.RESERVE_SCHEME_CHOICES
-        assert scheme not in DP.RESERVE_SCHEME_EXECUTABLE
+        assert scheme in DP.RESERVE_SCHEME_EXECUTABLE
+        DP.validate_policy_config(DP.PolicyConfig(reserve_scheme=scheme))
+    saved = DP.RESERVE_SCHEME_CHOICES
+    DP.RESERVE_SCHEME_CHOICES = saved + ("nonesuch-declared",)
+    try:
+        assert "nonesuch-declared" not in DP.RESERVE_SCHEME_EXECUTABLE
         with pytest.raises(ValueError, match="NOT WIRED"):
-            DP.validate_policy_config(DP.PolicyConfig(reserve_scheme=scheme))
+            DP.validate_policy_config(
+                DP.PolicyConfig(reserve_scheme="nonesuch-declared"))
+    finally:
+        DP.RESERVE_SCHEME_CHOICES = saved
 
     with pytest.raises(ValueError, match="must be one of"):
         DP.validate_policy_config(DP.PolicyConfig(reserve_scheme="nonesuch"))

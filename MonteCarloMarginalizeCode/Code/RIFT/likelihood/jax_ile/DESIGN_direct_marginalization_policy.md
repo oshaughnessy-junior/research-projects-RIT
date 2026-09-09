@@ -225,6 +225,171 @@ than for a saving. A single row takes the sequential path whatever is
 requested: `_scalar` evaluates one row, so `value_and_grad` and `hessian`
 would otherwise pay every select with nothing to amortize.
 
+## Peak-local time reserve
+
+The reserve schemes are pairs (angular kernel, time rule):
+
+| scheme | angular kernel | time rule |
+|---|---|---|
+| exact | exact angles | whole window, refine 4 escalating to 32 |
+| laplace | psi-Laplace | whole window |
+| peaklocal | psi-Laplace | peak-local, fixed count |
+| peaklocal-exact (config only) | exact angles | peak-local, fixed count |
+
+The whole-window rule's node count grows with rho: the peak of exp(lnL(t))
+has width sigma_t = 1/(2 pi rho sigma_f), and every node pays the angular
+kernel. At rung 41 the refine-4 rule already misses its own 1e-3 warrant on
+two of three rows (0.0018, 0.0040, 0.0114 nat, ladder controller
+2026-09-08), and the exact kernel costs 18.6 / 72.6 / 290 / 1278 s per
+evaluation at rungs 41 / 82 / 163 / 326 on 2453 nodes.
+
+### The rule
+
+One lattice per row.  The scan puts `scan_refine` nodes per native sample
+across the window (default 2).  The fine lattice divides each scan cell by an
+integer `m`, chosen so that its spacing is at most `sigma_t / 3` for the
+predicted width; every node of the rule is a point of that lattice.  Around
+each of the row's time maxima sits a block of `n_fine` consecutive fine nodes
+(default 73, so the block spans 24 predicted sigma).  Overlapping blocks and
+scan nodes inside a block coincide and carry no weight; the only
+spacing changes are at block ends, where the mass is negligible.  Mixing two
+lattices instead cost 0.02 nat on a 0.75-sample peak: the trapezoid rule is
+spectrally accurate only on uniform spacing.
+
+The maxima come from the primitive, not from the local branch.  The field
+`max_x (x A(t, phi, u) - x^2 B(phi, u) / 2)` is evaluated on a search grid of
+8 nodes per sample over an 8 x 8 angular lattice; the four highest local
+maxima are polished by Newton steps on the fixed-angle field with the
+reflected spectrum's exact derivatives.  On a synthetic peak 0.16 samples wide
+the local branch's plan carried no live mode at all, so a reserve leaning on it
+inherits that decline.  The plan's centre and width are reported beside the
+locator's as a cross-check.
+
+The scan is support-limited too: `reserve_peaklocal_scan_nodes` (65) nodes
+on the scan lattice across the hull of the live maxima widened by
+`reserve_peaklocal_scan_margin_sigmas` (16) predicted sigma each side, never
+the window.  The mass outside the hull is bounded from the locator's own
+search profile, summed over the outside search nodes, plus
+`reserve_peaklocal_outside_slack_nats` (5) for what lies between nodes.  The
+angle- and distance-maximized exponent is an upper bound on the marginal at
+each search node.  That bound is charged through the kernel's cropped-cover
+warrant (`reserve_time_cover`).  The node
+count is `65 + 4 x 73 = 357` whatever the window; a count that grows with the
+window is the wrong design (RO, 2026-09-09).
+
+The check rule is the half-refined scan plus every other fine node, on the
+same lattice with the same endpoints, so the kernel's structural resolution
+warrant, its two-guard comparison and its tail bound apply unchanged.  A
+failed warrant doubles the fine lattice at fixed span, at most
+`reserve_peaklocal_escalations` times (default 2), and the ledger counts it.
+The rule and its check share the block, so a block off the maximum agrees
+with itself: measured 0.22 nat, warranted, on a rung-160 row whose block sat
+0.17 samples (2.7 sigma) from the maximum.  The kernel therefore carries a
+focus certificate (`reserve_time_focus_ok`): the node with the largest
+evaluated `lnL(t)` must lie within a quarter of the block span of the block
+centre, or the rule is unwarranted.
+
+Under jit, XLA fuses the difference of two bitwise-equal products into a
+multiply-add that rounds to -1e-15, so the kernel's node checks compare
+slices rather than take `diff >= 0`, and repeated positions are accepted as
+non-decreasing.
+
+### Sizing from the prediction
+
+`sigma_t = 1 / (2 pi rho sigma_f)` per row.  `rho` comes from the locator's
+profile maximum, `rho^2 = 2 P_max`, which is the row's own `lnL` maximum; the
+angular triangle bound over the norm's triangle lower bound is the fallback
+and is reported beside it (`rho_bound`).  The bound ran 2.8x over on a
+rung-160 row (453 against 157), which narrowed the block span to 4 sigma of
+the true peak; the profile value does not.  `sigma_f` is the two-sided
+rms frequency of the stored Q (`q_effective_bandwidth_hz`).  The ladder record
+measured the same quantity at 0.01557 cycles per sample on the ladder-2 tables
+at every rung.  The row's own table spectrum is the fallback and is printed
+beside it.  The raw moment is deliberate.  The phi-marginalized field of a
+(2, +-2) signal with two polarization weights is `|alpha kappa + beta kappa*|`,
+which keeps carrier-scale sub-peaks unless the signal is circular.  The raw
+moment bounds the curvature of anything the band-limited primitive can make at
+that amplitude.  The central moment gives the face-on envelope, the widest
+case.  A factor sqrt(2) was proposed for the linear limit from the curvature
+of `|zeta|^2` at its maximum; it is not there.  The integrand is
+`exp(lnL)` with `lnL = (rho^2 / 2) |zeta_hat|^2`, and for `cos^2(omega t)`
+the curvature `2 omega^2` and the prefactor `rho^2 / 2` multiply to
+`rho^2 omega^2`, so `sigma_t = 1 / (rho omega) = 1 / (2 pi rho f_c)`, the
+raw moment, with no extra factor.  The carrier fixture agrees to 5 percent
+(located 0.0585 samples against predicted 0.0616 at rho 12.65), and the
+reserve-scheme session's fit of the log-integrand's curvature on a linearly
+polarized carrier gave measured / predicted of 1.0008, 1.0000, 0.9999 and
+0.9999 at rho 12.65, 40.77, 163.08 and 652.31 (their 59b48e3e).  The lattice
+is sized from the narrower of the prediction and the located curvature width
+at each maximum, so a row narrower than predicted sets its own spacing.  The
+located and plan widths are reported.  `prediction_consistent` flags a
+located width outside `[0.5, 4]` times the prediction.
+
+The ledger prints, per row: `rho_pred`, both `sigma_f`, the predicted,
+located, used and plan widths, the fine spacing and block span, the live
+block count and first centre, the escalation count, and the consistency flag.
+`predict_time_rule` gives the pair selector the same numbers from `rho` and
+`sigma_f` before any row runs.
+
+### Measured
+
+Rung 40.77: `likedata_snr40.pkl`, rho 40.8, 614-sample window, 8 rows in the
+ladder's truth-centred sky box, one RTX PRO 4000 Blackwell.  `peaklocal-exact`
+is compared with the shipped `exact` scheme so only the time rule differs.
+Policy defaults after #301, whole-window scan, `reserve_batch_rows` 1.  The
+exact column is the earlier run of the same rows.
+
+| row | exact reserve | peak-local minus exact, nat | nodes exact / peak-local | escalations exact / peak-local | wall s exact / peak-local | live blocks |
+|---|---|---|---|---|---|---|
+| 0 | 655.431925 | -2.3e-13 | 4905 / 1519 | 1 / 0 | 187 / 155 | 2 |
+| 1 | accepted locally (575.772711) | | | | | |
+| 2 | accepted locally (656.379930) | | | | | |
+| 3 | 604.921535 | +7.5e-11 | 4905 / 1807 | 1 / 1 | 130 / 139 | 1 |
+| 4 | accepted locally (433.744903) | | | | | |
+| 5 | accepted locally (626.523450) | | | | | |
+| 6 | accepted locally (591.821831) | | | | | |
+| 7 | 647.095757 | +0.0e+00 | 2453 / 1807 | 0 / 1 | 44 / 92 | 2 |
+
+Row 0 of each scheme carries the compile.  Rows 1, 2 and 6 accept locally
+under the #301 capacities and show the local branch's value.  The two
+peak-local escalations (rows 3 and 7) are the prediction one doubling short
+on those rows: the first tier's check missed 1e-3 and the second met it.
+
+Predicted against located width, same rows (samples; the locator's width is
+the envelope's curvature at the maximum, the plan's is the local branch's
+Newton width):
+
+| row | rho (located) | sigma_t predicted | sigma_t located | sigma_t plan | located / predicted | escalations |
+|---|---|---|---|---|---|---|
+| 0 | 36.7 | 0.279 | 0.332 | 0.309 | 1.19 | 0 |
+| 3 | 35.4 | 0.289 | 0.181 | 0.294 | 0.63 | 1 |
+| 7 | 36.6 | 0.280 | 0.305 | 0.306 | 1.09 | 1 |
+
+The stored Q's bandwidth is 0.01556 cycles per sample; the rows' own table
+spectra give 0.0135 to 0.0150.  The located width agrees with the plan's
+within 40 percent and the prediction sits at or below the located width.
+
+Rung 163.08: `likedata_snr160.pkl`, rho 163.1, same window, rows 0 to 3 of the
+seed-7 draw, one Blackwell.  Under the #301 capacities every row accepts locally
+(issue #308 has the values), so the decline is forced with `max_modes` 1.  The
+peak-local reserve has its support-limited scan here: 65 scan nodes plus
+4 x 73 block nodes, 357 in all.  It is compared with the whole-window exact
+reserve on the rows where that exists.  Row 1's is refine 32 with its refine-16
+check agreeing to 6e-10; rows 0 and 2 are being produced:
+
+| row | exact reserve | peak-local | difference, nat | nodes exact / peak-local | escalations exact / peak-local | wall s exact / peak-local | sigma_t predicted | located | plan | rho (located) | resolution error |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 0 | (running) | 13165.892582 |  |  / 357 |  / 0 |  / 186 | 0.0629 | 0.0619 | 0.0619 | 162.5 | 1.9e-10 |
+| 1 | 12335.902574 | 12335.902574 | +3.2e-07 | 19617 / 357 | 3 / 0 | 9805 / 107 | 0.0650 | 0.0649 | 0.0649 | 157.4 | 9.1e-12 |
+| 2 | (running) | 10083.512460 |  |  / 357 |  / 0 |  / 107 | 0.0719 | 0.0700 | 0.0700 | 142.3 | 8.9e-07 |
+| 3 | (running) | 8474.729892 |  |  / 357 |  / 0 |  / 108 | 0.0786 | 0.0782 | 0.0782 | 130.2 | 0.0e+00 |
+
+Row 1 agrees with the converged whole-window value to every printed digit at
+2 percent of its node count and 1 percent of its wall time.  No row escalated:
+the predicted widths sit within 3 percent of the located ones, and the located
+`rho` within 20 percent of the network 163.  The scan hull was 2.1 samples wide
+(the maxima +-16 sigma) against the 614-sample window.
+
 ## Gate before this can be a default
 
 PR #268 warrants scalar values. Differentiating the composite differentiates
