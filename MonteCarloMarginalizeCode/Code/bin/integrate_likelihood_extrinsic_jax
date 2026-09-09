@@ -1020,7 +1020,8 @@ def build_parser():
                       "16x) is nan and the run is NOT published.  Applies only "
                       "to --mode flowmc-phipsimarg; any other mode is refused."
                       % DIRECT_MARG_POLICY_DEFAULT)
-    g.add_option("--direct-marginalization-time-guard", type=int, default=16,
+    g.add_option("--direct-marginalization-time-guard", type=int,
+                 default=DirectMargPolicyConfig().time_guard,
                  help="Primitive-only support samples added at each end of the "
                       "time window for the policy's guarded reconstruction "
                       "(default 16; must be >= 2).  Both the local integral and "
@@ -1129,22 +1130,24 @@ def build_parser():
     # portfolio than PolicyConfig's defaults build, and the difference was
     # unreachable from the command line -- so the policy could only ever be
     # observed declining.
-    g.add_option("--direct-marginalization-max-modes", type=int, default=4,
+    g.add_option("--direct-marginalization-max-modes", type=int,
+                 default=DirectMargPolicyConfig().max_modes,
                  help="Modes retained in the policy's BASE plan (default 4).")
     g.add_option("--direct-marginalization-enriched-max-modes", type=int,
-                 default=8,
+                 default=DirectMargPolicyConfig().enriched_max_modes,
                  help="Modes retained in the policy's ENRICHED plan (default "
                       "8).  Acceptance compares the two plans, so an enriched "
                       "plan that cannot resolve the extra structure declines.")
     g.add_option("--direct-marginalization-base-oversample", type=int,
-                 default=1,
+                 default=DirectMargPolicyConfig().base_oversample,
                  help="Angular oversampling of the base start portfolio "
                       "(default 1).")
     g.add_option("--direct-marginalization-enriched-oversample", type=int,
-                 default=2,
+                 default=DirectMargPolicyConfig().enriched_oversample,
                  help="Angular oversampling of the enriched start portfolio "
                       "(default 2).")
-    g.add_option("--direct-marginalization-max-starts", type=int, default=128,
+    g.add_option("--direct-marginalization-max-starts", type=int,
+                 default=DirectMargPolicyConfig().base_max_starts,
                  help="Cap on ranked optimizer starts per plan (default 128).  "
                       "TWO THINGS THIS IS NOT.  (1) It is not the whole of "
                       "decline_capacity.  That ledger key reports the "
@@ -1173,7 +1176,7 @@ def build_parser():
                       "sized WITH --direct-marginalization-max-time-nodes; "
                       "either alone plateaus near 16%.")
     g.add_option("--direct-marginalization-convergence-tol-nats", type=float,
-                 default=1.0e-3,
+                 default=DirectMargPolicyConfig().convergence_tol_nats,
                  help="Agreement required between the base and enriched plans, "
                       "and between each plan's own two quadrature orders, in "
                       "nats (default 1e-3).  This is the tolerance the "
@@ -1182,7 +1185,7 @@ def build_parser():
                       "--direct-marginalization-error-budget-nats, which is the "
                       "total value allowance.")
     g.add_option("--direct-marginalization-time-guard-tol-nats", type=float,
-                 default=1.0e-3,
+                 default=DirectMargPolicyConfig().time_guard_tol_nats,
                  help="Agreement required between the full-guard and half-guard "
                       "evaluations, in nats (default 1e-3).  This is the "
                       "tolerance the two-guard time warrant is measured "

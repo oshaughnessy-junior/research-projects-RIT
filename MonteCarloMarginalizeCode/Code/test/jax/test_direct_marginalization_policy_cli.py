@@ -213,3 +213,50 @@ def test_every_driver_option_string_is_registered_exactly_once():
     names = re.findall(r'add_option\(\s*"(--[A-Za-z0-9-]+)"', src)
     dupes = {n: c for n, c in collections.Counter(names).items() if c > 1}
     assert not dupes, "option strings registered more than once: %r" % (dupes,)
+
+
+def test_each_policy_flag_default_matches_its_PolicyConfig_field():
+    """The driver default and the library default must be the SAME number.
+
+    The symptom that started this guard: a run used max_starts 32 from the
+    driver while PolicyConfig carried 128, so --help, the config and the
+    executed run disagreed and nothing raised.  Any knob whose two defaults
+    drift silently changes what a bare command line computes, and a default
+    change landing on one side only is the easiest way to produce that.
+
+    Deliberately compares VALUES, not a hardcoded expectation: when a default is
+    legitimately changed (RO approved max_starts 32 -> 128), this test keeps
+    passing as long as BOTH sides move, and fails the moment only one does.
+    """
+    from RIFT.likelihood.jax_ile.direct_marginalization_policy import PolicyConfig
+
+    mod = _load_driver()
+    parser = mod.build_parser()
+    cfg = PolicyConfig()
+
+    pairs = {
+        "direct_marginalization_time_guard": "time_guard",
+        "direct_marginalization_reserve_time_refine": "reserve_time_refine",
+        "direct_marginalization_reserve_time_refine_max": "reserve_time_refine_max",
+        "direct_marginalization_error_budget_nats": "total_value_error_budget_nats",
+        "direct_marginalization_max_modes": "max_modes",
+        "direct_marginalization_enriched_max_modes": "enriched_max_modes",
+        "direct_marginalization_base_oversample": "base_oversample",
+        "direct_marginalization_enriched_oversample": "enriched_oversample",
+        "direct_marginalization_max_starts": "base_max_starts",
+        "direct_marginalization_convergence_tol_nats": "convergence_tol_nats",
+        "direct_marginalization_time_guard_tol_nats": "time_guard_tol_nats",
+    }
+    mismatched = {}
+    for dest, field in pairs.items():
+        if not hasattr(cfg, field):
+            continue
+        drv = parser.defaults.get(dest, "<absent>")
+        if drv == "<absent>":
+            continue
+        lib = getattr(cfg, field)
+        if drv != lib:
+            mismatched[dest] = (drv, lib)
+    assert not mismatched, (
+        "driver default != PolicyConfig default for %r "
+        "(driver, library)" % (mismatched,))
