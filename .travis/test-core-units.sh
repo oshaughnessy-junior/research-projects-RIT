@@ -59,6 +59,7 @@ FILES=(
   "$C/test/test_calmarg_calibration.py"
   # -- likelihood dispatch
   "$C/RIFT/likelihood/test_td_dispatch_epoch.py"
+  "$C/RIFT/likelihood/test_precompute_crossterm_batching.py"
   "$C/test/test_ile_scalar_edge_cases.py"
   "$C/test/test_mcsamplerGPU_cdf_inverse_scalar_probe.py"
   "$C/test/test_srate_resample_time_marginalization.py"
@@ -172,12 +173,12 @@ done
 # direction that matters: 350 >= 347 passes today, and if pytest-subtests ever leaves the
 # runner's closure the count falls back to 347 and still passes.  Pinning 350 would turn an
 # unrelated dependency change into a red gate.
-EXPECTED_TESTS=358
+EXPECTED_TESTS=370
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 12 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
 # test_dslice_device_native, and the xfail in test_uv_symmetry.
-EXPECTED_PASSED=346
+EXPECTED_PASSED=358
 MAX_SKIPPED=12
 
 # The floors must be INTEGERS, and this is checked rather than assumed.  `[ 347 -lt FOO ]` does

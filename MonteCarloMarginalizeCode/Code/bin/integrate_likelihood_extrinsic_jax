@@ -87,7 +87,10 @@ import lal
 import lalsimulation as lalsim
 
 import RIFT.lalsimutils as lalsimutils
-from RIFT.likelihood.jax_ile import build_data_from_precompute
+from RIFT.likelihood.jax_ile import (
+    build_data_from_precompute, build_rotation_data_from_precompute,
+    build_freqresponse_data_from_precompute,
+    build_rotating_freqresponse_data_from_precompute)
 from RIFT.likelihood.jax_ile.wrapper import bandlimited_storage_requirement
 from RIFT.likelihood.jax_ile import anglemarg as _anglemarg
 from RIFT.likelihood.jax_ile.samplers import angle_marg_eval_chunk as _angle_marg_eval_chunk
@@ -103,6 +106,8 @@ from RIFT.likelihood.jax_ile.direct_marginalization_policy import (
     POLICY_CHOICES as DIRECT_MARG_POLICY_CHOICES,
     POLICY_DEFAULT as DIRECT_MARG_POLICY_DEFAULT,
     PolicyConfig as DirectMargPolicyConfig,
+    RESERVE_SCHEME_CHOICES as DIRECT_MARG_RESERVE_SCHEME_CHOICES,
+    reserve_pair as _direct_marg_reserve_pair,
     summarize_policy_ledger as _summarize_policy_ledger,
     predict_reserve_pair, format_reserve_pair, RESERVE_SCHEME_EXECUTABLE)
 _JAX_GATHERER_NAMES = tuple(_JAX_GATHERERS)
@@ -551,6 +556,10 @@ def check_critical_and_report(opts, optp):
     if _qf < 1:
         fatal.append("--q-time-pregrid-factor must be >= 1, got %d" % _qf)
     elif _qf != 1:
+        if (getattr(opts, "rotation_slow", False)
+                or getattr(opts, "freqresponse", False)):
+            fatal.append("--q-time-pregrid-factor is not implemented for banded "
+                         "rotation/frequency-response likelihoods")
         # NOT a blanket refusal any more (it was, before the JAX Q path grew a
         # pregrid).  What survives is the narrower, still-true refusal, and it
         # mirrors conventional ILE's (#261): the pregrid buys sub-sample accuracy
@@ -584,9 +593,40 @@ def check_critical_and_report(opts, optp):
             opts.interp = "cubic"
             print(" Q_lm pregrid: ENABLED factor=%d boundary=even-reflection "
                   "arrival_stencil=cubic integration_grid=unchanged" % _qf)
+    _tq = getattr(opts, "time_marginalization_quadrature", "simpson")
+    if getattr(opts, "rotation_slow", False) and _tq == "bandlimited":
+        fatal.append("bandlimited time quadrature is not valid when slow rotation "
+                     "makes <h|h> arrival-time dependent; use simpson")
+    if ((getattr(opts, "rotation_slow", False) or getattr(opts, "freqresponse", False))
+            and getattr(opts, "phase_marginalization", False)):
+        fatal.append("phase marginalization is not implemented for banded "
+                     "rotation/frequency-response likelihoods")
+    if int(getattr(opts, "rotation_p_max", 0) or 0) < 0:
+        fatal.append("--rotation-p-max must be >= 0")
+    if int(getattr(opts, "rotation_n_harmonics", 2) or 2) < 2:
+        fatal.append("--rotation-n-harmonics must be >= 2")
+    if int(getattr(opts, "freqresponse_qmax", 4) or 4) < 0:
+        fatal.append("--freqresponse-qmax must be >= 0")
+    _rotation = bool(getattr(opts, "rotation_slow", False))
+    _freqresponse = bool(getattr(opts, "freqresponse", False))
+    if not _rotation:
+        for _name in ("--rotation-n-harmonics", "--rotation-p-max"):
+            if was_supplied(opts, _name):
+                fatal.append("%s is inert without --rotation-slow" % _name)
+    elif _freqresponse and was_supplied(opts, "--rotation-n-harmonics"):
+        fatal.append("--rotation-n-harmonics does not set the compound bank width; "
+                     "its exact support is fixed by Qmax and pmax")
+    if not _freqresponse:
+        for _name in ("--freqresponse-qmax", "--freqresponse-arm-length"):
+            if was_supplied(opts, _name):
+                fatal.append("%s is inert without --freqresponse" % _name)
+    elif getattr(opts, "freqresponse_arm_length", None) not in (None, ""):
+        try:
+            _parse_freqresponse_arm_length(opts.freqresponse_arm_length)
+        except (TypeError, ValueError) as exc:
+            fatal.append("invalid --freqresponse-arm-length: %s" % exc)
     # Refused HERE, before precompute: with a full-sky prior the stop below is
     # not a chance event but the first chunk (see _EVAL_LNL_STOP_MODES).
-    _tq = getattr(opts, "time_marginalization_quadrature", "simpson")
     _hw = getattr(opts, "data_integration_window_half", None)
     if (_tq == "bandlimited" and getattr(opts, "mode", None) in _EVAL_LNL_STOP_MODES
             and _hw is not None
@@ -635,7 +675,10 @@ def check_critical_and_report(opts, optp):
                    "--random-event", "--distance-marginalization",
                    "--time-marginalization", "--time-marginalization-quadrature",
                    "--interpolate-time",
-                   "--vectorized", "--use-gwsignal"}
+                   "--vectorized", "--use-gwsignal", "--rotation-slow",
+                   "--rotation-n-harmonics", "--rotation-p-max",
+                   "--freqresponse", "--freqresponse-qmax",
+                   "--freqresponse-arm-length"}
     # These are implemented PER MODE.  Listing them unconditionally would claim
     # they act under --mode laplace-is (the default), nuts, map, multistart-nuts
     # and nuts-phimarg, where they are inert -- exactly the silent no-op this
@@ -788,6 +831,23 @@ def build_parser():
     g.add_option("--srate", type=float, default=4096.0)
     g.add_option("--data-integration-window-half", type=float, default=75e-3)
     g.add_option("--internal-data-storage-window-half", type=float, default=0.15)
+    optp.add_option_group(g)
+
+    g = OptionGroup(optp, "Time-dependent detector response")
+    g.add_option("--rotation-slow", action="store_true", default=False,
+                 help="Use the sidereal slow-rotation likelihood. May be combined "
+                      "with --freqresponse.")
+    g.add_option("--rotation-n-harmonics", type=int, default=2,
+                 help="Minimum sidereal harmonic half-width (default 2).")
+    g.add_option("--rotation-p-max", type=int, default=0,
+                 help="Maximum propagation-delay derivative order (default 0).")
+    g.add_option("--freqresponse", action="store_true", default=False,
+                 help="Use finite-arm frequency response. Combining this with "
+                      "--rotation-slow constructs a compound banded likelihood.")
+    g.add_option("--freqresponse-qmax", type=int, default=4,
+                 help="Highest finite-arm projection power (default 4).")
+    g.add_option("--freqresponse-arm-length", default=None,
+                 help="Arm length in metres, globally or DET=value comma list.")
     optp.add_option_group(g)
 
     g = OptionGroup(optp, "Extrinsic exploration / sampling")
@@ -1039,6 +1099,38 @@ def build_parser():
                       "agree with, so the warrant is a convergence statement "
                       "about the refined rules; the native Simpson rule's own "
                       "error is what the refinement removes.")
+    g.add_option("--direct-marginalization-reserve-scheme", type="choice",
+                 choices=list(DIRECT_MARG_RESERVE_SCHEME_CHOICES),
+                 default="exact",
+                 help="The policy's reserve, a PAIR (angular kernel, time rule): "
+                      "exact = exact angles on the whole-window refined rule "
+                      "(default, unchanged); laplace = psi-Laplace angles on "
+                      "that rule; peaklocal = psi-Laplace angles on a fixed-"
+                      "count time rule sized per row from the PREDICTED peak "
+                      "width 1/(2 pi rho sigma_f) (rho from the row's table, "
+                      "sigma_f the rms frequency of the stored Q), with fine "
+                      "blocks on one commensurate lattice around the time "
+                      "maxima located on the primitive itself plus a coarse "
+                      "scan of the window; its node count and "
+                      "cost do not grow with rho, and the ledger prints the "
+                      "prediction behind every row.  auto = choose the pair "
+                      "from the precomputed inputs before any row runs "
+                      "(predict_reserve_pair).  The whole-window refine "
+                      "options are inert under peaklocal; a failed warrant "
+                      "there doubles the fine lattice at fixed span, at most "
+                      "--direct-marginalization-peaklocal-escalations times, "
+                      "and is reported.  Measured: "
+                      "DESIGN_direct_marginalization_policy.md, "
+                      "\"Peak-local time reserve\".")
+    g.add_option("--direct-marginalization-peaklocal-escalations", type=int,
+                 default=int(DirectMargPolicyConfig().reserve_peaklocal_escalations),
+                 help="Under the peaklocal reserve schemes, how many times a "
+                      "failed resolution warrant may double the fine lattice at "
+                      "fixed span before the row is unusable (default: the "
+                      "PolicyConfig value).  The "
+                      "first tier is sized from the predicted width, so an "
+                      "escalation is a finding about the prediction, not a loop; "
+                      "the ledger counts them.")
     g.add_option("--direct-marginalization-reserve-time-refine-max", type=int,
                  default=DirectMargPolicyConfig().reserve_time_refine_max,
                  help="Ceiling of the reserve rule's escalation on a failed "
@@ -2573,6 +2665,21 @@ def write_samples(opts, out_index, theta, lnL, with_distance, logw=None,
     print("Wrote %s (%d samples)" % (sname, len(cols)))
 
 
+def _parse_freqresponse_arm_length(value):
+    if value in (None, ""):
+        return None
+    text = str(value)
+    if "=" not in text:
+        return float(text)
+    result = {}
+    for item in text.split(","):
+        fields = item.split("=", 1)
+        if len(fields) != 2 or not fields[0].strip():
+            raise ValueError("invalid --freqresponse-arm-length item %r" % item)
+        result[fields[0].strip()] = float(fields[1])
+    return result
+
+
 def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
                 rng, out_index, event_id, flow_state=None):
     """Build the JAX likelihood for one intrinsic template and run --mode.
@@ -2595,17 +2702,58 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
         print("  precompute time support: guard_initial=%d guard_certificate=%d "
               "samples storage_half=%.6g s" %
               (g0, gcert, opts.internal_data_storage_window_half))
-    print("Building JAX likelihood (PrecomputeLikelihoodTerms + pack)...")
-    like_data, extras = build_data_from_precompute(
-        P.copy(), data_dict, psd_dict, fiducial_epoch,
-        opts.internal_data_storage_window_half, opts.data_integration_window_half,
-        opts.l_max, opts.fmax,
-        analyticPSD_Q=analyticPSD_Q, verbose=opts.verbose,
-        q_time_pregrid_factor=(1 if getattr(opts, "q_time_pregrid_factor", 1) is None
-                               else int(opts.q_time_pregrid_factor)),
+    print("Building JAX likelihood (production precompute + banded pack)...")
+    waveform_kw = dict(
         use_gwsignal=bool(getattr(opts, "use_gwsignal", False)),
-        use_gwsignal_approx=(opts.approximant if getattr(opts, "use_gwsignal", False) else None))
-    print("  modes:", like_data.lms, "  guessed SNR:", extras["guess_snr"])
+        use_gwsignal_approx=(opts.approximant
+                             if getattr(opts, "use_gwsignal", False) else None))
+    if opts.rotation_slow and opts.freqresponse:
+        arm_length = _parse_freqresponse_arm_length(opts.freqresponse_arm_length)
+        like_data, extras = build_rotating_freqresponse_data_from_precompute(
+            P.copy(), data_dict, psd_dict, fiducial_epoch,
+            opts.data_integration_window_half, opts.l_max, opts.fmax,
+            t_window=opts.internal_data_storage_window_half,
+            Qmax=opts.freqresponse_qmax, L_arm=arm_length,
+            p_max=opts.rotation_p_max, analyticPSD_Q=analyticPSD_Q,
+            verbose=opts.verbose, **waveform_kw)
+    elif opts.rotation_slow:
+        nh = int(opts.rotation_n_harmonics)
+        like_data, extras = build_rotation_data_from_precompute(
+            P.copy(), data_dict, psd_dict, fiducial_epoch,
+            opts.data_integration_window_half, opts.l_max, opts.fmax,
+            t_window=opts.internal_data_storage_window_half,
+            harmonics=tuple(range(-nh, nh + 1)), p_max=opts.rotation_p_max,
+            analyticPSD_Q=analyticPSD_Q, verbose=opts.verbose, **waveform_kw)
+    elif opts.freqresponse:
+        arm_length = _parse_freqresponse_arm_length(opts.freqresponse_arm_length)
+        like_data, extras = build_freqresponse_data_from_precompute(
+            P.copy(), data_dict, psd_dict, fiducial_epoch,
+            opts.data_integration_window_half, opts.l_max, opts.fmax,
+            t_window=opts.internal_data_storage_window_half,
+            Qmax=opts.freqresponse_qmax, L_arm=arm_length,
+            analyticPSD_Q=analyticPSD_Q, verbose=opts.verbose, **waveform_kw)
+    else:
+        like_data, extras = build_data_from_precompute(
+            P.copy(), data_dict, psd_dict, fiducial_epoch,
+            opts.internal_data_storage_window_half, opts.data_integration_window_half,
+            opts.l_max, opts.fmax,
+            analyticPSD_Q=analyticPSD_Q, verbose=opts.verbose,
+            q_time_pregrid_factor=(
+                1 if getattr(opts, "q_time_pregrid_factor", 1) is None
+                else int(opts.q_time_pregrid_factor)), **waveform_kw)
+    print("  feature:", getattr(like_data, "feature", None),
+          " modes:", like_data.lms,
+          " guessed SNR:", extras.get("guess_snr", "not estimated"))
+    if getattr(like_data, "feature", None) is not None:
+        _d0 = like_data.detectors[like_data.detector_names[0]]
+        _A = int(_d0["Q_bank"].shape[0])
+        _bank_bytes = sum(int(like_data.detectors[d]["Q_bank"].nbytes
+                              + like_data.detectors[d]["U_bank"].nbytes
+                              + like_data.detectors[d]["V_bank"].nbytes)
+                          for d in like_data.detector_names)
+        print("  [banded] basis=%d ordered-pairs=%d device-bank=%.1f MB "
+              "(%d detectors)" % (_A, _A * _A, _bank_bytes / 2.0**20,
+                                    len(like_data.detector_names)))
     if like_data.q_time_pregrid_factor != 1:
         _d0 = like_data.detectors[like_data.detector_names[0]]
         _bytes = sum(int(like_data.detectors[d]["Q"].nbytes)
@@ -2694,8 +2842,17 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
         policy_config = None
         if policy != "off":
             _f0 = int(opts.direct_marginalization_reserve_time_refine)
+            _scheme = getattr(opts, "direct_marginalization_reserve_scheme",
+                              "exact")
+            if _scheme != "auto":
+                _angular, _time_rule = _direct_marg_reserve_pair(_scheme)
+                print("  direct-marginalization reserve scheme: %s (angular "
+                      "kernel %s, time rule %s)" % (_scheme, _angular, _time_rule))
             policy_config = DirectMargPolicyConfig(
                 time_guard=int(opts.direct_marginalization_time_guard),
+                reserve_scheme=_scheme,
+                reserve_peaklocal_escalations=int(
+                    opts.direct_marginalization_peaklocal_escalations),
                 reserve_time_refine=_f0,
                 reserve_time_refine_max=int(
                     opts.direct_marginalization_reserve_time_refine_max),
@@ -2842,8 +2999,20 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
                     "name.  Wiring %r is RIFT PR #304."
                     % (_pair, _pair_info.get("reason", ""),
                        RESERVE_SCHEME_EXECUTABLE, _pair))
-            like.policy_config = like.policy_config._replace(
-                reserve_scheme=_pair)
+            # The wrapper's jitted closures capture the config at
+            # construction, so writing the attribute alone would leave the
+            # composite running the string 'auto' (which reserve_pair refuses):
+            # rebuild the likelihood with the resolved pair.
+            if _pair != like.policy_config.reserve_scheme:
+                like = JAXDistPhiPsiMargLikelihood(
+                    like_data, d_lo, d_hi, nphi=nphi, npsi=npsi,
+                    n_grid=n_dist_grid, interp=opts.interp,
+                    guess_snr=extras["guess_snr"], angle_marg=angle_marg,
+                    time_quadrature=tq, d_prior_range=(opts.d_min, opts.d_max),
+                    dist_grid=dist_grid, dist_grid_tol=dist_tol,
+                    direct_marginalization_policy=policy,
+                    policy_config=like.policy_config._replace(
+                        reserve_scheme=_pair))
             # policy_info's "reserve_scheme" reported the resolved ANGLE
             # scheme, which is a different quantity that happened to share the
             # name while 'exact' was the only reserve.  Both are reported now,

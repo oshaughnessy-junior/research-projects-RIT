@@ -1284,8 +1284,22 @@ def InterpolateRholms(rholms, t,verbose=False):
 
     return rholm_intp
 
+# --- opt-in batching of the mode cross terms ---------------------------------------
+# OFF by default: the batched path reorders the frequency reduction and so does not
+# reproduce the shipped rounding bit-for-bit (~1e-15 of max|U|; see
+# DESIGN_precompute_crossterm_batching.md).  Enable per run with
+#     RIFT_PRECOMPUTE_BATCHED_CROSSTERMS=1
+# or per call with the `batched=` keyword, which overrides the environment.
+_CROSSTERM_BATCH_CALLS = [0]     # observability: a run that never took the path reads 0
+
+
+def _crossterm_batched_default():
+    return os.environ.get("RIFT_PRECOMPUTE_BATCHED_CROSSTERMS", "0").strip() in ("1", "true", "True")
+
+
 def ComputeModeCrossTermIP(hlmsA, hlmsB, psd, fmin, fMax, fNyq, deltaF, 
-        analyticPSD_Q=False, inv_spec_trunc_Q=False, T_spec=0., verbose=True,prefix="U",same_waveform_Q=False):
+        analyticPSD_Q=False, inv_spec_trunc_Q=False, T_spec=0., verbose=True,prefix="U",same_waveform_Q=False,
+        batched=None):
     """
     Compute the 'cross terms' between waveform modes, i.e.
     < h_lm | h_l'm' >.
@@ -1303,6 +1317,37 @@ def ComputeModeCrossTermIP(hlmsA, hlmsB, psd, fmin, fMax, fNyq, deltaF,
             inv_spec_trunc_Q, T_spec)
 
     crossTerms = {}
+
+    if batched is None:
+        batched = _crossterm_batched_default()
+    if batched:
+      # One GEMM over the whole (mode x mode) block instead of Na*Nb separate full-length
+      # reductions.  The symmetry bookkeeping below is kept identical to the loop, so the
+      # exact Hermitian/transpose relations the shipped path guarantees still hold.
+      _CROSSTERM_BATCH_CALLS[0] += 1
+      modesA = list(hlmsA.keys())
+      modesB = list(hlmsB.keys())
+      M = IP.ip_matrix([hlmsA[m] for m in modesA], [hlmsB[m] for m in modesB])
+      if same_waveform_Q:
+        assert modesA == modesB, "same_waveform_Q requires the same mode keys on both sides"
+        for i, mode in enumerate(modesA):
+          crossTerms[ (mode,mode) ] = M[i,i]
+        for i, mode1 in enumerate(modesA):
+          for j in range(i+1, len(modesA)):
+            mode2 = modesA[j]
+            crossTerms[ (mode1,mode2) ] = M[i,j]
+            if prefix == "V":
+              crossTerms[ (mode2,mode1) ] = crossTerms[(mode1,mode2)]
+            else:
+              crossTerms[ (mode2,mode1) ] = np.conj(crossTerms[(mode1,mode2)])
+      else:
+        for i, mode1 in enumerate(modesA):
+          for j, mode2 in enumerate(modesB):
+            crossTerms[ (mode1,mode2) ] = M[i,j]
+            if verbose:
+                print("       : ", prefix, " populated ", (mode1, mode2), "  = ",\
+                        crossTerms[(mode1,mode2) ])
+      return crossTerms
 
     if same_waveform_Q:
       mode_list = list(hlmsA.keys())

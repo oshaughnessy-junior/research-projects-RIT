@@ -53,7 +53,8 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #   test_jax_endtoend.py               1  full precompute -> pack -> JAX vs the numpy
 #                                         NoLoop on a real injection (fixed by #144)
 #   test_jax_slowrot_coeffs.py         2  rotation + freqresponse response coefficients
-#                                         against their numpy references
+#                                         against their numpy references; the compound
+#                                         algebra is folded into the freqresponse test
 #   test_jax_slowrot_wrapper.py        1  the one-call build_*_data_from_precompute path
 #   test_jax_slowrot.py                3  rotation Path A (p_max=0), Path B (p_max=1)
 #                                         and freqresponse: NoLoop parity + AD/jit/
@@ -532,6 +533,7 @@ FILES=(
   "${JAXDIR}/test_angle_marg_gh_selection.py"
   "${JAXDIR}/test_joint_anglemarg_peaklocal.py"
   "${JAXDIR}/test_angle_marg_peaklocal_wiring.py"
+  "${JAXDIR}/test_angle_marg_multipeak_wiring.py"
   "${JAXDIR}/test_limit_distance_jax.py"
   "${JAXDIR}/test_direct_marginalization_planner.py"
   "${JAXDIR}/test_time_first_peaklocal.py"
@@ -549,6 +551,7 @@ FILES=(
   "${JAXDIR}/test_direct_marginalization_policy_cli.py"
   "${JAXDIR}/test_jax_bandlimited_distmarg.py"
   "${JAXDIR}/test_jax_bandlimited_6d_blind.py"
+  "${JAXDIR}/test_policy_peaklocal_reserve.py"
 )
 
 # EXCLUDED: files in JAXDIR matching test_*.py that are deliberately NOT gated.  The
@@ -1031,7 +1034,37 @@ fi
 # 738 once the wrapper's source-text gate test became two behaviour tests, and
 # 740 with the two reserve-resolution tests.
 # This assignment is the one that binds.
-EXPECTED_TESTS=740
+# Plus the peak-local time reserve branch (PR #304): test_policy_peaklocal_reserve.py,
+# one file.  Re-measured by running this script on the rebased tree, ldas-grid,
+# ~/.cache/jaxci_venv, DESELECT loop applied, read off its own collection line:
+# "754/760 tests collected (6 deselected)", gate-style count 754 from 46 files
+# (2026-09-09).  This assignment is the one that binds.
+#
+# SIXTEENTH, --angle-marg-scheme multipeak (the four-axis controller wired into the
+# driver).  Adds ONE file, test_angle_marg_multipeak_wiring.py, 7 tests, none
+# parametrized, no removals, and touches no existing test count.  754 + 7 = 761,
+# measured by running this script.
+# (superseded assignment removed 2026-09-09; see the single EXPECTED_TESTS= below)
+# 2026-09-09 (laplace reserve kernel keyword fix): +1 test in test_policy_peaklocal_reserve.py
+# (the resolved kernel through anglemarg's REAL Laplace function).  Read off this script's
+# own collection line on ldas-pcdev12 (~/.cache/jaxci_venv, CPU): "collected 755 tests from 45 files".
+# (superseded assignment removed 2026-09-09; see the single EXPECTED_TESTS= below)
+
+# Simultaneous rotation + finite response adds cheap analytic coefficient parity
+# to an existing collected test.  Real waveform precompute, JIT/grad, the one-call
+# wrapper, and scaling profiles remain explicit manual checks in the same files:
+# they are too expensive for the already runner-limited per-PR JAX gate.
+
+# 2026-09-09, #313 rebased over #312 (laplace keyword fix, 755) and the base's
+# test_limit_distance_jax tightening: neither 761 + 1 nor 755 + 7 is the number.
+# Re-measured by running THIS script on the merged tree (ldas-grid, ~/.cache/jaxci_venv,
+# jax 0.9.2, CPU, DESELECT applied): "collected 762 tests from 46 files".  Binding.
+# 2026-09-09 (locator search sizing, stacked on #312 + #313): +1 test in
+# test_policy_peaklocal_reserve.py (the sized locator on a rho-632 carrier).  Read off this
+# script's own collection line on ldas-pcdev12 (~/.cache/jaxci_venv, CPU) after rebasing on
+# rift_O4d 336f86133: "collected 763 tests from 46 files".  The #312/#313 merges had left
+# three EXPECTED_TESTS= assignments (761, 755, 762; last wins); this is the single one.
+EXPECTED_TESTS=763
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
