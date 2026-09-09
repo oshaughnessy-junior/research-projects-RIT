@@ -914,8 +914,45 @@ done
 junit="$(mktemp -t jaxci-junit-XXXXXX.xml)"
 trap 'rm -f "${junit}"' EXIT
 
-echo "== running =="
-"${PYTHON_BIN}" -m pytest -q -p no:cacheprovider --durations=0 --junit-xml="${junit}" "${DESELECT[@]}" "${FILES[@]}"
+# SHARDING.  Only the EXECUTE step is split.  Everything above -- the FILES
+# manifest, the EXCLUDED accounting, the collection floor against
+# EXPECTED_TESTS, and the deselect-resolution check -- runs in full in every
+# shard, so no shard can pass on a partial view of the suite and the counts
+# stay one number rather than N.
+#
+# Why: the suite outgrew the 60-minute job cap.  Measured 2026-09-08, the base
+# suite ran 3277 s of pytest against a ~3518 s budget, and one new test in #290
+# added ~850 s, so every run was ~609 s over and jax-ile-check was cancelled at
+# 1h00m17s with the suite at 91% and ZERO failures.  Trimming was costed at
+# ~529 s across five changes and does not clear the overrun on its own.  Three
+# shards leave each well inside the cap with room for the next test.
+#
+# Round-robin by index, not a hand-tuned split: a cost table in this file would
+# go stale exactly the way the EXPECTED_TESTS comments above record every other
+# hardcoded number going stale.
+JAX_GATE_SHARDS="${JAX_GATE_SHARDS:-1}"
+JAX_GATE_SHARD="${JAX_GATE_SHARD:-1}"
+if ! [ "${JAX_GATE_SHARDS}" -ge 1 ] 2>/dev/null || ! [ "${JAX_GATE_SHARD}" -ge 1 ] 2>/dev/null \
+   || [ "${JAX_GATE_SHARD}" -gt "${JAX_GATE_SHARDS}" ]; then
+  echo "test-jax.sh: bad shard ${JAX_GATE_SHARD}/${JAX_GATE_SHARDS}" >&2; exit 1
+fi
+if [ "${JAX_GATE_SHARDS}" -gt 1 ]; then
+  SHARD_FILES=()
+  for i in "${!FILES[@]}"; do
+    if [ $(( i % JAX_GATE_SHARDS )) -eq $(( JAX_GATE_SHARD - 1 )) ]; then
+      SHARD_FILES+=( "${FILES[$i]}" )
+    fi
+  done
+  if [ "${#SHARD_FILES[@]}" -eq 0 ]; then
+    echo "test-jax.sh: shard ${JAX_GATE_SHARD}/${JAX_GATE_SHARDS} got 0 files" >&2
+    exit 1
+  fi
+  echo "== running shard ${JAX_GATE_SHARD}/${JAX_GATE_SHARDS}: ${#SHARD_FILES[@]} of ${#FILES[@]} files =="
+else
+  SHARD_FILES=( "${FILES[@]}" )
+  echo "== running =="
+fi
+"${PYTHON_BIN}" -m pytest -q -p no:cacheprovider --durations=0 --junit-xml="${junit}" "${DESELECT[@]}" "${SHARD_FILES[@]}"
 rc=$?
 if [ "${rc}" -ne 0 ]; then
   # rc 5 == "no tests ran"; it is a FAILURE here, not a pass.
