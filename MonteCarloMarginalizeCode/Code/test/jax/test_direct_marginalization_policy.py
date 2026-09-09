@@ -731,13 +731,20 @@ def test_local_plan_capacities_reach_the_planner(monkeypatch):
     assert seen[0].get("max_starts") == 77, seen[0]
 
 
-def test_capacity_defaults_are_the_measured_pair():
-    """Sized together: on the same rows 36 declines fail on time nodes and 37
-    on starts, only 7 on starts alone, so raising one alone buys nothing.
-    Measured acceptance at rho 652: (64, 32) 28%, (256, 32) 31%,
-    (256, 128) 75%, (512, 256) 77%."""
+def test_capacity_defaults_are_the_shipped_operating_point():
+    """The defaults reproduce what shipped, so exposing these knobs moves no
+    value on its own.
+
+    64 is rank_joint_starts_from_uvq_device's own default, which the policy
+    used to leave unset; 32 is the base_max_starts that was already there.
+    Raising them is measured to be worthwhile -- acceptance at rho 652 goes
+    (64, 32) 28%, (256, 32) 31%, (256, 128) 75%, (512, 256) 77% -- and also
+    measured NOT to be free: base_max_starts 32 -> 128 moves already-accepted
+    values by up to 3.5e-3 nats at rho 163.  Moving a RIFT default is an
+    explicit call, not a side effect of exposing the knob, so this test pins
+    the shipped pair and will fail if a later change drifts it silently."""
     cfg = DP.PolicyConfig()
-    assert (cfg.max_time_nodes, cfg.base_max_starts) == (256, 128)
+    assert (cfg.max_time_nodes, cfg.base_max_starts) == (64, 32)
 
 
 @pytest.mark.parametrize("kw", [{"max_time_nodes": 1}, {"max_time_nodes": 0},

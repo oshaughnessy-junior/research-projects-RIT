@@ -118,7 +118,7 @@ class PolicyConfig(NamedTuple):
     # peak scratch is set by the reserve's amplitude-sized grids, which are
     # compiled into the graph whether or not any row reaches them.  So there is
     # no memory argument for a small capacity here, only a compile-time one.
-    base_max_starts: int = 128
+    base_max_starts: int = 32
     # Time-node capacity of the local plan, SET IN ADVANCE rather than
     # discovered and then declined.  rank_joint_starts_from_uvq_device
     # defaults it to 64 and the policy never passed it, so the value that
@@ -129,13 +129,17 @@ class PolicyConfig(NamedTuple):
     # 44% of rows, 128 holds 73%, 256 holds 91%, 1024 holds 100%.  The median
     # row misses the old cap by eight nodes.
     #
-    # 256 is the default because a row that exceeds its capacity declines to
-    # the exact reserve, which costs about 4.7 h at this rung against 2.3 s
-    # for an accepted row.  Paying a 4x plan on every row to avoid that on 47%
-    # of them is the cheaper side of the trade by three orders of magnitude.
-    # Raise it toward 1024 for the last 9%; lower it only with the decline
-    # counts in front of you.
-    max_time_nodes: int = 256
+    # The default is 64 because that is what shipped: it reproduces the value
+    # rank_joint_starts_from_uvq_device used when the policy passed nothing.
+    # Exposing the knob is the fix here; MOVING it is a separate decision and
+    # is not an agent's to make (RIFT defaults are not changed without an
+    # explicit call).  What a raise buys, measured at rho 652 as
+    # (max_time_nodes, base_max_starts): (64, 32) 28% accepted, (256, 32) 31%,
+    # (256, 128) 75%, (512, 256) 77%.  It is not free: a declined row runs the
+    # exact reserve at hours per row, but base_max_starts 32 -> 128 also moves
+    # already-accepted values by up to 3.5e-3 nats at rho 163.  Raise both
+    # together or neither; raising starts alone plateaus near 16%.
+    max_time_nodes: int = 64
     # Angular oversample 2/4 and 16 modes are the configuration that accepted
     # on production tables at rho 163 and 326 (same record as above; 8 to 12
     # candidates against 32 starts).  PR #268's test values 1/2 and 4/8
