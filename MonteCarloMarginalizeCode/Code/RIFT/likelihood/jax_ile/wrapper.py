@@ -965,41 +965,50 @@ class JAXDistPhiPsiMargLikelihood:
                     _anglemarg._data_m_max(data)))
 
         if scheme == "grid":
-            def _fused(data_, ra, dec, incl, return_lnLt=False):
+            def _fused(data_, ra, dec, incl, return_lnLt=False,
+                       return_amp=False):
+                if return_amp:
+                    raise ValueError(
+                        "the 'grid' scheme has no amp_sizing and no runtime "
+                        "amplitude failsafe, so there is no metric to return")
                 return fused_log_likelihood_distphipsimarg(
                     data_, ra, dec, incl, xg, lwg, pg, sg, interp=interp,
                     time_quadrature=time_quadrature, return_lnLt=return_lnLt)
         elif scheme == "exact":
-            def _fused(data_, ra, dec, incl, return_lnLt=False):
+            def _fused(data_, ra, dec, incl, return_lnLt=False,
+                       return_amp=False):
                 return _anglemarg.fused_log_likelihood_distphipsimarg_exact(
                     data_, ra, dec, incl, xg, lwg, interp=interp,
                     amp_sizing=amp_sizing, time_quadrature=time_quadrature,
-                    return_lnLt=return_lnLt)
+                    return_lnLt=return_lnLt, return_amp=return_amp)
         elif scheme == "peak-local":
             # psi localized on the exact cell partition, phi still dense.  Reachable
             # only when asked for by name -- see the note on ANGLE_MARG_CHOICES for why
             # it is not in 'auto' until a head-to-head pilot has run.
-            def _fused(data_, ra, dec, incl, return_lnLt=False):
+            def _fused(data_, ra, dec, incl, return_lnLt=False,
+                       return_amp=False):
                 return _anglemarg.fused_log_likelihood_distphipsimarg_peaklocal(
                     data_, ra, dec, incl, xg, lwg, interp=interp,
                     amp_sizing=amp_sizing, time_quadrature=time_quadrature,
-                    return_lnLt=return_lnLt)
+                    return_lnLt=return_lnLt, return_amp=return_amp)
         elif scheme == "phi-local":
             # BOTH angle axes localized, with a dense fallback wherever the certificate
             # declines.  By name only, and deliberately not in 'auto': it is slower than
             # 'peak-local' until the fallback can be skipped, which needs a measured
             # acceptance rate on production tables.
-            def _fused(data_, ra, dec, incl, return_lnLt=False):
+            def _fused(data_, ra, dec, incl, return_lnLt=False,
+                       return_amp=False):
                 return _anglemarg.fused_log_likelihood_distphipsimarg_phi_local(
                     data_, ra, dec, incl, xg, lwg, interp=interp,
                     amp_sizing=amp_sizing, time_quadrature=time_quadrature,
-                    return_lnLt=return_lnLt)
+                    return_lnLt=return_lnLt, return_amp=return_amp)
         else:   # laplace
-            def _fused(data_, ra, dec, incl, return_lnLt=False):
+            def _fused(data_, ra, dec, incl, return_lnLt=False,
+                       return_amp=False):
                 return _anglemarg.fused_log_likelihood_distphipsimarg_laplace(
                     data_, ra, dec, incl, xg, lwg, interp=interp,
                     amp_sizing=amp_sizing, time_quadrature=time_quadrature,
-                    return_lnLt=return_lnLt)
+                    return_lnLt=return_lnLt, return_amp=return_amp)
 
         # Cross-axis policy (opt-in).  It REPLACES the per-scheme _fused above:
         # the composite owns time, distance and both angles per row, and uses
@@ -1027,12 +1036,19 @@ class JAXDistPhiPsiMargLikelihood:
                 time_guard=int(cfg.time_guard),
                 reserve_time_refine=int(cfg.reserve_time_refine),
                 reserve_distance_gh_nodes=int(_core._DISTMARG_GH_N),
+                reserve_batch_rows=int(cfg.reserve_batch_rows),
                 total_value_error_budget_nats=float(
                     cfg.total_value_error_budget_nats))
             self.angle_marg_info["direct_marginalization_policy"] = (
                 direct_marginalization_policy)
 
-            def _fused(data_, ra, dec, incl, return_lnLt=False):
+            def _fused(data_, ra, dec, incl, return_lnLt=False,
+                       return_amp=False):
+                if return_amp:
+                    raise ValueError(
+                        "direct_marginalization_policy=%r does not expose the "
+                        "angle-grid amplitude metric"
+                        % (direct_marginalization_policy,))
                 if return_lnLt:
                     raise ValueError(
                         "direct_marginalization_policy=%r marginalizes time "
@@ -1052,9 +1068,43 @@ class JAXDistPhiPsiMargLikelihood:
 
         self._fused = _fused
 
+        # WHICH CALLS ARE COVERED BY THE AMPLITUDE FAILSAFE, AND WHY IT IS THE
+        # BATCHED PATH.  The kernels return their amplitude metric instead of
+        # reporting it from inside the graph, because a host callback anywhere
+        # in a jitted module makes that module ineligible for JAX's persistent
+        # compilation cache (jax/_src/compiler.py::_cache_write) -- and the
+        # angle-marginalization graph is the most expensive compile in RIFT.
+        #
+        # The batched path is every pilot, reweight and final output-cloud
+        # evaluation, i.e. every point that reaches a published artifact, so
+        # the recorded coverage is exactly the set of points the label speaks
+        # for.  The scalar AD/flow-training path deliberately does not report:
+        # its proposals do not enter those artifacts, and asking for the metric
+        # there would put a second output on the differentiated graph.
+        self._amp_record = None
+        if scheme in ("exact", "laplace", "peak-local", "phi-local") and (
+                direct_marginalization_policy == "off"):
+            self._amp_record = lambda amp: _anglemarg.record_amp_failsafe(
+                amp, amp_sizing, scheme)
+
+        # _batched KEEPS its lnL-only contract, and the metric-bearing graph is
+        # a SEPARATE jit.  Folding the amplitude into _batched made its arity
+        # depend on the construction options, so `np.asarray(like._batched(...))`
+        # -- which test_angle_marg_peaklocal_wiring.py and
+        # test_direct_marginalization_policy.py both do, on the SAME line as a
+        # policy-enabled sibling whose _batched still returned one array --
+        # raised "inhomogeneous shape" for the amp-sized schemes only.  Both jits
+        # are lazy, and production reaches only the one log_likelihood calls, so
+        # nothing is compiled or cached twice.
         def _batched(ra, dec, incl):
             return _fused(data, ra, dec, incl)
         self._batched = jax.jit(_batched)
+
+        self._batched_amp = None
+        if self._amp_record is not None:
+            def _batched_amp(ra, dec, incl):
+                return _fused(data, ra, dec, incl, return_amp=True)
+            self._batched_amp = jax.jit(_batched_amp)
 
         def _scalar(theta3):
             v = _fused(data, theta3[0:1], theta3[1:2], theta3[2:3])
@@ -1065,7 +1115,16 @@ class JAXDistPhiPsiMargLikelihood:
 
     def log_likelihood(self, ra, dec, incl):
         """lnL for arrays of 3 angular parameters (ra, dec, incl), shape (S,)."""
-        return self._batched(jnp.asarray(ra), jnp.asarray(dec), jnp.asarray(incl))
+        if self._batched_amp is None:
+            return self._batched(jnp.asarray(ra), jnp.asarray(dec),
+                                 jnp.asarray(incl))
+        # One deliberate device->host read per batch, after the values are
+        # already required on the host anyway.  The maximum accumulates across
+        # calls for the whole event; the values are returned unchanged.
+        values, amp_call = self._batched_amp(
+            jnp.asarray(ra), jnp.asarray(dec), jnp.asarray(incl))
+        self._amp_record(amp_call)
+        return values
 
     def value(self, theta3):
         return float(self._scalar(jnp.asarray(theta3, dtype=jnp.float64)))

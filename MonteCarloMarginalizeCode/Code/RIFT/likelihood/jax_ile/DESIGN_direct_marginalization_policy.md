@@ -151,13 +151,79 @@ is the standing rule on this arm.
 
 ## Cost
 
-The batch runs the controller row by row (`lax.map`), so reserve workspace
-is one row's. Planning is vectorized. Accepted rows pay fixed local work per
-retained mode; declined rows pay three exact reserve evaluations (refined
-rule at two guards, plus the half-refined check). The sampler's angle-scheme chunk
-cap applies because the resolved scheme is `exact`. The policy has not been
-profiled on a GPU under the sampler; PR #268 records single-row device
-timings only.
+<!-- LENGTH: this file is over the 1500-word DESIGN budget in the plain-prose
+gate.  RO authorised the length on 2026-09-08: the cost record matters more
+than the budget here.  Do not trim it back to pass the gate. -->
+
+
+Planning is vectorized. Accepted rows pay fixed local work per retained mode;
+declined rows pay three exact reserve evaluations (refined rule at two guards,
+plus the half-refined check). The sampler's angle-scheme chunk cap applies.
+
+`PolicyConfig.reserve_batch_rows` sets how many rows run under one `vmap`;
+`--direct-marginalization-batch-rows` exposes it. At 1 the rows run one at a
+time under `lax.map`, the graph PR #268 measured. Above 1 the tier-escalation
+`lax.cond` becomes a `select`, so every reserve tier runs for every row. Nothing else changes:
+`test_row_batch_size_changes_cost_not_values_decisions_or_gradients` requires
+`lnL` bitwise equal, every ledger key and summary count equal, and the
+gradient equal to one ulp, over the full-batch, whole-multiple and remainder
+paths.
+
+### Device workspace
+
+XLA buffer assignment, ladder-2 tables, NVIDIA RTX PRO 4000 Blackwell,
+jax 0.9.2, `--n-phi 32 --n-psi 8 --distance-grid-points 256`,
+`reserve_time_refine_max` 32:
+
+| `reserve_batch_rows` | temp GiB at rho 40.8 | temp GiB at rho 652.3 |
+|---|---|---|
+| 1  |  0.425 |  0.432 |
+| 2  |  0.812 |  0.822 |
+| 4  |  1.588 |  1.592 |
+| 8  |  3.132 |  3.132 |
+| 16 |  6.212 |  6.212 |
+| 32 | 12.371 | 12.371 |
+| 64 | 24.692 | 24.692 |
+
+The fit is `0.046 + 0.385 B` GiB, maximum residual 6 MiB, at the grid sizes in
+the caption. The rung does not enter. Measured device use at B=32 was 23.3 GiB
+against the 12.4 GiB analysis figure, so buffer assignment understates the card
+about twofold: a 24 GiB card holds B=32 and not B=64.
+
+The tier count multiplies it. At B=8, `reserve_time_refine_max` 32 costs
+3.114 GiB and 138 s to compile; at 4 (one tier) the same batch costs
+0.415 GiB and 29 s. A batched row pays every tier.
+
+### Throughput
+
+Batching is a REGRESSION, not a saving. It converts three `lax.cond`s to
+selects, not the one the knob's first version named:
+
+| site | becomes, under vmap |
+|---|---|
+| tier escalation in `_row` | every reserve tier runs for every row |
+| `all_axis_peaklocal.py:2504` accept/reserve | every ACCEPTED row also runs the dense reserve |
+| `all_axis_peaklocal.py:1760` per-mode live | every dead mode slot runs a 4-D quadrature |
+
+So the penalty scales with the locally accepted fraction and the tier count.
+Measured on the wiring fixture, 2 of 6 rows accepting, second timed call:
+
+| tiers | B=1 | B=2 | B=6 |
+|---|---|---|---|
+| 1 (`reserve_time_refine_max` 4) | 2.50 s/row | 3.28 (+31%) | 4.08 (+63%) |
+| 2 (`reserve_time_refine_max` 8) | 6.49 s/row | | 7.81 (+20%) |
+
+An earlier production-table point read 96.3 s/row at B=1 against 99.9 at B=8
+and was reported as cost-neutral. It ran at `reserve_time_refine_max` 4, where
+`tiers` has length one and the escalation cond is absent, with `accepted_local`
+0 of 8, so the accept/reserve cond took its cheap branch everywhere. Both
+penalties were inert, making it the best case. The docstring at
+`all_axis_peaklocal.py:2344` is false above B=1.
+
+`reserve_batch_rows` defaults to 1, kept for the equivalence it pins rather
+than for a saving. A single row takes the sequential path whatever is
+requested: `_scalar` evaluates one row, so `value_and_grad` and `hessian`
+would otherwise pay every select with nothing to amortize.
 
 ## Gate before this can be a default
 

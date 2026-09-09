@@ -58,9 +58,22 @@ def test_wrapper_peak_local_matches_exact(boost):
     ex = JAXDistPhiPsiMargLikelihood(data, 30.0, 3000.0, angle_marg="exact", **kw)
     pl = JAXDistPhiPsiMargLikelihood(data, 30.0, 3000.0, angle_marg="peak-local", **kw)
     assert pl.angle_marg_scheme == "peak-local"
+    # _batched returns lnL ALONE for every scheme.  The amplitude metric the
+    # persistent-cache work introduced rides on a separate _batched_amp jit; when
+    # it rode on _batched the two np.asarray calls below raised "inhomogeneous
+    # shape" for the amp-sized schemes, because this line compares two wrappers
+    # whose _batched then had different arities under one attribute name.
     a = np.asarray(ex._batched(jnp.asarray(RA), jnp.asarray(DEC), jnp.asarray(INCL)))
     b = np.asarray(pl._batched(jnp.asarray(RA), jnp.asarray(DEC), jnp.asarray(INCL)))
+    assert a.shape == b.shape == np.shape(RA), (a.shape, b.shape)
     assert np.abs(a - b).max() < 1e-4, (boost, a, b)
+
+    # and the metric-bearing sibling returns the SAME likelihood: a pure caching
+    # change must be numerically inert, so pin it rather than assert it.
+    values, amp = ex._batched_amp(jnp.asarray(RA), jnp.asarray(DEC),
+                                  jnp.asarray(INCL))
+    np.testing.assert_array_equal(np.asarray(values), a)
+    assert np.asarray(amp).shape == () and np.isfinite(float(amp))
 
 
 def test_peak_local_records_its_provenance():
@@ -146,10 +159,15 @@ def test_peak_local_runs_the_runtime_amplitude_failsafe():
     x = jnp.linspace(0.4, 2.0, 8)
     lw = jnp.zeros(8)
     AM.reset_amp_failsafe()
-    # size for a much quieter target than the data actually is: the check must notice
-    AM.fused_log_likelihood_distphipsimarg_peaklocal(
+    # size for a much quieter target than the data actually is: the check must notice.
+    # The kernel now RETURNS its metric rather than reporting it through a host
+    # callback -- a callback anywhere in the graph makes it ineligible for JAX's
+    # persistent compilation cache -- so the caller records, exactly as the
+    # wrapper's batched path does in production.
+    _, amp_call = AM.fused_log_likelihood_distphipsimarg_peaklocal(
         data, jnp.asarray(RA), jnp.asarray(DEC), jnp.asarray(INCL), x, lw,
-        interp=INTERP, amp_sizing=1.0)
+        interp=INTERP, amp_sizing=1.0, return_amp=True)
+    AM.record_amp_failsafe(amp_call, 1.0, "peak-local")
     st = AM.amp_failsafe_state(barrier=True)
     assert st.get("tripped"), st
     assert st.get("scheme") == "peak-local", st
@@ -360,8 +378,18 @@ def test_peak_local_artifacts_carry_the_standing_best_effort_label():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     AM.reset_amp_failsafe()
+    # Nothing recorded: the label must STAND and must not read as a pass.  The
+    # former wording was BEST-EFFORT; the metric is now returned data rather
+    # than a droppable callback, so an unchecked event says NOT-PERFORMED and a
+    # checked one says OUTPUT-CLOUD-PASS.  What the P1 finding requires is
+    # unchanged -- peak-local never publishes silence.
     note = mod.angle_grid_suspect_note("peak-local")
-    assert note.startswith("ANGLE-GRID-CHECK=BEST-EFFORT"), note
+    assert note.startswith("ANGLE-GRID-CHECK=NOT-PERFORMED"), note
+    assert "NOT a pass" in note and "UNKNOWN" in note, note
+    AM.record_amp_failsafe(1.0, 100.0, "peak-local")
+    checked = mod.angle_grid_suspect_note("peak-local")
+    assert checked.startswith("ANGLE-GRID-CHECK=OUTPUT-CLOUD-PASS"), checked
+    AM.reset_amp_failsafe()
     assert mod.angle_grid_suspect_note("grid") == ""
 
 
