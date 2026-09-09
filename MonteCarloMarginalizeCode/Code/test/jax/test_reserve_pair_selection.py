@@ -188,3 +188,55 @@ def test_the_selector_sizes_on_the_narrow_bandwidth(data):
         DP.q_effective_bandwidth_hz(data, moment="central"))
     expect = 1.0 / (2.0 * np.pi * RHO_160 * sigma_f)
     assert info["sigma_t_s"] == pytest.approx(expect, rel=1e-9)
+
+
+def test_the_gate_roster_lists_every_file_once_and_covers_this_one():
+    """The CI roster is an explicit list, so a new test file is unrun until it
+    is added -- and a DUPLICATE entry runs the file twice and inflates the
+    collection floor, which then hides a later removal.
+
+    Both halves are things I got wrong on this branch within one hour: a rebase
+    resolved the roster conflict by taking upstream's side and silently dropped
+    my entry, and the fix then added a second copy of an entry that was already
+    there because my check used a broken grep pattern.
+    """
+    import collections
+    import os
+    import re
+
+    # test/jax/<file> -> test/jax -> test -> Code -> MonteCarloMarginalizeCode
+    # -> repo root: FIVE levels, not four.
+    root = os.path.abspath(__file__)
+    for _ in range(5):
+        root = os.path.dirname(root)
+    gate = os.path.join(root, ".travis", "test-jax.sh")
+    src = open(gate, encoding="utf-8").read()
+    block = src[src.index("FILES=("):src.index("\n)", src.index("FILES=("))]
+    listed = re.findall(r'\$\{JAXDIR\}/(test_[A-Za-z0-9_]+\.py)', block)
+
+    dupes = {n: c for n, c in collections.Counter(listed).items() if c > 1}
+    assert not dupes, "roster lists a file more than once: %r" % (dupes,)
+    assert os.path.basename(__file__) in listed, (
+        "this file is not in the gate roster, so CI would not run it")
+
+
+def test_the_gate_sets_its_floor_exactly_once():
+    """Bash keeps the LAST assignment, so a duplicated constant leaves earlier
+    ones dead while they still read as authoritative in review.
+
+    This file carried FIVE consecutive unconditional EXPECTED_TESTS= lines
+    (648, 629, 657, 648, 705) accumulated by parallel merges.  Only 705 was
+    live.  A reviewer checking "is the floor right?" would most likely read the
+    first, which had been dead for three merges.
+    """
+    import os
+    import re
+
+    root = os.path.abspath(__file__)
+    for _ in range(5):
+        root = os.path.dirname(root)
+    src = open(os.path.join(root, ".travis", "test-jax.sh"), encoding="utf-8").read()
+    assigns = re.findall(r"(?m)^EXPECTED_TESTS=(\d+)", src)
+    assert len(assigns) == 1, (
+        "EXPECTED_TESTS assigned %d times (%s); bash keeps the last and the "
+        "rest are dead" % (len(assigns), ", ".join(assigns)))
