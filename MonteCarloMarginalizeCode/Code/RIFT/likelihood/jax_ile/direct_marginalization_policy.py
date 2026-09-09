@@ -353,11 +353,18 @@ def q_effective_bandwidth_hz(data, moment="raw"):
     circular gives a peak of 11.3 Hz equivalent against a central moment of
     5.6 Hz; linear gives 309.6 Hz against a raw moment of 200.1 Hz.
 
-    AND RAW IS STILL ~sqrt(2) OPTIMISTIC IN THE LINEAR LIMIT.  |zeta|^2 carries
-    e^{2 i theta}, so the modulation is at TWICE the carrier and the Gaussian
-    equivalent of 1 + cos(2 theta) has 1/(2 pi sigma_t) = sqrt(2) f_c while the
-    raw moment returns ~f_c.  Callers sizing a lattice should carry that factor
-    rather than assume raw is a floor.
+    RAW IS EXACT FOR THE INTEGRAND, NOT sqrt(2) OPTIMISTIC.  An earlier revision
+    of this docstring claimed the latter, from measuring the curvature of
+    |zeta|^2 itself.  That is not the integrand.  The quadrature integrates
+    exp(lnL) with lnL = (rho^2/2) |zeta_hat|^2, so in the linear limit
+    |zeta_hat|^2 = cos^2(omega t) ~ 1 - omega^2 t^2 gives
+    lnL ~ const - (rho^2/2) omega^2 t^2 and hence sigma_t = 1/(rho omega)
+    = 1/(2 pi rho f_c) exactly -- the raw moment, no factor.  The sqrt(2)
+    appears only if the curvature of |zeta|^2 is read as a Gaussian width
+    WITHOUT the rho^2/2 prefactor; the two multiply.  Verified against the
+    log-integrand on a carrier fixture over four decades of rho:
+    measured/predicted = 1.0008, 1.0000, 0.9999, 0.9999 at rho 12.65, 40.77,
+    163.08, 652.31.
 
     Both are returned by name so the two can never be silently confused.  An
     earlier revision of this function made central the default and fed it to
