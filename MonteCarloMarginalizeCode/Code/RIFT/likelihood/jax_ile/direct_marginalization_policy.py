@@ -332,8 +332,12 @@ def validate_policy_config(config):
 # ALGEBRAICALLY convergent, so the node count it demands scales as
 # window / sigma_t.  A direct test at rho 40.77 on 64 rows says otherwise:
 #
-#     refine=4  2453 nodes   warrant 1.8e-03 .. 1.14e-02   fails 1e-3
-#     refine=8  4905 nodes   warrant 5e-11   .. 7.8e-09    passes
+#     refine=4  2453 nodes   warrant 1.8e-03 .. 1.14e-02
+#     refine=8  4905 nodes   warrant 5e-11   .. 7.8e-09
+#
+# The tolerance those are read against has MOVED (#301: 1e-3 -> 1e-2), so the
+# numbers are recorded without a verdict: refine=4 fails 1e-3 and straddles
+# 1e-2.  See DESIGN_direct_marginalization_policy.md.
 #
 # Doubling the rule improved the quadrature error by ~1e6.  An algebraic rule
 # would give 4.  That is the signature of the trapezoid rule on a BAND-LIMITED
