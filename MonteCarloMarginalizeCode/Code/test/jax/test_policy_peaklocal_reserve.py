@@ -298,6 +298,40 @@ def test_laplace_kernel_runs_through_the_real_anglemarg_function():
     assert abs(int(np.argmax(lap)) - peak) <= 1
 
 
+def test_locator_search_phi_grid_is_sized_for_the_amplitude():
+    """At rho ~ 630 the 64-node phi grid's ripple, about rho^2 (pi/64)^2 =
+    975 nat, exceeds the profile's change across one search cell, here
+    (rho^2/2)(0.125/tau)^2 = 49 nat with tau = 8, so the search maximum lands
+    on the wrong cell and the polish cannot reach the peak (measured on the
+    rung-652 production row, 2026-09-09).  With the policy's 4096 nodes the
+    ripple is 0.24 nat and the locator lands within the marginal peak's
+    width tau / rho of the carrier's centre, at the profile's true maximum
+    rho^2 / 2."""
+    n, guard = 40, 8
+    c = dict(_CARRIER, amp=1000.0, tau=8.0, t0=19.37)
+    support = np.arange(-guard, n + guard, dtype=float)
+    C_A = np.zeros((3, 3, support.size), dtype=np.complex128)
+    C_A[2, 1] = (c["amp"] * np.exp(-0.5 * ((support - c["t0"]) / c["tau"]) ** 2)
+                 * np.exp(2j * np.pi * c["f_c"] * (support - c["t0"])))
+    C_B = np.zeros((5, 5), dtype=np.complex128)
+    C_B[0, 2] = c["B"]
+    rho = 2.0 * c["amp"] / np.sqrt(c["B"])
+    width = c["tau"] / rho
+    x_lo, x_hi = 0.0, 1.0e6
+    kw = dict(n_candidates=2, search_refine=8, angular_lattice=8,
+              newton_steps=8, newton_step_max=1.0)
+    sized = PLR.locate_time_maxima(C_A, C_B, guard, n, x_lo, x_hi, n_phi=4096, **kw)
+    k = int(np.argmax(np.where(np.asarray(sized["live"]), np.asarray(sized["values"]), -np.inf)))
+    assert abs(float(sized["centres"][k]) - c["t0"]) < width
+    assert abs(float(sized["values"][k]) - 0.5 * rho ** 2) < 1.0
+    # The 64-node grid's failure is not pinned here: on this one-harmonic
+    # carrier the ripple's phase can favour the right cell by chance.  The
+    # production row is the evidence (DESIGN, rung 652 row 0).
+    cfg = DP.PolicyConfig(reserve_scheme="peaklocal-exact")
+    assert int(cfg.reserve_peaklocal_search_phi_nodes) == 4096
+    assert rho ** 2 * (np.pi / cfg.reserve_peaklocal_search_phi_nodes) ** 2 < 1.0
+
+
 # ------------------------------------------------ agreement on the reserve
 def _policy(monkeypatch, tables, cfg, amp_sizing=AMP_SIZING):
     monkeypatch.setattr(_core, "_DISTMARG_GH_N", 0)

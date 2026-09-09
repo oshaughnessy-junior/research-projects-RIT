@@ -281,6 +281,19 @@ class PolicyConfig(NamedTuple):
     # window (RO, 2026-09-09).
     reserve_peaklocal_scan_nodes: int = 65
     reserve_peaklocal_scan_margin_sigmas: float = 16.0
+    # Locator search sizing (measured 2026-09-09, rung 652 row 0): the search
+    # grid's phi lattice leaves a ripple of about rho^2 (pi / n_phi)^2 nat in
+    # the profile, 1000 nat at rho 652 on 64 nodes against a 25-nat time
+    # structure per search cell, so the search maximum landed 0.4 samples off
+    # and the focus certificate refused the row.  4096 nodes hold the ripple
+    # under 1 nat up to rho 1300; the count is a static shape, so it is a
+    # config field rather than a per-row prediction.  The Newton polish of
+    # (phi, u) at each polished node was clipped to 0.1 rad per step for 3
+    # steps, a 0.3 rad reach against a 0.4 rad lattice offset: 500 nat low on
+    # the same row.  Eight steps within a 1 rad trust region reach it.
+    reserve_peaklocal_search_phi_nodes: int = 4096
+    reserve_peaklocal_newton_steps: int = 8
+    reserve_peaklocal_newton_step_max: float = 1.0
     reserve_peaklocal_outside_slack_nats: float = 5.0
     reserve_peaklocal_sigma_t_override_samples: float = float("nan")
 
@@ -444,6 +457,12 @@ def validate_policy_config(config):
         ns = int(config.reserve_peaklocal_scan_nodes)
         if ns < 3 or ns % 2 == 0:
             raise ValueError("reserve_peaklocal_scan_nodes must be an odd integer >= 3")
+        if int(config.reserve_peaklocal_search_phi_nodes) < 4:
+            raise ValueError("reserve_peaklocal_search_phi_nodes must be >= 4")
+        if int(config.reserve_peaklocal_newton_steps) < 1:
+            raise ValueError("reserve_peaklocal_newton_steps must be >= 1")
+        if not (float(config.reserve_peaklocal_newton_step_max) > 0.0):
+            raise ValueError("reserve_peaklocal_newton_step_max must be positive")
         if not (float(config.reserve_peaklocal_scan_margin_sigmas) > 0.0
                 and float(config.reserve_peaklocal_outside_slack_nats) >= 0.0):
             raise ValueError("reserve_peaklocal_scan_margin_sigmas must be positive "
@@ -1149,7 +1168,10 @@ def fused_log_likelihood_four_axis_policy(
                 table, norm, guard, int(data.npts), x_min, x_max,
                 n_candidates=int(config.reserve_peaklocal_blocks),
                 search_refine=int(config.reserve_peaklocal_search_refine),
-                angular_lattice=int(config.reserve_peaklocal_angular_lattice))
+                angular_lattice=int(config.reserve_peaklocal_angular_lattice),
+                n_phi=int(config.reserve_peaklocal_search_phi_nodes),
+                newton_steps=int(config.reserve_peaklocal_newton_steps),
+                newton_step_max=float(config.reserve_peaklocal_newton_step_max))
             pred = _predict_row(table, norm, found["rho_located"])
             sigma_for_margin = jnp.minimum(
                 jnp.where(jnp.isfinite(pred["sigma_t"]), pred["sigma_t"], jnp.inf),
@@ -1192,6 +1214,8 @@ def fused_log_likelihood_four_axis_policy(
                     "first_block_centre_samples"],
                 reserve_peaklocal_rho_pred=pred["rho"],
                 reserve_peaklocal_rho_bound=pred["rho_bound"],
+                reserve_peaklocal_search_phi_nodes=jnp.asarray(
+                    int(config.reserve_peaklocal_search_phi_nodes), dtype=jnp.int32),
                 # Where the rule is fine: the kernel's focus certificate.
                 reserve_peaklocal_focus_centre_samples=rule["first_block_centre_samples"],
                 reserve_peaklocal_focus_half_width_samples=0.25 * rule["block_span_samples"],
@@ -1234,6 +1258,7 @@ def fused_log_likelihood_four_axis_policy(
             reserve_peaklocal_first_block_centre_samples=nan,
             reserve_peaklocal_rho_pred=nan,
             reserve_peaklocal_rho_bound=nan,
+            reserve_peaklocal_search_phi_nodes=jnp.asarray(0, dtype=jnp.int32),
             reserve_peaklocal_focus_centre_samples=nan,
             reserve_peaklocal_focus_half_width_samples=nan,
             reserve_peaklocal_scan_lo_samples=nan,
