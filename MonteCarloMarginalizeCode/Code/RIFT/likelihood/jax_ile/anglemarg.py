@@ -2105,6 +2105,40 @@ _GH_PROBE_DEC = (0.3,)
 _GH_PROBE_INCL = (1.0,)
 
 
+def _gh_laplace_precondition(m_max, feature):
+    """The two conditions that need no tables.  ``None`` means both hold.
+
+    Split out because there are two entry points and the cheap half must run
+    FIRST at both of them.  ``gh_laplace_supported_for_data`` builds tables, and
+    building them for a banded dataset takes the banded accumulation route --
+    a different code path, which fails on its own terms before the response
+    model is ever looked at.  So the caller that starts from a dataset has to
+    be able to refuse before it builds anything.
+    """
+    if int(m_max) > _GH_PSI_M_MAX:
+        # The tables are SIZED by m_max, so a mismatched m_max is a shape error
+        # rather than a measurement.
+        return dict(gh_laplace_ok=False, m_max=int(m_max),
+                    identity_A0_over_A1=None, identity_B1_over_B0=None,
+                    feature=feature,
+                    gh_laplace_reason="mode content m_max=%d above the "
+                                      "validated %d"
+                                      % (int(m_max), _GH_PSI_M_MAX))
+    # ANGLE-INDEPENDENT CONDITION, and the one that actually generalises.  A
+    # numerical check can only ever speak for the angles it was evaluated at,
+    # and the placement runs at arbitrary sampled angles; the response model is
+    # a property of the packed data and holds for all of them.
+    if feature not in _GH_PSI_STATIC_FEATURES:
+        return dict(gh_laplace_ok=False, m_max=int(m_max),
+                    identity_A0_over_A1=None, identity_B1_over_B0=None,
+                    feature=feature,
+                    gh_laplace_reason="response model %r does not give "
+                                      "the exact e^{-2i psi} polarization "
+                                      "factorization the A0 == 0 / B1 == 0 "
+                                      "identity rests on" % (feature,))
+    return None
+
+
 def gh_laplace_supported_for_data(data, interp=JAX_INTERP_DEFAULT):
     """:func:`gh_laplace_supported` on tables this builds at a probe direction.
 
@@ -2118,14 +2152,21 @@ def gh_laplace_supported_for_data(data, interp=JAX_INTERP_DEFAULT):
     use NEEDS the identity: that is the caller's condition (it is needed by the
     per-sample adaptive node placement, not by a static grid).
     """
+    m_max = _data_m_max(data)
+    feature = getattr(data, "feature", None)
+    # Cheap half first: see _gh_laplace_precondition.  Building the probe
+    # tables for a banded dataset would take the banded route and raise on its
+    # own missing fields, so a refusal here must not depend on tables.
+    refused = _gh_laplace_precondition(m_max, feature)
+    if refused is not None:
+        return False, refused
     C_A, C_B = angle_coefficient_tables(
         data,
         jnp.asarray(_GH_PROBE_RA, dtype=jnp.float64),
         jnp.asarray(_GH_PROBE_DEC, dtype=jnp.float64),
         jnp.asarray(_GH_PROBE_INCL, dtype=jnp.float64),
         interp)[:2]
-    return gh_laplace_supported(C_A, C_B, _data_m_max(data),
-                                feature=getattr(data, "feature", None))
+    return gh_laplace_supported(C_A, C_B, m_max, feature=feature)
 
 
 def gh_laplace_supported(C_A, C_B, m_max, feature=None):
@@ -2154,28 +2195,9 @@ def gh_laplace_supported(C_A, C_B, m_max, feature=None):
     # enough to resolve their phi content (harmonics to 2*m_max), NOT the
     # coefficient slices -- see psi_harmonics_at_phi's docstring for the two
     # ways reading slices gave the wrong answer.
-    ok_modes = int(m_max) <= _GH_PSI_M_MAX
-    if not ok_modes:
-        # Return before reconstructing: the tables are SIZED by m_max, so a
-        # mismatched m_max is a shape error rather than a measurement.
-        return False, dict(gh_laplace_ok=False, m_max=int(m_max),
-                           identity_A0_over_A1=None, identity_B1_over_B0=None,
-                           feature=feature,
-                           gh_laplace_reason="mode content m_max=%d above the "
-                                             "validated %d"
-                                             % (int(m_max), _GH_PSI_M_MAX))
-    # ANGLE-INDEPENDENT CONDITION, and the one that actually generalises.  A
-    # numerical check can only ever speak for the angles it was evaluated at,
-    # and the placement runs at arbitrary sampled angles; the response model is
-    # a property of the packed data and holds for all of them.
-    if feature not in _GH_PSI_STATIC_FEATURES:
-        return False, dict(gh_laplace_ok=False, m_max=int(m_max),
-                           identity_A0_over_A1=None, identity_B1_over_B0=None,
-                           feature=feature,
-                           gh_laplace_reason="response model %r does not give "
-                                             "the exact e^{-2i psi} polarization "
-                                             "factorization the A0 == 0 / B1 == 0 "
-                                             "identity rests on" % (feature,))
+    refused = _gh_laplace_precondition(m_max, feature)
+    if refused is not None:
+        return False, refused
     n_phi_probe = max(8 * int(m_max) + 8, 16)
     phi_probe = _np.linspace(0.0, 2.0 * _np.pi, n_phi_probe, endpoint=False)
     A0f, A1f, B0f, B1f, B2f = psi_harmonics_at_phi(C_A, C_B, phi_probe, m_max)
