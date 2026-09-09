@@ -375,14 +375,15 @@ seed-7 draw, one Blackwell.  Under the #301 capacities every row accepts locally
 peak-local reserve has its support-limited scan here: 65 scan nodes plus
 4 x 73 block nodes, 357 in all.  It is compared with the whole-window exact
 reserve on the rows where that exists.  Row 1's is refine 32 with its refine-16
-check agreeing to 6e-10; rows 0 and 2 are being produced:
+check agreeing to 6e-10; the exact rows 0, 2 and 3 were stopped on 2026-09-09 (RO:
+the exact kernel is not the one that drops out at 652) and are not run:
 
 | row | exact reserve | peak-local | difference, nat | nodes exact / peak-local | escalations exact / peak-local | wall s exact / peak-local | sigma_t predicted | located | plan | rho (located) | resolution error |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| 0 | (running) | 13165.892582 |  |  / 357 |  / 0 |  / 186 | 0.0629 | 0.0619 | 0.0619 | 162.5 | 1.9e-10 |
+| 0 | not run | 13165.892582 |  |  / 357 |  / 0 |  / 186 | 0.0629 | 0.0619 | 0.0619 | 162.5 | 1.9e-10 |
 | 1 | 12335.902574 | 12335.902574 | +3.2e-07 | 19617 / 357 | 3 / 0 | 9805 / 107 | 0.0650 | 0.0649 | 0.0649 | 157.4 | 9.1e-12 |
-| 2 | (running) | 10083.512460 |  |  / 357 |  / 0 |  / 107 | 0.0719 | 0.0700 | 0.0700 | 142.3 | 8.9e-07 |
-| 3 | (running) | 8474.729892 |  |  / 357 |  / 0 |  / 108 | 0.0786 | 0.0782 | 0.0782 | 130.2 | 0.0e+00 |
+| 2 | not run | 10083.512460 |  |  / 357 |  / 0 |  / 107 | 0.0719 | 0.0700 | 0.0700 | 142.3 | 8.9e-07 |
+| 3 | not run | 8474.729892 |  |  / 357 |  / 0 |  / 108 | 0.0786 | 0.0782 | 0.0782 | 130.2 | 0.0e+00 |
 
 Row 1 agrees with the converged whole-window value to every printed digit at
 2 percent of its node count and 1 percent of its wall time.  No row escalated:
