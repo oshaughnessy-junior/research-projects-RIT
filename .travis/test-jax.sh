@@ -986,6 +986,15 @@ EXPECTED_TESTS=657
 # this commit.
 EXPECTED_TESTS=648
 
+# EIGHTEENTH, the YOLO integration merge of 2026-09-08 (RIFT PRs #286, #295,
+# #297, #298, #299 -- #299 carries #288 -- merged onto rift_O4d after #294).
+# Every block above was measured on its own tree, so none of their numbers nor
+# their sum describes this one.  Re-measured by running THIS script on the merged
+# tree (ldas-grid, ~/.cache/jaxci_venv, jax 0.9.2, DESELECT loop applied) and
+# reading its own collection line: "collected 705 tests from 42 files".  This
+# assignment is the one that binds; the earlier ones are kept as provenance.
+EXPECTED_TESTS=705
+
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
 collect_rc=$?
