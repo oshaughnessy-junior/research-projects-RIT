@@ -72,8 +72,12 @@ guard 128 initial / 256 certified), distance grid 512 uniform nodes over
 (1.2, -0.4, 0.7, 0.9, 2.1). Host `ldas-grid`, CPU, float64,
 `~/.cache/jaxci_venv/bin/python`.
 
-Amplitude is set by the injected distance: 390 Mpc gives rho 19.92, and
-48.5 Mpc gives rho 160.18.
+Amplitude is set by the injected distance. The rho below is the network
+optimal SNR of the zero-noise data, sqrt(sum <d|d>) over 40-300 Hz: 390 Mpc
+gives rho 45.9 (H1 28.5, L1 36.0) and 48.5 Mpc gives rho 369 (H1 229, L1 289).
+`extras["guess_snr"]` reads 19.92 and 160.18 on the same data, 2.305x lower:
+it is the precompute's guess sqrt(sum max|Q_lm|^2 / U_lm) / 2.3, quoted as rho
+in earlier versions of this record.
 
 ## Agreement with an independent reference
 
@@ -90,7 +94,7 @@ ramps on `k/g`.
 
 Reference convergence, tapered. Successive differences along each ladder:
 
-| ladder | rho 19.92 | rho 160.18 |
+| ladder | rho 45.9 | rho 369 |
 |---|---|---|
 | factor 64→128→256→512→1024 at guard 512 | 0, 0, 0, 0 | -5.6e-02, +1.2e-03, +7e-12, 0 |
 | guard 128→256→512→1024 at factor 512 | +7.4e-07, +1.8e-07, +4.5e-08 | +4.7e-05, +1.2e-05, +2.9e-06 |
@@ -98,7 +102,7 @@ Reference convergence, tapered. Successive differences along each ladder:
 The taper is required. An untapered periodic reconstruction leaves a step at the
 periodic seam, and its Gibbs ringing decays like 1/guard:
 
-| untapered reference, factor 128 | rho 19.92 | rho 160.18 |
+| untapered reference, factor 128 | rho 45.9 | rho 369 |
 |---|---|---|
 | guard 128 | 589.929584 | 39196.403097 |
 | guard 256 | 589.897169 | 39194.333390 |
@@ -106,7 +110,7 @@ periodic seam, and its Gibbs ringing decays like 1/guard:
 | guard 1024 | 589.878738 | 39193.156559 |
 
 Each doubling halves the residual instead of removing it. At guard 1024 the
-untapered reference is still 1.3e-03 nat (rho 20) and 8.1e-02 nat (rho 160) from
+untapered reference is still 1.3e-03 nat (rho 46) and 8.1e-02 nat (rho 369) from
 the shipped value, so it certifies nothing at the tolerance this work asserts.
 
 The shipped value is not sitting on its own stopping tolerance. Forcing
@@ -122,11 +126,11 @@ doubling cannot be met within `_TIME_ADAPTIVE_FACTOR_MAX`.
 | 160.18 | 35923.702300 | 39193.075979 | 3269.4 |
 
 Reduce-then-refine, built explicitly in the test with the same numpy pieces,
-lands 3.31 nat (rho 20) and 99.35 nat (rho 160) from the shipped value.
+lands 3.31 nat (rho 46) and 99.35 nat (rho 369) from the shipped value.
 
 Mutating `at_factor` to reduce on the coarse grid and refine the reduced field
-makes the rho 20 agreement test fail by -3.366 nat, about 3400 times its
-tolerance, and makes the rho 160 row return NaN. The resolution and doubling
+makes the rho 46 agreement test fail by -3.366 nat, about 3400 times its
+tolerance, and makes the rho 369 row return NaN. The resolution and doubling
 certificates reject the wrong-order field on their own.
 
 ## The endpoint certificate
@@ -148,7 +152,7 @@ Every prior-seeded driver mode evaluates them by the thousand (`--mode map` and
 `nuts` pilot on 4000, `laplace-is` on `n_max/4`, `prior-mc` on `n_max`), and the
 driver stops the run on one NaN.
 
-Measured, same injection as above at 900 Mpc (rho 8.7), 20 ms half-window,
+Measured, same injection as above at 900 Mpc (rho 19.9), 20 ms half-window,
 seeds 0-3 of the driver's prior, 64 rows each:
 
 | certificate set | uncertified rows |
@@ -202,14 +206,16 @@ evaluation certified: the resolved peak is narrower than one moment-matched
 Gaussian covers. It is not a certificate failure. The default mode therefore
 needs a larger budget or another mode under `bandlimited` on a narrow posterior.
 
-Two labels in this record need a caveat. The "rho" values above are
-`extras["guess_snr"]` from `build_data_from_precompute`. On the 900 Mpc
-injection that quantity is 8.72 while the likelihood maximum implies about 19.5,
-and the injected polarization and reference phase are not where the likelihood
-peaks (95.4 nat at the injection against 189.5 on a scan of either angle at the
-injected sky). The agreement tests compare two reconstructions at one fixed
-point, so they stand; the amplitude labels do not. That convention question is
-a separate follow-up.
+The injected angles are not where this likelihood peaks. On the 900 Mpc
+injection the fixed-distance lnL at the injected angles is 84.0 in the
+conventional code and 84.3 in JAX. The 2-D (psi, phiref) maximum is 194.9 in
+both codes, so the offset is a property of the fixture and not of the
+quadrature. The fixture hands the precompute the same P as the injection. For
+IMRPhenomD the template route (`SimInspiralTDModesFromPolarizations`) bakes
+that P's phiref and psi into the (2,2) mode as exp(-2i phiref) exp(+4i psi)
+(measured, lalsimulation 6.2.0). ILE then applies both again through Y_lm and
+F. Production drivers zero P.phiref and P.psi before the precompute.
+`lalsimutils` is unchanged.
 
 ### The fixed-distance kernel (follow-up, 2026-09-08)
 
