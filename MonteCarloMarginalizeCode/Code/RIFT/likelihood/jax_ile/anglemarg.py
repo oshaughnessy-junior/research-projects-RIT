@@ -88,6 +88,7 @@ __all__ = [
     "angle_coefficient_tables",
     "estimate_angle_amplitude",
     "coefficient_table_distphipsimarg_exact",
+    "coefficient_table_distphipsimarg_laplace",
     "fused_log_likelihood_distphipsimarg_exact",
     "fused_log_likelihood_distphipsimarg_laplace",
     "choose_angle_marg_scheme",
@@ -133,10 +134,15 @@ __all__ = [
 # Why 'exact' and not 'auto': 'auto' selects 'laplace' above
 # ANGLE_MARG_CROSSOVER_AMPLITUDE (rho ~26-30; see that constant's note for why
 # 26 and not the 21 this line used to say), which is an ACCURACY crossover.
-# But 'laplace' cannot use the per-sample adaptive distance quadrature and the
-# log-uniform distance grid is opt-in, so on the default uniform grid 'laplace'
-# was measured 43.2 nats from 'exact'+GH16 at rho 163 (mean; 16.3 median) -- an
-# error on the DISTANCE axis, not the angular one, which is ~1e-6 nats there.
+# But 'laplace' on the DEFAULT UNIFORM distance grid was measured 43.2 nats
+# from 'exact'+GH16 at rho 163 (mean; 16.3 median) -- an error on the
+# DISTANCE axis, not the angular one, which is ~1e-6 nats there.  (This
+# comment used to say laplace 'cannot use the per-sample adaptive distance
+# quadrature'.  It can, and does, for m_max <= _GH_PSI_M_MAX via
+# _gh_psi_node_offsets, gated by gh_laplace_supported; the 43.2 nats is what
+# the UNIFORM grid costs, not what the scheme costs.)  The log-uniform distance
+# grid is opt-in, so a caller who selects laplace without moving the distance
+# axis with it pays that 43.2 nats.
 # A default that is correct and slow beats one that is fast and tens of nats
 # wrong.  'auto' becomes the right default once laplace has a sound distance
 # quadrature, and ANGLE_MARG_CROSSOVER_AMPLITUDE should then be re-derived from
@@ -1643,81 +1649,59 @@ def _gh_psi_node_offsets(n_nodes):
     return (z, z[np.maximum(idx - 1, 0)], z[np.minimum(idx + 1, n - 1)], n)
 
 
-def fused_log_likelihood_distphipsimarg_laplace(
-        data, ra, dec, incl, x_grid, log_w_grid,
-        interp=JAX_INTERP_DEFAULT, amp_sizing=None,
+def coefficient_table_distphipsimarg_laplace(
+        C_A, C_B, x_grid, log_w_grid, *, amp_sizing=None, m_max=None,
         phi_chunk=16, dist_block=4, point_block=LAPLACE_POINT_BLOCK,
-        time_quadrature=TIME_QUAD_DEFAULT, return_lnLt=False,
         return_amp=False):
-    """Distance-, phi_ref- AND psi-marginalized lnL: analytic psi-Laplace scheme.
+    """Stream the psi-Laplace angle/distance reserve from coefficient tables.
 
-    Same contract and normalization as
-    :func:`fused_log_likelihood_distphipsimarg_exact`, but the psi axis is
-    removed analytically (see :func:`_laplace_psi_lnI`): at every
-    (dense-phi, distance-node, time) point the u-exponent coefficients follow
-    directly from the SAME coefficient tables,
+    Same seam and normalization contract as
+    :func:`coefficient_table_distphipsimarg_exact`: it consumes the tables
+    :func:`angle_coefficient_tables` returns, produces ``(S, Ntime)``
+    normalized over the two periodic angles, and does NOT integrate time.
+    Extracted from :func:`fused_log_likelihood_distphipsimarg_laplace`, which
+    is now a thin wrapper over it, so the two paths cannot drift.
 
-        a  = x A0(phi) - x^2/2 B0(phi)
-        c1 = x A1(phi) - x^2/2 B1(phi)          (order e^{iu})
-        c2 =           - x^2/2 B2(phi)          (order e^{2iu})
+    It exists because the four-axis policy's reserve consumes already-built
+    tables at refined time nodes, and the only table-level reserve was the
+    exact one.  That made the reserve method un-selectable: the composite could
+    only ever fall back to exact angles, whatever the amplitude.
 
-    so no additional likelihood evaluations are needed.  Cost scales ~sqrt(A)
-    (the dense phi axis) instead of ~A; the Laplace error is O(1/A) and
-    SHRINKS with SNR.
+    Costs ~sqrt(A) rather than ~A -- the lattice is dense in phi only, the psi
+    axis being removed analytically -- and its error SHRINKS with amplitude, so
+    it is the reserve to use above the selector crossover.  The caller owns that
+    choice; this function does not select.
 
-    The adaptive distance quadrature (JAX_ILE_DISTMARG_GH) is honoured for
-    ``m_max <= _GH_PSI_M_MAX`` via the psi-marginal node placement documented
-    above ``_gh_psi_node_offsets``; ``x_grid``/``log_w_grid`` then only supply
-    the support [x_min, x_max] and the prior normalization, exactly as on the
-    exact path.  Richer mode content still RAISES rather than being silently
-    accepted: the placement rests on an A0 == B1 == 0 identity that is
-    established for (2,+-2) only.
-
-    Two DIFFERENT axes, and conflating them has already misled a reader.  The
-    paragraph above is about the PER-SAMPLE adaptive quadrature.  The STATIC
-    distance grid is separate and is not restricted here at all:
-    ``--distance-grid-scheme loguniform`` is supported and gated on this path,
-    and needs no node-placement rule because it locates no peak -- one relative
-    spacing resolves every per-sample peak wherever it sits.  See
-    DESIGN_jax_distance_quadrature.md.  The two cannot be combined: with
-    JAX_ILE_DISTMARG_GH set the per-sample quadrature consumes only the SUPPORT
-    of ``x_grid``, so the log-uniform option would be bit-identically inert and
-    is refused rather than silently ignored.
-
-    Memory of the multiplicative quadrature slab is bounded by ``phi_chunk`` x
-    ``dist_block`` x ``point_block``, never by the full sample x time product or
-    by grid sizes.  ``point_block`` rolls independent ``(sample, time)`` bins and
-    changes no quadrature rule or reduction order within a bin.
+    The adaptive distance quadrature is honoured exactly as in the fused
+    kernel, and carries the same restriction: the psi-marginal node placement
+    rests on the A0 == 0 / B1 == 0 identity, established for mode content up to
+    ``_GH_PSI_M_MAX``.  That identity is a property of the DATA and cannot be
+    measured here, where the tables are tracers; the caller must have gated it
+    with :func:`gh_laplace_supported` on concrete tables.
     """
-    # RESPONSE-MODEL PRECONDITION, before anything is built.  This function is
-    # public (__all__) and is called directly by the wrapper and by several test
-    # modules, so a wrapper-only gate leaves a live bypass: a direct call with a
-    # banded response and m_max <= 2 would execute the unsupported placement
-    # while the wrapper correctly refused it.  `feature` is a plain Python
-    # attribute -- static and trace-safe -- so unlike the numerical A0/B1
-    # measurement (which needs concrete tables and therefore stays in the
-    # wrapper) it costs nothing, and checking it here also avoids paying for a
-    # coefficient-table build that is about to be rejected.
-    if _core._DISTMARG_GH_N > 0:
-        _feature = getattr(data, "feature", None)
-        if _feature not in _GH_PSI_STATIC_FEATURES:
-            raise ValueError(
-                "distance-GH-nodes is set (--distance-gh-nodes / "
-                "JAX_ILE_DISTMARG_GH), but the 'laplace' angle-marg "
-                "scheme's psi-marginal distance-node placement requires the "
-                "static detector response: it is DERIVED from A0 == 0 and "
-                "B1 == 0, which follow from F+(psi) + i Fx(psi) = "
-                "(F+(0) + i Fx(0)) e^{-2i psi}.  This data has feature=%r, "
-                "which does not have that factorization.  Use "
-                "--angle-marg-scheme exact, or pass --distance-gh-nodes 0 "
-                "(or unset JAX_ILE_DISTMARG_GH)."
-                % (_feature,))
+    C_A = jnp.asarray(C_A, dtype=jnp.complex128)
+    C_B = jnp.asarray(C_B, dtype=jnp.complex128)
+    if C_A.ndim == 3:
+        C_A = C_A[:, :, None, :]
+    if C_A.ndim != 4:
+        raise ValueError("C_A must have shape (KP,KS[,S],Ntime)")
+    if C_B.ndim == 2:
+        C_B = jnp.broadcast_to(
+            C_B[:, :, None, None],
+            C_B.shape + (C_A.shape[2], C_A.shape[3]))
+    if C_B.ndim != 4 or C_B.shape[2:] != C_A.shape[2:]:
+        raise ValueError(
+            "C_B must be collapsed (KP,KS) or match C_A sample/time axes")
+    inferred_m_max = int(C_A.shape[0] - 1)
+    if m_max is None:
+        m_max = inferred_m_max
+    m_max = int(m_max)
+    if m_max != inferred_m_max:
+        raise ValueError("m_max does not match the C_A harmonic order")
+    S = int(C_A.shape[2])
+    npts = int(C_A.shape[3])
     x_grid = jnp.asarray(x_grid, dtype=jnp.float64)
     log_w_grid = jnp.asarray(log_w_grid, dtype=jnp.float64)
-    C_A, C_B, meta = angle_coefficient_tables(data, ra, dec, incl, interp)
-    m_max = meta["m_max"]
-    S = ra.shape[0]
-    npts = data.npts
 
     _use_gh = _core._DISTMARG_GH_N > 0
     # This runs under jit/grad, where C_A and C_B are TRACERS, so the identity
@@ -1927,6 +1911,85 @@ def fused_log_likelihood_distphipsimarg_laplace(
     s0 = jnp.zeros((S, npts), dtype=jnp.float64)
     (m, s), _ = jax.lax.scan(jax.checkpoint(_step), (m0, s0), (phi_x, lw_x))
     lnL_t = m + jnp.log(s) - jnp.log(float(nphi_d))
+    return (lnL_t, amp_call) if return_amp else lnL_t
+
+
+def fused_log_likelihood_distphipsimarg_laplace(
+        data, ra, dec, incl, x_grid, log_w_grid,
+        interp=JAX_INTERP_DEFAULT, amp_sizing=None,
+        phi_chunk=16, dist_block=4, point_block=LAPLACE_POINT_BLOCK,
+        time_quadrature=TIME_QUAD_DEFAULT, return_lnLt=False,
+        return_amp=False):
+    """Distance-, phi_ref- AND psi-marginalized lnL: analytic psi-Laplace scheme.
+
+    Same contract and normalization as
+    :func:`fused_log_likelihood_distphipsimarg_exact`, but the psi axis is
+    removed analytically (see :func:`_laplace_psi_lnI`): at every
+    (dense-phi, distance-node, time) point the u-exponent coefficients follow
+    directly from the SAME coefficient tables,
+
+        a  = x A0(phi) - x^2/2 B0(phi)
+        c1 = x A1(phi) - x^2/2 B1(phi)          (order e^{iu})
+        c2 =           - x^2/2 B2(phi)          (order e^{2iu})
+
+    so no additional likelihood evaluations are needed.  Cost scales ~sqrt(A)
+    (the dense phi axis) instead of ~A; the Laplace error is O(1/A) and
+    SHRINKS with SNR.
+
+    The adaptive distance quadrature (JAX_ILE_DISTMARG_GH) is honoured for
+    ``m_max <= _GH_PSI_M_MAX`` via the psi-marginal node placement documented
+    above ``_gh_psi_node_offsets``; ``x_grid``/``log_w_grid`` then only supply
+    the support [x_min, x_max] and the prior normalization, exactly as on the
+    exact path.  Richer mode content still RAISES rather than being silently
+    accepted: the placement rests on an A0 == B1 == 0 identity that is
+    established for (2,+-2) only.
+
+    Two DIFFERENT axes, and conflating them has already misled a reader.  The
+    paragraph above is about the PER-SAMPLE adaptive quadrature.  The STATIC
+    distance grid is separate and is not restricted here at all:
+    ``--distance-grid-scheme loguniform`` is supported and gated on this path,
+    and needs no node-placement rule because it locates no peak -- one relative
+    spacing resolves every per-sample peak wherever it sits.  See
+    DESIGN_jax_distance_quadrature.md.  The two cannot be combined: with
+    JAX_ILE_DISTMARG_GH set the per-sample quadrature consumes only the SUPPORT
+    of ``x_grid``, so the log-uniform option would be bit-identically inert and
+    is refused rather than silently ignored.
+
+    Memory of the multiplicative quadrature slab is bounded by ``phi_chunk`` x
+    ``dist_block`` x ``point_block``, never by the full sample x time product or
+    by grid sizes.  ``point_block`` rolls independent ``(sample, time)`` bins and
+    changes no quadrature rule or reduction order within a bin.
+    """
+    # RESPONSE-MODEL PRECONDITION, before anything is built.  This function is
+    # public (__all__) and is called directly by the wrapper and by several test
+    # modules, so a wrapper-only gate leaves a live bypass: a direct call with a
+    # banded response and m_max <= 2 would execute the unsupported placement
+    # while the wrapper correctly refused it.  `feature` is a plain Python
+    # attribute -- static and trace-safe -- so unlike the numerical A0/B1
+    # measurement (which needs concrete tables and therefore stays in the
+    # wrapper) it costs nothing, and checking it here also avoids paying for a
+    # coefficient-table build that is about to be rejected.
+    if _core._DISTMARG_GH_N > 0:
+        _feature = getattr(data, "feature", None)
+        if _feature not in _GH_PSI_STATIC_FEATURES:
+            raise ValueError(
+                "distance-GH-nodes is set (--distance-gh-nodes / "
+                "JAX_ILE_DISTMARG_GH), but the 'laplace' angle-marg "
+                "scheme's psi-marginal distance-node placement requires the "
+                "static detector response: it is DERIVED from A0 == 0 and "
+                "B1 == 0, which follow from F+(psi) + i Fx(psi) = "
+                "(F+(0) + i Fx(0)) e^{-2i psi}.  This data has feature=%r, "
+                "which does not have that factorization.  Use "
+                "--angle-marg-scheme exact, or pass --distance-gh-nodes 0 "
+                "(or unset JAX_ILE_DISTMARG_GH)."
+                % (_feature,))
+    x_grid = jnp.asarray(x_grid, dtype=jnp.float64)
+    log_w_grid = jnp.asarray(log_w_grid, dtype=jnp.float64)
+    C_A, C_B, meta = angle_coefficient_tables(data, ra, dec, incl, interp)
+    lnL_t, amp_call = coefficient_table_distphipsimarg_laplace(
+        C_A, C_B, x_grid, log_w_grid, amp_sizing=amp_sizing,
+        m_max=meta["m_max"], phi_chunk=phi_chunk, dist_block=dist_block,
+        point_block=point_block, return_amp=True)
     out = lnL_t if return_lnLt else _time_marginalize_terminal(
         lnL_t, data, time_quadrature)
     return (out, amp_call) if return_amp else out
