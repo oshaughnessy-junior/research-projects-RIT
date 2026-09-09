@@ -104,7 +104,38 @@ class PolicyConfig(NamedTuple):
     # doubled (and re-checked against its own half) until it is warranted or
     # this factor is reached.  Rows still unwarranted return nan.
     reserve_time_refine_max: int = 32
-    base_max_starts: int = 32
+    # Start capacity of the local plan.  Sized with max_time_nodes, not
+    # independently: on the same 64 rows the two capacities decline almost the
+    # same rows, 36 failing on time nodes and 37 on starts, with only 7 failing
+    # on starts alone.  Raising either one by itself buys nothing.  Measured
+    # acceptance at rho 652.3, full-sky prior draws, as (max_time_nodes,
+    # base_max_starts): (64, 32) 28%, (256, 32) 31%, (256, 128) 75%,
+    # (512, 256) 77%.  The pair moves acceptance from 28% to 75%; the second
+    # doubling buys 2 points.
+    #
+    # The resize is free.  Compiled workspace is 0.546 GiB -- 5% of a 24 GiB
+    # card -- and is UNCHANGED across that whole 16x capacity range, because
+    # peak scratch is set by the reserve's amplitude-sized grids, which are
+    # compiled into the graph whether or not any row reaches them.  So there is
+    # no memory argument for a small capacity here, only a compile-time one.
+    base_max_starts: int = 128
+    # Time-node capacity of the local plan, SET IN ADVANCE rather than
+    # discovered and then declined.  rank_joint_starts_from_uvq_device
+    # defaults it to 64 and the policy never passed it, so the value that
+    # gated the local path was unreachable from any config field or flag.
+    #
+    # Measured, rho 652.3, full-sky prior draws, 64 rows: the live-node count
+    # a row needs is min 18, median 72, p90 217, max 614.  A cap of 64 holds
+    # 44% of rows, 128 holds 73%, 256 holds 91%, 1024 holds 100%.  The median
+    # row misses the old cap by eight nodes.
+    #
+    # 256 is the default because a row that exceeds its capacity declines to
+    # the exact reserve, which costs about 4.7 h at this rung against 2.3 s
+    # for an accepted row.  Paying a 4x plan on every row to avoid that on 47%
+    # of them is the cheaper side of the trade by three orders of magnitude.
+    # Raise it toward 1024 for the last 9%; lower it only with the decline
+    # counts in front of you.
+    max_time_nodes: int = 256
     # Angular oversample 2/4 and 16 modes are the configuration that accepted
     # on production tables at rho 163 and 326 (same record as above; 8 to 12
     # candidates against 32 starts).  PR #268's test values 1/2 and 4/8
@@ -194,6 +225,11 @@ def validate_policy_config(config):
             and float(config.total_value_error_budget_nats) > 0.0):
         raise ValueError("total_value_error_budget_nats must be finite and "
                          "positive")
+    if int(config.max_time_nodes) < 2:
+        raise ValueError("PolicyConfig.max_time_nodes must be >= 2: the time "
+                         "cover needs at least one interior node pair")
+    if int(config.base_max_starts) < 1:
+        raise ValueError("PolicyConfig.base_max_starts must be >= 1")
     if int(config.base_oversample) < 1 or int(config.enriched_oversample) <= int(
             config.base_oversample):
         raise ValueError("enriched_oversample must exceed base_oversample "
@@ -450,10 +486,12 @@ def fused_log_likelihood_four_axis_policy(
         base = _aap.rank_joint_starts_from_uvq_device(
             table, norm, x_min, x_max, time_guard=guard,
             max_starts=int(config.base_max_starts),
+            max_time_nodes=int(config.max_time_nodes),
             angular_oversample=int(config.base_oversample))
         extra = _aap.rank_joint_starts_from_uvq_device(
             table, norm, x_min, x_max, time_guard=guard,
             max_starts=int(config.base_max_starts),
+            max_time_nodes=int(config.max_time_nodes),
             angular_oversample=int(config.enriched_oversample))
         (base_plan, enriched_plan, base_planning, enriched_planning,
          shared_planning) = _aap.make_all_axis_mode_plan_pair_device(
