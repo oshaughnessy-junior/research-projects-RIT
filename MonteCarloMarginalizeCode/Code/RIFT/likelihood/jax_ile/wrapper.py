@@ -598,7 +598,8 @@ class JAXDistPhiPsiMargLikelihood:
                  angle_marg=ANGLE_MARG_DEFAULT, *,
                  time_quadrature=TIME_QUAD_DEFAULT, d_prior_range=None,
                  dist_grid="uniform", dist_grid_tol=DIST_GRID_TOL_DEFAULT,
-                 direct_marginalization_policy=None, policy_config=None):
+                 direct_marginalization_policy=None, policy_config=None,
+                 multipeak_guard=16):
         self.data = data
         self.interp = interp   # the instance's stencil; sample_phi_ref defaults to it
         from . import direct_marginalization_policy as _policy
@@ -1028,6 +1029,22 @@ class JAXDistPhiPsiMargLikelihood:
                     data_, ra, dec, incl, xg, lwg, interp=interp,
                     amp_sizing=amp_sizing, time_quadrature=time_quadrature,
                     return_lnLt=return_lnLt, return_amp=return_amp)
+        elif scheme == "multipeak":
+            # The four-axis controller: it OWNS the time integral, so there is no
+            # lnL(t) and time_quadrature does not reach it.  Reachable only by
+            # name; not in 'auto'.
+            def _fused(data_, ra, dec, incl, return_lnLt=False,
+                       return_amp=False):
+                if return_lnLt:
+                    raise ValueError(
+                        "--angle-marg-scheme multipeak marginalizes time inside "
+                        "the controller; there is no lnL(t) to return.  Use "
+                        "another scheme if you need the time series.")
+                v = _anglemarg.fused_log_likelihood_distphipsimarg_multipeak(
+                    data_, ra, dec, incl, xg, lwg, interp=interp,
+                    amp_sizing=amp_sizing, guard=int(multipeak_guard))
+                return (v, jnp.asarray(amp_sizing)) if return_amp else v
+
         elif scheme == "phi-local":
             # BOTH angle axes localized, with a dense fallback wherever the certificate
             # declines.  By name only, and deliberately not in 'auto': it is slower than

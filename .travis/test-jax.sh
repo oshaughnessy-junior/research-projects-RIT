@@ -533,6 +533,7 @@ FILES=(
   "${JAXDIR}/test_angle_marg_gh_selection.py"
   "${JAXDIR}/test_joint_anglemarg_peaklocal.py"
   "${JAXDIR}/test_angle_marg_peaklocal_wiring.py"
+  "${JAXDIR}/test_angle_marg_multipeak_wiring.py"
   "${JAXDIR}/test_limit_distance_jax.py"
   "${JAXDIR}/test_direct_marginalization_planner.py"
   "${JAXDIR}/test_time_first_peaklocal.py"
@@ -1038,7 +1039,12 @@ fi
 # ~/.cache/jaxci_venv, DESELECT loop applied, read off its own collection line:
 # "754/760 tests collected (6 deselected)", gate-style count 754 from 46 files
 # (2026-09-09).  This assignment is the one that binds.
-EXPECTED_TESTS=754
+#
+# SIXTEENTH, --angle-marg-scheme multipeak (the four-axis controller wired into the
+# driver).  Adds ONE file, test_angle_marg_multipeak_wiring.py, 7 tests, none
+# parametrized, no removals, and touches no existing test count.  754 + 7 = 761,
+# measured by running this script.
+EXPECTED_TESTS=761
 
 # Simultaneous rotation + finite response adds cheap analytic coefficient parity
 # to an existing collected test.  Real waveform precompute, JIT/grad, the one-call
