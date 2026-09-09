@@ -1064,7 +1064,12 @@ fi
 # script's own collection line on ldas-pcdev12 (~/.cache/jaxci_venv, CPU) after rebasing on
 # rift_O4d 336f86133: "collected 763 tests from 46 files".  The #312/#313 merges had left
 # three EXPECTED_TESTS= assignments (761, 755, 762; last wins); this is the single one.
-EXPECTED_TESTS=763
+# SEVENTEENTH, the multipeak host-side fix (#317).  Adds TWO tests to
+# test_angle_marg_multipeak_wiring.py: one that crosses the jitted _batched seam
+# the sampler actually uses, and one pinning the gradient refusal.  No removals,
+# none parametrized.  RE-MEASURED by running this script rather than added:
+# "collected 765 tests from 46 files".
+EXPECTED_TESTS=765
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
