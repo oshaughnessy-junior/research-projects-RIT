@@ -1079,6 +1079,21 @@ else
   SHARD_FILES=( "${FILES[@]}" )
   echo "== running =="
 fi
+# The OUTCOME floor below must be the count THIS invocation was asked to run.  With
+# JAX_GATE_SHARDS>1 that is the shard's own collection, not EXPECTED_TESTS: the
+# whole-suite floor has already been asserted above on the full FILES list, and
+# holding one shard to it fails every shard that passes ("ran 257 tests, expected
+# at least 705", 2026-09-08, first run of the three-way split).  Collect the shard's
+# files the same way, so a shard still cannot go green on a partial view of ITS files.
+if [ "${JAX_GATE_SHARDS}" -gt 1 ]; then
+  shard_collect="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${SHARD_FILES[@]}" 2>&1)" || {
+    printf '%s\n' "${shard_collect}"; echo "test-jax.sh: shard collection failed" >&2; exit 1; }
+  RUN_EXPECTED="$(printf '%s\n' "${shard_collect}" | grep -cE '^[^[:space:]]+\.py::')"
+  echo "shard ${JAX_GATE_SHARD}/${JAX_GATE_SHARDS} collects ${RUN_EXPECTED} tests from ${#SHARD_FILES[@]} files"
+  if [ "${RUN_EXPECTED}" -lt 1 ]; then echo "test-jax.sh: shard collected 0 tests" >&2; exit 1; fi
+else
+  RUN_EXPECTED="${EXPECTED_TESTS}"
+fi
 "${PYTHON_BIN}" -m pytest -q -p no:cacheprovider --durations=0 --junit-xml="${junit}" "${DESELECT[@]}" "${SHARD_FILES[@]}"
 rc=$?
 if [ "${rc}" -ne 0 ]; then
@@ -1091,7 +1106,7 @@ fi
 # collects, runs, and asserts nothing: one pytest.skip() or importorskip() disables a
 # gate while both the collected count and the pytest exit status stay green.  That is
 # the very shape this script exists to prevent, so assert what the RUN did.
-"${PYTHON_BIN}" - "${junit}" "${EXPECTED_TESTS}" <<'PYCHECK'
+"${PYTHON_BIN}" - "${junit}" "${RUN_EXPECTED}" <<'PYCHECK'
 import sys, xml.etree.ElementTree as ET
 path, expected = sys.argv[1], int(sys.argv[2])
 root = ET.parse(path).getroot()
@@ -1115,4 +1130,4 @@ if bad:
 PYCHECK
 if [ $? -ne 0 ]; then exit 1; fi
 
-echo "jax_ile CPU regression gate: PASS (${n_collected} tests)"
+echo "jax_ile CPU regression gate: PASS (${n_collected} tests collected; this invocation ran ${RUN_EXPECTED})"
