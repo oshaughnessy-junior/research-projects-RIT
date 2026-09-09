@@ -1061,22 +1061,81 @@ def build_parser():
     g.add_option("--direct-marginalization-max-time-nodes", type=int,
                  default=64,
                  help="Time-node capacity of the policy's LOCAL plan (default "
-                      "64).  64 is what shipped: it is the value "
-                      "rank_joint_starts_from_uvq_device used while the policy "
-                      "passed nothing, so no config field or flag could reach "
-                      "it.  Exposing it is the fix; moving the default is a "
-                      "separate decision.  A row whose live time-node count "
-                      "exceeds this declines to the exact reserve, which costs "
-                      "hours per row at rho 652 against ~2.3 s for an accepted "
-                      "row.  Measured need at rho 652 on full-sky prior draws: "
-                      "median 72, p90 217, max 614, so the median row misses "
-                      "64 by eight nodes; caps of 64/128/256/1024 hold "
-                      "44/73/91/100% of rows.  Raise it WITH "
-                      "--direct-marginalization-max-starts -- of 64 rows, 36 "
-                      "declines fail on time nodes and 37 on starts, only 7 on "
-                      "starts alone, so either alone buys little.  NOT "
-                      "value-neutral: it changes which rows take the local "
-                      "branch.")
+                      "64, which is what shipped: it is the value "
+                      "rank_joint_starts_from_uvq_device used while the "
+                      "policy passed nothing, so no flag could reach it.  "
+                      "Exposing it is the fix; moving it is a separate call).  A row whose live time-node "
+                      "count exceeds this declines to the exact reserve, which "
+                      "costs ~4.7 h at rho 652 against 2.3 s for an accepted "
+                      "row, so the capacity is sized to avoid the fallback "
+                      "rather than to bound the plan.  Measured need at "
+                      "rho 652 on full-sky prior draws: median 72, p90 217, "
+                      "max 614; caps of 64/128/256/1024 hold 44/73/91/100% of "
+                      "rows.  The library default was 64 and was unreachable "
+                      "from any flag.  NOT value-neutral: it changes which "
+                      "rows take the local branch.")
+    g.add_option("--direct-marginalization-batch-rows", type=int, default=1,
+                 help="Rows the policy's controller executes together under "
+                      "one vmap (default 1: row at a time; 0: one full batch). "
+                      "VALUES are identical at every size -- lnL, every branch "
+                      "decision and the gradients -- and a test pins that.  "
+                      "COST IS A REGRESSION, not neutral: under vmap the "
+                      "accept/reserve cond becomes a select, so a locally "
+                      "ACCEPTED row also executes the dense reserve it would "
+                      "otherwise skip, and every escalation tier runs for "
+                      "every row.  The penalty therefore scales with the "
+                      "locally accepted fraction.  Device workspace grows as "
+                      "0.046 + 0.385 B GiB, so a 24 GiB card holds 32 rows and "
+                      "not 64.  Leave it at 1 unless a measurement on YOUR "
+                      "rows says otherwise; see "
+                      "DESIGN_direct_marginalization_policy.md.  "
+                      "WITHDRAWN: an earlier version of this text said COST "
+                      "ONLY and quoted 96.3 s per row at 1 against 99.9 at 8. "
+                      "Those rows all declined (accepted_local 0), so they "
+                      "priced the decline path, and 37-50% of them were nan "
+                      "under a reserve-refine ceiling of 4.  Do not cite them.")
+    g.add_option("--direct-marginalization-policy-probe-rows", type=int,
+                 default=0,
+                 help="Evaluate the policy ledger on this many prior draws "
+                      "BEFORE sampling and print the accept/decline counts "
+                      "(default 0 = off).  The end-of-run note reports the same "
+                      "counts on the exported rows, but only a run that reaches "
+                      "the export can be classified that way, and a declining "
+                      "run is exactly the one that does not get there: each "
+                      "declined row pays three exact reserve evaluations and "
+                      "rows execute one at a time under jax.lax.map.  The probe "
+                      "answers 'local or reserve' in one compile plus this many "
+                      "rows.  The compile is not extra work for a policy run -- "
+                      "the end-of-run note jits the identical function.")
+    g.add_option("--direct-marginalization-policy-probe-only",
+                 action="store_true", default=False,
+                 help="Exit after the probe above, before any sampling.  For "
+                      "surveying operating points: it reports which acceptance "
+                      "diagnostic is declining without paying for a posterior.  "
+                      "Writes no samples and no evidence.")
+    # Start-portfolio and mode-plan sizing.  Every default below is the value
+    # PolicyConfig already carried, so an unchanged command line is unchanged.
+    # They are exposed because the four-axis controller's own accepting
+    # operating point (analyses/va_sequence_20260902/RESULTS_20260907_aap268_ladder.md,
+    # 7 of 8 accepts at rho 326.15) reaches the SAME function through a richer
+    # portfolio than PolicyConfig's defaults build, and the difference was
+    # unreachable from the command line -- so the policy could only ever be
+    # observed declining.
+    g.add_option("--direct-marginalization-max-modes", type=int, default=4,
+                 help="Modes retained in the policy's BASE plan (default 4).")
+    g.add_option("--direct-marginalization-enriched-max-modes", type=int,
+                 default=8,
+                 help="Modes retained in the policy's ENRICHED plan (default "
+                      "8).  Acceptance compares the two plans, so an enriched "
+                      "plan that cannot resolve the extra structure declines.")
+    g.add_option("--direct-marginalization-base-oversample", type=int,
+                 default=1,
+                 help="Angular oversampling of the base start portfolio "
+                      "(default 1).")
+    g.add_option("--direct-marginalization-enriched-oversample", type=int,
+                 default=2,
+                 help="Angular oversampling of the enriched start portfolio "
+                      "(default 2).")
     g.add_option("--direct-marginalization-max-starts", type=int, default=32,
                  help="Cap on ranked optimizer starts per plan (default 32).  "
                       "TWO THINGS THIS IS NOT.  (1) It is not the whole of "
@@ -1100,11 +1159,11 @@ def build_parser():
                       "and 3.5e-3 nats, at and above the 1e-3 error budget.  "
                       "An A/B on this may not treat its value difference as "
                       "noise, and that is why the default stays 32: moving a "
-                      "RIFT default is not a decision this tool makes for you.  "
-                      "Raising it is worthwhile when the declines are costing "
-                      "more than the shift -- a declined row runs the exact "
-                      "reserve at hours per row at rho 652 -- but raise it "
-                      "WITH --direct-marginalization-max-time-nodes.")
+                      "RIFT default is not this tool's call.  Raising it is "
+                      "worth it when declines cost more than the shift -- a "
+                      "declined row runs the exact reserve at hours per row at "
+                      "rho 652 -- but raise it WITH "
+                      "--direct-marginalization-max-time-nodes.")
     g.add_option("--direct-marginalization-convergence-tol-nats", type=float,
                  default=1.0e-3,
                  help="Agreement required between the base and enriched plans, "
