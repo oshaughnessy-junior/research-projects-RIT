@@ -82,10 +82,24 @@ the sums those coefficients enter.
 
 ## Cost
 
-Measured with `analyses/response_cost_scaling/run_one.py --response finite`, stage
-attribution by `parse_profile.py`. See
-`RIFT_roboto_paper analyses/response_cost_scaling/RESULTS_20260909_vectorized_finite_response.md`
-for the table, the host, the GPU and the replicate spread.
+`analyses/response_cost_scaling/run_one.py --response finite --lmax 2 --device gpu --stencil
+sinc`, CE+ET+K, IMRPhenomXPHM, seglen 128 s, srate 8192, Qmax 4, on an RTX PRO 4000 Blackwell
+(ldas-pcdev11). Stage attribution by that directory's `parse_profile.py`. Arms alternate per
+seed.
+
+| seed | baseline `tau_it,like` | block `tau_it,like` | speedup | `tau_it,rest` | `N_it` both arms |
+|---|---|---|---|---|---|
+| 1002 | 1706.83 us | 37.03 us | 46.1x | 7.2 us | 281,817 |
+| 2002 | 1778.03 us | 71.09 us | 25.0x | 16.3 us | 321,687 |
+| 3002 | 1755.94 us | 73.08 us | 24.0x | 16.6 us | 403,083 |
+
+The spread is node contention. `tau_it,rest` is the sampler outside the likelihood and
+matches within each pair; the block arm tracks it at 4.4 to 5.2x, while the baseline arm has
+sd 2.1% across the three because it is bound by Python call overhead.
+
+Provenance, correctness table and the one row that was killed by the per-UID memory cgroup:
+RIFT_roboto_paper
+`analyses/finite_response_vectorization/RESULTS_2026-09-09_block_response_coefficients.md`.
 
 ## Not done
 
