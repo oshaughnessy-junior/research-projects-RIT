@@ -97,12 +97,14 @@ from RIFT.likelihood.jax_ile.samplers import regularize_cov as _regularize_cov
 from RIFT.likelihood.jax_ile.samplers import _finalize_evidence
 from RIFT.likelihood.jax_ile.core import _GATHERERS as _JAX_GATHERERS, JAX_INTERP_DEFAULT
 from RIFT.likelihood.jax_ile.anglemarg import (ANGLE_MARG_DEFAULT, ANGLE_MARG_LEGACY,
-                                               ANGLE_MARG_CHOICES)
+                                               ANGLE_MARG_CHOICES,
+                                               ANGLE_MARG_CROSSOVER_AMPLITUDE)
 from RIFT.likelihood.jax_ile.direct_marginalization_policy import (
     POLICY_CHOICES as DIRECT_MARG_POLICY_CHOICES,
     POLICY_DEFAULT as DIRECT_MARG_POLICY_DEFAULT,
     PolicyConfig as DirectMargPolicyConfig,
-    summarize_policy_ledger as _summarize_policy_ledger)
+    summarize_policy_ledger as _summarize_policy_ledger,
+    predict_reserve_pair, format_reserve_pair)
 _JAX_GATHERER_NAMES = tuple(_JAX_GATHERERS)
 from RIFT.likelihood.jax_ile.wrapper import (
     JAXExtrinsicLikelihood, JAXDistanceMarginalizedLikelihood,
@@ -2728,6 +2730,40 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
         print("  distance grid: %s"
               % "; ".join("%s=%s" % kv
                           for kv in sorted(getattr(like, "dist_grid_info", {}).items())))
+
+        # THE PAIR IS CHOSEN AND ANNOUNCED BEFORE ANY ROW IS EVALUATED.
+        # RO, 2026-09-08: rely on analysis and the known physics to pick the
+        # (local, reserve) pair, rather than try-then-decline-then-refine.  A
+        # run whose branch can only be read from a ledger at the end is a run
+        # that spent its time in a method nobody chose.
+        if like.direct_marginalization_policy != "off":
+            _requested = getattr(
+                opts, "direct_marginalization_reserve_scheme",
+                DirectMargPolicyConfig().reserve_scheme)
+            _available = ["exact", "laplace"]
+            _pair, _pair_info = predict_reserve_pair(
+                like_data, extras.get("guess_snr"),
+                reserve_time_refine_max=int(
+                    like.policy_config.reserve_time_refine_max),
+                crossover_amplitude=ANGLE_MARG_CROSSOVER_AMPLITUDE,
+                max_time_nodes=int(getattr(like.policy_config,
+                                           "max_time_nodes", 64)),
+                requested=_requested, available=tuple(_available))
+            _line = format_reserve_pair(_pair, _pair_info)
+            print("  " + _line)
+            sys.stderr.write("NOTE integrate_likelihood_extrinsic_jax: %s\n"
+                             % _line)
+            if _pair is None:
+                # REFUSE, do not fall back.  Falling back to whole-window
+                # refinement is the failure this analysis exists to prevent:
+                # it would carry the rows without anyone choosing it.
+                raise SystemExit(
+                    "--direct-marginalization-reserve-scheme auto: %s  No "
+                    "implemented reserve is adequate for this signal, so the "
+                    "run is refused rather than silently falling back.  Pass "
+                    "an explicit --direct-marginalization-reserve-scheme to "
+                    "override, and record that you did."
+                    % _pair_info.get("reason", ""))
         with_distance = False
         dim = 3
     elif opts.mode == "flowmc-dpsimarg":
