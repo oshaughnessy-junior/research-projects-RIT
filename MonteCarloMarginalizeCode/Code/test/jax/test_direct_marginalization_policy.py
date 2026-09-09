@@ -695,6 +695,95 @@ def test_row_batch_size_refuses_what_it_cannot_execute(bad):
         DP.validate_batch_rows(bad)
 
 
+# ------------------------------------------- preset local-plan capacities
+
+def test_local_plan_capacities_reach_the_planner(monkeypatch):
+    """Both capacities are PRESET, and -- the point of the test -- reachable.
+
+    The regression guarded here is not a wrong number but an unreachable one:
+    max_time_nodes defaulted to 64 inside rank_joint_starts_from_uvq_device and
+    the policy never passed it, so the value that gated the local path could
+    not be moved from any config field or flag.  Asserting the default alone
+    would have passed against that bug, so spy on the call and read the kwargs
+    the planner is actually handed."""
+    seen = []
+
+    class _Stop(Exception):
+        pass
+
+    def spy(*a, **kw):
+        seen.append(kw)
+        raise _Stop
+
+    monkeypatch.setattr(DP._aap, "rank_joint_starts_from_uvq_device", spy)
+    guarded, C_B, _ = _guarded_problem(_N, _GUARD)
+    _install_tables(monkeypatch, ([guarded], C_B), _GUARD)
+    data = _fake_data(_N)
+    x_grid, log_w = _grid(256)
+    with pytest.raises(_Stop):
+        DP.fused_log_likelihood_four_axis_policy(
+            data, jnp.zeros(1), jnp.zeros(1), jnp.zeros(1), x_grid, log_w,
+            interp=INTERP, amp_sizing=40.0,
+            config=DP.PolicyConfig(time_guard=_GUARD, max_time_nodes=333,
+                                   base_max_starts=77))
+    assert seen, "the planner was never called"
+    assert seen[0].get("max_time_nodes") == 333, seen[0]
+    assert seen[0].get("max_starts") == 77, seen[0]
+
+
+def test_capacity_and_budget_defaults_are_the_approved_operating_point():
+    """Pins the operating point RO approved on 2026-09-08 (evening).
+
+    Shipped was (64, 32) with a 1e-3 budget.  The capacities moved because
+    acceptance at rho 652 goes (64, 32) 28%, (256, 32) 31%, (256, 128) 75%;
+    they are pinned as a PAIR because of 64 rows, 36 declines fail on time
+    nodes and 37 on starts and only 7 on starts alone, so a later change that
+    moves one alone is a mistake this test should catch.  The budget moved
+    because 1e-3 -> 1e-2 took reserve escalations from 2 to 0 at rho 41, a
+    2.19x speedup, while moving lnL by 4.8e-12 nats.
+
+    None of these is value-neutral, which is why they are pinned rather than
+    left to drift: base_max_starts 32 -> 128 alone shifts already-accepted
+    values by up to 3.5e-3 nats at rho 163."""
+    cfg = DP.PolicyConfig()
+    assert (cfg.max_time_nodes, cfg.base_max_starts) == (256, 128)
+    assert cfg.total_value_error_budget_nats == 1.0e-2
+
+
+@pytest.mark.parametrize("kw", [{"max_time_nodes": 1}, {"max_time_nodes": 0},
+                                {"base_max_starts": 0},
+                                {"base_max_starts": -4}])
+def test_capacities_refuse_what_cannot_plan(kw):
+    with pytest.raises(ValueError):
+        DP.validate_policy_config(DP.PolicyConfig(**kw))
+
+
+def test_driver_offers_the_capacity_knobs_and_scopes_them():
+    root = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))))
+    driver = os.path.join(root, "bin", "integrate_likelihood_extrinsic_jax")
+    env = dict(os.environ)
+    env["PYTHONPATH"] = root + os.pathsep + env.get("PYTHONPATH", "")
+    env["JAX_PLATFORMS"] = "cpu"
+
+    def run(*args):
+        p = subprocess.run([sys.executable, driver] + list(args), env=env,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           timeout=600)
+        return p.returncode, p.stdout.decode("utf-8", "replace")
+
+    rc, out = run("--help")
+    assert "--direct-marginalization-max-time-nodes" in out
+    assert "--direct-marginalization-max-starts" in out
+    # --help exits before validation, so it proves only that the flags parse.
+    # Both must also be scoped: inert without the policy is an error, not a
+    # silently ignored flag.
+    for flag in ("--direct-marginalization-max-time-nodes",
+                 "--direct-marginalization-max-starts"):
+        rc, out = run("--mode", "flowmc-phipsimarg", flag, "64")
+        assert rc != 0 and "inert" in out, (flag, out[-1500:])
+
+
 def test_driver_offers_the_batch_rows_knob_and_scopes_it():
     root = os.path.dirname(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__))))
