@@ -867,6 +867,18 @@ fi
 # 3.11.13, jax 0.10.2) by running the collection and reading its own line, not
 # by adding 20 to 628: "648/653 tests collected (5 deselected)".
 EXPECTED_TESTS=648
+# FIFTEENTH, the peak-local phi-scan reduction (joint_lnL_phi_dense reduces into its
+# lax.scan carry instead of stacking the phi axis; RIFT PR #295).  Touches only
+# test_angle_marg_peaklocal_wiring.py: replaces
+# test_peak_local_model_includes_streamed_body_and_scan_output (2 params) with
+# test_peak_local_model_is_flat_in_n_phi_because_the_scan_reduces (the same 2 params)
+# and adds test_peak_local_model_does_not_grow_with_the_phi_axis.  The file-local delta
+# is exact at +1.
+#
+# NOT 628 + 1, for the reason this block has now recorded four times.  Re-measured by
+# running THIS script on the merged tree and reading its own collection line:
+# "collected 629 tests from 38 files".
+EXPECTED_TESTS=629
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"

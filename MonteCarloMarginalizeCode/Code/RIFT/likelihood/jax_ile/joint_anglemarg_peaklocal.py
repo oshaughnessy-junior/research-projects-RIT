@@ -415,25 +415,42 @@ def joint_lnL_phi_dense(C_A, C_B, x_grid, log_w_grid, n_phi=256,
         return jax.vmap(log_inner_u_integral, in_axes=(0, 0, 0, None))(
             a[:, 0], c1[:, 0], c2[:, 0], n_nodes)                    # (nx,)
 
+    # REDUCE INTO THE CARRY, do not stack.  The phi reduction is a logsumexp, so the
+    # scan can carry the running (nx,) accumulator instead of returning a value per
+    # chunk.  Returning one made `out` a live (n_chunk, phi_chunk, nx) array -- the
+    # whole phi axis, materialized before the reduction that immediately collapses it.
+    # Under the caller's sample/time vmaps that is `S * npts * n_phi * n_x * 8` bytes,
+    # which reached 19.97 GiB at rung 640 of the ladder-2 injection and OOMed a card
+    # with 18: measured 19.99 GiB requested against 19.97 predicted, and the same
+    # formula to three significant figures at three other sizes.  Nothing about the u
+    # axis was involved -- pinning the per-cell node count to its 48 floor, 468x below
+    # production, left the peak identical to the tenth of a MiB.
+    # `anglemarg.coefficient_table_distphipsimarg_exact` has carried its logsumexp in
+    # the scan state from the start; this is the same shape of fix, and it makes the
+    # live phi footprint one chunk rather than the whole axis.
+    # See development/BLOCKER_peaklocal_scheme_oom_20260908.md in RIFT_roboto_paper.
     def step(carry, args):
         ph, lv = args
         vals = jax.vmap(one_phi)(ph)                                 # (chunk, nx)
         vals = jnp.where(lv[:, None], vals, -jnp.inf)
-        return carry, vals
+        # jnp.logaddexp against the running total, the accumulation
+        # `log_inner_u_integral` already uses over its own cells.  The padded lanes are
+        # -inf and are the identity here, which is what retires the [:n_phi] slice: the
+        # mask alone now excludes them.
+        return jnp.logaddexp(carry, jax.scipy.special.logsumexp(vals, axis=0)), None
 
     # jax.checkpoint on the scan body, as the shipped exact scheme does.  Without it a
     # REVERSE-mode pass keeps every chunk's intermediates: the wrapper's Hessian tried to
     # allocate 135 GB and died RESOURCE_EXHAUSTED, so --fisher-precondition would have
     # OOMed rather than run.  Forward evaluation was never affected, which is exactly why
     # this was invisible until a second derivative was taken.
-    _, out = lax.scan(jax.checkpoint(step), None,
+    acc, _ = lax.scan(jax.checkpoint(step),
+                      jnp.full((x_grid.size,), -jnp.inf, dtype=jnp.float64),
                       (phis_p.reshape(n_chunk, phi_chunk),
                        live.reshape(n_chunk, phi_chunk)))
-    vals = out.reshape(n_chunk * phi_chunk, -1)[:n_phi]           # (n_phi, nx)
 
     # phi is a periodic trapezoid == plain mean; then the distance sum; then (2pi)^-2
-    per_x = jax.scipy.special.logsumexp(vals, axis=0) - jnp.log(n_phi) \
-        + jnp.log(2.0 * jnp.pi)
+    per_x = acc - jnp.log(n_phi) + jnp.log(2.0 * jnp.pi)
     return jax.scipy.special.logsumexp(per_x + log_w_grid) - 2.0 * jnp.log(2.0 * jnp.pi)
 
 
