@@ -71,6 +71,10 @@ __all__ = [
 POLICY_CHOICES = ("off", "auto")
 POLICY_DEFAULT = "off"
 
+RESERVE_SCHEME_CHOICES = ("auto", "exact", "laplace", "peaklocal")
+RESERVE_SCHEME_DEFAULT = "exact"
+
+
 # The controller's own decline reasons, in the order they gate acceptance.
 # Every key is a boolean per row in the returned ledger.
 _DECLINE_KEYS = (
@@ -206,6 +210,16 @@ class PolicyConfig(NamedTuple):
     # the workspace law, 0.046 + 0.385 B GiB, and the value equivalence.
     # See DESIGN_direct_marginalization_policy.md.
     reserve_batch_rows: int = 1
+    # WHICH reserve the composite falls back to.  Default 'exact' is what
+    # shipped, so no existing command line changes.  'laplace' is the same
+    # accuracy crossover the angle selector already validates
+    # (ANGLE_MARG_CROSSOVER_AMPLITUDE): above it laplace is the MORE accurate
+    # scheme and costs ~sqrt(A) rather than ~A.  'auto' chooses from the
+    # precomputed inputs via predict_reserve_pair and REFUSES when the analysis
+    # says the signal needs a method that is not implemented, rather than
+    # falling back to whole-window refinement.  A string so a third value plugs
+    # in without touching the composite.
+    reserve_scheme: str = RESERVE_SCHEME_DEFAULT
     norm_invariance_rtol: float = 1.0e-10
 
 
@@ -281,9 +295,6 @@ def validate_policy_config(config):
 # so the pair is chosen and PRINTED up front and the run can be read in its
 # first line instead of its last.
 
-RESERVE_SCHEME_CHOICES = ("auto", "exact", "laplace", "peaklocal")
-RESERVE_SCHEME_DEFAULT = "exact"
-
 # Fraction of a peak sigma the local branch's time cover must resolve.  The
 # cover keeps cells above a mass threshold, so a peak narrower than the node
 # spacing puts its mass in one cell and the cover cannot localize it.
@@ -328,8 +339,8 @@ def q_effective_bandwidth_hz(data):
 
 
 def predict_reserve_pair(data, guess_snr, *, reserve_time_refine_max,
-                         crossover_amplitude, requested="auto",
-                         available=("exact", "laplace")):
+                         crossover_amplitude, max_time_nodes,
+                         requested="auto", available=("exact", "laplace")):
     """Choose the (local, reserve) pair from the precomputed inputs.
 
     Returns ``(scheme, info)``.  ``scheme`` is None when the analysis says the
@@ -377,11 +388,28 @@ def predict_reserve_pair(data, guess_snr, *, reserve_time_refine_max,
         nodes_needed = float("inf")
     nodes_available = (float(data.npts) - 1.0) * float(
         reserve_time_refine_max) + 1.0
-    time_local_ok = nodes_needed <= nodes_available
+    time_reserve_ok = nodes_needed <= nodes_available
+
+    # FIRST question, and the one about the branch actually under test: can the
+    # LOCAL cover hold the peak?  Its budget is max_time_nodes, and a peak
+    # narrower than a native sample needs the cover to place its nodes inside
+    # one sample rather than across the window.  MEASURED, not modelled: at
+    # rho 163 raising the cover 64 -> 256 took acceptance 31% -> 75%, which is
+    # why the start cap appeared to "plateau" -- the plateau was time capacity
+    # binding, not the start cap saturating.
+    if _np.isfinite(width_samples) and width_samples > 0:
+        cover_nodes_needed = _TIME_NODES_PER_SIGMA / width_samples
+    else:
+        cover_nodes_needed = float("inf")
+    local_cover_ok = cover_nodes_needed <= float(max_time_nodes)
+    time_local_ok = time_reserve_ok
 
     info = dict(rho=rho, sigma_f_hz=sigma_f, amplitude_A=A,
                 crossover_amplitude=float(crossover_amplitude),
                 sigma_t_s=sigma_t, peak_width_samples=width_samples,
+                cover_nodes_needed=cover_nodes_needed,
+                max_time_nodes=int(max_time_nodes),
+                local_cover_resolves_peak=bool(local_cover_ok),
                 whole_window_nodes_needed=nodes_needed,
                 whole_window_nodes_available=nodes_available,
                 reserve_time_refine_max=int(reserve_time_refine_max),
@@ -407,26 +435,36 @@ def predict_reserve_pair(data, guess_snr, *, reserve_time_refine_max,
     if not time_local_ok:
         if "peaklocal" in available:
             info["reason"] = (
+                "local cover %s (needs %.1f nodes of %d); "
                 "A=%.4g > crossover %.4g selects laplace angles; peak is %.3g "
                 "native samples wide and a whole-window rule would need %.0f "
                 "nodes but the escalation ceiling affords %.0f, so the time "
-                "reserve must be peak-local" % (A, crossover_amplitude,
-                                width_samples, nodes_needed, nodes_available))
+                "reserve must be peak-local"
+                % ("holds the peak" if local_cover_ok else "CANNOT hold the peak",
+                   cover_nodes_needed, max_time_nodes,
+                   A, crossover_amplitude,
+                   width_samples, nodes_needed, nodes_available))
             return "peaklocal", info
         info["reason"] = (
+            "local cover %s (needs %.1f nodes of %d); "
             "peak is %.3g native samples wide; a whole-window time rule would "
             "need %.0f nodes but the escalation ceiling affords only %.0f, so this signal needs a "
             "peak-local-in-time reserve, which is NOT IMPLEMENTED.  Refusing "
             "rather than falling back to whole-window refinement, which would "
             "carry the rows without anyone choosing it."
-            % (width_samples, nodes_needed, nodes_available))
+            % ("holds the peak" if local_cover_ok else "CANNOT hold the peak",
+               cover_nodes_needed, max_time_nodes,
+               width_samples, nodes_needed, nodes_available))
         return None, info
 
     info["reason"] = (
+        "local cover %s (needs %.1f nodes of %d at this width); "
         "A=%.4g against crossover %.4g selects %s angles; peak is %.3g native "
         "samples wide and a whole-window rule needs %.0f nodes within the %.0f "
         "the ceiling affords, so the refined whole-window time reserve is adequate"
-        % (A, crossover_amplitude, angular, width_samples, nodes_needed,
+        % ("holds the peak" if local_cover_ok else "CANNOT hold the peak",
+           cover_nodes_needed, max_time_nodes,
+           A, crossover_amplitude, angular, width_samples, nodes_needed,
            nodes_available))
     return angular, info
 
@@ -434,20 +472,22 @@ def predict_reserve_pair(data, guess_snr, *, reserve_time_refine_max,
 def format_reserve_pair(scheme, info):
     """One line for the run log, printed BEFORE any row is evaluated."""
     return ("RESERVE-PAIR local=four-axis reserve=%s rho=%.4g sigma_f=%.4gHz "
-            "A=%.4g crossover=%.4g peak=%.3gsamples nodes_needed=%.0f "
-            "nodes_available=%.0f :: %s"
+            "A=%.4g crossover=%.4g peak=%.3gsamples cover_needs=%.1f/%d "
+            "reserve_needs=%.0f/%.0f :: %s"
             % (scheme if scheme else "REFUSED", info.get("rho", float("nan")),
                info.get("sigma_f_hz", float("nan")),
                info.get("amplitude_A", float("nan")),
                info.get("crossover_amplitude", float("nan")),
                info.get("peak_width_samples", float("nan")),
+               info.get("cover_nodes_needed", float("nan")),
+               info.get("max_time_nodes", 0),
                info.get("whole_window_nodes_needed", float("nan")),
                info.get("whole_window_nodes_available", 0),
                info.get("reason", "")))
 
 
 def validate_policy_request(policy, *, angle_marg_scheme, time_quadrature,
-                            d_prior, dist_grid):
+                            d_prior, dist_grid, reserve_scheme=None):
     """Refuse every combination the composite cannot honour.
 
     Refusal is explicit because an ignored request on this arm has a history
@@ -458,6 +498,10 @@ def validate_policy_request(policy, *, angle_marg_scheme, time_quadrature,
                          "got %r" % (POLICY_CHOICES, policy))
     if policy == "off":
         return
+    if reserve_scheme is not None and reserve_scheme not in RESERVE_SCHEME_CHOICES:
+        raise ValueError(
+            "direct-marginalization reserve scheme must be one of %r, got %r"
+            % (RESERVE_SCHEME_CHOICES, reserve_scheme))
     if angle_marg_scheme != "exact":
         raise ValueError(
             "--direct-marginalization-policy auto needs the exact-angle "

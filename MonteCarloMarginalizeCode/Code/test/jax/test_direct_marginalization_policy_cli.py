@@ -192,3 +192,24 @@ def test_the_note_returns_three_values_on_every_early_path(policy, ledger,
 
     plain = mod.direct_marginalization_policy_note(like, theta)
     assert isinstance(plain, str), plain
+
+
+def test_every_driver_option_string_is_registered_exactly_once():
+    """optparse SILENTLY keeps the last registration of a duplicated option.
+
+    A parallel branch merge produced two add_option calls for one flag; --help
+    rendered correctly from the first while the parser used the second, so the
+    driver ran at a different default from the one documented and nothing
+    raised.  That is invisible to every other test in this file, which all go
+    through the same parser and would agree with each other.
+
+    Read from the SOURCE rather than the parser for the same reason: the parser
+    only knows the winner.
+    """
+    import collections
+    import re
+
+    src = open(_DRIVER, encoding="utf-8").read()
+    names = re.findall(r'add_option\(\s*"(--[A-Za-z0-9-]+)"', src)
+    dupes = {n: c for n, c in collections.Counter(names).items() if c > 1}
+    assert not dupes, "option strings registered more than once: %r" % (dupes,)

@@ -29,6 +29,7 @@ def data():
 
 
 def _pick(data, rho, refine_max=32, **kw):
+    kw.setdefault("max_time_nodes", 64)
     return DP.predict_reserve_pair(
         data, rho, reserve_time_refine_max=refine_max,
         crossover_amplitude=ANGLE_MARG_CROSSOVER_AMPLITUDE, **kw)
@@ -108,5 +109,23 @@ def test_the_pair_line_is_printable_and_names_the_refusal(data):
     scheme, info = _pick(data, RHO_640)
     line = DP.format_reserve_pair(scheme, info)
     assert line.startswith("RESERVE-PAIR local=four-axis reserve=REFUSED")
-    for token in ("rho=", "sigma_f=", "A=", "peak=", "nodes_needed="):
+    for token in ("rho=", "sigma_f=", "A=", "peak=", "cover_needs=",
+                  "reserve_needs="):
         assert token in line
+
+
+def test_the_local_cover_verdict_is_reported_and_leads(data):
+    """The FIRST quantity: can the local branch's time cover hold the peak?
+
+    Measured elsewhere at rho 163: raising the cover 64 -> 256 took acceptance
+    31% -> 75%.  That is why the start cap appeared to plateau -- time capacity
+    was binding, not the start cap saturating -- so a selector that reports only
+    the reserve's budget would predict the wrong lever.  The local branch is the
+    thing under test; the reserve is only what it falls back to.
+    """
+    _, tight = _pick(data, RHO_640, max_time_nodes=64)
+    _, loose = _pick(data, RHO_640, max_time_nodes=4096)
+    assert tight["cover_nodes_needed"] == pytest.approx(loose["cover_nodes_needed"])
+    assert not tight["local_cover_resolves_peak"]
+    assert loose["local_cover_resolves_peak"]
+    assert "local cover" in loose["reason"]
