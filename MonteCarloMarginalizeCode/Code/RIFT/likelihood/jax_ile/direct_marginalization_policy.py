@@ -295,6 +295,29 @@ def validate_policy_config(config):
 # so the pair is chosen and PRINTED up front and the run can be read in its
 # first line instead of its last.
 
+# PROVISIONAL, AND KNOWN TO BE THE WRONG MODEL FOR THE RESERVE.
+#
+# The points-per-sigma budget below treats the reserve's trapezoid rule as
+# ALGEBRAICALLY convergent, so the node count it demands scales as
+# window / sigma_t.  A direct test at rho 40.77 on 64 rows says otherwise:
+#
+#     refine=4  2453 nodes   warrant 1.8e-03 .. 1.14e-02   fails 1e-3
+#     refine=8  4905 nodes   warrant 5e-11   .. 7.8e-09    passes
+#
+# Doubling the rule improved the quadrature error by ~1e6.  An algebraic rule
+# would give 4.  That is the signature of the trapezoid rule on a BAND-LIMITED
+# reconstruction, which is spectrally accurate once the band is resolved:
+# error ~ exp(-c R), not R^-2.  The measured 4905 nodes is 67% of what this
+# budget demands at that rung and lands five orders INSIDE tolerance.
+#
+# So the correct criterion is band resolution -- node spacing against the
+# integrand's highest frequency -- not points per sigma, and the replacement
+# must be FITTED to a measured convergence law rather than assumed.  Until a
+# second rung is measured (163.08 at refine 4 and 8 is the deciding test), the
+# time verdict below is provisional and MUST NOT be hardened into a threshold
+# anyone tunes against.  It is retained because refusing is the conservative
+# direction, but a refusal it produces is "unproven", not "shown inadequate".
+#
 # Fraction of a peak sigma the local branch's time cover must resolve.  The
 # cover keeps cells above a mass threshold, so a peak narrower than the node
 # spacing puts its mass in one cell and the cover cannot localize it.
