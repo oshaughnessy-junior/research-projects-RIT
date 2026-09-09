@@ -1022,9 +1022,10 @@ fi
 # every merge, not one it keeps on its own.
 # Re-measured by running this script on the rebased tree (ldas-grid,
 # /scratch/$USER/envs/jaxci-py311, jax 0.10.2, PYTHONPATH pinned to THIS
-# checkout, DESELECT loop applied): "collected 733 tests from 45 files".
+# checkout, DESELECT loop applied): "collected 733 tests from 45 files", and
+# 737 after the four reserve-roster/refusal tests added later in the branch.
 # This assignment is the one that binds.
-EXPECTED_TESTS=733
+EXPECTED_TESTS=737
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"

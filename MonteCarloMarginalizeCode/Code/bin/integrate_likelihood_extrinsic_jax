@@ -2751,7 +2751,45 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
             _requested = getattr(
                 opts, "direct_marginalization_reserve_scheme",
                 DirectMargPolicyConfig().reserve_scheme)
-            _available = ["exact", "laplace"]
+            # WHAT IS ON THE MENU IS A PROPERTY OF THIS DATA, not a constant.
+            # Offering laplace unconditionally would let the analysis choose a
+            # reserve whose premise is absent here, and the run would then be
+            # refused (or worse, carried) for a reason that has nothing to do
+            # with the signal.  Two conditions, both about the DISTANCE
+            # integral the reserve's table is contracted against:
+            #
+            #  1. The per-sample adaptive Gauss-Hermite quadrature must be on.
+            #     On the legacy static uniform grid laplace is measured to cost
+            #     43.2 nats at rho 163 -- that is what the GRID costs, not the
+            #     scheme, and it is why the reserve may not use it there.  The
+            #     loguniform static grid is NOT admitted either: it is sized
+            #     from the angle amplitude and may well be adequate, but no
+            #     measurement exists, and "probably fine" is the thing this
+            #     selector was built to stop saying.
+            #  2. The A0 == 0 / B1 == 0 identity the adaptive node placement is
+            #     DERIVED from must hold on this data, measured on concrete
+            #     tables.  Same predicate, same probe direction, and the same
+            #     one the angle scheme is gated by -- one definition, in
+            #     anglemarg.gh_laplace_supported_for_data.
+            _available = ["exact"]
+            _lap_why = None
+            if int(getattr(opts, "_distance_gh_nodes_resolved", 0)) <= 0:
+                _lap_why = ("the per-sample adaptive distance quadrature is "
+                            "off (--distance-gh-nodes 0 / JAX_ILE_DISTMARG_GH "
+                            "unset), and on a static distance grid the laplace "
+                            "reserve is measured at 43.2 nats of error at "
+                            "rho 163")
+            else:
+                _lap_ok, _lap_info = _anglemarg.gh_laplace_supported_for_data(
+                    like_data, getattr(like, "interp", None)
+                    or JAX_INTERP_DEFAULT)
+                if not _lap_ok:
+                    _lap_why = _lap_info.get("gh_laplace_reason",
+                                             "identity absent")
+            if _lap_why is None:
+                _available.append("laplace")
+            else:
+                print("  reserve roster: laplace NOT offered -- %s" % _lap_why)
             _pair, _pair_info = predict_reserve_pair(
                 like_data, extras.get("guess_snr"),
                 reserve_time_refine_max=int(

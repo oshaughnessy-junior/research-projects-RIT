@@ -373,3 +373,45 @@ Consequences, and they are limits on what may be claimed:
 
 The warrant is what certifies a row. This budget only predicts which method to
 reach for, and it must not be hardened into a threshold anyone tunes against.
+
+## The roster: which reserves this run may choose from
+
+`predict_reserve_pair` takes `available=`. That argument is not a preference
+list. It says which schemes the **data and the distance quadrature** can support
+at all, and it is computed before the analysis runs.
+
+| scheme | on the roster when | why |
+|---|---|---|
+| `exact` | always | what the composite dispatches (`empirical_enrichment_with_exact_reserve`) |
+| `laplace` | per-sample adaptive distance quadrature is ON **and** `gh_laplace_supported_for_data` holds | the placement is derived from A0 == 0 / B1 == 0 |
+| `peaklocal` | never, today | RIFT PR #304 |
+
+The laplace conditions are separate and both necessary. On a **static** distance
+grid the laplace reserve is measured at 43.2 nats at rho 163 — that is the
+grid's cost, not the scheme's, and it is why the reserve may not use it there.
+The loguniform static grid is not admitted either: it is sized from the angle
+amplitude and may well be adequate, but nothing has measured it.
+
+Two rules follow, both of which the code got wrong first:
+
+- The roster is checked on the **angular** branch, not only where the selector
+  chooses `peaklocal`. It was checked only on the branch that could never have
+  chosen `peaklocal` anyway, so a run with laplace off the roster still selected
+  laplace as soon as A cleared the crossover.
+- An explicit `requested=` overrides the **analysis**, not the roster. Forcing a
+  scheme whose premise is absent is not an override.
+
+## Declared, executable, and the gap between them
+
+`RESERVE_SCHEME_CHOICES` is what may be named. `RESERVE_SCHEME_EXECUTABLE` is
+what the composite dispatches, which is `("exact",)`. `validate_policy_config`
+refuses the difference.
+
+Without that refusal, `PolicyConfig(reserve_scheme="laplace")` would be
+accepted, printed in the policy line, and computed as exact — a field the
+composite never reads is worse than a missing one, because it answers.
+
+The laplace table-level kernel exists (`coefficient_table_distphipsimarg_laplace`,
+extracted from the fused laplace path so the two cannot drift). What is missing
+is the dispatch: `empirical_enrichment_with_exact_reserve` names its kernel.
+Wiring it is a change to `all_axis_peaklocal.py`, which is #304's file.

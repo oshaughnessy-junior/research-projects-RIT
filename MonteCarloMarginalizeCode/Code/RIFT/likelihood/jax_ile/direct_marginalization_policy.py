@@ -63,6 +63,7 @@ __all__ = [
     "summarize_policy_ledger",
     "RESERVE_SCHEME_CHOICES",
     "RESERVE_SCHEME_DEFAULT",
+    "RESERVE_SCHEME_EXECUTABLE",
     "q_effective_bandwidth_hz",
     "predict_reserve_pair",
     "format_reserve_pair",
@@ -73,6 +74,19 @@ POLICY_DEFAULT = "off"
 
 RESERVE_SCHEME_CHOICES = ("auto", "exact", "laplace", "peaklocal")
 RESERVE_SCHEME_DEFAULT = "exact"
+
+# WHICH OF THOSE THE COMPOSITE CAN ACTUALLY EXECUTE TODAY.  Kept separate from
+# the choices tuple, and checked in validate_policy_config, because a config
+# field the composite never reads is worse than a missing one: it accepts the
+# value, reports it, and runs something else.  The reserve is dispatched through
+# empirical_enrichment_with_exact_reserve, which names its kernel -- so 'exact'
+# is the whole of what is wired.
+#
+# 'laplace' has its table-level kernel (coefficient_table_distphipsimarg_laplace,
+# extracted from the fused laplace path in this same PR) but no dispatch: the
+# selector may CHOOSE it, and a run that needs it is refused with that reason
+# rather than carried by exact.  'peaklocal' belongs to RIFT PR #304.
+RESERVE_SCHEME_EXECUTABLE = ("exact",)
 
 
 # The controller's own decline reasons, in the order they gate acceptance.
@@ -277,6 +291,23 @@ def validate_policy_config(config):
     if not float(config.local_radius) > 0.0:
         raise ValueError("local_radius must be positive")
     validate_batch_rows(config.reserve_batch_rows)
+    scheme = config.reserve_scheme
+    if scheme not in RESERVE_SCHEME_CHOICES:
+        raise ValueError("PolicyConfig.reserve_scheme must be one of %r, got %r"
+                         % (RESERVE_SCHEME_CHOICES, scheme))
+    # 'auto' is resolved by predict_reserve_pair against the precomputed inputs,
+    # before this config ever reaches the composite; it is not a value the
+    # composite executes, so it is admitted here and refused there if the
+    # analysis lands on something unimplemented.
+    if scheme != "auto" and scheme not in RESERVE_SCHEME_EXECUTABLE:
+        raise ValueError(
+            "PolicyConfig.reserve_scheme=%r is a declared choice but is NOT "
+            "WIRED into the composite: the reserve is dispatched through "
+            "empirical_enrichment_with_exact_reserve and only %r is executable "
+            "today.  Refused rather than run as 'exact', which is what a "
+            "silently ignored field would do -- the run would report the "
+            "scheme you asked for and compute the other one."
+            % (scheme, RESERVE_SCHEME_EXECUTABLE))
     return config
 
 
@@ -489,6 +520,18 @@ def predict_reserve_pair(data, guess_snr, *, reserve_time_refine_max,
                 requested=requested, available=tuple(available))
 
     if requested != "auto":
+        # An explicit request overrides the ANALYSIS.  It does not override the
+        # ROSTER: `available` says which schemes this data and this distance
+        # quadrature can support at all, and forcing a scheme whose premise is
+        # absent is not an override, it is an unnoticed wrong answer.
+        if requested not in available:
+            info["reason"] = ("explicit request %r is not on the roster for "
+                              "this run (available: %s); the roster is a "
+                              "property of the data and the distance "
+                              "quadrature, not of the analysis, so it is not "
+                              "overridable"
+                              % (requested, ", ".join(available)))
+            return None, info
         info["reason"] = "explicit request, no analysis applied"
         return requested, info
 
@@ -527,6 +570,20 @@ def predict_reserve_pair(data, guess_snr, *, reserve_time_refine_max,
             % ("holds the peak" if local_cover_ok else "CANNOT hold the peak",
                cover_nodes_needed, max_time_nodes,
                width_samples, nodes_needed, nodes_available))
+        return None, info
+
+    # The roster is checked HERE too, not only on the peak-local branch.  It was
+    # not, and the effect was that a run with laplace off the roster still
+    # selected laplace whenever A cleared the crossover: the caller's roster was
+    # honoured for the scheme it could not have chosen anyway and ignored for
+    # the one it could.
+    if angular not in available:
+        info["reason"] = (
+            "the accuracy crossover selects %s angles (A=%.4g against %.4g), "
+            "and %s is NOT on the roster for this run (available: %s).  "
+            "Refusing rather than running the other scheme under the selected "
+            "one's name."
+            % (angular, A, crossover_amplitude, angular, ", ".join(available)))
         return None, info
 
     info["reason"] = (

@@ -240,3 +240,79 @@ def test_the_gate_sets_its_floor_exactly_once():
     assert len(assigns) == 1, (
         "EXPECTED_TESTS assigned %d times (%s); bash keeps the last and the "
         "rest are dead" % (len(assigns), ", ".join(assigns)))
+
+
+def test_the_roster_is_honoured_on_the_ANGULAR_branch_too(data):
+    """A roster without laplace must not yield laplace.
+
+    The roster was checked only where the selector chooses ``peaklocal`` -- the
+    branch that could not have chosen it anyway, since 'peaklocal' is never on
+    the roster today.  On the branch that CAN choose laplace, the caller's
+    roster was ignored, so a run whose data cannot support the laplace reserve
+    still selected it the moment A cleared the crossover.
+
+    The roster is not a preference.  It says which schemes this data and this
+    distance quadrature can support at all -- for laplace, that the adaptive
+    node placement's A0 == 0 / B1 == 0 premise holds -- so ignoring it means
+    running exact under laplace's name, or worse.
+    """
+    with_lap, _ = _pick(data, RHO_40, available=("exact", "laplace"))
+    assert with_lap == "laplace"
+
+    scheme, info = _pick(data, RHO_40, available=("exact",))
+    assert scheme is None, (
+        "laplace selected off a roster that does not offer it: %r"
+        % (info["reason"],))
+    assert "on the roster" in info["reason"]
+    assert "laplace" in info["reason"]
+
+
+def test_a_roster_absence_is_not_overridable_by_an_explicit_request(data):
+    """An explicit request overrides the ANALYSIS, not the ROSTER.
+
+    Forcing a scheme whose premise is absent is not an override; it is an
+    unnoticed wrong answer.  The distinction matters because the driver's
+    refusal message invites the user to pass an explicit scheme -- that must
+    let them overrule the crossover, and must not let them overrule a measured
+    identity failure.
+    """
+    ok, _ = _pick(data, RHO_40, requested="exact", available=("exact",))
+    assert ok == "exact"
+
+    scheme, info = _pick(data, RHO_40, requested="laplace",
+                         available=("exact",))
+    assert scheme is None
+    assert "not overridable" in info["reason"]
+
+
+def test_an_unwired_reserve_scheme_is_refused_not_run_as_exact():
+    """A config field the composite never reads is worse than a missing one.
+
+    ``PolicyConfig.reserve_scheme`` is validated against the CHOICES tuple, but
+    the composite dispatches through ``empirical_enrichment_with_exact_reserve``
+    and executes only 'exact'.  Without this refusal, asking for 'laplace' would
+    be accepted, reported in the policy line, and computed as exact.
+    """
+    DP.validate_policy_config(DP.PolicyConfig(reserve_scheme="exact"))
+    # 'auto' is resolved before the composite sees it, so it is admitted here.
+    DP.validate_policy_config(DP.PolicyConfig(reserve_scheme="auto"))
+
+    for scheme in ("laplace", "peaklocal"):
+        assert scheme in DP.RESERVE_SCHEME_CHOICES
+        assert scheme not in DP.RESERVE_SCHEME_EXECUTABLE
+        with pytest.raises(ValueError, match="NOT WIRED"):
+            DP.validate_policy_config(DP.PolicyConfig(reserve_scheme=scheme))
+
+    with pytest.raises(ValueError, match="must be one of"):
+        DP.validate_policy_config(DP.PolicyConfig(reserve_scheme="nonesuch"))
+
+
+def test_the_executable_roster_is_a_subset_of_the_choices():
+    """Guards the pair as a pair: a scheme becomes executable by being wired,
+    and this fails if RESERVE_SCHEME_EXECUTABLE ever names something the
+    choices tuple does not, which would mean the two lists were edited apart."""
+    assert set(DP.RESERVE_SCHEME_EXECUTABLE) <= set(DP.RESERVE_SCHEME_CHOICES)
+    assert "auto" not in DP.RESERVE_SCHEME_EXECUTABLE, (
+        "'auto' is a resolution mode, not something the composite executes")
+    assert DP.RESERVE_SCHEME_DEFAULT in DP.RESERVE_SCHEME_EXECUTABLE, (
+        "the default must be executable or every bare run refuses")

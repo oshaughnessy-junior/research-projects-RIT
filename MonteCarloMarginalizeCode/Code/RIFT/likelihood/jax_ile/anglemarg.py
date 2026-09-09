@@ -94,6 +94,7 @@ __all__ = [
     "choose_angle_marg_scheme",
     "fused_log_likelihood_distphipsimarg_peaklocal",
     "gh_laplace_supported",
+    "gh_laplace_supported_for_data",
     "ANGLE_MARG_CROSSOVER_AMPLITUDE",
 ]
 
@@ -2088,6 +2089,43 @@ def psi_harmonics_at_phi(C_A, C_B, phi, m_max):
             MB(2).real,                    # B0
             MB(3) + jnp.conj(MB(1)),       # B1
             MB(4) + jnp.conj(MB(0)))       # B2
+
+
+# Generic probe direction for the build-time identity check.  The A0==0/B1==0
+# identity is a property of the spin-2 detector response, so it does not depend
+# on where we probe; a single generic (ra, dec, incl) away from any pole or
+# face-on/edge-on special case is enough, and keeps the check O(1).
+#
+# These lived in wrapper.py, reached from its one call site.  They are here
+# because there are now TWO consumers -- the angle scheme and the policy's
+# reserve roster -- and a second copy of a probe direction is a second
+# definition of what "the identity holds on this data" means.
+_GH_PROBE_RA = (1.0,)
+_GH_PROBE_DEC = (0.3,)
+_GH_PROBE_INCL = (1.0,)
+
+
+def gh_laplace_supported_for_data(data, interp=JAX_INTERP_DEFAULT):
+    """:func:`gh_laplace_supported` on tables this builds at a probe direction.
+
+    THE ONLY WAY to ask the question of a dataset rather than of a table.  The
+    predicate itself cannot be called under jit/grad -- the tables are tracers
+    there -- so every caller needs concrete tables, and every caller that builds
+    its own would be choosing its own probe direction.
+
+    Returns ``(ok, info)`` exactly as :func:`gh_laplace_supported` does.  Costs
+    one O(1) table build.  Says nothing about whether the distance quadrature in
+    use NEEDS the identity: that is the caller's condition (it is needed by the
+    per-sample adaptive node placement, not by a static grid).
+    """
+    C_A, C_B = angle_coefficient_tables(
+        data,
+        jnp.asarray(_GH_PROBE_RA, dtype=jnp.float64),
+        jnp.asarray(_GH_PROBE_DEC, dtype=jnp.float64),
+        jnp.asarray(_GH_PROBE_INCL, dtype=jnp.float64),
+        interp)[:2]
+    return gh_laplace_supported(C_A, C_B, _data_m_max(data),
+                                feature=getattr(data, "feature", None))
 
 
 def gh_laplace_supported(C_A, C_B, m_max, feature=None):
