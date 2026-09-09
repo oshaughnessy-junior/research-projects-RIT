@@ -538,7 +538,6 @@ jobs:
         env:
           JAX_PLATFORMS: cpu
           OMP_NUM_THREADS: 1
-        env:
           JAX_GATE_SHARDS: 3
           JAX_GATE_SHARD: ${{ matrix.shard }}
         run: bash .travis/test-jax.sh
