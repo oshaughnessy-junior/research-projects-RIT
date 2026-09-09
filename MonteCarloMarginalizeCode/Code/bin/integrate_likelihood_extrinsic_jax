@@ -97,12 +97,14 @@ from RIFT.likelihood.jax_ile.samplers import regularize_cov as _regularize_cov
 from RIFT.likelihood.jax_ile.samplers import _finalize_evidence
 from RIFT.likelihood.jax_ile.core import _GATHERERS as _JAX_GATHERERS, JAX_INTERP_DEFAULT
 from RIFT.likelihood.jax_ile.anglemarg import (ANGLE_MARG_DEFAULT, ANGLE_MARG_LEGACY,
-                                               ANGLE_MARG_CHOICES)
+                                               ANGLE_MARG_CHOICES,
+                                               ANGLE_MARG_CROSSOVER_AMPLITUDE)
 from RIFT.likelihood.jax_ile.direct_marginalization_policy import (
     POLICY_CHOICES as DIRECT_MARG_POLICY_CHOICES,
     POLICY_DEFAULT as DIRECT_MARG_POLICY_DEFAULT,
     PolicyConfig as DirectMargPolicyConfig,
-    summarize_policy_ledger as _summarize_policy_ledger)
+    summarize_policy_ledger as _summarize_policy_ledger,
+    predict_reserve_pair, format_reserve_pair, RESERVE_SCHEME_EXECUTABLE)
 _JAX_GATHERER_NAMES = tuple(_JAX_GATHERERS)
 from RIFT.likelihood.jax_ile.wrapper import (
     JAXExtrinsicLikelihood, JAXDistanceMarginalizedLikelihood,
@@ -1018,25 +1020,31 @@ def build_parser():
                       "16x) is nan and the run is NOT published.  Applies only "
                       "to --mode flowmc-phipsimarg; any other mode is refused."
                       % DIRECT_MARG_POLICY_DEFAULT)
-    g.add_option("--direct-marginalization-time-guard", type=int, default=16,
+    g.add_option("--direct-marginalization-time-guard", type=int,
+                 default=DirectMargPolicyConfig().time_guard,
                  help="Primitive-only support samples added at each end of the "
                       "time window for the policy's guarded reconstruction "
-                      "(default 16; must be >= 2).  Both the local integral and "
+                      f"(default {DirectMargPolicyConfig().time_guard}; must "
+                      "be >= 2).  Both the local integral and "
                       "the reserve are re-evaluated at half this guard and must "
                       "agree within the error budget; a too-small guard declines "
                       "to the reserve rather than biasing.")
     g.add_option("--direct-marginalization-reserve-time-refine", type=int,
-                 default=4,
+                 default=DirectMargPolicyConfig().reserve_time_refine,
                  help="Refinement factor of the reserve's band-limited time rule "
-                      "over the native cadence (default 4; even, >= 2).  The "
+                      "over the native cadence (default "
+                      f"{DirectMargPolicyConfig().reserve_time_refine}; even, "
+                      ">= 2).  The "
                       "half-refined rule is the check rule the reserve must "
                       "agree with, so the warrant is a convergence statement "
                       "about the refined rules; the native Simpson rule's own "
                       "error is what the refinement removes.")
     g.add_option("--direct-marginalization-reserve-time-refine-max", type=int,
-                 default=32,
+                 default=DirectMargPolicyConfig().reserve_time_refine_max,
                  help="Ceiling of the reserve rule's escalation on a failed "
-                      "warrant (default 32; even, >= the refine factor).  It "
+                      "warrant (default "
+                      f"{DirectMargPolicyConfig().reserve_time_refine_max}; "
+                      "even, >= the refine factor).  It "
                       "also bounds REVERSE-MODE GRADIENT MEMORY: the dense "
                       "reserve's backward pass costs ~2.6 GiB per unit of "
                       "refinement per evaluated row on a 614-sample window "
@@ -1054,9 +1062,11 @@ def build_parser():
                       "returning a slightly worse number.  Lower it only with "
                       "the nan count in the ledger in front of you.")
     g.add_option("--direct-marginalization-error-budget-nats", type=float,
-                 default=1.0e-2,
+                 default=DirectMargPolicyConfig().total_value_error_budget_nats,
                  help="Value-error allowance, in nats, for the RESERVE's "
-                      "time-resolution warrant (default 1e-2; 1e-3 shipped).  "
+                      "time-resolution warrant (default "
+                      f"{DirectMargPolicyConfig().total_value_error_budget_nats:g}"
+                      "; 1e-3 shipped).  "
                       "It does NOT reach the local accept/decline decision, "
                       "despite what this help used to say: that decision is the "
                       "four-term boolean at all_axis_peaklocal.py:862 and carries "
@@ -1068,9 +1078,11 @@ def build_parser():
                       "Raised to 1e-2 by RO on 2026-09-08 (evening).  Measured at "
                       "rho 41; the speedup is not yet confirmed at high SNR.")
     g.add_option("--direct-marginalization-max-time-nodes", type=int,
-                 default=256,
+                 default=DirectMargPolicyConfig().max_time_nodes,
                  help="Time-node capacity of the policy's LOCAL plan (default "
-                      "256; 64 shipped, and was reachable from no flag).  A row whose live time-node "
+                      f"{DirectMargPolicyConfig().max_time_nodes}"
+                      "; 64 shipped, and was reachable from no flag).  A row "
+                      "whose live time-node "
                       "count exceeds this declines to the exact reserve, which "
                       "costs ~4.7 h at rho 652 against 2.3 s for an accepted "
                       "row, so the capacity is sized to avoid the fallback "
@@ -1127,23 +1139,28 @@ def build_parser():
     # portfolio than PolicyConfig's defaults build, and the difference was
     # unreachable from the command line -- so the policy could only ever be
     # observed declining.
-    g.add_option("--direct-marginalization-max-modes", type=int, default=4,
-                 help="Modes retained in the policy's BASE plan (default 4).")
+    g.add_option("--direct-marginalization-max-modes", type=int,
+                 default=DirectMargPolicyConfig().max_modes,
+                 help="Modes retained in the policy's BASE plan (default "
+                      f"{DirectMargPolicyConfig().max_modes}).")
     g.add_option("--direct-marginalization-enriched-max-modes", type=int,
-                 default=8,
+                 default=DirectMargPolicyConfig().enriched_max_modes,
                  help="Modes retained in the policy's ENRICHED plan (default "
-                      "8).  Acceptance compares the two plans, so an enriched "
+                      f"{DirectMargPolicyConfig().enriched_max_modes}).  "
+                      "Acceptance compares the two plans, so an enriched "
                       "plan that cannot resolve the extra structure declines.")
     g.add_option("--direct-marginalization-base-oversample", type=int,
-                 default=1,
+                 default=DirectMargPolicyConfig().base_oversample,
                  help="Angular oversampling of the base start portfolio "
-                      "(default 1).")
+                      f"(default {DirectMargPolicyConfig().base_oversample}).")
     g.add_option("--direct-marginalization-enriched-oversample", type=int,
-                 default=2,
+                 default=DirectMargPolicyConfig().enriched_oversample,
                  help="Angular oversampling of the enriched start portfolio "
-                      "(default 2).")
-    g.add_option("--direct-marginalization-max-starts", type=int, default=128,
-                 help="Cap on ranked optimizer starts per plan (default 128).  "
+                      f"(default {DirectMargPolicyConfig().enriched_oversample}).")
+    g.add_option("--direct-marginalization-max-starts", type=int,
+                 default=DirectMargPolicyConfig().base_max_starts,
+                 help="Cap on ranked optimizer starts per plan (default "
+                      f"{DirectMargPolicyConfig().base_max_starts}).  "
                       "TWO THINGS THIS IS NOT.  (1) It is not the whole of "
                       "decline_capacity.  That ledger key reports the "
                       "conjunction at all_axis_peaklocal.py:862 -- "
@@ -1171,7 +1188,7 @@ def build_parser():
                       "sized WITH --direct-marginalization-max-time-nodes; "
                       "either alone plateaus near 16%.")
     g.add_option("--direct-marginalization-convergence-tol-nats", type=float,
-                 default=1.0e-3,
+                 default=DirectMargPolicyConfig().convergence_tol_nats,
                  help="Agreement required between the base and enriched plans, "
                       "and between each plan's own two quadrature orders, in "
                       "nats (default 1e-3).  This is the tolerance the "
@@ -1180,7 +1197,7 @@ def build_parser():
                       "--direct-marginalization-error-budget-nats, which is the "
                       "total value allowance.")
     g.add_option("--direct-marginalization-time-guard-tol-nats", type=float,
-                 default=1.0e-3,
+                 default=DirectMargPolicyConfig().time_guard_tol_nats,
                  help="Agreement required between the full-guard and half-guard "
                       "evaluations, in nats (default 1e-3).  This is the "
                       "tolerance the two-guard time warrant is measured "
@@ -2728,6 +2745,113 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
         print("  distance grid: %s"
               % "; ".join("%s=%s" % kv
                           for kv in sorted(getattr(like, "dist_grid_info", {}).items())))
+
+        # THE PAIR IS CHOSEN AND ANNOUNCED BEFORE ANY ROW IS EVALUATED.
+        # RO, 2026-09-08: rely on analysis and the known physics to pick the
+        # (local, reserve) pair, rather than try-then-decline-then-refine.  A
+        # run whose branch can only be read from a ledger at the end is a run
+        # that spent its time in a method nobody chose.
+        if like.direct_marginalization_policy != "off":
+            _requested = getattr(
+                opts, "direct_marginalization_reserve_scheme",
+                DirectMargPolicyConfig().reserve_scheme)
+            # WHAT IS ON THE MENU IS A PROPERTY OF THIS DATA, not a constant.
+            # Offering laplace unconditionally would let the analysis choose a
+            # reserve whose premise is absent here, and the run would then be
+            # refused (or worse, carried) for a reason that has nothing to do
+            # with the signal.  Two conditions, both about the DISTANCE
+            # integral the reserve's table is contracted against:
+            #
+            #  1. The per-sample adaptive Gauss-Hermite quadrature must be on.
+            #     On the legacy static uniform grid laplace is measured to cost
+            #     43.2 nats at rho 163 -- that is what the GRID costs, not the
+            #     scheme, and it is why the reserve may not use it there.  The
+            #     loguniform static grid is NOT admitted either: it is sized
+            #     from the angle amplitude and may well be adequate, but no
+            #     measurement exists, and "probably fine" is the thing this
+            #     selector was built to stop saying.
+            #  2. The A0 == 0 / B1 == 0 identity the adaptive node placement is
+            #     DERIVED from must hold on this data, measured on concrete
+            #     tables.  Same predicate, same probe direction, and the same
+            #     one the angle scheme is gated by -- one definition, in
+            #     anglemarg.gh_laplace_supported_for_data.
+            _available = ["exact"]
+            _lap_why = None
+            if int(getattr(opts, "_distance_gh_nodes_resolved", 0)) <= 0:
+                _lap_why = ("the per-sample adaptive distance quadrature is "
+                            "off (--distance-gh-nodes 0 / JAX_ILE_DISTMARG_GH "
+                            "unset), and on a static distance grid the laplace "
+                            "reserve is measured at 43.2 nats of error at "
+                            "rho 163")
+            else:
+                # The wrapper has already measured this whenever the ANGLE
+                # scheme could use the placement, and stored it.  Reuse that
+                # answer rather than measuring a second time: two measurements
+                # of one property can disagree, and the one the run reports
+                # should be the one the run is gated on.
+                _am_info = getattr(like, "angle_marg_info", None) or {}
+                if "gh_laplace_ok" in _am_info:
+                    _lap_ok, _lap_info = _am_info["gh_laplace_ok"], _am_info
+                else:
+                    _lap_ok, _lap_info = (
+                        _anglemarg.gh_laplace_supported_for_data(
+                            like_data,
+                            getattr(like, "interp", None)
+                            or JAX_INTERP_DEFAULT))
+                if not _lap_ok:
+                    _lap_why = _lap_info.get("gh_laplace_reason",
+                                             "identity absent")
+            if _lap_why is None:
+                _available.append("laplace")
+            else:
+                print("  reserve roster: laplace NOT offered -- %s" % _lap_why)
+            _pair, _pair_info = predict_reserve_pair(
+                like_data, extras.get("guess_snr"),
+                reserve_time_refine_max=int(
+                    like.policy_config.reserve_time_refine_max),
+                crossover_amplitude=ANGLE_MARG_CROSSOVER_AMPLITUDE,
+                max_time_nodes=int(like.policy_config.max_time_nodes),
+                requested=_requested, available=tuple(_available))
+            _line = format_reserve_pair(_pair, _pair_info)
+            print("  " + _line)
+            sys.stderr.write("NOTE integrate_likelihood_extrinsic_jax: %s\n"
+                             % _line)
+            if _pair is None:
+                # REFUSE, do not fall back.  Falling back to whole-window
+                # refinement is the failure this analysis exists to prevent:
+                # it would carry the rows without anyone choosing it.
+                raise SystemExit(
+                    "--direct-marginalization-reserve-scheme auto: %s  No "
+                    "implemented reserve is adequate for this signal, so the "
+                    "run is refused rather than silently falling back.  Pass "
+                    "an explicit --direct-marginalization-reserve-scheme to "
+                    "override, and record that you did."
+                    % _pair_info.get("reason", ""))
+            # THE PAIR THE ANALYSIS CHOSE MUST BE THE PAIR THAT RUNS.
+            # Announcing it and leaving policy_config.reserve_scheme == "auto"
+            # would make the printed line a claim about nothing: the composite
+            # reads the config, not this print.  validate_policy_config admits
+            # "auto" ONLY because it is resolved here, so this write is what
+            # makes that admission true (found by the #304 session, whose
+            # composite dispatches on the string).
+            if _pair not in RESERVE_SCHEME_EXECUTABLE:
+                raise SystemExit(
+                    "the analysis selected the %r reserve (%s), and the "
+                    "composite dispatches only %r.  Refused rather than "
+                    "running a different reserve under the selected one's "
+                    "name.  Wiring %r is RIFT PR #304."
+                    % (_pair, _pair_info.get("reason", ""),
+                       RESERVE_SCHEME_EXECUTABLE, _pair))
+            like.policy_config = like.policy_config._replace(
+                reserve_scheme=_pair)
+            # policy_info's "reserve_scheme" reported the resolved ANGLE
+            # scheme, which is a different quantity that happened to share the
+            # name while 'exact' was the only reserve.  Both are reported now,
+            # under names that say which is which.
+            like.policy_info["reserve_angle_scheme"] = \
+                like.policy_info.get("reserve_scheme")
+            like.policy_info["reserve_scheme"] = _pair
+            print("  reserve pair RESOLVED: reserve_scheme=%s" % _pair)
         with_distance = False
         dim = 3
     elif opts.mode == "flowmc-dpsimarg":
