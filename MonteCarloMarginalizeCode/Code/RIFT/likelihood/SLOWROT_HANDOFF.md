@@ -227,6 +227,11 @@ pairs at the current `Qmax=4,pmax=0` defaults and 112 / 12544 at `pmax=1`; see
   evolution to 2.6e-12; the full compound precompute/NoLoop likelihood reduces to Path D at
   zero sidereal rate to <1e-8 and respects the Cauchy--Schwarz bound at zero and physical
   sidereal rates.  Guarded by `test_slowrot_rotating_freqresponse.py`.
+- JAX combined Path A/B+D: JAX-native compound coefficients agree with numpy to 2.7e-16;
+  the packed `Qmax=0,pmax=0` likelihood agrees with conventional NoLoop to 1.2e-14
+  relative and executes under JIT/grad.  The production JAX driver now wires the
+  rotation-only, frequency-response-only, and combined selections.  Initial CPU basis
+  scaling is recorded in `DESIGN_rotating_freqresponse.md`.
 - Cubic time-interp (from calmarg_in_loop, --interpolate-time): both slow-response NoLoops now
   support time_interp='nearest'|'cubic'.  Cubic exposed+fixed a sub-bin GPS-cancellation bug in
   the time reference; head-to-head regression floor 1.6e-3 -> 4.5e-13, test_slowrot_noloop 3.6e-12.
