@@ -353,6 +353,9 @@ parser.add_argument("--tabular-eos-file",type=str,default=None,help="Tabular fil
 parser.add_argument("--tabular-eos-file-format",type=str,default=None,help="Format of tabular file of EOS to use.  The default prior will be UNIFORM in this table!")
 parser.add_argument("--tabular-eos-order-statistic",type=str,default=None,help="Order statistic to use.  Options will include R1p4, LambdaTildeQ1, and ...}")
 parser.add_argument("--using-eos", type=str, default=None, help="Name of EOS.  Fit parameter list should physically use lambda1, lambda2 information (but need not). If starts with 'file:', uses a filename with EOS parameters ")
+parser.add_argument("--using-eos-branch", type=int, default=None, help="Select one stable LALSimulation family branch while preserving the fixed-EOS lambda_from_m(m) interface. Required for an explicitly chosen twin-star branch; not applicable to the primary-branch nmbseq v1 contract.")
+parser.add_argument("--using-eos-dirty-phase-transitions", action='store_true', help="With --using-eos lalsim_file:<path>, require the reviewed LALSimulation phase-transition reader (retained compatibility spelling; the reviewed API has no separate dirty-table boolean).")
+parser.add_argument("--using-eos-extended-family", action='store_true', help="With --using-eos lalsim_file:<path>, build the reviewed extended family instead of the PE-oriented minimal M/R/k2 family.")
 parser.add_argument("--using-eos-for-prior", action='store_true', default=None, help="Alternate (hacky) implementation, which overrides using-eos and using-eos-index, to handle loading in a hyperprior")
 parser.add_argument("--using-eos-index", type=int, default=None, help="Index of EOS parameters in file.")
 parser.add_argument("--no-use-lal-eos",action='store_true',help="Do not use LAL EOS interface. Used for spectral EOS. Do not use this.")
@@ -469,6 +472,16 @@ if opts.using_eos and opts.using_eos.startswith('file:') and not(opts.using_eos_
     except Exception as e:
         print(" Fail: EOS index out of range:\n   ",e)
         sys.exit(0)
+from RIFT.physics.lalsim_eos_compat import validate_fixed_eos_branch_request
+validate_fixed_eos_branch_request(
+    opts.using_eos_branch, opts.using_eos, opts.using_eos_for_prior
+)
+if (opts.using_eos_dirty_phase_transitions or opts.using_eos_extended_family) and (
+        opts.using_eos is None or not opts.using_eos.startswith('lalsim_file:')):
+    raise ValueError(
+        "--using-eos-dirty-phase-transitions and --using-eos-extended-family "
+        "require --using-eos lalsim_file:<path>"
+    )
 
 my_eos=None
 #option to be used if gridded values not calculated assuming EOS
@@ -500,7 +513,7 @@ elif opts.using_eos!=None and not(opts.using_eos_for_prior):
                 spec_params['gamma4']=spec_param_array[3]
             eos_base = EOSManager.EOSLindblomSpectral(name=eos_name,spec_params=spec_params,use_lal_spec_eos=not opts.no_use_lal_eos)
             my_eos=eos_base
-        elif opts.eos_param == 'cs_spectral' and len(spec_param_array >=4):
+        elif opts.eos_param == 'cs_spectral' and len(spec_param_array) >= 4:
             spec_params ={}
             spec_params['gamma1']=spec_param_array[0]
             spec_params['gamma2']=spec_param_array[1]
@@ -509,13 +522,13 @@ elif opts.using_eos!=None and not(opts.using_eos_for_prior):
             spec_params['gamma4']=spec_param_array[3]
             eos_base = EOSManager.EOSLindblomSpectralSoundSpeedVersusPressure(name=eos_name,spec_params=spec_params,use_lal_spec_eos=not opts.no_use_lal_eos)
             my_eos = eos_base
-        elif opts.eos_param == 'PP' and len(spec_param_array >=4):
+        elif opts.eos_param == 'PP' and len(spec_param_array) >= 4:
             spec_params ={}
             spec_params['logP1'] = spec_param_array[0]
             spec_params['gamma1'] = spec_param_array[1]
             spec_params['gamma2'] = spec_param_array[2]
             spec_params['gamma3'] = spec_param_array[3]
-            eos_base = EOSManager.EOSPiecewisePolytrope(name=eos_name,params_dict=spec_params)
+            eos_base = EOSManager.EOSPiecewisePolytrope(name=eos_name,param_dict=spec_params)
             my_eos = eos_base
         else:
             raise Exception("Unknown method for parametric EOS data file {} : {} ".format(eos_name,opts.eos_param))
@@ -565,6 +578,17 @@ elif opts.using_eos!=None and not(opts.using_eos_for_prior):
         _, seq_fname, seq_indx = eos_name.split(':')
         my_eos = EOSManager.EOSSequenceSingleIndex(fname=seq_fname,
                                                    index=int(seq_indx))
+    elif eos_name.startswith('lalsim_file:'):
+        my_eos = EOSManager.EOSLALSimulationFromFile(
+            fname=eos_name.split(':', 1)[1],
+            dirty_phase_transitions=opts.using_eos_dirty_phase_transitions,
+            minimal_family=not opts.using_eos_extended_family,
+            phase_transition_aware=(
+                opts.using_eos_branch is not None
+                or opts.using_eos_dirty_phase_transitions
+                or opts.using_eos_extended_family
+            ),
+        )
     elif 'lal_' in eos_name:
         eos_name = eos_name.replace('lal_','')
         my_eos = EOSManager.EOSLALSimulation(name=eos_name)
@@ -579,6 +603,16 @@ elif opts.using_eos!=None and not(opts.using_eos_for_prior):
         my_eos = EOSManager.EOSFromTabularData(name=eos_name,eos_data=my_eos_dat)
     else:
         my_eos = EOSManager.EOSFromDataFile(name=eos_name,fname =EOSManager.dirEOSTablesBase+"/" + eos_name+".dat")
+
+    if opts.using_eos_branch is not None:
+        if not hasattr(my_eos, "for_branch"):
+            raise ValueError(
+                "--using-eos-branch requires a LALSimulation-backed EOS. "
+                "The nmbseq v1 interface intentionally exposes its primary "
+                "stable branch; multi-branch NMB inference requires the "
+                "central-enthalpy sequence path."
+            )
+        my_eos = my_eos.for_branch(opts.using_eos_branch)
 
 
 with open('args.txt','w') as fp:
@@ -2780,6 +2814,27 @@ if not no_plots:
 ###
 ### Coordinate conversion tool
 ###
+def protect_fit_against_out_of_support(fn, val=-np.inf):
+    """Wrap a fit so rows with a nonfinite coordinate get ``val`` instead of being fit.
+
+    A fixed EOS has bounded support: no stable star exists above ``mMaxMsun``,
+    and none below ``mMinMsun`` on a selected branch either.  Those draws come
+    back from the EOS with a nonfinite lambda, which the coordinate conversion
+    propagates into the fit coordinates, and the usual fitting backends
+    (sklearn in particular) raise on nonfinite input.  Such draws are routine
+    in every integration batch, so they must be assigned zero probability here
+    rather than aborting the batch that carried them.  Rows that are in support
+    are still fit together, in one call, so batched backends are unaffected.
+    """
+    def my_protected_fit(x_in):
+        x_in = np.atleast_2d(x_in)
+        indx_ok = np.all(np.isfinite(x_in), axis=1)
+        val_out = np.full(len(x_in), val, dtype=float)
+        if np.any(indx_ok):
+            val_out[indx_ok] = np.reshape(fn(x_in[indx_ok]), -1)
+        return val_out
+    return my_protected_fit
+
 if not opts.using_eos or (fake_eos):
  def convert_coords(x_in):
     return lalsimutils.convert_waveform_coordinates(x_in, coord_names=coord_names,low_level_coord_names=low_level_coord_names,source_redshift=source_redshift,enforce_kerr=opts.downselect_enforce_kerr)
@@ -2787,6 +2842,11 @@ else:
  def convert_coords(x_in):
     x_out = lalsimutils.convert_waveform_coordinates_with_eos(x_in, coord_names=coord_names,low_level_coord_names=low_level_coord_names,eos_class=my_eos,no_matter1=opts.no_matter1, no_matter2=opts.no_matter2,source_redshift=source_redshift,enforce_kerr=opts.downselect_enforce_kerr)
     return x_out
+
+ # --protect-coordinate-conversions offers the same guard for the general case,
+ # but out-of-support draws are not exceptional with a fixed EOS, so the guard
+ # is not optional on this path.
+ my_fit = protect_fit_against_out_of_support(my_fit)
 
 
 ###
@@ -3837,6 +3897,12 @@ for indx_here in indx_list:
             else:
                 Pgrid.lambda1 = 0 # BH
             Pgrid.lambda2 = my_eos.lambda_from_m(Pgrid.m2/lal.MSUN_SI)
+            # A selected EOS branch is bounded below as well as above, so a mass
+            # can have no star on it at all.  That is flagged with a nonfinite
+            # lambda: the draw is outside this EOS model's support, so drop it
+            # instead of exporting a sample with a meaningless tidal parameter.
+            if not (np.isfinite(Pgrid.lambda1) and np.isfinite(Pgrid.lambda2)):
+                include_item = False
         elif opts.tabular_eos_file:
             # save the index of the SORTED SIMULATION (because that's how I'll be accessing it!)
             eos_indx_here = my_eos_sequence.lookup_closest(samples['ordering'][indx_here])
