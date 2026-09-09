@@ -449,6 +449,60 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         tested under `-W error::RuntimeWarning`, where
 #                                         warnings.warn had made the DEFAULT
 #                                         fail_on_fallback=False path raise.
+#   test_jax_bandlimited_distmarg.py   20  time_quadrature="bandlimited" on the
+#                                         DISTANCE-marginalized wrapper: agreement at
+#                                         two amplitudes with an independently
+#                                         reconstructed fine-grid reference (plain
+#                                         periodic FFT + numpy reduction + numpy
+#                                         trapezoid, converged in its own guard and
+#                                         factor), the sample-rate ladder closing on
+#                                         that value, the reduce-then-refine order
+#                                         being a different number, the refusal set
+#                                         still refusing, the two fail-closed doors
+#                                         (return_lnLt, rotation norms), the single
+#                                         definitions of the guard pair and the
+#                                         distance reduction, and one subprocess run
+#                                         of the driver through --mode flowmc
+#                                         --distance-marginalization.  Real
+#                                         precompute; needs lal, no GPU.
+#   test_distance_gh_nodes_cli.py      27  --distance-gh-nodes: makes the per-sample
+#                                         Gauss-Hermite distance quadrature (previously
+#                                         reachable only via JAX_ILE_DISTMARG_GH) an ILE
+#                                         argument, and the warn-not-silently-ignore
+#                                         compatibility notes for --phase-marginalization
+#                                         on the four phi_ref-analytic modes,
+#                                         --sky-coordinates on the modes that do not
+#                                         implement it, and --d-prior (always volumetric).
+#                                         Parse-time CLI/env resolution and refusal run the
+#                                         real check_critical_and_report in-process (no
+#                                         subprocess), including that a CLI/env conflict on
+#                                         DIFFERENT nonzero values is REFUSED rather than
+#                                         reconciled, and that a refused command line never
+#                                         mutates core._DISTMARG_GH_N.  BLOCKER fix (external
+#                                         review, same day): the option now defaults to None,
+#                                         not 0, so an explicit --distance-gh-nodes 0 is
+#                                         distinguishable from not-passed; four tests pin
+#                                         this -- explicit 0 against a nonzero env refuses,
+#                                         explicit 16 against agreeing env 16 is accepted,
+#                                         env 16 alone resolves and is named in the banner,
+#                                         and env 16 against CLI 32 refuses (the mutation
+#                                         target: a reversed CLI/env priority passes every
+#                                         other test in this file, since most cases here
+#                                         exercise only one of the two knobs).  A numeric liveness
+#                                         check on cheap synthetic packed data (no lal, no
+#                                         frames) pins that the resolved count actually
+#                                         changes the constructed likelihood's VALUE, not
+#                                         just an echoed CLI flag, with a fresh jax.jit
+#                                         closure per setting so no stale trace can mask the
+#                                         difference; and that 0 reproduces the untouched
+#                                         legacy grid bit-for-bit.  Two subprocess checks
+#                                         against the real driver entry point (--inj-mode,
+#                                         tiny budget, stopped at the same known
+#                                         post-construction validation error
+#                                         test_distance_grid_loguniform.py's own subprocess
+#                                         test relies on) confirm the resolved count reaches
+#                                         the run log end to end.  Needs no lal beyond what
+#                                         build_likelihood_data already requires; no GPU.
 
 FILES=(
   "${JAXDIR}/test_jax_time_quadrature.py"
@@ -488,7 +542,11 @@ FILES=(
   "${JAXDIR}/test_jax_phase_marg_mode_order.py"
   "${JAXDIR}/test_jax_q_time_pregrid.py"
   "${JAXDIR}/test_direct_marginalization_policy.py"
+  "${JAXDIR}/test_distance_gh_nodes_cli.py"
   "${JAXDIR}/test_jax_cache.py"
+  "${JAXDIR}/test_direct_marginalization_policy_cli.py"
+  "${JAXDIR}/test_jax_bandlimited_distmarg.py"
+  "${JAXDIR}/test_jax_bandlimited_6d_blind.py"
 )
 
 # EXCLUDED: files in JAXDIR matching test_*.py that are deliberately NOT gated.  The
@@ -496,6 +554,11 @@ FILES=(
 # test_*.py to test/jax/ forces a decision instead of being silently unrun -- which is
 # this gate's own failure mode, one level up.
 DESELECTED_TESTS=(
+  # importorskip("flowMC"): flowMC is deliberately not installed in jax-ile-check
+  # (ci.yml), and the OUTCOME check below rejects a skip.  The prior-mc and
+  # laplace-is driver tests in the same file are the executable coverage that
+  # runs here; run the flowMC one by hand where flowMC is installed.
+  "${JAXDIR}/test_jax_bandlimited_distmarg.py::test_driver_runs_flowmc_distance_marginalized_bandlimited"
   "${JAXDIR}/test_jax_stencil_parity.py::test_gpu_gather_parity_against_numpy_window"
   "${JAXDIR}/test_multipeak_planner.py::test_hm_second_mode_survives_unsafe_proxy_gap"
   "${JAXDIR}/test_multipeak_planner.py::test_hm_two_tier_integral_matches_overcomplete_oracle"
@@ -788,12 +851,33 @@ fi
 # collection line: "577/582 tests collected (5 deselected)", gate-style count 577
 # from 37 files.
 #
-# TWELFTH, the jax 0.9.2 empty-pool cap fix touches only test_anglemarg_buffer_cap.py:
-# removes 1 test (test_a_zero_largest_free_block_is_a_known_full_device, whose "0 means
-# full" premise was the bug) and adds 6, net +5, none parametrized -- so the file-local
-# delta is exact and this is a direct bump, not an arithmetic guess across a merge (the
-# failure mode the paragraphs above document).  577 + 5 = 582.
+# TWELFTH, adding test_distance_gh_nodes_cli.py (--distance-gh-nodes, this branch).
+# 20 test_* entry points, one parametrized x4, so 23 collected; none deselected.
+# FILES is now 38 files, EXPECTED_TESTS raised by exactly that: 577 + 23 = 600.
 #
+# THIRTEENTH, same branch, same day: adversarial review found a BLOCKER (the
+# 0-default made an explicit --distance-gh-nodes 0 indistinguishable from
+# not-passed, so a nonzero JAX_ILE_DISTMARG_GH silently won).  Fixed with a
+# None default and four new tests pinning CLI-given-including-0 wins, plus a
+# mutation-target regression test for the reversed-priority case.  24 test_*
+# entry points now, one parametrized x4, so 27 collected; none deselected.
+# EXPECTED_TESTS raised by exactly that: 600 + 4 = 604.
+#
+# FOURTEENTH, on rift_O4d (#285, not this branch): the jax 0.9.2 empty-pool cap fix
+# touches only test_anglemarg_buffer_cap.py: removes 1 test
+# (test_a_zero_largest_free_block_is_a_known_full_device, whose "0 means full" premise
+# was the bug) and adds 6, net +5, none parametrized.  577 + 5 = 582.
+#
+# FIFTEENTH, same file, the review-MAJOR follow-up (forced probe allocation before
+# reading memory_stats(), plus the on-demand-allocator bound): adds 5 tests, none
+# parametrized, no removals.  582 + 5 = 587.
+#
+# SIXTEENTH, reconciling TWELFTH/THIRTEENTH (this branch, test_distance_gh_nodes_cli.py,
+# +27 off the 577 base) with FOURTEENTH/FIFTEENTH (rift_O4d #285,
+# test_anglemarg_buffer_cap.py, +10 off the same 577 base) at this merge.  The two
+# deltas land in disjoint files, so unlike the earlier reconciliations in this history
+# the sum is exact, not a guess: 577 + 27 + 10 = 614.  FILES is 38 (37 + this branch's
+# one new file; #285 added no file).
 # THIRTEENTH, the review-MAJOR follow-up (forced probe allocation before reading
 # memory_stats(), plus the on-demand-allocator bound) again touches only
 # test_anglemarg_buffer_cap.py: adds 5 tests, none parametrized, no removals.
@@ -857,7 +941,59 @@ fi
 # Re-measured on the MERGED tree by running this script and reading its own
 # line: "collected 628 tests from 38 files" (ldas-grid, ~/.cache/jaxci_venv,
 # DESELECT loop applied).
-EXPECTED_TESTS=628
+#
+# NEXT, the policy observability branch (this change).  It adds ONE file,
+# test_direct_marginalization_policy_cli.py, with twenty tests: seventeen
+# driver-seam refusals and three that pin the return arity of
+# direct_marginalization_policy_note.  File count 38 -> 39.  Measured on the
+# REBASED tree with /scratch/richard.oshaughnessy/envs/jaxci-py311 (python
+# 3.11.13, jax 0.10.2) by running the collection and reading its own line, not
+# by adding 20 to 628: "648/653 tests collected (5 deselected)".
+EXPECTED_TESTS=648
+# FIFTEENTH, the peak-local phi-scan reduction (joint_lnL_phi_dense reduces into its
+# lax.scan carry instead of stacking the phi axis; RIFT PR #295).  Touches only
+# test_angle_marg_peaklocal_wiring.py: replaces
+# test_peak_local_model_includes_streamed_body_and_scan_output (2 params) with
+# test_peak_local_model_is_flat_in_n_phi_because_the_scan_reduces (the same 2 params)
+# and adds test_peak_local_model_does_not_grow_with_the_phi_axis.  The file-local delta
+# is exact at +1.
+#
+# NOT 628 + 1, for the reason this block has now recorded four times.  Re-measured by
+# running THIS script on the merged tree and reading its own collection line:
+# "collected 629 tests from 38 files".
+EXPECTED_TESTS=629
+# SIXTEENTH, the bandlimited distance-marginalization branch (this merge).  It
+# adds ONE file, test_jax_bandlimited_distmarg.py, which collects 20 and has one
+# test DESELECTED here (its flowMC driver run would importorskip, and a skip
+# fails the OUTCOME check), so +19 over the merged base.  Its own side carried
+# 596 against a base of 577; rift_O4d reached 628 meanwhile.  Re-measured by
+# running this script on the MERGED tree, ldas-grid, ~/.cache/jaxci_venv,
+# DESELECT loop applied, read off its own collection line:
+#   "647/653 tests collected (6 deselected)", gate-style count 647 from 39 files
+#   (the new file alone: "19/20 tests collected (1 deselected)").
+#
+# SEVENTEENTH, the fixed-distance blind-draw follow-up (endpoint gap off on the
+# 6-D field; parse-time window refusal).  ONE new file,
+# test_jax_bandlimited_6d_blind.py, nothing deselected.  Re-measured by running
+# this script on this tree, ldas-grid, ~/.cache/jaxci_venv, DESELECT loop
+# applied, read off its own collection line:
+#   "collected 657 tests from 40 files" (the gate's own line; 647 + 10)
+EXPECTED_TESTS=657
+# SEVENTEENTH, merging rift_O4d (#214's test_jax_cache.py, gate count 621 from 38
+# files) into this branch (test_distance_gh_nodes_cli.py, +27): the two deltas
+# land in disjoint files, so 621 + 27 = 648 from 39 files.  Re-measured on the
+# merged tree with the CI-equivalent /scratch jaxci-py311 interpreter before
+# this commit.
+EXPECTED_TESTS=648
+
+# EIGHTEENTH, the YOLO integration merge of 2026-09-08 (RIFT PRs #286, #295,
+# #297, #298, #299 -- #299 carries #288 -- merged onto rift_O4d after #294).
+# Every block above was measured on its own tree, so none of their numbers nor
+# their sum describes this one.  Re-measured by running THIS script on the merged
+# tree (ldas-grid, ~/.cache/jaxci_venv, jax 0.9.2, DESELECT loop applied) and
+# reading its own collection line: "collected 705 tests from 42 files".  This
+# assignment is the one that binds; the earlier ones are kept as provenance.
+EXPECTED_TESTS=705
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
@@ -905,8 +1041,60 @@ done
 junit="$(mktemp -t jaxci-junit-XXXXXX.xml)"
 trap 'rm -f "${junit}"' EXIT
 
-echo "== running =="
-"${PYTHON_BIN}" -m pytest -q -p no:cacheprovider --durations=0 --junit-xml="${junit}" "${DESELECT[@]}" "${FILES[@]}"
+# SHARDING.  Only the EXECUTE step is split.  Everything above -- the FILES
+# manifest, the EXCLUDED accounting, the collection floor against
+# EXPECTED_TESTS, and the deselect-resolution check -- runs in full in every
+# shard, so no shard can pass on a partial view of the suite and the counts
+# stay one number rather than N.
+#
+# Why: the suite outgrew the 60-minute job cap.  Measured 2026-09-08, the base
+# suite ran 3277 s of pytest against a ~3518 s budget, and one new test in #290
+# added ~850 s, so every run was ~609 s over and jax-ile-check was cancelled at
+# 1h00m17s with the suite at 91% and ZERO failures.  Trimming was costed at
+# ~529 s across five changes and does not clear the overrun on its own.  Three
+# shards leave each well inside the cap with room for the next test.
+#
+# Round-robin by index, not a hand-tuned split: a cost table in this file would
+# go stale exactly the way the EXPECTED_TESTS comments above record every other
+# hardcoded number going stale.
+JAX_GATE_SHARDS="${JAX_GATE_SHARDS:-1}"
+JAX_GATE_SHARD="${JAX_GATE_SHARD:-1}"
+if ! [ "${JAX_GATE_SHARDS}" -ge 1 ] 2>/dev/null || ! [ "${JAX_GATE_SHARD}" -ge 1 ] 2>/dev/null \
+   || [ "${JAX_GATE_SHARD}" -gt "${JAX_GATE_SHARDS}" ]; then
+  echo "test-jax.sh: bad shard ${JAX_GATE_SHARD}/${JAX_GATE_SHARDS}" >&2; exit 1
+fi
+if [ "${JAX_GATE_SHARDS}" -gt 1 ]; then
+  SHARD_FILES=()
+  for i in "${!FILES[@]}"; do
+    if [ $(( i % JAX_GATE_SHARDS )) -eq $(( JAX_GATE_SHARD - 1 )) ]; then
+      SHARD_FILES+=( "${FILES[$i]}" )
+    fi
+  done
+  if [ "${#SHARD_FILES[@]}" -eq 0 ]; then
+    echo "test-jax.sh: shard ${JAX_GATE_SHARD}/${JAX_GATE_SHARDS} got 0 files" >&2
+    exit 1
+  fi
+  echo "== running shard ${JAX_GATE_SHARD}/${JAX_GATE_SHARDS}: ${#SHARD_FILES[@]} of ${#FILES[@]} files =="
+else
+  SHARD_FILES=( "${FILES[@]}" )
+  echo "== running =="
+fi
+# The OUTCOME floor below must be the count THIS invocation was asked to run.  With
+# JAX_GATE_SHARDS>1 that is the shard's own collection, not EXPECTED_TESTS: the
+# whole-suite floor has already been asserted above on the full FILES list, and
+# holding one shard to it fails every shard that passes ("ran 257 tests, expected
+# at least 705", 2026-09-08, first run of the three-way split).  Collect the shard's
+# files the same way, so a shard still cannot go green on a partial view of ITS files.
+if [ "${JAX_GATE_SHARDS}" -gt 1 ]; then
+  shard_collect="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${SHARD_FILES[@]}" 2>&1)" || {
+    printf '%s\n' "${shard_collect}"; echo "test-jax.sh: shard collection failed" >&2; exit 1; }
+  RUN_EXPECTED="$(printf '%s\n' "${shard_collect}" | grep -cE '^[^[:space:]]+\.py::')"
+  echo "shard ${JAX_GATE_SHARD}/${JAX_GATE_SHARDS} collects ${RUN_EXPECTED} tests from ${#SHARD_FILES[@]} files"
+  if [ "${RUN_EXPECTED}" -lt 1 ]; then echo "test-jax.sh: shard collected 0 tests" >&2; exit 1; fi
+else
+  RUN_EXPECTED="${EXPECTED_TESTS}"
+fi
+"${PYTHON_BIN}" -m pytest -q -p no:cacheprovider --durations=0 --junit-xml="${junit}" "${DESELECT[@]}" "${SHARD_FILES[@]}"
 rc=$?
 if [ "${rc}" -ne 0 ]; then
   # rc 5 == "no tests ran"; it is a FAILURE here, not a pass.
@@ -918,7 +1106,7 @@ fi
 # collects, runs, and asserts nothing: one pytest.skip() or importorskip() disables a
 # gate while both the collected count and the pytest exit status stay green.  That is
 # the very shape this script exists to prevent, so assert what the RUN did.
-"${PYTHON_BIN}" - "${junit}" "${EXPECTED_TESTS}" <<'PYCHECK'
+"${PYTHON_BIN}" - "${junit}" "${RUN_EXPECTED}" <<'PYCHECK'
 import sys, xml.etree.ElementTree as ET
 path, expected = sys.argv[1], int(sys.argv[2])
 root = ET.parse(path).getroot()
@@ -942,4 +1130,4 @@ if bad:
 PYCHECK
 if [ $? -ne 0 ]; then exit 1; fi
 
-echo "jax_ile CPU regression gate: PASS (${n_collected} tests)"
+echo "jax_ile CPU regression gate: PASS (${n_collected} tests collected; this invocation ran ${RUN_EXPECTED})"

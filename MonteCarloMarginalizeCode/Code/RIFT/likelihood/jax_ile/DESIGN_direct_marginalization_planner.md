@@ -90,7 +90,7 @@ sites.  It does not attach error or cost numbers to them.
 | distance `loguniform` | bounded stationary set, no implemented end-to-end certificate | requires full prior support, an interior peak, and a passing endpoint budget |
 | distance `gh` | bounded stationary set, no implemented error certificate | currently the volumetric-prior kernel |
 | time `simpson` | none | historical fixed grid |
-| time `bandlimited` | exact band limit, no implemented per-request certificate | the nonlinear JAX distance/angle wrappers currently refuse this ordering |
+| time `bandlimited` | exact band limit, no implemented per-request certificate | the nonlinear JAX ANGLE wrappers currently refuse this ordering; the distance wrapper applies its reduction on the refined nodes and accepts it |
 
 The last row carries both kinds of caveat at once, and is why a production
 three-axis error-budgeted plan is not merely waiting for an angle cost table.

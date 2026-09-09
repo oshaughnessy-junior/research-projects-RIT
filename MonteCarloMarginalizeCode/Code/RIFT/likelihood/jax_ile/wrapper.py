@@ -35,7 +35,8 @@ from .core import (build_likelihood_data, fused_log_likelihood,
                    DIST_GRID_TOL_DEFAULT, DIST_GRID_SCHEMES,
                    estimate_distance_peak, phi_ref_grid, psi_grid,
                    phi_ref_conditional_lnL, DIST_MPC_REF, JAX_INTERP_DEFAULT,
-                   TIME_QUAD_DEFAULT, _TIME_QUAD_CHOICES, default_time_guard)
+                   TIME_QUAD_DEFAULT, _TIME_QUAD_CHOICES,
+                   bandlimited_time_guard)
 # Generic probe direction for the build-time identity check.  The A0==0/B1==0
 # identity is a property of the spin-2 detector response, so it does not depend
 # on where we probe; a single generic (ra, dec, incl) away from any pole or
@@ -56,9 +57,7 @@ def bandlimited_storage_requirement(deltaT, integration_window_half):
     """Return ``(storage_half, g0, g_certificate)`` for adaptive time support."""
     tvals = factored_likelihood.marginalization_time_grid(
         integration_window_half, deltaT, xpy=np)
-    g_default = default_time_guard(len(tvals))
-    g0 = 1 << int(np.ceil(np.log2(g_default)))
-    g_certificate = 2 * g0
+    g0, g_certificate = bandlimited_time_guard(len(tvals))
     # Fifty milliseconds exceeds the Earth-diameter light time (~42.6 ms), so
     # this support guarantee does not encode an HLV-only network assumption.
     storage_half = (float(integration_window_half) + g_certificate * float(deltaT)
@@ -67,6 +66,15 @@ def bandlimited_storage_requirement(deltaT, integration_window_half):
 
 
 def _validate_nonlinear_time_quadrature(time_quadrature, endpoint):
+    """Refusal for the endpoints whose reduction has no refinable primitive here.
+
+    The pure distance reduction is not one of them: it consumes the same
+    ``(kappa, rho^2)`` the refinement produces, so
+    :class:`JAXDistanceMarginalizedLikelihood` applies it on the refined nodes
+    instead of calling this.  The phi/psi/exact-angle endpoints either stream a
+    per-phi primitive the refined grid cannot hold or receive an already-reduced
+    lnL(t) from the coefficient-table kernels.
+    """
     if time_quadrature not in _TIME_QUAD_CHOICES:
         raise ValueError("time_quadrature must be one of %r" % (_TIME_QUAD_CHOICES,))
     if time_quadrature == "bandlimited":
@@ -278,9 +286,8 @@ class JAXExtrinsicLikelihood:
             raise ValueError("time_quadrature must be one of %r" % (_TIME_QUAD_CHOICES,))
         self.time_quadrature = time_quadrature
         if time_quadrature == "bandlimited":
-            g_default = default_time_guard(data.npts)
-            self.time_guard_initial = 1 << int(np.ceil(np.log2(g_default)))
-            self.time_guard_certified = 2 * self.time_guard_initial
+            (self.time_guard_initial,
+             self.time_guard_certified) = bandlimited_time_guard(data.npts)
 
         def _batched(ra, dec, psi, incl, phiref, distMpc):
             return fused_log_likelihood(
@@ -344,9 +351,12 @@ class JAXDistanceMarginalizedLikelihood:
         self.data = data
         self.interp = interp   # the instance's stencil; sample_phi_ref defaults to it
         self.phase_marginalization = phase_marginalization
-        _validate_nonlinear_time_quadrature(
-            time_quadrature, "distance marginalization")
+        if time_quadrature not in _TIME_QUAD_CHOICES:
+            raise ValueError("time_quadrature must be one of %r" % (_TIME_QUAD_CHOICES,))
         self.time_quadrature = time_quadrature
+        if time_quadrature == "bandlimited":
+            (self.time_guard_initial,
+             self.time_guard_certified) = bandlimited_time_guard(data.npts)
         self.x_grid, self.log_w_grid = make_distance_grid(
             d_min, d_max, n_grid, d_prior, distMpcRef=data.distMpcRef,
             d_prior_range=d_prior_range)
@@ -607,12 +617,13 @@ class JAXDistPhiPsiMargLikelihood:
             # only the support on every dense path -- so do not re-tie this
             # comment to a particular selector outcome.
             raise ValueError(
-                "dist_grid=%r cannot be combined with JAX_ILE_DISTMARG_GH=%d: "
-                "the per-sample Gauss-Hermite distance quadrature places its "
-                "own nodes and uses only the SUPPORT of x_grid, so this option "
-                "would be bit-identically inert while still being reported as "
-                "active.  Unset JAX_ILE_DISTMARG_GH, or use "
-                "dist_grid='uniform'." % (dist_grid, _core._DISTMARG_GH_N))
+                "dist_grid=%r cannot be combined with distance-GH-nodes=%d "
+                "(--distance-gh-nodes / JAX_ILE_DISTMARG_GH): the per-sample "
+                "Gauss-Hermite distance quadrature places its own nodes and "
+                "uses only the SUPPORT of x_grid, so this option would be "
+                "bit-identically inert while still being reported as active.  "
+                "Pass --distance-gh-nodes 0 (or unset JAX_ILE_DISTMARG_GH), or "
+                "use dist_grid='uniform'." % (dist_grid, _core._DISTMARG_GH_N))
         if dist_grid != "uniform" and d_prior_range is not None and (
                 float(d_prior_range[0]) != float(d_min)
                 or float(d_prior_range[1]) != float(d_max)):
@@ -939,13 +950,14 @@ class JAXDistPhiPsiMargLikelihood:
                 if angle_marg == "laplace" and gh_ok is False:
                     raise ValueError(
                         "--angle-marg-scheme laplace was requested with "
-                        "JAX_ILE_DISTMARG_GH set, but its psi-marginal "
+                        "distance-GH-nodes set (--distance-gh-nodes / "
+                        "JAX_ILE_DISTMARG_GH), but its psi-marginal "
                         "distance-node placement is not valid for this data: "
                         "%s.  The placement is DERIVED from A0 == 0 and "
                         "B1 == 0 (that is what reduces stationarity to "
                         "z^2 w = conj(w)), so it must not be used where they "
-                        "do not hold.  Use --angle-marg-scheme exact, or unset "
-                        "JAX_ILE_DISTMARG_GH."
+                        "do not hold.  Use --angle-marg-scheme exact, or pass "
+                        "--distance-gh-nodes 0 (or unset JAX_ILE_DISTMARG_GH)."
                         % gh_info.get("gh_laplace_reason", "identity absent"))
                 scheme, sel_info = angle_marg, dict(
                     reason="forced by caller", amplitude=amp_data,
@@ -1038,7 +1050,18 @@ class JAXDistPhiPsiMargLikelihood:
                 reserve_distance_gh_nodes=int(_core._DISTMARG_GH_N),
                 reserve_batch_rows=int(cfg.reserve_batch_rows),
                 total_value_error_budget_nats=float(
-                    cfg.total_value_error_budget_nats))
+                    cfg.total_value_error_budget_nats),
+                # The plan-sizing and tolerance knobs are reported for the same
+                # reason the resolved angle scheme is: they decide whether the
+                # controller can accept at all, and a caller that passed one and
+                # got the default back had no way to see it from the log.
+                max_modes=int(cfg.max_modes),
+                enriched_max_modes=int(cfg.enriched_max_modes),
+                base_oversample=int(cfg.base_oversample),
+                enriched_oversample=int(cfg.enriched_oversample),
+                base_max_starts=int(cfg.base_max_starts),
+                convergence_tol_nats=float(cfg.convergence_tol_nats),
+                time_guard_tol_nats=float(cfg.time_guard_tol_nats))
             self.angle_marg_info["direct_marginalization_policy"] = (
                 direct_marginalization_policy)
 

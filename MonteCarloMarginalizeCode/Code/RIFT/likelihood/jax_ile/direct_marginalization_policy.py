@@ -173,14 +173,23 @@ class PolicyConfig(NamedTuple):
     # workspace grows linearly in ``B``, and the tier-escalation ``lax.cond``
     # becomes a ``select`` that evaluates EVERY tier for EVERY row in the
     # batch.  Values, branch decisions and gradients are unchanged at every
-    # size; only cost is.  0 means one full batch of all rows.
+    # size.  0 means one full batch of all rows.
     #
-    # The default is 1 because batching was measured and does not pay.  On the
-    # ladder-2 tables at rho 40.8, one reserve tier, an idle RTX PRO 4000
-    # Blackwell: 96.3 s per row at B=1 and 99.9 s per row at B=8, for 4x the
-    # workspace (0.103 -> 0.415 GiB).  One row already saturates the card, so
-    # there is no occupancy for a batch to recover.  The row loop was not the
-    # reason the Section VI.A sampler cells stall; the per-row reserve is.
+    # The default is 1 because batching is a COST REGRESSION.  The
+    # tier-escalation cond is not the only one: the accept/reserve cond in
+    # ``all_axis_peaklocal`` also becomes a select, so a locally ACCEPTED row
+    # executes the dense reserve it would otherwise skip.  The penalty scales
+    # with the locally accepted fraction, and the docstring there claiming an
+    # accepted row never pays for the reserve is false above B=1.
+    #
+    # WITHDRAWN: this comment previously read "measured and does not pay",
+    # citing 96.3 s per row at B=1 against 99.9 at B=8 on ladder-2 tables at
+    # rho 40.8.  Every row in those runs DECLINED (accepted_local 0 of 8 and 0
+    # of 2), so the figures price the decline path, and 37-50% of the rows were
+    # nan under reserve_time_refine_max=4.  They also ran at refine == refine
+    # _max, where the escalation cond is absent from the graph, so both penalty
+    # mechanisms were inert.  Do not cite them.  What stands from that work is
+    # the workspace law, 0.046 + 0.385 B GiB, and the value equivalence.
     # See DESIGN_direct_marginalization_policy.md.
     reserve_batch_rows: int = 1
     norm_invariance_rtol: float = 1.0e-10

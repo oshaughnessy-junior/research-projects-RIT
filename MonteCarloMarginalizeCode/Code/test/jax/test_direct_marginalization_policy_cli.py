@@ -1,0 +1,194 @@
+"""Driver-seam tests for the four-axis policy's observability and plan knobs.
+
+These are SUBPROCESS tests on purpose.  Every option here is read in
+``build_parser`` and validated in ``check_critical_and_report``, both of which
+run before any likelihood is built, so a library-level test of the policy
+module cannot see them at all: it would exercise ``PolicyConfig`` directly and
+pass no matter what the command line does.  The failure this guards against is
+the one this pipeline keeps hitting -- a flag that is accepted and then
+silently inert -- so each case asserts that a misuse is REFUSED rather than
+ignored, and that the accepting combination is not refused.
+
+A separate file from test_direct_marginalization_policy.py because these need
+no JAX device, no synthetic data and no fixture: they are parser and validator
+behaviour only, and they run in well under a second each.
+"""
+
+import os
+import subprocess
+import sys
+
+import pytest
+
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_DRIVER = os.path.join(_ROOT, "bin", "integrate_likelihood_extrinsic_jax")
+
+# Enough of a policy request to reach the policy's own validation.  --sim-xml is
+# a path that exists so argument parsing does not fail for an unrelated reason;
+# the run never gets as far as reading it, because every case below is decided
+# at parse time.
+_POLICY = ("--mode", "flowmc-phipsimarg", "--distance-marginalization",
+           "--direct-marginalization-policy", "auto",
+           "--angle-marg-scheme", "exact", "--sim-xml", os.devnull)
+
+
+def _run(*args):
+    env = dict(os.environ)
+    env["PYTHONPATH"] = _ROOT + os.pathsep + env.get("PYTHONPATH", "")
+    env["JAX_PLATFORMS"] = "cpu"
+    p = subprocess.run([sys.executable, _DRIVER] + list(args), env=env,
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                       timeout=600)
+    return p.returncode, p.stdout.decode("utf-8", "replace")
+
+
+def test_the_help_lists_every_new_policy_and_smc_knob():
+    rc, out = _run("--help")
+    assert rc == 0, out[-1500:]
+    for flag in ("--direct-marginalization-policy-probe-rows",
+                 "--direct-marginalization-policy-probe-only",
+                 "--direct-marginalization-max-modes",
+                 "--direct-marginalization-enriched-max-modes",
+                 "--direct-marginalization-base-oversample",
+                 "--direct-marginalization-enriched-oversample",
+                 "--direct-marginalization-max-starts",
+                 "--direct-marginalization-convergence-tol-nats",
+                 "--direct-marginalization-time-guard-tol-nats",
+                 "--direct-marginalization-reserve-time-refine-max",
+                 "--smc-is-samples"):
+        assert flag in out, flag
+
+
+@pytest.mark.parametrize("flag,value", [
+    ("--direct-marginalization-policy-probe-rows", "8"),
+    ("--direct-marginalization-max-modes", "16"),
+    ("--direct-marginalization-enriched-max-modes", "16"),
+    ("--direct-marginalization-base-oversample", "2"),
+    ("--direct-marginalization-enriched-oversample", "4"),
+    ("--direct-marginalization-max-starts", "64"),
+    ("--direct-marginalization-convergence-tol-nats", "0.5"),
+    ("--direct-marginalization-time-guard-tol-nats", "0.5"),
+    ("--direct-marginalization-reserve-time-refine-max", "8"),
+])
+def test_a_policy_knob_without_the_policy_is_refused_not_ignored(flag, value):
+    """Each knob is inert unless the policy is on, so passing one without it is
+    a fatal mistake rather than a silently dropped request."""
+    rc, out = _run("--mode", "flowmc-phipsimarg", flag, value)
+    assert rc != 0, out[-1500:]
+    assert "inert" in out, out[-1500:]
+
+
+def test_a_negative_smc_is_sample_count_is_refused():
+    """A negative count reaches the SMC proposal draw, whose bare exception
+    handler would swallow it and publish the raw SMC evidence instead of the IS
+    evidence, with nothing in the output saying the estimator changed."""
+    rc, out = _run("--mode", "flowmc-phipsimarg", "--smc-is-samples", "-1")
+    assert rc != 0, out[-1500:]
+    assert "smc-is-samples" in out, out[-1500:]
+
+
+def test_probe_only_without_probe_rows_is_refused():
+    """--probe-only with zero rows would exit having measured nothing."""
+    rc, out = _run(*(_POLICY + ("--direct-marginalization-policy-probe-only",)))
+    assert rc != 0, out[-1500:]
+    assert "probe-rows" in out, out[-1500:]
+
+
+def test_an_enriched_plan_narrower_than_the_base_plan_is_refused():
+    """Acceptance compares a base plan against an enriched one that must be
+    able to nest it; a narrower enriched cap declines on mode nesting every
+    row, which would read as a property of the data."""
+    rc, out = _run(*(_POLICY + ("--direct-marginalization-max-modes", "16",
+                                "--direct-marginalization-enriched-max-modes",
+                                "8")))
+    assert rc != 0, out[-1500:]
+    assert "nest" in out, out[-1500:]
+
+
+def test_an_escalation_ceiling_below_its_floor_is_refused():
+    rc, out = _run(*(_POLICY + (
+        "--direct-marginalization-reserve-time-refine", "8",
+        "--direct-marginalization-reserve-time-refine-max", "4")))
+    assert rc != 0, out[-1500:]
+    assert "reserve-time-refine-max" in out, out[-1500:]
+
+
+@pytest.mark.parametrize("flag", [
+    "--direct-marginalization-convergence-tol-nats",
+    "--direct-marginalization-time-guard-tol-nats",
+])
+def test_a_nonpositive_tolerance_is_refused(flag):
+    rc, out = _run(*(_POLICY + (flag, "-1")))
+    assert rc != 0, out[-1500:]
+    assert "finite and positive" in out, out[-1500:]
+
+
+def test_the_recorded_accepting_operating_point_is_not_refused():
+    """The counterpart to every case above: the combination that reaches the
+    four-axis branch must pass validation.  It still exits nonzero, on a
+    missing --event-time, which is the point -- the policy's own validation is
+    behind it, so a future tightening that rejected this configuration would
+    be caught here rather than in a run."""
+    rc, out = _run(*(_POLICY + (
+        "--direct-marginalization-time-guard", "128",
+        "--direct-marginalization-max-modes", "16",
+        "--direct-marginalization-enriched-max-modes", "16",
+        "--direct-marginalization-base-oversample", "2",
+        "--direct-marginalization-enriched-oversample", "4",
+        "--direct-marginalization-reserve-time-refine", "4",
+        "--direct-marginalization-reserve-time-refine-max", "4",
+        "--direct-marginalization-policy-probe-rows", "8",
+        "--direct-marginalization-policy-probe-only")))
+    assert rc != 0, out[-1500:]
+    assert "event-time" in out, out[-1500:]
+    assert "direct-marginalization" not in out.split("error:")[-1], out[-1500:]
+
+
+# --------------------------------------------------- the note's return arity
+
+def _load_driver():
+    """Import the driver script as a module (it has no .py extension)."""
+    import importlib.util
+    spec = importlib.util.spec_from_loader(
+        "ile_jax_driver",
+        importlib.machinery.SourceFileLoader("ile_jax_driver", _DRIVER))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.mark.parametrize("policy,ledger,theta_rows", [
+    ("off", object(), 4),      # policy disabled
+    ("auto", None, 4),         # no ledger built
+    ("auto", object(), 0),     # no rows to evaluate
+])
+def test_the_note_returns_three_values_on_every_early_path(policy, ledger,
+                                                           theta_rows):
+    """``return_values=True`` must return the same NUMBER of values on every
+    path, including the ones that give up early.
+
+    The caller unpacks three.  Two early returns handed back two, so any caller
+    reaching them died on an unpacking error rather than on the condition the
+    early return was written to handle.  None of the three is reachable from
+    the probe today, which is exactly why it needs pinning: the guard is
+    unexercised, so nothing else would notice it drifting.
+    """
+    import numpy as np
+    mod = _load_driver()
+
+    class _Like(object):
+        pass
+
+    like = _Like()
+    like.direct_marginalization_policy = policy
+    like._batched_ledger = ledger
+    theta = np.zeros((theta_rows, 3))
+
+    out = mod.direct_marginalization_policy_note(like, theta,
+                                                 return_values=True)
+    assert isinstance(out, tuple) and len(out) == 3, out
+    assert isinstance(out[0], str)
+
+    plain = mod.direct_marginalization_policy_note(like, theta)
+    assert isinstance(plain, str), plain
