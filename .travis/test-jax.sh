@@ -1044,11 +1044,11 @@ fi
 # driver).  Adds ONE file, test_angle_marg_multipeak_wiring.py, 7 tests, none
 # parametrized, no removals, and touches no existing test count.  754 + 7 = 761,
 # measured by running this script.
-# (superseded by the measured value below) EXPECTED_TESTS=763
+# (superseded assignment removed 2026-09-09; see the single EXPECTED_TESTS= below)
 # 2026-09-09 (laplace reserve kernel keyword fix): +1 test in test_policy_peaklocal_reserve.py
 # (the resolved kernel through anglemarg's REAL Laplace function).  Read off this script's
 # own collection line on ldas-pcdev12 (~/.cache/jaxci_venv, CPU): "collected 755 tests from 45 files".
-# (superseded by the measured value below) EXPECTED_TESTS=755
+# (superseded assignment removed 2026-09-09; see the single EXPECTED_TESTS= below)
 
 # Simultaneous rotation + finite response adds cheap analytic coefficient parity
 # to an existing collected test.  Real waveform precompute, JIT/grad, the one-call
@@ -1059,12 +1059,12 @@ fi
 # test_limit_distance_jax tightening: neither 761 + 1 nor 755 + 7 is the number.
 # Re-measured by running THIS script on the merged tree (ldas-grid, ~/.cache/jaxci_venv,
 # jax 0.9.2, CPU, DESELECT applied): "collected 762 tests from 46 files".  Binding.
-# ONE ASSIGNMENT ONLY.  The #312 merge left THREE live EXPECTED_TESTS= lines on
-# different lines, so git saw no conflict and bash took the last.  That is not
-# hypothetical: bumping the floor for the two tests below, I edited the FIRST
-# line and the change was inert.  If you add tests, edit THIS line.
-# 762 (measured on the merged tree) + 2 = 764.
-EXPECTED_TESTS=764
+# 2026-09-09 (locator search sizing, stacked on #312 + #313): +1 test in
+# test_policy_peaklocal_reserve.py (the sized locator on a rho-632 carrier).  Read off this
+# script's own collection line on ldas-pcdev12 (~/.cache/jaxci_venv, CPU) after rebasing on
+# rift_O4d 336f86133: "collected 763 tests from 46 files".  The #312/#313 merges had left
+# three EXPECTED_TESTS= assignments (761, 755, 762; last wins); this is the single one.
+EXPECTED_TESTS=763
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"

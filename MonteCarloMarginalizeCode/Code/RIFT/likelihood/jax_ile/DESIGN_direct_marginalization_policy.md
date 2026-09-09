@@ -391,6 +391,59 @@ the predicted widths sit within 3 percent of the located ones, and the located
 `rho` within 20 percent of the network 163.  The scan hull was 2.1 samples wide
 (the maxima +-16 sigma) against the 614-sample window.
 
+### Locator search sizing (rung 652, 2026-09-09)
+
+The first `peaklocal` rows at rung 652 (`likedata_snr640.pkl`, S=8 draw, guard
+128, 16 distance nodes, decline forced) refused 3 of 8 rows on the focus
+certificate: the rule's argmax sat 0.18 to 0.33 samples from the block centre
+(spans 0.22 to 0.37).  On row 0 a 1/256-sample lattice of the psi-Laplace
+kernel peaks at 307.109 (lnL 212147.7, half-maximum width 0.027 samples); the
+locator had centred the block at 307.334, 107 nat lower.  A sweep of the
+locator on that row:
+
+| search refine | phi nodes | Newton steps / clip, rad | centre | value | note |
+|---|---|---|---|---|---|
+| 8 | 64 | 3 / 0.1 | 307.334 | 211532 | shipped #304 |
+| 8 | 64 | 8 / 1.0 | 307.334 | 212067 | angles reach, time cell wrong |
+| 64 | 64 | 3 / 0.1 | 306.559 | 211536 | |
+| 64 | 64 | 8 / 1.0 | 307.464 | 211908 | |
+| 128 | 64 | 8 / 1.0 | 307.482 | 211880 | |
+
+Refining the time search does not help: the search grid maximizes the angles on
+a 64-node phi lattice, whose ripple is about `rho^2 (pi / n_phi)^2` = 1000 nat at
+rho 652 against a 25-nat change of the profile across one search cell
+(`(rho^2 / 2)(0.125 / tau)^2` with the envelope width tau about 7.6 samples), so
+the search maximum lands on whichever cell the ripple favours, up to 0.4
+samples away, beyond the polish's reach of 1.33 cells.  The Newton polish of
+(phi, u) was clipped to 0.1 rad per step for 3 steps against a lattice offset
+of up to 0.4 rad, 500 nat low on the same row.
+
+Sizing, from the amplitude: the phi count must hold the ripple under the
+per-cell change, so `n_phi >= pi rho` for 1 nat; it is a static shape, so the
+policy carries `reserve_peaklocal_search_phi_nodes` = 4096 (under 1 nat up to
+rho 1300; the grid is `(t, phi, u)` = 4905 x 4096 x 8 doubles, 1.3 GB, a fraction
+of a second on the GPU) and `reserve_peaklocal_newton_steps` = 8 within
+`reserve_peaklocal_newton_step_max` = 1 rad.  Test: a carrier at rho 632 with
+tau 8 is located within tau / rho of its centre at the profile's true maximum.
+
+Rung 652 with the sizing, S=8 draw, `peaklocal` (psi-Laplace), decline forced:
+
+| row | reserve value | nodes | escalations | s per row | sigma_t predicted | located | rho located | focus offset, samples | resolution error, nat | warranted |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 0 | 212136.145450 | 357 | 0 | 152 | 0.0157 | 0.0154 | 651.4 | 0.001 | 2.9e-11 | yes |
+| 1 | 211785.826592 | 357 | 0 | 28 | 0.0157 | 0.0154 | 650.9 | 0.001 | 2.9e-11 | yes |
+| 2 | 205203.742743 | 357 | 0 | 28 | 0.0160 | 0.0157 | 640.7 | 0.000 | 2.9e-11 | yes |
+| 3 | 211361.706073 | 357 | 0 | 28 | 0.0157 | 0.0154 | 650.2 | 0.002 | 2.9e-11 | yes |
+| 4 | 139434.603116 | 357 | 0 | 28 | 0.0194 | 0.0190 | 528.2 | 0.001 | 0.0e+00 | yes |
+| 5 | 145870.675689 | 357 | 0 | 28 | 0.0189 | 0.0182 | 540.2 | 0.002 | 0.0e+00 | yes |
+| 6 | 203151.295219 | 357 | 0 | 28 | 0.0160 | 0.0157 | 637.5 | 0.001 | 2.9e-11 | yes |
+| 7 | 141631.499287 | 357 | 0 | 28 | 0.0192 | 0.0185 | 532.3 | 0.001 | 0.0e+00 | yes |
+
+Before the sizing rows 0, 1 and 3 were refused by the focus certificate
+(offsets 0.334, 0.183, 0.183 samples after two escalations, 1221 nodes,
+129 to 250 s); the other five rows keep their values to all printed digits.
+Rung 163: all eight rows unchanged at 9 s per row.
+
 ## Gate before this can be a default
 
 PR #268 warrants scalar values. Differentiating the composite differentiates
