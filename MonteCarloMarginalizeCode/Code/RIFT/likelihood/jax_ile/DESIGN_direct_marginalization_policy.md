@@ -351,10 +351,19 @@ at rho 12.65, 40.77, 163.08, 652.31.
 The budget is points-per-sigma, i.e. an ALGEBRAIC convergence model. Measured at
 rho 40.77 on 64 rows:
 
-| refine | nodes | warrant |
+| refine | nodes | warrant error |
 |---|---|---|
-| 4 | 2453 | 1.8e-03 .. 1.14e-02 (fails 1e-3) |
+| 4 | 2453 | 1.8e-03 .. 1.14e-02 |
 | 8 | 4905 | 5e-11 .. 7.8e-09 |
+
+Read against a tolerance, which has since moved: refine 4 fails the 1e-3 that
+was shipped when this was measured, and straddles the 1e-2 RIFT PR #301 adopted
+(only the top of the range exceeds it). #301 measured the other side of the same
+quantity at the same rung — escalations 2 -> 0 and 321 s -> 147 s going from
+1e-3 to 1e-2, lnL moving 4.8e-12 — which is what this range predicts. Two
+measurements of one effect, taken independently; neither confirms the other's
+method, and together they say the escalation at this rung was being driven by
+the tolerance rather than by the rule.
 
 Doubling improved the error by ~1e6 where an algebraic rule gives 4. That is the
 trapezoid rule on a BAND-LIMITED reconstruction: spectrally accurate once the
