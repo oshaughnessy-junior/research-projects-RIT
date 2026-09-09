@@ -61,6 +61,11 @@ __all__ = [
     "policy_acceptance_diagnostics",
     "fused_log_likelihood_four_axis_policy",
     "summarize_policy_ledger",
+    "RESERVE_SCHEME_CHOICES",
+    "RESERVE_SCHEME_DEFAULT",
+    "q_effective_bandwidth_hz",
+    "predict_reserve_pair",
+    "format_reserve_pair",
 ]
 
 POLICY_CHOICES = ("off", "auto")
@@ -259,6 +264,186 @@ def validate_policy_config(config):
         raise ValueError("local_radius must be positive")
     validate_batch_rows(config.reserve_batch_rows)
     return config
+
+
+# ---------------------------------------------------------------------------
+# Analysis-driven reserve selection
+# ---------------------------------------------------------------------------
+# RO, 2026-09-08: "we are learning a hard lesson about refinement and the
+# 'reserve' not protecting us; we need to rely on ANALYSIS and the known physics
+# ... have a hierarchy of methods and pick the expected bounding pairs as needed
+# that apply to our signal."
+#
+# The failure mode being named is try-then-decline-then-refine: run the local
+# branch, discover it declined, escalate a whole-window refinement, and discover
+# at the END that most rows were carried by a method nobody chose.  Everything
+# below is computable from the PRECOMPUTED inputs before any row is evaluated,
+# so the pair is chosen and PRINTED up front and the run can be read in its
+# first line instead of its last.
+
+RESERVE_SCHEME_CHOICES = ("auto", "exact", "laplace", "peaklocal")
+RESERVE_SCHEME_DEFAULT = "exact"
+
+# Fraction of a peak sigma the local branch's time cover must resolve.  The
+# cover keeps cells above a mass threshold, so a peak narrower than the node
+# spacing puts its mass in one cell and the cover cannot localize it.
+_TIME_NODES_PER_SIGMA = 3.0
+
+
+def q_effective_bandwidth_hz(data):
+    """PSD-weighted second frequency moment of the stored Q(t), in Hz.
+
+    sqrt(<f^2>) with <f^2> = sum f^2 |Qtilde(f)|^2 / sum |Qtilde(f)|^2, summed
+    over detectors and modes.  This is the SAME quantity paper1 uses for the
+    nearest-sample error budget (the "signal's effective bandwidth"), computed
+    here from the precomputed Q rather than re-derived from the PSD, so it costs
+    one FFT of data already in memory and needs no waveform call.
+
+    Q is stored at deltaT / q_time_pregrid_factor, so the frequency axis uses
+    the REFINED spacing; using deltaT here would understate the bandwidth by
+    exactly that factor.
+    """
+    import numpy as _np
+    num = 0.0
+    den = 0.0
+    for det in data.detector_names:
+        d = data.detectors[det]
+        Q = _np.asarray(d["Q"])                       # (npts_full, K)
+        f = int(d.get("q_time_pregrid_factor", 1)) or 1
+        dt = float(data.deltaT) / float(f)
+        n = Q.shape[0]
+        if n < 4:
+            continue
+        # Q (rholm) is COMPLEX, so this is the full two-sided transform, not
+        # rfft: a real-input transform silently rejects it, and dropping the
+        # imaginary part would discard half the signal's phase structure.
+        freqs = _np.fft.fftfreq(n, d=dt)
+        spec = _np.abs(_np.fft.fft(Q, axis=0)) ** 2   # (n, K)
+        w = spec.sum(axis=1)
+        num += float((freqs ** 2 * w).sum())
+        den += float(w.sum())
+    if den <= 0.0:
+        return float("nan")
+    return float(_np.sqrt(num / den))
+
+
+def predict_reserve_pair(data, guess_snr, *, reserve_time_refine_max,
+                         crossover_amplitude, requested="auto",
+                         available=("exact", "laplace")):
+    """Choose the (local, reserve) pair from the precomputed inputs.
+
+    Returns ``(scheme, info)``.  ``scheme`` is None when the analysis says the
+    signal needs a method that is not implemented; the caller must REFUSE rather
+    than fall back, which is the whole point of predicting.
+
+    The four quantities, all available before any row is evaluated:
+
+    * ``rho``  -- the network SNR guess the driver already computes from the
+      detector response.
+    * ``sigma_f`` -- the effective bandwidth of the stored Q (above).
+    * ``A = rho^2 / 2`` against ``ANGLE_MARG_CROSSOVER_AMPLITUDE``, the
+      selector's own VALIDATED accuracy crossover between exact and laplace
+      angles.  Above it laplace is the more accurate scheme AND costs ~sqrt(A)
+      rather than ~A.
+    * ``sigma_t = 1 / (2 pi rho sigma_f)`` -- the expected width of the time
+      peak, in native samples, against what the whole-window refined reserve
+      can AFFORD: ``(npts - 1) * reserve_time_refine_max + 1`` nodes.  A peak
+      the escalation ceiling cannot resolve is the regime where refinement
+      carries the rows without resolving them, which is what this function
+      exists to predict rather than discover at the end of a run.
+
+      NOTE the comparison is deliberately against the RESERVE's node budget and
+      NOT against ``max_time_nodes``.  The latter caps the LOCAL branch's time
+      CELL COVER, which is a different quantity: the cover exceeds its budget
+      when lnL(t) is BROAD (many live cells, far from truth), not when the peak
+      is narrow.  Comparing a whole-window node count against a cover budget
+      mixes the two, which an earlier draft of this function did.
+    """
+    import numpy as _np
+    rho = float(guess_snr) if guess_snr else float("nan")
+    sigma_f = q_effective_bandwidth_hz(data)
+    A = 0.5 * rho * rho if _np.isfinite(rho) else float("nan")
+    dt = float(data.deltaT)
+    if _np.isfinite(rho) and _np.isfinite(sigma_f) and rho > 0 and sigma_f > 0:
+        sigma_t = 1.0 / (2.0 * _np.pi * rho * sigma_f)
+    else:
+        sigma_t = float("nan")
+    width_samples = sigma_t / dt if _np.isfinite(sigma_t) else float("nan")
+    # Nodes the cover would need to put _TIME_NODES_PER_SIGMA across one sigma
+    # over the whole window, which is what a whole-window rule has to do.
+    if _np.isfinite(width_samples) and width_samples > 0:
+        nodes_needed = _TIME_NODES_PER_SIGMA * float(data.npts) / width_samples
+    else:
+        nodes_needed = float("inf")
+    nodes_available = (float(data.npts) - 1.0) * float(
+        reserve_time_refine_max) + 1.0
+    time_local_ok = nodes_needed <= nodes_available
+
+    info = dict(rho=rho, sigma_f_hz=sigma_f, amplitude_A=A,
+                crossover_amplitude=float(crossover_amplitude),
+                sigma_t_s=sigma_t, peak_width_samples=width_samples,
+                whole_window_nodes_needed=nodes_needed,
+                whole_window_nodes_available=nodes_available,
+                reserve_time_refine_max=int(reserve_time_refine_max),
+                time_peak_resolvable_whole_window=bool(time_local_ok),
+                requested=requested, available=tuple(available))
+
+    if requested != "auto":
+        info["reason"] = "explicit request, no analysis applied"
+        return requested, info
+
+    if not _np.isfinite(A) or not _np.isfinite(sigma_f):
+        info["reason"] = ("cannot analyse: rho=%r sigma_f=%r; refusing rather "
+                          "than guessing" % (rho, sigma_f))
+        return None, info
+
+    # Angles: the validated accuracy crossover.
+    angular = "laplace" if A > float(crossover_amplitude) else "exact"
+
+    # Time: if a whole-window rule cannot resolve the peak within the local
+    # branch's node budget, the pair needs a peak-local time reserve.  Saying so
+    # and refusing is the point; falling back to refinement is what RO is
+    # calling the hard lesson.
+    if not time_local_ok:
+        if "peaklocal" in available:
+            info["reason"] = (
+                "A=%.4g > crossover %.4g selects laplace angles; peak is %.3g "
+                "native samples wide and a whole-window rule would need %.0f "
+                "nodes but the escalation ceiling affords %.0f, so the time "
+                "reserve must be peak-local" % (A, crossover_amplitude,
+                                width_samples, nodes_needed, nodes_available))
+            return "peaklocal", info
+        info["reason"] = (
+            "peak is %.3g native samples wide; a whole-window time rule would "
+            "need %.0f nodes but the escalation ceiling affords only %.0f, so this signal needs a "
+            "peak-local-in-time reserve, which is NOT IMPLEMENTED.  Refusing "
+            "rather than falling back to whole-window refinement, which would "
+            "carry the rows without anyone choosing it."
+            % (width_samples, nodes_needed, nodes_available))
+        return None, info
+
+    info["reason"] = (
+        "A=%.4g against crossover %.4g selects %s angles; peak is %.3g native "
+        "samples wide and a whole-window rule needs %.0f nodes within the %.0f "
+        "the ceiling affords, so the refined whole-window time reserve is adequate"
+        % (A, crossover_amplitude, angular, width_samples, nodes_needed,
+           nodes_available))
+    return angular, info
+
+
+def format_reserve_pair(scheme, info):
+    """One line for the run log, printed BEFORE any row is evaluated."""
+    return ("RESERVE-PAIR local=four-axis reserve=%s rho=%.4g sigma_f=%.4gHz "
+            "A=%.4g crossover=%.4g peak=%.3gsamples nodes_needed=%.0f "
+            "nodes_available=%.0f :: %s"
+            % (scheme if scheme else "REFUSED", info.get("rho", float("nan")),
+               info.get("sigma_f_hz", float("nan")),
+               info.get("amplitude_A", float("nan")),
+               info.get("crossover_amplitude", float("nan")),
+               info.get("peak_width_samples", float("nan")),
+               info.get("whole_window_nodes_needed", float("nan")),
+               info.get("whole_window_nodes_available", 0),
+               info.get("reason", "")))
 
 
 def validate_policy_request(policy, *, angle_marg_scheme, time_quadrature,
