@@ -1045,11 +1045,21 @@ fi
 # parametrized, no removals, and touches no existing test count.  754 + 7 = 761,
 # measured by running this script.
 EXPECTED_TESTS=761
+# 2026-09-09 (laplace reserve kernel keyword fix): +1 test in test_policy_peaklocal_reserve.py
+# (the resolved kernel through anglemarg's REAL Laplace function).  Read off this script's
+# own collection line on ldas-pcdev12 (~/.cache/jaxci_venv, CPU): "collected 755 tests from 45 files".
+EXPECTED_TESTS=755
 
 # Simultaneous rotation + finite response adds cheap analytic coefficient parity
 # to an existing collected test.  Real waveform precompute, JIT/grad, the one-call
 # wrapper, and scaling profiles remain explicit manual checks in the same files:
 # they are too expensive for the already runner-limited per-PR JAX gate.
+
+# 2026-09-09, #313 rebased over #312 (laplace keyword fix, 755) and the base's
+# test_limit_distance_jax tightening: neither 761 + 1 nor 755 + 7 is the number.
+# Re-measured by running THIS script on the merged tree (ldas-grid, ~/.cache/jaxci_venv,
+# jax 0.9.2, CPU, DESELECT applied): "collected 762 tests from 46 files".  Binding.
+EXPECTED_TESTS=762
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"

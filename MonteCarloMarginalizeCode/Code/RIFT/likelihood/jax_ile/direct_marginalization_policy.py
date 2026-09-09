@@ -355,10 +355,16 @@ def resolve_reserve_angular_kernel(name, x_grid, log_w_grid, *, amp_sizing,
     x_grid = jnp.asarray(x_grid, dtype=jnp.float64)
     log_w_grid = jnp.asarray(log_w_grid, dtype=jnp.float64)
 
+    # ``dense_chunk`` and ``grid_block`` are the EXACT kernel's streaming knobs;
+    # the Laplace kernel streams by ``phi_chunk``/``dist_block``/``point_block``
+    # and rejects them.  They stay in this signature so the caller is uniform,
+    # and are deliberately not forwarded (measured 2026-09-09: the first
+    # psi-Laplace reserve evaluation at rung 652 died on the keyword).
+    del dense_chunk, grid_block
+
     def kernel(table, norm_table):
         return fn(table, norm_table, x_grid, log_w_grid,
-                  amp_sizing=float(amp_sizing), m_max=int(m_max),
-                  dense_chunk=int(dense_chunk), grid_block=int(grid_block))
+                  amp_sizing=float(amp_sizing), m_max=int(m_max))
     return kernel
 
 
