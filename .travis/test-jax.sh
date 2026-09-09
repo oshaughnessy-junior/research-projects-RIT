@@ -1044,11 +1044,11 @@ fi
 # driver).  Adds ONE file, test_angle_marg_multipeak_wiring.py, 7 tests, none
 # parametrized, no removals, and touches no existing test count.  754 + 7 = 761,
 # measured by running this script.
-EXPECTED_TESTS=761
+# (superseded, kept for the record) EXPECTED_TESTS=761
 # 2026-09-09 (laplace reserve kernel keyword fix): +1 test in test_policy_peaklocal_reserve.py
 # (the resolved kernel through anglemarg's REAL Laplace function).  Read off this script's
 # own collection line on ldas-pcdev12 (~/.cache/jaxci_venv, CPU): "collected 755 tests from 45 files".
-EXPECTED_TESTS=755
+# (superseded, kept for the record) EXPECTED_TESTS=755
 
 # Simultaneous rotation + finite response adds cheap analytic coefficient parity
 # to an existing collected test.  Real waveform precompute, JIT/grad, the one-call
@@ -1059,6 +1059,11 @@ EXPECTED_TESTS=755
 # test_limit_distance_jax tightening: neither 761 + 1 nor 755 + 7 is the number.
 # Re-measured by running THIS script on the merged tree (ldas-grid, ~/.cache/jaxci_venv,
 # jax 0.9.2, CPU, DESELECT applied): "collected 762 tests from 46 files".  Binding.
+# ONE ASSIGNMENT ONLY.  The merge that brought #312 and this branch together left
+# THREE live EXPECTED_TESTS= lines (761, 755, 762) on different lines, so nothing
+# conflicted and bash silently took the last.  The value was right; the shape was
+# a trap: a later reorder changes the answer, and anyone editing 'the' assignment
+# has two chances to edit a dead one.  Collapsed to the measured 762.
 EXPECTED_TESTS=762
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
