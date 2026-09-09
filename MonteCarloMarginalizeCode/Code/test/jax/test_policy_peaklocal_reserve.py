@@ -259,8 +259,10 @@ def test_laplace_kernel_is_resolved_from_anglemarg_or_refused(monkeypatch):
         DP.validate_policy_config(DP.PolicyConfig(reserve_scheme="peaklocal"))
     seen = {}
 
-    def fake(table, norm_table, xg, lw, *, amp_sizing, m_max, dense_chunk,
-             grid_block):
+    def fake(table, norm_table, xg, lw, *, amp_sizing, m_max):
+        # The Laplace kernel's signature: no dense_chunk/grid_block (those are
+        # the exact kernel's); a fake that accepted them hid the seam until
+        # the first real rung-652 evaluation (2026-09-09).
         seen.update(amp_sizing=amp_sizing, m_max=m_max, n=int(xg.shape[0]))
         return jnp.zeros(table.shape[-1:])
     monkeypatch.setattr(AM, DP._LAPLACE_TABLE_KERNEL, fake, raising=False)
@@ -271,6 +273,29 @@ def test_laplace_kernel_is_resolved_from_anglemarg_or_refused(monkeypatch):
                  jnp.zeros((5, 5), dtype=jnp.complex128))
     assert out.shape == (7,)
     assert seen == dict(amp_sizing=AMP_SIZING, m_max=2, n=16)
+
+
+def test_laplace_kernel_runs_through_the_real_anglemarg_function():
+    """The resolved Laplace kernel must call anglemarg's REAL function with
+    keywords it accepts: shape (npts,), finite, and within the psi-Laplace
+    approximation of the exact kernel on the carrier tables."""
+    x_grid, log_w = _grid(16)
+    n, guard = 8, 4
+    C_A, C_B = _carrier_problem(n, guard)
+    kernel = DP.resolve_reserve_angular_kernel(
+        "laplace", x_grid, log_w, amp_sizing=AMP_SIZING_CARRIER, m_max=2,
+        dense_chunk=8, grid_block=32)
+    lap = np.asarray(kernel(jnp.asarray(C_A), jnp.asarray(C_B)))
+    ex = np.asarray(AM.coefficient_table_distphipsimarg_exact(
+        C_A, C_B, x_grid, log_w, amp_sizing=AMP_SIZING_CARRIER, m_max=2,
+        dense_chunk=8, grid_block=32))
+    # Both kernels return the batched (B, npts) contract, B = 1 here.
+    assert lap.shape == ex.shape == (1, C_A.shape[-1])
+    assert np.all(np.isfinite(lap))
+    lap, ex = lap[0], ex[0]
+    peak = int(np.argmax(ex))
+    assert abs(float(lap[peak] - ex[peak])) < 0.5 * abs(float(ex[peak]))
+    assert abs(int(np.argmax(lap)) - peak) <= 1
 
 
 # ------------------------------------------------ agreement on the reserve

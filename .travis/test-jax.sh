@@ -1038,7 +1038,10 @@ fi
 # ~/.cache/jaxci_venv, DESELECT loop applied, read off its own collection line:
 # "754/760 tests collected (6 deselected)", gate-style count 754 from 46 files
 # (2026-09-09).  This assignment is the one that binds.
-EXPECTED_TESTS=754
+# 2026-09-09 (laplace reserve kernel keyword fix): +1 test in test_policy_peaklocal_reserve.py
+# (the resolved kernel through anglemarg's REAL Laplace function).  Read off this script's
+# own collection line on ldas-pcdev12 (~/.cache/jaxci_venv, CPU): "collected 755 tests from 45 files".
+EXPECTED_TESTS=755
 
 # Simultaneous rotation + finite response adds cheap analytic coefficient parity
 # to an existing collected test.  Real waveform precompute, JIT/grad, the one-call
