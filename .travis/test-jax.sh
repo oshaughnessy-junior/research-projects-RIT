@@ -53,7 +53,8 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #   test_jax_endtoend.py               1  full precompute -> pack -> JAX vs the numpy
 #                                         NoLoop on a real injection (fixed by #144)
 #   test_jax_slowrot_coeffs.py         2  rotation + freqresponse response coefficients
-#                                         against their numpy references
+#                                         against their numpy references; the compound
+#                                         algebra is folded into the freqresponse test
 #   test_jax_slowrot_wrapper.py        1  the one-call build_*_data_from_precompute path
 #   test_jax_slowrot.py                3  rotation Path A (p_max=0), Path B (p_max=1)
 #                                         and freqresponse: NoLoop parity + AD/jit/
@@ -1038,6 +1039,11 @@ fi
 # "754/760 tests collected (6 deselected)", gate-style count 754 from 46 files
 # (2026-09-09).  This assignment is the one that binds.
 EXPECTED_TESTS=754
+
+# Simultaneous rotation + finite response adds cheap analytic coefficient parity
+# to an existing collected test.  Real waveform precompute, JIT/grad, the one-call
+# wrapper, and scaling profiles remain explicit manual checks in the same files:
+# they are too expensive for the already runner-limited per-PR JAX gate.
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"

@@ -114,6 +114,7 @@ from .detector import compute_detamresponse, time_delay_from_earth_center
 from .spherical import spherical_harmonics_vectorized
 from . import response_slowrot as _rs
 from . import response_freqresponse as _rf
+from . import response_rotating_freqresponse as _rrf
 
 # Fiducial template distance (Mpc); identical to factored_likelihood.distMpcRef.
 DIST_MPC_REF = 1000.0
@@ -807,17 +808,18 @@ def _accumulate_unit(data, ra, dec, psi, incl, phiref, interp,
 def _norm_is_arrival_time_dependent(data):
     """True when the model norm ``<h|h>`` depends on the template's arrival time.
 
-    Only the slow-rotation bank has that dependence: its post-phase
+    Banks carrying slow rotation have that dependence: their post-phase
     ``C~_a(t) = C_a exp(i n_a Omega (t - tref))`` multiplies the data term AND the
     norm, so :func:`_accumulate_unit_banded` returns a genuinely ``(S, npts)``
-    ``rho_sq`` there.  The baseline accumulator (static ``F``) and the finite-size
-    ``freqresponse`` bank (no sidereal modulation) both return a norm that is
-    constant along the time axis, broadcast into the ``(S, npts)`` contract.
+    ``rho_sq`` there; the rotation+frequency-response bank shares this behavior.
+    The baseline accumulator (static ``F``) and the ``freqresponse``-only bank
+    (no sidereal modulation) both return a norm that is constant along the time
+    axis, broadcast into the ``(S, npts)`` contract.
 
     One definition on purpose: the quadratures that hold the norm fixed refuse
     exactly the data this predicate flags, so the two must not drift apart.
     """
-    return getattr(data, "feature", None) == "rotation"
+    return getattr(data, "feature", None) in ("rotation", "rotation_freqresponse")
 
 
 def _banded_coefficients(data, det, ra, dec, psi):
@@ -838,6 +840,10 @@ def _banded_coefficients(data, det, ra, dec, psi):
         return _rf.response_coefficients_packed(
             dd["response"], dd["x_arm"], dd["y_arm"], ra, dec, psi, data.gmst,
             b["Qmax"], b["p_list"])
+    if data.feature == "rotation_freqresponse":
+        return _rrf.coefficients_packed(
+            dd["response"], dd["location"], dd["x_arm"], dd["y_arm"],
+            ra, dec, psi, data.gmst, b["Qmax"], b["p_max"], b["a_list"])
     raise ValueError("unknown banded feature %r" % (data.feature,))
 
 
@@ -863,7 +869,7 @@ def _accumulate_unit_banded(data, ra, dec, psi, incl, phiref, interp,
     ``term2``).  ``aR`` is the V-term reflection (``(p,-n)`` for rotation, the
     identity for finite-size), supplied as ``data.band['refl_idx']``.
 
-    ARRIVAL-TIME POST-PHASE (``feature == "rotation"`` only).
+    ARRIVAL-TIME POST-PHASE (features carrying slow rotation).
     The bank's elementary templates ``chi_a(u) = e^{i n_a Omega u} h^{(p_a)}(u)`` live on
     the template's INTRINSIC time ``u``, while the physical response modulation lives on
     absolute time.  Placing the template at arrival time ``t`` (``t' = u + t``) factorizes
@@ -894,7 +900,7 @@ def _accumulate_unit_banded(data, ra, dec, psi, incl, phiref, interp,
     == -1`` -- one bin off the FRONT of the rholm buffer -- where ``_gather_nearest``'s
     ``trunc(. + 0.5)`` index rounds to sample 0; see the note at the ``samp0`` assignment.
 
-    ``freqresponse`` (Path D) has NO post-phase -- its basis is not a sidereal modulation
+    ``freqresponse`` alone (Path D) has NO post-phase -- its basis is not a sidereal modulation
     -- and keeps the arrival-time-independent ``rho_sq``.
 
     ``guard`` widens the window as in :func:`_accumulate_unit` / :func:`_guarded_window`.
@@ -1019,21 +1025,42 @@ def _accumulate_unit_banded(data, ra, dec, psi, incl, phiref, interp,
         kappa_unit = kappa_unit + kappa_det
 
         # --- term2: 0.5 Re[ sum_{a,a'} conj(C~_a)C~_a' YbarUY + C~_aR C~_a' YVY ] ---
-        # YUY[a,a'] = einsum(conjY, Y, U_bank[a,a']); YVY[a,a'] = einsum(Y, Y, V)
-        YUY = jnp.einsum("si,sj,abij->abs", conjY, Y, U_bank)   # (A,A,S)
-        YVY = jnp.einsum("si,sj,abij->abs", Y, Y, V_bank)       # (A,A,S)
-        # conj(C_a) C_a'  and  C_aR C_a'  contracted over (a,a') -- the post-phase is
-        # applied below, since it depends only on m = n_a' - n_a for both contractions.
-        CC_U = jnp.einsum("as,bs->abs", jnp.conj(C), C)          # (A,A,S)
-        CC_V = jnp.einsum("as,bs->abs", C_refl, C)              # (A,A,S)
-        pair = CC_U * YUY + CC_V * YVY                           # (A,A,S) complex
-        if post_phase:
+        if post_phase and data.feature == "rotation_freqresponse":
+            # A compound bank can have A=50 at pmax=0 and A=112 at pmax=1.
+            # Materializing four (A,A,S) arrays makes the temporary footprint the
+            # practical limit.  Contract each sidereal-difference bucket directly,
+            # matching the conventional dense-bank path; peak scratch is then
+            # max_m(number of pairs in m)*S instead of A*A*S.
+            bucket_values = []
+            pp_t2_host = np.asarray(band["pp_term2_idx"], dtype=np.int64)
+            for im in range(M):
+                ia, iap = np.nonzero(pp_t2_host == im)
+                ia_d = jnp.asarray(ia, dtype=jnp.int32)
+                iap_d = jnp.asarray(iap, dtype=jnp.int32)
+                yuy = jnp.einsum("si,sj,pij->ps", conjY, Y,
+                                  U_bank[ia_d, iap_d])
+                yvy = jnp.einsum("si,sj,pij->ps", Y, Y,
+                                  V_bank[ia_d, iap_d])
+                bucket_values.append(jnp.sum(
+                    jnp.conj(C[ia_d]) * C[iap_d] * yuy
+                    + C_refl[ia_d] * C[iap_d] * yvy, axis=0))
+            val_m = jnp.stack(bucket_values, axis=0)
+            rho_sq_det = 0.5 * jnp.einsum("ms,mt->st", val_m * pe, pt).real
+        else:
+            # The smaller individual-feature banks retain the original fused
+            # contraction, which minimizes compilation overhead for their usual A.
+            YUY = jnp.einsum("si,sj,abij->abs", conjY, Y, U_bank)
+            YVY = jnp.einsum("si,sj,abij->abs", Y, Y, V_bank)
+            CC_U = jnp.einsum("as,bs->abs", jnp.conj(C), C)
+            CC_V = jnp.einsum("as,bs->abs", C_refl, C)
+            pair = CC_U * YUY + CC_V * YVY
+        if post_phase and data.feature != "rotation_freqresponse":
             # BOTH contractions carry exp(i (n_a' - n_a) omega delta), so bucket the pairs
             # by m and pay one rank-1 phase per distinct m (M of them) instead of A^2.
             val_m = jnp.zeros((M, S), dtype=jnp.complex128).at[pp_t2].add(pair)
             # rho_sq becomes arrival-time dependent: (S, npts), not a broadcast scalar.
             rho_sq_det = 0.5 * jnp.einsum("ms,mt->st", val_m * pe, pt).real
-        else:
+        elif not post_phase:
             term2_c = jnp.sum(pair, axis=(0, 1))                 # (S,) complex
             rho_sq_det = 0.5 * term2_c.real                      # (S,)
         rho_sq_unit = rho_sq_unit + (rho_sq_det if post_phase

@@ -185,6 +185,41 @@ def build_freqresponse_data_from_precompute(P, data_dict, psd_dict, fiducial_epo
     return data, extras
 
 
+def build_rotating_freqresponse_data_from_precompute(
+        P, data_dict, psd_dict, fiducial_epoch, integration_window_half,
+        Lmax, fMax, t_window=0.1, Qmax=4, L_arm=None, p_max=0,
+        analyticPSD_Q=False, inv_spec_trunc_Q=False, T_spec=0.0,
+        tvals=None, verbose=False, **precompute_kwargs):
+    """One-call builder for the compound rotation + finite-response likelihood."""
+    import RIFT.likelihood.factored_likelihood_rotating_freqresponse as flrr
+    import RIFT.likelihood.slowrot_freqresponse as sfr
+    from .banded import build_rotating_freqresponse_data
+
+    bk = flrr.PrecomputeLikelihoodTermsRotatingFreqResponse(
+        fiducial_epoch, t_window, P, data_dict, psd_dict, Lmax, fMax,
+        Qmax=Qmax, L_arm=L_arm, p_max=p_max,
+        analyticPSD_Q=analyticPSD_Q, inv_spec_trunc_Q=inv_spec_trunc_Q,
+        T_spec=T_spec, verbose=verbose, quiet=not verbose,
+        skip_interpolation=True, **precompute_kwargs)
+    meta = bk[4]
+    lk, rba, uba, vba, ep = flrr.pack_rotating_freqresponse_arrays(
+        meta, bk[3], bk[1], bk[2])
+
+    def _L_of(det):
+        return L_arm.get(det, None) if isinstance(L_arm, dict) else L_arm
+    det_geom = {det: sfr.detector_geometry(det, L_arm=_L_of(det))
+                for det in data_dict}
+    deltaT = float(P.deltaT)
+    if tvals is None:
+        tvals = factored_likelihood.marginalization_time_grid(
+            integration_window_half, deltaT, xpy=np)
+    data = build_rotating_freqresponse_data(
+        meta, lk, rba, uba, vba, ep, deltaT, tvals, det_geom)
+    extras = dict(meta=meta, rho_by_a=rba, U_by_aa=uba, V_by_aa=vba,
+                  epochDict=ep, lookupNKDict=lk, det_geom=det_geom)
+    return data, extras
+
+
 def build_data_from_precompute(P, data_dict, psd_dict, fiducial_epoch,
                                storage_window_half, integration_window_half,
                                Lmax, fMax,

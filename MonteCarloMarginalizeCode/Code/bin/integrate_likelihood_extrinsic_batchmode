@@ -285,10 +285,10 @@ optp.add_option("--extrinsic-proposal-adapt",action='store_true',default=False, 
 optp.add_option("--vectorized", action="store_true", help="Perform manipulations of lm and timeseries using numpy arrays, not LAL data structures.  (Combine with --gpu to enable GPU use, where available)")
 optp.add_option("--gpu", action="store_true", help="Perform manipulations of lm and timeseries using numpy arrays, CONVERTING TO GPU when available. You MUST use this option with --vectorized (otherwise it is a no-op). You MUST have a suitable version of cupy installed, your cuda operational, etc")
 optp.add_option("--force-gpu-only", action="store_true", help="Hard fail if no GPU present (assessed by cupy not loading)")
-optp.add_option("--rotation-slow", action="store_true", help="[Path A] Slow-rotation likelihood: account for the sidereal time-dependence of the antenna pattern F(t) over the signal (harmonic modulation).  Requires --vectorized; supports --gpu (n_cal=1, no glitch/cal marg).  Uses factored_likelihood_with_rotation.")
+optp.add_option("--rotation-slow", action="store_true", help="[Path A] Slow-rotation likelihood: account for the sidereal time-dependence of the antenna pattern F(t) over the signal (harmonic modulation).  Requires --vectorized; supports --gpu (n_cal=1, no glitch/cal marg).  May be combined with --freqresponse for long, loud 3G/BNS-like signals.")
 optp.add_option("--rotation-n-harmonics", type=int, default=2, help="Number of sidereal harmonics for --rotation-slow (antenna pattern needs 2, i.e. n=-2..2).")
 optp.add_option("--rotation-p-max", type=int, default=0, help="[Path B] Max delay-derivative order for --rotation-slow (0 = amplitude drift only; >=1 adds propagation-delay drift).")
-optp.add_option("--freqresponse", action="store_true", help="[Path D] Finite-size (frequency-dependent) detector-response likelihood: account for the finite light-travel-time transfer across the arms (matters for 3G/CE-ET).  Requires --vectorized; supports --gpu (n_cal=1, no glitch/cal marg).  Uses factored_likelihood_freqresponse (sky-harmonic route b, sky stays extrinsic).")
+optp.add_option("--freqresponse", action="store_true", help="[Path D] Finite-size (frequency-dependent) detector-response likelihood: account for the finite light-travel-time transfer across the arms (matters for 3G/CE-ET).  Requires --vectorized; supports --gpu (n_cal=1, no glitch/cal marg).  May be combined with --rotation-slow; the compound bank is substantially more expensive and intended for long, loud sources.")
 optp.add_option("--freqresponse-qmax", type=int, default=4, help="Highest power of the arm projection retained for --freqresponse (basis size Qmax+2).  Higher for larger fL/c (heavier systems / higher fmax).")
 optp.add_option("--freqresponse-arm-length", default=None, help="Arm-length override [m] for --freqresponse.  Either a single float applied to ALL detectors (e.g. 40000 for 40-km CE), or per-detector 'C1=40000,E1=10000,...' (needed for mixed CE+ET networks, since LAL's cached C1 arm is a placeholder).  Default: each detector's native LAL arm length.")
 optp.add_option("--force-xpy", action="store_true", help="Use the xpy code path.  Use with --vectorized --gpu to use the fallback CPU-based code path. Useful for debugging.")
@@ -569,8 +569,6 @@ if opts.freqresponse:
     # Path D finite-size response: wired into BOTH the CPU-vectorized and GPU (xpy) branches;
     # the NoLoop reuses the baseline fused Q_inner_product kernel per basis weight p on GPU
     # (same memory footprint as the baseline), mirroring --rotation-slow.
-    if opts.rotation_slow:
-        raise ValueError("--freqresponse and --rotation-slow both replace the likelihood; use at most one")
     if not opts.vectorized:
         raise ValueError("--freqresponse requires --vectorized")
     # Same never-firing calibration guard as --rotation-slow above, with the same history;
@@ -626,6 +624,7 @@ if not(opts.use_gwsignal):
 import RIFT.likelihood.factored_likelihood as factored_likelihood
 import RIFT.likelihood.factored_likelihood_with_rotation as factored_likelihood_with_rotation
 import RIFT.likelihood.factored_likelihood_freqresponse as factored_likelihood_freqresponse
+import RIFT.likelihood.factored_likelihood_rotating_freqresponse as factored_likelihood_rotating_freqresponse
 
 if opts.use_gwsignal and not(factored_likelihood.has_GWS):
   print(" HARD FAILURE: this node could not import gwsignal ! ")
@@ -3655,9 +3654,48 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
             ctUArrayDict_cal = None
             ctVArrayDict_cal = None
 
+        # Combined Path A/B+D: compose finite-frequency basis weights with the sidereal
+        # modulation and delay-derivative operators.  This branch must precede the two
+        # individual response branches: both flags now request one compound physical model.
+        rotating_freqresponse_data = None
+        if opts.rotation_slow and opts.freqresponse:
+            _pmax = int(opts.rotation_p_max)
+            _qmax = int(opts.freqresponse_qmax)
+            _arm = opts.freqresponse_arm_length
+            if _arm is not None:
+                if '=' in str(_arm):
+                    _arm = {kv.split('=')[0]: float(kv.split('=')[1])
+                            for kv in str(_arm).split(',')}
+                else:
+                    _arm = float(_arm)
+            _rint_rf, _ct_rf, _ctV_rf, _rho_rf, _meta_rf = \
+                factored_likelihood_rotating_freqresponse.PrecomputeLikelihoodTermsRotatingFreqResponse(
+                    fiducial_epoch, t_window, P, data_dict, psd_dict, opts.l_max, fmax,
+                    Qmax=_qmax, L_arm=_arm, p_max=_pmax, analyticPSD_Q=False,
+                    inv_spec_trunc_Q=inv_spec_trunc_Q, T_spec=T_spec,
+                    verbose=opts.verbose, quiet=not opts.verbose, skip_interpolation=True)
+            _lkRF, _rhoA, _uAA, _vAA, _epRF = \
+                factored_likelihood_rotating_freqresponse.pack_rotating_freqresponse_arrays(
+                    _meta_rf, _rho_rf, _ct_rf, _ctV_rf)
+            if opts.gpu and (not xpy_default is np):
+                for _det in _rhoA:
+                    for _a in _rhoA[_det]:
+                        _rhoA[_det][_a] = cupy.asarray(_rhoA[_det][_a])
+                    _uAA[_det] = cupy.asarray(_uAA[_det])
+                    _vAA[_det] = cupy.asarray(_vAA[_det])
+            rotating_freqresponse_data = dict(
+                meta=_meta_rf, lookupNKDict=_lkRF, rho_by_a=_rhoA,
+                U_by_aa=_uAA, V_by_aa=_vAA, epochDict=_epRF)
+            _nbasis = len(_meta_rf['a_list'])
+            print("  [rotation-slow+freqresponse] compound precompute complete; "
+                  "p_max", _pmax, "Qmax", _qmax, "basis elements", _nbasis,
+                  "ordered U/V pairs", _nbasis * _nbasis, "arm-length",
+                  opts.freqresponse_arm_length,
+                  "(GPU)" if (opts.gpu and not xpy_default is np) else "(CPU)")
+
         # [Path A] slow-rotation precompute: build the harmonic-indexed bank and pack it.
         rotation_slow_data = None
-        if opts.rotation_slow:
+        if opts.rotation_slow and not opts.freqresponse:
             _pmax = int(opts.rotation_p_max)
             # --rotation-n-harmonics is a FLOOR, not the literal width: the response
             # coefficients C_{(p,ntilde)} reach |ntilde| <= 2 + p_max (issue #142), and the
@@ -3695,7 +3733,7 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
         # [Path D] finite-size (frequency-dependent) response precompute: fold each W_p(f)
         # into the modes once and pack the response-basis overlap bank.
         freqresponse_data = None
-        if opts.freqresponse:
+        if opts.freqresponse and not opts.rotation_slow:
             _qmax = int(opts.freqresponse_qmax)
             _arm = opts.freqresponse_arm_length
             if _arm is not None:
@@ -4062,7 +4100,13 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
               P.psi= psi_true
               P.phiref = phi_orb_true
 
-            if opts.rotation_slow:
+            if opts.rotation_slow and opts.freqresponse:
+              lnL = factored_likelihood_rotating_freqresponse.DiscreteFactoredLogLikelihoodRotatingFreqResponseNoLoop(
+                        tvals, P, rotating_freqresponse_data['meta'], rotating_freqresponse_data['lookupNKDict'],
+                        rotating_freqresponse_data['rho_by_a'], rotating_freqresponse_data['U_by_aa'],
+                        rotating_freqresponse_data['V_by_aa'], rotating_freqresponse_data['epochDict'],
+                        Lmax=opts.l_max, time_interp=opts._noloop_time_interp)
+            elif opts.rotation_slow:
               lnL = factored_likelihood_with_rotation.DiscreteFactoredLogLikelihoodViaArrayVectorNoLoopWithRotation(
                         tvals, P, rotation_slow_data['meta'], rotation_slow_data['lookupNKDict'],
                         rotation_slow_data['rho_by_n'], rotation_slow_data['U_by_nn'],
@@ -4130,7 +4174,13 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
                   P.phiref = phi_orb_true
 
 
-                if opts.rotation_slow:
+                if opts.rotation_slow and opts.freqresponse:
+                  lnL = factored_likelihood_rotating_freqresponse.DiscreteFactoredLogLikelihoodRotatingFreqResponseNoLoop(
+                        tvals, P, rotating_freqresponse_data['meta'], rotating_freqresponse_data['lookupNKDict'],
+                        rotating_freqresponse_data['rho_by_a'], rotating_freqresponse_data['U_by_aa'],
+                        rotating_freqresponse_data['V_by_aa'], rotating_freqresponse_data['epochDict'],
+                        Lmax=opts.l_max, time_interp=opts._noloop_time_interp, xpy=xpy_default)
+                elif opts.rotation_slow:
                   lnL = factored_likelihood_with_rotation.DiscreteFactoredLogLikelihoodViaArrayVectorNoLoopWithRotation(
                         tvals, P, rotation_slow_data['meta'], rotation_slow_data['lookupNKDict'],
                         rotation_slow_data['rho_by_n'], rotation_slow_data['U_by_nn'],
