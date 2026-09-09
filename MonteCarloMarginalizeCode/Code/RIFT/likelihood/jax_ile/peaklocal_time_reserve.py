@@ -240,7 +240,8 @@ def _profile(A, B, x_min, x_max):
 
 def locate_time_maxima(C_A_t, C_B, guard, n_target, x_min, x_max, *,
                        n_candidates, search_refine=8, angular_lattice=8,
-                       n_phi=64, polish_iterations=4, keep_nats=30.0):
+                       n_phi=64, polish_iterations=4, keep_nats=30.0,
+                       newton_steps=3, newton_step_max=0.1):
     """Time maxima of the angle- and distance-maximized field of one row.
 
     Fixed shape.  The ENVELOPE profile ``P(t) = max_{phi,u,x} (x A - x^2
@@ -342,10 +343,11 @@ def locate_time_maxima(C_A_t, C_B, guard, n_target, x_min, x_max, *,
             h_reg = h - ridge[:, None, None] * jnp.eye(2)[None]
             step = -jnp.linalg.solve(h_reg, g[..., None])[..., 0]
             concave = jnp.stack((h[:, 0, 0] < 0.0, h[:, 1, 1] < 0.0), axis=1)
-            step = jnp.where(concave, jnp.clip(step, -0.1, 0.1), 0.0)
+            step = jnp.where(concave, jnp.clip(step, -float(newton_step_max),
+                                               float(newton_step_max)), 0.0)
             return a + step, None
 
-        ang, _ = jax.lax.scan(_newton, ang, None, length=3)
+        ang, _ = jax.lax.scan(_newton, ang, None, length=int(newton_steps))
         vals = jax.vmap(_profile_ang)(ang, lanes)
         return (vals, ang) if return_angles else vals
 
