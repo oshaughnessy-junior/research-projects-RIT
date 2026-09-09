@@ -305,3 +305,71 @@ first questions for the production-table ladder.
   sampling. It describes the exported cloud, not every evaluation the
   sampler made. Unwarranted rows are not a labelling matter: they are `nan`
   and stop the run.
+
+## Choosing the (local, reserve) pair from analysis
+
+RO, 2026-09-08: rely on analysis and the known physics to pick the pair, rather
+than try-then-decline-then-refine. `predict_reserve_pair` computes, from the
+precomputed inputs and before any row is evaluated:
+
+| quantity | source | decides |
+|---|---|---|
+| network SNR | the driver's own response-derived guess | amplitude |
+| `sigma_f` | second moment of the stored Q's spectrum | peak width |
+| `A = rho^2/2` vs `ANGLE_MARG_CROSSOVER_AMPLITUDE` (450) | measured crossover in `anglemarg` | exact or laplace angles |
+| `sigma_t = 1/(2 pi rho sigma_f)` vs the local cover budget | `max_time_nodes` | can the LOCAL branch hold the peak |
+| the same width vs the reserve's node budget | `reserve_time_refine_max` | can the whole-window reserve resolve it |
+
+The verdict and its reasons are printed before sampling. When no implemented
+reserve is adequate the run REFUSES; it does not fall back, because a fallback
+to whole-window refinement carries the rows in a method nobody chose.
+
+### Which bandwidth, and why it is physics not convention
+
+The reserve marginalizes phi exactly, so the field in time is `|zeta|` with
+`zeta = alpha kappa + beta kappa*`. Face-on the carrier term vanishes and the
+peak is the ENVELOPE; linearly polarized the envelope is modulated at the
+carrier and each sub-peak is far narrower. Measured on a carrier fixture
+(f_c = 200 Hz):
+
+| polarization | measured peak | matches |
+|---|---|---|
+| circular | 11.3 Hz equivalent | central moment, 5.6 Hz |
+| linear | 309.6 Hz equivalent | raw moment, 200.1 Hz |
+
+So RAW is the narrowest peak the primitive can make and CENTRAL the widest. A
+rule that must not under-resolve sizes on the raw one. Two errors were made
+here and are recorded so they are not repeated: sizing on the central moment
+(the Cramer-Rao bound is about an ESTIMATOR's variance, not how sharply the
+INTEGRAND varies), and a claimed sqrt(2) correction that came from reading the
+curvature of `|zeta|^2` without its `rho^2/2` prefactor. Against the actual
+log-integrand, raw is exact: measured/predicted 1.0008, 1.0000, 0.9999, 0.9999
+at rho 12.65, 40.77, 163.08, 652.31.
+
+### The node budget is PROVISIONAL and known to be the wrong law
+
+The budget is points-per-sigma, i.e. an ALGEBRAIC convergence model. Measured at
+rho 40.77 on 64 rows:
+
+| refine | nodes | warrant |
+|---|---|---|
+| 4 | 2453 | 1.8e-03 .. 1.14e-02 (fails 1e-3) |
+| 8 | 4905 | 5e-11 .. 7.8e-09 |
+
+Doubling improved the error by ~1e6 where an algebraic rule gives 4. That is the
+trapezoid rule on a BAND-LIMITED reconstruction: spectrally accurate once the
+band is resolved, `exp(-c R)` not `R^-2`. The 4905 nodes that succeeded are 67%
+of what the budget demands at that rung and land five orders INSIDE tolerance.
+
+Consequences, and they are limits on what may be claimed:
+
+* A refusal produced by this budget means UNPROVEN, not shown inadequate.
+* No statement about WHERE the whole-window reserve stops being adequate
+  follows from it. Such a claim was made and withdrawn twice, on two different
+  mechanisms; it is not restated here.
+* The replacement is a band-resolution criterion fitted to a MEASURED
+  convergence law. The deciding test is rung 163.08 at refine 4, 8 and 16 --
+  three points, because two fit either law.
+
+The warrant is what certifies a row. This budget only predicts which method to
+reach for, and it must not be hardened into a threshold anyone tunes against.
