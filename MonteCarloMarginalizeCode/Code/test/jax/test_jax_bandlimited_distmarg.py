@@ -61,6 +61,16 @@ DELTAF = 0.25
 SRATE = 1024.0
 ANGLES = (1.2, -0.4, 0.7, 0.9, 2.1)
 D_MIN, D_MAX, N_GRID = 50.0, 4000.0, 512
+# The injected angles are NOT where this likelihood peaks, and every test here
+# evaluates at a fixed point, so none needs them to be.  The precompute below
+# receives the same P as the injection, and for IMRPhenomD the template route
+# (hlmoft -> SimInspiralTDModesFromPolarizations) bakes that P's phiref and psi
+# into the modes; ILE then applies both again through Y_lm and F.  Production
+# zeroes P.phiref/P.psi before the precompute (batchmode driver, and the JAX
+# driver's make_template).  Measured on the 900 Mpc case: lnL 84.0 at the
+# injection against a 2-D (psi, phiref) maximum of 194.9; the conventional
+# factored likelihood gives the same numbers, so this is the waveform interface,
+# not the quadrature.
 
 # Injected distances.  Named by the amplitude they produce, and the fixture
 # asserts the amplitude rather than trusting the label.
@@ -95,9 +105,22 @@ def _build(dist_mpc, srate, storage_half):
         Pdet.detector = det
         data_dict[det] = lalsimutils.non_herm_hoff(Pdet)
         psd_dict[det] = lalsim.SimNoisePSDaLIGOZeroDetHighPower
-    return build_data_from_precompute(
+    data, extras = build_data_from_precompute(
         P.copy(), data_dict, psd_dict, EPOCH, storage_half, IWH, 2, FMAX,
         analyticPSD_Q=True, verbose=False)
+    extras["network_snr"] = _network_snr(P, data_dict)
+    return data, extras
+
+
+def _network_snr(P, data_dict):
+    """Optimal network SNR of the zero-noise data, sqrt(sum_det <d|d>), on the
+    band the likelihood integrates.  Not ``extras["guess_snr"]``: that is the
+    precompute's deliberately deflated estimate, sqrt(sum max|Q_lm|^2 / U_lm)
+    divided by 2.3, and sits 2.305x below this on every fixture here."""
+    IP = lalsimutils.ComplexIP(
+        fLow=FMIN, fNyq=0.5 / P.deltaT, deltaF=P.deltaF, fMax=FMAX,
+        psd=lalsim.SimNoisePSDaLIGOZeroDetHighPower, analyticPSD_Q=True)
+    return float(np.sqrt(sum(IP.norm(d) ** 2 for d in data_dict.values())))
 
 
 #: Guard and refinement factor at which the numpy reference is converged; both
@@ -230,7 +253,7 @@ def cases():
         data, extras = _build(dist, SRATE, _storage_half(guard))
         like_s = _like(data, "simpson")
         out[tag] = dict(
-            data=data, snr=float(extras["guess_snr"]),
+            data=data, snr=float(extras["network_snr"]),
             x_grid=np.asarray(like_s.x_grid),
             log_w=np.asarray(like_s.log_w_grid),
             simpson=_value(like_s),
@@ -242,9 +265,11 @@ def cases():
 def test_fixture_amplitudes_are_the_two_regimes_claimed(cases):
     """Guard on the fixture.  Both assertions below are amplitude claims, and a
     distance that quietly stopped producing the intended SNR would make the
-    'differs at high amplitude' test pass or fail for the wrong reason."""
-    assert 15.0 < cases["quiet"]["snr"] < 30.0, cases["quiet"]["snr"]
-    assert cases["loud"]["snr"] > 140.0, cases["loud"]["snr"]
+    'differs at high amplitude' test pass or fail for the wrong reason.
+    The bounds are on the network optimal SNR of the data (measured 45.9 and
+    369.2), not on ``guess_snr``, which is 2.305x lower by construction."""
+    assert 40.0 < cases["quiet"]["snr"] < 55.0, cases["quiet"]["snr"]
+    assert cases["loud"]["snr"] > 300.0, cases["loud"]["snr"]
 
 
 # --------------------------------------------------------------------------
