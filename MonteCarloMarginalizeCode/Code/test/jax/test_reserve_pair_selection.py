@@ -164,22 +164,27 @@ def test_the_bandwidth_definition_is_pinned_not_just_its_plausibility(data):
 
     central = DP.q_effective_bandwidth_hz(_D, moment="central")
     raw = DP.q_effective_bandwidth_hz(_D, moment="raw")
+    default = DP.q_effective_bandwidth_hz(_D)
 
     bw_power = bw / np.sqrt(2.0)
     assert central == pytest.approx(bw_power, rel=0.05), central
     assert raw == pytest.approx(np.hypot(f0, bw_power), rel=0.05), raw
     assert raw > 5.0 * central          # the two are not interchangeable
+    # The DEFAULT must be the narrow one: sizing a time rule on the envelope
+    # bandwidth under-resolves every row whose likelihood is carrier-modulated.
+    assert default == pytest.approx(raw)
 
 
-def test_the_selector_uses_the_timing_bandwidth(data):
-    """sigma_t must be built from the CENTRAL positive-frequency moment.  If the
-    raw one is ever wired back in, the reported peak width jumps by the ratio of
-    the two and this fails."""
+def test_the_selector_sizes_on_the_narrow_bandwidth(data):
+    """sigma_t must be built from the RAW moment -- the narrowest peak the
+    primitive can produce.  If the envelope moment is ever wired back in, the
+    predicted width widens by the ratio of the two and the selector starts
+    calling a whole-window rule adequate when it is not."""
     _, info = _pick(data, RHO_160)
     sigma_f = info["sigma_f_hz"]
     assert sigma_f == pytest.approx(
-        DP.q_effective_bandwidth_hz(data, moment="central"))
-    assert info["sigma_f_raw_hz"] == pytest.approx(
         DP.q_effective_bandwidth_hz(data, moment="raw"))
+    assert info["sigma_f_envelope_hz"] == pytest.approx(
+        DP.q_effective_bandwidth_hz(data, moment="central"))
     expect = 1.0 / (2.0 * np.pi * RHO_160 * sigma_f)
     assert info["sigma_t_s"] == pytest.approx(expect, rel=1e-9)

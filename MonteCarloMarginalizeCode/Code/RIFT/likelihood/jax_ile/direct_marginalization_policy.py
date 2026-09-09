@@ -301,33 +301,45 @@ def validate_policy_config(config):
 _TIME_NODES_PER_SIGMA = 3.0
 
 
-def q_effective_bandwidth_hz(data, moment="central"):
+def q_effective_bandwidth_hz(data, moment="raw"):
     """Bandwidth of the stored Q(t), in Hz.  TWO different quantities.
 
-    ``moment="central"`` (default) returns the RMS bandwidth ABOUT THE MEAN over
-    POSITIVE frequencies,
+    ``moment="raw"`` (default, and THE one to size a time rule with) returns
+    sqrt(<f^2>) over the full two-sided spectrum.
 
-        sigma_f = sqrt(<f^2> - <f>^2),   weights |Qtilde(f)|^2,  f > 0
+    ``moment="central"`` returns the RMS bandwidth about the mean over positive
+    frequencies -- the ENVELOPE bandwidth.
 
-    which is the quantity the matched-filter arrival-time bound
-    ``sigma_t = 1 / (2 pi rho sigma_f)`` is written in terms of.  The spectrum of
-    the stored Q is already the |h(f)|^2 / S(f) weighting that bound wants, so
-    the moments of Q are the right moments -- but the bound needs the CENTRAL
-    moment over positive frequencies, not the raw one over both signs.
+    WHICH ONE, AND WHY IT IS PHYSICS RATHER THAN CONVENTION.  The reserve
+    marginalizes phi exactly, so the field in time is |zeta| with
+    zeta = alpha kappa + beta kappa*, kappa = E(t) e^{i theta}, theta ~ 2 pi f_c t,
+    and alpha, beta the polarization weights.  Then
 
-    ``moment="raw"`` returns sqrt(<f^2>) over the full two-sided spectrum.  That
-    is a legitimate description of total frequency content and is NOT a timing
-    width: for a signal centred at f0 with bandwidth B it tends to f0 while the
-    central moment tends to B.
+        |zeta|^2 = (|alpha|^2 + |beta|^2) E^2 + 2 Re(alpha beta* E^2 e^{2 i theta})
 
-    THIS DISTINCTION WAS A LIVE BUG HERE.  The first version of this function
-    returned the raw two-sided moment and fed it to sigma_t, which understates
-    the peak width whenever the spectrum is not symmetric about zero.  Measured
-    on a 614-sample fixture: raw two-sided 0.010000 against central positive
-    0.005901 cycles/sample, a factor of 1.695 straight into every threshold the
-    selector produces.  The fixture nearly hid it because its two-sided mean is
-    -0.0007, essentially zero; a real analytic Q would not be so forgiving.
-    Both are returned by name so the two can never be silently confused again.
+    Face-on (beta -> 0) the carrier term vanishes, the field is the envelope, and
+    the peak width is the envelope one -- the CENTRAL moment.  Linearly polarized
+    (|alpha| = |beta|) the envelope is modulated at the carrier and each sub-peak
+    is far narrower -- the RAW moment.  Every real row lies between, set by its
+    own psi and inclination.
+
+    So raw is the NARROWEST peak the primitive can produce at that amplitude and
+    central the WIDEST.  A rule that must not under-resolve, and a selector that
+    must not call a whole-window rule adequate when it is not, must size on the
+    NARROW one.  Measured on a carrier fixture (f_c = 200 Hz, Gaussian envelope):
+    circular gives a peak of 11.3 Hz equivalent against a central moment of
+    5.6 Hz; linear gives 309.6 Hz against a raw moment of 200.1 Hz.
+
+    AND RAW IS STILL ~sqrt(2) OPTIMISTIC IN THE LINEAR LIMIT.  |zeta|^2 carries
+    e^{2 i theta}, so the modulation is at TWICE the carrier and the Gaussian
+    equivalent of 1 + cos(2 theta) has 1/(2 pi sigma_t) = sqrt(2) f_c while the
+    raw moment returns ~f_c.  Callers sizing a lattice should carry that factor
+    rather than assume raw is a floor.
+
+    Both are returned by name so the two can never be silently confused.  An
+    earlier revision of this function made central the default and fed it to
+    sigma_t, which is the optimistic error: it predicts the envelope width for
+    rows whose likelihood is actually carrier-modulated.
 
     Q is stored at deltaT / q_time_pregrid_factor, so the frequency axis uses the
     REFINED spacing; using deltaT would understate the bandwidth by that factor.
@@ -398,8 +410,10 @@ def predict_reserve_pair(data, guess_snr, *, reserve_time_refine_max,
     """
     import numpy as _np
     rho = float(guess_snr) if guess_snr else float("nan")
-    sigma_f = q_effective_bandwidth_hz(data, moment='central')
-    sigma_f_raw = q_effective_bandwidth_hz(data, moment='raw')
+    # RAW: the narrowest peak the primitive can make, which is what a time
+    # rule must resolve.  Central is reported as the envelope bandwidth.
+    sigma_f = q_effective_bandwidth_hz(data, moment='raw')
+    sigma_f_env = q_effective_bandwidth_hz(data, moment='central')
     A = 0.5 * rho * rho if _np.isfinite(rho) else float("nan")
     dt = float(data.deltaT)
     if _np.isfinite(rho) and _np.isfinite(sigma_f) and rho > 0 and sigma_f > 0:
@@ -432,7 +446,7 @@ def predict_reserve_pair(data, guess_snr, *, reserve_time_refine_max,
     time_local_ok = time_reserve_ok
 
     info = dict(rho=rho, sigma_f_hz=sigma_f,
-                sigma_f_raw_hz=sigma_f_raw, amplitude_A=A,
+                sigma_f_envelope_hz=sigma_f_env, amplitude_A=A,
                 crossover_amplitude=float(crossover_amplitude),
                 sigma_t_s=sigma_t, peak_width_samples=width_samples,
                 cover_nodes_needed=cover_nodes_needed,
