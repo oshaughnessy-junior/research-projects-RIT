@@ -64,6 +64,7 @@ from optparse import OptionParser, OptionGroup
 import numpy as np
 
 import jax
+import jax.numpy as jnp
 jax.config.update("jax_enable_x64", True)
 
 # Configure the persistent cache before importing modules that construct ILE
@@ -337,6 +338,11 @@ def check_critical_and_report(opts, optp):
         fatal.append("--zero-likelihood is not implemented")
     if is_set("--maximize-only"):
         fatal.append("--maximize-only is not implemented (this driver integrates)")
+    _is_n = int(getattr(opts, "smc_is_samples", 60000))
+    if _is_n < 0:
+        fatal.append("--smc-is-samples must be >= 0; a negative count reaches "
+                     "the SMC proposal draw, whose exception handler would "
+                     "silently fall back to the raw SMC evidence")
     if is_set("--psi-marginalization"):
         fatal.append("--psi-marginalization (analytic polarization-angle "
                      "marginalization) is not implemented for psi-sampling modes "
@@ -352,7 +358,16 @@ def check_critical_and_report(opts, optp):
                      "--direct-marginalization-reserve-time-refine",
                      "--direct-marginalization-reserve-time-refine-max",
                      "--direct-marginalization-error-budget-nats",
-                     "--direct-marginalization-batch-rows")
+                     "--direct-marginalization-batch-rows",
+                     "--direct-marginalization-policy-probe-rows",
+                     "--direct-marginalization-policy-probe-only",
+                     "--direct-marginalization-max-modes",
+                     "--direct-marginalization-enriched-max-modes",
+                     "--direct-marginalization-base-oversample",
+                     "--direct-marginalization-enriched-oversample",
+                     "--direct-marginalization-max-starts",
+                     "--direct-marginalization-convergence-tol-nats",
+                     "--direct-marginalization-time-guard-tol-nats")
     if _policy != "off":
         if getattr(opts, "mode", None) != "flowmc-phipsimarg":
             fatal.append("--direct-marginalization-policy %s applies only to "
@@ -392,6 +407,40 @@ def check_critical_and_report(opts, optp):
         if _br < 0:
             fatal.append("--direct-marginalization-batch-rows must be >= 0 "
                          "(1 = row at a time, 0 = one full batch)")
+        _pr = int(getattr(opts, "direct_marginalization_policy_probe_rows", 0))
+        if _pr < 0:
+            fatal.append("--direct-marginalization-policy-probe-rows must be "
+                         ">= 0 (0 disables the pre-sampling probe)")
+        if getattr(opts, "direct_marginalization_policy_probe_only", False) \
+                and _pr <= 0:
+            fatal.append("--direct-marginalization-policy-probe-only needs "
+                         "--direct-marginalization-policy-probe-rows > 0; "
+                         "otherwise it would exit having measured nothing")
+        for _k, _d in (("--direct-marginalization-max-modes",
+                        "direct_marginalization_max_modes"),
+                       ("--direct-marginalization-enriched-max-modes",
+                        "direct_marginalization_enriched_max_modes"),
+                       ("--direct-marginalization-base-oversample",
+                        "direct_marginalization_base_oversample"),
+                       ("--direct-marginalization-enriched-oversample",
+                        "direct_marginalization_enriched_oversample"),
+                       ("--direct-marginalization-max-starts",
+                        "direct_marginalization_max_starts")):
+            if int(getattr(opts, _d, 1)) < 1:
+                fatal.append("%s must be >= 1" % _k)
+        for _k, _d in (("--direct-marginalization-convergence-tol-nats",
+                        "direct_marginalization_convergence_tol_nats"),
+                       ("--direct-marginalization-time-guard-tol-nats",
+                        "direct_marginalization_time_guard_tol_nats")):
+            _v = float(getattr(opts, _d, 1.0e-3))
+            if not (np.isfinite(_v) and _v > 0.0):
+                fatal.append("%s must be finite and positive" % _k)
+        if (int(getattr(opts, "direct_marginalization_enriched_max_modes", 8))
+                < int(getattr(opts, "direct_marginalization_max_modes", 4))):
+            fatal.append("--direct-marginalization-enriched-max-modes must be "
+                         ">= --direct-marginalization-max-modes: the enriched "
+                         "plan has to be able to nest the base plan, and a "
+                         "narrower one declines on mode nesting every row")
     else:
         for _k in _policy_knobs:
             if was_supplied(opts, _k):
@@ -880,6 +929,80 @@ def build_parser():
                       "card holds 32 rows and not 64.  Raise it only with a "
                       "measurement that says it helps; see "
                       "DESIGN_direct_marginalization_policy.md.")
+    g.add_option("--direct-marginalization-policy-probe-rows", type=int,
+                 default=0,
+                 help="Evaluate the policy ledger on this many prior draws "
+                      "BEFORE sampling and print the accept/decline counts "
+                      "(default 0 = off).  The end-of-run note reports the same "
+                      "counts on the exported rows, but only a run that reaches "
+                      "the export can be classified that way, and a declining "
+                      "run is exactly the one that does not get there: each "
+                      "declined row pays three exact reserve evaluations and "
+                      "rows execute one at a time under jax.lax.map.  The probe "
+                      "answers 'local or reserve' in one compile plus this many "
+                      "rows.  The compile is not extra work for a policy run -- "
+                      "the end-of-run note jits the identical function.")
+    g.add_option("--direct-marginalization-policy-probe-only",
+                 action="store_true", default=False,
+                 help="Exit after the probe above, before any sampling.  For "
+                      "surveying operating points: it reports which acceptance "
+                      "diagnostic is declining without paying for a posterior.  "
+                      "Writes no samples and no evidence.")
+    # Start-portfolio and mode-plan sizing.  Every default below is the value
+    # PolicyConfig already carried, so an unchanged command line is unchanged.
+    # They are exposed because the four-axis controller's own accepting
+    # operating point (analyses/va_sequence_20260902/RESULTS_20260907_aap268_ladder.md,
+    # 7 of 8 accepts at rho 326.15) reaches the SAME function through a richer
+    # portfolio than PolicyConfig's defaults build, and the difference was
+    # unreachable from the command line -- so the policy could only ever be
+    # observed declining.
+    g.add_option("--direct-marginalization-max-modes", type=int, default=4,
+                 help="Modes retained in the policy's BASE plan (default 4).")
+    g.add_option("--direct-marginalization-enriched-max-modes", type=int,
+                 default=8,
+                 help="Modes retained in the policy's ENRICHED plan (default "
+                      "8).  Acceptance compares the two plans, so an enriched "
+                      "plan that cannot resolve the extra structure declines.")
+    g.add_option("--direct-marginalization-base-oversample", type=int,
+                 default=1,
+                 help="Angular oversampling of the base start portfolio "
+                      "(default 1).")
+    g.add_option("--direct-marginalization-enriched-oversample", type=int,
+                 default=2,
+                 help="Angular oversampling of the enriched start portfolio "
+                      "(default 2).")
+    g.add_option("--direct-marginalization-max-starts", type=int, default=32,
+                 help="Cap on ranked optimizer starts per plan (default 32).  "
+                      "TWO THINGS THIS IS NOT.  (1) It is not the whole of "
+                      "decline_capacity.  That ledger key reports the "
+                      "conjunction at all_axis_peaklocal.py:862 -- "
+                      "norm_nonnegative, a certified time cover, the time-node "
+                      "capacity, AND this cap -- so a row is charged to "
+                      "'capacity' for four different reasons.  Measured at rho "
+                      "652 on 43 such rows, 36 failed the TIME-NODE capacity "
+                      "and only 7 were count-driven, so raising this recovers "
+                      "~16% and then plateaus at any value.  (2) It is not a "
+                      "cost knob: it selects which modes are retained, so it "
+                      "moves the integral.  Measured on identical rows at rho "
+                      "163, 32 -> 128 shifted already-accepted values by 4.8e-4 "
+                      "and 3.5e-3 nats, at and above the 1e-3 error budget.  "
+                      "An A/B on this may not treat its value difference as "
+                      "noise.")
+    g.add_option("--direct-marginalization-convergence-tol-nats", type=float,
+                 default=1.0e-3,
+                 help="Agreement required between the base and enriched plans, "
+                      "and between each plan's own two quadrature orders, in "
+                      "nats (default 1e-3).  This is the tolerance the "
+                      "'enrichment' and 'quadrature' declines are measured "
+                      "against; it is SEPARATE from "
+                      "--direct-marginalization-error-budget-nats, which is the "
+                      "total value allowance.")
+    g.add_option("--direct-marginalization-time-guard-tol-nats", type=float,
+                 default=1.0e-3,
+                 help="Agreement required between the full-guard and half-guard "
+                      "evaluations, in nats (default 1e-3).  This is the "
+                      "tolerance the two-guard time warrant is measured "
+                      "against, for the local branch and the reserve alike.")
     # flowMC tuning (modes flowmc / flowmc-phimarg).  Defaults match
     # samplers.flowmc_sample*; exposed so pipeline Makefiles can tune them.
     g.add_option("--n-training-loops", type=int, default=4,
@@ -954,6 +1077,16 @@ def build_parser():
                  help="SMC puffball: number of walkers in the cloud (default 2000).")
     g.add_option("--smc-move-steps", type=int, default=10,
                  help="SMC puffball: random-walk Metropolis moves per temperature rung.")
+    g.add_option("--smc-is-samples", type=int, default=60000,
+                 help="Draws in the SMC cloud-Gaussian importance-sampling "
+                      "evidence stage (default 60000, the sampler's own value). "
+                      "This stage is a FIXED cost paid after the ladder "
+                      "finishes, and on a likelihood whose rows execute one at "
+                      "a time -- the direct-marginalization policy -- it "
+                      "dominates the whole run.  Lowering it trades the IS "
+                      "evidence for the raw SMC evidence: the ESS gate then "
+                      "declines the IS value and the reported logZ falls back "
+                      "to the SMC estimator, which the run already prints.")
     g.add_option("--smc-puff-scale", type=float, default=1.0,
                  help="SMC puffball: proposal scale x sqrt(cloud covariance) (~1.0).")
     g.add_option("--fisher-is-samples", type=int, default=0,
@@ -1581,7 +1714,8 @@ def samples_path(opts, out_index):
     return opts.output_file + "_" + str(out_index) + "_samples.dat"
 
 
-def direct_marginalization_policy_note(like, theta, n_max=256, chunk=32):
+def direct_marginalization_policy_note(like, theta, n_max=256, chunk=32,
+                                       return_values=False):
     """Label the branch statistics of the exported rows under the policy.
 
     Returns "" when the policy is off.  Otherwise evaluates the ledger on up to
@@ -1593,10 +1727,11 @@ def direct_marginalization_policy_note(like, theta, n_max=256, chunk=32):
     policy = getattr(like, "direct_marginalization_policy", "off")
     ledger_fn = getattr(like, "_batched_ledger", None)
     if policy == "off" or ledger_fn is None:
-        return ""
+        return ("", None, None) if return_values else ""
     theta = np.asarray(theta)
     if theta.ndim != 2 or theta.shape[0] == 0:
-        return "DIRECT-MARG-POLICY=%s rows=0" % policy
+        _empty = "DIRECT-MARG-POLICY=%s rows=0" % policy
+        return (_empty, None, None) if return_values else _empty
     n = int(theta.shape[0])
     idx = np.unique(np.linspace(0, n - 1, min(n, int(n_max))).astype(int))
     parts = []
@@ -1609,7 +1744,7 @@ def direct_marginalization_policy_note(like, theta, n_max=256, chunk=32):
     summary = _summarize_policy_ledger(ledger)
     declines = ",".join("%s:%d" % (k.replace("decline_", ""), v)
                         for k, v in sorted(summary["declines"].items()))
-    return ("DIRECT-MARG-POLICY=%s rows=%d local=%d reserve=%d "
+    note = ("DIRECT-MARG-POLICY=%s rows=%d local=%d reserve=%d "
             "warranted-reserve=%d escalations=%d unusable=%d reconciles=%d "
             "declines=[%s] max-local-error-score-nats=%.3g"
             % (policy, summary["rows"], summary["accepted_local"],
@@ -1617,6 +1752,14 @@ def direct_marginalization_policy_note(like, theta, n_max=256, chunk=32):
                summary.get("reserve_escalations", 0),
                summary["unusable"], summary["reconciles"], declines,
                summary["max_local_error_score_nats"]))
+    if return_values:
+        # The per-row selected value, so two probes at ONE seed -- one whose
+        # config accepts, one forced onto the reserve -- can be differenced on
+        # exactly the same prior draws.  An accepted row never evaluates the
+        # reserve, so this is the only way to price the local branch against it.
+        return (note, np.asarray(ledger["lnL"], dtype=float),
+                np.asarray(ledger["accepted_local"], dtype=bool))
+    return note
 
 
 def angle_grid_suspect_note(scheme=None):
@@ -2340,7 +2483,19 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
                 total_value_error_budget_nats=float(
                     opts.direct_marginalization_error_budget_nats),
                 reserve_batch_rows=int(
-                    opts.direct_marginalization_batch_rows))
+                    opts.direct_marginalization_batch_rows),
+                max_modes=int(opts.direct_marginalization_max_modes),
+                enriched_max_modes=int(
+                    opts.direct_marginalization_enriched_max_modes),
+                base_oversample=int(
+                    opts.direct_marginalization_base_oversample),
+                enriched_oversample=int(
+                    opts.direct_marginalization_enriched_oversample),
+                base_max_starts=int(opts.direct_marginalization_max_starts),
+                convergence_tol_nats=float(
+                    opts.direct_marginalization_convergence_tol_nats),
+                time_guard_tol_nats=float(
+                    opts.direct_marginalization_time_guard_tol_nats))
         try:
             like = JAXDistPhiPsiMargLikelihood(
                 like_data, d_lo, d_hi, nphi=nphi, npsi=npsi,
@@ -2416,6 +2571,68 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
               "fine factor is curvature-derived per row with one doubling certificate"
               % (like.time_guard_initial, like.time_guard_certified))
 
+    # In-flight branch classification, BEFORE any sampling.
+    #
+    # direct_marginalization_policy_note() below reports the same counts, but it
+    # runs on the EXPORTED rows, so only a run that reaches the export can be
+    # classified -- and a declining run is precisely the one that does not get
+    # there.  A declined row executes the exact reserve (three evaluations: the
+    # refined rule, its half-refined check, and the guard comparison) and rows
+    # run one at a time under jax.lax.map, so declining costs enough that the
+    # 32-row prior pilot itself does not finish.  "Did the controller accept"
+    # was therefore unanswerable until the end of a run that never ends.
+    #
+    # The probe draws from the same prior the pilot draws from and calls the
+    # same ledger, so it predicts the pilot rather than describing something
+    # else.  Its compile is not extra work for a policy run: the end-of-run note
+    # jits the identical _batched_ledger.
+    _probe_rows = int(getattr(opts, "direct_marginalization_policy_probe_rows", 0))
+    if (getattr(like, "direct_marginalization_policy", "off") != "off"
+            and _probe_rows > 0):
+        import time as _time
+        from RIFT.likelihood.jax_ile.samplers import sample_prior_3 as _sp3
+        # sample_prior_3 is correct here ONLY because the policy is refused
+        # outside --mode flowmc-phipsimarg, whose parameter order is
+        # (ra, dec, incl).  Check rather than assume: another order would hand
+        # the ledger rows of the wrong width.
+        _order = tuple(getattr(like, "ANGULAR_PARAM_ORDER", ()))
+        if len(_order) != 3:
+            raise RuntimeError(
+                "policy probe expects the 3-parameter (ra, dec, incl) "
+                "likelihood the policy is restricted to; this one is %r"
+                % (_order,))
+        _theta_probe = _sp3(_probe_rows, np.random.default_rng(opts.seed))
+        _t0 = _time.time()
+        _probe_note, _probe_vals, _probe_acc = (
+            direct_marginalization_policy_note(
+                like, _theta_probe, n_max=_probe_rows, chunk=_probe_rows,
+                return_values=True))
+        _dt = _time.time() - _t0
+        # stderr AND stdout: the surveys read one or the other, and an
+        # unclassifiable run is the failure this whole probe exists to remove.
+        _msg = ("PROBE integrate_likelihood_extrinsic_jax: prior-draw policy "
+                "ledger on %d rows in %.1f s (%.2f s/row incl. compile): %s"
+                % (_probe_rows, _dt, _dt / max(_probe_rows, 1), _probe_note))
+        if _probe_vals is not None:
+            # lnL PAIRED WITH THE DISPOSITION, per row.  The counts alone
+            # cannot say whether the rows that decline are rows that matter:
+            # capacity declines concentrate far from truth, where the
+            # likelihood is negligible, and a decline fraction quoted without
+            # the likelihood of the declining rows overstates what it costs
+            # the posterior.
+            _msg += ("\nPROBE-VALUES seed=%d rows=%d lnL=[%s] local=[%s]"
+                     % (int(opts.seed), _probe_rows,
+                        ",".join("%.10g" % v for v in _probe_vals),
+                        ",".join("1" if a else "0" for a in _probe_acc)))
+        print(_msg)
+        sys.stderr.write(_msg + "\n")
+        sys.stdout.flush()
+        sys.stderr.flush()
+        if getattr(opts, "direct_marginalization_policy_probe_only", False):
+            print("--direct-marginalization-policy-probe-only: exiting before "
+                  "sampling; no samples and no evidence were written.")
+            return None, None
+
     if opts.mode == "map":
         theta_map, lnL_map = run_map(like, opts, rng, dim, with_distance)
         fish = like.fisher(theta_map)
@@ -2464,6 +2681,7 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
             res = _samplers.smc_puffball_sample(
                 like, opts.d_min, opts.d_max,
                 n_walkers=opts.smc_walkers, n_move=opts.smc_move_steps,
+                is_samples=opts.smc_is_samples,
                 ess_frac=opts.temper_ess_frac, max_dbeta=opts.temper_max_dbeta,
                 max_stages=max(opts.temper_max_stages, 80),
                 puff_scale=opts.smc_puff_scale,

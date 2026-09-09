@@ -489,6 +489,7 @@ FILES=(
   "${JAXDIR}/test_jax_q_time_pregrid.py"
   "${JAXDIR}/test_direct_marginalization_policy.py"
   "${JAXDIR}/test_jax_cache.py"
+  "${JAXDIR}/test_direct_marginalization_policy_cli.py"
 )
 
 # EXCLUDED: files in JAXDIR matching test_*.py that are deliberately NOT gated.  The
@@ -857,7 +858,15 @@ fi
 # Re-measured on the MERGED tree by running this script and reading its own
 # line: "collected 628 tests from 38 files" (ldas-grid, ~/.cache/jaxci_venv,
 # DESELECT loop applied).
-EXPECTED_TESTS=628
+#
+# NEXT, the policy observability branch (this change).  It adds ONE file,
+# test_direct_marginalization_policy_cli.py, with twenty tests: seventeen
+# driver-seam refusals and three that pin the return arity of
+# direct_marginalization_policy_note.  File count 38 -> 39.  Measured on the
+# REBASED tree with /scratch/richard.oshaughnessy/envs/jaxci-py311 (python
+# 3.11.13, jax 0.10.2) by running the collection and reading its own line, not
+# by adding 20 to 628: "648/653 tests collected (5 deselected)".
+EXPECTED_TESTS=648
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
