@@ -244,6 +244,7 @@ def test_each_policy_flag_default_matches_its_PolicyConfig_field():
         "direct_marginalization_base_oversample": "base_oversample",
         "direct_marginalization_enriched_oversample": "enriched_oversample",
         "direct_marginalization_max_starts": "base_max_starts",
+        "direct_marginalization_max_time_nodes": "max_time_nodes",
         "direct_marginalization_convergence_tol_nats": "convergence_tol_nats",
         "direct_marginalization_time_guard_tol_nats": "time_guard_tol_nats",
     }

@@ -1011,7 +1011,11 @@ fi
 # trees are not the same tree, which is the whole reason this file says to
 # measure and never to add.
 #
-# TWENTIETH, this branch (PR #305) rebased onto #301.  The nineteenth block and
+# TWENTIETH, this branch (PR #305) rebased onto #301 -- first onto its head
+# f30b6a06 while it was open, then onto rift_O4d c0654025 once #301 merged.
+# The second rebase was CLEAN and the count did not move; it was re-measured
+# anyway, because a clean rebase is when this file's one-assignment property is
+# most likely to have been quietly undone.  The nineteenth block and
 # the eighteenth-plus-mine block were BOTH left in the file by that rebase, in
 # that order, and git merged them without a conflict because they touch
 # different lines.  Bash keeps the last, so #301's 712 silently replaced the 731

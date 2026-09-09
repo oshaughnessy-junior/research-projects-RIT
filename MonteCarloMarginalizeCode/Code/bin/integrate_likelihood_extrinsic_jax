@@ -1062,9 +1062,11 @@ def build_parser():
                       "returning a slightly worse number.  Lower it only with "
                       "the nan count in the ledger in front of you.")
     g.add_option("--direct-marginalization-error-budget-nats", type=float,
-                 default=1.0e-2,
+                 default=DirectMargPolicyConfig().total_value_error_budget_nats,
                  help="Value-error allowance, in nats, for the RESERVE's "
-                      "time-resolution warrant (default 1e-2; 1e-3 shipped).  "
+                      "time-resolution warrant (default "
+                      f"{DirectMargPolicyConfig().total_value_error_budget_nats:g}"
+                      "; 1e-3 shipped).  "
                       "It does NOT reach the local accept/decline decision, "
                       "despite what this help used to say: that decision is the "
                       "four-term boolean at all_axis_peaklocal.py:862 and carries "
@@ -1076,9 +1078,11 @@ def build_parser():
                       "Raised to 1e-2 by RO on 2026-09-08 (evening).  Measured at "
                       "rho 41; the speedup is not yet confirmed at high SNR.")
     g.add_option("--direct-marginalization-max-time-nodes", type=int,
-                 default=256,
+                 default=DirectMargPolicyConfig().max_time_nodes,
                  help="Time-node capacity of the policy's LOCAL plan (default "
-                      "256; 64 shipped, and was reachable from no flag).  A row whose live time-node "
+                      f"{DirectMargPolicyConfig().max_time_nodes}"
+                      "; 64 shipped, and was reachable from no flag).  A row "
+                      "whose live time-node "
                       "count exceeds this declines to the exact reserve, which "
                       "costs ~4.7 h at rho 652 against 2.3 s for an accepted "
                       "row, so the capacity is sized to avoid the fallback "
