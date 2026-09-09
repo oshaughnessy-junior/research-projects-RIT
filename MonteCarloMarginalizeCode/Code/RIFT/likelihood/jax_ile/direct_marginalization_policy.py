@@ -301,41 +301,67 @@ def validate_policy_config(config):
 _TIME_NODES_PER_SIGMA = 3.0
 
 
-def q_effective_bandwidth_hz(data):
-    """PSD-weighted second frequency moment of the stored Q(t), in Hz.
+def q_effective_bandwidth_hz(data, moment="central"):
+    """Bandwidth of the stored Q(t), in Hz.  TWO different quantities.
 
-    sqrt(<f^2>) with <f^2> = sum f^2 |Qtilde(f)|^2 / sum |Qtilde(f)|^2, summed
-    over detectors and modes.  This is the SAME quantity paper1 uses for the
-    nearest-sample error budget (the "signal's effective bandwidth"), computed
-    here from the precomputed Q rather than re-derived from the PSD, so it costs
-    one FFT of data already in memory and needs no waveform call.
+    ``moment="central"`` (default) returns the RMS bandwidth ABOUT THE MEAN over
+    POSITIVE frequencies,
 
-    Q is stored at deltaT / q_time_pregrid_factor, so the frequency axis uses
-    the REFINED spacing; using deltaT here would understate the bandwidth by
-    exactly that factor.
+        sigma_f = sqrt(<f^2> - <f>^2),   weights |Qtilde(f)|^2,  f > 0
+
+    which is the quantity the matched-filter arrival-time bound
+    ``sigma_t = 1 / (2 pi rho sigma_f)`` is written in terms of.  The spectrum of
+    the stored Q is already the |h(f)|^2 / S(f) weighting that bound wants, so
+    the moments of Q are the right moments -- but the bound needs the CENTRAL
+    moment over positive frequencies, not the raw one over both signs.
+
+    ``moment="raw"`` returns sqrt(<f^2>) over the full two-sided spectrum.  That
+    is a legitimate description of total frequency content and is NOT a timing
+    width: for a signal centred at f0 with bandwidth B it tends to f0 while the
+    central moment tends to B.
+
+    THIS DISTINCTION WAS A LIVE BUG HERE.  The first version of this function
+    returned the raw two-sided moment and fed it to sigma_t, which understates
+    the peak width whenever the spectrum is not symmetric about zero.  Measured
+    on a 614-sample fixture: raw two-sided 0.010000 against central positive
+    0.005901 cycles/sample, a factor of 1.695 straight into every threshold the
+    selector produces.  The fixture nearly hid it because its two-sided mean is
+    -0.0007, essentially zero; a real analytic Q would not be so forgiving.
+    Both are returned by name so the two can never be silently confused again.
+
+    Q is stored at deltaT / q_time_pregrid_factor, so the frequency axis uses the
+    REFINED spacing; using deltaT would understate the bandwidth by that factor.
     """
     import numpy as _np
-    num = 0.0
-    den = 0.0
+    if moment not in ("central", "raw"):
+        raise ValueError("moment must be 'central' or 'raw', got %r" % (moment,))
+    num1 = num2 = den = 0.0
     for det in data.detector_names:
         d = data.detectors[det]
         Q = _np.asarray(d["Q"])                       # (npts_full, K)
-        f = int(d.get("q_time_pregrid_factor", 1)) or 1
-        dt = float(data.deltaT) / float(f)
+        f_ref = int(d.get("q_time_pregrid_factor", 1)) or 1
+        dt = float(data.deltaT) / float(f_ref)
         n = Q.shape[0]
         if n < 4:
             continue
-        # Q (rholm) is COMPLEX, so this is the full two-sided transform, not
-        # rfft: a real-input transform silently rejects it, and dropping the
-        # imaginary part would discard half the signal's phase structure.
+        # Q (rholm) is COMPLEX, so this is the full two-sided transform: a
+        # real-input transform rejects it outright, and dropping the imaginary
+        # part would discard half the phase structure.
         freqs = _np.fft.fftfreq(n, d=dt)
         spec = _np.abs(_np.fft.fft(Q, axis=0)) ** 2   # (n, K)
         w = spec.sum(axis=1)
-        num += float((freqs ** 2 * w).sum())
+        if moment == "central":
+            keep = freqs > 0.0
+            freqs, w = freqs[keep], w[keep]
+        num1 += float((freqs * w).sum())
+        num2 += float((freqs ** 2 * w).sum())
         den += float(w.sum())
     if den <= 0.0:
         return float("nan")
-    return float(_np.sqrt(num / den))
+    m1, m2 = num1 / den, num2 / den
+    if moment == "raw":
+        return float(_np.sqrt(max(m2, 0.0)))
+    return float(_np.sqrt(max(m2 - m1 * m1, 0.0)))
 
 
 def predict_reserve_pair(data, guess_snr, *, reserve_time_refine_max,
@@ -372,7 +398,8 @@ def predict_reserve_pair(data, guess_snr, *, reserve_time_refine_max,
     """
     import numpy as _np
     rho = float(guess_snr) if guess_snr else float("nan")
-    sigma_f = q_effective_bandwidth_hz(data)
+    sigma_f = q_effective_bandwidth_hz(data, moment='central')
+    sigma_f_raw = q_effective_bandwidth_hz(data, moment='raw')
     A = 0.5 * rho * rho if _np.isfinite(rho) else float("nan")
     dt = float(data.deltaT)
     if _np.isfinite(rho) and _np.isfinite(sigma_f) and rho > 0 and sigma_f > 0:
@@ -404,7 +431,8 @@ def predict_reserve_pair(data, guess_snr, *, reserve_time_refine_max,
     local_cover_ok = cover_nodes_needed <= float(max_time_nodes)
     time_local_ok = time_reserve_ok
 
-    info = dict(rho=rho, sigma_f_hz=sigma_f, amplitude_A=A,
+    info = dict(rho=rho, sigma_f_hz=sigma_f,
+                sigma_f_raw_hz=sigma_f_raw, amplitude_A=A,
                 crossover_amplitude=float(crossover_amplitude),
                 sigma_t_s=sigma_t, peak_width_samples=width_samples,
                 cover_nodes_needed=cover_nodes_needed,

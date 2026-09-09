@@ -129,3 +129,57 @@ def test_the_local_cover_verdict_is_reported_and_leads(data):
     assert not tight["local_cover_resolves_peak"]
     assert loose["local_cover_resolves_peak"]
     assert "local cover" in loose["reason"]
+
+
+def test_the_bandwidth_definition_is_pinned_not_just_its_plausibility(data):
+    """A synthetic signal with a KNOWN analytic bandwidth, so a definition swap
+    fails here rather than shifting every threshold quietly.
+
+    The earlier tests in this file only asserted sigma_f was finite, positive and
+    Nyquist-bounded.  Every one of them passes with the RAW two-sided moment,
+    which is the wrong quantity for a timing width and was what this function
+    originally returned.  Plausibility is not a definition.
+
+    Construction: a complex tone at f0 with a Gaussian AMPLITUDE of width bw in
+    frequency.  The moments weight |Qtilde|^2, so the POWER spectrum has width
+    bw/sqrt(2), and that -- not bw -- is what the central moment must return.
+    Getting this wrong was my first version of this test: the expectation, not
+    the code, was off by sqrt(2).  The two-sided RAW moment must instead land
+    near f0, which is the error the test exists to catch.
+    """
+    import numpy as np
+
+    n, dt = 4096, 1.0 / 4096
+    f0, bw = 200.0, 20.0
+    freqs = np.fft.fftfreq(n, d=dt)
+    amp = np.exp(-0.5 * ((freqs - f0) / bw) ** 2)      # positive-side only
+    x = np.fft.ifft(amp)
+
+    class _D:
+        deltaT = dt
+        q_time_pregrid_factor = 1
+        detector_names = ["H1"]
+        detectors = {"H1": {"Q": np.asarray(x)[:, None],
+                            "q_time_pregrid_factor": 1}}
+
+    central = DP.q_effective_bandwidth_hz(_D, moment="central")
+    raw = DP.q_effective_bandwidth_hz(_D, moment="raw")
+
+    bw_power = bw / np.sqrt(2.0)
+    assert central == pytest.approx(bw_power, rel=0.05), central
+    assert raw == pytest.approx(np.hypot(f0, bw_power), rel=0.05), raw
+    assert raw > 5.0 * central          # the two are not interchangeable
+
+
+def test_the_selector_uses_the_timing_bandwidth(data):
+    """sigma_t must be built from the CENTRAL positive-frequency moment.  If the
+    raw one is ever wired back in, the reported peak width jumps by the ratio of
+    the two and this fails."""
+    _, info = _pick(data, RHO_160)
+    sigma_f = info["sigma_f_hz"]
+    assert sigma_f == pytest.approx(
+        DP.q_effective_bandwidth_hz(data, moment="central"))
+    assert info["sigma_f_raw_hz"] == pytest.approx(
+        DP.q_effective_bandwidth_hz(data, moment="raw"))
+    expect = 1.0 / (2.0 * np.pi * RHO_160 * sigma_f)
+    assert info["sigma_t_s"] == pytest.approx(expect, rel=1e-9)
