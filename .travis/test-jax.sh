@@ -998,8 +998,8 @@ fi
 # that the driver's duplicate add_option produced, one file over.  The comment
 # history is kept; the dead assignments are not.  Re-derive by running this
 # script and reading its own collection line, never by adding a delta.
-# Measured on this branch: 729 collected, 44 files, 6 deselected.
-EXPECTED_TESTS=729
+# Measured on this branch: 731 collected, 44 files, 6 deselected.
+EXPECTED_TESTS=731
 
 # NINETEENTH, RIFT PR #301 (preset local-plan capacities) merged with rift_O4d
 # at 43918b22.  #301 adds four tests to
