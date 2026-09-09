@@ -549,6 +549,7 @@ FILES=(
   "${JAXDIR}/test_direct_marginalization_policy_cli.py"
   "${JAXDIR}/test_jax_bandlimited_distmarg.py"
   "${JAXDIR}/test_jax_bandlimited_6d_blind.py"
+  "${JAXDIR}/test_policy_peaklocal_reserve.py"
 )
 
 # EXCLUDED: files in JAXDIR matching test_*.py that are deliberately NOT gated.  The
@@ -1031,7 +1032,12 @@ fi
 # 738 once the wrapper's source-text gate test became two behaviour tests, and
 # 740 with the two reserve-resolution tests.
 # This assignment is the one that binds.
-EXPECTED_TESTS=740
+# Plus the peak-local time reserve branch (PR #304): test_policy_peaklocal_reserve.py,
+# one file.  Re-measured by running this script on the rebased tree, ldas-grid,
+# ~/.cache/jaxci_venv, DESELECT loop applied, read off its own collection line:
+# "754/760 tests collected (6 deselected)", gate-style count 754 from 46 files
+# (2026-09-09).  This assignment is the one that binds.
+EXPECTED_TESTS=754
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"

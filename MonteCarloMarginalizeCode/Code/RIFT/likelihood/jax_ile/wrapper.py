@@ -1045,6 +1045,9 @@ class JAXDistPhiPsiMargLikelihood:
                 reserve_time_refine=int(cfg.reserve_time_refine),
                 reserve_distance_gh_nodes=int(_core._DISTMARG_GH_N),
                 reserve_batch_rows=int(cfg.reserve_batch_rows),
+                reserve_pair=str(cfg.reserve_scheme),
+                max_time_nodes=int(cfg.max_time_nodes),
+                reserve_peaklocal_fine_nodes=int(cfg.reserve_peaklocal_fine_nodes),
                 total_value_error_budget_nats=float(
                     cfg.total_value_error_budget_nats),
                 # The plan-sizing and tolerance knobs are reported for the same
