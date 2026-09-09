@@ -995,6 +995,17 @@ EXPECTED_TESTS=648
 # assignment is the one that binds; the earlier ones are kept as provenance.
 EXPECTED_TESTS=705
 
+# NINETEENTH, RIFT PR #301 (preset local-plan capacities) merged with rift_O4d
+# at 43918b22.  #301 adds four tests to
+# test/jax/test_direct_marginalization_policy.py, a file already in FILES.
+# The eighteenth block measured 705 on the integration tree, so the tempting
+# number here is 705 + 4 = 709.  That is wrong: the gate's own line on THIS
+# tree reads "collected 712 tests from 42 files" (ldas-grid,
+# /scratch/$USER/envs/jaxci-py311, jax 0.10.2, DESELECT loop applied).  The two
+# trees are not the same tree, which is the whole reason this file says to
+# measure and never to add.  This assignment is the one that binds.
+EXPECTED_TESTS=712
+
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
 collect_rc=$?
