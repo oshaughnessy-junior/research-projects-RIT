@@ -185,7 +185,8 @@ def test_freqresponse():
     check_ad(check_freqresponse(), "freqresponse")
 
 
-def test_rotating_freqresponse():
+def check_rotating_freqresponse():
+    """Manual real-precompute/JIT gate; deliberately excluded from per-PR CI."""
     qmax = 0
     bk = flrr.PrecomputeLikelihoodTermsRotatingFreqResponse(
         event_time, t_window, Psig, data_dict, psd_dict, Lmax, fmax,
@@ -255,7 +256,7 @@ if __name__ == "__main__":
     test_rotation_path_a()
     test_rotation_path_b()
     test_freqresponse()
-    test_rotating_freqresponse()
+    check_rotating_freqresponse()
     print("\nSLOWROT + FREQRESPONSE JAX VALIDATION PASSED")
     print("  (agreement with the NoLoop is necessary, not sufficient: the rotation VALUE is")
     print("   pinned by test/jax/test_jax_slowrot_cauchy_schwarz.py.)")

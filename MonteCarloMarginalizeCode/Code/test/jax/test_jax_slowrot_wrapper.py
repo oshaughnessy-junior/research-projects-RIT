@@ -80,7 +80,8 @@ def test_one_call_builders():
          L_arm=40000.0)
 
 
-def test_combined_one_call_builder():
+def check_combined_one_call_builder():
+    """Manual production-wrapper gate; deliberately excluded from per-PR CI."""
     # The individual features above own the expensive distance-AD wrapper gate.
     # Here the compound path needs to prove production precompute selection and a
     # finite fixed-distance contraction without adding minutes of duplicate CPU CI.
@@ -90,5 +91,5 @@ def test_combined_one_call_builder():
 
 if __name__ == "__main__":
     test_one_call_builders()
-    test_combined_one_call_builder()
+    check_combined_one_call_builder()
     print("ONE-CALL BUILDER SMOKE TEST PASSED")

@@ -89,9 +89,12 @@ def test_freqresponse_coefficients():
                 worst = max(worst, d)
     print("[freqresponse coeff] max|jax-np| over dets/L = %.3e" % worst)
     assert worst < 1e-11, "freqresponse coefficient mismatch %g" % worst
+    # Keep compound CI coverage inside this already-collected algebraic test.  It
+    # adds no waveform precompute, likelihood compilation, or new test shard.
+    check_rotating_freqresponse_coefficients()
 
 
-def test_rotating_freqresponse_coefficients():
+def check_rotating_freqresponse_coefficients():
     rng = np.random.default_rng(11)
     S = 24
     RA = rng.uniform(0, 2 * np.pi, S)
@@ -119,5 +122,4 @@ def test_rotating_freqresponse_coefficients():
 if __name__ == "__main__":
     test_rotation_coefficients()
     test_freqresponse_coefficients()
-    test_rotating_freqresponse_coefficients()
     print("COEFFICIENT PORTS VALIDATED (Gate 1a PASSED)")

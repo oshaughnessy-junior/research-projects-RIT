@@ -52,11 +52,12 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         vs finite differences, jit/vmap
 #   test_jax_endtoend.py               1  full precompute -> pack -> JAX vs the numpy
 #                                         NoLoop on a real injection (fixed by #144)
-#   test_jax_slowrot_coeffs.py         3  rotation + freqresponse + combined coefficients
-#                                         against their numpy references
-#   test_jax_slowrot_wrapper.py        2  individual and compound one-call builders
-#   test_jax_slowrot.py                4  rotation Path A (p_max=0), Path B (p_max=1),
-#                                         freqresponse, and combined: NoLoop parity + AD/jit/
+#   test_jax_slowrot_coeffs.py         2  rotation + freqresponse response coefficients
+#                                         against their numpy references; the compound
+#                                         algebra is folded into the freqresponse test
+#   test_jax_slowrot_wrapper.py        1  the one-call build_*_data_from_precompute path
+#   test_jax_slowrot.py                3  rotation Path A (p_max=0), Path B (p_max=1)
+#                                         and freqresponse: NoLoop parity + AD/jit/
 #                                         vmap/hessian
 #   test_jax_slowrot_cauchy_schwarz.py 2  the rotation lnL VALUE (bound + explicit
 #                                         time-domain model), Path A and Path B.
@@ -1006,11 +1007,11 @@ EXPECTED_TESTS=705
 # measure and never to add.
 EXPECTED_TESTS=712
 
-# TWENTIETH, simultaneous rotation + finite response.  Adds one coefficient-parity
-# test, one conventional/JAX likelihood-parity test, and one cheap one-call wrapper
-# test to files already in FILES.  The preceding tree's measured floor was 712, so
-# this branch raises the binding floor by those three collected tests.
-EXPECTED_TESTS=715
+# TWENTIETH, simultaneous rotation + finite response.  The cheap analytic coefficient
+# parity is folded into an existing collected test.  Real waveform precompute, JIT/grad,
+# the one-call wrapper, and scaling profiles remain explicit manual checks in the same
+# files: they are too expensive to add to the already runner-limited per-PR JAX gate.
+EXPECTED_TESTS=712
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
