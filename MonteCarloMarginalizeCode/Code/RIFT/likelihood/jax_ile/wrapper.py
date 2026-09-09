@@ -1034,6 +1034,12 @@ class JAXDistPhiPsiMargLikelihood:
             self.policy_config = cfg
             self.policy_info = dict(
                 norm_info, policy=direct_marginalization_policy,
+                # The reserve's ANGLE scheme.  Not PolicyConfig.reserve_scheme,
+                # which names WHICH reserve runs -- two different quantities
+                # that shared this key while 'exact' was the only reserve.  The
+                # driver overwrites "reserve_scheme" with the resolved pair and
+                # keeps this one under its own name.
+                reserve_angle_scheme=scheme,
                 reserve_scheme=scheme,
                 time_guard=int(cfg.time_guard),
                 reserve_time_refine=int(cfg.reserve_time_refine),

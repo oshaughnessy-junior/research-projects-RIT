@@ -1028,9 +1028,10 @@ fi
 # /scratch/$USER/envs/jaxci-py311, jax 0.10.2, PYTHONPATH pinned to THIS
 # checkout, DESELECT loop applied): "collected 733 tests from 45 files", and
 # 737 after the four reserve-roster/refusal tests added later in the branch, and
-# 738 once the wrapper's source-text gate test became two behaviour tests.
+# 738 once the wrapper's source-text gate test became two behaviour tests, and
+# 740 with the two reserve-resolution tests.
 # This assignment is the one that binds.
-EXPECTED_TESTS=738
+EXPECTED_TESTS=740
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"

@@ -104,7 +104,7 @@ from RIFT.likelihood.jax_ile.direct_marginalization_policy import (
     POLICY_DEFAULT as DIRECT_MARG_POLICY_DEFAULT,
     PolicyConfig as DirectMargPolicyConfig,
     summarize_policy_ledger as _summarize_policy_ledger,
-    predict_reserve_pair, format_reserve_pair)
+    predict_reserve_pair, format_reserve_pair, RESERVE_SCHEME_EXECUTABLE)
 _JAX_GATHERER_NAMES = tuple(_JAX_GATHERERS)
 from RIFT.likelihood.jax_ile.wrapper import (
     JAXExtrinsicLikelihood, JAXDistanceMarginalizedLikelihood,
@@ -2810,8 +2810,7 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
                 reserve_time_refine_max=int(
                     like.policy_config.reserve_time_refine_max),
                 crossover_amplitude=ANGLE_MARG_CROSSOVER_AMPLITUDE,
-                max_time_nodes=int(getattr(like.policy_config,
-                                           "max_time_nodes", 64)),
+                max_time_nodes=int(like.policy_config.max_time_nodes),
                 requested=_requested, available=tuple(_available))
             _line = format_reserve_pair(_pair, _pair_info)
             print("  " + _line)
@@ -2828,6 +2827,31 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
                     "an explicit --direct-marginalization-reserve-scheme to "
                     "override, and record that you did."
                     % _pair_info.get("reason", ""))
+            # THE PAIR THE ANALYSIS CHOSE MUST BE THE PAIR THAT RUNS.
+            # Announcing it and leaving policy_config.reserve_scheme == "auto"
+            # would make the printed line a claim about nothing: the composite
+            # reads the config, not this print.  validate_policy_config admits
+            # "auto" ONLY because it is resolved here, so this write is what
+            # makes that admission true (found by the #304 session, whose
+            # composite dispatches on the string).
+            if _pair not in RESERVE_SCHEME_EXECUTABLE:
+                raise SystemExit(
+                    "the analysis selected the %r reserve (%s), and the "
+                    "composite dispatches only %r.  Refused rather than "
+                    "running a different reserve under the selected one's "
+                    "name.  Wiring %r is RIFT PR #304."
+                    % (_pair, _pair_info.get("reason", ""),
+                       RESERVE_SCHEME_EXECUTABLE, _pair))
+            like.policy_config = like.policy_config._replace(
+                reserve_scheme=_pair)
+            # policy_info's "reserve_scheme" reported the resolved ANGLE
+            # scheme, which is a different quantity that happened to share the
+            # name while 'exact' was the only reserve.  Both are reported now,
+            # under names that say which is which.
+            like.policy_info["reserve_angle_scheme"] = \
+                like.policy_info.get("reserve_scheme")
+            like.policy_info["reserve_scheme"] = _pair
+            print("  reserve pair RESOLVED: reserve_scheme=%s" % _pair)
         with_distance = False
         dim = 3
     elif opts.mode == "flowmc-dpsimarg":

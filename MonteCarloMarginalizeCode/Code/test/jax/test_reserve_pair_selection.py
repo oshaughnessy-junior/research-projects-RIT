@@ -11,6 +11,8 @@ session MEASURED the whole-window reserve failing its own convergence warrant at
 the lowest rung, and the predictor says the same thing from the physics alone.
 """
 
+import os
+
 import numpy as np
 import pytest
 
@@ -18,6 +20,11 @@ from RIFT.likelihood.jax_ile import direct_marginalization_policy as DP
 from RIFT.likelihood.jax_ile.anglemarg import ANGLE_MARG_CROSSOVER_AMPLITUDE
 
 from test_angle_marg_exact import make_synth
+
+_DRIVER = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__)))), "bin",
+    "integrate_likelihood_extrinsic_jax")
 
 # Ladder-2 network SNRs.
 RHO_40, RHO_160, RHO_320, RHO_640 = 40.7691, 163.0766, 326.1531, 652.3062
@@ -316,3 +323,45 @@ def test_the_executable_roster_is_a_subset_of_the_choices():
         "'auto' is a resolution mode, not something the composite executes")
     assert DP.RESERVE_SCHEME_DEFAULT in DP.RESERVE_SCHEME_EXECUTABLE, (
         "the default must be executable or every bare run refuses")
+
+
+def test_auto_is_admitted_only_because_something_resolves_it():
+    """``validate_policy_config`` admits 'auto' on a PREMISE: that the driver
+    writes the resolved pair back onto the config before the composite runs.
+
+    Found by the #304 session -- the driver announced a pair and left
+    ``policy_config.reserve_scheme == "auto"``.  Nothing dispatched on the
+    string yet, so nothing broke; the printed line was a claim about a value
+    the composite never read, and the admission's stated reason was false.
+
+    A COUPLING GUARD, not a behaviour test, and labelled as one.  The behaviour
+    -- 'auto' reaching the composite and being executed as something -- cannot
+    be observed until #304 dispatches on the string, because today the
+    composite ignores the field entirely.  So this checks the two tokens that
+    have to co-exist, tolerant of formatting, and says what to do if it fires:
+    if the driver stops resolving, 'auto' must stop being admitted.
+    """
+    import re
+    with open(_DRIVER) as fh:
+        src = fh.read()
+    assert re.search(r"_replace\(\s*reserve_scheme=_pair\s*\)", src), (
+        "the driver no longer writes the resolved pair onto policy_config, so "
+        "validate_policy_config must stop admitting 'auto' -- an unresolved "
+        "'auto' reaching the composite is the silently-inert field this branch "
+        "refuses everywhere else")
+    DP.validate_policy_config(DP.PolicyConfig(reserve_scheme="auto"))
+
+
+def test_a_selected_reserve_the_composite_cannot_run_is_refused():
+    """Selecting is not running.  The roster says what the DATA supports; the
+    executable tuple says what the composite DISPATCHES, and the two are not
+    the same list.  A pair that clears the first and fails the second must
+    refuse, not run exact under the selected scheme's name."""
+    for scheme in DP.RESERVE_SCHEME_CHOICES:
+        if scheme == "auto":
+            continue
+        if scheme in DP.RESERVE_SCHEME_EXECUTABLE:
+            DP.validate_policy_config(DP.PolicyConfig(reserve_scheme=scheme))
+        else:
+            with pytest.raises(ValueError, match="NOT WIRED"):
+                DP.validate_policy_config(DP.PolicyConfig(reserve_scheme=scheme))
