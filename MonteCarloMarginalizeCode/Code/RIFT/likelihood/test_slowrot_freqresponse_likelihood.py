@@ -297,10 +297,11 @@ def run_response_coefficients_block():
     single place the substitution can go wrong, and the reference is the scalar routine
     itself -- still shipped, still the definition of b_p.
 
-    The block form is a reordering of the same algebra, using numpy's power for a_x**q.
-    On CIT (IGWN numpy) this agreed bit-for-bit; on numpy 2.2.6 it differs by about one
-    ulp in the last bit of a_x**q for q>=1, propagating into b_p. The tests bound the
-    difference rather than assert exact equality.
+    The block form is a reordering of the same algebra. It agreed bit for bit on CIT
+    (IGWN CVMFS numpy) and differs by about one ulp on numpy 2.2.6, from the arm
+    projection (einsum against BLAS ddot) and, for p >= 4, from a_x**q (numpy's power
+    against CPython's libm pow). The difference is bounded here rather than asserted
+    to zero.
     """
     rng = np.random.RandomState(20260909)
     n, Qmax, tref = 400, 4, 1e9

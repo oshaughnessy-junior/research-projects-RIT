@@ -456,10 +456,14 @@ def test_geometry_vector_matches_scalar_loop():
 def test_beta_block_matches_scalar_beta():
     """finite_size_beta on a block reproduces the per-sample beta_q.
 
-    The block form is a reordering of the scalar algebra, using numpy's power for a_x**q.
-    On CIT (IGWN numpy) this agreed bit-for-bit; on numpy 2.2.6 it differs by about one
-    ulp in the last bit of a_x**q for q>=1, propagating into beta_q. The tests bound
-    the difference rather than assert exact equality.
+    The block form is a reordering of the scalar algebra. It agreed bit for bit on CIT
+    (IGWN CVMFS numpy) and differs by about one ulp on numpy 2.2.6, so the difference is
+    bounded here rather than asserted to zero.
+
+    Two independent sources, and beta_0 shows the first one alone (a_x**0 is 1):
+      zx, zy   the arm projection, where einsum and BLAS ddot disagree in the last bit
+               on some numpy builds;
+      a_x**q   for q >= 3, numpy's power loop against CPython's libm pow.
     """
     rng = np.random.RandomState(11)
     n, Qmax = 300, 4
@@ -479,7 +483,8 @@ def test_beta_block_matches_scalar_beta():
             rel_err = d / max(abs(bs[q]), 1e-300)
             worst = max(worst, rel_err)
             if q <= 2:
-                assert d <= 8 * eps * max(abs(bs[q]), 1.0), "beta_%d must be exact (got |d|=%g)" % (q, d)
+                assert d <= 8 * eps * max(abs(bs[q]), 1.0), (
+                    "beta_%d past 8 ulp of the scalar value (|d|=%g)" % (q, d))
     print("(E) beta block-vs-scalar: worst relative difference %.3e" % worst)
     assert worst < 1e-14, "beta block form drifted well past one ulp: %g" % worst
 
