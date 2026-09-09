@@ -35,7 +35,8 @@ from .core import (build_likelihood_data, fused_log_likelihood,
                    DIST_GRID_TOL_DEFAULT, DIST_GRID_SCHEMES,
                    estimate_distance_peak, phi_ref_grid, psi_grid,
                    phi_ref_conditional_lnL, DIST_MPC_REF, JAX_INTERP_DEFAULT,
-                   TIME_QUAD_DEFAULT, _TIME_QUAD_CHOICES, default_time_guard)
+                   TIME_QUAD_DEFAULT, _TIME_QUAD_CHOICES,
+                   bandlimited_time_guard)
 # Generic probe direction for the build-time identity check.  The A0==0/B1==0
 # identity is a property of the spin-2 detector response, so it does not depend
 # on where we probe; a single generic (ra, dec, incl) away from any pole or
@@ -56,9 +57,7 @@ def bandlimited_storage_requirement(deltaT, integration_window_half):
     """Return ``(storage_half, g0, g_certificate)`` for adaptive time support."""
     tvals = factored_likelihood.marginalization_time_grid(
         integration_window_half, deltaT, xpy=np)
-    g_default = default_time_guard(len(tvals))
-    g0 = 1 << int(np.ceil(np.log2(g_default)))
-    g_certificate = 2 * g0
+    g0, g_certificate = bandlimited_time_guard(len(tvals))
     # Fifty milliseconds exceeds the Earth-diameter light time (~42.6 ms), so
     # this support guarantee does not encode an HLV-only network assumption.
     storage_half = (float(integration_window_half) + g_certificate * float(deltaT)
@@ -67,6 +66,15 @@ def bandlimited_storage_requirement(deltaT, integration_window_half):
 
 
 def _validate_nonlinear_time_quadrature(time_quadrature, endpoint):
+    """Refusal for the endpoints whose reduction has no refinable primitive here.
+
+    The pure distance reduction is not one of them: it consumes the same
+    ``(kappa, rho^2)`` the refinement produces, so
+    :class:`JAXDistanceMarginalizedLikelihood` applies it on the refined nodes
+    instead of calling this.  The phi/psi/exact-angle endpoints either stream a
+    per-phi primitive the refined grid cannot hold or receive an already-reduced
+    lnL(t) from the coefficient-table kernels.
+    """
     if time_quadrature not in _TIME_QUAD_CHOICES:
         raise ValueError("time_quadrature must be one of %r" % (_TIME_QUAD_CHOICES,))
     if time_quadrature == "bandlimited":
@@ -278,9 +286,8 @@ class JAXExtrinsicLikelihood:
             raise ValueError("time_quadrature must be one of %r" % (_TIME_QUAD_CHOICES,))
         self.time_quadrature = time_quadrature
         if time_quadrature == "bandlimited":
-            g_default = default_time_guard(data.npts)
-            self.time_guard_initial = 1 << int(np.ceil(np.log2(g_default)))
-            self.time_guard_certified = 2 * self.time_guard_initial
+            (self.time_guard_initial,
+             self.time_guard_certified) = bandlimited_time_guard(data.npts)
 
         def _batched(ra, dec, psi, incl, phiref, distMpc):
             return fused_log_likelihood(
@@ -344,9 +351,12 @@ class JAXDistanceMarginalizedLikelihood:
         self.data = data
         self.interp = interp   # the instance's stencil; sample_phi_ref defaults to it
         self.phase_marginalization = phase_marginalization
-        _validate_nonlinear_time_quadrature(
-            time_quadrature, "distance marginalization")
+        if time_quadrature not in _TIME_QUAD_CHOICES:
+            raise ValueError("time_quadrature must be one of %r" % (_TIME_QUAD_CHOICES,))
         self.time_quadrature = time_quadrature
+        if time_quadrature == "bandlimited":
+            (self.time_guard_initial,
+             self.time_guard_certified) = bandlimited_time_guard(data.npts)
         self.x_grid, self.log_w_grid = make_distance_grid(
             d_min, d_max, n_grid, d_prior, distMpcRef=data.distMpcRef,
             d_prior_range=d_prior_range)

@@ -1190,12 +1190,14 @@ def plan_jax_direct_marginalization(offers, error_budget, resource_budget, *,
     _validate_jax_offer_profiles(offers)
 
     active_capabilities = set(capabilities)
-    if "time" in axes and ("angle" in axes or "distance" in axes):
-        # Every current JAX distance/angle wrapper calls
-        # _validate_nonlinear_time_quadrature and refuses bandlimited: its
-        # primitive fields would have to be refined before the nonlinear
-        # marginalization.  This is an active execution-context fact, not a
-        # capability callers should have to remember to declare.
+    if "time" in axes and "angle" in axes:
+        # The JAX angle wrappers reduce through coefficient-table kernels that
+        # return an already-reduced lnL(t), so bandlimited has no primitive to
+        # refine there and _validate_nonlinear_time_quadrature refuses it.  The
+        # distance axis is NOT in this condition: its reduction consumes the
+        # refined (kappa, rho^2) directly and the distance-marginalized wrapper
+        # applies it on the refined nodes.  This is an active execution-context
+        # fact, not a capability callers should have to remember to declare.
         active_capabilities.add("jax-direct-nonlinear-time")
     return plan_direct_marginalization(
         offers, error_budget, resource_budget, required_axes=axes,

@@ -1031,7 +1031,15 @@ _TIME_UPSAMPLE_DEFAULT = 8
 _TIME_ADAPTIVE_FACTOR_MAX = 1024
 _TIME_ADAPTIVE_SAFETY = 2.0
 _TIME_ADAPTIVE_RTOL = 1e-3
+# Threshold of the endpoint certificate.  No production caller applies it since
+# 2026-09-08 (kernel default None); kept for the tests that pin what it rejected.
+# Evidence: DESIGN_jax_bandlimited_distmarg.md, "The endpoint certificate".
 _TIME_ENDPOINT_LOG_GAP_MIN = 15.0
+# Element budget for one distance-quadrature block on the refined time grid.
+# The refined row is up to 2048x the data grid, so the block count is derived
+# from the row length rather than inherited from the coarse ``grid_block``.
+_BANDLIMITED_GRID_ELEMENTS = 1 << 22
+_LOG_ZERO = -1e300
 
 
 def default_time_guard(npts):
@@ -1046,6 +1054,19 @@ def default_time_guard(npts):
     moving, exactly as with ``time_upsample``.
     """
     return max(32, int(npts) // 2)
+
+
+def bandlimited_time_guard(npts):
+    """``(guard_initial, guard_certified)`` for the conventional bandlimited API.
+
+    ONE definition, because three sites need the same pair: the fixed-distance
+    kernel, the distance-marginalized kernel, and the driver's storage-window
+    sizing.  A second copy would let the gathered support and the guard the
+    quadrature actually uses drift apart, which is a wrong likelihood and not an
+    error.
+    """
+    g_initial = 1 << int(np.ceil(np.log2(default_time_guard(int(npts)))))
+    return g_initial, 2 * g_initial
 
 
 def _upsample_bandlimited(x, factor, axis=-1):
@@ -1324,15 +1345,36 @@ def _time_marginalize_reflected_fft(lnL_t, deltaT, w_t):
 
 def _time_marginalize_reflected_primitive(kappa_t, rho_sq, deltaT,
                                            phase_marginalization=False,
-                                           guard=0):
+                                           guard=0, reduce_fn=None,
+                                           endpoint_log_gap=None):
     """Adaptive integral after refining the band-limited complex primitive.
 
     This is required for phase marginalization: interpolating ``abs(kappa)``
     cannot recover intersample structure lost to that nonlinear operation.
     Arrival-time-dependent norms remain unsupported by the bandlimited mode.
-    A refined row whose endpoint is within 15 nats of its peak fails closed:
-    the even-extension boundary condition is not trustworthy when the finite
-    window carries appreciable posterior mass at either turn.
+    Endpoint mass is covered by the guard-agreement certificate, not by an
+    endpoint gap.  The 15-nat gap of 2026-08-29 was switched off on 2026-09-08:
+    a row's peak-to-endpoint contrast is bounded by its own amplitude (at most
+    2 max|kappa| on the fixed-distance field; a prior-mass floor on the
+    distance-marginalized one), so a fixed gap rejected every blind or far draw
+    whatever the trapezoid did, and the rows it rejected alone agree with an
+    independent reference to 1e-4 nat on both fields.
+
+    ``reduce_fn(kappa, rho_sq) -> lnL`` is the shape-preserving nonlinear
+    reduction applied AFTER refinement.  ``None`` is the fixed-distance
+    reduction; :func:`fused_log_likelihood_distmarg` passes the distance
+    quadrature so the same certificates cover it.  It is applied to the
+    curvature probe as well as the fine grid, because the starting factor has
+    to be derived from the field that is integrated.
+
+    Every per-row quantity -- probe, factor selection, refinement -- is built
+    inside the ``lax.map`` body, so scratch is set by one row and not by the
+    sampler batch.
+
+    ``endpoint_log_gap`` is the endpoint certificate's threshold in nats, or
+    ``None`` (the default) for no endpoint certificate; the resolution,
+    doubling and guard-agreement certificates are in force either way.  No
+    production caller passes a threshold.
     """
     guard = int(guard)
     if guard < 0 or 2 * guard >= kappa_t.shape[-1] - 1:
@@ -1341,6 +1383,10 @@ def _time_marginalize_reflected_primitive(kappa_t, rho_sq, deltaT,
     inner_guard = guard // 2
     if guard and inner_guard < 1:
         raise ValueError("guard convergence requires at least two samples per end")
+    if reduce_fn is None:
+        def reduce_fn(kappa, rho):
+            return ((jnp.abs(kappa) if phase_marginalization else kappa.real)
+                    - 0.5 * rho)
     kappa_t = jnp.asarray(kappa_t, dtype=jnp.complex128)
     rho_sq = jnp.asarray(rho_sq, dtype=jnp.float64)
     coarse_full = ((jnp.abs(kappa_t) if phase_marginalization else kappa_t.real)
@@ -1359,26 +1405,6 @@ def _time_marginalize_reflected_primitive(kappa_t, rho_sq, deltaT,
                                  jnp.flip(ramp[:-1])))
         return x * taper
 
-    # Probe the primitive at half a sample before deriving curvature.  A
-    # near-Nyquist real kappa can alternate +/-A, making coarse ``abs(kappa)``
-    # exactly constant even though the continuous phase-marginalized field has
-    # a zero between every pair of samples.  No statistic of the coarse
-    # nonlinear field can detect that alias.
-    probe_kappa = _reflected_fft_upsample(taper_support(clean_kappa, guard), 2)
-    probe_rho = jnp.broadcast_to(clean_rho[:, :1], probe_kappa.shape)
-    probe = ((jnp.abs(probe_kappa) if phase_marginalization
-              else probe_kappa.real) - 0.5 * probe_rho)
-    probe = probe[..., 2 * guard:2 * guard + (npts - 1) * 2 + 1]
-    sigma, measurable = _peak_width_from_lnL_jax(probe, deltaT / 2.0)
-    need = jnp.where(measurable & jnp.isfinite(sigma) & (sigma > 0),
-                     _TIME_ADAPTIVE_SAFETY * deltaT / sigma, 1.0)
-    need = jnp.maximum(need, 1.0)
-    factor_float = jnp.exp2(jnp.ceil(jnp.log2(need)))
-    factor_float = jnp.where(factor_float < need, factor_float * 2.0, factor_float)
-    too_sharp = (~jnp.isfinite(factor_float)) | (
-        factor_float > _TIME_ADAPTIVE_FACTOR_MAX)
-    factor = jnp.minimum(factor_float, float(_TIME_ADAPTIVE_FACTOR_MAX)).astype(
-        jnp.int32)
     powers = tuple(1 << k for k in range(11))
 
     def make_branch(base):
@@ -1396,21 +1422,28 @@ def _time_marginalize_reflected_primitive(kappa_t, rho_sq, deltaT,
                 # mass is negligible.
                 kappa = taper_support(kappa, support_guard)
             dense_kappa = _reflected_fft_upsample(kappa, f)
+            # Crop to the integrated window BEFORE reducing.  Refinement needs
+            # the guard columns; nothing downstream reads a reduced value
+            # outside the crop.  ``reduce_fn`` is pointwise in the node, so this
+            # is the same number, but the distance reduction is the expensive
+            # one and the padded row is several times the window.
+            start = support_guard * f
+            dense_kappa = dense_kappa[start:start + (npts - 1) * f + 1]
             # Conventional baseline data have a time-independent model norm.
             # Keeping the first value avoids inventing high-frequency structure
             # in a constant primitive through roundoff.
             dense_rho = jnp.broadcast_to(rho[0], dense_kappa.shape)
-            dense = ((jnp.abs(dense_kappa) if phase_marginalization
-                      else dense_kappa.real) - 0.5 * dense_rho)
-            start = support_guard * f
-            dense = dense[start:start + (npts - 1) * f + 1]
+            dense = reduce_fn(dense_kappa, dense_rho)
             value = _log_trapezoid(dense, deltaT / float(f))
             width, measured = _peak_width_from_lnL_jax(dense, deltaT / float(f))
             resolved = ((~measured) | (~jnp.isfinite(width))
                         | (deltaT / float(f) <= width / _TIME_ADAPTIVE_SAFETY))
-            peak = jnp.max(dense)
-            endpoint = jnp.maximum(dense[0], dense[-1])
-            boundary_ok = endpoint <= peak - _TIME_ENDPOINT_LOG_GAP_MIN
+            if endpoint_log_gap is None:
+                boundary_ok = True
+            else:
+                peak = jnp.max(dense)
+                endpoint = jnp.maximum(dense[0], dense[-1])
+                boundary_ok = endpoint <= peak - float(endpoint_log_gap)
             return value, resolved, boundary_ok
 
         def branch(args):
@@ -1429,17 +1462,37 @@ def _time_marginalize_reflected_primitive(kappa_t, rho_sq, deltaT,
     branches = tuple(make_branch(f) for f in powers)
 
     def refine_one(args):
-        kappa, rho, row_factor = args
+        kappa, rho = args
+        # Probe the primitive at half a sample before deriving curvature.  A
+        # near-Nyquist real kappa can alternate +/-A, making coarse ``abs(kappa)``
+        # exactly constant even though the continuous phase-marginalized field has
+        # a zero between every pair of samples.  No statistic of the coarse
+        # nonlinear field can detect that alias.
+        probe_kappa = _reflected_fft_upsample(taper_support(kappa, guard), 2)
+        probe_kappa = probe_kappa[2 * guard:2 * guard + (npts - 1) * 2 + 1]
+        probe_rho = jnp.broadcast_to(rho[:1], probe_kappa.shape)
+        probe = reduce_fn(probe_kappa, probe_rho)
+        sigma, measurable = _peak_width_from_lnL_jax(probe, deltaT / 2.0)
+        need = jnp.where(measurable & jnp.isfinite(sigma) & (sigma > 0),
+                         _TIME_ADAPTIVE_SAFETY * deltaT / sigma, 1.0)
+        need = jnp.maximum(need, 1.0)
+        factor_float = jnp.exp2(jnp.ceil(jnp.log2(need)))
+        factor_float = jnp.where(factor_float < need, factor_float * 2.0,
+                                 factor_float)
+        too_sharp = (~jnp.isfinite(factor_float)) | (
+            factor_float > _TIME_ADAPTIVE_FACTOR_MAX)
+        row_factor = jnp.minimum(
+            factor_float, float(_TIME_ADAPTIVE_FACTOR_MAX)).astype(jnp.int32)
         index = jnp.clip(
             jnp.ceil(jnp.log2(row_factor.astype(jnp.float64))).astype(jnp.int32),
             0, len(powers) - 1)
-        return jax.lax.switch(index, branches, (kappa, rho))
+        return jnp.where(too_sharp, jnp.nan,
+                         jax.lax.switch(index, branches, (kappa, rho)))
 
     # Rematerialize a row's selected branch during reverse mode instead of
     # retaining every dense abs/exp/FFT residual across the sampler batch.
     refined = jax.lax.map(
-        jax.checkpoint(refine_one), (clean_kappa, clean_rho, factor))
-    refined = jnp.where(too_sharp, jnp.nan, refined)
+        jax.checkpoint(refine_one), (clean_kappa, clean_rho))
     return jnp.where(finite_rows, refined, jnp.nan)
 
 
@@ -1454,7 +1507,11 @@ def _time_marginalize_terminal(lnL_t, data, time_quadrature=TIME_QUAD_DEFAULT,
     if not bandlimited_safe:
         raise ValueError(
             "bandlimited terminal interpolation is invalid after nonlinear "
-            "distance/phase/polarization marginalization; use 'simpson'")
+            "distance/phase/polarization marginalization; use 'simpson'.  "
+            "This refuses the ORDERING, not the option: a caller that can "
+            "refine the primitive first and reduce on the refined nodes does "
+            "not reach here.  fused_log_likelihood_distmarg does exactly "
+            "that and supports 'bandlimited'.")
     return _time_marginalize_reflected_fft(lnL_t, data.deltaT, data.w_t)
 
 
@@ -1535,9 +1592,7 @@ def fused_log_likelihood(data, ra, dec, psi, incl, phiref, distMpc,
     elif canonical_time_api and time_quad == "bandlimited":
         # Start at the established half-window guard, rounded upward to a power
         # of two, then gather one doubling as an independent certificate.
-        g_default = default_time_guard(data.npts)
-        g_initial = 1 << int(np.ceil(np.log2(g_default)))
-        guard = 2 * g_initial
+        guard = bandlimited_time_guard(data.npts)[1]
     else:
         guard = 0
     distMpc = jnp.asarray(distMpc, dtype=jnp.float64)
@@ -1599,13 +1654,38 @@ def fused_log_likelihood_distmarg(data, ra, dec, psi, incl, phiref,
         Grid of ``x = distMpcRef / d`` values.
     log_w_grid : array_like, shape (G,)
         Log quadrature weights (including the distance prior) for each grid point.
+    time_quadrature : {"simpson", "bandlimited"}
+        ``"simpson"`` (default) applies the distance quadrature on the data time
+        grid and integrates it with the fixed Simpson weights.  ``"bandlimited"``
+        refines the complex primitive kappa(t) first, applies the SAME distance
+        quadrature on the refined nodes, and integrates by trapezoid under the
+        resolution, endpoint and guard certificates of
+        :func:`_time_marginalize_reflected_primitive`.  Refining the reduced
+        lnL(t) instead is what that ordering exists to avoid.
     """
+    if time_quadrature not in _TIME_QUAD_CHOICES:
+        raise ValueError("time_quadrature must be one of %r, got %r"
+                         % (_TIME_QUAD_CHOICES, time_quadrature))
+    bandlimited = time_quadrature == "bandlimited"
+    if bandlimited:
+        if return_lnLt:
+            raise ValueError(
+                "return_lnLt returns the reduced field on the DATA grid; the "
+                "band-limited path has no such field, because the distance "
+                "reduction is applied on the refined grid.  Use "
+                "time_quadrature='simpson' to read lnL_t.")
+        if _norm_is_arrival_time_dependent(data):
+            raise ValueError(
+                "time_quadrature='bandlimited' holds the model norm fixed in "
+                "time, but this likelihood data carries the slow-rotation "
+                "post-phase, whose <h|h> depends on the template arrival time; "
+                "use time_quadrature='simpson' for rotation data.")
     x_grid = jnp.asarray(x_grid, dtype=jnp.float64)
     log_w_grid = jnp.asarray(log_w_grid, dtype=jnp.float64)
+    guard = bandlimited_time_guard(data.npts)[1] if bandlimited else 0
     kappa_unit, rho_sq_unit = _accumulate_unit(
-        data, ra, dec, psi, incl, phiref, interp, phase_marginalization)
-    K = jnp.abs(kappa_unit) if phase_marginalization else kappa_unit.real
-    R = rho_sq_unit
+        data, ra, dec, psi, incl, phiref, interp, phase_marginalization,
+        guard=guard)
 
     # log-sum-exp over the distance grid -> (S, npts), done in a few *vectorized*
     # blocks combined by a running log-sum-exp.  The block loop is a plain Python
@@ -1615,10 +1695,78 @@ def fused_log_likelihood_distmarg(data, ra, dec, psi, incl, phiref,
     # bounded.  Mathematically identical to the previous scan.
     a = x_grid                     # (G,)
     b = -0.5 * jnp.square(x_grid)  # (G,)
-    lnL_t = _logsumexp_grid_blocked(K, R, a, b, log_w_grid, grid_block)
+    if bandlimited:
+        def _reduce(kappa, rho):
+            k = jnp.abs(kappa) if phase_marginalization else kappa.real
+            shape = k.shape
+            n = 1
+            for dim in shape:
+                n *= int(dim)
+            block = min(max(1, _BANDLIMITED_GRID_ELEMENTS // max(n, 1)),
+                        int(x_grid.shape[0]))
+            out = _logsumexp_grid_scanned(
+                k.reshape(n), rho.reshape(n), a, b, log_w_grid, block)
+            return out.reshape(shape)
+
+        # The endpoint certificate is OFF here, and only here.  The marginal
+        # field has a floor: at every node the distance sum is at least the
+        # far-distance prior mass, so a row's peak-to-endpoint contrast is
+        # bounded by its own peak height, and a fixed 15-nat gap rejects every
+        # low-contrast row outright, converged or not.  Those rows are exactly
+        # the blind sky/orientation draws a prior-seeded mode evaluates by the
+        # thousand.  The reconstruction at the window edge is still certified
+        # by the guard-agreement check, and the value by the doubling check.
+        # Numbers: DESIGN_jax_bandlimited_distmarg.md, "The endpoint
+        # certificate".  The fixed-distance kernel keeps the gap.
+        return _time_marginalize_reflected_primitive(
+            kappa_unit, rho_sq_unit, data.deltaT,
+            phase_marginalization=phase_marginalization, guard=guard,
+            reduce_fn=_reduce, endpoint_log_gap=None)
+    K = jnp.abs(kappa_unit) if phase_marginalization else kappa_unit.real
+    lnL_t = _logsumexp_grid_blocked(K, rho_sq_unit, a, b, log_w_grid, grid_block)
     if return_lnLt:
         return lnL_t
     return _time_marginalize_terminal(lnL_t, data, time_quadrature)
+
+
+def _logsumexp_grid_scanned(K, R, a, b, log_w, block):
+    """Same integral as :func:`_logsumexp_grid_blocked`, traced ONCE.
+
+    That function's Python loop unrolls, which is what makes reverse mode fast
+    on the data grid.  The refined time grid is up to 2048x longer, so a block
+    sized to bound the working set implies many blocks, and the unrolled copies
+    would then be multiplied by the certificate's eleven refinement branches.
+    Scanning keeps the graph one block wide at any refinement factor.
+
+    Padding weights are a finite log-zero rather than -inf: a -inf entry can
+    become the block maximum and turn the shift into inf-inf.
+    """
+    G = int(a.shape[0])
+    block = max(1, min(int(block), G))
+    n_blocks = (G + block - 1) // block
+    pad = n_blocks * block - G
+    if pad:
+        zeros = jnp.zeros((pad,), dtype=a.dtype)
+        a = jnp.concatenate([a, zeros])
+        b = jnp.concatenate([b, zeros])
+        log_w = jnp.concatenate(
+            [log_w, jnp.full((pad,), _LOG_ZERO, dtype=log_w.dtype)])
+    a = a.reshape(n_blocks, block)
+    b = b.reshape(n_blocks, block)
+    log_w = log_w.reshape(n_blocks, block)
+
+    def step(carry, node):
+        m, s = carry
+        a_b, b_b, w_b = node
+        e = K[..., None] * a_b + R[..., None] * b_b + w_b
+        m_blk = jnp.max(e, axis=-1)
+        s_blk = jnp.sum(jnp.exp(e - m_blk[..., None]), axis=-1)
+        m_new = jnp.maximum(m, m_blk)
+        return (m_new, s * jnp.exp(m - m_new) + s_blk * jnp.exp(m_blk - m_new)), None
+
+    init = (jnp.full(K.shape, -jnp.inf), jnp.zeros(K.shape))
+    (m, s), _ = jax.lax.scan(step, init, (a, b, log_w))
+    return m + jnp.log(s)
 
 
 def _logsumexp_grid_blocked(K, R, a, b, log_w, block):

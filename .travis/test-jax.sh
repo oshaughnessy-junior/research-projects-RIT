@@ -449,6 +449,22 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         tested under `-W error::RuntimeWarning`, where
 #                                         warnings.warn had made the DEFAULT
 #                                         fail_on_fallback=False path raise.
+#   test_jax_bandlimited_distmarg.py   20  time_quadrature="bandlimited" on the
+#                                         DISTANCE-marginalized wrapper: agreement at
+#                                         two amplitudes with an independently
+#                                         reconstructed fine-grid reference (plain
+#                                         periodic FFT + numpy reduction + numpy
+#                                         trapezoid, converged in its own guard and
+#                                         factor), the sample-rate ladder closing on
+#                                         that value, the reduce-then-refine order
+#                                         being a different number, the refusal set
+#                                         still refusing, the two fail-closed doors
+#                                         (return_lnLt, rotation norms), the single
+#                                         definitions of the guard pair and the
+#                                         distance reduction, and one subprocess run
+#                                         of the driver through --mode flowmc
+#                                         --distance-marginalization.  Real
+#                                         precompute; needs lal, no GPU.
 
 FILES=(
   "${JAXDIR}/test_jax_time_quadrature.py"
@@ -490,6 +506,8 @@ FILES=(
   "${JAXDIR}/test_direct_marginalization_policy.py"
   "${JAXDIR}/test_jax_cache.py"
   "${JAXDIR}/test_direct_marginalization_policy_cli.py"
+  "${JAXDIR}/test_jax_bandlimited_distmarg.py"
+  "${JAXDIR}/test_jax_bandlimited_6d_blind.py"
 )
 
 # EXCLUDED: files in JAXDIR matching test_*.py that are deliberately NOT gated.  The
@@ -497,6 +515,11 @@ FILES=(
 # test_*.py to test/jax/ forces a decision instead of being silently unrun -- which is
 # this gate's own failure mode, one level up.
 DESELECTED_TESTS=(
+  # importorskip("flowMC"): flowMC is deliberately not installed in jax-ile-check
+  # (ci.yml), and the OUTCOME check below rejects a skip.  The prior-mc and
+  # laplace-is driver tests in the same file are the executable coverage that
+  # runs here; run the flowMC one by hand where flowMC is installed.
+  "${JAXDIR}/test_jax_bandlimited_distmarg.py::test_driver_runs_flowmc_distance_marginalized_bandlimited"
   "${JAXDIR}/test_jax_stencil_parity.py::test_gpu_gather_parity_against_numpy_window"
   "${JAXDIR}/test_multipeak_planner.py::test_hm_second_mode_survives_unsafe_proxy_gap"
   "${JAXDIR}/test_multipeak_planner.py::test_hm_two_tier_integral_matches_overcomplete_oracle"
@@ -879,6 +902,23 @@ EXPECTED_TESTS=648
 # running THIS script on the merged tree and reading its own collection line:
 # "collected 629 tests from 38 files".
 EXPECTED_TESTS=629
+# SIXTEENTH, the bandlimited distance-marginalization branch (this merge).  It
+# adds ONE file, test_jax_bandlimited_distmarg.py, which collects 20 and has one
+# test DESELECTED here (its flowMC driver run would importorskip, and a skip
+# fails the OUTCOME check), so +19 over the merged base.  Its own side carried
+# 596 against a base of 577; rift_O4d reached 628 meanwhile.  Re-measured by
+# running this script on the MERGED tree, ldas-grid, ~/.cache/jaxci_venv,
+# DESELECT loop applied, read off its own collection line:
+#   "647/653 tests collected (6 deselected)", gate-style count 647 from 39 files
+#   (the new file alone: "19/20 tests collected (1 deselected)").
+#
+# SEVENTEENTH, the fixed-distance blind-draw follow-up (endpoint gap off on the
+# 6-D field; parse-time window refusal).  ONE new file,
+# test_jax_bandlimited_6d_blind.py, nothing deselected.  Re-measured by running
+# this script on this tree, ldas-grid, ~/.cache/jaxci_venv, DESELECT loop
+# applied, read off its own collection line:
+#   "collected 657 tests from 40 files" (the gate's own line; 647 + 10)
+EXPECTED_TESTS=657
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
