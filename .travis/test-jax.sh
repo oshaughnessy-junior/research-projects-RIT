@@ -998,8 +998,8 @@ fi
 # that the driver's duplicate add_option produced, one file over.  The comment
 # history is kept; the dead assignments are not.  Re-derive by running this
 # script and reading its own collection line, never by adding a delta.
-# Measured on this branch: 731 collected, 44 files, 6 deselected.
-EXPECTED_TESTS=731
+# Measured on this branch: 731 collected, 44 files, 6 deselected -- superseded by
+# the twentieth block below, which is the one that binds.
 
 # NINETEENTH, RIFT PR #301 (preset local-plan capacities) merged with rift_O4d
 # at 43918b22.  #301 adds four tests to
@@ -1009,8 +1009,22 @@ EXPECTED_TESTS=731
 # tree reads "collected 712 tests from 42 files" (ldas-grid,
 # /scratch/$USER/envs/jaxci-py311, jax 0.10.2, DESELECT loop applied).  The two
 # trees are not the same tree, which is the whole reason this file says to
-# measure and never to add.  This assignment is the one that binds.
-EXPECTED_TESTS=712
+# measure and never to add.
+#
+# TWENTIETH, this branch (PR #305) rebased onto #301.  The nineteenth block and
+# the eighteenth-plus-mine block were BOTH left in the file by that rebase, in
+# that order, and git merged them without a conflict because they touch
+# different lines.  Bash keeps the last, so #301's 712 silently replaced the 731
+# this branch had measured -- the same shadowing this file was already collapsed
+# once to remove, reintroduced by a clean rebase rather than by an edit.  A
+# textual merge cannot see that two assignments to one name are in conflict, so
+# ONE ASSIGNMENT ONLY is a property this file has to be re-checked for after
+# every merge, not one it keeps on its own.
+# Re-measured by running this script on the rebased tree (ldas-grid,
+# /scratch/$USER/envs/jaxci-py311, jax 0.10.2, PYTHONPATH pinned to THIS
+# checkout, DESELECT loop applied): "collected 733 tests from 45 files".
+# This assignment is the one that binds.
+EXPECTED_TESTS=733
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
