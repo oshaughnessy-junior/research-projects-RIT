@@ -1172,7 +1172,17 @@ class JAXDistPhiPsiMargLikelihood:
         # nothing is compiled or cached twice.
         def _batched(ra, dec, incl):
             return _fused(data, ra, dec, incl)
-        self._batched = jax.jit(_batched)
+        # MULTIPEAK IS HOST-SIDE AND MUST NOT BE TRACED.  multipeak_local_marginalize
+        # is a numpy/scipy planner with a Python loop over rows; it calls np.asarray on
+        # the coefficient tables, which under jit are tracers
+        # (TracerArrayConversionError).  Every other scheme here is a jax kernel and is
+        # jitted.  This was missed because the wiring tests called _fused directly, in
+        # eager mode, and the failure only appears through _batched -- the seam the
+        # sampler actually uses.
+        if scheme == "multipeak":
+            self._batched = _batched
+        else:
+            self._batched = jax.jit(_batched)
 
         self._batched_amp = None
         if self._amp_record is not None:
@@ -1184,8 +1194,21 @@ class JAXDistPhiPsiMargLikelihood:
             v = _fused(data, theta3[0:1], theta3[1:2], theta3[2:3])
             return v[0]
         self._scalar = _scalar
-        self._value_and_grad = jax.jit(jax.value_and_grad(_scalar))
-        self._hessian = jax.jit(jax.hessian(_scalar))
+        if scheme == "multipeak":
+            # No AD through a numpy planner.  Refusing is the honest contract; a
+            # silently zero or wrong gradient would reach --fisher-precondition,
+            # which swallows exceptions and falls back to raw coordinates with the
+            # flag still recorded as supplied.
+            def _no_grad(*a, **k):
+                raise ValueError(
+                    "--angle-marg-scheme multipeak is a host-side planner and is "
+                    "not differentiable; gradients and the Fisher preconditioner "
+                    "are unavailable for it.  Use another scheme if you need them.")
+            self._value_and_grad = _no_grad
+            self._hessian = _no_grad
+        else:
+            self._value_and_grad = jax.jit(jax.value_and_grad(_scalar))
+            self._hessian = jax.jit(jax.hessian(_scalar))
 
     def log_likelihood(self, ra, dec, incl):
         """lnL for arrays of 3 angular parameters (ra, dec, incl), shape (S,)."""
