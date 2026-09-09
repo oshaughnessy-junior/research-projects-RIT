@@ -93,6 +93,7 @@ __all__ = [
     "fused_log_likelihood_distphipsimarg_laplace",
     "choose_angle_marg_scheme",
     "fused_log_likelihood_distphipsimarg_peaklocal",
+    "fused_log_likelihood_distphipsimarg_multipeak",
     "gh_laplace_supported",
     "gh_laplace_supported_for_data",
     "ANGLE_MARG_CROSSOVER_AMPLITUDE",
@@ -161,7 +162,7 @@ __all__ = [
 ANGLE_MARG_DEFAULT = "exact"
 ANGLE_MARG_LEGACY = "grid"      # the spelling that reproduces pre-2026-09-02 runs
 ANGLE_MARG_CHOICES = ("grid", "exact", "laplace", "peak-local", "phi-local",
-                      "auto")
+                      "multipeak", "auto")
 
 #: 'peak-local' is deliberately NOT reachable from 'auto' yet.  It agrees with 'exact'
 #: to 1e-13 nats on the tables measured so far and is device-independent (the same answer
@@ -2382,6 +2383,177 @@ def fused_log_likelihood_distphipsimarg_phi_local(
     if return_ok:
         return (out, ok_t, amp_call) if return_amp else (out, ok_t)
     return (out, amp_call) if return_amp else out
+
+
+def _multipeak_sigma_t(rows_A, guard):
+    """Predicted time-peak width in native samples, from the tables alone.
+
+    sigma_t = 1 / (2 pi rho sigma_f).  sigma_f is the RMS frequency of the time
+    primitive's own spectrum, in cycles per sample, so no rate conversion enters;
+    rho comes from the exponent's peak.  Both are properties of the data, which is
+    the point: the reserve's node placement is PREDICTED before any evaluation
+    rather than discovered by evaluating everywhere.
+    """
+    from .time_first_peaklocal import _time_primitive_spectrum
+    flat = jnp.asarray(rows_A[0]).reshape((-1, rows_A.shape[-1]))
+    coeff, freq, _ = _time_primitive_spectrum(flat, int(guard))
+    p = np.abs(np.asarray(coeff)) ** 2
+    f = np.asarray(freq)
+    w = p.sum(axis=0)
+    sigma_f = float(np.sqrt((w * f * f).sum() / max(w.sum(), 1.0e-300)))
+    env = np.abs(np.asarray(rows_A)).sum(axis=(1, 2))
+    rho = float(np.sqrt(2.0 * np.max(env)))
+    return 1.0 / max(2.0 * np.pi * rho * sigma_f, 1.0e-300)
+
+
+def _multipeak_reserve_rule(CA_full, guard, data, sigma_t, n_sigma, pts_per_sigma):
+    """Peak-local time nodes and trapezoid weights, in production time units.
+
+    Node count does not grow with rho: the window is +-n_sigma sigma_t and the
+    spacing is sigma_t / pts_per_sigma, so the two scale together.
+    """
+    from .all_axis_peaklocal import (_time_primitive_spectrum,
+                                     _evaluate_time_spectrum)
+    n_nat = CA_full.shape[-1] - 2 * int(guard)
+    enum = np.arange(0.0, n_nat - 1 + 1.0e-9, 0.25)
+    flat = jnp.asarray(CA_full).reshape((-1, CA_full.shape[-1]))
+    coeff, freq, off = _time_primitive_spectrum(flat, int(guard))
+    env = np.abs(np.asarray(_evaluate_time_spectrum(
+        coeff, freq, jnp.asarray(enum), off))).sum(axis=0)
+    keep = env >= env.max() * np.exp(-0.5 * 40.0 / max(env.max(), 1.0e-300))
+    peaks = [j for j in range(1, len(env) - 1)
+             if env[j] >= env[j - 1] and env[j] >= env[j + 1] and keep[j]]
+    if not peaks:
+        peaks = [int(np.argmax(env))]
+    half = float(n_sigma) * float(sigma_t)
+    step = float(sigma_t) / float(pts_per_sigma)
+    wins = sorted((max(0.0, enum[j] - half), min(float(n_nat - 1), enum[j] + half))
+                  for j in peaks)
+    merged = [list(wins[0])]
+    for w0, w1 in wins[1:]:
+        if w0 <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], w1)
+        else:
+            merged.append([w0, w1])
+    nd, wt = [], []
+    for w0, w1 in merged:
+        k = max(2, int(np.ceil((w1 - w0) / step)) + 1)
+        g = np.linspace(w0, w1, k)
+        h = (w1 - w0) / (k - 1)
+        ww = np.full(k, h)
+        ww[0] = ww[-1] = 0.5 * h
+        nd.append(g)
+        wt.append(ww)
+    nodes = np.concatenate(nd)
+    # BUCKET THE SHAPE so a batch compiles once, not once per row.  Padding is
+    # zero-weight, so the value is identical.
+    weights = np.concatenate(wt)
+    tgt = next((b for b in (256, 512, 1024, 2048) if b >= len(nodes)), len(nodes))
+    pad = tgt - len(nodes)
+    if pad > 0:
+        # compute `pad` BEFORE reassigning nodes: deriving it from len(nodes)
+        # afterwards gives zero and leaves weights shorter than nodes.
+        nodes = np.concatenate([nodes, np.full(pad, nodes[-1])])
+        weights = np.concatenate([weights, np.zeros(pad)])
+    assert len(nodes) == len(weights) == tgt
+    w_t = np.asarray(data.w_t, dtype=float)
+    scale = float(np.sum(w_t)) / ((int(data.npts) - 1) * float(data.deltaT))
+    return jnp.asarray(nodes), jnp.asarray(weights * float(data.deltaT) * scale)
+
+
+def fused_log_likelihood_distphipsimarg_multipeak(
+        data, ra, dec, incl, x_grid, log_w_grid,
+        interp=JAX_INTERP_DEFAULT, amp_sizing=None, guard=16,
+        tier0=(2, 3, 24), tier1=(3, 5, 48), log_integral_tol=1.0e-3,
+        cell_sigma=5.0, quadrature_order=7, refine_iterations=18,
+        reserve_sigma=12.0, reserve_pts_per_sigma=8.0, return_record=False):
+    """Distance-, phi_ref-, psi- AND time-marginalized lnL: MULTIPEAK scheme.
+
+    The four-axis controller of
+    :func:`~RIFT.likelihood.jax_ile.multipeak_planner.multipeak_local_marginalize`,
+    reachable from ``--angle-marg-scheme multipeak``.  Unlike every other entry
+    in this family it OWNS THE TIME INTEGRAL, so there is no ``lnL(t)`` and no
+    ``time_quadrature``: the caller gets one value per sample.  Callers that
+    need ``lnL(t)`` must use another scheme.
+
+    The default operating point is the one measured on the ladder-2 injection at
+    rho 40.77, 163.08 and 652.31 (64 rows per rung, inclination banded +-0.20 rad
+    about the injection): 64/64 accepted at every rung, 4.74-5.17 s per row and
+    ~218 MiB peak device memory, error against a peak-local reference of 2.2e-05
+    nats median at rho 40.77 and 5.6e-04 at 163.08.  See
+    analyses/va_sequence_20260902/RESULTS_20260909_multipeak_ladder.md in the
+    RIFT_roboto_paper record store.  ``guard`` defaults to the value that
+    measurement used; the driver's production default is larger and the caller
+    passes it explicitly.
+
+    The reserve is a PEAK-LOCAL time rule, not a refined whole window: nodes are
+    placed only in +-``reserve_sigma`` sigma_t windows about the peaks of the
+    coefficient envelope, at spacing sigma_t/``reserve_pts_per_sigma``.  Window
+    and spacing both scale as sigma_t, so the node count does not grow with rho.
+    A refined whole-window reserve was measured at 4905 nodes for a peak 0.06
+    native samples wide at rho 163, and its own half-refined warrant failed at
+    rho 40.77; this rule reproduced it to 0.0 on every row with 193 nodes.
+    """
+    from . import multipeak_planner as _mp
+    from . import all_axis_peaklocal as _aap
+    from . import direct_marginalization_policy as _pol
+    from .core import _time_marginalize
+
+    _require_amp_sizing(amp_sizing)
+    guard = int(guard)
+    if guard < 2:
+        raise ValueError("multipeak needs guard >= 2 for the time primitive")
+    x_grid = jnp.asarray(x_grid, dtype=jnp.float64)
+    log_w_grid = jnp.asarray(log_w_grid, dtype=jnp.float64)
+    C_A, C_B, meta = angle_coefficient_tables(data, ra, dec, incl, interp,
+                                              guard=guard)
+    _runtime_amp_failsafe(C_A, C_B, x_grid, amp_sizing, "multipeak")
+    log_measure, _ = _pol.policy_log_normalization(
+        data, np.asarray(x_grid), np.asarray(log_w_grid))
+    x_min = float(np.min(np.asarray(x_grid)))
+    x_max = float(np.max(np.asarray(x_grid)))
+    m_max = int(meta["m_max"])
+
+    rows_A = np.moveaxis(np.asarray(C_A), 2, 0)          # (S,KP,KS,ntime+2g)
+    rows_B = np.moveaxis(np.asarray(C_B), 2, 0)
+    sigma_t = _multipeak_sigma_t(rows_A, guard)
+
+    out, records = [], []
+    for i in range(rows_A.shape[0]):
+        CA_full = rows_A[i]
+        CA_i = CA_full[..., guard:-guard]
+        CB_i = rows_B[i][..., 0][..., None] * np.ones(CA_i.shape[-1])
+        nodes, weights = _multipeak_reserve_rule(
+            CA_full, guard, data, sigma_t,
+            float(reserve_sigma), float(reserve_pts_per_sigma))
+
+        CB_flat = rows_B[i][..., 0]                  # (KP,KS), time-independent
+
+        def _reserve(CA_full=CA_full, CB_flat=CB_flat, nodes=nodes,
+                     weights=weights):
+            flat = jnp.asarray(CA_full).reshape((-1, CA_full.shape[-1]))
+            coeff, freq, off = _aap._time_primitive_spectrum(flat, guard)
+            tgt = _aap._evaluate_time_spectrum(
+                coeff, freq, nodes, off).reshape(
+                    CA_full.shape[:-1] + (nodes.size,))
+            lnLt = coefficient_table_distphipsimarg_laplace(
+                tgt, jnp.asarray(CB_flat), x_grid, log_w_grid,
+                amp_sizing=amp_sizing, m_max=m_max)
+            return float(np.asarray(_time_marginalize(lnLt, weights)[0]))
+
+        res = _mp.multipeak_local_marginalize(
+            CA_i, CB_i, x_min, x_max, _reserve,
+            log_integral_tol=float(log_integral_tol),
+            tier0=tuple(int(v) for v in tier0),
+            tier1=tuple(int(v) for v in tier1),
+            refine_iterations=int(refine_iterations),
+            cell_sigma=float(cell_sigma),
+            quadrature_order=int(quadrature_order),
+            log_measure=float(log_measure), label="multipeak_row%d" % i)
+        out.append(float(res.value))
+        records.append(res)
+    values = jnp.asarray(np.asarray(out, dtype=float))
+    return (values, records) if return_record else values
 
 
 def choose_angle_marg_scheme(amplitude, gh_enabled=None,

@@ -533,6 +533,7 @@ FILES=(
   "${JAXDIR}/test_angle_marg_gh_selection.py"
   "${JAXDIR}/test_joint_anglemarg_peaklocal.py"
   "${JAXDIR}/test_angle_marg_peaklocal_wiring.py"
+  "${JAXDIR}/test_angle_marg_multipeak_wiring.py"
   "${JAXDIR}/test_limit_distance_jax.py"
   "${JAXDIR}/test_direct_marginalization_planner.py"
   "${JAXDIR}/test_time_first_peaklocal.py"
@@ -1038,6 +1039,12 @@ fi
 # ~/.cache/jaxci_venv, DESELECT loop applied, read off its own collection line:
 # "754/760 tests collected (6 deselected)", gate-style count 754 from 46 files
 # (2026-09-09).  This assignment is the one that binds.
+#
+# SIXTEENTH, --angle-marg-scheme multipeak (the four-axis controller wired into the
+# driver).  Adds ONE file, test_angle_marg_multipeak_wiring.py, 7 tests, none
+# parametrized, no removals, and touches no existing test count.  754 + 7 = 761,
+# measured by running this script.
+EXPECTED_TESTS=761
 # 2026-09-09 (laplace reserve kernel keyword fix): +1 test in test_policy_peaklocal_reserve.py
 # (the resolved kernel through anglemarg's REAL Laplace function).  Read off this script's
 # own collection line on ldas-pcdev12 (~/.cache/jaxci_venv, CPU): "collected 755 tests from 45 files".
@@ -1047,6 +1054,12 @@ EXPECTED_TESTS=755
 # to an existing collected test.  Real waveform precompute, JIT/grad, the one-call
 # wrapper, and scaling profiles remain explicit manual checks in the same files:
 # they are too expensive for the already runner-limited per-PR JAX gate.
+
+# 2026-09-09, #313 rebased over #312 (laplace keyword fix, 755) and the base's
+# test_limit_distance_jax tightening: neither 761 + 1 nor 755 + 7 is the number.
+# Re-measured by running THIS script on the merged tree (ldas-grid, ~/.cache/jaxci_venv,
+# jax 0.9.2, CPU, DESELECT applied): "collected 762 tests from 46 files".  Binding.
+EXPECTED_TESTS=762
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
