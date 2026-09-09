@@ -1024,22 +1024,27 @@ def build_parser():
                  default=DirectMargPolicyConfig().time_guard,
                  help="Primitive-only support samples added at each end of the "
                       "time window for the policy's guarded reconstruction "
-                      "(default 16; must be >= 2).  Both the local integral and "
+                      f"(default {DirectMargPolicyConfig().time_guard}; must "
+                      "be >= 2).  Both the local integral and "
                       "the reserve are re-evaluated at half this guard and must "
                       "agree within the error budget; a too-small guard declines "
                       "to the reserve rather than biasing.")
     g.add_option("--direct-marginalization-reserve-time-refine", type=int,
-                 default=4,
+                 default=DirectMargPolicyConfig().reserve_time_refine,
                  help="Refinement factor of the reserve's band-limited time rule "
-                      "over the native cadence (default 4; even, >= 2).  The "
+                      "over the native cadence (default "
+                      f"{DirectMargPolicyConfig().reserve_time_refine}; even, "
+                      ">= 2).  The "
                       "half-refined rule is the check rule the reserve must "
                       "agree with, so the warrant is a convergence statement "
                       "about the refined rules; the native Simpson rule's own "
                       "error is what the refinement removes.")
     g.add_option("--direct-marginalization-reserve-time-refine-max", type=int,
-                 default=32,
+                 default=DirectMargPolicyConfig().reserve_time_refine_max,
                  help="Ceiling of the reserve rule's escalation on a failed "
-                      "warrant (default 32; even, >= the refine factor).  It "
+                      "warrant (default "
+                      f"{DirectMargPolicyConfig().reserve_time_refine_max}; "
+                      "even, >= the refine factor).  It "
                       "also bounds REVERSE-MODE GRADIENT MEMORY: the dense "
                       "reserve's backward pass costs ~2.6 GiB per unit of "
                       "refinement per evaluated row on a 614-sample window "
@@ -1132,23 +1137,26 @@ def build_parser():
     # observed declining.
     g.add_option("--direct-marginalization-max-modes", type=int,
                  default=DirectMargPolicyConfig().max_modes,
-                 help="Modes retained in the policy's BASE plan (default 4).")
+                 help="Modes retained in the policy's BASE plan (default "
+                      f"{DirectMargPolicyConfig().max_modes}).")
     g.add_option("--direct-marginalization-enriched-max-modes", type=int,
                  default=DirectMargPolicyConfig().enriched_max_modes,
                  help="Modes retained in the policy's ENRICHED plan (default "
-                      "8).  Acceptance compares the two plans, so an enriched "
+                      f"{DirectMargPolicyConfig().enriched_max_modes}).  "
+                      "Acceptance compares the two plans, so an enriched "
                       "plan that cannot resolve the extra structure declines.")
     g.add_option("--direct-marginalization-base-oversample", type=int,
                  default=DirectMargPolicyConfig().base_oversample,
                  help="Angular oversampling of the base start portfolio "
-                      "(default 1).")
+                      f"(default {DirectMargPolicyConfig().base_oversample}).")
     g.add_option("--direct-marginalization-enriched-oversample", type=int,
                  default=DirectMargPolicyConfig().enriched_oversample,
                  help="Angular oversampling of the enriched start portfolio "
-                      "(default 2).")
+                      f"(default {DirectMargPolicyConfig().enriched_oversample}).")
     g.add_option("--direct-marginalization-max-starts", type=int,
                  default=DirectMargPolicyConfig().base_max_starts,
-                 help="Cap on ranked optimizer starts per plan (default 128).  "
+                 help="Cap on ranked optimizer starts per plan (default "
+                      f"{DirectMargPolicyConfig().base_max_starts}).  "
                       "TWO THINGS THIS IS NOT.  (1) It is not the whole of "
                       "decline_capacity.  That ledger key reports the "
                       "conjunction at all_axis_peaklocal.py:862 -- "

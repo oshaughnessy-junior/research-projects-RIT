@@ -260,3 +260,45 @@ def test_each_policy_flag_default_matches_its_PolicyConfig_field():
     assert not mismatched, (
         "driver default != PolicyConfig default for %r "
         "(driver, library)" % (mismatched,))
+
+
+def test_every_policy_flag_help_states_its_real_default():
+    """``--help`` must not quote a number the flag no longer uses.
+
+    The value guard above was passing while four help strings still read
+    "(default 4)", "(default 8)", "(default 1)", "(default 2)" -- the pre-#280
+    portfolio -- and --direct-marginalization-time-guard read "(default 16)"
+    against a default of 128.  The values had been repointed at PolicyConfig
+    and the prose had not, so the two defaults agreed with each other and
+    disagreed with what --help told the operator.  A knob's documented default
+    is what someone reads before deciding whether to pass it, so a stale one
+    misconfigures a run exactly as a stale value does.
+
+    Reads the parser's rendered help, not the source, so an interpolation that
+    silently fails to interpolate is caught too.  A stated default may carry a
+    trailing constraint ("16; must be >= 2") -- only the leading token is the
+    number, and the rest of the parenthetical may explain the value
+    ("1: row at a time", "0 = off").
+    """
+    import re
+
+    mod = _load_driver()
+    parser = mod.build_parser()
+
+    stale = {}
+    for opt in parser._get_all_options():
+        dest = opt.dest
+        if not dest or not str(dest).startswith("direct_marginalization"):
+            continue
+        for match in re.finditer(r"\(default ([^\s);,:=]+)", opt.help or ""):
+            stated = match.group(1).strip().strip("'\"")
+            actual = parser.defaults.get(dest)
+            try:
+                ok = float(stated) == float(actual)
+            except (TypeError, ValueError):
+                ok = stated == str(actual)
+            if not ok:
+                stale[opt.get_opt_string()] = (stated, actual)
+    assert not stale, (
+        "help text states a default the flag does not use %r "
+        "(stated, actual)" % (stale,))
