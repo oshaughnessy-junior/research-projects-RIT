@@ -1054,17 +1054,23 @@ def build_parser():
                       "returning a slightly worse number.  Lower it only with "
                       "the nan count in the ledger in front of you.")
     g.add_option("--direct-marginalization-error-budget-nats", type=float,
-                 default=1.0e-3,
-                 help="Shared empirical value-error allowance, in nats, for the "
-                      "policy's local acceptance and reserve warrant (default "
-                      "1e-3).")
+                 default=1.0e-2,
+                 help="Value-error allowance, in nats, for the RESERVE's "
+                      "time-resolution warrant (default 1e-2; 1e-3 shipped).  "
+                      "It does NOT reach the local accept/decline decision, "
+                      "despite what this help used to say: that decision is the "
+                      "four-term boolean at all_axis_peaklocal.py:862 and carries "
+                      "no tolerance, so acceptance measured identical (48/64 at "
+                      "rho 652) across 1e-3, 1e-2 and 1e-1.  What it buys is "
+                      "reserve cost: at rho 41 on identical rows, 1e-3 -> 1e-2 "
+                      "took escalations from 2 to 0 and the run from 321.1 s to "
+                      "146.9 s, a 2.19x speedup, moving lnL by 4.8e-12 nats.  "
+                      "Raised to 1e-2 by RO on 2026-09-08 (evening).  Measured at "
+                      "rho 41; the speedup is not yet confirmed at high SNR.")
     g.add_option("--direct-marginalization-max-time-nodes", type=int,
-                 default=64,
+                 default=256,
                  help="Time-node capacity of the policy's LOCAL plan (default "
-                      "64, which is what shipped: it is the value "
-                      "rank_joint_starts_from_uvq_device used while the "
-                      "policy passed nothing, so no flag could reach it.  "
-                      "Exposing it is the fix; moving it is a separate call).  A row whose live time-node "
+                      "256; 64 shipped, and was reachable from no flag).  A row whose live time-node "
                       "count exceeds this declines to the exact reserve, which "
                       "costs ~4.7 h at rho 652 against 2.3 s for an accepted "
                       "row, so the capacity is sized to avoid the fallback "
@@ -1136,8 +1142,8 @@ def build_parser():
                  default=2,
                  help="Angular oversampling of the enriched start portfolio "
                       "(default 2).")
-    g.add_option("--direct-marginalization-max-starts", type=int, default=32,
-                 help="Cap on ranked optimizer starts per plan (default 32).  "
+    g.add_option("--direct-marginalization-max-starts", type=int, default=128,
+                 help="Cap on ranked optimizer starts per plan (default 128).  "
                       "TWO THINGS THIS IS NOT.  (1) It is not the whole of "
                       "decline_capacity.  That ledger key reports the "
                       "conjunction at all_axis_peaklocal.py:862 -- "
@@ -1158,12 +1164,12 @@ def build_parser():
                       "163, 32 -> 128 shifted already-accepted values by 4.8e-4 "
                       "and 3.5e-3 nats, at and above the 1e-3 error budget.  "
                       "An A/B on this may not treat its value difference as "
-                      "noise, and that is why the default stays 32: moving a "
-                      "RIFT default is not this tool's call.  Raising it is "
-                      "worth it when declines cost more than the shift -- a "
+                      "noise.  32 -> 128 was approved by RO on 2026-09-08 "
+                      "(evening) with that shift on the record, because a "
                       "declined row runs the exact reserve at hours per row at "
-                      "rho 652 -- but raise it WITH "
-                      "--direct-marginalization-max-time-nodes.")
+                      "rho 652 against ~2.3 s for an accepted one.  It is "
+                      "sized WITH --direct-marginalization-max-time-nodes; "
+                      "either alone plateaus near 16%.")
     g.add_option("--direct-marginalization-convergence-tol-nats", type=float,
                  default=1.0e-3,
                  help="Agreement required between the base and enriched plans, "

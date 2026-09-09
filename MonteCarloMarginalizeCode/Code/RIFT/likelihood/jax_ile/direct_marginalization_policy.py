@@ -118,7 +118,7 @@ class PolicyConfig(NamedTuple):
     # peak scratch is set by the reserve's amplitude-sized grids, which are
     # compiled into the graph whether or not any row reaches them.  So there is
     # no memory argument for a small capacity here, only a compile-time one.
-    base_max_starts: int = 32
+    base_max_starts: int = 128
     # Time-node capacity of the local plan, SET IN ADVANCE rather than
     # discovered and then declined.  rank_joint_starts_from_uvq_device
     # defaults it to 64 and the policy never passed it, so the value that
@@ -129,17 +129,22 @@ class PolicyConfig(NamedTuple):
     # 44% of rows, 128 holds 73%, 256 holds 91%, 1024 holds 100%.  The median
     # row misses the old cap by eight nodes.
     #
-    # The default is 64 because that is what shipped: it reproduces the value
-    # rank_joint_starts_from_uvq_device used when the policy passed nothing.
-    # Exposing the knob is the fix here; MOVING it is a separate decision and
-    # is not an agent's to make (RIFT defaults are not changed without an
-    # explicit call).  What a raise buys, measured at rho 652 as
-    # (max_time_nodes, base_max_starts): (64, 32) 28% accepted, (256, 32) 31%,
-    # (256, 128) 75%, (512, 256) 77%.  It is not free: a declined row runs the
-    # exact reserve at hours per row, but base_max_starts 32 -> 128 also moves
-    # already-accepted values by up to 3.5e-3 nats at rho 163.  Raise both
-    # together or neither; raising starts alone plateaus near 16%.
-    max_time_nodes: int = 64
+    # 256 with base_max_starts 128, approved by RO on 2026-09-08 (evening).
+    # What shipped was 64/32 -- the value rank_joint_starts_from_uvq_device
+    # used while the policy passed nothing, reachable from no field or flag.
+    # Measured acceptance at rho 652 as (max_time_nodes, base_max_starts):
+    # (64, 32) 28%, (256, 32) 31%, (256, 128) 75%, (512, 256) 77%.  They move
+    # together: of 64 rows, 36 declines fail on time nodes and 37 on starts,
+    # only 7 on starts alone, so raising either alone plateaus near 16%.
+    #
+    # The price, and it is not zero: base_max_starts 32 -> 128 shifts
+    # already-accepted values by up to 3.5e-3 nats at rho 163, so an A/B across
+    # this change may not treat its difference as noise.  Accepted because a
+    # declined row runs the exact reserve at hours per row at rho 652 while an
+    # accepted one costs ~2.3 s.  Workspace is unaffected -- 0.546 GiB, flat
+    # from (64, 32) to (1024, 256) on a 24 GiB card -- so the cost of the
+    # resize is compile time, 13 s to ~70 s, not memory.
+    max_time_nodes: int = 256
     # Angular oversample 2/4 and 16 modes are the configuration that accepted
     # on production tables at rho 163 and 326 (same record as above; 8 to 12
     # candidates against 32 starts).  PR #268's test values 1/2 and 4/8
@@ -162,7 +167,7 @@ class PolicyConfig(NamedTuple):
     enriched_check_order: int = 25
     convergence_tol_nats: float = 1.0e-3
     time_guard_tol_nats: float = 1.0e-3
-    total_value_error_budget_nats: float = 1.0e-3
+    total_value_error_budget_nats: float = 1.0e-2
     time_outside_tol_nats: float = -23.0
     # 64, not the kernel's 8: the reserve's reverse pass keeps one carry per
     # dense-angle scan step, so gradient memory falls ~7x from 8 to 64

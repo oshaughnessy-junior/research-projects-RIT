@@ -731,20 +731,23 @@ def test_local_plan_capacities_reach_the_planner(monkeypatch):
     assert seen[0].get("max_starts") == 77, seen[0]
 
 
-def test_capacity_defaults_are_the_shipped_operating_point():
-    """The defaults reproduce what shipped, so exposing these knobs moves no
-    value on its own.
+def test_capacity_and_budget_defaults_are_the_approved_operating_point():
+    """Pins the operating point RO approved on 2026-09-08 (evening).
 
-    64 is rank_joint_starts_from_uvq_device's own default, which the policy
-    used to leave unset; 32 is the base_max_starts that was already there.
-    Raising them is measured to be worthwhile -- acceptance at rho 652 goes
-    (64, 32) 28%, (256, 32) 31%, (256, 128) 75%, (512, 256) 77% -- and also
-    measured NOT to be free: base_max_starts 32 -> 128 moves already-accepted
-    values by up to 3.5e-3 nats at rho 163.  Moving a RIFT default is an
-    explicit call, not a side effect of exposing the knob, so this test pins
-    the shipped pair and will fail if a later change drifts it silently."""
+    Shipped was (64, 32) with a 1e-3 budget.  The capacities moved because
+    acceptance at rho 652 goes (64, 32) 28%, (256, 32) 31%, (256, 128) 75%;
+    they are pinned as a PAIR because of 64 rows, 36 declines fail on time
+    nodes and 37 on starts and only 7 on starts alone, so a later change that
+    moves one alone is a mistake this test should catch.  The budget moved
+    because 1e-3 -> 1e-2 took reserve escalations from 2 to 0 at rho 41, a
+    2.19x speedup, while moving lnL by 4.8e-12 nats.
+
+    None of these is value-neutral, which is why they are pinned rather than
+    left to drift: base_max_starts 32 -> 128 alone shifts already-accepted
+    values by up to 3.5e-3 nats at rho 163."""
     cfg = DP.PolicyConfig()
-    assert (cfg.max_time_nodes, cfg.base_max_starts) == (64, 32)
+    assert (cfg.max_time_nodes, cfg.base_max_starts) == (256, 128)
+    assert cfg.total_value_error_budget_nats == 1.0e-2
 
 
 @pytest.mark.parametrize("kw", [{"max_time_nodes": 1}, {"max_time_nodes": 0},
