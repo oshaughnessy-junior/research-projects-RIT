@@ -37,13 +37,10 @@ from .core import (build_likelihood_data, fused_log_likelihood,
                    phi_ref_conditional_lnL, DIST_MPC_REF, JAX_INTERP_DEFAULT,
                    TIME_QUAD_DEFAULT, _TIME_QUAD_CHOICES,
                    bandlimited_time_guard)
-# Generic probe direction for the build-time identity check.  The A0==0/B1==0
-# identity is a property of the spin-2 detector response, so it does not depend
-# on where we probe; a single generic (ra, dec, incl) away from any pole or
-# face-on/edge-on special case is enough, and keeps the check O(1).
-_ANGLE_MARG_PROBE_RA = [1.0]
-_ANGLE_MARG_PROBE_DEC = [0.3]
-_ANGLE_MARG_PROBE_INCL = [1.0]
+# The probe direction for the build-time identity check moved to
+# anglemarg.gh_laplace_supported_for_data: the policy's reserve roster asks the
+# same question, and a second probe direction here would be a second definition
+# of it.
 from . import core as _core
 from .anglemarg import (ANGLE_MARG_DEFAULT, ANGLE_MARG_LEGACY,  # noqa: F401
                         ANGLE_MARG_CHOICES)
@@ -968,15 +965,8 @@ class JAXDistPhiPsiMargLikelihood:
             # coefficient tables are tracers.
             gh_ok, gh_info = None, {}
             if _core._DISTMARG_GH_N > 0 and angle_marg in ("auto", "laplace"):
-                gh_ok, gh_info = _anglemarg.gh_laplace_supported(
-                    *_anglemarg.angle_coefficient_tables(
-                        data,
-                        jnp.asarray(_ANGLE_MARG_PROBE_RA),
-                        jnp.asarray(_ANGLE_MARG_PROBE_DEC),
-                        jnp.asarray(_ANGLE_MARG_PROBE_INCL),
-                        interp)[:2],
-                    _anglemarg._data_m_max(data),
-                    feature=getattr(data, "feature", None))
+                gh_ok, gh_info = _anglemarg.gh_laplace_supported_for_data(
+                    data, interp)
             if angle_marg == "auto":
                 scheme, sel_info = _anglemarg.choose_angle_marg_scheme(
                     amp_data, gh_laplace_ok=gh_ok)
@@ -1079,6 +1069,12 @@ class JAXDistPhiPsiMargLikelihood:
             self.policy_config = cfg
             self.policy_info = dict(
                 norm_info, policy=direct_marginalization_policy,
+                # The reserve's ANGLE scheme.  Not PolicyConfig.reserve_scheme,
+                # which names WHICH reserve runs -- two different quantities
+                # that shared this key while 'exact' was the only reserve.  The
+                # driver overwrites "reserve_scheme" with the resolved pair and
+                # keeps this one under its own name.
+                reserve_angle_scheme=scheme,
                 reserve_scheme=scheme,
                 time_guard=int(cfg.time_guard),
                 reserve_time_refine=int(cfg.reserve_time_refine),

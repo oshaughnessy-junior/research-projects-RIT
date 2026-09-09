@@ -305,3 +305,122 @@ first questions for the production-table ladder.
   sampling. It describes the exported cloud, not every evaluation the
   sampler made. Unwarranted rows are not a labelling matter: they are `nan`
   and stop the run.
+
+## Choosing the (local, reserve) pair from analysis
+
+RO, 2026-09-08: rely on analysis and the known physics to pick the pair, rather
+than try-then-decline-then-refine. `predict_reserve_pair` computes, from the
+precomputed inputs and before any row is evaluated:
+
+| quantity | source | decides |
+|---|---|---|
+| network SNR | the driver's own response-derived guess | amplitude |
+| `sigma_f` | second moment of the stored Q's spectrum | peak width |
+| `A = rho^2/2` vs `ANGLE_MARG_CROSSOVER_AMPLITUDE` (450) | measured crossover in `anglemarg` | exact or laplace angles |
+| `sigma_t = 1/(2 pi rho sigma_f)` vs the local cover budget | `max_time_nodes` | can the LOCAL branch hold the peak |
+| the same width vs the reserve's node budget | `reserve_time_refine_max` | can the whole-window reserve resolve it |
+
+The verdict and its reasons are printed before sampling. When no implemented
+reserve is adequate the run REFUSES; it does not fall back, because a fallback
+to whole-window refinement carries the rows in a method nobody chose.
+
+### Which bandwidth, and why it is physics not convention
+
+The reserve marginalizes phi exactly, so the field in time is `|zeta|` with
+`zeta = alpha kappa + beta kappa*`. Face-on the carrier term vanishes and the
+peak is the ENVELOPE; linearly polarized the envelope is modulated at the
+carrier and each sub-peak is far narrower. Measured on a carrier fixture
+(f_c = 200 Hz):
+
+| polarization | measured peak | matches |
+|---|---|---|
+| circular | 11.3 Hz equivalent | central moment, 5.6 Hz |
+| linear | 309.6 Hz equivalent | raw moment, 200.1 Hz |
+
+So RAW is the narrowest peak the primitive can make and CENTRAL the widest. A
+rule that must not under-resolve sizes on the raw one. Two errors were made
+here and are recorded so they are not repeated: sizing on the central moment
+(the Cramer-Rao bound is about an ESTIMATOR's variance, not how sharply the
+INTEGRAND varies), and a claimed sqrt(2) correction that came from reading the
+curvature of `|zeta|^2` without its `rho^2/2` prefactor. Against the actual
+log-integrand, raw is exact: measured/predicted 1.0008, 1.0000, 0.9999, 0.9999
+at rho 12.65, 40.77, 163.08, 652.31.
+
+### The node budget is PROVISIONAL and known to be the wrong law
+
+The budget is points-per-sigma, i.e. an ALGEBRAIC convergence model. Measured at
+rho 40.77 on 64 rows:
+
+| refine | nodes | warrant error |
+|---|---|---|
+| 4 | 2453 | 1.8e-03 .. 1.14e-02 |
+| 8 | 4905 | 5e-11 .. 7.8e-09 |
+
+Read against a tolerance, which has since moved: refine 4 fails the 1e-3 that
+was shipped when this was measured, and straddles the 1e-2 RIFT PR #301 adopted
+(only the top of the range exceeds it). #301 measured the other side of the same
+quantity at the same rung — escalations 2 -> 0 and 321 s -> 147 s going from
+1e-3 to 1e-2, lnL moving 4.8e-12 — which is what this range predicts. Two
+measurements of one effect, taken independently; neither confirms the other's
+method, and together they say the escalation at this rung was being driven by
+the tolerance rather than by the rule.
+
+Doubling improved the error by ~1e6 where an algebraic rule gives 4. That is the
+trapezoid rule on a BAND-LIMITED reconstruction: spectrally accurate once the
+band is resolved, `exp(-c R)` not `R^-2`. The 4905 nodes that succeeded are 67%
+of what the budget demands at that rung and land five orders INSIDE tolerance.
+
+Consequences, and they are limits on what may be claimed:
+
+* A refusal produced by this budget means UNPROVEN, not shown inadequate.
+* No statement about WHERE the whole-window reserve stops being adequate
+  follows from it. Such a claim was made and withdrawn twice, on two different
+  mechanisms; it is not restated here.
+* The replacement is a band-resolution criterion fitted to a MEASURED
+  convergence law. The deciding test is rung 163.08 at refine 4, 8 and 16 --
+  three points, because two fit either law.
+
+The warrant is what certifies a row. This budget only predicts which method to
+reach for, and it must not be hardened into a threshold anyone tunes against.
+
+## The roster: which reserves this run may choose from
+
+`predict_reserve_pair` takes `available=`. That argument is not a preference
+list. It says which schemes the **data and the distance quadrature** can support
+at all, and it is computed before the analysis runs.
+
+| scheme | on the roster when | why |
+|---|---|---|
+| `exact` | always | what the composite dispatches (`empirical_enrichment_with_exact_reserve`) |
+| `laplace` | per-sample adaptive distance quadrature is ON **and** `gh_laplace_supported_for_data` holds | the placement is derived from A0 == 0 / B1 == 0 |
+| `peaklocal` | never, today | RIFT PR #304 |
+
+The laplace conditions are separate and both necessary. On a **static** distance
+grid the laplace reserve is measured at 43.2 nats at rho 163 — that is the
+grid's cost, not the scheme's, and it is why the reserve may not use it there.
+The loguniform static grid is not admitted either: it is sized from the angle
+amplitude and may well be adequate, but nothing has measured it.
+
+Two rules follow, both of which the code got wrong first:
+
+- The roster is checked on the **angular** branch, not only where the selector
+  chooses `peaklocal`. It was checked only on the branch that could never have
+  chosen `peaklocal` anyway, so a run with laplace off the roster still selected
+  laplace as soon as A cleared the crossover.
+- An explicit `requested=` overrides the **analysis**, not the roster. Forcing a
+  scheme whose premise is absent is not an override.
+
+## Declared, executable, and the gap between them
+
+`RESERVE_SCHEME_CHOICES` is what may be named. `RESERVE_SCHEME_EXECUTABLE` is
+what the composite dispatches, which is `("exact",)`. `validate_policy_config`
+refuses the difference.
+
+Without that refusal, `PolicyConfig(reserve_scheme="laplace")` would be
+accepted, printed in the policy line, and computed as exact — a field the
+composite never reads is worse than a missing one, because it answers.
+
+The laplace table-level kernel exists (`coefficient_table_distphipsimarg_laplace`,
+extracted from the fused laplace path so the two cannot drift). What is missing
+is the dispatch: `empirical_enrichment_with_exact_reserve` names its kernel.
+Wiring it is a change to `all_axis_peaklocal.py`, which is #304's file.

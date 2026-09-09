@@ -61,10 +61,33 @@ __all__ = [
     "policy_acceptance_diagnostics",
     "fused_log_likelihood_four_axis_policy",
     "summarize_policy_ledger",
+    "RESERVE_SCHEME_CHOICES",
+    "RESERVE_SCHEME_DEFAULT",
+    "RESERVE_SCHEME_EXECUTABLE",
+    "q_effective_bandwidth_hz",
+    "predict_reserve_pair",
+    "format_reserve_pair",
 ]
 
 POLICY_CHOICES = ("off", "auto")
 POLICY_DEFAULT = "off"
+
+RESERVE_SCHEME_CHOICES = ("auto", "exact", "laplace", "peaklocal")
+RESERVE_SCHEME_DEFAULT = "exact"
+
+# WHICH OF THOSE THE COMPOSITE CAN ACTUALLY EXECUTE TODAY.  Kept separate from
+# the choices tuple, and checked in validate_policy_config, because a config
+# field the composite never reads is worse than a missing one: it accepts the
+# value, reports it, and runs something else.  The reserve is dispatched through
+# empirical_enrichment_with_exact_reserve, which names its kernel -- so 'exact'
+# is the whole of what is wired.
+#
+# 'laplace' has its table-level kernel (coefficient_table_distphipsimarg_laplace,
+# extracted from the fused laplace path in this same PR) but no dispatch: the
+# selector may CHOOSE it, and a run that needs it is refused with that reason
+# rather than carried by exact.  'peaklocal' belongs to RIFT PR #304.
+RESERVE_SCHEME_EXECUTABLE = ("exact",)
+
 
 # The controller's own decline reasons, in the order they gate acceptance.
 # Every key is a boolean per row in the returned ledger.
@@ -201,6 +224,16 @@ class PolicyConfig(NamedTuple):
     # the workspace law, 0.046 + 0.385 B GiB, and the value equivalence.
     # See DESIGN_direct_marginalization_policy.md.
     reserve_batch_rows: int = 1
+    # WHICH reserve the composite falls back to.  Default 'exact' is what
+    # shipped, so no existing command line changes.  'laplace' is the same
+    # accuracy crossover the angle selector already validates
+    # (ANGLE_MARG_CROSSOVER_AMPLITUDE): above it laplace is the MORE accurate
+    # scheme and costs ~sqrt(A) rather than ~A.  'auto' chooses from the
+    # precomputed inputs via predict_reserve_pair and REFUSES when the analysis
+    # says the signal needs a method that is not implemented, rather than
+    # falling back to whole-window refinement.  A string so a third value plugs
+    # in without touching the composite.
+    reserve_scheme: str = RESERVE_SCHEME_DEFAULT
     norm_invariance_rtol: float = 1.0e-10
 
 
@@ -258,11 +291,336 @@ def validate_policy_config(config):
     if not float(config.local_radius) > 0.0:
         raise ValueError("local_radius must be positive")
     validate_batch_rows(config.reserve_batch_rows)
+    scheme = config.reserve_scheme
+    if scheme not in RESERVE_SCHEME_CHOICES:
+        raise ValueError("PolicyConfig.reserve_scheme must be one of %r, got %r"
+                         % (RESERVE_SCHEME_CHOICES, scheme))
+    # 'auto' is resolved by predict_reserve_pair against the precomputed inputs,
+    # before this config ever reaches the composite; it is not a value the
+    # composite executes, so it is admitted here and refused there if the
+    # analysis lands on something unimplemented.
+    if scheme != "auto" and scheme not in RESERVE_SCHEME_EXECUTABLE:
+        raise ValueError(
+            "PolicyConfig.reserve_scheme=%r is a declared choice but is NOT "
+            "WIRED into the composite: the reserve is dispatched through "
+            "empirical_enrichment_with_exact_reserve and only %r is executable "
+            "today.  Refused rather than run as 'exact', which is what a "
+            "silently ignored field would do -- the run would report the "
+            "scheme you asked for and compute the other one."
+            % (scheme, RESERVE_SCHEME_EXECUTABLE))
     return config
 
 
+# ---------------------------------------------------------------------------
+# Analysis-driven reserve selection
+# ---------------------------------------------------------------------------
+# RO, 2026-09-08: "we are learning a hard lesson about refinement and the
+# 'reserve' not protecting us; we need to rely on ANALYSIS and the known physics
+# ... have a hierarchy of methods and pick the expected bounding pairs as needed
+# that apply to our signal."
+#
+# The failure mode being named is try-then-decline-then-refine: run the local
+# branch, discover it declined, escalate a whole-window refinement, and discover
+# at the END that most rows were carried by a method nobody chose.  Everything
+# below is computable from the PRECOMPUTED inputs before any row is evaluated,
+# so the pair is chosen and PRINTED up front and the run can be read in its
+# first line instead of its last.
+
+# PROVISIONAL, AND KNOWN TO BE THE WRONG MODEL FOR THE RESERVE.
+#
+# The points-per-sigma budget below treats the reserve's trapezoid rule as
+# ALGEBRAICALLY convergent, so the node count it demands scales as
+# window / sigma_t.  A direct test at rho 40.77 on 64 rows says otherwise:
+#
+#     refine=4  2453 nodes   warrant 1.8e-03 .. 1.14e-02
+#     refine=8  4905 nodes   warrant 5e-11   .. 7.8e-09
+#
+# The tolerance those are read against has MOVED (#301: 1e-3 -> 1e-2), so the
+# numbers are recorded without a verdict: refine=4 fails 1e-3 and straddles
+# 1e-2.  See DESIGN_direct_marginalization_policy.md.
+#
+# Doubling the rule improved the quadrature error by ~1e6.  An algebraic rule
+# would give 4.  That is the signature of the trapezoid rule on a BAND-LIMITED
+# reconstruction, which is spectrally accurate once the band is resolved:
+# error ~ exp(-c R), not R^-2.  The measured 4905 nodes is 67% of what this
+# budget demands at that rung and lands five orders INSIDE tolerance.
+#
+# So the correct criterion is band resolution -- node spacing against the
+# integrand's highest frequency -- not points per sigma, and the replacement
+# must be FITTED to a measured convergence law rather than assumed.  Until a
+# second rung is measured (163.08 at refine 4 and 8 is the deciding test), the
+# time verdict below is provisional and MUST NOT be hardened into a threshold
+# anyone tunes against.  It is retained because refusing is the conservative
+# direction, but a refusal it produces is "unproven", not "shown inadequate".
+#
+# Fraction of a peak sigma the local branch's time cover must resolve.  The
+# cover keeps cells above a mass threshold, so a peak narrower than the node
+# spacing puts its mass in one cell and the cover cannot localize it.
+_TIME_NODES_PER_SIGMA = 3.0
+
+
+def q_effective_bandwidth_hz(data, moment="raw"):
+    """Bandwidth of the stored Q(t), in Hz.  TWO different quantities.
+
+    ``moment="raw"`` (default, and THE one to size a time rule with) returns
+    sqrt(<f^2>) over the full two-sided spectrum.
+
+    ``moment="central"`` returns the RMS bandwidth about the mean over positive
+    frequencies -- the ENVELOPE bandwidth.
+
+    WHICH ONE, AND WHY IT IS PHYSICS RATHER THAN CONVENTION.  The reserve
+    marginalizes phi exactly, so the field in time is |zeta| with
+    zeta = alpha kappa + beta kappa*, kappa = E(t) e^{i theta}, theta ~ 2 pi f_c t,
+    and alpha, beta the polarization weights.  Then
+
+        |zeta|^2 = (|alpha|^2 + |beta|^2) E^2 + 2 Re(alpha beta* E^2 e^{2 i theta})
+
+    Face-on (beta -> 0) the carrier term vanishes, the field is the envelope, and
+    the peak width is the envelope one -- the CENTRAL moment.  Linearly polarized
+    (|alpha| = |beta|) the envelope is modulated at the carrier and each sub-peak
+    is far narrower -- the RAW moment.  Every real row lies between, set by its
+    own psi and inclination.
+
+    So raw is the NARROWEST peak the primitive can produce at that amplitude and
+    central the WIDEST.  A rule that must not under-resolve, and a selector that
+    must not call a whole-window rule adequate when it is not, must size on the
+    NARROW one.  Measured on a carrier fixture (f_c = 200 Hz, Gaussian envelope):
+    circular gives a peak of 11.3 Hz equivalent against a central moment of
+    5.6 Hz; linear gives 309.6 Hz against a raw moment of 200.1 Hz.
+
+    RAW IS EXACT FOR THE INTEGRAND, NOT sqrt(2) OPTIMISTIC.  An earlier revision
+    of this docstring claimed the latter, from measuring the curvature of
+    |zeta|^2 itself.  That is not the integrand.  The quadrature integrates
+    exp(lnL) with lnL = (rho^2/2) |zeta_hat|^2, so in the linear limit
+    |zeta_hat|^2 = cos^2(omega t) ~ 1 - omega^2 t^2 gives
+    lnL ~ const - (rho^2/2) omega^2 t^2 and hence sigma_t = 1/(rho omega)
+    = 1/(2 pi rho f_c) exactly -- the raw moment, no factor.  The sqrt(2)
+    appears only if the curvature of |zeta|^2 is read as a Gaussian width
+    WITHOUT the rho^2/2 prefactor; the two multiply.  Verified against the
+    log-integrand on a carrier fixture over four decades of rho:
+    measured/predicted = 1.0008, 1.0000, 0.9999, 0.9999 at rho 12.65, 40.77,
+    163.08, 652.31.
+
+    Both are returned by name so the two can never be silently confused.  An
+    earlier revision of this function made central the default and fed it to
+    sigma_t, which is the optimistic error: it predicts the envelope width for
+    rows whose likelihood is actually carrier-modulated.
+
+    Q is stored at deltaT / q_time_pregrid_factor, so the frequency axis uses the
+    REFINED spacing; using deltaT would understate the bandwidth by that factor.
+    """
+    import numpy as _np
+    if moment not in ("central", "raw"):
+        raise ValueError("moment must be 'central' or 'raw', got %r" % (moment,))
+    num1 = num2 = den = 0.0
+    for det in data.detector_names:
+        d = data.detectors[det]
+        Q = _np.asarray(d["Q"])                       # (npts_full, K)
+        f_ref = int(d.get("q_time_pregrid_factor", 1)) or 1
+        dt = float(data.deltaT) / float(f_ref)
+        n = Q.shape[0]
+        if n < 4:
+            continue
+        # Q (rholm) is COMPLEX, so this is the full two-sided transform: a
+        # real-input transform rejects it outright, and dropping the imaginary
+        # part would discard half the phase structure.
+        freqs = _np.fft.fftfreq(n, d=dt)
+        spec = _np.abs(_np.fft.fft(Q, axis=0)) ** 2   # (n, K)
+        w = spec.sum(axis=1)
+        if moment == "central":
+            keep = freqs > 0.0
+            freqs, w = freqs[keep], w[keep]
+        num1 += float((freqs * w).sum())
+        num2 += float((freqs ** 2 * w).sum())
+        den += float(w.sum())
+    if den <= 0.0:
+        return float("nan")
+    m1, m2 = num1 / den, num2 / den
+    if moment == "raw":
+        return float(_np.sqrt(max(m2, 0.0)))
+    return float(_np.sqrt(max(m2 - m1 * m1, 0.0)))
+
+
+def predict_reserve_pair(data, guess_snr, *, reserve_time_refine_max,
+                         crossover_amplitude, max_time_nodes,
+                         requested="auto", available=("exact", "laplace")):
+    """Choose the (local, reserve) pair from the precomputed inputs.
+
+    Returns ``(scheme, info)``.  ``scheme`` is None when the analysis says the
+    signal needs a method that is not implemented; the caller must REFUSE rather
+    than fall back, which is the whole point of predicting.
+
+    The four quantities, all available before any row is evaluated:
+
+    * ``rho``  -- the network SNR guess the driver already computes from the
+      detector response.
+    * ``sigma_f`` -- the effective bandwidth of the stored Q (above).
+    * ``A = rho^2 / 2`` against ``ANGLE_MARG_CROSSOVER_AMPLITUDE``, the
+      selector's own VALIDATED accuracy crossover between exact and laplace
+      angles.  Above it laplace is the more accurate scheme AND costs ~sqrt(A)
+      rather than ~A.
+    * ``sigma_t = 1 / (2 pi rho sigma_f)`` -- the expected width of the time
+      peak, in native samples, against what the whole-window refined reserve
+      can AFFORD: ``(npts - 1) * reserve_time_refine_max + 1`` nodes.  A peak
+      the escalation ceiling cannot resolve is the regime where refinement
+      carries the rows without resolving them, which is what this function
+      exists to predict rather than discover at the end of a run.
+
+      NOTE the comparison is deliberately against the RESERVE's node budget and
+      NOT against ``max_time_nodes``.  The latter caps the LOCAL branch's time
+      CELL COVER, which is a different quantity: the cover exceeds its budget
+      when lnL(t) is BROAD (many live cells, far from truth), not when the peak
+      is narrow.  Comparing a whole-window node count against a cover budget
+      mixes the two, which an earlier draft of this function did.
+    """
+    import numpy as _np
+    rho = float(guess_snr) if guess_snr else float("nan")
+    # RAW: the narrowest peak the primitive can make, which is what a time
+    # rule must resolve.  Central is reported as the envelope bandwidth.
+    sigma_f = q_effective_bandwidth_hz(data, moment='raw')
+    sigma_f_env = q_effective_bandwidth_hz(data, moment='central')
+    A = 0.5 * rho * rho if _np.isfinite(rho) else float("nan")
+    dt = float(data.deltaT)
+    if _np.isfinite(rho) and _np.isfinite(sigma_f) and rho > 0 and sigma_f > 0:
+        sigma_t = 1.0 / (2.0 * _np.pi * rho * sigma_f)
+    else:
+        sigma_t = float("nan")
+    width_samples = sigma_t / dt if _np.isfinite(sigma_t) else float("nan")
+    # Nodes the cover would need to put _TIME_NODES_PER_SIGMA across one sigma
+    # over the whole window, which is what a whole-window rule has to do.
+    if _np.isfinite(width_samples) and width_samples > 0:
+        nodes_needed = _TIME_NODES_PER_SIGMA * float(data.npts) / width_samples
+    else:
+        nodes_needed = float("inf")
+    nodes_available = (float(data.npts) - 1.0) * float(
+        reserve_time_refine_max) + 1.0
+    time_reserve_ok = nodes_needed <= nodes_available
+
+    # FIRST question, and the one about the branch actually under test: can the
+    # LOCAL cover hold the peak?  Its budget is max_time_nodes, and a peak
+    # narrower than a native sample needs the cover to place its nodes inside
+    # one sample rather than across the window.  MEASURED, not modelled: at
+    # rho 163 raising the cover 64 -> 256 took acceptance 31% -> 75%, which is
+    # why the start cap appeared to "plateau" -- the plateau was time capacity
+    # binding, not the start cap saturating.
+    if _np.isfinite(width_samples) and width_samples > 0:
+        cover_nodes_needed = _TIME_NODES_PER_SIGMA / width_samples
+    else:
+        cover_nodes_needed = float("inf")
+    local_cover_ok = cover_nodes_needed <= float(max_time_nodes)
+    time_local_ok = time_reserve_ok
+
+    info = dict(rho=rho, sigma_f_hz=sigma_f,
+                sigma_f_envelope_hz=sigma_f_env, amplitude_A=A,
+                crossover_amplitude=float(crossover_amplitude),
+                sigma_t_s=sigma_t, peak_width_samples=width_samples,
+                cover_nodes_needed=cover_nodes_needed,
+                max_time_nodes=int(max_time_nodes),
+                local_cover_resolves_peak=bool(local_cover_ok),
+                whole_window_nodes_needed=nodes_needed,
+                whole_window_nodes_available=nodes_available,
+                reserve_time_refine_max=int(reserve_time_refine_max),
+                time_peak_resolvable_whole_window=bool(time_local_ok),
+                requested=requested, available=tuple(available))
+
+    if requested != "auto":
+        # An explicit request overrides the ANALYSIS.  It does not override the
+        # ROSTER: `available` says which schemes this data and this distance
+        # quadrature can support at all, and forcing a scheme whose premise is
+        # absent is not an override, it is an unnoticed wrong answer.
+        if requested not in available:
+            info["reason"] = ("explicit request %r is not on the roster for "
+                              "this run (available: %s); the roster is a "
+                              "property of the data and the distance "
+                              "quadrature, not of the analysis, so it is not "
+                              "overridable"
+                              % (requested, ", ".join(available)))
+            return None, info
+        info["reason"] = "explicit request, no analysis applied"
+        return requested, info
+
+    if not _np.isfinite(A) or not _np.isfinite(sigma_f):
+        info["reason"] = ("cannot analyse: rho=%r sigma_f=%r; refusing rather "
+                          "than guessing" % (rho, sigma_f))
+        return None, info
+
+    # Angles: the validated accuracy crossover.
+    angular = "laplace" if A > float(crossover_amplitude) else "exact"
+
+    # Time: if a whole-window rule cannot resolve the peak within the local
+    # branch's node budget, the pair needs a peak-local time reserve.  Saying so
+    # and refusing is the point; falling back to refinement is what RO is
+    # calling the hard lesson.
+    if not time_local_ok:
+        if "peaklocal" in available:
+            info["reason"] = (
+                "local cover %s (needs %.1f nodes of %d); "
+                "A=%.4g > crossover %.4g selects laplace angles; peak is %.3g "
+                "native samples wide and a whole-window rule would need %.0f "
+                "nodes but the escalation ceiling affords %.0f, so the time "
+                "reserve must be peak-local"
+                % ("holds the peak" if local_cover_ok else "CANNOT hold the peak",
+                   cover_nodes_needed, max_time_nodes,
+                   A, crossover_amplitude,
+                   width_samples, nodes_needed, nodes_available))
+            return "peaklocal", info
+        info["reason"] = (
+            "local cover %s (needs %.1f nodes of %d); "
+            "peak is %.3g native samples wide; a whole-window time rule would "
+            "need %.0f nodes but the escalation ceiling affords only %.0f, so this signal needs a "
+            "peak-local-in-time reserve, which is NOT IMPLEMENTED.  Refusing "
+            "rather than falling back to whole-window refinement, which would "
+            "carry the rows without anyone choosing it."
+            % ("holds the peak" if local_cover_ok else "CANNOT hold the peak",
+               cover_nodes_needed, max_time_nodes,
+               width_samples, nodes_needed, nodes_available))
+        return None, info
+
+    # The roster is checked HERE too, not only on the peak-local branch.  It was
+    # not, and the effect was that a run with laplace off the roster still
+    # selected laplace whenever A cleared the crossover: the caller's roster was
+    # honoured for the scheme it could not have chosen anyway and ignored for
+    # the one it could.
+    if angular not in available:
+        info["reason"] = (
+            "the accuracy crossover selects %s angles (A=%.4g against %.4g), "
+            "and %s is NOT on the roster for this run (available: %s).  "
+            "Refusing rather than running the other scheme under the selected "
+            "one's name."
+            % (angular, A, crossover_amplitude, angular, ", ".join(available)))
+        return None, info
+
+    info["reason"] = (
+        "local cover %s (needs %.1f nodes of %d at this width); "
+        "A=%.4g against crossover %.4g selects %s angles; peak is %.3g native "
+        "samples wide and a whole-window rule needs %.0f nodes within the %.0f "
+        "the ceiling affords, so the refined whole-window time reserve is adequate"
+        % ("holds the peak" if local_cover_ok else "CANNOT hold the peak",
+           cover_nodes_needed, max_time_nodes,
+           A, crossover_amplitude, angular, width_samples, nodes_needed,
+           nodes_available))
+    return angular, info
+
+
+def format_reserve_pair(scheme, info):
+    """One line for the run log, printed BEFORE any row is evaluated."""
+    return ("RESERVE-PAIR local=four-axis reserve=%s rho=%.4g sigma_f=%.4gHz "
+            "A=%.4g crossover=%.4g peak=%.3gsamples cover_needs=%.1f/%d "
+            "reserve_needs=%.0f/%.0f :: %s"
+            % (scheme if scheme else "REFUSED", info.get("rho", float("nan")),
+               info.get("sigma_f_hz", float("nan")),
+               info.get("amplitude_A", float("nan")),
+               info.get("crossover_amplitude", float("nan")),
+               info.get("peak_width_samples", float("nan")),
+               info.get("cover_nodes_needed", float("nan")),
+               info.get("max_time_nodes", 0),
+               info.get("whole_window_nodes_needed", float("nan")),
+               info.get("whole_window_nodes_available", 0),
+               info.get("reason", "")))
+
+
 def validate_policy_request(policy, *, angle_marg_scheme, time_quadrature,
-                            d_prior, dist_grid):
+                            d_prior, dist_grid, reserve_scheme=None):
     """Refuse every combination the composite cannot honour.
 
     Refusal is explicit because an ignored request on this arm has a history
@@ -273,6 +631,10 @@ def validate_policy_request(policy, *, angle_marg_scheme, time_quadrature,
                          "got %r" % (POLICY_CHOICES, policy))
     if policy == "off":
         return
+    if reserve_scheme is not None and reserve_scheme not in RESERVE_SCHEME_CHOICES:
+        raise ValueError(
+            "direct-marginalization reserve scheme must be one of %r, got %r"
+            % (RESERVE_SCHEME_CHOICES, reserve_scheme))
     if angle_marg_scheme != "exact":
         raise ValueError(
             "--direct-marginalization-policy auto needs the exact-angle "

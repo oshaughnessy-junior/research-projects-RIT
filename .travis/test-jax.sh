@@ -543,6 +543,8 @@ FILES=(
   "${JAXDIR}/test_jax_phase_marg_mode_order.py"
   "${JAXDIR}/test_jax_q_time_pregrid.py"
   "${JAXDIR}/test_direct_marginalization_policy.py"
+  "${JAXDIR}/test_reserve_pair_selection.py"
+  "${JAXDIR}/test_angle_marg_laplace_table.py"
   "${JAXDIR}/test_distance_gh_nodes_cli.py"
   "${JAXDIR}/test_jax_cache.py"
   "${JAXDIR}/test_direct_marginalization_policy_cli.py"
@@ -950,7 +952,6 @@ fi
 # REBASED tree with /scratch/richard.oshaughnessy/envs/jaxci-py311 (python
 # 3.11.13, jax 0.10.2) by running the collection and reading its own line, not
 # by adding 20 to 628: "648/653 tests collected (5 deselected)".
-EXPECTED_TESTS=648
 # FIFTEENTH, the peak-local phi-scan reduction (joint_lnL_phi_dense reduces into its
 # lax.scan carry instead of stacking the phi axis; RIFT PR #295).  Touches only
 # test_angle_marg_peaklocal_wiring.py: replaces
@@ -962,7 +963,6 @@ EXPECTED_TESTS=648
 # NOT 628 + 1, for the reason this block has now recorded four times.  Re-measured by
 # running THIS script on the merged tree and reading its own collection line:
 # "collected 629 tests from 38 files".
-EXPECTED_TESTS=629
 # SIXTEENTH, the bandlimited distance-marginalization branch (this merge).  It
 # adds ONE file, test_jax_bandlimited_distmarg.py, which collects 20 and has one
 # test DESELECTED here (its flowMC driver run would importorskip, and a skip
@@ -979,13 +979,11 @@ EXPECTED_TESTS=629
 # this script on this tree, ldas-grid, ~/.cache/jaxci_venv, DESELECT loop
 # applied, read off its own collection line:
 #   "collected 657 tests from 40 files" (the gate's own line; 647 + 10)
-EXPECTED_TESTS=657
 # SEVENTEENTH, merging rift_O4d (#214's test_jax_cache.py, gate count 621 from 38
 # files) into this branch (test_distance_gh_nodes_cli.py, +27): the two deltas
 # land in disjoint files, so 621 + 27 = 648 from 39 files.  Re-measured on the
 # merged tree with the CI-equivalent /scratch jaxci-py311 interpreter before
 # this commit.
-EXPECTED_TESTS=648
 
 # EIGHTEENTH, the YOLO integration merge of 2026-09-08 (RIFT PRs #286, #295,
 # #297, #298, #299 -- #299 carries #288 -- merged onto rift_O4d after #294).
@@ -994,7 +992,15 @@ EXPECTED_TESTS=648
 # tree (ldas-grid, ~/.cache/jaxci_venv, jax 0.9.2, DESELECT loop applied) and
 # reading its own collection line: "collected 705 tests from 42 files".  This
 # assignment is the one that binds; the earlier ones are kept as provenance.
-EXPECTED_TESTS=705
+# ONE ASSIGNMENT ONLY.  This file carried FIVE consecutive unconditional
+# EXPECTED_TESTS= assignments (648, 629, 657, 648, 705) accumulated by parallel
+# merges, separated only by their comment blocks.  Bash keeps the LAST, so the
+# four above it were dead while reading as authoritative -- the same shadowing
+# that the driver's duplicate add_option produced, one file over.  The comment
+# history is kept; the dead assignments are not.  Re-derive by running this
+# script and reading its own collection line, never by adding a delta.
+# Measured on this branch: 731 collected, 44 files, 6 deselected -- superseded by
+# the twentieth block below, which is the one that binds.
 
 # NINETEENTH, RIFT PR #301 (preset local-plan capacities) merged with rift_O4d
 # at 43918b22.  #301 adds four tests to
@@ -1005,13 +1011,33 @@ EXPECTED_TESTS=705
 # /scratch/$USER/envs/jaxci-py311, jax 0.10.2, DESELECT loop applied).  The two
 # trees are not the same tree, which is the whole reason this file says to
 # measure and never to add.
-EXPECTED_TESTS=712
+#
+# TWENTIETH, this branch (PR #305) rebased onto #301 -- first onto its head
+# f30b6a06 while it was open, then onto rift_O4d c0654025 once #301 merged.
+# The second rebase was CLEAN and the count did not move; it was re-measured
+# anyway, because a clean rebase is when this file's one-assignment property is
+# most likely to have been quietly undone.  The nineteenth block and
+# the eighteenth-plus-mine block were BOTH left in the file by that rebase, in
+# that order, and git merged them without a conflict because they touch
+# different lines.  Bash keeps the last, so #301's 712 silently replaced the 731
+# this branch had measured -- the same shadowing this file was already collapsed
+# once to remove, reintroduced by a clean rebase rather than by an edit.  A
+# textual merge cannot see that two assignments to one name are in conflict, so
+# ONE ASSIGNMENT ONLY is a property this file has to be re-checked for after
+# every merge, not one it keeps on its own.
+# Re-measured by running this script on the rebased tree (ldas-grid,
+# /scratch/$USER/envs/jaxci-py311, jax 0.10.2, PYTHONPATH pinned to THIS
+# checkout, DESELECT loop applied): "collected 733 tests from 45 files", and
+# 737 after the four reserve-roster/refusal tests added later in the branch, and
+# 738 once the wrapper's source-text gate test became two behaviour tests, and
+# 740 with the two reserve-resolution tests.
+# This assignment is the one that binds.
+EXPECTED_TESTS=740
 
-# TWENTIETH, simultaneous rotation + finite response.  The cheap analytic coefficient
-# parity is folded into an existing collected test.  Real waveform precompute, JIT/grad,
-# the one-call wrapper, and scaling profiles remain explicit manual checks in the same
-# files: they are too expensive to add to the already runner-limited per-PR JAX gate.
-EXPECTED_TESTS=712
+# Simultaneous rotation + finite response adds cheap analytic coefficient parity
+# to an existing collected test.  Real waveform precompute, JIT/grad, the one-call
+# wrapper, and scaling profiles remain explicit manual checks in the same files:
+# they are too expensive for the already runner-limited per-PR JAX gate.
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
