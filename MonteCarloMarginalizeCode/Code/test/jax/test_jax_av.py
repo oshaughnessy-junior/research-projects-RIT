@@ -14,6 +14,12 @@ _CODE = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pa
 _DRIVER = os.path.join(_CODE, "bin", "integrate_likelihood_extrinsic_jax")
 
 
+def _trapezoid(y, x):
+    """Integrate on NumPy versions before and after ``trapz`` was removed."""
+    trapezoid = getattr(np, "trapezoid", None)
+    return trapezoid(y, x) if trapezoid is not None else np.trapz(y, x)
+
+
 def _driver_module():
     loader = importlib.machinery.SourceFileLoader("_jax_av_driver", _DRIVER)
     spec = importlib.util.spec_from_loader(loader.name, loader)
@@ -67,7 +73,7 @@ def test_physical_coordinate_priors_are_normalized():
     for name in ("ra", "dec", "psi", "incl", "phiref", "distMpc"):
         lo, hi, density = samplers._av_prior_spec(name, 10.0, 100.0)
         x = np.linspace(lo, hi, 20001)
-        np.testing.assert_allclose(np.trapz(density(x), x), 1.0,
+        np.testing.assert_allclose(_trapezoid(density(x), x), 1.0,
                                    rtol=2e-6, atol=2e-6)
 
 
@@ -81,12 +87,12 @@ def test_sampling_window_does_not_renormalize_physical_prior():
     assert (ra_lo, ra_hi) == bounds["ra"]
     assert (dec_lo, dec_hi) == bounds["dec"]
     np.testing.assert_allclose(
-        np.trapz(ra_pdf(np.linspace(ra_lo, ra_hi, 10001)),
-                 np.linspace(ra_lo, ra_hi, 10001)),
+        _trapezoid(ra_pdf(np.linspace(ra_lo, ra_hi, 10001)),
+                   np.linspace(ra_lo, ra_hi, 10001)),
         (ra_hi - ra_lo) / (2 * np.pi), rtol=1e-10)
     np.testing.assert_allclose(
-        np.trapz(dec_pdf(np.linspace(dec_lo, dec_hi, 10001)),
-                 np.linspace(dec_lo, dec_hi, 10001)),
+        _trapezoid(dec_pdf(np.linspace(dec_lo, dec_hi, 10001)),
+                   np.linspace(dec_lo, dec_hi, 10001)),
         0.5 * (np.sin(dec_hi) - np.sin(dec_lo)), rtol=1e-9)
 
 
