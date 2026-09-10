@@ -19,6 +19,9 @@ exact gradients to cover *all* the modes:
   estimate.
 * :func:`flowmc_sample` -- a normalizing-flow sampler (flowMC) that trains a flow
   to the full multimodal geometry in a single run.
+* :func:`adaptive_volume_sample` -- the production RIFT AV or AV+GMM portfolio
+  control logic around fixed-shape, value-only JAX likelihood batches.  Its
+  optional AD work is confined to a short Fisher-sky initializer.
 
 The priors are the standard physical ones (uniform sky/orientation):
 ``ra ~ U(0, 2pi)``, ``sin(dec) ~ U(-1, 1)``, ``psi ~ U(0, pi)``,
@@ -2342,6 +2345,415 @@ def smc_puffball_sample(like, d_min, d_max, n_walkers=2000, seed=0,
                         else float("inf")),
                 logZ_laplace=float(logZ_smc),
                 lnL_map=float(np.max(lnL)) if len(lnL) else np.nan)
+
+
+# ---------------------------------------------------------------------------
+# 2c. Adaptive-volume / portfolio backends (value-only JAX likelihood)
+# ---------------------------------------------------------------------------
+
+_FULL_EXTRINSIC_ORDER = ("ra", "dec", "psi", "incl", "phiref", "distMpc")
+
+
+def _av_param_order(like):
+    """Parameter order exposed by a JAX likelihood, including the bare 6-D case."""
+    order = tuple(getattr(like, "ANGULAR_PARAM_ORDER", ()))
+    if order:
+        return order
+    return _FULL_EXTRINSIC_ORDER
+
+
+def _av_sample_bounds(order, d_min, d_max, sample_d_min=None,
+                      sample_d_max=None, sample_bounds=None):
+    """Validate and resolve AV sampling limits without renormalizing the prior."""
+    requested = dict(sample_bounds or {})
+    if sample_d_min is not None or sample_d_max is not None:
+        requested["distMpc"] = (
+            d_min if sample_d_min is None else sample_d_min,
+            d_max if sample_d_max is None else sample_d_max)
+    unknown = set(requested) - set(order)
+    if unknown:
+        raise ValueError("sampling bounds name coordinates absent from likelihood: %s"
+                         % ", ".join(sorted(unknown)))
+    resolved = {}
+    for name in order:
+        physical_lo, physical_hi, _ = _av_prior_spec(name, d_min, d_max)
+        lo, hi = requested.get(name, (physical_lo, physical_hi))
+        lo, hi = float(lo), float(hi)
+        if not np.isfinite(lo) or not np.isfinite(hi) or lo >= hi:
+            raise ValueError("invalid sampling bounds for %s: (%r, %r)"
+                             % (name, lo, hi))
+        if lo < physical_lo or hi > physical_hi:
+            raise ValueError("sampling bounds for %s must lie within [%g, %g]"
+                             % (name, physical_lo, physical_hi))
+        resolved[name] = (lo, hi)
+    return resolved
+
+
+def _av_prior_draw(order, n, rng, d_min, d_max, sample_bounds=None):
+    """Draw the physical prior conditioned only on the AV sampling window."""
+    bounds = _av_sample_bounds(order, d_min, d_max,
+                               sample_bounds=sample_bounds)
+    def interval(name):
+        return bounds.get(name, _av_prior_spec(name, d_min, d_max)[:2])
+    ra_lo, ra_hi = interval("ra") if "ra" in order else (0.0, _TWO_PI)
+    dec_lo, dec_hi = interval("dec") if "dec" in order else (-_PI / 2, _PI / 2)
+    psi_lo, psi_hi = interval("psi") if "psi" in order else (0.0, _PI)
+    inc_lo, inc_hi = interval("incl") if "incl" in order else (0.0, _PI)
+    phase_name = "phiref_shifted" if "phiref_shifted" in order else "phiref"
+    phase_lo, phase_hi = interval(phase_name) if phase_name in order else (0.0, _TWO_PI)
+    pp_lo, pp_hi = interval("phase_p") if "phase_p" in order else (0.0, 2.0 * _TWO_PI)
+    pm_lo, pm_hi = interval("phase_m") if "phase_m" in order else (0.0, 2.0 * _TWO_PI)
+    dist_lo, dist_hi = interval("distMpc") if "distMpc" in order else (d_min, d_max)
+    draws = {
+        "ra": rng.uniform(ra_lo, ra_hi, n),
+        "dec": np.arcsin(rng.uniform(np.sin(dec_lo), np.sin(dec_hi), n)),
+        "psi": rng.uniform(psi_lo, psi_hi, n),
+        "incl": np.arccos(rng.uniform(np.cos(inc_hi), np.cos(inc_lo), n)),
+        "phiref": rng.uniform(phase_lo, phase_hi, n),
+        "phiref_shifted": rng.uniform(phase_lo, phase_hi, n),
+        "phase_p": rng.uniform(pp_lo, pp_hi, n),
+        "phase_m": rng.uniform(pm_lo, pm_hi, n),
+        "distMpc": np.cbrt(rng.uniform(dist_lo ** 3, dist_hi ** 3, n)),
+    }
+    return np.column_stack([draws[name] for name in order])
+
+
+def _av_prior_spec(name, d_min, d_max, sample_d_min=None, sample_d_max=None,
+                   sample_bounds=None):
+    """Return ``(lo, hi, physical_density)`` for one wrapper coordinate."""
+    if name == "ra":
+        spec = (0.0, _TWO_PI, lambda x: np.ones(np.shape(x)) / _TWO_PI)
+    elif name == "dec":
+        spec = (-_PI / 2, _PI / 2,
+                lambda x: 0.5 * np.maximum(np.cos(np.asarray(x)), 0.0))
+    elif name == "psi":
+        spec = (0.0, _PI, lambda x: np.ones(np.shape(x)) / _PI)
+    elif name == "incl":
+        spec = (0.0, _PI,
+                lambda x: 0.5 * np.maximum(np.sin(np.asarray(x)), 0.0))
+    elif name in ("phiref", "phiref_shifted"):
+        spec = (0.0, _TWO_PI, lambda x: np.ones(np.shape(x)) / _TWO_PI)
+    elif name in ("phase_p", "phase_m"):
+        spec = (0.0, 2.0 * _TWO_PI,
+                lambda x: np.ones(np.shape(x)) / (2.0 * _TWO_PI))
+    elif name == "distMpc":
+        norm = 3.0 / (float(d_max) ** 3 - float(d_min) ** 3)
+        spec = (float(d_min if sample_d_min is None else sample_d_min),
+                float(d_max if sample_d_max is None else sample_d_max),
+                lambda x, _norm=norm: _norm * np.asarray(x) ** 2)
+    else:
+        raise ValueError("unsupported JAX-ILE adaptive-volume parameter %r" % (name,))
+    if sample_bounds and name in sample_bounds:
+        return float(sample_bounds[name][0]), float(sample_bounds[name][1]), spec[2]
+    return spec
+
+
+def _fixed_shape_value_callback(like, n_dim, eval_chunk):
+    """Build an AV callback that compiles only one JAX batch shape.
+
+    AV's number of occupied bins changes as it contracts, so its raw draw length
+    changes slightly from cycle to cycle.  Passing that length straight to a jitted
+    likelihood recompiles the likelihood every cycle.  Split into fixed blocks and
+    pad only the last block; padding changes neither returned rows nor the integral.
+    """
+    eval_chunk = int(angle_marg_eval_chunk(like, max(1, int(eval_chunk))))
+
+    def lnL(*cols):
+        # AV can be configured with cupy even though the JAX likelihood owns the
+        # accelerator.  ``np.asarray(cupy_array)`` intentionally raises; ``get``
+        # is the explicit host handoff needed before JAX transfers each fixed
+        # block to its device.  This also covers portfolio's selfish AV update,
+        # which does not have integrate_log's host-fallback wrapper.
+        host_cols = [(c.get() if hasattr(c, "get") else np.asarray(c))
+                     for c in cols]
+        x = np.column_stack([np.asarray(c, dtype=float).reshape(-1)
+                             for c in host_cols])
+        if x.shape[1] != n_dim:
+            raise ValueError("JAX-AV callback expected %d columns, got %d"
+                             % (n_dim, x.shape[1]))
+        out = np.empty(len(x), dtype=float)
+        for start in range(0, len(x), eval_chunk):
+            stop = min(start + eval_chunk, len(x))
+            block = x[start:stop]
+            if len(block) < eval_chunk:
+                block = np.concatenate(
+                    [block, np.repeat(block[-1:], eval_chunk - len(block), axis=0)],
+                    axis=0)
+            val = like.log_likelihood(*[block[:, j] for j in range(n_dim)])
+            out[start:stop] = np.asarray(val, dtype=float)[:stop - start]
+        return out
+
+    lnL.eval_chunk = eval_chunk
+    return lnL
+
+
+def _sky_distance(a, b):
+    return float(np.arccos(np.clip(
+        np.sin(a[1]) * np.sin(b[1])
+        + np.cos(a[1]) * np.cos(b[1]) * np.cos(a[0] - b[0]), -1.0, 1.0)))
+
+
+def _fisher_sky_seed(like, order, lnL, rng, d_min, d_max, n_seed,
+                     n_pilot, n_modes, sky_inflate, prior_frac,
+                     initial_points=None, sample_bounds=None, verbose=False):
+    """Hill-climb modes, then draw Fisher sky / physical-prior other coordinates.
+
+    This is deliberately a proposal initializer, not part of the estimator.  The
+    likelihood calls in the AV integration remain value-only.  A fraction of the
+    cloud is left as a full-prior draw; in portfolio mode the GMM's defensive
+    component supplies the actual full-support guarantee (a finite point cloud
+    alone cannot provide one).
+    """
+    from scipy.optimize import minimize
+
+    n_pilot = max(int(n_pilot), int(n_modes), 1)
+    pilot = _av_prior_draw(order, n_pilot, rng, d_min, d_max, sample_bounds)
+    pilot_lnL = lnL(*pilot.T)
+    ranked = np.argsort(np.where(np.isfinite(pilot_lnL), pilot_lnL, -np.inf))[::-1]
+    seeds = []
+    if initial_points is not None:
+        supplied = np.atleast_2d(np.asarray(initial_points, dtype=float))
+        if supplied.shape[1] != len(order):
+            raise ValueError("initial_points must have %d columns, got %d"
+                             % (len(order), supplied.shape[1]))
+        seeds.extend(supplied)
+    for idx in ranked:
+        if len(seeds) >= int(n_modes):
+            break
+        candidate = pilot[idx]
+        if not seeds or all(_sky_distance(candidate, old) >= 0.25 for old in seeds):
+            seeds.append(candidate)
+        if len(seeds) >= int(n_modes):
+            break
+    if not seeds:
+        raise RuntimeError("the Fisher-sky prior pilot found no finite likelihood")
+
+    bounds = [_av_prior_spec(name, d_min, d_max,
+                             sample_bounds=sample_bounds)[:2] for name in order]
+    # Avoid evaluating the Jacobian-singular orientation endpoints during AD.
+    bounds = [(lo + 1e-6 if name in ("dec", "incl") else lo,
+               hi - 1e-6 if name in ("dec", "incl") else hi)
+              for name, (lo, hi) in zip(order, bounds)]
+
+    def objective(x):
+        value, grad = like.value_and_grad(x)
+        return -float(value), -np.asarray(grad, dtype=float)
+
+    modes = []
+    for seed_theta in seeds:
+        try:
+            result = minimize(objective, seed_theta, jac=True, method="L-BFGS-B",
+                              bounds=bounds, options={"maxiter": 120})
+            theta = np.asarray(result.x if np.isfinite(result.fun) else seed_theta)
+            value = -float(result.fun) if np.isfinite(result.fun) else float(
+                lnL(*seed_theta[:, None])[0])
+            fisher = np.asarray(like.fisher(theta), dtype=float)
+            fisher = 0.5 * (fisher + fisher.T)
+            # Marginalize over the nuisance angles.  Inverting only F[:2,:2]
+            # would give the conditional sky covariance and is too narrow when
+            # sky is correlated with polarization, inclination, or phase.
+            full_cov = np.linalg.pinv(fisher, rcond=1e-12)
+            sky_cov = 0.5 * (full_cov[:2, :2] + full_cov[:2, :2].T)
+            eig, vec = np.linalg.eigh(sky_cov)
+            # Cap the one-sigma sky width at one radian: weak curvature should
+            # remain broad, while a sharp high-SNR sky peak gets its 1/rho scale.
+            floor = max(float(np.max(eig)) * 1e-10, 1e-16)
+            var = float(sky_inflate) ** 2 * np.clip(eig, floor, None)
+            cov = (vec * np.minimum(var, 1.0)) @ vec.T
+            modes.append((theta, cov, value))
+        except Exception as exc:  # one failed mode must not discard the good ones
+            if verbose:
+                print("  [JAX-AV seed] hill climb skipped: %s" % exc)
+    if not modes:
+        raise RuntimeError("all Fisher-sky hill climbs failed")
+    modes.sort(key=lambda item: item[2], reverse=True)
+
+    n_seed = max(int(n_seed), len(order) + 2)
+    n_prior = int(np.clip(float(prior_frac), 0.0, 1.0) * n_seed)
+    n_focus = n_seed - n_prior
+    focused = _av_prior_draw(order, n_focus, rng, d_min, d_max, sample_bounds)
+    counts = np.full(len(modes), n_focus // len(modes), dtype=int)
+    counts[:n_focus % len(modes)] += 1
+    cursor = 0
+    for (mode, cov, _), count in zip(modes, counts):
+        if count == 0:
+            continue
+        sky = rng.multivariate_normal(mode[:2], cov, size=count)
+        ra_lo, ra_hi = bounds[0]
+        dec_lo, dec_hi = bounds[1]
+        sky[:, 0] = np.mod(sky[:, 0], _TWO_PI)
+        # A restricted, non-wrapping RA window cannot use periodic wrap as a
+        # boundary condition. Clip the seed proposal to the declared window;
+        # integration weights remain governed by the physical prior.
+        focused[cursor:cursor + count, 0] = np.clip(
+            sky[:, 0], ra_lo + 1e-9, ra_hi - 1e-9)
+        focused[cursor:cursor + count, 1] = np.clip(
+            sky[:, 1], dec_lo + 1e-9, dec_hi - 1e-9)
+        cursor += count
+    cloud = focused
+    if n_prior:
+        cloud = np.vstack([cloud, _av_prior_draw(
+            order, n_prior, rng, d_min, d_max, sample_bounds)])
+    if verbose:
+        print("  [JAX-AV seed] %d hill-climbed sky mode(s), %d seed points "
+              "(%d full-prior)" % (len(modes), len(cloud), n_prior))
+    return cloud, np.asarray([m[0] for m in modes]), np.asarray([m[2] for m in modes])
+
+
+def adaptive_volume_sample(like, d_min, d_max, sampler_method="AV",
+                           portfolio_members=("AV", "GMM"), nmax=300000,
+                           neff=1000, n_chunk=8000, eval_chunk=None, seed=0,
+                           seed_method="none", seed_pilot=4000, seed_modes=4,
+                           seed_points=None, seed_initial_points=None,
+                           initial_samples=None,
+                           sky_inflate=2.0,
+                           seed_prior_frac=0.1, anisotropic_bins=True,
+                           gmm_components=2,
+                           verbose=False, sample_d_min=None, sample_d_max=None,
+                           sample_bounds=None):
+    """Run production AV/portfolio control logic on a value-only JAX likelihood.
+
+    ``sampler_method`` is ``AV`` or ``portfolio``.  The optional ``fisher-sky``
+    seed pays a small, explicit AD startup cost (multi-start hill climb plus local
+    Hessians); all integration calls use only ``like.log_likelihood``.  Portfolio
+    defaults to AV+GMM so its defensive mixture retains full support even when the
+    seeded AV live volume covers only selected sky modes.
+    """
+    from RIFT.integrators import mcsamplerAdaptiveVolume as AV
+
+    method = str(sampler_method)
+    if method not in ("AV", "portfolio"):
+        raise ValueError("sampler_method must be 'AV' or 'portfolio', got %r" % method)
+    order = _av_param_order(like)
+    n_dim = len(order)
+    resolved_bounds = _av_sample_bounds(
+        order, d_min, d_max, sample_d_min, sample_d_max, sample_bounds)
+    # Decouple AV's coverage cloud from the accelerator batch.  AV often needs
+    # a large n_chunk to hit a narrow sky mode, while the marginalized JAX
+    # kernel has a much smaller memory-efficient batch.  The callback loops over
+    # this fixed shape, so increasing coverage does not increase device memory.
+    eval_chunk = int(eval_chunk or min(int(n_chunk), _default_eval_chunk()))
+    lnL = _fixed_shape_value_callback(like, n_dim, eval_chunk)
+
+    av_member = AV.MCSampler(n_chunk=int(n_chunk))
+    if method == "AV":
+        sampler = av_member
+    else:
+        from RIFT.integrators import mcsamplerEnsemble as GMM
+        from RIFT.integrators import mcsamplerPortfolio as Portfolio
+        members = []
+        member_setup_args = []
+        for name in portfolio_members:
+            key = str(name).strip().upper()
+            if key == "AV":
+                members.append(av_member if not any(m is av_member for m in members)
+                               else AV.MCSampler(n_chunk=int(n_chunk)))
+                member_setup_args.append({})
+            elif key == "GMM":
+                members.append(GMM.MCSampler())
+                # At least two components are required whenever a narrow mode
+                # crosses a periodic box boundary (Event B has phiref=0).  One
+                # Euclidean Gaussian spans the whole [0,2pi] box and destroys
+                # the sky/phase correlations in an otherwise excellent seed.
+                member_setup_args.append({"n_comp": max(2, int(gmm_components))})
+            else:
+                raise ValueError("JAX portfolio member %r is unsupported; use AV or GMM"
+                                 % name)
+        if not members:
+            raise ValueError("JAX portfolio needs at least one member")
+        sampler = Portfolio.MCSampler(portfolio=members, n_chunk=int(n_chunk))
+
+    for name in order:
+        lo, hi = resolved_bounds[name]
+        prior = _av_prior_spec(name, d_min, d_max)[2]
+        sampler.add_parameter(name, pdf=None, left_limit=lo, right_limit=hi,
+                              prior_pdf=prior, adaptive_sampling=True)
+    setup_kwargs = {"anisotropic_bins": bool(anisotropic_bins)}
+    if method == "portfolio":
+        setup_kwargs["portfolio_args"] = member_setup_args
+    sampler.setup(**setup_kwargs)
+
+    seed_cloud = seed_modes_theta = seed_modes_lnL = None
+    if initial_samples is not None:
+        if seed_method not in (None, "none"):
+            raise ValueError("initial_samples and seed_method are mutually exclusive")
+        seed_cloud = np.atleast_2d(np.asarray(initial_samples, dtype=float))
+        if seed_cloud.shape[1] != n_dim:
+            raise ValueError("initial_samples must have %d columns, got %d"
+                             % (n_dim, seed_cloud.shape[1]))
+        for j, name in enumerate(order):
+            lo, hi = resolved_bounds[name]
+            if np.any(seed_cloud[:, j] < lo) or np.any(seed_cloud[:, j] > hi):
+                raise ValueError("initial_samples fall outside sampling bounds for %s"
+                                 % name)
+        sampler.bootstrap_from_samples(seed_cloud, params=order, seed=seed)
+        if verbose:
+            print("  [JAX-AV seed] bootstrapped from %d caller/oracle samples"
+                  % len(seed_cloud))
+    elif seed_method not in (None, "none"):
+        if seed_method != "fisher-sky":
+            raise ValueError("unknown JAX-AV seed method %r" % seed_method)
+        seed_cloud, seed_modes_theta, seed_modes_lnL = _fisher_sky_seed(
+            like, order, lnL, np.random.default_rng(seed), d_min, d_max,
+            n_seed=(seed_points or n_chunk), n_pilot=seed_pilot,
+            n_modes=seed_modes, sky_inflate=sky_inflate,
+            prior_frac=seed_prior_frac, initial_points=seed_initial_points,
+            sample_bounds=resolved_bounds, verbose=verbose)
+        if method == "portfolio":
+            sampler.bootstrap_from_samples(seed_cloud, params=order, seed=seed)
+        else:
+            print("  [JAX-AV seed] WARNING: standalone seeded AV has compact "
+                  "support; the prior seed fraction is a diagnostic safety net, "
+                  "not a full-support guarantee.  Prefer --sampler-method portfolio.")
+            sampler.bootstrap_from_samples(seed_cloud, params=order, seed=seed)
+
+    # The production integrators use numpy's legacy module RNG internally.
+    # Isolate that stream so --seed controls this run without perturbing a
+    # caller's RNG (notably later events in the same JAX-ILE batch).
+    numpy_rng_state = np.random.get_state()
+    np.random.seed(int(seed))
+    try:
+        result = sampler.integrate_log(
+            lnL, *order, nmax=int(nmax), neff=float(neff), n=int(n_chunk),
+            no_protect_names=True, verbose=bool(verbose), save_intg=True,
+            tempering_exp=1.0, anisotropic_bins=bool(anisotropic_bins),
+            # Standalone AV can keep device-typed internal arrays when cupy is
+            # importable even though this adapter evaluates on the host.  Its
+            # legacy in-integrator fair draw mixes those backends.  Return the
+            # retained weighted population instead; callers have the exact
+            # log_weight below and can resample without changing the integral.
+            igrand_fairdraw_samples=(method != "AV"),
+            igrand_fairdraw_samples_max=max(int(1.5 * float(neff)), 1))
+    finally:
+        np.random.set_state(numpy_rng_state)
+    logZ, log_var, eff_samp, diagnostics = result
+    if logZ is None:
+        raise RuntimeError("JAX-%s terminated without an evidence estimate" % method)
+    if method == "AV" and diagnostics.get("live_volume_collapsed", False):
+        raise RuntimeError("JAX-AV live-volume collapse: %s" %
+                           diagnostics.get("collapse_reason", "unspecified"))
+
+    theta = np.column_stack([np.asarray(sampler._rvs[name], dtype=float)
+                             for name in order])
+    out_lnL = np.asarray(sampler._rvs["log_integrand"], dtype=float)
+    already_fair = bool(getattr(sampler, "_rvs_is_fairdraw", False))
+    log_weight = None
+    if not already_fair:
+        log_weight = (out_lnL
+                      + np.asarray(sampler._rvs["log_joint_prior"], dtype=float)
+                      - np.asarray(sampler._rvs["log_joint_s_prior"], dtype=float))
+    sigma_over_Z = float(np.exp(0.5 * float(log_var) - float(logZ)))
+    peak = float(np.max(out_lnL)) if len(out_lnL) else np.nan
+    logZ, sigma_over_Z, eff_samp = _finalize_evidence(
+        float(logZ), sigma_over_Z, float(eff_samp), peak)
+    return dict(theta=theta, lnL=out_lnL, logZ=logZ,
+                sigma_over_Z=sigma_over_Z, neff=eff_samp,
+                n_eval=int(getattr(sampler, "ntotal", nmax)),
+                log_weight=log_weight, sampler=sampler,
+                diagnostics=diagnostics, eval_chunk=lnL.eval_chunk,
+                seed_cloud=seed_cloud, seed_modes=seed_modes_theta,
+                seed_mode_lnL=seed_modes_lnL,
+                sample_bounds=resolved_bounds)
 
 
 # ---------------------------------------------------------------------------

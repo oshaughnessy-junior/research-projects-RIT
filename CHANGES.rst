@@ -3,6 +3,20 @@
 ------------
 development tree is rift_O4d.
 
+** NEW, jax ILE (opt-in): ``--sampler-method AV`` and ``portfolio`` run the
+   adaptive-volume and AV+GMM production integrators against fixed-shape,
+   value-only JAX likelihood batches.  ``--jax-av-eval-chunk`` decouples GPU
+   memory use from the much larger AV coverage chunk.  AV supports explicit
+   angular sampling windows through the conventional ``--limit-*`` flags while
+   retaining the full physical-prior density: a boxed run estimates the
+   full-prior contribution inside that box, not a box-renormalized evidence.
+   The five-dimensional fixed-distance wrapper and phase-centred coordinates
+   support high-SNR validation cases.  Standalone AV returns its exact weighted
+   retained population; portfolio can return a fair draw and uses a defensive
+   GMM component for full support.
+   ``JAXRotatedPhaseLikelihood`` mirrors conventional ILE's
+   ``--internal-rotate-phase`` coordinates for high-SNR AV calculations.
+
 ** NEW, jax ILE (opt-in): ``--direct-marginalization-policy auto`` for
    ``--mode flowmc-phipsimarg`` composes PR #268's four-axis peak-local
    controller with the exact-angle reserve, per likelihood evaluation, under

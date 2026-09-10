@@ -364,6 +364,139 @@ class JAXExtrinsicLikelihood:
         return -H
 
 
+class JAXFixedDistanceLikelihood:
+    """Five-angle view of :class:`JAXExtrinsicLikelihood` at fixed distance.
+
+    This is the fixed-distance geometry used by the high-SNR Event-B validation:
+    ``theta5 = (ra, dec, psi, incl, phiref)`` is sampled while ``distMpc`` is a
+    constant.  Keeping this as a likelihood view (instead of an extremely narrow
+    distance prior) removes a numerically artificial sixth direction from both
+    hill climbing and the observed Fisher matrix.
+    """
+
+    ANGULAR_PARAM_ORDER = ("ra", "dec", "psi", "incl", "phiref")
+
+    def __init__(self, likelihood, dist_mpc, phase_shift=0.0):
+        if not isinstance(likelihood, JAXExtrinsicLikelihood):
+            raise TypeError("likelihood must be a JAXExtrinsicLikelihood")
+        self.likelihood = likelihood
+        self.data = likelihood.data
+        self.dist_mpc = float(dist_mpc)
+        self.phase_shift = float(phase_shift)
+        if self.phase_shift:
+            self.ANGULAR_PARAM_ORDER = (
+                "ra", "dec", "psi", "incl", "phiref_shifted")
+        self.interp = likelihood.interp
+        self.phase_marginalization = likelihood.phase_marginalization
+        self.time_quadrature = likelihood.time_quadrature
+        if hasattr(likelihood, "time_guard_initial"):
+            self.time_guard_initial = likelihood.time_guard_initial
+            self.time_guard_certified = likelihood.time_guard_certified
+
+        distance = jnp.asarray([self.dist_mpc], dtype=jnp.float64)
+
+        def _scalar(theta5):
+            physical5 = theta5.at[4].set(
+                jnp.mod(theta5[4] + self.phase_shift, 2.0 * jnp.pi))
+            return likelihood._scalar(jnp.concatenate([physical5, distance]))
+
+        self._scalar = _scalar
+        self._value_and_grad = jax.jit(jax.value_and_grad(_scalar))
+        self._hessian = jax.jit(jax.hessian(_scalar))
+
+    def log_likelihood(self, ra, dec, psi, incl, phiref):
+        ra = jnp.asarray(ra)
+        distance = jnp.full_like(ra, self.dist_mpc)
+        return self.likelihood.log_likelihood(
+            ra, dec, psi, incl,
+            jnp.mod(jnp.asarray(phiref) + self.phase_shift, 2.0 * jnp.pi),
+            distance)
+
+    def to_sampler_coordinates(self, theta5):
+        """Map physical ``phiref`` to this view's shifted sampler coordinate."""
+        theta5 = np.array(theta5, dtype=float, copy=True)
+        theta5[..., 4] = np.mod(theta5[..., 4] - self.phase_shift, 2.0 * np.pi)
+        return theta5
+
+    def to_physical_coordinates(self, theta5):
+        """Map this view's sampler coordinate back to physical ``phiref``."""
+        theta5 = np.array(theta5, dtype=float, copy=True)
+        theta5[..., 4] = np.mod(theta5[..., 4] + self.phase_shift, 2.0 * np.pi)
+        return theta5
+
+    def value(self, theta5):
+        return float(self._scalar(jnp.asarray(theta5, dtype=jnp.float64)))
+
+    def value_and_grad(self, theta5):
+        value, grad = self._value_and_grad(
+            jnp.asarray(theta5, dtype=jnp.float64))
+        return float(value), np.asarray(grad)
+
+    def fisher(self, theta5):
+        hessian = np.asarray(
+            self._hessian(jnp.asarray(theta5, dtype=jnp.float64)))
+        return -hessian
+
+
+class JAXRotatedPhaseLikelihood:
+    """Rotate ``(psi, phiref)`` into AV-friendly sum/difference coordinates.
+
+    This mirrors conventional ILE's ``--internal-rotate-phase``.  Both rotated
+    coordinates live on ``[0, 4 pi)``; the redundant cover preserves the flat
+    physical angle prior and straightens the leading quadrupole degeneracy.
+    """
+
+    ANGULAR_PARAM_ORDER = ("ra", "dec", "phase_p", "incl", "phase_m")
+
+    def __init__(self, likelihood):
+        if tuple(getattr(likelihood, "ANGULAR_PARAM_ORDER", ())) not in (
+                ("ra", "dec", "psi", "incl", "phiref"),
+                ("ra", "dec", "psi", "incl", "phiref_shifted")):
+            raise TypeError("likelihood must expose ra,dec,psi,incl,phase coordinates")
+        self.likelihood = likelihood
+        for name in ("data", "interp", "phase_marginalization", "time_quadrature"):
+            setattr(self, name, getattr(likelihood, name))
+
+        def _scalar(theta):
+            psi = jnp.mod(0.5 * (theta[2] - theta[4]), jnp.pi)
+            phase = jnp.mod(0.5 * (theta[2] + theta[4]), 2.0 * jnp.pi)
+            physical = jnp.stack([theta[0], theta[1], psi, theta[3], phase])
+            return likelihood._scalar(physical)
+
+        self._scalar = _scalar
+        self._value_and_grad = jax.jit(jax.value_and_grad(_scalar))
+        self._hessian = jax.jit(jax.hessian(_scalar))
+
+    def log_likelihood(self, ra, dec, phase_p, incl, phase_m):
+        psi = jnp.mod(0.5 * (phase_p - phase_m), jnp.pi)
+        phase = jnp.mod(0.5 * (phase_p + phase_m), 2.0 * jnp.pi)
+        return self.likelihood.log_likelihood(ra, dec, psi, incl, phase)
+
+    def to_sampler_coordinates(self, theta5):
+        base = self.likelihood.to_sampler_coordinates(theta5)
+        out = np.array(base, dtype=float, copy=True)
+        out[..., 2] = np.mod(base[..., 4] + base[..., 2], 4.0 * np.pi)
+        out[..., 4] = np.mod(base[..., 4] - base[..., 2], 4.0 * np.pi)
+        return out
+
+    def to_physical_coordinates(self, theta5):
+        theta5 = np.asarray(theta5, dtype=float)
+        base = np.array(theta5, copy=True)
+        base[..., 2] = np.mod(0.5 * (theta5[..., 2] - theta5[..., 4]), np.pi)
+        base[..., 4] = np.mod(0.5 * (theta5[..., 2] + theta5[..., 4]), 2.0 * np.pi)
+        return self.likelihood.to_physical_coordinates(base)
+
+    def value(self, theta5):
+        return float(self._scalar(jnp.asarray(theta5, dtype=jnp.float64)))
+
+    def value_and_grad(self, theta5):
+        value, grad = self._value_and_grad(jnp.asarray(theta5, dtype=jnp.float64))
+        return float(value), np.asarray(grad)
+
+    def fisher(self, theta5):
+        return -np.asarray(self._hessian(jnp.asarray(theta5, dtype=jnp.float64)))
+
+
 class JAXDistanceMarginalizedLikelihood:
     """Distance- and time-marginalized lnL over the 5 angular parameters.
 
