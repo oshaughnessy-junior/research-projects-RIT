@@ -202,6 +202,29 @@ def test_fixed_distance_likelihood_can_center_periodic_phase():
     np.testing.assert_allclose(fixed.value(sampler_theta), 0.0, atol=1e-12)
 
 
+def test_rotated_phase_wrapper_roundtrips_and_preserves_likelihood():
+    from RIFT.likelihood.jax_ile import wrapper
+
+    raw = object.__new__(wrapper.JAXExtrinsicLikelihood)
+    raw.data = object(); raw.interp = "linear"
+    raw.phase_marginalization = False; raw.time_quadrature = "simpson"
+    raw._scalar = lambda theta: theta[2] + 2.0 * theta[4]
+    raw.log_likelihood = lambda ra, dec, psi, incl, phase, dist: psi + 2 * phase
+    fixed = wrapper.JAXFixedDistanceLikelihood(raw, 17.0, phase_shift=np.pi)
+    rotated = wrapper.JAXRotatedPhaseLikelihood(fixed)
+    physical = np.array([1.2, 0.3, 0.5, 1.05, 0.2])
+    theta = rotated.to_sampler_coordinates(physical)
+
+    assert rotated.ANGULAR_PARAM_ORDER == (
+        "ra", "dec", "phase_p", "incl", "phase_m")
+    np.testing.assert_allclose(rotated.to_physical_coordinates(theta), physical)
+    np.testing.assert_allclose(rotated.value(theta), 0.9)
+    for name in ("phase_p", "phase_m"):
+        lo, hi, density = samplers._av_prior_spec(name, 1.0, 100.0)
+        assert (lo, hi) == (0.0, 4.0 * np.pi)
+        np.testing.assert_allclose(density(np.array([1.0])), 1.0 / (4.0 * np.pi))
+
+
 def test_av_and_seeded_portfolio_return_driver_contract():
     common = dict(d_min=1.0, d_max=100.0, nmax=20000, neff=25,
                   n_chunk=2000, eval_chunk=512, seed=11, verbose=False)

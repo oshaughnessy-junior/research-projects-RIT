@@ -2401,6 +2401,8 @@ def _av_prior_draw(order, n, rng, d_min, d_max, sample_bounds=None):
     inc_lo, inc_hi = interval("incl") if "incl" in order else (0.0, _PI)
     phase_name = "phiref_shifted" if "phiref_shifted" in order else "phiref"
     phase_lo, phase_hi = interval(phase_name) if phase_name in order else (0.0, _TWO_PI)
+    pp_lo, pp_hi = interval("phase_p") if "phase_p" in order else (0.0, 2.0 * _TWO_PI)
+    pm_lo, pm_hi = interval("phase_m") if "phase_m" in order else (0.0, 2.0 * _TWO_PI)
     dist_lo, dist_hi = interval("distMpc") if "distMpc" in order else (d_min, d_max)
     draws = {
         "ra": rng.uniform(ra_lo, ra_hi, n),
@@ -2409,6 +2411,8 @@ def _av_prior_draw(order, n, rng, d_min, d_max, sample_bounds=None):
         "incl": np.arccos(rng.uniform(np.cos(inc_hi), np.cos(inc_lo), n)),
         "phiref": rng.uniform(phase_lo, phase_hi, n),
         "phiref_shifted": rng.uniform(phase_lo, phase_hi, n),
+        "phase_p": rng.uniform(pp_lo, pp_hi, n),
+        "phase_m": rng.uniform(pm_lo, pm_hi, n),
         "distMpc": np.cbrt(rng.uniform(dist_lo ** 3, dist_hi ** 3, n)),
     }
     return np.column_stack([draws[name] for name in order])
@@ -2429,6 +2433,9 @@ def _av_prior_spec(name, d_min, d_max, sample_d_min=None, sample_d_max=None,
                 lambda x: 0.5 * np.maximum(np.sin(np.asarray(x)), 0.0))
     elif name in ("phiref", "phiref_shifted"):
         spec = (0.0, _TWO_PI, lambda x: np.ones(np.shape(x)) / _TWO_PI)
+    elif name in ("phase_p", "phase_m"):
+        spec = (0.0, 2.0 * _TWO_PI,
+                lambda x: np.ones(np.shape(x)) / (2.0 * _TWO_PI))
     elif name == "distMpc":
         norm = 3.0 / (float(d_max) ** 3 - float(d_min) ** 3)
         spec = (float(d_min if sample_d_min is None else sample_d_min),

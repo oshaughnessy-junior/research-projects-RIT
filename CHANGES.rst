@@ -14,6 +14,8 @@ development tree is rift_O4d.
    support high-SNR validation cases.  Standalone AV returns its exact weighted
    retained population; portfolio can return a fair draw and uses a defensive
    GMM component for full support.
+   ``JAXRotatedPhaseLikelihood`` mirrors conventional ILE's
+   ``--internal-rotate-phase`` coordinates for high-SNR AV calculations.
 
 ** NEW, jax ILE (opt-in): ``--direct-marginalization-policy auto`` for
    ``--mode flowmc-phipsimarg`` composes PR #268's four-axis peak-local

@@ -288,6 +288,10 @@ six-dimensional likelihood for controlled validation problems.  It can also
 shift the periodic phase coordinate so a narrow mode at physical phase zero is
 not split across the sampler's box boundary; exported points must be mapped
 back with ``to_physical_coordinates``.
+``JAXRotatedPhaseLikelihood`` supplies the conventional
+``--internal-rotate-phase`` sum/difference coordinates on a redundant
+``[0,4 pi)`` cover, making the leading phase--polarization ridge axis-aligned
+for AV as well as for gradient samplers.
 
 `bin/integrate_likelihood_extrinsic_jax` mirrors the ILE CLI/output conventions
 and uses the JAX likelihood.
