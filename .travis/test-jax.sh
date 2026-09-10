@@ -516,6 +516,7 @@ FILES=(
   "${JAXDIR}/test_jax_slowrot_cauchy_schwarz.py"
   "${JAXDIR}/test_network_coords.py"
   "${JAXDIR}/test_nuts_phimarg.py"
+  "${JAXDIR}/test_jax_av.py"
   "${JAXDIR}/test_jax_fairdraw_export.py"
   "${JAXDIR}/test_jax_tempering_chooser.py"
   "${JAXDIR}/test_tvals_grid_convention.py"
@@ -1064,7 +1065,9 @@ fi
 # script's own collection line on ldas-pcdev12 (~/.cache/jaxci_venv, CPU) after rebasing on
 # rift_O4d 336f86133: "collected 763 tests from 46 files".  The #312/#313 merges had left
 # three EXPECTED_TESTS= assignments (761, 755, 762; last wins); this is the single one.
-EXPECTED_TESTS=763
+# 2026-09-10: +22 value-only AV/portfolio, prior-window, wrapper, and driver
+# contract tests in test_jax_av.py.
+EXPECTED_TESTS=785
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
