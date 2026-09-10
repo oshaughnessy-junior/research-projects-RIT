@@ -399,6 +399,79 @@ def check_critical_and_report(opts, optp):
         fatal.append("--smc-is-samples must be >= 0; a negative count reaches "
                      "the SMC proposal draw, whose exception handler would "
                      "silently fall back to the raw SMC evidence")
+    _sampler_method = getattr(opts, "sampler_method", None)
+    _jax_av_active = _sampler_method in ("AV", "portfolio")
+    if _jax_av_active:
+        try:
+            resolve_av_angular_limits(opts)
+        except SystemExit as exc:
+            fatal.append(str(exc).strip())
+        if getattr(opts, "mode", None) in ("map", "nuts", "multistart-nuts",
+                                            "nuts-phimarg"):
+            fatal.append("--sampler-method %s cannot override the chain/optimizer "
+                         "mode --mode %s; use laplace-is or a flowmc-* mode to "
+                         "select the desired JAX likelihood geometry"
+                         % (_sampler_method, getattr(opts, "mode", None)))
+        if int(getattr(opts, "n_eff", None) or 1000) <= 0:
+            fatal.append("--n-eff must be positive for --sampler-method %s"
+                         % _sampler_method)
+        if int(getattr(opts, "jax_av_seed_pilot", 4000)) <= 0:
+            fatal.append("--jax-av-seed-pilot must be positive")
+        if int(getattr(opts, "jax_av_seed_modes", 4)) <= 0:
+            fatal.append("--jax-av-seed-modes must be positive")
+        _seed_points = getattr(opts, "jax_av_seed_points", None)
+        if _seed_points is not None and int(_seed_points) <= 0:
+            fatal.append("--jax-av-seed-points must be positive")
+        _eval_chunk = getattr(opts, "jax_av_eval_chunk", None)
+        if _eval_chunk is not None and int(_eval_chunk) <= 0:
+            fatal.append("--jax-av-eval-chunk must be positive")
+        if float(getattr(opts, "jax_av_sky_inflate", 2.0)) <= 0:
+            fatal.append("--jax-av-sky-inflate must be positive")
+        _prior_frac = float(getattr(opts, "jax_av_seed_prior_frac", 0.1))
+        if not (0.0 <= _prior_frac <= 1.0):
+            fatal.append("--jax-av-seed-prior-frac must lie in [0,1]")
+        _members = [s.strip().upper()
+                    for item in (getattr(opts, "sampler_portfolio", None) or [])
+                    for s in str(item).split(",") if s.strip()]
+        if _sampler_method == "AV" and _members:
+            fatal.append("--sampler-portfolio is inert with --sampler-method AV")
+        if any(name not in ("AV", "GMM") for name in _members):
+            fatal.append("the JAX portfolio supports only AV and GMM members; got %s"
+                         % ",".join(_members))
+        if getattr(opts, "jax_av_seed", "none") == "none":
+            for _name in ("--jax-av-seed-pilot", "--jax-av-seed-modes",
+                          "--jax-av-seed-points", "--jax-av-sky-inflate",
+                          "--jax-av-seed-prior-frac"):
+                if was_supplied(opts, _name):
+                    fatal.append("%s is inert with --jax-av-seed none" % _name)
+        for _name in ("--auto-adapt-weight-exponent", "--target-export-ess-frac",
+                      "--allow-degenerate-tempering", "--adapt-adapt",
+                      "--temper-init", "--temper-ess-frac",
+                      "--temper-max-stages", "--temper-max-dbeta",
+                      "--fisher-precondition", "--fisher-is-samples",
+                      "--smc-puffball", "--smc-walkers", "--smc-move-steps",
+                      "--smc-is-samples", "--smc-puff-scale"):
+            if was_supplied(opts, _name):
+                fatal.append("%s configures the mode's gradient/SMC sampler and "
+                             "is inert under --sampler-method %s"
+                             % (_name, _sampler_method))
+    else:
+        for _name in ("--sampler-portfolio", "--sampler-anisotropic-bins",
+                      "--n-eff"):
+            if was_supplied(opts, _name):
+                fatal.append("%s is inert unless --sampler-method AV/portfolio"
+                             % _name)
+        for _name in ("--jax-av-seed", "--jax-av-seed-pilot",
+                      "--jax-av-seed-modes", "--jax-av-seed-points",
+                      "--jax-av-sky-inflate", "--jax-av-seed-prior-frac",
+                      "--jax-av-eval-chunk"):
+            if was_supplied(opts, _name):
+                fatal.append("%s requires --sampler-method AV/portfolio" % _name)
+        # ``was_supplied`` deliberately fails open when an in-process caller
+        # has no argv provenance.  The non-default value itself is conclusive.
+        if getattr(opts, "jax_av_seed", "none") != "none" \
+                and not any("--jax-av-seed requires" in item for item in fatal):
+            fatal.append("--jax-av-seed requires --sampler-method AV/portfolio")
     if is_set("--psi-marginalization"):
         fatal.append("--psi-marginalization (analytic polarization-angle "
                      "marginalization) is not implemented for psi-sampling modes "
@@ -628,7 +701,8 @@ def check_critical_and_report(opts, optp):
     # Refused HERE, before precompute: with a full-sky prior the stop below is
     # not a chance event but the first chunk (see _EVAL_LNL_STOP_MODES).
     _hw = getattr(opts, "data_integration_window_half", None)
-    if (_tq == "bandlimited" and getattr(opts, "mode", None) in _EVAL_LNL_STOP_MODES
+    if (_tq == "bandlimited" and (getattr(opts, "mode", None) in _EVAL_LNL_STOP_MODES
+                                  or _jax_av_active)
             and _hw is not None
             and float(_hw) < _BANDLIMITED_FULLSKY_HALF_WINDOW_MIN):
         optp.error(
@@ -684,7 +758,17 @@ def check_critical_and_report(opts, optp):
     # and nuts-phimarg, where they are inert -- exactly the silent no-op this
     # driver's compat layer exists to prevent.
     mode = getattr(opts, "mode", None)
-    if mode in _TEMPERED_MODES:
+    if getattr(opts, "sampler_method", None) in ("AV", "portfolio"):
+        implemented |= {"--sampler-method", "--n-eff",
+                        "--sampler-anisotropic-bins",
+                        "--limit-right-ascension", "--limit-declination",
+                        "--limit-psi", "--limit-inclination"}
+        if getattr(opts, "sampler_method", None) == "portfolio":
+            implemented.add("--sampler-portfolio")
+    _tempered_mode_active = (mode in _TEMPERED_MODES
+                             and getattr(opts, "sampler_method", None)
+                             not in ("AV", "portfolio"))
+    if _tempered_mode_active:
         # static tempering exponent (samplers.flowmc_sample*: inv_T = 1/temper)
         implemented.add("--adapt-weight-exponent")
     if mode in _FAIRDRAW_MODES:
@@ -701,7 +785,7 @@ def check_critical_and_report(opts, optp):
     # counterpart), so the loop above cannot see them -- and they act ONLY on the
     # tempered modes.  Report them explicitly rather than let a user's chooser
     # request evaporate under --mode laplace-is, which is the driver default.
-    if mode not in _TEMPERED_MODES:
+    if not _tempered_mode_active:
         inert = [n for n in ("--auto-adapt-weight-exponent",
                              "--allow-degenerate-tempering")
                  if getattr(opts, _dest(n), False)]
@@ -902,6 +986,37 @@ def build_parser():
                       "factored-likelihood amplitude degeneracy; required for nuts).")
     g.add_option("--n-max", type=int, default=300000)
     g.add_option("--n-chunk", type=int, default=8000)
+    g.add_option("--n-eff", type=int, default=None,
+                 help="Target effective sample count for --sampler-method AV/portfolio "
+                      "(default 1000 on those backends).")
+    g.add_option("--sampler-method", default=None,
+                 help="Optional non-AD integration backend: AV or portfolio.  The "
+                      "existing --mode still selects the JAX likelihood geometry; "
+                      "other legacy values remain accepted as compatibility no-ops.")
+    g.add_option("--sampler-portfolio", action="append", default=[],
+                 help="Portfolio members (repeat or comma-separate; JAX path supports "
+                      "AV and GMM, default AV,GMM).")
+    g.add_option("--sampler-anisotropic-bins", action="store_true", default=False,
+                 help="Allocate AV bins preferentially along compressed coordinates.")
+    g.add_option("--jax-av-seed", type="choice", choices=("none", "fisher-sky"),
+                 default="none",
+                 help="Optional JAX initializer for AV/portfolio: hill-climb several "
+                      "modes, use their Fisher curvature on sky, and draw all other "
+                      "coordinates from the physical prior (default none).")
+    g.add_option("--jax-av-eval-chunk", type=int, default=None,
+                 help="Fixed JAX likelihood batch inside each AV coverage chunk "
+                      "(default min(--n-chunk, the JAX memory-aware default)).")
+    g.add_option("--jax-av-seed-pilot", type=int, default=4000,
+                 help="Prior likelihood evaluations used to find hill-climb starts.")
+    g.add_option("--jax-av-seed-modes", type=int, default=4,
+                 help="Maximum separated sky modes retained by the Fisher-sky seed.")
+    g.add_option("--jax-av-seed-points", type=int, default=None,
+                 help="Seed-cloud size (default --n-chunk).")
+    g.add_option("--jax-av-sky-inflate", type=float, default=2.0,
+                 help="Standard-deviation inflation of the local Fisher sky proposal.")
+    g.add_option("--jax-av-seed-prior-frac", type=float, default=0.1,
+                 help="Fraction of the seed cloud drawn from the full physical prior. "
+                      "The portfolio GMM, not this finite cloud, guarantees full support.")
     g.add_option("--d-min", type=float, default=1.0, help="Min distance (Mpc).")
     g.add_option("--d-max", type=float, default=10000.0, help="Max distance (Mpc).")
 
@@ -1587,6 +1702,43 @@ def resolve_distance_limit(opts):
         return distance_limit_range(v, opts.d_min, opts.d_max)
     except ValueError as exc:
         raise SystemExit(" --limit-distance: %s" % exc)
+
+
+def resolve_av_angular_limits(opts):
+    """Return validated AV-only angular sampling windows.
+
+    The likelihood prior remains normalized on the full physical domain.  These
+    limits therefore restrict the region integrated; they do not define a new,
+    box-normalized prior.  Wraparound RA windows are intentionally refused until
+    AV can represent their union as more than one hyperrectangle.
+    """
+    specs = (("limit_right_ascension", "ra", 0.0, 2.0 * np.pi),
+             ("limit_declination", "dec", -0.5 * np.pi, 0.5 * np.pi),
+             ("limit_psi", "psi", 0.0, np.pi),
+             ("limit_inclination", "incl", 0.0, np.pi))
+    out = {}
+    for attr, name, physical_lo, physical_hi in specs:
+        raw = getattr(opts, attr, None)
+        if raw in (None, ""):
+            continue
+        try:
+            parts = [float(item.strip()) for item in str(raw).split(",")]
+        except ValueError:
+            parts = []
+        if len(parts) != 2 or not np.all(np.isfinite(parts)):
+            raise SystemExit(" --limit-%s must be a finite LO,HI pair" %
+                             attr[len("limit_"):].replace("_", "-"))
+        lo, hi = parts
+        if lo >= hi:
+            raise SystemExit(" --limit-%s requires LO < HI (RA wraparound is "
+                             "not supported)" %
+                             attr[len("limit_"):].replace("_", "-"))
+        if lo < physical_lo or hi > physical_hi:
+            raise SystemExit(" --limit-%s must lie within [%g,%g]" %
+                             (attr[len("limit_"):].replace("_", "-"),
+                              physical_lo, physical_hi))
+        out[name] = (lo, hi)
+    return out
 
 
 def log_distance_box_correction(opts, with_distance):
@@ -3142,7 +3294,42 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
         return lnL_map, None
 
     out_flow_state = None
-    if opts.mode in ("multistart-nuts", "flowmc", "flowmc-phimarg",
+    if getattr(opts, "sampler_method", None) in ("AV", "portfolio"):
+        from RIFT.likelihood.jax_ile import samplers as _samplers
+        _portfolio_members = [
+            name.strip() for item in (opts.sampler_portfolio or [])
+            for name in str(item).split(",") if name.strip()]
+        if not _portfolio_members:
+            _portfolio_members = ["AV", "GMM"]
+        _sample_bounds = resolve_av_angular_limits(opts)
+        print("  JAX-%s: value-only integration, coverage chunk=%d, eval chunk=%s%s"
+              % (opts.sampler_method, opts.n_chunk,
+                 (str(opts.jax_av_eval_chunk)
+                  if opts.jax_av_eval_chunk is not None else "auto"),
+                 ("; members=" + ",".join(_portfolio_members))
+                 if opts.sampler_method == "portfolio" else ""))
+        res = _samplers.adaptive_volume_sample(
+            like, opts.d_min, opts.d_max,
+            sampler_method=opts.sampler_method,
+            portfolio_members=_portfolio_members,
+            nmax=opts.n_max, neff=(opts.n_eff or 1000),
+            n_chunk=opts.n_chunk, eval_chunk=opts.jax_av_eval_chunk,
+            seed=opts.seed, seed_method=opts.jax_av_seed,
+            seed_pilot=opts.jax_av_seed_pilot,
+            seed_modes=opts.jax_av_seed_modes,
+            seed_points=opts.jax_av_seed_points,
+            sky_inflate=opts.jax_av_sky_inflate,
+            seed_prior_frac=opts.jax_av_seed_prior_frac,
+            anisotropic_bins=opts.sampler_anisotropic_bins,
+            verbose=opts.verbose, sample_d_min=d_lo, sample_d_max=d_hi,
+            sample_bounds=_sample_bounds)
+        theta, lnL = res["theta"], res["lnL"]
+        logZ, sig, neff = res["logZ"], res["sigma_over_Z"], res["neff"]
+        ntot = res["n_eval"]
+        logw_export = res.get("log_weight")
+        print("  JAX-%s resolved fixed eval chunk=%d"
+              % (opts.sampler_method, res["eval_chunk"]))
+    elif opts.mode in ("multistart-nuts", "flowmc", "flowmc-phimarg",
                      "flowmc-phipsimarg", "flowmc-dpsimarg", "nuts-phimarg"):
         if opts.mode not in ("flowmc-phimarg", "flowmc-phipsimarg",
                              "flowmc-dpsimarg", "nuts-phimarg") and with_distance:

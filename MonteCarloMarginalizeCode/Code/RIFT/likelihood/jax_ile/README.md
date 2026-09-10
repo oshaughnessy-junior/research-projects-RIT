@@ -257,6 +257,38 @@ to different nonzero values.  See `core.make_distance_gh` /
 
 ## Driver
 
+### Value-only adaptive volume and portfolio
+
+The opt-in ``--sampler-method AV`` and ``--sampler-method portfolio`` paths use
+the same JAX likelihood selected by ``--mode`` but do not differentiate it
+during integration.  Likelihood rows are evaluated in one fixed JAX shape;
+``--jax-av-eval-chunk`` therefore controls accelerator memory independently of
+the larger ``--n-chunk`` used to cover and contract the adaptive volume.
+
+Portfolio defaults to AV plus a defensive GMM member.  An optional Fisher-sky
+initializer pays an explicit, one-time AD cost for hill climbing and local
+curvature; every integration evaluation remains value-only.  A finite seed
+cloud does not itself guarantee prior support.  For blind/full-prior inference,
+use the defensive portfolio rather than interpreting seeded standalone AV as a
+global calculation.
+
+For deliberately local tests, AV/portfolio honor
+``--limit-right-ascension``, ``--limit-declination``, ``--limit-psi``, and
+``--limit-inclination`` as comma-separated sampling limits.  These restrict the
+domain sampled while the integrand retains the normalized full physical prior.
+Consequently the evidence is the full-prior contribution from that domain; it
+is not conditional on the box and must not receive an inverse-volume correction.
+A widened-box repeat and a posterior edge-contact check are required before the
+boxed contribution can be identified with the all-sky evidence.  RA windows
+that cross 0/2pi are refused because one AV hyperrectangle cannot represent the
+wrapped union.
+
+``JAXFixedDistanceLikelihood`` provides a five-angular-coordinate view of the
+six-dimensional likelihood for controlled validation problems.  It can also
+shift the periodic phase coordinate so a narrow mode at physical phase zero is
+not split across the sampler's box boundary; exported points must be mapped
+back with ``to_physical_coordinates``.
+
 `bin/integrate_likelihood_extrinsic_jax` mirrors the ILE CLI/output conventions
 and uses the JAX likelihood.
 
