@@ -1741,6 +1741,14 @@ def resolve_av_angular_limits(opts):
     return out
 
 
+def av_distance_sampling_kwargs(like, d_lo, d_hi):
+    """Apply distance limits only when distance is an sampled coordinate."""
+    from RIFT.likelihood.jax_ile import samplers as _samplers
+    if "distMpc" not in _samplers._av_param_order(like):
+        return {}
+    return {"sample_d_min": d_lo, "sample_d_max": d_hi}
+
+
 def log_distance_box_correction(opts, with_distance):
     """ln[ prior mass on (d_min,d_max) / prior mass on the sampled box ]; 0.0 unless
     --limit-distance narrowed the box.
@@ -3308,6 +3316,7 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
                   if opts.jax_av_eval_chunk is not None else "auto"),
                  ("; members=" + ",".join(_portfolio_members))
                  if opts.sampler_method == "portfolio" else ""))
+        _distance_sampling = av_distance_sampling_kwargs(like, d_lo, d_hi)
         res = _samplers.adaptive_volume_sample(
             like, opts.d_min, opts.d_max,
             sampler_method=opts.sampler_method,
@@ -3321,8 +3330,8 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
             sky_inflate=opts.jax_av_sky_inflate,
             seed_prior_frac=opts.jax_av_seed_prior_frac,
             anisotropic_bins=opts.sampler_anisotropic_bins,
-            verbose=opts.verbose, sample_d_min=d_lo, sample_d_max=d_hi,
-            sample_bounds=_sample_bounds)
+            verbose=opts.verbose, sample_bounds=_sample_bounds,
+            **_distance_sampling)
         theta, lnL = res["theta"], res["lnL"]
         logZ, sig, neff = res["logZ"], res["sigma_over_Z"], res["neff"]
         ntot = res["n_eval"]

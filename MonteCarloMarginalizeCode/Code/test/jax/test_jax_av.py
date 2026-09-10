@@ -335,3 +335,27 @@ def test_driver_refuses_seed_knobs_without_jax_av_backend(monkeypatch):
     opts, _ = parser.parse_args(["--jax-av-seed", "fisher-sky"])
     with pytest.raises(SystemExit):
         driver.check_critical_and_report(opts, parser)
+
+
+def test_driver_distance_limits_follow_likelihood_dimension(monkeypatch):
+    monkeypatch.delenv("JAX_ILE_DISTMARG_GH", raising=False)
+    driver = _driver_module()
+    assert driver.av_distance_sampling_kwargs(_ToySkyLikelihood(), 10.0, 90.0) == {}
+
+    class WithDistance:
+        ANGULAR_PARAM_ORDER = ("ra", "dec", "distMpc")
+
+    assert driver.av_distance_sampling_kwargs(WithDistance(), 10.0, 90.0) == {
+        "sample_d_min": 10.0, "sample_d_max": 90.0}
+
+
+def test_fisher_sky_seed_respects_restricted_sky_window():
+    like = _ToySkyLikelihood()
+    callback = samplers._fixed_shape_value_callback(like, 3, 64)
+    bounds = {"ra": (1.8, 2.2), "dec": (0.0, 0.4)}
+    cloud, _, _ = samplers._fisher_sky_seed(
+        like, like.ANGULAR_PARAM_ORDER, callback, np.random.default_rng(71),
+        1.0, 100.0, n_seed=400, n_pilot=100, n_modes=1,
+        sky_inflate=2.0, prior_frac=0.1, sample_bounds=bounds)
+    assert np.all((cloud[:, 0] >= 1.8) & (cloud[:, 0] <= 2.2))
+    assert np.all((cloud[:, 1] >= 0.0) & (cloud[:, 1] <= 0.4))

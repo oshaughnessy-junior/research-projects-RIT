@@ -2579,9 +2579,16 @@ def _fisher_sky_seed(like, order, lnL, rng, d_min, d_max, n_seed,
         if count == 0:
             continue
         sky = rng.multivariate_normal(mode[:2], cov, size=count)
-        focused[cursor:cursor + count, 0] = np.mod(sky[:, 0], _TWO_PI)
+        ra_lo, ra_hi = bounds[0]
+        dec_lo, dec_hi = bounds[1]
+        sky[:, 0] = np.mod(sky[:, 0], _TWO_PI)
+        # A restricted, non-wrapping RA window cannot use periodic wrap as a
+        # boundary condition. Clip the seed proposal to the declared window;
+        # integration weights remain governed by the physical prior.
+        focused[cursor:cursor + count, 0] = np.clip(
+            sky[:, 0], ra_lo + 1e-9, ra_hi - 1e-9)
         focused[cursor:cursor + count, 1] = np.clip(
-            sky[:, 1], -_PI / 2 + 1e-6, _PI / 2 - 1e-6)
+            sky[:, 1], dec_lo + 1e-9, dec_hi - 1e-9)
         cursor += count
     cloud = focused
     if n_prior:
