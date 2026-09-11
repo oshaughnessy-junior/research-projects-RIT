@@ -3,6 +3,16 @@
 ------------
 development tree is rift_O4d.
 
+** BUG FIX, jax ILE AV/portfolio: ``--d-prior pseudo_cosmo`` is now threaded
+   into the adaptive-volume physical prior density and its optional seed draws,
+   with normalization over the declared physical distance range.  Previously
+   the compatibility parser accepted this production pseudo-pipe setting but
+   explicitly ignored it and used Euclidean ``d_L^2``; an exact-grid GW240426
+   preflight exposed a multi-nat, intrinsic-dependent likelihood shift.  AV now
+   supports Euclidean/volumetric and ``pseudo_cosmo`` and refuses other distance
+   priors before likelihood construction.  Non-AV JAX sampler modes retain
+   their existing explicit accepted-but-ignored warning.
+
 ** NEW, jax ILE (opt-in): ``--sampler-method AV`` and ``portfolio`` run the
    adaptive-volume and AV+GMM production integrators against fixed-shape,
    value-only JAX likelihood batches.  ``--jax-av-eval-chunk`` decouples GPU
@@ -900,3 +910,12 @@ Since last release
 ------------------------------
 
   - This is the initial release.  
+* The JAX ILE driver now implements production ``--srate-internal`` data
+  upsampling and waveform cadence, and forwards the frequency-domain waveform
+  alignment, ``--internal-waveform-fd-L-frame``, and
+  ``--internal-waveform-fd-no-condition`` controls into likelihood
+  precomputation.  Previously the compatibility parser accepted the latter two
+  options but ignored them, which could change real-data likelihood values.
+  The same parity repair makes production's default no-mode-truncation policy,
+  optional ``--internal-precompute-ignore-threshold``, memory-mode control,
+  detector low-frequency cutoffs, and PSD-window normalization explicit.
