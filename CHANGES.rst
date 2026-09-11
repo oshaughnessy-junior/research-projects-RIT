@@ -31,6 +31,10 @@ development tree is rift_O4d; PRs refer to oshaughn/research-projects-RIT.
      publication.  Extend slow-rotation/finite-size response support and cross-term batching; expand
      CPU/JAX regression and CI-roster coverage (fork PRs #214, #245, #247, #255, #268, #270,
      #274, #280--#285, #294, #301--#315, #319).
+     The terminal pseudo-pipe stage now recognizes JAX-ILE's tabular fair-draw
+     sidecars and joins them to the paired intrinsic likelihood records.  It no
+     longer sends JAX output through the XML-only converter, which could exit
+     successfully while producing a header-only posterior.
 
 0.0.17.12
 ---------
