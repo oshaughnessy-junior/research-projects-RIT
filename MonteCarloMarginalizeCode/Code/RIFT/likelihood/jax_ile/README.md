@@ -264,6 +264,11 @@ the same JAX likelihood selected by ``--mode`` but do not differentiate it
 during integration.  Likelihood rows are evaluated in one fixed JAX shape;
 ``--jax-av-eval-chunk`` therefore controls accelerator memory independently of
 the larger ``--n-chunk`` used to cover and contract the adaptive volume.
+AV/portfolio honor the production ``--d-prior pseudo_cosmo`` distance density,
+including its normalization over ``[--d-min, --d-max]``; Euclidean/volumetric
+remains the default.  Other cosmological distance-prior variants are refused
+for this backend rather than silently changed.  A sampling-only
+``--limit-distance`` does not renormalize either physical prior.
 
 Portfolio defaults to AV plus a defensive GMM member.  An optional Fisher-sky
 initializer pays an explicit, one-time AD cost for hill climbing and local
@@ -536,3 +541,14 @@ the mode-covering samplers above.  Further hardening available to compound:
 Not yet ported (structured for): in-loop calibration marginalization
 (`n_cal>1`) and the lookup-table distance marginalization (we use direct grid
 quadrature instead, which is AD-friendly and needs no precomputed table).
+Waveform precomputation uses the same two-second post-event FD alignment as
+production numpy ILE.  The compatibility options
+``--internal-waveform-fd-L-frame`` and
+``--internal-waveform-fd-no-condition`` are forwarded to the production
+precompute call; they are not JAX-only transformations.
+Input frames are first loaded at ``--srate`` and, when requested, upsampled to
+``--srate-internal`` before the mode time series are constructed, matching the
+two-cadence production ILE path.
+The production defaults also retain all modes (no implicit precompute
+threshold), retain memory modes unless ``--no-memory`` is given, and apply the
+same ``--fmin-ifo`` and PSD-window normalization to each detector.

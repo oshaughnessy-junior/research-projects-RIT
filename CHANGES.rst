@@ -1,6 +1,13 @@
 0.0.18.0
 ------------
 development tree is rift_O4d; PRs refer to oshaughn/research-projects-RIT.
+
+** BUG FIX, jax ILE AV/portfolio: production pseudo-pipe controls for the
+   distance prior, internal sample rate, mode retention, detector cutoffs, PSD
+   conditioning, and time interpolation are now honored by the JAX driver.
+   Previously accepted compatibility options could silently change a real-data
+   likelihood.  The AV distance prior now supports Euclidean/volumetric and
+   ``pseudo_cosmo`` and refuses unsupported choices before construction.
    - (rc0) O4d base refresh: modern Python/numpy support, portable GPU execution, generic workflow
      backends, hyperpipe and simulation-manager support; distance-likelihood export, parsimonious
      placement preview, waveform utilities and diagnostics (PRs #129, #132, #135, #143).
