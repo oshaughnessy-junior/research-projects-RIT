@@ -152,6 +152,22 @@ conditional time per exported row.  This intentionally differs from
 conventional ILE's XML export semantics, but a high-level DAG can swap
 executables without dying during option parsing.
 
+For an Asimov/pseudo-pipe final fair-draw stage, the pipeline detects the JAX
+executable and runs `util_ConvertJAXILEFairdraws.py`.  The converter strictly
+pairs each tabular sidecar with its intrinsic likelihood record and writes the
+usual joint posterior coordinates that are actually available.  It omits
+`time`, which remains marginalized and is not exported by this driver, rather
+than fabricating a coordinate.  Redshift and source-frame masses are likewise
+not inferred; custom `--convert-args` are refused instead of silently ignored.
+The compatibility columns `p` and `ps` are both the neutral value one because
+the exported rows are already equal-weight fair draws.  Missing pairs,
+malformed records, nonfinite rows, noncontiguous grid IDs, or unexpected
+intrinsic/draw counts fail the terminal job and remove any stale terminal
+output.  Conventional ILE retains its existing XML conversion path.  The
+converter also writes a JSON provenance ledger beside the posterior, recording
+input and output hashes, row counts, shuffle seed, neutral columns, and omitted
+coordinates.
+
 ## Modules
 
 - `detector.py` — `compute_detamresponse`, `time_delay_from_earth_center`
@@ -256,6 +272,47 @@ to different nonzero values.  See `core.make_distance_gh` /
 `core._distmarg_gh_logL` and `DESIGN_jax_distance_quadrature.md`.
 
 ## Driver
+
+### Value-only adaptive volume and portfolio
+
+The opt-in ``--sampler-method AV`` and ``--sampler-method portfolio`` paths use
+the same JAX likelihood selected by ``--mode`` but do not differentiate it
+during integration.  Likelihood rows are evaluated in one fixed JAX shape;
+``--jax-av-eval-chunk`` therefore controls accelerator memory independently of
+the larger ``--n-chunk`` used to cover and contract the adaptive volume.
+AV/portfolio honor the production ``--d-prior pseudo_cosmo`` distance density,
+including its normalization over ``[--d-min, --d-max]``; Euclidean/volumetric
+remains the default.  Other cosmological distance-prior variants are refused
+for this backend rather than silently changed.  A sampling-only
+``--limit-distance`` does not renormalize either physical prior.
+
+Portfolio defaults to AV plus a defensive GMM member.  An optional Fisher-sky
+initializer pays an explicit, one-time AD cost for hill climbing and local
+curvature; every integration evaluation remains value-only.  A finite seed
+cloud does not itself guarantee prior support.  For blind/full-prior inference,
+use the defensive portfolio rather than interpreting seeded standalone AV as a
+global calculation.
+
+For deliberately local tests, AV/portfolio honor
+``--limit-right-ascension``, ``--limit-declination``, ``--limit-psi``, and
+``--limit-inclination`` as comma-separated sampling limits.  These restrict the
+domain sampled while the integrand retains the normalized full physical prior.
+Consequently the evidence is the full-prior contribution from that domain; it
+is not conditional on the box and must not receive an inverse-volume correction.
+A widened-box repeat and a posterior edge-contact check are required before the
+boxed contribution can be identified with the all-sky evidence.  RA windows
+that cross 0/2pi are refused because one AV hyperrectangle cannot represent the
+wrapped union.
+
+``JAXFixedDistanceLikelihood`` provides a five-angular-coordinate view of the
+six-dimensional likelihood for controlled validation problems.  It can also
+shift the periodic phase coordinate so a narrow mode at physical phase zero is
+not split across the sampler's box boundary; exported points must be mapped
+back with ``to_physical_coordinates``.
+``JAXRotatedPhaseLikelihood`` supplies the conventional
+``--internal-rotate-phase`` sum/difference coordinates on a redundant
+``[0,4 pi)`` cover, making the leading phase--polarization ridge axis-aligned
+for AV as well as for gradient samplers.
 
 `bin/integrate_likelihood_extrinsic_jax` mirrors the ILE CLI/output conventions
 and uses the JAX likelihood.
@@ -500,3 +557,14 @@ the mode-covering samplers above.  Further hardening available to compound:
 Not yet ported (structured for): in-loop calibration marginalization
 (`n_cal>1`) and the lookup-table distance marginalization (we use direct grid
 quadrature instead, which is AD-friendly and needs no precomputed table).
+Waveform precomputation uses the same two-second post-event FD alignment as
+production numpy ILE.  The compatibility options
+``--internal-waveform-fd-L-frame`` and
+``--internal-waveform-fd-no-condition`` are forwarded to the production
+precompute call; they are not JAX-only transformations.
+Input frames are first loaded at ``--srate`` and, when requested, upsampled to
+``--srate-internal`` before the mode time series are constructed, matching the
+two-cadence production ILE path.
+The production defaults also retain all modes (no implicit precompute
+threshold), retain memory modes unless ``--no-memory`` is given, and apply the
+same ``--fmin-ifo`` and PSD-window normalization to each detector.

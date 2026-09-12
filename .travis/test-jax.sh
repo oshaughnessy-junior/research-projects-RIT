@@ -516,6 +516,7 @@ FILES=(
   "${JAXDIR}/test_jax_slowrot_cauchy_schwarz.py"
   "${JAXDIR}/test_network_coords.py"
   "${JAXDIR}/test_nuts_phimarg.py"
+  "${JAXDIR}/test_jax_av.py"
   "${JAXDIR}/test_jax_fairdraw_export.py"
   "${JAXDIR}/test_jax_tempering_chooser.py"
   "${JAXDIR}/test_tvals_grid_convention.py"
@@ -1064,12 +1065,11 @@ fi
 # script's own collection line on ldas-pcdev12 (~/.cache/jaxci_venv, CPU) after rebasing on
 # rift_O4d 336f86133: "collected 763 tests from 46 files".  The #312/#313 merges had left
 # three EXPECTED_TESTS= assignments (761, 755, 762; last wins); this is the single one.
-# SEVENTEENTH, the multipeak host-side fix (#317).  Adds TWO tests to
-# test_angle_marg_multipeak_wiring.py: one that crosses the jitted _batched seam
-# the sampler actually uses, and one pinning the gradient refusal.  No removals,
-# none parametrized.  RE-MEASURED by running this script rather than added:
-# "collected 765 tests from 46 files".
-EXPECTED_TESTS=765
+# 2026-09-10: +22 value-only AV/portfolio, prior-window, wrapper, and driver
+# contract tests in test_jax_av.py.
+# The multipeak host-side fix (#317) adds two more tests in
+# test_angle_marg_multipeak_wiring.py, for 787 tests total.
+EXPECTED_TESTS=787
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"

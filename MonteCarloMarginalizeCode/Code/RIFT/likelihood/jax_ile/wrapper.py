@@ -50,6 +50,55 @@ EXTRINSIC_PARAM_ORDER = ("ra", "dec", "psi", "incl", "phiref", "distMpc")
 _TIME_SUPPORT_DELAY_MARGIN = 0.05
 
 
+def _apply_response_order_control(products, control, selected_p, selected_q):
+    """Estimate/check orders on a reference bank, then return the requested subset.
+
+    Kept here so both JAX builders use exactly the production U,V products.  The
+    import and the higher-order U,V scan happen only when ``control`` is
+    non-None, which is true only for an explicit check/choose CLI option.
+    """
+    if control is None:
+        return products, None
+    import warnings
+    from RIFT.likelihood import response_order
+
+    report = response_order.estimate_response_orders(
+        products[4], products[1], products[2],
+        target_snr=control['target_snr'],
+        lnL_tolerance=control.get('lnL_tolerance', 0.1),
+        n_samples=control.get('n_samples', 128),
+        selected_p=selected_p, selected_q=selected_q,
+        vary_p=control.get('check_p', False) or control.get('choose_p', False),
+        vary_q=control.get('check_q', False) or control.get('choose_q', False))
+    response_order.print_order_report(report)
+    if (control.get('check_p', False) or control.get('check_q', False)) \
+            and not report['selected_passes']:
+        warnings.warn(
+            "chosen response order fails the requested accuracy: predicted "
+            "Delta lnL={:.3g} > {:.3g} at SNR {:.6g}".format(
+                report['selected_delta_lnL'], report['lnL_tolerance'],
+                report['target_snr']), RuntimeWarning)
+
+    final_p, final_q = int(selected_p), int(selected_q)
+    if control.get('choose_p', False) or control.get('choose_q', False):
+        if not report['reference_resolved']:
+            raise ValueError(
+                "cannot auto-select from an unresolved finite response "
+                "reference; raise the diagnostic reference order")
+        if report['chosen'] is None:
+            raise ValueError(
+                "no response order in the diagnostic reference bank satisfies "
+                "the requested SNR/error budget")
+        if control.get('choose_p', False):
+            final_p = int(report['chosen']['p_max'])
+        if control.get('choose_q', False):
+            final_q = int(report['chosen']['Qmax'])
+    report['final_p'] = final_p
+    report['final_Q'] = final_q
+    return response_order.truncate_precompute_products(
+        products, p_max=final_p, q_max=final_q), report
+
+
 def bandlimited_storage_requirement(deltaT, integration_window_half):
     """Return ``(storage_half, g0, g_certificate)`` for adaptive time support."""
     tvals = factored_likelihood.marginalization_time_grid(
@@ -87,6 +136,7 @@ def build_rotation_data_from_precompute(P, data_dict, psd_dict, fiducial_epoch,
                                         p_max=0, analyticPSD_Q=False,
                                         inv_spec_trunc_Q=False, T_spec=0.0,
                                         tvals=None, verbose=False,
+                                        order_control=None,
                                         **precompute_kwargs):
     """One-call builder for the slow-rotation (Path A/B) banded JAX likelihood.
 
@@ -109,12 +159,25 @@ def build_rotation_data_from_precompute(P, data_dict, psd_dict, fiducial_epoch,
     import RIFT.likelihood.factored_likelihood_with_rotation as flwr
     from .banded import build_rotation_data
 
+    p_reference = (max(int(p_max), int(order_control.get('p_reference', p_max)))
+                   if order_control is not None and
+                   (order_control.get('check_p') or order_control.get('choose_p'))
+                   else int(p_max))
+    if order_control is not None:
+        from RIFT.likelihood import response_order
+        response_order.guard_reference_bank(
+            'rotation', p_reference, 0, Lmax, len(data_dict),
+            order_control.get('max_bank_gib', 4.0))
     ri, ct, ctV, rho, meta = flwr.PrecomputeLikelihoodTermsWithRotation(
         fiducial_epoch, t_window, P, data_dict, psd_dict, Lmax, fMax,
-        harmonics=harmonics, p_max=p_max, f_sidereal=flwr.F_SIDEREAL,
+        harmonics=harmonics, p_max=p_reference, f_sidereal=flwr.F_SIDEREAL,
         analyticPSD_Q=analyticPSD_Q, inv_spec_trunc_Q=inv_spec_trunc_Q,
         T_spec=T_spec, verbose=verbose, quiet=not verbose,
         skip_interpolation=True, **precompute_kwargs)
+    products, order_report = _apply_response_order_control(
+        (ri, ct, ctV, rho, meta), order_control,
+        selected_p=int(p_max), selected_q=0)
+    ri, ct, ctV, rho, meta = products
     lk, rbn, ubn, vbn, ep = flwr.pack_rotation_arrays(meta, rho, ct, ctV)
 
     deltaT = float(P.deltaT)
@@ -130,7 +193,7 @@ def build_rotation_data_from_precompute(P, data_dict, psd_dict, fiducial_epoch,
             integration_window_half, deltaT, xpy=np)
     data = build_rotation_data(meta, lk, rbn, ubn, vbn, ep, deltaT, tvals)
     extras = dict(meta=meta, rho_by_a=rbn, U_by_aa=ubn, V_by_aa=vbn,
-                  epochDict=ep, lookupNKDict=lk)
+                  epochDict=ep, lookupNKDict=lk, order_report=order_report)
     return data, extras
 
 
@@ -140,6 +203,7 @@ def build_freqresponse_data_from_precompute(P, data_dict, psd_dict, fiducial_epo
                                             analyticPSD_Q=False,
                                             inv_spec_trunc_Q=False, T_spec=0.0,
                                             tvals=None, verbose=False,
+                                            order_control=None,
                                             **precompute_kwargs):
     """One-call builder for the finite-size (Path D) banded JAX likelihood.
 
@@ -154,11 +218,23 @@ def build_freqresponse_data_from_precompute(P, data_dict, psd_dict, fiducial_epo
     import RIFT.likelihood.slowrot_freqresponse as sfr
     from .banded import build_freqresponse_data
 
+    q_reference = (max(int(Qmax), int(order_control.get('q_reference', Qmax)))
+                   if order_control is not None and
+                   (order_control.get('check_q') or order_control.get('choose_q'))
+                   else int(Qmax))
+    if order_control is not None:
+        from RIFT.likelihood import response_order
+        response_order.guard_reference_bank(
+            'finite', 0, q_reference, Lmax, len(data_dict),
+            order_control.get('max_bank_gib', 4.0))
     bk = flfr.PrecomputeLikelihoodTermsFreqResponse(
         fiducial_epoch, t_window, P, data_dict, psd_dict, Lmax, fMax,
-        Qmax=Qmax, L_arm=L_arm, analyticPSD_Q=analyticPSD_Q,
+        Qmax=q_reference, L_arm=L_arm, analyticPSD_Q=analyticPSD_Q,
         inv_spec_trunc_Q=inv_spec_trunc_Q, T_spec=T_spec, verbose=verbose,
         quiet=not verbose, skip_interpolation=True, **precompute_kwargs)
+    bk, order_report = _apply_response_order_control(
+        bk, order_control,
+        selected_p=0, selected_q=int(Qmax))
     meta = bk[4]
     lk, rbp, ubp, vbp, ep = flfr.pack_freqresponse_arrays(bk[4], bk[3], bk[1], bk[2])
 
@@ -181,7 +257,8 @@ def build_freqresponse_data_from_precompute(P, data_dict, psd_dict, fiducial_epo
     data = build_freqresponse_data(meta, lk, rbp, ubp, vbp, ep, deltaT, tvals,
                                    det_geom)
     extras = dict(meta=meta, rho_by_p=rbp, U_by_pp=ubp, V_by_pp=vbp,
-                  epochDict=ep, lookupNKDict=lk, det_geom=det_geom)
+                  epochDict=ep, lookupNKDict=lk, det_geom=det_geom,
+                  order_report=order_report)
     return data, extras
 
 
@@ -189,18 +266,34 @@ def build_rotating_freqresponse_data_from_precompute(
         P, data_dict, psd_dict, fiducial_epoch, integration_window_half,
         Lmax, fMax, t_window=0.1, Qmax=4, L_arm=None, p_max=0,
         analyticPSD_Q=False, inv_spec_trunc_Q=False, T_spec=0.0,
-        tvals=None, verbose=False, **precompute_kwargs):
+        tvals=None, verbose=False, order_control=None, **precompute_kwargs):
     """One-call builder for the compound rotation + finite-response likelihood."""
     import RIFT.likelihood.factored_likelihood_rotating_freqresponse as flrr
     import RIFT.likelihood.slowrot_freqresponse as sfr
     from .banded import build_rotating_freqresponse_data
 
+    p_reference = (max(int(p_max), int(order_control.get('p_reference', p_max)))
+                   if order_control is not None and
+                   (order_control.get('check_p') or order_control.get('choose_p'))
+                   else int(p_max))
+    q_reference = (max(int(Qmax), int(order_control.get('q_reference', Qmax)))
+                   if order_control is not None and
+                   (order_control.get('check_q') or order_control.get('choose_q'))
+                   else int(Qmax))
+    if order_control is not None:
+        from RIFT.likelihood import response_order
+        response_order.guard_reference_bank(
+            'combined', p_reference, q_reference, Lmax, len(data_dict),
+            order_control.get('max_bank_gib', 4.0))
     bk = flrr.PrecomputeLikelihoodTermsRotatingFreqResponse(
         fiducial_epoch, t_window, P, data_dict, psd_dict, Lmax, fMax,
-        Qmax=Qmax, L_arm=L_arm, p_max=p_max,
+        Qmax=q_reference, L_arm=L_arm, p_max=p_reference,
         analyticPSD_Q=analyticPSD_Q, inv_spec_trunc_Q=inv_spec_trunc_Q,
         T_spec=T_spec, verbose=verbose, quiet=not verbose,
         skip_interpolation=True, **precompute_kwargs)
+    bk, order_report = _apply_response_order_control(
+        bk, order_control,
+        selected_p=int(p_max), selected_q=int(Qmax))
     meta = bk[4]
     lk, rba, uba, vba, ep = flrr.pack_rotating_freqresponse_arrays(
         meta, bk[3], bk[1], bk[2])
@@ -216,7 +309,8 @@ def build_rotating_freqresponse_data_from_precompute(
     data = build_rotating_freqresponse_data(
         meta, lk, rba, uba, vba, ep, deltaT, tvals, det_geom)
     extras = dict(meta=meta, rho_by_a=rba, U_by_aa=uba, V_by_aa=vba,
-                  epochDict=ep, lookupNKDict=lk, det_geom=det_geom)
+                  epochDict=ep, lookupNKDict=lk, det_geom=det_geom,
+                  order_report=order_report)
     return data, extras
 
 
@@ -362,6 +456,139 @@ class JAXExtrinsicLikelihood:
         """Observed Fisher matrix ``-Hessian(lnL)`` at ``theta6`` (6x6)."""
         H = np.asarray(self._hessian(jnp.asarray(theta6, dtype=jnp.float64)))
         return -H
+
+
+class JAXFixedDistanceLikelihood:
+    """Five-angle view of :class:`JAXExtrinsicLikelihood` at fixed distance.
+
+    This is the fixed-distance geometry used by the high-SNR Event-B validation:
+    ``theta5 = (ra, dec, psi, incl, phiref)`` is sampled while ``distMpc`` is a
+    constant.  Keeping this as a likelihood view (instead of an extremely narrow
+    distance prior) removes a numerically artificial sixth direction from both
+    hill climbing and the observed Fisher matrix.
+    """
+
+    ANGULAR_PARAM_ORDER = ("ra", "dec", "psi", "incl", "phiref")
+
+    def __init__(self, likelihood, dist_mpc, phase_shift=0.0):
+        if not isinstance(likelihood, JAXExtrinsicLikelihood):
+            raise TypeError("likelihood must be a JAXExtrinsicLikelihood")
+        self.likelihood = likelihood
+        self.data = likelihood.data
+        self.dist_mpc = float(dist_mpc)
+        self.phase_shift = float(phase_shift)
+        if self.phase_shift:
+            self.ANGULAR_PARAM_ORDER = (
+                "ra", "dec", "psi", "incl", "phiref_shifted")
+        self.interp = likelihood.interp
+        self.phase_marginalization = likelihood.phase_marginalization
+        self.time_quadrature = likelihood.time_quadrature
+        if hasattr(likelihood, "time_guard_initial"):
+            self.time_guard_initial = likelihood.time_guard_initial
+            self.time_guard_certified = likelihood.time_guard_certified
+
+        distance = jnp.asarray([self.dist_mpc], dtype=jnp.float64)
+
+        def _scalar(theta5):
+            physical5 = theta5.at[4].set(
+                jnp.mod(theta5[4] + self.phase_shift, 2.0 * jnp.pi))
+            return likelihood._scalar(jnp.concatenate([physical5, distance]))
+
+        self._scalar = _scalar
+        self._value_and_grad = jax.jit(jax.value_and_grad(_scalar))
+        self._hessian = jax.jit(jax.hessian(_scalar))
+
+    def log_likelihood(self, ra, dec, psi, incl, phiref):
+        ra = jnp.asarray(ra)
+        distance = jnp.full_like(ra, self.dist_mpc)
+        return self.likelihood.log_likelihood(
+            ra, dec, psi, incl,
+            jnp.mod(jnp.asarray(phiref) + self.phase_shift, 2.0 * jnp.pi),
+            distance)
+
+    def to_sampler_coordinates(self, theta5):
+        """Map physical ``phiref`` to this view's shifted sampler coordinate."""
+        theta5 = np.array(theta5, dtype=float, copy=True)
+        theta5[..., 4] = np.mod(theta5[..., 4] - self.phase_shift, 2.0 * np.pi)
+        return theta5
+
+    def to_physical_coordinates(self, theta5):
+        """Map this view's sampler coordinate back to physical ``phiref``."""
+        theta5 = np.array(theta5, dtype=float, copy=True)
+        theta5[..., 4] = np.mod(theta5[..., 4] + self.phase_shift, 2.0 * np.pi)
+        return theta5
+
+    def value(self, theta5):
+        return float(self._scalar(jnp.asarray(theta5, dtype=jnp.float64)))
+
+    def value_and_grad(self, theta5):
+        value, grad = self._value_and_grad(
+            jnp.asarray(theta5, dtype=jnp.float64))
+        return float(value), np.asarray(grad)
+
+    def fisher(self, theta5):
+        hessian = np.asarray(
+            self._hessian(jnp.asarray(theta5, dtype=jnp.float64)))
+        return -hessian
+
+
+class JAXRotatedPhaseLikelihood:
+    """Rotate ``(psi, phiref)`` into AV-friendly sum/difference coordinates.
+
+    This mirrors conventional ILE's ``--internal-rotate-phase``.  Both rotated
+    coordinates live on ``[0, 4 pi)``; the redundant cover preserves the flat
+    physical angle prior and straightens the leading quadrupole degeneracy.
+    """
+
+    ANGULAR_PARAM_ORDER = ("ra", "dec", "phase_p", "incl", "phase_m")
+
+    def __init__(self, likelihood):
+        if tuple(getattr(likelihood, "ANGULAR_PARAM_ORDER", ())) not in (
+                ("ra", "dec", "psi", "incl", "phiref"),
+                ("ra", "dec", "psi", "incl", "phiref_shifted")):
+            raise TypeError("likelihood must expose ra,dec,psi,incl,phase coordinates")
+        self.likelihood = likelihood
+        for name in ("data", "interp", "phase_marginalization", "time_quadrature"):
+            setattr(self, name, getattr(likelihood, name))
+
+        def _scalar(theta):
+            psi = jnp.mod(0.5 * (theta[2] - theta[4]), jnp.pi)
+            phase = jnp.mod(0.5 * (theta[2] + theta[4]), 2.0 * jnp.pi)
+            physical = jnp.stack([theta[0], theta[1], psi, theta[3], phase])
+            return likelihood._scalar(physical)
+
+        self._scalar = _scalar
+        self._value_and_grad = jax.jit(jax.value_and_grad(_scalar))
+        self._hessian = jax.jit(jax.hessian(_scalar))
+
+    def log_likelihood(self, ra, dec, phase_p, incl, phase_m):
+        psi = jnp.mod(0.5 * (phase_p - phase_m), jnp.pi)
+        phase = jnp.mod(0.5 * (phase_p + phase_m), 2.0 * jnp.pi)
+        return self.likelihood.log_likelihood(ra, dec, psi, incl, phase)
+
+    def to_sampler_coordinates(self, theta5):
+        base = self.likelihood.to_sampler_coordinates(theta5)
+        out = np.array(base, dtype=float, copy=True)
+        out[..., 2] = np.mod(base[..., 4] + base[..., 2], 4.0 * np.pi)
+        out[..., 4] = np.mod(base[..., 4] - base[..., 2], 4.0 * np.pi)
+        return out
+
+    def to_physical_coordinates(self, theta5):
+        theta5 = np.asarray(theta5, dtype=float)
+        base = np.array(theta5, copy=True)
+        base[..., 2] = np.mod(0.5 * (theta5[..., 2] - theta5[..., 4]), np.pi)
+        base[..., 4] = np.mod(0.5 * (theta5[..., 2] + theta5[..., 4]), 2.0 * np.pi)
+        return self.likelihood.to_physical_coordinates(base)
+
+    def value(self, theta5):
+        return float(self._scalar(jnp.asarray(theta5, dtype=jnp.float64)))
+
+    def value_and_grad(self, theta5):
+        value, grad = self._value_and_grad(jnp.asarray(theta5, dtype=jnp.float64))
+        return float(value), np.asarray(grad)
+
+    def fisher(self, theta5):
+        return -np.asarray(self._hessian(jnp.asarray(theta5, dtype=jnp.float64)))
 
 
 class JAXDistanceMarginalizedLikelihood:

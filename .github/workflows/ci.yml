@@ -810,7 +810,9 @@ jobs:
         # --use-jax-ile and --ile-exe land in ILE.sub/ILE_puff.sub/ILE_extr.sub,
         # and --use-jax-ile is refused at DAG-build time with --calmarg-envelope-directory.
         run: |
-          python -m pytest -q MonteCarloMarginalizeCode/Code/test/test_jax_ile_selectable.py
+          python -m pytest -q \
+            MonteCarloMarginalizeCode/Code/test/test_jax_ile_selectable.py \
+            MonteCarloMarginalizeCode/Code/test/test_jax_fairdraw_postprocess.py
       - name: Run q-time-pregrid DAG-build test (--internal-ile-q-time-pregrid-factor)
         # Full subprocess DAG build against the same reference ini/coinc, same reason as
         # the step above (PR #281 follow-up review, MAJOR #1): asserts
