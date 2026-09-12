@@ -229,6 +229,14 @@ RULES = [
      "LISA has the same skip-on-no-shrink and serialization boundary, so port this "
      "with --fairdraw-extrinsic-output-n-max while preserving its larger LISA default."),
 
+    # --------------------------------------------- ground-based noise-only evidence
+    (r"^OPTION:--log-noise-evidence-(only|output)$", "NA",
+     "Writes the fixed-PSD Gaussian noise likelihood from the ground-based detector "
+     "data_dict/psd_dict and ComplexIP conditioning path. The LISA driver uses a "
+     "different response and likelihood construction, so this implementation cannot "
+     "be ported by exposing the same options; a LISA-specific normalization mechanism "
+     "would need its own convention and implementation."),
+
     # ------------------------------------------------------- LIGO/Virgo calibration envelopes
     (r"^OPTION:--calibration-", "NA",
      "LIGO/Virgo spline calibration-envelope marginalization. The LISA driver models no "
