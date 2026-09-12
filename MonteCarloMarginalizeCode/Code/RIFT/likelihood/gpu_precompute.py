@@ -200,8 +200,8 @@ def build_compound_basis(base_modes_fd, response_weights, a_list, delta_f,
     ``base_modes_fd`` is ``(M,N)`` and ``response_weights`` is ``(B,N)``.
     Each ``a=(b,p,n)`` selects one response row, a time derivative, and a
     sidereal modulation.  This function is public mainly for validation; the
-    full precompute may spill this bank to host when it cannot safely reside on
-    the device.
+    full precompute fails before allocating a bank that cannot safely reside on
+    the device; it does not silently spill the derived bank to the host.
     """
     xp = _resolve_backend(backend)
     base = xp.asarray(base_modes_fd)
@@ -601,7 +601,7 @@ def PrecomputeLikelihoodTermsRotatingFreqResponseGPU(
     ``(bank, conjugate_bank)`` or one bank with ``conjugate_modes``.  With
     ``return_device=False`` this returns the exact legacy five-item structure.
     With ``return_device=True`` it returns packed device arrays and metadata, avoiding
-    the final narrow host copies for a future fully device-resident ILE worker.
+    the final narrow host copies for the device-resident ILE/JAX handoff.
     """
     from . import factored_likelihood as FL
     from . import factored_likelihood_rotating_freqresponse as fr

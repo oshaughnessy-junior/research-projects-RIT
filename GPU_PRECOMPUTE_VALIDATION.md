@@ -146,6 +146,19 @@ Raw logs and snapshots: /scratch/richard.oshaughnessy/rift_gpu_precompute_202609
 
 ## Internal use (not merged)
 
+### Merged template-angle correction follow-up
+
+PR326 was merged by the user as 8eb362ef. The GPU branch incorporates that
+development change without merging PR325. Snapshot10
+`a4a3cd5d33c35851aca7003fed224a64c0fc6b4097ffd3c99535ef8eea928fa2`
+reruns only short JAX AV, job60769863, to test whether the corrected XML/grid
+template finalization explains the smoke evidence/peak discrepancy. The target
+remains neff20, two intrinsic points, and fairdraw capped at200; result pending.
+`test_cross_driver_parity.py` pins same-bank p1/q1 cubic pointwise and time-
+marginalized classic/JAX equality independently of the two sampling runs.
+After integrating the merged fix, six focused CPU tests passed: XML/grid
+finalization, same-bank cubic cross-driver parity, and handoff/order guards.
+
 ### Device handoff checkpoint (in progress)
 
 Snapshot08 `c0353bd4a65c62641793979924fc41e7a8a450b86b713fcf37c52abe8db1b7c0`
@@ -176,7 +189,9 @@ evidence agreement or production posterior claim is made.
 Snapshot09 `7279a60119bb6a58985b90f45524cc7cfd921874a0468c7f669fb6bc5f5ec6f2`
 adds the full high-level precompute-to-classic-consumer no-bulk-host-transfer
 test, physical-device consistency guards, and pre-import allocator setup in
-the JAX executable/harness. GPU regression job 60769862 pending. Focused CPU
+the JAX executable/harness. GPU regression job 60769862 passed all 62 tests
+in 342.34 s, including full precompute-to-classic-consumer no-bulk-transfer
+and final physical-device/lifetime guards. Focused CPU
 handoff/dispatch tests passed 5 tests before the final device guards; the final
 structural/device-guard suite passed 3 tests. No long-waveform performance run.
 
