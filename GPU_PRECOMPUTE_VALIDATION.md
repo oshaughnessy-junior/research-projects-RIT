@@ -51,6 +51,24 @@ and the capture hash is
 `d798f29fb59f51e2ad080ae2afb95dba384fc19bff984fd8c8ff9dda21835c32`.
 No end-to-end or independently replicated performance claim follows.
 
+Code inspection identifies a separate reuse limitation: each
+`JAXExtrinsicLikelihood` constructor defines a fresh jitted closure over its
+`JAXLikelihoodData`, including Q/U/V. Same-shaped intrinsic banks therefore
+do not use a shared dynamic-bank kernel. This is distinct from the expanded
+A-by-K data-term graph. A future reuse change must pass bank arrays as dynamic
+arguments and explicitly test two distinct same-shape banks for both compile
+reuse and different correct outputs; caching the first closure would silently
+reuse stale physics. No wrapper-cache repair is claimed here.
+
+The first compile-cost candidate replaces the A-by-K Python expansion in the
+banded data term with statically bounded JAX loops. Twelve short synthetic CPU
+tests passed in 82.38 s with both JAX platform selectors explicitly set to CPU:
+nearest/linear/cubic/sinc, with and without post-phase, eager/JIT value parity,
+linear/cubic position and coefficient-phase derivative parity, bounded graph
+size from A=2 to A=40, and rejection of incomplete phase arguments. The oracle
+retains the literal previous contraction. Full captured-bank GPU parity and
+cold/warm performance remain pending; no speedup is claimed for this candidate.
+
 ### Latest completed validity checkpoint (2026-09-12)
 
 Snapshot11 GPU job 60769868 passed 70 tests in 387.32 s. This includes short
