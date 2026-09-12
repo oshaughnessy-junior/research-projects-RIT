@@ -147,9 +147,21 @@ class TestRIFTPostprocessing(unittest.TestCase):
         ))
         for label in expected:
             self.assertAlmostEqual(float(expected[label].epoch), epoch, places=12)
-            np.testing.assert_allclose(
-                got[label], expected[label].data.data, rtol=2e-14, atol=2e-14
-            )
+            target = np.asarray(expected[label].data.data)
+            scale = np.max(np.abs(target))
+            if scale == 0:
+                np.testing.assert_array_equal(got[label], target)
+                continue
+            # Physical strain is ~1e-21: a unit-scale absolute tolerance would
+            # silently accept a missing or sign-flipped waveform. Normalize
+            # both sides, and pin that the comparison rejects those defects.
+            np.testing.assert_allclose(got[label] / scale, target / scale,
+                                       rtol=2e-14, atol=2e-14)
+            for broken in (np.zeros_like(target), -target):
+                with self.assertRaises(AssertionError):
+                    np.testing.assert_allclose(broken / scale, target / scale,
+                                               rtol=2e-14, atol=2e-14)
+        self.assertGreater(np.max(np.abs(expected[(2, 2)].data.data)), 0)
 
 
 class _Params:
