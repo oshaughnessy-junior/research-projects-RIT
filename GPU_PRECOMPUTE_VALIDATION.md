@@ -14,6 +14,43 @@ the corrected short integration below removes the large discrepancy but does
 not establish precise cross-driver evidence agreement.
 The smoke harness now also rejects exported samples outside its declared box.
 
+### Isolated profiling checkpoint (2026-09-12)
+
+These are completed single-host diagnostic observations, not replicated
+production speedup estimates. Job 60769876 first passed 21 GPU correctness
+tests, then compared old source 35db72f60 and new source 99e6ff998 using the
+same new harness, separate processes and cold caches on the same GPU. Both
+profiles used five identical 128-second XPHM banks (8+7 Msun, generic spins,
+K=21, A=40, H1/L1); no long NumPy oracle was run. Warm medians over calls 2--5
+were 14.648 s before and 14.222 s after the duplication fixes (about 2.9%
+lower total time). V fell from 4.478 to 4.059 s and primary basis construction
+from 0.286 to 0.147 s. These are overlapping stage totals, not independent
+terms to sum. New warm waveform generation was 5.956 s; packing and upload
+were 0.035 s. Warm calls recorded zero storage read bytes and zero major
+faults. This observation does not rule out cold I/O or longer-signal effects.
+Raw profiles, gate output and hashes are outside the repository in
+`/scratch/richard.oshaughnessy/rift_gpu_precompute_20260912/dupfix_ab_128s/`.
+The new archive SHA256 is
+`2d9812ac31ba1be07e7d120c2d9e39c2d13c2fd481eda077895ab89bdd750314`.
+
+Separately, job 60769875 profiled a fixed captured short bank with JAX 0.9.0,
+x64, on an RTX PRO 4000 Blackwell SFF Edition: K=2, A=40, two detectors,
+five extrinsic points and 153 time bins. Backend initialization took 16.853 s,
+device handoff 7.103 s, wrapper setup 0.019 s, lowering 13.397 s, compilation
+297.930 s, and first execution 18.029 s. Seven warm calls had median 0.010997 s
+(range 0.010987--0.011972 s). The maximum absolute discrepancy against the
+independent fixed-bank NumPy oracle was 9.064e-10 in log likelihood. This is
+consumer-only timing: imports, capture I/O, precompute, initial CuPy upload,
+and the oracle are excluded; no AV integral or long waveform was timed.
+Compilation dominates this measured cold consumer; the responsible graph
+structure and cost of rebuilding a wrapper for another intrinsic remain to
+be isolated. Raw output is `profile_jax_consumer.out` in the same scratch
+root; source archive snapshot10 SHA256 is
+`a4a3cd5d33c35851aca7003fed224a64c0fc6b4097ffd3c99535ef8eea928fa2`,
+and the capture hash is
+`d798f29fb59f51e2ad080ae2afb95dba384fc19bff984fd8c8ff9dda21835c32`.
+No end-to-end or independently replicated performance claim follows.
+
 ### Latest completed validity checkpoint (2026-09-12)
 
 Snapshot11 GPU job 60769868 passed 70 tests in 387.32 s. This includes short
@@ -49,6 +86,41 @@ Raw logs and samples remain under
 `/scratch/richard.oshaughnessy/rift_gpu_precompute_20260912/` in
 `snapshot11_tests.*`, `replay2_snapshot10_*_bank.json`, and
 `snapshot12_jaxav_products/`; no raw products are committed.
+
+### Short generic-mode timing checkpoint (2026-09-12)
+
+Job 60769870 exited zero using committed source 35db72f60, snapshot SHA256
+`f34adf33aed302c4bd542b18de733ee0684c15974b2f987d1601dda03ca94338`.
+Short XPHM, 30+25 Msun with generic spins, H1/L1, N=2048, K=21,
+pmax=Qmax=1 (A=40), 153 retained time bins; one RTX PRO 4000 Blackwell SFF
+Edition and one CPU thread. This compares the same batched algorithm on NumPy
+and CuPy, not the scalar legacy implementation. The CPU oracle runs first.
+
+| Intrinsic | Batched CPU seconds | GPU seconds | Observed ratio CPU/GPU |
+| --- | ---: | ---: | ---: |
+| 0 (first call) | 85.381 | 39.702 | 2.15 |
+| 1 | 9.068 | 1.122 | 8.08 |
+| 2 | 7.202 | 0.746 | 9.65 |
+
+Both paths include waveform generation and stop at resident-bank return;
+queue, container transfer, and later oracle copies are excluded. The first
+CPU call has about 80 s outside existing stage timers, so its ratio is not a
+fair isolated hardware comparison. Initialization timing is being added to
+locate this cost. GPU first-call basis and Q/U stages cost 13.94 and 24.98 s;
+these observations do not alone identify kernel compilation versus other setup.
+
+For intrinsic 2, GPU Q FFTs total 0.357 s, U Gram reductions 0.050 s,
+V total 0.176 s, main basis 0.059 s, and legacy waveform plus upload 0.090 s.
+Q currently batches only four rows, so a controlled larger-batch test is next;
+production defaults remain unchanged. CPU U/V reductions dominate its warm cost.
+Six cached detector arrays (294912 bytes) were uploaded initially, with no
+additional uploads at either later intrinsic. Retained Q/U/V uses 49271040
+bytes; primary basis per detector uses 27525120 bytes. All three numerical
+parity checks passed, with maximum downstream absolute lnL error 2.17e-9.
+
+These are one-worker profiling observations, not replicated speedup estimates
+or a long-BNS runtime projection. Raw output: scratch `snapshot13_xphm_short.out`
+and its adjacent scheduler log/error files. No samples or sampler were involved.
 
 ## Question and failure criteria
 
