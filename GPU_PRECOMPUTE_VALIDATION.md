@@ -153,11 +153,40 @@ development change without merging PR325. Snapshot10
 `a4a3cd5d33c35851aca7003fed224a64c0fc6b4097ffd3c99535ef8eea928fa2`
 reruns only short JAX AV, job60769863, to test whether the corrected XML/grid
 template finalization explains the smoke evidence/peak discrepancy. The target
-remains neff20, two intrinsic points, and fairdraw capped at200; result pending.
+remains neff20, two intrinsic points, and fairdraw capped at200. The run completed
+successfully in 413 s of host worker runtime: lnZ=286.4796/284.4658,
+neff=23.81/26.44. Thus the merged correction does NOT explain this fixture's
+large evidence discrepancy. For this (2,+/-2)-only model with full orbital-phase
+support, the baked polarization phase can be absorbed by the sampled phase.
+Actual per-driver bank construction and callback inputs remain under investigation;
+no additional integration or performance run is justified until they agree.
 `test_cross_driver_parity.py` pins same-bank p1/q1 cubic pointwise and time-
 marginalized classic/JAX equality independently of the two sampling runs.
 After integrating the merged fix, six focused CPU tests passed: XML/grid
 finalization, same-bank cubic cross-driver parity, and handoff/order guards.
+
+The follow-up found a separate classic-driver compatibility omission: its
+compound calls did not receive the waveform controls used by ordinary precompute.
+The three calls now share one waveform-control dictionary, including alternate
+generators and conditioning. A sentinel-based caller-boundary regression passes.
+For the current PhenomD fixture, a bounded mode-generation comparison with and
+without the omitted conditioning arguments gave exactly identical ordinary and
+conjugate modes; this omission is not an explanation of the evidence gap.
+Frozen snapshot10 jobs60769864.0/.1 capture the first actual classic/JAX compound
+bank, input data/PSD arrays, and parameters, then stop before sampling.
+
+The short timing harness now reports cropped retained Q bytes separately from
+full-frequency primary-basis bytes. Candidate NumPy and GPU timings end at the
+resident-bank return; host copies used only for numerical comparison occur after
+that timing. Approximant, Lmax, response orders, and short-grid parameters are
+selectable. No new performance run has been launched with this harness.
+
+An additional short synthetic regression passes for H1/L1 with distinct
+40 km/20 km arm lengths, p1/q1, and cubic interpolation: direct JAX handoff,
+host adapter, and classic NumPy agree for each detector and the network.
+The test explicitly checks network additivity and a nonzero Q contribution.
+This does not yet test classic CuPy's separate cubic Q-contraction kernel;
+the real-bank replay must cover that path before declaring cross-driver parity.
 
 ### Device handoff checkpoint (in progress)
 

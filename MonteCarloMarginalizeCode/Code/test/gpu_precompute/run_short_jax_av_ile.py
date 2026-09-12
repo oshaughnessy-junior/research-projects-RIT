@@ -175,6 +175,7 @@ def main():
     set_option(args, "--d-max", boxes["distance_mpc"][1])
 
     env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
     env.pop("RIFT_HYPERPIPELINE_FORMAT", None)
     env["RIFT_GPU_PRECOMPUTE"] = "1"
     # This checkpoint deliberately exercises the production-compatible route:

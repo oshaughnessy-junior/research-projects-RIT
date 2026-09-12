@@ -1,10 +1,12 @@
 """Structural and downstream parity tests for the direct GPU-to-JAX adapter."""
 import os
+from types import SimpleNamespace
 
 os.environ.setdefault("JAX_ENABLE_X64", "1")
 
 import jax
 import jax.numpy as jnp
+import lal
 import numpy as np
 import pytest
 
@@ -77,6 +79,119 @@ def test_device_builder_matches_existing_banded_builder_downstream():
     zero_lnL = fused_log_likelihood(zero_data, *args, interp="nearest")
     assert np.max(np.abs(np.asarray(got-zero_lnL))) > 1e-6, \
         "fixture did not exercise the sampled Q data term"
+
+
+def test_two_detector_unequal_arm_handoff_matches_host_and_classic_cubic():
+    """Keep detector banks and geometry distinct through both adapter routes."""
+    rng = np.random.default_rng(88291)
+    detectors = ("H1", "L1")
+    arm_lengths = {"H1": 40000.0, "L1": 20000.0}
+    qmax = pmax = 1
+    modes = [(2, 2), (2, -2)]
+    a_list = fr.compound_index_set(qmax, pmax)
+    A, K, N = len(a_list), len(modes), 256
+    delta_t = 1.0 / 1024.0
+    tref = 1000000000.0
+    epochs = {"H1": tref - 128 * delta_t,
+              "L1": tref - 127 * delta_t}
+    tvals = np.arange(-4, 5) * delta_t
+
+    # Independent detector arrays make an accidental H1/L1 alias or overwrite
+    # observable.  The Q support is centred on the arrival-time stencil.
+    q = {}; u = {}; v = {}
+    for det in detectors:
+        q[det] = (rng.normal(size=(A, K, N))
+                  + 1j * rng.normal(size=(A, K, N)))
+        u[det] = (rng.normal(size=(A, A, K, K))
+                  + 1j * rng.normal(size=(A, A, K, K)))
+        v[det] = (rng.normal(size=(A, A, K, K))
+                  + 1j * rng.normal(size=(A, A, K, K)))
+
+    meta = dict(feature="rotation_freqresponse", gpu_precompute=True,
+                device_resident=True, post_phase_required=True,
+                event_time_geo=tref, modes=modes, a_list=a_list,
+                Qmax=qmax, p_max=pmax, f_sidereal=fr.flwr.F_SIDEREAL,
+                L=dict(arm_lengths), L_arm=dict(arm_lengths))
+    geometry = {det: sfr.detector_geometry(det, L_arm=arm_lengths[det])
+                for det in detectors}
+    packed = dict(q={det: jnp.asarray(q[det]) for det in detectors},
+                  U={det: jnp.asarray(u[det]) for det in detectors},
+                  V={det: jnp.asarray(v[det]) for det in detectors},
+                  epoch=dict(epochs), delta_t=delta_t,
+                  modes=modes, a_list=a_list)
+
+    ra = np.asarray([0.7, 5.8])
+    dec = np.asarray([-0.2, 0.85])
+    psi = np.asarray([0.3, 2.7])
+    incl = np.asarray([0.6, 2.5])
+    phiref = np.asarray([0.4, 5.0])
+    dist_mpc = np.asarray([100.0, 900.0])
+    jax_args = tuple(jnp.asarray(x) for x in
+                     (ra, dec, psi, incl, phiref, dist_mpc))
+    params = SimpleNamespace(
+        phi=ra, theta=dec, psi=psi, incl=incl, phiref=phiref,
+        dist=dist_mpc * 1.0e6 * lal.PC_SI, tref=tref, deltaT=delta_t)
+
+    def compare(selected):
+        packed_part = dict(
+            packed,
+            q={det: packed["q"][det] for det in selected},
+            U={det: packed["U"][det] for det in selected},
+            V={det: packed["V"][det] for det in selected},
+            epoch={det: epochs[det] for det in selected})
+        geom_part = {det: geometry[det] for det in selected}
+        lookup = {det: np.asarray(modes, dtype=int) for det in selected}
+        rho = {det: {a: q[det][i] for i, a in enumerate(a_list)}
+               for det in selected}
+        U = {det: u[det] for det in selected}
+        V = {det: v[det] for det in selected}
+        epoch = {det: epochs[det] for det in selected}
+
+        direct = build_jax_rotating_freqresponse_data_from_device(
+            packed_part, meta, tvals, geom_part, require_gpu=False)
+        host = build_rotating_freqresponse_data(
+            meta, lookup, rho, U, V, epoch, delta_t, tvals, geom_part)
+
+        direct_t = np.asarray(fused_log_likelihood(
+            direct, *jax_args, interp="cubic", return_lnLt=True))
+        host_t = np.asarray(fused_log_likelihood(
+            host, *jax_args, interp="cubic", return_lnLt=True))
+        classic_t = fr.DiscreteFactoredLogLikelihoodRotatingFreqResponseNoLoop(
+            tvals, params, meta, lookup, rho, U, V, epoch, Lmax=2,
+            array_output=True, time_interp="cubic")
+        np.testing.assert_allclose(direct_t, host_t, rtol=2e-13, atol=2e-13)
+        np.testing.assert_allclose(direct_t, classic_t, rtol=2e-13, atol=2e-13)
+
+        direct_marg = np.asarray(fused_log_likelihood(
+            direct, *jax_args, interp="cubic"))
+        host_marg = np.asarray(fused_log_likelihood(
+            host, *jax_args, interp="cubic"))
+        classic_marg = fr.DiscreteFactoredLogLikelihoodRotatingFreqResponseNoLoop(
+            tvals, params, meta, lookup, rho, U, V, epoch, Lmax=2,
+            array_output=False, time_interp="cubic")
+        np.testing.assert_allclose(direct_marg, host_marg,
+                                   rtol=2e-13, atol=2e-13)
+        np.testing.assert_allclose(direct_marg, classic_marg,
+                                   rtol=2e-13, atol=2e-13)
+        for det in selected:
+            assert direct.detectors[det]["L_arm"] == arm_lengths[det]
+        return direct_t, direct_marg
+
+    h1_t, _ = compare(("H1",))
+    l1_t, _ = compare(("L1",))
+    network_t, _ = compare(detectors)
+    np.testing.assert_allclose(network_t, h1_t + l1_t,
+                               rtol=2e-13, atol=2e-13)
+    assert not np.allclose(h1_t, l1_t), "detector fixtures are not distinguishable"
+
+    zero_packed = dict(
+        packed, q={det: jnp.zeros_like(packed["q"][det]) for det in detectors})
+    zero_data = build_jax_rotating_freqresponse_data_from_device(
+        zero_packed, meta, tvals, geometry, require_gpu=False)
+    zero_t = np.asarray(fused_log_likelihood(
+        zero_data, *(x[:1] for x in jax_args), interp="cubic", return_lnLt=True))
+    assert np.max(np.abs(network_t[:1] - zero_t)) > 1e-6, \
+        "fixture did not exercise the centred two-detector Q data term"
 
 
 def test_handoff_fails_closed_for_host_arrays_cpu_jax_and_pregrid():
