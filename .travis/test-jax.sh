@@ -1070,10 +1070,10 @@ fi
 # contract tests in test_jax_av.py.
 # The multipeak host-side fix (#317) adds two more tests in
 # test_angle_marg_multipeak_wiring.py, for 787 tests total.
-# The bounded multipeak suite has 49 tests, including real acceptance/AD,
+# The bounded multipeak suite has 53 tests, including real acceptance/AD,
 # CLI configuration, invalid guards, and explicit drop/refuse publication.
-# 787 + 49 = 836.
-EXPECTED_TESTS=836
+# 787 + 53 = 840.
+EXPECTED_TESTS=840
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"

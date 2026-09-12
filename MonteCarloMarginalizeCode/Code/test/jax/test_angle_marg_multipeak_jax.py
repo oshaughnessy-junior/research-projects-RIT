@@ -203,7 +203,8 @@ def test_invalid_distance_support_refused_before_tables(bounds):
 
 
 @pytest.mark.parametrize("kwargs,match", [
-    ({"time_quadrature": "trapezoid"}, "simpson"),
+    ({"time_quadrature": "bandlimited"},
+     "time_quadrature='bandlimited' is not valid for distance/phase/polarization marginalization"),
     ({"dist_grid": "loguniform"}, "uniform-in-distance"),
 ])
 def test_wrapper_refuses_incompatible_measures(kwargs, match):
@@ -391,6 +392,10 @@ def test_driver_mixed_cloud_publication_and_cli_wiring(monkeypatch, tmp_path, ac
         assert len(seen[0][2]["logw"]) == 2
         note = seen[0][2]["angle_note"]
         assert "output_rows_dropped=1" in note and "omitted_mass=unbounded" in note
+        assert "audit_scope=log_likelihood-batches" in note
+        assert "audit_excludes=scalar-MAP-Fisher-MALA" in note
+        assert "refuse_latch_scope=log_likelihood-batches" in note
+        assert "scalar_refuse_decline=nan-without-raise-or-latch" in note
         assert seen[1][1]["angle_note"] == note
 
 
@@ -415,3 +420,37 @@ def test_drop_refuses_an_entirely_declined_output_cloud():
                            bounded_multipeak_decline_action="drop")
     with pytest.raises(RuntimeError, match="no accepted output rows"):
         mod.require_bounded_multipeak_rows(like, np.array([-1.e30, np.nan]))
+
+
+@pytest.mark.parametrize("kwargs,match", [
+    ({"bounded_multipeak_decline_action": "invalid"},
+     "bounded_multipeak_decline_action must be drop or refuse"),
+    ({"multipeak_guard": 32,
+      "bounded_multipeak_config": DP.BoundedMultipeakConfig(time_guard=16)},
+     "multipeak_guard conflicts with bounded_multipeak_config"),
+])
+def test_wrapper_rejects_invalid_python_configuration(kwargs, match):
+    with pytest.raises(ValueError, match=match):
+        JAXDistPhiPsiMargLikelihood(
+            make_synth(scale=2.), 30., 3000., interp=INTERP,
+            angle_marg="multipeak-jax", **kwargs)
+
+
+@pytest.mark.parametrize("action", ["drop", "refuse"])
+def test_scalar_declines_are_explicitly_outside_host_audit(monkeypatch, action):
+    def kernel(data, ra, *args, **kwargs):
+        return jnp.full_like(ra, jnp.nan)
+    monkeypatch.setattr(DP, "fused_log_likelihood_four_axis_bounded", kernel)
+    like = JAXDistPhiPsiMargLikelihood(
+        make_synth(scale=2.), 30., 3000., interp=INTERP,
+        angle_marg="multipeak-jax", bounded_multipeak_decline_action=action)
+    theta = jnp.zeros(3)
+    value, grad = like.value_and_grad(theta)
+    like.fisher(theta)
+    scalar = jax.jit(like._scalar)(theta)
+    if action == "refuse":
+        assert np.isnan(value) and np.isnan(scalar)
+    else:
+        assert value == -1.e30 and scalar == -1.e30
+    assert like.bounded_multipeak_audit["evaluated"] == 0
+    assert not getattr(like, "bounded_multipeak_declined", False)

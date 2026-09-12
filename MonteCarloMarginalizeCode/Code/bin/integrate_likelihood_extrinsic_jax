@@ -1266,7 +1266,9 @@ def build_parser():
                  choices=("drop", "refuse"), default="drop",
                  help="Handle bounded multipeak declines (default drop): "
                       "drop gives proposals zero numerical weight and labels "
-                      "accepted-region evidence; refuse aborts on any decline. "
+                      "accepted-region evidence; refuse aborts on declined "
+                      "log_likelihood batches only. Scalar MAP/Fisher/MALA "
+                      "declines return NaN without raising or latching. "
                       "Important declined mass requires changing the config; "
                       "neither action runs a reserve.")
     # Each cap is a construction-time scalar.  The complete configuration is
@@ -3733,6 +3735,10 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
             theta, lnL = np.asarray(theta)[_keep], np.asarray(lnL)[_keep]
             if logw_export is not None:
                 logw_export = np.asarray(logw_export)[_keep]
+        _ev_note += (" audit_scope=log_likelihood-batches"
+                     " audit_excludes=scalar-MAP-Fisher-MALA"
+                     " refuse_latch_scope=log_likelihood-batches"
+                     " scalar_refuse_decline=nan-without-raise-or-latch")
         _ev_note += " host_evaluation_audit=" + json.dumps(
             like.bounded_multipeak_audit, sort_keys=True, separators=(",", ":"))
     # Record the resolved distance-GH-nodes count in the same artifact header

@@ -68,7 +68,13 @@ For qualification, widen the relevant capacities or relax the appropriate
 accuracy check, rerun the same proposals, and compare the contribution and
 posterior/evidence stability at the accuracy needed by the application.
 No output cloud consisting entirely of declined rows is published.
-Internal JIT-only training proposals are not counted by the host audit.
+The audit and refusal latch cover only batched `log_likelihood` calls
+(pilot/reweight/output evaluations). Scalar evaluations, including MAP,
+Fisher and internal MALA training, are excluded. Under `refuse`, a scalar
+decline returns NaN without raising or latching; a scalar-only decline can
+therefore go unreported and does not prevent later publication of accepted
+batches. Zero audited declines is not certification of scalar acceptance.
+Both output headers record this scope and limitation explicitly.
 
 ## Regression coverage
 
@@ -84,7 +90,10 @@ constructed in tests; no captured scientific products are needed.
 Two analytic `_guarded_problem` rows at scales 1 and 1.01, 33 native time
 samples, guard 128, starts/time capacities 128/256 and 16 retained modes:
 orders 11/13/13/15 accepted both rows even at the policy's tighter 0.001-nat
-convergence setting. The A100 (JAX 0.9.2, float64) took 3.70 s for the warm
+convergence setting and 0.01-nat total budget. Relaxing these tolerances to
+0.01/0.03 nat gave no acceptance or accuracy benefit on this fixture; the
+relaxation is a configurable starting accuracy choice, not a measured speedup.
+The A100 (JAX 0.9.2, float64) took 3.70 s for the warm
 two-row call and reported 2.57 MB of XLA temporary workspace (not total GPU
 memory); CPU JAX 0.7.1 took 9.07 s. Returned log likelihoods were
 36.3868065844 and 37.4751416172. The independent fine-time reference and AD

@@ -827,6 +827,11 @@ class JAXDistPhiPsiMargLikelihood:
     are counted in ``bounded_multipeak_audit``; ``bounded_multipeak_decline_action="refuse"``
     instead rejects any declined host batch. There is no reserve. The
     accepted-region target can have discontinuities at acceptance boundaries.
+    Audit counts and the refusal latch cover only ``log_likelihood`` batches
+    (pilot/reweight/output calls). Scalar calls, including MAP, Fisher and
+    internal MALA training, are excluded: under ``refuse`` a scalar decline
+    returns NaN without raising or latching. Zero audited declines therefore
+    does not certify that scalar evaluations accepted.
     """
 
     ANGULAR_PARAM_ORDER = ("ra", "dec", "incl")
@@ -1292,10 +1297,7 @@ class JAXDistPhiPsiMargLikelihood:
             # exceeds the envelope or fails a warrant returns nan.  Planning
             # is stop_gradient control data; AD differentiates the accepted
             # fixed-plan integral and carries no derivative-accuracy claim.
-            if time_quadrature != "simpson":
-                raise ValueError(
-                    "--angle-marg-scheme multipeak-jax owns the time integral "
-                    "and only accepts the simpson normalization convention")
+            # The endpoint time-quadrature validation already requires Simpson.
             if dist_grid != "uniform":
                 raise ValueError(
                     "--angle-marg-scheme multipeak-jax derives its local "
