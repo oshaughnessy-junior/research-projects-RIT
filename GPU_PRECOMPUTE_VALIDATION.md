@@ -10,8 +10,45 @@ Independent repair PR327 matches classic's existing bounds flag. Its outward-
 rising synthetic regression fails before the fix and passes after it; all27
 JAX AV tests pass, including on the isolated clean branch. Prior normalization
 is unchanged. GPU Q/U/V and handoff parity results survive this correction;
-cross-driver evidence agreement still requires a corrected short integration.
+the corrected short integration below removes the large discrepancy but does
+not establish precise cross-driver evidence agreement.
 The smoke harness now also rejects exported samples outside its declared box.
+
+### Latest completed validity checkpoint (2026-09-12)
+
+Snapshot11 GPU job 60769868 passed 70 tests in 387.32 s. This includes short
+SEOBNRv5PHM through GWSignal (21 modes through l=4), ordinary and conjugate
+legacy-mode uploads, NumPy/CuPy Q/U/V parity, unequal detector arm lengths,
+and nearest/cubic classic GPU consumers. The deliberately small SEOBNR test
+disables the model's per-mode Nyquist veto; it tests transport compatibility,
+not the physical accuracy of high modes on that grid.
+
+Actual captured banks replayed through NumPy, CuPy, and JAX in job 60769867
+agree to at most 1.06e-9 in pointwise log likelihood and 9.17e-10 after time
+marginalization (five fixed extrinsics, 153 time bins, both driver-origin banks).
+This tests identical banks, not waveform equivalence across differing inputs.
+
+Corrected snapshot12 AV job 60769869 (source SHA256
+`1e55243f1191fee15e57c785395b65ccc6e896dce73e87aeac745acd6a5c1a0d`)
+passed the two-intrinsic short PhenomD integration and all exported sample-bound
+guards. Both drivers now explicitly use reference frequency 100 Hz.
+
+| Intrinsic | Corrected JAX lnZ | Reported sigma | neff | Evaluations | Fairdraw rows | Earlier classic lnZ |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 50.98011 | 0.16864 | 20.44349 | 242372 | 107 | 51.50609 |
+| 1 | 50.78177 | 0.15037 | 20.00309 | 323314 | 188 | 51.27185 |
+
+Worker host runtime was 465.84 s for both points, excluding queue/container
+transfer. This is an end-to-end execution smoke, not isolated precompute timing.
+The roughly 235-nat discrepancy disappears after enforcing AV bounds. The
+remaining roughly 0.5-nat differences require separate investigation before
+claiming precise evidence agreement: low ESS, edge contact, and no independent
+seed replication preclude such a claim. These fairdraw clouds are not usable
+scientific posteriors. Native GPU waveform conditioning remains fail-closed.
+Raw logs and samples remain under
+`/scratch/richard.oshaughnessy/rift_gpu_precompute_20260912/` in
+`snapshot11_tests.*`, `replay2_snapshot10_*_bank.json`, and
+`snapshot12_jaxav_products/`; no raw products are committed.
 
 ## Question and failure criteria
 
@@ -38,8 +75,9 @@ silently falls back; or if the long case exceeds device memory.
 - D5: synchronized process runtime for initial setup, waveform, basis, Q, U/V,
   transfer of compact results, and subsequent intrinsic points. Container
   transfer and queue turnaround are excluded.
-- D6: if AV integration is run, log weights, n-eff=300, n-max=800000,
-  n-chunk=20000 initially; output only bounded fairdraw (200). Report achieved
+- D6: if AV integration is run, log weights, n-eff=20 per Richard's updated
+  smoke target, n-max=800000, n-chunk=20000 classic/8000 JAX;
+  output only bounded fairdraw (200). Report achieved
   ESS, collapse state, prior-edge contact, and seed variation. A failed
   convergence check is not a posterior result.
 
@@ -224,7 +262,7 @@ nearest/cubic classic-GPU consumer regression are prepared for the next frozen
 snapshot. The paired reference-frequency and waveform-forwarding caller tests
 both pass.
 
-### Device handoff checkpoint (in progress)
+### Historical device handoff checkpoint (superseded by latest checkpoint above)
 
 Snapshot08 `c0353bd4a65c62641793979924fc41e7a8a450b86b713fcf37c52abe8db1b7c0`
 adds direct compound-bank routing for both conventional GPU ILE and ILE-JAX.
@@ -297,5 +335,6 @@ For integration tests use AV with internal log weights, multiple intrinsic
 points, bounded n-max/n-eff, and save-samples only with fairdraw capped at 200.
 All generated frames, grids, outputs, containers, dependency bundles, and logs
 remain outside this source repository. The user subsequently authorized a draft
-PR; no merge is authorized. Draft PR325 is being updated with the connected
-handoff checkpoint and explicit pending final-device-guard/JAX AV results.
+PR; no merge is authorized. Draft PR325 tracks the connected handoff;
+the completed final-device-guard and corrected JAX AV results are recorded in
+the latest checkpoint above.
