@@ -2763,6 +2763,9 @@ def adaptive_volume_sample(like, d_min, d_max, sampler_method="AV",
         result = sampler.integrate_log(
             lnL, *order, nmax=int(nmax), neff=float(neff), n=int(n_chunk),
             no_protect_names=True, verbose=bool(verbose), save_intg=True,
+            # Match classic ILE: fractional edge bins otherwise extend beyond
+            # the requested sampling box, where the physical prior is nonzero.
+            enforce_bounds=True,
             tempering_exp=1.0, anisotropic_bins=bool(anisotropic_bins),
             # Standalone AV can keep device-typed internal arrays when cupy is
             # importable even though this adapter evaluates on the host.  Its
