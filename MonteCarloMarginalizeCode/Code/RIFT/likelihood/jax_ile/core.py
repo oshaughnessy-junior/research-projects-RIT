@@ -431,6 +431,7 @@ def _make_gather_sinc(a):
         valid = (idx >= 0) & (idx < n)
         vals = Q_col[jnp.clip(idx, 0, n - 1)]
         return jnp.sum(w * jnp.where(valid, vals, 0.0 + 0.0j), axis=-1)
+    _gather._stencil_size = 2 * a
     return _gather
 
 
@@ -847,6 +848,25 @@ def _banded_coefficients(data, det, ra, dec, psi):
     raise ValueError("unknown banded feature %r" % (data.feature,))
 
 
+def _banded_chunk_shape(A, K, S, npts, nfull, taps, budget=128 * 1024**2):
+    """Choose row/sample tiles using a conservative forward scratch estimate.
+
+    Reserve four complex arrays per stencil tap and twelve per output element,
+    plus the selected source rows.  This covers unfused gathers, masks, weights,
+    products and reductions; it excludes input banks, the final output, compiler
+    workspaces and reverse-mode saved residuals.  It is an allocation estimate,
+    not a guarantee about XLA's whole-executable memory use.
+    """
+    element_bytes = 16 * (4 * taps + 12)
+    source_bytes = 16 * nfull
+    samples = min(S, (budget - source_bytes) // (npts * element_bytes))
+    if samples < 1:
+        raise ValueError("one banded gather sample exceeds the scratch budget")
+    row_bytes = source_bytes + samples * npts * element_bytes
+    rows = min(A * K, budget // row_bytes)
+    return int(rows), int(samples), int(rows * row_bytes)
+
+
 def _contract_banded_data_term(Q_bank, conjY, C, gather, pos, u_sep,
                                *, pp_t1=None, pe=None, pt=None):
     """Contract the banded ``<d|h>`` term without unrolling ``A * K`` in Python.
@@ -858,12 +878,11 @@ def _contract_banded_data_term(Q_bank, conjY, C, gather, pos, u_sep,
     pairs and is a suspected contributor to excessive cold compilation despite
     the actual operation being a small regular reduction.
 
-    Static-bound ``fori_loop`` lowers to compact loop/scan primitives, remains
-    reverse-mode differentiable, and retains the old bounded-memory execution:
-    only one gathered ``(S, npts)`` mode and one accumulated band are live at a
-    time.  In particular, do not replace this with a fully vmapped
-    ``(A, K, S, npts)`` gather; that temporary is prohibitive for production AV
-    sample batches.
+    Vectorized row gathers run inside static-bound loops over row and sample
+    tiles. Small batches gather all A*K rows together; large AV batches use
+    smaller tiles under the forward scratch estimate in _banded_chunk_shape.
+    The graph stays compact and reverse-mode differentiable without creating
+    a full production (A, K, S, npts) temporary.
 
     Supplying all of ``pp_t1``, ``pe`` and ``pt`` applies the separable
     arrival-time post-phase.  Supplying none retains the frequency-response-only
@@ -882,35 +901,41 @@ def _contract_banded_data_term(Q_bank, conjY, C, gather, pos, u_sep,
     if post_phase:
         pp_t1 = jnp.asarray(pp_t1, dtype=jnp.int32)
 
-    def accumulate_band(a, kappa):
-        Qa = jax.lax.dynamic_index_in_dim(
-            Q_bank, a, axis=0, keepdims=False)                 # (n_time_full, K)
+    taps = {_gather_nearest: 1, _gather_linear: 2, _gather_cubic: 4}.get(
+        gather, getattr(gather, "_stencil_size", 16))
+    rows, samples, _ = _banded_chunk_shape(
+        A, K, S, npts, int(Q_bank.shape[1]), taps)
+    nblocks = (S + samples - 1) // samples
 
-        def accumulate_mode(k, inner):
-            Qak = jax.lax.dynamic_index_in_dim(
-                Qa, k, axis=1, keepdims=False)                 # (n_time_full,)
-            yk = jax.lax.dynamic_index_in_dim(
-                conjY, k, axis=1, keepdims=False)              # (S,)
-            return inner + yk[:, None] * gather(Qak, pos, u_sep)
+    def sample_block(block, output):
+        sample_ids = jnp.minimum(block * samples + jnp.arange(samples), S - 1)
+        positions = pos[sample_ids]
+        fractions = None if u_sep is None else u_sep[sample_ids]
 
-        inner = jax.lax.fori_loop(
-            0, K, accumulate_mode,
-            jnp.zeros((S, npts), dtype=jnp.complex128))
-        ca = jax.lax.dynamic_index_in_dim(C, a, axis=0, keepdims=False)
-        if post_phase:
-            im = jax.lax.dynamic_index_in_dim(
-                pp_t1, a, axis=0, keepdims=False)
-            phase_e = jax.lax.dynamic_index_in_dim(
-                pe, im, axis=0, keepdims=False)
-            phase_t = jax.lax.dynamic_index_in_dim(
-                pt, im, axis=0, keepdims=False)
-            return kappa + ((jnp.conj(ca) * phase_e)[:, None]
-                            * (phase_t[None, :] * inner))
-        return kappa + jnp.conj(ca)[:, None] * inner
+        def row_block(block_row, kappa):
+            row_ids = block_row * rows + jnp.arange(rows)
+            valid = row_ids < A * K
+            safe_ids = jnp.minimum(row_ids, A * K - 1)
+            a, k = safe_ids // K, safe_ids % K
+            source = Q_bank[a, :, k]
+            values = jax.vmap(lambda q: gather(q, positions, fractions))(source)
+            weights = (jnp.conj(C[a[:, None], sample_ids[None, :]])
+                       * conjY[sample_ids[None, :], k[:, None]])
+            weights = jnp.where(valid[:, None], weights, 0.0j)
+            if post_phase:
+                im = pp_t1[a]
+                weights = weights * pe[im[:, None], sample_ids[None, :]]
+                values = values * pt[im, None, :]
+            return kappa + jnp.sum(weights[:, :, None] * values, axis=0)
+
+        value = jax.lax.fori_loop(
+            0, (A * K + rows - 1) // rows, row_block,
+            jnp.zeros((samples, npts), dtype=jnp.complex128))
+        return jax.lax.dynamic_update_slice(output, value, (block * samples, 0))
 
     return jax.lax.fori_loop(
-        0, A, accumulate_band,
-        jnp.zeros((S, npts), dtype=jnp.complex128))
+        0, nblocks, sample_block,
+        jnp.zeros((nblocks * samples, npts), dtype=jnp.complex128))[:S]
 
 
 def _accumulate_unit_banded(data, ra, dec, psi, incl, phiref, interp,

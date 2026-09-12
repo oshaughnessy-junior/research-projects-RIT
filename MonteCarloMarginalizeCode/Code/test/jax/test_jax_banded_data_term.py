@@ -17,9 +17,9 @@ import jax.numpy as jnp
 from RIFT.likelihood.jax_ile import core as JC
 
 
-def _problem(A=5, K=3):
+def _problem(A=5, K=3, S=2):
     rng = np.random.default_rng(1905 + A + K)
-    S, nfull, npts, M = 2, 32, 6, 4
+    nfull, npts, M = max(32, 8 + 5 * (S - 1) + 6 + 4), 6, 4
 
     def complex_normal(shape):
         return rng.normal(size=shape) + 1j * rng.normal(size=shape)
@@ -29,8 +29,8 @@ def _problem(A=5, K=3):
     coeff = jnp.asarray(complex_normal((A, S)), dtype=jnp.complex128)
     # Include distinct sub-sample positions for the two samples while staying
     # away from the buffer edge for every interpolation stencil.
-    pos = jnp.asarray([[8.2 + j for j in range(npts)],
-                       [13.7 + j for j in range(npts)]], dtype=jnp.float64)
+    pos = jnp.asarray([[8.2 + 5 * i + j for j in range(npts)]
+                       for i in range(S)], dtype=jnp.float64)
     u = pos - jnp.floor(pos[:, :1]) - jnp.arange(npts)[None, :]
     pp_t1 = jnp.asarray(np.arange(A) % M, dtype=jnp.int32)
     pe = jnp.asarray(np.exp(1j * rng.normal(size=(M, S))), dtype=jnp.complex128)
@@ -130,3 +130,42 @@ def test_partial_post_phase_contract_is_rejected():
     with pytest.raises(ValueError, match="must be supplied together"):
         JC._contract_banded_data_term(
             q, conj_y, coeff, JC._gather_cubic, pos, u, pp_t1=pp_t1)
+
+
+def test_chunked_rows_and_samples_preserve_padded_tail(monkeypatch):
+    # Both A*K and S are nonmultiples of their tile sizes.  Repeated tail
+    # indices must not leak into the returned samples or their derivatives.
+    q, conj_y, coeff, pos, u, pp_t1, pe, pt = _problem(S=5)
+    gather = JC._gather_cubic
+    expected = _python_oracle(
+        q, conj_y, coeff, gather, pos, u, pp_t1, pe, pt)
+    monkeypatch.setattr(JC, "_banded_chunk_shape",
+                        lambda *args: (2, 3, 0))
+
+    def contracted(offset):
+        return JC._contract_banded_data_term(
+            q, conj_y, coeff, gather, pos + offset, u + offset,
+            pp_t1=pp_t1, pe=pe, pt=pt)
+
+    got = jax.jit(contracted)(0.0)
+    np.testing.assert_allclose(np.asarray(got), np.asarray(expected),
+                               rtol=2e-14, atol=2e-14)
+    literal_grad = jax.grad(lambda x: jnp.real(jnp.sum(
+        jnp.abs(_python_oracle(q, conj_y, coeff, gather, pos + x, u + x,
+                              pp_t1, pe, pt)) ** 2)))(0.031)
+    tiled_grad = jax.grad(lambda x: jnp.real(jnp.sum(
+        jnp.abs(contracted(x)) ** 2)))(0.031)
+    np.testing.assert_allclose(np.asarray(tiled_grad), np.asarray(literal_grad),
+                               rtol=3e-12, atol=3e-12)
+
+
+def test_chunk_shape_respects_forward_scratch_budget():
+    budget = 2 * 1024**2
+    rows, samples, estimated = JC._banded_chunk_shape(
+        A=100, K=20, S=2000, npts=128, nfull=4096, taps=16,
+        budget=budget)
+    assert 1 <= rows < 2000
+    assert 1 <= samples < 2000
+    assert estimated <= budget
+    with pytest.raises(ValueError, match="exceeds the scratch budget"):
+        JC._banded_chunk_shape(100, 20, 2000, 128, 4096, 16, budget=1024)
