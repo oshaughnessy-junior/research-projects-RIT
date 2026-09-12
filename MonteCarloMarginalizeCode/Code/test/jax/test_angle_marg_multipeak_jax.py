@@ -93,7 +93,7 @@ def test_device_function_is_jittable_differentiable_and_forwards_caps(
         if invalid == "norm":
             cb = cb.at[..., -1].set(2.0)
         if invalid == "table":
-            cb = cb.at[..., 0].set(jnp.nan)
+            ca = ca.at[..., 0].set(jnp.nan)
         return ca, cb, {"m_max": 0}
 
     def fake_rank(table, norm, x_min, x_max, **kwargs):
@@ -118,7 +118,9 @@ def test_device_function_is_jittable_differentiable_and_forwards_caps(
     def fake_integral(table, norm, base_plan, enriched_plan,
                       x_min, x_max, **kwargs):
         del norm, base_plan, enriched_plan, x_min, x_max, kwargs
-        value = jnp.real(jnp.sum(table))
+        # Return a finite candidate even for the bad A table, isolating the
+        # outer tables_finite guard from both norm invariance and inner gates.
+        value = jnp.real(jnp.sum(jnp.nan_to_num(table)))
         return value, jnp.asarray(True), {"accepted_local": jnp.asarray(True)}
 
     monkeypatch.setattr(DP._anglemarg, "angle_coefficient_tables", fake_tables)
