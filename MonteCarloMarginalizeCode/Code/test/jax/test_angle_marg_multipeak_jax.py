@@ -165,7 +165,7 @@ def test_device_function_is_jittable_differentiable_and_forwards_caps(
 @pytest.mark.parametrize("changes", [
     {"base_max_starts": 0}, {"max_time_nodes": 1},
     {"base_oversample": 0}, {"max_modes": 0},
-    {"enriched_max_modes": 15}, {"enriched_max_modes": 257},
+    {"enriched_max_modes": 7}, {"enriched_max_modes": 257},
     {"base_order": 1}, {"base_check_order": 11},
     {"enriched_order": 12}, {"enriched_check_order": 13},
     {"local_radius": 0}, {"refine_iterations": 0},
@@ -184,7 +184,9 @@ def test_bounded_config_type_and_shared_defaults():
     with pytest.raises(TypeError, match="BoundedMultipeakConfig"):
         DP.validate_bounded_multipeak_config(DP.PolicyConfig())
     cfg = DP.BoundedMultipeakConfig()
-    separate = {"batch_rows", "base_order", "base_check_order",
+    separate = {"time_guard", "base_max_starts", "max_time_nodes",
+                "max_modes", "enriched_max_modes",
+                "batch_rows", "base_order", "base_check_order",
                 "enriched_order", "enriched_check_order",
                 "convergence_tol_nats", "total_value_error_budget_nats"}
     for field in cfg._fields:

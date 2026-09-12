@@ -312,15 +312,18 @@ class BoundedMultipeakConfig(NamedTuple):
     about derivatives of the discrete mode-selection map.
     """
 
-    # Share the measured local operating point documented on PolicyConfig.
-    # No reserve fields or amplitude-sized work enter this envelope.
-    time_guard: int = PolicyConfig().time_guard
-    base_max_starts: int = PolicyConfig().base_max_starts
-    max_time_nodes: int = PolicyConfig().max_time_nodes
+    # Compact by default: with the corrected orders this accepts the analytic
+    # reference and costs 0.36 s / two rows on A100, versus 3.70 s with the
+    # policy's 128/128/256 guard/start/time caps (2026-09-12). Wider caps can
+    # recover important declines; expose them instead of paying for every
+    # prior draw. See DESIGN_bounded_multipeak.md for the tradeoff and profile.
+    time_guard: int = 16
+    base_max_starts: int = 32
+    max_time_nodes: int = 64
     base_oversample: int = PolicyConfig().base_oversample
     enriched_oversample: int = PolicyConfig().enriched_oversample
-    max_modes: int = PolicyConfig().max_modes
-    enriched_max_modes: int = PolicyConfig().enriched_max_modes
+    max_modes: int = 8
+    enriched_max_modes: int = 8
     local_radius: float = PolicyConfig().local_radius
     refine_iterations: int = PolicyConfig().refine_iterations
     # Deliberately cheaper than the reserve-bearing policy: 11/13/13/15

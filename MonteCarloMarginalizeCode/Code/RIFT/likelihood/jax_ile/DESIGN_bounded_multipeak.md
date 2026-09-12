@@ -16,13 +16,28 @@ orders, `convergence-tol-nats` and `total-value-error-budget-nats`.
 The separate `--direct-marginalization-*` flags still configure the policy
 with a reserve; they do not configure this scheme.
 
-The default local resource caps share the policy's recorded operating point
-rather than silently reverting the time/start capacities. Quadrature is
-intentionally cheaper than the policy: orders **11/13/13/15**, convergence
+The default resource envelope is compact: **guard 16, starts 32, time nodes
+64, base/enriched modes 8/8**. This is a deliberate cost choice, not an
+assumption that the policy's wider operating point is unnecessary everywhere.
+With corrected quadrature it accepts the analytic reference at one tenth of
+the wider envelope's warm A100 cost. Quadrature orders are **11/13/13/15**, convergence
 **0.01 nat**, total empirical error budget **0.03 nat**. These are practical
 starting settings, not a universal scientific accuracy requirement. An
-application can lower orders, relax tolerances or change capacities to meet its accuracy and runtime needs. The complete
-configuration is recorded in both output headers.
+application can lower orders, relax tolerances or change capacities to meet
+its accuracy and runtime needs. The complete configuration is recorded in both output headers.
+
+To try the wider policy capacity profile on important declines, add:
+
+```text
+--multipeak-jax-time-guard 128 --multipeak-jax-base-max-starts 128
+--multipeak-jax-max-time-nodes 256 --multipeak-jax-max-modes 16
+--multipeak-jax-enriched-max-modes 16
+```
+
+The policy's recorded full-sky acceptance improvement at these wider caps
+motivates exposing this profile, but acceptance fraction is not missed mass.
+The compact default does not establish that its declined production rows are
+negligible. Use their diagnostics and contribution comparisons to decide.
 
 ## Declines and contribution
 
@@ -79,3 +94,10 @@ Orders 7/9/9/11 still declined both rows with convergence loosened to 0.03 nat
 and total budget 0.1 nat, and took 9.09 s on CPU / 3.66 s on A100. Lowering
 orders alone did not reduce this fixture's dominant discovery/refinement cost. These are
 synthetic checks, not a production acceptance-rate or throughput claim.
+
+The compact caps (guard 16, starts/time nodes 32/64, modes 8/8), with
+11/13/13/15 orders, also accepted both rows at the tighter 0.001-nat setting:
+log likelihoods 36.3868061719 and 37.4751411797. Warm A100 cost was **0.355 s
+per two-row call** and temporary workspace 2.20 MB. That measured cost,
+together with explicit drop diagnostics and configurable caps, is why this
+profile is the default instead of automatically inheriting the wider policy.
