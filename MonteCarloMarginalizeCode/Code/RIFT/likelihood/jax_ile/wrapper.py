@@ -826,7 +826,7 @@ class JAXDistPhiPsiMargLikelihood:
                  time_quadrature=TIME_QUAD_DEFAULT, d_prior_range=None,
                  dist_grid="uniform", dist_grid_tol=DIST_GRID_TOL_DEFAULT,
                  direct_marginalization_policy=None, policy_config=None,
-                 multipeak_guard=16):
+                 multipeak_guard=16, bounded_multipeak_config=None):
         self.data = data
         self.interp = interp   # the instance's stencil; sample_phi_ref defaults to it
         from . import direct_marginalization_policy as _policy
@@ -857,7 +857,8 @@ class JAXDistPhiPsiMargLikelihood:
         # actually ran -- callers must surface it in the run log.
         if angle_marg not in ANGLE_MARG_CHOICES:
             raise ValueError("angle_marg must be one of grid/exact/laplace/"
-                             "peak-local/auto, got %r" % (angle_marg,))
+                             "peak-local/phi-local/multipeak/multipeak-jax/"
+                             "auto, got %r" % (angle_marg,))
         if dist_grid not in DIST_GRID_SCHEMES:
             # An unrecognised value must NEVER fall through to the default: a
             # typo that silently returns the old answer is precisely the
@@ -1223,7 +1224,8 @@ class JAXDistPhiPsiMargLikelihood:
         # replaces it inside the block above.
         xg, lwg, pg, sg = (self.x_grid, self.log_w_grid,
                            self._phi_grid, self._psi_grid)
-        if scheme in ("exact", "laplace", "peak-local", "phi-local"):
+        if scheme in ("exact", "laplace", "peak-local", "phi-local",
+                      "multipeak-jax"):
             self.angle_marg_info["amp_sizing"] = amp_sizing
             self.angle_marg_info["sample_grid"] = tuple(
                 _anglemarg.angle_sample_grid_sizes(
@@ -1271,6 +1273,67 @@ class JAXDistPhiPsiMargLikelihood:
                     data_, ra, dec, incl, xg, lwg, interp=interp,
                     amp_sizing=amp_sizing, guard=int(multipeak_guard))
                 return (v, jnp.asarray(amp_sizing)) if return_amp else v
+
+        elif scheme == "multipeak-jax":
+            # Fixed-cap device discovery plus fixed-order local quadrature.
+            # There is intentionally no amplitude-sized reserve: a row that
+            # exceeds the envelope or fails a warrant returns nan.  Planning
+            # is stop_gradient control data; AD differentiates the accepted
+            # fixed-plan integral and carries no derivative-accuracy claim.
+            if time_quadrature != "simpson":
+                raise ValueError(
+                    "--angle-marg-scheme multipeak-jax owns the time integral "
+                    "and only accepts the simpson normalization convention")
+            if dist_grid != "uniform":
+                raise ValueError(
+                    "--angle-marg-scheme multipeak-jax derives its local "
+                    "distance normalization from a uniform-in-distance grid")
+            cfg = bounded_multipeak_config
+            if cfg is None:
+                cfg = _policy.BoundedMultipeakConfig(
+                    time_guard=int(multipeak_guard))
+            _policy.validate_bounded_multipeak_config(cfg)
+            lln_bounded, _ = _policy.policy_log_normalization(
+                data, xg, lwg, d_prior=d_prior)
+            _policy.probe_guarded_tables(data, interp, int(cfg.time_guard))
+            x_bounds_bounded = (float(np.min(np.asarray(xg))),
+                                float(np.max(np.asarray(xg))))
+            self.angle_marg_info.update(
+                bounded_cost=True,
+                dense_reserve=False,
+                fixed_plan_autodiff_only=True,
+                derivative_warrant_certified=False,
+                max_starts=int(cfg.base_max_starts),
+                max_time_nodes=int(cfg.max_time_nodes),
+                max_modes=int(cfg.enriched_max_modes),
+                time_guard=int(cfg.time_guard),
+                base_oversample=int(cfg.base_oversample),
+                enriched_oversample=int(cfg.enriched_oversample),
+                refine_iterations=int(cfg.refine_iterations),
+                quadrature_orders=(int(cfg.base_order),
+                                   int(cfg.base_check_order),
+                                   int(cfg.enriched_order),
+                                   int(cfg.enriched_check_order)),
+                convergence_tol_nats=float(cfg.convergence_tol_nats),
+                total_value_error_budget_nats=float(
+                    cfg.total_value_error_budget_nats),
+                batch_rows=int(cfg.batch_rows))
+
+            def _fused(data_, ra, dec, incl, return_lnLt=False,
+                       return_amp=False):
+                if return_lnLt:
+                    raise ValueError(
+                        "--angle-marg-scheme multipeak-jax marginalizes time "
+                        "inside the controller; there is no lnL(t) to return")
+                if return_amp:
+                    raise ValueError(
+                        "--angle-marg-scheme multipeak-jax has a static cost "
+                        "envelope and does not expose an amplitude-sized grid")
+                return _policy.fused_log_likelihood_four_axis_bounded(
+                    data_, ra, dec, incl, xg, lwg, interp=interp,
+                    amp_sizing=amp_sizing, config=cfg,
+                    local_log_normalization=lln_bounded,
+                    x_bounds=x_bounds_bounded)
 
         elif scheme == "phi-local":
             # BOTH angle axes localized, with a dense fallback wherever the certificate
