@@ -3668,15 +3668,29 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
                             for kv in str(_arm).split(',')}
                 else:
                     _arm = float(_arm)
-            _rint_rf, _ct_rf, _ctV_rf, _rho_rf, _meta_rf = \
-                factored_likelihood_rotating_freqresponse.PrecomputeLikelihoodTermsRotatingFreqResponse(
+            if os.environ.get('RIFT_GPU_PRECOMPUTE', '0') == '1' and opts.gpu and xpy_default is not np:
+                if os.environ.get('RIFT_GPU_WAVEFORM', 'lal') != 'lal':
+                    raise ValueError('Native GPU waveform provider is not yet validated; use RIFT_GPU_WAVEFORM=lal')
+                from RIFT.likelihood.gpu_precompute import (
+                    PrecomputeLikelihoodTermsRotatingFreqResponseGPU,
+                    pack_device_precompute)
+                _packed_rf, _meta_rf = PrecomputeLikelihoodTermsRotatingFreqResponseGPU(
                     fiducial_epoch, t_window, P, data_dict, psd_dict, opts.l_max, fmax,
                     Qmax=_qmax, L_arm=_arm, p_max=_pmax, analyticPSD_Q=False,
                     inv_spec_trunc_Q=inv_spec_trunc_Q, T_spec=T_spec,
-                    verbose=opts.verbose, quiet=not opts.verbose, skip_interpolation=True)
-            _lkRF, _rhoA, _uAA, _vAA, _epRF = \
-                factored_likelihood_rotating_freqresponse.pack_rotating_freqresponse_arrays(
-                    _meta_rf, _rho_rf, _ct_rf, _ctV_rf)
+                    verbose=opts.verbose, quiet=not opts.verbose,
+                    skip_interpolation=True, return_device=True)
+                _lkRF, _rhoA, _uAA, _vAA, _epRF = pack_device_precompute(_packed_rf, _meta_rf)
+            else:
+                _rint_rf, _ct_rf, _ctV_rf, _rho_rf, _meta_rf = \
+                    factored_likelihood_rotating_freqresponse.PrecomputeLikelihoodTermsRotatingFreqResponse(
+                        fiducial_epoch, t_window, P, data_dict, psd_dict, opts.l_max, fmax,
+                        Qmax=_qmax, L_arm=_arm, p_max=_pmax, analyticPSD_Q=False,
+                        inv_spec_trunc_Q=inv_spec_trunc_Q, T_spec=T_spec,
+                        verbose=opts.verbose, quiet=not opts.verbose, skip_interpolation=True)
+                _lkRF, _rhoA, _uAA, _vAA, _epRF = \
+                    factored_likelihood_rotating_freqresponse.pack_rotating_freqresponse_arrays(
+                        _meta_rf, _rho_rf, _ct_rf, _ctV_rf)
             if opts.gpu and (not xpy_default is np):
                 for _det in _rhoA:
                     for _a in _rhoA[_det]:

@@ -146,6 +146,35 @@ Raw logs and snapshots: /scratch/richard.oshaughnessy/rift_gpu_precompute_202609
 
 ## Internal use (not merged)
 
+### Device handoff checkpoint (in progress)
+
+Snapshot08 `c0353bd4a65c62641793979924fc41e7a8a450b86b713fcf37c52abe8db1b7c0`
+adds direct compound-bank routing for both conventional GPU ILE and ILE-JAX.
+Conventional ILE uses Q row views and the original dense U/V; JAX shares arrays
+through DLPack, with a device-local Q layout conversion. The legacy host-return
+API remains available. Native waveform conditioning is still gated.
+
+Preregistered checks: no CuPy-to-host calls during handoff; GPU array residence;
+Q/U/V and downstream likelihood parity; nonzero Q contribution inside the stored
+time support; source-buffer deletion/allocator churn without corruption; reject
+host inputs and unsupported Q pregrid factors. Short conventional and JAX AV
+smokes use two intrinsic points, neff20, and fairdraw capped at 200. Queue and
+container transfer are excluded from runtime. Jobs 60769861.0/.1/.2 respectively
+run the GPU suite, conventional AV and JAX AV. Conventional AV returned
+neff=20.14955 and 18.09552, finite and non-collapsed for both points; independent
+XML inspection found 20 fairdraw rows each, 1673/1695 bytes. The strict runner
+exited on event 1's below-20 value, not a likelihood/device failure. The user
+requested a reasonable approximately-20 smoke target, not repeated runs to clear
+a sharp threshold; these values are recorded without rerunning for convergence.
+The snapshot08 GPU suite passed all 61 tests in 386.40 s. JAX AV remains pending.
+
+Snapshot09 `7279a60119bb6a58985b90f45524cc7cfd921874a0468c7f669fb6bc5f5ec6f2`
+adds the full high-level precompute-to-classic-consumer no-bulk-host-transfer
+test, physical-device consistency guards, and pre-import allocator setup in
+the JAX executable/harness. GPU regression job 60769862 pending. Focused CPU
+handoff/dispatch tests passed 5 tests before the final device guards; the final
+structural/device-guard suite passed 3 tests. No long-waveform performance run.
+
 Set `RIFT_GPU_PRECOMPUTE=1` in the worker to replace compound
 rotation-plus-frequency-response precompute in conventional ILE or ILE-JAX.
 CuPy is mandatory on this opt-in path; failure does not silently fall back.
@@ -175,6 +204,5 @@ For integration tests use AV with internal log weights, multiple intrinsic
 points, bounded n-max/n-eff, and save-samples only with fairdraw capped at 200.
 All generated frames, grids, outputs, containers, dependency bundles, and logs
 remain outside this source repository. The user subsequently authorized a draft
-PR; no merge is authorized. End-to-end device residency is still in progress:
-the current legacy wrapper exports Q/U/V to the host, while the direct device
-return API avoids that export but is not yet connected to the ILE driver.
+PR; no merge is authorized. Draft PR325 is being updated with the connected
+handoff checkpoint and explicit pending final-device-guard/JAX AV results.

@@ -515,6 +515,76 @@ def _wrap_host_result(detectors, modes, a_list, q_by_det, u_by_det, v_by_det,
     return interpolants, cross, cross_v, rholms
 
 
+def _physical_device_key(value, name="array"):
+    """Return ``(platform, device id)`` for an unsharded array."""
+    module = type(value).__module__.split(".")[0]
+    if module == "cupy":
+        return "gpu", int(value.device.id)
+    if module in ("jax", "jaxlib"):
+        devices = tuple(value.devices())
+        if len(devices) != 1:
+            raise ValueError("%s spans %d devices; one physical device is required" %
+                             (name, len(devices)))
+        return str(devices[0].platform), int(devices[0].id)
+    if module == "numpy":
+        return "cpu", 0
+    raise TypeError("%s is not a recognized NumPy/CuPy/JAX array" % name)
+
+
+def pack_device_precompute(packed, meta, require_gpu=True):
+    """Expose a device result in the five packed objects used by classic ILE.
+
+    This is a view-only operation: Q rows and dense U/V banks remain the exact
+    backend arrays returned by ``return_device=True``.  The conventional NoLoop
+    compound evaluator already accepts ``rho_by_a`` dictionaries with dense
+    ``(A,A,K,K)`` U/V arrays, so no LAL objects or host packing are required.
+    """
+    required = {"q", "U", "V", "epoch", "delta_t", "modes", "a_list"}
+    missing = required.difference(packed)
+    if missing:
+        raise ValueError("packed device result is missing %s" % sorted(missing))
+    if not bool(meta.get("gpu_precompute")) or not bool(meta.get("device_resident")):
+        raise ValueError("meta does not describe a device-resident GPU precompute")
+    modes = [tuple(map(int, lm)) for lm in packed["modes"]]
+    a_list = [tuple(map(int, a)) for a in packed["a_list"]]
+    if modes != [tuple(map(int, lm)) for lm in meta.get("modes", ())] \
+            or a_list != [tuple(map(int, a)) for a in meta.get("a_list", ())]:
+        raise ValueError("packed mode or compound-index order differs from meta")
+    detectors = list(packed["q"])
+    if not detectors or any(set(packed[name]) != set(detectors)
+                            for name in ("U", "V", "epoch")):
+        raise ValueError("Q/U/V/epoch detector sets differ")
+    A, K = len(a_list), len(modes)
+    delta_t = float(packed["delta_t"])
+    if not np.isfinite(delta_t) or delta_t <= 0:
+        raise ValueError("packed delta_t must be finite and positive")
+    lookup = {}; rho = {}
+    device_key = None
+    for det in detectors:
+        q = packed["q"][det]; u = packed["U"][det]; v = packed["V"][det]
+        if getattr(q, "ndim", None) != 3 or tuple(q.shape[:2]) != (A, K):
+            raise ValueError("%s Q must have shape (A,K,N)" % det)
+        if tuple(getattr(u, "shape", ())) != (A, A, K, K) \
+                or tuple(getattr(v, "shape", ())) != (A, A, K, K):
+            raise ValueError("%s U/V must have shape (A,A,K,K)" % det)
+        if not np.isfinite(float(packed["epoch"][det])):
+            raise ValueError("%s Q epoch is non-finite" % det)
+        for label, array in (("Q", q), ("U", u), ("V", v)):
+            here = _physical_device_key(array, "%s %s" % (det, label))
+            if require_gpu and here[0] != "gpu":
+                raise RuntimeError("%s %s is not on a GPU" % (det, label))
+            if device_key is None:
+                device_key = here
+            elif here != device_key:
+                raise ValueError("mixed physical devices in packed bank: %r and %r" %
+                                 (device_key, here))
+        lookup[det] = np.asarray(modes, dtype=int)
+        rho[det] = {a: q[i] for i, a in enumerate(a_list)}
+    # U and V stay dense.  The maintained evaluator's dense branch consumes
+    # exactly this ordering and avoids A^2 Python dictionary entries.
+    return lookup, rho, packed["U"], packed["V"], dict(packed["epoch"])
+
+
 def PrecomputeLikelihoodTermsRotatingFreqResponseGPU(
         event_time_geo, t_window, P, data_dict, psd_dict, Lmax, fMax,
         Qmax=4, L_arm=None, p_max=0, f_sidereal=None,

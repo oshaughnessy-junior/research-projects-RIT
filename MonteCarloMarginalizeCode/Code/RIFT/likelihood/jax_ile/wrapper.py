@@ -190,10 +190,45 @@ def build_rotating_freqresponse_data_from_precompute(
         Lmax, fMax, t_window=0.1, Qmax=4, L_arm=None, p_max=0,
         analyticPSD_Q=False, inv_spec_trunc_Q=False, T_spec=0.0,
         tvals=None, verbose=False, **precompute_kwargs):
-    """One-call builder for the compound rotation + finite-response likelihood."""
+    """Build the compound likelihood, optionally without a Q/U/V host round trip.
+
+    ``RIFT_GPU_PRECOMPUTE=1`` selects CuPy precompute followed by DLPack
+    handoff to JAX. Existing host waveform generators remain supported.
+    """
     import RIFT.likelihood.factored_likelihood_rotating_freqresponse as flrr
     import RIFT.likelihood.slowrot_freqresponse as sfr
     from .banded import build_rotating_freqresponse_data
+
+    if os.environ.get('RIFT_GPU_PRECOMPUTE', '0') == '1':
+        if os.environ.get('RIFT_GPU_WAVEFORM', 'lal') != 'lal':
+            raise ValueError('Native GPU waveform provider is not yet validated; use RIFT_GPU_WAVEFORM=lal')
+        from ..gpu_precompute import PrecomputeLikelihoodTermsRotatingFreqResponseGPU
+        from ..gpu_jax_handoff import build_jax_rotating_freqresponse_data_from_device
+        packed, meta = PrecomputeLikelihoodTermsRotatingFreqResponseGPU(
+            fiducial_epoch, t_window, P, data_dict, psd_dict, Lmax, fMax,
+            Qmax=Qmax, L_arm=L_arm, p_max=p_max,
+            analyticPSD_Q=analyticPSD_Q, inv_spec_trunc_Q=inv_spec_trunc_Q,
+            T_spec=T_spec, verbose=verbose, quiet=not verbose,
+            skip_interpolation=True, return_device=True, **precompute_kwargs)
+        det_geom = {
+            det: sfr.detector_geometry(det, L_arm=(
+                L_arm.get(det, None) if isinstance(L_arm, dict) else L_arm))
+            for det in data_dict}
+        if tvals is None:
+            tvals = factored_likelihood.marginalization_time_grid(
+                integration_window_half, float(P.deltaT), xpy=np)
+        data = build_jax_rotating_freqresponse_data_from_device(
+            packed, meta, tvals, det_geom)
+        # Preserve the diagnostic keys without materializing LAL/NumPy Q banks.
+        extras = dict(meta=meta,
+                      rho_by_a={det: {a: packed['q'][det][i]
+                                     for i, a in enumerate(packed['a_list'])}
+                                for det in data_dict},
+                      U_by_aa=packed['U'], V_by_aa=packed['V'],
+                      epochDict=packed['epoch'],
+                      lookupNKDict={det: np.asarray(packed['modes'])
+                                    for det in data_dict}, det_geom=det_geom)
+        return data, extras
 
     bk = flrr.PrecomputeLikelihoodTermsRotatingFreqResponse(
         fiducial_epoch, t_window, P, data_dict, psd_dict, Lmax, fMax,
