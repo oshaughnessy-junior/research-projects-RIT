@@ -328,6 +328,33 @@ def test_pure_av_runs_inside_a_narrow_sky_sampling_window():
                   (result["theta"][:, 1] <= 0.5))
 
 
+def test_pure_av_never_evaluates_or_retains_points_outside_sampling_window():
+    """A live bin at the upper edge must not extend beyond the declared box."""
+    class OutwardRisingLikelihood:
+        ANGULAR_PARAM_ORDER = ("ra",)
+
+        def __init__(self):
+            self.evaluated = []
+
+        def log_likelihood(self, ra):
+            values = np.asarray(ra, dtype=float)
+            self.evaluated.append(values.copy())
+            # Force the retained live volume against the upper boundary, where
+            # fractional bin counts used to let the final bin overshoot.
+            return 2000.0 * values
+
+    like = OutwardRisingLikelihood()
+    bounds = {"ra": (1.1, 1.3)}
+    result = samplers.adaptive_volume_sample(
+        like, 1.0, 100.0, sampler_method="AV", sample_bounds=bounds,
+        nmax=4000, neff=1000000, n_chunk=400, eval_chunk=128, seed=1409)
+
+    evaluated = np.concatenate(like.evaluated)
+    assert np.all((evaluated >= 1.1) & (evaluated <= 1.3))
+    assert np.all((result["theta"][:, 0] >= 1.1) &
+                  (result["theta"][:, 0] <= 1.3))
+
+
 def test_caller_supplied_oracle_cloud_bootstraps_portfolio():
     rng = np.random.default_rng(31)
     centre = np.array([2.0, 0.2, 1.0])
