@@ -1687,6 +1687,12 @@ def load_templates(opts, fiducial_epoch, deltaF, deltaT):
         P.fmax = 0.0
         P.tref = fiducial_epoch
         P.dist = 1000.0 * 1e6 * PC  # fiducial template distance (= distMpcRef)
+        # Extrinsic angles are sampled later, not baked into the base modes.
+        # Match conventional ILE: some mode generators encode these angles in
+        # h_lm, so retaining XML/grid values would apply them twice.
+        P.phiref = 0.0
+        P.psi = 0.0
+        P.incl = 0.0
         if opts.approximant:
             P.approx = lalsim.GetApproximantFromString(opts.approximant)
         return P
