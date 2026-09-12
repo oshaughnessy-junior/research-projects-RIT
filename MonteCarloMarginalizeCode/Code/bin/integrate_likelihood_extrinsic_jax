@@ -255,6 +255,11 @@ _ILE_ALL_OPTS = {
     "--force-adapt-all", "--force-gpu-only", "--force-hyperbolic-22",
     "--force-reset-all", "--force-xpy", "--freqresponse",
     "--freqresponse-arm-length", "--freqresponse-qmax", "--gpu",
+    "--check-slowrot-pmax", "--check-finite-size-Qmax",
+    "--choose-slowrot-pmax", "--choose-slowrot-Qmax",
+    "--response-order-snr", "--response-order-lnL-tol",
+    "--response-order-sky-samples", "--response-order-p-reference",
+    "--response-order-Q-reference", "--response-order-max-bank-gib",
     "--inclination-cosine-sampler", "--internal-gmm-adaptive-components",
     "--internal-gmm-correlate-all", "--internal-gmm-defensive-frac",
     "--internal-gmm-inflate", "--internal-gmm-max-components",
@@ -692,6 +697,38 @@ def check_critical_and_report(opts, optp):
         fatal.append("--freqresponse-qmax must be >= 0")
     _rotation = bool(getattr(opts, "rotation_slow", False))
     _freqresponse = bool(getattr(opts, "freqresponse", False))
+    _order_p = bool(getattr(opts, "check_slowrot_pmax", False)
+                    or getattr(opts, "choose_slowrot_pmax", False))
+    _order_q = bool(getattr(opts, "check_finite_size_Qmax", False)
+                    or getattr(opts, "choose_slowrot_Qmax", False))
+    if _order_p and not _rotation:
+        fatal.append("pmax check/choice requires --rotation-slow")
+    if _order_q and not _freqresponse:
+        fatal.append("Qmax check/choice requires --freqresponse")
+    if (_order_p or _order_q) and getattr(opts, "response_order_snr", None) is None:
+        fatal.append("response-order check/choice requires --response-order-snr")
+    if (getattr(opts, "check_slowrot_pmax", False)
+            and getattr(opts, "choose_slowrot_pmax", False)):
+        fatal.append("choose either --check-slowrot-pmax or --choose-slowrot-pmax")
+    if (getattr(opts, "check_finite_size_Qmax", False)
+            and getattr(opts, "choose_slowrot_Qmax", False)):
+        fatal.append("choose either --check-finite-size-Qmax or --choose-slowrot-Qmax")
+    if ((_order_p and _order_q)
+            and ((getattr(opts, "check_slowrot_pmax", False)
+                  or getattr(opts, "check_finite_size_Qmax", False))
+                 and (getattr(opts, "choose_slowrot_pmax", False)
+                      or getattr(opts, "choose_slowrot_Qmax", False)))):
+        fatal.append("do not mix check and choose controls in one compound response scan")
+    if float(getattr(opts, "response_order_lnL_tol", 0.1)) <= 0:
+        fatal.append("--response-order-lnL-tol must be positive")
+    if int(getattr(opts, "response_order_sky_samples", 128)) < 8:
+        fatal.append("--response-order-sky-samples must be at least 8")
+    if (int(getattr(opts, "response_order_p_reference", 2)) < 0
+            or int(getattr(opts, "response_order_Q_reference", 8)) < 0):
+        fatal.append("response-order reference orders must be nonnegative")
+    if (not np.isfinite(float(getattr(opts, "response_order_max_bank_gib", 4.0)))
+            or float(getattr(opts, "response_order_max_bank_gib", 4.0)) <= 0):
+        fatal.append("--response-order-max-bank-gib must be finite and positive")
     if not _rotation:
         for _name in ("--rotation-n-harmonics", "--rotation-p-max"):
             if was_supplied(opts, _name):
@@ -767,7 +804,12 @@ def check_critical_and_report(opts, optp):
                    "--e-freq", "--fmin-ifo",
                    "--rotation-n-harmonics", "--rotation-p-max",
                    "--freqresponse", "--freqresponse-qmax",
-                   "--freqresponse-arm-length"}
+                   "--freqresponse-arm-length", "--check-slowrot-pmax",
+                   "--check-finite-size-Qmax", "--choose-slowrot-pmax",
+                   "--choose-slowrot-Qmax", "--response-order-snr",
+                   "--response-order-lnL-tol", "--response-order-sky-samples",
+                   "--response-order-p-reference", "--response-order-Q-reference",
+                   "--response-order-max-bank-gib"}
     # These are implemented PER MODE.  Listing them unconditionally would claim
     # they act under --mode laplace-is (the default), nuts, map, multistart-nuts
     # and nuts-phimarg, where they are inert -- exactly the silent no-op this
@@ -947,6 +989,30 @@ def build_parser():
                  help="Highest finite-arm projection power (default 4).")
     g.add_option("--freqresponse-arm-length", default=None,
                  help="Arm length in metres, globally or DET=value comma list.")
+    g.add_option("--check-slowrot-pmax", action="store_true", default=False,
+                 help="Estimate the required pmax and warn if --rotation-p-max is too small.")
+    g.add_option("--check-finite-size-Qmax", "--check-finite-size-qmax",
+                 dest="check_finite_size_Qmax", action="store_true", default=False,
+                 help="Estimate the required Qmax and warn if --freqresponse-qmax is too small.")
+    g.add_option("--choose-slowrot-pmax", action="store_true", default=False,
+                 help="Choose the least pmax satisfying the response error budget.")
+    g.add_option("--choose-slowrot-Qmax", "--choose-finite-size-Qmax",
+                 dest="choose_slowrot_Qmax", action="store_true", default=False,
+                 help="Choose the least finite-size Qmax satisfying the response error budget.")
+    g.add_option("--response-order-snr", type=float, default=None,
+                 help="Target network SNR for response-order checks/choice (required when active).")
+    g.add_option("--response-order-lnL-tol", type=float, default=0.1,
+                 help="Allowed worst scanned Asimov likelihood loss (default 0.1).")
+    g.add_option("--response-order-sky-samples", type=int, default=128,
+                 help="Deterministic full-prior angular design size (default 128).")
+    g.add_option("--response-order-p-reference", type=int, default=2,
+                 help="Highest p used by the diagnostic reference bank (default 2).")
+    g.add_option("--response-order-Q-reference", "--response-order-q-reference",
+                 dest="response_order_Q_reference", type=int, default=8,
+                 help="Highest Q used by the diagnostic reference bank (default 8).")
+    g.add_option("--response-order-max-bank-gib", type=float, default=4.0,
+                 help="Refuse a diagnostic whose dense U,V planning estimate exceeds "
+                      "this many GiB (default 4).")
     optp.add_option_group(g)
 
     g = OptionGroup(optp, "Extrinsic exploration / sampling")
@@ -2929,6 +2995,21 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
               "samples storage_half=%.6g s" %
               (g0, gcert, opts.internal_data_storage_window_half))
     print("Building JAX likelihood (production precompute + banded pack)...")
+    _order_active = any((opts.check_slowrot_pmax, opts.check_finite_size_Qmax,
+                         opts.choose_slowrot_pmax, opts.choose_slowrot_Qmax))
+    order_control = None
+    if _order_active:
+        order_control = dict(
+            target_snr=float(opts.response_order_snr),
+            lnL_tolerance=float(opts.response_order_lnL_tol),
+            n_samples=int(opts.response_order_sky_samples),
+            p_reference=int(opts.response_order_p_reference),
+            q_reference=int(opts.response_order_Q_reference),
+            max_bank_gib=float(opts.response_order_max_bank_gib),
+            check_p=bool(opts.check_slowrot_pmax),
+            check_q=bool(opts.check_finite_size_Qmax),
+            choose_p=bool(opts.choose_slowrot_pmax),
+            choose_q=bool(opts.choose_slowrot_Qmax))
     waveform_kw = _waveform_precompute_kwargs(opts)
     if opts.rotation_slow and opts.freqresponse:
         arm_length = _parse_freqresponse_arm_length(opts.freqresponse_arm_length)
@@ -2938,7 +3019,7 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
             t_window=opts.internal_data_storage_window_half,
             Qmax=opts.freqresponse_qmax, L_arm=arm_length,
             p_max=opts.rotation_p_max, analyticPSD_Q=analyticPSD_Q,
-            verbose=opts.verbose, **waveform_kw)
+            verbose=opts.verbose, order_control=order_control, **waveform_kw)
     elif opts.rotation_slow:
         nh = int(opts.rotation_n_harmonics)
         like_data, extras = build_rotation_data_from_precompute(
@@ -2946,7 +3027,8 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
             opts.data_integration_window_half, opts.l_max, opts.fmax,
             t_window=opts.internal_data_storage_window_half,
             harmonics=tuple(range(-nh, nh + 1)), p_max=opts.rotation_p_max,
-            analyticPSD_Q=analyticPSD_Q, verbose=opts.verbose, **waveform_kw)
+            analyticPSD_Q=analyticPSD_Q, verbose=opts.verbose,
+            order_control=order_control, **waveform_kw)
     elif opts.freqresponse:
         arm_length = _parse_freqresponse_arm_length(opts.freqresponse_arm_length)
         like_data, extras = build_freqresponse_data_from_precompute(
@@ -2954,7 +3036,8 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
             opts.data_integration_window_half, opts.l_max, opts.fmax,
             t_window=opts.internal_data_storage_window_half,
             Qmax=opts.freqresponse_qmax, L_arm=arm_length,
-            analyticPSD_Q=analyticPSD_Q, verbose=opts.verbose, **waveform_kw)
+            analyticPSD_Q=analyticPSD_Q, verbose=opts.verbose,
+            order_control=order_control, **waveform_kw)
     else:
         like_data, extras = build_data_from_precompute(
             P.copy(), data_dict, psd_dict, fiducial_epoch,
@@ -2964,6 +3047,11 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
             q_time_pregrid_factor=(
                 1 if getattr(opts, "q_time_pregrid_factor", 1) is None
                 else int(opts.q_time_pregrid_factor)), **waveform_kw)
+    if extras.get('order_report') is not None:
+        opts.rotation_p_max = int(extras['order_report']['final_p'])
+        opts.freqresponse_qmax = int(extras['order_report']['final_Q'])
+        print("  response order used: p_max=%d Qmax=%d" %
+              (opts.rotation_p_max, opts.freqresponse_qmax))
     print("  feature:", getattr(like_data, "feature", None),
           " modes:", like_data.lms,
           " guessed SNR:", extras.get("guess_snr", "not estimated"))

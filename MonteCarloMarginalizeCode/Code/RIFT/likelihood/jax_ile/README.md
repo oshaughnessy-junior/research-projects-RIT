@@ -152,6 +152,22 @@ conditional time per exported row.  This intentionally differs from
 conventional ILE's XML export semantics, but a high-level DAG can swap
 executables without dying during option parsing.
 
+For an Asimov/pseudo-pipe final fair-draw stage, the pipeline detects the JAX
+executable and runs `util_ConvertJAXILEFairdraws.py`.  The converter strictly
+pairs each tabular sidecar with its intrinsic likelihood record and writes the
+usual joint posterior coordinates that are actually available.  It omits
+`time`, which remains marginalized and is not exported by this driver, rather
+than fabricating a coordinate.  Redshift and source-frame masses are likewise
+not inferred; custom `--convert-args` are refused instead of silently ignored.
+The compatibility columns `p` and `ps` are both the neutral value one because
+the exported rows are already equal-weight fair draws.  Missing pairs,
+malformed records, nonfinite rows, noncontiguous grid IDs, or unexpected
+intrinsic/draw counts fail the terminal job and remove any stale terminal
+output.  Conventional ILE retains its existing XML conversion path.  The
+converter also writes a JSON provenance ledger beside the posterior, recording
+input and output hashes, row counts, shuffle seed, neutral columns, and omitted
+coordinates.
+
 ## Modules
 
 - `detector.py` — `compute_detamresponse`, `time_delay_from_earth_center`

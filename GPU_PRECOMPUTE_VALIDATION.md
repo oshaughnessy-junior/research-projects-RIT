@@ -166,7 +166,12 @@ XML inspection found 20 fairdraw rows each, 1673/1695 bytes. The strict runner
 exited on event 1's below-20 value, not a likelihood/device failure. The user
 requested a reasonable approximately-20 smoke target, not repeated runs to clear
 a sharp threshold; these values are recorded without rerunning for convergence.
-The snapshot08 GPU suite passed all 61 tests in 386.40 s. JAX AV remains pending.
+The snapshot08 GPU suite passed all 61 tests in 386.40 s. JAX AV completed both
+points with neff=27.5798/22.4957 and 160/114 fairdraw rows. This certifies the
+execution smoke only: lnZ=285.6272/284.4376 differs substantially from the classic
+smoke's lnZ=51.5061/51.2719. The known ln(2) convention offset cannot explain
+that gap; input/driver differences are under investigation. No cross-driver
+evidence agreement or production posterior claim is made.
 
 Snapshot09 `7279a60119bb6a58985b90f45524cc7cfd921874a0468c7f669fb6bc5f5ec6f2`
 adds the full high-level precompute-to-classic-consumer no-bulk-host-transfer
@@ -174,6 +179,14 @@ test, physical-device consistency guards, and pre-import allocator setup in
 the JAX executable/harness. GPU regression job 60769862 pending. Focused CPU
 handoff/dispatch tests passed 5 tests before the final device guards; the final
 structural/device-guard suite passed 3 tests. No long-waveform performance run.
+
+Integrated development base 3ee682fe into the draft branch without merging a PR
+or rewriting published history. Conflicts were confined to the new response-order
+control and device-routing blocks. The host order controls are preserved; the
+device-resident path rejects explicit check/choose controls until a device-native
+selector is implemented. Upstream response-order tests: 8 passed. Fresh-process
+handoff/dispatch/order-guard tests: 3 passed. These must run separately because
+the upstream response-order test module installs stub RIFT modules globally.
 
 Set `RIFT_GPU_PRECOMPUTE=1` in the worker to replace compound
 rotation-plus-frequency-response precompute in conventional ILE or ILE-JAX.

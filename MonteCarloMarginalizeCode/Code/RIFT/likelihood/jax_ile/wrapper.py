@@ -50,6 +50,55 @@ EXTRINSIC_PARAM_ORDER = ("ra", "dec", "psi", "incl", "phiref", "distMpc")
 _TIME_SUPPORT_DELAY_MARGIN = 0.05
 
 
+def _apply_response_order_control(products, control, selected_p, selected_q):
+    """Estimate/check orders on a reference bank, then return the requested subset.
+
+    Kept here so both JAX builders use exactly the production U,V products.  The
+    import and the higher-order U,V scan happen only when ``control`` is
+    non-None, which is true only for an explicit check/choose CLI option.
+    """
+    if control is None:
+        return products, None
+    import warnings
+    from RIFT.likelihood import response_order
+
+    report = response_order.estimate_response_orders(
+        products[4], products[1], products[2],
+        target_snr=control['target_snr'],
+        lnL_tolerance=control.get('lnL_tolerance', 0.1),
+        n_samples=control.get('n_samples', 128),
+        selected_p=selected_p, selected_q=selected_q,
+        vary_p=control.get('check_p', False) or control.get('choose_p', False),
+        vary_q=control.get('check_q', False) or control.get('choose_q', False))
+    response_order.print_order_report(report)
+    if (control.get('check_p', False) or control.get('check_q', False)) \
+            and not report['selected_passes']:
+        warnings.warn(
+            "chosen response order fails the requested accuracy: predicted "
+            "Delta lnL={:.3g} > {:.3g} at SNR {:.6g}".format(
+                report['selected_delta_lnL'], report['lnL_tolerance'],
+                report['target_snr']), RuntimeWarning)
+
+    final_p, final_q = int(selected_p), int(selected_q)
+    if control.get('choose_p', False) or control.get('choose_q', False):
+        if not report['reference_resolved']:
+            raise ValueError(
+                "cannot auto-select from an unresolved finite response "
+                "reference; raise the diagnostic reference order")
+        if report['chosen'] is None:
+            raise ValueError(
+                "no response order in the diagnostic reference bank satisfies "
+                "the requested SNR/error budget")
+        if control.get('choose_p', False):
+            final_p = int(report['chosen']['p_max'])
+        if control.get('choose_q', False):
+            final_q = int(report['chosen']['Qmax'])
+    report['final_p'] = final_p
+    report['final_Q'] = final_q
+    return response_order.truncate_precompute_products(
+        products, p_max=final_p, q_max=final_q), report
+
+
 def bandlimited_storage_requirement(deltaT, integration_window_half):
     """Return ``(storage_half, g0, g_certificate)`` for adaptive time support."""
     tvals = factored_likelihood.marginalization_time_grid(
@@ -87,6 +136,7 @@ def build_rotation_data_from_precompute(P, data_dict, psd_dict, fiducial_epoch,
                                         p_max=0, analyticPSD_Q=False,
                                         inv_spec_trunc_Q=False, T_spec=0.0,
                                         tvals=None, verbose=False,
+                                        order_control=None,
                                         **precompute_kwargs):
     """One-call builder for the slow-rotation (Path A/B) banded JAX likelihood.
 
@@ -109,12 +159,25 @@ def build_rotation_data_from_precompute(P, data_dict, psd_dict, fiducial_epoch,
     import RIFT.likelihood.factored_likelihood_with_rotation as flwr
     from .banded import build_rotation_data
 
+    p_reference = (max(int(p_max), int(order_control.get('p_reference', p_max)))
+                   if order_control is not None and
+                   (order_control.get('check_p') or order_control.get('choose_p'))
+                   else int(p_max))
+    if order_control is not None:
+        from RIFT.likelihood import response_order
+        response_order.guard_reference_bank(
+            'rotation', p_reference, 0, Lmax, len(data_dict),
+            order_control.get('max_bank_gib', 4.0))
     ri, ct, ctV, rho, meta = flwr.PrecomputeLikelihoodTermsWithRotation(
         fiducial_epoch, t_window, P, data_dict, psd_dict, Lmax, fMax,
-        harmonics=harmonics, p_max=p_max, f_sidereal=flwr.F_SIDEREAL,
+        harmonics=harmonics, p_max=p_reference, f_sidereal=flwr.F_SIDEREAL,
         analyticPSD_Q=analyticPSD_Q, inv_spec_trunc_Q=inv_spec_trunc_Q,
         T_spec=T_spec, verbose=verbose, quiet=not verbose,
         skip_interpolation=True, **precompute_kwargs)
+    products, order_report = _apply_response_order_control(
+        (ri, ct, ctV, rho, meta), order_control,
+        selected_p=int(p_max), selected_q=0)
+    ri, ct, ctV, rho, meta = products
     lk, rbn, ubn, vbn, ep = flwr.pack_rotation_arrays(meta, rho, ct, ctV)
 
     deltaT = float(P.deltaT)
@@ -130,7 +193,7 @@ def build_rotation_data_from_precompute(P, data_dict, psd_dict, fiducial_epoch,
             integration_window_half, deltaT, xpy=np)
     data = build_rotation_data(meta, lk, rbn, ubn, vbn, ep, deltaT, tvals)
     extras = dict(meta=meta, rho_by_a=rbn, U_by_aa=ubn, V_by_aa=vbn,
-                  epochDict=ep, lookupNKDict=lk)
+                  epochDict=ep, lookupNKDict=lk, order_report=order_report)
     return data, extras
 
 
@@ -140,6 +203,7 @@ def build_freqresponse_data_from_precompute(P, data_dict, psd_dict, fiducial_epo
                                             analyticPSD_Q=False,
                                             inv_spec_trunc_Q=False, T_spec=0.0,
                                             tvals=None, verbose=False,
+                                            order_control=None,
                                             **precompute_kwargs):
     """One-call builder for the finite-size (Path D) banded JAX likelihood.
 
@@ -154,11 +218,23 @@ def build_freqresponse_data_from_precompute(P, data_dict, psd_dict, fiducial_epo
     import RIFT.likelihood.slowrot_freqresponse as sfr
     from .banded import build_freqresponse_data
 
+    q_reference = (max(int(Qmax), int(order_control.get('q_reference', Qmax)))
+                   if order_control is not None and
+                   (order_control.get('check_q') or order_control.get('choose_q'))
+                   else int(Qmax))
+    if order_control is not None:
+        from RIFT.likelihood import response_order
+        response_order.guard_reference_bank(
+            'finite', 0, q_reference, Lmax, len(data_dict),
+            order_control.get('max_bank_gib', 4.0))
     bk = flfr.PrecomputeLikelihoodTermsFreqResponse(
         fiducial_epoch, t_window, P, data_dict, psd_dict, Lmax, fMax,
-        Qmax=Qmax, L_arm=L_arm, analyticPSD_Q=analyticPSD_Q,
+        Qmax=q_reference, L_arm=L_arm, analyticPSD_Q=analyticPSD_Q,
         inv_spec_trunc_Q=inv_spec_trunc_Q, T_spec=T_spec, verbose=verbose,
         quiet=not verbose, skip_interpolation=True, **precompute_kwargs)
+    bk, order_report = _apply_response_order_control(
+        bk, order_control,
+        selected_p=0, selected_q=int(Qmax))
     meta = bk[4]
     lk, rbp, ubp, vbp, ep = flfr.pack_freqresponse_arrays(bk[4], bk[3], bk[1], bk[2])
 
@@ -181,7 +257,8 @@ def build_freqresponse_data_from_precompute(P, data_dict, psd_dict, fiducial_epo
     data = build_freqresponse_data(meta, lk, rbp, ubp, vbp, ep, deltaT, tvals,
                                    det_geom)
     extras = dict(meta=meta, rho_by_p=rbp, U_by_pp=ubp, V_by_pp=vbp,
-                  epochDict=ep, lookupNKDict=lk, det_geom=det_geom)
+                  epochDict=ep, lookupNKDict=lk, det_geom=det_geom,
+                  order_report=order_report)
     return data, extras
 
 
@@ -189,7 +266,7 @@ def build_rotating_freqresponse_data_from_precompute(
         P, data_dict, psd_dict, fiducial_epoch, integration_window_half,
         Lmax, fMax, t_window=0.1, Qmax=4, L_arm=None, p_max=0,
         analyticPSD_Q=False, inv_spec_trunc_Q=False, T_spec=0.0,
-        tvals=None, verbose=False, **precompute_kwargs):
+        tvals=None, verbose=False, order_control=None, **precompute_kwargs):
     """Build the compound likelihood, optionally without a Q/U/V host round trip.
 
     ``RIFT_GPU_PRECOMPUTE=1`` selects CuPy precompute followed by DLPack
@@ -200,6 +277,8 @@ def build_rotating_freqresponse_data_from_precompute(
     from .banded import build_rotating_freqresponse_data
 
     if os.environ.get('RIFT_GPU_PRECOMPUTE', '0') == '1':
+        if order_control is not None:
+            raise NotImplementedError('Device-resident response-order selection is not yet supported; choose explicit orders or disable RIFT_GPU_PRECOMPUTE')
         if os.environ.get('RIFT_GPU_WAVEFORM', 'lal') != 'lal':
             raise ValueError('Native GPU waveform provider is not yet validated; use RIFT_GPU_WAVEFORM=lal')
         from ..gpu_precompute import PrecomputeLikelihoodTermsRotatingFreqResponseGPU
@@ -227,15 +306,32 @@ def build_rotating_freqresponse_data_from_precompute(
                       U_by_aa=packed['U'], V_by_aa=packed['V'],
                       epochDict=packed['epoch'],
                       lookupNKDict={det: np.asarray(packed['modes'])
-                                    for det in data_dict}, det_geom=det_geom)
+                                    for det in data_dict}, det_geom=det_geom,
+                      order_report=None)
         return data, extras
 
+    p_reference = (max(int(p_max), int(order_control.get('p_reference', p_max)))
+                   if order_control is not None and
+                   (order_control.get('check_p') or order_control.get('choose_p'))
+                   else int(p_max))
+    q_reference = (max(int(Qmax), int(order_control.get('q_reference', Qmax)))
+                   if order_control is not None and
+                   (order_control.get('check_q') or order_control.get('choose_q'))
+                   else int(Qmax))
+    if order_control is not None:
+        from RIFT.likelihood import response_order
+        response_order.guard_reference_bank(
+            'combined', p_reference, q_reference, Lmax, len(data_dict),
+            order_control.get('max_bank_gib', 4.0))
     bk = flrr.PrecomputeLikelihoodTermsRotatingFreqResponse(
         fiducial_epoch, t_window, P, data_dict, psd_dict, Lmax, fMax,
-        Qmax=Qmax, L_arm=L_arm, p_max=p_max,
+        Qmax=q_reference, L_arm=L_arm, p_max=p_reference,
         analyticPSD_Q=analyticPSD_Q, inv_spec_trunc_Q=inv_spec_trunc_Q,
         T_spec=T_spec, verbose=verbose, quiet=not verbose,
         skip_interpolation=True, **precompute_kwargs)
+    bk, order_report = _apply_response_order_control(
+        bk, order_control,
+        selected_p=int(p_max), selected_q=int(Qmax))
     meta = bk[4]
     lk, rba, uba, vba, ep = flrr.pack_rotating_freqresponse_arrays(
         meta, bk[3], bk[1], bk[2])
@@ -251,7 +347,8 @@ def build_rotating_freqresponse_data_from_precompute(
     data = build_rotating_freqresponse_data(
         meta, lk, rba, uba, vba, ep, deltaT, tvals, det_geom)
     extras = dict(meta=meta, rho_by_a=rba, U_by_aa=uba, V_by_aa=vba,
-                  epochDict=ep, lookupNKDict=lk, det_geom=det_geom)
+                  epochDict=ep, lookupNKDict=lk, det_geom=det_geom,
+                  order_report=order_report)
     return data, extras
 
 
@@ -1340,7 +1437,17 @@ class JAXDistPhiPsiMargLikelihood:
         # nothing is compiled or cached twice.
         def _batched(ra, dec, incl):
             return _fused(data, ra, dec, incl)
-        self._batched = jax.jit(_batched)
+        # MULTIPEAK IS HOST-SIDE AND MUST NOT BE TRACED.  multipeak_local_marginalize
+        # is a numpy/scipy planner with a Python loop over rows; it calls np.asarray on
+        # the coefficient tables, which under jit are tracers
+        # (TracerArrayConversionError).  Every other scheme here is a jax kernel and is
+        # jitted.  This was missed because the wiring tests called _fused directly, in
+        # eager mode, and the failure only appears through _batched -- the seam the
+        # sampler actually uses.
+        if scheme == "multipeak":
+            self._batched = _batched
+        else:
+            self._batched = jax.jit(_batched)
 
         self._batched_amp = None
         if self._amp_record is not None:
@@ -1352,8 +1459,21 @@ class JAXDistPhiPsiMargLikelihood:
             v = _fused(data, theta3[0:1], theta3[1:2], theta3[2:3])
             return v[0]
         self._scalar = _scalar
-        self._value_and_grad = jax.jit(jax.value_and_grad(_scalar))
-        self._hessian = jax.jit(jax.hessian(_scalar))
+        if scheme == "multipeak":
+            # No AD through a numpy planner.  Refusing is the honest contract; a
+            # silently zero or wrong gradient would reach --fisher-precondition,
+            # which swallows exceptions and falls back to raw coordinates with the
+            # flag still recorded as supplied.
+            def _no_grad(*a, **k):
+                raise ValueError(
+                    "--angle-marg-scheme multipeak is a host-side planner and is "
+                    "not differentiable; gradients and the Fisher preconditioner "
+                    "are unavailable for it.  Use another scheme if you need them.")
+            self._value_and_grad = _no_grad
+            self._hessian = _no_grad
+        else:
+            self._value_and_grad = jax.jit(jax.value_and_grad(_scalar))
+            self._hessian = jax.jit(jax.hessian(_scalar))
 
     def log_likelihood(self, ra, dec, incl):
         """lnL for arrays of 3 angular parameters (ra, dec, incl), shape (S,)."""

@@ -279,3 +279,17 @@ def test_wrapper_gpu_dispatch_bypasses_legacy_pack_and_preserves_options(monkeyp
     assert extras["meta"] is meta
     assert extras["U_by_aa"] is packed["U"]
     assert extras["V_by_aa"] is packed["V"]
+
+
+def test_gpu_order_control_fails_before_allocating_reference_bank(monkeypatch):
+    from RIFT.likelihood import gpu_precompute
+    from RIFT.likelihood.jax_ile import wrapper
+    monkeypatch.setenv("RIFT_GPU_PRECOMPUTE", "1")
+    monkeypatch.setattr(gpu_precompute,
+                        "PrecomputeLikelihoodTermsRotatingFreqResponseGPU",
+                        lambda *a, **k: pytest.fail("unexpected reference precompute"))
+    with pytest.raises(NotImplementedError, match="response-order selection"):
+        wrapper.build_rotating_freqresponse_data_from_precompute(
+            SimpleNamespace(deltaT=0.125), {"H1": object()}, {"H1": object()},
+            1000.0, 0.125, 2, 256.0,
+            order_control={"choose_p": True, "p_reference": 3})

@@ -30,6 +30,9 @@ host transfer, and a nonzero data-term contribution as well as likelihood parity
 device banks in conventional GPU ILE and to DLPack in ILE-JAX. The existing
 host waveform generator remains the default. The standalone legacy-return
 precompute API still supports consumers that need host/LAL objects.
+The device-resident route currently requires explicit response orders; it
+rejects opt-in response-order check/choose controls instead of ignoring them.
+The existing host route retains those controls unchanged.
 
 The benchmark starts its clock inside the already-running worker, synchronizes the
 device before and after each call, and reports several sequential intrinsic points:
