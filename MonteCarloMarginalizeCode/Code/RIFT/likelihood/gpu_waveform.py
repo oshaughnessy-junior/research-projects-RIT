@@ -168,6 +168,108 @@ def _conjugate_spectrum(mode, xpy):
     return xpy.conj(mode[reflection])
 
 
+def _lal_tdfromfd_shift_and_irfft(
+    one_sided_fd, delta_f, delta_t, epoch, extra_time, xpy
+):
+    """Reproduce the deterministic shift and inverse FFT in LAL TDFromFD.
+
+    The caller must supply the one-sided FD series on LAL's already-selected
+    grid and the explicit ``extra_time`` metadata.  This routine deliberately
+    does not infer the grid or duration bounds.  LAL rounds the shift to an
+    integer number of samples with C ``round`` semantics, multiplies bin ``k``
+    by ``exp(+2 pi i k df tshift)``, advances the epoch by ``tshift``, and uses
+    its physical inverse-real-FFT normalization ``N*df``.
+
+    This helper stops before LAL's high-pass filter, chirp-length snip, and
+    endpoint tapers.
+    """
+    delta_f = _scalar(delta_f, "delta_f")
+    delta_t = _scalar(delta_t, "delta_t")
+    epoch = _scalar(epoch, "epoch")
+    extra_time = _scalar(extra_time, "extra_time")
+    if delta_f <= 0 or delta_t <= 0 or extra_time < 0:
+        raise WaveformCompatibilityError(
+            "delta_f and delta_t must be positive and extra_time nonnegative"
+        )
+    if getattr(one_sided_fd, "ndim", None) != 1 or one_sided_fd.shape[0] < 3:
+        raise WaveformCompatibilityError(
+            "one-sided FD input must be a one-dimensional rFFT series"
+        )
+    n = 2 * (int(one_sided_fd.shape[0]) - 1)
+    if not math.isclose(delta_t, 1.0 / (n * delta_f), rel_tol=5e-13):
+        raise WaveformCompatibilityError(
+            "explicit delta_t is inconsistent with the one-sided FD grid"
+        )
+    # `extra_time` is nonnegative here, so C round(x) is floor(x + 1/2).
+    shift_samples = int(math.floor(extra_time / delta_t + 0.5))
+    time_shift = shift_samples * delta_t
+    k = xpy.arange(one_sided_fd.shape[0], dtype=xpy.float64)
+    phase = xpy.exp(2.0j * math.pi * k * delta_f * time_shift)
+    shifted = one_sided_fd * phase
+    td = xpy.fft.irfft(shifted, n=n) * (n * delta_f)
+    return td, epoch + time_shift, shift_samples
+
+
+def _rift_postprocess_td_modes(modes, epoch, delta_t, target_length, fmin, xpy):
+    """Apply RIFT's post-LAL resize and start taper on an array backend.
+
+    This is the part of :func:`lalsimutils.hlmoft` *after*
+    ``SimInspiralTDModesFromPolarizations`` returns.  It is intentionally kept
+    separate from LAL's own ``SimInspiralTDFromFD`` conditioning: reproducing
+    the latter also requires its auto-selected grid, sample-rounded time shift,
+    eighth-order high-pass filter, snip, and two-sided endpoint tapers.
+
+    ``modes`` maps labels to equal-length one-dimensional arrays.  LAL resize
+    semantics append zeros on the right when growing and discard samples from
+    the left when shrinking; a left discard advances the epoch by the same
+    number of samples.  The returned arrays are new values, which keeps this
+    routine valid for JAX arrays.
+    """
+    target_length = int(target_length)
+    delta_t = _scalar(delta_t, "delta_t")
+    fmin = _scalar(fmin, "fmin")
+    if target_length < 1 or delta_t <= 0 or fmin <= 0:
+        raise WaveformCompatibilityError(
+            "target_length, delta_t, and fmin must be positive"
+        )
+    if not modes:
+        raise WaveformCompatibilityError("time-domain mode bank is empty")
+    lengths = {int(value.shape[0]) for value in modes.values()}
+    if len(lengths) != 1:
+        raise WaveformCompatibilityError("time-domain modes do not share a grid")
+    original_length = lengths.pop()
+    if original_length < 1:
+        raise WaveformCompatibilityError("time-domain modes are empty")
+
+    left_discard = max(0, original_length - target_length)
+    resized = {}
+    for label, value in modes.items():
+        value = value[left_discard:]
+        if original_length < target_length:
+            value = xpy.pad(value, (0, target_length - original_length))
+        resized[label] = value
+
+    # This exactly follows hlmoft: one percent of min(post-resize, original),
+    # but never less than one cycle at fmin.  Valid RIFT configurations must
+    # leave enough samples for that taper; reject instead of broadcasting a
+    # malformed window.
+    ntaper = max(
+        int(0.01 * min(target_length, original_length)),
+        int(1.0 / (fmin * delta_t)),
+    )
+    if ntaper > target_length:
+        raise WaveformCompatibilityError(
+            "RIFT start taper exceeds the requested time-series length"
+        )
+    j = xpy.arange(ntaper, dtype=xpy.float64)
+    leading = 0.5 - 0.5 * xpy.cos(math.pi * j / float(ntaper))
+    window = xpy.concatenate(
+        (leading, xpy.ones(target_length - ntaper, dtype=xpy.float64))
+    )
+    resized = {label: value * window for label, value in resized.items()}
+    return resized, float(epoch) + left_discard * delta_t, ntaper
+
+
 def generate_imrphenomd_fd(
     P,
     Lmax=2,

@@ -93,8 +93,19 @@ class GPUPrecomputeContext:
 
     def __post_init__(self):
         self.backend = _resolve_backend(self.backend)
+        self._device_id = (None if _is_numpy(self.backend) else
+                           int(self.backend.cuda.runtime.getDevice()))
+
+    def check_device(self):
+        """Do not reuse a worker's cached buffers on another CUDA device."""
+        if self._device_id is not None and int(
+                self.backend.cuda.runtime.getDevice()) != self._device_id:
+            raise RuntimeError("GPU precompute context belongs to CUDA device %d; "
+                               "select that device or use its default context" %
+                               self._device_id)
 
     def array(self, role, host_array, dtype=None):
+        self.check_device()
         a = np.asarray(host_array, dtype=dtype)
         key = (str(role), _content_digest(a), a.dtype.str, tuple(a.shape))
         with self._lock:
@@ -114,6 +125,7 @@ class GPUPrecomputeContext:
             return cached
 
     def clear(self):
+        self.check_device()
         with self._lock:
             self._arrays.clear()
             self._role_keys.clear()
@@ -131,7 +143,7 @@ _DEFAULT_CONTEXT_LOCK = threading.Lock()
 
 def default_context(backend=None):
     xp = _resolve_backend(backend)
-    key = id(xp)
+    key = (id(xp), None if _is_numpy(xp) else int(xp.cuda.runtime.getDevice()))
     with _DEFAULT_CONTEXT_LOCK:
         if key not in _DEFAULT_CONTEXTS:
             _DEFAULT_CONTEXTS[key] = GPUPrecomputeContext(xp)
@@ -622,6 +634,9 @@ def PrecomputeLikelihoodTermsRotatingFreqResponseGPU(
 
     xp = _resolve_backend(backend)
     context = context or default_context(xp)
+    if context.backend is not xp:
+        raise ValueError("precompute context uses a different array backend")
+    context.check_device()
     if set(data_dict) != set(psd_dict) or not data_dict:
         raise ValueError("data and PSD detector sets differ or are empty")
     if analyticPSD_Q:
@@ -681,14 +696,13 @@ def PrecomputeLikelihoodTermsRotatingFreqResponseGPU(
         f_host = np.asarray(lal_frequency_axis(nfreq, delta_f, xp=np))
         response_host = np.asarray(sfr.finite_size_response_weights(
             f_host, {'L': float(length), 'T': float(length)/sfr.C_SI}, int(Qmax)))
-        response = context.array((det, "finite-response", Qmax, length), response_host,
+        response = context.array((det, "finite-response"), response_host,
                                  dtype=np.complex128)
 
         psd = psd_dict[det]
         ip = lsu.ComplexIP(P.fmin, fMax, 1.0/2.0/P.deltaT, P.deltaF, psd,
                            False, inv_spec_trunc_Q, T_spec)
-        weight = context.array((det, "weights", P.fmin, fMax, T_spec,
-                                inv_spec_trunc_Q), ip.weights2side, dtype=np.float64)
+        weight = context.array((det, "weights"), ip.weights2side, dtype=np.float64)
         data = context.array((det, "data"), data_dict[det].data.data,
                              dtype=np.complex128)
         stamp = _timed("input_prep", xp, timing_callback, stamp, detector=det,

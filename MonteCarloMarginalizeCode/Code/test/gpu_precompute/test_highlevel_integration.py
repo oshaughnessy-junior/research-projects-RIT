@@ -131,6 +131,26 @@ def test_highlevel_precompute_pack_epoch_and_downstream_likelihood(monkeypatch, 
     np.testing.assert_allclose(ln_got, ln_cpu, rtol=2e-10, atol=2e-8)
 
 
+def test_context_replaces_old_response_orders_and_cutoffs(monkeypatch):
+    from RIFT.likelihood.gpu_precompute import (
+        GPUPrecomputeContext, PrecomputeLikelihoodTermsRotatingFreqResponseGPU)
+    _, fl, event, p, data, psd, modes, modes_c = _synthetic_problem()
+    monkeypatch.setattr(fl, "internal_hlm_generator", lambda *a, **k: (modes, modes_c))
+    context = GPUPrecomputeContext(np)
+    for order, cutoff, arm in [(0, 24., 4000.), (1, 20., 3000.), (0, 22., 3500.)]:
+        common = dict(event_time_geo=event, t_window=.25, P=p,
+                      data_dict=data, psd_dict=psd, Lmax=2, fMax=cutoff,
+                      Qmax=order, p_max=0, L_arm=arm, backend=np,
+                      return_device=True, verbose=False, quiet=True)
+        reused, _ = PrecomputeLikelihoodTermsRotatingFreqResponseGPU(
+            **common, context=context)
+        fresh, _ = PrecomputeLikelihoodTermsRotatingFreqResponseGPU(
+            **common, context=GPUPrecomputeContext(np))
+        assert context.stats()["retained_arrays"] == 3
+        for name in ("q", "U", "V"):
+            np.testing.assert_allclose(reused[name]["H1"], fresh[name]["H1"])
+
+
 def pytestconfig_requires_gpu():
     # pytest's fixture object is deliberately not threaded through the scientific helper;
     # the environment is the stable Condor/container gate used by README.md.

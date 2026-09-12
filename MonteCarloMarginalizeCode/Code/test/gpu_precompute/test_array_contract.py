@@ -5,6 +5,7 @@ implementations must fail several tests here.
 """
 
 import inspect
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -16,6 +17,29 @@ from RIFT.likelihood.gpu_precompute import (
 
 from conftest import to_host
 from oracle import direct_log_likelihood, q_oracle, uv_oracle
+
+
+def test_default_context_separates_devices_and_explicit_context_rejects_switch(monkeypatch):
+    from RIFT.likelihood import gpu_precompute as gpu
+    selected = [0]
+    backend = SimpleNamespace(
+        cuda=SimpleNamespace(runtime=SimpleNamespace(getDevice=lambda: selected[0])),
+        asarray=lambda value: np.array(value, copy=True))
+    monkeypatch.setattr(gpu, "_DEFAULT_CONTEXTS", {})
+    zero = gpu.default_context(backend)
+    first = zero.array("data", np.arange(4.))
+    selected[0] = 1
+    one = gpu.default_context(backend)
+    assert one is not zero
+    second = one.array("data", np.arange(4.))
+    assert second is not first
+    with pytest.raises(RuntimeError, match="belongs to CUDA device 0"):
+        zero.array("data", np.arange(4.))
+    with pytest.raises(RuntimeError, match="belongs to CUDA device 0"):
+        zero.clear()
+    selected[0] = 0
+    assert gpu.default_context(backend) is zero
+    assert zero.array("data", np.arange(4.)) is first
 
 
 def _case(seed=2917, a=3, m=2, n=32):

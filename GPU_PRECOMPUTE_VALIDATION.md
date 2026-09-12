@@ -3,6 +3,34 @@
 Status: OPEN, 2026-09-12. Internal implementation requested by Richard;
 no PR merge authorized. Base: c14c1fbc3c2c05ef1f4b228404443a8bb9841769.
 
+### Readiness checkpoint before quota expiry (2026-09-12)
+
+Fresh independent review found missing CI registration and two cache-lifetime
+issues. The CPU CI gate now explicitly runs all 13 added non-JAX-directory
+test files in separate processes and rejects all-skipped files. Roster and
+shell checks pass. Contexts now bind to CUDA devices; changing devices rejects
+an explicit old context and selects a distinct default context. Stable cache
+roles replace old cutoff/response-order versions. Both new regressions passed
+on CPU; the full per-file gate was still running at this checkpoint (session
+13894, temporary reports `/tmp/tmp.ZAmOyN5C0a/`). No full-gate pass is claimed.
+
+Completed GPU job 60769877 compares frozen source 7dc4058c4 with b99bca825 on
+one allocation, with separate cold caches and the same five-point captured
+bank. Compile time fell from 293.469 s to 24.057 s, but warm median increased
+from 0.001204 s to 0.009285 s. Both matched the independent likelihood oracle
+to 9.064e-10 absolute. This single-host tradeoff is NOT a general speedup claim.
+Raw outputs are in scratch `jax_compact_ab/`. PR325 remains draft pending
+resolution of warm throughput and a final GPU gate. An untested chunked-gather
+experiment is only in the local worktree's `jax_ile/core.py`, deliberately NOT
+included in this readiness commit; validate or replace it before committing.
+
+PR328's fail-closed waveform helpers and corrected tests are synchronized here
+to avoid conflicting alternative versions of the two added files. Independent
+review identified a physical-strain absolute-tolerance bug in its LAL test;
+amplitude-normalized checks now reject deliberate zero/sign mutations. All
+11 waveform tests passed. This certifies helpers, not real Ripple/LAL carrier
+parity or completed production native-GPU waveform conditioning.
+
 Current correction: the pre-bounds-fix JAX AV smoke evidences are INVALID for
 their requested boxes. The JAX adapter omitted AV's `enforce_bounds=True`;
 every saved snapshot10 sample lay outside the requested sky/distance bounds.

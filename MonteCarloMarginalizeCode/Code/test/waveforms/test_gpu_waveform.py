@@ -37,6 +37,132 @@ class TestFourierConvention(unittest.TestCase):
             rtol=2e-14, atol=2e-14,
         )
 
+    def test_tdfromfd_shift_and_real_ifft_matches_lal(self):
+        try:
+            import lal
+        except ImportError:
+            self.skipTest("LAL is optional in lightweight unit environments")
+        rng = np.random.default_rng(20260913)
+        n, dt = 64, 1.0 / 128.0
+        df = 1.0 / (n * dt)
+        # A real inverse transform requires real DC and Nyquist coefficients.
+        values = rng.normal(size=n // 2 + 1) + 1j * rng.normal(size=n // 2 + 1)
+        values[[0, -1]] = values[[0, -1]].real
+        epoch, extra_time = -7.25, 10.5 * dt
+        got, got_epoch, shift_samples = gw._lal_tdfromfd_shift_and_irfft(
+            values, df, dt, epoch, extra_time, np
+        )
+        # C round is half away from zero, unlike Python's ties-to-even round.
+        self.assertEqual(shift_samples, 11)
+        self.assertEqual(got_epoch, epoch + 11 * dt)
+        fs = lal.CreateCOMPLEX16FrequencySeries(
+            "shifted", lal.LIGOTimeGPS(got_epoch), 0.0, df,
+            lal.DimensionlessUnit, len(values),
+        )
+        k = np.arange(len(values))
+        fs.data.data[:] = values * np.exp(2j * np.pi * k * df * 11 * dt)
+        ts = lal.CreateREAL8TimeSeries(
+            "inverse", fs.epoch, 0.0, dt, lal.DimensionlessUnit, n
+        )
+        lal.REAL8FreqTimeFFT(ts, fs, lal.CreateReverseREAL8FFTPlan(n, 0))
+        np.testing.assert_allclose(got, ts.data.data, rtol=2e-14, atol=2e-14)
+
+    def test_tdfromfd_numpy_jax_agree(self):
+        try:
+            import jax.numpy as jnp
+        except ImportError:
+            self.skipTest("JAX is optional in lightweight unit environments")
+        n, dt = 32, 1.0 / 64.0
+        df = 1.0 / (n * dt)
+        values = np.linspace(0.0, 1.0, n // 2 + 1).astype(np.complex128)
+        expected = gw._lal_tdfromfd_shift_and_irfft(
+            values, df, dt, -1.0, 3.2 * dt, np
+        )
+        got = gw._lal_tdfromfd_shift_and_irfft(
+            jnp.asarray(values), df, dt, -1.0, 3.2 * dt, jnp
+        )
+        np.testing.assert_allclose(np.asarray(got[0]), expected[0],
+                                   rtol=2e-13, atol=2e-13)
+        self.assertEqual(got[1:], expected[1:])
+
+
+class TestRIFTPostprocessing(unittest.TestCase):
+    def test_grow_appends_right_and_preserves_epoch(self):
+        modes = {(2, 2): np.arange(12, dtype=np.complex128)}
+        got, epoch, ntaper = gw._rift_postprocess_td_modes(
+            modes, -3.25, 1.0 / 16.0, 20, 2.0, np
+        )
+        self.assertEqual(epoch, -3.25)
+        self.assertEqual(ntaper, 8)
+        expected = np.pad(modes[(2, 2)], (0, 8))
+        j = np.arange(ntaper)
+        expected[:ntaper] *= 0.5 - 0.5 * np.cos(np.pi * j / ntaper)
+        np.testing.assert_allclose(got[(2, 2)], expected)
+
+    def test_shrink_discards_left_and_advances_epoch(self):
+        source = np.arange(24, dtype=np.float64).astype(np.complex128)
+        got, epoch, ntaper = gw._rift_postprocess_td_modes(
+            {(2, 2): source, (2, -2): source.conj()},
+            -2.0, 1.0 / 16.0, 16, 2.0, np,
+        )
+        self.assertEqual(epoch, -1.5)
+        self.assertEqual(ntaper, 8)
+        window = np.ones(16)
+        window[:ntaper] = 0.5 - 0.5 * np.cos(np.pi * np.arange(ntaper) / ntaper)
+        np.testing.assert_allclose(got[(2, 2)], source[-16:] * window)
+
+    def test_rejects_noncommon_grid(self):
+        with self.assertRaisesRegex(gw.WaveformCompatibilityError, "share a grid"):
+            gw._rift_postprocess_td_modes(
+                {(2, 2): np.zeros(8), (2, -2): np.zeros(10)},
+                0.0, 1.0 / 16.0, 16, 2.0, np,
+            )
+
+    def test_matches_actual_lalsimutils_post_lal_stage(self):
+        try:
+            import lal
+            import lalsimulation as lalsim
+            from RIFT import lalsimutils as lsu
+        except ImportError:
+            self.skipTest("LAL and RIFT waveform dependencies are optional")
+        dt, df, fmin = 1.0 / 512.0, 0.25, 40.0
+        p = lsu.ChooseWaveformParams(
+            m1=30 * lal.MSUN_SI, m2=25 * lal.MSUN_SI,
+            s1z=0.1, s2z=-0.2, fmin=fmin, fref=60.0,
+            deltaT=dt, deltaF=df, approx=lalsim.IMRPhenomD,
+            dist=200e6 * lal.PC_SI, phiref=0.4, psi=0.0,
+        )
+        raw_struct = lsu.hlmoft_FromFD_dict(p.manual_copy(), Lmax=2)
+        raw = lsu.SphHarmTimeSeries_to_dict(raw_struct, 2)
+        expected = lsu.hlmoft(p.manual_copy(), Lmax=2, silent=True)
+        source = {label: np.asarray(series.data.data).copy()
+                  for label, series in raw.items()}
+        got, epoch, ntaper = gw._rift_postprocess_td_modes(
+            source, float(raw[(2, 2)].epoch), dt,
+            int(1.0 / (dt * df)), fmin, np,
+        )
+        self.assertEqual(ntaper, max(
+            int(0.01 * min(len(source[(2, 2)]), len(got[(2, 2)]))),
+            int(1.0 / (fmin * dt)),
+        ))
+        for label in expected:
+            self.assertAlmostEqual(float(expected[label].epoch), epoch, places=12)
+            target = np.asarray(expected[label].data.data)
+            scale = np.max(np.abs(target))
+            if scale == 0:
+                np.testing.assert_array_equal(got[label], target)
+                continue
+            # Physical strain is ~1e-21: a unit-scale absolute tolerance would
+            # silently accept a missing or sign-flipped waveform. Normalize
+            # both sides, and pin that the comparison rejects those defects.
+            np.testing.assert_allclose(got[label] / scale, target / scale,
+                                       rtol=2e-14, atol=2e-14)
+            for broken in (np.zeros_like(target), -target):
+                with self.assertRaises(AssertionError):
+                    np.testing.assert_allclose(broken / scale, target / scale,
+                                               rtol=2e-14, atol=2e-14)
+        self.assertGreater(np.max(np.abs(expected[(2, 2)].data.data)), 0)
+
 
 class _Params:
     deltaT = 1.0 / 16.0
