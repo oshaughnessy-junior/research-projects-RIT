@@ -188,6 +188,32 @@ The test explicitly checks network additivity and a nonzero Q contribution.
 This does not yet test classic CuPy's separate cubic Q-contraction kernel;
 the real-bank replay must cover that path before declaring cross-driver parity.
 
+The first boundary-capture writer failed to serialize a LIGOTimeGPS object after
+writing the array archive; this was a diagnostic-output failure, not a numerical
+failure. Corrected captures60769865.0/.1 completed. They show identical modes,
+compound labels, cadence, Q epochs, and metadata. Data differ by only 1.37e-14
+relative scale between independently regenerated fixtures; PSDs are identical.
+The actual template parameters reveal a previously missed executable-default
+difference: reference frequency100 Hz in classic versus30 Hz in JAX. Both have
+zero phiref/psi/incl. Q banks differ by opposite constant mode phases; such a
+phase can be absorbed by full orbital-phase sampling for this two-mode fixture,
+so this is not yet an explanation of the evidence discrepancy. Both smoke
+harnesses now explicitly request100 Hz, pinned by a caller-contract test.
+Replay job60769866 failed before computation because its script was outside
+the container bind. Corrected job60769867 replays each captured bank at five
+fixed extrinsic points through
+classic NumPy, classic CuPy, and direct JAX, including their actual terminal
+time-marginalization routines. No extrinsic sampler is called.
+
+Short SEOBNRv5PHM through GWSignal: NumPy-backend compatibility test passed
+(29.04 s test runtime), with 21 modes through l4, N2048, df0.25 Hz, and common
+epoch -0.204755017. It compares reference and candidate Q/U/V and epochs, and
+asserts that both actually invoke the GWSignal provider. This is not a CuPy
+result or a performance measurement. The corresponding GPU test and an expanded
+nearest/cubic classic-GPU consumer regression are prepared for the next frozen
+snapshot. The paired reference-frequency and waveform-forwarding caller tests
+both pass.
+
 ### Device handoff checkpoint (in progress)
 
 Snapshot08 `c0353bd4a65c62641793979924fc41e7a8a450b86b713fcf37c52abe8db1b7c0`

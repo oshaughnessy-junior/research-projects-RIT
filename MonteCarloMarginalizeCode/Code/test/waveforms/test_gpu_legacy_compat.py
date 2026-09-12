@@ -5,6 +5,8 @@ every approximant and waveform option, then upload both ordinary and
 conjugated conditioned mode banks.  Native waveform providers are opt-in.
 """
 
+import importlib.util
+import os
 import unittest
 from unittest import mock
 
@@ -297,6 +299,101 @@ class TestGenericMultimodeModel(unittest.TestCase):
             if cp.cuda.runtime.getDeviceCount() < 1:
                 raise RuntimeError("no CUDA device")
         except Exception as exc:
+            self.skipTest("no usable CuPy GPU: %s" % exc)
+        self._run(cp)
+
+
+class TestGWSignalSEOBNRv5PHM(unittest.TestCase):
+    """Short real-model guard for the legacy GWSignal-to-device route."""
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            cls.lal, cls.lalsim, cls.lsu, cls.fl, cls.fr, cls.gpu = _imports()
+        except ImportError as exc:
+            raise unittest.SkipTest("RIFT waveform dependencies unavailable: %s" % exc)
+        if importlib.util.find_spec("pyseobnr") is None:
+            raise unittest.SkipTest("SEOBNRv5PHM needs the optional pyseobnr backend")
+        # Once the advertised backend exists, a broken GWSignal import is a
+        # compatibility failure rather than an optional-dependency skip.
+        if not cls.fl.has_GWS:
+            raise RuntimeError("pyseobnr is installed but RIFT could not import GWSignal")
+
+    def _run(self, xp):
+        event, p, data, psd = _short_problem(
+            self.lalsim.IMRPhenomXPHM, precessing=True
+        )
+        waveform_kwargs = dict(
+            use_gwsignal=True,
+            use_gwsignal_approx="SEOBNRv5PHM",
+            # This deliberately short 512 Hz test is a transport/parity gate,
+            # not a high-mode accuracy study.  Disable the model's per-mode
+            # ringdown/Nyquist veto exactly as the maintained diagnostic does.
+            extra_waveform_kwargs={"lmax_nyquist": 1},
+        )
+        common = dict(
+            event_time_geo=event, t_window=0.05, P=p, data_dict=data,
+            psd_dict=psd, Lmax=4, fMax=200.0, Qmax=0, p_max=0,
+            analyticPSD_Q=False, inv_spec_trunc_Q=False, T_spec=0.0,
+            verbose=False, quiet=True, skip_interpolation=True,
+            **waveform_kwargs
+        )
+
+        routed_calls = []
+        real_gwsignal = self.fl.rgws.std_and_conj_hlmoff
+
+        def record_gwsignal_route(*args, **kwargs):
+            banks = real_gwsignal(*args, **kwargs)
+            routed_calls.append((args, kwargs, banks))
+            return banks
+
+        # P.approx is intentionally an ordinary available LAL approximant:
+        # SEOBNRv5PHM is selected only by the explicit GWSignal string.  Thus
+        # observing both calls here proves neither precompute silently fell
+        # back to the default LAL route.
+        with mock.patch.object(
+                self.fl.rgws, "std_and_conj_hlmoff",
+                side_effect=record_gwsignal_route):
+            cpu = self.fr.PrecomputeLikelihoodTermsRotatingFreqResponse(**common)
+            candidate = self.gpu.PrecomputeLikelihoodTermsRotatingFreqResponseGPU(
+                **common, backend=xp, context=self.gpu.GPUPrecomputeContext(xp)
+            )
+
+        self.assertEqual(len(routed_calls), 2)
+        for args, kwargs, (ordinary, conjugate) in routed_calls:
+            self.assertIsInstance(args[0], self.lsu.ChooseWaveformParams)
+            self.assertEqual(args[1], 4)
+            self.assertEqual(kwargs["approx_string"], "SEOBNRv5PHM")
+            self.assertEqual(kwargs["lmax_nyquist"], 1)
+            labels = set(ordinary)
+            self.assertEqual(labels, set(conjugate))
+            self.assertGreater(len(labels), 2)
+            self.assertTrue(any(ell > 2 for ell, _ in labels))
+            first = ordinary[next(iter(labels))]
+            self.assertEqual(first.data.length, data["H1"].data.length)
+            self.assertAlmostEqual(first.deltaF, data["H1"].deltaF, places=14)
+            for bank in (ordinary, conjugate):
+                for series in bank.values():
+                    self.assertEqual(series.data.length, first.data.length)
+                    self.assertAlmostEqual(series.deltaF, first.deltaF, places=14)
+                    self.assertAlmostEqual(float(series.epoch),
+                                           float(first.epoch), places=12)
+
+        self.assertEqual(set(cpu[4]["modes"]), set(candidate[4]["modes"]))
+        _assert_precompute_close(self, self.fr, cpu, candidate,
+                                 5e-10 if xp is np else 5e-9)
+
+    def test_seobnrv5phm_gwsignal_numpy_precompute_matches_cpu(self):
+        self._run(np)
+
+    def test_seobnrv5phm_gwsignal_cupy_precompute_matches_cpu(self):
+        try:
+            import cupy as cp
+            if cp.cuda.runtime.getDeviceCount() < 1:
+                raise RuntimeError("no CUDA device")
+        except Exception as exc:
+            if os.environ.get("RIFT_REQUIRE_GPU_PRECOMPUTE") == "1":
+                self.fail("mandatory CuPy device gate unavailable: %s" % exc)
             self.skipTest("no usable CuPy GPU: %s" % exc)
         self._run(cp)
 

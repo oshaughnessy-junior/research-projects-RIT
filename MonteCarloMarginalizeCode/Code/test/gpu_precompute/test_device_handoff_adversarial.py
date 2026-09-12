@@ -156,7 +156,8 @@ def test_handoff_rejects_numpy_banks_before_jax_evaluation():
             packed, meta, tvals, geometry, require_gpu=False)
 
 
-def test_highlevel_device_precompute_to_classic_likelihood_has_no_bulk_d2h(monkeypatch):
+@pytest.mark.parametrize("interp", ["nearest", "cubic"])
+def test_highlevel_device_precompute_to_classic_likelihood_has_no_bulk_d2h(monkeypatch, interp):
     cp, unused_jax, unused_jnp = _require_cupy_jax_gpu()
     from test_highlevel_integration import _synthetic_problem
     from RIFT.likelihood import factored_likelihood_rotating_freqresponse as fr
@@ -189,7 +190,10 @@ def test_highlevel_device_precompute_to_classic_likelihood_has_no_bulk_d2h(monke
     tvals = np.array([-p.deltaT, 0.0, p.deltaT])
     expected = fr.DiscreteFactoredLogLikelihoodRotatingFreqResponseNoLoop(
         tvals, pvec, cpu[4], *cpu_packed, Lmax=2, array_output=True,
-        time_interp="nearest", xpy=np)
+        time_interp=interp, xpy=np)
+    expected_marginal = fr.DiscreteFactoredLogLikelihoodRotatingFreqResponseNoLoop(
+        tvals, pvec, cpu[4], *cpu_packed, Lmax=2, array_output=False,
+        time_interp=interp, xpy=np)
 
     real_asnumpy = cp.asnumpy
     transfers = []
@@ -214,10 +218,15 @@ def test_highlevel_device_precompute_to_classic_likelihood_has_no_bulk_d2h(monke
         assert cp.shares_memory(rho["H1"][a], packed["q"]["H1"][index])
     got_device = fr.DiscreteFactoredLogLikelihoodRotatingFreqResponseNoLoop(
         tvals, pvec, meta, *device_packed, Lmax=2, array_output=True,
-        time_interp="nearest", xpy=cp)
+        time_interp=interp, xpy=cp)
+    got_marginal = fr.DiscreteFactoredLogLikelihoodRotatingFreqResponseNoLoop(
+        tvals, pvec, meta, *device_packed, Lmax=2, array_output=False,
+        time_interp=interp, xpy=cp)
     cp.cuda.Stream.null.synchronize()
     assert all(ndim == 0 for ndim, unused_nbytes in transfers)
     np.testing.assert_allclose(real_asnumpy(got_device), expected,
+                               rtol=3e-10, atol=2e-8)
+    np.testing.assert_allclose(real_asnumpy(got_marginal), expected_marginal,
                                rtol=3e-10, atol=2e-8)
 
 

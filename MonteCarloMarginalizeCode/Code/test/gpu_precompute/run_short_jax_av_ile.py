@@ -153,6 +153,8 @@ def main():
                  "--vectorized", "--rotation-slow", "--freqresponse"):
         set_option(args, flag)
     set_option(args, "--fairdraw-extrinsic-output-n-max", 200)
+    # Match classic explicitly; this driver's default is 30 Hz, not 100 Hz.
+    set_option(args, "--reference-freq", 100.0)
 
     boxes = {
         "right_ascension": [generator.RA - opts.sky_half_width,

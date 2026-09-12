@@ -121,6 +121,8 @@ def main():
     set_option(args, "--fairdraw-extrinsic-output-n-max", 200)
     set_option(args, "--inv-spec-trunc-time", 0)
     set_option(args, "--interpolate-time", "cubic")
+    # Driver defaults differ (classic 100 Hz, JAX 30 Hz); pin the convention.
+    set_option(args, "--reference-freq", 100.0)
     set_option(args, "--rotation-p-max", 1)
     set_option(args, "--freqresponse-qmax", 1)
     set_option(args, "--freqresponse-arm-length", "H1=40000,L1=40000")
