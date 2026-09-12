@@ -1067,7 +1067,9 @@ fi
 # three EXPECTED_TESTS= assignments (761, 755, 762; last wins); this is the single one.
 # 2026-09-10: +22 value-only AV/portfolio, prior-window, wrapper, and driver
 # contract tests in test_jax_av.py.
-EXPECTED_TESTS=785
+# The multipeak host-side fix (#317) adds two more tests in
+# test_angle_marg_multipeak_wiring.py, for 787 tests total.
+EXPECTED_TESTS=787
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
