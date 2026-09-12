@@ -535,6 +535,7 @@ FILES=(
   "${JAXDIR}/test_joint_anglemarg_peaklocal.py"
   "${JAXDIR}/test_angle_marg_peaklocal_wiring.py"
   "${JAXDIR}/test_angle_marg_multipeak_wiring.py"
+  "${JAXDIR}/test_angle_marg_multipeak_jax.py"
   "${JAXDIR}/test_limit_distance_jax.py"
   "${JAXDIR}/test_direct_marginalization_planner.py"
   "${JAXDIR}/test_time_first_peaklocal.py"
@@ -1069,7 +1070,10 @@ fi
 # contract tests in test_jax_av.py.
 # The multipeak host-side fix (#317) adds two more tests in
 # test_angle_marg_multipeak_wiring.py, for 787 tests total.
-EXPECTED_TESTS=787
+# The bounded multipeak suite has 53 tests, including real acceptance/AD,
+# CLI configuration, invalid guards, and explicit drop/refuse publication.
+# 787 + 53 = 840.
+EXPECTED_TESTS=840
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
