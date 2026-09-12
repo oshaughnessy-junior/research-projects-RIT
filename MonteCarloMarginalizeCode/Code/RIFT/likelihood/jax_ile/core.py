@@ -900,6 +900,10 @@ def _contract_banded_data_term(Q_bank, conjY, C, gather, pos, u_sep,
         raise ValueError("pp_t1, pe, and pt must be supplied together")
     if post_phase:
         pp_t1 = jnp.asarray(pp_t1, dtype=jnp.int32)
+    if S == 0:
+        # The previous reduction returned an empty band for empty sampler
+        # chunks.  Avoid selecting a zero-sized tile (and dividing by it).
+        return jnp.zeros((0, npts), dtype=jnp.complex128)
 
     taps = {_gather_nearest: 1, _gather_linear: 2, _gather_cubic: 4}.get(
         gather, getattr(gather, "_stencil_size", 16))

@@ -169,3 +169,16 @@ def test_chunk_shape_respects_forward_scratch_budget():
     assert estimated <= budget
     with pytest.raises(ValueError, match="exceeds the scratch budget"):
         JC._banded_chunk_shape(100, 20, 2000, 128, 4096, 16, budget=1024)
+
+
+def test_empty_sample_batch_preserves_empty_result():
+    q, conj_y, coeff, pos, u, pp_t1, pe, pt = _problem()
+    args = (q, conj_y[:0], coeff[:, :0], JC._gather_cubic,
+            pos[:0], u[:0])
+    kwargs = dict(pp_t1=pp_t1, pe=pe[:, :0], pt=pt)
+    got = JC._contract_banded_data_term(*args, **kwargs)
+    got_jit = jax.jit(lambda: JC._contract_banded_data_term(
+        *args, **kwargs))()
+    assert got.shape == (0, pos.shape[1])
+    assert got_jit.shape == got.shape
+    np.testing.assert_array_equal(np.asarray(got_jit), np.asarray(got))

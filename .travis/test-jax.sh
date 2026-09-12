@@ -1075,9 +1075,9 @@ fi
 # The bounded multipeak suite has 53 tests, including real acceptance/AD,
 # CLI configuration, invalid guards, and explicit drop/refuse publication.
 # 787 + 53 = 840.
-# 2026-09-12: +14 compact banded-data contraction value, AD, tile/padding,
-# scratch-budget, and graph-size tests. 840 + 14 = 854.
-EXPECTED_TESTS=854
+# 2026-09-12: +15 compact banded-data contraction value, AD, tile/padding,
+# scratch-budget, empty-batch, and graph-size tests. 840 + 15 = 855.
+EXPECTED_TESTS=855
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"

@@ -1,9 +1,44 @@
 # GPU compound precompute: implementation and validation
 
-Status: OPEN, 2026-09-12. Internal implementation requested by Richard;
-no PR merge authorized. Base: c14c1fbc3c2c05ef1f4b228404443a8bb9841769.
+Status: PR #325 open and draft, 2026-09-12. The target is `rift_O4d`;
+the branch includes the 2026-09-12 base merge after waveform PR #328 landed.
 
-### Readiness checkpoint before quota expiry (2026-09-12)
+### Current JAX cost and readiness update (2026-09-12)
+
+The earlier bounded-loop reduction removed most of the cold compile cost but
+regressed warm execution. The replacement gathers small row/sample tiles under
+an explicit forward scratch estimate. It retains the compact JAX loop graph
+and reverse-mode differentiation without materializing the full production
+`(A, K, S, npts)` gather. Fifteen focused CPU tests pass: independent value
+oracles for nearest/linear/cubic/sinc, reverse-mode derivatives, non-divisible
+row/sample tiles and padded tails, scratch-budget rejection, an empty-batch
+compatibility case, and graph size. The actual JAX CI harness collects 860
+tests from 49 files against its floor of 855, and its isolated new-test shard
+passes all 15 (pinned JAX 0.9.0).
+
+Paired Condor job 60769878 ran frozen expanded-loop baseline snapshot15
+(`492aa421...`) and chunked candidate snapshot17 (`8996e237...`) on the same
+NVIDIA RTX PRO 4000 Blackwell SFF worker. Both used the same captured 40-element,
+five-sample H1/L1 bank, JAX/jaxlib 0.9.0, x64, pinned runtime image
+`898a1261...`, and separate cold caches. Compilation fell from 196.691 to
+17.855 s; warm median execution improved from 1.109 to 0.900 ms. First
+compiled execution remained about 15.4--15.8 s. Maximum absolute error
+against the independent fixed-point likelihood oracle was at most 9.10e-10.
+These are one-worker observations for a captured bank, not a full ILE or BNS
+throughput estimate. Raw products remain in scratch `jax_chunked_ab/`.
+
+The exact post-base-merge source snapshot18 (`97f9acda...`) passed the
+mandatory real-GPU regression job 60769879: 92 tests passed in 311.36 s,
+exit 0. The subsequent zero-sample compatibility branch is covered by the
+focused CPU test; the full GPU gate predates only that branch. Fresh GitHub CI
+is running; keep the PR draft until those checks pass. A bounded full-length C1/E1/K1 probe uses the same
+pushed code and frozen input record. Its first attempt (60769880) stopped
+before RIFT execution because `/usr/bin/time` was absent from the container;
+the corrected wrapper was verified inside that image and resubmitted as
+60769881. Neither attempt is a posterior result. Per-intrinsic JAX closure
+compilation reuse remains a separate cost issue.
+
+### Historical readiness checkpoint before quota expiry (2026-09-12)
 
 Fresh independent review found missing CI registration and two cache-lifetime
 issues. The CPU CI gate now explicitly runs all 13 added non-JAX-directory
@@ -21,10 +56,9 @@ bank. Compile time fell from 293.469 s to 24.057 s, but warm median increased
 from 0.001204 s to 0.009285 s. Both matched the independent likelihood oracle
 to 9.064e-10 absolute. This single-host tradeoff is NOT a general speedup claim.
 Raw outputs are in scratch `jax_compact_ab/`. PR325 remains draft pending
-resolution of warm throughput and a final GPU gate. An untested chunked-gather
-experiment is only in the local worktree's `jax_ile/core.py`, deliberately NOT
-included in this readiness commit; validate or replace it before committing.
-A backup patch is `/tmp/jax_chunked_gather_UNTESTED_20260912.patch`.
+resolution of warm throughput and a final GPU gate. That earlier chunked-gather experiment was subsequently validated and
+committed, as described in the current update above. A backup of its initial
+untested form is `/tmp/jax_chunked_gather_UNTESTED_20260912.patch`.
 
 PR328's fail-closed waveform helpers and corrected tests are synchronized here
 to avoid conflicting alternative versions of the two added files. Independent
@@ -455,6 +489,6 @@ For integration tests use AV with internal log weights, multiple intrinsic
 points, bounded n-max/n-eff, and save-samples only with fairdraw capped at 200.
 All generated frames, grids, outputs, containers, dependency bundles, and logs
 remain outside this source repository. The user subsequently authorized a draft
-PR; no merge is authorized. Draft PR325 tracks the connected handoff;
+PR, and later requested landing it. Draft PR325 tracks the connected handoff;
 the completed final-device-guard and corrected JAX AV results are recorded in
 the latest checkpoint above.
