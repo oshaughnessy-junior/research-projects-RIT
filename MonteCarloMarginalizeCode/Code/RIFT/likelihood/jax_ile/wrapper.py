@@ -809,6 +809,11 @@ class JAXDistPhiMargLikelihood:
         return out[:, 0] if n_samples == 1 else out
 
 
+# Finite log-zero preserves proposal counts in legacy evidence helpers, which
+# discard nonfinite weights. Shared with the driver for output-cloud filtering.
+BOUNDED_MULTIPEAK_LOG_ZERO = -1.e30
+
+
 class JAXDistPhiPsiMargLikelihood:
     """Distance-, phi_ref- AND psi-marginalised lnL over 3 angles (ra, dec, incl).
 
@@ -816,6 +821,12 @@ class JAXDistPhiPsiMargLikelihood:
     leaving a smooth 3-D target.  Removing psi (spin-2, the dimension most entangled
     with distance/inclination) lowers the sampler dimension and stabilises the
     distance integral relative to the 4-D phi-marginalised likelihood.
+
+    For explicit ``multipeak-jax``, ``bounded_multipeak_config`` fixes the
+    resource envelope. Declines have numerical zero weight by default and
+    are counted in ``bounded_multipeak_audit``; ``bounded_multipeak_decline_action="refuse"``
+    instead rejects any declined host batch. There is no reserve. The
+    accepted-region target can have discontinuities at acceptance boundaries.
     """
 
     ANGULAR_PARAM_ORDER = ("ra", "dec", "incl")
@@ -826,7 +837,8 @@ class JAXDistPhiPsiMargLikelihood:
                  time_quadrature=TIME_QUAD_DEFAULT, d_prior_range=None,
                  dist_grid="uniform", dist_grid_tol=DIST_GRID_TOL_DEFAULT,
                  direct_marginalization_policy=None, policy_config=None,
-                 multipeak_guard=16, bounded_multipeak_config=None):
+                 multipeak_guard=None, bounded_multipeak_config=None,
+                 bounded_multipeak_decline_action="drop"):
         self.data = data
         self.interp = interp   # the instance's stencil; sample_phi_ref defaults to it
         from . import direct_marginalization_policy as _policy
@@ -1224,8 +1236,7 @@ class JAXDistPhiPsiMargLikelihood:
         # replaces it inside the block above.
         xg, lwg, pg, sg = (self.x_grid, self.log_w_grid,
                            self._phi_grid, self._psi_grid)
-        if scheme in ("exact", "laplace", "peak-local", "phi-local",
-                      "multipeak-jax"):
+        if scheme in ("exact", "laplace", "peak-local", "phi-local"):
             self.angle_marg_info["amp_sizing"] = amp_sizing
             self.angle_marg_info["sample_grid"] = tuple(
                 _anglemarg.angle_sample_grid_sizes(
@@ -1271,7 +1282,8 @@ class JAXDistPhiPsiMargLikelihood:
                         "another scheme if you need the time series.")
                 v = _anglemarg.fused_log_likelihood_distphipsimarg_multipeak(
                     data_, ra, dec, incl, xg, lwg, interp=interp,
-                    amp_sizing=amp_sizing, guard=int(multipeak_guard))
+                    amp_sizing=amp_sizing,
+                    guard=16 if multipeak_guard is None else int(multipeak_guard))
                 return (v, jnp.asarray(amp_sizing)) if return_amp else v
 
         elif scheme == "multipeak-jax":
@@ -1288,10 +1300,22 @@ class JAXDistPhiPsiMargLikelihood:
                 raise ValueError(
                     "--angle-marg-scheme multipeak-jax derives its local "
                     "distance normalization from a uniform-in-distance grid")
+            if bounded_multipeak_decline_action not in ("drop", "refuse"):
+                raise ValueError("bounded_multipeak_decline_action must be drop or refuse")
+            self.bounded_multipeak_decline_action = bounded_multipeak_decline_action
+            self.bounded_multipeak_audit = dict(
+                evaluated=0, declined=0, diagnostic_unknown=0,
+                max_accepted=None, max_declined_diagnostic=None, reasons={})
             cfg = bounded_multipeak_config
             if cfg is None:
-                cfg = _policy.BoundedMultipeakConfig(
-                    time_guard=int(multipeak_guard))
+                cfg = _policy.BoundedMultipeakConfig()
+                if multipeak_guard is not None:
+                    cfg = cfg._replace(time_guard=multipeak_guard)
+            elif multipeak_guard is not None:
+                _policy.validate_bounded_multipeak_config(cfg)
+                if multipeak_guard != cfg.time_guard:
+                    raise ValueError(
+                        "multipeak_guard conflicts with bounded_multipeak_config")
             _policy.validate_bounded_multipeak_config(cfg)
             lln_bounded, _ = _policy.policy_log_normalization(
                 data, xg, lwg, d_prior=d_prior)
@@ -1299,6 +1323,8 @@ class JAXDistPhiPsiMargLikelihood:
             x_bounds_bounded = (float(np.min(np.asarray(xg))),
                                 float(np.max(np.asarray(xg))))
             self.angle_marg_info.update(
+                config=dict(cfg._asdict()),
+                decline_action=bounded_multipeak_decline_action,
                 bounded_cost=True,
                 dense_reserve=False,
                 fixed_plan_autodiff_only=True,
@@ -1329,11 +1355,28 @@ class JAXDistPhiPsiMargLikelihood:
                     raise ValueError(
                         "--angle-marg-scheme multipeak-jax has a static cost "
                         "envelope and does not expose an amplitude-sized grid")
-                return _policy.fused_log_likelihood_four_axis_bounded(
+                values = _policy.fused_log_likelihood_four_axis_bounded(
                     data_, ra, dec, incl, xg, lwg, interp=interp,
                     amp_sizing=amp_sizing, config=cfg,
                     local_log_normalization=lln_bounded,
                     x_bounds=x_bounds_bounded)
+
+                if bounded_multipeak_decline_action == "drop":
+                    # Finite log-zero keeps declined proposals in the IS sample
+                    # count (the evidence helper filters infinities). It also
+                    # avoids NaNs in MCMC acceptance ratios. This defines the
+                    # accepted-region target, whose omitted mass is NOT known.
+                    values = jnp.where(
+                        jnp.isfinite(values), values, BOUNDED_MULTIPEAK_LOG_ZERO)
+                return values
+
+            def _bounded_ledger(ra, dec, incl):
+                return _policy.fused_log_likelihood_four_axis_bounded(
+                    data, ra, dec, incl, xg, lwg, interp=interp,
+                    amp_sizing=amp_sizing, config=cfg,
+                    local_log_normalization=lln_bounded,
+                    x_bounds=x_bounds_bounded, return_ledger=True)
+            self._bounded_ledger = jax.jit(_bounded_ledger)
 
         elif scheme == "phi-local":
             # BOTH angle axes localized, with a dense fallback wherever the certificate
@@ -1502,6 +1545,37 @@ class JAXDistPhiPsiMargLikelihood:
 
     def log_likelihood(self, ra, dec, incl):
         """lnL for arrays of 3 angular parameters (ra, dec, incl), shape (S,)."""
+        if self.angle_marg_scheme == "multipeak-jax":
+            values, ledger = self._bounded_ledger(
+                jnp.asarray(ra), jnp.asarray(dec), jnp.asarray(incl))
+            host, ledger = jax.device_get((values, ledger))
+            bad = ~np.isfinite(host)
+            audit = self.bounded_multipeak_audit
+            audit["evaluated"] += int(host.size)
+            audit["declined"] += int(np.sum(bad))
+            for key in ledger:
+                if key.startswith("decline_"):
+                    n = int(np.sum(np.asarray(ledger[key])))
+                    if n:
+                        audit["reasons"][key] = audit["reasons"].get(key, 0) + n
+            selected = np.asarray(ledger["selected_value"])
+            audit["diagnostic_unknown"] += int(np.sum(bad & ~np.isfinite(selected)))
+            for key, samples in (("max_accepted", host[~bad]),
+                                 ("max_declined_diagnostic", selected[bad])):
+                finite = samples[np.isfinite(samples)]
+                if finite.size:
+                    old = audit[key]
+                    audit[key] = max(float(np.max(finite)),
+                                     old if old is not None else -np.inf)
+            if np.any(bad):
+                self.bounded_multipeak_declined = True
+                if self.bounded_multipeak_decline_action == "refuse":
+                    raise RuntimeError(
+                        "multipeak-jax could not warrant every row within the "
+                        "static envelope; refusing samples and evidence. "
+                        "Change the envelope or use decline-action drop.")
+            return jnp.where(
+                jnp.isfinite(values), values, BOUNDED_MULTIPEAK_LOG_ZERO)
         if self._batched_amp is None:
             return self._batched(jnp.asarray(ra), jnp.asarray(dec),
                                  jnp.asarray(incl))

@@ -59,6 +59,7 @@ from __future__ import print_function
 
 import os
 import sys
+import json
 from optparse import OptionParser, OptionGroup
 
 import numpy as np
@@ -106,6 +107,7 @@ from RIFT.likelihood.jax_ile.direct_marginalization_policy import (
     POLICY_CHOICES as DIRECT_MARG_POLICY_CHOICES,
     POLICY_DEFAULT as DIRECT_MARG_POLICY_DEFAULT,
     PolicyConfig as DirectMargPolicyConfig,
+    BoundedMultipeakConfig, validate_bounded_multipeak_config,
     RESERVE_SCHEME_CHOICES as DIRECT_MARG_RESERVE_SCHEME_CHOICES,
     reserve_pair as _direct_marg_reserve_pair,
     summarize_policy_ledger as _summarize_policy_ledger,
@@ -113,6 +115,7 @@ from RIFT.likelihood.jax_ile.direct_marginalization_policy import (
 _JAX_GATHERER_NAMES = tuple(_JAX_GATHERERS)
 from RIFT.likelihood.jax_ile.wrapper import (
     JAXExtrinsicLikelihood, JAXDistanceMarginalizedLikelihood,
+    BOUNDED_MULTIPEAK_LOG_ZERO,
 )
 
 MSUN = lal.MSUN_SI
@@ -487,6 +490,20 @@ def check_critical_and_report(opts, optp):
                      "marginalization) is not implemented for psi-sampling modes "
                      "on this driver; use --mode flowmc-phipsimarg or "
                      "flowmc-dpsimarg, which marginalize psi by construction")
+    # Static multipeak options must be effective and valid before precompute.
+    _bounded = getattr(opts, "angle_marg_scheme", None) == "multipeak-jax"
+    if _bounded:
+        if getattr(opts, "mode", None) != "flowmc-phipsimarg":
+            fatal.append("multipeak-jax requires --mode flowmc-phipsimarg")
+        try:
+            bounded_multipeak_config_from_options(opts)
+        except (TypeError, ValueError) as exc:
+            fatal.append("multipeak-jax: %s" % exc)
+    else:
+        for field in (*BoundedMultipeakConfig._fields, "decline_action"):
+            flag = "--multipeak-jax-" + field.replace("_", "-")
+            if was_supplied(opts, flag):
+                fatal.append("%s requires --angle-marg-scheme multipeak-jax" % flag)
     # Cross-axis policy scope, at parse time (external review of #278, P1):
     # only --mode flowmc-phipsimarg reads the policy, so a request anywhere
     # else would otherwise complete on the ordinary likelihood, and the
@@ -1245,6 +1262,22 @@ def build_parser():
                       "ran is printed.  See RIFT.likelihood.jax_ile.anglemarg."
                       % (ANGLE_MARG_DEFAULT, ANGLE_MARG_LEGACY,
                          ANGLE_MARG_LEGACY, ANGLE_MARG_LEGACY))
+    g.add_option("--multipeak-jax-decline-action", type="choice",
+                 choices=("drop", "refuse"), default="drop",
+                 help="Handle bounded multipeak declines (default drop): "
+                      "drop gives proposals zero numerical weight and labels "
+                      "accepted-region evidence; refuse aborts on any decline. "
+                      "Important declined mass requires changing the config; "
+                      "neither action runs a reserve.")
+    # Each cap is a construction-time scalar.  The complete configuration is
+    # recorded on the likelihood, and no reserve is available at any setting.
+    for field, default in BoundedMultipeakConfig()._asdict().items():
+        g.add_option("--multipeak-jax-" + field.replace("_", "-"),
+                     type="int" if isinstance(default, int) else "float",
+                     default=default,
+                     help=("Static multipeak-jax %s (default %s); requires "
+                           "--angle-marg-scheme multipeak-jax."
+                           % (field.replace("_", " "), default)))
     g.add_option("--direct-marginalization-policy",
                  default=DIRECT_MARG_POLICY_DEFAULT,
                  choices=sorted(DIRECT_MARG_POLICY_CHOICES),
@@ -1919,6 +1952,32 @@ def log_prior(theta, opts, with_distance):
 # ---------------------------------------------------------------------------
 # Batched lnL
 # ---------------------------------------------------------------------------
+def bounded_multipeak_config_from_options(opts):
+    """Build the exact envelope executed by the wrapper from registered flags."""
+    return validate_bounded_multipeak_config(BoundedMultipeakConfig(**{
+        field: getattr(opts, "multipeak_jax_" + field)
+        for field in BoundedMultipeakConfig._fields}))
+
+
+def require_bounded_multipeak_rows(like, lnL):
+    """Apply the requested decline action before publishing either artifact."""
+    if getattr(like, "angle_marg_scheme", None) != "multipeak-jax":
+        return
+    bad = ~np.isfinite(np.asarray(lnL)) | (np.asarray(lnL) == BOUNDED_MULTIPEAK_LOG_ZERO)
+    if getattr(like, "bounded_multipeak_decline_action", "refuse") == "drop":
+        if np.all(bad):
+            raise RuntimeError("multipeak-jax: no accepted output rows; change "
+                               "the static envelope. No samples or evidence published.")
+        return
+    if np.any(bad) or getattr(like, "bounded_multipeak_declined", False):
+        raise RuntimeError(
+            "--angle-marg-scheme multipeak-jax: %d of %d rows could not be "
+            "warranted within the static envelope; refusing to publish samples "
+            "or evidence (including any earlier declined batch). Change the "
+            "--multipeak-jax-* envelope, or select decline-action drop."
+            % (int(np.sum(bad)), int(np.size(bad))))
+
+
 def eval_lnL(like, theta, opts, with_distance):
     N = theta.shape[0]
     out = np.empty(N)
@@ -1930,6 +1989,8 @@ def eval_lnL(like, theta, opts, with_distance):
         sl = slice(i, min(i + chunk, N))
         cols = [theta[sl, j] for j in range(theta.shape[1])]
         out[sl] = np.asarray(like.log_likelihood(*cols))
+        if getattr(like, "bounded_multipeak_decline_action", "refuse") == "refuse":
+            require_bounded_multipeak_rows(like, out[sl])
         if (getattr(like, "direct_marginalization_policy", "off") != "off"
                 and np.any(np.isnan(out[sl]))):
             raise RuntimeError(
@@ -2355,6 +2416,9 @@ def angle_grid_suspect_note(scheme=None):
     artifacts) are deliberately NOT claimed.  This split also keeps host
     callbacks out of the expensive graph so JAX can persistently cache it.
     """
+    if scheme == "multipeak-jax":
+        return ("MULTIPEAK-JAX bounded_cost=true dense_reserve=false "
+                "fixed_plan_autodiff_only=true derivative_warrant_certified=false")
     st = _anglemarg.amp_failsafe_state()
     if st.get("tripped"):
         return ("SUSPECT-ANGLE-GRID amp_failsafe=TRIPPED worst_amp=%.6g "
@@ -3188,7 +3252,11 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
                 time_quadrature=tq, d_prior_range=(opts.d_min, opts.d_max),
                 dist_grid=dist_grid, dist_grid_tol=dist_tol,
                 direct_marginalization_policy=policy,
-                policy_config=policy_config)
+                policy_config=policy_config,
+                bounded_multipeak_config=(
+                    bounded_multipeak_config_from_options(opts)
+                    if angle_marg == "multipeak-jax" else None),
+                bounded_multipeak_decline_action=opts.multipeak_jax_decline_action)
         except ValueError as e:
             if policy == "off":
                 raise
@@ -3649,7 +3717,24 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
     # stayed silent -- an inert guard, which is the exact failure mode this
     # label exists to prevent.
     _scheme = getattr(like, "angle_marg_scheme", None)
+    require_bounded_multipeak_rows(like, lnL)
     _ev_note = angle_grid_suspect_note(_scheme)
+    if _scheme == "multipeak-jax":
+        _ev_note += " config=" + json.dumps(
+            like.angle_marg_info["config"], sort_keys=True, separators=(",", ":"))
+        _action = like.bounded_multipeak_decline_action
+        _ev_note += " decline_action=" + _action
+        if _action == "drop":
+            _ev_note += " evidence_scope=accepted-region omitted_mass=unbounded"
+            # Evidence has already counted every proposal, including finite
+            # log-zero declines. Only the output cloud is filtered here.
+            _keep = np.isfinite(lnL) & (np.asarray(lnL) != BOUNDED_MULTIPEAK_LOG_ZERO)
+            _ev_note += " output_rows_dropped=%d" % int(np.sum(~_keep))
+            theta, lnL = np.asarray(theta)[_keep], np.asarray(lnL)[_keep]
+            if logw_export is not None:
+                logw_export = np.asarray(logw_export)[_keep]
+        _ev_note += " host_evaluation_audit=" + json.dumps(
+            like.bounded_multipeak_audit, sort_keys=True, separators=(",", ":"))
     # Record the resolved distance-GH-nodes count in the same artifact header
     # line as the angle-marg/policy notes and (via write_samples' provenance
     # line) the mode/ESS record, so a reader of either artifact can see

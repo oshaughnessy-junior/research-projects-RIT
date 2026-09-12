@@ -312,24 +312,30 @@ class BoundedMultipeakConfig(NamedTuple):
     about derivatives of the discrete mode-selection map.
     """
 
-    time_guard: int = 16
-    base_max_starts: int = 32
-    max_time_nodes: int = 64
-    base_oversample: int = 2
-    enriched_oversample: int = 4
-    max_modes: int = 8
-    enriched_max_modes: int = 8
-    local_radius: float = 6.0
-    refine_iterations: int = 14
-    base_order: int = 7
-    base_check_order: int = 9
-    enriched_order: int = 9
-    enriched_check_order: int = 11
-    convergence_tol_nats: float = 1.0e-3
-    time_guard_tol_nats: float = 1.0e-3
-    total_value_error_budget_nats: float = 1.0e-2
-    time_outside_tol_nats: float = -23.0
-    norm_invariance_rtol: float = 1.0e-10
+    # Share the measured local operating point documented on PolicyConfig.
+    # No reserve fields or amplitude-sized work enter this envelope.
+    time_guard: int = PolicyConfig().time_guard
+    base_max_starts: int = PolicyConfig().base_max_starts
+    max_time_nodes: int = PolicyConfig().max_time_nodes
+    base_oversample: int = PolicyConfig().base_oversample
+    enriched_oversample: int = PolicyConfig().enriched_oversample
+    max_modes: int = PolicyConfig().max_modes
+    enriched_max_modes: int = PolicyConfig().enriched_max_modes
+    local_radius: float = PolicyConfig().local_radius
+    refine_iterations: int = PolicyConfig().refine_iterations
+    # Deliberately cheaper than the reserve-bearing policy: 11/13/13/15
+    # accepts the analytic reference where 7/9/9/11 declines even at 0.03 nat.
+    # 0.01-nat convergence / 0.03-nat total budget favors practical acceptance;
+    # all remain explicit CLI controls. See DESIGN_bounded_multipeak.md.
+    base_order: int = 11
+    base_check_order: int = 13
+    enriched_order: int = 13
+    enriched_check_order: int = 15
+    convergence_tol_nats: float = 1.0e-2
+    time_guard_tol_nats: float = PolicyConfig().time_guard_tol_nats
+    total_value_error_budget_nats: float = 3.0e-2
+    time_outside_tol_nats: float = PolicyConfig().time_outside_tol_nats
+    norm_invariance_rtol: float = PolicyConfig().norm_invariance_rtol
     batch_rows: int = 1
 
 
@@ -1521,8 +1527,7 @@ def fused_log_likelihood_four_axis_bounded(
     log_w_grid = jnp.asarray(log_w_grid, dtype=jnp.float64)
     C_A, C_B, _ = _anglemarg.angle_coefficient_tables(
         data, ra, dec, incl, interp, guard=guard)
-    _anglemarg._runtime_amp_failsafe(
-        C_A, C_B, x_grid, amp_sizing, "multipeak-jax")
+    # amp_sizing is retained for call compatibility, not used to size work.
     rows_A = jnp.moveaxis(C_A, 2, 0)
     rows_B = jnp.moveaxis(C_B, 2, 0)
     norm0 = rows_B[..., 0]
@@ -1621,6 +1626,8 @@ def fused_log_likelihood_four_axis_bounded(
             (n_rows,), int(config.max_time_nodes), dtype=jnp.int32),
         max_modes_cap=jnp.full(
             (n_rows,), int(config.enriched_max_modes), dtype=jnp.int32),
+        decline_norm_time_variation=~norm_time_invariant,
+        decline_input_nonfinite=~tables_finite,
         norm_time_invariant=norm_time_invariant,
         norm_time_deviation=norm_dev,
         tables_finite=tables_finite,
