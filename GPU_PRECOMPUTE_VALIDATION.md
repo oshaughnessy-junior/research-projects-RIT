@@ -3,6 +3,16 @@
 Status: OPEN, 2026-09-12. Internal implementation requested by Richard;
 no PR merge authorized. Base: c14c1fbc3c2c05ef1f4b228404443a8bb9841769.
 
+Current correction: the pre-bounds-fix JAX AV smoke evidences are INVALID for
+their requested boxes. The JAX adapter omitted AV's `enforce_bounds=True`;
+every saved snapshot10 sample lay outside the requested sky/distance bounds.
+Independent repair PR327 matches classic's existing bounds flag. Its outward-
+rising synthetic regression fails before the fix and passes after it; all27
+JAX AV tests pass, including on the isolated clean branch. Prior normalization
+is unchanged. GPU Q/U/V and handoff parity results survive this correction;
+cross-driver evidence agreement still requires a corrected short integration.
+The smoke harness now also rejects exported samples outside its declared box.
+
 ## Question and failure criteria
 
 Can a GPU construct the compound response bank with the same numerical

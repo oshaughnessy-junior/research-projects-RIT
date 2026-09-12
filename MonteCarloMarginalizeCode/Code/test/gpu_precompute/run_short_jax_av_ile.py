@@ -80,6 +80,25 @@ def result_rows(path):
     return values
 
 
+def validate_fairdraw_bounds(path, boxes):
+    """A finite evidence and ESS do not certify that AV respected its box."""
+    header = path.read_text().splitlines()[0].lstrip("# ").split()
+    values = np.atleast_2d(np.loadtxt(path))
+    if values.shape[1] != len(header) or not np.all(np.isfinite(values)):
+        raise RuntimeError("invalid fairdraw columns or non-finite values: %s" % path)
+    for column, key in (("right_ascension", "right_ascension"),
+                        ("declination", "declination"),
+                        ("inclination", "inclination"), ("psi", "psi"),
+                        ("distance", "distance_mpc")):
+        if column not in header:
+            raise RuntimeError("missing fairdraw column %s" % column)
+        x = values[:, header.index(column)]
+        lo, hi = boxes[key]
+        if np.any((x < lo) | (x > hi)):
+            raise RuntimeError("fairdraw %s outside requested [%g, %g]: %s" %
+                               (column, lo, hi, path))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--work-dir", type=Path)
@@ -242,6 +261,7 @@ def main():
                                (index, len(payload)))
         if not any("fairdraw:" in line for line in lines if line.startswith("#")):
             raise RuntimeError("event %d fairdraw lacks provenance header" % index)
+        validate_fairdraw_bounds(samples, boxes)
         sample_rows[samples.name] = len(payload)
         rows.append(dict(index=index, path=str(dat), samples=str(samples),
                          lnL=float(lnl), sigma_lnL=float(sigma),
