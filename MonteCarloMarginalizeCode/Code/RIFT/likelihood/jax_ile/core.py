@@ -847,6 +847,72 @@ def _banded_coefficients(data, det, ra, dec, psi):
     raise ValueError("unknown banded feature %r" % (data.feature,))
 
 
+def _contract_banded_data_term(Q_bank, conjY, C, gather, pos, u_sep,
+                               *, pp_t1=None, pe=None, pt=None):
+    """Contract the banded ``<d|h>`` term without unrolling ``A * K`` in Python.
+
+    ``Q_bank`` has shape ``(A, n_time_full, K)``.  The former implementation
+    spelled out one Python/JAX expression for every ``(a, k)`` pair.  For a
+    compound response bank (``A=40`` at ``p_max=Qmax=1``),
+    that made XLA trace and compile time scale with the number of basis/mode
+    pairs and is a suspected contributor to excessive cold compilation despite
+    the actual operation being a small regular reduction.
+
+    Static-bound ``fori_loop`` lowers to compact loop/scan primitives, remains
+    reverse-mode differentiable, and retains the old bounded-memory execution:
+    only one gathered ``(S, npts)`` mode and one accumulated band are live at a
+    time.  In particular, do not replace this with a fully vmapped
+    ``(A, K, S, npts)`` gather; that temporary is prohibitive for production AV
+    sample batches.
+
+    Supplying all of ``pp_t1``, ``pe`` and ``pt`` applies the separable
+    arrival-time post-phase.  Supplying none retains the frequency-response-only
+    contraction.  Partial post-phase inputs are rejected instead of silently
+    evaluating a mixed convention.
+    """
+    A = int(Q_bank.shape[0])
+    K = int(Q_bank.shape[2])
+    S = int(conjY.shape[0])
+    npts = int(pos.shape[1])
+
+    phase_args = (pp_t1, pe, pt)
+    post_phase = all(x is not None for x in phase_args)
+    if post_phase != any(x is not None for x in phase_args):
+        raise ValueError("pp_t1, pe, and pt must be supplied together")
+    if post_phase:
+        pp_t1 = jnp.asarray(pp_t1, dtype=jnp.int32)
+
+    def accumulate_band(a, kappa):
+        Qa = jax.lax.dynamic_index_in_dim(
+            Q_bank, a, axis=0, keepdims=False)                 # (n_time_full, K)
+
+        def accumulate_mode(k, inner):
+            Qak = jax.lax.dynamic_index_in_dim(
+                Qa, k, axis=1, keepdims=False)                 # (n_time_full,)
+            yk = jax.lax.dynamic_index_in_dim(
+                conjY, k, axis=1, keepdims=False)              # (S,)
+            return inner + yk[:, None] * gather(Qak, pos, u_sep)
+
+        inner = jax.lax.fori_loop(
+            0, K, accumulate_mode,
+            jnp.zeros((S, npts), dtype=jnp.complex128))
+        ca = jax.lax.dynamic_index_in_dim(C, a, axis=0, keepdims=False)
+        if post_phase:
+            im = jax.lax.dynamic_index_in_dim(
+                pp_t1, a, axis=0, keepdims=False)
+            phase_e = jax.lax.dynamic_index_in_dim(
+                pe, im, axis=0, keepdims=False)
+            phase_t = jax.lax.dynamic_index_in_dim(
+                pt, im, axis=0, keepdims=False)
+            return kappa + ((jnp.conj(ca) * phase_e)[:, None]
+                            * (phase_t[None, :] * inner))
+        return kappa + jnp.conj(ca)[:, None] * inner
+
+    return jax.lax.fori_loop(
+        0, A, accumulate_band,
+        jnp.zeros((S, npts), dtype=jnp.complex128))
+
+
 def _accumulate_unit_banded(data, ra, dec, psi, incl, phiref, interp,
                             phase_marginalization, guard=0):
     """Multi-band (slow-rotation / finite-size) network kappa and rho^2.
@@ -1010,18 +1076,13 @@ def _accumulate_unit_banded(data, ra, dec, psi, incl, phiref, interp,
 
         # --- term1: sum_a conj(C~_a) * ( sum_lm conj(Y_lm) Q^a_lm(t) ) ---
         # conj(C~_a) = conj(C_a) exp(-i n_a omega delta), i.e. the m = -n_a bucket.
-        kappa_det = jnp.zeros((S, npts), dtype=jnp.complex128)
-        for a in range(A):
-            inner_a = jnp.zeros((S, npts), dtype=jnp.complex128)
-            Qa = Q_bank[a]                                   # (npts_full, K)
-            for k in range(K):
-                inner_a = inner_a + conjY[:, k][:, None] * gather(Qa[:, k], pos, u_sep)
-            if post_phase:
-                i1 = int(pp_t1[a])
-                kappa_det = kappa_det + ((jnp.conj(C[a]) * pe[i1])[:, None]
-                                         * (pt[i1][None, :] * inner_a))
-            else:
-                kappa_det = kappa_det + jnp.conj(C[a])[:, None] * inner_a
+        if post_phase:
+            kappa_det = _contract_banded_data_term(
+                Q_bank, conjY, C, gather, pos, u_sep,
+                pp_t1=pp_t1, pe=pe, pt=pt)
+        else:
+            kappa_det = _contract_banded_data_term(
+                Q_bank, conjY, C, gather, pos, u_sep)
         kappa_unit = kappa_unit + kappa_det
 
         # --- term2: 0.5 Re[ sum_{a,a'} conj(C~_a)C~_a' YbarUY + C~_aR C~_a' YVY ] ---
