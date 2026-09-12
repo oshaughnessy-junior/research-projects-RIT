@@ -11,8 +11,9 @@ test files in separate processes and rejects all-skipped files. Roster and
 shell checks pass. Contexts now bind to CUDA devices; changing devices rejects
 an explicit old context and selects a distinct default context. Stable cache
 roles replace old cutoff/response-order versions. Both new regressions passed
-on CPU; the full per-file gate was still running at this checkpoint (session
-13894, temporary reports `/tmp/tmp.ZAmOyN5C0a/`). No full-gate pass is claimed.
+on CPU. The full per-file gate subsequently produced all 13 expected reports:
+62 passed, 30 optional tests skipped, no failures/errors, and at least one
+passing test in every file (temporary reports `/tmp/tmp.ZAmOyN5C0a/`).
 
 Completed GPU job 60769877 compares frozen source 7dc4058c4 with b99bca825 on
 one allocation, with separate cold caches and the same five-point captured
@@ -23,6 +24,7 @@ Raw outputs are in scratch `jax_compact_ab/`. PR325 remains draft pending
 resolution of warm throughput and a final GPU gate. An untested chunked-gather
 experiment is only in the local worktree's `jax_ile/core.py`, deliberately NOT
 included in this readiness commit; validate or replace it before committing.
+A backup patch is `/tmp/jax_chunked_gather_UNTESTED_20260912.patch`.
 
 PR328's fail-closed waveform helpers and corrected tests are synchronized here
 to avoid conflicting alternative versions of the two added files. Independent
