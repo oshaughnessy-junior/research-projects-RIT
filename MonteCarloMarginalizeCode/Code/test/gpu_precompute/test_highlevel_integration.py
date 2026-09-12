@@ -79,9 +79,15 @@ def test_highlevel_precompute_pack_epoch_and_downstream_likelihood(monkeypatch, 
     # feature variable globally.
     monkeypatch.delenv("RIFT_GPU_PRECOMPUTE", raising=False)
     cpu = fr.PrecomputeLikelihoodTermsRotatingFreqResponse(**common)
+    timings = []
     got = PrecomputeLikelihoodTermsRotatingFreqResponseGPU(
         **common, backend=xp, context=GPUPrecomputeContext(xp), return_device=False,
-        fft_batch=7, q_row_batch=9, frequency_chunk=37)
+        fft_batch=7, q_row_batch=9, frequency_chunk=37,
+        timing_callback=lambda stage, elapsed, details: timings.append((stage, elapsed)))
+    assert timings[0][0] == "initialization"
+    assert [stage for stage, _ in timings[:4]] == [
+        "initialization", "waveform_generation", "waveform_pack_upload", "waveform"]
+    assert all(np.isfinite(elapsed) and elapsed >= 0 for _, elapsed in timings)
 
     cpu_i, cpu_u, cpu_v, cpu_q, cpu_meta = cpu
     got_i, got_u, got_v, got_q, got_meta = got

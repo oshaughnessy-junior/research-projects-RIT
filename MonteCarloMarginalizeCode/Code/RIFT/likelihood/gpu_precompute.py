@@ -238,20 +238,26 @@ def build_compound_basis(base_modes_fd, response_weights, a_list, delta_f,
             (len(indices) * bytes_per_a / 2.0**30, free_bytes / 2.0**30))
     frequency = lal_frequency_axis(nfreq, delta_f, xp=xp)
     out = xp.empty((len(indices), base.shape[0], nfreq), dtype=xp.complex128)
-    for start in range(0, len(indices), fft_batch):
-        block = indices[start:start + fft_batch]
-        raw = xp.stack([base * weights[b][None, :] *
-                        _derivative_weight(frequency, p, xp)[None, :]
-                        for b, p, unused_n in block], axis=0)
-        # One batched reverse FFT, phase multiply, and forward FFT.
+    # The reverse transform depends on (b,p), not on the sidereal index n.
+    # Reuse it across all n without retaining a second full compound bank.
+    groups = {}
+    for index, (b, p, n) in enumerate(indices):
+        groups.setdefault((b, p), []).append((index, n))
+    time = float(epoch) + xp.arange(nfreq) * float(delta_t)
+    sidereal = float(f_sidereal if f_sidereal is not None else _sidereal_default())
+    for (b, p), members in groups.items():
+        raw = base * weights[b][None, :] * _derivative_weight(frequency, p, xp)[None, :]
         td = _lal_reverse(raw, xp)
-        time = float(epoch) + xp.arange(nfreq) * float(delta_t)
-        phases = xp.stack([
-            xp.exp(2.0j * math.pi * n * float(
-                f_sidereal if f_sidereal is not None else _sidereal_default()) * time)
-            for unused_b, unused_p, n in block], axis=0)
-        out[start:start + len(block)] = _lal_forward(td * phases[:, None, :], xp)
-        del raw, td, phases
+        del raw
+        for start in range(0, len(members), fft_batch):
+            block = members[start:start + fft_batch]
+            phases = xp.stack([
+                xp.exp(2.0j * math.pi * n * sidereal * time)
+                for unused_index, n in block], axis=0)
+            transformed = _lal_forward(td[None, :, :] * phases[:, None, :], xp)
+            out[xp.asarray([index for index, unused_n in block])] = transformed
+            del phases, transformed
+        del td
     if base_conjugate_fd is None:
         return out
     conj_bank = build_compound_basis(
@@ -395,8 +401,13 @@ def streamed_v_matrix(base_conjugate_fd, response_weights, a_list, primary_basis
         block_out = xp.zeros((left.shape[0], primary_flat.shape[0]), dtype=xp.complex128)
         for f0 in range(0, nfreq, int(frequency_chunk)):
             f1 = min(f0 + int(frequency_chunk), nfreq)
-            rhs = primary_flat[:, f0:f1] * weight[None, f0:f1]
-            block_out += xp.conj(left[:, f0:f1]) @ rhs.T
+            # Weight the streamed (small) conjugate block, not the retained
+            # (A*M,N) primary bank.  The contraction is algebraically identical,
+            # while the per-frequency-slab temporary shrinks by A/a_block.
+            weighted_left = (xp.conj(left[:, f0:f1])
+                             * weight[None, f0:f1])
+            block_out += weighted_left @ primary_flat[:, f0:f1].T
+            del weighted_left
         r0, r1 = a0 * mode_count, a1 * mode_count
         out[r0:r1] = block_out * (2.0 * float(delta_f))
         if timing_callback is not None:
@@ -603,6 +614,7 @@ def PrecomputeLikelihoodTermsRotatingFreqResponseGPU(
     With ``return_device=True`` it returns packed device arrays and metadata, avoiding
     the final narrow host copies for the device-resident ILE/JAX handoff.
     """
+    initialization_stamp = time.perf_counter()
     from . import factored_likelihood as FL
     from . import factored_likelihood_rotating_freqresponse as fr
     from . import slowrot_freqresponse as sfr
@@ -620,12 +632,16 @@ def PrecomputeLikelihoodTermsRotatingFreqResponseGPU(
     P.dist = FL.distMpcRef * 1e6 * lsu.lsu_PC
     P.deltaF = data_dict[detectors[0]].deltaF
 
-    stamp = time.perf_counter()
+    stamp = _timed("initialization", xp, timing_callback, initialization_stamp)
     if waveform_provider is None:
         host, host_conj = FL.internal_hlm_generator(
             P, Lmax, verbose=verbose, quiet=quiet, **hlm_kwargs)
+        upload_stamp = _timed("waveform_generation", xp, timing_callback, stamp,
+                              provider="legacy_host")
         modes, base, delta_f, delta_t, epoch = _series_arrays(host, xp)
         modes_c, base_c, df_c, dt_c, epoch_c = _series_arrays(host_conj, xp, mode_order=modes)
+        _timed("waveform_pack_upload", xp, timing_callback, upload_stamp,
+               modes=len(modes), frequencies=int(base.shape[-1]))
     else:
         supplied = waveform_provider(P, Lmax, backend=waveform_backend, **hlm_kwargs)
         if isinstance(supplied, tuple) and len(supplied) == 2:
