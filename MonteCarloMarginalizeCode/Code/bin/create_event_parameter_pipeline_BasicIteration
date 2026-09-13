@@ -274,6 +274,7 @@ parser.add_argument("--last-iteration-export-distance-slices-wing-nmax", default
 parser.add_argument("--last-iteration-export-distance-slices-wing-delta-lnL", default=None, type=float, help="Passthrough to ILE --distance-slice-wing-delta-lnL for the extrinsic-stage .dslice export.")
 parser.add_argument("--last-iteration-export-distance-slices-skip-threshold", default=None, type=float, help="Passthrough to ILE --distance-slice-skip-threshold for the extrinsic-stage .dslice export.")
 parser.add_argument("--ile-args",default=None,help="filename of args_ile.txt file  which holds ILE arguments.  Should NOT conflict with arguments auto-set by this DAG ... in particular, i/o arguments will be modified")
+parser.add_argument("--clean-ile-intrinsic-digits",default=5,type=int,help="Decimal places retained for intrinsic coordinates when util_CleanILE consolidates and unifies ILE rows (default: 5). Use 12 for narrow 3G BNS mass grids.")
 parser.add_argument("--ile-exe",default=None,help="filename of ILE or equivalent executable. Will default to `which integrate_likelihood_extrinsic` in low-level code")
 parser.add_argument("--ile-retries",default=0,type=int,help="Number of retry attempts for ILE jobs. (These can fail)")
 parser.add_argument("--ile-group-subdag",action='store_true',help="If true, ILE jobs are grouped in a subdag. Useful mainly to create iterative DAGs with random ILE jobs/etc")
@@ -354,6 +355,8 @@ parser.add_argument("--n-post-jobs",default=1,type=int,help="Number of posterior
 parser.add_argument("--use-bw-psd",action='store_true',help="Use BW PSD, attempting to use fiducial arguments as in LI for placement (i.e., signal at seglen -2). Assumes LI style data convention.  Necessary BW will be parsed out of ile-args.txt (required)")
 parser.add_argument("--use-full-submit-paths",action='store_true',help="DAG created has full paths to submit files generated. Note this is implemented on a per-file/as-needed basis, mainly to facilitate using this dag as an external subdag")
 opts=  parser.parse_args()
+if not 0 <= opts.clean_ile_intrinsic_digits <= 15:
+    parser.error("--clean-ile-intrinsic-digits must be between 0 and 15")
 
 # Multi-GPU ILE fan-out: funnel --ile-gpu-fanout through RIFT_ILE_GPU_FANOUT, which
 # dag_utils reads at write_ILE_sub_simple time to size request_GPUs/CPUs and bake the
@@ -1110,6 +1113,8 @@ if opts.use_eccentricity:
         con_arg_str += " --meanPerAno "
 if opts.use_tabular_eos_file:
     con_arg_str += " --tabular-eos-file "
+if opts.clean_ile_intrinsic_digits != 5:
+    con_arg_str += " --intrinsic-digits {} ".format(opts.clean_ile_intrinsic_digits)
 con_job, con_job_name = dag_utils.write_consolidate_sub_simple(tag='join',log_dir=None,arg_str=con_arg_str,base=opts.working_directory+"/iteration_$(macroiteration)_ile", target=opts.working_directory+'/consolidated_$(macroiteration)',universe=local_worker_universe,no_grid=no_worker_grid,extra_text=extra_text)
 # Modify: set 'initialdir' : should run in top-level direcory
 #con_job.add_condor_cmd("initialdir",opts.working_directory+"/iteration_$(macroiteration)_con")
@@ -1139,6 +1144,8 @@ if opts.use_eccentricity:
         unify_arg_str += " --meanPerAno "
 if opts.use_tabular_eos_file:
     unify_arg_str += " --tabular-eos-file "
+if opts.clean_ile_intrinsic_digits != 5:
+    unify_arg_str += " --intrinsic-digits {} ".format(opts.clean_ile_intrinsic_digits)
 unify_job, unify_job_name = dag_utils.write_unify_sub_simple(tag='unify',log_dir='',arg_str=unify_arg_str, base=opts.working_directory, target=opts.working_directory+'/all.net',universe=local_worker_universe,no_grid=no_worker_grid,extra_text=extra_text)
 unify_job.add_condor_cmd("initialdir",opts.working_directory)
 unify_job.set_log_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/unify-$(cluster)-$(process).log")
