@@ -438,6 +438,25 @@ def test_driver_exposes_sampler_as_an_orthogonal_backend(monkeypatch):
     assert opts.n_eff == 321
 
 
+
+def test_driver_rejects_inert_portfolio_allocation_option(monkeypatch):
+    monkeypatch.delenv("JAX_ILE_DISTMARG_GH", raising=False)
+    driver = _driver_module()
+    parser = driver.build_parser()
+    opts, _ = parser.parse_args([
+        "--sampler-method", "portfolio",
+        "--sampler-portfolio", "AV,GMM",
+        "--sampler-portfolio-adaptive-alloc"])
+    driver.check_critical_and_report(opts, parser)
+    assert opts.sampler_portfolio_adaptive_alloc is True
+
+    for args in (["--sampler-method", "AV"], []):
+        invalid, _ = parser.parse_args(
+            [*args, "--sampler-portfolio-adaptive-alloc"])
+        with pytest.raises(SystemExit, match="requires --sampler-method portfolio"):
+            driver.check_critical_and_report(invalid, parser)
+
+
 def test_driver_accepts_pseudo_cosmo_only_for_av_backend(monkeypatch):
     monkeypatch.delenv("JAX_ILE_DISTMARG_GH", raising=False)
     driver = _driver_module()

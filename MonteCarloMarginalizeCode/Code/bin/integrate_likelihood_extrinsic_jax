@@ -413,6 +413,10 @@ def check_critical_and_report(opts, optp):
                      "the SMC proposal draw, whose exception handler would "
                      "silently fall back to the raw SMC evidence")
     _sampler_method = getattr(opts, "sampler_method", None)
+    if (getattr(opts, "sampler_portfolio_adaptive_alloc", False)
+            and _sampler_method != "portfolio"):
+        fatal.append("--sampler-portfolio-adaptive-alloc requires "
+                     "--sampler-method portfolio")
     _jax_av_active = _sampler_method in ("AV", "portfolio")
     if _jax_av_active:
         _dp = str(getattr(opts, "d_prior", None) or "euclidean").strip().lower()
@@ -1094,6 +1098,10 @@ def build_parser():
     g.add_option("--sampler-portfolio", action="append", default=[],
                  help="Portfolio members (repeat or comma-separate; JAX path supports "
                       "AV and GMM, default AV,GMM).")
+    g.add_option("--sampler-portfolio-adaptive-alloc", action="store_true",
+                 default=False,
+                 help="Opt into the existing portfolio member-allocation rule with "
+                      "periodic probes (default: validated fixed schedule).")
     g.add_option("--sampler-anisotropic-bins", action="store_true", default=False,
                  help="Allocate AV bins preferentially along compressed coordinates.")
     g.add_option("--jax-av-seed", type="choice", choices=("none", "fisher-sky"),
@@ -3548,6 +3556,7 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
             like, opts.d_min, opts.d_max,
             sampler_method=opts.sampler_method,
             portfolio_members=_portfolio_members,
+            portfolio_adaptive_alloc=opts.sampler_portfolio_adaptive_alloc,
             nmax=opts.n_max, neff=(opts.n_eff or 1000),
             n_chunk=opts.n_chunk, eval_chunk=opts.jax_av_eval_chunk,
             seed=opts.seed, seed_method=opts.jax_av_seed,
