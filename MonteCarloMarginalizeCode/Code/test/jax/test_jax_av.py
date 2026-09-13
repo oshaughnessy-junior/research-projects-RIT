@@ -315,6 +315,37 @@ def test_av_and_seeded_portfolio_return_driver_contract():
     assert portfolio["log_weight"] is None  # portfolio performed its fair draw
 
 
+
+def test_portfolio_adaptive_allocation_is_explicit_opt_in(monkeypatch):
+    from RIFT.integrators import mcsamplerPortfolio as Portfolio
+
+    observed = []
+    original = Portfolio.MCSampler.integrate_log
+
+    def capture(self, *args, **kwargs):
+        observed.append(kwargs.get("portfolio_adaptive_alloc"))
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Portfolio.MCSampler, "integrate_log", capture)
+    rng = np.random.default_rng(191)
+    cloud = np.array([2.0, 0.2, 1.0]) + rng.normal(
+        size=(300, 3)) * np.array([0.1, 0.08, 0.1])
+    common = dict(d_min=1.0, d_max=100.0, sampler_method="portfolio",
+                  initial_samples=cloud, nmax=10000, neff=10,
+                  n_chunk=1000, eval_chunk=256, seed=191)
+
+    for enabled in (False, True):
+        result = samplers.adaptive_volume_sample(
+            _ToySkyLikelihood(), portfolio_adaptive_alloc=enabled, **common)
+        assert np.isfinite(result["logZ"])
+    assert observed == [None, True]
+
+    with pytest.raises(ValueError, match="requires sampler_method"):
+        samplers.adaptive_volume_sample(
+            _ToySkyLikelihood(), 1.0, 100.0, sampler_method="AV",
+            portfolio_adaptive_alloc=True)
+
+
 def test_pure_av_runs_inside_a_narrow_sky_sampling_window():
     bounds = {"ra": (1.7, 2.3), "dec": (-0.1, 0.5)}
     result = samplers.adaptive_volume_sample(
