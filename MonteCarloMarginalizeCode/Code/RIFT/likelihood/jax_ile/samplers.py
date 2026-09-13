@@ -2658,7 +2658,8 @@ def adaptive_volume_sample(like, d_min, d_max, sampler_method="AV",
                            seed_prior_frac=0.1, anisotropic_bins=True,
                            gmm_components=2,
                            verbose=False, sample_d_min=None, sample_d_max=None,
-                           sample_bounds=None, distance_prior="euclidean"):
+                           sample_bounds=None, distance_prior="euclidean",
+                           portfolio_adaptive_alloc=False):
     """Run production AV/portfolio control logic on a value-only JAX likelihood.
 
     ``sampler_method`` is ``AV`` or ``portfolio``.  The optional ``fisher-sky``
@@ -2666,12 +2667,18 @@ def adaptive_volume_sample(like, d_min, d_max, sampler_method="AV",
     Hessians); all integration calls use only ``like.log_likelihood``.  Portfolio
     defaults to AV+GMM so its defensive mixture retains full support even when the
     seeded AV live volume covers only selected sky modes.
+    ``portfolio_adaptive_alloc=True`` opts into the integrator's existing
+    global-impact allocation with periodic member probes. This can keep a
+    full-support GMM from being starved after AV contracts; the default remains
+    the previously validated portfolio schedule.
     """
     from RIFT.integrators import mcsamplerAdaptiveVolume as AV
 
     method = str(sampler_method)
     if method not in ("AV", "portfolio"):
         raise ValueError("sampler_method must be 'AV' or 'portfolio', got %r" % method)
+    if portfolio_adaptive_alloc and method != "portfolio":
+        raise ValueError("portfolio_adaptive_alloc requires sampler_method='portfolio'")
     order = _av_param_order(like)
     n_dim = len(order)
     resolved_bounds = _av_sample_bounds(
@@ -2764,6 +2771,8 @@ def adaptive_volume_sample(like, d_min, d_max, sampler_method="AV",
     numpy_rng_state = np.random.get_state()
     np.random.seed(int(seed))
     try:
+        allocation_kwargs = ({"portfolio_adaptive_alloc": True}
+                             if portfolio_adaptive_alloc else {})
         result = sampler.integrate_log(
             lnL, *order, nmax=int(nmax), neff=float(neff), n=int(n_chunk),
             no_protect_names=True, verbose=bool(verbose), save_intg=True,
@@ -2777,7 +2786,8 @@ def adaptive_volume_sample(like, d_min, d_max, sampler_method="AV",
             # retained weighted population instead; callers have the exact
             # log_weight below and can resample without changing the integral.
             igrand_fairdraw_samples=(method != "AV"),
-            igrand_fairdraw_samples_max=max(int(1.5 * float(neff)), 1))
+            igrand_fairdraw_samples_max=max(int(1.5 * float(neff)), 1),
+            **allocation_kwargs)
     finally:
         np.random.set_state(numpy_rng_state)
     logZ, log_var, eff_samp, diagnostics = result
