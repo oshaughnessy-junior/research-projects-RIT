@@ -439,7 +439,7 @@ def test_driver_exposes_sampler_as_an_orthogonal_backend(monkeypatch):
 
 
 
-def test_driver_rejects_inert_portfolio_allocation_option(monkeypatch):
+def test_driver_rejects_inert_portfolio_allocation_option(monkeypatch, capsys):
     monkeypatch.delenv("JAX_ILE_DISTMARG_GH", raising=False)
     driver = _driver_module()
     parser = driver.build_parser()
@@ -451,10 +451,12 @@ def test_driver_rejects_inert_portfolio_allocation_option(monkeypatch):
     assert opts.sampler_portfolio_adaptive_alloc is True
 
     for args in (["--sampler-method", "AV"], []):
-        invalid, _ = parser.parse_args(
+        invalid_parser = driver.build_parser()
+        invalid, _ = invalid_parser.parse_args(
             [*args, "--sampler-portfolio-adaptive-alloc"])
-        with pytest.raises(SystemExit, match="requires --sampler-method portfolio"):
-            driver.check_critical_and_report(invalid, parser)
+        with pytest.raises(SystemExit):
+            driver.check_critical_and_report(invalid, invalid_parser)
+        assert "requires --sampler-method portfolio" in capsys.readouterr().err
 
 
 def test_driver_accepts_pseudo_cosmo_only_for_av_backend(monkeypatch):
