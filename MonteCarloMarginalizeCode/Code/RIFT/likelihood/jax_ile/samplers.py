@@ -833,19 +833,30 @@ def cluster_modes(theta, min_sep=0.5):
 # Evidence helpers (same math as the bin/ driver)
 # ---------------------------------------------------------------------------
 def evidence_from_logweights(logw):
-    """``(logZ, sigma/Z, neff)`` for ``Z = E[w]`` from log importance weights."""
-    logw = np.asarray(logw)
-    fin = np.isfinite(logw)
-    logw = logw[fin]
+    """``(logZ, sigma/Z, neff)`` for ``Z = E[w]`` from log importance weights.
+
+    A proposal draw outside prior support has log weight ``-inf`` and contributes
+    zero to the integral, but it still counts in the proposal draw count.  Dropping
+    it before taking the mean conditions on support and biases ``Z`` upward.
+    NaN or ``+inf`` weights instead invalidate the estimate.
+    """
+    logw = np.asarray(logw, dtype=float)
     if logw.size == 0:
         return -np.inf, np.inf, 0.0
-    m = np.max(logw)
-    w = np.exp(logw - m)
-    n = len(w)
-    Zhat = np.mean(w)
-    logZ = m + np.log(Zhat)
-    sigma_over_Z = np.sqrt(np.var(w) / n) / Zhat
-    neff = (np.sum(w) ** 2) / np.sum(w ** 2)
+    if np.any(np.isnan(logw) | np.isposinf(logw)):
+        return np.nan, np.nan, 0.0
+    fin = np.isfinite(logw)
+    if not np.any(fin):
+        return -np.inf, np.inf, 0.0
+    m = np.max(logw[fin])
+    w = np.exp(logw[fin] - m)
+    n = logw.size  # includes zero-weight, out-of-support proposal draws
+    sum_w = np.sum(w)
+    sum_w2 = np.sum(w * w)
+    mean_w = sum_w / n
+    logZ = m + np.log(mean_w)
+    sigma_over_Z = np.sqrt(max(sum_w2 / n - mean_w ** 2, 0.0) / n) / mean_w
+    neff = sum_w ** 2 / sum_w2
     return logZ, sigma_over_Z, neff
 
 
