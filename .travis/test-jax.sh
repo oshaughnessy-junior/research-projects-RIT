@@ -543,6 +543,7 @@ FILES=(
   "${JAXDIR}/test_time_first_peaklocal.py"
   "${JAXDIR}/test_all_axis_peaklocal.py"
   "${JAXDIR}/test_is_proposal_jitter.py"
+  "${JAXDIR}/test_jax_evidence_logweights.py"
   "${JAXDIR}/test_multipeak_planner.py"
   "${JAXDIR}/test_multipeak_fallback_visibility.py"
   "${JAXDIR}/test_jax_phase_marg_mode_order.py"
@@ -1077,7 +1078,10 @@ fi
 # 787 + 53 = 840.
 # 2026-09-12: +15 compact banded-data contraction value, AD, tile/padding,
 # scratch-budget, empty-batch, and graph-size tests. 840 + 15 = 855.
-EXPECTED_TESTS=855
+# 2026-09-13: zero-weight JAX evidence regression adds four cases in one file.
+# Measured on the merged-base branch with the gate FILES and DESELECT lists:
+# 864/870 collected (6 deselected), 2026-09-13, jax 0.9.2 CPU.
+EXPECTED_TESTS=864
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
