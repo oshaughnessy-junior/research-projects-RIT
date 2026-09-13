@@ -18,10 +18,10 @@ behind RIFT_RUN_EXPENSIVE.  MEASURED, and the premise was wrong: on CIT with the
 to be opt-in.
 
 FLAKE RISK, since these are Monte Carlo studies with tolerance-based gates: all five seed
-explicitly (numpy RandomState(0/1/3) and np.random.seed), so they are deterministic rather than
-merely lucky, and three consecutive runs of each exited 0.  Three runs is not a flake proof; if
-one does prove marginal in CI, tighten ITS seed or widen ITS stated tolerance, and do not
-delete the gate.
+explicitly, but a seed does not make a low-effective-sample-size result reliable across
+platforms.  The decoy balance-heuristic study therefore checks the mean evidence from
+independent, process-isolated runs.  If a study proves marginal in CI, investigate its
+sampling and statistical contract; do not delete the gate.
 
 Subprocess rather than import: each is a __main__ script with argparse, and running it the way a
 human runs it is the point -- it is what keeps the wrapper honest about the entry point.
