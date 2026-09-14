@@ -1499,6 +1499,11 @@ if opts.log_noise_evidence_output:
   log_noise_evidence, noise_evidence_by_detector = compute_network_log_noise_evidence(
       data_dict, psd_dict, fmin=P.fmin, fmax=fmax, fnyq=0.5/P.deltaT,
       inv_spec_trunc_Q=inv_spec_trunc_Q, T_spec=T_spec)
+  # --fmin-ifo is applied by ZEROING the PSD below the cut, not by moving the IP's
+  # fLow, so the band a detector was actually integrated over is not P.fmin alone.
+  for noise_evidence_det in noise_evidence_by_detector:
+    noise_evidence_by_detector[noise_evidence_det]["fmin"] = float(
+        max(P.fmin, flow_ifo_dict.get(noise_evidence_det, P.fmin)))
   noise_evidence_payload = {
       "schema": "rift.log-noise-evidence/v1",
       "convention": "bilby-fixed-psd-no-gaussian-determinant",
@@ -1511,6 +1516,10 @@ if opts.log_noise_evidence_output:
           "inverse_spectrum_truncation_time": float(T_spec),
           "data_start_time": float(start_time),
           "data_end_time": float(end_time),
+          # Both windows scale (d|d) by a constant, so a value compared against a
+          # Bilby run is only meaningful alongside them.
+          "window_shape": float(opts.window_shape),
+          "psd_window_shape": float(opts.psd_window_shape),
       },
   }
   with open(opts.log_noise_evidence_output, "w") as noise_evidence_file:
