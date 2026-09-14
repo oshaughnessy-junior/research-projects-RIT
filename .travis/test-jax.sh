@@ -547,6 +547,7 @@ FILES=(
   "${JAXDIR}/test_time_first_peaklocal.py"
   "${JAXDIR}/test_all_axis_peaklocal.py"
   "${JAXDIR}/test_is_proposal_jitter.py"
+  "${JAXDIR}/test_jax_evidence_logweights.py"
   "${JAXDIR}/test_multipeak_planner.py"
   "${JAXDIR}/test_multipeak_fallback_visibility.py"
   "${JAXDIR}/test_jax_phase_marg_mode_order.py"
@@ -1081,7 +1082,13 @@ fi
 # 787 + 53 = 840.
 # 2026-09-12: +15 compact banded-data contraction value, AD, tile/padding,
 # scratch-budget, empty-batch, and graph-size tests. 840 + 15 = 855.
-EXPECTED_TESTS=857
+# 2026-09-13: zero-weight JAX evidence regression adds four cases in one file.
+# The prior gate measurement was 864/870 collected (6 deselected), excluding
+# the two existing SMC evidence cases. Retaining those cases raises the floor.
+# 2026-09-14: +1 in the same already-gated file, the driver-wiring guard that the
+# production CLI uses the corrected estimator rather than its own pre-fix copy.
+# One test added to a file already in FILES, so the floor moves by exactly one.
+EXPECTED_TESTS=867
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"

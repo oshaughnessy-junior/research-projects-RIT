@@ -77,12 +77,12 @@ MonteCarloMarginalizeCode/Code/test/integrators/test_mcsampler_gpu.py         LE
 # still belong in this file because they remain non-collectable themselves.
 #
 # The earlier version of this entry called them "expensive" and proposed hiding them behind
-# RIFT_RUN_EXPENSIVE.  That was asserted, not measured, and it was wrong: on CIT with the IGWN
-# python (OMP_NUM_THREADS=1) they take 5, 2, 14, 4 and 4 seconds -- 29 s for all five.  Each ends
-# in `raise SystemExit(1)` on failure.  Four of the five seed through
-# RIFT.integrators.seeding.seed_everything, which covers the cupy backend the samplers draw
-# through; the decoy study still seeds numpy only, which is enough on the CPU-only CI runner but
-# not on GPU.
+# RIFT_RUN_EXPENSIVE.  That was asserted, not measured, and it was wrong: on CIT (ldas-grid) with
+# the IGWN python (OMP_NUM_THREADS=1) they take 7, 4, 20, 64 and 6 seconds -- 101 s for all five.
+# Each ends in `raise SystemExit(1)` on failure, and all five now seed through
+# RIFT.integrators.seeding.seed_everything, which covers the cupy backend the samplers draw through
+# (a bare numpy.random.seed is inert there).  The decoy study also replicates itself over nine child
+# processes, which is why it is the slow one.
 #
 # THE WRAPPER PASSES --as-test, AND THAT IS LOAD-BEARING.  Every one of these keeps its
 # scientific comparisons AND its SystemExit(1) behind `if args.as_test`, so without the flag
@@ -93,7 +93,7 @@ MonteCarloMarginalizeCode/Code/test/integrators/test_mcsampler_gpu.py         LE
 MonteCarloMarginalizeCode/Code/test/integrators/test_AV_bootstrap.py                 HANDRUN  AV warm-start bias/efficiency gate; 0 collected, run by test_integrator_studies.py --as-test (8 s)
 MonteCarloMarginalizeCode/Code/test/integrators/test_AV_warmstart_safety.py          HANDRUN  anti-bias guard for reusing a proposal across problems; 0 collected, run by test_integrator_studies.py --as-test (4 s)
 MonteCarloMarginalizeCode/Code/test/integrators/test_portfolio_adaptive_alloc.py     HANDRUN  portfolio draw-allocation vs standalone AV; 0 collected, run by test_integrator_studies.py --as-test (19 s)
-MonteCarloMarginalizeCode/Code/test/integrators/test_portfolio_balance_heuristic.py  HANDRUN  portfolio safety under a decoy member; 0 collected, run by test_integrator_studies.py --as-test (7 s)
+MonteCarloMarginalizeCode/Code/test/integrators/test_portfolio_balance_heuristic.py  HANDRUN  portfolio safety under a decoy member; 0 collected, run by test_integrator_studies.py --as-test (64 s, nine replicates)
 MonteCarloMarginalizeCode/Code/test/integrators/test_portfolio_oracle.py             HANDRUN  needle-target oracle study; 0 collected, run by test_integrator_studies.py --as-test (5 s)
 MonteCarloMarginalizeCode/Code/test/integrators/test_mcsamplerEnsemble.py            HANDRUN  GMM-vs-mcsampler comparison demo, prints results; 0 collected, exit 5
 MonteCarloMarginalizeCode/Code/test/integrators/test_mcsamplerEnsemble_AdaptationDemo.py HANDRUN  adaptation demo, plots and prints; 0 collected, exit 5
