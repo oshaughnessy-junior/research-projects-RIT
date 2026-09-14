@@ -132,7 +132,6 @@ MonteCarloMarginalizeCode/Code/test/test_gwsignal_teob_near_aligned.py         O
 MonteCarloMarginalizeCode/Code/test/test_rimsky_integration.py                OPTDEP  needs:asimov,liquid -- 15 collected where asimov is installed, 0 without it
 MonteCarloMarginalizeCode/Code/test/integrators/test_NF_reuse.py               OPTDEP  needs:nflows -- the normalizing-flow store; collection errors without it
 MonteCarloMarginalizeCode/Code/test/integrators/test_mcsamp_vegas.py           OPTDEP  needs:vegas -- commented out of requirements.txt; NameError at import without it
-MonteCarloMarginalizeCode/Code/test/integrators/test_mcsampler_rosenbrock.py   HANDRUN  Rosenbrock sampler study; its docstring pairs it with plot_posterior_corner.py by hand
 MonteCarloMarginalizeCode/Code/test/test_eosmanager_misc.py                    OPTDEP  needs:env:LALSIMULATION_DATADIR -- raises KeyError at import without it
 MonteCarloMarginalizeCode/Code/test/test_skysamp.py                            LEGACY  imports lalinference.bayestar.fits, removed upstream; cannot be imported
 
