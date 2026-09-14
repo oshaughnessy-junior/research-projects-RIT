@@ -98,6 +98,38 @@ def _make_external_tree(tmp_path, nested=NESTED_DAG, top=EXTERNAL_DAG):
     return tmp_path
 
 
+# ``nested.dag`` may itself declare an external sub-DAG.  The abort then lives
+# two levels down and its boundary must be read in ``nested.dag``, not in the
+# top-level DAG.
+NESTED_WITH_EXTERNAL = """JOB grid convert.sub
+SUBDAG EXTERNAL inner_adaptive nested2.dag
+JOB inner_fetch FETCH_5_subdag.sub
+PARENT grid CHILD inner_adaptive
+PARENT inner_adaptive CHILD inner_fetch
+"""
+
+
+SECOND_LEVEL_DAG = """JOB inner_grid convert.sub
+JOB inner_convergence nested_test.sub
+PARENT inner_grid CHILD inner_convergence
+ABORT-DAG-ON inner_convergence 1 RETURN 0
+"""
+
+
+def _make_double_external_tree(
+    tmp_path,
+    nested=NESTED_WITH_EXTERNAL,
+    second=SECOND_LEVEL_DAG,
+    top=EXTERNAL_DAG,
+):
+    _make_external_tree(tmp_path, nested=nested, top=top)
+    (tmp_path / "nested2.dag").write_text(second, encoding="utf-8")
+    (tmp_path / "FETCH_5_subdag.sub").write_text(
+        'arguments = "fetch inner grid"\n', encoding="utf-8"
+    )
+    return tmp_path
+
+
 def test_parser_models_control_flow_and_subdag(tmp_path):
     dag = _parse(
         tmp_path,
@@ -212,3 +244,43 @@ def test_nested_abort_without_fetch_boundary_is_caught(tmp_path):
     report = audit_pipeline(_make_external_tree(tmp_path, top=top))
     assert not report["pass"]
     assert any("lacks immediate FETCH child" in item for item in report["failures"])
+
+
+def test_second_level_active_abort_is_read_in_its_own_container(tmp_path):
+    report = audit_pipeline(_make_double_external_tree(tmp_path))
+    assert report["pass"], report["failures"]
+    boundaries = {item["node"]: item for item in report["checks"]["external_dags"]}
+    inner = boundaries["inner_adaptive"]
+    assert inner["container"].endswith("nested.dag")
+    assert inner["active_abort_nodes"] == 1
+    assert inner["has_fetch_child"]
+    assert inner["feeds_terminal_product"]
+
+
+def test_second_level_abort_without_fetch_boundary_is_caught(tmp_path):
+    nested = NESTED_WITH_EXTERNAL.replace(
+        "PARENT inner_adaptive CHILD inner_fetch", "PARENT grid CHILD inner_fetch"
+    )
+    report = audit_pipeline(_make_double_external_tree(tmp_path, nested=nested))
+    assert not report["pass"]
+    assert any(
+        "lacks immediate FETCH child: inner_adaptive" in item
+        for item in report["failures"]
+    )
+
+
+def test_second_level_abort_detached_from_product_is_caught(tmp_path):
+    top = EXTERNAL_DAG.replace("PARENT adaptive CHILD fetch", "PARENT convergence CHILD fetch")
+    report = audit_pipeline(_make_double_external_tree(tmp_path, top=top))
+    assert not report["pass"]
+    assert any(
+        "does not feed terminal product: inner_adaptive" in item
+        for item in report["failures"]
+    )
+
+
+def test_second_level_abort_before_grid_is_caught(tmp_path):
+    second = SECOND_LEVEL_DAG.replace("PARENT inner_grid CHILD inner_convergence\n", "")
+    report = audit_pipeline(_make_double_external_tree(tmp_path, second=second))
+    assert not report["pass"]
+    assert any("aborts before a grid conversion" in item for item in report["failures"])

@@ -128,59 +128,83 @@ def audit_pipeline(root):
         )
 
     external_reports = []
-    pending = list(external_dags(dag))
+    parsed = {}
+    # Each queued boundary carries the DAG that declares it and whether that
+    # declaring node is connected to the top-level terminal product, so a
+    # second-level external DAG is evaluated in its own containing graph.
+    pending = [
+        (dag, node, path, bool(product) and product in dag.descendants(node))
+        for node, path in external_dags(dag)
+    ]
     seen = set()
+    analysed = set()
     while pending:
-        external_node, path = pending.pop()
-        if path in seen:
+        container, external_node, path, reaches_product = pending.pop()
+        key = (container.path, external_node, path)
+        if key in seen:
             continue
-        seen.add(path)
+        seen.add(key)
         if not path.is_file():
             graph_errors.append("external DAG {} is missing: {}".format(external_node, path))
             continue
-        nested = parse_dag(path)
-        nested_errors = validate_dag(nested)
-        graph_errors.extend("{}: {}".format(path, item) for item in nested_errors)
-        active_abort_nodes = []
-        abort_without_grid = []
-        for node in nested.abort:
-            if not _submit_has(nested, node, "--always-succeed"):
-                active_abort_nodes.append(node)
-            prior_roles = {
-                Path(nested.nodes[ancestor]["submit"]).name
-                for ancestor in nested.ancestors(node)
-                if ancestor in nested.nodes
-            }
-            if "convert.sub" not in prior_roles:
-                abort_without_grid.append(node)
-        if abort_without_grid:
-            failures.append(
-                "external DAG aborts before a grid conversion: " + ", ".join(abort_without_grid)
+        if path not in parsed:
+            parsed[path] = parse_dag(path)
+            graph_errors.extend(
+                "{}: {}".format(path, item) for item in validate_dag(parsed[path])
             )
+        nested = parsed[path]
+        active_abort_nodes = [
+            node
+            for node in nested.abort
+            if not _submit_has(nested, node, "--always-succeed")
+        ]
+        if path not in analysed:
+            analysed.add(path)
+            abort_without_grid = []
+            for node in nested.abort:
+                prior_roles = {
+                    Path(nested.nodes[ancestor]["submit"]).name
+                    for ancestor in nested.ancestors(node)
+                    if ancestor in nested.nodes
+                }
+                if "convert.sub" not in prior_roles:
+                    abort_without_grid.append(node)
+            if abort_without_grid:
+                failures.append(
+                    "external DAG aborts before a grid conversion: "
+                    + ", ".join(abort_without_grid)
+                )
         child_roles = sorted(
             {
-                Path(dag.nodes[child]["submit"]).name
-                for child in dag.children.get(external_node, set())
-                if child in dag.nodes
+                Path(container.nodes[child]["submit"]).name
+                for child in container.children.get(external_node, set())
+                if child in container.nodes
             }
         )
         has_fetch = any(role.startswith("FETCH_") for role in child_roles)
-        feeds_product = bool(product and product in dag.descendants(external_node))
+        boundary = "{} (in {})".format(external_node, container.path)
         if active_abort_nodes and not has_fetch:
-            failures.append("active external abort lacks immediate FETCH child: " + external_node)
-        if active_abort_nodes and not feeds_product:
-            failures.append("active external abort does not feed terminal product: " + external_node)
+            failures.append("active external abort lacks immediate FETCH child: " + boundary)
+        if active_abort_nodes and not reaches_product:
+            failures.append("active external abort does not feed terminal product: " + boundary)
         external_reports.append(
             {
                 "node": external_node,
+                "container": str(container.path),
                 "path": str(path),
                 "nodes": len(nested.nodes),
                 "active_abort_nodes": len(active_abort_nodes),
                 "has_fetch_child": has_fetch,
-                "feeds_terminal_product": feeds_product,
+                "feeds_terminal_product": reaches_product,
             }
         )
-        pending.extend(external_dags(nested))
+        # Every node of ``nested`` must complete before this SUBDAG node does,
+        # so a boundary declared inside it inherits this node's connection to
+        # the top-level product.
+        pending.extend(
+            (nested, child_node, child_path, reaches_product)
+            for child_node, child_path in external_dags(nested)
+        )
 
     if graph_errors:
         failures.extend("DAG graph integrity: " + item for item in sorted(set(graph_errors)))

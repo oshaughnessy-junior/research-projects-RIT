@@ -18,6 +18,11 @@ The contract checks:
   conversion when the parent immediately fetches that grid and remains upstream
   of the terminal product.
 
+Sub-DAGs nest. A boundary is evaluated in whichever DAG declares it. The fetch
+child is read from that containing graph. The connection to the terminal product
+is inherited from the containing SUBDAG node, which cannot complete until every
+node inside it has.
+
 The distinction between top-level and adaptive aborts is intentional. A
 successful top-level convergence abort can silently skip extrinsic/calibration
 work. An adaptive sub-DAG is allowed to converge early because its already-built
