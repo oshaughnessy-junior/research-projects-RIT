@@ -51,6 +51,7 @@ import sys
 
 import benchmark_integrators as B
 from RIFT.integrators import mcsamplerAdaptiveVolume as AVmod
+from RIFT.integrators.seeding import seed_everything
 from RIFT.integrators import mcsamplerEnsemble as Emod
 from RIFT.integrators import mcsamplerPortfolio as Pmod
 
@@ -163,7 +164,12 @@ def build_portfolio(target, n_chunk, decoy=None, broad_gmm=True):
 
 def run(target, n_chunk, nmax, neff, use_mixture, decoy=None, seed=1234,
         tempering_exp=0.3, verbose=False):
-    np.random.seed(seed)
+    # The samplers draw through their array backend, which is cupy under the GPU
+    # invocation this file documents; numpy.random.seed does not reach cupy's
+    # generator, so seeding only numpy would leave each replicate below drawing
+    # from uncontrolled device state.  Seed every backend before the members are
+    # built, so a seed means the same thing on CPU and on GPU.
+    seed_everything(seed, verbose=False)
     port, members = build_portfolio(target, n_chunk, decoy=decoy)
     ln_f = _host_lnfunc(target)
     lnI, logvar, eff, _ = port.integrate_log(
@@ -245,8 +251,8 @@ def main():
     # A single decoy run has only a handful of effective covering draws.  Its
     # within-run logvar can miss the much larger variation from one adaptive
     # run to the next (the fixed seed failed at 5.87 quoted sigma on Linux).
-    # Replicate the estimator in fresh processes: NumPy's seed alone does not
-    # reset every sampler/library state in a long-lived Python interpreter.
+    # Replicate the estimator in fresh processes: seeding fixes the RNG streams,
+    # but not the sampler and library state a long-lived interpreter accumulates.
     n_repeats = 9 if args.as_test else 1
     new_runs = ([_isolated_decoy_run(args, args.seed + i)
                  for i in range(n_repeats)] if args.as_test else

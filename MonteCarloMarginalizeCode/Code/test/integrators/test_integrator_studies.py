@@ -13,9 +13,10 @@ a __main__ and argparse and no test functions, so pytest collects ZERO items and
 tests ran", which reads as a pass -- and .travis/ci_roster.txt carried them as HANDRUN.
 
 That roster entry called them "expensive", which is why the suggested fix was an opt-in wrapper
-behind RIFT_RUN_EXPENSIVE.  MEASURED, and the premise was wrong: on CIT with the IGWN python
-(OMP_NUM_THREADS=1) they take 5, 2, 14, 4 and 4 seconds -- 29 s for all five.  Nothing here needs
-to be opt-in.
+behind RIFT_RUN_EXPENSIVE.  MEASURED, and the premise was wrong: on CIT (ldas-grid) with the IGWN
+python (OMP_NUM_THREADS=1) they take 7, 4, 20, 64 and 6 seconds -- 101 s for all five.  The decoy
+study is the expensive one only because it replicates itself in nine child processes; that is still
+not enough to be opt-in.
 
 FLAKE RISK, since these are Monte Carlo studies with tolerance-based gates: all five seed
 explicitly, but a seed does not make a low-effective-sample-size result reliable across
@@ -38,11 +39,11 @@ CODE = os.path.normpath(os.path.join(HERE, "..", ".."))
 
 # name -> measured wall seconds on CIT, for whoever wonders what this costs
 STUDIES = [
-    ("test_AV_bootstrap.py", 5),
-    ("test_AV_warmstart_safety.py", 2),
-    ("test_portfolio_adaptive_alloc.py", 14),
-    ("test_portfolio_balance_heuristic.py", 4),
-    ("test_portfolio_oracle.py", 4),
+    ("test_AV_bootstrap.py", 7),
+    ("test_AV_warmstart_safety.py", 4),
+    ("test_portfolio_adaptive_alloc.py", 20),
+    ("test_portfolio_balance_heuristic.py", 64),
+    ("test_portfolio_oracle.py", 6),
 ]
 
 
