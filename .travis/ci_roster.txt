@@ -137,21 +137,6 @@ MonteCarloMarginalizeCode/Code/test/integrators/test_mcsamp_vegas.py           O
 MonteCarloMarginalizeCode/Code/test/integrators/test_mcsampler_rosenbrock.py   HANDRUN  Rosenbrock sampler study; its docstring pairs it with plot_posterior_corner.py by hand
 MonteCarloMarginalizeCode/Code/test/test_eosmanager_misc.py                    OPTDEP  needs:env:LALSIMULATION_DATADIR -- raises KeyError at import without it
 MonteCarloMarginalizeCode/Code/test/test_skysamp.py                            LEGACY  imports lalinference.bayestar.fits, removed upstream; cannot be imported
-# test_mcsampler_foridiots.py is HANDRUN rather than BROKEN because it is a demo script with no
-# test functions -- it was never going to be gated.  But it fails for a reason that is NOT the
-# demo's: it dies in RIFT/integrators/mcsamplerGPU.py:1324, inside integrate(), on
-#
-#     weights_alt = int_vals**tempering_exp        # NameError: int_vals is not defined
-#
-# the `not save_intg` branch of the adaptation weighting.  `int_vals` exists nowhere in that
-# scope; the sibling branches use self._rvs["integrand"][-n_history:], and the local holding the
-# same values when nothing is being saved is `fval` (a commented-out line two above prints it),
-# so `fval**tempering_exp` is the near-certain intent.  This branch cannot ever have run.
-#
-# NOT FIXED HERE: that is core sampler code, and guessing the intended expression is exactly the
-# kind of change that should be RO'S call rather than a side effect of a test-hygiene PR.
-# Reported instead.  Reachable on CPU -- this demo hit it with no GPU involved.
-MonteCarloMarginalizeCode/Code/test/test_mcsampler_foridiots.py                HANDRUN  plotting demo with no test functions; dies in mcsamplerGPU.integrate on an undefined int_vals (see note above)
 
 # ---------------------------------------------------------------------------------------
 # EXPENSIVE -- correctly gated already, by an env var rather than by CI membership.

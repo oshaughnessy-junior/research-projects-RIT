@@ -890,11 +890,21 @@ class MCSampler(SamplerOutputMixin, object):
             # correction: near-flat weights made each histogram replay the previous
             # proposal's sampling noise, a multiplicative random walk that collapses the
             # proposal onto a comb of surviving bins.)
-            weights_alt = self._rvs["log_weights"][-n_history:]
+            if save_intg:
+                weights_alt = self._rvs["log_weights"][-n_history:]
+            else:
+                # Same gap as in integrate(): save_intg is only forced on above when
+                # tempering_exp>0, while this block runs for any n_adapt>0, so with the
+                # default tempering_exp=0 there is no cached history and reading it raised
+                # KeyError('log_weights').  Adapt on this chunk's weights alone.
+                weights_alt = log_weights
             weights_alt = self.xpy.exp(weights_alt - self.xpy.max(weights_alt))
             weights_alt = weights_alt/(weights_alt.sum())
             if weights_alt.dtype == RiftFloat:
               weights_alt = weights_alt.astype(numpy.float64,copy=False)
+            # Points sliced to the depth the weights reach, not to n_history -- see the
+            # note on the same line in integrate().
+            n_history_here = len(weights_alt)
 
             for itr, p in enumerate(self.params_ordered):
                 # # FIXME: The second part of this condition should be made more
@@ -902,7 +912,7 @@ class MCSampler(SamplerOutputMixin, object):
                 if p not in self.adaptive or p in list(kwargs.keys()):
                     continue
 
-                points = self._rvs[p][-n_history:]
+                points = self._rvs[p][-n_history_here:]
                 self.compute_hist(points, p,weights=weights_alt,floor_level=floor_integrated_probability)
                 self.pdf[p] = function_wrapper(self.pdf_from_hist, p)
                 self.cdf_inv[p] = function_wrapper(self.cdf_inverse_from_hist, p)
@@ -1356,8 +1366,12 @@ class MCSampler(SamplerOutputMixin, object):
                 return inner
 
             if not(save_intg):
-                print("Direct access ")
-                weights_alt = int_vals**tempering_exp
+                # No integrand history was cached: save_intg is only forced on above when
+                # tempering_exp>0, while this block runs for any n_adapt>0, so the default
+                # tempering_exp=0 lands here.  The only weights in hand are this chunk's
+                # importance weights, so adapt on the chunk alone.  Was int_vals**tempering_exp,
+                # a name that has never existed, so every such call raised NameError instead.
+                weights_alt = int_val
             elif not(tempering_exp):  # zero value, should not happen but just in case, fall back to using integrand for adaptation
                 weights_alt = self._rvs["integrand"][-n_history:]
             else:
@@ -1376,6 +1390,14 @@ class MCSampler(SamplerOutputMixin, object):
             if weights_alt.dtype == RiftFloat:
               weights_alt = weights_alt.astype(numpy.float64,copy=False)
 #            weights_alt = floor_integrated_probability*xpy_default.ones(len(weights_alt))/len(weights_alt) + (1-floor_integrated_probability)*weights_alt
+            # Slice the points to the depth the WEIGHTS actually reach, not to n_history.
+            # The two differ whenever the integrand record is shorter than the parameter
+            # record -- the branch above that adapts on one chunk, and any sampler reused
+            # for a second integrate(), since _rvs[p] carries over from the previous pass
+            # while "integrand" restarts.  Both records are appended in lockstep from
+            # wherever the shorter one begins, so equal depths are aligned; unequal ones
+            # reach bincount as "The weights and list don't have the same length."
+            n_history_here = len(weights_alt)
 
             for itr, p in enumerate(self.params_ordered):
                 # # FIXME: The second part of this condition should be made more
@@ -1383,7 +1405,7 @@ class MCSampler(SamplerOutputMixin, object):
                 if p not in self.adaptive or p in list(kwargs.keys()):
                     continue
 
-                points = self._rvs[p][-n_history:]
+                points = self._rvs[p][-n_history_here:]
                 self.compute_hist(points, p,weights=weights_alt,floor_level=floor_integrated_probability)
             #    if p == 'declination':
             #          vals = identity_convert(self.histogram_values[p])
