@@ -108,6 +108,11 @@ FILES=(
   # -- ILE consolidation precision.  Both DAG builders and BOTH cleaner passes,
   # in the legacy and hyperpipeline formats; 7 tests, 9 s, subprocesses only.
   "$C/test/test_cleanile_intrinsic_precision.py"
+  # -- EOS: the LALSimulation version-compatibility layer.  numpy/lal only; the reviewed
+  # multibranch API is exercised through injected fakes, so this runs on a released build.
+  # Its companion test_lalsim_eos_reviewed_integration.py needs a private reviewed LALSuite
+  # and is rostered EXPENSIVE.
+  "$C/test/test_lalsim_eos_compat.py"
   # -- packaging / config contracts / waveform conventions
   "$C/test/test_advanced_parameter_ports.py"
   "$C/test/test_container_manifest.py"
@@ -166,6 +171,13 @@ done
 #            fed odeint's float probe to len(x) pdfs; the t_ref wiring in all three ILE drivers)
 #   378/366  + test_response_order.py (8 tests: SNR tightening, Halton independence,
 #            compound-axis semantics, reference resolution/tail charging, and bank preflight)
+#   414/402  + test_lalsim_eos_compat.py (27 tests: the LALSimulation EOS version-compatibility
+#            layer -- released one-argument family API vs the reviewed multibranch API through
+#            injected fakes, branch selection and its mass bounds, and the CIP fixed-EOS support
+#            mask).  MEASURED on CIT (ldas-grid) 2026-09-14, IGWN conda python 3.11 / numpy
+#            1.26.4 / lal 7.7.0: per-file 414 over 41 files, 12 skipped, 0 failed.  That run's
+#            junit reported 417/405 because pytest-subtests was present in it; per the rule
+#            below the floors stay pinned to the PLUGIN-FREE per-file count, 414/402.
 #   387/375  + test_cleanile_intrinsic_precision.py (7 tests: --clean-ile-intrinsic-digits
 #            through the legacy join/unify, through the hyperpipeline cleaner pair, and
 #            through the multi-approximant builder's three cleaner passes).  MEASURED on CIT
@@ -188,12 +200,12 @@ done
 # runner's closure the count falls back to 347 and still passes.  Pinning 350 would turn an
 # unrelated dependency change into a red gate.
 # Two XML/grid template-finalization regressions, with no added skips.
-EXPECTED_TESTS=387
+EXPECTED_TESTS=414
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 12 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
 # test_dslice_device_native, and the xfail in test_uv_symmetry.
-EXPECTED_PASSED=375
+EXPECTED_PASSED=402
 MAX_SKIPPED=12
 
 # The floors must be INTEGERS, and this is checked rather than assumed.  `[ 347 -lt FOO ]` does
