@@ -948,6 +948,14 @@ discard_prob: threshold on CDF to throw away an entire bin.  Should be very smal
 <dd></dd></dl>
 
 <dl class="py function">
+<dt class="sig sig-object py" id="RIFT.integrators.mcsamplerAdaptiveVolume.keep_reserve_from_rvs">
+<span class="sig-prename descclassname"><span class="pre">RIFT.integrators.mcsamplerAdaptiveVolume.</span></span><span class="sig-name descname"><span class="pre">keep_reserve_from_rvs</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">sampler</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">label</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">integrand_is_log</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerAdaptiveVolume.keep_reserve_from_rvs" title="Link to this definition"></a></dt>
+<dd><p>Attach <code class="docutils literal notranslate"><span class="pre">sampler._warm_seed_reserve</span></code> from its own <code class="docutils literal notranslate"><span class="pre">_rvs</span></code>, or leave it None.</p>
+<p>Provenance for an export, never a reason to lose a completed integral – the same
+contract AV and the portfolio already use at their own reserve sites.</p>
+</dd></dl>
+
+<dl class="py function">
 <dt class="sig sig-object py" id="RIFT.integrators.mcsamplerAdaptiveVolume.live_volume_collapse_verdict">
 <span class="sig-prename descclassname"><span class="pre">RIFT.integrators.mcsamplerAdaptiveVolume.</span></span><span class="sig-name descname"><span class="pre">live_volume_collapse_verdict</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">n_live</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ndim</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ess</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">khat</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">n_empty_cycles</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">n_live_collapses</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">n_warm_seed</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">n_warm_seed_rank</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">n_warm_seed_dim</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerAdaptiveVolume.live_volume_collapse_verdict" title="Link to this definition"></a></dt>
 <dd><p>Has the adaptive-volume live set degenerated?  -&gt; (collapsed, [reasons])</p>
@@ -1030,8 +1038,30 @@ it exactly would mean tracking whether the peak was already in the subsample.</p
 </dd></dl>
 
 <dl class="py function">
+<dt class="sig sig-object py" id="RIFT.integrators.mcsamplerAdaptiveVolume.make_reserve_from_rvs">
+<span class="sig-prename descclassname"><span class="pre">RIFT.integrators.mcsamplerAdaptiveVolume.</span></span><span class="sig-name descname"><span class="pre">make_reserve_from_rvs</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">rvs</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">params_ordered</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">n_max</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">20000</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">integrand_is_log</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">convert</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerAdaptiveVolume.make_reserve_from_rvs" title="Link to this definition"></a></dt>
+<dd><p>The retained-set reserve for a sampler that still has its rows in <code class="docutils literal notranslate"><span class="pre">_rvs</span></code> -&gt; dict.</p>
+<p>ONE adapter in front of make_warm_seed_reserve, for the backends that reach the fair
+draw with the retained set still in <code class="docutils literal notranslate"><span class="pre">_rvs</span></code>: mcsampler, mcsamplerGPU (both entry
+points), mcsamplerEnsemble and mcsamplerNFlow.  AV builds its own from allx/allloglkl
+because it never keeps them in <code class="docutils literal notranslate"><span class="pre">_rvs</span></code>; the portfolio aggregates its members’ rows.</p>
+<p>WHY THESE BACKENDS NEED ONE AT ALL.  Until now the reserve existed only for the L0
+rescue, so only AV and the portfolio built it and <code class="docutils literal notranslate"><span class="pre">reserve=None</span></code> elsewhere was
+described as “the honest answer, not a gap”.  It is a gap for anything that EXPORTS a
+shape: the fair draw below replaces <code class="docutils literal notranslate"><span class="pre">_rvs</span></code> with min(–fairdraw-extrinsic-output-n-max
+(5 by default), 1.5*eff_samp, 1.5*neff) rows taken WITH REPLACEMENT, and the .dgrid
+exporter then binned those five rows as though they were a likelihood-vs-distance
+curve.  The retained rows are right here; keeping a bounded copy of them costs one
+subsample and lets the exporter use the sample set instead of its export resample.</p>
+<p>BOTH CONVENTIONS.  <code class="docutils literal notranslate"><span class="pre">integrand</span></code> is lnL on some backends and linear L on others, and
+the sampler is the only thing that knows which (see RvsRecord.integrand_is_log).  The
+log columns are preferred where they exist; otherwise the linear ones are converted
+here.  log(0) is -inf, which make_warm_seed_reserve drops as a zero-weight row.</p>
+</dd></dl>
+
+<dl class="py function">
 <dt class="sig sig-object py" id="RIFT.integrators.mcsamplerAdaptiveVolume.make_warm_seed_reserve">
-<span class="sig-prename descclassname"><span class="pre">RIFT.integrators.mcsamplerAdaptiveVolume.</span></span><span class="sig-name descname"><span class="pre">make_warm_seed_reserve</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">X</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">lnL</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">params_ordered</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">n_max</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">20000</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">log_joint_prior</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">log_joint_s_prior</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rng</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerAdaptiveVolume.make_warm_seed_reserve" title="Link to this definition"></a></dt>
+<span class="sig-prename descclassname"><span class="pre">RIFT.integrators.mcsamplerAdaptiveVolume.</span></span><span class="sig-name descname"><span class="pre">make_warm_seed_reserve</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">X</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">lnL</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">params_ordered</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">n_max</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">20000</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">log_joint_prior</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">log_joint_s_prior</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rng</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">force_peak</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerAdaptiveVolume.make_warm_seed_reserve" title="Link to this definition"></a></dt>
 <dd><p>A bounded copy of the points a pass RETAINED, for a later warm start -&gt; dict.</p>
 <p>THE ONE BUILDER, because every sampler that can be L0-rescued needs the identical
 record and they reach this point by different routes: mcsamplerAdaptiveVolume from its
@@ -1062,6 +1092,30 @@ and would bias both the covariance estimate and any lnZ taken from the reserve, 
 neither is a uniform sample of the level set any more.  The one deliberate exception is
 the PEAK row, appended unconditionally because the seed is defined relative to it and a
 subsample can drop it; at one row in n_max its effect on either estimate is negligible.</p>
+<p>force_peak IS FOR A SEED, NOT FOR AN EXPORT.  Appending the peak row unconditionally
+costs a seed nothing (“at one row in n_max its effect on either estimate is
+negligible”) because a seed is a SET of points and the peak defines its centre.  A
+consumer that reads the reserve as a WEIGHTED SAMPLE sees something else.  Uniform
+subsampling without replacement gives every row the same inclusion probability, which
+cancels in a normalized histogram; that histogram is a RATIO of two unbiased estimators,
+so it carries an O(1/n) bias rather than none (measured at +1.5 to +3.9 sigma in the
+small-mass bins over 4000 seeds, i.e. negligible beside the MC noise, but not zero).
+Forcing one row in at probability 1 while the rest come in at n_max/n_finite is a
+different thing entirely: a bias that does not shrink with n.</p>
+<p>HOW BIG DEPENDS ENTIRELY ON HOW DOMINANT THE PEAK IS, so the numbers below are a
+measured range and not a constant.  On 8000 rows capped at 800, median of 15 subsample
+seeds, as the top weight is lifted above the rest: no dominant row, ESS 506 forced
+against 506 free (no effect at all); 3 e-folds up, 223 against 505; 6 e-folds, 3.6
+against 505.  On a real starved GMM extrinsic pass (180,000 retained rows capped at
+20,000, 20 seeds) the forced version reported ESS 33 where the population has 1163,
+and displaced the exported curve by up to 1.22 nats in a bin against 0.72 free.</p>
+<p>force_peak therefore stays True everywhere, and the .dgrid exporter divides that row by
+its own inclusion probability instead (reserve_distance_and_ln_weights), which is why
+n_subsample is recorded below.  Dropping the row instead is worse than it sounds: the
+unforced subsample then usually misses the dominant row entirely and reports ESS 506
+where the population has 99, against 87 for the forced-and-corrected version.</p>
+<p>Neither setting makes the SUBSAMPLE’s own ESS a description of the population – that
+is what ess_finite, recorded below before the cap, is for.</p>
 <p>ISOLATED RNG.  This reserve is built unconditionally – including when
 –sampler-warmstart-retry-neff is unset and nothing will ever read it – so drawing the
 subsample from the global numpy stream would advance it before the fair draw, before the
