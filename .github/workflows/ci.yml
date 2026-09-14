@@ -784,6 +784,7 @@ jobs:
         run: |
           python -m pytest -q \
             MonteCarloMarginalizeCode/Code/test/test_av_empty_live_volume.py \
+            MonteCarloMarginalizeCode/Code/test/test_av_selfish_host_integrand.py \
             MonteCarloMarginalizeCode/Code/test/test_l0_rescue_seed.py \
             MonteCarloMarginalizeCode/Code/test/test_seq_warmstart_seed.py \
             MonteCarloMarginalizeCode/Code/test/test_fairdraw_double_weighting.py \
