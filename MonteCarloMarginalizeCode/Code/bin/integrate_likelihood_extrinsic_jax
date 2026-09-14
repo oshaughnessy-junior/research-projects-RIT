@@ -222,6 +222,7 @@ _ILE_BOOL_OPTS = {
     "--distance-slice-all-fresh",
     "--distance-slice-randomize",
     "--psi-marginalization",
+    "--log-noise-evidence-only",
 }
 # ILE options taking repeated values (action=append).
 _ILE_APPEND_OPTS = {
@@ -280,7 +281,9 @@ _ILE_ALL_OPTS = {
     "--internal-waveform-fd-L-frame", "--internal-waveform-taper",
     "--interpolate-time", "--inv-spec-trunc-time", "--l-max",
     "--limit-declination", "--limit-distance", "--limit-inclination", "--limit-psi",
-    "--limit-right-ascension", "--manual-logarithm-offset", "--mass1", "--mass2",
+    "--limit-right-ascension", "--log-noise-evidence-only",
+    "--log-noise-evidence-output",
+    "--manual-logarithm-offset", "--mass1", "--mass2",
     "--mc-error-ess-trigger", "--mc-error-khat-trigger", "--mc-error-replicas",
     "--mc-error-sigma-trigger",
     "--maximize-only", "--n-chunk", "--n-distance-slice-core", "--n-eff",
@@ -410,6 +413,16 @@ def check_critical_and_report(opts, optp):
         fatal.append("--zero-likelihood is not implemented")
     if is_set("--maximize-only"):
         fatal.append("--maximize-only is not implemented (this driver integrates)")
+    # REFUSED, not reported IGNORED with the compatibility no-ops above.  The
+    # no-op rule is for missing KNOBS; these two ask for a data product.  Ignoring
+    # --log-noise-evidence-only would run the whole integration the user asked the
+    # driver to skip, and ignoring --log-noise-evidence-output leaves a workflow
+    # reading a file that never appears.  Conventional ILE's (d|d) comes from its
+    # own conditioning and ComplexIP path, which this driver does not share, so
+    # forwarding the flag is not what implementing it would mean.
+    if is_set("--log-noise-evidence-only") or is_set("--log-noise-evidence-output"):
+        fatal.append("--log-noise-evidence-output/--log-noise-evidence-only are "
+                     "not implemented; run conventional ILE for the noise evidence")
     _is_n = int(getattr(opts, "smc_is_samples", 60000))
     if _is_n < 0:
         fatal.append("--smc-is-samples must be >= 0; a negative count reaches "

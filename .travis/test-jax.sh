@@ -1088,7 +1088,11 @@ fi
 # 2026-09-14: +1 in the same already-gated file, the driver-wiring guard that the
 # production CLI uses the corrected estimator rather than its own pre-fix copy.
 # One test added to a file already in FILES, so the floor moves by exactly one.
-EXPECTED_TESTS=867
+# 2026-09-14: +1 in test_jax_terminal_time_marginalization.py, the refusal guard for
+# --log-noise-evidence-output/-only.  The manifest test beside it only checks that a
+# conventional flag is DECLARED with the same arity, which a silent no-op satisfies;
+# removing the refusal leaves that one green and this one red.  867 + 1 = 868.
+EXPECTED_TESTS=868
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
