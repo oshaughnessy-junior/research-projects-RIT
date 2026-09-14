@@ -1,0 +1,228 @@
+#!/usr/bin/env python
+"""
+Regression tests for the .dgrid exporter's degenerate bins
+(RIFT/misc/distance_grid.py, bin/integrate_likelihood_extrinsic_batchmode).
+
+Background (the defect these tests lock down).  With --sampler-method GMM on the
+ILE-GPU-Paper demo, `--export-marginal-distance-grid` wrote a table that is not a
+function of distance -- two rows per bin centre, ~40 nats apart:
+
+    dist [74.84 74.84 94.26 94.26]
+    lnL  [103.99 65.68 65.21 103.53]
+
+The same command line on AV wrote 5 distinct, monotonically increasing distances with
+smooth lnL.  Reproduced byte-identically on an unmodified junior/rift_O4d, so it predates
+the gate widening in PR #167 -- that widening only makes more configurations reach it.
+
+  1. THE BLOCK SPLIT CUT A RUN OF IDENTICAL DISTANCES.  integrate_log's fair draw
+     resamples _rvs WITH REPLACEMENT at n_extr = min(n_extr, 1.5*eff_samp, 1.5*neff), so a
+     starved pass (GMM n_eff 2.9 -> 4 rows) exports a few distinct distances each repeated
+     several times.  _weighted_blocks then ran np.array_split over the RAW sample indices,
+     which puts the two copies of one distance in different blocks.  Both blocks take the
+     weighted mean of the same value, so both report the same centre.
+
+  2. THE WIDTH FLOOR TURNED THAT INTO A 36-NAT LIE.  Bin edges are midpoints of the
+     centres, so a repeated centre gives a zero-width bin, and `np.maximum(width, eps)`
+     floored it at 2.2e-16.  lnL carries -log(width), so those bins were reported
+     -log(eps) = 36.04 nats brighter than their neighbours -- which is the 38-39 nat
+     first-and-last-row spread above, not a physical feature.
+
+  3. NOTHING SAID THE GRID WAS UNRESOLVABLE.  n_grid rows were emitted whatever the
+     samples could support; a file with two distinct distances in it is indistinguishable
+     from a converged curve once it leaves the job.
+
+The requirement is not "runs without crashing": a table sold as likelihood-vs-distance
+must be single-valued in d, its widths must come from the sample spacing rather than from
+a floor, and a sample set that cannot resolve a curve must be refused or flagged -- while
+a healthy all-distinct sample set must be binned exactly as before.
+"""
+
+import os
+
+import numpy as np
+import pytest
+
+from RIFT.misc.distance_grid import (
+    MIN_UNIQUE_DISTANCES,
+    build_distance_grid,
+    distance_grid_resolution_warning,
+    reconstruct_marginal_lnL,
+)
+
+_ILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                    '..', 'bin', 'integrate_likelihood_extrinsic_batchmode')
+
+EPS = np.finfo(float).eps
+
+
+def _volumetric_log_prior(d):
+    return 2.0 * np.log(np.asarray(d, dtype=float))
+
+
+def _fair_draw(uniq, counts, rng=None):
+    """An _rvs column as the fair draw leaves it: each surviving distance repeated.
+
+    Returns (distance, ln_prior_d, ln_weights) with the weights flat in d, so ANY
+    structure in the exported lnL is an artifact of the binning and nothing else.
+    """
+    uniq = np.asarray(uniq, dtype=float)
+    counts = np.asarray(counts, dtype=int)
+    distance = np.repeat(uniq, counts)
+    if rng is not None:
+        distance = rng.permutation(distance)          # the draw is not sorted
+    ln_pi = _volumetric_log_prior(distance)
+    return distance, ln_pi, np.zeros(len(distance))
+
+
+###
+### 1. the exported table must be a function of distance
+###
+
+def test_repeated_fair_draw_distances_do_not_share_a_bin_centre():
+    """The reported symptom, minimised: 4 rows, 2 distinct distances."""
+    distance, ln_pi, ln_w = _fair_draw([74.84, 94.26], [2, 2])
+
+    grid = build_distance_grid(distance, ln_w, 64.0, 0.0, {},
+                               ln_prior_d_at_samples=ln_pi, n_grid=4)
+
+    assert len(np.unique(grid["dist"])) == len(grid["dist"]), \
+        "two rows share a bin centre: the grid is not a function of d"
+    assert np.all(np.diff(grid["dist"]) > 0), \
+        "bin centres are not strictly increasing"
+
+
+def test_no_bin_width_is_floored_at_machine_epsilon():
+    """A width of eps is not a narrow bin, it is a missing one; -log(eps) = 36 nats
+    then lands in lnL."""
+    distance, ln_pi, ln_w = _fair_draw([74.84, 94.26], [2, 2])
+
+    grid = build_distance_grid(distance, ln_w, 64.0, 0.0, {},
+                               ln_prior_d_at_samples=ln_pi, n_grid=4)
+
+    assert np.all(grid["dist_weight"] > 1e6 * EPS), \
+        "a bin width came from the floor, not from the sample spacing"
+    # the sampled range is ~19.4 Mpc; no bin may be a rounding error of it
+    assert np.min(grid["dist_weight"]) > 1e-6 * np.ptp(distance)
+
+
+def test_a_likelihood_that_is_flat_in_distance_is_exported_flat():
+    """Evenly spaced distinct distances, each repeated the same number of times, each
+    copy weighted by the sampling prior.  Every bin then has the same width and the
+    same mass, so the exported lnL is analytically constant -- L(d) is flat.  The
+    defect split each triple across bins and wrote a -log(eps) = 36-nat sawtooth."""
+    uniq = np.linspace(100.0, 900.0, 9)
+    distance, ln_pi, _ = _fair_draw(uniq, np.full(len(uniq), 3))
+    ln_w = ln_pi.copy()          # p(d) proportional to pi_d(d) <=> L(d) constant
+
+    grid = build_distance_grid(distance, ln_w, 0.0, 0.0, {},
+                               ln_prior_d_at_samples=ln_pi, n_grid=len(distance))
+
+    spread = float(np.ptp(grid["lnL"]))
+    assert spread < 1e-9, \
+        "flat likelihood exported with a {:.2f}-nat spread across bins".format(spread)
+    assert np.allclose(grid["dist_weight"], 100.0)
+
+
+def test_duplicating_a_sample_only_reweights_it():
+    """k copies of one distance must give exactly the grid one copy of k times the
+    weight gives.  This is what makes the export independent of how many times the
+    fair draw happened to land on a point."""
+    rng = np.random.default_rng(3)
+    for _ in range(25):
+        uniq = np.sort(rng.lognormal(np.log(400.0), 0.35, size=int(rng.integers(3, 20))))
+        counts = rng.integers(1, 6, size=len(uniq))
+        ln_pi_u = _volumetric_log_prior(uniq)
+        ln_w_u = -0.5 * ((uniq - 430.0) / 70.0) ** 2
+        n_grid = int(rng.integers(1, len(uniq) + 1))
+
+        repeated = build_distance_grid(
+            np.repeat(uniq, counts), np.repeat(ln_w_u, counts), 5.0, 0.0, {},
+            ln_prior_d_at_samples=np.repeat(ln_pi_u, counts), n_grid=n_grid)
+        collapsed = build_distance_grid(
+            uniq, ln_w_u + np.log(counts), 5.0, 0.0, {},
+            ln_prior_d_at_samples=ln_pi_u, n_grid=n_grid)
+
+        for field in ("dist", "dist_weight", "lnL", "ln_prior_d_sampling"):
+            assert np.allclose(repeated[field], collapsed[field], rtol=0, atol=1e-12), field
+
+
+###
+### 2. a grid it cannot resolve must be refused or flagged, never written quietly
+###
+
+def test_rows_are_capped_at_the_number_of_distinct_distances():
+    distance, ln_pi, ln_w = _fair_draw([120.0, 305.0, 900.0], [40, 7, 13])
+
+    grid = build_distance_grid(distance, ln_w, 3.0, 0.0, {},
+                               ln_prior_d_at_samples=ln_pi, n_grid=500)
+
+    assert len(grid) == 3, "asked for 500 bins over 3 distinct distances, got {}".format(len(grid))
+
+
+def test_a_single_distinct_distance_is_refused():
+    """One distance has no width to report; the old code shipped it with width eps."""
+    distance = np.full(6, 300.0)
+    with pytest.raises(ValueError) as excinfo:
+        build_distance_grid(distance, np.zeros(6), 1.0, 0.0, {},
+                            ln_prior_d_at_samples=_volumetric_log_prior(distance), n_grid=6)
+    assert "distinct" in str(excinfo.value)
+    assert MIN_UNIQUE_DISTANCES == 2
+
+
+def test_resolution_warning_fires_exactly_when_the_draw_is_starved():
+    starved, _, _ = _fair_draw([74.84, 94.26], [2, 2])
+    assert distance_grid_resolution_warning(starved, n_grid=4) is not None
+    assert distance_grid_resolution_warning(starved, n_grid=500) is not None
+
+    healthy = np.linspace(130.1, 216.8, 5)          # the AV arm of the same command line
+    assert distance_grid_resolution_warning(healthy, n_grid=5) is None
+    assert distance_grid_resolution_warning(healthy) is None
+    assert distance_grid_resolution_warning(np.array([])) is not None
+
+
+###
+### 3. healthy, all-distinct samples must be binned exactly as before
+###
+
+def test_all_distinct_samples_keep_the_equal_count_split():
+    """No duplicates means unique-value blocking IS the old sample-index blocking, so
+    equal weights must still give every bin the same mass."""
+    n, n_grid = 120, 12
+    distance = np.linspace(100.0, 900.0, n)
+    ln_pi = _volumetric_log_prior(distance)
+
+    grid = build_distance_grid(distance, np.zeros(n), -4.0, 0.0, {},
+                               ln_prior_d_at_samples=ln_pi, n_grid=n_grid)
+
+    assert len(grid) == n_grid
+    mass = np.exp(grid["lnL"] + grid["ln_prior_d_sampling"] + np.log(grid["dist_weight"]))
+    mass /= np.sum(mass)
+    assert np.allclose(mass, 1.0 / n_grid, atol=1e-12), \
+        "bins no longer carry equal probability mass: the split changed"
+    assert np.isclose(reconstruct_marginal_lnL(grid), -4.0)
+
+
+def test_starved_draw_still_reconstructs_the_marginal_it_was_given():
+    """Capping rows must not move lnZ: the grid is still a partition of the same mass."""
+    distance, ln_pi, _ = _fair_draw([74.84, 94.26], [2, 2])
+    ln_w = np.array([0.0, 0.0, -0.3, -0.3])
+
+    grid = build_distance_grid(distance, ln_w, 64.0, 0.0, {},
+                               ln_prior_d_at_samples=ln_pi, n_grid=4)
+
+    assert np.isclose(reconstruct_marginal_lnL(grid), 64.0)
+
+
+###
+### 4. the ILE must actually say so
+###
+
+@pytest.mark.skipif(not os.path.exists(_ILE), reason='ILE executable not in this tree')
+def test_the_ile_flags_a_starved_distance_grid_before_writing_it():
+    with open(_ILE) as f:
+        src = f.read()
+    i = src.index('build_distance_grid(')
+    block = src[max(0, i - 3000):i]
+    assert 'distance_grid_resolution_warning' in block, \
+        'the exporter writes a .dgrid without checking the draw can resolve one'
+    assert 'WARNING' in block, 'the starved-grid check does not reach the log'

@@ -84,6 +84,7 @@ FILES=(
   "$C/test/test_cip_evidence_consolidation.py"
   "$C/test/test_cip_pipeline.py"
   "$C/test/test_distance_grid.py"
+  "$C/test/test_distance_grid_degenerate_bins.py"
   "$C/test/test_distance_tail.py"
   "$C/test/test_dslice_device_native.py"
   # -- hyperpipe (paper4 area; the hydra leg is rostered OPTDEP, not here)

@@ -49,6 +49,12 @@ def _logsumexp(vals):
     return vmax + np.log(np.sum(np.exp(vals - vmax)))
 
 
+# A bin centre is the weighted mean distance of its block, so two blocks built
+# from the same distance value share a centre and leave a zero-width bin between
+# them.  One distinct distance therefore cannot be a grid at all.
+MIN_UNIQUE_DISTANCES = 2
+
+
 def _as_positive_integer(value, default):
     if value is None:
         return default
@@ -59,8 +65,9 @@ def _as_positive_integer(value, default):
 
 
 def _weighted_blocks(distance, ln_prior_d, probability, n_grid):
-    """Sort samples by distance, split into n_grid equal-count blocks, and
-    return per-block (center, mass, width, mean ln-prior)."""
+    """Sort samples by distance, split into n_grid blocks that never cut a run
+    of identical distances, and return per-block (center, mass, width, mean
+    ln-prior)."""
     order = np.argsort(distance)
     distance = np.asarray(distance, dtype=float)[order]
     probability = np.asarray(probability, dtype=float)[order]
@@ -73,8 +80,24 @@ def _weighted_blocks(distance, ln_prior_d, probability, n_grid):
     if len(distance) == 0:
         raise ValueError("no finite positive-weight distance samples to export")
 
-    n_grid = min(_as_positive_integer(n_grid, len(distance)), len(distance))
-    blocks = np.array_split(np.arange(len(distance)), n_grid)
+    # Block boundaries must fall BETWEEN distinct distances, never inside a run
+    # of identical ones.  ILE's fair draw resamples with replacement, so a
+    # starved extrinsic pass hands us a few distinct distances each repeated
+    # several times; an equal-count split of the raw samples then cuts such a
+    # run, gives both halves the same weighted-mean centre, and leaves a
+    # zero-width bin between them.  Splitting the DISTINCT distances instead is
+    # the identical equal-count split whenever the samples are all distinct.
+    starts = np.concatenate(([0], np.flatnonzero(np.diff(distance)) + 1))
+    n_unique = len(starts)
+    if n_unique < MIN_UNIQUE_DISTANCES:
+        raise ValueError(
+            "cannot resolve a distance grid: {} finite positive-weight sample(s) "
+            "span only {} distinct distance(s)".format(len(distance), n_unique))
+
+    n_grid = min(_as_positive_integer(n_grid, n_unique), n_unique)
+    first_unique = [group[0] for group in np.array_split(np.arange(n_unique), n_grid)]
+    bounds = np.append(starts[first_unique], len(distance))
+    blocks = [np.arange(bounds[i], bounds[i + 1]) for i in range(n_grid)]
     grid_dist = np.empty(len(blocks))
     grid_mass = np.empty(len(blocks))
     grid_ln_prior = np.empty(len(blocks))
@@ -89,16 +112,49 @@ def _weighted_blocks(distance, ln_prior_d, probability, n_grid):
         )
 
     if len(grid_dist) == 1:
-        width = np.array([max(np.ptp(distance), np.finfo(float).eps)])
+        width = np.array([np.ptp(distance)])
     else:
         edges = np.empty(len(grid_dist) + 1)
         edges[1:-1] = 0.5 * (grid_dist[1:] + grid_dist[:-1])
         edges[0] = min(distance[0], grid_dist[0] - (edges[1] - grid_dist[0]))
         edges[-1] = max(distance[-1], grid_dist[-1] + (grid_dist[-1] - edges[-2]))
         width = np.diff(edges)
-        width = np.maximum(width, np.finfo(float).eps)
+
+    # lnL carries -log(width), so a floored zero width is not a small error: the
+    # old np.maximum(width, eps) floor reported a bin as ~36 nats brighter than
+    # its neighbours.  Distinct-distance blocking makes the centres strictly
+    # increasing, so this should be unreachable; refuse rather than floor.
+    if not np.all(width > 0):
+        raise ValueError(
+            "cannot resolve a distance grid: {} of {} bin(s) have non-positive "
+            "width over distances [{:g}, {:g}]".format(
+                int(np.sum(width <= 0)), len(width), distance[0], distance[-1]))
 
     return grid_dist, grid_mass, width, grid_ln_prior
+
+
+def distance_grid_resolution_warning(distance, n_grid=None):
+    """Describe a distance grid the samples cannot resolve, or return None.
+
+    The grid can carry at most one row per DISTINCT sampled distance.  ILE's
+    fair draw resamples with replacement and is sized from the achieved n_eff,
+    so a starved extrinsic pass (GMM at n_eff of a few) collapses onto fewer
+    distinct distances than rows were requested.  What survives is a handful of
+    repeated points, not a likelihood-vs-distance curve, and nothing in the
+    written file says so.
+    """
+    d = np.asarray(distance, dtype=float)
+    d = d[np.isfinite(d)]
+    if len(d) == 0:
+        return "no finite distance samples to export"
+    n_unique = len(np.unique(d))
+    n_requested = min(_as_positive_integer(n_grid, len(d)), len(d))
+    if n_unique >= n_requested:
+        return None
+    return (
+        "{} sample(s) span only {} distinct distance(s), {} row(s) requested.  The "
+        "exported curve is repeated draws, not a resolved likelihood-vs-distance "
+        "curve.".format(len(d), n_unique, n_requested))
 
 
 def build_distance_grid(distance, ln_weights, lnL_marginal, sigmaL, params,
@@ -126,7 +182,9 @@ def build_distance_grid(distance, ln_weights, lnL_marginal, sigmaL, params,
         is divided out so the exported ``lnL`` is a pure likelihood, not a
         density-times-prior.
     n_grid : int, optional
-        Number of grid bins.  Defaults to ``len(distance)``.
+        Number of grid bins.  Defaults to, and is capped at, the number of
+        DISTINCT finite positive-weight distances: a bin cannot be narrower
+        than the spacing of the samples that define it.
     """
     ln_weights = np.asarray(ln_weights, dtype=float)
     ln_norm = _logsumexp(ln_weights)
