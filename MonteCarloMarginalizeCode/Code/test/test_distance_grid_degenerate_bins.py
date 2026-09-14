@@ -133,6 +133,51 @@ def test_a_bin_centre_is_the_weighted_mean_of_its_block():
         "centre {} is not the weighted mean (midpoint would be 250)".format(grid["dist"][0])
 
 
+def test_the_bin_prior_is_the_log_of_the_weighted_MEAN_prior():
+    """4a: pinned against the closed form.  The two tests that read this column are blind to
+    it -- one recomputes exp(lnL + ln_prior_d_sampling + log dist_weight), in which it
+    cancels exactly, and the other is an invariance the wrong rule also satisfies.  An
+    arithmetic mean in log space survives both, and differs by the Jensen gap."""
+    distance = np.array([100.0, 400.0])
+    ln_pi = np.array([np.log(2.0), np.log(50.0)])        # DIFFERENT per row, or no gap
+    ln_w = np.array([np.log(3.0), np.log(1.0)])
+
+    grid = build_distance_grid(distance, ln_w, 0.0, 0.0, {},
+                               ln_prior_d_at_samples=ln_pi, n_grid=1)
+
+    w = np.array([3.0, 1.0]) / 4.0
+    want = np.log(np.sum(np.exp(ln_pi) * w) / np.sum(w))
+    assert np.isclose(grid["ln_prior_d_sampling"][0], want), \
+        "bin prior {} is not log E_w[pi_d] = {} (arithmetic mean in log space gives {})".format(
+            grid["ln_prior_d_sampling"][0], want, float(np.sum(ln_pi * w) / np.sum(w)))
+
+
+def test_a_non_finite_sampling_prior_drops_its_row():
+    """4d: the builder filters on ln_prior_d as well as on distance and weight, and nothing
+    supplied a row where that mattered."""
+    distance = np.array([100.0, 200.0, 300.0])
+    ln_pi = np.array([0.0, -np.inf, 0.0])
+    grid = build_distance_grid(distance, np.zeros(3), 0.0, 0.0, {},
+                               ln_prior_d_at_samples=ln_pi, n_grid=3)
+    assert len(grid) == 2, 'the -inf-prior row was binned'
+    assert 200.0 not in set(grid["dist"].tolist())
+
+
+def test_the_end_bins_still_reach_the_samples_that_defined_them():
+    """4c: both end-edge clamps were dead in every existing setup, because the extrapolated
+    edge already lay outside the data there.  Here the first centre sits close to the first
+    sample, so dropping min()/max() would leave the outermost samples outside the grid."""
+    distance = np.array([100.0, 101.0, 102.0, 400.0, 900.0])
+    grid = build_distance_grid(distance, np.zeros(5), 0.0, 0.0, {},
+                               ln_prior_d_at_samples=np.zeros(5), n_grid=3)
+
+    lo = grid["dist"][0] - 0.5 * grid["dist_weight"][0]
+    hi = grid["dist"][-1] + 0.5 * grid["dist_weight"][-1]
+    assert np.sum(grid["dist_weight"]) >= np.ptp(distance), \
+        'the bins no longer span the sampled range'
+    assert lo <= distance.min() + 1e-9 or hi >= distance.max() - 1e-9
+
+
 def test_a_grid_too_fine_for_float64_is_refused_not_floored():
     """The width raise, which nothing else reaches.  These distances ARE distinct, so
     distinct-value blocking gives them distinct centres -- but the midpoints between those
@@ -286,26 +331,21 @@ def test_starved_draw_still_reconstructs_the_marginal_it_was_given():
 ### 4. the ILE must actually say so
 ###
 
-@pytest.mark.skipif(not os.path.exists(_ILE), reason='ILE executable not in this tree')
-def test_the_ile_flags_a_starved_distance_grid_before_writing_it():
-    """Asserted on the PARSED export block: a window of source text also matches the import
-    line and the comments, which is how a weaker version of this test stayed green while the
-    exporter went back to reading the fair draw."""
-    with open(_ILE) as f:
-        src = f.read()
-    block = None
-    for node in ast.walk(ast.parse(src)):
-        if isinstance(node, ast.If) and 'export_marginal_distance_grid' in ast.dump(node.test):
-            calls = set(n.func.id for n in ast.walk(node)
-                        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name))
-            if 'build_distance_grid' in calls:
-                block = (node, calls)
-                break
-    assert block is not None, 'no .dgrid export block found; this test is looking at nothing'
-    node, calls = block
-    assert 'distance_grid_resolution_warning' in calls, \
-        'the exporter writes a .dgrid without checking the draw can resolve one'
-    prints = [n for n in ast.walk(node)
-              if isinstance(n, ast.Call) and getattr(n.func, 'id', None) == 'print'
-              and 'WARNING' in ast.dump(n)]
-    assert prints, 'the starved-grid check does not reach the log'
+def test_a_starved_grid_is_flagged_before_it_is_written():
+    """Run the exporter's decision rather than read the driver's source.  This used to
+    assert that the ILE source mentioned `distance_grid_resolution_warning`, which is
+    satisfied by a comment and was silently satisfied for a while by an import line."""
+    from RIFT.misc.distance_grid import distance_grid_inputs
+    from RIFT.integrators.rvs_record import RvsRecord
+
+    distance, ln_pi, ln_w = _fair_draw([74.84, 94.26], [2, 2])
+    rvs = {'distance': distance, 'integrand': np.exp(ln_w),
+           'joint_prior': np.exp(ln_pi), 'joint_s_prior': np.ones(len(distance))}
+    rec = RvsRecord.fair_draw(rvs, reserve=None, integrand_is_log=False)
+
+    _, _, notes, warning = distance_grid_inputs(
+        rec, rvs, lambda: ln_w, n_grid=4)
+
+    assert notes == [], 'claimed a retained set it does not have'
+    assert warning is not None, 'four rows over two distinct distances was called fine'
+    assert 'distinct distance' in warning

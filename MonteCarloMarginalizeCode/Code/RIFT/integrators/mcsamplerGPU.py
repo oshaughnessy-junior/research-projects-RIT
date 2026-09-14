@@ -998,7 +998,7 @@ class MCSampler(SamplerOutputMixin, object):
                # which the rows this pass actually kept still exist.  Exporters that read
                # _rvs afterwards -- the .dgrid distance grid above all -- were binning that
                # export resample as if it were the sample set.  Local import: AV owns the
-               # one builder and imports this module at the bottom, so a top-level import
+               # one builder and imports THIS module at the bottom, so a top-level import
                # here would be circular.  Built only when the draw is really about to
                # happen, so a pass that never fair-draws pays nothing for it.
                from RIFT.integrators.mcsamplerAdaptiveVolume import keep_reserve_from_rvs
@@ -1463,7 +1463,7 @@ class MCSampler(SamplerOutputMixin, object):
                # which the rows this pass actually kept still exist.  Exporters that read
                # _rvs afterwards -- the .dgrid distance grid above all -- were binning that
                # export resample as if it were the sample set.  Local import: AV owns the
-               # one builder and imports this module at the bottom, so a top-level import
+               # one builder and imports THIS module at the bottom, so a top-level import
                # here would be circular.  Built only when the draw is really about to
                # happen, so a pass that never fair-draws pays nothing for it.
                from RIFT.integrators.mcsamplerAdaptiveVolume import keep_reserve_from_rvs

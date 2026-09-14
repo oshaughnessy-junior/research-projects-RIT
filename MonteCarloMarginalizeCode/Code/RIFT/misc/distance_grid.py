@@ -168,7 +168,21 @@ def reserve_distance_and_ln_weights(reserve, param="distance"):
     ln_s_prior = np.asarray(ln_s_prior, dtype=float).ravel()
     if not (len(lnL) == len(ln_prior) == len(ln_s_prior) == X.shape[0]):
         return None
-    return X[:, names.index(param)].astype(float), lnL + ln_prior - ln_s_prior
+    ln_w = lnL + ln_prior - ln_s_prior
+
+    # HORVITZ-THOMPSON: divide each row by the probability it was included.  A bounded
+    # reserve draws n_subsample of n_finite rows uniformly, so that probability is identical
+    # for every ordinary row and cancels in a normalized histogram -- EXCEPT for a peak row
+    # appended unconditionally, whose probability is 1.  Correcting it HERE, rather than
+    # asking every builder for force_peak=False, is what makes this right for the reserves
+    # the .dgrid actually meets: AV and the portfolio build their own for the L0 rescue,
+    # which wants that row, and never go through make_reserve_from_rvs.
+    if reserve.get("capped") and reserve.get("force_peak"):
+        n_sub, n_fin = reserve.get("n_subsample"), reserve.get("n_finite")
+        if n_sub and n_fin and 0 < n_sub < n_fin and len(ln_w):
+            ln_w = ln_w.copy()
+            ln_w[int(np.argmax(lnL))] += np.log(float(n_sub) / float(n_fin))
+    return X[:, names.index(param)].astype(float), ln_w
 
 
 def _ess(ln_weights):
@@ -183,12 +197,14 @@ def _ess(ln_weights):
 
 
 def distance_grid_resolution_warning(distance, n_grid=None, ln_weights=None,
-                                     n_eff_population=None):
+                                     n_eff_population=None, n_eff_sampler=None):
     """Describe a distance grid the samples cannot resolve, or return None.
 
     Pass ``n_eff_population`` when the rows handed in are a bounded subsample of a larger
     retained set (RvsRecord's reserve records it as ``ess_finite``): the subsample's own
-    effective sample size describes the subsample, not the pass.
+    effective sample size describes the subsample, not the pass.  Pass ``n_eff_sampler``
+    when the sampler reported one -- it is the only input here that a saturated integrand
+    column cannot fake.
 
     Two separate ways the samples can fail to support the table that gets written, and
     which one bites depends on where the rows came from:
@@ -243,6 +259,16 @@ def distance_grid_resolution_warning(distance, n_grid=None, ln_weights=None,
             "{} usable sample(s) span only {} distinct distance(s), so the grid carries "
             "{} row(s), not the {} requested.".format(
                 len(d), n_unique, n_rows, n_requested))
+    if n_eff_sampler is not None and float(n_eff_sampler) < n_rows:
+        # THE SAMPLER'S OWN n_eff, which no weight column can contradict.  On a collapsed
+        # pass the linear `integrand` column bottoms out at its underflow floor, so the
+        # derived weights come back UNIFORM and every check above reports a healthy grid:
+        # measured on a collapsed Ensemble pass, ESS 4000 of 4000 rows while the exported
+        # curve was flat to 0.13 nats across a true 1130-nat span.  The pass itself knew.
+        problems.append(
+            "the sampler reported n_eff={:.1f} for this pass, fewer than the {} bin(s) "
+            "exported: the integration did not converge, whatever the weight column "
+            "says.".format(float(n_eff_sampler), n_rows))
     if lw is not None or n_eff_population is not None:
         # THE POPULATION'S ESS WHEN THE CALLER HAS IT.  When the rows are a bounded uniform
         # subsample of the retained set, the subsample's own ESS is not an estimate of the
@@ -256,6 +282,71 @@ def distance_grid_resolution_warning(distance, n_grid=None, ln_weights=None,
                 "effective sample per bin: the exported curve is resampled points, not a "
                 "resolved likelihood-vs-distance curve.".format(n_eff, n_rows))
     return " ".join(problems) if problems else None
+
+
+def _rvs_row_count(rvs):
+    """Row count of a sample-column dict.  Deferred import: rvs_record owns the one
+    implementation (it handles the tuple keys --skymap-file creates), and importing it
+    lazily keeps this module free of an integrator dependency at import time."""
+    try:
+        from RIFT.integrators.rvs_record import n_rows
+        return n_rows(rvs)
+    except Exception:
+        for v in rvs.values():
+            arr = np.asarray(v)
+            return arr.shape[-1] if arr.ndim > 1 else len(arr)
+        return 0
+
+
+def distance_grid_inputs(record, rvs, posterior_ln_weights, convert=None,
+                         param="distance", n_grid=None, n_eff_sampler=None):
+    """Everything the .dgrid export needs to decide, as one testable function.
+
+    -> (distance, ln_weights, notes, warning)
+
+    THIS LIVES HERE BECAUSE IT HAS TO BE RUNNABLE.  It was six statements inside
+    ``analyze_event`` in the ILE script, which nothing can import, so the only available
+    tests asserted that the source text mentioned the right names.  Those tests pass while
+    the branch is inverted (``if not _resampled``), while the returned rows are thrown away
+    and re-read from ``_rvs``, while ``param='psi'`` is exported as distance, and while the
+    warning is computed and never printed -- all measured.  A named function with a return
+    value can simply be called.
+
+    ``record`` is the sampler's RvsRecord for THESE rows (or None), ``rvs`` the column dict
+    the fair draw has by now replaced, and ``posterior_ln_weights`` a zero-argument callable
+    giving the fall-back weighting for the rvs rows.
+    """
+    conv = convert if convert is not None else (lambda x: x)
+    notes = []
+
+    # is_equal_weight(), not rows_are_resampled(): a POOLED record is resampled per block
+    # but is not one sampler's draws, so one replica's reserve would give the curve of one
+    # replica under the evidence of the pool.  And when the record is absent it is absent
+    # BECAUSE it does not describe these rows, which is when the sampler's reserve
+    # attribute is least entitled to speak for them -- so no reserve then either.
+    reserve = getattr(record, "reserve", None) if record is not None else None
+    retained = None
+    if record is not None and record.is_equal_weight():
+        retained = reserve_distance_and_ln_weights(reserve, param=param)
+
+    if retained is not None:
+        distance, ln_weights = retained
+        n_eff_population = (reserve or {}).get("ess_finite")
+        notes.append("built from the RETAINED set ({} rows) rather than the {}-row fair "
+                     "draw".format(len(distance), _rvs_row_count(rvs)))
+        if (reserve or {}).get("capped"):
+            notes.append("that is a uniform subsample of {} finite retained rows, so the "
+                         "exported curve carries subsample noise".format(
+                             (reserve or {}).get("n_finite")))
+    else:
+        distance = np.asarray(conv(rvs[param]), dtype=float).ravel()
+        ln_weights = np.asarray(posterior_ln_weights(), dtype=float)
+        n_eff_population = None
+
+    warning = distance_grid_resolution_warning(
+        distance, n_grid=n_grid, ln_weights=ln_weights,
+        n_eff_population=n_eff_population, n_eff_sampler=n_eff_sampler)
+    return distance, ln_weights, notes, warning
 
 
 def build_distance_grid(distance, ln_weights, lnL_marginal, sigmaL, params,

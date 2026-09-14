@@ -362,8 +362,11 @@ def make_warm_seed_reserve(X, lnL, params_ordered, n_max=20000,
     negligible") because a seed is a SET of points and the peak defines its centre.  A
     consumer that reads the reserve as a WEIGHTED SAMPLE sees something else.  Uniform
     subsampling without replacement gives every row the same inclusion probability, which
-    cancels in a normalized histogram, so it is UNBIASED for the exported curve.  Forcing
-    one row in at probability 1 while the rest come in at n_max/n_finite is not.
+    cancels in a normalized histogram; that histogram is a RATIO of two unbiased estimators,
+    so it carries an O(1/n) bias rather than none (measured at +1.5 to +3.9 sigma in the
+    small-mass bins over 4000 seeds, i.e. negligible beside the MC noise, but not zero).
+    Forcing one row in at probability 1 while the rest come in at n_max/n_finite is a
+    different thing entirely: a bias that does not shrink with n.
 
     HOW BIG DEPENDS ENTIRELY ON HOW DOMINANT THE PEAK IS, so the numbers below are a
     measured range and not a constant.  On 8000 rows capped at 800, median of 15 subsample
@@ -373,9 +376,14 @@ def make_warm_seed_reserve(X, lnL, params_ordered, n_max=20000,
     20,000, 20 seeds) the forced version reported ESS 33 where the population has 1163,
     and displaced the exported curve by up to 1.22 nats in a bin against 0.72 free.
 
-    So the .dgrid exporter asks for force_peak=False; the L0 rescue, which this was built
-    for, keeps the default.  Neither setting makes the SUBSAMPLE's own ESS a description
-    of the population -- that is what ess_finite, recorded below before the cap, is for.
+    force_peak therefore stays True everywhere, and the .dgrid exporter divides that row by
+    its own inclusion probability instead (reserve_distance_and_ln_weights), which is why
+    n_subsample is recorded below.  Dropping the row instead is worse than it sounds: the
+    unforced subsample then usually misses the dominant row entirely and reports ESS 506
+    where the population has 99, against 87 for the forced-and-corrected version.
+
+    Neither setting makes the SUBSAMPLE's own ESS a description of the population -- that
+    is what ess_finite, recorded below before the cap, is for.
 
     ISOLATED RNG.  This reserve is built unconditionally -- including when
     --sampler-warmstart-retry-neff is unset and nothing will ever read it -- so drawing the
@@ -446,7 +454,11 @@ def make_warm_seed_reserve(X, lnL, params_ordered, n_max=20000,
     out = dict(X=X, lnL=lnL, n_retained=int(n_ret), n_finite=int(n_fin),
                ln_sum_w_finite=ln_sum_w, ess_finite=ess_finite,
                params_ordered=list(params_ordered),
-               capped=capped, force_peak=bool(force_peak))
+               capped=capped, force_peak=bool(force_peak),
+               # The INCLUSION PROBABILITY of an ordinary row is n_subsample/n_finite, and
+               # the forced peak's is 1.  A consumer reading this as a weighted sample needs
+               # both numbers to undo that; neither is recoverable from the kept rows.
+               n_subsample=(int(n_max) if capped else None))
     out.update(extra)
     return out
 
@@ -495,14 +507,42 @@ def make_reserve_from_rvs(rvs, params_ordered, n_max=20000, integrand_is_log=Non
         else:
             ln_s_prior = np.log(_col('joint_s_prior'))
 
-    X = np.vstack([_col(p) for p in params_ordered]).T
-    # force_peak=False: see make_warm_seed_reserve.  This reserve is read as a WEIGHTED
-    # SAMPLE by the .dgrid exporter, and a peak row admitted with probability 1 rather
-    # than n_max/n_finite is the single largest distortion the cap introduces.
-    return make_warm_seed_reserve(X, lnL, params_ordered, n_max=n_max,
+    # ONE CONJUNCTIVE KEEP-MASK, not three independent logs.  RvsRecord.log_weights()
+    # documents why: term-by-term, a row with a zero prior AND a zero sampling prior gives
+    # -inf - (-inf) = NaN rather than "no weight", and a single NaN propagates through
+    # _logsumexp to take the WHOLE export down.  Rows that cannot carry weight are marked
+    # -inf here, which make_warm_seed_reserve then drops as non-finite.
+    bad = ~(np.isfinite(lnL) & np.isfinite(ln_prior) & np.isfinite(ln_s_prior))
+    if np.any(bad):
+        lnL = np.where(bad, -np.inf, lnL)
+        ln_prior = np.where(bad, 0.0, ln_prior)
+        ln_s_prior = np.where(bad, 0.0, ln_s_prior)
+
+    # TUPLE KEYS ARE A REAL LAYOUT, not a curiosity: --skymap-file registers
+    # ("declination","right_ascension") as ONE parameter, so _rvs[key] is (2, N) and a
+    # plain ravel makes the vstack ragged -- which silently cost those runs their reserve.
+    # Flatten to component names so the reserve is addressable by coordinate either way.
+    names, cols = [], []
+    for name in params_ordered:
+        arr = np.asarray(conv(rvs[name]), dtype=float)
+        if isinstance(name, tuple):
+            arr = arr.reshape(len(name), -1)
+            for i, part in enumerate(name):
+                names.append(part)
+                cols.append(arr[i])
+        else:
+            names.append(name)
+            cols.append(arr.ravel())
+    X = np.vstack(cols).T
+    # The DEFAULT force_peak=True, deliberately, so every reserve in the tree is built the
+    # same way and one correction covers all of them.  Dropping the peak instead leaves the
+    # subsample looking healthier than the population it came from -- measured on 8000 rows
+    # capped at 800 with a dominant row, the unforced subsample reports ESS 506 where the
+    # population has 99, because it usually misses that row altogether.  Keeping it and
+    # dividing by its inclusion probability (reserve_distance_and_ln_weights) gives 87.
+    return make_warm_seed_reserve(X, lnL, names, n_max=n_max,
                                   log_joint_prior=ln_prior,
-                                  log_joint_s_prior=ln_s_prior,
-                                  force_peak=False)
+                                  log_joint_s_prior=ln_s_prior)
 
 
 def keep_reserve_from_rvs(sampler, label, integrand_is_log=None):
