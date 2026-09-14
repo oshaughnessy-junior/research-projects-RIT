@@ -274,6 +274,7 @@ parser.add_argument("--last-iteration-export-distance-slices-wing-nmax", default
 parser.add_argument("--last-iteration-export-distance-slices-wing-delta-lnL", default=None, type=float, help="Passthrough to ILE --distance-slice-wing-delta-lnL for the extrinsic-stage .dslice export.")
 parser.add_argument("--last-iteration-export-distance-slices-skip-threshold", default=None, type=float, help="Passthrough to ILE --distance-slice-skip-threshold for the extrinsic-stage .dslice export.")
 parser.add_argument("--ile-args",default=None,help="filename of args_ile.txt file  which holds ILE arguments.  Should NOT conflict with arguments auto-set by this DAG ... in particular, i/o arguments will be modified")
+parser.add_argument("--clean-ile-intrinsic-digits",default=5,type=int,help="Decimal places retained for intrinsic coordinates when util_CleanILE consolidates and unifies ILE rows (default: 5). Use 12 for narrow 3G BNS mass grids.")
 parser.add_argument("--ile-exe",default=None,help="filename of ILE or equivalent executable. Will default to `which integrate_likelihood_extrinsic` in low-level code")
 parser.add_argument("--ile-retries",default=0,type=int,help="Number of retry attempts for ILE jobs. (These can fail)")
 parser.add_argument("--ile-group-subdag",action='store_true',help="If true, ILE jobs are grouped in a subdag. Useful mainly to create iterative DAGs with random ILE jobs/etc")
@@ -354,6 +355,8 @@ parser.add_argument("--n-post-jobs",default=1,type=int,help="Number of posterior
 parser.add_argument("--use-bw-psd",action='store_true',help="Use BW PSD, attempting to use fiducial arguments as in LI for placement (i.e., signal at seglen -2). Assumes LI style data convention.  Necessary BW will be parsed out of ile-args.txt (required)")
 parser.add_argument("--use-full-submit-paths",action='store_true',help="DAG created has full paths to submit files generated. Note this is implemented on a per-file/as-needed basis, mainly to facilitate using this dag as an external subdag")
 opts=  parser.parse_args()
+if not 0 <= opts.clean_ile_intrinsic_digits <= 15:
+    parser.error("--clean-ile-intrinsic-digits must be between 0 and 15")
 
 # Multi-GPU ILE fan-out: funnel --ile-gpu-fanout through RIFT_ILE_GPU_FANOUT, which
 # dag_utils reads at write_ILE_sub_simple time to size request_GPUs/CPUs and bake the
@@ -927,17 +930,29 @@ if  (opts.last_iteration_extrinsic):
     
     # Convert task 
     if opts.last_iteration_extrinsic_time_resampling:
-        # very simple: igwn_ligolw add on all final output, then a single convert
+        # JAX ILE exports fair draws as tabular sidecars, not XML rows.  Route
+        # that driver to its strict joiner; retain the historical XML path for
+        # conventional ILE.
+        jax_tabular_fairdraws = (
+            ile_exe is not None
+            and "integrate_likelihood_extrinsic_jax" in str(ile_exe)
+        )
+        if jax_tabular_fairdraws and convert_args is not None:
+            raise ValueError(
+                "JAX tabular fair-draw conversion does not support --convert-args; "
+                "remove it or use conventional ILE")
         convert_args_extr =  " --convention LI  --export-cosmology --use-interpolated-cosmology " 
         if not (convert_args is None):
             convert_args_extr += convert_args
         # batched convert shell script
         relevant_path = dag_utils.which('util_JoinExtrXML.py')
         relevant_path_2 = dag_utils.which('convert_output_format_ile2inference')
+        relevant_path_jax = dag_utils.which('util_ConvertJAXILEFairdraws.py')
         if opts.condor_local_nonworker_igwn_prefix:
             # we are in igwn environment
-            relevant_path = 'util_JoinExtrXML.py'  
+            relevant_path = 'util_JoinExtrXML.py'
             relevant_path_2 = 'convert_output_format_ile2inference'
+            relevant_path_jax = 'util_ConvertJAXILEFairdraws.py'
         # randomization: 'shuf' is preferred, but otherwise use ' sort -R'. Note performed locally, so local filesystem/os is fine.
         extra_shuffle_command = ' | cat'
         which_shuf = which('shuf'); which_sort = which('sort')
@@ -946,7 +961,17 @@ if  (opts.last_iteration_extrinsic):
         elif isinstance(which_sort, str):
             extra_shuffle_command  = ' | {} -R '.format(which_sort)
         with open("allinone_convert.sh",'w') as f:
-            f.write(f"""#! /bin/bash
+            if jax_tabular_fairdraws:
+                f.write(f"""#! /bin/bash
+set -euo pipefail
+{extra_text}
+{relevant_path_jax} --directory ./iteration_$1_ile \
+  --draws-per-intrinsic {n_points_per_ILE} \
+  --expected-intrinsic {opts.last_iteration_extrinsic_nsamples} \
+  --output ./extrinsic_posterior_samples.dat
+""")
+            else:
+                f.write(f"""#! /bin/bash
 {extra_text}
 {relevant_path} ./iteration_$1_ile/'EXTR_out-*.xml_*_.xml.gz' --output ./tmp_converted.xml.gz
 {relevant_path_2} {convert_args_extr} ./tmp_converted.xml.gz  > ./tmp_converted.dat
@@ -1088,6 +1113,8 @@ if opts.use_eccentricity:
         con_arg_str += " --meanPerAno "
 if opts.use_tabular_eos_file:
     con_arg_str += " --tabular-eos-file "
+if opts.clean_ile_intrinsic_digits != 5:
+    con_arg_str += " --intrinsic-digits {} ".format(opts.clean_ile_intrinsic_digits)
 con_job, con_job_name = dag_utils.write_consolidate_sub_simple(tag='join',log_dir=None,arg_str=con_arg_str,base=opts.working_directory+"/iteration_$(macroiteration)_ile", target=opts.working_directory+'/consolidated_$(macroiteration)',universe=local_worker_universe,no_grid=no_worker_grid,extra_text=extra_text)
 # Modify: set 'initialdir' : should run in top-level direcory
 #con_job.add_condor_cmd("initialdir",opts.working_directory+"/iteration_$(macroiteration)_con")
@@ -1117,6 +1144,8 @@ if opts.use_eccentricity:
         unify_arg_str += " --meanPerAno "
 if opts.use_tabular_eos_file:
     unify_arg_str += " --tabular-eos-file "
+if opts.clean_ile_intrinsic_digits != 5:
+    unify_arg_str += " --intrinsic-digits {} ".format(opts.clean_ile_intrinsic_digits)
 unify_job, unify_job_name = dag_utils.write_unify_sub_simple(tag='unify',log_dir='',arg_str=unify_arg_str, base=opts.working_directory, target=opts.working_directory+'/all.net',universe=local_worker_universe,no_grid=no_worker_grid,extra_text=extra_text)
 unify_job.add_condor_cmd("initialdir",opts.working_directory)
 unify_job.set_log_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/unify-$(cluster)-$(process).log")

@@ -32,8 +32,17 @@ done
 case "$(echo "${RIFT_HYPERPIPELINE_FORMAT:-}" | tr '[:upper:]' '[:lower:]')" in
   1|true|yes|on)
     echo " Joining data files (hyperpipeline format) .... "
+    # Forward the SAME flag list as the legacy branch.  Dropping it here meant
+    # --intrinsic-digits never reached the hyperpipeline join, so that path kept
+    # coalescing intrinsic points at five decimals while the legacy path honoured
+    # the request -- the two formats silently disagreeing about which grid points
+    # are distinct.  util_CleanILE_hyperpipeline.py accepts --intrinsic-digits as
+    # an alias for --digits and ignores the advanced-physics flags it has no use
+    # for (its columns are self-describing), but it now REFUSES a leftover value
+    # rather than reading it as a shard filename.
     util_CleanILE_hyperpipeline.py \
         --output "${BASE_OUT}.composite" \
+        "${CLEAN_FLAGS[@]}" \
         ${DIR_PROCESS}/CME*.dat
     ;;
   *)

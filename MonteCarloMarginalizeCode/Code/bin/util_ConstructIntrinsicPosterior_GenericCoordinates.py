@@ -344,6 +344,7 @@ parser.add_argument("--fit-save-gp",default=None,type=str,help="Filename of GP f
 parser.add_argument("--fit-save-jax",default=None,type=str,help="Base path for a self-contained, differentiable jax_gp export (writes <path>.npz + <path>.meta.json). Only used with --fit-method gp-jax-*. Reload with --fit-load-gp pointing at the same base path.")
 parser.add_argument("--fit-order",type=int,default=2,help="Fit order (polynomial case: degree)")
 parser.add_argument("--fit-gp-length-scale-max-factor",default=5.0,type=float,help="fit_gp: upper bound on each RBF length scale, as a multiple of that coordinate's standard deviation over the retained points. Default 5.0 reproduces the hardcoded value. Unlike the noise and amplitude bounds this ceiling is DERIVED FROM THE DATA, not hand-tuned, so raising it lets the GP become effectively linear across the grid; it exists to be measured against, not routinely changed.")
+parser.add_argument("--fit-gp-length-scale-min-factor",default=None,type=float,help="fit_gp: opt-in scale-aware lower bound on each RBF length scale, factor * coordinate standard deviation / sqrt(number of retained points). The default keeps the historical 1e-3 floor for non-mc coordinates and the 0.2 statistical floor for mc. Use when a measured coordinate width is below 1e-3, and inspect GP-KERNEL-RECORD after fitting.")
 parser.add_argument("--fit-gp-holdout-folds",default=0,type=int,help="fit_gp: if >0, also report a K-fold HELD-OUT predictive RMS alongside the in-sample residual, refitting the same kernel on each training split. In-sample residual cannot distinguish a flexible fit from an overfit one; this can. Costs K extra GP fits.")
 parser.add_argument("--fit-gp-noise-bounds",default="1e-2,1",type=str,help="fit_gp: comma-separated (lo,hi) bounds on the WhiteKernel noise_level, in nats^2. Default reproduces the hand-tuned LVK-scale value. Widen when lnL spans a dynamic range far larger than LVK's (third-generation networks): the default saturates and the fit under-reports structure.")
 parser.add_argument("--fit-gp-amplitude-bounds",default="1e-3,1e1",type=str,help="fit_gp: comma-separated (lo,hi) bounds on the ConstantKernel amplitude multiplying the RBF, in nats^2. Default reproduces the hand-tuned LVK-scale value, which caps the representable signal amplitude at sqrt(1e1)=3.2 nats.")
@@ -1591,16 +1592,30 @@ def fit_gp(x,y,x0=None,symmetry_list=None,y_errors=None,hypercube_rescale=False,
     #   - they are rarely very long, but at high mass can be long
     #   - I need to allow for a RANGE
 
+    if opts.fit_gp_length_scale_min_factor is not None and (
+            not np.isfinite(opts.fit_gp_length_scale_min_factor)
+            or opts.fit_gp_length_scale_min_factor <= 0):
+        raise ValueError("--fit-gp-length-scale-min-factor must be positive and finite")
     length_scale_est = []
     length_scale_bounds_est = []
     for indx in np.arange(len(x[0])):
         # These length scales have been tuned by expereience
         length_scale_est.append( 2*np.nanstd(x[:,indx])  )  # auto-select range based on sampling retained
-        length_scale_min_here= np.max([1e-3,0.2*np.nanstd(x[:,indx]/np.sqrt(len(x)))])
-        if indx == mc_index:
-            length_scale_min_here= 0.2*np.nanstd(x[:,indx]/np.sqrt(len(x)))
-            print(" Setting mc range: retained point range is ", np.nanstd(x[:,indx]), " and target min is ", length_scale_min_here)
-        length_scale_bounds_est.append( (length_scale_min_here , opts.fit_gp_length_scale_max_factor*np.nanstd(x[:,indx])   ) )  # auto-select range based on sampling *RETAINED* (i.e., passing cut).  Note that for the coordinates I usually use, it would be nonsensical to make the range in coordinate too small, as can occasionally happens
+        statistical_floor = 0.2*np.nanstd(x[:,indx]/np.sqrt(len(x)))
+        if opts.fit_gp_length_scale_min_factor is None:
+            length_scale_min_here = (statistical_floor if indx == mc_index
+                                     else np.max([1e-3, statistical_floor]))
+        else:
+            length_scale_min_here = (opts.fit_gp_length_scale_min_factor
+                                     * np.nanstd(x[:,indx]/np.sqrt(len(x))))
+        print(" Setting", "mc" if indx == mc_index else "coordinate %d" % indx,
+              "range: retained point range is", np.nanstd(x[:,indx]),
+              "and target min is", length_scale_min_here)
+        length_scale_max_here = opts.fit_gp_length_scale_max_factor*np.nanstd(x[:,indx])
+        if not (np.isfinite(length_scale_min_here) and 0 < length_scale_min_here < length_scale_max_here):
+            raise ValueError("GP length-scale bounds are invalid for coordinate %d: (%r, %r)" %
+                             (indx, length_scale_min_here, length_scale_max_here))
+        length_scale_bounds_est.append((length_scale_min_here, length_scale_max_here))
 
     print(" GP: Input sample size ", len(x), len(y))
     print(" GP: Estimated length scales ")
