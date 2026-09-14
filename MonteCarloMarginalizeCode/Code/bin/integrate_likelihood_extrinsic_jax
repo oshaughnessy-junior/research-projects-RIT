@@ -102,8 +102,11 @@ from RIFT.likelihood.jax_ile import anglemarg as _anglemarg
 from RIFT.likelihood.jax_ile.samplers import angle_marg_eval_chunk as _angle_marg_eval_chunk
 from RIFT.likelihood.jax_ile.samplers import regularize_cov as _regularize_cov
 # ONE definition, imported rather than re-typed: a second copy of the
-# "is this evidence trustworthy" rule is a copy that drifts.
+# "is this evidence trustworthy" rule is a copy that drifts.  The same argument
+# applies to the estimator itself -- the driver's own copy dropped -inf weights
+# before averaging, which conditions Z on prior support and biases it upward.
 from RIFT.likelihood.jax_ile.samplers import _finalize_evidence
+from RIFT.likelihood.jax_ile.samplers import evidence_from_logweights
 from RIFT.likelihood.jax_ile.core import _GATHERERS as _JAX_GATHERERS, JAX_INTERP_DEFAULT
 from RIFT.likelihood.jax_ile.anglemarg import (ANGLE_MARG_DEFAULT, ANGLE_MARG_LEGACY,
                                                ANGLE_MARG_CHOICES,
@@ -2128,22 +2131,6 @@ def prior_pilot_floor(logZ_pilot, false_positive_rate=PILOT_FLOOR_FP_RATE):
     if not np.isfinite(logZ_pilot):
         return -np.inf
     return float(logZ_pilot) + float(np.log(false_positive_rate))
-
-
-def evidence_from_logweights(logw):
-    """(logZ, sigma/Z, neff) for Z = E[w] from log importance weights."""
-    fin = np.isfinite(logw)
-    logw = logw[fin]
-    if logw.size == 0:
-        return -np.inf, np.inf, 0.0
-    m = np.max(logw)
-    w = np.exp(logw - m)
-    n = len(w)
-    Zhat = np.mean(w)
-    logZ = m + np.log(Zhat)
-    sigma_over_Z = np.sqrt(np.var(w) / n) / Zhat
-    neff = (np.sum(w) ** 2) / np.sum(w ** 2)
-    return logZ, sigma_over_Z, neff
 
 
 def _gaussian_logq(theta, mu, cov):
