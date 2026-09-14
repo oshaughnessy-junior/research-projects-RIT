@@ -37,6 +37,7 @@ a floor, and a sample set that cannot resolve a curve must be refused or flagged
 a healthy all-distinct sample set must be binned exactly as before.
 """
 
+import ast
 import os
 
 import numpy as np
@@ -89,6 +90,61 @@ def test_repeated_fair_draw_distances_do_not_share_a_bin_centre():
         "two rows share a bin centre: the grid is not a function of d"
     assert np.all(np.diff(grid["dist"]) > 0), \
         "bin centres are not strictly increasing"
+
+
+def test_the_split_is_pinned_where_the_row_cap_cannot_rescue_it():
+    """The four-sample symptom above does NOT test the blocking.
+
+    With 4 samples over 2 distinct distances the row cap alone forces n_grid = 2, and
+    raw-index splitting happens to land on the run boundary -- so restoring the exact
+    defective line leaves the two tests named after the symptom green.  Found by mutating
+    `blocks = np.array_split(np.arange(len(distance)), n_grid)` back in.
+
+    Here one distance is repeated 20 times among 23 samples and 4 bins are asked for.
+    Raw-index blocks are 6/6/6/5 rows, so THREE of the four boundaries fall inside that
+    one run and three bins report the same centre.  Only blocking on distinct values can
+    give four distinct centres.
+    """
+    uniq = [110.0, 240.0, 380.0, 505.0]
+    distance, ln_pi, ln_w = _fair_draw(uniq, [1, 20, 1, 1])
+
+    grid = build_distance_grid(distance, ln_w, 7.0, 0.0, {},
+                               ln_prior_d_at_samples=ln_pi, n_grid=4)
+
+    assert len(grid) == 4
+    assert np.allclose(grid["dist"], uniq), \
+        "block boundaries fell inside the repeated distance: centres {}".format(grid["dist"])
+    assert np.all(np.diff(grid["dist"]) > 0)
+    assert np.all(grid["dist_weight"] > 1e6 * EPS)
+
+
+def test_a_bin_centre_is_the_weighted_mean_of_its_block():
+    """Pinned against the closed form.  Nothing else here would notice a centre computed
+    as the block midpoint instead (found by mutating it to 0.5*(min+max))."""
+    distance = np.array([100.0, 400.0])
+    ln_w = np.array([np.log(3.0), np.log(1.0)])
+    ln_pi = np.zeros(2)
+
+    grid = build_distance_grid(distance, ln_w, 0.0, 0.0, {},
+                               ln_prior_d_at_samples=ln_pi, n_grid=1)
+
+    assert len(grid) == 1
+    assert np.isclose(grid["dist"][0], (3.0 * 100.0 + 1.0 * 400.0) / 4.0), \
+        "centre {} is not the weighted mean (midpoint would be 250)".format(grid["dist"][0])
+
+
+def test_a_grid_too_fine_for_float64_is_refused_not_floored():
+    """The width raise, which nothing else reaches.  These distances ARE distinct, so
+    distinct-value blocking gives them distinct centres -- but the midpoints between those
+    centres collapse onto the centres in float64, so the bins have no width.  The old
+    np.maximum(width, eps) floor turned exactly this into a row 36 nats bright."""
+    distance = 5000.0 + np.arange(5) * 1e-12
+    assert len(np.unique(distance)) == 5, "the inputs must be distinct or this tests nothing"
+
+    with pytest.raises(ValueError) as excinfo:
+        build_distance_grid(distance, np.zeros(5), 1.0, 0.0, {},
+                            ln_prior_d_at_samples=np.zeros(5), n_grid=5)
+    assert "non-positive" in str(excinfo.value)
 
 
 def test_no_bin_width_is_floored_at_machine_epsilon():
@@ -166,7 +222,11 @@ def test_a_single_distinct_distance_is_refused():
         build_distance_grid(distance, np.zeros(6), 1.0, 0.0, {},
                             ln_prior_d_at_samples=_volumetric_log_prior(distance), n_grid=6)
     assert "distinct" in str(excinfo.value)
-    assert MIN_UNIQUE_DISTANCES == 2
+    # and the boundary is where the refusal claims it is: TWO distinct distances export.
+    # (Asserting MIN_UNIQUE_DISTANCES == 2 instead only restates the module's own literal.)
+    two = build_distance_grid(np.array([300.0, 300.0, 460.0]), np.zeros(3), 1.0, 0.0, {},
+                              ln_prior_d_at_samples=np.zeros(3), n_grid=6)
+    assert len(two) == MIN_UNIQUE_DISTANCES
 
 
 def test_resolution_warning_fires_exactly_when_the_draw_is_starved():
@@ -188,7 +248,12 @@ def test_all_distinct_samples_keep_the_equal_count_split():
     """No duplicates means unique-value blocking IS the old sample-index blocking, so
     equal weights must still give every bin the same mass."""
     n, n_grid = 120, 12
-    distance = np.linspace(100.0, 900.0, n)
+    # NON-UNIFORMLY SPACED on purpose.  On np.linspace an equal-WIDTH split is also an
+    # equal-count split, so this assertion passed with the bins rebuilt by width (found by
+    # mutating it).  A lognormal draw separates the two.
+    rng = np.random.default_rng(4)
+    distance = np.sort(rng.lognormal(np.log(400.0), 0.5, size=n))
+    assert len(np.unique(distance)) == n
     ln_pi = _volumetric_log_prior(distance)
 
     grid = build_distance_grid(distance, np.zeros(n), -4.0, 0.0, {},
@@ -199,11 +264,15 @@ def test_all_distinct_samples_keep_the_equal_count_split():
     mass /= np.sum(mass)
     assert np.allclose(mass, 1.0 / n_grid, atol=1e-12), \
         "bins no longer carry equal probability mass: the split changed"
-    assert np.isclose(reconstruct_marginal_lnL(grid), -4.0)
 
 
 def test_starved_draw_still_reconstructs_the_marginal_it_was_given():
-    """Capping rows must not move lnZ: the grid is still a partition of the same mass."""
+    """Capping rows must not move lnZ: the grid is still a partition of the same mass.
+
+    NOT evidence that the binning is right.  lnL carries -log(width) and the
+    reconstruction adds +log(dist_weight) back with the SAME width, so the identity holds
+    for any partition -- the eps-floored one included.  It is here to catch a change to the
+    normalization itself, and the tests above are what cover the blocking."""
     distance, ln_pi, _ = _fair_draw([74.84, 94.26], [2, 2])
     ln_w = np.array([0.0, 0.0, -0.3, -0.3])
 
@@ -219,10 +288,24 @@ def test_starved_draw_still_reconstructs_the_marginal_it_was_given():
 
 @pytest.mark.skipif(not os.path.exists(_ILE), reason='ILE executable not in this tree')
 def test_the_ile_flags_a_starved_distance_grid_before_writing_it():
+    """Asserted on the PARSED export block: a window of source text also matches the import
+    line and the comments, which is how a weaker version of this test stayed green while the
+    exporter went back to reading the fair draw."""
     with open(_ILE) as f:
         src = f.read()
-    i = src.index('build_distance_grid(')
-    block = src[max(0, i - 3000):i]
-    assert 'distance_grid_resolution_warning' in block, \
+    block = None
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, ast.If) and 'export_marginal_distance_grid' in ast.dump(node.test):
+            calls = set(n.func.id for n in ast.walk(node)
+                        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name))
+            if 'build_distance_grid' in calls:
+                block = (node, calls)
+                break
+    assert block is not None, 'no .dgrid export block found; this test is looking at nothing'
+    node, calls = block
+    assert 'distance_grid_resolution_warning' in calls, \
         'the exporter writes a .dgrid without checking the draw can resolve one'
-    assert 'WARNING' in block, 'the starved-grid check does not reach the log'
+    prints = [n for n in ast.walk(node)
+              if isinstance(n, ast.Call) and getattr(n.func, 'id', None) == 'print'
+              and 'WARNING' in ast.dump(n)]
+    assert prints, 'the starved-grid check does not reach the log'

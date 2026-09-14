@@ -798,6 +798,16 @@ class MCSampler(SamplerOutputMixin, object):
            ln_wt += - scipy.special.logsumexp(self.identity_convert(ln_wt))
            wt = self.xpy.exp(ln_wt)
            if n_extr < len(value_array):
+               # RETAINED-SET RESERVE, taken HERE.  The gather just below rebinds every _rvs
+               # key to n_extr rows drawn WITH REPLACEMENT, so this is the last moment at
+               # which the rows this pass actually kept still exist.  Exporters that read
+               # _rvs afterwards -- the .dgrid distance grid above all -- were binning that
+               # export resample as if it were the sample set.  Local import: AV owns the
+               # one builder and imports this module at the bottom, so a top-level import
+               # here would be circular.  Built only when the draw is really about to
+               # happen, so a pass that never fair-draws pays nothing for it.
+               from RIFT.integrators.mcsamplerAdaptiveVolume import keep_reserve_from_rvs
+               keep_reserve_from_rvs(self, 'mcsamplerEnsemble', integrand_is_log=bool(return_lnI))
                indx_list = self.identity_convert(self.xpy.random.choice(self.xpy.arange(len(wt)), size=n_extr,replace=True,p=wt))
                for key in list(self._rvs.keys()):
                    if isinstance(key, tuple):

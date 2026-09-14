@@ -319,7 +319,8 @@ def seed_affine_rank(pts, box_lo, box_hi, axes=None, tol=1e-9):
 
 
 def make_warm_seed_reserve(X, lnL, params_ordered, n_max=20000,
-                           log_joint_prior=None, log_joint_s_prior=None, rng=None):
+                           log_joint_prior=None, log_joint_s_prior=None, rng=None,
+                           force_peak=True):
     """A bounded copy of the points a pass RETAINED, for a later warm start -> dict.
 
     THE ONE BUILDER, because every sampler that can be L0-rescued needs the identical
@@ -356,6 +357,26 @@ def make_warm_seed_reserve(X, lnL, params_ordered, n_max=20000,
     the PEAK row, appended unconditionally because the seed is defined relative to it and a
     subsample can drop it; at one row in n_max its effect on either estimate is negligible.
 
+    force_peak IS FOR A SEED, NOT FOR AN EXPORT.  Appending the peak row unconditionally
+    costs a seed nothing ("at one row in n_max its effect on either estimate is
+    negligible") because a seed is a SET of points and the peak defines its centre.  A
+    consumer that reads the reserve as a WEIGHTED SAMPLE sees something else.  Uniform
+    subsampling without replacement gives every row the same inclusion probability, which
+    cancels in a normalized histogram, so it is UNBIASED for the exported curve.  Forcing
+    one row in at probability 1 while the rest come in at n_max/n_finite is not.
+
+    HOW BIG DEPENDS ENTIRELY ON HOW DOMINANT THE PEAK IS, so the numbers below are a
+    measured range and not a constant.  On 8000 rows capped at 800, median of 15 subsample
+    seeds, as the top weight is lifted above the rest: no dominant row, ESS 506 forced
+    against 506 free (no effect at all); 3 e-folds up, 223 against 505; 6 e-folds, 3.6
+    against 505.  On a real starved GMM extrinsic pass (180,000 retained rows capped at
+    20,000, 20 seeds) the forced version reported ESS 33 where the population has 1163,
+    and displaced the exported curve by up to 1.22 nats in a bin against 0.72 free.
+
+    So the .dgrid exporter asks for force_peak=False; the L0 rescue, which this was built
+    for, keeps the default.  Neither setting makes the SUBSAMPLE's own ESS a description
+    of the population -- that is what ess_finite, recorded below before the cap, is for.
+
     ISOLATED RNG.  This reserve is built unconditionally -- including when
     --sampler-warmstart-retry-neff is unset and nothing will ever read it -- so drawing the
     subsample from the global numpy stream would advance it before the fair draw, before the
@@ -391,24 +412,114 @@ def make_warm_seed_reserve(X, lnL, params_ordered, n_max=20000,
     #    otherwise identical warm reserve that does not would then reject a valid warm pass on
     #    nothing but subsample luck.  Captured here, the gate never sees that error at all.
     ln_sum_w = None
+    ess_finite = None
     if 'log_joint_prior' in extra and 'log_joint_s_prior' in extra:
         _lw = lnL + extra['log_joint_prior'] - extra['log_joint_s_prior']
         _lw = _lw[np.isfinite(_lw)]
         if _lw.size:
             _mx = float(np.max(_lw))
             ln_sum_w = float(_mx + np.log(np.sum(np.exp(_lw - _mx))))
+            # AND THE POPULATION'S EFFECTIVE SAMPLE SIZE, captured here for the same reason
+            # as the total above: a bounded record cannot reconstruct it afterwards, and a
+            # uniform subsample is not merely a noisier estimate of it.  Where one row
+            # carries the weight -- the starved, high-amplitude pass this whole area exists
+            # for -- the subsample either drops that row and reports a healthy ESS for a
+            # population that has none, or keeps it and reports a collapsed one.  Measured
+            # on 8000 rows capped at 800, varying how far the top weight sits above the
+            # rest: with the top row 9 e-folds up, the population ESS is 2.1 while the
+            # median uncapped-peak subsample reports 505.
+            _p = np.exp(_lw - ln_sum_w)
+            _den = float(np.sum(_p ** 2))
+            ess_finite = (1.0 / _den) if _den > 0 else None
     # 3. bound, uniformly over that population, on a stream of our own
     n_max = int(n_max)
-    if n_max > 0 and n_fin > n_max:
+    capped = bool(n_max > 0 and n_fin > n_max)
+    if capped:
         rng = rng if rng is not None else np.random.RandomState(20260811)
         idx = rng.choice(n_fin, size=n_max, replace=False)
-        idx = np.unique(np.append(idx, int(np.nanargmax(lnL))))
+        if force_peak:
+            idx = np.unique(np.append(idx, int(np.nanargmax(lnL))))
+        else:
+            idx = np.unique(idx)
         X, lnL = X[idx], lnL[idx]
         extra = {k: v[idx] for k, v in extra.items()}
     out = dict(X=X, lnL=lnL, n_retained=int(n_ret), n_finite=int(n_fin),
-               ln_sum_w_finite=ln_sum_w, params_ordered=list(params_ordered))
+               ln_sum_w_finite=ln_sum_w, ess_finite=ess_finite,
+               params_ordered=list(params_ordered),
+               capped=capped, force_peak=bool(force_peak))
     out.update(extra)
     return out
+
+
+def make_reserve_from_rvs(rvs, params_ordered, n_max=20000, integrand_is_log=None,
+                          convert=None):
+    """The retained-set reserve for a sampler that still has its rows in ``_rvs`` -> dict.
+
+    ONE adapter in front of make_warm_seed_reserve, for the backends that reach the fair
+    draw with the retained set still in ``_rvs``: mcsampler, mcsamplerGPU (both entry
+    points), mcsamplerEnsemble and mcsamplerNFlow.  AV builds its own from allx/allloglkl
+    because it never keeps them in ``_rvs``; the portfolio aggregates its members' rows.
+
+    WHY THESE BACKENDS NEED ONE AT ALL.  Until now the reserve existed only for the L0
+    rescue, so only AV and the portfolio built it and ``reserve=None`` elsewhere was
+    described as "the honest answer, not a gap".  It is a gap for anything that EXPORTS a
+    shape: the fair draw below replaces ``_rvs`` with min(--fairdraw-extrinsic-output-n-max
+    (5 by default), 1.5*eff_samp, 1.5*neff) rows taken WITH REPLACEMENT, and the .dgrid
+    exporter then binned those five rows as though they were a likelihood-vs-distance
+    curve.  The retained rows are right here; keeping a bounded copy of them costs one
+    subsample and lets the exporter use the sample set instead of its export resample.
+
+    BOTH CONVENTIONS.  ``integrand`` is lnL on some backends and linear L on others, and
+    the sampler is the only thing that knows which (see RvsRecord.integrand_is_log).  The
+    log columns are preferred where they exist; otherwise the linear ones are converted
+    here.  log(0) is -inf, which make_warm_seed_reserve drops as a zero-weight row.
+    """
+    conv = convert if convert is not None else identity_convert
+
+    def _col(key):
+        return np.asarray(conv(rvs[key]), dtype=float).ravel()
+
+    with np.errstate(divide='ignore', invalid='ignore'):
+        if 'log_integrand' in rvs:
+            lnL = _col('log_integrand')
+        elif integrand_is_log:
+            lnL = _col('integrand')
+        else:
+            lnL = np.log(_col('integrand'))
+        if 'log_joint_prior' in rvs:
+            ln_prior = _col('log_joint_prior')
+        else:
+            ln_prior = np.log(_col('joint_prior'))
+        if 'log_joint_s_prior' in rvs:
+            ln_s_prior = _col('log_joint_s_prior')
+        else:
+            ln_s_prior = np.log(_col('joint_s_prior'))
+
+    X = np.vstack([_col(p) for p in params_ordered]).T
+    # force_peak=False: see make_warm_seed_reserve.  This reserve is read as a WEIGHTED
+    # SAMPLE by the .dgrid exporter, and a peak row admitted with probability 1 rather
+    # than n_max/n_finite is the single largest distortion the cap introduces.
+    return make_warm_seed_reserve(X, lnL, params_ordered, n_max=n_max,
+                                  log_joint_prior=ln_prior,
+                                  log_joint_s_prior=ln_s_prior,
+                                  force_peak=False)
+
+
+def keep_reserve_from_rvs(sampler, label, integrand_is_log=None):
+    """Attach ``sampler._warm_seed_reserve`` from its own ``_rvs``, or leave it None.
+
+    Provenance for an export, never a reason to lose a completed integral -- the same
+    contract AV and the portfolio already use at their own reserve sites.
+    """
+    try:
+        sampler._warm_seed_reserve = make_reserve_from_rvs(
+            sampler._rvs, sampler.params_ordered,
+            n_max=getattr(sampler, 'n_warm_seed_reserve', 20000),
+            integrand_is_log=integrand_is_log,
+            convert=getattr(sampler, 'identity_convert', None))
+    except Exception as _e_res:
+        sampler._warm_seed_reserve = None
+        print("  [{}] retained-set reserve not kept (".format(label), _e_res, ")")
 
 
 def lnZ_from_reserve(reserve):

@@ -5454,13 +5454,49 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
           # but it must not go quiet either, which is the defect the gate change fixes.
           try:
             from RIFT.misc.distance_grid import (build_distance_grid, save_distance_grid,
-                                                 distance_grid_resolution_warning)
+                                                 distance_grid_resolution_warning,
+                                                 reserve_distance_and_ln_weights)
             fname_output_dgrid = opts.output_file +"_"+str(indx_event)+"_" + ".dgrid"
-            dL = np.array(sampler._rvs["distance"])
             rvs = sampler._rvs
-            # POSTERIOR weights: a fair-drawn record is already an equal-weight posterior draw,
-            # and build_distance_grid weights the samples again to form the per-bin mass.
-            ln_wts = ln_weights_for_posterior(rvs, sampler, use_lnL=rvs_integrand_is_lnL)
+            # PREFER THE RETAINED SET.  _rvs by now is the fair draw -- min(
+            # --fairdraw-extrinsic-output-n-max (5 by default), 1.5*eff_samp, 1.5*neff) rows
+            # taken WITH REPLACEMENT -- which is an EXPORT resample, not a sample set.  A
+            # likelihood-vs-distance curve cannot be built from five rows, three of them the
+            # same point; every integrator that fair-draws now keeps a bounded copy of the
+            # rows it actually retained, with both prior components, so the grid is built
+            # from those and weighted by the real importance weight.  Falling back to _rvs
+            # keeps this working for a sampler that kept no reserve (and for a pass that
+            # never fair-drew, where _rvs IS the retained set).
+            # is_equal_weight(), not rows_are_resampled(): a POOLED record is resampled
+            # per block but is not one sampler's draws, so one replica's reserve would
+            # give the curve of one replica under the evidence of the pool.  Pooling
+            # passes no reserve today; asking the named question means it cannot start.
+            _rec = _rvs_record_for(sampler, rvs)
+            _resampled = _rec.is_equal_weight() if _rec is not None else bool(
+                getattr(sampler, '_rvs_is_fairdraw', False))
+            _retained = None
+            _reserve = (getattr(_rec, 'reserve', None) if _rec is not None
+                        else getattr(sampler, '_warm_seed_reserve', None))
+            if _resampled:
+              _retained = reserve_distance_and_ln_weights(_reserve)
+            if _retained is not None:
+              dL, ln_wts = _retained
+              print("  .dgrid built from the RETAINED set ({} rows) rather than the {}-row fair draw".format(
+                  len(dL), _rvs_len(rvs)))
+              # SAY WHEN IT IS A SUBSAMPLE.  The reserve is bounded (n_warm_seed_reserve,
+              # 20000), so on a long pass the curve is built from a uniform subsample of the
+              # retained rows and carries subsample noise that nothing in the file records.
+              if _reserve.get('capped'):
+                print("           NOTE: a uniform subsample of {} finite retained rows; the exported"
+                      " curve carries subsample noise.".format(_reserve.get('n_finite')))
+            else:
+              # identity_convert at the boundary, as the .dslice block below already does:
+              # on a GPU run _rvs can still hold cupy arrays, and numpy refuses to convert
+              # them implicitly ("Implicit conversion to a NumPy array is not allowed").
+              dL = np.asarray(identity_convert(sampler._rvs["distance"]), dtype=float)
+              # POSTERIOR weights: a fair-drawn record is already an equal-weight posterior draw,
+              # and build_distance_grid weights the samples again to form the per-bin mass.
+              ln_wts = ln_weights_for_posterior(rvs, sampler, use_lnL=rvs_integrand_is_lnL)
             # Distance prior at each sample. Use the sampler's stored prior_pdf
             # callable; this matches whatever ILE actually integrated against
             # (volumetric, pseudo_cosmo, redshift, ...).
@@ -5489,13 +5525,24 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
             # starved pass (GMM at n_eff of a few) therefore exports a handful of
             # repeated points that read as a likelihood-vs-distance curve; say so here,
             # because the file itself carries no record of how thin it is.
-            _dgrid_warn = distance_grid_resolution_warning(dL, n_grid=opts.n_eff)
+            # ess_finite is the retained set's OWN effective sample size, recorded before
+            # the reserve was bounded.  Without it a capped reserve that happened to miss the
+            # dominant row reports a healthy n_eff for a pass that has none.
+            _dgrid_warn = distance_grid_resolution_warning(
+                dL, n_grid=opts.n_eff, ln_weights=ln_wts,
+                n_eff_population=(_reserve or {}).get('ess_finite') if _retained is not None else None)
             if _dgrid_warn:
               # The two levers, in the order they bind: the fair draw is capped at
               # --fairdraw-extrinsic-output-n-max (5 by default) and then again at
               # 1.5*n_eff, so on a starved pass it is n_eff that decides.
               print("  WARNING: --export-marginal-distance-grid: " + _dgrid_warn
-                    + "  (--sampler-method {}, main n_eff={:.1f})".format(opts.sampler_method, neff)
+                    + "  (--sampler-method {}, main n_eff={:.1f})".format(
+                          opts.sampler_method,
+                          # mcsamplerPortfolio and AV return neff=None from their
+                          # terminate-early branch, and "{:.1f}".format(None) raises --
+                          # inside this try, so a diagnostic would have suppressed the
+                          # export it exists to describe.  Same guard as line ~5310.
+                          float(neff) if neff is not None else float('nan'))
                     + "  Raise --fairdraw-extrinsic-output-n-max, and raise the achieved n_eff"
                       " (--n-max, or --sampler-method AV) -- the draw is also capped at 1.5*n_eff.")
             dgrid = build_distance_grid(
@@ -5511,6 +5558,17 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
           except Exception as _e_dgrid:
             print("  ERROR: --export-marginal-distance-grid requested but the .dgrid could NOT be"
                   " written for this event: {}: {}".format(type(_e_dgrid).__name__, _e_dgrid))
+            # LEAVE A MARK.  util_ConsolidateDistanceGrids.py GLOBS the .dgrid files and the
+            # DAG runs it with --allow-empty, so a missing file removes this intrinsic point
+            # from all_dgrid.dat with nothing to count -- and the points that fail here are
+            # the collapsed, highest-SNR ones, so what remains is a biased subset rather than
+            # a smaller one.  A sidecar is greppable across a run directory; the ERROR line
+            # above is buried in one job's .out.
+            try:
+              with open(opts.output_file + "_" + str(indx_event) + "_" + ".dgrid.skipped", "w") as _f_skip:
+                _f_skip.write("{}\t{}\t{}\n".format(indx_event, type(_e_dgrid).__name__, _e_dgrid))
+            except Exception as _e_skip:
+              print("  ERROR: could not record the skipped .dgrid either: {}".format(_e_skip))
 
         # Plan-B distance slices: K independent fixed-d extrinsic integrals.
         # Produces a (K rows x intrinsic cols) table per ILE job; target size
