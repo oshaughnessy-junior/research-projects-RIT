@@ -249,3 +249,39 @@ def test_multi_builder_applies_precision_to_all_three_cleaner_passes(tmp_path):
 
     for name in ("join.sub", "unify.sh", "unify_model.sh"):
         assert "--intrinsic-digits 12" in (tmp_path / name).read_text(), name
+
+
+def test_both_passes_must_be_told_or_the_chain_loses_the_grid(tmp_path):
+    """Two passes run over the same points: the coarser one decides.
+
+    util_CleanILE writes with Python's repr, so the intermediate .composite
+    carries every digit the join kept.  That is what makes a 5-decimal unify
+    silently undo a 12-decimal join -- the precision is present in the file and
+    thrown away at read.  Pinned as an end-to-end chain rather than per pass,
+    because either pass alone looks correct.
+    """
+    rows = np.array([
+        [-1, MC_A, 1.25, 0, 0, 0, 0, 0, 0, 10, .01, 100, 50],
+        [-1, MC_B, 1.25, 0, 0, 0, 0, 0, 0, 11, .01, 100, 50],
+    ])
+    ile = tmp_path / "ile.dat"
+    np.savetxt(ile, rows, fmt="%.17g")
+
+    def clean(source, *options):
+        proc = subprocess.run([sys.executable, str(CLEAN), *options, str(source)],
+                              cwd=tmp_path, env=env(), text=True,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        assert proc.returncode == 0, proc.stderr
+        return [line.split() for line in proc.stdout.splitlines() if line.strip()]
+
+    joined = clean(ile, "--intrinsic-digits", "12")
+    assert len(joined) == 2
+    composite = tmp_path / "joined.composite"
+    composite.write_text("".join(" ".join(row) + "\n" for row in joined))
+
+    unified = clean(composite, "--intrinsic-digits", "12")
+    assert sorted(float(r[1]) for r in unified) == [MC_A, MC_B]
+
+    # and the negative half: the join alone does not save the grid.
+    collapsed = clean(composite)
+    assert len(collapsed) == 1, "a default unify should still coalesce"
