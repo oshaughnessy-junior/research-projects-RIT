@@ -61,6 +61,10 @@ FILES=(
   "$C/RIFT/likelihood/test_td_dispatch_epoch.py"
   "$C/RIFT/likelihood/test_precompute_crossterm_batching.py"
   "$C/test/test_jax_template_finalization.py"
+  # The JAX ILE driver's sim_inspiral export: the file the BasicIteration
+  # terminal extrinsic stage opens.  Only the .dat sidecar was ever written, so
+  # the stage ran and collected nothing -- a loss no build-time check can see.
+  "$C/test/test_jax_ile_extrinsic_xml_export.py"
   "$C/test/test_response_order.py"
   "$C/test/test_ile_scalar_edge_cases.py"
   "$C/test/test_mcsamplerGPU_cdf_inverse_scalar_probe.py"
@@ -195,6 +199,14 @@ done
 #            see a factor of two).  MEASURED on CIT (citlogin6) 2026-09-14, IGWN conda
 #            python 3.11 / lal 7.7.0: per-file 420 over 42 files, junit 423 / 12 skipped /
 #            411 passed -- 423 and 411 are the pytest-subtests counts, floors stay plugin-free.
+#   438/426  + test_jax_ile_extrinsic_xml_export.py (18 tests: the JAX ILE driver's
+#            sim_inspiral export -- the filename convert_extr opens, row count and column
+#            round trip against the .dat sidecar, every --mode theta layout plus an explicit
+#            refusal for one with no mapping, and the p/ps columns the resampler divides by).
+#            MEASURED on CIT (ldas-grid, cupy import FAILS there so this is the numpy
+#            backend) 2026-09-14, IGWN conda python 3.11 / numpy 1.26.4 / lal 7.7.0:
+#            per-file 438 over 43 files, junit 441 / 12 skipped / 429 passed.  441 and 429
+#            carry 3 subtest entries; the floors stay pinned to the plugin-free 438/426.
 #
 # RAISE these when files are added: a floor left at the old value passes while covering less,
 # which is the failure this gate exists to catch.
@@ -210,12 +222,12 @@ done
 # runner's closure the count falls back to 347 and still passes.  Pinning 350 would turn an
 # unrelated dependency change into a red gate.
 # Two XML/grid template-finalization regressions, with no added skips.
-EXPECTED_TESTS=420
+EXPECTED_TESTS=438
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 12 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
 # test_dslice_device_native, and the xfail in test_uv_symmetry.
-EXPECTED_PASSED=408
+EXPECTED_PASSED=426
 MAX_SKIPPED=12
 
 # The floors must be INTEGERS, and this is checked rather than assumed.  `[ 347 -lt FOO ]` does
