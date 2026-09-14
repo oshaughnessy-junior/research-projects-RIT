@@ -67,6 +67,10 @@ FILES=(
   "$C/test/test_srate_resample_time_marginalization.py"
   "$C/test/test_vectorized_lal_tools_split.py"
   "$C/test/test_noloop_accumulator_shapes.py"
+  # The Bilby-convention noise evidence: its normalization is checked against the
+  # 4/T sum |d|^2/S formula through the real ComplexIP, so a factor of two regresses
+  # loudly instead of shifting every reported log evidence by a plausible amount.
+  "$C/test/test_noise_evidence.py"
   # -- integrators: seeding, allocation, weight derivation
   "$C/test/integrators/test_convergence_sample_order.py"
   "$C/test/integrators/test_gmm_adaptive.py"
@@ -187,6 +191,12 @@ done
 #            40 files, junit 390 / 12 skipped / 378 passed.  390 and 378 are the counts WITH
 #            pytest-subtests, which that environment happens to have; the floors below stay
 #            pinned to the plugin-free 387/375 for the reason given above.
+#   420/408  + test_noise_evidence.py (6 tests: the Bilby fixed-PSD noise evidence -- network
+#            sum and sign against stubs, plus the real lalsimutils.ComplexIP against the
+#            4/T sum |d|^2/S formula written out by hand, which is the only check that can
+#            see a factor of two).  MEASURED on CIT (citlogin6) 2026-09-14, IGWN conda
+#            python 3.11 / lal 7.7.0: per-file 420 over 42 files, junit 423 / 12 skipped /
+#            411 passed -- 423 and 411 are the pytest-subtests counts, floors stay plugin-free.
 #
 # RAISE these when files are added: a floor left at the old value passes while covering less,
 # which is the failure this gate exists to catch.
@@ -202,12 +212,12 @@ done
 # runner's closure the count falls back to 347 and still passes.  Pinning 350 would turn an
 # unrelated dependency change into a red gate.
 # Two XML/grid template-finalization regressions, with no added skips.
-EXPECTED_TESTS=487
+EXPECTED_TESTS=494
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 12 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
 # test_dslice_device_native, and the xfail in test_uv_symmetry.
-EXPECTED_PASSED=475
+EXPECTED_PASSED=482
 MAX_SKIPPED=12
 
 # The floors must be INTEGERS, and this is checked rather than assumed.  `[ 347 -lt FOO ]` does
