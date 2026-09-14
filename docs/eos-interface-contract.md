@@ -33,12 +33,26 @@ therefore `lambda_from_m_vector`) returns `-inf` for a mass with no stable star
 on the selected branch rather than raising, so a single out-of-branch draw
 flags itself instead of aborting the batch it arrived in.
 
-The flag is only useful if the consumer acts on it, so with a fixed EOS CIP
-rejects nonfinite converted coordinates before the likelihood fit
-unconditionally -- not only under `--protect-coordinate-conversions` -- giving
-those draws zero probability while the rest of the batch is fit normally, and
-drops the corresponding samples on export rather than writing a meaningless
-tidal parameter.
+The flag is only useful if the consumer acts on it, and the consumer cannot
+read it off the converted coordinates.
+`lalsimutils.convert_waveform_coordinates_with_eos` returns only `coord_names`,
+so with a mass-only fit basis such as `mc,eta` the lambda carrying the flag is
+computed and then discarded, and the row reaches the fit fully finite. On the
+vectorized path an above-`mMaxMsun` mass is worse than invisible: it arrives as
+`lambda = 0`, which reads as a black hole rather than as "no such star".
+
+The support test is therefore made against the sampled MASSES, by
+`RIFT.physics.lalsim_eos_compat.mass_in_eos_support`, which tests each object
+against whichever of `mMinMsun` and `mMaxMsun` the EOS publishes and exempts any
+object declared a black hole by `--no-matter1` / `--no-matter2` (or
+`--assume-eos-but-primary-bh` on export). A bound the EOS does not publish is
+read as unbounded, which leaves EOS classes exposing neither unchanged. With a
+fixed EOS, CIP applies that test unconditionally -- not only under
+`--protect-coordinate-conversions` -- stamping out-of-support rows `-inf` before
+the likelihood fit, so they carry zero probability while the rest of the batch
+is fit normally in one call. The export path applies the SAME test before asking
+the EOS for lambda at all, so the fit and the export cannot disagree about which
+draws exist.
 
 Reviewed two- or nine-column tables use:
 

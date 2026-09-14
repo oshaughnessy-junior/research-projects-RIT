@@ -10,6 +10,8 @@ solutions.
 
 import math
 
+import numpy as np
+
 
 class AmbiguousFamilyBranchError(ValueError):
     """Raised when a mass belongs to more than one stable family branch."""
@@ -31,6 +33,48 @@ def validate_fixed_eos_branch_request(branch_id, eos_spec, using_eos_for_prior=F
         )
     if eos_spec is None:
         raise ValueError("--using-eos-branch also requires --using-eos")
+
+
+def mass_in_eos_support(eos, m1_msun, m2_msun, bh1=False, bh2=False):
+    """Per-row test against an EOS's published stellar mass bounds.
+
+    A fixed EOS supports stars only on a bounded mass interval, and a family
+    branch selected with ``--using-eos-branch`` is bounded at BOTH ends: a
+    twin-star branch typically begins well above the family minimum mass.  A
+    draw outside that interval describes no star, so it must carry no posterior
+    weight.
+
+    This test is made against MASSES on purpose.  The EOS reports "no star
+    here" through lambda, and
+    ``lalsimutils.convert_waveform_coordinates_with_eos`` returns only
+    ``coord_names``: with a mass-only fit basis such as ``mc,eta`` the flag is
+    discarded by the conversion and the row reaches the likelihood fit fully
+    finite.  Callers must therefore carry this mask explicitly rather than
+    inferring support from the converted coordinates.
+
+    ``bh1``/``bh2`` mark an object as a black hole (``--no-matter1`` /
+    ``--no-matter2``, or ``--assume-eos-but-primary-bh`` on export); a black
+    hole is under no EOS constraint and is exempt.  A bound the EOS does not
+    publish is read as unbounded, which leaves EOS classes exposing neither
+    exactly as they were.
+
+    Accepts scalars or arrays; returns a boolean of the broadcast shape.
+    """
+    m1_msun = np.asarray(m1_msun, dtype=float)
+    m2_msun = np.asarray(m2_msun, dtype=float)
+    ok = np.logical_and(np.isfinite(m1_msun), np.isfinite(m2_msun))
+    m_min = getattr(eos, 'mMinMsun', None)
+    m_max = getattr(eos, 'mMaxMsun', None)
+    for m_here, is_bh in ((m1_msun, bh1), (m2_msun, bh2)):
+        if is_bh:
+            continue
+        if m_max is not None:
+            # Strict, to match the mMaxMsun test inside
+            # lalsimutils.convert_waveform_coordinates_with_eos.
+            ok = np.logical_and(ok, m_here < m_max)
+        if m_min is not None:
+            ok = np.logical_and(ok, m_here >= m_min)
+    return ok
 
 
 class LALSimNeutronStarFamilyAdapter:

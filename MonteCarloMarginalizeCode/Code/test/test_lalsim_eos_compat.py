@@ -1,6 +1,7 @@
 import ast
 import json
 import os
+import types
 
 import lal
 import numpy as np
@@ -9,6 +10,7 @@ import pytest
 from RIFT.physics.lalsim_eos_compat import (
     AmbiguousFamilyBranchError,
     LALSimNeutronStarFamilyAdapter,
+    mass_in_eos_support,
     validate_fixed_eos_branch_request,
 )
 
@@ -597,3 +599,244 @@ def test_nmb_primary_branch_contract_does_not_mix_disconnected_branches(tmp_path
     assert eos_sequence.R_of_m_indx(1.8, 0) == pytest.approx(
         expected_primary_radius
     )
+
+
+def _load_cip_nested_function(name, container_predicate=None):
+    """exec one CIP function that is nested inside a conditional block.
+
+    ``_load_cip_function`` only reaches module-level defs.  The fixed-EOS
+    coordinate-conversion helpers live in the ``else:`` of the ``using_eos``
+    test, so they need a full walk.  Loading from the shipped source, rather
+    than restating the body here, is what makes these regression tests.
+    """
+    tree = _cip_source_tree()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.FunctionDef) and node.name == name):
+            continue
+        if container_predicate is not None and not container_predicate(tree, node):
+            continue
+        return compile(
+            ast.Module(body=[node], type_ignores=[]), CIP_SCRIPT, "exec"
+        )
+    raise AssertionError("CIP no longer defines a nested {}".format(name))
+
+
+def _in_fixed_eos_block(tree, target):
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.If) and "using_eos" in ast.dump(node.test)
+                and any(child is target for child in node.orelse)):
+            return True
+    return False
+
+
+class _MassOnlyCoordinateStub:
+    """A converter whose fit basis carries no tidal coordinate.
+
+    This is the configuration behind the review finding: with ``mc,eta`` as
+    both the sampled and the fitted coordinates,
+    ``convert_waveform_coordinates_with_eos`` computes lambda from the EOS and
+    then DISCARDS it, because lambda is not among ``coord_names``.  Every row
+    it returns is finite, whatever the EOS said about the masses.
+    """
+
+    def __init__(self):
+        self.eos_conversions = 0
+
+    @staticmethod
+    def _m1_m2_from_mc_eta(x_in):
+        mc = x_in[:, 0]
+        eta = x_in[:, 1]
+        mtot = mc / np.power(eta, 3.0 / 5.0)
+        delta = np.sqrt(1.0 - 4.0 * eta)
+        return np.c_[mtot * (1 + delta) / 2, mtot * (1 - delta) / 2]
+
+    def convert_waveform_coordinates(self, x_in, coord_names=None,
+                                     low_level_coord_names=None, **kwargs):
+        assert list(coord_names) == ['m1', 'm2']
+        assert list(low_level_coord_names) == ['mc', 'eta']
+        return self._m1_m2_from_mc_eta(np.atleast_2d(x_in))
+
+    def convert_waveform_coordinates_with_eos(self, x_in, **kwargs):
+        self.eos_conversions += 1
+        # Identity: the fit basis IS the sampled basis, so nothing the EOS
+        # reported about lambda survives into the returned row.
+        return np.array(np.atleast_2d(x_in), dtype=float, copy=True)
+
+
+def _mc_eta(m1, m2):
+    mtot = m1 + m2
+    return np.array([np.power(m1 * m2, 3.0 / 5.0) / np.power(mtot, 1.0 / 5.0),
+                     m1 * m2 / mtot ** 2])
+
+
+def _cip_eos_convert_coords(eos, no_matter1=False, no_matter2=False):
+    """Build CIP's fixed-EOS convert_coords over a mass-only fit basis."""
+    lalsimutils_stub = _MassOnlyCoordinateStub()
+    namespace = {
+        "np": np,
+        "lalsimutils": lalsimutils_stub,
+        "mass_in_eos_support": mass_in_eos_support,
+        "my_eos": eos,
+        "coord_names": ['mc', 'eta'],
+        "low_level_coord_names": ['mc', 'eta'],
+        "source_redshift": 0,
+        "opts": types.SimpleNamespace(
+            no_matter1=no_matter1, no_matter2=no_matter2,
+            downselect_enforce_kerr=False,
+        ),
+    }
+    exec(_load_cip_nested_function("eos_mass_support_mask"), namespace)
+    exec(
+        _load_cip_nested_function("convert_coords", _in_fixed_eos_block),
+        namespace,
+    )
+    return namespace["convert_coords"], lalsimutils_stub
+
+
+def _twin_star_branch(monkeypatch, branch_id):
+    from RIFT.physics import EOSManager
+
+    monkeypatch.setattr(
+        EOSManager, "lalsim", StellarMassMultibranchLALSimulation()
+    )
+    return EOSManager.EOSLALSimulationFromFile(
+        "twin-star.dat", phase_transition_aware=True
+    ).for_branch(branch_id)
+
+
+def test_mass_support_mask_rejects_masses_outside_both_branch_bounds():
+    eos = types.SimpleNamespace(mMinMsun=1.3, mMaxMsun=3.0)
+
+    m1 = np.array([1.5, 1.5, 1.5, 3.5, 1.2])
+    m2 = np.array([1.4, 1.1, 3.0, 1.4, 1.25])
+    ok = mass_in_eos_support(eos, m1, m2)
+
+    assert list(ok) == [True, False, False, False, False]
+    # The upper test is strict, matching the mMaxMsun test the coordinate
+    # converter already applies, so a mass exactly at mMaxMsun is out.
+    assert not mass_in_eos_support(eos, 1.4, 3.0)
+    assert mass_in_eos_support(eos, 1.3, 1.3)  # closed at the lower bound
+    assert not mass_in_eos_support(eos, np.nan, 1.4)
+
+
+def test_mass_support_mask_exempts_objects_declared_to_be_black_holes():
+    eos = types.SimpleNamespace(mMinMsun=1.3, mMaxMsun=3.0)
+
+    # A black hole is under no EOS constraint, so its mass must not be tested.
+    assert mass_in_eos_support(eos, 30.0, 1.4, bh1=True)
+    assert mass_in_eos_support(eos, 1.4, 0.4, bh2=True)
+    assert not mass_in_eos_support(eos, 30.0, 0.4, bh1=True)
+    assert not mass_in_eos_support(eos, 30.0, 1.4)
+
+
+def test_mass_support_mask_leaves_an_eos_publishing_no_bounds_unchanged():
+    # Several EOS classes set mMaxMsun = None and publish no minimum at all.
+    # Reading an absent bound as unbounded is what keeps their behaviour, and
+    # that of released LALSimulation callers, exactly as it was.
+    unbounded = types.SimpleNamespace(mMaxMsun=None)
+    assert mass_in_eos_support(unbounded, 1e-3, 500.0)
+
+    upper_only = types.SimpleNamespace(mMaxMsun=2.2)
+    assert mass_in_eos_support(upper_only, 0.2, 0.3)
+    assert not mass_in_eos_support(upper_only, 0.2, 2.4)
+
+
+def test_cip_stamps_out_of_support_rows_when_the_fit_basis_has_no_lambda(
+        monkeypatch):
+    # The review finding: with mc,eta fitted and mc,eta sampled, the converted
+    # row is finite even for a mass with no star on the selected branch, so
+    # finiteness of the converted coordinates cannot be the support test.
+    secondary = _twin_star_branch(monkeypatch, 1)
+    assert secondary.mMinMsun == pytest.approx(1.3)
+    assert secondary.mMaxMsun == pytest.approx(3.0)
+
+    convert_coords, stub = _cip_eos_convert_coords(secondary)
+
+    in_support = _mc_eta(1.5, 1.4)
+    below_branch_minimum = _mc_eta(1.5, 1.1)
+    above_branch_maximum = _mc_eta(3.4, 1.4)
+
+    x_out = convert_coords(
+        np.array([in_support, below_branch_minimum, above_branch_maximum])
+    )
+
+    # Control: the converter itself reports every row as finite.
+    passthrough = stub.convert_waveform_coordinates_with_eos(
+        np.array([in_support, below_branch_minimum, above_branch_maximum])
+    )
+    assert np.all(np.isfinite(passthrough))
+
+    assert np.all(np.isfinite(x_out[0]))
+    assert np.all(x_out[0] == pytest.approx(in_support))
+    assert np.all(np.isneginf(x_out[1]))
+    assert np.all(np.isneginf(x_out[2]))
+
+    # Stamped rows are exactly what the fit guard rejects, so they carry zero
+    # probability rather than reaching the fit.
+    protect = _load_cip_function("protect_fit_against_out_of_support")
+    guarded = protect(lambda x: np.zeros(len(x)))
+    assert list(np.exp(guarded(x_out))) == [1.0, 0.0, 0.0]
+
+
+def test_cip_support_stamp_respects_no_matter_flags(monkeypatch):
+    secondary = _twin_star_branch(monkeypatch, 1)
+
+    # m2 = 1.1 has no star on this branch, but --no-matter2 declares it a black
+    # hole, so the EOS must not be consulted about it.
+    convert_coords, _ = _cip_eos_convert_coords(secondary, no_matter2=True)
+    x_out = convert_coords(np.array([_mc_eta(1.5, 1.1)]))
+    assert np.all(np.isfinite(x_out[0]))
+
+    convert_coords, _ = _cip_eos_convert_coords(secondary)
+    x_out = convert_coords(np.array([_mc_eta(1.5, 1.1)]))
+    assert np.all(np.isneginf(x_out[0]))
+
+
+def test_cip_export_applies_the_same_support_test_before_asking_for_lambda():
+    # The fit and the export must not disagree about support: a draw the fit
+    # gave zero weight cannot come back as an exported sample with a tidal
+    # parameter.  Guard the wiring, since the two sites are 1000 lines apart.
+    tree = _cip_source_tree()
+
+    export_blocks = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Name) and node.test.id == "my_eos"
+        and "lambda_from_m" in ast.dump(node)
+    ]
+    assert len(export_blocks) == 1
+    block = export_blocks[0]
+
+    guards = [
+        node for node in ast.walk(block)
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", None) == "mass_in_eos_support"
+    ]
+    assert len(guards) == 1
+
+    # The support test must gate the EOS call, not merely accompany it.
+    gated = [
+        node for node in block.body
+        if isinstance(node, ast.If)
+        and any(child is guards[0] for child in ast.walk(node.test))
+    ]
+    assert len(gated) == 1
+    assert "lambda_from_m" not in ast.dump(ast.Module(
+        body=list(gated[0].body), type_ignores=[]))
+    assert "lambda_from_m" in ast.dump(ast.Module(
+        body=list(gated[0].orelse), type_ignores=[]))
+
+
+def test_released_lalsimulation_family_publishes_both_mass_bounds(monkeypatch):
+    # Backward compatibility: the lower bound is read through the adapter, so a
+    # released build answers it with SimNeutronStarFamMinimumMass and never
+    # touches a reviewed symbol.
+    from RIFT.physics import EOSManager
+
+    legacy = LegacyLALSimulation()
+    monkeypatch.setattr(EOSManager, "lalsim", legacy)
+    eos = EOSManager.EOSLALSimulationFromFile("released.dat")
+
+    assert eos.mMinMsun == pytest.approx(1.0 / lal.MSUN_SI)
+    assert eos.mMaxMsun == pytest.approx(3.0 / lal.MSUN_SI)
+    assert legacy.create_calls  # legacy one-argument family API was used

@@ -473,7 +473,8 @@ if opts.using_eos and opts.using_eos.startswith('file:') and not(opts.using_eos_
     except Exception as e:
         print(" Fail: EOS index out of range:\n   ",e)
         sys.exit(0)
-from RIFT.physics.lalsim_eos_compat import validate_fixed_eos_branch_request
+from RIFT.physics.lalsim_eos_compat import (
+    mass_in_eos_support, validate_fixed_eos_branch_request)
 validate_fixed_eos_branch_request(
     opts.using_eos_branch, opts.using_eos, opts.using_eos_for_prior
 )
@@ -2833,13 +2834,17 @@ def protect_fit_against_out_of_support(fn, val=-np.inf):
     """Wrap a fit so rows with a nonfinite coordinate get ``val`` instead of being fit.
 
     A fixed EOS has bounded support: no stable star exists above ``mMaxMsun``,
-    and none below ``mMinMsun`` on a selected branch either.  Those draws come
-    back from the EOS with a nonfinite lambda, which the coordinate conversion
-    propagates into the fit coordinates, and the usual fitting backends
-    (sklearn in particular) raise on nonfinite input.  Such draws are routine
-    in every integration batch, so they must be assigned zero probability here
-    rather than aborting the batch that carried them.  Rows that are in support
-    are still fit together, in one call, so batched backends are unaffected.
+    and none below ``mMinMsun`` on a selected branch either.  Such draws are
+    routine in every integration batch, so they must be assigned zero
+    probability here rather than aborting the batch that carried them: the
+    usual fitting backends (sklearn in particular) raise on nonfinite input.
+    Rows that are in support are still fit together, in one call, so batched
+    backends are unaffected.
+
+    This wrapper only sees the FIT coordinates.  It cannot itself decide
+    support, because the EOS flag rides in lambda and the fit basis need not
+    carry lambda -- see ``eos_mass_support_mask``, which stamps the row before
+    it gets here.
     """
     def my_protected_fit(x_in):
         x_in = np.atleast_2d(x_in)
@@ -2854,8 +2859,42 @@ if not opts.using_eos or (fake_eos):
  def convert_coords(x_in):
     return lalsimutils.convert_waveform_coordinates(x_in, coord_names=coord_names,low_level_coord_names=low_level_coord_names,source_redshift=source_redshift,enforce_kerr=opts.downselect_enforce_kerr)
 else:
+ def eos_mass_support_mask(x_in):
+    """Per-row test: does every matter object in this draw have a stable star?
+
+    ``convert_waveform_coordinates_with_eos`` returns only ``coord_names``.
+    When the fit basis carries no tidal coordinate -- ``mc,eta`` is the common
+    case -- the EOS's out-of-support flag is created in lambda and then
+    DISCARDED by the conversion, so the row arrives at the fit fully finite.
+    Fitting it assigns posterior support to a mass at which this EOS (or the
+    branch selected with --using-eos-branch) has no star at all.
+
+    The support test therefore has to be made against the SAMPLED masses,
+    which is what this does.  ``no_matter1``/``no_matter2`` mark an object as a
+    black hole, and a black hole is under no EOS constraint, so those objects
+    are exempt.  Bounds the EOS does not publish are read as unbounded, which
+    is the historical behaviour for EOS classes that expose neither.
+    """
+    x_in = np.atleast_2d(x_in)
+    # Source-frame component masses in Msun: the same quantity the converter
+    # itself feeds the EOS, before any source_redshift is applied.
+    m_source = lalsimutils.convert_waveform_coordinates(
+        x_in, coord_names=['m1','m2'], low_level_coord_names=low_level_coord_names)
+    return mass_in_eos_support(
+        my_eos, m_source[:, 0], m_source[:, 1],
+        bh1=opts.no_matter1, bh2=opts.no_matter2)
+
  def convert_coords(x_in):
     x_out = lalsimutils.convert_waveform_coordinates_with_eos(x_in, coord_names=coord_names,low_level_coord_names=low_level_coord_names,eos_class=my_eos,no_matter1=opts.no_matter1, no_matter2=opts.no_matter2,source_redshift=source_redshift,enforce_kerr=opts.downselect_enforce_kerr)
+    # Stamp out-of-support rows here, from the masses, rather than relying on a
+    # nonfinite lambda surviving the conversion -- it need not, and on the
+    # vectorized converter path an above-mMaxMsun mass comes back as lambda=0,
+    # which reads as a black hole rather than as "no such star".  -inf across
+    # the row is the same flag the Kerr-bound check uses.
+    indx_bad = np.logical_not(eos_mass_support_mask(x_in))
+    if np.any(indx_bad):
+        x_out = np.array(x_out, dtype=float, copy=True)
+        x_out[indx_bad] = -np.inf
     return x_out
 
  # --protect-coordinate-conversions offers the same guard for the general case,
@@ -3906,18 +3945,28 @@ for indx_here in indx_list:
         # Test for downselect
         # Perform tabular EOS calculations: compute reference index, lambda1, lambda2
         if my_eos:
-            # only define lambda1, lambda2 as parameters if they are used in sampling! Otherwise may cause problems (e.g.,we are assuming it is zero for a BH)
-            if not(opts.assume_eos_but_primary_bh):
-                Pgrid.lambda1 = my_eos.lambda_from_m(Pgrid.m1/lal.MSUN_SI)
-            else:
-                Pgrid.lambda1 = 0 # BH
-            Pgrid.lambda2 = my_eos.lambda_from_m(Pgrid.m2/lal.MSUN_SI)
             # A selected EOS branch is bounded below as well as above, so a mass
-            # can have no star on it at all.  That is flagged with a nonfinite
-            # lambda: the draw is outside this EOS model's support, so drop it
-            # instead of exporting a sample with a meaningless tidal parameter.
-            if not (np.isfinite(Pgrid.lambda1) and np.isfinite(Pgrid.lambda2)):
+            # can have no star on it at all.  Apply the SAME support test the
+            # likelihood fit applied (mass_in_eos_support), so a draw the fit
+            # gave zero weight cannot be exported with a tidal parameter, and so
+            # an out-of-support mass is never handed to the EOS at all -- some
+            # EOS backends raise there, and others return a small finite lambda
+            # that would read as a real star.
+            if not mass_in_eos_support(
+                    my_eos, Pgrid.m1/lal.MSUN_SI, Pgrid.m2/lal.MSUN_SI,
+                    bh1=(opts.assume_eos_but_primary_bh or opts.no_matter1),
+                    bh2=opts.no_matter2):
                 include_item = False
+            else:
+                # only define lambda1, lambda2 as parameters if they are used in sampling! Otherwise may cause problems (e.g.,we are assuming it is zero for a BH)
+                if not(opts.assume_eos_but_primary_bh):
+                    Pgrid.lambda1 = my_eos.lambda_from_m(Pgrid.m1/lal.MSUN_SI)
+                else:
+                    Pgrid.lambda1 = 0 # BH
+                Pgrid.lambda2 = my_eos.lambda_from_m(Pgrid.m2/lal.MSUN_SI)
+                # Backstop: an EOS may still flag an interior failure this way.
+                if not (np.isfinite(Pgrid.lambda1) and np.isfinite(Pgrid.lambda2)):
+                    include_item = False
         elif opts.tabular_eos_file:
             # save the index of the SORTED SIMULATION (because that's how I'll be accessing it!)
             eos_indx_here = my_eos_sequence.lookup_closest(samples['ordering'][indx_here])

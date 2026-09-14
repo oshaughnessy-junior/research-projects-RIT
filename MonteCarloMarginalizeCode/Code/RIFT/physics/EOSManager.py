@@ -88,6 +88,18 @@ class EOSConcrete:
         )
         self.eos_fam = self._lalsim_family_adapter.family
         self.mMaxMsun = self._lalsim_family_adapter.maximum_mass() / lal.MSUN_SI
+        # The family is bounded below as well as above.  Released LALSimulation
+        # publishes this as SimNeutronStarFamMinimumMass and the reviewed API as
+        # the per-branch minimum, so the adapter can answer it on either build;
+        # consumers that mask draws need both ends.  A build that cannot answer
+        # leaves the attribute None, which those consumers read as "unbounded
+        # below", i.e. the historical behaviour.
+        try:
+            self.mMinMsun = (
+                self._lalsim_family_adapter.minimum_mass() / lal.MSUN_SI
+            )
+        except Exception:
+            self.mMinMsun = None
         return self.eos_fam
 
     def _get_lalsim_family_adapter(self):
