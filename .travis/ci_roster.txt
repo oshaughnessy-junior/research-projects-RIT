@@ -79,10 +79,10 @@ MonteCarloMarginalizeCode/Code/test/integrators/test_mcsampler_gpu.py         LE
 # The earlier version of this entry called them "expensive" and proposed hiding them behind
 # RIFT_RUN_EXPENSIVE.  That was asserted, not measured, and it was wrong: on CIT (ldas-grid) with
 # the IGWN python (OMP_NUM_THREADS=1) they take 7, 4, 20, 64 and 6 seconds -- 101 s for all five.
-# Each ends in `raise SystemExit(1)` on failure.  Seeding: four seed numpy only, which is enough on
-# the CPU-only CI runner but NOT on GPU, where the samplers draw through cupy; the decoy study uses
-# RIFT.integrators.seeding.seed_everything and replicates itself over nine child processes, which is
-# why it is the slow one.
+# Each ends in `raise SystemExit(1)` on failure, and all five now seed through
+# RIFT.integrators.seeding.seed_everything, which covers the cupy backend the samplers draw through
+# (a bare numpy.random.seed is inert there).  The decoy study also replicates itself over nine child
+# processes, which is why it is the slow one.
 #
 # THE WRAPPER PASSES --as-test, AND THAT IS LOAD-BEARING.  Every one of these keeps its
 # scientific comparisons AND its SystemExit(1) behind `if args.as_test`, so without the flag

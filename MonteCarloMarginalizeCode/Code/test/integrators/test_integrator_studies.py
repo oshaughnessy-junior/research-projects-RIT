@@ -19,10 +19,12 @@ study is the expensive one only because it replicates itself in nine child proce
 not enough to be opt-in.
 
 FLAKE RISK, since these are Monte Carlo studies with tolerance-based gates: all five seed
-explicitly, but a seed does not make a low-effective-sample-size result reliable across
-platforms.  The decoy balance-heuristic study therefore checks the mean evidence from
-independent, process-isolated runs.  If a study proves marginal in CI, investigate its
-sampling and statistical contract; do not delete the gate.
+explicitly, through RIFT.integrators.seeding.seed_everything, which reaches cupy as well as numpy
+(a bare numpy.random.seed is inert on the GPU backend the samplers draw through).  But a seed does
+not make a low-effective-sample-size result reliable across platforms, and it does not reset the
+state a long-lived interpreter accumulates.  The decoy balance-heuristic study therefore checks the
+mean evidence from independent, process-isolated runs.  If a study proves marginal in CI,
+investigate its sampling and statistical contract; do not delete the gate.
 
 Subprocess rather than import: each is a __main__ script with argparse, and running it the way a
 human runs it is the point -- it is what keeps the wrapper honest about the entry point.
