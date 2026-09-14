@@ -3,7 +3,9 @@
 posterior's HARD feature: a CURVED degeneracy arc that no axis-aligned binning
 (and no few-component Gaussian) can wrap.
 
-Reference results (n_eff vs cumulative N; GPU, seconds):
+Reference results (n_eff vs cumulative N; GPU, seconds).  These were recorded
+before the seeding below reached the GPU backend, so they are not reproducible
+runs -- treat them as the scale of the effect, not as values to diff against:
   corrall k=1 -> n_eff>=100 @76k, final ~50 ;  corrall k=2 -> @28k, final ~312
   corrall k=4 -> @752k (over-allocation collapse)
   adaptive (BIC, k<=8) -> @220k, final ~135   (robust, unbiased, hands-free)
@@ -23,8 +25,15 @@ Usage:
     mode = pairing  -> factored pairing {(0,1),(2,3),(4,5)} k each
 """
 import sys, numpy as np
-np.random.seed(1234)
 from RIFT.integrators import mcsamplerEnsemble
+from RIFT.integrators.seeding import seed_everything
+
+# The GMM member draws through its array backend -- gaussian_mixture_model's
+# k-means++ initialization calls xpy.random.choice -- and that backend is cupy on
+# a GPU host, where numpy.random.seed does not reach the generator.  Seeding numpy
+# alone left this benchmark's fixed seed inert on exactly the device the reference
+# numbers above were taken on.  Seed every backend instead.
+seed_everything(1234, verbose=False)
 
 # ---- box (broad prior) ----
 LO = np.array([-6.,-6., -6.,-30., -6.,-6.])

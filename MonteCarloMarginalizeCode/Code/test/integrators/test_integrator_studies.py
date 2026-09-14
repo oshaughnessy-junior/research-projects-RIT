@@ -18,8 +18,10 @@ behind RIFT_RUN_EXPENSIVE.  MEASURED, and the premise was wrong: on CIT with the
 to be opt-in.
 
 FLAKE RISK, since these are Monte Carlo studies with tolerance-based gates: all five seed
-explicitly (numpy RandomState(0/1/3) and np.random.seed), so they are deterministic rather than
-merely lucky, and three consecutive runs of each exited 0.  Three runs is not a flake proof; if
+explicitly, and four seed through RIFT.integrators.seeding.seed_everything, which reaches cupy as
+well as numpy -- a bare numpy.random.seed is inert on the GPU backend the samplers actually draw
+through.  So they are deterministic rather than merely lucky, and three consecutive runs of each
+exited 0.  Three runs is not a flake proof; if
 one does prove marginal in CI, tighten ITS seed or widen ITS stated tolerance, and do not
 delete the gate.
 
