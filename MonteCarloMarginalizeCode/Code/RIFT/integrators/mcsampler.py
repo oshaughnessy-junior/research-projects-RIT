@@ -104,6 +104,18 @@ class MCSampler(SamplerOutputMixin, object):
         # ASSUMES the user insures they are normalized
         self.prior_pdf = {}
 
+        # Host/device converters.  This sampler is pure numpy, so both are the identity --
+        # but they must EXIST, because callers written against the sampler interface use
+        # them unconditionally to normalize a possibly-device return value.  Every other
+        # sampler defines them in __init__ (mcsamplerGPU, mcsamplerAdaptiveVolume,
+        # mcsamplerPortfolio, mcsamplerEnsemble); this one did not, and the ILE driver only
+        # assigns them onto the samplers it recognizes by name.  So any --sampler-method
+        # that lands on the "original sampler" fallback (e.g. `adaptive_cartesian`) reached
+        # `float(sampler.identity_convert(neff))` after a SUCCESSFUL integration and died
+        # with AttributeError, discarding the result.
+        self.identity_convert = lambda x: x       # device -> host (no-op here)
+        self.identity_convert_togpu = lambda x: x # host -> device (no-op here)
+
     def clear(self):
         """
         Clear out the parameters and their settings, as well as clear the sample cache.
