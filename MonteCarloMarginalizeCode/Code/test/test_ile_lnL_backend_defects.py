@@ -373,7 +373,8 @@ def _construct(modname):
 
 
 @pytest.mark.parametrize('modname', ['mcsampler', 'mcsamplerGPU', 'mcsamplerAdaptiveVolume',
-                                     'mcsamplerEnsemble', 'mcsamplerPortfolio'])
+                                     'mcsamplerEnsemble', 'mcsamplerPortfolio',
+                                     'mcsamplerNFlow'])
 def test_every_sampler_exposes_identity_convert_straight_out_of_the_constructor(modname):
     """`float(sampler.identity_convert(neff))` runs for EVERY sampler the ILE builds, and the
     driver only assigns the converter onto the ones it recognizes by name.  So a sampler that
@@ -520,7 +521,8 @@ def test_no_post_processing_step_still_reads_the_option_as_the_convention():
     """The replica arm and the zero-likelihood stand-in had the same substitution."""
     src = _driver_source()
     for anchor in ('log_res = numpy.log(res)', '_lr2 = numpy.log(_res2)',
-                   'like_to_integrate = zero_like'):
+                   'like_to_integrate = zero_like',
+                   'res = numpy.exp(log_res); var'):
         before = src[:src.index(anchor)].split('\n')
         gate = next(ln for ln in reversed(before) if ln.strip().startswith(('if ', 'elif ')))
         assert 'internal_use_lnL' not in gate, \
@@ -559,3 +561,64 @@ def test_the_dgrid_gate_still_refuses_the_cases_it_should(override, expect):
               distance_marginalization=False, internal_use_lnL=False)
     kw.update(override)
     assert bool(eval(code, {'opts': _Opts(**kw)})) is expect
+
+
+@pytest.mark.skipif(not os.path.exists(_ILE), reason='ILE executable not in this tree')
+def test_the_replica_pass_undoes_exactly_what_the_main_pass_did():
+    """analyze_event RETURNS res, and the replica arm converts (log_res, sqrt_var_over_res)
+    back into (res, var).  That conversion is the INVERSE of the main pass's log_res block,
+    so the two must share a predicate: read one off the sampler's convention and the other
+    off the option and the round trip stops being one.  They disagree for
+    `--sampler-method adaptive_cartesian --internal-use-lnL`, where the main pass correctly
+    logs a linear integral and this block has to exponentiate it back.
+
+    Added after a rebase: this block did not exist when the other three sites were fixed, and
+    it arrived keyed off the option.  Running the two real source blocks back to back is what
+    pins them together, rather than each one separately looking defensible."""
+    fwd = _driver_slice('if not(return_lnL):\n      log_res', '# ---------')
+    back = _driver_slice('# keep the (res, var) pair consistent', '    # Calibration MC error')
+    for return_lnL, res0, var0 in [(False, np.exp(67.0), 3.0e56), (True, 67.0, 0.5)]:
+        ns = {'numpy': np, 'res': res0, 'var': var0, 'return_lnL': return_lnL}
+        exec(fwd, ns)
+        exec(back, ns)
+        assert ns['res'] == pytest.approx(res0, rel=1e-9), \
+            'round trip changed res for return_lnL={}'.format(return_lnL)
+        assert ns['var'] == pytest.approx(var0, rel=1e-9), \
+            'round trip changed var for return_lnL={}'.format(return_lnL)
+
+
+def test_the_plugin_base_class_carries_the_converter_so_subclasses_inherit_it():
+    """The parametrized check above can only name the samplers that exist today, and the
+    plugin samplers (nflow, and everything under integrators/unreliable_oracle) are
+    discovered at runtime.  What actually makes the rule hold for those is that they all
+    subclass MCSamplerGeneric, so assert it THERE -- otherwise a new plugin silently reopens
+    the hole that `float(sampler.identity_convert(neff))` fell into.
+
+    mcsampler.MCSampler, the one that was missing it, is the class that does NOT inherit from
+    this base; that is why it had to be fixed directly."""
+    from RIFT.integrators.mcsampler_generic import MCSamplerGeneric
+    s = MCSamplerGeneric()
+    assert hasattr(s, 'identity_convert'), 'MCSamplerGeneric has no identity_convert'
+    probe = np.asarray([1.0, 2.0])
+    assert np.allclose(np.asarray(s.identity_convert(probe)), probe)
+    assert not issubclass(mcsampler.MCSampler, MCSamplerGeneric), \
+        'mcsampler.MCSampler now inherits the base; drop its own converters rather than duplicating'
+
+
+@pytest.mark.skipif(not os.path.exists(_ILE), reason='ILE executable not in this tree')
+def test_a_failed_dgrid_export_is_loud_but_not_fatal():
+    """Widening the gate makes backends RUN an exporter they used to skip, and the block reads
+    `sampler._rvs["distance"]` / `sampler.prior_pdf["distance"]` unguarded.  Turning a silent
+    no-op into a job-killing KeyError at the very end -- after the integration is done and the
+    .dat is written -- would be a worse bug than the one being fixed.  So the export is
+    wrapped, and the handler must NAME the failure rather than swallow it."""
+    src = _driver_source()
+    i = src.index('export_marginal_distance_grid and not(opts.distance_marginalization):')
+    block = src[i:i + 3000]
+    j = block.index('save_distance_grid(fname_output_dgrid, dgrid)')
+    assert 'try:' in block[:j], 'the .dgrid exporter runs unguarded'
+    handler = block[j:j + 600]
+    assert 'except Exception' in handler, 'no handler after the export'
+    assert 'ERROR' in handler and 'could NOT be' in handler, \
+        'the handler does not say the .dgrid was not written'
+    assert '_e_dgrid' in handler, 'the handler does not report which exception it caught'
