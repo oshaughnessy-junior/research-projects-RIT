@@ -74,6 +74,7 @@ from igwn_ligolw import lsctables, utils, ligolw
 lsctables.use_in(ligolw.LIGOLWContentHandler)
 
 import RIFT.integrators.mcsampler as mcsampler
+from RIFT.misc.mc_error import relative_mc_error
 try:
     import RIFT.integrators.mcsamplerEnsemble as mcsamplerEnsemble
     mcsampler_gmm_ok = True
@@ -291,6 +292,12 @@ parser.add_argument("--cap-points",default=-1,type=int,help="Maximum number of p
 parser.add_argument("--chi-max", default=1,type=float,help="Maximum range of 'a' allowed.  Use when comparing to models that aren't calibrated to go to the Kerr limit.")
 parser.add_argument("--chi-small-max", default=None,type=float,help="Maximum range of 'a' allowed on the smaller body.  If not specified, defaults to chi_max")
 parser.add_argument("--eccentricity-prior", default="uniform",choices=['uniform','log_uniform'],help="Options are 'uniform' and 'log_uniform'")  # constrained: only 'log_uniform' is branched on below, so anything else would quietly fall through to the uniform prior
+parser.add_argument("--a6c-max", default=-20,type=float,help="Maximum range of 'a6c' allowed.")
+parser.add_argument("--a6c-min", default=-80,type=float,help="Minimum range of 'a6c' allowed.")
+parser.add_argument("--E0-max", default=1.2,type=float,help="Maximum range of 'E0' allowed.")
+parser.add_argument("--E0-min", default=1.0,type=float,help="Minimum range of 'E0' allowed.")
+parser.add_argument("--pphi0-max", default=5.4,type=float,help="Maximum range of 'p_phi0' allowed.")
+parser.add_argument("--pphi0-min", default=0.0,type=float,help="Minimum range of 'p_phi0' allowed.")
 parser.add_argument("--ecc-max", default=0.9,type=float,help="Maximum range of 'eccentricity' allowed.")
 parser.add_argument("--ecc-min", default=0.0,type=float,help="Minimum range of 'eccentricity' allowed.")
 parser.add_argument("--meanPerAno-max", default=2*np.pi,type=float,help="Maximum range of 'meanPerAno' allowed.")
@@ -303,6 +310,7 @@ parser.add_argument("--lambda-plus-max", default=None,type=float,help="Maximum r
 parser.add_argument("--parameter-nofit", action='append', help="Parameter used to initialize the implied parameters, and varied at a low level, but NOT the fitting parameters")
 parser.add_argument("--use-precessing",action='store_true')
 parser.add_argument("--lnL-downscale-factor",type=float,default=None,help="Multiply log likelihood by this number.  Intended for early stages of iterative analyses. Broadens the posterior. Assumes lnL is usual scale. Applied by MULTIPLYING INPUT DATA BY THIS FACTOR, before anything else applied.  Note also applied BEFORE MANUAL OFFSETS")
+parser.add_argument("--integrate-prior", action='store_true', help="Replace the fitted likelihood by L=1 while retaining the configured CIP prior, bounds, coordinate Jacobians, and post-integration prior corrections. Intended for an independent prior-normalization run used to report Bayes factors.")
 parser.add_argument("--lnL-shift-prevent-overflow",default=None,type=float,help="Define this quantity to be a large positive number to avoid overflows. Note that we do *not* define this dynamically based on sample values, to insure reproducibility and comparable integral results. BEWARE: If you shift the result to be below zero, because the GP relaxes to 0, you will get crazy answers.")
 parser.add_argument("--lnL-protect-overflow",action='store_true',help="Before fitting, subtract lnLmax - 100.  Add this quantity back at the end.")
 parser.add_argument("--lnL-offset",type=float,default=np.inf,help="lnL offset. ONLY POINTS within lnLmax - lnLoffset are used in the calculation!  VERY IMPORTANT - default value chosen to include all points, not viable for production with some fit techniques like gp")
@@ -335,12 +343,20 @@ parser.add_argument("--fit-load-gp",default=None,type=str,help="Filename of GP f
 parser.add_argument("--fit-save-gp",default=None,type=str,help="Filename of GP fit to save. ")
 parser.add_argument("--fit-save-jax",default=None,type=str,help="Base path for a self-contained, differentiable jax_gp export (writes <path>.npz + <path>.meta.json). Only used with --fit-method gp-jax-*. Reload with --fit-load-gp pointing at the same base path.")
 parser.add_argument("--fit-order",type=int,default=2,help="Fit order (polynomial case: degree)")
+parser.add_argument("--fit-gp-length-scale-max-factor",default=5.0,type=float,help="fit_gp: upper bound on each RBF length scale, as a multiple of that coordinate's standard deviation over the retained points. Default 5.0 reproduces the hardcoded value. Unlike the noise and amplitude bounds this ceiling is DERIVED FROM THE DATA, not hand-tuned, so raising it lets the GP become effectively linear across the grid; it exists to be measured against, not routinely changed.")
+parser.add_argument("--fit-gp-length-scale-min-factor",default=None,type=float,help="fit_gp: opt-in scale-aware lower bound on each RBF length scale, factor * coordinate standard deviation / sqrt(number of retained points). The default keeps the historical 1e-3 floor for non-mc coordinates and the 0.2 statistical floor for mc. Use when a measured coordinate width is below 1e-3, and inspect GP-KERNEL-RECORD after fitting.")
+parser.add_argument("--fit-gp-holdout-folds",default=0,type=int,help="fit_gp: if >0, also report a K-fold HELD-OUT predictive RMS alongside the in-sample residual, refitting the same kernel on each training split. In-sample residual cannot distinguish a flexible fit from an overfit one; this can. Costs K extra GP fits.")
+parser.add_argument("--fit-gp-noise-bounds",default="1e-2,1",type=str,help="fit_gp: comma-separated (lo,hi) bounds on the WhiteKernel noise_level, in nats^2. Default reproduces the hand-tuned LVK-scale value. Widen when lnL spans a dynamic range far larger than LVK's (third-generation networks): the default saturates and the fit under-reports structure.")
+parser.add_argument("--fit-gp-amplitude-bounds",default="1e-3,1e1",type=str,help="fit_gp: comma-separated (lo,hi) bounds on the ConstantKernel amplitude multiplying the RBF, in nats^2. Default reproduces the hand-tuned LVK-scale value, which caps the representable signal amplitude at sqrt(1e1)=3.2 nats.")
 parser.add_argument("--fit-uncertainty-added",default=False, action='store_true', help="Reported likelihood is lnL+(fit error). Use for placement and use of systematic errors.")
 parser.add_argument("--no-plots",action='store_true')
 parser.add_argument("--tabular-eos-file",type=str,default=None,help="Tabular file of EOS to use.  The default prior will be UNIFORM in this table!")
 parser.add_argument("--tabular-eos-file-format",type=str,default=None,help="Format of tabular file of EOS to use.  The default prior will be UNIFORM in this table!")
 parser.add_argument("--tabular-eos-order-statistic",type=str,default=None,help="Order statistic to use.  Options will include R1p4, LambdaTildeQ1, and ...}")
 parser.add_argument("--using-eos", type=str, default=None, help="Name of EOS.  Fit parameter list should physically use lambda1, lambda2 information (but need not). If starts with 'file:', uses a filename with EOS parameters ")
+parser.add_argument("--using-eos-branch", type=int, default=None, help="Select one stable LALSimulation family branch while preserving the fixed-EOS lambda_from_m(m) interface. Required for an explicitly chosen twin-star branch; not applicable to the primary-branch nmbseq v1 contract.")
+parser.add_argument("--using-eos-dirty-phase-transitions", action='store_true', help="With --using-eos lalsim_file:<path>, require the reviewed LALSimulation phase-transition reader (retained compatibility spelling; the reviewed API has no separate dirty-table boolean).")
+parser.add_argument("--using-eos-extended-family", action='store_true', help="With --using-eos lalsim_file:<path>, build the reviewed extended family instead of the PE-oriented minimal M/R/k2 family.")
 parser.add_argument("--using-eos-for-prior", action='store_true', default=None, help="Alternate (hacky) implementation, which overrides using-eos and using-eos-index, to handle loading in a hyperprior")
 parser.add_argument("--using-eos-index", type=int, default=None, help="Index of EOS parameters in file.")
 parser.add_argument("--no-use-lal-eos",action='store_true',help="Do not use LAL EOS interface. Used for spectral EOS. Do not use this.")
@@ -364,8 +380,13 @@ parser.add_argument("--internal-correlate-parameters",default=None,type=str,help
 parser.add_argument("--internal-n-comp",default=1,type=int,help="number of components to use for GMM sampling. Default is 1, because we expect a unimodal posterior in well-adapted coordinates.  If you have crappy coordinates, use more")
 parser.add_argument("--internal-gmm-memory-chisquared-factor",default=None,type=float,help="Multiple of the number of degrees of freedom to save. 5 is a part in 10^6, 4 is 10^{-4}, and None keeps all up to lnL_offset.  Note that low-weight points can contribute notably to n_eff, and it can be dangerous to assume a simple chisquared likelihood!  Provided in case we need very long runs")
 parser.add_argument("--assume-eos-but-primary-bh",action='store_true',help="Special case of known EOS, but primary is a BH")
+parser.add_argument("--use-EOB-parameters", action="store_true")
 parser.add_argument("--use-eccentricity", action="store_true")
 parser.add_argument("--use-meanPerAno", action="store_true")
+parser.add_argument("--use-hyperbolic", action="store_true")
+parser.add_argument("--force-scatter",default=False,action='store_true', help='For hyperbolic analyses forces only scatter grid points')
+parser.add_argument("--force-plunge",default=False,action='store_true', help='For hyperbolic analyses forces only plunge grid points')
+parser.add_argument("--force-zoomwhirl",default=False,action='store_true', help='For hyperbolic analyses forces only zoomwhirl grid points')
 parser.add_argument("--tripwire-fraction",default=0.05,type=float,help="Fraction of nmax of iterations after which n_eff needs to be greater than 1+epsilon for a small number epsilon")
 
 # FIXME hacky options added by me (Liz) to try to get my capstone project to work.
@@ -382,6 +403,17 @@ parser.add_argument("--supplementary-prior-code",default=None,type=str,help="Imp
 
 opts=  parser.parse_args()
 
+force_hyperbolic_classes = [
+    opts.force_scatter, opts.force_plunge, opts.force_zoomwhirl,
+]
+if any(force_hyperbolic_classes) and not opts.use_hyperbolic:
+    parser.error(
+        "--force-scatter, --force-plunge, and --force-zoomwhirl require "
+        "--use-hyperbolic"
+    )
+if sum(bool(value) for value in force_hyperbolic_classes) > 1:
+    parser.error("CANNOT use multiple hyperbolic --force-X options at once")
+
 # good enough file: terminate always with success if present, don't try any more work
 if opts.check_good_enough:
   fname = 'cip_good_enough'
@@ -397,15 +429,25 @@ if opts.check_good_enough:
 
 if not(opts.no_adapt_parameter):
     opts.no_adapt_parameter =[] # needs to default to empty list
+A6C_MAX = opts.a6c_max
+A6C_MIN = opts.a6c_min
+E0_MAX = opts.E0_max
+E0_MIN = opts.E0_min
+PPHI0_MAX = opts.pphi0_max
+PPHI0_MIN = opts.pphi0_min
 ECC_MAX = opts.ecc_max
 ECC_MIN = opts.ecc_min
-MEANPERANO_MAX = 2*np.pi
-MEANPERANO_MIN = 0
+MEANPERANO_MAX = opts.meanPerAno_max
+MEANPERANO_MIN = opts.meanPerAno_min
 no_plots = no_plots |  opts.no_plots
 lnL_shift = 0
 lnL_default_large_negative = -500
 if opts.lnL_shift_prevent_overflow:
     lnL_shift  = opts.lnL_shift_prevent_overflow
+if opts.integrate_prior:
+    # No fitted likelihood is evaluated in this mode, so no likelihood-scale
+    # shift or supplementary-likelihood constant belongs in the result.
+    lnL_shift = 0
 if not(opts.force_no_adapt):
     opts.force_no_adapt=False  # force explicit boolean false
 
@@ -431,6 +473,17 @@ if opts.using_eos and opts.using_eos.startswith('file:') and not(opts.using_eos_
     except Exception as e:
         print(" Fail: EOS index out of range:\n   ",e)
         sys.exit(0)
+from RIFT.physics.lalsim_eos_compat import (
+    mass_in_eos_support, validate_fixed_eos_branch_request)
+validate_fixed_eos_branch_request(
+    opts.using_eos_branch, opts.using_eos, opts.using_eos_for_prior
+)
+if (opts.using_eos_dirty_phase_transitions or opts.using_eos_extended_family) and (
+        opts.using_eos is None or not opts.using_eos.startswith('lalsim_file:')):
+    raise ValueError(
+        "--using-eos-dirty-phase-transitions and --using-eos-extended-family "
+        "require --using-eos lalsim_file:<path>"
+    )
 
 my_eos=None
 #option to be used if gridded values not calculated assuming EOS
@@ -462,7 +515,7 @@ elif opts.using_eos!=None and not(opts.using_eos_for_prior):
                 spec_params['gamma4']=spec_param_array[3]
             eos_base = EOSManager.EOSLindblomSpectral(name=eos_name,spec_params=spec_params,use_lal_spec_eos=not opts.no_use_lal_eos)
             my_eos=eos_base
-        elif opts.eos_param == 'cs_spectral' and len(spec_param_array >=4):
+        elif opts.eos_param == 'cs_spectral' and len(spec_param_array) >= 4:
             spec_params ={}
             spec_params['gamma1']=spec_param_array[0]
             spec_params['gamma2']=spec_param_array[1]
@@ -471,13 +524,13 @@ elif opts.using_eos!=None and not(opts.using_eos_for_prior):
             spec_params['gamma4']=spec_param_array[3]
             eos_base = EOSManager.EOSLindblomSpectralSoundSpeedVersusPressure(name=eos_name,spec_params=spec_params,use_lal_spec_eos=not opts.no_use_lal_eos)
             my_eos = eos_base
-        elif opts.eos_param == 'PP' and len(spec_param_array >=4):
+        elif opts.eos_param == 'PP' and len(spec_param_array) >= 4:
             spec_params ={}
             spec_params['logP1'] = spec_param_array[0]
             spec_params['gamma1'] = spec_param_array[1]
             spec_params['gamma2'] = spec_param_array[2]
             spec_params['gamma3'] = spec_param_array[3]
-            eos_base = EOSManager.EOSPiecewisePolytrope(name=eos_name,params_dict=spec_params)
+            eos_base = EOSManager.EOSPiecewisePolytrope(name=eos_name,param_dict=spec_params)
             my_eos = eos_base
         else:
             raise Exception("Unknown method for parametric EOS data file {} : {} ".format(eos_name,opts.eos_param))
@@ -527,6 +580,17 @@ elif opts.using_eos!=None and not(opts.using_eos_for_prior):
         _, seq_fname, seq_indx = eos_name.split(':')
         my_eos = EOSManager.EOSSequenceSingleIndex(fname=seq_fname,
                                                    index=int(seq_indx))
+    elif eos_name.startswith('lalsim_file:'):
+        my_eos = EOSManager.EOSLALSimulationFromFile(
+            fname=eos_name.split(':', 1)[1],
+            dirty_phase_transitions=opts.using_eos_dirty_phase_transitions,
+            minimal_family=not opts.using_eos_extended_family,
+            phase_transition_aware=(
+                opts.using_eos_branch is not None
+                or opts.using_eos_dirty_phase_transitions
+                or opts.using_eos_extended_family
+            ),
+        )
     elif 'lal_' in eos_name:
         eos_name = eos_name.replace('lal_','')
         my_eos = EOSManager.EOSLALSimulation(name=eos_name)
@@ -541,6 +605,16 @@ elif opts.using_eos!=None and not(opts.using_eos_for_prior):
         my_eos = EOSManager.EOSFromTabularData(name=eos_name,eos_data=my_eos_dat)
     else:
         my_eos = EOSManager.EOSFromDataFile(name=eos_name,fname =EOSManager.dirEOSTablesBase+"/" + eos_name+".dat")
+
+    if opts.using_eos_branch is not None:
+        if not hasattr(my_eos, "for_branch"):
+            raise ValueError(
+                "--using-eos-branch requires a LALSimulation-backed EOS. "
+                "The nmbseq v1 interface intentionally exposes its primary "
+                "stable branch; multi-branch NMB inference requires the "
+                "central-enthalpy sequence path."
+            )
+        my_eos = my_eos.for_branch(opts.using_eos_branch)
 
 
 with open('args.txt','w') as fp:
@@ -678,7 +752,7 @@ if not('chi2' in downselect_dict):
 if opts.input_tides:
     # only insert these cuts if we are using a composite file with tides!
     # do not downselect if lambda1 is not in ! allows NSBH
-    if not('lambda1' in downselect_dict) and 'lambda1' in opts.parameter:
+    if not('lambda1' in downselect_dict) and ('lambda1' in opts.parameter):
         downselect_dict['lambda1'] = [lambda_min,lambda_max]
     if not('lambda2' in downselect_dict):
         downselect_dict['lambda2'] = [lambda_min,lambda_small_max]
@@ -919,6 +993,9 @@ def tapered_magnitude_prior_alt(x,loc=0.8,kappa=20.):   #
     
     return 1/(1+f1)
 
+def a6c_prior(x):
+    return np.ones(x.shape) / (A6C_MAX-A6C_MIN) # uniform over the interval [A6C, A6C_MAX]
+
 def eccentricity_prior(x):
     return np.ones(x.shape) / (ECC_MAX-ECC_MIN) # uniform over the interval [0.0, ECC_MAX]
 
@@ -946,6 +1023,12 @@ def log_eccentricity_squared_prior(x):
 
 def meanPerAno_prior(x):
     return np.ones(x.shape) / (MEANPERANO_MAX-MEANPERANO_MIN) # uniform over the interval [MEANPERANO_MIN, MEANPERANO_MAX]
+
+def initial_energy_prior(x):
+    return np.ones(x.shape) / (E0_MAX-E0_MIN) # uniform over the interval [E0_MIN, E0_MAX]
+
+def initial_angmom_prior(x):
+    return np.ones(x.shape) / (PPHI0_MAX-PPHI0_MIN) # uniform over the interval [PPHI0_MIN, PPHI0_MAX]
 
 def precession_prior(x):
     return 0.5*np.ones(x.shape) # uniform over the interval [0.0, 2.0]
@@ -995,6 +1078,9 @@ prior_map  = { "mtot": M_prior, "q":q_prior, "s1z":s_component_uniform_prior, "s
     's1z_bar':normalized_zbar_prior,
     's2z_bar':normalized_zbar_prior,
     # Other priors
+    'a6c':a6c_prior,
+    'E0':initial_energy_prior,
+    'p_phi0':initial_angmom_prior,
     'eccentricity':eccentricity_prior,
     'eccentricity_ln':uniform_eccentricity_ln_prior,
     'eccentricity_squared':eccentricity_squared_prior,
@@ -1019,6 +1105,9 @@ prior_range_map = {"mtot": [1, 300], "q":[0.01,1], "s1z":[-0.999*chi_max,0.999*c
   'lambda2':[lambda_min,lambda_small_max],
   'lambda_plus':[lambda_min,lambda_plus_max],
   'lambda_minus':[-lambda_max,lambda_max],  # will include the true region always...lots of overcoverage for small lambda, but adaptation will save us.
+  'a6c':[A6C_MIN, A6C_MAX],
+  'E0':[E0_MIN,E0_MAX],
+  'p_phi0':[PPHI0_MIN,PPHI0_MAX],
   'eccentricity':[ECC_MIN, ECC_MAX],
   'eccentricity_ln':[np.log(ECC_MIN), np.log(ECC_MAX)],
   'eccentricity_squared':[ECC_MIN**2, ECC_MAX**2],
@@ -1068,7 +1157,7 @@ if not (opts.eta_range is None):
     # Note CDF of 1/(1+q)^2 is    -1/(1+q), so the normalization is analytic
     if 'q' in low_level_coord_names:
         delta_range = np.sqrt(1 - 4*np.array(eta_range))
-        q_range = (1-delta_range)/(1+delta_range)
+        q_range = prior_range_map['q'] = (1-delta_range)/(1+delta_range)
         norm_factor_q = 1./(1+q_range[0]) - 1./(1+q_range[1])
         prior_map['q']  = functools.partial(q_prior, norm_factor=norm_factor_q)
         prior_range_map['q'] = q_range
@@ -1363,6 +1452,126 @@ def adderr(y):
     val,err = y
     return val+error_factor*err
 
+def _gp_bounds_opt(spec):
+    """Parse a "lo,hi" CLI string into a (float,float) sklearn bounds tuple."""
+    lo, hi = (float(v) for v in str(spec).split(","))
+    return (lo, hi)
+
+
+def _mc_index_in(names):
+    """Index of chirp mass in a coordinate list, or -1 if it is not in it.
+
+    The peak scan reports a *physical* coordinate, so its index must be taken in
+    the basis the fitted array is actually built in: the columns of x follow
+    coord_names.  The global mc_index indexes low_level_coord_names instead, and
+    the two lists diverge exactly when --parameter-implied / --parameter-nofit
+    are used -- e.g. "--parameter delta_mc --parameter-implied mu1
+    --parameter-implied mu2 --parameter-nofit mc" fits [delta_mc, mu1, mu2]
+    while mc_index is 1, so scanning column 1 would report the mu1 peak as
+    chirp mass.  -1 is the "not a fitted coordinate" sentinel that
+    report_gp_kernel declines to scan.
+    """
+    return list(names).index('mc') if 'mc' in names else -1
+
+
+def report_gp_kernel(gp, x, y, tol=1e-3, holdout_folds=0, kernel_proto=None,
+                     alpha_proto=None, peak_index=None, peak_grid=240,
+                     peak_max_points=200000, peak_block_elements=5000000):
+    """Print a machine-readable record of the fitted GP: kernel form, the bounds
+    actually in force, the fitted hyperparameters, and -- the part that is not
+    self-announcing -- which of them the optimizer drove onto a bound.
+
+    A saturated fit returns successfully and looks exactly like a converged one,
+    so the saturation flags are the only way to tell from the outputs whether the
+    kernel bounds, rather than the data, set the answer.  sklearn stores
+    hyperparameters and bounds log-transformed in .theta / .bounds, so proximity
+    is tested there: |theta - bound| < tol means "on the bound".
+
+    peak_max_points caps the total size of the optional peak scan and
+    peak_block_elements caps the points-by-training kernel block it evaluates at
+    a time; both keep this diagnostic's memory bounded regardless of dimension
+    and retained sample count.
+    """
+    import json as _json
+    rec = {"kernel_form": str(gp.kernel), "kernel_fitted": str(gp.kernel_),
+           "log_marginal_likelihood": float(gp.log_marginal_likelihood_value_),
+           "n_points": int(len(y)), "lnL_range": float(np.nanmax(y) - np.nanmin(y)),
+           "resid_std": float(np.std(y - gp.predict(x))), "hyperparameters": []}
+    theta, bounds = gp.kernel_.theta, gp.kernel_.bounds
+    names = []
+    for h in gp.kernel_.hyperparameters:
+        names.extend([h.name] * int(h.n_elements if h.n_elements > 1 else 1))
+    for i in np.arange(len(theta)):
+        lo, hi = float(bounds[i][0]), float(bounds[i][1])
+        at_lo, at_hi = bool(theta[i] - lo < tol), bool(hi - theta[i] < tol)
+        rec["hyperparameters"].append(
+            {"name": names[i] if i < len(names) else "param_%d" % i,
+             "value": float(np.exp(theta[i])),
+             "bounds": [float(np.exp(lo)), float(np.exp(hi))],
+             "at_lower_bound": at_lo, "at_upper_bound": at_hi,
+             # decades of headroom to the nearer bound: a value can be
+             # operationally pinned without tripping the boolean flag.
+             "decades_to_bound": float(min(theta[i] - lo, hi - theta[i]) / np.log(10.0))})
+    rec["n_at_bound"] = int(sum(h["at_lower_bound"] or h["at_upper_bound"]
+                                for h in rec["hyperparameters"]))
+    if holdout_folds and holdout_folds > 1 and kernel_proto is not None:
+        # In-sample residual rewards flexibility.  Refit the SAME kernel on K
+        # training splits and score the untouched folds: this is the number that
+        # says whether relaxing the bounds bought generalization or overfitting.
+        from sklearn.model_selection import KFold
+        errs = []
+        alpha_is_vec = hasattr(alpha_proto, "__len__")
+        for tr, te in KFold(holdout_folds, shuffle=True, random_state=0).split(x):
+            g2 = GaussianProcessRegressor(
+                kernel=kernel_proto,
+                alpha=(alpha_proto[tr] if alpha_is_vec else alpha_proto),
+                n_restarts_optimizer=4)
+            g2.fit(x[tr], y[tr])
+            errs.append(g2.predict(x[te]) - y[te])
+        errs = np.concatenate(errs)
+        rec["holdout_folds"] = int(holdout_folds)
+        rec["holdout_rms_nats"] = float(np.sqrt((errs ** 2).mean()))
+        rec["holdout_max_abs_nats"] = float(np.abs(errs).max())
+    # The caller passes the chirp-mass column, whose sentinel for "there is no
+    # such coordinate" is -1: that is a legal numpy index, so it has to be
+    # rejected explicitly or the scan would report the LAST coordinate as mc.
+    peak_index = -1 if peak_index is None else int(peak_index)
+    if 0 <= peak_index < x.shape[1] and x.shape[1] <= 3:
+        # Where does the FITTED SURFACE put the likelihood maximum?  This is the
+        # question the interpolant exists to answer, and it is not implied by the
+        # residual: a saturated kernel can score acceptably on average and still
+        # misplace the peak.  Scanned over the training data's own extent.
+        #
+        # The grid is a full outer product, so its cost is peak_grid**ndim, and
+        # gp.predict then forms a points-by-training kernel matrix: in 3-D at
+        # peak_grid=240 that is 1.4e7 points against every retained sample, i.e.
+        # tens of GB.  Thin the axes to a fixed total budget and evaluate in
+        # blocks, so a diagnostic can never be what kills a successful fit.
+        ndim = int(x.shape[1])
+        n_per_axis = max(2, int(min(peak_grid, peak_max_points ** (1.0 / ndim))))
+        axes = [np.linspace(x[:, i].min(), x[:, i].max(), n_per_axis)
+                for i in np.arange(ndim)]
+        mesh = np.meshgrid(*axes, indexing="ij")
+        pts = np.column_stack([m.ravel() for m in mesh])
+        n_block = max(1, int(peak_block_elements // max(1, len(y))))
+        peak_val, peak_pt = -np.inf, pts[0]
+        for start in np.arange(0, len(pts), n_block):
+            block = pts[start:start + n_block]
+            zz = gp.predict(block)
+            here = int(np.argmax(zz))
+            if zz[here] > peak_val:
+                peak_val, peak_pt = float(zz[here]), block[here]
+        rec["surface_peak"] = {"coord_index": peak_index,
+                               "value": float(peak_pt[peak_index]),
+                               "grid_points_per_axis": int(n_per_axis)}
+    rec["saturated"] = bool(rec["n_at_bound"] > 0)
+    print(" GP-KERNEL-RECORD " + _json.dumps(rec, sort_keys=True))
+    if rec["saturated"]:
+        print(" GP WARNING: %d hyperparameter(s) sit ON a bound -- the bounds, not the"
+              " data, are setting the fit." % rec["n_at_bound"])
+    return rec
+
+
 def fit_gp(x,y,x0=None,symmetry_list=None,y_errors=None,hypercube_rescale=False,fname_export="gp_fit"):
     """
     x = array so x[0] , x[1], x[2] are points.
@@ -1384,16 +1593,30 @@ def fit_gp(x,y,x0=None,symmetry_list=None,y_errors=None,hypercube_rescale=False,
     #   - they are rarely very long, but at high mass can be long
     #   - I need to allow for a RANGE
 
+    if opts.fit_gp_length_scale_min_factor is not None and (
+            not np.isfinite(opts.fit_gp_length_scale_min_factor)
+            or opts.fit_gp_length_scale_min_factor <= 0):
+        raise ValueError("--fit-gp-length-scale-min-factor must be positive and finite")
     length_scale_est = []
     length_scale_bounds_est = []
     for indx in np.arange(len(x[0])):
         # These length scales have been tuned by expereience
         length_scale_est.append( 2*np.nanstd(x[:,indx])  )  # auto-select range based on sampling retained
-        length_scale_min_here= np.max([1e-3,0.2*np.nanstd(x[:,indx]/np.sqrt(len(x)))])
-        if indx == mc_index:
-            length_scale_min_here= 0.2*np.nanstd(x[:,indx]/np.sqrt(len(x)))
-            print(" Setting mc range: retained point range is ", np.nanstd(x[:,indx]), " and target min is ", length_scale_min_here)
-        length_scale_bounds_est.append( (length_scale_min_here , 5*np.nanstd(x[:,indx])   ) )  # auto-select range based on sampling *RETAINED* (i.e., passing cut).  Note that for the coordinates I usually use, it would be nonsensical to make the range in coordinate too small, as can occasionally happens
+        statistical_floor = 0.2*np.nanstd(x[:,indx]/np.sqrt(len(x)))
+        if opts.fit_gp_length_scale_min_factor is None:
+            length_scale_min_here = (statistical_floor if indx == mc_index
+                                     else np.max([1e-3, statistical_floor]))
+        else:
+            length_scale_min_here = (opts.fit_gp_length_scale_min_factor
+                                     * np.nanstd(x[:,indx]/np.sqrt(len(x))))
+        print(" Setting", "mc" if indx == mc_index else "coordinate %d" % indx,
+              "range: retained point range is", np.nanstd(x[:,indx]),
+              "and target min is", length_scale_min_here)
+        length_scale_max_here = opts.fit_gp_length_scale_max_factor*np.nanstd(x[:,indx])
+        if not (np.isfinite(length_scale_min_here) and 0 < length_scale_min_here < length_scale_max_here):
+            raise ValueError("GP length-scale bounds are invalid for coordinate %d: (%r, %r)" %
+                             (indx, length_scale_min_here, length_scale_max_here))
+        length_scale_bounds_est.append((length_scale_min_here, length_scale_max_here))
 
     print(" GP: Input sample size ", len(x), len(y))
     print(" GP: Estimated length scales ")
@@ -1405,10 +1628,15 @@ def fit_gp(x,y,x0=None,symmetry_list=None,y_errors=None,hypercube_rescale=False,
         alpha = y_errors**2  # added to diagonal of kernel, used to assign variances of measurements a priori; note also WhiteKernel also absorbs some of this
     if not (hypercube_rescale):
         # These parameters have been hand-tuned by experience to try to set to levels comparable to typical lnL Monte Carlo error
-        kernel = WhiteKernel(noise_level=0.1,noise_level_bounds=(1e-2,1))+C(0.5, (1e-3,1e1))*RBF(length_scale=length_scale_est, length_scale_bounds=length_scale_bounds_est)
+        noise_bounds_here = _gp_bounds_opt(opts.fit_gp_noise_bounds)
+        amp_bounds_here   = _gp_bounds_opt(opts.fit_gp_amplitude_bounds)
+        kernel = WhiteKernel(noise_level=0.1,noise_level_bounds=noise_bounds_here)+C(0.5, amp_bounds_here)*RBF(length_scale=length_scale_est, length_scale_bounds=length_scale_bounds_est)
         gp = GaussianProcessRegressor(kernel=kernel, alpha=alpha,  n_restarts_optimizer=8)
 
         gp.fit(x,y)
+        report_gp_kernel(gp, x, y, holdout_folds=opts.fit_gp_holdout_folds,
+                         kernel_proto=kernel, alpha_proto=alpha,
+                         peak_index=_mc_index_in(coord_names))
 
         print(" Fit: std: ", np.std(y - gp.predict(x)),  "using number of features ", len(y))
 
@@ -1559,7 +1787,7 @@ def fit_xg(x,y,y_errors=None,fname_export='nn_fit',verbose=False):
     import xgboost as xgb
     # Instantiate model. Usually not that many structures to find, don't overcomplicate
     #   - should scale like number of samples
-    rf = xgb.XGBRegressor(n_estimators=100) # no more than 5% of samples in a leaf
+    rf = xgb.XGBRegressor(n_estimators=100)
     if y_errors is None:
         rf.fit(x,y)
     else:
@@ -1620,7 +1848,7 @@ def fit_rf(x,y,y_errors=None,fname_export='nn_fit',verbose=False):
     from sklearn.ensemble import ExtraTreesRegressor
     # Instantiate model. Usually not that many structures to find, don't overcomplicate
     #   - should scale like number of samples
-    rf = ExtraTreesRegressor(n_estimators=100, verbose=verbose,n_jobs=-1) # no more than 5% of samples in a leaf
+    rf = ExtraTreesRegressor(n_estimators=100, verbose=verbose,n_jobs=-1)
     if y_errors is None:
         rf.fit(x,y)
     else:
@@ -1646,7 +1874,6 @@ def fit_rf(x,y,y_errors=None,fname_export='nn_fit',verbose=False):
 
 def fit_rf_pca(x,y,y_errors=None,fname_export='nn_fit'):
     # from aasim
-#    from sklearn.ensemble import RandomForestRegressor
     from sklearn.ensemble import ExtraTreesRegressor
     from sklearn.decomposition import PCA
     from sklearn.preprocessing import StandardScaler
@@ -1656,38 +1883,35 @@ def fit_rf_pca(x,y,y_errors=None,fname_export='nn_fit'):
     x_pca = pca.fit_transform(x_scaled)
     # Instantiate model. Usually not that many structures to find, don't overcomplicate
     #   - should scale like number of samples
-    rf = ExtraTreesRegressor(n_estimators=100, verbose=True,n_jobs=-1) # no more than 5% of samples in a leaf
+    rf = ExtraTreesRegressor(n_estimators=100, verbose=True,n_jobs=-1)
 
     if y_errors is None:
         rf.fit(x_pca,y)
     else:
         rf.fit(x_pca,y,sample_weight=1./y_errors**2)
 
-    ### reject points with infinities : problems for inputs
     def fn_return(x_in,rf=rf):
         f_out = -100000*np.ones(len(x_in))
-        # remove infinity or Nan
         indx_ok = np.all(np.isfinite(x_in),axis=-1)
-        # rf internally uses float32, so we need to remove points > 10^37 or so ! 
-        #    ... this *should* never happen due to bounds constraints, but ...
-        indx_ok_size = np.all( np.logical_not(np.greater(np.abs(x_in),1e37)), axis=-1)
+        indx_ok_size = np.all(
+            np.logical_not(np.greater(np.abs(x_in),1e37)), axis=-1
+        )
         indx_ok = np.logical_and(indx_ok, indx_ok_size)
-
-        f_out[indx_ok] = rf.predict(pca.transform(x_scaler.transform(x_in[indx_ok])))
+        f_out[indx_ok] = rf.predict(
+            pca.transform(x_scaler.transform(x_in[indx_ok]))
+        )
         return f_out
-#    fn_return = lambda x_in: rf.predict(x_in) 
 
-    print( " Demonstrating RF")   # debugging
+    print( " Demonstrating RF")
     residuals = rf.predict(pca.transform(x_scaler.transform(x)))-y
     print( "    std ", np.std(residuals), np.max(y), np.max(fn_return(x)))
     return fn_return
 
 def fit_rbf(x,y,y_errors=None,fname_export='rbf_fit',verbose=False):
     from scipy.interpolate import RBFInterpolator
-    #   - should scale like number of samples
     rbf = RBFInterpolator(x,y)
 
-    print( " Demonstrating RBF")   # debugging
+    print( " Demonstrating RBF")
     residuals = rbf(x)-y
     print( "    std ", np.std(residuals), np.max(y), np.max(rbf(x)))
     return rbf
@@ -1872,6 +2096,9 @@ n_params = -1
 ###
 #  id m1 m2  lnL sigma/L  neff
 col_lnL = 9
+col_a6c = None
+col_E0 = None
+col_pphi0 = None
 col_eccentricity = None
 col_meanPerAno = None
 col_lambda1 = None
@@ -1893,20 +2120,25 @@ if opts.input_tides:
             low_level_coord_names += ['ordering'] 
         print(" Revised fit coord names (for lookup) : ", coord_names) # 'eos_table_index' will be overwritten here
         print(" Revised sampling coord names  : ", low_level_coord_names)
-elif opts.use_eccentricity:
-    print(" Eccentricity input: [",ECC_MIN, ", ",ECC_MAX, "]")
+if opts.use_EOB_parameters:
+    print(" EOB parameters (a6c) input: [", A6C_MIN, ", ", A6C_MAX, "]")
+    col_lnL += 1
+    col_a6c = col_lnL - 1
+if opts.use_hyperbolic:
+    print(" E0 input: [", E0_MIN, ", ", E0_MAX, "]")
+    print(" p_phi0 input: [", PPHI0_MIN, ", ", PPHI0_MAX, "]")
+    col_lnL += 2
+    col_E0 = col_lnL - 2
+    col_pphi0 = col_lnL - 1
+if opts.use_eccentricity:
+    print(" Eccentricity input: [", ECC_MIN, ", ", ECC_MAX, "]")
+    col_lnL += 1
+    col_eccentricity = col_lnL - 1
     if opts.use_meanPerAno:
         print("  Also using meanPerAno ")
-        # perform modulus on desired row
-        col_lnL+=2
-        col_meanPerAno = col_lnL -1
-        col_eccentricity = col_lnL -2
-    else:
         col_lnL += 1
-        col_eccentricity = col_lnL -1
-if opts.input_distance:
-    print(" Distance input")
-    col_lnL +=1
+        col_meanPerAno = col_lnL - 1
+
 # ----------------------------------------------------------------------
 # Hyperpipeline ASCII input path (opt-in via env var or auto-detected).
 # When active, we (a) read a header-bearing file via hyperpipeline_io,
@@ -1931,6 +2163,12 @@ if _use_hpip:
     _use_tides = bool(opts.input_tides) or _has("lambda1")
     _use_eos = bool(opts.input_eos_index) or _has("eos_table_index")
     _use_dist = bool(opts.input_distance) or _has("distance")
+    _use_eob = bool(opts.use_EOB_parameters)
+    _use_hyp = bool(opts.use_hyperbolic)
+    if _has("a6c") and not _use_eob:
+        parser.error("Hyperpipeline input contains a6c; pass --use-EOB-parameters")
+    if (_has("E0") or _has("p_phi0")) and not _use_hyp:
+        parser.error("Hyperpipeline input contains E0/p_phi0; pass --use-hyperbolic")
     # LISA sky: ecliptic_longitude/latitude are NAMED columns -> carry them
     # through (aliased to P.phi/P.theta), so the sky is fit/sampled like any
     # other coordinate.  No positional all.net hacking.
@@ -1938,14 +2176,20 @@ if _use_hpip:
     dat = _hpio.to_legacy_dat(_arr,
                               use_eccentricity=_use_ecc, use_meanPerAno=_use_mpa,
                               use_tides=_use_tides, use_eos_index=_use_eos,
-                              use_distance=_use_dist, use_sky=_use_sky)
+                              use_distance=_use_dist,
+                              use_eob_parameters=_use_eob,
+                              use_hyperbolic=_use_hyp, use_sky=_use_sky)
     _ix = _hpio.legacy_column_indices(
         use_eccentricity=_use_ecc, use_meanPerAno=_use_mpa,
         use_tides=_use_tides, use_eos_index=_use_eos,
-        use_distance=_use_dist, use_sky=_use_sky)
+        use_distance=_use_dist, use_eob_parameters=_use_eob,
+        use_hyperbolic=_use_hyp, use_sky=_use_sky)
     col_lnL = _ix["lnL"]
     col_distance = _ix["distance"]
     col_lambda1 = _ix["lambda1"]
+    col_a6c = _ix["a6c"]
+    col_E0 = _ix["E0"]
+    col_pphi0 = _ix["p_phi0"]
     col_eccentricity = _ix["eccentricity"]
     col_meanPerAno = _ix["meanPerAno"]
     col_ecliptic_longitude = _ix["ecliptic_longitude"]
@@ -2043,6 +2287,8 @@ for line in dat:
         P.lambda2 = line[col_lambda1+1]
     if opts.input_eos_index:
         P.eos_table_index = line[col_lambda1+2]
+    if opts.use_EOB_parameters:
+        P.a6c = line[col_a6c]  # 9
     if opts.use_eccentricity:
         P.eccentricity = line[col_eccentricity]  # 9
         if opts.use_meanPerAno:
@@ -2050,6 +2296,9 @@ for line in dat:
 #        P.eccentricity = line[9]
 #        if opts.use_meanPerAno:
 #            P.meanPerAno = line[10]
+    if opts.use_hyperbolic:
+        P.E0 = line[col_E0]
+        P.p_phi0 = line[col_pphi0]
     if opts.input_distance:
         P.dist = lal.PC_SI*1e6*line[col_distance]  # 9. Previously incompatible with tides when hardcoded
     if _use_sky:
@@ -2238,7 +2487,14 @@ elif sum(indx_ok) < 5*len(X[0])**2: # and max_lnL > 30:
 X_raw = X.copy()
 
 my_fit= None
-if not(opts.fit_load_quadratic is None):
+if opts.integrate_prior:
+    print(" PRIOR NORMALIZATION: replacing the fitted likelihood by L=1 ")
+    def my_fit(x):
+        x = np.asarray(x)
+        if x.ndim < 2:
+            return 0.0
+        return np.zeros(len(x))
+elif not(opts.fit_load_quadratic is None):
     print("FIT METHOD IS STORED QUADRATIC; no data used! ")
     my_fit = fit_quadratic_stored(opts.fit_load_quadratic, opts.fit_load_quadratic_path)
 elif opts.fit_method == "quadratic":
@@ -2433,12 +2689,10 @@ elif opts.fit_method == 'rf':
     my_fit = fit_rf(X,Y,y_errors=Y_err)
 elif opts.fit_method == 'rf_pca':
     print( " FIT METHOD ", opts.fit_method, " IS RF-pca ")
-    # NO data truncation for NN needed?  To be *consistent*, have the code function the same way as the others
     X=X[indx_ok]
     Y=Y[indx_ok] - lnL_shift
     Y_err = Y_err[indx_ok]
-    dat_out_low_level_coord_names =     dat_out_low_level_coord_names[indx_ok]
-    # Cap the total number of points retained, AFTER the threshold cut
+    dat_out_low_level_coord_names = dat_out_low_level_coord_names[indx_ok]
     if opts.cap_points< len(Y) and opts.cap_points> 100:
         n_keep = opts.cap_points
         indx = np.random.choice(np.arange(len(Y)),size=n_keep,replace=False)
@@ -2449,12 +2703,10 @@ elif opts.fit_method == 'rf_pca':
     my_fit = fit_rf_pca(X,Y,y_errors=Y_err)
 elif opts.fit_method == 'rbf':
     print( " FIT METHOD ", opts.fit_method, " IS RBF; **errors not used! **")
-    # NO data truncation for NN needed?  To be *consistent*, have the code function the same way as the others
     X=X[indx_ok]
     Y=Y[indx_ok] - lnL_shift
     Y_err = Y_err[indx_ok]
-    dat_out_low_level_coord_names =     dat_out_low_level_coord_names[indx_ok]
-    # Cap the total number of points retained, AFTER the threshold cut
+    dat_out_low_level_coord_names = dat_out_low_level_coord_names[indx_ok]
     if opts.cap_points< len(Y) and opts.cap_points> 100:
         n_keep = opts.cap_points
         indx = np.random.choice(np.arange(len(Y)),size=n_keep,replace=False)
@@ -2578,13 +2830,77 @@ if not no_plots:
 ###
 ### Coordinate conversion tool
 ###
+def protect_fit_against_out_of_support(fn, val=-np.inf):
+    """Wrap a fit so rows with a nonfinite coordinate get ``val`` instead of being fit.
+
+    A fixed EOS has bounded support: no stable star exists above ``mMaxMsun``,
+    and none below ``mMinMsun`` on a selected branch either.  Such draws are
+    routine in every integration batch, so they must be assigned zero
+    probability here rather than aborting the batch that carried them: the
+    usual fitting backends (sklearn in particular) raise on nonfinite input.
+    Rows that are in support are still fit together, in one call, so batched
+    backends are unaffected.
+
+    This wrapper only sees the FIT coordinates.  It cannot itself decide
+    support, because the EOS flag rides in lambda and the fit basis need not
+    carry lambda -- see ``eos_mass_support_mask``, which stamps the row before
+    it gets here.
+    """
+    def my_protected_fit(x_in):
+        x_in = np.atleast_2d(x_in)
+        indx_ok = np.all(np.isfinite(x_in), axis=1)
+        val_out = np.full(len(x_in), val, dtype=float)
+        if np.any(indx_ok):
+            val_out[indx_ok] = np.reshape(fn(x_in[indx_ok]), -1)
+        return val_out
+    return my_protected_fit
+
 if not opts.using_eos or (fake_eos):
  def convert_coords(x_in):
     return lalsimutils.convert_waveform_coordinates(x_in, coord_names=coord_names,low_level_coord_names=low_level_coord_names,source_redshift=source_redshift,enforce_kerr=opts.downselect_enforce_kerr)
 else:
+ def eos_mass_support_mask(x_in):
+    """Per-row test: does every matter object in this draw have a stable star?
+
+    ``convert_waveform_coordinates_with_eos`` returns only ``coord_names``.
+    When the fit basis carries no tidal coordinate -- ``mc,eta`` is the common
+    case -- the EOS's out-of-support flag is created in lambda and then
+    DISCARDED by the conversion, so the row arrives at the fit fully finite.
+    Fitting it assigns posterior support to a mass at which this EOS (or the
+    branch selected with --using-eos-branch) has no star at all.
+
+    The support test therefore has to be made against the SAMPLED masses,
+    which is what this does.  ``no_matter1``/``no_matter2`` mark an object as a
+    black hole, and a black hole is under no EOS constraint, so those objects
+    are exempt.  Bounds the EOS does not publish are read as unbounded, which
+    is the historical behaviour for EOS classes that expose neither.
+    """
+    x_in = np.atleast_2d(x_in)
+    # Source-frame component masses in Msun: the same quantity the converter
+    # itself feeds the EOS, before any source_redshift is applied.
+    m_source = lalsimutils.convert_waveform_coordinates(
+        x_in, coord_names=['m1','m2'], low_level_coord_names=low_level_coord_names)
+    return mass_in_eos_support(
+        my_eos, m_source[:, 0], m_source[:, 1],
+        bh1=opts.no_matter1, bh2=opts.no_matter2)
+
  def convert_coords(x_in):
     x_out = lalsimutils.convert_waveform_coordinates_with_eos(x_in, coord_names=coord_names,low_level_coord_names=low_level_coord_names,eos_class=my_eos,no_matter1=opts.no_matter1, no_matter2=opts.no_matter2,source_redshift=source_redshift,enforce_kerr=opts.downselect_enforce_kerr)
+    # Stamp out-of-support rows here, from the masses, rather than relying on a
+    # nonfinite lambda surviving the conversion -- it need not, and on the
+    # vectorized converter path an above-mMaxMsun mass comes back as lambda=0,
+    # which reads as a black hole rather than as "no such star".  -inf across
+    # the row is the same flag the Kerr-bound check uses.
+    indx_bad = np.logical_not(eos_mass_support_mask(x_in))
+    if np.any(indx_bad):
+        x_out = np.array(x_out, dtype=float, copy=True)
+        x_out[indx_bad] = -np.inf
     return x_out
+
+ # --protect-coordinate-conversions offers the same guard for the general case,
+ # but out-of-support draws are not exceptional with a fixed EOS, so the guard
+ # is not optional on this path.
+ my_fit = protect_fit_against_out_of_support(my_fit)
 
 
 ###
@@ -2669,9 +2985,8 @@ elif opts.sampler_method == "portfolio":
         print('PORTFOLIO: adding {} '.format(name))
         sampler_list.append(sampler)
     sampler = mcsamplerPortfolio.MCSampler(portfolio=sampler_list)
-elif mcsampler_Portfolio_ok:
-    if opts.sampler_method in mcsamplerPortfolio.known_pipelines: # access from plugins
-        sampler = mcsamplerPortfolio.known_pipelines[opts.sampler_method]()
+elif opts.sampler_method in mcsamplerPortfolio.known_pipelines: # access from plugins
+  sampler = mcsamplerPortfolio.known_pipelines[opts.sampler_method]()
 
 
 ###
@@ -2985,6 +3300,8 @@ if opts.sampler_method == 'GMM':
     my_exp = np.min([1,4*np.log(n_step)/np.max(Y)])   # target value : scale to slightly sublinear to (n_step)^(0.8) for Ymax = 200. This means we have ~ n_step points, with peak value wt~ n_step^(0.8)/n_step ~ 1/n_step^(0.2), limiting contrast
 if opts.sampler_method == 'NFlow':
     my_exp = 1 # don't use it
+if opts.integrate_prior:
+    my_exp = 1
 #my_exp = np.max([my_exp,  1/np.log(n_step)]) # do not allow extreme contrast in adaptivity, to the point that one iteration will dominate
 print(" Weight exponent ", my_exp, " and peak contrast (exp)*lnL = ", my_exp*np.max(Y), "; exp(ditto) =  ", np.exp(my_exp*np.max(Y)), " which should ideally be no larger than of order the number of trials in each epoch, to insure reweighting doesn't select a single preferred bin too strongly.  Note also the floor exponent also constrains the peak, de-facto")
 
@@ -3042,11 +3359,11 @@ if opts.force_no_adapt:
     tempering_adapt=False
 # Result shifted by lnL_shift
 fn_passed = likelihood_function
-if supplemental_ln_likelihood:
+if supplemental_ln_likelihood and not opts.integrate_prior:
     fn_passed =  lambda *x: likelihood_function(*x)*np.exp(supplemental_ln_likelihood(*x))
 if opts.internal_use_lnL:
     fn_passed = log_likelihood_function   # helps regularize large values
-    if supplemental_ln_likelihood:
+    if supplemental_ln_likelihood and not opts.integrate_prior:
         fn_passed =  lambda *x: log_likelihood_function(*x) + supplemental_ln_likelihood(*x)
     extra_args.update({"use_lnL":True,"return_lnI":True})
 if opts.internal_temper_log:
@@ -3104,10 +3421,11 @@ else:
 # a plugin configured entirely by environment prepares itself lazily on its first evaluation, which
 # has certainly happened by now.  Stays 0.0 for every plugin that does not centre, and for runs
 # with no supplementary factor at all -- so nothing else changes.
-if supplemental_ln_likelihood_offset_fn:
+if supplemental_ln_likelihood_offset_fn and not opts.integrate_prior:
     supplemental_ln_likelihood_offset = float(supplemental_ln_likelihood_offset_fn())
     print(" EXTERNAL SUPPLEMENTARY LIKELIHOOD FACTOR : restoring offset {} in reported lnL/evidence ".format(supplemental_ln_likelihood_offset))
 ln_integrand_value_absolute = ln_integrand_value + supplemental_ln_likelihood_offset
+sigma_integral = relative_mc_error(res, var, log_space=opts.internal_use_lnL)
 
 # Test n_eff threshold
 if not (opts.fail_unless_n_eff is None):
@@ -3198,12 +3516,12 @@ elif opts.using_eos and opts.using_eos.startswith('file:'):
     annotation_header = linefirst # this will/must be lnL sigma_lnL and then parameter names, which we want to preserve
 with open(opts.fname_output_integral+"+annotation.dat", 'w') as file_out:
   if not(opts.using_eos) or not(opts.using_eos.startswith('file:')):
-    str_out =list( map(str,[ln_integrand_value_absolute, np.sqrt(var)/res, neff]))
+    str_out =list( map(str,[ln_integrand_value_absolute, sigma_integral, neff]))
     file_out.write("# " + annotation_header + "\n")
     file_out.write(' '.join( str_out + eos_extra + ["\n"]))
   else:
     file_out.write("# " + annotation_header + "\n")
-    file_out.write(" {} {} ".format(ln_integrand_value_absolute, np.sqrt(var)/res) + ' '.join(map(str,params_here)))
+    file_out.write(" {} {} ".format(ln_integrand_value_absolute, sigma_integral) + ' '.join(map(str,params_here)))
 #np.savetxt(opts.fname_output_integral+"+annotation.dat", np.array([[np.log(res), np.sqrt(var)/res, neff]]), header=eos_extra)
 # since not EOS, can just use np.savetxt
 # with open(opts.fname_output_integral+"+annotation_ESS.dat", 'w') as file_out:
@@ -3256,11 +3574,15 @@ if True:
     weights_scaled = weights_scaled/np.max(weights_scaled)  # try to reduce dynamic range
     n_ESS = np.sum(weights_scaled)**2/np.sum(weights_scaled**2)
     print(" n_eff n_ESS ", neff, n_ESS)
-np.savetxt(opts.fname_output_integral+"+annotation_ESS.dat",[[ln_integrand_value_absolute, np.sqrt(var)/res, neff, n_ESS]],header=" lnL sigmaL neff n_ESS ")
+np.savetxt(opts.fname_output_integral+"+annotation_ESS.dat",[[ln_integrand_value_absolute, sigma_integral, neff, n_ESS]],header=" lnL sigmaL neff n_ESS ")
 
 
 # Throw away stupid points that don't impact the posterior
 indx_ok = np.logical_and(dat_logL > lnLmax-opts.lnL_offset ,samples["joint_s_prior"]>0)
+if opts.integrate_prior:
+    # The likelihood-offset cut is a posterior-memory optimization.  For L=1
+    # it would instead excise genuine prior support and bias the normalization.
+    indx_ok = samples["joint_s_prior"] > 0
 for p in low_level_coord_names:
     samples[p] = samples[p][indx_ok]
 dat_logL  = dat_logL[indx_ok]
@@ -3372,8 +3694,13 @@ if opts.pseudo_gaussian_mass_prior:
 # Same absolute-scale restoration as for the integral above: lnLmax here is a maximum of the
 # CENTRED integrand, and this file is documented to agree with integral_result.dat -- so leaving the
 # plugin's constant out of one and not the other turns a check into a spurious disagreement.
-log_res_reweighted = lnLmax + np.log(np.mean(weights)) + supplemental_ln_likelihood_offset
+log_res_reweighted = lnLmax + np.log(np.mean(weights)) + supplemental_ln_likelihood_offset + lnL_shift
 sigma_reweighted= np.std(weights,dtype=RiftFloat)/np.mean(weights)
+if opts.integrate_prior:
+    # The L=1 result is a fresh importance-sampling mean.  Its fractional
+    # standard error carries the usual 1/sqrt(N); preserve the historical
+    # coefficient-of-variation annotation for ordinary likelihood runs.
+    sigma_reweighted /= np.sqrt(len(weights))
 neff_reweighted = np.sum(weights)/np.max(weights)
 np.savetxt(opts.fname_output_integral+"_withpriorchange.dat", [log_res_reweighted])  # should agree with the usual result, if no prior changes
 with open(opts.fname_output_integral+"_withpriorchange+annotation.dat", 'w') as file_out:
@@ -3618,12 +3945,28 @@ for indx_here in indx_list:
         # Test for downselect
         # Perform tabular EOS calculations: compute reference index, lambda1, lambda2
         if my_eos:
-            # only define lambda1, lambda2 as parameters if they are used in sampling! Otherwise may cause problems (e.g.,we are assuming it is zero for a BH)
-            if not(opts.assume_eos_but_primary_bh):
-                Pgrid.lambda1 = my_eos.lambda_from_m(Pgrid.m1/lal.MSUN_SI)
+            # A selected EOS branch is bounded below as well as above, so a mass
+            # can have no star on it at all.  Apply the SAME support test the
+            # likelihood fit applied (mass_in_eos_support), so a draw the fit
+            # gave zero weight cannot be exported with a tidal parameter, and so
+            # an out-of-support mass is never handed to the EOS at all -- some
+            # EOS backends raise there, and others return a small finite lambda
+            # that would read as a real star.
+            if not mass_in_eos_support(
+                    my_eos, Pgrid.m1/lal.MSUN_SI, Pgrid.m2/lal.MSUN_SI,
+                    bh1=(opts.assume_eos_but_primary_bh or opts.no_matter1),
+                    bh2=opts.no_matter2):
+                include_item = False
             else:
-                Pgrid.lambda1 = 0 # BH
-            Pgrid.lambda2 = my_eos.lambda_from_m(Pgrid.m2/lal.MSUN_SI)
+                # only define lambda1, lambda2 as parameters if they are used in sampling! Otherwise may cause problems (e.g.,we are assuming it is zero for a BH)
+                if not(opts.assume_eos_but_primary_bh):
+                    Pgrid.lambda1 = my_eos.lambda_from_m(Pgrid.m1/lal.MSUN_SI)
+                else:
+                    Pgrid.lambda1 = 0 # BH
+                Pgrid.lambda2 = my_eos.lambda_from_m(Pgrid.m2/lal.MSUN_SI)
+                # Backstop: an EOS may still flag an interior failure this way.
+                if not (np.isfinite(Pgrid.lambda1) and np.isfinite(Pgrid.lambda2)):
+                    include_item = False
         elif opts.tabular_eos_file:
             # save the index of the SORTED SIMULATION (because that's how I'll be accessing it!)
             eos_indx_here = my_eos_sequence.lookup_closest(samples['ordering'][indx_here])
@@ -3645,6 +3988,42 @@ for indx_here in indx_list:
                     include_item = False
                     if opts.verbose:
                         print(" Sample: Skipping " , line, ' due to ', p, val, downselect_dict[p])
+
+        if opts.force_scatter:
+            if include_item==False:
+                # no need to evaluate if the point is already downselected out
+                pass
+            else:
+                # removes non-scatter points from the hyperbolic grid
+                hypclass = Pgrid.extract_param('hypclass')
+                if hypclass == 'scatter':
+                    include_item = True
+                else:
+                    include_item = False
+
+        if opts.force_plunge:
+            if include_item==False:
+                # no need to evaluate if the point is already downselected out
+                pass
+            else:
+                # removes non-plunge points from the hyperbolic grid
+                hypclass = Pgrid.extract_param('hypclass')
+                if hypclass == 'plunge':
+                    include_item = True
+                else:
+                    include_item = False
+
+        if opts.force_zoomwhirl:
+            if include_item==False:
+                # no need to evaluate if the point is already downselected out
+                pass
+            else:
+                # removes non-zoomwhirl points from the hyperbolic grid
+                hypclass = Pgrid.extract_param('hypclass')
+                if hypclass == 'zoomwhirl':
+                    include_item = True
+                else:
+                    include_item = False
 
         # Set some superfluous quantities, needed only for PN approximants, so the result is generated sensibly
         Pgrid.ampO =opts.amplitude_order
@@ -3977,4 +4356,3 @@ for indx in np.arange(len(extra_plot_coord_names)):
      print(" Failed to generate corner for ", extra_plot_coord_names[indx])
 
 sys.exit(0)
-
