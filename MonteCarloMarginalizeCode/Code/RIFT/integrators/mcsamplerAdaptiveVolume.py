@@ -1196,13 +1196,43 @@ class MCSampler(SamplerOutputMixin, object):
               rv = identity_convert_togpu(rv) # send random numbers to GPU : ugh
               log_joint_p_prior = identity_convert_togpu(log_joint_p_prior)    # send to GPU if required. Don't waste memory reassignment otherwise
 
-            # Evaluate function, protecting argument order
-            if True: #'no_protect_names' in kwargs:
-                unpacked0 = rv.T
-                lnL = lnF(*unpacked0)  # do not protect order
-            # else:
-            #     unpacked = dict(list(zip(self.params_ordered,rv.T)))
-            #     lnL= lnF(**unpacked)  # protect order using dictionary
+            # Evaluate the integrand, device-first with a remembered host retry -- the
+            # same contract as integrate_log() below and as mcsamplerPortfolio.  The
+            # production ILE likelihood is device-native; a host-only integrand (CI toy,
+            # benchmark, a user's CPU likelihood) raises TypeError on a cupy array.  The
+            # host copy is the MODULE-level identity_convert, the counterpart of the
+            # identity_convert_togpu that put rv on the device three lines up.
+            #
+            # Argument order is positional here as it always has been: no_protect_names is
+            # a named parameter of this method, so it can never reach **kwargs and the dict
+            # branch integrate_log keys on was already unreachable.
+            #
+            # Two things this site needs that integrate_log does not, both because
+            # mcsamplerPortfolio hands this method a verdict it did not learn itself:
+            #   - a propagated verdict can be WRONG (the portfolio may have latched on a
+            #     transient ValueError from a device-native likelihood).  Unlatch and go
+            #     back to the device instead of dying on an unguarded host call.
+            def _eval_integrand(samples):
+                return lnF(*samples.T)  # do not protect order
+            if not cupy_ok:
+                # no device exists, so there is no second array to try: call ONCE.  Retrying
+                # the identical host array would run a legitimately-failing integrand twice
+                # (doubled side effects, doubled RNG draws in a marginalizing likelihood).
+                lnL = _eval_integrand(rv)
+            elif getattr(self, '_integrand_wants_host', False):
+                try:
+                    lnL = _eval_integrand(identity_convert(rv))
+                except (TypeError, ValueError):
+                    self._integrand_wants_host = False
+                    print("  [AV selfish-update] host evaluation refused; returning to the device backend")
+                    lnL = _eval_integrand(rv)
+            else:
+                try:
+                    lnL = _eval_integrand(rv)
+                except (TypeError, ValueError):
+                    self._integrand_wants_host = True
+                    print("  [AV selfish-update] integrand refused a device array; evaluating on the host from here on")
+                    lnL = _eval_integrand(identity_convert(rv))
             # take log if we are NOT using lnL
             if cupy_ok:
               if not(isinstance(lnL,cupy.ndarray)):
@@ -1867,13 +1897,18 @@ class MCSampler(SamplerOutputMixin, object):
                 if 'no_protect_names' in kwargs:
                     return lnF(*samples.T)
                 return lnF(**dict(list(zip(self.params_ordered, samples.T))))
-            if getattr(self, '_integrand_wants_host', False):
+            # `or not cupy_ok` matches mcsamplerPortfolio and mcsamplerNFlow: with no cupy
+            # identity_convert is the identity, so without it a legitimately-failing
+            # integrand is invoked a second time with the identical array before the
+            # exception propagates.
+            if getattr(self, '_integrand_wants_host', False) or not cupy_ok:
                 lnL = _eval_integrand(identity_convert(rv))
             else:
                 try:
                     lnL = _eval_integrand(rv)
                 except (TypeError, ValueError):
                     self._integrand_wants_host = True
+                    print("  [AV] integrand refused a device array; evaluating on the host from here on")
                     lnL = _eval_integrand(identity_convert(rv))
             # take log if we are NOT using lnL
             if cupy_ok:

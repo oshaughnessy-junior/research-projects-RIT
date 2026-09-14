@@ -1844,7 +1844,16 @@ class MCSampler(SamplerOutputMixin, object):
                     # log_weights_train / rvs_train include any oracle proposals appended above
                     member.update_sampling_prior(log_weights_train, n_history,external_rvs=rvs_train,log_scale_weights=True, **update_dict)
                   else:
-                    # just do a single VARAHA step, independent of others
+                    # just do a single VARAHA step, independent of others.
+                    # The member evaluates the SAME lnF, and the common integration block
+                    # above has already learned whether it accepts device arrays (it runs
+                    # first, every chunk), so hand the verdict down rather than let the
+                    # member rediscover it with a call known to fail.  The member retries
+                    # on its own too, so this is speed, not correctness.  Set-only: a
+                    # portfolio that has not learned "host" is indistinguishable from one
+                    # whose target is device-native, so there is nothing to clear.
+                    if getattr(self, '_integrand_wants_host', False):
+                      member._integrand_wants_host = True
                     member.update_sampling_prior_selfish(lnF)
                 else:
                   if self.portfolio_draw_iteration > self.portfolio_breakpoints[indx]:  
