@@ -132,9 +132,9 @@ def audit_pipeline(root):
     # Each queued boundary carries the DAG that declares it, whether that
     # declaring node is connected to the top-level terminal product, and the
     # chain of boundaries it was reached through, so a second-level external
-    # DAG is evaluated in its own containing graph once per invocation: two
-    # SUBDAG nodes may share one container file yet differ in how they connect
-    # to the terminal product.
+    # DAG is evaluated in its own containing graph: two SUBDAG nodes may share
+    # one container file yet differ in how they connect to the terminal
+    # product.
     pending = [
         (dag, node, path, bool(product) and product in dag.descendants(node), ())
         for node, path in external_dags(dag)
@@ -144,9 +144,17 @@ def audit_pipeline(root):
     while pending:
         container, external_node, path, reaches_product, ancestry = pending.pop()
         invocation = ancestry + ((container.path, external_node, path),)
-        if invocation in seen:
+        # Key on what decides the verdict, not on the whole chain.  A boundary's
+        # three findings are fixed by the container it is declared in, the node
+        # declaring it, the file it points at, and its connection to the
+        # terminal product; two chains agreeing on those agree on the result.
+        # Keying on the chain itself is exact but exponential -- a file
+        # referenced twice per level costs 2**depth invocations, 4.3 s and
+        # 155 MB at depth 16 -- and this gate runs on production DAGs.
+        key = (container.path, external_node, path, reaches_product)
+        if key in seen:
             continue
-        seen.add(invocation)
+        seen.add(key)
         if any(step[0] == path for step in invocation):
             graph_errors.append(
                 "external DAG {} re-enters its own container: {}".format(external_node, path)
