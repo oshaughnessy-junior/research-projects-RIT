@@ -1085,7 +1085,10 @@ fi
 # 2026-09-13: zero-weight JAX evidence regression adds four cases in one file.
 # The prior gate measurement was 864/870 collected (6 deselected), excluding
 # the two existing SMC evidence cases. Retaining those cases raises the floor.
-EXPECTED_TESTS=866
+# 2026-09-14: +1 in the same already-gated file, the driver-wiring guard that the
+# production CLI uses the corrected estimator rather than its own pre-fix copy.
+# One test added to a file already in FILES, so the floor moves by exactly one.
+EXPECTED_TESTS=867
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
