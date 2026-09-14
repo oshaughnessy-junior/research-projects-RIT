@@ -129,21 +129,29 @@ def audit_pipeline(root):
 
     external_reports = []
     parsed = {}
-    # Each queued boundary carries the DAG that declares it and whether that
-    # declaring node is connected to the top-level terminal product, so a
-    # second-level external DAG is evaluated in its own containing graph.
+    # Each queued boundary carries the DAG that declares it, whether that
+    # declaring node is connected to the top-level terminal product, and the
+    # chain of boundaries it was reached through, so a second-level external
+    # DAG is evaluated in its own containing graph once per invocation: two
+    # SUBDAG nodes may share one container file yet differ in how they connect
+    # to the terminal product.
     pending = [
-        (dag, node, path, bool(product) and product in dag.descendants(node))
+        (dag, node, path, bool(product) and product in dag.descendants(node), ())
         for node, path in external_dags(dag)
     ]
     seen = set()
     analysed = set()
     while pending:
-        container, external_node, path, reaches_product = pending.pop()
-        key = (container.path, external_node, path)
-        if key in seen:
+        container, external_node, path, reaches_product, ancestry = pending.pop()
+        invocation = ancestry + ((container.path, external_node, path),)
+        if invocation in seen:
             continue
-        seen.add(key)
+        seen.add(invocation)
+        if any(step[0] == path for step in invocation):
+            graph_errors.append(
+                "external DAG {} re-enters its own container: {}".format(external_node, path)
+            )
+            continue
         if not path.is_file():
             graph_errors.append("external DAG {} is missing: {}".format(external_node, path))
             continue
@@ -182,7 +190,10 @@ def audit_pipeline(root):
             }
         )
         has_fetch = any(role.startswith("FETCH_") for role in child_roles)
+        invocation_nodes = [step[1] for step in invocation]
         boundary = "{} (in {})".format(external_node, container.path)
+        if ancestry:
+            boundary += " via " + " -> ".join(invocation_nodes[:-1])
         if active_abort_nodes and not has_fetch:
             failures.append("active external abort lacks immediate FETCH child: " + boundary)
         if active_abort_nodes and not reaches_product:
@@ -191,6 +202,7 @@ def audit_pipeline(root):
             {
                 "node": external_node,
                 "container": str(container.path),
+                "invocation": invocation_nodes,
                 "path": str(path),
                 "nodes": len(nested.nodes),
                 "active_abort_nodes": len(active_abort_nodes),
@@ -202,7 +214,7 @@ def audit_pipeline(root):
         # so a boundary declared inside it inherits this node's connection to
         # the top-level product.
         pending.extend(
-            (nested, child_node, child_path, reaches_product)
+            (nested, child_node, child_path, reaches_product, invocation)
             for child_node, child_path in external_dags(nested)
         )
 

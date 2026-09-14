@@ -116,6 +116,27 @@ ABORT-DAG-ON inner_convergence 1 RETURN 0
 """
 
 
+# One container file may be instantiated by two SUBDAG nodes.  The detached
+# instance is declared first, so a traversal keyed on the container file alone
+# evaluates the connected instance and silently drops the detached one.
+SHARED_EXTERNAL_DAG = EXTERNAL_DAG.replace(
+    "SUBDAG EXTERNAL adaptive nested.dag\n",
+    "SUBDAG EXTERNAL adaptive_detached nested.dag\nSUBDAG EXTERNAL adaptive nested.dag\n",
+).replace(
+    "PARENT convergence CHILD adaptive\n",
+    "PARENT convergence CHILD adaptive adaptive_detached\n",
+)
+
+
+SELF_REFERENTIAL_NESTED_DAG = """JOB grid convert.sub
+SUBDAG EXTERNAL repeat nested.dag
+JOB inner_convergence nested_test.sub
+PARENT grid CHILD repeat
+PARENT repeat CHILD inner_convergence
+ABORT-DAG-ON inner_convergence 1 RETURN 0
+"""
+
+
 def _make_double_external_tree(
     tmp_path,
     nested=NESTED_WITH_EXTERNAL,
@@ -277,6 +298,36 @@ def test_second_level_abort_detached_from_product_is_caught(tmp_path):
         "does not feed terminal product: inner_adaptive" in item
         for item in report["failures"]
     )
+
+
+def test_repeated_external_invocations_are_evaluated_separately(tmp_path):
+    report = audit_pipeline(
+        _make_double_external_tree(tmp_path, top=SHARED_EXTERNAL_DAG)
+    )
+    assert not report["pass"]
+    assert any(
+        "does not feed terminal product: inner_adaptive" in item
+        for item in report["failures"]
+    )
+    inner = [
+        item
+        for item in report["checks"]["external_dags"]
+        if item["node"] == "inner_adaptive"
+    ]
+    assert len(inner) == 2
+    assert {item["feeds_terminal_product"] for item in inner} == {True, False}
+    assert {tuple(item["invocation"]) for item in inner} == {
+        ("adaptive", "inner_adaptive"),
+        ("adaptive_detached", "inner_adaptive"),
+    }
+
+
+def test_self_referential_external_dag_is_caught(tmp_path):
+    report = audit_pipeline(
+        _make_external_tree(tmp_path, nested=SELF_REFERENTIAL_NESTED_DAG)
+    )
+    assert not report["pass"]
+    assert any("re-enters its own container" in item for item in report["failures"])
 
 
 def test_second_level_abort_before_grid_is_caught(tmp_path):
