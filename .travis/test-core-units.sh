@@ -105,6 +105,9 @@ FILES=(
   # importorskips asimov, which CIT has and this job does not, so it collected 15 here and
   # 0 on the runner.  The per-file collection floor below caught that -- see the roster.)
   "$C/test/test_teobresums_compat.py"
+  # -- ILE consolidation precision.  Both DAG builders and BOTH cleaner passes,
+  # in the legacy and hyperpipeline formats; 7 tests, 9 s, subprocesses only.
+  "$C/test/test_cleanile_intrinsic_precision.py"
   # -- packaging / config contracts / waveform conventions
   "$C/test/test_advanced_parameter_ports.py"
   "$C/test/test_container_manifest.py"
@@ -163,6 +166,13 @@ done
 #            fed odeint's float probe to len(x) pdfs; the t_ref wiring in all three ILE drivers)
 #   378/366  + test_response_order.py (8 tests: SNR tightening, Halton independence,
 #            compound-axis semantics, reference resolution/tail charging, and bank preflight)
+#   387/375  + test_cleanile_intrinsic_precision.py (7 tests: --clean-ile-intrinsic-digits
+#            through the legacy join/unify, through the hyperpipeline cleaner pair, and
+#            through the multi-approximant builder's three cleaner passes).  MEASURED on CIT
+#            2026-09-14, IGWN conda python 3.11 / numpy 1.26.4 / lal 7.7.0: per-file 387 over
+#            40 files, junit 390 / 12 skipped / 378 passed.  390 and 378 are the counts WITH
+#            pytest-subtests, which that environment happens to have; the floors below stay
+#            pinned to the plugin-free 387/375 for the reason given above.
 #
 # RAISE these when files are added: a floor left at the old value passes while covering less,
 # which is the failure this gate exists to catch.
@@ -178,12 +188,12 @@ done
 # runner's closure the count falls back to 347 and still passes.  Pinning 350 would turn an
 # unrelated dependency change into a red gate.
 # Two XML/grid template-finalization regressions, with no added skips.
-EXPECTED_TESTS=380
+EXPECTED_TESTS=387
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 12 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
 # test_dslice_device_native, and the xfail in test_uv_symmetry.
-EXPECTED_PASSED=368
+EXPECTED_PASSED=375
 MAX_SKIPPED=12
 
 # The floors must be INTEGERS, and this is checked rather than assumed.  `[ 347 -lt FOO ]` does
