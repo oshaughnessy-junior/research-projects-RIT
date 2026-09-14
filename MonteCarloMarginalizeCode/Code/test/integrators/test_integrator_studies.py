@@ -21,10 +21,13 @@ not enough to be opt-in.
 FLAKE RISK, since these are Monte Carlo studies with tolerance-based gates: all five seed
 explicitly, through RIFT.integrators.seeding.seed_everything, which reaches cupy as well as numpy
 (a bare numpy.random.seed is inert on the GPU backend the samplers draw through).  But a seed does
-not make a low-effective-sample-size result reliable across platforms, and it does not reset the
-state a long-lived interpreter accumulates.  The decoy balance-heuristic study therefore checks the
-mean evidence from independent, process-isolated runs.  If a study proves marginal in CI,
-investigate its sampling and statistical contract; do not delete the gate.
+not make a low-effective-sample-size result reliable across platforms, and it does not even fix the
+result on ONE platform: scipy's mvnun, which normalizes each GMM component inside gmm.score,
+carries an RNG that NEITHER seeding path can reach, so repeating an arm inside one interpreter
+changes its answer.  The decoy balance-heuristic study therefore checks the mean log bias over
+independent, process-isolated runs against a fixed threshold in nats.  If a study proves marginal
+in CI, investigate its sampling and statistical contract; do not delete the gate and do not widen
+its threshold.
 
 Subprocess rather than import: each is a __main__ script with argparse, and running it the way a
 human runs it is the point -- it is what keeps the wrapper honest about the entry point.
@@ -44,7 +47,7 @@ STUDIES = [
     ("test_AV_bootstrap.py", 7),
     ("test_AV_warmstart_safety.py", 4),
     ("test_portfolio_adaptive_alloc.py", 20),
-    ("test_portfolio_balance_heuristic.py", 64),
+    ("test_portfolio_balance_heuristic.py", 95),
     ("test_portfolio_oracle.py", 6),
 ]
 
