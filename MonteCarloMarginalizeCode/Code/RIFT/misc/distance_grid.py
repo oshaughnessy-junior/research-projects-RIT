@@ -182,18 +182,34 @@ def reserve_distance_and_ln_weights(reserve, param="distance"):
         if n_sub and n_fin and 0 < n_sub < n_fin and len(ln_w):
             ln_w = ln_w.copy()
             ln_w[int(np.argmax(lnL))] += np.log(float(n_sub) / float(n_fin))
+        else:
+            # A capped, peak-forced reserve with no recorded n_subsample cannot be
+            # corrected -- it predates the field.  Using it anyway means exporting the
+            # forced row at probability 1, which is the bias this whole path exists to
+            # remove, so decline and let the caller fall back to _rvs.
+            return None
     return X[:, names.index(param)].astype(float), ln_w
 
 
 def _ess(ln_weights):
-    """Kish effective sample size of log weights; 0.0 if none are usable."""
+    """Kish effective sample size of log weights; 0.0 if none are usable.
+
+    EXACTLY EQUAL weights must give exactly n.  Summing n copies of 1/n in float64 lands a
+    few ULP off, so 1/sum(p^2) came back as n*(1-eps) -- 2.9999999999999996 for n=3 -- and
+    a strict `n_eff < n_rows` then reported "fewer than one effective sample per bin" for
+    a perfectly flat weight set, at n = 3, 5, 6, 8, 9, 10 but not 2, 4, 7, 11.  Rounding to
+    the representable neighbour removes the artifact without touching a genuine shortfall.
+    """
     lw = np.asarray(ln_weights, dtype=float).ravel()
     lw = lw[np.isfinite(lw)]
     if lw.size == 0:
         return 0.0
     p = np.exp(lw - _logsumexp(lw))
     denom = float(np.sum(p ** 2))
-    return 1.0 / denom if denom > 0 else 0.0
+    if denom <= 0:
+        return 0.0
+    ess = 1.0 / denom
+    return float(np.round(ess)) if abs(ess - np.round(ess)) < 1e-9 * max(1.0, ess) else ess
 
 
 def distance_grid_resolution_warning(distance, n_grid=None, ln_weights=None,
@@ -259,16 +275,19 @@ def distance_grid_resolution_warning(distance, n_grid=None, ln_weights=None,
             "{} usable sample(s) span only {} distinct distance(s), so the grid carries "
             "{} row(s), not the {} requested.".format(
                 len(d), n_unique, n_rows, n_requested))
-    if n_eff_sampler is not None and float(n_eff_sampler) < n_rows:
+    if n_eff_sampler is not None and not (float(n_eff_sampler) >= n_rows):
+        # `not (x >= n)` rather than `x < n`, so a NaN reports rather than passes: a NaN
+        # n_eff is a pass that could not measure its own convergence, which is the case
+        # this clause exists for.
         # THE SAMPLER'S OWN n_eff, which no weight column can contradict.  On a collapsed
         # pass the linear `integrand` column bottoms out at its underflow floor, so the
         # derived weights come back UNIFORM and every check above reports a healthy grid:
         # measured on a collapsed Ensemble pass, ESS 4000 of 4000 rows while the exported
         # curve was flat to 0.13 nats across a true 1130-nat span.  The pass itself knew.
         problems.append(
-            "the sampler reported n_eff={:.1f} for this pass, fewer than the {} bin(s) "
-            "exported: the integration did not converge, whatever the weight column "
-            "says.".format(float(n_eff_sampler), n_rows))
+            "the sampler reported n_eff={:.1f} for this pass, not the {} bin(s) exported: "
+            "the integration did not converge, whatever the weight column says.".format(
+                float(n_eff_sampler), n_rows))
     if lw is not None or n_eff_population is not None:
         # THE POPULATION'S ESS WHEN THE CALLER HAS IT.  When the rows are a bounded uniform
         # subsample of the retained set, the subsample's own ESS is not an estimate of the
@@ -299,10 +318,19 @@ def _rvs_row_count(rvs):
 
 
 def distance_grid_inputs(record, rvs, posterior_ln_weights, convert=None,
-                         param="distance", n_grid=None, n_eff_sampler=None):
+                         param="distance", n_grid=None, n_eff_sampler=None,
+                         prior_pdf=None):
     """Everything the .dgrid export needs to decide, as one testable function.
 
-    -> (distance, ln_weights, notes, warning)
+    -> (distance, ln_weights, ln_prior_at_rows, notes, warning)
+
+    ``prior_pdf`` is the sampler's own distance prior, evaluated HERE so that it cannot be
+    separated from the choice of rows.  Keeping it in the caller left a two-line gap in
+    which the prior could be taken at the fair draw's distances while the curve was built
+    from the retained set's: measured, that moves the exported lnL by 2.87 nats and turns
+    ln_prior_d_sampling from a real d^2 ramp into a flat column, with every test green.
+    That is the same shape as the params_out deletion, so the fix is structural rather
+    than another assertion.
 
     THIS LIVES HERE BECAUSE IT HAS TO BE RUNNABLE.  It was six statements inside
     ``analyze_event`` in the ILE script, which nothing can import, so the only available
@@ -343,10 +371,17 @@ def distance_grid_inputs(record, rvs, posterior_ln_weights, convert=None,
         ln_weights = np.asarray(posterior_ln_weights(), dtype=float)
         n_eff_population = None
 
+    if prior_pdf is not None:
+        pi_d = np.asarray(conv(prior_pdf(distance)), dtype=float).ravel()
+        # The prior must be strictly positive at the rows being exported.
+        ln_prior_at_rows = np.log(np.where(pi_d > 0, pi_d, np.finfo(float).tiny))
+    else:
+        ln_prior_at_rows = None
+
     warning = distance_grid_resolution_warning(
         distance, n_grid=n_grid, ln_weights=ln_weights,
         n_eff_population=n_eff_population, n_eff_sampler=n_eff_sampler)
-    return distance, ln_weights, notes, warning
+    return distance, ln_weights, ln_prior_at_rows, notes, warning
 
 
 def build_distance_grid(distance, ln_weights, lnL_marginal, sigmaL, params,

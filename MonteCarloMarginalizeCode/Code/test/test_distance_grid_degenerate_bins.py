@@ -343,7 +343,7 @@ def test_a_starved_grid_is_flagged_before_it_is_written():
            'joint_prior': np.exp(ln_pi), 'joint_s_prior': np.ones(len(distance))}
     rec = RvsRecord.fair_draw(rvs, reserve=None, integrand_is_log=False)
 
-    _, _, notes, warning = distance_grid_inputs(
+    _, _, _, notes, warning = distance_grid_inputs(
         rec, rvs, lambda: ln_w, n_grid=4)
 
     assert notes == [], 'claimed a retained set it does not have'

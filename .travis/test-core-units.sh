@@ -197,6 +197,15 @@ done
 #            see a factor of two).  MEASURED on CIT (citlogin6) 2026-09-14, IGWN conda
 #            python 3.11 / lal 7.7.0: per-file 420 over 42 files, junit 423 / 12 skipped /
 #            411 passed -- 423 and 411 are the pytest-subtests counts, floors stay plugin-free.
+#   497/485  + test_distance_grid_degenerate_bins.py and test_dgrid_retained_set.py (the
+#            .dgrid retained-set work: degenerate bins, the reserve every fair-drawing
+#            integrator now keeps, and the export decision itself), and 4 tests added to
+#            test_distance_grid.py's neighbours.  MEASURED on CIT (ldas-grid) 2026-09-14,
+#            IGWN conda python 3.11 / numpy 1.26.4: junit 500 / 12 skipped / 488 passed,
+#            of which 3 are subtests -- so the plugin-free floors are 497/485.  Set to the
+#            plugin-free pair, per the rule below; a first attempt used the junit numbers
+#            and would have pinned this gate to an environment that happens to carry
+#            pytest-subtests.
 #
 # RAISE these when files are added: a floor left at the old value passes while covering less,
 # which is the failure this gate exists to catch.
@@ -212,12 +221,12 @@ done
 # runner's closure the count falls back to 347 and still passes.  Pinning 350 would turn an
 # unrelated dependency change into a red gate.
 # Two XML/grid template-finalization regressions, with no added skips.
-EXPECTED_TESTS=494
+EXPECTED_TESTS=497
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 12 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
 # test_dslice_device_native, and the xfail in test_uv_symmetry.
-EXPECTED_PASSED=482
+EXPECTED_PASSED=485
 MAX_SKIPPED=12
 
 # The floors must be INTEGERS, and this is checked rather than assumed.  `[ 347 -lt FOO ]` does

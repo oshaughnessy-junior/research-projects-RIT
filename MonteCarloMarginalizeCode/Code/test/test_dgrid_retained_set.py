@@ -483,8 +483,16 @@ def test_a_tuple_parameter_still_yields_a_usable_reserve():
     assert reserve['params_ordered'] == ['distance', 'declination', 'right_ascension'], \
         'the tuple key was not flattened to its component coordinates'
     assert reserve['X'].shape == (n, 3)
+    # THE VALUES, not just the shape.  reshape(-1, 2).T has the same shape and interleaves
+    # declination with right ascension; the warm-seed rescue builds a covariance from these
+    # columns, so scrambled sky values corrupt a seed with nothing to show for it.
+    for col, want in ((0, cols['distance']),
+                      (1, cols[('declination', 'right_ascension')][0]),
+                      (2, cols[('declination', 'right_ascension')][1])):
+        assert np.allclose(reserve['X'][:, col], want), \
+            'column {} is not the values that were handed in'.format(col)
     d, ln_w = reserve_distance_and_ln_weights(reserve)
-    assert np.allclose(np.sort(d), np.sort(cols['distance']))
+    assert np.allclose(d, cols['distance'])
     assert reserve_distance_and_ln_weights(reserve, param='declination') is not None
 
 
@@ -657,7 +665,7 @@ def test_a_fairdrawn_record_with_a_reserve_exports_the_RETAINED_rows():
     rvs, reserve = _fake_rvs(), _fake_reserve()
     rec = RvsRecord.fair_draw(rvs, reserve=reserve, integrand_is_log=False)
 
-    d, ln_w, notes, warn = distance_grid_inputs(rec, rvs, _uniform_fallback(rvs), n_grid=20)
+    d, ln_w, _lnpi, notes, warn = distance_grid_inputs(rec, rvs, _uniform_fallback(rvs), n_grid=20)
 
     assert len(d) == len(reserve['X']), 'the fair-drawn rows were exported, not the reserve'
     assert np.allclose(np.sort(d), np.sort(reserve['X'][:, 0]))
@@ -667,13 +675,75 @@ def test_a_fairdrawn_record_with_a_reserve_exports_the_RETAINED_rows():
     assert any('uniform subsample of 4000' in n for n in notes), 'the cap was not disclosed'
 
 
+def test_the_prior_comes_back_evaluated_at_the_rows_that_were_chosen():
+    """The prior and the rows cannot be separated any more, because they used to be: taking
+    it at the fair draw's distances while the curve came from the retained set moved the
+    exported lnL by 2.87 nats and flattened ln_prior_d_sampling, with every test green."""
+    rvs, reserve = _fake_rvs(), _fake_reserve()
+    volumetric = lambda d: np.asarray(d, dtype=float) ** 2
+
+    d, _, ln_pi, _, _ = distance_grid_inputs(
+        RvsRecord.fair_draw(rvs, reserve=reserve, integrand_is_log=False), rvs,
+        _uniform_fallback(rvs), n_grid=20, prior_pdf=volumetric)
+
+    assert len(ln_pi) == len(d), 'the prior has a different length than the rows'
+    assert np.allclose(ln_pi, np.log(volumetric(d))), \
+        'the prior was evaluated somewhere other than the exported distances'
+    # and it is emphatically NOT the fair draw's single repeated distance
+    assert not np.allclose(ln_pi, np.log(volumetric(np.full(len(d), 900.0))))
+
+
+def test_the_prior_follows_the_fall_back_rows_too():
+    rvs, reserve = _fake_rvs(), _fake_reserve()
+    volumetric = lambda d: np.asarray(d, dtype=float) ** 2
+    d, _, ln_pi, notes, _ = distance_grid_inputs(
+        RvsRecord.retained(rvs, reserve=reserve, integrand_is_log=False), rvs,
+        _uniform_fallback(rvs), n_grid=20, prior_pdf=volumetric)
+    assert notes == [] and np.allclose(d, 900.0)
+    assert np.allclose(ln_pi, np.log(volumetric(d)))
+
+
+def test_an_uncorrectable_capped_reserve_is_declined_rather_than_used():
+    """A peak-forced capped reserve with no recorded n_subsample predates the field, so the
+    forced row cannot be divided by its inclusion probability.  Using it anyway reinstates
+    exactly the bias this path removes."""
+    r = _fake_reserve()
+    r['force_peak'] = True
+    r.pop('n_subsample')
+    assert reserve_distance_and_ln_weights(r) is None
+    r['n_subsample'] = None
+    assert reserve_distance_and_ln_weights(r) is None
+    # and a reserve that CAN be corrected is still used
+    r['n_subsample'] = 400
+    assert reserve_distance_and_ln_weights(r) is not None
+
+
+def test_equal_weights_are_exactly_n_effective_samples():
+    """1/sum(p^2) over n equal weights lands a few ULP below n, which read as "fewer than
+    one effective sample per bin" for a perfectly flat set at n = 3, 5, 6, 8, 9, 10."""
+    for n in range(2, 16):
+        assert _ess(np.zeros(n)) == float(n), 'n={} gave {!r}'.format(n, _ess(np.zeros(n)))
+    d = np.linspace(100.0, 900.0, 5)
+    assert distance_grid_resolution_warning(d, n_grid=5, ln_weights=np.zeros(5)) is None, \
+        'five equal-weight rows over five bins was called starved'
+
+
+def test_a_sampler_that_could_not_measure_its_own_neff_is_not_called_fine():
+    d = np.linspace(100.0, 900.0, 40)
+    ln_w = np.zeros(40)
+    warned = distance_grid_resolution_warning(d, n_grid=20, ln_weights=ln_w,
+                                              n_eff_sampler=float('nan'))
+    assert warned is not None, 'a NaN n_eff passed the check silently'
+    assert 'sampler reported' in warned
+
+
 def test_the_exported_column_is_the_one_asked_for():
     """`param='psi'` exports psi values labelled as distance, and nothing in the source text
     can tell the difference."""
     rvs, reserve = _fake_rvs(), _fake_reserve()
     rec = RvsRecord.fair_draw(rvs, reserve=reserve, integrand_is_log=False)
-    d, _, _, _ = distance_grid_inputs(rec, rvs, _uniform_fallback(rvs), n_grid=20)
-    d_psi, _, _, _ = distance_grid_inputs(rec, rvs, _uniform_fallback(rvs), n_grid=20,
+    d, _, _, _, _ = distance_grid_inputs(rec, rvs, _uniform_fallback(rvs), n_grid=20)
+    d_psi, _, _, _, _ = distance_grid_inputs(rec, rvs, _uniform_fallback(rvs), n_grid=20,
                                           param='psi')
     assert np.allclose(np.sort(d), np.sort(reserve['X'][:, 0]))
     assert np.allclose(np.sort(d_psi), np.sort(reserve['X'][:, 1]))
@@ -696,7 +766,7 @@ def test_the_exported_column_is_the_one_asked_for():
 ])
 def test_the_fall_back_to_rvs_is_taken_when_it_should_be(make_record, why):
     rvs, reserve = _fake_rvs(), _fake_reserve()
-    d, ln_w, notes, _ = distance_grid_inputs(make_record(rvs, reserve), rvs,
+    d, ln_w, _lnpi, notes, _ = distance_grid_inputs(make_record(rvs, reserve), rvs,
                                              _uniform_fallback(rvs), n_grid=20)
     assert len(d) == 5 and np.allclose(d, 900.0), why
     assert np.allclose(ln_w, 0.0), 'the fall-back weighting was not the one supplied'
@@ -709,9 +779,9 @@ def test_the_population_ess_reaches_the_check_and_the_subsample_does_not():
     healthy = _fake_reserve(ess=None)
     starved = _fake_reserve(ess=1.2)
 
-    _, _, _, ok = distance_grid_inputs(RvsRecord.fair_draw(rvs, reserve=healthy), rvs,
+    _, _, _, _, ok = distance_grid_inputs(RvsRecord.fair_draw(rvs, reserve=healthy), rvs,
                                        _uniform_fallback(rvs), n_grid=20)
-    _, _, _, bad = distance_grid_inputs(RvsRecord.fair_draw(rvs, reserve=starved), rvs,
+    _, _, _, _, bad = distance_grid_inputs(RvsRecord.fair_draw(rvs, reserve=starved), rvs,
                                         _uniform_fallback(rvs), n_grid=20)
     assert ok is None, 'a healthy retained set was flagged'
     assert bad is not None and 'n_eff=1.2' in bad, \
@@ -721,8 +791,8 @@ def test_the_population_ess_reaches_the_check_and_the_subsample_does_not():
 def test_the_bin_count_the_check_sees_is_the_one_that_will_be_written():
     rvs, reserve = _fake_rvs(), _fake_reserve(ess=30.0)
     rec = RvsRecord.fair_draw(rvs, reserve=reserve, integrand_is_log=False)
-    assert distance_grid_inputs(rec, rvs, _uniform_fallback(rvs), n_grid=5)[3] is None
-    wide = distance_grid_inputs(rec, rvs, _uniform_fallback(rvs), n_grid=200)[3]
+    assert distance_grid_inputs(rec, rvs, _uniform_fallback(rvs), n_grid=5)[4] is None
+    wide = distance_grid_inputs(rec, rvs, _uniform_fallback(rvs), n_grid=200)[4]
     assert wide is not None and 'n_eff=30.0' in wide
 
 
@@ -730,9 +800,9 @@ def test_the_sampler_neff_is_carried_through():
     rvs, reserve = _fake_rvs(), _fake_reserve()
     rec = RvsRecord.fair_draw(rvs, reserve=reserve, integrand_is_log=False)
     assert distance_grid_inputs(rec, rvs, _uniform_fallback(rvs), n_grid=20,
-                                n_eff_sampler=500.0)[3] is None
+                                n_eff_sampler=500.0)[4] is None
     warned = distance_grid_inputs(rec, rvs, _uniform_fallback(rvs), n_grid=20,
-                                  n_eff_sampler=1.4)[3]
+                                  n_eff_sampler=1.4)[4]
     assert warned is not None and 'sampler reported n_eff=1.4' in warned
 
 
@@ -756,7 +826,8 @@ def _fairdraw_calls(tree):
                     and kw.value.value is True for kw in n.keywords)]
 
 
-_RESERVE_BUILDERS = ('keep_reserve_from_rvs', 'make_warm_seed_reserve')
+_RESERVE_BUILDERS = ('keep_reserve_from_rvs', 'make_reserve_from_rvs',
+                     'make_warm_seed_reserve')
 
 
 def _reserve_calls_in(fn):
@@ -824,6 +895,27 @@ def test_every_fair_draw_site_keeps_the_retained_rows_first(module):
         assert kept, \
             '{}: the fair draw at line {} discards the retained rows with no reserve ' \
             'taken earlier in the same function'.format(module, draw.lineno)
+
+
+def test_the_portfolio_builds_its_reserve_through_the_shared_adapter():
+    """It used to build X with its own vstack, which carried both defects the adapter was
+    given: a tuple parameter makes _rvs[key] (2,N) so the ravel goes ragged and the reserve
+    is lost, and a term-by-term weight turns a zero-prior row into NaN instead of into no
+    weight.  Two implementations of one thing drift; this pins the one."""
+    src = open(os.path.join(_INTEGRATORS, 'mcsamplerPortfolio.py')).read()
+    tree = ast.parse(src)
+    builders = set()
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Call):
+            name = getattr(n.func, 'id', None) or getattr(n.func, 'attr', None)
+            if name in _RESERVE_BUILDERS:
+                builders.add(name)
+    assert 'make_reserve_from_rvs' in builders, \
+        'the portfolio builds its reserve some other way again'
+    assert 'make_warm_seed_reserve' not in builders, \
+        'the portfolio calls the raw builder directly, bypassing the adapter fixes'
+    assert 'numpy.vstack' not in src.split('Clean out the _rvs arrays')[0][-2000:], \
+        'the hand-rolled sample matrix is back'
 
 
 @pytest.mark.parametrize('module', ['mcsampler.py', 'mcsamplerGPU.py', 'mcsamplerEnsemble.py',

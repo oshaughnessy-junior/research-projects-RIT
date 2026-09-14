@@ -1870,15 +1870,18 @@ class MCSampler(SamplerOutputMixin, object):
         # before this existed: portfolio rescues seeded from 3 and 5 rows, and the puff width
         # fell back to the fixed prior fraction because that few rows cannot define a 6-D
         # covariance.
+        # THE SHARED ADAPTER, not a second copy of the same vstack.  This block used to
+        # build X itself, which meant it also carried the two defects the adapter was given:
+        # a tuple parameter -- ("declination","right_ascension") under --skymap-file -- makes
+        # _rvs[key] (2,N), so ravel() produces a ragged vstack and the whole reserve is lost;
+        # and deriving the weight term by term turns a row with a zero prior AND a zero
+        # sampling prior into NaN rather than into no weight.
         if (not save_no_samples) and ("log_integrand" in self._rvs):
             try:
-                self._warm_seed_reserve = mcsamplerAdaptiveVolume.make_warm_seed_reserve(
-                    numpy.vstack([numpy.asarray(identity_convert(self._rvs[p]), dtype=float).ravel()
-                                  for p in self.params_ordered]).T,
-                    self._rvs["log_integrand"], self.params_ordered,
+                self._warm_seed_reserve = mcsamplerAdaptiveVolume.make_reserve_from_rvs(
+                    self._rvs, self.params_ordered,
                     n_max=getattr(self, 'n_warm_seed_reserve', 20000),
-                    log_joint_prior=self._rvs["log_joint_prior"],
-                    log_joint_s_prior=self._rvs["log_joint_s_prior"])
+                    convert=identity_convert)
             except Exception as _e_res:
                 # Provenance for a rescue, never a reason to lose a completed integral.
                 self._warm_seed_reserve = None
