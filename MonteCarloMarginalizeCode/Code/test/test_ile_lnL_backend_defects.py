@@ -612,13 +612,35 @@ def test_a_failed_dgrid_export_is_loud_but_not_fatal():
     no-op into a job-killing KeyError at the very end -- after the integration is done and the
     .dat is written -- would be a worse bug than the one being fixed.  So the export is
     wrapped, and the handler must NAME the failure rather than swallow it."""
+    # PARSED, not sliced: the 3000-character window this used to take stopped reaching
+    # save_distance_grid the moment the exporter grew a retained-set branch, and failed
+    # with the guard still fully in place.  The claim is about structure, so ask for it.
     src = _driver_source()
-    i = src.index('export_marginal_distance_grid and not(opts.distance_marginalization):')
-    block = src[i:i + 3000]
-    j = block.index('save_distance_grid(fname_output_dgrid, dgrid)')
-    assert 'try:' in block[:j], 'the .dgrid exporter runs unguarded'
-    handler = block[j:j + 600]
-    assert 'except Exception' in handler, 'no handler after the export'
-    assert 'ERROR' in handler and 'could NOT be' in handler, \
+    export_if = None
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, ast.If) and 'export_marginal_distance_grid' in ast.dump(node.test):
+            names = set(n.func.id for n in ast.walk(node)
+                        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name))
+            if 'save_distance_grid' in names:
+                export_if = node
+                break
+    assert export_if is not None, 'no .dgrid export block found; this test is looking at nothing'
+
+    tries = [n for n in ast.walk(export_if) if isinstance(n, ast.Try)
+             and any(isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
+                     and c.func.id == 'save_distance_grid' for c in ast.walk(n))]
+    assert tries, 'the .dgrid exporter runs unguarded'
+    handlers = [h for t in tries for h in t.handlers]
+    assert any(isinstance(h.type, ast.Name) and h.type.id == 'Exception' for h in handlers), \
+        'no `except Exception` around the export'
+    # Asserted on the PRINT, not on the handler body.  The handler also writes a
+    # .dgrid.skipped sidecar that mentions _e_dgrid, so `'_e_dgrid' in <handler>` stayed
+    # true when the ERROR line stopped naming the exception -- caught by reverting it.
+    prints = [n for h in handlers for n in ast.walk(h)
+              if isinstance(n, ast.Call) and getattr(n.func, 'id', None) == 'print']
+    assert prints, 'the handler prints nothing at all'
+    said = [ast.dump(n) for n in prints]
+    assert any('ERROR' in d and 'could NOT be' in d for d in said), \
         'the handler does not say the .dgrid was not written'
-    assert '_e_dgrid' in handler, 'the handler does not report which exception it caught'
+    assert any('ERROR' in d and '_e_dgrid' in d for d in said), \
+        'the ERROR line does not report which exception it caught'
