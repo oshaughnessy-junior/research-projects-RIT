@@ -6,10 +6,20 @@
 # the census that now keeps that number honest).  Most of those 86 should stay out -- they are
 # hand-run studies, plotting demos, or scripts importing pre-package flat modules that have not
 # existed since RIFT was packaged.  The files below are the ones that should NOT: they are
-# ordinary pytest suites, numpy/scipy/lal/sklearn only, that collect and PASS in seconds, and
-# they guard things that regress SILENTLY -- an evidence accounting, a seeding path, a
-# distance grid, a container manifest, a parameter port.  A wrong number there is still a
-# plausible number.
+# ordinary pytest suites that guard things which regress SILENTLY -- an evidence accounting, a
+# seeding path, a distance grid, a container manifest, a parameter port.  A wrong number there
+# is still a plausible number.
+#
+# That used to read "numpy/scipy/lal/sklearn only, collect and PASS in seconds".  Neither half
+# still describes this manifest.  test_integrator_studies.py runs study scripts as subprocesses
+# for 95-125 s, and test_eos_portfolio_sampler.py / test_cip_portfolio_members.py are the first
+# members to run util_ConstructEOSPosterior.py and
+# util_ConstructIntrinsicPosterior_GenericCoordinates.py END TO END -- an audited import closure
+# of one EOS driver subprocess is 74 non-stdlib top-level packages (igwn_ligolw, h5py, joblib,
+# healpy, corner, numba, pandas ...).  What IS still true, and is the property that matters, is
+# that no member SKIPS its way to green: blocking sklearn, igwn_ligolw or h5py makes those two
+# files FAIL loudly (measured), matplotlib and astropy are soft, and the `import lal` probe
+# below short-circuits the one dependency that would otherwise be ambiguous.
 #
 # The original manifest was run file by file on CIT (IGWN conda python 3.11, numpy 1.26.4,
 # lal 7.7.0) before it was added; the measured collection counts are the floors below.  Later
@@ -123,9 +133,11 @@ FILES=(
   # -- EOS: --sampler-method portfolio in util_ConstructEOSPosterior.py, which failed on EVERY
   # invocation -- sampler.setup() was never called, so portfolio_breakpoints stayed None and the
   # first draw() raised; without --internal-use-lnL it stopped even earlier, in integrate().
-  # 11 tests, ~73 s: ten driver subprocesses, on the same basis as
-  # test_cleanile_intrinsic_precision.py above.  A static "is setup() called" check would not
-  # do -- see the module docstring for the guard placement that passes one and still skips.
+  # 11 tests, TEN DRIVER SUBPROCESSES -- size it by that, not by seconds: wall time on a shared
+  # head node is contention-dominated (134 s measured on ldas-grid at load 246; its 6-test
+  # predecessor measured 35 s at load 8-21).  Same basis as test_cleanile_intrinsic_precision.py
+  # above.  A static "is setup() called" check would not do -- see the module docstring for the
+  # guard placement that passes one and still skips.
   "$C/test/test_eos_portfolio_sampler.py"
   # -- EOS: the LALSimulation version-compatibility layer.  numpy/lal only; the reviewed
   # multibranch API is exercised through injected fakes, so this runs on a released build.
@@ -262,6 +274,16 @@ done
 #            (A first run under the default `python` reported numpy 1.14.3 and 33 files
 #            collecting 0 tests.  That measures the interpreter, not the tree; set
 #            RIFT_COREUNIT_PYTHON before quoting a count from this gate.)
+#
+#   568/555  test_eos_portfolio_sampler.py added (11 tests: --sampler-method portfolio in
+#            util_ConstructEOSPosterior.py failed on EVERY invocation because sampler.setup()
+#            was never called).  Runs the driver as a subprocess, so it is one of the slower
+#            members.  MEASURED on CIT (ldas-grid; `import cupy` FAILS there, so this is the
+#            numpy backend) 2026-09-15, IGWN conda python 3.11 / lal 7.7.0, with
+#            RIFT_COREUNIT_PYTHON pointed at the IGWN interpreter: per-file 568 over 48 files,
+#            junit 571 collected / 558 passed / 13 skipped / 0 failed.  The 3 of slack between
+#            these floors and the junit numbers is the pytest-subtests margin documented below,
+#            not spare room.
 #
 # RAISE these when files are added: a floor left at the old value passes while covering less,
 # which is the failure this gate exists to catch.

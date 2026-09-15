@@ -91,6 +91,11 @@ def _run(tmp_path, extra):
     env["PYTHONPATH"] = CODE + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     env["OMP_NUM_THREADS"] = "1"
     env["MPLBACKEND"] = "Agg"
+    # Keep the driver's caches inside tmp_path.  Without these it writes
+    # ~/.cache/matplotlib/fontlist-v390.json, ~/.config/matplotlib and ~/.cache/arviz into the
+    # real HOME -- which on CIT is the NFS home -- on every run of every test in this file.
+    env["XDG_CACHE_HOME"] = os.path.join(str(tmp_path), "cache")
+    env["MPLCONFIGDIR"] = os.path.join(str(tmp_path), "mpl")
     cmd = [sys.executable, DRIVER,
            "--fname", fname,
            "--parameter", "xx", "--parameter", "yy",
