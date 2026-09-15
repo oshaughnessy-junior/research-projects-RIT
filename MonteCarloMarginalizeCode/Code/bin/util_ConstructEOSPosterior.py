@@ -145,7 +145,7 @@ parser.add_argument("--n-max",default=3e5,type=float)
 parser.add_argument("--n-step",default=1e5,type=int)
 parser.add_argument("--n-eff",default=3e3,type=int)
 parser.add_argument("--pool-size",default=3,type=int,help="Integer. Number of GPs to use (result is averaged)")
-parser.add_argument("--fit-method",default="rf",help="rf (default) : rf|gp|quadratic|polynomial|gp_hyper|gp_lazy|cov|kde.  Note 'polynomial' with --fit-order 0  will fit a constant")
+parser.add_argument("--fit-method",default="rf",help="rf (default) : rf|gp.  These are the only two this driver builds; util_ConstructIntrinsicPosterior_GenericCoordinates.py implements quadratic|polynomial|gp_hyper|gp_lazy|cov and more.")
 parser.add_argument("--fit-load-gp",default=None,type=str,help="Filename of GP fit to load. Overrides fitting process, but user MUST correctly specify coordinate system to interpret the fit with.  Does not override loading and converting the data.")
 parser.add_argument("--fit-save-gp",default=None,type=str,help="Filename of GP fit to save. ")
 parser.add_argument("--fit-order",type=int,default=2,help="Fit order (polynomial case: degree)")
@@ -743,6 +743,16 @@ elif opts.fit_method == 'rf':
     if opts.ignore_errors_in_data:
         Y_err=None
     my_fit = fit_rf(X,Y,y_errors=Y_err)
+
+if my_fit is None:
+    # This driver builds only 'gp' and 'rf'.  The --fit-method help was copied from
+    # util_ConstructIntrinsicPosterior_GenericCoordinates.py, which implements a dozen more, so
+    # asking for one of those here left my_fit at None and the run continued: nothing referenced
+    # it until the sampler evaluated the integrand, which then died with
+    # "TypeError: 'NoneType' object is not callable" from inside log_likelihood_function, after
+    # the whole setup had been paid for and with nothing naming --fit-method.
+    print(" OPTION MISMATCH : --fit-method {} is not implemented in this driver; it builds only 'gp' and 'rf'.  (util_ConstructIntrinsicPosterior_GenericCoordinates.py implements the others.)".format(opts.fit_method))
+    sys.exit(99)
 
 ### Distance tail: make the fit decay beyond each intrinsic point's exported distance support
 ###

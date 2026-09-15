@@ -2959,6 +2959,13 @@ elif opts.sampler_method == "portfolio":
     sampler_list = []
     sampler_types = opts.sampler_portfolio
     for name in sampler_types:
+        # Clear the carry-over BEFORE dispatching on the name.  Without this, the
+        # "if sampler is None: continue" below cannot do what its comment says: after one
+        # recognized name, `sampler` stays bound to that member, so every LATER unrecognized name
+        # appends THE SAME OBJECT again.  That is not merely a duplicate -- setup() then runs
+        # twice on one sampler and the run dies in mcsamplerAdaptiveVolume.sample_from_bins with
+        # "ValueError: operands could not be broadcast together with shapes (4,) (1,2)".
+        sampler = None
         if name =='AV':
             sampler = mcsamplerAdaptiveVolume.MCSampler()
         if name =='GMM':
@@ -2980,7 +2987,9 @@ elif opts.sampler_method == "portfolio":
             sampler.xpy = xpy_default
             sampler.identity_convert=identity_convert
         if sampler is None:
-            # Don't add unknown type
+            # Don't add unknown type.  Say so: a single mistyped name among several good ones
+            # otherwise shrinks the portfolio with no message at all.
+            print(" PORTFOLIO : WARNING, ignoring unrecognized --sampler-portfolio {!r} (known: AV, GMM, NFlow, AC, adaptive_cartesian_gpu)".format(name))
             continue
         print('PORTFOLIO: adding {} '.format(name))
         sampler_list.append(sampler)
@@ -3384,12 +3393,21 @@ if hasattr(sampler, 'setup'):
           print(" PRE_EVAL", opts.sampler_portfolio_args)
           #opts.sampler_portfolio_args = list(map(lambda x: eval(' "{}" '.format(x)), opts.sampler_portfolio_args))
           opts.sampler_portfolio_args = list(map(eval, opts.sampler_portfolio_args))
-          # confirm all are dict
+          # confirm all are dict.  This used to only PRINT, which was survivable while the
+          # misspelt kwarg below meant setup() discarded every entry anyway.  Now that the args
+          # are actually delivered, a non-dict reaches
+          # `args_here.update(portfolio_extra_args[indx])` in mcsamplerPortfolio.setup() and
+          # kills the run with "TypeError: cannot convert dictionary update sequence element #0
+          # to a sequence" -- naming neither this option nor this driver.  Refuse here instead.
           for indx in range(len(opts.sampler_portfolio_args)):
             if not(isinstance(opts.sampler_portfolio_args[indx], dict)):
-                print(indx,opts.sampler_portfolio_args[indx]) 
+                print(" OPTION MISMATCH : --sampler-portfolio-args entry {} is not a dict: {}".format(indx, opts.sampler_portfolio_args[indx]))
+                sys.exit(99)
           print(" ARGS ", opts.sampler_portfolio_args)
-        sampler.setup(portolio_args=opts.sampler_portfolio_args,portfolio_breakpoints=our_breakpoints,**extra_args_here)
+        # NOTE the spelling: setup() reads kwargs['portfolio_args'].  It takes **kwargs, so the
+        # long-standing 'portolio_args' here was accepted and silently ignored, and every
+        # --sampler-portfolio-args on this driver was dropped without a message.
+        sampler.setup(portfolio_args=opts.sampler_portfolio_args,portfolio_breakpoints=our_breakpoints,**extra_args_here)
 
 # Call oracle if provided, to initialize sampler 
 if sampler_oracle:  # NON-PORTFOLIO SCENARIO TARGET 
