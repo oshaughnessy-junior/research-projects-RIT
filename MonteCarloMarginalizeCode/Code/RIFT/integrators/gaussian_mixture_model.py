@@ -620,11 +620,13 @@ class gmm:
         if _model_backend(self) is not xpy:
             self.means = [_to_backend(xpy, m) for m in self.means]
             self.covariances = [_to_backend(xpy, c) for c in self.covariances]
-        # Weights go through float EXPLICITLY.  `self.weights` is not always the float
-        # array fit() produces -- mcsamplerEnsemble.create_wide_single_component_prior
-        # assigns the python list [1] -- and np.asarray of that is dtype int64, so the
-        # `self.weights[i] = weight` below truncated every merged weight to 0 and took
-        # the whole proposal density to the 1e-300 floor in score(), silently.
+        # Weights go through float EXPLICITLY.  `self.weights` is not always the float array
+        # fit() produces -- a hand-built model may assign a python list of ints -- and the
+        # np.asarray on THIS line would then make it dtype int64, so the `self.weights[i] =
+        # weight` below would truncate every merged weight to 0 and take the whole proposal
+        # density to the 1e-300 floor in score(), silently.  The conversion is this line's
+        # own doing, so the guard has to live here.  test_gmm_backend_dispatch.py::
+        # test_update_keeps_weights_floating_point fails if the dtype is dropped.
         self.weights = _to_backend(xpy, np.asarray(_to_host(self.weights), dtype=float))
         order = self._match_components(new_model)
         for i in range(self.k):

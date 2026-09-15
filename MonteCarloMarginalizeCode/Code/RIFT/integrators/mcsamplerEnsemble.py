@@ -41,6 +41,7 @@ from multiprocessing import Pool
 from RIFT.integrators.mcsampler import HealPixSampler
 
 from . import MonteCarloEnsemble as monte_carlo
+from . import gaussian_mixture_model as GMM   # MCSampler.update_sampling_prior fits per-group models
 
 __author__ = "Ben Champion"
 
@@ -326,7 +327,8 @@ class MCSampler(SamplerOutputMixin, object):
       self.integrator = monte_carlo.integrator(dim, bounds, gmm_dict, n_comp, n=self.n, prior=self.calc_pdf,
                          user_func=integrator_func, proc_count=proc_count,L_cutoff=L_cutoff,gmm_adapt=gmm_adapt,gmm_epsilon=gmm_epsilon,tempering_exp=tempering_exp,
                          tempering_adapt=tempering_adapt, ess_target=ess_target, ess_floor=ess_floor, gmm_adaptive=gmm_adaptive,
-                         gmm_defensive_frac=gmm_defensive_frac, gmm_inflate=gmm_inflate)
+                         gmm_defensive_frac=gmm_defensive_frac, gmm_inflate=gmm_inflate,
+                         param_names=self.params_ordered)
       self.integrator.gmm_defensive_all_paths = bool(_defensive_all)
 
     def update_sampling_prior(self,ln_weights, n_history,tempering_exp=1,log_scale_weights=True,floor_integrated_probability=0,external_rvs=None,**kwargs):
@@ -688,7 +690,8 @@ class MCSampler(SamplerOutputMixin, object):
         integrator = monte_carlo.integrator(dim, bounds, gmm_dict, n_comp, n=n, prior=self.calc_pdf,
                          user_func=integrator_func, proc_count=proc_count,L_cutoff=L_cutoff,gmm_adapt=gmm_adapt,gmm_epsilon=gmm_epsilon,tempering_exp=tempering_exp,
                          tempering_adapt=tempering_adapt, ess_target=ess_target, ess_floor=ess_floor, gmm_adaptive=gmm_adaptive,
-                         gmm_defensive_frac=gmm_defensive_frac, gmm_inflate=gmm_inflate)
+                         gmm_defensive_frac=gmm_defensive_frac, gmm_inflate=gmm_inflate,
+                         param_names=self.params_ordered)
         # Warm-start survival: a prior setup()/bootstrap_from_samples fits proposal
         # models and stores them on self.integrator, but integrate() rebuilds a fresh
         # integrator from the passed gmm_dict (values None) -- so without this the
@@ -705,6 +708,14 @@ class MCSampler(SamplerOutputMixin, object):
                     integrator.gmm_dict[key] = model
                     n_xfer += 1
             if n_xfer:
+                # This writes into gmm_dict AFTER the integrator was constructed, so it steps
+                # over the check in integrator.__init__.  Re-run it: a previous integrator
+                # built on a different box (a re-run with --internal-rotate-phase, or any
+                # --limit-* narrowing) would otherwise hand over a seed normalized on the old
+                # bounds, which shifts lnZ and leaves every marginal looking right.
+                monte_carlo.validate_gmm_dict(integrator.bounds, integrator.gmm_dict,
+                                              where="warm-start gmm_dict",
+                                              param_names=self.params_ordered)
                 print("  [GMM warm-start] transferred {} fitted proposal group(s) into the integrator".format(n_xfer))
         self.integrator = integrator
         if not direct_eval:
@@ -1022,12 +1033,36 @@ def convergence_test_NormalSubIntegrals(ncopies, pcutNormalTest, sigmaCutRelativ
     print(" Ln(evidence) sub-integral values, as used in tests  : ", igrandValues)
     return valTest> pcutNormalTest and igrandSigma < sigmaCutRelativeErrorThreshold
 
-from . import gaussian_mixture_model as GMM
-def create_wide_single_component_prior(bounds, epsilon=None):
-    model = GMM.gmm(1, bounds, epsilon=epsilon)
-    widths = np.array([ bounds[k][1] - bounds[k][0] for k in np.arange(len(bounds))])  
-    model.means = [np.array([np.mean(bounds[k]) for k in np.arange(len(bounds))]) ]
-    model.covariances = [np.diag( widths**2)]
-    model.weights = [1]
-    model.adapt = [False]
-    model.d = len(bounds)
+# create_wide_single_component_prior() lived here.  It built a one-component gmm as a wide
+# seed for the extrinsic (psi, phi_orb) group, and both ILE drivers put its return value in
+# gmm_dict.  The function had no `return`, so the drivers always installed None.  None is
+# what MonteCarloEnsemble._sample() reads as "draw this group uniformly over its bounds".
+#
+# Removed instead of repaired.  The seed cannot beat None -- None is already exact uniform --
+# and it has one failure mode that nothing downstream would catch.  Note the ordering: until
+# PR #347 taught score() to convert list bounds, adding the `return` raised and the seed was
+# never installed.  That is gone, so the first bullet is now live rather than latent:
+#   * it always built a 2-D model from (psi, phi_orb) bounds, but when phase is marginalized
+#     the drivers' dim-group is the 1-element (psi,).  A 2-D model there biases lnZ by
+#     ln(width of phi_orb): +1.84 nats by default, +2.53 under --internal-rotate-phase.
+#     Every recovered marginal keeps its shape, so only the evidence moves.
+#     MonteCarloEnsemble.validate_gmm_dict() now rejects that mismatch, and the box
+#     mismatch beside it.  No live caller can currently trip either: the breadcrumb
+#     seeder drops groups whose params are not all sampled and matches keys by dim-set.
+#     The guard is forward insurance, not cover for a caller that needs it today.
+#   * means/covariances were in physical units, while a gmm holds its parameters in the
+#     normalized [-1,1] image of its bounds.  With cov=diag(width**2) the truncated result is
+#     still near-uniform (a ~5% marginal tilt), so this one is a wrong frame, not a wrong answer.
+#   * bounds arrived as the drivers' list of tuples.  gmm.score() used to be unable to index
+#     that (self.bounds.T), so adding the `return` raised, integrate() swallowed it and called
+#     _reset(), and the group fell back to None.  PR #347 made score() convert its bounds, so
+#     that accident no longer protects anything: on this base the helper would RUN, and the
+#     dimension bias above would ship.
+#   * the seed carries N=0, so _merge discards it on the first update(), and a seeded entry
+#     takes MonteCarloEnsemble._train's model.update() branch, holding the group at k=1
+#     instead of the n_comp=n_phase components the un-seeded path fits.
+#
+# `GMM` is imported at the top of this module.  It used to be imported HERE, below every use
+# of it, as a side effect of this helper; dropping that line breaks update_sampling_prior.
+#
+# Evidence: MonteCarloMarginalizeCode/Code/test/integrators/shape_extrinsic_phase_seed.py

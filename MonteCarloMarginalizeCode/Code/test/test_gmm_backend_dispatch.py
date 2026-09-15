@@ -571,9 +571,8 @@ def test_host_and_device_score_the_same_mixture_alike(on_a_device):
 ### parameters' own backend say the same thing and reading either works.  A model built by
 ### assignment does not: self.xpy is still xpy_default (the device) while every parameter
 ### is host numpy.  Two places in the tree build exactly that: test_gmm_truncated_score.py,
-### and mcsamplerEnsemble.create_wide_single_component_prior, which assigns host means,
-### covariances and weights onto a fresh gmm (it is inert today only because it forgets to
-### return the model it built).
+### and any hand-built model that assigns host means,
+### covariances and weights onto a fresh gmm.
 ###
 ### The converse shape -- a model whose parameters are all on the DEVICE -- is what
 ### calmarg.extrinsic_handoff.reconstruct_gmm builds, and it must stay that way: see the
@@ -732,10 +731,10 @@ def test_the_adaptive_fit_chooses_the_same_k_on_both_backends(on_a_device):
 
 def test_update_keeps_weights_floating_point(on_a_device):
     """`self.weights` is not always the float array fit() leaves behind.
-    mcsamplerEnsemble.create_wide_single_component_prior assigns the PYTHON LIST `[1]`, and
-    _merge writes float weights back into whatever container it finds.  Coercing that list
-    with a bare np.asarray gives dtype int64, so `self.weights[i] = weight` truncates every
-    merged weight to 0 and score() returns its 1e-300 floor for every sample -- no
+    A hand-built model may assign a PYTHON LIST of ints, and _merge writes float weights back
+    into whatever container it finds.  _merge's own np.asarray would coerce that list to
+    dtype int64 without the explicit dtype=float, so `self.weights[i] = weight` truncates
+    every merged weight to 0 and score() returns its 1e-300 floor for every sample -- no
     exception, no warning, just a proposal density of zero."""
     m = GMM.gmm(2, BOUNDS)
     m.d, m.N = 2, 200
