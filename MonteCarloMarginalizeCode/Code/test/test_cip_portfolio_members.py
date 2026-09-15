@@ -20,6 +20,7 @@ Both are asserted against a RUN of the driver.  A static check of the kwarg name
 only, and nothing static sees (1).  One subprocess, ~11 s.
 """
 import os
+import re
 import subprocess
 import sys
 
@@ -79,6 +80,32 @@ def cip_portfolio_run(tmp_path_factory):
                           universal_newlines=True, timeout=1800)
 
 
+_MEMBER_ID = re.compile(r"object at (0x[0-9a-fA-F]+)")
+
+
+def _member_ids(lines):
+    """The ADDRESS out of each member setup line.
+
+    NOT `split("object at ")[-1]`.  That keeps the trailing per-member args dict, and the members
+    here deliberately carry DIFFERENT args ({} vs {'n_comp':7}) -- so two setups of the SAME
+    aliased object compared as distinct and the distinctness assertion passed on a portfolio that
+    was one object twice.  Demonstrated with the loop reset removed:
+        parsed ids : ['0x7f5914943950> {}', "0x7f5914943950> {'n_comp': 7}"]  -> 2 distinct
+        true addrs : ['0x7f5914943950', '0x7f5914943950']                     -> 1 distinct
+    A line that does not match is an error rather than a skip: split() would return the whole
+    line if MCSampler ever gained a __repr__, silently degrading this into a class-name check.
+
+    Comparing CPython id-reprs is sound here only because every member is alive and referenced by
+    portfolio_realizations when these lines print, so no address can be reused.
+    """
+    out = []
+    for ln in lines:
+        m = _MEMBER_ID.search(ln)
+        assert m, "cannot read a member address out of: %r" % ln
+        out.append(m.group(1))
+    return out
+
+
 def _member_lines(proc):
     # setup() prints one line per MEMBER including the object's repr, so this sees ALIASING --
     # which a count of the driver's own "PORTFOLIO: adding" lines cannot.
@@ -101,13 +128,16 @@ def test_unrecognized_member_is_skipped_not_aliased(cip_portfolio_run):
     recognized, which would look like a pass to a test that only counted duplicates.
     """
     lines = _member_lines(cip_portfolio_run)
-    ids = [ln.split("object at ")[-1] for ln in lines]
+    ids = _member_ids(lines)
     assert len(ids) == 2, \
         "expected exactly 2 members (AV, GMM); 'bogus' must add none. Got %d:\n%s" \
         % (len(ids), "\n".join(lines))
     assert len(set(ids)) == 2, \
         "the two members are THE SAME OBJECT -- the unknown name was aliased onto the previous " \
         "member:\n" + "\n".join(lines)
+    assert any("ignoring unrecognized --sampler-portfolio" in ln and "bogus" in ln
+               for ln in cip_portfolio_run.stdout.splitlines()), \
+        "the dropped name was not reported:\n" + cip_portfolio_run.stdout[-3000:]
     assert any("mcsamplerAdaptiveVolume" in ln for ln in lines), "the AV member was dropped"
     assert any("mcsamplerEnsemble" in ln for ln in lines), "the GMM member was dropped"
 
@@ -129,3 +159,49 @@ def test_portfolio_args_reach_the_right_member(cip_portfolio_run):
         "--sampler-portfolio-args never reached the GMM member; setup() saw:\n" + gmm[0]
     assert "'n_comp'" not in av[0], \
         "the GMM member's arguments leaked onto the AV member:\n" + av[0]
+
+
+def test_cip_portfolio_args_must_be_dicts(tmp_path):
+    """A non-dict --sampler-portfolio-args entry must be refused, not delivered.
+
+    This is a REGRESSION GUARD ON THE SPELLING FIX itself.  While setup() was called with the
+    misspelt `portolio_args`, every entry was discarded and a malformed one was harmless: the run
+    completed (exit 0) with the args ignored.  Delivering them correctly makes the same input
+    fatal inside mcsamplerPortfolio.setup():
+
+        TypeError: cannot convert dictionary update sequence element #0 to a sequence
+
+    Measured on the base vs the spelling fix alone: exit 0 -> exit 1.  So the guard is part of
+    the fix, not an extra; without it this driver trades a silently-ignored option for a crash in
+    the integrator.
+    """
+    if not os.path.exists(DRIVER):
+        pytest.fail("driver missing: %s" % DRIVER)
+    fname = _write_ile(tmp_path)
+    env = dict(os.environ)
+    env["PYTHONPATH"] = CODE + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    env["OMP_NUM_THREADS"] = "1"
+    env["MPLBACKEND"] = "Agg"
+    env["XDG_CACHE_HOME"] = os.path.join(str(tmp_path), "cache")
+    env["MPLCONFIGDIR"] = os.path.join(str(tmp_path), "mpl")
+    cmd = [sys.executable, DRIVER,
+           "--fname", fname,
+           "--parameter", "mc", "--parameter", "delta_mc",
+           "--fit-method", "rf",
+           "--sampler-method", "portfolio",
+           "--sampler-portfolio", "AV",
+           "--sampler-portfolio", "GMM",
+           "--sampler-portfolio-args", "{}",
+           "--sampler-portfolio-args", "[1,2]",
+           "--n-max", "4000", "--n-eff", "10",
+           "--n-output-samples", "20",
+           "--no-plots", "--internal-use-lnL"]
+    proc = subprocess.run(cmd, cwd=str(tmp_path), env=env,
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          universal_newlines=True, timeout=1800)
+    assert "cannot convert dictionary update sequence" not in proc.stdout, \
+        "a malformed args entry reached setup():\n" + proc.stdout[-3000:]
+    assert proc.returncode == 99, \
+        "expected a clean option-mismatch exit, got %d:\n%s" % (proc.returncode,
+                                                                proc.stdout[-3000:])
+    assert "OPTION MISMATCH" in proc.stdout, proc.stdout[-2000:]

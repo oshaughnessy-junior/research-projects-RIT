@@ -142,7 +142,8 @@ FILES=(
   # -- CIP: the portfolio member list handed to mcsamplerPortfolio.  An unrecognized
   # --sampler-portfolio name following a recognized one used to re-append the SAME sampler
   # object, which crashed the run in sample_from_bins; and --sampler-portfolio-args was passed
-  # under a misspelt keyword and silently dropped.  3 tests, ~11 s, one driver subprocess.
+  # under a misspelt keyword and silently dropped -- delivering it correctly makes a
+  # malformed entry fatal, so the non-dict guard is part of that fix.  4 tests, ~22 s.
   "$C/test/test_cip_portfolio_members.py"
   # -- EOS: the LALSimulation version-compatibility layer.  numpy/lal only; the reviewed
   # multibranch API is exercised through injected fakes, so this runs on a released build.
@@ -304,7 +305,7 @@ done
 # runner's closure the count falls back to 347 and still passes.  Pinning 350 would turn an
 # unrelated dependency change into a red gate.
 # Two XML/grid template-finalization regressions, with no added skips.
-EXPECTED_TESTS=572
+EXPECTED_TESTS=573
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -312,8 +313,8 @@ EXPECTED_TESTS=572
 # test_eos_posterior_tempering_kwarg::test_integrators_read_tempering_exp_from_kwargs
 # (mcsamplerNFlow is an optional dependency and is absent from the IGWN environment), and
 # the xfail in test_uv_symmetry.  test_eos_portfolio_sampler.py adds 12 tests and
-# test_cip_portfolio_members.py 3, none of them skips.
-EXPECTED_PASSED=559
+# test_cip_portfolio_members.py 4, none of them skips.
+EXPECTED_PASSED=560
 MAX_SKIPPED=13
 
 # The floors must be INTEGERS, and this is checked rather than assumed.  `[ 347 -lt FOO ]` does
