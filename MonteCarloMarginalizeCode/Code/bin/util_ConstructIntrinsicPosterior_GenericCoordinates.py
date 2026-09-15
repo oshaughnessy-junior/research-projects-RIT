@@ -2959,6 +2959,13 @@ elif opts.sampler_method == "portfolio":
     sampler_list = []
     sampler_types = opts.sampler_portfolio
     for name in sampler_types:
+        # Clear the carry-over BEFORE dispatching on the name.  Without this, the
+        # "if sampler is None: continue" below cannot do what its comment says: after one
+        # recognized name, `sampler` stays bound to that member, so every LATER unrecognized name
+        # appends THE SAME OBJECT again.  That is not merely a duplicate -- setup() then runs
+        # twice on one sampler and the run dies in mcsamplerAdaptiveVolume.sample_from_bins with
+        # "ValueError: operands could not be broadcast together with shapes (4,) (1,2)".
+        sampler = None
         if name =='AV':
             sampler = mcsamplerAdaptiveVolume.MCSampler()
         if name =='GMM':
@@ -3389,7 +3396,10 @@ if hasattr(sampler, 'setup'):
             if not(isinstance(opts.sampler_portfolio_args[indx], dict)):
                 print(indx,opts.sampler_portfolio_args[indx]) 
           print(" ARGS ", opts.sampler_portfolio_args)
-        sampler.setup(portolio_args=opts.sampler_portfolio_args,portfolio_breakpoints=our_breakpoints,**extra_args_here)
+        # NOTE the spelling: setup() reads kwargs['portfolio_args'].  It takes **kwargs, so the
+        # long-standing 'portolio_args' here was accepted and silently ignored, and every
+        # --sampler-portfolio-args on this driver was dropped without a message.
+        sampler.setup(portfolio_args=opts.sampler_portfolio_args,portfolio_breakpoints=our_breakpoints,**extra_args_here)
 
 # Call oracle if provided, to initialize sampler 
 if sampler_oracle:  # NON-PORTFOLIO SCENARIO TARGET 

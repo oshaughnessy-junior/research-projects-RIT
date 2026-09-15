@@ -354,3 +354,22 @@ def test_implemented_fit_method_gp_is_not_refused(tmp_path):
         "a supported fit method was refused:\n" + proc.stdout[-3000:]
     assert proc.returncode == 0, \
         "--fit-method gp exited %d:\n%s" % (proc.returncode, proc.stdout[-3000:])
+
+
+def test_unimplemented_fit_method_is_refused(tmp_path):
+    """This driver builds only 'gp' and 'rf'.  Anything else must be refused UP FRONT.
+
+    The --fit-method help was copied from the intrinsic driver, which implements a dozen more.
+    Asking for one of those here left `my_fit` at None and the run carried on: nothing referenced
+    it until the sampler evaluated the integrand, which died with "TypeError: 'NoneType' object is
+    not callable" from inside log_likelihood_function -- after the full setup had been paid for,
+    and with nothing in the message naming --fit-method.
+    """
+    proc = _run(tmp_path, ["--fit-method", "quadratic"])
+    assert "TypeError: 'NoneType' object is not callable" not in proc.stdout, \
+        "an unbuilt fit reached the integrand:\n" + proc.stdout[-3000:]
+    assert proc.returncode == 99, \
+        "expected a clean option-mismatch exit, got %d:\n%s" % (proc.returncode,
+                                                                proc.stdout[-3000:])
+    assert "--fit-method" in proc.stdout, \
+        "the message must name the option at fault:\n" + proc.stdout[-2000:]
