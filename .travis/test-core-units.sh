@@ -92,6 +92,7 @@ FILES=(
   # -- CIP / evidence / distance export
   "$C/test/test_cip_evidence_consolidation.py"
   "$C/test/test_cip_pipeline.py"
+  "$C/test/test_eos_posterior_tempering_kwarg.py"
   "$C/test/test_distance_grid.py"
   "$C/test/test_distance_grid_degenerate_bins.py"
   "$C/test/test_dgrid_retained_set.py"
@@ -244,6 +245,17 @@ done
 #            test files beyond the two named above, so summing would have pinned this gate
 #            29 tests below its real coverage while still passing.
 #
+#   557/544  test_eos_posterior_tempering_kwarg.py added (14 tests: the EOS driver must send
+#            the sampler tempering_exp, not the argparse spelling adapt_weight_exponent).
+#            MEASURED on CIT (ldas-grid; `import cupy` FAILS there, so this is the numpy
+#            backend) 2026-09-15, IGWN conda python 3.11 / lal 7.7.0, with
+#            RIFT_COREUNIT_PYTHON pointed at the IGWN interpreter: per-file 557 over 47
+#            files, junit 560 collected / 547 passed / 13 skipped / 0 failed.  560 and 547
+#            carry 3 subtest entries, so the floors are the plugin-free 557/544.
+#            (A first run under the default `python` reported numpy 1.14.3 and 33 files
+#            collecting 0 tests.  That measures the interpreter, not the tree; set
+#            RIFT_COREUNIT_PYTHON before quoting a count from this gate.)
+#
 # RAISE these when files are added: a floor left at the old value passes while covering less,
 # which is the failure this gate exists to catch.
 # DO NOT RAISE THESE TO THE RUNNER'S NUMBERS.  The GitHub runner reports 350 collected / 338
@@ -258,13 +270,16 @@ done
 # runner's closure the count falls back to 347 and still passes.  Pinning 350 would turn an
 # unrelated dependency change into a red gate.
 # Two XML/grid template-finalization regressions, with no added skips.
-EXPECTED_TESTS=543
+EXPECTED_TESTS=557
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
-# asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 12 skips are
+# asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
-# test_dslice_device_native, and the xfail in test_uv_symmetry.
-EXPECTED_PASSED=531
-MAX_SKIPPED=12
+# test_dslice_device_native, the nflows leg of
+# test_eos_posterior_tempering_kwarg::test_integrators_read_tempering_exp_from_kwargs
+# (mcsamplerNFlow is an optional dependency and is absent from the IGWN environment), and
+# the xfail in test_uv_symmetry.
+EXPECTED_PASSED=544
+MAX_SKIPPED=13
 
 # The floors must be INTEGERS, and this is checked rather than assumed.  `[ 347 -lt FOO ]` does
 # not fail the build: bash prints "integer expression expected", returns 2, and the `if` is
