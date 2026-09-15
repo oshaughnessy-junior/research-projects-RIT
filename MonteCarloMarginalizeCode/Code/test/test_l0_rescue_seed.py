@@ -546,11 +546,19 @@ def test_a_second_portfolio_pass_reserve_contains_only_second_pass_draws():
 
 
 def test_the_portfolio_reserve_is_taken_before_pruning_and_the_fair_draw():
-    """Order matters: taken after either step it would carry the same starved subset."""
+    """Order matters: taken after either step it would carry the same starved subset.
+
+    Matches EITHER reserve builder by name.  The portfolio now goes through the shared
+    make_reserve_from_rvs adapter rather than calling make_warm_seed_reserve directly, and
+    pinning one spelling turned that into a red test about nothing -- the ordering claim,
+    which is what this is for, was never in doubt."""
     import RIFT.integrators.mcsamplerPortfolio as mcsamplerPF
     import inspect
     src = inspect.getsource(mcsamplerPF.MCSampler.integrate_log)
-    i_res = src.index('make_warm_seed_reserve')
+    builders = [src.index(n) for n in ('make_reserve_from_rvs', 'make_warm_seed_reserve')
+                if n in src]
+    assert builders, 'the portfolio no longer builds a warm-seed reserve at all'
+    i_res = min(builders)
     assert i_res < src.index("Clean out the _rvs arrays"), 'reserve taken after pruning'
     assert i_res < src.index('if bFairdraw'), 'reserve taken after the fair draw'
 

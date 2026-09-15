@@ -985,6 +985,18 @@ class MCSampler(SamplerOutputMixin, MCSamplerGeneric):
            ln_wt += - special.logsumexp(ln_wt)
            wt = xpy.exp(identity_convert_togpu(ln_wt))
            if n_extr < len(self._rvs["log_integrand"]):
+               # RETAINED-SET RESERVE, taken HERE.  The gather just below rebinds every _rvs
+               # key to n_extr rows drawn WITH REPLACEMENT, so this is the last moment at
+               # which the rows this pass actually kept still exist.  Exporters that read
+               # _rvs afterwards -- the .dgrid distance grid above all -- were binning that
+               # export resample as if it were the sample set.  Local import to keep the
+               # module graph flat: AV owns the one builder and pulls in mcsamplerGPU, and
+               # only mcsamplerGPU would actually be circular -- but a deferred import
+               # costs nothing and none of these five sites has to know which.  Built only
+               # when the draw is really about to happen, so a pass that never fair-draws
+               # pays nothing for it.
+               from RIFT.integrators.mcsamplerAdaptiveVolume import keep_reserve_from_rvs
+               keep_reserve_from_rvs(self, 'mcsamplerNFlow', integrand_is_log=True)
                indx_list = self.xpy.random.choice(self.xpy.arange(len(wt)), size=n_extr,replace=True,p=wt) # fair draw
                # FIXME: See previous FIXME
                for key in list(self._rvs.keys()):

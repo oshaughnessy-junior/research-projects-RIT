@@ -95,8 +95,6 @@ MonteCarloMarginalizeCode/Code/test/integrators/test_AV_warmstart_safety.py     
 MonteCarloMarginalizeCode/Code/test/integrators/test_portfolio_adaptive_alloc.py     HANDRUN  portfolio draw-allocation vs standalone AV; 0 collected, run by test_integrator_studies.py --as-test (19 s)
 MonteCarloMarginalizeCode/Code/test/integrators/test_portfolio_balance_heuristic.py  HANDRUN  portfolio safety under a decoy member; 0 collected, run by test_integrator_studies.py --as-test (64 s, nine replicates)
 MonteCarloMarginalizeCode/Code/test/integrators/test_portfolio_oracle.py             HANDRUN  needle-target oracle study; 0 collected, run by test_integrator_studies.py --as-test (5 s)
-MonteCarloMarginalizeCode/Code/test/integrators/test_mcsamplerEnsemble.py            HANDRUN  GMM-vs-mcsampler comparison demo, prints results; 0 collected, exit 5
-MonteCarloMarginalizeCode/Code/test/integrators/test_mcsamplerEnsemble_AdaptationDemo.py HANDRUN  adaptation demo, plots and prints; 0 collected, exit 5
 MonteCarloMarginalizeCode/Code/demo/rift/export_likelihoods/head_to_head/run_test.py HANDRUN  GP-vs-RF figure driver for a demo; --stage picks a stage; 0 collected, exit 5
 
 # ---------------------------------------------------------------------------------------
