@@ -87,6 +87,7 @@ FILES=(
   # -- CIP / evidence / distance export
   "$C/test/test_cip_evidence_consolidation.py"
   "$C/test/test_cip_pipeline.py"
+  "$C/test/test_eos_posterior_tempering_kwarg.py"
   "$C/test/test_distance_grid.py"
   "$C/test/test_distance_grid_degenerate_bins.py"
   "$C/test/test_dgrid_retained_set.py"
