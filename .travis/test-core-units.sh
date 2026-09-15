@@ -291,6 +291,18 @@ done
 #            these floors and the junit numbers is the pytest-subtests margin documented below,
 #            not spare room.
 #
+#   573/560  test_cip_portfolio_members.py added (4 tests) and test_eos_portfolio_sampler.py
+#            gained its fit-method case (11 -> 12).  Guards the portfolio member list
+#            util_ConstructIntrinsicPosterior_GenericCoordinates.py hands to mcsamplerPortfolio:
+#            an unrecognized --sampler-portfolio name used to re-append the SAME sampler object
+#            and kill the run in sample_from_bins, and --sampler-portfolio-args rode in under a
+#            misspelt keyword and was silently dropped.  Runs the CIP driver as a subprocess.
+#            MEASURED on CIT (ldas-grid; `import cupy` FAILS there, so this is the numpy
+#            backend) 2026-09-15, IGWN conda python 3.11 / lal 7.7.0, with
+#            RIFT_COREUNIT_PYTHON pointed at the IGWN interpreter: per-file 573 over 49 files,
+#            junit 576 collected / 563 passed / 13 skipped / 0 failed.  Again 3 of
+#            pytest-subtests margin, not spare room.
+#
 # RAISE these when files are added: a floor left at the old value passes while covering less,
 # which is the failure this gate exists to catch.
 # DO NOT RAISE THESE TO THE RUNNER'S NUMBERS.  The GitHub runner reports 350 collected / 338

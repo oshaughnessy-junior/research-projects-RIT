@@ -75,9 +75,12 @@ def cip_portfolio_run(tmp_path_factory):
            "--n-max", "4000", "--n-eff", "10",
            "--n-output-samples", "20",
            "--no-plots", "--internal-use-lnL"]
+    # timeout MUST stay under the core-unit job's timeout-minutes: 20 (1200 s).  At 1800 s it
+    # could never fire: GitHub cancels the job first, so a hung driver yields a cancelled job
+    # and NO test diagnostic.  900 s matches the rest of the manifest.
     return subprocess.run(cmd, cwd=str(tmp_path), env=env,
                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                          universal_newlines=True, timeout=1800)
+                          universal_newlines=True, timeout=900)
 
 
 _MEMBER_ID = re.compile(r"object at (0x[0-9a-fA-F]+)")
@@ -198,7 +201,7 @@ def test_cip_portfolio_args_must_be_dicts(tmp_path):
            "--no-plots", "--internal-use-lnL"]
     proc = subprocess.run(cmd, cwd=str(tmp_path), env=env,
                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                          universal_newlines=True, timeout=1800)
+                          universal_newlines=True, timeout=900)
     assert "cannot convert dictionary update sequence" not in proc.stdout, \
         "a malformed args entry reached setup():\n" + proc.stdout[-3000:]
     assert proc.returncode == 99, \
