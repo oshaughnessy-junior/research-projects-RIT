@@ -43,10 +43,10 @@ DRIVER = (Path(__file__).resolve().parents[1] /
 # reason to supply.
 _WANTED_FUNCS = ("dat_path", "samples_path", "xml_path", "_remove_stale_artifact",
                  "fairdraw_indices", "fairdraw_size", "_target_ess_was_given",
-                 "was_supplied", "_xml_extrinsic_columns", "write_samples_xml",
-                 "write_samples")
+                 "was_supplied", "_xml_extrinsic_columns", "_xml_prior_columns",
+                 "write_samples_xml", "write_samples")
 _WANTED_ASSIGNS = ("_TEMPERED_MODES", "_FAIRDRAW_MODES", "_FAIRDRAW_N_MAX_DEFAULT",
-                   "_XML_PS_LOG_CLIP")
+                   "_XML_PS_LOG_CLIP", "_USABLE_EXPORT_ESS")
 
 
 def _driver_namespace():
@@ -543,3 +543,111 @@ def test_analyze_one_still_supplies_every_xml_input():
     assert len(calls) == 1, "expected one write_samples call, found %d" % len(calls)
     passed = {k.arg for k in calls[0].keywords if k.arg}
     assert {"P", "fiducial_epoch", "logZ", "sigma_lnL"} <= passed, sorted(passed)
+
+
+# ---------------------------------------------------------------------------
+# --sampler-method AV: the WEIGHTED cloud, with its own prior columns
+# ---------------------------------------------------------------------------
+def _weighted(opts, theta, lnL, log_p, log_ps, **kw):
+    NS["write_samples"](opts, 0, theta, lnL, True, P=_P(),
+                        fiducial_epoch=1126259462.0, logZ=41.25,
+                        sigma_lnL=0.031, report_neff=88.5, ntotal=4096,
+                        log_prior=log_p, log_s_prior=log_ps, **kw)
+    return (Path(NS["samples_path"](opts, 0)), Path(NS["xml_path"](opts, 0)))
+
+
+def test_av_publishes_the_real_prior_pair_not_a_cancellation(tmp_path):
+    """samplers.adaptive_volume_sample keeps the retained population under AV.
+
+    igrand_fairdraw_samples is False there, so log_joint_prior and
+    log_joint_s_prior still exist per row.  Write them: exp(lnL) * p/ps is then
+    the true importance weight, with nothing cancelling against lnL.
+    """
+    rng = np.random.default_rng(20)
+    n = 300
+    theta = _theta(n, 6, rng)
+    lnL = rng.normal(300.0, 4.0, n)
+    log_p = rng.normal(-9.0, 0.5, n)
+    log_ps = rng.normal(-7.0, 0.8, n)
+    _, xml = _weighted(_opts(tmp_path), theta, lnL, log_p, log_ps)
+    tab = _sim_rows(xml)
+    got = np.array([r.alpha2 / r.alpha3 for r in tab])
+    np.testing.assert_allclose(got, np.exp(log_p - log_ps), rtol=1e-5, atol=0)
+    # NOT the cancelling pair: these weights vary, because the cloud does.
+    w = _consumer_weights(xml)
+    assert w.std() / w.mean() > 0.1
+
+
+def test_av_xml_is_the_weighted_cloud_while_the_dat_stays_a_fair_draw(tmp_path):
+    """The two products stop being the same rows here, on purpose.
+
+    util_ConvertJAXILEFairdraws.py and every hand-rolled collector read the
+    .dat as equal-weight rows, so it keeps its fair draw; the XML's consumer
+    reweights, so it gets the cloud the weights belong to.
+    """
+    rng = np.random.default_rng(21)
+    n = 4000
+    theta = _theta(n, 6, rng)
+    lnL = rng.normal(300.0, 3.0, n)
+    log_p = rng.normal(-9.0, 0.5, n)
+    log_ps = rng.normal(-7.0, 0.8, n)
+    opts = _opts(tmp_path, n_fairdraw_extrinsic_samples=50)
+    logw = lnL + log_p - log_ps
+    dat, xml = _weighted(opts, theta, lnL, log_p, log_ps, logw=logw)
+    # The sidecar is the fair draw, at or under the requested count (ILE's
+    # 1.5*ESS clamp can cut it further); the XML is the whole weighted cloud.
+    n_dat = len(_dat(dat))
+    assert 0 < n_dat <= 50
+    assert len(_sim_rows(xml)) == n
+    assert n_dat < n
+
+
+def test_av_prior_pair_must_line_up_with_the_rows(tmp_path):
+    rng = np.random.default_rng(22)
+    theta = _theta(12, 6, rng)
+    with pytest.raises(RuntimeError, match="disagree in length"):
+        _weighted(_opts(tmp_path), theta, np.zeros(12),
+                  np.zeros(11), np.zeros(12))
+
+
+def test_out_of_range_priors_are_shifted_together_so_the_ratio_survives(tmp_path):
+    """alpha2 and alpha3 are real_4, and only their ratio is ever read.
+
+    A common shift on both logs is weight preserving; scaling one alone would
+    change this file's weight against the other intrinsic points.
+    """
+    rng = np.random.default_rng(23)
+    n = 200
+    log_p = rng.normal(-400.0, 2.0, n)      # exp() underflows float32
+    log_ps = rng.normal(-398.0, 2.0, n)
+    p, ps = NS["_xml_prior_columns"](log_p, log_ps)
+    assert np.all(np.isfinite(p)) and np.all(p > 0)
+    assert np.all(np.isfinite(ps)) and np.all(ps > 0)
+    np.testing.assert_allclose(p / ps, np.exp(log_p - log_ps), rtol=1e-9, atol=0)
+
+
+def test_ordinary_priors_are_written_verbatim(tmp_path):
+    """No shift in the normal case: the columns are the classic ILE's values."""
+    rng = np.random.default_rng(24)
+    log_p = rng.normal(-9.0, 0.4, 50)
+    log_ps = rng.normal(-7.0, 0.4, 50)
+    p, ps = NS["_xml_prior_columns"](log_p, log_ps)
+    np.testing.assert_allclose(p, np.exp(log_p), rtol=0, atol=0)
+    np.testing.assert_allclose(ps, np.exp(log_ps), rtol=0, atol=0)
+
+
+def test_analyze_one_hands_the_av_prior_pair_to_the_export():
+    """Structural: the AV branch's log_joint_prior must reach write_samples.
+
+    Losing the keyword would fall back to the fair-drawn cancellation silently,
+    which is a different (and for AV, wrong) export.
+    """
+    tree = ast.parse(DRIVER.read_text(), filename=str(DRIVER))
+    calls = [n for n in ast.walk(tree)
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+             and n.func.id == "write_samples"]
+    passed = {k.arg for k in calls[0].keywords if k.arg}
+    assert {"log_prior", "log_s_prior"} <= passed, sorted(passed)
+    src = DRIVER.read_text()
+    assert 'res.get("log_joint_prior")' in src
+    assert 'res.get("log_joint_s_prior")' in src
