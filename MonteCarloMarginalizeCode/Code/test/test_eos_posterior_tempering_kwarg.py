@@ -9,8 +9,10 @@ driver, forked from the same code, kept it.
 
 The first test is a call-site spy: it executes the driver's real ``sampler.integrate(...)``
 expression against a recording stand-in and asserts on the keyword dict the sampler
-receives, so it fails whether the kwarg is renamed back, dropped, or shadowed by a
-colliding entry in ``extra_args``.
+receives, so it fails if the kwarg is renamed back, dropped, or set from something other
+than ``my_exp``.  It binds its own ``extra_args``, so it cannot see a key smuggled in
+through the driver's real ``extra_args``; ``test_extra_args_does_not_collide...`` below
+covers that, and neither test can see the call being made unreachable.
 """
 import ast
 import os
@@ -109,6 +111,97 @@ def test_eos_driver_hands_the_sampler_tempering_exp():
         % (GOOD_KWARG, spy.kwargs[GOOD_KWARG]))
 
 
+def _my_exp_block(tree):
+    """The driver's my_exp assignment and the guards that follow it, as a Module."""
+    body = tree.body
+    start = None
+    for i, node in enumerate(body):
+        if (isinstance(node, ast.Assign)
+                and any(isinstance(t, ast.Name) and t.id == "my_exp" for t in node.targets)):
+            start = i
+            break
+    assert start is not None, "no top-level my_exp assignment in %s" % EOS_DRIVER
+    end = start + 1
+    while end < len(body) and isinstance(body[end], ast.If):
+        end += 1
+    block = ast.Module(body=body[start:end], type_ignores=[])
+    ast.fix_missing_locations(block)
+    return block, end - start
+
+
+@pytest.mark.parametrize("y_orig_max,shift", [
+    (50.0, 0.0),      # ordinary run
+    (50.0, 100.0),    # --lnL-shift-prevent-overflow above the peak: max(Y) < 0
+    (50.0, 50.0),     # shifted exactly to zero: the ratio is +inf
+    (-50.0, -50.0),   # all-negative lnL, driver's own auto-shift
+])
+def test_my_exp_is_positive_whatever_the_shift(y_orig_max, shift):
+    """my_exp reaches the sampler now, so a negative value is no longer inert.
+
+    The ratio divides by max(Y), which carries lnL_shift; the historical guard tests the
+    unshifted Y_orig.  A negative exponent makes the sampler adapt away from the peak.
+    """
+    import numpy as np
+    with open(EOS_DRIVER) as f:
+        tree = ast.parse(f.read(), filename=EOS_DRIVER)
+    block, n_stmt = _my_exp_block(tree)
+    assert n_stmt >= 2, (
+        "the my_exp block in %s has no guard after the assignment; a negative or "
+        "non-finite exponent would reach the sampler" % os.path.basename(EOS_DRIVER))
+
+    y_orig = np.array([y_orig_max - 10.0, y_orig_max])
+    namespace = {"np": np, "n_step": 2000, "Y": y_orig - shift, "Y_orig": y_orig}
+    exec(compile(block, EOS_DRIVER, "exec"), namespace)
+    my_exp = namespace["my_exp"]
+    assert np.isfinite(my_exp) and my_exp > 0, (
+        "my_exp = %r for max(Y_orig)=%s, lnL_shift=%s; the sampler receives this as "
+        "tempering_exp" % (my_exp, y_orig_max, shift))
+    assert my_exp <= 1, "my_exp = %r exceeds the driver's own cap of 1" % my_exp
+
+
+def test_extra_args_does_not_collide_with_the_tempering_kwarg():
+    """The driver also sends **extra_args, which the spy above binds itself.
+
+    A key there named `adapt_weight_exponent` reaches the sampler as the dead name even
+    though the call site is right; a key named `tempering_exp` makes the call raise
+    TypeError ("multiple values for keyword argument") at run time.  Neither is visible
+    to a spy that supplies its own extra_args, so check the driver's literals.
+    """
+    with open(EOS_DRIVER) as f:
+        tree = ast.parse(f.read(), filename=EOS_DRIVER)
+
+    dicts = []
+    for node in ast.walk(tree):
+        # extra_args = {...}
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Dict):
+            if any(isinstance(t, ast.Name) and t.id == "extra_args" for t in node.targets):
+                dicts.append(node.value)
+        # extra_args.update({...})
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "update"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "extra_args"):
+            dicts.extend([a for a in node.args if isinstance(a, ast.Dict)])
+
+    assert dicts, (
+        "found no extra_args dict literal in %s; the driver stopped building it the way "
+        "this test reads it" % os.path.basename(EOS_DRIVER))
+
+    keys = {}
+    for d in dicts:
+        for k in d.keys:
+            if isinstance(k, ast.Constant) and isinstance(k.value, str):
+                keys.setdefault(k.value, k.lineno)
+
+    assert BAD_KWARG not in keys, (
+        "extra_args carries %s (line %s); it reaches the sampler as the dead name even "
+        "though the call site spells %s" % (BAD_KWARG, keys.get(BAD_KWARG), GOOD_KWARG))
+    assert GOOD_KWARG not in keys, (
+        "extra_args carries %s (line %s) and the call site passes it too; **extra_args "
+        "then raises TypeError, multiple values for keyword argument"
+        % (GOOD_KWARG, keys.get(GOOD_KWARG)))
+
+
 def _driver_sources():
     for name in sorted(os.listdir(BIN_DIR)):
         path = os.path.join(BIN_DIR, name)
@@ -144,21 +237,78 @@ def test_no_driver_passes_the_argparse_spelling_to_a_sampler():
         "take %s: %s" % (BAD_KWARG, GOOD_KWARG, ", ".join(offenders)))
 
 
+def _delegates_to_sibling(func_node):
+    """True if this method UNCONDITIONALLY forwards its kwargs bundle to the sibling.
+
+    AV.integrate, Portfolio.integrate and Ensemble.integrate_log are thin wrappers, so
+    their read lives in the sibling, once.  The delegating call must be a direct child
+    statement of the function body: mcsamplerGPU.integrate delegates too, but only
+    inside `if kwargs["use_lnL"]`, and then falls through to its own implementation --
+    walking the whole body would exempt a method that does read the kwarg itself.
+    """
+    for stmt in func_node.body:
+        if isinstance(stmt, ast.Return):
+            call = stmt.value
+        elif isinstance(stmt, ast.Assign):
+            call = stmt.value
+        else:
+            continue
+        if (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+                and call.func.attr in INTEGRATE_METHODS
+                and isinstance(call.func.value, ast.Name) and call.func.value.id == "self"
+                and any(kw.arg is None for kw in call.keywords)):
+            return True
+    return False
+
+
+def _reads_from_kwargs(func_node, name):
+    """True if this function body reads kwargs["<name>"] or kwargs.get("<name>")."""
+    for n in ast.walk(func_node):
+        if (isinstance(n, ast.Subscript) and isinstance(n.value, ast.Name)
+                and n.value.id == "kwargs"
+                and isinstance(n.slice, ast.Constant) and n.slice.value == name):
+            return True
+        if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                and n.func.attr == "get" and isinstance(n.func.value, ast.Name)
+                and n.func.value.id == "kwargs" and n.args
+                and isinstance(n.args[0], ast.Constant) and n.args[0].value == name):
+            return True
+    return False
+
+
 @pytest.mark.parametrize("module_name", [
     "RIFT.integrators.mcsampler",
     "RIFT.integrators.mcsamplerGPU",
     "RIFT.integrators.mcsamplerAdaptiveVolume",
     "RIFT.integrators.mcsamplerEnsemble",
     "RIFT.integrators.mcsamplerPortfolio",
+    "RIFT.integrators.mcsamplerNFlow",
 ])
 def test_integrators_read_tempering_exp_from_kwargs(module_name):
-    """The premise of the rename: every sampler the EOS driver can build reads this name."""
+    """The premise of the rename, checked per entry point rather than per file.
+
+    A module-wide substring scan passes while one of the two entry points has had its
+    read replaced by a hardcoded value, because the other still spells the name.
+    """
     mod = pytest.importorskip(module_name)
     with open(mod.__file__) as f:
-        source = f.read()
-    assert '"%s"' % GOOD_KWARG in source or "'%s'" % GOOD_KWARG in source, (
-        "%s no longer reads %s from kwargs; the drivers' rename target has moved"
-        % (module_name, GOOD_KWARG))
+        tree = ast.parse(f.read(), filename=mod.__file__)
+    checked = []
+    for cls in [n for n in ast.walk(tree)
+                if isinstance(n, ast.ClassDef) and n.name == "MCSampler"]:
+        for fn in [n for n in cls.body
+                   if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                   and n.name in INTEGRATE_METHODS]:
+            checked.append(fn.name)
+            if _delegates_to_sibling(fn):
+                continue
+            assert _reads_from_kwargs(fn, GOOD_KWARG), (
+                "%s.MCSampler.%s neither reads %s from kwargs nor forwards ** to the "
+                "sibling entry point, so the value the EOS driver sends is dropped there"
+                % (module_name, fn.name, GOOD_KWARG))
+    assert checked, (
+        "found no MCSampler.integrate/integrate_log in %s to check; the class or method "
+        "names moved and this test stopped testing anything" % module_name)
 
 
 def test_the_argparse_spelling_is_inert_at_the_sampler():

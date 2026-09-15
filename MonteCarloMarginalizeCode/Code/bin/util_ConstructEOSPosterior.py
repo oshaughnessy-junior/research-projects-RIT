@@ -970,6 +970,11 @@ n_step = opts.n_step
 my_exp = np.min([1,0.8*np.log(n_step)/np.max(Y)])   # target value : scale to slightly sublinear to (n_step)^(0.8) for Ymax = 200. This means we have ~ n_step points, with peak value wt~ n_step^(0.8)/n_step ~ 1/n_step^(0.2), limiting contrast
 if np.max(Y_orig) < 0:   # for now, don't use a weight exponent if we are negative: can't use guess based from GW experience
     my_exp = 1
+if not (my_exp > 0):
+    # The ratio above divides by max(Y), which is lnL_shift-shifted; the Y_orig test is not.
+    # --lnL-shift-prevent-overflow above the peak lnL makes max(Y)<0 and the exponent negative,
+    # which adapts AWAY from the peak.  Fall back to the same "don't use it" value as above.
+    my_exp = 1
 #my_exp = np.max([my_exp,  1/np.log(n_step)]) # do not allow extreme contrast in adaptivity, to the point that one iteration will dominate
 print(" Weight exponent ", my_exp, " and peak contrast (exp)*lnL = ", my_exp*np.max(Y), "; exp(ditto) =  ", np.exp(my_exp*np.max(Y)), " which should ideally be no larger than of order the number of trials in each epoch, to insure reweighting doesn't select a single preferred bin too strongly.  Note also the floor exponent also constrains the peak, de-facto")
 
