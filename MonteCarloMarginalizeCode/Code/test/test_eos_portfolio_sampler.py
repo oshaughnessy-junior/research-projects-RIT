@@ -1,0 +1,184 @@
+"""Guard `--sampler-method portfolio` in bin/util_ConstructEOSPosterior.py.
+
+Motivation.  The EOS driver built `mcsamplerPortfolio.MCSampler(portfolio=...)` and then went
+straight to `sampler.integrate(...)`, never calling `sampler.setup()`.  `setup()` is the only
+place that
+
+  (a) initialises `portfolio_breakpoints`, left at None by __init__, so the very first draw()
+      evaluated `None <= iteration` and the run died with
+      `TypeError: '<=' not supported between instances of 'NoneType' and 'int'`; and
+  (b) calls setup() on each MEMBER, which is what builds AV's my_ranges/dx/V_s and the GMM
+      integrator -- a member that never got setup() is cold and cannot draw.
+
+So EVERY `--sampler-method portfolio` invocation of this driver crashed, at the first chunk,
+after the fit had already been paid for.  The sibling driver
+util_ConstructIntrinsicPosterior_GenericCoordinates.py has always called setup() here.
+
+These tests RUN THE DRIVER.  A static check of "is setup() called" would pass on a setup() call
+placed where it cannot fire -- and one such trap is live here: the portfolio branch REBINDS
+opts.sampler_method to 'GMM' whenever a GMM member is requested, so a guard written as
+`opts.sampler_method == "portfolio"` silently skips setup() for exactly the mixed portfolios
+that need it.  test_portfolio_args_reach_members covers that configuration on purpose.
+
+Cost: three driver subprocesses, ~10 s each on the IGWN conda python.  Compare
+test_cleanile_intrinsic_precision.py, already in the core-unit gate on the same basis.
+"""
+import os
+import subprocess
+import sys
+
+import numpy as np
+import pytest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+CODE = os.path.abspath(os.path.join(HERE, ".."))
+DRIVER = os.path.join(CODE, "bin", "util_ConstructEOSPosterior.py")
+
+
+def _write_grid(tmp_path, n=200):
+    """A tiny separable Gaussian in two dummy coordinates, in the driver's .dat format:
+    column 0 lnL, column 1 sigma_lnL, then one column per parameter named in the header."""
+    rng = np.random.default_rng(20260915)
+    xx = rng.uniform(-1.0, 1.0, n)
+    yy = rng.uniform(-1.0, 1.0, n)
+    lnL = -0.5 * ((xx / 0.4) ** 2 + (yy / 0.4) ** 2) + 10.0
+    path = os.path.join(str(tmp_path), "fake_int_grid.dat")
+    np.savetxt(path, np.column_stack([lnL, np.zeros(n), xx, yy]),
+               header=" lnL sigma_lnL xx yy")
+    return path
+
+
+def _run(tmp_path, extra):
+    """Run the driver in tmp_path.  PYTHONPATH is PREPENDED so the driver imports THIS
+    checkout and not an installed RIFT (.travis scripts do not export it for us)."""
+    if not os.path.exists(DRIVER):
+        pytest.fail("driver missing: %s" % DRIVER)
+    fname = _write_grid(tmp_path)
+    env = dict(os.environ)
+    env["PYTHONPATH"] = CODE + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    env["OMP_NUM_THREADS"] = "1"
+    env["MPLBACKEND"] = "Agg"
+    cmd = [sys.executable, DRIVER,
+           "--fname", fname,
+           "--parameter", "xx", "--parameter", "yy",
+           "--fit-method", "rf",            # 'rf' and 'gp' are the only fits this driver builds
+           "--n-max", "4000", "--n-step", "1000", "--n-eff", "10",
+           "--n-output-samples", "20",
+           "--no-plots", "--ignore-errors-in-data"] + extra
+    proc = subprocess.run(cmd, cwd=str(tmp_path), env=env,
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          universal_newlines=True, timeout=900)
+    return proc
+
+
+@pytest.fixture(scope="module")
+def portfolio_run(tmp_path_factory):
+    """One successful --sampler-method portfolio run, shared by the assertions below."""
+    tmp_path = tmp_path_factory.mktemp("eos_portfolio")
+    proc = _run(tmp_path, ["--sampler-method", "portfolio", "--sampler-portfolio", "AV"])
+    return proc, str(tmp_path)
+
+
+def test_portfolio_completes(portfolio_run):
+    """THE regression: the driver used to die inside draw() on the first chunk."""
+    proc, _ = portfolio_run
+    assert "TypeError: '<=' not supported between instances of 'NoneType' and 'int'" \
+        not in proc.stdout, \
+        "portfolio_breakpoints was never initialised -- sampler.setup() is not being called:\n" \
+        + proc.stdout[-3000:]
+    assert proc.returncode == 0, \
+        "--sampler-method portfolio exited %d:\n%s" % (proc.returncode, proc.stdout[-3000:])
+
+
+def test_portfolio_writes_a_finite_evidence(portfolio_run):
+    """A non-crashing run is not enough: it must produce the evidence the pipeline reads.
+
+    The peak of the input is lnL=10 over a unit-ish box, so ln Z lands near 10; the bound is
+    deliberately loose (RF fit + MC scatter at n_eff=10), it only has to exclude nan/inf and a
+    log taken twice.
+    """
+    proc, wd = portfolio_run
+    assert proc.returncode == 0, proc.stdout[-3000:]
+    fname = os.path.join(wd, "output-EOS-integral")
+    assert os.path.exists(fname), "no evidence file written:\n" + proc.stdout[-2000:]
+    lnZ = float(np.atleast_1d(np.loadtxt(fname))[0])
+    assert np.isfinite(lnZ), "ln Z is not finite: %r" % lnZ
+    assert 5.0 < lnZ < 15.0, "ln Z = %r, nowhere near the lnL=10 peak of the input" % lnZ
+
+    samples = os.path.join(wd, "output-EOS-samples.dat")
+    assert os.path.exists(samples), "no posterior samples written"
+    assert len(np.atleast_2d(np.loadtxt(samples))) > 0, "posterior sample file is empty"
+
+
+def test_portfolio_args_reach_members(tmp_path):
+    """--sampler-portfolio-args must actually arrive at the member's setup().
+
+    Two ways this silently does nothing, both covered here:
+      * setup() is never called at all (the bug above); or
+      * setup() is called with a MISSPELT keyword.  setup() takes **kwargs, so a wrong name is
+        accepted and ignored rather than raising -- mcsamplerPortfolio.setup() reads
+        kwargs['portfolio_args'] exactly.  (The sibling intrinsic driver passes 'portolio_args'
+        and has therefore been dropping this option silently.)
+
+    A GMM member also makes this the case where the portfolio branch rebinds
+    opts.sampler_method to 'GMM', so a setup() guarded on --sampler-method would not fire.
+    """
+    proc = _run(tmp_path, ["--sampler-method", "portfolio",
+                           "--sampler-portfolio", "GMM",
+                           "--sampler-portfolio-args", "{'n_comp':7}"])
+    assert proc.returncode == 0, \
+        "portfolio+GMM exited %d:\n%s" % (proc.returncode, proc.stdout[-3000:])
+    member_lines = [ln for ln in proc.stdout.splitlines() if "PORTFOLIO setup" in ln]
+    assert member_lines, \
+        "member setup() never ran -- portfolio members are cold:\n" + proc.stdout[-3000:]
+    assert any("'n_comp': 7" in ln for ln in member_lines), \
+        "--sampler-portfolio-args never reached the member; setup() saw:\n" \
+        + "\n".join(member_lines)
+
+
+def test_portfolio_without_members_is_refused(tmp_path):
+    """--sampler-method portfolio with no --sampler-portfolio used to build an EMPTY portfolio.
+
+    Once setup() is wired up that no longer stops at the breakpoints TypeError: it survives
+    construction and setup() and dies deep inside draw() with "index -1 is out of bounds for
+    axis 0 with size 0", after a divide-by-zero warning on the member weights.  Refuse up front.
+    """
+    proc = _run(tmp_path, ["--sampler-method", "portfolio"])
+    assert proc.returncode == 99, \
+        "expected a clean option-mismatch exit, got %d:\n%s" % (proc.returncode,
+                                                                proc.stdout[-3000:])
+    assert "OPTION MISMATCH" in proc.stdout, proc.stdout[-2000:]
+
+
+def test_unrecognized_member_is_skipped_not_aliased(tmp_path):
+    """An unrecognized --sampler-portfolio name must be DROPPED, not turned into a duplicate.
+
+    The construction loop reuses one `sampler` variable and only skips on `sampler is None`, so
+    before the reset at the top of the loop an unknown name that FOLLOWED a good one re-appended
+    the previous member -- the identical object, twice, sharing all its adaptation state.  It is
+    silent: the portfolio looks like it has the requested number of members.
+
+    Asserted in both directions on one run, because a reset placed wrongly would instead drop
+    members that ARE recognized: 'bogus' must contribute nothing, and AV and GMM must both
+    survive as DISTINCT objects.
+    """
+    proc = _run(tmp_path, ["--sampler-method", "portfolio",
+                           "--sampler-portfolio", "AV",
+                           "--sampler-portfolio", "bogus",
+                           "--sampler-portfolio", "GMM"])
+    assert proc.returncode == 0, \
+        "exited %d:\n%s" % (proc.returncode, proc.stdout[-3000:])
+    # setup() prints one line per MEMBER, including the object's repr -- so this sees aliasing,
+    # which a count of "PORTFOLIO: adding" lines would not.
+    members = [ln.split("object at ")[-1] for ln in proc.stdout.splitlines()
+               if "PORTFOLIO setup" in ln]
+    assert len(members) == 2, \
+        "expected exactly 2 portfolio members (AV, GMM); 'bogus' must add none. Got %d:\n%s" \
+        % (len(members), "\n".join(members))
+    assert len(set(members)) == 2, \
+        "the two portfolio members are THE SAME OBJECT -- an unknown name was aliased onto the " \
+        "previous member:\n" + "\n".join(members)
+    assert any("mcsamplerAdaptiveVolume" in ln for ln in proc.stdout.splitlines()
+               if "PORTFOLIO setup" in ln), "the AV member was dropped"
+    assert any("mcsamplerEnsemble" in ln for ln in proc.stdout.splitlines()
+               if "PORTFOLIO setup" in ln), "the GMM member was dropped"

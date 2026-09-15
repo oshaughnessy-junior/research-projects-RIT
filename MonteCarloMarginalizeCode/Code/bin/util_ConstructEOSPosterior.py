@@ -152,9 +152,9 @@ parser.add_argument("--fit-order",type=int,default=2,help="Fit order (polynomial
 parser.add_argument("--fit-distance-tail",action='store_true',help="Distance-export (.dslice) runs ONLY, i.e. runs that carry an explicit distance fit coordinate. Beyond each intrinsic point's exported distance support, make the fitted lnL decay to zero as d->infinity instead of holding its edge value. An RF/ExtraTrees fit is piecewise constant outside its training envelope, so without this it holds lnL flat while the volumetric prior keeps growing like d^2, and the recovered distance posterior comes out ~18 percent too wide. Changes nothing on the support, so it is a strict addition. It is an error to request this without a distance fit coordinate.")
 parser.add_argument("--no-plots",action='store_true')
 parser.add_argument("--using-eos-type", type=str, default=None, help="Name of EOS parameterization (must match what is used for inputs). Will use EOS parameterization to identify appropriate field headers")
-parser.add_argument("--sampler-method",default="adaptive_cartesian",help="adaptive_cartesian|GMM|adaptive_cartesian_gpu")
-parser.add_argument("--sampler-portfolio",default=None,action='append',type=str,help="comma-separated strings, matching sampler methods other than portfolio")
-parser.add_argument("--sampler-portfolio-args",default=None, action='append', type=str, help='eval-able dictionary to be passed to that sampler_')
+parser.add_argument("--sampler-method",default="adaptive_cartesian",help="adaptive_cartesian|GMM|AV|adaptive_cartesian_gpu|portfolio")
+parser.add_argument("--sampler-portfolio",default=None,action='append',type=str,help="Portfolio member, one NAME per flag (repeat the flag): AV|GMM|adaptive_cartesian_gpu|NFlow.  Not comma-separated -- a comma-joined 'AV,GMM' matches no sampler.  Requires --sampler-method portfolio.")
+parser.add_argument("--sampler-portfolio-args",default=None, action='append', type=str, help='eval-able dictionary of extra setup() arguments for the corresponding --sampler-portfolio member.  One per flag, in the same order and the same COUNT as --sampler-portfolio.')
 parser.add_argument("--internal-use-lnL",action='store_true',help="integrator internally manipulates lnL..   ")
 parser.add_argument("--internal-correlate-parameters",default=None,type=str,help="comman-separated string indicating parameters that should be sampled allowing for correlations. Must be sampling parameters. Only implemented for gmm.  If string is 'all', correlate *all* parameters")
 parser.add_argument("--internal-n-comp",default=1,type=int,help="number of components to use for GMM sampling. Default is 1, because we expect a unimodal posterior in well-adapted coordinates.  If you have crappy coordinates, use more")
@@ -805,10 +805,23 @@ elif opts.sampler_method == "AV":
     opts.internal_use_lnL= True  # required!
 elif opts.sampler_method == "portfolio":
     use_portfolio=True
+    opts.internal_use_lnL=True  # required: mcsamplerPortfolio.integrate() refuses to run without use_lnL
     sampler = None
     sampler_list = []
     sampler_types = opts.sampler_portfolio
+    if not sampler_types:
+        # --sampler-method portfolio with no members to put in the portfolio.  Catch it here:
+        # an empty portfolio otherwise survives construction and setup() and only dies inside
+        # draw() with "index -1 is out of bounds for axis 0 with size 0".
+        print(" OPTION MISMATCH : --sampler-method portfolio requires at least one --sampler-portfolio NAME (AV|GMM|adaptive_cartesian_gpu|NFlow).")
+        sys.exit(99)
     for name in sampler_types:
+        # Clear the carry-over BEFORE dispatching on the name.  Without this, the
+        # "if sampler is None: continue" below cannot do what its comment says: after one
+        # recognized name, `sampler` stays bound to that member, so every LATER unrecognized
+        # name appends THE SAME OBJECT again -- a portfolio holding one sampler twice, sharing
+        # all its adaptation state, silently and with no message.
+        sampler = None
         if name =='AV':
             sampler = mcsamplerAdaptiveVolume.MCSampler()
         if name =='GMM':
@@ -834,6 +847,11 @@ elif opts.sampler_method == "portfolio":
             continue
         print('PORTFOLIO: adding {} '.format(name))
         sampler_list.append(sampler)
+    if not sampler_list:
+        # Every name was unrecognized (note --sampler-portfolio takes ONE name per flag; a
+        # comma-joined "AV,GMM" matches nothing).  Same reasoning as the guard above.
+        print(" OPTION MISMATCH : --sampler-portfolio matched no known sampler in {}.  Pass one name per flag, e.g. --sampler-portfolio AV --sampler-portfolio GMM.".format(sampler_types))
+        sys.exit(99)
     sampler = mcsamplerPortfolio.MCSampler(portfolio=sampler_list)
 
 
@@ -1034,6 +1052,37 @@ if opts.internal_use_lnL:
         fn_passed =  lambda *x: log_likelihood_function(*x) + supplemental_ln_likelihood(*x)
     extra_args.update({"use_lnL":True,"return_lnI":True})
 
+
+# PORTFOLIO: setup() is MANDATORY, not an optimization.  It is the only place that
+#   (a) initializes self.portfolio_breakpoints -- left at None by __init__, so the first
+#       draw() evaluates `None <= iteration` and dies with
+#       "TypeError: '<=' not supported between instances of 'NoneType' and 'int'"; and
+#   (b) calls setup() on each MEMBER, which is what builds AV's my_ranges/dx/V_s and the
+#       GMM integrator.  A member that never got setup() is cold and cannot draw.
+# Compare util_ConstructIntrinsicPosterior_GenericCoordinates.py, which calls setup() at the
+# same point in its own flow.  Key off the CLASS actually constructed rather than off
+# --sampler-method: the portfolio branch above rebinds opts.sampler_method to 'GMM' whenever a
+# GMM member is requested, so `opts.sampler_method == "portfolio"` is False by the time we get
+# here for exactly the configurations that need this most.
+if _sampler_module == 'mcsamplerPortfolio':
+    print(" PORTFOLIO : setup")
+    portfolio_args = None
+    if opts.sampler_portfolio_args:
+        # One eval-able dict per portfolio member, in --sampler-portfolio order.
+        portfolio_args = list(map(eval, opts.sampler_portfolio_args))
+        for indx, arg in enumerate(portfolio_args):
+            if not isinstance(arg, dict):
+                print(" OPTION MISMATCH : --sampler-portfolio-args entry {} is not a dict: {}".format(indx, arg))
+                sys.exit(99)
+        if len(portfolio_args) != len(sampler.portfolio_realizations):
+            # setup() only prints "PORTFOLIO - format ERROR" and silently drops ALL of them
+            # on a length mismatch, so the run would proceed with the member tuning ignored.
+            print(" OPTION MISMATCH : {} --sampler-portfolio-args entries for {} portfolio members; they must correspond one-to-one.".format(len(portfolio_args), len(sampler.portfolio_realizations)))
+            sys.exit(99)
+        print(" PORTFOLIO ARGS ", portfolio_args)
+    # NOTE the spelling: mcsamplerPortfolio.setup() reads kwargs['portfolio_args'].  It takes
+    # **kwargs, so a misspelled name is accepted and silently ignored rather than raising.
+    sampler.setup(portfolio_args=portfolio_args, **extra_args)
 
 
 res, var, neff, dict_return = sampler.integrate(fn_passed, *low_level_coord_names,  verbose=True,nmax=int(opts.n_max),n=n_step,neff=opts.n_eff, save_intg=True,tempering_adapt=True, floor_level=1e-3,igrand_threshold_p=1e-3,convergence_tests=test_converged,tempering_exp=my_exp,no_protect_names=True,**extra_args)  # MC integrates in the SAMPLING basis (low_level_coord_names); convert_coords routes each sample into the fit basis (coord_names) before evaluating the GP/RF
