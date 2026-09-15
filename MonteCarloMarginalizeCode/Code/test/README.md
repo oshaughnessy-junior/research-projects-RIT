@@ -12,6 +12,8 @@ See pp
   current directory.
 
 * ``test_mcsamplerEnsemble_extended.py`` : best single-contact test.  3d gaussian integration, with plot of recovered CDF.
+  It is a script, not a pytest target: ``.travis/test-integrate.sh`` runs it with
+  ``--as-test``, and ``conftest.py`` keeps pytest from importing it.
 
 * ``demo_mcsampler_rosenbrock.py``: simple 2d Rosenbrock demo.  Run it by hand;
   it is not a pytest test, and it writes ``fairdraw_rosenbrock_*.dat`` and
