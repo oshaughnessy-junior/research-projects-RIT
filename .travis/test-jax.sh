@@ -29,6 +29,24 @@ set -uo pipefail
 # JAXDIR below is repo-relative, so anchor cwd rather than trusting the caller.
 cd "$(dirname "$0")/.." || { echo "test-jax.sh: cannot cd to repo root" >&2; exit 1; }
 
+# INVARIANT: this gate tests THIS CHECKOUT, never an installed build and never another
+# tree.  Derived from the script's own location (the cd above), so it does not depend on
+# where the caller stood.
+#
+# REPLACE, not prepend.  The five sibling gates (test-core-units.sh, test-slowrot.sh,
+# test-q-window-stencil.sh, test-calmarg.sh, test-gpu-precompute.sh) prepend, which is
+# enough to win an ordering contest.  This one replaces because nothing the gate needs
+# arrives by PYTHONPATH, so there is no ambient value to preserve: everything it imports
+# -- pytest, jax, numpyro, lal, lalsimulation -- comes from the interpreter's own
+# site-packages, in CI (ci.yml installs them with pip and sets no PYTHONPATH for this job)
+# and in the CIT venvs alike, and the in-tree tests that spawn subprocesses build the child
+# env as their own root plus os.environ["PYTHONPATH"], so they supply the tree themselves.
+# Replacing removes a class of interference instead of only winning a race.
+# If you need to validate a wheel or a container rather than the checkout, run its test
+# files directly -- do not "fix" it here.
+RIFT_TREE_UNDER_TEST="$PWD/MonteCarloMarginalizeCode/Code"
+export PYTHONPATH="${RIFT_TREE_UNDER_TEST}"
+
 PYTHON_BIN="${RIFT_JAX_PYTHON:-${PYTHON:-python}}"
 if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
   PYTHON_BIN="$(command -v python3)"
@@ -45,6 +63,82 @@ fi
 export JAX_PLATFORMS="${JAX_PLATFORMS:-cpu}"
 export JAX_ENABLE_X64="${JAX_ENABLE_X64:-1}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+
+# RESOLUTION GUARD, and it is the substance of this pair rather than the export above.
+# PYTHONPATH is only one of the ways an interpreter picks a RIFT, and it does not always
+# win.  Measured on ldas-grid, 2026-09-15, /scratch/$USER/envs/jaxci-py311:
+#
+#   * that venv's editable-install .pth is a plain path line naming an UNRELATED checkout,
+#     so with no pin `import RIFT` lands there.  The export above beats it -- PYTHONPATH
+#     sorts ahead of site-packages -- and that is the case this gate actually hit.
+#   * a sitecustomize.py, a usercustomize.py, or any .pth that does sys.path.insert(0, ...)
+#     or puts a finder ahead of PathFinder BEATS the export outright.  Checked: with
+#     PYTHONPATH pinned to this tree and such a sitecustomize on the path, RIFT still
+#     resolves to the other tree, and only this block notices.
+#
+# Every one of those is SILENT, so resolve RIFT the way pytest is about to and refuse
+# unless it lands inside this tree.  A pin you cannot check is a pin you are trusting.
+#
+# Why refuse rather than warn, and why this matters more than the red run that prompted it.
+# The gate's collection floor and pass count are quoted as evidence in review.  Unpinned it
+# has two failure modes, and the quiet one is worse.  The loud one, 2026-09-15: under that
+# venv EIGHT files errored at collection with
+#   ImportError: cannot import name build_rotating_freqresponse_data_from_precompute
+#   from RIFT.likelihood.jax_ile (/scratch/.../pr214_land/.../Code/RIFT/likelihood/jax_ile)
+# -- a red that says nothing about the branch, and a wasted run.  The quiet one is the same
+# mismatch in the other direction: a GREEN gate, and a count entered into a PR, over a tree
+# nobody reviewed.  Nothing downstream can detect that after the fact, which is why the
+# gate now also PRINTS the tree it resolved, so a quoted number stays attributable.
+"${PYTHON_BIN}" - "${RIFT_TREE_UNDER_TEST}" <<'PYPIN' || exit 1
+import os, sys
+
+tree = os.path.realpath(sys.argv[1])
+
+def under(path):
+    real = os.path.realpath(path)
+    return real == tree or real.startswith(tree + os.sep)
+
+try:
+    import RIFT
+    import RIFT.likelihood
+except Exception as exc:                       # noqa: BLE001 -- report anything, then fail
+    print("test-jax.sh: cannot import RIFT: %s: %s" % (type(exc).__name__, exc),
+          file=sys.stderr)
+    print("  expected it under %s" % tree, file=sys.stderr)
+    sys.exit(1)
+
+# Check __path__, not just __file__: a namespace package can be stitched together from two
+# checkouts at once, and then __file__ alone looks fine while half the modules come from
+# somewhere else.
+bad = []
+for mod in (RIFT, RIFT.likelihood):
+    entries = [e for e in getattr(mod, "__path__", [])] or [getattr(mod, "__file__", "") or ""]
+    for entry in entries:
+        line = "%s -> %s" % (mod.__name__, os.path.realpath(entry))
+        if entry and not under(entry) and line not in bad:
+            bad.append(line)
+
+if bad:
+    print("test-jax.sh: RIFT does not resolve under the tree being tested.", file=sys.stderr)
+    print("  tree under test: %s" % tree, file=sys.stderr)
+    for b in bad:
+        print("  resolved:        %s" % b, file=sys.stderr)
+    print("  PYTHONPATH:      %s" % os.environ.get("PYTHONPATH", "<unset>"), file=sys.stderr)
+    print("  sys.path[:6]:    %s" % sys.path[:6], file=sys.stderr)
+    print("  Something beats PYTHONPATH here.  Usual suspect: an editable install in this",
+          file=sys.stderr)
+    print("  interpreter pointing elsewhere.  Find it with", file=sys.stderr)
+    print("    %s -c \"import RIFT,sys; print(RIFT.__file__)\"" % sys.executable,
+          file=sys.stderr)
+    print("    grep -r . $(%s -c \"import site; print(site.getsitepackages()[0])\")/*.pth"
+          % sys.executable, file=sys.stderr)
+    print("  Do NOT work around it by editing this check: a gate that tests a tree other",
+          file=sys.stderr)
+    print("  than the one under review proves nothing about the branch.", file=sys.stderr)
+    sys.exit(1)
+
+print("RIFT pinned to %s" % os.path.dirname(os.path.realpath(RIFT.__file__)))
+PYPIN
 
 JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 
@@ -934,11 +1028,11 @@ fi
 # versions; pass/fail has not.  Issue #292 tracks the environment spread and
 # what to do about it.
 #
-# One practical note for whoever hits this next, because it cost a wasted run:
-# PYTHONPATH must be pinned to the tree under test before collecting.  The
-# conda environment on the CIT interactive hosts resolves RIFT to a DIFFERENT
-# checkout (~/RIFT_ralph), and collection then fails on imports that have
-# nothing to do with the branch.
+# The PYTHONPATH trap this block used to warn about -- the CIT environments resolve RIFT
+# to a DIFFERENT checkout, and collection then fails on imports that have nothing to do
+# with the branch -- is now HANDLED at the top of this script, by the pin and the
+# resolution guard beside it.  The gate prints "RIFT pinned to <path>" before it collects;
+# if a local red is still an environment, that line tells you which tree produced it.
 #
 #
 # FIFTEENTH, the four-axis policy row-batching branch (this merge).  It adds
