@@ -2,18 +2,9 @@
 # everything here runs at import and it defines no test functions.  It writes
 # test_fig_0.png into the current directory.
 #
-# KNOWN FAILURE, and it is not this demo's: partway through, it dies in
-# RIFT/integrators/mcsamplerGPU.py, inside integrate(), on
-#
-#     weights_alt = int_vals**tempering_exp        # NameError: int_vals is not defined
-#
-# in the `not save_intg` branch of the adaptation weighting.  `int_vals` exists
-# nowhere in that scope; the sibling branches use self._rvs["integrand"][-n_history:],
-# and the local holding those values when nothing is saved is `fval`, so
-# `fval**tempering_exp` is the near-certain intent.  That branch cannot ever have run.
-# Reachable on CPU -- this demo hits it with no GPU involved.  Left unfixed here
-# deliberately: it is core sampler code, and guessing the intended expression is
-# RO's call, not a side effect of test hygiene.
+# The mcsamplerGPU section here carries a NORMALIZED prior, so integrate() returns a
+# prior-weighted average rather than a raw integral; the printed reference values divide
+# by the width of the range to match.
 
 import numpy as np
 from matplotlib import pylab as plt

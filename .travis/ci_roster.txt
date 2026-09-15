@@ -65,7 +65,6 @@ MonteCarloMarginalizeCode/Code/test/test_runvar.py                            LE
 MonteCarloMarginalizeCode/Code/test/test_sampler_visualization.py             LEGACY  imports lalsimutils
 MonteCarloMarginalizeCode/Code/test/integrators/test_mcsamp.py                LEGACY  imports statutils and mpl_toolkits.basemap
 MonteCarloMarginalizeCode/Code/test/integrators/test_mcsamp_pinned.py         LEGACY  imports statutils
-MonteCarloMarginalizeCode/Code/test/integrators/test_mcsampler_gpu.py         LEGACY  imports ourio
 
 # ---------------------------------------------------------------------------------------
 # HANDRUN -- scripts that are not pytest targets.  All collect ZERO items, so pytest exits 5

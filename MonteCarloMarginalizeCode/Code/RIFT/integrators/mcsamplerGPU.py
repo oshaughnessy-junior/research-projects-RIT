@@ -240,6 +240,29 @@ class MCSampler(SamplerOutputMixin, object):
             print("   Adapting ", params)
             self.adaptive.append(params)
 
+    def _trim_rvs_to_record(self, record_key):
+        """Drop parameter rows that the integrand record of THIS pass does not describe.
+
+        _rvs[p] survives an integrate() call, while the integrand record restarts, so a
+        sampler reused for a second pass carries the earlier pass's draws in _rvs[p] and
+        only this pass's in _rvs[record_key].  The cleanup below indexes EVERY key with
+        one index list built from the integrand length, which on a longer _rvs[p] selects
+        its first rows: the parameter values then belong to different draws than the
+        likelihoods beside them.  Nothing downstream can see that, because the lengths
+        agree afterwards.
+
+        Trimming to the tail keeps the rows the record actually describes.  A no-op
+        whenever the two already agree, which is every single-pass call.
+        """
+        n_rec = len(self._rvs[record_key])
+        for key in list(self._rvs.keys()):
+            val = self._rvs[key]
+            if isinstance(key, tuple):
+                if val.shape[-1] > n_rec:
+                    self._rvs[key] = val[:, -n_rec:]
+            elif len(val) > n_rec:
+                self._rvs[key] = val[-n_rec:]
+
     def reset_sampling(self,param):
       self.pdf[param] = self.pdf_initial[param]
       self.cdf_inv[param] = self.cdf_inv_initial[param]
@@ -896,10 +919,28 @@ class MCSampler(SamplerOutputMixin, object):
                 # Same gap as in integrate(): save_intg is only forced on above when
                 # tempering_exp>0, while this block runs for any n_adapt>0, so with the
                 # default tempering_exp=0 there is no cached history and reading it raised
-                # KeyError('log_weights').  Adapt on this chunk's weights alone.
-                weights_alt = log_weights
+                # KeyError('log_weights').  Adapt on this chunk alone.
+                #
+                # log_integrand, NOT log_weights: this branch is only reachable at
+                # tempering_exp == 0, where log_weights = 0*lnL + ln p - ln p_s drops the
+                # likelihood entirely and leaves the histogram replaying the previous
+                # proposal's own sampling noise.  log_integrand = lnL + ln p - ln p_s is the
+                # exact log-space twin of the int_val used by integrate().  There is no
+                # history to reach back over, so this covers one chunk regardless of
+                # history_mult.
+                weights_alt = log_integrand
             weights_alt = self.xpy.exp(weights_alt - self.xpy.max(weights_alt))
-            weights_alt = weights_alt/(weights_alt.sum())
+            # Sum stays on the DEVICE: dividing a device array by a host scalar mixes
+            # backends (test_ile_lnL_backend_defects guards exactly that).  Only the
+            # scalar used for the CHECK comes back to the host.
+            _wt_total = weights_alt.sum()
+            _wt_check = float(identity_convert(_wt_total))
+            if not numpy.isfinite(_wt_check) or _wt_check <= 0:
+                # Degenerate chunk (every lnL -inf or nan).  Normalizing would put nan in the
+                # histogram, hence in the CDF, hence in the next draw, which surfaces far away
+                # as an out-of-bounds index inside pdf_from_hist.  Keep the current proposal.
+                continue
+            weights_alt = weights_alt/_wt_total
             if weights_alt.dtype == RiftFloat:
               weights_alt = weights_alt.astype(numpy.float64,copy=False)
             # Points sliced to the depth the weights reach, not to n_history -- see the
@@ -928,6 +969,7 @@ class MCSampler(SamplerOutputMixin, object):
         #   - create the cumulative weights
         #   - find and remove samples which contribute too little to the cumulative weights
         if (not save_no_samples) and ( "log_integrand" in self._rvs):
+            self._trim_rvs_to_record("log_integrand")
             self._rvs["sample_n"] = numpy.arange(len(self._rvs["log_integrand"]))  # create 'iteration number'        
             # Step 1: Cut out any sample with lnL belw threshold
             indx_list = [k for k, value in enumerate( (self._rvs["log_integrand"] > maxlnL - deltalnL)) if value] # threshold number 1
@@ -1395,7 +1437,18 @@ class MCSampler(SamplerOutputMixin, object):
                   weights_alt =((self._rvs["integrand"][-n_history:]/self._rvs["joint_s_prior"][-n_history:]*self._rvs["joint_prior"][-n_history:])**tempering_exp )
                   weights_alt = self.xpy.maximum(weights_alt,10)   # preventing too little dynamic range
 
-            weights_alt = weights_alt/(weights_alt.sum())
+            # Sum stays on the DEVICE: dividing a device array by a host scalar mixes
+            # backends (test_ile_lnL_backend_defects guards exactly that).  Only the
+            # scalar used for the CHECK comes back to the host.
+            _wt_total = weights_alt.sum()
+            _wt_check = float(identity_convert(_wt_total))
+            if not numpy.isfinite(_wt_check) or _wt_check <= 0:
+                # An all-zero chunk reaches here only on the GPU: the fval.sum()==0 skip above
+                # is gated `if not(cupy_ok)`.  Normalizing would write nan into the histogram
+                # and the failure would surface later as an out-of-bounds index in
+                # pdf_from_hist.  Keep the current proposal instead.
+                continue
+            weights_alt = weights_alt/_wt_total
             # Type convert as needed: if weights are float128, convert to float64; otherwise we hit a typing error later with bincount
             if weights_alt.dtype == RiftFloat:
               weights_alt = weights_alt.astype(numpy.float64,copy=False)
@@ -1435,6 +1488,7 @@ class MCSampler(SamplerOutputMixin, object):
         #   - create the cumulative weights
         #   - find and remove samples which contribute too little to the cumulative weights
         if (not save_no_samples) and ( "integrand" in self._rvs):
+            self._trim_rvs_to_record("integrand")
             self._rvs["sample_n"] = numpy.arange(len(self._rvs["integrand"]))  # create 'iteration number'        
             if deltalnL < 1e10:
               # Step 1: Cut out any sample with lnL belw threshold
