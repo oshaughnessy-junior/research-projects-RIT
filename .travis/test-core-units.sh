@@ -78,6 +78,7 @@ FILES=(
   # -- integrators: seeding, allocation, weight derivation
   "$C/test/integrators/test_convergence_sample_order.py"
   "$C/test/integrators/test_gmm_adaptive.py"
+  "$C/test/integrators/test_mcsamplerGPU_default_adapt.py"
   "$C/test/integrators/test_portfolio_gmm_member_trains.py"
   "$C/test/integrators/test_portfolio_restrict_and_warm.py"
   # Wraps the five integrator studies as subprocesses (29 s).  They collect nothing
@@ -92,6 +93,8 @@ FILES=(
   "$C/test/test_cip_evidence_consolidation.py"
   "$C/test/test_cip_pipeline.py"
   "$C/test/test_distance_grid.py"
+  "$C/test/test_distance_grid_degenerate_bins.py"
+  "$C/test/test_dgrid_retained_set.py"
   "$C/test/test_distance_tail.py"
   "$C/test/test_dslice_device_native.py"
   # -- hyperpipe (paper4 area; the hydra leg is rostered OPTDEP, not here)
@@ -199,6 +202,16 @@ done
 #            see a factor of two).  MEASURED on CIT (citlogin6) 2026-09-14, IGWN conda
 #            python 3.11 / lal 7.7.0: per-file 420 over 42 files, junit 423 / 12 skipped /
 #            411 passed -- 423 and 411 are the pytest-subtests counts, floors stay plugin-free.
+#   497/485  + test_distance_grid_degenerate_bins.py and test_dgrid_retained_set.py (the
+#            .dgrid retained-set work: degenerate bins, the reserve every fair-drawing
+#            integrator now keeps, and the export decision itself), and 4 tests added to
+#            test_distance_grid.py's neighbours.  MEASURED on CIT (ldas-grid) 2026-09-14,
+#            IGWN conda python 3.11 / numpy 1.26.4: junit 500 / 12 skipped / 488 passed,
+#            of which 3 are subtests -- so the plugin-free floors are 497/485.  Set to the
+#            plugin-free pair, per the rule below; a first attempt used the junit numbers
+#            and would have pinned this gate to an environment that happens to carry
+#            pytest-subtests.
+#
 #   438/426  + test_jax_ile_extrinsic_xml_export.py (18 tests: the JAX ILE driver's
 #            sim_inspiral export -- the filename convert_extr opens, row count and column
 #            round trip against the .dat sidecar, every --mode theta layout plus an explicit
@@ -218,7 +231,18 @@ done
 #            43 files, junit 458 collected / 446 passed / 12 skipped / 0 failed.  458 and
 #            446 carry 3 subtest entries; the floors stay pinned to the plugin-free
 #            455/443.  The gate PASSED at the old 438/426 floor, which is the
-#            under-coverage this roster exists to catch, not a reason to leave it.
+#            under-coverage this roster exists to catch, not a reason to leave it.#
+#   MERGED   rift_O4d (the .dgrid retained-set floors above) into the JAX-ILE
+#            sim_inspiral export branch.  Each side raised this floor over a file set the
+#            other had changed, so neither number nor their sum describes the merged tree.
+#            RE-MEASURED on the merged tree, per the rule this roster already states.
+#            MEASURED on CIT (ldas-grid; `import cupy` FAILS there, so this is the numpy
+#            backend) 2026-09-15, IGWN conda python 3.11 / lal 7.7.1: per-file 543 over
+#            46 files, junit 546 collected / 534 passed / 12 skipped / 0 failed.  546 and
+#            534 carry 3 subtest entries, so the floors are the plugin-free 543/531.
+#            Note 543 is 29 ABOVE 497+17, the two raises added together: the base added
+#            test files beyond the two named above, so summing would have pinned this gate
+#            29 tests below its real coverage while still passing.
 #
 # RAISE these when files are added: a floor left at the old value passes while covering less,
 # which is the failure this gate exists to catch.
@@ -234,12 +258,12 @@ done
 # runner's closure the count falls back to 347 and still passes.  Pinning 350 would turn an
 # unrelated dependency change into a red gate.
 # Two XML/grid template-finalization regressions, with no added skips.
-EXPECTED_TESTS=455
+EXPECTED_TESTS=543
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 12 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
 # test_dslice_device_native, and the xfail in test_uv_symmetry.
-EXPECTED_PASSED=443
+EXPECTED_PASSED=531
 MAX_SKIPPED=12
 
 # The floors must be INTEGERS, and this is checked rather than assumed.  `[ 347 -lt FOO ]` does

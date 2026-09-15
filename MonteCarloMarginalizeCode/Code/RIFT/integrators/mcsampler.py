@@ -694,12 +694,27 @@ class MCSampler(SamplerOutputMixin, object):
                 # specific to pinned parameters
                 if p not in self.adaptive or p in list(kwargs.keys()):
                     continue
-                points = self._rvs[p][-n_history:]
-#                print "      Points", p, type(points),points.dtype
-                # use log weights or weights
-                if not temper_log:
-                    weights = (self._rvs["integrand"][-n_history:]/self._rvs["joint_s_prior"][-n_history:]*self._rvs["joint_prior"][-n_history:])**tempering_exp_running
+                # save_intg is only forced on above when tempering_exp > 0, while this block
+                # runs for any n_adapt > 0, so n_adapt>0 with the default tempering_exp=0
+                # reached the reads below with no cache and raised KeyError('integrand').
+                # Masked at defaults only because n_adapt defaults to 0 here, where
+                # mcsamplerGPU defaults it to 1000*n and so crashed outright.  With no
+                # history, adapt on this chunk's own importance weights, as mcsamplerGPU's
+                # int_val branch does.  NOT raised to tempering_exp_running: reaching here
+                # means tempering_exp is 0, so the exponent would flatten every weight to 1
+                # and the histogram would replay the current proposal instead of the target.
+                if not save_intg:
+                    weights = fval*joint_p_prior/joint_p_s
+                    points = self._rvs[p][-len(weights):]
+                    if temper_log:
+                        weights = numpy.maximum(1e-5, numpy.log(weights))
                 else:
+                  points = self._rvs[p][-n_history:]
+#                print "      Points", p, type(points),points.dtype
+                  # use log weights or weights
+                  if not temper_log:
+                    weights = (self._rvs["integrand"][-n_history:]/self._rvs["joint_s_prior"][-n_history:]*self._rvs["joint_prior"][-n_history:])**tempering_exp_running
+                  else:
                     weights = numpy.maximum(1e-5,numpy.log(self._rvs["integrand"][-n_history:] )) #**tempering_exp_running
 
                 if tempering_adapt:
@@ -816,6 +831,18 @@ class MCSampler(SamplerOutputMixin, object):
            wt = numpy.array(self._rvs["integrand"]*self._rvs["joint_prior"]/self._rvs["joint_s_prior"]/numpy.max(self._rvs["integrand"]),dtype=float)
            wt *= 1.0/numpy.sum(wt)
            if n_extr < len(self._rvs["integrand"]):
+               # RETAINED-SET RESERVE, taken HERE.  The gather just below rebinds every _rvs
+               # key to n_extr rows drawn WITH REPLACEMENT, so this is the last moment at
+               # which the rows this pass actually kept still exist.  Exporters that read
+               # _rvs afterwards -- the .dgrid distance grid above all -- were binning that
+               # export resample as if it were the sample set.  Local import to keep the
+               # module graph flat: AV owns the one builder and pulls in mcsamplerGPU, and
+               # only mcsamplerGPU would actually be circular -- but a deferred import
+               # costs nothing and none of these five sites has to know which.  Built only
+               # when the draw is really about to happen, so a pass that never fair-draws
+               # pays nothing for it.
+               from RIFT.integrators.mcsamplerAdaptiveVolume import keep_reserve_from_rvs
+               keep_reserve_from_rvs(self, 'mcsampler', integrand_is_log=False)
                indx_list = numpy.random.choice(numpy.arange(len(wt)), size=n_extr,replace=True,p=wt) # fair draw
                # FIXME: See previous FIXME
                for key in list(self._rvs.keys()):
@@ -885,7 +912,7 @@ def uniform_samp_withfloor_vector(rmaxQuad,rmaxFlat,pFlat,x):
 
 # syntatic sugar : predefine the most common distributions
 uniform_samp_phase = lambda x,numpy=numpy: numpy.broadcast_to(0.5/numpy.pi, numpy.shape(x))
-uniform_samp_psi = lambda x,numpy=numpy: numpy.broadcast_to(1.0/numpy.pi, numpy.shape(x))
+uniform_samp_psi = lambda x,numpy=numpy: numpy.broadcast_to(1.0/numpy.pi, numpy.shape(x))   # density for psi on [0, pi) ONLY; the ILE drivers sample psi on (0, 2 pi) and derive their prior from that range instead
 uniform_samp_theta = lambda x,numpy=numpy: 0.5*numpy.sin(x.astype(float))
 uniform_samp_dec = lambda x,numpy=numpy: 0.5*numpy.cos(x.astype(float))
 

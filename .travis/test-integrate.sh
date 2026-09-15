@@ -50,6 +50,11 @@ python -m pytest -q MonteCarloMarginalizeCode/Code/test/test_mcsampler_ensemble_
 # test).  Covers the analytic marginal against a brute-force quadrature, the driver's
 # refuse-don't-ignore prerequisite checks, and a real subprocess run on synthetic data.
 python -m pytest -q MonteCarloMarginalizeCode/Code/test/test_psi_marginalization.py
+# psi and phi_orb priors derived from their sampling ranges (evidence normalization): the
+# fixed 1/pi psi prior over (0, 2 pi) put +ln 2 on every ILE lnZ (+ln 8 under
+# --internal-rotate-phase).  Constructor, driver wiring, and a --zero-likelihood run whose
+# lnZ must be ln(total prior mass).
+python -m pytest -q MonteCarloMarginalizeCode/Code/test/test_angle_prior_normalization.py
 
 # Supplementary-likelihood plugin hook: the NAL reader/evaluator (pure numpy, no data) and the
 # static guard on the drivers' prepare-hook wiring, which is what makes the plugin receive the
