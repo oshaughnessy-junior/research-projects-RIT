@@ -7,6 +7,13 @@ cleanly, ran its terminal stage and collected nothing.  These tests pin the
 XML's existence, its row count against the ``.dat``, and the round trip of every
 column both files carry.
 
+They also pin what the resamplers do with the file.  The exported rows are an
+equal-weight fair draw, so the weight
+``exp(lnL - lnLmax) * (alpha2/alpha3) / Npts`` that
+util_ResampleILEOutputWithExtrinsic.py and util_BatchConvertResampleILEOutput.py
+form must come out CONSTANT over them; constant prior columns do not do that,
+and the spread test below measures the difference rather than asserting it.
+
 The executable parses options at import, so the writers are extracted by AST --
 the same technique as test_jax_template_finalization.py, and for the same
 reason: it exercises the real implementation rather than a copy of it.
@@ -38,7 +45,8 @@ _WANTED_FUNCS = ("dat_path", "samples_path", "xml_path", "_remove_stale_artifact
                  "fairdraw_indices", "fairdraw_size", "_target_ess_was_given",
                  "was_supplied", "_xml_extrinsic_columns", "write_samples_xml",
                  "write_samples")
-_WANTED_ASSIGNS = ("_TEMPERED_MODES", "_FAIRDRAW_MODES", "_FAIRDRAW_N_MAX_DEFAULT")
+_WANTED_ASSIGNS = ("_TEMPERED_MODES", "_FAIRDRAW_MODES", "_FAIRDRAW_N_MAX_DEFAULT",
+                   "_XML_PS_LOG_CLIP")
 
 
 def _driver_namespace():
@@ -108,7 +116,7 @@ def _run(opts, theta, lnL, with_distance, epoch=1126259462.0,
          logZ=41.25, sigma_lnL=0.031, neff=88.5, ntotal=4096):
     NS["write_samples"](opts, 0, theta, lnL, with_distance, P=_P(),
                         fiducial_epoch=epoch, logZ=logZ, sigma_lnL=sigma_lnL,
-                        neff=neff, ntotal=ntotal)
+                        report_neff=neff, ntotal=ntotal)
     return (Path(NS["samples_path"](opts, 0)), Path(NS["xml_path"](opts, 0)))
 
 
@@ -292,30 +300,246 @@ def test_unmappable_layout_refuses_rather_than_guessing(tmp_path):
         NS["_xml_extrinsic_columns"](opts, np.zeros((4, 5)), True)
 
 
-def test_missing_provenance_arguments_refuse_rather_than_skip_the_xml(tmp_path):
+def test_missing_provenance_arguments_skip_the_xml_but_keep_the_dat(tmp_path):
+    """A caller without an evidence row loses the XML, loudly -- not the .dat.
+
+    Raising here instead took test/jax/test_jax_fairdraw_export.py from 34
+    passed to 22 failed: it drives write_samples directly to check the fair
+    draw and has no intrinsic point or evidence row to hand it.
+    """
     rng = np.random.default_rng(10)
     opts = _opts(tmp_path)
-    with pytest.raises(RuntimeError, match="sim_inspiral XML"):
-        NS["write_samples"](opts, 0, _theta(4, 6, rng), np.zeros(4), True)
+    NS["write_samples"](opts, 0, _theta(4, 6, rng), np.zeros(4), True)
     assert not Path(NS["xml_path"](opts, 0)).exists()
+    assert Path(NS["samples_path"](opts, 0)).is_file()
 
 
-def test_prior_columns_are_unity_so_the_resampler_gets_finite_weights(tmp_path):
-    """alpha2/alpha3 reach util_ResampleILEOutputWithExtrinsic.py as p and ps.
+def test_skipped_xml_names_every_missing_input_on_stderr(tmp_path, capsys):
+    rng = np.random.default_rng(101)
+    opts = _opts(tmp_path)
+    NS["write_samples"](opts, 0, _theta(4, 6, rng), np.zeros(4), True,
+                        P=_P(), logZ=3.0)          # epoch and sigma_lnL missing
+    err = capsys.readouterr().err
+    assert "SKIPPED" in err
+    named = err.split("without", 1)[1]
+    assert "fiducial_epoch" in named and "sigma_lnL" in named
+    # the two that WERE supplied are not named as missing
+    assert "logZ" not in named and "P," not in named
 
-    convert_output_format_ile2inference copies them into the 'p'/'ps' columns and
-    the resampler forms exp(lnL - lnLmax) * (p/ps) / Npts, so zeros -- batchmode's
-    placeholder, which its sampler record overwrites through the joint_prior /
-    joint_s_prior CMAP keys -- would give every row a nan weight.  1.0/1.0 is what
-    util_ConvertJAXILEFairdraws.py already writes for these same rows.
+
+def test_skipping_the_xml_removes_an_earlier_runs_file(tmp_path):
+    """The path is what convert_extr opens, so a stale file is collected as ours."""
+    rng = np.random.default_rng(102)
+    opts = _opts(tmp_path)
+    stale = Path(NS["xml_path"](opts, 0))
+    stale.write_bytes(b"not this run's output")
+    NS["write_samples"](opts, 0, _theta(4, 6, rng), np.zeros(4), True)
+    assert not stale.exists()
+
+
+def test_an_attempted_xml_that_cannot_be_mapped_still_raises(tmp_path):
+    """Skipping is only for ABSENT inputs; a bad layout stays a hard failure."""
+    rng = np.random.default_rng(103)
+    opts = _opts(tmp_path)
+    theta = np.column_stack([_theta(6, 6, rng), rng.normal(size=6)])   # 7 columns
+    with pytest.raises(RuntimeError, match="no sim_inspiral column mapping"):
+        NS["write_samples"](opts, 0, theta, np.zeros(6), False, P=_P(),
+                            fiducial_epoch=0.0, logZ=1.0, sigma_lnL=0.1)
+
+
+# ---------------------------------------------------------------------------
+# The prior columns: what the resamplers actually do with alpha2 / alpha3
+# ---------------------------------------------------------------------------
+def _consumer_weights(*xmls):
+    """``exp(lnL - lnLmax) * (p/ps) / Npts``, as the resamplers form it.
+
+    util_ResampleILEOutputWithExtrinsic.py reads ONE --fname, which may be a
+    concatenation of several intrinsic points, and takes a single GLOBAL lnLmax
+    over it; util_BatchConvertResampleILEOutput.py loops file by file with a
+    per-file lnLmax.  Pass one path for the per-file case, several for the
+    pooled one.  Npts is max(simulation_id)+1, which xmlutils makes the row
+    count, and convert_output_format_ile2inference copies alpha1/alpha2/alpha3
+    into lnL/p/ps unchanged.
+    """
+    lnL, p, ps, npts = [], [], [], []
+    for xml in xmls:
+        rows = _sim_rows(xml)
+        n = max(int(r.simulation_id) for r in rows) + 1
+        lnL += [r.alpha1 for r in rows]
+        p += [r.alpha2 for r in rows]
+        ps += [r.alpha3 for r in rows]
+        npts += [n] * len(rows)
+    lnL, p, ps, npts = (np.array(x, dtype=float) for x in (lnL, p, ps, npts))
+    return np.exp(lnL - lnL.max()) * (p / ps) / npts
+
+
+def test_resampler_weights_are_uniform_over_the_equal_weight_rows(tmp_path):
+    """The exported rows are ALREADY a fair draw, so the consumer weight is flat.
+
+    With p/ps = 1 it was not: the resampler tilted by exp(lnL) a second time and
+    returned samples proportional to prior * L^2.
     """
     rng = np.random.default_rng(11)
     opts = _opts(tmp_path)
-    _, xml = _run(opts, _theta(15, 6, rng), rng.normal(30.0, 1.0, 15), True)
+    lnL = rng.normal(300.0, 6.0, 500)         # realistic magnitude and spread
+    _, xml = _run(opts, _theta(500, 6, rng), lnL, True, logZ=297.5)
+    w = _consumer_weights(xml)
+    assert np.all(np.isfinite(w)) and np.all(w > 0)
+    # Not exact, and the residual is pinned rather than waved at: alpha1 and
+    # alpha3 are real_4 in sim_inspiral and ligolw's ASCII round trip is not an
+    # exact float32 one, so the cancellation survives the file to ~4e-5 at
+    # lnL ~ 300 (measured 3.9e-5).  1e-4 is that with headroom, and 3 orders
+    # below the 29% narrowing the p/ps = 1 export cost.
+    np.testing.assert_allclose(w, w[0], rtol=1e-4, atol=0)
+
+
+def test_the_double_likelihood_tilt_is_gone(tmp_path):
+    """Measured, not asserted: resample the export and compare the spread.
+
+    The rows are draws from a Gaussian posterior in ra of width 0.05.  A
+    consumer that applies exp(lnL) once more narrows them by exactly
+    1/sqrt(2); the reviewer measured 0.049845 -> 0.035384, ratio 0.7099, under
+    p/ps = 1.
+    """
+    rng = np.random.default_rng(12)
+    n, width = 40000, 0.05
+    theta = _theta(n, 6, rng)
+    theta[:, 0] = rng.normal(1.2, width, n)                   # ra ~ posterior
+    lnL = 300.0 - 0.5 * ((theta[:, 0] - 1.2) / width) ** 2
+    opts = _opts(tmp_path)
+    _, xml = _run(opts, theta, lnL, True, logZ=float(lnL.max()) - 1.0)
+    w = _consumer_weights(xml)
+    ra = np.array([r.longitude for r in _sim_rows(xml)])
+    drawn = rng.choice(ra, size=n, p=w / w.sum())
+    ratio = drawn.std() / ra.std()
+    assert 0.97 < ratio < 1.03, "spread ratio %.4f (0.7071 = tilted twice)" % ratio
+
+
+def test_pooled_weight_of_an_intrinsic_point_tracks_its_evidence(tmp_path):
+    """The offset is logZ, and this is the case that decides it.
+
+    util_ResampleILEOutputWithExtrinsic.py may be handed several intrinsic
+    points in one file.  Each point's share of the total must be its evidence --
+    the same relative weight conventional ILE's retained cloud carries, since
+    sum_rows exp(lnL) (p/ps) / Npts is the importance-sampling estimate of Z.
+    A per-file lnLmax offset would make the share track the point's PEAK
+    likelihood instead: correct within a file, wrong between files.
+    """
+    rng = np.random.default_rng(13)
+    logZ_a, logZ_b = 312.0, 305.5
+    xmls = []
+    for k, (logZ, n) in enumerate(((logZ_a, 40), (logZ_b, 90))):
+        sub = tmp_path / str(k)
+        sub.mkdir()
+        opts = _opts(sub)
+        # Different row counts AND different peak likelihoods, so neither Npts
+        # nor lnLmax can stand in for the evidence by accident.
+        lnL = rng.normal(logZ + 3.0 * (1 + k), 2.0, n)
+        xmls.append(_run(opts, _theta(n, 6, rng), lnL, True, logZ=logZ)[1])
+    w = _consumer_weights(*xmls)
+    n_a = len(_sim_rows(xmls[0]))
+    got = w[:n_a].sum() / w[n_a:].sum()
+    assert math.isclose(got, math.exp(logZ_a - logZ_b), rel_tol=1e-4)
+
+
+def test_each_events_rows_are_numbered_from_zero_within_its_own_file(tmp_path):
+    """Npts must be THIS event's row count, in a batch as well as alone.
+
+    samples_to_siminsp_row takes simulation_id from lsctables' get_next_id(),
+    a CLASS attribute shared by every SimInspiralTable in the process.  One ILE
+    process writes one XML per --n-events-to-analyze event, so without an
+    explicit sample_n the second event's ids continue from the first, both
+    resamplers read Npts = max(simulation_id)+1 as the running total, and that
+    event's share of the pooled posterior is scaled by its batch position.
+    """
+    rng = np.random.default_rng(141)
+    ids = []
+    for k, n in enumerate((13, 21)):
+        sub = tmp_path / ("event%d" % k)
+        sub.mkdir()
+        opts = _opts(sub)
+        _, xml = _run(opts, _theta(n, 6, rng), rng.normal(30.0, 1.0, n), True)
+        ids.append([int(r.simulation_id) for r in _sim_rows(xml)])
+    assert ids[0] == list(range(13))
+    assert ids[1] == list(range(21))
+
+
+def test_weights_stay_finite_when_rows_sit_far_below_the_evidence(tmp_path):
+    """Clipped, deliberately, to zero weight -- never to a nan.
+
+    util_BatchConvertResampleILEOutput.py rewrites a nan weight to 1e-2, which
+    would put a LARGE weight on a row carrying no posterior mass.
+    """
+    rng = np.random.default_rng(14)
+    opts = _opts(tmp_path)
+    lnL = np.full(40, 300.0)
+    lnL[:5] = -5000.0                      # |lnL - logZ| far past the clip
+    _, xml = _run(opts, _theta(40, 6, rng), lnL, True, logZ=300.0)
     tab = _sim_rows(xml)
-    p = np.array([r.alpha2 for r in tab])
     ps = np.array([r.alpha3 for r in tab])
-    np.testing.assert_allclose(p, 1.0, rtol=0, atol=0)
-    np.testing.assert_allclose(ps, 1.0, rtol=0, atol=0)
-    like = np.array([r.alpha1 for r in tab])
-    assert np.all(np.isfinite(np.exp(like - like.max()) * (p / ps)))
+    assert np.all(np.isfinite(ps)) and np.all(ps > 0)
+    w = _consumer_weights(xml)
+    assert np.all(np.isfinite(w))
+    assert np.all(w[:5] == 0.0)
+    np.testing.assert_allclose(w[5:], w[5], rtol=1e-4, atol=0)
+
+
+def test_nonfinite_evidence_falls_back_to_the_file_lnLmax_and_says_so(tmp_path, capsys):
+    rng = np.random.default_rng(15)
+    opts = _opts(tmp_path)
+    lnL = rng.normal(100.0, 1.0, 30)
+    _, xml = _run(opts, _theta(30, 6, rng), lnL, True, logZ=float("-inf"))
+    assert "not finite" in capsys.readouterr().err
+    w = _consumer_weights(xml)
+    assert np.all(np.isfinite(w))
+    np.testing.assert_allclose(w, w[0], rtol=1e-4, atol=0)
+
+
+# ---------------------------------------------------------------------------
+# --distance-marginalization --phase-marginalization: the 5-D branch
+# ---------------------------------------------------------------------------
+def test_five_d_phase_marginalized_writes_the_reference_phase(tmp_path):
+    """The real --distance-marginalization --phase-marginalization combination.
+
+    Only the 6-D branch was covered, so replacing the 5-D branch's
+    ``phi_reference if phase_marginalized else theta[:, 4]`` with plain
+    ``theta[:, 4]`` left all 18 tests green while exporting a SAMPLED phase
+    column from a run whose phase was integrated out analytically.
+    """
+    rng = np.random.default_rng(16)
+    opts = _opts(tmp_path, phase_marginalization=True)
+    theta = _theta(24, 5, rng)
+    theta[:, 4] = rng.uniform(0.5, 6.0, 24)      # nothing near the reference 0.0
+    dat, xml = _run(opts, theta, rng.normal(30.0, 1.0, 24), with_distance=False)
+    got = np.array([r.coa_phase for r in _sim_rows(xml)])
+    np.testing.assert_allclose(got, 0.0, rtol=0, atol=0)
+    assert not np.allclose(got, theta[:, 4])
+    # and the sidecar agrees: no phi_orb column when phase was marginalized
+    assert "phi_orb" not in (_dat(dat).dtype.names or ())
+
+
+def test_five_d_without_phase_marginalization_keeps_the_sampled_phase(tmp_path):
+    rng = np.random.default_rng(17)
+    opts = _opts(tmp_path, phase_marginalization=False)
+    theta = _theta(24, 5, rng)
+    dat, xml = _run(opts, theta, rng.normal(30.0, 1.0, 24), with_distance=False)
+    got = np.array([r.coa_phase for r in _sim_rows(xml)])
+    np.testing.assert_allclose(got, theta[:, 4], rtol=0, atol=1e-6)
+    np.testing.assert_allclose(got, _dat(dat)["phi_orb"], rtol=0, atol=1e-6)
+
+
+def test_analyze_one_still_supplies_every_xml_input():
+    """Structural: the loud skip must never become the production behaviour.
+
+    write_samples now SKIPS the XML when an input is missing instead of raising,
+    so a call site that quietly stopped passing one would print a warning into a
+    Condor log and produce a DAG that collects nothing -- the exact failure the
+    export was added to fix.  Pin the call site instead.
+    """
+    tree = ast.parse(DRIVER.read_text(), filename=str(DRIVER))
+    calls = [n for n in ast.walk(tree)
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+             and n.func.id == "write_samples"]
+    assert len(calls) == 1, "expected one write_samples call, found %d" % len(calls)
+    passed = {k.arg for k in calls[0].keywords if k.arg}
+    assert {"P", "fiducial_epoch", "logZ", "sigma_lnL"} <= passed, sorted(passed)

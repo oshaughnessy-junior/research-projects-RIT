@@ -236,6 +236,50 @@ _ILE_APPEND_OPTS = {
     "--parameter", "--parameter-range", "--sampler-portfolio",
     "--sampler-portfolio-args",
 }
+# Clip on |lnL - logZ| when writing the sim_inspiral sampling-prior column.
+# float64 exp() overflows past ~709, and the failure is not a loud one: an inf
+# ps divides to 0 and a 0 ps divides to inf, either of which reaches the
+# resamplers as a nan weight that util_BatchConvertResampleILEOutput.py silently
+# rewrites to 1e-2.  600 leaves headroom on both sides and is far outside
+# anything a real extrinsic posterior draw reaches.
+_XML_PS_LOG_CLIP = 600.0
+
+# ILE's SHORT option forms, exactly as integrate_likelihood_extrinsic_batchmode
+# spells them.  Drop-in compatibility is an argv-level contract, and this driver
+# defined NO short options at all: a production command line written with ILE's
+# short spellings (-o, -S, -P, -c, -t, ...) died at optparse before any of the
+# long-option compatibility above could help it.  Registered as aliases on the
+# already-registered long options, so a short form can never mean something
+# different here from what it means in ILE.
+_ILE_SHORT_FORMS = {
+    "-a": "--approximant", "-A": "--amp-order", "-c": "--cache-file",
+    "-C": "--channel-name", "-d": "--distance-marginalization",
+    "-e": "--data-end-time", "-E": "--event", "-f": "--reference-freq",
+    "-F": "--fmax", "-i": "--inv-spec-trunc-time", "-I": "--sim-xml",
+    "-k": "--skymap-file", "-l": "--distance-marginalization-lookup-table",
+    "-L": "--save-deltalnL", "-m": "--time-marginalization",
+    "-o": "--output-file", "-O": "--output-format", "-p": "--psd-file",
+    "-P": "--save-P", "-s": "--data-start-time", "-S": "--save-samples",
+    "-t": "--event-time", "-w": "--window-shape", "-x": "--coinc-xml",
+}
+
+
+def _register_ile_short_forms(optp):
+    """Attach ILE's short option spellings to the matching long options."""
+    for short, long_name in sorted(_ILE_SHORT_FORMS.items()):
+        opt = optp._long_opt.get(long_name)
+        if opt is None:
+            # Every entry must resolve: a table naming an option this driver no
+            # longer registers would advertise a short form that still fails.
+            raise RuntimeError(
+                "ILE short form %s names %s, which this parser does not define"
+                % (short, long_name))
+        if short in optp._short_opt:
+            continue
+        opt._short_opts.append(short)
+        optp._short_opt[short] = opt
+
+
 # The full ILE option set (so anything not implemented is still accepted).
 _ILE_ALL_OPTS = {
     "--adapt-adapt", "--adapt-floor-level", "--adapt-intrinsic", "--adapt-log",
@@ -925,7 +969,7 @@ def check_critical_and_report(opts, optp):
     if ignored:
         print("Note: the following ILE options are accepted but IGNORED by the "
               "JAX driver (not yet implemented; behavior may differ from ILE):")
-        print("   " + " ".join(ignored))
+        print("   " + " ".join(sorted(ignored)))
 
 
 # ---------------------------------------------------------------------------
@@ -1703,6 +1747,9 @@ def build_parser():
     # Register every remaining ILE option for drop-in compatibility (accepted,
     # silently ignored unless implemented; science-critical ones fail below).
     _register_compat_options(optp)
+    # AFTER the compat pass, so a short form can alias an option registered by
+    # either route.
+    _register_ile_short_forms(optp)
     return optp
 
 
@@ -2967,10 +3014,12 @@ def write_samples_xml(opts, out_index, theta, lnL, with_distance, P,
     ``integrate_likelihood_extrinsic_batchmode``'s --save-samples block rather
     than invented, so the two drivers write one schema.
 
-    Like batchmode's, this XML is DELIBERATELY sparse: it carries lnL (mapped to
-    alpha1) and not the importance weight, so a consumer cannot reconstruct the
-    true weight from it and must not reweight these rows by likelihood.  The rows
-    are already the equal-weight fair draw ``write_samples`` produced.
+    The rows are already the equal-weight fair draw ``write_samples`` produced,
+    so the prior columns are written to make the standard consumer weight
+    ``exp(lnL - lnLmax) * (p/ps) / Npts`` come out CONSTANT over them; see the
+    alpha2/alpha3 block below for the parameterisation and for why the offset is
+    this event's ``logZ``.  Unlike batchmode's sparse export, these rows may
+    therefore be reweighted by the standard formula -- that is the point.
     """
     from igwn_ligolw import ligolw, utils as ligolw_utils
     from RIFT.likelihood import factored_likelihood
@@ -3003,6 +3052,17 @@ def write_samples_xml(opts, out_index, theta, lnL, with_distance, P,
         # batchmode's --time-marginalization branch.
         "t_ref": ones * float(fiducial_epoch),
         "loglikelihood": np.asarray(lnL, dtype=np.float64),
+        # simulation_id, set EXPLICITLY.  samples_to_siminsp_row otherwise takes
+        # it from lsctables' get_next_id(), which is a CLASS attribute shared by
+        # every SimInspiralTable in the process -- so in a batch (this driver
+        # writes one XML per --n-events-to-analyze event from one process) the
+        # second event's rows are numbered from where the first stopped.  Both
+        # resamplers read Npts as max(simulation_id)+1 and divide the weight by
+        # it, so a continued counter silently scales one intrinsic point's share
+        # of the pooled posterior by the batch position.  Number each file's
+        # rows from zero, which is what "Assumes NOT mixed samples" in those
+        # tools means.
+        "sample_n": np.arange(n, dtype=np.int64),
     }
     # Fixed intrinsic template parameters, as batchmode's ILE-mode block writes
     # them (this driver has no --rom-integrate-intrinsic path).
@@ -3018,20 +3078,73 @@ def write_samples_xml(opts, out_index, theta, lnL, with_distance, P,
     samples["psi3"] = ones * float(getattr(P, "E0", 0.0))
     samples["beta"] = ones * float(getattr(P, "p_phi0", 0.0))
     # alpha2 / alpha3 are NOT decoration: convert_output_format_ile2inference
-    # reads them straight into the 'p' and 'ps' columns, and
-    # util_ResampleILEOutputWithExtrinsic.py then forms
-    # exp(lnL - lnLmax) * (p/ps) / Npts.  Batchmode's literal zeros here are a
-    # PLACEHOLDER that its sampler record overwrites: `samples` there is a copy
-    # of sampler._rvs, which carries 'joint_prior' and 'joint_s_prior', and those
-    # CMAP keys sit after "alpha2"/"alpha3" so they win.  This driver has no such
-    # record to persist -- by the time these rows exist they are the equal-weight
-    # fair draw, with no prior/proposal pair left to report -- and copying the
-    # zeros would hand the resampler 0/0 and nan weights for every row.
-    # Write 1.0/1.0, which is exactly what util_ConvertJAXILEFairdraws.py already
-    # puts in the p and ps columns for these same rows, so the XML route and the
-    # tabular route produce the same posterior table.
+    # reads them into the 'p' and 'ps' columns, and both resamplers the pipeline
+    # reaches then form exp(lnL - lnLmax) * (p/ps) / Npts
+    # (util_ResampleILEOutputWithExtrinsic.py, util_BatchConvertResampleILEOutput.py).
+    #
+    # These rows are already an equal-weight fair draw -- ILE's integrator made
+    # it when igrand_fairdraw_samples was on, write_samples made it from
+    # log_weight otherwise -- so that step has to come out a NO-OP.  Neither
+    # constant does it.  1.0/1.0 tilts the cloud by the likelihood a second time
+    # and yields samples proportional to prior * L^2 (measured: std(ra) fell
+    # from 0.049845 to 0.035384, ratio 0.7099 against 1/sqrt(2)).  Batchmode's
+    # 0.0/0.0, which its sampler record overwrites through the joint_prior /
+    # joint_s_prior CMAP keys and this driver has no record to overwrite with,
+    # gives every row a nan weight and crashes the resample job.
+    #
+    # So write p = 1, ps = exp(lnL - logZ).  Forcing a block's weights by
+    # rewriting the sampling prior is batchmode's own idiom (_pool_replica_rvs).
+    # Publishing the real importance weight instead is unavailable: under
+    # --sampler-method portfolio, under AV once the integrator fair-draws, and
+    # under nuts/map/multistart-nuts, samplers.adaptive_volume_sample and the
+    # run_* helpers return log_weight=None, the weights having been consumed.
+    #
+    # The offset cancels for both consumers, which normalise inside one file.
+    # logZ is chosen over the file's own lnLmax because it keeps ps at O(1), and
+    # because it stays correct on the CONCATENATION the resampler's docstring
+    # advertises: this file's share is then exp(logZ - lnLmax), proportional to
+    # this point's evidence, as conventional ILE's retained cloud is.  PR #341
+    # carries the evidence for both.
+    #
+    # Npts is the ROW COUNT: both consumers take it from max(simulation_id)+1,
+    # which sample_n above pins to 0..n-1 for this file.
+    logZ_offset = float(logZ)
+    if not np.isfinite(logZ_offset):
+        # A non-finite evidence would put nan in EVERY ps and so in every
+        # downstream weight.  analyze_one validates logZ before it gets here, so
+        # this is reachable only from an in-process caller; fall back to the
+        # file's own lnLmax, which keeps the within-file weights uniform (what
+        # both pipeline consumers need) and say so rather than emit nan.
+        finite = np.asarray(lnL, dtype=np.float64)[np.isfinite(lnL)]
+        logZ_offset = float(finite.max()) if finite.size else 0.0
+        print("  *** logZ=%r is not finite: the sim_inspiral sampling-prior "
+              "column falls back to the file's own lnLmax (%g).  Weights stay "
+              "uniform WITHIN this file, but this file's weight relative to "
+              "other intrinsic points is no longer its evidence. ***"
+              % (logZ, logZ_offset), file=sys.stderr)
+    # Build ps from the lnL the file will actually CARRY: alpha1/alpha2/alpha3
+    # are real_4 in sim_inspiral, so the consumer's exp(lnL - lnLmax) runs on a
+    # rounded exponent.  Rounding here first removes most of the mismatch; what
+    # is left is ligolw's real_4 ASCII round trip, ~2e-5 absolute at lnL ~ 300,
+    # which leaves a measured 3.9e-5 relative spread in weights that should be
+    # identical.  That is 4 parts in 100000 against the 29% the bug above cost.
+    lnL_stored = np.asarray(lnL, dtype=np.float32).astype(np.float64)
+    ln_ps = lnL_stored - logZ_offset
+    # ps must stay strictly positive AND finite.  A 0 gives the consumers a
+    # division by zero; an inf gives them 0*inf = nan, and
+    # util_BatchConvertResampleILEOutput.py replaces a nan weight with 1e-2 --
+    # a LARGE weight on a row that should carry none.  Clip instead: a row past
+    # the clip is >600 nats from the evidence and has no posterior mass, so its
+    # weight is driven toward zero deliberately rather than to nan.
+    n_clipped = int(np.count_nonzero(np.abs(ln_ps) > _XML_PS_LOG_CLIP))
+    if n_clipped:
+        print("  *** %d of %d exported rows have |lnL - logZ| > %g: their "
+              "sampling-prior column is clipped, so their resampling weight is "
+              "driven toward zero rather than to nan ***"
+              % (n_clipped, n, _XML_PS_LOG_CLIP), file=sys.stderr)
     samples["alpha2"] = np.ones(n, dtype=np.float64)
-    samples["alpha3"] = np.ones(n, dtype=np.float64)
+    samples["alpha3"] = np.exp(np.clip(ln_ps, -_XML_PS_LOG_CLIP,
+                                       _XML_PS_LOG_CLIP))
 
     xmldoc = ligolw.Document()
     xmldoc.appendChild(ligolw.LIGO_LW())
@@ -3062,7 +3175,7 @@ def write_samples_xml(opts, out_index, theta, lnL, with_distance, P,
 
 def write_samples(opts, out_index, theta, lnL, with_distance, logw=None,
                   angle_note="", P=None, fiducial_epoch=None,
-                  logZ=None, sigma_lnL=None, neff=0.0, ntotal=0):
+                  logZ=None, sigma_lnL=None, report_neff=0.0, ntotal=0):
     """Write the exported extrinsic samples.
 
     ``logw`` are per-sample LOG IMPORTANCE WEIGHTS ``ln(L p / p_s)`` for the
@@ -3082,20 +3195,28 @@ def write_samples(opts, out_index, theta, lnL, with_distance, logw=None,
     ``_samples.dat`` sidecar, whose format and content are unchanged, and the
     ``_<k>_.xml.gz`` sim_inspiral file the pipeline's terminal extrinsic stage
     reads (see ``xml_path``).  ``P``, ``fiducial_epoch``, ``logZ`` and
-    ``sigma_lnL`` carry the intrinsic point and the evidence row into that file,
-    and a caller that omits one gets a RuntimeError rather than a silently
-    missing XML -- which is the failure this export exists to fix.  ``neff`` and
-    ``ntotal`` are reported values only.
+    ``sigma_lnL`` carry the intrinsic point and the evidence row into that file;
+    a caller that omits one still gets the ``.dat`` and a stderr warning naming
+    what was missing, and no XML.  ``report_neff`` and ``ntotal`` are written
+    into the XML's evidence row and read NOWHERE ELSE.  ``report_neff`` is
+    spelled that way on purpose: an export path that takes a bare ``neff`` is
+    exactly the wiring test_write_samples_cannot_be_handed_an_evidence_neff
+    forbids, because the export COUNT must never be clamped by the evidence
+    estimator's effective sample size (see fairdraw_size).
     """
     if not (opts.output_file and opts.save_samples) or theta is None:
         return
-    if P is None or fiducial_epoch is None or logZ is None or sigma_lnL is None:
-        raise RuntimeError(
-            "write_samples needs P, fiducial_epoch, logZ and sigma_lnL to write "
-            "the sim_inspiral XML the pipeline reads; got P=%r fiducial_epoch=%r "
-            "logZ=%r sigma_lnL=%r.  Writing only the .dat sidecar is the defect "
-            "this export was added to fix, so it is refused rather than skipped."
-            % (P, fiducial_epoch, logZ, sigma_lnL))
+    # The XML needs four things the .dat does not.  A caller that omits one gets
+    # the .dat and a warning naming what was missing -- NOT an exception, and
+    # never at the cost of the sidecar.  Refusing here instead took out the whole
+    # of test/jax/test_jax_fairdraw_export.py (22 of 34 red), which drives
+    # write_samples directly and has no evidence row to supply, and broke
+    # in-process callers that only ever wanted the ASCII export.  analyze_one
+    # always supplies all four, and a test pins that, so production still writes
+    # the XML; what is relaxed is the in-process contract, not the pipeline's.
+    xml_inputs_missing = [name for name, value in (
+        ("P", P), ("fiducial_epoch", fiducial_epoch), ("logZ", logZ),
+        ("sigma_lnL", sigma_lnL)) if value is None]
     sname = samples_path(opts, out_index)
     # The export RNG is derived here and NOWHERE ELSE.  It must never be the
     # generator that feeds the samplers/estimators: --save-samples is an OUTPUT
@@ -3233,8 +3354,25 @@ def write_samples(opts, out_index, theta, lnL, with_distance, logw=None,
     # SAME rows, same flag, second product: the sim_inspiral XML the pipeline's
     # terminal extrinsic stage reads.  Written after the .dat so a refusal in the
     # column mapping cannot cost the sidecar an existing consumer already reads.
+    if xml_inputs_missing:
+        # LOUD, and on stderr, because the silent version of this is the defect
+        # the XML export exists to fix.  Any XML already at that path belongs to
+        # an earlier run and would be collected as this event's terminal
+        # extrinsic posterior, so it goes too.
+        _remove_stale_artifact(xml_path(opts, out_index), "sim_inspiral export")
+        sys.stderr.write(
+            "WARNING integrate_likelihood_extrinsic_jax: wrote %s but SKIPPED "
+            "the sim_inspiral XML %s -- write_samples was called without %s.  "
+            "create_event_parameter_pipeline_BasicIteration's convert_extr job "
+            "reads the XML, so a pipeline run that prints this collects nothing "
+            "from this event.\n"
+            % (sname, xml_path(opts, out_index),
+               ", ".join(xml_inputs_missing)))
+        return
+    # Anything that goes wrong from here on is an XML that was ATTEMPTED and
+    # failed (an unmapped theta layout, an unwritable path): that still raises.
     write_samples_xml(opts, out_index, theta, lnL, with_distance, P,
-                      fiducial_epoch, logZ, sigma_lnL, neff, ntotal)
+                      fiducial_epoch, logZ, sigma_lnL, report_neff, ntotal)
 
 
 def _parse_freqresponse_arm_length(value):
@@ -4025,7 +4163,7 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
             "NOTE integrate_likelihood_extrinsic_jax: %s\n" % _ev_note)
     write_samples(opts, out_index, theta, lnL, with_distance, angle_note=_ev_note,
                   logw=logw_export, P=P, fiducial_epoch=fiducial_epoch,
-                  logZ=logZ, sigma_lnL=sig, neff=neff, ntotal=ntot)
+                  logZ=logZ, sigma_lnL=sig, report_neff=neff, ntotal=ntot)
     write_dat(opts, P, out_index, event_id, logZ, sig, ntot, neff,
               angle_note=_ev_note)
     return logZ, out_flow_state

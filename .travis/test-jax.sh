@@ -561,6 +561,7 @@ FILES=(
   "${JAXDIR}/test_jax_bandlimited_distmarg.py"
   "${JAXDIR}/test_jax_bandlimited_6d_blind.py"
   "${JAXDIR}/test_policy_peaklocal_reserve.py"
+  "${JAXDIR}/test_jax_ile_short_option_forms.py"
 )
 
 # EXCLUDED: files in JAXDIR matching test_*.py that are deliberately NOT gated.  The
@@ -1092,7 +1093,13 @@ fi
 # --log-noise-evidence-output/-only.  The manifest test beside it only checks that a
 # conventional flag is DECLARED with the same arity, which a silent no-op satisfies;
 # removing the refusal leaves that one green and this one red.  867 + 1 = 868.
-EXPECTED_TESTS=868
+# 2026-09-15: + test_jax_ile_short_option_forms.py (28 tests: ILE's short option
+# spellings.  This driver defined NO short options at all, so a production command
+# line written with -o/-S/-P/-c/-t died at optparse before the long-option compat
+# layer could help it.  24 of the 28 are one per short form ILE defines, read out of
+# integrate_likelihood_extrinsic_batchmode rather than hand-listed, so a form added
+# there cannot quietly go missing here.)  868 + 28 = 896.
+EXPECTED_TESTS=896
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
