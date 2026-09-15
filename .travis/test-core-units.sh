@@ -208,6 +208,18 @@ done
 #            per-file 438 over 43 files, junit 441 / 12 skipped / 429 passed.  441 and 429
 #            carry 3 subtest entries; the floors stay pinned to the plugin-free 438/426.
 #
+#   455/443  test_jax_ile_extrinsic_xml_export.py grew from 18 tests to 35, for the
+#            adversarial review of that export: the prior columns both resamplers divide
+#            by (the AV weighted-cloud pair and the fair-drawn cancellation), per-file
+#            sample_n row numbering, the loud XML skip that keeps the .dat, and the 5-D
+#            --phase-marginalization layout a surviving mutant exposed.  No file added.
+#            MEASURED on CIT (ldas-grid; `import cupy` FAILS there, so this is the numpy
+#            backend) 2026-09-15, IGWN conda python 3.11 / lal 7.7.1: per-file 455 over
+#            43 files, junit 458 collected / 446 passed / 12 skipped / 0 failed.  458 and
+#            446 carry 3 subtest entries; the floors stay pinned to the plugin-free
+#            455/443.  The gate PASSED at the old 438/426 floor, which is the
+#            under-coverage this roster exists to catch, not a reason to leave it.
+#
 # RAISE these when files are added: a floor left at the old value passes while covering less,
 # which is the failure this gate exists to catch.
 # DO NOT RAISE THESE TO THE RUNNER'S NUMBERS.  The GitHub runner reports 350 collected / 338
@@ -222,12 +234,12 @@ done
 # runner's closure the count falls back to 347 and still passes.  Pinning 350 would turn an
 # unrelated dependency change into a red gate.
 # Two XML/grid template-finalization regressions, with no added skips.
-EXPECTED_TESTS=438
+EXPECTED_TESTS=455
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 12 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
 # test_dslice_device_native, and the xfail in test_uv_symmetry.
-EXPECTED_PASSED=426
+EXPECTED_PASSED=443
 MAX_SKIPPED=12
 
 # The floors must be INTEGERS, and this is checked rather than assumed.  `[ 347 -lt FOO ]` does
