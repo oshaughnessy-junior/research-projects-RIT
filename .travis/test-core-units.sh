@@ -120,9 +120,10 @@ FILES=(
   # -- ILE consolidation precision.  Both DAG builders and BOTH cleaner passes,
   # in the legacy and hyperpipeline formats; 7 tests, 9 s, subprocesses only.
   "$C/test/test_cleanile_intrinsic_precision.py"
-  # -- EOS: --sampler-method portfolio in util_ConstructEOSPosterior.py, which crashed on
-  # EVERY invocation (sampler.setup() was never called, so portfolio_breakpoints stayed None).
-  # 5 tests, ~27 s: four driver subprocesses, on the same basis as
+  # -- EOS: --sampler-method portfolio in util_ConstructEOSPosterior.py, which failed on EVERY
+  # invocation -- sampler.setup() was never called, so portfolio_breakpoints stayed None and the
+  # first draw() raised; without --internal-use-lnL it stopped even earlier, in integrate().
+  # 11 tests, ~73 s: ten driver subprocesses, on the same basis as
   # test_cleanile_intrinsic_precision.py above.  A static "is setup() called" check would not
   # do -- see the module docstring for the guard placement that passes one and still skips.
   "$C/test/test_eos_portfolio_sampler.py"
@@ -276,15 +277,15 @@ done
 # runner's closure the count falls back to 347 and still passes.  Pinning 350 would turn an
 # unrelated dependency change into a red gate.
 # Two XML/grid template-finalization regressions, with no added skips.
-EXPECTED_TESTS=562
+EXPECTED_TESTS=568
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
 # test_dslice_device_native, the nflows leg of
 # test_eos_posterior_tempering_kwarg::test_integrators_read_tempering_exp_from_kwargs
 # (mcsamplerNFlow is an optional dependency and is absent from the IGWN environment), and
-# the xfail in test_uv_symmetry.  test_eos_portfolio_sampler.py adds 5 tests and no skips.
-EXPECTED_PASSED=549
+# the xfail in test_uv_symmetry.  test_eos_portfolio_sampler.py adds 11 tests and no skips.
+EXPECTED_PASSED=555
 MAX_SKIPPED=13
 
 # The floors must be INTEGERS, and this is checked rather than assumed.  `[ 347 -lt FOO ]` does
