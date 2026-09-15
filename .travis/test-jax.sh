@@ -1098,8 +1098,13 @@ fi
 # line written with -o/-S/-P/-c/-t died at optparse before the long-option compat
 # layer could help it.  24 of the 28 are one per short form ILE defines, read out of
 # integrate_likelihood_extrinsic_batchmode rather than hand-listed, so a form added
-# there cannot quietly go missing here.)  868 + 28 = 896.
-EXPECTED_TESTS=896
+# there cannot quietly go missing here.)
+# Then MERGED rift_O4d.  868 + 28 = 896 describes neither tree: the base had added
+# jax tests of its own.  RE-MEASURED on the merged tree by running this script and
+# reading its own line, "collected 898 tests from 52 files" (ldas-pcdev2, `import
+# cupy` FAILS in /scratch/$USER/envs/jaxci-py311, PYTHONPATH pinned to the tree under
+# test, DESELECT loop applied).
+EXPECTED_TESTS=898
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
