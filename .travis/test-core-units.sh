@@ -6,10 +6,20 @@
 # the census that now keeps that number honest).  Most of those 86 should stay out -- they are
 # hand-run studies, plotting demos, or scripts importing pre-package flat modules that have not
 # existed since RIFT was packaged.  The files below are the ones that should NOT: they are
-# ordinary pytest suites, numpy/scipy/lal/sklearn only, that collect and PASS in seconds, and
-# they guard things that regress SILENTLY -- an evidence accounting, a seeding path, a
-# distance grid, a container manifest, a parameter port.  A wrong number there is still a
-# plausible number.
+# ordinary pytest suites that guard things which regress SILENTLY -- an evidence accounting, a
+# seeding path, a distance grid, a container manifest, a parameter port.  A wrong number there
+# is still a plausible number.
+#
+# That used to read "numpy/scipy/lal/sklearn only, collect and PASS in seconds".  Neither half
+# still describes this manifest.  test_integrator_studies.py runs study scripts as subprocesses
+# for 95-125 s, and test_eos_portfolio_sampler.py / test_cip_portfolio_members.py are the first
+# members to run util_ConstructEOSPosterior.py and
+# util_ConstructIntrinsicPosterior_GenericCoordinates.py END TO END -- an audited import closure
+# of one EOS driver subprocess is 74 non-stdlib top-level packages (igwn_ligolw, h5py, joblib,
+# healpy, corner, numba, pandas ...).  What IS still true, and is the property that matters, is
+# that no member SKIPS its way to green: blocking sklearn, igwn_ligolw or h5py makes those two
+# files FAIL loudly (measured), matplotlib and astropy are soft, and the `import lal` probe
+# below short-circuits the one dependency that would otherwise be ambiguous.
 #
 # The original manifest was run file by file on CIT (IGWN conda python 3.11, numpy 1.26.4,
 # lal 7.7.0) before it was added; the measured collection counts are the floors below.  Later
@@ -120,6 +130,21 @@ FILES=(
   # -- ILE consolidation precision.  Both DAG builders and BOTH cleaner passes,
   # in the legacy and hyperpipeline formats; 7 tests, 9 s, subprocesses only.
   "$C/test/test_cleanile_intrinsic_precision.py"
+  # -- EOS: --sampler-method portfolio in util_ConstructEOSPosterior.py, which failed on EVERY
+  # invocation -- sampler.setup() was never called, so portfolio_breakpoints stayed None and the
+  # first draw() raised; without --internal-use-lnL it stopped even earlier, in integrate().
+  # 12 tests, ELEVEN DRIVER SUBPROCESSES -- size it by that, not by seconds: wall time on a
+  # shared head node is contention-dominated (the 11-test form measured 134 s on ldas-grid at
+  # load 246; its 6-test predecessor measured 35 s at load 8-21).  Same basis as
+  # test_cleanile_intrinsic_precision.py above.  A static "is setup() called" check would not
+  # do -- see the module docstring for the guard placement that passes one and still skips.
+  "$C/test/test_eos_portfolio_sampler.py"
+  # -- CIP: the portfolio member list handed to mcsamplerPortfolio.  An unrecognized
+  # --sampler-portfolio name following a recognized one used to re-append the SAME sampler
+  # object, which crashed the run in sample_from_bins; and --sampler-portfolio-args was passed
+  # under a misspelt keyword and silently dropped -- delivering it correctly makes a
+  # malformed entry fatal, so the non-dict guard is part of that fix.  4 tests, ~22 s.
+  "$C/test/test_cip_portfolio_members.py"
   # -- EOS: the LALSimulation version-compatibility layer.  numpy/lal only; the reviewed
   # multibranch API is exercised through injected fakes, so this runs on a released build.
   # Its companion test_lalsim_eos_reviewed_integration.py needs a private reviewed LALSuite
@@ -256,6 +281,28 @@ done
 #            collecting 0 tests.  That measures the interpreter, not the tree; set
 #            RIFT_COREUNIT_PYTHON before quoting a count from this gate.)
 #
+#   568/555  test_eos_portfolio_sampler.py added (11 tests: --sampler-method portfolio in
+#            util_ConstructEOSPosterior.py failed on EVERY invocation because sampler.setup()
+#            was never called).  Runs the driver as a subprocess, so it is one of the slower
+#            members.  MEASURED on CIT (ldas-grid; `import cupy` FAILS there, so this is the
+#            numpy backend) 2026-09-15, IGWN conda python 3.11 / lal 7.7.0, with
+#            RIFT_COREUNIT_PYTHON pointed at the IGWN interpreter: per-file 568 over 48 files,
+#            junit 571 collected / 558 passed / 13 skipped / 0 failed.  The 3 of slack between
+#            these floors and the junit numbers is the pytest-subtests margin documented below,
+#            not spare room.
+#
+#   573/560  test_cip_portfolio_members.py added (4 tests) and test_eos_portfolio_sampler.py
+#            gained its fit-method case (11 -> 12).  Guards the portfolio member list
+#            util_ConstructIntrinsicPosterior_GenericCoordinates.py hands to mcsamplerPortfolio:
+#            an unrecognized --sampler-portfolio name used to re-append the SAME sampler object
+#            and kill the run in sample_from_bins, and --sampler-portfolio-args rode in under a
+#            misspelt keyword and was silently dropped.  Runs the CIP driver as a subprocess.
+#            MEASURED on CIT (ldas-grid; `import cupy` FAILS there, so this is the numpy
+#            backend) 2026-09-15, IGWN conda python 3.11 / lal 7.7.0, with
+#            RIFT_COREUNIT_PYTHON pointed at the IGWN interpreter: per-file 573 over 49 files,
+#            junit 576 collected / 563 passed / 13 skipped / 0 failed.  Again 3 of
+#            pytest-subtests margin, not spare room.
+#
 # RAISE these when files are added: a floor left at the old value passes while covering less,
 # which is the failure this gate exists to catch.
 # DO NOT RAISE THESE TO THE RUNNER'S NUMBERS.  The GitHub runner reports 350 collected / 338
@@ -270,15 +317,16 @@ done
 # runner's closure the count falls back to 347 and still passes.  Pinning 350 would turn an
 # unrelated dependency change into a red gate.
 # Two XML/grid template-finalization regressions, with no added skips.
-EXPECTED_TESTS=557
+EXPECTED_TESTS=573
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
 # test_dslice_device_native, the nflows leg of
 # test_eos_posterior_tempering_kwarg::test_integrators_read_tempering_exp_from_kwargs
 # (mcsamplerNFlow is an optional dependency and is absent from the IGWN environment), and
-# the xfail in test_uv_symmetry.
-EXPECTED_PASSED=544
+# the xfail in test_uv_symmetry.  test_eos_portfolio_sampler.py adds 12 tests and
+# test_cip_portfolio_members.py 4, none of them skips.
+EXPECTED_PASSED=560
 MAX_SKIPPED=13
 
 # The floors must be INTEGERS, and this is checked rather than assumed.  `[ 347 -lt FOO ]` does

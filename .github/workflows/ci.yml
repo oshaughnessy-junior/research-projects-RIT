@@ -362,11 +362,16 @@ jobs:
     # would have nothing to scope over.  The census job above is what keeps this set honest.
     #
     # Python 3.10 to match the sibling numpy jobs.  timeout-minutes is a runaway backstop,
-    # not a budget -- but the margin is no longer large: the gate measures 350 s on CIT
-    # (was 49 s when this comment first claimed 'an order of magnitude'), because the
-    # per-file collection loop spawns one RIFT-importing interpreter per manifest entry and
-    # grows with the manifest.  20 min is ~3.4x that, not 20x.  Re-measure before adding
-    # many more files, and see .travis/test-core-units.sh for the breakdown.
+    # not a budget -- but the margin is no longer large: re-measured on CIT 2026-09-15 at
+    # 465-510 s (was 350 s when this comment was written, and 49 s when it first claimed 'an
+    # order of magnitude'), because the per-file collection loop spawns one RIFT-importing
+    # interpreter per manifest entry and grows with the manifest, and because members now run
+    # RIFT DRIVERS as subprocesses.  Those CIT figures came off a head node at load 227-246, so
+    # treat them as an upper bound rather than a budget.  20 min is ~2.4x, not 20x.
+    # NOTE FOR ANYONE ADDING A SUBPROCESS TEST: keep its subprocess `timeout=` BELOW this cap.
+    # A timeout above 1200 s can never fire -- the job is cancelled first, and you get no test
+    # diagnostic at all.  Re-measure before adding many more files, and see
+    # .travis/test-core-units.sh for the breakdown.
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
