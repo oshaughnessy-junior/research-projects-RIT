@@ -8,7 +8,7 @@ See pp
 # Monte carlo integration
 
 * ``demo_mcsampler_foridiots.py``: easy-to-read demo code, not that stringent.
-  Run it by hand; it is not a pytest test, and it writes figures into the
+  Run it by hand; it is not a pytest test, and it writes a figure into the
   current directory.
 
 * ``test_mcsamplerEnsemble_extended.py`` : best single-contact test.  3d gaussian integration, with plot of recovered CDF.

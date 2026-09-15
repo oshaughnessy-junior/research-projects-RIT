@@ -74,6 +74,7 @@ FILES=(
   # -- integrators: seeding, allocation, weight derivation
   "$C/test/integrators/test_convergence_sample_order.py"
   "$C/test/integrators/test_gmm_adaptive.py"
+  "$C/test/integrators/test_mcsamplerGPU_default_adapt.py"
   "$C/test/integrators/test_portfolio_gmm_member_trains.py"
   "$C/test/integrators/test_portfolio_restrict_and_warm.py"
   # Wraps the five integrator studies as subprocesses (29 s).  They collect nothing
