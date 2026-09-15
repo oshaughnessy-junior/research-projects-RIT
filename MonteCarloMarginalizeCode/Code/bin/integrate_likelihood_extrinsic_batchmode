@@ -2435,7 +2435,9 @@ if use_gmm_args:   # standalone GMM, or a portfolio carrying a GMM member (see u
     #    (psi) (orb_phase)   # only do 1d adaptivity there, 
 #    gmm_dict = {tuple([2]):None,tuple([4]):None,(3,5):None,(0,1):None} 
 #    comp_dict = {tuple([2]):1,tuple([4]):1,(3,5):3,(0,1):4} 
-    default_phipsi = mcsamplerEnsemble.create_wide_single_component_prior( [ param_limits['psi'], param_limits['phi_orb']])
+    # (psi, phi_orb) starts from the UNIFORM proposal: MonteCarloEnsemble._sample() reads a
+    # None entry as "draw this group uniformly over its bounds".  See the block at the end of
+    # RIFT/integrators/mcsamplerEnsemble.py for the seed that used to be wired in here.
 #    pair_sky = sampler_param_tuple(sampler, ['right_ascension','declination'])
     pair_ra_dec =   sampler_param_tuple(sampler, ["right_ascension", "declination"])
     n_d =  2  # 2 distance-inclination lobes by default
@@ -2471,7 +2473,7 @@ if use_gmm_args:   # standalone GMM, or a portfolio carrying a GMM member (see u
       gmm_dict = {pair_all: None}
       gmm_adapt = {pair_all: True}
     else:
-      gmm_dict = {pair_ra_dec:None,pair_d_incl:None,pair_phi_psi:default_phipsi}
+      gmm_dict = {pair_ra_dec:None,pair_d_incl:None,pair_phi_psi:None}
       gmm_adapt = {pair_ra_dec: True, pair_d_incl: True, pair_phi_psi: False}
       if opts.internal_rotate_phase:
         gmm_adapt[pair_phi_psi] = True
