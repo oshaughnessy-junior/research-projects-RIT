@@ -2813,10 +2813,15 @@ def adaptive_volume_sample(like, d_min, d_max, sampler_method="AV",
     out_lnL = np.asarray(sampler._rvs["log_integrand"], dtype=float)
     already_fair = bool(getattr(sampler, "_rvs_is_fairdraw", False))
     log_weight = None
+    log_joint_prior = log_joint_s_prior = None
     if not already_fair:
-        log_weight = (out_lnL
-                      + np.asarray(sampler._rvs["log_joint_prior"], dtype=float)
-                      - np.asarray(sampler._rvs["log_joint_s_prior"], dtype=float))
+        # Return the PAIR, not only their combination.  A caller exporting this
+        # retained cloud as sim_inspiral has to write joint_prior and
+        # joint_s_prior into the alpha2/alpha3 columns the classic ILE writes,
+        # and log_weight alone cannot be split back into them.
+        log_joint_prior = np.asarray(sampler._rvs["log_joint_prior"], dtype=float)
+        log_joint_s_prior = np.asarray(sampler._rvs["log_joint_s_prior"], dtype=float)
+        log_weight = out_lnL + log_joint_prior - log_joint_s_prior
     sigma_over_Z = float(np.exp(0.5 * float(log_var) - float(logZ)))
     peak = float(np.max(out_lnL)) if len(out_lnL) else np.nan
     logZ, sigma_over_Z, eff_samp = _finalize_evidence(
@@ -2824,7 +2829,8 @@ def adaptive_volume_sample(like, d_min, d_max, sampler_method="AV",
     return dict(theta=theta, lnL=out_lnL, logZ=logZ,
                 sigma_over_Z=sigma_over_Z, neff=eff_samp,
                 n_eval=int(getattr(sampler, "ntotal", nmax)),
-                log_weight=log_weight, sampler=sampler,
+                log_weight=log_weight, log_joint_prior=log_joint_prior,
+                log_joint_s_prior=log_joint_s_prior, sampler=sampler,
                 diagnostics=diagnostics, eval_chunk=lnL.eval_chunk,
                 seed_cloud=seed_cloud, seed_modes=seed_modes_theta,
                 seed_mode_lnL=seed_modes_lnL,

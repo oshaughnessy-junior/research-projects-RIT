@@ -61,6 +61,10 @@ FILES=(
   "$C/RIFT/likelihood/test_td_dispatch_epoch.py"
   "$C/RIFT/likelihood/test_precompute_crossterm_batching.py"
   "$C/test/test_jax_template_finalization.py"
+  # The JAX ILE driver's sim_inspiral export: the file the BasicIteration
+  # terminal extrinsic stage opens.  Only the .dat sidecar was ever written, so
+  # the stage ran and collected nothing -- a loss no build-time check can see.
+  "$C/test/test_jax_ile_extrinsic_xml_export.py"
   "$C/test/test_response_order.py"
   "$C/test/test_ile_scalar_edge_cases.py"
   "$C/test/test_mcsamplerGPU_cdf_inverse_scalar_probe.py"
@@ -208,6 +212,38 @@ done
 #            and would have pinned this gate to an environment that happens to carry
 #            pytest-subtests.
 #
+#   438/426  + test_jax_ile_extrinsic_xml_export.py (18 tests: the JAX ILE driver's
+#            sim_inspiral export -- the filename convert_extr opens, row count and column
+#            round trip against the .dat sidecar, every --mode theta layout plus an explicit
+#            refusal for one with no mapping, and the p/ps columns the resampler divides by).
+#            MEASURED on CIT (ldas-grid, cupy import FAILS there so this is the numpy
+#            backend) 2026-09-14, IGWN conda python 3.11 / numpy 1.26.4 / lal 7.7.0:
+#            per-file 438 over 43 files, junit 441 / 12 skipped / 429 passed.  441 and 429
+#            carry 3 subtest entries; the floors stay pinned to the plugin-free 438/426.
+#
+#   455/443  test_jax_ile_extrinsic_xml_export.py grew from 18 tests to 35, for the
+#            adversarial review of that export: the prior columns both resamplers divide
+#            by (the AV weighted-cloud pair and the fair-drawn cancellation), per-file
+#            sample_n row numbering, the loud XML skip that keeps the .dat, and the 5-D
+#            --phase-marginalization layout a surviving mutant exposed.  No file added.
+#            MEASURED on CIT (ldas-grid; `import cupy` FAILS there, so this is the numpy
+#            backend) 2026-09-15, IGWN conda python 3.11 / lal 7.7.1: per-file 455 over
+#            43 files, junit 458 collected / 446 passed / 12 skipped / 0 failed.  458 and
+#            446 carry 3 subtest entries; the floors stay pinned to the plugin-free
+#            455/443.  The gate PASSED at the old 438/426 floor, which is the
+#            under-coverage this roster exists to catch, not a reason to leave it.#
+#   MERGED   rift_O4d (the .dgrid retained-set floors above) into the JAX-ILE
+#            sim_inspiral export branch.  Each side raised this floor over a file set the
+#            other had changed, so neither number nor their sum describes the merged tree.
+#            RE-MEASURED on the merged tree, per the rule this roster already states.
+#            MEASURED on CIT (ldas-grid; `import cupy` FAILS there, so this is the numpy
+#            backend) 2026-09-15, IGWN conda python 3.11 / lal 7.7.1: per-file 543 over
+#            46 files, junit 546 collected / 534 passed / 12 skipped / 0 failed.  546 and
+#            534 carry 3 subtest entries, so the floors are the plugin-free 543/531.
+#            Note 543 is 29 ABOVE 497+17, the two raises added together: the base added
+#            test files beyond the two named above, so summing would have pinned this gate
+#            29 tests below its real coverage while still passing.
+#
 # RAISE these when files are added: a floor left at the old value passes while covering less,
 # which is the failure this gate exists to catch.
 # DO NOT RAISE THESE TO THE RUNNER'S NUMBERS.  The GitHub runner reports 350 collected / 338
@@ -222,12 +258,12 @@ done
 # runner's closure the count falls back to 347 and still passes.  Pinning 350 would turn an
 # unrelated dependency change into a red gate.
 # Two XML/grid template-finalization regressions, with no added skips.
-EXPECTED_TESTS=497
+EXPECTED_TESTS=543
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 12 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
 # test_dslice_device_native, and the xfail in test_uv_symmetry.
-EXPECTED_PASSED=485
+EXPECTED_PASSED=531
 MAX_SKIPPED=12
 
 # The floors must be INTEGERS, and this is checked rather than assumed.  `[ 347 -lt FOO ]` does
