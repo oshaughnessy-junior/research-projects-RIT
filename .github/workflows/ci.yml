@@ -790,6 +790,7 @@ jobs:
             MonteCarloMarginalizeCode/Code/test/test_fairdraw_double_weighting.py \
             MonteCarloMarginalizeCode/Code/test/test_portfolio_fairdraw_backend.py \
             MonteCarloMarginalizeCode/Code/test/test_gmm_truncated_score.py \
+            MonteCarloMarginalizeCode/Code/test/test_gmm_backend_dispatch.py \
             MonteCarloMarginalizeCode/Code/test/test_rvs_record.py \
             MonteCarloMarginalizeCode/Code/test/test_ile_lnL_backend_defects.py \
             MonteCarloMarginalizeCode/Code/test/integrators/test_mcsamplerGPU_default_adapt.py
