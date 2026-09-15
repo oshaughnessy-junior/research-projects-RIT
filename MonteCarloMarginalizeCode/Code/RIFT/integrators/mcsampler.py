@@ -694,12 +694,27 @@ class MCSampler(SamplerOutputMixin, object):
                 # specific to pinned parameters
                 if p not in self.adaptive or p in list(kwargs.keys()):
                     continue
-                points = self._rvs[p][-n_history:]
-#                print "      Points", p, type(points),points.dtype
-                # use log weights or weights
-                if not temper_log:
-                    weights = (self._rvs["integrand"][-n_history:]/self._rvs["joint_s_prior"][-n_history:]*self._rvs["joint_prior"][-n_history:])**tempering_exp_running
+                # save_intg is only forced on above when tempering_exp > 0, while this block
+                # runs for any n_adapt > 0, so n_adapt>0 with the default tempering_exp=0
+                # reached the reads below with no cache and raised KeyError('integrand').
+                # Masked at defaults only because n_adapt defaults to 0 here, where
+                # mcsamplerGPU defaults it to 1000*n and so crashed outright.  With no
+                # history, adapt on this chunk's own importance weights, as mcsamplerGPU's
+                # int_val branch does.  NOT raised to tempering_exp_running: reaching here
+                # means tempering_exp is 0, so the exponent would flatten every weight to 1
+                # and the histogram would replay the current proposal instead of the target.
+                if not save_intg:
+                    weights = fval*joint_p_prior/joint_p_s
+                    points = self._rvs[p][-len(weights):]
+                    if temper_log:
+                        weights = numpy.maximum(1e-5, numpy.log(weights))
                 else:
+                  points = self._rvs[p][-n_history:]
+#                print "      Points", p, type(points),points.dtype
+                  # use log weights or weights
+                  if not temper_log:
+                    weights = (self._rvs["integrand"][-n_history:]/self._rvs["joint_s_prior"][-n_history:]*self._rvs["joint_prior"][-n_history:])**tempering_exp_running
+                  else:
                     weights = numpy.maximum(1e-5,numpy.log(self._rvs["integrand"][-n_history:] )) #**tempering_exp_running
 
                 if tempering_adapt:

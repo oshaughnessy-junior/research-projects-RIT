@@ -240,6 +240,29 @@ class MCSampler(SamplerOutputMixin, object):
             print("   Adapting ", params)
             self.adaptive.append(params)
 
+    def _trim_rvs_to_record(self, record_key):
+        """Drop parameter rows that the integrand record of THIS pass does not describe.
+
+        _rvs[p] survives an integrate() call, while the integrand record restarts, so a
+        sampler reused for a second pass carries the earlier pass's draws in _rvs[p] and
+        only this pass's in _rvs[record_key].  The cleanup below indexes EVERY key with
+        one index list built from the integrand length, which on a longer _rvs[p] selects
+        its first rows: the parameter values then belong to different draws than the
+        likelihoods beside them.  Nothing downstream can see that, because the lengths
+        agree afterwards.
+
+        Trimming to the tail keeps the rows the record actually describes.  A no-op
+        whenever the two already agree, which is every single-pass call.
+        """
+        n_rec = len(self._rvs[record_key])
+        for key in list(self._rvs.keys()):
+            val = self._rvs[key]
+            if isinstance(key, tuple):
+                if val.shape[-1] > n_rec:
+                    self._rvs[key] = val[:, -n_rec:]
+            elif len(val) > n_rec:
+                self._rvs[key] = val[-n_rec:]
+
     def reset_sampling(self,param):
       self.pdf[param] = self.pdf_initial[param]
       self.cdf_inv[param] = self.cdf_inv_initial[param]
@@ -890,11 +913,39 @@ class MCSampler(SamplerOutputMixin, object):
             # correction: near-flat weights made each histogram replay the previous
             # proposal's sampling noise, a multiplicative random walk that collapses the
             # proposal onto a comb of surviving bins.)
-            weights_alt = self._rvs["log_weights"][-n_history:]
+            if save_intg:
+                weights_alt = self._rvs["log_weights"][-n_history:]
+            else:
+                # Same gap as in integrate(): save_intg is only forced on above when
+                # tempering_exp>0, while this block runs for any n_adapt>0, so with the
+                # default tempering_exp=0 there is no cached history and reading it raised
+                # KeyError('log_weights').  Adapt on this chunk alone.
+                #
+                # log_integrand, NOT log_weights: this branch is only reachable at
+                # tempering_exp == 0, where log_weights = 0*lnL + ln p - ln p_s drops the
+                # likelihood entirely and leaves the histogram replaying the previous
+                # proposal's own sampling noise.  log_integrand = lnL + ln p - ln p_s is the
+                # exact log-space twin of the int_val used by integrate().  There is no
+                # history to reach back over, so this covers one chunk regardless of
+                # history_mult.
+                weights_alt = log_integrand
             weights_alt = self.xpy.exp(weights_alt - self.xpy.max(weights_alt))
-            weights_alt = weights_alt/(weights_alt.sum())
+            # Sum stays on the DEVICE: dividing a device array by a host scalar mixes
+            # backends (test_ile_lnL_backend_defects guards exactly that).  Only the
+            # scalar used for the CHECK comes back to the host.
+            _wt_total = weights_alt.sum()
+            _wt_check = float(identity_convert(_wt_total))
+            if not numpy.isfinite(_wt_check) or _wt_check <= 0:
+                # Degenerate chunk (every lnL -inf or nan).  Normalizing would put nan in the
+                # histogram, hence in the CDF, hence in the next draw, which surfaces far away
+                # as an out-of-bounds index inside pdf_from_hist.  Keep the current proposal.
+                continue
+            weights_alt = weights_alt/_wt_total
             if weights_alt.dtype == RiftFloat:
               weights_alt = weights_alt.astype(numpy.float64,copy=False)
+            # Points sliced to the depth the weights reach, not to n_history -- see the
+            # note on the same line in integrate().
+            n_history_here = len(weights_alt)
 
             for itr, p in enumerate(self.params_ordered):
                 # # FIXME: The second part of this condition should be made more
@@ -902,7 +953,7 @@ class MCSampler(SamplerOutputMixin, object):
                 if p not in self.adaptive or p in list(kwargs.keys()):
                     continue
 
-                points = self._rvs[p][-n_history:]
+                points = self._rvs[p][-n_history_here:]
                 self.compute_hist(points, p,weights=weights_alt,floor_level=floor_integrated_probability)
                 self.pdf[p] = function_wrapper(self.pdf_from_hist, p)
                 self.cdf_inv[p] = function_wrapper(self.cdf_inverse_from_hist, p)
@@ -918,6 +969,7 @@ class MCSampler(SamplerOutputMixin, object):
         #   - create the cumulative weights
         #   - find and remove samples which contribute too little to the cumulative weights
         if (not save_no_samples) and ( "log_integrand" in self._rvs):
+            self._trim_rvs_to_record("log_integrand")
             self._rvs["sample_n"] = numpy.arange(len(self._rvs["log_integrand"]))  # create 'iteration number'        
             # Step 1: Cut out any sample with lnL belw threshold
             indx_list = [k for k, value in enumerate( (self._rvs["log_integrand"] > maxlnL - deltalnL)) if value] # threshold number 1
@@ -1366,8 +1418,12 @@ class MCSampler(SamplerOutputMixin, object):
                 return inner
 
             if not(save_intg):
-                print("Direct access ")
-                weights_alt = int_vals**tempering_exp
+                # No integrand history was cached: save_intg is only forced on above when
+                # tempering_exp>0, while this block runs for any n_adapt>0, so the default
+                # tempering_exp=0 lands here.  The only weights in hand are this chunk's
+                # importance weights, so adapt on the chunk alone.  Was int_vals**tempering_exp,
+                # a name that has never existed, so every such call raised NameError instead.
+                weights_alt = int_val
             elif not(tempering_exp):  # zero value, should not happen but just in case, fall back to using integrand for adaptation
                 weights_alt = self._rvs["integrand"][-n_history:]
             else:
@@ -1381,11 +1437,30 @@ class MCSampler(SamplerOutputMixin, object):
                   weights_alt =((self._rvs["integrand"][-n_history:]/self._rvs["joint_s_prior"][-n_history:]*self._rvs["joint_prior"][-n_history:])**tempering_exp )
                   weights_alt = self.xpy.maximum(weights_alt,10)   # preventing too little dynamic range
 
-            weights_alt = weights_alt/(weights_alt.sum())
+            # Sum stays on the DEVICE: dividing a device array by a host scalar mixes
+            # backends (test_ile_lnL_backend_defects guards exactly that).  Only the
+            # scalar used for the CHECK comes back to the host.
+            _wt_total = weights_alt.sum()
+            _wt_check = float(identity_convert(_wt_total))
+            if not numpy.isfinite(_wt_check) or _wt_check <= 0:
+                # An all-zero chunk reaches here only on the GPU: the fval.sum()==0 skip above
+                # is gated `if not(cupy_ok)`.  Normalizing would write nan into the histogram
+                # and the failure would surface later as an out-of-bounds index in
+                # pdf_from_hist.  Keep the current proposal instead.
+                continue
+            weights_alt = weights_alt/_wt_total
             # Type convert as needed: if weights are float128, convert to float64; otherwise we hit a typing error later with bincount
             if weights_alt.dtype == RiftFloat:
               weights_alt = weights_alt.astype(numpy.float64,copy=False)
 #            weights_alt = floor_integrated_probability*xpy_default.ones(len(weights_alt))/len(weights_alt) + (1-floor_integrated_probability)*weights_alt
+            # Slice the points to the depth the WEIGHTS actually reach, not to n_history.
+            # The two differ whenever the integrand record is shorter than the parameter
+            # record -- the branch above that adapts on one chunk, and any sampler reused
+            # for a second integrate(), since _rvs[p] carries over from the previous pass
+            # while "integrand" restarts.  Both records are appended in lockstep from
+            # wherever the shorter one begins, so equal depths are aligned; unequal ones
+            # reach bincount as "The weights and list don't have the same length."
+            n_history_here = len(weights_alt)
 
             for itr, p in enumerate(self.params_ordered):
                 # # FIXME: The second part of this condition should be made more
@@ -1393,7 +1468,7 @@ class MCSampler(SamplerOutputMixin, object):
                 if p not in self.adaptive or p in list(kwargs.keys()):
                     continue
 
-                points = self._rvs[p][-n_history:]
+                points = self._rvs[p][-n_history_here:]
                 self.compute_hist(points, p,weights=weights_alt,floor_level=floor_integrated_probability)
             #    if p == 'declination':
             #          vals = identity_convert(self.histogram_values[p])
@@ -1413,6 +1488,7 @@ class MCSampler(SamplerOutputMixin, object):
         #   - create the cumulative weights
         #   - find and remove samples which contribute too little to the cumulative weights
         if (not save_no_samples) and ( "integrand" in self._rvs):
+            self._trim_rvs_to_record("integrand")
             self._rvs["sample_n"] = numpy.arange(len(self._rvs["integrand"]))  # create 'iteration number'        
             if deltalnL < 1e10:
               # Step 1: Cut out any sample with lnL belw threshold
