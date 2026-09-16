@@ -291,9 +291,9 @@ def _ratio(sampler, n=20000):
 def test_reset_also_happens_on_the_update_sampling_prior_path():
     """`update_sampling_prior` installs the adapted proposal too, and MUST reset _pdf_norm.
 
-    THIS PATH IS NOT REACHED BY ANY OTHER TEST HERE.  Everything else calls
+    THIS PATH IS NOT REACHED BY ANY OTHER TEST HERE.  Every other test that INTEGRATES calls
     integrate(use_lnL=True), which returns integrate_log() immediately, so only that ONE of the
-    three install sites runs.  Verified by deleting each reset in turn: dropping the
+    three install sites runs; the rest call draw_simplified() directly and reach none of them.  Verified by deleting each reset in turn: dropping the
     update_sampling_prior one leaves the whole file green while the reported density is wrong by
     prod(_pdf_norm) -- about +1.6 nats of evidence error.
 
@@ -309,13 +309,29 @@ def test_reset_also_happens_on_the_update_sampling_prior_path():
     s.draw_simplified(4000)                      # and populate _rvs so it has history
     assert np.isclose(_ratio(s), hi - lo, rtol=1e-6)
     n = len(np.asarray(mcsamplerGPU.identity_convert(s._rvs["xx"])).reshape(-1))
-    s.update_sampling_prior(np.zeros(n), 1, tempering_exp=1.0)
-    # Structural, not statistical.  Once the proposal is adapted it is bumpy, so prior/p_s
-    # varies sample to sample and its mean over 20000 draws carries ~10-18% scatter (measured:
-    # 4.95 and 5.85 on two consecutive draws) -- far too noisy to pin a reset.  _pdf_norm itself
-    # is exact, and is what the reset actually writes.
+    # n_history MUST be realistic.  mcsamplerPortfolio passes int(history_mult*n) (~2000); with
+    # n_history=1 compute_hist fits the histogram to a SINGLE point (peak/mean bin ratio ~99 on
+    # a 100-bin grid) and E[prior/p_s] then carries 4.7-8.9% scatter -- which is an artifact of
+    # the invocation, not a property of the sampler.  At a realistic n_history the scatter is
+    # 0.13% and the behavioural assertion below is perfectly sharp: it fails on a density
+    # misreported x1.3, on a proposal whose cdf_inv was never swapped, and on a 0.999 reset.
+    # TILTED weights, not flat.  With np.zeros() the adapted histogram comes out essentially
+    # uniform, and then a proposal installed WITHOUT swapping cdf_inv (draws still uniform,
+    # density reported from the histogram) is very nearly self-consistent and slips through.
+    # A tilt makes the adapted proposal genuinely non-uniform, so the draws and the reported
+    # density have to agree for the identity below to hold.  Measured at this tilt: control
+    # E[prior/p_s] = 5.02, an unswapped cdf_inv gives 13.18 (exact 5.0).
+    xs = np.asarray(mcsamplerGPU.identity_convert(s._rvs["xx"])).reshape(-1)[:n]
+    s.update_sampling_prior(20.0 * xs, n, tempering_exp=1.0)
     assert np.isclose(float(s._pdf_norm["xx"]), 1.0, rtol=1e-6), \
         "_pdf_norm not reset on the update_sampling_prior path: %r" % float(s._pdf_norm["xx"])
+    # ...and the sampler must actually BE coherent afterwards, not merely have had the
+    # assignment executed: _pdf_norm alone cannot tell "the reset ran" from "the adapted
+    # proposal and the draws agree".
+    ratio = _ratio(s)
+    assert np.isclose(ratio, hi - lo, rtol=0.01), \
+        "after update_sampling_prior E[prior/p_s] = %r, expected the prior integral %r" % (
+            ratio, hi - lo)
 
 
 def test_reset_also_happens_on_the_linear_integrate_path():
@@ -331,9 +347,15 @@ def test_reset_also_happens_on_the_linear_integrate_path():
     for p in ("xx", "yy"):
         s.add_parameter(p, pdf=np.vectorize(lambda x: 1), prior_pdf=np.vectorize(lambda x: 1.0),
                         left_limit=lo, right_limit=hi, adaptive_sampling=True)
-    s.integrate(fn, "xx", "yy", n=2000, nmax=20000, neff=1e9,
-                save_intg=True, no_protect_names=True, verbose=False,
-                n_adapt=100, tempering_adapt=True)
+    res = s.integrate(fn, "xx", "yy", n=2000, nmax=20000, neff=1e9,
+                      save_intg=True, no_protect_names=True, verbose=False,
+                      n_adapt=100, tempering_adapt=True)
+    # This path returns the LINEAR integral, which must be the prior volume 5*5 = 25.  Measured
+    # over 6 seeds: ln I - ln 25 = -0.0022 with the reset, +3.12 without it -- a 1400x margin,
+    # free, on the path an ordinary run actually takes.
+    assert np.isclose(np.log(float(res[0])), np.log(25.0), atol=0.05), \
+        "linear integrate() gave ln I = %r, exact ln 25 = %r" % (np.log(float(res[0])),
+                                                                 np.log(25.0))
     for p in ("xx", "yy"):
         assert np.isclose(float(s._pdf_norm[p]), 1.0, rtol=1e-6), \
             "_pdf_norm[%s] = %r after the linear integrate() path" % (p, float(s._pdf_norm[p]))
@@ -345,9 +367,12 @@ def test_three_parameters_are_all_corrected():
     Correcting only the first two (or three) parameters passed every test in this file, because
     none of them used more than two.  util_ConstructEOSPosterior.py adds parameters in a loop
     over low_level_coord_names and routinely has more, so that mutation would have shipped.
-    Ranges are all different so a per-parameter error cannot cancel.
+
+    The three widths are 5, 1 and 3 -- all DIFFERENT, which matters and was got wrong once: an
+    earlier revision used widths 5, 1, 5, and with two equal widths a permutation of the norms
+    across parameters (an ordinary indexing bug) cancels and passes.
     """
-    boxes = (("xx", -2.0, 3.0), ("yy", 0.0, 1.0), ("zz", -1.0, 4.0))
+    boxes = (("xx", -2.0, 3.0), ("yy", 0.0, 1.0), ("zz", -1.0, 2.0))
     V = float(np.prod([hi - lo for _, lo, hi in boxes]))
     s = mcsamplerGPU.MCSampler()
     for p, lo, hi in boxes:

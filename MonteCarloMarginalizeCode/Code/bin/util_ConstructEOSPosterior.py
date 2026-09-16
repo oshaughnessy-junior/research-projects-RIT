@@ -896,7 +896,7 @@ elif opts.sampler_method == "portfolio":
     #
     # The predicate is "lacks sampling_density", not "is the GPU sampler" -- mcsamplerNFlow
     # lacks it too, so an [AV, NFlow] portfolio takes the same fallback and must warn as well.
-    _no_density = [type(m).__name__ and not hasattr(m, 'sampling_density') for m in sampler_list]
+    _no_density = [not hasattr(m, 'sampling_density') for m in sampler_list]
     if any(_no_density) and not all(_no_density):
         _which = sorted({type(m).__module__.split('.')[-1]
                          for m, bad in zip(sampler_list, _no_density) if bad})
