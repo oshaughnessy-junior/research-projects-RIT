@@ -867,40 +867,47 @@ elif opts.sampler_method == "portfolio":
         # comma-joined "AV,GMM" matches nothing).  Same reasoning as the guard above.
         print(" OPTION MISMATCH : --sampler-portfolio matched no known sampler in {}.  Pass one name per flag, e.g. --sampler-portfolio AV --sampler-portfolio GMM.".format(sampler_types))
         sys.exit(99)
-    # MIXED-BACKEND PORTFOLIO: measured wrong, and NOT fixed by the mcsamplerGPU _pdf_norm work
-    # that accompanies this.  The mechanism, traced rather than guessed:
+    # MIXED-BACKEND PORTFOLIO.  Deliberately stated as MEASUREMENTS, not as a mechanism: three
+    # successive attempts to explain this in prose were each shown to be wrong, so what follows
+    # is only what was measured.  Constant integrand, non-square box, exact ln Z = 1.609438,
+    # adaptation running, 16 seeds:
     #
-    #   mcsamplerPortfolio needs each member to expose sampling_density() to build its mixture
-    #   density q_mix.  mcsamplerGPU DOES NOT DEFINE ONE (only mcsamplerAdaptiveVolume and
-    #   mcsamplerEnsemble do), so the portfolio prints "some active member lacks
-    #   sampling_density; falling back to legacy stratified per-member density" and q_mix is
-    #   never formed -- the estimator becomes the legacy stratified one.  The same missing
-    #   method short-circuits the portfolio's support diagnostics, which is why a GPU member
-    #   makes it report weight_share=[nan]/escaped_mass=[nan].  That nan reaches only the
-    #   printout and dict_return, not the member weighting, but it is a true symptom.
+    #     portfolio[AV]        1.6094 (sd 0.0000)     portfolio[GPU]       1.6037 (sd 0.0175)
+    #     portfolio[GMM]       1.6195 (sd 0.0061)     portfolio[GPU,GPU]   1.6144 (sd 0.0151)
+    #     portfolio[AV,GMM]    1.6093 (sd 0.0014)     portfolio[GPU,GMM]   1.6144 (sd 0.0060)
+    #     portfolio[AV,GPU]    0.7111 (sd 0.0075)     portfolio[GPU,AV]    0.7081 (sd 0.0049)
     #
-    # The members also report their sampling density on different scales, and after the
-    # accompanying fix it is mcsamplerAdaptiveVolume that is the odd one out, not the GPU
-    # sampler: AV's draw_simplified returns V_s/V, a dimensionless live-volume FRACTION rather
-    # than a density, measured E[prior/p_s] = 0.20000 against the GPU member's 4.99332 on a box
-    # where the prior integral is 5.
+    # So the badly wrong case is an AV member together with a member that has no
+    # sampling_density: -0.90 nats.  [GPU,GMM] fires the warning below and is +0.005, no worse
+    # than its own GMM member (+0.010) -- the warning OVER-fires there, and that is a known
+    # false alarm rather than an undetected bias.
     #
-    # Measured on a constant integrand over a non-square box, exact ln Z = 1.609438, adaptation
-    # running, 8 seeds: portfolio[AV] 1.609438, portfolio[AV,GPU] 0.703 (base 0.652,
-    # order-independent).  A single-member portfolio[GPU] gives 1.6034 +/- 0.0235 -- consistent
-    # with exact; the portfolio path is ~30x noisier than the bare sampler, so do NOT read a
-    # single run of it as a bias.
+    # What IS established about the machinery: mcsamplerGPU and mcsamplerNFlow define no
+    # sampling_density (only mcsamplerAdaptiveVolume and mcsamplerEnsemble do), so
+    # mcsamplerPortfolio prints its own "falling back to legacy stratified per-member density"
+    # notice and q_mix is generally not formed; the same condition leaves its support
+    # diagnostics at nan.  That nan reaches only the printout and dict_return -- but the same
+    # condition also holds credit_per_sample identically zero, so with the NON-DEFAULT settings
+    # portfolio_adaptive_alloc=True and portfolio_quality_signal='credit' the draw-allocation
+    # signal is silently dead.  Defaults ('global', False) are unaffected.
+    #
+    # On a scale mismatch: measured, with a prior integral of 5, mcsamplerGPU and
+    # mcsamplerEnsemble both report E[prior/p_s] = 5.000000 and mcsamplerAdaptiveVolume reports
+    # 0.200000.  AV is the outlier.  WHY it differs is NOT established here -- an earlier
+    # revision of this comment asserted a reason and was wrong.
+    #
+    # KNOWN GAP in the predicate below: `any and not all` means a portfolio in which EVERY
+    # member lacks sampling_density (e.g. [adaptive_cartesian_gpu, NFlow]) does not warn, even
+    # though it takes the same fallback.  [GPU,GPU] measures fine (+0.005); [GPU,NFlow] is
+    # untested here because nflows is not installed on this host.
     #
     # Deliberately a warning and not a refusal: unifying the member p_s contract is a decision
     # about mcsamplerAdaptiveVolume as much as about mcsamplerGPU.
-    #
-    # The predicate is "lacks sampling_density", not "is the GPU sampler" -- mcsamplerNFlow
-    # lacks it too, so an [AV, NFlow] portfolio takes the same fallback and must warn as well.
     _no_density = [not hasattr(m, 'sampling_density') for m in sampler_list]
     if any(_no_density) and not all(_no_density):
         _which = sorted({type(m).__module__.split('.')[-1]
                          for m, bad in zip(sampler_list, _no_density) if bad})
-        print(" PORTFOLIO : WARNING, this portfolio mixes members that expose sampling_density with members that do not ({}).  q_mix is never formed -- the portfolio falls back to its legacy stratified estimator -- and the members report their sampling density on different scales, so the mixture's EVIDENCE IS WRONG by a configuration-dependent amount.  Use a single-backend portfolio until the member p_s contract is unified.".format(", ".join(_which)))
+        print(" PORTFOLIO : WARNING, this portfolio mixes members that expose sampling_density with members that do not ({}).  q_mix is generally not formed and the portfolio falls back to its legacy stratified estimator.  MEASURED: with an AV member this is badly biased (0.71 where the exact answer is 1.609); with GMM+GPU it was not measurably worse than the members themselves, so this warning over-fires there.  Prefer a single-backend portfolio, and do not trust a mixed one's evidence without checking it against a known answer.".format(", ".join(_which)))
     sampler = mcsamplerPortfolio.MCSampler(portfolio=sampler_list)
 
 

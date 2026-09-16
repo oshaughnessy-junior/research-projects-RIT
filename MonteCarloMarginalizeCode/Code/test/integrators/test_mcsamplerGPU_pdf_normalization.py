@@ -156,13 +156,22 @@ def test_evidence_is_exact_AFTER_ADAPTATION(nmax, chunks, atol):
             20   1.567732            3.176679            1.610915
            100   1.600740            3.210876            1.609291
 
-    TOLERANCES, re-measured over 300 seeds (5 chunks) and 200 seeds (20 chunks), not the 6 an
-    earlier revision used -- 6 seeds cannot estimate a maximum: sd 0.00236 / max|err| 0.00660 at
-    5 chunks, sd 0.00113 / max|err| 0.00305 at 20.  Both distributions are clean gaussians
-    (max/sd ~2.7-2.8) with no tail, and 0/300 and 0/200 runs exceeded the atol below.  The real
-    margins are therefore ~4.5x and ~6.6x above the observed maxima -- NOT the "~6x and ~11x"
-    claimed before -- and ~6x and ~20x below the defects they must catch (0.177 and 0.042 for
-    base, 1.437 and 1.567 for the unreset division).
+    TOLERANCES.  Twice re-measured, because both earlier figures were optimistic -- first from 6
+    seeds (which cannot estimate a maximum at all), then from 300/200 seeds whose maxima were
+    still under-reported.  Independently re-derived, same seed ranges:
+
+        5 chunks, 300 seeds : sd 0.00262, max|err| 0.00709, 0/300 exceed atol 0.03 -> 4.23x
+       20 chunks, 200 seeds : sd 0.00117, max|err| 0.00358, 0/200 exceed atol 0.02 -> 5.59x
+
+    (Earlier revisions claimed sd 0.00236/0.00113, maxima 0.00660/0.00305 and margins 4.5x/6.6x.
+    A 120-seed run already exceeded both of those quoted 300/200-seed maxima.)  max/sd is 2.71
+    and 3.07 -- clean gaussians, no tail.
+
+    HEADROOM OVER THE DEFECTS, measured on the true pre-PR base: 0.174404 at 5 chunks, so atol
+    0.03 sits 5.81x below it; but only 0.040784 at 20 chunks, so atol 0.02 sits **2.04x** below
+    -- NOT the "~20x" an earlier revision claimed and then re-asserted inside the sentence that
+    was correcting it.  The 20-chunk case is the tight one; treat it as ~2x, not a wide margin.
+    Against the unreset division the margins are 47.8x and 78.4x.
 
     Known blind spot, measured: a post-adaptation density misreport of up to ~x1.0075 per
     dimension (0.015 nats in 2-D) passes these bounds.  That is the honest floor of an MC test
@@ -225,8 +234,12 @@ def test_non_constant_pdf_pins_the_draws_not_just_the_algebra():
     This test is not a complete guard on its own and the docstring should not pretend otherwise:
     an earlier revision quoted "53.96" for a middle-10% truncation, which was wrong -- measured,
     that mutation gives 1.56 read in quantile space and 2.00 in x space, and the x-space reading
-    PASSES here (the adaptation tests are what catch it).  Its measured detection floor is a
-    ~2.5% bias in the draw distribution.
+    PASSES here (the adaptation tests are what catch it).
+
+    Its detection floor, measured against the distortion family q ~ p_s^(1+e): the statistic
+    reaches this test's 0.05 threshold at e ~ 0.10, which is a ~16% peak relative density error
+    and ~1.7% total variation.  (An earlier revision called that "a ~2.5% bias in the draw
+    distribution"; 2.5% was just atol/target, a property of the statistic and not of the draws.)
 
     With pdf(x) = 1 + 0.8x the reported density genuinely varies with position, so the identity
     E_{p_s}[prior/p_s] = int prior dx = (hi - lo) holds only if the draws really are distributed
@@ -328,8 +341,14 @@ def test_reset_also_happens_on_the_update_sampling_prior_path():
     # ...and the sampler must actually BE coherent afterwards, not merely have had the
     # assignment executed: _pdf_norm alone cannot tell "the reset ran" from "the adapted
     # proposal and the draws agree".
-    ratio = _ratio(s)
-    assert np.isclose(ratio, hi - lo, rtol=0.01), \
+    # 200k draws and rtol=0.03 (tolerance 0.15), both set from the DISTRIBUTION, not from one
+    # observation: at this tilt the statistic has sd 0.0128 and max|err| 0.0313 over 12 runs at
+    # 200k draws (it was sd 0.0341 / max 0.0722 at the 20k default, which made this test fail
+    # 2 runs in 10 -- a tolerance fitted to a single measurement).  0.15 is ~12 sigma and ~4.8x
+    # the observed maximum, while the mutants it must catch sit at 13.30 (unswapped cdf_inv)
+    # and 3.85 (density x1.3), i.e. 55x and 7.7x outside it.
+    ratio = _ratio(s, n=200000)
+    assert np.isclose(ratio, hi - lo, rtol=0.03), \
         "after update_sampling_prior E[prior/p_s] = %r, expected the prior integral %r" % (
             ratio, hi - lo)
 

@@ -661,7 +661,7 @@ class MCSampler(SamplerOutputMixin, object):
         temper_log -- Adapt in min(ln L, 10^(-5))^tempering_exp
         tempering_adapt -- Gradually evolve the tempering_exp based on previous history.
         floor_level -- *total probability* of a uniform distribution, averaged with the weighted sampled distribution, to generate a new sampled distribution
-        n_adapt -- number of chunks over which to allow the pdf to adapt. Default is 1000*n, i.e. adaptation runs on ANY run longer than one chunk -- it is NOT off by default.  Both the kwarg and that default are in CHUNKS (n_adapt is compared against a chunk counter)
+        n_adapt -- number of chunks over which to allow the pdf to adapt. Default is 1000*n, i.e. adaptation runs on ANY run longer than one chunk -- it is NOT off by default.  The kwarg is in CHUNKS and is scaled by n here, so the default 1000*n is exactly n_adapt=1000; the scaled variable is then compared against self.ntotal, a SAMPLE count.  Do NOT pass 1000*n to reproduce the default
         convergence_tests - dictionary of function pointers, each accepting self._rvs and self.params as arguments. CURRENTLY ONLY USED FOR REPORTING
         Pinning a value: By specifying a kwarg with the same of an existing parameter, it is possible to "pin" it. The sample draws will always be that value, and the sampling prior will use a delta function at that value.
         """
@@ -1141,7 +1141,7 @@ class MCSampler(SamplerOutputMixin, object):
         temper_log -- Adapt in min(ln L, 10^(-5))^tempering_exp
         tempering_adapt -- Gradually evolve the tempering_exp based on previous history.
         floor_level -- *total probability* of a uniform distribution, averaged with the weighted sampled distribution, to generate a new sampled distribution
-        n_adapt -- number of chunks over which to allow the pdf to adapt. Default is 1000*n, i.e. adaptation runs on ANY run longer than one chunk -- it is NOT off by default.  Both the kwarg and that default are in CHUNKS (n_adapt is compared against a chunk counter)
+        n_adapt -- number of chunks over which to allow the pdf to adapt. Default is 1000*n, i.e. adaptation runs on ANY run longer than one chunk -- it is NOT off by default.  The kwarg is in CHUNKS and is scaled by n here, so the default 1000*n is exactly n_adapt=1000; the scaled variable is then compared against self.ntotal, a SAMPLE count.  Do NOT pass 1000*n to reproduce the default
         convergence_tests - dictionary of function pointers, each accepting self._rvs and self.params as arguments. CURRENTLY ONLY USED FOR REPORTING
         Pinning a value: By specifying a kwarg with the same of an existing parameter, it is possible to "pin" it. The sample draws will always be that value, and the sampling prior will use a delta function at that value.
         """
