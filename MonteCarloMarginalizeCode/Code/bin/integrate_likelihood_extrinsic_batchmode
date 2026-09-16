@@ -4665,6 +4665,45 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
                    like_to_integrate = zero_like
               else:
                    like_to_integrate = unit_like
+              if supplemental_ln_likelihood:
+                  # --zero-likelihood zeroes the SIGNAL likelihood.  A supplementary factor is an
+                  # EXTERNAL constraint (EM observation, population term), not part of the signal
+                  # model, so it has to survive.  Replacing likelihood_function wholesale dropped
+                  # it: the startup banner still printed "EXTERNAL SUPPLEMENTARY LIKELIHOOD
+                  # FACTOR", and the run returned ln Z bit-identical to one with no factor at all.
+                  # Measured on a zero-strain fixture: with a factor of A*cos(phi_orb), A = 0.75,
+                  # ln Z should be ln I0(A) = 0.135969 and was 0.006525 -- exactly the no-factor
+                  # answer, to every digit.  --zero-likelihood is documented as a PRIOR TEST, and
+                  # imposing an analytic external prior is what the supplementary hook is for, so
+                  # this is the combination the option exists to support.
+                  _zero_base = like_to_integrate
+                  def like_to_integrate(*args, **kwargs):
+                      _base = _zero_base(*args, **kwargs)
+                      if kwargs:
+                          ra  = kwargs['right_ascension']; dec = kwargs['declination']
+                          phr = kwargs['phi_orb'];         ic  = kwargs['inclination']
+                          ps  = kwargs['psi'];             di  = kwargs['distance']
+                      else:
+                          # likelihood_function's own signature order
+                          ra, dec, _t_ref, phr, ic, ps, di = args[:7]
+                      # Apply the SAME sampler-coordinate transforms the real likelihood applies
+                      # before it calls the factor, or the factor sees cos(dec) where the real
+                      # path gives it dec.
+                      dec = numpy.copy(numpy.asarray(dec)).astype(numpy.float64)
+                      if opts.declination_cosine_sampler:
+                          dec = numpy.pi/2 - numpy.arccos(dec)
+                      ic = numpy.copy(numpy.asarray(ic)).astype(numpy.float64)
+                      if opts.inclination_cosine_sampler:
+                          ic = numpy.arccos(ic)
+                      if opts.d_prior_redshift:
+                          di = redshift_to_distance(di)
+                      # Distance is passed in the RAW sampler units (Mpc), matching the
+                      # time-marginalized call site; the two vectorized sites pass P.dist in SI
+                      # instead.  That inconsistency is pre-existing and not resolved here.
+                      _supp = supplemental_ln_likelihood(ra, dec, phr, ic, ps, di)
+                      if return_lnL:
+                          return _base + _supp
+                      return _base * numpy.exp(_supp)
     if oracleRS:
          print("  ORACLE  - seeding sampling  with" , oracleRS.params_ordered)
          if hasattr(sampler, 'update_sampling_prior'):

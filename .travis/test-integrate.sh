@@ -117,6 +117,24 @@ if [ "$_PORTDENS_FOUND" -ne "$_PORTDENS_EXPECTED" ]; then
 fi
 python -m pytest -q "$_PORTDENS_TESTS"
 
+# END-TO-END, ANALYTIC.  Every pipeline stage on a case whose answer is known in closed form:
+# a zero-strain fixture, ILE with --zero-likelihood (exact ln Z = 0), and with an analytic
+# supplementary factor A*cos(phi_orb) whose marginal is exactly ln I0(A).  The sampler unit
+# tests check samplers; pseudo_pipe/asimov check that the pipeline RUNS; nothing checked that
+# it runs and is CORRECT.  That gap hid two defects: --zero-likelihood silently discarded a
+# --supplementary-likelihood-factor-* (two runs differing only by it returned ln Z bit-
+# identical, while the banner reported the factor as active), and ILE --sampler-method GMM
+# returns an evidence wrong by 29-136 nats with a small error bar.  Needs no network, no real
+# event and no GPU; about 7 s per ILE arm.
+_E2E_TESTS=MonteCarloMarginalizeCode/Code/test/test_e2e_analytic_pipeline.py
+_E2E_EXPECTED=8
+_E2E_FOUND=$(python -m pytest -q --collect-only "$_E2E_TESTS" 2>/dev/null | grep -c '::' || true)
+if [ "$_E2E_FOUND" -ne "$_E2E_EXPECTED" ]; then
+    echo "e2e analytic gate: collected $_E2E_FOUND tests, expected $_E2E_EXPECTED" >&2
+    exit 1
+fi
+python -m pytest -q "$_E2E_TESTS"
+
 # Supplementary-likelihood plugin hook: the NAL reader/evaluator (pure numpy, no data) and the
 # static guard on the drivers' prepare-hook wiring, which is what makes the plugin receive the
 # SAMPLING basis at all. Both are seconds-long and protect a silent-wrong-answer path.
