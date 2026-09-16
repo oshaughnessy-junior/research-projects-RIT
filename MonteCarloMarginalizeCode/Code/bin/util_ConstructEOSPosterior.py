@@ -867,20 +867,19 @@ elif opts.sampler_method == "portfolio":
         # comma-joined "AV,GMM" matches nothing).  Same reasoning as the guard above.
         print(" OPTION MISMATCH : --sampler-portfolio matched no known sampler in {}.  Pass one name per flag, e.g. --sampler-portfolio AV --sampler-portfolio GMM.".format(sampler_types))
         sys.exit(99)
-    # MIXED-BACKEND PORTFOLIO: measured wrong, and NOT fixed by the mcsamplerGPU normalization
-    # correction that accompanies this.  Test case: a CONSTANT integrand over [-1,1]^2, where
-    # the exact answer is ln V = 1.386294 and every sampler ALONE -- and a single-backend
-    # portfolio of either -- now returns it to machine precision.  A portfolio holding BOTH an
-    # AV and an adaptive_cartesian_gpu member does not: measured 7.537718 through this driver
-    # and 0.753772 driving mcsamplerPortfolio directly, i.e. wrong by a configuration-dependent
-    # amount rather than a fixed offset, and before the mcsamplerGPU fix the same mixture gave
-    # -0.470004, wrong in the other direction.  That is why this is a portfolio member-contract
-    # problem and not the sampler's: the members report their sampling density on different
-    # scales and q_mix combines them without reconciling.  Deliberately a warning and not a
-    # refusal -- unifying the p_s contract is a decision about AV as much as about GPU.
+    # MIXED-BACKEND PORTFOLIO: measured wrong, and NOT fixed by the mcsamplerGPU _pdf_norm
+    # work that accompanies this.  On a constant integrand over a non-square box whose exact
+    # ln Z is 1.609438, with adaptation running: portfolio[AV] 1.609438, portfolio[GPU]
+    # 1.593975, portfolio[AV,GPU] 0.695934.  The members report their sampling density on
+    # different scales and q_mix combines them without reconciling, so the mixture is wrong by
+    # an amount that depends on the configuration -- do not read the numbers above as a fixed
+    # offset, they are one measurement of a moving target.  (The GPU member also drives
+    # weight_share to nan in the portfolio's own support diagnostic, which is not understood.)
+    # Deliberately a warning and not a refusal: unifying the member p_s contract is a decision
+    # about mcsamplerAdaptiveVolume as much as about mcsamplerGPU.
     _is_gpu = [type(m).__module__.split('.')[-1] == 'mcsamplerGPU' for m in sampler_list]
     if any(_is_gpu) and not all(_is_gpu):
-        print(" PORTFOLIO : WARNING, this portfolio mixes adaptive_cartesian_gpu with non-GPU members.  They report their sampling density on different scales, so the mixture's EVIDENCE IS WRONG by a configuration-dependent amount (on a constant integrand whose exact ln Z is 1.386294 this driver returns 7.537718).  Each backend ALONE is exact.  Use a single-backend portfolio until the member p_s contract is unified.")
+        print(" PORTFOLIO : WARNING, this portfolio mixes adaptive_cartesian_gpu with non-GPU members.  They report their sampling density on different scales, so the mixture's EVIDENCE IS WRONG by a configuration-dependent amount.  Use a single-backend portfolio until the member p_s contract is unified.")
     sampler = mcsamplerPortfolio.MCSampler(portfolio=sampler_list)
 
 

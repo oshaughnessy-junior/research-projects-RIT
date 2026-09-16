@@ -49,10 +49,15 @@ def test_reported_p_s_matches_the_density_drawn_from():
     s = _build(mcsamplerGPU.MCSampler(), 1.0, 1.0)
     p_s, p_prior, _ = s.draw_simplified(40000)
     ratio = np.asarray(p_prior, dtype=float) / np.asarray(p_s, dtype=float)
-    # TOLERANCE, measured not guessed: _pdf_norm is cdf[-1] from a NUMERICALLY built cdf, so it
-    # carries the grid's discretization error -- 1.5e-8 relative here (observed 3.9999999851 for
-    # V = 4).  1e-6 sits ~70x above that floor and ~1e6x below the defect it guards, which was a
-    # factor of V (300% at V = 4), so the two cannot be confused.
+    # TOLERANCE.  _pdf_norm is cdf[-1] from a NUMERICALLY integrated cdf (odeint/lsoda, default
+    # atol=rtol=1.49e-8), so the error on it is an ABSOLUTE ~atol and the RELATIVE error scales
+    # as atol/_pdf_norm -- it is NOT a constant floor.  Measured at V = 4: E[prior/p_s] =
+    # 3.99999998505, i.e. 1.49e-8 absolute and 3.74e-9 RELATIVE.  (An earlier revision of this
+    # comment quoted the absolute figure as relative; that was wrong.)  rtol=1e-6 therefore sits
+    # ~270x above the floor HERE, but it is configuration-specific: a box with _pdf_norm <~ 0.015
+    # would make a CORRECT implementation fail this, so re-measure before reusing these bounds at
+    # very small parameter scales.  The defect guarded is a factor of _pdf_norm (300% at V = 4),
+    # so nothing plausible lands in between.
     assert np.allclose(ratio, V, rtol=1e-6), \
         "E[prior/p_s] = %r, expected the prior integral V = %r; draw_simplified is reporting a " \
         "density inconsistent with cdf_inv" % (float(np.mean(ratio)), V)
@@ -92,18 +97,28 @@ def test_normalized_pdf_caller_is_unaffected():
         "normalized-pdf caller sees E[prior/p_s] = %r, expected 1" % float(np.mean(ratio))
 
 
-@pytest.mark.parametrize("R,V", [(1.0, 4.0), (2.0, 16.0)])
-def test_constant_likelihood_evidence_is_exact_and_matches_AV(R, V):
+@pytest.mark.parametrize("box,V", [(((-1.0, 1.0), (-3.0, 3.0)), 12.0),
+                                   (((-2.0, 3.0), (0.0, 1.0)), 5.0)])
+def test_constant_likelihood_evidence_is_exact_and_matches_AV(box, V):
     """End to end on a case with an exact answer, at two different volumes.
 
     A constant integrand removes fit error and MC scatter entirely: every sampler must return
     ln(integral of prior) = ln V, to machine precision.  Two volumes, because a single one
-    cannot distinguish a genuine correction from a coincidence at V = 4.
+    cannot distinguish a genuine correction from a coincidence.
+
+    BOTH BOXES ARE NON-SQUARE, deliberately.  With [-R,R] in every dimension all the per-
+    parameter _pdf_norm values are equal, so a fix that reuses ONE parameter's norm for all of
+    them, or takes max() over them, is indistinguishable from the correct per-parameter product.
+    On [-1,1] x [-3,3] those two give ln 4 and ln 36 against the correct ln 12.
     """
     lnL = lambda *x: np.zeros(np.asarray(x[0]).shape)
     out = {}
     for name, mod in (("GPU", mcsamplerGPU), ("AV", mcsamplerAV)):
-        s = _build(mod.MCSampler(), 1.0, 1.0, lo=-R, hi=R)
+        s = mod.MCSampler()
+        for pname, (lo, hi) in zip(("xx", "yy"), box):
+            s.add_parameter(pname, pdf=np.vectorize(lambda x: 1),
+                            prior_pdf=np.vectorize(lambda x: 1.0),
+                            left_limit=lo, right_limit=hi, adaptive_sampling=True)
         res = s.integrate(lnL, "xx", "yy", n=2000, nmax=20000, neff=30,
                           use_lnL=True, return_lnI=True, save_intg=True,
                           no_protect_names=True, verbose=False)
@@ -183,3 +198,68 @@ def test_pdf_norm_is_reset_when_the_adapted_proposal_is_installed():
             "_pdf_norm[%s] = %r after adaptation; pdf_from_hist is already normalized, so it " \
             "must be 1 or every consumer of _pdf_norm is working from a stale value" % (
                 p, float(s._pdf_norm[p]))
+
+
+def test_non_constant_pdf_pins_the_draws_not_just_the_algebra():
+    """With a NON-CONSTANT sampling pdf, E[prior/p_s] still equals the prior integral.
+
+    THIS IS THE TEST THAT PINS THE FILE'S HEADLINE CLAIM.  Every other check here uses a
+    constant pdf, and with a constant pdf `p_s` takes the same value at every sample, so
+    `prior/p_s` is an algebraic identity that holds no matter WHERE the samples landed.  A
+    sampler that drew from an entirely wrong distribution -- say the middle 10% of the box --
+    while still reporting `pdf/_pdf_norm` would pass all of them.  Measured: such a sampler
+    returns 53.96 here where the answer is 2.0.
+
+    With pdf(x) = 1 + 0.8x the reported density genuinely varies with position, so the identity
+    E_{p_s}[prior/p_s] = int prior dx = (hi - lo) holds only if the draws really are distributed
+    as the reported p_s.
+
+    Tolerance is MC, not numerical: the standard error over 40000 draws is 0.0061, measured
+    across three seeds (means 1.99507, 2.00169, 2.00102), so 0.05 is ~8 sigma.
+    """
+    lo, hi = -1.0, 1.0
+    s = mcsamplerGPU.MCSampler()
+    s.add_parameter("xx", pdf=np.vectorize(lambda x: 1.0 + 0.8 * x),
+                    prior_pdf=np.vectorize(lambda x: 1.0),
+                    left_limit=lo, right_limit=hi, adaptive_sampling=True)
+    p_s, p_prior, _ = s.draw_simplified(40000)
+    ratio = np.asarray(p_prior, dtype=float) / np.asarray(p_s, dtype=float)
+    assert np.isclose(float(np.mean(ratio)), hi - lo, atol=0.05), \
+        "E[prior/p_s] = %r for a non-constant pdf, expected the prior integral %r; the draws do " \
+        "not follow the density draw_simplified reports" % (float(np.mean(ratio)), hi - lo)
+
+
+def test_a_non_adaptive_parameter_is_corrected_too():
+    """The correction must not be conditional on `adaptive_sampling`.
+
+    Restricting it to `param in self.adaptive` passes every other test here, because they make
+    every parameter adaptive.  A non-adaptive parameter keeps the caller's pdf for the whole run,
+    so it is precisely the one that always needs the normalization.
+    """
+    s = mcsamplerGPU.MCSampler()
+    s.add_parameter("xx", pdf=np.vectorize(lambda x: 1), prior_pdf=np.vectorize(lambda x: 1.0),
+                    left_limit=-2.0, right_limit=3.0, adaptive_sampling=False)
+    p_s, p_prior, _ = s.draw_simplified(20000)
+    ratio = np.asarray(p_prior, dtype=float) / np.asarray(p_s, dtype=float)
+    assert np.allclose(ratio, 5.0, rtol=1e-6), \
+        "E[prior/p_s] = %r on a NON-adaptive parameter, expected the prior integral 5.0" % (
+            float(np.mean(ratio)))
+
+
+def test_draw_agrees_with_draw_simplified():
+    """draw() and draw_simplified() must report p_s on the same scale.
+
+    draw() is currently dead code -- nothing in the tree calls it (mcsamplerPortfolio and
+    mcsampler have their own).  It is pinned anyway for two reasons: this file's own rationale
+    is that the two paths must agree, and a double-correction applied to draw() would otherwise
+    be invisible if anything ever revived it.
+    """
+    s = mcsamplerGPU.MCSampler()
+    s.add_parameter("xx", pdf=np.vectorize(lambda x: 1), prior_pdf=np.vectorize(lambda x: 1.0),
+                    left_limit=-2.0, right_limit=3.0, adaptive_sampling=True)
+    p_s_simpl = float(np.mean(np.asarray(s.draw_simplified(20000)[0], dtype=float)))
+    out = s.draw(20000, "xx")
+    p_s_draw = float(np.mean(np.asarray(mcsamplerGPU.identity_convert(out[0]), dtype=float)))
+    assert np.isclose(p_s_simpl, p_s_draw, rtol=1e-6), \
+        "draw_simplified reports p_s ~ %r and draw() reports ~ %r; the two paths disagree " \
+        "about the normalization" % (p_s_simpl, p_s_draw)
