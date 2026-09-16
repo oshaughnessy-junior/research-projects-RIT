@@ -65,7 +65,16 @@ python -m pytest -q MonteCarloMarginalizeCode/Code/test/test_angle_prior_normali
 # makes _pdf_norm 1 and the defect a no-op.  A constant integrand with an UNNORMALIZED pdf,
 # checked against ln(prior mass) in absolute terms, is the combination that separates it -- a
 # difference of two runs cancels the constant.
-python -m pytest -q MonteCarloMarginalizeCode/Code/test/integrators/test_mcsamplerGPU_pdf_normalization.py
+# Collection-count guard, matching this script's other gates: a silent shrink reads as green.
+# Raise EXPECTED by RUNNING collection, never by arithmetic.
+_GPUNORM_TESTS=MonteCarloMarginalizeCode/Code/test/integrators/test_mcsamplerGPU_pdf_normalization.py
+_GPUNORM_EXPECTED=14
+_GPUNORM_FOUND=$(python -m pytest -q --collect-only "$_GPUNORM_TESTS" 2>/dev/null | grep -c '::' || true)
+if [ "$_GPUNORM_FOUND" -ne "$_GPUNORM_EXPECTED" ]; then
+    echo "mcsamplerGPU pdf-normalization gate: collected $_GPUNORM_FOUND tests, expected $_GPUNORM_EXPECTED" >&2
+    exit 1
+fi
+python -m pytest -q "$_GPUNORM_TESTS"
 
 # Supplementary-likelihood plugin hook: the NAL reader/evaluator (pure numpy, no data) and the
 # static guard on the drivers' prepare-hook wiring, which is what makes the plugin receive the

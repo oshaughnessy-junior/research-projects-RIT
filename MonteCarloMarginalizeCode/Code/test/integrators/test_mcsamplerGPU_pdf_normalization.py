@@ -156,10 +156,17 @@ def test_evidence_is_exact_AFTER_ADAPTATION(nmax, chunks, atol):
             20   1.567732            3.176679            1.610915
            100   1.600740            3.210876            1.609291
 
-    TOLERANCES, measured over 6 seeds rather than guessed: with the reset, sd is 0.0030 and
-    max|err| 0.0053 at 5 chunks, sd 0.0012 and max|err| 0.0018 at 20.  The atol values below sit
-    ~6x and ~11x above those, and ~6x and ~20x BELOW the defects they must catch (0.177 and
-    0.042 for base, 1.437 and 1.567 for the unreset division).
+    TOLERANCES, re-measured over 300 seeds (5 chunks) and 200 seeds (20 chunks), not the 6 an
+    earlier revision used -- 6 seeds cannot estimate a maximum: sd 0.00236 / max|err| 0.00660 at
+    5 chunks, sd 0.00113 / max|err| 0.00305 at 20.  Both distributions are clean gaussians
+    (max/sd ~2.7-2.8) with no tail, and 0/300 and 0/200 runs exceeded the atol below.  The real
+    margins are therefore ~4.5x and ~6.6x above the observed maxima -- NOT the "~6x and ~11x"
+    claimed before -- and ~6x and ~20x below the defects they must catch (0.177 and 0.042 for
+    base, 1.437 and 1.567 for the unreset division).
+
+    Known blind spot, measured: a post-adaptation density misreport of up to ~x1.0075 per
+    dimension (0.015 nats in 2-D) passes these bounds.  That is the honest floor of an MC test
+    here; the reset VALUE is pinned by the structural test instead.
     """
     lnL = lambda *x: np.zeros(np.asarray(x[0]).shape)
     s = mcsamplerGPU.MCSampler()
@@ -179,9 +186,15 @@ def test_evidence_is_exact_AFTER_ADAPTATION(nmax, chunks, atol):
 def test_pdf_norm_is_reset_when_the_adapted_proposal_is_installed():
     """Direct structural check of the invariant behind the test above.
 
-    Kept separate because the integral test can only see the CONSEQUENCE, and a future edit
-    that installs pdf_from_hist at a FOURTH site would reintroduce the defect there while the
-    two-parameter integral above still passed.
+    Kept separate because the integral tests see only the CONSEQUENCE, and the two catch
+    genuinely different things: a reset with a WRONG VALUE (0.999 rather than 1.0) is invisible
+    to the integral tests and caught only here, while a reset that is transiently absent and
+    restored before the function returns is caught only by them.
+
+    Its reach is limited and was overstated in an earlier revision: this test drives
+    integrate(use_lnL=True) -> integrate_log() and therefore only ONE of the three install
+    sites.  A fourth install site added to update_sampling_prior would NOT be caught here.  The
+    other two sites have their own tests below; anyone adding a fourth should add one too.
     """
     lnL = lambda *x: np.zeros(np.asarray(x[0]).shape)
     s = mcsamplerGPU.MCSampler()
@@ -206,9 +219,14 @@ def test_non_constant_pdf_pins_the_draws_not_just_the_algebra():
     THIS IS THE TEST THAT PINS THE FILE'S HEADLINE CLAIM.  Every other check here uses a
     constant pdf, and with a constant pdf `p_s` takes the same value at every sample, so
     `prior/p_s` is an algebraic identity that holds no matter WHERE the samples landed.  A
-    sampler that drew from an entirely wrong distribution -- say the middle 10% of the box --
-    while still reporting `pdf/_pdf_norm` would pass all of them.  Measured: such a sampler
-    returns 53.96 here where the answer is 2.0.
+    sampler that drew from an entirely wrong distribution while still reporting `pdf/_pdf_norm`
+    would pass all of them.
+
+    This test is not a complete guard on its own and the docstring should not pretend otherwise:
+    an earlier revision quoted "53.96" for a middle-10% truncation, which was wrong -- measured,
+    that mutation gives 1.56 read in quantile space and 2.00 in x space, and the x-space reading
+    PASSES here (the adaptation tests are what catch it).  Its measured detection floor is a
+    ~2.5% bias in the draw distribution.
 
     With pdf(x) = 1 + 0.8x the reported density genuinely varies with position, so the identity
     E_{p_s}[prior/p_s] = int prior dx = (hi - lo) holds only if the draws really are distributed
@@ -263,3 +281,77 @@ def test_draw_agrees_with_draw_simplified():
     assert np.isclose(p_s_simpl, p_s_draw, rtol=1e-6), \
         "draw_simplified reports p_s ~ %r and draw() reports ~ %r; the two paths disagree " \
         "about the normalization" % (p_s_simpl, p_s_draw)
+
+
+def _ratio(sampler, n=20000):
+    p_s, p_prior, _ = sampler.draw_simplified(n)
+    return float(np.mean(np.asarray(p_prior, dtype=float) / np.asarray(p_s, dtype=float)))
+
+
+def test_reset_also_happens_on_the_update_sampling_prior_path():
+    """`update_sampling_prior` installs the adapted proposal too, and MUST reset _pdf_norm.
+
+    THIS PATH IS NOT REACHED BY ANY OTHER TEST HERE.  Everything else calls
+    integrate(use_lnL=True), which returns integrate_log() immediately, so only that ONE of the
+    three install sites runs.  Verified by deleting each reset in turn: dropping the
+    update_sampling_prior one leaves the whole file green while the reported density is wrong by
+    prod(_pdf_norm) -- about +1.6 nats of evidence error.
+
+    It is also the path mcsamplerPortfolio drives: the portfolio adapts a member by calling
+    member.update_sampling_prior(...), so a portfolio containing this sampler runs exclusively
+    through here.
+    """
+    lo, hi = -2.0, 3.0
+    s = mcsamplerGPU.MCSampler()
+    s.add_parameter("xx", pdf=np.vectorize(lambda x: 1), prior_pdf=np.vectorize(lambda x: 1.0),
+                    left_limit=lo, right_limit=hi, adaptive_sampling=True)
+    s.setup()                                    # builds the histogram state the update needs,
+    s.draw_simplified(4000)                      # and populate _rvs so it has history
+    assert np.isclose(_ratio(s), hi - lo, rtol=1e-6)
+    n = len(np.asarray(mcsamplerGPU.identity_convert(s._rvs["xx"])).reshape(-1))
+    s.update_sampling_prior(np.zeros(n), 1, tempering_exp=1.0)
+    # Structural, not statistical.  Once the proposal is adapted it is bumpy, so prior/p_s
+    # varies sample to sample and its mean over 20000 draws carries ~10-18% scatter (measured:
+    # 4.95 and 5.85 on two consecutive draws) -- far too noisy to pin a reset.  _pdf_norm itself
+    # is exact, and is what the reset actually writes.
+    assert np.isclose(float(s._pdf_norm["xx"]), 1.0, rtol=1e-6), \
+        "_pdf_norm not reset on the update_sampling_prior path: %r" % float(s._pdf_norm["xx"])
+
+
+def test_reset_also_happens_on_the_linear_integrate_path():
+    """integrate() WITHOUT use_lnL runs its own body, which installs the proposal separately.
+
+    That is not an exotic branch: `--internal-use-lnL` is a store_true with no default while
+    `--sampler-method` defaults to adaptive_cartesian_gpu, so an ordinary run reaches this code.
+    Dropping the reset here leaves all the other tests green while the integral goes badly wrong.
+    """
+    lo, hi = -2.0, 3.0
+    fn = lambda *x: np.ones(np.asarray(x[0]).shape)       # LINEAR likelihood, L = 1
+    s = mcsamplerGPU.MCSampler()
+    for p in ("xx", "yy"):
+        s.add_parameter(p, pdf=np.vectorize(lambda x: 1), prior_pdf=np.vectorize(lambda x: 1.0),
+                        left_limit=lo, right_limit=hi, adaptive_sampling=True)
+    s.integrate(fn, "xx", "yy", n=2000, nmax=20000, neff=1e9,
+                save_intg=True, no_protect_names=True, verbose=False,
+                n_adapt=100, tempering_adapt=True)
+    for p in ("xx", "yy"):
+        assert np.isclose(float(s._pdf_norm[p]), 1.0, rtol=1e-6), \
+            "_pdf_norm[%s] = %r after the linear integrate() path" % (p, float(s._pdf_norm[p]))
+
+
+def test_three_parameters_are_all_corrected():
+    """Every parameter, not just the first two.
+
+    Correcting only the first two (or three) parameters passed every test in this file, because
+    none of them used more than two.  util_ConstructEOSPosterior.py adds parameters in a loop
+    over low_level_coord_names and routinely has more, so that mutation would have shipped.
+    Ranges are all different so a per-parameter error cannot cancel.
+    """
+    boxes = (("xx", -2.0, 3.0), ("yy", 0.0, 1.0), ("zz", -1.0, 4.0))
+    V = float(np.prod([hi - lo for _, lo, hi in boxes]))
+    s = mcsamplerGPU.MCSampler()
+    for p, lo, hi in boxes:
+        s.add_parameter(p, pdf=np.vectorize(lambda x: 1), prior_pdf=np.vectorize(lambda x: 1.0),
+                        left_limit=lo, right_limit=hi, adaptive_sampling=True)
+    assert np.isclose(_ratio(s), V, rtol=1e-6), \
+        "E[prior/p_s] = %r over 3 parameters, expected the prior integral %r" % (_ratio(s), V)
