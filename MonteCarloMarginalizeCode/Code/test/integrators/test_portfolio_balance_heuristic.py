@@ -178,6 +178,11 @@ def run(target, n_chunk, nmax, neff, use_mixture, decoy=None, seed=1234,
         tempering_exp=tempering_exp, floor_level=0.0, use_lnL=True,
         save_intg=True, verbose=verbose,
         portfolio_use_mixture_density=use_mixture,
+        # The stratified arm is the POINT of this study: it exists to exhibit the bias that
+        # q_mix removes.  mcsamplerPortfolio now refuses that estimator unless the caller says
+        # in as many words that a biased evidence is what they want, so say it -- for the
+        # stratified arm only, so the q_mix arms stay under the guard.
+        portfolio_allow_stratified_density=(not use_mixture),
         # This test isolates the q_mix ESTIMATOR under a PINNED pathological allocation (the decoy
         # AV is frozen and, in the stratified case, dominates).  Adaptive-probe allocation would
         # dynamically re-allocate away from the decoy and change the scenario, so pin it off here;

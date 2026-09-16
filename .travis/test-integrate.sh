@@ -109,7 +109,7 @@ python -m pytest -q "$_GPUNORM_TESTS"
 # _pdf_norm, which the adapted-proposal fix above leaves stale.
 # Same collection-count guard, same reason.
 _PORTDENS_TESTS=MonteCarloMarginalizeCode/Code/test/integrators/test_portfolio_member_density.py
-_PORTDENS_EXPECTED=14
+_PORTDENS_EXPECTED=37
 _PORTDENS_FOUND=$(python -m pytest -q --collect-only "$_PORTDENS_TESTS" 2>/dev/null | grep -c '::' || true)
 if [ "$_PORTDENS_FOUND" -ne "$_PORTDENS_EXPECTED" ]; then
     echo "portfolio member-density gate: collected $_PORTDENS_FOUND tests, expected $_PORTDENS_EXPECTED" >&2
