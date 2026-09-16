@@ -3564,9 +3564,17 @@ print(samples_type_names)
 n_params = len(coord_names)
 dat_mass = np.zeros((len(samples[low_level_coord_names[0]]),n_params+3))
 dat_logL = np.zeros(len(samples[low_level_coord_names[0]]))
+# THE one place the sampler's lnL field and its log/linear convention are resolved.  The
+# required _rvs contract is 'log_integrand' OR 'integrand', not both: mcsamplerGPU.integrate_log
+# (so adaptive_cartesian_gpu) leaves only 'log_integrand', AV/NFlow/portfolio alias 'integrand'
+# to it as well, and the linear integrators leave only 'integrand'.  Read dat_logL downstream,
+# never the raw field: a second site that re-read samples["integrand"] is how the posterior
+# export died with KeyError under adaptive_cartesian_gpu.  log_integrand is checked first for
+# the reason the ILE export block gives -- logging an already-log field writes log(lnL), and nan
+# for every row with lnL < 0.
 if not(opts.internal_use_lnL):
     if 'log_integrand' in samples_type_names:
-        dat_logL = np.log(samples["log_integrand"])
+        dat_logL = samples["log_integrand"]
     elif 'integrand' in samples_type_names:
         dat_logL = np.log(samples["integrand"])
     else:
@@ -3574,8 +3582,10 @@ if not(opts.internal_use_lnL):
 else:
     if 'log_integrand' in samples_type_names:
         dat_logL = samples['log_integrand']
-    else:
+    elif 'integrand' in samples_type_names:
         dat_logL = samples["integrand"]
+    else:
+        raise Exception("Failure : cannot identify lnL field")
 lnLmax = np.max(dat_logL[np.isfinite(dat_logL)])
 print(" Max lnL ", np.max(dat_logL))
 
@@ -3930,6 +3940,12 @@ if opts.internal_bound_factor_if_n_eff_small and neff <opts.n_output_samples  an
     indx_list = np.random.choice(indx_list, my_size_out, replace=False)
 if opts.verbose:
     print(" output size: truncating based on n_eff to N=", len(indx_list))
+# lnL for the export comes from dat_logL: the convention is already resolved, and dat_logL has
+# been masked by indx_ok, so indx_list indexes it in the same post-mask space as samples[p] and
+# weights.  The raw field is NOT masked, so re-reading it here would pair each exported P with
+# another draw's lnL as soon as indx_ok dropped anything.  That never fired in the arms measured
+# (AV, GMM, adaptive_cartesian at --lnL-offset down to 0.5: every integrator thins its own
+# retained set first, so the cut is non-binding) -- a hazard removed, not an observed defect.
 lnL_list = []
 P_list =[]
 kept_indx_list = []   # cache index behind each P_list entry, for the export supply annotation
@@ -4062,18 +4078,12 @@ for indx_here in indx_list:
          if Pgrid.m2 <= Pgrid.m1:  # do not add grid elements with m2> m1, to avoid possible code pathologies !
             P_list.append(Pgrid)
             kept_indx_list.append(indx_here)
-            if not(opts.internal_use_lnL):
-                lnL_list.append(np.log(samples["integrand"][indx_here]))
-            else:
-                lnL_list.append(samples["integrand"][indx_here])
+            lnL_list.append(dat_logL[indx_here])
          else:
             Pgrid.swap_components()  # IMPORTANT.  This should NOT change the physical functionality FOR THE PURPOSES OF OVERLAP (but will for PE - beware phiref, etc!)
             P_list.append(Pgrid)
             kept_indx_list.append(indx_here)
-            if not(opts.internal_use_lnL):
-                lnL_list.append(np.log(samples["integrand"][indx_here]))
-            else:
-                lnL_list.append(samples["integrand"][indx_here])
+            lnL_list.append(dat_logL[indx_here])
         else:
             True
 

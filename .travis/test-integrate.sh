@@ -44,6 +44,28 @@ python -m pytest -q MonteCarloMarginalizeCode/Code/test/test_limit_cosine_sample
 python -m pytest -q MonteCarloMarginalizeCode/Code/test/test_limit_distance.py
 python -m pytest -q MonteCarloMarginalizeCode/Code/test/test_mcsampler_ensemble_log_contract.py
 
+# Which _rvs field the CIP posterior export reads, per sampler convention.  The export
+# re-read the raw samples["integrand"] after dat_logL had already resolved the field, so
+# --sampler-method adaptive_cartesian_gpu --internal-use-lnL died with KeyError:
+# 'integrand' AFTER a converged integral: *_int.dat was written, the posterior samples
+# were not, and the exit code was 1.  mcsamplerGPU.integrate_log leaves only
+# 'log_integrand'; AV/NFlow/portfolio alias 'integrand' to it, which is what made a
+# working arm one flag away from a dead one.
+#
+# Five subprocess arms (~70 s total), not a static check: the crash is in a flat driver
+# script with no importable export function, and the value written is as much the point as
+# the exit code -- exporting exp(lnL) or log(lnL) also exits 0.  Verified to FAIL on
+# b281ccff2 without the fix (acgpu_lnL arm only; the other four arms pass there).
+_CIP_EXPORT_TESTS=MonteCarloMarginalizeCode/Code/test/test_cip_posterior_export_lnL.py
+# Raise EXPECTED by RUNNING collection, never by arithmetic.
+_CIP_EXPORT_EXPECTED=11
+_CIP_EXPORT_FOUND=$(python -m pytest -q --collect-only "$_CIP_EXPORT_TESTS" 2>/dev/null | grep -c '::' || true)
+if [ "$_CIP_EXPORT_FOUND" -ne "$_CIP_EXPORT_EXPECTED" ]; then
+    echo "cip-export gate: collected $_CIP_EXPORT_FOUND tests, expected $_CIP_EXPORT_EXPECTED" >&2
+    exit 1
+fi
+python -m pytest -q "$_CIP_EXPORT_TESTS"
+
 # --psi-marginalization: analytic polarization-angle marginalization made reachable on
 # the legacy scalar likelihood path (factored_likelihood.NetworkLogLikelihoodPolarizationMarginalized
 # was previously dead code, unreachable from any driver and untested by any importable
