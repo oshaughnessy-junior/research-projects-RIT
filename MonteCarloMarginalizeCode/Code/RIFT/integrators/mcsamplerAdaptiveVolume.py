@@ -1053,6 +1053,14 @@ class MCSampler(SamplerOutputMixin, object):
             rv = rv[keep]
             log_p = log_p[keep]
         p = np.exp(log_p)
+        # NOT A DENSITY, DELIBERATELY.  The points are uniform over the live volume, whose
+        # measure is V_s*V (V_s = full box, V = live FRACTION), so the density they come from is
+        # 1/(V_s*V) -- what sampling_density() returns.  What is reported here is V_s/V, larger by
+        # V_s**2.  This sampler's own integrate_log is written against that scale and is exact on
+        # it, and changing it would move every production CIP/ILE evidence, so it stays.
+        # A PORTFOLIO MUST NOT USE THIS AS A MIXTURE DENOMINATOR: sampling_density() is the member
+        # contract (see mcsamplerPortfolio.integrate_log).  Mixing this scale with a member that
+        # does report a density cost 0.63 nats on a constant integrand whose exact ln Z is 1.386.
         ps = self.xpy.ones(len(p))*self.V_s/self.V   # sampling prior, full hypercube normalized to 1
         rv = rv.T
         return ps, p, rv

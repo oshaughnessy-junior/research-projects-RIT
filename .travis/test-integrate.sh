@@ -100,6 +100,22 @@ if [ "$_GPUNORM_FOUND" -ne "$_GPUNORM_EXPECTED" ]; then
     exit 1
 fi
 python -m pytest -q "$_GPUNORM_TESTS"
+# The PORTFOLIO half of the same contract: a member must report its sampling density through
+# sampling_density(), normalized.  mcsamplerGPU had no such method, so any portfolio containing
+# one fell back to the stratified per-member joint_p_s -- valid only if EVERY member reports a
+# normalized density, which mcsamplerAdaptiveVolume does not (it reports V_s/V).  Mixing them
+# returned 0.753772 where the exact answer is 1.386294.  Also pins the refusal that keeps the
+# next density-less member from reintroducing the bias, and reset_sampling's restore of
+# _pdf_norm, which the adapted-proposal fix above leaves stale.
+# Same collection-count guard, same reason.
+_PORTDENS_TESTS=MonteCarloMarginalizeCode/Code/test/integrators/test_portfolio_member_density.py
+_PORTDENS_EXPECTED=14
+_PORTDENS_FOUND=$(python -m pytest -q --collect-only "$_PORTDENS_TESTS" 2>/dev/null | grep -c '::' || true)
+if [ "$_PORTDENS_FOUND" -ne "$_PORTDENS_EXPECTED" ]; then
+    echo "portfolio member-density gate: collected $_PORTDENS_FOUND tests, expected $_PORTDENS_EXPECTED" >&2
+    exit 1
+fi
+python -m pytest -q "$_PORTDENS_TESTS"
 
 # Supplementary-likelihood plugin hook: the NAL reader/evaluator (pure numpy, no data) and the
 # static guard on the drivers' prepare-hook wiring, which is what makes the plugin receive the
