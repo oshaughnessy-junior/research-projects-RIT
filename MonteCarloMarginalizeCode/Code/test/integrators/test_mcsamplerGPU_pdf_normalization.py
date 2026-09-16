@@ -114,3 +114,72 @@ def test_constant_likelihood_evidence_is_exact_and_matches_AV(R, V):
     assert np.isclose(out["GPU"], out["AV"], atol=1e-6), \
         "mcsamplerGPU %r and mcsamplerAdaptiveVolume %r disagree on a constant integrand" % (
             out["GPU"], out["AV"])
+
+
+@pytest.mark.parametrize("nmax,chunks,atol", [(10000, 5, 0.03), (40000, 20, 0.02)])
+def test_evidence_is_exact_AFTER_ADAPTATION(nmax, chunks, atol):
+    """The evidence must stay exact once the adapted proposal is in use -- MULTIPLE CHUNKS.
+
+    THIS IS THE AXIS THE REST OF THIS FILE MISSES, and missing it hid a real defect.  Every
+    other test here either calls draw_simplified() directly or integrates a constant with
+    neff=30, which clears neff on the FIRST chunk -- so `self.pdf[p]` is still the caller's
+    original function throughout, and only the un-adapted regime is ever exercised.
+
+    From the second chunk on, `self.pdf[p]` has been REPLACED by pdf_from_hist (at the three
+    install sites in update_sampling_prior/integrate_log/integrate), which is already a density:
+    compute_hist normalizes to sum 1 and divides by the bin width, and cdf_inverse_from_hist
+    draws from that same normalized cdf.  So `_pdf_norm[p]` -- the integral of the pdf the
+    CALLER supplied -- is stale from that point, and it must be reset to 1 alongside each
+    install.  Without that reset, a `/_pdf_norm` in draw_simplified() is an error rather than a
+    correction, and the integral converges to ln V + log(prod(_pdf_norm)) instead of ln V.
+
+    Measured on a non-square box [-2,3] x [0,1] (V = 5, exact ln Z = 1.6094379):
+
+        chunks   base      dividing-without-reset   with the reset
+             1   0.000000            1.609438            1.609438
+             5   1.432952            3.046184            1.609690
+            20   1.567732            3.176679            1.610915
+           100   1.600740            3.210876            1.609291
+
+    TOLERANCES, measured over 6 seeds rather than guessed: with the reset, sd is 0.0030 and
+    max|err| 0.0053 at 5 chunks, sd 0.0012 and max|err| 0.0018 at 20.  The atol values below sit
+    ~6x and ~11x above those, and ~6x and ~20x BELOW the defects they must catch (0.177 and
+    0.042 for base, 1.437 and 1.567 for the unreset division).
+    """
+    lnL = lambda *x: np.zeros(np.asarray(x[0]).shape)
+    s = mcsamplerGPU.MCSampler()
+    s.add_parameter("xx", pdf=np.vectorize(lambda x: 1), prior_pdf=np.vectorize(lambda x: 1.0),
+                    left_limit=-2.0, right_limit=3.0, adaptive_sampling=True)
+    s.add_parameter("yy", pdf=np.vectorize(lambda x: 1), prior_pdf=np.vectorize(lambda x: 1.0),
+                    left_limit=0.0, right_limit=1.0, adaptive_sampling=True)
+    res = s.integrate(lnL, "xx", "yy", n=2000, nmax=nmax, neff=1e9,
+                      use_lnL=True, return_lnI=True, save_intg=True,
+                      no_protect_names=True, verbose=False, n_adapt=100, tempering_adapt=True)
+    lnV = np.log(5.0)
+    assert np.isclose(float(res[0]), lnV, atol=atol), \
+        "over %d chunks ln Z = %r, exact ln V = %r; a stale _pdf_norm after adaptation drives " \
+        "this toward ln V + log(prod(_pdf_norm))" % (chunks, float(res[0]), lnV)
+
+
+def test_pdf_norm_is_reset_when_the_adapted_proposal_is_installed():
+    """Direct structural check of the invariant behind the test above.
+
+    Kept separate because the integral test can only see the CONSEQUENCE, and a future edit
+    that installs pdf_from_hist at a FOURTH site would reintroduce the defect there while the
+    two-parameter integral above still passed.
+    """
+    lnL = lambda *x: np.zeros(np.asarray(x[0]).shape)
+    s = mcsamplerGPU.MCSampler()
+    for p, (lo, hi) in (("xx", (-2.0, 3.0)), ("yy", (0.0, 1.0))):
+        s.add_parameter(p, pdf=np.vectorize(lambda x: 1), prior_pdf=np.vectorize(lambda x: 1.0),
+                        left_limit=lo, right_limit=hi, adaptive_sampling=True)
+    # before adaptation _pdf_norm is the supplied pdf's integral, i.e. the range width
+    assert np.isclose(float(s._pdf_norm["xx"]), 5.0, rtol=1e-6)
+    s.integrate(lnL, "xx", "yy", n=2000, nmax=10000, neff=1e9, use_lnL=True, return_lnI=True,
+                save_intg=True, no_protect_names=True, verbose=False, n_adapt=100,
+                tempering_adapt=True)
+    for p in ("xx", "yy"):
+        assert np.isclose(float(s._pdf_norm[p]), 1.0, rtol=1e-6), \
+            "_pdf_norm[%s] = %r after adaptation; pdf_from_hist is already normalized, so it " \
+            "must be 1 or every consumer of _pdf_norm is working from a stale value" % (
+                p, float(s._pdf_norm[p]))

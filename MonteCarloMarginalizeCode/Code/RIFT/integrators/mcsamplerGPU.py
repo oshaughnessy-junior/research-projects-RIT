@@ -633,6 +633,12 @@ class MCSampler(SamplerOutputMixin, object):
                 points = rvs_here[p][-n_history_to_use:]
                 self.compute_hist(points, p,weights=weights_alt,floor_level=floor_integrated_probability)
                 self.pdf[p] = function_wrapper(self.pdf_from_hist, p)
+                # pdf_from_hist IS already a density: compute_hist normalizes the histogram to
+                # sum 1 and then divides by the bin width, and cdf_inverse_from_hist draws from
+                # that same normalized cdf.  So the caller's _pdf_norm -- the integral of the
+                # pdf they originally supplied -- is stale the moment this runs, and anything
+                # still dividing by it is introducing an error rather than removing one.
+                self._pdf_norm[p] = 1.0
                 self.cdf_inv[p] = function_wrapper(self.cdf_inverse_from_hist, p)
 
 
@@ -964,6 +970,12 @@ class MCSampler(SamplerOutputMixin, object):
                 points = self._rvs[p][-n_history_here:]
                 self.compute_hist(points, p,weights=weights_alt,floor_level=floor_integrated_probability)
                 self.pdf[p] = function_wrapper(self.pdf_from_hist, p)
+                # pdf_from_hist IS already a density: compute_hist normalizes the histogram to
+                # sum 1 and then divides by the bin width, and cdf_inverse_from_hist draws from
+                # that same normalized cdf.  So the caller's _pdf_norm -- the integral of the
+                # pdf they originally supplied -- is stale the moment this runs, and anything
+                # still dividing by it is introducing an error rather than removing one.
+                self._pdf_norm[p] = 1.0
                 self.cdf_inv[p] = function_wrapper(self.cdf_inverse_from_hist, p)
 
         # If we were pinning any values, undo the changes we did before
@@ -1483,6 +1495,12 @@ class MCSampler(SamplerOutputMixin, object):
             #          print(vals)
             #          print(np.mean(vals),np.std(vals))
                 self.pdf[p] = function_wrapper(self.pdf_from_hist, p)
+                # pdf_from_hist IS already a density: compute_hist normalizes the histogram to
+                # sum 1 and then divides by the bin width, and cdf_inverse_from_hist draws from
+                # that same normalized cdf.  So the caller's _pdf_norm -- the integral of the
+                # pdf they originally supplied -- is stale the moment this runs, and anything
+                # still dividing by it is introducing an error rather than removing one.
+                self._pdf_norm[p] = 1.0
                 self.cdf_inv[p] = function_wrapper(self.cdf_inverse_from_hist, p)
 
         # If we were pinning any values, undo the changes we did before
