@@ -209,6 +209,12 @@ if [ "$_JOINT_PL_FOUND" -ne "$_JOINT_PL_EXPECTED" ]; then
 fi
 python -m pytest -q "$_JOINT_PL_TESTS"
 
+# mcsamplerEnsemble dim-group keys, and the ln Z they decide.  A gmm_dict key indexes the
+# POSITIONAL ARGUMENT order of integrate(), and every dimension must be in exactly one group;
+# an uncovered one is never sampled (uninitialized memory) and the evidence is meaningless.
+# Analytic targets, so these assert an exact answer, not a remembered one.
+python -m pytest -q MonteCarloMarginalizeCode/Code/test/integrators/test_ensemble_dim_group_cover.py
+
 python MonteCarloMarginalizeCode/Code/test/test_mcsamplerEnsemble_extended.py --as-test --n-max 100000
 
 python MonteCarloMarginalizeCode/Code/test/test_mcsamplerEnsemble_extended.py --as-test --n-max 100000 --use-lnL

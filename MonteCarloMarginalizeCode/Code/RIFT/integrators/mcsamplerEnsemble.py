@@ -316,6 +316,7 @@ class MCSampler(SamplerOutputMixin, object):
                 for i in range(dim):
                     gmm_dict[(i,)] = None
       else:
+            monte_carlo._validate_dim_group_cover(gmm_dict, dim)   # see integrate()
             bounds ={}
             for dims in gmm_dict:
                 n_dims = len(dims)
@@ -679,6 +680,10 @@ class MCSampler(SamplerOutputMixin, object):
                 for i in range(dim):
                     gmm_dict[(i,)] = None
         else:
+            # Check the keys before using them to index raw_bounds: an out-of-range dimension
+            # would otherwise surface as a bare IndexError that says nothing about which frame
+            # the caller's dim-group keys are in.
+            monte_carlo._validate_dim_group_cover(gmm_dict, dim)
             bounds ={}
             for dims in gmm_dict:
                 n_dims = len(dims)
@@ -691,7 +696,7 @@ class MCSampler(SamplerOutputMixin, object):
                          user_func=integrator_func, proc_count=proc_count,L_cutoff=L_cutoff,gmm_adapt=gmm_adapt,gmm_epsilon=gmm_epsilon,tempering_exp=tempering_exp,
                          tempering_adapt=tempering_adapt, ess_target=ess_target, ess_floor=ess_floor, gmm_adaptive=gmm_adaptive,
                          gmm_defensive_frac=gmm_defensive_frac, gmm_inflate=gmm_inflate,
-                         param_names=self.params_ordered)
+                         param_names=self.curr_args)   # integrate() numbers dims by ITS args
         # Warm-start survival: a prior setup()/bootstrap_from_samples fits proposal
         # models and stores them on self.integrator, but integrate() rebuilds a fresh
         # integrator from the passed gmm_dict (values None) -- so without this the
@@ -715,7 +720,7 @@ class MCSampler(SamplerOutputMixin, object):
                 # bounds, which shifts lnZ and leaves every marginal looking right.
                 monte_carlo.validate_gmm_dict(integrator.bounds, integrator.gmm_dict,
                                               where="warm-start gmm_dict",
-                                              param_names=self.params_ordered)
+                                              param_names=self.curr_args)
                 print("  [GMM warm-start] transferred {} fitted proposal group(s) into the integrator".format(n_xfer))
         self.integrator = integrator
         if not direct_eval:
@@ -997,6 +1002,62 @@ class HealPixSampler(object):
             raise ValueError("%s is not a recgonized sampling type" % stype)
 
 pseudo_dist_samp_vector = np.vectorize(pseudo_dist_samp,otypes=[np.float64])
+
+
+def dim_group_frame(sampler, integrate_args, driven_by_integrate):
+    """The parameter-name list that numbers this sampler's gmm_dict dimension indices.
+
+    mcsamplerEnsemble numbers its dimensions two DIFFERENT ways depending on how it is driven,
+    and a caller that builds keys in the wrong one silently groups the wrong parameters:
+
+      * standalone: integrate(func, *args) builds raw_bounds from `args`, so dim i is args[i].
+      * portfolio member: the portfolio never calls member.integrate().  It calls
+        member.setup(...) -- where _setup_impl uses dim = len(self.params_ordered) -- and then
+        member.draw_simplified(n, *self.params_ordered).  So dim i is params_ordered[i].
+
+    Pass driven_by_integrate=False for a portfolio member.  Returns a list of names; index into
+    it to build a key, and len() it to know how many dimensions must be covered.
+    """
+    if driven_by_integrate:
+        return list(integrate_args)
+    return list(sampler.params_ordered)
+
+
+def validate_dim_group_cover(gmm_dict, ndim):
+    """Raise ValueError unless gmm_dict partitions range(ndim) exactly.
+
+    Public entry point for a DRIVER that wants to fail before it starts work.  The same check
+    runs inside the integrator, but a driver that wraps its per-event call in a broad `except`
+    can turn that refusal into an empty output file and a zero exit status, which is the one
+    outcome this whole guard exists to prevent.
+    """
+    return monte_carlo._validate_dim_group_cover(gmm_dict, ndim)
+
+
+def complete_dim_group_cover(gmm_dict, ndim, comp_dict=None, gmm_adapt=None,
+                             n_comp_default=1, adapt_default=False):
+    """Give every dimension not already in a dim-group its own uncorrelated 1-d group.
+
+    MonteCarloEnsemble._sample() allocates sample_array with xpy.empty and writes only the
+    columns a dim-group names, so a dimension in NO group is uninitialized memory -- handed to
+    the integrand and to the prior with no matching factor in sampling_prior_array.  That is an
+    unnormalized estimator, and because the value is whatever the allocator returned it is not
+    even reproducibly wrong.  Returns the keys added, so a caller can log them.
+    """
+    covered = set()
+    for key in gmm_dict:
+        covered.update(int(i) for i in key)
+    added = []
+    for i in range(ndim):
+        if i not in covered:
+            key = (i,)
+            gmm_dict[key] = None
+            if comp_dict is not None:
+                comp_dict[key] = n_comp_default
+            if gmm_adapt is not None:
+                gmm_adapt[key] = adapt_default
+            added.append(key)
+    return added
 
 
 def sanityCheckSamplerIntegrateUnity(sampler,*args,**kwargs):

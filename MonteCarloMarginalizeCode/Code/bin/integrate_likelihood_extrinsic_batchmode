@@ -186,10 +186,6 @@ def unit_like(*args,**kwargs):
   return xpy_default.ones(len(arg0))
 
 
-def sampler_param_tuple(sampler,args):
-  param_list = sampler.params_ordered
-  return tuple( [param_list.index(x) for x in args])
-
 #
 # Option parsing
 #
@@ -966,9 +962,9 @@ if opts.psi_marginalization:
         ('default --interpolate-time (the scalar path always evaluates rholm(t) through its '
          'own interpolator, independent of the sinc/cubic/nearest NoLoop stencil choice, so an '
          'explicit request here would be silently ignored)', opts.interpolate_time is None),
-        ('not --sampler-method GMM/portfolio (their adaptive phi/psi pairing indexes "psi" '
-         'directly in sampler.params, which this option removes -- ValueError at sampler setup, '
-         'not audited as a combination)',
+        ('not --sampler-method GMM/portfolio (their adaptive phi/psi pairing names "psi" in a '
+         'dim-group, which this option removes from the frame those keys index -- the group '
+         'collapses and the dim-group guard refuses it; not audited as a combination)',
          opts.sampler_method not in ('GMM', 'portfolio')),
         ('not --internal-rotate-phase (its phi_orb/psi joint reparam reads a per-sample psi '
          'that no longer exists; the exported "psi"/"polarization" columns would be a silently '
@@ -2429,6 +2425,39 @@ if opts.sampler_method =="portfolio":
 if use_gmm_args:   # standalone GMM, or a portfolio carrying a GMM member (see use_gmm_args above)
     n_step =pinned_params["n"]
     n_max_blocks = ((1.0*int(opts.n_max))/n_step)
+    # cannot pin params at present
+    # unpinned params MUST be full call signature of likelihood, IN ORDER
+    #
+    # This MUST be settled before the dim-group keys below are built.  mcsamplerEnsemble numbers
+    # its integration dimensions by the order of the positional arguments it is called with --
+    # i.e. by this list -- NOT by sampler.params_ordered, which is the order add_parameter()
+    # happened to be called in (psi, phi_orb, inclination, distance, right_ascension,
+    # declination, t_ref).  The two orders are different, so keys built from params_ordered
+    # name the wrong dimensions.
+    if not(opts.time_marginalization):
+      unpinned_params =['right_ascension','declination', 't_ref','phi_orb','inclination','psi','distance']
+    else:
+      unpinned_params =['right_ascension','declination', 'phi_orb','inclination','psi','distance']
+    if opts.distance_marginalization:
+      unpinned_params.remove('distance')
+      if lookup_table["phase_marginalization"]:
+        unpinned_params.remove('phi_orb')
+
+    # WHICH FRAME the dim-group keys are in depends on HOW the sampler is driven, and this one
+    # option block feeds both:
+    #   standalone GMM      -> sampler.integrate(like_to_integrate, *unpinned_params), so dim i
+    #                          is unpinned_params[i].
+    #   portfolio GMM member-> the portfolio never calls member.integrate().  It calls
+    #                          member.setup() (dim = len(params_ordered)) and then
+    #                          member.draw_simplified(n, *self.params_ordered), so dim i is
+    #                          sampler.params_ordered[i].
+    # Those two lists are NOT the same order, so one key set cannot serve both.
+    gmm_frame = mcsamplerEnsemble.dim_group_frame(sampler, unpinned_params,
+                                                 driven_by_integrate=not use_gmm_member)
+
+    def gmm_param_tuple(names):
+      """Dim-group key for mcsamplerEnsemble, in the frame its driver numbers dimensions in."""
+      return tuple([gmm_frame.index(x) for x in names if x in gmm_frame])
     # pairing coordinates for adaptive integration: see definition of order below
     #    (distance,inclination)
     #    (ra, dec)
@@ -2438,21 +2467,20 @@ if use_gmm_args:   # standalone GMM, or a portfolio carrying a GMM member (see u
     # (psi, phi_orb) starts from the UNIFORM proposal: MonteCarloEnsemble._sample() reads a
     # None entry as "draw this group uniformly over its bounds".  See the block at the end of
     # RIFT/integrators/mcsamplerEnsemble.py for the seed that used to be wired in here.
-#    pair_sky = sampler_param_tuple(sampler, ['right_ascension','declination'])
-    pair_ra_dec =   sampler_param_tuple(sampler, ["right_ascension", "declination"])
+    pair_ra_dec =   gmm_param_tuple(["right_ascension", "declination"])
     n_d =  2  # 2 distance-inclination lobes by default
     n_sky = 4
     n_phase =4
     adapt_phase = False
-    if 'distance' in sampler.params:
-         pair_d_incl = sampler_param_tuple(sampler, ['distance','inclination'])
+    if 'distance' in gmm_frame:
+         pair_d_incl = gmm_param_tuple(['distance','inclination'])
     else:
-         pair_d_incl = sampler_param_tuple(sampler, ['inclination'])
+         pair_d_incl = gmm_param_tuple(['inclination'])
          n_d = 1 # one peak in distance by default
-    if 'phi_orb' in sampler.params:
-         pair_phi_psi = sampler_param_tuple(sampler, ['psi', "phi_orb"])
+    if 'phi_orb' in gmm_frame:
+         pair_phi_psi = gmm_param_tuple(['psi', "phi_orb"])
     else:
-         pair_phi_psi = sampler_param_tuple(sampler, ['psi'])
+         pair_phi_psi = gmm_param_tuple(['psi'])
          adapt_phase = True
          n_phase = 2
     # user overrides for component counts (single-peak sources: the ring-sized
@@ -2468,7 +2496,7 @@ if use_gmm_args:   # standalone GMM, or a portfolio carrying a GMM member (see u
       # (rank-elite refits included: the elite set looks broad in every
       # per-group projection).  One joint GMM can compound on any structure
       # a Gaussian mixture can represent.
-      pair_all = tuple(range(len(sampler.params_ordered)))
+      pair_all = tuple(range(len(gmm_frame)))
       n_all = opts.internal_gmm_sky_components if opts.internal_gmm_sky_components else 2
       gmm_dict = {pair_all: None}
       gmm_adapt = {pair_all: True}
@@ -2479,13 +2507,13 @@ if use_gmm_args:   # standalone GMM, or a portfolio carrying a GMM member (see u
         gmm_adapt[pair_phi_psi] = True
     # Extrinsic handoff: SEED the per-group GMMs from a learned proposal breadcrumb (the
     # previous iteration's posterior).  Keys are dim-group index tuples, matched by name to
-    # sampler.params_ordered -- so they line up with pair_ra_dec / pair_d_incl / pair_phi_psi.
+    # gmm_frame -- so they line up with pair_ra_dec / pair_d_incl / pair_phi_psi.
     if opts.extrinsic_proposal_breadcrumb and os.path.exists(opts.extrinsic_proposal_breadcrumb) and os.path.getsize(opts.extrinsic_proposal_breadcrumb) > 0:
       try:
         import RIFT.calmarg.breadcrumbs as _ebcmod, RIFT.calmarg.extrinsic_handoff as _ehmod
         _ebc = _ebcmod.load(opts.extrinsic_proposal_breadcrumb)
         _ext_adapt = bool(getattr(opts, 'extrinsic_proposal_adapt', False))
-        _seed = _ehmod.gmm_dict_from_breadcrumb(_ebc.get('extrinsic'), sampler.params_ordered, adapt=_ext_adapt, existing_keys=list(gmm_dict.keys()))
+        _seed = _ehmod.gmm_dict_from_breadcrumb(_ebc.get('extrinsic'), gmm_frame, adapt=_ext_adapt, existing_keys=list(gmm_dict.keys()))
         for _k, _m in _seed.items():
           if _k in gmm_dict:
             gmm_dict[_k] = _m
@@ -2505,6 +2533,22 @@ if use_gmm_args:   # standalone GMM, or a portfolio carrying a GMM member (see u
       comp_dict = {pair_all: n_all}
     else:
       comp_dict = {pair_ra_dec:n_sky,pair_d_incl:n_d,pair_phi_psi:n_phase}
+    # EVERY dimension must belong to exactly one dim-group.  The three named groups above cover
+    # (ra,dec),(distance,inclination),(psi,phi_orb) only, so a run with a seventh parameter
+    # (t_ref, i.e. no --time-marginalization) leaves one out, and an uncovered column is
+    # uninitialized memory -- see complete_dim_group_cover().
+    for _k in mcsamplerEnsemble.complete_dim_group_cover(gmm_dict, len(gmm_frame),
+                                                         comp_dict=comp_dict, gmm_adapt=gmm_adapt):
+      print("GMM: dimension {} ({}) had no dim-group; added as its own uncorrelated group".format(
+          _k[0], gmm_frame[_k[0]]))
+    # Fail HERE, not inside analyze_event: that is wrapped in a bare `except Exception` that
+    # writes an empty .dat and exits 0 under --internal-make-empty-file-on-error, so a refusal
+    # raised from sampler.integrate() would look like a job that merely found nothing.
+    try:
+      mcsamplerEnsemble.validate_dim_group_cover(gmm_dict, len(gmm_frame))
+    except ValueError as _e_cover:
+      print("FATAL: GMM dim-group mapping is unusable: {}".format(_e_cover))
+      sys.exit(1)
     extra_args = {'n_comp':comp_dict,'max_iter':n_max_blocks,'gmm_dict':gmm_dict, 'gmm_adapt':gmm_adapt}  # made up for now, should adjust
     # FLEXIBLE allocation: each ADAPTING group chooses its component count from
     # the data by BIC (GMM.fit_gmm_adaptive), replacing the hard-coded per-group
@@ -2537,19 +2581,8 @@ if use_gmm_args:   # standalone GMM, or a portfolio carrying a GMM member (see u
     # force adapt in all parameters, if we request it. Requires pass-by-reference in above
     if opts.force_adapt_all:
         for param in gmm_adapt:
-            gmm_adapt[param] = True
+            gmm_adapt[param] = True   # includes the leftover 1-d groups added above
     pinned_params.update(extra_args)
-
-    # cannot pin params at present
-    # unpinned params MUST be full call signature of likelihood, IN ORDER
-    if not(opts.time_marginalization):
-      unpinned_params =['right_ascension','declination', 't_ref','phi_orb','inclination','psi','distance']
-    else:
-      unpinned_params =['right_ascension','declination', 'phi_orb','inclination','psi','distance']
-    if opts.distance_marginalization:
-      unpinned_params.remove('distance')
-      if lookup_table["phase_marginalization"]:
-        unpinned_params.remove('phi_orb')
 if opts.sampler_method == "AV":
   return_lnL=True
   pinned_params.update( { 'enforce_bounds':True})  # don't go out of range : choose integer bin sizes
@@ -4641,11 +4674,11 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
         sampler.reset_sampling('distance')
       sampler.reset_sampling('inclination')
     elif use_gmm_args:   # standalone GMM or a portfolio with a GMM member (gmm_dict exists in both)
-      if 'distance' in sampler.params:
-         pair_d_incl = sampler_param_tuple(sampler, ['distance','inclination'])
+      if 'distance' in gmm_frame:
+         pair_d_incl = gmm_param_tuple(['distance','inclination'])
          if  pair_d_incl in gmm_dict:
             gmm_dict[pair_d_incl] = None # reset inclination/distance sampling
-      single_incl = sampler_param_tuple(sampler, ['inclination'])
+      single_incl = gmm_param_tuple(['inclination'])
       if (opts.distance_marginalization) and single_incl in gmm_dict:
         gmm_dict[single_incl] = None # reset inclination sampling
 
