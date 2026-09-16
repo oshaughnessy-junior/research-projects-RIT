@@ -378,6 +378,7 @@ integration_params.add_option("--internal-use-lnL",action='store_true',help="lik
 integration_params.add_option("--sampler-method",default="adaptive_cartesian_gpu",help="adaptive_cartesian|GMM|adaptive_cartesian_gpu")
 integration_params.add_option("--sampler-portfolio",default=None,action='append',type=str,help="Portfolio member sampler, one of AV / GMM / AC (adaptive_cartesian_gpu) or a discovered plugin. Repeat the option per member, or give one comma-separated list; both forms may be mixed. An unrecognized name is an error.")
 integration_params.add_option("--sampler-portfolio-args",default=None, action='append', type=str, help='eval-able dictionaryo to be passed to that sampler')
+integration_params.add_option("--sampler-portfolio-allow-stratified-density",action='store_true',default=False,help="Accept a portfolio whose members cannot form the balance-heuristic mixture density q_mix -- i.e. run the legacy stratified per-member estimator even when a member has not declared that its sampling density is normalized.  THE EVIDENCE IS THEN BIASED (measured 0.753772 on a constant integrand whose exact ln Z is 1.386294).  Without this the portfolio refuses at setup.  Exists so an unusual member combination, in particular a plugin from RIFT.integrator_plugins, is recoverable without editing RIFT; do not use it for production evidence.")
 # Portfolio freeze-policy knobs (only meaningful with --sampler-method portfolio).  A member
 # whose balance weight drops below --portfolio-freeze-wt normally stops updating its proposal;
 # these control that.  Defaults (None here) mean "use the sampler's built-in default".
@@ -2627,7 +2628,7 @@ if use_portfolio:
       if opts.portfolio_probe_period is not None:
           _freeze_policy_kwargs['portfolio_probe_period'] = opts.portfolio_probe_period
       print(" PORTFOLIO freeze-policy overrides: ", _freeze_policy_kwargs)
-      sampler.setup(portfolio_args=opts.sampler_portfolio_args, **_freeze_policy_kwargs, **pinned_params) # directly pass all parameters set above to low-level portfolios.  In particular, GMM setup
+      sampler.setup(portfolio_args=opts.sampler_portfolio_args, portfolio_allow_stratified_density=opts.sampler_portfolio_allow_stratified_density, **_freeze_policy_kwargs, **pinned_params) # directly pass all parameters set above to low-level portfolios.  In particular, GMM setup
       # NOTE: the portfolio oracle MECHANISM is fixed (proposals now actually enter
       # member training; see mcsamplerPortfolio), and a FisherGaussianOracle can be
       # attached via sampler.oracle_realizations.  It is not auto-wired here because

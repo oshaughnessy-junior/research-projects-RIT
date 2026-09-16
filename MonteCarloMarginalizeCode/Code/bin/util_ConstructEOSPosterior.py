@@ -155,6 +155,7 @@ parser.add_argument("--using-eos-type", type=str, default=None, help="Name of EO
 parser.add_argument("--sampler-method",default="adaptive_cartesian",help="adaptive_cartesian|GMM|AV|adaptive_cartesian_gpu|portfolio")
 parser.add_argument("--sampler-portfolio",default=None,action='append',type=str,help="Portfolio member, one NAME per flag (repeat the flag): AV|GMM|adaptive_cartesian_gpu|NFlow.  Not comma-separated -- a comma-joined 'AV,GMM' matches no sampler.  Requires --sampler-method portfolio.")
 parser.add_argument("--sampler-portfolio-args",default=None, action='append', type=str, help='eval-able dictionary of extra setup() arguments for the corresponding --sampler-portfolio member.  One per flag, in the same order and the same COUNT as --sampler-portfolio.')
+parser.add_argument("--sampler-portfolio-allow-stratified-density",action='store_true',help="Accept a portfolio whose members cannot form the balance-heuristic mixture density q_mix, i.e. run the legacy stratified per-member estimator even when a member reports its sampling density on a non-normalized scale.  THE EVIDENCE IS THEN BIASED (measured: 0.753772 on a constant integrand whose exact ln Z is 1.386294).  Without this the portfolio refuses at setup.  Exists so an unusual member combination is recoverable without editing RIFT; do not use it for production evidence.")
 parser.add_argument("--internal-use-lnL",action='store_true',help="integrator internally manipulates lnL..   ")
 parser.add_argument("--internal-correlate-parameters",default=None,type=str,help="comman-separated string indicating parameters that should be sampled allowing for correlations. Must be sampling parameters. Only implemented for gmm.  If string is 'all', correlate *all* parameters")
 parser.add_argument("--internal-n-comp",default=1,type=int,help="number of components to use for GMM sampling. Default is 1, because we expect a unimodal posterior in well-adapted coordinates.  If you have crappy coordinates, use more")
@@ -868,10 +869,13 @@ elif opts.sampler_method == "portfolio":
         print(" OPTION MISMATCH : --sampler-portfolio matched no known sampler in {}.  Pass one name per flag, e.g. --sampler-portfolio AV --sampler-portfolio GMM.".format(sampler_types))
         sys.exit(99)
     # MIXED-BACKEND PORTFOLIO.  The warning that stood here is gone because the condition it
-    # warned about is now enforced in mcsamplerPortfolio itself: a member must expose
-    # sampling_density(), returning a NORMALIZED density, and the portfolio refuses the legacy
-    # stratified fallback rather than returning a biased evidence from it.  mcsamplerGPU now has
-    # one, so the mixed case this driver could produce is correct instead of merely flagged.
+    # warned about is now checked in mcsamplerPortfolio.setup() -- earlier than here, and for
+    # every caller rather than this driver alone.  mcsamplerGPU implements sampling_density(),
+    # so the mixed case this driver could produce is correct rather than merely flagged; a
+    # member that still lacks one is refused at setup when any member has not DECLARED that its
+    # joint_p_s is a normalized density -- mcsamplerAdaptiveVolume declares False, and a member
+    # that declares nothing (a plugin, a new sampler) counts as unknown rather than safe.  A pool
+    # in which every member declares True is allowed and warned about.
     #
     # The measurements that motivated the warning, re-taken as a BEFORE/AFTER pair on this
     # branch and its base with identical settings (the absolute numbers differ from the earlier
@@ -1147,7 +1151,7 @@ if _sampler_module == 'mcsamplerPortfolio':
         print(" PORTFOLIO ARGS ", portfolio_args)
     # NOTE the spelling: mcsamplerPortfolio.setup() reads kwargs['portfolio_args'].  It takes
     # **kwargs, so a misspelled name is accepted and silently ignored rather than raising.
-    sampler.setup(portfolio_args=portfolio_args, **extra_args)
+    sampler.setup(portfolio_args=portfolio_args, portfolio_allow_stratified_density=opts.sampler_portfolio_allow_stratified_density, **extra_args)
 
 
 res, var, neff, dict_return = sampler.integrate(fn_passed, *low_level_coord_names,  verbose=True,nmax=int(opts.n_max),n=n_step,neff=opts.n_eff, save_intg=True,tempering_adapt=True, floor_level=1e-3,igrand_threshold_p=1e-3,convergence_tests=test_converged,tempering_exp=my_exp,no_protect_names=True,**extra_args)  # MC integrates in the SAMPLING basis (low_level_coord_names); convert_coords routes each sample into the fit basis (coord_names) before evaluating the GP/RF

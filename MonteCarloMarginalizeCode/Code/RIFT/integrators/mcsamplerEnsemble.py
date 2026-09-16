@@ -57,6 +57,12 @@ class NanOrInf(Exception):
 
 class MCSampler(SamplerOutputMixin, object):
 
+    # PORTFOLIO MEMBER CONTRACT.  draw_simplified() reports the integrator's
+    # sampling_prior_array, the fitted mixture density the draws come from, so a portfolio may
+    # pool it through the legacy stratified denominator.  See mcsamplerPortfolio.setup().
+    joint_p_s_is_normalized_density = True
+
+
     @property
     def has_unbounded_support(self):
         """Does this member's proposal genuinely have support across the WHOLE prior box?

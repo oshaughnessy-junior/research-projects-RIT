@@ -825,6 +825,14 @@ def sample_from_bins(xrange, dx, bu, ninbin, reject_out_of_range=False):
 
 
 class MCSampler(SamplerOutputMixin, object):
+
+    # PORTFOLIO MEMBER CONTRACT.  draw_simplified() reports p_s on this sampler's own scale
+    # (V_s/V), which is NOT a normalized density -- see the note in draw_simplified.  A portfolio
+    # must therefore never use it as a stratified denominator; sampling_density() below is the
+    # contract and does return the density.  mcsamplerPortfolio reads this flag to tell a member
+    # whose joint_p_s it may pool from one whose it may not.
+    joint_p_s_is_normalized_density = False
+
     # COMPACT SUPPORT: this sampler's density is EXACTLY ZERO outside its contracted live volume,
     # so once seeded or contracted it cannot serve as the mixture's coverage guarantee.
     # mcsamplerPortfolio reads this to decide whether it must hold one member cold.

@@ -1046,6 +1046,66 @@ class MCSampler(SamplerOutputMixin, object):
               args_here.setdefault('gmm_defensive_all_paths', True)
               self._member_setup_args[indx] = self._snapshot_setup_args(args_here)
               member.setup(**args_here)
+        # MEMBER p_s CONTRACT, CHECKED HERE so an unusable portfolio dies at setup rather than
+        # inside integrate_log after a chunk of likelihood evaluation.  q_mix is built from
+        # sampling_density(); a member without one forces the legacy STRATIFIED denominator,
+        # which pools each member's own draw_simplified() joint_p_s and is unbiased only while
+        # every member reports a normalized density.  mcsamplerAdaptiveVolume does not (V_s/V),
+        # so that combination is refused.  Everything else is allowed and warned about at run
+        # time.  Members are checked AFTER member.setup(), because a member may only be able to
+        # answer once its own state exists.
+        # DEFAULT TO REFUSING, not to trusting.  An absent attribute means "this member has not
+        # told us what scale its joint_p_s is on", and treating that as "normalized" is exactly
+        # backwards: the members least likely to carry the attribute are third-party pipelines
+        # from known_pipelines and new in-tree samplers whose author did not know the contract
+        # exists, which is the population the check is for.  Measured, with an undeclared member
+        # reporting AV's V_s/V scale pooled with another density-less member: ln Z = 1.619388
+        # where the exact answer is 2.302585, silently.  `is not True` so a member that sets the
+        # attribute to something that is not a bool is treated as undeclared rather than truthy.
+        # REMEMBER the opt-out.  Requiring it at setup() AND at every integrate() meant a
+        # driver had to thread it through every call site; integrate_likelihood_extrinsic_batchmode
+        # has five and its LISA twin four, and missing one turns the escape hatch back into an
+        # abort the caller cannot clear.  Store it once here; the run-time gate falls back to it.
+        # Each setup() states consent afresh.  Inheriting it from a previous setup() would make
+        # an opt-out sticky, so a reconfigured portfolio could not take the guard back.
+        self._allow_stratified_density = bool(kwargs.get('portfolio_allow_stratified_density',
+                                                         False))
+        _no_density = [m for m in self.portfolio_realizations
+                       if getattr(m, 'sampling_density', None) is None]
+        _bad_scale = [m for m in self.portfolio_realizations
+                      if getattr(m, 'joint_p_s_is_normalized_density', None) is not True]
+        _mod = lambda m: type(m).__module__.split('.')[-1] + '.' + type(m).__name__
+        if _no_density and _bad_scale and not self._allow_stratified_density:
+            raise Exception(
+                "mcsamplerPortfolio: member(s) {} do not implement sampling_density(), so the "
+                "balance-heuristic mixture density q_mix cannot be formed and the portfolio "
+                "would fall back to the legacy stratified per-member density.  That fallback is "
+                "unbiased only if every member's draw_simplified() joint_p_s is a normalized "
+                "density, and member(s) {} have NOT DECLARED that it is (class attribute "
+                "joint_p_s_is_normalized_density; mcsamplerAdaptiveVolume declares False because "
+                "it reports V_s/V, and an undeclared member is treated as unknown rather than "
+                "assumed safe).  Pooling them can return a WRONG EVIDENCE rather than a noisier "
+                "one: measured 0.753772 on a constant integrand whose exact ln Z is 1.386294.  "
+                "Implement sampling_density(), or declare "
+                "joint_p_s_is_normalized_density = True if the member does report a density, or "
+                "remove it from the portfolio, or pass "
+                "portfolio_allow_stratified_density=True to setup() (CLI: "
+                "--sampler-portfolio-allow-stratified-density) to accept the biased "
+                "behaviour.".format(sorted({_mod(m) for m in _no_density}),
+                                    sorted({_mod(m) for m in _bad_scale})))
+        if _no_density and not _bad_scale:
+            print("  PORTFOLIO: member(s) {} have no sampling_density, so q_mix will not be formed"
+                  " and the legacy stratified per-member density will be used.  Every member"
+                  " declares a normalized joint_p_s, so this is unbiased, but it is the weaker"
+                  " estimator.".format(sorted({_mod(m) for m in _no_density})))
+        elif _no_density and _bad_scale:
+            # only reachable on the opt-out, since the raise above fires otherwise.  Say what it
+            # IS -- the biased configuration -- not that it is sound.
+            print("  PORTFOLIO: WARNING, portfolio_allow_stratified_density was set, so the"
+                  " member(s) {} with no sampling_density are being pooled with member(s) {}"
+                  " whose joint_p_s is NOT a normalized density.  THE EVIDENCE FROM THIS RUN IS"
+                  " BIASED.".format(sorted({_mod(m) for m in _no_density}),
+                                    sorted({_mod(m) for m in _bad_scale})))
         for indx, member in enumerate(self.oracle_realizations):
             if hasattr(member, 'setup'):
               print(" PORTFOLIO ORACLE setup ", member, portfolio_extra_args[indx])
@@ -1262,6 +1322,13 @@ class MCSampler(SamplerOutputMixin, object):
         xpy_here = numpy
         xpy = numpy
         special_here = special    # scipy.special (host); statutils uses this
+        # The stratified-fallback notice is latched so it prints once per PASS, not once per
+        # chunk.  Clear the latch HERE, at the top of each integrate_log, or the latch outlives
+        # the pass: a driver that integrates once per iteration (CIP/EOS) emitted the notice for
+        # the first iteration only, and an MC-error replica reusing the sampler emitted none at
+        # all while running the same fallback.  reset_adaptation() does not clear it either,
+        # which is why this is done on the entry path rather than there.
+        self._warned_no_mixture = False
 
         #
         # Determine stopping conditions
@@ -1446,7 +1513,8 @@ class MCSampler(SamplerOutputMixin, object):
                         q_m = dens_fn(X_all) if dens_fn is not None else None
                         if q_m is None:
                             all_ok = False
-                            _no_density_member = type(member_m).__module__.split('.')[-1]
+                            _no_density_member = (type(member_m).__module__.split('.')[-1]
+                                                  + '.' + type(member_m).__name__)
                             break
                         _contrib_m = float(frac_m) * numpy.asarray(identity_convert(q_m), dtype=float)
                         acc = acc + _contrib_m
@@ -1486,38 +1554,94 @@ class MCSampler(SamplerOutputMixin, object):
                         "sampling_density).  The legacy stratified density is invalid for members "
                         "with unequal support and would bias the integral; refusing to continue.")
                 # THE MEMBER p_s CONTRACT.  The stratified fallback uses each member's OWN
-                # draw_simplified() joint_p_s as that sample's denominator.  That is unbiased only
-                # if every member's joint_p_s is a properly NORMALIZED density -- and members are
-                # not required to report one.  mcsamplerAdaptiveVolume deliberately does not: it
-                # returns V_s/V, which is (box volume)^2 times the density it actually draws from,
-                # and compensates inside its own integrate_log.  Mixing it with a member that DOES
-                # report a density (mcsamplerGPU) therefore added weights on scales differing by
-                # V_s^2 and returned a wrong evidence with no diagnostic: on a CONSTANT integrand
-                # over [-1,1]^2, exact ln Z = 1.386294, the mixture returned 0.753772 -- and the
-                # pooled mean 0.25*1000 + 4*1000 over 2000 reproduces that to every digit.
-                # sampling_density() is the contract; joint_p_s is each sampler's private scale.
-                # Refuse rather than return a silently biased number.  Every shipped member that
-                # can be a portfolio member implements sampling_density.
-                # An explicit portfolio_use_mixture_density=False is the caller ASKING for the
-                # stratified estimator, so honour it (with the warning below).  Refuse only when
-                # the mixture was attempted and a member could not supply its density.
-                if use_mixture and not kwargs.get('portfolio_allow_stratified_density', False):
+                # draw_simplified() joint_p_s as that sample's denominator.  Pooling several
+                # members that way is unbiased only if EVERY member's joint_p_s is a properly
+                # NORMALIZED density, and members are not required to report one.
+                # mcsamplerAdaptiveVolume does not: it returns V_s/V, which is (box volume)^2
+                # times the density it actually draws from, and compensates inside its own
+                # integrate_log.  Mixing it with a member that DOES report a density (an
+                # mcsamplerGPU with no sampling_density) returned a wrong evidence with no
+                # diagnostic: on a CONSTANT integrand over [-1,1]^2, exact ln Z = 1.386294, the
+                # mixture returned 0.753772 -- the pooled mean of 1000 draws at 0.25 and 1000
+                # at 4.  sampling_density() is the contract; joint_p_s is the private scale.
+                # WHO IMPLEMENTS IT: mcsamplerGPU, mcsamplerAdaptiveVolume, mcsamplerEnsemble.
+                # mcsamplerNFlow SHIPS, is accepted by name as a portfolio member in all three
+                # drivers, and does NOT (it also returns its draw_simplified tuple in a different
+                # order from every other member, so it cannot be a member today regardless).
+                #
+                # WHAT IS REFUSED.  Not "more than one member": the stratified estimator is
+                # NOT scale-invariant even with a single member -- one AV member on that path is
+                # wrong by ln(V_s**2) (measured -2.302585 where the exact answer is +2.302585 on
+                # a box of volume 10).  What matters is whether every member that DREW this chunk
+                # has declared its joint_p_s to be a normalized density.  An undeclared member is
+                # unknown, not safe: assuming safe pooled a plugin on AV's scale at 0.68 nats of
+                # error, silently.  Gate on the declaration, over _chunk_members (the members that
+                # actually drew) rather than the whole roster, so a member held behind an
+                # activation breakpoint cannot abort a sound run.
+                _bad_scale = [m for m in getattr(self, '_chunk_members', [])
+                              if getattr(m, 'joint_p_s_is_normalized_density', None) is not True]
+                _allow = kwargs.get('portfolio_allow_stratified_density',
+                                    getattr(self, '_allow_stratified_density', False))
+                if _bad_scale and not _allow:
+                    # Separate the two reasons.  A member that DECLARED False (AV) is a
+                    # different problem from one that never declared, and the remedy for the
+                    # first -- "declare True" -- would restore the very bias this guard exists
+                    # to stop.  Naming only the members that actually triggered it matters too:
+                    # rounds 2 and 3 of review both blocked on a message that named the wrong
+                    # member, and a substring-matching test cannot see that.
+                    _name = lambda m: (type(m).__module__.split('.')[-1] + '.'
+                                       + type(m).__name__)
+                    _declared_false = sorted({_name(m) for m in _bad_scale
+                                              if getattr(m, 'joint_p_s_is_normalized_density',
+                                                         None) is False})
+                    _never_declared = sorted({_name(m) for m in _bad_scale
+                                              if _name(m) not in _declared_false})
+                    _why = []
+                    if _declared_false:
+                        _why.append("member(s) {} DECLARE joint_p_s_is_normalized_density = "
+                                    "False, i.e. they report joint_p_s on their own scale "
+                                    "(mcsamplerAdaptiveVolume reports V_s/V) -- remove them from "
+                                    "the portfolio, or give the other member(s) a "
+                                    "sampling_density() so q_mix can be formed"
+                                    .format(_declared_false))
+                    if _never_declared:
+                        _why.append("member(s) {} have NOT DECLARED whether their joint_p_s is a "
+                                    "normalized density, and an undeclared member is treated as "
+                                    "unknown rather than assumed safe -- implement "
+                                    "sampling_density(), or set "
+                                    "joint_p_s_is_normalized_density = True on them if they do "
+                                    "report a density".format(_never_declared))
                     raise Exception(
-                        "mcsamplerPortfolio: active member '{}' does not implement "
-                        "sampling_density(), so the balance-heuristic mixture denominator q_mix "
-                        "cannot be formed.  The legacy stratified fallback would use each "
-                        "member's own draw_simplified() joint_p_s, which is only a valid "
-                        "denominator if EVERY member reports a normalized density -- "
-                        "mcsamplerAdaptiveVolume does not (it reports V_s/V), so a portfolio "
-                        "containing it would return a wrong evidence.  Implement "
-                        "sampling_density() on that member, or pass "
-                        "portfolio_allow_stratified_density=True to accept the old, "
-                        "possibly-biased behaviour.".format(_no_density_member))
-                if use_mixture and getattr(self, '_warned_no_mixture', False) is False:
-                    print(" PORTFOLIO: some active member lacks sampling_density; "
-                          "falling back to legacy stratified per-member density.  This is only "
-                          "unbiased if every member's draw_simplified() joint_p_s is a NORMALIZED "
-                          "density; mcsamplerAdaptiveVolume's is not.")
+                        "mcsamplerPortfolio: this chunk used the legacy stratified per-member "
+                        "density{}, which is unbiased only if EVERY member that drew reports a "
+                        "normalized joint_p_s.  {}.  To accept the biased evidence anyway, pass "
+                        "portfolio_allow_stratified_density=True to setup() (CLI: "
+                        "--sampler-portfolio-allow-stratified-density)."
+                        .format(" because member '{}' has no sampling_density".format(
+                                    _no_density_member)
+                                if use_mixture else
+                                " because portfolio_use_mixture_density=False was requested",
+                                ".  ".join(_why)))
+                # Otherwise the fallback is sound, but say so EVERY run: it is the one path where
+                # a future member reporting a non-density scale would go unnoticed, and the
+                # driver-level warning that used to cover it has been removed in favour of this.
+                if getattr(self, '_warned_no_mixture', False) is False:
+                    # with portfolio_use_mixture_density=False the density loop never ran, so
+                    # _no_density_member is still its placeholder; name the members directly.
+                    _who = _no_density_member
+                    if not use_mixture:
+                        _who = ", ".join(sorted({type(m).__module__.split('.')[-1] + '.'
+                                                 + type(m).__name__
+                                                 for m in getattr(self, '_chunk_members', [])})) \
+                               or "(no members recorded)"
+                    print(" PORTFOLIO: member '{}' has no sampling_density, so q_mix is NOT formed"
+                          " and the legacy STRATIFIED per-member density is in use.{}  That is"
+                          " unbiased only while every member's draw_simplified() joint_p_s is a"
+                          " normalized density; members declare this with"
+                          " joint_p_s_is_normalized_density.".format(
+                              _who,
+                              "  (portfolio_use_mixture_density=False was requested.)"
+                              if not use_mixture else ""))
                     self._warned_no_mixture = True
 
             log_integrand =lnL + self.xpy.log(joint_p_prior) - self.xpy.log(joint_p_s)
