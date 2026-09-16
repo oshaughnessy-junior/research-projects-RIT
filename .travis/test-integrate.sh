@@ -52,13 +52,16 @@ python -m pytest -q MonteCarloMarginalizeCode/Code/test/test_mcsampler_ensemble_
 # 'log_integrand'; AV/NFlow/portfolio alias 'integrand' to it, which is what made a
 # working arm one flag away from a dead one.
 #
-# Five subprocess arms (~70 s total), not a static check: the crash is in a flat driver
-# script with no importable export function, and the value written is as much the point as
-# the exit code -- exporting exp(lnL) or log(lnL) also exits 0.  Verified to FAIL on
-# b281ccff2 without the fix (acgpu_lnL arm only; the other four arms pass there).
+# Five subprocess arms plus six integrator cases (~55 s total), not a static check: the
+# crash is in a flat driver script with no importable export function, and both the value
+# written and the ROW it lands on are as much the point as the exit code -- exporting
+# exp(lnL), log(lnL) or well-formed lnL against shuffled rows all exit 0.  The synthetic
+# input is exactly quadratic in mc and the arms fit with --fit-method quadratic, so the
+# exported lnL can be checked against the likelihood at its own row's masses.  Verified to
+# FAIL on b281ccff2 without the fix (acgpu_lnL arm only; the other four arms pass there).
 _CIP_EXPORT_TESTS=MonteCarloMarginalizeCode/Code/test/test_cip_posterior_export_lnL.py
 # Raise EXPECTED by RUNNING collection, never by arithmetic.
-_CIP_EXPORT_EXPECTED=11
+_CIP_EXPORT_EXPECTED=16
 _CIP_EXPORT_FOUND=$(python -m pytest -q --collect-only "$_CIP_EXPORT_TESTS" 2>/dev/null | grep -c '::' || true)
 if [ "$_CIP_EXPORT_FOUND" -ne "$_CIP_EXPORT_EXPECTED" ]; then
     echo "cip-export gate: collected $_CIP_EXPORT_FOUND tests, expected $_CIP_EXPORT_EXPECTED" >&2

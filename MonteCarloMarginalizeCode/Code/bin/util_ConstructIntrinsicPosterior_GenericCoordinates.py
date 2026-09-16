@@ -3564,14 +3564,18 @@ print(samples_type_names)
 n_params = len(coord_names)
 dat_mass = np.zeros((len(samples[low_level_coord_names[0]]),n_params+3))
 dat_logL = np.zeros(len(samples[low_level_coord_names[0]]))
-# THE one place the sampler's lnL field and its log/linear convention are resolved.  The
-# required _rvs contract is 'log_integrand' OR 'integrand', not both: mcsamplerGPU.integrate_log
-# (so adaptive_cartesian_gpu) leaves only 'log_integrand', AV/NFlow/portfolio alias 'integrand'
-# to it as well, and the linear integrators leave only 'integrand'.  Read dat_logL downstream,
-# never the raw field: a second site that re-read samples["integrand"] is how the posterior
-# export died with KeyError under adaptive_cartesian_gpu.  log_integrand is checked first for
-# the reason the ILE export block gives -- logging an already-log field writes log(lnL), and nan
-# for every row with lnL < 0.
+# THE one place the sampler's lnL field and its log/linear convention are resolved.  What an
+# integrator guarantees is AT LEAST ONE of these keys, never a particular one:
+#
+#   mcsamplerGPU.integrate_log  (adaptive_cartesian_gpu --internal-use-lnL)  log_integrand only
+#   AV / NFlow / portfolio, log mode                        log_integrand + an integrand alias
+#   mcsampler, mcsamplerGPU.integrate, mcsamplerEnsemble    integrand only (linear L)
+#
+# So read dat_logL downstream, never the raw key.  A second site that re-read
+# samples["integrand"] is how the posterior export died with KeyError on
+# adaptive_cartesian_gpu while the AV arm, one flag away, worked.  log_integrand is checked
+# first for the reason the ILE export block gives: logging an already-log field writes
+# log(lnL), and nan for every row with lnL < 0.
 if not(opts.internal_use_lnL):
     if 'log_integrand' in samples_type_names:
         dat_logL = samples["log_integrand"]
@@ -3942,10 +3946,12 @@ if opts.verbose:
     print(" output size: truncating based on n_eff to N=", len(indx_list))
 # lnL for the export comes from dat_logL: the convention is already resolved, and dat_logL has
 # been masked by indx_ok, so indx_list indexes it in the same post-mask space as samples[p] and
-# weights.  The raw field is NOT masked, so re-reading it here would pair each exported P with
-# another draw's lnL as soon as indx_ok dropped anything.  That never fired in the arms measured
-# (AV, GMM, adaptive_cartesian at --lnL-offset down to 0.5: every integrator thins its own
-# retained set first, so the cut is non-binding) -- a hazard removed, not an observed defect.
+# weights.  The raw key is NOT masked.  Re-reading it here paired each exported P with another
+# draw's lnL as soon as indx_ok dropped anything: with ONE row dropped, 143 of 250 exported lnL
+# values moved, by up to 1.97 nats.  No CLI configuration was found that makes indx_ok drop a
+# row -- AV, GMM and adaptive_cartesian kept 100% at --lnL-offset inf, 15, 3, 1.5 and 0.5, and
+# at a 629-nat input dynamic range, because every integrator thins or cuts its own retained set
+# first.  So this was reachable and silent, but not shown to have fired in production.
 lnL_list = []
 P_list =[]
 kept_indx_list = []   # cache index behind each P_list entry, for the export supply annotation
