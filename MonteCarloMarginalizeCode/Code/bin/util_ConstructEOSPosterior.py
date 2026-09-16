@@ -859,15 +859,6 @@ elif opts.sampler_method == "portfolio":
             # the guards above only fire when NOTHING matched.
             print(" PORTFOLIO : WARNING, ignoring unrecognized --sampler-portfolio {!r} (known: AV, GMM, NFlow, adaptive_cartesian_gpu)".format(name))
             continue
-        if name == "adaptive_cartesian_gpu":
-            # MEASURED, on this driver, base and branch alike, numpy backend, ldas-grid: a
-            # separable Gaussian whose closed-form ln Z is 9.980 returns 8.56-8.60 from
-            # adaptive_cartesian_gpu, standalone AND as a portfolio member -- low by ln V
-            # (=1.386 here).  A portfolio mixing it with AV came out at 8.10, BELOW both of its
-            # own members.  AV/GMM/adaptive_cartesian all land on 9.89-10.00.  This is a
-            # pre-existing defect in the sampler, not in the portfolio wiring, and it is not
-            # fixed here -- but say so, because nothing downstream will.
-            print(" PORTFOLIO : WARNING, adaptive_cartesian_gpu returns ln Z low by ln(prior volume) in this driver; a portfolio containing it is biased.  Measured: see the --sampler-portfolio note in the PR that added this line.")
         print('PORTFOLIO: adding {} '.format(name))
         sampler_list.append(sampler)
         accepted_indices.append(indx)
@@ -876,6 +867,47 @@ elif opts.sampler_method == "portfolio":
         # comma-joined "AV,GMM" matches nothing).  Same reasoning as the guard above.
         print(" OPTION MISMATCH : --sampler-portfolio matched no known sampler in {}.  Pass one name per flag, e.g. --sampler-portfolio AV --sampler-portfolio GMM.".format(sampler_types))
         sys.exit(99)
+    # MIXED-BACKEND PORTFOLIO.  Deliberately stated as MEASUREMENTS, not as a mechanism: three
+    # successive attempts to explain this in prose were each shown to be wrong, so what follows
+    # is only what was measured.  Constant integrand, non-square box, exact ln Z = 1.609438,
+    # adaptation running, 16 seeds:
+    #
+    #     portfolio[AV]        1.6094 (sd 0.0000)     portfolio[GPU]       1.6037 (sd 0.0175)
+    #     portfolio[GMM]       1.6195 (sd 0.0061)     portfolio[GPU,GPU]   1.6144 (sd 0.0151)
+    #     portfolio[AV,GMM]    1.6093 (sd 0.0014)     portfolio[GPU,GMM]   1.6144 (sd 0.0060)
+    #     portfolio[AV,GPU]    0.7111 (sd 0.0075)     portfolio[GPU,AV]    0.7081 (sd 0.0049)
+    #
+    # So the badly wrong case is an AV member together with a member that has no
+    # sampling_density: -0.90 nats.  [GPU,GMM] fires the warning below and is +0.005, no worse
+    # than its own GMM member (+0.010) -- the warning OVER-fires there, and that is a known
+    # false alarm rather than an undetected bias.
+    #
+    # What IS established about the machinery: mcsamplerGPU and mcsamplerNFlow define no
+    # sampling_density (only mcsamplerAdaptiveVolume and mcsamplerEnsemble do), so
+    # mcsamplerPortfolio prints its own "falling back to legacy stratified per-member density"
+    # notice and q_mix is generally not formed; the same condition leaves its support
+    # diagnostics at nan.  That nan reaches only the printout and dict_return -- but the same
+    # condition also holds credit_per_sample identically zero, so with the NON-DEFAULT settings
+    # portfolio_adaptive_alloc=True and portfolio_quality_signal='credit' the draw-allocation
+    # signal is silently dead.  Defaults ('global', False) are unaffected.
+    #
+    # On a scale mismatch: measured, with a prior integral of 5, mcsamplerGPU and
+    # mcsamplerEnsemble both report E[prior/p_s] = 5.000000 and mcsamplerAdaptiveVolume reports
+    # 0.200000.  AV is the outlier.  WHY it differs is NOT established here -- an earlier
+    # revision of this comment asserted a reason and was wrong.
+    #
+    # KNOWN GAP in the predicate below: `any and not all` means a portfolio in which EVERY
+    # member lacks sampling_density (e.g. [adaptive_cartesian_gpu, NFlow]) does not warn, even
+    # though it takes the same fallback.  [GPU,GPU] measures fine (+0.005); [GPU,NFlow] is
+    # untested here because nflows is not installed on this host.
+    #
+    # Deliberately a warning and not a refusal: unifying the member p_s contract is a decision
+    # about mcsamplerAdaptiveVolume as much as about mcsamplerGPU.
+    _no_density = [not hasattr(m, 'sampling_density') for m in sampler_list]
+    if any(_no_density) and not all(_no_density):
+        _which = sorted({type(m).__module__.split('.')[-1]
+                         for m, bad in zip(sampler_list, _no_density) if bad})
+        print(" PORTFOLIO : WARNING, this portfolio mixes members that expose sampling_density with members that do not ({}).  q_mix is generally not formed and the portfolio falls back to its legacy stratified estimator.  MEASURED: with an AV member this is badly biased (0.71 where the exact answer is 1.609); with GMM+GPU it was not measurably worse than the members themselves, so this warning over-fires there.  Prefer a single-backend portfolio, and do not trust a mixed one's evidence without checking it against a known answer.".format(", ".join(_which)))
     sampler = mcsamplerPortfolio.MCSampler(portfolio=sampler_list)
 
 

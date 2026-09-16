@@ -489,7 +489,15 @@ class MCSampler(SamplerOutputMixin, object):
             # Store the random samples, and multiply on the contribution to the
             # joint PDF and joint prior at those samples.
             rv[i] = param_samples
-            joint_p_s *= self.pdf[param](param_samples)
+            # DIVIDE BY _pdf_norm, exactly as draw() does (see the res.append lines there).
+            # The samples come from cdf_inv[param], which is built from the NORMALIZED cdf, so
+            # the density they are actually drawn from is pdf/_pdf_norm.  Reporting the raw pdf
+            # here made joint_p_s inconsistent with the draws: the estimator weight
+            # prior/p_s was then too small by prod(_pdf_norm) -- a constant -- so integrate(),
+            # which uses draw_simplified(), reported ln Z low by log(prod(_pdf_norm)) whenever a
+            # caller passed an UNNORMALIZED sampling pdf.  _pdf_norm is 1 for a pdf that already
+            # integrates to 1, so this is a no-op for every normalized-pdf caller.
+            joint_p_s *= self.pdf[param](param_samples)/self._pdf_norm[param]
             #val= self.pdf[param](param_samples); print(type(val),param,xpy_default)
             # portfolio compatibility: prior_pdf is not always returning nice things
             prior_vals = self.prior_pdf[param](param_samples)
@@ -625,6 +633,12 @@ class MCSampler(SamplerOutputMixin, object):
                 points = rvs_here[p][-n_history_to_use:]
                 self.compute_hist(points, p,weights=weights_alt,floor_level=floor_integrated_probability)
                 self.pdf[p] = function_wrapper(self.pdf_from_hist, p)
+                # pdf_from_hist IS already a density: compute_hist normalizes the histogram to
+                # sum 1 and then divides by the bin width, and cdf_inverse_from_hist draws from
+                # that same normalized cdf.  So the caller's _pdf_norm -- the integral of the
+                # pdf they originally supplied -- is stale the moment this runs, and anything
+                # still dividing by it is introducing an error rather than removing one.
+                self._pdf_norm[p] = 1.0
                 self.cdf_inv[p] = function_wrapper(self.cdf_inverse_from_hist, p)
 
 
@@ -647,7 +661,7 @@ class MCSampler(SamplerOutputMixin, object):
         temper_log -- Adapt in min(ln L, 10^(-5))^tempering_exp
         tempering_adapt -- Gradually evolve the tempering_exp based on previous history.
         floor_level -- *total probability* of a uniform distribution, averaged with the weighted sampled distribution, to generate a new sampled distribution
-        n_adapt -- number of chunks over which to allow the pdf to adapt. Default is zero, which will turn off adaptive sampling regardless of other settings
+        n_adapt -- number of chunks over which to allow the pdf to adapt. Default is 1000*n, i.e. adaptation runs on ANY run longer than one chunk -- it is NOT off by default.  The kwarg is in CHUNKS and is scaled by n here, so the default 1000*n is exactly n_adapt=1000; the scaled variable is then compared against self.ntotal, a SAMPLE count.  Do NOT pass 1000*n to reproduce the default
         convergence_tests - dictionary of function pointers, each accepting self._rvs and self.params as arguments. CURRENTLY ONLY USED FOR REPORTING
         Pinning a value: By specifying a kwarg with the same of an existing parameter, it is possible to "pin" it. The sample draws will always be that value, and the sampling prior will use a delta function at that value.
         """
@@ -956,6 +970,12 @@ class MCSampler(SamplerOutputMixin, object):
                 points = self._rvs[p][-n_history_here:]
                 self.compute_hist(points, p,weights=weights_alt,floor_level=floor_integrated_probability)
                 self.pdf[p] = function_wrapper(self.pdf_from_hist, p)
+                # pdf_from_hist IS already a density: compute_hist normalizes the histogram to
+                # sum 1 and then divides by the bin width, and cdf_inverse_from_hist draws from
+                # that same normalized cdf.  So the caller's _pdf_norm -- the integral of the
+                # pdf they originally supplied -- is stale the moment this runs, and anything
+                # still dividing by it is introducing an error rather than removing one.
+                self._pdf_norm[p] = 1.0
                 self.cdf_inv[p] = function_wrapper(self.cdf_inverse_from_hist, p)
 
         # If we were pinning any values, undo the changes we did before
@@ -1121,7 +1141,7 @@ class MCSampler(SamplerOutputMixin, object):
         temper_log -- Adapt in min(ln L, 10^(-5))^tempering_exp
         tempering_adapt -- Gradually evolve the tempering_exp based on previous history.
         floor_level -- *total probability* of a uniform distribution, averaged with the weighted sampled distribution, to generate a new sampled distribution
-        n_adapt -- number of chunks over which to allow the pdf to adapt. Default is zero, which will turn off adaptive sampling regardless of other settings
+        n_adapt -- number of chunks over which to allow the pdf to adapt. Default is 1000*n, i.e. adaptation runs on ANY run longer than one chunk -- it is NOT off by default.  The kwarg is in CHUNKS and is scaled by n here, so the default 1000*n is exactly n_adapt=1000; the scaled variable is then compared against self.ntotal, a SAMPLE count.  Do NOT pass 1000*n to reproduce the default
         convergence_tests - dictionary of function pointers, each accepting self._rvs and self.params as arguments. CURRENTLY ONLY USED FOR REPORTING
         Pinning a value: By specifying a kwarg with the same of an existing parameter, it is possible to "pin" it. The sample draws will always be that value, and the sampling prior will use a delta function at that value.
         """
@@ -1475,6 +1495,12 @@ class MCSampler(SamplerOutputMixin, object):
             #          print(vals)
             #          print(np.mean(vals),np.std(vals))
                 self.pdf[p] = function_wrapper(self.pdf_from_hist, p)
+                # pdf_from_hist IS already a density: compute_hist normalizes the histogram to
+                # sum 1 and then divides by the bin width, and cdf_inverse_from_hist draws from
+                # that same normalized cdf.  So the caller's _pdf_norm -- the integral of the
+                # pdf they originally supplied -- is stale the moment this runs, and anything
+                # still dividing by it is introducing an error rather than removing one.
+                self._pdf_norm[p] = 1.0
                 self.cdf_inv[p] = function_wrapper(self.cdf_inverse_from_hist, p)
 
         # If we were pinning any values, undo the changes we did before
