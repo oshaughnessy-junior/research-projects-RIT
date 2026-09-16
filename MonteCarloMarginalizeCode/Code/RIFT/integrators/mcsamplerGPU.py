@@ -152,6 +152,7 @@ class MCSampler(SamplerOutputMixin, object):
         # If the pdfs aren't normalized, this will hold the normalization 
         # constant
         self._pdf_norm = defaultdict(lambda: 1)
+        self._pdf_norm_initial = defaultdict(lambda: 1)
         # Cache for the sampling points
         self._rvs = {}
         # parameter -> cdf^{-1} function object
@@ -184,6 +185,7 @@ class MCSampler(SamplerOutputMixin, object):
         self.params_ordered = []
         self.pdf = {}
         self._pdf_norm = defaultdict(lambda: 1.0)
+        self._pdf_norm_initial = defaultdict(lambda: 1.0)
         self._rvs = {}
         self._hist = {}
         self.cdf = {}
@@ -228,6 +230,10 @@ class MCSampler(SamplerOutputMixin, object):
           self.cdf_inv[params] =  self.cdf_inverse(params)
         self.pdf_initial[params] = pdf
         self.cdf_inv_initial[params] = self.cdf_inv[params]
+        # cdf_inverse() above sets _pdf_norm[params] to the mass of an UNNORMALIZED pdf.
+        # Keep that value: the adaptive path below overwrites _pdf_norm with 1 (the histogram
+        # proposal is already a density), and reset_sampling has to be able to put it back.
+        self._pdf_norm_initial[params] = self._pdf_norm[params]
         if not isinstance(params, tuple):
 #            self.cdf[params] =  self.cdf_function(params)
             if prior_pdf is None:
@@ -266,6 +272,9 @@ class MCSampler(SamplerOutputMixin, object):
     def reset_sampling(self,param):
       self.pdf[param] = self.pdf_initial[param]
       self.cdf_inv[param] = self.cdf_inv_initial[param]
+      # _pdf_norm travels WITH the pdf: restoring an unnormalized analytic pdf while leaving
+      # _pdf_norm at the histogram's 1.0 would report a density too large by that mass.
+      self._pdf_norm[param] = self._pdf_norm_initial[param]
 
     def setup_hist(self):
         """
@@ -521,6 +530,50 @@ class MCSampler(SamplerOutputMixin, object):
 
 
         return joint_p_s, joint_p_prior, rv
+
+    def sampling_density(self, X):
+        """Pointwise sampling density q(theta) of THIS member, evaluated at ARBITRARY points
+        X (shape (N, ndim), columns in self.params_ordered order).  Returns a host (numpy)
+        array of length N, or None if this sampler cannot express one.
+
+        THE PORTFOLIO MEMBER CONTRACT.  mcsamplerPortfolio builds the balance-heuristic
+        mixture denominator q_mix = sum_m frac_m q_m from this method, so what it returns
+        must be a properly NORMALIZED probability density over the sampler's own box, in
+        original coordinates -- not a likelihood-ratio-style scale factor.
+
+        This sampler draws each parameter independently by inverse-CDF sampling from the
+        NORMALIZED cdf, so the density is the product over parameters of
+        pdf[p](x)/_pdf_norm[p] -- exactly the per-sample product draw_simplified() reports
+        as joint_p_s, and the two are kept in step deliberately.  Zero outside the box:
+        cdf_inv cannot produce a point there, and pdf_from_hist would otherwise return the
+        clamped edge bin rather than 0.
+
+        READ-ONLY -- touches no sampler state and does not affect this sampler's own
+        integrate().
+        """
+        ndim = len(self.params_ordered)
+        if ndim == 0:
+            return None
+        if any(isinstance(p, tuple) for p in self.params_ordered):
+            # a joint (tuple) parameter has no per-axis pdf to take a product over
+            return None
+        Xc = np.atleast_2d(np.asarray(self.identity_convert(X), dtype=np.float64))
+        if Xc.shape[1] != ndim and Xc.shape[0] == ndim:
+            Xc = Xc.T   # tolerate (ndim, N)
+        if Xc.shape[1] != ndim:
+            return None
+        q = np.ones(Xc.shape[0], dtype=np.float64)
+        inside = np.ones(Xc.shape[0], dtype=bool)
+        for i, param in enumerate(self.params_ordered):
+            col = Xc[:, i]
+            inside &= (col >= self.llim[param]) & (col <= self.rlim[param])
+            # evaluate on the sampler's own backend, exactly as draw_simplified does, then
+            # bring the result back to the host the portfolio aggregates on
+            vals = self.pdf[param](self.identity_convert_togpu(col))
+            vals = np.asarray(self.identity_convert(vals), dtype=np.float64)
+            q *= vals/float(self._pdf_norm[param])
+        q[~inside] = 0.0
+        return q
 
     #@profile
     def draw(self, rvs, *args,**kwargs):

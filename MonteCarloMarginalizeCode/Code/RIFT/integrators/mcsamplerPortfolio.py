@@ -1424,6 +1424,7 @@ class MCSampler(SamplerOutputMixin, object):
             # joint_p_s so those portfolios keep running unchanged.
             use_mixture = kwargs['portfolio_use_mixture_density'] if 'portfolio_use_mixture_density' in kwargs else True
             q_mix = None
+            _no_density_member = '(none identified: no active member supplied a density)'
             # drop last chunk's per-member densities: keeping them would let a chunk in which the
             # mixture could not be formed be scored against the PREVIOUS chunk's supports.
             self._chunk_mix_parts = None
@@ -1445,6 +1446,7 @@ class MCSampler(SamplerOutputMixin, object):
                         q_m = dens_fn(X_all) if dens_fn is not None else None
                         if q_m is None:
                             all_ok = False
+                            _no_density_member = type(member_m).__module__.split('.')[-1]
                             break
                         _contrib_m = float(frac_m) * numpy.asarray(identity_convert(q_m), dtype=float)
                         acc = acc + _contrib_m
@@ -1483,9 +1485,39 @@ class MCSampler(SamplerOutputMixin, object):
                         "balance-heuristic q_mix could not be formed (some active member lacks "
                         "sampling_density).  The legacy stratified density is invalid for members "
                         "with unequal support and would bias the integral; refusing to continue.")
+                # THE MEMBER p_s CONTRACT.  The stratified fallback uses each member's OWN
+                # draw_simplified() joint_p_s as that sample's denominator.  That is unbiased only
+                # if every member's joint_p_s is a properly NORMALIZED density -- and members are
+                # not required to report one.  mcsamplerAdaptiveVolume deliberately does not: it
+                # returns V_s/V, which is (box volume)^2 times the density it actually draws from,
+                # and compensates inside its own integrate_log.  Mixing it with a member that DOES
+                # report a density (mcsamplerGPU) therefore added weights on scales differing by
+                # V_s^2 and returned a wrong evidence with no diagnostic: on a CONSTANT integrand
+                # over [-1,1]^2, exact ln Z = 1.386294, the mixture returned 0.753772 -- and the
+                # pooled mean 0.25*1000 + 4*1000 over 2000 reproduces that to every digit.
+                # sampling_density() is the contract; joint_p_s is each sampler's private scale.
+                # Refuse rather than return a silently biased number.  Every shipped member that
+                # can be a portfolio member implements sampling_density.
+                # An explicit portfolio_use_mixture_density=False is the caller ASKING for the
+                # stratified estimator, so honour it (with the warning below).  Refuse only when
+                # the mixture was attempted and a member could not supply its density.
+                if use_mixture and not kwargs.get('portfolio_allow_stratified_density', False):
+                    raise Exception(
+                        "mcsamplerPortfolio: active member '{}' does not implement "
+                        "sampling_density(), so the balance-heuristic mixture denominator q_mix "
+                        "cannot be formed.  The legacy stratified fallback would use each "
+                        "member's own draw_simplified() joint_p_s, which is only a valid "
+                        "denominator if EVERY member reports a normalized density -- "
+                        "mcsamplerAdaptiveVolume does not (it reports V_s/V), so a portfolio "
+                        "containing it would return a wrong evidence.  Implement "
+                        "sampling_density() on that member, or pass "
+                        "portfolio_allow_stratified_density=True to accept the old, "
+                        "possibly-biased behaviour.".format(_no_density_member))
                 if use_mixture and getattr(self, '_warned_no_mixture', False) is False:
                     print(" PORTFOLIO: some active member lacks sampling_density; "
-                          "falling back to legacy stratified per-member density.")
+                          "falling back to legacy stratified per-member density.  This is only "
+                          "unbiased if every member's draw_simplified() joint_p_s is a NORMALIZED "
+                          "density; mcsamplerAdaptiveVolume's is not.")
                     self._warned_no_mixture = True
 
             log_integrand =lnL + self.xpy.log(joint_p_prior) - self.xpy.log(joint_p_s)
