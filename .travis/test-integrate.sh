@@ -55,6 +55,17 @@ python -m pytest -q MonteCarloMarginalizeCode/Code/test/test_psi_marginalization
 # --internal-rotate-phase).  Constructor, driver wiring, and a --zero-likelihood run whose
 # lnZ must be ln(total prior mass).
 python -m pytest -q MonteCarloMarginalizeCode/Code/test/test_angle_prior_normalization.py
+# mcsamplerGPU.draw_simplified() must report the density its draws actually come from.  It
+# returned the RAW pdf while drawing from the NORMALIZED cdf_inv, so integrate() -- which uses
+# draw_simplified() -- reported ln Z low by log(prod(_pdf_norm)) for any caller passing an
+# unnormalized sampling pdf.  THIS GATE ALREADY HAD THE RIGHT TECHNIQUE AND STILL MISSED IT:
+# test_limit_distance.py's absolute-evidence check runs mcsampler, not mcsamplerGPU; where it
+# does build a mcsamplerGPU it asserts on draw_simplified(...)[-1], the SAMPLES, never [0], the
+# reported density; and distance_sampler_kwargs() hands it an already-normalized pdf, which
+# makes _pdf_norm 1 and the defect a no-op.  A constant integrand with an UNNORMALIZED pdf,
+# checked against ln(prior mass) in absolute terms, is the combination that separates it -- a
+# difference of two runs cancels the constant.
+python -m pytest -q MonteCarloMarginalizeCode/Code/test/integrators/test_mcsamplerGPU_pdf_normalization.py
 
 # Supplementary-likelihood plugin hook: the NAL reader/evaluator (pure numpy, no data) and the
 # static guard on the drivers' prepare-hook wiring, which is what makes the plugin receive the

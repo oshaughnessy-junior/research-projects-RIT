@@ -489,7 +489,15 @@ class MCSampler(SamplerOutputMixin, object):
             # Store the random samples, and multiply on the contribution to the
             # joint PDF and joint prior at those samples.
             rv[i] = param_samples
-            joint_p_s *= self.pdf[param](param_samples)
+            # DIVIDE BY _pdf_norm, exactly as draw() does (see the res.append lines there).
+            # The samples come from cdf_inv[param], which is built from the NORMALIZED cdf, so
+            # the density they are actually drawn from is pdf/_pdf_norm.  Reporting the raw pdf
+            # here made joint_p_s inconsistent with the draws: the estimator weight
+            # prior/p_s was then too small by prod(_pdf_norm) -- a constant -- so integrate(),
+            # which uses draw_simplified(), reported ln Z low by log(prod(_pdf_norm)) whenever a
+            # caller passed an UNNORMALIZED sampling pdf.  _pdf_norm is 1 for a pdf that already
+            # integrates to 1, so this is a no-op for every normalized-pdf caller.
+            joint_p_s *= self.pdf[param](param_samples)/self._pdf_norm[param]
             #val= self.pdf[param](param_samples); print(type(val),param,xpy_default)
             # portfolio compatibility: prior_pdf is not always returning nice things
             prior_vals = self.prior_pdf[param](param_samples)
