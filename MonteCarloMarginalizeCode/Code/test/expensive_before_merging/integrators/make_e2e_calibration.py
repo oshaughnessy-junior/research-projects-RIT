@@ -31,7 +31,7 @@ import test_e2e_analytic_pipeline as gate          # noqa: E402
 
 _AV, _PORTFOLIO, _GMM = gate._AV, gate._PORTFOLIO, gate._GMM
 
-# (label, sampler argv, A, B, exact-A, exact-B, extra kwargs for _run_ile)
+# (label, sampler argv, A, B, extra kwargs for _run_ile).  A is None for a prior-only lane.
 LANES = [
     ("prior-only,    AV",                        _AV,        None, 0.0, {}),
     ("prior-only,    portfolio",                 _PORTFOLIO, None, 0.0, {}),
@@ -79,31 +79,44 @@ def main():
     ap.add_argument("--lane", default=None, help="substring; measure only matching lanes")
     args = ap.parse_args()
 
-    import pathlib
-    out = pathlib.Path(tempfile.mkdtemp(prefix="e2e_calibration_"))
-    event = gate.build_event(out)
-    if event is None:
-        raise SystemExit("could not build the fixture (lal_path2cache missing or failed)")
-
-    seeds = [args.first_seed + i for i in range(args.seeds)]
-    selected = [L for L in LANES if not args.lane or args.lane in L[0]]
+    # Lane selection BEFORE anything expensive or on-disk.  It depends on nothing but argv, and
+    # running it after mkdtemp/build_event meant a --lane typo cost a full fixture build and
+    # then leaked the directory: the refusal path below neither prints nor removes it, and on
+    # the CIT nodes that directory is on /, which is 20-22 GB.
+    #
+    # The index is carried alongside each lane, and it is the index into LANES rather than into
+    # this filtered list, so --lane does not renumber the output tags.
+    selected = [(i, L) for i, L in enumerate(LANES) if not args.lane or args.lane in L[0]]
     if not selected:
         # Exiting 0 having measured nothing, under a summary line that reads like a clean
         # result, is the exact shape this whole branch exists to remove.
         raise SystemExit("--lane %r matched none of:\n  %s"
                          % (args.lane, "\n  ".join(L[0].strip() for L in LANES)))
+
+    import pathlib
+    out = pathlib.Path(tempfile.mkdtemp(prefix="e2e_calibration_"))
+    event = gate.build_event(out)
+    if event is None:
+        raise SystemExit(
+            "could not build the fixture (lal_path2cache missing or failed); the empty "
+            "directory is at %s" % out)
+
+    seeds = [args.first_seed + i for i in range(args.seeds)]
     print("#   lane                                      max |z|   max sigma   min n_eff")
     worst_z = worst_s = 0.0
     least_n = float("inf")
-    for label, sampler, a, b, kw in selected:
-        kw0 = kw
+    for idx, (label, sampler, a, b, kw) in selected:
         kw = dict(kw)
         if kw.pop("_needs_dmarg", False):
             kw.update(_dmarg_extra(event, out))
         exact = 0.0 if a is None else gate._exact(a, b)
         zs, sigs, neffs = [], [], []
         for seed in seeds:
-            tag = "cal_%d_%d" % (LANES.index((label, sampler, a, b, kw0)), seed)
+            # `idx` from enumerate, NOT LANES.index(...): index is a first-match lookup, so two
+            # identical lane rows would silently share a tag and overwrite each other's ILE
+            # output directory.  Correct for today's 17 distinct rows; wrong the moment one is
+            # duplicated, which is exactly the kind of edit this table invites.
+            tag = "cal_%d_%d" % (idx, seed)
             lnL, sigma, neff = gate._run_ile(event, tag, sampler, a_coeff=a, b_coeff=b,
                                              seed=seed, **kw)
             zs.append(abs((lnL - exact) / sigma))
