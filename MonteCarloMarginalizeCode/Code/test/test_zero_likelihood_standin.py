@@ -9,13 +9,17 @@ defect class the stand-in can have.
 
 So this file checks the WIRING instead of the answer: the argument order against the driver's
 own real call sites, the generated signature against the live likelihood_function signatures,
-and that the values handed to the factor are the RAW sampled ones.  It is pure AST + exec, runs
-in under a second, and needs no data, no network and no GPU.
+and that the values handed to the factor are the RAW sampled ones.  That part is pure AST +
+exec, runs in a few seconds, and needs no data, no network and no GPU.
 
 It also covers the device question the end-to-end gate is structurally blind to: that gate pins
-CUDA_VISIBLE_DEVICES="" and the CI runners have no cupy, so nothing there can catch the
-stand-in reaching for numpy on a host where the integrand is on a device.  Here the array module
-is INJECTED, and a fake one records every call.
+CUDA_VISIBLE_DEVICES="" for its children by design, and the CI runners have no cupy, so nothing
+there can catch the stand-in reaching for numpy on a host where the integrand is on a device.
+That is covered twice here, deliberately.  Section 3 INJECTS a fake array module that records
+every call, which runs everywhere.  Section 4 runs the same paths against REAL cupy, because a
+fake can be more permissive than the thing it stands for and a device claim checked only
+against a fake is a claim nobody ran.  Section 4 skips where there is no usable GPU -- a skip
+is not a pass; see _cupy_or_skip for how to make it run.
 """
 import ast
 import inspect
@@ -618,3 +622,118 @@ def test_the_two_conventions_give_the_right_arithmetic():
     # and with no factor at all, the exact zero / one the option promises
     assert np.allclose(make(sig, True, None, _DEFAULTS, np)(**kw), 0.0)
     assert np.allclose(make(sig, False, None, _DEFAULTS, np)(**kw), 1.0)
+
+
+# ---------------------------------------------------------------------------------------
+# 4. the device path, on a REAL GPU
+
+def _cupy_or_skip():
+    """Real cupy, on a device this cupy can actually build a kernel for, or a skip saying why.
+
+    TWO distinct failures, and conflating them is how a device claim goes unchecked.  `import
+    cupy` fails outright on a host with no CUDA runtime (ldas-grid, and every CI runner).  It
+    SUCCEEDS on the CIT GPU head nodes while the visible device is one this cupy cannot compile
+    for: ldas-pcdev13 slots 0-2 and all of ldas-pcdev11 are Blackwell cc 12.0, and cupy 12.0.0
+    answers `nvrtc: error: invalid value for --gpu-architecture`.  So the probe RUNS a kernel
+    rather than trusting the import, and the slot map moves, so it probes at dispatch.
+
+    A SKIP HERE IS NOT A PASS.  Pin CUDA_VISIBLE_DEVICES to a slot this cupy supports and run
+    the file again; as of 2026-09-17 ldas-pcdev2 slot 0 (A100, cc 8.0) and ldas-pcdev13 slot 3
+    (RTX 2080 Ti, cc 7.5) work.  The reason string says which of the two failures happened."""
+    try:
+        import cupy
+    except Exception as exc:
+        pytest.skip("no usable cupy on this host (%s: %s)" % (type(exc).__name__,
+                                                              str(exc)[:80]))
+    try:
+        cupy.asnumpy(cupy.cos(cupy.asarray(np.zeros(2), dtype=float)))
+    except Exception as exc:
+        pytest.skip(
+            "cupy %s imports but cannot run a kernel on the visible device (%s: %s).  Pin "
+            "CUDA_VISIBLE_DEVICES to a slot this cupy supports; this is NOT a pass."
+            % (cupy.__version__, type(exc).__name__, str(exc)[:80]))
+    return cupy
+
+
+@pytest.mark.parametrize("b_coeff", [0.0, 2.0])
+def test_the_shipped_example_really_runs_on_a_gpu(b_coeff):
+    """THE DEVICE HALF, RUN RATHER THAN ARGUED.
+
+    The example's one cast has to do two jobs: object dtype to float, for the draws mcsampler
+    hands --sampler-method adaptive_cartesian, and host to device, because the three call sites
+    that pass xpy do `lnL += factor(...)` with lnL on the device.  Everything else that touches
+    this is blind to the second job: the end-to-end gate pins CUDA_VISIBLE_DEVICES="" for its
+    children by design, the CI runners have no cupy, and _FakeXpy above is a stand-in that can
+    be more permissive than the thing it stands for.
+
+    So this runs the real module with xpy=cupy, on BOTH input kinds, and checks the result is
+    on the device and equals the numpy arm.  It is also the test that refuses the rewrite the
+    comment on that line warns about: xpy.asarray(np.asarray(x, dtype=float)) raises TypeError
+    on a cupy argument, so the device-float64 case below goes red.  Verified by mutation on
+    ldas-pcdev2.
+
+    b_coeff = 0 exercises only the phi_orb cast; b_coeff != 0 also reaches the inclination one,
+    which the default B = 0 never does."""
+    cupy = _cupy_or_skip()
+    if HERE not in sys.path:
+        sys.path.insert(0, HERE)
+    import analytic_supplement_for_e2e as ex
+    vals = np.array([0.1, 1.2, 2.3, 3.4])
+    b_was = ex.B_COEFF
+    try:
+        ex.B_COEFF = b_coeff
+        want = np.asarray(ex.ln_analytic_factor(*([vals] * 6), xpy=np), dtype=float)
+        cases = (("device float64", cupy.asarray(vals, dtype=float)),
+                 ("host object dtype", np.asarray(vals, dtype=object)))
+        for label, arg in cases:
+            got = ex.ln_analytic_factor(*([arg] * 6), xpy=cupy)
+            assert isinstance(got, cupy.ndarray), (
+                "B=%r, %s input: the factor returned %r, not a device array.  The three call "
+                "sites that pass xpy add this to a device lnL and would raise."
+                % (b_coeff, label, type(got)))
+            assert np.allclose(cupy.asnumpy(got), want), (
+                "B=%r, %s input: the device answer %r disagrees with the numpy arm %r"
+                % (b_coeff, label, cupy.asnumpy(got), want))
+    finally:
+        ex.B_COEFF = b_was
+
+
+def test_the_stand_in_builds_its_array_on_a_real_device():
+    """The same question as test_the_base_array_comes_from_the_injected_module_not_numpy, asked
+    of real cupy instead of _FakeXpy.
+
+    _FakeXpy implements zeros/ones/exp over numpy and tags the result.  It therefore accepts
+    things cupy refuses -- an object-dtype array, a numpy array handed to a ufunc -- so it can
+    report a device path working that would raise on a GPU.  This runs the driver's own factory
+    with xpy=cupy and the shipped factor, on a fully-sampled signature and on one that has to
+    fall back to a scalar default, and checks the result is on the device and matches numpy."""
+    cupy = _cupy_or_skip()
+    if HERE not in sys.path:
+        sys.path.insert(0, HERE)
+    import analytic_supplement_for_e2e as ex
+    make = _driver_ns()["make_zero_likelihood_standin"]
+    full = ("right_ascension", "declination", "phi_orb", "inclination", "psi", "distance")
+    # distance is not sampled here, so the factory has to supply _DEFAULTS["distance"] = 0.0 --
+    # a PYTHON SCALAR reaching the factor's cast alongside device arrays.
+    partial = ("right_ascension", "declination", "phi_orb", "inclination", "psi")
+    b_was = ex.B_COEFF
+    try:
+        ex.B_COEFF = 2.0
+        for sig in (full, partial):
+            host = {nm: np.linspace(0.1, 1.0, 4) for nm in sig}
+            dev = {nm: cupy.asarray(v, dtype=float) for nm, v in host.items()}
+            for return_lnL in (True, False):
+                want = make(sig, return_lnL, ex.ln_analytic_factor, _DEFAULTS, np)(**host)
+                got = make(sig, return_lnL, ex.ln_analytic_factor, _DEFAULTS, cupy)(**dev)
+                assert isinstance(got, cupy.ndarray), (
+                    "signature %r, return_lnL=%r: the stand-in returned %r, not a device array"
+                    % (sig, return_lnL, type(got)))
+                assert np.allclose(cupy.asnumpy(got), np.asarray(want, dtype=float)), (
+                    "signature %r, return_lnL=%r: device %r != numpy %r"
+                    % (sig, return_lnL, cupy.asnumpy(got), want))
+        # and with no factor at all, the exact zero / one the option promises, on the device
+        kw = {nm: cupy.asarray(np.zeros(4), dtype=float) for nm in full}
+        assert np.allclose(cupy.asnumpy(make(full, True, None, _DEFAULTS, cupy)(**kw)), 0.0)
+        assert np.allclose(cupy.asnumpy(make(full, False, None, _DEFAULTS, cupy)(**kw)), 1.0)
+    finally:
+        ex.B_COEFF = b_was
