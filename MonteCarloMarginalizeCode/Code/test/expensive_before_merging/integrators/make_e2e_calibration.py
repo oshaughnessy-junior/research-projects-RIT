@@ -6,7 +6,7 @@ seeds, and the table recording it is a comment.  A comment is a claim nobody can
 script re-derives it:
 
     python make_e2e_calibration.py --seeds 8          # the table as committed
-    python make_e2e_calibration.py --seeds 2 --lane dmarg
+    python make_e2e_calibration.py --seeds 2 --lane distance-marginalized
 
 It imports the gate's OWN _run_ile, build_event and _exact rather than reimplementing them, so
 a lane measured here is the lane the gate runs.  Reimplementing them would produce a table that
@@ -21,8 +21,6 @@ import argparse
 import os
 import sys
 import tempfile
-
-import numpy as np
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _TEST_DIR = os.path.abspath(os.path.join(_HERE, "..", ".."))
@@ -47,7 +45,7 @@ LANES = [
     ("A=0.75 B=3,    AV",                        _AV,        0.75, 3.0, {}),
     ("A=0.75 B=3,    portfolio",                 _PORTFOLIO, 0.75, 3.0, {}),
     ("A=0.75 B=3,    GMM",                       _GMM,       0.75, 3.0, {}),
-    ("A=8    B=2,    AV (survives-swap lanes)",  _AV,        8.0,  2.0, {}),
+    ("A=8    B=2,    AV (the survives-swap lanes)", _AV,     8.0,  2.0, {}),
     ("raw inclination contract (cosine sampler)", _AV,       8.0,  2.0,
      dict(incl_is_cosine=True, extra=("--inclination-cosine-sampler",))),
     ("time-marginalized portfolio",              _PORTFOLIO, 8.0,  2.0,
@@ -88,19 +86,24 @@ def main():
         raise SystemExit("could not build the fixture (lal_path2cache missing or failed)")
 
     seeds = [args.first_seed + i for i in range(args.seeds)]
+    selected = [L for L in LANES if not args.lane or args.lane in L[0]]
+    if not selected:
+        # Exiting 0 having measured nothing, under a summary line that reads like a clean
+        # result, is the exact shape this whole branch exists to remove.
+        raise SystemExit("--lane %r matched none of:\n  %s"
+                         % (args.lane, "\n  ".join(L[0].strip() for L in LANES)))
     print("#   lane                                      max |z|   max sigma   min n_eff")
     worst_z = worst_s = 0.0
     least_n = float("inf")
-    for label, sampler, a, b, kw in LANES:
-        if args.lane and args.lane not in label:
-            continue
+    for label, sampler, a, b, kw in selected:
+        kw0 = kw
         kw = dict(kw)
         if kw.pop("_needs_dmarg", False):
             kw.update(_dmarg_extra(event, out))
         exact = 0.0 if a is None else gate._exact(a, b)
         zs, sigs, neffs = [], [], []
         for seed in seeds:
-            tag = "cal_%s_%d" % (abs(hash(label)) % 10 ** 8, seed)
+            tag = "cal_%d_%d" % (LANES.index((label, sampler, a, b, kw0)), seed)
             lnL, sigma, neff = gate._run_ile(event, tag, sampler, a_coeff=a, b_coeff=b,
                                              seed=seed, **kw)
             zs.append(abs((lnL - exact) / sigma))
@@ -109,7 +112,7 @@ def main():
         worst_z = max(worst_z, max(zs))
         worst_s = max(worst_s, max(sigs))
         least_n = min(least_n, min(neffs))
-        print("#   %-42s %5.2f      %6.4f      %6.0f"
+        print("#   %-44s%5.2f      %6.4f      %6.0f"
               % (label, max(zs), max(sigs), min(neffs)))
     print("#")
     print("# across all lanes: worst |z| %.2f, worst sigma %.4f, least n_eff %.0f"

@@ -65,18 +65,23 @@ def ln_analytic_factor(right_ascension, declination, phi_orb, inclination, psi, 
                        xpy=np):
     # xpy HAS to be accepted, not merely ignored: three of ILE's five call sites pass
     # xpy=xpy_default and two do not, so a factor declared with the six positional arguments
-    # alone raises TypeError on the vectorized paths.  This gate only ever reaches the
-    # --zero-likelihood stand-in, so nothing here would have caught that; the signature is
-    # correct so the shipped example is usable outside the gate as well.
-    # The CAST is not decoration.  mcsampler (--sampler-method adaptive_cartesian) hands its
-    # integrand object-dtype draws, on which np.cos raises "loop of ufunc does not support
+    # alone raises TypeError on the vectorized paths.
+    #
+    # And it has to be USED, not just accepted.  The three sites that pass it do
+    # `lnL += factor(...)` with lnL on the device, so a factor that always returns numpy raises
+    # there on a GPU host.  Computing through xpy is what makes this example portable; the gate
+    # cannot check it, because every lane here pins CUDA_VISIBLE_DEVICES="" and the CI runners
+    # have no cupy.
+    #
+    # The CAST is not decoration either.  mcsampler (--sampler-method adaptive_cartesian) hands
+    # its integrand object-dtype draws, on which np.cos raises "loop of ufunc does not support
     # argument 0 of type float"; the driver's own non-vectorized likelihood casts for the same
-    # reason ("get rid of 'object'").  Any real supplementary factor needs this line.
-    phi_orb = np.asarray(phi_orb, dtype=np.float64)
-    out = A_COEFF * np.cos(phi_orb)
+    # reason ("get rid of 'object'").  Any real supplementary factor needs it.
+    phi_orb = xpy.asarray(phi_orb, dtype=float)
+    out = A_COEFF * xpy.cos(phi_orb)
     if B_COEFF:
-        inclination = np.asarray(inclination, dtype=np.float64)
-        cos_iota = inclination if INCL_IS_COSINE else np.cos(inclination)
+        inclination = xpy.asarray(inclination, dtype=float)
+        cos_iota = inclination if INCL_IS_COSINE else xpy.cos(inclination)
         out = out + B_COEFF * cos_iota
     return out
 

@@ -73,14 +73,22 @@ def _driver_ns():
 # updating it.
 _EXPECTED_CALL_SITES = 5
 
+# How many likelihood_function signatures the driver defines.  Pinned exactly, for the same
+# reason as the call-site count: a lower bound lets the extractor lose one silently.
+_EXPECTED_SIGNATURES = 8
+
 
 def _textual_call_site_count():
     """Count the factor's call sites WITHOUT the AST, as a cross-check on the walker.
 
-    The failure mode this exists for: a call the AST pass cannot see -- reached through an
-    alias, or any shape that is not a Call whose func is the bare Name -- contributes nothing
-    to the comparison below, so the argument-order test would pass on a driver it had only
-    partly read.  A textual count cannot be fooled the same way."""
+    The failure mode this exists for: a call the AST pass cannot see, but the SOURCE TEXT still
+    shows -- e.g. one the walker's func/Name filter rejects -- contributes nothing to the
+    comparison below, so the argument-order test would pass on a driver it had only partly read.
+
+    It does NOT cover aliasing (`f = supplemental_ln_likelihood; f(...)`): that removes the token
+    from the text as well, so both counts fall together and the equality still holds.  What
+    catches aliasing is _EXPECTED_CALL_SITES being pinned exactly.  Verified by mutation, which
+    is how this paragraph got corrected."""
     return len(re.findall(r"(?<![\w.])supplemental_ln_likelihood\s*\(", _driver_source()))
 
 
@@ -234,6 +242,13 @@ def test_the_stand_in_passes_a_keyword_only_to_a_factor_that_takes_it():
         seen["with"] = dict(k)
         return np.zeros(len(right_ascension))
 
+    # NAMED explicitly, which is the shape --help tells plugin authors to write and the shape
+    # the shipped example uses.  Only the **kwargs case was driven before, so deleting the
+    # `"xpy" in _params` clause from the driver left every test green.
+    def names_it(right_ascension, declination, phi_orb, inclination, psi, distance, xpy=None):
+        seen["named"] = xpy
+        return np.zeros(len(right_ascension))
+
     def takes_it_not(right_ascension, declination, phi_orb, inclination, psi, distance):
         seen["without"] = True
         return np.zeros(len(right_ascension))
@@ -243,8 +258,108 @@ def test_the_stand_in_passes_a_keyword_only_to_a_factor_that_takes_it():
     make(sig, True, takes_it, _DEFAULTS, xpy)(**args)
     assert kw in seen["with"] and seen["with"][kw] is xpy, \
         "a factor that accepts %r was not given it: %r" % (kw, seen.get("with"))
+    make(sig, True, names_it, _DEFAULTS, xpy)(**args)
+    assert seen.get("named") is xpy, \
+        "a factor NAMING %r in its signature was not given it: %r" % (kw, seen.get("named"))
     make(sig, True, takes_it_not, _DEFAULTS, np)(**args)    # must not raise TypeError
     assert seen.get("without") is True
+
+
+# Signatures whose BODY contains no supplemental_ln_likelihood(...) call at all, keyed by the
+# parameter tuple so the pin survives line numbers moving.  A factor is silently ignored on
+# these paths.  Pre-existing, pinned here so it cannot widen, and so FIXING it reddens this test
+# and forces someone to decide deliberately.
+_SIGNATURES_THAT_DROP_THE_FACTOR = {
+    # no --time-marginalization, --psi-marginalization
+    ("right_ascension", "declination", "t_ref", "phi_orb", "inclination", "distance"),
+    # no --time-marginalization, the driver's plain default path
+    ("right_ascension", "declination", "t_ref", "phi_orb", "inclination", "psi", "distance"),
+    # --rom-integrate-intrinsic
+    ("right_ascension", "declination", "phi_orb", "inclination", "psi", "distance", "q"),
+}
+
+
+def _signatures_by_whether_they_call_the_factor():
+    calls, drops = set(), set()
+    for n in ast.walk(ast.parse(_driver_source())):
+        if not (isinstance(n, ast.FunctionDef) and n.name == "likelihood_function"):
+            continue
+        sig = tuple(a.arg for a in n.args.args)
+        used = any(isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
+                   and c.func.id == "supplemental_ln_likelihood" for c in ast.walk(n))
+        (calls if used else drops).add(sig)
+    return calls, drops
+
+
+def test_the_paths_that_silently_drop_the_factor_are_the_known_ones():
+    """THE TRAP THE STAND-IN CREATES.  make_zero_likelihood_standin applies the supplementary
+    factor for EVERY signature, but only five of the eight real bodies call it.  So a plugin
+    validated under --zero-likelihood and then run in production WITHOUT --time-marginalization
+    is silently ignored, with the startup banner still announcing it.
+
+    The hole is pre-existing; this pins its shape.  If it widens, that is a new silently-ignored
+    configuration.  If it shrinks, someone fixed it and should delete the entry rather than let
+    this file keep describing a hole that closed."""
+    _calls, drops = _signatures_by_whether_they_call_the_factor()
+    assert drops == _SIGNATURES_THAT_DROP_THE_FACTOR, (
+        "the set of likelihood_function signatures that never call the supplementary factor "
+        "changed.\n  now dropping: %r\n  recorded:    %r\nIf a path was fixed, remove it here "
+        "and from --help.  If one was added, a new configuration now ignores the factor."
+        % (sorted(drops), sorted(_SIGNATURES_THAT_DROP_THE_FACTOR)))
+
+
+def test_the_help_warns_that_some_paths_drop_the_factor():
+    """A plugin author reads --help, not this file."""
+    src = _driver_source()
+    i = src.index('"--supplementary-likelihood-factor-function"')
+    text = src[i:src.index("\n", i)]
+    for phrase in ("time-marginalization", "silently ignored"):
+        assert phrase in text, (
+            "--supplementary-likelihood-factor-function's help no longer warns that some paths "
+            "drop the factor (missing %r)" % phrase)
+
+
+# What the DRIVER's own call site passes as supplement_defaults.  Read out of the source, not
+# reproduced here from memory: the values below were unpinned entirely until a review mutated
+# them to nonsense and every test still passed.
+_EXPECTED_DEFAULT_SOURCES = {
+    "right_ascension": "P.phi",
+    "declination": "P.theta",
+    "phi_orb": "P.phiref",
+    "inclination": "P.incl",
+    "psi": "P.psi",
+    "distance": "0.0",
+}
+
+
+def _driver_supplement_defaults():
+    """The dict literal the driver hands make_zero_likelihood_standin, as {name: source text}."""
+    tree = ast.parse(_driver_source())
+    for n in ast.walk(tree):
+        if not (isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                and n.func.id == "make_zero_likelihood_standin"):
+            continue
+        for a in n.args:
+            if isinstance(a, ast.Dict):
+                return {k.value: ast.unparse(v).replace(" ", "")
+                        for k, v in zip(a.keys, a.values)}
+    raise AssertionError("no dict literal in the make_zero_likelihood_standin call")
+
+
+def test_the_driver_supplies_the_defaults_it_documents():
+    """These are the values a factor sees for an argument the live signature does not sample, so
+    a wrong one is a silent wrong answer for any plugin that reads it.  Nothing tested them: the
+    wiring tests below use their own _DEFAULTS, and the only gate lane that reaches a default is
+    the distance-marginalized one, whose factor ignores distance.  Mutating the driver's literal
+    to P.dist (SI, ~1e24) and P.phiref left all twenty tests green."""
+    got = _driver_supplement_defaults()
+    assert got == _EXPECTED_DEFAULT_SOURCES, (
+        "the driver's supplement_defaults changed.\n  now: %r\n  was: %r\ndistance must stay "
+        "0.0, which is what the two distance-marginalized call sites pass the factor; the angles "
+        "must stay the template's own value for that parameter."
+        % (got, _EXPECTED_DEFAULT_SOURCES))
+    assert set(got) == set(_driver_ns()["_SUPPLEMENT_ARG_ORDER"]), \
+        "the defaults dict no longer covers exactly the factor's arguments: %r" % sorted(got)
 
 
 def test_the_argument_order_is_the_documented_one():
@@ -263,7 +378,10 @@ def test_the_stand_in_reproduces_every_live_likelihood_signature():
     arguments there, which killed --zero-likelihood --sampler-method adaptive_cartesian."""
     make = _driver_ns()["make_zero_likelihood_standin"]
     sigs = _likelihood_signatures()
-    assert len(sigs) >= 6, "only %d signatures found; the extractor probably broke" % len(sigs)
+    assert len(sigs) == _EXPECTED_SIGNATURES, (
+        "found %d likelihood_function signatures, expected %d.  A lower bound here would let the "
+        "extractor lose one and still report every signature reproduced."
+        % (len(sigs), _EXPECTED_SIGNATURES))
     for sig in sigs:
         f = make(sig, True, None, _DEFAULTS, np)
         got = f.__code__.co_varnames[:f.__code__.co_argcount]

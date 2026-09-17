@@ -127,7 +127,7 @@ python -m pytest -q "$_PORTDENS_TESTS"
 # (one parametrized case each, currently 8); if a signature is added, look at the new one and
 # update the number.
 _ZLSTANDIN_TESTS=MonteCarloMarginalizeCode/Code/test/test_zero_likelihood_standin.py
-_ZLSTANDIN_EXPECTED=20
+_ZLSTANDIN_EXPECTED=23
 _ZLSTANDIN_FOUND=$(python -m pytest -q --collect-only "$_ZLSTANDIN_TESTS" 2>/dev/null | grep -c '::' || true)
 if [ "$_ZLSTANDIN_FOUND" -ne "$_ZLSTANDIN_EXPECTED" ]; then
     echo "zero-likelihood stand-in gate: collected $_ZLSTANDIN_FOUND tests, expected $_ZLSTANDIN_EXPECTED" >&2
