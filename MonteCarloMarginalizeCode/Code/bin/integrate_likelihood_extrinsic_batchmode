@@ -2452,6 +2452,12 @@ if use_gmm_args:   # standalone GMM, or a portfolio carrying a GMM member (see u
     #                          member.draw_simplified(n, *self.params_ordered), so dim i is
     #                          sampler.params_ordered[i].
     # Those two lists are NOT the same order, so one key set cannot serve both.
+    #
+    # SCOPE: this changes the STANDALONE GMM path only.  params_ordered was already the correct
+    # frame for a portfolio member, so that branch reproduces the previous behaviour exactly --
+    # it is here to avoid regressing the portfolio, not to improve it.  Portfolio correctness is
+    # owned elsewhere; when that work lands it can adopt dim_group_frame() rather than
+    # re-deriving the rule.
     gmm_frame = mcsamplerEnsemble.dim_group_frame(sampler, unpinned_params,
                                                  driven_by_integrate=not use_gmm_member)
 
@@ -2537,8 +2543,13 @@ if use_gmm_args:   # standalone GMM, or a portfolio carrying a GMM member (see u
     # (ra,dec),(distance,inclination),(psi,phi_orb) only, so a run with a seventh parameter
     # (t_ref, i.e. no --time-marginalization) leaves one out, and an uncovered column is
     # uninitialized memory -- see complete_dim_group_cover().
+    # adapt_default must already reflect --force-adapt-all: the gmm_adaptive (BIC) block below
+    # sizes exactly the groups gmm_adapt marks adapting, and it runs BEFORE the force-adapt-all
+    # sweep further down.  Leaving this False made a forced-adapt leftover group refit at
+    # n_comp=1 instead of up to --internal-gmm-max-components.
     for _k in mcsamplerEnsemble.complete_dim_group_cover(gmm_dict, len(gmm_frame),
-                                                         comp_dict=comp_dict, gmm_adapt=gmm_adapt):
+                                                         comp_dict=comp_dict, gmm_adapt=gmm_adapt,
+                                                         adapt_default=bool(opts.force_adapt_all)):
       print("GMM: dimension {} ({}) had no dim-group; added as its own uncorrelated group".format(
           _k[0], gmm_frame[_k[0]]))
     # Fail HERE, not inside analyze_event: that is wrapped in a bare `except Exception` that

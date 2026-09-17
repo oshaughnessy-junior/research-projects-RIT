@@ -184,10 +184,18 @@ def _validate_dim_group_cover(gmm_dict, d):
     seen = {}
     for key in gmm_dict:
         if len(tuple(key)) == 0:
-            raise ValueError(
-                "gmm_dict has an EMPTY dim-group key. It names no dimension, so it contributes "
-                "neither a draw nor a factor to the sampling density; it is always a key that was "
-                "built from parameter names none of which are being sampled.")
+            # An empty key is a NO-OP, not a corruption: _sample() draws an (n, 0) block and
+            # multiplies the sampling density by prod([]) == 1.  CIP reaches this legitimately --
+            # parse_corr_params swallows an unknown name, so an --internal-correlate-parameters
+            # block whose names are all unknown collapses to (), and the uncorrelated fill still
+            # covers every real dimension.  Raising here killed a run that was producing the
+            # right answer, so warn (the empty block is still a user typo worth reporting) and
+            # let the cover check below decide on the dimensions that actually exist.
+            warnings.warn(
+                "gmm_dict has an empty dim-group key; it names no dimension and is ignored. "
+                "This usually means a correlate-parameters block named only unknown parameters.",
+                RuntimeWarning)
+            continue
         for i in tuple(key):
             i = int(i)
             if not (0 <= i < d):

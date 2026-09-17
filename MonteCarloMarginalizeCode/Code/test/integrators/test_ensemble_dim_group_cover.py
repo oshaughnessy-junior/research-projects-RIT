@@ -20,7 +20,8 @@ The wrong FRAME, where the cover happens to be complete, leaves ln Z unbiased --
 n_eff instead.  It is pinned by the frame tests, not the evidence tests.
 
 Tolerances come from the measured across-seed spread of this integrator on these two targets
-(8 seeds, worst |deviation| 0.025 nats); the cover defect being pinned is 11-29 nats.
+(8 seeds, worst |deviation| 0.0349 nats, so the 0.15 used below is 4.3x that); the cover defect
+being pinned is 11-29 nats.
 """
 import numpy as np
 import pytest
@@ -28,6 +29,7 @@ import pytest
 from scipy.special import i0
 
 import RIFT.integrators.mcsamplerEnsemble as mcsamplerEnsemble
+from RIFT.integrators import MonteCarloEnsemble as monte_carlo
 
 
 # ILE's extrinsic parameters, in the two orders that disagree.
@@ -47,7 +49,7 @@ PARAMS_ORDERED = ['psi', 'phi_orb', 'inclination', 'distance',
 INTEGRATE_ARGS = ['right_ascension', 'declination', 't_ref', 'phi_orb',
                   'inclination', 'psi', 'distance']
 
-LN_Z_TOL = 0.15   # 6x the measured worst across-seed deviation, 70x below the smallest defect
+LN_Z_TOL = 0.15   # 4.3x the measured worst across-seed deviation, 70x below the smallest defect
 
 
 def _prior_pdf(name):
@@ -221,8 +223,12 @@ def test_setup_path_groups_the_parameters_the_key_names():
     for g in groups:
         key = tuple(frame.index(n) for n in g)
         assert key in sampler.integrator.gmm_dict
-        assert [sampler.params_ordered[i] for i in key] == g, \
-            "key {} lands on {}, not {}".format(key, [sampler.params_ordered[i] for i in key], g)
+        # compare against the integrator's OWN bounds, which is what _sample() will draw from --
+        # reading the names back out of `frame` would be true by construction.
+        got = np.asarray(sampler.identity_convert(sampler.integrator.bounds[key]), dtype=float)
+        expected = np.array([PARAM_LIMITS[n] for n in g], dtype=float)
+        assert np.allclose(got, expected), \
+            "key {} carries bounds {}, expected {} for {}".format(key, got, expected, g)
     # and the setup() path is covered by the guard too (it was not, before)
     assert sorted(i for k in sampler.integrator.gmm_dict for i in k) == list(range(len(frame)))
 
@@ -250,8 +256,9 @@ def test_setup_path_names_the_frame_for_an_out_of_range_key():
     bad[(n - 1, n + 4)] = None                                 # n+4 is not a dimension
     with pytest.raises(ValueError) as e:
         sampler.setup(n_comp={k: 1 for k in bad}, gmm_dict=dict(bad), setup_forget=True)
-    assert "POSITIONAL ARGUMENT" in str(e.value), \
-        "the message must name the frame, not just the index: %r" % str(e.value)
+    msg = str(e.value)
+    assert "outside the" in msg and "POSITIONAL ARGUMENT" in msg, \
+        "must be the OUT-OF-RANGE branch and must name the frame: %r" % msg
 
 
 def test_complete_dim_group_cover_fills_and_reports():
@@ -265,11 +272,48 @@ def test_complete_dim_group_cover_fills_and_reports():
     assert mcsamplerEnsemble.complete_dim_group_cover(gmm_dict, 7, comp_dict=comp, gmm_adapt=adapt) == []
 
 
-def test_empty_dim_group_key_is_refused():
-    """A key built from names none of which are sampled collapses to (), which names nothing."""
+def test_empty_dim_group_key_is_ignored_not_refused():
+    """An empty key names no dimension, so it is a NO-OP -- and CIP produces one legitimately.
+
+    `parse_corr_params` swallows an unknown parameter name, so a CIP
+    `--internal-correlate-parameters` block whose names are all unknown collapses to `()` while
+    the uncorrelated fill still covers every real dimension.  `_sample()` then draws an (n, 0)
+    block and multiplies the sampling density by `prod([]) == 1`.  Refusing that killed a run
+    that was computing the right answer.  Warn, ignore the key, and still get the exact answer.
+    """
     sampler = _make_sampler()
-    bad = {(): None}
-    bad.update({(i,): None for i in range(len(INTEGRATE_ARGS))})
+    gmm_dict = {(): None}
+    gmm_dict.update({(i,): None for i in range(len(INTEGRATE_ARGS))})
+    with pytest.warns(RuntimeWarning, match="empty dim-group"):
+        ln_z, _, _, _ = _integrate(sampler, gmm_dict, {k: 1 for k in gmm_dict},
+                                   {k: False for k in gmm_dict}, a_coeff=0.0, seed=1000)
+    assert abs(float(ln_z)) < LN_Z_TOL, "empty key perturbed ln Z: %r" % float(ln_z)
+
+
+def test_integrator_init_guard_is_live():
+    """The guard in monte_carlo.integrator.__init__ protects every caller that is NOT
+    mcsamplerEnsemble.setup()/integrate() -- CIP, EOS, and the warm-start write-back, which
+    deliberately steps over it.  Without a test here, deleting that call site is invisible."""
+    bounds = {(0, 1): np.array([[0.0, 1.0], [0.0, 1.0]])}
     with pytest.raises(ValueError):
-        _integrate(sampler, bad, {k: 1 for k in bad}, {k: False for k in bad},
-                   a_coeff=0.0, seed=1000, nmax=20000, neff=10)
+        monte_carlo.integrator(3, bounds, {(0, 1): None}, 1, n=10)      # dim 2 in no group
+    with pytest.raises(ValueError):
+        monte_carlo.integrator(2, bounds, {(0, 1): None, (1,): None}, 1, n=10)   # dim 1 twice
+    # the matching complete cover is accepted
+    monte_carlo.integrator(2, bounds, {(0, 1): None}, 1, n=10)
+
+
+def test_complete_dim_group_cover_default_values():
+    """The VALUES the fill writes, not just the key sets.
+
+    `adapt_default` in particular is load-bearing: the driver passes bool(--force-adapt-all)
+    because the BIC (`gmm_adaptive`) block sizes exactly the groups gmm_adapt marks adapting,
+    and it runs BEFORE the force-adapt-all sweep.
+    """
+    gd, comp, adapt = {(0, 1): None}, {(0, 1): 4}, {(0, 1): True}
+    mcsamplerEnsemble.complete_dim_group_cover(gd, 3, comp_dict=comp, gmm_adapt=adapt)
+    assert comp[(2,)] == 1 and adapt[(2,)] is False, (comp, adapt)
+    gd2, comp2, adapt2 = {(0, 1): None}, {(0, 1): 4}, {(0, 1): True}
+    mcsamplerEnsemble.complete_dim_group_cover(gd2, 3, comp_dict=comp2, gmm_adapt=adapt2,
+                                               n_comp_default=5, adapt_default=True)
+    assert comp2[(2,)] == 5 and adapt2[(2,)] is True, (comp2, adapt2)
