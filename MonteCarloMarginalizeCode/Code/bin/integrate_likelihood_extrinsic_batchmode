@@ -211,7 +211,7 @@ def make_zero_likelihood_standin(arg_names, return_lnL, supplement, supplement_d
 
     `supplement_defaults` supplies a value for each of _SUPPLEMENT_ARG_ORDER that the live
     signature does not sample -- distance under --distance-marginalization, phi_orb when the
-    distance lookup table is phase-marginalized, psi under the time+psi-marginalized signature.
+    distance lookup table is phase-marginalized, psi under --psi-marginalization.
 
     `return_lnL` is the convention the INTEGRAND uses (ln L = 0 versus L = 1), which is not the
     same question as opts.internal_use_lnL; see the note on log_res below.
