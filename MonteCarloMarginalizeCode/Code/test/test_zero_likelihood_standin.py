@@ -19,6 +19,7 @@ is INJECTED, and a fake one records every call.
 """
 import ast
 import os
+import re
 
 import numpy as np
 import pytest
@@ -53,6 +54,23 @@ def _driver_ns():
     ns = {}
     exec(compile(ast.Module(body=nodes, type_ignores=[]), _ILE, "exec"), ns)
     return ns
+
+
+# How many times the driver calls the factor.  Pinned EXACTLY, not as a lower bound: with a
+# `>=` the extractor could lose a site, or fail to see one, and still report "no mismatch".
+# If this number changes, look at the new site and check its argument order by hand before
+# updating it.
+_EXPECTED_CALL_SITES = 5
+
+
+def _textual_call_site_count():
+    """Count the factor's call sites WITHOUT the AST, as a cross-check on the walker.
+
+    The failure mode this exists for: a call the AST pass cannot see -- reached through an
+    alias, or any shape that is not a Call whose func is the bare Name -- contributes nothing
+    to the comparison below, so the argument-order test would pass on a driver it had only
+    partly read.  A textual count cannot be fooled the same way."""
+    return len(re.findall(r"(?<![\w.])supplemental_ln_likelihood\s*\(", _driver_source()))
 
 
 def _likelihood_signatures():
@@ -104,11 +122,29 @@ def test_the_stand_in_uses_the_same_argument_order_as_every_real_call_site():
     others is a failure here rather than a silent inconsistency."""
     order = _driver_ns()["_SUPPLEMENT_ARG_ORDER"]
     sites = _real_supplement_call_orders()
-    assert len(sites) >= 4, "only %d call sites found; the extractor probably broke" % len(sites)
+    assert len(sites) == _EXPECTED_CALL_SITES, (
+        "the AST pass found %d call sites, expected %d.  If a site was added, read its argument "
+        "order and update _EXPECTED_CALL_SITES; if one vanished, the extractor broke."
+        % (len(sites), _EXPECTED_CALL_SITES))
     for names, lineno in sites:
         assert names == tuple(order), (
             "the --zero-likelihood stand-in passes the factor %r, but the real call site at "
             "line %d passes %r" % (tuple(order), lineno, names))
+
+
+def test_the_extractor_reads_every_call_site_the_source_has():
+    """The guard on the guard.  A site the AST pass cannot see would make the order comparison
+    above pass on a driver it had only partly read, which is the quiet way this whole file stops
+    being worth anything."""
+    ast_count = len(_real_supplement_call_orders())
+    textual = _textual_call_site_count()
+    assert ast_count == textual, (
+        "the AST pass sees %d call sites but the source text has %d: at least one call is in a "
+        "shape the walker does not recognise, and its argument order is NOT being checked."
+        % (ast_count, textual))
+    assert textual == _EXPECTED_CALL_SITES, (
+        "the driver has %d call sites, expected %d; read the new one before updating the number."
+        % (textual, _EXPECTED_CALL_SITES))
 
 
 def test_the_argument_order_is_the_documented_one():
