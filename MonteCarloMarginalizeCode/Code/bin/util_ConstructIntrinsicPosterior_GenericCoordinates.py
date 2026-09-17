@@ -912,7 +912,12 @@ def m_prior(x):
 
 
 def triangle_prior(x,R=chi_max):
-    return (np.ones(x.shape)-np.abs(x/R))/R  # triangle from -R to R centered on zero
+    # A density is zero outside its support: without the clamp this returns a NEGATIVE
+    # number for |x|>R, and a negative prior weight is not a small error.  It reaches a
+    # fractional tempering exponent in mcsampler (nan, which poisons the adaptive
+    # histogram), np.log in mcsamplerAdaptiveVolume (nan, silently dropped), and the
+    # export reweight (ValueError: weights must be finite and nonnegative).
+    return np.maximum(np.ones(x.shape)-np.abs(x/R), 0.)/R  # triangle from -R to R centered on zero
 def xi_uniform_prior(x):
     return np.ones(x.shape)
 def s_component_uniform_prior(x,R=chi_max):  # If all three are used, a volumetric prior
@@ -1059,11 +1064,32 @@ def unnormalized_uniform_prior(x):
 def unnormalized_log_prior(x):
     return 1./x
 
+# The chi{1,2}_perp_bar family.  Rbar = chi_perp/sqrt(1-s1z^2) is the cylindrical radius
+# divided by the radius of the UNIT sphere at that height (lalsimutils assign_param /
+# extract_param), so its support is [0,1] whatever --chi-max is, and every density on it
+# must be normalized there -- as prior_range_map['chi{1,2}_perp_bar'] = [0,1] says, with
+# no chi_small_max variant.  chi-max bounds this coordinate only through the
+# downselect_dict['chi1'] = [0,chi_max] cut on the exported samples.  Its partner
+# s{1,2}z_bar is different: that one IS s1z, carries chi-max directly, and its range is
+# set alongside its prior in the --aligned-prior block below.
+#
+# So the [-R,R] cartesian-component densities (triangle_prior, s_component_sqrt_prior)
+# cannot be reused here at their R=chi_max default: a --transverse-prior selection must
+# install the [0,1] counterpart below instead.
 def normalized_Rbar_prior(x):
     return 2*x
 p_Rbar = lalsimutils.p_R
 def normalized_Rbar_singular_prior(x):
     return np.power(x, p_Rbar-1.)*p_Rbar
+def normalized_Rbar_taper_prior(x):
+    # --transverse-prior taper-down, in Rbar: triangle_prior restricted to [0,1] and
+    # renormalized there (the triangle carries half its mass on x<0, which Rbar has not).
+    return 2*np.maximum(1.-x, 0.)
+def normalized_Rbar_sqrt_prior(x):
+    # --transverse-prior sqrt-prior, in Rbar: s_component_sqrt_prior at R=1 restricted to
+    # [0,1] and renormalized there.  Integrable singularity at Rbar=0, as in the cartesian
+    # version and in normalized_Rbar_singular_prior.
+    return 0.5/np.sqrt(np.abs(x).astype(float))
 def normalized_zbar_prior(z):
     return 3.*(1.-z**2)/4.
 
@@ -1192,8 +1218,27 @@ if opts.aligned_prior == 'alignedspin-zprior':
     # prior on s1z constructed to produce the standard distribution
     prior_map["s1z"] = s_component_zprior
     prior_map["s2z"] = functools.partial(s_component_zprior,R=chi_small_max)
+    # s1z_bar IS s1z (lalsimutils extract_param), so R here is a maximum spin MAGNITUDE
+    # and chi-max is the right one -- unlike chi1_perp_bar, which is already divided by
+    # sqrt(1-s1z^2) and carries no chi-max scale.  What was missing is the matching
+    # RANGE: left at its [-1,1] default, the density is identically zero over the
+    # |s1z_bar| > chi_max shell -- 20% of the sampled range at --chi-max 0.8, 50% at 0.5.
+    #
+    # This is NOT only a wasted-draw problem.  Those draws have log(prior) = -inf and are
+    # dropped by the isfinite screen in mcsamplerAdaptiveVolume.integrate_log, which
+    # divides by the RETAINED count while log_joint_s_prior still names the full box, so
+    # the evidence came out inflated by (1/chi_max)^2 -- one factor per z coordinate.
+    # Measured on a real composite, lnZ moved about 0.45 nats at --chi-max 0.8 and 1.4 at
+    # 0.5,
+    # and lnZ grew as chi-max SHRANK, which removing prior support cannot do.  Giving
+    # these two the same box as s1z/s2z removes that; it does not fix the AV
+    # normalization, which will bite any future prior narrower than its range.
+    # The posterior itself does not move: the density is the same function on the
+    # retained region, which downselect_dict['s1z'] already bounded.
     prior_map["s1z_bar"] = s_component_zprior
     prior_map["s2z_bar"] = functools.partial(s_component_zprior,R=chi_small_max)
+    prior_range_map['s1z_bar'] = [-0.999*chi_max,0.999*chi_max]
+    prior_range_map['s2z_bar'] = [-0.999*chi_small_max,0.999*chi_small_max]
     if  'chiz_plus' in low_level_coord_names:
         if opts.spin_prior_chizplusminus_alternate_sampling == 'alignedspin_zprior':
             # just a  trick to make reweighting more efficient.
@@ -1235,15 +1280,15 @@ elif opts.transverse_prior == 'sqrt-prior':
     prior_map["s1y"] = s_component_sqrt_prior
     prior_map["s2x"] = functools.partial(s_component_sqrt_prior,R=chi_small_max)
     prior_map["s2y"] = functools.partial(s_component_sqrt_prior,R=chi_small_max)
-    prior_map['chi1_perp_bar'] = s_component_sqrt_prior
-    prior_map['chi2_perp_bar'] = s_component_sqrt_prior
+    prior_map['chi1_perp_bar'] = normalized_Rbar_sqrt_prior
+    prior_map['chi2_perp_bar'] = normalized_Rbar_sqrt_prior
 elif opts.transverse_prior == 'taper-down':
     prior_map["s1x"] = triangle_prior
     prior_map["s1y"] = triangle_prior
     prior_map["s2x"] = functools.partial(triangle_prior,R=chi_small_max)
     prior_map["s2y"] = functools.partial(triangle_prior,R=chi_small_max)
-    prior_map['chi1_perp_bar'] = triangle_prior
-    prior_map['chi2_perp_bar'] = triangle_prior
+    prior_map['chi1_perp_bar'] = normalized_Rbar_taper_prior
+    prior_map['chi2_perp_bar'] = normalized_Rbar_taper_prior
 else:
     print(" UNKOWN OPTION  for --transverse-prior ", opts.transverse_prior)
 
