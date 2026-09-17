@@ -122,12 +122,17 @@ python -m pytest -q "$_PORTDENS_TESTS"
 # every live likelihood_function signature, and its array module.  This is the half the
 # end-to-end gate below is structurally blind to -- right_ascension, phi_orb and psi are iid
 # uniform on [0, 2pi), so NO marginal can tell a permutation of the three apart, and the runners
-# have no cupy, so nothing there sees a host/device mistake.  Pure AST + exec, ~4 s.
+# have no cupy, so nothing there sees a host/device mistake.  Mostly AST + exec, ~5 s.
+# Its section 4 runs the same device paths against REAL cupy and SKIPS here, because the runners
+# have none.  Skipped tests are still collected, so the count below is the same everywhere; but
+# a green run here has NOT exercised the device half.  That half is run by hand on a CIT GPU
+# node with CUDA_VISIBLE_DEVICES pinned to a slot the installed cupy supports -- see
+# _cupy_or_skip in the test file.
 # The collected count tracks the number of `def likelihood_function` signatures in the driver
 # (one parametrized case each, currently 8); if a signature is added, look at the new one and
 # update the number.
 _ZLSTANDIN_TESTS=MonteCarloMarginalizeCode/Code/test/test_zero_likelihood_standin.py
-_ZLSTANDIN_EXPECTED=24
+_ZLSTANDIN_EXPECTED=27
 _ZLSTANDIN_FOUND=$(python -m pytest -q --collect-only "$_ZLSTANDIN_TESTS" 2>/dev/null | grep -c '::' || true)
 if [ "$_ZLSTANDIN_FOUND" -ne "$_ZLSTANDIN_EXPECTED" ]; then
     echo "zero-likelihood stand-in gate: collected $_ZLSTANDIN_FOUND tests, expected $_ZLSTANDIN_EXPECTED" >&2
