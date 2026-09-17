@@ -139,17 +139,17 @@ python -m pytest -q "$_ZLSTANDIN_TESTS"
 # a zero-strain fixture, --zero-likelihood (exact ln Z = 0), and an analytic supplementary
 # factor A*cos(phi_orb) + B*cos(iota) whose marginal is exactly ln I0(A) + ln(sinh(B)/B).  The
 # sampler unit tests check samplers; pseudo_pipe/asimov check that the pipeline RUNS; nothing
-# checked that it runs and is CORRECT.  That gap hid three defects: --zero-likelihood silently
+# checked that it runs and is CORRECT.  That gap hid two defects: --zero-likelihood silently
 # discarded a --supplementary-likelihood-factor-* (two runs differing only by it returned ln Z
-# bit-identical, while the banner reported the factor as active); the *args stand-in it was
+# bit-identical, while the banner reported the factor as active), and the *args stand-in it was
 # replaced with reported co_argcount 0 to mcsampler, killing --zero-likelihood with the
-# driver's own default --sampler-method adaptive_cartesian; and ILE --sampler-method GMM
-# returns an evidence ~30 nats wrong with a small error bar.  All three were invisible because
-# the driver catches the exception, prints FAILED ANALYSIS and EXITS 0.  Needs no network, no
-# real event and no GPU; about 8-12 s per ILE arm plus ~15 s once for the distance-
-# marginalization lookup table.
+# driver's own default --sampler-method adaptive_cartesian.  Both were invisible because the
+# driver catches the exception, prints FAILED ANALYSIS and EXITS 0.  It also caught ILE
+# --sampler-method GMM returning an evidence ~30 nats wrong; #359 fixed that, and GMM is now a
+# lane here rather than a recorded defect.  Needs no network, no real event and no GPU; about
+# 8-12 s per ILE arm plus ~15 s once for the distance-marginalization lookup table.
 _E2E_TESTS=MonteCarloMarginalizeCode/Code/test/test_e2e_analytic_pipeline.py
-_E2E_EXPECTED=14
+_E2E_EXPECTED=17
 _E2E_FOUND=$(python -m pytest -q --collect-only "$_E2E_TESTS" 2>/dev/null | grep -c '::' || true)
 if [ "$_E2E_FOUND" -ne "$_E2E_EXPECTED" ]; then
     echo "e2e analytic gate: collected $_E2E_FOUND tests, expected $_E2E_EXPECTED" >&2

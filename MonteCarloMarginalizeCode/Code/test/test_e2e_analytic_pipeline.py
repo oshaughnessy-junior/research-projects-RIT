@@ -18,6 +18,21 @@ about 4 s.  It exists because an end-to-end marginal is structurally unable to d
 permutation among right_ascension, phi_orb and psi: the three are independent and identically
 distributed, so any factor's marginal is the same under the swap.  Read both files together.
 
+SAMPLERS.  AV, portfolio (AV + AC) and GMM run every factor lane.  GMM was a recorded
+known-wrong lane here until #359 ("GMM sampler: dim-group keys were in the wrong frame"), which
+moved it from -23.1 to -0.26 sigma on the sharply peaked target; it is a first-class lane now,
+and this file is what keeps it one.
+
+WHAT IS DELIBERATELY ABSENT.  The high-SNR recipe in
+~/rift-integrator-lore/coordinates-and-degeneracies.md (--force-adapt-all plus
+--internal-rotate-phase and --internal-sky-network-coordinates) is the documented fix for a
+collapsing n_eff, and it is NOT used here.  --internal-sky-network-coordinates needs two
+detectors and this fixture is H1-only.  --internal-rotate-phase changes which coordinates the
+supplementary factor is handed on the raw path, so the closed form would no longer describe the
+integral being measured.  A lane that passes because the geometry was changed underneath it is
+measuring something else.  If a lane will not converge, scope it or leave it out; do not add
+these.
+
 WHAT EACH ARM COSTS.  About 8-12 s of one core per ILE arm, plus ~15 s once for the
 distance-marginalization lookup table.  No network, no real event, no GPU.
 """
@@ -57,7 +72,8 @@ MIN_NEFF = 30.0
 _AV = ["--sampler-method", "AV"]
 _PORTFOLIO = ["--sampler-method", "portfolio",
               "--sampler-portfolio", "AV", "--sampler-portfolio", "AC"]
-SAMPLER_ARGS = {"AV": _AV, "portfolio": _PORTFOLIO}
+_GMM = ["--sampler-method", "GMM"]
+SAMPLER_ARGS = {"AV": _AV, "portfolio": _PORTFOLIO, "GMM": _GMM}
 
 
 # ---------------------------------------------------------------------------------------
@@ -231,7 +247,7 @@ def _assert_lnZ(tag, lnL, sigma, neff, exact):
 # ---------------------------------------------------------------------------------------
 # 1. the prior-only answer
 
-@pytest.mark.parametrize("sampler", ["AV", "portfolio"])
+@pytest.mark.parametrize("sampler", ["AV", "portfolio", "GMM"])
 def test_zero_likelihood_alone_gives_ln_Z_zero(event, sampler):
     """--zero-likelihood makes the signal term exactly 0, so ln Z is the log prior mass, which
     is 0 for normalized extrinsic priors.  This is the whole extrinsic integrator, the driver
@@ -252,7 +268,7 @@ FACTOR_CASES = [(0.75, 0.0), (8.0, 0.0), (0.75, 3.0)]
 # repeated here.
 
 
-@pytest.mark.parametrize("sampler", ["AV", "portfolio"])
+@pytest.mark.parametrize("sampler", ["AV", "portfolio", "GMM"])
 @pytest.mark.parametrize("a_coeff,b_coeff", FACTOR_CASES)
 def test_analytic_factor_marginal_is_recovered(event, sampler, a_coeff, b_coeff):
     """ln Z must equal ln I0(A) + ln(sinh(B)/B).  A sampler can be right on a flat target and
@@ -356,39 +372,63 @@ def test_adaptive_cartesian(event):
 
 
 # ---------------------------------------------------------------------------------------
-# 4. the lane that is known to be wrong
-
-def test_gmm_lane_is_known_wrong(event):
-    """ILE --sampler-method GMM returns a badly wrong evidence on this target.  It is recorded
-    rather than left out, so the defect cannot be forgotten and so a FIX fails here and forces
-    GMM into the parametrized lanes above.  Do not 'fix' this by deleting it.
-
-    The underlying defect is being fixed separately -- oshaughnessy-junior/research-projects-RIT
-    PR #359, 'GMM sampler: dim-group keys were in the wrong frame' -- so do not duplicate that
-    work here.
-
-    GMM ALSO FAILS TO CONVERGE on some draws, emitting nan for lnL, sigma and n_eff together.
-    Measured on this fixture over 16 seeds (2000-2015) on a clean tree: 2 non-finite, and of the
-    14 that returned a number, ln Z ran from -129.52 to -11.50 against an exact 6.653, with
-    sigma 0.065 to 0.648 and n_eff 1.6 to 53.1.  So the non-convergence branch below is a skip
-    and not a failure: a run that produced no estimate cannot characterise anything, and failing
-    on it puts a red mark on a clean tree about one run in eight."""
-    a, b = 8.0, 2.0
-    exact = _exact(a, b)
-    tag = "gmm_known_wrong"
-    lnL, sigma, neff = _run_ile(event, tag, ["--sampler-method", "GMM"],
-                                a_coeff=a, b_coeff=b)
-    # NOT MIN_NEFF: GMM reaches n_eff of order 10 on this target even when it does return a
-    # number, and that is part of what is being recorded.  The question here is only whether it
-    # produced an estimate AT ALL.
-    if not (np.isfinite(lnL) and np.isfinite(sigma) and np.isfinite(neff)) or sigma <= 0:
-        pytest.skip("GMM did not converge on this draw (lnL=%r, sigma=%r, n_eff=%r), so it "
-                    "produced no estimate to characterise" % (lnL, sigma, neff))
-    if abs(lnL - exact) < Z_TOLERANCE * max(sigma, 1e-6):
-        pytest.fail(
-            "ILE --sampler-method GMM now agrees with the analytic answer (%r vs %r): the "
-            "defect this test records appears to be FIXED.  Move GMM into the parametrized "
-            "lanes above and delete this test." % (lnL, exact))
-    assert lnL < exact - 5.0, \
-        "GMM is wrong in an unexpected direction/size (%r vs exact %r); re-characterise it " \
-        "rather than widening this assertion" % (lnL, exact)
+# CALIBRATION
+#
+# Where Z_TOLERANCE, MAX_SIGMA and MIN_NEFF come from.  Eight seeds (1000-1007) per lane on
+# ldas-grid, IGWN CVMFS python 3.11, numpy 1.26.4, cupy absent, CUDA_VISIBLE_DEVICES="".
+# Non-GMM lanes were measured at d1d7c7e84 and re-run after the rebase onto 0a5fdb3be: the
+# prior-only AV lane came back BIT-IDENTICAL on all eight seeds, so those numbers carry over.
+# GMM lanes were measured at 0a5fdb3be, i.e. after #359.
+#
+#   lane                                      max |z|   max sigma   min n_eff
+#   prior-only,    AV                            2.03      0.0134        1349
+#   prior-only,    portfolio                     1.68      0.0104        2316
+#   prior-only,    GMM                           1.88      0.0134        1335
+#   A=0.75 B=0,    AV                            1.37      0.0159         745
+#   A=0.75 B=0,    portfolio                     1.14      0.0127        1287
+#   A=0.75 B=0,    GMM                           1.66      0.0160         750
+#   A=8    B=0,    AV                            1.73      0.0272         416
+#   A=8    B=0,    portfolio                     1.31      0.0305         346
+#   A=8    B=0,    GMM                           1.52      0.0349         267
+#   A=0.75 B=3,    AV                            1.25      0.0234         363
+#   A=0.75 B=3,    portfolio                     1.54      0.0227         392
+#   A=0.75 B=3,    GMM                           1.34      0.0235         381
+#   A=8    B=2,    AV (the survives-swap lanes)  1.06      0.0332         247
+#   raw inclination contract (cosine sampler)    1.47      0.0353         163
+#   time-marginalized portfolio                  1.65      0.0298         237
+#   distance-marginalized                        2.15      0.0326         336
+#   adaptive_cartesian, --n-max 60000            1.35      0.0305         250
+#
+# Z_TOLERANCE = 5     is 2.3x the worst |z| seen (2.15, distance-marginalized).
+# MAX_SIGMA   = 0.06  is 1.7x the worst sigma seen (0.0353).  5 * MAX_SIGMA is a 0.30-nat band.
+# MIN_NEFF    = 30    is 5.4x below the worst n_eff seen (163).  See its comment for why it is
+#                     this loose.
+#
+# WHAT THE GATE HAS TO SEPARATE A CORRECT RUN FROM.  Each row was run on this fixture, not
+# argued.  The smallest is 6.3 sigma, against a tolerance of 5 and a worst observed draw of 2.15:
+#
+#   defect                                                        lane              z
+#   portfolio member p_s, rift_O4d @ 9e55f12b7 (without #356)     prior-only    -43.6
+#   portfolio member p_s, same tree                               A=0.75 B=3    -25.9
+#   ILE --sampler-method GMM before #359                          A=8 B=2      -684
+#   phi_orb and inclination swapped in _SUPPLEMENT_ARG_ORDER      A=8 B=2       -19.5
+#   inclination and psi swapped                                   A=8 B=2        +6.3
+#   inclination and psi swapped, B term off                       A=8 B=0        -0.1
+#   phi_orb and psi swapped                                       all            ~0
+#
+# The last two rows are why the B term and test_zero_likelihood_standin.py both exist.  With
+# the B term off, mis-routing inclination is invisible.  And phi_orb, psi and right_ascension
+# are independent and identically distributed, so NO closed-form lane can see a permutation of
+# those three: with phi_orb and psi swapped in the stand-in, every z-test in this file passes.
+# That case is caught by reading the wiring, which is the companion file's job.
+#
+# ONE THING THE GMM LANES DO NOT COVER, measured while calibrating them.  GMM's EVIDENCE is
+# correct on all three cases above, but at A=8 with the inclination term ON (B=2, which no lane
+# here runs) its n_eff is a bimodal lottery: over eight seeds, six landed at n_eff 266-324 with
+# sigma ~0.025 and two collapsed to 73.5 and 14.5 with sigma 0.028 and 0.073, while ln Z stayed
+# right on every one (max |z| 1.49).  A=8 with B=0 does NOT collapse, so the inclination term is
+# what drives it, not the phi_orb peak.  This is the shape recorded in
+# ~/rift-integrator-lore/coordinates-and-degeneracies.md, whose diagnosis is extrinsic mode
+# collapse rather than sample starvation -- raising --n-max re-rolls the dice instead of fixing
+# it.  Narrower than the production case it resembles: this fixture is H1-only, so neither the
+# sky ring nor the two-detector phase-polarization degeneracy exists here.
