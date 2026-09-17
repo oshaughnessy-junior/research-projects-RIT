@@ -520,8 +520,18 @@ def test_a_linear_sampler_result_gets_its_logarithm_taken():
 def test_no_post_processing_step_still_reads_the_option_as_the_convention():
     """The replica arm and the zero-likelihood stand-in had the same substitution."""
     src = _driver_source()
+    # The zero-likelihood stand-in no longer has an `if` of its own: it is built by
+    # make_zero_likelihood_standin, and the convention is an ARGUMENT.  Check that argument
+    # instead, and that the construction is still there to check.
+    _mark = 'like_to_integrate = make_zero_likelihood_standin('
+    assert _mark in src, 'the zero-likelihood stand-in construction moved or was renamed'
+    _call = src[src.index(_mark):]
+    _call = _call[:_call.index(')\n')]
+    assert 'return_lnL' in _call, \
+        'the zero-likelihood stand-in is no longer told the convention: {!r}'.format(_call)
+    assert 'internal_use_lnL' not in _call, \
+        'the zero-likelihood stand-in reads the OPTION again: {!r}'.format(_call)
     for anchor in ('log_res = numpy.log(res)', '_lr2 = numpy.log(_res2)',
-                   'like_to_integrate = zero_like',
                    'res = numpy.exp(log_res); var'):
         before = src[:src.index(anchor)].split('\n')
         gate = next(ln for ln in reversed(before) if ln.strip().startswith(('if ', 'elif ')))
