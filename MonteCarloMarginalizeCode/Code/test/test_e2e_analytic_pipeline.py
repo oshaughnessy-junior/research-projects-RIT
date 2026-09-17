@@ -399,7 +399,10 @@ def test_adaptive_cartesian(event):
 #   distance-marginalized                        2.15      0.0326         336
 #   adaptive_cartesian, --n-max 60000            1.35      0.0305         250
 #
-# Z_TOLERANCE = 5     is 2.3x the worst |z| seen (2.15, distance-marginalized).
+# Z_TOLERANCE = 5     is 2.3x the worst |z| seen (2.15, distance-marginalized).  That lane sets
+#                     the constant, so it was re-measured at eight seeds after the stand-in
+#                     started passing xpy= to factors that accept it: max |z| 2.15, max sigma
+#                     0.0326, least n_eff 336, unchanged, and seed 1000 bit-identical.
 # MAX_SIGMA   = 0.06  is 1.7x the worst sigma seen (0.0353).  5 * MAX_SIGMA is a 0.30-nat band.
 # MIN_NEFF    = 30    is 5.4x below the worst n_eff seen (163).  See its comment for why it is
 #                     this loose.

@@ -18,8 +18,10 @@ stand-in reaching for numpy on a host where the integrand is on a device.  Here 
 is INJECTED, and a fake one records every call.
 """
 import ast
+import inspect
 import os
 import re
+import sys
 
 import numpy as np
 import pytest
@@ -35,6 +37,11 @@ pytestmark = pytest.mark.skipif(not os.path.exists(_ILE),
 _P_ATTR = {"phi": "right_ascension", "theta": "declination", "phiref": "phi_orb",
            "incl": "inclination", "psi": "psi", "dist": "distance"}
 
+# How a literal argument is reported.  Only the distance slot may hold one: the
+# distance-marginalized sites pass 0 because distance has been integrated away.
+_LITERAL = "<literal %r>"
+_LITERAL_OK_IN = "distance"
+
 
 def _driver_source():
     with open(_ILE) as f:
@@ -45,13 +52,17 @@ def _driver_ns():
     """exec just the stand-in factory and its constant, out of the driver's real source."""
     src = _driver_source()
     tree = ast.parse(src)
-    wanted = ("make_zero_likelihood_standin", "_SUPPLEMENT_ARG_ORDER")
+    wanted = ("make_zero_likelihood_standin", "_SUPPLEMENT_ARG_ORDER",
+              "_SUPPLEMENT_OPTIONAL_KWARGS")
     nodes = [n for n in tree.body
              if (isinstance(n, ast.FunctionDef) and n.name in wanted)
              or (isinstance(n, ast.Assign) and any(
                  isinstance(t, ast.Name) and t.id in wanted for t in n.targets))]
-    assert len(nodes) == 2, "expected the factory and its constant, found %d" % len(nodes)
-    ns = {}
+    assert len(nodes) == 3, "expected the factory and its two constants, found %d" % len(nodes)
+    # The factory is lifted out of the driver, so the module-level names its body uses have to
+    # be supplied here.  Keep this list MINIMAL and explicit: anything added to it is a name the
+    # driver gets from its own imports and this harness is standing in for.
+    ns = {"inspect": inspect}
     exec(compile(ast.Module(body=nodes, type_ignores=[]), _ILE, "exec"), ns)
     return ns
 
@@ -86,9 +97,13 @@ def _likelihood_signatures():
 def _real_supplement_call_orders():
     """The positional argument order of every real supplemental_ln_likelihood(...) call.
 
-    Returns (parameter-name tuple, source line) per site.  A site that passes a literal for
-    distance -- the distance-marginalized ones pass 0 -- reports 'distance' for it, which is
-    what that slot means."""
+    Returns (parameter-name tuple, keyword-name frozenset, source line) per site.  A site that
+    passes a literal for distance -- the distance-marginalized ones pass 0 -- reports 'distance'
+    for it, which is what that slot means.
+
+    KEYWORDS ARE READ TOO, and that is not decoration.  Reading n.args alone checked the ORDER
+    thoroughly and the ARITY not at all, which is how a documented six-argument contract sat
+    next to three call sites passing xpy=xpy_default without anything noticing."""
     out = []
     for n in ast.walk(ast.parse(_driver_source())):
         if not (isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
@@ -103,11 +118,14 @@ def _real_supplement_call_orders():
                     a.value.id, a.attr, n.lineno)
                 names.append(_P_ATTR[a.attr])
             elif isinstance(a, ast.Constant):
-                # a literal in the distance slot: the distance-marginalized sites pass 0
-                names.append("distance")
+                # Reported as a literal, NOT resolved to a parameter name.  Naming it "distance"
+                # outright made the comparison agree with itself wherever a literal appeared;
+                # which slot may carry one is checked positionally below.
+                names.append(_LITERAL % (a.value,))
             else:
                 pytest.fail("un-readable argument %d at line %d of the ILE" % (i, n.lineno))
-        out.append((tuple(names), n.lineno))
+        kwargs = frozenset(k.arg for k in n.keywords if k.arg is not None)
+        out.append((tuple(names), kwargs, n.lineno))
     assert out, "no supplemental_ln_likelihood call sites found in the ILE"
     return out
 
@@ -126,10 +144,22 @@ def test_the_stand_in_uses_the_same_argument_order_as_every_real_call_site():
         "the AST pass found %d call sites, expected %d.  If a site was added, read its argument "
         "order and update _EXPECTED_CALL_SITES; if one vanished, the extractor broke."
         % (len(sites), _EXPECTED_CALL_SITES))
-    for names, lineno in sites:
-        assert names == tuple(order), (
+    for names, _kwargs, lineno in sites:
+        resolved = []
+        for idx, nm in enumerate(names):
+            if not nm.startswith("<literal"):
+                resolved.append(nm)
+                continue
+            slot = order[idx] if idx < len(order) else "(beyond the contract)"
+            assert slot == _LITERAL_OK_IN, (
+                "the call site at line %d passes %s in the %r slot.  Only %r may be a literal, "
+                "because it is the one argument the driver marginalizes away; a literal "
+                "anywhere else is a value the factor cannot distinguish from a sampled one."
+                % (lineno, nm, slot, _LITERAL_OK_IN))
+            resolved.append(slot)
+        assert tuple(resolved) == tuple(order), (
             "the --zero-likelihood stand-in passes the factor %r, but the real call site at "
-            "line %d passes %r" % (tuple(order), lineno, names))
+            "line %d passes %r" % (tuple(order), lineno, tuple(resolved)))
 
 
 def test_the_extractor_reads_every_call_site_the_source_has():
@@ -145,6 +175,76 @@ def test_the_extractor_reads_every_call_site_the_source_has():
     assert textual == _EXPECTED_CALL_SITES, (
         "the driver has %d call sites, expected %d; read the new one before updating the number."
         % (textual, _EXPECTED_CALL_SITES))
+
+
+def test_every_keyword_the_call_sites_pass_is_declared():
+    """THE ARITY AXIS.  The positional order was checked here from the start; the keywords were
+    not, so a factor written to the driver's own stated contract raised TypeError on three of
+    the five call sites and worked on the other two.  A factor has to ACCEPT every keyword any
+    site passes, with a default, because the sites disagree about passing them."""
+    declared = frozenset(_driver_ns()["_SUPPLEMENT_OPTIONAL_KWARGS"])
+    sites = _real_supplement_call_orders()
+    used = frozenset().union(*[kw for _n, kw, _l in sites])
+    undeclared = sorted(used - declared)
+    assert not undeclared, (
+        "call sites pass keyword(s) %s that _SUPPLEMENT_OPTIONAL_KWARGS does not declare.  A "
+        "factor written to the documented contract will raise TypeError there.  Declare them, "
+        "document them in --help, and give the shipped example a default for them."
+        % undeclared)
+    unused = sorted(declared - used)
+    assert not unused, (
+        "_SUPPLEMENT_OPTIONAL_KWARGS declares %s, which no call site passes any more.  Drop it "
+        "rather than leaving the contract describing a keyword nothing sends." % unused)
+
+
+def test_the_documented_contract_names_every_optional_keyword():
+    """--help is where a plugin author reads the contract, so the keyword has to reach it."""
+    src = _driver_source()
+    i = src.index('"--supplementary-likelihood-factor-function"')
+    text = src[i:src.index("\n", i)]
+    for kw in _driver_ns()["_SUPPLEMENT_OPTIONAL_KWARGS"]:
+        assert kw in text, (
+            "--supplementary-likelihood-factor-function's help does not mention the %r keyword "
+            "that the call sites pass" % kw)
+
+
+def test_the_shipped_example_factor_accepts_the_real_call_shapes():
+    """The example is what someone copies.  Ship one that works on ALL five sites, not on the
+    two the gate happens to exercise."""
+    import numpy as _np
+    if HERE not in sys.path:
+        sys.path.insert(0, HERE)
+    import analytic_supplement_for_e2e as ex
+    a = _np.zeros(3)
+    order = _driver_ns()["_SUPPLEMENT_ARG_ORDER"]
+    ex.ln_analytic_factor(*([a] * len(order)))                       # the two bare sites
+    for kw in _driver_ns()["_SUPPLEMENT_OPTIONAL_KWARGS"]:           # and the three that do not
+        ex.ln_analytic_factor(*([a] * len(order)), **{kw: _np})
+
+
+def test_the_stand_in_passes_a_keyword_only_to_a_factor_that_takes_it():
+    """A factor without xpy must not be handed one, or fixing the contract would break every
+    plugin written for the two sites that never passed it."""
+    make = _driver_ns()["make_zero_likelihood_standin"]
+    sig = ("right_ascension", "declination", "phi_orb", "inclination", "psi", "distance")
+    kw = _driver_ns()["_SUPPLEMENT_OPTIONAL_KWARGS"][0]
+    seen = {}
+
+    def takes_it(right_ascension, declination, phi_orb, inclination, psi, distance, **k):
+        seen["with"] = dict(k)
+        return np.zeros(len(right_ascension))
+
+    def takes_it_not(right_ascension, declination, phi_orb, inclination, psi, distance):
+        seen["without"] = True
+        return np.zeros(len(right_ascension))
+
+    xpy = _FakeXpy()
+    args = {nm: np.zeros(3) for nm in sig}
+    make(sig, True, takes_it, _DEFAULTS, xpy)(**args)
+    assert kw in seen["with"] and seen["with"][kw] is xpy, \
+        "a factor that accepts %r was not given it: %r" % (kw, seen.get("with"))
+    make(sig, True, takes_it_not, _DEFAULTS, np)(**args)    # must not raise TypeError
+    assert seen.get("without") is True
 
 
 def test_the_argument_order_is_the_documented_one():

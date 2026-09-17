@@ -138,7 +138,7 @@ RULES = [
      "Hoisted to module level rather than nested, because this driver has TWO "
      "analyze_event variants. The audit matches FUNC items on the bare name for exactly "
      "this reason."),
-    (r"^(FUNC:make_zero_likelihood_standin(\.[A-Za-z_]+)?|CONST:_SUPPLEMENT_ARG_ORDER)$", "PORT",
+    (r"^(FUNC:make_zero_likelihood_standin(\.[A-Za-z_]+)?|CONST:_SUPPLEMENT_[A-Z_]+)$", "PORT",
      "The --zero-likelihood stand-in, built with the SAME SIGNATURE as the likelihood it "
      "replaces and applying a --supplementary-likelihood-factor-*. LISA has the identical "
      "shape at both of its `like_to_integrate = zero_like` sites, the same supplementary hook "

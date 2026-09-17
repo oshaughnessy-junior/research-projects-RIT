@@ -6,7 +6,9 @@ pointed at a hand-run pipeline:
     --supplementary-likelihood-factor-code analytic_supplement_for_e2e \\
     --supplementary-likelihood-factor-function ln_analytic_factor
 
-ILE calls the factor as f(ra, dec, phi_orb, inclination, psi, distance) and ADDS it to lnL.
+ILE calls the factor as f(ra, dec, phi_orb, inclination, psi, distance) and ADDS it to lnL,
+with xpy=xpy_default at three of its five call sites and without it at the other two, so the
+signature below takes xpy with a default.
 Under --zero-likelihood the signal term is exactly 0, so the marginal likelihood ILE reports
 for every intrinsic grid point is ln E_prior[exp(f)], which the factors here make exact.
 
@@ -59,7 +61,13 @@ B_COEFF = float(os.environ.get("E2E_B_COEFF", "0.0"))
 INCL_IS_COSINE = os.environ.get("E2E_INCL_IS_COSINE", "0") not in ("", "0", "false", "False")
 
 
-def ln_analytic_factor(right_ascension, declination, phi_orb, inclination, psi, distance):
+def ln_analytic_factor(right_ascension, declination, phi_orb, inclination, psi, distance,
+                       xpy=np):
+    # xpy HAS to be accepted, not merely ignored: three of ILE's five call sites pass
+    # xpy=xpy_default and two do not, so a factor declared with the six positional arguments
+    # alone raises TypeError on the vectorized paths.  This gate only ever reaches the
+    # --zero-likelihood stand-in, so nothing here would have caught that; the signature is
+    # correct so the shipped example is usable outside the gate as well.
     # The CAST is not decoration.  mcsampler (--sampler-method adaptive_cartesian) hands its
     # integrand object-dtype draws, on which np.cos raises "loop of ufunc does not support
     # argument 0 of type float"; the driver's own non-vectorized likelihood casts for the same
