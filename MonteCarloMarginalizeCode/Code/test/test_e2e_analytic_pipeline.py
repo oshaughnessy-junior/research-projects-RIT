@@ -79,13 +79,15 @@ SAMPLER_ARGS = {"AV": _AV, "portfolio": _PORTFOLIO, "GMM": _GMM}
 # ---------------------------------------------------------------------------------------
 # fixtures
 
-@pytest.fixture(scope="module")
-def event(tmp_path_factory):
-    """Zero-strain H1 frame + PSD + LAL cache.  Copied in shape from the fixture in
-    test_psi_marginalization.py, which is already exercised in CI."""
+def build_event(out):
+    """Zero-strain H1 frame + PSD + LAL cache in `out`.  Copied in shape from the fixture in
+    test_psi_marginalization.py, which is already exercised in CI.
+
+    A plain function, not only a fixture, so the calibration generator in
+    expensive_before_merging/integrators/make_e2e_calibration.py builds the SAME fixture this
+    gate runs on.  A calibration measured on a different fixture would not calibrate anything."""
     if shutil.which("lal_path2cache") is None:
-        pytest.skip("lal_path2cache not on PATH")
-    out = tmp_path_factory.mktemp("e2e_analytic")
+        return None
     t0, srate = 1000000000.0, 2048.0
     dt = 1.0 / srate
     seg_start, seg_end = t0 - 6.0, t0 + 2.0
@@ -98,7 +100,7 @@ def event(tmp_path_factory):
     lalsimutils.hoft_to_frame_data(str(frame), "H1:FAKE-STRAIN", ht)
     cache = out / "test.cache"
     if os.system("echo %s | lal_path2cache > %s" % (frame, cache)) != 0:
-        pytest.skip("lal_path2cache failed")
+        return None
     psd = lal.CreateREAL8FrequencySeries("psd", lal.LIGOTimeGPS(0), 0, 1.0 / dur,
                                          lal.SecondUnit, npts // 2 + 1)
     f = psd.f0 + np.arange(psd.data.length) * psd.deltaF
@@ -108,6 +110,14 @@ def event(tmp_path_factory):
                                  str(out / "H1_psd.xml.gz"))
     return dict(dir=out, cache=cache, psd=out / "H1_psd.xml.gz",
                 t0=t0, seg_start=seg_start, seg_end=seg_end)
+
+
+@pytest.fixture(scope="module")
+def event(tmp_path_factory):
+    ev = build_event(tmp_path_factory.mktemp("e2e_analytic"))
+    if ev is None:
+        pytest.skip("lal_path2cache unavailable or failed")
+    return ev
 
 
 # The distance-marginalized likelihood reads bmax/bref/s_array/t_array/lnI_array out of this
@@ -373,6 +383,14 @@ def test_adaptive_cartesian(event):
 
 # ---------------------------------------------------------------------------------------
 # CALIBRATION
+#
+# RE-DERIVE THIS TABLE, do not trust it:
+#
+#     cd test/expensive_before_merging/integrators && python make_e2e_calibration.py --seeds 8
+#
+# That generator drives this file's own _run_ile and build_event, so it measures the lanes this
+# gate runs rather than a reimplementation of them.  ~20 minutes on one core, which is why the
+# numbers live here as a comment and the measurement lives there.
 #
 # Where Z_TOLERANCE, MAX_SIGMA and MIN_NEFF come from.  Eight seeds (1000-1007) per lane on
 # ldas-grid, IGWN CVMFS python 3.11, numpy 1.26.4, cupy absent, CUDA_VISIBLE_DEVICES="".
