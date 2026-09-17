@@ -58,6 +58,7 @@ the ``_eccentricity_setup`` tests
 """
 
 import ast
+import functools
 import os
 import re
 import sys
@@ -67,6 +68,7 @@ import numpy as np
 import pytest
 
 scipy_stats = pytest.importorskip("scipy.stats")
+scipy_special = pytest.importorskip("scipy.special")
 from scipy import integrate
 
 CIP_SCRIPT = os.path.join(
@@ -285,6 +287,9 @@ SUPPORT = {
     "unnormalized_log_prior": (0.1, 10.0),
     "normalized_Rbar_prior": (0.0, 1.0),
     "normalized_Rbar_singular_prior": (1e-6, 1.0),
+    "normalized_Rbar_taper_prior": (0.0, 1.0),
+    # integrable 1/sqrt singularity at Rbar=0, sampled strictly inside it
+    "normalized_Rbar_sqrt_prior": (1e-6, 1.0),
     "normalized_zbar_prior": (-1.0, 1.0),
     "s_component_volumetricprior": (0.0, 1.0),
     "s_component_aligned_volumetricprior": (-1.0, 1.0),
@@ -357,6 +362,10 @@ NORMALIZED = [
     ("s_component_aligned_volumetricprior", -1.0, 1.0, "x", ()),
     ("normalized_Rbar_prior", 0.0, 1.0, "x", ()),
     ("normalized_Rbar_singular_prior", 0.0, 1.0, "x", ()),
+    # the [0,1] counterparts of triangle_prior and s_component_sqrt_prior, for the
+    # normalized radial coordinate; a [-R,R] density reused here integrates to 1/2
+    ("normalized_Rbar_taper_prior", 0.0, 1.0, "x", ()),
+    ("normalized_Rbar_sqrt_prior", 0.0, 1.0, "x", ()),
     ("normalized_zbar_prior", -1.0, 1.0, "x", ()),
     ("lambda_prior", LAMBDA_MIN, LAMBDA_MAX, "x", ()),
     ("lambda_small_prior", LAMBDA_MIN, LAMBDA_SMALL_MAX, "x", ()),
@@ -1111,6 +1120,8 @@ SHARED_PRIOR_SOURCES = {
 SHARED_PRIOR_NAMES = ["s_component_zprior"]
 # Present in CIP and in rift_priors only.
 SHARED_PRIOR_NAMES_LIBRARY_ONLY = ["s_component_zprior_positive"]
+# Present in CIP, rift_priors and GaussianResampling, but not in the EOS driver.
+SHARED_PRIOR_NAMES_NO_EOS = ["triangle_prior"]
 
 
 def _function_source(tree, name):
@@ -1132,6 +1143,8 @@ def test_duplicated_priors_match_cip(where):
     names = list(SHARED_PRIOR_NAMES)
     if where == "rift_priors":
         names += SHARED_PRIOR_NAMES_LIBRARY_ONLY
+    if where != "IntermediateEOSIntegralFromFit":
+        names += SHARED_PRIOR_NAMES_NO_EOS
 
     for name in names:
         theirs = _function_source(tree, name)
@@ -1406,3 +1419,530 @@ def test_third_pseudo_uniform_branch_is_unreachable_as_written():
         "the 3rd branch's condition now differs from the 2nd, so it is REACHABLE. "
         "It divides by prior_map['chiz_plus']*prior_map['chiz_minus'], which is "
         "zero on the spin boundary -- give it a test.")
+###
+### The prior a coordinate actually gets, over the range that coordinate is actually
+### sampled on.
+###
+### Everything above tests a prior function against the support it is *documented* on.
+### That cannot see the other half of the contract: prior_map[c] and prior_range_map[c]
+### are chosen independently, by different `if opts...` blocks, and a density evaluated
+### outside its own support is not merely inaccurate -- it goes NEGATIVE, and a negative
+### prior weight is nan under mcsampler's fractional tempering exponent, nan under
+### mcsamplerAdaptiveVolume's np.log (dropped silently, exit 0), and a hard
+### "weights must be finite and nonnegative" from the export reweight.
+###
+### The defect this catches: --transverse-prior taper-down installed triangle_prior, a
+### density on [-chi_max, chi_max], for chi1_perp_bar, whose range is [0,1].  At
+### --chi-max 0.8 that is negative over 18% of the sampled range, reaching -0.312.
+###
+
+# Every value of the two spin-sector options that CIP actually BRANCHES ON, read out of
+# the `opts.<dest> == '...'` comparisons in its source.
+#
+# Not out of the --help text, which was the first thing tried and is wrong twice over:
+# --aligned-prior implements 'alignedspin-zprior-positive' without listing it, so the one
+# branch this change deliberately leaves alone would never have been swept, and
+# --transverse-prior writes its default as "(default)" without quotes, so the DEFAULT
+# configuration would never have been swept either.  Reading the branches cannot drift
+# from what the script does, because it is what the script does.
+def _implemented_choices(dest):
+    found = set()
+    for node in ast.walk(CIP_TREE):
+        if not (isinstance(node, ast.Compare) and len(node.ops) == 1
+                and isinstance(node.ops[0], ast.Eq)):
+            continue
+        left = node.left
+        if not (isinstance(left, ast.Attribute) and left.attr == dest
+                and isinstance(left.value, ast.Name) and left.value.id == "opts"):
+            continue
+        try:
+            value = ast.literal_eval(node.comparators[0])
+        except (ValueError, SyntaxError):
+            continue
+        if isinstance(value, str):
+            found.add(value)
+    assert found, "no `opts.{} == ...` branches found in CIP".format(dest)
+    return sorted(found)
+
+
+def _swept_choices(option, dest):
+    """Branch values, plus the shipped default.
+
+    --aligned-prior uniform has no branch at all -- it means "leave every default alone"
+    -- so it has to come from argparse or the configuration almost every run uses would
+    never be swept.
+    """
+    found = set(_implemented_choices(dest))
+    found.add(_add_argument_kwargs(CIP_TREE, option)["default"])
+    return sorted(found)
+
+
+ALIGNED_PRIORS = _swept_choices("--aligned-prior", "aligned_prior")
+TRANSVERSE_PRIORS = _swept_choices("--transverse-prior", "transverse_prior")
+
+# Guard against the extraction above silently matching nothing, or matching less than it
+# did: without this the sweeps would collect fewer cases and still go green.  A rename in
+# CIP should fail here, loudly, rather than quietly shrink the sweep.
+EXPECTED_ALIGNED = {"uniform", "alignedspin-zprior", "alignedspin-zprior-positive",
+                    "volumetric"}
+EXPECTED_TRANSVERSE = {"uniform", "uniform-mag", "taper-down", "sqrt-prior",
+                       "Rbar-singular", "alignedspin-zprior"}
+
+
+@pytest.mark.parametrize("option,swept,expected",
+                         [("--aligned-prior", ALIGNED_PRIORS, EXPECTED_ALIGNED),
+                          ("--transverse-prior", TRANSVERSE_PRIORS, EXPECTED_TRANSVERSE)],
+                         ids=["aligned", "transverse"])
+def test_every_known_option_value_is_swept(option, swept, expected):
+    missing = expected - set(swept)
+    assert not missing, "{}: {} implemented but not swept".format(option, sorted(missing))
+    assert _add_argument_kwargs(CIP_TREE, option)["default"] in swept
+
+# (chi_max, chi_small_max).  chi_max enters the spin priors, so a sweep at one value --
+# and especially at 1.0, where R=chi_max and R=1 coincide -- proves nothing about the
+# rest.  The last two rows are the NSBH shape, chi_small_max != chi_max: with the two
+# pinned equal, an s2z_bar/chi2_perp_bar entry written against the wrong one of the two
+# is indistinguishable from a correct one, and the suite stayed green under exactly that
+# mutation.
+CHI_RANGES = [(0.5, 0.5), (0.8, 0.8), (0.99, 0.99), (1.0, 1.0), (0.99, 0.05), (0.8, 0.2)]
+# kept for the tests that vary only the large-body bound
+CHI_MAX_VALUES = [0.5, 0.8, 0.99, 1.0]
+
+# What the run samples in.  Includes both spin coordinate systems so the cylindrical
+# (s1z_bar, chi1_perp_bar, phi1) block and the chiz_plus branch of --aligned-prior both
+# execute.
+SWEEP_COORDS = ["mc", "delta_mc", "s1z", "s2z", "chiz_plus", "chiz_minus",
+                "s1z_bar", "s2z_bar", "chi1_perp_bar", "chi2_perp_bar"]
+
+MCSAMPLER_SOURCE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "RIFT", "integrators",
+    "mcsampler.py")
+
+# prior_map holds three mcsampler callables for the angular coordinates.  They are taken
+# from the mcsampler SOURCE, by the same ast route as everything else here: importing
+# mcsampler pulls in lalsimutils and LAL, whose error handler calls abort().
+MCSAMPLER_NAMES = ("uniform_samp_phase", "uniform_samp_theta", "uniform_samp_cos_theta")
+
+
+def _mcsampler_stub():
+    namespace = {"numpy": np, "np": np}
+    tree = _parse_script(MCSAMPLER_SOURCE)
+    for node in tree.body:
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id in MCSAMPLER_NAMES):
+            exec(compile(ast.Module(body=[node], type_ignores=[]),
+                         MCSAMPLER_SOURCE, "exec"), namespace)
+    missing = set(MCSAMPLER_NAMES) - set(namespace)
+    assert not missing, "not found in mcsampler: {}".format(sorted(missing))
+    return types.SimpleNamespace(**{name: namespace[name] for name in MCSAMPLER_NAMES})
+
+
+def _cip_opt_defaults():
+    """Every CIP option at its shipped argparse default, as an opts namespace.
+
+    The prior_map rewrites are guarded by a dozen unrelated `if opts.*` conditions, so
+    the sweep has to supply all of them.  Reading them off the add_argument calls means
+    the sweep runs the default configuration CIP itself would, and keeps doing so.
+    """
+    defaults = {}
+    for node in ast.walk(CIP_TREE):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "add_argument" and node.args):
+            continue
+        flags = []
+        for arg in node.args:
+            try:
+                value = ast.literal_eval(arg)
+            except (ValueError, SyntaxError):
+                continue
+            if isinstance(value, str) and value.startswith("--"):
+                flags.append(value)
+        if not flags:
+            continue
+        kwargs = {}
+        for keyword in node.keywords:
+            if keyword.arg is None:
+                continue
+            try:
+                kwargs[keyword.arg] = ast.literal_eval(keyword.value)
+            except (ValueError, SyntaxError):
+                kwargs[keyword.arg] = None
+        action = kwargs.get("action")
+        if "default" in kwargs:
+            default = kwargs["default"]
+        elif action == "store_true":
+            default = False
+        elif action == "store_false":
+            default = True
+        else:
+            default = None
+        dest = kwargs.get("dest") or flags[0][2:].replace("-", "_")
+        defaults[dest] = default
+    assert "aligned_prior" in defaults and "transverse_prior" in defaults
+    return defaults
+
+
+def _assigns_into(node, names):
+    """Does this subtree assign into any of `names` by subscript, e.g. prior_map[c]=..?"""
+    for child in ast.walk(node):
+        if not isinstance(child, ast.Assign):
+            continue
+        for target in child.targets:
+            if (isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name)
+                    and target.value.id in names):
+                return True
+    return False
+
+
+def _installed_priors(aligned_prior, transverse_prior, chi_max,
+                      coords=tuple(SWEEP_COORDS), chi_small_max=None):
+    """CIP's prior_map / prior_range_map as a run with these options would hold them.
+
+    Builds the two shipped dict literals whole -- not trimmed, as the eccentricity tests
+    above do -- then runs every top-level `if` block that rewrites either of them, in
+    source order.  Selection is on "does this block assign prior_map[...] or
+    prior_range_map[...]", so a future option that rewrites one of them is swept without
+    anyone editing this list.
+    """
+    namespace = _make_namespace(coords=coords)
+    namespace["functools"] = functools
+    namespace["mcsampler"] = _mcsampler_stub()
+    namespace["chi_max"] = chi_max
+    namespace["chi_small_max"] = chi_max if chi_small_max is None else chi_small_max
+    namespace["lambda_plus_max"] = LAMBDA_MAX
+    namespace["p_Rbar"] = _p_rbar()
+    namespace["scipy"] = types.SimpleNamespace(stats=scipy_stats, special=scipy_special)
+    opts = _cip_opt_defaults()
+    opts.update(aligned_prior=aligned_prior, transverse_prior=transverse_prior,
+                lambda_max=LAMBDA_MAX)
+    namespace["opts"] = types.SimpleNamespace(**opts)
+
+    _load_priors(namespace)
+
+    maps = ("prior_map", "prior_range_map")
+    for name in maps:
+        for node in CIP_TREE.body:
+            if (isinstance(node, ast.Assign) and isinstance(node.value, ast.Dict)
+                    and len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Name)
+                    and node.targets[0].id == name):
+                _exec_in(namespace, node)
+                break
+        else:
+            raise AssertionError("could not find the {} dict in CIP".format(name))
+
+    rewrote = 0
+    for node in CIP_TREE.body:
+        if isinstance(node, ast.If) and _assigns_into(node, maps):
+            _exec_in(namespace, node)
+            rewrote += 1
+    assert rewrote >= 4, (
+        "only {} option blocks rewrite prior_map/prior_range_map; the selection above "
+        "has stopped matching CIP".format(rewrote))
+
+    return namespace["prior_map"], namespace["prior_range_map"]
+
+
+@pytest.mark.parametrize("chi_max,chi_small_max", CHI_RANGES,
+                         ids=["{}-{}".format(*row) for row in CHI_RANGES])
+@pytest.mark.parametrize("transverse_prior", TRANSVERSE_PRIORS)
+@pytest.mark.parametrize("aligned_prior", ALIGNED_PRIORS)
+def test_installed_prior_is_never_negative_on_its_sampling_range(
+        aligned_prior, transverse_prior, chi_max, chi_small_max):
+    """No coordinate may be given a density that goes negative where it is sampled.
+
+    Evaluated strictly inside the range, on a fine grid: the boundary cell of the spin
+    z-prior is a separate, chi_max-INDEPENDENT defect (the `+1e-7` offset) and is not
+    what this sweep is for.  +inf is likewise allowed through -- s_component_sqrt_prior
+    and normalized_Rbar_singular_prior have an integrable singularity at 0 by design --
+    so the assertions are "not nan" and ">= 0", which is exactly the class that turns
+    into nan weights downstream.
+    """
+    prior_map, prior_range_map = _installed_priors(
+        aligned_prior, transverse_prior, chi_max, chi_small_max=chi_small_max)
+
+    checked = 0
+    for coord in sorted(prior_map):
+        if coord not in prior_range_map:
+            continue
+        lo, hi = [float(v) for v in prior_range_map[coord]]
+        assert np.isfinite([lo, hi]).all() and lo < hi, (
+            "{}: sampling range {} is not usable".format(coord, prior_range_map[coord]))
+        x = np.linspace(lo, hi, 401)[1:-1]
+
+        value = np.asarray(prior_map[coord](x), dtype=float)
+        value = np.broadcast_to(value, x.shape)
+        checked += 1
+
+        assert not np.any(np.isnan(value)), "{}: nan density".format(coord)
+        worst = int(np.argmin(value))
+        assert value[worst] >= 0, (
+            "{}: density {:.4g} at {:.4g}, negative over {:.1f}% of its sampling range "
+            "{}".format(coord, value[worst], x[worst], 100 * np.mean(value < 0),
+                        [lo, hi]))
+
+    assert checked > 20, "only swept {} coordinates".format(checked)
+
+
+# The cylindrical spin coordinates, chi{1,2}_perp_bar and s{1,2}z_bar.  The two halves are
+# NOT the same kind of quantity, which is the whole point of this group:
+#
+#   chi1_perp_bar = chi1_perp/sqrt(1-s1z^2)  -- already divided by the UNIT sphere's
+#       radius at that height, so it has no chi-max scale.  Range [0,1] with no
+#       chi_small_max variant, and every density on it must be normalized there.
+#   s1z_bar       = s1z                      -- an unscaled spin component.  It carries
+#       chi-max directly, and --aligned-prior sets its range alongside its prior.
+#
+# What both must satisfy is the same, and is what the sweeps below check: the installed
+# density has to be a normalized, positive density over the range actually drawn.
+BAR_COORDS = ("chi1_perp_bar", "chi2_perp_bar", "s1z_bar", "s2z_bar")
+
+
+@pytest.mark.parametrize("chi_max,chi_small_max", CHI_RANGES,
+                         ids=["{}-{}".format(*row) for row in CHI_RANGES])
+@pytest.mark.parametrize("transverse_prior", TRANSVERSE_PRIORS)
+@pytest.mark.parametrize("aligned_prior", ALIGNED_PRIORS)
+def test_bar_coordinate_prior_is_normalized_on_its_sampling_range(
+        aligned_prior, transverse_prior, chi_max, chi_small_max):
+    """Whatever option installs it, a _bar density integrates to 1 over its own range.
+
+    Stronger than the sign check and independent of chi_max: reusing a [-R,R] cartesian
+    density on the half-range [0,1] loses half its mass whatever R is.  On the base
+    commit --transverse-prior taper-down integrated to 0.500 at --chi-max 1 and 0.469 at
+    --chi-max 0.8, i.e. a 1.4-1.5 nat lnZ offset across the two spins, on top of the
+    negative-density region.
+    """
+    prior_map, prior_range_map = _installed_priors(
+        aligned_prior, transverse_prior, chi_max, chi_small_max=chi_small_max)
+
+    for coord in BAR_COORDS:
+        density = prior_map[coord]
+        lo, hi = [float(v) for v in prior_range_map[coord]]
+        # 0 is where every singular member of this family (sqrt, Rbar-singular, zprior)
+        # has its integrable pole; hand it to QUADPACK so it subdivides rather than
+        # sampling the pole and aborting.
+        points = [0.0] if lo <= 0.0 <= hi else None
+        integrand = lambda u: float(np.asarray(density(np.array([u])), dtype=float)[0])
+        total, err = integrate.quad(integrand, lo, hi, limit=400, points=points)
+
+        assert err < 1e-3, "{}: quadrature did not converge (err={})".format(coord, err)
+        assert total == pytest.approx(1.0, rel=2e-3), (
+            "{} under --aligned-prior {} --transverse-prior {} --chi-max {} "
+            "--chi-small-max {}: the "
+            "installed density integrates to {:.6f} over its sampling range {}, not "
+            "1".format(coord, aligned_prior, transverse_prior, chi_max, chi_small_max,
+                       total, [lo, hi]))
+
+
+def test_triangle_prior_is_zero_outside_its_support():
+    """triangle_prior is a density, so it is zero past |x|=R, not negative.
+
+    The clamp is what stops the defect above from being a nan the moment any caller --
+    now or later -- hands this function an argument past its own R.
+    """
+    prior = PRIORS["triangle_prior"]
+    R = CHI_MAX
+
+    outside = np.linspace(R, 4 * R, 25)
+    assert np.all(np.asarray(prior(outside), dtype=float) == 0.0)
+
+    # and the interior is untouched by the clamp
+    inside = np.linspace(-0.999 * R, 0.999 * R, 25)
+    assert np.allclose(np.asarray(prior(inside), dtype=float),
+                       (1 - np.abs(inside / R)) / R)
+
+
+@pytest.mark.parametrize("chi_max,chi_small_max", CHI_RANGES,
+                         ids=["{}-{}".format(*row) for row in CHI_RANGES])
+@pytest.mark.parametrize("transverse_prior", TRANSVERSE_PRIORS)
+@pytest.mark.parametrize("aligned_prior", ALIGNED_PRIORS)
+def test_bar_coordinate_prior_covers_its_sampling_range(
+        aligned_prior, transverse_prior, chi_max, chi_small_max):
+    """A _bar density must be positive everywhere its coordinate is sampled.
+
+    The third failure mode of a prior paired with the wrong range, and the one the
+    other two cannot see.  A density that is identically ZERO over part of the range
+    it is drawn on integrates to 1 and is never negative, so it passes both checks
+    above -- but log(0) is -inf, the sample is dropped by the sampler's own isfinite
+    admission filter, and the run quietly explores a smaller volume than the range it
+    reports.
+
+    This is what --aligned-prior alignedspin-zprior did to s1z_bar: the chi_max-width
+    z-prior on a [-1,1] range, zero over 20% of it at --chi-max 0.8.  Before the clamp
+    in #361 that region was NEGATIVE and the sign check caught it; the clamp turned it
+    into zero and silently took the coverage with it.  Hence a separate predicate.
+
+    Evaluated strictly inside the range: every correct density in this family is zero
+    at one endpoint or the other (2*Rbar at 0, the taper at 1, the z-prior at +-1),
+    which is the support boundary, not a gap.
+    """
+    prior_map, prior_range_map = _installed_priors(
+        aligned_prior, transverse_prior, chi_max, chi_small_max=chi_small_max)
+
+    for coord in BAR_COORDS:
+        lo, hi = [float(v) for v in prior_range_map[coord]]
+        x = np.linspace(lo, hi, 401)[1:-1]
+        value = np.broadcast_to(
+            np.asarray(prior_map[coord](x), dtype=float), x.shape)
+
+        dead = value <= 0
+        assert not np.any(dead), (
+            "{} under --aligned-prior {} --transverse-prior {} --chi-max {} "
+            "--chi-small-max {}: the "
+            "installed density is zero over {:.1f}% of its sampling range {}, out to "
+            "|x| = {:.4g}".format(coord, aligned_prior, transverse_prior, chi_max,
+                                  chi_small_max, 100 * np.mean(dead), [lo, hi],
+                                  np.max(np.abs(x[dead])) if np.any(dead) else 0.0))
+
+
+###
+### Wiring.
+###
+### The three sweeps above check that whatever density is installed is a usable one.
+### They cannot see whether the OPTION installed it: CIP's defaults (2*Rbar on [0,1],
+### 3(1-z^2)/4 on [-1,1]) satisfy all three predicates, so deleting the whole elif
+### chain leaves the suite green.  Measured: with the four prior_map assignments this
+### change adds removed, the sweeps still reported 0 failures.  These tests assert the
+### identity of what lands in prior_map instead.
+###
+
+def _installed(coord, aligned_prior="uniform", transverse_prior="uniform", chi_max=0.8):
+    prior_map, prior_range_map = _installed_priors(
+        aligned_prior, transverse_prior, chi_max)
+    return prior_map[coord], prior_range_map[coord]
+
+
+def _density_name(fn):
+    """The underlying function name, through functools.partial."""
+    return getattr(getattr(fn, "func", fn), "__name__", None)
+
+
+# (option value, coordinate, the density that value must install)
+TRANSVERSE_WIRING = [
+    ("taper-down", "chi1_perp_bar", "normalized_Rbar_taper_prior"),
+    ("taper-down", "chi2_perp_bar", "normalized_Rbar_taper_prior"),
+    ("sqrt-prior", "chi1_perp_bar", "normalized_Rbar_sqrt_prior"),
+    ("sqrt-prior", "chi2_perp_bar", "normalized_Rbar_sqrt_prior"),
+    # unchanged by this commit, pinned so the [-R,R] cartesian densities cannot drift
+    # back onto the normalized radial coordinate
+    ("uniform-mag", "chi1_perp_bar", "unnormalized_uniform_prior"),
+    ("Rbar-singular", "chi1_perp_bar", "normalized_Rbar_singular_prior"),
+    ("taper-down", "s1x", "triangle_prior"),
+    ("sqrt-prior", "s1x", "s_component_sqrt_prior"),
+]
+
+
+@pytest.mark.parametrize("value,coord,expected", TRANSVERSE_WIRING,
+                         ids=["{}-{}".format(row[0], row[1]) for row in TRANSVERSE_WIRING])
+def test_transverse_prior_installs_the_named_density(value, coord, expected):
+    density, _ = _installed(coord, transverse_prior=value)
+    assert _density_name(density) == expected, (
+        "--transverse-prior {} gave {} the density {}, not {}".format(
+            value, coord, _density_name(density), expected))
+
+
+@pytest.mark.parametrize("coord", ["chi1_perp_bar", "chi2_perp_bar"])
+@pytest.mark.parametrize("value", ["taper-down", "sqrt-prior", "uniform-mag",
+                                   "Rbar-singular"])
+def test_transverse_prior_actually_changes_the_radial_density(value, coord):
+    """Each --transverse-prior value must move chi_perp_bar off the default.
+
+    The shape checks cannot tell "the option installed its density" from "the option did
+    nothing and the default is fine", because the default is fine.  This can: it compares
+    the installed density against the one the same coordinate gets under
+    --transverse-prior uniform, pointwise.
+    """
+    chosen, (lo, hi) = _installed(coord, transverse_prior=value)
+    default, _ = _installed(coord, transverse_prior="uniform")
+    x = np.linspace(lo, hi, 51)[1:-1]
+
+    assert not np.allclose(np.asarray(chosen(x), dtype=float),
+                           np.asarray(default(x), dtype=float)), (
+        "--transverse-prior {} leaves {} on the default density".format(value, coord))
+
+
+ZPRIOR_BAR_WIRING = [
+    ("alignedspin-zprior", "s1z_bar", "s_component_zprior"),
+    ("alignedspin-zprior", "s2z_bar", "s_component_zprior"),
+    ("alignedspin-zprior-positive", "s1z_bar", "s_component_zprior_positive"),
+    ("alignedspin-zprior-positive", "s2z_bar", "s_component_zprior_positive"),
+]
+
+
+@pytest.mark.parametrize("value,coord,expected", ZPRIOR_BAR_WIRING,
+                         ids=["{}-{}".format(row[0], row[1]) for row in ZPRIOR_BAR_WIRING])
+def test_aligned_prior_reaches_the_bar_coordinate(value, coord, expected):
+    density, _ = _installed(coord, aligned_prior=value)
+    assert _density_name(density) == expected, (
+        "--aligned-prior {} gave {} the density {}, not {}".format(
+            value, coord, _density_name(density), expected))
+
+
+@pytest.mark.parametrize("chi_max", CHI_MAX_VALUES)
+@pytest.mark.parametrize("coord,cartesian", [("s1z_bar", "s1z"), ("s2z_bar", "s2z")])
+def test_bar_z_prior_matches_its_cartesian_twin(coord, cartesian, chi_max):
+    """s1z_bar IS s1z, so --aligned-prior must give the two the same density.
+
+    The predicate behind keeping R=chi_max here rather than setting R=1: the z-prior's R
+    is a maximum spin MAGNITUDE, and s1z_bar is an unscaled spin component (lalsimutils
+    extract_param returns self.s1z), so under R=1 the two names would carry different
+    priors for one physical quantity.
+
+    For s1z the two map entries are the same object, so this pair is a tautology and the
+    s2z pair (distinct partials) is what has teeth here.  The non-vacuous check on both
+    is test_bar_z_prior_support_edge_is_the_spin_bound below, which locates R rather than
+    comparing two lookups.
+    """
+    bar, bar_range = _installed(coord, aligned_prior="alignedspin-zprior",
+                                chi_max=chi_max)
+    twin, twin_range = _installed(cartesian, aligned_prior="alignedspin-zprior",
+                                  chi_max=chi_max)
+
+    # both entries carry the same 0.999 endpoint factor now, so this is the same
+    # interval twice; kept as a min/max so the test still samples inside BOTH if one of
+    # the two range entries is ever changed on its own
+    lo = max(float(bar_range[0]), float(twin_range[0]))
+    hi = min(float(bar_range[1]), float(twin_range[1]))
+    x = np.linspace(lo, hi, 101)[1:-1]
+
+    assert np.allclose(np.asarray(bar(x), dtype=float),
+                       np.asarray(twin(x), dtype=float)), (
+        "{} and {} have different densities under --aligned-prior alignedspin-zprior "
+        "at --chi-max {}".format(coord, cartesian, chi_max))
+
+
+@pytest.mark.parametrize("chi_max,chi_small_max", CHI_RANGES,
+                         ids=["{}-{}".format(*row) for row in CHI_RANGES])
+@pytest.mark.parametrize("coord,scale", [("s1z_bar", "chi_max"),
+                                         ("s2z_bar", "chi_small_max")])
+def test_bar_z_prior_support_edge_is_the_spin_bound(coord, scale, chi_max,
+                                                    chi_small_max):
+    """--aligned-prior alignedspin-zprior must put s{1,2}z_bar's support edge at chi-max.
+
+    The behavioural form of "R is a maximum spin MAGNITUDE here".  Asserting the
+    function's NAME cannot see this: s_component_zprior at R=1, at R=chi_max and at
+    R=chi_small_max are all the same function under a different partial, and
+    functools.partial hides the keyword from __name__.  The z-prior is exactly zero at
+    |x| = R and positive just inside, so the edge locates R without reading it.
+
+    Pins the decision to keep R=chi_max rather than raise it to 1: under R=1 the edge
+    would sit at 1 for every chi-max, and s{1,2}z_bar -- which IS s1z -- would describe a
+    different prior than its own cartesian name.  It also separates chi_max from
+    chi_small_max, which a run with --chi-small-max set does not hold equal.
+    """
+    bound = chi_max if scale == "chi_max" else chi_small_max
+    prior_map, _ = _installed_priors("alignedspin-zprior", "uniform", chi_max,
+                                     chi_small_max=chi_small_max)
+    density = prior_map[coord]
+
+    at_edge = float(np.asarray(density(np.array([bound])), dtype=float)[0])
+    inside = float(np.asarray(density(np.array([0.99 * bound])), dtype=float)[0])
+    outside = float(np.asarray(density(np.array([1.01 * bound])), dtype=float)[0])
+
+    assert at_edge == 0.0, (
+        "{}: density is {:.6g} at |x| = {} (the {} edge), so its R is not {}".format(
+            coord, at_edge, bound, scale, scale))
+    assert inside > 0, "{}: density is {:.6g} just inside the edge".format(coord, inside)
+    assert outside == 0.0, (
+        "{}: density is {:.6g} outside |x| = {}".format(coord, outside, bound))

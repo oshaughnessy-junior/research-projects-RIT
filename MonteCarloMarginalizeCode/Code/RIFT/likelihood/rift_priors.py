@@ -61,7 +61,10 @@ def m_prior(x):
 
 
 def triangle_prior(x,R=chi_max):
-    return (np.ones(x.shape)-np.abs(x/R))/R  # triangle from -R to R centered on zero
+    # clamped: a density is zero outside its support, and an unclamped triangle returns a
+    # negative weight for |x|>R.  See the copy in
+    # bin/util_ConstructIntrinsicPosterior_GenericCoordinates.py.
+    return np.maximum(np.ones(x.shape)-np.abs(x/R), 0.)/R  # triangle from -R to R centered on zero
 def xi_uniform_prior(x):
     return np.ones(x.shape)
 def s_component_uniform_prior(x,R=chi_max):  # If all three are used, a volumetric prior
