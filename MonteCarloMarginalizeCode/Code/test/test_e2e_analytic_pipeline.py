@@ -396,7 +396,9 @@ def test_adaptive_cartesian(event):
 # ldas-grid, IGWN CVMFS python 3.11, numpy 1.26.4, cupy absent, CUDA_VISIBLE_DEVICES="".
 # Non-GMM lanes were measured at d1d7c7e84 and re-run after the rebase onto 0a5fdb3be: the
 # prior-only AV lane came back BIT-IDENTICAL on all eight seeds, so those numbers carry over.
-# GMM lanes were measured at 0a5fdb3be, i.e. after #359.
+# GMM lanes were measured at 0a5fdb3be, i.e. after #359, and RE-DERIVED with the generator on
+# 87780efce (after #360, #361, #362, one of which is a GMM dim-group follow-up): all four GMM
+# rows came back identical, so that work does not move this fixture.
 #
 #   lane                                      max |z|   max sigma   min n_eff
 #   prior-only,    AV                            2.03      0.0134        1349
