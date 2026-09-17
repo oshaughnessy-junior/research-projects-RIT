@@ -428,7 +428,10 @@ def test_adaptive_cartesian(event):
 # sigma ~0.025 and two collapsed to 73.5 and 14.5 with sigma 0.028 and 0.073, while ln Z stayed
 # right on every one (max |z| 1.49).  A=8 with B=0 does NOT collapse, so the inclination term is
 # what drives it, not the phi_orb peak.  This is the shape recorded in
-# ~/rift-integrator-lore/coordinates-and-degeneracies.md, whose diagnosis is extrinsic mode
-# collapse rather than sample starvation -- raising --n-max re-rolls the dice instead of fixing
-# it.  Narrower than the production case it resembles: this fixture is H1-only, so neither the
-# sky ring nor the two-detector phase-polarization degeneracy exists here.
+# ~/rift-integrator-lore/coordinates-and-degeneracies.md, section "What the n_eff lottery
+# actually needs", whose diagnosis is extrinsic mode collapse rather than sample starvation --
+# raising --n-max re-rolls the dice instead of fixing it.  Narrower than the production case it
+# resembles: this fixture is H1-only, so neither the sky ring nor the two-detector
+# phase-polarization degeneracy exists here.  Contrast adaptive_cartesian above, which DID get
+# a bigger --n-max: there the answer was right on every seed and only the error bar was short,
+# which is sample starvation.  Do not carry one precedent to the other case.
