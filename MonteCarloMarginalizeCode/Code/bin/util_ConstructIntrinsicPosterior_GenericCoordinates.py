@@ -937,13 +937,13 @@ def s_component_zprior(x,R=chi_max):
     # makes this density negative for |x| > R*(1-1e-7), and one spin-boundary
     # sample then carries a negative importance weight.  The outer clamp gives the
     # density its proper support, zero outside [-R,R].
-    val = -1./(2*R) * np.log( np.maximum(np.abs(np.asarray(x,dtype=float))/R, 1e-7))
+    val = -1./(2*R) * np.log( np.maximum(np.abs(x)/R, 1e-7).astype(float))
     return np.maximum(val, 0.)
 def s_component_zprior_positive(x,R=chi_max):
     # assume maximum spin =1. Should get from appropriate prior range
     # Integrate[-1/2 Log[Abs[x]], {x, -1, 1}] == 1
     # clamped, not offset -- see s_component_zprior above
-    val = -1./(2*R) * np.log( np.maximum(np.abs(np.asarray(x,dtype=float))/R, 1e-7))
+    val = -1./(2*R) * np.log( np.maximum(np.abs(x)/R, 1e-7).astype(float))
     return np.maximum(val, 0.)*2
 
 
@@ -951,6 +951,21 @@ def s_component_volumetricprior(x,R=1.):
     # assume maximum spin =1. Should get from appropriate prior range
     # for SPIN MAGNITUDE OF PRECESSING SPINS only
     return (1./3.* np.power(x/R,2))
+
+def divisible_sampling_density(prior_weight, n):
+    """Mask of samples whose sampling density can be divided out of a reweight.
+
+    A prior density is zero outside its support, so a sample sitting exactly on a
+    spin boundary has prior_weight == 0 and no finite importance weight.  Such a
+    sample carries no posterior mass: zero it rather than dividing by zero, which
+    would fail the export validator with inf.
+
+    NaN is deliberately NOT masked here.  nan != 0 is True, so a NaN sampling
+    density still reaches the validator and stops the run loudly, instead of being
+    silently turned into a dropped sample.
+    """
+    return np.logical_and(np.ones(n, dtype=bool), np.asarray(prior_weight) != 0)
+
 
 def s_component_aligned_volumetricprior(x,R=1.):
     # assume maximum spin =1. Should get from appropriate prior range
@@ -3646,14 +3661,18 @@ if opts.pseudo_uniform_magnitude_prior and 's1x' in samples.keys() and 's1z' in 
     prior_weight = np.prod([prior_map[x](samples[x]) for x in ['s1x','s1y','s1z'] ],axis=0)
     val = np.array(samples["s1z"]**2+samples["s1y"]**2 + samples["s1x"]**2,dtype=internal_dtype)
     chi1 = np.sqrt(val)  # weird typecasting problem
-    weights *= 3.*chi_max*chi_max/(chi1*chi1*prior_weight)   # prior_weight accounts for the density, in cartesian coordinates
+    indx_pw = divisible_sampling_density(prior_weight, len(weights))
+    weights[ np.logical_not(indx_pw)] = 0
+    weights[indx_pw] *= 3.*chi_max*chi_max/(chi1[indx_pw]*chi1[indx_pw]*prior_weight[indx_pw])   # prior_weight accounts for the density, in cartesian coordinates
     weights[ chi1>chi_max] =0
     if 's2z' in samples.keys():
         prior_weight = np.prod([prior_map[x](samples[x]) for x in ['s2x','s2y','s2z'] ],axis=0)
         val = np.array(samples["s2z"]**2+samples["s2y"]**2 + samples["s2x"]**2,dtype=internal_dtype)
         chi2= np.sqrt(val)
         weights[ chi2>chi_small_max] =0
-        weights *= 3.*chi_small_max*chi_small_max/(chi2*chi2*prior_weight)
+        indx_pw = divisible_sampling_density(prior_weight, len(weights))
+        weights[ np.logical_not(indx_pw)] = 0
+        weights[indx_pw] *= 3.*chi_small_max*chi_small_max/(chi2[indx_pw]*chi2[indx_pw]*prior_weight[indx_pw])
 elif opts.pseudo_uniform_magnitude_prior and  'chiz_plus' in samples.keys() and not opts.pseudo_uniform_magnitude_prior_alternate_sampling:
     # Uniform sampling: simple volumetric reweight
     s1z  = samples['chiz_plus'] + samples['chiz_minus']
@@ -3671,6 +3690,8 @@ elif opts.pseudo_uniform_magnitude_prior and  'chiz_plus' in samples.keys() and 
     indx_ok = np.logical_and(chi1<=chi_max , chi2<=chi_small_max)
     weights[ np.logical_not(indx_ok)] = 0  # Zero out failing samples. Has effect of fixing prior range!
     prior_weight = np.prod([prior_map[x](samples[x]) for x in ['s1x','s1y', 's2x', 's2y','chiz_plus','chiz_minus'] ],axis=0)
+    indx_ok = np.logical_and(indx_ok, divisible_sampling_density(prior_weight, len(weights)))
+    weights[ np.logical_not(indx_ok)] = 0
     weights[indx_ok] *= 9.*(chi_max**2  * chi_small_max**2)/(chi1*chi1*chi2*chi2)[indx_ok]/prior_weight[indx_ok]  # undo chizplus, chizminus prior
     
 
@@ -3682,9 +3703,7 @@ if opts.aligned_prior =="alignedspin-zprior" and 'chiz_plus' in samples.keys()  
     s1z  = samples['chiz_plus'] + samples['chiz_minus']
     s2z  =samples['chiz_plus'] - samples['chiz_minus']
     indx_ok = np.logical_and(np.abs(s1z)<=chi_max , np.abs(s2z)<=chi_max)
-    # prior_weight is the sampling density we divide out; it is zero for a sample
-    # sitting exactly on the chiz_plus/chiz_minus boundary, which cannot be reweighted.
-    indx_ok = np.logical_and(indx_ok, prior_weight > 0)
+    indx_ok = np.logical_and(indx_ok, divisible_sampling_density(prior_weight, len(weights)))
     weights[ np.logical_not(indx_ok)] = 0  # Zero out failing samples. Has effect of fixing prior range!
     weights[indx_ok] *= s_component_zprior( s1z[indx_ok])*s_component_zprior(s2z[indx_ok])/(prior_weight[indx_ok])  # correct for uniform
 

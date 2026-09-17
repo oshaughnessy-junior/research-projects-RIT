@@ -66,7 +66,7 @@ def s_component_zprior(x,R=chi_max):
     # makes this density negative for |x| > R*(1-1e-7), and one spin-boundary
     # sample then carries a negative importance weight.  The outer clamp gives the
     # density its proper support, zero outside [-R,R].
-    val = -1./(2*R) * np.log( np.maximum(np.abs(np.asarray(x,dtype=float))/R, 1e-7))
+    val = -1./(2*R) * np.log( np.maximum(np.abs(x)/R, 1e-7).astype(float))
     return np.maximum(val, 0.)
 
 

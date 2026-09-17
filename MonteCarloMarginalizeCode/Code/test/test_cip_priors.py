@@ -938,7 +938,8 @@ def _run_aligned_zprior_reweight(chiz_plus, chiz_minus, weights,
     })
     _exec_in(namespace, *[node for node in CIP_TREE.body
                           if isinstance(node, ast.FunctionDef)
-                          and "prior" in node.name.lower()
+                          and ("prior" in node.name.lower()
+                               or node.name == "divisible_sampling_density")
                           and node.name not in NOT_A_DENSITY])
     _exec_in(namespace, _aligned_prior_map_node())
 
@@ -1002,3 +1003,406 @@ def test_aligned_zprior_reweight_survives_boundary_samples(alternate_sampling):
     # ... and the interior rows are untouched, so the block still does its job
     assert np.all(weights[3:] > 1e-3), (
         "interior samples were zeroed too: {}".format(weights[3:]))
+
+
+# ---------------------------------------------------------------------------
+# OUTSIDE the support.
+#
+# The tests above only reach the boundary, which pins the inner clamp and leaves
+# the outer one (np.maximum(val, 0)) doing nothing a test can see.  It is not
+# decoration: CIP installs several priors over a sampling range WIDER than the R
+# they were built with.  prior_range_map['s1z_bar'] is [-1,1] while
+# prior_map['s1z_bar'] is s_component_zprior with R=chi_max, so a run with
+# --chi-max 0.8 draws |x| > R over a fifth of that coordinate's range -- six
+# orders of magnitude more often than the 1e-7 boundary shell.  Without the outer
+# clamp the density is negative across all of it.
+# ---------------------------------------------------------------------------
+
+# How far outside R these densities are asked for, as a fraction of R.  1.25 is
+# 1/0.8: the ratio a --chi-max 0.8 run actually produces for a *_bar coordinate.
+OUTSIDE_SUPPORT_FACTORS = (1.0 + 1e-9, 1.0 + 1e-6, 1.01, 1.25, 2.0)
+
+
+@pytest.mark.parametrize("name", ["s_component_zprior", "s_component_zprior_positive"])
+def test_s_component_zprior_nonnegative_outside_support(name):
+    """Zero, not negative, beyond |x| = R.
+
+    A density evaluated outside its own support should be zero.  The old
+    -log(|x|/R + 1e-7) form went negative there and stayed negative, without
+    limit.
+    """
+    prior = PRIORS[name]
+    R = CHI_MAX
+    x = R * np.array(OUTSIDE_SUPPORT_FACTORS)
+    x = np.concatenate([x, -x])
+
+    value = np.asarray(prior(x), dtype=float)
+
+    bad = ~(value >= 0)
+    assert not np.any(bad), "{}: density {} at |x|/R = {}".format(
+        name, value[bad], np.abs(x[bad]) / R)
+    assert np.all(value == 0), (
+        "{}: density outside [-R,R] is {}, expected 0".format(name, value))
+
+
+def test_zprior_sampling_range_can_exceed_its_R():
+    """The condition that makes the test above load-bearing, read out of CIP.
+
+    If CIP ever stops installing s_component_zprior over a range wider than its
+    R, the outside-support test becomes hypothetical and should be retired --
+    rather than sitting there looking like coverage.  Fail loudly at that point
+    instead.  Checked on s1z_bar, whose prior_range_map entry is fixed at +-1
+    while --aligned-prior alignedspin-zprior gives it a prior with R=chi_max.
+    """
+    # Read the one entry out of CIP's dict LITERAL.  Exec'ing the whole assignment
+    # would drag in every name its other entries close over (lambda_plus_max, ...),
+    # which is a lot of setup for one pair of numbers.
+    entry = None
+    for node in CIP_TREE.body:
+        if not (isinstance(node, ast.Assign)
+                and any(isinstance(t, ast.Name) and t.id == "prior_range_map"
+                        for t in node.targets)
+                and isinstance(node.value, ast.Dict)):
+            continue
+        for key, value in zip(node.value.keys, node.value.values):
+            try:
+                if ast.literal_eval(key) == "s1z_bar":
+                    entry = ast.literal_eval(value)
+            except (ValueError, SyntaxError):
+                continue
+        break
+    assert entry is not None, (
+        "prior_range_map no longer carries a literal s1z_bar range; re-derive which "
+        "coordinates are sampled outside their prior's R before trusting the test above")
+
+    lo, hi = entry
+    assert max(abs(lo), abs(hi)) > CHI_MAX, (
+        "s1z_bar is now sampled inside chi_max ({} vs {}); the outside-support "
+        "clamp may no longer be reachable from a real run".format((lo, hi), CHI_MAX))
+
+    # ... and the prior installed on it really is the zprior with R=chi_max
+    aligned = ast.dump(_aligned_prior_map_node())
+    assert "s1z_bar" in aligned and "s_component_zprior" in aligned, (
+        "CIP's alignedspin-zprior block no longer installs s_component_zprior on "
+        "s1z_bar; this test's premise has moved")
+
+
+# ---------------------------------------------------------------------------
+# The other copies of the same function.
+#
+# This module extracts priors from CIP only, so a fix applied to CIP and missed
+# in one of the three sibling copies would pass everything above.  Compare the
+# source of each shared definition instead of re-testing each one: the defect
+# class here is a copy left behind, not a copy that drifts subtly.
+# ---------------------------------------------------------------------------
+
+SHARED_PRIOR_SOURCES = {
+    "rift_priors": os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", "RIFT", "likelihood", "rift_priors.py"),
+    "GaussianResampling": os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                       "..", "bin",
+                                       "util_ConstructIntrinsicPosterior_GaussianResampling.py"),
+    "IntermediateEOSIntegralFromFit": os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "bin",
+        "util_IntermediateEOSIntegralFromFit.py"),
+}
+
+# Present in CIP and in every copy listed above.
+SHARED_PRIOR_NAMES = ["s_component_zprior"]
+# Present in CIP and in rift_priors only.
+SHARED_PRIOR_NAMES_LIBRARY_ONLY = ["s_component_zprior_positive"]
+
+
+def _function_source(tree, name):
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return ast.dump(node, annotate_fields=True)
+    return None
+
+
+@pytest.mark.parametrize("where", sorted(SHARED_PRIOR_SOURCES))
+def test_duplicated_priors_match_cip(where):
+    """Every copy of a duplicated prior must be the same function as CIP's.
+
+    Compared as a normalized AST, so comments and whitespace do not matter and a
+    changed expression does.  If a copy legitimately has to differ, this test is
+    the place to record why -- silence here means the copies drifted.
+    """
+    tree = _parse_script(SHARED_PRIOR_SOURCES[where])
+    names = list(SHARED_PRIOR_NAMES)
+    if where == "rift_priors":
+        names += SHARED_PRIOR_NAMES_LIBRARY_ONLY
+
+    for name in names:
+        theirs = _function_source(tree, name)
+        assert theirs is not None, "{} no longer defines {}".format(where, name)
+        mine = _function_source(CIP_TREE, name)
+        assert mine is not None, "CIP no longer defines {}".format(name)
+        assert theirs == mine, (
+            "{}.{} has drifted from CIP's copy of the same function".format(where, name))
+
+
+# ---------------------------------------------------------------------------
+# Device arrays.
+#
+# prior_map entries are handed to the sampler as prior_pdf, and mcsamplerGPU
+# calls them on cupy arrays without copying to the host first (unlike
+# mcsamplerAdaptiveVolume.prior_prod, which converts).  cupy refuses
+# np.asarray(), so coercing the ARGUMENT rather than casting the RESULT turns
+# every GPU-backend aligned-spin run into a TypeError.  CI has no cupy, so the
+# contract is checked against a stand-in.
+# ---------------------------------------------------------------------------
+
+class _DeviceLike(object):
+    """The parts of cupy's ndarray contract this prior has to respect.
+
+    Dispatches ufuncs and stays itself, supports scalar arithmetic from both
+    sides, has .astype -- and REFUSES implicit conversion to numpy, which is the
+    behaviour that catches np.asarray(x).
+    """
+    __array_priority__ = 100
+
+    def __init__(self, a):
+        self._a = np.asarray(a)
+
+    def __array__(self, *args, **kwargs):
+        raise TypeError("Implicit conversion to a NumPy array is not allowed.")
+
+    def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
+        unwrapped = [i._a if isinstance(i, _DeviceLike) else i for i in inputs]
+        return _DeviceLike(getattr(ufunc, method)(*unwrapped, **kwargs))
+
+    def astype(self, dtype):
+        return _DeviceLike(self._a.astype(dtype))
+
+    def _binary(self, other, op, reflected=False):
+        value = other._a if isinstance(other, _DeviceLike) else other
+        return _DeviceLike(op(value, self._a) if reflected else op(self._a, value))
+
+    def __truediv__(self, o):
+        import operator
+        return self._binary(o, operator.truediv)
+
+    def __rtruediv__(self, o):
+        import operator
+        return self._binary(o, operator.truediv, True)
+
+    def __mul__(self, o):
+        import operator
+        return self._binary(o, operator.mul)
+
+    def __rmul__(self, o):
+        import operator
+        return self._binary(o, operator.mul, True)
+
+    def __add__(self, o):
+        import operator
+        return self._binary(o, operator.add)
+
+    def __radd__(self, o):
+        import operator
+        return self._binary(o, operator.add, True)
+
+
+def test_device_like_standin_refuses_numpy_conversion():
+    """The stand-in must actually be able to fail the test below.
+
+    A permissive fake passes the defect it exists to catch.
+    """
+    with pytest.raises(TypeError):
+        np.asarray(_DeviceLike([0.1, 0.5]), dtype=float)
+    # ... while still supporting everything the prior legitimately does
+    probe = _DeviceLike([0.1, 0.5])
+    assert isinstance(np.maximum(np.abs(probe) / 2.0, 1e-7).astype(float), _DeviceLike)
+    assert isinstance(-1.0 * np.log(probe), _DeviceLike)
+
+
+@pytest.mark.parametrize("name", ["s_component_zprior", "s_component_zprior_positive"])
+def test_zprior_stays_on_the_device(name):
+    """Evaluating the prior on a device array must not force a host conversion."""
+    prior = PRIORS[name]
+    device = _DeviceLike([0.1, 0.5, 0.9 * CHI_MAX])
+
+    value = prior(device)
+
+    assert isinstance(value, _DeviceLike), (
+        "{} returned {}, so it left the device".format(name, type(value).__name__))
+    host = np.asarray(prior(np.array([0.1, 0.5, 0.9 * CHI_MAX])), dtype=float)
+    assert np.allclose(value._a, host, rtol=1e-12), (
+        "{}: device and host results disagree".format(name))
+
+
+# ---------------------------------------------------------------------------
+# The other three sampling-density divisions.
+#
+# CIP divides out a sampling density in four places.  All four can be handed a
+# zero -- under --transverse-prior alignedspin-zprior, prior_map['s1x'..'s2y']
+# ARE s_component_zprior with R=chi_max, and prior_range_map['s1x'] is
+# [-chi_max, chi_max], so the sampling bound IS the support bound.  Guarding only
+# the block that happened to produce the reported traceback would leave the same
+# abort reachable from the other three, and with the density now clamped to a
+# hard zero the symptom there is inf rather than a negative.
+# ---------------------------------------------------------------------------
+
+def _pseudo_uniform_magnitude_node():
+    """CIP's own `--pseudo-uniform-magnitude-prior` reweight chain."""
+    # Two top-level chains mention the option: the prior_map one (line ~1253) and
+    # the reweight one.  Only the reweight chain consults `samples`.
+    found = [node for node in CIP_TREE.body
+             if isinstance(node, ast.If)
+             and "pseudo_uniform_magnitude_prior" in ast.dump(node.test)
+             and "samples" in ast.dump(node.test)]
+    assert len(found) == 1, (
+        "expected exactly one top-level pseudo_uniform_magnitude_prior REWEIGHT "
+        "chain in CIP, found {}".format(len(found)))
+    return found[0]
+
+
+def _transverse_prior_map_node():
+    """CIP's own `--transverse-prior` prior_map chain."""
+    found = [node for node in CIP_TREE.body
+             if isinstance(node, ast.If) and "transverse_prior" in ast.dump(node.test)]
+    assert len(found) == 1, (
+        "expected exactly one top-level transverse_prior chain in CIP, found "
+        "{}".format(len(found)))
+    return found[0]
+
+
+def _run_pseudo_uniform_magnitude_reweight(spins, weights):
+    """Run CIP's pseudo-uniform-magnitude reweight verbatim on hand-built samples.
+
+    prior_map is built by exec'ing CIP's own --transverse-prior alignedspin-zprior
+    and --aligned-prior alignedspin-zprior blocks, so the density divided out is
+    the one CIP installs, not one this test chose.
+    """
+    import functools
+
+    namespace = _make_namespace()
+    namespace.update({
+        "functools": functools,
+        "prior_map": {},
+        "prior_range_map": {},
+        "low_level_coord_names": ["s1x", "s1y", "s1z", "s2x", "s2y", "s2z"],
+        "internal_dtype": np.float64,
+        "opts": types.SimpleNamespace(
+            aligned_prior="alignedspin-zprior",
+            transverse_prior="alignedspin-zprior",
+            pseudo_uniform_magnitude_prior=True,
+            pseudo_uniform_magnitude_prior_alternate_sampling=False,
+            spin_prior_chizplusminus_alternate_sampling="alignedspin_zprior"),
+    })
+    _exec_in(namespace, *[node for node in CIP_TREE.body
+                          if isinstance(node, ast.FunctionDef)
+                          and ("prior" in node.name.lower()
+                               or node.name == "divisible_sampling_density")
+                          and node.name not in NOT_A_DENSITY])
+    _exec_in(namespace, _aligned_prior_map_node())
+    _exec_in(namespace, _transverse_prior_map_node())
+    assert namespace["prior_map"]["s1x"] is namespace["s_component_zprior"], (
+        "CIP no longer installs s_component_zprior on s1x under --transverse-prior "
+        "alignedspin-zprior; this test's premise has moved")
+
+    namespace["samples"] = {k: np.asarray(v, dtype=float) for k, v in spins.items()}
+    namespace["weights"] = np.asarray(weights, dtype=float).copy()
+    _exec_in(namespace, _pseudo_uniform_magnitude_node())
+    return namespace["weights"]
+
+
+def test_pseudo_uniform_magnitude_survives_a_transverse_boundary_sample():
+    """A component exactly on the spin boundary must not make an inf weight.
+
+    Under --transverse-prior alignedspin-zprior the transverse sampling density is
+    the zprior, which is zero at |s1x| = chi_max, so this block divides by zero
+    unless the same guard applies here as in the aligned-spin block.
+
+    The boundary rows put the ENTIRE spin on one transverse component, so that
+    chi1 (or chi2) equals chi_max exactly and the block's own `chi1 > chi_max` cut
+    -- which is strict -- does NOT fire.  With any other placement that cut zeroes
+    the row first and the guard is untestable: both of the first two attempts at
+    this test passed with the guard removed for exactly that reason.
+    """
+    unique_draw_bound = _load_export_validator()
+    R = CHI_MAX          # _make_namespace sets chi_small_max = chi_max = CHI_MAX
+    spins = {
+        # row 0: all of spin 1 in s1x, exactly at chi_max -> p(s1x) = 0, chi1 == chi_max
+        # row 1: the same for body 2
+        # rows 2-4: ordinary interior samples that must survive
+        "s1x": [R,   0.2 * R, -0.3 * R, 0.1 * R,  0.25 * R],
+        "s1y": [0.0, 0.1 * R,  0.2 * R, -0.2 * R, 0.1 * R],
+        "s1z": [0.0, 0.3 * R,  0.1 * R, 0.4 * R, -0.2 * R],
+        "s2x": [0.1 * R, R,   0.1 * R,  0.2 * R, -0.1 * R],
+        "s2y": [0.1 * R, 0.0, -0.1 * R, 0.1 * R,  0.2 * R],
+        "s2z": [0.2 * R, 0.0,  0.3 * R, -0.1 * R, 0.1 * R],
+    }
+    n = len(spins["s1x"])
+
+    # the premise: the boundary rows must survive the block's own range cuts, or
+    # this test cannot see the guard at all
+    chi1 = np.sqrt(np.sum([np.asarray(spins[k], dtype=float) ** 2
+                           for k in ("s1x", "s1y", "s1z")], axis=0))
+    chi2 = np.sqrt(np.sum([np.asarray(spins[k], dtype=float) ** 2
+                           for k in ("s2x", "s2y", "s2z")], axis=0))
+    assert chi1[0] == pytest.approx(R) and not chi1[0] > R
+    assert chi2[1] == pytest.approx(R) and not chi2[1] > R
+
+    weights = _run_pseudo_uniform_magnitude_reweight(spins, np.ones(n))
+
+    assert unique_draw_bound(weights) >= 1
+    assert np.all(np.isfinite(weights)), "non-finite export weight: {}".format(weights)
+    assert np.all(weights >= 0), "negative export weight: {}".format(weights)
+    assert weights[0] == 0.0, "the s1 boundary sample was not zeroed: {}".format(weights[0])
+    assert weights[1] == 0.0, "the s2 boundary sample was not zeroed: {}".format(weights[1])
+    assert np.all(weights[2:] > 0), (
+        "interior samples were zeroed too: {}".format(weights[2:]))
+
+
+def test_divisible_sampling_density_leaves_nan_loud():
+    """NaN must reach the export validator, not be silently zeroed.
+
+    A zero sampling density is a sample with no posterior mass -- a normal thing
+    to drop.  A NaN one is a bug somewhere upstream, and turning it into a
+    dropped sample would hide it.
+    """
+    namespace = {"np": np}
+    _exec_in(namespace, *[node for node in CIP_TREE.body
+                          if isinstance(node, ast.FunctionDef)
+                          and node.name == "divisible_sampling_density"])
+    fn = namespace["divisible_sampling_density"]
+
+    mask = fn(np.array([1.0, 0.0, np.nan, -1.0]), 4)
+
+    assert list(mask) == [True, False, True, True], (
+        "expected only the exact zero to be masked, got {}".format(mask))
+    # scalar prior_weight must still broadcast to a per-sample mask
+    assert fn(1.0, 3).shape == (3,)
+    assert fn(0.0, 3).shape == (3,) and not np.any(fn(0.0, 3))
+
+
+def test_third_pseudo_uniform_branch_is_unreachable_as_written():
+    """The chain's 2nd and 3rd branches have IDENTICAL conditions.
+
+    So the third -- the only one of the four that divides by a chiz_plus/chiz_minus
+    sampling density -- can never run, which is why no test drives it.  This is
+    pre-existing and is NOT fixed here: the two branches differ in body, and which
+    one was meant to be taken (presumably the third under
+    --pseudo-uniform-magnitude-prior-alternate-sampling) is a physics call.
+
+    Pinned because repairing that condition would make an untested block live.
+    When this test fails, the branch has become reachable: write a case that
+    drives it, the way test_pseudo_uniform_magnitude_survives_a_transverse_boundary_sample
+    drives the first two.
+    """
+    node = _pseudo_uniform_magnitude_node()
+    conditions = []
+    while isinstance(node, ast.If):
+        conditions.append(ast.dump(node.test))
+        node = (node.orelse[0] if len(node.orelse) == 1
+                and isinstance(node.orelse[0], ast.If) else None)
+
+    assert len(conditions) == 3, (
+        "the pseudo-uniform reweight chain now has {} branches, not 3; re-derive "
+        "which are reachable".format(len(conditions)))
+    assert conditions[1] == conditions[2], (
+        "the 3rd branch's condition now differs from the 2nd, so it is REACHABLE. "
+        "It divides by prior_map['chiz_plus']*prior_map['chiz_minus'], which is "
+        "zero on the spin boundary -- give it a test.")
