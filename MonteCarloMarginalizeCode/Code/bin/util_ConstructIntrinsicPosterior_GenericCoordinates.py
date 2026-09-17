@@ -933,13 +933,18 @@ def s_component_gaussian_prior(x,R=chi_max/3.):
 def s_component_zprior(x,R=chi_max):
     # assume maximum spin =1. Should get from appropriate prior range
     # Integrate[-1/2 Log[Abs[x]], {x, -1, 1}] == 1
-    val = -1./(2*R) * np.log( (np.abs(x)/R+1e-7).astype(float))
-    return val
+    # The small number CLAMPS the log argument, it does not offset it: offsetting
+    # makes this density negative for |x| > R*(1-1e-7), and one spin-boundary
+    # sample then carries a negative importance weight.  The outer clamp gives the
+    # density its proper support, zero outside [-R,R].
+    val = -1./(2*R) * np.log( np.maximum(np.abs(np.asarray(x,dtype=float))/R, 1e-7))
+    return np.maximum(val, 0.)
 def s_component_zprior_positive(x,R=chi_max):
     # assume maximum spin =1. Should get from appropriate prior range
     # Integrate[-1/2 Log[Abs[x]], {x, -1, 1}] == 1
-    val = -1./(2*R) * np.log( (np.abs(x)/R+1e-7).astype(float))
-    return val*2
+    # clamped, not offset -- see s_component_zprior above
+    val = -1./(2*R) * np.log( np.maximum(np.abs(np.asarray(x,dtype=float))/R, 1e-7))
+    return np.maximum(val, 0.)*2
 
 
 def s_component_volumetricprior(x,R=1.):
@@ -3677,6 +3682,9 @@ if opts.aligned_prior =="alignedspin-zprior" and 'chiz_plus' in samples.keys()  
     s1z  = samples['chiz_plus'] + samples['chiz_minus']
     s2z  =samples['chiz_plus'] - samples['chiz_minus']
     indx_ok = np.logical_and(np.abs(s1z)<=chi_max , np.abs(s2z)<=chi_max)
+    # prior_weight is the sampling density we divide out; it is zero for a sample
+    # sitting exactly on the chiz_plus/chiz_minus boundary, which cannot be reweighted.
+    indx_ok = np.logical_and(indx_ok, prior_weight > 0)
     weights[ np.logical_not(indx_ok)] = 0  # Zero out failing samples. Has effect of fixing prior range!
     weights[indx_ok] *= s_component_zprior( s1z[indx_ok])*s_component_zprior(s2z[indx_ok])/(prior_weight[indx_ok])  # correct for uniform
 

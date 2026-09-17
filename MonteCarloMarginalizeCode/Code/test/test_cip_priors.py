@@ -781,3 +781,224 @@ def test_eccentricity_prior_option_rejects_unknown_values(tree, script):
     assert kwargs.get("default") in choices, (
         "{}: default {!r} is not one of the accepted values".format(
             script, kwargs.get("default")))
+
+
+# ---------------------------------------------------------------------------
+# Behaviour ON the support boundary.
+#
+# test_prior_evaluates above samples np.linspace(lo, hi, 17)[1:-1] -- strictly
+# interior, deliberately, so that an integrable endpoint singularity is not what
+# is under test.  That also makes its "negative density" assertion blind to a
+# density that is only wrong AT the endpoint, which is the shape of the defect
+# these tests pin: s_component_zprior was written as -log(|x|/R + 1e-7)/(2R),
+# and the OFFSET pushes the log argument above 1 -- so the density negative --
+# for |x| > R*(1-1e-7).  One CIP sample in ~450k landed in that shell, its
+# importance weight went negative, and the whole posterior export aborted in
+# RIFT.misc.cip_pipeline with "weights must be finite and nonnegative" after the
+# run had already converged and written integral_result.dat.
+# ---------------------------------------------------------------------------
+
+# Fractions of the support width to step in from each endpoint.  0.0 is the
+# endpoint itself; the small ones straddle the 1e-7 shell the offset corrupted.
+ENDPOINT_OFFSETS = (0.0, 1e-12, 1e-9, 1e-8, 1e-7, 1e-6, 1e-5)
+
+
+@pytest.mark.parametrize("name", sorted(PRIORS))
+def test_prior_nonnegative_at_support_endpoints(name):
+    """No prior may return a negative (or NaN) density at or beside an endpoint.
+
+    +inf is allowed: several of these densities have an integrable endpoint
+    singularity, which is why test_prior_evaluates stays inside.  A negative
+    value is different in kind -- it is not a density at all, and downstream it
+    becomes a negative importance weight.
+    """
+    lo, hi = SUPPORT.get(name, DEFAULT_SUPPORT)
+    span = hi - lo
+    x = np.array(sorted(
+        {lo + fraction * span for fraction in ENDPOINT_OFFSETS}
+        | {hi - fraction * span for fraction in ENDPOINT_OFFSETS}))
+
+    value = np.broadcast_to(np.asarray(PRIORS[name](x), dtype=float), x.shape)
+
+    # ~(v >= 0) catches NaN as well: NaN >= 0 is False.
+    bad = ~(value >= 0)
+    assert not np.any(bad), "{}: density {} at x = {}".format(
+        name, value[bad], x[bad])
+
+
+@pytest.mark.parametrize("name,scale",
+                         [("s_component_zprior", 1.0),
+                          ("s_component_zprior_positive", 2.0)])
+def test_s_component_zprior_boundary_shell(name, scale):
+    """The zprior is zero at |x| = R and non-negative throughout the shell below it.
+
+    The second assertion is what makes the first one worth having: clamping the
+    density flat to zero everywhere would satisfy non-negativity while destroying
+    the prior, so the interior is pinned to the analytic -log(|x|/R)/(2R).
+    """
+    prior = PRIORS[name]
+    R = CHI_MAX
+
+    # the endpoint, then a log-spaced approach to it from inside, crossing 1e-7
+    shell = R * (1.0 - np.concatenate([[0.0], np.logspace(-16, -5, 45)]))
+    value = np.asarray(prior(shell), dtype=float)
+    bad = ~(value >= 0)
+    assert not np.any(bad), "{}: density {} at |x|/R = {}".format(
+        name, value[bad], shell[bad] / R)
+
+    assert float(np.asarray(prior(np.array([R])))[0]) == 0.0, (
+        "{}: density at the support boundary is not zero".format(name))
+
+    interior = np.array([0.05, 0.1, 0.3, 0.5, 0.7, 0.9, 0.99]) * R
+    expected = scale * -np.log(interior / R) / (2 * R)
+    assert np.allclose(np.asarray(prior(interior), dtype=float), expected,
+                       rtol=1e-6), (
+        "{} no longer has the zprior shape on its interior".format(name))
+
+
+# ---------------------------------------------------------------------------
+# The whole path, from one boundary sample to the export validator.
+# ---------------------------------------------------------------------------
+
+CIP_PIPELINE_SOURCE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "..", "RIFT", "misc", "cip_pipeline.py")
+
+
+def _load_export_validator():
+    """``unique_draw_bound`` and its helper, by ast, out of RIFT.misc.cip_pipeline.
+
+    Imported the ordinary way this would pull RIFT's package __init__ -- lal,
+    lalsimulation, h5py, igwn_ligolw, precession -- into a suite whose whole
+    premise is that it needs numpy and scipy only.  The function itself is pure
+    numpy; take just it, the same way the priors above are taken from CIP.
+    """
+    tree = _parse_script(CIP_PIPELINE_SOURCE)
+    wanted = ("_validated_scaled_weights", "unique_draw_bound")
+    namespace = {"np": np}
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name in wanted:
+            exec(compile(ast.Module(body=[node], type_ignores=[]),
+                         CIP_PIPELINE_SOURCE, "exec"), namespace)
+    for name in wanted:
+        assert name in namespace, (
+            "{} is no longer a top-level function in cip_pipeline.py; this test "
+            "is pointing at nothing".format(name))
+    return namespace["unique_draw_bound"]
+
+
+def _aligned_zprior_reweight_node():
+    """CIP's own ``--aligned-prior alignedspin-zprior`` reweight block.
+
+    Identified by its guard rather than by line number: the only top-level `if`
+    whose condition names both the option value and the chiz_plus coordinate.
+    """
+    found = [node for node in CIP_TREE.body
+             if isinstance(node, ast.If)
+             and "alignedspin-zprior" in ast.dump(node.test)
+             and "chiz_plus" in ast.dump(node.test)]
+    assert len(found) == 1, (
+        "expected exactly one top-level alignedspin-zprior/chiz_plus reweight "
+        "block in CIP, found {}".format(len(found)))
+    return found[0]
+
+
+def _aligned_prior_map_node():
+    """CIP's own ``if opts.aligned_prior == 'alignedspin-zprior':`` prior_map block.
+
+    Exec'ing this rather than transcribing it is what stops the test agreeing
+    with itself: the sampling density the block divides out is whatever CIP
+    installs, including the --spin-prior-chizplusminus-alternate-sampling branch.
+    """
+    found = [node for node in CIP_TREE.body
+             if isinstance(node, ast.If)
+             and "alignedspin-zprior" in ast.dump(node.test)
+             and "chiz_plus" not in ast.dump(node.test)]
+    assert len(found) == 1, (
+        "expected exactly one top-level aligned_prior prior_map block in CIP, "
+        "found {}".format(len(found)))
+    return found[0]
+
+
+def _run_aligned_zprior_reweight(chiz_plus, chiz_minus, weights,
+                                 alternate_sampling="alignedspin_zprior"):
+    """Run CIP's reweight block verbatim on a hand-built sample set."""
+    import functools
+
+    namespace = _make_namespace()
+    namespace.update({
+        "functools": functools,
+        "prior_map": {},
+        "prior_range_map": {},
+        "low_level_coord_names": ["mc", "delta_mc", "chiz_plus", "chiz_minus"],
+        "internal_dtype": np.float64,
+        "opts": types.SimpleNamespace(
+            aligned_prior="alignedspin-zprior",
+            spin_prior_chizplusminus_alternate_sampling=alternate_sampling),
+    })
+    _exec_in(namespace, *[node for node in CIP_TREE.body
+                          if isinstance(node, ast.FunctionDef)
+                          and "prior" in node.name.lower()
+                          and node.name not in NOT_A_DENSITY])
+    _exec_in(namespace, _aligned_prior_map_node())
+
+    namespace["samples"] = {"chiz_plus": np.asarray(chiz_plus, dtype=float),
+                            "chiz_minus": np.asarray(chiz_minus, dtype=float)}
+    namespace["weights"] = np.asarray(weights, dtype=float).copy()
+    _exec_in(namespace, _aligned_zprior_reweight_node())
+    return namespace["weights"]
+
+
+# (label, s1z, s2z) in units of chi_max.  The first three rows are the defect;
+# the rest are ordinary interior samples that must survive it.
+BOUNDARY_ROWS = [
+    ("s1z exactly on the boundary", 1.0, 0.25),
+    ("s2z inside the 1e-7 shell", 0.4, 1.0 - 5e-8),
+    ("both on the boundary: sampling density is zero too", 1.0, 1.0),
+    ("interior", 0.3, -0.6),
+    ("interior", -0.8, 0.1),
+    ("interior", 0.55, 0.45),
+]
+
+
+@pytest.mark.parametrize("alternate_sampling",
+                         ["alignedspin_zprior", "gaussian"])
+def test_aligned_zprior_reweight_survives_boundary_samples(alternate_sampling):
+    """A sample on the spin boundary must not produce a negative export weight.
+
+    This drives CIP's own reweight block and then CIP's own export validator, so
+    it fails with the production ValueError -- not a proxy for it -- when the
+    prior goes negative.  Deterministic by construction: reaching the offending
+    shell in a real run takes a sample within 1e-7 of chi_max, which happens
+    roughly once per few hundred thousand draws.
+    """
+    unique_draw_bound = _load_export_validator()
+    s1z = CHI_MAX * np.array([row[1] for row in BOUNDARY_ROWS])
+    s2z = CHI_MAX * np.array([row[2] for row in BOUNDARY_ROWS])
+
+    weights = _run_aligned_zprior_reweight(
+        0.5 * (s1z + s2z), 0.5 * (s1z - s2z), np.ones(len(BOUNDARY_ROWS)),
+        alternate_sampling=alternate_sampling)
+
+    # CIP's own validator first, so the failure a regression produces here is the
+    # production one, not a proxy for it.
+    assert unique_draw_bound(weights) >= 1
+
+    bad = ~(weights >= 0)
+    assert not np.any(bad), "negative export weight from {}".format(
+        [BOUNDARY_ROWS[i][0] for i in np.flatnonzero(bad)])
+    assert np.all(np.isfinite(weights)), "non-finite export weight from {}".format(
+        [BOUNDARY_ROWS[i][0] for i in np.flatnonzero(~np.isfinite(weights))])
+
+    # A sample ON the boundary is zeroed: the density there is zero, so the
+    # sample carries no posterior mass.
+    assert weights[0] == 0.0, BOUNDARY_ROWS[0][0]
+    assert weights[2] == 0.0, BOUNDARY_ROWS[2][0]
+    # A sample just INSIDE the 1e-7 shell is not on the boundary and must keep a
+    # real weight -- tiny, because the density is nearly zero there, but positive.
+    # This is the row whose weight used to come out tiny and NEGATIVE.
+    assert 0 < weights[1] < 1e-5, "{}: weight {}".format(
+        BOUNDARY_ROWS[1][0], weights[1])
+    # ... and the interior rows are untouched, so the block still does its job
+    assert np.all(weights[3:] > 1e-3), (
+        "interior samples were zeroed too: {}".format(weights[3:]))
