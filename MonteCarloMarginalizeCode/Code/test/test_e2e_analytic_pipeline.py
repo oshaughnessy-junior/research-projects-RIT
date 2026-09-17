@@ -419,8 +419,13 @@ def test_adaptive_cartesian(event):
 # The last two rows are why the B term and test_zero_likelihood_standin.py both exist.  With
 # the B term off, mis-routing inclination is invisible.  And phi_orb, psi and right_ascension
 # are independent and identically distributed, so NO closed-form lane can see a permutation of
-# those three: with phi_orb and psi swapped in the stand-in, every z-test in this file passes.
-# That case is caught by reading the wiring, which is the companion file's job.
+# those three.  Run as a mutation, EVERY z-test in this file passes with phi_orb and psi
+# swapped in the stand-in.  The module does go red, but on the adaptive_cartesian lane's sigma
+# budget, because the mutated integrand happens to be harder for that one sampler -- an
+# efficiency artifact, not a detection, and not something to rely on: a swap between phi_orb
+# and right_ascension need not perturb any sampler at all.  The case is caught by reading the
+# wiring, which is the companion file's job; it fails there immediately and for the right
+# reason.
 #
 # ONE THING THE GMM LANES DO NOT COVER, measured while calibrating them.  GMM's EVIDENCE is
 # correct on all three cases above, but at A=8 with the inclination term ON (B=2, which no lane
