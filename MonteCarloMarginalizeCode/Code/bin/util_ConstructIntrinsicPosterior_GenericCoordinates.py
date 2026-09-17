@@ -34,6 +34,7 @@ import itertools
 
 from RIFT.misc.samples_utils import add_field
 from RIFT.misc.cip_pipeline import systematic_resample, unique_draw_bound
+from RIFT.misc.corner_range import pad_degenerate_intervals, unplottable_reason
 
 import joblib  # http://scikit-learn.org/stable/modules/model_persistence.html
 
@@ -59,6 +60,27 @@ try:
     no_plots=False
 except ImportError:
     print(" - no matplotlib - ")
+
+
+def corner_overlay_or_warn(sample, range_here, labels, what, **kwargs):
+    """Add one overlay to an existing corner figure, unless corner would reject it.
+
+    Every corner plot below draws several data sets against ONE range: a posterior,
+    the input grid, its significant subset, and sometimes lalinference.  Only the
+    first of those had any say in the range, and corner RAISES ValueError -- it does
+    not warn, and it does not draw a blank panel -- when a 2-D panel's histogram
+    comes out empty.  A posterior that has moved off the grid therefore used to end
+    the whole job at the very last step, after the samples were already written.
+
+    Only that one condition is declined here, and it is tested rather than caught:
+    no exception is handled, so a genuine corner or matplotlib break still fails the
+    run.  Returns the figure to keep drawing on.
+    """
+    reason = unplottable_reason(sample, range_here, labels=labels)
+    if reason:
+        print(" WARNING: skipping the ", what, " overlay -- ", reason)
+        return kwargs.get('fig')
+    return corner.corner(sample, range=range_here, **kwargs)
 
 
 from sklearn.preprocessing import PolynomialFeatures
@@ -3884,7 +3906,11 @@ range_here = []
 if not no_plots:
   for p in low_level_coord_names:
 #    print p, prior_range_map[p]
-    range_here.append(prior_range_map[p])
+    # COPY.  The lines below widen range_here[-1] IN PLACE, and prior_range_map[p] is a
+    # list: appending the object itself rewrote the prior map, so Corner 3's clamp
+    # against prior_range_map read a bound this plot had just moved.  Measured on the CI
+    # grid: prior_range_map['mc'] went from [0.9, 250] to [-10.1, 268.8].
+    range_here.append(list(prior_range_map[p]))
     if (range_here[-1][1] < np.mean(samples[p])+2*np.std(samples[p])  ):
          range_here[-1][1] = np.mean(samples[p])+2*np.std(samples[p])
     if (range_here[-1][0] > np.mean(samples[p])-2*np.std(samples[p])  ):
@@ -3919,6 +3945,12 @@ if not no_plots:
 
 if not no_plots:
     labels_tex = list(map(lambda x: tex_dictionary[x], low_level_coord_names))
+    # A coordinate held at one value across the grid gives a zero-width interval, which
+    # collapses every bin edge; that is a degenerate RANGE, not an unplottable sample, so
+    # widen it rather than dropping the panel.
+    range_here, padded_here = pad_degenerate_intervals(range_here)
+    for z in padded_here:
+        print(' Range ', low_level_coord_names[z], ' was zero width; widened to ', range_here[z])
     fig_base = corner.corner(dat_mass[:,:len(low_level_coord_names)], weights=(weights/np.sum(weights)).astype(np.float64),labels=labels_tex, quantiles=quantiles_1d,plot_datapoints=False,plot_density=False,no_fill_contours=True,fill_contours=False,levels=CIs,truths=truth_here,range=range_here)
     my_cmap_values = 'g' # default color
     if True:
@@ -3928,12 +3960,14 @@ if not no_plots:
         # ax.plot(), which takes one colour for the whole series.
         my_cmap_values = 'g'
 
-        fig_base = corner.corner(dat_out_low_level_coord_names,weights=np.ones(len(X))/len(X), plot_datapoints=True,plot_density=False,plot_contours=False,quantiles=None,fig=fig_base, data_kwargs={'color':my_cmap_values},hist_kwargs={'color':'g', 'linestyle':'dashed'},range=range_here)
+        # range_here is set by the POSTERIOR above; these two overlays are the input
+        # grid, which had no say in it.  See corner_overlay_or_warn.
+        fig_base = corner_overlay_or_warn(dat_out_low_level_coord_names, range_here, low_level_coord_names, "input grid", weights=np.ones(len(X))/len(X), plot_datapoints=True,plot_density=False,plot_contours=False,quantiles=None,fig=fig_base, data_kwargs={'color':my_cmap_values},hist_kwargs={'color':'g', 'linestyle':'dashed'})
 
         # TRUNCATED data set used here
         indx_ok = Y > Y.max() - scipy.stats.chi2.isf(0.1,len(low_level_coord_names))/2  # approximate threshold for significant points,from inverse cdf 90%
         n_ok = np.sum(indx_ok)
-        fig_base  = corner.corner(dat_out_low_level_coord_names[indx_ok],weights=np.ones(n_ok)*1.0/n_ok, plot_datapoints=True,plot_density=False,plot_contours=False,quantiles=None,fig=fig_base, data_kwargs={'color':'b'},hist_kwargs={'color':'b', 'linestyle':'dashed'},range=range_here)
+        fig_base  = corner_overlay_or_warn(dat_out_low_level_coord_names[indx_ok], range_here, low_level_coord_names, "significant grid points", weights=np.ones(n_ok)*1.0/n_ok, plot_datapoints=True,plot_density=False,plot_contours=False,quantiles=None,fig=fig_base, data_kwargs={'color':'b'},hist_kwargs={'color':'b', 'linestyle':'dashed'})
 
     #except:
     else:
@@ -4390,20 +4424,37 @@ for indx in np.arange(len(extra_plot_coord_names)):
 
     print(" Truth here for ", coord_names_here, truth_here)
 
+    # Zero-width intervals are widened; see the same step in Corner 1.
+    range_here, padded_here = pad_degenerate_intervals(range_here)
+    for z in padded_here:
+        print('   - Range ', coord_names_here[z], ' was zero width; widened to ', range_here[z])
+
+    # Unlike Corner 1, range_here here comes from the input GRID, and the first and
+    # largest data set drawn against it is the POSTERIOR.  Nothing ties the two
+    # together: this is the panel that killed CI runs intermittently, with the
+    # posterior entirely outside the m1-m2 box the grid defines.  With no figure to
+    # draw on there is nothing to salvage, so give up on this coordinate group and
+    # keep the others.  Nothing is caught -- any other corner failure still ends the
+    # run.
+    reason_here = unplottable_reason(dat_here, range_here, labels=coord_names_here)
+    if reason_here:
+        print(" WARNING: skipping corner for ", str_name, " -- posterior: ", reason_here)
+        continue
+
     print(" Generating figure for ", extra_plot_coord_names[indx], " using ", len(dat_here), " from the posterior and ",  len(dat_points_here) , len(Y_orig), " from the original data set ")
     fig_base = corner.corner(dat_here, weights=np.ones(len(dat_here))*1.0/len(dat_here), labels=labels_tex, quantiles=quantiles_1d,plot_datapoints=False,plot_density=False,no_fill_contours=True,fill_contours=False,levels=CIs,range=range_here,truths=truth_here)
                 
     if can_render_LI:
-        corner.corner( dat_mass_LI, weights=np.ones(len(dat_mass_LI))*1.0/len(dat_mass_LI), color='r',labels=labels_tex,fig=fig_base,quantiles=quantiles_1d,no_fill_contours=True,plot_datapoints=False,plot_density=False,fill_contours=False,levels=CIs,range=range_here)
+        corner_overlay_or_warn( dat_mass_LI, range_here, coord_names_here, "lalinference", weights=np.ones(len(dat_mass_LI))*1.0/len(dat_mass_LI), color='r',labels=labels_tex,fig=fig_base,quantiles=quantiles_1d,no_fill_contours=True,plot_datapoints=False,plot_density=False,fill_contours=False,levels=CIs)
 
 
     print(" Rendering past samples for ",  extra_plot_coord_names[indx], " based on ", len(dat_points_here))
-    fig_base = corner.corner(dat_points_here,weights=np.ones(len(dat_points_here))*1.0/len(dat_points_here), plot_datapoints=True,plot_density=False,plot_contours=False,quantiles=None,fig=fig_base, data_kwargs={'color':'g'},hist_kwargs={'color':'g', 'linestyle':'dashed'},range=range_here)
+    fig_base = corner_overlay_or_warn(dat_points_here, range_here, coord_names_here, "input grid", weights=np.ones(len(dat_points_here))*1.0/len(dat_points_here), plot_datapoints=True,plot_density=False,plot_contours=False,quantiles=None,fig=fig_base, data_kwargs={'color':'g'},hist_kwargs={'color':'g', 'linestyle':'dashed'})
     # Render points available. Note we use the ORIGINAL data set, and truncate it
     indx_ok = Y_orig > Y_orig.max() - scipy.stats.chi2.isf(0.1,len(low_level_coord_names))/2  # approximate threshold for significant points,from inverse cdf 90%
     n_ok = np.sum(indx_ok)
     print(" Adding points for figure ", n_ok, extra_plot_coord_names[indx], " drawn from original  ")
-    fig_base  = corner.corner(dat_points_here[indx_ok],weights=np.ones(n_ok)*1.0/n_ok, plot_datapoints=True,plot_density=False,plot_contours=False,quantiles=None,fig=fig_base, data_kwargs={'color':'b'},hist_kwargs={'color':'b', 'linestyle':'dashed'},range=range_here)
+    fig_base  = corner_overlay_or_warn(dat_points_here[indx_ok], range_here, coord_names_here, "significant grid points", weights=np.ones(n_ok)*1.0/n_ok, plot_datapoints=True,plot_density=False,plot_contours=False,quantiles=None,fig=fig_base, data_kwargs={'color':'b'},hist_kwargs={'color':'b', 'linestyle':'dashed'})
 
 
     plt.legend(handles=line_handles, bbox_to_anchor=corner_legend_location, prop=corner_legend_prop,loc=4)
