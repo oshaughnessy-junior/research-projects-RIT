@@ -369,6 +369,7 @@ parser.add_argument("--eos-param-values", default=None, help="Specific parameter
 parser.add_argument("--sampler-method",default="adaptive_cartesian",help="adaptive_cartesian|GMM|adaptive_cartesian_gpu|portfolio")
 parser.add_argument("--sampler-portfolio",default=None,action='append',type=str,help="comma-separated strings, matching sampler methods other than portfolio")
 parser.add_argument("--sampler-portfolio-args",default=None, action='append', type=str, help='eval-able dictionary to be passed to that sampler_')
+parser.add_argument("--sampler-portfolio-allow-stratified-density",action='store_true',help="Accept a portfolio whose members cannot form the balance-heuristic mixture density q_mix, i.e. run the legacy stratified per-member estimator even when a member reports its sampling density on a non-normalized scale.  THE EVIDENCE IS THEN BIASED (measured: 0.753772 on a constant integrand whose exact ln Z is 1.386294).  Without this the portfolio refuses at setup.  Exists so an unusual member combination is recoverable without editing RIFT; do not use it for production evidence.")
 parser.add_argument("--sampler-portfolio-breakpoints",default=None,  type=str, help='string representing list')
 parser.add_argument("--sampler-oracle",default=None, action='append', type=str, help='names of oracles to be used')
 parser.add_argument("--sampler-oracle-args",default=None, action='append', type=str, help='eval-able dictionary to be passed to that oracle')
@@ -3407,7 +3408,7 @@ if hasattr(sampler, 'setup'):
         # NOTE the spelling: setup() reads kwargs['portfolio_args'].  It takes **kwargs, so the
         # long-standing 'portolio_args' here was accepted and silently ignored, and every
         # --sampler-portfolio-args on this driver was dropped without a message.
-        sampler.setup(portfolio_args=opts.sampler_portfolio_args,portfolio_breakpoints=our_breakpoints,**extra_args_here)
+        sampler.setup(portfolio_args=opts.sampler_portfolio_args,portfolio_breakpoints=our_breakpoints,portfolio_allow_stratified_density=opts.sampler_portfolio_allow_stratified_density,**extra_args_here)
 
 # Call oracle if provided, to initialize sampler 
 if sampler_oracle:  # NON-PORTFOLIO SCENARIO TARGET 

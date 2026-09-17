@@ -825,6 +825,14 @@ def sample_from_bins(xrange, dx, bu, ninbin, reject_out_of_range=False):
 
 
 class MCSampler(SamplerOutputMixin, object):
+
+    # PORTFOLIO MEMBER CONTRACT.  draw_simplified() reports p_s on this sampler's own scale
+    # (V_s/V), which is NOT a normalized density -- see the note in draw_simplified.  A portfolio
+    # must therefore never use it as a stratified denominator; sampling_density() below is the
+    # contract and does return the density.  mcsamplerPortfolio reads this flag to tell a member
+    # whose joint_p_s it may pool from one whose it may not.
+    joint_p_s_is_normalized_density = False
+
     # COMPACT SUPPORT: this sampler's density is EXACTLY ZERO outside its contracted live volume,
     # so once seeded or contracted it cannot serve as the mixture's coverage guarantee.
     # mcsamplerPortfolio reads this to decide whether it must hold one member cold.
@@ -1053,6 +1061,14 @@ class MCSampler(SamplerOutputMixin, object):
             rv = rv[keep]
             log_p = log_p[keep]
         p = np.exp(log_p)
+        # NOT A DENSITY, DELIBERATELY.  The points are uniform over the live volume, whose
+        # measure is V_s*V (V_s = full box, V = live FRACTION), so the density they come from is
+        # 1/(V_s*V) -- what sampling_density() returns.  What is reported here is V_s/V, larger by
+        # V_s**2.  This sampler's own integrate_log is written against that scale and is exact on
+        # it, and changing it would move every production CIP/ILE evidence, so it stays.
+        # A PORTFOLIO MUST NOT USE THIS AS A MIXTURE DENOMINATOR: sampling_density() is the member
+        # contract (see mcsamplerPortfolio.integrate_log).  Mixing this scale with a member that
+        # does report a density cost 0.63 nats on a constant integrand whose exact ln Z is 1.386.
         ps = self.xpy.ones(len(p))*self.V_s/self.V   # sampling prior, full hypercube normalized to 1
         rv = rv.T
         return ps, p, rv

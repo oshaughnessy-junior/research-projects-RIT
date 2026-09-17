@@ -155,6 +155,7 @@ parser.add_argument("--using-eos-type", type=str, default=None, help="Name of EO
 parser.add_argument("--sampler-method",default="adaptive_cartesian",help="adaptive_cartesian|GMM|AV|adaptive_cartesian_gpu|portfolio")
 parser.add_argument("--sampler-portfolio",default=None,action='append',type=str,help="Portfolio member, one NAME per flag (repeat the flag): AV|GMM|adaptive_cartesian_gpu|NFlow.  Not comma-separated -- a comma-joined 'AV,GMM' matches no sampler.  Requires --sampler-method portfolio.")
 parser.add_argument("--sampler-portfolio-args",default=None, action='append', type=str, help='eval-able dictionary of extra setup() arguments for the corresponding --sampler-portfolio member.  One per flag, in the same order and the same COUNT as --sampler-portfolio.')
+parser.add_argument("--sampler-portfolio-allow-stratified-density",action='store_true',help="Accept a portfolio whose members cannot form the balance-heuristic mixture density q_mix, i.e. run the legacy stratified per-member estimator even when a member reports its sampling density on a non-normalized scale.  THE EVIDENCE IS THEN BIASED (measured: 0.753772 on a constant integrand whose exact ln Z is 1.386294).  Without this the portfolio refuses at setup.  Exists so an unusual member combination is recoverable without editing RIFT; do not use it for production evidence.")
 parser.add_argument("--internal-use-lnL",action='store_true',help="integrator internally manipulates lnL..   ")
 parser.add_argument("--internal-correlate-parameters",default=None,type=str,help="comman-separated string indicating parameters that should be sampled allowing for correlations. Must be sampling parameters. Only implemented for gmm.  If string is 'all', correlate *all* parameters")
 parser.add_argument("--internal-n-comp",default=1,type=int,help="number of components to use for GMM sampling. Default is 1, because we expect a unimodal posterior in well-adapted coordinates.  If you have crappy coordinates, use more")
@@ -867,47 +868,51 @@ elif opts.sampler_method == "portfolio":
         # comma-joined "AV,GMM" matches nothing).  Same reasoning as the guard above.
         print(" OPTION MISMATCH : --sampler-portfolio matched no known sampler in {}.  Pass one name per flag, e.g. --sampler-portfolio AV --sampler-portfolio GMM.".format(sampler_types))
         sys.exit(99)
-    # MIXED-BACKEND PORTFOLIO.  Deliberately stated as MEASUREMENTS, not as a mechanism: three
-    # successive attempts to explain this in prose were each shown to be wrong, so what follows
-    # is only what was measured.  Constant integrand, non-square box, exact ln Z = 1.609438,
-    # adaptation running, 16 seeds:
+    # MIXED-BACKEND PORTFOLIO.  The warning that stood here is gone because the condition it
+    # warned about is now checked in mcsamplerPortfolio.setup() -- earlier than here, and for
+    # every caller rather than this driver alone.  mcsamplerGPU implements sampling_density(),
+    # so the mixed case this driver could produce is correct rather than merely flagged; a
+    # member that still lacks one is refused at setup when any member has not DECLARED that its
+    # joint_p_s is a normalized density -- mcsamplerAdaptiveVolume declares False, and a member
+    # that declares nothing (a plugin, a new sampler) counts as unknown rather than safe.  A pool
+    # in which every member declares True is allowed and warned about.
     #
-    #     portfolio[AV]        1.6094 (sd 0.0000)     portfolio[GPU]       1.6037 (sd 0.0175)
-    #     portfolio[GMM]       1.6195 (sd 0.0061)     portfolio[GPU,GPU]   1.6144 (sd 0.0151)
-    #     portfolio[AV,GMM]    1.6093 (sd 0.0014)     portfolio[GPU,GMM]   1.6144 (sd 0.0060)
-    #     portfolio[AV,GPU]    0.7111 (sd 0.0075)     portfolio[GPU,AV]    0.7081 (sd 0.0049)
+    # The measurements that motivated the warning, re-taken as a BEFORE/AFTER pair on this
+    # branch and its base with identical settings (the absolute numbers differ from the earlier
+    # revision of this comment because n/neff differ; only a same-settings pair is comparable).
+    # Constant integrand, non-square box, prior integral 5, exact ln Z = 1.609438, adaptation
+    # running, 16 seeds, ldas-grid numpy backend:
     #
-    # So the badly wrong case is an AV member together with a member that has no
-    # sampling_density: -0.90 nats.  [GPU,GMM] fires the warning below and is +0.005, no worse
-    # than its own GMM member (+0.010) -- the warning OVER-fires there, and that is a known
-    # false alarm rather than an undetected bias.
+    #     portfolio          before (94f352ad8)        after
+    #     [AV]               1.6094 (sd 0.0000)        1.6094 (sd 0.0000)    unchanged
+    #     [GPU]              1.6134 (sd 0.1158)        1.6134 (sd 0.1158)    unchanged
+    #     [GMM]              1.6207 (sd 0.0093)        1.6207 (sd 0.0093)    unchanged
+    #     [GPU,GPU]          1.5891 (sd 0.0691)        1.5891 (sd 0.0691)    unchanged
+    #     [AV,GMM]           1.6092 (sd 0.0026)        1.6092 (sd 0.0026)    unchanged
+    #     [GPU,GMM]          1.6165 (sd 0.0093)        1.6108 (sd 0.0151)    err +0.0071 -> +0.0013
+    #     [AV,GPU]           0.4458 (sd 0.0326)        1.6105 (sd 0.0027)    err -1.16 -> +0.001
+    #     [GPU,AV]           0.4330 (sd 0.0231)        1.6090 (sd 0.0028)    err -1.18 -> -0.000
     #
-    # What IS established about the machinery: mcsamplerGPU and mcsamplerNFlow define no
-    # sampling_density (only mcsamplerAdaptiveVolume and mcsamplerEnsemble do), so
-    # mcsamplerPortfolio prints its own "falling back to legacy stratified per-member density"
-    # notice and q_mix is generally not formed; the same condition leaves its support
-    # diagnostics at nan.  That nan reaches only the printout and dict_return -- but the same
-    # condition also holds credit_per_sample identically zero, so with the NON-DEFAULT settings
-    # portfolio_adaptive_alloc=True and portfolio_quality_signal='credit' the draw-allocation
-    # signal is silently dead.  Defaults ('global', False) are unaffected.
+    # Read the [GPU,GMM] row as a wash, not a win: both members already reported a normalized
+    # joint_p_s, so the stratified fallback was unbiased there and the earlier warning
+    # over-fired.  What changes is that q_mix is now formed, which moves the mean 0.006 closer
+    # to exact and raises the seed-to-seed spread from 0.009 to 0.015.  Only the two AV+GPU
+    # orderings were actually broken.
     #
-    # On a scale mismatch: measured, with a prior integral of 5, mcsamplerGPU and
-    # mcsamplerEnsemble both report E[prior/p_s] = 5.000000 and mcsamplerAdaptiveVolume reports
-    # 0.200000.  AV is the outlier.  WHY it differs is NOT established here -- an earlier
-    # revision of this comment asserted a reason and was wrong.
+    # The earlier comment recorded that AV was the outlier on scale -- E[prior/p_s] = 0.2 where
+    # mcsamplerGPU and mcsamplerEnsemble both report 5 -- and said the reason was not
+    # established.  It is mcsamplerAdaptiveVolume.draw_simplified reporting ps = V_s/V with V
+    # the live volume FRACTION (1 before any contraction), so the reported value is V_s**2 times
+    # the density the points actually come from, 1/(V_s*V).  AV's own integrate_log is written
+    # against that scale, so it is left alone; its sampling_density() already returns the
+    # density, and that method is the portfolio contract.  Pinned by
+    # test/integrators/test_portfolio_member_density.py::test_AV_reported_p_s_is_left_alone.
     #
-    # KNOWN GAP in the predicate below: `any and not all` means a portfolio in which EVERY
-    # member lacks sampling_density (e.g. [adaptive_cartesian_gpu, NFlow]) does not warn, even
-    # though it takes the same fallback.  [GPU,GPU] measures fine (+0.005); [GPU,NFlow] is
-    # untested here because nflows is not installed on this host.
-    #
-    # Deliberately a warning and not a refusal: unifying the member p_s contract is a decision
-    # about mcsamplerAdaptiveVolume as much as about mcsamplerGPU.
-    _no_density = [not hasattr(m, 'sampling_density') for m in sampler_list]
-    if any(_no_density) and not all(_no_density):
-        _which = sorted({type(m).__module__.split('.')[-1]
-                         for m, bad in zip(sampler_list, _no_density) if bad})
-        print(" PORTFOLIO : WARNING, this portfolio mixes members that expose sampling_density with members that do not ({}).  q_mix is generally not formed and the portfolio falls back to its legacy stratified estimator.  MEASURED: with an AV member this is badly biased (0.71 where the exact answer is 1.609); with GMM+GPU it was not measurably worse than the members themselves, so this warning over-fires there.  Prefer a single-backend portfolio, and do not trust a mixed one's evidence without checking it against a known answer.".format(", ".join(_which)))
+    # Two things the old warning noted as gaps are closed by the refusal rather than by a better
+    # predicate: a portfolio in which EVERY member lacks sampling_density took the same fallback
+    # without warning, and q_mix not being formed also left credit_per_sample identically zero,
+    # silently killing the draw-allocation signal under portfolio_adaptive_alloc=True with
+    # portfolio_quality_signal='credit'.
     sampler = mcsamplerPortfolio.MCSampler(portfolio=sampler_list)
 
 
@@ -1146,7 +1151,7 @@ if _sampler_module == 'mcsamplerPortfolio':
         print(" PORTFOLIO ARGS ", portfolio_args)
     # NOTE the spelling: mcsamplerPortfolio.setup() reads kwargs['portfolio_args'].  It takes
     # **kwargs, so a misspelled name is accepted and silently ignored rather than raising.
-    sampler.setup(portfolio_args=portfolio_args, **extra_args)
+    sampler.setup(portfolio_args=portfolio_args, portfolio_allow_stratified_density=opts.sampler_portfolio_allow_stratified_density, **extra_args)
 
 
 res, var, neff, dict_return = sampler.integrate(fn_passed, *low_level_coord_names,  verbose=True,nmax=int(opts.n_max),n=n_step,neff=opts.n_eff, save_intg=True,tempering_adapt=True, floor_level=1e-3,igrand_threshold_p=1e-3,convergence_tests=test_converged,tempering_exp=my_exp,no_protect_names=True,**extra_args)  # MC integrates in the SAMPLING basis (low_level_coord_names); convert_coords routes each sample into the fit basis (coord_names) before evaluating the GP/RF
