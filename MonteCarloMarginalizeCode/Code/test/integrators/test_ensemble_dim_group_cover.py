@@ -20,9 +20,14 @@ The wrong FRAME, where the cover happens to be complete, leaves ln Z unbiased --
 n_eff instead.  It is pinned by the frame tests, not the evidence tests.
 
 Tolerances come from the measured across-seed spread of this integrator on these two targets
-(8 seeds, worst |deviation| 0.0349 nats, so the 0.15 used below is 4.3x that); the cover defect
-being pinned is 11-29 nats.
+(seeds 0-7, worst |deviation| 0.0349 nats, so the 0.15 used below is 4.3x that; on seeds
+1000-1007 it is 0.0251, i.e. 6.0x -- state the seeds, the two families differ); the cover
+defect being pinned is 11-29 nats.
 """
+import contextlib
+import io
+import warnings
+
 import numpy as np
 import pytest
 
@@ -272,22 +277,71 @@ def test_complete_dim_group_cover_fills_and_reports():
     assert mcsamplerEnsemble.complete_dim_group_cover(gmm_dict, 7, comp_dict=comp, gmm_adapt=adapt) == []
 
 
-def test_empty_dim_group_key_is_ignored_not_refused():
-    """An empty key names no dimension, so it is a NO-OP -- and CIP produces one legitimately.
+def test_empty_dim_group_key_is_dropped_and_harmless():
+    """An empty dim-group key must be DROPPED, not merely tolerated.
 
-    `parse_corr_params` swallows an unknown parameter name, so a CIP
-    `--internal-correlate-parameters` block whose names are all unknown collapses to `()` while
-    the uncorrelated fill still covers every real dimension.  `_sample()` then draws an (n, 0)
-    block and multiplies the sampling density by `prod([]) == 1`.  Refusing that killed a run
-    that was computing the right answer.  Warn, ignore the key, and still get the exact answer.
+    It is not inert.  `_sample()` survives it -- an (n, 0) draw, `prod([]) == 1` -- but `_train()`
+    also iterates gmm_dict and tries to FIT a mixture to that zero-width block: LAPACK raises, the
+    whole proposal is `_reset()`, and enough consecutive failures end the run with "GMM proposal
+    refit failed 5 consecutive times".  Measured before this was fixed: 4 proposal resets.
+
+    This uses CIP's ACTUAL call shape, which is what makes the defect reachable and is the corner
+    an earlier version of this test missed:
+      * `n_comp` is an INT (`opts.internal_n_comp`, default 1), not a dict, so `_train` cannot be
+        talked out of fitting the group by a per-group count of 0;
+      * NO `gmm_adapt` is passed, so the `gmm_adapt.get(group)` skip never fires;
+      * the target is SHARP, so the proposal genuinely has to adapt -- on a flat target the
+        uniform proposal converges in one chunk and swallows the training failures.
     """
-    sampler = _make_sampler()
-    gmm_dict = {(): None}
-    gmm_dict.update({(i,): None for i in range(len(INTEGRATE_ARGS))})
-    with pytest.warns(RuntimeWarning, match="empty dim-group"):
-        ln_z, _, _, _ = _integrate(sampler, gmm_dict, {k: 1 for k in gmm_dict},
-                                   {k: False for k in gmm_dict}, a_coeff=0.0, seed=1000)
-    assert abs(float(ln_z)) < LN_Z_TOL, "empty key perturbed ln Z: %r" % float(ln_z)
+    lo, hi = 0.0, 1.0
+    def make():
+        s = mcsamplerEnsemble.MCSampler()
+        for nm in ('a', 'b', 'c'):
+            s.add_parameter(nm, left_limit=lo, right_limit=hi,
+                            prior_pdf=lambda v: np.ones(np.shape(v)))
+        return s
+
+    def go(gmm_dict):
+        sampler = make()
+        state = np.random.get_state()
+        buf = io.StringIO()
+        try:
+            np.random.seed(1000)
+            with warnings.catch_warnings(record=True) as caught, \
+                 contextlib.redirect_stdout(buf):
+                warnings.simplefilter("always")
+                res = sampler.integrate(
+                    lambda *cols: -0.5 * (((cols[0] - 0.5) / 0.02) ** 2
+                                          + ((cols[1] - 0.5) / 0.02) ** 2),
+                    'a', 'b', 'c', nmax=400000, neff=40, n=5000, use_lnL=True, return_lnI=True,
+                    n_comp=1, gmm_dict=dict(gmm_dict), max_iter=80, verbose=False)
+                warned = any("empty dim-group" in str(w.message) for w in caught)
+        finally:
+            np.random.set_state(state)
+        return float(res[0]), float(res[2]), buf.getvalue().count("Error training, resetting"), warned
+
+    plain = {(0,): None, (1,): None, (2,): None}
+    with_empty = dict(plain); with_empty[()] = None
+
+    ln_z_ref, n_eff_ref, resets_ref, _ = go(plain)
+    assert resets_ref == 0, "control should not reset the proposal"
+    ln_z, n_eff, resets, warned = go(with_empty)
+
+    assert resets == 0, "the empty key still made the proposal refit fail %d time(s)" % resets
+    assert warned, "dropping the key must be reported -- it means a parameter name went unmatched"
+    assert ln_z == ln_z_ref and n_eff == n_eff_ref, \
+        "dropping the empty key must change nothing: %r/%r vs %r/%r" % (ln_z, n_eff, ln_z_ref, n_eff_ref)
+
+
+def test_public_validate_wrapper_is_live():
+    """The driver calls mcsamplerEnsemble.validate_dim_group_cover() at startup so a bad mapping
+    fails before analyze_event's broad `except` can turn it into an empty .dat and exit 0.  Making
+    that wrapper a no-op has to fail something."""
+    with pytest.raises(ValueError):
+        mcsamplerEnsemble.validate_dim_group_cover({(0, 1): None}, 3)      # dim 2 uncovered
+    with pytest.raises(ValueError):
+        mcsamplerEnsemble.validate_dim_group_cover({(0,): None, (0, 1): None}, 2)   # dim 0 twice
+    mcsamplerEnsemble.validate_dim_group_cover({(0, 1): None}, 2)          # complete: accepted
 
 
 def test_integrator_init_guard_is_live():

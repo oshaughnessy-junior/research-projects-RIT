@@ -2561,21 +2561,6 @@ if use_gmm_args:   # standalone GMM, or a portfolio carrying a GMM member (see u
       print("FATAL: GMM dim-group mapping is unusable: {}".format(_e_cover))
       sys.exit(1)
     extra_args = {'n_comp':comp_dict,'max_iter':n_max_blocks,'gmm_dict':gmm_dict, 'gmm_adapt':gmm_adapt}  # made up for now, should adjust
-    # FLEXIBLE allocation: each ADAPTING group chooses its component count from
-    # the data by BIC (GMM.fit_gmm_adaptive), replacing the hard-coded per-group
-    # counts above.  A defensive tail component + optional inflation keep the
-    # importance weights bounded (the fix that gets GMM n_eff off ~1 at high SNR).
-    if opts.internal_gmm_adaptive_components:
-      k_cap = int(opts.internal_gmm_max_components)
-      gmm_adaptive = {}
-      for _g in gmm_dict:
-        if (gmm_adapt is None) or gmm_adapt.get(_g, True):   # only groups that adapt
-          gmm_adaptive[_g] = k_cap
-      extra_args['gmm_adaptive'] = gmm_adaptive
-      extra_args['gmm_defensive_frac'] = float(opts.internal_gmm_defensive_frac)
-      extra_args['gmm_inflate'] = float(opts.internal_gmm_inflate)
-      print("GMM adaptive components (BIC, cap {}, defensive {}, inflate {}): groups {}".format(
-          k_cap, opts.internal_gmm_defensive_frac, opts.internal_gmm_inflate, list(gmm_adaptive.keys())))
     print("GMM:",extra_args)
     print("GMM:",sampler.params_ordered)
     # if opts.distance_marginalization:
@@ -2593,6 +2578,26 @@ if use_gmm_args:   # standalone GMM, or a portfolio carrying a GMM member (see u
     if opts.force_adapt_all:
         for param in gmm_adapt:
             gmm_adapt[param] = True   # includes the leftover 1-d groups added above
+    # BIC allocation must be decided AFTER the sweep above, not before: it sizes exactly the
+    # groups gmm_adapt marks adapting, so running it first left every group the sweep was about
+    # to switch on absent from gmm_adaptive -- it then refit at its fixed count instead of BIC up
+    # to --internal-gmm-max-components.  That hit the leftover group and (psi, phi_orb), which is
+    # frozen by default and only adapts under --force-adapt-all or --internal-rotate-phase.
+    # FLEXIBLE allocation: each ADAPTING group chooses its component count from
+    # the data by BIC (GMM.fit_gmm_adaptive), replacing the hard-coded per-group
+    # counts above.  A defensive tail component + optional inflation keep the
+    # importance weights bounded (the fix that gets GMM n_eff off ~1 at high SNR).
+    if opts.internal_gmm_adaptive_components:
+      k_cap = int(opts.internal_gmm_max_components)
+      gmm_adaptive = {}
+      for _g in gmm_dict:
+        if (gmm_adapt is None) or gmm_adapt.get(_g, True):   # only groups that adapt
+          gmm_adaptive[_g] = k_cap
+      extra_args['gmm_adaptive'] = gmm_adaptive
+      extra_args['gmm_defensive_frac'] = float(opts.internal_gmm_defensive_frac)
+      extra_args['gmm_inflate'] = float(opts.internal_gmm_inflate)
+      print("GMM adaptive components (BIC, cap {}, defensive {}, inflate {}): groups {}".format(
+          k_cap, opts.internal_gmm_defensive_frac, opts.internal_gmm_inflate, list(gmm_adaptive.keys())))
     pinned_params.update(extra_args)
 if opts.sampler_method == "AV":
   return_lnL=True
