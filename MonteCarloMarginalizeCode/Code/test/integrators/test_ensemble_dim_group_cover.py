@@ -1,0 +1,275 @@
+"""mcsamplerEnsemble (--sampler-method GMM): dim-group keys, and the evidence they decide.
+
+A gmm_dict key is a tuple of INTEGRATION DIMENSION indices, and those index the POSITIONAL
+ARGUMENT order of integrate(), not the order add_parameter() was called in.  ILE built its keys
+from sampler.params_ordered instead, and the two orders are different, so:
+
+  * every named group adapted the wrong parameters, and
+  * a dimension could end up in no group at all (t_ref, without --time-marginalization).
+
+MonteCarloEnsemble._sample() allocates sample_array with xpy.empty and writes only the columns a
+dim-group names, so an uncovered column is uninitialized memory -- fed to the integrand and to
+the prior, with no matching factor in the sampling density.  The estimator is then unnormalized:
+on the zero-likelihood ILE fixture it returned ln Z = -28.7 (and, on a different allocation, NaN)
+where the exact answer is 0, reporting sigma = 0.178 against it.
+
+The two defects are NOT the same size, and the analytic assertions below only catch one of
+them.  An uncovered dimension moves ln Z by tens of nats and is caught by test_analytic_evidence.
+The wrong FRAME, where the cover happens to be complete, leaves ln Z unbiased -- measured at
+0.006-0.02 nats on these targets, an order of magnitude BELOW the tolerance here -- and costs
+n_eff instead.  It is pinned by the frame tests, not the evidence tests.
+
+Tolerances come from the measured across-seed spread of this integrator on these two targets
+(8 seeds, worst |deviation| 0.025 nats); the cover defect being pinned is 11-29 nats.
+"""
+import numpy as np
+import pytest
+
+from scipy.special import i0
+
+import RIFT.integrators.mcsamplerEnsemble as mcsamplerEnsemble
+
+
+# ILE's extrinsic parameters, in the two orders that disagree.
+PARAM_LIMITS = {
+    'psi': (0.0, 2 * np.pi),
+    'phi_orb': (0.0, 2 * np.pi),
+    'inclination': (0.0, np.pi),
+    'distance': (1.0, 10000.0),
+    'right_ascension': (0.0, 2 * np.pi),
+    'declination': (-np.pi / 2, np.pi / 2),
+    't_ref': (-0.075, 0.075),
+}
+# the order ILE calls add_parameter() in
+PARAMS_ORDERED = ['psi', 'phi_orb', 'inclination', 'distance',
+                  'right_ascension', 'declination', 't_ref']
+# the order ILE calls sampler.integrate() with (opts.time_marginalization off)
+INTEGRATE_ARGS = ['right_ascension', 'declination', 't_ref', 'phi_orb',
+                  'inclination', 'psi', 'distance']
+
+LN_Z_TOL = 0.15   # 6x the measured worst across-seed deviation, 70x below the smallest defect
+
+
+def _prior_pdf(name):
+    """Priors normalized over that parameter's own box, so a flat target integrates to exactly 1."""
+    lo, hi = PARAM_LIMITS[name]
+    if name == 'declination':
+        return lambda v: 0.5 * np.cos(v)
+    if name == 'inclination':
+        return lambda v: 0.5 * np.sin(v)
+    if name == 'distance':
+        return lambda v: v ** 2 / (hi ** 3 / 3.0 - lo ** 3 / 3.0)
+    return lambda v: np.ones(np.shape(v)) / (hi - lo)
+
+
+def _make_sampler():
+    sampler = mcsamplerEnsemble.MCSampler()
+    for p in PARAMS_ORDERED:
+        sampler.add_parameter(p, left_limit=PARAM_LIMITS[p][0], right_limit=PARAM_LIMITS[p][1],
+                              prior_pdf=_prior_pdf(p))
+    return sampler
+
+
+def _args_frame(names):
+    """A dim-group key in the frame integrate() actually uses."""
+    return tuple(INTEGRATE_ARGS.index(x) for x in names)
+
+
+def _params_ordered_frame(names):
+    """A dim-group key in the frame ILE used to build (the bug)."""
+    return tuple(PARAMS_ORDERED.index(x) for x in names)
+
+
+def _ile_groups(frame):
+    """ILE's three named groups, plus the leftover dimension as its own group."""
+    sky = frame(['right_ascension', 'declination'])
+    d_incl = frame(['distance', 'inclination'])
+    phi_psi = frame(['psi', 'phi_orb'])
+    n_comp = {sky: 4, d_incl: 2, phi_psi: 4}
+    adapt = {sky: True, d_incl: True, phi_psi: True}
+    covered = set(sky) | set(d_incl) | set(phi_psi)
+    for i in range(len(INTEGRATE_ARGS)):
+        if i not in covered:
+            n_comp[(i,)] = 1
+            adapt[(i,)] = False
+    return {k: None for k in n_comp}, n_comp, adapt
+
+
+def _integrate(sampler, gmm_dict, n_comp, adapt, a_coeff, seed, nmax=200000, neff=1000):
+    i_phi = INTEGRATE_ARGS.index('phi_orb')
+
+    def integrand(*columns):
+        # supplementary factor A*cos(phi_orb) on a zero signal likelihood: since phi_orb's prior
+        # is uniform on [0, 2pi) and the factor depends on nothing else, the exact marginal is
+        # ln I0(A), to machine precision, with no fit error and no MC scatter in the target.
+        return a_coeff * np.cos(columns[i_phi])
+
+    state = np.random.get_state()
+    try:
+        np.random.seed(seed)
+        return sampler.integrate(integrand, *INTEGRATE_ARGS, nmax=nmax, neff=neff, n=10000,
+                                 use_lnL=True, return_lnI=True, n_comp=n_comp,
+                                 gmm_dict=dict(gmm_dict), gmm_adapt=adapt, max_iter=20,
+                                 verbose=False)
+    finally:
+        np.random.set_state(state)
+
+
+def test_the_two_frames_really_disagree():
+    """Anchor: without this, every frame assertion below could pass vacuously."""
+    for names in (['right_ascension', 'declination'], ['distance', 'inclination'], ['psi', 'phi_orb']):
+        assert _args_frame(names) != _params_ordered_frame(names), names
+
+
+def test_dim_group_keys_index_positional_arguments():
+    """The bounds attached to a dim-group must be the bounds of the parameters it names.
+
+    This is what makes the key frame observable: ILE's params_ordered-frame key (4, 5) was
+    'right_ascension, declination', but integrate() read it as 'inclination, psi'.
+    """
+    sampler = _make_sampler()
+    gmm_dict, n_comp, adapt = _ile_groups(_args_frame)
+    _integrate(sampler, gmm_dict, n_comp, adapt, a_coeff=0.0, seed=1000, nmax=20000, neff=10)
+
+    integrator = sampler.integrator
+    for names in (['right_ascension', 'declination'], ['distance', 'inclination'], ['psi', 'phi_orb']):
+        key = _args_frame(names)
+        expected = np.array([PARAM_LIMITS[n] for n in names], dtype=float)
+        got = np.asarray(sampler.identity_convert(integrator.bounds[key]), dtype=float)
+        assert np.allclose(got, expected), \
+            "dim-group {} carries bounds {}, expected {} for {}".format(key, got, expected, names)
+
+
+@pytest.mark.parametrize('bad_gmm_dict,reason', [
+    ({(0, 1): None, (6, 4): None, (5, 3): None}, 'uncovered'),        # t_ref (dim 2) in no group
+    ({(0, 1): None, (2, 3): None, (4, 5): None, (6, 0): None}, 'duplicate'),
+    ({(0, 1): None, (2, 3): None, (4, 5): None, (6, 7): None}, 'out of range'),
+])
+def test_incomplete_dim_group_cover_is_refused(bad_gmm_dict, reason):
+    """Refuse the integral rather than return a confident wrong number.
+
+    An uncovered dimension is never written, so sample_array carries whatever xpy.empty
+    returned; a repeated one is double counted.  Both make ln Z meaningless while the reported
+    sigma stays small, and neither is recoverable downstream.
+    """
+    sampler = _make_sampler()
+    n_comp = {k: 1 for k in bad_gmm_dict}
+    adapt = {k: False for k in bad_gmm_dict}
+    with pytest.raises(ValueError):
+        _integrate(sampler, bad_gmm_dict, n_comp, adapt, a_coeff=0.0, seed=1000,
+                   nmax=20000, neff=10)
+
+
+def test_complete_cover_of_the_same_run_is_accepted():
+    """Control for the test above: the only difference is that every dimension has a group."""
+    sampler = _make_sampler()
+    gmm_dict, n_comp, adapt = _ile_groups(_args_frame)
+    assert sorted(i for k in gmm_dict for i in k) == list(range(len(INTEGRATE_ARGS)))
+    _integrate(sampler, gmm_dict, n_comp, adapt, a_coeff=0.0, seed=1000, nmax=20000, neff=10)
+
+
+@pytest.mark.parametrize('a_coeff', [0.0, 8.0])
+def test_analytic_evidence(a_coeff):
+    """ln Z against a closed form: E_prior[exp(A cos phi_orb)] = I0(A)."""
+    sampler = _make_sampler()
+    gmm_dict, n_comp, adapt = _ile_groups(_args_frame)
+    ln_z, _, n_eff, _ = _integrate(sampler, gmm_dict, n_comp, adapt, a_coeff, seed=1000)
+
+    exact = float(np.log(i0(a_coeff)))
+    assert np.isfinite(ln_z), "ln Z = {} (A={})".format(ln_z, a_coeff)
+    assert abs(float(ln_z) - exact) < LN_Z_TOL, \
+        "ln Z = {:.4f}, exact {:.4f}, off by {:.4f} nats (A={})".format(
+            float(ln_z), exact, float(ln_z) - exact, a_coeff)
+    # A collapsed proposal is the other way this integral goes wrong; the measured floor over 8
+    # seeds on these targets was n_eff ~1000, so 100 only catches a collapse.
+    assert float(n_eff) > 100, "n_eff = {:.1f} (A={})".format(float(n_eff), a_coeff)
+
+
+def test_dim_group_frame_differs_by_how_the_sampler_is_driven():
+    """mcsamplerEnsemble numbers its dimensions differently depending on its driver.
+
+    integrate(func, *args) builds raw_bounds from `args`, so dim i is args[i].  A portfolio
+    never calls member.integrate(): it calls member.setup() -- where _setup_impl uses
+    dim = len(self.params_ordered) -- and then member.draw_simplified(n, *params_ordered), so
+    dim i is params_ordered[i].  One key set cannot serve both, and building keys for the wrong
+    one groups the wrong parameters with no effect on ln Z that a flat target can see.
+    """
+    sampler = _make_sampler()
+    assert list(sampler.params_ordered) == PARAMS_ORDERED
+    assert mcsamplerEnsemble.dim_group_frame(sampler, INTEGRATE_ARGS, driven_by_integrate=True) \
+        == list(INTEGRATE_ARGS)
+    assert mcsamplerEnsemble.dim_group_frame(sampler, INTEGRATE_ARGS, driven_by_integrate=False) \
+        == list(PARAMS_ORDERED)
+    # anchor: the distinction is only meaningful because the two orders disagree
+    assert list(INTEGRATE_ARGS) != list(PARAMS_ORDERED)
+
+
+def test_setup_path_groups_the_parameters_the_key_names():
+    """The setup()/draw_simplified() path, which the portfolio uses and integrate() does not.
+
+    Keys built in the params_ordered frame must land on the parameters they name.  Feeding this
+    path args-frame keys silently regroups everything -- that is the defect this pins, and
+    test_analytic_evidence cannot see it because the estimator stays unbiased.
+    """
+    sampler = _make_sampler()
+    frame = mcsamplerEnsemble.dim_group_frame(sampler, INTEGRATE_ARGS, driven_by_integrate=False)
+    groups = [['right_ascension', 'declination'], ['distance', 'inclination'], ['psi', 'phi_orb']]
+    gmm_dict = {tuple(frame.index(n) for n in g): None for g in groups}
+    mcsamplerEnsemble.complete_dim_group_cover(gmm_dict, len(frame))
+    sampler.setup(n_comp={k: 1 for k in gmm_dict}, gmm_dict=dict(gmm_dict))
+
+    for g in groups:
+        key = tuple(frame.index(n) for n in g)
+        assert key in sampler.integrator.gmm_dict
+        assert [sampler.params_ordered[i] for i in key] == g, \
+            "key {} lands on {}, not {}".format(key, [sampler.params_ordered[i] for i in key], g)
+    # and the setup() path is covered by the guard too (it was not, before)
+    assert sorted(i for k in sampler.integrator.gmm_dict for i in k) == list(range(len(frame)))
+
+
+def test_setup_path_is_guarded_too():
+    """_setup_impl builds its own integrator; the guard has to run on that path as well."""
+    sampler = _make_sampler()
+    partial = {(0, 1): None, (2, 3): None, (4, 5): None}      # last dim uncovered
+    with pytest.raises(ValueError):
+        sampler.setup(n_comp={k: 1 for k in partial}, gmm_dict=dict(partial), setup_forget=True)
+
+
+def test_setup_path_names_the_frame_for_an_out_of_range_key():
+    """The guard must run BEFORE _setup_impl indexes raw_bounds with the key.
+
+    Dropping the _setup_impl call site and relying on integrator.__init__ is invisible for an
+    uncovered dimension -- __init__ catches that either way -- but an out-of-range index dies
+    first, building bounds, as a bare IndexError that says nothing about dim-group frames.  That
+    is exactly the message an operator needs, because an out-of-range key IS the signature of
+    keys built in the wrong frame against a shorter parameter list.
+    """
+    sampler = _make_sampler()
+    n = len(PARAMS_ORDERED)
+    bad = {(i,): None for i in range(n - 1)}
+    bad[(n - 1, n + 4)] = None                                 # n+4 is not a dimension
+    with pytest.raises(ValueError) as e:
+        sampler.setup(n_comp={k: 1 for k in bad}, gmm_dict=dict(bad), setup_forget=True)
+    assert "POSITIONAL ARGUMENT" in str(e.value), \
+        "the message must name the frame, not just the index: %r" % str(e.value)
+
+
+def test_complete_dim_group_cover_fills_and_reports():
+    gmm_dict = {(0, 1): None, (4, 5): None}
+    comp, adapt = {(0, 1): 4, (4, 5): 2}, {(0, 1): True, (4, 5): True}
+    added = mcsamplerEnsemble.complete_dim_group_cover(gmm_dict, 7, comp_dict=comp, gmm_adapt=adapt)
+    assert added == [(2,), (3,), (6,)]
+    assert sorted(i for k in gmm_dict for i in k) == list(range(7))
+    assert set(comp) == set(gmm_dict) == set(adapt), "n_comp/gmm_adapt must stay keyed like gmm_dict"
+    # idempotent: a second pass adds nothing
+    assert mcsamplerEnsemble.complete_dim_group_cover(gmm_dict, 7, comp_dict=comp, gmm_adapt=adapt) == []
+
+
+def test_empty_dim_group_key_is_refused():
+    """A key built from names none of which are sampled collapses to (), which names nothing."""
+    sampler = _make_sampler()
+    bad = {(): None}
+    bad.update({(i,): None for i in range(len(INTEGRATE_ARGS))})
+    with pytest.raises(ValueError):
+        _integrate(sampler, bad, {k: 1 for k in bad}, {k: False for k in bad},
+                   a_coeff=0.0, seed=1000, nmax=20000, neff=10)

@@ -168,6 +168,47 @@ def _to_host_bounds(b):
     return get() if (get is not None and not isinstance(b, (list, tuple, dict))) else b
 
 
+def _validate_dim_group_cover(gmm_dict, d):
+    """Every integration dimension must belong to exactly one dim-group key of gmm_dict.
+
+    _sample() allocates sample_array with xpy.empty and writes only the columns named by a
+    dim-group.  A dimension missing from gmm_dict therefore carries UNINITIALIZED MEMORY into
+    the integrand and into the prior, with no matching factor in sampling_prior_array -- an
+    unnormalized importance-sampling estimator whose ln Z is arbitrarily wrong while its
+    reported sigma stays small.  A repeated dimension is double-counted the same way.  Neither
+    is recoverable downstream, so refuse the integrator instead of returning a confident wrong
+    number.
+    """
+    if gmm_dict is None:
+        raise ValueError("gmm_dict is None: mcsamplerEnsemble needs a dim-group mapping covering all {} dimensions".format(d))
+    seen = {}
+    for key in gmm_dict:
+        if len(tuple(key)) == 0:
+            raise ValueError(
+                "gmm_dict has an EMPTY dim-group key. It names no dimension, so it contributes "
+                "neither a draw nor a factor to the sampling density; it is always a key that was "
+                "built from parameter names none of which are being sampled.")
+        for i in tuple(key):
+            i = int(i)
+            if not (0 <= i < d):
+                raise ValueError(
+                    "gmm_dict dim-group {} names dimension {}, outside the {} integration dimensions. "
+                    "Dim-group keys index the sampler's POSITIONAL ARGUMENT order, not params_ordered.".format(
+                        tuple(key), i, d))
+            if i in seen:
+                raise ValueError(
+                    "gmm_dict dimension {} appears in both {} and {}; each dimension must be in exactly one group".format(
+                        i, seen[i], tuple(key)))
+            seen[i] = tuple(key)
+    missing = sorted(set(range(d)) - set(seen))
+    if missing:
+        raise ValueError(
+            "gmm_dict covers dimensions {} but the integral has {} dimensions; {} are in no dim-group. "
+            "Uncovered dimensions are never sampled (left as uninitialized memory) and make ln Z "
+            "meaningless.  Dim-group keys index the sampler's POSITIONAL ARGUMENT order.".format(
+                sorted(seen), d, missing))
+
+
 class integrator:
     '''
     Class to iteratively perform an adaptive Monte Carlo integral where the integrand
@@ -217,8 +258,12 @@ class integrator:
         # user-specified parameters
         self.d = d
         self.bounds = bounds
-        self.gmm_dict = gmm_dict
+        # Order matters: validate_gmm_dict reports a SEED that does not match its group, which is
+        # the more specific complaint, and a caller may hand a deliberately partial gmm_dict while
+        # exercising it.  The cover check is the blunter one, so it runs second.
         validate_gmm_dict(bounds, gmm_dict, param_names=param_names)
+        _validate_dim_group_cover(gmm_dict, d)
+        self.gmm_dict = gmm_dict
         self.gmm_adapt = gmm_adapt
         # gmm_adaptive: {dim_group: k_max}.  Groups listed here choose their
         # component count from the data by BIC (GMM.fit_gmm_adaptive) at
