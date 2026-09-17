@@ -182,12 +182,11 @@ def _validate_dim_group_cover(gmm_dict, d):
     if gmm_dict is None:
         raise ValueError("gmm_dict is None: mcsamplerEnsemble needs a dim-group mapping covering all {} dimensions".format(d))
     seen = {}
-    for key in gmm_dict:
+    empty_keys = []
+    for key in list(gmm_dict):
         if len(tuple(key)) == 0:
-            raise ValueError(
-                "gmm_dict has an EMPTY dim-group key. It names no dimension, so it contributes "
-                "neither a draw nor a factor to the sampling density; it is always a key that was "
-                "built from parameter names none of which are being sampled.")
+            empty_keys.append(key)
+            continue
         for i in tuple(key):
             i = int(i)
             if not (0 <= i < d):
@@ -200,6 +199,26 @@ def _validate_dim_group_cover(gmm_dict, d):
                     "gmm_dict dimension {} appears in both {} and {}; each dimension must be in exactly one group".format(
                         i, seen[i], tuple(key)))
             seen[i] = tuple(key)
+    # An empty key is NOT inert, despite naming no dimension.  _sample() tolerates it (it draws
+    # an (n, 0) block and multiplies the sampling density by prod([]) == 1), but _train() also
+    # iterates gmm_dict and tries to FIT a mixture to that zero-width block: LAPACK raises, the
+    # whole proposal is _reset(), and after enough consecutive chunks integrate() gives up with
+    # "GMM proposal refit failed 5 consecutive times".  Measured on a sharp 3-d target with CIP's
+    # call shape (int n_comp, no gmm_adapt): 4 proposal resets, on this base AND before it.
+    #
+    # CIP manufactures one from a typo: parse_corr_params swallows an unknown parameter name with
+    # a bare `except: continue`, so an --internal-correlate-parameters block naming only unknown
+    # parameters collapses to ().  Refusing the run is too harsh (the remaining groups still cover
+    # every dimension) and warning alone leaves the training failures in place, so DROP the key
+    # and say so.  This mutates the caller's dict on purpose: it is the only way to keep _train
+    # from seeing it, and every consumer reads the group list from here.
+    for key in empty_keys:
+        del gmm_dict[key]
+        warnings.warn(
+            "gmm_dict had an empty dim-group key; it names no dimension and has been dropped. "
+            "It would otherwise make the proposal refit fail and reset. This usually means a "
+            "correlate-parameters block named only parameters that are not being sampled.",
+            RuntimeWarning)
     missing = sorted(set(range(d)) - set(seen))
     if missing:
         raise ValueError(
