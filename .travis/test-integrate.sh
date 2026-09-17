@@ -117,6 +117,46 @@ if [ "$_PORTDENS_FOUND" -ne "$_PORTDENS_EXPECTED" ]; then
 fi
 python -m pytest -q "$_PORTDENS_TESTS"
 
+# The --zero-likelihood stand-in, checked as WIRING rather than as an answer: its argument order
+# against the driver's own supplemental_ln_likelihood call sites, its generated signature against
+# every live likelihood_function signature, and its array module.  This is the half the
+# end-to-end gate below is structurally blind to -- right_ascension, phi_orb and psi are iid
+# uniform on [0, 2pi), so NO marginal can tell a permutation of the three apart, and the runners
+# have no cupy, so nothing there sees a host/device mistake.  Pure AST + exec, ~4 s.
+# The collected count tracks the number of `def likelihood_function` signatures in the driver
+# (one parametrized case each, currently 8); if a signature is added, look at the new one and
+# update the number.
+_ZLSTANDIN_TESTS=MonteCarloMarginalizeCode/Code/test/test_zero_likelihood_standin.py
+_ZLSTANDIN_EXPECTED=23
+_ZLSTANDIN_FOUND=$(python -m pytest -q --collect-only "$_ZLSTANDIN_TESTS" 2>/dev/null | grep -c '::' || true)
+if [ "$_ZLSTANDIN_FOUND" -ne "$_ZLSTANDIN_EXPECTED" ]; then
+    echo "zero-likelihood stand-in gate: collected $_ZLSTANDIN_FOUND tests, expected $_ZLSTANDIN_EXPECTED" >&2
+    exit 1
+fi
+python -m pytest -q "$_ZLSTANDIN_TESTS"
+
+# END-TO-END, ANALYTIC.  ILE run to completion on a case whose answer is known in closed form:
+# a zero-strain fixture, --zero-likelihood (exact ln Z = 0), and an analytic supplementary
+# factor A*cos(phi_orb) + B*cos(iota) whose marginal is exactly ln I0(A) + ln(sinh(B)/B).  The
+# sampler unit tests check samplers; pseudo_pipe/asimov check that the pipeline RUNS; nothing
+# checked that it runs and is CORRECT.  That gap hid two defects: --zero-likelihood silently
+# discarded a --supplementary-likelihood-factor-* (two runs differing only by it returned ln Z
+# bit-identical, while the banner reported the factor as active), and the *args stand-in it was
+# replaced with reported co_argcount 0 to mcsampler, killing --zero-likelihood with the
+# driver's own default --sampler-method adaptive_cartesian.  Both were invisible because the
+# driver catches the exception, prints FAILED ANALYSIS and EXITS 0.  It also caught ILE
+# --sampler-method GMM returning an evidence ~30 nats wrong; #359 fixed that, and GMM is now a
+# lane here rather than a recorded defect.  Needs no network, no real event and no GPU; about
+# 8-12 s per ILE arm plus ~15 s once for the distance-marginalization lookup table.
+_E2E_TESTS=MonteCarloMarginalizeCode/Code/test/test_e2e_analytic_pipeline.py
+_E2E_EXPECTED=17
+_E2E_FOUND=$(python -m pytest -q --collect-only "$_E2E_TESTS" 2>/dev/null | grep -c '::' || true)
+if [ "$_E2E_FOUND" -ne "$_E2E_EXPECTED" ]; then
+    echo "e2e analytic gate: collected $_E2E_FOUND tests, expected $_E2E_EXPECTED" >&2
+    exit 1
+fi
+python -m pytest -q "$_E2E_TESTS"
+
 # Supplementary-likelihood plugin hook: the NAL reader/evaluator (pure numpy, no data) and the
 # static guard on the drivers' prepare-hook wiring, which is what makes the plugin receive the
 # SAMPLING basis at all. Both are seconds-long and protect a silent-wrong-answer path.

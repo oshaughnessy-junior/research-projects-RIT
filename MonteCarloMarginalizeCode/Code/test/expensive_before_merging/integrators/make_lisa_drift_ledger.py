@@ -138,6 +138,17 @@ RULES = [
      "Hoisted to module level rather than nested, because this driver has TWO "
      "analyze_event variants. The audit matches FUNC items on the bare name for exactly "
      "this reason."),
+    (r"^(FUNC:make_zero_likelihood_standin(\.[A-Za-z_]+)?|CONST:_SUPPLEMENT_[A-Z_]+)$", "PORT",
+     "The --zero-likelihood stand-in, built with the SAME SIGNATURE as the likelihood it "
+     "replaces and applying a --supplementary-likelihood-factor-*. LISA has the identical "
+     "shape at both of its `like_to_integrate = zero_like` sites, the same supplementary hook "
+     "and the same eight-signature likelihood_function, so it carries both defects this "
+     "replaced: --zero-likelihood silently discards a supplementary factor, and a *args "
+     "stand-in reports co_argcount 0 to mcsampler, which kills --sampler-method "
+     "adaptive_cartesian. LISA's two sites additionally still read opts.internal_use_lnL "
+     "rather than return_lnL as the convention, which is a separate, already-fixed-here "
+     "defect they would need to take at the same time. Nothing in the helper is "
+     "ground-based-specific: it is signature plumbing."),
     (r"^OPTION:--sampler-sequential-warmstart$", "PORT",
      "Warm-start each intrinsic point from the previous one's cloud. Applies whenever "
      "--n-events-to-analyze>1, which LISA supports. Its snapshot/restore prerequisites "
