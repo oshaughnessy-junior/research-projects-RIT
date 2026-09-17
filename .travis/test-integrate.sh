@@ -117,6 +117,24 @@ if [ "$_PORTDENS_FOUND" -ne "$_PORTDENS_EXPECTED" ]; then
 fi
 python -m pytest -q "$_PORTDENS_TESTS"
 
+# The --zero-likelihood stand-in, checked as WIRING rather than as an answer: its argument order
+# against the driver's own supplemental_ln_likelihood call sites, its generated signature against
+# every live likelihood_function signature, and its array module.  This is the half the
+# end-to-end gate below is structurally blind to -- right_ascension, phi_orb and psi are iid
+# uniform on [0, 2pi), so NO marginal can tell a permutation of the three apart, and the runners
+# have no cupy, so nothing there sees a host/device mistake.  Pure AST + exec, ~4 s.
+# The collected count tracks the number of `def likelihood_function` signatures in the driver
+# (one parametrized case each, currently 8); if a signature is added, look at the new one and
+# update the number.
+_ZLSTANDIN_TESTS=MonteCarloMarginalizeCode/Code/test/test_zero_likelihood_standin.py
+_ZLSTANDIN_EXPECTED=15
+_ZLSTANDIN_FOUND=$(python -m pytest -q --collect-only "$_ZLSTANDIN_TESTS" 2>/dev/null | grep -c '::' || true)
+if [ "$_ZLSTANDIN_FOUND" -ne "$_ZLSTANDIN_EXPECTED" ]; then
+    echo "zero-likelihood stand-in gate: collected $_ZLSTANDIN_FOUND tests, expected $_ZLSTANDIN_EXPECTED" >&2
+    exit 1
+fi
+python -m pytest -q "$_ZLSTANDIN_TESTS"
+
 # END-TO-END, ANALYTIC.  ILE run to completion on a case whose answer is known in closed form:
 # a zero-strain fixture, --zero-likelihood (exact ln Z = 0), and an analytic supplementary
 # factor A*cos(phi_orb) + B*cos(iota) whose marginal is exactly ln I0(A) + ln(sinh(B)/B).  The

@@ -12,6 +12,12 @@ analytic_supplement_for_e2e for the factor and its closed form.  That is the con
 trick of the sampler unit tests lifted to the pipeline: no fit error, no MC scatter in the
 TARGET, and an answer you can write down.
 
+ITS FAST COMPANION.  test_zero_likelihood_standin.py checks the same stand-in as WIRING --
+argument order against the driver's real call sites, generated signature, array module -- in
+about 4 s.  It exists because an end-to-end marginal is structurally unable to distinguish a
+permutation among right_ascension, phi_orb and psi: the three are independent and identically
+distributed, so any factor's marginal is the same under the swap.  Read both files together.
+
 WHAT EACH ARM COSTS.  About 8-12 s of one core per ILE arm, plus ~15 s once for the
 distance-marginalization lookup table.  No network, no real event, no GPU.
 """
@@ -31,17 +37,22 @@ _ligolw_utils = pytest.importorskip("igwn_ligolw.utils")
 import RIFT.lalsimutils as lalsimutils
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-BIN = os.path.abspath(os.path.join(HERE, "..", "bin"))
+CODE = os.path.abspath(os.path.join(HERE, ".."))
+BIN = os.path.join(CODE, "bin")
 ILE = os.path.join(BIN, "integrate_likelihood_extrinsic_batchmode")
 MARG_TABLE_TOOL = os.path.join(BIN, "util_InitMargTable")
 SUPPLEMENT_MODULE = "analytic_supplement_for_e2e"
 
-# TOLERANCE, MEASURED not guessed; see the calibration note at the end of this file.
+# TOLERANCES, MEASURED not guessed.  See CALIBRATION at the end of this file for the sweep
+# these come from, what was varied, and how much headroom each one has.
 Z_TOLERANCE = 5.0
-# ...and a floor on informativeness, because a z-test passes vacuously if sigma is huge.
+# The informativeness floor, and the one that does the work: a z-test passes vacuously if sigma
+# is large, so cap it.  5 * MAX_SIGMA is a 0.30-nat band.
 MAX_SIGMA = 0.06
-# n_eff floor: below this the run did not converge and no verdict is available from it.
-MIN_NEFF = 100.0
+# A DEGENERACY TRIPWIRE, deliberately loose -- not a convergence criterion, which is MAX_SIGMA.
+# n_eff is a noisy statistic at fixed accuracy: adaptive_cartesian reported 91 to 220 over eight
+# seeds whose lnZ all landed inside 1.2 sigma, so a tight floor here buys a flake, not a check.
+MIN_NEFF = 30.0
 
 _AV = ["--sampler-method", "AV"]
 _PORTFOLIO = ["--sampler-method", "portfolio",
@@ -120,7 +131,12 @@ def _child_env(**extra):
     env["CUDA_VISIBLE_DEVICES"] = ""
     env["OMP_NUM_THREADS"] = "1"
     env["MPLBACKEND"] = "Agg"
-    env["PYTHONPATH"] = HERE + os.pathsep + env.get("PYTHONPATH", "")
+    # THIS tree, not whatever RIFT is installed: the driver is run by absolute path out of the
+    # checkout, but `import RIFT.integrators...` inside it would otherwise resolve to the
+    # installed package, and half of what this gate covers lives there.  HERE is also on the
+    # path so the child can import the analytic factor module.
+    env["PYTHONPATH"] = os.pathsep.join(
+        [HERE, CODE] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
     env.update(extra)
     return env
 
@@ -144,8 +160,7 @@ def _read_result(d, tag):
     st = json.loads(status.read_text())
     for name, got in (("lnL", lnL), ("sigma_lnL", sigma), ("ntotal", ntotal), ("neff", neff)):
         want = float(st[name])
-        assert got == pytest.approx(want, rel=1e-12, nan_ok=True) or (
-            np.isnan(got) and np.isnan(want)), (
+        assert got == pytest.approx(want, rel=1e-12, nan_ok=True), (
             "column contract broken: the row's tail columns give %s=%r, the status JSON says "
             "%r.  The .dat layout changed and this file is reading the wrong columns."
             % (name, got, want))
@@ -188,10 +203,13 @@ def _run_ile(event, tag, sampler_args, a_coeff=None, b_coeff=0.0, incl_is_cosine
     return _read_result(d, tag)
 
 
-def _exact(a, b=0.0):
+if HERE not in sys.path:
     sys.path.insert(0, HERE)
-    import analytic_supplement_for_e2e as sup
-    return sup.exact_ln_Z(a, b)
+import analytic_supplement_for_e2e as _supplement
+
+
+def _exact(a, b=0.0):
+    return _supplement.exact_ln_Z(a, b)
 
 
 def _assert_converged(tag, lnL, sigma, neff):
@@ -248,8 +266,9 @@ def test_analytic_factor_marginal_is_recovered(event, sampler, a_coeff, b_coeff)
 def test_supplementary_factor_survives_zero_likelihood(event):
     """THE REGRESSION.  --zero-likelihood swaps the likelihood function for a stand-in; the
     supplementary factor has to survive that, or the option pair is silently inert while the
-    startup banner reports the factor as active.  Before the fix these two runs returned ln Z
-    bit-identical (0.00652494967775219 both).
+    startup banner reports the factor as active.  Measured on rift_O4d at d1d7c7e84, these two
+    runs returned ln Z bit-identical: -0.027110200401507356 with the factor and without it,
+    where the exact answer with it is 6.653324.
 
     Asserted as a DIFFERENCE as well as an absolute value: the difference cancels every prior
     normalization constant, so it isolates the factor itself."""
@@ -300,10 +319,13 @@ def test_time_marginalized_portfolio(event):
 
 
 def test_distance_marginalized(event, dmarg_table):
-    """--distance-marginalization removes 'distance' from the sampled parameters AND from
-    likelihood_function's signature, so a stand-in that read kwargs['distance'] raised KeyError.
-    The value handed to the factor's distance argument comes from the stand-in's defaults; the
-    factor does not use it, which is the documented advice for a portable factor."""
+    """--distance-marginalization removes 'distance' from the sampled parameters and from
+    likelihood_function's signature, which becomes (right_ascension, declination, phi_orb,
+    inclination, psi).  The factor still takes six arguments, so the stand-in has to supply a
+    value for that one; it uses 0.0, which is what the two distance-marginalized real call
+    sites already pass.  The factor here does not use distance, which is the advice --help
+    gives for a portable factor.  Reading it out of the sampled values instead raised KeyError
+    on this configuration."""
     a, b = 8.0, 2.0
     tag = "dmarg"
     lnL, sigma, neff = _run_ile(
@@ -323,8 +345,13 @@ def test_adaptive_cartesian(event):
     driver's own default sampler, and again behind FAILED ANALYSIS and exit 0."""
     a, b = 8.0, 2.0
     tag = "adaptive_cartesian"
+    # A LARGER --n-max than the other lanes, because at 20000 this sampler stops on the budget
+    # rather than on --n-eff: over eight seeds it reported n_eff 91 to 220 against a target of
+    # 250, with sigma up to 0.0430 against a 0.06 cap.  At 60000 it stops on n_eff instead, at
+    # ntotal 30000, with n_eff ~300 and sigma ~0.03.  One-and-a-half times the arm, and the
+    # lane stops sitting one bad draw away from its own informativeness floor.
     lnL, sigma, neff = _run_ile(event, tag, ["--sampler-method", "adaptive_cartesian"],
-                                a_coeff=a, b_coeff=b)
+                                a_coeff=a, b_coeff=b, n_max=60000)
     _assert_lnZ(tag, lnL, sigma, neff, _exact(a, b))
 
 
@@ -340,10 +367,12 @@ def test_gmm_lane_is_known_wrong(event):
     PR #359, 'GMM sampler: dim-group keys were in the wrong frame' -- so do not duplicate that
     work here.
 
-    GMM ALSO FAILS TO CONVERGE on a substantial fraction of draws, emitting nan for lnL, sigma
-    and n_eff together, which is why the non-convergence branch below is a skip and not a
-    failure: a run that produced no estimate cannot characterise anything, and treating it as a
-    failure made this lane go red on a clean tree roughly two runs in five."""
+    GMM ALSO FAILS TO CONVERGE on some draws, emitting nan for lnL, sigma and n_eff together.
+    Measured on this fixture over 16 seeds (2000-2015) on a clean tree: 2 non-finite, and of the
+    14 that returned a number, ln Z ran from -129.52 to -11.50 against an exact 6.653, with
+    sigma 0.065 to 0.648 and n_eff 1.6 to 53.1.  So the non-convergence branch below is a skip
+    and not a failure: a run that produced no estimate cannot characterise anything, and failing
+    on it puts a red mark on a clean tree about one run in eight."""
     a, b = 8.0, 2.0
     exact = _exact(a, b)
     tag = "gmm_known_wrong"

@@ -484,7 +484,7 @@ integration_params.add_option("--extrinsic-proposal-field",default=None,help="AV
 integration_params.add_option("--extrinsic-proposal-field-cover-frac",type=float,default=0.5,help="Coverage floor for --extrinsic-proposal-field handoff (default 0.5, the measured-safe floor -- see --sampler-warmstart-cover-frac; 0.1 is under-covered).")
 integration_params.add_option("--extrinsic-proposal-field-inflate",type=float,default=1.5,help="Handoff safety margin for --extrinsic-proposal-field: widen the imported seed by this factor about its mean to cover the peak shift between the neighbouring intrinsic point and this one (default 1.5).")
 integration_params.add_option("--supplementary-likelihood-factor-code", default=None,type=str,help="Import a module (in your pythonpath!) containing a supplementary factor for the likelihood.  Used to impose supplementary external priors of arbitrary complexity and external dependence (e.g., EM observations). EXPERTS-ONLY")
-integration_params.add_option("--supplementary-likelihood-factor-function", default=None,type=str,help="With above option, specifies the specific function used as an external prior.  CALL CONTRACT: f(right_ascension, declination, phi_orb, inclination, psi, distance) returning the LOG of the factor, which is ADDED to lnL.  WHAT ARRIVES IN THOSE ARGUMENTS IS NOT THE SAME ON EVERY CODE PATH, and that is pre-existing.  The scalar (non-vectorized) likelihood and the --zero-likelihood stand-in pass the RAW SAMPLED coordinates: cos(dec) / cos(iota) under --declination-cosine-sampler / --inclination-cosine-sampler rather than the angles, the rotated (phi+psi, phi-psi) pair under --internal-rotate-phase, and distance in Mpc.  The vectorized paths instead pass the template's physical values (cosines inverted, sky and phase rotations already applied) with distance in SI, or 0 where distance is marginalized away.  So: a portable factor should not depend on distance, and one that depends on an angle should state which convention it assumes.  Arguments that the live likelihood signature does not sample are supplied from the template (0 for distance).  Finally, mcsampler (--sampler-method adaptive_cartesian) hands object-dtype arrays, on which numpy ufuncs raise, so cast (numpy.asarray(x, dtype=float)) before any arithmetic.  EXPERTS ONLY")
+integration_params.add_option("--supplementary-likelihood-factor-function", default=None,type=str,help="With above option, specifies the specific function used as an external prior.  CALL CONTRACT: f(right_ascension, declination, phi_orb, inclination, psi, distance) returning the LOG of the factor, which is ADDED to lnL.  WHAT ARRIVES IN THOSE ARGUMENTS IS NOT THE SAME ON EVERY CODE PATH, and that is pre-existing.  The scalar (non-vectorized) likelihood and the --zero-likelihood stand-in pass the RAW SAMPLED coordinates: cos(dec) / cos(iota) under --declination-cosine-sampler / --inclination-cosine-sampler rather than the angles, the rotated (phi+psi, phi-psi) pair under --internal-rotate-phase, and distance in Mpc.  The vectorized paths instead pass the template's physical values (cosines inverted, sky and phase rotations already applied) with distance in SI, or 0 where distance is marginalized away.  So: a portable factor should not depend on distance, and one that depends on an angle should state which convention it assumes.  Under --zero-likelihood, arguments that the live likelihood signature does not sample are supplied from the template (0 for distance).  Finally, mcsampler (--sampler-method adaptive_cartesian) hands object-dtype arrays, on which numpy ufuncs raise, so cast (numpy.asarray(x, dtype=float)) before any arithmetic.  EXPERTS ONLY")
 integration_params.add_option("--supplementary-likelihood-factor-ini", default=None,type=str,help="With above option, specifies an ini file that is parsed (here) and passed to the preparation code, called when the module is first loaded, to configure the module. EXPERTS ONLY")
 optp.add_option_group(integration_params)
 
@@ -1037,8 +1037,16 @@ if opts.psi_marginalization:
          not bool(opts.internal_rotate_phase)),
         ('not --limit-psi (there is no psi sampler left to apply the box to; the box would be '
          'silently ignored)', not bool(opts.limit_psi)),
-        ('not --zero-likelihood (its debug likelihood keys results off a "psi" kwarg that this '
-         'option removes from the call signature)', not bool(opts.zero_likelihood)),
+        # The MECHANISM this clause used to name is gone: the stand-in was
+        # `def zero_like(*args, **kwargs)` reading kwargs['psi'], and is now built from the live
+        # signature by make_zero_likelihood_standin, which binds by name and sizes its output off
+        # right_ascension.  The refusal is kept because the COMBINATION is unaudited, not because
+        # it is known to crash.  To retire it: drop this clause, run
+        #   --psi-marginalization --zero-likelihood --sampler-method AV
+        # with an analytic --supplementary-likelihood-factor-* and check ln Z against its closed
+        # form (test/test_e2e_analytic_pipeline.py does exactly this for other configurations).
+        ('not --zero-likelihood (the combination is unaudited; see the note above this clause '
+         'for what it would take to retire the refusal)', not bool(opts.zero_likelihood)),
     )
     _psi_marg_missing = [name for name, ok in _psi_marg_prereqs if not ok]
     if _psi_marg_missing:
