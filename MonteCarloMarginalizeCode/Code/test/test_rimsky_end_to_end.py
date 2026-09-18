@@ -280,7 +280,7 @@ def test_first_rimsky_result_creates_bootstrapped_rift_production(
     # conversion, config rendering, posterior reading, and bootstrap conversion
     # run for real against the synthetic files above.
     with chdir(Path(settings.asimovdir)), patch("asimov.git.time.sleep"), patch(
-        "asimov.pipeline.Pipeline._capture_environment"
+        "asimov.pipeline.Pipeline._capture_environment", create=True
     ), patch("RIFT.asimov.rift.subprocess.Popen", SchedulerBoundary):
         build_and_submit(event, production, ledger)
 
