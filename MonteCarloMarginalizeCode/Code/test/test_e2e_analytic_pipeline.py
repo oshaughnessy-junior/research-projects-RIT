@@ -552,6 +552,17 @@ _GPU_SAMPLERS = ["AV", "GMM", "portfolio", "adaptive_cartesian"]
 _GPU_LANE_COEFFS = {"AV": (8.0, 2.0), "GMM": (0.75, 3.0),
                     "portfolio": (0.75, 3.0), "adaptive_cartesian": (8.0, 2.0)}
 
+# WHAT SECTION 4 STILL DOES NOT COVER, stated because an unlisted sampler is an invisible gap
+# rather than an absent one.  `--sampler-method adaptive_cartesian_gpu` -- mcsamplerGPU
+# standalone, and the ILE driver's own GPU default -- reaches the same
+# mcsamplerGPU.compute_hist conversion these lanes exercise, by a different route (its
+# integrate/integrate_log adaptation blocks rather than a portfolio member's external_rvs),
+# and has no lane here.  Measured by hand on ldas-pcdev2 slot 0 (A100), cupy 12.0.0, seed
+# 1000: prior-only ln Z 0.00893 +- 0.00888 with n_eff 3364 (z = +1.0), and A=8 B=2
+# ln Z 6.64213 +- 0.02819 against 6.65332 (z = -0.40).  It works; it is simply not gated.
+# A hand measurement is not a lane -- see the note at the top of the CALIBRATION section
+# about re-deriving rather than trusting -- so treat this as a to-do, not as coverage.
+
 # Per-lane _run_ile overrides, so a device lane runs its host twin's configuration and not a
 # nearby one.  Applied to the prior-only lane too: there the integrand is flat and the run stops
 # on --n-eff long before any budget, so the larger cap costs nothing and keeps one definition.
@@ -670,11 +681,17 @@ def test_the_gpu_flags_do_not_decide_the_backend(event, gpu_slot):
 # the seven twinned rows; the other two differ by 0.0007 (A=8 B=2 AV) and 0.0001 (A=0.75 B=3
 # portfolio).  The |z| values differ freely, because they are draws, not constants.
 #
-# THE LAST ROW IS ITS HOST TWIN EXACTLY, not merely close, and that is expected rather than
-# lucky: under --zero-likelihood the only device work is xpy.zeros, and mcsampler.integrate now
-# copies the integrand back to the host before anything else touches it, so the two arms run
-# identical host arithmetic off the same seed.  If that row ever DRIFTS from its host twin,
-# something started doing real arithmetic on the device -- read it, do not just re-record it.
+# THE LAST ROW PRINTS AS ITS HOST TWIN, and that is agreement at the table's precision, NOT a
+# bitwise identity -- do not read it as one.  An earlier version of this comment claimed the
+# two arms run identical host arithmetic because "the only device work is xpy.zeros".  That is
+# wrong and was disproved by measurement: for a sampler with return_lnL False the
+# --zero-likelihood stand-in builds xpy.ones(n) * xpy.exp(supp), so cos and exp run on the
+# DEVICE.  cupy 12.0.0 and numpy 1.26.4 disagree bitwise on about a fifth of 200000 float64
+# draws (max relative 2e-15), and at seed 1000 this lane returns ln Z 6.646959838539267 on the
+# host against 6.646957839585277 on the device -- a 2e-6 difference, four orders below the
+# 0.0305 error bar and well below what these three columns show.  So a last-digit move in this
+# row is a rounding boundary, not a finding; a move you can see in the SECOND digit is worth
+# reading.
 #
 # The four AV/GMM rows above were RE-DERIVED in the sweep that added the last four, i.e. after
 # the two host/device fixes, and came back identical -- so those fixes do not move the lanes

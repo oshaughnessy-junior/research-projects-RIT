@@ -1053,11 +1053,26 @@ def to_host(x):
     value, the same way infer_array_module does it, so this file keeps its numpy-only import
     list.  A host input is returned UNCHANGED, not re-wrapped: the numpy path must stay bit
     for bit what it was.
+
+    A non-numpy backend it cannot convert RAISES rather than passing the value through.
+    infer_array_module recognizes any module exposing asarray/where/clip, which is a wider
+    set than the ones exposing asnumpy (torch is in the gap), so "return it unchanged" would
+    hand a device array to the host-only arithmetic below the call site -- the silent
+    host/device mix this function exists to remove, reintroduced one backend later.
     """
     mod = infer_array_module(x)
-    if mod is not numpy and hasattr(mod, "asnumpy"):
+    if mod is numpy:
+        return x
+    if hasattr(mod, "asnumpy"):
         return mod.asnumpy(x)
-    return x
+    _get = getattr(x, "get", None)          # cupy-like array, module without a top-level asnumpy
+    if callable(_get):
+        return numpy.asarray(_get())
+    raise TypeError(
+        "mcsampler cannot bring a %s.%s back to the host: the module exposes neither asnumpy "
+        "nor a .get() on the array, and this sampler's accumulators are host RiftFloat, which "
+        "no device backend can hold.  Use a sampler that runs on that backend."
+        % (mod.__name__, type(x).__name__))
 
 
 def clip_angle_limits(lo, hi, kind):
