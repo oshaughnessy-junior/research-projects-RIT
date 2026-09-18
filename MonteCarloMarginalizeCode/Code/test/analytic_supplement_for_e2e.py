@@ -73,10 +73,22 @@ def ln_analytic_factor(right_ascension, declination, phi_orb, inclination, psi, 
     # cannot check it, because every lane here pins CUDA_VISIBLE_DEVICES="" and the CI runners
     # have no cupy.
     #
-    # The CAST is not decoration either.  mcsampler (--sampler-method adaptive_cartesian) hands
-    # its integrand object-dtype draws, on which np.cos raises "loop of ufunc does not support
-    # argument 0 of type float"; the driver's own non-vectorized likelihood casts for the same
-    # reason ("get rid of 'object'").  Any real supplementary factor needs it.
+    # The CAST is not decoration, and the EXPLICIT dtype is the whole of it.  mcsampler
+    # (--sampler-method adaptive_cartesian) hands its integrand object-dtype draws, on which
+    # np.cos raises "loop of ufunc does not support argument 0 of type float"; the driver's own
+    # non-vectorized likelihood casts for the same reason ("get rid of 'object'").
+    #
+    # ONE line does BOTH jobs -- object dtype to float, and host to device -- and it does so
+    # only because `dtype=` is passed.  Measured on cupy 12.0.0, 2026-09-17, on ldas-pcdev2
+    # (A100, cc 8.0) and ldas-pcdev13 (RTX 2080 Ti, cc 7.5):
+    #     cupy.asarray(obj_arr)                 -> ValueError: Unsupported dtype object
+    #     cupy.asarray(obj_arr, dtype=float)    -> float64 cupy.ndarray, values preserved
+    #     cupy.asarray(device_arr, dtype=float) -> float64 cupy.ndarray
+    # A review read the first of those three and concluded this line could not be doing both.
+    # Do NOT act on that by rewriting it as xpy.asarray(np.asarray(x, dtype=float)): np.asarray
+    # of a cupy array raises TypeError ("Implicit conversion to a NumPy array is not allowed"),
+    # so that form breaks every GPU run -- the exact path the line exists for.  Re-check by
+    # running those three calls; it is a three-line probe, not an argument.
     phi_orb = xpy.asarray(phi_orb, dtype=float)
     out = A_COEFF * xpy.cos(phi_orb)
     if B_COEFF:

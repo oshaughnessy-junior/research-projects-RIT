@@ -122,12 +122,17 @@ python -m pytest -q "$_PORTDENS_TESTS"
 # every live likelihood_function signature, and its array module.  This is the half the
 # end-to-end gate below is structurally blind to -- right_ascension, phi_orb and psi are iid
 # uniform on [0, 2pi), so NO marginal can tell a permutation of the three apart, and the runners
-# have no cupy, so nothing there sees a host/device mistake.  Pure AST + exec, ~4 s.
+# have no cupy, so nothing there sees a host/device mistake.  Mostly AST + exec, ~5 s.
+# Its section 4 runs the same device paths against REAL cupy and SKIPS here, because the runners
+# have none.  Skipped tests are still collected, so the count below is the same everywhere; but
+# a green run here has NOT exercised the device half.  That half is run by hand on a CIT GPU
+# node with CUDA_VISIBLE_DEVICES pinned to a slot the installed cupy supports -- see
+# _cupy_or_skip in the test file.
 # The collected count tracks the number of `def likelihood_function` signatures in the driver
 # (one parametrized case each, currently 8); if a signature is added, look at the new one and
 # update the number.
 _ZLSTANDIN_TESTS=MonteCarloMarginalizeCode/Code/test/test_zero_likelihood_standin.py
-_ZLSTANDIN_EXPECTED=23
+_ZLSTANDIN_EXPECTED=27
 _ZLSTANDIN_FOUND=$(python -m pytest -q --collect-only "$_ZLSTANDIN_TESTS" 2>/dev/null | grep -c '::' || true)
 if [ "$_ZLSTANDIN_FOUND" -ne "$_ZLSTANDIN_EXPECTED" ]; then
     echo "zero-likelihood stand-in gate: collected $_ZLSTANDIN_FOUND tests, expected $_ZLSTANDIN_EXPECTED" >&2
@@ -146,10 +151,15 @@ python -m pytest -q "$_ZLSTANDIN_TESTS"
 # driver's own default --sampler-method adaptive_cartesian.  Both were invisible because the
 # driver catches the exception, prints FAILED ANALYSIS and EXITS 0.  It also caught ILE
 # --sampler-method GMM returning an evidence ~30 nats wrong; #359 fixed that, and GMM is now a
-# lane here rather than a recorded defect.  Needs no network, no real event and no GPU; about
+# lane here rather than a recorded defect.  Needs no network and no real event; about
 # 8-12 s per ILE arm plus ~15 s once for the distance-marginalization lookup table.
+# Its section 5 runs the same answers with a GPU VISIBLE and asserts the child reached one.
+# Those 7 lanes SKIP here, because the runners have no cupy -- so a green run in CI has NOT
+# exercised the device path.  Run the file by hand on a CIT GPU node with CUDA_VISIBLE_DEVICES
+# pinned to a slot the installed cupy supports; see the gpu_slot fixture.  Skipped tests are
+# still collected, so the count below is the same everywhere.
 _E2E_TESTS=MonteCarloMarginalizeCode/Code/test/test_e2e_analytic_pipeline.py
-_E2E_EXPECTED=17
+_E2E_EXPECTED=24
 _E2E_FOUND=$(python -m pytest -q --collect-only "$_E2E_TESTS" 2>/dev/null | grep -c '::' || true)
 if [ "$_E2E_FOUND" -ne "$_E2E_EXPECTED" ]; then
     echo "e2e analytic gate: collected $_E2E_FOUND tests, expected $_E2E_EXPECTED" >&2
