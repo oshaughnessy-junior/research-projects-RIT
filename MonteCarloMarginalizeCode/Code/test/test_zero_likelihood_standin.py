@@ -27,6 +27,7 @@ import ast
 import inspect
 import os
 import re
+import subprocess
 import sys
 
 import numpy as np
@@ -636,46 +637,73 @@ def test_the_two_conventions_give_the_right_arithmetic():
 # ---------------------------------------------------------------------------------------
 # 4. the device path, on a REAL GPU
 
+# Which visible device this cupy can actually build a kernel for, decided ONCE, in a
+# SUBPROCESS.  Cached because three tests ask.
+_USABLE_SLOT = None
+
+_SLOT_PROBE = r"""
+import numpy as np
+def _flat(e):
+    return ("%s: %s" % (type(e).__name__, e)).replace("\n", " ")[:150]
+try:
+    import cupy
+except Exception as e:
+    print("VERDICT NOCUPY %s" % _flat(e)); raise SystemExit(0)
+bad = []
+try:
+    n = cupy.cuda.runtime.getDeviceCount()
+except Exception as e:
+    print("VERDICT NOQUERY %s" % _flat(e)); raise SystemExit(0)
+for d in range(n):
+    try:
+        with cupy.cuda.Device(d):
+            cupy.asnumpy(cupy.cos(cupy.asarray(np.zeros(2), dtype=float)))
+    except Exception as e:
+        bad.append("%d:%s" % (d, type(e).__name__)); continue
+    print("VERDICT SLOT %d" % d); raise SystemExit(0)
+print("VERDICT NOSLOT %s" % (",".join(bad) or "no devices visible"))
+"""
+
+
 def _cupy_or_skip():
-    """Real cupy, on a device this cupy can actually build a kernel for, or a skip saying why.
+    """Real cupy, pinned to a device this cupy can actually build a kernel for, or a skip
+    saying why.
 
     TWO distinct failures, and conflating them is how a device claim goes unchecked.  `import
     cupy` fails outright on a host with no CUDA runtime (ldas-grid, and every CI runner).  It
     SUCCEEDS on the CIT GPU head nodes while the visible device is one this cupy cannot compile
     for: ldas-pcdev13 slots 0-2 and all of ldas-pcdev11 are Blackwell cc 12.0, and cupy 12.0.0
     answers `nvrtc: error: invalid value for --gpu-architecture`.  So the probe RUNS a kernel
-    rather than trusting the import, and the slot map moves, so it probes at dispatch.
+    rather than trusting the import, and it probes at dispatch, because the slot map moves.
+
+    THE PROBE RUNS IN A SUBPROCESS, and that is not tidiness.  Finding out whether a device
+    works means creating a CUDA context on it, and a context is not undone by finishing with the
+    device: `with cupy.cuda.Device(d):` restores the CURRENT DEVICE and destroys nothing.
+    Measured on ldas-pcdev2 with two devices visible, the first unusable -- probing in-process
+    with `.use()` and probing in-process with `with` BOTH leave two contexts on one pid, 252 and
+    446 MB, one of them on a card this cupy cannot even build for.  On pcdev11/13 that is three,
+    on a shared node.  Probing out of process leaves this process holding exactly one, on the
+    device it actually uses; the rejected contexts die with the child.  (An earlier version of
+    this comment claimed `with` fixed the leak.  It does not; that was measured afterwards.)
 
     A SKIP HERE IS NOT A PASS.  Pin CUDA_VISIBLE_DEVICES to a slot this cupy supports and run
     the file again; as of 2026-09-17 ldas-pcdev2 slot 0 (A100, cc 8.0) and ldas-pcdev13 slot 3
-    (RTX 2080 Ti, cc 7.5) work.  The reason string says which of the two failures happened."""
-    try:
-        import cupy
-    except Exception as exc:
-        pytest.skip("no usable cupy on this host (%s: %s)" % (type(exc).__name__,
-                                                              str(exc)[:80]))
-    # EVERY visible device is tried, not just the default one, to match the e2e gate's gpu_slot
-    # fixture.  They used to disagree: on a host whose slot 0 is Blackwell and slot 3 is not,
-    # gpu_slot found slot 3 and ran while this skipped, so the two files claimed the same
-    # discipline and applied different ones.  The first usable device is selected for the rest
-    # of the process.
-    bad = []
-    try:
-        n_dev = cupy.cuda.runtime.getDeviceCount()
-    except Exception as exc:
-        pytest.skip("cupy %s imports but no CUDA device could be queried (%s: %s).  NOT a pass."
-                    % (cupy.__version__, type(exc).__name__, str(exc)[:80]))
-    for d in range(n_dev):
-        try:
-            cupy.cuda.Device(d).use()
-            cupy.asnumpy(cupy.cos(cupy.asarray(np.zeros(2), dtype=float)))
-            return cupy
-        except Exception as exc:
-            bad.append("%d:%s" % (d, type(exc).__name__))
-    pytest.skip(
-        "cupy %s imports but cannot run a kernel on any of the %d visible device(s) (%s).  Pin "
-        "CUDA_VISIBLE_DEVICES to a slot this cupy supports; this is NOT a pass."
-        % (cupy.__version__, n_dev, ",".join(bad) or "none visible"))
+    (RTX 2080 Ti, cc 7.5) work.  The reason string says which failure happened."""
+    global _USABLE_SLOT
+    if _USABLE_SLOT is None:
+        proc = subprocess.run([sys.executable, "-c", _SLOT_PROBE], stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, timeout=600)
+        verdicts = [l for l in proc.stdout.decode().splitlines() if l.startswith("VERDICT ")]
+        _USABLE_SLOT = (verdicts[-1][len("VERDICT "):] if verdicts
+                        else "NOVERDICT rc=%d %s" % (proc.returncode,
+                                                     proc.stdout.decode()[-200:]))
+    if not _USABLE_SLOT.startswith("SLOT "):
+        pytest.skip("no usable GPU here -- %s.  A skip is NOT a pass: pin CUDA_VISIBLE_DEVICES "
+                    "to a slot the installed cupy supports and rerun." % _USABLE_SLOT)
+    import cupy
+    # The only device this process ever touches, so the only context it holds.
+    cupy.cuda.Device(int(_USABLE_SLOT.split()[1])).use()
+    return cupy
 
 
 @pytest.mark.parametrize("b_coeff", [0.0, 2.0])
@@ -684,10 +712,9 @@ def test_the_shipped_example_really_runs_on_a_gpu(b_coeff):
 
     The example's one cast has to do two jobs: object dtype to float, for the draws mcsampler
     hands --sampler-method adaptive_cartesian, and host to device, because the three call sites
-    that pass xpy do `lnL += factor(...)` with lnL on the device.  Everything else that touches
-    this is blind to the second job: the end-to-end gate pins CUDA_VISIBLE_DEVICES="" for its
-    children by design, the CI runners have no cupy, and _FakeXpy above is a stand-in that can
-    be more permissive than the thing it stands for.
+    that pass xpy do `lnL += factor(...)` with lnL on the device.  Nothing that runs on a
+    CPU-only runner can see the second job: the e2e gate's own device lanes skip there too, and
+    _FakeXpy above is a stand-in that can be more permissive than the thing it stands for.
 
     So this runs the real module with xpy=cupy, on BOTH input kinds, and checks the result is
     on the device and equals the numpy arm.  It is also the test that refuses the rewrite the

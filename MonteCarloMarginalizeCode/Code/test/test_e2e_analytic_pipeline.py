@@ -280,7 +280,7 @@ def _read_result(d, tag):
     return lnL, sigma, neff
 
 
-def _invoke_ile(event, tag, sampler_args, a_coeff=None, b_coeff=0.0, incl_is_cosine=False,
+def _invoke_ile(event, tag, sampler_args, *, a_coeff=None, b_coeff=0.0, incl_is_cosine=False,
                 n_max=20000, n_eff=250, seed=1000, extra=(), cuda=""):
     """Run one ILE arm.  Returns (dir, returncode, stdout text, whether the result row exists).
 

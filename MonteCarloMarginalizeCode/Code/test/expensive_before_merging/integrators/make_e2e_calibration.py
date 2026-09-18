@@ -171,8 +171,8 @@ def main():
         print("#   %-44s%5.2f      %6.4f      %6.0f"
               % (label, max(zs), max(sigs), min(neffs)))
     print("#")
-    print("# across all lanes: worst |z| %.2f, worst sigma %.4f, least n_eff %.0f"
-          % (worst_z, worst_s, least_n))
+    print("# across the %d lane(s) MEASURED above: worst |z| %.2f, worst sigma %.4f, "
+          "least n_eff %.0f" % (len(selected), worst_z, worst_s, least_n))
     # Printed, not deleted: a failing lane is worth inspecting.  /tmp is small on the CIT
     # nodes, so clean up when you are done.
     print("# fixture kept at %s   (rm -rf it when done)" % out)
