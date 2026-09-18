@@ -562,6 +562,16 @@ class MCSampler(SamplerOutputMixin, object):
             else:
                 fval = func(**unpacked) # Chris' original plan: note this insures the function arguments are tied to the parameters, using a dictionary. 
 
+            # THE INTEGRAND CONVERTS, NOT THE ACCUMULATORS.  On a GPU node the ILE likelihood
+            # returns a cupy array (xpy_default binds at import from whether cupy imports, so
+            # a merely visible device is enough), while everything below here is host numpy:
+            # numpy.hstack, statutils update/finalize, math.isnan -- and joint_p_prior is
+            # deliberately RiftFloat, which cupy has no dtype for at all.  So the host side is
+            # the one that cannot move.  Without this, `fval*joint_p_prior/joint_p_s` raised
+            # "TypeError: Unsupported type <class 'numpy.ndarray'>" from a cupy ufunc and the
+            # driver swallowed it, printed FAILED ANALYSIS and exited 0.
+            fval = to_host(fval)
+
             #
             # Check if there is any practical contribution to the integral
             #
@@ -1033,6 +1043,21 @@ def infer_array_module(x, xpy=None):
     if mod is not None and all(hasattr(mod, _attr) for _attr in ('asarray', 'where', 'clip')):
         return mod
     return numpy
+
+
+def to_host(x):
+    """Return `x` as a host (numpy) array, copying it off a device backend if it is on one.
+
+    numpy.asarray(cupy_array) RAISES -- cupy refuses implicit host conversion -- so the copy
+    has to go through the device module's own asnumpy.  The module is looked up from the
+    value, the same way infer_array_module does it, so this file keeps its numpy-only import
+    list.  A host input is returned UNCHANGED, not re-wrapped: the numpy path must stay bit
+    for bit what it was.
+    """
+    mod = infer_array_module(x)
+    if mod is not numpy and hasattr(mod, "asnumpy"):
+        return mod.asnumpy(x)
+    return x
 
 
 def clip_angle_limits(lo, hi, kind):
