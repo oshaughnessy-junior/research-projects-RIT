@@ -98,12 +98,20 @@ SAMPLER_ARGS = {"AV": _AV, "portfolio": _PORTFOLIO, "GMM": _GMM, "adaptive_carte
 # Per-lane _run_ile overrides, keyed by sampler and SHARED by the host and device lanes, so a
 # device lane runs its host twin's configuration and not a nearby one.
 #
-# Both mcsampler and mcsamplerGPU stop on the sample BUDGET with the factor on, so both take
-# _AC_N_MAX.  MEASURED for adaptive_cartesian_gpu rather than inherited from adaptive_cartesian,
-# because they are different samplers: on ldas-pcdev2 CUDA slot 0 (A100, cc 8.0), cupy 12.0.0,
-# seed 1000, A=8 B=2, --n-max 20000 stops at ntotal 20000 with n_eff 230 against a target of
-# 250, and --n-max 60000 stops on --n-eff instead, at ntotal 30000 with n_eff 342 and sigma
+# Both mcsampler and mcsamplerGPU stop on the sample BUDGET with the factor on at the 20000 the
+# other lanes use, so both take _AC_N_MAX.  MEASURED for adaptive_cartesian_gpu rather than
+# inherited from adaptive_cartesian, because they are different samplers: at A=8 B=2, seed 1000,
+# ldas-pcdev2 CUDA slot 0 (A100, cc 8.0), --n-max 20000 stops at ntotal 20000 with n_eff 230
+# against a target of 250, while --n-max 60000 reaches n_eff 342 at ntotal 30000 with sigma
 # 0.0221 against 0.0282.
+#
+# Over eight seeds on ldas-pcdev12 slot 0, adaptive_cartesian_gpu at --n-max 60000 spends ntotal
+# 20000 to 40000 and lands n_eff 261 to 384, so the cap is headroom with about a 1.5x margin at
+# the worst seed and NOT a promise that the lane stops on --n-eff.  Nothing asserts the override
+# is still applied: at --n-max 20000 the device lane still passes (seed 1000: z -0.40, sigma
+# 0.0282, n_eff 230, all inside the thresholds).  A ntotal < n_max guard was measured and
+# REJECTED -- adaptive_cartesian reaches ntotal 60000 on seed 1004, so the guard would flake on
+# the lane it was meant to protect.  Re-derive with make_e2e_calibration.py instead.
 #
 # Applied to the PRIOR-ONLY lanes too, where it costs nothing and keeps one definition: there
 # the integrand is flat and the run stops on --n-eff at ntotal 10000, with lnL, sigma, ntotal
@@ -538,11 +546,12 @@ def test_adaptive_cartesian(event):
     tag = "adaptive_cartesian"
     # A LARGER --n-max than the other lanes, because at 20000 this sampler stops on the budget
     # rather than on --n-eff: over eight seeds it reported n_eff 91 to 220 against a target of
-    # 250, with sigma up to 0.0430 against a 0.06 cap.  At 60000 it stops on n_eff instead, at
-    # ntotal 30000, with n_eff ~300 and sigma ~0.03.  One-and-a-half times the arm, and the
-    # lane stops sitting one bad draw away from its own informativeness floor.  The device
-    # lane in section 4, and the host prior-only lane in section 1, inherit it through
-    # _LANE_KW.
+    # 250, with sigma up to 0.0430 against a 0.06 cap.  60000 is HEADROOM, not a guarantee of
+    # stopping on n_eff, and an earlier version of this comment claimed the latter from one
+    # seed: over the same eight seeds, ntotal runs 30000, 30000, 40000, 50000, 60000, 40000,
+    # 40000, 40000, so seed 1004 still spends the whole budget.  What the cap buys is the n_eff
+    # column, 250 to 319 against a target of 250, instead of 91 to 220.  The device lane in
+    # section 4, and the host prior-only lane in section 1, inherit it through _LANE_KW.
     lnL, sigma, neff = _run_ile(event, tag, _AC, a_coeff=a, b_coeff=b, n_max=_AC_N_MAX)
     _assert_lnZ(tag, lnL, sigma, neff, _exact(a, b))
 
@@ -589,6 +598,12 @@ def test_adaptive_cartesian(event):
 # lane is what catches the deletion, which is the failure recorded above.  What this lane pins
 # is the DIRECTION.  A future conversion that sends this histogram to the host breaks the
 # standalone sampler, and nothing else in this file would have said so.
+#
+# expect_device IS WHAT MAKES IT A DEVICE LANE, and that was broken on purpose to check: the
+# same arguments with cuda="" on ldas-grid COMPLETE and land a correct answer (ln Z 6.63129 +-
+# 0.0278, n_eff 263, z -0.79), so a host run of this lane is a passing physics run.  Only the
+# marker separates the two, and _run_ile raised on it.  Do not drop expect_device here on the
+# grounds that the numbers look right.
 _GPU_SAMPLERS = ["AV", "GMM", "portfolio", "adaptive_cartesian", "adaptive_cartesian_gpu"]
 
 # Coefficients per device lane, and they are NOT the same pair for every sampler on purpose.
@@ -740,8 +755,11 @@ def test_the_gpu_flags_do_not_decide_the_backend(event, gpu_slot):
 # by 0.0007 (A=8 B=2 AV) and 0.0001 (A=0.75 B=3 portfolio).  The |z| values differ freely,
 # because they are draws, not constants.
 #
-# THE TWO adaptive_cartesian ROWS PRINT AS THEIR HOST TWINS in all three columns, and that is
-# agreement at the table's precision, NOT a bitwise identity -- do not read it as one.  An
+# THE TWO adaptive_cartesian ROWS PRINT AS THEIR HOST TWINS in all three columns, and the
+# agreement is per-seed rather than only in the max: at A=8 B=2 the host and device arms return
+# the same ntotal on all eight seeds (30000, 30000, 40000, 50000, 60000, 40000, 40000, 40000)
+# and n_eff equal to within 0.2.  That is still agreement at this precision, NOT a bitwise
+# identity -- do not read it as one.  An
 # earlier version of this comment claimed the two arms run identical host arithmetic because
 # "the only device work is xpy.zeros".  That is wrong and was disproved by measurement: for a
 # sampler with return_lnL False the --zero-likelihood stand-in builds
