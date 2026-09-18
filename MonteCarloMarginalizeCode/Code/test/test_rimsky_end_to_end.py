@@ -229,10 +229,11 @@ def test_first_rimsky_result_creates_bootstrapped_rift_production(
     with chdir(project_dir), patch("asimov.git.time.sleep"):
         pipeline.before_config()
 
-    environment = production.meta["environment"]
-    assert environment["captured_at"] is True
-    assert {"metadata", "pip"}.issubset(environment["files"])
-    assert all(Path(path).is_file() for path in environment["files"].values())
+    if Version(version("asimov")) >= Version("0.8"):
+        environment = production.meta["environment"]
+        assert environment["captured_at"] is True
+        assert {"metadata", "pip"}.issubset(environment["files"])
+        assert all(Path(path).is_file() for path in environment["files"].values())
 
     for detector in settings.detectors:
         xml_psd = Path(production.xml_psds[detector])
