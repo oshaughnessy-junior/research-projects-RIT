@@ -29,7 +29,7 @@ if _TEST_DIR not in sys.path:
 
 import test_e2e_analytic_pipeline as gate          # noqa: E402
 
-_AV, _PORTFOLIO, _GMM = gate._AV, gate._PORTFOLIO, gate._GMM
+_AV, _PORTFOLIO, _GMM, _AC = gate._AV, gate._PORTFOLIO, gate._GMM, gate._AC
 
 # (label, sampler argv, A, B, extra kwargs for _run_ile).  A is None for a prior-only lane.
 LANES = [
@@ -52,9 +52,9 @@ LANES = [
      dict(extra=("--time-marginalization",))),
     ("distance-marginalized",                    _AV,        8.0,  2.0, {"_needs_dmarg": True}),
     ("adaptive_cartesian, --n-max 60000",
-     ["--sampler-method", "adaptive_cartesian"], 8.0, 2.0, dict(n_max=60000)),
+     _AC, 8.0, 2.0, dict(n_max=gate._AC_N_MAX)),
     # DEVICE lanes.  They need --gpu-slot, and are refused rather than skipped without it, for
-    # the same reason as a --lane typo: a table that quietly stops covering four of its rows
+    # the same reason as a --lane typo: a table that quietly stops covering eight of its rows
     # under a summary line that reads clean is worse than no table.
     ("GPU prior-only, AV",      _AV,  None, 0.0, {"_needs_gpu": True}),
     ("GPU prior-only, GMM",     _GMM, None, 0.0, {"_needs_gpu": True}),
@@ -62,6 +62,16 @@ LANES = [
     # NOT A=8 B=2: that is the n_eff lottery recorded at the end of the gate's CALIBRATION
     # section.  Mirrors the CPU "A=0.75 B=3, GMM" row instead.
     ("GPU A=0.75 B=3, GMM",     _GMM, 0.75, 3.0, {"_needs_gpu": True}),
+    # portfolio and adaptive_cartesian could not run on a device at all until the host/device
+    # conversions in mcsamplerGPU.compute_hist and mcsampler.integrate.  Each mirrors its host
+    # twin: portfolio the plain-portfolio lanes above, adaptive_cartesian its own --n-max, taken
+    # from the gate rather than repeated here.
+    ("GPU prior-only, portfolio",  _PORTFOLIO, None, 0.0, {"_needs_gpu": True}),
+    ("GPU A=0.75 B=3, portfolio",  _PORTFOLIO, 0.75, 3.0, {"_needs_gpu": True}),
+    ("GPU prior-only, adaptive_cartesian", _AC, None, 0.0,
+     dict(_needs_gpu=True, n_max=gate._AC_N_MAX)),
+    ("GPU A=8    B=2, adaptive_cartesian", _AC, 8.0, 2.0,
+     dict(_needs_gpu=True, n_max=gate._AC_N_MAX)),
 ]
 
 

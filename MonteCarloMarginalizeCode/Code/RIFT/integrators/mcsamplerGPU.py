@@ -326,6 +326,24 @@ class MCSampler(SamplerOutputMixin, object):
 
 
     def compute_hist(self, x_samples, param,weights=None,floor_level=0):
+        # PUT THE INPUTS ON THIS SAMPLER'S BACKEND FIRST.  As a portfolio member the samples
+        # arrive from the aggregator's host _rvs (mcsamplerPortfolio pins self.xpy = numpy)
+        # while self.xpy here is cupy, and the first cupy ufunc downstream -- the
+        # xpy.maximum(samples, xpy.zeros(...)) clip in vectorized_general_tools.histogram --
+        # raised "TypeError: Unsupported type <class 'numpy.ndarray'>", killing every
+        # portfolio run with an AC member on a GPU node behind FAILED ANALYSIS and exit 0.
+        #
+        # DEVICE is the side to converge on here.  The result has to end up there anyway
+        # (setup_hist_single_param preallocates histogram_edges/histogram_cdf with self.xpy,
+        # and cdf_inverse_from_hist is read by device draws), and nothing here carries
+        # precision worth keeping on the host: the coordinates are float64 and this histogram
+        # is a *proposal* density, not an estimator (see _bincount_weighted).  Contrast
+        # mcsampler.py, whose accumulators are deliberately RiftFloat and so convert the
+        # other way.  asarray is a no-op when the input is already on this backend, so the
+        # standalone GPU and pure-numpy paths are untouched.
+        x_samples = self.xpy.asarray(x_samples)
+        if weights is not None:
+            weights = self.xpy.asarray(weights)
         # Rescale the samples to [0, 1]
         y_samples = (
             (x_samples - self.x_min[param]) / self.x_max_minus_min[param]
