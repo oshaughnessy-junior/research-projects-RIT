@@ -33,12 +33,12 @@ integral being measured.  A lane that passes because the geometry was changed un
 measuring something else.  If a lane will not converge, scope it or leave it out; do not add
 these.
 
-THE DEVICE.  Section 5 runs the prior-only and factor answers again with a GPU VISIBLE, and
+THE DEVICE.  Section 4 runs the prior-only and factor answers again with a GPU VISIBLE, and
 asserts the child reached it.  RIFT binds its array module at import from whether cupy imports,
 not from --gpu, so on a GPU node production is on the device path by default and the rest of
 this file -- which pins CUDA_VISIBLE_DEVICES="" -- said nothing about it.  Two samplers cannot
 run there at all; they are recorded as known-failing lanes rather than skipped, so the hole is
-visible.  What section 5 does NOT cover is the GPU signal likelihood: --zero-likelihood
+visible.  What section 4 does NOT cover is the GPU signal likelihood: --zero-likelihood
 replaces likelihood_function outright, so the NoLoop path never runs.
 
 WHAT EACH ARM COSTS.  About 8-12 s of one core per ILE arm, plus ~15 s once for the
@@ -315,8 +315,13 @@ def _invoke_ile(event, tag, sampler_args, a_coeff=None, b_coeff=0.0, incl_is_cos
     return d, proc.returncode, proc.stdout.decode(), (d / ("%s_0_.dat" % tag)).exists()
 
 
-def _run_ile(event, tag, sampler_args, expect_device=False, **kw):
+def _run_ile(event, tag, sampler_args, *, expect_device=False, **kw):
     """One ILE job as a subprocess.  Returns (lnL, sigma_lnL, n_eff).
+
+    KEYWORD-ONLY past sampler_args, deliberately: this function's fourth positional used to be
+    a_coeff, so `_run_ile(event, tag, args, 8.0)` would now quietly mean expect_device=8.0 with
+    a_coeff=None -- a prior-only run asserted to be on a device.  Every caller passes keywords
+    today; the `*` keeps that true.
 
     expect_device asserts the child really reached a GPU.  Without it a "GPU lane" that
     silently fell back to the host is indistinguishable from one that ran, which is the whole
@@ -488,7 +493,7 @@ def test_adaptive_cartesian(event):
 
 
 # ---------------------------------------------------------------------------------------
-# 5. the same answers, on a real GPU
+# 4. the same answers, on a real GPU
 #
 # WHY THIS IS NOT THE SAME TEST TWICE.  Every lane above pins CUDA_VISIBLE_DEVICES="", so the
 # whole file used to say nothing about the device path -- and RIFT picks that path up from
@@ -642,9 +647,17 @@ def test_the_gpu_samplers_that_do_not_work_still_fail_the_known_way(event, gpu_s
 #   adaptive_cartesian, --n-max 60000            1.35      0.0305         250
 #
 # THE DEVICE LANES, measured separately because they need a GPU: eight seeds (1000-1007) on
-# ldas-pcdev2 slot 0 (A100, cc 8.0), cupy 12.0.0, at 5bb8da02b, with
+# ldas-pcdev2, cupy 12.0.0, with
 #
 #     python make_e2e_calibration.py --seeds 8 --lane "GPU " --gpu-slot 0
+#
+# run on the working tree that became THIS commit, on top of rift_O4d 6772c2b7e.  The generator
+# lanes and --gpu-slot arrive in the same commit as these numbers, so there is no earlier commit
+# at which that command exists -- do not "correct" this to an ancestor SHA.
+#
+# "slot 0" is CUDA's numbering, which is not nvidia-smi's: on ldas-pcdev2 today `nvidia-smi`
+# calls the A100 index 2 and an RTX 3080 index 0, while CUDA's default FASTEST_FIRST ordering
+# puts the A100 at 0.  Check with cupy's own getDeviceProperties, not with nvidia-smi.
 #
 # The GMM row is A=0.75 B=3 and not A=8 B=2 deliberately; see _GPU_LANE_COEFFS.  Each device row
 # sits on top of its host twin, which is the point: the device path is not a different answer.

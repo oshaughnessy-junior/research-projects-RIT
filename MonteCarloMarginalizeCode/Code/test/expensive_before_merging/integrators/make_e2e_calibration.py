@@ -74,10 +74,10 @@ def _dmarg_extra(event, out):
         stderr=subprocess.STDOUT, timeout=1800)
     if proc.returncode != 0 or not table.exists():
         raise SystemExit("util_InitMargTable failed:\n%s" % proc.stdout.decode()[-1500:])
-    return dict(extra=("--distance-marginalization",
-                       "--distance-marginalization-lookup-table", str(table),
-                       "--d-min", "100", "--d-max", "1000",
-                       "--time-marginalization", "--vectorized", "--gpu", "--force-xpy"))
+    return ("--distance-marginalization",
+            "--distance-marginalization-lookup-table", str(table),
+            "--d-min", "100", "--d-max", "1000",
+            "--time-marginalization", "--vectorized", "--gpu", "--force-xpy")
 
 
 def main():
@@ -100,12 +100,28 @@ def main():
     # The index is carried alongside each lane, and it is the index into LANES rather than into
     # this filtered list, so --lane does not renumber the output tags.
     selected = [(i, L) for i, L in enumerate(LANES) if not args.lane or args.lane in L[0]]
+    # WITHOUT --gpu-slot the device rows are dropped, LOUDLY, and the rest are measured.
+    # Refusing outright broke the one invocation two comments tell you to run
+    # ("RE-DERIVE THIS TABLE, do not trust it" -> `make_e2e_calibration.py --seeds 8`): it
+    # exited 1 having measured nothing, and no single --lane selects the 17 host rows and
+    # excludes the 4 device ones, so the committed host table could not be regenerated at all.
+    # A comment demanding re-derivation, next to a command that cannot re-derive, is the exact
+    # unfalsifiable claim this script exists to remove.
+    #
+    # Naming them ON STDERR matters: the table below is built from stdout, so a dropped row
+    # cannot slip into it, and a person still sees which rows were not measured.
     if args.gpu_slot is None:
-        refused = [L[0].strip() for _i, L in selected if L[4].get("_needs_gpu")]
-        if refused:
-            raise SystemExit("--gpu-slot is required to measure:\n  %s\nProbe a slot this "
-                             "cupy can build a kernel for, or narrow with --lane."
-                             % "\n  ".join(refused))
+        dropped = [L[0].strip() for _i, L in selected if L[4].get("_needs_gpu")]
+        if dropped:
+            print("# NOT MEASURED (no --gpu-slot): %s" % ", ".join(dropped), file=sys.stderr)
+            selected = [(i, L) for i, L in selected if not L[4].get("_needs_gpu")]
+        if dropped and not selected:
+            # Dropping every selected row and then printing a clean summary over nothing is
+            # the shape this whole branch exists to remove, so that case is a refusal.
+            raise SystemExit("--gpu-slot is required: every lane selected%s needs a device:"
+                             "\n  %s\nProbe a slot this cupy can build a kernel for."
+                             % ((" by --lane %r" % args.lane) if args.lane else "",
+                                "\n  ".join(dropped)))
     if not selected:
         # Exiting 0 having measured nothing, under a summary line that reads like a clean
         # result, is the exact shape this whole branch exists to remove.
@@ -126,8 +142,10 @@ def main():
     least_n = float("inf")
     for idx, (label, sampler, a, b, kw) in selected:
         kw = dict(kw)
+        # Both of these EXTEND `extra` rather than assigning it, so a lane that carries its
+        # own options does not lose them, and a lane needing both keeps both.
         if kw.pop("_needs_dmarg", False):
-            kw.update(_dmarg_extra(event, out))
+            kw["extra"] = tuple(kw.get("extra", ())) + _dmarg_extra(event, out)
         if kw.pop("_needs_gpu", False):
             # expect_device=True, so a lane that fell back to the host FAILS instead of
             # contributing host numbers to a row labelled GPU.
@@ -138,8 +156,9 @@ def main():
         for seed in seeds:
             # `idx` from enumerate, NOT LANES.index(...): index is a first-match lookup, so two
             # identical lane rows would silently share a tag and overwrite each other's ILE
-            # output directory.  Correct for today's 17 distinct rows; wrong the moment one is
-            # duplicated, which is exactly the kind of edit this table invites.
+            # output directory.  LANES.index happened to be correct for every row it ever had;
+            # it is wrong the moment one is duplicated, which is the kind of edit this table
+            # invites, and nothing would have said so.
             tag = "cal_%d_%d" % (idx, seed)
             lnL, sigma, neff = gate._run_ile(event, tag, sampler, a_coeff=a, b_coeff=b,
                                              seed=seed, **kw)

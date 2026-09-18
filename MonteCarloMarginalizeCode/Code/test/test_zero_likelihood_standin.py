@@ -12,14 +12,16 @@ own real call sites, the generated signature against the live likelihood_functio
 and that the values handed to the factor are the RAW sampled ones.  That part is pure AST +
 exec, runs in a few seconds, and needs no data, no network and no GPU.
 
-It also covers the device question the end-to-end gate is structurally blind to: that gate pins
-CUDA_VISIBLE_DEVICES="" for its children by design, and the CI runners have no cupy, so nothing
-there can catch the stand-in reaching for numpy on a host where the integrand is on a device.
-That is covered twice here, deliberately.  Section 3 INJECTS a fake array module that records
-every call, which runs everywhere.  Section 4 runs the same paths against REAL cupy, because a
-fake can be more permissive than the thing it stands for and a device claim checked only
-against a fake is a claim nobody ran.  Section 4 skips where there is no usable GPU -- a skip
-is not a pass; see _cupy_or_skip for how to make it run.
+It also covers the device path, twice and deliberately.  Section 3 INJECTS a fake array module
+that records every call, which runs everywhere.  Section 4 runs the same paths against REAL
+cupy, because a fake can be more permissive than the thing it stands for, and a device claim
+checked only against a fake is a claim nobody ran.  Section 4 skips where there is no usable
+GPU -- a skip is not a pass; see _cupy_or_skip for how to make it run.
+
+test_e2e_analytic_pipeline.py has device lanes of its own now (its section 4), so this file is
+no longer the only place that sees a device.  What is still only here is the PER-SAMPLE view:
+that gate reads a marginal, so it cannot distinguish a permutation of iid parameters however it
+is run, on a device or off one.
 """
 import ast
 import inspect
@@ -248,9 +250,8 @@ def test_the_shipped_example_survives_object_dtype_draws():
     WHAT THIS ADDS.  The end-to-end gate's adaptive_cartesian lane runs with B = 2, so it does
     reach both casts and does redden if either loses its dtype -- but at ~3 minutes and a full
     ILE run, reported as a ln Z failure rather than as a cast.  This is the same check in ~5 s,
-    in the file that already reads this contract, naming the cause.  It does NOT cover the
-    device half: there is no cupy on the runners, and that half is an argument in the comment,
-    not a test.
+    in the file that already reads this contract, naming the cause.  It runs on a CPU-only
+    runner, where every device lane in this file and in the e2e gate skips.
 
     Verified by mutation: deleting `dtype=float` from either asarray reddens this test."""
     if HERE not in sys.path:
@@ -345,13 +346,19 @@ def test_the_paths_that_silently_drop_the_factor_are_the_known_ones():
     distinct tuples -- three of them share (right_ascension, declination, phi_orb, inclination,
     psi, distance) -- so a NEW dropping definition whose tuple is already recorded here is
     invisible to this test.  What catches that one is _EXPECTED_SIGNATURES, pinned exactly in
-    test_the_stand_in_reproduces_every_live_likelihood_signature.  The claim "a new
-    silently-ignored configuration reddens something" belongs to the two tests TOGETHER;
-    neither states it alone.
+    test_the_stand_in_reproduces_every_live_likelihood_signature.
 
-    So: if this set widens, that is a new silently-ignored configuration.  If it shrinks,
-    someone fixed a path and should delete the entry rather than let this file keep describing a
-    hole that closed."""
+    AND THE PAIR IS STILL NOT A GENERAL GUARANTEE.  Both tests reason about DEFINITIONS.  A new
+    silently-ignored configuration that lives INSIDE an existing calling body -- wrapping that
+    body's supplemental_ln_likelihood(...) in a new `if` -- changes no signature and moves no
+    tuple between the two sets, so neither test sees it.  Demonstrated by a review, which did
+    exactly that to the call at driver line 4395 and got a fully green file.  So do not write
+    here that the two together catch "a new silently-ignored configuration"; what they catch is
+    a new silently-ignored DEFINITION.
+
+    If this set widens, that is a new silently-ignored definition.  If it shrinks, someone fixed
+    a path and should delete the entry rather than let this file keep describing a hole that
+    closed."""
     calls, drops = _signatures_by_whether_they_call_the_factor()
     # A tuple in BOTH sets means two definitions share a signature and disagree about calling
     # the factor.  That is the one shape the partition below cannot express -- "this signature
@@ -553,9 +560,11 @@ def test_a_signature_missing_a_factor_argument_with_no_default_is_refused():
 
 class _FakeXpy(object):
     """Stands in for cupy: every array it makes is tagged, so a stand-in that reached for
-    numpy instead produces an untagged array and is caught.  The CI runners have no cupy and
-    the end-to-end gate pins CUDA_VISIBLE_DEVICES="", so this is the only place that can see
-    it."""
+    numpy instead produces an untagged array and is caught.
+
+    Its value is that it runs EVERYWHERE, including on a runner with no cupy, where section 4
+    below and the e2e gate's device lanes both skip.  It is not a substitute for them: a fake
+    accepts things cupy refuses, so the two are paired on purpose."""
 
     def __init__(self):
         self.calls = []
@@ -645,14 +654,28 @@ def _cupy_or_skip():
     except Exception as exc:
         pytest.skip("no usable cupy on this host (%s: %s)" % (type(exc).__name__,
                                                               str(exc)[:80]))
+    # EVERY visible device is tried, not just the default one, to match the e2e gate's gpu_slot
+    # fixture.  They used to disagree: on a host whose slot 0 is Blackwell and slot 3 is not,
+    # gpu_slot found slot 3 and ran while this skipped, so the two files claimed the same
+    # discipline and applied different ones.  The first usable device is selected for the rest
+    # of the process.
+    bad = []
     try:
-        cupy.asnumpy(cupy.cos(cupy.asarray(np.zeros(2), dtype=float)))
+        n_dev = cupy.cuda.runtime.getDeviceCount()
     except Exception as exc:
-        pytest.skip(
-            "cupy %s imports but cannot run a kernel on the visible device (%s: %s).  Pin "
-            "CUDA_VISIBLE_DEVICES to a slot this cupy supports; this is NOT a pass."
-            % (cupy.__version__, type(exc).__name__, str(exc)[:80]))
-    return cupy
+        pytest.skip("cupy %s imports but no CUDA device could be queried (%s: %s).  NOT a pass."
+                    % (cupy.__version__, type(exc).__name__, str(exc)[:80]))
+    for d in range(n_dev):
+        try:
+            cupy.cuda.Device(d).use()
+            cupy.asnumpy(cupy.cos(cupy.asarray(np.zeros(2), dtype=float)))
+            return cupy
+        except Exception as exc:
+            bad.append("%d:%s" % (d, type(exc).__name__))
+    pytest.skip(
+        "cupy %s imports but cannot run a kernel on any of the %d visible device(s) (%s).  Pin "
+        "CUDA_VISIBLE_DEVICES to a slot this cupy supports; this is NOT a pass."
+        % (cupy.__version__, n_dev, ",".join(bad) or "none visible"))
 
 
 @pytest.mark.parametrize("b_coeff", [0.0, 2.0])
