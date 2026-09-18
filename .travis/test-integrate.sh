@@ -165,10 +165,11 @@ _ZLSTANDIN_OUT=$(python -m pytest -q -rs "$_ZLSTANDIN_TESTS" 2>&1 | tee >(cat >&
 # On a runner that PROMISES a device, any skip is bad.  The reason-matching below cannot tell
 # "there is no GPU here" from "the GPU probe itself broke": break the probe and every device
 # lane skips with a reason naming the GPU, which this would score as fine.  Measured -- an
-# unimportable module inside the e2e gate's _GPU_PROBE silently removed all 9 device lanes and
-# scored 0 bad.  RIFT_CI_REQUIRE_GPU=1 means the preflight at the top of this file already
-# proved cupy works and a device computes, so there is nothing left for a skip to legitimately
-# mean.  Measured on ldas-pcdev2 slot 0: 0 skips.
+# unimportable module inside the e2e gate's _GPU_PROBE silently removed EVERY device lane -- 9
+# of them when that was measured, and the count is not the point -- and scored 0 bad.
+# RIFT_CI_REQUIRE_GPU=1 means the preflight at the top of this file already proved cupy works
+# and a device computes, so there is nothing left for a skip to legitimately mean.  Measured on
+# ldas-pcdev2 CUDA slot 0 (A100): 0 skips.
 if [[ "${RIFT_CI_REQUIRE_GPU:-0}" == "1" ]]; then
     _ZLSTANDIN_BAD=$(echo "$_ZLSTANDIN_OUT" | grep -cE '^SKIPPED' || true)
 else
@@ -195,20 +196,20 @@ fi
 # lane here rather than a recorded defect.  Needs no network and no real event; about
 # 8-12 s per ILE arm plus ~15 s once for the distance-marginalization lookup table.
 # Its section 4 runs the same answers with a GPU VISIBLE and asserts the child reached one.
-# Those 9 lanes skip on a CPU-only runner and RUN under .gitlab-ci.yml's `gpu_integration` job
+# Those 11 lanes skip on a CPU-only runner and RUN under .gitlab-ci.yml's `gpu_integration` job
 # (RIFT_CI_REQUIRE_GPU=1, CUDA_VISIBLE_DEVICES=0, GPU container).  Skipped tests are still
 # collected, so the count below is the same on both; the SKIP GUARD after the run is what stops
 # a CPU-only pass from reading as device coverage.
 _E2E_TESTS=MonteCarloMarginalizeCode/Code/test/test_e2e_analytic_pipeline.py
-_E2E_EXPECTED=26
+_E2E_EXPECTED=29
 _E2E_FOUND=$(python -m pytest -q --collect-only "$_E2E_TESTS" 2>/dev/null | grep -c '::' || true)
 if [ "$_E2E_FOUND" -ne "$_E2E_EXPECTED" ]; then
     echo "e2e analytic gate: collected $_E2E_FOUND tests, expected $_E2E_EXPECTED" >&2
     exit 1
 fi
-# SKIP guard, as above.  This gate skips 9 of 26 on a CPU-only runner, and it has a non-GPU
+# SKIP guard, as above.  This gate skips 11 of 29 on a CPU-only runner, and it has a non-GPU
 # skip path that matters: build_event returns None when lal_path2cache is missing, which skips
-# the WHOLE module -- 26 silent skips under a green exit 0.  So a skip whose reason does not
+# the WHOLE module -- 29 silent skips under a green exit 0.  So a skip whose reason does not
 # name cupy/GPU/CUDA fails the gate.
 # Streamed, not `tee /dev/stderr` -- see the note on the stand-in gate above.  This is the gate
 # that made streaming worth having: 3-9 minutes, and silent when captured.
@@ -217,10 +218,11 @@ _E2E_OUT=$(python -m pytest -q -rs "$_E2E_TESTS" 2>&1 | tee >(cat >&2)) \
 # On a runner that PROMISES a device, any skip is bad.  The reason-matching below cannot tell
 # "there is no GPU here" from "the GPU probe itself broke": break the probe and every device
 # lane skips with a reason naming the GPU, which this would score as fine.  Measured -- an
-# unimportable module inside the e2e gate's _GPU_PROBE silently removed all 9 device lanes and
-# scored 0 bad.  RIFT_CI_REQUIRE_GPU=1 means the preflight at the top of this file already
-# proved cupy works and a device computes, so there is nothing left for a skip to legitimately
-# mean.  Measured on ldas-pcdev2 slot 0: 0 skips.
+# unimportable module inside the e2e gate's _GPU_PROBE silently removed EVERY device lane -- 9
+# of them when that was measured, and the count is not the point -- and scored 0 bad.
+# RIFT_CI_REQUIRE_GPU=1 means the preflight at the top of this file already proved cupy works
+# and a device computes, so there is nothing left for a skip to legitimately mean.  Measured on
+# ldas-pcdev2 CUDA slot 0 (A100): 0 skips.
 if [[ "${RIFT_CI_REQUIRE_GPU:-0}" == "1" ]]; then
     _E2E_BAD=$(echo "$_E2E_OUT" | grep -cE '^SKIPPED' || true)
 else
