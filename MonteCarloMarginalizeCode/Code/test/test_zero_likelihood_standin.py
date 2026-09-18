@@ -637,8 +637,28 @@ def test_the_two_conventions_give_the_right_arithmetic():
 # ---------------------------------------------------------------------------------------
 # 4. the device path, on a REAL GPU
 
+def _no_gpu(reason):
+    """Skip, or FAIL when the environment promised a device.
+
+    The shell gate applies this rule too (RIFT_CI_REQUIRE_GPU=1 makes any skip fatal there),
+    but living only in the shell means `pytest <this file>` on the GPU runner -- what someone
+    does to reproduce a CI failure -- reports green with every device lane skipped.  The rule
+    belongs with the tests.  test_time_marginalization_quadrature.py converts skip to failure
+    the same way, for the same reason.
+
+    RIFT_CI_REQUIRE_GPU is read from the ambient environment on purpose: _child_env in the e2e
+    gate strips RIFT_* from ILE CHILDREN, which is a different question from what this pytest
+    process was promised."""
+    if os.environ.get("RIFT_CI_REQUIRE_GPU", "0") == "1":
+        pytest.fail("RIFT_CI_REQUIRE_GPU=1 promised a usable device and there is none: %s.  "
+                    "On this runner a skipped device lane is a failure, not a pass." % reason)
+    pytest.skip("%s  A skip is NOT a pass: pin CUDA_VISIBLE_DEVICES to a slot the installed "
+                "cupy supports and rerun." % reason)
+
+
 # Which visible device this cupy can actually build a kernel for, decided ONCE, in a
-# SUBPROCESS.  Cached because three tests ask.
+# SUBPROCESS.  Cached because three tests ask -- INCLUDING a failure verdict, so a probe that
+# times out costs one timeout and not one per test.
 _USABLE_SLOT = None
 
 _SLOT_PROBE = r"""
@@ -691,17 +711,27 @@ def _cupy_or_skip():
     (RTX 2080 Ti, cc 7.5) work.  The reason string says which failure happened."""
     global _USABLE_SLOT
     if _USABLE_SLOT is None:
-        proc = subprocess.run([sys.executable, "-c", _SLOT_PROBE], stdout=subprocess.PIPE,
-                              stderr=subprocess.STDOUT, timeout=600)
-        verdicts = [l for l in proc.stdout.decode().splitlines() if l.startswith("VERDICT ")]
-        _USABLE_SLOT = (verdicts[-1][len("VERDICT "):] if verdicts
-                        else "NOVERDICT rc=%d %s" % (proc.returncode,
-                                                     proc.stdout.decode()[-200:]))
+        try:
+            proc = subprocess.run([sys.executable, "-c", _SLOT_PROBE], stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT, timeout=600)
+        except subprocess.TimeoutExpired:
+            # Cached, or each of the three device tests pays its own 600 s.
+            _USABLE_SLOT = "TIMEOUT the device probe did not finish in 600 s"
+        else:
+            verdicts = [l for l in proc.stdout.decode().splitlines()
+                        if l.startswith("VERDICT ")]
+            # Flattened: this probe exists because a multi-line message ruins a verdict line,
+            # and the fallback must not reintroduce one.
+            _USABLE_SLOT = (verdicts[-1][len("VERDICT "):] if verdicts
+                            else "NOVERDICT rc=%d %s"
+                            % (proc.returncode,
+                               " ".join(proc.stdout.decode().split())[-200:]))
     if not _USABLE_SLOT.startswith("SLOT "):
-        pytest.skip("no usable GPU here -- %s.  A skip is NOT a pass: pin CUDA_VISIBLE_DEVICES "
-                    "to a slot the installed cupy supports and rerun." % _USABLE_SLOT)
+        _no_gpu("no usable GPU here -- %s." % _USABLE_SLOT)
     import cupy
-    # The only device this process ever touches, so the only context it holds.
+    # The only device this process ever touches, so the only context it holds.  Anything failing
+    # BETWEEN a good verdict and here is a test ERROR rather than a skip, deliberately: the
+    # probe just proved this device works, so a failure now is a real change, not an absence.
     cupy.cuda.Device(int(_USABLE_SLOT.split()[1])).use()
     return cupy
 

@@ -185,6 +185,25 @@ print("VERDICT NOSLOT %s" % (",".join(bad) or "no devices at all"))
 """
 
 
+def _no_gpu(reason):
+    """Skip, or FAIL when the environment promised a device.
+
+    .travis/test-integrate.sh applies this rule too (with RIFT_CI_REQUIRE_GPU=1 any skip is
+    fatal there), but a rule that lives only in the shell does not survive `pytest <this file>`
+    on the GPU runner -- which is what someone runs to reproduce a CI failure, and it would
+    report green with all 7 device lanes skipped.  RIFT_CI_REQUIRE_GPU is read from the ambient
+    environment deliberately: _child_env strips RIFT_* from ILE CHILDREN, a different question
+    from what this pytest process was promised."""
+    if os.environ.get("RIFT_CI_REQUIRE_GPU", "0") == "1":
+        # Reported as an ERROR rather than a FAILURE, because gpu_slot is a fixture and this
+        # fires during setup.  Red either way, which is the point; measured: 7 errors on a
+        # CPU host with RIFT_CI_REQUIRE_GPU=1.
+        pytest.fail("RIFT_CI_REQUIRE_GPU=1 promised a usable device and there is none: %s.  On "
+                    "this runner a skipped device lane is a failure, not a pass." % reason)
+    pytest.skip("%s  A skip is NOT a pass: pin CUDA_VISIBLE_DEVICES to a slot the installed "
+                "cupy supports and rerun." % reason)
+
+
 @pytest.fixture(scope="module")
 def gpu_slot():
     """A CUDA slot this cupy can actually build a kernel for, as the child should see it.
@@ -209,9 +228,7 @@ def gpu_slot():
         "probe produced no verdict (rc=%d): %s" % (proc.returncode,
                                                    proc.stdout.decode()[-300:]))
     if not line.startswith("SLOT "):
-        pytest.skip("no usable GPU for these lanes -- %s.  A skip is NOT a pass: pin "
-                    "CUDA_VISIBLE_DEVICES to a slot the installed cupy supports and rerun."
-                    % line)
+        _no_gpu("no usable GPU for these lanes -- %s." % line)
     d = int(line.split()[1])
     visible = os.environ.get("CUDA_VISIBLE_DEVICES")
     if visible:

@@ -152,9 +152,15 @@ fi
 # test_the_factor_gets_the_raw_sampled_value_for_every_argument reads the driver at IMPORT, so
 # it is a collection ERROR and the count guard above already catches it (collected drops to 0).
 # Verified by moving the executable aside.  The skipif is unreachable today.
-# tee, not capture: a captured 4-minute gate prints nothing until it finishes, and on a CI
-# runner that looks like a hang.
-_ZLSTANDIN_OUT=$(python -m pytest -q -rs "$_ZLSTANDIN_TESTS" 2>&1 | tee /dev/stderr) \
+# Streamed as well as captured, so a long gate is not silent on a runner -- but NOT via
+# `tee /dev/stderr`.  That opens /proc/self/fd/2 with O_TRUNC, so when stderr is a regular file
+# (`bash .travis/test-integrate.sh > gate.log 2>&1`, the obvious way to run this) it truncates
+# the log to zero and every earlier gate's output is gone, while the shell's own fd 2 keeps its
+# offset and writes NULs into the hole.  Measured; with stderr CLOSED it went on to overwrite
+# the running script.  `tee >(cat >&2)` writes through a pipe to a process that appends, which
+# has none of that, keeps $_OUT intact for the grep below, and still propagates pytest's exit
+# status under `set -o pipefail`.
+_ZLSTANDIN_OUT=$(python -m pytest -q -rs "$_ZLSTANDIN_TESTS" 2>&1 | tee >(cat >&2)) \
     || { echo "zero-likelihood stand-in gate FAILED" >&2; exit 1; }
 # On a runner that PROMISES a device, any skip is bad.  The reason-matching below cannot tell
 # "there is no GPU here" from "the GPU probe itself broke": break the probe and every device
@@ -170,7 +176,7 @@ else
 fi
 _ZLSTANDIN_BAD=${_ZLSTANDIN_BAD:-0}
 if [ "$_ZLSTANDIN_BAD" -ne 0 ]; then
-    echo "zero-likelihood stand-in gate: $_ZLSTANDIN_BAD unacceptable skip(s) (RIFT_CI_REQUIRE_GPU=${RIFT_CI_REQUIRE_GPU:-0}; with it set, ANY skip is unacceptable):" >&2
+    echo "zero-likelihood stand-in gate: $_ZLSTANDIN_BAD unacceptable SKIPPED line(s) -- pytest -rs groups equal reasons, so this is not a test count (RIFT_CI_REQUIRE_GPU=${RIFT_CI_REQUIRE_GPU:-0}; with it set, ANY skip is unacceptable):" >&2
     echo "$_ZLSTANDIN_OUT" | grep -E '^SKIPPED' >&2
     exit 1
 fi
@@ -204,7 +210,9 @@ fi
 # skip path that matters: build_event returns None when lal_path2cache is missing, which skips
 # the WHOLE module -- 24 silent skips under a green exit 0.  So a skip whose reason does not
 # name cupy/GPU/CUDA fails the gate.
-_E2E_OUT=$(python -m pytest -q -rs "$_E2E_TESTS" 2>&1 | tee /dev/stderr) \
+# Streamed, not `tee /dev/stderr` -- see the note on the stand-in gate above.  This is the gate
+# that made streaming worth having: 3-9 minutes, and silent when captured.
+_E2E_OUT=$(python -m pytest -q -rs "$_E2E_TESTS" 2>&1 | tee >(cat >&2)) \
     || { echo "e2e analytic gate FAILED" >&2; exit 1; }
 # On a runner that PROMISES a device, any skip is bad.  The reason-matching below cannot tell
 # "there is no GPU here" from "the GPU probe itself broke": break the probe and every device
@@ -220,7 +228,7 @@ else
 fi
 _E2E_BAD=${_E2E_BAD:-0}
 if [ "$_E2E_BAD" -ne 0 ]; then
-    echo "e2e analytic gate: $_E2E_BAD unacceptable skip(s) (RIFT_CI_REQUIRE_GPU=${RIFT_CI_REQUIRE_GPU:-0}; with it set, ANY skip is unacceptable):" >&2
+    echo "e2e analytic gate: $_E2E_BAD unacceptable SKIPPED line(s) -- pytest -rs groups equal reasons, so this is not a test count (RIFT_CI_REQUIRE_GPU=${RIFT_CI_REQUIRE_GPU:-0}; with it set, ANY skip is unacceptable):" >&2
     echo "$_E2E_OUT" | grep -E '^SKIPPED' >&2
     exit 1
 fi
