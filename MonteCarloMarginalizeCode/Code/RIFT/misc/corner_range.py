@@ -6,10 +6,11 @@ panel -- when a 2-D panel's histogram comes out empty.  In a driver that plots
 several coordinate pairs at the end of a run, that turns a cosmetic problem into a
 nonzero exit status for the whole job.
 
-The two functions here answer the narrow question "would corner reject this?"
+:func:`unplottable_reason` answers the narrow question "would corner reject this?"
 without calling it, so a caller can widen a degenerate interval, or decline one
-panel and keep going, while every OTHER corner failure still propagates.  They
-deliberately do not catch exceptions: a caller that wraps corner in
+panel and keep going, while every OTHER corner failure still propagates.
+:func:`overlay_or_warn` is the one-line form for an overlay added to a figure that
+already exists.  Neither catches exceptions: a caller that wraps corner in
 ``try/except`` loses the ability to tell an unplottable sample from broken
 plotting, which is the distinction these exist to preserve.
 
@@ -31,7 +32,7 @@ from __future__ import print_function, absolute_import
 
 import numpy as np
 
-__all__ = ["pad_degenerate_intervals", "unplottable_reason"]
+__all__ = ["pad_degenerate_intervals", "unplottable_reason", "overlay_or_warn"]
 
 
 def pad_degenerate_intervals(ranges, rel_pad=1e-3, abs_pad=1e-6):
@@ -137,3 +138,26 @@ def unplottable_reason(sample, ranges, weights=None, labels=None):
                     "no sample falls inside the plotted range in the ({}, {}) panel: "
                     "{} x {}".format(name(j), name(k), list(bounds[j]), list(bounds[k])))
     return None
+
+
+def overlay_or_warn(sample, ranges, coord_labels, what, **kwargs):
+    """Add one overlay to an existing corner figure, unless corner would reject it.
+
+    A corner plot here draws several data sets against ONE range: a posterior, the
+    input grid, its significant subset, sometimes lalinference.  Only the first of
+    those had any say in the range.  ``kwargs`` goes straight to ``corner.corner``
+    along with ``range=ranges``; the figure to keep drawing on is returned, which on
+    a declined overlay is ``kwargs['fig']`` unchanged.
+
+    The positional names are deliberately not corner's.  ``labels`` IS a corner
+    keyword, and an earlier version of this signature took the coordinate names under
+    that name: the one call site that passes ``labels=`` to corner -- the lalinference
+    overlay, which no CI job runs -- then raised TypeError before corner was reached.
+    test_corner_range_guard.py walks the driver's call sites for that collision.
+    """
+    reason = unplottable_reason(sample, ranges, labels=coord_labels)
+    if reason:
+        print(" WARNING: skipping the ", what, " overlay -- ", reason)
+        return kwargs.get('fig')
+    import corner
+    return corner.corner(sample, range=ranges, **kwargs)

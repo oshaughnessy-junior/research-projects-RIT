@@ -14,7 +14,8 @@ it are the POSTERIOR, which had moved off that box entirely.
 import numpy as np
 import pytest
 
-from RIFT.misc.corner_range import pad_degenerate_intervals, unplottable_reason
+from RIFT.misc.corner_range import (
+    overlay_or_warn, pad_degenerate_intervals, unplottable_reason)
 
 # The m1-m2 box the CI grid defines (m1 uniform in [50,60], m2 in [0.8 m1, m1]),
 # and the posterior that arm produces: a constant lnL, so the posterior is the
@@ -32,21 +33,29 @@ def _ci_posterior(n=2500, seed=0, inside=0):
     hit = ((m1 >= CI_RANGE[0][0]) & (m1 <= CI_RANGE[0][1])
            & (m2 >= CI_RANGE[1][0]) & (m2 <= CI_RANGE[1][1]))
     m1[hit] = 1000.
-    assert (inside == 0) or inside <= n
+    assert inside <= n
     for j in range(inside):
         m1[j], m2[j] = 55., 50.
     return np.column_stack([m1, m2])
 
 
+# The two ValueErrors corner raises about a range or an empty histogram.  Anything
+# else is re-raised: a test that accepted any ValueError would pass on a corner bug
+# and report agreement that was never tested.
+_CORNER_RANGE_ERRORS = ("is not valid or the sample is empty", "no dynamic range")
+
+
 def _corner_raises(sample, ranges, **kw):
-    """True if corner.corner rejects this (sample, range) pair."""
+    """True if corner.corner rejects this (sample, range) pair for a range reason."""
     corner = pytest.importorskip("corner")
     matplotlib = pytest.importorskip("matplotlib")
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     try:
         corner.corner(np.asarray(sample), range=[list(r) for r in ranges], **kw)
-    except ValueError:
+    except ValueError as exc:
+        if not any(m in str(exc) for m in _CORNER_RANGE_ERRORS):
+            raise
         return True
     finally:
         plt.close("all")
@@ -206,7 +215,7 @@ def test_driver_declines_rather_than_catching():
     path = os.path.join(here, os.pardir, "bin",
                         "util_ConstructIntrinsicPosterior_GenericCoordinates.py")
     src = open(path).read()
-    assert "def corner_overlay_or_warn(" in src
+    assert "overlay_or_warn(" in src
     assert "unplottable_reason(dat_here" in src
 
     # Line number of the Corner 3 header, and of the guard, from the SOURCE; the
@@ -221,3 +230,81 @@ def test_driver_declines_rather_than_catching():
     assert not handlers, (
         "Corner 3 must not catch (handlers at lines {}): an unplottable sample is "
         "declined, a broken plotter is not".format([n.lineno for n in handlers]))
+
+
+# ---------------------------------------------------------------- the overlay wrapper
+
+def _driver_source():
+    import os
+    here = os.path.dirname(os.path.abspath(__file__))
+    return open(os.path.join(here, os.pardir, "bin",
+                             "util_ConstructIntrinsicPosterior_GenericCoordinates.py")).read()
+
+
+def test_overlay_call_sites_do_not_collide_with_the_positional_names():
+    """Every overlay_or_warn(...) in the driver, checked against the real signature.
+
+    `labels` IS a corner keyword and was once this function's third positional, so the
+    lalinference overlay -- the one call site that forwards labels= to corner, and the
+    one no CI job runs -- raised TypeError before corner was reached.  A green pipeline
+    said nothing.  So bind each call site's keywords against the signature instead of
+    reading them.
+    """
+    import ast
+    import inspect
+    sig = inspect.signature(overlay_or_warn)
+    positional = [n for n, prm in sig.parameters.items()
+                  if prm.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD]
+    assert positional, "overlay_or_warn takes its coordinate labels positionally"
+
+    calls = [n for n in ast.walk(ast.parse(_driver_source()))
+             if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "overlay_or_warn"]
+    assert len(calls) >= 4, "expected the Corner 1 and Corner 3 overlays; found {}".format(len(calls))
+    for call in calls:
+        # A splat would make the bind below prove nothing about the real arguments.
+        assert not any(isinstance(a, ast.Starred) for a in call.args), \
+            "*args splat at line {}".format(call.lineno)
+        assert all(k.arg is not None for k in call.keywords), \
+            "**kwargs splat at line {}".format(call.lineno)
+        # Bind the call the way Python will, with placeholders for the values.
+        sig.bind(*[None] * len(call.args), **{k.arg: None for k in call.keywords})
+
+
+def test_overlay_draws_when_plottable_and_declines_when_not():
+    pytest.importorskip("corner")
+    matplotlib = pytest.importorskip("matplotlib")
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    try:
+        base = plt.figure()
+        ok = np.column_stack([np.linspace(0., 1., 32), np.linspace(0., 1., 32)])
+        out = overlay_or_warn(ok, [[0., 1.], [0., 1.]], ["a", "b"], "grid",
+                              weights=np.ones(32) / 32., fig=base, plot_datapoints=True,
+                              plot_density=False, plot_contours=False, quantiles=None)
+        assert out is not None
+
+        out = overlay_or_warn(ok + 99., [[0., 1.], [0., 1.]], ["a", "b"], "grid",
+                              weights=np.ones(32) / 32., fig=base, plot_datapoints=True,
+                              plot_density=False, plot_contours=False, quantiles=None)
+        assert out is base, "a declined overlay returns the figure it was handed"
+    finally:
+        plt.close("all")
+
+
+def test_overlay_forwards_the_labels_keyword_corner_takes():
+    """The lalinference call site's shape: coordinate names positionally, corner's own
+    `labels` (TeX) as a keyword.  These are different arguments and both must arrive."""
+    pytest.importorskip("corner")
+    matplotlib = pytest.importorskip("matplotlib")
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    try:
+        dat = np.column_stack([np.linspace(0., 1., 32), np.linspace(0., 1., 32)])
+        fig = overlay_or_warn(dat, [[0., 1.], [0., 1.]], ["m1", "m2"], "lalinference",
+                              weights=np.ones(32) / 32., color="r", labels=["$m_1$", "$m_2$"],
+                              quantiles=[0.05, 0.95], no_fill_contours=True,
+                              plot_datapoints=False, plot_density=False,
+                              fill_contours=False, levels=[0.9])
+        assert fig is not None
+    finally:
+        plt.close("all")

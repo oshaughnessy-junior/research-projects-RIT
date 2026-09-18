@@ -34,7 +34,7 @@ import itertools
 
 from RIFT.misc.samples_utils import add_field
 from RIFT.misc.cip_pipeline import systematic_resample, unique_draw_bound
-from RIFT.misc.corner_range import pad_degenerate_intervals, unplottable_reason
+from RIFT.misc.corner_range import pad_degenerate_intervals, unplottable_reason, overlay_or_warn
 
 import joblib  # http://scikit-learn.org/stable/modules/model_persistence.html
 
@@ -60,27 +60,6 @@ try:
     no_plots=False
 except ImportError:
     print(" - no matplotlib - ")
-
-
-def corner_overlay_or_warn(sample, range_here, labels, what, **kwargs):
-    """Add one overlay to an existing corner figure, unless corner would reject it.
-
-    Every corner plot below draws several data sets against ONE range: a posterior,
-    the input grid, its significant subset, and sometimes lalinference.  Only the
-    first of those had any say in the range, and corner RAISES ValueError -- it does
-    not warn, and it does not draw a blank panel -- when a 2-D panel's histogram
-    comes out empty.  A posterior that has moved off the grid therefore used to end
-    the whole job at the very last step, after the samples were already written.
-
-    Only that one condition is declined here, and it is tested rather than caught:
-    no exception is handled, so a genuine corner or matplotlib break still fails the
-    run.  Returns the figure to keep drawing on.
-    """
-    reason = unplottable_reason(sample, range_here, labels=labels)
-    if reason:
-        print(" WARNING: skipping the ", what, " overlay -- ", reason)
-        return kwargs.get('fig')
-    return corner.corner(sample, range=range_here, **kwargs)
 
 
 from sklearn.preprocessing import PolynomialFeatures
@@ -3961,13 +3940,13 @@ if not no_plots:
         my_cmap_values = 'g'
 
         # range_here is set by the POSTERIOR above; these two overlays are the input
-        # grid, which had no say in it.  See corner_overlay_or_warn.
-        fig_base = corner_overlay_or_warn(dat_out_low_level_coord_names, range_here, low_level_coord_names, "input grid", weights=np.ones(len(X))/len(X), plot_datapoints=True,plot_density=False,plot_contours=False,quantiles=None,fig=fig_base, data_kwargs={'color':my_cmap_values},hist_kwargs={'color':'g', 'linestyle':'dashed'})
+        # grid, which had no say in it.  See overlay_or_warn.
+        fig_base = overlay_or_warn(dat_out_low_level_coord_names, range_here, low_level_coord_names, "input grid", weights=np.ones(len(X))/len(X), plot_datapoints=True,plot_density=False,plot_contours=False,quantiles=None,fig=fig_base, data_kwargs={'color':my_cmap_values},hist_kwargs={'color':'g', 'linestyle':'dashed'})
 
         # TRUNCATED data set used here
         indx_ok = Y > Y.max() - scipy.stats.chi2.isf(0.1,len(low_level_coord_names))/2  # approximate threshold for significant points,from inverse cdf 90%
         n_ok = np.sum(indx_ok)
-        fig_base  = corner_overlay_or_warn(dat_out_low_level_coord_names[indx_ok], range_here, low_level_coord_names, "significant grid points", weights=np.ones(n_ok)*1.0/n_ok, plot_datapoints=True,plot_density=False,plot_contours=False,quantiles=None,fig=fig_base, data_kwargs={'color':'b'},hist_kwargs={'color':'b', 'linestyle':'dashed'})
+        fig_base  = overlay_or_warn(dat_out_low_level_coord_names[indx_ok], range_here, low_level_coord_names, "significant grid points", weights=np.ones(n_ok)*1.0/n_ok, plot_datapoints=True,plot_density=False,plot_contours=False,quantiles=None,fig=fig_base, data_kwargs={'color':'b'},hist_kwargs={'color':'b', 'linestyle':'dashed'})
 
     #except:
     else:
@@ -4445,16 +4424,16 @@ for indx in np.arange(len(extra_plot_coord_names)):
     fig_base = corner.corner(dat_here, weights=np.ones(len(dat_here))*1.0/len(dat_here), labels=labels_tex, quantiles=quantiles_1d,plot_datapoints=False,plot_density=False,no_fill_contours=True,fill_contours=False,levels=CIs,range=range_here,truths=truth_here)
                 
     if can_render_LI:
-        corner_overlay_or_warn( dat_mass_LI, range_here, coord_names_here, "lalinference", weights=np.ones(len(dat_mass_LI))*1.0/len(dat_mass_LI), color='r',labels=labels_tex,fig=fig_base,quantiles=quantiles_1d,no_fill_contours=True,plot_datapoints=False,plot_density=False,fill_contours=False,levels=CIs)
+        overlay_or_warn( dat_mass_LI, range_here, coord_names_here, "lalinference", weights=np.ones(len(dat_mass_LI))*1.0/len(dat_mass_LI), color='r',labels=labels_tex,fig=fig_base,quantiles=quantiles_1d,no_fill_contours=True,plot_datapoints=False,plot_density=False,fill_contours=False,levels=CIs)
 
 
     print(" Rendering past samples for ",  extra_plot_coord_names[indx], " based on ", len(dat_points_here))
-    fig_base = corner_overlay_or_warn(dat_points_here, range_here, coord_names_here, "input grid", weights=np.ones(len(dat_points_here))*1.0/len(dat_points_here), plot_datapoints=True,plot_density=False,plot_contours=False,quantiles=None,fig=fig_base, data_kwargs={'color':'g'},hist_kwargs={'color':'g', 'linestyle':'dashed'})
+    fig_base = overlay_or_warn(dat_points_here, range_here, coord_names_here, "input grid", weights=np.ones(len(dat_points_here))*1.0/len(dat_points_here), plot_datapoints=True,plot_density=False,plot_contours=False,quantiles=None,fig=fig_base, data_kwargs={'color':'g'},hist_kwargs={'color':'g', 'linestyle':'dashed'})
     # Render points available. Note we use the ORIGINAL data set, and truncate it
     indx_ok = Y_orig > Y_orig.max() - scipy.stats.chi2.isf(0.1,len(low_level_coord_names))/2  # approximate threshold for significant points,from inverse cdf 90%
     n_ok = np.sum(indx_ok)
     print(" Adding points for figure ", n_ok, extra_plot_coord_names[indx], " drawn from original  ")
-    fig_base  = corner_overlay_or_warn(dat_points_here[indx_ok], range_here, coord_names_here, "significant grid points", weights=np.ones(n_ok)*1.0/n_ok, plot_datapoints=True,plot_density=False,plot_contours=False,quantiles=None,fig=fig_base, data_kwargs={'color':'b'},hist_kwargs={'color':'b', 'linestyle':'dashed'})
+    fig_base  = overlay_or_warn(dat_points_here[indx_ok], range_here, coord_names_here, "significant grid points", weights=np.ones(n_ok)*1.0/n_ok, plot_datapoints=True,plot_density=False,plot_contours=False,quantiles=None,fig=fig_base, data_kwargs={'color':'b'},hist_kwargs={'color':'b', 'linestyle':'dashed'})
 
 
     plt.legend(handles=line_handles, bbox_to_anchor=corner_legend_location, prop=corner_legend_prop,loc=4)
