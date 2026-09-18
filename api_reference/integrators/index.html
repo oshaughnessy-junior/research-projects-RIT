@@ -567,6 +567,22 @@ dec_samp_vector for the full range.</p>
 <dd></dd></dl>
 
 <dl class="py function">
+<dt class="sig sig-object py" id="RIFT.integrators.mcsampler.to_host">
+<span class="sig-prename descclassname"><span class="pre">RIFT.integrators.mcsampler.</span></span><span class="sig-name descname"><span class="pre">to_host</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">x</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsampler.to_host" title="Link to this definition"></a></dt>
+<dd><p>Return <cite>x</cite> as a host (numpy) array, copying it off a device backend if it is on one.</p>
+<p>numpy.asarray(cupy_array) RAISES – cupy refuses implicit host conversion – so the copy
+has to go through the device module’s own asnumpy.  The module is looked up from the
+value, the same way infer_array_module does it, so this file keeps its numpy-only import
+list.  A host input is returned UNCHANGED, not re-wrapped: the numpy path must stay bit
+for bit what it was.</p>
+<p>A non-numpy backend it cannot convert RAISES rather than passing the value through.
+infer_array_module recognizes any module exposing asarray/where/clip, which is a wider
+set than the ones exposing asnumpy (torch is in the gap), so “return it unchanged” would
+hand a device array to the host-only arithmetic below the call site – the silent
+host/device mix this function exists to remove, reintroduced one backend later.</p>
+</dd></dl>
+
+<dl class="py function">
 <dt class="sig sig-object py" id="RIFT.integrators.mcsampler.uniform_samp">
 <span class="sig-prename descclassname"><span class="pre">RIFT.integrators.mcsampler.</span></span><span class="sig-name descname"><span class="pre">uniform_samp</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">a</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">b</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">x</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsampler.uniform_samp" title="Link to this definition"></a></dt>
 <dd></dd></dl>
