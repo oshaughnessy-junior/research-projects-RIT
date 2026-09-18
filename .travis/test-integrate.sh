@@ -121,13 +121,16 @@ python -m pytest -q "$_PORTDENS_TESTS"
 # against the driver's own supplemental_ln_likelihood call sites, its generated signature against
 # every live likelihood_function signature, and its array module.  This is the half the
 # end-to-end gate below is structurally blind to -- right_ascension, phi_orb and psi are iid
-# uniform on [0, 2pi), so NO marginal can tell a permutation of the three apart, and the runners
-# have no cupy, so nothing there sees a host/device mistake.  Mostly AST + exec, ~5 s.
-# Its section 4 runs the same device paths against REAL cupy and SKIPS here, because the runners
-# have none.  Skipped tests are still collected, so the count below is the same everywhere; but
-# a green run here has NOT exercised the device half.  That half is run by hand on a CIT GPU
-# node with CUDA_VISIBLE_DEVICES pinned to a slot the installed cupy supports -- see
-# _cupy_or_skip in the test file.
+# uniform on [0, 2pi), so NO marginal can tell a permutation of the three apart, however and
+# wherever that gate is run.  Mostly AST + exec, ~5 s.
+# Its section 4 runs the same device paths against REAL cupy.  WHETHER THOSE RUN DEPENDS ON THE
+# RUNNER, not on the code: they skip on a CPU-only runner, and they RUN under .gitlab-ci.yml's
+# `gpu_integration` job, which invokes this script with RIFT_CI_REQUIRE_GPU=1 and
+# CUDA_VISIBLE_DEVICES=0 inside the GPU container (the preflight at the top of this file then
+# makes a working cupy a hard requirement).  So a green run on a CPU-only runner has NOT
+# exercised the device half; a green gpu_integration run has.  Skipped tests are still
+# collected, so the count below is the same on both.  The SKIP GUARD after the run is what
+# keeps a CPU-only pass honest.
 # The collected count tracks the number of `def likelihood_function` signatures in the driver
 # (one parametrized case each, currently 8); if a signature is added, look at the new one and
 # update the number.
@@ -138,7 +141,45 @@ if [ "$_ZLSTANDIN_FOUND" -ne "$_ZLSTANDIN_EXPECTED" ]; then
     echo "zero-likelihood stand-in gate: collected $_ZLSTANDIN_FOUND tests, expected $_ZLSTANDIN_EXPECTED" >&2
     exit 1
 fi
-python -m pytest -q "$_ZLSTANDIN_TESTS"
+# SKIP guard, same shape and same reason as the time-marginalization one below: `pytest -q`
+# exits 0 with skips, the count guard above catches DESELECTION and not SKIPPING, and skipping
+# is now this gate's NORMAL state on a CPU-only runner (3 of 27).  Identify rather than count --
+# the expected number of skips is a property of the runner, not of the code.  Allow skips whose
+# reason names cupy/GPU/CUDA; fail on any other, whatever the total.
+#
+# This is future-proofing, not a live hole, and the reason first written here was wrong: a
+# missing ILE executable does NOT reach the module-level skipif, because the parametrize on
+# test_the_factor_gets_the_raw_sampled_value_for_every_argument reads the driver at IMPORT, so
+# it is a collection ERROR and the count guard above already catches it (collected drops to 0).
+# Verified by moving the executable aside.  The skipif is unreachable today.
+# Streamed as well as captured, so a long gate is not silent on a runner -- but NOT via
+# `tee /dev/stderr`.  That opens /proc/self/fd/2 with O_TRUNC, so when stderr is a regular file
+# (`bash .travis/test-integrate.sh > gate.log 2>&1`, the obvious way to run this) it truncates
+# the log to zero and every earlier gate's output is gone, while the shell's own fd 2 keeps its
+# offset and writes NULs into the hole.  Measured; with stderr CLOSED it went on to overwrite
+# the running script.  `tee >(cat >&2)` writes through a pipe to a process that appends, which
+# has none of that, keeps $_OUT intact for the grep below, and still propagates pytest's exit
+# status under `set -o pipefail`.
+_ZLSTANDIN_OUT=$(python -m pytest -q -rs "$_ZLSTANDIN_TESTS" 2>&1 | tee >(cat >&2)) \
+    || { echo "zero-likelihood stand-in gate FAILED" >&2; exit 1; }
+# On a runner that PROMISES a device, any skip is bad.  The reason-matching below cannot tell
+# "there is no GPU here" from "the GPU probe itself broke": break the probe and every device
+# lane skips with a reason naming the GPU, which this would score as fine.  Measured -- an
+# unimportable module inside the e2e gate's _GPU_PROBE silently removed all 9 device lanes and
+# scored 0 bad.  RIFT_CI_REQUIRE_GPU=1 means the preflight at the top of this file already
+# proved cupy works and a device computes, so there is nothing left for a skip to legitimately
+# mean.  Measured on ldas-pcdev2 slot 0: 0 skips.
+if [[ "${RIFT_CI_REQUIRE_GPU:-0}" == "1" ]]; then
+    _ZLSTANDIN_BAD=$(echo "$_ZLSTANDIN_OUT" | grep -cE '^SKIPPED' || true)
+else
+    _ZLSTANDIN_BAD=$(echo "$_ZLSTANDIN_OUT" | grep -E '^SKIPPED' | grep -vciE 'cupy|gpu|cuda' || true)
+fi
+_ZLSTANDIN_BAD=${_ZLSTANDIN_BAD:-0}
+if [ "$_ZLSTANDIN_BAD" -ne 0 ]; then
+    echo "zero-likelihood stand-in gate: $_ZLSTANDIN_BAD unacceptable SKIPPED line(s) -- pytest -rs groups equal reasons, so this is not a test count (RIFT_CI_REQUIRE_GPU=${RIFT_CI_REQUIRE_GPU:-0}; with it set, ANY skip is unacceptable):" >&2
+    echo "$_ZLSTANDIN_OUT" | grep -E '^SKIPPED' >&2
+    exit 1
+fi
 
 # END-TO-END, ANALYTIC.  ILE run to completion on a case whose answer is known in closed form:
 # a zero-strain fixture, --zero-likelihood (exact ln Z = 0), and an analytic supplementary
@@ -153,11 +194,11 @@ python -m pytest -q "$_ZLSTANDIN_TESTS"
 # --sampler-method GMM returning an evidence ~30 nats wrong; #359 fixed that, and GMM is now a
 # lane here rather than a recorded defect.  Needs no network and no real event; about
 # 8-12 s per ILE arm plus ~15 s once for the distance-marginalization lookup table.
-# Its section 5 runs the same answers with a GPU VISIBLE and asserts the child reached one.
-# Those 9 lanes SKIP here, because the runners have no cupy -- so a green run in CI has NOT
-# exercised the device path.  Run the file by hand on a CIT GPU node with CUDA_VISIBLE_DEVICES
-# pinned to a slot the installed cupy supports; see the gpu_slot fixture.  Skipped tests are
-# still collected, so the count below is the same everywhere.
+# Its section 4 runs the same answers with a GPU VISIBLE and asserts the child reached one.
+# Those 9 lanes skip on a CPU-only runner and RUN under .gitlab-ci.yml's `gpu_integration` job
+# (RIFT_CI_REQUIRE_GPU=1, CUDA_VISIBLE_DEVICES=0, GPU container).  Skipped tests are still
+# collected, so the count below is the same on both; the SKIP GUARD after the run is what stops
+# a CPU-only pass from reading as device coverage.
 _E2E_TESTS=MonteCarloMarginalizeCode/Code/test/test_e2e_analytic_pipeline.py
 _E2E_EXPECTED=26
 _E2E_FOUND=$(python -m pytest -q --collect-only "$_E2E_TESTS" 2>/dev/null | grep -c '::' || true)
@@ -165,7 +206,32 @@ if [ "$_E2E_FOUND" -ne "$_E2E_EXPECTED" ]; then
     echo "e2e analytic gate: collected $_E2E_FOUND tests, expected $_E2E_EXPECTED" >&2
     exit 1
 fi
-python -m pytest -q "$_E2E_TESTS"
+# SKIP guard, as above.  This gate skips 9 of 26 on a CPU-only runner, and it has a non-GPU
+# skip path that matters: build_event returns None when lal_path2cache is missing, which skips
+# the WHOLE module -- 26 silent skips under a green exit 0.  So a skip whose reason does not
+# name cupy/GPU/CUDA fails the gate.
+# Streamed, not `tee /dev/stderr` -- see the note on the stand-in gate above.  This is the gate
+# that made streaming worth having: 3-9 minutes, and silent when captured.
+_E2E_OUT=$(python -m pytest -q -rs "$_E2E_TESTS" 2>&1 | tee >(cat >&2)) \
+    || { echo "e2e analytic gate FAILED" >&2; exit 1; }
+# On a runner that PROMISES a device, any skip is bad.  The reason-matching below cannot tell
+# "there is no GPU here" from "the GPU probe itself broke": break the probe and every device
+# lane skips with a reason naming the GPU, which this would score as fine.  Measured -- an
+# unimportable module inside the e2e gate's _GPU_PROBE silently removed all 9 device lanes and
+# scored 0 bad.  RIFT_CI_REQUIRE_GPU=1 means the preflight at the top of this file already
+# proved cupy works and a device computes, so there is nothing left for a skip to legitimately
+# mean.  Measured on ldas-pcdev2 slot 0: 0 skips.
+if [[ "${RIFT_CI_REQUIRE_GPU:-0}" == "1" ]]; then
+    _E2E_BAD=$(echo "$_E2E_OUT" | grep -cE '^SKIPPED' || true)
+else
+    _E2E_BAD=$(echo "$_E2E_OUT" | grep -E '^SKIPPED' | grep -vciE 'cupy|gpu|cuda' || true)
+fi
+_E2E_BAD=${_E2E_BAD:-0}
+if [ "$_E2E_BAD" -ne 0 ]; then
+    echo "e2e analytic gate: $_E2E_BAD unacceptable SKIPPED line(s) -- pytest -rs groups equal reasons, so this is not a test count (RIFT_CI_REQUIRE_GPU=${RIFT_CI_REQUIRE_GPU:-0}; with it set, ANY skip is unacceptable):" >&2
+    echo "$_E2E_OUT" | grep -E '^SKIPPED' >&2
+    exit 1
+fi
 
 # Supplementary-likelihood plugin hook: the NAL reader/evaluator (pure numpy, no data) and the
 # static guard on the drivers' prepare-hook wiring, which is what makes the plugin receive the

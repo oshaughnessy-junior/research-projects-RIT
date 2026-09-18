@@ -69,9 +69,10 @@ def ln_analytic_factor(right_ascension, declination, phi_orb, inclination, psi, 
     #
     # And it has to be USED, not just accepted.  The three sites that pass it do
     # `lnL += factor(...)` with lnL on the device, so a factor that always returns numpy raises
-    # there on a GPU host.  Computing through xpy is what makes this example portable; the gate
-    # cannot check it, because every lane here pins CUDA_VISIBLE_DEVICES="" and the CI runners
-    # have no cupy.
+    # there on a GPU host.  Computing through xpy is what makes this example portable, and it IS
+    # checked now: test_zero_likelihood_standin.py section 4 runs this function with xpy=cupy,
+    # and the e2e gate's section 4 runs the whole pipeline with a device visible.  Both skip
+    # where there is no usable GPU.
     #
     # The CAST is not decoration, and the EXPLICIT dtype is the whole of it.  mcsampler
     # (--sampler-method adaptive_cartesian) hands its integrand object-dtype draws, on which
