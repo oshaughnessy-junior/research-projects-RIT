@@ -36,9 +36,8 @@ these.
 THE DEVICE.  Section 5 runs the prior-only and factor answers again with a GPU VISIBLE, and
 asserts the child reached it.  RIFT binds its array module at import from whether cupy imports,
 not from --gpu, so on a GPU node production is on the device path by default and the rest of
-this file -- which pins CUDA_VISIBLE_DEVICES="" -- said nothing about it.  Two samplers cannot
-run there at all; they are recorded as known-failing lanes rather than skipped, so the hole is
-visible.  What section 5 does NOT cover is the GPU signal likelihood: --zero-likelihood
+this file -- which pins CUDA_VISIBLE_DEVICES="" -- said nothing about it.  All four samplers
+run there.  What section 5 does NOT cover is the GPU signal likelihood: --zero-likelihood
 replaces likelihood_function outright, so the NoLoop path never runs.
 
 WHAT EACH ARM COSTS.  About 8-12 s of one core per ILE arm, plus ~15 s once for the
@@ -82,7 +81,11 @@ _AV = ["--sampler-method", "AV"]
 _PORTFOLIO = ["--sampler-method", "portfolio",
               "--sampler-portfolio", "AV", "--sampler-portfolio", "AC"]
 _GMM = ["--sampler-method", "GMM"]
-SAMPLER_ARGS = {"AV": _AV, "portfolio": _PORTFOLIO, "GMM": _GMM}
+_AC = ["--sampler-method", "adaptive_cartesian"]
+# adaptive_cartesian stops on the sample BUDGET rather than on --n-eff at the 20000 the other
+# lanes use; see test_adaptive_cartesian for the eight-seed measurement behind this number.
+_AC_N_MAX = 60000
+SAMPLER_ARGS = {"AV": _AV, "portfolio": _PORTFOLIO, "GMM": _GMM, "adaptive_cartesian": _AC}
 
 
 # ---------------------------------------------------------------------------------------
@@ -481,9 +484,9 @@ def test_adaptive_cartesian(event):
     # rather than on --n-eff: over eight seeds it reported n_eff 91 to 220 against a target of
     # 250, with sigma up to 0.0430 against a 0.06 cap.  At 60000 it stops on n_eff instead, at
     # ntotal 30000, with n_eff ~300 and sigma ~0.03.  One-and-a-half times the arm, and the
-    # lane stops sitting one bad draw away from its own informativeness floor.
-    lnL, sigma, neff = _run_ile(event, tag, ["--sampler-method", "adaptive_cartesian"],
-                                a_coeff=a, b_coeff=b, n_max=60000)
+    # lane stops sitting one bad draw away from its own informativeness floor.  The device
+    # lane in section 5 inherits it through _GPU_LANE_KW.
+    lnL, sigma, neff = _run_ile(event, tag, _AC, a_coeff=a, b_coeff=b, n_max=_AC_N_MAX)
     _assert_lnZ(tag, lnL, sigma, neff, _exact(a, b))
 
 
@@ -502,20 +505,34 @@ def test_adaptive_cartesian(event):
 # and without _GPU_FLAGS returns bit-identical lnZ, because those flags only choose a likelihood
 # that this configuration does not evaluate.
 
-_GPU_SAMPLERS = ["AV", "GMM"]
+# portfolio and adaptive_cartesian were RECORDED HERE AS BROKEN when this section was written:
+# both mixed host and device arrays and died in a cupy ufunc with "TypeError: Unsupported type
+# <class 'numpy.ndarray'>", invisible in production because the driver catches it, prints FAILED
+# ANALYSIS and exits 0.  Fixed on opposite sides, because the two sides are not alike -- the
+# samples go TO the device in mcsamplerGPU.compute_hist, the integrand comes BACK to the host in
+# mcsampler.integrate, whose accumulators are deliberately RiftFloat.  Read those two comments
+# before moving either conversion.
+_GPU_SAMPLERS = ["AV", "GMM", "portfolio", "adaptive_cartesian"]
 
-# Coefficients per device lane, and they are NOT the same pair for both samplers on purpose.
+# Coefficients per device lane, and they are NOT the same pair for every sampler on purpose.
 # Each mirrors the CPU lane that sampler already runs, so a device row is comparable with a host
-# row in the table below, and neither lands on a configuration this file records as unstable.
+# row in the table below, and none lands on a configuration this file records as unstable.
 #
 # GMM is A=0.75 B=3, not A=8 B=2.  The note at the end of the CALIBRATION section records that
 # GMM at A=8 WITH the inclination term is an n_eff LOTTERY: over eight seeds, two collapsed to
 # n_eff 73.5 and 14.5 with sigma 0.028 and 0.073, and 0.073 is over MAX_SIGMA.  The evidence was
 # right on every seed; the error bar was not.  That is why no CPU lane runs it, and a device lane
 # that ran it would be a flake with a ~1-in-4 seed.  Eight clean GPU seeds do not refute a
-# lottery -- the CPU sweep that FOUND it was also eight seeds.  Both lanes keep a B term, so
-# mis-routing inclination is still detectable; that is what the B term is for.
-_GPU_LANE_COEFFS = {"AV": (8.0, 2.0), "GMM": (0.75, 3.0)}
+# lottery -- the CPU sweep that FOUND it was also eight seeds.  portfolio takes the same pair as
+# its own A=0.75 B=3 host lane.  Every lane keeps a B term, so mis-routing inclination is still
+# detectable; that is what the B term is for.
+_GPU_LANE_COEFFS = {"AV": (8.0, 2.0), "GMM": (0.75, 3.0),
+                    "portfolio": (0.75, 3.0), "adaptive_cartesian": (8.0, 2.0)}
+
+# Per-lane _run_ile overrides, so a device lane runs its host twin's configuration and not a
+# nearby one.  Applied to the prior-only lane too: there the integrand is flat and the run stops
+# on --n-eff long before any budget, so the larger cap costs nothing and keeps one definition.
+_GPU_LANE_KW = {"adaptive_cartesian": dict(n_max=_AC_N_MAX)}
 
 
 @pytest.mark.parametrize("sampler", _GPU_SAMPLERS)
@@ -523,7 +540,8 @@ def test_gpu_zero_likelihood_alone_gives_ln_Z_zero(event, gpu_slot, sampler):
     """The prior-only answer, on device.  ln Z = 0 exactly, for a normalized extrinsic prior."""
     tag = "gpu_zero_%s" % sampler
     lnL, sigma, neff = _run_ile(event, tag, SAMPLER_ARGS[sampler] + list(_GPU_FLAGS),
-                                a_coeff=None, cuda=gpu_slot, expect_device=True)
+                                a_coeff=None, cuda=gpu_slot, expect_device=True,
+                                **_GPU_LANE_KW.get(sampler, {}))
     _assert_lnZ(tag, lnL, sigma, neff, 0.0)
 
 
@@ -535,7 +553,8 @@ def test_gpu_analytic_factor_marginal_is_exact(event, gpu_slot, sampler):
     a, b = _GPU_LANE_COEFFS[sampler]
     tag = "gpu_factor_%s" % sampler
     lnL, sigma, neff = _run_ile(event, tag, SAMPLER_ARGS[sampler] + list(_GPU_FLAGS),
-                                a_coeff=a, b_coeff=b, cuda=gpu_slot, expect_device=True)
+                                a_coeff=a, b_coeff=b, cuda=gpu_slot, expect_device=True,
+                                **_GPU_LANE_KW.get(sampler, {}))
     _assert_lnZ(tag, lnL, sigma, neff, _exact(a, b))
 
 
@@ -555,52 +574,6 @@ def test_the_gpu_flags_do_not_decide_the_backend(event, gpu_slot):
         "--vectorized --gpu --force-xpy changed the answer (%r vs %r).  Under --zero-likelihood "
         "they select a signal likelihood that never runs, so they were expected to be inert; "
         "something else now depends on them." % (bare, flagged))
-
-
-# Device lanes that DO NOT WORK today, recorded with the shape of the failure so the hole is
-# visible instead of hidden behind CUDA_VISIBLE_DEVICES="".  Both are host/device mixes, both
-# reproduce with NO supplementary factor, and neither is caused by anything in this file:
-#
-#   portfolio (AV + AC)   RIFT/likelihood/vectorized_general_tools.py, histogram():
-#                         `xpy.maximum(samples, blank_array)` with blank_array built by
-#                         xpy.zeros on device and `samples` arriving as a numpy array from
-#                         mcsamplerGPU.compute_hist.
-#   adaptive_cartesian    RIFT/integrators/mcsampler.py, `fval*joint_p_prior/joint_p_s`: the
-#                         integrand is on device, the two prior arrays are numpy.
-#
-# Both surface as `TypeError: Unsupported type <class 'numpy.ndarray'>` from a cupy ufunc, and
-# both are invisible in production because the driver catches the exception, prints FAILED
-# ANALYSIS and EXITS 0.  Measured on ldas-pcdev2 (A100, cc 8.0), cupy 12.0.0, 2026-09-17.
-_GPU_KNOWN_FAILING = {
-    "portfolio": (_PORTFOLIO, {}, "vectorized_general_tools.py"),
-    "adaptive_cartesian": (["--sampler-method", "adaptive_cartesian"], dict(n_max=60000),
-                           "integrators/mcsampler.py"),
-}
-
-
-@pytest.mark.parametrize("sampler", sorted(_GPU_KNOWN_FAILING))
-def test_the_gpu_samplers_that_do_not_work_still_fail_the_known_way(event, gpu_slot, sampler):
-    """A RECORDED DEFECT, not an excused one.
-
-    Two samplers cannot run on a device at all.  Skipping them would leave the gate reporting
-    green over a broken configuration, which is what pinning CUDA_VISIBLE_DEVICES="" did for
-    the whole file.  So the failure is pinned by its SITE and its EXCEPTION, and this test goes
-    red in both directions: if someone fixes one, promote it into _GPU_SAMPLERS and delete the
-    entry; if the failure moves somewhere else, that is a different defect and wants reading."""
-    args, kw, site = _GPU_KNOWN_FAILING[sampler]
-    tag = "gpu_known_fail_%s" % sampler
-    _d, _rc, out, have_row = _invoke_ile(event, tag, args + list(_GPU_FLAGS),
-                                         a_coeff=8.0, b_coeff=2.0, cuda=gpu_slot, **kw)
-    assert _DEVICE_MARKER in out, (
-        "%s never reached a device, so this says nothing about the GPU path" % tag)
-    assert not have_row, (
-        "%s SUCCEEDED on a device.  If that is a fix, move %r into _GPU_SAMPLERS, delete its "
-        "_GPU_KNOWN_FAILING entry and the paragraph above it, and re-measure the calibration "
-        "table for the new lane." % (tag, sampler))
-    assert "Unsupported type <class 'numpy.ndarray'>" in out and site in out, (
-        "%s still fails on a device, but not in the recorded way: expected a cupy ufunc "
-        "TypeError from %s.  A different failure is a different defect; read the log.\n%s"
-        % (tag, site, out[-2500:]))
 
 
 # ---------------------------------------------------------------------------------------
@@ -642,32 +615,50 @@ def test_the_gpu_samplers_that_do_not_work_still_fail_the_known_way(event, gpu_s
 #   adaptive_cartesian, --n-max 60000            1.35      0.0305         250
 #
 # THE DEVICE LANES, measured separately because they need a GPU: eight seeds (1000-1007) on
-# ldas-pcdev2 slot 0 (A100, cc 8.0), cupy 12.0.0, at 5bb8da02b, with
+# ldas-pcdev2 CUDA slot 0 (A100, cc 8.0 -- the slot MAP MOVES on that node, so the card was
+# identified by running a kernel, not by nvidia-smi order), cupy 12.0.0, with
 #
 #     python make_e2e_calibration.py --seeds 8 --lane "GPU " --gpu-slot 0
 #
-# The GMM row is A=0.75 B=3 and not A=8 B=2 deliberately; see _GPU_LANE_COEFFS.  Each device row
-# sits on top of its host twin, which is the point: the device path is not a different answer.
+# The GMM and portfolio rows are A=0.75 B=3 and not A=8 B=2 deliberately; see _GPU_LANE_COEFFS.
+# Each device row sits on top of its host twin, which is the point: the device path is not a
+# different answer.
 #
 #   lane                                      max |z|   max sigma   min n_eff
 #   GPU prior-only, AV                           1.50      0.0134        1343
 #   GPU prior-only, GMM                          0.93      0.0134        1352
 #   GPU A=8    B=2, AV                           2.30      0.0325         257
 #   GPU A=0.75 B=3, GMM                          1.49      0.0235         389
+#   GPU prior-only, portfolio                    2.22      0.0104        2335
+#   GPU A=0.75 B=3, portfolio                    2.32      0.0228         411
+#   GPU prior-only, adaptive_cartesian           2.39      0.0091        3262
+#   GPU A=8    B=2, adaptive_cartesian           1.35      0.0305         250
 #
-# Host twins for those four, from the table above: 2.03/0.0134/1349, 1.88/0.0134/1335,
-# 1.06/0.0332/247, 1.34/0.0235/381.  Same sigma to three digits on three of the four; the |z|
-# values differ because they are draws, not constants.
+# Host twins, from the table above: 2.03/0.0134/1349, 1.88/0.0134/1335, 1.06/0.0332/247,
+# 1.34/0.0235/381, 1.68/0.0104/2316, 1.54/0.0227/392, -- (no host prior-only AC lane),
+# 1.35/0.0305/250.  Sigma is identical to all four decimals on five of the seven twinned rows;
+# the other two differ by 0.0007 (A=8 B=2 AV) and 0.0001 (A=0.75 B=3 portfolio).  The |z|
+# values differ freely, because they are draws, not constants.
 #
-# Z_TOLERANCE = 5     is 2.2x the worst |z| seen, which is now 2.30 on the GPU A=8 B=2 AV lane;
-#                     the worst host lane is 2.15 (distance-marginalized), re-measured at eight
-#                     seeds after the stand-in started passing xpy= to factors that accept it
-#                     (max |z| 2.15, max sigma 0.0326, least n_eff 336, unchanged, seed 1000
-#                     bit-identical).  Adding the device lanes moved the margin from 2.3x to
-#                     2.2x and nothing else.
+# The last row is the same three numbers as its host twin, not merely close, and that is
+# expected rather than lucky: under --zero-likelihood the only device work is xpy.zeros, and
+# mcsampler.integrate now copies the integrand back to the host before anything else touches
+# it, so the two arms run identical host arithmetic off the same seed.  If that row ever
+# DRIFTS from its host twin, something started doing real arithmetic on the device.
+#
+# The first four rows were re-derived here, after the two host/device fixes, and came back
+# identical to the values measured before them -- so those fixes do not move the lanes that
+# already worked.
+#
+# Z_TOLERANCE = 5     is 2.1x the worst |z| seen, which is now 2.39 on the GPU prior-only
+#                     adaptive_cartesian lane; the worst host lane is 2.15 (distance-
+#                     marginalized), re-measured at eight seeds after the stand-in started
+#                     passing xpy= to factors that accept it (max |z| 2.15, max sigma 0.0326,
+#                     least n_eff 336, unchanged, seed 1000 bit-identical).  Adding four more
+#                     device lanes moved the margin from 2.2x to 2.1x and nothing else.
 # MAX_SIGMA   = 0.06  is 1.7x the worst sigma seen (0.0353, host).  The worst device sigma is
 #                     0.0325.  5 * MAX_SIGMA is a 0.30-nat band.
-# MIN_NEFF    = 30    is 5.4x below the worst n_eff seen (163, host; 257 on device).  See its
+# MIN_NEFF    = 30    is 5.4x below the worst n_eff seen (163, host; 250 on device).  See its
 #                     comment for why it is this loose.
 #
 # WHAT THE GATE HAS TO SEPARATE A CORRECT RUN FROM.  Each row was run on this fixture, not

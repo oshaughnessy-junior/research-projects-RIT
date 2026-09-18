@@ -29,7 +29,7 @@ if _TEST_DIR not in sys.path:
 
 import test_e2e_analytic_pipeline as gate          # noqa: E402
 
-_AV, _PORTFOLIO, _GMM = gate._AV, gate._PORTFOLIO, gate._GMM
+_AV, _PORTFOLIO, _GMM, _AC = gate._AV, gate._PORTFOLIO, gate._GMM, gate._AC
 
 # (label, sampler argv, A, B, extra kwargs for _run_ile).  A is None for a prior-only lane.
 LANES = [
@@ -62,6 +62,16 @@ LANES = [
     # NOT A=8 B=2: that is the n_eff lottery recorded at the end of the gate's CALIBRATION
     # section.  Mirrors the CPU "A=0.75 B=3, GMM" row instead.
     ("GPU A=0.75 B=3, GMM",     _GMM, 0.75, 3.0, {"_needs_gpu": True}),
+    # portfolio and adaptive_cartesian could not run on a device at all until the host/device
+    # conversions in mcsamplerGPU.compute_hist and mcsampler.integrate.  Each mirrors its host
+    # twin: the portfolio rows the plain-portfolio lanes above, adaptive_cartesian its own
+    # --n-max, taken from the gate rather than repeated here.
+    ("GPU prior-only, portfolio",  _PORTFOLIO, None, 0.0, {"_needs_gpu": True}),
+    ("GPU A=0.75 B=3, portfolio",  _PORTFOLIO, 0.75, 3.0, {"_needs_gpu": True}),
+    ("GPU prior-only, adaptive_cartesian", _AC, None, 0.0,
+     dict(_needs_gpu=True, n_max=gate._AC_N_MAX)),
+    ("GPU A=8    B=2, adaptive_cartesian", _AC, 8.0, 2.0,
+     dict(_needs_gpu=True, n_max=gate._AC_N_MAX)),
 ]
 
 
@@ -138,7 +148,7 @@ def main():
         for seed in seeds:
             # `idx` from enumerate, NOT LANES.index(...): index is a first-match lookup, so two
             # identical lane rows would silently share a tag and overwrite each other's ILE
-            # output directory.  Correct for today's 17 distinct rows; wrong the moment one is
+            # output directory.  Correct for today's 25 distinct rows; wrong the moment one is
             # duplicated, which is exactly the kind of edit this table invites.
             tag = "cal_%d_%d" % (idx, seed)
             lnL, sigma, neff = gate._run_ile(event, tag, sampler, a_coeff=a, b_coeff=b,
