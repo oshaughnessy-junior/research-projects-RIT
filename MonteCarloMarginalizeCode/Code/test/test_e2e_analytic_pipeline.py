@@ -33,8 +33,17 @@ integral being measured.  A lane that passes because the geometry was changed un
 measuring something else.  If a lane will not converge, scope it or leave it out; do not add
 these.
 
+THE DEVICE.  Section 4 runs the prior-only and factor answers again with a GPU VISIBLE, and
+asserts the child reached it.  RIFT binds its array module at import from whether cupy imports,
+not from --gpu, so on a GPU node production is on the device path by default and the rest of
+this file -- which pins CUDA_VISIBLE_DEVICES="" -- said nothing about it.  Two samplers cannot
+run there at all; they are recorded as known-failing lanes rather than skipped, so the hole is
+visible.  What section 4 does NOT cover is the GPU signal likelihood: --zero-likelihood
+replaces likelihood_function outright, so the NoLoop path never runs.
+
 WHAT EACH ARM COSTS.  About 8-12 s of one core per ILE arm, plus ~15 s once for the
-distance-marginalization lookup table.  No network, no real event, no GPU.
+distance-marginalization lookup table.  No network, no real event.  The CPU lanes need no GPU;
+the device lanes skip without one, and a skip there is not a pass.
 """
 import json
 import os
@@ -142,19 +151,114 @@ def dmarg_table(event):
 
 
 # ---------------------------------------------------------------------------------------
+# the device
+
+# Printed by the driver's own preamble only AFTER `cupy.array(5)` succeeds, so it cannot appear
+# on a host.  That makes it the one cheap proof a "GPU lane" was not a CPU lane.
+_DEVICE_MARKER = "cupy memory [total, available]"
+
+# The production shape of a deliberate GPU invocation.  Note these are NOT what puts the run on
+# a device: xpy_default is bound at IMPORT from whether cupy imports, so a device that is merely
+# visible is already in use.  That is why the bare-flags lane below exists as well.
+_GPU_FLAGS = ("--vectorized", "--gpu", "--force-xpy")
+
+# Every verdict is ONE line beginning with a known word, and every message is flattened, because
+# cupy's ImportError is a multi-line banner: reading "the last line of the probe's output" turned
+# it into the skip reason "no usable GPU (If you installed CuPy via whee)".
+_GPU_PROBE = r"""
+import numpy as np
+def _flat(e):
+    return ("%s: %s" % (type(e).__name__, e)).replace("\n", " ")[:150]
+try:
+    import cupy
+except Exception as e:
+    print("VERDICT NOCUPY %s" % _flat(e)); raise SystemExit(0)
+bad = []
+for d in range(cupy.cuda.runtime.getDeviceCount()):
+    try:
+        with cupy.cuda.Device(d):
+            cupy.asnumpy(cupy.cos(cupy.asarray(np.zeros(2), dtype=float)))
+    except Exception as e:
+        bad.append("%d:%s" % (d, type(e).__name__)); continue
+    print("VERDICT SLOT %d" % d); raise SystemExit(0)
+print("VERDICT NOSLOT %s" % (",".join(bad) or "no devices at all"))
+"""
+
+
+def _no_gpu(reason):
+    """Skip, or FAIL when the environment promised a device.
+
+    .travis/test-integrate.sh applies this rule too (with RIFT_CI_REQUIRE_GPU=1 any skip is
+    fatal there), but a rule that lives only in the shell does not survive `pytest <this file>`
+    on the GPU runner -- which is what someone runs to reproduce a CI failure, and it would
+    report green with all 7 device lanes skipped.  RIFT_CI_REQUIRE_GPU is read from the ambient
+    environment deliberately: _child_env strips RIFT_* from ILE CHILDREN, a different question
+    from what this pytest process was promised."""
+    if os.environ.get("RIFT_CI_REQUIRE_GPU", "0") == "1":
+        # Reported as an ERROR rather than a FAILURE, because gpu_slot is a fixture and this
+        # fires during setup.  Red either way, which is the point; measured: 7 errors on a
+        # CPU host with RIFT_CI_REQUIRE_GPU=1.
+        pytest.fail("RIFT_CI_REQUIRE_GPU=1 promised a usable device and there is none: %s.  On "
+                    "this runner a skipped device lane is a failure, not a pass." % reason)
+    pytest.skip("%s  A skip is NOT a pass: pin CUDA_VISIBLE_DEVICES to a slot the installed "
+                "cupy supports and rerun." % reason)
+
+
+@pytest.fixture(scope="module")
+def gpu_slot():
+    """A CUDA slot this cupy can actually build a kernel for, as the child should see it.
+
+    TWO failures that look alike, and conflating them is how a device lane quietly never runs.
+    `import cupy` fails outright where there is no CUDA runtime (ldas-grid, CI runners).  It
+    SUCCEEDS on the CIT GPU head nodes while the visible device is one this cupy cannot compile
+    for: ldas-pcdev13 slots 0-2 and all of ldas-pcdev11 are Blackwell cc 12.0, and cupy 12.0.0
+    answers `nvrtc: error: invalid value for --gpu-architecture`.  So the probe RUNS a kernel
+    instead of trusting the import, and it probes at dispatch, because the slot map moves.
+
+    It probes in a SUBPROCESS so this pytest process never holds a CUDA context while the ILE
+    children run, and it re-indexes: the probe's index is into the CURRENTLY VISIBLE list, so
+    when the parent already has CUDA_VISIBLE_DEVICES set, what the child is given is that
+    list's d-th entry, not d.
+
+    A SKIP HERE IS NOT A PASS."""
+    proc = subprocess.run([sys.executable, "-c", _GPU_PROBE], env=_child_env(cuda=None),
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=600)
+    verdicts = [l for l in proc.stdout.decode().splitlines() if l.startswith("VERDICT ")]
+    line = verdicts[-1][len("VERDICT "):] if verdicts else (
+        "probe produced no verdict (rc=%d): %s" % (proc.returncode,
+                                                   proc.stdout.decode()[-300:]))
+    if not line.startswith("SLOT "):
+        _no_gpu("no usable GPU for these lanes -- %s." % line)
+    d = int(line.split()[1])
+    visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if visible:
+        return visible.split(",")[d].strip()
+    return str(d)
+
+
+# ---------------------------------------------------------------------------------------
 # running one ILE arm
 
-def _child_env(**extra):
+def _child_env(cuda="", **extra):
     # Every RIFT_* variable is stripped, not just the one that bit.  RIFT_HYPERPIPELINE_FORMAT
     # moves lnL/sigma to columns 0/1 and adds a header, under which the tail-column read below
     # returns a spin component (0.0) as sigma and the z-test passes VACUOUSLY.  Others
     # (RIFT_LOWLATENCY, RIFT_NO_GWSIGNAL, RIFT_GPU_*) change the code path.  A gate whose
     # answer depends on the invoking shell's environment is not a gate.
     env = {k: v for k, v in os.environ.items() if not k.startswith("RIFT_")}
-    # CUDA_VISIBLE_DEVICES="" is required, and is not this test's problem: on a host where
-    # cupy sees a GPU the scalar AV path raises "Unsupported dtype float128" (see the same
-    # note in test_psi_marginalization.py).
-    env["CUDA_VISIBLE_DEVICES"] = ""
+    # CUDA_VISIBLE_DEVICES is pinned so the answer does not depend on the invoking shell.  ""
+    # is the default and what every CPU lane uses.  The device lanes pass a real slot; see
+    # gpu_slot.  cuda=None leaves whatever the parent has, which only the device PROBE wants.
+    #
+    # The empty default used to carry "required, because on a host where cupy sees a GPU the
+    # scalar AV path raises Unsupported dtype float128".  That is true where it was written
+    # (test_psi_marginalization.py) and NOT true here, measured: this gate runs
+    # --zero-likelihood, so make_zero_likelihood_standin builds lnL with xpy.zeros -- float64
+    # on the device -- and the scalar likelihood that would have built a RiftFloat never runs.
+    # Verified on ldas-pcdev2 (A100) 2026-09-17: --sampler-method AV with the device visible
+    # completes and lands 1.5 sigma from the closed form.  Do not re-copy that sentence here.
+    if cuda is not None:
+        env["CUDA_VISIBLE_DEVICES"] = cuda
     env["OMP_NUM_THREADS"] = "1"
     env["MPLBACKEND"] = "Agg"
     # THIS tree, not whatever RIFT is installed: the driver is run by absolute path out of the
@@ -193,12 +297,15 @@ def _read_result(d, tag):
     return lnL, sigma, neff
 
 
-def _run_ile(event, tag, sampler_args, a_coeff=None, b_coeff=0.0, incl_is_cosine=False,
-             n_max=20000, n_eff=250, seed=1000, extra=()):
-    """One ILE job as a subprocess.  Returns (lnL, sigma_lnL, n_eff)."""
+def _invoke_ile(event, tag, sampler_args, *, a_coeff=None, b_coeff=0.0, incl_is_cosine=False,
+                n_max=20000, n_eff=250, seed=1000, extra=(), cuda=""):
+    """Run one ILE arm.  Returns (dir, returncode, stdout text, whether the result row exists).
+
+    Split out of _run_ile because the recorded known-failing device lanes need the CHILD'S LOG,
+    not a pytest failure: what they pin is the shape of a failure that is real today."""
     d = event["dir"] / tag
     d.mkdir(exist_ok=True)
-    env = _child_env()
+    env = _child_env(cuda=cuda)
     cmd = [sys.executable, ILE,
            "--cache-file", str(event["cache"]), "--channel-name", "H1=FAKE-STRAIN",
            "--psd-file", "H1=%s" % event["psd"],
@@ -222,10 +329,31 @@ def _run_ile(event, tag, sampler_args, a_coeff=None, b_coeff=0.0, incl_is_cosine
     # The driver CATCHES an exception from analyze_event, prints "FAILED ANALYSIS", skips the
     # point and EXITS 0 -- so in a DAG a crashed configuration is silent.  Absence of the
     # output row, not the exit code, is what says the run failed.
-    row = d / ("%s_0_.dat" % tag)
-    if proc.returncode != 0 or not row.exists():
+    return d, proc.returncode, proc.stdout.decode(), (d / ("%s_0_.dat" % tag)).exists()
+
+
+def _run_ile(event, tag, sampler_args, *, expect_device=False, **kw):
+    """One ILE job as a subprocess.  Returns (lnL, sigma_lnL, n_eff).
+
+    KEYWORD-ONLY past sampler_args, deliberately: this function's fourth positional used to be
+    a_coeff, so `_run_ile(event, tag, args, 8.0)` would now quietly mean expect_device=8.0 with
+    a_coeff=None -- a prior-only run asserted to be on a device.  Every caller passes keywords
+    today; the `*` keeps that true.
+
+    expect_device asserts the child really reached a GPU.  Without it a "GPU lane" that
+    silently fell back to the host is indistinguishable from one that ran, which is the whole
+    failure mode these lanes exist to remove: the marker is printed only after
+    `cupy.array(5)` succeeds in the driver's own preamble, so it cannot be true on a host."""
+    d, rc, out, have_row = _invoke_ile(event, tag, sampler_args, **kw)
+    if rc != 0 or not have_row:
         pytest.fail("ILE (%s) exited %d and wrote no result row; tail:\n%s"
-                    % (tag, proc.returncode, proc.stdout.decode()[-3000:]))
+                    % (tag, rc, out[-3000:]))
+    if expect_device:
+        assert _DEVICE_MARKER in out, (
+            "%s was supposed to run on a device, but the child never printed %r, so cupy did "
+            "not initialise there and this lane measured the HOST path under a GPU name.  "
+            "CUDA_VISIBLE_DEVICES reached the child as %r."
+            % (tag, _DEVICE_MARKER, kw.get("cuda")))
     return _read_result(d, tag)
 
 
@@ -382,6 +510,122 @@ def test_adaptive_cartesian(event):
 
 
 # ---------------------------------------------------------------------------------------
+# 4. the same answers, on a real GPU
+#
+# WHY THIS IS NOT THE SAME TEST TWICE.  Every lane above pins CUDA_VISIBLE_DEVICES="", so the
+# whole file used to say nothing about the device path -- and RIFT picks that path up from
+# whether cupy IMPORTS, not from --gpu, so on a GPU node production takes it by default.  These
+# lanes run with a device visible and assert the child reached it.
+#
+# WHAT THEY COVER, precisely: the extrinsic sampler on device, the --zero-likelihood stand-in
+# building its base array with xpy_default=cupy, and the supplementary factor evaluating on
+# device.  They do NOT cover the GPU SIGNAL likelihood: --zero-likelihood replaces
+# likelihood_function outright, so the NoLoop path never runs.  Measured, not assumed: AV with
+# and without _GPU_FLAGS returns bit-identical lnZ, because those flags only choose a likelihood
+# that this configuration does not evaluate.
+
+_GPU_SAMPLERS = ["AV", "GMM"]
+
+# Coefficients per device lane, and they are NOT the same pair for both samplers on purpose.
+# Each mirrors the CPU lane that sampler already runs, so a device row is comparable with a host
+# row in the table below, and neither lands on a configuration this file records as unstable.
+#
+# GMM is A=0.75 B=3, not A=8 B=2.  The note at the end of the CALIBRATION section records that
+# GMM at A=8 WITH the inclination term is an n_eff LOTTERY: over eight seeds, two collapsed to
+# n_eff 73.5 and 14.5 with sigma 0.028 and 0.073, and 0.073 is over MAX_SIGMA.  The evidence was
+# right on every seed; the error bar was not.  That is why no CPU lane runs it, and a device lane
+# that ran it would be a flake with a ~1-in-4 seed.  Eight clean GPU seeds do not refute a
+# lottery -- the CPU sweep that FOUND it was also eight seeds.  Both lanes keep a B term, so
+# mis-routing inclination is still detectable; that is what the B term is for.
+_GPU_LANE_COEFFS = {"AV": (8.0, 2.0), "GMM": (0.75, 3.0)}
+
+
+@pytest.mark.parametrize("sampler", _GPU_SAMPLERS)
+def test_gpu_zero_likelihood_alone_gives_ln_Z_zero(event, gpu_slot, sampler):
+    """The prior-only answer, on device.  ln Z = 0 exactly, for a normalized extrinsic prior."""
+    tag = "gpu_zero_%s" % sampler
+    lnL, sigma, neff = _run_ile(event, tag, SAMPLER_ARGS[sampler] + list(_GPU_FLAGS),
+                                a_coeff=None, cuda=gpu_slot, expect_device=True)
+    _assert_lnZ(tag, lnL, sigma, neff, 0.0)
+
+
+@pytest.mark.parametrize("sampler", _GPU_SAMPLERS)
+def test_gpu_analytic_factor_marginal_is_exact(event, gpu_slot, sampler):
+    """The factor's closed-form marginal, on device: ln Z = ln I0(A) + ln(sinh(B)/B).
+
+    See _GPU_LANE_COEFFS for why the two samplers get different coefficients."""
+    a, b = _GPU_LANE_COEFFS[sampler]
+    tag = "gpu_factor_%s" % sampler
+    lnL, sigma, neff = _run_ile(event, tag, SAMPLER_ARGS[sampler] + list(_GPU_FLAGS),
+                                a_coeff=a, b_coeff=b, cuda=gpu_slot, expect_device=True)
+    _assert_lnZ(tag, lnL, sigma, neff, _exact(a, b))
+
+
+def test_the_gpu_flags_do_not_decide_the_backend(event, gpu_slot):
+    """A VISIBLE DEVICE IS ALREADY A GPU RUN; --gpu does not opt in and its absence does not opt
+    out.  xpy_default is bound at import from whether cupy imports, so someone who runs this
+    driver on a GPU node without --gpu is on the device path anyway.
+
+    Pinned because it is the assumption the lanes above rest on, and because it is the opposite
+    of what the flag names suggest.  If this ever fails, the backend became flag-driven, which
+    is a fix -- update these lanes rather than deleting the test."""
+    kw = dict(a_coeff=8.0, b_coeff=2.0, cuda=gpu_slot, expect_device=True)
+    bare = _run_ile(event, "gpu_backend_bare", SAMPLER_ARGS["AV"], **kw)
+    flagged = _run_ile(event, "gpu_backend_flagged",
+                       SAMPLER_ARGS["AV"] + list(_GPU_FLAGS), **kw)
+    assert bare == flagged, (
+        "--vectorized --gpu --force-xpy changed the answer (%r vs %r).  Under --zero-likelihood "
+        "they select a signal likelihood that never runs, so they were expected to be inert; "
+        "something else now depends on them." % (bare, flagged))
+
+
+# Device lanes that DO NOT WORK today, recorded with the shape of the failure so the hole is
+# visible instead of hidden behind CUDA_VISIBLE_DEVICES="".  Both are host/device mixes, both
+# reproduce with NO supplementary factor, and neither is caused by anything in this file:
+#
+#   portfolio (AV + AC)   RIFT/likelihood/vectorized_general_tools.py, histogram():
+#                         `xpy.maximum(samples, blank_array)` with blank_array built by
+#                         xpy.zeros on device and `samples` arriving as a numpy array from
+#                         mcsamplerGPU.compute_hist.
+#   adaptive_cartesian    RIFT/integrators/mcsampler.py, `fval*joint_p_prior/joint_p_s`: the
+#                         integrand is on device, the two prior arrays are numpy.
+#
+# Both surface as `TypeError: Unsupported type <class 'numpy.ndarray'>` from a cupy ufunc, and
+# both are invisible in production because the driver catches the exception, prints FAILED
+# ANALYSIS and EXITS 0.  Measured on ldas-pcdev2 (A100, cc 8.0), cupy 12.0.0, 2026-09-17.
+_GPU_KNOWN_FAILING = {
+    "portfolio": (_PORTFOLIO, {}, "vectorized_general_tools.py"),
+    "adaptive_cartesian": (["--sampler-method", "adaptive_cartesian"], dict(n_max=60000),
+                           "integrators/mcsampler.py"),
+}
+
+
+@pytest.mark.parametrize("sampler", sorted(_GPU_KNOWN_FAILING))
+def test_the_gpu_samplers_that_do_not_work_still_fail_the_known_way(event, gpu_slot, sampler):
+    """A RECORDED DEFECT, not an excused one.
+
+    Two samplers cannot run on a device at all.  Skipping them would leave the gate reporting
+    green over a broken configuration, which is what pinning CUDA_VISIBLE_DEVICES="" did for
+    the whole file.  So the failure is pinned by its SITE and its EXCEPTION, and this test goes
+    red in both directions: if someone fixes one, promote it into _GPU_SAMPLERS and delete the
+    entry; if the failure moves somewhere else, that is a different defect and wants reading."""
+    args, kw, site = _GPU_KNOWN_FAILING[sampler]
+    tag = "gpu_known_fail_%s" % sampler
+    _d, _rc, out, have_row = _invoke_ile(event, tag, args + list(_GPU_FLAGS),
+                                         a_coeff=8.0, b_coeff=2.0, cuda=gpu_slot, **kw)
+    assert _DEVICE_MARKER in out, (
+        "%s never reached a device, so this says nothing about the GPU path" % tag)
+    assert not have_row, (
+        "%s SUCCEEDED on a device.  If that is a fix, move %r into _GPU_SAMPLERS, delete its "
+        "_GPU_KNOWN_FAILING entry and the paragraph above it, and re-measure the calibration "
+        "table for the new lane." % (tag, sampler))
+    assert "Unsupported type <class 'numpy.ndarray'>" in out and site in out, (
+        "%s still fails on a device, but not in the recorded way: expected a cupy ufunc "
+        "TypeError from %s.  A different failure is a different defect; read the log.\n%s"
+        % (tag, site, out[-2500:]))
+
+
+# ---------------------------------------------------------------------------------------
 # CALIBRATION
 #
 # RE-DERIVE THIS TABLE, do not trust it:
@@ -419,13 +663,42 @@ def test_adaptive_cartesian(event):
 #   distance-marginalized                        2.15      0.0326         336
 #   adaptive_cartesian, --n-max 60000            1.35      0.0305         250
 #
-# Z_TOLERANCE = 5     is 2.3x the worst |z| seen (2.15, distance-marginalized).  That lane sets
-#                     the constant, so it was re-measured at eight seeds after the stand-in
-#                     started passing xpy= to factors that accept it: max |z| 2.15, max sigma
-#                     0.0326, least n_eff 336, unchanged, and seed 1000 bit-identical.
-# MAX_SIGMA   = 0.06  is 1.7x the worst sigma seen (0.0353).  5 * MAX_SIGMA is a 0.30-nat band.
-# MIN_NEFF    = 30    is 5.4x below the worst n_eff seen (163).  See its comment for why it is
-#                     this loose.
+# THE DEVICE LANES, measured separately because they need a GPU: eight seeds (1000-1007) on
+# ldas-pcdev2, cupy 12.0.0, with
+#
+#     python make_e2e_calibration.py --seeds 8 --lane "GPU " --gpu-slot 0
+#
+# run on the working tree that became THIS commit, on top of rift_O4d 6772c2b7e.  The generator
+# lanes and --gpu-slot arrive in the same commit as these numbers, so there is no earlier commit
+# at which that command exists -- do not "correct" this to an ancestor SHA.
+#
+# "slot 0" is CUDA's numbering, which is not nvidia-smi's: on ldas-pcdev2 today `nvidia-smi`
+# calls the A100 index 2 and an RTX 3080 index 0, while CUDA's default FASTEST_FIRST ordering
+# puts the A100 at 0.  Check with cupy's own getDeviceProperties, not with nvidia-smi.
+#
+# The GMM row is A=0.75 B=3 and not A=8 B=2 deliberately; see _GPU_LANE_COEFFS.  Each device row
+# sits on top of its host twin, which is the point: the device path is not a different answer.
+#
+#   lane                                      max |z|   max sigma   min n_eff
+#   GPU prior-only, AV                           1.50      0.0134        1343
+#   GPU prior-only, GMM                          0.93      0.0134        1352
+#   GPU A=8    B=2, AV                           2.30      0.0325         257
+#   GPU A=0.75 B=3, GMM                          1.49      0.0235         389
+#
+# Host twins for those four, from the table above: 2.03/0.0134/1349, 1.88/0.0134/1335,
+# 1.06/0.0332/247, 1.34/0.0235/381.  Same sigma to three digits on three of the four; the |z|
+# values differ because they are draws, not constants.
+#
+# Z_TOLERANCE = 5     is 2.2x the worst |z| seen, which is now 2.30 on the GPU A=8 B=2 AV lane;
+#                     the worst host lane is 2.15 (distance-marginalized), re-measured at eight
+#                     seeds after the stand-in started passing xpy= to factors that accept it
+#                     (max |z| 2.15, max sigma 0.0326, least n_eff 336, unchanged, seed 1000
+#                     bit-identical).  Adding the device lanes moved the margin from 2.3x to
+#                     2.2x and nothing else.
+# MAX_SIGMA   = 0.06  is 1.7x the worst sigma seen (0.0353, host).  The worst device sigma is
+#                     0.0325.  5 * MAX_SIGMA is a 0.30-nat band.
+# MIN_NEFF    = 30    is 5.4x below the worst n_eff seen (163, host; 257 on device).  See its
+#                     comment for why it is this loose.
 #
 # WHAT THE GATE HAS TO SEPARATE A CORRECT RUN FROM.  Each row was run on this fixture, not
 # argued.  The smallest is 6.3 sigma, against a tolerance of 5 and a worst observed draw of 2.15:
