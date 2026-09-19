@@ -3726,20 +3726,26 @@ elif opts.pseudo_uniform_magnitude_prior and  'chiz_plus' in samples.keys() and 
     s2z  = samples['chiz_plus'] - samples['chiz_minus']
     val1 = np.array(s1z**2+samples["s1y"]**2 + samples["s1x"]**2,dtype=internal_dtype); chi1 = np.sqrt(val1)
     val2 = np.array(s2z**2+samples["s2y"]**2 + samples["s2x"]**2,dtype=internal_dtype); chi2= np.sqrt(val2)
-    indx_ok = np.logical_and(chi1<=chi_max , chi2<=chi_small_max)
-    weights[ np.logical_not(indx_ok)] = 0  # Zero out failing samples. Has effect of fixing prior range!
-    weights[indx_ok] *= 9.*(chi_max**2 * chi_small_max**2)/(chi1*chi1*chi2*chi2)[indx_ok]
+    indx_in_range = np.logical_and(chi1<=chi_max , chi2<=chi_small_max)
+    weights[ np.logical_not(indx_in_range)] = 0  # Zero out failing samples. Has effect of fixing prior range!
+    weights[indx_in_range] *= 9.*(chi_max**2 * chi_small_max**2)/(chi1*chi1*chi2*chi2)[indx_in_range]
+# DEAD BRANCH, KEPT DEAD ON PURPOSE.  This guard repeats the one above, so this body never
+# runs.  It is the alternate-sampling twin -- it divides prior_weight out, the branch above
+# does not -- so the `not` looks like a copy-paste slip.  Do NOT drop it: the body reads
+# samples["s1x"]/["s1y"], which an aligned-spin chiz_plus coordinate set does not have, so
+# dropping it crashes a CLI combination that completes today.  Reviving this needs the body
+# fixed and a physics decision, not a guard edit.  Measured in junior PR #357.
 elif opts.pseudo_uniform_magnitude_prior and  'chiz_plus' in samples.keys() and not opts.pseudo_uniform_magnitude_prior_alternate_sampling:
     s1z  = samples['chiz_plus'] + samples['chiz_minus']
     s2z  = samples['chiz_plus'] - samples['chiz_minus']
     val1 = np.array(s1z**2+samples["s1y"]**2 + samples["s1x"]**2,dtype=internal_dtype); chi1 = np.sqrt(val1)
     val2 = np.array(s2z**2+samples["s2y"]**2 + samples["s2x"]**2,dtype=internal_dtype); chi2= np.sqrt(val2)
-    indx_ok = np.logical_and(chi1<=chi_max , chi2<=chi_small_max)
-    weights[ np.logical_not(indx_ok)] = 0  # Zero out failing samples. Has effect of fixing prior range!
+    indx_in_range = np.logical_and(chi1<=chi_max , chi2<=chi_small_max)
+    weights[ np.logical_not(indx_in_range)] = 0  # Zero out failing samples. Has effect of fixing prior range!
     prior_weight = np.prod([prior_map[x](samples[x]) for x in ['s1x','s1y', 's2x', 's2y','chiz_plus','chiz_minus'] ],axis=0)
-    indx_ok = np.logical_and(indx_ok, divisible_sampling_density(prior_weight, len(weights)))
-    weights[ np.logical_not(indx_ok)] = 0
-    weights[indx_ok] *= 9.*(chi_max**2  * chi_small_max**2)/(chi1*chi1*chi2*chi2)[indx_ok]/prior_weight[indx_ok]  # undo chizplus, chizminus prior
+    indx_in_range = np.logical_and(indx_in_range, divisible_sampling_density(prior_weight, len(weights)))
+    weights[ np.logical_not(indx_in_range)] = 0
+    weights[indx_in_range] *= 9.*(chi_max**2  * chi_small_max**2)/(chi1*chi1*chi2*chi2)[indx_in_range]/prior_weight[indx_in_range]  # undo chizplus, chizminus prior
     
 
 # If we are using alignedspin-zprior AND chiz+, chiz-, then we need to reweight .. that prior cannot be evaluated internally
@@ -3749,10 +3755,10 @@ if opts.aligned_prior =="alignedspin-zprior" and 'chiz_plus' in samples.keys()  
     prior_weight = np.prod([prior_map[x](samples[x]) for x in ['chiz_plus','chiz_minus'] ],axis=0)
     s1z  = samples['chiz_plus'] + samples['chiz_minus']
     s2z  =samples['chiz_plus'] - samples['chiz_minus']
-    indx_ok = np.logical_and(np.abs(s1z)<=chi_max , np.abs(s2z)<=chi_max)
-    indx_ok = np.logical_and(indx_ok, divisible_sampling_density(prior_weight, len(weights)))
-    weights[ np.logical_not(indx_ok)] = 0  # Zero out failing samples. Has effect of fixing prior range!
-    weights[indx_ok] *= s_component_zprior( s1z[indx_ok])*s_component_zprior(s2z[indx_ok])/(prior_weight[indx_ok])  # correct for uniform
+    indx_in_range = np.logical_and(np.abs(s1z)<=chi_max , np.abs(s2z)<=chi_max)
+    indx_in_range = np.logical_and(indx_in_range, divisible_sampling_density(prior_weight, len(weights)))
+    weights[ np.logical_not(indx_in_range)] = 0  # Zero out failing samples. Has effect of fixing prior range!
+    weights[indx_in_range] *= s_component_zprior( s1z[indx_in_range])*s_component_zprior(s2z[indx_in_range])/(prior_weight[indx_in_range])  # correct for uniform
 
 if opts.pseudo_gaussian_mass_prior:
     # mass normalization (assuming mc, eta limits are bounds - as is invariably the case)
@@ -3796,7 +3802,7 @@ if opts.pseudo_gaussian_mass_prior:
 
 # Integral result v2: using modified prior. 
 # Note also downselects NOT applied: no range cuts, unless applied as part of aligned_prior, etc.  
-#   - use for Bayes factors with GREAT CARE for this reason; should correct for with indx_ok
+#   - use for Bayes factors with GREAT CARE for this reason; should correct for with the indx_in_range cuts above
 # Same absolute-scale restoration as for the integral above: lnLmax here is a maximum of the
 # CENTRED integrand, and this file is documented to agree with integral_result.dat -- so leaving the
 # plugin's constant out of one and not the other turns a check into a spurious disagreement.
@@ -3989,9 +3995,9 @@ if not no_plots:
         fig_base = overlay_or_warn(dat_out_low_level_coord_names, range_here, low_level_coord_names, "input grid", weights=np.ones(len(X))/len(X), plot_datapoints=True,plot_density=False,plot_contours=False,quantiles=None,fig=fig_base, data_kwargs={'color':my_cmap_values},hist_kwargs={'color':'g', 'linestyle':'dashed'})
 
         # TRUNCATED data set used here
-        indx_ok = Y > Y.max() - scipy.stats.chi2.isf(0.1,len(low_level_coord_names))/2  # approximate threshold for significant points,from inverse cdf 90%
-        n_ok = np.sum(indx_ok)
-        fig_base  = overlay_or_warn(dat_out_low_level_coord_names[indx_ok], range_here, low_level_coord_names, "significant grid points", weights=np.ones(n_ok)*1.0/n_ok, plot_datapoints=True,plot_density=False,plot_contours=False,quantiles=None,fig=fig_base, data_kwargs={'color':'b'},hist_kwargs={'color':'b', 'linestyle':'dashed'})
+        indx_significant = Y > Y.max() - scipy.stats.chi2.isf(0.1,len(low_level_coord_names))/2  # approximate threshold for significant points,from inverse cdf 90%
+        n_ok = np.sum(indx_significant)
+        fig_base  = overlay_or_warn(dat_out_low_level_coord_names[indx_significant], range_here, low_level_coord_names, "significant grid points", weights=np.ones(n_ok)*1.0/n_ok, plot_datapoints=True,plot_density=False,plot_contours=False,quantiles=None,fig=fig_base, data_kwargs={'color':'b'},hist_kwargs={'color':'b', 'linestyle':'dashed'})
 
     #except:
     else:
@@ -4374,9 +4380,9 @@ try:
  # BEFORE truncation, note, to highlight region explored. ONLY for this plot
  fig_base = corner.corner(X_orig, weights=np.ones(len(X_orig))/len(X_orig),plot_datapoints=True,plot_density=False,plot_contours=False,quantiles=None,fig=fig_base, data_kwargs={'color':'g'},hist_kwargs={'color':'g', 'linestyle':'dashed'},range=range_here)
  # A subset of the truncated data set
- indx_ok = Y > Y.max() - scipy.stats.chi2.isf(0.1,len(low_level_coord_names))/2  # approximate threshold for significant points,from inverse cdf 90%
- n_ok = np.sum(indx_ok)
- fig_base  = corner.corner(X[indx_ok],weights=np.ones(n_ok)*1.0/n_ok, plot_datapoints=True,plot_density=False,plot_contours=False,quantiles=None,fig=fig_base, data_kwargs={'color':'r'},hist_kwargs={'color':'b', 'linestyle':'dashed'},range=range_here)
+ indx_significant = Y > Y.max() - scipy.stats.chi2.isf(0.1,len(low_level_coord_names))/2  # approximate threshold for significant points,from inverse cdf 90%
+ n_ok = np.sum(indx_significant)
+ fig_base  = corner.corner(X[indx_significant],weights=np.ones(n_ok)*1.0/n_ok, plot_datapoints=True,plot_density=False,plot_contours=False,quantiles=None,fig=fig_base, data_kwargs={'color':'r'},hist_kwargs={'color':'b', 'linestyle':'dashed'},range=range_here)
 
 
  plt.legend(handles=line_handles, bbox_to_anchor=corner_legend_location, prop=corner_legend_prop,loc=4)
@@ -4475,10 +4481,10 @@ for indx in np.arange(len(extra_plot_coord_names)):
     print(" Rendering past samples for ",  extra_plot_coord_names[indx], " based on ", len(dat_points_here))
     fig_base = overlay_or_warn(dat_points_here, range_here, coord_names_here, "input grid", weights=np.ones(len(dat_points_here))*1.0/len(dat_points_here), plot_datapoints=True,plot_density=False,plot_contours=False,quantiles=None,fig=fig_base, data_kwargs={'color':'g'},hist_kwargs={'color':'g', 'linestyle':'dashed'})
     # Render points available. Note we use the ORIGINAL data set, and truncate it
-    indx_ok = Y_orig > Y_orig.max() - scipy.stats.chi2.isf(0.1,len(low_level_coord_names))/2  # approximate threshold for significant points,from inverse cdf 90%
-    n_ok = np.sum(indx_ok)
+    indx_significant = Y_orig > Y_orig.max() - scipy.stats.chi2.isf(0.1,len(low_level_coord_names))/2  # approximate threshold for significant points,from inverse cdf 90%
+    n_ok = np.sum(indx_significant)
     print(" Adding points for figure ", n_ok, extra_plot_coord_names[indx], " drawn from original  ")
-    fig_base  = overlay_or_warn(dat_points_here[indx_ok], range_here, coord_names_here, "significant grid points", weights=np.ones(n_ok)*1.0/n_ok, plot_datapoints=True,plot_density=False,plot_contours=False,quantiles=None,fig=fig_base, data_kwargs={'color':'b'},hist_kwargs={'color':'b', 'linestyle':'dashed'})
+    fig_base  = overlay_or_warn(dat_points_here[indx_significant], range_here, coord_names_here, "significant grid points", weights=np.ones(n_ok)*1.0/n_ok, plot_datapoints=True,plot_density=False,plot_contours=False,quantiles=None,fig=fig_base, data_kwargs={'color':'b'},hist_kwargs={'color':'b', 'linestyle':'dashed'})
 
 
     plt.legend(handles=line_handles, bbox_to_anchor=corner_legend_location, prop=corner_legend_prop,loc=4)

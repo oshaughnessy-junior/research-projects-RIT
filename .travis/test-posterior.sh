@@ -1,5 +1,11 @@
 #!/bin/bash
 
+# Static guard on the posterior drivers, ahead of the end-to-end arms below: `indx_ok` keeps
+# one meaning after the master post-integration mask is applied.  Pure ast, no RIFT import,
+# ~2 s.  The defect is invisible to the runs below, because the rebindings it forbids were
+# never read as the master mask -- it is a trap for the next edit, not a live bug.
+python -m pytest -q MonteCarloMarginalizeCode/Code/test/test_cip_indx_ok_scope.py
+
 python .travis/make_fake_composite.py
 # Test default sampler (constant fit)
 util_ConstructIntrinsicPosterior_GenericCoordinates.py  --fname fake.composite  --parameter mtot --parameter q --parameter s1z --parameter s2z  --use-precessing --no-plots
