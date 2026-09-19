@@ -25,6 +25,8 @@ Rapid inference via Iterative FiTting: this algorithm provides a framework for e
    injections
    plotting
    demos
+   populations
+   eos-posterior
    hyperpipe
    troubleshooting
    api_samples_utils
@@ -37,8 +39,6 @@ Rapid inference via Iterative FiTting: this algorithm provides a framework for e
    :caption: RIFT API Reference:
 
    api_reference/index
-
-
 
 
 
