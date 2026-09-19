@@ -284,7 +284,9 @@ def test_gpu_offset_is_per_row_too():
     is a real, separate, already-known discrepancy and it is not this test's subject; a
     cross-backend equality assertion here would be asserting #204 is absent.
     """
-    cupy = gpu_slot_probe.cupy_or_skip()
+    # require_rift_backend: this goes through the likelihood, so RIFT's own import-time
+    # cupy probe has to have taken the device too.  See gpu_slot_probe.cupy_or_skip.
+    cupy = gpu_slot_probe.cupy_or_skip(require_rift_backend=True)
     from RIFT.likelihood import optimized_gpu_tools
     import copy
 
