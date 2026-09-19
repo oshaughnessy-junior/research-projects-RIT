@@ -235,6 +235,30 @@ if [ "$_E2E_BAD" -ne 0 ]; then
     exit 1
 fi
 
+# mcsamplerNFlow as a mcsamplerPortfolio MEMBER.  draw_simplified() returned
+# (rv, p_s, p_prior) while MCSamplerGeneric and every other implementation return
+# (p_s, p_prior, rv), and mcsamplerPortfolio.draw() unpacks the latter -- so an
+# NFlow member had the SAMPLES assigned to joint_p_s.  --sampler-portfolio NFlow is
+# offered by both util_ConstructIntrinsicPosterior_GenericCoordinates and
+# util_ConstructEOSPosterior, so the broken configuration is reachable from
+# production CLI.  It is NOT reliably loud: measured on a [AV,NFlow] portfolio over a
+# unit Gaussian, d=2 raises a broadcast ValueError but d=1 COMPLETES, 3.07 nats low.
+# The same file pins sampling_density(), which the portfolio needs to build its
+# balance-heuristic q_mix.
+#
+# Runs in CI although test_NF_reuse.py is rostered OPTDEP: the paths pinned here are
+# the untrained uniform branch plus a strict in-file flow stand-in, both pure numpy,
+# and the file stubs torch/nflows at import when they are absent (and uses the real
+# packages when present).
+_NFCONTRACT_TESTS=MonteCarloMarginalizeCode/Code/test/integrators/test_NFlow_portfolio_contract.py
+_NFCONTRACT_EXPECTED=4
+_NFCONTRACT_FOUND=$(python -m pytest -q --collect-only "$_NFCONTRACT_TESTS" 2>/dev/null | grep -c '::' || true)
+if [ "$_NFCONTRACT_FOUND" -ne "$_NFCONTRACT_EXPECTED" ]; then
+    echo "NFlow portfolio-contract gate: collected $_NFCONTRACT_FOUND tests, expected $_NFCONTRACT_EXPECTED" >&2
+    exit 1
+fi
+python -m pytest -q "$_NFCONTRACT_TESTS"
+
 # Supplementary-likelihood plugin hook: the NAL reader/evaluator (pure numpy, no data) and the
 # static guard on the drivers' prepare-hook wiring, which is what makes the plugin receive the
 # SAMPLING basis at all. Both are seconds-long and protect a silent-wrong-answer path.
