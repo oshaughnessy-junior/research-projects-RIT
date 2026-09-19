@@ -171,14 +171,18 @@ _ZLSTANDIN_OUT=$(python -m pytest -q -rs "$_ZLSTANDIN_TESTS" 2>&1 | tee >(cat >&
 # and a device computes, so there is nothing left for a skip to legitimately mean.  Measured on
 # ldas-pcdev2 CUDA slot 0 (A100): 0 skips.
 if [[ "${RIFT_CI_REQUIRE_GPU:-0}" == "1" ]]; then
-    _ZLSTANDIN_BAD=$(echo "$_ZLSTANDIN_OUT" | grep -cE '^SKIPPED' || true)
+    _ZLSTANDIN_BAD_LINES=$(echo "$_ZLSTANDIN_OUT" | grep -E '^SKIPPED' || true)
 else
-    _ZLSTANDIN_BAD=$(echo "$_ZLSTANDIN_OUT" | grep -E '^SKIPPED' | grep -vciE 'cupy|gpu|cuda' || true)
+    _ZLSTANDIN_BAD_LINES=$(echo "$_ZLSTANDIN_OUT" | grep -E '^SKIPPED' | grep -viE 'cupy|gpu|cuda' || true)
 fi
-_ZLSTANDIN_BAD=${_ZLSTANDIN_BAD:-0}
+# ONE list decides the count AND the listing.  They used to be two greps, so on the
+# no-flag path the count was reason-filtered and the listing was not: the gate said
+# "1 unacceptable" and printed two lines, the first of them an ACCEPTABLE skip.
+if [ -z "$_ZLSTANDIN_BAD_LINES" ]; then _ZLSTANDIN_BAD=0; else _ZLSTANDIN_BAD=$(printf '%s
+' "$_ZLSTANDIN_BAD_LINES" | wc -l); fi
 if [ "$_ZLSTANDIN_BAD" -ne 0 ]; then
-    echo "zero-likelihood stand-in gate: $_ZLSTANDIN_BAD unacceptable SKIPPED line(s) -- pytest -rs groups equal reasons, so this is not a test count (RIFT_CI_REQUIRE_GPU=${RIFT_CI_REQUIRE_GPU:-0}; with it set, ANY skip is unacceptable):" >&2
-    echo "$_ZLSTANDIN_OUT" | grep -E '^SKIPPED' >&2
+    echo "zero-likelihood stand-in gate: $_ZLSTANDIN_BAD unacceptable SKIPPED line(s) -- pytest -rs groups by (file:line, reason), so ONE line can cover N tests and this is not a test count (RIFT_CI_REQUIRE_GPU=${RIFT_CI_REQUIRE_GPU:-0}; with it set, ANY skip is unacceptable):" >&2
+    printf '%s\n' "$_ZLSTANDIN_BAD_LINES" >&2
     exit 1
 fi
 
@@ -224,14 +228,18 @@ _E2E_OUT=$(python -m pytest -q -rs "$_E2E_TESTS" 2>&1 | tee >(cat >&2)) \
 # and a device computes, so there is nothing left for a skip to legitimately mean.  Measured on
 # ldas-pcdev2 CUDA slot 0 (A100): 0 skips.
 if [[ "${RIFT_CI_REQUIRE_GPU:-0}" == "1" ]]; then
-    _E2E_BAD=$(echo "$_E2E_OUT" | grep -cE '^SKIPPED' || true)
+    _E2E_BAD_LINES=$(echo "$_E2E_OUT" | grep -E '^SKIPPED' || true)
 else
-    _E2E_BAD=$(echo "$_E2E_OUT" | grep -E '^SKIPPED' | grep -vciE 'cupy|gpu|cuda' || true)
+    _E2E_BAD_LINES=$(echo "$_E2E_OUT" | grep -E '^SKIPPED' | grep -viE 'cupy|gpu|cuda' || true)
 fi
-_E2E_BAD=${_E2E_BAD:-0}
+# ONE list decides the count AND the listing.  They used to be two greps, so on the
+# no-flag path the count was reason-filtered and the listing was not: the gate said
+# "1 unacceptable" and printed two lines, the first of them an ACCEPTABLE skip.
+if [ -z "$_E2E_BAD_LINES" ]; then _E2E_BAD=0; else _E2E_BAD=$(printf '%s
+' "$_E2E_BAD_LINES" | wc -l); fi
 if [ "$_E2E_BAD" -ne 0 ]; then
-    echo "e2e analytic gate: $_E2E_BAD unacceptable SKIPPED line(s) -- pytest -rs groups equal reasons, so this is not a test count (RIFT_CI_REQUIRE_GPU=${RIFT_CI_REQUIRE_GPU:-0}; with it set, ANY skip is unacceptable):" >&2
-    echo "$_E2E_OUT" | grep -E '^SKIPPED' >&2
+    echo "e2e analytic gate: $_E2E_BAD unacceptable SKIPPED line(s) -- pytest -rs groups by (file:line, reason), so ONE line can cover N tests and this is not a test count (RIFT_CI_REQUIRE_GPU=${RIFT_CI_REQUIRE_GPU:-0}; with it set, ANY skip is unacceptable):" >&2
+    printf '%s\n' "$_E2E_BAD_LINES" >&2
     exit 1
 fi
 
@@ -282,11 +290,25 @@ fi
 # whose REASON names cupy/GPU, and fail on any other skip whatever the total.
 _TMARG_OUT=$(python -m pytest -q -rs "${_TMARG_TESTS[@]}" 2>&1) || { echo "$_TMARG_OUT"; exit 1; }
 echo "$_TMARG_OUT" | tail -20
-_TMARG_BAD=$(echo "$_TMARG_OUT" | grep -E '^SKIPPED' | grep -vciE 'cupy|gpu|cuda' || true)
-_TMARG_BAD=${_TMARG_BAD:-0}
+# On a runner that PROMISES a device, any skip is bad -- the same branch the stand-in and e2e
+# gates above carry, and it was missing from this block and the next.  Nothing reachable
+# exploited that on 2026-09-19: every GPU-reason skip these files can emit goes through a guard
+# that already fails under RIFT_CI_REQUIRE_GPU=1.  It is here so that stays true.  What the
+# reason-match alone accepts, measured by feeding it one line
+# `SKIPPED [1] x.py:12: no cupy on this host` with the flag set: BAD=0, gate ACCEPTED.
+if [[ "${RIFT_CI_REQUIRE_GPU:-0}" == "1" ]]; then
+    _TMARG_BAD_LINES=$(echo "$_TMARG_OUT" | grep -E '^SKIPPED' || true)
+else
+    _TMARG_BAD_LINES=$(echo "$_TMARG_OUT" | grep -E '^SKIPPED' | grep -viE 'cupy|gpu|cuda' || true)
+fi
+# ONE list decides the count AND the listing.  They used to be two greps, so on the
+# no-flag path the count was reason-filtered and the listing was not: the gate said
+# "1 unacceptable" and printed two lines, the first of them an ACCEPTABLE skip.
+if [ -z "$_TMARG_BAD_LINES" ]; then _TMARG_BAD=0; else _TMARG_BAD=$(printf '%s
+' "$_TMARG_BAD_LINES" | wc -l); fi
 if [ "$_TMARG_BAD" -ne 0 ]; then
-    echo "time-marginalization gate: $_TMARG_BAD test(s) skipped for a reason other than an absent GPU:" >&2
-    echo "$_TMARG_OUT" | grep -E '^SKIPPED' | grep -viE 'cupy|gpu|cuda' >&2
+    echo "time-marginalization gate: $_TMARG_BAD unacceptable SKIPPED line(s) -- pytest -rs groups by (file:line, reason), so ONE line can cover N tests and this is not a test count (RIFT_CI_REQUIRE_GPU=${RIFT_CI_REQUIRE_GPU:-0}; with it set, ANY skip is unacceptable):" >&2
+    printf '%s\n' "$_TMARG_BAD_LINES" >&2
     exit 1
 fi
 
@@ -314,11 +336,20 @@ fi
 # whose REASON names cupy/GPU, and fail on any other skip whatever the total.
 _TMARG_PL_OUT=$(python -m pytest -q -rs "$_TMARG_PL_TESTS" 2>&1) || { echo "$_TMARG_PL_OUT"; exit 1; }
 echo "$_TMARG_PL_OUT" | tail -20
-_TMARG_PL_BAD=$(echo "$_TMARG_PL_OUT" | grep -E '^SKIPPED' | grep -vciE 'cupy|gpu|cuda' || true)
-_TMARG_PL_BAD=${_TMARG_PL_BAD:-0}
+# As in the time-marginalization block above: under RIFT_CI_REQUIRE_GPU=1 any skip is bad.
+if [[ "${RIFT_CI_REQUIRE_GPU:-0}" == "1" ]]; then
+    _TMARG_PL_BAD_LINES=$(echo "$_TMARG_PL_OUT" | grep -E '^SKIPPED' || true)
+else
+    _TMARG_PL_BAD_LINES=$(echo "$_TMARG_PL_OUT" | grep -E '^SKIPPED' | grep -viE 'cupy|gpu|cuda' || true)
+fi
+# ONE list decides the count AND the listing.  They used to be two greps, so on the
+# no-flag path the count was reason-filtered and the listing was not: the gate said
+# "1 unacceptable" and printed two lines, the first of them an ACCEPTABLE skip.
+if [ -z "$_TMARG_PL_BAD_LINES" ]; then _TMARG_PL_BAD=0; else _TMARG_PL_BAD=$(printf '%s
+' "$_TMARG_PL_BAD_LINES" | wc -l); fi
 if [ "$_TMARG_PL_BAD" -ne 0 ]; then
-    echo "peak-local gate: $_TMARG_PL_BAD test(s) skipped for a reason other than an absent GPU:" >&2
-    echo "$_TMARG_PL_OUT" | grep -E '^SKIPPED' | grep -viE 'cupy|gpu|cuda' >&2
+    echo "peak-local gate: $_TMARG_PL_BAD unacceptable SKIPPED line(s) -- pytest -rs groups by (file:line, reason), so ONE line can cover N tests and this is not a test count (RIFT_CI_REQUIRE_GPU=${RIFT_CI_REQUIRE_GPU:-0}; with it set, ANY skip is unacceptable):" >&2
+    printf '%s\n' "$_TMARG_PL_BAD_LINES" >&2
     exit 1
 fi
 
