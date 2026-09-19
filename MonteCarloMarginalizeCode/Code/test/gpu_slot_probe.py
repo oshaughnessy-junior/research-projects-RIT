@@ -138,12 +138,19 @@ def no_gpu(reason):
     RIFT_CI_REQUIRE_GPU=1 is the GPU runner saying it HAS a device; there, a skipped device
     lane is a green report for a lane that never ran.
 
-    THIS IS THE ONLY PLACE THAT RULE IS ENFORCED for these two files, so do not delete it as a
-    duplicate of the shell.  .travis/test-integrate.sh does carry an "under RIFT_CI_REQUIRE_GPU
-    any skip is fatal" branch, but only for the zero-likelihood stand-in and e2e gates; its
-    peak-local block, and the whole of .travis/test-q-window-stencil.sh, score skips by REASON
-    alone and would accept these.  Checked 2026-09-18: `grep -n RIFT_CI_REQUIRE_GPU
-    .travis/test-q-window-stencil.sh` prints nothing.
+    DO NOT DELETE THIS AS A DUPLICATE OF THE SHELL.  Re-checked 2026-09-19, because the first
+    version of this paragraph went stale within a day and said three wrong things:
+
+      * all four skip-scoring blocks in .travis/test-integrate.sh now carry an "under
+        RIFT_CI_REQUIRE_GPU any skip is fatal" branch.  Two did when this was written.
+      * .travis/test-q-window-stencil.sh has no RIFT_CI_REQUIRE_GPU branch and no reason
+        matching either.  It scores by junit COUNTS -- EXPECTED_PASSED=75, MAX_SKIPS=3 -- so a
+        new skip there drops `passed` below the floor and fails on the count, not the reason.
+      * this helper has three callers, not two.
+
+    What the shell still cannot do is survive `pytest <file>` run by hand on the GPU node,
+    which is what someone does to reproduce a CI failure, and that run would report green with
+    the device lane skipped.  That is what this function is for.
     """
     if os.environ.get("RIFT_CI_REQUIRE_GPU", "0") == "1":
         pytest.fail("RIFT_CI_REQUIRE_GPU=1 promised a usable device and there is none: %s.  "
@@ -176,8 +183,9 @@ def cupy_or_skip(require_rift_backend=False):
     """The imported cupy module, with a slot that can build a kernel already selected.
 
     Skips (or fails under RIFT_CI_REQUIRE_GPU=1) instead of raising, on both of the failures
-    above.  Every skip reason names cupy/GPU/CUDA, which is what the skip-reason guards in
-    .travis/test-integrate.sh and .travis/test-q-window-stencil.sh accept.
+    above.  Every skip reason names cupy/GPU/CUDA, which is what the reason-matching guards in
+    .travis/test-integrate.sh accept when RIFT_CI_REQUIRE_GPU is unset.
+    (.travis/test-q-window-stencil.sh does not match reasons; see no_gpu.)
 
     ``require_rift_backend`` additionally demands that RIFT's own import-time probes took the
     device.  OPT-IN, because the two answers differ and a blanket check costs a lane that
