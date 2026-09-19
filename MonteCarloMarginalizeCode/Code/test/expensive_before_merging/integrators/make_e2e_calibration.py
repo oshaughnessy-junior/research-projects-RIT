@@ -30,12 +30,17 @@ if _TEST_DIR not in sys.path:
 import test_e2e_analytic_pipeline as gate          # noqa: E402
 
 _AV, _PORTFOLIO, _GMM, _AC = gate._AV, gate._PORTFOLIO, gate._GMM, gate._AC
+_ACG = gate._ACG
 
 # (label, sampler argv, A, B, extra kwargs for _run_ile).  A is None for a prior-only lane.
 LANES = [
     ("prior-only,    AV",                        _AV,        None, 0.0, {}),
     ("prior-only,    portfolio",                 _PORTFOLIO, None, 0.0, {}),
     ("prior-only,    GMM",                       _GMM,       None, 0.0, {}),
+    # The host twin of the device prior-only adaptive_cartesian row, which sets the worst |z|
+    # in the committed table.  --n-max from the gate, not repeated here.
+    ("prior-only,    adaptive_cartesian",        _AC,        None, 0.0,
+     dict(n_max=gate._AC_N_MAX)),
     ("A=0.75 B=0,    AV",                        _AV,        0.75, 0.0, {}),
     ("A=0.75 B=0,    portfolio",                 _PORTFOLIO, 0.75, 0.0, {}),
     ("A=0.75 B=0,    GMM",                       _GMM,       0.75, 0.0, {}),
@@ -71,6 +76,15 @@ LANES = [
     ("GPU prior-only, adaptive_cartesian", _AC, None, 0.0,
      dict(_needs_gpu=True, n_max=gate._AC_N_MAX)),
     ("GPU A=8    B=2, adaptive_cartesian", _AC, 8.0, 2.0,
+     dict(_needs_gpu=True, n_max=gate._AC_N_MAX)),
+    # mcsamplerGPU STANDALONE, and the ILE driver's own default --sampler-method.  Device only:
+    # it reaches the compute_hist conversion through its own integrate/integrate_log adaptation
+    # blocks rather than through a portfolio member, and that route has no other lane.  It stops
+    # on the BUDGET at --n-max 20000 with the factor on, like adaptive_cartesian; measured, not
+    # assumed -- see _LANE_KW in the gate.
+    ("GPU prior-only, adaptive_cartesian_gpu", _ACG, None, 0.0,
+     dict(_needs_gpu=True, n_max=gate._AC_N_MAX)),
+    ("GPU A=8    B=2, adaptive_cartesian_gpu", _ACG, 8.0, 2.0,
      dict(_needs_gpu=True, n_max=gate._AC_N_MAX)),
 ]
 
