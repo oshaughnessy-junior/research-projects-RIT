@@ -131,6 +131,10 @@ FILES=(
   # -- ILE consolidation precision.  Both DAG builders and BOTH cleaner passes,
   # in the legacy and hyperpipeline formats; 7 tests, 9 s, subprocesses only.
   "$C/test/test_cleanile_intrinsic_precision.py"
+  # -- DAG postprocessing must resolve its sibling helpers without relying on the
+  # submit host's PATH, and must fail closed on helper or empty-output failures.
+  # 6 tests, subprocesses only.
+  "$C/test/test_dag_postprocess_fail_closed.py"
   # -- EOS: --sampler-method portfolio in util_ConstructEOSPosterior.py, which failed on EVERY
   # invocation -- sampler.setup() was never called, so portfolio_breakpoints stayed None and the
   # first draw() raised; without --internal-use-lnL it stopped even earlier, in integrate().
@@ -318,7 +322,8 @@ done
 # runner's closure the count falls back to 347 and still passes.  Pinning 350 would turn an
 # unrelated dependency change into a red gate.
 # Two XML/grid template-finalization regressions, with no added skips.
-EXPECTED_TESTS=590
+# test_dag_postprocess_fail_closed.py adds 6 passing tests and no skips.
+EXPECTED_TESTS=596
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -326,8 +331,9 @@ EXPECTED_TESTS=590
 # test_eos_posterior_tempering_kwarg::test_integrators_read_tempering_exp_from_kwargs
 # (mcsamplerNFlow is an optional dependency and is absent from the IGWN environment), and
 # the xfail in test_uv_symmetry.  test_eos_portfolio_sampler.py adds 12 tests and
-# test_cip_portfolio_members.py 4, none of them skips.
-EXPECTED_PASSED=577
+# test_cip_portfolio_members.py 4, and test_dag_postprocess_fail_closed.py 6;
+# none of them skips.
+EXPECTED_PASSED=583
 MAX_SKIPPED=13
 
 # The floors must be INTEGERS, and this is checked rather than assumed.  `[ 347 -lt FOO ]` does
