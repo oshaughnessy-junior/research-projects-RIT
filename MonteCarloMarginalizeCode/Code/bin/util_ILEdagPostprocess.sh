@@ -5,6 +5,23 @@
 #   For NR-based DAGs, (a) consolidates the output, (b) runs ILE simplification, then (c) creates an NR-indexed version.
 #   The second format uses a *portable* name, which is stable to me changing the underlying relationship between spins and label.
 
+set -o pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+
+resolve_helper() {
+    local helper=$1
+    if [ -x "${SCRIPT_DIR}/${helper}" ]; then
+        printf '%s\n' "${SCRIPT_DIR}/${helper}"
+    elif command -v "${helper}" >/dev/null 2>&1; then
+        command -v "${helper}"
+    else
+        echo "ERROR: unable to locate required helper ${helper}" >&2
+        return 127
+    fi
+}
+
+CLEAN_ILE="$(resolve_helper util_CleanILE.py)" || exit $?
 
 DIR_PROCESS=$1
 BASE_OUT=$2
@@ -40,10 +57,12 @@ case "$(echo "${RIFT_HYPERPIPELINE_FORMAT:-}" | tr '[:upper:]' '[:lower:]')" in
     # an alias for --digits and ignores the advanced-physics flags it has no use
     # for (its columns are self-describing), but it now REFUSES a leftover value
     # rather than reading it as a shard filename.
-    util_CleanILE_hyperpipeline.py \
+    HYPER_CLEAN="$(resolve_helper util_CleanILE_hyperpipeline.py)" || exit $?
+    "${HYPER_CLEAN}" \
         --output "${BASE_OUT}.composite" \
         "${CLEAN_FLAGS[@]}" \
         ${DIR_PROCESS}/CME*.dat
+    clean_status=$?
     ;;
   *)
     # join together the .dat files
@@ -57,7 +76,14 @@ case "$(echo "${RIFT_HYPERPIPELINE_FORMAT:-}" | tr '[:upper:]' '[:lower:]')" in
 
     # clean them (=join duplicate lines)
     echo " Consolidating multiple instances of the monte carlo  .... "
-    util_CleanILE.py ${RND}_tmp.dat "${CLEAN_FLAGS[@]}" > ${RND}_clean.dat
+    "${CLEAN_ILE}" ${RND}_tmp.dat "${CLEAN_FLAGS[@]}" > ${RND}_clean.dat
+    clean_status=$?
+    if [ ${clean_status} -ne 0 ]; then
+        rm -f ${RND}_clean.dat
+        echo "ERROR: ILE consolidation failed with status ${clean_status}" >&2
+        rm -f "$BASE_OUT.composite"
+        exit ${clean_status}
+    fi
 
     # Sort on lnL.  The composite row is
     #   (event_id, intrinsic..., lnL, sigma_lnL, ntotal, neff)
@@ -72,9 +98,25 @@ case "$(echo "${RIFT_HYPERPIPELINE_FORMAT:-}" | tr '[:upper:]' '[:lower:]')" in
     else
         sort -rg -k$((NCOL-3)) ${RND}_clean.dat > $BASE_OUT.composite
     fi
+    output_status=$?
     rm -f ${RND}_clean.dat
+    if [ ${output_status} -ne 0 ]; then
+        echo "ERROR: failed to write consolidated ILE output with status ${output_status}" >&2
+        rm -f "$BASE_OUT.composite"
+        exit ${output_status}
+    fi
     ;;
 esac
+if [ ${clean_status} -ne 0 ]; then
+    echo "ERROR: ILE consolidation failed with status ${clean_status}" >&2
+    rm -f "$BASE_OUT.composite"
+    exit ${clean_status}
+fi
+if [ ! -s "$BASE_OUT.composite" ]; then
+    echo "ERROR: ILE consolidation produced an empty composite: $BASE_OUT.composite" >&2
+    rm -f "$BASE_OUT.composite"
+    exit 1
+fi
 
 # Manifest
 rm -f ${BASE_OUT}.manifest
@@ -87,6 +129,9 @@ cat ${DIR_PROCESS}/command-single.sh >>  ${BASE_OUT}.manifest
 env >> ${BASE_OUT}.environment  
 
 # tar file
-tar cvzf ${BASE_OUT}.tgz ${BASE_OUT}.composite  ${BASE_OUT}.manifest ${BASE_OUT}.environment
+if ! tar cvzf ${BASE_OUT}.tgz ${BASE_OUT}.composite  ${BASE_OUT}.manifest ${BASE_OUT}.environment; then
+    echo "ERROR: failed to create ${BASE_OUT}.tgz" >&2
+    exit 1
+fi
 
-exit 0 ;  # force end on success, for DAG
+exit 0
