@@ -81,6 +81,8 @@ FILES=(
   "$C/test/test_srate_resample_time_marginalization.py"
   "$C/test/test_vectorized_lal_tools_split.py"
   "$C/test/test_noloop_accumulator_shapes.py"
+  # -- detector-network sky coordinates: direction and inverse round trip
+  "$C/test/test_sky_rotations.py"
   # The Bilby-convention noise evidence: its normalization is checked against the
   # 4/T sum |d|^2/S formula through the real ComplexIP, so a factor of two regresses
   # loudly instead of shifting every reported log evidence by a plausible amount.
@@ -317,8 +319,8 @@ done
 # direction that matters: 350 >= 347 passes today, and if pytest-subtests ever leaves the
 # runner's closure the count falls back to 347 and still passes.  Pinning 350 would turn an
 # unrelated dependency change into a red gate.
-# Two XML/grid template-finalization regressions, with no added skips.
-EXPECTED_TESTS=590
+# The detector-network sky mapping adds two passing tests and no skips.
+EXPECTED_TESTS=592
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -327,7 +329,7 @@ EXPECTED_TESTS=590
 # (mcsamplerNFlow is an optional dependency and is absent from the IGWN environment), and
 # the xfail in test_uv_symmetry.  test_eos_portfolio_sampler.py adds 12 tests and
 # test_cip_portfolio_members.py 4, none of them skips.
-EXPECTED_PASSED=577
+EXPECTED_PASSED=579
 MAX_SKIPPED=13
 
 # The floors must be INTEGERS, and this is checked rather than assumed.  `[ 347 -lt FOO ]` does
