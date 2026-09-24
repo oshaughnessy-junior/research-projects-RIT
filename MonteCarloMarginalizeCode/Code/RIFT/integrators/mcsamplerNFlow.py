@@ -433,6 +433,7 @@ class MCSampler(SamplerOutputMixin, MCSamplerGeneric):
         # histogram setup
         self.xpy = numpy
         self.identity_convert = lambda x: x  # if needed, convert to numpy format  (e.g, cupy.asnumpy)
+        self._enforce_bounds_last = True   # see draw_simplified / sampling_density
 
         # sampling tool
         self.nf_model = None
@@ -556,6 +557,17 @@ class MCSampler(SamplerOutputMixin, MCSamplerGeneric):
         super_verbose = kwargs["super_verbose"] if "super_verbose" in kwargs else False  # default
         save_no_samples = kwargs.get("save_no_samples", False)
         enforce_bounds = kwargs["enforce_bounds"] if "enforce_bounds" in kwargs else True
+        # sampling_density() has to describe the density these draws ACTUALLY come
+        # from, and that depends on whether they were truncated to the box.
+        self._enforce_bounds_last = bool(enforce_bounds)
+
+        # nflows type-checks this with isinstance(n, int), which a numpy integer
+        # FAILS ("Number of samples must be a positive integer").  Every other
+        # integrator takes a numpy int here, and mcsamplerPortfolio hands its
+        # members exactly that (n_samples_per_member is an int64 array), so
+        # normalize rather than making NFlow the one member with a stricter
+        # signature.
+        n_to_get = int(n_to_get)
 
         args = self.params_ordered # by default draw all
 
@@ -608,7 +620,89 @@ class MCSampler(SamplerOutputMixin, MCSamplerGeneric):
                    self._rvs[p] = self.xpy.hstack((self._rvs[p], rvs_tmp[p]))
 
 
-        return  rv, np.exp(log_ps), np.exp(log_p)
+        # (p_s, p_prior, rv) -- the MCSamplerGeneric contract every other integrator
+        # honours (mcsamplerGPU, mcsamplerAdaptiveVolume, mcsamplerEnsemble, and the
+        # unreliable_oracle members).  This used to return (rv, p_s, p_prior); a
+        # mcsamplerPortfolio member is unpacked as (p_s, p_prior, rv), so an NFlow
+        # member silently assigned rv to joint_p_s.
+        return  np.exp(log_ps), np.exp(log_p), rv
+
+    def sampling_density(self, X):
+        """Pointwise sampling density q(theta) of THIS member, evaluated at
+        ARBITRARY points X (shape (N, ndim), columns in self.params_ordered
+        order).  Returns a host (numpy) array of length N, or None if the
+        parameter box has not been registered yet.
+
+        Mirrors draw_simplified exactly, so the density returned here is the one
+        the draws actually come from:
+
+          * self.nf_flow is None (the cold state, before any update_sampling_prior
+            has trained a flow): draw_simplified samples each axis uniformly on
+            [llim, rlim], so q = 1/V inside the box and 0 outside it, with
+            V = prod(rlim - llim).
+          * a trained flow: draw_simplified reports p_s = exp(flow.log_prob(rv)),
+            so q = exp(flow.log_prob(X)).
+
+        TRUNCATION CAVEAT (inherited from the draw path).  With the default
+        enforce_bounds=True, draw_simplified DISCARDS the flow samples that land
+        outside the box, so its accepted draws are distributed as q(x)/A on the
+        box, with A the integral of q over the box -- while the p_s it reports
+        for them is the un-divided q(x).  We reproduce that convention rather
+        than correcting it, so a member's q_m in the portfolio mixture is the
+        SAME quantity as the p_s it reports for its own draws; the missing 1/A
+        is a pre-existing property of this sampler, not something the mixture
+        introduces.  It is not negligible -- measure it for a given flow with
+        mean(sampling_density(U))*V over U uniform on the box.  We zero the
+        density outside the box when the draws were truncated, since then no
+        accepted draw can land there.
+
+        READ-ONLY: touches no sampler state and does not affect this sampler's own
+        integrate()/integrate_log().  It exists so mcsamplerPortfolio can form the
+        balance-heuristic mixture density q_mix = sum_m frac_m * q_m.
+        """
+        ndim = len(self.params_ordered)
+        if ndim == 0:
+            return None
+        try:
+            bounds = np.array([[self.llim[pname], self.rlim[pname]] for pname in self.params_ordered], dtype=float)
+        except KeyError:
+            return None
+        X = np.atleast_2d(np.asarray(self.identity_convert(X), dtype=float))
+        if X.shape[1] != ndim and X.shape[0] == ndim:
+            X = X.T   # tolerate (ndim, N), the shape draw_simplified returns rv in
+        box_lo, box_hi = bounds[:, 0], bounds[:, 1]
+        # Mirror the truncation mode the last draw actually used (default True, as in
+        # draw_simplified).  With enforce_bounds=False the flow's draws DO land outside
+        # the box, so zeroing there would drive the portfolio's q_mix to underflow on
+        # this member's own samples and hand them a spurious ~1/1e-300 weight.
+        if getattr(self, '_enforce_bounds_last', True):
+            inside = np.all((X >= box_lo) & (X <= box_hi), axis=1)
+        else:
+            inside = np.ones(X.shape[0], dtype=bool)
+
+        if self.nf_flow is None:
+            V = float(np.prod(box_hi - box_lo))
+            q = np.zeros(X.shape[0], dtype=float)
+            q[inside] = 1.0 / V
+            return q
+
+        flow = self.nf_flow
+        # Match the flow's own parameter dtype: nflows builds float32 nets by
+        # default, and handing log_prob a float64 tensor raises rather than
+        # casting.
+        try:
+            dtype = next(flow.parameters()).dtype
+        except StopIteration:
+            dtype = torch.get_default_dtype()
+        with torch.no_grad():
+            log_q = flow.log_prob(torch.as_tensor(X, dtype=dtype)).detach().numpy()
+        log_q = np.asarray(log_q, dtype=float)
+        q = np.zeros(X.shape[0], dtype=float)
+        # a flow can emit nan/-inf log_prob on out-of-distribution points; those
+        # are zero density, not a crash and not a nan poisoning q_mix.
+        ok = inside & np.isfinite(log_q)
+        q[ok] = np.exp(log_q[ok])
+        return q
 
     def update_sampling_prior(self, lnw, *args, xpy=xpy_default,no_protect_names=True,external_rvs=None,tempering_exp=1,max_epochs_requested=300,n_history=1000,**kwargs):
       """
@@ -868,7 +962,7 @@ class MCSampler(SamplerOutputMixin, MCSamplerGeneric):
         max_epochs_requested =300
         while (eff_samp < neff and ntotal_true < nmax ): #  and (not bConvergenceTests):
             # Draw samples. Note state variables binunique, ninbin -- so we can re-use the sampler later outside the loop
-            rv, joint_p_s, joint_p_prior = self.draw_simplified(self.n_chunk, save_no_samples=False)  # Beware reversed order of rv
+            joint_p_s, joint_p_prior, rv = self.draw_simplified(self.n_chunk, save_no_samples=False)
             if super_verbose:
               print(" Drawn ", np.mean(rv, axis=-1))
 #              print(" Drawn ", np.cov(rv))
