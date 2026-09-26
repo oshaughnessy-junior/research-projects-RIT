@@ -1008,6 +1008,7 @@ if fetch_args:
 
 cip_job_list = None
 cip_args_for_iteration = []
+cip_exe_for_iteration = []
 if  (cip_args_lines is None):
     # Write the default cip_job into cip_job_list n times
     # add some redundancy in case this happens : we're hitting a problem with having too few copies of this/fencepost error later
@@ -1016,7 +1017,8 @@ if  (cip_args_lines is None):
     else:
         cip_job_list =(opts.n_iterations)* [ [cip_job, cip_job_worker] ]
     cip_args_for_iteration = opts.n_iterations * [cip_args]
-else:  
+    cip_exe_for_iteration = opts.n_iterations * [cip_exe]
+else:
     # we have different cip jobs for different iteration numbers
     cip_job_list = []
     for indx in np.arange(len(cip_args_lines)):
@@ -1104,29 +1106,36 @@ else:
             # terminal L=1 run.  Fit-save/load and worker-output controls are
             # pipeline mechanics, not part of the configured prior.
             cip_args_for_iteration += n_to_add * [cip_args_lines[indx]]
+            # Retain the executable this group's sampling jobs use ('G' groups
+            # use the alternate CIP), so the prior normalization is computed by
+            # the same implementation, with the same argument dialect.
+            cip_exe_for_iteration += n_to_add * [cip_exe_here.strip() if cip_exe_here else cip_exe_here]
         else:
             print(" Indefinite subdag-to-convergence requested for group ", indx)
             cip_job_list += ["Subdag"]
             # The recursively generated subdag schedules its own terminal
             # prior/evidence pair, so the outer DAG must not duplicate it.
             cip_args_for_iteration += [None]
+            cip_exe_for_iteration += [None]
 print(" ===> Iteration size ", len(cip_job_list), opts.n_iterations)
 
 # Dedicated terminal prior-normalization job.  It reuses the final iteration's
-# physical CIP arguments but runs independently with L=1.  Only the terminal
-# node is scheduled below; intermediate evidence summaries remain unchanged.
+# physical CIP arguments and executable, but runs independently with L=1.  Only
+# the terminal node is scheduled below; intermediate evidence summaries remain
+# unchanged.
 prior_job = None
 final_evidence_job = None
 if opts.n_iterations > 0 and cip_args_for_iteration[opts.n_iterations-1] is not None:
     exe_evidence = which('util_CIPDirSummarizeEvidence.py')
     prior_args = cip_args_for_iteration[opts.n_iterations-1]
+    prior_exe = cip_exe_for_iteration[opts.n_iterations-1]
     prior_args += " --integrate-prior --n-output-samples 1 --no-plots "
     prior_job, prior_job_name = dag_utils.write_CIP_sub(
         tag='CIP_prior', log_dir=None, arg_str=prior_args,
         request_memory=opts.request_memory_CIP,
         input_net=opts.working_directory+'/all.net',
         output='prior-integral-$(macroiteration)',
-        out_dir=opts.working_directory, exe=cip_exe,
+        out_dir=opts.working_directory, exe=prior_exe,
         universe=local_worker_universe, no_grid=True)
     prior_job.add_condor_cmd("initialdir", opts.working_directory)
     prior_job.set_log_file(opts.working_directory+"/iteration_$(macroiteration)_cip/logs/prior-$(cluster)-$(process).log")

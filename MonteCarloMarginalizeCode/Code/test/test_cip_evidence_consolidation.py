@@ -113,6 +113,20 @@ def test_pipeline_has_terminal_prior_then_strict_final_evidence(pipeline):
     assert "--cip-prefix overlap-grid-$(macroiterationnext)" in source
 
 
+@pytest.mark.parametrize("pipeline", PIPELINES)
+def test_terminal_prior_job_uses_the_terminal_iterations_executable(pipeline):
+    source = open(pipeline).read()
+    # A 'G' group runs the alternate CIP, so the L=1 denominator must be built
+    # with that iteration's executable rather than the default one.
+    assert "cip_exe_for_iteration = opts.n_iterations * [cip_exe]" in source
+    assert "cip_exe_for_iteration += n_to_add * [" in source
+    assert "prior_exe = cip_exe_for_iteration[opts.n_iterations-1]" in source
+    assert "exe=prior_exe" in source
+    # The executable list must stay index-aligned with the argument list.
+    assert source.count("cip_args_for_iteration +=") == source.count(
+        "cip_exe_for_iteration +=")
+
+
 def test_prior_mode_is_independent_and_reweighted_evidence_restores_shift():
     source = open(CIP).read()
     assert 'parser.add_argument("--integrate-prior"' in source
