@@ -150,6 +150,7 @@ parser.add_argument("--gp-predict-backend",default="sklearn",choices=["sklearn",
 parser.add_argument("--gp-predict-batch-size",default=4096,type=int,help="Maximum queries per cached CuPy GP prediction block. Used only with --gp-predict-backend cupy.")
 parser.add_argument("--gp-matern-max-train-points",default=4800,type=int,help="gp-matern: deterministic balanced training bound (rho1 x lnL strata when the data carry s1x,s1y; otherwise lnL strata). Exact float64 fit on CPU.")
 parser.add_argument("--gp-matern-optimizer-maxiter",default=25,type=int,help="gp-matern: bounded single L-BFGS-B start; numerical convergence is not interpolation validation.")
+parser.add_argument("--gp-matern-fit-backend",default="sklearn",choices=["sklearn","cupy"],help="gp-matern: fit hyperparameters with sklearn on CPU (default) or with the same objective in float64 CuPy on a GPU (RIFT.interpolators.cupy_matern_fit), which affords larger --gp-matern-max-train-points. The cupy fit predicts with CuPy.")
 parser.add_argument("--gp-matern-seed",default=25062842,type=int,help="gp-matern: deterministic row selection and sklearn seed, independent of sampler randomness.")
 parser.add_argument("--fit-load-gp",default=None,type=str,help="Filename of GP fit to load. Overrides fitting process, but user MUST correctly specify coordinate system to interpret the fit with.  Does not override loading and converting the data.")
 parser.add_argument("--fit-save-gp",default=None,type=str,help="Filename of GP fit to save. ")
@@ -549,16 +550,22 @@ def fit_gp_matern(x,y,y_errors,rho1=None):
         bound = opts.gp_matern_max_train_points
         if opts.cap_points > 0:
             bound = min(bound,opts.cap_points)
-        model,record = fit_matern_gp(x,y,y_errors,
+        fitter = fit_matern_gp
+        if opts.gp_matern_fit_backend == "cupy":
+            from RIFT.interpolators.cupy_matern_fit import fit_matern_gp_cupy as fitter
+        model,record = fitter(x,y,y_errors,
             max_train_points=bound,optimizer_maxiter=opts.gp_matern_optimizer_maxiter,
             seed=opts.gp_matern_seed,rho1=rho1,feature_names=list(coord_names),
-            provenance={"lnL_shift":float(lnL_shift),"fit_method":"gp-matern"})
+            provenance={"lnL_shift":float(lnL_shift),"fit_method":"gp-matern",
+                        "fit_backend":opts.gp_matern_fit_backend})
+        model.rift_matern_provenance = record
         print("GP-MATERN-RECORD",json.dumps({k:v for k,v in record.items() if k!="selected_indices"}))
         if opts.fit_save_gp:
             joblib.dump(model,opts.fit_save_gp+".pkl")
             with open(opts.fit_save_gp+".meta.json","w") as stream:
                 json.dump(record,stream,indent=2)
-    if opts.gp_predict_backend == "cupy":
+    from RIFT.interpolators.cached_matern_gp import CachedMaternMean
+    if opts.gp_predict_backend == "cupy" and not isinstance(model,CachedMaternMean):
         from RIFT.interpolators.cached_matern_gp import from_sklearn
         model = from_sklearn(model,backend="cupy",batch_size=opts.gp_predict_batch_size)
         print(" Cached CUDA Matern means: float64, prediction batch ", opts.gp_predict_batch_size)
