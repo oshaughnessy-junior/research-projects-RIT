@@ -105,6 +105,11 @@ def fit_matern_gp_cupy(x, y, y_errors, *, max_train_points=4800, optimizer_maxit
     res = minimize(_nlml_and_grad, theta0, args=(xs, yn, alpha_diag, xp), method="L-BFGS-B", jac=True,
                    bounds=bounds, options={"maxiter": int(optimizer_maxiter)})
     theta = res.x
+    lo, hi = np.array(bounds).T
+    at_bounds = [i for i in range(len(theta)) if min(theta[i] - lo[i], hi[i] - theta[i]) < 1e-3]
+    if not res.success or at_bounds:
+        print(" WARNING cupy_matern_fit: optimizer success=%s, hyperparameters at bounds (index into [C, l_1..l_d, W]): %s"
+              % (bool(res.success), at_bounds))
     const, lengths, white = np.exp(theta[0]), np.exp(theta[1:1 + d]), np.exp(theta[-1])
     # Final weights alpha_ = K^-1 y_n at the optimum (white noise in K, as sklearn does)
     z = xs / xp.asarray(lengths)
@@ -129,7 +134,9 @@ def fit_matern_gp_cupy(x, y, y_errors, *, max_train_points=4800, optimizer_maxit
                   selected_indices_sha256=array_hash(indices), X_sha256=array_hash(x), Y_sha256=array_hash(y),
                   target_std=tstd, constant=float(const), length_scale=lengths.tolist(), white=float(white),
                   theta=theta.tolist(), optimizer=dict(success=bool(res.success), iterations=int(res.nit),
-                  evaluations=int(res.nfev), message=str(res.message), nlml=float(res.fun)),
+                  evaluations=int(res.nfev), message=str(res.message), nlml=float(res.fun),
+                  gradient_max_abs=float(np.max(np.abs(res.jac))), at_bounds=at_bounds),
+                  error_sha256=array_hash(errors), alpha_sha256=array_hash(alpha_diag.get() if hasattr(alpha_diag, "get") else alpha_diag),
                   optimizer_maxiter=int(optimizer_maxiter), elapsed_seconds=elapsed,
                   provenance=dict(provenance or {}))
     return model, record

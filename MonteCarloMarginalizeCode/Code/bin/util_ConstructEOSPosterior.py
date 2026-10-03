@@ -146,9 +146,9 @@ parser.add_argument("--n-step",default=1e5,type=int)
 parser.add_argument("--n-eff",default=3e3,type=int)
 parser.add_argument("--pool-size",default=3,type=int,help="Integer. Number of GPs to use (result is averaged)")
 parser.add_argument("--fit-method",default="rf",help="rf (default) : rf|gp|gp-matern.  These are the only three this driver builds; util_ConstructIntrinsicPosterior_GenericCoordinates.py implements quadratic|polynomial|gp_hyper|gp_lazy|cov and more.")
-parser.add_argument("--gp-predict-backend",default="sklearn",choices=["sklearn","cupy"],help="gp-matern only: evaluate the fitted StandardScaler/Matern-5/2 mean with exact cached float64 CuPy blocks. Training stays on CPU.")
+parser.add_argument("--gp-predict-backend",default="sklearn",choices=["sklearn","cupy"],help="gp-matern only: evaluate the fitted Matern-5/2 mean with exact cached float64 CuPy blocks (sklearn: CPU). Applies to fresh and reloaded fits, whichever backend trained them.")
 parser.add_argument("--gp-predict-batch-size",default=4096,type=int,help="Maximum queries per cached CuPy GP prediction block. Used only with --gp-predict-backend cupy.")
-parser.add_argument("--gp-matern-max-train-points",default=4800,type=int,help="gp-matern: deterministic balanced training bound (rho1 x lnL strata when the data carry s1x,s1y; otherwise lnL strata). Exact float64 fit on CPU.")
+parser.add_argument("--gp-matern-max-train-points",default=4800,type=int,help="gp-matern: deterministic balanced training bound (rho1 x lnL strata when the data carry in-plane spin; otherwise lnL strata). Exact float64 fit; see --gp-matern-fit-backend.")
 parser.add_argument("--gp-matern-optimizer-maxiter",default=25,type=int,help="gp-matern: bounded single L-BFGS-B start; numerical convergence is not interpolation validation.")
 parser.add_argument("--gp-matern-fit-backend",default="sklearn",choices=["sklearn","cupy"],help="gp-matern: fit hyperparameters with sklearn on CPU (default) or with the same objective in float64 CuPy on a GPU (RIFT.interpolators.cupy_matern_fit), which affords larger --gp-matern-max-train-points. The cupy fit predicts with CuPy.")
 parser.add_argument("--gp-matern-seed",default=25062842,type=int,help="gp-matern: deterministic row selection and sklearn seed, independent of sampler randomness.")
@@ -178,6 +178,11 @@ parser.add_argument("--supplementary-coordinate-function", default=None, type=st
 parser.add_argument("--supplementary-coordinate-ini", default=None, type=str, help="Optional ini file parsed and handed to the coordinate plugin's prepare() hook so it can read its own configuration block(s).")
 parser.add_argument("--supplementary-coordinate-chart", default=None, type=str, help="Which chart (coordinate system) defined by the plugin to use for this run. Required when the plugin's CHARTS dict has more than one entry; ignored when the plugin doesn't define CHARTS. Different charts can share parameter names but imply different priors -- the chart name disambiguates which (name -> prior) mapping is installed.")
 opts=  parser.parse_args()
+if opts.fit_method != 'gp-matern':
+    if opts.gp_predict_backend != "sklearn":
+        parser.error("--gp-predict-backend cupy requires --fit-method gp-matern")
+    if opts.gp_matern_fit_backend != "sklearn":
+        parser.error("--gp-matern-fit-backend cupy requires --fit-method gp-matern")
 
 #print(" WARNING: Always use internal_use_lnL for now ")
 #opts.internal_use_lnL=True
@@ -565,7 +570,13 @@ def fit_gp_matern(x,y,y_errors,rho1=None):
             with open(opts.fit_save_gp+".meta.json","w") as stream:
                 json.dump(record,stream,indent=2)
     from RIFT.interpolators.cached_matern_gp import CachedMaternMean
-    if opts.gp_predict_backend == "cupy" and not isinstance(model,CachedMaternMean):
+    if isinstance(model,CachedMaternMean):
+        # CuPy-fitted model: the stored backend is a training-host detail, not a request
+        model.backend = "cupy" if opts.gp_predict_backend == "cupy" else "numpy"
+        model.batch_size = int(opts.gp_predict_batch_size)
+        model._device_state = None
+        print(" Matern means via CachedMaternMean: backend ", model.backend, " batch ", model.batch_size)
+    elif opts.gp_predict_backend == "cupy":
         from RIFT.interpolators.cached_matern_gp import from_sklearn
         model = from_sklearn(model,backend="cupy",batch_size=opts.gp_predict_batch_size)
         print(" Cached CUDA Matern means: float64, prediction batch ", opts.gp_predict_batch_size)
@@ -573,7 +584,7 @@ def fit_gp_matern(x,y,y_errors,rho1=None):
         # Same guard as fit_rf: a nonfinite coordinate round-trip gets the default floor, not a crash
         x_in = np.asarray(x_in,dtype=np.float64)
         f_out = lnL_default_large_negative*np.ones(len(x_in))
-        ok = np.all(np.isfinite(x_in),axis=-1)
+        ok = np.all(np.isfinite(x_in),axis=-1) & np.all(np.abs(x_in) < 1e37,axis=-1)
         if np.any(ok):
             f_out[ok] = model.predict(x_in[ok]) + prediction_offset
         return f_out
@@ -800,27 +811,32 @@ elif opts.fit_method == 'rf':
 elif opts.fit_method == 'gp-matern':
     print(" FIT METHOD gp-matern: bounded standardized Matern5/2")
     # rho1 from the data file's native in-plane spin, aligned with X before any cut
-    rho1 = None
-    if supplemental_coordinate_convert is not None and 's1x' in dat_orig_names and 's1y' in dat_orig_names:
-        from RIFT.interpolators.matern_gp import native_rho1
-        rho1 = native_rho1(dat[:,2:],dat_orig_names)[indx_ok]
+    from RIFT.interpolators.matern_gp import native_rho1
+    rho1 = native_rho1(dat[:,2:],dat_orig_names)
+    if rho1 is not None:
+        rho1 = rho1[indx_ok]
     X=X[indx_ok]
     Y=Y[indx_ok] - lnL_shift
     Y_err = Y_err[indx_ok]
     if opts.ignore_errors_in_data:
         Y_err = np.zeros_like(Y_err)
+    # Rows the coordinate converter cannot map cannot be fit; drop them visibly
+    finite = np.all(np.isfinite(X),axis=1) & np.isfinite(Y) & np.isfinite(Y_err)
+    if not np.all(finite):
+        print(" gp-matern: dropping {} of {} training rows with nonfinite fit coordinates/targets".format(int(np.sum(~finite)),len(finite)))
+        X, Y, Y_err = X[finite], Y[finite], Y_err[finite]
+        if rho1 is not None:
+            rho1 = rho1[finite]
     my_fit = fit_gp_matern(X,Y,Y_err,rho1=rho1)
-if opts.gp_predict_backend != "sklearn" and opts.fit_method != 'gp-matern':
-    parser.error("--gp-predict-backend cupy requires --fit-method gp-matern")
 
 if my_fit is None:
-    # This driver builds only 'gp' and 'rf'.  The --fit-method help was copied from
+    # This driver builds only 'gp', 'rf' and 'gp-matern'.  The --fit-method help was copied from
     # util_ConstructIntrinsicPosterior_GenericCoordinates.py, which implements a dozen more, so
     # asking for one of those here left my_fit at None and the run continued: nothing referenced
     # it until the sampler evaluated the integrand, which then died with
     # "TypeError: 'NoneType' object is not callable" from inside log_likelihood_function, after
     # the whole setup had been paid for and with nothing naming --fit-method.
-    print(" OPTION MISMATCH : --fit-method {} is not implemented in this driver; it builds only 'gp' and 'rf'.  (util_ConstructIntrinsicPosterior_GenericCoordinates.py implements the others.)".format(opts.fit_method))
+    print(" OPTION MISMATCH : --fit-method {} is not implemented in this driver; it builds only 'gp', 'rf' and 'gp-matern'.  (util_ConstructIntrinsicPosterior_GenericCoordinates.py implements the others.)".format(opts.fit_method))
     sys.exit(99)
 
 ### Distance tail: make the fit decay beyond each intrinsic point's exported distance support

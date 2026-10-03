@@ -32,6 +32,25 @@ def test_gradient_matches_finite_differences():
         assert abs(fd - g[k]) < 1e-4 * max(1.0, abs(fd)), (k, fd, g[k])
 
 
+def _interior_data(n=400, seed=5):
+    """Smooth target whose reported errors understate the scatter, so the fitted constant and white
+    noise land inside their bounds and every term of the final weights matters."""
+    rng = np.random.default_rng(seed)
+    x = rng.uniform(-1, 1, (n, 3))
+    y = 2 * np.sin(2 * x[:, 0]) + np.cos(3 * x[:, 1]) + 0.5 * np.sin(4 * x[:, 2]) + rng.normal(0, 0.15, n)
+    return x, y, 0.05 * np.ones(n)
+
+
+def test_matches_sklearn_recipe_interior():
+    x, y, e = _interior_data()
+    ref, rec_ref = fit_matern_gp(x, y, e, max_train_points=400)
+    mine, rec = fit_matern_gp_cupy(x, y, e, max_train_points=400, xp=np)
+    assert rec["optimizer"]["at_bounds"] == [], rec["theta"]
+    assert np.allclose(rec["theta"], rec_ref["theta"], atol=1e-4)
+    q = np.random.default_rng(9).uniform(-1, 1, (500, 3))
+    assert np.max(np.abs(mine.predict(q) - ref.predict(q))) < 1e-6
+
+
 def test_matches_sklearn_recipe():
     x, y, e = _data()
     ref, rec_ref = fit_matern_gp(x, y, e, max_train_points=300)

@@ -74,3 +74,75 @@ def test_cupy_backend_requires_gp_matern(tmp_path):
     proc, _ = _run(tmp_path, ["--fit-method", "rf", "--gp-predict-backend", "cupy"])
     assert proc.returncode != 0
     assert "--gp-predict-backend cupy requires --fit-method gp-matern" in proc.stdout
+
+
+_NAN_PLUGIN = '''
+import numpy as np
+def convert_coordinates(x_in, coord_names, low_level_coord_names, **kwargs):
+    x_in = np.atleast_2d(np.asarray(x_in, dtype=float))
+    src = {n: x_in[:, i] for i, n in enumerate(low_level_coord_names)}
+    if "xx" in src:
+        src["ux"] = np.where(src["xx"] > 0.9, np.nan, src["xx"])   # a converter that fails on part of the box
+        src["uy"] = src["yy"]
+    return np.column_stack([src[n] for n in coord_names])
+'''
+
+
+def test_nonfinite_conversion_gets_the_floor(tmp_path):
+    """Rows the converter cannot map must carry no posterior weight (the -500 fill is a floor).
+
+    The likelihood peaks at the box edge xx=1 here, so a fill that acted as a ceiling (or any
+    value near the peak) would put most samples in the NaN strip xx>0.9."""
+    plugin = os.path.join(str(tmp_path), "nan_plugin.py")
+    open(plugin, "w").write(_NAN_PLUGIN)
+    fname = os.path.join(str(tmp_path), "grid.dat")
+    rng = np.random.default_rng(4)
+    x = rng.uniform(-1.0, 1.0, (800, 2))
+    lnL = 20.0 - 0.5 * (((x[:, 0] - 0.85) / 0.3) ** 2 + (x[:, 1] / 0.3) ** 2)
+    np.savetxt(fname, np.column_stack([lnL, 0.05 * np.ones(len(x)), x]), header=" lnL sigma_lnL xx yy")
+    env = dict(os.environ)
+    env["PYTHONPATH"] = CODE + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    env.update(OMP_NUM_THREADS="1", MPLBACKEND="Agg", XDG_CACHE_HOME=os.path.join(str(tmp_path), "cache"),
+               MPLCONFIGDIR=os.path.join(str(tmp_path), "mpl"))
+    cmd = [sys.executable, DRIVER, "--fname", fname,
+           "--parameter-nofit", "xx", "--parameter-nofit", "yy",
+           "--parameter-implied", "ux", "--parameter-implied", "uy",
+           "--supplementary-coordinate-code", plugin,
+           "--integration-parameter-range", "xx:[-1,1]", "--integration-parameter-range", "yy:[-1,1]",
+           "--fit-method", "gp-matern", "--gp-matern-max-train-points", "400",
+           "--sampler-method", "AV", "--internal-use-lnL",
+           "--n-max", "300000", "--n-eff", "300", "--n-output-samples", "1000",
+           "--fname-output-samples", "post", "--no-plots"]
+    proc = subprocess.run(cmd, cwd=str(tmp_path), env=env, stdout=subprocess.PIPE,
+                          stderr=subprocess.STDOUT, universal_newlines=True, timeout=900)
+    assert proc.returncode == 0, proc.stdout[-3000:]
+    post = np.genfromtxt(os.path.join(str(tmp_path), "post.dat"), names=True)
+    assert np.mean(post["xx"] > 0.9) < 0.01, np.mean(post["xx"] > 0.9)
+
+
+def test_reload_with_a_different_lnL_shift(tmp_path):
+    """A saved fit reloaded under another --lnL-shift-prevent-overflow returns the same likelihood."""
+    proc, out = _run(tmp_path, ["--fit-save-gp", os.path.join(str(tmp_path), "fit")])
+    assert proc.returncode == 0, proc.stdout[-3000:]
+    fresh = np.genfromtxt(out, names=True)
+    proc2, out2 = _run(tmp_path, ["--fit-load-gp", os.path.join(str(tmp_path), "fit.pkl"),
+                                  "--lnL-shift-prevent-overflow", "5"])
+    assert proc2.returncode == 0, proc2.stdout[-3000:]
+    again = np.genfromtxt(out2, names=True)
+    for c in ("xx", "yy"):
+        assert abs(fresh[c].mean() - again[c].mean()) < 0.03
+        assert abs(fresh[c].std() / again[c].std() - 1) < 0.1
+
+
+def test_cupy_fit_backend_through_the_driver(tmp_path):
+    try:
+        import cupy as cp
+        cp.zeros(1) + 1
+    except Exception as exc:
+        pytest.skip("no usable CUDA device: %s" % exc)
+    proc, out = _run(tmp_path, ["--gp-matern-fit-backend", "cupy", "--gp-predict-backend", "cupy"])
+    assert proc.returncode == 0, proc.stdout[-3000:]
+    post = np.genfromtxt(out, names=True)
+    x = np.column_stack([post["xx"], post["yy"]])
+    assert np.all(np.abs(x.mean(0) - MU) < 0.03), x.mean(0)
+    assert np.all(np.abs(x.std(0) / SIG - 1) < 0.10), x.std(0)
