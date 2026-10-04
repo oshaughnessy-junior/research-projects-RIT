@@ -167,6 +167,7 @@ FILES=(
   "$C/test/test_convert_waveform_coordinates_vectorized.py"
   "$C/test/test_waveform_coordinates_xpy.py"
   "$C/test/interpolators/test_dslice_amplitude_model.py"
+  "$C/test/interpolators/test_dslice_rf_tails.py"
   # -- EOSPosterior gp-matern fit, cached/cupy Matern prediction, dslice quadratic GP, AV stopping metric
   #    (numpy legs; cupy legs skip).  test_eos_gp_matern.py runs the driver end to end: ~100 s on CIT.
   "$C/test/interpolators/test_av_stopping_metric.py"
@@ -366,7 +367,9 @@ done
 # measured per file on CIT (ldas-grid, no cupy) 2026-10-04.
 # Floors re-measured 2026-10-04 at the measured counts (CI run 37225002686 at 70f20c9a: 691/672/19,
 # matching CIT; +1 test since): the ~30-test slack inherited from earlier entries is removed.
-EXPECTED_TESTS=692
+# test_dslice_rf_tails.py (--rf-dslice-tails) adds 3 collected, 3 passed, no skips, measured per
+# file on CIT (ldas-grid, IGWN python, no cupy) 2026-10-04.
+EXPECTED_TESTS=695
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -375,7 +378,7 @@ EXPECTED_TESTS=692
 # (mcsamplerNFlow is an optional dependency and is absent from the IGWN environment), and
 # the xfail in test_uv_symmetry.  test_eos_portfolio_sampler.py adds 12 tests and
 # test_cip_portfolio_members.py 4, none of them skips.
-EXPECTED_PASSED=673
+EXPECTED_PASSED=676
 MAX_SKIPPED=19
 
 # The floors must be INTEGERS, and this is checked rather than assumed.  `[ 347 -lt FOO ]` does
