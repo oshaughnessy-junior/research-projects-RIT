@@ -95,8 +95,9 @@ class DistanceAmplitudeModel:
 
     Fields are interpolated as log R, log u*, logit f_min. Points whose fit failed are left out."""
 
-    def __init__(self, dist_index, n_estimators=100, n_jobs=-1, min_slices=5):
+    def __init__(self, dist_index, n_estimators=100, n_jobs=-1, min_slices=5, max_overshoot=1.0):
         self.dist_index = int(dist_index)
+        self.max_overshoot = float(max_overshoot)
         self.n_estimators, self.n_jobs, self.min_slices = n_estimators, n_jobs, min_slices
 
     @staticmethod
@@ -115,7 +116,19 @@ class DistanceAmplitudeModel:
         uk, P, rms, counts = fit_all_points(key, 1.0 / x[:, self.dist_index], np.asarray(y, dtype=float),
                                             np.asarray(y_errors, dtype=float), self.min_slices, fix_C=True)
         good = np.all(np.isfinite(P), axis=1)
-        self.report = dict(points=int(len(uk)), points_fit=int(good.sum()),
+        # Guard: a point whose slices do not resolve its flat top (e.g. all slices at nearly one d)
+        # can fit a peak far above anything it measured; the sampler then piles onto that spike.
+        # Drop points whose fitted maximum over d exceeds their highest slice by > max_overshoot.
+        _, inv = np.unique(key, axis=0, return_inverse=True)
+        ymax = np.full(len(uk), -np.inf)
+        np.maximum.at(ymax, inv.reshape(-1), np.asarray(y, dtype=float))
+        ug = np.geomspace(1e-5, 1e-2, 2000)
+        over = np.full(len(uk), np.inf)
+        for k in np.flatnonzero(good):
+            over[k] = log_model(ug, *P[k]).max() - ymax[k]
+        n_over = int(np.sum(good & (over > self.max_overshoot)))
+        good &= over <= self.max_overshoot
+        self.report = dict(points=int(len(uk)), points_fit=int(good.sum()), dropped_overshoot=n_over,
                            per_point_rms_median=float(np.nanmedian(rms)), slices_median=float(np.median(counts)))
         self.rf = ExtraTreesRegressor(n_estimators=self.n_estimators, n_jobs=self.n_jobs)
         self.rf.fit(uk[good], self._to_fields(P[good]))
