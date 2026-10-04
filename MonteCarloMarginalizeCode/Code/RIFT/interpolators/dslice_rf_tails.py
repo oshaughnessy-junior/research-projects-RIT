@@ -14,15 +14,26 @@ event (the median of free per-point fits): the inclination degeneracy it encodes
 import numpy as np
 from scipy.spatial import cKDTree
 
-from RIFT.interpolators.dslice_amplitude_model import fit_all_points_batched, log_model
+from RIFT.interpolators.dslice_amplitude_model import fit_all_points, fit_all_points_batched, log_model
 
 
 class RFDistanceTails:
-    def __init__(self, base_fit, dist_index, sides="both", shared_fmin=True, xp=np):
+    def __init__(self, base_fit, dist_index, sides="both", shared_fmin=True, xp=np, point_fit="scipy",
+                 n_jobs=1):
         if sides not in ("near", "far", "both"):
             raise ValueError("sides must be near, far or both")
+        if point_fit not in ("scipy", "batched"):
+            raise ValueError("point_fit must be scipy or batched")
         self.base_fit, self.dist_index, self.sides = base_fit, int(dist_index), sides
         self.shared_fmin, self.xp = bool(shared_fmin), xp
+        self.point_fit, self.n_jobs = point_fit, int(n_jobs)
+
+    def _fit_points(self, args, fmin_fixed=None):
+        # scipy (default): one least_squares per point. batched: all points at once on numpy/cupy; it
+        # reaches a higher cost than scipy on a fraction of points, so it is an option, not the default.
+        if self.point_fit == "batched":
+            return fit_all_points_batched(*args, fix_C=True, xp=self.xp, fmin_fixed=fmin_fixed)
+        return fit_all_points(*args, fix_C=True, fmin_fixed=fmin_fixed, n_jobs=self.n_jobs)
 
     def fit(self, x, y_unshifted, y_errors):
         """x: training rows in fit coordinates; y_unshifted: lnL with no shift (the model's d -> inf
@@ -37,11 +48,11 @@ class RFDistanceTails:
         np.minimum.at(self.dmin, inv, d)
         np.maximum.at(self.dmax, inv, d)
         args = (key, 1.0 / d, np.asarray(y_unshifted, dtype=float), np.asarray(y_errors, dtype=float))
-        uk2, P, _, _ = fit_all_points_batched(*args, fix_C=True, xp=self.xp)
+        uk2, P, _, _ = self._fit_points(args)
         fmin = None
         if self.shared_fmin:
             fmin = float(np.nanmedian(P[:, 2]))
-            uk2, P, _, _ = fit_all_points_batched(*args, fix_C=True, xp=self.xp, fmin_fixed=fmin)
+            uk2, P, _, _ = self._fit_points(args, fmin_fixed=fmin)
         assert np.array_equal(uk2, uk)
         self.P = P
         self.good = np.all(np.isfinite(P), axis=1)
@@ -49,7 +60,7 @@ class RFDistanceTails:
         self.sd[self.sd == 0] = 1.0
         self.tree = cKDTree((uk - self.mu) / self.sd)
         self.report = dict(points=int(len(uk)), points_fit=int(self.good.sum()), sides=self.sides,
-                           fmin_shared=fmin)
+                           fmin_shared=fmin, point_fit=self.point_fit)
         return self
 
     def __call__(self, x_in):
