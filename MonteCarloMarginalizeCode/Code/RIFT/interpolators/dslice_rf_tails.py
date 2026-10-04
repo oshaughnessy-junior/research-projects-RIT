@@ -6,7 +6,7 @@ spurious mass at small or large d. This wrapper keeps the base fit inside the sl
 nearest grid point and, outside it, continues from the base fit's edge value with the shape of the
 averaged-amplitude model (dslice_amplitude_model.log_model, C = 0) fitted to that point's slices:
 
-    lnL(x, d) = base(x, d_edge) + [A(1/d; theta_j) - A(1/d_edge; theta_j)]      for d outside [d_min_j, d_max_j]
+    lnL(x, d) = base(x, d_edge) + min(0, A(1/d; theta_j) - A(1/d_edge; theta_j))      for d outside [d_min_j, d_max_j]
 
 with j the nearest grid point in standardized intrinsic coordinates. f_min may be shared by the whole
 event (the median of free per-point fits): the inclination degeneracy it encodes is set by the network.
@@ -76,7 +76,10 @@ class RFDistanceTails:
         off = lo | hi
         if np.any(off):
             Pj = self.P[j[off]]
-            val[off] = val[off] + log_model(1.0 / d[off], Pj[:, 0], Pj[:, 1], Pj[:, 2], 0.0) \
+            # Never rise above the edge value: where a point's fitted peak lies beyond its slices the
+            # shape would climb away from the data, and the sampler piles onto that unmeasured spike.
+            step = log_model(1.0 / d[off], Pj[:, 0], Pj[:, 1], Pj[:, 2], 0.0) \
                 - log_model(1.0 / d_edge[off], Pj[:, 0], Pj[:, 1], Pj[:, 2], 0.0)
+            val[off] = val[off] + np.minimum(step, 0.0)
         out[fin] = val
         return xmod.asarray(out)
