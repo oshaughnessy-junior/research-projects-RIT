@@ -841,7 +841,8 @@ elif opts.fit_method == 'dslice-amp':
     if opts.fit_load_gp:
         dslice_model = joblib.load(opts.fit_load_gp)
     else:
-        dslice_model = DistanceAmplitudeModel(list(coord_names).index('dist')).fit(X[finite],Y[finite],Y_err[finite])
+        _mi = list(coord_names).index('mtot') if 'mtot' in list(coord_names) else None   # mass-scaled distance field when mtot is a fit coordinate
+        dslice_model = DistanceAmplitudeModel(list(coord_names).index('dist'),mass_index=_mi).fit(X[finite],Y[finite],Y_err[finite])
         if opts.fit_save_gp:
             joblib.dump(dslice_model,opts.fit_save_gp+".pkl")
     print(" dslice-amp report ", dslice_model.report)

@@ -95,8 +95,12 @@ class DistanceAmplitudeModel:
 
     Fields are interpolated as log R, log u*, logit f_min. Points whose fit failed are left out."""
 
-    def __init__(self, dist_index, n_estimators=100, n_jobs=-1, min_slices=5, max_overshoot=1.0):
+    def __init__(self, dist_index, n_estimators=100, n_jobs=-1, min_slices=5, max_overshoot=1.0, mass_index=None):
+        """mass_index: column (in the full fit coordinates) holding a mass M. If given, the distance
+        scale is interpolated as log(u* M): the horizon distance scales with mass, so u* M varies far
+        less across the grid than u* itself."""
         self.dist_index = int(dist_index)
+        self.mass_index = None if mass_index is None else int(mass_index)
         self.max_overshoot = float(max_overshoot)
         self.n_estimators, self.n_jobs, self.min_slices = n_estimators, n_jobs, min_slices
 
@@ -131,11 +135,22 @@ class DistanceAmplitudeModel:
         self.report = dict(points=int(len(uk)), points_fit=int(good.sum()), dropped_overshoot=n_over,
                            per_point_rms_median=float(np.nanmedian(rms)), slices_median=float(np.median(counts)))
         self.rf = ExtraTreesRegressor(n_estimators=self.n_estimators, n_jobs=self.n_jobs)
-        self.rf.fit(uk[good], self._to_fields(P[good]))
+        F = self._to_fields(P[good])
+        if self.mass_index is not None:
+            F[:, 1] += np.log(self._mass(uk[good]))
+        self.rf.fit(uk[good], F)
         return self
+
+    def _mass(self, xi):
+        # mass column index refers to the full fit coordinates; xi has the distance column removed
+        j = self.mass_index - (1 if self.mass_index > self.dist_index else 0)
+        return xi[:, j]
 
     def predict(self, x):
         x = np.asarray(x, dtype=float)
         xi = np.delete(x, self.dist_index, axis=1)
-        R, us, fm = self._from_fields(self.rf.predict(xi))
+        F = self.rf.predict(xi)
+        if self.mass_index is not None:
+            F[:, 1] -= np.log(self._mass(xi))
+        R, us, fm = self._from_fields(F)
         return log_model(1.0 / x[:, self.dist_index], R, us, fm, 0.0)
