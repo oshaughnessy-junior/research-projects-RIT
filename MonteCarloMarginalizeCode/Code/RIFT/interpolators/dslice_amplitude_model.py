@@ -187,3 +187,67 @@ class DistanceAmplitudeModel:
         if self.prior is not None:
             ll = F[:, 3] + ll - self._lognorm(R, us, fm)
         return ll
+
+
+# ---- isotropic-inclination variant -----------------------------------------------------------
+# f(c) = sqrt(a (1+c^2)^2/4 + (1-a) c^2), c = cos(inclination) uniform on [0, 1] (symmetric), a in (0,1)
+# the network's plus-polarization share. f = 1 face-on, f_min = sqrt(a)/2 edge-on; the density of f
+# piles up at f_min, unlike the uniform-f model above.
+_C_NODES = np.linspace(0.0, 1.0, 241)
+_C_W = np.full(len(_C_NODES), 1.0 / (len(_C_NODES) - 1)); _C_W[[0, -1]] *= 0.5     # trapezoid on [0,1]
+_LOG_CW = np.log(_C_W)
+
+
+def log_model_iso(u, R, ustar, a, C=0.0):
+    """lnL(u) = C + log int_0^1 dc exp(R (1 - (1 - f(c) x)^2)),  x = u/u*; vectorized over u (and params)."""
+    u = np.asarray(u, dtype=float)
+    x = (u / ustar)[..., None]
+    a_ = np.asarray(a, dtype=float)[..., None] if np.ndim(a) else a
+    R_ = np.asarray(R, dtype=float)[..., None] if np.ndim(R) else R
+    c = _C_NODES
+    f = np.sqrt(a_ * (1 + c ** 2) ** 2 / 4 + (1 - a_) * c ** 2)
+    L = R_ * (1 - (1 - f * x) ** 2) + _LOG_CW
+    m = L.max(axis=-1)
+    return C + m + np.log(np.exp(L - m[..., None]).sum(axis=-1))
+
+
+def fit_point_iso(u, y, w, loss="linear", f_scale=1.0):
+    """Weighted least squares for (R, u*, a) with C = 0. Returns (params[4] with C=0, rms)."""
+    ymax = y.max()
+    u10 = np.percentile(u, 10)
+    best = None
+    for a0 in (0.5, 0.85):
+        p0 = np.array([np.log(max(ymax, 1.0)), np.log(u10), np.log(a0 / (1 - a0))])
+
+        def resid(p):
+            return np.sqrt(w) * (log_model_iso(u, np.exp(p[0]), np.exp(p[1]), 1 / (1 + np.exp(-p[2]))) - y)
+        try:
+            r = least_squares(resid, p0, method="trf", max_nfev=200, loss=loss, f_scale=f_scale * float(np.sqrt(np.median(w))))
+        except Exception:
+            continue
+        if best is None or r.cost < best.cost:
+            best = r
+    if best is None or not np.all(np.isfinite(best.x)):
+        return None, np.inf
+    p = best.x
+    params = np.array([np.exp(p[0]), np.exp(p[1]), 1 / (1 + np.exp(-p[2])), 0.0])
+    rms = float(np.sqrt(np.sum(w * (log_model_iso(u, *params[:3]) - y) ** 2) / np.sum(w)))
+    return params, rms
+
+
+def fit_all_points_iso(key, u, y, sig, min_slices=5, loss="linear", f_scale=1.0):
+    uk, inv, counts = np.unique(key, axis=0, return_inverse=True, return_counts=True)
+    inv = inv.reshape(-1)
+    order = np.argsort(inv, kind="stable")
+    starts = np.r_[0, np.cumsum(counts)]
+    w = 1.0 / np.maximum(sig, 1e-3) ** 2
+    params = np.full((len(uk), 4), np.nan)
+    rms = np.full(len(uk), np.nan)
+    for g in range(len(uk)):
+        r = order[starts[g]:starts[g + 1]]
+        if len(r) < min_slices:
+            continue
+        p, e = fit_point_iso(u[r], y[r], w[r], loss=loss, f_scale=f_scale)
+        if p is not None:
+            params[g], rms[g] = p, e
+    return uk, params, rms, counts
