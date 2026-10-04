@@ -44,3 +44,15 @@ def test_continuation_never_rises_above_the_edge():
     g = np.vstack(rows)
     m = RFDistanceTails(lambda x: np.full(len(x), 5.0), 1, sides="both").fit(g[:, :2], g[:, 2], 0.05 * np.ones(len(g)))
     assert np.all(m(np.column_stack([np.full(5, g[0, 0]), [500.0, 1000.0, 2000.0, 9000.0, 20000.0]])) <= 5.0)
+
+
+def test_point_fit_scipy_default_and_batched_option():
+    g = _grid()
+    m = RFDistanceTails(lambda x: np.zeros(len(x)), 1).fit(g[:, :2], g[:, 2], 0.05 * np.ones(len(g)))
+    b = RFDistanceTails(lambda x: np.zeros(len(x)), 1, point_fit="batched").fit(g[:, :2], g[:, 2], 0.05 * np.ones(len(g)))
+    assert m.report["point_fit"] == "scipy" and b.report["point_fit"] == "batched"
+    _, inv = np.unique(np.round(g[:, :1], 10), axis=0, return_inverse=True)
+    inv = inv.reshape(-1)
+    cost = lambda P: np.sum((log_model(1 / g[:, 1], *P[inv].T[:3], 0.0) - g[:, 2]) ** 2)
+    # two fitters (each with its own shared f_min): scipy reaches at most the batched cost
+    assert cost(m.P) <= cost(b.P) * (1 + 1e-6)
