@@ -294,9 +294,16 @@ def test_driver_resolves_and_forwards_the_box():
         src = f.read()
     assert 'g.add_option("--limit-distance"' in src
     assert 'def resolve_distance_limit(opts):' in src
-    assert src.count('d_prior_range=(opts.d_min, opts.d_max)') == 4
+    # Baseline, slow rotation, finite response, combined response, and the
+    # direct-marginalization wrapper must all preserve the physical prior box.
+    assert src.count('d_prior_range=(opts.d_min, opts.d_max)') == 5
     assert 'like_data, d_lo, d_hi' in src
-    assert '"--d-prior", "--limit-distance",' in src      # in the `implemented` set
+    # in the `implemented` set (PR 286 moved --d-prior OUT of it, so pin the
+    # block's contents rather than a neighbouring token)
+    start = src.index('implemented = {')
+    block = src[start:src.index('}', start)]
+    assert '"--limit-distance"' in block
+    assert '"--d-prior"' not in block
 
 
 @pytest.mark.skipif(not os.path.exists(_DRIVER), reason='JAX driver not in this tree')
@@ -321,7 +328,8 @@ def _driver_ns():
     """
     with open(_DRIVER) as f:
         src = f.read()
-    ns = {'np': np}
+    from RIFT.likelihood.jax_ile import distance_prior
+    ns = {'np': np, '_distance_prior': distance_prior}
     start = src.index('def resolve_distance_limit(opts):')
     end = src.index('def eval_lnL(like, theta, opts, with_distance):')
     exec(compile(src[start:end], _DRIVER, 'exec'), ns)          # noqa: S102

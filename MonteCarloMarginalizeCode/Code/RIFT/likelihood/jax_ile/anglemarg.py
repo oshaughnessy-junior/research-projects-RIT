@@ -68,6 +68,8 @@ scipy special functions, lax.scan (checkpointed) bounds memory by CHUNK, not
 by grid size.
 """
 
+import sys
+
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -85,11 +87,15 @@ __all__ = [
     "angle_sample_grid_sizes",
     "angle_coefficient_tables",
     "estimate_angle_amplitude",
+    "coefficient_table_distphipsimarg_exact",
+    "coefficient_table_distphipsimarg_laplace",
     "fused_log_likelihood_distphipsimarg_exact",
     "fused_log_likelihood_distphipsimarg_laplace",
     "choose_angle_marg_scheme",
     "fused_log_likelihood_distphipsimarg_peaklocal",
+    "fused_log_likelihood_distphipsimarg_multipeak",
     "gh_laplace_supported",
+    "gh_laplace_supported_for_data",
     "ANGLE_MARG_CROSSOVER_AMPLITUDE",
 ]
 
@@ -130,10 +136,15 @@ __all__ = [
 # Why 'exact' and not 'auto': 'auto' selects 'laplace' above
 # ANGLE_MARG_CROSSOVER_AMPLITUDE (rho ~26-30; see that constant's note for why
 # 26 and not the 21 this line used to say), which is an ACCURACY crossover.
-# But 'laplace' cannot use the per-sample adaptive distance quadrature and the
-# log-uniform distance grid is opt-in, so on the default uniform grid 'laplace'
-# was measured 43.2 nats from 'exact'+GH16 at rho 163 (mean; 16.3 median) -- an
-# error on the DISTANCE axis, not the angular one, which is ~1e-6 nats there.
+# But 'laplace' on the DEFAULT UNIFORM distance grid was measured 43.2 nats
+# from 'exact'+GH16 at rho 163 (mean; 16.3 median) -- an error on the
+# DISTANCE axis, not the angular one, which is ~1e-6 nats there.  (This
+# comment used to say laplace 'cannot use the per-sample adaptive distance
+# quadrature'.  It can, and does, for m_max <= _GH_PSI_M_MAX via
+# _gh_psi_node_offsets, gated by gh_laplace_supported; the 43.2 nats is what
+# the UNIFORM grid costs, not what the scheme costs.)  The log-uniform distance
+# grid is opt-in, so a caller who selects laplace without moving the distance
+# axis with it pays that 43.2 nats.
 # A default that is correct and slow beats one that is fast and tens of nats
 # wrong.  'auto' becomes the right default once laplace has a sound distance
 # quadrature, and ANGLE_MARG_CROSSOVER_AMPLITUDE should then be re-derived from
@@ -151,7 +162,7 @@ __all__ = [
 ANGLE_MARG_DEFAULT = "exact"
 ANGLE_MARG_LEGACY = "grid"      # the spelling that reproduces pre-2026-09-02 runs
 ANGLE_MARG_CHOICES = ("grid", "exact", "laplace", "peak-local", "phi-local",
-                      "auto")
+                      "multipeak", "multipeak-jax", "auto")
 
 #: 'peak-local' is deliberately NOT reachable from 'auto' yet.  It agrees with 'exact'
 #: to 1e-13 nats on the tables measured so far and is device-independent (the same answer
@@ -258,7 +269,7 @@ def _data_m_max(data):
 
 
 def angle_coefficient_tables(data, ra, dec, incl, interp=JAX_INTERP_DEFAULT,
-                             sample_chunk=None):
+                             sample_chunk=None, guard=0):
     """Exact 2-D Fourier coefficient tables of A = Re kappa_unit, B = rho^2_unit.
 
     Samples :func:`core._accumulate_unit` on the Nyquist-sized
@@ -274,15 +285,24 @@ def angle_coefficient_tables(data, ra, dec, incl, interp=JAX_INTERP_DEFAULT,
     kp = 0 and 2 for kp > 0 (the kp = 0 row stores both ks signs, whose
     conjugate pairing is already real).
 
-    Memory: the tables are (m_max+1, 3, S, npts) and (2*m_max+1, 5, S, npts)
+    ``guard`` requests primitive-only reconstruction support from the same
+    accumulation operation as the terminal band-limited path.  The returned
+    time axis then has ``data.npts + 2*guard`` samples; callers must discard the
+    support after reconstruction and compare two guard widths before accepting.
+
+    Memory: the tables are (m_max+1, 3, S, ntime) and (2*m_max+1, 5, S, ntime)
     complex -- independent of every grid size.  The sample scan runs in
     chunks of ``sample_chunk`` grid points (default npsi_s, i.e. one phi row
     per step), checkpointed so reverse-mode AD does not store per-step
     intermediates.
 
-    Returns ``(C_A, C_B, meta)`` with ``meta = dict(m_max, nphi_s, npsi_s)``.
+    Returns ``(C_A, C_B, meta)`` with grid sizes and the effective ``guard``
+    and ``ntime`` support recorded in ``meta``.
     """
     m_max = _data_m_max(data)
+    guard = int(guard)
+    if guard < 0:
+        raise ValueError("guard must be non-negative")
     nphi_s, npsi_s = angle_sample_grid_sizes(m_max)
     if sample_chunk is None:
         sample_chunk = npsi_s
@@ -311,7 +331,7 @@ def angle_coefficient_tables(data, ra, dec, incl, interp=JAX_INTERP_DEFAULT,
     dec = jnp.asarray(dec, dtype=jnp.float64)
     incl = jnp.asarray(incl, dtype=jnp.float64)
     S = ra.shape[0]
-    npts = data.npts
+    npts = data.npts + 2 * guard
     c = int(sample_chunk)
     nsteps = Ns // c
 
@@ -329,7 +349,7 @@ def angle_coefficient_tables(data, ra, dec, incl, interp=JAX_INTERP_DEFAULT,
         phi_b = jnp.broadcast_to(prs[:, 0][:, None], (c, S)).reshape(-1)
         psi_b = jnp.broadcast_to(prs[:, 1][:, None], (c, S)).reshape(-1)
         ku, rs = _accumulate_unit(data, ra_b, dec_b, psi_b, incl_b, phi_b,
-                                  interp, False)
+                                  interp, False, guard=guard)
         A = ku.real.reshape(c, S, npts)
         B = rs.reshape(c, S, npts)
         CA = CA + jnp.einsum("ckq,cst->kqst", pA, A)
@@ -339,7 +359,8 @@ def angle_coefficient_tables(data, ra, dec, incl, interp=JAX_INTERP_DEFAULT,
     CA0 = jnp.zeros((KPA, 2 * KSA + 1, S, npts), dtype=jnp.complex128)
     CB0 = jnp.zeros((KPB, 2 * KSB + 1, S, npts), dtype=jnp.complex128)
     (C_A, C_B), _ = jax.lax.scan(jax.checkpoint(_step), (CA0, CB0), xs)
-    meta = dict(m_max=m_max, nphi_s=nphi_s, npsi_s=npsi_s)
+    meta = dict(m_max=m_max, nphi_s=nphi_s, npsi_s=npsi_s,
+                guard=guard, ntime=npts)
     return C_A, C_B, meta
 
 
@@ -806,45 +827,60 @@ _AMP_FAILSAFE = {"tripped": False, "n_calls": 0, "worst_amp": 0.0,
 def reset_amp_failsafe():
     """Clear the undersizing record (call once per event, before sampling).
 
-    Barriers first: an in-flight callback from the PREVIOUS event must not land
-    after the reset and mislabel this one.
+    No barrier is needed: the record is written synchronously at the Python
+    boundary by :func:`record_amp_failsafe`, never by a queued device effect.
     """
-    try:
-        jax.effects_barrier()
-    except Exception:
-        pass
     _AMP_FAILSAFE.update(tripped=False, n_calls=0, worst_amp=0.0,
                          amp_sizing=None, scheme=None)
 
 
 def amp_failsafe_state(barrier=True):
-    """Host-side record of whether the dense grids were ever undersized.
+    """Host-side record of the deterministic output-cloud amplitude checks.
 
-    ``barrier=True`` calls :func:`jax.effects_barrier` first, so queued debug
-    callbacks have landed before the record is read.  Without it a caller can
-    read CLEAN while a tripped callback is still in flight, or reset for the
-    next event before the previous event's callback arrives.
+    ``barrier`` is accepted for API compatibility and ignored: there are no
+    queued device effects left to drain.  The jitted kernels RETURN their
+    amplitude metric as ordinary data and the wrapper accumulates it
+    synchronously once each batch is ready, so a read here is already
+    ordered after every batch the caller has taken delivery of.
+
+    Keeping host effects out of these graphs is load-bearing beyond tidiness:
+    ``jax/_src/compiler.py::_cache_write`` refuses to write a persistent cache
+    entry for any module carrying host callbacks ("because it uses host
+    callbacks"), so a ``jax.debug.print``/``jax.debug.callback`` anywhere in
+    the angle-marginalization graph makes the most expensive compile in RIFT
+    permanently uncacheable.
 
     Returns a dict; ``tripped`` is the load-bearing field.  Consumers should
     LABEL their output rather than discard it -- see the note in
     :func:`_runtime_amp_failsafe` about why this is not fatal and not a NaN.
     """
-    if barrier:
-        try:
-            jax.effects_barrier()
-        except Exception:
-            pass
     return dict(_AMP_FAILSAFE)
 
 
-def _record_amp_failsafe(tripped, amp_call, amp_sizing, scheme_name):
-    """Host callback.  Runs outside the traced graph; never alters a value."""
+def record_amp_failsafe(amp_call, amp_sizing, scheme_name):
+    """Accumulate one already-evaluated batch's amplitude maximum.
+
+    Runs at the Python boundary after the device result is ready, never inside
+    a JIT.  Maxima accumulate across chunks and calls for the whole event; the
+    likelihood values are neither altered nor filtered.
+    """
+    amp_call = float(np.max(np.asarray(amp_call)))
+    amp_sizing = float(amp_sizing)
+    tripped = amp_call > AMP_FAILSAFE_TRIP_FACTOR * amp_sizing
     _AMP_FAILSAFE["n_calls"] += 1
-    if bool(tripped):
+    _AMP_FAILSAFE["worst_amp"] = max(_AMP_FAILSAFE["worst_amp"], amp_call)
+    _AMP_FAILSAFE["amp_sizing"] = amp_sizing
+    _AMP_FAILSAFE["scheme"] = scheme_name
+    if tripped:
         _AMP_FAILSAFE["tripped"] = True
-        _AMP_FAILSAFE["worst_amp"] = max(_AMP_FAILSAFE["worst_amp"], float(amp_call))
-        _AMP_FAILSAFE["amp_sizing"] = float(amp_sizing)
-        _AMP_FAILSAFE["scheme"] = scheme_name
+        sys.stderr.write(
+            "WARNING anglemarg/%s: this batch's coefficient tables reach an "
+            "amplitude scale ~%.4g (analytic over-reading expression), above "
+            "%gx the amp_sizing=%.4g the dense (phi,psi) grids were built "
+            "for.  estimate_angle_amplitude underestimated the sky maximum; "
+            "the marginal may be under-resolved at such points.  Rebuild the "
+            "likelihood with amp_sizing >= the reported amplitude.\n"
+            % (scheme_name, amp_call, AMP_FAILSAFE_TRIP_FACTOR, amp_sizing))
 
 
 def _runtime_amp_failsafe(C_A, C_B, x_grid, amp_sizing, scheme_name):
@@ -859,10 +895,11 @@ def _runtime_amp_failsafe(C_A, C_B, x_grid, amp_sizing, scheme_name):
     trigger threshold is 2*amp_sizing: it fires when the true local
     amplitude exceeds ~1.3-2x the sizing bound -- comfortably BEFORE the
     dense grids actually degrade (their calibrated constants carry a 2x
-    margin in N, i.e. 4x in amplitude).  The warning prints from inside jit
-    via jax.debug.print (no value is altered; the recourse is named in the
-    message).  Everything under stop_gradient: the check must not appear in
-    the AD graph.
+    margin in N, i.e. 4x in amplitude).  It RETURNS the metric as ordinary JAX
+    data; no value is altered and there are deliberately no host effects here,
+    because such effects make this graph ineligible for JAX's persistent
+    compilation cache.  Everything under stop_gradient: the check must not
+    appear in the AD graph.
     """
     w = _kp_weights(C_A.shape[0])
     M_A = jnp.einsum("k,kqst->st", jnp.asarray(w), jnp.abs(C_A))
@@ -878,21 +915,9 @@ def _runtime_amp_failsafe(C_A, C_B, x_grid, amp_sizing, scheme_name):
     # anything, so a production run could finish and publish biased likelihoods, samples
     # and evidence while the "fail-safe" scrolled past in a log.  The recourse chosen is
     # a HOST-RECORDED LABEL, not a poisoned value -- see the block below, which gives the
-    # reasoning and the two rejected alternatives.  This function returns None; it alters
-    # no value.  Everything is under stop_gradient so the check never enters the AD graph.
-    jax.lax.cond(
-        amp_call > AMP_FAILSAFE_TRIP_FACTOR * amp_sizing,
-        lambda a_: jax.debug.print(
-            "WARNING anglemarg/" + scheme_name + ": this call's coefficient "
-            "tables reach an amplitude scale ~{a:.4g} (analytic over-reading "
-            "expression), above "
-            + "%gx the amp_sizing=%.4g" % (AMP_FAILSAFE_TRIP_FACTOR, amp_sizing)
-            + " the dense (phi,psi) grids were built for.  "
-            "estimate_angle_amplitude underestimated the sky maximum; the "
-            "marginal may be under-resolved at such points.  Rebuild the "
-            "likelihood with amp_sizing >= the reported amplitude.", a=a_),
-        lambda a_: None,
-        amp_call)
+    # reasoning and the two rejected alternatives.  This function alters no value; it
+    # RETURNS the metric as ordinary JAX data and the caller records it at the Python
+    # boundary.  Everything is under stop_gradient so the check never enters the AD graph.
     # DELIBERATELY NOT FATAL, AND DELIBERATELY NOT A NaN.
     #
     # An earlier version returned NaN to "fail closed".  That was worse than the
@@ -907,29 +932,30 @@ def _runtime_amp_failsafe(C_A, C_B, x_grid, amp_sizing, scheme_name):
     # Aborting is also wrong here: this is a configuration estimate, and hard
     # failure would destroy a multi-hour run over a recoverable condition.
     #
-    # So: the value is untouched, the run completes, and the condition is
-    # recorded on the HOST so the driver can LABEL the result as suspect in its
-    # provenance.  A labelled result an operator can judge beats both a vanished
-    # region and a dead run.
-    # The callback sits INSIDE lax.cond so the ORDINARY path has no host
-    # callback at all.  An unconditional callback fires once per likelihood
-    # evaluation -- once per MALA/flowMC proposal, per chain -- transferring to
-    # the host and destroying accelerator throughput even when undersizing never
-    # happens.  Only the rare tripped branch pays.
+    # So: the value is untouched, the run completes, and the metric is RETURNED
+    # for the host to record, so the driver can LABEL the result as suspect in
+    # its provenance.  A labelled result an operator can judge beats both a
+    # vanished region and a dead run.
     #
-    # Reliability caveat, stated because it bounds what this record can be used
-    # for: jax.debug.callback effects may be dropped, duplicated or reordered
-    # under transformation, and may land AFTER the result is ready.  So this is
-    # a best-effort DIAGNOSTIC LABEL, not a correctness gate -- consumers must
-    # call jax.effects_barrier() before reading or resetting the state, and must
-    # not treat a clean read as proof of adequacy.
-    jax.lax.cond(
-        amp_call > AMP_FAILSAFE_TRIP_FACTOR * amp_sizing,
-        lambda a_: jax.debug.callback(
-            _record_amp_failsafe, True, a_,
-            jnp.asarray(amp_sizing, dtype=jnp.float64), scheme_name),
-        lambda a_: None,
-        amp_call)
+    # WHY THIS IS RETURNED RATHER THAN REPORTED FROM INSIDE THE GRAPH, which is
+    # what it used to be.  Two reasons, and the second is why it changed.
+    # (1) Reliability: debug-callback effects may be dropped, duplicated or
+    # reordered under transformation, so a clean read never proved adequacy and
+    # every consumer had to say so.  (2) Cacheability, which is load-bearing:
+    # jax/_src/compiler.py::_cache_write declines to write a persistent cache
+    # entry for any module that carries host callbacks.  With one in this
+    # function the whole angle-marginalization graph -- the most expensive
+    # compile in RIFT, minutes for peak-local -- could never be persistently
+    # cached, on any scheme, in any run.  Returning the metric fixes both: the
+    # record is now synchronous and exact for every batch the caller takes
+    # delivery of.
+    #
+    # The COVERAGE that buys is narrower than "every traced call", and is stated
+    # rather than implied: the wrapper records on the BATCHED path (pilot,
+    # reweight and final output-cloud evaluations, i.e. every point that reaches
+    # a published artifact) and deliberately not on the scalar AD/flow-training
+    # path, whose proposals do not enter those artifacts.
+    return amp_call
 
 
 def _require_amp_sizing(amp_sizing):
@@ -975,11 +1001,119 @@ def _pad_chunks(values, chunk):
     return [jnp.asarray(o) for o in out] + [jnp.asarray(lw)]
 
 
+def coefficient_table_distphipsimarg_exact(
+        C_A, C_B, x_grid, log_w_grid, *, amp_sizing=None, m_max=None,
+        dense_chunk=8, grid_block=32, return_amp=False):
+    """Stream the exact angle/distance reserve from coefficient tables.
+
+    This is the common fixed-point seam between the dense/exact reserve and
+    all-axis peak-local work.  ``C_A`` and ``C_B`` may be the batched
+    ``(KP,KS,S,Ntime)`` tables returned by :func:`angle_coefficient_tables`, or
+    an unbatched ``C_A`` of shape ``(KP,KS,Ntime)`` together with a collapsed,
+    time-independent ``C_B`` of shape ``(KP,KS)``.  The latter is exactly the
+    compact representation used by ``all_axis_peaklocal``.
+
+    The result has shape ``(S,Ntime)`` and is normalized over the two periodic
+    angles.  With the fixed-grid distance path, normalization is entirely
+    determined by ``log_w_grid``.  When ``JAX_ILE_DISTMARG_GH`` is enabled, the
+    existing adaptive-distance contract instead reads only the support from
+    ``x_grid`` and applies its built-in normalized volumetric ``x**-4`` measure.
+    Time is deliberately not integrated here.  Keeping those measures explicit
+    prevents an empirical local result using continuous ``x**-4 dx`` from being
+    silently compared with a differently normalized production distance prior.
+
+    Dense angle coordinates are generated procedurally from each scan index and
+    distance blocks are streamed, so peak workspace is controlled by
+    ``dense_chunk`` and ``grid_block`` rather than the complete dense angle
+    lattice.  No waveform or packed U,V/Q contraction is repeated.
+    """
+    C_A = jnp.asarray(C_A, dtype=jnp.complex128)
+    C_B = jnp.asarray(C_B, dtype=jnp.complex128)
+    x_grid = jnp.asarray(x_grid, dtype=jnp.float64)
+    log_w_grid = jnp.asarray(log_w_grid, dtype=jnp.float64)
+    if C_A.ndim == 3:
+        C_A = C_A[:, :, None, :]
+    if C_A.ndim != 4:
+        raise ValueError("C_A must have shape (KP,KS[,S],Ntime)")
+    if C_B.ndim == 2:
+        C_B = jnp.broadcast_to(
+            C_B[:, :, None, None],
+            C_B.shape + (C_A.shape[2], C_A.shape[3]))
+    if C_B.ndim != 4 or C_B.shape[2:] != C_A.shape[2:]:
+        raise ValueError(
+            "C_B must be collapsed (KP,KS) or match C_A sample/time axes")
+    if C_A.shape[1] % 2 != 1 or C_B.shape[1] % 2 != 1:
+        raise ValueError("angular harmonic axes must have odd length")
+    if x_grid.ndim != 1 or log_w_grid.shape != x_grid.shape or x_grid.size < 2:
+        raise ValueError("x_grid/log_w_grid must be matching one-dimensional grids")
+    if not (int(dense_chunk) > 0 and int(grid_block) > 0):
+        raise ValueError("dense_chunk and grid_block must be positive")
+    inferred_m_max = int(C_A.shape[0] - 1)
+    if m_max is None:
+        m_max = inferred_m_max
+    m_max = int(m_max)
+    if m_max != inferred_m_max:
+        raise ValueError("m_max does not match the C_A harmonic order")
+    if C_B.shape[0] < 2 * m_max + 1:
+        raise ValueError("C_B does not contain the required norm harmonics")
+
+    S = C_A.shape[2]
+    npts = C_A.shape[3]
+    amp_sizing = _require_amp_sizing(amp_sizing)
+    amp_call = _runtime_amp_failsafe(C_A, C_B, x_grid, amp_sizing,
+                                     "exact-tables")
+    nphi_d, nu_d = _dense_grid_sizes(amp_sizing, m_max=m_max)
+    c = int(dense_chunk)
+    n_dense = nphi_d * nu_d
+    nsteps = (n_dense + c - 1) // c
+    lane = jnp.arange(c, dtype=jnp.int32)
+
+    a_g = x_grid
+    b_g = -0.5 * jnp.square(x_grid)
+    _use_gh = _core._DISTMARG_GH_N > 0
+    if _use_gh:
+        gh_xi, gh_logw = make_distance_gh(_core._DISTMARG_GH_N)
+        x_min = jnp.min(x_grid)
+        x_max = jnp.max(x_grid)
+
+    def _step(carry, step):
+        m, s = carry
+        flat = step * c + lane
+        live = flat < n_dense
+        safe = jnp.minimum(flat, n_dense - 1)
+        iphi = safe // nu_d
+        iu = safe - iphi * nu_d
+        phw = (2.0 * jnp.pi / float(nphi_d)) * iphi
+        uw = (2.0 * jnp.pi / float(nu_d)) * iu
+        lww = jnp.where(live, 0.0, -jnp.inf)
+        A = _reconstruct_field(C_A, phw, uw)
+        B = _reconstruct_field(C_B, phw, uw)
+        K2 = A.reshape(c * S, npts)
+        R2 = B.reshape(c * S, npts)
+        if _use_gh:
+            lnL = _distmarg_gh_logL(K2, R2, gh_xi, gh_logw, x_min, x_max)
+        else:
+            lnL = _logsumexp_grid_blocked(
+                K2, R2, a_g, b_g, log_w_grid, grid_block)
+        lnL = lnL.reshape(c, S, npts) + lww[:, None, None]
+        m_new, s_new = _lse_update(m, s, lnL, axis=0)
+        return (m_new, s_new), None
+
+    m0 = jnp.full((S, npts), -jnp.inf, dtype=jnp.float64)
+    s0 = jnp.zeros((S, npts), dtype=jnp.float64)
+    (m, s), _ = jax.lax.scan(
+        jax.checkpoint(_step), (m0, s0),
+        jnp.arange(nsteps, dtype=jnp.int32))
+    lnL_t = m + jnp.log(s) - jnp.log(float(n_dense))
+    return (lnL_t, amp_call) if return_amp else lnL_t
+
+
 def fused_log_likelihood_distphipsimarg_exact(
         data, ra, dec, incl, x_grid, log_w_grid,
         interp=JAX_INTERP_DEFAULT, amp_sizing=None,
         dense_chunk=8, grid_block=32,
-        time_quadrature=TIME_QUAD_DEFAULT, return_lnLt=False):
+        time_quadrature=TIME_QUAD_DEFAULT, return_lnLt=False,
+        return_amp=False):
     """Distance-, phi_ref- AND psi-marginalized lnL: exact-coefficient scheme.
 
     Drop-in replacement for :func:`core.fused_log_likelihood_distphipsimarg`
@@ -1003,51 +1137,13 @@ def fused_log_likelihood_distphipsimarg_exact(
     x_grid = jnp.asarray(x_grid, dtype=jnp.float64)
     log_w_grid = jnp.asarray(log_w_grid, dtype=jnp.float64)
     C_A, C_B, meta = angle_coefficient_tables(data, ra, dec, incl, interp)
-    S = ra.shape[0]
-    npts = data.npts
-
-    amp_sizing = _require_amp_sizing(amp_sizing)
-    _runtime_amp_failsafe(C_A, C_B, x_grid, amp_sizing, "exact")
-    nphi_d, nu_d = _dense_grid_sizes(amp_sizing, m_max=meta["m_max"])
-    phi_d = np.linspace(0.0, 2.0 * np.pi, nphi_d, endpoint=False)
-    u_d = np.linspace(0.0, 2.0 * np.pi, nu_d, endpoint=False)   # u = 2 psi
-    PH, UU = np.meshgrid(phi_d, u_d, indexing="ij")
-    c = int(dense_chunk)
-    phi_x, u_x, lw_x = _pad_chunks([PH.ravel(), UU.ravel()], c)
-    n_dense = nphi_d * nu_d
-
-    a_g = x_grid
-    b_g = -0.5 * jnp.square(x_grid)
-    _use_gh = _core._DISTMARG_GH_N > 0
-    if _use_gh:
-        gh_xi, gh_logw = make_distance_gh(_core._DISTMARG_GH_N)
-        x_min = jnp.min(x_grid)
-        x_max = jnp.max(x_grid)
-
-    def _step(carry, x):
-        m, s = carry
-        phw, uw, lww = x
-        A = _reconstruct_field(C_A, phw, uw)                  # (c,S,npts)
-        B = _reconstruct_field(C_B, phw, uw)
-        K2 = A.reshape(c * S, npts)
-        R2 = B.reshape(c * S, npts)
-        if _use_gh:
-            lnL = _distmarg_gh_logL(K2, R2, gh_xi, gh_logw, x_min, x_max)
-        else:
-            lnL = _logsumexp_grid_blocked(K2, R2, a_g, b_g, log_w_grid,
-                                          grid_block)
-        lnL = lnL.reshape(c, S, npts) + lww[:, None, None]
-        m_new, s_new = _lse_update(m, s, lnL, axis=0)
-        return (m_new, s_new), None
-
-    m0 = jnp.full((S, npts), -jnp.inf, dtype=jnp.float64)
-    s0 = jnp.zeros((S, npts), dtype=jnp.float64)
-    (m, s), _ = jax.lax.scan(jax.checkpoint(_step), (m0, s0),
-                             (phi_x, u_x, lw_x))
-    lnL_t = m + jnp.log(s) - jnp.log(float(n_dense))
-    if return_lnLt:
-        return lnL_t
-    return _time_marginalize_terminal(lnL_t, data, time_quadrature)
+    lnL_t, amp_call = coefficient_table_distphipsimarg_exact(
+        C_A, C_B, x_grid, log_w_grid, amp_sizing=amp_sizing,
+        m_max=meta["m_max"], dense_chunk=dense_chunk,
+        grid_block=grid_block, return_amp=True)
+    out = lnL_t if return_lnLt else _time_marginalize_terminal(
+        lnL_t, data, time_quadrature)
+    return (out, amp_call) if return_amp else out
 
 
 # ---------------------------------------------------------------------------
@@ -1555,78 +1651,59 @@ def _gh_psi_node_offsets(n_nodes):
     return (z, z[np.maximum(idx - 1, 0)], z[np.minimum(idx + 1, n - 1)], n)
 
 
-def fused_log_likelihood_distphipsimarg_laplace(
-        data, ra, dec, incl, x_grid, log_w_grid,
-        interp=JAX_INTERP_DEFAULT, amp_sizing=None,
+def coefficient_table_distphipsimarg_laplace(
+        C_A, C_B, x_grid, log_w_grid, *, amp_sizing=None, m_max=None,
         phi_chunk=16, dist_block=4, point_block=LAPLACE_POINT_BLOCK,
-        time_quadrature=TIME_QUAD_DEFAULT, return_lnLt=False):
-    """Distance-, phi_ref- AND psi-marginalized lnL: analytic psi-Laplace scheme.
+        return_amp=False):
+    """Stream the psi-Laplace angle/distance reserve from coefficient tables.
 
-    Same contract and normalization as
-    :func:`fused_log_likelihood_distphipsimarg_exact`, but the psi axis is
-    removed analytically (see :func:`_laplace_psi_lnI`): at every
-    (dense-phi, distance-node, time) point the u-exponent coefficients follow
-    directly from the SAME coefficient tables,
+    Same seam and normalization contract as
+    :func:`coefficient_table_distphipsimarg_exact`: it consumes the tables
+    :func:`angle_coefficient_tables` returns, produces ``(S, Ntime)``
+    normalized over the two periodic angles, and does NOT integrate time.
+    Extracted from :func:`fused_log_likelihood_distphipsimarg_laplace`, which
+    is now a thin wrapper over it, so the two paths cannot drift.
 
-        a  = x A0(phi) - x^2/2 B0(phi)
-        c1 = x A1(phi) - x^2/2 B1(phi)          (order e^{iu})
-        c2 =           - x^2/2 B2(phi)          (order e^{2iu})
+    It exists because the four-axis policy's reserve consumes already-built
+    tables at refined time nodes, and the only table-level reserve was the
+    exact one.  That made the reserve method un-selectable: the composite could
+    only ever fall back to exact angles, whatever the amplitude.
 
-    so no additional likelihood evaluations are needed.  Cost scales ~sqrt(A)
-    (the dense phi axis) instead of ~A; the Laplace error is O(1/A) and
-    SHRINKS with SNR.
+    Costs ~sqrt(A) rather than ~A -- the lattice is dense in phi only, the psi
+    axis being removed analytically -- and its error SHRINKS with amplitude, so
+    it is the reserve to use above the selector crossover.  The caller owns that
+    choice; this function does not select.
 
-    The adaptive distance quadrature (JAX_ILE_DISTMARG_GH) is honoured for
-    ``m_max <= _GH_PSI_M_MAX`` via the psi-marginal node placement documented
-    above ``_gh_psi_node_offsets``; ``x_grid``/``log_w_grid`` then only supply
-    the support [x_min, x_max] and the prior normalization, exactly as on the
-    exact path.  Richer mode content still RAISES rather than being silently
-    accepted: the placement rests on an A0 == B1 == 0 identity that is
-    established for (2,+-2) only.
-
-    Two DIFFERENT axes, and conflating them has already misled a reader.  The
-    paragraph above is about the PER-SAMPLE adaptive quadrature.  The STATIC
-    distance grid is separate and is not restricted here at all:
-    ``--distance-grid-scheme loguniform`` is supported and gated on this path,
-    and needs no node-placement rule because it locates no peak -- one relative
-    spacing resolves every per-sample peak wherever it sits.  See
-    DESIGN_jax_distance_quadrature.md.  The two cannot be combined: with
-    JAX_ILE_DISTMARG_GH set the per-sample quadrature consumes only the SUPPORT
-    of ``x_grid``, so the log-uniform option would be bit-identically inert and
-    is refused rather than silently ignored.
-
-    Memory of the multiplicative quadrature slab is bounded by ``phi_chunk`` x
-    ``dist_block`` x ``point_block``, never by the full sample x time product or
-    by grid sizes.  ``point_block`` rolls independent ``(sample, time)`` bins and
-    changes no quadrature rule or reduction order within a bin.
+    The adaptive distance quadrature is honoured exactly as in the fused
+    kernel, and carries the same restriction: the psi-marginal node placement
+    rests on the A0 == 0 / B1 == 0 identity, established for mode content up to
+    ``_GH_PSI_M_MAX``.  That identity is a property of the DATA and cannot be
+    measured here, where the tables are tracers; the caller must have gated it
+    with :func:`gh_laplace_supported` on concrete tables.
     """
-    # RESPONSE-MODEL PRECONDITION, before anything is built.  This function is
-    # public (__all__) and is called directly by the wrapper and by several test
-    # modules, so a wrapper-only gate leaves a live bypass: a direct call with a
-    # banded response and m_max <= 2 would execute the unsupported placement
-    # while the wrapper correctly refused it.  `feature` is a plain Python
-    # attribute -- static and trace-safe -- so unlike the numerical A0/B1
-    # measurement (which needs concrete tables and therefore stays in the
-    # wrapper) it costs nothing, and checking it here also avoids paying for a
-    # coefficient-table build that is about to be rejected.
-    if _core._DISTMARG_GH_N > 0:
-        _feature = getattr(data, "feature", None)
-        if _feature not in _GH_PSI_STATIC_FEATURES:
-            raise ValueError(
-                "JAX_ILE_DISTMARG_GH is set, but the 'laplace' angle-marg "
-                "scheme's psi-marginal distance-node placement requires the "
-                "static detector response: it is DERIVED from A0 == 0 and "
-                "B1 == 0, which follow from F+(psi) + i Fx(psi) = "
-                "(F+(0) + i Fx(0)) e^{-2i psi}.  This data has feature=%r, "
-                "which does not have that factorization.  Use "
-                "--angle-marg-scheme exact, or unset JAX_ILE_DISTMARG_GH."
-                % (_feature,))
+    C_A = jnp.asarray(C_A, dtype=jnp.complex128)
+    C_B = jnp.asarray(C_B, dtype=jnp.complex128)
+    if C_A.ndim == 3:
+        C_A = C_A[:, :, None, :]
+    if C_A.ndim != 4:
+        raise ValueError("C_A must have shape (KP,KS[,S],Ntime)")
+    if C_B.ndim == 2:
+        C_B = jnp.broadcast_to(
+            C_B[:, :, None, None],
+            C_B.shape + (C_A.shape[2], C_A.shape[3]))
+    if C_B.ndim != 4 or C_B.shape[2:] != C_A.shape[2:]:
+        raise ValueError(
+            "C_B must be collapsed (KP,KS) or match C_A sample/time axes")
+    inferred_m_max = int(C_A.shape[0] - 1)
+    if m_max is None:
+        m_max = inferred_m_max
+    m_max = int(m_max)
+    if m_max != inferred_m_max:
+        raise ValueError("m_max does not match the C_A harmonic order")
+    S = int(C_A.shape[2])
+    npts = int(C_A.shape[3])
     x_grid = jnp.asarray(x_grid, dtype=jnp.float64)
     log_w_grid = jnp.asarray(log_w_grid, dtype=jnp.float64)
-    C_A, C_B, meta = angle_coefficient_tables(data, ra, dec, incl, interp)
-    m_max = meta["m_max"]
-    S = ra.shape[0]
-    npts = data.npts
 
     _use_gh = _core._DISTMARG_GH_N > 0
     # This runs under jit/grad, where C_A and C_B are TRACERS, so the identity
@@ -1637,18 +1714,20 @@ def fused_log_likelihood_distphipsimarg_laplace(
     # m_max test below is the only check available at trace time.
     if _use_gh and int(m_max) > _GH_PSI_M_MAX:
         raise ValueError(
-            "JAX_ILE_DISTMARG_GH is set and the 'laplace' angle-marg scheme's "
+            "distance-GH-nodes is set (--distance-gh-nodes / "
+            "JAX_ILE_DISTMARG_GH) and the 'laplace' angle-marg scheme's "
             "psi-marginal distance-node placement is validated for mode "
             "content m_max <= %d only (it rests on the A0 == 0 / B1 == 0 "
             "identity); this data has m_max = %d.  Use --angle-marg-scheme "
-            "exact, or unset JAX_ILE_DISTMARG_GH."
+            "exact, or pass --distance-gh-nodes 0 (or unset "
+            "JAX_ILE_DISTMARG_GH)."
             % (_GH_PSI_M_MAX, int(m_max)))
 
     amp_sizing = _require_amp_sizing(amp_sizing)
     # x_grid is still the right argument under GH: the adaptive nodes are
     # CLIPPED into [min x_grid, max x_grid], so the amplitude bound the
     # failsafe computes over x_grid bounds the nodes actually used.
-    _runtime_amp_failsafe(C_A, C_B, x_grid, amp_sizing, "laplace")
+    amp_call = _runtime_amp_failsafe(C_A, C_B, x_grid, amp_sizing, "laplace")
     nphi_d, _ = _dense_grid_sizes(amp_sizing, m_max=m_max)
     phi_d = np.linspace(0.0, 2.0 * np.pi, nphi_d, endpoint=False)
     c = int(phi_chunk)
@@ -1834,9 +1913,88 @@ def fused_log_likelihood_distphipsimarg_laplace(
     s0 = jnp.zeros((S, npts), dtype=jnp.float64)
     (m, s), _ = jax.lax.scan(jax.checkpoint(_step), (m0, s0), (phi_x, lw_x))
     lnL_t = m + jnp.log(s) - jnp.log(float(nphi_d))
-    if return_lnLt:
-        return lnL_t
-    return _time_marginalize_terminal(lnL_t, data, time_quadrature)
+    return (lnL_t, amp_call) if return_amp else lnL_t
+
+
+def fused_log_likelihood_distphipsimarg_laplace(
+        data, ra, dec, incl, x_grid, log_w_grid,
+        interp=JAX_INTERP_DEFAULT, amp_sizing=None,
+        phi_chunk=16, dist_block=4, point_block=LAPLACE_POINT_BLOCK,
+        time_quadrature=TIME_QUAD_DEFAULT, return_lnLt=False,
+        return_amp=False):
+    """Distance-, phi_ref- AND psi-marginalized lnL: analytic psi-Laplace scheme.
+
+    Same contract and normalization as
+    :func:`fused_log_likelihood_distphipsimarg_exact`, but the psi axis is
+    removed analytically (see :func:`_laplace_psi_lnI`): at every
+    (dense-phi, distance-node, time) point the u-exponent coefficients follow
+    directly from the SAME coefficient tables,
+
+        a  = x A0(phi) - x^2/2 B0(phi)
+        c1 = x A1(phi) - x^2/2 B1(phi)          (order e^{iu})
+        c2 =           - x^2/2 B2(phi)          (order e^{2iu})
+
+    so no additional likelihood evaluations are needed.  Cost scales ~sqrt(A)
+    (the dense phi axis) instead of ~A; the Laplace error is O(1/A) and
+    SHRINKS with SNR.
+
+    The adaptive distance quadrature (JAX_ILE_DISTMARG_GH) is honoured for
+    ``m_max <= _GH_PSI_M_MAX`` via the psi-marginal node placement documented
+    above ``_gh_psi_node_offsets``; ``x_grid``/``log_w_grid`` then only supply
+    the support [x_min, x_max] and the prior normalization, exactly as on the
+    exact path.  Richer mode content still RAISES rather than being silently
+    accepted: the placement rests on an A0 == B1 == 0 identity that is
+    established for (2,+-2) only.
+
+    Two DIFFERENT axes, and conflating them has already misled a reader.  The
+    paragraph above is about the PER-SAMPLE adaptive quadrature.  The STATIC
+    distance grid is separate and is not restricted here at all:
+    ``--distance-grid-scheme loguniform`` is supported and gated on this path,
+    and needs no node-placement rule because it locates no peak -- one relative
+    spacing resolves every per-sample peak wherever it sits.  See
+    DESIGN_jax_distance_quadrature.md.  The two cannot be combined: with
+    JAX_ILE_DISTMARG_GH set the per-sample quadrature consumes only the SUPPORT
+    of ``x_grid``, so the log-uniform option would be bit-identically inert and
+    is refused rather than silently ignored.
+
+    Memory of the multiplicative quadrature slab is bounded by ``phi_chunk`` x
+    ``dist_block`` x ``point_block``, never by the full sample x time product or
+    by grid sizes.  ``point_block`` rolls independent ``(sample, time)`` bins and
+    changes no quadrature rule or reduction order within a bin.
+    """
+    # RESPONSE-MODEL PRECONDITION, before anything is built.  This function is
+    # public (__all__) and is called directly by the wrapper and by several test
+    # modules, so a wrapper-only gate leaves a live bypass: a direct call with a
+    # banded response and m_max <= 2 would execute the unsupported placement
+    # while the wrapper correctly refused it.  `feature` is a plain Python
+    # attribute -- static and trace-safe -- so unlike the numerical A0/B1
+    # measurement (which needs concrete tables and therefore stays in the
+    # wrapper) it costs nothing, and checking it here also avoids paying for a
+    # coefficient-table build that is about to be rejected.
+    if _core._DISTMARG_GH_N > 0:
+        _feature = getattr(data, "feature", None)
+        if _feature not in _GH_PSI_STATIC_FEATURES:
+            raise ValueError(
+                "distance-GH-nodes is set (--distance-gh-nodes / "
+                "JAX_ILE_DISTMARG_GH), but the 'laplace' angle-marg "
+                "scheme's psi-marginal distance-node placement requires the "
+                "static detector response: it is DERIVED from A0 == 0 and "
+                "B1 == 0, which follow from F+(psi) + i Fx(psi) = "
+                "(F+(0) + i Fx(0)) e^{-2i psi}.  This data has feature=%r, "
+                "which does not have that factorization.  Use "
+                "--angle-marg-scheme exact, or pass --distance-gh-nodes 0 "
+                "(or unset JAX_ILE_DISTMARG_GH)."
+                % (_feature,))
+    x_grid = jnp.asarray(x_grid, dtype=jnp.float64)
+    log_w_grid = jnp.asarray(log_w_grid, dtype=jnp.float64)
+    C_A, C_B, meta = angle_coefficient_tables(data, ra, dec, incl, interp)
+    lnL_t, amp_call = coefficient_table_distphipsimarg_laplace(
+        C_A, C_B, x_grid, log_w_grid, amp_sizing=amp_sizing,
+        m_max=meta["m_max"], phi_chunk=phi_chunk, dist_block=dist_block,
+        point_block=point_block, return_amp=True)
+    out = lnL_t if return_lnLt else _time_marginalize_terminal(
+        lnL_t, data, time_quadrature)
+    return (out, amp_call) if return_amp else out
 
 
 # Relative size at which A0 / B1 count as nonzero.  The identity the psi-marginal
@@ -1934,6 +2092,84 @@ def psi_harmonics_at_phi(C_A, C_B, phi, m_max):
             MB(4) + jnp.conj(MB(0)))       # B2
 
 
+# Generic probe direction for the build-time identity check.  The A0==0/B1==0
+# identity is a property of the spin-2 detector response, so it does not depend
+# on where we probe; a single generic (ra, dec, incl) away from any pole or
+# face-on/edge-on special case is enough, and keeps the check O(1).
+#
+# These lived in wrapper.py, reached from its one call site.  They are here
+# because there are now TWO consumers -- the angle scheme and the policy's
+# reserve roster -- and a second copy of a probe direction is a second
+# definition of what "the identity holds on this data" means.
+_GH_PROBE_RA = (1.0,)
+_GH_PROBE_DEC = (0.3,)
+_GH_PROBE_INCL = (1.0,)
+
+
+def _gh_laplace_precondition(m_max, feature):
+    """The two conditions that need no tables.  ``None`` means both hold.
+
+    Split out because there are two entry points and the cheap half must run
+    FIRST at both of them.  ``gh_laplace_supported_for_data`` builds tables, and
+    building them for a banded dataset takes the banded accumulation route --
+    a different code path, which fails on its own terms before the response
+    model is ever looked at.  So the caller that starts from a dataset has to
+    be able to refuse before it builds anything.
+    """
+    if int(m_max) > _GH_PSI_M_MAX:
+        # The tables are SIZED by m_max, so a mismatched m_max is a shape error
+        # rather than a measurement.
+        return dict(gh_laplace_ok=False, m_max=int(m_max),
+                    identity_A0_over_A1=None, identity_B1_over_B0=None,
+                    feature=feature,
+                    gh_laplace_reason="mode content m_max=%d above the "
+                                      "validated %d"
+                                      % (int(m_max), _GH_PSI_M_MAX))
+    # ANGLE-INDEPENDENT CONDITION, and the one that actually generalises.  A
+    # numerical check can only ever speak for the angles it was evaluated at,
+    # and the placement runs at arbitrary sampled angles; the response model is
+    # a property of the packed data and holds for all of them.
+    if feature not in _GH_PSI_STATIC_FEATURES:
+        return dict(gh_laplace_ok=False, m_max=int(m_max),
+                    identity_A0_over_A1=None, identity_B1_over_B0=None,
+                    feature=feature,
+                    gh_laplace_reason="response model %r does not give "
+                                      "the exact e^{-2i psi} polarization "
+                                      "factorization the A0 == 0 / B1 == 0 "
+                                      "identity rests on" % (feature,))
+    return None
+
+
+def gh_laplace_supported_for_data(data, interp=JAX_INTERP_DEFAULT):
+    """:func:`gh_laplace_supported` on tables this builds at a probe direction.
+
+    THE ONLY WAY to ask the question of a dataset rather than of a table.  The
+    predicate itself cannot be called under jit/grad -- the tables are tracers
+    there -- so every caller needs concrete tables, and every caller that builds
+    its own would be choosing its own probe direction.
+
+    Returns ``(ok, info)`` exactly as :func:`gh_laplace_supported` does.  Costs
+    one O(1) table build.  Says nothing about whether the distance quadrature in
+    use NEEDS the identity: that is the caller's condition (it is needed by the
+    per-sample adaptive node placement, not by a static grid).
+    """
+    m_max = _data_m_max(data)
+    feature = getattr(data, "feature", None)
+    # Cheap half first: see _gh_laplace_precondition.  Building the probe
+    # tables for a banded dataset would take the banded route and raise on its
+    # own missing fields, so a refusal here must not depend on tables.
+    refused = _gh_laplace_precondition(m_max, feature)
+    if refused is not None:
+        return False, refused
+    C_A, C_B = angle_coefficient_tables(
+        data,
+        jnp.asarray(_GH_PROBE_RA, dtype=jnp.float64),
+        jnp.asarray(_GH_PROBE_DEC, dtype=jnp.float64),
+        jnp.asarray(_GH_PROBE_INCL, dtype=jnp.float64),
+        interp)[:2]
+    return gh_laplace_supported(C_A, C_B, m_max, feature=feature)
+
+
 def gh_laplace_supported(C_A, C_B, m_max, feature=None):
     """May 'laplace' use the per-sample adaptive distance quadrature on THIS data?
 
@@ -1960,28 +2196,9 @@ def gh_laplace_supported(C_A, C_B, m_max, feature=None):
     # enough to resolve their phi content (harmonics to 2*m_max), NOT the
     # coefficient slices -- see psi_harmonics_at_phi's docstring for the two
     # ways reading slices gave the wrong answer.
-    ok_modes = int(m_max) <= _GH_PSI_M_MAX
-    if not ok_modes:
-        # Return before reconstructing: the tables are SIZED by m_max, so a
-        # mismatched m_max is a shape error rather than a measurement.
-        return False, dict(gh_laplace_ok=False, m_max=int(m_max),
-                           identity_A0_over_A1=None, identity_B1_over_B0=None,
-                           feature=feature,
-                           gh_laplace_reason="mode content m_max=%d above the "
-                                             "validated %d"
-                                             % (int(m_max), _GH_PSI_M_MAX))
-    # ANGLE-INDEPENDENT CONDITION, and the one that actually generalises.  A
-    # numerical check can only ever speak for the angles it was evaluated at,
-    # and the placement runs at arbitrary sampled angles; the response model is
-    # a property of the packed data and holds for all of them.
-    if feature not in _GH_PSI_STATIC_FEATURES:
-        return False, dict(gh_laplace_ok=False, m_max=int(m_max),
-                           identity_A0_over_A1=None, identity_B1_over_B0=None,
-                           feature=feature,
-                           gh_laplace_reason="response model %r does not give "
-                                             "the exact e^{-2i psi} polarization "
-                                             "factorization the A0 == 0 / B1 == 0 "
-                                             "identity rests on" % (feature,))
+    refused = _gh_laplace_precondition(m_max, feature)
+    if refused is not None:
+        return False, refused
     n_phi_probe = max(8 * int(m_max) + 8, 16)
     phi_probe = _np.linspace(0.0, 2.0 * _np.pi, n_phi_probe, endpoint=False)
     A0f, A1f, B0f, B1f, B2f = psi_harmonics_at_phi(C_A, C_B, phi_probe, m_max)
@@ -2019,7 +2236,7 @@ def fused_log_likelihood_distphipsimarg_peaklocal(
         data, ra, dec, incl, x_grid, log_w_grid,
         interp=JAX_INTERP_DEFAULT, amp_sizing=None,
         time_quadrature=TIME_QUAD_DEFAULT, return_lnLt=False,
-        phi_chunk=None):
+        phi_chunk=None, return_amp=False):
     """Distance-, phi_ref- AND psi-marginalized lnL: PEAK-LOCAL scheme.
 
     Same contract and normalization as
@@ -2046,10 +2263,12 @@ def fused_log_likelihood_distphipsimarg_peaklocal(
     """
     if _core._DISTMARG_GH_N > 0:
         raise ValueError(
-            "JAX_ILE_DISTMARG_GH is set, but the 'peak-local' angle-marg scheme does "
-            "not implement the adaptive distance quadrature (it sums the caller's "
-            "distance grid directly).  Use --angle-marg-scheme exact, or unset "
-            "JAX_ILE_DISTMARG_GH.")
+            "distance-GH-nodes is set (--distance-gh-nodes / "
+            "JAX_ILE_DISTMARG_GH), but the 'peak-local' angle-marg scheme "
+            "does not implement the adaptive distance quadrature (it sums "
+            "the caller's distance grid directly).  Use --angle-marg-scheme "
+            "exact, or pass --distance-gh-nodes 0 (or unset "
+            "JAX_ILE_DISTMARG_GH).")
     _require_amp_sizing(amp_sizing)
     from . import joint_anglemarg_peaklocal as _jp
 
@@ -2063,7 +2282,8 @@ def fused_log_likelihood_distphipsimarg_peaklocal(
     # for the exact and laplace schemes.  Skipping the check would publish that
     # silently, and would also leave the artifact without the standing best-effort
     # label, which is worse than the undersizing itself.
-    _runtime_amp_failsafe(C_A, C_B, x_grid, amp_sizing, "peak-local")
+    amp_call = _runtime_amp_failsafe(C_A, C_B, x_grid, amp_sizing,
+                                     "peak-local")
 
     n_phi = _jp.required_n_phi(amp_sizing, m_max=_data_m_max(data))
     # Size the u axis through the SINGLE SOURCE OF TRUTH rather than letting the kernel
@@ -2085,16 +2305,17 @@ def fused_log_likelihood_distphipsimarg_peaklocal(
         return _jp.joint_lnL_phi_dense(a, b, x_grid, log_w_grid, n_phi=n_phi, **kw)
 
     lnL_t = jax.vmap(jax.vmap(_one))(A, B)          # (S, npts)
-    if return_lnLt:
-        return lnL_t
-    return _time_marginalize_terminal(lnL_t, data, time_quadrature)
+    out = lnL_t if return_lnLt else _time_marginalize_terminal(
+        lnL_t, data, time_quadrature)
+    return (out, amp_call) if return_amp else out
 
 
 def fused_log_likelihood_distphipsimarg_phi_local(
         data, ra, dec, incl, x_grid, log_w_grid,
         interp=JAX_INTERP_DEFAULT, amp_sizing=None,
         time_quadrature=TIME_QUAD_DEFAULT, return_lnLt=False,
-        x_chunk=None, pt_chunk=None, n_slots=None, return_ok=False):
+        x_chunk=None, pt_chunk=None, n_slots=None, return_ok=False,
+        return_amp=False):
     """Distance-, phi_ref- AND psi-marginalized lnL with BOTH ANGLE AXES LOCALIZED.
 
     Same contract and normalization as the other ``fused_log_likelihood_distphipsimarg_*``
@@ -2122,15 +2343,18 @@ def fused_log_likelihood_distphipsimarg_phi_local(
     """
     if _core._DISTMARG_GH_N > 0:
         raise ValueError(
-            "JAX_ILE_DISTMARG_GH is set, but the 'phi-local' angle-marg scheme does "
-            "not implement the adaptive distance quadrature (it sums the caller's "
-            "distance grid directly).  Use --angle-marg-scheme exact, or unset "
-            "JAX_ILE_DISTMARG_GH.")
+            "distance-GH-nodes is set (--distance-gh-nodes / "
+            "JAX_ILE_DISTMARG_GH), but the 'phi-local' angle-marg scheme "
+            "does not implement the adaptive distance quadrature (it sums "
+            "the caller's distance grid directly).  Use --angle-marg-scheme "
+            "exact, or pass --distance-gh-nodes 0 (or unset "
+            "JAX_ILE_DISTMARG_GH).")
     _require_amp_sizing(amp_sizing)
     from . import joint_anglemarg_peaklocal as _jp
 
     C_A, C_B, _meta = angle_coefficient_tables(data, ra, dec, incl, interp=interp)
-    _runtime_amp_failsafe(C_A, C_B, x_grid, amp_sizing, "phi-local")
+    amp_call = _runtime_amp_failsafe(C_A, C_B, x_grid, amp_sizing,
+                                     "phi-local")
 
     n_phi = _jp.required_n_phi(amp_sizing, m_max=_data_m_max(data))
     u_nodes = _jp.u_nodes_in_use(amp_sizing)
@@ -2152,12 +2376,184 @@ def fused_log_likelihood_distphipsimarg_phi_local(
         return jnp.where(ok, loc, dense), ok
 
     lnL_t, ok_t = jax.vmap(jax.vmap(_one))(A, B)          # (S, npts) each
+    # return_amp appends the amplitude metric as the LAST element whatever the
+    # other flags select, so the three optional returns compose unambiguously.
+    out = lnL_t if return_lnLt else _time_marginalize_terminal(
+        lnL_t, data, time_quadrature)
     if return_ok:
-        return (lnL_t, ok_t) if return_lnLt else (
-            _time_marginalize_terminal(lnL_t, data, time_quadrature), ok_t)
-    if return_lnLt:
-        return lnL_t
-    return _time_marginalize_terminal(lnL_t, data, time_quadrature)
+        return (out, ok_t, amp_call) if return_amp else (out, ok_t)
+    return (out, amp_call) if return_amp else out
+
+
+def _multipeak_sigma_t(rows_A, guard):
+    """Predicted time-peak width in native samples, from the tables alone.
+
+    sigma_t = 1 / (2 pi rho sigma_f).  sigma_f is the RMS frequency of the time
+    primitive's own spectrum, in cycles per sample, so no rate conversion enters;
+    rho comes from the exponent's peak.  Both are properties of the data, which is
+    the point: the reserve's node placement is PREDICTED before any evaluation
+    rather than discovered by evaluating everywhere.
+    """
+    from .time_first_peaklocal import _time_primitive_spectrum
+    flat = jnp.asarray(rows_A[0]).reshape((-1, rows_A.shape[-1]))
+    coeff, freq, _ = _time_primitive_spectrum(flat, int(guard))
+    p = np.abs(np.asarray(coeff)) ** 2
+    f = np.asarray(freq)
+    w = p.sum(axis=0)
+    sigma_f = float(np.sqrt((w * f * f).sum() / max(w.sum(), 1.0e-300)))
+    env = np.abs(np.asarray(rows_A)).sum(axis=(1, 2))
+    rho = float(np.sqrt(2.0 * np.max(env)))
+    return 1.0 / max(2.0 * np.pi * rho * sigma_f, 1.0e-300)
+
+
+def _multipeak_reserve_rule(CA_full, guard, data, sigma_t, n_sigma, pts_per_sigma):
+    """Peak-local time nodes and trapezoid weights, in production time units.
+
+    Node count does not grow with rho: the window is +-n_sigma sigma_t and the
+    spacing is sigma_t / pts_per_sigma, so the two scale together.
+    """
+    from .all_axis_peaklocal import (_time_primitive_spectrum,
+                                     _evaluate_time_spectrum)
+    n_nat = CA_full.shape[-1] - 2 * int(guard)
+    enum = np.arange(0.0, n_nat - 1 + 1.0e-9, 0.25)
+    flat = jnp.asarray(CA_full).reshape((-1, CA_full.shape[-1]))
+    coeff, freq, off = _time_primitive_spectrum(flat, int(guard))
+    env = np.abs(np.asarray(_evaluate_time_spectrum(
+        coeff, freq, jnp.asarray(enum), off))).sum(axis=0)
+    keep = env >= env.max() * np.exp(-0.5 * 40.0 / max(env.max(), 1.0e-300))
+    peaks = [j for j in range(1, len(env) - 1)
+             if env[j] >= env[j - 1] and env[j] >= env[j + 1] and keep[j]]
+    if not peaks:
+        peaks = [int(np.argmax(env))]
+    half = float(n_sigma) * float(sigma_t)
+    step = float(sigma_t) / float(pts_per_sigma)
+    wins = sorted((max(0.0, enum[j] - half), min(float(n_nat - 1), enum[j] + half))
+                  for j in peaks)
+    merged = [list(wins[0])]
+    for w0, w1 in wins[1:]:
+        if w0 <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], w1)
+        else:
+            merged.append([w0, w1])
+    nd, wt = [], []
+    for w0, w1 in merged:
+        k = max(2, int(np.ceil((w1 - w0) / step)) + 1)
+        g = np.linspace(w0, w1, k)
+        h = (w1 - w0) / (k - 1)
+        ww = np.full(k, h)
+        ww[0] = ww[-1] = 0.5 * h
+        nd.append(g)
+        wt.append(ww)
+    nodes = np.concatenate(nd)
+    # BUCKET THE SHAPE so a batch compiles once, not once per row.  Padding is
+    # zero-weight, so the value is identical.
+    weights = np.concatenate(wt)
+    tgt = next((b for b in (256, 512, 1024, 2048) if b >= len(nodes)), len(nodes))
+    pad = tgt - len(nodes)
+    if pad > 0:
+        # compute `pad` BEFORE reassigning nodes: deriving it from len(nodes)
+        # afterwards gives zero and leaves weights shorter than nodes.
+        nodes = np.concatenate([nodes, np.full(pad, nodes[-1])])
+        weights = np.concatenate([weights, np.zeros(pad)])
+    assert len(nodes) == len(weights) == tgt
+    w_t = np.asarray(data.w_t, dtype=float)
+    scale = float(np.sum(w_t)) / ((int(data.npts) - 1) * float(data.deltaT))
+    return jnp.asarray(nodes), jnp.asarray(weights * float(data.deltaT) * scale)
+
+
+def fused_log_likelihood_distphipsimarg_multipeak(
+        data, ra, dec, incl, x_grid, log_w_grid,
+        interp=JAX_INTERP_DEFAULT, amp_sizing=None, guard=16,
+        tier0=(2, 3, 24), tier1=(3, 5, 48), log_integral_tol=1.0e-3,
+        cell_sigma=5.0, quadrature_order=7, refine_iterations=18,
+        reserve_sigma=12.0, reserve_pts_per_sigma=8.0, return_record=False):
+    """Distance-, phi_ref-, psi- AND time-marginalized lnL: MULTIPEAK scheme.
+
+    The four-axis controller of
+    :func:`~RIFT.likelihood.jax_ile.multipeak_planner.multipeak_local_marginalize`,
+    reachable from ``--angle-marg-scheme multipeak``.  Unlike every other entry
+    in this family it OWNS THE TIME INTEGRAL, so there is no ``lnL(t)`` and no
+    ``time_quadrature``: the caller gets one value per sample.  Callers that
+    need ``lnL(t)`` must use another scheme.
+
+    The default operating point is the one measured on the ladder-2 injection at
+    rho 40.77, 163.08 and 652.31 (64 rows per rung, inclination banded +-0.20 rad
+    about the injection): 64/64 accepted at every rung, 4.74-5.17 s per row and
+    ~218 MiB peak device memory, error against a peak-local reference of 2.2e-05
+    nats median at rho 40.77 and 5.6e-04 at 163.08.  See
+    analyses/va_sequence_20260902/RESULTS_20260909_multipeak_ladder.md in the
+    RIFT_roboto_paper record store.  ``guard`` defaults to the value that
+    measurement used; the driver's production default is larger and the caller
+    passes it explicitly.
+
+    The reserve is a PEAK-LOCAL time rule, not a refined whole window: nodes are
+    placed only in +-``reserve_sigma`` sigma_t windows about the peaks of the
+    coefficient envelope, at spacing sigma_t/``reserve_pts_per_sigma``.  Window
+    and spacing both scale as sigma_t, so the node count does not grow with rho.
+    A refined whole-window reserve was measured at 4905 nodes for a peak 0.06
+    native samples wide at rho 163, and its own half-refined warrant failed at
+    rho 40.77; this rule reproduced it to 0.0 on every row with 193 nodes.
+    """
+    from . import multipeak_planner as _mp
+    from . import all_axis_peaklocal as _aap
+    from . import direct_marginalization_policy as _pol
+    from .core import _time_marginalize
+
+    _require_amp_sizing(amp_sizing)
+    guard = int(guard)
+    if guard < 2:
+        raise ValueError("multipeak needs guard >= 2 for the time primitive")
+    x_grid = jnp.asarray(x_grid, dtype=jnp.float64)
+    log_w_grid = jnp.asarray(log_w_grid, dtype=jnp.float64)
+    C_A, C_B, meta = angle_coefficient_tables(data, ra, dec, incl, interp,
+                                              guard=guard)
+    _runtime_amp_failsafe(C_A, C_B, x_grid, amp_sizing, "multipeak")
+    log_measure, _ = _pol.policy_log_normalization(
+        data, np.asarray(x_grid), np.asarray(log_w_grid))
+    x_min = float(np.min(np.asarray(x_grid)))
+    x_max = float(np.max(np.asarray(x_grid)))
+    m_max = int(meta["m_max"])
+
+    rows_A = np.moveaxis(np.asarray(C_A), 2, 0)          # (S,KP,KS,ntime+2g)
+    rows_B = np.moveaxis(np.asarray(C_B), 2, 0)
+    sigma_t = _multipeak_sigma_t(rows_A, guard)
+
+    out, records = [], []
+    for i in range(rows_A.shape[0]):
+        CA_full = rows_A[i]
+        CA_i = CA_full[..., guard:-guard]
+        CB_i = rows_B[i][..., 0][..., None] * np.ones(CA_i.shape[-1])
+        nodes, weights = _multipeak_reserve_rule(
+            CA_full, guard, data, sigma_t,
+            float(reserve_sigma), float(reserve_pts_per_sigma))
+
+        CB_flat = rows_B[i][..., 0]                  # (KP,KS), time-independent
+
+        def _reserve(CA_full=CA_full, CB_flat=CB_flat, nodes=nodes,
+                     weights=weights):
+            flat = jnp.asarray(CA_full).reshape((-1, CA_full.shape[-1]))
+            coeff, freq, off = _aap._time_primitive_spectrum(flat, guard)
+            tgt = _aap._evaluate_time_spectrum(
+                coeff, freq, nodes, off).reshape(
+                    CA_full.shape[:-1] + (nodes.size,))
+            lnLt = coefficient_table_distphipsimarg_laplace(
+                tgt, jnp.asarray(CB_flat), x_grid, log_w_grid,
+                amp_sizing=amp_sizing, m_max=m_max)
+            return float(np.asarray(_time_marginalize(lnLt, weights)[0]))
+
+        res = _mp.multipeak_local_marginalize(
+            CA_i, CB_i, x_min, x_max, _reserve,
+            log_integral_tol=float(log_integral_tol),
+            tier0=tuple(int(v) for v in tier0),
+            tier1=tuple(int(v) for v in tier1),
+            refine_iterations=int(refine_iterations),
+            cell_sigma=float(cell_sigma),
+            quadrature_order=int(quadrature_order),
+            log_measure=float(log_measure), label="multipeak_row%d" % i)
+        out.append(float(res.value))
+        records.append(res)
+    values = jnp.asarray(np.asarray(out, dtype=float))
+    return (values, records) if return_record else values
 
 
 def choose_angle_marg_scheme(amplitude, gh_enabled=None,

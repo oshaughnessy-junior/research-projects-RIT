@@ -138,6 +138,17 @@ RULES = [
      "Hoisted to module level rather than nested, because this driver has TWO "
      "analyze_event variants. The audit matches FUNC items on the bare name for exactly "
      "this reason."),
+    (r"^(FUNC:make_zero_likelihood_standin(\.[A-Za-z_]+)?|CONST:_SUPPLEMENT_[A-Z_]+)$", "PORT",
+     "The --zero-likelihood stand-in, built with the SAME SIGNATURE as the likelihood it "
+     "replaces and applying a --supplementary-likelihood-factor-*. LISA has the identical "
+     "shape at both of its `like_to_integrate = zero_like` sites, the same supplementary hook "
+     "and the same eight-signature likelihood_function, so it carries both defects this "
+     "replaced: --zero-likelihood silently discards a supplementary factor, and a *args "
+     "stand-in reports co_argcount 0 to mcsampler, which kills --sampler-method "
+     "adaptive_cartesian. LISA's two sites additionally still read opts.internal_use_lnL "
+     "rather than return_lnL as the convention, which is a separate, already-fixed-here "
+     "defect they would need to take at the same time. Nothing in the helper is "
+     "ground-based-specific: it is signature plumbing."),
     (r"^OPTION:--sampler-sequential-warmstart$", "PORT",
      "Warm-start each intrinsic point from the previous one's cloud. Applies whenever "
      "--n-events-to-analyze>1, which LISA supports. Its snapshot/restore prerequisites "
@@ -229,6 +240,14 @@ RULES = [
      "LISA has the same skip-on-no-shrink and serialization boundary, so port this "
      "with --fairdraw-extrinsic-output-n-max while preserving its larger LISA default."),
 
+    # --------------------------------------------- ground-based noise-only evidence
+    (r"^OPTION:--log-noise-evidence-(only|output)$", "NA",
+     "Writes the fixed-PSD Gaussian noise likelihood from the ground-based detector "
+     "data_dict/psd_dict and ComplexIP conditioning path. The LISA driver uses a "
+     "different response and likelihood construction, so this implementation cannot "
+     "be ported by exposing the same options; a LISA-specific normalization mechanism "
+     "would need its own convention and implementation."),
+
     # ------------------------------------------------------- LIGO/Virgo calibration envelopes
     (r"^OPTION:--calibration-", "NA",
      "LIGO/Virgo spline calibration-envelope marginalization. The LISA driver models no "
@@ -274,6 +293,20 @@ RULES = [
      "(CE/ET), built on lalsimulation detector geometry and an arm-length override in "
      "metres. LISA's finite-size response is not an add-on: it is the whole point of "
      "the TDI response the LISA driver already applies."),
+    (r"^OPTION:--(check-slowrot-pmax|check-finite-size-[Qq]max|"
+     r"choose-slowrot-pmax|choose-(finite-size|slowrot)-Qmax)$", "NA",
+     "Order checks and selectors for the Earth-rotation and 3G ground-detector finite-arm "
+     "approximations. LISA uses neither expansion: its time-dependent heliocentric, "
+     "finite-arm response is already evaluated by the TDI response, so applying these "
+     "orders would test or truncate the wrong detector model."),
+    (r"^OPTION:--response-order-", "NA",
+     "Tolerance, reference-order, angular-design and memory controls used only by the "
+     "ground-detector slow-rotation and finite-arm order estimator. That estimator does "
+     "not represent LISA's TDI response, so none of its tuning surface applies."),
+    (r"^FUNC:analyze_event\._apply_order_control$", "NA",
+     "Nested dispatcher for the ground-detector response-order estimator. It is reachable "
+     "only from the check/choose controls classified above, and LISA's TDI response has no "
+     "corresponding pmax or Qmax truncation to dispatch."),
     (r"^OPTION:--e-freq$", "NA",
      "TEOBResumS eccentric-frequency convention. Tied to a ground-based eccentric "
      "waveform path the LISA driver does not offer (it takes --modes / h5 frames)."),
@@ -444,6 +477,15 @@ RULES = [
      "The LISA driver does not call that waveform path or write its a6c/E0/p_phi0 "
      "composite layout."),
     (r"^OPTION:--calibration-spline-count$", "NA", "See the --calibration-* reason."),
+    (r"^OPTION:--psi-marginalization$", "NA",
+     "Analytic polarization-angle marginalization via "
+     "factored_likelihood.NetworkLogLikelihoodPolarizationMarginalized. Per its own help "
+     "text, this is only reachable on the legacy scalar (non-vectorized, non-GPU, "
+     "non-time-marginalized) likelihood path -- the main driver itself REFUSES it with "
+     "--vectorized, --gpu, and --time-marginalization, among others. The LISA driver has "
+     "no such scalar path: analyze_event there is vectorized/time-marginalized by "
+     "construction, so this option would be refused there too if it existed. Not a gap "
+     "to close -- porting it would add an option that is dead on arrival."),
     (r"^CONST:_SEQ_WS_PENDING$", "PORT",
      "Sentinel for the deferred sequential warm-start capture; ports with "
      "--sampler-sequential-warmstart."),

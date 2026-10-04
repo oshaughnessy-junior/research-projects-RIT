@@ -205,6 +205,10 @@ else:
   useNR=False
 
 distMpcRef = 1000 # a fiducial distance for the template source.
+# Nodes used ONLY to locate the maximum of the band-limited psi exponent, for the max
+# subtraction in NetworkLogLikelihoodPolarizationMarginalized.  The exponent carries only
+# harmonics 2 and 4 in psi, so this grid needs to resolve a quarter period, not the peak.
+N_PSI_MAX_GRID = 256
 
 # --- per-detector constants, cached across likelihood calls -------------------
 # DetectorPrefixToLALDetector() plus two host->device transfers of a 3-vector and a
@@ -1064,7 +1068,7 @@ def NetworkLogLikelihoodPolarizationMarginalized(epoch,rholmsDictionary,crossTer
         for pair1 in rholmsDictionary[det]:
             for pair2 in rholmsDictionary[det]:
                 term2a += F[det] * np.conj(F[det]) * ( crossTerms[det][(pair1,pair2)])* np.conj(Ylms[pair1]) * Ylms[pair2] 
-                term2b += F[det]*F[det]*Ylms[pair1]*Ylms[pair2]*crossTermsV[(pair1,pair2)] #((-1)**pair1[0])*crossTerms[det][((pair1[0],-pair1[1]),pair2)]
+                term2b += F[det]*F[det]*Ylms[pair1]*Ylms[pair2]*crossTermsV[det][(pair1,pair2)] #((-1)**pair1[0])*crossTerms[det][((pair1[0],-pair1[1]),pair2)]
     term2a = -np.real(term2a) / 4. /(distMpc/distMpcRef)**2
     term2b = -term2b/4./(distMpc/distMpcRef)**2   # coefficient of exp(-4ipsi)
 
@@ -1078,12 +1082,26 @@ def NetworkLogLikelihoodPolarizationMarginalized(epoch,rholmsDictionary,crossTer
     if False: #xgterm2a+np.abs(term2b)+np.abs(term1)>100:
         return term2a+ np.log(special.iv(0,np.abs(term1)))  # an approximation, ignoring term2b entirely! 
     else:
-        # marginalize over phase.  Ideally done analytically. Only works if the terms are not too large -- otherwise overflow can occur. 
-        # Should probably implement a special solution if overflow occurs
+        # marginalize over psi.  The exponent is band-limited in psi -- exactly the harmonics
+        # 2 and 4 -- so a coarse grid locates its maximum to far better than a nat, and that
+        # is all the subtraction below needs.  WITHOUT the subtraction exp() overflows to inf
+        # (and log(inf) -> nan) as soon as max_psi lnL exceeds ln(DBL_MAX) = 709, a network
+        # SNR near 38: measured nan at max lnL 725 before this was added.
+        _psi_max_grid = np.arange(N_PSI_MAX_GRID)*np.pi/N_PSI_MAX_GRID
+        _expon_grid = term2a + np.real(term2b*np.exp(-4.j*_psi_max_grid)
+                                       + term1*np.exp(+2.j*_psi_max_grid))
+        _i_max = int(np.argmax(_expon_grid))
+        expon_max = float(_expon_grid[_i_max])
         def fnIntegrand(x):
-            return np.exp( term2a+ np.real(term2b*np.exp(-4.j*x)+ term1*np.exp(+2.j*x)))/np.pi  # remember how the two terms enter -- note signs!
-        LmargPsi = integrate.quad(fnIntegrand,0,np.pi,limit=100,epsrel=1e-4)[0]
-        return np.log(LmargPsi)
+            # remember how the two terms enter -- note signs!
+            return np.exp( term2a+ np.real(term2b*np.exp(-4.j*x)+ term1*np.exp(+2.j*x)) - expon_max)/np.pi
+        # epsabs=0 is required, not cosmetic: after the subtraction the integral is the peak
+        # WIDTH, ~1/rho, so quad's default epsabs=1.49e-8 is met by a coarse rule that has not
+        # resolved the peak at all.  Measured at exponent max 4194: default epsabs returns an
+        # answer 20 nat low.  'points' pins the first subdivision at the located maximum.
+        LmargPsi = integrate.quad(fnIntegrand,0,np.pi,points=[float(_psi_max_grid[_i_max])],
+                                  limit=200,epsabs=0,epsrel=1e-10)[0]
+        return np.log(LmargPsi) + expon_max
 
 def SingleDetectorLogLikelihood(rholm_vals, crossTerms,crossTermsV, Ylms, F, dist):
     """
@@ -1266,8 +1284,22 @@ def InterpolateRholms(rholms, t,verbose=False):
 
     return rholm_intp
 
+# --- opt-in batching of the mode cross terms ---------------------------------------
+# OFF by default: the batched path reorders the frequency reduction and so does not
+# reproduce the shipped rounding bit-for-bit (~1e-15 of max|U|; see
+# DESIGN_precompute_crossterm_batching.md).  Enable per run with
+#     RIFT_PRECOMPUTE_BATCHED_CROSSTERMS=1
+# or per call with the `batched=` keyword, which overrides the environment.
+_CROSSTERM_BATCH_CALLS = [0]     # observability: a run that never took the path reads 0
+
+
+def _crossterm_batched_default():
+    return os.environ.get("RIFT_PRECOMPUTE_BATCHED_CROSSTERMS", "0").strip() in ("1", "true", "True")
+
+
 def ComputeModeCrossTermIP(hlmsA, hlmsB, psd, fmin, fMax, fNyq, deltaF, 
-        analyticPSD_Q=False, inv_spec_trunc_Q=False, T_spec=0., verbose=True,prefix="U",same_waveform_Q=False):
+        analyticPSD_Q=False, inv_spec_trunc_Q=False, T_spec=0., verbose=True,prefix="U",same_waveform_Q=False,
+        batched=None):
     """
     Compute the 'cross terms' between waveform modes, i.e.
     < h_lm | h_l'm' >.
@@ -1285,6 +1317,37 @@ def ComputeModeCrossTermIP(hlmsA, hlmsB, psd, fmin, fMax, fNyq, deltaF,
             inv_spec_trunc_Q, T_spec)
 
     crossTerms = {}
+
+    if batched is None:
+        batched = _crossterm_batched_default()
+    if batched:
+      # One GEMM over the whole (mode x mode) block instead of Na*Nb separate full-length
+      # reductions.  The symmetry bookkeeping below is kept identical to the loop, so the
+      # exact Hermitian/transpose relations the shipped path guarantees still hold.
+      _CROSSTERM_BATCH_CALLS[0] += 1
+      modesA = list(hlmsA.keys())
+      modesB = list(hlmsB.keys())
+      M = IP.ip_matrix([hlmsA[m] for m in modesA], [hlmsB[m] for m in modesB])
+      if same_waveform_Q:
+        assert modesA == modesB, "same_waveform_Q requires the same mode keys on both sides"
+        for i, mode in enumerate(modesA):
+          crossTerms[ (mode,mode) ] = M[i,i]
+        for i, mode1 in enumerate(modesA):
+          for j in range(i+1, len(modesA)):
+            mode2 = modesA[j]
+            crossTerms[ (mode1,mode2) ] = M[i,j]
+            if prefix == "V":
+              crossTerms[ (mode2,mode1) ] = crossTerms[(mode1,mode2)]
+            else:
+              crossTerms[ (mode2,mode1) ] = np.conj(crossTerms[(mode1,mode2)])
+      else:
+        for i, mode1 in enumerate(modesA):
+          for j, mode2 in enumerate(modesB):
+            crossTerms[ (mode1,mode2) ] = M[i,j]
+            if verbose:
+                print("       : ", prefix, " populated ", (mode1, mode2), "  = ",\
+                        crossTerms[(mode1,mode2) ])
+      return crossTerms
 
     if same_waveform_Q:
       mode_list = list(hlmsA.keys())
