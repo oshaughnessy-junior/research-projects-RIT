@@ -284,8 +284,19 @@ def fit_point(u, y, w, n_restart=2, fix_C=False, loss="linear", f_scale=1.0, fmi
     return params, rms
 
 
-def fit_all_points(key, u, y, sig, min_slices=5, fix_C=False, loss="linear", f_scale=1.0, fmin_fixed=None):
-    """Fit every unique intrinsic row of `key`. Returns (unique keys, params (n,4), rms, nslices)."""
+def _fit_point_chunk(slices, kw):
+    out = []
+    for u_, y_, w_ in slices:
+        out.append(fit_point(u_, y_, w_, **kw))
+    return out
+
+
+def fit_all_points(key, u, y, sig, min_slices=5, fix_C=False, loss="linear", f_scale=1.0, fmin_fixed=None,
+                   n_jobs=1):
+    """Fit every unique intrinsic row of `key`. Returns (unique keys, params (n,4), rms, nslices).
+
+    n_jobs > 1 spreads the per-point fits over worker processes. fit_point is deterministic, so the
+    result equals the serial one."""
     uk, inv, counts = np.unique(key, axis=0, return_inverse=True, return_counts=True)
     inv = inv.reshape(-1)
     order = np.argsort(inv, kind="stable")
@@ -293,11 +304,24 @@ def fit_all_points(key, u, y, sig, min_slices=5, fix_C=False, loss="linear", f_s
     w = 1.0 / np.maximum(sig, 1e-3) ** 2
     params = np.full((len(uk), 4), np.nan)
     rms = np.full(len(uk), np.nan)
+    kw = dict(fix_C=fix_C, loss=loss, f_scale=f_scale, fmin_fixed=fmin_fixed)
+    if n_jobs is not None and int(n_jobs) > 1:
+        from joblib import Parallel, delayed
+        elig = [g for g in range(len(uk)) if counts[g] >= min_slices]
+        chunks = np.array_split(np.asarray(elig, dtype=int), max(1, 8 * int(n_jobs)))
+        jobs = [[(u[order[starts[g]:starts[g + 1]]], y[order[starts[g]:starts[g + 1]]], w[order[starts[g]:starts[g + 1]]])
+                 for g in c] for c in chunks]
+        res = Parallel(n_jobs=int(n_jobs), backend="loky")(delayed(_fit_point_chunk)(j, kw) for j in jobs)
+        for c, rr in zip(chunks, res):
+            for g, (p, e) in zip(c, rr):
+                if p is not None:
+                    params[g], rms[g] = p, e
+        return uk, params, rms, counts
     for g in range(len(uk)):
         r = order[starts[g]:starts[g + 1]]
         if len(r) < min_slices:
             continue
-        p, e = fit_point(u[r], y[r], w[r], fix_C=fix_C, loss=loss, f_scale=f_scale, fmin_fixed=fmin_fixed)
+        p, e = fit_point(u[r], y[r], w[r], **kw)
         if p is not None:
             params[g], rms[g] = p, e
     return uk, params, rms, counts
@@ -310,13 +334,16 @@ class DistanceAmplitudeModel:
     Fields are interpolated as log R, log u*, logit f_min. Points whose fit failed are left out."""
 
     def __init__(self, dist_index, n_estimators=100, n_jobs=-1, min_slices=5, max_overshoot=1.0, mass_index=None,
-                 prior=None, d_range=None, n_dgrid=256, loss="linear", f_scale=1.0, point_fit="scipy", xp=None):
+                 prior=None, d_range=None, n_dgrid=256, loss="linear", f_scale=1.0, point_fit="scipy", xp=None,
+                 point_fit_jobs=1):
         """mass_index: column (in the full fit coordinates) holding a mass M. If given, the distance
         scale is interpolated as log(u* M): the horizon distance scales with mass, so u* M varies far
         less across the grid than u* itself.
 
-        point_fit: 'scipy' (one least_squares call per point) or 'batched' (fit_all_points_batched on
-        array module xp, numpy by default; pass cupy to fit on the GPU)."""
+        point_fit: 'scipy' (one least_squares call per point; point_fit_jobs worker processes) or
+        'batched' (fit_all_points_batched on array module xp). batched is not for production: it ends
+        in a worse local minimum than scipy on ~0.5% of points, which degraded the distance posterior
+        on S240501an and S240527en (RIFT_roboto_paper analyses/distance_gp_interp)."""
         self.dist_index = int(dist_index)
         self.mass_index = None if mass_index is None else int(mass_index)
         # prior + d_range switch on the marginal/conditional decomposition:
@@ -330,7 +357,7 @@ class DistanceAmplitudeModel:
         self.n_estimators, self.n_jobs, self.min_slices = n_estimators, n_jobs, min_slices
         if point_fit not in ("scipy", "batched"):
             raise ValueError("point_fit must be 'scipy' or 'batched'")
-        self.point_fit, self._fit_xp = point_fit, xp
+        self.point_fit, self._fit_xp, self.point_fit_jobs = point_fit, xp, int(point_fit_jobs)
 
     def __getstate__(self):
         state = dict(self.__dict__)
@@ -358,7 +385,8 @@ class DistanceAmplitudeModel:
             uk, P, rms, counts = fit_all_points_batched(*args, fix_C=True, loss=self.loss, f_scale=self.f_scale,
                                                         xp=self._fit_xp if self._fit_xp is not None else np)
         else:
-            uk, P, rms, counts = fit_all_points(*args, fix_C=True, loss=self.loss, f_scale=self.f_scale)
+            uk, P, rms, counts = fit_all_points(*args, fix_C=True, loss=self.loss, f_scale=self.f_scale,
+                                                n_jobs=getattr(self, "point_fit_jobs", 1))
         # a fit with f_min rounded to 0 or 1 has a nonfinite field (logit); count it as failed
         with np.errstate(all="ignore"):
             good = np.all(np.isfinite(P), axis=1) & np.all(np.isfinite(self._to_fields(P)), axis=1)

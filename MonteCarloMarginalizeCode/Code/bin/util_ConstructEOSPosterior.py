@@ -154,7 +154,8 @@ parser.add_argument("--gp-matern-fit-backend",default="sklearn",choices=["sklear
 parser.add_argument("--dslice-amp-decompose",action='store_true',help="dslice-amp: write lnL as an interpolated distance-marginal M(x) plus a normalized conditional in d, so distance-shape interpolation error cannot move intrinsic weights.")
 parser.add_argument("--dslice-amp-loss",default="linear",help="dslice-amp: scipy least_squares loss for the per-point fits (linear|soft_l1|cauchy|huber).")
 parser.add_argument("--dslice-amp-loss-scale",default=1.0,type=float,help="dslice-amp: robust-loss scale in nats.")
-parser.add_argument("--dslice-amp-point-fit",default="scipy",choices=["scipy","batched"],help="dslice-amp: per-point fits by one scipy least_squares call each (default), or all points at once by a batched Levenberg-Marquardt on the same objective (RIFT.interpolators.dslice_amplitude_model.fit_all_points_batched), on the GPU under --fit-device gpu.")
+parser.add_argument("--dslice-amp-point-fit",default="scipy",choices=["scipy","batched"],help="dslice-amp: per-point fits by one scipy least_squares call each (default), or all points at once by a batched Levenberg-Marquardt on the same objective (on the GPU under --fit-device gpu). batched is experimental and not for production: it reaches a worse local minimum than scipy on ~0.5%% of points, enough to degrade the distance posterior on some grids.")
+parser.add_argument("--dslice-amp-point-fit-jobs",default=1,type=int,help="dslice-amp, scipy point fits: number of worker processes. Fits are deterministic, so the result equals the serial one.")
 parser.add_argument("--rf-fit-backend",default="sklearn",choices=["sklearn","cupy"],help="rf: grow the ExtraTrees forest with sklearn on CPU (default) or on the GPU with the same algorithm (RIFT.interpolators.cupy_extratrees; same distribution of forests, different random stream). cupy requires --fit-device gpu.")
 parser.add_argument("--fit-device",default="cpu",choices=["cpu","gpu"],help="rf and dslice-amp only. gpu: copy the fitted trees to the GPU and evaluate the fit there inside the sampler (RIFT.interpolators.cupy_forest; same predictions as sklearn to float64 roundoff, checked at startup), keep sample batches on the device, and convert coordinates as --coordinate-convert-xpy. Needs cupy and a visible device.")
 parser.add_argument("--coordinate-convert-xpy",action='store_true',help="With --supplementary-coordinate-code: convert the data file and the sampler's batches with the vectorized RIFT.misc.waveform_coordinates_xpy instead of the plugin, after checking the two agree on data rows and on draws from the integration ranges (the plugin is kept if they do not). Avoids convert_waveform_coordinates' per-row fallthrough.")
@@ -965,6 +966,8 @@ elif opts.fit_method == 'dslice-amp':
             _kw = dict(prior=prior_map['dist'], d_range=param_ranges['dist'])
         if opts.dslice_amp_point_fit == 'batched':
             _kw.update(point_fit='batched', xp=_cupy() if opts.fit_device == 'gpu' else np)
+        elif opts.dslice_amp_point_fit_jobs > 1:
+            _kw.update(point_fit_jobs=opts.dslice_amp_point_fit_jobs)
         dslice_model = DistanceAmplitudeModel(list(coord_names).index('dist'),mass_index=_mi,
                                               loss=opts.dslice_amp_loss,f_scale=opts.dslice_amp_loss_scale,
                                               **_kw).fit(X[finite],Y[finite],Y_err[finite])

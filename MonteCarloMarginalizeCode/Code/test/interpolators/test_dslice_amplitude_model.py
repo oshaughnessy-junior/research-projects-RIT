@@ -195,3 +195,11 @@ def test_device_check_tolerates_degenerate_fits_and_catches_a_bad_forest():
     m._device["forest"]._val[:, 0] += 0.5
     ok, rep = m.check_device(q)
     assert not ok and rep["field_max_rel"] > 1e-3, rep
+
+
+def test_parallel_scipy_point_fits_equal_serial():
+    key, u, y, sig, _ = _synthetic_points(n_pts=120)
+    a = fit_all_points(key, u, y, sig, fix_C=True)
+    b = fit_all_points(key, u, y, sig, fix_C=True, n_jobs=2)
+    for x1, x2 in zip(a, b):
+        assert np.array_equal(x1, x2, equal_nan=True)
