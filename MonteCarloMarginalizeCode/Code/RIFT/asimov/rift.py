@@ -751,10 +751,13 @@ class Rift(Pipeline):
             f"{approximant}",
             "--use-rundir",
             rundir,
-            "--ile-force-gpu",
             "--use-ini",
             ini,
         ]
+        # An explicit native CPU route must not also require a CUDA device.
+        no_gpu = self.production.meta["scheduler"].get("pipeline", {}).get("ile-no-gpu", False)
+        if no_gpu not in (True, "True", "true"):
+            command += ["--ile-force-gpu"]
 
         if "pipeline" in self.production.meta["scheduler"]:
             # ini file specifications
