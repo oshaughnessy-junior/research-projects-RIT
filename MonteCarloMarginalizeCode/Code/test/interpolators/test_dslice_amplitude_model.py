@@ -55,3 +55,24 @@ def test_model_interpolates_fields_over_intrinsic_coordinates():
     q = np.column_stack([np.zeros(5), np.array([2000, 3000, 4000, 6000, 8000.0])])
     truth = log_model(1 / q[:, 1], 30.0, 1 / 3000.0, 0.4, 0.0)
     assert np.max(np.abs(m.predict(q) - truth)) < 1.0
+
+
+def test_decomposition_makes_the_intrinsic_marginal_the_interpolated_M():
+    import pickle
+    rng = np.random.default_rng(2)
+    rows = []
+    for x0 in rng.uniform(-1, 1, 150):
+        R, us = 30 + 5 * x0, 1 / (3000 * (1 + 0.2 * x0))
+        d = rng.uniform(1500, 6000, 30)
+        rows.append(np.column_stack([np.full(30, x0), d, log_model(1 / d, R, us, 0.4, 0.0) + rng.normal(0, 0.1, 30)]))
+    g = np.vstack(rows)
+    prior = lambda d: np.asarray(d) ** 2
+    m = DistanceAmplitudeModel(dist_index=1, n_jobs=1, prior=prior, d_range=(500.0, 10000.0)).fit(
+        g[:, :2], g[:, 2], 0.1 * np.ones(len(g)))
+    m = pickle.loads(pickle.dumps(m))                   # must survive save/reload
+    x0 = 0.1
+    dg = np.linspace(500, 10000, 4000)
+    lnl = m.predict(np.column_stack([np.full(len(dg), x0), dg]))
+    marg = np.log(np.trapz(np.exp(lnl) * dg ** 2, dg))
+    M = m.rf.predict(np.array([[x0]]))[0, 3]
+    assert abs(marg - M) < 0.02, (marg, M)

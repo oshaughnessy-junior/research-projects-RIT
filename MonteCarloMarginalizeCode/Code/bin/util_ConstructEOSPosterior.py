@@ -151,6 +151,9 @@ parser.add_argument("--gp-predict-batch-size",default=4096,type=int,help="Maximu
 parser.add_argument("--gp-matern-max-train-points",default=4800,type=int,help="gp-matern: deterministic balanced training bound (rho1 x lnL strata when the data carry in-plane spin; otherwise lnL strata). Exact float64 fit; see --gp-matern-fit-backend.")
 parser.add_argument("--gp-matern-optimizer-maxiter",default=25,type=int,help="gp-matern: bounded single L-BFGS-B start; numerical convergence is not interpolation validation.")
 parser.add_argument("--gp-matern-fit-backend",default="sklearn",choices=["sklearn","cupy"],help="gp-matern: fit hyperparameters with sklearn on CPU (default) or with the same objective in float64 CuPy on a GPU (RIFT.interpolators.cupy_matern_fit), which affords larger --gp-matern-max-train-points. The cupy fit predicts with CuPy.")
+parser.add_argument("--dslice-amp-decompose",action='store_true',help="dslice-amp: write lnL as an interpolated distance-marginal M(x) plus a normalized conditional in d, so distance-shape interpolation error cannot move intrinsic weights.")
+parser.add_argument("--dslice-amp-loss",default="linear",help="dslice-amp: scipy least_squares loss for the per-point fits (linear|soft_l1|cauchy|huber).")
+parser.add_argument("--dslice-amp-loss-scale",default=1.0,type=float,help="dslice-amp: robust-loss scale in nats.")
 parser.add_argument("--gp-matern-seed",default=25062842,type=int,help="gp-matern: deterministic row selection and sklearn seed, independent of sampler randomness.")
 parser.add_argument("--fit-load-gp",default=None,type=str,help="Filename of GP fit to load. Overrides fitting process, but user MUST correctly specify coordinate system to interpret the fit with.  Does not override loading and converting the data.")
 parser.add_argument("--fit-save-gp",default=None,type=str,help="Filename of GP fit to save. ")
@@ -842,7 +845,13 @@ elif opts.fit_method == 'dslice-amp':
         dslice_model = joblib.load(opts.fit_load_gp)
     else:
         _mi = list(coord_names).index('mtot') if 'mtot' in list(coord_names) else None   # mass-scaled distance field when mtot is a fit coordinate
-        dslice_model = DistanceAmplitudeModel(list(coord_names).index('dist'),mass_index=_mi).fit(X[finite],Y[finite],Y_err[finite])
+        _kw = {}
+        if opts.dslice_amp_decompose:
+            # marginal/conditional split under the run's own distance prior and integration range
+            _kw = dict(prior=prior_map['dist'], d_range=param_ranges['dist'])
+        dslice_model = DistanceAmplitudeModel(list(coord_names).index('dist'),mass_index=_mi,
+                                              loss=opts.dslice_amp_loss,f_scale=opts.dslice_amp_loss_scale,
+                                              **_kw).fit(X[finite],Y[finite],Y_err[finite])
         if opts.fit_save_gp:
             joblib.dump(dslice_model,opts.fit_save_gp+".pkl")
     print(" dslice-amp report ", dslice_model.report)

@@ -34,11 +34,13 @@ def log_model(u, R, ustar, fmin, C):
     return C + logI
 
 
-def fit_point(u, y, w, n_restart=2, fix_C=False):
+def fit_point(u, y, w, n_restart=2, fix_C=False, loss="linear", f_scale=1.0):
     """Weighted least-squares fit of (R, u*, f_min, C) to one point's slices. Returns (params, rms).
 
     fix_C pins C = 0, the exact d -> infinity limit; otherwise C absorbs model mismatch, and over a
-    narrow slice range it trades off against f_min, which changes the extrapolation."""
+    narrow slice range it trades off against f_min, which changes the extrapolation.
+    loss/f_scale are passed to scipy least_squares on residuals in nats (weights still apply); a robust
+    loss such as 'cauchy' with f_scale ~ 1 discounts slices where the integrator missed the peak."""
     order = np.argsort(u)
     u, y, w = u[order], y[order], w[order]
     ymax = y.max()
@@ -57,7 +59,8 @@ def fit_point(u, y, w, n_restart=2, fix_C=False):
             return np.sqrt(w) * (log_model(u, R, us, fm, C) - y)
 
         try:
-            r = least_squares(resid, p0, method="trf", max_nfev=200)
+            r = least_squares(resid, p0, method="trf", max_nfev=200, loss=loss,
+                              f_scale=f_scale * float(np.sqrt(np.median(w))))
         except Exception:
             continue
         if best is None or r.cost < best.cost:
@@ -66,11 +69,12 @@ def fit_point(u, y, w, n_restart=2, fix_C=False):
         return None, np.inf
     p = best.x
     params = np.array([np.exp(p[0]), np.exp(p[1]), 1 / (1 + np.exp(-p[2])), 0.0 if fix_C else p[3]])
-    rms = float(np.sqrt(np.sum(w * (log_model(u, *params) - y) ** 2) / np.sum(w)))
+    res_ = log_model(u, *params) - y
+    rms = float(np.sqrt(np.sum(w * res_ ** 2) / np.sum(w))) if loss == "linear" else float(1.4826 * np.median(np.abs(res_)))
     return params, rms
 
 
-def fit_all_points(key, u, y, sig, min_slices=5, fix_C=False):
+def fit_all_points(key, u, y, sig, min_slices=5, fix_C=False, loss="linear", f_scale=1.0):
     """Fit every unique intrinsic row of `key`. Returns (unique keys, params (n,4), rms, nslices)."""
     uk, inv, counts = np.unique(key, axis=0, return_inverse=True, return_counts=True)
     inv = inv.reshape(-1)
@@ -83,7 +87,7 @@ def fit_all_points(key, u, y, sig, min_slices=5, fix_C=False):
         r = order[starts[g]:starts[g + 1]]
         if len(r) < min_slices:
             continue
-        p, e = fit_point(u[r], y[r], w[r], fix_C=fix_C)
+        p, e = fit_point(u[r], y[r], w[r], fix_C=fix_C, loss=loss, f_scale=f_scale)
         if p is not None:
             params[g], rms[g] = p, e
     return uk, params, rms, counts
@@ -95,12 +99,20 @@ class DistanceAmplitudeModel:
 
     Fields are interpolated as log R, log u*, logit f_min. Points whose fit failed are left out."""
 
-    def __init__(self, dist_index, n_estimators=100, n_jobs=-1, min_slices=5, max_overshoot=1.0, mass_index=None):
+    def __init__(self, dist_index, n_estimators=100, n_jobs=-1, min_slices=5, max_overshoot=1.0, mass_index=None,
+                 prior=None, d_range=None, n_dgrid=256, loss="linear", f_scale=1.0):
         """mass_index: column (in the full fit coordinates) holding a mass M. If given, the distance
         scale is interpolated as log(u* M): the horizon distance scales with mass, so u* M varies far
         less across the grid than u* itself."""
         self.dist_index = int(dist_index)
         self.mass_index = None if mass_index is None else int(mass_index)
+        # prior + d_range switch on the marginal/conditional decomposition:
+        #   lnL(x,d) = M(x) + [log_model(1/d; theta(x)) - N(theta(x))],
+        # M = log int exp(log_model) prior dd over d_range per point, interpolated directly, N the same
+        # integral evaluated at the interpolated shape. The intrinsic marginal is then M(x) alone, so
+        # interpolation error in the distance-shape fields cannot move intrinsic weights.
+        self.prior, self.d_range, self.n_dgrid = prior, d_range, int(n_dgrid)
+        self.loss, self.f_scale = loss, float(f_scale)
         self.max_overshoot = float(max_overshoot)
         self.n_estimators, self.n_jobs, self.min_slices = n_estimators, n_jobs, min_slices
 
@@ -118,7 +130,8 @@ class DistanceAmplitudeModel:
         xi = np.delete(x, self.dist_index, axis=1)
         key = np.round(xi, 10)
         uk, P, rms, counts = fit_all_points(key, 1.0 / x[:, self.dist_index], np.asarray(y, dtype=float),
-                                            np.asarray(y_errors, dtype=float), self.min_slices, fix_C=True)
+                                            np.asarray(y_errors, dtype=float), self.min_slices, fix_C=True,
+                                            loss=self.loss, f_scale=self.f_scale)
         good = np.all(np.isfinite(P), axis=1)
         # Guard: a point whose slices do not resolve its flat top (e.g. all slices at nearly one d)
         # can fit a peak far above anything it measured; the sampler then piles onto that spike.
@@ -138,8 +151,25 @@ class DistanceAmplitudeModel:
         F = self._to_fields(P[good])
         if self.mass_index is not None:
             F[:, 1] += np.log(self._mass(uk[good]))
+        if self.prior is not None:
+            self._dgrid = np.linspace(self.d_range[0], self.d_range[1], self.n_dgrid)
+            self._lw = np.log(np.maximum(np.asarray(self.prior(self._dgrid), dtype=float), 1e-300)) \
+                + np.log(np.gradient(self._dgrid))
+            M = self._lognorm(P[good, 0], P[good, 1], P[good, 2])
+            F = np.column_stack([F, M])
+            self.prior = "tabulated"     # keep only the tabulated weights: closures do not pickle
         self.rf.fit(uk[good], F)
         return self
+
+    def _lognorm(self, R, us, fm):
+        """log int exp(log_model(1/d)) prior(d) dd over the d grid, vectorized over points."""
+        out = np.empty(len(R))
+        for s0 in range(0, len(R), 4096):
+            sl = slice(s0, s0 + 4096)
+            L = log_model(1.0 / self._dgrid[None, :], R[sl, None], us[sl, None], fm[sl, None], 0.0) + self._lw[None, :]
+            m = L.max(axis=1)
+            out[sl] = m + np.log(np.exp(L - m[:, None]).sum(axis=1))
+        return out
 
     def _mass(self, xi):
         # mass column index refers to the full fit coordinates; xi has the distance column removed
@@ -152,5 +182,8 @@ class DistanceAmplitudeModel:
         F = self.rf.predict(xi)
         if self.mass_index is not None:
             F[:, 1] -= np.log(self._mass(xi))
-        R, us, fm = self._from_fields(F)
-        return log_model(1.0 / x[:, self.dist_index], R, us, fm, 0.0)
+        R, us, fm = self._from_fields(F[:, :3])
+        ll = log_model(1.0 / x[:, self.dist_index], R, us, fm, 0.0)
+        if self.prior is not None:
+            ll = F[:, 3] + ll - self._lognorm(R, us, fm)
+        return ll
