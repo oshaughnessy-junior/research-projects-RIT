@@ -32,3 +32,15 @@ def test_shared_fmin_is_reported():
     g = _grid()
     m = RFDistanceTails(lambda x: np.zeros(len(x)), 1).fit(g[:, :2], g[:, 2], 0.05 * np.ones(len(g)))
     assert abs(m.report["fmin_shared"] - 0.4) < 0.1
+
+
+def test_continuation_never_rises_above_the_edge():
+    # slices only on the far side of the peak: the fitted shape rises toward small d beyond the data
+    rng = np.random.default_rng(5)
+    rows = []
+    for x0 in rng.uniform(-1, 1, 80):
+        d = np.linspace(4000, 7000, 30)
+        rows.append(np.column_stack([np.full(30, x0), d, log_model(1 / d, 30.0, 1 / 2000.0, 0.5, 0.0) + rng.normal(0, 0.05, 30)]))
+    g = np.vstack(rows)
+    m = RFDistanceTails(lambda x: np.full(len(x), 5.0), 1, sides="both").fit(g[:, :2], g[:, 2], 0.05 * np.ones(len(g)))
+    assert np.all(m(np.column_stack([np.full(5, g[0, 0]), [500.0, 1000.0, 2000.0, 9000.0, 20000.0]])) <= 5.0)
