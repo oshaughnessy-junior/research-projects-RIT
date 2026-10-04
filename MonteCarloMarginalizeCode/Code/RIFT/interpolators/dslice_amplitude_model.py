@@ -168,10 +168,14 @@ def fit_points_batched(U, Yv, W, fscale, fix_C=False, loss="linear", max_iter=20
                 r_new = resid(p_new, ix)
                 c_new, rw_new = cost_and_w(r_new, ix)
                 better = good & xp.isfinite(c_new) & (c_new <= c)
-                # scipy's tests: ftol on an accepted step, xtol on the step, gtol on the gradient
-                conv = (better & ((c - c_new) < 1e-8 * c)) \
-                    | (xp.linalg.norm(step, axis=1) < 1e-8 * (1e-8 + xp.linalg.norm(p, axis=1))) \
-                    | (xp.max(xp.abs(g), axis=1) < 1e-8) | ~good
+                # scipy's tests: ftol on an accepted step whose reduction matches the model's
+                # prediction (ratio > 0.25), xtol on an accepted step, gtol on the gradient. A
+                # nonfinite system is not convergence: it raises the damping and retries.
+                pred = -xp.einsum('gi,gi->g', g, step) - 0.5 * xp.einsum('gi,gij,gj->g', step, A, step)
+                ratio = (c - c_new) / xp.where(pred > 0, pred, xp.inf)
+                conv = (better & ((c - c_new) < 1e-8 * c) & (ratio > 0.25)) \
+                    | (better & (xp.linalg.norm(step, axis=1) < 1e-8 * (1e-8 + xp.linalg.norm(p, axis=1)))) \
+                    | (good & (xp.max(xp.abs(g), axis=1) < 1e-8))
                 p = xp.where(better[:, None], p_new, p)
                 r = xp.where(better[:, None], r_new, r)
                 if rw is not None:
@@ -344,6 +348,7 @@ class DistanceAmplitudeModel:
 
     def fit(self, x, y, y_errors):
         from sklearn.ensemble import ExtraTreesRegressor
+        self._device = None     # a cached device copy belongs to the previous fit
         x = np.asarray(x, dtype=float)
         xi = np.delete(x, self.dist_index, axis=1)
         key = np.round(xi, 10)

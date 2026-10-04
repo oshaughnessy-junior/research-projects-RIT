@@ -6388,7 +6388,10 @@ def convert_waveform_coordinates(x_in,coord_names=['mc', 'eta'],low_level_coord_
     # Mass-ratio, total-mass and aligned-spin coordinates from component masses (a data file's m1, m2)
     # or from (mc, delta_mc|eta), and xi/chiMinus/mu1/mu2 from Cartesian s1z, s2z: vectorized forms of
     # the extract_param definitions the per-row loop below applies (L frame).  Not used with
-    # source_redshift, which that loop applies to the masses before extracting.
+    # source_redshift, which that loop applies to the masses before extracting.  On valid rows the two
+    # agree to roundoff.  They differ where the loop is wrong: it reuses one ChooseWaveformParams, so a
+    # NaN or delta_mc > 1 row corrupts the masses of every later row, and eta > 0.25 is clamped or not
+    # depending on name order; here each row stands alone and eta goes to m1m2 as given.
     vec_mass_names = ['delta_mc', 'eta', 'mc', 'q', 'mtot', 'm1', 'm2']
     vec_spin_names = ['xi', 'chiMinus', 'mu1', 'mu2']
     have_m12 = ('m1' in low_level_coord_names) and ('m2' in low_level_coord_names)
@@ -6405,6 +6408,11 @@ def convert_waveform_coordinates(x_in,coord_names=['mc', 'eta'],low_level_coord_
         elif 'chi1' in low_level_coord_names and 'chi2' in low_level_coord_names:
             xf = np.asarray(x_in, dtype=float)
             kerr_bad = (xf[:, low_level_coord_names.index('chi1')] > 1) | (xf[:, low_level_coord_names.index('chi2')] > 1)
+        elif 's1z' in low_level_coord_names and 's2z' in low_level_coord_names and \
+                not any(n in low_level_coord_names for n in ['s1x', 's1y', 's2x', 's2y', 'chi1', 'chi2']):
+            # aligned spins only (CIP's common case): the loop's in-plane components stay 0
+            xf = np.asarray(x_in, dtype=float)
+            kerr_bad = (np.abs(xf[:, low_level_coord_names.index('s1z')]) > 1) | (np.abs(xf[:, low_level_coord_names.index('s2z')]) > 1)
         else:
             kerr_ok = False      # cannot apply the per-row Kerr rule here; leave these to the loop
     if wanted and not source_redshift and kerr_ok and (have_m12 or have_mc_eta):

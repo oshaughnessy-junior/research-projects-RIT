@@ -194,6 +194,14 @@ if opts.fit_device == "gpu" and opts.fit_method not in ("rf", "dslice-amp"):
     parser.error("--fit-device gpu supports --fit-method rf and dslice-amp")
 if opts.rf_fit_backend == "cupy" and (opts.fit_method != "rf" or opts.fit_device != "gpu"):
     parser.error("--rf-fit-backend cupy requires --fit-method rf and --fit-device gpu")
+if opts.fit_device == "gpu":
+    if opts.fit_distance_tail:
+        parser.error("--fit-distance-tail is host-only; it is not available with --fit-device gpu")
+    try:    # fail before the fit, not after it
+        import cupy as _cupy_probe
+        _cupy_probe.zeros(1)
+    except Exception as _err:
+        parser.error("--fit-device gpu needs cupy and a visible CUDA device ({})".format(_err))
 
 #print(" WARNING: Always use internal_use_lnL for now ")
 #opts.internal_use_lnL=True
@@ -663,7 +671,9 @@ def _device_forest_fit(rf, x_check, fill):
         forest, msg = rf, "grown on device"
     else:
         forest = CupyForest(rf)
-        xc = np.asarray(x_check, dtype=float)[np.linspace(0, len(x_check) - 1, min(len(x_check), 4096)).astype(int)]
+        xc = np.asarray(x_check, dtype=float)
+        xc = xc[np.all(np.isfinite(xc), axis=-1) & np.all(~(np.abs(xc) > 1e37), axis=-1)]   # rows fn_return evaluates
+        xc = xc[np.linspace(0, len(xc) - 1, min(len(xc), 4096)).astype(int)]
         err = float(np.max(np.abs(cp.asnumpy(forest.predict(xc)) - rf.predict(xc))))
         msg = "max |gpu - sklearn| on {} training rows = {:.3g}".format(len(xc), err)
         if not err < 1e-9:
@@ -688,8 +698,13 @@ def fit_rf(x,y,y_errors=None,fname_export='nn_fit',device='cpu',backend='sklearn
     if backend == 'cupy':
         from RIFT.interpolators.cupy_extratrees import CupyExtraTreesRegressor
         sw = None if y_errors is None else 1./np.maximum(np.asarray(y_errors,dtype=float),1e-3)**2
-        model = CupyExtraTreesRegressor(n_estimators=100, verbose=True).fit(x, y, sample_weight=sw)
-        fn_return = _device_forest_fit(model.forest(), None, fill=-lnL_default_large_negative)
+        keep = np.all(np.isfinite(x), axis=-1) & np.all(~(np.abs(x) > 1e37), axis=-1)
+        if not np.all(keep):
+            # sklearn fits such rows as missing values; the GPU grower does not support them
+            print(" rf cupy fit: dropping {} of {} rows with nonfinite or |x| > 1e37 coordinates".format(int(np.sum(~keep)), len(keep)))
+        model = CupyExtraTreesRegressor(n_estimators=100, verbose=True).fit(
+            x[keep], y[keep], sample_weight=None if sw is None else sw[keep])
+        fn_return = _device_forest_fit(model.forest(release=True), None, fill=-lnL_default_large_negative)
         residuals = fn_return(x) - y
         print( " Demonstrating RF (cupy fit)")
         print( "    std ", np.std(residuals), np.max(y), np.max(fn_return(x)))
@@ -832,6 +847,14 @@ else:
             # _low / _coord captured as defaults so the closure stays correct
             # even if either list mutates later in the script.
             return supplemental_coordinate_convert(x_in, coord_names=_coord, low_level_coord_names=_low)
+        if opts.fit_device == 'gpu':
+            # the plugin is host-only: convert a device batch on the host, evaluate the fit on the device
+            print(" FIT-DEVICE gpu : coordinate conversion runs on the host (plugin); the fit is evaluated on the device")
+            def convert_coords(x_in, _low=low_level_coord_names, _coord=coord_names):
+                import cupy as _cp
+                if isinstance(x_in, _cp.ndarray):
+                    return _cp.asarray(supplemental_coordinate_convert(_cp.asnumpy(x_in), coord_names=_coord, low_level_coord_names=_low))
+                return supplemental_coordinate_convert(x_in, coord_names=_coord, low_level_coord_names=_low)
 # Save copies for later (plots)
 X_orig = X.copy()
 Y_orig = Y.copy()
@@ -989,8 +1012,6 @@ if my_fit is None:
 ### This wraps whatever fit was just built and is a no-op on the support, so nothing that currently
 ### works changes.  It is applied AFTER the cap/threshold cuts above so the tail is built from
 ### exactly the rows the fit itself saw.
-if opts.fit_distance_tail and opts.fit_device == 'gpu':
-    raise ValueError("--fit-distance-tail is host-only; it is not available with --fit-device gpu")
 if opts.fit_distance_tail:
     if my_fit is None:
         raise ValueError("--fit-distance-tail: no fit was built (--fit-method %s)" % opts.fit_method)
@@ -1341,6 +1362,12 @@ if opts.internal_use_lnL:
     fn_passed = log_likelihood_function   # helps regularize large values
     if supplemental_ln_likelihood:
         fn_passed =  lambda *x: log_likelihood_function(*x) + supplemental_ln_likelihood(*x)
+        if opts.fit_device == 'gpu':
+            # the supplementary factor is host code: add it on the host
+            def fn_passed(*x):
+                _h = [a.get() if hasattr(a, 'get') else a for a in x]
+                _l = log_likelihood_function(*x)
+                return (_l.get() if hasattr(_l, 'get') else _l) + supplemental_ln_likelihood(*_h)
     extra_args.update({"use_lnL":True,"return_lnI":True})
 
 

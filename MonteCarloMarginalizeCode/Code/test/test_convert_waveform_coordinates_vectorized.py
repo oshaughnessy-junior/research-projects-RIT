@@ -4,6 +4,9 @@ The reference is the fallthrough loop itself (ChooseWaveformParams.assign_param 
 row). Inputs: a data file's basis (m1, m2, Cartesian spins) and the sampler's (mc, delta_mc, spherical
 spins). enforce_kerr rows must come back as -inf rows, and source_redshift must still take the loop.
 A wrong-sign chiMinus is the deliberately broken case.
+
+The reference builds a fresh ChooseWaveformParams per row. The library loop reuses one, so an invalid
+row (NaN, delta_mc > 1) corrupts later rows there; the vectorized branch does not inherit that.
 """
 import numpy as np
 import pytest
@@ -15,9 +18,9 @@ MC = ['delta_mc', 'mc', 'chi1', 'chi2', 'cos_theta1', 'cos_theta2', 'phi1', 'phi
 
 
 def _per_row(x, coord_names, low, enforce_kerr=False, source_redshift=0):
-    P = lalsimutils.ChooseWaveformParams()
     out = np.zeros((len(x), len(coord_names)))
     for i in range(len(x)):
+        P = lalsimutils.ChooseWaveformParams()
         for j, n in enumerate(low):
             P.assign_param(n, x[i, j])
         P.m1 *= (1 + source_redshift); P.m2 *= (1 + source_redshift)
@@ -74,3 +77,16 @@ def test_sign_error_would_be_caught():
     x = _file_rows()
     got = lalsimutils.convert_waveform_coordinates(x, coord_names=['chiMinus'], low_level_coord_names=FILE)
     assert not _close(-got, _per_row(x, ['chiMinus'], FILE))
+
+
+def test_aligned_spin_kerr_rule_and_bad_rows_do_not_leak():
+    rng = np.random.default_rng(4)
+    low = ['mc', 'delta_mc', 's1z', 's2z']
+    x = np.column_stack([rng.uniform(5, 60, 300), rng.uniform(0, 0.9, 300), rng.uniform(-1.2, 1.2, 300), rng.uniform(-1.2, 1.2, 300)])
+    names = ['q', 'mtot', 'xi', 'mu1', 'mu2']
+    got = lalsimutils.convert_waveform_coordinates(x, coord_names=list(names), low_level_coord_names=low, enforce_kerr=True)
+    ref = _per_row(x, names, low, enforce_kerr=True)
+    assert np.isneginf(ref).any() and _close(got, ref)
+    x[10, 1] = 1.5                                    # an invalid row
+    got = lalsimutils.convert_waveform_coordinates(x, coord_names=list(names), low_level_coord_names=low)
+    assert np.all(np.isfinite(got[11:]))

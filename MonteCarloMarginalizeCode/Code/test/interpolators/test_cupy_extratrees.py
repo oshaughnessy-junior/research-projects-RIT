@@ -83,3 +83,25 @@ def test_heldout_error_and_size_match_sklearn():
         e_sk.append(np.mean((s.predict(Xh) - yh) ** 2))
         assert f.n_nodes == sum(e.tree_.node_count for e in s.estimators_)    # fully grown: 2n - 1 per tree
     assert abs(np.mean(e_gpu) / np.mean(e_sk) - 1) < 0.08, (e_gpu, e_sk)
+
+
+def test_zero_weights_match_reference_and_sklearn():
+    """Samples with weight 0: a split needs positive weight on both sides (sklearn's proxy is NaN
+    otherwise). Every tree of a multi-tree group must equal the reference, and no leaf may be NaN."""
+    X, y, w = _data(n=2000, seed=5)
+    w[np.random.default_rng(6).random(len(w)) < 0.3] = 0.0
+    g = ce.CupyExtraTreesRegressor(n_estimators=4, trees_per_group=4).fit(X, y, w, uniforms=_uniforms)
+    for k, e in enumerate(g.estimators_):
+        t = e.tree_
+        left, right, feat, thr, val = ce._reference_tree(X, y, w, _uniforms, tree_id=k)
+        assert np.array_equal(t.children_left, left) and np.array_equal(t.feature, feat), k
+        assert np.array_equal(t.threshold, thr) and np.all(np.isfinite(t.value)), k
+        assert np.max(np.abs(t.value[:, 0, 0] - val)) < 1e-12, k
+    rng = np.random.default_rng(9)
+    Xh = rng.uniform(-1, 1, (20000, 4)); Xh[:, 3] = np.round(Xh[:, 3], 1)
+    yh = np.sin(3 * Xh[:, 0]) * Xh[:, 1]
+    f = ce.CupyExtraTreesRegressor(20, random_state=1).fit(X, y, w).forest(release=True)
+    p = cp.asnumpy(f.predict(Xh))
+    s = ExtraTreesRegressor(20, random_state=1, n_jobs=1).fit(X, y, sample_weight=w)
+    assert np.all(np.isfinite(p))
+    assert np.mean((p - yh) ** 2) < 1.3 * np.mean((s.predict(Xh) - yh) ** 2)

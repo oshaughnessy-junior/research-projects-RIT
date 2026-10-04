@@ -5,7 +5,7 @@ min_samples_leaf=1, bootstrap=False) with sample weights. At every node and for 
 not constant on the node (max <= min + 1e-7, sklearn's FEATURE_THRESHOLD, in float32 X), the threshold
 is drawn uniformly on [min, max) (a draw equal to max is moved to min, as in sklearn); the split with
 the largest weighted-MSE proxy improvement S_L^2/W_L + S_R^2/W_R is kept, ties (equal partitions)
-broken uniformly as sklearn's random feature order does. A node is a leaf when it
+broken uniformly as sklearn's random feature order does (tolerance 1e-13 of the proxy). A node is a leaf when it
 holds fewer than two samples, its weighted impurity is <= double epsilon, or every feature is constant
 on it; its value is the weighted mean of y. Samples go left when float32(x) <= threshold.
 
@@ -26,13 +26,15 @@ __device__ __forceinline__ int ord_f(float f) { int i = __float_as_int(f); retur
 extern "C" __global__
 void node_stats(const int* __restrict__ act, const long long n_act, const int N, const int F,
                 const float* __restrict__ X, const double* __restrict__ y, const double* __restrict__ w,
-                const int* __restrict__ slot, double* W, double* S1, double* S2, int* cnt, int* fmin, int* fmax)
+                const int* __restrict__ slot, double* W, double* S1, double* S2, int* cnt, int* cntw,
+                int* fmin, int* fmax)
 {
     long long k = (long long)blockDim.x * blockIdx.x + threadIdx.x;
     if (k >= n_act) return;
     int p = act[k]; int i = p % N; int s = slot[p];
     double wi = w[i], yi = y[i];
     atomicAdd(W + s, wi); atomicAdd(S1 + s, wi * yi); atomicAdd(S2 + s, wi * yi * yi); atomicAdd(cnt + s, 1);
+    if (wi > 0) atomicAdd(cntw + s, 1);
     const float* x = X + (long long)i * F;
     for (int f = 0; f < F; f++) {
         int v = ord_f(x[f]);
@@ -44,7 +46,8 @@ extern "C" __global__
 void split_stats(const int* __restrict__ act, const long long n_act, const int N, const int F,
                  const float* __restrict__ X, const double* __restrict__ y, const double* __restrict__ w,
                  const int* __restrict__ slot, const unsigned char* __restrict__ splitting,
-                 const double* __restrict__ thr, const unsigned char* __restrict__ cand, double* LW, double* LS)
+                 const double* __restrict__ thr, const unsigned char* __restrict__ cand, double* LW, double* LS,
+                 int* LCW)
 {
     long long k = (long long)blockDim.x * blockIdx.x + threadIdx.x;
     if (k >= n_act) return;
@@ -55,7 +58,10 @@ void split_stats(const int* __restrict__ act, const long long n_act, const int N
     const float* x = X + (long long)i * F;
     for (int f = 0; f < F; f++) {
         long long sf = (long long)s * F + f;
-        if (cand[sf] && (double)x[f] <= thr[sf]) { atomicAdd(LW + sf, wi); atomicAdd(LS + sf, wy); }
+        if (cand[sf] && (double)x[f] <= thr[sf]) {
+            atomicAdd(LW + sf, wi); atomicAdd(LS + sf, wy);
+            if (wi > 0) atomicAdd(LCW + sf, 1);
+        }
     }
 }
 
@@ -78,12 +84,14 @@ void route(const int* __restrict__ act, const long long n_act, const int N, cons
 
 
 def _pick(xp, proxy, u_tie):
-    """Best feature per row. Features whose proxy is within 1e-12 (relative) of the best are tied --
+    """Best feature per row. Features whose proxy is within 1e-13 (relative) of the best are tied --
     typically several features give the same partition of a small node -- and one is chosen uniformly
     with u_tie, as sklearn's random feature order does. A fixed rule (argmax: lowest index) would bias
-    which feature carries the cut."""
+    which feature carries the cut. The tolerance is relative to the whole proxy, which includes the node
+    offset S^2/W, so it must sit above the proxy's roundoff (a few eps for the small nodes where ties
+    occur); improvements closer than 1e-13 S^2/W also count as tied."""
     pmax = xp.max(proxy, axis=1, keepdims=True)
-    tied = (proxy >= pmax - 1e-12 * xp.abs(pmax)) & xp.isfinite(proxy)
+    tied = (proxy >= pmax - 1e-13 * xp.abs(pmax)) & xp.isfinite(proxy)
     n_tied = xp.sum(tied, axis=1)
     j = xp.minimum(xp.floor(u_tie * n_tied), xp.maximum(n_tied - 1, 0)).astype(xp.int64)
     rank = xp.cumsum(tied, axis=1) - 1
@@ -134,7 +142,16 @@ class CupyExtraTreesRegressor:
         k_stats, k_split, k_route = (mod.get_function(n) for n in ("node_stats", "split_stats", "route"))
         rng = cp.random.RandomState(self.random_state if self.random_state is not None
                                     else np.random.SeedSequence().generate_state(1)[0])
-        tpg = self.trees_per_group or max(1, min(self.n_estimators, int(2 ** 31 // (2 * N)) - 1, 20))
+        if self.trees_per_group:
+            tpg = int(self.trees_per_group)
+        else:
+            # ~(64 F + 40) bytes per (tree, sample) at the widest level (measured 13.3 GB for 20 trees,
+            # 1.2M rows, F = 9); use at most half the free device memory
+            free = cp.cuda.Device().mem_info[0] + cp.get_default_memory_pool().free_bytes()
+            tpg = int(0.5 * free // ((64 * F + 40) * N))
+            if tpg < 1:
+                raise MemoryError("cupy ExtraTrees: %.1f GB free is too little for one tree of %d rows" % (free / 1e9, N))
+            tpg = min(tpg, self.n_estimators, int(2 ** 31 // (2 * N)) - 1, 20)
         self.n_features_in_ = F
         self._trees = []          # per tree: dict of device arrays
         TH = 256
@@ -154,10 +171,11 @@ class CupyExtraTreesRegressor:
                 K = len(ftree)
                 n_act = np.int64(len(act))
                 blocks = (int((n_act + TH - 1) // TH),)
-                W = cp.zeros(K); S1 = cp.zeros(K); S2 = cp.zeros(K); cnt = cp.zeros(K, dtype=cp.int32)
+                W = cp.zeros(K); S1 = cp.zeros(K); S2 = cp.zeros(K)
+                cnt = cp.zeros(K, dtype=cp.int32); cntw = cp.zeros(K, dtype=cp.int32)
                 fmin = cp.full((K, F), np.iinfo(np.int32).max, dtype=cp.int32)
                 fmax = cp.full((K, F), np.iinfo(np.int32).min, dtype=cp.int32)
-                k_stats(blocks, (TH,), (act, n_act, np.int32(N), np.int32(F), Xd, yd, wd, slot, W, S1, S2, cnt, fmin, fmax))
+                k_stats(blocks, (TH,), (act, n_act, np.int32(N), np.int32(F), Xd, yd, wd, slot, W, S1, S2, cnt, cntw, fmin, fmax))
                 lo = _decode_ord(cp, fmin).astype(cp.float64); hi = _decode_ord(cp, fmax).astype(cp.float64)
                 imp = S2 / W - (S1 / W) ** 2
                 cand = ~(hi.astype(cp.float32) <= (lo.astype(cp.float32) + np.float32(_FEATURE_THRESHOLD)))
@@ -168,14 +186,17 @@ class CupyExtraTreesRegressor:
                     u = cp.asarray(uniforms(level, cp.asnumpy(ftree) + g0, cp.asnumpy(fid), F + 1), dtype=cp.float64)
                 thr = (hi - lo) * u[:, :F] + lo
                 thr = cp.where(thr == hi, lo, thr)
-                LW = cp.zeros((K, F)); LS = cp.zeros((K, F))
-                sp8 = splitting.astype(cp.uint8)
-                k_split(blocks, (TH,), (act, n_act, np.int32(N), np.int32(F), Xd, yd, wd, slot, sp8, thr,
-                                        cand.astype(cp.uint8), LW, LS))
+                LW = cp.zeros((K, F)); LS = cp.zeros((K, F)); LCW = cp.zeros((K, F), dtype=cp.int32)
+                k_split(blocks, (TH,), (act, n_act, np.int32(N), np.int32(F), Xd, yd, wd, slot,
+                                        splitting.astype(cp.uint8), thr, cand.astype(cp.uint8), LW, LS, LCW))
                 RW = W[:, None] - LW; RS = S1[:, None] - LS
-                proxy = cp.where(cand & (LW > 0) & (RW > 0), LS * LS / LW + RS * RS / RW, -cp.inf)
+                # each side needs positive weight (sklearn's proxy is NaN otherwise, so the split loses);
+                # tested on counts of positive-weight samples, since W - LW leaves roundoff
+                valid = cand & (LCW > 0) & (cntw[:, None] - LCW > 0)
+                proxy = cp.where(valid, LS * LS / cp.where(valid, LW, 1.0) + RS * RS / cp.where(valid, RW, 1.0), -cp.inf)
                 bf = _pick(cp, proxy, u[:, F])
                 splitting &= cp.isfinite(cp.max(proxy, axis=1))
+                sp8 = splitting.astype(cp.uint8)
                 bthr = thr[cp.arange(K), bf]
                 # node records
                 gid = ftree.astype(cp.int64) * cap + fid
@@ -219,9 +240,16 @@ class CupyExtraTreesRegressor:
             out.append(_Est(_Tree(lf, rt, t["feat"].get(), t["thr"].get(), t["val"].get())))
         return out
 
-    def forest(self):
+    def forest(self, release=False):
+        """CupyForest for prediction. release=True frees the per-tree arrays (estimators_ then
+        unavailable), so the forest is the only device copy."""
+        import cupy as cp
         from RIFT.interpolators.cupy_forest import CupyForest
-        return CupyForest.from_device_trees(self._trees, self.n_features_in_)
+        f = CupyForest.from_device_trees(self._trees, self.n_features_in_)
+        if release:
+            self._trees = None
+            cp.get_default_memory_pool().free_all_blocks()
+        return f
 
 
 def _reference_tree(X, y, w, uniforms, tree_id=0):
@@ -238,6 +266,7 @@ def _reference_tree(X, y, w, uniforms, tree_id=0):
         for k, (nid, idx) in enumerate(frontier):
             ww, yy, xx = w[idx], y[idx], X[idx]
             W, S1, S2 = ww.sum(), (ww * yy).sum(), (ww * yy * yy).sum()
+            pos = ww > 0
             val[nid] = S1 / W
             lo, hi = xx.min(axis=0).astype(np.float64), xx.max(axis=0).astype(np.float64)
             cand = ~(hi.astype(np.float32) <= lo.astype(np.float32) + np.float32(_FEATURE_THRESHOLD))
@@ -248,8 +277,10 @@ def _reference_tree(X, y, w, uniforms, tree_id=0):
             goes_left = xx.astype(np.float64) <= t[None, :]
             LW = (ww[:, None] * goes_left).sum(0); LS = ((ww * yy)[:, None] * goes_left).sum(0)
             RW, RS = W - LW, S1 - LS
+            lcw = (goes_left & pos[:, None]).sum(0)
+            valid = cand & (lcw > 0) & (pos.sum() - lcw > 0)
             with np.errstate(divide="ignore", invalid="ignore"):
-                proxy = np.where(cand & (LW > 0) & (RW > 0), LS ** 2 / LW + RS ** 2 / RW, -np.inf)
+                proxy = np.where(valid, LS ** 2 / LW + RS ** 2 / RW, -np.inf)
             if not np.isfinite(proxy.max()):
                 continue
             f = int(_pick(np, proxy[None, :], u[k, F:F + 1])[0])
