@@ -154,6 +154,10 @@ parser.add_argument("--gp-matern-fit-backend",default="sklearn",choices=["sklear
 parser.add_argument("--dslice-amp-decompose",action='store_true',help="dslice-amp: write lnL as an interpolated distance-marginal M(x) plus a normalized conditional in d, so distance-shape interpolation error cannot move intrinsic weights.")
 parser.add_argument("--dslice-amp-loss",default="linear",help="dslice-amp: scipy least_squares loss for the per-point fits (linear|soft_l1|cauchy|huber).")
 parser.add_argument("--dslice-amp-loss-scale",default=1.0,type=float,help="dslice-amp: robust-loss scale in nats.")
+parser.add_argument("--dslice-amp-point-fit",default="scipy",choices=["scipy","batched"],help="dslice-amp: per-point fits by one scipy least_squares call each (default), or all points at once by a batched Levenberg-Marquardt on the same objective (RIFT.interpolators.dslice_amplitude_model.fit_all_points_batched), on the GPU under --fit-device gpu.")
+parser.add_argument("--rf-fit-backend",default="sklearn",choices=["sklearn","cupy"],help="rf: grow the ExtraTrees forest with sklearn on CPU (default) or on the GPU with the same algorithm (RIFT.interpolators.cupy_extratrees; same distribution of forests, different random stream). cupy requires --fit-device gpu.")
+parser.add_argument("--fit-device",default="cpu",choices=["cpu","gpu"],help="rf and dslice-amp only. gpu: copy the fitted trees to the GPU and evaluate the fit there inside the sampler (RIFT.interpolators.cupy_forest; same predictions as sklearn to float64 roundoff, checked at startup), keep sample batches on the device, and convert coordinates as --coordinate-convert-xpy. Needs cupy and a visible device.")
+parser.add_argument("--coordinate-convert-xpy",action='store_true',help="With --supplementary-coordinate-code: convert the data file and the sampler's batches with the vectorized RIFT.misc.waveform_coordinates_xpy instead of the plugin, after checking the two agree on data rows and on draws from the integration ranges (the plugin is kept if they do not). Avoids convert_waveform_coordinates' per-row fallthrough.")
 parser.add_argument("--gp-matern-seed",default=25062842,type=int,help="gp-matern: deterministic row selection and sklearn seed, independent of sampler randomness.")
 parser.add_argument("--fit-load-gp",default=None,type=str,help="Filename of GP fit to load. Overrides fitting process, but user MUST correctly specify coordinate system to interpret the fit with.  Does not override loading and converting the data.")
 parser.add_argument("--fit-save-gp",default=None,type=str,help="Filename of GP fit to save. ")
@@ -186,6 +190,10 @@ if opts.fit_method != 'gp-matern':
         parser.error("--gp-predict-backend cupy requires --fit-method gp-matern")
     if opts.gp_matern_fit_backend != "sklearn":
         parser.error("--gp-matern-fit-backend cupy requires --fit-method gp-matern")
+if opts.fit_device == "gpu" and opts.fit_method not in ("rf", "dslice-amp"):
+    parser.error("--fit-device gpu supports --fit-method rf and dslice-amp")
+if opts.rf_fit_backend == "cupy" and (opts.fit_method != "rf" or opts.fit_device != "gpu"):
+    parser.error("--rf-fit-backend cupy requires --fit-method rf and --fit-device gpu")
 
 #print(" WARNING: Always use internal_use_lnL for now ")
 #opts.internal_use_lnL=True
@@ -472,6 +480,28 @@ for name in low_level_coord_names:
     if not (name in param_ranges):
         raise Exception(" {} not provided a parameter range ".format(name))
 
+# Vectorized coordinate conversion (--coordinate-convert-xpy; implied by --fit-device gpu).  Used only
+# where it reproduces the plugin: on data rows, and on draws from the integration box when the
+# per-sample path goes through the plugin.  NaN rows (e.g. |cos_theta| > 1) must match as well.
+_xpy_convert = None
+if supplemental_coordinate_convert is not None and (opts.coordinate_convert_xpy or opts.fit_device == 'gpu'):
+    from RIFT.misc.waveform_coordinates_xpy import convert_waveform_coordinates_xpy, check_against
+    _rows = dat[np.linspace(0, len(dat) - 1, min(len(dat), 4096)).astype(int), 2:]
+    _checks = []
+    try:
+        _checks.append(("data",) + check_against(supplemental_coordinate_convert, coord_names, dat_orig_names, _rows))
+        if _per_sample_needs_plugin:
+            _box = np.array([param_ranges[p] for p in low_level_coord_names], dtype=float)
+            _draw = np.random.default_rng(0).uniform(_box[:, 0], _box[:, 1], (4096, len(low_level_coord_names)))
+            _checks.append(("samples",) + check_against(supplemental_coordinate_convert, coord_names, low_level_coord_names, _draw))
+    except NotImplementedError as _err:
+        _checks.append(("unsupported", False, np.inf, str(_err)))
+    print(" COORDINATE-CONVERT-XPY check (max error in units of rtol 1e-10): {}".format(_checks))
+    if all(c[1] for c in _checks):
+        _xpy_convert = convert_waveform_coordinates_xpy
+    else:
+        print(" COORDINATE-CONVERT-XPY : vectorized converter does not reproduce the plugin; keeping the plugin")
+
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import RBF, WhiteKernel, ConstantKernel as C
 
@@ -613,11 +643,57 @@ def fit_gp_pool(x,y,n_pool=10,**kwargs):
     return fn_out
 
 
-def fit_rf(x,y,y_errors=None,fname_export='nn_fit'):
+def _cupy():
+    try:
+        import cupy
+        cupy.zeros(1)
+        return cupy
+    except Exception as err:
+        raise RuntimeError("--fit-device gpu needs cupy and a visible CUDA device ({})".format(err))
+
+
+def _device_forest_fit(rf, x_check, fill):
+    """Device evaluation of a fitted forest with fn_return's row guard: rows with a nonfinite or
+    |x| > 1e37 coordinate get `fill`. Returns cupy for cupy input and numpy for numpy input. rf is a
+    fitted sklearn forest, checked at startup against rf.predict on training rows x_check, or an
+    already built CupyForest (x_check None)."""
+    cp = _cupy()
+    from RIFT.interpolators.cupy_forest import CupyForest
+    if isinstance(rf, CupyForest):
+        forest, msg = rf, "grown on device"
+    else:
+        forest = CupyForest(rf)
+        xc = np.asarray(x_check, dtype=float)[np.linspace(0, len(x_check) - 1, min(len(x_check), 4096)).astype(int)]
+        err = float(np.max(np.abs(cp.asnumpy(forest.predict(xc)) - rf.predict(xc))))
+        msg = "max |gpu - sklearn| on {} training rows = {:.3g}".format(len(xc), err)
+        if not err < 1e-9:
+            raise RuntimeError("--fit-device gpu: device forest disagrees with sklearn ({:.3g})".format(err))
+    print(" FIT-DEVICE gpu : forest of {} trees, {} nodes, {:.2f} GB on device; {}".format(
+        forest.n_trees, forest.n_nodes, forest.device_bytes / 1e9, msg))
+
+    def fn_return(x_in, forest=forest):
+        on_host = not isinstance(x_in, cp.ndarray)
+        x_in = cp.asarray(x_in, dtype=cp.float64)
+        ok = cp.all(cp.isfinite(x_in), axis=-1) & cp.all(~(cp.abs(x_in) > 1e37), axis=-1)
+        f_out = cp.where(ok, forest.predict(cp.where(ok[:, None], x_in, 0.0)), fill)
+        return cp.asnumpy(f_out) if on_host else f_out
+    return fn_return
+
+
+def fit_rf(x,y,y_errors=None,fname_export='nn_fit',device='cpu',backend='sklearn'):
 #    from sklearn.ensemble import RandomForestRegressor
     from sklearn.ensemble import ExtraTreesRegressor
     # Instantiate model. Usually not that many structures to find, don't overcomplicate
     #   - should scale like number of samples
+    if backend == 'cupy':
+        from RIFT.interpolators.cupy_extratrees import CupyExtraTreesRegressor
+        sw = None if y_errors is None else 1./np.maximum(np.asarray(y_errors,dtype=float),1e-3)**2
+        model = CupyExtraTreesRegressor(n_estimators=100, verbose=True).fit(x, y, sample_weight=sw)
+        fn_return = _device_forest_fit(model.forest(), None, fill=-lnL_default_large_negative)
+        residuals = fn_return(x) - y
+        print( " Demonstrating RF (cupy fit)")
+        print( "    std ", np.std(residuals), np.max(y), np.max(fn_return(x)))
+        return fn_return
     rf = ExtraTreesRegressor(n_estimators=100, verbose=True,n_jobs=-1)
     if y_errors is None:
         rf.fit(x,y)
@@ -639,9 +715,11 @@ def fit_rf(x,y,y_errors=None,fname_export='nn_fit'):
         f_out[indx_ok] = rf.predict(x_in[indx_ok])
         return f_out
 #    fn_return = lambda x_in: rf.predict(x_in) 
+    if device == 'gpu':
+        fn_return = _device_forest_fit(rf, x, fill=-lnL_default_large_negative)
 
     print( " Demonstrating RF")   # debugging
-    residuals = rf.predict(x)-y
+    residuals = (fn_return(x) if device == 'gpu' else rf.predict(x))-y
     print( "    std ", np.std(residuals), np.max(y), np.max(fn_return(x)))
     return fn_return
 
@@ -725,7 +803,10 @@ else:
     #       MC samples in a different basis than the file's columns,
     #       the old behaviour applied the rotation an extra time and
     #       silently mis-evaluated lnL.
-    X = supplemental_coordinate_convert(dat[:,2:], coord_names=coord_names, low_level_coord_names=dat_orig_names) # convert and generate X
+    if _xpy_convert is not None:
+        X = _xpy_convert(dat[:,2:], coord_names, dat_orig_names)
+    else:
+        X = supplemental_coordinate_convert(dat[:,2:], coord_names=coord_names, low_level_coord_names=dat_orig_names) # convert and generate X
     Y = dat[:,0]
     Y_err = dat[:,1]
     if np.max(Y)<0 and lnL_shift ==0:
@@ -740,6 +821,12 @@ else:
         _fit_col_of_sample = np.array([ low_level_coord_names.index(name) for name in coord_names ])
         def convert_coords(x_in, _idx=_fit_col_of_sample):
             return np.asarray(x_in)[:, _idx]
+        if opts.fit_device == 'gpu':
+            def convert_coords(x_in, _idx=_fit_col_of_sample):
+                return x_in[:, _idx]
+    elif _xpy_convert is not None:
+        def convert_coords(x_in, _low=list(low_level_coord_names), _coord=list(coord_names)):
+            return _xpy_convert(x_in, _coord, _low)
     else:
         def convert_coords(x_in, _low=low_level_coord_names, _coord=coord_names):
             # _low / _coord captured as defaults so the closure stays correct
@@ -809,7 +896,7 @@ elif opts.fit_method == 'rf':
         Y_err=Y_err[indx]
     if opts.ignore_errors_in_data:
         Y_err=None
-    my_fit = fit_rf(X,Y,y_errors=Y_err)
+    my_fit = fit_rf(X,Y,y_errors=Y_err,device=opts.fit_device,backend=opts.rf_fit_backend)
 
 elif opts.fit_method == 'gp-matern':
     print(" FIT METHOD gp-matern: bounded standardized Matern5/2")
@@ -849,6 +936,8 @@ elif opts.fit_method == 'dslice-amp':
         if opts.dslice_amp_decompose:
             # marginal/conditional split under the run's own distance prior and integration range
             _kw = dict(prior=prior_map['dist'], d_range=param_ranges['dist'])
+        if opts.dslice_amp_point_fit == 'batched':
+            _kw.update(point_fit='batched', xp=_cupy() if opts.fit_device == 'gpu' else np)
         dslice_model = DistanceAmplitudeModel(list(coord_names).index('dist'),mass_index=_mi,
                                               loss=opts.dslice_amp_loss,f_scale=opts.dslice_amp_loss_scale,
                                               **_kw).fit(X[finite],Y[finite],Y_err[finite])
@@ -863,6 +952,20 @@ elif opts.fit_method == 'dslice-amp':
         if np.any(ok):
             f_out[ok] = _m.predict(x_in[ok]) - _shift
         return f_out
+    if opts.fit_device == 'gpu':
+        _cp = _cupy()
+        _xc = X[finite][np.linspace(0, int(np.sum(finite)) - 1, min(int(np.sum(finite)), 4096)).astype(int)]
+        _err = float(np.max(np.abs(_cp.asnumpy(dslice_model.predict_device(_xc)) - dslice_model.predict(_xc))))
+        print(" FIT-DEVICE gpu : dslice-amp device predict, max |gpu - cpu| on {} training rows = {:.3g}".format(len(_xc), _err))
+        if not _err < 1e-8:
+            raise RuntimeError("--fit-device gpu: dslice-amp device predict disagrees with the CPU model ({:.3g})".format(_err))
+        _host_fit = my_fit
+        def my_fit(x_in, _m=dslice_model, _shift=lnL_shift, _host_fit=_host_fit):
+            if not isinstance(x_in, _cp.ndarray):
+                return _host_fit(x_in)
+            x_in = x_in.astype(_cp.float64)
+            ok = _cp.all(_cp.isfinite(x_in),axis=-1) & _cp.all(_cp.abs(x_in) < 1e37,axis=-1)
+            return _cp.where(ok, _m.predict_device(_cp.where(ok[:, None], x_in, 1.0)) - _shift, float(lnL_default_large_negative))
 
 if my_fit is None:
     # This driver builds only 'gp', 'rf', 'gp-matern' and 'dslice-amp'.  The --fit-method help was copied from
@@ -886,6 +989,8 @@ if my_fit is None:
 ### This wraps whatever fit was just built and is a no-op on the support, so nothing that currently
 ### works changes.  It is applied AFTER the cap/threshold cuts above so the tail is built from
 ### exactly the rows the fit itself saw.
+if opts.fit_distance_tail and opts.fit_device == 'gpu':
+    raise ValueError("--fit-distance-tail is host-only; it is not available with --fit-device gpu")
 if opts.fit_distance_tail:
     if my_fit is None:
         raise ValueError("--fit-distance-tail: no fit was built (--fit-method %s)" % opts.fit_method)
@@ -1083,6 +1188,12 @@ likelihood_function = None
 log_likelihood_function = None
 def log_likelihood_function(*args):
     return my_fit(convert_coords(np.array([*args]).T ))
+if opts.fit_device == 'gpu':
+    # sample batches stay on the device the sampler hands them in (AV: cupy when a GPU is visible)
+    _cp_mod = _cupy()
+    def log_likelihood_function(*args):
+        _xp = _cp_mod if any(isinstance(a, _cp_mod.ndarray) for a in args) else np
+        return my_fit(convert_coords(_xp.stack([_xp.asarray(a, dtype=_xp.float64) for a in args], axis=1)))
 
 # Fixed-arity wrappers around log_likelihood_function / likelihood_function.
 #
