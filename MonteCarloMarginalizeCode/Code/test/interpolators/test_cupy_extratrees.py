@@ -103,5 +103,7 @@ def test_zero_weights_match_reference_and_sklearn():
     f = ce.CupyExtraTreesRegressor(20, random_state=1).fit(X, y, w).forest(release=True)
     p = cp.asnumpy(f.predict(Xh))
     s = ExtraTreesRegressor(20, random_state=1, n_jobs=1).fit(X, y, sample_weight=w)
+    # sklearn grows on positive weights only: fully grown, 2 n_pos - 1 nodes per tree (distinct rows)
+    assert f.n_nodes == sum(e.tree_.node_count for e in s.estimators_)
     assert np.all(np.isfinite(p))
     assert np.mean((p - yh) ** 2) < 1.3 * np.mean((s.predict(Xh) - yh) ** 2)

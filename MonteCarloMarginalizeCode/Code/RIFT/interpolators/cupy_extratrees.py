@@ -134,7 +134,15 @@ class CupyExtraTreesRegressor:
         draws, used instead of the RNG (for the exact reference check)."""
         import cupy as cp
         Xh = np.ascontiguousarray(np.asarray(X, dtype=np.float32))
+        y = np.asarray(y, dtype=np.float64)
+        if sample_weight is not None:
+            # sklearn grows on positively weighted samples only: zero weights set no range and no count
+            sample_weight = np.asarray(sample_weight, dtype=np.float64)
+            keep = sample_weight > 0
+            Xh, y, sample_weight = np.ascontiguousarray(Xh[keep]), y[keep], sample_weight[keep]
         N, F = Xh.shape
+        if self.n_estimators * 1.6 * N >= 2 ** 31:     # trees have ~1.57 N nodes; CupyForest uses int32 ids
+            raise ValueError("cupy ExtraTrees: %d trees of %d rows exceed int32 node indices" % (self.n_estimators, N))
         Xd = cp.asarray(Xh)
         yd = cp.asarray(np.asarray(y, dtype=np.float64))
         wd = cp.asarray(np.ones(N) if sample_weight is None else np.asarray(sample_weight, dtype=np.float64))
@@ -157,84 +165,99 @@ class CupyExtraTreesRegressor:
                 raise MemoryError("cupy ExtraTrees: %.1f GB free is too little for one tree of %d rows" % (free / 1e9, N))
             return min(t, remaining, int(2 ** 31 // (2 * N)) - 1, 20)
         self.n_features_in_ = F
-        self._trees = []          # per tree: dict of device arrays
+        self._trees = []          # per tree: dict of host arrays
         TH = 256
         g0 = 0
         while g0 < self.n_estimators:
             T = group_size(self.n_estimators - g0)
-            cap = 2 * N                                   # nodes per tree are at most 2N - 1
-            left = cp.full(T * cap, -1, dtype=cp.int32); right = cp.full(T * cap, -1, dtype=cp.int32)
-            feat = cp.full(T * cap, -2, dtype=cp.int32); thr_out = cp.full(T * cap, -2.0, dtype=cp.float64)
-            val = cp.zeros(T * cap, dtype=cp.float64)
-            n_nodes = np.ones(T, dtype=np.int64)          # root of each tree exists
-            # frontier: K nodes, each (tree, node id); pairs carry their frontier slot
-            ftree = cp.arange(T, dtype=cp.int32); fid = cp.zeros(T, dtype=cp.int32)
-            slot = cp.repeat(cp.arange(T, dtype=cp.int32), N)
-            act = cp.arange(T * N, dtype=cp.int32)
-            level = 0
-            while len(act):
-                K = len(ftree)
-                n_act = np.int64(len(act))
-                blocks = (int((n_act + TH - 1) // TH),)
-                W = cp.zeros(K); S1 = cp.zeros(K); S2 = cp.zeros(K)
-                cnt = cp.zeros(K, dtype=cp.int32); cntw = cp.zeros(K, dtype=cp.int32)
-                fmin = cp.full((K, F), np.iinfo(np.int32).max, dtype=cp.int32)
-                fmax = cp.full((K, F), np.iinfo(np.int32).min, dtype=cp.int32)
-                k_stats(blocks, (TH,), (act, n_act, np.int32(N), np.int32(F), Xd, yd, wd, slot, W, S1, S2, cnt, cntw, fmin, fmax))
-                lo = _decode_ord(cp, fmin).astype(cp.float64); hi = _decode_ord(cp, fmax).astype(cp.float64)
-                imp = S2 / W - (S1 / W) ** 2
-                cand = ~(hi.astype(cp.float32) <= (lo.astype(cp.float32) + np.float32(_FEATURE_THRESHOLD)))
-                splitting = (cnt >= 2) & (imp > _EPS) & cp.any(cand, axis=1)
-                if uniforms is None:
-                    u = rng.uniform(0.0, 1.0, (K, F + 1))
-                else:
-                    u = cp.asarray(uniforms(level, cp.asnumpy(ftree) + g0, cp.asnumpy(fid), F + 1), dtype=cp.float64)
-                thr = (hi - lo) * u[:, :F] + lo
-                thr = cp.where(thr == hi, lo, thr)
-                LW = cp.zeros((K, F)); LS = cp.zeros((K, F)); LCW = cp.zeros((K, F), dtype=cp.int32)
-                k_split(blocks, (TH,), (act, n_act, np.int32(N), np.int32(F), Xd, yd, wd, slot,
-                                        splitting.astype(cp.uint8), thr, cand.astype(cp.uint8), LW, LS, LCW))
-                RW = W[:, None] - LW; RS = S1[:, None] - LS
-                # each side needs positive weight (sklearn's proxy is NaN otherwise, so the split loses);
-                # tested on counts of positive-weight samples, since W - LW leaves roundoff
-                valid = cand & (LCW > 0) & (cntw[:, None] - LCW > 0)
-                proxy = cp.where(valid, LS * LS / cp.where(valid, LW, 1.0) + RS * RS / cp.where(valid, RW, 1.0), -cp.inf)
-                bf = _pick(cp, proxy, u[:, F])
-                splitting &= cp.isfinite(cp.max(proxy, axis=1))
-                sp8 = splitting.astype(cp.uint8)
-                bthr = thr[cp.arange(K), bf]
-                # node records
-                gid = ftree.astype(cp.int64) * cap + fid
-                val[gid] = S1 / W
-                # children: consecutive ids per tree, in frontier (= tree) order
-                spi = splitting.astype(cp.int64)
-                ns = cp.asnumpy(cp.bincount(ftree, weights=spi, minlength=T)).astype(np.int64)
-                csum = cp.cumsum(spi) - spi                                   # global rank among splits
-                tree_first = cp.asarray(np.r_[0, np.cumsum(ns)[:-1]])          # rank of the tree's first split
-                rank_in_tree = csum - tree_first[ftree]
-                child_id = cp.asarray(n_nodes)[ftree] + 2 * rank_in_tree
-                sgid = gid[splitting]
-                left[sgid] = child_id[splitting].astype(cp.int32)
-                right[sgid] = (child_id[splitting] + 1).astype(cp.int32)
-                feat[sgid] = bf[splitting]
-                thr_out[sgid] = bthr[splitting]
-                n_nodes += 2 * ns
-                # next frontier: two children per splitting node, slot = 2 * global rank (+1)
-                child0 = (2 * csum).astype(cp.int32)
-                ftree_s = ftree[splitting]
-                ftree = cp.repeat(ftree_s, 2)
-                fid = cp.stack([child_id[splitting], child_id[splitting] + 1], axis=1).reshape(-1).astype(cp.int32)
-                alive = cp.empty(len(act), dtype=cp.uint8)
-                k_route(blocks, (TH,), (act, n_act, np.int32(N), np.int32(F), Xd, slot, sp8, bf, bthr, child0, alive))
-                act = act[alive.astype(bool)]
-                level += 1
-            for t in range(T):      # finished trees go to the host
-                n = int(n_nodes[t]); o = t * cap
-                self._trees.append(dict(left=left[o:o + n].get(), right=right[o:o + n].get(), feat=feat[o:o + n].get(),
-                                        thr=thr_out[o:o + n].get(), val=val[o:o + n].get()))
-            if self.verbose:
-                print(" cupy ExtraTrees: trees %d-%d grown, %d levels, nodes %s" % (g0, g0 + T - 1, level, n_nodes.tolist()))
-            del left, right, feat, thr_out, val, slot, act
+            while True:      # an out-of-memory group (e.g. a co-tenant grew) is retried at half size
+                try:
+                    cap = 2 * N                                   # nodes per tree are at most 2N - 1
+                    left = cp.full(T * cap, -1, dtype=cp.int32); right = cp.full(T * cap, -1, dtype=cp.int32)
+                    feat = cp.full(T * cap, -2, dtype=cp.int32); thr_out = cp.full(T * cap, -2.0, dtype=cp.float64)
+                    val = cp.zeros(T * cap, dtype=cp.float64)
+                    n_nodes = np.ones(T, dtype=np.int64)          # root of each tree exists
+                    # frontier: K nodes, each (tree, node id); pairs carry their frontier slot
+                    ftree = cp.arange(T, dtype=cp.int32); fid = cp.zeros(T, dtype=cp.int32)
+                    slot = cp.repeat(cp.arange(T, dtype=cp.int32), N)
+                    act = cp.arange(T * N, dtype=cp.int32)
+                    level = 0
+                    while len(act):
+                        K = len(ftree)
+                        n_act = np.int64(len(act))
+                        blocks = (int((n_act + TH - 1) // TH),)
+                        W = cp.zeros(K); S1 = cp.zeros(K); S2 = cp.zeros(K)
+                        cnt = cp.zeros(K, dtype=cp.int32); cntw = cp.zeros(K, dtype=cp.int32)
+                        fmin = cp.full((K, F), np.iinfo(np.int32).max, dtype=cp.int32)
+                        fmax = cp.full((K, F), np.iinfo(np.int32).min, dtype=cp.int32)
+                        k_stats(blocks, (TH,), (act, n_act, np.int32(N), np.int32(F), Xd, yd, wd, slot, W, S1, S2, cnt, cntw, fmin, fmax))
+                        lo = _decode_ord(cp, fmin).astype(cp.float64); hi = _decode_ord(cp, fmax).astype(cp.float64)
+                        imp = S2 / W - (S1 / W) ** 2
+                        cand = ~(hi.astype(cp.float32) <= (lo.astype(cp.float32) + np.float32(_FEATURE_THRESHOLD)))
+                        splitting = (cnt >= 2) & (imp > _EPS) & cp.any(cand, axis=1)
+                        if uniforms is None:
+                            u = rng.uniform(0.0, 1.0, (K, F + 1))
+                        else:
+                            u = cp.asarray(uniforms(level, cp.asnumpy(ftree) + g0, cp.asnumpy(fid), F + 1), dtype=cp.float64)
+                        thr = (hi - lo) * u[:, :F] + lo
+                        thr = cp.where(thr == hi, lo, thr)
+                        LW = cp.zeros((K, F)); LS = cp.zeros((K, F)); LCW = cp.zeros((K, F), dtype=cp.int32)
+                        k_split(blocks, (TH,), (act, n_act, np.int32(N), np.int32(F), Xd, yd, wd, slot,
+                                                splitting.astype(cp.uint8), thr, cand.astype(cp.uint8), LW, LS, LCW))
+                        RW = W[:, None] - LW; RS = S1[:, None] - LS
+                        # each side needs positive weight (sklearn's proxy is NaN otherwise, so the split loses);
+                        # tested on counts of positive-weight samples, since W - LW leaves roundoff
+                        valid = cand & (LCW > 0) & (cntw[:, None] - LCW > 0)
+                        proxy = cp.where(valid, LS * LS / cp.where(valid, LW, 1.0) + RS * RS / cp.where(valid, RW, 1.0), -cp.inf)
+                        bf = _pick(cp, proxy, u[:, F])
+                        splitting &= cp.isfinite(cp.max(proxy, axis=1))
+                        sp8 = splitting.astype(cp.uint8)
+                        bthr = thr[cp.arange(K), bf]
+                        # node records
+                        gid = ftree.astype(cp.int64) * cap + fid
+                        val[gid] = S1 / W
+                        # children: consecutive ids per tree, in frontier (= tree) order
+                        spi = splitting.astype(cp.int64)
+                        ns = cp.asnumpy(cp.bincount(ftree, weights=spi, minlength=T)).astype(np.int64)
+                        csum = cp.cumsum(spi) - spi                                   # global rank among splits
+                        tree_first = cp.asarray(np.r_[0, np.cumsum(ns)[:-1]])          # rank of the tree's first split
+                        rank_in_tree = csum - tree_first[ftree]
+                        child_id = cp.asarray(n_nodes)[ftree] + 2 * rank_in_tree
+                        sgid = gid[splitting]
+                        left[sgid] = child_id[splitting].astype(cp.int32)
+                        right[sgid] = (child_id[splitting] + 1).astype(cp.int32)
+                        feat[sgid] = bf[splitting]
+                        thr_out[sgid] = bthr[splitting]
+                        n_nodes += 2 * ns
+                        # next frontier: two children per splitting node, slot = 2 * global rank (+1)
+                        child0 = (2 * csum).astype(cp.int32)
+                        ftree_s = ftree[splitting]
+                        ftree = cp.repeat(ftree_s, 2)
+                        fid = cp.stack([child_id[splitting], child_id[splitting] + 1], axis=1).reshape(-1).astype(cp.int32)
+                        alive = cp.empty(len(act), dtype=cp.uint8)
+                        k_route(blocks, (TH,), (act, n_act, np.int32(N), np.int32(F), Xd, slot, sp8, bf, bthr, child0, alive))
+                        act = act[alive.astype(bool)]
+                        level += 1
+                        # release this level's per-node arrays and the pool's cache, which would otherwise
+                        # grow past the (64 F + 40)-byte estimate (up to 1.7x on uniform data)
+                        del W, S1, S2, cnt, cntw, fmin, fmax, lo, hi, imp, cand, u, thr, LW, LS, LCW, RW, RS, valid, proxy
+                        del bf, bthr, gid, spi, csum, child_id, sgid, child0, alive, splitting, sp8
+                        pool.free_all_blocks()
+                    for t in range(T):      # finished trees go to the host
+                        n = int(n_nodes[t]); o = t * cap
+                        self._trees.append(dict(left=left[o:o + n].get(), right=right[o:o + n].get(), feat=feat[o:o + n].get(),
+                                                thr=thr_out[o:o + n].get(), val=val[o:o + n].get()))
+                    if self.verbose:
+                        print(" cupy ExtraTrees: trees %d-%d grown, %d levels, nodes %s" % (g0, g0 + T - 1, level, n_nodes.tolist()))
+                    del left, right, feat, thr_out, val, slot, act
+                    break
+                except cp.cuda.memory.OutOfMemoryError:
+                    pool.free_all_blocks()
+                    if T == 1:
+                        raise
+                    T = max(1, T // 2)
+                    if self.verbose:
+                        print(" cupy ExtraTrees: out of device memory; retrying with %d trees per group" % T)
             g0 += T
         pool.free_all_blocks()
         return self
@@ -249,7 +272,6 @@ class CupyExtraTreesRegressor:
     def forest(self, release=False):
         """CupyForest for prediction. The trees are kept on the host; release=True drops that copy
         (estimators_ then unavailable)."""
-        import cupy as cp
         from RIFT.interpolators.cupy_forest import CupyForest
         f = CupyForest.from_device_trees(self._trees, self.n_features_in_)
         if release:
@@ -261,7 +283,10 @@ def _reference_tree(X, y, w, uniforms, tree_id=0):
     """Same algorithm in numpy, breadth first, driven by uniforms(level, tree_ids, node_ids, F) like
     CupyExtraTreesRegressor.fit. Returns (left, right, feature, threshold, value) with the same node
     numbering (children of a level's splitting nodes numbered consecutively in frontier order)."""
-    X = np.asarray(X, dtype=np.float32); N, F = X.shape
+    X = np.asarray(X, dtype=np.float32)
+    keep = np.asarray(w) > 0                # as fit(): positively weighted samples only
+    X, y, w = X[keep], np.asarray(y)[keep], np.asarray(w)[keep]
+    N, F = X.shape
     left, right, feat, thr_o, val = [-1], [-1], [-2], [-2.0], [0.0]
     frontier = [(0, np.arange(N))]
     level = 0

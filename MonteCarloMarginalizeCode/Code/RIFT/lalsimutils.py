@@ -6409,8 +6409,9 @@ def convert_waveform_coordinates(x_in,coord_names=['mc', 'eta'],low_level_coord_
             xf = np.asarray(x_in, dtype=float)
             kerr_bad = (xf[:, low_level_coord_names.index('chi1')] > 1) | (xf[:, low_level_coord_names.index('chi2')] > 1)
         elif 's1z' in low_level_coord_names and 's2z' in low_level_coord_names and \
-                not any(n in low_level_coord_names for n in ['s1x', 's1y', 's2x', 's2y', 'chi1', 'chi2']):
-            # aligned spins only (CIP's common case): the loop's in-plane components stay 0
+                set(low_level_coord_names) <= {'m1', 'm2', 'mc', 'eta', 'delta_mc', 's1z', 's2z', 'lambda1', 'lambda2', 'dist'}:
+            # aligned spins only (CIP's common case), and no other name that assigns a spin: the loop's
+            # in-plane components stay 0
             xf = np.asarray(x_in, dtype=float)
             kerr_bad = (np.abs(xf[:, low_level_coord_names.index('s1z')]) > 1) | (np.abs(xf[:, low_level_coord_names.index('s2z')]) > 1)
         else:

@@ -305,13 +305,17 @@ def fit_all_points(key, u, y, sig, min_slices=5, fix_C=False, loss="linear", f_s
     params = np.full((len(uk), 4), np.nan)
     rms = np.full(len(uk), np.nan)
     kw = dict(fix_C=fix_C, loss=loss, f_scale=f_scale, fmin_fixed=fmin_fixed)
-    if n_jobs is not None and int(n_jobs) > 1:
+    n_jobs = 1 if n_jobs is None else int(n_jobs)
+    if n_jobs < 1:
+        raise ValueError("fit_all_points: n_jobs must be a positive number of processes")
+    elig = [g for g in range(len(uk)) if counts[g] >= min_slices]
+    n_jobs = min(n_jobs, max(1, len(elig)))
+    if n_jobs > 1:
         from joblib import Parallel, delayed
-        elig = [g for g in range(len(uk)) if counts[g] >= min_slices]
-        chunks = np.array_split(np.asarray(elig, dtype=int), max(1, 8 * int(n_jobs)))
+        chunks = np.array_split(np.asarray(elig, dtype=int), 8 * n_jobs)
         jobs = [[(u[order[starts[g]:starts[g + 1]]], y[order[starts[g]:starts[g + 1]]], w[order[starts[g]:starts[g + 1]]])
                  for g in c] for c in chunks]
-        res = Parallel(n_jobs=int(n_jobs), backend="loky")(delayed(_fit_point_chunk)(j, kw) for j in jobs)
+        res = Parallel(n_jobs=n_jobs, backend="loky")(delayed(_fit_point_chunk)(j, kw) for j in jobs)
         for c, rr in zip(chunks, res):
             for g, (p, e) in zip(c, rr):
                 if p is not None:

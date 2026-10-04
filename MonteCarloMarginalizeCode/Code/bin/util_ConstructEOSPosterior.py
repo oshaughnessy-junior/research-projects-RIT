@@ -193,6 +193,10 @@ if opts.fit_method != 'gp-matern':
         parser.error("--gp-matern-fit-backend cupy requires --fit-method gp-matern")
 if opts.fit_device == "gpu" and opts.fit_method not in ("rf", "dslice-amp"):
     parser.error("--fit-device gpu supports --fit-method rf and dslice-amp")
+if opts.dslice_amp_point_fit_jobs < 1:
+    parser.error("--dslice-amp-point-fit-jobs must be at least 1")
+if opts.dslice_amp_point_fit_jobs > 1 and opts.dslice_amp_point_fit != "scipy":
+    parser.error("--dslice-amp-point-fit-jobs applies to scipy point fits only")
 if opts.rf_fit_backend == "cupy" and (opts.fit_method != "rf" or opts.fit_device != "gpu"):
     parser.error("--rf-fit-backend cupy requires --fit-method rf and --fit-device gpu")
 if opts.fit_device == "gpu":
@@ -678,6 +682,8 @@ def _device_forest_fit(rf, x_check, fill):
         forest = CupyForest(rf)
         xc = np.asarray(x_check, dtype=float)
         xc = xc[np.all(np.isfinite(xc), axis=-1) & np.all(~(np.abs(xc) > 1e37), axis=-1)]   # rows fn_return evaluates
+        if len(xc) == 0:
+            raise RuntimeError("--fit-device gpu: no training row has finite coordinates to check the device forest on")
         xc = xc[np.linspace(0, len(xc) - 1, min(len(xc), 4096)).astype(int)]
         err = float(np.max(np.abs(cp.asnumpy(forest.predict(xc)) - rf.predict(xc))))
         msg = "max |gpu - sklearn| on {} training rows = {:.3g}".format(len(xc), err)
@@ -710,7 +716,7 @@ def fit_rf(x,y,y_errors=None,fname_export='nn_fit',device='cpu',backend='sklearn
         model = CupyExtraTreesRegressor(n_estimators=100, verbose=True).fit(
             x[keep], y[keep], sample_weight=None if sw is None else sw[keep])
         fn_return = _device_forest_fit(model.forest(release=True), None, fill=rf_nonfinite_fill)
-        residuals = fn_return(x) - y
+        residuals = fn_return(x[keep]) - y[keep]
         print( " Demonstrating RF (cupy fit)")
         print( "    std ", np.std(residuals), np.max(y), np.max(fn_return(x)))
         return fn_return
