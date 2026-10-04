@@ -158,7 +158,7 @@ parser.add_argument("--dslice-amp-point-fit",default="scipy",choices=["scipy","b
 parser.add_argument("--dslice-amp-point-fit-jobs",default=1,type=int,help="dslice-amp, scipy point fits: number of worker processes. Fits are deterministic, so the result equals the serial one.")
 parser.add_argument("--rf-seed",default=None,type=int,help="rf: random_state for the ExtraTrees forest (sklearn or cupy), so a forest can be regrown and scored twice. The same seed on the same data gives the same trees; the cupy grower reproduces predictions bit for bit (integer node sums), sklearn to float roundoff (it sums trees in thread order). Default: unseeded, as before.")
 parser.add_argument("--rf-dslice-tails",default="none",choices=["none","near","far","both"],help="rf on a distance-slice grid only: beyond each nearest grid point's slice range (near: below its closest slice; far: above its farthest), continue from the fit's edge value with the averaged-amplitude distance shape fitted to that point (RIFT.interpolators.dslice_rf_tails) instead of the tree's flat extrapolation. Requires a 'dist' fit coordinate.")
-parser.add_argument("--rf-dslice-tails-fmin",default="shared",choices=["shared","free"],help="--rf-dslice-tails: share one f_min across the event (median of per-point fits; default) or fit it per point.")
+parser.add_argument("--rf-dslice-tails-fmin",default="shared",choices=["shared","free"],help="--rf-dslice-tails (tail shapes fit as set by --dslice-amp-point-fit/-jobs): share one f_min across the event (median of per-point fits; default) or fit it per point.")
 parser.add_argument("--rf-fit-backend",default="sklearn",choices=["sklearn","cupy"],help="rf: grow the ExtraTrees forest with sklearn on CPU (default) or on the GPU with the same algorithm (RIFT.interpolators.cupy_extratrees; same distribution of forests, different random stream). cupy requires --fit-device gpu.")
 parser.add_argument("--fit-device",default="cpu",choices=["cpu","gpu"],help="rf and dslice-amp only. gpu: copy the fitted trees to the GPU and evaluate the fit there inside the sampler (RIFT.interpolators.cupy_forest; same predictions as sklearn to float64 roundoff, checked at startup), keep sample batches on the device, and convert coordinates as --coordinate-convert-xpy. Needs cupy and a visible device.")
 parser.add_argument("--coordinate-convert-xpy",action='store_true',help="With --supplementary-coordinate-code: convert the data file and the sampler's batches with the vectorized RIFT.misc.waveform_coordinates_xpy instead of the plugin, after checking the two agree on data rows and on draws from the integration ranges (the plugin is kept if they do not). Avoids convert_waveform_coordinates' per-row fallthrough.")
@@ -203,7 +203,10 @@ _defaults = {a.dest: a.default for a in parser._actions}
 def _set(*names):
     return [n for n in names if getattr(opts, n) != _defaults[n]]
 if opts.fit_method != 'dslice-amp':
-    _bad = _set('dslice_amp_decompose', 'dslice_amp_loss', 'dslice_amp_loss_scale', 'dslice_amp_point_fit', 'dslice_amp_point_fit_jobs')
+    # --rf-dslice-tails fits its tail shapes with the same per-point fitter, so it uses the point-fit options
+    _tails = opts.fit_method == 'rf' and opts.rf_dslice_tails != 'none'
+    _bad = _set('dslice_amp_decompose', 'dslice_amp_loss', 'dslice_amp_loss_scale',
+                *(() if _tails else ('dslice_amp_point_fit', 'dslice_amp_point_fit_jobs')))
     if _bad:
         parser.error("{} apply to --fit-method dslice-amp only".format(", ".join("--" + b.replace("_", "-") for b in _bad)))
 else:
@@ -1004,7 +1007,8 @@ elif opts.fit_method == 'rf':
         if opts.fit_device == "gpu":
             import cupy as _xp_tails
         my_fit = RFDistanceTails(my_fit, list(coord_names).index('dist'), sides=opts.rf_dslice_tails,
-                                 shared_fmin=(opts.rf_dslice_tails_fmin == "shared"), xp=_xp_tails).fit(X, Y + lnL_shift, Y_err)
+                                 shared_fmin=(opts.rf_dslice_tails_fmin == "shared"), xp=_xp_tails,
+                                 point_fit=opts.dslice_amp_point_fit, n_jobs=opts.dslice_amp_point_fit_jobs).fit(X, Y + lnL_shift, Y_err)
         print(" RF-DSLICE-TAILS ", my_fit.report)
 
 elif opts.fit_method == 'gp-matern':
