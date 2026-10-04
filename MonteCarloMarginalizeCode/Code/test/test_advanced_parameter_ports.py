@@ -315,9 +315,23 @@ def _extract_ile_output_block():
                 ):
                     continue
                 start = index
-                while start > 0 and not isinstance(statements[start - 1], ast.ImportFrom):
+                # The statement that binds _hpio above the writer has two shapes:
+                # `from RIFT.misc import hyperpipeline_io as _hpio` (this branch's
+                # original), and `_hpio = _load_hyperpipeline_io()` (the hyperpipe
+                # builder's lazy form, so a staged copy of the module can win inside
+                # a production image that predates it).  Anchor on either; anchoring
+                # on ImportFrom alone made this extraction die at the merge of the
+                # two branches while the writer itself was fine.
+                def _binds_hpio(statement):
+                    if isinstance(statement, ast.ImportFrom):
+                        return True
+                    return (isinstance(statement, ast.Assign)
+                            and len(statement.targets) == 1
+                            and isinstance(statement.targets[0], ast.Name)
+                            and statement.targets[0].id == "_hpio")
+                while start > 0 and not _binds_hpio(statements[start - 1]):
                     start -= 1
-                assert start > 0, "hyperpipeline_io import not found above the writer"
+                assert start > 0, "no _hpio binding (import or lazy loader) found above the writer"
                 return "\n".join(
                     ast.unparse(entry) for entry in statements[start - 1:index + 1]
                 )
@@ -334,6 +348,13 @@ class _CapturingNumpy:
 
     def savetxt(self, fname, rows):
         self.rows = rows
+
+
+def _real_hyperpipeline_io():
+    """The lazy-loader shim for the exec namespace: the extracted writer block may
+    open with `_hpio = _load_hyperpipeline_io()` rather than an import statement."""
+    from RIFT.misc import hyperpipeline_io
+    return hyperpipeline_io
 
 
 def _legacy_ile_row(monkeypatch, lambda1=0.0, lambda2=0.0, **flags):
@@ -371,6 +392,7 @@ def _legacy_ile_row(monkeypatch, lambda1=0.0, lambda2=0.0, **flags):
         "neff": 30,
         "pinned_params": {"distance": 410.0},
         "fname_output_txt": str(Path("unused.dat")),
+        "_load_hyperpipeline_io": _real_hyperpipeline_io,
     }
     exec(compile(_extract_ile_output_block(), "<ile-writer>", "exec"), namespace)
     assert recorder.rows is not None

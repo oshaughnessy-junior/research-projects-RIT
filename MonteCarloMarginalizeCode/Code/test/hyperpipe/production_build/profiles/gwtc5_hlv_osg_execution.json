@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "name": "gwtc5-hlv-osg-execution",
+  "ile": {
+    "name": "ile",
+    "protocol": "indexed-grid-v1",
+    "exe": "/bin/true",
+    "args": "--cache local.cache --zero-likelihood",
+    "n_chunk": 2,
+    "execution": {
+      "schema": "rift-execution-v1",
+      "request_memory": 4096,
+      "request_disk": "4G",
+      "request_gpu": true,
+      "request_cpus": 1,
+      "retries": 3,
+      "max_runtime_minutes": 700,
+      "use_osg": true,
+      "use_singularity": true,
+      "singularity_image": "osdf://example.invalid/rift/Reviewed-GWTC5-RIFT.sif",
+      "use_oauth_files": "scitokens",
+      "frames_dir": "<RUN_DIR>/frames_dir",
+      "transfer_files": [
+        "<RUN_DIR>/H1-psd.xml.gz",
+        "<RUN_DIR>/L1-psd.xml.gz",
+        "<RUN_DIR>/grid.dat"
+      ],
+      "backend_commands": {
+        "htcondor": {
+          "+PreCmd": "\"ile_pre.sh\"",
+          "+Campaign": "\"GWTC5-HLV\""
+        }
+      }
+    }
+  },
+  "cip": {
+    "execution": {
+      "schema": "rift-execution-v1",
+      "request_memory": 8192,
+      "request_disk": "4G",
+      "retries": 3,
+      "use_osg": true,
+      "use_singularity": true,
+      "singularity_image": "osdf://example.invalid/rift/Reviewed-GWTC5-RIFT.sif",
+      "use_oauth_files": "scitokens",
+      "transfer_files": ["<RUN_DIR>/all.net"],
+      "backend_commands": {
+        "htcondor": {
+          "+Campaign": "\"GWTC5-HLV\""
+        }
+      }
+    }
+  },
+  "expected": {
+    "ile": [
+      "use_oauth_services = scitokens",
+      "MY.SingularityBindCVMFS = True",
+      "HAS_SINGULARITY",
+      "PreCmd = \"ile_pre.sh\"",
+      "request_GPUs = 1",
+      "should_transfer_files = YES",
+      "H1-psd.xml.gz",
+      "L1-psd.xml.gz",
+      "grid.dat",
+      "frames_dir",
+      "Reviewed-GWTC5-RIFT.sif"
+    ],
+    "cip": [
+      "use_oauth_services = scitokens",
+      "MY.SingularityBindCVMFS = True",
+      "HAS_SINGULARITY",
+      "should_transfer_files = YES",
+      "all.net",
+      "Reviewed-GWTC5-RIFT.sif"
+    ]
+  }
+}

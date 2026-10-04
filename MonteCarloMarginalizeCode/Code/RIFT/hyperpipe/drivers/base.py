@@ -112,16 +112,21 @@ def read_grid(using_eos: str) -> Tuple[np.ndarray, List[str]]:
     the two leading ``lnL  sigma_lnL`` columns.
     """
     path = _strip_file_prefix(using_eos)
-    with open(path, "r") as f:
-        header = f.readline().rstrip("\n")
-    if not header.startswith("#"):
-        raise ValueError(
-            f"read_grid: expected a '#'-prefixed header in {path!r}; got {header!r}."
-        )
-    cols = header.lstrip("#").split()
+    # Same rule as the other readers of these tables.  This parsed line one, so
+    # it rejected a hyperpipeline grid -- "must declare at least lnL and
+    # sigma_lnL" against a file that declares exactly that, one line down --
+    # and silently shifted every column on a `# # lnL ...` grid, which is what
+    # np.savetxt(header='# '+names) writes.  It matters more here than in the
+    # consumers: this is the reader for the `--using-eos file:<grid>` driver
+    # contract, so a shift propagates into whatever the driver writes back.
+    from RIFT.misc.hyperpipeline_io import read_column_names
+    try:
+        cols = list(read_column_names(path))
+    except ValueError as exc:
+        raise ValueError("read_grid: {}".format(exc))
     if len(cols) < 2:
         raise ValueError(
-            f"read_grid: header {header!r} must declare at least lnL and sigma_lnL."
+            f"read_grid: header of {path!r} must declare at least lnL and sigma_lnL."
         )
     data = np.genfromtxt(path, dtype="str")
     if data.ndim == 1:

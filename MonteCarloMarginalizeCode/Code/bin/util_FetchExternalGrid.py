@@ -82,7 +82,17 @@ def retrieve_native(sourcedir,outfile,n_max=None,base_pattern=None,verbose=True)
         print("Checking ", sourcedir, " for ", base_pattern)
     # Identify the correct source file in the directory
     fnames = glob.glob(sourcedir+"/"+base_pattern)  # give flexibility to naming/reuse of this code
-    fnames.sort(key=lambda f:int(re.sub('\D', '', f))) # trick from https://pretagteam.com/question/how-to-sort-files-by-number-in-filename-of-a-directory-duplicate
+    if not fnames:
+        raise RuntimeError(
+            "No external grids matching {!r} in {!r}".format(
+                base_pattern, sourcedir))
+
+    def _numeric_basename_key(fname):
+        numbers = re.findall(r"\d+", os.path.basename(fname))
+        return tuple(int(number) for number in numbers)
+
+    # Never include digits from the parent run directory in the ordering.
+    fnames.sort(key=_numeric_basename_key)
     # if verbose:
     #     print(fnames)
     fname_to_use = fnames[-1]
@@ -95,6 +105,28 @@ def retrieve_native(sourcedir,outfile,n_max=None,base_pattern=None,verbose=True)
     elif n_max > 0:
         import random
         import RIFT.lalsimutils as lalsimutils
+
+        def _capped(P_list):
+            """Take at most n_max points, without failing when there are fewer.
+
+            Both branches previously computed ``P_list_reduced`` and then wrote
+            the FULL list, so ``n_max`` was inert -- and
+            create_event_parameter_pipeline_BasicIteration sets it to 3000 on
+            the external-fetch subdag, so this is a production path.  Before
+            PR #181 the key was never even passed through from the JSON, so the
+            cap has never actually applied; honouring it is a BEHAVIOUR CHANGE
+            for --external-fetch-native-from with grids larger than the cap.
+
+            ``random.sample`` raises when asked for more than the population,
+            which is why the size check is here and not left to it.
+            """
+            limit = int(n_max)
+            if len(P_list) <= limit:
+                return P_list
+            if verbose:
+                print(" Capping external grid at ", limit, " of ", len(P_list))
+            return random.sample(P_list, limit)
+
         if _hpip or _hpio.sniff(fname_to_use):
             import lal as _lal_mod
             P_list, _columns = _hpio.read_grid_to_P_list(
@@ -102,18 +134,14 @@ def retrieve_native(sourcedir,outfile,n_max=None,base_pattern=None,verbose=True)
                 P_factory=lalsimutils.ChooseWaveformParams,
                 lal_module=_lal_mod,
                 valid_params=lalsimutils.valid_params)
-            # NOTE: legacy code computed `P_list_reduced` but exported the
-            # full P_list anyway (apparent bug); preserved here verbatim.
-            P_list_reduced = random.sample(P_list, int(n_max))
-            _hpio.write_grid_from_P_list(outfile, P_list, _columns,
+            _hpio.write_grid_from_P_list(outfile, _capped(P_list), _columns,
                                          lal_module=_lal_mod,
                                          lalsimutils_module=lalsimutils)
         else:
             # Load in grid
             P_list = lalsimutils.xml_to_ChooseWaveformParams_array(fname_to_use)
-            # select points randomly!
-            P_list_reduced = random.sample(P_list, int(n_max))
-            lalsimutils.ChooseWaveformParams_array_to_xml(P_list, outfile)
+            lalsimutils.ChooseWaveformParams_array_to_xml(
+                _capped(P_list), outfile)
     else:
         print(" Invalid fetch size ", n_max)
         import sys; sys.exit(99)
@@ -134,4 +162,7 @@ with open(opts.input_json,'r') as f:
 
 method = config['method']
 if method =='native':
-    retrieve_native(config['source'],opts.inj_file_out)
+    retrieve_native(
+        config['source'], opts.inj_file_out,
+        n_max=config.get('n_max'),
+        base_pattern=config.get('base_pattern'))

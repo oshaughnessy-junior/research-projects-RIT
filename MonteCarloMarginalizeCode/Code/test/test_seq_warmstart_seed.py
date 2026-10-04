@@ -17,9 +17,13 @@ this suite pins:
   1. ON A COLLAPSED PASS THERE IS ALMOST NOTHING LEFT TO SEED FROM.  eff_samp ~ 1 gives one
      row ("Fairdraw size : 1" in the rho_net 146.8 logs) out of a thousand retained, and
      drawing WITH REPLACEMENT is why a "2-point seed" can have affine rank 0 -- two copies of
-     one point.  This is not an exotic configuration: every extrinsic stage built by
-     create_event_parameter_pipeline_BasicIteration, cepp_basic_htcondor and
-     create_event_nr_pipeline_with_cip passes --fairdraw-extrinsic-output unconditionally.
+     one point.  This is not an exotic configuration: the extrinsic stage built by
+     create_event_parameter_pipeline_BasicIteration (via RIFT.misc.extrinsic_stage) and by
+     create_event_nr_pipeline_with_cip adds --fairdraw-extrinsic-output whenever
+     --last-iteration-extrinsic-time-resampling is set, which is what
+     util_RIFT_pseudo_pipe.py --add-extrinsic-time-resampling sets.  (An earlier version of
+     this paragraph said "unconditionally" and named cepp_basic_htcondor, since removed; the
+     flag has always been inside the time-resampling branch.)
 
   2. THE GUARD WAS A COUNT (`_lnv.size >= 2`, `np.sum(_keep) >= 2`), which is exactly the
      rule build_warm_seed exists to replace.  n points span at most n-1 affine dimensions, so
