@@ -163,3 +163,35 @@ def test_batched_model_matches_scipy_model_on_cupy():
                                point_fit="batched", xp=cp).fit(g[:, :2], g[:, 2], 0.1 * np.ones(len(g)))
     q = np.column_stack([rng.uniform(-1, 1, 2000), rng.uniform(500, 10000, 2000)])
     assert np.max(np.abs(cp.asnumpy(m.predict_device(q)) - m.predict(q))) < 1e-9
+
+
+def test_device_check_tolerates_degenerate_fits_and_catches_a_bad_forest():
+    """check_device: a runaway fit (R ~ 1e10, f_min ~ 0) differs between paths by rounding of order
+    100 eps R and must pass; a corrupted device leaf must fail."""
+    import pytest
+    try:
+        import cupy as cp
+        cp.zeros(1)
+    except Exception as err:
+        pytest.skip("needs cupy and a CUDA device: %s" % type(err).__name__)
+    rng = np.random.default_rng(3)
+    rows = []
+    for x0 in rng.uniform(-1, 1, 150):
+        R, us = 30 + 5 * x0, 1 / (3000 * (1 + 0.2 * x0))
+        d = rng.uniform(1500, 6000, 30)
+        rows.append(np.column_stack([np.full(30, x0), d, log_model(1 / d, R, us, 0.4, 0.0) + rng.normal(0, 0.1, 30)]))
+    g = np.vstack(rows)
+    m = DistanceAmplitudeModel(dist_index=1, n_jobs=1, prior=lambda d: np.asarray(d) ** 2,
+                               d_range=(500.0, 30000.0)).fit(g[:, :2], g[:, 2], 0.1 * np.ones(len(g)))
+    for e in m.rf.estimators_:          # make one region degenerate, as on S241201ac
+        t = e.tree_
+        t.value[:, 0, 0] = np.where(t.value[:, 0, 0] > np.log(33), np.log(4.5e10), t.value[:, 0, 0])
+        t.value[:, 1, 0] = np.where(t.value[:, 0, 0] > 20, np.log(6.9e8), t.value[:, 1, 0])
+        t.value[:, 2, 0] = np.where(t.value[:, 0, 0] > 20, -45.0, t.value[:, 2, 0])
+    q = np.column_stack([rng.uniform(-1, 1, 4000), rng.uniform(500, 30000, 4000)])
+    ok, rep = m.check_device(q)
+    assert ok, rep
+    assert rep["lnl_max_abs"] > 1e-8, rep     # the flat 1e-8 check would fail here
+    m._device["forest"]._val[:, 0] += 0.5
+    ok, rep = m.check_device(q)
+    assert not ok and rep["field_max_rel"] > 1e-3, rep

@@ -955,10 +955,10 @@ elif opts.fit_method == 'dslice-amp':
     if opts.fit_device == 'gpu':
         _cp = _cupy()
         _xc = X[finite][np.linspace(0, int(np.sum(finite)) - 1, min(int(np.sum(finite)), 4096)).astype(int)]
-        _err = float(np.max(np.abs(_cp.asnumpy(dslice_model.predict_device(_xc)) - dslice_model.predict(_xc))))
-        print(" FIT-DEVICE gpu : dslice-amp device predict, max |gpu - cpu| on {} training rows = {:.3g}".format(len(_xc), _err))
-        if not _err < 1e-8:
-            raise RuntimeError("--fit-device gpu: dslice-amp device predict disagrees with the CPU model ({:.3g})".format(_err))
+        _ok, _rep = dslice_model.check_device(_xc)
+        print(" FIT-DEVICE gpu : dslice-amp device predict vs cpu on training rows {}".format(_rep))
+        if not _ok:
+            raise RuntimeError("--fit-device gpu: dslice-amp device predict disagrees with the CPU model ({})".format(_rep))
         _host_fit = my_fit
         def my_fit(x_in, _m=dslice_model, _shift=lnL_shift, _host_fit=_host_fit):
             if not isinstance(x_in, _cp.ndarray):

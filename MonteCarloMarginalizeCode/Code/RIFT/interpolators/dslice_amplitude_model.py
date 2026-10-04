@@ -34,6 +34,27 @@ def log_model(u, R, ustar, fmin, C):
     return C + logI
 
 
+def log_model_rounding_scale(u, R, ustar, fmin):
+    """Size of float64 rounding in log_model(u, ...), in nats, up to an O(1) factor: eps times the
+    magnitude of the terms that cancel. log1p(-exp(lo - hi)) amplifies the rounding of lo and hi by
+    1/|lo - hi|, which is large where the two erf arguments nearly coincide (u/u* -> 0, the far tail
+    of degenerate fits), and log(1 - f_min) amplifies the rounding of f_min by 1/(1 - f_min). Used to
+    set the CPU/GPU comparison tolerance, not in the model."""
+    u = np.asarray(u, dtype=float)
+    x = np.maximum(u / ustar, 1e-300)
+    sR = np.sqrt(R)
+    b = sR * (1 - x)
+    a = sR * (1 - fmin * x)
+    upper = a > 0
+    hi_ = np.where(upper, log_ndtr(-np.sqrt(2) * b), log_ndtr(np.sqrt(2) * a))
+    lo_ = np.where(upper, log_ndtr(-np.sqrt(2) * a), log_ndtr(np.sqrt(2) * b))
+    gap = np.maximum(np.abs(lo_ - hi_), 1e-300)
+    amp = np.where(gap < 1, 1 / gap, 1.0)
+    eps = np.finfo(float).eps
+    return eps * (R + np.abs(np.log(x)) + (np.abs(hi_) + np.abs(lo_) + np.abs(a) + np.abs(b)) * (1 + amp)
+                  + 1 / np.maximum(1 - fmin, 1e-300))
+
+
 def _xp_of(a):
     try:
         import cupy
@@ -391,6 +412,36 @@ class DistanceAmplitudeModel:
         if self.prior is not None:
             ll = F[:, 3] + ll - self._lognorm(R, us, fm)
         return ll
+
+    def check_device(self, x, field_rtol=1e-10, atol=1e-8, k_round=100.0):
+        """Compare predict_device with predict on rows x. Returns (ok, report).
+
+        The field forest must agree to roundoff (field_rtol). lnL rows must agree within
+        atol + k_round * log_model_rounding_scale: on degenerate fits of weak points (R up to 1e10,
+        f_min -> 0, u/u* ~ 1e-13) log_model cancels large terms and either path carries ~1e-3 nats of
+        rounding while the value is near 0, so a flat tolerance flags rows where nothing is wrong."""
+        import cupy as cp
+        x = np.asarray(x, dtype=float)
+        ll_dev = cp.asnumpy(self.predict_device(x))
+        ll = self.predict(x)
+        xi = np.delete(x, self.dist_index, axis=1)
+        F = self.rf.predict(xi)
+        F_dev = cp.asnumpy(self._device["forest"].predict(xi))
+        field_err = float(np.max(np.abs(F_dev - F) / (1 + np.abs(F))))
+        Fm = F.copy()
+        if self.mass_index is not None:
+            Fm[:, 1] -= np.log(self._mass(xi))
+        R, us, fm = self._from_fields(Fm[:, :3])
+        scale = log_model_rounding_scale(1.0 / x[:, self.dist_index], R, us, fm)
+        if self.prior is not None:      # the normalization integral carries the same rounding, at its worst node
+            scale = scale + np.max(log_model_rounding_scale(1.0 / self._dgrid[None, :], R[:, None], us[:, None],
+                                                            fm[:, None]), axis=1)
+        ratio = np.abs(ll_dev - ll) / (atol + k_round * scale)
+        w = int(np.argmax(ratio))
+        report = dict(rows=len(x), field_max_rel=field_err, lnl_max_abs=float(np.max(np.abs(ll_dev - ll))),
+                      lnl_max_scaled=float(ratio[w]), worst_row=dict(R=float(R[w]), x=float(1.0 / x[w, self.dist_index] / us[w]),
+                                                                    fmin=float(fm[w]), rounding_scale=float(scale[w])))
+        return bool(field_err < field_rtol and np.max(ratio) <= 1.0), report
 
     def predict_device(self, x):
         """predict on the GPU: x a cupy (or numpy) array, returns cupy. Same formulas as predict; the
