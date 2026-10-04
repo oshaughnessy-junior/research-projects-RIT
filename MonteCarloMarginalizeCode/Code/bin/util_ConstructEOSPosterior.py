@@ -145,7 +145,7 @@ parser.add_argument("--n-max",default=3e5,type=float)
 parser.add_argument("--n-step",default=1e5,type=int)
 parser.add_argument("--n-eff",default=3e3,type=int)
 parser.add_argument("--pool-size",default=3,type=int,help="Integer. Number of GPs to use (result is averaged)")
-parser.add_argument("--fit-method",default="rf",help="rf (default) : rf|gp|gp-matern.  These are the only three this driver builds; util_ConstructIntrinsicPosterior_GenericCoordinates.py implements quadratic|polynomial|gp_hyper|gp_lazy|cov and more.")
+parser.add_argument("--fit-method",default="rf",help="rf (default) : rf|gp|gp-matern|dslice-amp.  These are the only four this driver builds; dslice-amp is for distance-export grids (a physical per-point distance model, RIFT.interpolators.dslice_amplitude_model); util_ConstructIntrinsicPosterior_GenericCoordinates.py implements quadratic|polynomial|gp_hyper|gp_lazy|cov and more.")
 parser.add_argument("--gp-predict-backend",default="sklearn",choices=["sklearn","cupy"],help="gp-matern only: evaluate the fitted Matern-5/2 mean with exact cached float64 CuPy blocks (sklearn: CPU). Applies to fresh and reloaded fits, whichever backend trained them.")
 parser.add_argument("--gp-predict-batch-size",default=4096,type=int,help="Maximum queries per cached CuPy GP prediction block. Used only with --gp-predict-backend cupy.")
 parser.add_argument("--gp-matern-max-train-points",default=4800,type=int,help="gp-matern: deterministic balanced training bound (rho1 x lnL strata when the data carry in-plane spin; otherwise lnL strata). Exact float64 fit; see --gp-matern-fit-backend.")
@@ -829,8 +829,33 @@ elif opts.fit_method == 'gp-matern':
             rho1 = rho1[finite]
     my_fit = fit_gp_matern(X,Y,Y_err,rho1=rho1)
 
+elif opts.fit_method == 'dslice-amp':
+    print(" FIT METHOD dslice-amp: per-point averaged-amplitude distance model, fields interpolated by ExtraTrees")
+    if 'dist' not in list(coord_names):
+        raise ValueError("--fit-method dslice-amp needs 'dist' as a fit coordinate (distance-export grid)")
+    from RIFT.interpolators.dslice_amplitude_model import DistanceAmplitudeModel
+    X=X[indx_ok]
+    Y=Y[indx_ok]            # UNshifted: the model's d -> infinity limit lnL -> 0 is physical
+    Y_err = Y_err[indx_ok]
+    finite = np.all(np.isfinite(X),axis=1) & np.isfinite(Y) & np.isfinite(Y_err)
+    if opts.fit_load_gp:
+        dslice_model = joblib.load(opts.fit_load_gp)
+    else:
+        dslice_model = DistanceAmplitudeModel(list(coord_names).index('dist')).fit(X[finite],Y[finite],Y_err[finite])
+        if opts.fit_save_gp:
+            joblib.dump(dslice_model,opts.fit_save_gp+".pkl")
+    print(" dslice-amp report ", dslice_model.report)
+    Y = Y - lnL_shift
+    def my_fit(x_in, _m=dslice_model, _shift=lnL_shift):
+        x_in = np.asarray(x_in,dtype=np.float64)
+        f_out = lnL_default_large_negative*np.ones(len(x_in))
+        ok = np.all(np.isfinite(x_in),axis=-1) & np.all(np.abs(x_in) < 1e37,axis=-1)
+        if np.any(ok):
+            f_out[ok] = _m.predict(x_in[ok]) - _shift
+        return f_out
+
 if my_fit is None:
-    # This driver builds only 'gp', 'rf' and 'gp-matern'.  The --fit-method help was copied from
+    # This driver builds only 'gp', 'rf', 'gp-matern' and 'dslice-amp'.  The --fit-method help was copied from
     # util_ConstructIntrinsicPosterior_GenericCoordinates.py, which implements a dozen more, so
     # asking for one of those here left my_fit at None and the run continued: nothing referenced
     # it until the sampler evaluated the integrand, which then died with
