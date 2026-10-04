@@ -34,7 +34,7 @@ def log_model(u, R, ustar, fmin, C):
     return C + logI
 
 
-def fit_point(u, y, w, n_restart=2, fix_C=False, loss="linear", f_scale=1.0):
+def fit_point(u, y, w, n_restart=2, fix_C=False, loss="linear", f_scale=1.0, fmin_fixed=None):
     """Weighted least-squares fit of (R, u*, f_min, C) to one point's slices. Returns (params, rms).
 
     fix_C pins C = 0, the exact d -> infinity limit; otherwise C absorbs model mismatch, and over a
@@ -52,10 +52,16 @@ def fit_point(u, y, w, n_restart=2, fix_C=False, loss="linear", f_scale=1.0):
 
         if fix_C:
             p0 = p0[:3]
+        if fmin_fixed is not None:
+            p0 = np.delete(p0, 2)
+
+        def unpack(p):
+            if fmin_fixed is not None:
+                p = np.insert(p, 2, np.log(fmin_fixed / (1 - fmin_fixed)))
+            return np.exp(p[0]), np.exp(p[1]), 1 / (1 + np.exp(-p[2])), (0.0 if fix_C else p[3])
 
         def resid(p):
-            R, us, fm = np.exp(p[0]), np.exp(p[1]), 1 / (1 + np.exp(-p[2]))
-            C = 0.0 if fix_C else p[3]
+            R, us, fm, C = unpack(p)
             return np.sqrt(w) * (log_model(u, R, us, fm, C) - y)
 
         try:
@@ -67,14 +73,13 @@ def fit_point(u, y, w, n_restart=2, fix_C=False, loss="linear", f_scale=1.0):
             best = r
     if best is None or not np.all(np.isfinite(best.x)):
         return None, np.inf
-    p = best.x
-    params = np.array([np.exp(p[0]), np.exp(p[1]), 1 / (1 + np.exp(-p[2])), 0.0 if fix_C else p[3]])
+    params = np.array(unpack(best.x))
     res_ = log_model(u, *params) - y
     rms = float(np.sqrt(np.sum(w * res_ ** 2) / np.sum(w))) if loss == "linear" else float(1.4826 * np.median(np.abs(res_)))
     return params, rms
 
 
-def fit_all_points(key, u, y, sig, min_slices=5, fix_C=False, loss="linear", f_scale=1.0):
+def fit_all_points(key, u, y, sig, min_slices=5, fix_C=False, loss="linear", f_scale=1.0, fmin_fixed=None):
     """Fit every unique intrinsic row of `key`. Returns (unique keys, params (n,4), rms, nslices)."""
     uk, inv, counts = np.unique(key, axis=0, return_inverse=True, return_counts=True)
     inv = inv.reshape(-1)
@@ -87,7 +92,7 @@ def fit_all_points(key, u, y, sig, min_slices=5, fix_C=False, loss="linear", f_s
         r = order[starts[g]:starts[g + 1]]
         if len(r) < min_slices:
             continue
-        p, e = fit_point(u[r], y[r], w[r], fix_C=fix_C, loss=loss, f_scale=f_scale)
+        p, e = fit_point(u[r], y[r], w[r], fix_C=fix_C, loss=loss, f_scale=f_scale, fmin_fixed=fmin_fixed)
         if p is not None:
             params[g], rms[g] = p, e
     return uk, params, rms, counts
