@@ -1221,7 +1221,11 @@ fi
 # 2026-10-01: + test_pseudo_cosmo_distance_prior.py (16 tests: --d-prior
 # pseudo_cosmo on the distance grids and 6-D prior) and one more
 # test_driver_grid_distance_prior case.  945 + 17 = 962.
-EXPECTED_TESTS=962
+# 2026-10-04: merged into the log-hermite branch (#266), + test_time_log_hermite.py
+# (16) and test_time_log_hermite_selectable.py (20).  Read off this script's own line
+# on the merged tree: "collected 998 tests from 56 files" (citlogin6,
+# ~/.cache/jaxci_venv, PYTHONPATH pinned to the tree under test, DESELECT applied).
+EXPECTED_TESTS=998
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"
