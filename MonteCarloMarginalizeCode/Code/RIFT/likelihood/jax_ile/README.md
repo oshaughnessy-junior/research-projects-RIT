@@ -67,7 +67,10 @@ choices from that same tuple.  Simpson remains the default.
 `log-hermite` interpolates lnL in LOG space and integrates exp of the
 interpolant per interval; it claims no band-limitedness, so unlike
 `bandlimited` it is available on the nonlinear (distance / phase /
-polarization) marginalization endpoints.
+polarization) marginalization endpoints.  It needs lnL(t) smooth on the grid
+scale: exact `-inf` samples fall back to Simpson, but a finite deep dip makes
+the interpolant overshoot.  The multipeak angle schemes integrate time
+themselves and refuse it, as does `--direct-marginalization-policy auto`.
 The opt-in `bandlimited` path is currently supported by
 `JAXExtrinsicLikelihood` (6-D, including analytic phase marginalization) and by
 `JAXDistanceMarginalizedLikelihood` (5-D, the wrapper `--mode nuts`,

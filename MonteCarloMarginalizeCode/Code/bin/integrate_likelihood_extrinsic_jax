@@ -1308,8 +1308,10 @@ def build_parser():
                       "draw; 0.05 s is the measured clean value.  'log-hermite' "
                       "makes no band-limited claim: it interpolates lnL(t) in "
                       "log space and integrates exp of the interpolant per "
-                      "interval, so it is available wherever Simpson is, "
-                      "including the phi/psi-marginalized endpoints."
+                      "interval, so it is accepted on the phi/psi-marginalized "
+                      "endpoints.  It is refused by the multipeak angle schemes "
+                      "and by --direct-marginalization-policy auto, which own "
+                      "the time integral."
                       % ("|".join(_TIME_QUAD_CHOICES), TIME_QUAD_DEFAULT))
     g.add_option("--resample-time-marginalization", action="store_true",
                  default=False,

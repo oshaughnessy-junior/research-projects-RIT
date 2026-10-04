@@ -7,9 +7,9 @@ wrong operation and `_time_marginalize_terminal` refuses it.
 
 This rule claims no band-limitedness.  It interpolates lnL in LOG space, where
 the function is smooth and nearly quadratic near its peak, and integrates exp of
-that interpolant with per-interval Gauss-Legendre.  So it is valid exactly where
-Simpson is valid, and the tests below pin that it is far more accurate in the
-regime that actually bites: a peak narrower than the sample spacing.
+that interpolant with per-interval Gauss-Legendre.  The tests below pin that it
+is far more accurate than Simpson in the regime that actually bites: a peak
+narrower than the sample spacing.
 """
 import numpy as np
 import pytest
@@ -255,6 +255,37 @@ def test_mixed_neg_inf_wings_are_integrated_not_refused():
     lo_mixed[np.abs(t) > 12 * sigma] = -np.inf
     got_lo = float(_time_marginalize_log_hermite(jnp.asarray(lo_mixed[None, :]), deltaT)[0])
     assert abs(got_lo - lo_truth) < 1e-6, (got_lo, lo_truth)
+
+    # The gradient of a log integral is a normalized weight: finite, zero on the
+    # -inf samples, summing to 1.  The forward value cannot see the -inf -> 0.0
+    # substitution; this can (removing it makes every entry NaN).
+    for row in (mixed, lo_mixed):
+        g = np.asarray(jax.grad(lambda z: f(z[None, :])[0])(jnp.asarray(row)))
+        assert np.all(np.isfinite(g)), g
+        assert np.all(g[np.isneginf(row)] == 0.0)
+        assert abs(g.sum() - 1.0) < 1e-10, g.sum()
+
+
+def test_all_neg_inf_row_has_a_finite_gradient():
+    """-inf forward, and no NaN leaking back from the unselected Simpson branch."""
+    deltaT = 1.0 / 4096
+    row = jnp.full((33,), -jnp.inf)
+    f = lambda z: _time_marginalize_log_hermite(z[None, :], deltaT)[0]
+    assert np.isneginf(float(f(row)))
+    g = np.asarray(jax.grad(f)(row))
+    assert np.all(np.isfinite(g)), g
+
+
+def test_n_sub_reaches_the_quadrature():
+    """At h/sigma = 2 the per-interval rule is visibly unconverged at n_sub = 2
+    (-8.093045 vs -8.091975 converged) and converged by 6.  A kernel that ignored
+    n_sub would return the default-node value for every n_sub."""
+    y, deltaT, npts, truth = _gaussian_case(2.0)
+    v = {n: float(_time_marginalize_log_hermite(y, deltaT, n_sub=n)[0])
+         for n in (2, 4, 6, 10)}
+    assert abs(v[2] - v[4]) > 1e-4, v
+    assert abs(v[6] - v[10]) < 1e-8, v
+    assert abs(v[10] - truth) < 1e-4, (v, truth)
 
 
 def test_quadratic_lnL_is_reproduced_far_better_than_a_cubic_one():

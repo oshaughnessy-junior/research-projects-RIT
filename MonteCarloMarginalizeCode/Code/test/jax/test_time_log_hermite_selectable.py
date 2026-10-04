@@ -324,3 +324,16 @@ def test_log_hermite_survives_grad_through_the_phi_psi_marginalized_endpoint():
     v, g = like.value_and_grad(np.array([float(RA[0]), float(DEC[0]), float(INCL[0])]))
     assert np.isfinite(v)
     assert np.all(np.isfinite(g)) and np.any(g != 0.0), g
+
+
+@pytest.mark.parametrize("scheme", ["multipeak", "multipeak-jax"])
+def test_the_multipeak_schemes_refuse_log_hermite_instead_of_ignoring_it(scheme):
+    """Both multipeak controllers integrate time themselves and never read
+    time_quadrature.  Accepting 'log-hermite' there returned the Simpson-path
+    value bitwise while like.time_quadrature (and the driver's log) said
+    'log-hermite'."""
+    data = _phipsi_data()
+    with pytest.raises(ValueError, match="integrates time inside its controller"):
+        JAXDistPhiPsiMargLikelihood(data, _D_MIN, _D_MAX, nphi=_NPHI, npsi=_NPSI,
+                                    n_grid=_NGRID, interp=INTERP, angle_marg=scheme,
+                                    time_quadrature="log-hermite")

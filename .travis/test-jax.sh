@@ -602,7 +602,7 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         test relies on) confirm the resolved count reaches
 #                                         the run log end to end.  Needs no lal beyond what
 #                                         build_likelihood_data already requires; no GPU.
-#   test_time_log_hermite.py          16  the log-space cubic-Hermite terminal time
+#   test_time_log_hermite.py          18  the log-space cubic-Hermite terminal time
 #                                         rule itself: agreement with Simpson where
 #                                         Simpson is trustworthy, better where it is
 #                                         not, quadratic reproduction including the
@@ -610,12 +610,13 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 #                                         (mixed -inf falls back to Simpson),
 #                                         jit/vmap/grad and two exact identities.
 #   test_time_log_hermite_selectable.py
-#                                     20  driver --time-marginalization-quadrature
+#                                     22  driver --time-marginalization-quadrature
 #                                         accepts every _TIME_QUAD_CHOICES member
 #                                         (subprocess, not --help), bitwise dispatch
 #                                         in _time_marginalize_terminal, and the
 #                                         phi_ref+psi marginalized endpoint where
-#                                         'bandlimited' is refused.
+#                                         'bandlimited' is refused; both multipeak
+#                                         schemes refuse log-hermite.
 
 FILES=(
   "${JAXDIR}/test_jax_time_quadrature.py"
@@ -1225,7 +1226,9 @@ fi
 # (16) and test_time_log_hermite_selectable.py (20).  Read off this script's own line
 # on the merged tree: "collected 998 tests from 56 files" (citlogin6,
 # ~/.cache/jaxci_venv, PYTHONPATH pinned to the tree under test, DESELECT applied).
-EXPECTED_TESTS=998
+# 2026-10-04: review fixes, +4 tests (multipeak refusal x2, all -inf gradient,
+# n_sub).  Read off this script's own line: "collected 1002 tests from 56 files".
+EXPECTED_TESTS=1002
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"

@@ -1496,13 +1496,19 @@ def _time_marginalize_log_hermite(lnL_t, deltaT, n_sub=_LOG_HERMITE_SUB_DEFAULT)
     would look perfect for the wrong reason.
 
     DOMAIN.  ``npts >= 3`` (the three-point endpoint slopes); below that this
-    raises ``ValueError`` and the caller should use ``simpson``.  Otherwise the
-    rule is valid exactly where Simpson is valid, which is the whole claim: rows
-    mixing ``-inf`` with finite samples -- the ordinary case at high amplitude,
-    where the inner marginalization underflows in the wings -- are integrated
-    row-wise by Simpson rather than refused, because they are well defined and
-    log space, not the integrand, is what cannot express them.  All ``-inf`` ->
-    ``-inf``; ``+inf`` -> ``+inf``; NaN propagates.
+    raises ``ValueError`` and the caller should use ``simpson``.  Rows mixing
+    ``-inf`` with finite samples -- the ordinary case at high amplitude, where
+    the inner marginalization underflows in the wings -- are integrated row-wise
+    by Simpson rather than refused.  All ``-inf`` -> ``-inf``; ``+inf`` ->
+    ``+inf``; NaN propagates.
+
+    NOT valid on rows that are non-smooth on the grid scale.  The fallback keys
+    on an exact ``-inf`` only.  A FINITE deep dip goes through Catmull-Rom and
+    overshoots without bound: nine zeros with one sample set to -50, -300, -700,
+    -1e4 return -4.72, +13.48, +43.10, +731.9, where Simpson (and the ``-inf``
+    spelling) give -6.33.  So an upstream reduction that floors or saturates
+    near underflow, instead of returning ``-inf``, must not be paired with this
+    rule.
     """
     npts = lnL_t.shape[-1]
     # PRECONDITION.  The three-point one-sided endpoint slopes read y[0..2] and
@@ -1531,8 +1537,7 @@ def _time_marginalize_log_hermite(lnL_t, deltaT, n_sub=_LOG_HERMITE_SUB_DEFAULT)
     # at high amplitude, where the inner angle/distance marginalization underflows
     # in the wings.  It cannot be represented in LOG space, which is this rule's
     # problem and not the caller's, so the row is handed to Simpson instead:
-    # Simpson is linear in exp(lnL) and drops a -inf sample cleanly.  That keeps
-    # the promise made above, "valid exactly where Simpson is valid".
+    # Simpson is linear in exp(lnL) and drops a -inf sample cleanly.
     #
     # The fallback must be a real Simpson evaluation, NOT a clamp.  Flooring -inf
     # to row_max - 700 was tried and is far worse than either: the floor creates a
@@ -1563,6 +1568,8 @@ def _time_marginalize_log_hermite(lnL_t, deltaT, n_sub=_LOG_HERMITE_SUB_DEFAULT)
     has_pos_inf = jnp.any(jnp.isposinf(y), axis=-1)
     # Substitute a harmless finite value so the arithmetic below cannot produce a
     # spurious result; every affected row is overwritten by the guards at the end.
+    # The forward value does not need this, the GRADIENT does: without it the
+    # unselected Hermite branch puts NaN cotangents on every mixed -inf row.
     y = jnp.where(neg_inf, 0.0, y)
     # (S, N-1, K): the interpolated lnL at every sub-node of every interval.
     p = _log_hermite_eval(y, s_nodes)
@@ -1579,8 +1586,11 @@ def _time_marginalize_log_hermite(lnL_t, deltaT, n_sub=_LOG_HERMITE_SUB_DEFAULT)
     # the static npts) and scaled by deltaT -- which keeps the fallback traceable
     # if deltaT ever arrives as a tracer, where `_simpson_weights` could not run.
     # Same quantity, same normalization (an integral in seconds) as the main path.
+    # All -inf rows are zeroed for the same gradient reason as `y` above; their
+    # value is overwritten with -inf below.
     w_unit = jnp.asarray(_simpson_weights(npts, 1.0), dtype=lnL_t.dtype)
-    simpson_out = _time_marginalize(lnL_t, w_unit * deltaT)
+    simpson_in = jnp.where(all_neg_inf[..., None], 0.0, lnL_t)
+    simpson_out = _time_marginalize(simpson_in, w_unit * deltaT)
 
     # Two cases the max-subtraction cannot express, made explicit rather than
     # left as NaN.  A row that is entirely -inf integrates to zero, so its log is
@@ -1872,8 +1882,8 @@ def _time_marginalize_terminal(lnL_t, data, time_quadrature=TIME_QUAD_DEFAULT,
         # FFT reconstruction asserts band-limitedness, which exp(lnL_t) does not
         # have after a nonlinear marginalization.  This rule asserts no such
         # thing: it interpolates lnL in log space and integrates exp of the
-        # interpolant, so it is valid exactly where Simpson is valid and simply
-        # more accurate.  Opt-in; the default is unchanged.
+        # interpolant.  It needs lnL_t smooth on the grid scale (see its
+        # docstring for the finite-dip failure).  Opt-in; the default is unchanged.
         return _time_marginalize_log_hermite(lnL_t, data.deltaT)
     if not bandlimited_safe:
         raise ValueError(
