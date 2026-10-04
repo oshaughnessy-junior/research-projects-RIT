@@ -17,6 +17,14 @@
       "decision": "PORT",
       "reason": "Sentinel for the deferred sequential warm-start capture; ports with --sampler-sequential-warmstart."
     },
+    "CONST:_SUPPLEMENT_ARG_ORDER": {
+      "decision": "PORT",
+      "reason": "The --zero-likelihood stand-in, built with the SAME SIGNATURE as the likelihood it replaces and applying a --supplementary-likelihood-factor-*. LISA has the identical shape at both of its `like_to_integrate = zero_like` sites, the same supplementary hook and the same eight-signature likelihood_function, so it carries both defects this replaced: --zero-likelihood silently discards a supplementary factor, and a *args stand-in reports co_argcount 0 to mcsampler, which kills --sampler-method adaptive_cartesian. LISA's two sites additionally still read opts.internal_use_lnL rather than return_lnL as the convention, which is a separate, already-fixed-here defect they would need to take at the same time. Nothing in the helper is ground-based-specific: it is signature plumbing."
+    },
+    "CONST:_SUPPLEMENT_OPTIONAL_KWARGS": {
+      "decision": "PORT",
+      "reason": "The --zero-likelihood stand-in, built with the SAME SIGNATURE as the likelihood it replaces and applying a --supplementary-likelihood-factor-*. LISA has the identical shape at both of its `like_to_integrate = zero_like` sites, the same supplementary hook and the same eight-signature likelihood_function, so it carries both defects this replaced: --zero-likelihood silently discards a supplementary factor, and a *args stand-in reports co_argcount 0 to mcsampler, which kills --sampler-method adaptive_cartesian. LISA's two sites additionally still read opts.internal_use_lnL rather than return_lnL as the convention, which is a separate, already-fixed-here defect they would need to take at the same time. Nothing in the helper is ground-based-specific: it is signature plumbing."
+    },
     "CONST:_TI_LEGACY_BOOLEAN": {
       "decision": "PORT",
       "reason": "Legacy-boolean vocabulary for --interpolate-time. Main (PR #97) now accepts STENCIL NAMES there -- nearest/cubic/sinc -- normalizing into opts._noloop_time_interp, with this tuple for back-compat and an explicit typo guard so a misspelling is not absorbed as falsey. LISA still passes the raw --interpolate-time value straight to the likelihood, so porting means normalizing it AND teaching the LISA time path the stencil name; it travels with _normalize_interpolate_time_argv and _truthy_option."
@@ -57,6 +65,10 @@
       "decision": "PORT",
       "reason": "Tolerant truthiness for optparse values that may arrive as strings from the pipe. Belongs with _normalize_interpolate_time_argv, its ONLY caller in the main driver (opts._noloop_time_interp), not with the fair-draw family -- porting it alongside those helpers would have added dead code to the LISA driver."
     },
+    "FUNC:analyze_event._apply_order_control": {
+      "decision": "NA",
+      "reason": "Nested dispatcher for the ground-detector response-order estimator. It is reachable only from the check/choose controls classified above, and LISA's TDI response has no corresponding pmax or Qmax truncation to dispatch."
+    },
     "FUNC:analyze_event._cal_error_probe": {
       "decision": "NA",
       "reason": "Calibration Monte-Carlo error probe; see the --calibration-* reason."
@@ -76,6 +88,14 @@
     "FUNC:fused_calmarg_in_use": {
       "decision": "NA",
       "reason": "THE predicate for 'will the fused in-loop calibration kernel actually run?', shared by the startup --interpolate-time guard and by use_fused_calmarg at dispatch so the condition has one definition instead of two that drift (it drifted three times in a day before being hoisted). Every one of its terms is a LIGO/Virgo calibration concept -- an envelope directory, a realization count, --calibration-fused-kernel, the responsibilities pilot -- and the LISA driver has NONE of them: it declares no --calibration-* option, never sets cal_method, and models no instrument calibration at all. See the --calibration-* reason. NOT a stencil gap despite being read by the stencil guard: LISA's --interpolate-time is a separate boolean parsed by legacy_time_interpolation_enabled, with no fused kernel to protect. If LISA ever models calibration this predicate is the wrong shape for it, and the thing to port would be the ONE-definition discipline, not this function."
+    },
+    "FUNC:make_zero_likelihood_standin": {
+      "decision": "PORT",
+      "reason": "The --zero-likelihood stand-in, built with the SAME SIGNATURE as the likelihood it replaces and applying a --supplementary-likelihood-factor-*. LISA has the identical shape at both of its `like_to_integrate = zero_like` sites, the same supplementary hook and the same eight-signature likelihood_function, so it carries both defects this replaced: --zero-likelihood silently discards a supplementary factor, and a *args stand-in reports co_argcount 0 to mcsampler, which kills --sampler-method adaptive_cartesian. LISA's two sites additionally still read opts.internal_use_lnL rather than return_lnL as the convention, which is a separate, already-fixed-here defect they would need to take at the same time. Nothing in the helper is ground-based-specific: it is signature plumbing."
+    },
+    "FUNC:make_zero_likelihood_standin._standin_body": {
+      "decision": "PORT",
+      "reason": "The --zero-likelihood stand-in, built with the SAME SIGNATURE as the likelihood it replaces and applying a --supplementary-likelihood-factor-*. LISA has the identical shape at both of its `like_to_integrate = zero_like` sites, the same supplementary hook and the same eight-signature likelihood_function, so it carries both defects this replaced: --zero-likelihood silently discards a supplementary factor, and a *args stand-in reports co_argcount 0 to mcsampler, which kills --sampler-method adaptive_cartesian. LISA's two sites additionally still read opts.internal_use_lnL rather than return_lnL as the convention, which is a separate, already-fixed-here defect they would need to take at the same time. Nothing in the helper is ground-based-specific: it is signature plumbing."
     },
     "OPTION:--calibration-burn-in-neff": {
       "decision": "NA",
@@ -137,9 +157,33 @@
       "decision": "NA",
       "reason": "LIGO/Virgo spline calibration-envelope marginalization. The LISA driver models no instrument calibration: it takes no envelope directory, has no cal nodes, and its response is applied analytically by factored_likelihood_LISA. LISA calibration, if it is ever modelled, will not have this data product or this spline parameterization, so porting the LIGO machinery would be actively misleading."
     },
+    "OPTION:--check-finite-size-Qmax": {
+      "decision": "NA",
+      "reason": "Order checks and selectors for the Earth-rotation and 3G ground-detector finite-arm approximations. LISA uses neither expansion: its time-dependent heliocentric, finite-arm response is already evaluated by the TDI response, so applying these orders would test or truncate the wrong detector model."
+    },
+    "OPTION:--check-finite-size-qmax": {
+      "decision": "NA",
+      "reason": "Order checks and selectors for the Earth-rotation and 3G ground-detector finite-arm approximations. LISA uses neither expansion: its time-dependent heliocentric, finite-arm response is already evaluated by the TDI response, so applying these orders would test or truncate the wrong detector model."
+    },
     "OPTION:--check-good-enough": {
       "decision": "PORT",
       "reason": "Early-exit when the pipeline has written an 'ile_good_enough' sentinel. Pipeline plumbing, detector-agnostic."
+    },
+    "OPTION:--check-slowrot-pmax": {
+      "decision": "NA",
+      "reason": "Order checks and selectors for the Earth-rotation and 3G ground-detector finite-arm approximations. LISA uses neither expansion: its time-dependent heliocentric, finite-arm response is already evaluated by the TDI response, so applying these orders would test or truncate the wrong detector model."
+    },
+    "OPTION:--choose-finite-size-Qmax": {
+      "decision": "NA",
+      "reason": "Order checks and selectors for the Earth-rotation and 3G ground-detector finite-arm approximations. LISA uses neither expansion: its time-dependent heliocentric, finite-arm response is already evaluated by the TDI response, so applying these orders would test or truncate the wrong detector model."
+    },
+    "OPTION:--choose-slowrot-Qmax": {
+      "decision": "NA",
+      "reason": "Order checks and selectors for the Earth-rotation and 3G ground-detector finite-arm approximations. LISA uses neither expansion: its time-dependent heliocentric, finite-arm response is already evaluated by the TDI response, so applying these orders would test or truncate the wrong detector model."
+    },
+    "OPTION:--choose-slowrot-pmax": {
+      "decision": "NA",
+      "reason": "Order checks and selectors for the Earth-rotation and 3G ground-detector finite-arm approximations. LISA uses neither expansion: its time-dependent heliocentric, finite-arm response is already evaluated by the TDI response, so applying these orders would test or truncate the wrong detector model."
     },
     "OPTION:--d-prior-redshift": {
       "decision": "PORT",
@@ -301,6 +345,14 @@
       "decision": "PORT",
       "reason": "ANSWERED (RO 2026-08-16): LISA and LIGO are never overlapping use cases, so follow the convention already in this driver, document it in the help string, and DO NOT rename the options. VERIFIED that convention is ECLIPTIC: the sampled right_ascension/declination columns flow to P.phi/P.theta and then to lisa_sky_lamda/lisa_sky_beta, i.e. ecliptic longitude/latitude, under the historical key names. So --limit-right-ascension bounds lambda and --limit-declination bounds beta; say exactly that in the help text. Port the post-PR#58 form including the cos(iota)/cos(dec) endpoint swap under the cosine samplers."
     },
+    "OPTION:--log-noise-evidence-only": {
+      "decision": "NA",
+      "reason": "Writes the fixed-PSD Gaussian noise likelihood from the ground-based detector data_dict/psd_dict and ComplexIP conditioning path. The LISA driver uses a different response and likelihood construction, so this implementation cannot be ported by exposing the same options; a LISA-specific normalization mechanism would need its own convention and implementation."
+    },
+    "OPTION:--log-noise-evidence-output": {
+      "decision": "NA",
+      "reason": "Writes the fixed-PSD Gaussian noise likelihood from the ground-based detector data_dict/psd_dict and ComplexIP conditioning path. The LISA driver uses a different response and likelihood construction, so this implementation cannot be ported by exposing the same options; a LISA-specific normalization mechanism would need its own convention and implementation."
+    },
     "OPTION:--n-distance-slice-core": {
       "decision": "NA",
       "reason": "The .dslice export and its placement/tuning knobs. This is a data product for a downstream LIGO CIP distance workflow that the LISA pipeline does not run; there is no consumer. If a LISA distance workflow is ever built, note that the .dslice reweight core was the third Finding-2 site and must not be revived in its pre-#87 form."
@@ -317,6 +369,10 @@
       "decision": "PORT",
       "reason": "Normalizing-flow persistence is detector-agnostic, but the LISA portfolio factory currently constructs only AV, GMM, and adaptive_cartesian_gpu members. Port the NF member construction and route load/save to that member before exposing these flags; hooks on the portfolio aggregate are a silent no-op because it has no flow API."
     },
+    "OPTION:--psi-marginalization": {
+      "decision": "NA",
+      "reason": "Analytic polarization-angle marginalization via factored_likelihood.NetworkLogLikelihoodPolarizationMarginalized. Per its own help text, this is only reachable on the legacy scalar (non-vectorized, non-GPU, non-time-marginalized) likelihood path -- the main driver itself REFUSES it with --vectorized, --gpu, and --time-marginalization, among others. The LISA driver has no such scalar path: analyze_event there is vectorized/time-marginalized by construction, so this option would be refused there too if it existed. Not a gap to close -- porting it would add an option that is dead on arrival."
+    },
     "OPTION:--q-time-pregrid-factor": {
       "decision": "PORT",
       "reason": "Refines the finite Q time grid before detector-arrival interpolation. LISA uses the same NoLoop Q gather and can carry the same interpolation bias, so this is not ground-detector-specific. Port only after separate LISA accuracy and memory validation: its long observation windows make an unconditional 8x retained grid potentially much more expensive than in the ground-based driver."
@@ -324,6 +380,34 @@
     "OPTION:--random-event": {
       "decision": "PORT",
       "reason": "Pick a random event from the input file. Detector-agnostic; flagged dangerous in its own help text for oversampling reasons that apply equally to LISA."
+    },
+    "OPTION:--response-order-Q-reference": {
+      "decision": "NA",
+      "reason": "Tolerance, reference-order, angular-design and memory controls used only by the ground-detector slow-rotation and finite-arm order estimator. That estimator does not represent LISA's TDI response, so none of its tuning surface applies."
+    },
+    "OPTION:--response-order-lnL-tol": {
+      "decision": "NA",
+      "reason": "Tolerance, reference-order, angular-design and memory controls used only by the ground-detector slow-rotation and finite-arm order estimator. That estimator does not represent LISA's TDI response, so none of its tuning surface applies."
+    },
+    "OPTION:--response-order-max-bank-gib": {
+      "decision": "NA",
+      "reason": "Tolerance, reference-order, angular-design and memory controls used only by the ground-detector slow-rotation and finite-arm order estimator. That estimator does not represent LISA's TDI response, so none of its tuning surface applies."
+    },
+    "OPTION:--response-order-p-reference": {
+      "decision": "NA",
+      "reason": "Tolerance, reference-order, angular-design and memory controls used only by the ground-detector slow-rotation and finite-arm order estimator. That estimator does not represent LISA's TDI response, so none of its tuning surface applies."
+    },
+    "OPTION:--response-order-q-reference": {
+      "decision": "NA",
+      "reason": "Tolerance, reference-order, angular-design and memory controls used only by the ground-detector slow-rotation and finite-arm order estimator. That estimator does not represent LISA's TDI response, so none of its tuning surface applies."
+    },
+    "OPTION:--response-order-sky-samples": {
+      "decision": "NA",
+      "reason": "Tolerance, reference-order, angular-design and memory controls used only by the ground-detector slow-rotation and finite-arm order estimator. That estimator does not represent LISA's TDI response, so none of its tuning surface applies."
+    },
+    "OPTION:--response-order-snr": {
+      "decision": "NA",
+      "reason": "Tolerance, reference-order, angular-design and memory controls used only by the ground-detector slow-rotation and finite-arm order estimator. That estimator does not represent LISA's TDI response, so none of its tuning surface applies."
     },
     "OPTION:--rotation-n-harmonics": {
       "decision": "NA",

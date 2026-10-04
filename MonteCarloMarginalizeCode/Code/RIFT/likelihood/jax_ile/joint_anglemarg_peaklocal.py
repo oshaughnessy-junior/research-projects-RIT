@@ -415,25 +415,42 @@ def joint_lnL_phi_dense(C_A, C_B, x_grid, log_w_grid, n_phi=256,
         return jax.vmap(log_inner_u_integral, in_axes=(0, 0, 0, None))(
             a[:, 0], c1[:, 0], c2[:, 0], n_nodes)                    # (nx,)
 
+    # REDUCE INTO THE CARRY, do not stack.  The phi reduction is a logsumexp, so the
+    # scan can carry the running (nx,) accumulator instead of returning a value per
+    # chunk.  Returning one made `out` a live (n_chunk, phi_chunk, nx) array -- the
+    # whole phi axis, materialized before the reduction that immediately collapses it.
+    # Under the caller's sample/time vmaps that is `S * npts * n_phi * n_x * 8` bytes,
+    # which reached 19.97 GiB at rung 640 of the ladder-2 injection and OOMed a card
+    # with 18: measured 19.99 GiB requested against 19.97 predicted, and the same
+    # formula to three significant figures at three other sizes.  Nothing about the u
+    # axis was involved -- pinning the per-cell node count to its 48 floor, 468x below
+    # production, left the peak identical to the tenth of a MiB.
+    # `anglemarg.coefficient_table_distphipsimarg_exact` has carried its logsumexp in
+    # the scan state from the start; this is the same shape of fix, and it makes the
+    # live phi footprint one chunk rather than the whole axis.
+    # See development/BLOCKER_peaklocal_scheme_oom_20260908.md in RIFT_roboto_paper.
     def step(carry, args):
         ph, lv = args
         vals = jax.vmap(one_phi)(ph)                                 # (chunk, nx)
         vals = jnp.where(lv[:, None], vals, -jnp.inf)
-        return carry, vals
+        # jnp.logaddexp against the running total, the accumulation
+        # `log_inner_u_integral` already uses over its own cells.  The padded lanes are
+        # -inf and are the identity here, which is what retires the [:n_phi] slice: the
+        # mask alone now excludes them.
+        return jnp.logaddexp(carry, jax.scipy.special.logsumexp(vals, axis=0)), None
 
     # jax.checkpoint on the scan body, as the shipped exact scheme does.  Without it a
     # REVERSE-mode pass keeps every chunk's intermediates: the wrapper's Hessian tried to
     # allocate 135 GB and died RESOURCE_EXHAUSTED, so --fisher-precondition would have
     # OOMed rather than run.  Forward evaluation was never affected, which is exactly why
     # this was invisible until a second derivative was taken.
-    _, out = lax.scan(jax.checkpoint(step), None,
+    acc, _ = lax.scan(jax.checkpoint(step),
+                      jnp.full((x_grid.size,), -jnp.inf, dtype=jnp.float64),
                       (phis_p.reshape(n_chunk, phi_chunk),
                        live.reshape(n_chunk, phi_chunk)))
-    vals = out.reshape(n_chunk * phi_chunk, -1)[:n_phi]           # (n_phi, nx)
 
     # phi is a periodic trapezoid == plain mean; then the distance sum; then (2pi)^-2
-    per_x = jax.scipy.special.logsumexp(vals, axis=0) - jnp.log(n_phi) \
-        + jnp.log(2.0 * jnp.pi)
+    per_x = acc - jnp.log(n_phi) + jnp.log(2.0 * jnp.pi)
     return jax.scipy.special.logsumexp(per_x + log_w_grid) - 2.0 * jnp.log(2.0 * jnp.pi)
 
 
@@ -1039,8 +1056,48 @@ def phi_local_lnI(C, n_seed=PHI_SEEDS, w_sigma=PHI_WINDOW_SIGMA,
     # AT MOST two pieces, so 2*n_seed slots is a static bound and nothing has to be
     # compacted; a piece that does not exist is emitted empty and drops out downstream.
     wdt = jnp.clip(hi - lo, 0.0, 2.0 * jnp.pi)
-    a0 = jnp.where(peaked, jnp.mod(lo, 2.0 * jnp.pi), big)
-    crosses = peaked & (a0 + wdt > 2.0 * jnp.pi)
+    # A WINDOW THAT ALREADY SPANS A FULL CIRCUIT HAS NO SEAM TO SPLIT AT, and splitting
+    # one anyway made the region count -- and the ANSWER -- a one-ulp coin flip.  After the
+    # clip `wdt` is EXACTLY 2 pi, so the two pieces are [a0, 2 pi] and [0, a0 + 2 pi - 2 pi]
+    # and they are adjacent by construction.  In floating point they are adjacent only when
+    # (a0 + 2 pi) - 2 pi comes back >= a0.  ONLY THE LOW SIDE BREAKS, and an earlier version
+    # of this note had the criterion wrong: the round-trip landing one ulp ABOVE a0 is fine,
+    # the pieces then overlap and _merge_sorted_intervals folds them.  The loss is a0's low
+    # bits -- ulp(a0 + 2 pi) is 1.78e-15 whatever a0 is, against ulp(a0) from 6.9e-18 to
+    # 8.9e-16, so the sum is 2x to 64x coarser.  Measured on pure float64, no jax involved:
+    # 34.4% of a0 drawn uniformly on the circle round LOW.
+    #
+    # When they do, the pieces are one ulp apart, the merge (which joins only exactly
+    # touching intervals, by design -- no tolerance decides membership here) leaves them
+    # separate, `total` comes out 8.9e-16 below 2 pi, and the `wrapped` clamp below does not
+    # fire.  The rule then runs a two-region trapezoid with a seam instead of the PERIODIC
+    # trapezoid on the full circle, and a periodic trapezoid is spectrally accurate where a
+    # seamed one is O(h^2): on the harmonic-alias table of
+    # test_the_halving_check_is_blind_at_the_sampling_harmonic, 2.1e-3 nats wrong instead of
+    # 2.1e-8, a factor of 1e5, from a two-ulp difference in the Newton fixed point.
+    #
+    # jax 0.9.2 and 0.10.2 land on opposite sides of it -- same host, same python, same
+    # numpy -- which is how this arrived as an environment-dependent test failure rather
+    # than as a bug.
+    #
+    # THIS PATH IS NOT FAIL-CLOSED AGAINST THE DEFECT, and an earlier version of this note
+    # claimed it was ("both sides return ok=False, so nothing was ever accepted wrong").
+    # That is true of the shipped fixture and false in general.  Sweeping the peak location
+    # pre-fix on jax 0.9.2, the seam fires WITH ok=True: 5 of 96 at kappa=300 and 400, 12 of
+    # 96 at kappa=550 and 700.  What bounds the accepted error is the convergence probe, not
+    # the decline -- the worst accepted case found was 6.0e-06 nats, so the CONCLUSION that
+    # nothing was accepted materially wrong survives, but not for the reason first given.
+    #
+    # The fix is exact and not a tolerance: a full circuit is anchored at 0 and emitted as
+    # the single piece [0, 2 pi].  This is the tree's existing idiom, not a new one --
+    # multipeak_planner._periodic_segments anchors the same way before splitting.  The numpy
+    # twin instead closes the seam AFTER the fact with a 1e-12 tolerance
+    # (_merge_boxes' caller in joint_angle_peak_local); this path had neither.
+    full_circuit = peaked & (wdt >= 2.0 * jnp.pi)
+    a0 = jnp.where(peaked,
+                   jnp.where(full_circuit, 0.0, jnp.mod(lo, 2.0 * jnp.pi)),
+                   big)
+    crosses = peaked & (~full_circuit) & (a0 + wdt > 2.0 * jnp.pi)
     lo2 = jnp.concatenate([a0,
                            jnp.where(crosses, 0.0, big)])
     hi2 = jnp.concatenate([jnp.where(crosses, 2.0 * jnp.pi, a0 + wdt),

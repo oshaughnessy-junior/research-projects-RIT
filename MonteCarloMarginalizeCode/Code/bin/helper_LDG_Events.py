@@ -39,6 +39,11 @@ from RIFT.likelihood.time_interp_choice import (
 from RIFT.likelihood.time_marginalization_quadrature import (
     TIME_QUADRATURE_CHOICES, validate_time_quadrature,
     refuse_unless_time_quadrature_emitted)
+# Same leaf-module reasoning: the choice tuple and the stencil-conflict wording are IMPORTED,
+# not re-typed, so this helper and the ILE driver's own guard cannot silently disagree.
+from RIFT.likelihood.q_time_pregrid import (
+    Q_TIME_PREGRID_CHOICES, validate_q_time_pregrid_factor,
+    refuse_unless_q_time_pregrid_emitted)
 lalapps_path2cache = which('lal_path2cache')
 ligolw_add = 'igwn_ligolw_add'
 if not(which(ligolw_add)):
@@ -241,6 +246,7 @@ parser.add_argument("--internal-ile-use-lnL",action='store_true',help="Passthrou
 parser.add_argument("--internal-ile-n-chunk",default=None,type=int,help="Override the extrinsic chunk size (--n-chunk) passed to ILE. Default: 40000, scaled linearly with SNR above 40 and capped at 160000. Rationale: at high SNR the posterior is a vanishing fraction of the prior volume, so a small chunk gives few informative samples per adaptation step; measured collapse on a truth-known SNR ladder falls 88%%->50%% (SNR160) and 69%%->25%% (SNR80) going 1e4->1.6e5, and the gain survives at fixed budget. Larger chunks cost GPU memory, so raise the ILE memory request if you raise this a lot.")
 parser.add_argument("--internal-ile-interpolate-time",nargs='?',const=BARE_FLAG_SENTINEL,default=None,type=str,help="Evaluate Q_lm at FRACTIONAL detector times instead of snapping to the nearest sample bin, in the maintained NoLoop likelihood (needs --time-marginalization --vectorized and one of --gpu/--rotation-slow/--freqresponse; the driver REFUSES rather than ignores otherwise). REQUIRES AN EXPLICIT STENCIL: nearest|cubic|sinc -- automatic selection was removed as measurably unreliable, and a bare flag is rejected rather than silently doing nothing. MEASURED GUIDANCE (SEOBNRv4, an IMR model): %s. 'nearest' is never competitive and is already unusable at O4 SNRs. Error grows as SNR^2, so this matters more at 3G. Cost: sinc is ~4.2-4.5x cubic on CPU, ~1.6-3.0x on GPU. Full tables, limitations and provenance: RIFT/likelihood/DESIGN_q_window_stencil.md. Default: emit nothing, so ILE uses its own default, which CHANGED 2026-09-02 from 'nearest' to time_interp_choice.TIME_INTERP_DEFAULT. To pin the historical behaviour pass 'nearest' (or an off-request such as 'False', which this helper now re-expresses as an explicit '--interpolate-time nearest' so that 'off' still means off)." % CROSSOVER_GUIDANCE)
 parser.add_argument("--internal-ile-time-marginalization-quadrature",default=None,type=str,choices=list(TIME_QUADRATURE_CHOICES),help="Rule for the TIME integral of the marginalized likelihood: %s. Default None = emit nothing, so ILE keeps its own default ('simpson', the historical fixed-deltaT Simpson rule) and args_ile.txt is byte-identical to today. 'bandlimited' resolves the INTEGRAND rather than the data: exp(lnL(t)) is a peak of width sigma_t = 1/(2 pi rho sigma_f), which shrinks as 1/rho, while deltaT=1/srate is fixed -- so production under-resolves its own integrand, worse at higher SNR (measured: scanning the grid phase moves the reported lnL by 1.649 nats at srate 4096, rho=40). Emitted as --time-marginalization-quadrature on the ILE command line, so a completed run's quadrature is readable off the .sub file. Requires --time-marginalization --vectorized --gpu and excludes --rotation-slow / --freqresponse / calibration marginalization; this helper REFUSES rather than emitting an inert flag. INI OVERRIDE: the RIFT ini parser overrides the command line for non-boolean options, so never set this string option in an ini that a Makefile also sets. Rationale and measured tables: RIFT/likelihood/DESIGN_time_marginalization_quadrature.md." % ("|".join(TIME_QUADRATURE_CHOICES),))
+parser.add_argument("--internal-ile-q-time-pregrid-factor",default=None,type=int,choices=list(Q_TIME_PREGRID_CHOICES),help="OPT-IN certified Q_lm pregrid (PR #261): %s. Default None = emit nothing, so ILE keeps its own default (factor 1, the historical unchanged path) and args_ile.txt is byte-identical to today. Factor 8 reflects each finite Q window, FFT-interpolates it onto an 8x finer grid once after packing, and evaluates detector arrival times off that grid with four-tap CUBIC interpolation -- the geocentric time-integration grid is left at the data deltaT. Emitted as --q-time-pregrid-factor on the ILE command line, so a completed run's pregrid setting is readable off the .sub file. Requires --vectorized and excludes --rotation-slow / --freqresponse / calibration marginalization; also FORCES the cubic stencil and REFUSES a conflicting explicit --internal-ile-interpolate-time (i.e. one naming a stencil other than cubic) rather than silently overriding it. This helper REFUSES rather than emitting an inert flag. INI OVERRIDE: the RIFT ini parser overrides the command line for non-boolean options, so never set this in an ini that a Makefile also sets." % ("|".join(str(c) for c in Q_TIME_PREGRID_CHOICES),))
 parser.add_argument("--internal-cip-use-lnL",action='store_true')
 parser.add_argument("--ile-n-eff",default=50,type=int,help="Target n_eff passed to ILE.  Try to keep above 2")
 parser.add_argument("--test-convergence",action='store_true',help="If present, the code will terminate if the convergence test  passes. WARNING: if you are using a low-dimensional model the code may terminate during the low-dimensional model!")
@@ -260,6 +266,7 @@ parser.add_argument("--force-initial-grid-size",default=None,type=int,help="Forc
 parser.add_argument("--propose-fit-strategy",action='store_true',help="If present, the code will propose a fit strategy (i.e., cip-args or cip-args-list).  The strategy will take into account the mass scale, presence/absence of matter, and the spin of the component objects.  If --lowlatency-propose-approximant is active, the code will use a strategy suited to low latency (i.e., low cost, compatible with search PSDs, etc)")
 parser.add_argument("--propose-flat-strategy",action="store_true",help="If present AND propose-fit-strategy is present, the strategy proposed will have puffball and convergence tests for every iteration, and the same CIP")
 parser.add_argument("--propose-converge-last-stage",action="store_true",help="If present, the last pre-extrinsic stage is 'iterate to convergence' form")
+parser.add_argument("--rf-transverse-spin-coordinates", choices=["off","auto","physics3"], default=None, help="Opt-in RF physics3 fitting scalars; auto applies only at detector chirp mass <20 Msun")
 parser.add_argument("--force-fit-method",type=str,default=None,help="Force specific fit method")
 #parser.add_argument("--internal-fit-strategy-enforces-cut",action='store_true',help="Fit strategy enforces lnL-offset (default 15) after the first batch of iterations. ACTUALLY DEFAULT - SHOULD BE REDUNDANT")
 parser.add_argument("--last-iteration-extrinsic",action='store_true',help="Does nothing!  extrinsic implemented with CEP call, user must do this elsewhere")
@@ -308,6 +315,13 @@ if (time_interp_choice is None and opts.internal_ile_interpolate_time is not Non
 time_quadrature_choice = opts.internal_ile_time_marginalization_quadrature
 if time_quadrature_choice is not None:
     validate_time_quadrature(time_quadrature_choice)
+
+# Same, for the Q_lm pregrid factor: argparse `choices` already rejects a typo, but validate
+# through the LIBRARY function too so this helper and the ILE driver can never disagree about
+# the legal set.  None means "emit nothing", which is the byte-identical default path.
+q_time_pregrid_factor = opts.internal_ile_q_time_pregrid_factor
+if q_time_pregrid_factor is not None:
+    validate_q_time_pregrid_factor(q_time_pregrid_factor)
 
 # Ensure --assume-hyperbolic is set when using any --force-X-grids option
 # Ensure only ONE of the --force-X-grids options is set
@@ -730,6 +744,7 @@ if use_gracedb_event:
       # For CWB triggers, should use event.log file to pull out a central frequency
       P.m1=P.m2= 50*lal.MSUN_SI  # make this up completely, just so code will run, goal is higher mass than this, watch out for mc range
       event_dict["P"]=P
+      event_dict["rf_mass_is_placeholder"] = True
       event_dict["MChirp"] = P.extract_param('mc')/lal.MSUN_SI
       event_dict["epoch"]  = 0 # no estimate for now
       if not "SNR" in event_dict:
@@ -762,6 +777,7 @@ elif not(opts.event_time is None):
     event_dict["P"] = lalsimutils.ChooseWaveformParams() # default!
 
     if "MChirp" not in event_dict.keys():
+        event_dict["rf_mass_is_placeholder"] = True
         event_dict["MChirp"] = event_dict["P"].extract_param('mc')/lal.MSUN_SI  # note this is RANDOM
     else:
         event_dict["P"].assign_param('mc', event_dict["MChirp"]*lal.MSUN_SI)
@@ -1274,6 +1290,24 @@ if time_quadrature_choice is not None:
     # then have to catch it.  Make it structurally impossible instead.
     helper_ile_args = helper_ile_args.rstrip() + " --time-marginalization-quadrature " + time_quadrature_choice + " "
 
+if q_time_pregrid_factor is not None:
+    # Validated at parse time, so by here it is one of Q_TIME_PREGRID_CHOICES.  The value goes
+    # on the ILE command line verbatim, so a completed run's pregrid setting is readable off
+    # the .sub file.  Prerequisites (--vectorized, the exclusions, and the forced-cubic-stencil
+    # conflict) are checked on the FULLY ASSEMBLED command line below, by
+    # refuse_unless_q_time_pregrid_emitted -- not here, because --vectorized/--gpu are added by
+    # the strategy branches further down this file.
+    #
+    # VERSION SKEW: an ILE predating this option rejects the unknown flag outright (optparse
+    # errors on an unrecognised option), so an old ILE driven by this helper FAILS LOUDLY rather
+    # than silently running the historical factor=1 grid.
+    print("  ==> Q_lm pregrid factor: {} (emitted as --q-time-pregrid-factor; the ILE driver "
+          "refuses rather than ignores if its configuration cannot honour it)".format(
+              q_time_pregrid_factor))
+    # rstrip(), for the same reason as the quadrature emission just above: the flag gluing onto
+    # its neighbour would make it invisible to the emission guard.
+    helper_ile_args = helper_ile_args.rstrip() + " --q-time-pregrid-factor " + str(q_time_pregrid_factor) + " "
+
 if opts.internal_ile_auto_logarithm_offset and not opts.internal_ile_use_lnL:
     helper_ile_args += " --auto-logarithm-offset "
     rescaled_base_ile = True
@@ -1430,6 +1464,19 @@ if opts.assume_eccentric:
     helper_ile_args += " --save-eccentricity "
     if opts.use_meanPerAno:
         helper_ile_args += " --save-meanPerAno "
+# RF transverse opt-in: an unforced switch to rf happens before the initial grid, so the grid
+# matches an explicit --force-fit-method rf build.
+rf_transverse_active = False
+if opts.rf_transverse_spin_coordinates:
+    from RIFT.misc.rf_transverse_spin import enabled
+    rf_applicable = (opts.assume_precessing_spin and not opts.assume_nospin
+        and not opts.assume_matter and not opts.assume_eccentric and not opts.assume_highq
+        and not opts.use_mtot_coords)
+    rf_detector_mc = None if event_dict.get('rf_mass_is_placeholder', False) else event_dict.get('MChirp')
+    rf_transverse_active = enabled(opts.rf_transverse_spin_coordinates, rf_detector_mc, rf_applicable)
+    if rf_transverse_active and opts.force_fit_method is None:
+        fit_method = 'rf'
+
 if opts.propose_initial_grid_fisher: # and (P.extract_param('mc')/lal.MSUN_SI < 10.):
     cmd  = "util_AnalyticFisherGrid.py  --inj-file-out  proposed-grid  "
     # Add standard downselects : do not have m1, m2 be less than 1
@@ -1724,6 +1771,11 @@ if opts.assume_eccentric:
     if opts.use_meanPerAno:
         helper_puff_args += " --parameter meanPerAno "
 
+# The single top-level option selects the tested native mu1/mu2 fit basis (after the grid,
+# as for explicit rf). A custom total-mass schedule is outside this bounded prototype.
+if rf_transverse_active and fit_method == 'rf':
+    opts.internal_use_aligned_phase_coordinates = True
+
 if opts.propose_fit_strategy:
     puff_max_it= 0
     # Strategy: One iteration of low-dimensional, followed by other dimensions of high-dimensional
@@ -1983,6 +2035,9 @@ if opts.propose_fit_strategy:
 # raise lives in the library function so that it is executable in a unit test.
 refuse_unless_time_quadrature_emitted(
     time_quadrature_choice, helper_ile_args, "helper_ile_args.txt")
+# Same discipline, same reason, for the Q_lm pregrid factor.
+refuse_unless_q_time_pregrid_emitted(
+    q_time_pregrid_factor, helper_ile_args, "helper_ile_args.txt")
 
 # editing ILE args based on strategy above, so only writing now
 with open("helper_ile_args.txt",'w') as f:
@@ -2022,6 +2077,25 @@ if opts.propose_converge_last_stage:
 # iterations with normal errors and keep the default cut.
 if opts.calmarg_first_cip_sigma_cut is not None and len(helper_cip_arg_list) > 0:
     helper_cip_arg_list[0] += " --sigma-cut {} ".format(opts.calmarg_first_cip_sigma_cut)
+
+if opts.rf_transverse_spin_coordinates:
+    from RIFT.misc.rf_transverse_spin import stage_arguments
+    # engine.fref is the reference assigned to ILE spins; fmin is not a substitute.
+    rf_fref = unsafe_config_get(config, ['engine','fref']) if opts.use_ini else opts.fmin_template
+    if rf_fref is None:
+        rf_fref = opts.fmin_template
+    rf_applicable = (opts.assume_precessing_spin and not opts.assume_nospin
+        and not opts.assume_matter and not opts.assume_eccentric and not opts.assume_highq
+        and not opts.use_mtot_coords)
+    helper_cip_arg_list = [stage_arguments(line, opts.rf_transverse_spin_coordinates,
+        None if event_dict.get('rf_mass_is_placeholder', False) else event_dict.get('MChirp'), rf_applicable, float(rf_fref)) for line in helper_cip_arg_list]
+    rf_activated = sum('--rf-transverse-spin-coordinates physics3' in line for line in helper_cip_arg_list)
+    if opts.rf_transverse_spin_coordinates == 'physics3' and not rf_activated:
+        raise ValueError('No complete two-spin RF stage can honor the requested physics3 option')
+    print('RF transverse-spin mode {}, detector chirp mass {}, fref {}, activated stages {}'.format(
+        opts.rf_transverse_spin_coordinates,
+        None if event_dict.get('rf_mass_is_placeholder', False) else event_dict.get('MChirp'),
+        rf_fref, rf_activated))
 
 with open("helper_cip_arg_list.txt",'w+') as f:
     f.write("\n".join(helper_cip_arg_list))
