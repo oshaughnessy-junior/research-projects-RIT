@@ -120,8 +120,8 @@ class _Est:
 
 class CupyExtraTreesRegressor:
     """GPU ExtraTreesRegressor (single output). ``fit(X, y, sample_weight)``; ``forest()`` returns a
-    CupyForest for prediction. ``estimators_`` hold sklearn-like ``tree_`` arrays on the host only if
-    ``keep_host=True``."""
+    CupyForest for prediction. Finished trees are held on the host; ``estimators_`` exposes them as
+    sklearn-like ``tree_`` arrays."""
 
     def __init__(self, n_estimators=100, trees_per_group=None, random_state=None, verbose=False):
         self.n_estimators = int(n_estimators)
@@ -142,21 +142,26 @@ class CupyExtraTreesRegressor:
         k_stats, k_split, k_route = (mod.get_function(n) for n in ("node_stats", "split_stats", "route"))
         rng = cp.random.RandomState(self.random_state if self.random_state is not None
                                     else np.random.SeedSequence().generate_state(1)[0])
-        if self.trees_per_group:
-            tpg = int(self.trees_per_group)
-        else:
+        pool = cp.get_default_memory_pool()
+
+        def group_size(remaining):
+            if self.trees_per_group:
+                return min(int(self.trees_per_group), remaining)
             # ~(64 F + 40) bytes per (tree, sample) at the widest level (measured 13.3 GB for 20 trees,
-            # 1.2M rows, F = 9); use at most half the free device memory
-            free = cp.cuda.Device().mem_info[0] + cp.get_default_memory_pool().free_bytes()
-            tpg = int(0.5 * free // ((64 * F + 40) * N))
-            if tpg < 1:
+            # 1.2M rows, F = 9); use at most half the device memory free now. Finished trees live on
+            # the host, so later groups see the same budget.
+            pool.free_all_blocks()
+            free = cp.cuda.Device().mem_info[0]
+            t = int(0.5 * free // ((64 * F + 40) * N))
+            if t < 1:
                 raise MemoryError("cupy ExtraTrees: %.1f GB free is too little for one tree of %d rows" % (free / 1e9, N))
-            tpg = min(tpg, self.n_estimators, int(2 ** 31 // (2 * N)) - 1, 20)
+            return min(t, remaining, int(2 ** 31 // (2 * N)) - 1, 20)
         self.n_features_in_ = F
         self._trees = []          # per tree: dict of device arrays
         TH = 256
-        for g0 in range(0, self.n_estimators, tpg):
-            T = min(tpg, self.n_estimators - g0)
+        g0 = 0
+        while g0 < self.n_estimators:
+            T = group_size(self.n_estimators - g0)
             cap = 2 * N                                   # nodes per tree are at most 2N - 1
             left = cp.full(T * cap, -1, dtype=cp.int32); right = cp.full(T * cap, -1, dtype=cp.int32)
             feat = cp.full(T * cap, -2, dtype=cp.int32); thr_out = cp.full(T * cap, -2.0, dtype=cp.float64)
@@ -223,32 +228,32 @@ class CupyExtraTreesRegressor:
                 k_route(blocks, (TH,), (act, n_act, np.int32(N), np.int32(F), Xd, slot, sp8, bf, bthr, child0, alive))
                 act = act[alive.astype(bool)]
                 level += 1
-            for t in range(T):
+            for t in range(T):      # finished trees go to the host
                 n = int(n_nodes[t]); o = t * cap
-                self._trees.append(dict(left=left[o:o + n].copy(), right=right[o:o + n].copy(), feat=feat[o:o + n].copy(),
-                                        thr=thr_out[o:o + n].copy(), val=val[o:o + n].copy()))
+                self._trees.append(dict(left=left[o:o + n].get(), right=right[o:o + n].get(), feat=feat[o:o + n].get(),
+                                        thr=thr_out[o:o + n].get(), val=val[o:o + n].get()))
             if self.verbose:
                 print(" cupy ExtraTrees: trees %d-%d grown, %d levels, nodes %s" % (g0, g0 + T - 1, level, n_nodes.tolist()))
             del left, right, feat, thr_out, val, slot, act
+            g0 += T
+        pool.free_all_blocks()
         return self
 
     @property
     def estimators_(self):
         out = []
         for t in self._trees:
-            lf = t["left"].get(); rt = t["right"].get()
-            out.append(_Est(_Tree(lf, rt, t["feat"].get(), t["thr"].get(), t["val"].get())))
+            out.append(_Est(_Tree(t["left"], t["right"], t["feat"], t["thr"], t["val"])))
         return out
 
     def forest(self, release=False):
-        """CupyForest for prediction. release=True frees the per-tree arrays (estimators_ then
-        unavailable), so the forest is the only device copy."""
+        """CupyForest for prediction. The trees are kept on the host; release=True drops that copy
+        (estimators_ then unavailable)."""
         import cupy as cp
         from RIFT.interpolators.cupy_forest import CupyForest
         f = CupyForest.from_device_trees(self._trees, self.n_features_in_)
         if release:
             self._trees = None
-            cp.get_default_memory_pool().free_all_blocks()
         return f
 
 

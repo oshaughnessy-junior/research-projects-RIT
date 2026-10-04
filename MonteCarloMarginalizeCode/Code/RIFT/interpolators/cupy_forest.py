@@ -88,8 +88,9 @@ class CupyForest:
 
     @classmethod
     def from_device_trees(cls, trees, n_features, batch_size=1 << 20):
-        """From per-tree dicts of cupy arrays (left, right, feat, thr float64, val), as grown by
-        RIFT.interpolators.cupy_extratrees; leaves have left = right = -1. Single output."""
+        """From per-tree dicts of arrays (left, right, feat, thr float64, val; numpy or cupy), as grown by
+        RIFT.interpolators.cupy_extratrees; leaves have left = right = -1. Single output. The device
+        arrays are allocated once and filled one tree at a time."""
         import cupy as cp
         self = cls.__new__(cls)
         self.n_features_in_, self.n_outputs = int(n_features), 1
@@ -97,16 +98,22 @@ class CupyForest:
         if sizes.sum() >= 2 ** 31:
             raise ValueError("forest too large for int32 node indices (%d nodes)" % sizes.sum())
         offs = np.r_[0, np.cumsum(sizes)[:-1]]
-        sh = lambda key, o: [cp.where(t[key] >= 0, t[key] + int(oo), -1) for t, oo in zip(trees, o)]
-        self._left = cp.concatenate(sh("left", offs)).astype(cp.int32)
-        self._right = cp.concatenate(sh("right", offs)).astype(cp.int32)
-        self._feat = cp.concatenate([cp.maximum(t["feat"], 0) for t in trees]).astype(cp.int32)
-        thr = cp.concatenate([t["thr"] for t in trees])
-        t32 = thr.astype(cp.float32)
-        self._thr = cp.where(t32.astype(cp.float64) > thr, cp.nextafter(t32, cp.float32(-cp.inf)), t32)
-        self._val = cp.concatenate([t["val"] for t in trees])[:, None].copy()
+        n = int(sizes.sum())
+        self._left = cp.empty(n, dtype=cp.int32); self._right = cp.empty(n, dtype=cp.int32)
+        self._feat = cp.empty(n, dtype=cp.int32); self._thr = cp.empty(n, dtype=cp.float32)
+        self._val = cp.empty((n, 1), dtype=cp.float64)
+        for t, o in zip(trees, offs):
+            sl = slice(int(o), int(o) + len(t["left"]))
+            lf, rt = cp.asarray(t["left"]), cp.asarray(t["right"])
+            self._left[sl] = cp.where(lf >= 0, lf + int(o), -1)
+            self._right[sl] = cp.where(rt >= 0, rt + int(o), -1)
+            self._feat[sl] = cp.maximum(cp.asarray(t["feat"]), 0)
+            thr = cp.asarray(t["thr"], dtype=cp.float64)
+            t32 = thr.astype(cp.float32)
+            self._thr[sl] = cp.where(t32.astype(cp.float64) > thr, cp.nextafter(t32, cp.float32(-cp.inf)), t32)
+            self._val[sl, 0] = cp.asarray(t["val"])
         self._roots = cp.asarray(offs.astype(np.int32))
-        self.n_trees, self.n_nodes, self.batch_size = len(trees), int(sizes.sum()), int(batch_size)
+        self.n_trees, self.n_nodes, self.batch_size = len(trees), n, int(batch_size)
         self._kern = cp.RawKernel(_KERNEL.replace("MAX_OUT", str(MAX_OUT)), "forest_predict")
         return self
 

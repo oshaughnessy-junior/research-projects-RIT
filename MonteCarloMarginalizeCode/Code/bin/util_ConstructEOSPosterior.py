@@ -209,6 +209,10 @@ if opts.fit_device == "gpu":
 no_plots = no_plots |  opts.no_plots
 lnL_shift = 0
 lnL_default_large_negative = -500
+# value the rf fit returns for rows with a nonfinite or |x| > 1e37 coordinate, on CPU and GPU alike.
+# It is +500, a ceiling rather than a floor: an open defect (RIFT_roboto_paper
+# development/OPEN_rf_nonfinite_fill_sign.md). One constant so a fix reaches both paths.
+rf_nonfinite_fill = -lnL_default_large_negative
 if opts.lnL_shift_prevent_overflow:
     lnL_shift  = opts.lnL_shift_prevent_overflow
 
@@ -704,7 +708,7 @@ def fit_rf(x,y,y_errors=None,fname_export='nn_fit',device='cpu',backend='sklearn
             print(" rf cupy fit: dropping {} of {} rows with nonfinite or |x| > 1e37 coordinates".format(int(np.sum(~keep)), len(keep)))
         model = CupyExtraTreesRegressor(n_estimators=100, verbose=True).fit(
             x[keep], y[keep], sample_weight=None if sw is None else sw[keep])
-        fn_return = _device_forest_fit(model.forest(release=True), None, fill=-lnL_default_large_negative)
+        fn_return = _device_forest_fit(model.forest(release=True), None, fill=rf_nonfinite_fill)
         residuals = fn_return(x) - y
         print( " Demonstrating RF (cupy fit)")
         print( "    std ", np.std(residuals), np.max(y), np.max(fn_return(x)))
@@ -720,7 +724,7 @@ def fit_rf(x,y,y_errors=None,fname_export='nn_fit',device='cpu',backend='sklearn
 
     ### reject points with infinities : problems for inputs
     def fn_return(x_in,rf=rf):
-        f_out = -lnL_default_large_negative*np.ones(len(x_in))
+        f_out = rf_nonfinite_fill*np.ones(len(x_in))
         # remove infinity or Nan
         indx_ok = np.all(np.isfinite(np.array(x_in,dtype=float)),axis=-1)
         # rf internally uses float32, so we need to remove points > 10^37 or so ! 
@@ -731,7 +735,7 @@ def fit_rf(x,y,y_errors=None,fname_export='nn_fit',device='cpu',backend='sklearn
         return f_out
 #    fn_return = lambda x_in: rf.predict(x_in) 
     if device == 'gpu':
-        fn_return = _device_forest_fit(rf, x, fill=-lnL_default_large_negative)
+        fn_return = _device_forest_fit(rf, x, fill=rf_nonfinite_fill)
 
     print( " Demonstrating RF")   # debugging
     residuals = (fn_return(x) if device == 'gpu' else rf.predict(x))-y
