@@ -155,6 +155,8 @@ parser.add_argument("--dslice-amp-decompose",action='store_true',help="dslice-am
 parser.add_argument("--dslice-amp-loss",default="linear",help="dslice-amp: scipy least_squares loss for the per-point fits (linear|soft_l1|cauchy|huber).")
 parser.add_argument("--dslice-amp-loss-scale",default=1.0,type=float,help="dslice-amp: robust-loss scale in nats.")
 parser.add_argument("--dslice-amp-point-fit",default="scipy",choices=["scipy","batched"],help="dslice-amp: per-point fits by one scipy least_squares call each (default), or all points at once by a batched Levenberg-Marquardt on the same objective (RIFT.interpolators.dslice_amplitude_model.fit_all_points_batched), on the GPU under --fit-device gpu.")
+parser.add_argument("--rf-dslice-tails",default="none",choices=["none","near","far","both"],help="rf on a distance-slice grid only: beyond each nearest grid point's slice range (near: below its closest slice; far: above its farthest), continue from the fit's edge value with the averaged-amplitude distance shape fitted to that point (RIFT.interpolators.dslice_rf_tails) instead of the tree's flat extrapolation. Requires a 'dist' fit coordinate.")
+parser.add_argument("--rf-dslice-tails-fmin",default="shared",choices=["shared","free"],help="--rf-dslice-tails: share one f_min across the event (median of per-point fits; default) or fit it per point.")
 parser.add_argument("--rf-fit-backend",default="sklearn",choices=["sklearn","cupy"],help="rf: grow the ExtraTrees forest with sklearn on CPU (default) or on the GPU with the same algorithm (RIFT.interpolators.cupy_extratrees; same distribution of forests, different random stream). cupy requires --fit-device gpu.")
 parser.add_argument("--fit-device",default="cpu",choices=["cpu","gpu"],help="rf and dslice-amp only. gpu: copy the fitted trees to the GPU and evaluate the fit there inside the sampler (RIFT.interpolators.cupy_forest; same predictions as sklearn to float64 roundoff, checked at startup), keep sample batches on the device, and convert coordinates as --coordinate-convert-xpy. Needs cupy and a visible device.")
 parser.add_argument("--coordinate-convert-xpy",action='store_true',help="With --supplementary-coordinate-code: convert the data file and the sampler's batches with the vectorized RIFT.misc.waveform_coordinates_xpy instead of the plugin, after checking the two agree on data rows and on draws from the integration ranges (the plugin is kept if they do not). Avoids convert_waveform_coordinates' per-row fallthrough.")
@@ -897,6 +899,18 @@ elif opts.fit_method == 'rf':
     if opts.ignore_errors_in_data:
         Y_err=None
     my_fit = fit_rf(X,Y,y_errors=Y_err,device=opts.fit_device,backend=opts.rf_fit_backend)
+    if opts.rf_dslice_tails != "none":
+        if 'dist' not in list(coord_names):
+            raise ValueError("--rf-dslice-tails needs 'dist' as a fit coordinate (distance-slice grid)")
+        if Y_err is None:
+            raise ValueError("--rf-dslice-tails needs the per-row sigma column (not --ignore-errors-in-data)")
+        from RIFT.interpolators.dslice_rf_tails import RFDistanceTails
+        _xp_tails = np
+        if opts.fit_device == "gpu":
+            import cupy as _xp_tails
+        my_fit = RFDistanceTails(my_fit, list(coord_names).index('dist'), sides=opts.rf_dslice_tails,
+                                 shared_fmin=(opts.rf_dslice_tails_fmin == "shared"), xp=_xp_tails).fit(X, Y + lnL_shift, Y_err)
+        print(" RF-DSLICE-TAILS ", my_fit.report)
 
 elif opts.fit_method == 'gp-matern':
     print(" FIT METHOD gp-matern: bounded standardized Matern5/2")
