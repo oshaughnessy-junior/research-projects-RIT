@@ -6385,6 +6385,61 @@ def convert_waveform_coordinates(x_in,coord_names=['mc', 'eta'],low_level_coord_
                 coord_names_reduced.remove('DeltaLambdaTilde')
 
 
+    # Mass-ratio, total-mass and aligned-spin coordinates from component masses (a data file's m1, m2)
+    # or from (mc, delta_mc|eta), and xi/chiMinus/mu1/mu2 from Cartesian s1z, s2z: vectorized forms of
+    # the extract_param definitions the per-row loop below applies (L frame).  Not used with
+    # source_redshift, which that loop applies to the masses before extracting.
+    vec_mass_names = ['delta_mc', 'eta', 'mc', 'q', 'mtot', 'm1', 'm2']
+    vec_spin_names = ['xi', 'chiMinus', 'mu1', 'mu2']
+    have_m12 = ('m1' in low_level_coord_names) and ('m2' in low_level_coord_names)
+    have_mc_eta = ('mc' in low_level_coord_names) and ('delta_mc' in low_level_coord_names or 'eta' in low_level_coord_names)
+    have_sz = ('s1z' in low_level_coord_names) and ('s2z' in low_level_coord_names) and spin_convention == "L"
+    wanted = [p for p in coord_names_reduced if p in vec_mass_names or (have_sz and p in vec_spin_names)]
+    kerr_ok = True
+    if enforce_kerr and wanted:
+        cart = ['s1x', 's1y', 's1z', 's2x', 's2y', 's2z']
+        if all(n in low_level_coord_names for n in cart):
+            xf = np.asarray(x_in, dtype=float)
+            c = [xf[:, low_level_coord_names.index(n)] for n in cart]
+            kerr_bad = (np.sqrt(c[0]**2 + c[1]**2 + c[2]**2) > 1) | (np.sqrt(c[3]**2 + c[4]**2 + c[5]**2) > 1)
+        elif 'chi1' in low_level_coord_names and 'chi2' in low_level_coord_names:
+            xf = np.asarray(x_in, dtype=float)
+            kerr_bad = (xf[:, low_level_coord_names.index('chi1')] > 1) | (xf[:, low_level_coord_names.index('chi2')] > 1)
+        else:
+            kerr_ok = False      # cannot apply the per-row Kerr rule here; leave these to the loop
+    if wanted and not source_redshift and kerr_ok and (have_m12 or have_mc_eta):
+        xf = np.asarray(x_in, dtype=float)
+        if have_m12:
+            m1_vals = xf[:, low_level_coord_names.index('m1')]
+            m2_vals = xf[:, low_level_coord_names.index('m2')]
+        else:
+            if 'delta_mc' in low_level_coord_names:
+                eta_vals = 0.25*(1 - xf[:, low_level_coord_names.index('delta_mc')]**2)
+            else:
+                eta_vals = xf[:, low_level_coord_names.index('eta')]
+            m1_vals, m2_vals = m1m2(xf[:, low_level_coord_names.index('mc')], eta_vals)
+        vals = {'delta_mc': lambda: (m1_vals - m2_vals)/(m1_vals + m2_vals),
+                'eta': lambda: symRatio(m1_vals, m2_vals),
+                'mc': lambda: mchirp(m1_vals, m2_vals),
+                'q': lambda: m2_vals/m1_vals,
+                'mtot': lambda: m2_vals + m1_vals,
+                'm1': lambda: m1_vals, 'm2': lambda: m2_vals}
+        if have_sz:
+            s1z = xf[:, low_level_coord_names.index('s1z')]
+            s2z = xf[:, low_level_coord_names.index('s2z')]
+            vals['xi'] = lambda: (m1_vals*s1z + m2_vals*s2z)/(m1_vals + m2_vals)
+            vals['chiMinus'] = lambda: (m1_vals*s1z - m2_vals*s2z)/(m1_vals + m2_vals)
+            if 'mu1' in wanted or 'mu2' in wanted:
+                fac = np.where(m1_vals > 1e10, lal.MSUN_SI, 1.0)
+                mu1, mu2, mu3 = tools.Mcqchi1chi2Tomu1mu2mu3(mchirp(m1_vals, m2_vals)/fac, m2_vals/m1_vals, s1z, s2z)
+                vals['mu1'] = lambda: mu1
+                vals['mu2'] = lambda: mu2
+        for p in wanted:
+            x_out[:, coord_names.index(p)] = vals[p]()
+            coord_names_reduced.remove(p)
+        if enforce_kerr:
+            kerr_violation_ring = kerr_bad if kerr_violation_ring is None else (kerr_violation_ring | kerr_bad)
+
     # perform any mass conversions needed, so output in detector frame given input in source frame
     if source_redshift:
         for name in ['mc', 'm1', 'm2']:
