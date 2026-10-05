@@ -56,3 +56,21 @@ def test_point_fit_scipy_default_and_batched_option():
     cost = lambda P: np.sum((log_model(1 / g[:, 1], *P[inv].T[:3], 0.0) - g[:, 2]) ** 2)
     # two fitters (each with its own shared f_min): scipy reaches at most the batched cost
     assert cost(m.P) <= cost(b.P) * (1 + 1e-6)
+
+
+def test_driver_refuses_tail_options_outside_rf(tmp_path):
+    # parse-time refusals: tails need rf; point-fit options on rf need the tails
+    import os
+    import subprocess
+    import sys
+    code = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+    driver = os.path.join(code, "bin", "util_ConstructEOSPosterior.py")
+    env = dict(os.environ, PYTHONPATH=code, OMP_NUM_THREADS="1", MPLBACKEND="Agg", CUDA_VISIBLE_DEVICES="",
+               MPLCONFIGDIR=str(tmp_path))
+    base = [sys.executable, driver, "--fname", str(tmp_path / "missing.dat"), "--parameter", "xx"]
+    for extra, msg in ((["--fit-method", "dslice-amp", "--rf-dslice-tails", "near"], "apply to --fit-method rf only"),
+                       (["--fit-method", "rf", "--dslice-amp-point-fit-jobs", "2"], "apply to --fit-method dslice-amp only"),
+                       (["--fit-method", "rf", "--rf-dslice-tails-fmin", "free"], "needs --rf-dslice-tails")):
+        p = subprocess.run(base + extra, env=env, cwd=str(tmp_path), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           universal_newlines=True, timeout=300)
+        assert p.returncode == 2 and msg in p.stdout, p.stdout[-2000:]
