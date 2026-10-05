@@ -114,7 +114,10 @@ from RIFT.likelihood.jax_ile.samplers import regularize_cov as _regularize_cov
 # before averaging, which conditions Z on prior support and biases it upward.
 from RIFT.likelihood.jax_ile.samplers import _finalize_evidence
 from RIFT.likelihood.jax_ile.samplers import evidence_from_logweights
-from RIFT.likelihood.jax_ile.core import _GATHERERS as _JAX_GATHERERS, JAX_INTERP_DEFAULT
+from RIFT.likelihood.jax_ile.core import (_GATHERERS as _JAX_GATHERERS,
+                                          JAX_INTERP_DEFAULT,
+                                          TIME_QUAD_DEFAULT,
+                                          _TIME_QUAD_CHOICES)
 from RIFT.likelihood.jax_ile.anglemarg import (ANGLE_MARG_DEFAULT, ANGLE_MARG_LEGACY,
                                                ANGLE_MARG_CHOICES,
                                                ANGLE_MARG_CROSSOVER_AMPLITUDE)
@@ -1281,12 +1284,19 @@ def build_parser():
                       "the box comfortably wider than the posterior.  Must lie "
                       "inside [--d-min,--d-max].")
     g.add_option("--phase-marginalization", action="store_true", default=False)
+    # choices= and default= are DERIVED from the library, never re-typed.  A
+    # hardcoded ("simpson","bandlimited") tuple here made 'log-hermite'
+    # unreachable from every command line, ini and sub file for the life of the
+    # option -- the rule existed, passed its unit tests, and could only be
+    # selected by a direct Python caller.  test_time_log_hermite_selectable.py
+    # pins the derivation so the same gap cannot reopen.
     g.add_option("--time-marginalization-quadrature", type="choice",
-                 choices=("simpson", "bandlimited"), default="simpson",
-                 help="Rule for the time integral: historical fixed-grid "
-                      "Simpson or adaptive reflected-FFT refinement followed "
-                      "by a converged trapezoid. No resolution knob is exposed; "
-                      "the factor is derived and rechecked per row. "
+                 choices=list(_TIME_QUAD_CHOICES), default=TIME_QUAD_DEFAULT,
+                 help="Rule for the time integral: %s.  DEFAULT '%s', the "
+                      "historical fixed-grid Simpson rule.  'bandlimited' is "
+                      "adaptive reflected-FFT refinement followed by a converged "
+                      "trapezoid. No resolution knob is exposed; the factor is "
+                      "derived and rechecked per row. "
                       "'bandlimited' is honoured by the 6-D modes and, under "
                       "--distance-marginalization, by every mode except the "
                       "phi/psi-marginalized ones, which refuse it and say so. "
@@ -1295,7 +1305,14 @@ def build_parser():
                       "laplace-is, map, nuts) are refused at parse time unless "
                       "--data-integration-window-half is at least 2 R_earth / c "
                       "(0.0426 s), the largest arrival shift of a wrong-sky "
-                      "draw; 0.05 s is the measured clean value.")
+                      "draw; 0.05 s is the measured clean value.  'log-hermite' "
+                      "makes no band-limited claim: it interpolates lnL(t) in "
+                      "log space and integrates exp of the interpolant per "
+                      "interval, so it is accepted on the phi/psi-marginalized "
+                      "endpoints.  It is refused by the multipeak angle schemes "
+                      "and by --direct-marginalization-policy auto, which own "
+                      "the time integral."
+                      % ("|".join(_TIME_QUAD_CHOICES), TIME_QUAD_DEFAULT))
     g.add_option("--resample-time-marginalization", action="store_true",
                  default=False,
                  help="Conventional ILE option; currently unsupported by JAX ILE.")
