@@ -189,6 +189,17 @@ FILES=(
   "$C/test/test_ring_coordinates.py"
   # -- coordinates: source_redshift gives detector-frame values, vectorized vs extract_param
   "$C/test/test_convert_coordinates_source_redshift.py"
+  # -- EOSPosterior distance-slice fits: vectorized coordinates and the dslice-amp model
+  #    (numpy legs; the cupy legs skip here and run by hand on a GPU node)
+  "$C/test/test_convert_waveform_coordinates_vectorized.py"
+  "$C/test/test_waveform_coordinates_xpy.py"
+  "$C/test/interpolators/test_dslice_amplitude_model.py"
+  # -- EOSPosterior gp-matern driver, cupy Matern fit
+  #    (numpy legs; cupy legs skip).  test_eos_gp_matern.py runs the driver end to end: ~100 s on CIT.
+  "$C/test/interpolators/test_cupy_matern_fit.py"
+  "$C/test/test_eos_gp_matern.py"
+  # -- --rf-seed regrows the same forest (driver run three times, ~30 s on CIT)
+  "$C/test/test_eos_rf_seed.py"
 )
 
 # A manifest entry that stops existing is a SILENT no-op: the gate keeps passing while
@@ -397,7 +408,11 @@ done
 # CUDA_VISIBLE_DEVICES='': junit 698 collected / 683 passed, 3 of them subtests -> 695/680.
 # (pcdev11 has one extra host skip, cupy-importable in test_eos_posterior_tempering_kwarg.)
 # test_convert_coordinates_source_redshift.py adds 16 passing tests and no skips.
-EXPECTED_TESTS=711
+# PR #391 (EOSPosterior GPU port and dslice fits), merged with rift_O4d 7e2984a0: measured on CIT
+# ldas-grid (IGWN python, cupy importable, no device) 2026-10-05, outcomes 751 collected / 732 passed /
+# 19 skipped incl. 3 subtests -> 748/729; less test_dslice_quadratic_gp.py (2, removed) -> 746/727;
+# final review added 4 tests to test_dslice_amplitude_model.py (all pass on CPU) -> 750/731.
+EXPECTED_TESTS=750
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -410,9 +425,9 @@ EXPECTED_TESTS=711
 # missing dependency there FAILS the driver subprocess rather than skipping the check.
 # test_dag_postprocess_fail_closed.py adds 13 tests and no skips.
 # test_convert_coordinates_source_redshift.py adds 16 tests and no skips.
-EXPECTED_PASSED=696
+EXPECTED_PASSED=731
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
-MAX_SKIPPED=14
+MAX_SKIPPED=19
 
 # The floors must be INTEGERS, and this is checked rather than assumed.  `[ 347 -lt FOO ]` does
 # not fail the build: bash prints "integer expression expected", returns 2, and the `if` is
