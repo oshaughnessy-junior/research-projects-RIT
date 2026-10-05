@@ -420,6 +420,29 @@ valid_params = ['m1', 'm2', 's1x', 's1y', 's1z', 's2x', 's2y', 's2z', 'chi1_perp
 #   - note we also provide for extrinsic: RA (phi), phiref, psi, just in case we need it in the future
 periodic_params = {'phi1':2*np.pi, 'phi2':2*np.pi, 'phi12':2*np.pi, 'phiref':2*np.pi, 'psi':np.pi, 'meanPerAno':2*np.pi, 'phi':2*np.pi, 'phiJL':2*np.pi, 'psiJ':2*np.pi}
 
+# assign_param sets a mass scale at fixed mass ratio, and a mass ratio at fixed mtot (q, delta) or
+# fixed mc (eta, delta_mc).  A ratio assigned after a scale it does not hold moves that scale.
+_mass_scale_family = {'mtot': 'mtot', 'mc': 'mc', 'mc_ecc': 'mc', 'log_mc': 'mc'}
+_mass_ratio_holds = {'q': 'mtot', 'delta': 'mtot', 'eta': 'mc', 'delta_mc': 'mc'}
+
+def check_mass_coordinate_order(names):
+    """
+    Raise ValueError if assigning `names` in order with assign_param would not reproduce the masses.
+    Example: ['mtot', 'delta_mc'] fails (delta_mc holds mc, so it moves mtot); ['delta_mc', 'mtot'],
+    ['mtot', 'q'] and ['mc', 'delta_mc'] are exact.
+    """
+    scales = {}
+    for p in names:
+        if p in _mass_scale_family:
+            scales.setdefault(_mass_scale_family[p], p)
+        held = _mass_ratio_holds.get(p)
+        for family, scale in scales.items():
+            if held is not None and family != held:
+                alternative = 'q' if family == 'mtot' else 'delta_mc or eta'
+                raise ValueError("inconsistent mass coordinates {}: assign_param('{}') holds {} fixed, so it changes the {} "
+                                 "assigned before it.  Pair {} with {}, or list {} before {}.".format(
+                                     list(names), p, held, scale, scale, alternative, p, scale))
+
 tex_dictionary  = {
  "mtot": r'$M$',
  "mc": r'${\cal M}_c$',
@@ -6464,6 +6487,7 @@ def convert_waveform_coordinates(x_in,coord_names=['mc', 'eta'],low_level_coord_
         x_out[kerr_violation_ring] = -np.inf
     if len(coord_names_reduced)<1:
         return x_out
+    check_mass_coordinate_order(low_level_coord_names)
 
     print(" Fallthrough to non-vector-coords for ", coord_names_reduced,low_level_coord_names)
     
@@ -6494,6 +6518,7 @@ def convert_waveform_coordinates_with_eos(x_in,coord_names=['mc', 'eta'],low_lev
     except:
         print( " - Failed to load EOSManager - ")  # this will occur at the start
     assert not (eos_class==None)
+    check_mass_coordinate_order(low_level_coord_names)
     x_out = np.zeros( (len(x_in), len(coord_names) ) )
 
     if not(backstop_novector):  # backstop option to use older code

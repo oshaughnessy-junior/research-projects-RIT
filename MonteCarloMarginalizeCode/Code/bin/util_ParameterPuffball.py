@@ -80,6 +80,10 @@ coord_names = opts.parameter # Used  in fit
 #    coord_names = coord_names + opts.parameter_nofit
 if coord_names is None:
     sys.exit(0)
+try:
+    lalsimutils.check_mass_coordinate_order(coord_names)   # the output points are assigned in this order
+except ValueError as e:
+    parser.error(str(e))
 
 # match up pairs in --no-correlation
 corr_list = None

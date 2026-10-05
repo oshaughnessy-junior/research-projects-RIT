@@ -1516,7 +1516,8 @@ elif opts.propose_initial_grid:
     cmd  = "util_ManualOverlapGrid.py  --fname proposed-grid --skip-overlap "
     mass_string_init = " --random-parameter mc --random-parameter-range   " + mc_range_str + "  --random-parameter delta_mc --random-parameter-range '[" + str(delta_grid_min) +"," + str(delta_grid_max) + "]'  "
     if not(opts.force_mtot_range is None):
-        mass_string_init = " --random-parameter mtot --random-parameter-range   " + mtot_range_str + "  --random-parameter delta_mc --random-parameter-range '[" + str(delta_grid_min) +"," + str(delta_grid_max) + "]'  "
+        # delta_mc before mtot: assign_param('delta_mc') holds mc fixed, so assigned last it would move mtot
+        mass_string_init = " --random-parameter delta_mc --random-parameter-range '[" + str(delta_grid_min) +"," + str(delta_grid_max) + "]'  --random-parameter mtot --random-parameter-range   " + mtot_range_str + "  "
     cmd+= mass_string_init
     # Add standard downselects : do not have m1, m2 be less than 1
     if not(opts.force_mc_range is None):
@@ -1731,7 +1732,8 @@ if opts.internal_ile_rotate_phase:
 puff_max_it=0
 if event_dict["MChirp"] >25:
     if opts.use_mtot_coords:
-        helper_puff_args = " --parameter mtot --parameter delta_mc --fmin {} --fref {}  ".format(opts.fmin_template,opts.fmin_template)
+        # not mtot with delta_mc: assign_param('delta_mc') holds mc fixed, so it would move mtot
+        helper_puff_args = " --parameter mtot --parameter q --fmin {} --fref {}  ".format(opts.fmin_template,opts.fmin_template)
     else:
         # at high mass, mc/eta correlation weak, don't want to have eta coordinate degeneracy at q=1 to reduce puff proposals  near there
         helper_puff_args = " --parameter mc --parameter delta_mc --fmin {} --fref {}  ".format(opts.fmin_template,opts.fmin_template)

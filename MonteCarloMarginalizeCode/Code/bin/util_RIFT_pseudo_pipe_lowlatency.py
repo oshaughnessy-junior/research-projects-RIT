@@ -537,11 +537,19 @@ for indx in np.arange(len(instructions_cip)):
         # Must use mtotal, q coordinates!  Change defaults
         line = line.replace('parameter mc', 'parameter mtot')
         line = line.replace('parameter delta_mc', 'parameter q')
+        if '--parameter mtot' in line:
+            # early-stage and eta-sampler lines: delta_mc or eta assigned after mtot would move mtot
+            line = line.replace('parameter-nofit delta_mc', 'parameter-nofit q')
+            line = line.replace('--parameter eta', '--parameter q')
         line += " --prior-tapered-mass-ratio "
     elif opts.hierarchical_merger_prior_2g:
         # Must use mtotal, q coordinates! Change defaults
         line = line.replace('parameter mc', 'parameter mtot')
         line = line.replace('parameter delta_mc', 'parameter q')
+        if '--parameter mtot' in line:
+            # early-stage and eta-sampler lines: delta_mc or eta assigned after mtot would move mtot
+            line = line.replace('parameter-nofit delta_mc', 'parameter-nofit q')
+            line = line.replace('--parameter eta', '--parameter q')
         line += " --prior-gaussian-mass-ratio --prior-gaussian-spin1-magnitude "   # should require precessing analysis
     elif opts.assume_highq and ('s1z' in line):
         line += " --sampler-method GMM --internal-correlate-parameters 'mc,delta_mc,s1z' "

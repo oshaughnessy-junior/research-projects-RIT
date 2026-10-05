@@ -857,6 +857,10 @@ if opts.parameter_nofit:
         low_level_coord_names = opts.parameter_nofit # Used for Monte Carlo
     else:
         low_level_coord_names = opts.parameter+opts.parameter_nofit # Used for Monte Carlo
+try:
+    lalsimutils.check_mass_coordinate_order(low_level_coord_names)   # samples are assigned in this order
+except ValueError as e:
+    parser.error(str(e))
 from RIFT.misc import rf_transverse_spin
 if set(rf_transverse_spin.FEATURE_NAMES).intersection(coord_names + low_level_coord_names):
     raise ValueError('RF fitting scalars are enabled only through the opt-in flag')

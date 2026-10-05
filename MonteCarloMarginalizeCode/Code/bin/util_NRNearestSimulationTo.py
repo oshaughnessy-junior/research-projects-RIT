@@ -9,7 +9,7 @@
 #   + Match calculations
 # 
 #     python util_ManualOverlapGrid.py --inj mdc.xml.gz --event 0 --parameter mtot --parameter-range '[50,70]' --use-fisher --seglen 8 --verbose --reset-grid-via-match
-#     python util_ManualOverlapGrid.py --inj mdc.xml.gz --event 0 --parameter mtot --parameter-range '[50,70]' --use-fisher --seglen 8 --verbose --reset-grid-via-match --parameter eta --parameter-range '[0.1,0.2499]'
+#     python util_ManualOverlapGrid.py --inj mdc.xml.gz --event 0 --parameter eta --parameter-range '[0.1,0.2499]' --parameter mtot --parameter-range '[50,70]' --use-fisher --seglen 8 --verbose --reset-grid-via-match
 #
 #   + Real overlap
 

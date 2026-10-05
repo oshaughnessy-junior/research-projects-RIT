@@ -253,6 +253,10 @@ opts=  parser.parse_args()
 force_options = [opts.force_scatter, opts.force_plunge, opts.force_zoomwhirl]  # Add more if needed
 if sum(bool(x) for x in force_options) > 1:
     parser.error("CANNOT use multiple --force-X options at the same time!")
+try:
+    lalsimutils.check_mass_coordinate_order((opts.parameter or []) + (opts.random_parameter or []))   # grid points are assigned in this order
+except ValueError as e:
+    parser.error(str(e))
 if opts.inj_file_out:
     opts.fname = opts.inj_file_out.replace(".xml.gz","")
 
