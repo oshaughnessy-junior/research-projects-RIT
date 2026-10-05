@@ -121,13 +121,18 @@ def test_nonfinite_conversion_gets_the_floor(tmp_path):
 
 
 def test_reload_with_a_different_lnL_shift(tmp_path):
-    """A saved fit reloaded under another --lnL-shift-prevent-overflow returns the same likelihood."""
-    proc, out = _run(tmp_path, ["--fit-save-gp", os.path.join(str(tmp_path), "fit")])
+    """A saved fit reloaded under another --lnL-shift-prevent-overflow returns the same likelihood: the same
+    posterior and, since a constant offset cannot change the posterior, the same evidence."""
+    proc, out = _run(tmp_path, ["--fit-save-gp", os.path.join(str(tmp_path), "fit"),
+                                "--fname-output-integral", "evid_fresh"])
     assert proc.returncode == 0, proc.stdout[-3000:]
     fresh = np.genfromtxt(out, names=True)
     proc2, out2 = _run(tmp_path, ["--fit-load-gp", os.path.join(str(tmp_path), "fit.pkl"),
-                                  "--lnL-shift-prevent-overflow", "5"])
+                                  "--lnL-shift-prevent-overflow", "5", "--fname-output-integral", "evid_reload"])
     assert proc2.returncode == 0, proc2.stdout[-3000:]
+    e1 = float(np.loadtxt(os.path.join(str(tmp_path), "evid_fresh")))
+    e2 = float(np.loadtxt(os.path.join(str(tmp_path), "evid_reload")))
+    assert abs(e1 - e2) < 0.5, (e1, e2)      # a wrong-sign offset moves it by ~10
     again = np.genfromtxt(out2, names=True)
     for c in ("xx", "yy"):
         assert abs(fresh[c].mean() - again[c].mean()) < 0.03

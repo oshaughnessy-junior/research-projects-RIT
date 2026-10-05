@@ -87,12 +87,17 @@ void route(const int* __restrict__ act, const long long n_act, const int N, cons
 """
 
 
-# splitmix64 applied in turn to seed, tree, node and feature; 53-bit uniform on [0, 1)
+# splitmix64 applied in turn to seed, tree, node and feature, each key through its own mixing stage and
+# odd multiplier (seeding z with the seed and adding the tree would alias (s, t+1) with (s+1, t));
+# 53-bit uniform on [0, 1)
 _HASH_UNIFORM = r'''
-unsigned long long z = seed;
-unsigned long long keys[3] = {(unsigned long long)tree, (unsigned long long)node, (unsigned long long)f};
-for (int k = 0; k < 3; k++) {
-    z += keys[k] + 0x9E3779B97F4A7C15ULL;
+unsigned long long z = 0ULL;
+const unsigned long long keys[4] = {(unsigned long long)seed, (unsigned long long)tree,
+                                    (unsigned long long)node, (unsigned long long)f};
+const unsigned long long mult[4] = {0xD1B54A32D192ED03ULL, 0xAEF17502108EF2D9ULL,
+                                    0xF39CC0605CEDC835ULL, 0xDB4F0B9175AE2165ULL};
+for (int k = 0; k < 4; k++) {
+    z += keys[k] * mult[k] + 0x9E3779B97F4A7C15ULL;
     z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
     z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
     z = z ^ (z >> 31);
@@ -178,6 +183,8 @@ class CupyExtraTreesRegressor:
         import cupy as cp
         Xh = np.ascontiguousarray(np.asarray(X, dtype=np.float32))
         y = np.asarray(y, dtype=np.float64)
+        if not np.all(np.isfinite(y)) or (sample_weight is not None and not np.all(np.isfinite(sample_weight))):
+            raise ValueError("cupy ExtraTrees: y and sample_weight must be finite (as sklearn requires)")
         if sample_weight is not None:
             # sklearn grows on positively weighted samples only: zero weights set no range and no count
             sample_weight = np.asarray(sample_weight, dtype=np.float64)

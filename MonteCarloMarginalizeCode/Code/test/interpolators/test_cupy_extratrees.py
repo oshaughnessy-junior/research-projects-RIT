@@ -154,3 +154,20 @@ def test_seeded_fit_does_not_depend_on_tree_grouping():
     for ea, eb in zip(a, b):
         assert np.array_equal(ea.tree_.threshold, eb.tree_.threshold)
         assert np.array_equal(ea.tree_.value, eb.tree_.value)
+
+
+def test_adjacent_seeds_share_no_trees():
+    """The per-node draws must not alias across seeds: seed s, tree t+1 once equalled seed s+1, tree t."""
+    X, y, w = _data(n=1500, seed=14)
+    a = ce.CupyExtraTreesRegressor(4, random_state=5).fit(X, y, w).estimators_
+    b = ce.CupyExtraTreesRegressor(4, random_state=6).fit(X, y, w).estimators_
+    for ea in a:
+        for eb in b:
+            assert not np.array_equal(ea.tree_.threshold, eb.tree_.threshold)
+
+
+def test_nonfinite_target_is_refused():
+    X, y, w = _data(n=200, seed=15)
+    y[3] = -np.inf
+    with pytest.raises(ValueError):
+        ce.CupyExtraTreesRegressor(2).fit(X, y, w)

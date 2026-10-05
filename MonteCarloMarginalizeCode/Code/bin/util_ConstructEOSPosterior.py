@@ -150,7 +150,7 @@ parser.add_argument("--gp-predict-backend",default="sklearn",choices=["sklearn",
 parser.add_argument("--gp-predict-batch-size",default=4096,type=int,help="Maximum queries per cached CuPy GP prediction block. Used only with --gp-predict-backend cupy.")
 parser.add_argument("--gp-matern-max-train-points",default=4800,type=int,help="gp-matern: deterministic balanced training bound (rho1 x lnL strata when the data carry in-plane spin; otherwise lnL strata). Exact float64 fit; see --gp-matern-fit-backend.")
 parser.add_argument("--gp-matern-optimizer-maxiter",default=25,type=int,help="gp-matern: bounded single L-BFGS-B start; numerical convergence is not interpolation validation.")
-parser.add_argument("--gp-matern-fit-backend",default="sklearn",choices=["sklearn","cupy"],help="gp-matern: fit hyperparameters with sklearn on CPU (default) or with the same objective in float64 CuPy on a GPU (RIFT.interpolators.cupy_matern_fit), which affords larger --gp-matern-max-train-points. The cupy fit predicts with CuPy.")
+parser.add_argument("--gp-matern-fit-backend",default="sklearn",choices=["sklearn","cupy"],help="gp-matern: fit hyperparameters with sklearn on CPU (default) or with the same objective in float64 CuPy on a GPU (RIFT.interpolators.cupy_matern_fit), which affords larger --gp-matern-max-train-points. Prediction uses --gp-predict-backend (numpy by default).")
 parser.add_argument("--dslice-amp-decompose",action='store_true',help="dslice-amp: write lnL as an interpolated distance-marginal M(x) plus a normalized conditional in d, so distance-shape interpolation error cannot move intrinsic weights.")
 parser.add_argument("--dslice-amp-loss",default="linear",help="dslice-amp: scipy least_squares loss for the per-point fits (linear|soft_l1|cauchy|huber).")
 parser.add_argument("--dslice-amp-loss-scale",default=1.0,type=float,help="dslice-amp: robust-loss scale in nats.")
@@ -196,6 +196,34 @@ if opts.fit_method != 'gp-matern':
         parser.error("--gp-matern-fit-backend cupy requires --fit-method gp-matern")
 if opts.fit_device == "gpu" and opts.fit_method not in ("rf", "dslice-amp"):
     parser.error("--fit-device gpu supports --fit-method rf and dslice-amp")
+# options a fit method would silently ignore are refused
+_defaults = {a.dest: a.default for a in parser._actions}
+def _set(*names):
+    return [n for n in names if getattr(opts, n) != _defaults[n]]
+if opts.fit_method != 'dslice-amp':
+    _bad = _set('dslice_amp_decompose', 'dslice_amp_loss', 'dslice_amp_loss_scale', 'dslice_amp_point_fit', 'dslice_amp_point_fit_jobs')
+    if _bad:
+        parser.error("{} apply to --fit-method dslice-amp only".format(", ".join("--" + b.replace("_", "-") for b in _bad)))
+else:
+    _bad = _set('fit_distance_tail', 'cap_points', 'ignore_errors_in_data')
+    if _bad:
+        parser.error("{} are not used by --fit-method dslice-amp".format(", ".join("--" + b.replace("_", "-") for b in _bad)))
+if opts.fit_method != 'gp-matern':
+    _bad = _set('gp_matern_max_train_points', 'gp_matern_optimizer_maxiter', 'gp_matern_seed', 'gp_predict_batch_size')
+    if _bad:
+        parser.error("{} apply to --fit-method gp-matern only".format(", ".join("--" + b.replace("_", "-") for b in _bad)))
+if opts.rf_seed is not None and opts.fit_method not in ('rf', 'dslice-amp'):
+    parser.error("--rf-seed applies to --fit-method rf and dslice-amp (its field forest)")
+if opts.fit_method == 'gp-matern' and 'cupy' in (opts.gp_matern_fit_backend, opts.gp_predict_backend):
+    try:    # fail before data loading, not after it
+        import cupy as _cupy_probe
+        _cupy_probe.zeros(1)
+        _dev_total = _cupy_probe.cuda.Device().mem_info[1]
+    except Exception as _err:
+        parser.error("--gp-matern-fit-backend/--gp-predict-backend cupy need cupy and a visible CUDA device ({})".format(_err))
+    if opts.gp_matern_fit_backend == 'cupy' and 48.0 * opts.gp_matern_max_train_points ** 2 > 0.8 * _dev_total:
+        parser.error("--gp-matern-max-train-points {} needs ~{:.0f} GB on the device for the CuPy fit (6 n^2 float64); {:.0f} GB available".format(
+            opts.gp_matern_max_train_points, 48.0 * opts.gp_matern_max_train_points ** 2 / 1e9, _dev_total / 1e9))
 if opts.dslice_amp_point_fit_jobs < 1:
     parser.error("--dslice-amp-point-fit-jobs must be at least 1")
 if opts.dslice_amp_point_fit_jobs > 1 and opts.dslice_amp_point_fit != "scipy":
@@ -963,9 +991,12 @@ elif opts.fit_method == 'gp-matern':
     print(" FIT METHOD gp-matern: bounded standardized Matern5/2")
     # rho1 from the data file's native in-plane spin, aligned with X before any cut
     from RIFT.interpolators.matern_gp import native_rho1
-    rho1 = native_rho1(dat[:,2:],dat_orig_names)
+    # rows with nonfinite or negative native spin geometry cannot be stratified; they are dropped below
+    _ok_rows = np.all(np.isfinite(dat[:,2:]), axis=1)
+    rho1 = native_rho1(dat[_ok_rows,2:],dat_orig_names)
     if rho1 is not None:
-        rho1 = rho1[indx_ok]
+        _r = np.full(len(dat), np.nan); _r[_ok_rows] = rho1
+        rho1 = _r[indx_ok]
     X=X[indx_ok]
     Y=Y[indx_ok] - lnL_shift
     Y_err = Y_err[indx_ok]
@@ -973,6 +1004,8 @@ elif opts.fit_method == 'gp-matern':
         Y_err = np.zeros_like(Y_err)
     # Rows the coordinate converter cannot map cannot be fit; drop them visibly
     finite = np.all(np.isfinite(X),axis=1) & np.isfinite(Y) & np.isfinite(Y_err)
+    if rho1 is not None:
+        finite &= np.isfinite(rho1)
     if not np.all(finite):
         print(" gp-matern: dropping {} of {} training rows with nonfinite fit coordinates/targets".format(int(np.sum(~finite)),len(finite)))
         X, Y, Y_err = X[finite], Y[finite], Y_err[finite]
@@ -991,6 +1024,9 @@ elif opts.fit_method == 'dslice-amp':
     finite = np.all(np.isfinite(X),axis=1) & np.isfinite(Y) & np.isfinite(Y_err)
     if opts.fit_load_gp:
         dslice_model = joblib.load(opts.fit_load_gp)
+        _saved = getattr(dslice_model, 'coord_names', None)
+        if _saved is not None and list(_saved) != list(coord_names):
+            raise ValueError("--fit-load-gp: dslice-amp model was fit in coordinates {} but this run uses {}".format(list(_saved), list(coord_names)))
     else:
         _mi = list(coord_names).index('mtot') if 'mtot' in list(coord_names) else None   # mass-scaled distance field when mtot is a fit coordinate
         _kw = {}
@@ -1003,7 +1039,9 @@ elif opts.fit_method == 'dslice-amp':
             _kw.update(point_fit_jobs=opts.dslice_amp_point_fit_jobs)
         dslice_model = DistanceAmplitudeModel(list(coord_names).index('dist'),mass_index=_mi,
                                               loss=opts.dslice_amp_loss,f_scale=opts.dslice_amp_loss_scale,
+                                              random_state=opts.rf_seed,
                                               **_kw).fit(X[finite],Y[finite],Y_err[finite])
+        dslice_model.coord_names = list(coord_names)
         if opts.fit_save_gp:
             joblib.dump(dslice_model,opts.fit_save_gp+".pkl")
     print(" dslice-amp report ", dslice_model.report)
@@ -1037,7 +1075,7 @@ if my_fit is None:
     # it until the sampler evaluated the integrand, which then died with
     # "TypeError: 'NoneType' object is not callable" from inside log_likelihood_function, after
     # the whole setup had been paid for and with nothing naming --fit-method.
-    print(" OPTION MISMATCH : --fit-method {} is not implemented in this driver; it builds only 'gp', 'rf' and 'gp-matern'.  (util_ConstructIntrinsicPosterior_GenericCoordinates.py implements the others.)".format(opts.fit_method))
+    print(" OPTION MISMATCH : --fit-method {} is not implemented in this driver; it builds only 'gp', 'rf', 'gp-matern' and 'dslice-amp'.  (util_ConstructIntrinsicPosterior_GenericCoordinates.py implements the others.)".format(opts.fit_method))
     sys.exit(99)
 
 ### Distance tail: make the fit decay beyond each intrinsic point's exported distance support

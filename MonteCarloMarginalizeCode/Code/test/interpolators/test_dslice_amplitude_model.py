@@ -1,4 +1,5 @@
 """Known-answer tests for the averaged-amplitude distance model."""
+import pytest
 import numpy as np
 from scipy.integrate import quad
 
@@ -203,3 +204,74 @@ def test_parallel_scipy_point_fits_equal_serial():
     b = fit_all_points(key, u, y, sig, fix_C=True, n_jobs=2)
     for x1, x2 in zip(a, b):
         assert np.array_equal(x1, x2, equal_nan=True)
+
+
+# ---- review additions: mass scaling, overshoot guard, fixed f_min, normalization refinement ------
+def _grid(n_pts, d_lo, d_hi, R_of, us_of, fm=0.4, noise=0.1, seed=7, mass=None):
+    rng = np.random.default_rng(seed)
+    rows = []
+    for k in range(n_pts):
+        x0 = rng.uniform(-1, 1)
+        M = 1.0 if mass is None else mass(x0)
+        d = rng.uniform(d_lo, d_hi, 30)
+        lnl = log_model(1 / d, R_of(x0), us_of(x0, M), fm, 0.0) + rng.normal(0, noise, 30)
+        rows.append(np.column_stack([np.full(30, x0), np.full(30, M), d, lnl]))
+    return np.vstack(rows)
+
+
+def test_mass_scaled_distance_field_predicts_the_truth():
+    """u* = c / M exactly: interpolating log(u* M) is constant; a sign error in the mass term breaks it."""
+    g = _grid(200, 1500, 9000, lambda x: 30.0, lambda x, M: 1 / (3000.0 * M), mass=lambda x: 0.6 + 0.8 * (x + 1))
+    m = DistanceAmplitudeModel(dist_index=2, mass_index=1, n_jobs=1).fit(g[:, :3], g[:, 3], 0.1 * np.ones(len(g)))
+    q = np.column_stack([np.zeros(4), np.array([0.8, 1.2, 1.6, 2.0]), np.full(4, 3500.0)])
+    truth = log_model(1 / q[:, 2], 30.0, 1 / (3000.0 * q[:, 1]), 0.4, 0.0)
+    assert np.max(np.abs(m.predict(q) - truth)) < 0.5, (m.predict(q), truth)
+
+
+def test_overshoot_guard_drops_unresolved_points_at_any_distance_scale():
+    """Points whose slices sit on the far side of the peak alone (no flat top seen) can fit a peak far
+    above what they measured; the guard must drop them, including for a nearby source (d* ~ 40 Mpc)."""
+    rng = np.random.default_rng(3)
+    for dstar in (40.0, 3000.0):
+        R, us = 1000.0, 1 / dstar
+        rows = []
+        for k in range(60):
+            d = rng.uniform(3.0, 3.6, 25) * dstar      # far tail only: lnL well below the peak
+            rows.append(np.column_stack([np.full(25, float(k)), d, log_model(1 / d, R, us, 0.5, 0.0) + rng.normal(0, 0.3, 25)]))
+        g = np.vstack(rows)
+        m = DistanceAmplitudeModel(dist_index=1, n_jobs=1, max_overshoot=1.0)
+        try:
+            m.fit(g[:, :2], g[:, 2], 0.3 * np.ones(len(g)))
+        except ValueError:
+            pass                                       # every point dropped: nothing left to interpolate
+        assert m.report["dropped_overshoot"] > 0, (dstar, m.report)
+
+
+def test_fixed_fmin_is_respected_and_costs_no_less_than_free():
+    R, us, fm = 40.0, 1 / 3000.0, 0.4
+    rng = np.random.default_rng(1)
+    d = np.linspace(1400, 3200, 50)
+    y = log_model(1 / d, R, us, fm, 0.0) + rng.normal(0, 0.15, 50)
+    w = np.ones(50) / 0.15 ** 2
+    pf, _ = fit_point(1 / d, y, w, fix_C=True)
+    px, _ = fit_point(1 / d, y, w, fix_C=True, fmin_fixed=0.25)
+    assert px[2] == pytest.approx(0.25, abs=1e-12)
+    cost = lambda p: np.sum(w * (log_model(1 / d, *p) - y) ** 2)
+    assert cost(px) >= cost(pf) - 1e-9
+
+
+def test_normalization_grid_refines_for_narrow_distance_peaks():
+    """A loud, nearby source has a distance peak narrower than a 256-node grid over [1, 2000] Mpc can
+    integrate; the fit must refine the grid until M(x) is the marginal of the predicted lnL."""
+    g = _grid(120, 25, 70, lambda x: 1000.0, lambda x, M: 1 / (40.0 * (1 + 0.1 * x)), noise=0.3, seed=11)
+    g = g[:, [0, 2, 3]]
+    prior = lambda d: np.asarray(d) ** 2
+    m = DistanceAmplitudeModel(dist_index=1, n_jobs=1, prior=prior, d_range=(1.0, 2000.0)).fit(
+        g[:, :2], g[:, 2], 0.3 * np.ones(len(g)))
+    assert m.report["dgrid_nodes"] > 256 and m.report["dgrid_check_nats"] <= 0.01, m.report
+    for x0 in (-0.5, 0.0, 0.5):
+        dg = np.linspace(1.0, 2000.0, 400000)
+        lnl = m.predict(np.column_stack([np.full(len(dg), x0), dg]))
+        top = lnl.max()
+        marg = top + np.log(np.trapz(np.exp(lnl - top) * dg ** 2, dg))
+        assert abs(marg - m.rf.predict(np.array([[x0]]))[0, 3]) < 0.05, (x0, marg)
