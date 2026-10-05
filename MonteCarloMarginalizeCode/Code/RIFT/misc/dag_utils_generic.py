@@ -5497,6 +5497,11 @@ def write_calibration_uncertainty_reweighting_sub(tag='Calib_reweight', exe=None
     pickle_file_arg = str(pickle_file)
     post_file_arg = str(posterior_file)
     if use_osg:
+        # Same release as the ILE writer: an OSDF transfer failure (code 13)
+        # otherwise holds the node, and the DAG with it, indefinitely.
+        ile_job.add_condor_cmd(
+            'periodic_release',
+            '((HoldReasonCode == 45) && (HoldReasonSubCode == 0)) || (HoldReasonCode == 13)')
         transfer_files += [pickle_file_arg , post_file_arg]
         pickle_file_arg = os.path.basename(pickle_file_arg)
         post_file_arg = os.path.basename(post_file_arg)

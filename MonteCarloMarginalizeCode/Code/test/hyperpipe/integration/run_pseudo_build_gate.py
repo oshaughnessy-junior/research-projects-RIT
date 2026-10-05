@@ -1248,6 +1248,15 @@ def _assert_osg_posterior_worker_contract(hyper: Path):
                    if line.startswith("periodic_release")]
         assert release and "HoldReasonCode == 13" in release[0], (
             sub.name, release)
+    # Any OSG job that pulls inputs from OSDF can be held on a transfer
+    # failure; all of them, not only the posterior workers, must release it.
+    osdf_subs = [sub for sub in sorted(hyper.glob("*.sub"))
+                 if "osdf://" in sub.read_text()]
+    assert osdf_subs, "no OSDF-consuming submit files in {}".format(hyper)
+    unreleased = [sub.name for sub in osdf_subs
+                  if "HoldReasonCode == 13" not in sub.read_text()]
+    assert not unreleased, ("OSDF consumers without a transfer-hold release",
+                            unreleased)
 
 
 def _assert_marg_worker_follows_ile_selection(hyper: Path, hyper_jax: Path):
