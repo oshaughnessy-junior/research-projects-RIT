@@ -3539,6 +3539,10 @@ if opts.pipeline_builder == "Hyperpipe":
         "--working-directory", os.getcwd(),
         "--use-full-submit-paths",
     ]
+    if opts.internal_cip_request_disk:
+        # The posterior workers play CIP's role, so they take CIP's disk request.
+        hyperpipe_cmd += [
+            "--eos-post-request-disk", str(opts.internal_cip_request_disk)]
     if terminal_stage_spec_path:
         hyperpipe_cmd += [
             "--terminal-stage-spec-file", terminal_stage_spec_path]

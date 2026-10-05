@@ -1232,6 +1232,24 @@ def _assert_invalid_hyperpipe_grid_fails(run_base: Path, cache: Path,
         raise AssertionError("headerless Hyperpipe grid unexpectedly built")
 
 
+def _assert_osg_posterior_worker_contract(hyper: Path):
+    """OSG posterior workers pull the container image into their sandbox.
+
+    They take the CIP disk request (the role they play), and a transfer
+    failure (hold code 13) is released like the ILE workers' -- a held worker
+    otherwise stalls the whole DAG indefinitely.
+    """
+    subs = sorted(hyper.glob("EOS_POST_worker_*.sub"))
+    assert subs, "no EOS_POST worker submit files in {}".format(hyper)
+    for sub in subs:
+        text = sub.read_text()
+        assert "request_disk = 4G" in text, (sub.name, "CIP disk request dropped")
+        release = [line for line in text.splitlines()
+                   if line.startswith("periodic_release")]
+        assert release and "HoldReasonCode == 13" in release[0], (
+            sub.name, release)
+
+
 def _assert_marg_worker_follows_ile_selection(hyper: Path, hyper_jax: Path):
     """The Hyperpipe MARG worker is whichever ILE the run selected.
 
@@ -1291,7 +1309,8 @@ def main(argv=None):
             run_label="hyperpipe-auto-bilby", bilby_ini=bilby_ini)
         hyper_osg = _build(
             "Hyperpipe", run_base, ascii_grid, cache, pickle_file,
-            run_label="hyperpipe-osg-calibration", osg_calibration=True)
+            run_label="hyperpipe-osg-calibration", osg_calibration=True,
+            extra_args=["--internal-cip-request-disk", "4G"])
         hyper_z = _build(
             "Hyperpipe", run_base, ascii_grid, cache, pickle_file,
             run_label="hyperpipe-z-convergence", z_convergence=True)
@@ -1307,6 +1326,7 @@ def main(argv=None):
         _assert_hyperpipe_terminal_chain(hyper)
         _assert_automatic_bilby_chain(hyper_auto)
         _assert_osg_calibration_contract(hyper_osg)
+        _assert_osg_posterior_worker_contract(hyper_osg)
         _assert_z_subworkflow_contract(hyper_z)
         _assert_marg_worker_follows_ile_selection(hyper, hyper_jax)
         _assert_extrinsic_reads_the_final_grid(basic, hyper)
