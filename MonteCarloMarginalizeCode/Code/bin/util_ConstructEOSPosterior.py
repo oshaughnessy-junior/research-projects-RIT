@@ -1510,7 +1510,9 @@ else:
 if supplemental_ln_likelihood_offset_fn:
     supplemental_ln_likelihood_offset = float(supplemental_ln_likelihood_offset_fn())
     print(" EXTERNAL SUPPLEMENTARY LIKELIHOOD FACTOR : restoring offset {} in reported evidence ".format(supplemental_ln_likelihood_offset))
-ln_integrand_value_absolute = ln_integrand_value + supplemental_ln_likelihood_offset
+# Every fit evaluates lnL - lnL_shift (--lnL-shift-prevent-overflow, or the shift applied automatically
+# when every lnL is negative), so the integral is ln Z - lnL_shift. Restore it, as CIP does.
+ln_integrand_value_absolute = ln_integrand_value + supplemental_ln_likelihood_offset + lnL_shift
 np.savetxt(opts.fname_output_integral, [ln_integrand_value_absolute])
 
 if neff < len(coord_names):
@@ -1532,7 +1534,7 @@ else:
     else:
         dat_logL = samples["integrand"]
 lnLmax = np.max(dat_logL[np.isfinite(dat_logL)])
-print(" Max lnL ", np.max(dat_logL))
+print(" Max lnL ", np.max(dat_logL), " (fit scale: lnL - lnL_shift, lnL_shift = {})".format(lnL_shift))
 
 n_ESS = -1
 if True:
