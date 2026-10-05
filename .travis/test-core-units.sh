@@ -399,10 +399,10 @@ done
 # CUDA_VISIBLE_DEVICES='': junit 698 collected / 683 passed, 3 of them subtests -> 695/680.
 # (pcdev11 has one extra host skip, cupy-importable in test_eos_posterior_tempering_kwarg.)
 # test_convert_coordinates_source_redshift.py adds 16 passing tests and no skips.
-# test_convert_coordinates_row_independence.py adds 5 passing tests and no skips.  MEASURED on
-# ldas-grid (`import cupy` FAILS there) 2026-10-05, IGWN conda python: junit 719 collected /
-# 705 passed / 14 skipped (13 skips + 1 xfail) / 0 failed, 3 of them subtests -> 716/702.
-EXPECTED_TESTS=716
+# test_convert_coordinates_row_independence.py adds 9 passing tests and no skips.  MEASURED on
+# ldas-grid (`import cupy` FAILS there) 2026-10-05, IGWN conda python: junit 723 collected /
+# 709 passed / 14 skipped (13 skips + 1 xfail) / 0 failed, 3 of them subtests -> 720/706.
+EXPECTED_TESTS=720
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -415,8 +415,10 @@ EXPECTED_TESTS=716
 # missing dependency there FAILS the driver subprocess rather than skipping the check.
 # test_dag_postprocess_fail_closed.py adds 13 tests and no skips.
 # test_convert_coordinates_source_redshift.py adds 16 tests and no skips.
-# test_convert_coordinates_row_independence.py adds 5 tests and no skips.
-EXPECTED_PASSED=701
+# test_convert_coordinates_row_independence.py adds 9 tests and no skips.  The passed floor
+# follows the pcdev11 accounting above (one extra host skip there), so it sits one below the
+# ldas-grid count.
+EXPECTED_PASSED=705
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 MAX_SKIPPED=14
 
