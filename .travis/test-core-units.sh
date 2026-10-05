@@ -416,8 +416,8 @@ done
 # 19 skipped incl. 3 subtests -> 748/729; less test_dslice_quadratic_gp.py (2, removed) -> 746/727;
 # final review added 4 tests to test_dslice_amplitude_model.py (all pass on CPU) -> 750/731.
 # test_eos_evidence_lnL_shift.py adds 3 collected, 3 passed, no skips.
-# test_dslice_rf_tails.py (--rf-dslice-tails) adds 4 collected, 4 passed, no skips.
-EXPECTED_TESTS=757
+# test_dslice_rf_tails.py (--rf-dslice-tails) adds 5 collected, 5 passed, no skips (ldas-grid, IGWN python, 2026-10-05).
+EXPECTED_TESTS=758
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -430,7 +430,7 @@ EXPECTED_TESTS=757
 # missing dependency there FAILS the driver subprocess rather than skipping the check.
 # test_dag_postprocess_fail_closed.py adds 13 tests and no skips.
 # test_convert_coordinates_source_redshift.py adds 16 tests and no skips.
-EXPECTED_PASSED=738
+EXPECTED_PASSED=739
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 MAX_SKIPPED=19
 
