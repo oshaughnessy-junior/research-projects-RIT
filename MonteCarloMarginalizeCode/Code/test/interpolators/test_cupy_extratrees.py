@@ -107,3 +107,20 @@ def test_zero_weights_match_reference_and_sklearn():
     assert f.n_nodes == sum(e.tree_.node_count for e in s.estimators_)
     assert np.all(np.isfinite(p))
     assert np.mean((p - yh) ** 2) < 1.3 * np.mean((s.predict(Xh) - yh) ** 2)
+
+
+def test_same_random_state_regrows_the_same_forest():
+    """--rf-seed contract: identical trees and thresholds; predictions equal to roundoff (node sums use
+    atomics, so leaf values can differ in the last bits)."""
+    X, y, w = _data(n=3000, seed=8)
+    a = ce.CupyExtraTreesRegressor(10, random_state=4).fit(X, y, w)
+    b = ce.CupyExtraTreesRegressor(10, random_state=4).fit(X, y, w)
+    c = ce.CupyExtraTreesRegressor(10, random_state=5).fit(X, y, w)
+    for ea, eb in zip(a.estimators_, b.estimators_):
+        assert np.array_equal(ea.tree_.children_left, eb.tree_.children_left)
+        assert np.array_equal(ea.tree_.feature, eb.tree_.feature)
+        assert np.array_equal(ea.tree_.threshold, eb.tree_.threshold)
+    q = np.random.default_rng(1).uniform(-1, 1, (1000, X.shape[1]))
+    pa, pb, pc = (cp.asnumpy(m.forest().predict(q)) for m in (a, b, c))
+    assert np.max(np.abs(pa - pb)) < 1e-12
+    assert np.max(np.abs(pa - pc)) > 1e-6

@@ -156,6 +156,7 @@ parser.add_argument("--dslice-amp-loss",default="linear",help="dslice-amp: scipy
 parser.add_argument("--dslice-amp-loss-scale",default=1.0,type=float,help="dslice-amp: robust-loss scale in nats.")
 parser.add_argument("--dslice-amp-point-fit",default="scipy",choices=["scipy","batched"],help="dslice-amp: per-point fits by one scipy least_squares call each (default), or all points at once by a batched Levenberg-Marquardt on the same objective (on the GPU under --fit-device gpu). batched is experimental and not for production: it reaches a worse local minimum than scipy on ~0.5%% of points, enough to degrade the distance posterior on some grids.")
 parser.add_argument("--dslice-amp-point-fit-jobs",default=1,type=int,help="dslice-amp, scipy point fits: number of worker processes. Fits are deterministic, so the result equals the serial one.")
+parser.add_argument("--rf-seed",default=None,type=int,help="rf: random_state for the ExtraTrees forest (sklearn or cupy), so a forest can be regrown and scored twice. The same seed on the same data gives the same trees; predictions agree to float roundoff (sklearn sums trees in thread order, the cupy grower sums node statistics with atomics). Default: unseeded, as before.")
 parser.add_argument("--rf-fit-backend",default="sklearn",choices=["sklearn","cupy"],help="rf: grow the ExtraTrees forest with sklearn on CPU (default) or on the GPU with the same algorithm (RIFT.interpolators.cupy_extratrees; same distribution of forests, different random stream). cupy requires --fit-device gpu.")
 parser.add_argument("--fit-device",default="cpu",choices=["cpu","gpu"],help="rf and dslice-amp only. gpu: copy the fitted trees to the GPU and evaluate the fit there inside the sampler (RIFT.interpolators.cupy_forest; same predictions as sklearn to float64 roundoff, checked at startup), keep sample batches on the device, and convert coordinates as --coordinate-convert-xpy. Needs cupy and a visible device.")
 parser.add_argument("--coordinate-convert-xpy",action='store_true',help="With --supplementary-coordinate-code: convert the data file and the sampler's batches with the vectorized RIFT.misc.waveform_coordinates_xpy instead of the plugin, after checking the two agree on data rows and on draws from the integration ranges (the plugin is kept if they do not). Avoids convert_waveform_coordinates' per-row fallthrough.")
@@ -701,7 +702,15 @@ def _device_forest_fit(rf, x_check, fill):
     return fn_return
 
 
-def fit_rf(x,y,y_errors=None,fname_export='nn_fit',device='cpu',backend='sklearn'):
+def _rf_fingerprint(trees, seed):
+    """One log line identifying a forest: tree count, node count, threshold and leaf-value sums."""
+    nodes = sum(int(t.node_count) for t in trees)
+    thr = sum(float(np.sum(t.threshold[t.children_left >= 0])) for t in trees)
+    leaf = sum(float(np.sum(t.value[t.children_left < 0])) for t in trees)
+    print(" RF-FOREST seed={} trees={} nodes={} thr_sum={:.17g} leaf_sum={:.12g}".format(seed, len(trees), nodes, thr, leaf))
+
+
+def fit_rf(x,y,y_errors=None,fname_export='nn_fit',device='cpu',backend='sklearn',seed=None):
 #    from sklearn.ensemble import RandomForestRegressor
     from sklearn.ensemble import ExtraTreesRegressor
     # Instantiate model. Usually not that many structures to find, don't overcomplicate
@@ -713,14 +722,16 @@ def fit_rf(x,y,y_errors=None,fname_export='nn_fit',device='cpu',backend='sklearn
         if not np.all(keep):
             # sklearn fits such rows as missing values; the GPU grower does not support them
             print(" rf cupy fit: dropping {} of {} rows with nonfinite or |x| > 1e37 coordinates".format(int(np.sum(~keep)), len(keep)))
-        model = CupyExtraTreesRegressor(n_estimators=100, verbose=True).fit(
+        model = CupyExtraTreesRegressor(n_estimators=100, verbose=True, random_state=seed).fit(
             x[keep], y[keep], sample_weight=None if sw is None else sw[keep])
+        if seed is not None:
+            _rf_fingerprint([e.tree_ for e in model.estimators_], seed)
         fn_return = _device_forest_fit(model.forest(release=True), None, fill=rf_nonfinite_fill)
         residuals = fn_return(x[keep]) - y[keep]
         print( " Demonstrating RF (cupy fit)")
         print( "    std ", np.std(residuals), np.max(y), np.max(fn_return(x)))
         return fn_return
-    rf = ExtraTreesRegressor(n_estimators=100, verbose=True,n_jobs=-1)
+    rf = ExtraTreesRegressor(n_estimators=100, verbose=True,n_jobs=-1,random_state=seed)
     if y_errors is None:
         rf.fit(x,y)
     else:
@@ -728,6 +739,8 @@ def fit_rf(x,y,y_errors=None,fname_export='nn_fit',device='cpu',backend='sklearn
         # accumulated marg net with sigma=0) doesn't make sample_weight=1/sigma^2
         # infinite (sklearn rejects inf sample_weight).
         rf.fit(x,y,sample_weight=1./np.maximum(np.asarray(y_errors,dtype=float),1e-3)**2)
+    if seed is not None:
+        _rf_fingerprint([e.tree_ for e in rf.estimators_], seed)
 
     ### reject points with infinities : problems for inputs
     def fn_return(x_in,rf=rf):
@@ -930,7 +943,7 @@ elif opts.fit_method == 'rf':
         Y_err=Y_err[indx]
     if opts.ignore_errors_in_data:
         Y_err=None
-    my_fit = fit_rf(X,Y,y_errors=Y_err,device=opts.fit_device,backend=opts.rf_fit_backend)
+    my_fit = fit_rf(X,Y,y_errors=Y_err,device=opts.fit_device,backend=opts.rf_fit_backend,seed=opts.rf_seed)
 
 elif opts.fit_method == 'gp-matern':
     print(" FIT METHOD gp-matern: bounded standardized Matern5/2")
