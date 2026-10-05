@@ -189,6 +189,8 @@ FILES=(
   "$C/test/test_ring_coordinates.py"
   # -- coordinates: source_redshift gives detector-frame values, vectorized vs extract_param
   "$C/test/test_convert_coordinates_source_redshift.py"
+  # -- coordinates: per-row fallbacks convert each row independently of the others
+  "$C/test/test_convert_coordinates_row_independence.py"
 )
 
 # A manifest entry that stops existing is a SILENT no-op: the gate keeps passing while
@@ -397,7 +399,10 @@ done
 # CUDA_VISIBLE_DEVICES='': junit 698 collected / 683 passed, 3 of them subtests -> 695/680.
 # (pcdev11 has one extra host skip, cupy-importable in test_eos_posterior_tempering_kwarg.)
 # test_convert_coordinates_source_redshift.py adds 16 passing tests and no skips.
-EXPECTED_TESTS=711
+# test_convert_coordinates_row_independence.py adds 5 passing tests and no skips.  MEASURED on
+# ldas-grid (`import cupy` FAILS there) 2026-10-05, IGWN conda python: junit 719 collected /
+# 705 passed / 14 skipped (13 skips + 1 xfail) / 0 failed, 3 of them subtests -> 716/702.
+EXPECTED_TESTS=716
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -410,7 +415,8 @@ EXPECTED_TESTS=711
 # missing dependency there FAILS the driver subprocess rather than skipping the check.
 # test_dag_postprocess_fail_closed.py adds 13 tests and no skips.
 # test_convert_coordinates_source_redshift.py adds 16 tests and no skips.
-EXPECTED_PASSED=696
+# test_convert_coordinates_row_independence.py adds 5 tests and no skips.
+EXPECTED_PASSED=701
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 MAX_SKIPPED=14
 
