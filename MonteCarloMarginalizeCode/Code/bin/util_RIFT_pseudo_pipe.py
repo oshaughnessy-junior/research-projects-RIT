@@ -416,8 +416,13 @@ if opts.assume_nonprecessing or opts.approx == "IMRPhenomD":
     opts.internal_puff_transverse=False
 
 
-if opts.ile_xpu:
+# GPU routes fail closed. --force-xpy selects the shared NumPy/CuPy
+# likelihood path; it does not authorize silent CPU fallback. A CPU or
+# cross-platform route must be explicitly requested.
+if opts.ile_no_gpu or opts.ile_xpu:
     opts.ile_force_gpu = False
+else:
+    opts.ile_force_gpu = True
 
 if not(opts.ile_jobs_per_worker):
     opts.ile_jobs_per_worker=20
