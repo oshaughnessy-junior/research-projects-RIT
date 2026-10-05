@@ -606,6 +606,7 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 FILES=(
   "${JAXDIR}/test_jax_time_quadrature.py"
   "${JAXDIR}/test_jax_terminal_time_marginalization.py"
+  "${JAXDIR}/test_jax_hyperpipe_marg_contract.py"
   "${JAXDIR}/test_jax_likelihood.py"
   "${JAXDIR}/test_jax_banded_data_term.py"
   "${JAXDIR}/test_jax_endtoend.py"
@@ -1205,7 +1206,10 @@ fi
 # 2026-10-01: + test_pseudo_cosmo_distance_prior.py (16 tests: --d-prior
 # pseudo_cosmo on the distance grids and 6-D prior) and one more
 # test_driver_grid_distance_prior case.  945 + 17 = 962.
-EXPECTED_TESTS=962
+# 2026-10-04: + test_jax_hyperpipe_marg_contract.py (5 tests: the driver as a
+# Hyperpipe MARG worker -- reads a hyperpipe grid, writes hyperpipe shards that
+# util_HyperCombine consolidates, stays legacy without the flag).  962 + 5 = 967.
+EXPECTED_TESTS=967
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"

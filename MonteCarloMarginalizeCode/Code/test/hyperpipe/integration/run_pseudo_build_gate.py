@@ -19,7 +19,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
-from typing import Optional
+from typing import Optional, Sequence
 
 import lal
 
@@ -79,7 +79,8 @@ def _build(builder: Optional[str], run_base: Path, seed_grid: Path, cache: Path,
            bilby_ini: Optional[Path] = None,
            osg_calibration: bool = False,
            z_convergence: bool = False,
-           extra_stage_file: Optional[Path] = None):
+           extra_stage_file: Optional[Path] = None,
+           extra_args: Sequence[str] = ()):
     label = builder or "default"
     rundir = run_base / (run_label or label.lower())
     command = [
@@ -138,6 +139,7 @@ def _build(builder: Optional[str], run_base: Path, seed_grid: Path, cache: Path,
     if extra_stage_file is not None:
         command.extend(
             ["--terminal-stage-extra-file", str(extra_stage_file)])
+    command.extend(extra_args)
     result = subprocess.run(
         command, cwd=str(run_base), env=env,
         text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -1220,6 +1222,30 @@ def _assert_invalid_hyperpipe_grid_fails(run_base: Path, cache: Path,
         raise AssertionError("headerless Hyperpipe grid unexpectedly built")
 
 
+def _assert_marg_worker_follows_ile_selection(hyper: Path, hyper_jax: Path):
+    """The Hyperpipe MARG worker is whichever ILE the run selected.
+
+    The terminal extrinsic stage copies the MARG job, so it must follow too,
+    and the emitted MARG submit file must run what the spec names.
+    """
+    expected = {hyper: "integrate_likelihood_extrinsic_batchmode",
+                hyper_jax: "integrate_likelihood_extrinsic_jax"}
+    for rundir, exe_name in expected.items():
+        marg = json.loads((rundir / "marg_job_specs.json").read_text())
+        assert len(marg) == 1, (rundir, marg)
+        assert os.path.basename(marg[0]["exe"]) == exe_name, (rundir, marg[0]["exe"])
+        terminal = json.loads((rundir / "terminal_stage_specs.json").read_text())
+        stages = terminal["stages"] if isinstance(terminal, dict) else terminal
+        extr = [stage for stage in stages if stage["name"] == "extrinsic_samples"]
+        assert len(extr) == 1, (rundir, [stage["name"] for stage in stages])
+        assert os.path.basename(extr[0]["job"]["exe"]) == exe_name, (
+            rundir, extr[0]["job"]["exe"])
+        sub = (rundir / "MARG_0.sub").read_text()
+        assert exe_name in sub, (rundir, "MARG_0.sub does not run " + exe_name)
+        other = set(expected.values()) - {exe_name}
+        assert not any(name in sub for name in other), (rundir, other)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -1259,6 +1285,9 @@ def main(argv=None):
         hyper_z = _build(
             "Hyperpipe", run_base, ascii_grid, cache, pickle_file,
             run_label="hyperpipe-z-convergence", z_convergence=True)
+        hyper_jax = _build(
+            "Hyperpipe", run_base, ascii_grid, cache, pickle_file,
+            run_label="hyperpipe-jax-ile", extra_args=["--use-jax-ile"])
         _assert_default_basic_unchanged(basic, default)
         _assert_shared_semantics(basic, hyper)
         _assert_terminal_parity(basic, hyper)
@@ -1269,6 +1298,7 @@ def main(argv=None):
         _assert_automatic_bilby_chain(hyper_auto)
         _assert_osg_calibration_contract(hyper_osg)
         _assert_z_subworkflow_contract(hyper_z)
+        _assert_marg_worker_follows_ile_selection(hyper, hyper_jax)
         _assert_extrinsic_reads_the_final_grid(basic, hyper)
         _assert_alternate_extrinsic_reads_the_final_grid(alternate)
         _assert_nr_extrinsic_reads_the_final_grid(nr)

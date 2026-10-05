@@ -1853,6 +1853,18 @@ def load_templates(opts, fiducial_epoch, deltaF, deltaT):
         return [_finalize(P) for P in P_list]
 
     if opts.sim_grid:
+        from RIFT.misc import hyperpipeline_io
+        if hyperpipeline_io.sniff(opts.sim_grid):
+            # Hyperpipe indexed-grid input: the shared reader converts the
+            # on-disk units, resolves the a1x/s1x aliases, and applies the
+            # grid's waveform metadata (ampO), exactly as batchmode does.
+            P_all, _ = hyperpipeline_io.read_grid_to_P_list(
+                opts.sim_grid, P_factory=lalsimutils.ChooseWaveformParams,
+                lal_module=lal, valid_params=lalsimutils.valid_params)
+            if len(P_all) <= opts.event:
+                print(" Event index out of range; soft exit"); sys.exit(0)
+            hi = min(len(P_all), opts.event + opts.n_events_to_analyze)
+            return [_finalize(P) for P in P_all[opts.event:hi]]
         grid = np.genfromtxt(opts.sim_grid, names=True)
         grid = np.atleast_1d(grid)
         names = list(grid.dtype.names)
@@ -2608,6 +2620,20 @@ def write_dat(opts, P, out_index, event_id, logZ, sigma_over_Z, ntotal, neff,
         return
     m1, m2 = P.m1 / MSUN, P.m2 / MSUN
     fname = dat_path(opts, out_index)
+    from RIFT.misc import hyperpipeline_io
+    if hyperpipeline_io.is_active():
+        # Hyperpipe MARG shard: the same columns batchmode writes for a
+        # template with no optional parameter groups.
+        cols = hyperpipeline_io.build_column_list()
+        vals = {"lnL": logZ, "sigma_lnL": sigma_over_Z, "m1": m1, "m2": m2,
+                "a1x": P.s1x, "a1y": P.s1y, "a1z": P.s1z,
+                "a2x": P.s2x, "a2y": P.s2y, "a2z": P.s2z}
+        hyperpipeline_io.write_row(fname, cols, [vals[c] for c in cols])
+        if angle_note:
+            with open(fname, "a") as fp:
+                fp.write("# " + angle_note + "\n")
+        print("Wrote %s" % fname)
+        return
     row = np.array([[event_id, m1, m2, P.s1x, P.s1y, P.s1z, P.s2x, P.s2y,
                      P.s2z, logZ, sigma_over_Z, ntotal, neff]])
     hdr = "event_id m1 m2 s1x s1y s1z s2x s2y s2z lnL sigma_lnL ntotal neff"

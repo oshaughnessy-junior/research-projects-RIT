@@ -900,11 +900,10 @@ if opts.use_jax_ile and opts.ile_exe:
         "--use-jax-ile and --ile-exe are mutually exclusive: --use-jax-ile already "
         "resolves to `which integrate_likelihood_extrinsic_jax`.  Pass that "
         "executable's path via --ile-exe directly instead of setting both.")
-if opts.pipeline_builder == "Hyperpipe" and (opts.use_jax_ile or opts.ile_exe):
+if opts.use_jax_ile and opts.ile_zero_likelihood_data_free:
     raise ValueError(
-        "--pipeline-builder Hyperpipe runs integrate_likelihood_extrinsic_batchmode "
-        "as its MARG worker and does not read --use-jax-ile or --ile-exe; no other "
-        "ILE executable has been run as a Hyperpipe MARG worker.")
+        "--ile-zero-likelihood-data-free needs the batchmode early exit; "
+        "integrate_likelihood_extrinsic_jax refuses that flag.")
 if opts.use_jax_ile and opts.calmarg_envelope_directory:
     raise ValueError(
         "--use-jax-ile is incompatible with in-loop calibration marginalization "
@@ -3041,10 +3040,19 @@ if opts.pipeline_builder == "Hyperpipe":
                     "frames_dir", "local.cache", transfer_files))
         else:
             cache_file = os.path.abspath("local.cache")
+    # The MARG worker is whichever ILE the run selected; any executable that
+    # honours the indexed-grid contract can serve.
+    if opts.use_jax_ile:
+        hyperpipe_ile_exe = "integrate_likelihood_extrinsic_jax"
+    elif opts.ile_exe:
+        hyperpipe_ile_exe = opts.ile_exe
+    else:
+        hyperpipe_ile_exe = "integrate_likelihood_extrinsic_batchmode"
+    hyperpipe_ile_exe = shutil.which(hyperpipe_ile_exe) or hyperpipe_ile_exe
     marg_spec = [{
         "name": "ile",
         "protocol": "indexed-grid-v1",
-        "exe": shutil.which("integrate_likelihood_extrinsic_batchmode") or "integrate_likelihood_extrinsic_batchmode",
+        "exe": hyperpipe_ile_exe,
         "args_file": os.path.abspath("args_ile.txt"),
         "event_file": None,
         "n_chunk": int(n_jobs_per_worker),
