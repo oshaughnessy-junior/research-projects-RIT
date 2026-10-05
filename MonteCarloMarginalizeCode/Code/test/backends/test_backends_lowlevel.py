@@ -539,6 +539,79 @@ class CrossBackendInvarianceTests(unittest.TestCase):
                     self.assertGreater(os.path.getsize(wf_path), 0)
 
 
+class LocalRequirementsTests(unittest.TestCase):
+    """Submit-host glue never asks the schedd to advertise execute-slot traits."""
+
+    def setUp(self):
+        self.m = _load_with_stubs()
+
+    def _emit(self, backend, job):
+        self.m.set_backend(backend)
+        with tempfile.TemporaryDirectory() as td:
+            job.set_sub_file(os.path.join(td, "job.sub"))
+            job.write_sub_file()
+            with open(job.get_sub_file()) as fh:
+                return fh.read()
+
+    def test_local_glue_drops_automatic_slot_requirements_keeps_resources(self):
+        from unittest.mock import patch
+        with patch.dict(os.environ, {"RIFT_REQUIRE_NONWORKER": "EPNFS"}):
+            for backend in ("htcondor", "glue"):
+                for label in ("join", "convert", "plot", "grid"):
+                    with self.subTest(backend=backend, label=label):
+                        job = self.m.CondorDAGJob(universe="local", executable="/bin/true")
+                        self.m._add_nonworker_requirements(job, ["IS_GLIDEIN=?=undefined"])
+                        job.add_condor_cmd("request_memory", "1024M")
+                        job.add_condor_cmd("request_disk", "1G")
+                        text = self._emit(backend, job)
+                        self.assertIn("+Requirements = true", text)
+                        self.assertNotIn("EPNFS", text)
+                        self.assertNotIn("IS_GLIDEIN", text)
+                        self.assertNotIn("\nrequirements =", text)
+                        self.assertIn("request_memory = 1024M", text)
+                        self.assertIn("request_disk = 1G", text)
+
+    def test_vanilla_workers_and_nonworkers_keep_their_matching(self):
+        from unittest.mock import patch
+        with patch.dict(os.environ, {"RIFT_REQUIRE_NONWORKER": "EPNFS"}):
+            for backend in ("htcondor", "glue"):
+                for label in ("ILE", "CIP", "calibration", "remote_join"):
+                    with self.subTest(backend=backend, label=label):
+                        job = self.m.CondorDAGJob(universe="vanilla", executable="/bin/true")
+                        self.m._add_nonworker_requirements(job, ["TARGET.Arch == \"X86_64\""])
+                        text = self._emit(backend, job)
+                        self.assertIn("requirements = (TARGET.Arch", text)
+                        self.assertIn("EPNFS =?= TRUE", text)
+                        self.assertNotIn("+Requirements", text)
+
+    def test_consolidation_factory_separates_local_from_remote_glue(self):
+        from unittest.mock import patch
+        with patch.dict(os.environ, {"RIFT_REQUIRE_NONWORKER": "EPNFS"}):
+            for backend in ("htcondor", "glue"):
+                for universe in ("local", "vanilla"):
+                    with self.subTest(backend=backend, universe=universe):
+                        job, _ = self.m.write_consolidate_sub_simple(
+                            exe="/bin/true", base="/home/test/iteration_0_ile",
+                            target="/home/test/consolidated_0", universe=universe, arg_str="")
+                        text = self._emit(backend, job)
+                        if universe == "local":
+                            self.assertIn("+Requirements = true", text)
+                            self.assertNotIn("EPNFS", text)
+                        else:
+                            self.assertIn("EPNFS =?= TRUE", text)
+                            self.assertNotIn("+Requirements", text)
+
+    def test_explicit_local_caller_condition_is_preserved_without_auto_clauses(self):
+        for backend in ("htcondor", "glue"):
+            with self.subTest(backend=backend):
+                job = self.m.CondorDAGJob(universe="local", executable="/bin/true")
+                self.m._add_nonworker_requirements(job, ["EPNFS =?= TRUE"])
+                job.add_condor_cmd("requirements", "TARGET.LocalPolicy =?= true")
+                text = self._emit(backend, job)
+                self.assertIn("+Requirements = TARGET.LocalPolicy =?= true", text)
+                self.assertNotIn("EPNFS", text)
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------

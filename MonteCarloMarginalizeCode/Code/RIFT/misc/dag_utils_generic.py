@@ -509,6 +509,27 @@ _RESOURCE_KEYS = {
 }
 
 
+def _condor_commands_for_job(job):
+    """Keep execute-slot matching out of submit-host local-universe jobs.
+
+    HTCondor evaluates local Requirements against the schedd, which need not
+    advertise Arch, OpSys, EPNFS or slot resources.  Even ``requirements=true``
+    gets machine clauses appended by condor_submit; a direct job-ad assignment
+    is needed.  START_LOCAL_UNIVERSE remains the administrator's dispatch gate.
+    Vanilla/container worker requirements and resource requests are untouched.
+    """
+    if str(job.universe).lower() != "local":
+        return job.condor_cmds
+    commands = [(key, value) for key, value in job.condor_cmds
+                if key.lower() not in ("requirements", "+requirements", "my.requirements")]
+    # Preserve deliberate caller conditions, without condor_submit adding slot clauses.
+    requirements = "true"
+    for key, value in job.condor_cmds:
+        if key.lower() in ("requirements", "+requirements", "my.requirements"):
+            requirements = value or "true"
+    return commands + [("+Requirements", requirements)]
+
+
 class _GenericJob(object):
     """Backend-neutral description of a single job/task.
 
@@ -1059,7 +1080,7 @@ class HTCondorBackend(WorkflowBackend):
         if job.stderr_file:
             sub["error"] = job.stderr_file
         # condor_cmds includes both well-known and custom commands; pass them all through.
-        for key, value in job.condor_cmds:
+        for key, value in _condor_commands_for_job(job):
             sub[key] = "" if value is None else str(value)
         return sub
 
@@ -1196,7 +1217,7 @@ class GluePipelineBackend(WorkflowBackend):
             gjob.add_var_opt(n)
         for arg in job.arguments:
             gjob.add_arg(arg)
-        for k, v in job.condor_cmds:
+        for k, v in _condor_commands_for_job(job):
             gjob.add_condor_cmd(k, v)
         try:
             # glue.pipeline stores the queue count in this private attribute.
@@ -1783,19 +1804,30 @@ _BACKEND = _ACTIVE_BACKEND_NAME  # snapshot for backwards-compat
 # ---------------------------------------------------------------------------
 
 def _nonworker_extra_requirements():
-    """Extra HTCondor requirements for LOCAL (non-worker) jobs, from $RIFT_REQUIRE_NONWORKER.
+    """Extra slot requirements for non-worker jobs, from $RIFT_REQUIRE_NONWORKER.
 
-    Counterpart to RIFT_BOOLEAN_LIST (which targets REMOTE workers, ILE/CIP). The local jobs
-    (convert/test/consolidate/puff/join/...) run flock_local and read+write absolute /home
+    Counterpart to RIFT_BOOLEAN_LIST (which targets workers, ILE/CIP). Remote non-workers
+    (convert/test/consolidate/puff/join/...) can read+write absolute /home
     paths with NO file transfer, so on a pool whose execute points may lack /home they must be
     pinned to NFS-/home nodes. e.g. RIFT_REQUIRE_NONWORKER='EPNFS' -> appends '(EPNFS =?= TRUE)'
     to their requirements (comma-separated for multiple). Read at DAG-build time, so it is
-    durable through `asimov manage submit` / the asimov daemon.
+    durable through `asimov manage submit` / the asimov daemon.  These constrain
+    vanilla non-workers only: true local-universe jobs execute on the submit host
+    and Condor backends replace their slot matching with ``+Requirements=true``.
     """
     val = os.environ.get('RIFT_REQUIRE_NONWORKER', '').strip()
     if not val:
         return []
     return ['{} =?= TRUE'.format(x.strip()) for x in val.split(',') if x.strip()]
+
+
+def _add_nonworker_requirements(job, requirements):
+    """Apply automatic execute-slot constraints only to remote non-workers."""
+    if str(job.universe).lower() == "local":
+        job.add_condor_cmd("requirements", "true")
+    else:
+        requirements = list(requirements) + _nonworker_extra_requirements()
+        job.add_condor_cmd("requirements", "&&".join("({0})".format(r) for r in requirements))
 
 
 def write_integrate_likelihood_extrinsic_grid_sub(tag='integrate', exe=None, log_dir=None, ncopies=1, **kwargs):
@@ -2480,8 +2512,7 @@ def write_puff_sub(tag='puffball', exe=None, base=None,input_net='output-ILE-sam
     # for example: 
     #    for i in `condor_q -hold  | grep oshaughn | awk '{print $1}'`; do condor_qedit $i RequestMemory 30000; done; condor_release -all 
 
-    requirements += _nonworker_extra_requirements()
-    ile_job.add_condor_cmd('requirements', '&&'.join('({0})'.format(r) for r in requirements))
+    _add_nonworker_requirements(ile_job, requirements)
 
     try:
         ile_job.add_condor_cmd('accounting_group',os.environ['LIGO_ACCOUNTING'])
@@ -3114,8 +3145,7 @@ def write_consolidate_sub_simple(tag='consolidate', exe=None, base=None,target=N
     # for example: 
     #    for i in `condor_q -hold  | grep oshaughn | awk '{print $1}'`; do condor_qedit $i RequestMemory 30000; done; condor_release -all 
 
-    requirements += _nonworker_extra_requirements()
-    ile_job.add_condor_cmd('requirements', '&&'.join('({0})'.format(r) for r in requirements))
+    _add_nonworker_requirements(ile_job, requirements)
 
     # no grid
     if no_grid:
@@ -3337,8 +3367,7 @@ def write_calpilot_sub(tag='calpilot', exe=None, log_dir=None, universe="vanilla
         requirements.append(build_capability_defined_requirement(_manifest))
 
     if requirements:
-        requirements += _nonworker_extra_requirements()
-        job.add_condor_cmd('requirements', '&&'.join('({0})'.format(r) for r in requirements))
+        _add_nonworker_requirements(job, requirements)
 
     try:
         job.add_condor_cmd('accounting_group', os.environ['LIGO_ACCOUNTING'])
@@ -3500,8 +3529,7 @@ if [ $ret_value -eq 0 ]; then
     # for example: 
     #    for i in `condor_q -hold  | grep oshaughn | awk '{print $1}'`; do condor_qedit $i RequestMemory 30000; done; condor_release -all 
 
-    requirements += _nonworker_extra_requirements()
-    ile_job.add_condor_cmd('requirements', '&&'.join('({0})'.format(r) for r in requirements))
+    _add_nonworker_requirements(ile_job, requirements)
 
     # no grid
     if no_grid:
@@ -3580,8 +3608,7 @@ def write_convert_sub(tag='convert', exe=None, file_input=None,file_output=None,
         except:
             True
 
-    requirements += _nonworker_extra_requirements()
-    ile_job.add_condor_cmd('requirements', '&&'.join('({0})'.format(r) for r in requirements))
+    _add_nonworker_requirements(ile_job, requirements)
         
     try:
         ile_job.add_condor_cmd('accounting_group',os.environ['LIGO_ACCOUNTING'])
@@ -3637,8 +3664,7 @@ def write_test_sub(tag='converge', exe=None,samples_files=None, base=None,target
     # for example: 
     #    for i in `condor_q -hold  | grep oshaughn | awk '{print $1}'`; do condor_qedit $i RequestMemory 30000; done; condor_release -all 
 
-    requirements += _nonworker_extra_requirements()
-    ile_job.add_condor_cmd('requirements', '&&'.join('({0})'.format(r) for r in requirements))
+    _add_nonworker_requirements(ile_job, requirements)
 
     # no grid
     if no_grid:
@@ -3915,8 +3941,7 @@ def write_psd_sub_BW_monoblock(tag='PSD_BW_mono', exe=None, log_dir=None, ncopie
 
     # Write requirements
     # From https://github.com/lscsoft/lalsuite/blob/master/lalinference/python/lalinference/lalinference_pipe_utils.py
-    requirements += _nonworker_extra_requirements()
-    ile_job.add_condor_cmd('requirements', '&&'.join('({0})'.format(r) for r in requirements))
+    _add_nonworker_requirements(ile_job, requirements)
 
     try:
         ile_job.add_condor_cmd('accounting_group',os.environ['LIGO_ACCOUNTING'])
@@ -4027,8 +4052,7 @@ def write_psd_sub_BW_step1(tag='PSD_BW_post', exe=None, log_dir=None, ncopies=1,
 
     # Write requirements
     # From https://github.com/lscsoft/lalsuite/blob/master/lalinference/python/lalinference/lalinference_pipe_utils.py
-    requirements += _nonworker_extra_requirements()
-    ile_job.add_condor_cmd('requirements', '&&'.join('({0})'.format(r) for r in requirements))
+    _add_nonworker_requirements(ile_job, requirements)
 
     try:
         ile_job.add_condor_cmd('accounting_group',os.environ['LIGO_ACCOUNTING'])
@@ -4137,8 +4161,7 @@ def write_psd_sub_BW_step0(tag='PSD_BW', exe=None, log_dir=None, ncopies=1,arg_s
 
     # Write requirements
     # From https://github.com/lscsoft/lalsuite/blob/master/lalinference/python/lalinference/lalinference_pipe_utils.py
-    requirements += _nonworker_extra_requirements()
-    ile_job.add_condor_cmd('requirements', '&&'.join('({0})'.format(r) for r in requirements))
+    _add_nonworker_requirements(ile_job, requirements)
 
     try:
         ile_job.add_condor_cmd('accounting_group',os.environ['LIGO_ACCOUNTING'])
@@ -4189,8 +4212,7 @@ def write_resample_sub(tag='resample', exe=None, file_input=None,file_output=Non
     # for example: 
     #    for i in `condor_q -hold  | grep oshaughn | awk '{print $1}'`; do condor_qedit $i RequestMemory 30000; done; condor_release -all 
 
-    requirements += _nonworker_extra_requirements()
-    ile_job.add_condor_cmd('requirements', '&&'.join('({0})'.format(r) for r in requirements))
+    _add_nonworker_requirements(ile_job, requirements)
 
     # no grid
     if no_grid:
@@ -4341,9 +4363,8 @@ def write_consolidate_distance_grids_sub(tag='consolidate_dgrid', exe=None,
     ile_job.set_stdout_file("%s%s-%s.out" % (log_dir, tag, uniq_str))
 
     ile_job.add_condor_cmd('getenv', default_getenv_value)
-    _nw_req = _nonworker_extra_requirements()
-    if _nw_req:
-        ile_job.add_condor_cmd('requirements', '&&'.join('({0})'.format(r) for r in _nw_req))
+    if str(universe).lower() == "local" or _nonworker_extra_requirements():
+        _add_nonworker_requirements(ile_job, [])
     try:
         ile_job.add_condor_cmd('accounting_group', os.environ['LIGO_ACCOUNTING'])
         ile_job.add_condor_cmd('accounting_group_user', os.environ['LIGO_USER_NAME'])
@@ -4755,8 +4776,7 @@ def write_calibration_uncertainty_reweighting_sub(tag='Calib_reweight', exe=None
         ile_job.add_condor_cmd("MY.flock_local",'true')
 
     # Write requirements
-    requirements += _nonworker_extra_requirements()
-    ile_job.add_condor_cmd('requirements', '&&'.join('({0})'.format(r) for r in requirements))
+    _add_nonworker_requirements(ile_job, requirements)
 
     # Write transfer file list.  Will handle any surrogates + pickle/container files.
     if not transfer_files is None:
@@ -5031,8 +5051,7 @@ def write_bilby_pickle_sub(tag='Bilby_pickle', exe=None, universe='local', log_d
             True
 
     # Write requirements
-    requirements += _nonworker_extra_requirements()
-    ile_job.add_condor_cmd('requirements', '&&'.join('({0})'.format(r) for r in requirements))
+    _add_nonworker_requirements(ile_job, requirements)
 
     try:
         ile_job.add_condor_cmd('accounting_group',os.environ['LIGO_ACCOUNTING'])
@@ -5106,8 +5125,7 @@ def write_comov_distance_reweighting_sub(tag='Comov_dist', comov_distance_reweig
 
 
     # Write requirements
-    requirements += _nonworker_extra_requirements()
-    ile_job.add_condor_cmd('requirements', '&&'.join('({0})'.format(r) for r in requirements))
+    _add_nonworker_requirements(ile_job, requirements)
 
     try:
         ile_job.add_condor_cmd('accounting_group',os.environ['LIGO_ACCOUNTING'])
@@ -5188,8 +5206,7 @@ def write_convert_ascii_to_h5_sub(tag='Convert_ascii2h5', convert_ascii_to_h5_ex
             True
 
     # Write requirements
-    requirements += _nonworker_extra_requirements()
-    ile_job.add_condor_cmd('requirements', '&&'.join('({0})'.format(r) for r in requirements))
+    _add_nonworker_requirements(ile_job, requirements)
 
     try:
         ile_job.add_condor_cmd('accounting_group',os.environ['LIGO_ACCOUNTING'])
@@ -5343,8 +5360,7 @@ def write_hyperpost_sub(tag='HYPER', exe=None, input_net='all.marg_net',output='
                ile_job.add_condor_cmd("stream_output",'True')
 
 
-    requirements += _nonworker_extra_requirements()
-    ile_job.add_condor_cmd('requirements', '&&'.join('({0})'.format(r) for r in requirements))
+    _add_nonworker_requirements(ile_job, requirements)
 
     # Stream log info: always stream CIP error, it is a critical bottleneck
     if True: # not ('RIFT_NOSTREAM_LOG' in os.environ):
