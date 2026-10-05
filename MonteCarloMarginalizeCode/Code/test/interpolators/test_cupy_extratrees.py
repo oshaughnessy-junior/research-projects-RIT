@@ -110,8 +110,7 @@ def test_zero_weights_match_reference_and_sklearn():
 
 
 def test_same_random_state_regrows_the_same_forest():
-    """--rf-seed contract: identical trees and thresholds; predictions equal to roundoff (node sums use
-    atomics, so leaf values can differ in the last bits)."""
+    """--rf-seed contract: identical trees, thresholds, leaf values and predictions (integer node sums)."""
     X, y, w = _data(n=3000, seed=8)
     a = ce.CupyExtraTreesRegressor(10, random_state=4).fit(X, y, w)
     b = ce.CupyExtraTreesRegressor(10, random_state=4).fit(X, y, w)
@@ -120,7 +119,38 @@ def test_same_random_state_regrows_the_same_forest():
         assert np.array_equal(ea.tree_.children_left, eb.tree_.children_left)
         assert np.array_equal(ea.tree_.feature, eb.tree_.feature)
         assert np.array_equal(ea.tree_.threshold, eb.tree_.threshold)
+        assert np.array_equal(ea.tree_.value, eb.tree_.value)
     q = np.random.default_rng(1).uniform(-1, 1, (1000, X.shape[1]))
     pa, pb, pc = (cp.asnumpy(m.forest().predict(q)) for m in (a, b, c))
-    assert np.max(np.abs(pa - pb)) < 1e-12
+    assert np.array_equal(pa, pb)
     assert np.max(np.abs(pa - pc)) > 1e-6
+
+
+def test_seeded_fit_is_reproducible_on_tied_slice_data():
+    """Distance-slice-like data: 300 intrinsic points with identical coordinates over 40 slices, so
+    many candidate splits tie or nearly tie, and weights spanning 1e-1..1e3. Float atomics made such
+    near-ties order dependent (different forests for one seed on real grids); integer sums must not."""
+    rng = np.random.default_rng(12)
+    P = rng.uniform(-1, 1, (300, 4))
+    X = np.repeat(P, 40, axis=0)
+    d = rng.uniform(500, 5000, len(X))
+    X = np.c_[d, X]
+    y = 100 - ((X[:, 1:] ** 2).sum(1)) * 5 - 1e-3 * np.abs(d - 2500) + rng.normal(0, 0.8, len(X))
+    w = 10 ** rng.uniform(-1, 3, len(X))
+    fits = [ce.CupyExtraTreesRegressor(8, random_state=21).fit(X, y, w) for _ in range(4)]
+    ref = fits[0].estimators_
+    for f in fits[1:]:
+        for ea, eb in zip(ref, f.estimators_):
+            assert ea.tree_.node_count == eb.tree_.node_count
+            assert np.array_equal(ea.tree_.threshold, eb.tree_.threshold)
+            assert np.array_equal(ea.tree_.value, eb.tree_.value)
+
+
+def test_seeded_fit_does_not_depend_on_tree_grouping():
+    """Group size follows free device memory, which other jobs change; a seeded forest must not."""
+    X, y, w = _data(n=2000, seed=13)
+    a = ce.CupyExtraTreesRegressor(6, random_state=9, trees_per_group=6).fit(X, y, w).estimators_
+    b = ce.CupyExtraTreesRegressor(6, random_state=9, trees_per_group=2).fit(X, y, w).estimators_
+    for ea, eb in zip(a, b):
+        assert np.array_equal(ea.tree_.threshold, eb.tree_.threshold)
+        assert np.array_equal(ea.tree_.value, eb.tree_.value)

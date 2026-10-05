@@ -120,7 +120,6 @@ MonteCarloMarginalizeCode/Code/RIFT/interpolators/jax_gp/test_interpolators.py B
 # Module-level skip without cupy and a device. Run by hand on a GPU node (pcdev13, 2026-10-04: 10 pass).
 MonteCarloMarginalizeCode/Code/test/interpolators/test_cupy_forest.py           GPU  cupy device predictor vs sklearn; skips without a device
 MonteCarloMarginalizeCode/Code/test/interpolators/test_cupy_extratrees.py       GPU  cupy ExtraTrees vs numpy reference and sklearn; skips without a device
-MonteCarloMarginalizeCode/Code/test/test_gpytorch_wrapper.py                   OPTDEP  needs:torch,gpytorch -- module-level skip without them (1 skipped on CIT IGWN, 2026-10-04)
 MonteCarloMarginalizeCode/Code/test/hyperpipe/tests/test_hydra_integration.py  OPTDEP  needs:hydra,omegaconf -- skips cleanly without them
 MonteCarloMarginalizeCode/Code/test/test_gwsignal_teob_mode_sign.py            OPTDEP  needs:EOBRun_module -- the gwsignal TEOB route; 2 collected, 1 passes and 1 skips without it
 MonteCarloMarginalizeCode/Code/test/test_gwsignal_teob_near_aligned.py         OPTDEP  needs:EOBRun_module -- 1 collected, skips without it
@@ -144,3 +143,4 @@ MonteCarloMarginalizeCode/Code/test/test_skysamp.py                            L
 MonteCarloMarginalizeCode/Code/test/expensive_before_merging/integrators/test_shape_recovery.py          EXPENSIVE  4 collected, all skip unless RIFT_RUN_EXPENSIVE=1
 MonteCarloMarginalizeCode/Code/test/expensive_before_merging/integrators/test_escaped_mass_diagnostic.py EXPENSIVE  5 collected, all skip unless RIFT_RUN_EXPENSIVE=1
 MonteCarloMarginalizeCode/Code/test/test_lalsim_eos_reviewed_integration.py                                 EXPENSIVE  3 collected, all skip unless RIFT_REVIEWED_LALSIM_MANIFEST names a build-generated manifest
+MonteCarloMarginalizeCode/Code/test/test_gpytorch_wrapper.py                  OPTDEP  needs:torch,gpytorch -- importorskip on both; the CUDA case also needs a GPU

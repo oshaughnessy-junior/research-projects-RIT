@@ -156,7 +156,7 @@ parser.add_argument("--dslice-amp-loss",default="linear",help="dslice-amp: scipy
 parser.add_argument("--dslice-amp-loss-scale",default=1.0,type=float,help="dslice-amp: robust-loss scale in nats.")
 parser.add_argument("--dslice-amp-point-fit",default="scipy",choices=["scipy","batched"],help="dslice-amp: per-point fits by one scipy least_squares call each (default), or all points at once by a batched Levenberg-Marquardt on the same objective (on the GPU under --fit-device gpu). batched is experimental and not for production: it reaches a worse local minimum than scipy on ~0.5%% of points, enough to degrade the distance posterior on some grids.")
 parser.add_argument("--dslice-amp-point-fit-jobs",default=1,type=int,help="dslice-amp, scipy point fits: number of worker processes. Fits are deterministic, so the result equals the serial one.")
-parser.add_argument("--rf-seed",default=None,type=int,help="rf: random_state for the ExtraTrees forest (sklearn or cupy), so a forest can be regrown and scored twice. The same seed on the same data gives the same trees; predictions agree to float roundoff (sklearn sums trees in thread order, the cupy grower sums node statistics with atomics). Default: unseeded, as before.")
+parser.add_argument("--rf-seed",default=None,type=int,help="rf: random_state for the ExtraTrees forest (sklearn or cupy), so a forest can be regrown and scored twice. The same seed on the same data gives the same trees; the cupy grower reproduces predictions bit for bit (integer node sums), sklearn to float roundoff (it sums trees in thread order). Default: unseeded, as before.")
 parser.add_argument("--rf-fit-backend",default="sklearn",choices=["sklearn","cupy"],help="rf: grow the ExtraTrees forest with sklearn on CPU (default) or on the GPU with the same algorithm (RIFT.interpolators.cupy_extratrees; same distribution of forests, different random stream). cupy requires --fit-device gpu.")
 parser.add_argument("--fit-device",default="cpu",choices=["cpu","gpu"],help="rf and dslice-amp only. gpu: copy the fitted trees to the GPU and evaluate the fit there inside the sampler (RIFT.interpolators.cupy_forest; same predictions as sklearn to float64 roundoff, checked at startup), keep sample batches on the device, and convert coordinates as --coordinate-convert-xpy. Needs cupy and a visible device.")
 parser.add_argument("--coordinate-convert-xpy",action='store_true',help="With --supplementary-coordinate-code: convert the data file and the sampler's batches with the vectorized RIFT.misc.waveform_coordinates_xpy instead of the plugin, after checking the two agree on data rows and on draws from the integration ranges (the plugin is kept if they do not). Avoids convert_waveform_coordinates' per-row fallthrough.")
@@ -186,6 +186,8 @@ parser.add_argument("--supplementary-coordinate-code", default=None,type=str,hel
 parser.add_argument("--supplementary-coordinate-function", default=None, type=str, help="Name of the entry-point callable inside the module named by --supplementary-coordinate-code. Defaults to 'convert_coordinates'.")
 parser.add_argument("--supplementary-coordinate-ini", default=None, type=str, help="Optional ini file parsed and handed to the coordinate plugin's prepare() hook so it can read its own configuration block(s).")
 parser.add_argument("--supplementary-coordinate-chart", default=None, type=str, help="Which chart (coordinate system) defined by the plugin to use for this run. Required when the plugin's CHARTS dict has more than one entry; ignored when the plugin doesn't define CHARTS. Different charts can share parameter names but imply different priors -- the chart name disambiguates which (name -> prior) mapping is installed.")
+parser.add_argument("--get-range-from-external", action='store_true', help="Ask the coordinate plugin for integration ranges: calls get_bounds(low_level_coord_names, ranges, **kwargs), which returns {name: [lo,hi]} in the SAMPLING basis. Replaces data-derived and chart ranges; --integration-parameter-range wins. Errors raise.")
+parser.add_argument("--external-range-args", action='append', type=str, help="key=value passed to the plugin's get_bounds. Values are parsed as python literals when possible.")
 opts=  parser.parse_args()
 if opts.fit_method != 'gp-matern':
     if opts.gp_predict_backend != "sklearn":
@@ -215,10 +217,9 @@ if opts.fit_device == "gpu":
 no_plots = no_plots |  opts.no_plots
 lnL_shift = 0
 lnL_default_large_negative = -500
-# value the rf fit returns for rows with a nonfinite or |x| > 1e37 coordinate, on CPU and GPU alike.
-# It is +500, a ceiling rather than a floor: an open defect (RIFT_roboto_paper
-# development/OPEN_rf_nonfinite_fill_sign.md). One constant so a fix reaches both paths.
-rf_nonfinite_fill = -lnL_default_large_negative
+# value the rf fit returns for rows with a nonfinite or |x| > 1e37 coordinate, on CPU and GPU alike
+# (a floor; it was +500, a ceiling, until rift_O4d fixed the sign)
+rf_nonfinite_fill = lnL_default_large_negative
 if opts.lnL_shift_prevent_overflow:
     lnL_shift  = opts.lnL_shift_prevent_overflow
 
@@ -471,6 +472,19 @@ if opts.supplementary_coordinate_code:
     _coord_plugin_in_names = resolve_input_parameters(
         _coord_plugin_module, chart=opts.supplementary_coordinate_chart
     ) or list(dat_orig_names)
+
+# Ranges from the plugin's get_bounds hook, in the sampling basis.  They
+# replace data-derived and chart ranges; --integration-parameter-range wins.
+# Failures raise: a range in the wrong frame must not be used silently.
+if opts.get_range_from_external:
+    if supplemental_coordinate_convert is None:
+        raise Exception(" --get-range-from-external needs --supplementary-coordinate-code ")
+    from RIFT.misc.coordinate_plugin import call_get_bounds
+    _cli_range_names = set(name for name, _ in (r.split(':', 1) for r in (opts.integration_parameter_range or [])))
+    for _name, _rng in call_get_bounds(_coord_plugin_module, low_level_coord_names, param_ranges, opts.external_range_args).items():
+        if _name in low_level_coord_names and _name not in _cli_range_names:
+            param_ranges[_name] = _rng
+            print(" Integration range for {} from get_bounds : {} ".format(_name, _rng))
 
 # Auto-derive integration ranges for sampled names that are still missing one:
 # forward-transform the input grid into the sampling basis and use the

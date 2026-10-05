@@ -67,6 +67,7 @@ FILES=(
   "$C/RIFT/calmarg/test_cal_mc_error.py"
   "$C/RIFT/calmarg/test_seed_fallback.py"
   "$C/test/test_calmarg_calibration.py"
+  "$C/test/test_calmarg_rift_source.py"
   # -- likelihood dispatch
   "$C/RIFT/likelihood/test_td_dispatch_epoch.py"
   "$C/RIFT/likelihood/test_precompute_crossterm_batching.py"
@@ -83,6 +84,8 @@ FILES=(
   "$C/test/test_noloop_accumulator_shapes.py"
   # -- detector-network sky coordinates: direction and inverse round trip
   "$C/test/test_sky_rotations.py"
+  # -- pseudo_pipe: per-class disk requests reach their own job class
+  "$C/test/test_pseudo_pipe_request_disk.py"
   # The Bilby-convention noise evidence: its normalization is checked against the
   # 4/T sum |d|^2/S formula through the real ComplexIP, so a factor of two regresses
   # loudly instead of shifting every reported log evidence by a plausible amount.
@@ -99,6 +102,12 @@ FILES=(
   "$C/test/integrators/test_integrator_studies.py"
   "$C/test/integrators/test_replica_pooling.py"
   "$C/test/integrators/test_rvs_weight_derivation.py"
+  # -- intrinsic interpolators and AV stopping (PR #382)
+  "$C/test/interpolators/test_av_stopping_metric.py"
+  "$C/test/interpolators/test_cached_matern_gp.py"
+  "$C/test/test_av_host_backend.py"
+  "$C/test/test_av_kish_loop.py"
+  "$C/test/test_matern_gp.py"
   "$C/test/integrators/test_seeding_public_paths.py"
   "$C/test/integrators/test_seeding_reproducibility.py"
   "$C/test/test_mc_error.py"
@@ -117,6 +126,9 @@ FILES=(
   "$C/test/hyperpipe/tests/test_drivers.py"
   "$C/test/hyperpipe/tests/test_marg_list.py"
   "$C/test/test_hyperpipeline_io.py"
+  # -- coordinate plugin through the hyperpipe post and puff stages; puffball ranges; CEP
+  # get_bounds.  ~13 tests, about ten driver subprocesses.
+  "$C/test/test_hyperpipe_coordinate_passing.py"
   # -- promoted out of the roster after roster-verify-check caught its reason being false ON
   # THE RUNNER: it was OPTDEP needs:glue,htcondor, and with htcondor absent there it still
   # collected 15 and passed 15.  Confirmed locally with BOTH blocked via a sys.meta_path
@@ -133,6 +145,10 @@ FILES=(
   # -- ILE consolidation precision.  Both DAG builders and BOTH cleaner passes,
   # in the legacy and hyperpipeline formats; 7 tests, 9 s, subprocesses only.
   "$C/test/test_cleanile_intrinsic_precision.py"
+  # -- DAG postprocessing must resolve its sibling helpers without relying on the
+  # submit host's PATH, and must fail closed on helper or empty-output failures.
+  # 13 tests, subprocesses only.
+  "$C/test/test_dag_postprocess_fail_closed.py"
   # -- EOS: --sampler-method portfolio in util_ConstructEOSPosterior.py, which failed on EVERY
   # invocation -- sampler.setup() was never called, so portfolio_breakpoints stayed None and the
   # first draw() raised; without --internal-use-lnL it stopped even earlier, in integrate().
@@ -148,6 +164,15 @@ FILES=(
   # under a misspelt keyword and silently dropped -- delivering it correctly makes a
   # malformed entry fatal, so the non-dict guard is part of that fix.  4 tests, ~22 s.
   "$C/test/test_cip_portfolio_members.py"
+  # -- the lnL fill for query rows the coordinate conversion cannot map.  fit_rf and fit_xg
+  # fill nonfinite / |x|>1e37 rows with lnL_default_large_negative, and a sign error made that
+  # fill +500 instead of -500, so any unmappable row the sampler gave prior weight to took the
+  # whole posterior.  Nothing raises on that: the run completes and reports a plausible-looking
+  # posterior over a region the converter failed on.  2 tests, one EOS driver subprocess (a
+  # plugin that returns NaN above xx=0.9) and one CIP driver subprocess
+  # (--downselect-enforce-kerr, which sends Kerr-violating rows to -inf).  Both subprocess
+  # timeouts are 900 s, below this job's cap, per the note in ci.yml.
+  "$C/test/test_fit_nonfinite_floor.py"
   # -- EOS: the LALSimulation version-compatibility layer.  numpy/lal only; the reviewed
   # multibranch API is exercised through injected fakes, so this runs on a released build.
   # Its companion test_lalsim_eos_reviewed_integration.py needs a private reviewed LALSuite
@@ -162,18 +187,16 @@ FILES=(
   "$C/test/test_complex_overlap_interpolate_max.py"
   # -- coordinates: vectorized in-plane spin / ring coordinates agree with extract_param
   "$C/test/test_ring_coordinates.py"
+  # -- coordinates: source_redshift gives detector-frame values, vectorized vs extract_param
+  "$C/test/test_convert_coordinates_source_redshift.py"
   # -- EOSPosterior distance-slice fits: vectorized coordinates and the dslice-amp model
   #    (numpy legs; the cupy legs skip here and run by hand on a GPU node)
   "$C/test/test_convert_waveform_coordinates_vectorized.py"
   "$C/test/test_waveform_coordinates_xpy.py"
   "$C/test/interpolators/test_dslice_amplitude_model.py"
-  # -- EOSPosterior gp-matern fit, cached/cupy Matern prediction, dslice quadratic GP, AV stopping metric
+  # -- EOSPosterior gp-matern driver, cupy Matern fit
   #    (numpy legs; cupy legs skip).  test_eos_gp_matern.py runs the driver end to end: ~100 s on CIT.
-  "$C/test/interpolators/test_av_stopping_metric.py"
-  "$C/test/interpolators/test_cached_matern_gp.py"
   "$C/test/interpolators/test_cupy_matern_fit.py"
-  "$C/test/interpolators/test_dslice_quadratic_gp.py"
-  "$C/test/test_matern_gp.py"
   "$C/test/test_eos_gp_matern.py"
   # -- --rf-seed regrows the same forest (driver run three times, ~30 s on CIT)
   "$C/test/test_eos_rf_seed.py"
@@ -337,6 +360,28 @@ done
 #            pointed at the IGWN interpreter: junit 616 collected / 603 passed / 13 skipped /
 #            0 failed, of which 3 are subtests.
 #
+#   653/640  test_hyperpipe_coordinate_passing.py added (13 tests: coord module through the
+#            hyperpipe post and puff stages, puffball name:[lo,hi] ranges and reflection, CEP
+#            get_bounds), together with the PR #202 port's CIP changes.  MEASURED on CIT
+#            (ldas-grid; `import cupy` FAILS there, numpy backend) 2026-10-03, IGWN conda python
+#            3.11, RIFT_COREUNIT_PYTHON pointed at the IGWN interpreter: junit 656 collected /
+#            643 passed / 13 skipped / 0 failed, of which 3 are subtests.
+#   656/643  review of #383: +3 tests in test_hyperpipe_coordinate_passing.py (16 collected,
+#            ldas-grid collect-only 2026-10-03), none skipped.
+#   658/645  + test_fit_nonfinite_floor.py (2 tests, neither skipped: the EOS route through a
+#            NaN-returning coordinate plugin, and the CIP route through
+#            --downselect-enforce-kerr).  The file defines exactly two test_* functions, has no
+#            parametrization and no skip or xfail marks, so the raise is +2/+2 over the row
+#            above; the per-file collection loop below is what confirms it on the runner, and it
+#            fails rather than reports if that is wrong.
+#            MEASURED on CIT (ldas-grid; `import cupy` FAILS there) 2026-10-03, IGWN conda
+#            python 3.11: junit 661 collected / 648 passed / 13 skipped / 0 failed, 3 subtests.
+#   671/658  + test_dag_postprocess_fail_closed.py (13 tests, none skipped: the ILE and NR
+#            postprocess wrappers run as subprocesses under a sanitized PATH with stub helpers).
+#            MEASURED on CIT (citlogin6; `import cupy` FAILS there) 2026-10-04, IGWN conda
+#            python 3.11: junit 676 collected / 663 passed / 13 skipped / 0 failed, 3 subtests.
+#            The 2 above 671/658 come from base tests added after the 658/645 measurement.
+#
 # RAISE these when files are added: a floor left at the old value passes while covering less,
 # which is the failure this gate exists to catch.
 # DO NOT RAISE THESE TO THE RUNNER'S NUMBERS.  The GitHub runner reports 350 collected / 338
@@ -358,18 +403,15 @@ done
 # Review of #377 added five more ring-coordinate tests, no skips (605/592 measured).
 # test_complex_overlap_interpolate_max.py (#375) adds 8 passing tests and no skips.
 # Merged with #375: 613/600 (see the table above).
-# EOSPosterior distance-slice files (test_convert_waveform_coordinates_vectorized 6,
-# test_waveform_coordinates_xpy 6, test_dslice_amplitude_model 11) add 23 collected, 20 passed and
-# 3 skips: the cupy legs of the last two, which need a device.  Floors raised by exactly that;
-# measured on CIT (ldas-grid, no cupy) 2026-10-04 with all but the last cupy leg: 663 collected /
-# 648 passed / 15 skipped.
-# The gp-matern / Matern-GP / AV-stopping files above (3 + 7 + 4 + 2 + 4 + 6) add 26 collected,
-# 23 passed and 3 skips (cupy legs of test_cached_matern_gp, test_cupy_matern_fit, test_eos_gp_matern),
-# measured per file on CIT (ldas-grid, no cupy) 2026-10-04.
-# Floors re-measured 2026-10-04 at the measured counts (CI run 37225002686 at 70f20c9a: 691/672/19,
-# matching CIT; +1 test since): the ~30-test slack inherited from earlier entries is removed.
-# test_eos_rf_seed.py adds 2 collected, 2 passed, no skips.
-EXPECTED_TESTS=694
+# test_dag_postprocess_fail_closed.py adds 13 passing tests and no skips.
+# PR #382 merged with rift_O4d 7062023d, measured ldas-pcdev11 2026-10-04 with
+# CUDA_VISIBLE_DEVICES='': junit 698 collected / 683 passed, 3 of them subtests -> 695/680.
+# (pcdev11 has one extra host skip, cupy-importable in test_eos_posterior_tempering_kwarg.)
+# test_convert_coordinates_source_redshift.py adds 16 passing tests and no skips.
+# PR #391 (EOSPosterior GPU port and dslice fits), merged with rift_O4d 7e2984a0: measured on CIT
+# ldas-grid (IGWN python, cupy importable, no device) 2026-10-05, outcomes 751 collected / 732 passed /
+# 19 skipped incl. 3 subtests -> 748/729; less test_dslice_quadratic_gp.py (2, removed) -> 746/727.
+EXPECTED_TESTS=746
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -378,7 +420,12 @@ EXPECTED_TESTS=694
 # (mcsamplerNFlow is an optional dependency and is absent from the IGWN environment), and
 # the xfail in test_uv_symmetry.  test_eos_portfolio_sampler.py adds 12 tests and
 # test_cip_portfolio_members.py 4, none of them skips.
-EXPECTED_PASSED=675
+# test_fit_nonfinite_floor.py adds 2 tests and no skips: both routes run unconditionally, so a
+# missing dependency there FAILS the driver subprocess rather than skipping the check.
+# test_dag_postprocess_fail_closed.py adds 13 tests and no skips.
+# test_convert_coordinates_source_redshift.py adds 16 tests and no skips.
+EXPECTED_PASSED=727
+# PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 MAX_SKIPPED=19
 
 # The floors must be INTEGERS, and this is checked rather than assumed.  `[ 347 -lt FOO ]` does

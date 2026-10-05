@@ -69,6 +69,30 @@ if [ "$_CIP_EXPORT_FOUND" -ne "$_CIP_EXPORT_EXPECTED" ]; then
 fi
 python -m pytest -q "$_CIP_EXPORT_TESTS"
 
+# CIP --n-events-to-analyze > 1 (several hyperpipeline grid rows per job), --chunk-save and
+# --save-hyperfile-only.  CIP accepted N > 1 but integrated only the first row, so (N-1)/N of
+# every chunked grid was silently skipped.  Subprocess runs on a synthetic problem with a known
+# answer (~100 s): an N=4 job must write the same files, names and statistically equal
+# integrals as four N=1 jobs, from row 0 and across the end of the grid.
+_CIP_MULTIROW_TESTS=MonteCarloMarginalizeCode/Code/test/test_cip_multi_row.py
+# Raise EXPECTED by RUNNING collection, never by arithmetic.
+_CIP_MULTIROW_EXPECTED=10
+_CIP_MULTIROW_FOUND=$(python -m pytest -q --collect-only "$_CIP_MULTIROW_TESTS" 2>/dev/null | grep -c '::' || true)
+if [ "$_CIP_MULTIROW_FOUND" -ne "$_CIP_MULTIROW_EXPECTED" ]; then
+    echo "cip-multi-row gate: collected $_CIP_MULTIROW_FOUND tests, expected $_CIP_MULTIROW_EXPECTED" >&2
+    exit 1
+fi
+python -m pytest -q "$_CIP_MULTIROW_TESTS"
+
+# CIP startup must not import torch/cupy/jax/sklearn unless the options select them (PR #382).
+_CIP_IMPORT_TESTS=MonteCarloMarginalizeCode/Code/test/test_cip_startup_imports.py
+_CIP_IMPORT_FOUND=$(python -m pytest -q --collect-only "$_CIP_IMPORT_TESTS" 2>/dev/null | grep -c '::' || true)
+if [ "$_CIP_IMPORT_FOUND" -ne 2 ]; then
+    echo "cip-startup-imports gate: collected $_CIP_IMPORT_FOUND tests, expected 2" >&2
+    exit 1
+fi
+python -m pytest -q "$_CIP_IMPORT_TESTS"
+
 # --psi-marginalization: analytic polarization-angle marginalization made reachable on
 # the legacy scalar likelihood path (factored_likelihood.NetworkLogLikelihoodPolarizationMarginalized
 # was previously dead code, unreachable from any driver and untested by any importable

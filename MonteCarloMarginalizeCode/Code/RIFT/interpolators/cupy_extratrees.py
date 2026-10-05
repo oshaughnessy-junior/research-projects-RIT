@@ -10,8 +10,10 @@ holds fewer than two samples, its weighted impurity is <= double epsilon, or eve
 on it; its value is the weighted mean of y. Samples go left when float32(x) <= threshold.
 
 The trees are grown level by level, a group of trees at a time, one CUDA thread per (tree, sample)
-pair. The random stream is cupy's, so a forest equals an sklearn forest in distribution, not draw for
-draw; ``_reference_tree`` below is the same algorithm in numpy, driven by supplied uniforms, against
+pair. Node and split sums are fixed-point integer sums (see _quanta), so a fit with a given
+random_state is bit-for-bit reproducible; the uniforms come from a counter-based hash of (seed, tree,
+node, feature), so they do not depend on how trees are grouped. A forest equals an sklearn forest in
+distribution, not draw for draw; ``_reference_tree`` below is the same algorithm in numpy, driven by supplied uniforms, against
 which a GPU tree grown from the same uniforms is checked exactly. Prediction is by
 RIFT.interpolators.cupy_forest.CupyForest.
 """
@@ -25,16 +27,18 @@ __device__ __forceinline__ int ord_f(float f) { int i = __float_as_int(f); retur
 
 extern "C" __global__
 void node_stats(const int* __restrict__ act, const long long n_act, const int N, const int F,
-                const float* __restrict__ X, const double* __restrict__ y, const double* __restrict__ w,
-                const int* __restrict__ slot, double* W, double* S1, double* S2, int* cnt, int* cntw,
+                const float* __restrict__ X, const long long* __restrict__ qw, const long long* __restrict__ qs,
+                const long long* __restrict__ qq, const int* __restrict__ slot,
+                unsigned long long* W, unsigned long long* S1, unsigned long long* S2, int* cnt, int* cntw,
                 int* fmin, int* fmax)
 {
     long long k = (long long)blockDim.x * blockIdx.x + threadIdx.x;
     if (k >= n_act) return;
     int p = act[k]; int i = p % N; int s = slot[p];
-    double wi = w[i], yi = y[i];
-    atomicAdd(W + s, wi); atomicAdd(S1 + s, wi * yi); atomicAdd(S2 + s, wi * yi * yi); atomicAdd(cnt + s, 1);
-    if (wi > 0) atomicAdd(cntw + s, 1);
+    // fixed-point integer sums: exact, so the result does not depend on the order of the atomics
+    atomicAdd(W + s, (unsigned long long)qw[i]); atomicAdd(S1 + s, (unsigned long long)qs[i]);
+    atomicAdd(S2 + s, (unsigned long long)qq[i]); atomicAdd(cnt + s, 1);
+    if (qw[i] > 0) atomicAdd(cntw + s, 1);
     const float* x = X + (long long)i * F;
     for (int f = 0; f < F; f++) {
         int v = ord_f(x[f]);
@@ -44,23 +48,23 @@ void node_stats(const int* __restrict__ act, const long long n_act, const int N,
 
 extern "C" __global__
 void split_stats(const int* __restrict__ act, const long long n_act, const int N, const int F,
-                 const float* __restrict__ X, const double* __restrict__ y, const double* __restrict__ w,
+                 const float* __restrict__ X, const long long* __restrict__ qw, const long long* __restrict__ qs,
                  const int* __restrict__ slot, const unsigned char* __restrict__ splitting,
-                 const double* __restrict__ thr, const unsigned char* __restrict__ cand, double* LW, double* LS,
-                 int* LCW)
+                 const double* __restrict__ thr, const unsigned char* __restrict__ cand,
+                 unsigned long long* LW, unsigned long long* LS, int* LCW)
 {
     long long k = (long long)blockDim.x * blockIdx.x + threadIdx.x;
     if (k >= n_act) return;
     int p = act[k]; int s = slot[p];
     if (!splitting[s]) return;
     int i = p % N;
-    double wi = w[i], wy = wi * y[i];
+    unsigned long long wi = (unsigned long long)qw[i], wy = (unsigned long long)qs[i];
     const float* x = X + (long long)i * F;
     for (int f = 0; f < F; f++) {
         long long sf = (long long)s * F + f;
         if (cand[sf] && (double)x[f] <= thr[sf]) {
             atomicAdd(LW + sf, wi); atomicAdd(LS + sf, wy);
-            if (wi > 0) atomicAdd(LCW + sf, 1);
+            if (qw[i] > 0) atomicAdd(LCW + sf, 1);
         }
     }
 }
@@ -83,6 +87,20 @@ void route(const int* __restrict__ act, const long long n_act, const int N, cons
 """
 
 
+# splitmix64 applied in turn to seed, tree, node and feature; 53-bit uniform on [0, 1)
+_HASH_UNIFORM = r'''
+unsigned long long z = seed;
+unsigned long long keys[3] = {(unsigned long long)tree, (unsigned long long)node, (unsigned long long)f};
+for (int k = 0; k < 3; k++) {
+    z += keys[k] + 0x9E3779B97F4A7C15ULL;
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    z = z ^ (z >> 31);
+}
+u = (double)(z >> 11) * (1.0 / 9007199254740992.0);
+'''
+
+
 def _pick(xp, proxy, u_tie):
     """Best feature per row. Features whose proxy is within 1e-13 (relative) of the best are tied --
     typically several features give the same partition of a small node -- and one is chosen uniformly
@@ -96,6 +114,31 @@ def _pick(xp, proxy, u_tie):
     j = xp.minimum(xp.floor(u_tie * n_tied), xp.maximum(n_tied - 1, 0)).astype(xp.int64)
     rank = xp.cumsum(tied, axis=1) - 1
     return xp.argmax(tied & (rank == j[:, None]), axis=1).astype(xp.int32)
+
+
+def _quanta(y, w):
+    """Fixed-point integer quanta of w, w (y - c) and w (y - c)^2, c the weighted mean of y.
+
+    Node and split sums are then sums of int64 values, exact in any order, so a seeded fit is
+    reproducible although the GPU adds them with atomics. Each scale is a power of two chosen so no
+    node sum (at most the sum over all samples of one tree) can overflow 2^62. Centering y shifts
+    every candidate split's proxy at a node by the same constant, so the chosen split is unchanged;
+    leaf values add c back."""
+    y = np.asarray(y, dtype=np.float64); w = np.asarray(w, dtype=np.float64)
+    c = float(np.sum(w * y) / np.sum(w)) if np.sum(w) > 0 else 0.0
+    yc = y - c
+    out = {"c": c, "q": []}
+    for key, v in (("sw", w), ("ss", w * yc), ("sq", w * yc * yc)):
+        tot = float(np.sum(np.abs(v)))
+        scale = 2.0 ** int(np.floor(np.log2(2.0 ** 62 / max(tot, 1e-300)))) if tot > 0 else 1.0
+        out[key] = scale
+        out["q"].append(np.rint(v * scale).astype(np.int64))
+    return out
+
+
+def _from_q(xp, a, scale):
+    """Integer sums (stored as uint64, two's complement) back to float64."""
+    return a.view(xp.int64).astype(xp.float64) / scale
 
 
 def _decode_ord(cp, a):
@@ -144,12 +187,16 @@ class CupyExtraTreesRegressor:
         if self.n_estimators * 1.6 * N >= 2 ** 31:     # trees have ~1.57 N nodes; CupyForest uses int32 ids
             raise ValueError("cupy ExtraTrees: %d trees of %d rows exceed int32 node indices" % (self.n_estimators, N))
         Xd = cp.asarray(Xh)
-        yd = cp.asarray(np.asarray(y, dtype=np.float64))
-        wd = cp.asarray(np.ones(N) if sample_weight is None else np.asarray(sample_weight, dtype=np.float64))
+        w_h = np.ones(N) if sample_weight is None else np.asarray(sample_weight, dtype=np.float64)
+        Q = _quanta(y, w_h)
+        qw, qs, qq = (cp.asarray(a) for a in Q["q"])
+        sw, ss, sq, yc0 = Q["sw"], Q["ss"], Q["sq"], Q["c"]
         mod = cp.RawModule(code=_KERNELS)
         k_stats, k_split, k_route = (mod.get_function(n) for n in ("node_stats", "split_stats", "route"))
-        rng = cp.random.RandomState(self.random_state if self.random_state is not None
-                                    else np.random.SeedSequence().generate_state(1)[0])
+        seed64 = np.uint64(self.random_state if self.random_state is not None
+                           else int(np.random.SeedSequence().generate_state(2, dtype=np.uint64)[0]))
+        hash_u = cp.ElementwiseKernel("uint64 seed, int64 tree, int64 node, int64 f", "float64 u", _HASH_UNIFORM,
+                                      "et_hash_uniform")
         pool = cp.get_default_memory_pool()
 
         def group_size(remaining):
@@ -186,25 +233,31 @@ class CupyExtraTreesRegressor:
                         K = len(ftree)
                         n_act = np.int64(len(act))
                         blocks = (int((n_act + TH - 1) // TH),)
-                        W = cp.zeros(K); S1 = cp.zeros(K); S2 = cp.zeros(K)
+                        Wq = cp.zeros(K, dtype=cp.uint64); S1q = cp.zeros(K, dtype=cp.uint64); S2q = cp.zeros(K, dtype=cp.uint64)
                         cnt = cp.zeros(K, dtype=cp.int32); cntw = cp.zeros(K, dtype=cp.int32)
                         fmin = cp.full((K, F), np.iinfo(np.int32).max, dtype=cp.int32)
                         fmax = cp.full((K, F), np.iinfo(np.int32).min, dtype=cp.int32)
-                        k_stats(blocks, (TH,), (act, n_act, np.int32(N), np.int32(F), Xd, yd, wd, slot, W, S1, S2, cnt, cntw, fmin, fmax))
+                        k_stats(blocks, (TH,), (act, n_act, np.int32(N), np.int32(F), Xd, qw, qs, qq, slot, Wq, S1q, S2q, cnt, cntw, fmin, fmax))
+                        W, S1, S2 = _from_q(cp, Wq, sw), _from_q(cp, S1q, ss), _from_q(cp, S2q, sq)
                         lo = _decode_ord(cp, fmin).astype(cp.float64); hi = _decode_ord(cp, fmax).astype(cp.float64)
                         imp = S2 / W - (S1 / W) ** 2
                         cand = ~(hi.astype(cp.float32) <= (lo.astype(cp.float32) + np.float32(_FEATURE_THRESHOLD)))
                         splitting = (cnt >= 2) & (imp > _EPS) & cp.any(cand, axis=1)
                         if uniforms is None:
-                            u = rng.uniform(0.0, 1.0, (K, F + 1))
+                            # counter-based draws: a node's uniforms depend on (seed, tree, node, feature)
+                            # only, not on how trees are grouped (which follows free device memory)
+                            u = hash_u(seed64, (ftree.astype(cp.int64) + g0)[:, None], fid.astype(cp.int64)[:, None],
+                                       cp.arange(F + 1, dtype=cp.int64)[None, :])
                         else:
                             u = cp.asarray(uniforms(level, cp.asnumpy(ftree) + g0, cp.asnumpy(fid), F + 1), dtype=cp.float64)
                         thr = (hi - lo) * u[:, :F] + lo
                         thr = cp.where(thr == hi, lo, thr)
-                        LW = cp.zeros((K, F)); LS = cp.zeros((K, F)); LCW = cp.zeros((K, F), dtype=cp.int32)
-                        k_split(blocks, (TH,), (act, n_act, np.int32(N), np.int32(F), Xd, yd, wd, slot,
-                                                splitting.astype(cp.uint8), thr, cand.astype(cp.uint8), LW, LS, LCW))
-                        RW = W[:, None] - LW; RS = S1[:, None] - LS
+                        LWq = cp.zeros((K, F), dtype=cp.uint64); LSq = cp.zeros((K, F), dtype=cp.uint64)
+                        LCW = cp.zeros((K, F), dtype=cp.int32)
+                        k_split(blocks, (TH,), (act, n_act, np.int32(N), np.int32(F), Xd, qw, qs, slot,
+                                                splitting.astype(cp.uint8), thr, cand.astype(cp.uint8), LWq, LSq, LCW))
+                        RWq = Wq[:, None] - LWq; RSq = S1q[:, None] - LSq      # exact integer complements
+                        LW, LS, RW, RS = _from_q(cp, LWq, sw), _from_q(cp, LSq, ss), _from_q(cp, RWq, sw), _from_q(cp, RSq, ss)
                         # each side needs positive weight (sklearn's proxy is NaN otherwise, so the split loses);
                         # tested on counts of positive-weight samples, since W - LW leaves roundoff
                         valid = cand & (LCW > 0) & (cntw[:, None] - LCW > 0)
@@ -215,7 +268,7 @@ class CupyExtraTreesRegressor:
                         bthr = thr[cp.arange(K), bf]
                         # node records
                         gid = ftree.astype(cp.int64) * cap + fid
-                        val[gid] = S1 / W
+                        val[gid] = S1 / W + yc0
                         # children: consecutive ids per tree, in frontier (= tree) order
                         spi = splitting.astype(cp.int64)
                         ns = cp.asnumpy(cp.bincount(ftree, weights=spi, minlength=T)).astype(np.int64)
@@ -240,7 +293,7 @@ class CupyExtraTreesRegressor:
                         level += 1
                         # release this level's per-node arrays and the pool's cache, which would otherwise
                         # grow past the (64 F + 40)-byte estimate (up to 1.7x on uniform data)
-                        del W, S1, S2, cnt, cntw, fmin, fmax, lo, hi, imp, cand, u, thr, LW, LS, LCW, RW, RS, valid, proxy
+                        del W, S1, S2, Wq, S1q, S2q, LWq, LSq, RWq, RSq, cnt, cntw, fmin, fmax, lo, hi, imp, cand, u, thr, LW, LS, LCW, RW, RS, valid, proxy
                         del bf, bthr, gid, spi, csum, child_id, sgid, child0, alive, splitting, sp8
                         pool.free_all_blocks()
                     for t in range(T):      # finished trees go to the host
@@ -287,6 +340,8 @@ def _reference_tree(X, y, w, uniforms, tree_id=0):
     keep = np.asarray(w) > 0                # as fit(): positively weighted samples only
     X, y, w = X[keep], np.asarray(y)[keep], np.asarray(w)[keep]
     N, F = X.shape
+    Q = _quanta(y, w)                       # as fit(): exact integer sums of fixed-point quanta
+    qw, qs, qq = Q["q"]; sw, ss, sq, c0 = Q["sw"], Q["ss"], Q["sq"], Q["c"]
     left, right, feat, thr_o, val = [-1], [-1], [-2], [-2.0], [0.0]
     frontier = [(0, np.arange(N))]
     level = 0
@@ -294,10 +349,11 @@ def _reference_tree(X, y, w, uniforms, tree_id=0):
         u = np.asarray(uniforms(level, np.full(len(frontier), tree_id), np.array([n for n, _ in frontier]), F + 1))
         nxt = []
         for k, (nid, idx) in enumerate(frontier):
-            ww, yy, xx = w[idx], y[idx], X[idx]
-            W, S1, S2 = ww.sum(), (ww * yy).sum(), (ww * yy * yy).sum()
-            pos = ww > 0
-            val[nid] = S1 / W
+            xx = X[idx]
+            Wq, S1q, S2q = qw[idx].sum(), qs[idx].sum(), qq[idx].sum()
+            W, S1, S2 = np.float64(Wq) / sw, np.float64(S1q) / ss, np.float64(S2q) / sq
+            pos = qw[idx] > 0
+            val[nid] = S1 / W + c0
             lo, hi = xx.min(axis=0).astype(np.float64), xx.max(axis=0).astype(np.float64)
             cand = ~(hi.astype(np.float32) <= lo.astype(np.float32) + np.float32(_FEATURE_THRESHOLD))
             if len(idx) < 2 or not (S2 / W - (S1 / W) ** 2 > _EPS) or not cand.any():
@@ -305,8 +361,9 @@ def _reference_tree(X, y, w, uniforms, tree_id=0):
             t = (hi - lo) * u[k, :F] + lo
             t = np.where(t == hi, lo, t)
             goes_left = xx.astype(np.float64) <= t[None, :]
-            LW = (ww[:, None] * goes_left).sum(0); LS = ((ww * yy)[:, None] * goes_left).sum(0)
-            RW, RS = W - LW, S1 - LS
+            LWq = (qw[idx][:, None] * goes_left).sum(0); LSq = (qs[idx][:, None] * goes_left).sum(0)
+            LW, LS = LWq.astype(np.float64) / sw, LSq.astype(np.float64) / ss
+            RW, RS = (Wq - LWq).astype(np.float64) / sw, (S1q - LSq).astype(np.float64) / ss
             lcw = (goes_left & pos[:, None]).sum(0)
             valid = cand & (lcw > 0) & (pos.sum() - lcw > 0)
             with np.errstate(divide="ignore", invalid="ignore"):
