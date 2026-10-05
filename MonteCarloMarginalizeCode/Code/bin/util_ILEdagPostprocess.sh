@@ -53,7 +53,9 @@ case "$(echo "${RIFT_HYPERPIPELINE_FORMAT:-}" | tr '[:upper:]' '[:lower:]')" in
     FNAME=`pwd`/tmp.dat
     #cat ${DIR_PROCESS}/CME*.dat > tmp.dat
     export RND=`echo ${RANDOM}`
-    find ${DIR_PROCESS} -name 'CME*.dat' -exec cat {} \; > ${RND}_tmp.dat
+    # A native rescue may expose preserved ILE products through a directory
+    # symlink. Follow that command-line root, without following links inside it.
+    find -H "${DIR_PROCESS}" -name 'CME*.dat' -exec cat {} \; > ${RND}_tmp.dat
 
     # clean them (=join duplicate lines)
     echo " Consolidating multiple instances of the monte carlo  .... "
