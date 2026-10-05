@@ -981,6 +981,17 @@ if opts.lisa_known_sky:
     run_lisa_known_sky_surface(opts)
     sys.exit(0)
 
+_alternate_builder_selected = (
+    opts.pipeline_builder == "AlternateIteration" or
+    (opts.pipeline_builder is None and
+     (opts.use_subdags or opts.internal_use_amr)))
+if _use_hpip_pp and _alternate_builder_selected:
+    raise SystemExit(
+        "pseudo_pipe: AlternateIteration does not support "
+        "RIFT_HYPERPIPELINE_FORMAT; this legacy builder is XML-only. "
+        "Unset RIFT_HYPERPIPELINE_FORMAT or select "
+        "--pipeline-builder Hyperpipe.")
+
 if opts.pipeline_builder == "Hyperpipe":
     _unsupported_hyperpipe = []
     _hyperpipe_feature_checks = [

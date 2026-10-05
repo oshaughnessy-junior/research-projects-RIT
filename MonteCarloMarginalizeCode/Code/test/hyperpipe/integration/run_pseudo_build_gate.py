@@ -655,13 +655,23 @@ def _assert_osg_calibration_contract(hyper: Path):
     # Staging parity: a run whose MARG iterations stage the candidate ILE
     # must not let the terminal extrinsic fan-out silently run the
     # image-installed one -- that is version skew in exactly the final
-    # stage the staging mechanism exists to protect.  A staged sub carries
-    # no `transfer_executable = False` line (HTCondor's default True
-    # transfers the executable) and invokes ./<basename> in the container.
+    # stage the staging mechanism exists to protect.  A staged candidate
+    # rides in transfer_input_files as an ordinary sandbox input (HTCondor's
+    # own executable transfer can land it outside the container mount on
+    # some OSG execute points, so that transfer is off).
     marg_submit = (hyper / "MARG_0.sub").read_text()
     term_submit = (hyper / "TERMINAL_extrinsic_samples.sub").read_text()
-    marg_staged = "transfer_executable = False" not in marg_submit
-    term_staged = "transfer_executable = False" not in term_submit
+
+    def _stages(submit, name):
+        inputs = [line.split("=", 1)[1] for line in submit.splitlines()
+                  if line.startswith("transfer_input_files")]
+        return (any(entry.strip().endswith("/" + name)
+                    for line in inputs for entry in line.split(","))
+                and "transfer_executable = False" in submit)
+
+    ile = "integrate_likelihood_extrinsic_batchmode"
+    marg_staged = _stages(marg_submit, ile)
+    term_staged = _stages(term_submit, ile)
     assert marg_staged, "OSG lane no longer stages the MARG executable"
     assert term_staged == marg_staged, (
         "terminal extrinsic fan-out does not inherit the MARG staging "

@@ -152,6 +152,7 @@ FILES=(
   "$C/test/test_osg_cache_rewrite.py"
   "$C/test/test_pseudo_pipe_option_precedence.py"
   "$C/test/test_worker_partition.py"
+  "$C/test/test_alternate_iteration_format_guard.py"
   # -- coordinate plugin through the hyperpipe post and puff stages; puffball ranges; CEP
   # get_bounds.  ~13 tests, about ten driver subprocesses.
   "$C/test/test_hyperpipe_coordinate_passing.py"
@@ -392,6 +393,9 @@ done
 #            cap) 2026-10-04, IGWN conda python 3.11, RIFT_COREUNIT_PYTHON pointed at the IGWN
 #            interpreter: junit 872 collected / 859 passed / 13 skipped / 0 failed, of which 3
 #            are subtests.
+#   872/859  + test_alternate_iteration_format_guard.py (3 tests, no skips: the XML-only
+#            AlternateIteration builder and its pseudo_pipe routes refuse
+#            RIFT_HYPERPIPELINE_FORMAT), ported from the S240705at run's source tree.
 #   556/544  + the 18 hyperpipe pseudo-pipe builder suites (PR 181) at the rift_O4d merge,
 #            re-measured whole-manifest on CIT (IGWN conda python 3.11) 2026-09-07.  The same
 #            measurement caught test_advanced_parameter_ports.py failing 3 tests at the merge:
@@ -422,7 +426,7 @@ done
 # Review of #377 added five more ring-coordinate tests, no skips (605/592 measured).
 # test_complex_overlap_interpolate_max.py (#375) adds 8 passing tests and no skips.
 # Merged with #375: 613/600 (see the table above).
-EXPECTED_TESTS=869
+EXPECTED_TESTS=872
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -433,7 +437,7 @@ EXPECTED_TESTS=869
 # test_cip_portfolio_members.py 4, none of them skips.
 # test_fit_nonfinite_floor.py adds 2 tests and no skips: both routes run unconditionally, so a
 # missing dependency there FAILS the driver subprocess rather than skipping the check.
-EXPECTED_PASSED=856
+EXPECTED_PASSED=859
 MAX_SKIPPED=13
 
 # The floors must be INTEGERS, and this is checked rather than assumed.  `[ 347 -lt FOO ]` does

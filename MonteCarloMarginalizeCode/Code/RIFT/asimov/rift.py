@@ -378,6 +378,87 @@ class Rift(Pipeline):
             "source provenance validation".format(bootstrap_file))
         return True
 
+    def _uses_hyperpipe(self):
+        """Return whether this production selected the opt-in Hyperpipe builder."""
+        builder = self.production.meta.get('scheduler', {}).get(
+            'pipeline', {}).get('pipeline-builder', '')
+        return str(builder).strip().lower() == 'hyperpipe'
+
+    def _dag_filename(self):
+        """Return the DAG filename emitted by the selected pipeline builder."""
+        if self._uses_hyperpipe():
+            return "marginalize_hyperparameters.dag"
+        return "marginalize_intrinsic_parameters_BasicIterationWorkflow.dag"
+
+    def _bootstrap_grid_path(self):
+        """Return the builder-native initial-grid path for this production."""
+        suffix = ".dat" if self._uses_hyperpipe() else ".xml.gz"
+        if self.production.event.repository:
+            return os.path.join(
+                self.production.event.repository.directory,
+                "C01_offline",
+                "{}_bootstrap{}".format(self.production.name, suffix),
+            )
+        return "{}_bootstrap{}".format(self.production.name, suffix)
+
+    def _manual_grid_arguments(self, bootstrap_file):
+        """Return builder-compatible pseudo-pipe initial-grid arguments."""
+        arguments = ["--manual-initial-grid", bootstrap_file]
+        # The legacy supplement merger invokes ligolw_add and is XML-only.
+        # Hyperpipe bootstrap conversion already emits one complete named grid.
+        if not self._uses_hyperpipe():
+            arguments.append("--manual-initial-grid-supplements")
+        return arguments
+
+    def _write_hyperpipe_bootstrap(self, xml_file, grid_file):
+        """Convert a legacy bootstrap XML into Hyperpipe's named ASCII grid.
+
+        The established posterior converter remains the single place which
+        interprets PESummary columns.  This final, lossless adapter only
+        changes the pipeline interchange format and preserves optional
+        eccentricity/tidal columns when they are populated.
+        """
+        import lal
+        import RIFT.lalsimutils as lalsimutils
+        from RIFT.misc import hyperpipeline_io
+
+        points = lalsimutils.xml_to_ChooseWaveformParams_array(xml_file)
+        if not points:
+            raise PipelineException(
+                "RIFT bootstrap: converter produced no points in {}".format(
+                    xml_file))
+
+        waveform = self.production.meta.get("waveform", {})
+        likelihood = self.production.meta.get("likelihood", {})
+        approximant = waveform.get("approximant")
+        fmin = likelihood.get("start frequency")
+        fref = waveform.get("reference frequency", fmin)
+        amp_order = waveform.get("pn amplitude order", -1)
+        for point in points:
+            if fmin is not None:
+                point.fmin = float(fmin)
+            if fref is not None:
+                point.fref = float(fref)
+            point.ampO = int(amp_order)
+
+        def any_nonzero(attribute):
+            return any(abs(float(getattr(point, attribute, 0.0))) > 0
+                       for point in points)
+
+        use_eccentricity = any_nonzero("eccentricity")
+        use_tides = any_nonzero("lambda1") or any_nonzero("lambda2")
+        use_eos_index = use_tides and any_nonzero("eos_table_index")
+        columns = hyperpipeline_io.build_column_list(
+            use_eccentricity=use_eccentricity,
+            use_meanPerAno=(use_eccentricity and any_nonzero("meanPerAno")),
+            use_tides=use_tides,
+            use_eos_index=use_eos_index,
+        )
+        hyperpipeline_io.write_grid_from_P_list(
+            grid_file, points, columns, lal_module=lal,
+            lalsimutils_module=lalsimutils,
+            metadata_overrides={"approx": approximant})
+
     def after_completion(self):
         if PESummaryPipeline is None:
             self.logger.info(
@@ -704,12 +785,13 @@ class Rift(Pipeline):
             self.logger.info("  Bootstrap requested, attempting with file {}".format(posterior_file) )                        
             if posterior_file:
                 # convert posterior samples to temp location
-                bootstrap_file = os.path.join(
+                bootstrap_xml_file = os.path.join(
                         self.production.event.repository.directory,
                         "C01_offline",
                         f"{self.production.name}_bootstrap.xml.gz",
                     )
-                bootstrap_file_ascii = str(bootstrap_file) + "_ascii"
+                bootstrap_file = self._bootstrap_grid_path()
+                bootstrap_file_ascii = str(bootstrap_xml_file) + "_ascii"
                 # test if bootstrap file already exists
                 if not self._reuse_existing_bootstrap(
                         bootstrap_file, posterior_file):
@@ -727,7 +809,10 @@ class Rift(Pipeline):
                        if 'bootstrap size' in self.production.meta['scheduler']:
                                bootstrap_size = int(self.production.meta['scheduler']['bootstrap size'])
                                extra_args += " --target-size {} ".format(bootstrap_size)
-                       os.system("convert_output_format_inference2ile --posterior-samples {} --output {} {} ".format(bootstrap_file_ascii, bootstrap_file, extra_args) )
+                       os.system("convert_output_format_inference2ile --posterior-samples {} --output {} {} ".format(bootstrap_file_ascii, bootstrap_xml_file, extra_args) )
+                       if self._uses_hyperpipe():
+                           self._write_hyperpipe_bootstrap(
+                               bootstrap_xml_file, bootstrap_file)
                 self.bootstrap="manual"
                 # as needed, parse bootstrap file for signal
                 if 'bootstrap amplitude' in self.production.meta['scheduler']:
@@ -742,7 +827,7 @@ class Rift(Pipeline):
                         self.production.event.repository.directory,
                         "C01_offline",
                         'coinc.xml')
-                    os.system("util_SimInspiralToCoinc.py --sim-xml {} --output {} ".format(bootstrap_file, coinc_file) )
+                    os.system("util_SimInspiralToCoinc.py --sim-xml {} --output {} ".format(bootstrap_xml_file, coinc_file) )
                     
         command += [
             "--calibration",
@@ -775,16 +860,9 @@ class Rift(Pipeline):
 
         if self.bootstrap:
             if self.bootstrap == "manual":
-                if self.production.event.repository:
-                    bootstrap_file = os.path.join(
-                        self.production.event.repository.directory,
-                        "C01_offline",
-                        f"{self.production.name}_bootstrap.xml.gz",
-                    )
-                    if bootstrap_file[0] != '/': # need absolute path!
-                        bootstrap_file = os.getcwd() + "/" + bootstrap_file
-                else:
-                    bootstrap_file = "{self.production.name}_bootstrap.xml.gz"
+                bootstrap_file = self._bootstrap_grid_path()
+                if bootstrap_file[0] != '/': # need absolute path!
+                    bootstrap_file = os.getcwd() + "/" + bootstrap_file
             else:
                 raise PipelineException(
                     f"Unable to find the bootstrapping production for {self.production.name}.",
@@ -792,7 +870,7 @@ class Rift(Pipeline):
                     production=self.production.name,
                 )
 
-            command += ["--manual-initial-grid", bootstrap_file, "--manual-initial-grid-supplements"]
+            command += self._manual_grid_arguments(bootstrap_file)
 
         if "scheduler" in self.production.meta:
             if "osg" in self.production.meta["scheduler"]:
@@ -831,7 +909,7 @@ class Rift(Pipeline):
                             production=self.production.name,
                         )
                 else:
-                    dagfile = os.path.join(rundir,'marginalize_intrinsic_parameters_BasicIterationWorkflow.dag')
+                    dagfile = os.path.join(rundir, self._dag_filename())
                     if not(os.path.exists(dagfile)):
                         self.production.status = "stuck"
                         self.logger.info(out) #, production=self.production)
@@ -900,7 +978,7 @@ class Rift(Pipeline):
             "condor_submit_dag",
             "-batch-name",
             f"rift/{self.production.event.name}/{self.production.name}",
-            "marginalize_intrinsic_parameters_BasicIterationWorkflow.dag",
+            self._dag_filename(),
         ]
         priority = (self.production.meta.get("scheduler") or {}).get("priority")
         if priority is not None:
@@ -971,20 +1049,20 @@ class Rift(Pipeline):
             glob.glob(
                 os.path.join(
                     self.production.rundir,
-                    "marginalize_intrinsic_parameters_BasicIterationWorkflow.dag.rescue*",
+                    self._dag_filename() + ".rescue*",
                 )
             )
         )
         # check if dagman.out  newer than rescue - job has not really died? Prevent superfluous restarts!
         time_mod_out = os.path.getmtime(                os.path.join(
                     self.production.rundir,
-                    "marginalize_intrinsic_parameters_BasicIterationWorkflow.dag.dagman.out",
+                    self._dag_filename() + ".dagman.out",
                 ))
         if count > 0:
             last_rescue =        glob.glob(
                 os.path.join(
                     self.production.rundir,
-                    "marginalize_intrinsic_parameters_BasicIterationWorkflow.dag.rescue*",
+                    self._dag_filename() + ".rescue*",
                 )
                 )
             last_rescue.sort()
@@ -1002,7 +1080,7 @@ class Rift(Pipeline):
                 glob.glob(
                     os.path.join(
                         self.production.rundir,
-                        "marginalize_intrinsic_parameters_BasicIterationWorkflow.dag.rescue*",
+                        self._dag_filename() + ".rescue*",
                     )
                 )
             )

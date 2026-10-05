@@ -61,6 +61,15 @@ import argparse
 import sys
 import os
 import shutil
+
+if str(os.environ.get("RIFT_HYPERPIPELINE_FORMAT", "")).strip().lower() in (
+        "1", "true", "yes", "on"):
+    raise SystemExit(
+        "create_event_parameter_pipeline_AlternateIteration: "
+        "RIFT_HYPERPIPELINE_FORMAT is unsupported; this legacy builder is "
+        "XML-only. Unset RIFT_HYPERPIPELINE_FORMAT or select "
+        "--pipeline-builder Hyperpipe.")
+
 import numpy as np
 import RIFT.lalsimutils as lalsimutils
 import lalsimulation as lalsim

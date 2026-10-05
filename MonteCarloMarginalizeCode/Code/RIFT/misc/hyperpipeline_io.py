@@ -85,13 +85,17 @@ GRID_METADATA_FIELDS = ("ampO", "phaseO", "fmin", "fref", "taper", "radec",
                         "approx")
 
 
-def _format_metadata(P):
+def _format_metadata(P, overrides=None):
     """Render the per-grid waveform settings of *P* as a header line."""
+    overrides = overrides or {}
     items = []
     for name in GRID_METADATA_FIELDS:
-        if not hasattr(P, name):
+        if name in overrides:
+            value = overrides[name]
+        elif hasattr(P, name):
+            value = getattr(P, name)
+        else:
             continue
-        value = getattr(P, name)
         if value is None:
             continue
         items.append("{}={}".format(name, value))
@@ -128,8 +132,14 @@ def parse_metadata(fname):
 
 
 def _coerce_metadata_value(name, text):
-    if name in ("ampO", "phaseO", "approx"):
+    if name in ("ampO", "phaseO"):
         return int(text)
+    if name == "approx":
+        try:
+            return int(text)
+        except ValueError:
+            # gwsignal models need not have a LALSimulation integer enum.
+            return text
     if name in ("fmin", "fref"):
         return float(text)
     if name == "radec":
@@ -340,7 +350,8 @@ def write_table(fname, columns, data):
     np.savetxt(fname, arr, header=header)
 
 
-def write_table_with_metadata(fname, columns, data, P=None):
+def write_table_with_metadata(fname, columns, data, P=None,
+                              metadata_overrides=None):
     """:func:`write_table`, plus the per-grid waveform settings taken from *P*."""
     columns = tuple(columns)
     arr = np.asarray(data, dtype=float)
@@ -352,7 +363,7 @@ def write_table_with_metadata(fname, columns, data, P=None):
             "header has {}".format(arr.shape[1], len(columns)))
     header = MAGIC
     if P is not None:
-        rendered = _format_metadata(P)
+        rendered = _format_metadata(P, metadata_overrides)
         if rendered:
             header += "\n" + META_MAGIC + " " + rendered
     header += "\n" + " ".join(columns)
@@ -756,7 +767,8 @@ def with_grid_suffix(fname):
 
 def write_grid_from_P_list(fname, P_list, columns,
                            lal_module=None, lalsimutils_module=None,
-                           lnL_values=None, sigma_lnL_values=None):
+                           lnL_values=None, sigma_lnL_values=None,
+                           metadata_overrides=None):
     """Write a hyperpipeline grid file from a list of ChooseWaveformParams.
 
     Used by CIP / puffball / fetch when emitting the next-iteration
@@ -818,7 +830,8 @@ def write_grid_from_P_list(fname, P_list, columns,
             else:
                 mat[i, j] = float(raw)
     write_table_with_metadata(fname, columns, mat,
-                              P=P_list[0] if len(P_list) else None)
+                              P=P_list[0] if len(P_list) else None,
+                              metadata_overrides=metadata_overrides)
 
 
 def read_grid_to_P_list(fname, P_factory, lal_module=None,

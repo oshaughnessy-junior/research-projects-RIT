@@ -330,5 +330,114 @@ def test_existing_bootstrap_requires_explicit_unprovenanced_reuse(tmp_path):
         str(bootstrap), "new-posterior.h5") is True
 
 
+@pytest.mark.parametrize("builder,suffix", [
+    ("Hyperpipe", "_bootstrap.dat"),
+    ("hyperpipe", "_bootstrap.dat"),
+    ("BasicIteration", "_bootstrap.xml.gz"),
+    (None, "_bootstrap.xml.gz"),
+])
+def test_bootstrap_grid_path_follows_selected_builder(tmp_path, builder, suffix):
+    pipeline = {} if builder is None else {"pipeline-builder": builder}
+    production = types.SimpleNamespace(
+        name="rift-bootstrap", category="C01_offline",
+        event=types.SimpleNamespace(
+            repository=types.SimpleNamespace(directory=str(tmp_path))),
+        meta={"scheduler": {"pipeline": pipeline}},
+    )
+
+    path = _pipe(production)._bootstrap_grid_path()
+
+    assert path.endswith(os.path.join("C01_offline", "rift-bootstrap" + suffix))
+
+
+@pytest.mark.parametrize("builder,expected", [
+    ("Hyperpipe", "marginalize_hyperparameters.dag"),
+    ("hyperpipe", "marginalize_hyperparameters.dag"),
+    ("BasicIteration",
+     "marginalize_intrinsic_parameters_BasicIterationWorkflow.dag"),
+    (None, "marginalize_intrinsic_parameters_BasicIterationWorkflow.dag"),
+])
+def test_dag_filename_follows_selected_builder(builder, expected):
+    pipeline = {} if builder is None else {"pipeline-builder": builder}
+    production = types.SimpleNamespace(
+        name="rift-dag", category="C01_offline",
+        meta={"scheduler": {"pipeline": pipeline}},
+    )
+
+    assert _pipe(production)._dag_filename() == expected
+
+
+@pytest.mark.parametrize("builder,expected", [
+    ("Hyperpipe", ["--manual-initial-grid", "/tmp/bootstrap.dat"]),
+    ("BasicIteration", ["--manual-initial-grid", "/tmp/bootstrap.xml.gz",
+                        "--manual-initial-grid-supplements"]),
+])
+def test_manual_grid_arguments_omit_xml_supplements_for_hyperpipe(
+        builder, expected):
+    production = types.SimpleNamespace(
+        name="rift-bootstrap", category="C01_offline",
+        meta={"scheduler": {"pipeline": {"pipeline-builder": builder}}},
+    )
+
+    assert _pipe(production)._manual_grid_arguments(expected[1]) == expected
+
+
+def test_hyperpipe_bootstrap_writer_emits_named_grid(tmp_path, monkeypatch):
+    class _Point:
+        m1 = 10.0
+        m2 = 8.0
+        s1x = 0.1
+        s1y = 0.0
+        s1z = 0.2
+        s2x = 0.0
+        s2y = 0.0
+        s2z = -0.1
+        eccentricity = 0.01
+        meanPerAno = 0.3
+        lambda1 = 0.0
+        lambda2 = 0.0
+
+    import RIFT.lalsimutils as lalsimutils
+    from RIFT.misc import hyperpipeline_io
+
+    monkeypatch.setattr(
+        lalsimutils, "xml_to_ChooseWaveformParams_array",
+        lambda path: [_Point()])
+    calls = []
+
+    def capture(path, points, columns, **kwargs):
+        calls.append((path, points, columns, kwargs))
+
+    monkeypatch.setattr(hyperpipeline_io, "write_grid_from_P_list", capture)
+    target = tmp_path / "bootstrap.dat"
+    production = types.SimpleNamespace(
+        name="rift-bootstrap", category="C01_offline",
+        meta={
+            "scheduler": {"pipeline": {"pipeline-builder": "Hyperpipe"}},
+            "waveform": {
+                "approximant": "IMRPhenomD", "pn amplitude order": -1,
+                "reference frequency": 20.0,
+            },
+            "likelihood": {"start frequency": 19.68},
+        },
+    )
+
+    _pipe(production)._write_hyperpipe_bootstrap(
+        "bootstrap.xml.gz", str(target))
+
+    assert len(calls) == 1
+    assert calls[0][0] == str(target)
+    assert calls[0][2][:2] == ("lnL", "sigma_lnL")
+    assert "eccentricity" in calls[0][2]
+    assert "meanPerAno" in calls[0][2]
+    assert "lambda1" not in calls[0][2]
+    point = calls[0][1][0]
+    assert point.ampO == -1
+    assert point.fmin == 19.68
+    assert point.fref == 20.0
+    assert calls[0][3]["metadata_overrides"] == {
+        "approx": "IMRPhenomD"}
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([os.path.abspath(__file__), "-v"]))

@@ -212,9 +212,10 @@ def test_ile_submit_builder_can_stage_candidate_executable(
     job.set_sub_file(str(tmp_path / "staged.sub"))
     job.write_sub_file()
     submit = (tmp_path / "staged.sub").read_text()
-    assert "executable = {}".format(worker) in submit
+    assert "executable = ./candidate-worker" in submit
     assert "executable = /container/bin/candidate-worker" not in submit
-    assert "transfer_executable = False" not in submit
+    assert "transfer_executable = False" in submit
+    assert str(worker) in submit
 
 
 def test_container_executable_base_does_not_require_trailing_slash(
@@ -250,9 +251,10 @@ def test_hyperpost_submit_can_stage_candidate_executable(
     job.set_sub_file(str(tmp_path / "staged_post.sub"))
     job.write_sub_file()
     submit = (tmp_path / "staged_post.sub").read_text()
-    assert "executable = {}".format(worker) in submit
+    assert "executable = ./candidate-post" in submit
     assert "executable = /container/bin/candidate-post" not in submit
-    assert "transfer_executable = False" not in submit
+    assert "transfer_executable = False" in submit
+    assert str(worker) in submit
     assert "hyperpipeline_io.py" in submit
 
 

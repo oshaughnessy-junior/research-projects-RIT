@@ -3274,6 +3274,15 @@ def write_ILE_sub_simple(tag='integrate', exe=None, log_dir=None, use_eos=False,
 #            singularity_base_exe_path = "/opt/lscsoft/rift/MonteCarloMarginalizeCode/Code/"  # should not hardcode this ...!
             singularity_base_exe_path = "/usr/bin/"  # should not hardcode this ...!
         if transfer_executable:
+            # Do not rely on HTCondor's special executable transfer when the
+            # job will enter a container.  Some OSG execute points place that
+            # payload outside the directory mounted into the container (for
+            # example under /srv/scratch), so the job starts but cannot exec
+            # it.  Transfer the candidate as an ordinary sandbox input and run
+            # the sandbox-relative path instead.  This also works when an ILE
+            # pre-script becomes the outer executable below.
+            extra_files.append(exe)
+            exe = "./" + exe_base
             singularity_inner_exe = "./" + exe_base
         else:
             exe = os.path.join(singularity_base_exe_path, exe_base)
@@ -3450,7 +3459,10 @@ echo Starting ...
             # and it invokes apptainer itself, so do not ask HTCondor to enter
             # singularity or suppress executable transfer.
             pass
-        elif not transfer_executable:
+        else:
+            # Container jobs either use the image's executable or receive a
+            # candidate through transfer_input_files.  In neither case should
+            # HTCondor perform its separate executable-transfer operation.
             ile_job.add_condor_cmd('transfer_executable', 'False')
         if singularity_container_universe:
             # Container universe: the per-machine image is delivered via
@@ -6037,7 +6049,13 @@ def write_hyperpost_sub(tag='HYPER', exe=None, input_net='all.marg_net',output='
         singularity_base_exe_path = "/usr/bin/"  # should not hardcode this ...!
         if 'SINGULARITY_BASE_EXE_DIR' in list(os.environ.keys()) :
             singularity_base_exe_path = os.environ['SINGULARITY_BASE_EXE_DIR']
-        if not transfer_executable:
+        if transfer_executable:
+            # See write_ILE_sub_simple: ordinary input transfer keeps the
+            # candidate visible inside the container's working directory on
+            # OSG execute points.
+            transfer_files_here.append(exe)
+            exe = "./" + path_split[-1]
+        else:
             exe = os.path.join(singularity_base_exe_path, path_split[-1])
             if path_split[-1] == 'true':  # special universal path for /bin/true, don't override it!
                 exe = "/usr/bin/true"
@@ -6128,8 +6146,7 @@ def write_hyperpost_sub(tag='HYPER', exe=None, input_net='all.marg_net',output='
     if use_singularity:
         # Compare to https://github.com/lscsoft/lalsuite/blob/master/lalinference/python/lalinference/lalinference_pipe_utils.py
         ile_job.add_condor_cmd('request_CPUs', str(1))
-        if not transfer_executable:
-            ile_job.add_condor_cmd('transfer_executable', 'False')
+        ile_job.add_condor_cmd('transfer_executable', 'False')
         ile_job.add_condor_cmd("MY.SingularityBindCVMFS", 'True')
         ile_job.add_condor_cmd(
             "MY.SingularityImage", '"' + singularity_image_used + '"')

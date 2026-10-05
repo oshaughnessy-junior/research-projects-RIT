@@ -245,17 +245,21 @@ def _assert_osg_data_free_contract(rundir: Path):
     assert "precmd" not in commands
     assert "+precmd" not in commands
     assert "hyperpipeline_io.py" in transferred
-    assert commands.get("transfer_executable", "true").lower() != "false"
-    assert commands["executable"] == str(
-        BIN / "integrate_likelihood_extrinsic_batchmode")
+    assert commands.get("transfer_executable", "true").lower() == "false"
+    assert commands["executable"] == "./integrate_likelihood_extrinsic_batchmode"
+    assert str(BIN / "integrate_likelihood_extrinsic_batchmode") in transferred
     assert "--zero-likelihood-data-free" in marg_submit
     assert "use_oauth_services = scitokens" in marg_submit
     assert "rift-test.sif" in marg_submit
     post_commands = _read_submit(rundir / "EOS_POST_worker_0.sub")
-    assert post_commands["executable"] == str(
-        BIN / "util_ConstructIntrinsicPosterior_GenericCoordinates.py")
-    assert post_commands.get("transfer_executable", "true").lower() != "false"
-    assert "/RIFT" in post_commands.get("transfer_input_files", "")
+    post_transferred = post_commands.get("transfer_input_files", "")
+    assert post_commands["executable"] == (
+        "./util_ConstructIntrinsicPosterior_GenericCoordinates.py")
+    assert post_commands.get("transfer_executable", "true").lower() == "false"
+    assert str(
+        BIN / "util_ConstructIntrinsicPosterior_GenericCoordinates.py"
+    ) in post_transferred
+    assert "/RIFT" in post_transferred
 
 
 def _parse_dag(path: Path):

@@ -126,6 +126,7 @@ pytest_lane core-unit  "$CODE/test/test_worker_partition.py" \
                        "$CODE/test/test_container_exe_paths.py" \
                        "$CODE/test/test_convergence_exit_codes.py" \
                        "$CODE/test/test_ile_early_exit_order.py" \
+                       "$CODE/test/test_alternate_iteration_format_guard.py" \
                        "$CODE/test/test_pseudo_pipe_option_precedence.py" \
                        "$CODE/test/test_database.py" \
                        "$CODE/test/test_eos_posterior_header.py" \
