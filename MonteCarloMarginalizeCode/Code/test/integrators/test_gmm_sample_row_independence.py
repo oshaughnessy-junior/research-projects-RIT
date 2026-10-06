@@ -28,11 +28,12 @@ def _restore_numpy_rng():
     np.random.set_state(state)
 
 
-def _model(means=MEANS, sigmas=SIGMAS, weights=WEIGHTS):
-    m = GMM.gmm(len(weights), BOUNDS_1D.copy())
-    m.means = [np.array([mu]) for mu in means]
-    m.covariances = [np.array([[s ** 2]]) for s in sigmas]
-    m.weights = np.array(weights, dtype=float)
+def _model(means=MEANS, sigmas=SIGMAS, weights=WEIGHTS, xpy=np):
+    """Host model by default.  Pass the integrator's backend when the model goes into one."""
+    m = GMM.gmm(len(weights), xpy.asarray(BOUNDS_1D))
+    m.means = [xpy.asarray([mu]) for mu in means]
+    m.covariances = [xpy.asarray([[s ** 2]]) for s in sigmas]
+    m.weights = xpy.asarray(weights, dtype=float)
     m.adapt = [False] * len(weights)
     m.d = 1
     m.N = 0
@@ -41,11 +42,13 @@ def _model(means=MEANS, sigmas=SIGMAS, weights=WEIGHTS):
 
 def _draw(n, seed):
     np.random.seed(seed)
-    gmm_dict = {(0,): _model(), (1,): _model()}
-    bounds = {(0,): BOUNDS_1D[0], (1,): BOUNDS_1D[0]}
+    xpy = monte_carlo.xpy_default   # cupy wherever a device is visible
+    gmm_dict = {(0,): _model(xpy=xpy), (1,): _model(xpy=xpy)}
+    bounds = {(0,): xpy.asarray(BOUNDS_1D[0]), (1,): xpy.asarray(BOUNDS_1D[0])}
     integ = monte_carlo.integrator(2, bounds, gmm_dict, 3, n=n, user_func=None, L_cutoff=None)
     integ._sample()
-    return np.asarray(integ.sample_array), np.asarray(integ.sampling_prior_array)
+    host = monte_carlo.identity_convert
+    return host(integ.sample_array), host(integ.sampling_prior_array)
 
 
 def _mean_and_err(v):
@@ -56,8 +59,9 @@ def _norm_pdf(x, mu, sigma):
     return np.exp(-0.5 * ((x - mu) / sigma) ** 2) / (np.sqrt(2 * np.pi) * sigma)
 
 
-# Measured 2026-10-06, seeds 0-7: with the fix |mean-1|/err <= 2.4 for both checks below
-# (err ~0.02); without it E[1/(vol q)] = 5.3-5.4 and the evidence 0.38-0.45.
+# Measured 2026-10-06 on the host backend, seeds 0-39: with the fix max |mean-1|/err is 2.6
+# (inverse density) and 3.5 (evidence), err ~0.02; without it E[1/(vol q)] = 5.3-5.4 and the
+# evidence 0.38-0.45.
 N = 100000
 SEEDS = (3, 5, 7, 11)
 
