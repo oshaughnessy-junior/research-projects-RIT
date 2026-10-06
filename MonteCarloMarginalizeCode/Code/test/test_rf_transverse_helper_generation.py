@@ -130,3 +130,40 @@ def test_unforced_opt_in_builds_the_explicit_rf_initial_grid(monkeypatch,tmp_pat
     assert grids
     assert unforced['commands']==explicit['commands']
     assert unforced['lines']==explicit['lines']
+
+
+def test_lossless_q_convergence_and_final_stages(monkeypatch,tmp_path):
+    result=generate(monkeypatch,tmp_path,'lossless-q',10,'rf',extra=[
+        '--internal-use-aligned-phase-coordinates', '--propose-converge-last-stage',
+        '--last-iteration-extrinsic', '--propose-ile-convergence-options',
+        '--internal-ile-interpolate-time', 'cubic'])
+    # The strong-bootstrap profile keeps exactly these last two rows.
+    internal,final=result['lines'][-2:]
+    assert internal.split()[0]=='Z' and final.split()[0]=='1'
+    from RIFT.misc.rf_transverse_spin import stage_problem
+    for line in (internal,final):
+        assert '--rf-transverse-spin-coordinates lossless-q --fref 35.0' in line
+        assert stage_problem(line) is None
+        assert '--parameter-nofit phi1' in line and '--parameter-nofit phi2' in line
+    assert all('--rf-transverse-spin-coordinates' not in line for line in result['lines'][:-2])
+    # Execute the real pseudo_pipe passthrough blocks on these helper arguments.
+    import ast
+    from types import SimpleNamespace
+    tree=ast.parse((ROOT/'bin/util_RIFT_pseudo_pipe.py').read_text())
+    blocks=[n for n in tree.body if isinstance(n,ast.If)
+        and ast.unparse(n.test) in ('opts.internal_ile_sky_network_coordinates',
+            "opts.ile_no_gpu or opts.ile_sampler_method == 'AV'")]
+    assert len(blocks)==2
+    namespace={'line':result['ile'],'opts':SimpleNamespace(
+        internal_ile_sky_network_coordinates=True,ile_no_gpu=False,ile_sampler_method='AV')}
+    exec(compile(ast.Module(body=blocks,type_ignores=[]),'ile-passthrough','exec'),namespace)
+    tokens=namespace['line'].split()
+    for flag in ['--time-marginalization','--vectorized','--gpu','--force-xpy',
+                 '--internal-sky-network-coordinates']:
+        assert flag in tokens
+    assert tokens[tokens.index('--interpolate-time')+1]=='cubic'
+
+
+def test_lossless_q_rejects_non_rf_helper(monkeypatch,tmp_path):
+    with pytest.raises(ValueError,match='No complete two-spin RF stage'):
+        generate(monkeypatch,tmp_path,'lossless-q',10,'gp')

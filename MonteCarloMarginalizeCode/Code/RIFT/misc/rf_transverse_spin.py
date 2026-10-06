@@ -108,7 +108,8 @@ def stage_arguments(line, mode, detector_chirp_mass, applicable, frequency):
     if '--fref' in tokens:
         i=tokens.index('--fref'); del tokens[i:i+2]
         line=' '.join(shlex.quote(t) for t in tokens)
-    return line+' --rf-transverse-spin-coordinates physics3 --fref '+str(float(frequency))
+    active_mode = 'lossless-q' if mode == 'lossless-q' else 'physics3'
+    return line+' --rf-transverse-spin-coordinates '+active_mode+' --fref '+str(float(frequency))
 
 
 def stage_problem(line):
@@ -140,12 +141,12 @@ def stage_problem(line):
 
 def enabled(mode, detector_chirp_mass, applicable):
     """Resolve the opt-in policy before constructing the native phase-fit schedule."""
-    if mode not in (None,'off','auto','physics3'):
+    if mode not in (None,'off','auto','physics3','lossless-q'):
         raise ValueError('Unknown RF transverse-spin mode')
     if mode in (None,'off'):
         return False
     if not applicable:
-        if mode == 'physics3':
+        if mode in ('physics3','lossless-q'):
             raise ValueError('RF transverse-spin coordinates require a precessing BBH analysis')
         return False
     try: mc=float(detector_chirp_mass) if not isinstance(detector_chirp_mass,(bool,np.bool_)) else float('nan')

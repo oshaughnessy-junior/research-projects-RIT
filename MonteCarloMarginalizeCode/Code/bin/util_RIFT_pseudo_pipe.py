@@ -18,6 +18,7 @@ import numpy as np
 import argparse
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import lal
@@ -601,7 +602,7 @@ parser.add_argument("--internal-cip-cap-neff",type=int,default=500,help="Largest
 # The shipped default caps that net count via --internal-cip-cap-neff=500 and n-output-samples=5000,
 # and stops on the tail-blind Gaussian 'lame' convergence test -> chi1_perp under-extends vs bilby.
 # This opt-in bundle lifts the NET samples-out and switches to a tail-sensitive stop.
-parser.add_argument("--rf-transverse-spin-coordinates", choices=["off","auto","physics3"], default=None, help="Pass opt-in RF-only transverse fitting scalars to every applicable full precessing stage")
+parser.add_argument("--rf-transverse-spin-coordinates", choices=["off","auto","physics3","lossless-q"], default=None, help="Pass opt-in RF-only transverse fitting scalars to every applicable full precessing stage")
 parser.add_argument("--internal-cip-transverse-tails",action='store_true',help="OPT-IN alt config for resolving transverse-spin (chi1_perp) tails, esp. at low mass. Bundles: (a) tail-sensitive convergence test (passes --internal-test-convergence-method js_lame to helper_LDG_Events.py, unless overridden); (b) raises the NET interim posterior samples across the CIP worker cohort by lifting --internal-cip-cap-neff and --n-output-samples and scaling up --cip-explode-jobs (MORE WORKERS -> more net samples-out, NOT larger per-worker n_eff) -- the raised interim sample count is what makes js_lame's quantile-drift tolerance statistically meaningful; (c) transverse TAIL-GUARD in the puffball: --append-with-random-parameter chi1_perp appends+shuffles uniformly-random transverse draws into every puff, so the proposed grid keeps offering chi1_perp tail coverage even after the posterior contracts (the measured tail-starvation feedback), and puff is kept active through all iterations. REQUIRES A PRECESSING ANALYSIS (precessing approximant or --assume-precessing): the tail guard proposes nonzero transverse spin, so combining this with --assume-nospin/--assume-nonprecessing or an aligned-spin approximant is REJECTED rather than silently changing the spin model analyzed. Tune with the --internal-cip-transverse-tails-* flags. Default OFF (behavior unchanged). See results_triage/CONVERGENCE_PROTOCOL_2026-07-23.md.")
 parser.add_argument("--internal-cip-transverse-tails-cap-neff",type=int,default=4000,help="With --internal-cip-transverse-tails: raise --internal-cip-cap-neff to at least this (the interim net-n_eff throttle; shipped base is 500).")
 parser.add_argument("--internal-cip-transverse-tails-nout",type=int,default=20000,help="With --internal-cip-transverse-tails: raise interim --n-output-samples to at least this (net samples out, combined across workers).")
@@ -655,6 +656,7 @@ parser.add_argument("--use-osg",action='store_true',help="Restructuring for ILE 
 parser.add_argument("--use-osg-cip",action='store_true',help="Restructuring for ILE on OSG. The code by default will use CVMFS")
 parser.add_argument("--use-osg-file-transfer",action='store_true',help="Restructuring for ILE on OSG. The code will NOT use CVMFS, and instead will try to transfer the frame files.")
 parser.add_argument("--internal-use-oauth-files",default=None,type=str,help="Option for low level pipeline writer to use scitokens. Useful if files on osdf need to be transferred, like containers ")
+parser.add_argument("--internal-staged-frames-directory", default=None, help="Copy verified local frames from this directory into the new run, bypassing frame truncation.")
 parser.add_argument("--internal-truncate-files-for-osg-file-transfer",action='store_true',help="If use-osg-file-transfer, will use FrCopy plus the start/end time to build the frame directory.")
 parser.add_argument("--condor-local-nonworker",action='store_true',help="Provide this option if job will run in non-NFS space. ")
 parser.add_argument("--condor-local-nonworker-igwn-prefix",action='store_true', help="Adds some prefix text to start up cvmfs igwn environment, so local jobs have access to standard RIFT operators. Required for public OSG.")
@@ -1119,6 +1121,10 @@ if opts.use_rundir:
     dirname_run = opts.use_rundir
 os.mkdir(dirname_run)
 os.chdir(dirname_run)
+if opts.internal_staged_frames_directory:
+    if opts.internal_truncate_files_for_osg_file_transfer:
+        raise ValueError("Staged frames and automatic frame truncation are mutually exclusive")
+    shutil.copytree(os.path.abspath(opts.internal_staged_frames_directory), "frames_dir")
 
 
 if not(opts.use_ini is None):
@@ -1339,8 +1345,9 @@ if opts.internal_test_convergence_threshold: # pass argument if provided
 # Options that rewrite the CIP fit coordinates after the helper; physics3 needs delta_mc et al.
 rf_transverse_conflicts = [name for name in ('cip_internal_use_eta_in_sampler','hierarchical_merger_prior_1g',
     'hierarchical_merger_prior_2g','use_quadratic_early') if getattr(opts, name)]
-if opts.rf_transverse_spin_coordinates == 'physics3' and rf_transverse_conflicts:
-    raise ValueError('--rf-transverse-spin-coordinates physics3 is incompatible with {}: they replace delta_mc in the activated CIP stage'.format(
+if opts.rf_transverse_spin_coordinates in ('physics3','lossless-q') and rf_transverse_conflicts:
+    raise ValueError('--rf-transverse-spin-coordinates {} is incompatible with {}: they replace delta_mc in the activated CIP stage'.format(
+        opts.rf_transverse_spin_coordinates,
         ', '.join('--'+name.replace('_','-') for name in rf_transverse_conflicts)))
 if opts.rf_transverse_spin_coordinates:
     cmd += ' --rf-transverse-spin-coordinates {} '.format(opts.rf_transverse_spin_coordinates)
@@ -2163,12 +2170,13 @@ if opts.internal_use_amr:
 if opts.rf_transverse_spin_coordinates:
     from RIFT.misc.rf_transverse_spin import stage_problem
     for indx_rf, line_rf in enumerate(lines):
-        if '--rf-transverse-spin-coordinates physics3' in line_rf and stage_problem(line_rf):
+        if any('--rf-transverse-spin-coordinates '+mode in line_rf for mode in ('physics3','lossless-q')) and stage_problem(line_rf):
             raise ValueError('RF transverse-spin stage {} activated but CIP would refuse it ({}); conflicting options: {}'.format(
                 indx_rf, stage_problem(line_rf), ', '.join('--'+name.replace('_','-') for name in rf_transverse_conflicts) or 'see --manual-extra-cip-args'))
 with open("args_cip_list.txt",'w') as f:
    if not(opts.internal_truncate_cip_arg_list is None):
        lines = lines[-opts.internal_truncate_cip_arg_list:]  # truncate the cip arg list file
+       n_iterations = sum(1 if line.split()[0] == "Z" else int(line.split()[0].lstrip("G")) for line in lines)
    # The final CIP group produces both the published posterior and the downstream grid,
    # so it gets the duplicate-free fair draw (capped at sum(w)/max(w)).  Internal
    # iterations keep the fair draw with duplicates allowed, so successive iterations feed

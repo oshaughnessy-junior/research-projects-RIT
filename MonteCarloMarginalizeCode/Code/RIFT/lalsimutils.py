@@ -414,7 +414,79 @@ def lsu_StringFromPNOrder(order):
 # Class to hold arguments of ChooseWaveform functions
 #
 
-valid_params = ['m1', 'm2', 's1x', 's1y', 's1z', 's2x', 's2y', 's2z', 'chi1_perp', 'chi2_perp', 'chi1_perp_bar', 'chi2_perp_bar','chi1_perp_u', 'chi2_perp_u', 's1z_bar', 's2z_bar', 'lambda1', 'lambda2', 'theta','phi', 'phiref',  'psi', 'incl', 'tref', 'dist', 'mc', 'mc_ecc', 'eta', 'delta_mc', 'chi1', 'chi2', 'thetaJN', 'phiJL', 'theta1', 'theta2', 'cos_theta1', 'cos_theta2',  'theta1_Jfix', 'theta2_Jfix', 'psiJ', 'beta', 'cos_beta', 'sin_phiJL', 'cos_phiJL', 'phi12', 'phi1', 'phi2', 'LambdaTilde', 'DeltaLambdaTilde', 'lambda_plus', 'lambda_minus', 'q', 'mtot','xi','chiz_plus', 'chiz_minus', 'chieff_aligned','fmin','fref', "SOverM2_perp", "SOverM2_L", "DeltaOverM2_perp", "DeltaOverM2_L", "shu","ampO", "phaseO",'eccentricity','eccentricity_squared','eccentricity_ln', 'chi_pavg','mu1','mu2','eos_table_index','meanPerAno','a6c','E0','p_phi0','hypclass']
+PRECESSION_Q_COORDINATES = ('precession_Q', 'precession_phiT',
+                          'precession_Rparallel', 'precession_Rperp')
+
+
+def _precession_q_geometry(m1, m2, z1, z2, reference_frequency):
+    m1, m2, z1, z2, frequency = np.broadcast_arrays(
+        np.asarray(m1, float), np.asarray(m2, float), np.asarray(z1, float),
+        np.asarray(z2, float), np.asarray(reference_frequency, float))
+    if (not all(np.isfinite(x).all() for x in (m1, m2, z1, z2, frequency))
+            or np.any(m1 < m2) or np.any(m2 <= 0) or np.any(frequency <= 0)):
+        raise ValueError('Require finite m1>=m2>0, aligned spins, and f_ref>0')
+    q = m2 / m1
+    w1, w2 = 1 / (1 + q)**2, q**2 / (1 + q)**2
+    eta = q / (1 + q)**2
+    v = (np.pi * (m1 + m2) * lal.MTSUN_SI * frequency)**(1 / 3)
+    L = eta / v
+    D = L + w1 * z1 + w2 * z2
+    return w1, w2, np.hypot(w1, w2), L, D
+
+
+def precession_q_forward(m1, m2, spin1, spin2, reference_frequency=20.):
+    """Return (Q, phi_T, R_parallel, R_perp) from dimensionless L-frame spins.
+
+    Masses are in solar masses. Q=(J-D)/L; the azimuth is about L, not J.
+    phi_T is in [-pi,pi), with zero on the T=0 axis. This is a polar chart.
+    """
+    s1, s2 = np.asarray(spin1, float), np.asarray(spin2, float)
+    if s1.shape[-1:] != (3,) or s2.shape[-1:] != (3,):
+        raise ValueError('Require three components for each spin')
+    if not np.isfinite(s1).all() or not np.isfinite(s2).all():
+        raise ValueError('Require finite spins')
+    w1, w2, h, L, D = _precession_q_geometry(
+        m1, m2, s1[..., 2], s2[..., 2], reference_frequency)
+    T = w1[..., None] * s1[..., :2] + w2[..., None] * s2[..., :2]
+    R = (-w2[..., None] * s1[..., :2] + w1[..., None] * s2[..., :2]) / h[..., None]
+    radius = np.hypot(T[..., 0], T[..., 1])
+    J = np.hypot(D, radius)
+    Q = np.where(D >= 0, np.divide(radius**2, L * (J + D),
+                  out=np.zeros_like(J), where=(J + D) > 0), (J - D) / L)
+    phi = (np.arctan2(T[..., 1], T[..., 0]) + np.pi) % (2 * np.pi) - np.pi
+    phi = np.where(radius == 0, 0., phi)
+    co, si = np.cos(phi), np.sin(phi)
+    return np.stack([Q, phi, co * R[..., 0] + si * R[..., 1],
+                     -si * R[..., 0] + co * R[..., 1]], axis=-1)
+
+
+def precession_q_inverse(m1, m2, z1, z2, features, reference_frequency=20.):
+    """Recover both L-frame spins at fixed masses and aligned components.
+
+    Negative-D Q must obey Q>=-2D/L. Roundoff at this axis is clamped only
+    within floating-point tolerance. No sampling prior is defined here.
+    """
+    f = np.asarray(features, float)
+    if f.shape[-1:] != (4,) or not np.isfinite(f).all():
+        raise ValueError('Require four finite chart coordinates')
+    w1, w2, h, L, D = _precession_q_geometry(m1, m2, z1, z2, reference_frequency)
+    Q, phi, rp, rt = np.moveaxis(f, -1, 0)
+    floor = np.maximum(0., -2 * D / L)
+    tolerance = 64 * np.finfo(float).eps * np.maximum(1., np.abs(floor))
+    if np.any(Q < 0) or np.any(Q < floor - tolerance):
+        raise ValueError('Q outside the physical chart domain')
+    radius = L * np.sqrt(Q) * np.sqrt(np.maximum(0., Q + 2 * D / L))
+    co, si = np.cos(phi), np.sin(phi)
+    T = np.stack([radius * co, radius * si], axis=-1)
+    R = np.stack([rp * co - rt * si, rp * si + rt * co], axis=-1)
+    u1 = w1[..., None] * T / h[..., None]**2 - w2[..., None] * R / h[..., None]
+    u2 = w2[..., None] * T / h[..., None]**2 + w1[..., None] * R / h[..., None]
+    outshape = u1.shape[:-1]
+    return (np.concatenate([u1, np.broadcast_to(z1, outshape)[..., None]], axis=-1),
+            np.concatenate([u2, np.broadcast_to(z2, outshape)[..., None]], axis=-1))
+
+
+valid_params = list(PRECESSION_Q_COORDINATES) + ['m1', 'm2', 's1x', 's1y', 's1z', 's2x', 's2y', 's2z', 'chi1_perp', 'chi2_perp', 'chi1_perp_bar', 'chi2_perp_bar','chi1_perp_u', 'chi2_perp_u', 's1z_bar', 's2z_bar', 'lambda1', 'lambda2', 'theta','phi', 'phiref',  'psi', 'incl', 'tref', 'dist', 'mc', 'mc_ecc', 'eta', 'delta_mc', 'chi1', 'chi2', 'thetaJN', 'phiJL', 'theta1', 'theta2', 'cos_theta1', 'cos_theta2',  'theta1_Jfix', 'theta2_Jfix', 'psiJ', 'beta', 'cos_beta', 'sin_phiJL', 'cos_phiJL', 'phi12', 'phi1', 'phi2', 'LambdaTilde', 'DeltaLambdaTilde', 'lambda_plus', 'lambda_minus', 'q', 'mtot','xi','chiz_plus', 'chiz_minus', 'chieff_aligned','fmin','fref', "SOverM2_perp", "SOverM2_L", "DeltaOverM2_perp", "DeltaOverM2_L", "shu","ampO", "phaseO",'eccentricity','eccentricity_squared','eccentricity_ln', 'chi_pavg','mu1','mu2','eos_table_index','meanPerAno','a6c','E0','p_phi0','hypclass']
 
 # so far, used for puffball, to prevent insanity (infinite growth) and/or death to downselect
 #   - note we also provide for extrinsic: RA (phi), phiref, psi, just in case we need it in the future
@@ -1026,6 +1098,10 @@ class ChooseWaveformParams:
             - system frame parameters
         VERY HELPFUL if you want to change just one parameter at a time (e.g., for Fisher )
         """
+        if p in PRECESSION_Q_COORDINATES:
+            return precession_q_forward(self.m1/lsu_MSUN, self.m2/lsu_MSUN,
+                [self.s1x,self.s1y,self.s1z], [self.s2x,self.s2y,self.s2z],
+                reference_frequency=self.fref)[PRECESSION_Q_COORDINATES.index(p)]
         if p == 'mtot':
             return (self.m2+self.m1)
         if p == 'q':
@@ -5969,7 +6045,7 @@ def DataRollTime(ht,DeltaT):  # ONLY FOR TIME DOMAIN. ACTS IN PLACE
     return DataRollBins(ht, nL)            
 
 
-def convert_waveform_coordinates(x_in,coord_names=['mc', 'eta'],low_level_coord_names=['m1','m2'],enforce_kerr=False,source_redshift=0):
+def convert_waveform_coordinates(x_in,coord_names=['mc', 'eta'],low_level_coord_names=['m1','m2'],enforce_kerr=False,source_redshift=0,reference_frequency=20.):
     """
     A wrapper for ChooseWaveformParams() 's coordinate tools (extract_param, assign_param) providing array-formatted coordinate changes.  BE VERY CAREFUL, because coordinates may be defined inconsistently (e.g., holding different variables constant: M and eta, or mc and q).  Note that if ChooseWaveformParam structuers are built ,the loops can be quite slow
 
@@ -5978,6 +6054,54 @@ def convert_waveform_coordinates(x_in,coord_names=['mc', 'eta'],low_level_coord_
       - xi==chi_eff, chiMinus, mu1,mu2 : transformed directly from mc, delta_mc, s1z,s2z coordinates, using fast vectorized transformations.
       - source_redshift: if nonzero, convert m1 -> m1 (1+z)=m_z, as fit is done in the detector frame.  We are **assuming source-frame sampling**
     """
+    requested = [name for name in coord_names if name in PRECESSION_Q_COORDINATES]
+    if requested:
+        low = np.asarray(x_in, float).copy()
+        for spin in (1,2):
+            amp = 'chi%d' % spin
+            if amp in low_level_coord_names:
+                zero = low[:,low_level_coord_names.index(amp)] == 0
+                for name,value in [('cos_theta%d' % spin,1.),('phi%d' % spin,0.)]:
+                    if name in low_level_coord_names:
+                        col = low_level_coord_names.index(name)
+                        low[zero & ~np.isfinite(low[:,col]),col] = value
+        native_transverse = convert_waveform_coordinates(low,
+            coord_names=['m1','m2','s1x','s1y','s2x','s2y'],
+            low_level_coord_names=low_level_coord_names, enforce_kerr=False,
+            source_redshift=source_redshift)
+        aligned = []
+        for spin in (1,2):
+            name = 's%dz' % spin
+            if name in low_level_coord_names:
+                aligned.append(low[:,low_level_coord_names.index(name)])
+            elif ('chi%d' % spin in low_level_coord_names and
+                  'cos_theta%d' % spin in low_level_coord_names):
+                aligned.append(low[:,low_level_coord_names.index('chi%d' % spin)] *
+                               low[:,low_level_coord_names.index('cos_theta%d' % spin)])
+            else:
+                aligned.append(convert_waveform_coordinates(low,coord_names=[name],
+                    low_level_coord_names=low_level_coord_names)[:,0])
+        physical = np.column_stack([native_transverse[:,:4],aligned[0],
+                                    native_transverse[:,4:],aligned[1]])
+        bad = (~np.isfinite(physical).all(axis=1) | (physical[:,0] < physical[:,1])
+               | (physical[:,1] <= 0))
+        if enforce_kerr:
+            bad |= (np.sum(physical[:,2:5]**2,axis=1)>1) | (np.sum(physical[:,5:8]**2,axis=1)>1)
+        features = np.full((len(low),4), -np.inf)
+        good = ~bad
+        features[good] = precession_q_forward(physical[good,0],physical[good,1],
+            physical[good,2:5],physical[good,5:8],reference_frequency)
+        remaining = [name for name in coord_names if name not in PRECESSION_Q_COORDINATES]
+        out = np.empty((len(low),len(coord_names)))
+        if remaining:
+            native = convert_waveform_coordinates(low,coord_names=remaining,
+                low_level_coord_names=low_level_coord_names,enforce_kerr=enforce_kerr,
+                source_redshift=source_redshift)
+            for j,name in enumerate(remaining):out[:,coord_names.index(name)] = native[:,j]
+        for name in requested:
+            out[:,coord_names.index(name)] = features[:,PRECESSION_Q_COORDINATES.index(name)]
+        out[bad] = -np.inf
+        return out
     x_out = np.zeros( (len(x_in), len(coord_names) ) )
     kerr_violation_ring = None   # set by the vectorized in-plane block, which can end the conversion early
     # Vectorized branches need detector-frame masses. Keep the original source-frame
