@@ -144,3 +144,8 @@ MonteCarloMarginalizeCode/Code/test/expensive_before_merging/integrators/test_sh
 MonteCarloMarginalizeCode/Code/test/expensive_before_merging/integrators/test_escaped_mass_diagnostic.py EXPENSIVE  5 collected, all skip unless RIFT_RUN_EXPENSIVE=1
 MonteCarloMarginalizeCode/Code/test/test_lalsim_eos_reviewed_integration.py                                 EXPENSIVE  3 collected, all skip unless RIFT_REVIEWED_LALSIM_MANIFEST names a build-generated manifest
 MonteCarloMarginalizeCode/Code/test/test_gpytorch_wrapper.py                  OPTDEP  needs:torch,gpytorch -- importorskip on both; the CUDA case also needs a GPU
+
+# Actual pipeline/subdag/frame CLI regressions use the native HTCondor runtime;
+# measured on the IGWN test runtime (36 tests) and accompanied by Condor dry-run
+# and dirty-source package-install receipts. Ordinary CI does not install htcondor.
+MonteCarloMarginalizeCode/Code/test/pipeline_deployment/test_deployment_cli.py OPTDEP needs:htcondor -- actual HTCondor backend, native condor_submit dry-run, GWPy GWF IO; real CIT suite, no inference jobs
