@@ -189,6 +189,21 @@ FILES=(
   "$C/test/test_ring_coordinates.py"
   # -- coordinates: source_redshift gives detector-frame values, vectorized vs extract_param
   "$C/test/test_convert_coordinates_source_redshift.py"
+  # -- coordinates: assign_param gives the same spin for any order within one spin system
+  "$C/test/test_assign_param_spin_order.py"
+  # -- EOSPosterior distance-slice fits: vectorized coordinates and the dslice-amp model
+  #    (numpy legs; the cupy legs skip here and run by hand on a GPU node)
+  "$C/test/test_convert_waveform_coordinates_vectorized.py"
+  "$C/test/test_waveform_coordinates_xpy.py"
+  "$C/test/interpolators/test_dslice_amplitude_model.py"
+  # -- EOSPosterior gp-matern driver, cupy Matern fit
+  #    (numpy legs; cupy legs skip).  test_eos_gp_matern.py runs the driver end to end: ~100 s on CIT.
+  "$C/test/interpolators/test_cupy_matern_fit.py"
+  "$C/test/test_eos_gp_matern.py"
+  # -- --rf-seed regrows the same forest (driver run three times, ~30 s on CIT)
+  "$C/test/test_eos_rf_seed.py"
+  # -- reported evidence restores the lnL shift (explicit and automatic), known answer
+  "$C/test/test_eos_evidence_lnL_shift.py"
   # -- coordinates: per-row fallbacks convert each row independently of the others
   "$C/test/test_convert_coordinates_row_independence.py"
 )
@@ -399,10 +414,14 @@ done
 # CUDA_VISIBLE_DEVICES='': junit 698 collected / 683 passed, 3 of them subtests -> 695/680.
 # (pcdev11 has one extra host skip, cupy-importable in test_eos_posterior_tempering_kwarg.)
 # test_convert_coordinates_source_redshift.py adds 16 passing tests and no skips.
-# test_convert_coordinates_row_independence.py adds 9 passing tests and no skips.  MEASURED on
-# ldas-grid (`import cupy` FAILS there) 2026-10-05, IGWN conda python: junit 723 collected /
-# 709 passed / 14 skipped (13 skips + 1 xfail) / 0 failed, 3 of them subtests -> 720/706.
-EXPECTED_TESTS=720
+# PR #391 (EOSPosterior GPU port and dslice fits), merged with rift_O4d 7e2984a0: measured on CIT
+# ldas-grid (IGWN python, cupy importable, no device) 2026-10-05, outcomes 751 collected / 732 passed /
+# 19 skipped incl. 3 subtests -> 748/729; less test_dslice_quadratic_gp.py (2, removed) -> 746/727;
+# final review added 4 tests to test_dslice_amplitude_model.py (all pass on CPU) -> 750/731.
+# test_eos_evidence_lnL_shift.py adds 3 collected, 3 passed, no skips.
+# test_assign_param_spin_order.py adds 35 passing tests and no skips -> 788/769.
+# test_convert_coordinates_row_independence.py adds 9 passing tests and no skips -> 797/778.
+EXPECTED_TESTS=797
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -415,12 +434,11 @@ EXPECTED_TESTS=720
 # missing dependency there FAILS the driver subprocess rather than skipping the check.
 # test_dag_postprocess_fail_closed.py adds 13 tests and no skips.
 # test_convert_coordinates_source_redshift.py adds 16 tests and no skips.
-# test_convert_coordinates_row_independence.py adds 9 tests and no skips.  The passed floor
-# follows the pcdev11 accounting above (one extra host skip there), so it sits one below the
-# ldas-grid count.
-EXPECTED_PASSED=705
+# test_assign_param_spin_order.py adds 35 tests and no skips.
+# test_convert_coordinates_row_independence.py adds 9 tests and no skips.
+EXPECTED_PASSED=778
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
-MAX_SKIPPED=14
+MAX_SKIPPED=19
 
 # The floors must be INTEGERS, and this is checked rather than assumed.  `[ 347 -lt FOO ]` does
 # not fail the build: bash prints "integer expression expected", returns 2, and the `if` is
