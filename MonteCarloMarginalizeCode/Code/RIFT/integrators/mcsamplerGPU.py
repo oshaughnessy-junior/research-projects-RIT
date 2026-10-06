@@ -1746,8 +1746,8 @@ def uniform_samp_withfloor_vector(rmaxQuad,rmaxFlat,pFlat,x,xpy=None):
             ret +=pFlat/rmaxFlat
         return  ret
     ret = xpy.zeros(x.shape,dtype=numpy.float64)
-    ret += xpy.select([x<rmaxQuad],[(1.-pFlat)/rmaxQuad])
-    ret += xpy.select([x<rmaxFlat],[pFlat/rmaxFlat])
+    ret += xpy.where(x<rmaxQuad, (1.-pFlat)/rmaxQuad, 0.)   # cupy.select refuses scalar choices
+    ret += xpy.where(x<rmaxFlat, pFlat/rmaxFlat, 0.)
     return ret
 
 
