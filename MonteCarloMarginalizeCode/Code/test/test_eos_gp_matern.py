@@ -122,9 +122,8 @@ def test_nonfinite_conversion_gets_the_floor(tmp_path):
 
 def test_reload_with_a_different_lnL_shift(tmp_path):
     """A saved fit reloaded under another --lnL-shift-prevent-overflow returns the same likelihood. The posterior
-    must agree. A constant offset cannot change the posterior, so the evidence is checked too: the driver
-    reports the evidence of the shifted lnL for every fit method (the shift is not added back), so the
-    reloaded run's evidence is lower by exactly the shift (5); a wrong-sign reload offset moves it by ~10 more."""
+    must agree. A constant offset cannot change the posterior, so the evidence is checked too: it must agree
+    as well (the driver restores the shift); a wrong-sign reload offset would move it by ~10."""
     proc, out = _run(tmp_path, ["--fit-save-gp", os.path.join(str(tmp_path), "fit"),
                                 "--fname-output-integral", "evid_fresh"])
     assert proc.returncode == 0, proc.stdout[-3000:]
@@ -134,7 +133,7 @@ def test_reload_with_a_different_lnL_shift(tmp_path):
     assert proc2.returncode == 0, proc2.stdout[-3000:]
     e1 = float(np.loadtxt(os.path.join(str(tmp_path), "evid_fresh")))
     e2 = float(np.loadtxt(os.path.join(str(tmp_path), "evid_reload")))
-    assert abs((e1 - e2) - 5.0) < 0.5, (e1, e2)
+    assert abs(e1 - e2) < 0.5, (e1, e2)
     again = np.genfromtxt(out2, names=True)
     for c in ("xx", "yy"):
         assert abs(fresh[c].mean() - again[c].mean()) < 0.03

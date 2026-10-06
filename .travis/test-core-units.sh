@@ -189,6 +189,8 @@ FILES=(
   "$C/test/test_ring_coordinates.py"
   # -- coordinates: source_redshift gives detector-frame values, vectorized vs extract_param
   "$C/test/test_convert_coordinates_source_redshift.py"
+  # -- coordinates: assign_param gives the same spin for any order within one spin system
+  "$C/test/test_assign_param_spin_order.py"
   # -- coordinates: mass-coordinate lists whose assign_param order would move a mass scale raise
   "$C/test/test_mass_coordinate_order.py"
   # -- EOSPosterior distance-slice fits: vectorized coordinates and the dslice-amp model
@@ -202,6 +204,8 @@ FILES=(
   "$C/test/test_eos_gp_matern.py"
   # -- --rf-seed regrows the same forest (driver run three times, ~30 s on CIT)
   "$C/test/test_eos_rf_seed.py"
+  # -- reported evidence restores the lnL shift (explicit and automatic), known answer
+  "$C/test/test_eos_evidence_lnL_shift.py"
 )
 
 # A manifest entry that stops existing is a SILENT no-op: the gate keeps passing while
@@ -414,10 +418,10 @@ done
 # ldas-grid (IGWN python, cupy importable, no device) 2026-10-05, outcomes 751 collected / 732 passed /
 # 19 skipped incl. 3 subtests -> 748/729; less test_dslice_quadratic_gp.py (2, removed) -> 746/727;
 # final review added 4 tests to test_dslice_amplitude_model.py (all pass on CPU) -> 750/731.
-# test_mass_coordinate_order.py adds 14 passing tests and no skips.  MEASURED on CIT ldas-grid
-# (IGWN python, cupy importable, no device) 2026-10-05: 767 collected / 748 passed / 19 skipped,
-# incl. 3 subtests -> 764/745.
-EXPECTED_TESTS=764
+# test_eos_evidence_lnL_shift.py adds 3 collected, 3 passed, no skips.
+# test_assign_param_spin_order.py adds 35 passing tests and no skips -> 788/769.
+# test_mass_coordinate_order.py adds 14 passing tests and no skips -> 802/783.
+EXPECTED_TESTS=802
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -430,8 +434,9 @@ EXPECTED_TESTS=764
 # missing dependency there FAILS the driver subprocess rather than skipping the check.
 # test_dag_postprocess_fail_closed.py adds 13 tests and no skips.
 # test_convert_coordinates_source_redshift.py adds 16 tests and no skips.
+# test_assign_param_spin_order.py adds 35 tests and no skips.
 # test_mass_coordinate_order.py adds 14 tests and no skips.
-EXPECTED_PASSED=745
+EXPECTED_PASSED=783
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 MAX_SKIPPED=19
 
