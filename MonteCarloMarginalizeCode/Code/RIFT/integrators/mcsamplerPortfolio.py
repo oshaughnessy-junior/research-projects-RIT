@@ -1426,6 +1426,11 @@ class MCSampler(SamplerOutputMixin, object):
         # then seed this point's live volume from a different point's peak.  Drop it on
         # entry, so "present" always means "this pass wrote it".
         self._warm_seed_reserve = None
+        # AV members carry their selfish-step live set and threshold between chunks.  Keep
+        # the adapted grid across passes, but not a threshold set on another integrand.
+        for _member in self.portfolio_realizations:
+            if hasattr(_member, 'reset_selfish_state'):
+                _member.reset_selfish_state()
         while (eff_samp < neff and self.ntotal < nmax): #  and (not bConvergenceTests):
             
 

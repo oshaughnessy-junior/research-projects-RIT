@@ -1037,6 +1037,8 @@ class MCSampler(SamplerOutputMixin, object):
         warm = getattr(self, '_warm', None)
         if warm is None or getattr(self, '_warm_applied', False):
             return
+        # A new grid invalidates the selfish step's live set and threshold.
+        self._selfish_state = None
         try:
             self.binunique = np.array(warm['binunique'])
             self.dx = np.array(warm['dx'])
@@ -1047,9 +1049,6 @@ class MCSampler(SamplerOutputMixin, object):
                 self.V = float(warm['V'])
             if 'loglkl_thr' in warm:
                 self.lnL_thresh = float(warm['loglkl_thr'])
-            # The selfish step restarts from the seed's threshold and trunc_p, not from
-            # whatever live set the cold grid had accumulated.
-            self._selfish_state = None
             self._warm_applied = True
             print("  [AV warm-start] seeded grid APPLIED to the active draw path: "
                   "live bins={}".format(self.binunique.shape[0]))
@@ -1198,6 +1197,33 @@ class MCSampler(SamplerOutputMixin, object):
             nbins[adaptive] = np.exp(c[adaptive] / csum * total_log)  # prod(adaptive)=1/delta_V
         return nbins
 
+    def reset_selfish_state(self):
+        """Forget the selfish step's live set and threshold; keep the grid.
+
+        A new integration pass may use a different integrand (e.g. the calmarg burn-in
+        followed by the full likelihood), so a threshold carried from the previous pass
+        could exclude every new draw."""
+        self._selfish_state = None
+
+    def _cap_selfish_live_set(self, loglkl, first_in_bin, nsel):
+        """Indices of the carried live set to keep, or None to keep all.
+
+        After the final threshold nothing is removed from the live set, so without a cap it
+        grows by about n_chunk per call.  Keep one point per occupied bin (so the rebuilt grid
+        and live volume do not change), the nsel highest-lnL points (which set the threshold),
+        and a random fill up to the cap."""
+        cap = int(getattr(self, 'selfish_live_set_cap', 0) or 4 * self.n_chunk)
+        n = len(loglkl)
+        if n <= cap:
+            return None
+        must = np.union1d(np.asarray(first_in_bin, dtype=int),
+                          np.argsort(np.asarray(loglkl))[-int(nsel):])
+        rest = np.setdiff1d(np.arange(n), must, assume_unique=True)
+        n_fill = max(cap - len(must), 0)
+        if n_fill < len(rest):
+            rest = np.random.choice(rest, size=n_fill, replace=False)
+        return np.sort(np.concatenate([must, rest]))
+
     def update_sampling_prior_selfish(self, lnF, *args, xpy=xpy_default,no_protect_names=True,**kwargs):
         """
       update_sampling_prior
@@ -1212,10 +1238,12 @@ class MCSampler(SamplerOutputMixin, object):
 
       One call is one cycle of integrate_log's loop, so the cycle state persists between
       calls in self._selfish_state: the live set (allx/allloglkl/allp), the threshold and
-      the truncated probability trunc_p.  Restarting them on every call made each call
-      keep only the top nsel of its own fresh draws, so V shrank by n_chunk/nsel per call
-      and never reached the final threshold: the live volume contracted without limit and
-      cut away the posterior (lnV -27 after 40 calls where standalone AV stops at -7.3).
+      the truncated probability trunc_p.  Restarted on every call, each call would keep
+      only the top nsel of its own draws, V would shrink by n_chunk/nsel per call, the
+      final threshold would never be reached, and the live volume would contract without
+      limit.  The state is cleared by setup(), by installing a warm seed, and by
+      reset_selfish_state(), which mcsamplerPortfolio calls at the start of each pass.
+      The carried live set is capped (_cap_selfish_live_set) to bound memory and cost.
        """
         xpy_here = self.xpy
         enforce_bounds=True
@@ -1232,11 +1260,6 @@ class MCSampler(SamplerOutputMixin, object):
             allp = []
             loglkl_thr = -1e15
             trunc_p = 1e-10 #How much probability analysis removes with evolution
-            warm = getattr(self, '_warm', None)
-            if warm is not None and getattr(self, '_warm_applied', False):
-                # continue from the installed seed, as integrate_log does
-                loglkl_thr = float(warm.get('loglkl_thr', loglkl_thr))
-                trunc_p = float(warm.get('trunc_p', trunc_p))
             if cupy_ok:
               allx = identity_convert_togpu(allx)
               allloglkl = identity_convert_togpu(allloglkl)
@@ -1368,10 +1391,15 @@ class MCSampler(SamplerOutputMixin, object):
             self.dx = np.diff(self.my_ranges, axis = 1).flatten() / self.nbins   # update bin widths
             binidx = ( (( identity_convert(allx) - self.my_ranges.T[0]) / self.dx.T).astype(int)  ) #bin indexs of the samples ... sent back to CPU as needed
 
-            self.binunique = np.unique(binidx, axis = 0)
+            self.binunique, first_in_bin = np.unique(binidx, axis = 0, return_index=True)
             self.ninbin = ((self.n_chunk // self.binunique.shape[0] + 1) * np.ones(self.binunique.shape[0])).astype(int)
 
             self.cycle += 1
+
+            keep = self._cap_selfish_live_set(identity_convert(allloglkl), first_in_bin, nsel)
+            if keep is not None:
+                keep = xpy_here.asarray(keep) if cupy_ok else keep
+                allx, allloglkl, allp = allx[keep], allloglkl[keep], allp[keep]
 
         self.V = V
         self.delta_V  = delta_V
