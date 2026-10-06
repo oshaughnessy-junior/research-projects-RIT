@@ -45,7 +45,7 @@ n_events_per_job = None
 with open(opts.submit_script,'r') as f:
     lines = f.readlines()
     for line in lines:
-        if 'executable = ' in line:
+        if line.lstrip().lower().startswith('executable ='):
             exe = line.split("=",1)[1].strip()
         if line.lstrip().lower().startswith('arguments ='):
             # Condor escapes embedded quotes; splitting at the first quote can
