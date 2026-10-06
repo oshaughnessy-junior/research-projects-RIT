@@ -2015,7 +2015,16 @@ class MCSampler(SamplerOutputMixin, object):
                     # whose target is device-native, so there is nothing to clear.
                     if getattr(self, '_integrand_wants_host', False):
                       member._integrand_wants_host = True
-                    member.update_sampling_prior_selfish(lnF)
+                    # The member calls its integrand positionally, in ITS parameter order.
+                    # Unless the caller asked for positional calls (no_protect_names), the
+                    # portfolio calls lnF by name, and the signature order can differ from
+                    # the parameter order (classic ILE), so pass the member the by-name form.
+                    if 'no_protect_names' in kwargs:
+                      member_lnF = lnF
+                    else:
+                      _names_m = list(member.params_ordered)
+                      member_lnF = lambda *cols, _n=_names_m: lnF(**dict(zip(_n, cols)))
+                    member.update_sampling_prior_selfish(member_lnF)
                 else:
                   if self.portfolio_draw_iteration > self.portfolio_breakpoints[indx]:  
                     print("   - frozen sampling for member {} {}".format(indx, self.portfolio_weights[indx]))

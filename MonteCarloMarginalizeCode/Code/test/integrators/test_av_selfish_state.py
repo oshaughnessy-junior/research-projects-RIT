@@ -193,6 +193,30 @@ def test_repeated_passes_do_not_recontract():
         assert _covered_fraction(av, mu) >= cover - 1e-3, (cover, _covered_fraction(av, mu))
 
 
+def test_selfish_step_uses_the_portfolio_calling_convention():
+    # Classic ILE adds parameters in a different order from its likelihood's signature
+    # and integrates by keyword (no no_protect_names).  The AV member must evaluate the
+    # same function the portfolio does, not the positional arguments in its own order.
+    mu = np.array([0.31, -0.42])
+
+    def lnF_kw(y, x):      # signature order differs from the add_parameter order
+        return -0.5 * ((np.asarray(x) - mu[0]) ** 2
+                       + (np.asarray(y) - mu[1]) ** 2) / SIGMA ** 2
+    np.random.seed(9)
+    av = mcsamplerAV.MCSampler(n_chunk=N_CHUNK)
+    port = mcsamplerPortfolio.MCSampler(portfolio=[av, mcsamplerGMM.MCSampler()],
+                                        n_chunk=N_CHUNK)
+    for name in ('x', 'y'):
+        port.add_parameter(name, pdf=None, left_limit=LO, right_limit=HI,
+                           prior_pdf=_uniform, adaptive_sampling=True)
+    port.setup(portfolio_args=[{}, {'n_comp': 2}])
+    logZ, log_var, neff, info = port.integrate_log(
+        lnF_kw, 'x', 'y', nmax=30 * N_CHUNK, neff=1e9, n=N_CHUNK, save_intg=True,
+        tempering_exp=1.0)
+    assert _covered_fraction(av, mu) > 0.995, _covered_fraction(av, mu)
+    assert np.asarray(info['portfolio_escaped_mass'], dtype=float)[0] < 0.01
+
+
 def test_setup_and_new_warm_seed_restart_the_selfish_state():
     mu, lnF = _target(2)
     av = _av(2, 5)
