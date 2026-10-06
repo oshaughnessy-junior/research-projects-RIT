@@ -66,6 +66,7 @@ except:
   cupy_pi = np.pi
 
 from RIFT.integrators.rvs_record import RvsRecord, SamplerOutputMixin   # see DESIGN_rvs_naming.md
+from RIFT.integrators.mcsampler import infer_array_module
 
 def set_xpy_to_numpy():
    xpy_default=numpy
@@ -1719,22 +1720,24 @@ def uniform_samp_cdf_inv_vector(a,b,p):
 #    Note NO cupy implementation yet
 #    """
 #    return numpy.heaviside(x-a,0)*numpy.heaviside(b-x,0)/(b-a)
-def uniform_samp_vector(a,b,x,xpy=xpy_default):
+def uniform_samp_vector(a,b,x,xpy=None):
    """
    uniform_samp_vector_lazy:
       Implement uniform sampling as multiplication by a constant.
       Much faster and lighter weight. We never use the cutoffs anyways, because the limits are hardcoded elsewhere.
    """
+   xpy = infer_array_module(x, xpy)
    return xpy.ones(len(x))/(b-a)  # requires the variable in range.  Needed because there is no cupy implementation of np.heavyside
 # if cupy_ok:
 #    uniform_samp_vector = uniform_samp_vector_lazy  
 
 def ret_uniform_samp_vector_alt(a,b):
-    return lambda x: xpy_default.ones(len(x))/(b-a)
+    return lambda x: infer_array_module(x).ones(len(x))/(b-a)
 #    return lambda x: 1./(b-a)
 
 
-def uniform_samp_withfloor_vector(rmaxQuad,rmaxFlat,pFlat,x,xpy=xpy_default):
+def uniform_samp_withfloor_vector(rmaxQuad,rmaxFlat,pFlat,x,xpy=None):
+    xpy = infer_array_module(x, xpy)
     if isinstance(x, float):
         ret =0.
         if x<rmaxQuad:
@@ -1750,39 +1753,47 @@ def uniform_samp_withfloor_vector(rmaxQuad,rmaxFlat,pFlat,x,xpy=xpy_default):
 
 
 # syntatic sugar : predefine the most common distributions
-def uniform_samp_phase(x,xpy=xpy_default):
+def uniform_samp_phase(x,xpy=None):
    """
    Assume range known as 0,2pi
    """
+   xpy = infer_array_module(x, xpy)
    return xpy.ones(len(x))/(2*cupy_pi) 
-def uniform_samp_psi(x,xpy=xpy_default):
+def uniform_samp_psi(x,xpy=None):
    """
    Assume range known as 0,pi
    """
+   xpy = infer_array_module(x, xpy)
    return xpy.ones(len(x))/(cupy_pi) 
-def uniform_samp_theta(x,xpy=xpy_default):
+def uniform_samp_theta(x,xpy=None):
    """
    Assume range known as 
    """
+   xpy = infer_array_module(x, xpy)
    return xpy.sin(x)/(2.) 
-def uniform_samp_dec(x,xpy=xpy_default):
+def uniform_samp_dec(x,xpy=None):
    """
    Assume range known as 
    """
+   xpy = infer_array_module(x, xpy)
    return xpy.cos(x)/(2.) 
 
 
-def cos_samp(x,xpy=xpy_default):
+def cos_samp(x,xpy=None):
+        xpy = infer_array_module(x, xpy)
         return xpy.sin(x)/2   # x from 0, pi
 
-def dec_samp(x,xpy=xpy_default):
+def dec_samp(x,xpy=None):
+        xpy = infer_array_module(x, xpy)
         return xpy.sin(x+cupy_pi/2)/2   # x from 0, pi
 
 cos_samp_vector = cos_samp
 dec_samp_vector = dec_samp
-def cos_samp_cdf_inv_vector(p,xpy=xpy_default):
+def cos_samp_cdf_inv_vector(p,xpy=None):
+    xpy = infer_array_module(p, xpy)
     return xpy.arccos( 2*p-1)   # returns from 0 to pi
-def dec_samp_cdf_inv_vector(p,xpy=xpy_default):
+def dec_samp_cdf_inv_vector(p,xpy=None):
+    xpy = infer_array_module(p, xpy)
     return xpy.arccos(2*p-1) - xpy.pi/2  # target from -pi/2 to pi/2
 
 
@@ -1797,7 +1808,7 @@ def dec_samp_cdf_inv_vector(p,xpy=xpy_default):
 def q_samp_vector(qmin,qmax,x):
     scale = 1./(1+qmin) - 1./(1+qmax)
     return 1/numpy.power((1+x),2)/scale
-def q_cdf_inv_vector(qmin,qmax,x,xpy=xpy_default):
+def q_cdf_inv_vector(qmin,qmax,x,xpy=None):
     return np.array((qmin + qmax*qmin + qmax*x - qmin*x)/(1 + qmax - qmax*x + qmin*x),dtype=RiftFloat)
 
 # total mass. Assumed used with q.  2M/Mmax^2-Mmin^2

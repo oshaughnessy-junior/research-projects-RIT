@@ -167,3 +167,45 @@ def test_fairdraw_export_on_a_cupy_host(on_device, use_lnL):
         {k: type(v) for k, v in s._rvs.items()}
     lengths = {k: len(v) for k, v in s._rvs.items()}
     assert len(set(lengths.values())) == 1, lengths
+
+
+def test_no_signature_binds_the_import_time_backend():
+    """`xpy=xpy_default` in a signature fixes the backend at import, whatever the caller holds.
+    That was the integrate_log defect and the prior helpers' (uniform_samp_dec, cos_samp, ...).
+    AST, so it runs on any host."""
+    import ast
+    import inspect
+    tree = ast.parse(inspect.getsource(mcsamplerGPU))
+    bad = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.Lambda)):
+            args = node.args
+            pairs = list(zip(args.args[len(args.args) - len(args.defaults):], args.defaults))
+            pairs += [(a, d) for a, d in zip(args.kwonlyargs, args.kw_defaults) if d is not None]
+            for a, d in pairs:
+                if isinstance(d, ast.Name) and d.id == 'xpy_default':
+                    bad.append("%s(%s=xpy_default) line %d" % (
+                        getattr(node, 'name', '<lambda>'), a.arg, node.lineno))
+    assert not bad, bad
+
+
+HELPERS = [("uniform_samp_phase", ()), ("uniform_samp_psi", ()), ("uniform_samp_theta", ()),
+           ("uniform_samp_dec", ()), ("cos_samp", ()), ("dec_samp", ()),
+           ("cos_samp_cdf_inv_vector", ()), ("dec_samp_cdf_inv_vector", ()),
+           ("uniform_samp_vector", (0.0, 1.0)), ("uniform_samp_withfloor_vector", (0.5, 1.0, 0.1))]
+
+
+@needs_device
+@pytest.mark.parametrize("name,lead", HELPERS, ids=[h[0] for h in HELPERS])
+def test_prior_helpers_follow_their_argument(name, lead):
+    """Host in, host out; device in, device out -- on a host where cupy is the module default."""
+    import cupy
+    fn = getattr(mcsamplerGPU, name)
+    x = np.linspace(0.05, 0.95, 7)
+    host = fn(*lead, x)
+    dev = fn(*lead, cupy.asarray(x))
+    assert isinstance(host, np.ndarray), type(host)
+    assert isinstance(dev, cupy.ndarray), type(dev)
+    assert np.allclose(host, cupy.asnumpy(dev))
+    alt = mcsamplerGPU.ret_uniform_samp_vector_alt(0.0, 2.0)
+    assert isinstance(alt(x), np.ndarray) and isinstance(alt(cupy.asarray(x)), cupy.ndarray)
