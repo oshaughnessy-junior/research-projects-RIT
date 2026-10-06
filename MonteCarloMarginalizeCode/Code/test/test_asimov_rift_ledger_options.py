@@ -28,7 +28,7 @@ class _Stub:
         self.staged.append(dryrun)
 
 
-@pytest.mark.parametrize("value", ["off", "auto", "physics3", True, False])
+@pytest.mark.parametrize("value", ["off", "auto", "physics3", "lossless-q", True, False])
 def test_transverse_spin_ledger_values_accepted(value):
     _Stub({"sampler": {"cip": {"transverse spin coordinates": value}}})._validate_transverse_spin_coordinates()
 
