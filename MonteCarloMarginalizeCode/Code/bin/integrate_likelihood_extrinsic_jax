@@ -928,6 +928,7 @@ def check_critical_and_report(opts, optp):
         implemented |= {"--sampler-method", "--n-eff",
                         "--d-prior",
                         "--sampler-anisotropic-bins",
+                        "--internal-sky-network-coordinates",
                         "--limit-right-ascension", "--limit-declination",
                         "--limit-psi", "--limit-inclination"}
         if getattr(opts, "sampler_method", None) == "portfolio":
@@ -977,13 +978,12 @@ def check_critical_and_report(opts, optp):
     if getattr(opts, "phase_marginalization", False) and mode in _PHASE_ANALYTIC_MODES:
         print("Note: --phase-marginalization is accepted but IGNORED for "
               "--mode %s (phase is already marginalized analytically)." % mode)
-    # --sky-coordinates network: wired only for --mode multistart-nuts (the
-    # other modes' samplers assume the equatorial (ra, sin(dec)) parameterization
-    # end to end -- reparameterizing them is more than plumbing, see the PR).
+    # AV/portfolio and multistart NUTS implement network-frame sky sampling.
     _skyc = getattr(opts, "sky_coordinates", "equatorial")
-    if _skyc != "equatorial" and mode != "multistart-nuts":
+    if (_skyc != "equatorial" and mode != "multistart-nuts"
+            and getattr(opts, "sampler_method", None) not in ("AV", "portfolio")):
         print("Note: --sky-coordinates %s is accepted but IGNORED for --mode "
-              "%s (only --mode multistart-nuts samples the sky in network-"
+              "%s (only AV/portfolio and --mode multistart-nuts sample the sky in network-"
               "frame coordinates; other modes use the default equatorial "
               "parameterization)." % (_skyc, mode))
     if ignored:
@@ -1002,6 +1002,13 @@ def _jax_core_dist_tol_default():
     """Default distance-grid tolerance, read from the module that owns it."""
     from RIFT.likelihood.jax_ile.core import DIST_GRID_TOL_DEFAULT
     return DIST_GRID_TOL_DEFAULT
+
+
+def _av_sky_sampling_kwargs(opts):
+    """Classic alias uses its usual HL preference; explicit network uses all IFOs."""
+    if getattr(opts, "internal_sky_network_coordinates", False):
+        return dict(sky_coords="network", network_exclude_detectors=("V1", "K1"))
+    return dict(sky_coords=opts.sky_coordinates)
 
 
 def build_parser():
@@ -1747,8 +1754,9 @@ def build_parser():
     g.add_option("--sky-coordinates", default="equatorial",
                  choices=["equatorial", "network"],
                  help="Optional: 'network' samples the sky in the two-detector "
-                      "baseline frame (folds the time-delay ring); multistart-nuts "
-                      "only, falls back to equatorial if <2 detectors.")
+                      "baseline frame (folds the time-delay ring); AV/portfolio or "
+                      "multistart-nuts. AV requires two distinct detectors and "
+                      "unrestricted sky bounds; NUTS falls back if <2 detectors.")
     g.add_option("--proposal-inflate", type=float, default=3.0,
                  help="Scale on the adaptive Gaussian proposal covariance.")
     g.add_option("--seed", type=int, default=0)
@@ -4080,6 +4088,7 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
             anisotropic_bins=opts.sampler_anisotropic_bins,
             verbose=opts.verbose, sample_bounds=_sample_bounds,
             distance_prior=opts.d_prior,
+            **_av_sky_sampling_kwargs(opts),
             **_distance_sampling)
         theta, lnL = res["theta"], res["lnL"]
         logZ, sig, neff = res["logZ"], res["sigma_over_Z"], res["neff"]
