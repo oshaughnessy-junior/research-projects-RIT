@@ -12,9 +12,12 @@ integrate_likelihood_extrinsic_jax ... --sampler-method AV --sky-coordinates net
 Like conventional ILE, this alias excludes V1/K1 when choosing the baseline
 (usually H1-L1), while retaining every detector in the physical likelihood.
 Explicit `--sky-coordinates network` uses the first two detectors without those
-exclusions. Both conventions fail clearly if fewer than two eligible locations
-remain; AV does not silently revert to equatorial sampling. `--internal-sky-network-coordinates-raw` retains its existing explicitly
-reported unimplemented status; it does not change the coordinate system.
+exclusions. If fewer than two eligible detectors remain (HV, LV or single-IFO
+events), the alias falls back to equatorial sampling with a printed note, as
+classic ILE does. The explicit request fails instead. Adding
+`--internal-sky-network-coordinates-raw` keeps V1/K1 and the given detector order,
+as in classic ILE; alone it does nothing. If both the alias and
+`--sky-coordinates network` are given, the alias rules apply.
 
 The existing ECEF network-frame rotation is reused, including the likelihood's
 GMST convention. The physical likelihood still receives RA/DEC and physical

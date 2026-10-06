@@ -116,12 +116,49 @@ def test_driver_compatibility_flag_is_implemented_for_av(capsys):
     opts, _ = parser.parse_args(["--sampler-method", "AV", "--internal-sky-network-coordinates"])
     driver.check_critical_and_report(opts, parser)
     assert opts.internal_sky_network_coordinates
-    assert driver._av_sky_sampling_kwargs(opts) == {
+    assert driver._av_sky_sampling_kwargs(opts, ("V1", "H1", "L1")) == {
         "sky_coords": "network", "network_exclude_detectors": ("V1", "K1")}
     assert "--internal-sky-network-coordinates" not in capsys.readouterr().out
-    opts, _ = parser.parse_args(["--sampler-method", "AV", "--internal-sky-network-coordinates-raw"])
+    # Classic ILE falls back to equatorial when V1/K1 exclusion leaves <2 IFOs.
+    for names in (("L1", "V1"), ("H1", "K1"), ("H1",)):
+        assert driver._av_sky_sampling_kwargs(opts, names) == {"sky_coords": "equatorial"}
+        assert "equatorial" in capsys.readouterr().out
+    # The explicit request is not an alias: it keeps every detector, fails closed in AV.
+    opts, _ = parser.parse_args(["--sampler-method", "AV", "--sky-coordinates", "network"])
+    assert driver._av_sky_sampling_kwargs(opts, ("L1", "V1")) == {"sky_coords": "network"}
+    # -raw keeps V1/K1 and the given order, as in classic ILE.
+    opts, _ = parser.parse_args(["--sampler-method", "AV", "--internal-sky-network-coordinates",
+                                 "--internal-sky-network-coordinates-raw"])
     driver.check_critical_and_report(opts, parser)
-    assert "--internal-sky-network-coordinates-raw" in capsys.readouterr().out
+    assert "--internal-sky-network-coordinates-raw" not in capsys.readouterr().out
+    assert driver._av_sky_sampling_kwargs(opts, ("H1", "V1")) == {
+        "sky_coords": "network", "network_exclude_detectors": ()}
+
+
+def test_driver_passes_sky_kwargs_to_av():
+    """The helper is only useful if analyze_one forwards it to the AV call."""
+    import ast
+    path = Path(__file__).parents[2] / "bin/integrate_likelihood_extrinsic_jax"
+    tree = ast.parse(path.read_text())
+    analyze = next(node for node in ast.walk(tree)
+                   if isinstance(node, ast.FunctionDef) and node.name == "analyze_one")
+    calls = [node for node in ast.walk(analyze) if isinstance(node, ast.Call)
+             and isinstance(node.func, ast.Attribute)
+             and node.func.attr == "adaptive_volume_sample"]
+    assert len(calls) == 1
+    forwarded = [kw.value for kw in calls[0].keywords if kw.arg is None]
+    assert any(isinstance(v, ast.Call) and getattr(v.func, "id", None) == "_av_sky_sampling_kwargs"
+               and ast.unparse(v.args[1]) == "like.data.detector_names" for v in forwarded)
+
+
+def test_full_range_sky_window_is_accepted():
+    like = RingLikelihood(width=.3)
+    for bounds in ({"ra": (0., 2*np.pi)}, {"ra": (0., 6.283185)},
+                   {"dec": (-np.pi/2, np.pi/2)}):
+        result = samplers.adaptive_volume_sample(
+            like, 1., 100., sky_coords="network", sample_bounds=bounds,
+            nmax=4000, n_chunk=1000, eval_chunk=256, neff=5., seed=3)
+        assert result["diagnostics"]["sky_coordinates"] == "network"
 
 
 def test_network_portfolio_bootstraps_physical_caller_cloud():

@@ -631,6 +631,7 @@ FILES=(
   "${JAXDIR}/test_network_coords.py"
   "${JAXDIR}/test_nuts_phimarg.py"
   "${JAXDIR}/test_jax_av.py"
+  "${JAXDIR}/test_jax_av_network.py"
   "${JAXDIR}/test_jax_fairdraw_export.py"
   "${JAXDIR}/test_smc_evidence.py"
   "${JAXDIR}/test_jax_tempering_chooser.py"
@@ -1228,7 +1229,9 @@ fi
 # ~/.cache/jaxci_venv, PYTHONPATH pinned to the tree under test, DESELECT applied).
 # 2026-10-04: review fixes, +4 tests (multipeak refusal x2, all -inf gradient,
 # n_sub).  Read off this script's own line: "collected 1002 tests from 56 files".
-EXPECTED_TESTS=1002
+# 2026-10-06: + test_jax_av_network.py (13 tests: network-frame sky sampling in JAX
+# AV/portfolio).  1002 + 13 = 1015.
+EXPECTED_TESTS=1015
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"

@@ -2389,7 +2389,7 @@ class _AVNetworkSky:
         names = [name for name in like.data.detector_names
                  if name not in exclude_detectors]
         if len(names) < 2:
-            raise ValueError("AV network sky coordinates require two distinct detectors")
+            raise ValueError("AV network sky coordinates require two detectors (after excluding %s), have %s" % (list(exclude_detectors), list(like.data.detector_names)))
         self.physical = like
         self.order = _av_param_order(like)
         if "ra" not in self.order or "dec" not in self.order:
@@ -2404,16 +2404,22 @@ class _AVNetworkSky:
             np.asarray(like.data.detectors[names[0]]["location"]),
             np.asarray(like.data.detectors[names[1]]["location"]), self.gmst)
         self.baseline = tuple(names[:2])
+        # One compiled transform per batch shape; eager dispatch of the rotation
+        # otherwise dominates the GPU wall time of each likelihood chunk.
+        self._to_physical = jax.jit(self._to_physical_impl)
+        self._physical_columns = jax.jit(self._physical_columns_impl)
 
     def __getattr__(self, name):
         return getattr(self.physical, name)
 
-    def to_physical(self, theta):
-        theta = jnp.asarray(theta)
+    def _to_physical_impl(self, theta):
         ra, dec = self.coordinates.network_to_equatorial(
             jnp.arccos(jnp.clip(theta[..., self.ra_index], -1., 1.)),
             theta[..., self.dec_index], self.rotation, self.gmst)
         return theta.at[..., self.ra_index].set(ra).at[..., self.dec_index].set(dec)
+
+    def to_physical(self, theta):
+        return self._to_physical(jnp.asarray(theta))
 
     def from_physical(self, theta):
         theta = jnp.asarray(theta)
@@ -2422,9 +2428,12 @@ class _AVNetworkSky:
             self.rotation, self.gmst)
         return theta.at[..., self.ra_index].set(jnp.cos(polar)).at[..., self.dec_index].set(azimuth)
 
+    def _physical_columns_impl(self, *cols):
+        theta = self._to_physical_impl(jnp.stack(cols, axis=-1))
+        return tuple(theta[..., j] for j in range(len(self.order)))
+
     def log_likelihood(self, *cols):
-        theta = self.to_physical(jnp.stack(cols, axis=-1))
-        return self.physical.log_likelihood(*[theta[..., j] for j in range(len(self.order))])
+        return self.physical.log_likelihood(*self._physical_columns(*cols))
 
 
 def _av_sample_bounds(order, d_min, d_max, sample_d_min=None,
@@ -2754,7 +2763,8 @@ def adaptive_volume_sample(like, d_min, d_max, sampler_method="AV",
         for name in ("ra", "dec"):
             if name in sample_bounds:
                 full = _av_prior_spec(name, d_min, d_max)[:2]
-                if tuple(sample_bounds.pop(name)) != full:
+                # Tolerate a full range typed to ~6 digits (e.g. 0,6.283185).
+                if not np.allclose(sample_bounds.pop(name), full, rtol=0., atol=1e-5):
                     raise ValueError("AV network sky coordinates do not support restricted %s bounds" % name)
         network = _AVNetworkSky(like, exclude_detectors=network_exclude_detectors)
         like = network
