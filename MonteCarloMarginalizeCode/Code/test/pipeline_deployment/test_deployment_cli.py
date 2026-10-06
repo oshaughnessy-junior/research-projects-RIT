@@ -116,9 +116,12 @@ def test_real_frame_crop_and_cache(tmp_path):
     np.testing.assert_array_equal(TimeSeries.read(entry.path,'H1:TEST-STRAIN').value,data.value)
 
 
-@pytest.mark.parametrize('kind',['absent_detector','absent_channel','gap'])
+@pytest.mark.parametrize('kind',['absent_detector','absent_channel','gap','empty_cache'])
 def test_frame_failure_preserves_input(tmp_path,kind):
     original=stage_frames(tmp_path,missing=kind=='absent_detector',gap=kind=='gap')
+    if kind=='empty_cache':
+        (tmp_path/'local.cache').write_bytes(b'')
+        original=b''
     if kind=='absent_channel':
         p=tmp_path/'args_ile.txt';p.write_text(p.read_text().replace('TEST-STRAIN','NOT_PRESENT'))
     result=run('util_ForOSG_MakeTruncatedLocalFramesDir.py',[tmp_path],tmp_path,False)
@@ -232,12 +235,15 @@ def test_frame_edges(tmp_path,case):
 
 @pytest.mark.parametrize('builder',['BasicIteration','AlternateIteration'])
 @pytest.mark.parametrize('transfer',[False,True])
-def test_real_pseudo_pipe_truncated_schedule_and_frames(tmp_path,grid,builder,transfer):
+def test_real_pseudo_pipe_truncated_schedule_and_frames(tmp_path,grid,builder,transfer,empty_cache=False):
     import configparser
     import lal
     import lal.series
     from igwn_ligolw import utils
     original=stage_frames(tmp_path)
+    if empty_cache:
+        (tmp_path/'local.cache').write_bytes(b'')
+        original=b''
     config=configparser.ConfigParser();config.read(INPUTS/'GW150914.ini')
     config.remove_section('rift-pseudo-pipe')
     config['analysis']['ifos']="['H1']"
@@ -260,7 +266,14 @@ def test_real_pseudo_pipe_truncated_schedule_and_frames(tmp_path,grid,builder,tr
         '--assume-precessing','--internal-use-aligned-phase-coordinates','--cip-fit-method','rf',
         *(['--use-osg','--use-osg-file-transfer','--internal-truncate-files-for-osg-file-transfer'] if transfer else []),
         '--ile-sampler-method','AV','--pipeline-builder',builder,
-        '--manual-extra-ile-args'," --internal-waveform-extra-lalsuite-args \"{'PhenomXPrecVersion':320}\" "],tmp_path)
+        '--manual-extra-ile-args'," --internal-waveform-extra-lalsuite-args \"{'PhenomXPrecVersion':320}\" "],tmp_path,check=not empty_cache)
+    if empty_cache:
+        assert result.returncode!=0
+        assert not (rundir/'marginalize_intrinsic_parameters_BasicIterationWorkflow.dag').exists()
+        assert not (rundir/'frames_dir').exists()
+        assert (rundir/'local.cache').read_bytes()==original
+        assert (tmp_path/'local.cache').read_bytes()==original
+        return
     untrimmed=(rundir/'helper_cip_arg_list.txt').read_text().splitlines()
     assert len(untrimmed)>2
     groups=(rundir/'args_cip_list.txt').read_text().splitlines()
@@ -306,3 +319,7 @@ def test_empty_intrinsic_grid_fails_closed(tmp_path,grid,missing_table):
     sub=tmp_path/'ILE.sub';sub.write_text('executable = /bin/true\narguments = "--n-events-to-analyze 2"\nqueue\n')
     result=run('create_ile_sub_dag.py',['--sim-xml',grid,'--submit-script',sub,'--macroiteration',0],tmp_path,False)
     assert result.returncode!=0 and not list(tmp_path.glob('*.dag'))
+
+
+def test_real_pseudo_pipe_empty_cache_fails_before_dag(tmp_path,grid):
+    test_real_pseudo_pipe_truncated_schedule_and_frames(tmp_path,grid,'BasicIteration',True,empty_cache=True)
