@@ -841,6 +841,52 @@ def sample_from_bins(xrange, dx, bu, ninbin, reject_out_of_range=False):
         return x
 
 
+def _rows_in_bins(idx, bins):
+    """Boolean mask: is each row of the integer array idx (N, d) a row of bins (M, d)?"""
+    if len(bins) == 0 or len(idx) == 0:
+        return np.zeros(len(idx), dtype=bool)
+    ok = np.all(idx >= 0, axis=1)
+    idx = np.where(ok[:, None], idx, 0)
+    shape = np.maximum(bins.max(axis=0), idx.max(axis=0)) + 1
+    if np.prod([float(s) for s in shape]) < 2.0**62:
+        key_b = np.ravel_multi_index(tuple(bins.T), shape)
+        key_x = np.ravel_multi_index(tuple(idx.T), shape)
+        return ok & np.isin(key_x, key_b)
+    _, inv = np.unique(np.vstack([bins, idx]), axis=0, return_inverse=True)
+    inv = np.asarray(inv).ravel()
+    return ok & np.isin(inv[len(bins):], inv[:len(bins)])
+
+
+def log_retained_density(X, origin, grids, box_lo, dx0, pinned_dims=()):
+    """Per-point log density of the retained set, for the deterministic-mixture estimator.
+
+    grids[k] = (dx, binunique, n_drawn) is the proposal integrate_log drew cycle k from:
+    uniform over the occupied bins, density 1/|B_k|.  The pooled draws come from the
+    mixture sum_k n_k 1[x in B_k]/|B_k|; dividing by the retained count gives a density
+    for which logsumexp(lnL + ln p - ln p_s) - ln(n_retained) is the balance-heuristic
+    estimate (1/N) sum L p / q_mix.  origin[i] is the cycle that drew point i, which is a
+    member of its own grid by construction (guards rounding at a bin's upper edge).
+    Pinned dimensions are not drawn from the bins, so they enter with their full width.
+    """
+    X = np.asarray(X, dtype=float)
+    origin = np.asarray(origin, dtype=int)
+    dx0 = np.asarray(dx0, dtype=float)
+    box_lo = np.asarray(box_lo, dtype=float)
+    keep = np.ones(len(dx0), dtype=bool)
+    if len(pinned_dims):
+        keep[np.asarray(pinned_dims, dtype=int)] = False
+    log_dx0_pinned = float(np.sum(np.log(dx0[~keep])))
+    acc = np.full(len(X), -np.inf)
+    for k, (dx, bins, n_k) in enumerate(grids):
+        dx = np.asarray(dx, dtype=float)
+        bins = np.asarray(bins).astype(np.int64)
+        log_vol = np.log(len(bins)) + np.sum(np.log(dx[keep])) + log_dx0_pinned
+        idx = np.floor((X[:, keep] - box_lo[keep]) / dx[keep]).astype(np.int64)
+        member = _rows_in_bins(idx, bins[:, keep]) | (origin == k)
+        acc[member] = np.logaddexp(acc[member], np.log(n_k) - log_vol)
+    return acc - np.log(len(X))
+
+
 class MCSampler(SamplerOutputMixin, object):
 
     # PORTFOLIO MEMBER CONTRACT.  draw_simplified() reports p_s on this sampler's own scale
@@ -1086,8 +1132,7 @@ class MCSampler(SamplerOutputMixin, object):
         # NOT A DENSITY, DELIBERATELY.  The points are uniform over the live volume, whose
         # measure is V_s*V (V_s = full box, V = live FRACTION), so the density they come from is
         # 1/(V_s*V) -- what sampling_density() returns.  What is reported here is V_s/V, larger by
-        # V_s**2.  This sampler's own integrate_log is written against that scale and is exact on
-        # it, and changing it would move every production CIP/ILE evidence, so it stays.
+        # V_s**2.  It is kept for callers that read this scale; integrate_log does not use it.
         # A PORTFOLIO MUST NOT USE THIS AS A MIXTURE DENOMINATOR: sampling_density() is the member
         # contract (see mcsamplerPortfolio.integrate_log).  Mixing this scale with a member that
         # does report a density cost 0.63 nats on a constant integrand whose exact ln Z is 1.386.
@@ -1117,13 +1162,13 @@ class MCSampler(SamplerOutputMixin, object):
 
         VARAHA draws uniformly over its live volume -- the union of the
         currently-occupied hypercubes (self.binunique), each of width self.dx.
-        The density is therefore the SAME constant this sampler reports in
-        integrate_log's log_joint_s_prior,
+        The density of the CURRENT grid is therefore the constant
 
-            q_live = 1 / (n_occupied_bins * prod(dx))   (== 1/(V*prod(dx0))
-                                                          for VARAHA's geometric V),
+            q_live = 1 / (n_occupied_bins * prod(dx))
 
-        inside the live volume and 0 outside it.  We use the geometric form
+        inside the live volume and 0 outside it.  (integrate_log's own
+        log_joint_s_prior is the mixture of every grid it drew from; see
+        log_retained_density.)  We use the geometric form
         1/(n_bins*prod(dx)) directly: it is *exactly* the density of the points
         draw_simple() produces (equal draws per occupied bin, uniform within a
         bin), so a multiple-importance-sampling denominator built from it is
@@ -1438,9 +1483,8 @@ class MCSampler(SamplerOutputMixin, object):
     #
     # These methods seed the live-volume state (`self._warm`) from prior
     # information; integrate_log() then starts from that concentrated grid.  The
-    # seeded fractional volume is set GEOMETRICALLY (n_occupied_bins / prod(nbins))
-    # so the final integral normalization (log_joint_s_prior = log(1/V) - sum log dx0)
-    # stays unbiased regardless of how the state was produced.
+    # seeded fractional volume is set GEOMETRICALLY (n_occupied_bins / prod(nbins)),
+    # which sizes the first contraction's bins.
 
     def _order_columns(self, samples, params=None):
         """Return samples as an (M, ndim) array whose columns are in
@@ -1982,7 +2026,9 @@ class MCSampler(SamplerOutputMixin, object):
         n_live_collapses = 0    # cycles in which the threshold would have emptied the live set
         collapse_reported = False
         nrec = 0
-        allloglkl_prev, allp_prev, allx_prev = allloglkl, allp, allx
+        allcyc = np.zeros(0, dtype=int)   # index into draw_grids of the cycle that drew each retained point
+        draw_grids = []                   # (dx, binunique, n_drawn) of every proposal drawn from
+        allloglkl_prev, allp_prev, allx_prev, allcyc_prev = allloglkl, allp, allx, allcyc
         loglkl_thr_prev = loglkl_thr
 
         ntotal_true = 0
@@ -1990,6 +2036,7 @@ class MCSampler(SamplerOutputMixin, object):
             # Draw samples. Note state variables binunique, ninbin -- so we can re-use the sampler later outside the loop
             rv, log_joint_p_prior = self.draw_simple()  # Beware reversed order of rv
             ntotal_true += len(rv)
+            draw_grids.append((np.array(identity_convert(self.dx)), np.array(identity_convert(self.binunique)), len(rv)))
             if cupy_ok:
               rv = identity_convert_togpu(rv) # send random numbers to GPU : ugh
               log_joint_p_prior = identity_convert_togpu(log_joint_p_prior)    # send to GPU if required. Don't waste memory reassignment otherwise
@@ -2052,6 +2099,7 @@ class MCSampler(SamplerOutputMixin, object):
             n_new = len(idxsel[0])
             #only admit samples that lie inside the live volume, i.e. one that cross likelihood threshold
             allx = xpy_here.append(allx, rv[idxsel], axis = 0)
+            allcyc = np.append(allcyc, np.full(n_new, len(draw_grids) - 1, dtype=int))
             allloglkl = xpy_here.append(allloglkl, loglkl[idxsel])
             allp = xpy_here.append(allp, log_joint_p_prior[idxsel])
             ninj = len(allloglkl)
@@ -2095,6 +2143,7 @@ class MCSampler(SamplerOutputMixin, object):
             allloglkl = allloglkl[idxsel]
             allp = allp[idxsel]
             allx = allx[idxsel]
+            allcyc = allcyc[identity_convert(idxsel[0])]
             nrec = len(allloglkl)   # recovered size of active volume at present, after selection
 
             _av_trace("cycle {}: after selection at thr={:.6g}: nrec={} (was ninj={})".format(
@@ -2107,7 +2156,8 @@ class MCSampler(SamplerOutputMixin, object):
                 n_live_collapses += 1
                 print("  [AV collapse] cycle {}: threshold {:.6g} emptied a live volume of {}; ".format(cycle, loglkl_thr, ninj)
                       + "restoring it and stopping contraction.")
-                allloglkl, allp, allx = allloglkl_prev, allp_prev, allx_prev
+                allloglkl, allp, allx, allcyc = allloglkl_prev, allp_prev, allx_prev, allcyc_prev
+                draw_grids.pop()   # this cycle's draws are discarded, so its grid leaves the mixture
                 loglkl_thr = loglkl_thr_prev
                 nrec = len(allloglkl)
                 if nrec == 0:
@@ -2118,7 +2168,7 @@ class MCSampler(SamplerOutputMixin, object):
                 break
 
             # remember the last GOOD state, so a degenerate contraction can be undone
-            allloglkl_prev, allp_prev, allx_prev, loglkl_thr_prev = allloglkl, allp, allx, loglkl_thr
+            allloglkl_prev, allp_prev, allx_prev, allcyc_prev, loglkl_thr_prev = allloglkl, allp, allx, allcyc, loglkl_thr
 
             # Weights
             lw = allloglkl - xpy_here.max(allloglkl)
@@ -2186,11 +2236,15 @@ class MCSampler(SamplerOutputMixin, object):
         # write out log integrand
         self._rvs['log_integrand']  = allloglkl - allp  # remember 'allloglkl' really is Lp -- despite the misleading name! --  so we are *undoing* that
         self._rvs['log_joint_prior'] = allp
-        # ones_like(allloglkl) follows allloglkl's backend (cupy via numpy's
-        # __array_function__ dispatch when on GPU); xpy_here.ones(len) would
-        # instead create a host array, leaving this term on a different backend
-        # than log_integrand / log_joint_prior and breaking the arithmetic below.
-        self._rvs['log_joint_s_prior'] = xpy_here.ones_like(allloglkl)*(np.log(1/V) - np.sum(np.log(self.dx0)))  # effective uniform sampling on this volume
+        # Sampling density of the retained set: the mixture of every grid drawn from, not
+        # 1/(V*prod(dx0)).  V (the product of per-cycle survival fractions nrec/ninj) is
+        # biased high whenever a cycle's occupied bins miss part of the previous live
+        # region, because the missed part is its low-likelihood rim; V now only sizes bins.
+        # Result is put on allloglkl's backend so the arithmetic below stays on one backend.
+        _pinned = [self.params_ordered.index(p) for p in self.params_pinned_vals]
+        _log_ps = log_retained_density(identity_convert(allx), allcyc, draw_grids,
+                                       self.my_ranges.T[0], self.dx0, pinned_dims=_pinned)
+        self._rvs['log_joint_s_prior'] = xpy_here.ones_like(allloglkl)*(identity_convert_togpu(_log_ps) if cupy_ok else _log_ps)
 
         # WARM-SEED RESERVE: keep a bounded copy of the points this pass actually RETAINED,
         # before the fair draw below overwrites self._rvs in place.
@@ -2233,12 +2287,11 @@ class MCSampler(SamplerOutputMixin, object):
         log_wt = identity_convert(log_wt)  # convert to CPU
         log_int = special.logsumexp( log_wt) - np.log(len(log_wt))  # mean value
         rel_var_mc = np.var( np.exp(log_wt - log_int))/len(log_wt)   # error in integral, estimated: just taking int = <w> , so error is V(w_k)/N (sample mean/variance)
-        # Total DISCLOSED relative variance: the naive weight-variance term above is
-        # structurally blind to (a) the stochasticity of the live volume V itself
-        # (Z ~ V*mean(w); var_lnV accumulated per cycle) and (b) the probability
-        # deliberately truncated by the likelihood threshold (trunc_p, a one-sided
-        # systematic entered here as a variance in quadrature).  Add them.
-        rel_var = rel_var_mc + var_lnV + trunc_p**2
+        # Total DISCLOSED relative variance: the weight-variance term above plus the
+        # probability deliberately truncated by the likelihood threshold (trunc_p, a
+        # one-sided systematic entered here as a variance in quadrature).  var_lnV is not
+        # added: V no longer enters the estimate (see log_joint_s_prior above).
+        rel_var = rel_var_mc + trunc_p**2
         eff_samp = np.sum(np.exp(log_wt - np.max(log_wt)))
         maxval = np.max(allloglkl)  # max of log
 
@@ -2320,9 +2373,7 @@ class MCSampler(SamplerOutputMixin, object):
         dict_return = {"av_stopping_statistics": self.last_stopping_statistics.copy()}
 
         # MC-error diagnostics: disclose the components and the weight-tail state.
-        # NOTE the AV estimator assigns the surviving (threshold-selected) samples a
-        # pretend-uniform density on the final live volume, so the naive term is if
-        # anything MORE optimistic than for the other samplers -- k-hat matters here.
+        # sigma_lnV describes the grid-sizing volume V, which no longer enters lnZ.
         try:
             mc_diag = {'sigma_lnZ_mc': float(np.sqrt(rel_var_mc)),
                        'sigma_lnV': float(np.sqrt(var_lnV)),

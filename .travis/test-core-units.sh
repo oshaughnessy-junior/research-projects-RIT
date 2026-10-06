@@ -109,6 +109,7 @@ FILES=(
   "$C/test/interpolators/test_cached_matern_gp.py"
   "$C/test/test_av_host_backend.py"
   "$C/test/test_av_kish_loop.py"
+  "$C/test/test_av_retained_density.py"
   "$C/test/test_matern_gp.py"
   "$C/test/integrators/test_seeding_public_paths.py"
   "$C/test/integrators/test_seeding_reproducibility.py"
