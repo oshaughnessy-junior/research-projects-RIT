@@ -1131,7 +1131,7 @@ class MCSampler(SamplerOutputMixin, MCSamplerGeneric):
         current_log_aggregate = None
         eff_samp = 0  # ratio of max weight to sum of weights
         maxlnL = -np.inf  # max lnL
-        maxval=0   # max weight
+        maxval = -np.inf   # running max of the LOG weight; 0 would floor it at w=1
         outvals=None  # define in top level scope
         self.ntotal = 0
         if bShowEvaluationLog:
@@ -1217,7 +1217,10 @@ class MCSampler(SamplerOutputMixin, MCSamplerGeneric):
             maxval = max(maxval, identity_convert(self.xpy.max(log_integrand) ))
 
             # sum of weights is the integral * the number of points
-            eff_samp = xpy.exp(  outvals[0]+np.log(self.ntotal) - maxval)   # integral value minus floating point, which is maximum
+            if maxval == -np.inf:
+              eff_samp = 0   # every weight so far is zero
+            else:
+              eff_samp = xpy.exp(  outvals[0]+np.log(self.ntotal) - maxval)   # integral value minus floating point, which is maximum
             if bShowEvaluationLog:
                 print(" :",  self.ntotal, eff_samp, numpy.sqrt(2*maxlnL), numpy.sqrt(2*outvals[0]), outvals[0]-maxlnL, np.exp(outvals[1]/2  - outvals[0]  - np.log(self.ntotal)/2 ))
 
