@@ -97,6 +97,7 @@ FILES=(
   "$C/test/integrators/test_mcsamplerGPU_default_adapt.py"
   "$C/test/integrators/test_portfolio_gmm_member_trains.py"
   "$C/test/integrators/test_portfolio_restrict_and_warm.py"
+  "$C/test/integrators/test_av_selfish_state.py"
   # Wraps the five integrator studies as subprocesses (29 s).  They collect nothing
   # themselves -- pytest exits 5 on each -- so this is how their gates reach CI at all.
   "$C/test/integrators/test_integrator_studies.py"

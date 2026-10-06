@@ -946,6 +946,9 @@ class MCSampler(SamplerOutputMixin, object):
         self.V_s = np.prod([ self.rlim[x] - self.llim[x] for x in self.llim])  # global sampling volume
         self.lnL_thresh = -np.inf
         self.enc_prob = 0.999
+        # Live set, threshold and truncated probability carried between
+        # update_sampling_prior_selfish calls; None = start cold on the next call.
+        self._selfish_state = None
 
         self.is_varaha=True
 
@@ -1044,6 +1047,9 @@ class MCSampler(SamplerOutputMixin, object):
                 self.V = float(warm['V'])
             if 'loglkl_thr' in warm:
                 self.lnL_thresh = float(warm['loglkl_thr'])
+            # The selfish step restarts from the seed's threshold and trunc_p, not from
+            # whatever live set the cold grid had accumulated.
+            self._selfish_state = None
             self._warm_applied = True
             print("  [AV warm-start] seeded grid APPLIED to the active draw path: "
                   "live bins={}".format(self.binunique.shape[0]))
@@ -1203,22 +1209,40 @@ class MCSampler(SamplerOutputMixin, object):
 
       We therefore do a single pure step of VARAHA, including *independent* draws.  We will keep state about 'V' etc from previous iterations.
         We therefore also have to know about the function we are integrating. However, we do not keep track of the integral result here -- the top -level routine does this.
+
+      One call is one cycle of integrate_log's loop, so the cycle state persists between
+      calls in self._selfish_state: the live set (allx/allloglkl/allp), the threshold and
+      the truncated probability trunc_p.  Restarting them on every call made each call
+      keep only the top nsel of its own fresh draws, so V shrank by n_chunk/nsel per call
+      and never reached the final threshold: the live volume contracted without limit and
+      cut away the posterior (lnV -27 after 40 calls where standalone AV stops at -7.3).
        """
         xpy_here = self.xpy
         enforce_bounds=True
 
         # VT specific items
-        loglkl_thr = -1e15
         enc_prob = 0.999 #The approximate upper limit on the final probability enclosed by histograms.
         V = self.V  # nominal scale factor for hypercube volume
         ndim = len(self.params_ordered)
-        allx, allloglkl = np.transpose([[]] * ndim), []
-        allp = []
-        trunc_p = 1e-10 #How much probability analysis removes with evolution
         nsel = 1000# number of largest log-likelihood samples selected to estimate lkl_thr for the next cycle.
-        if cupy_ok:
-          allx = identity_convert_togpu(allx)
-          allloglkl = identity_convert_togpu(allloglkl)
+        nsel = np.min([nsel, int(0.1*self.n_chunk)]) #  if chunk size is small, don't pick too many points
+        state = getattr(self, '_selfish_state', None)
+        if state is None:
+            allx, allloglkl = np.transpose([[]] * ndim), []
+            allp = []
+            loglkl_thr = -1e15
+            trunc_p = 1e-10 #How much probability analysis removes with evolution
+            warm = getattr(self, '_warm', None)
+            if warm is not None and getattr(self, '_warm_applied', False):
+                # continue from the installed seed, as integrate_log does
+                loglkl_thr = float(warm.get('loglkl_thr', loglkl_thr))
+                trunc_p = float(warm.get('trunc_p', trunc_p))
+            if cupy_ok:
+              allx = identity_convert_togpu(allx)
+              allloglkl = identity_convert_togpu(allloglkl)
+        else:
+            allx, allloglkl, allp = state['allx'], state['allloglkl'], state['allp']
+            loglkl_thr, trunc_p = state['loglkl_thr'], state['trunc_p']
 
         ntotal_true = 0
         if True: # while (eff_samp < neff and ntotal_true < nmax ): #  and (not bConvergenceTests):
@@ -1283,20 +1307,20 @@ class MCSampler(SamplerOutputMixin, object):
             # or, if ALL are non-finite, yields an empty set -> the reported crash chain
             # (get_likelihood_threshold max of empty array; then this method's max at line ~532).
             idxsel = xpy_here.where(xpy_here.logical_and(loglkl > loglkl_thr, xpy_here.isfinite(loglkl)))
+            n_new = len(idxsel[0])
+            if n_new == 0:
+                # Nothing finite in the live volume this step (cold portfolio member / degenerate
+                # draw).  Leave V, the threshold and the grid UNCHANGED: re-thresholding the
+                # carried live set on no new evidence would shrink V for nothing (integrate_log
+                # has the same guard).  The portfolio's other members carry this step.
+                print("  [AV selfish-update] no finite in-volume samples this step; live volume unchanged")
+                self.V = V
+                return
             #only admit samples that lie inside the live volume, i.e. one that cross likelihood threshold
             allx = xpy_here.append(allx, rv[idxsel], axis = 0)
             allloglkl = xpy_here.append(allloglkl, loglkl[idxsel])
             allp = xpy_here.append(allp, log_joint_p_prior[idxsel])
             ninj = len(allloglkl)
-            if ninj == 0:
-                # Nothing finite in the live volume this step (cold portfolio member / degenerate
-                # draw).  Leave V and the grid UNCHANGED rather than crashing on empty-array
-                # reductions downstream.  The portfolio's other members carry this step; a later
-                # draw with finite samples lets AV resume training.  (This method is a SINGLE
-                # selfish step, so an early return is correct -- unlike integrate_log's loop.)
-                print("  [AV selfish-update] no finite in-volume samples this step; live volume unchanged")
-                self.V = V
-                return
 
 
             #just some test to verify if we dont discard more than 1 - Pthr probability
@@ -1351,6 +1375,8 @@ class MCSampler(SamplerOutputMixin, object):
 
         self.V = V
         self.delta_V  = delta_V
+        self._selfish_state = dict(allx=allx, allloglkl=allloglkl, allp=allp,
+                                   loglkl_thr=loglkl_thr, trunc_p=trunc_p)
 
 
     ###
