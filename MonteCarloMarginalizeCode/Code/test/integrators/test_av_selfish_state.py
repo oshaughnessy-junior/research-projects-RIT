@@ -153,6 +153,42 @@ def test_carried_live_set_is_bounded_and_keeps_every_bin():
     assert _covered_fraction(av, mu) > 0.995
 
 
+def test_threshold_and_volume_freeze_under_the_cap():
+    # A fixed-size live set must not hold trunc_p short of its final value: the
+    # threshold would then keep rising and V keep shrinking.
+    sigma, ndim, n_chunk = 0.05, 4, 1000
+    mu = np.linspace(0.31, -0.42, ndim)
+
+    def lnF(*cols):
+        return -0.5 * sum((np.asarray(c) - m) ** 2 for c, m in zip(cols, mu)) / sigma ** 2
+    np.random.seed(1)
+    av = mcsamplerAV.MCSampler(n_chunk=n_chunk)
+    _add_params(av, ndim)
+    av.setup()
+    thr, lnV = [], []
+    for _ in range(600):
+        av.draw_simplified(n_chunk, *_names(ndim))
+        av.update_sampling_prior_selfish(lnF)
+        thr.append(av._selfish_state['loglkl_thr'])
+        lnV.append(np.log(av.V))
+    assert av._at_final_threshold(av._selfish_state['trunc_p'])
+    assert thr[-1] == thr[-300], (thr[-300], thr[-1])
+    assert lnV[-1] == lnV[-300], (lnV[-300], lnV[-1])
+
+
+def test_repeated_passes_do_not_recontract():
+    # Reusing a portfolio for further passes (calmarg burn-in, cold backstop) keeps the
+    # adapted grid; it must not contract it again on every pass.
+    mu, lnF = _target(2)
+    av, port = _portfolio(2, 7)
+    lnV = []
+    for _ in range(4):
+        _integrate(port, lnF, 2, n_chunks=15)
+        lnV.append(np.log(av.V))
+    assert lnV[-1] - lnV[0] > -0.05, lnV
+    assert _covered_fraction(av, mu) > 0.995
+
+
 def test_setup_and_new_warm_seed_restart_the_selfish_state():
     mu, lnF = _target(2)
     av = _av(2, 5)

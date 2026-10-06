@@ -1197,13 +1197,31 @@ class MCSampler(SamplerOutputMixin, object):
             nbins[adaptive] = np.exp(c[adaptive] / csum * total_log)  # prod(adaptive)=1/delta_V
         return nbins
 
-    def reset_selfish_state(self):
-        """Forget the selfish step's live set and threshold; keep the grid.
+    @staticmethod
+    def _at_final_threshold(trunc_p, enc_prob=0.999):
+        """The test integrate_log uses to stop moving the likelihood threshold."""
+        return np.round(enc_prob/trunc_p) - np.round(enc_prob/(1 - enc_prob)) == 0
 
-        A new integration pass may use a different integrand (e.g. the calmarg burn-in
-        followed by the full likelihood), so a threshold carried from the previous pass
-        could exclude every new draw."""
-        self._selfish_state = None
+    def reset_selfish_state(self):
+        """Start a new integration pass: forget the live set and threshold, keep the grid.
+
+        A new pass may use a different integrand (e.g. the calmarg burn-in followed by the
+        full likelihood), so a threshold carried from the previous pass could exclude every
+        new draw.  If the previous pass had reached the final threshold, the grid is kept
+        as adapted: trunc_p stays final and the threshold is open, so the new pass neither
+        contracts it again nor spends a second discard budget.  Otherwise contraction
+        restarts from the current grid."""
+        state = getattr(self, '_selfish_state', None)
+        if state is not None and self._at_final_threshold(state['trunc_p']):
+            ndim = len(self.params_ordered)
+            allx, allloglkl = np.transpose([[]] * ndim), []
+            if cupy_ok:
+                allx = identity_convert_togpu(allx)
+                allloglkl = identity_convert_togpu(allloglkl)
+            self._selfish_state = dict(allx=allx, allloglkl=allloglkl, allp=[],
+                                       loglkl_thr=-np.inf, trunc_p=state['trunc_p'])
+        else:
+            self._selfish_state = None
 
     def _cap_selfish_live_set(self, loglkl, first_in_bin, nsel):
         """Indices of the carried live set to keep, or None to keep all.
@@ -1396,7 +1414,11 @@ class MCSampler(SamplerOutputMixin, object):
 
             self.cycle += 1
 
-            keep = self._cap_selfish_live_set(identity_convert(allloglkl), first_in_bin, nsel)
+            # Cap only once the threshold is final: before then a fixed-size set can hold
+            # trunc_p just short of final while the threshold keeps rising.
+            keep = None
+            if self._at_final_threshold(trunc_p, enc_prob):
+                keep = self._cap_selfish_live_set(identity_convert(allloglkl), first_in_bin, nsel)
             if keep is not None:
                 keep = xpy_here.asarray(keep) if cupy_ok else keep
                 allx, allloglkl, allp = allx[keep], allloglkl[keep], allp[keep]
