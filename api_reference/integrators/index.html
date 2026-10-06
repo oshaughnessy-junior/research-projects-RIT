@@ -843,6 +843,18 @@ is not in use.</p>
 </dd></dl>
 
 <dl class="py method">
+<dt class="sig sig-object py" id="RIFT.integrators.mcsamplerAdaptiveVolume.MCSampler.reset_selfish_state">
+<span class="sig-name descname"><span class="pre">reset_selfish_state</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerAdaptiveVolume.MCSampler.reset_selfish_state" title="Link to this definition"></a></dt>
+<dd><p>Start a new integration pass: forget the live set and threshold, keep the grid.</p>
+<p>A new pass may use a different integrand (e.g. the calmarg burn-in followed by the
+full likelihood), so a threshold carried from the previous pass could exclude every
+new draw.  If the previous pass had reached the final threshold, the grid is frozen
+as adapted for the new pass: the selfish step then does nothing, so the grid is
+neither contracted again nor re-binned.  Otherwise contraction restarts from the
+current grid.</p>
+</dd></dl>
+
+<dl class="py method">
 <dt class="sig sig-object py" id="RIFT.integrators.mcsamplerAdaptiveVolume.MCSampler.sampling_density">
 <span class="sig-name descname"><span class="pre">sampling_density</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">X</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerAdaptiveVolume.MCSampler.sampling_density" title="Link to this definition"></a></dt>
 <dd><p>Pointwise sampling density q(theta) of THIS member, evaluated at
@@ -895,6 +907,14 @@ VARAHA should only be trained on its own samples, not others!</p>
 <dt>We therefore do a single pure step of VARAHA, including <em>independent</em> draws.  We will keep state about ‘V’ etc from previous iterations.</dt><dd><p>We therefore also have to know about the function we are integrating. However, we do not keep track of the integral result here – the top -level routine does this.</p>
 </dd>
 </dl>
+<p>One call is one cycle of integrate_log’s loop, so the cycle state persists between
+calls in self._selfish_state: the live set (allx/allloglkl/allp), the threshold and
+the truncated probability trunc_p.  Restarted on every call, each call would keep
+only the top nsel of its own draws, V would shrink by n_chunk/nsel per call, the
+final threshold would never be reached, and the live volume would contract without
+limit.  The state is cleared by setup(), by installing a warm seed, and by
+reset_selfish_state(), which mcsamplerPortfolio calls at the start of each pass.
+The carried live set is capped (_cap_selfish_live_set) to bound memory and cost.</p>
 </dd></dl>
 
 <dl class="py method">
