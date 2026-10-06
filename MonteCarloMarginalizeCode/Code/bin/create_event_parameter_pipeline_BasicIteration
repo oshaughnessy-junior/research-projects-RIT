@@ -1969,9 +1969,9 @@ for it in np.arange(it_start,opts.n_iterations):
         grid_node.set_retry(opts.general_retries)
         dag.add_node(grid_node)
         ordinary_ile_parent = grid_node
-    indx_max = int((1.0*n_jobs_this_time)/n_group_here)
-    if indx_max*n_jobs_this_time < n_group_here:
-        indx_max+=1
+    # Keep the trailing partial batch, including when the grid is smaller
+    # than one batch.  Multiplying by the point count here drops that tail.
+    indx_max = (n_jobs_this_time + n_group_here - 1) // n_group_here
     if not(it==it_start and opts.first_iteration_jumpstart):   # if on first iteration ,don't do this for jumpstart
         if opts.ile_group_subdag:
             # Write the subdag

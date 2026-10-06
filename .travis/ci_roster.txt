@@ -149,3 +149,4 @@ MonteCarloMarginalizeCode/Code/test/test_gpytorch_wrapper.py                  OP
 # measured on the IGWN test runtime (38 tests) and accompanied by Condor dry-run
 # and dirty-source package-install receipts. Ordinary CI does not install htcondor.
 MonteCarloMarginalizeCode/Code/test/pipeline_deployment/test_deployment_cli.py OPTDEP needs:htcondor -- actual HTCondor backend, native condor_submit dry-run, GWPy GWF IO; real CIT suite, no inference jobs
+MonteCarloMarginalizeCode/Code/test/pipeline_deployment/test_mock_workflow.py OPTDEP needs:htcondor -- native-parsed emitted DAG mock execution, real dynamic subdag builders and partial-batch CLI coverage; no inference jobs

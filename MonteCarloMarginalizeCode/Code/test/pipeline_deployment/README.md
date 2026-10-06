@@ -25,3 +25,20 @@ Ordinary default-builder smoke passes on the unmodified branch. Regressions
 address shared optional truncation/runtime-subdag paths and AlternateIteration
 worker deployment parity; they do not demonstrate a defect in every standard
 inference. These build and frame IO tests do not claim posterior recovery.
+
+`test_mock_workflow.py` adds bounded local execution of the actual emitted
+Basic/Alternate two-stage DAGs, including real runtime subdag builders,
+native Condor cluster/process argument and environment parsing, and real POST
+existence checks. Drop-in executables replace ILE, CIP, PUFF, join, unify,
+evidence, and final extrinsic conversion. Their outputs carry input provenance;
+fits require current ordinary and puff likelihood records, and conversion requires
+all three final batch workers (six points). Seven-point intrinsic coverage with
+batch size two checks the trailing partial batch. Removing the puff producer edge
+must fail at the real puff subdag builder; a worker returning success without its
+output must also fail before the final artifact.
+
+The executor covers an explicit local/shared-filesystem DAG subset and rejects
+unsupported control directives, legacy environments, input redirection and output
+remapping. It validates transfer-input existence but does not emulate remote
+Condor sandboxes, container execution, retries or scientific calculations.
+Native submit parsing uses dry-run only; no scheduler jobs are submitted.
