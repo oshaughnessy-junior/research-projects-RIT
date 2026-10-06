@@ -1,0 +1,40 @@
+# Analysis overlay: inherit the event's reviewed data, PSDs and physical priors.
+# Replace bootstrap file and dataset before building. This file does not submit jobs.
+kind: analysis
+name: rift-xphm-lossless-q
+pipeline: RIFT
+status: Ready
+dataset: REPLACE_WITH_POSTERIOR_ANALYSIS_LABEL
+waveform:
+  approximant: IMRPhenomXPHM
+  reference frequency: 20
+  maximum mode: 4
+  pn amplitude order: -1
+likelihood:
+  sample rate: 4096
+  assume:
+    - precessing
+sampler:
+  cip:
+    fitting method: rf
+    sampling method: AV
+    transverse spin coordinates: lossless-q
+    av stop metric: kish
+  ile:
+    sampling method: AV
+    interpolate time: cubic
+  likelihood:
+    calibration:
+      sample: false
+  n input samples: 1500
+  n output samples: 20000
+  n output samples last: 100000
+scheduler:
+  bootstrap file: /REPLACE_WITH_REVIEWED_PESUMMARY_FILE.h5
+  bootstrap size: 10000
+  bootstrap reuse existing: false
+  pipeline:
+    internal-truncate-cip-arg-list: 2
+    internal-ile-sky-network-coordinates: true
+    internal-ile-srate-time-resampling: 4096
+    internal-mitigate-fd-J-frame: L_frame

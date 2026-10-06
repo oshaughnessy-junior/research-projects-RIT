@@ -277,7 +277,7 @@ parser.add_argument("--n-chunk",default=1e5,type=int)
 parser.add_argument("--contingency-unevolved-neff",default=None,help="Contingency planning for when n_eff produced by CIP is small, and user doesn't want to have hard failures.  Note --fail-unless-n-eff will prevent this from happening. Options: quadpuff, ...")
 parser.add_argument("--not-worker",action='store_true',help="Nonworker jobs, IF we have workers present, don't have the 'fail unless' statement active")
 parser.add_argument("--fail-unless-n-eff",default=None,type=float,help="If nonzero, places a minimum requirement on n_eff. Code will exit if not achieved, with no sample generation")
-parser.add_argument("--rf-transverse-spin-coordinates", choices=["physics3"], help="Opt-in RF-only L-frame fitting scalars; preserves every native coordinate and the physical prior")
+parser.add_argument("--rf-transverse-spin-coordinates", choices=["physics3","lossless-q"], help="Opt-in RF-only L-frame fit basis: physics3 appends scalars; lossless-q replaces four transverse features; physical sampler and prior unchanged")
 parser.add_argument("--fit-method",default="rf",help="rf (default) : rf|gp|gp-matern|gp-torch|quadratic|polynomial|gp_hyper|gp_lazy|cov|kde|gp-jax-svgp|gp-jax-rff|gp-jax-exact.  Note 'polynomial' with --fit-order 0  will fit a constant. The gp-jax-* methods use the optional JAX interpolators (RIFT.interpolators.jax_gp) and support a differentiable export via --fit-save-jax.")
 parser.add_argument("--fit-load-quadratic",default=None,help="Filename of hdf5 file to load quadratic fit from. ")
 parser.add_argument("--fit-load-quadratic-path",default="GW190814/annealing_mc_source_eta_chieff",help="Path in hdf5 file to specific covariance matrix to be used")
@@ -866,8 +866,12 @@ if opts.rf_transverse_spin_coordinates:
     if (opts.fit_method != 'rf' or opts.fit_load_gp or not opts.use_precessing
             or opts.input_tides or opts.using_eos or opts.use_eccentricity
             or not set(rf_transverse_spin.NATIVE_FEATURES).issubset(coord_names)):
-        raise ValueError('physics3 requires a fresh RF fit with delta_mc, mu1, mu2, chiMinus, s1x, s1y, s2x, s2y in a precessing BBH L-frame analysis')
-    coord_names = list(coord_names) + list(rf_transverse_spin.FEATURE_NAMES)
+        raise ValueError('{} requires a fresh RF fit with delta_mc, mu1, mu2, chiMinus, s1x, s1y, s2x, s2y in a precessing BBH L-frame analysis'.format(opts.rf_transverse_spin_coordinates))
+    if opts.rf_transverse_spin_coordinates == 'physics3':
+        coord_names = list(coord_names) + list(rf_transverse_spin.FEATURE_NAMES)
+    else:
+        chart = dict(zip(rf_transverse_spin.TRANSVERSE,lalsimutils.PRECESSION_Q_COORDINATES))
+        coord_names = [chart.get(name,name) for name in coord_names]
     def extract_fit_param(P, name):
         return rf_transverse_spin.extract(P, name)
 else:
@@ -886,6 +890,8 @@ if opts.fit_uses_reported_error:
 tex_dictionary = dict(lalsimutils.tex_dictionary)
 if opts.rf_transverse_spin_coordinates:
     tex_dictionary.update(zip(rf_transverse_spin.FEATURE_NAMES, rf_transverse_spin.FEATURE_NAMES))
+    tex_dictionary.update(zip(lalsimutils.PRECESSION_Q_COORDINATES,
+        [r"Q", r"\phi_T", r"R_\parallel", r"R_\perp"]))
 print(" Coordinate names for fit :, ", coord_names)
 if not(opts.no_plots):
     print(" Rendering coordinate names : ",  render_coordinates(coord_names))  # map(lambda x: tex_dictionary[x], coord_names)
@@ -3183,11 +3189,11 @@ if _row_mode:
 _row_pass_begins = True   # marker: first statement of a row pass (see above)
 if not opts.using_eos or (fake_eos):
  def convert_coords(x_in):
-    if opts.rf_transverse_spin_coordinates:
+    if opts.rf_transverse_spin_coordinates == 'physics3':
         return rf_transverse_spin.convert(x_in, coord_names, low_level_coord_names, opts.fref,
             lalsimutils.convert_waveform_coordinates, source_redshift=source_redshift,
             enforce_kerr=opts.downselect_enforce_kerr)
-    return lalsimutils.convert_waveform_coordinates(x_in, coord_names=coord_names,low_level_coord_names=low_level_coord_names,source_redshift=source_redshift,enforce_kerr=opts.downselect_enforce_kerr)
+    return lalsimutils.convert_waveform_coordinates(x_in, coord_names=coord_names,low_level_coord_names=low_level_coord_names,source_redshift=source_redshift,enforce_kerr=opts.downselect_enforce_kerr,reference_frequency=opts.fref)
 else:
  def eos_mass_support_mask(x_in):
     """Per-row test: does every matter object in this draw have a stable star?
