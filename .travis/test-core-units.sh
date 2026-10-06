@@ -94,6 +94,7 @@ FILES=(
   "$C/test/integrators/test_convergence_sample_order.py"
   "$C/test/integrators/test_extrinsic_phase_group_uniform.py"
   "$C/test/integrators/test_gmm_adaptive.py"
+  "$C/test/integrators/test_gmm_sample_row_independence.py"
   "$C/test/integrators/test_mcsamplerGPU_default_adapt.py"
   "$C/test/integrators/test_portfolio_gmm_member_trains.py"
   "$C/test/integrators/test_portfolio_restrict_and_warm.py"
@@ -418,7 +419,8 @@ done
 # final review added 4 tests to test_dslice_amplitude_model.py (all pass on CPU) -> 750/731.
 # test_eos_evidence_lnL_shift.py adds 3 collected, 3 passed, no skips.
 # test_assign_param_spin_order.py adds 35 passing tests and no skips -> 788/769.
-EXPECTED_TESTS=788
+# test_gmm_sample_row_independence.py adds 10 passing tests and no skips -> 798/779.
+EXPECTED_TESTS=798
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -432,7 +434,8 @@ EXPECTED_TESTS=788
 # test_dag_postprocess_fail_closed.py adds 13 tests and no skips.
 # test_convert_coordinates_source_redshift.py adds 16 tests and no skips.
 # test_assign_param_spin_order.py adds 35 tests and no skips.
-EXPECTED_PASSED=769
+# test_gmm_sample_row_independence.py adds 10 tests and no skips.
+EXPECTED_PASSED=779
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 MAX_SKIPPED=19
 
