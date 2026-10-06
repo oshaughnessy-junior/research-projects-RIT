@@ -235,7 +235,7 @@ def test_frame_edges(tmp_path,case):
 
 @pytest.mark.parametrize('builder',['BasicIteration','AlternateIteration'])
 @pytest.mark.parametrize('transfer',[False,True])
-def test_real_pseudo_pipe_truncated_schedule_and_frames(tmp_path,grid,builder,transfer,empty_cache=False):
+def test_real_pseudo_pipe_truncated_schedule_and_frames(tmp_path,grid,builder,transfer,empty_cache=False,helper_cache=False,monkeypatch=None,truncate_check=False):
     import configparser
     import lal
     import lal.series
@@ -244,6 +244,24 @@ def test_real_pseudo_pipe_truncated_schedule_and_frames(tmp_path,grid,builder,tr
     if empty_cache:
         (tmp_path/'local.cache').write_bytes(b'')
         original=b''
+    if helper_cache:
+        assert transfer and not empty_cache and monkeypatch is not None
+        stubs=tmp_path/'drop-in';stubs.mkdir()
+        datafind=stubs/'gw_data_find'
+        datafind.write_text('#!'+sys.executable+'\nimport json, pathlib, sys\n'
+            + 'p=pathlib.Path('+repr(str(tmp_path/'datafind-calls.jsonl'))+')\n'
+            + 'with p.open("a") as f: f.write(json.dumps(sys.argv[1:])+"\\n")\n'
+            + 'print("\\n".join(line.split()[-1] for line in pathlib.Path('+repr(str(tmp_path/'local.cache'))+').read_text().splitlines()))\n')
+        datafind.chmod(0o755)
+        truncator=stubs/'util_ForOSG_MakeTruncatedLocalFramesDir.sh'
+        truncator.write_text('#!'+sys.executable+'\nimport json, os, pathlib, sys\n'
+            + 'p=pathlib.Path('+repr(str(tmp_path/'truncate-calls.jsonl'))+')\n'
+            + 'with p.open("a") as f: f.write(json.dumps(sys.argv[1:])+"\\n")\n'
+            + 'os.execv('+repr(str(BIN/'util_ForOSG_MakeTruncatedLocalFramesDir.sh'))+', ['+repr(str(BIN/'util_ForOSG_MakeTruncatedLocalFramesDir.sh'))+']+sys.argv[1:])\n')
+        truncator.chmod(0o755)
+        monkeypatch.setitem(ENV,'PATH',str(stubs)+os.pathsep+ENV['PATH'])
+        if truncate_check:monkeypatch.setitem(ENV,'RIFT_TRUNCATE_CHECK','1')
+        else:monkeypatch.delitem(ENV,'RIFT_TRUNCATE_CHECK',raising=False)
     config=configparser.ConfigParser();config.read(INPUTS/'GW150914.ini')
     config.remove_section('rift-pseudo-pipe')
     config['analysis']['ifos']="['H1']"
@@ -261,7 +279,7 @@ def test_real_pseudo_pipe_truncated_schedule_and_frames(tmp_path,grid,builder,tr
     rundir=tmp_path/'run'
     result=run('util_RIFT_pseudo_pipe.py',['--use-ini',ini,'--use-coinc',INPUTS/'coinc.xml',
         '--event-time',106.4,'--use-rundir',rundir,'--manual-initial-grid',grid,
-        '--fake-data-cache',tmp_path/'local.cache','--use-online-psd-file',psdfile,
+        *([] if helper_cache else ['--fake-data-cache',tmp_path/'local.cache']),'--use-online-psd-file',psdfile,
         '--skip-reproducibility','--condor-nogrid-nonworker','--internal-truncate-cip-arg-list',2,
         '--assume-precessing','--internal-use-aligned-phase-coordinates','--cip-fit-method','rf',
         *(['--use-osg','--use-osg-file-transfer','--internal-truncate-files-for-osg-file-transfer'] if transfer else []),
@@ -274,6 +292,13 @@ def test_real_pseudo_pipe_truncated_schedule_and_frames(tmp_path,grid,builder,tr
         assert (rundir/'local.cache').read_bytes()==original
         assert (tmp_path/'local.cache').read_bytes()==original
         return
+    if helper_cache:
+        import json
+        calls=[json.loads(x) for x in (tmp_path/'datafind-calls.jsonl').read_text().splitlines()]
+        assert calls and all('-u' in x and '--server' in x for x in calls)
+        assert (tmp_path/'truncate-calls.jsonl').read_text().splitlines()==['["."]']
+        original=(rundir/'H_local.cache').read_bytes()
+        assert original and (tmp_path/'local.cache').is_file()
     untrimmed=(rundir/'helper_cip_arg_list.txt').read_text().splitlines()
     assert len(untrimmed)>2
     groups=(rundir/'args_cip_list.txt').read_text().splitlines()
@@ -323,3 +348,15 @@ def test_empty_intrinsic_grid_fails_closed(tmp_path,grid,missing_table):
 
 def test_real_pseudo_pipe_empty_cache_fails_before_dag(tmp_path,grid):
     test_real_pseudo_pipe_truncated_schedule_and_frames(tmp_path,grid,'BasicIteration',True,empty_cache=True)
+
+
+@pytest.mark.parametrize('builder',['BasicIteration','AlternateIteration'])
+@pytest.mark.parametrize('truncate_check',[False,True])
+def test_real_pseudo_pipe_helper_produced_cache(tmp_path,grid,monkeypatch,builder,truncate_check):
+    test_real_pseudo_pipe_truncated_schedule_and_frames(tmp_path,grid,builder,True,
+        helper_cache=True,monkeypatch=monkeypatch,truncate_check=truncate_check)
+
+
+def test_real_pseudo_pipe_explicit_cache_with_truncate_check(tmp_path,grid,monkeypatch):
+    monkeypatch.setitem(ENV,'RIFT_TRUNCATE_CHECK','1')
+    test_real_pseudo_pipe_truncated_schedule_and_frames(tmp_path,grid,'BasicIteration',True)

@@ -2602,17 +2602,7 @@ if opts.use_osg:
     if not(opts.use_osg_file_transfer):
         cmd += " --use-cvmfs-frames "
     elif (opts.internal_truncate_files_for_osg_file_transfer):  # attempt to make copies of frame files, and set up to transfer them with *every* job (!)
-        if os.path.exists('local.cache'):
-            os.system("util_ForOSG_MakeTruncatedLocalFramesDir.sh .")
-        else:
-            print(" --- WARNING --- ")
-            print(" File truncation not yet performed")
-        # if environment variable active, check that frames were created! Fail otherwise
-        if 'RIFT_TRUNCATE_CHECK' in os.environ:
-            fnames_gwf = os.listdir('./frames_dir/')
-            if len(fnames_gwf)< len(event_dict["IFOs"]):
-                raise Exception(" Pipeline build failure: Problem generating truncated frames for OSG")
-            
+        # Frame staging is performed once, with checked failure handling, below.
 #        os.system("echo ../frames_dir >> helper_transfer_files.txt")
         cmd += " --frames-dir `pwd`/frames_dir "
     elif opts.use_osg_file_transfer:
@@ -2702,6 +2692,11 @@ if opts.use_osg_file_transfer and opts.internal_truncate_files_for_osg_file_tran
     if opts.fake_data_cache:
         shutil.copyfile(opts.fake_data_cache, "local.cache")
     subprocess.run(["util_ForOSG_MakeTruncatedLocalFramesDir.sh", "."], check=True)
+    # Check only after the helper-produced or explicit cache has been staged.
+    if 'RIFT_TRUNCATE_CHECK' in os.environ:
+        fnames_gwf = [name for name in os.listdir('frames_dir') if name.endswith('.gwf')]
+        if len(fnames_gwf) < len(event_dict["IFOs"]):
+            raise RuntimeError("Pipeline build failure: Problem generating truncated frames for OSG")
 
 if not(ile_condor_commands is None):
     # create file

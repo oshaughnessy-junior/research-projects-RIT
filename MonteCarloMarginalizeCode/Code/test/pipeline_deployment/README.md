@@ -42,3 +42,10 @@ unsupported control directives, legacy environments, input redirection and outpu
 remapping. It validates transfer-input existence but does not emulate remote
 Condor sandboxes, container execution, retries or scientific calculations.
 Native submit parsing uses dry-run only; no scheduler jobs are submitted.
+
+Normal data staging is also tested without `--fake-data-cache`: a drop-in
+`gw_data_find` returns synthetic local GWF URLs, while the real helper converts
+and assembles `H_local.cache` and `local.cache`. A counted wrapper executes the
+real frame helper, proving it is called exactly once before DAG construction in
+both builders, with `RIFT_TRUNCATE_CHECK` enabled and disabled. Explicit-cache
+staging with that check enabled is covered separately. No data service is used.
