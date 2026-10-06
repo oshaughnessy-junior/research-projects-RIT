@@ -1732,14 +1732,14 @@ if opts.internal_ile_rotate_phase:
 puff_max_it=0
 if event_dict["MChirp"] >25:
     if opts.use_mtot_coords:
-        # not mtot with delta_mc: assign_param('delta_mc') holds mc fixed, so it would move mtot
-        helper_puff_args = " --parameter mtot --parameter q --fmin {} --fref {}  ".format(opts.fmin_template,opts.fmin_template)
+        # delta_mc before mtot: assign_param('delta_mc') holds mc fixed, so after mtot it would move mtot
+        helper_puff_args = " --parameter delta_mc --parameter mtot --fmin {} --fref {}  ".format(opts.fmin_template,opts.fmin_template)
     else:
         # at high mass, mc/eta correlation weak, don't want to have eta coordinate degeneracy at q=1 to reduce puff proposals  near there
         helper_puff_args = " --parameter mc --parameter delta_mc --fmin {} --fref {}  ".format(opts.fmin_template,opts.fmin_template)
 else:
     if opts.use_mtot_coords:
-        helper_puff_args = " --parameter mtot --parameter q --fmin {} --fref {}  ".format(opts.fmin_template,opts.fmin_template)
+        helper_puff_args = " --parameter delta_mc --parameter mtot --fmin {} --fref {}  ".format(opts.fmin_template,opts.fmin_template)
     else:
         helper_puff_args = " --parameter mc --parameter eta --fmin {} --fref {} ".format(opts.fmin_template,opts.fmin_template)
 if opts.use_EOB_parameters:

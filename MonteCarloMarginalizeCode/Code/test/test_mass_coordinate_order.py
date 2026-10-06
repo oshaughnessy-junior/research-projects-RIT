@@ -110,3 +110,28 @@ def test_emitted_parameter_lists_reproduce_the_masses():
                 if len(names) > 1 and np.max(np.abs(_assigned_masses(names))) > 1e-12:
                     bad.append('{}:{} {}'.format(name, lineno, names))
     assert not bad, bad
+
+
+@pytest.mark.parametrize("names", [['mtot', 'q'], ['delta_mc', 'mtot']])
+def test_puffball_keeps_m1_above_m2(tmp_path, names):
+    # near-equal-mass seeds and a large puff: q above 1 must not be assigned
+    rng = np.random.default_rng(11)
+    P_list = []
+    for _ in range(100):
+        mtot, q = rng.uniform(60, 80), rng.uniform(0.7, 1.0)
+        P = lalsimutils.ChooseWaveformParams()
+        P.m1, P.m2, P.fmin = mtot / (1 + q) * lal.MSUN_SI, mtot * q / (1 + q) * lal.MSUN_SI, 20.
+        P_list.append(P)
+    lalsimutils.ChooseWaveformParams_array_to_xml(P_list, str(tmp_path / 'inj'))
+    args = ['--inj-file', str(tmp_path / 'inj.xml.gz'), '--inj-file-out', str(tmp_path / 'out'),
+            '--puff-factor', '3', '--fmin', '20', '--fref', '20']
+    for p in names:
+        args += ['--parameter', p]
+    env = dict(os.environ, PYTHONPATH=CODE + os.pathsep + os.environ.get('PYTHONPATH', ''))
+    res = subprocess.run([sys.executable, os.path.join(CODE, 'bin', 'util_ParameterPuffball.py')] + args,
+                         cwd=str(tmp_path), env=env, capture_output=True, text=True, timeout=300)
+    assert res.returncode == 0, res.stderr[-2000:]
+    out = lalsimutils.xml_to_ChooseWaveformParams_array(str(tmp_path / 'out.xml.gz'))
+    assert len(out) > 50  # premise: points survived the puff
+    m1 = np.array([P.m1 for P in out]); m2 = np.array([P.m2 for P in out])
+    assert np.all(m2 <= m1 * (1 + 1e-12)), np.max(m2 / m1)

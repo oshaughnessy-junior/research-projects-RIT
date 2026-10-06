@@ -333,6 +333,8 @@ for indx_P in np.arange(len(P_list)):
             continue
         if coord_names[indx] == 'delta_mc' and (X_out[indx_P,indx]>1 or X_out[indx_P,indx]<0.) :
             continue
+        if coord_names[indx] == 'q' and (X_out[indx_P,indx]>1 or X_out[indx_P,indx]<=0.) :
+            continue
         if coord_names[indx] in ['mc','m1','m2','mtot']:
             fac = lal.MSUN_SI
         if coord_names[indx] in lalsimutils.periodic_params:
