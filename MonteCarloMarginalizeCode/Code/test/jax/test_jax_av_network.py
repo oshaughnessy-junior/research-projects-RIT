@@ -206,3 +206,50 @@ def test_classic_alias_baseline_keeps_hl_with_virgo_first():
     adapter = samplers._AVNetworkSky(like, exclude_detectors=("V1", "K1"))
     assert adapter.baseline == ("H1", "L1")
     assert adapter.physical.data.detector_names == ["V1", "H1", "L1"]
+
+
+@pytest.mark.parametrize("count", [0, 1, 16, 17, 35])
+def test_retained_cloud_conversion_is_fixed_shape_and_memory_bounded(count):
+    adapter = samplers._AVNetworkSky(RingLikelihood())
+    theta = samplers._av_prior_draw(adapter.ANGULAR_PARAM_ORDER, count,
+                                   np.random.default_rng(79), 1., 100.)
+    calls = []
+    transform = adapter.to_physical
+    def bounded(block):
+        calls.append(len(block))
+        assert len(block) == 16
+        return transform(block)
+    adapter.to_physical = bounded
+    original = theta.copy()
+    actual = samplers._av_network_to_physical_batched(adapter, theta, 16)
+    assert actual.shape == (count, 3)
+    assert calls == [16] * ((count + 15) // 16)
+    np.testing.assert_array_equal(theta, original)
+    if count:
+        np.testing.assert_allclose(actual, np.asarray(transform(theta)), atol=1e-12)
+        np.testing.assert_array_equal(actual[:, 2], theta[:, 2])
+        # Coordinate Jacobians cancel in the weight even across block boundaries.
+        lnL = np.asarray(adapter.physical.log_likelihood(*actual.T))
+        lp, lq = np.arange(count)*.03, np.arange(count)*.02
+        jacobian = np.log(np.cos(actual[:, 1]))
+        np.testing.assert_allclose(lnL + lp + jacobian - lq - jacobian,
+                                   lnL + lp - lq, atol=1e-12)
+
+
+def test_actual_av_export_uses_bounded_conversion(monkeypatch):
+    transform = samplers._AVNetworkSky.to_physical
+    calls = []
+    def bounded(self, theta):
+        calls.append(len(theta))
+        assert len(theta) == 64
+        return transform(self, theta)
+    monkeypatch.setattr(samplers._AVNetworkSky, "to_physical", bounded)
+    like = RingLikelihood(width=.08)
+    result = samplers.adaptive_volume_sample(
+        like, 1., 100., sky_coords="network", nmax=10000,
+        n_chunk=1024, eval_chunk=64, neff=100., seed=42)
+    assert len(result["theta"]) > 64
+    assert calls and max(calls) == 64
+    np.testing.assert_allclose(result["lnL"], like.log_likelihood(*result["theta"].T), atol=1e-12)
+    np.testing.assert_allclose(result["log_weight"], result["lnL"] +
+                               result["log_joint_prior"] - result["log_joint_s_prior"], atol=1e-12)

@@ -2436,6 +2436,29 @@ class _AVNetworkSky:
         return self.physical.log_likelihood(*self._physical_columns(*cols))
 
 
+def _av_network_to_physical_batched(network, theta, eval_chunk):
+    """Convert retained host rows without uploading the entire cloud to JAX.
+
+    Reuse the likelihood's bounded, fixed batch shape, including a padded final
+    block. Padding is hidden and no retained row or importance weight changes.
+    An empty cloud allocates no device batch.
+    """
+    eval_chunk = int(eval_chunk)
+    if eval_chunk < 1:
+        raise ValueError("network output conversion chunk must be positive")
+    theta = np.asarray(theta)
+    out = np.empty_like(theta)
+    for start in range(0, len(theta), eval_chunk):
+        stop = min(start + eval_chunk, len(theta))
+        block = theta[start:stop]
+        if len(block) < eval_chunk:
+            block = np.concatenate(
+                [block, np.repeat(block[-1:], eval_chunk - len(block), axis=0)],
+                axis=0)
+        out[start:stop] = np.asarray(network.to_physical(block))[:stop - start]
+    return out
+
+
 def _av_sample_bounds(order, d_min, d_max, sample_d_min=None,
                       sample_d_max=None, sample_bounds=None,
                       distance_prior="euclidean"):
@@ -2917,7 +2940,7 @@ def adaptive_volume_sample(like, d_min, d_max, sampler_method="AV",
         log_joint_s_prior = np.asarray(sampler._rvs["log_joint_s_prior"], dtype=float)
         log_weight = out_lnL + log_joint_prior - log_joint_s_prior
     if network is not None:
-        theta = np.asarray(network.to_physical(theta))
+        theta = _av_network_to_physical_batched(network, theta, lnL.eval_chunk)
         if not already_fair:
             with np.errstate(divide="ignore"):
                 log_jacobian = np.log(np.maximum(np.cos(theta[:, network.dec_index]), 0.))
