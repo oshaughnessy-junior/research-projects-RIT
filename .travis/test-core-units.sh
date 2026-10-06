@@ -98,6 +98,7 @@ FILES=(
   "$C/test/integrators/test_mcsamplerGPU_default_adapt.py"
   "$C/test/integrators/test_portfolio_gmm_member_trains.py"
   "$C/test/integrators/test_portfolio_restrict_and_warm.py"
+  "$C/test/integrators/test_av_selfish_state.py"
   # Wraps the five integrator studies as subprocesses (29 s).  They collect nothing
   # themselves -- pytest exits 5 on each -- so this is how their gates reach CI at all.
   "$C/test/integrators/test_integrator_studies.py"
@@ -205,6 +206,8 @@ FILES=(
   "$C/test/test_eos_rf_seed.py"
   # -- reported evidence restores the lnL shift (explicit and automatic), known answer
   "$C/test/test_eos_evidence_lnL_shift.py"
+  # -- coordinates: per-row fallbacks convert each row independently of the others
+  "$C/test/test_convert_coordinates_row_independence.py"
 )
 
 # A manifest entry that stops existing is a SILENT no-op: the gate keeps passing while
@@ -419,8 +422,9 @@ done
 # final review added 4 tests to test_dslice_amplitude_model.py (all pass on CPU) -> 750/731.
 # test_eos_evidence_lnL_shift.py adds 3 collected, 3 passed, no skips.
 # test_assign_param_spin_order.py adds 35 passing tests and no skips -> 788/769.
-# test_gmm_sample_row_independence.py adds 10 passing tests and no skips -> 798/779.
-EXPECTED_TESTS=798
+# test_convert_coordinates_row_independence.py adds 9 passing tests and no skips -> 797/778.
+# test_gmm_sample_row_independence.py adds 10 passing tests and no skips -> 807/788.
+EXPECTED_TESTS=807
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -434,8 +438,9 @@ EXPECTED_TESTS=798
 # test_dag_postprocess_fail_closed.py adds 13 tests and no skips.
 # test_convert_coordinates_source_redshift.py adds 16 tests and no skips.
 # test_assign_param_spin_order.py adds 35 tests and no skips.
+# test_convert_coordinates_row_independence.py adds 9 tests and no skips.
 # test_gmm_sample_row_independence.py adds 10 tests and no skips.
-EXPECTED_PASSED=779
+EXPECTED_PASSED=788
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 MAX_SKIPPED=19
 

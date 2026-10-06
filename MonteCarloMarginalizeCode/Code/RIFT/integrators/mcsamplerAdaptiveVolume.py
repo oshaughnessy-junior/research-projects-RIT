@@ -946,6 +946,9 @@ class MCSampler(SamplerOutputMixin, object):
         self.V_s = np.prod([ self.rlim[x] - self.llim[x] for x in self.llim])  # global sampling volume
         self.lnL_thresh = -np.inf
         self.enc_prob = 0.999
+        # Live set, threshold and truncated probability carried between
+        # update_sampling_prior_selfish calls; None = start cold on the next call.
+        self._selfish_state = None
 
         self.is_varaha=True
 
@@ -1034,6 +1037,8 @@ class MCSampler(SamplerOutputMixin, object):
         warm = getattr(self, '_warm', None)
         if warm is None or getattr(self, '_warm_applied', False):
             return
+        # A new grid invalidates the selfish step's live set and threshold.
+        self._selfish_state = None
         try:
             self.binunique = np.array(warm['binunique'])
             self.dx = np.array(warm['dx'])
@@ -1192,6 +1197,46 @@ class MCSampler(SamplerOutputMixin, object):
             nbins[adaptive] = np.exp(c[adaptive] / csum * total_log)  # prod(adaptive)=1/delta_V
         return nbins
 
+    @staticmethod
+    def _at_final_threshold(trunc_p, enc_prob=0.999):
+        """The test integrate_log uses to stop moving the likelihood threshold."""
+        return np.round(enc_prob/trunc_p) - np.round(enc_prob/(1 - enc_prob)) == 0
+
+    def reset_selfish_state(self):
+        """Start a new integration pass: forget the live set and threshold, keep the grid.
+
+        A new pass may use a different integrand (e.g. the calmarg burn-in followed by the
+        full likelihood), so a threshold carried from the previous pass could exclude every
+        new draw.  If the previous pass had reached the final threshold, the grid is frozen
+        as adapted for the new pass: the selfish step then does nothing, so the grid is
+        neither contracted again nor re-binned.  Otherwise contraction restarts from the
+        current grid."""
+        state = getattr(self, '_selfish_state', None)
+        if state is not None and (state.get('frozen')
+                                  or self._at_final_threshold(state['trunc_p'])):
+            self._selfish_state = dict(frozen=True)
+        else:
+            self._selfish_state = None
+
+    def _cap_selfish_live_set(self, loglkl, first_in_bin, nsel):
+        """Indices of the carried live set to keep, or None to keep all.
+
+        After the final threshold nothing is removed from the live set, so without a cap it
+        grows by about n_chunk per call.  Keep one point per occupied bin (so the rebuilt grid
+        and live volume do not change), the nsel highest-lnL points (which set the threshold),
+        and a random fill up to the cap."""
+        cap = int(getattr(self, 'selfish_live_set_cap', 0) or 4 * self.n_chunk)
+        n = len(loglkl)
+        if n <= cap:
+            return None
+        must = np.union1d(np.asarray(first_in_bin, dtype=int),
+                          np.argsort(np.asarray(loglkl))[-int(nsel):])
+        rest = np.setdiff1d(np.arange(n), must, assume_unique=True)
+        n_fill = max(cap - len(must), 0)
+        if n_fill < len(rest):
+            rest = np.random.choice(rest, size=n_fill, replace=False)
+        return np.sort(np.concatenate([must, rest]))
+
     def update_sampling_prior_selfish(self, lnF, *args, xpy=xpy_default,no_protect_names=True,**kwargs):
         """
       update_sampling_prior
@@ -1203,22 +1248,39 @@ class MCSampler(SamplerOutputMixin, object):
 
       We therefore do a single pure step of VARAHA, including *independent* draws.  We will keep state about 'V' etc from previous iterations.
         We therefore also have to know about the function we are integrating. However, we do not keep track of the integral result here -- the top -level routine does this.
+
+      One call is one cycle of integrate_log's loop, so the cycle state persists between
+      calls in self._selfish_state: the live set (allx/allloglkl/allp), the threshold and
+      the truncated probability trunc_p.  Restarted on every call, each call would keep
+      only the top nsel of its own draws, V would shrink by n_chunk/nsel per call, the
+      final threshold would never be reached, and the live volume would contract without
+      limit.  The state is cleared by setup(), by installing a warm seed, and by
+      reset_selfish_state(), which mcsamplerPortfolio calls at the start of each pass.
+      The carried live set is capped (_cap_selfish_live_set) to bound memory and cost.
        """
         xpy_here = self.xpy
         enforce_bounds=True
 
         # VT specific items
-        loglkl_thr = -1e15
         enc_prob = 0.999 #The approximate upper limit on the final probability enclosed by histograms.
         V = self.V  # nominal scale factor for hypercube volume
         ndim = len(self.params_ordered)
-        allx, allloglkl = np.transpose([[]] * ndim), []
-        allp = []
-        trunc_p = 1e-10 #How much probability analysis removes with evolution
         nsel = 1000# number of largest log-likelihood samples selected to estimate lkl_thr for the next cycle.
-        if cupy_ok:
-          allx = identity_convert_togpu(allx)
-          allloglkl = identity_convert_togpu(allloglkl)
+        nsel = np.min([nsel, int(0.1*self.n_chunk)]) #  if chunk size is small, don't pick too many points
+        state = getattr(self, '_selfish_state', None)
+        if state is not None and state.get('frozen'):
+            return   # grid adapted by an earlier pass; see reset_selfish_state
+        if state is None:
+            allx, allloglkl = np.transpose([[]] * ndim), []
+            allp = []
+            loglkl_thr = -1e15
+            trunc_p = 1e-10 #How much probability analysis removes with evolution
+            if cupy_ok:
+              allx = identity_convert_togpu(allx)
+              allloglkl = identity_convert_togpu(allloglkl)
+        else:
+            allx, allloglkl, allp = state['allx'], state['allloglkl'], state['allp']
+            loglkl_thr, trunc_p = state['loglkl_thr'], state['trunc_p']
 
         ntotal_true = 0
         if True: # while (eff_samp < neff and ntotal_true < nmax ): #  and (not bConvergenceTests):
@@ -1283,20 +1345,20 @@ class MCSampler(SamplerOutputMixin, object):
             # or, if ALL are non-finite, yields an empty set -> the reported crash chain
             # (get_likelihood_threshold max of empty array; then this method's max at line ~532).
             idxsel = xpy_here.where(xpy_here.logical_and(loglkl > loglkl_thr, xpy_here.isfinite(loglkl)))
+            n_new = len(idxsel[0])
+            if n_new == 0:
+                # Nothing finite in the live volume this step (cold portfolio member / degenerate
+                # draw).  Leave V, the threshold and the grid UNCHANGED: re-thresholding the
+                # carried live set on no new evidence would shrink V for nothing (integrate_log
+                # has the same guard).  The portfolio's other members carry this step.
+                print("  [AV selfish-update] no finite in-volume samples this step; live volume unchanged")
+                self.V = V
+                return
             #only admit samples that lie inside the live volume, i.e. one that cross likelihood threshold
             allx = xpy_here.append(allx, rv[idxsel], axis = 0)
             allloglkl = xpy_here.append(allloglkl, loglkl[idxsel])
             allp = xpy_here.append(allp, log_joint_p_prior[idxsel])
             ninj = len(allloglkl)
-            if ninj == 0:
-                # Nothing finite in the live volume this step (cold portfolio member / degenerate
-                # draw).  Leave V and the grid UNCHANGED rather than crashing on empty-array
-                # reductions downstream.  The portfolio's other members carry this step; a later
-                # draw with finite samples lets AV resume training.  (This method is a SINGLE
-                # selfish step, so an early return is correct -- unlike integrate_log's loop.)
-                print("  [AV selfish-update] no finite in-volume samples this step; live volume unchanged")
-                self.V = V
-                return
 
 
             #just some test to verify if we dont discard more than 1 - Pthr probability
@@ -1344,13 +1406,24 @@ class MCSampler(SamplerOutputMixin, object):
             self.dx = np.diff(self.my_ranges, axis = 1).flatten() / self.nbins   # update bin widths
             binidx = ( (( identity_convert(allx) - self.my_ranges.T[0]) / self.dx.T).astype(int)  ) #bin indexs of the samples ... sent back to CPU as needed
 
-            self.binunique = np.unique(binidx, axis = 0)
+            self.binunique, first_in_bin = np.unique(binidx, axis = 0, return_index=True)
             self.ninbin = ((self.n_chunk // self.binunique.shape[0] + 1) * np.ones(self.binunique.shape[0])).astype(int)
 
             self.cycle += 1
 
+            # Cap only once the threshold is final: before then a fixed-size set can hold
+            # trunc_p just short of final while the threshold keeps rising.
+            keep = None
+            if self._at_final_threshold(trunc_p, enc_prob):
+                keep = self._cap_selfish_live_set(identity_convert(allloglkl), first_in_bin, nsel)
+            if keep is not None:
+                keep = xpy_here.asarray(keep) if cupy_ok else keep
+                allx, allloglkl, allp = allx[keep], allloglkl[keep], allp[keep]
+
         self.V = V
         self.delta_V  = delta_V
+        self._selfish_state = dict(allx=allx, allloglkl=allloglkl, allp=allp,
+                                   loglkl_thr=loglkl_thr, trunc_p=trunc_p)
 
 
     ###
