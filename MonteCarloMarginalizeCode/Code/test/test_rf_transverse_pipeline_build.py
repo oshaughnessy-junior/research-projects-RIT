@@ -19,6 +19,10 @@ COINC = REPO / ".travis" / "ref_ini" / "coinc.xml"
 
 def _opt_in_ini(tmp_path, mode="physics3", extra=(), chirpmass=None):
     text = REF_INI.read_text()
+    # This contract builds a DAG with an empty placeholder cache; it performs
+    # no strain IO. Automatic truncation must reject that cache in real runs.
+    text = re.sub(r'(?m)^internal-truncate-files-for-osg-file-transfer=.*$',
+                  'internal-truncate-files-for-osg-file-transfer=False', text)
     text = re.sub(r'(?m)^cip-fit-method=.*\n', '', text)
     text = re.sub(r'(?m)^cip-explode-jobs=.*$', '\n'.join(
         ['cip-explode-jobs=3', 'rf-transverse-spin-coordinates="{}"'.format(mode)] + list(extra)), text)

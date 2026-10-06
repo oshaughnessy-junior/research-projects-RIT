@@ -2168,7 +2168,10 @@ if opts.rf_transverse_spin_coordinates:
                 indx_rf, stage_problem(line_rf), ', '.join('--'+name.replace('_','-') for name in rf_transverse_conflicts) or 'see --manual-extra-cip-args'))
 with open("args_cip_list.txt",'w') as f:
    if not(opts.internal_truncate_cip_arg_list is None):
+       if opts.internal_truncate_cip_arg_list < 1:
+           parser.error("--internal-truncate-cip-arg-list must be positive")
        lines = lines[-opts.internal_truncate_cip_arg_list:]  # truncate the cip arg list file
+       n_iterations = sum(1 if line.split()[0] == "Z" else int(line.split()[0].lstrip("G")) for line in lines)
    # The final CIP group produces both the published posterior and the downstream grid,
    # so it gets the duplicate-free fair draw (capped at sum(w)/max(w)).  Internal
    # iterations keep the fair draw with duplicates allowed, so successive iterations feed
@@ -2599,17 +2602,7 @@ if opts.use_osg:
     if not(opts.use_osg_file_transfer):
         cmd += " --use-cvmfs-frames "
     elif (opts.internal_truncate_files_for_osg_file_transfer):  # attempt to make copies of frame files, and set up to transfer them with *every* job (!)
-        if os.path.exists('local.cache'):
-            os.system("util_ForOSG_MakeTruncatedLocalFramesDir.sh .")
-        else:
-            print(" --- WARNING --- ")
-            print(" File truncation not yet performed")
-        # if environment variable active, check that frames were created! Fail otherwise
-        if 'RIFT_TRUNCATE_CHECK' in os.environ:
-            fnames_gwf = os.listdir('./frames_dir/')
-            if len(fnames_gwf)< len(event_dict["IFOs"]):
-                raise Exception(" Pipeline build failure: Problem generating truncated frames for OSG")
-            
+        # Frame staging is performed once, with checked failure handling, below.
 #        os.system("echo ../frames_dir >> helper_transfer_files.txt")
         cmd += " --frames-dir `pwd`/frames_dir "
     elif opts.use_osg_file_transfer:
@@ -2693,14 +2686,17 @@ if opts.calibration_reweighting:
 if opts.condor_local_nonworker_igwn_prefix:
     cmd += " --condor-local-nonworker-igwn-prefix "
 
-# Make copy of local.cache for use in file transfer
-if opts.use_osg_file_transfer and opts.internal_truncate_files_for_osg_file_transfer and os.path.exists('local.cache'):
-    shutil.copyfile('local.cache', 'local_orig.cache')
-    # Move contents of ile_pre.sh here
-    os.system("cat local.cache > awk '{print $1, $2, $3, $4}' > local_stripped.cache")
-    os.system('for i in `ls frames_dir/*.gwf`; do echo frames_local/${i} ; done > base_paths.dat') # yes probably easier to do the ls myself
-    os.system("paste local_stripped.cache base_paths.dat > local_relative.cache ")
-    os.system("cp local_relative.cache local.cache")
+# Stage frames before emitting jobs: a truncation failure must not leave a
+# seemingly launchable DAG or replace the cache with an empty file.
+if opts.use_osg_file_transfer and opts.internal_truncate_files_for_osg_file_transfer:
+    if opts.fake_data_cache:
+        shutil.copyfile(opts.fake_data_cache, "local.cache")
+    subprocess.run(["util_ForOSG_MakeTruncatedLocalFramesDir.sh", "."], check=True)
+    # Check only after the helper-produced or explicit cache has been staged.
+    if 'RIFT_TRUNCATE_CHECK' in os.environ:
+        fnames_gwf = [name for name in os.listdir('frames_dir') if name.endswith('.gwf')]
+        if len(fnames_gwf) < len(event_dict["IFOs"]):
+            raise RuntimeError("Pipeline build failure: Problem generating truncated frames for OSG")
 
 if not(ile_condor_commands is None):
     # create file
@@ -2747,16 +2743,6 @@ if opts.internal_ile_check_good_enough:
     # Populate 'ile_check_good_enough' through all subdirectories
     cmd_enough = r"find . -name 'iter*ile' -type d -exec touch {}/ile_good_enough \; "
     os.system(cmd_enough)   # was os.system(cmd): re-ran the pipeline builder
-
-if opts.use_osg_file_transfer and opts.internal_truncate_files_for_osg_file_transfer:
-    if opts.fake_data_cache:
-        shutil.copyfile(opts.fake_data_cache, 'local.cache')
-    # build truncated frames.  Note this parses ILE arguments, so must be done last
-    if os.path.exists('local.cache'):
-        os.system("util_ForOSG_MakeTruncatedLocalFramesDir.sh .")
-
-
-    
 
 ## RUNMON
 try:
