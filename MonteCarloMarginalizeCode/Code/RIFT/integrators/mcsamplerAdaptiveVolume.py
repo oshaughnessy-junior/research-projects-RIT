@@ -1207,19 +1207,14 @@ class MCSampler(SamplerOutputMixin, object):
 
         A new pass may use a different integrand (e.g. the calmarg burn-in followed by the
         full likelihood), so a threshold carried from the previous pass could exclude every
-        new draw.  If the previous pass had reached the final threshold, the grid is kept
-        as adapted: trunc_p stays final and the threshold is open, so the new pass neither
-        contracts it again nor spends a second discard budget.  Otherwise contraction
-        restarts from the current grid."""
+        new draw.  If the previous pass had reached the final threshold, the grid is frozen
+        as adapted for the new pass: the selfish step then does nothing, so the grid is
+        neither contracted again nor re-binned.  Otherwise contraction restarts from the
+        current grid."""
         state = getattr(self, '_selfish_state', None)
-        if state is not None and self._at_final_threshold(state['trunc_p']):
-            ndim = len(self.params_ordered)
-            allx, allloglkl = np.transpose([[]] * ndim), []
-            if cupy_ok:
-                allx = identity_convert_togpu(allx)
-                allloglkl = identity_convert_togpu(allloglkl)
-            self._selfish_state = dict(allx=allx, allloglkl=allloglkl, allp=[],
-                                       loglkl_thr=-np.inf, trunc_p=state['trunc_p'])
+        if state is not None and (state.get('frozen')
+                                  or self._at_final_threshold(state['trunc_p'])):
+            self._selfish_state = dict(frozen=True)
         else:
             self._selfish_state = None
 
@@ -1273,6 +1268,8 @@ class MCSampler(SamplerOutputMixin, object):
         nsel = 1000# number of largest log-likelihood samples selected to estimate lkl_thr for the next cycle.
         nsel = np.min([nsel, int(0.1*self.n_chunk)]) #  if chunk size is small, don't pick too many points
         state = getattr(self, '_selfish_state', None)
+        if state is not None and state.get('frozen'):
+            return   # grid adapted by an earlier pass; see reset_selfish_state
         if state is None:
             allx, allloglkl = np.transpose([[]] * ndim), []
             allp = []

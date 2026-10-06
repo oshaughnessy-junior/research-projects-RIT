@@ -179,14 +179,18 @@ def test_threshold_and_volume_freeze_under_the_cap():
 def test_repeated_passes_do_not_recontract():
     # Reusing a portfolio for further passes (calmarg burn-in, cold backstop) keeps the
     # adapted grid; it must not contract it again on every pass.
-    mu, lnF = _target(2)
-    av, port = _portfolio(2, 7)
-    lnV = []
-    for _ in range(4):
-        _integrate(port, lnF, 2, n_chunks=15)
-        lnV.append(np.log(av.V))
-    assert lnV[-1] - lnV[0] > -0.05, lnV
-    assert _covered_fraction(av, mu) > 0.995
+    # Check the GRID (occupied bins and widths), not the scalar V, which a reused
+    # pass need not touch at all.
+    for ndim in (2, 4):
+        mu, lnF = _target(ndim)
+        av, port = _portfolio(ndim, 7)
+        _integrate(port, lnF, ndim, n_chunks=20)
+        bins, dx = np.array(av.binunique), np.array(av.dx)
+        cover = _covered_fraction(av, mu)
+        for _ in range(3):
+            _integrate(port, lnF, ndim, n_chunks=20)
+        assert np.array_equal(np.array(av.binunique), bins) and np.array_equal(np.array(av.dx), dx)
+        assert _covered_fraction(av, mu) >= cover - 1e-3, (cover, _covered_fraction(av, mu))
 
 
 def test_setup_and_new_warm_seed_restart_the_selfish_state():
