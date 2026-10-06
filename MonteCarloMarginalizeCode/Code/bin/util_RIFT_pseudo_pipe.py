@@ -18,6 +18,7 @@ import numpy as np
 import argparse
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import lal
@@ -655,6 +656,7 @@ parser.add_argument("--use-osg",action='store_true',help="Restructuring for ILE 
 parser.add_argument("--use-osg-cip",action='store_true',help="Restructuring for ILE on OSG. The code by default will use CVMFS")
 parser.add_argument("--use-osg-file-transfer",action='store_true',help="Restructuring for ILE on OSG. The code will NOT use CVMFS, and instead will try to transfer the frame files.")
 parser.add_argument("--internal-use-oauth-files",default=None,type=str,help="Option for low level pipeline writer to use scitokens. Useful if files on osdf need to be transferred, like containers ")
+parser.add_argument("--internal-staged-frames-directory", default=None, help="Copy verified local frames from this directory into the new run, bypassing frame truncation.")
 parser.add_argument("--internal-truncate-files-for-osg-file-transfer",action='store_true',help="If use-osg-file-transfer, will use FrCopy plus the start/end time to build the frame directory.")
 parser.add_argument("--condor-local-nonworker",action='store_true',help="Provide this option if job will run in non-NFS space. ")
 parser.add_argument("--condor-local-nonworker-igwn-prefix",action='store_true', help="Adds some prefix text to start up cvmfs igwn environment, so local jobs have access to standard RIFT operators. Required for public OSG.")
@@ -1119,6 +1121,10 @@ if opts.use_rundir:
     dirname_run = opts.use_rundir
 os.mkdir(dirname_run)
 os.chdir(dirname_run)
+if opts.internal_staged_frames_directory:
+    if opts.internal_truncate_files_for_osg_file_transfer:
+        raise ValueError("Staged frames and automatic frame truncation are mutually exclusive")
+    shutil.copytree(os.path.abspath(opts.internal_staged_frames_directory), "frames_dir")
 
 
 if not(opts.use_ini is None):
@@ -2170,6 +2176,7 @@ if opts.rf_transverse_spin_coordinates:
 with open("args_cip_list.txt",'w') as f:
    if not(opts.internal_truncate_cip_arg_list is None):
        lines = lines[-opts.internal_truncate_cip_arg_list:]  # truncate the cip arg list file
+       n_iterations = sum(1 if line.split()[0] == "Z" else int(line.split()[0].lstrip("G")) for line in lines)
    # The final CIP group produces both the published posterior and the downstream grid,
    # so it gets the duplicate-free fair draw (capped at sum(w)/max(w)).  Internal
    # iterations keep the fair draw with duplicates allowed, so successive iterations feed

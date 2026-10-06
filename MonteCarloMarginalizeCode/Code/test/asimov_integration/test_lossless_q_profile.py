@@ -46,3 +46,21 @@ def test_bootstrapped_xphm_profile_renders_requested_settings():
     assert overlay['scheduler']['bootstrap reuse existing'] is False
     # Reviewed event physical priors survive the overlay exactly.
     assert meta['priors']==_base_meta()['priors']
+
+
+def test_profile_requests_internal_subdag():
+    yaml=pytest.importorskip("yaml")
+    p=Path(__file__).with_name("blueprints")/"analysis_rift_XPHM_lossless_q.yaml"
+    assert yaml.safe_load(p.read_text())["scheduler"]["pipeline"]["use-subdags"] is True
+
+
+def test_staged_frames_skip_truncation_and_unused_oauth():
+    meta=_base_meta()
+    meta['scheduler']['osg']=True
+    meta['scheduler']['frames directory']='/verified/frames'
+    meta['scheduler']['oauth service']='none'
+    _,ini=_render(meta)
+    section='rift-pseudo-pipe'
+    assert ini.get(section,'internal-staged-frames-directory').strip("'")== '/verified/frames'
+    assert ini.get(section,'internal-truncate-files-for-osg-file-transfer').lower()=='false'
+    assert not ini.has_option(section,'internal-use-oauth-files')

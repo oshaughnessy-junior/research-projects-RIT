@@ -34,6 +34,7 @@ scheduler:
   bootstrap size: 10000
   bootstrap reuse existing: false
   pipeline:
+    use-subdags: true
     internal-truncate-cip-arg-list: 2
     internal-ile-sky-network-coordinates: true
     internal-ile-srate-time-resampling: 4096
