@@ -1207,6 +1207,7 @@ for it in np.arange(it_start,opts.n_iterations):
         subdag_puff_node.add_macro("macroiteration",it)
         con_node.add_parent(subdag_puff_node) # consolidate depends on all of the individual jobs
         subdag_main_node.add_parent(parent_puff_node)  # force to happen after puffball from previous ... set later. Cannot be none
+        subdag_puff_node.add_parent(parent_puff_node)  # grid must exist before the puff subdag is generated
 
         puff_subdag =  pipeline.CondorDAGManJob("iteration_{}_ile_puff_subdag.dag".format(it))  # assumes subdag is created
         puff_analysis_node = puff_subdag.create_node()

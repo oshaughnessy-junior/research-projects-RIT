@@ -51,3 +51,9 @@ def test_truncated_schedule_counts_only_retained_groups():
         exec(compile(ast.Module(body=[block],type_ignores=[]),str(source),'exec'),namespace)
         assert namespace['n_iterations']==count
         assert namespace['lines']==groups[-2:]
+
+
+def test_puff_subdag_waits_for_grid_producer():
+    tree=ast.parse(SOURCE.read_text())
+    calls=[ast.unparse(n) for n in ast.walk(tree) if isinstance(n,ast.Call)]
+    assert 'subdag_puff_node.add_parent(parent_puff_node)' in calls

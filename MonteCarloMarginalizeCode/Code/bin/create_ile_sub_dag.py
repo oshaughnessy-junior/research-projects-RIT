@@ -4,6 +4,7 @@ import argparse
 import sys
 import os
 import shutil
+import re
 # Backend-neutral pipeline namespace (htcondor/glue/slurm) provided by dag_utils_generic
 from RIFT.misc.dag_utils_generic import pipeline
 from igwn_ligolw import utils, ligolw, lsctables
@@ -36,20 +37,26 @@ except ValueError:
 
 if not (opts.cap_points is None):
     if n_events > opts.cap_points:
-        n_event = opts.cap_points
+        n_events = opts.cap_points
 
 dag = pipeline.CondorDAG(log=os.getcwd())
 
+n_events_per_job = None
 with open(opts.submit_script,'r') as f:
     lines = f.readlines()
     for line in lines:
         if 'executable = ' in line:
-            exe = line.split("=")[-1].strip()
-        if 'arguments' in line:
-            argsplit = line.split('"')[1].split()
-            for i,arg in enumerate(argsplit):
-                if arg == "--n-events-to-analyze":
-                    n_events_per_job = int(argsplit[i+1])
+            exe = line.split("=",1)[1].strip()
+        if line.lstrip().lower().startswith('arguments ='):
+            # Condor escapes embedded quotes; splitting at the first quote can
+            # discard the later batch-size flag when waveform kwargs are present.
+            counts = re.findall(r"--n-events-to-analyze(?:\s+|=)(\d+)(?=\s|[\"']|$)", line)
+            if counts:
+                if len(set(counts)) != 1:
+                    raise ValueError("Conflicting --n-events-to-analyze settings")
+                n_events_per_job = int(counts[0])
+if n_events_per_job is None or n_events_per_job < 1:
+    raise ValueError("Submit arguments must set a positive --n-events-to-analyze")
 
 print(f"exe is {exe}")
 print(f"num events per job is {n_events_per_job}")
