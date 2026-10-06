@@ -730,8 +730,21 @@ class MCSampler(SamplerOutputMixin, object):
 
 
 
+    def _to_instance_backend(self, x):
+        """Put an integrand chunk on self.xpy, the backend of joint_p_s/joint_p_prior.
+
+        The integrand is one chunk and can move; the sampler state cannot.  It may arrive on
+        either side: a host callable on a GPU sampler, or a --gpu likelihood (device) with
+        --sampler-xpy numpy.  self.identity_convert_togpu is the identity on a numpy
+        sampler, so it cannot bring a device array back."""
+        if isinstance(x, self.xpy.ndarray):
+            return x
+        if self.xpy is numpy:
+            return numpy.asarray(identity_convert(x))   # cupy.asnumpy accepts host input too
+        return self.xpy.asarray(x)
+
     @profile
-    def integrate_log(self, lnF, *args, xpy=xpy_default,**kwargs):
+    def integrate_log(self, lnF, *args, xpy=None,**kwargs):
         """
         Integrate exp(lnF) returning lnI, by using n sample points, assuming integrand is lnF
         Does NOT allow for tuples of arguments, an unused feature in mcsampler
@@ -759,6 +772,12 @@ class MCSampler(SamplerOutputMixin, object):
             self.setup_hist_single_param(self.llim[p], self.rlim[p], n_bins, p)
 
         xpy_here = self.xpy
+        # The aggregates follow the INSTANCE backend.  A default of xpy_default was bound at
+        # import, so on a cupy host a sampler left on numpy (the constructor default, and
+        # --sampler-xpy numpy) fed host arrays to cupy ufuncs in init_log.
+        if xpy is None:
+            xpy = self.xpy
+        special_here = xpy_special_default if xpy is not numpy else special
 
         #
         # Pin values
@@ -901,11 +920,7 @@ class MCSampler(SamplerOutputMixin, object):
             else:
                 lnL= lnF(**unpacked)  # protect order using dictionary
             # take log if we are NOT using lnL
-            if cupy_ok:
-              # instance converter tracks self.xpy; module-level converter would
-              # force lnL onto the GPU even in CPU mode (see note in integrate()).
-              if not(isinstance(lnL, self.xpy.ndarray)):
-                lnL = self.identity_convert_togpu(lnL)
+            lnL = self._to_instance_backend(lnL)
 
             log_integrand =lnL + self.xpy.log(joint_p_prior) - self.xpy.log(joint_p_s)
             log_weights = tempering_exp*lnL + self.xpy.log(joint_p_prior) - self.xpy.log(joint_p_s)
@@ -943,14 +958,14 @@ class MCSampler(SamplerOutputMixin, object):
 
             # n, Mean, error tracked by statutils structure
             if current_log_aggregate is None:
-              current_log_aggregate = init_log(log_integrand,xpy=xpy,special=xpy_special_default)
+              current_log_aggregate = init_log(log_integrand,xpy=xpy,special=special_here)
             else:
-              current_log_aggregate = update_log(current_log_aggregate, log_integrand,xpy=xpy,special=xpy_special_default)
+              current_log_aggregate = update_log(current_log_aggregate, log_integrand,xpy=xpy,special=special_here)
             outvals = finalize_log(current_log_aggregate,xpy=xpy)
             # per-chunk lnZ for the between-chunk error floor (init_log returns
             # (n, log_mean, log_M2, log_ref) so lnZ_chunk = log_mean + log_ref)
             try:
-              _chunk_agg = init_log(log_integrand,xpy=xpy,special=xpy_special_default)
+              _chunk_agg = init_log(log_integrand,xpy=xpy,special=special_here)
               lnZ_chunk_list.append(float(identity_convert(_chunk_agg[1])) + float(identity_convert(_chunk_agg[3])))
               n_chunk_list.append(int(_chunk_agg[0]))
             except Exception:
@@ -1077,7 +1092,8 @@ class MCSampler(SamplerOutputMixin, object):
         #   - find and remove samples which contribute too little to the cumulative weights
         if (not save_no_samples) and ( "log_integrand" in self._rvs):
             self._trim_rvs_to_record("log_integrand")
-            self._rvs["sample_n"] = numpy.arange(len(self._rvs["log_integrand"]))  # create 'iteration number'        
+            # on self.xpy with the other keys: the fair draw gathers every key with a device index
+            self._rvs["sample_n"] = self.xpy.arange(len(self._rvs["log_integrand"]))  # create 'iteration number'
             # Step 1: Cut out any sample with lnL belw threshold
             indx_list = [k for k, value in enumerate( (self._rvs["log_integrand"] > maxlnL - deltalnL)) if value] # threshold number 1
             # FIXME: This is an unncessary initial copy, the second step (cum i
@@ -1150,7 +1166,7 @@ class MCSampler(SamplerOutputMixin, object):
            ln_wt = self.xpy.array(self._rvs["log_integrand"] + self._rvs["log_joint_prior"] - self._rvs["log_joint_s_prior"] ,dtype=float)
            ln_wt = identity_convert(ln_wt)  # send to CPU
            ln_wt += - special.logsumexp(ln_wt)
-           wt = xpy.exp(identity_convert_togpu(ln_wt))
+           wt = xpy.exp(self._to_instance_backend(ln_wt))
            if n_extr < len(self._rvs["log_integrand"]):
                # RETAINED-SET RESERVE, taken HERE.  The gather just below rebinds every _rvs
                # key to n_extr rows drawn WITH REPLACEMENT, so this is the last moment at
@@ -1393,14 +1409,7 @@ class MCSampler(SamplerOutputMixin, object):
             else:
                 fval = func(**unpacked) # Chris' original plan: note this insures the function arguments are tied to the parameters, using a dictionary. 
 
-            if cupy_ok:
-              # Use the *instance* converter (self.identity_convert_togpu), which
-              # tracks self.xpy. The module-level converter would force fval onto
-              # the GPU even when this sampler is running on the CPU (self.xpy is
-              # numpy by default), producing a numpy/cupy mismatch against the
-              # numpy joint_p_prior / joint_p_s built in draw_simplified.
-              if not(isinstance(fval, self.xpy.ndarray)):
-                fval = self.identity_convert_togpu(fval)
+            fval = self._to_instance_backend(fval)
 
             #
             # Check if there is any practical contribution to the integral
@@ -1602,7 +1611,8 @@ class MCSampler(SamplerOutputMixin, object):
         #   - find and remove samples which contribute too little to the cumulative weights
         if (not save_no_samples) and ( "integrand" in self._rvs):
             self._trim_rvs_to_record("integrand")
-            self._rvs["sample_n"] = numpy.arange(len(self._rvs["integrand"]))  # create 'iteration number'        
+            # on self.xpy with the other keys: the fair draw gathers every key with a device index
+            self._rvs["sample_n"] = self.xpy.arange(len(self._rvs["integrand"]))  # create 'iteration number'
             if deltalnL < 1e10:
               # Step 1: Cut out any sample with lnL belw threshold
               indx_list = [k for k, value in enumerate( (self._rvs["integrand"] > maxlnL - deltalnL)) if value] # threshold number 1
@@ -1615,7 +1625,7 @@ class MCSampler(SamplerOutputMixin, object):
                 else:
                     self._rvs[key] = self._rvs[key][indx_list]
             # Step 2: Create and sort the cumulative weights, among the remaining points, then use that as a threshold
-            wt = self._rvs["integrand"]*self._rvs["joint_prior"]/self._rvs["joint_s_prior"]
+            wt = identity_convert(self._rvs["integrand"]*self._rvs["joint_prior"]/self._rvs["joint_s_prior"])  # to CPU, as the log path does
             idx_sorted_index = numpy.lexsort((numpy.arange(len(wt)), wt))  # Sort the array of weights, recovering index values
             indx_list = numpy.array( [[k, wt[k]] for k in idx_sorted_index])     # pair up with the weights again. NOTE NOT INTEGER TYPE ANY MORE
             cum_sum = numpy.cumsum(indx_list[:,1])  # find the cumulative sum
