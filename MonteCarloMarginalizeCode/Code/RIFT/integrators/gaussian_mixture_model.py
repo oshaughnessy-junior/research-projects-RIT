@@ -73,7 +73,7 @@ if not _ORIGINAL_AVAILABLE:
 # Primes for the Richtmyer lattice in _box_mass, one per integrated dimension (d <= 168).
 _LATTICE_PRIMES = np.array([p for p in range(2, 1000) if all(p % q for q in range(2, int(p**0.5) + 1))])
 
-def _box_mass(lower, upper, mean, cov, n_points=2**14):
+def _box_mass(lower, upper, mean, cov, n_points=2**12):
     '''
     Gaussian probability mass of the box [lower, upper]: Genz's separation-of-variables
     integral on a FIXED Richtmyer lattice, so the same inputs always give the same value.
