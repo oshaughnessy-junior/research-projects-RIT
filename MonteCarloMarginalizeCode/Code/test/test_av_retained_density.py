@@ -131,3 +131,37 @@ def test_bin_set_matches_brute_force_on_both_storage_paths():
         assert (bs.rows is not None) == (scale > 1)
         want = np.array([tuple(r) in set(map(tuple, bins.tolist())) for r in idx.tolist()])
         np.testing.assert_array_equal(bs.contains(idx), want)
+
+
+def _one_cycle_constant(prior_x, warm=None, pin=None, seed=1, n=4000):
+    """One draw cycle of a constant likelihood on the unit square; returns (lnZ, rel sigma)."""
+    np.random.seed(seed)
+    s = mcsamplerAV.MCSampler(n_chunk=n)
+    s.xpy = np
+    s.identity_convert = lambda x: x
+    s.add_parameter('x', pdf=None, left_limit=0.0, right_limit=1.0, prior_pdf=prior_x, adaptive_sampling=True)
+    s.add_parameter('y', pdf=None, left_limit=0.0, right_limit=1.0,
+                    prior_pdf=lambda x: np.ones(np.shape(x)), adaptive_sampling=True)
+    if warm is not None:
+        s._warm = warm
+    kw = {} if pin is None else {'x': pin}
+    out = s.integrate_log(lambda *xs: np.zeros(len(np.atleast_1d(xs[0]))), 'x', 'y', nmax=n + 100,
+                          neff=10, n=n, no_protect_names=True, verbose=False, **kw)
+    return out[0], np.sqrt(np.exp(out[1] - 2 * out[0]))
+
+
+def test_warm_grid_binned_in_a_later_pinned_dimension():
+    """A warm 2x2 grid with x pinned: draw_simple draws from all 4 bins, so each projected y
+    bin carries 2 bins' draws.  Counting it once gave lnZ = ln 2 instead of 0."""
+    warm = dict(binunique=np.array([[0, 0], [0, 1], [1, 0], [1, 1]]), dx=np.array([0.5, 0.5]),
+                nbins=np.array([2, 2]), V=1.0, loglkl_thr=-1e15)
+    lnZ, _ = _one_cycle_constant(lambda x: np.ones(np.shape(x)), warm=warm, pin=0.3)
+    assert abs(lnZ) < 1e-9, lnZ
+
+
+def test_rejected_draws_enter_the_reported_variance():
+    """Prior 2 on x < 0.5: every retained weight is equal, but the estimate 2*N_ret/N_drawn is
+    binomial, relative sigma sqrt((1-p)/(p N)) = 1/sqrt(N) at p = 1/2.  Reported ~1e-10 before."""
+    lnZ, rel_sigma = _one_cycle_constant(lambda x: 2.0 * (np.asarray(x) < 0.5))
+    assert abs(lnZ) < 0.1
+    assert rel_sigma == pytest.approx(1 / np.sqrt(4001), rel=0.05)
