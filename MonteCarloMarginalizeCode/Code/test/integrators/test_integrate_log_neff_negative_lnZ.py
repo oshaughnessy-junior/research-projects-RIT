@@ -140,3 +140,25 @@ def test_nflow_loop_neff_stops_on_true_kish_ratio(nflow_module, shift):
     eff = _run(s, shift, n_adapt=0, neff=10, nmax=40000)
     _check(s, eff, shift)
     assert len(s._rvs["log_integrand"]) < 40000, "ran to nmax although sum(w)/max(w)={}".format(eff)
+
+
+def _run_f(s, f, **kw):
+    np.random.seed(7)
+    args = dict(neff=10, n=2000, nmax=40000, save_intg=True, verbose=False)
+    args.update(kw)
+    out = s.integrate_log(f, *["x%d" % i for i in range(D)], **args)
+    return float(np.asarray(out[2]))
+
+
+def test_gpu_nan_still_raises():
+    """With maxval starting at -inf, max(-inf, nan) is -inf.  A NaN in the first chunk must
+    still reach the NanOrInf check, not be reported as a finite or zero n_eff."""
+    from RIFT.integrators import mcsamplerGPU
+    s = _gpu()
+
+    def f(*a, **k):
+        out = _lnG(*a, **k) + LNZ_SHIFT
+        out[0] = np.nan
+        return out
+    with pytest.raises(mcsamplerGPU.NanOrInf):
+        _run_f(s, f, n_adapt=0)

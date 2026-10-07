@@ -975,10 +975,7 @@ class MCSampler(SamplerOutputMixin, object):
             maxval = max(maxval, float(identity_convert(self.xpy.max(log_integrand) )))
 
             # sum of weights is the integral * the number of points
-            if maxval == -np.inf:
-              eff_samp = 0   # every weight so far is zero
-            else:
-              eff_samp = xpy.exp(  outvals[0]+np.log(self.ntotal) - maxval)   # integral value minus floating point, which is maximum
+            eff_samp = xpy.exp(  outvals[0]+np.log(self.ntotal) - maxval)   # integral value minus floating point, which is maximum
 
 
             # Throw exception if we get infinity or nan
