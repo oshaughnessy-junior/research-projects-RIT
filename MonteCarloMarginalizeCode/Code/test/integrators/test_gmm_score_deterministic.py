@@ -92,3 +92,23 @@ def test_box_mass_terminates_on_bad_covariance():
     assert np.isnan(GMM._box_mass(lo, hi, np.zeros(3), bad))
     assert np.isfinite(GMM._box_mass(lo, hi, np.zeros(3), np.zeros((3, 3))))
     assert np.isfinite(GMM._box_mass(lo, hi, np.zeros(3), np.diag([1.0, 1.0, -1e-3])))
+
+
+def test_box_mass_accuracy_matches_mvnun():
+    '''Pin accuracy to mvnun's own at its defaults, so a smaller lattice cannot slip in.
+
+    18 fixed cases, d=3,4,6, against mvnun run to a tight tolerance (within 2e-6 of
+    maxpts=1e7).  Measured mean relative error: 2^11 points 1.2e-4, 2^12 9.2e-5.
+    '''
+    errs = []
+    for d in (3, 4, 6):
+        for s in range(6):
+            rng = np.random.default_rng(1000 * d + s)
+            A = rng.normal(size=(d, d))
+            cov = 0.1 * A @ A.T / d + 0.02 * np.eye(d)
+            mean = rng.uniform(-1.2, 1.2, d)
+            lo, hi = -np.ones(d), np.ones(d)
+            ref = GMM.mvnun(lo, hi, mean, cov, maxpts=2 * 10**6, abseps=1e-10, releps=1e-8)[0]
+            errs.append(abs(GMM._box_mass(lo, hi, mean, cov) / ref - 1))
+    assert max(errs) <= 5e-4, max(errs)
+    assert np.mean(errs) <= 1.1e-4, np.mean(errs)

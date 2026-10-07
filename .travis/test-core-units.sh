@@ -437,7 +437,8 @@ done
 # test_gmm_score_deterministic.py adds 19 passing tests and no skips.  RE-MEASURED on 9b0e4085a
 # (ldas-pcdev2, IGWN python, cupy importable, CUDA_VISIBLE_DEVICES='') 2026-10-07: 862 collected /
 # 842 passed / 20 skipped incl. 3 subtests -> 859/839; the 20 skips are the same as above.
-EXPECTED_TESTS=859
+# Its accuracy test then made it 20 (file alone: 20 passed) -> 860/840.
+EXPECTED_TESTS=860
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -454,8 +455,8 @@ EXPECTED_TESTS=859
 # test_convert_coordinates_row_independence.py adds 9 tests and no skips.
 # test_gmm_sample_row_independence.py adds 10 tests and no skips.
 # test_gmm_sample_matches_score.py adds 17 tests and no skips; re-measured 840/820 (above).
-# test_gmm_score_deterministic.py adds 19 tests and no skips; re-measured 859/839 (above).
-EXPECTED_PASSED=839
+# test_gmm_score_deterministic.py adds 20 tests and no skips; 860/840 (above).
+EXPECTED_PASSED=840
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 MAX_SKIPPED=19
 
