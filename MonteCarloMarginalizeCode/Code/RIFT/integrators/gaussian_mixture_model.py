@@ -814,17 +814,22 @@ class gmm:
         bounds_normalized[:, 0] = -1.0
         bounds_normalized[:, 1] = 1.0
 
+        # Per-component counts: floor(n*w) plus a multinomial draw of the remainder in proportion
+        # to the fractional parts (residual sampling), so E[count_k] = n*w_k exactly.  Plain
+        # int(n*w) with the remainder dumped on the last component biases every count.
+        w_norm = np.asarray(weights_np, dtype=float)
+        w_norm = w_norm / np.sum(w_norm)
+        counts = np.floor(n * w_norm).astype(int)
+        n_left = int(n - np.sum(counts))
+        if n_left > 0:
+            frac = n * w_norm - counts
+            counts += np.random.multinomial(n_left, frac / np.sum(frac))
         sample_array_np = np.empty((n, self.d))
         start = 0
         for component in range(self.k):
-            w = weights_np[component]
             mean = means_np[component]
             cov = covs_np[component]
-            num_samples = int(n * w)
-            if component == self.k - 1:
-                end = n
-            else:
-                end = start + num_samples
+            end = start + int(counts[component])
             try:
                 if not use_bounds:
                     sample_array_np[start:end] = np.random.multivariate_normal(mean, cov, end - start)
@@ -834,6 +839,10 @@ class gmm:
             except Exception as e:
                 print('Exiting due to non-positive-semidefinite', e)
                 raise Exception("gmm covariance not positive-semidefinite")
+        # The loop leaves rows grouped by component.  MonteCarloEnsemble._sample writes each dim
+        # group's draw into the SAME rows and scores them as a product of independent group
+        # densities, which is only true if the component order is random within each draw.
+        sample_array_np = sample_array_np[np.random.permutation(n)]
 
         # Move to xpy and unnormalize back to original [llim, rlim] coordinates,
         # so callers receive samples in the same frame as self.bounds.
