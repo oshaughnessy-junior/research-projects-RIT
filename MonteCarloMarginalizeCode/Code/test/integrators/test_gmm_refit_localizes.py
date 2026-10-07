@@ -41,6 +41,25 @@ def test_weighted_refit_localizes_separated_1d_modes():
     assert n_ok == 20, "only {}/20 refits localized both modes".format(n_ok)
 
 
+def test_weighted_convergence_criterion_localizes_3d_modes():
+    # Pins the convergence criterion separately from the init: with the k-means++ init kept and
+    # the legacy unweighted criterion restored, 32/40 of these refits localize both modes.
+    from scipy.stats import multivariate_normal as mvn
+    rng = np.random.default_rng(302)
+    x = rng.uniform(-1, 1, (10000, 3))
+    c1, c2 = -0.5 * np.ones(3), 0.45 * np.ones(3)
+    lw = 0.55 * np.log(0.57 * mvn.pdf(x, c1, 0.012 * np.eye(3)) + 0.43 * mvn.pdf(x, c2, 0.0324 * np.eye(3)))
+    n_ok = 0
+    for seed in range(40):
+        np.random.seed(seed)
+        est = GMM.estimator(2, max_iters=1000)
+        est.fit(x, lw)
+        mu = np.array(est.means)
+        mu = mu[np.argsort(mu[:, 0])]
+        n_ok += bool(np.allclose(mu[0], c1, atol=0.05) and np.allclose(mu[1], c2, atol=0.05))
+    assert n_ok == 40, "only {}/40 refits localized both modes".format(n_ok)
+
+
 def test_update_does_not_write_into_caller_arrays():
     model = GMM.gmm(2, np.array([[-5.0, 5.0]]))
     weights = np.array([0.6, 0.4])
