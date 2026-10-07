@@ -768,13 +768,14 @@ def run_seq_case(kind, target_b, target_a, nmax, neff, n_chunk=10000, seed=98765
 # cross-group correlation is zero and corr_diff_max reads the defect directly.
 #
 # The proposal is SEEDED and FROZEN: each group's GMM holds the target's own components, widened
-# 1.3x, as ILE's --extrinsic-proposal-breadcrumb installs them (frozen by default).  Cold-started
-# GMM does not resolve these modes on either side of #407 (fitted means stay near the box centre,
-# both components ~2.6 wide), so a cold case never draws from a multi-component group model and
-# cannot see a row-alignment defect.  Measured 2026-10-06, run seeds 987654 and 988654.
+# 1.3x, as ILE's --extrinsic-proposal-breadcrumb installs them (frozen by default).  Standalone
+# cold-started GMM does not resolve these modes on either side of #407 (fitted means stay near the
+# box centre, both components ~2.6 wide), so its fitted groups give a row-alignment defect almost
+# nothing to act on.  Measured 2026-10-06, run seeds 987654 and 988654.  The lane exercises
+# _sample / gmm.sample / score, not _train: a matched seed reaches neff in one chunk.
 GROUP_KINDS = ("GMM_pp", "GMM_pairs", "portfolio_pairs")
 GROUP_CASES = [   # (kind, group_sizes, ncomp, target_seed, nmax, neff)
-    # CIP shape: one group per parameter (int n_comp, as `--internal-n-comp`)
+    # CIP's grouping: one group per parameter (int n_comp, as `--internal-n-comp`)
     ("GMM_pp",          (1, 1, 1, 1), 2, 101, 400000, 3000),
     ("GMM_pp",          (1, 1, 1, 1), 3, 202, 400000, 3000),
     # ILE shape: correlated pairs, per-group n_comp dict
@@ -908,6 +909,7 @@ def run_group_case(kind, target, nmax, neff, n_chunk=10000, seed=987654, verbose
         if proposal in ("seed_frozen", "seed_adapt"):
             gmm_dict = _seed_group_models(target, adapt=(proposal == "seed_adapt"))
             gmm_kw["gmm_adapt"] = {g: proposal == "seed_adapt" for g in target.groups}
+            seeds = {g: (m, [_asnumpy(mu).copy() for mu in m.means]) for g, m in gmm_dict.items()}
         # CIP passes an int n_comp, ILE a per-group dict; use each lane's production form
         n_comp = target.ncomp if kind == "GMM_pp" else {g: target.ncomp for g in target.groups}
         extra = dict(n=n_chunk, n_adapt=100, floor_level=0.0, tempering_exp=1.0,
@@ -923,12 +925,16 @@ def run_group_case(kind, target, nmax, neff, n_chunk=10000, seed=987654, verbose
             lnI, logvar, eff, _ = s.integrate(ln_f, *target.params, min_iter=n_iters,
                                               max_iter=n_iters, gmm_dict=gmm_dict, n_comp=n_comp,
                                               use_lnL=True, return_lnI=True, **gmm_kw, **extra)
-        if proposal != "cold":
-            # a sampling error makes the integrator _reset() and blank every model, after which
-            # the run continues cold and can still pass; require the seeds to have survived
+        if proposal == "seed_frozen":
+            # A sampling error makes the integrator _reset() and blank every model, and a lost
+            # gmm_adapt lets the seeds refit; either way the run can still pass.  Require the
+            # SAME seed objects, unmoved, at the end.
             gmm = s.portfolio_realizations[1] if kind == "portfolio_pairs" else s
-            out["seed_kept"] = all(gmm.integrator.gmm_dict.get(g) is not None
-                                   for g in target.groups)
+            live = gmm.integrator.gmm_dict
+            out["seed_kept"] = all(
+                live.get(g) is m and len(m.means) == len(mu0) and
+                all(np.array_equal(_asnumpy(a), b) for a, b in zip(m.means, mu0))
+                for g, (m, mu0) in seeds.items())
         _finish_record(out, target, s, lnI, logvar, eff, nmax, seed, t0)
     except Exception as e:
         import traceback
@@ -952,7 +958,7 @@ def evaluate(r):
     if r.get("error"):
         return "ERROR", ["ERROR " + r["error"]]
     if r.get("seed_kept") is False:
-        return "FAIL", ["seeded GMM models were discarded during the run (integrator reset)"]
+        return "FAIL", ["frozen seed GMM models were replaced or refit during the run"]
     if r["kind"] in STARVE_IS_FAIL and r["n_eff"] < MIN_NEFF_FOR_SHAPE:
         # NOT "untestable": correct code clears this floor by >= 8x on these cases (measured
         # 799-2103 vs 0.0-12.8 when state leaks), so starvation here IS the defect.
