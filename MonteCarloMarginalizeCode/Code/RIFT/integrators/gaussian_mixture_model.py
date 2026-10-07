@@ -71,7 +71,6 @@ if not _ORIGINAL_AVAILABLE:
 
         
 from scipy.special import logsumexp
-from . import multivariate_truncnorm as truncnorm
 import itertools
 import math
 
@@ -797,57 +796,15 @@ class gmm:
         the original coordinate frame before being returned, matching the
         pre-port behavior expected by MonteCarloEnsemble._sample().
         '''
-        # Sampling is kept on CPU for stability (truncnorm is CPU-only).  The RESULT goes
-        # back onto the backend the mixture PARAMETERS live on: sample() has no argument to
-        # read a backend off, so the model itself is the only honest source.  A host-fitted
-        # model must keep returning host draws on a GPU host, and a device-fitted one must
-        # keep returning device draws -- MonteCarloEnsemble._sample writes them straight
-        # into a self.xpy array.
+        # Draws are made on the backend the mixture PARAMETERS live on: sample() has no
+        # argument to read a backend off, so the model itself is the only honest source.  A
+        # host-fitted model must keep returning host draws on a GPU host, and a device-fitted
+        # one must keep returning device draws -- MonteCarloEnsemble._sample writes them
+        # straight into a self.xpy array.
         xpy = _model_backend(self)
-        means_np = [_to_host(m) for m in self.means]
-        covs_np = [_to_host(c) for c in self.covariances]
-        weights_np = _to_host(self.weights)
-
-        # truncnorm bounds must match the coordinate frame of the model
-        # parameters (mean/cov), which is normalized [-1, 1].
-        bounds_normalized = np.empty((self.d, 2))
-        bounds_normalized[:, 0] = -1.0
-        bounds_normalized[:, 1] = 1.0
-
-        # Per-component counts: floor(n*w) plus a multinomial draw of the remainder in proportion
-        # to the fractional parts (residual sampling), so E[count_k] = n*w_k exactly.  Plain
-        # int(n*w) with the remainder dumped on the last component biases every count.
-        w_norm = np.asarray(weights_np, dtype=float)
-        w_norm = w_norm / np.sum(w_norm)
-        counts = np.floor(n * w_norm).astype(int)
-        n_left = int(n - np.sum(counts))
-        if n_left > 0:
-            frac = n * w_norm - counts
-            counts += np.random.multinomial(n_left, frac / np.sum(frac))
-        sample_array_np = np.empty((n, self.d))
-        start = 0
-        for component in range(self.k):
-            mean = means_np[component]
-            cov = covs_np[component]
-            end = start + int(counts[component])
-            try:
-                if not use_bounds:
-                    sample_array_np[start:end] = np.random.multivariate_normal(mean, cov, end - start)
-                else:
-                    sample_array_np[start:end] = truncnorm.sample(mean, cov, bounds_normalized, end - start)
-                start = end
-            except Exception as e:
-                print('Exiting due to non-positive-semidefinite', e)
-                raise Exception("gmm covariance not positive-semidefinite")
-        # The loop leaves rows grouped by component.  MonteCarloEnsemble._sample writes each dim
-        # group's draw into the SAME rows and scores them as a product of independent group
-        # densities, which is only true if the component order is random within each draw.
-        sample_array_np = sample_array_np[np.random.permutation(n)]
-
-        # Move to xpy and unnormalize back to original [llim, rlim] coordinates,
-        # so callers receive samples in the same frame as self.bounds.
-        sample_array_xpy = _to_backend(xpy, sample_array_np)
-        return self._unnormalize(sample_array_xpy)
+        draws = _sample_mixture_normalized(xpy, self.means, self.covariances, self.weights,
+                                           n, use_bounds=use_bounds)
+        return self._unnormalize(draws)
 
     def print_params(self):
         '''
@@ -874,6 +831,152 @@ class gmm:
                 print(weight, '\n')
             else:
                 print(i, weight, self._unnormalize(np.array([mean]))[0,0], mean[0], np.sqrt(cov[0,0]))
+
+
+def _special_for(xpy):
+    '''scipy.special for the host backend, the device's special-function module otherwise.'''
+    if xpy is np:
+        import scipy.special
+        return scipy.special
+    if xpy_special_default is None:
+        raise RuntimeError("no special-function module for backend %r" % (xpy,))
+    return xpy_special_default
+
+
+def _cov_factor(cov):
+    '''Q with cov = Q Q^T, from the symmetric eigendecomposition (Q = V sqrt(Lambda)).
+    eigh, not eig: for a repeated eigenvalue eig can return non-orthogonal eigenvectors.'''
+    cov = np.asarray(cov, dtype=float)
+    lam, V = np.linalg.eigh(0.5 * (cov + cov.T))
+    if not (np.all(np.isfinite(lam)) and lam.min() > 0):
+        raise Exception("gmm covariance not positive-semidefinite")
+    return V * np.sqrt(lam)
+
+
+def _whitened_box(mean, cov):
+    '''Host-side setup for drawing N(mean, cov) truncated to the normalized box [-1,1]^d.
+
+    With cov = Q Q^T (Q = V sqrt(Lambda)), x = mean + Q z and z ~ N(0, I).  The box pulls
+    back to a parallelotope in z; its bounding box [a, b] is returned.  Drawing each z_j
+    from a standard normal truncated to [a_j, b_j] and rejecting x outside the box gives
+    exactly N(mean, cov) truncated to the box -- the same algorithm as
+    multivariate_truncnorm.sample, which this replaces.
+
+    The 1-D truncated draws are made by inverse CDF.  To keep the CDF away from 1, an
+    interval with a > 0 is reflected through zero (sign -1).  Returns Q, sign, the
+    reflected lower bounds and upper bounds, and their CDF values.'''
+    from scipy.special import ndtr
+    mean = np.asarray(mean, dtype=float).reshape(-1)
+    Q = _cov_factor(cov)        # cov = Q Q^T
+    C = np.linalg.inv(Q)        # z = C (x - mean)
+    lo = -1.0 - mean
+    hi = 1.0 - mean
+    a = np.sum(np.minimum(C * lo, C * hi), axis=1)
+    b = np.sum(np.maximum(C * lo, C * hi), axis=1)
+    sign = np.where(a > 0, -1.0, 1.0)
+    lo_r = np.where(sign < 0, -b, a)
+    hi_r = np.where(sign < 0, -a, b)
+    p_lo = ndtr(lo_r)
+    dp = ndtr(hi_r) - p_lo
+    if not np.all(dp > 0):
+        raise RuntimeError("gmm.sample: a component has no numerical mass inside the "
+                           "bounds (whitened interval [%s, %s])" % (lo_r, hi_r))
+    return Q, sign, lo_r, hi_r, p_lo, dp
+
+
+# Total candidate rows one sample(n) call may draw before giving up, as a multiple of n.
+# Generous: the old host sampler allowed n rounds of n candidates per component.
+_MAX_CANDIDATES_PER_ROW = 10000
+# Candidate rows held in memory at once.
+_MAX_CANDIDATES_PER_ROUND = 2 ** 19
+
+
+def _sample_mixture_normalized(xpy, means, covs, weights, n, use_bounds=True):
+    '''n draws (n, d) on backend `xpy` from the mixture in normalized coordinates, each
+    component truncated to [-1,1]^d individually (use_bounds) -- the density
+    gmm.score() reports.
+
+    Every random number comes from xpy.random, so on the device the whole draw is
+    seeded by cupy.random (RIFT.integrators.seeding.seed_everything seeds both).
+
+    Per-component counts are floor(n*w) plus a categorical draw of the remainder in
+    proportion to the fractional parts (residual sampling), so E[count_k] = n*w_k exactly.
+    Component labels are then permuted, so row order carries no component label:
+    MonteCarloEnsemble._sample writes several dim groups' draws into the SAME rows and
+    scores them as a product of independent group densities.'''
+    n = int(n)                  # cupy.random.permutation rejects a numpy integer (portfolio passes one)
+    special = _special_for(xpy)
+    k = len(means)
+    w = np.asarray(_to_host(weights), dtype=float).reshape(-1)
+    w = w / np.sum(w)
+    means_h = [np.asarray(_to_host(m), dtype=float).reshape(-1) for m in means]
+    covs_h = [np.asarray(_to_host(c), dtype=float) for c in covs]
+    d = means_h[0].shape[0]
+    out = xpy.empty((n, d))
+    if n == 0:
+        return out
+
+    counts = np.floor(n * w).astype(int)
+    n_left = int(n - np.sum(counts))
+    if n_left > 0:
+        frac = n * w - counts
+        extra = xpy.random.choice(k, size=n_left, p=xpy.asarray(frac / np.sum(frac)))
+        counts += _to_host(xpy.bincount(extra, minlength=k)).astype(int)
+    labels = xpy.repeat(xpy.arange(k), [int(c) for c in counts])
+    labels = labels[xpy.random.permutation(n)]
+
+    # Set up only the components that are drawn: a component with no rows is never checked.
+    setup = []
+    for j in range(k):
+        if counts[j] == 0:
+            setup.append((np.eye(d),) + (np.ones(d),) * 5)    # placeholder, never indexed
+        elif use_bounds:
+            setup.append(_whitened_box(means_h[j], covs_h[j]))
+        else:
+            setup.append((_cov_factor(covs_h[j]),) + (np.ones(d),) * 5)
+
+    def stack(i):
+        return xpy.asarray(np.stack([s[i] for s in setup]))
+    Q_k = stack(0)
+    mean_k = xpy.asarray(np.stack(means_h))
+
+    if not use_bounds:
+        z = xpy.random.standard_normal((n, d))
+        out[...] = mean_k[labels] + xpy.einsum('nij,nj->ni', Q_k[labels], z)
+        return out
+
+    sign_k, lo_k, hi_k, plo_k, dp_k = (stack(i) for i in range(1, 6))
+    # Rows still to fill.  Each round takes a batch of them, draws r candidates for each and
+    # keeps the first accepted one; rows without an accepted candidate go back in the queue.
+    # Every row is filled from its own sequence of independent candidates, so the batching
+    # and r change the cost, not the distribution.
+    todo = xpy.arange(n)
+    r = 1
+    drawn = 0
+    while todo.shape[0] > 0:
+        n_cur = int(min(todo.shape[0], max(1, _MAX_CANDIDATES_PER_ROUND // r)))
+        cur, rest = todo[:n_cur], todo[n_cur:]
+        lab = xpy.repeat(labels[cur], r)
+        m = n_cur * r
+        u = xpy.random.uniform(0.0, 1.0, (m, d))
+        zr = special.ndtri(plo_k[lab] + u * dp_k[lab])
+        zr = xpy.minimum(xpy.maximum(zr, lo_k[lab]), hi_k[lab])
+        x = mean_k[lab] + xpy.einsum('nij,nj->ni', Q_k[lab], sign_k[lab] * zr)
+        ok = xpy.all((x > -1.0) & (x < 1.0), axis=1).reshape(n_cur, r)
+        got = xpy.any(ok, axis=1)
+        first = xpy.argmax(ok, axis=1)          # the first accepted candidate of each row
+        pick = x.reshape(n_cur, r, d)[xpy.arange(n_cur), first]
+        out[cur[got]] = pick[got]
+        todo = xpy.concatenate([rest, cur[~got]])
+        drawn += m
+        if todo.shape[0] > 0:
+            if drawn > _MAX_CANDIDATES_PER_ROW * n:
+                raise RuntimeError("gmm.sample: truncated-component acceptance too low "
+                                   "(%d of %d rows still unfilled after %d candidates)"
+                                   % (todo.shape[0], n, drawn))
+            rate = max(int(_to_host(xpy.sum(ok))), 1) / float(m)
+            r = int(min(max(1, np.ceil(2.0 / rate)), _MAX_CANDIDATES_PER_ROUND))
+    return out
 
 
 def _mixture_log_density_normalized(model, Xn):
