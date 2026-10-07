@@ -437,11 +437,11 @@ class Rift(Pipeline):
         if "transverse spin coordinates" not in cip:
             return
         value = cip["transverse spin coordinates"]
-        if isinstance(value, bool) or (isinstance(value, str) and value in ("off", "auto", "physics3")):
+        if isinstance(value, bool) or (isinstance(value, str) and value in ("off", "auto", "physics3", "geometric4", "geometric4-phase-excess")):
             return
         raise ValueError(
-            "sampler.cip.transverse spin coordinates must be off, auto, physics3 "
-            "or a YAML boolean; got {!r}".format(value))
+            "sampler.cip.transverse spin coordinates must be off, auto, physics3, "
+            "geometric4, geometric4-phase-excess or a YAML boolean; got {!r}".format(value))
 
     def before_config(self, dryrun=False):
         """

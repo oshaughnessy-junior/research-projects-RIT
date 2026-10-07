@@ -68,18 +68,19 @@ def _build(tmp_path, ini, coinc=COINC):
     return proc, rundir
 
 
-def test_unforced_opt_in_builds_flat_cip_workers(tmp_path):
+@pytest.mark.parametrize('mode',['physics3','geometric4','geometric4-phase-excess'])
+def test_unforced_opt_in_builds_flat_cip_workers(tmp_path,mode):
     pytest.importorskip("lal")
-    proc, rundir = _build(tmp_path, _opt_in_ini(tmp_path))
+    proc, rundir = _build(tmp_path, _opt_in_ini(tmp_path,mode))
     assert proc.returncode == 0, proc.stdout[-3000:]
     assert "--cip-explode-jobs-flat" in proc.stdout
     subs = {p.name: p.read_text() for p in rundir.glob("CIP*.sub")}
     workers = [n for n in subs if n.startswith("CIP_worker")]
     assert workers
-    activated = [n for n in workers if "--rf-transverse-spin-coordinates physics3" in subs[n]]
+    activated = [n for n in workers if ("--rf-transverse-spin-coordinates "+mode) in subs[n]]
     assert activated, sorted(subs)
     for name, sub in subs.items():
-        assert not ("physics3" in sub and "--fit-load-gp" in sub), name
+        assert not ("--rf-transverse-spin-coordinates " in sub and "--fit-load-gp" in sub), name
     for name in workers:
         assert "--fit-method rf" in subs[name], name
 

@@ -117,7 +117,8 @@ def test_auto_effect_in_the_asimov_configuration(monkeypatch,tmp_path):
     auto=generate(monkeypatch,tmp_path,'auto',10,'rf',extra=extra)
     assert off['lines']==default['lines']
     assert auto['lines'][:-1]==default['lines'][:-1]
-    assert auto['lines'][-1]==default['lines'][-1]+ACTIVATION
+    import shlex
+    assert shlex.split(auto['lines'][-1])==shlex.split(default['lines'][-1]+ACTIVATION)
     assert auto['ile']==default['ile']
 
 @pytest.mark.parametrize('mc',[3,15])
@@ -130,3 +131,21 @@ def test_unforced_opt_in_builds_the_explicit_rf_initial_grid(monkeypatch,tmp_pat
     assert grids
     assert unforced['commands']==explicit['commands']
     assert unforced['lines']==explicit['lines']
+
+@pytest.mark.parametrize('mode',['geometric4','geometric4-phase-excess'])
+def test_actual_geometric4_helper(monkeypatch,tmp_path,mode):
+    import shlex
+    result=generate(monkeypatch,tmp_path,mode,25)
+    active=[shlex.split(line) for line in result['lines'] if ('--rf-transverse-spin-coordinates '+mode) in line]
+    assert active, 'Explicit geometric4 must survive actual helper generation'
+    for tokens in active:
+        i=tokens.index('--rf-transverse-spin-coordinates')
+        assert tokens[i+1]==mode
+        assert float(tokens[tokens.index('--fref')+1])==35.
+    assert result['fit_method']=='rf'
+
+
+@pytest.mark.parametrize('mode',['geometric4','geometric4-phase-excess'])
+def test_actual_geometric4_rejects_gp(monkeypatch,tmp_path,mode):
+    with pytest.raises(ValueError,match='No complete two-spin RF stage'):
+        generate(monkeypatch,tmp_path,mode,10,'gp')

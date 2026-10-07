@@ -160,7 +160,7 @@ def test_stage_problem_mirrors_each_cip_refusal(tmp_path,case):
     env=dict(os.environ,PYTHONPATH=str(ROOT)+os.pathsep+os.environ.get('PYTHONPATH',''),OMP_NUM_THREADS='1')
     proc=subprocess.run(cmd,cwd=tmp_path,env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,universal_newlines=True,timeout=300)
     assert proc.returncode!=0
-    assert ('physics3 requires a fresh RF fit' in proc.stdout) or ('RF reference frequency' in proc.stdout), proc.stdout[-2000:]
+    assert ('RF transverse coordinates require a fresh RF fit' in proc.stdout) or ('RF reference frequency' in proc.stdout), proc.stdout[-2000:]
 
 def test_default_and_off_never_enter_the_policy():
     # Helper behavior under each mode is executed in test_rf_transverse_helper_generation.py.
