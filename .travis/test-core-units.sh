@@ -95,6 +95,7 @@ FILES=(
   "$C/test/integrators/test_extrinsic_phase_group_uniform.py"
   "$C/test/integrators/test_gmm_adaptive.py"
   "$C/test/integrators/test_gmm_sample_row_independence.py"
+  "$C/test/integrators/test_gmm_update_no_aliasing.py"
   "$C/test/integrators/test_integrate_log_neff_negative_lnZ.py"
   "$C/test/integrators/test_gmm_sample_matches_score.py"
   "$C/test/integrators/test_mcsamplerGPU_default_adapt.py"
