@@ -41,6 +41,24 @@ def test_weighted_refit_localizes_separated_1d_modes():
     assert n_ok == 20, "only {}/20 refits localized both modes".format(n_ok)
 
 
+def test_degenerate_weights_keep_identity_init():
+    # one sample carries all the weight (ess = 1 < d+1): no usable cloud, so the init keeps
+    # the legacy identity covariances rather than shrinking them by k^(-2/d)
+    x = np.random.default_rng(4).uniform(-1, 1, (500, 3))
+    lw = np.full(500, -np.inf)
+    lw[7] = 0.0
+    state = np.random.get_state()
+    try:
+        np.random.seed(0)
+        est = GMM.estimator(3)
+        est.d = 3
+        est._initialize(500, x, lw)
+    finally:
+        np.random.set_state(state)
+    for c in est.covariances:
+        np.testing.assert_array_equal(c, np.identity(3))
+
+
 def test_update_does_not_write_into_caller_arrays():
     model = GMM.gmm(2, np.array([[-5.0, 5.0]]))
     weights = np.array([0.6, 0.4])
