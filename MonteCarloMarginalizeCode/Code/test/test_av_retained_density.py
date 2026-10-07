@@ -52,6 +52,30 @@ def test_narrow_gaussian_lnZ_matches_closed_form():
     assert np.all(np.abs(err) < 0.3), "lnZ - exact = {}".format(err)
 
 
+def test_prior_narrower_than_box_keeps_normalization():
+    """Prior zero on x0 >= 0.5 (density 2 below).  Draws there return -inf and still count as
+    draws; the scalar-V normalization dropped them and came out high by about ln 2."""
+    sig, ndim = 0.01, 4
+    names = ['x%d' % i for i in range(ndim)]
+    mu = np.array([0.25] + [0.5] * (ndim - 1))
+    exact = ndim * np.log(np.sqrt(2 * np.pi) * sig) + np.log(2.0)
+    err = []
+    for seed in (1, 2, 3):
+        np.random.seed(seed)
+        s = mcsamplerAV.MCSampler(n_chunk=4000)
+        s.xpy = np
+        s.identity_convert = lambda x: x
+        for i, name in enumerate(names):
+            pdf = (lambda x: 2.0 * (np.asarray(x) < 0.5)) if i == 0 else (lambda x: np.ones(np.shape(x)))
+            s.add_parameter(name, pdf=None, left_limit=0.0, right_limit=1.0, prior_pdf=pdf,
+                            adaptive_sampling=True)
+        out = s.integrate_log(lambda *xs: -0.5 * np.sum((np.array(xs).T - mu)**2, axis=1) / sig**2,
+                              *names, nmax=400000, neff=50, n=4000, no_protect_names=True, verbose=False)
+        err.append(out[0] - exact)
+    err = np.array(err)
+    assert abs(err.mean()) < 0.15, "lnZ - exact = {} (mean {:.3f})".format(err, err.mean())
+
+
 def test_pinned_coordinate_keeps_normalization():
     """A pinned coordinate is drawn at one value; with a unit-width uniform prior on it the
     evidence equals that of the remaining free coordinates."""
