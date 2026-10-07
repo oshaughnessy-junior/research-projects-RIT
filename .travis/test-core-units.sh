@@ -434,7 +434,9 @@ done
 # collected / 823 passed / 20 skipped incl. 3 subtests -> 840/820.  The 20th skip is the
 # cupy-importable leg of test_eos_posterior_tempering_kwarg, absent on the CI runner.  The
 # previous floors (814/795) sat 9 below the tree before this file was added.
-EXPECTED_TESTS=840
+# test_gmm_update_no_aliasing.py adds 2 passing tests and no skips.  Measured on rift_O4d
+# 615dc1bfa + #420 (ldas-pcdev2, same setup) 2026-10-07: junit 845 / 825 / 20 -> 842/822.
+EXPECTED_TESTS=842
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -451,7 +453,8 @@ EXPECTED_TESTS=840
 # test_convert_coordinates_row_independence.py adds 9 tests and no skips.
 # test_gmm_sample_row_independence.py adds 10 tests and no skips.
 # test_gmm_sample_matches_score.py adds 17 tests and no skips; re-measured 840/820 (above).
-EXPECTED_PASSED=820
+# test_gmm_update_no_aliasing.py adds 2 tests and no skips -> 842/822 (above).
+EXPECTED_PASSED=822
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 MAX_SKIPPED=19
 
