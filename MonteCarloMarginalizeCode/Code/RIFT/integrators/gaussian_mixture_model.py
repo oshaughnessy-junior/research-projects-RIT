@@ -73,6 +73,25 @@ if not _ORIGINAL_AVAILABLE:
 # Primes for the Richtmyer lattice in _box_mass, one per integrated dimension (d <= 169).
 _LATTICE_PRIMES = np.array([p for p in range(2, 1000) if all(p % q for q in range(2, int(p**0.5) + 1))])
 
+def _normal_interval(a, b):
+    '''Standard-normal CDF data for the intervals [a, b] (elementwise), evaluated in the
+    lower tail: the reflection sign, the endpoint CDFs p_lo <= p_hi of the REFLECTED
+    interval, and the mass Phi(b) - Phi(a).
+
+    ndtr saturates at exactly 1.0 beyond about 8.3, so differencing the two CDFs of an
+    interval deep in the POSITIVE tail -- a component mean far below the box -- gives
+    exactly zero.  score() then divides that component's pdf by the 1e-300 floor and
+    overestimates its density by hundreds of orders of magnitude, while sample() draws the
+    same component happily (it reflects, see _whitened_box).  Phi(b) - Phi(a) ==
+    Phi(-a) - Phi(-b), and in the lower tail ndtr -- and ndtri, used for the conditional
+    draw -- keep full relative accuracy down to ~1e-300, so evaluate reflected there.'''
+    from scipy.special import ndtr
+    sign = np.where(np.asarray(a) > 0, -1.0, 1.0)
+    p_lo = ndtr(np.where(sign < 0, -b, a))
+    p_hi = ndtr(np.where(sign < 0, -a, b))
+    return sign, p_lo, p_hi, p_hi - p_lo
+
+
 def _box_mass(lower, upper, mean, cov, n_points=2**12):
     '''
     Gaussian probability mass of the box [lower, upper]: Genz's separation-of-variables
@@ -82,7 +101,7 @@ def _box_mass(lower, upper, mean, cov, n_points=2**12):
     result depends on how many calls preceded it in the process.  Accuracy here is
     comparable to mvnun at its default abseps/releps=1e-5.
     '''
-    from scipy.special import ndtr, ndtri
+    from scipy.special import ndtri
     lower = np.asarray(lower, dtype=float)
     a = lower - mean
     b = np.asarray(upper, dtype=float) - mean
@@ -92,7 +111,7 @@ def _box_mass(lower, upper, mean, cov, n_points=2**12):
         return float('nan')
     # Integrate the least-probable dimensions first (Genz's variable reordering).
     sd = np.sqrt(np.diag(cov))
-    order = np.argsort(ndtr(b / sd) - ndtr(a / sd))
+    order = np.argsort(_normal_interval(a / sd, b / sd)[3])
     a, b, cov = a[order], b[order], cov[np.ix_(order, order)]
     scale = max(float(np.max(np.abs(np.diag(cov)))), 1e-300)
     for k in range(80):
@@ -111,11 +130,14 @@ def _box_mass(lower, upper, mean, cov, n_points=2**12):
     f = np.ones(n_points)
     for i in range(d):
         s = y[:, :i] @ L[i, :i]
-        lo = ndtr((a[i] - s) / L[i, i])
-        hi = ndtr((b[i] - s) / L[i, i])
-        f *= hi - lo
+        sign, p_lo, p_hi, dp = _normal_interval((a[i] - s) / L[i, i], (b[i] - s) / L[i, i])
+        f *= dp
         if i < d - 1:
-            y[:, i] = ndtri(np.clip(lo + w[:, i] * (hi - lo), 1e-300, 1.0 - 1e-16))
+            # Interpolate on the reflected interval as well: for a positive-tail interval
+            # p_lo + w*dp rounds to 1 and ndtri saturates.  w=0 gives the lower endpoint
+            # of the original interval either way.
+            u = np.where(sign < 0, p_hi - w[:, i] * dp, p_lo + w[:, i] * dp)
+            y[:, i] = sign * ndtri(np.clip(u, 1e-300, 1.0 - 1e-16))
     return float(np.mean(f))
 
 
