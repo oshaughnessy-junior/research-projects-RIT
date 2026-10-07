@@ -69,7 +69,52 @@ if not _ORIGINAL_AVAILABLE:
         # Return probability and a '0' for success (mimicking legacy API)
         return p, 0
 
-        
+
+# Primes for the Richtmyer lattice in _box_mass, one per integrated dimension (d <= 168).
+_LATTICE_PRIMES = np.array([p for p in range(2, 1000) if all(p % q for q in range(2, int(p**0.5) + 1))])
+
+def _box_mass(lower, upper, mean, cov, n_points=2**14):
+    '''
+    Gaussian probability mass of the box [lower, upper]: Genz's separation-of-variables
+    integral on a FIXED Richtmyer lattice, so the same inputs always give the same value.
+
+    mvnun for d>=3 draws its lattice shifts from a Fortran RNG that no seed reaches, so its
+    result depends on how many calls preceded it in the process.  Accuracy here is
+    comparable to mvnun at its default abseps/releps=1e-5.
+    '''
+    from scipy.special import ndtr, ndtri
+    lower = np.asarray(lower, dtype=float)
+    a = lower - mean
+    b = np.asarray(upper, dtype=float) - mean
+    cov = np.asarray(cov, dtype=float)
+    d = len(a)
+    # Integrate the least-probable dimensions first (Genz's variable reordering).
+    sd = np.sqrt(np.diag(cov))
+    order = np.argsort(ndtr(b / sd) - ndtr(a / sd))
+    a, b, cov = a[order], b[order], cov[np.ix_(order, order)]
+    jitter = 0.0
+    while True:
+        try:
+            L = np.linalg.cholesky(cov + jitter * np.eye(d))
+            break
+        except np.linalg.LinAlgError:
+            jitter = max(2 * jitter, 1e-12 * float(np.mean(np.diag(cov))))
+    # Richtmyer lattice with the baker's (periodizing) transform; d-1 dimensions are
+    # sampled, the last is integrated exactly.
+    j = np.arange(1, n_points + 1)[:, None]
+    w = np.abs(2.0 * np.mod(j * np.sqrt(_LATTICE_PRIMES[:d - 1]) + 0.5, 1.0) - 1.0)
+    y = np.empty((n_points, d))
+    f = np.ones(n_points)
+    for i in range(d):
+        s = y[:, :i] @ L[i, :i]
+        lo = ndtr((a[i] - s) / L[i, i])
+        hi = ndtr((b[i] - s) / L[i, i])
+        f *= hi - lo
+        if i < d - 1:
+            y[:, i] = ndtri(np.clip(lo + w[:, i] * (hi - lo), 1e-300, 1.0 - 1e-16))
+    return float(np.mean(f))
+
+
 from scipy.special import logsumexp
 import itertools
 import math
@@ -761,10 +806,13 @@ class gmm:
                         x=sample_array_norm, mean=mean, cov=cov,
                         allow_singular=True)
                 
-                # mvnun is CPU only
+                # mvnun / _box_mass are CPU only.  mvnun is deterministic only for d==2.
                 mean_cpu = _to_host(mean)
                 cov_cpu = _to_host(cov)
-                component_mass = mvnun(bounds_norm_cpu[:,0], bounds_norm_cpu[:,1], mean_cpu, cov_cpu)[0]
+                if self.d == 2:
+                    component_mass = mvnun(bounds_norm_cpu[:,0], bounds_norm_cpu[:,1], mean_cpu, cov_cpu)[0]
+                else:
+                    component_mass = _box_mass(bounds_norm_cpu[:,0], bounds_norm_cpu[:,1], mean_cpu, cov_cpu)
             else:
                 sigma2 = cov[0,0]
                 component_pdf = (1./xpy.sqrt(2*xpy.pi*sigma2)
