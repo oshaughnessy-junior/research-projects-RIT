@@ -88,17 +88,21 @@ def _box_mass(lower, upper, mean, cov, n_points=2**14):
     b = np.asarray(upper, dtype=float) - mean
     cov = np.asarray(cov, dtype=float)
     d = len(a)
+    if not (np.all(np.isfinite(mean)) and np.all(np.isfinite(cov))):
+        return float('nan')
     # Integrate the least-probable dimensions first (Genz's variable reordering).
     sd = np.sqrt(np.diag(cov))
     order = np.argsort(ndtr(b / sd) - ndtr(a / sd))
     a, b, cov = a[order], b[order], cov[np.ix_(order, order)]
-    jitter = 0.0
-    while True:
+    scale = max(float(np.max(np.abs(np.diag(cov)))), 1e-300)
+    for k in range(80):
         try:
-            L = np.linalg.cholesky(cov + jitter * np.eye(d))
+            L = np.linalg.cholesky(cov + (0.0 if k == 0 else 1e-12 * 2.0**k * scale) * np.eye(d))
             break
         except np.linalg.LinAlgError:
-            jitter = max(2 * jitter, 1e-12 * float(np.mean(np.diag(cov))))
+            pass
+    else:
+        return float('nan')
     # Richtmyer lattice with the baker's (periodizing) transform; d-1 dimensions are
     # sampled, the last is integrated exactly.
     j = np.arange(1, n_points + 1)[:, None]

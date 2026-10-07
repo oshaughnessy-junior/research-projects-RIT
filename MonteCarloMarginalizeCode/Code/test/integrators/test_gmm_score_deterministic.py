@@ -82,3 +82,13 @@ def test_score_normalized_over_box(d):
     vol = float(np.prod(m.bounds[:, 1] - m.bounds[:, 0]))
     est, err = inv.mean(), inv.std() / np.sqrt(len(inv))
     assert abs(est / vol - 1) < 5 * err / vol, (est / vol, err / vol)
+
+
+def test_box_mass_terminates_on_bad_covariance():
+    '''A non-finite or degenerate covariance must return, not spin in the jitter retry.'''
+    lo, hi = -np.ones(3), np.ones(3)
+    bad = np.eye(3)
+    bad[0, 0] = np.nan
+    assert np.isnan(GMM._box_mass(lo, hi, np.zeros(3), bad))
+    assert np.isfinite(GMM._box_mass(lo, hi, np.zeros(3), np.zeros((3, 3))))
+    assert np.isfinite(GMM._box_mass(lo, hi, np.zeros(3), np.diag([1.0, 1.0, -1e-3])))
