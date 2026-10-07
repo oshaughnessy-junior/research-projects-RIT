@@ -526,3 +526,32 @@ def test_the_selfish_update_takes_an_extended_precision_integrand(on_a_device):
     s.update_sampling_prior_selfish(lnF)
     assert lnF.n_calls > 0
     assert s.V < 1.0, 'the live volume did not contract: the update did not do its work'
+
+
+class _RefusingBackend(object):
+    """numpy, except that array/asarray refuse extended precision as cupy's do."""
+
+    def __getattr__(self, name):
+        return getattr(np, name)
+
+    def array(self, x, *a, **k):
+        return _refusing_push(np.array(x, *a, **k))
+
+    def asarray(self, x, *a, **k):
+        return _refusing_push(np.asarray(x, *a, **k))
+
+
+@needs_extended
+def test_a_portfolio_gmm_member_takes_extended_precision_weights(on_a_device):
+    """CIP --sampler-method portfolio with a GMM member and a quadratic fit: the portfolio
+    hands its host RiftFloat log-weights to mcsamplerEnsemble.update_sampling_prior, whose
+    xpy is cupy on a GPU host.  Reproduced on an A100 at mcsamplerEnsemble.py:349."""
+    np.random.seed(20261006)
+    s = _portfolio(256)
+    gmm = s.portfolio_realizations[1]
+    if not REAL_CUPY:
+        gmm.xpy = _RefusingBackend()
+    lnF = _HostOnlyExtended()
+    s.integrate_log(lnF, *NAMES, nmax=1024, neff=1, n=256,
+                    no_protect_names=True, verbose=False, save_intg=True)
+    assert lnF.n_calls > 0
