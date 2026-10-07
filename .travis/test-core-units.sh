@@ -97,6 +97,7 @@ FILES=(
   "$C/test/integrators/test_gmm_sample_row_independence.py"
   "$C/test/integrators/test_integrate_log_neff_negative_lnZ.py"
   "$C/test/integrators/test_gmm_sample_matches_score.py"
+  "$C/test/integrators/test_gmm_score_deterministic.py"
   "$C/test/integrators/test_mcsamplerGPU_default_adapt.py"
   "$C/test/integrators/test_portfolio_gmm_member_trains.py"
   "$C/test/integrators/test_portfolio_restrict_and_warm.py"
