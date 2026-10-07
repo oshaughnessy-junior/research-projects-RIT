@@ -70,7 +70,7 @@ if not _ORIGINAL_AVAILABLE:
         return p, 0
 
 
-# Primes for the Richtmyer lattice in _box_mass, one per integrated dimension (d <= 168).
+# Primes for the Richtmyer lattice in _box_mass, one per integrated dimension (d <= 169).
 _LATTICE_PRIMES = np.array([p for p in range(2, 1000) if all(p % q for q in range(2, int(p**0.5) + 1))])
 
 def _box_mass(lower, upper, mean, cov, n_points=2**12):
@@ -583,7 +583,7 @@ class gmm:
         renormalize.  Over-allocated components collapse to ~zero weight under
         EM; removing them (a) prevents a spurious sharp component from dominating
         the importance weights and (b) cuts score() cost, which is O(k) in the
-        per-component mvnun box normalization.  Keeps at least max(1, min_keep)
+        per-component box normalization (_box_mass, a few ms per component).  Keeps at least max(1, min_keep)
         components (the highest-weight ones) -- pass min_keep to preserve a safety
         floor.  No-op if nothing is below the floor.'''
         min_keep = max(1, int(min_keep))
@@ -1107,7 +1107,7 @@ def fit_gmm_adaptive(sample_array, bounds, log_sample_weights=None, k_max=8,
       * A fixed LARGE k is both statistically fragile (a spurious sharp
         component collapses onto ~1 elite sample and dominates the importance
         weights) and computationally costly (score() does an O(k) per-component
-        mvnun box normalization on the CPU).
+        box normalization on the CPU).
     BIC threads between the two: fit k over a ladder, penalize free parameters
     by ln(N_eff), keep the best, and drop dead components.  It allocates more
     components only where the (importance-weighted) cloud is genuinely
