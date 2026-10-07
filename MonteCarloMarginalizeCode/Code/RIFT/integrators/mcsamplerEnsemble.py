@@ -208,7 +208,10 @@ class MCSampler(SamplerOutputMixin, object):
         temp = []
         for index in range(len(self.curr_args)):
             temp.append(samples[:,index])
-        temp_ret = self.identity_convert_togpu(self.func(*temp))
+        temp_ret = self.func(*temp)
+        if self.xpy is not np and getattr(temp_ret, 'dtype', None) == RiftFloat:
+            temp_ret = temp_ret.astype(np.float64)   # cupy has no extended precision (CIP's fit returns RiftFloat)
+        temp_ret = self.identity_convert_togpu(temp_ret)
         # column vector (n,1); cupy.rot90 does not accept array-likes/lists, and
         # reshape is backend-agnostic and order-preserving (equiv. to the old
         # np.rot90([temp_ret], -1)).
