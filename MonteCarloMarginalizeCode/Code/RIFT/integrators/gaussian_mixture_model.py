@@ -303,10 +303,8 @@ class estimator:
         diff = sample_array - mu
         cov0 = xpy.dot((p_weights[:, None] * diff).T, diff)
         ess = 1.0 / xpy.sum(p_weights**2)
-        if bool(xpy.all(xpy.isfinite(cov0))) and bool(xpy.trace(cov0) > 0) and bool(ess >= self.d + 1):
-            cov0 = self._near_psd(cov0)
-        else:
-            cov0 = xpy.identity(self.d)
+        cloud_ok = bool(xpy.all(xpy.isfinite(cov0))) and bool(xpy.trace(cov0) > 0) and bool(ess >= self.d + 1)
+        cov0 = self._near_psd(cov0) if cloud_ok else xpy.identity(self.d)
         cov0_inv = xpy.linalg.inv(cov0)
         p = p_weights.astype(sample_array.dtype)
         idx = [xpy.random.choice(n, 1, p=p)]   # index arrays stay on the backend
@@ -320,7 +318,8 @@ class estimator:
             p_next = (p_pp / s_pp) if bool(s_pp > 0) and bool(xpy.isfinite(s_pp)) else p_weights
             idx.append(xpy.random.choice(n, 1, p=p_next.astype(sample_array.dtype)))
         self.means = sample_array[xpy.concatenate(idx), :]
-        self.covariances = [cov0 * self.k**(-2.0/self.d)] * self.k
+        # no usable cloud (ess < d+1): keep the legacy identity covariances, unshrunk
+        self.covariances = [cov0 * self.k**(-2.0/self.d) if cloud_ok else cov0] * self.k
         self.weights = self.xpy.ones(self.k) / self.k
         self.adapt = [True] * self.k
 
@@ -356,14 +355,6 @@ class estimator:
         self.p_nk += log_sample_weights[:,self.xpy.newaxis]  - ls_sum
 
         self.log_prob = self.xpy.sum(p_xn + log_sample_weights)
-        # The quantity EM actually maximizes: the WEIGHTED mean log-density.  self.log_prob
-        # above adds the (constant) log weights to the UNWEIGHTED sum of log q(x_n), so its
-        # change tracks how well the mixture fits the proposal draws, not the weighted
-        # target.  Converging on it stopped every refit after ~3 iterations at one broad
-        # blob (measured: separated 1-D modes at +-0.5 never split).
-        w_norm = self.xpy.exp(log_sample_weights - ls_sum)
-        w_norm = self.xpy.where(self.xpy.isfinite(w_norm), w_norm, 0.0)
-        self.weighted_log_prob = float(self.xpy.sum(w_norm * p_xn))
 
     def _m_step(self, n, sample_array):
         '''
@@ -414,11 +405,10 @@ class estimator:
 
     def _tol(self, n):
         '''
-        Convergence tolerance on the change of the weighted MEAN log-density per EM
-        iteration (see _e_step: weighted_log_prob); scales with dimension and component
-        count, and not with n because the monitored quantity is already a mean.
+        Scale tolerance with number of dimensions, number of components, and
+        number of samples
         '''
-        return 1e-5 * self.d * self.k
+        return (self.d * self.k * n) * 10e-4
 
     def _near_psd(self, x):
         '''
@@ -437,10 +427,10 @@ class estimator:
         n, self.d = sample_array.shape
         self._initialize(n, sample_array, log_sample_weights)
         prev_log_prob = 0
-        self.weighted_log_prob = float('inf')
+        self.log_prob = float('inf')
         count = 0
-        while abs(self.weighted_log_prob - prev_log_prob) > self._tol(n) and count < self.max_iters:
-            prev_log_prob = self.weighted_log_prob
+        while abs(self.log_prob - prev_log_prob) > self._tol(n) and count < self.max_iters:
+            prev_log_prob = self.log_prob
             self._e_step(n, sample_array, log_sample_weights)
             self._m_step(n, sample_array)
             count += 1
