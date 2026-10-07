@@ -4798,7 +4798,7 @@ def std_and_conj_hlmoff(P, Lmax=2,**kwargs):
         for m in range(-l, l+1):
             hxx = lalsim.SphHarmTimeSeriesGetMode(hlms, l, m)
             if hxx:
-                hlmsT[mode]=hxx
+                hlmsT[(l,m)]=hxx
     hlms=hlmsT
     #
     hlmsF = {}
