@@ -841,22 +841,6 @@ def sample_from_bins(xrange, dx, bu, ninbin, reject_out_of_range=False):
         return x
 
 
-def _rows_in_bins(idx, bins):
-    """Boolean mask: is each row of the integer array idx (N, d) a row of bins (M, d)?"""
-    if len(bins) == 0 or len(idx) == 0:
-        return np.zeros(len(idx), dtype=bool)
-    ok = np.all(idx >= 0, axis=1)
-    idx = np.where(ok[:, None], idx, 0)
-    shape = np.maximum(bins.max(axis=0), idx.max(axis=0)) + 1
-    if np.prod([float(s) for s in shape]) < 2.0**62:
-        key_b = np.ravel_multi_index(tuple(bins.T), shape)
-        key_x = np.ravel_multi_index(tuple(idx.T), shape)
-        return ok & np.isin(key_x, key_b)
-    _, inv = np.unique(np.vstack([bins, idx]), axis=0, return_inverse=True)
-    inv = np.asarray(inv).ravel()
-    return ok & np.isin(inv[len(bins):], inv[:len(bins)])
-
-
 class _BinSet(object):
     """Occupied bins of one grid as sorted int64 keys with a count per key (rows only if keys
     would overflow).  Bins projected onto fewer dimensions can coincide; the count is how many

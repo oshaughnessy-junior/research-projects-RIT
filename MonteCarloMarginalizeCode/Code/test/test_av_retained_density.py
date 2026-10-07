@@ -151,12 +151,22 @@ def _one_cycle_constant(prior_x, warm=None, pin=None, seed=1, n=4000):
 
 
 def test_warm_grid_binned_in_a_later_pinned_dimension():
-    """A warm 2x2 grid with x pinned: draw_simple draws from all 4 bins, so each projected y
-    bin carries 2 bins' draws.  Counting it once gave lnZ = ln 2 instead of 0."""
-    warm = dict(binunique=np.array([[0, 0], [0, 1], [1, 0], [1, 1]]), dx=np.array([0.5, 0.5]),
-                nbins=np.array([2, 2]), V=1.0, loglkl_thr=-1e15)
-    lnZ, _ = _one_cycle_constant(lambda x: np.ones(np.shape(x)), warm=warm, pin=0.3)
-    assert abs(lnZ) < 1e-9, lnZ
+    """Warm bins (0,0), (1,0), (1,1) with x pinned: y bin 0 carries 2 bins' draws, y bin 1 one.
+    With L = 1[y < 1/2] the exact lnZ is ln(1/2).  Counting each projected bin once gives
+    ln 2 too high on the full grid; dividing by the unique projected count gives ln(2/3)."""
+    for seed in (1, 2):
+        np.random.seed(seed)
+        s = mcsamplerAV.MCSampler(n_chunk=4000)
+        s.xpy = np
+        s.identity_convert = lambda x: x
+        for name in ('x', 'y'):
+            s.add_parameter(name, pdf=None, left_limit=0.0, right_limit=1.0,
+                            prior_pdf=lambda x: np.ones(np.shape(x)), adaptive_sampling=True)
+        s._warm = dict(binunique=np.array([[0, 0], [1, 0], [1, 1]]), dx=np.array([0.5, 0.5]),
+                       nbins=np.array([2, 2]), V=1.0, loglkl_thr=-1e15)
+        out = s.integrate_log(lambda x, y: np.where(np.asarray(y) < 0.5, 0.0, -np.inf), 'x', 'y',
+                              nmax=4100, neff=10, n=4000, no_protect_names=True, verbose=False, x=0.3)
+        assert out[0] == pytest.approx(np.log(0.5), abs=1e-9), out[0]
 
 
 def test_rejected_draws_enter_the_reported_variance():
@@ -165,3 +175,27 @@ def test_rejected_draws_enter_the_reported_variance():
     lnZ, rel_sigma = _one_cycle_constant(lambda x: 2.0 * (np.asarray(x) < 0.5))
     assert abs(lnZ) < 0.1
     assert rel_sigma == pytest.approx(1 / np.sqrt(4001), rel=0.05)
+
+
+def test_rejected_draws_counted_over_every_cycle():
+    """Two cycles (box, then the bins of the x < 1/2 survivors).  Every retained point lies in
+    both grids, so all weights are equal and rel var = 1/N_retained - 1/N_drawn exactly, with
+    N_drawn summed over both cycles."""
+    np.random.seed(1)
+    n = 4000
+    s = mcsamplerAV.MCSampler(n_chunk=n)
+    s.xpy = np
+    s.identity_convert = lambda x: x
+    # Priors vanish outside the box: cycle-2 bins overhang it, and a draw retained out there
+    # would be covered by cycle 2 only.
+    s.add_parameter('x', pdf=None, left_limit=0.0, right_limit=1.0, adaptive_sampling=True,
+                    prior_pdf=lambda x: 2.0 * ((np.asarray(x) >= 0) & (np.asarray(x) < 0.5)))
+    s.add_parameter('y', pdf=None, left_limit=0.0, right_limit=1.0, adaptive_sampling=True,
+                    prior_pdf=lambda x: 1.0 * ((np.asarray(x) >= 0) & (np.asarray(x) <= 1)))
+    out = s.integrate_log(lambda *xs: np.zeros(len(np.atleast_1d(xs[0]))), 'x', 'y', nmax=n + 2,
+                          neff=1e9, n=n, no_protect_names=True, verbose=False, dict_return=True)
+    n_ret = out[3]['n_live_final']
+    n_drawn = s.last_stopping_statistics['total_draws']
+    assert n_drawn > n + 1, 'the run must draw a second cycle'
+    rel_var = np.exp(out[1] - 2 * out[0])
+    assert rel_var == pytest.approx(1.0 / n_ret - 1.0 / n_drawn, rel=1e-6)
