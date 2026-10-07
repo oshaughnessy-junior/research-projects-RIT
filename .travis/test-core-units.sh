@@ -96,6 +96,7 @@ FILES=(
   "$C/test/integrators/test_gmm_adaptive.py"
   "$C/test/integrators/test_gmm_sample_row_independence.py"
   "$C/test/integrators/test_integrate_log_neff_negative_lnZ.py"
+  "$C/test/integrators/test_gmm_sample_matches_score.py"
   "$C/test/integrators/test_mcsamplerGPU_default_adapt.py"
   "$C/test/integrators/test_portfolio_gmm_member_trains.py"
   "$C/test/integrators/test_portfolio_restrict_and_warm.py"
@@ -426,7 +427,13 @@ done
 # test_convert_coordinates_row_independence.py adds 9 passing tests and no skips -> 797/778.
 # test_gmm_sample_row_independence.py adds 10 passing tests and no skips -> 807/788.
 # test_integrate_log_neff_negative_lnZ.py adds 7 passing tests and no skips -> 814/795.
-EXPECTED_TESTS=814
+# test_gmm_sample_matches_score.py adds 17 passing tests and no skips (its device legs are
+# collected only where a device is usable).  RE-MEASURED with it on rift_O4d dd1ea9511
+# (ldas-pcdev2, IGWN python, cupy importable, CUDA_VISIBLE_DEVICES='') 2026-10-07: junit 843
+# collected / 823 passed / 20 skipped incl. 3 subtests -> 840/820.  The 20th skip is the
+# cupy-importable leg of test_eos_posterior_tempering_kwarg, absent on the CI runner.  The
+# previous floors (814/795) sat 9 below the tree before this file was added.
+EXPECTED_TESTS=840
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -442,7 +449,8 @@ EXPECTED_TESTS=814
 # test_assign_param_spin_order.py adds 35 tests and no skips.
 # test_convert_coordinates_row_independence.py adds 9 tests and no skips.
 # test_gmm_sample_row_independence.py adds 10 tests and no skips.
-EXPECTED_PASSED=795
+# test_gmm_sample_matches_score.py adds 17 tests and no skips; re-measured 840/820 (above).
+EXPECTED_PASSED=820
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 MAX_SKIPPED=19
 

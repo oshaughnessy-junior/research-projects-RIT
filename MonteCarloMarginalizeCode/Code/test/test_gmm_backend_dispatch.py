@@ -50,6 +50,7 @@ import types
 
 import numpy as np
 import pytest
+import scipy.special
 
 from RIFT.integrators import gaussian_mixture_model as GMM
 
@@ -334,6 +335,8 @@ def on_a_device(monkeypatch, request):
     # backend, or a revert fails with AttributeError and scores as caught for the wrong
     # reason.
     monkeypatch.setattr(GMM, 'cupy', _DEVICE_XPY, raising=False)
+    # sample() draws on the device through the device's special-function module (ndtri)
+    monkeypatch.setattr(GMM, 'xpy_special_default', _DeviceXpy(scipy.special))
     monkeypatch.setattr(GMM, 'identity_convert', _host)
     monkeypatch.setattr(GMM, 'identity_convert_togpu',
                         lambda x: x if isinstance(x, _DeviceLike) else _DeviceLike(x))
