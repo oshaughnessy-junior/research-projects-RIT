@@ -81,8 +81,8 @@ def _normal_interval(a, b):
     ndtr saturates at exactly 1.0 beyond about 8.3, so differencing the two CDFs of an
     interval deep in the POSITIVE tail -- a component mean far below the box -- gives
     exactly zero.  score() then divides that component's pdf by the 1e-300 floor and
-    overestimates its density by hundreds of orders of magnitude, while sample() draws the
-    same component happily (it reflects, see _whitened_box).  Phi(b) - Phi(a) ==
+    overestimates its density by hundreds of orders of magnitude, while sample() can still
+    draw the same component (it reflects, see _whitened_box).  Phi(b) - Phi(a) ==
     Phi(-a) - Phi(-b), and in the lower tail ndtr -- and ndtri, used for the conditional
     draw -- keep full relative accuracy down to ~1e-300, so evaluate reflected there.'''
     from scipy.special import ndtr
