@@ -851,15 +851,7 @@ class MCSampler(SamplerOutputMixin, object):
         current_log_aggregate = None
         eff_samp = 0  # ratio of max weight to sum of weights
         maxlnL = -np.inf  # max lnL
-        # NOTE this is a LOG-scale running max (of log_integrand), initialized with a
-        # LINEAR-weight idiom: on a log scale 0 asserts max w >= 1, so eff_samp = sum(w)/max(w)
-        # is floored below its true value whenever the largest weight is < 1 -- it under-reports
-        # n_eff by 1/max w and keeps drawing to nmax.  Real GW lnL is large and positive so the
-        # floor does not bite in production, and -inf (what integrate(), the linear sibling,
-        # correctly uses) is DELIBERATELY not adopted here: it would move n_eff, hence run
-        # lengths, on every log-space backend, and the same initializer is copied verbatim in
-        # mcsamplerPortfolio and mcsamplerNFlow.  Change all of them together or none.
-        maxval=0   # max weight
+        maxval = -np.inf   # running max of the LOG weight; 0 would floor it at w=1
         outvals=None  # define in top level scope
         self.ntotal = 0
         # per-chunk lnZ record: each chunk used a (different) adapted proposal, so the
