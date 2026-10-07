@@ -434,6 +434,9 @@ done
 # collected / 823 passed / 20 skipped incl. 3 subtests -> 840/820.  The 20th skip is the
 # cupy-importable leg of test_eos_posterior_tempering_kwarg, absent on the CI runner.  The
 # previous floors (814/795) sat 9 below the tree before this file was added.
+# test_gmm_score_deterministic.py adds 19 passing tests and no skips.  RE-MEASURED on 9b0e4085a
+# (ldas-pcdev2, IGWN python, cupy importable, CUDA_VISIBLE_DEVICES='') 2026-10-07: 862 collected /
+# 842 passed / 20 skipped incl. 3 subtests -> 859/839; the 20 skips are the same as above.
 EXPECTED_TESTS=859
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
@@ -451,6 +454,7 @@ EXPECTED_TESTS=859
 # test_convert_coordinates_row_independence.py adds 9 tests and no skips.
 # test_gmm_sample_row_independence.py adds 10 tests and no skips.
 # test_gmm_sample_matches_score.py adds 17 tests and no skips; re-measured 840/820 (above).
+# test_gmm_score_deterministic.py adds 19 tests and no skips; re-measured 859/839 (above).
 EXPECTED_PASSED=839
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 MAX_SKIPPED=19
