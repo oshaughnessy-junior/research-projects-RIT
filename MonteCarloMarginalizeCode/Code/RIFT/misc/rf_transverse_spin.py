@@ -185,7 +185,7 @@ def revalidate_stage(line):
 
     A rewrite that drops the native basis (e.g. delta_mc -> eta) would otherwise
     fail in every CIP job of that stage, after ILE has run. Fail at build time
-    instead, in auto and physics3 alike (as on rift_O4d).
+    instead. Kept for parity with rift_O4c; this pipeline checks stage_problem.
     """
     import shlex
     tokens=shlex.split(line)
