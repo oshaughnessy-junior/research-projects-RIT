@@ -2879,6 +2879,8 @@ def adaptive_volume_sample(like, d_min, d_max, sampler_method="AV",
         allocation_kwargs = ({"portfolio_adaptive_alloc": True}
                              if portfolio_adaptive_alloc else {})
         if dilate_layers:
+            if int(dilate_layers) < 0:
+                raise ValueError("dilate_layers must be >= 0")
             if method != "AV":
                 raise ValueError("dilate_layers acts only on standalone AV, not %r" % method)
             allocation_kwargs["dilate_layers"] = int(dilate_layers)

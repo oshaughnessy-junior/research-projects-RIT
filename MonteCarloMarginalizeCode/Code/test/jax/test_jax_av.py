@@ -499,6 +499,14 @@ def test_driver_rejects_dilate_layers_outside_standalone_av(monkeypatch, capsys)
             driver.check_critical_and_report(invalid, invalid_parser)
         assert "--sampler-av-dilate-layers is inert unless --sampler-method AV" in capsys.readouterr().err
 
+    # unset, it must not appear in the ignored-option report
+    for args in (["--sampler-method", "portfolio"], []):
+        unset_parser = driver.build_parser()
+        unset, _ = unset_parser.parse_args(args)
+        driver.check_critical_and_report(unset, unset_parser)
+        out = capsys.readouterr()
+        assert "--sampler-av-dilate-layers" not in out.out + out.err
+
 
 def test_driver_accepts_pseudo_cosmo_for_av_backend(monkeypatch):
     monkeypatch.delenv("JAX_ILE_DISTMARG_GH", raising=False)
