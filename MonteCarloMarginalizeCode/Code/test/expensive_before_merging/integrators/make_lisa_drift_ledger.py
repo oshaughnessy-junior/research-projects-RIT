@@ -161,6 +161,9 @@ RULES = [
      "for it is if anything stronger there: the LISA extrinsic axes are no more "
      "isotropic than the ground-based ones, and a sky pair that localizes tightly "
      "while distance stays broad is the exact case this exists for."),
+    (r"^OPTION:--sampler-av-dilate-layers$", "PORT",
+     "AV axis-neighbour bin dilation each cycle. Pure AV plumbing (a sampler attribute "
+     "set at construction), so it applies to LISA as it does to the ground-based driver."),
     (r"^OPTION:--sampler-(save|load)-state$", "PORTED",
      "AV live-volume state serialization. AV is wired in LISA; the state is the "
      "sampler's own internal grid, so it carries no LIGO-specific convention."),
