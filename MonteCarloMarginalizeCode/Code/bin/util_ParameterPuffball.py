@@ -255,17 +255,6 @@ for indx, name  in enumerate(coord_names):
         print(" undoing log transform for ", name)
         X_out[:,indx] = np.exp(X_out[:,indx])
 
-# Box-bounded transverse-spin coordinates (added by --internal-puff-transverse): reflect excursions
-# back into the box rather than discarding them, so the puff keeps its points near spin boundaries.
-reflect_ranges = {'s1z_bar': (-1., 1.), 's2z_bar': (-1., 1.), 'chi1_perp_u': (0., 1.), 'chi2_perp_u': (0., 1.)}
-def reflect_into(x, lo, hi):
-    width = hi - lo
-    y = np.mod(x - lo, 2*width)
-    return lo + width - np.abs(y - width)
-for indx, name in enumerate(coord_names):
-    if name in reflect_ranges:
-        X_out[:,indx] = reflect_into(X_out[:,indx], *reflect_ranges[name])
-
 
 # Sanity check parameters
 #for indx in np.arange(len(coord_names)):

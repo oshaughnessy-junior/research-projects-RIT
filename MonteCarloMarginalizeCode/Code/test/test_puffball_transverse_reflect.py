@@ -1,4 +1,4 @@
-"""util_ParameterPuffball.py with the --internal-puff-transverse coordinates.
+"""util_ParameterPuffball.py with the arguments pseudo_pipe passes for --internal-puff-transverse.
 
 Puffing s1z_bar, s2z_bar, chi1_perp_u, chi2_perp_u, phi1, phi2 must reflect excursions back
 into the spin box (not discard them), wrap only the azimuths, and never write non-finite spins.
@@ -12,8 +12,19 @@ lal = pytest.importorskip('lal')
 CODE = Path(__file__).resolve().parents[1]
 from RIFT import lalsimutils  # noqa: E402
 
-TRANSVERSE = ['--parameter', 'mc', '--parameter', 'delta_mc', '--parameter', 's1z_bar', '--parameter', 's2z_bar',
-              '--parameter', 'phi1', '--parameter', 'phi2', '--parameter', 'chi1_perp_u', '--parameter', 'chi2_perp_u']
+def _pipeline_puff_args():
+    """Puff arguments exactly as util_RIFT_pseudo_pipe.py builds them for --internal-puff-transverse."""
+    import ast, shlex, types
+    source = (CODE / 'bin/util_RIFT_pseudo_pipe.py').read_text()
+    block = next(n for n in ast.parse(source).body
+                 if isinstance(n, ast.If) and ast.unparse(n.test) == 'opts.internal_puff_transverse')
+    ns = {'opts': types.SimpleNamespace(internal_puff_transverse=True),
+          'puff_params': '--parameter mc --parameter delta_mc --parameter chieff_aligned'}
+    exec(compile(ast.Module(body=[block], type_ignores=[]), 'pseudo_pipe_puff_transverse', 'exec'), ns)
+    return shlex.split(ns['puff_params'])
+
+
+TRANSVERSE = _pipeline_puff_args()
 
 
 def _grid(path, n=400, seed=3):
@@ -58,6 +69,7 @@ def test_transverse_puff_reflects_and_keeps_points(tmp_path):
 def test_only_azimuths_are_wrapped(tmp_path):
     # The periodic wrap once applied np.mod(2 pi) to the whole row, folding every coordinate assigned
     # after an azimuth. Put mc (~29) last so that bug would fold it to ~4.
-    _, out = _puff(tmp_path, TRANSVERSE[4:] + TRANSVERSE[:4])
+    i = TRANSVERSE.index('mc') - 1
+    _, out = _puff(tmp_path, TRANSVERSE[:i] + TRANSVERSE[i+2:] + TRANSVERSE[i:i+2])
     mc = np.array([P.extract_param('mc') / lal.MSUN_SI for P in out])
     assert np.median(mc) > 20, np.median(mc)
