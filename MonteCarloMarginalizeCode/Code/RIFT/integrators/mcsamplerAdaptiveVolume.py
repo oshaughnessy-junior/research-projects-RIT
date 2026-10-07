@@ -1331,6 +1331,8 @@ class MCSampler(SamplerOutputMixin, object):
             # take log if we are NOT using lnL
             if cupy_ok:
               if not(isinstance(lnL,cupy.ndarray)):
+                if getattr(lnL, 'dtype', None) == RiftFloat:
+                    lnL = lnL.astype(np.float64)   # cupy has no extended precision (CIP's fit returns RiftFloat)
                 lnL = identity_convert_togpu(lnL)  # send to GPU, if not already there
 
 
@@ -2022,6 +2024,8 @@ class MCSampler(SamplerOutputMixin, object):
             # take log if we are NOT using lnL
             if cupy_ok:
               if not(isinstance(lnL,cupy.ndarray)):
+                if getattr(lnL, 'dtype', None) == RiftFloat:
+                    lnL = lnL.astype(np.float64)   # cupy has no extended precision (CIP's fit returns RiftFloat)
                 lnL = identity_convert_togpu(lnL)  # send to GPU, if not already there
 
 
