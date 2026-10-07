@@ -38,6 +38,33 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--inj-file", help="Name of XML file")
 parser.add_argument("--inj-file-out", default="output-puffball", help="Name of XML file")
 parser.add_argument("--puff-factor", default=1,type=float)
+parser.add_argument("--force-away-quantile", default=None, type=float,
+                    help="Set the --force-away "
+                         "threshold to this QUANTILE of the measured puffed-point-to-grid "
+                         "nearest-neighbour distances, i.e. specify the TARGET REJECTION FRACTION "
+                         "directly (0.3-0.5 recommended) instead of a distance.  A bare distance "
+                         "cannot transfer: rejection goes as 1-exp(-(r/delta)^d), so the usable "
+                         "window is a factor ~2 wide in r and delta ~ sqrt(2e)[Gamma(d/2+1)/N]^(1/d) "
+                         "moves from 0.23 at d=4 to 1.01 at d=8.  It also depends on the puff shape "
+                         "(measured puffed-to-grid median: 2.385 isotropic puff-factor 2 vs 0.956 anisotropic), so "
+                         "one number means 5%% rejection for one shape and 54%% for another.  Taking a "
+                         "quantile of the ACTUAL distribution absorbs dimensionality, grid size, puff "
+                         "shape AND hard domain edges -- near a reflecting or downselected boundary "
+                         "part of the neighbour-ball lies outside the domain, so those points sit "
+                         "farther from their neighbours and are preferentially kept, which is the "
+                         "desired behaviour for edge coverage.  Overrides --force-away when set.")
+parser.add_argument("--force-away-unpuffed", action='store_true',
+                    help="Measure --force-away "
+                         "in the UNPUFFED grid covariance instead of the puffed one, so the threshold "
+                         "means 'grid-sigma from the nearest existing point' and keeps that meaning "
+                         "across puff shapes.  The previous behaviour scaled the metric with the puff "
+                         "factor, which makes 0.05 a no-op (measured: zero rejections).")
+parser.add_argument("--puff-factor-parameter", action='append', type=str,
+                    help="Per-coordinate puff "
+                         "scale as NAME:VALUE, repeatable, e.g. --puff-factor-parameter chi1_perp_u:4 "
+                         "--puff-factor-parameter mc:0.25 .  Multiplies the global --puff-factor for "
+                         "that coordinate only, via cov -> D cov D.  Lets the puff be narrow in the "
+                         "tightly-constrained directions and wide in the transverse ones.")
 parser.add_argument("--fail-if-empty", action='store_true', help="Fail if the output file is empty. Useflu diagnostic to stop runs with undesired behavior which otherwise quietly have no puff input")
 parser.add_argument("--force-away", default=0,type=float,help="If >0, uses the icov to compute a metric, and discards points which are close to existing points")
 parser.add_argument("--approx-output",default="SEOBNRv2", help="approximant to use when writing output XML files.")
@@ -199,6 +226,29 @@ if len(coord_names) >1:
     cov_in = np.cov(X.T)
     cov = cov_in*opts.puff_factor*opts.puff_factor
 
+    # ANISOTROPIC PUFF.
+    #
+    # Previously the WHOLE covariance was scaled by puff_factor^2, so buying transverse reach also
+    # buys displacement in mc/eta/s1z_bar, which is where the likelihood falls off a cliff.  Measured
+    # on S240629by arm D: puff points reach chi1_perp>bilby-p90 at 20.7% (grid: 1.0%) but sit at
+    # median Mahalanobis 6.15 from the lnL shell in (mc,eta,chi_eff), only 0.97% of them parallel-
+    # close, and P(shell | transversely out, parallel far) ~ 0.001.  The reach is delivered dead.
+    #
+    # cov -> D cov D with D = diag(s_i) lets the transverse coordinates keep (or exceed) their spread
+    # while the constrained ones are pulled in.  Scaling the covariance this way preserves the
+    # CORRELATION structure and stays positive semi-definite by construction, which the downstream
+    # icov/force-away logic relies on.
+    if opts.puff_factor_parameter:
+        s = np.ones(len(coord_names))
+        for spec in opts.puff_factor_parameter:
+            nm, _, val = spec.partition(":")
+            if nm not in coord_names:
+                raise Exception(" --puff-factor-parameter names a coordinate that is not a --parameter: "+nm)
+            s[coord_names.index(nm)] = float(val)
+        D = np.diag(s)
+        cov = D @ cov @ D
+        print(" ANISOTROPIC puff: per-parameter scales ", dict(zip(coord_names, s)))
+
     # Check for singularities
     if np.min(np.linalg.eig(cov)[0])<1e-10:
         print(" ===> WARNING: SINGULAR MATRIX: are you sure you varied this parameters? <=== ")
@@ -211,6 +261,19 @@ if len(coord_names) >1:
         cov= np.linalg.inv(icov_proposed)
 
     cov_orig = np.array(cov)  # force copy
+    # FORCE-AWAY METRIC.
+    #
+    # The previous code copied cov_orig HERE, i.e. AFTER the puff-factor and anisotropy scaling, so
+    # --force-away measures distance in units of the PUFFED cloud.  That is backwards: shrinking the
+    # puff makes the metric tighter and rejects FEWER points, and the threshold's meaning changes
+    # every time the puff shape changes.  Measured on the real grid, --force-away 0.05 rejects
+    # exactly ZERO points in every configuration tried -- it is a no-op, not a filter.
+    #
+    # cov_unpuffed is the raw grid covariance, so a threshold of 1.0 means "one grid-sigma from the
+    # nearest existing point" and keeps that meaning across puff shapes.  Because the collapsed core
+    # is dense and the transverse tail is sparse, rejecting on this metric preferentially discards
+    # core-duplicating points and keeps tail points -- which is what force-away was for.
+    cov_unpuffed = np.array(cov_in)
     # Remove targeted covariances
     if not(corr_list is None):
       for my_pair in corr_list:
@@ -281,10 +344,34 @@ P_list = list(itertools.compress(P_list, indx_ok))  # https://stackoverflow.com/
 
 # Discard points which are 'close' to the original data set
 #   - there are MUCH faster codes eg in scipy which should do this
-if opts.force_away > 0:
-    icov= np.linalg.pinv(cov_orig)
+if opts.force_away > 0 or opts.force_away_quantile is not None:
+    _fa_cov = cov_unpuffed if opts.force_away_unpuffed else cov_orig
+    icov= np.linalg.pinv(_fa_cov)
     Y = np.min(scipy.spatial.distance.cdist(X,X_out, metric='mahalanobis',VI=icov),axis=0)
-    Y_id = Y > opts.force_away
+    _fa_thresh = opts.force_away
+    if opts.force_away_quantile is not None:
+        if not (0.0 < opts.force_away_quantile < 1.0):
+            raise Exception(" --force-away-quantile must be in (0,1)")
+        _fa_thresh = float(np.quantile(Y, opts.force_away_quantile))
+        print(" force-away QUANTILE mode: target rejection {:.0%} -> threshold {:.4f} grid-sigma"
+              " (d={}, N_grid={}, puffed-to-grid NN median {:.3f})".format(
+                  opts.force_away_quantile, _fa_thresh, len(coord_names), len(X), float(np.median(Y))))
+    Y_id = Y > _fa_thresh
+    if opts.force_away_unpuffed:
+        # report where the rejections land, so it is visible whether the filter is doing the job it
+        # exists for (killing core duplicates) or just thinning everything uniformly
+        _cp = None
+        try:
+            _i = coord_names.index('chi1_perp_u')
+            _cp = X_out[:, _i]
+        except ValueError:
+            pass
+        print(" force-away metric: UNPUFFED grid covariance; threshold {} grid-sigma".format(_fa_thresh))
+        print(" force-away distance percentiles (5/25/50/75/95): {}".format(
+            np.round(np.percentile(Y, [5, 25, 50, 75, 95]), 3)))
+        if _cp is not None and np.sum(~Y_id) > 0:
+            print(" force-away rejected: n={} median chi1_perp_u {:.3f} vs kept median {:.3f}".format(
+                int(np.sum(~Y_id)), float(np.median(_cp[~Y_id])), float(np.median(_cp[Y_id])) if np.sum(Y_id) else float('nan')))
     print(" Puffball distance rejection size change " , np.sum(Y_id), len(Y_id))
     X_out = X_out[Y_id]
     P_list = list(itertools.compress(P_list, Y_id))  # https://stackoverflow.com/questions/18665873/filtering-a-list-based-on-a-list-of-booleans
