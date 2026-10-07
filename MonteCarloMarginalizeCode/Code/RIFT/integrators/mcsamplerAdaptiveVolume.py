@@ -857,16 +857,45 @@ def _rows_in_bins(idx, bins):
     return ok & np.isin(inv[len(bins):], inv[:len(bins)])
 
 
+class _BinSet(object):
+    """Occupied bins of one grid, stored as sorted int64 keys (rows only if keys would overflow)."""
+
+    def __init__(self, bins, n_bins=None):
+        bins = np.asarray(bins).astype(np.int64)
+        self.n_bins = len(bins) if n_bins is None else int(n_bins)
+        self.shape = bins.max(axis=0) + 1 if len(bins) else np.ones(bins.shape[1], dtype=np.int64)
+        self.keys = self.rows = None
+        if bins.shape[1] == 0:
+            return
+        if np.prod([float(v) for v in self.shape]) < 2.0**62:
+            self.keys = np.sort(np.ravel_multi_index(tuple(bins.T), self.shape))
+        else:
+            self.rows = bins
+
+    def contains(self, idx):
+        if len(self.shape) == 0:          # every dimension pinned: one bin covers everything
+            return np.full(len(idx), self.n_bins > 0)
+        if self.rows is not None:
+            return _rows_in_bins(idx, self.rows)
+        if self.keys is None or len(self.keys) == 0 or len(idx) == 0:
+            return np.zeros(len(idx), dtype=bool)
+        ok = np.all((idx >= 0) & (idx < self.shape), axis=1)
+        k = np.ravel_multi_index(tuple(np.where(ok[:, None], idx, 0).T), self.shape)
+        pos = np.minimum(np.searchsorted(self.keys, k), len(self.keys) - 1)
+        return ok & (self.keys[pos] == k)
+
+
 def log_retained_density(X, origin, grids, box_lo, dx0, pinned_dims=()):
     """Per-point log density of the retained set, for the deterministic-mixture estimator.
 
-    grids[k] = (dx, binunique, n_drawn) is the proposal integrate_log drew cycle k from:
-    uniform over the occupied bins, density 1/|B_k|.  The pooled draws come from the
-    mixture sum_k n_k 1[x in B_k]/|B_k|; dividing by the retained count gives a density
-    for which logsumexp(lnL + ln p - ln p_s) - ln(n_retained) is the balance-heuristic
-    estimate (1/N) sum L p / q_mix.  origin[i] is the cycle that drew point i, which is a
-    member of its own grid by construction (guards rounding at a bin's upper edge).
-    Pinned dimensions are not drawn from the bins, so they enter with their full width.
+    grids[k] = (dx, bins, n_drawn) is the proposal integrate_log drew cycle k from: uniform
+    over the occupied bins (an (M, ndim) array, or a _BinSet over the non-pinned dims),
+    density 1/|B_k|.  The pooled draws come from the mixture sum_k n_k 1[x in B_k]/|B_k|;
+    dividing by the retained count gives a density for which
+    logsumexp(lnL + ln p - ln p_s) - ln(n_retained) is the balance-heuristic estimate
+    (1/N) sum L p / q_mix.  origin[i] is the cycle that drew point i, which is a member of
+    its own grid by construction (guards rounding at a bin's upper edge).  Pinned
+    dimensions are not drawn from the bins, so they enter with their full width.
     """
     X = np.asarray(X, dtype=float)
     origin = np.asarray(origin, dtype=int)
@@ -879,10 +908,12 @@ def log_retained_density(X, origin, grids, box_lo, dx0, pinned_dims=()):
     acc = np.full(len(X), -np.inf)
     for k, (dx, bins, n_k) in enumerate(grids):
         dx = np.asarray(dx, dtype=float)
-        bins = np.asarray(bins).astype(np.int64)
-        log_vol = np.log(len(bins)) + np.sum(np.log(dx[keep])) + log_dx0_pinned
+        if not isinstance(bins, _BinSet):
+            bins = np.asarray(bins).astype(np.int64)
+            bins = _BinSet(bins[:, keep], n_bins=len(bins))
+        log_vol = np.log(bins.n_bins) + np.sum(np.log(dx[keep])) + log_dx0_pinned
         idx = np.floor((X[:, keep] - box_lo[keep]) / dx[keep]).astype(np.int64)
-        member = _rows_in_bins(idx, bins[:, keep]) | (origin == k)
+        member = bins.contains(idx) | (origin == k)
         acc[member] = np.logaddexp(acc[member], np.log(n_k) - log_vol)
     return acc - np.log(len(X))
 
@@ -2014,9 +2045,9 @@ class MCSampler(SamplerOutputMixin, object):
                     "?" if n_warm_seed_rank is None else n_warm_seed_rank,
                     "?" if n_warm_seed_dim is None else n_warm_seed_dim))
 
-        var_lnV = 0.0  # accumulated variance of ln(V): V is a stochastic product of per-cycle
-                       # binomial survival fractions, and Z ~ V*mean(w), so Var(lnV) is a
-                       # component of the lnZ error the weight variance is structurally blind to
+        var_lnV = 0.0  # accumulated variance of ln(V), V a stochastic product of per-cycle
+                       # binomial survival fractions; reported as sigma_lnV.  V sizes the bins
+                       # only; it does not enter lnZ (see log_retained_density)
         if cupy_ok:
           allx = identity_convert_togpu(allx)
           allloglkl = identity_convert_togpu(allloglkl)
@@ -2028,6 +2059,8 @@ class MCSampler(SamplerOutputMixin, object):
         nrec = 0
         allcyc = np.zeros(0, dtype=int)   # index into draw_grids of the cycle that drew each retained point
         draw_grids = []                   # (dx, binunique, n_drawn) of every proposal drawn from
+        _pinned = [self.params_ordered.index(p) for p in self.params_pinned_vals]
+        _keep_dims = np.setdiff1d(np.arange(ndim), _pinned)   # bins of pinned dims are not stored
         allloglkl_prev, allp_prev, allx_prev, allcyc_prev = allloglkl, allp, allx, allcyc
         loglkl_thr_prev = loglkl_thr
 
@@ -2036,7 +2069,8 @@ class MCSampler(SamplerOutputMixin, object):
             # Draw samples. Note state variables binunique, ninbin -- so we can re-use the sampler later outside the loop
             rv, log_joint_p_prior = self.draw_simple()  # Beware reversed order of rv
             ntotal_true += len(rv)
-            draw_grids.append((np.array(identity_convert(self.dx)), np.array(identity_convert(self.binunique)), len(rv)))
+            _bu = np.asarray(identity_convert(self.binunique))
+            draw_grids.append((np.array(identity_convert(self.dx)), _BinSet(_bu[:, _keep_dims], n_bins=len(_bu)), len(rv)))
             if cupy_ok:
               rv = identity_convert_togpu(rv) # send random numbers to GPU : ugh
               log_joint_p_prior = identity_convert_togpu(log_joint_p_prior)    # send to GPU if required. Don't waste memory reassignment otherwise
@@ -2093,7 +2127,7 @@ class MCSampler(SamplerOutputMixin, object):
             # detect LEADING empty chunks.  Once a single sample has survived, a later chunk
             # contributing nothing would sail past such a test and re-threshold the recycled
             # live set -- shedding a point and shrinking V every cycle on no new evidence at
-            # all, which biases lnZ (Z ~ V*mean(w)).  Measured before this guard: 20 live
+            # all, which contracts the grid on no evidence.  Measured before this guard: 20 live
             # points and ln V decreasing monotonically -0.05, -0.11, -0.16, -0.22, ... over
             # chunks that each returned zero finite samples.
             n_new = len(idxsel[0])
@@ -2241,7 +2275,6 @@ class MCSampler(SamplerOutputMixin, object):
         # biased high whenever a cycle's occupied bins miss part of the previous live
         # region, because the missed part is its low-likelihood rim; V now only sizes bins.
         # Result is put on allloglkl's backend so the arithmetic below stays on one backend.
-        _pinned = [self.params_ordered.index(p) for p in self.params_pinned_vals]
         _log_ps = log_retained_density(identity_convert(allx), allcyc, draw_grids,
                                        self.my_ranges.T[0], self.dx0, pinned_dims=_pinned)
         self._rvs['log_joint_s_prior'] = xpy_here.ones_like(allloglkl)*(identity_convert_togpu(_log_ps) if cupy_ok else _log_ps)

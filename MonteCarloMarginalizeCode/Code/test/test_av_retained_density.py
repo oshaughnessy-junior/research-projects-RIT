@@ -118,3 +118,16 @@ def test_density_pinned_dimension_uses_full_width():
     out = log_retained_density(X, np.array([0]), grids, np.zeros(2), np.array([1.0, 1.0]),
                                pinned_dims=[1])
     assert np.isclose(out[0], np.log(4 / 0.5))
+
+
+def test_bin_set_matches_brute_force_on_both_storage_paths():
+    """Sorted-key storage, and the row fallback used when keys would overflow int64."""
+    from RIFT.integrators.mcsamplerAdaptiveVolume import _BinSet
+    rng = np.random.default_rng(3)
+    for scale in (1, 2**40):
+        bins = rng.integers(0, 6, size=(50, 3)) * scale
+        idx = np.vstack([bins[:20], rng.integers(-1, 7, size=(200, 3)) * scale])
+        bs = _BinSet(bins)
+        assert (bs.rows is not None) == (scale > 1)
+        want = np.array([tuple(r) in set(map(tuple, bins.tolist())) for r in idx.tolist()])
+        np.testing.assert_array_equal(bs.contains(idx), want)

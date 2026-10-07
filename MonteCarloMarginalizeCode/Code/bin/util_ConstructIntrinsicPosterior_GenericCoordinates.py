@@ -1317,15 +1317,14 @@ if opts.aligned_prior == 'alignedspin-zprior':
     # RANGE: left at its [-1,1] default, the density is identically zero over the
     # |s1z_bar| > chi_max shell -- 20% of the sampled range at --chi-max 0.8, 50% at 0.5.
     #
-    # This is NOT only a wasted-draw problem.  Those draws have log(prior) = -inf and are
-    # dropped by the isfinite screen in mcsamplerAdaptiveVolume.integrate_log, which
-    # divides by the RETAINED count while log_joint_s_prior still names the full box, so
+    # This was NOT only a wasted-draw problem.  Those draws have log(prior) = -inf, and
+    # integrate_log's former scalar-V normalization left them out of the denominator, so
     # the evidence came out inflated by (1/chi_max)^2 -- one factor per z coordinate.
     # Measured on a real composite, lnZ moved about 0.45 nats at --chi-max 0.8 and 1.4 at
     # 0.5,
     # and lnZ grew as chi-max SHRANK, which removing prior support cannot do.  Giving
-    # these two the same box as s1z/s2z removes that; it does not fix the AV
-    # normalization, which will bite any future prior narrower than its range.
+    # these two the same box as s1z/s2z removes the wasted draws.  integrate_log now
+    # counts every draw (log_retained_density), so a narrower prior no longer inflates lnZ.
     # The posterior itself does not move: the density is the same function on the
     # retained region, which downselect_dict['s1z'] already bounded.
     prior_map["s1z_bar"] = s_component_zprior
