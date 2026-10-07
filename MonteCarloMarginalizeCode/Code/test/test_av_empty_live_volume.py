@@ -569,13 +569,24 @@ class _FiniteFirstChunkOnly(object):
 
 
 def _run_first_chunk_only(nmax, n_chunk=5000, return_sampler=False):
+    # Both runs must draw the same first chunk.  On a cupy backend the draws come from cupy's
+    # global RNG, which np.random.seed does not touch: seed a fresh one, restore it after.
     np.random.seed(7)
     s = _sampler(n_chunk)
     fn = _FiniteFirstChunkOnly()
-    res = s.integrate_log(fn, *NAMES, nmax=nmax, neff=8, n=n_chunk,
-                          no_protect_names=True, verbose=False,
-                          igrand_fairdraw_samples=True,
-                          igrand_fairdraw_samples_max=50)
+    prev = None
+    if mcsamplerAV.cupy_ok:
+        import cupy
+        prev = cupy.random.get_random_state()
+        cupy.random.set_random_state(cupy.random.RandomState(7))
+    try:
+        res = s.integrate_log(fn, *NAMES, nmax=nmax, neff=8, n=n_chunk,
+                              no_protect_names=True, verbose=False,
+                              igrand_fairdraw_samples=True,
+                              igrand_fairdraw_samples_max=50)
+    finally:
+        if prev is not None:
+            cupy.random.set_random_state(prev)
     if return_sampler:
         return res, fn.calls, s
     return res, fn.calls
