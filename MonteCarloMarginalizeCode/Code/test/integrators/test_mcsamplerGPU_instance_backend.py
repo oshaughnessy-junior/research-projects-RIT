@@ -189,6 +189,22 @@ def test_no_signature_binds_the_import_time_backend():
     assert not bad, bad
 
 
+def test_prior_helpers_do_not_read_the_import_time_backend():
+    """The signature pin above misses `xpy = xpy or xpy_default` in a body, or a lambda that
+    reads xpy_default.  No reference at all inside the helpers."""
+    import ast
+    import inspect
+    names = {h[0] for h in HELPERS} | {"ret_uniform_samp_vector_alt"}
+    tree = ast.parse(inspect.getsource(mcsamplerGPU))
+    bad = []
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name in names:
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Name) and sub.id == 'xpy_default':
+                    bad.append("%s line %d" % (node.name, sub.lineno))
+    assert not bad, bad
+
+
 HELPERS = [("uniform_samp_phase", ()), ("uniform_samp_psi", ()), ("uniform_samp_theta", ()),
            ("uniform_samp_dec", ()), ("cos_samp", ()), ("dec_samp", ()),
            ("cos_samp_cdf_inv_vector", ()), ("dec_samp_cdf_inv_vector", ()),

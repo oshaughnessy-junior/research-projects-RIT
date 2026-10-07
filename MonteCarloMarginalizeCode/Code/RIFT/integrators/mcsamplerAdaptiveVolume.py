@@ -38,9 +38,9 @@ def _av_weight_statistics_from_log(log_weights):
 
 @functools.lru_cache(maxsize=None)
 def _prior_pdf_accepts_xpy(fn):
-    """True if a prior_pdf callable takes an `xpy` kwarg.  Many of the mcsamplerGPU prior
-    helpers default xpy=cupy, so evaluating them on the host CPU copy (as prior_prod does)
-    would feed a numpy array to cupy and raise; we pass xpy=numpy to those that accept it."""
+    """True if a prior_pdf callable takes an `xpy` kwarg.  prior_prod passes xpy=numpy to
+    those that accept it, so a prior that binds a device backend still evaluates on the
+    host CPU copy."""
     try:
         return 'xpy' in inspect.signature(fn).parameters
     except (TypeError, ValueError):
@@ -1013,8 +1013,8 @@ class MCSampler(SamplerOutputMixin, object):
         for param in self.params_ordered:
             fn = self.prior_pdf[param]
             xc = x_cpu[:, indx]
-            # Force host evaluation: several mcsamplerGPU prior helpers default xpy=cupy, which
-            # would raise on the numpy host copy when cupy is importable (e.g. GPU container runs).
+            # Force host evaluation: a prior_pdf may bind a device backend, which would raise on
+            # the numpy host copy when cupy is importable (e.g. GPU container runs).
             val = fn(xc, xpy=numpy) if _prior_pdf_accepts_xpy(fn) else fn(xc)
             p_out *= identity_convert_togpu(val)
             indx += 1
