@@ -292,8 +292,35 @@ class estimator:
             p_weights = self.xpy.ones(n)
             w_sum = 1.0 * n
         p_weights /= w_sum
-        self.means = sample_array[self.xpy.random.choice(n, self.k, p=p_weights.astype(sample_array.dtype)), :]
-        self.covariances = [self.xpy.identity(self.d)] * self.k
+        xpy = self.xpy
+        # Weighted k-means++ seeding with covariances at the weighted cloud's scale shrunk by
+        # k^(-2/d).  The legacy init (independent weighted draws for the means, IDENTITY
+        # covariances -- std 1, half the normalized box) gave every component near-equal
+        # responsibilities, so EM sat on the symmetric saddle and returned one broad blob:
+        # measured 0/40 refits localizing two 1-D modes at +-0.5 (widths 0.06/0.18), vs 40/40
+        # with this init.
+        mu = xpy.sum(p_weights[:, None] * sample_array, axis=0)
+        diff = sample_array - mu
+        cov0 = xpy.dot((p_weights[:, None] * diff).T, diff)
+        ess = 1.0 / xpy.sum(p_weights**2)
+        if bool(xpy.all(xpy.isfinite(cov0))) and bool(xpy.trace(cov0) > 0) and bool(ess >= self.d + 1):
+            cov0 = self._near_psd(cov0)
+        else:
+            cov0 = xpy.identity(self.d)
+        cov0_inv = xpy.linalg.inv(cov0)
+        p = p_weights.astype(sample_array.dtype)
+        idx = [xpy.random.choice(n, 1, p=p)]   # index arrays stay on the backend
+        d2 = xpy.full(n, xpy.inf)
+        for _ in range(1, self.k):
+            dx = sample_array - sample_array[idx[-1]]
+            d2 = xpy.minimum(d2, xpy.sum(xpy.dot(dx, cov0_inv) * dx, axis=1))
+            p_pp = p_weights * d2
+            s_pp = xpy.sum(p_pp)
+            # all weight on already-chosen points: fall back to plain weighted draws
+            p_next = (p_pp / s_pp) if bool(s_pp > 0) and bool(xpy.isfinite(s_pp)) else p_weights
+            idx.append(xpy.random.choice(n, 1, p=p_next.astype(sample_array.dtype)))
+        self.means = sample_array[xpy.concatenate(idx), :]
+        self.covariances = [cov0 * self.k**(-2.0/self.d)] * self.k
         self.weights = self.xpy.ones(self.k) / self.k
         self.adapt = [True] * self.k
 
@@ -329,6 +356,14 @@ class estimator:
         self.p_nk += log_sample_weights[:,self.xpy.newaxis]  - ls_sum
 
         self.log_prob = self.xpy.sum(p_xn + log_sample_weights)
+        # The quantity EM actually maximizes: the WEIGHTED mean log-density.  self.log_prob
+        # above adds the (constant) log weights to the UNWEIGHTED sum of log q(x_n), so its
+        # change tracks how well the mixture fits the proposal draws, not the weighted
+        # target.  Converging on it stopped every refit after ~3 iterations at one broad
+        # blob (measured: separated 1-D modes at +-0.5 never split).
+        w_norm = self.xpy.exp(log_sample_weights - ls_sum)
+        w_norm = self.xpy.where(self.xpy.isfinite(w_norm), w_norm, 0.0)
+        self.weighted_log_prob = float(self.xpy.sum(w_norm * p_xn))
 
     def _m_step(self, n, sample_array):
         '''
@@ -379,10 +414,11 @@ class estimator:
 
     def _tol(self, n):
         '''
-        Scale tolerance with number of dimensions, number of components, and
-        number of samples
+        Convergence tolerance on the change of the weighted MEAN log-density per EM
+        iteration (see _e_step: weighted_log_prob); scales with dimension and component
+        count, and not with n because the monitored quantity is already a mean.
         '''
-        return (self.d * self.k * n) * 10e-4
+        return 1e-5 * self.d * self.k
 
     def _near_psd(self, x):
         '''
@@ -401,10 +437,10 @@ class estimator:
         n, self.d = sample_array.shape
         self._initialize(n, sample_array, log_sample_weights)
         prev_log_prob = 0
-        self.log_prob = float('inf')
+        self.weighted_log_prob = float('inf')
         count = 0
-        while abs(self.log_prob - prev_log_prob) > self._tol(n) and count < self.max_iters:
-            prev_log_prob = self.log_prob
+        while abs(self.weighted_log_prob - prev_log_prob) > self._tol(n) and count < self.max_iters:
+            prev_log_prob = self.weighted_log_prob
             self._e_step(n, sample_array, log_sample_weights)
             self._m_step(n, sample_array)
             count += 1
@@ -626,7 +662,14 @@ class gmm:
         # density to the 1e-300 floor in score(), silently.  The conversion is this line's
         # own doing, so the guard has to live here.  test_gmm_backend_dispatch.py::
         # test_update_keeps_weights_floating_point fails if the dtype is dropped.
-        self.weights = _to_backend(xpy, np.asarray(_to_host(self.weights), dtype=float))
+        # ...and through a COPY: the loop below writes into self.weights/means/covariances
+        # element-wise, and np.asarray hands back a caller's own float array unchanged.  A seed
+        # built as `m.weights = target_weights` then had the CALLER's array rewritten on every
+        # update (measured: a test target's mixture weights drifted 0.561->0.518, so lnL
+        # re-evaluated after the run disagreed with the stored log_integrand by up to 0.23).
+        self.weights = _to_backend(xpy, np.array(_to_host(self.weights), dtype=float))
+        self.means = self.means.copy()               # list or ndarray: copy keeps the type
+        self.covariances = self.covariances.copy()
         order = self._match_components(new_model)
         for i in range(self.k):
             j = order[i]
