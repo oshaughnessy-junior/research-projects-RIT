@@ -107,6 +107,20 @@ reference. Q_a is computed per segment as for a = 0. Two conditions (C, 2026-10-
 Memory and time then scale with |a| on the low-rate arrays, not on N. Not in the first
 prototype: it refuses `--rotation-slow` until the static path passes.
 
+## Waveform-side controls (measured 2026-10-08)
+
+Two template effects are not multirate errors, and the tests control both
+(RIFT_roboto_paper PRs #220, #221):
+- RIFT's FD-branch end taper covers the last 1% of the buffer. With a 2 s post-event time it
+  reaches the merger for buffers longer than about 180 s, differently for each buffer length.
+  The tests use a 24 s post-event time on every piece; production keeps 2 s, and the fix there
+  is Richard's call.
+- XHM's internal multibanding grid depends on f_min, so calls at different f_min differ by up to
+  4e-5 in amplitude and 3e-4 rad at a fixed frequency (XPHM: order unity). The tests set
+  `PhenomXHMThresholdMband=0` and `PhenomXPHMThresholdMband=0` on every piece. This costs time.
+- On the DSWr path the low-rate template is already band-limited, so w_h has no measurable
+  effect; it is kept to match the validated recipe.
+
 ## Stages measured
 
 Per stage: elapsed time, peak RSS (`VmHWM`) and read bytes, using the existing profiling
@@ -127,7 +141,9 @@ wrapper extended to the new functions.
    `crossTermsV` to floating-point precision on identical inputs, under production flags:
    `fd_alignment_postevent_time=2` as ILE sets it, on a power-of-2 segment of at least 8 s.
    The template epochs then carry no offset on either path.
-2. The two-rate schedule meets A's pre-registered gates (`TOLERANCES.json`): D1 <= 0.1 nats,
+2. Status 2026-10-08: passed for Q (RIFT_roboto_paper PR #221: CE BNS from 10 Hz, XHM l <= 4,
+   256 Hz, D3_Q 1.1e-5 and D2_DSW 6e-8 / 1e-8 at rho = 1000). U, V still full rate.
+   The two-rate schedule meets A's pre-registered gates (`TOLERANCES.json`): D1 <= 0.1 nats,
    D3 <= 0.01, at rho = 20, 100, 300 and 1000, three noise seeds. D2 is the DSW form
    (`amendment_2026-10-08`, PR #216 `5b8e374a3`): D2_DSW = || W [ w_e (1 - LP^2)(w_h h) ] ||,
    with h the raw template, gate min(0.03, 0.1/rho_e). The prototype computes it both per mode
@@ -144,4 +160,6 @@ wrapper extended to the new functions.
 3. Measured per-point time and peak RSS are compared with B's prediction (5.0-7.3x for the
    3G CE BNS). A gap of more than 2x is a finding, not a tuning target.
 4. One end-to-end ILE run on a known injection, with the multirate path in force (log line
-   present). A run that falls back to the full-rate path does not test it.
+   present). A run that falls back to the full-rate path does not test it. Both paths use
+   per-|m| f_min and the controls above, so a production higher-mode wrap or end-taper
+   difference is not read as a multirate failure.
