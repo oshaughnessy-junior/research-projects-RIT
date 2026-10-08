@@ -697,7 +697,14 @@ class gmm:
         # density to the 1e-300 floor in score(), silently.  The conversion is this line's
         # own doing, so the guard has to live here.  test_gmm_backend_dispatch.py::
         # test_update_keeps_weights_floating_point fails if the dtype is dropped.
-        self.weights = _to_backend(xpy, np.asarray(_to_host(self.weights), dtype=float))
+        # ...and through a COPY: the loop below writes into self.weights/means/covariances
+        # element-wise, and np.asarray hands back a caller's own float array unchanged.  A seed
+        # built as `m.weights = target_weights` then had the CALLER's array rewritten on every
+        # update (measured: a test target's mixture weights drifted 0.561->0.518, so lnL
+        # re-evaluated after the run disagreed with the stored log_integrand by up to 0.23).
+        self.weights = _to_backend(xpy, np.array(_to_host(self.weights), dtype=float))
+        self.means = self.means.copy()               # list or ndarray: copy keeps the type
+        self.covariances = self.covariances.copy()
         order = self._match_components(new_model)
         for i in range(self.k):
             j = order[i]
