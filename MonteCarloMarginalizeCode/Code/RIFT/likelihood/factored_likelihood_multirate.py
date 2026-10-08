@@ -15,7 +15,7 @@ import lal
 
 import RIFT.lalsimutils as lsu
 
-__all__ = ["data_side_weighted", "overlap_series_dsw", "ComputeModeIPTimeSeriesDSW"]
+__all__ = ["data_side_weighted", "overlap_series_dsw", "ComputeModeIPTimeSeriesDSW", "ComputeModeCrossTermIPDSW"]
 
 
 def data_side_weighted(data, psd, fmin, fMax, fNyq, analyticPSD_Q=False, inv_spec_trunc_Q=False, T_spec=0.):
@@ -59,3 +59,19 @@ def ComputeModeIPTimeSeriesDSW(hlms, dbar, data_epoch, deltaT, N_shift, N_window
         ts.data.data = q
         rholms[pair] = ts
     return rholms
+
+
+def ComputeModeCrossTermIPDSW(hlmsA, hlmsB, psd, fmin, fMax, fNyq, deltaF, analyticPSD_Q=False,
+                              inv_spec_trunc_Q=False, T_spec=0., prefix="U"):
+    """One-segment counterpart of ComputeModeCrossTermIP in the time domain:
+    <a|b> = 2 dt sum_t conj(a(t)) bbar(t), bbar = IFFT(b~ weights2side), for every ordered pair.
+    The reference the multibanded U, V are judged against (acceptance test 1b)."""
+    IP = lsu.ComplexIP(fmin, fMax, fNyq, deltaF, psd, analyticPSD_Q, inv_spec_trunc_Q, T_spec)
+    tA = {k: np.array(lsu.DataInverseFourier(v).data.data) for k, v in hlmsA.items()}
+    tB = {}
+    for k, v in hlmsB.items():
+        w = lal.CreateCOMPLEX16FrequencySeries("bbar", v.epoch, v.f0, v.deltaF, lsu.lsu_HertzUnit, v.data.length)
+        w.data.data = v.data.data * IP.weights2side
+        tB[k] = np.array(lsu.DataInverseFourier(w).data.data)
+    dt = 1. / (2. * fNyq)
+    return {(a, b): 2. * dt * np.vdot(tA[a], tB[b]) for a in tA for b in tB}

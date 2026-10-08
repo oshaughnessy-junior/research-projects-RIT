@@ -45,3 +45,22 @@ def test_one_segment_dsw_matches_ComputeModeIPTimeSeries(trunc):
         a, b = ref[k].data.data, new[k].data.data
         assert abs(float(ref[k].epoch) - float(new[k].epoch)) < 1e-9
         assert np.max(np.abs(a - b)) <= 1e-12 * np.max(np.abs(a))
+
+
+@pytest.mark.parametrize("trunc", [(False, 0.), (True, 4.)])
+def test_one_segment_UV_match_ComputeModeCrossTermIP(trunc):
+    """Acceptance test 1b: U and V in the time-domain form equal ComputeModeCrossTermIP."""
+    data, psd, hlms, deltaT = _setup(*trunc)
+    P_conj = {}
+    for k, v in hlms.items():                    # conjugate modes as std_and_conj_hlmoff builds them
+        t = lsu.DataInverseFourier(v)
+        t.data.data = np.conj(t.data.data)
+        P_conj[k] = lsu.DataFourier(t)
+    for A, prefix in ((hlms, "U"), (P_conj, "V")):
+        ref = fl.ComputeModeCrossTermIP(A, hlms, psd, FMIN, FMAX, 0.5 / deltaT, 1. / SEGLEN, False,
+                                        trunc[0], trunc[1], verbose=False, prefix=prefix, batched=False)
+        new = flm.ComputeModeCrossTermIPDSW(A, hlms, psd, FMIN, FMAX, 0.5 / deltaT, 1. / SEGLEN, False,
+                                            trunc[0], trunc[1], prefix=prefix)
+        scale = max(abs(v) for v in ref.values())
+        for key in ref:
+            assert abs(ref[key] - new[key]) <= 1e-12 * scale, (prefix, key)
