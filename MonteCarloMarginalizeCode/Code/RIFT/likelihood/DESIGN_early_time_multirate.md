@@ -13,7 +13,7 @@ notes (PR #215). Base: `rift_O4d` at `615dc1bfa`. No default changes.
 |---|---|---|
 | Q, data side | `dbar = C^-1 d` once per job; early segment low-passed (200 dB FIR) and decimated to fs_e; final 100 s (400 s for CE at rho ~ 1000) at full rate | A: Verdict; Table E |
 | C^-1 | RIFT's own inner-product weights, `InnerProduct.weights2side` (`lalsimutils.py:2354`). With `--inv-spec-trunc-time 0` these are 1/S; otherwise they are the truncated weights. Either way Q matches today's | |
-| Data cut at f_max | RIFT's hard cut. Combined DSWc + multibanded U, V with the hard cut on bns_o4: D1 1.7e-4, D3 7.1e-3 at rho 1000, the same as with the roll-off (A, 2026-10-08). bns_ce and hmedge_o4 pending | A: Tables B, D; combined runs 569269890 |
+| Data cut at f_max | RIFT's hard cut. Combined DSWc + multibanded U, V at 160 dB with the hard cut, rho 1000: bns_ce D1 1.55e-3, D3 4.4e-3; bns_o4 D1 1.73e-4, D3 7.1e-3 (32 s) / 3.4e-3 (64 s); hmedge_o4 D1 1.7e-5, D3 2.4e-4; peak-time shift <= 3e-9 sigma_t. Equal to the roll-off rows (A, 2026-10-08). 200 dB rows pending | A: combined runs 569269890 (`451e2115`) |
 | Early template | RIFT's own call at `deltaT = 1/fs_e`, then cos^2 taper over the top quarter below fs_e/2 | A: Table C (emulated with IMRPhenomTHM); B: XHM pair agrees after a 30-38 Hz low-pass |
 | Late template | full rate, short buffer, per-mode f_min (below) | B: `wf_pair_hm.py` |
 | U, V | FD modes on a multibanded grid, 32 s margin | A: Table D |
