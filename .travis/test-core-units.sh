@@ -189,6 +189,10 @@ FILES=(
   "$C/test/test_lisa_ini_contract.py"
   "$C/test/test_tracer_placement_gp.py"
   "$C/test/waveforms/test_uv_symmetry.py"
+  # -- std_and_conj_hlmoff's SphHarmTimeSeries branch must key its output by (l,m), the way
+  # every caller indexes it.  A dict keyed the other way is still a populated dict: the
+  # mode sum silently loses modes rather than raising.
+  "$C/test/test_std_and_conj_hlmoff_sphharm.py"
   "$C/test/test_complex_overlap_interpolate_max.py"
   # -- coordinates: vectorized in-plane spin / ring coordinates agree with extract_param
   "$C/test/test_ring_coordinates.py"
@@ -434,7 +438,13 @@ done
 # collected / 823 passed / 20 skipped incl. 3 subtests -> 840/820.  The 20th skip is the
 # cupy-importable leg of test_eos_posterior_tempering_kwarg, absent on the CI runner.  The
 # previous floors (814/795) sat 9 below the tree before this file was added.
-EXPECTED_TESTS=840
+#   842/822  + test_std_and_conj_hlmoff_sphharm.py.  The file defines ONE test function with a
+#            two-case parametrize (deltaF set, and deltaF None so the branch pads itself), no
+#            further parametrization and no skip or xfail marks, so the raise is +2/+2 over the
+#            row above rather than a re-measurement.  The per-file collection loop below is what
+#            confirms that on the runner: if the file collects nothing -- lalsimulation absent,
+#            an entry point renamed -- this gate fails there instead of reporting a number.
+EXPECTED_TESTS=842
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -451,7 +461,9 @@ EXPECTED_TESTS=840
 # test_convert_coordinates_row_independence.py adds 9 tests and no skips.
 # test_gmm_sample_row_independence.py adds 10 tests and no skips.
 # test_gmm_sample_matches_score.py adds 17 tests and no skips; re-measured 840/820 (above).
-EXPECTED_PASSED=820
+# test_std_and_conj_hlmoff_sphharm.py adds 2 tests and no skips: both parametrize cases run
+# unconditionally, so a missing lalsimulation FAILS collection rather than skipping the check.
+EXPECTED_PASSED=822
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 MAX_SKIPPED=19
 
