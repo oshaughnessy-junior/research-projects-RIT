@@ -2425,7 +2425,7 @@ class MCSampler(SamplerOutputMixin, object):
                 mc_diag['pareto_khat'] = _kh
             mc_diag['n_ESS'] = ess_from_log_weights(log_wt)
             if np.sqrt(rel_var) > 0.3:
-                _q = bootstrap_lnZ_quantiles(log_wt, n_total=len(log_wt))
+                _q = bootstrap_lnZ_quantiles(log_wt, n_total=len(log_wt), n_drawn=_n_drawn)
                 if _q is not None:
                     mc_diag['lnZ_ci90'] = _q
             dict_return.update(mc_diag)

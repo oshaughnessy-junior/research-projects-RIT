@@ -199,3 +199,33 @@ def test_rejected_draws_counted_over_every_cycle():
     assert n_drawn > n + 1, 'the run must draw a second cycle'
     rel_var = np.exp(out[1] - 2 * out[0])
     assert rel_var == pytest.approx(1.0 / n_ret - 1.0 / n_drawn, rel=1e-6)
+
+
+def test_bootstrap_resamples_the_survivor_count():
+    """10 equal weights out of 4001 draws: resampling the survivors alone gives a zero-width
+    interval; with n_drawn the survivor count varies and so does lnZ."""
+    from RIFT.integrators.statutils import bootstrap_lnZ_quantiles
+    lw = np.zeros(10)
+    fixed = bootstrap_lnZ_quantiles(lw, n_total=10, rng_seed=1)
+    assert fixed[-1] - fixed[0] == 0.0
+    q = bootstrap_lnZ_quantiles(lw, n_total=10, rng_seed=1, n_drawn=4001)
+    assert q[0] < 0.0 < q[-1] and q[-1] - q[0] > 0.5, q
+
+
+def test_av_interval_counts_rejected_draws():
+    """Constant likelihood, prior on x < 0.0025: 11 of 4001 draws survive (seed 1), relative
+    sigma 0.30 triggers the bootstrap.  The interval had zero width."""
+    f = 0.0025
+    np.random.seed(1)
+    s = mcsamplerAV.MCSampler(n_chunk=4000)
+    s.xpy = np
+    s.identity_convert = lambda x: x
+    s.add_parameter('x', pdf=None, left_limit=0.0, right_limit=1.0, adaptive_sampling=True,
+                    prior_pdf=lambda x: (np.asarray(x) < f) / f)
+    s.add_parameter('y', pdf=None, left_limit=0.0, right_limit=1.0, adaptive_sampling=True,
+                    prior_pdf=lambda x: np.ones(np.shape(x)))
+    out = s.integrate_log(lambda *xs: np.zeros(len(np.atleast_1d(xs[0]))), 'x', 'y', nmax=4100,
+                          neff=5, n=4000, no_protect_names=True, verbose=False)
+    q = out[3].get('lnZ_ci90')
+    assert q is not None, 'the bootstrap did not run: premise of this test broke'
+    assert q[0] < out[0] < q[-1] and q[-1] - q[0] > 0.5, (q, out[0])
