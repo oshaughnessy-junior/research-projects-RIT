@@ -191,6 +191,10 @@ FILES=(
   "$C/test/test_lisa_ini_contract.py"
   "$C/test/test_tracer_placement_gp.py"
   "$C/test/waveforms/test_uv_symmetry.py"
+  # -- std_and_conj_hlmoff's SphHarmTimeSeries branch must key its output by (l,m), the way
+  # every caller indexes it.  A dict keyed the other way is still a populated dict: the
+  # mode sum silently loses modes rather than raising.
+  "$C/test/test_std_and_conj_hlmoff_sphharm.py"
   "$C/test/test_complex_overlap_interpolate_max.py"
   # -- coordinates: vectorized in-plane spin / ring coordinates agree with extract_param
   "$C/test/test_ring_coordinates.py"
@@ -444,7 +448,10 @@ done
 # test_gmm_update_no_aliasing.py (#420) adds 2 passing tests and no skips.  RE-MEASURED on the
 # merge of #420 with rift_O4d c7476627e (ldas-pcdev11, same setup) 2026-10-07: 876 collected /
 # 856 passed / 20 skipped incl. 3 subtests -> 873/853 (base floors sat 8 below the tree).
-EXPECTED_TESTS=873
+# test_std_and_conj_hlmoff_sphharm.py adds 2 tests (one function, two-case parametrize, no
+# skips) -> 875/855.  RE-MEASURED on the merge of #433 with rift_O4d c46a19bf (ldas-grid, IGWN
+# python, cupy absent) 2026-10-08: 878 collected / 859 passed / 19 skipped incl. 3 subtests.
+EXPECTED_TESTS=875
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -463,7 +470,8 @@ EXPECTED_TESTS=873
 # test_gmm_sample_matches_score.py adds 17 tests and no skips; re-measured 840/820 (above).
 # test_gmm_score_deterministic.py adds 23 tests and no skips; 863/843 (above).
 # test_gmm_update_no_aliasing.py adds 2 tests and no skips; re-measured 873/853 (above).
-EXPECTED_PASSED=853
+# test_std_and_conj_hlmoff_sphharm.py adds 2 tests and no skips; 875/855 (above).
+EXPECTED_PASSED=855
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 MAX_SKIPPED=19
 
