@@ -967,6 +967,14 @@ measured optimum and both tails are wrong – see warm_seed_scale_from_finite_po
 </dd></dl>
 
 <dl class="py function">
+<dt class="sig sig-object py" id="RIFT.integrators.mcsamplerAdaptiveVolume.dilate_bins">
+<span class="sig-prename descclassname"><span class="pre">RIFT.integrators.mcsamplerAdaptiveVolume.</span></span><span class="sig-name descname"><span class="pre">dilate_bins</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">bins</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">nbins</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">axes</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">layers</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerAdaptiveVolume.dilate_bins" title="Link to this definition"></a></dt>
+<dd><p>Occupied bins plus their axis neighbours (<code class="docutils literal notranslate"><span class="pre">layers</span></code> steps along each axis in <code class="docutils literal notranslate"><span class="pre">axes</span></code>),
+clipped to the grid.  The occupied set is built from retained points, so it misses the part
+of the live region that holds no point yet; the neighbour layer keeps that part drawable.</p>
+</dd></dl>
+
+<dl class="py function">
 <dt class="sig sig-object py" id="RIFT.integrators.mcsamplerAdaptiveVolume.get_likelihood_threshold">
 <span class="sig-prename descclassname"><span class="pre">RIFT.integrators.mcsamplerAdaptiveVolume.</span></span><span class="sig-name descname"><span class="pre">get_likelihood_threshold</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">lkl</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">lkl_thr</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">nsel</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">discard_prob</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">xpy_here=&lt;module</span> <span class="pre">'numpy'</span> <span class="pre">from</span> <span class="pre">'/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/numpy/__init__.py'&gt;</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerAdaptiveVolume.get_likelihood_threshold" title="Link to this definition"></a></dt>
 <dd><p>Find the likelihood threshold that encolses a probability
