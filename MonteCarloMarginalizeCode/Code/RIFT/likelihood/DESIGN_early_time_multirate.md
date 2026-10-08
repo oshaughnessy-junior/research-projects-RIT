@@ -13,7 +13,7 @@ notes (PR #215). Base: `rift_O4d` at `615dc1bfa`. No default changes.
 |---|---|---|
 | Q, data side | `dbar = C^-1 d` once per job; early segment low-passed (200 dB FIR) and decimated to fs_e; final 100 s (400 s for CE at rho ~ 1000) at full rate | A: Verdict; Table E |
 | C^-1 | RIFT's own inner-product weights, `InnerProduct.weights2side` (`lalsimutils.py:2354`). With `--inv-spec-trunc-time 0` these are 1/S; otherwise they are the truncated weights. Either way Q matches today's | |
-| Data cut at f_max | RIFT's hard cut. Combined DSWc + multibanded U, V at 160 dB with the hard cut, rho 1000: bns_ce D1 1.55e-3, D3 4.4e-3; bns_o4 D1 1.73e-4, D3 7.1e-3 (32 s) / 3.4e-3 (64 s); hmedge_o4 D1 1.7e-5, D3 2.4e-4; peak-time shift <= 3e-9 sigma_t. Equal to the roll-off rows (A, 2026-10-08). 200 dB rows pending | A: combined runs 569269890 (`451e2115`) |
+| Data cut at f_max | RIFT's hard cut. Combined DSWc + multibanded U, V at 160 dB with the hard cut, rho 1000: bns_ce D1 1.55e-3, D3 4.4e-3; bns_o4 D1 1.73e-4, D3 7.1e-3 (32 s) / 3.4e-3 (64 s); hmedge_o4 D1 1.7e-5, D3 2.4e-4; peak-time shift <= 3e-9 sigma_t. Equal to the roll-off rows (A, 2026-10-08). At 200 dB the hard cut again equals the roll-off: bns_ce D1 7.4e-6, bns_o4 1.1e-4 | A: combined runs 569269890 (`451e2115`) |
 | Early template | RIFT's own call at `deltaT = 1/fs_e`, then cos^2 taper over the top quarter below fs_e/2 | A: Table C (emulated with IMRPhenomTHM); B: XHM pair agrees after a 30-38 Hz low-pass |
 | Late template | full rate, short buffer, per-mode f_min (below) | B: `wf_pair_hm.py` |
 | U, V | FD modes on a multibanded grid, 32 s margin | A: Table D |
@@ -72,7 +72,11 @@ tested:
   to the inertial frame with the precession angles over the late segment;
 - generate the late template from a low f_min on a long buffer, then window it in time
   (no saving on the late piece).
-Until one is designed and measured, the prototype refuses in-plane spins. The early-rate
+A's precessing partition (hmprec_o4: IMRPhenomTPHM, in-plane chi1 = 0.5, l <= 4) passes the
+accuracy gates with A's own templates: D1 1.8e-5 at 160 dB and 2.9e-7 at 200 dB, D3 <= 1.3e-4,
+spectral D2 4.2e-7 (PR #216, `2950de6f`). So the schedule itself holds under precession.
+What is missing is the RIFT late-template route above. Until one is designed and measured,
+the prototype refuses in-plane spins. The early-rate
 bound uses m_max = l_max, which covers mode mixing. The precession-frequency spread needs
 its own margin there.
 
@@ -124,9 +128,10 @@ wrapper extended to the new functions.
    The template epochs then carry no offset on either path.
 2. The two-rate schedule meets A's pre-registered gates (`TOLERANCES.json`): D1 <= 0.1 nats,
    D3 <= 0.01, D2 per the amended rule, at rho = 20, 100, 300 and 1000, three noise seeds.
-   G4 also holds: the peak-time shift is at most 0.1 sigma_t. The expected scale is A's
-   end-to-end D1 at rho = 1000 (160 dB): 1.55e-3 for CE BNS, 1.7e-4 for O4 BNS. The smaller
-   DSW-only rows are not end-to-end figures.
+   G4 also holds: the peak-time shift is at most 0.1 sigma_t. Expected scale, A's end-to-end
+   D1 at rho = 1000 with the 32 s U, V margin (PR #216, `2950de6f`): at 200 dB, 7.2e-6 (CE BNS),
+   7.9e-7 (ET BNS), 1.1e-4 (O4 BNS, limited by U, V), 7.2e-6 (CE higher modes); at 160 dB,
+   1.55e-3 (CE BNS) and 1.7e-4 (O4 BNS). The smaller DSW-only rows are not end-to-end figures.
 3. Measured per-point time and peak RSS are compared with B's prediction (5.0-7.3x for the
    3G CE BNS). A gap of more than 2x is a finding, not a tuning target.
 4. One end-to-end ILE run on a known injection, with the multirate path in force (log line
