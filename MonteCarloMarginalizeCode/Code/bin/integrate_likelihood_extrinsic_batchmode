@@ -4987,8 +4987,8 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
                 #     mode), pooled -4.9079 (log 0.75).  Pinned in test_replica_pooling.py;
                 #   * a warning alone does not correct the number that gets reported.
                 # AND THE OBVIOUS "REAL FIX" IS A TRAP.  Giving AV a defensive component with
-                # support everywhere requires per-sample sampling densities (integrate_log applies
-                # ONE scalar log_joint_s_prior to every sample), i.e. a proposal that is a weighted
+                # support everywhere requires per-sample sampling densities over components AV did
+                # not draw from (integrate_log's densities cover only its own grids), i.e. a weighted
                 # mixture of components whose densities are evaluated per sample and combined.
                 # That is mcsamplerPortfolio: q_mix, defensive members, and the coverage
                 # bookkeeping around them already exist there, tested.  Rebuilding it inside AV
