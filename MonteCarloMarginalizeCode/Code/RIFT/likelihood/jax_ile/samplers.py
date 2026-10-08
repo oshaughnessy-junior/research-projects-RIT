@@ -2722,7 +2722,7 @@ def adaptive_volume_sample(like, d_min, d_max, sampler_method="AV",
                            initial_samples=None,
                            sky_inflate=2.0,
                            seed_prior_frac=0.1, anisotropic_bins=True,
-                           gmm_components=2,
+                           dilate_layers=0, gmm_components=2,
                            verbose=False, sample_d_min=None, sample_d_max=None,
                            sample_bounds=None, distance_prior="euclidean",
                            portfolio_adaptive_alloc=False, sky_coords="equatorial",
@@ -2878,6 +2878,12 @@ def adaptive_volume_sample(like, d_min, d_max, sampler_method="AV",
     try:
         allocation_kwargs = ({"portfolio_adaptive_alloc": True}
                              if portfolio_adaptive_alloc else {})
+        if dilate_layers:
+            if int(dilate_layers) < 0:
+                raise ValueError("dilate_layers must be >= 0")
+            if method != "AV":
+                raise ValueError("dilate_layers acts only on standalone AV, not %r" % method)
+            allocation_kwargs["dilate_layers"] = int(dilate_layers)
         result = sampler.integrate_log(
             lnL, *order, nmax=int(nmax), neff=float(neff), n=int(n_chunk),
             no_protect_names=True, verbose=bool(verbose), save_intg=True,

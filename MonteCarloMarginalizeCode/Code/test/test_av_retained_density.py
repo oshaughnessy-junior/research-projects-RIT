@@ -229,3 +229,79 @@ def test_av_interval_counts_rejected_draws():
     q = out[3].get('lnZ_ci90')
     assert q is not None, 'the bootstrap did not run: premise of this test broke'
     assert q[0] < out[0] < q[-1] and q[-1] - q[0] > 0.5, (q, out[0])
+
+
+# --- dilation (dilate_layers) ----------------------------------------------------------------
+# Each cycle's bins come from the retained points.  On a thin, curved live region that leaves
+# parts of the region with no bin, and integrate_log never draws there again, so lnZ comes out
+# low.  dilate_bins adds the axis neighbours of the occupied bins before the next draw.
+
+def test_dilate_bins_adds_axis_neighbours_inside_the_grid():
+    from RIFT.integrators.mcsamplerAdaptiveVolume import dilate_bins
+    out = dilate_bins(np.array([[0, 0], [2, 3]]), np.array([3.0, 4.0]), [0, 1])
+    want = {(0, 0), (1, 0), (0, 1),                 # (0,0): -1 steps fall off the grid
+            (2, 3), (1, 3), (2, 2)}                 # (2,3): +1 steps fall off the grid
+    assert set(map(tuple, out.tolist())) == want
+
+
+def test_dilate_bins_only_on_given_axes_and_layers():
+    from RIFT.integrators.mcsamplerAdaptiveVolume import dilate_bins
+    b = np.array([[2, 2]])
+    nb = np.array([5.0, 5.0])
+    assert np.array_equal(dilate_bins(b, nb, [0, 1], layers=0), b)
+    assert set(map(tuple, dilate_bins(b, nb, [1]).tolist())) == {(2, 1), (2, 2), (2, 3)}
+    two = set(map(tuple, dilate_bins(b, nb, [0, 1], layers=2).tolist()))
+    assert len(two) == 13 and (4, 2) in two and (3, 3) in two and (4, 3) not in two
+
+
+def _thin_ring_lnZ_error(seed, dilate_layers, sig=0.0005, n_chunk=8000):
+    """lnZ(AV) - exact for a ring of radius 0.3 and width sig in (x0, x1), Gaussian of width
+    0.05 in four more coordinates, centred in the unit box."""
+    np.random.seed(seed)
+    names = ['x%d' % i for i in range(6)]
+    r0, sb = 0.3, 0.05
+    exact = np.log(2 * np.pi * r0) + np.log(np.sqrt(2 * np.pi) * sig) + 4 * np.log(np.sqrt(2 * np.pi) * sb)
+
+    def lnF(*xs):
+        Y = np.array(xs).T - 0.5
+        r = np.hypot(Y[:, 0], Y[:, 1])
+        return -0.5 * ((r - r0) / sig)**2 - 0.5 * np.sum((Y[:, 2:] / sb)**2, axis=1)
+
+    s = mcsamplerAV.MCSampler(n_chunk=n_chunk)
+    s.xpy = np
+    s.identity_convert = lambda x: x
+    for name in names:
+        s.add_parameter(name, pdf=None, left_limit=0.0, right_limit=1.0,
+                        prior_pdf=lambda x: np.ones(np.shape(x)), adaptive_sampling=True)
+    out = s.integrate_log(lnF, *names, nmax=4000000, neff=50, n=n_chunk, no_protect_names=True,
+                          verbose=False, enforce_bounds=True, dilate_layers=dilate_layers)
+    return out[0] - exact
+
+
+def test_dilation_keeps_normalization():
+    """The dilated bins enter the mixture density, so lnZ stays exact on a Gaussian."""
+    err = []
+    for seed in (1, 2, 3):
+        np.random.seed(seed)
+        names = ['x%d' % i for i in range(4)]
+        s = mcsamplerAV.MCSampler(n_chunk=2000)
+        s.xpy = np
+        s.identity_convert = lambda x: x
+        for name in names:
+            s.add_parameter(name, pdf=None, left_limit=0.0, right_limit=1.0,
+                            prior_pdf=lambda x: np.ones(np.shape(x)), adaptive_sampling=True)
+        out = s.integrate_log(lambda *xs: -0.5 * np.sum((np.array(xs).T - 0.5)**2, axis=1) / 0.003**2,
+                              *names, nmax=400000, neff=50, n=2000, no_protect_names=True,
+                              verbose=False, dilate_layers=1)
+        err.append(out[0] - 4 * np.log(np.sqrt(2 * np.pi) * 0.003))
+    err = np.array(err)
+    assert abs(err.mean()) < 0.15, "lnZ - exact = {} (mean {:.3f})".format(err, err.mean())
+
+
+def test_dilation_recovers_thin_ring_evidence():
+    """Without dilation AV loses parts of the ring during contraction and lnZ is low."""
+    seeds = (1, 2, 3, 4)
+    off = np.array([_thin_ring_lnZ_error(s, 0) for s in seeds])
+    on = np.array([_thin_ring_lnZ_error(s, 1) for s in seeds])
+    assert off.mean() < -0.1, "undilated lnZ - exact = {}".format(off)
+    assert abs(on.mean()) < 0.1, "dilated lnZ - exact = {}".format(on)

@@ -319,6 +319,7 @@ parser.add_argument("--source-redshift",default=0,type=float,help="Source redshi
 parser.add_argument("--eos-param", type=str, default=None, help="parameterization of equation of state")
 parser.add_argument("--eos-param-values", default=None, help="Specific parameter list for EOS")
 parser.add_argument("--sampler-method",default="adaptive_cartesian",help="adaptive_cartesian|GMM|adaptive_cartesian_gpu|portfolio")
+parser.add_argument("--sampler-av-dilate-layers",type=int,default=0,help="AV only (--sampler-method AV): after each contraction, add this many layers of axis-neighbour bins to the occupied bins before the next draw.  The occupied bins come from the retained points, so on a thin or curved live region they miss parts that hold no point yet, and those parts are never drawn again; lnZ then comes out low.  Each layer keeps that rim drawable.  Costs several times more likelihood calls, so at a fixed --n-max a run may end with a lower n_eff.  A cycle draws at least one point per bin, so the per-cycle batch (and GPU memory) can grow to several times --n-chunk.  Default 0 (off).")
 parser.add_argument("--av-stop-metric", choices=["max-weight", "kish"], default="max-weight", help="AV stopping statistic; max-weight preserves the historical sum(w)/max(w), kish uses sum(w)^2/sum(w^2). Experimental; target is --n-eff. Kish stopping weights are lnL-only, while the --fail-unless-n-eff/--n-eff acceptance check uses the final weights including the prior ratio, so the two Kish values can differ.")
 parser.add_argument("--sampler-portfolio",default=None,action='append',type=str,help="comma-separated strings, matching sampler methods other than portfolio")
 parser.add_argument("--sampler-portfolio-args",default=None, action='append', type=str, help='eval-able dictionary to be passed to that sampler_')
@@ -356,6 +357,10 @@ parser.add_argument("--supplementary-likelihood-factor-ini", default=None,type=s
 parser.add_argument("--supplementary-prior-code",default=None,type=str,help="Import external priors, assumed in scope as extra_prior.prior_dict_pdf, extra_prior.prior_range.  Currentlyonly supports seperable external priors")
 
 opts=  parser.parse_args()
+if opts.sampler_av_dilate_layers < 0:
+    raise ValueError("--sampler-av-dilate-layers must be >= 0")
+if opts.sampler_av_dilate_layers and opts.sampler_method != 'AV':
+    raise ValueError("--sampler-av-dilate-layers acts only under --sampler-method AV, not {}".format(opts.sampler_method))
 
 force_hyperbolic_classes = [
     opts.force_scatter, opts.force_plunge, opts.force_zoomwhirl,
@@ -3707,6 +3712,8 @@ extra_args.update({
 })
 if opts.sampler_method == 'NFlow':
     extra_args['n_adapt'] = 10  # reduce this?
+if opts.sampler_av_dilate_layers:
+    extra_args['dilate_layers'] = int(opts.sampler_av_dilate_layers)
 tempering_adapt=True
 if opts.force_no_adapt:   
     tempering_adapt=False

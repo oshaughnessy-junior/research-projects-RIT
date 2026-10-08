@@ -841,6 +841,25 @@ def sample_from_bins(xrange, dx, bu, ninbin, reject_out_of_range=False):
         return x
 
 
+def dilate_bins(bins, nbins, axes, layers=1):
+    """Occupied bins plus their axis neighbours (``layers`` steps along each axis in ``axes``),
+    clipped to the grid.  The occupied set is built from retained points, so it misses the part
+    of the live region that holds no point yet; the neighbour layer keeps that part drawable."""
+    bins = np.asarray(bins).astype(np.int64)
+    if layers <= 0 or len(bins) == 0 or len(axes) == 0:
+        return bins
+    nb_max = np.ceil(np.asarray(nbins, dtype=float) - 1e-9).astype(np.int64)
+    for _ in range(int(layers)):
+        parts = [bins]
+        for ax in axes:
+            for step in (-1, 1):
+                nb = bins.copy()
+                nb[:, ax] += step
+                parts.append(nb[(nb[:, ax] >= 0) & (nb[:, ax] < nb_max[ax])])
+        bins = np.unique(np.vstack(parts), axis=0)
+    return bins
+
+
 class _BinSet(object):
     """Occupied bins of one grid as sorted int64 keys with a count per key (rows only if keys
     would overflow).  Bins projected onto fewer dimensions can coincide; the count is how many
@@ -1005,6 +1024,9 @@ class MCSampler(SamplerOutputMixin, object):
         # broad -- distance/inclination), instead of the default equal split.  Keeps the same
         # total bin budget (prod(nbins)=1/delta_V) so the estimator is unchanged.  Default off.
         self.anisotropic_bins = False
+        # Axis-neighbour layers added to the occupied bins each cycle in integrate_log (see
+        # dilate_bins).  0 draws only from bins that hold a retained point.
+        self.dilate_layers = 0
 
 
     def setup(self, **kwargs):
@@ -1957,6 +1979,8 @@ class MCSampler(SamplerOutputMixin, object):
         # opt-in anisotropic (per-axis) bin allocation; also settable as a sampler attribute
         if "anisotropic_bins" in kwargs:
             self.anisotropic_bins = bool(kwargs["anisotropic_bins"])
+        if kwargs.get("dilate_layers") is not None:
+            self.dilate_layers = int(kwargs["dilate_layers"])
         # FIXME: The adaptive step relies on the _rvs cache, so this has to be
         # on in order to work
         if n_adapt > 0 and tempering_exp > 0.0:
@@ -2237,6 +2261,8 @@ class MCSampler(SamplerOutputMixin, object):
             binidx = ( (( identity_convert(allx) - self.my_ranges.T[0]) / self.dx.T).astype(int)  ) #bin indexs of the samples ... sent back to CPU as needed
 
             self.binunique = np.unique(binidx, axis = 0)
+            if self.d_adaptive > 0:
+              self.binunique = dilate_bins(self.binunique, self.nbins, self.indx_adaptive, self.dilate_layers)
             self.ninbin = ((self.n_chunk // self.binunique.shape[0] + 1) * np.ones(self.binunique.shape[0])).astype(int)
             self.ntotal = current_log_aggregate[0]
             # accumulate the binomial variance of this cycle's ln(V) update:
