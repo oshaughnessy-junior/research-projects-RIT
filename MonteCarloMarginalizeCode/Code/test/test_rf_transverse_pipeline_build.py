@@ -1,7 +1,7 @@
 """Build (never submit) a real pseudo_pipe DAG that opts in without --cip-fit-method.
 
 The helper switches the unforced gp fit to rf. The DAG must then be built as an explicit
-rf run: flat CIP workers, so no worker is handed both physics3 and --fit-load-gp.
+rf run: flat CIP workers, so no worker is handed both RF transverse coordinates and --fit-load-gp.
 """
 import os
 from pathlib import Path
@@ -17,7 +17,7 @@ REF_INI = REPO / ".travis" / "ref_ini" / "GW150914.ini"
 COINC = REPO / ".travis" / "ref_ini" / "coinc.xml"
 
 
-def _opt_in_ini(tmp_path, mode="physics3", extra=(), chirpmass=None):
+def _opt_in_ini(tmp_path, mode="geometric4", extra=(), chirpmass=None):
     text = REF_INI.read_text()
     # This contract builds a DAG with an empty placeholder cache; it performs
     # no strain IO. Automatic truncation must reject that cache in real runs.
@@ -68,7 +68,7 @@ def _build(tmp_path, ini, coinc=COINC):
     return proc, rundir
 
 
-@pytest.mark.parametrize('mode',['physics3','geometric4','geometric4-phase-excess'])
+@pytest.mark.parametrize('mode',['geometric4','geometric4-phase-excess'])
 def test_unforced_opt_in_builds_flat_cip_workers(tmp_path,mode):
     pytest.importorskip("lal")
     proc, rundir = _build(tmp_path, _opt_in_ini(tmp_path,mode))
@@ -87,12 +87,19 @@ def test_unforced_opt_in_builds_flat_cip_workers(tmp_path,mode):
 
 @pytest.mark.parametrize("option", ["cip-internal-use-eta-in-sampler=True",
                                     "hierarchical-merger-prior-1g=True"])
-def test_physics3_refuses_coordinate_rewrites_before_the_helper(tmp_path, option):
+def test_geometric4_refuses_coordinate_rewrites_before_the_helper(tmp_path, option):
     # These options replace delta_mc in every CIP stage after the helper runs.
     pytest.importorskip("lal")
     proc, rundir = _build(tmp_path, _opt_in_ini(tmp_path, extra=[option]))
     assert proc.returncode != 0
     assert "incompatible with --" + option.split("=")[0] in proc.stdout, proc.stdout[-3000:]
+    assert not (rundir / "helper_cip_arg_list.txt").exists()
+
+
+def test_physics3_is_refused_before_the_helper(tmp_path):
+    proc, rundir = _build(tmp_path, _opt_in_ini(tmp_path, "physics3"))
+    assert proc.returncode != 0
+    assert "physics3 is retired" in proc.stdout, proc.stdout[-3000:]
     assert not (rundir / "helper_cip_arg_list.txt").exists()
 
 

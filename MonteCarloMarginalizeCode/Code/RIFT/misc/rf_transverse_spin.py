@@ -83,6 +83,12 @@ def geometric4_inverse(m1,m2,z1,z2,features,frequency=20.,phase_excess=False):
 GEOMETRIC4_NAMES=('rf_total_perp','rf_total_azimuth','rf_residual_parallel','rf_residual_perpendicular')
 PHASE_EXCESS_NAMES=('rf_phase_excess',)+GEOMETRIC4_NAMES[1:]
 GEOMETRIC4_MODES=('geometric4','geometric4-phase-excess')
+# physics3 appends three scalars to the eight native fit coordinates: 11 fit
+# coordinates for 8 degrees of freedom. CIP must never fit more coordinates
+# than it samples, so the mode is refused everywhere.
+RETIRED_MODES=('physics3',)
+RETIRED_MESSAGE=('RF transverse-spin mode physics3 is retired: it gives CIP 11 fit coordinates '
+    'for 8 degrees of freedom. Use geometric4 (auto selects it) or off.')
 
 def geometric_names(mode):
     return PHASE_EXCESS_NAMES if mode=='geometric4-phase-excess' else GEOMETRIC4_NAMES
@@ -155,7 +161,8 @@ def stage_arguments(line, mode, detector_chirp_mass, applicable, frequency):
     tokens=shlex.split(line)
     if not _supports_physics3(tokens):
         return line
-    if mode in GEOMETRIC4_MODES:
+    active_mode = 'geometric4' if mode == 'auto' else mode
+    if active_mode in GEOMETRIC4_MODES:
         _require_geometric4_basis(tokens)
     if '--rf-transverse-spin-coordinates' in tokens:
         raise ValueError('Duplicate RF transverse-spin activation')
@@ -164,7 +171,6 @@ def stage_arguments(line, mode, detector_chirp_mass, applicable, frequency):
     # Explicit fref replaces a stage-local value; it is the ILE spin reference, not fmin.
     # Edit the text in place: re-quoting every token would quote [lo,hi] ranges.
     line=re.sub(r'(^|\s)--fref(\s+|=)\S+', ' ', line)
-    active_mode = mode if mode in GEOMETRIC4_MODES else 'physics3'
     return line.rstrip()+' --rf-transverse-spin-coordinates '+active_mode+' --fref '+str(float(frequency))
 
 
@@ -200,12 +206,14 @@ def revalidate_stage(line):
 
 
 def stage_problem(line):
-    """Mirror every CIP physics3 refusal on a final CIP argument line; None if it will pass."""
+    """Mirror every CIP RF transverse-spin refusal on a final CIP argument line; None if it will pass."""
     import shlex
     tokens=[]
     for t in shlex.split(line):
         tokens += t.split('=',1) if t.startswith('--') and '=' in t else [t]
     def values(flag): return [tokens[i+1] for i,t in enumerate(tokens[:-1]) if t==flag]
+    if values('--rf-transverse-spin-coordinates')[-1:] and values('--rf-transverse-spin-coordinates')[-1] in RETIRED_MODES:
+        return RETIRED_MESSAGE
     fref=values('--fref')[-1:] or ['20']
     try: fref=float(fref[0])
     except ValueError: return 'reference frequency is not a number'
@@ -233,10 +241,12 @@ def enabled(mode, detector_chirp_mass, applicable):
     """Resolve the opt-in policy before constructing the native phase-fit schedule."""
     if mode not in (None,'off','auto','physics3','geometric4','geometric4-phase-excess'):
         raise ValueError('Unknown RF transverse-spin mode')
+    if mode in RETIRED_MODES:
+        raise ValueError(RETIRED_MESSAGE)
     if mode in (None,'off'):
         return False
     if not applicable:
-        if mode in ('physics3','geometric4','geometric4-phase-excess'):
+        if mode in GEOMETRIC4_MODES:
             raise ValueError('RF transverse-spin coordinates require a precessing BBH analysis')
         return False
     try: mc=float(detector_chirp_mass) if not isinstance(detector_chirp_mass,(bool,np.bool_)) else float('nan')
