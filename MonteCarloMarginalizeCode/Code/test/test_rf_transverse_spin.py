@@ -282,3 +282,58 @@ def test_asimov_psd_staging_targets_rundir_from_foreign_cwd(tmp_path,monkeypatch
     for name in ['build_dag','submit_dag']:
         fn=next(n for n in ast.walk(tree) if isinstance(n,ast.FunctionDef) and n.name==name)
         assert any(isinstance(n,ast.Call) and isinstance(n.func,ast.Attribute) and n.func.attr=='_stage_xml_psds' for n in ast.walk(fn))
+
+
+@pytest.mark.parametrize('mode',rf.GEOMETRIC4_MODES)
+@pytest.mark.parametrize('sampled', [[], ['mc'] * 8])
+def test_pipeline_refuses_missing_or_repeated_sampling_coordinates(mode, sampled):
+    line='1 --fit-method rf --use-precessing --rf-transverse-spin-coordinates='+mode
+    line+=' '+' '.join('--parameter-implied '+p for p in rf.NATIVE_FEATURES)
+    line+=' '+' '.join('--parameter-nofit '+p for p in sampled)
+    if hasattr(rf, 'stage_problem'):
+        assert rf.stage_problem(line) is not None
+    else:
+        with pytest.raises(ValueError, match='samples only|must be unique'):
+            rf.revalidate_stage(line)
+
+
+def test_cip_refuses_duplicate_sampling_coordinates(tmp_path):
+    # Eight argument entries cannot stand in for eight independent dimensions.
+    args=CIP_BASE[:CIP_BASE.index('--parameter-nofit')]
+    args += ['--parameter-nofit', 'mc'] * 7  # delta_mc is the only --parameter.
+    proc=_run_cip(tmp_path,args)
+    assert proc.returncode!=0 and 'sampling coordinates must be unique' in proc.stdout, proc.stdout[-2000:]
+
+
+def test_pipeline_refuses_last_equals_form_retired_mode():
+    line=' '.join(CIP_BASE)+' --rf-transverse-spin-coordinates=physics3'
+    if hasattr(rf, 'stage_problem'):
+        assert 'retired' in rf.stage_problem(line)
+    else:
+        with pytest.raises(ValueError, match='retired'):
+            rf.revalidate_stage(line)
+
+
+@pytest.mark.parametrize('matter', [False, True])
+def test_dimension_guard_leaves_nontransverse_and_matter_fits_alone(matter):
+    # Execute the actual CIP block without launching the sampler. Redundant fit
+    # features are legitimate outside this specific RF transverse policy.
+    import ast
+    from types import SimpleNamespace
+    root=Path(__file__).resolve().parents[1]
+    tree=ast.parse((root/'bin/util_ConstructIntrinsicPosterior_GenericCoordinates.py').read_text())
+    guard=next(n for n in tree.body if isinstance(n,ast.If)
+               and 'rf_transverse_spin.sampling_problem' in ast.unparse(n))
+    ns={'opts':SimpleNamespace(rf_transverse_spin_coordinates=None,
+                              input_tides=matter, using_eos=matter),
+        'coord_names':['mc', 'eta', 'lambda1', 'lambda2', 'lambda_plus', 'lambda_minus'],
+        'low_level_coord_names':['mc', 'eta', 'lambda1', 'lambda2']}
+    exec(compile(ast.Module(body=[guard],type_ignores=[]),'CIP_dimension_policy','exec'),ns)
+
+
+def test_revalidate_rejects_retired_mode_with_argparse_spelling_and_precedence():
+    line=' '.join(CIP_BASE)
+    with pytest.raises(ValueError, match='retired'):
+        rf.revalidate_stage(line+' --rf-transverse-spin-coordinates=physics3')
+    overridden=line+' --rf-transverse-spin-coordinates physics3 --rf-transverse-spin-coordinates=geometric4'
+    assert rf.revalidate_stage(overridden)==overridden

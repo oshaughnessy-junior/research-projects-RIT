@@ -47,11 +47,13 @@ helper stage to the mu1/mu2 aligned-phase basis. The separate opt-in `geometric4
 differs from `(J-J_parallel)/L_N` when `J_parallel < 0`.
 The raw radius has no aligned-spin/J rescaling. Historical phase-excess
 fit results do not establish performance of this raw-radius option.
-The `auto` policy, and a YAML `true`, select geometric4 for eligible
-precessing BBH analyses with detector chirp mass below 20 solar masses.
+The `auto` policy selects geometric4 for eligible precessing BBH analyses
+with detector chirp mass below 20 solar masses. A YAML `true` explicitly
+selects geometric4 at any mass.
 
 The earlier `physics3` mode is retired and refused at every layer. It appended
 three scalar features to the eight native coordinates, so CIP fit 11
-coordinates for 8 degrees of freedom. CIP must never fit more coordinates than
-it samples.
+coordinates for 8 degrees of freedom. This RF transverse mode requires a nonredundant fit basis. Other CIP
+configurations, including matter fits, can use more fit features than sampled
+coordinates.
 This is an experimental representation, not an end-to-end accuracy claim.
