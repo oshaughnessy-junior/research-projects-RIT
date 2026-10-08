@@ -69,7 +69,78 @@ if not _ORIGINAL_AVAILABLE:
         # Return probability and a '0' for success (mimicking legacy API)
         return p, 0
 
-        
+
+# Primes for the Richtmyer lattice in _box_mass, one per integrated dimension (d <= 169).
+_LATTICE_PRIMES = np.array([p for p in range(2, 1000) if all(p % q for q in range(2, int(p**0.5) + 1))])
+
+def _normal_interval(a, b):
+    '''Standard-normal CDF data for the intervals [a, b] (elementwise), evaluated in the
+    lower tail: the reflection sign, the endpoint CDFs p_lo <= p_hi of the REFLECTED
+    interval, and the mass Phi(b) - Phi(a).
+
+    ndtr saturates at exactly 1.0 beyond about 8.3, so differencing the two CDFs of an
+    interval deep in the POSITIVE tail -- a component mean far below the box -- gives
+    exactly zero.  score() then divides that component's pdf by the 1e-300 floor and
+    overestimates its density by hundreds of orders of magnitude, while sample() can still
+    draw the same component (it reflects, see _whitened_box).  Phi(b) - Phi(a) ==
+    Phi(-a) - Phi(-b), and in the lower tail ndtr -- and ndtri, used for the conditional
+    draw -- keep full relative accuracy down to ~1e-300, so evaluate reflected there.'''
+    from scipy.special import ndtr
+    sign = np.where(np.asarray(a) > 0, -1.0, 1.0)
+    p_lo = ndtr(np.where(sign < 0, -b, a))
+    p_hi = ndtr(np.where(sign < 0, -a, b))
+    return sign, p_lo, p_hi, p_hi - p_lo
+
+
+def _box_mass(lower, upper, mean, cov, n_points=2**12):
+    '''
+    Gaussian probability mass of the box [lower, upper]: Genz's separation-of-variables
+    integral on a FIXED Richtmyer lattice, so the same inputs always give the same value.
+
+    mvnun for d>=3 draws its lattice shifts from a Fortran RNG that no seed reaches, so its
+    result depends on how many calls preceded it in the process.  Accuracy here is
+    comparable to mvnun at its default abseps/releps=1e-5.
+    '''
+    from scipy.special import ndtri
+    lower = np.asarray(lower, dtype=float)
+    a = lower - mean
+    b = np.asarray(upper, dtype=float) - mean
+    cov = np.asarray(cov, dtype=float)
+    d = len(a)
+    if not (np.all(np.isfinite(mean)) and np.all(np.isfinite(cov))):
+        return float('nan')
+    # Integrate the least-probable dimensions first (Genz's variable reordering).
+    sd = np.sqrt(np.diag(cov))
+    order = np.argsort(_normal_interval(a / sd, b / sd)[3])
+    a, b, cov = a[order], b[order], cov[np.ix_(order, order)]
+    scale = max(float(np.max(np.abs(np.diag(cov)))), 1e-300)
+    for k in range(80):
+        try:
+            L = np.linalg.cholesky(cov + (0.0 if k == 0 else 1e-12 * 2.0**k * scale) * np.eye(d))
+            break
+        except np.linalg.LinAlgError:
+            pass
+    else:
+        return float('nan')
+    # Richtmyer lattice with the baker's (periodizing) transform; d-1 dimensions are
+    # sampled, the last is integrated exactly.
+    j = np.arange(1, n_points + 1)[:, None]
+    w = np.abs(2.0 * np.mod(j * np.sqrt(_LATTICE_PRIMES[:d - 1]) + 0.5, 1.0) - 1.0)
+    y = np.empty((n_points, d))
+    f = np.ones(n_points)
+    for i in range(d):
+        s = y[:, :i] @ L[i, :i]
+        sign, p_lo, p_hi, dp = _normal_interval((a[i] - s) / L[i, i], (b[i] - s) / L[i, i])
+        f *= dp
+        if i < d - 1:
+            # Interpolate on the reflected interval as well: for a positive-tail interval
+            # p_lo + w*dp rounds to 1 and ndtri saturates.  w=0 gives the lower endpoint
+            # of the original interval either way.
+            u = np.where(sign < 0, p_hi - w[:, i] * dp, p_lo + w[:, i] * dp)
+            y[:, i] = sign * ndtri(np.clip(u, 1e-300, 1.0 - 1e-16))
+    return float(np.mean(f))
+
+
 from scipy.special import logsumexp
 import itertools
 import math
@@ -534,7 +605,7 @@ class gmm:
         renormalize.  Over-allocated components collapse to ~zero weight under
         EM; removing them (a) prevents a spurious sharp component from dominating
         the importance weights and (b) cuts score() cost, which is O(k) in the
-        per-component mvnun box normalization.  Keeps at least max(1, min_keep)
+        per-component box normalization (_box_mass, a few ms per component).  Keeps at least max(1, min_keep)
         components (the highest-weight ones) -- pass min_keep to preserve a safety
         floor.  No-op if nothing is below the floor.'''
         min_keep = max(1, int(min_keep))
@@ -761,10 +832,13 @@ class gmm:
                         x=sample_array_norm, mean=mean, cov=cov,
                         allow_singular=True)
                 
-                # mvnun is CPU only
+                # mvnun / _box_mass are CPU only.  mvnun is deterministic only for d==2.
                 mean_cpu = _to_host(mean)
                 cov_cpu = _to_host(cov)
-                component_mass = mvnun(bounds_norm_cpu[:,0], bounds_norm_cpu[:,1], mean_cpu, cov_cpu)[0]
+                if self.d == 2:
+                    component_mass = mvnun(bounds_norm_cpu[:,0], bounds_norm_cpu[:,1], mean_cpu, cov_cpu)[0]
+                else:
+                    component_mass = _box_mass(bounds_norm_cpu[:,0], bounds_norm_cpu[:,1], mean_cpu, cov_cpu)
             else:
                 sigma2 = cov[0,0]
                 component_pdf = (1./xpy.sqrt(2*xpy.pi*sigma2)
@@ -1055,7 +1129,7 @@ def fit_gmm_adaptive(sample_array, bounds, log_sample_weights=None, k_max=8,
       * A fixed LARGE k is both statistically fragile (a spurious sharp
         component collapses onto ~1 elite sample and dominates the importance
         weights) and computationally costly (score() does an O(k) per-component
-        mvnun box normalization on the CPU).
+        box normalization on the CPU).
     BIC threads between the two: fit k over a ladder, penalize free parameters
     by ln(N_eff), keep the best, and drop dead components.  It allocates more
     components only where the (importance-weighted) cloud is genuinely
