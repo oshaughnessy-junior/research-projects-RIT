@@ -74,8 +74,9 @@ tested:
   (no saving on the late piece).
 A's precessing partition (hmprec_o4: IMRPhenomTPHM, in-plane chi1 = 0.5, l <= 4) passes the
 accuracy gates with A's own templates: D1 1.8e-5 at 160 dB and 2.9e-7 at 200 dB, D3 <= 1.3e-4,
-spectral D2 4.2e-7 (PR #216, `2950de6f`). So the schedule itself holds under precession.
-What is missing is the RIFT late-template route above. Until one is designed and measured,
+spectral D2 4.2e-7 (PR #216, `2950de6f`). That is one system (8 + 1.4, chi1 = 0.5) whose early
+window holds 5e-4 of rho^2. It tests the rate bound and mode mixing, not lnL accuracy at
+large early SNR. The RIFT late-template route above is also still missing. Until one is designed and measured,
 the prototype refuses in-plane spins. The early-rate
 bound uses m_max = l_max, which covers mode mixing. The precession-frequency spread needs
 its own margin there.
@@ -132,6 +133,9 @@ wrapper extended to the new functions.
    D1 at rho = 1000 with the 32 s U, V margin (PR #216, `2950de6f`): at 200 dB, 7.2e-6 (CE BNS),
    7.9e-7 (ET BNS), 1.1e-4 (O4 BNS, limited by U, V), 7.2e-6 (CE higher modes); at 160 dB,
    1.55e-3 (CE BNS) and 1.7e-4 (O4 BNS). The smaller DSW-only rows are not end-to-end figures.
+   These use A's IMRPhenomTHM/TPHM modes. RIFT's own XHM early-template path has not been run
+   through DSWc. As registered, D2 fails through its strain term for bns_et at rho = 1000 and
+   for the hard-cut rows from rho = 300; A reports this unamended.
 3. Measured per-point time and peak RSS are compared with B's prediction (5.0-7.3x for the
    3G CE BNS). A gap of more than 2x is a finding, not a tuning target.
 4. One end-to-end ILE run on a known injection, with the multirate path in force (log line
