@@ -41,15 +41,19 @@ open item (A's `development/OPEN_fmax_convergence_full_rate.md`).
 
 ## Time convention
 
-RIFT's FD branch (`lalsimutils.py:3846-3870`) rolls by `int(0.1 N)` samples but sets the
-epoch from `0.9 N dt`. Sample k therefore sits at `epoch + (k - frac(0.1 N)) dt`, and pieces
-of different N disagree by up to one sample (0.42 rad in (2,2) between 128 Hz and 4096 Hz).
+RIFT's FD branch (`lalsimutils.py:3796-3870`) rolls each mode by an integer number of samples
+and sets the epoch from the exact centering fraction. Without `fd_alignment_postevent_time`
+the fraction is 0.9, so sample k sits at `epoch + (k - frac(0.1 N)) dt`. Direct calls of
+different N then disagree by up to one sample (0.42 rad in (2,2) between 128 Hz and 4096 Hz;
+B's `wf_pair.py`). ILE passes `fd_alignment_postevent_time=2`
+(`integrate_likelihood_extrinsic_batchmode:3737`). The roll is then 2 s x srate, a whole
+number of samples, and the epoch is exact for segments of at least 8 s. The t_c
+investigation (RIFT_roboto_paper `5eabd7022`) measured 0.00 us at T = 8, 12 and 16 s.
 
-The prototype puts every piece on the time convention of the equivalent full-rate
-template: true sample times, then the full-rate offset `frac(0.1 N_full) dt_full` added
-back. Then a one-segment schedule reproduces today's `rholms` exactly, and recovered t_c
-behaves as today. Switching to true times would move t_c by 49 us at N = 2^25, 4096 Hz.
-That needs Richard's decision after the separate t_c measurement reports.
+The prototype passes the same kwarg for every piece. Every buffer is a power of two of at
+least 8 s (early 8192 s at 128 Hz, late 512 or 1024 s at 4096 Hz), so all pieces have exact
+epochs. They agree with each other and with today's ILE templates, and acceptance 1 holds
+with no correction.
 
 ## Per-mode start frequency for late templates
 
