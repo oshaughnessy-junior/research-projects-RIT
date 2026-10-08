@@ -337,3 +337,12 @@ def test_revalidate_rejects_retired_mode_with_argparse_spelling_and_precedence()
         rf.revalidate_stage(line+' --rf-transverse-spin-coordinates=physics3')
     overridden=line+' --rf-transverse-spin-coordinates physics3 --rf-transverse-spin-coordinates=geometric4'
     assert rf.revalidate_stage(overridden)==overridden
+
+
+def test_retired_problem_finds_any_occurrence_in_any_spelling():
+    # pseudo_pipe applies this to every final CIP line, including --manual-extra-cip-args.
+    base=' '.join(CIP_BASE)
+    assert rf.retired_problem(base) is None
+    for extra in [' --rf-transverse-spin-coordinates=physics3',' --rf-transverse-spin-coordinates physics3']:
+        assert 'retired' in rf.retired_problem(base+extra)
+        assert 'retired' in rf.retired_problem(extra+' '+base)

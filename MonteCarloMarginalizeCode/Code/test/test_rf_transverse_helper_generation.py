@@ -90,8 +90,16 @@ def test_actual_explicit_geometric4_rejects_explicit_gp(monkeypatch,tmp_path):
         generate(monkeypatch,tmp_path,'geometric4',10,'gp')
 
 def test_actual_helper_refuses_physics3(monkeypatch,tmp_path):
-    with pytest.raises(SystemExit):
+    # parser.error exits 2; without the parse-time refusal enabled() raises ValueError.
+    with pytest.raises(SystemExit) as exc:
         generate(monkeypatch,tmp_path,'physics3',10)
+    assert exc.value.code==2
+
+@pytest.mark.parametrize('extra',[('--assume-matter-eos','SLy'),('--use-EOB-parameters',),('--assume-hyperbolic',)])
+def test_auto_declines_analyses_outside_the_native_basis(monkeypatch,tmp_path,extra):
+    # pseudo_pipe or the helper adds fit coordinates (a6c, E0/p_phi0, tides) that geometric4 cannot carry.
+    result=generate(monkeypatch,tmp_path,'auto',10,extra=extra)
+    assert not any('--rf-transverse-spin-coordinates' in line for line in result['lines'])
 
 
 ACTIVATION = ' --rf-transverse-spin-coordinates geometric4 --fref 35.0'

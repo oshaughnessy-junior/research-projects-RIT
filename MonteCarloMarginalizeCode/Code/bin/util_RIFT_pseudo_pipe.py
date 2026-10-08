@@ -2164,13 +2164,15 @@ if opts.internal_use_amr:
         if not(opts.assume_lowlatency_tradeoffs):
             lines[0] += " --intrinsic-param spin2z "
 
-# Final CIP lines must still satisfy CIP's RF transverse-spin guard.
-if opts.rf_transverse_spin_coordinates:
-    from RIFT.misc.rf_transverse_spin import stage_problem
-    for indx_rf, line_rf in enumerate(lines):
-        if '--rf-transverse-spin-coordinates ' in line_rf and stage_problem(line_rf):
-            raise ValueError('RF transverse-spin stage {} activated but CIP would refuse it ({}); conflicting options: {}'.format(
-                indx_rf, stage_problem(line_rf), ', '.join('--'+name.replace('_','-') for name in rf_transverse_conflicts) or 'see --manual-extra-cip-args'))
+# Final CIP lines, from any route (e.g. --manual-extra-cip-args), must satisfy CIP's
+# RF transverse-spin guard; fail here rather than in every CIP job after ILE.
+from RIFT.misc.rf_transverse_spin import retired_problem, stage_problem
+for indx_rf, line_rf in enumerate(lines):
+    if retired_problem(line_rf):
+        raise ValueError('CIP stage {}: {}'.format(indx_rf, retired_problem(line_rf)))
+    if '--rf-transverse-spin-coordinates' in line_rf and stage_problem(line_rf):
+        raise ValueError('RF transverse-spin stage {} activated but CIP would refuse it ({}); conflicting options: {}'.format(
+            indx_rf, stage_problem(line_rf), ', '.join('--'+name.replace('_','-') for name in rf_transverse_conflicts) or 'see --manual-extra-cip-args'))
 with open("args_cip_list.txt",'w') as f:
    if not(opts.internal_truncate_cip_arg_list is None):
        if opts.internal_truncate_cip_arg_list < 1:

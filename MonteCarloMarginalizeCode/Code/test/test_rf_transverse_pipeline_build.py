@@ -99,8 +99,28 @@ def test_geometric4_refuses_coordinate_rewrites_before_the_helper(tmp_path, opti
 def test_physics3_is_refused_before_the_helper(tmp_path):
     proc, rundir = _build(tmp_path, _opt_in_ini(tmp_path, "physics3"))
     assert proc.returncode != 0
-    assert "physics3 is retired" in proc.stdout, proc.stdout[-3000:]
+    # pseudo_pipe's own parser, not the helper's, must refuse it.
+    assert "util_RIFT_pseudo_pipe.py: error: RF transverse-spin mode physics3 is retired" in proc.stdout, proc.stdout[-3000:]
     assert not (rundir / "helper_cip_arg_list.txt").exists()
+
+
+def test_physics3_via_manual_cip_args_is_refused_at_build(tmp_path):
+    pytest.importorskip("lal")
+    ini = _opt_in_ini(tmp_path, "off", ["manual-extra-cip-args=--rf-transverse-spin-coordinates=physics3"])
+    proc, rundir = _build(tmp_path, ini)
+    assert proc.returncode != 0
+    assert "physics3 is retired" in proc.stdout and "CIP stage" in proc.stdout, proc.stdout[-3000:]
+    assert not (rundir / "args_cip_list.txt").exists()
+
+
+def test_auto_declines_eob_parameters(tmp_path):
+    # pseudo_pipe appends --parameter a6c after the helper; geometric4 cannot carry it.
+    pytest.importorskip("lal")
+    ini = _opt_in_ini(tmp_path, "auto", ["use-EOB-parameters=True"], (8, 16))
+    proc, rundir = _build(tmp_path, ini, _low_mass_coinc(tmp_path))
+    assert proc.returncode == 0, proc.stdout[-3000:]
+    cip = (rundir / "args_cip_list.txt").read_text()
+    assert "--parameter a6c" in cip and "--rf-transverse-spin-coordinates" not in cip
 
 
 def test_auto_refuses_eta_sampler_once_it_activates(tmp_path):
