@@ -128,14 +128,19 @@ wrapper extended to the new functions.
    `fd_alignment_postevent_time=2` as ILE sets it, on a power-of-2 segment of at least 8 s.
    The template epochs then carry no offset on either path.
 2. The two-rate schedule meets A's pre-registered gates (`TOLERANCES.json`): D1 <= 0.1 nats,
-   D3 <= 0.01, D2 per the amended rule, at rho = 20, 100, 300 and 1000, three noise seeds.
+   D3 <= 0.01, at rho = 20, 100, 300 and 1000, three noise seeds. D2 is the DSW form
+   (`amendment_2026-10-08`, PR #216 `5b8e374a3`): D2_DSW = || W [ w_e (1 - LP^2)(w_h h) ] ||,
+   with h the raw template, gate min(0.03, 0.1/rho_e). The prototype computes it both per mode
+   and for the injected strain. The injected-strain form has never been computed. For
+   precessing templates the per-inertial-mode D2_DSW is the spectral rate-bound check.
    G4 also holds: the peak-time shift is at most 0.1 sigma_t. Expected scale, A's end-to-end
    D1 at rho = 1000 with the 32 s U, V margin (PR #216, `2950de6f`): at 200 dB, 7.2e-6 (CE BNS),
    7.9e-7 (ET BNS), 1.1e-4 (O4 BNS, limited by U, V), 7.2e-6 (CE higher modes); at 160 dB,
    1.55e-3 (CE BNS) and 1.7e-4 (O4 BNS). The smaller DSW-only rows are not end-to-end figures.
    These use A's IMRPhenomTHM/TPHM modes. RIFT's own XHM early-template path has not been run
-   through DSWc. As registered, D2 fails through its strain term for bns_et at rho = 1000 and
-   for the hard-cut rows from rho = 300; A reports this unamended.
+   through DSWc. Under the original whiten-first D2, the strain term fails for bns_et at
+   rho = 1000 and for the hard-cut rows from rho = 300; A's review keeps that verdict, since
+   the DSW amendment is not retroactive.
 3. Measured per-point time and peak RSS are compared with B's prediction (5.0-7.3x for the
    3G CE BNS). A gap of more than 2x is a finding, not a tuning target.
 4. One end-to-end ILE run on a known injection, with the multirate path in force (log line
