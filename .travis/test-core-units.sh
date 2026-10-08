@@ -95,8 +95,10 @@ FILES=(
   "$C/test/integrators/test_extrinsic_phase_group_uniform.py"
   "$C/test/integrators/test_gmm_adaptive.py"
   "$C/test/integrators/test_gmm_sample_row_independence.py"
+  "$C/test/integrators/test_gmm_update_no_aliasing.py"
   "$C/test/integrators/test_integrate_log_neff_negative_lnZ.py"
   "$C/test/integrators/test_gmm_sample_matches_score.py"
+  "$C/test/integrators/test_gmm_score_deterministic.py"
   "$C/test/integrators/test_mcsamplerGPU_default_adapt.py"
   "$C/test/integrators/test_portfolio_gmm_member_trains.py"
   "$C/test/integrators/test_portfolio_restrict_and_warm.py"
@@ -438,13 +440,18 @@ done
 # collected / 823 passed / 20 skipped incl. 3 subtests -> 840/820.  The 20th skip is the
 # cupy-importable leg of test_eos_posterior_tempering_kwarg, absent on the CI runner.  The
 # previous floors (814/795) sat 9 below the tree before this file was added.
-#   842/822  + test_std_and_conj_hlmoff_sphharm.py.  The file defines ONE test function with a
-#            two-case parametrize (deltaF set, and deltaF None so the branch pads itself), no
-#            further parametrization and no skip or xfail marks, so the raise is +2/+2 over the
-#            row above rather than a re-measurement.  The per-file collection loop below is what
-#            confirms that on the runner: if the file collects nothing -- lalsimulation absent,
-#            an entry point renamed -- this gate fails there instead of reporting a number.
-EXPECTED_TESTS=842
+# test_gmm_score_deterministic.py adds 19 passing tests and no skips.  RE-MEASURED on 9b0e4085a
+# (ldas-pcdev2, IGWN python, cupy importable, CUDA_VISIBLE_DEVICES='') 2026-10-07: 862 collected /
+# 842 passed / 20 skipped incl. 3 subtests -> 859/839; the 20 skips are the same as above.
+# Its accuracy test then made it 20 (file alone: 20 passed) -> 860/840; three tail-mass tests
+# made it 23 (file alone: 23 passed) -> 863/843.
+# test_gmm_update_no_aliasing.py (#420) adds 2 passing tests and no skips.  RE-MEASURED on the
+# merge of #420 with rift_O4d c7476627e (ldas-pcdev11, same setup) 2026-10-07: 876 collected /
+# 856 passed / 20 skipped incl. 3 subtests -> 873/853 (base floors sat 8 below the tree).
+# test_std_and_conj_hlmoff_sphharm.py adds 2 tests (one function, two-case parametrize, no
+# skips) -> 875/855.  RE-MEASURED on the merge of #433 with rift_O4d c46a19bf (ldas-grid, IGWN
+# python, cupy absent) 2026-10-08: 878 collected / 859 passed / 19 skipped incl. 3 subtests.
+EXPECTED_TESTS=875
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -461,9 +468,10 @@ EXPECTED_TESTS=842
 # test_convert_coordinates_row_independence.py adds 9 tests and no skips.
 # test_gmm_sample_row_independence.py adds 10 tests and no skips.
 # test_gmm_sample_matches_score.py adds 17 tests and no skips; re-measured 840/820 (above).
-# test_std_and_conj_hlmoff_sphharm.py adds 2 tests and no skips: both parametrize cases run
-# unconditionally, so a missing lalsimulation FAILS collection rather than skipping the check.
-EXPECTED_PASSED=822
+# test_gmm_score_deterministic.py adds 23 tests and no skips; 863/843 (above).
+# test_gmm_update_no_aliasing.py adds 2 tests and no skips; re-measured 873/853 (above).
+# test_std_and_conj_hlmoff_sphharm.py adds 2 tests and no skips; 875/855 (above).
+EXPECTED_PASSED=855
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 MAX_SKIPPED=19
 

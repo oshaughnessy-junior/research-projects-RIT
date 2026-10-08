@@ -819,7 +819,7 @@ class MCSampler(SamplerOutputMixin, object):
            n_extr = int(min(float(n_extr), 1.5*float(eff_samp), 1.5*float(neff)))
            print(" Fairdraw size : ", n_extr)
            if return_lnI:
-               ln_wt =  integrator.cumulative_values
+               ln_wt = self.xpy.copy(integrator.cumulative_values)   # += below must not rewrite the stored lnL (_rvs aliases it)
            else:
                ln_wt = self.xpy.log(value_array)
            ln_wt += self.xpy.log(prior_array/p_array)

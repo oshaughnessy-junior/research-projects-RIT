@@ -2207,6 +2207,8 @@ puff_params = ' '.join(instructions_puff)
 if opts.internal_puff_transverse:
     puff_params = puff_params.replace('--parameter chieff_aligned', '--parameter s1z_bar --parameter s2z_bar ')
     puff_params +=  ' --parameter phi1 --parameter phi2 --parameter chi1_perp_u --parameter chi2_perp_u --reflect-parameter chi1_perp_u --downselect-parameter chi1_perp_u  --downselect-parameter-range [0,1]  --reflect-parameter chi2_perp_u --downselect-parameter chi2_perp_u  --downselect-parameter-range [0,1] '
+    # s_z_bar past +-1 gives |chi|>1, which the chi1/chi2 downselect would discard: reflect instead.
+    puff_params += ' --reflect-parameter s1z_bar --downselect-parameter s1z_bar --downselect-parameter-range [-1,1] --reflect-parameter s2z_bar --downselect-parameter s2z_bar --downselect-parameter-range [-1,1] '
 if opts.internal_cip_transverse_tails:
     # transverse TAIL-GUARD (transverse-spin study 2026-07): every puff APPENDS (and shuffles in)
     # uniformly-random chi1_perp draws (range defaults to [0, chi1-downselect-cap], azimuth also
