@@ -841,48 +841,47 @@ def sample_from_bins(xrange, dx, bu, ninbin, reject_out_of_range=False):
         return x
 
 
-def _rows_in_bins(idx, bins):
-    """Boolean mask: is each row of the integer array idx (N, d) a row of bins (M, d)?"""
-    if len(bins) == 0 or len(idx) == 0:
-        return np.zeros(len(idx), dtype=bool)
-    ok = np.all(idx >= 0, axis=1)
-    idx = np.where(ok[:, None], idx, 0)
-    shape = np.maximum(bins.max(axis=0), idx.max(axis=0)) + 1
-    if np.prod([float(s) for s in shape]) < 2.0**62:
-        key_b = np.ravel_multi_index(tuple(bins.T), shape)
-        key_x = np.ravel_multi_index(tuple(idx.T), shape)
-        return ok & np.isin(key_x, key_b)
-    _, inv = np.unique(np.vstack([bins, idx]), axis=0, return_inverse=True)
-    inv = np.asarray(inv).ravel()
-    return ok & np.isin(inv[len(bins):], inv[:len(bins)])
-
-
 class _BinSet(object):
-    """Occupied bins of one grid, stored as sorted int64 keys (rows only if keys would overflow)."""
+    """Occupied bins of one grid as sorted int64 keys with a count per key (rows only if keys
+    would overflow).  Bins projected onto fewer dimensions can coincide; the count is how many
+    original bins sit at each projected location, since draw_simple draws from every one."""
 
     def __init__(self, bins, n_bins=None):
         bins = np.asarray(bins).astype(np.int64)
         self.n_bins = len(bins) if n_bins is None else int(n_bins)
         self.shape = bins.max(axis=0) + 1 if len(bins) else np.ones(bins.shape[1], dtype=np.int64)
-        self.keys = self.rows = None
+        self.keys = self.rows = self.counts = None
         if bins.shape[1] == 0:
             return
         if np.prod([float(v) for v in self.shape]) < 2.0**62:
-            self.keys = np.sort(np.ravel_multi_index(tuple(bins.T), self.shape))
+            self.keys, self.counts = np.unique(np.ravel_multi_index(tuple(bins.T), self.shape),
+                                               return_counts=True)
         else:
-            self.rows = bins
+            self.rows, self.counts = np.unique(bins, axis=0, return_counts=True)
 
-    def contains(self, idx):
-        if len(self.shape) == 0:          # every dimension pinned: one bin covers everything
-            return np.full(len(idx), self.n_bins > 0)
+    def multiplicity(self, idx):
+        """Number of bins at each point's projected location (0 if none)."""
+        if len(self.shape) == 0:          # every dimension pinned: all bins share one location
+            return np.full(len(idx), self.n_bins, dtype=np.int64)
+        out = np.zeros(len(idx), dtype=np.int64)
         if self.rows is not None:
-            return _rows_in_bins(idx, self.rows)
+            _, inv = np.unique(np.vstack([self.rows, idx]), axis=0, return_inverse=True)
+            inv = np.asarray(inv).ravel()
+            where = {int(v): j for j, v in enumerate(inv[:len(self.rows)])}
+            hit = np.array([where.get(int(v), -1) for v in inv[len(self.rows):]], dtype=np.int64)
+            out[hit >= 0] = self.counts[hit[hit >= 0]]
+            return out
         if self.keys is None or len(self.keys) == 0 or len(idx) == 0:
-            return np.zeros(len(idx), dtype=bool)
+            return out
         ok = np.all((idx >= 0) & (idx < self.shape), axis=1)
         k = np.ravel_multi_index(tuple(np.where(ok[:, None], idx, 0).T), self.shape)
         pos = np.minimum(np.searchsorted(self.keys, k), len(self.keys) - 1)
-        return ok & (self.keys[pos] == k)
+        hit = ok & (self.keys[pos] == k)
+        out[hit] = self.counts[pos[hit]]
+        return out
+
+    def contains(self, idx):
+        return self.multiplicity(idx) > 0
 
 
 def log_retained_density(X, origin, grids, box_lo, dx0, pinned_dims=()):
@@ -913,8 +912,10 @@ def log_retained_density(X, origin, grids, box_lo, dx0, pinned_dims=()):
             bins = _BinSet(bins[:, keep], n_bins=len(bins))
         log_vol = np.log(bins.n_bins) + np.sum(np.log(dx[keep])) + log_dx0_pinned
         idx = np.floor((X[:, keep] - box_lo[keep]) / dx[keep]).astype(np.int64)
-        member = bins.contains(idx) | (origin == k)
-        acc[member] = np.logaddexp(acc[member], np.log(n_k) - log_vol)
+        mult = bins.multiplicity(idx)
+        mult[(mult == 0) & (origin == k)] = 1
+        member = mult > 0
+        acc[member] = np.logaddexp(acc[member], np.log(n_k) + np.log(mult[member]) - log_vol)
     return acc - np.log(len(X))
 
 
@@ -2323,7 +2324,11 @@ class MCSampler(SamplerOutputMixin, object):
         log_wt = self._rvs["log_integrand"] + self._rvs["log_joint_prior"] - self._rvs["log_joint_s_prior"]
         log_wt = identity_convert(log_wt)  # convert to CPU
         log_int = special.logsumexp( log_wt) - np.log(len(log_wt))  # mean value
-        rel_var_mc = np.var( np.exp(log_wt - log_int))/len(log_wt)   # error in integral, estimated: just taking int = <w> , so error is V(w_k)/N (sample mean/variance)
+        # Relative variance of (1/N_drawn) sum w over ALL draws: rejected draws are zeros in that
+        # average, so the count is N_drawn, not the retained count.
+        _w = np.exp(log_wt - np.max(log_wt))
+        _n_drawn = float(sum(g[2] for g in draw_grids))
+        rel_var_mc = max(float(np.sum(_w**2) / np.sum(_w)**2) - 1.0 / _n_drawn, 0.0)
         # Total DISCLOSED relative variance: the weight-variance term above plus the
         # probability deliberately truncated by the likelihood threshold (trunc_p, a
         # one-sided systematic entered here as a variance in quadrature).  var_lnV is not
@@ -2420,7 +2425,7 @@ class MCSampler(SamplerOutputMixin, object):
                 mc_diag['pareto_khat'] = _kh
             mc_diag['n_ESS'] = ess_from_log_weights(log_wt)
             if np.sqrt(rel_var) > 0.3:
-                _q = bootstrap_lnZ_quantiles(log_wt, n_total=len(log_wt))
+                _q = bootstrap_lnZ_quantiles(log_wt, n_total=len(log_wt), n_drawn=_n_drawn)
                 if _q is not None:
                     mc_diag['lnZ_ci90'] = _q
             dict_return.update(mc_diag)

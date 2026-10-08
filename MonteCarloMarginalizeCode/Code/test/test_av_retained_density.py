@@ -131,3 +131,101 @@ def test_bin_set_matches_brute_force_on_both_storage_paths():
         assert (bs.rows is not None) == (scale > 1)
         want = np.array([tuple(r) in set(map(tuple, bins.tolist())) for r in idx.tolist()])
         np.testing.assert_array_equal(bs.contains(idx), want)
+
+
+def _one_cycle_constant(prior_x, warm=None, pin=None, seed=1, n=4000):
+    """One draw cycle of a constant likelihood on the unit square; returns (lnZ, rel sigma)."""
+    np.random.seed(seed)
+    s = mcsamplerAV.MCSampler(n_chunk=n)
+    s.xpy = np
+    s.identity_convert = lambda x: x
+    s.add_parameter('x', pdf=None, left_limit=0.0, right_limit=1.0, prior_pdf=prior_x, adaptive_sampling=True)
+    s.add_parameter('y', pdf=None, left_limit=0.0, right_limit=1.0,
+                    prior_pdf=lambda x: np.ones(np.shape(x)), adaptive_sampling=True)
+    if warm is not None:
+        s._warm = warm
+    kw = {} if pin is None else {'x': pin}
+    out = s.integrate_log(lambda *xs: np.zeros(len(np.atleast_1d(xs[0]))), 'x', 'y', nmax=n + 100,
+                          neff=10, n=n, no_protect_names=True, verbose=False, **kw)
+    return out[0], np.sqrt(np.exp(out[1] - 2 * out[0]))
+
+
+def test_warm_grid_binned_in_a_later_pinned_dimension():
+    """Warm bins (0,0), (1,0), (1,1) with x pinned: y bin 0 carries 2 bins' draws, y bin 1 one.
+    With L = 1[y < 1/2] the exact lnZ is ln(1/2).  Counting each projected bin once gives
+    ln 2 too high on the full grid; dividing by the unique projected count gives ln(2/3)."""
+    for seed in (1, 2):
+        np.random.seed(seed)
+        s = mcsamplerAV.MCSampler(n_chunk=4000)
+        s.xpy = np
+        s.identity_convert = lambda x: x
+        for name in ('x', 'y'):
+            s.add_parameter(name, pdf=None, left_limit=0.0, right_limit=1.0,
+                            prior_pdf=lambda x: np.ones(np.shape(x)), adaptive_sampling=True)
+        s._warm = dict(binunique=np.array([[0, 0], [1, 0], [1, 1]]), dx=np.array([0.5, 0.5]),
+                       nbins=np.array([2, 2]), V=1.0, loglkl_thr=-1e15)
+        out = s.integrate_log(lambda x, y: np.where(np.asarray(y) < 0.5, 0.0, -np.inf), 'x', 'y',
+                              nmax=4100, neff=10, n=4000, no_protect_names=True, verbose=False, x=0.3)
+        assert out[0] == pytest.approx(np.log(0.5), abs=1e-9), out[0]
+
+
+def test_rejected_draws_enter_the_reported_variance():
+    """Prior 2 on x < 0.5: every retained weight is equal, but the estimate 2*N_ret/N_drawn is
+    binomial, relative sigma sqrt((1-p)/(p N)) = 1/sqrt(N) at p = 1/2.  Reported ~1e-10 before."""
+    lnZ, rel_sigma = _one_cycle_constant(lambda x: 2.0 * (np.asarray(x) < 0.5))
+    assert abs(lnZ) < 0.1
+    assert rel_sigma == pytest.approx(1 / np.sqrt(4001), rel=0.05)
+
+
+def test_rejected_draws_counted_over_every_cycle():
+    """Two cycles (box, then the bins of the x < 1/2 survivors).  Every retained point lies in
+    both grids, so all weights are equal and rel var = 1/N_retained - 1/N_drawn exactly, with
+    N_drawn summed over both cycles."""
+    np.random.seed(1)
+    n = 4000
+    s = mcsamplerAV.MCSampler(n_chunk=n)
+    s.xpy = np
+    s.identity_convert = lambda x: x
+    # Priors vanish outside the box: cycle-2 bins overhang it, and a draw retained out there
+    # would be covered by cycle 2 only.
+    s.add_parameter('x', pdf=None, left_limit=0.0, right_limit=1.0, adaptive_sampling=True,
+                    prior_pdf=lambda x: 2.0 * ((np.asarray(x) >= 0) & (np.asarray(x) < 0.5)))
+    s.add_parameter('y', pdf=None, left_limit=0.0, right_limit=1.0, adaptive_sampling=True,
+                    prior_pdf=lambda x: 1.0 * ((np.asarray(x) >= 0) & (np.asarray(x) <= 1)))
+    out = s.integrate_log(lambda *xs: np.zeros(len(np.atleast_1d(xs[0]))), 'x', 'y', nmax=n + 2,
+                          neff=1e9, n=n, no_protect_names=True, verbose=False, dict_return=True)
+    n_ret = out[3]['n_live_final']
+    n_drawn = s.last_stopping_statistics['total_draws']
+    assert n_drawn > n + 1, 'the run must draw a second cycle'
+    rel_var = np.exp(out[1] - 2 * out[0])
+    assert rel_var == pytest.approx(1.0 / n_ret - 1.0 / n_drawn, rel=1e-6)
+
+
+def test_bootstrap_resamples_the_survivor_count():
+    """10 equal weights out of 4001 draws: resampling the survivors alone gives a zero-width
+    interval; with n_drawn the survivor count varies and so does lnZ."""
+    from RIFT.integrators.statutils import bootstrap_lnZ_quantiles
+    lw = np.zeros(10)
+    fixed = bootstrap_lnZ_quantiles(lw, n_total=10, rng_seed=1)
+    assert fixed[-1] - fixed[0] == 0.0
+    q = bootstrap_lnZ_quantiles(lw, n_total=10, rng_seed=1, n_drawn=4001)
+    assert q[0] < 0.0 < q[-1] and q[-1] - q[0] > 0.5, q
+
+
+def test_av_interval_counts_rejected_draws():
+    """Constant likelihood, prior on x < 0.0025: 11 of 4001 draws survive (seed 1), relative
+    sigma 0.30 triggers the bootstrap.  The interval had zero width."""
+    f = 0.0025
+    np.random.seed(1)
+    s = mcsamplerAV.MCSampler(n_chunk=4000)
+    s.xpy = np
+    s.identity_convert = lambda x: x
+    s.add_parameter('x', pdf=None, left_limit=0.0, right_limit=1.0, adaptive_sampling=True,
+                    prior_pdf=lambda x: (np.asarray(x) < f) / f)
+    s.add_parameter('y', pdf=None, left_limit=0.0, right_limit=1.0, adaptive_sampling=True,
+                    prior_pdf=lambda x: np.ones(np.shape(x)))
+    out = s.integrate_log(lambda *xs: np.zeros(len(np.atleast_1d(xs[0]))), 'x', 'y', nmax=4100,
+                          neff=5, n=4000, no_protect_names=True, verbose=False)
+    q = out[3].get('lnZ_ci90')
+    assert q is not None, 'the bootstrap did not run: premise of this test broke'
+    assert q[0] < out[0] < q[-1] and q[-1] - q[0] > 0.5, (q, out[0])
