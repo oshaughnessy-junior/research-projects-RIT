@@ -119,7 +119,9 @@ wrapper extended to the new functions.
 ## Acceptance
 
 1. A one-segment full-rate schedule reproduces today's `rholms`, `crossTerms` and
-   `crossTermsV` to floating-point precision on identical inputs.
+   `crossTermsV` to floating-point precision on identical inputs, under production flags:
+   `fd_alignment_postevent_time=2` as ILE sets it, on a power-of-2 segment of at least 8 s.
+   The template epochs then carry no offset on either path.
 2. The two-rate schedule meets A's pre-registered gates (`TOLERANCES.json`): D1 <= 0.1 nats,
    D3 <= 0.01, D2 per the amended rule, at rho = 20, 100, 300 and 1000, three noise seeds.
    G4 also holds: the peak-time shift is at most 0.1 sigma_t. The expected scale is A's
