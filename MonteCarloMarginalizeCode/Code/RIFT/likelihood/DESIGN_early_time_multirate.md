@@ -35,8 +35,8 @@ open item (A's `development/OPEN_fmax_convergence_full_rate.md`).
 - Dispatch at the precompute call (`integrate_likelihood_extrinsic_batchmode:3821`). Build
   the data products once, after the data and PSD load (`:1503`, `:1525`).
 - Refuse, never fall through: calibration marginalization, `--freqresponse`, ROM basis, a
-  TD-only approximant, an intrinsic point outside the frozen range, or a waveform whose
-  generator rejects the low rate.
+  TD-only approximant, an intrinsic point outside the frozen range, a waveform whose
+  generator rejects the low rate, or in-plane spins (precession; see below).
 - Log one line per job naming the schedule, its hash and the segments.
 
 ## Time convention
@@ -53,17 +53,32 @@ That needs Richard's decision after the separate t_c measurement reports.
 
 ## Per-mode start frequency for late templates
 
-Mode (l, m) at time tau before the peak has frequency about (m/2) f22(tau). RIFT's call
-starts every mode at the same f_min in the mode's own frequency. For |m| > 2 that is earlier
-than a short buffer holds, so it wraps. For |m| = 1 it starts too late.
+**Aligned spins only.** For a non-precessing source, mode (l, m) at time tau before the
+peak has frequency about (m/2) f22(tau). RIFT's call starts every mode at the same f_min in
+the mode's own frequency. For |m| > 2 that is earlier than a short buffer holds, so it wraps.
+For |m| = 1 it starts too late.
+
+For a precessing source this rule does not hold (R. O'Shaughnessy, 2026-10-08). Each
+inertial-frame (l, m) mode mixes co-precessing components m' = -l..l, so it carries content
+near (m'/2) f22 for several m' at once. No single f_min per inertial mode both covers the
+m' = 1 part and keeps the m' = l part inside the buffer. One call covering both needs a
+buffer about l^(8/3) times longer than tau_start (about 40x for l = 4). Candidates, none
+tested:
+- generate co-precessing-frame modes per m' with f_min = (m'/2) f22(tau_start), then rotate
+  to the inertial frame with the precession angles over the late segment;
+- generate the late template from a low f_min on a long buffer, then window it in time
+  (no saving on the late piece).
+Until one is designed and measured, the prototype refuses in-plane spins. The early-rate
+bound uses m_max = l_max, which covers mode mixing. The precession-frequency spread needs
+its own margin there.
 
 - One call per |m| group: `f_min,lm = (m/2) f22(tau_start)`, inside RIFT's call with
   `fd_standoff_factor = 0.9` (the driver's value, `factored_likelihood.py:422`). tau_start
   is the late-segment start plus guard plus 100 s.
 - Buffer: a power of two at least tau_start plus 2 s.
-- Measured (B, 3G BNS, XHM l <= 4, tau_start 600 s, 1024 s buffer): all modes agree with the
-  early template across the guard to 1.1e-4 rad and 7e-5 in amplitude. With one f_min,
-  |m| = 1, 3, 4 fail at order unity.
+- Measured (B, 3G BNS, zero spin, XHM l <= 4, tau_start 600 s, 1024 s buffer): all modes
+  agree with the early template across the guard to 1.1e-4 rad and 7e-5 in amplitude. With
+  one f_min, |m| = 1, 3, 4 fail at order unity. Precessing sources were not tested.
 - Cost: four late calls instead of one, all on the short buffer. The cost row's 0.064-0.107
   late fraction assumed one call; per-|m| calls must be measured.
 
