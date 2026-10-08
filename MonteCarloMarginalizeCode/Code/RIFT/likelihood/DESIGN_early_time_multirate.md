@@ -13,7 +13,7 @@ notes (PR #215). Base: `rift_O4d` at `615dc1bfa`. No default changes.
 |---|---|---|
 | Q, data side | `dbar = C^-1 d` once per job; early segment low-passed (200 dB FIR) and decimated to fs_e; final 100 s (400 s for CE at rho ~ 1000) at full rate | A: Verdict; Table E |
 | C^-1 | RIFT's own inner-product weights, `InnerProduct.weights2side` (`lalsimutils.py:2354`). With `--inv-spec-trunc-time 0` these are 1/S; otherwise they are the truncated weights. Either way Q matches today's | |
-| Data cut at f_max | RIFT's hard cut, pending A's combined hard-cut runs (condor 569269890, `451e2115`) | A: Table B (Q), Table D (U, V); supported piecewise |
+| Data cut at f_max | RIFT's hard cut. Combined DSWc + multibanded U, V with the hard cut on bns_o4: D1 1.7e-4, D3 7.1e-3 at rho 1000, the same as with the roll-off (A, 2026-10-08). bns_ce and hmedge_o4 pending | A: Tables B, D; combined runs 569269890 |
 | Early template | RIFT's own call at `deltaT = 1/fs_e`, then cos^2 taper over the top quarter below fs_e/2 | A: Table C (emulated with IMRPhenomTHM); B: XHM pair agrees after a 30-38 Hz low-pass |
 | Late template | full rate, short buffer, per-mode f_min (below) | B: `wf_pair_hm.py` |
 | U, V | FD modes on a multibanded grid, 32 s margin | A: Table D |
@@ -113,7 +113,9 @@ wrapper extended to the new functions.
    `crossTermsV` to floating-point precision on identical inputs.
 2. The two-rate schedule meets A's pre-registered gates (`TOLERANCES.json`): D1 <= 0.1 nats,
    D3 <= 0.01, D2 per the amended rule, at rho = 20, 100, 300 and 1000, three noise seeds.
-   G4 also holds: the peak-time shift is at most 0.1 sigma_t.
+   G4 also holds: the peak-time shift is at most 0.1 sigma_t. The expected scale is A's
+   end-to-end D1 at rho = 1000 (160 dB): 1.55e-3 for CE BNS, 1.7e-4 for O4 BNS. The smaller
+   DSW-only rows are not end-to-end figures.
 3. Measured per-point time and peak RSS are compared with B's prediction (5.0-7.3x for the
    3G CE BNS). A gap of more than 2x is a finding, not a tuning target.
 4. One end-to-end ILE run on a known injection, with the multirate path in force (log line
