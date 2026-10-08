@@ -61,6 +61,143 @@ def ComputeModeIPTimeSeriesDSW(hlms, dbar, data_epoch, deltaT, N_shift, N_window
     return rholms
 
 
+# ---------------------------------------------------------------------------------------------
+# Two-rate Q (DSWc).  Windows, filter and low-rate correlation follow session A's prototype
+# (RIFT_roboto_paper analyses/early_time_compression/prototype/twrate.py, experiment.py).
+# Index alignment uses ILE's template convention (fd_alignment_postevent_time=2, power-of-2
+# buffers): every template puts its peak 2 s before its buffer end, so coarse sample j of the
+# early template is full-rate index j*M, and sample j of a late template of length N_l is
+# full-rate index j + N - N_l.
+# ---------------------------------------------------------------------------------------------
+from scipy import signal as _signal, special as _special, fft as _sp_fft
+
+ERFC_HALF = 8.3            # erfc(x/sqrt2)/2 < 1e-16 beyond 8.3 sigma
+GUARD_PER_SIGMA = 2 * ERFC_HALF
+G_MSUN_C3 = 4.925490947641267e-06
+
+
+def early_window(t, t_tr, sigma):
+    return 0.5 * _special.erfc((np.asarray(t) - t_tr) / (np.sqrt(2.) * sigma))
+
+
+def f22_newtonian(tau, mc_msun):
+    return (1. / np.pi) * (5. / 256.)**0.375 * (mc_msun * G_MSUN_C3)**(-0.625) * np.asarray(tau, float)**(-0.375)
+
+
+def kaiser_lowpass(fs, f_pass, f_stop, atten_db):
+    ntap = int(np.ceil((atten_db - 7.95) * fs / (14.36 * (f_stop - f_pass)))) + 1
+    ntap += 1 - ntap % 2                       # odd length: integer group delay
+    return _signal.firwin(ntap, 0.5 * (f_pass + f_stop), window=('kaiser', _signal.kaiser_beta(atten_db)), fs=fs)
+
+
+def decimate(x, M, h):
+    """Zero-phase FIR, then every M-th sample (index 0 kept)."""
+    if M == 1:
+        return x.copy()
+    if np.iscomplexobj(x):
+        return _signal.resample_poly(x.real, 1, M, window=h) + 1j * _signal.resample_poly(x.imag, 1, M, window=h)
+    return _signal.resample_poly(x, 1, M, window=h)
+
+
+def taper_top_quarter(hf, fs_e):
+    """DSWr: cos^2 roll-off over the top quarter below fs_e/2, on a two-sided centred FD series (in place)."""
+    n = hf.data.length
+    f = (np.arange(n) - n // 2) * hf.deltaF
+    x = np.clip((np.abs(f) - 0.75 * fs_e / 2) / (0.25 * fs_e / 2), 0, 1)
+    hf.data.data = hf.data.data * np.cos(0.5 * np.pi * x)**2
+    return hf
+
+
+def _corr_offsets(x, x0, y, y0, lags):
+    """sum_s x[s-x0] conj(y[s-n-y0]) for integer lags n, linear (zero-padded)."""
+    L = _sp_fft.next_fast_len(len(x) + len(y) + 8)
+    z = np.fft.ifft(np.fft.fft(x, L) * np.conj(np.fft.fft(y, L)))
+    return z[(np.asarray(lags) - x0 + y0) % L]
+
+
+def _corr_lowrate_fulllags(De, He, M, dt, lags):
+    """M sum_j De[j] conj(He_tau[j]) at full-rate lags tau = n dt, via M sub-phase inverse FFTs.
+    He_tau is the band-limited shift of He; exact for inputs band-limited below fs_e/2."""
+    lags = np.asarray(lags)
+    L = _sp_fft.next_fast_len(max(len(De), len(He)) + int(np.max(np.abs(lags))) // M + 8)
+    C = M * np.fft.fft(De, L) * np.conj(np.fft.fft(He, L))
+    fk = np.fft.fftfreq(L, d=M * dt)
+    q, r = np.divmod(lags, M)
+    out = np.empty(len(lags), dtype=np.complex128)
+    for rr in np.unique(r):
+        sel = (r == rr)
+        out[sel] = np.fft.ifft(C * np.exp(2j * np.pi * fk * rr * dt))[q[sel] % L]
+    return out
+
+
+class TwoRateSchedule(object):
+    """Frozen two-rate schedule: full rate fs, early rate fs_e, transition tau_tr before the
+    peak, guard (erfc width sigma = guard/16.6), template window sigma_h, data-side filter."""
+
+    def __init__(self, fs, fs_e, tau_tr, guard, atten_db, mc_min, m_max, lag_halfwidth, sigma_h=1.0,
+                 late_buffer=None):
+        self.fs, self.fs_e = float(fs), float(fs_e)
+        self.M = int(round(fs / fs_e))
+        assert self.M * fs_e == fs
+        self.tau_tr, self.guard, self.atten_db = float(tau_tr), float(guard), float(atten_db)
+        self.sigma, self.sigma_h = guard / GUARD_PER_SIGMA, float(sigma_h)
+        self.mc_min, self.m_max = float(mc_min), int(m_max)
+        self.nlag = int(np.ceil(lag_halfwidth * fs))
+        self.ng = int(np.ceil(ERFC_HALF * self.sigma * fs))
+        # template window w_h: 1 on the data's early support plus filter, lags and one coarse sample
+        nL0 = 0
+        for _ in range(3):                     # the filter length depends on f_pass_h; iterate
+            self.tau_hc = tau_tr - (self.ng + nL0 + self.nlag + self.M) / fs - ERFC_HALF * self.sigma_h
+            tau_min_h = self.tau_hc - ERFC_HALF * self.sigma_h
+            self.f_pass_h = 1.1 * (m_max / 2.) * f22_newtonian(tau_min_h, mc_min) + 1.4 / self.sigma_h
+            # the early template is tapered (DSWr) over the top quarter below fs_e/2, so the
+            # template window's pass band must stay below 0.75 fs_e/2
+            if not np.isfinite(self.f_pass_h) or self.f_pass_h >= 0.75 * fs_e / 2:
+                raise ValueError("template window needs %.1f Hz, above the DSWr taper start %.1f Hz; "
+                                 "raise fs_e" % (self.f_pass_h, 0.75 * fs_e / 2))
+            self.h = kaiser_lowpass(fs, self.f_pass_h, fs_e / 2, atten_db)
+            nL0 = len(self.h)
+        self.late_buffer = late_buffer
+
+
+def prepare_data_two_rate(dbar, deltaT, s_peak, sch):
+    """Once per job and detector: split dbar at the transition and decimate the early part.
+
+    s_peak: data index the template peak sits at for lag 0 (template and data indices aligned).
+    Returns dict with dE (early, rate fs_e, index j <-> data index j*M), dL (late, full rate,
+    starting at data index i_l0), and the indices used.
+    """
+    N, M = len(dbar), sch.M
+    s_tr = s_peak - int(round(sch.tau_tr * sch.fs))
+    s = np.arange(N)
+    i_de = min(N, s_tr + sch.ng + len(sch.h))
+    we = early_window(s[:i_de] * deltaT, s_tr * deltaT, sch.sigma)
+    i_l0 = max(0, s_tr - sch.ng - sch.nlag - 8)
+    wl = 1. - early_window(s[i_l0:] * deltaT, s_tr * deltaT, sch.sigma)
+    dE = decimate(we * dbar[:i_de], M, sch.h)
+    dL = wl * dbar[i_l0:]
+    return dict(dE=dE, dL=dL, i_l0=i_l0, i_de=i_de, s_tr=s_tr, s_peak=s_peak, N=N)
+
+
+def early_template_window(n_coarse, j_peak_full, sch, deltaT):
+    """w_h on the early template's coarse grid (index j <-> full index j*M)."""
+    t = np.arange(n_coarse) * sch.M * deltaT
+    t_hc = (j_peak_full - int(round(sch.tau_hc * sch.fs))) * deltaT
+    return early_window(t, t_hc, sch.sigma_h)
+
+
+def Q_two_rate(prep, hE, hL, j_peak_full, n_late_offset, sch, deltaT, lags):
+    """Q(n dt) = 2 dt [ M sum_j dE[j] conj(w_h hE)_tau[j] + sum_s dL[s] conj(hL[s - n - off]) ].
+
+    hE: early template on the coarse grid (length N/M), DSWr-tapered.  hL: late template at full
+    rate (length N_l), sample j at full index j + n_late_offset.  Template index = data index - n.
+    """
+    wh = early_template_window(len(hE), j_peak_full, sch, deltaT)
+    qE = _corr_lowrate_fulllags(prep["dE"], wh * hE, sch.M, deltaT, lags)
+    qL = _corr_offsets(prep["dL"], prep["i_l0"], hL, n_late_offset, lags)
+    return 2. * deltaT * (qE + qL)
+
+
 def ComputeModeCrossTermIPDSW(hlmsA, hlmsB, psd, fmin, fMax, fNyq, deltaF, analyticPSD_Q=False,
                               inv_spec_trunc_Q=False, T_spec=0., prefix="U"):
     """One-segment counterpart of ComputeModeCrossTermIP in the time domain:
