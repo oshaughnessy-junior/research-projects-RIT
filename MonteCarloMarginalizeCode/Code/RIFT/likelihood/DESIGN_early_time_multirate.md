@@ -86,12 +86,17 @@ its own margin there.
 
 The rotation bank (`factored_likelihood_with_rotation.py:380-463`) builds chi_a by applying
 a time-derivative weight (order p) and a sidereal modulation exp(i n Omega t) to each mode.
-Both are linear and local in time, so they commute with the segment partition. Each segment
-builds its own chi_a on its own grid, with the same time reference. Q_a is computed per
-segment as for a = 0. The 2|a|^2 U, V terms per detector go on the multibanded grid; the
-modulation shifts frequency by n f_sidereal (~1e-5 Hz), well inside one coarse bin. Memory
-and time then scale with |a| on the low-rate arrays, not on N. Not in the first prototype:
-it refuses `--rotation-slow` until the static path passes.
+Both are linear, so each segment builds its own chi_a on its own grid, with the same time
+reference. Q_a is computed per segment as for a = 0. Two conditions (C, 2026-10-08):
+- The derivative weight commutes with the partition only where the template window is flat.
+  Require w_h = 1 on the support of w_e, erfc tails included. Otherwise apply the derivative
+  before windowing.
+- The sidereal shift n f_sid (2.3e-5 Hz for n = 2) is far below a coarse bin, but it is not
+  negligible. Over the earliest band (T ~ 6000 s) it builds about 0.9 rad of phase. The
+  2|a|^2 U, V terms per detector need the modes evaluated at f - n f_sid on the coarse grid.
+  XHM's `FrequencySequence` path supports that; reusing the nearest bin would not work.
+Memory and time then scale with |a| on the low-rate arrays, not on N. Not in the first
+prototype: it refuses `--rotation-slow` until the static path passes.
 
 ## Stages measured
 
