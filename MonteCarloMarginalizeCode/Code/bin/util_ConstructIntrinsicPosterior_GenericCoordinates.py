@@ -277,7 +277,7 @@ parser.add_argument("--n-chunk",default=1e5,type=int)
 parser.add_argument("--contingency-unevolved-neff",default=None,help="Contingency planning for when n_eff produced by CIP is small, and user doesn't want to have hard failures.  Note --fail-unless-n-eff will prevent this from happening. Options: quadpuff, ...")
 parser.add_argument("--not-worker",action='store_true',help="Nonworker jobs, IF we have workers present, don't have the 'fail unless' statement active")
 parser.add_argument("--fail-unless-n-eff",default=None,type=float,help="If nonzero, places a minimum requirement on n_eff. Code will exit if not achieved, with no sample generation")
-parser.add_argument("--rf-transverse-spin-coordinates", choices=["physics3","geometric4","geometric4-phase-excess"], help="Opt-in RF fitting basis: physics3 appends scalars; geometric4 replaces four transverse inputs; sampler/prior unchanged")
+parser.add_argument("--rf-transverse-spin-coordinates", choices=["physics3","geometric4","geometric4-phase-excess"], help="Opt-in RF fitting basis: geometric4 replaces four transverse inputs; sampler/prior unchanged. physics3 is retired and refused (11 fit coordinates for 8 degrees of freedom)")
 parser.add_argument("--fit-method",default="rf",help="rf (default) : rf|gp|gp-matern|gp-torch|quadratic|polynomial|gp_hyper|gp_lazy|cov|kde|gp-jax-svgp|gp-jax-rff|gp-jax-exact.  Note 'polynomial' with --fit-order 0  will fit a constant. The gp-jax-* methods use the optional JAX interpolators (RIFT.interpolators.jax_gp) and support a differentiable export via --fit-save-jax.")
 parser.add_argument("--fit-load-quadratic",default=None,help="Filename of hdf5 file to load quadratic fit from. ")
 parser.add_argument("--fit-load-quadratic-path",default="GW190814/annealing_mc_source_eta_chieff",help="Path in hdf5 file to specific covariance matrix to be used")
@@ -860,6 +860,8 @@ if opts.parameter_nofit:
 from RIFT.misc import rf_transverse_spin
 if set(rf_transverse_spin.FEATURE_NAMES + rf_transverse_spin.GEOMETRIC4_NAMES + rf_transverse_spin.PHASE_EXCESS_NAMES).intersection(coord_names + low_level_coord_names):
     raise ValueError('RF fitting scalars are enabled only through the opt-in flag')
+if opts.rf_transverse_spin_coordinates in rf_transverse_spin.RETIRED_MODES:
+    raise ValueError(rf_transverse_spin.RETIRED_MESSAGE)
 if opts.rf_transverse_spin_coordinates:
     if not np.isfinite(opts.fref) or opts.fref <= 0:
         raise ValueError('RF reference frequency must be finite and positive')
@@ -867,18 +869,20 @@ if opts.rf_transverse_spin_coordinates:
             or opts.input_tides or opts.using_eos or opts.use_eccentricity
             or not set(rf_transverse_spin.NATIVE_FEATURES).issubset(coord_names)):
         raise ValueError('RF transverse coordinates require a fresh RF fit with delta_mc, mu1, mu2, chiMinus, s1x, s1y, s2x, s2y in a precessing BBH L-frame analysis')
-    if opts.rf_transverse_spin_coordinates in rf_transverse_spin.GEOMETRIC4_MODES:
-        if len(coord_names) != 8 or set(coord_names) != set(rf_transverse_spin.NATIVE_FEATURES):
-            raise ValueError('geometric4 requires exactly the eight native mass/aligned/transverse fitting coordinates')
-        # Preserve physical sampling coordinates: only replace the fitting basis.
-        coord_names = [p for p in coord_names if p not in rf_transverse_spin.TRANSVERSE] + list(rf_transverse_spin.geometric_names(opts.rf_transverse_spin_coordinates))
-    else:
-        coord_names = list(coord_names) + list(rf_transverse_spin.FEATURE_NAMES)
+    if len(coord_names) != 8 or set(coord_names) != set(rf_transverse_spin.NATIVE_FEATURES):
+        raise ValueError('geometric4 requires exactly the eight native mass/aligned/transverse fitting coordinates')
+    # Preserve physical sampling coordinates: only replace the fitting basis.
+    coord_names = [p for p in coord_names if p not in rf_transverse_spin.TRANSVERSE] + list(rf_transverse_spin.geometric_names(opts.rf_transverse_spin_coordinates))
     def extract_fit_param(P, name):
         return rf_transverse_spin.extract(P, name)
 else:
     def extract_fit_param(P, name):
         return P.extract_param(name)
+# An RF transverse fit basis must not fit more coordinates than are sampled.
+if opts.rf_transverse_spin_coordinates:
+    sampling_problem = rf_transverse_spin.sampling_problem(coord_names, low_level_coord_names)
+    if sampling_problem:
+        raise ValueError(sampling_problem)
 # SANITY COMPATIBILITY CHECK
 if 'q' in low_level_coord_names and 'mc' in low_level_coord_names:
     print(" Coordinate compatibility error: mc,eta or mc,delta_mc or M,q are compatible coordinates for masses. Do not mix!")

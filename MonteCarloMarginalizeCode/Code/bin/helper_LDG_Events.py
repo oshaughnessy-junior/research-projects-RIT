@@ -263,7 +263,7 @@ parser.add_argument("--force-initial-grid-size",default=None,type=int,help="Forc
 parser.add_argument("--propose-fit-strategy",action='store_true',help="If present, the code will propose a fit strategy (i.e., cip-args or cip-args-list).  The strategy will take into account the mass scale, presence/absence of matter, and the spin of the component objects.  If --lowlatency-propose-approximant is active, the code will use a strategy suited to low latency (i.e., low cost, compatible with search PSDs, etc)")
 parser.add_argument("--propose-flat-strategy",action="store_true",help="If present AND propose-fit-strategy is present, the strategy proposed will have puffball and convergence tests for every iteration, and the same CIP")
 parser.add_argument("--propose-converge-last-stage",action="store_true",help="If present, the last pre-extrinsic stage is 'iterate to convergence' form")
-parser.add_argument("--rf-transverse-spin-coordinates", choices=["off","auto","physics3","geometric4","geometric4-phase-excess"], default=None, help="Opt-in RF physics3 augmentation or geometric4 radius/phase-excess fit bases; auto selects physics3 at detector chirp mass <20 Msun")
+parser.add_argument("--rf-transverse-spin-coordinates", choices=["off","auto","physics3","geometric4","geometric4-phase-excess"], default=None, help="Opt-in RF geometric4 radius/phase-excess fit bases; auto selects geometric4 at detector chirp mass <20 Msun. physics3 is retired and refused (11 fit coordinates for 8 degrees of freedom)")
 parser.add_argument("--force-fit-method",type=str,default=None,help="Force specific fit method")
 #parser.add_argument("--internal-fit-strategy-enforces-cut",action='store_true',help="Fit strategy enforces lnL-offset (default 15) after the first batch of iterations. ACTUALLY DEFAULT - SHOULD BE REDUNDANT")
 parser.add_argument("--last-iteration-extrinsic",action='store_true',help="Does nothing!  extrinsic implemented with CEP call, user must do this elsewhere")
@@ -290,6 +290,9 @@ parser.add_argument("--force-plunge-grids",action='store_true',help="Eliminates 
 parser.add_argument("--force-zoomwhirl-grids",action='store_true',help="Eliminates all non-zoomwhirl intrinsic points from hyperbolic grids throughout the workflow.")
 parser.add_argument('--force-hyperbolic-22', action='store_true', help='Forces just the 22 modes for hyperbolic waveforms')
 opts=  parser.parse_args()
+if opts.rf_transverse_spin_coordinates == 'physics3':
+    from RIFT.misc.rf_transverse_spin import RETIRED_MESSAGE
+    parser.error(RETIRED_MESSAGE)
 
 # Resolve the sub-sample stencil request IMMEDIATELY, so a bare flag / retired 'True' / typo
 # fails here rather than after a whole workflow has been built and submitted.  Returns None when
@@ -345,7 +348,7 @@ if not(opts.force_fit_method is None):
     fit_method=opts.force_fit_method
 if fit_method == 'gp-matern' and (opts.use_quadratic_early or opts.use_cov_early or opts.use_gp_early or opts.use_gauss_early):
     parser.error("--force-fit-method gp-matern rewrites every CIP stage; it cannot be combined with --use-quadratic-early, --use-cov-early, --use-gp-early or --use-gauss-early")
-if fit_method == 'gp-matern' and opts.rf_transverse_spin_coordinates in ('auto','physics3','geometric4','geometric4-phase-excess'):
+if fit_method == 'gp-matern' and opts.rf_transverse_spin_coordinates in ('auto','geometric4','geometric4-phase-excess'):
     parser.error("--rf-transverse-spin-coordinates needs rf CIP stages; --force-fit-method gp-matern has none")
 
 
@@ -1454,8 +1457,9 @@ rf_transverse_active = False
 if opts.rf_transverse_spin_coordinates:
     from RIFT.misc.rf_transverse_spin import enabled
     rf_applicable = (opts.assume_precessing_spin and not opts.assume_nospin
-        and not opts.assume_matter and not opts.assume_eccentric and not opts.assume_highq
-        and not opts.use_mtot_coords)
+        and not opts.assume_matter and not opts.assume_matter_eos and not opts.assume_eccentric
+        and not opts.assume_highq and not opts.use_mtot_coords
+        and not opts.use_EOB_parameters and not opts.assume_hyperbolic)
     rf_detector_mc = None if event_dict.get('rf_mass_is_placeholder', False) else event_dict.get('MChirp')
     rf_transverse_active = enabled(opts.rf_transverse_spin_coordinates, rf_detector_mc, rf_applicable)
     if rf_transverse_active and opts.force_fit_method is None:
@@ -2077,12 +2081,13 @@ if opts.rf_transverse_spin_coordinates:
     if rf_fref is None:
         rf_fref = opts.fmin_template
     rf_applicable = (opts.assume_precessing_spin and not opts.assume_nospin
-        and not opts.assume_matter and not opts.assume_eccentric and not opts.assume_highq
-        and not opts.use_mtot_coords)
+        and not opts.assume_matter and not opts.assume_matter_eos and not opts.assume_eccentric
+        and not opts.assume_highq and not opts.use_mtot_coords
+        and not opts.use_EOB_parameters and not opts.assume_hyperbolic)
     helper_cip_arg_list = [stage_arguments(line, opts.rf_transverse_spin_coordinates,
         None if event_dict.get('rf_mass_is_placeholder', False) else event_dict.get('MChirp'), rf_applicable, float(rf_fref)) for line in helper_cip_arg_list]
     rf_activated = sum('--rf-transverse-spin-coordinates ' in line for line in helper_cip_arg_list)
-    if opts.rf_transverse_spin_coordinates in ('physics3','geometric4','geometric4-phase-excess') and not rf_activated:
+    if opts.rf_transverse_spin_coordinates in ('geometric4','geometric4-phase-excess') and not rf_activated:
         raise ValueError('No complete two-spin RF stage can honor the requested RF transverse-spin option')
     print('RF transverse-spin mode {}, detector chirp mass {}, fref {}, activated stages {}'.format(
         opts.rf_transverse_spin_coordinates,

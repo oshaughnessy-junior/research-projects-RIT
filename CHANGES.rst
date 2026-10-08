@@ -35,6 +35,11 @@ development tree is rift_O4d; PRs refer to oshaughn/research-projects-RIT.
      handoff, with expanded GPU/JAX regression and contract coverage (fork PRs #325,
      #328, #330--#332).
 
+   - (unreleased) Fork PR #435 retires the physics3 RF transverse-spin mode, which
+     gave CIP 11 fit coordinates for 8 degrees of freedom; every layer now refuses it.
+     `auto` and Asimov `true` select geometric4; `auto` leaves fixed-EOS, EOB-parameter
+     and hyperbolic analyses unchanged.
+
    - (unreleased) Additional JAX terminal-output and EOS support updates
      (fork PR #213).
      The terminal pseudo-pipe stage now recognizes JAX-ILE's tabular fair-draw
