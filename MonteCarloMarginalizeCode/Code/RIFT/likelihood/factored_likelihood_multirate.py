@@ -261,7 +261,10 @@ def ComputeModeCrossTermIPDSW(hlmsA, hlmsB, psd, fmin, fMax, fNyq, deltaF, analy
 # Smooth erfc partition of unity in |f|; full-resolution bands of width edge_hz at hard edges.
 # ---------------------------------------------------------------------------------------------
 def multiband_schedule(flow, fhigh, T, mc_min, m_max, kappa=0.2, extra_s=32.0, sigma_f=1.0, edge_hz=4.0,
-                       post=1.0):
+                       post=1.0, top_edge_K=1):
+    """top_edge_K: bin stride in the hard-edge band below fhigh.  1 keeps every bin; the pieces
+    U, V need the late buffer's stride there (measured 2026-10-09: stride 32 changes U by at most
+    1.1e-7 of max |U|, O4 256 s and CE 2048 s, XHM l <= 4)."""
     tauN = lambda f22: (5. / 256.) * (np.pi * f22)**(-8. / 3) * (mc_min * G_MSUN_C3)**(-5. / 3)
     top = fhigh - edge_hz
     edges = [flow, flow + edge_hz]
@@ -276,7 +279,7 @@ def multiband_schedule(flow, fhigh, T, mc_min, m_max, kappa=0.2, extra_s=32.0, s
         while T / (2 * K) >= Tj:
             K *= 2
         bands.append((edges[j], edges[j + 1], K))
-    bands.append((top, fhigh + 1.0, 1))
+    bands.append((top, fhigh + 1.0, int(top_edge_K)))
     return dict(bands=bands, sigma_f=sigma_f)
 
 
@@ -318,3 +321,216 @@ def ComputeModeCrossTermIPMultiband(hlmsA, hlmsB, psd, fmin, fMax, fNyq, deltaF,
             for b in B:
                 out[(a, b)] += 2. * deltaF * np.sum(np.conj(A[a]) * B[b] * g)
     return out, nkept
+
+
+def ComputeModeCrossTermsPieces(early, late, psd, fmin, fMax, fNyq, deltaF, sched, fs_e, f22_late,
+                                analyticPSD_Q=False, inv_spec_trunc_Q=False, T_spec=0.):
+    """U_ab = <h_a|h_b> and V_ab = <conj(h_a)|h_b> on the multibanded grid, with model values taken
+    from the templates the two-rate path already builds: the early FD series (rate fs_e, full
+    duration, no DSWr taper) below the switch, the late FD series (short buffer T/R) above it.
+    A late bin kf (in full-grid units) needs kf % R == 0; there the buffer phase factor is
+    exp(2 pi i kf / R) = 1, so values from the two sources combine without correction.
+    Mode (l, m) switches to the late series at 1.05 (|m|/2) f22_late, above its start-frequency
+    conditioning; the early series is used up to 0.9 fs_e/2.  Raises if a kept bin has no source.
+    Returns (U, V, number of kept bins with f >= 0)."""
+    IP = lsu.ComplexIP(fmin, fMax, fNyq, deltaF, psd, analyticPSD_Q, inv_spec_trunc_Q, T_spec)
+    w = IP.weights2side
+    n = len(w)
+    kf_all = np.arange(n) - n // 2
+    keys = sorted(early)
+    ne = early[keys[0]].data.length
+    nl = late[keys[0]].data.length
+    R = int(round(n / nl))
+    assert R * nl == n and abs(late[keys[0]].deltaF - R * deltaF) < 1e-9 * deltaF
+    f_e_max = 0.9 * fs_e / 2.
+    kfs, gs = [], []
+    for j, (lo, hi, K) in enumerate(sched["bands"]):
+        sel = np.nonzero(kf_all % K == 0)[0]
+        g = _band_window(sched, j, np.abs(kf_all[sel]) * deltaF) * w[sel] * K
+        keep = np.abs(g) > 0
+        kfs.append(kf_all[sel][keep]); gs.append(g[keep])
+    kf, g = np.concatenate(kfs), np.concatenate(gs)
+    af = np.abs(kf) * deltaF
+    vals, vals_neg = {}, {}
+    for k in keys:
+        use_late = (af >= 1.05 * (abs(k[1]) / 2.) * f22_late) & (kf % R == 0)
+        use_early = ~use_late & (af <= f_e_max)
+        if not np.all(use_late | use_early):
+            bad = af[~(use_late | use_early)]
+            raise ValueError("mode %s: %d kept bins (%.1f-%.1f Hz) have neither an early nor a late value; "
+                             "raise fs_e or the late buffer" % (k, len(bad), bad.min(), bad.max()))
+        ie, il = kf + ne // 2, kf // R + nl // 2
+        e, l = early[k].data.data, late[k].data.data
+        v = np.where(use_late, l[np.clip(il, 0, nl - 1)], e[np.clip(ie, 0, ne - 1)])
+        ie, il = -kf + ne // 2, -kf // R + nl // 2
+        vn = np.where(use_late, l[np.clip(il, 0, nl - 1)], e[np.clip(ie, 0, ne - 1)])
+        vals[k], vals_neg[k] = v, vn
+    U = {(a, b): 2. * deltaF * np.sum(np.conj(vals[a]) * vals[b] * g) for a in keys for b in keys}
+    V = {(a, b): 2. * deltaF * np.sum(vals_neg[a] * vals[b] * g) for a in keys for b in keys}
+    return U, V, int(np.sum(kf >= 0))
+
+
+# ---------------------------------------------------------------------------------------------
+# Opt-in precompute (DESIGN_early_time_multirate.md, "Opt-in interface").  Same arguments and
+# return tuple as factored_likelihood.PrecomputeLikelihoodTerms, plus a schedule:
+#   kind        "one_segment" (full rate, per-|m| calls: the matched control) or "two_rate"
+#   fs_e, tau_tr, guard, atten_db, late_start, late_buffer, post, uv_margin, mc_range
+# Data products (weighted data, decimated early part) are built once per job and detector.
+# ---------------------------------------------------------------------------------------------
+_JOB_CACHE = {}
+SCHEDULE_KEYS = ("kind", "fs_e", "tau_tr", "guard", "atten_db", "late_start", "late_buffer", "post",
+                 "uv_margin", "mc_range")
+
+
+def load_schedule(path):
+    import json, hashlib
+    raw = open(path, "rb").read()
+    sch = json.loads(raw)
+    missing = [k for k in SCHEDULE_KEYS if k not in sch]
+    if missing:
+        raise ValueError("early-time multirate schedule %s lacks %s" % (path, missing))
+    if sch["kind"] not in ("one_segment", "two_rate"):
+        raise ValueError("schedule kind must be one_segment or two_rate, not %r" % sch["kind"])
+    # the late template starts late_start s before merger (at Mc_min; sooner for heavier
+    # templates) and must fit its buffer with the post-event time; it must also start before
+    # the transition, so the late piece covers the data's late window
+    if sch["late_buffer"] < sch["late_start"] + sch["post"] + 8:
+        raise ValueError("late_buffer %g s cannot hold late_start %g s plus post %g s and 8 s"
+                         % (sch["late_buffer"], sch["late_start"], sch["post"]))
+    if sch["late_start"] * (sch["mc_range"][0] / sch["mc_range"][1])**(5. / 3) <= sch["tau_tr"] + sch["guard"]:
+        raise ValueError("late_start %g s is too close to tau_tr %g s for the heaviest template"
+                         % (sch["late_start"], sch["tau_tr"]))
+    sch["_hash"] = hashlib.sha256(raw).hexdigest()[:12]
+    sch["_path"] = path
+    return sch
+
+
+def _per_m_modes(P, Lmax, srate, seglen, f22_start, post):
+    import lalsimulation as lalsim
+    out = {}
+    for am in range(1, Lmax + 1):
+        if not any(l <= Lmax and m == am for (l, m) in XHM_MODES):
+            continue
+        Pm = P.manual_copy()
+        Pm.fmin = (am / 2.) * f22_start
+        Pm.deltaT, Pm.deltaF = 1. / srate, 1. / seglen
+        extra = dict(PhenomXHMThresholdMband=0, PhenomXPHMThresholdMband=0, ModeArray=mode_array_for_m(Lmax, am))
+        hF, _ = lsu.std_and_conj_hlmoff(Pm, Lmax=Lmax, fd_alignment_postevent_time=post, extra_waveform_args=extra)
+        out.update({k: v for k, v in hF.items() if abs(k[1]) == am})
+    return out
+
+
+def _refuse(P, schedule, kwargs):
+    import lalsimulation as lalsim
+    bad = [k for k in ("calibration_realizations", "NR_group", "ROM_group") if kwargs.get(k) is not None]
+    bad += [k for k in ("ROM_use_basis", "use_gwsignal", "use_external_EOB", "nr_lookup", "hybrid_use",
+                        "use_provided_strain", "analyticPSD_Q") if kwargs.get(k)]
+    if bad:
+        raise ValueError("early-time multirate refuses %s" % bad)
+    if P.approx not in (lalsim.IMRPhenomXHM, lalsim.IMRPhenomXPHM):
+        raise ValueError("early-time multirate supports IMRPhenomXHM/XPHM only, not %s"
+                         % lalsim.GetStringFromApproximant(P.approx))
+    if max(abs(P.s1x), abs(P.s1y), abs(P.s2x), abs(P.s2y)) > 0:
+        raise ValueError("early-time multirate refuses in-plane spins: per-|m| start frequencies "
+                         "assume aligned spins")
+    mc = (P.m1 * P.m2)**0.6 / (P.m1 + P.m2)**0.2 / lal.MSUN_SI
+    lo, hi = schedule["mc_range"]
+    if not (lo <= mc <= hi):
+        raise ValueError("intrinsic point Mc = %.5f outside the schedule's frozen range [%g, %g]" % (mc, lo, hi))
+
+
+def PrecomputeLikelihoodTermsMultirate(event_time_geo, t_window, P, data_dict, psd_dict, Lmax, fMax,
+                                       analyticPSD_Q=False, inv_spec_trunc_Q=False, T_spec=0., verbose=True,
+                                       quiet=False, schedule=None, return_calibration_crossterms=False,
+                                       skip_interpolation=False, **kwargs):
+    from RIFT.likelihood import factored_likelihood as fl
+    _refuse(P, schedule, dict(kwargs, analyticPSD_Q=analyticPSD_Q))
+    detectors = list(data_dict.keys())
+    first = data_dict[detectors[0]]
+    P.dist = fl.distMpcRef * 1e6 * lsu.lsu_PC
+    P.deltaF = first.deltaF
+    dt = P.deltaT; fs = 1. / dt; N = first.data.length; seglen = N * dt
+    fNyq = fs / 2.
+    post = schedule["post"]
+    mc_lo = schedule["mc_range"][0]
+    f22_late = float(f22_newtonian(schedule["late_start"], mc_lo))
+    if schedule["kind"] == "one_segment":
+        hlms = _per_m_modes(P, Lmax, fs, seglen, P.fmin, post)
+        keys = sorted(hlms)
+    else:
+        sch = TwoRateSchedule(fs, schedule["fs_e"], schedule["tau_tr"], schedule["guard"], schedule["atten_db"],
+                              mc_min=mc_lo, m_max=Lmax, lag_halfwidth=t_window)
+        early = _per_m_modes(P, Lmax, schedule["fs_e"], seglen, P.fmin, post)
+        late = _per_m_modes(P, Lmax, fs, schedule["late_buffer"], f22_late, post)
+        keys = sorted(early)
+        bands = multiband_schedule(P.fmin, fMax, seglen, mc_lo, Lmax, extra_s=schedule["uv_margin"],
+                                   top_edge_K=int(round(seglen / schedule["late_buffer"])))
+    rholms, rholms_intp, crossTerms, crossTermsV = {}, {}, {}, {}
+    # all pieces put the peak `post` s before their buffer end, so a full-length template
+    # starts at -(seglen - post): that is the epoch the rholm time axis is built from
+    full_epoch = -(seglen - post)
+    if schedule["kind"] == "one_segment":
+        pieces = [(hlms, seglen)]
+    else:
+        pieces = [(early, seglen), (late, schedule["late_buffer"])]
+    for d, T in pieces:
+        e = float(d[keys[0]].epoch)
+        assert abs(e + (T - post)) < 0.5 * dt, "template epoch %r, expected %r" % (e, -(T - post))
+    for det in detectors:
+        t_det = fl.ComputeArrivalTimeAtDetector(det, P.phi, P.theta, event_time_geo)
+        rho_epoch = data_dict[det].epoch - full_epoch          # LIGOTimeGPS
+        t_shift = float(float(t_det) - float(t_window) - float(rho_epoch))
+        N_shift = int(t_shift / dt + 0.5)
+        N_window = int(2 * t_window / dt)
+        if schedule["kind"] == "one_segment":
+            crossTerms[det] = fl.ComputeModeCrossTermIP(hlms, hlms, psd_dict[det], P.fmin, fMax, fNyq, P.deltaF,
+                                                        analyticPSD_Q, inv_spec_trunc_Q, T_spec, verbose=False)
+            hc = {}
+            for k, v in hlms.items():
+                t = lsu.DataInverseFourier(v); t.data.data = np.conj(t.data.data); hc[k] = lsu.DataFourier(t)
+            crossTermsV[det] = fl.ComputeModeCrossTermIP(hc, hlms, psd_dict[det], P.fmin, fMax, fNyq, P.deltaF,
+                                                         analyticPSD_Q, inv_spec_trunc_Q, T_spec, prefix="V",
+                                                         verbose=False)
+            rholms[det] = fl.ComputeModeIPTimeSeries(hlms, data_dict[det], psd_dict[det], P.fmin, fMax, fNyq,
+                                                     N_shift, N_window, analyticPSD_Q, inv_spec_trunc_Q, T_spec)
+        else:
+            ck = (det, id(data_dict[det]), schedule["_hash"])
+            if ck not in _JOB_CACHE:
+                dbar = data_side_weighted(data_dict[det], psd_dict[det], P.fmin, fMax, fNyq, analyticPSD_Q,
+                                          inv_spec_trunc_Q, T_spec)
+                s_peak = int(round((float(t_det) - float(data_dict[det].epoch)) / dt))
+                _JOB_CACHE[ck] = prepare_data_two_rate(dbar, dt, s_peak, sch)
+                print(" early-time multirate: schedule %s (hash %s), %s: early %g Hz before t_det - %g s, "
+                      "late %g s at %g Hz" % (schedule["_path"], schedule["_hash"], det, schedule["fs_e"],
+                                              schedule["tau_tr"], schedule["late_buffer"], fs))
+            prep = _JOB_CACHE[ck]
+            U, V, _ = ComputeModeCrossTermsPieces(early, late, psd_dict[det], P.fmin, fMax, fNyq, P.deltaF, bands,
+                                                  schedule["fs_e"], f22_late, analyticPSD_Q, inv_spec_trunc_Q, T_spec)
+            crossTerms[det], crossTermsV[det] = U, V
+            j_peak = N - int(round(post * fs))
+            lags = np.arange(N_shift, N_shift + N_window)
+            n_late_off = N - late[keys[0]].data.length
+            rholms[det] = {}
+            for k in keys:
+                hE = lal.CreateCOMPLEX16FrequencySeries("e", early[k].epoch, early[k].f0, early[k].deltaF,
+                                                        early[k].sampleUnits, early[k].data.length)
+                hE.data.data = early[k].data.data.copy()
+                hE = np.array(lsu.DataInverseFourier(taper_top_quarter(hE, schedule["fs_e"])).data.data)
+                hL = np.array(lsu.DataInverseFourier(late[k]).data.data)
+                ts = lal.CreateCOMPLEX16TimeSeries("rho", rho_epoch, 0., dt,
+                                                   lsu.lsu_DimensionlessUnit, N_window)
+                ts.epoch += N_shift * dt
+                ts.data.data = Q_two_rate(prep, hE, hL, j_peak, n_late_off, sch, dt, lags)
+                rholms[det][k] = ts
+        t = np.arange(N_window) * dt + float(rho_epoch + N_shift * dt)
+        rholms_intp[det] = None if skip_interpolation else fl.InterpolateRholms(rholms[det], t, verbose=verbose)
+    rho_max = 0.
+    for det in rholms:
+        for k in rholms[det]:
+            u = np.real(crossTerms[det][(k, k)])
+            if u > 0:
+                rho_max += np.max(np.abs(rholms[det][k].data.data))**2 / u
+    guess_snr = np.sqrt(rho_max) / 2.3
+    if return_calibration_crossterms:
+        return rholms_intp, crossTerms, crossTermsV, rholms, guess_snr, None, None, None
+    return rholms_intp, crossTerms, crossTermsV, rholms, guess_snr, None

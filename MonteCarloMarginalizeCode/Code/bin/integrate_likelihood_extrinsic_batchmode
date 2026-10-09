@@ -386,6 +386,7 @@ optp.add_option("--response-order-p-reference", type=int, default=2, help="Highe
 optp.add_option("--response-order-Q-reference", "--response-order-q-reference", dest="response_order_Q_reference", type=int, default=8, help="Highest Q used by the diagnostic reference bank (default 8).")
 optp.add_option("--response-order-max-bank-gib", type=float, default=4.0, help="Refuse a diagnostic whose dense U,V planning estimate exceeds this many GiB (default 4).")
 optp.add_option("--force-xpy", action="store_true", help="Use the xpy code path.  Use with --vectorized --gpu to use the fallback CPU-based code path. Useful for debugging.")
+optp.add_option("--early-time-multirate", default=None, help="Opt-in prototype (RIFT/likelihood/DESIGN_early_time_multirate.md): path to a schedule JSON. Replaces the precompute with factored_likelihood_multirate.PrecomputeLikelihoodTermsMultirate (data-side weighting; kind two_rate, or one_segment as the matched full-rate control). IMRPhenomXHM/XPHM with aligned spins only; refuses calibration marginalization, --rotation-slow, --freqresponse, ROM, NR, gwsignal and extra waveform arguments. Default off.")
 optp.add_option("-o", "--output-file", help="Save result to this file.")
 optp.add_option("-O", "--output-format", default='xml', help="[xml|hdf5]")
 optp.add_option("-S", "--save-samples", action="store_true", help="Save sample points to output-file (sparse sim_inspiral XML). Requires --output-file to be defined. NOTE: the XML carries lnL only, not the importance weight -- it does NOT persist the joint prior / sampling prior, so it must not be reweighted by likelihood for a weighted-posterior/shape check. For that, use the ASCII per-sample outputs --extrinsic-proposal-output (full log-weight) or --calibration-export-posterior.")
@@ -3818,7 +3819,27 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
       # per-realization self-term cross terms (and their SVD-basis precompute) entirely.
       extra_kwargs['calibration_self_term'] = not bool(opts.calibration_global_norm)
       n_cal_for_likelihood = opts.calibration_n_realizations
-    rholms_intp, cross_terms, cross_terms_V,  rholms,  guess_snr, rest, cross_terms_cal, cross_terms_cal_V=factored_likelihood.PrecomputeLikelihoodTerms(
+    if opts.early_time_multirate:
+        import RIFT.likelihood.factored_likelihood_multirate as factored_likelihood_multirate
+        _bad = [n for n, v in (("calibration marginalization", calibration_marginalization),
+                               ("--rotation-slow", opts.rotation_slow), ("--freqresponse", opts.freqresponse),
+                               # ILE always sets these two; the schedule's own post-event time replaces the first
+                               ("extra waveform arguments %s" % sorted(set(extra_waveform_kwargs) - {"fd_alignment_postevent_time", "e_freq"}),
+                                bool(set(extra_waveform_kwargs) - {"fd_alignment_postevent_time", "e_freq"})),
+                               ("--force-hyperbolic-22", opts.force_hyperbolic_22)) if v]
+        if _bad:
+            raise ValueError("--early-time-multirate refuses %s" % _bad)
+        _etm_schedule = factored_likelihood_multirate.load_schedule(opts.early_time_multirate)
+        _wg = {k: v for k, v in waveform_generation_kwargs.items() if k not in ("extra_waveform_kwargs", "use_gwsignal_approx")}
+        rholms_intp, cross_terms, cross_terms_V,  rholms,  guess_snr, rest, cross_terms_cal, cross_terms_cal_V=factored_likelihood_multirate.PrecomputeLikelihoodTermsMultirate(
+            fiducial_epoch, t_window, P, data_dict, psd_dict, opts.l_max, fmax,
+            False, inv_spec_trunc_Q, T_spec,
+            return_calibration_crossterms=True,
+            verbose=opts.verbose,quiet=not opts.verbose,
+            skip_interpolation=opts.vectorized, schedule=_etm_schedule,
+            **_wg, **extra_kwargs)
+    else:
+     rholms_intp, cross_terms, cross_terms_V,  rholms,  guess_snr, rest, cross_terms_cal, cross_terms_cal_V=factored_likelihood.PrecomputeLikelihoodTerms(
             fiducial_epoch, t_window, P, data_dict, psd_dict, opts.l_max, fmax,
             False, inv_spec_trunc_Q, T_spec,
             return_calibration_crossterms=True,
