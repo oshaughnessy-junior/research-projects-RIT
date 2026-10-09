@@ -100,7 +100,7 @@ class RFDistanceTails:
             pos = d[off] > 0
             # Never rise above the edge value: where a point's fitted peak lies beyond its slices the
             # shape would climb away from the data, and the sampler piles onto that unmeasured spike.
-            with np.errstate(divide="ignore", invalid="ignore"):
+            with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
                 step = log_model(1.0 / np.where(pos, d[off], 1.0), Pj[:, 0], Pj[:, 1], Pj[:, 2], 0.0) \
                     - log_model(1.0 / d_edge[off], Pj[:, 0], Pj[:, 1], Pj[:, 2], 0.0)
             step = np.where(pos & ~np.isnan(step), step, -np.inf)

@@ -76,6 +76,12 @@ def test_driver_refuses_tail_options_outside_rf(tmp_path):
         p = subprocess.run(base + extra, env=env, cwd=str(tmp_path), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                            universal_newlines=True, timeout=300)
         assert p.returncode == 2 and msg in p.stdout, p.stdout[-2000:]
+    # a valid configuration passes the parse-time checks: 'dist' given via --parameter-implied (it then
+    # fails later only because the data file does not exist)
+    p = subprocess.run(base + ["--fit-method", "rf", "--rf-dslice-tails", "near", "--parameter-implied", "dist"],
+                       env=env, cwd=str(tmp_path), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                       universal_newlines=True, timeout=300)
+    assert p.returncode != 2 and "fit coordinate" not in p.stdout, p.stdout[-2000:]
 
 
 def _truth_grid(seed=12, n=150, shift=-37.0):
@@ -113,10 +119,17 @@ def test_failed_point_nan_rows_and_nonpositive_distance():
     pts, g, truth, shift = _truth_grid(n=40)
     few = np.array([[0.5, 2000.0, 2500.0, 10.0], [0.5, 2000.0, 3000.0, 9.0], [0.5, 2000.0, 3500.0, 8.0]])
     bad = np.array([[np.nan, 1500.0, 2500.0, 5.0], [0.1, 1500.0, 2500.0, np.nan]])
-    G = np.vstack([g, few, bad])
+    # a d <= 0 row and a NaN-sigma row on real grid points: each must be dropped, not sink that point's fit
+    p0, p1 = g[0, :2], g[30, :2]
+    extra = np.array([[p0[0], p0[1], -10.0, 1.0], [p1[0], p1[1], 2600.0, 1.0]])
+    G = np.vstack([g, few, bad, extra])
+    sig = 0.01 * np.ones(len(G))
+    sig[-1] = np.nan
     base = lambda x: np.full(len(x), 3.0)
-    m = RFDistanceTails(base, 2, sides="near").fit(G[:, :3], G[:, 3], 0.01 * np.ones(len(G)))
-    assert m.report["rows_dropped"] == 2 and m.report["points_fit"] == m.report["points"] - 1
+    m = RFDistanceTails(base, 2, sides="near").fit(G[:, :3], G[:, 3], sig)
+    assert m.report["rows_dropped"] == 4 and m.report["points_fit"] == m.report["points"] - 1
+    for p in (p0, p1):                                 # both points keep their tails
+        assert m(np.array([[p[0], p[1], 900.0]]))[0] < 3.0 - 1
     out = m(np.array([[0.5, 2000.0, 1000.0]]))        # the 3-slice point: no fit, so the base value
     assert out[0] == 3.0
     v = m(np.column_stack([pts[:3], [0.0, -5.0, 900.0]]))
