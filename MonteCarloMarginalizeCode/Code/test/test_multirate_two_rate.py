@@ -88,6 +88,19 @@ def test_interp_matches_subphase(setup):
         assert np.max(np.abs(a[k][0] - b[k][0])) <= 1e-8 * np.max(np.abs(b[k][1])), k
 
 
+def test_mode_array_lmax4_all_m():
+    """Every per-|m| ModeArray at l <= 4 is accepted by XHM and returns exactly that |m|'s modes."""
+    for am in (1, 2, 3, 4):
+        P = lsu.ChooseWaveformParams()
+        P.m1, P.m2 = M1 * lal.MSUN_SI, M2 * lal.MSUN_SI
+        P.fmin = am * 15.; P.fref = FLOW; P.deltaT, P.deltaF = 1. / FS_E, 1. / 64
+        P.approx = lalsim.IMRPhenomXHM; P.dist = 100e6 * lal.PC_SI; P.taper = lsu.lsu_TAPER_START
+        hF, _ = lsu.std_and_conj_hlmoff(P, Lmax=4, fd_alignment_postevent_time=POST,
+                                        extra_waveform_args=dict(MBAND_OFF, ModeArray=flm.mode_array_for_m(4, am)))
+        want = {(l, s * m) for (l, m) in flm.XHM_MODES if m == am for s in (1, -1)}
+        assert set(hF) == want, (am, sorted(hF))
+
+
 def test_mode_array_call_matches_full_call():
     """A per-|m| call restricted by ModeArray (no (2,2) in the |m| = 1 call) returns the same
     modes as the unrestricted call at the same f_min."""

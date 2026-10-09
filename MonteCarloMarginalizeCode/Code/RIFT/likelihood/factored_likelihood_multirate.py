@@ -147,13 +147,18 @@ def _corr_lowrate_interp(De, He, M, dt, lags, h_interp):
     return W @ c[q % L]
 
 
-def mode_array_for_m(lmax, am):
-    """lalsimulation ModeArray holding (l, +-am) for am <= l <= lmax: one per-|m| call."""
+XHM_MODES = ((2, 2), (2, 1), (3, 3), (3, 2), (4, 4))     # IMRPhenomXHM/XPHM; lalsim rejects others
+
+
+def mode_array_for_m(lmax, am, model_modes=XHM_MODES):
+    """lalsimulation ModeArray holding the model's (l, +-am) with l <= lmax: one per-|m| call.
+    Activating a mode the model lacks makes ChooseFDModes fail, so only model_modes are used."""
     import lalsimulation as lalsim
     ma = lalsim.SimInspiralCreateModeArray()
-    for l in range(max(2, am), lmax + 1):
-        lalsim.SimInspiralModeArrayActivateMode(ma, l, am)
-        lalsim.SimInspiralModeArrayActivateMode(ma, l, -am)
+    for (l, m) in model_modes:
+        if l <= lmax and m == am:
+            lalsim.SimInspiralModeArrayActivateMode(ma, l, am)
+            lalsim.SimInspiralModeArrayActivateMode(ma, l, -am)
     return ma
 
 
