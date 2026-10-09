@@ -130,6 +130,33 @@ def _corr_lowrate_fulllags(De, He, M, dt, lags):
     return out
 
 
+def _corr_lowrate_interp(De, He, M, dt, lags, h_interp):
+    """As _corr_lowrate_fulllags, from one inverse FFT at coarse lags and band-limited
+    interpolation to the full-rate lags (zero-stuff by M, filter h_interp, odd length).
+    Exact to the filter's stop-band attenuation when the correlation is band-limited below
+    the filter's pass band."""
+    lags = np.asarray(lags)
+    L = _sp_fft.next_fast_len(max(len(De), len(He)) + int(np.max(np.abs(lags))) // M + 8)
+    c = np.fft.ifft(M * np.fft.fft(De, L) * np.conj(np.fft.fft(He, L)))
+    D = (len(h_interp) - 1) // 2
+    P = D // M + 1
+    q = np.arange(int(np.min(lags)) // M - P, int(np.max(lags)) // M + P + 2)
+    k = lags[:, None] - M * q[None, :] + D          # filter tap for (lag, coarse sample)
+    ok = (k >= 0) & (k < len(h_interp))
+    W = np.where(ok, h_interp[np.clip(k, 0, len(h_interp) - 1)], 0.)
+    return W @ c[q % L]
+
+
+def mode_array_for_m(lmax, am):
+    """lalsimulation ModeArray holding (l, +-am) for am <= l <= lmax: one per-|m| call."""
+    import lalsimulation as lalsim
+    ma = lalsim.SimInspiralCreateModeArray()
+    for l in range(max(2, am), lmax + 1):
+        lalsim.SimInspiralModeArrayActivateMode(ma, l, am)
+        lalsim.SimInspiralModeArrayActivateMode(ma, l, -am)
+    return ma
+
+
 class TwoRateSchedule(object):
     """Frozen two-rate schedule: full rate fs, early rate fs_e, transition tau_tr before the
     peak, guard (erfc width sigma = guard/16.6), template window sigma_h, data-side filter."""
@@ -157,6 +184,9 @@ class TwoRateSchedule(object):
                                  "raise fs_e" % (self.f_pass_h, 0.75 * fs_e / 2))
             self.h = kaiser_lowpass(fs, self.f_pass_h, fs_e / 2, atten_db)
             nL0 = len(self.h)
+        # lag interpolation: the early correlation is band-limited below f_pass_h, so its images
+        # at coarse sampling start at fs_e - f_pass_h; upsample by M with this filter
+        self.h_interp = self.M * kaiser_lowpass(fs, self.f_pass_h, fs_e - self.f_pass_h, atten_db)
         self.late_buffer = late_buffer
 
 
@@ -186,14 +216,19 @@ def early_template_window(n_coarse, j_peak_full, sch, deltaT):
     return early_window(t, t_hc, sch.sigma_h)
 
 
-def Q_two_rate(prep, hE, hL, j_peak_full, n_late_offset, sch, deltaT, lags):
+def Q_two_rate(prep, hE, hL, j_peak_full, n_late_offset, sch, deltaT, lags, early_method="interp"):
     """Q(n dt) = 2 dt [ M sum_j dE[j] conj(w_h hE)_tau[j] + sum_s dL[s] conj(hL[s - n - off]) ].
 
     hE: early template on the coarse grid (length N/M), DSWr-tapered.  hL: late template at full
     rate (length N_l), sample j at full index j + n_late_offset.  Template index = data index - n.
+    early_method: "interp" (one coarse-lag FFT, band-limited lag interpolation) or "subphase"
+    (M inverse FFTs, the reference).
     """
     wh = early_template_window(len(hE), j_peak_full, sch, deltaT)
-    qE = _corr_lowrate_fulllags(prep["dE"], wh * hE, sch.M, deltaT, lags)
+    if early_method == "subphase":
+        qE = _corr_lowrate_fulllags(prep["dE"], wh * hE, sch.M, deltaT, lags)
+    else:
+        qE = _corr_lowrate_interp(prep["dE"], wh * hE, sch.M, deltaT, lags, sch.h_interp)
     qL = _corr_offsets(prep["dL"], prep["i_l0"], hL, n_late_offset, lags)
     return 2. * deltaT * (qE + qL)
 

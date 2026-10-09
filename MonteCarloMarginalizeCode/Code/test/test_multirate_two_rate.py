@@ -18,15 +18,18 @@ MBAND_OFF = dict(PhenomXHMThresholdMband=0, PhenomXPHMThresholdMband=0)
 M1, M2 = 1.4, 1.35
 
 
-def _modes(srate, seglen, f22_start):
+def _modes(srate, seglen, f22_start, restrict=True):
     out = {}
     for am in (1, 2):
+        extra = dict(MBAND_OFF)
+        if restrict:
+            extra["ModeArray"] = flm.mode_array_for_m(2, am)
         P = lsu.ChooseWaveformParams()
         P.m1, P.m2 = M1 * lal.MSUN_SI, M2 * lal.MSUN_SI
         P.fmin = (am / 2.) * f22_start; P.fref = FLOW
         P.deltaT, P.deltaF = 1. / srate, 1. / seglen
         P.approx = lalsim.IMRPhenomXHM; P.dist = 100e6 * lal.PC_SI; P.taper = lsu.lsu_TAPER_START
-        hF, _ = lsu.std_and_conj_hlmoff(P, Lmax=2, fd_alignment_postevent_time=POST, extra_waveform_args=dict(MBAND_OFF))
+        hF, _ = lsu.std_and_conj_hlmoff(P, Lmax=2, fd_alignment_postevent_time=POST, extra_waveform_args=extra)
         out.update({k: v for k, v in hF.items() if abs(k[1]) == am})
     return out
 
@@ -55,7 +58,7 @@ def setup():
     return dict(dt=dt, N=N, psd=psd, ref=ref, early=early, late=late, data=data, sch=sch)
 
 
-def _two_rate(s, keys, wh_scale=1.0):
+def _two_rate(s, keys, wh_scale=1.0, early_method="interp"):
     dt, N, sch = s["dt"], s["N"], s["sch"]
     nlag = int(round(0.05 * FS)); lags = np.arange(-nlag, nlag + 1)
     j_peak = N - POST * FS
@@ -65,14 +68,34 @@ def _two_rate(s, keys, wh_scale=1.0):
     out = {}
     for k in keys:
         hE = _td(flm.taper_top_quarter(lal.ResizeCOMPLEX16FrequencySeries(s["early"][k], 0, s["early"][k].data.length), FS_E))
-        q = flm.Q_two_rate(prep, wh_scale * hE, _td(s["late"][k]), j_peak, N - LATE_BUF * FS, sch, dt, lags)
+        q = flm.Q_two_rate(prep, wh_scale * hE, _td(s["late"][k]), j_peak, N - LATE_BUF * FS, sch, dt, lags,
+                         early_method=early_method)
         out[k] = (q, np.array(Qr[k].data.data))
     return out
 
 
-def test_two_rate_matches_full_rate(setup):
-    for k, (q, r) in _two_rate(setup, [(2, 2), (2, 1)]).items():
+@pytest.mark.parametrize("early_method", ["interp", "subphase"])
+def test_two_rate_matches_full_rate(setup, early_method):
+    for k, (q, r) in _two_rate(setup, [(2, 2), (2, 1)], early_method=early_method).items():
         assert np.max(np.abs(q - r)) <= 1e-6 * np.max(np.abs(r)), k
+
+
+def test_interp_matches_subphase(setup):
+    """One coarse-lag FFT plus lag interpolation reproduces the M sub-phase FFTs."""
+    a = _two_rate(setup, [(2, 2), (2, 1)], early_method="interp")
+    b = _two_rate(setup, [(2, 2), (2, 1)], early_method="subphase")
+    for k in a:
+        assert np.max(np.abs(a[k][0] - b[k][0])) <= 1e-8 * np.max(np.abs(b[k][1])), k
+
+
+def test_mode_array_call_matches_full_call():
+    """A per-|m| call restricted by ModeArray (no (2,2) in the |m| = 1 call) returns the same
+    modes as the unrestricted call at the same f_min."""
+    a = _modes(FS_E, SEGLEN, FLOW, restrict=True)
+    b = _modes(FS_E, SEGLEN, FLOW, restrict=False)
+    assert set(a) == set(b)
+    for k in a:
+        assert np.max(np.abs(a[k].data.data - b[k].data.data)) <= 1e-12 * np.max(np.abs(b[k].data.data)), k
 
 
 def test_two_rate_detects_wrong_early_amplitude(setup):
