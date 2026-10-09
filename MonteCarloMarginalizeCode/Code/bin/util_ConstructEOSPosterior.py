@@ -810,7 +810,8 @@ def fit_rf(x,y,y_errors=None,fname_export='nn_fit',device='cpu',backend='sklearn
         #    ... this *should* never happen due to bounds constraints, but ...
         indx_ok_size = np.all( np.logical_not(np.greater(np.abs(x_in),1e37)), axis=-1)
         indx_ok = np.logical_and(indx_ok, indx_ok_size)
-        f_out[indx_ok] = rf.predict(x_in[indx_ok])
+        if np.any(indx_ok):      # sklearn rejects an empty batch
+            f_out[indx_ok] = rf.predict(x_in[indx_ok])
         return f_out
 #    fn_return = lambda x_in: rf.predict(x_in) 
     if device == 'gpu':

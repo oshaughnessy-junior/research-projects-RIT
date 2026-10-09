@@ -79,10 +79,7 @@ class RFDistanceTails:
         xmod = __import__("cupy") if dev else np
         x = x_in.get() if dev else np.asarray(x_in, dtype=float)
         to_host = (lambda a: a.get()) if dev else (lambda a: np.asarray(a, dtype=float))
-        out = np.empty(len(x))
         fin = np.all(np.isfinite(x), axis=1)
-        if not np.all(fin):                      # leave non-finite rows to the base fit's own guard
-            out[~fin] = to_host(self.base_fit(xmod.asarray(x[~fin])))
         xf = x[fin]
         d = xf[:, self.dist_index]
         _, j = self.tree.query((np.delete(xf, self.dist_index, axis=1) - self.mu) / self.sd)
@@ -90,9 +87,12 @@ class RFDistanceTails:
         lo = g & (d < self.dmin[j]) if self.sides in ("near", "both") else np.zeros(len(d), bool)
         hi = g & (d > self.dmax[j]) if self.sides in ("far", "both") else np.zeros(len(d), bool)
         d_edge = np.where(lo, self.dmin[j], np.where(hi, self.dmax[j], d))
-        xe = xf.copy()
-        xe[:, self.dist_index] = d_edge
-        val = to_host(self.base_fit(xmod.asarray(xe))).copy()
+        # one base call on the whole batch: non-finite rows go through the base fit's own guard (its fill
+        # value), never as a batch of their own, which an sklearn forest rejects once its guard empties it
+        xe = x.copy()
+        xe[fin, self.dist_index] = d_edge
+        out = to_host(self.base_fit(xmod.asarray(xe))).astype(float, copy=True)
+        val = out[fin]
         off = lo | hi
         if np.any(off):
             Pj = self.P[j[off]]

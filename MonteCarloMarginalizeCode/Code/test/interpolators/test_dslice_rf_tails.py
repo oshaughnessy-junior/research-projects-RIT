@@ -134,3 +134,20 @@ def test_failed_point_nan_rows_and_nonpositive_distance():
     assert out[0] == 3.0
     v = m(np.column_stack([pts[:3], [0.0, -5.0, 900.0]]))
     assert np.all(v[:2] == -np.inf) and np.isfinite(v[2]) and v[2] <= 3.0
+
+
+def test_nonfinite_rows_go_through_the_base_guard():
+    # a base like the driver's CPU RF: it fills non-finite rows itself and, like sklearn, rejects a batch
+    # with nothing finite in it; the wrapper must never hand it the non-finite rows on their own
+    g = _grid()
+    def base(x):
+        x = np.asarray(x, dtype=float)
+        ok = np.all(np.isfinite(x), axis=1)
+        if not np.any(ok):
+            raise ValueError("Found array with 0 sample(s)")
+        out = np.full(len(x), -500.0)
+        out[ok] = 7.0
+        return out
+    m = RFDistanceTails(base, 1, sides="near").fit(g[:, :2], g[:, 2], 0.05 * np.ones(len(g)))
+    v = m(np.array([[g[0, 0], np.nan], [g[0, 0], 2500.0], [np.inf, 900.0], [g[0, 0], 900.0]]))
+    assert v[0] == -500.0 and v[2] == -500.0 and v[1] == 7.0 and v[3] < 7.0
