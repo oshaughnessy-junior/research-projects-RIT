@@ -386,7 +386,22 @@ def shape_metrics(target, X, ln_wt, rng):
 KNOWN_SAMPLERS = ("AV", "GMM", "NF", "portfolio", "AC", "default")
 
 
+def _cpu_requested():
+    """True when the caller has hidden every device: CUDA_VISIBLE_DEVICES set to "" (what
+    run_shape_recovery.sh, confirm_regressions.py and conftest.py all export) or "-1"."""
+    v = os.environ.get("CUDA_VISIBLE_DEVICES")
+    return v is not None and v.strip() in ("", "-1")
+
+
 def _gpu_available():
+    # An explicit CPU request wins over cupy's own answer.  CUDA reads CUDA_VISIBLE_DEVICES once,
+    # at driver init, so it binds only if nothing initialised CUDA first -- true under the shell
+    # driver, NOT under pytest: on ldas-pcdev2 (3 GPUs, IGWN conda) a pytest plugin imports cupy
+    # and initialises CUDA before conftest.py runs, so getDeviceCount() still reported 3 and the
+    # pytest entry ran the GMM stack on cupy while the gate ran it on numpy.  Asking the
+    # environment rather than the driver makes the answer independent of import order.
+    if _cpu_requested():
+        return False
     try:
         import cupy
         return cupy.cuda.runtime.getDeviceCount() > 0
@@ -1156,6 +1171,7 @@ def main(argv=None):
     if _checkout:
         assert_rift_under_test(_checkout, who="shape_recovery.py")
     print("# RIFT under test: {}".format(rift_package_dir() or "<not importable>"))
+    print("# GPU path: {}".format(_gpu_available()))
 
     cfg = dict(PRESETS[opts.preset])
     if opts.dims:
