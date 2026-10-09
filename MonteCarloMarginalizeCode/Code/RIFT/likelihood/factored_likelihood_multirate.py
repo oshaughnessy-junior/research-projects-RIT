@@ -212,3 +212,69 @@ def ComputeModeCrossTermIPDSW(hlmsA, hlmsB, psd, fmin, fMax, fNyq, deltaF, analy
         tB[k] = np.array(lsu.DataInverseFourier(w).data.data)
     dt = 1. / (2. * fNyq)
     return {(a, b): 2. * dt * np.vdot(tA[a], tB[b]) for a in tA for b in tB}
+
+
+# ---------------------------------------------------------------------------------------------
+# Multibanded U, V (Vinciguerra et al. 2017), band schedule after session A's multiband_UV.
+# Band j keeps every K_j-th bin of the full grid; K_j is the largest power of two with
+# T/K_j >= T_j, T_j = (1 + kappa) tau_N(2 f_eff/m_max; Mc_min) + post + extra_s.
+# Smooth erfc partition of unity in |f|; full-resolution bands of width edge_hz at hard edges.
+# ---------------------------------------------------------------------------------------------
+def multiband_schedule(flow, fhigh, T, mc_min, m_max, kappa=0.2, extra_s=32.0, sigma_f=1.0, edge_hz=4.0,
+                       post=1.0):
+    tauN = lambda f22: (5. / 256.) * (np.pi * f22)**(-8. / 3) * (mc_min * G_MSUN_C3)**(-5. / 3)
+    top = fhigh - edge_hz
+    edges = [flow, flow + edge_hz]
+    while edges[-1] < top:
+        edges.append(edges[-1] * 2**0.375)
+    edges[-1] = top
+    bands = [(flow, flow + edge_hz, 1)]
+    for j in range(1, len(edges) - 1):
+        f_eff = max(flow, edges[j] - 8.3 * sigma_f)
+        Tj = (1 + kappa) * tauN(2 * f_eff / m_max) + post + extra_s
+        K = 1
+        while T / (2 * K) >= Tj:
+            K *= 2
+        bands.append((edges[j], edges[j + 1], K))
+    bands.append((top, fhigh + 1.0, 1))
+    return dict(bands=bands, sigma_f=sigma_f)
+
+
+def _band_window(sched, j, af):
+    bands, sf = sched["bands"], sched["sigma_f"]
+
+    def step(i):
+        if i == 0:
+            return (af >= bands[0][0]).astype(float)
+        if i >= len(bands):
+            return np.zeros(len(af))
+        return 0.5 * _special.erfc(-(af - bands[i][0]) / (np.sqrt(2) * sf))
+    return step(j) - step(j + 1)
+
+
+def ComputeModeCrossTermIPMultiband(hlmsA, hlmsB, psd, fmin, fMax, fNyq, deltaF, sched, analyticPSD_Q=False,
+                                    inv_spec_trunc_Q=False, T_spec=0.):
+    """<a|b> = 2 df sum_f conj(a~) b~ w on the multibanded grid, from two-sided centred FD series.
+
+    Emulation step: the FD values are subsampled from the full grid, which tests the band schedule;
+    evaluating the model only at the kept frequencies is a separate step.  Pass the conjugate modes
+    as hlmsA for V, as PrecomputeLikelihoodTerms does.  Returns (dict, number of kept bins)."""
+    IP = lsu.ComplexIP(fmin, fMax, fNyq, deltaF, psd, analyticPSD_Q, inv_spec_trunc_Q, T_spec)
+    w = IP.weights2side
+    n = len(w)
+    kf = np.arange(n) - n // 2                 # centred bin index: f = kf * deltaF
+    af = np.abs(kf) * deltaF
+    out = {(a, b): 0j for a in hlmsA for b in hlmsB}
+    nkept = 0
+    for j, (lo, hi, K) in enumerate(sched["bands"]):
+        sel = np.nonzero(kf % K == 0)[0]
+        g = _band_window(sched, j, af[sel]) * w[sel] * K
+        keep = np.abs(g) > 0
+        sel, g = sel[keep], g[keep]
+        nkept += int(np.sum(kf[sel] >= 0))
+        A = {k: v.data.data[sel] for k, v in hlmsA.items()}
+        B = {k: v.data.data[sel] for k, v in hlmsB.items()}
+        for a in A:
+            for b in B:
+                out[(a, b)] += 2. * deltaF * np.sum(np.conj(A[a]) * B[b] * g)
+    return out, nkept
