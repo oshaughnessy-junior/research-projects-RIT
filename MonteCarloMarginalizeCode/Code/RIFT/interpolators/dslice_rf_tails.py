@@ -10,6 +10,10 @@ averaged-amplitude model (dslice_amplitude_model.log_model, C = 0) fitted to tha
 
 with j the nearest grid point in standardized intrinsic coordinates. f_min may be shared by the whole
 event (the median of free per-point fits): the inclination degeneracy it encodes is set by the network.
+
+Cost: fit() does one scipy least_squares per grid point (twice with a shared f_min); on a 24k-point,
+1.2M-row grid that is ~220 s on one core, ~30 s with n_jobs=8. Each call adds a host-side nearest-point
+lookup, ~1 s per 1e5 query rows.
 """
 import numpy as np
 from scipy.spatial import cKDTree
@@ -39,6 +43,11 @@ class RFDistanceTails:
         """x: training rows in fit coordinates; y_unshifted: lnL with no shift (the model's d -> inf
         limit is 0); y_errors: per-row sigma."""
         x = np.asarray(x, dtype=float)
+        y_unshifted = np.asarray(y_unshifted, dtype=float)
+        y_errors = np.asarray(y_errors, dtype=float)
+        ok = np.all(np.isfinite(x), axis=1) & np.isfinite(y_unshifted) & np.isfinite(y_errors) \
+            & (x[:, self.dist_index] > 0)          # the base fit may accept rows the tail model cannot
+        x, y_unshifted, y_errors = x[ok], y_unshifted[ok], y_errors[ok]
         d = x[:, self.dist_index]
         key = np.round(np.delete(x, self.dist_index, axis=1), 10)
         uk, inv = np.unique(key, axis=0, return_inverse=True)
@@ -47,7 +56,7 @@ class RFDistanceTails:
         self.dmax = np.zeros(len(uk))
         np.minimum.at(self.dmin, inv, d)
         np.maximum.at(self.dmax, inv, d)
-        args = (key, 1.0 / d, np.asarray(y_unshifted, dtype=float), np.asarray(y_errors, dtype=float))
+        args = (key, 1.0 / d, y_unshifted, y_errors)
         uk2, P, _, _ = self._fit_points(args)
         fmin = None
         if self.shared_fmin:
@@ -59,7 +68,7 @@ class RFDistanceTails:
         self.mu, self.sd = uk.mean(0), uk.std(0)
         self.sd[self.sd == 0] = 1.0
         self.tree = cKDTree((uk - self.mu) / self.sd)
-        self.report = dict(points=int(len(uk)), points_fit=int(self.good.sum()), sides=self.sides,
+        self.report = dict(points=int(len(uk)), points_fit=int(self.good.sum()), rows_dropped=int((~ok).sum()), sides=self.sides,
                            fmin_shared=fmin, point_fit=self.point_fit)
         return self
 
@@ -87,10 +96,14 @@ class RFDistanceTails:
         off = lo | hi
         if np.any(off):
             Pj = self.P[j[off]]
+            # d <= 0 has no 1/d; the model's u -> inf limit is lnL -> -inf, so give it zero likelihood
+            pos = d[off] > 0
             # Never rise above the edge value: where a point's fitted peak lies beyond its slices the
             # shape would climb away from the data, and the sampler piles onto that unmeasured spike.
-            step = log_model(1.0 / d[off], Pj[:, 0], Pj[:, 1], Pj[:, 2], 0.0) \
-                - log_model(1.0 / d_edge[off], Pj[:, 0], Pj[:, 1], Pj[:, 2], 0.0)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                step = log_model(1.0 / np.where(pos, d[off], 1.0), Pj[:, 0], Pj[:, 1], Pj[:, 2], 0.0) \
+                    - log_model(1.0 / d_edge[off], Pj[:, 0], Pj[:, 1], Pj[:, 2], 0.0)
+            step = np.where(pos & ~np.isnan(step), step, -np.inf)
             val[off] = val[off] + np.minimum(step, 0.0)
         out[fin] = val
         return xmod.asarray(out)

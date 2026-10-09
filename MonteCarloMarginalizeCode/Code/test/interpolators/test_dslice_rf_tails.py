@@ -70,7 +70,54 @@ def test_driver_refuses_tail_options_outside_rf(tmp_path):
     base = [sys.executable, driver, "--fname", str(tmp_path / "missing.dat"), "--parameter", "xx"]
     for extra, msg in ((["--fit-method", "dslice-amp", "--rf-dslice-tails", "near"], "apply to --fit-method rf only"),
                        (["--fit-method", "rf", "--dslice-amp-point-fit-jobs", "2"], "apply to --fit-method dslice-amp only"),
-                       (["--fit-method", "rf", "--rf-dslice-tails-fmin", "free"], "needs --rf-dslice-tails")):
+                       (["--fit-method", "rf", "--rf-dslice-tails-fmin", "free"], "needs --rf-dslice-tails"),
+                       (["--fit-method", "rf", "--rf-dslice-tails", "near", "--ignore-errors-in-data"], "per-row sigma"),
+                       (["--fit-method", "rf", "--rf-dslice-tails", "near"], "'dist' as a fit coordinate")):
         p = subprocess.run(base + extra, env=env, cwd=str(tmp_path), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                            universal_newlines=True, timeout=300)
         assert p.returncode == 2 and msg in p.stdout, p.stdout[-2000:]
+
+
+def _truth_grid(seed=12, n=150, shift=-37.0):
+    # two intrinsic coordinates on very different scales; the distance shape depends strongly on x1
+    rng = np.random.default_rng(seed)
+    pts = np.column_stack([rng.uniform(-1, 1, n), rng.uniform(1000, 3000, n)])
+    par = lambda p: (30 + 10 * p[..., 0], 1 / (2500 * (1 + 0.3 * p[..., 0])))
+    d = np.linspace(1800, 4000, 30)
+    rows = [np.column_stack([np.full(30, p[0]), np.full(30, p[1]), d,
+                             log_model(1 / d, *par(p), 0.4, 0.0) + rng.normal(0, 0.01, 30)]) for p in pts]
+    truth = lambda x: log_model(1 / x[:, 2], *par(x[:, :2]), 0.4, 0.0)
+    return pts, np.vstack(rows), truth, shift
+
+
+def test_known_answer_nonflat_base_off_grid_queries():
+    # base = truth - shift, as the driver's RF sees it; tails are fitted on truth (= Y + shift).
+    pts, g, truth, shift = _truth_grid()
+    base = lambda x: truth(np.asarray(x)) - shift
+    m = RFDistanceTails(base, 2, sides="near").fit(g[:, :3], g[:, 3], 0.01 * np.ones(len(g)))
+    rng = np.random.default_rng(3)
+    q = pts[:40] + np.column_stack([rng.normal(0, 0.002, 40), rng.normal(0, 1.0, 40)])   # near each point
+    for dq in (700.0, 1200.0):
+        X = np.column_stack([q, np.full(len(q), dq)])
+        err = m(X) - (truth(X) - shift)
+        # correct code errs by <= 0.42 here (the tail borrows the nearest point's shape); anchoring at
+        # d_max, reading the base at the query distance, or an unstandardized lookup err by 6-30 nats
+        assert np.max(np.abs(err)) < 1.0, (dq, np.max(np.abs(err)))
+    X = np.column_stack([q, np.full(len(q), 2500.0)])
+    assert np.allclose(m(X), base(X))                            # inside the slices: base unchanged
+    assert all(np.isclose(m.P[:, 2], m.report["fmin_shared"]))   # shared f_min was refit, not left free
+    assert abs(m.report["fmin_shared"] - 0.4) < 0.05
+
+
+def test_failed_point_nan_rows_and_nonpositive_distance():
+    pts, g, truth, shift = _truth_grid(n=40)
+    few = np.array([[0.5, 2000.0, 2500.0, 10.0], [0.5, 2000.0, 3000.0, 9.0], [0.5, 2000.0, 3500.0, 8.0]])
+    bad = np.array([[np.nan, 1500.0, 2500.0, 5.0], [0.1, 1500.0, 2500.0, np.nan]])
+    G = np.vstack([g, few, bad])
+    base = lambda x: np.full(len(x), 3.0)
+    m = RFDistanceTails(base, 2, sides="near").fit(G[:, :3], G[:, 3], 0.01 * np.ones(len(G)))
+    assert m.report["rows_dropped"] == 2 and m.report["points_fit"] == m.report["points"] - 1
+    out = m(np.array([[0.5, 2000.0, 1000.0]]))        # the 3-slice point: no fit, so the base value
+    assert out[0] == 3.0
+    v = m(np.column_stack([pts[:3], [0.0, -5.0, 900.0]]))
+    assert np.all(v[:2] == -np.inf) and np.isfinite(v[2]) and v[2] <= 3.0

@@ -223,6 +223,12 @@ if opts.fit_method != 'rf':
         parser.error("{} apply to --fit-method rf only".format(", ".join("--" + b.replace("_", "-") for b in _bad)))
 elif opts.rf_dslice_tails == 'none' and _set('rf_dslice_tails_fmin'):
     parser.error("--rf-dslice-tails-fmin needs --rf-dslice-tails near|far|both")
+if opts.fit_method == 'rf' and opts.rf_dslice_tails != 'none':
+    # the rest is checked after the coordinates are known; fail before data loading where possible
+    if opts.ignore_errors_in_data:
+        parser.error("--rf-dslice-tails needs the per-row sigma column (drop --ignore-errors-in-data)")
+    if (opts.parameter or opts.parameter_implied) and 'dist' not in (opts.parameter or []) + (opts.parameter_implied or []):
+        parser.error("--rf-dslice-tails needs 'dist' as a fit coordinate (--parameter dist or --parameter-implied dist)")
 if opts.rf_seed is not None and opts.fit_method not in ('rf', 'dslice-amp'):
     parser.error("--rf-seed applies to --fit-method rf and dslice-amp (its field forest)")
 if opts.fit_method == 'gp-matern' and 'cupy' in (opts.gp_matern_fit_backend, opts.gp_predict_backend):
