@@ -3822,7 +3822,9 @@ def hlmoft(P, Lmax=2,nr_polarization_convention=False, fixed_tapering=False, sil
            # center-DC grid, and the default (RIFT reversed) convention would shift the
            # high-pass window by one bin between (l,m) and (l,-m), breaking the
            # conjugate-pair identity at the percent level.  See evaluate_fvals docs.
-           our_fvals = evaluate_fvals(hlmsdict[(2,2)], lal_convention=True)
+           # all modes share one grid; a ModeArray without (2,2) (per-|m| calls) uses any mode's
+           our_fvals = evaluate_fvals(hlmsdict[(2,2)] if (2,2) in hlmsdict else next(iter(hlmsdict.values())),
+                                      lal_convention=True)
            vectaper_symmetric  = np.ones(len(our_fvals))
            indx_below = np.logical_and(np.abs(our_fvals)<P.fmin, np.abs(our_fvals)>=P.fmin*fd_standoff_factor)
            vectaper_symmetric[indx_below] = 0.5 + 0.5*np.cos(np.pi* (np.abs(our_fvals[indx_below])/P.fmin - 1)/(1-fd_standoff_factor))
