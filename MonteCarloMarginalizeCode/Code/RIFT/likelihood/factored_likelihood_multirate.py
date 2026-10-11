@@ -323,51 +323,72 @@ def ComputeModeCrossTermIPMultiband(hlmsA, hlmsB, psd, fmin, fMax, fNyq, deltaF,
     return out, nkept
 
 
-def ComputeModeCrossTermsPieces(early, late, psd, fmin, fMax, fNyq, deltaF, sched, fs_e, f22_late,
-                                analyticPSD_Q=False, inv_spec_trunc_Q=False, T_spec=0.):
-    """U_ab = <h_a|h_b> and V_ab = <conj(h_a)|h_b> on the multibanded grid, with model values taken
-    from the templates the two-rate path already builds: the early FD series (rate fs_e, full
-    duration, no DSWr taper) below the switch, the late FD series (short buffer T/R) above it.
-    A late bin kf (in full-grid units) needs kf % R == 0; there the buffer phase factor is
-    exp(2 pi i kf / R) = 1, so values from the two sources combine without correction.
-    Mode (l, m) switches to the late series at 1.05 (|m|/2) f22_late, above its start-frequency
-    conditioning; the early series is used up to 0.9 fs_e/2.  Raises if a kept bin has no source.
-    Returns (U, V, number of kept bins with f >= 0)."""
+def pieces_uv_plan(psd, fmin, fMax, fNyq, deltaF, sched, fs_e, f22_late, n_early, n_late, mode_keys,
+                   analyticPSD_Q=False, inv_spec_trunc_Q=False, T_spec=0.):
+    """Once per job (depends only on the PSD, the schedule and the template grid sizes): the kept
+    multibanded bins and their weights, and for each |m| the gather indices that read each bin from
+    the early FD series (rate fs_e, full duration, no DSWr taper) below the switch or from the late
+    FD series (short buffer T/R) above it.  A late bin kf (full-grid units) needs kf % R == 0; there
+    the buffer phase factor is exp(2 pi i kf / R) = 1, so the two sources combine without
+    correction.  Mode |m| switches to the late series at 1.05 (|m|/2) f22_late, above its
+    start-frequency conditioning; the early series is used up to 0.9 fs_e/2.  Raises if a kept bin
+    has no source.  Pass the result to ComputeModeCrossTermsPieces for every intrinsic point."""
     IP = lsu.ComplexIP(fmin, fMax, fNyq, deltaF, psd, analyticPSD_Q, inv_spec_trunc_Q, T_spec)
     w = IP.weights2side
     n = len(w)
-    kf_all = np.arange(n) - n // 2
-    keys = sorted(early)
-    ne = early[keys[0]].data.length
-    nl = late[keys[0]].data.length
-    R = int(round(n / nl))
-    assert R * nl == n and abs(late[keys[0]].deltaF - R * deltaF) < 1e-9 * deltaF
-    f_e_max = 0.9 * fs_e / 2.
+    R = int(round(n / n_late))
+    assert R * n_late == n
+    nb = sched["bands"]
     kfs, gs = [], []
-    for j, (lo, hi, K) in enumerate(sched["bands"]):
-        sel = np.nonzero(kf_all % K == 0)[0]
-        g = _band_window(sched, j, np.abs(kf_all[sel]) * deltaF) * w[sel] * K
+    for j, (lo, hi, K) in enumerate(nb):
+        # only the bins inside this band's support (erfc edges cut at 12 sigma, < 1e-32):
+        # no pass over the full grid per band
+        f_lo = max(0., lo - 12 * sched["sigma_f"]) if j > 0 else lo
+        f_hi = (nb[j + 1][0] + 12 * sched["sigma_f"]) if j + 1 < len(nb) else fNyq
+        k_lo, k_hi = int(np.ceil(f_lo / deltaF / K)) * K, int(np.floor(min(f_hi, fNyq) / deltaF / K)) * K
+        kpos = np.arange(k_lo, k_hi + 1, K)
+        kpos = kpos[kpos < n // 2]
+        kf = np.concatenate([kpos, -kpos[kpos > 0]])
+        g = _band_window(sched, j, np.abs(kf) * deltaF) * w[kf + n // 2] * K
         keep = np.abs(g) > 0
-        kfs.append(kf_all[sel][keep]); gs.append(g[keep])
+        kfs.append(kf[keep]); gs.append(g[keep])
     kf, g = np.concatenate(kfs), np.concatenate(gs)
     af = np.abs(kf) * deltaF
-    vals, vals_neg = {}, {}
-    for k in keys:
-        use_late = (af >= 1.05 * (abs(k[1]) / 2.) * f22_late) & (kf % R == 0)
+    f_e_max = 0.9 * fs_e / 2.
+    gather = {}
+    for am in sorted({abs(k[1]) for k in mode_keys}):
+        use_late = (af >= 1.05 * (am / 2.) * f22_late) & (kf % R == 0)
         use_early = ~use_late & (af <= f_e_max)
         if not np.all(use_late | use_early):
             bad = af[~(use_late | use_early)]
-            raise ValueError("mode %s: %d kept bins (%.1f-%.1f Hz) have neither an early nor a late value; "
-                             "raise fs_e or the late buffer" % (k, len(bad), bad.min(), bad.max()))
-        ie, il = kf + ne // 2, kf // R + nl // 2
-        e, l = early[k].data.data, late[k].data.data
-        v = np.where(use_late, l[np.clip(il, 0, nl - 1)], e[np.clip(ie, 0, ne - 1)])
-        ie, il = -kf + ne // 2, -kf // R + nl // 2
-        vn = np.where(use_late, l[np.clip(il, 0, nl - 1)], e[np.clip(ie, 0, ne - 1)])
-        vals[k], vals_neg[k] = v, vn
-    U = {(a, b): 2. * deltaF * np.sum(np.conj(vals[a]) * vals[b] * g) for a in keys for b in keys}
-    V = {(a, b): 2. * deltaF * np.sum(vals_neg[a] * vals[b] * g) for a in keys for b in keys}
-    return U, V, int(np.sum(kf >= 0))
+            raise ValueError("|m| = %d: %d kept bins (%.1f-%.1f Hz) have neither an early nor a late value; "
+                             "raise fs_e or the late buffer" % (am, len(bad), bad.min(), bad.max()))
+        idx = {}
+        for sgn, kk in (("pos", kf), ("neg", -kf)):
+            idx[sgn] = (use_late, np.clip(kk // R + n_late // 2, 0, n_late - 1), np.clip(kk + n_early // 2, 0, n_early - 1))
+        gather[am] = idx
+    return dict(g=g, gather=gather, nkept=int(np.sum(kf >= 0)), n_early=n_early, n_late=n_late, deltaF=deltaF)
+
+
+def ComputeModeCrossTermsPieces(early, late, plan):
+    """Per point: U_ab = <h_a|h_b> and V_ab = <conj(h_a)|h_b> on the multibanded grid, from the early
+    and late FD series and a plan from pieces_uv_plan.  Gathers each mode's values, then forms all
+    pairs as two matrix products.  Returns (U, V, number of kept bins with f >= 0)."""
+    keys = sorted(early)
+    assert early[keys[0]].data.length == plan["n_early"] and late[keys[0]].data.length == plan["n_late"]
+
+    def gather(k, sgn):
+        use_late, il, ie = plan["gather"][abs(k[1])][sgn]
+        return np.where(use_late, late[k].data.data[il], early[k].data.data[ie])
+    A = np.array([gather(k, "pos") for k in keys])
+    An = np.array([gather(k, "neg") for k in keys])
+    g = plan["g"]
+    Um = (np.conj(A) * g) @ A.T
+    Vm = (An * g) @ A.T
+    df2 = 2. * plan["deltaF"]
+    U = {(a, b): df2 * Um[i, j] for i, a in enumerate(keys) for j, b in enumerate(keys)}
+    V = {(a, b): df2 * Vm[i, j] for i, a in enumerate(keys) for j, b in enumerate(keys)}
+    return U, V, plan["nkept"]
 
 
 # ---------------------------------------------------------------------------------------------
@@ -504,8 +525,12 @@ def PrecomputeLikelihoodTermsMultirate(event_time_geo, t_window, P, data_dict, p
                       "late %g s at %g Hz" % (schedule["_path"], schedule["_hash"], det, schedule["fs_e"],
                                               schedule["tau_tr"], schedule["late_buffer"], fs))
             prep = _JOB_CACHE[ck]
-            U, V, _ = ComputeModeCrossTermsPieces(early, late, psd_dict[det], P.fmin, fMax, fNyq, P.deltaF, bands,
-                                                  schedule["fs_e"], f22_late, analyticPSD_Q, inv_spec_trunc_Q, T_spec)
+            pk = ("uv_plan", det, id(psd_dict[det]), schedule["_hash"])
+            if pk not in _JOB_CACHE:      # once per job: bins, weights and gather indices
+                _JOB_CACHE[pk] = pieces_uv_plan(psd_dict[det], P.fmin, fMax, fNyq, P.deltaF, bands, schedule["fs_e"],
+                                                f22_late, early[keys[0]].data.length, late[keys[0]].data.length,
+                                                keys, analyticPSD_Q, inv_spec_trunc_Q, T_spec)
+            U, V, _ = ComputeModeCrossTermsPieces(early, late, _JOB_CACHE[pk])
             crossTerms[det], crossTermsV[det] = U, V
             j_peak = N - int(round(post * fs))
             lags = np.arange(N_shift, N_shift + N_window)

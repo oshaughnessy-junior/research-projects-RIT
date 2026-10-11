@@ -80,3 +80,42 @@ def test_schedule_rejects_short_late_buffer(tmp_path):
 def test_refusals(tmp_path, inputs, P, msg):
     with pytest.raises(ValueError, match=msg):
         _run(tmp_path, inputs, "two_rate", P)
+
+
+def test_pieces_uv_plan_matches_full_grid_reference(inputs):
+    """The per-job plan (band support only, gather indices, matrix-product pair sums) reproduces
+    the full-grid selection with explicit pair loops it replaced."""
+    P = _P(); df = 1. / SEGLEN; fNyq = FS / 2.
+    mc_lo = SCHED["mc_range"][0]
+    f22_late = float(flm.f22_newtonian(SCHED["late_start"], mc_lo))
+    early = flm._per_m_modes(P, LMAX, SCHED["fs_e"], SEGLEN, FLOW, SCHED["post"])
+    late = flm._per_m_modes(P, LMAX, FS, SCHED["late_buffer"], f22_late, SCHED["post"])
+    keys = sorted(early)
+    sched = flm.multiband_schedule(FLOW, FMAX, SEGLEN, mc_lo, LMAX, extra_s=SCHED["uv_margin"],
+                                   top_edge_K=SEGLEN // SCHED["late_buffer"])
+    psd = inputs["psd"]["H1"]
+    plan = flm.pieces_uv_plan(psd, FLOW, FMAX, fNyq, df, sched, SCHED["fs_e"], f22_late,
+                              early[keys[0]].data.length, late[keys[0]].data.length, keys)
+    U, V, nk = flm.ComputeModeCrossTermsPieces(early, late, plan)
+    # reference: every bin of the full grid, each band, explicit loops
+    w = lsu.ComplexIP(FLOW, FMAX, fNyq, df, psd, False, False, 0.).weights2side
+    n = len(w); kf_all = np.arange(n) - n // 2
+    ne, nl = early[keys[0]].data.length, late[keys[0]].data.length; R = n // nl
+    kf = []; g = []
+    for j, (lo, hi, K) in enumerate(sched["bands"]):
+        sel = np.nonzero(kf_all % K == 0)[0]
+        gj = flm._band_window(sched, j, np.abs(kf_all[sel]) * df) * w[sel] * K
+        kf.append(kf_all[sel][np.abs(gj) > 0]); g.append(gj[np.abs(gj) > 0])
+    kf, g = np.concatenate(kf), np.concatenate(g)
+
+    def val(k, kk):
+        ul = (np.abs(kk) * df >= 1.05 * (abs(k[1]) / 2.) * f22_late) & (kk % R == 0)
+        return np.where(ul, late[k].data.data[np.clip(kk // R + nl // 2, 0, nl - 1)],
+                        early[k].data.data[np.clip(kk + ne // 2, 0, ne - 1)])
+    s = max(abs(x) for x in U.values())
+    for a in keys:
+        for b in keys:
+            Ur = 2 * df * np.sum(np.conj(val(a, kf)) * val(b, kf) * g)
+            Vr = 2 * df * np.sum(val(a, -kf) * val(b, kf) * g)
+            assert abs(U[(a, b)] - Ur) <= 1e-12 * s, ("U", a, b)
+            assert abs(V[(a, b)] - Vr) <= 1e-12 * s, ("V", a, b)
