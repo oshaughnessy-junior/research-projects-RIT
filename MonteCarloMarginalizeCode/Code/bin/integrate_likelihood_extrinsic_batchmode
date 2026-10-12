@@ -4905,6 +4905,51 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
                 _t.anisotropic_bins = True
         print("  AV: anisotropic per-axis bin allocation ENABLED")
 
+    # ---- BRUTE-FORCE REFERENCE (RIFT #443; env RIFT_ILE_BRUTE=OUT.json, AV only) ---------------
+    # AV runs only as a PILOT (neff unreachable, so it spends RIFT_BRUTE_PILOT draws); its samples
+    # build a fixed proposal and are discarded.  The reported lnZ is a plain importance-sampling
+    # mean of L p / q over fresh draws from that frozen q, unbiased for any q > 0 on the box
+    # (RIFT/misc/brute_reference.py).  Same integrand, priors, bounds and overflow offset as the
+    # production integral below.  Writes OUT.json and exits.
+    if os.environ.get('RIFT_ILE_BRUTE'):
+        import json as _json
+        from RIFT.misc.brute_reference import brute_reference_integral
+        _pk = dict(pinned_params)
+        _pk.update(dict(neff=1e9, nmax=int(os.environ.get('RIFT_BRUTE_PILOT', '2000000')), save_intg=True,
+                        igrand_threshold_deltalnL=1e30, igrand_threshold_p=None, igrand_fairdraw_samples=False))
+        _pr = sampler.integrate(like_to_integrate, *unpinned_params, **_pk)
+        _po = list(sampler.params_ordered)
+        _rv = sampler._rvs
+        _pilot = numpy.column_stack([numpy.asarray(identity_convert(_rv[p_]), dtype=float) for p_ in _po])
+        _lw = (numpy.asarray(identity_convert(_rv['log_integrand']), dtype=float)
+               + numpy.asarray(identity_convert(_rv['log_joint_prior']), dtype=float)
+               - numpy.asarray(identity_convert(_rv['log_joint_s_prior']), dtype=float))
+        _lw = _lw - numpy.max(_lw[numpy.isfinite(_lw)])
+        _pw = numpy.exp(_lw); _pw[~numpy.isfinite(_pw)] = 0.
+        print(" BRUTE pilot: n=%d lnZ_AV=%.4f weight-ESS=%.1f" % (len(_pw), float(_pr[0]) + manual_avoid_overflow_logarithm,
+              float(numpy.sum(_pw)**2 / numpy.sum(_pw**2))), flush=True)
+        if 'no_protect_names' in pinned_params:
+            _like = lambda **kw: like_to_integrate(*[kw[p_] for p_ in _po])
+        else:
+            _like = like_to_integrate
+        _wu = float(os.environ.get('RIFT_BRUTE_WU', '0.10')); _wc = float(os.environ.get('RIFT_BRUTE_WC', '0.20'))
+        _wv = float(os.environ.get('RIFT_BRUTE_WV', '0.25'))
+        _out = brute_reference_integral(
+            _like, _po, [sampler.llim[p_] for p_ in _po], [sampler.rlim[p_] for p_ in _po],
+            {p_: sampler.prior_pdf[p_] for p_ in _po}, _pilot,
+            n_total=int(os.environ.get('RIFT_BRUTE_N', '4000000')), block=int(os.environ.get('RIFT_BRUTE_BLOCK', '20000')),
+            nb_fine=int(os.environ.get('RIFT_BRUTE_NBF', '20')), nb_coarse=int(os.environ.get('RIFT_BRUTE_NBC', '6')),
+            weights=(1.0 - _wu - _wc - _wv, _wv, _wc, _wu), pilot_weights=_pw,
+            seed=int(os.environ.get('RIFT_BRUTE_SEED', '1234')), tag="BRUTE", verbose=True)
+        _out['lnZ'] = _out['lnI'] + manual_avoid_overflow_logarithm
+        _out['lnZ_AV_pilot'] = float(_pr[0]) + manual_avoid_overflow_logarithm
+        _out['params'] = _po
+        _out['manual_avoid_overflow_logarithm'] = float(manual_avoid_overflow_logarithm)
+        _json.dump(_out, open(os.environ['RIFT_ILE_BRUTE'], 'w'), indent=1)
+        print(" BRUTE lnZ=%.4f sigma=%.4f ESS=%.1f khat=%.3f" % (_out['lnZ'], _out['sigma_lnI'], _out['ess'], _out['khat']), flush=True)
+        sys.exit(0)
+    # ---- end brute-force reference ----------------------------------------------------------
+
     res, var, neff, dict_return = sampler.integrate(like_to_integrate, *unpinned_params, **pinned_params)
 
     # L0 auto-rescue: on a very sharply-peaked (high-amplitude) point a cold AV can
