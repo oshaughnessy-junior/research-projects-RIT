@@ -95,8 +95,10 @@ FILES=(
   "$C/test/integrators/test_extrinsic_phase_group_uniform.py"
   "$C/test/integrators/test_gmm_adaptive.py"
   "$C/test/integrators/test_gmm_sample_row_independence.py"
+  "$C/test/integrators/test_gmm_update_no_aliasing.py"
   "$C/test/integrators/test_integrate_log_neff_negative_lnZ.py"
   "$C/test/integrators/test_gmm_sample_matches_score.py"
+  "$C/test/integrators/test_gmm_score_deterministic.py"
   "$C/test/integrators/test_mcsamplerGPU_default_adapt.py"
   "$C/test/integrators/test_portfolio_gmm_member_trains.py"
   "$C/test/integrators/test_portfolio_restrict_and_warm.py"
@@ -111,6 +113,7 @@ FILES=(
   "$C/test/interpolators/test_cached_matern_gp.py"
   "$C/test/test_av_host_backend.py"
   "$C/test/test_av_kish_loop.py"
+  "$C/test/test_av_retained_density.py"
   "$C/test/test_matern_gp.py"
   "$C/test/integrators/test_seeding_public_paths.py"
   "$C/test/integrators/test_seeding_reproducibility.py"
@@ -188,6 +191,13 @@ FILES=(
   "$C/test/test_lisa_ini_contract.py"
   "$C/test/test_tracer_placement_gp.py"
   "$C/test/waveforms/test_uv_symmetry.py"
+  # -- std_and_conj_hlmoff's SphHarmTimeSeries branch must key its output by (l,m), the way
+  # every caller indexes it.  A dict keyed the other way is still a populated dict: the
+  # mode sum silently loses modes rather than raising.
+  "$C/test/test_std_and_conj_hlmoff_sphharm.py"
+  # -- hlmoft ChooseFDModes end taper is capped in duration: long buffers keep the merger,
+  # buffers <= 100 s are bit-identical to the uncapped 1% rule.
+  "$C/test/test_fd_end_taper_cap.py"
   "$C/test/test_complex_overlap_interpolate_max.py"
   # -- coordinates: vectorized in-plane spin / ring coordinates agree with extract_param
   "$C/test/test_ring_coordinates.py"
@@ -200,6 +210,7 @@ FILES=(
   "$C/test/test_convert_waveform_coordinates_vectorized.py"
   "$C/test/test_waveform_coordinates_xpy.py"
   "$C/test/interpolators/test_dslice_amplitude_model.py"
+  "$C/test/interpolators/test_dslice_rf_tails.py"
   # -- EOSPosterior gp-matern driver, cupy Matern fit
   #    (numpy legs; cupy legs skip).  test_eos_gp_matern.py runs the driver end to end: ~100 s on CIT.
   "$C/test/interpolators/test_cupy_matern_fit.py"
@@ -433,7 +444,22 @@ done
 # collected / 823 passed / 20 skipped incl. 3 subtests -> 840/820.  The 20th skip is the
 # cupy-importable leg of test_eos_posterior_tempering_kwarg, absent on the CI runner.  The
 # previous floors (814/795) sat 9 below the tree before this file was added.
-EXPECTED_TESTS=840
+# test_gmm_score_deterministic.py adds 19 passing tests and no skips.  RE-MEASURED on 9b0e4085a
+# (ldas-pcdev2, IGWN python, cupy importable, CUDA_VISIBLE_DEVICES='') 2026-10-07: 862 collected /
+# 842 passed / 20 skipped incl. 3 subtests -> 859/839; the 20 skips are the same as above.
+# Its accuracy test then made it 20 (file alone: 20 passed) -> 860/840; three tail-mass tests
+# made it 23 (file alone: 23 passed) -> 863/843.
+# test_gmm_update_no_aliasing.py (#420) adds 2 passing tests and no skips.  RE-MEASURED on the
+# merge of #420 with rift_O4d c7476627e (ldas-pcdev11, same setup) 2026-10-07: 876 collected /
+# 856 passed / 20 skipped incl. 3 subtests -> 873/853 (base floors sat 8 below the tree).
+# test_std_and_conj_hlmoff_sphharm.py adds 2 tests (one function, two-case parametrize, no
+# skips) -> 875/855.  RE-MEASURED on the merge of #433 with rift_O4d c46a19bf (ldas-grid, IGWN
+# python, cupy absent) 2026-10-08: 878 collected / 859 passed / 19 skipped incl. 3 subtests.
+# test_fd_end_taper_cap.py adds 3 tests (two functions, one two-case parametrize, no skips)
+# -> 878/858.
+# test_dslice_rf_tails.py adds 10 tests and no skips -> 888/868.
+# test_dslice_amplitude_model.py: +1 (_lognorm chunk memory bound), passes, no skips -> 889/869.
+EXPECTED_TESTS=889
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -450,7 +476,12 @@ EXPECTED_TESTS=840
 # test_convert_coordinates_row_independence.py adds 9 tests and no skips.
 # test_gmm_sample_row_independence.py adds 10 tests and no skips.
 # test_gmm_sample_matches_score.py adds 17 tests and no skips; re-measured 840/820 (above).
-EXPECTED_PASSED=820
+# test_gmm_score_deterministic.py adds 23 tests and no skips; 863/843 (above).
+# test_gmm_update_no_aliasing.py adds 2 tests and no skips; re-measured 873/853 (above).
+# test_std_and_conj_hlmoff_sphharm.py adds 2 tests and no skips; 875/855 (above).
+# test_fd_end_taper_cap.py adds 3 tests and no skips; 878/858 (above).
+# test_dslice_rf_tails.py adds 10 tests and no skips; 888/868 (above).
+EXPECTED_PASSED=869
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 MAX_SKIPPED=19
 

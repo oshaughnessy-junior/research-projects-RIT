@@ -277,7 +277,7 @@ parser.add_argument("--n-chunk",default=1e5,type=int)
 parser.add_argument("--contingency-unevolved-neff",default=None,help="Contingency planning for when n_eff produced by CIP is small, and user doesn't want to have hard failures.  Note --fail-unless-n-eff will prevent this from happening. Options: quadpuff, ...")
 parser.add_argument("--not-worker",action='store_true',help="Nonworker jobs, IF we have workers present, don't have the 'fail unless' statement active")
 parser.add_argument("--fail-unless-n-eff",default=None,type=float,help="If nonzero, places a minimum requirement on n_eff. Code will exit if not achieved, with no sample generation")
-parser.add_argument("--rf-transverse-spin-coordinates", choices=["physics3","geometric4","geometric4-phase-excess"], help="Opt-in RF fitting basis: physics3 appends scalars; geometric4 replaces four transverse inputs; sampler/prior unchanged")
+parser.add_argument("--rf-transverse-spin-coordinates", choices=["physics3","geometric4","geometric4-phase-excess"], help="Opt-in RF fitting basis: geometric4 replaces four transverse inputs; sampler/prior unchanged. physics3 is retired and refused (11 fit coordinates for 8 degrees of freedom)")
 parser.add_argument("--fit-method",default="rf",help="rf (default) : rf|gp|gp-matern|gp-torch|quadratic|polynomial|gp_hyper|gp_lazy|cov|kde|gp-jax-svgp|gp-jax-rff|gp-jax-exact.  Note 'polynomial' with --fit-order 0  will fit a constant. The gp-jax-* methods use the optional JAX interpolators (RIFT.interpolators.jax_gp) and support a differentiable export via --fit-save-jax.")
 parser.add_argument("--fit-load-quadratic",default=None,help="Filename of hdf5 file to load quadratic fit from. ")
 parser.add_argument("--fit-load-quadratic-path",default="GW190814/annealing_mc_source_eta_chieff",help="Path in hdf5 file to specific covariance matrix to be used")
@@ -319,6 +319,7 @@ parser.add_argument("--source-redshift",default=0,type=float,help="Source redshi
 parser.add_argument("--eos-param", type=str, default=None, help="parameterization of equation of state")
 parser.add_argument("--eos-param-values", default=None, help="Specific parameter list for EOS")
 parser.add_argument("--sampler-method",default="adaptive_cartesian",help="adaptive_cartesian|GMM|adaptive_cartesian_gpu|portfolio")
+parser.add_argument("--sampler-av-dilate-layers",type=int,default=0,help="AV only (--sampler-method AV): after each contraction, add this many layers of axis-neighbour bins to the occupied bins before the next draw.  The occupied bins come from the retained points, so on a thin or curved live region they miss parts that hold no point yet, and those parts are never drawn again; lnZ then comes out low.  Each layer keeps that rim drawable.  Costs several times more likelihood calls, so at a fixed --n-max a run may end with a lower n_eff.  A cycle draws at least one point per bin, so the per-cycle batch (and GPU memory) can grow to several times --n-chunk.  Default 0 (off).")
 parser.add_argument("--av-stop-metric", choices=["max-weight", "kish"], default="max-weight", help="AV stopping statistic; max-weight preserves the historical sum(w)/max(w), kish uses sum(w)^2/sum(w^2). Experimental; target is --n-eff. Kish stopping weights are lnL-only, while the --fail-unless-n-eff/--n-eff acceptance check uses the final weights including the prior ratio, so the two Kish values can differ.")
 parser.add_argument("--sampler-portfolio",default=None,action='append',type=str,help="comma-separated strings, matching sampler methods other than portfolio")
 parser.add_argument("--sampler-portfolio-args",default=None, action='append', type=str, help='eval-able dictionary to be passed to that sampler_')
@@ -356,6 +357,10 @@ parser.add_argument("--supplementary-likelihood-factor-ini", default=None,type=s
 parser.add_argument("--supplementary-prior-code",default=None,type=str,help="Import external priors, assumed in scope as extra_prior.prior_dict_pdf, extra_prior.prior_range.  Currentlyonly supports seperable external priors")
 
 opts=  parser.parse_args()
+if opts.sampler_av_dilate_layers < 0:
+    raise ValueError("--sampler-av-dilate-layers must be >= 0")
+if opts.sampler_av_dilate_layers and opts.sampler_method != 'AV':
+    raise ValueError("--sampler-av-dilate-layers acts only under --sampler-method AV, not {}".format(opts.sampler_method))
 
 force_hyperbolic_classes = [
     opts.force_scatter, opts.force_plunge, opts.force_zoomwhirl,
@@ -860,6 +865,8 @@ if opts.parameter_nofit:
 from RIFT.misc import rf_transverse_spin
 if set(rf_transverse_spin.FEATURE_NAMES + rf_transverse_spin.GEOMETRIC4_NAMES + rf_transverse_spin.PHASE_EXCESS_NAMES).intersection(coord_names + low_level_coord_names):
     raise ValueError('RF fitting scalars are enabled only through the opt-in flag')
+if opts.rf_transverse_spin_coordinates in rf_transverse_spin.RETIRED_MODES:
+    raise ValueError(rf_transverse_spin.RETIRED_MESSAGE)
 if opts.rf_transverse_spin_coordinates:
     if not np.isfinite(opts.fref) or opts.fref <= 0:
         raise ValueError('RF reference frequency must be finite and positive')
@@ -867,18 +874,20 @@ if opts.rf_transverse_spin_coordinates:
             or opts.input_tides or opts.using_eos or opts.use_eccentricity
             or not set(rf_transverse_spin.NATIVE_FEATURES).issubset(coord_names)):
         raise ValueError('RF transverse coordinates require a fresh RF fit with delta_mc, mu1, mu2, chiMinus, s1x, s1y, s2x, s2y in a precessing BBH L-frame analysis')
-    if opts.rf_transverse_spin_coordinates in rf_transverse_spin.GEOMETRIC4_MODES:
-        if len(coord_names) != 8 or set(coord_names) != set(rf_transverse_spin.NATIVE_FEATURES):
-            raise ValueError('geometric4 requires exactly the eight native mass/aligned/transverse fitting coordinates')
-        # Preserve physical sampling coordinates: only replace the fitting basis.
-        coord_names = [p for p in coord_names if p not in rf_transverse_spin.TRANSVERSE] + list(rf_transverse_spin.geometric_names(opts.rf_transverse_spin_coordinates))
-    else:
-        coord_names = list(coord_names) + list(rf_transverse_spin.FEATURE_NAMES)
+    if len(coord_names) != 8 or set(coord_names) != set(rf_transverse_spin.NATIVE_FEATURES):
+        raise ValueError('geometric4 requires exactly the eight native mass/aligned/transverse fitting coordinates')
+    # Preserve physical sampling coordinates: only replace the fitting basis.
+    coord_names = [p for p in coord_names if p not in rf_transverse_spin.TRANSVERSE] + list(rf_transverse_spin.geometric_names(opts.rf_transverse_spin_coordinates))
     def extract_fit_param(P, name):
         return rf_transverse_spin.extract(P, name)
 else:
     def extract_fit_param(P, name):
         return P.extract_param(name)
+# An RF transverse fit basis must not fit more coordinates than are sampled.
+if opts.rf_transverse_spin_coordinates:
+    sampling_problem = rf_transverse_spin.sampling_problem(coord_names, low_level_coord_names)
+    if sampling_problem:
+        raise ValueError(sampling_problem)
 # SANITY COMPATIBILITY CHECK
 if 'q' in low_level_coord_names and 'mc' in low_level_coord_names:
     print(" Coordinate compatibility error: mc,eta or mc,delta_mc or M,q are compatible coordinates for masses. Do not mix!")
@@ -1323,15 +1332,14 @@ if opts.aligned_prior == 'alignedspin-zprior':
     # RANGE: left at its [-1,1] default, the density is identically zero over the
     # |s1z_bar| > chi_max shell -- 20% of the sampled range at --chi-max 0.8, 50% at 0.5.
     #
-    # This is NOT only a wasted-draw problem.  Those draws have log(prior) = -inf and are
-    # dropped by the isfinite screen in mcsamplerAdaptiveVolume.integrate_log, which
-    # divides by the RETAINED count while log_joint_s_prior still names the full box, so
+    # This was NOT only a wasted-draw problem.  Those draws have log(prior) = -inf, and
+    # integrate_log's former scalar-V normalization left them out of the denominator, so
     # the evidence came out inflated by (1/chi_max)^2 -- one factor per z coordinate.
     # Measured on a real composite, lnZ moved about 0.45 nats at --chi-max 0.8 and 1.4 at
     # 0.5,
     # and lnZ grew as chi-max SHRANK, which removing prior support cannot do.  Giving
-    # these two the same box as s1z/s2z removes that; it does not fix the AV
-    # normalization, which will bite any future prior narrower than its range.
+    # these two the same box as s1z/s2z removes the wasted draws.  integrate_log now
+    # counts every draw (log_retained_density), so a narrower prior no longer inflates lnZ.
     # The posterior itself does not move: the density is the same function on the
     # retained region, which downselect_dict['s1z'] already bounded.
     prior_map["s1z_bar"] = s_component_zprior
@@ -3704,6 +3712,8 @@ extra_args.update({
 })
 if opts.sampler_method == 'NFlow':
     extra_args['n_adapt'] = 10  # reduce this?
+if opts.sampler_av_dilate_layers:
+    extra_args['dilate_layers'] = int(opts.sampler_av_dilate_layers)
 tempering_adapt=True
 if opts.force_no_adapt:   
     tempering_adapt=False

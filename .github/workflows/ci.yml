@@ -614,6 +614,8 @@ jobs:
           python -m pip install -r requirements.txt --break-system-packages
           python -m pip install coverage pytest --break-system-packages
           python -m pip install --editable . --break-system-packages
+          # the Asimov-template leg of the GWSignal option-transport tests renders rift.ini
+          python -m pip install liquidpy --break-system-packages
       - name: Run calibration-marginalization regression gate
         run: bash .travis/test-calmarg.sh
 
@@ -832,6 +834,7 @@ jobs:
           python -m pip install liquidpy --break-system-packages
           python -m pytest -q \
             MonteCarloMarginalizeCode/Code/test/test_geometric4.py \
+            MonteCarloMarginalizeCode/Code/test/test_puffball_transverse_reflect.py \
             MonteCarloMarginalizeCode/Code/test/test_rf_transverse_spin.py \
             MonteCarloMarginalizeCode/Code/test/test_rf_transverse_asimov_render.py \
             MonteCarloMarginalizeCode/Code/test/test_rf_transverse_helper_generation.py \

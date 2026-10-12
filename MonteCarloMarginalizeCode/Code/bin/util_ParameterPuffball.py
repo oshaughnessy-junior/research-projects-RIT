@@ -332,10 +332,10 @@ for indx_P in np.arange(len(P_list)):
         if coord_names[indx] in ['mc','m1','m2','mtot']:
             fac = lal.MSUN_SI
         if coord_names[indx] in lalsimutils.periodic_params:
-            X_out[indx_P] = np.mod(X_out[indx_P], lalsimutils.periodic_params[coord_names[indx]])
+            X_out[indx_P,indx] = np.mod(X_out[indx_P,indx], lalsimutils.periodic_params[coord_names[indx]])
         P_list[indx_P].assign_param( coord_names[indx], X_out[indx_P,indx]*fac)
 
-    if np.isnan(P.m1) or np.isnan(P.m2):  # don't allow nan mass
+    if not np.all(np.isfinite([P.m1, P.m2, P.s1x, P.s1y, P.s1z, P.s2x, P.s2y, P.s2z])):  # don't allow nan mass or spin
         continue
 
     if not(opts.enforce_duration_bound is None):

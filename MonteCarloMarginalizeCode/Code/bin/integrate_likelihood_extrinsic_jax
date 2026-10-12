@@ -366,6 +366,7 @@ _ILE_ALL_OPTS = {
     "--sampler-anisotropic-bins", "--sampler-l0-rescue-accept-truncated",
     "--sampler-l0-rescue-puff-factor", "--sampler-l0-rescue-puff-scale",
     "--sampler-l0-rescue-puff-width-frac", "--sampler-l0-rescue-reject-dlnZ",
+    "--sampler-av-dilate-layers",
     "--sampler-load-state", "--sampler-method", "--sampler-portfolio",
     "--sampler-portfolio-allow-stratified-density",
     "--sampler-portfolio-args", "--sampler-save-state",
@@ -569,6 +570,11 @@ def check_critical_and_report(opts, optp):
         if getattr(opts, "jax_av_seed", "none") != "none" \
                 and not any("--jax-av-seed requires" in item for item in fatal):
             fatal.append("--jax-av-seed requires --sampler-method AV/portfolio")
+    if (getattr(opts, "sampler_av_dilate_layers", None) or 0) < 0:
+        fatal.append("--sampler-av-dilate-layers must be >= 0")
+    if _sampler_method != "AV" and getattr(opts, "sampler_av_dilate_layers", None):
+        # a portfolio's AV member contracts without dilation
+        fatal.append("--sampler-av-dilate-layers is inert unless --sampler-method AV")
     if is_set("--psi-marginalization"):
         fatal.append("--psi-marginalization (analytic polarization-angle "
                      "marginalization) is not implemented for psi-sampling modes "
@@ -934,6 +940,8 @@ def check_critical_and_report(opts, optp):
                         "--limit-psi", "--limit-inclination"}
         if getattr(opts, "sampler_method", None) == "portfolio":
             implemented.add("--sampler-portfolio")
+        else:
+            implemented.add("--sampler-av-dilate-layers")
     _tempered_mode_active = (mode in _TEMPERED_MODES
                              and getattr(opts, "sampler_method", None)
                              not in ("AV", "portfolio"))
@@ -1212,6 +1220,14 @@ def build_parser():
                       "periodic probes (default: validated fixed schedule).")
     g.add_option("--sampler-anisotropic-bins", action="store_true", default=False,
                  help="Allocate AV bins preferentially along compressed coordinates.")
+    g.add_option("--sampler-av-dilate-layers", type=int, default=None,
+                 help="--sampler-method AV only: add this many layers of axis-neighbour "
+                      "bins to AV's occupied bins each cycle, so parts of a thin or "
+                      "curved live region that hold no retained point stay drawable "
+                      "(otherwise lnZ comes out low).  Costs several times more "
+                      "likelihood calls and can grow the per-cycle batch to several "
+                      "times --n-chunk.  Default off.  Left as None when unset so the "
+                      "ignored-option report does not claim the user passed it.")
     g.add_option("--jax-av-seed", type="choice", choices=("none", "fisher-sky"),
                  default="none",
                  help="Optional JAX initializer for AV/portfolio: hill-climb several "
@@ -4101,6 +4117,7 @@ def analyze_one(opts, P, data_dict, psd_dict, analyticPSD_Q, fiducial_epoch,
             sky_inflate=opts.jax_av_sky_inflate,
             seed_prior_frac=opts.jax_av_seed_prior_frac,
             anisotropic_bins=opts.sampler_anisotropic_bins,
+            dilate_layers=(opts.sampler_av_dilate_layers or 0),
             verbose=opts.verbose, sample_bounds=_sample_bounds,
             distance_prior=opts.d_prior,
             **_av_sky_sampling_kwargs(opts, like.data.detector_names),

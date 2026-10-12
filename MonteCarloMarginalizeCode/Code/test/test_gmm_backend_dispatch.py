@@ -895,7 +895,7 @@ def test_the_score_carries_the_right_box_jacobian_in_more_than_one_dimension(on_
     """The d==1 anchor above cannot see the box volume: with one dimension prod and sum of
     the widths agree, and so do 2**d and 2.  This pins both in d=2, with UNEQUAL widths.
 
-    The d>1 normalization goes through mvnun, which is randomized at abseps/releps 1e-5, so
+    The d>1 normalization is a numerical integral (mvnun for d=2) accurate to ~1e-4, so
     this compares at 1e-3 rather than to roundoff.  That is ample: dropping 2**d is a factor
     4, and prod -> sum on these bounds is a factor 6/5.
     """
