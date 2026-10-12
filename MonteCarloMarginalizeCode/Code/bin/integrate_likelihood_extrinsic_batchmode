@@ -4952,12 +4952,28 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
             _like = like_to_integrate
         _wu = float(os.environ.get('RIFT_BRUTE_WU', '0.10')); _wc = float(os.environ.get('RIFT_BRUTE_WC', '0.20'))
         _wv = float(os.environ.get('RIFT_BRUTE_WV', '0.25'))
+        # optional smooth components: Student-t (nu 5) fitted to the pilot's weighted mean and
+        # covariance, at scales RIFT_BRUTE_TS (comma list), weights RIFT_BRUTE_TW
+        _ext, _extw = [], []
+        _tw = [float(x_) for x_ in os.environ.get('RIFT_BRUTE_TW', '').split(',') if x_]
+        if _tw:
+            from RIFT.misc.brute_reference import _TruncT
+            _ts = [float(x_) for x_ in os.environ.get('RIFT_BRUTE_TS', '1.5,4').split(',')]
+            _Xw = _pilot[_ok]; _ww = _pw[_ok] / numpy.sum(_pw[_ok])
+            _mu = numpy.sum(_Xw * _ww[:, None], axis=0)
+            _cv = numpy.cov(_Xw.T, aweights=_ww)
+            _rng_t = numpy.random.default_rng(int(os.environ.get('RIFT_BRUTE_SEED', '1234')) + 17)
+            for sc_, w_ in zip(_ts, _tw):
+                c_ = _TruncT(_mu, _cv * sc_**2, 5.0, _lo, _hi, _rng_t)
+                print(" BRUTE t component: scale %.2f weight %.2f box mass %.4f (rel err %.1e)" % (sc_, w_, c_.Z, c_.Z_relerr), flush=True)
+                _ext.append(c_); _extw.append(w_)
         _out = brute_reference_integral(
             _like, _po, list(_lo), list(_hi),
             {p_: sampler.prior_pdf[p_] for p_ in _po}, _pilot[_ok],
             n_total=int(os.environ.get('RIFT_BRUTE_N', '4000000')), block=int(os.environ.get('RIFT_BRUTE_BLOCK', '20000')),
             nb_fine=int(os.environ.get('RIFT_BRUTE_NBF', '20')), nb_coarse=int(os.environ.get('RIFT_BRUTE_NBC', '6')),
-            weights=(1.0 - _wu - _wc - _wv, _wv, _wc, _wu), pilot_weights=_pw[_ok],
+            weights=(1.0 - _wu - _wc - _wv - sum(_extw), _wv, _wc, _wu), pilot_weights=_pw[_ok],
+            extra_components=_ext, extra_weights=_extw,
             seed=int(os.environ.get('RIFT_BRUTE_SEED', '1234')), tag="BRUTE", verbose=True)
         _out['lnZ'] = _out['lnI'] + manual_avoid_overflow_logarithm
         _out['lnZ_AV_pilot'] = float(_pr[0]) + manual_avoid_overflow_logarithm

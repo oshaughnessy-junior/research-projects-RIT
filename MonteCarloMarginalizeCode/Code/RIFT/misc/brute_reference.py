@@ -188,6 +188,44 @@ class _HistProposal(object):
         return self.lo + (b + rng.random((n, self.ndim))) * self.width
 
 
+class _TruncT(object):
+    """Multivariate Student-t (location m, scale matrix S, nu dof) truncated to the box.
+
+    Smooth where the histograms are piecewise constant: in 6-D at moderate SNR the integrand
+    varies by many e-folds inside one histogram cell, and no piecewise-constant q tracks it.
+    The box mass Z of the untruncated t is estimated once by Monte Carlo (n_norm draws); a
+    relative error eps in Z changes this component's density by eps, so lnI moves by at most
+    weight * eps.  Sampling is by rejection outside the box."""
+
+    def __init__(self, mean, cov, nu, lo, hi, rng, n_norm=4000000):
+        from scipy.stats import multivariate_t
+        self.lo = np.asarray(lo, dtype=float)
+        self.hi = np.asarray(hi, dtype=float)
+        self.dist = multivariate_t(loc=np.asarray(mean, float), shape=np.asarray(cov, float), df=float(nu))
+        X = self.dist.rvs(size=int(n_norm), random_state=rng)
+        inside = np.all((X > self.lo) & (X < self.hi), axis=1)
+        self.Z = float(np.mean(inside))
+        self.Z_relerr = float(np.sqrt((1 - self.Z) / (self.Z * n_norm))) if self.Z > 0 else float("inf")
+        if self.Z <= 0:
+            raise ValueError("t component has no mass in the box")
+
+    def density(self, X):
+        inside = np.all((X > self.lo) & (X < self.hi), axis=1)
+        out = np.zeros(len(X))
+        if inside.any():
+            out[inside] = np.exp(self.dist.logpdf(X[inside])) / self.Z
+        return out
+
+    def sample(self, n, rng):
+        out = []
+        need = n
+        while need > 0:
+            X = np.atleast_2d(self.dist.rvs(size=max(int(1.3 * need / self.Z), 16), random_state=rng))
+            X = X[np.all((X > self.lo) & (X < self.hi), axis=1)]
+            out.append(X[:need]); need -= len(out[-1])
+        return np.vstack(out)
+
+
 class _Mixture(object):
     """sum_m w_m q_m, plus a final uniform-on-the-box term.  Exactly evaluable,
     exactly sampleable, and strictly positive inside the box.
@@ -243,7 +281,7 @@ def brute_reference_integral(like_fn, params, lo, hi, prior_pdfs, pilot_pts,
                              nb_coarse=6, weights=(0.60, 0.30, 0.10),
                              seed=1234, tag="BRUTE", verbose=True,
                              uniform_cells=True, dilate_fine=1, dilate_coarse=0,
-                             pilot_weights=None):
+                             pilot_weights=None, extra_components=(), extra_weights=()):
     """Fixed-proposal importance-sampling estimate of int L p dOmega.
 
     ``like_fn(**{param: array})`` must return lnL as a host array.
@@ -267,7 +305,9 @@ def brute_reference_integral(like_fn, params, lo, hi, prior_pdfs, pilot_pts,
                           dilate=dilate_fine)
     coarse = _HistProposal(pilot_pts, lo, hi, nb_coarse, uniform_cells=False,
                            dilate=dilate_coarse, pt_weights=pilot_weights)
-    q = _Mixture([fine, cover, coarse], weights, lo, hi)
+    # optional smooth components (e.g. _TruncT), inserted before the uniform-box term
+    w_all = list(weights[:-1]) + list(extra_weights) + [weights[-1]]
+    q = _Mixture([fine, cover, coarse] + list(extra_components), w_all, lo, hi)
     if verbose:
         print("%s PROPOSAL pilot=%d fine_cells=%d cover_cells=%d (nb=%d)"
               " coarse_cells=%d (nb=%d) w=%s box_vol=%.6g"
