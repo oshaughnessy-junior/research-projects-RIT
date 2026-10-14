@@ -61,6 +61,7 @@
 <li class="toctree-l1"><a class="reference internal" href="troubleshooting.html">General Troubleshooting</a></li>
 <li class="toctree-l1"><a class="reference internal" href="api_samples_utils.html">Samples Utilities</a></li>
 <li class="toctree-l1"><a class="reference internal" href="gp_likelihood_export.html">Differentiable GP likelihood export and validation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="cip-distance-slices.html">CIP and distance-slice operator workflow</a></li>
 <li class="toctree-l1"><a class="reference internal" href="executables/index.html">Executables</a></li>
 <li class="toctree-l1"><a class="reference internal" href="physics/index.html">Waveform Generation</a></li>
 </ul>
@@ -261,6 +262,19 @@
 <li class="toctree-l2"><a class="reference internal" href="gp_likelihood_export.html#testing-it">Testing it</a></li>
 </ul>
 </li>
+<li class="toctree-l1"><a class="reference internal" href="cip-distance-slices.html">CIP and distance-slice operator workflow</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="cip-distance-slices.html#pipeline-data-flow">Pipeline data flow</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cip-distance-slices.html#cip-export-contract">CIP export contract</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cip-distance-slices.html#enabling-distance-slice-export">Enabling distance-slice export</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="cip-distance-slices.html#choosing-core-and-fresh-slices">Choosing core and fresh slices</a></li>
+<li class="toctree-l3"><a class="reference internal" href="cip-distance-slices.html#fresh-slice-budgets-and-safe-parameterization">Fresh-slice budgets and safe parameterization</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="cip-distance-slices.html#cpu-and-gpu-boundaries">CPU and GPU boundaries</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cip-distance-slices.html#output-schema-and-diagnostics">Output schema and diagnostics</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cip-distance-slices.html#reproducibility-checklist">Reproducibility checklist</a></li>
+</ul>
+</li>
 <li class="toctree-l1"><a class="reference internal" href="executables/index.html">Executables</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="executables/util_RIFT_pseudo_pipe.html">util_RIFT_pseudo_pipe.py</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="executables/util_RIFT_pseudo_pipe.html#overview">Overview</a></li>
@@ -396,6 +410,7 @@
 </li>
 <li class="toctree-l3"><a class="reference internal" href="executables/convergence_test_samples.html#functional-logic">Functional Logic</a></li>
 <li class="toctree-l3"><a class="reference internal" href="executables/convergence_test_samples.html#output-details">Output Details</a></li>
+<li class="toctree-l3"><a class="reference internal" href="executables/convergence_test_samples.html#related-workflow">Related workflow</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="executables/util_ParameterPuffball.html">util_ParameterPuffball</a><ul>
