@@ -83,7 +83,7 @@ def test_stops_at_range_limit():
 def test_edge_beyond_range_limit_never_walks_inward():
     d = narrow_core()
     f = Fresh()
-    dw = walk_out_slices(d, lnL(d), flat, f, 1.0, d.max() * 0.99, delta_lnL=7.0)[0]
+    dw = walk_out_slices(d, lnL(d), flat, f, 1.0, d.max() * 0.9, delta_lnL=7.0)[0]
     assert not np.any(dw > d.min()), dw     # far side adds nothing; nothing lands inside the core
 
 
