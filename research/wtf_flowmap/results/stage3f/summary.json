@@ -1,0 +1,153 @@
+{
+  "status": "passed_periodic_real_objective_smoke_implementation_only",
+  "genuinely_reward_finetuned_periodic_model_exists": true,
+  "source_parent_commit": "06a6c67ef68a76bafd070dacb0c51215c4c5aca0",
+  "final_checkpoint": {
+    "path": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3f/run1/periodic_wtf_tuned.pt",
+    "sha256": "71be3106af24277b3f78882b4ddf849fc748be9075055b627da24ec0e93c13e1"
+  },
+  "starting_checkpoint_sha256": "a63d634bf014ed43c3c46be3318f2ad3459e9c943975320a3960a79fc73ef4ea",
+  "updates_completed": 8,
+  "batch": 4,
+  "attempted_rows": 100,
+  "physical_rows": 92,
+  "expected_support_rejections": 8,
+  "unexpected_failures": 0,
+  "repairs_or_retries": 0,
+  "backend_rows": {
+    "numpy_noloop": 50,
+    "jax_value_and_gradient": 42
+  },
+  "torch_reward_backward_rows": 34,
+  "mathematical_tests": {
+    "passed": 19,
+    "new_objective_tests": 6,
+    "existing_model_geometry_tests": 13,
+    "manual_caltech": true,
+    "ci": false
+  },
+  "coefficients": {
+    "reward_scale": 0.001,
+    "beta": 1.0,
+    "adam_lr": 1e-05
+  },
+  "seed_roles": {
+    "real_gradient_checks": 261040,
+    "training": 261041,
+    "fixed_validation": 261042
+  },
+  "full_value_gradient_checks_passed_before_updates": true,
+  "gradient_checks": [
+    {
+      "index": 0,
+      "raw_value_difference_nat": 4.1404892670016125e-06,
+      "value_gradient_error_over_tolerance": 1.8848667968680737e-05,
+      "fd_refinement_over_tolerance": 7.439717287582599e-05,
+      "control_gradient_norm": 0.11254536801222702,
+      "scaled_reward_pullback_norm": 34.78272093769668,
+      "control_gradient_fd_passed": true
+    },
+    {
+      "index": 1,
+      "raw_value_difference_nat": 1.6780689747974975e-05,
+      "value_gradient_error_over_tolerance": 1.077424806517549e-05,
+      "fd_refinement_over_tolerance": 6.960771139239748e-06,
+      "control_gradient_norm": 0.15256700366870987,
+      "scaled_reward_pullback_norm": 0.5866260943885137,
+      "control_gradient_fd_passed": true
+    }
+  ],
+  "frozen_base_and_reference_unchanged": true,
+  "student_parameter_change_l2": 0.002805142667758647,
+  "trained_contract_max_error": 1.1102230246251565e-14,
+  "validation_before": {
+    "mean_value": 0.9786291828298419,
+    "mean_logL": 1049.6080361359493
+  },
+  "validation_after": {
+    "mean_value": 0.9797661746161406,
+    "mean_logL": 1051.1997021621632
+  },
+  "cost": {
+    "processes": [
+      {
+        "process": "tests",
+        "cpu_seconds": 3.01,
+        "wall_seconds": 5.57,
+        "peak_rss_kib": 329404
+      },
+      {
+        "process": "run1",
+        "cpu_seconds": 27.3,
+        "wall_seconds": 33.78,
+        "peak_rss_kib": 2106788
+      }
+    ],
+    "complete_cpu_seconds": 30.31,
+    "complete_wall_seconds": 39.35,
+    "peak_rss_kib": 2106788,
+    "caps": {
+      "stage_cpu_seconds": 600,
+      "process_cpu_seconds": 560,
+      "memory_gib": 8,
+      "attempted_rows": 256,
+      "max_updates": 8,
+      "batch": 4
+    },
+    "administrative_and_local_syntax_process_seconds": null
+  },
+  "source_sha256": {
+    "smoke_periodic_wtf.py": "018c2b387e1c4f75eabdf872a895e5ba191afccb03339f9cdcf916273d7d42ca",
+    "periodic_wtf.py": "440b52051b3b0213833aba1b607f11a775a43490607474b777aa4c31e3766a48",
+    "periodic_real_context.py": "037eff5c2430bc0f884d005705569e170dc1dbb43b637a51005c61dd046d0714",
+    "periodic_target_bank.py": "f17c6e525580904040a14d75a1141a98de84fce527d89c0afbdcbf9e4a28ed8c",
+    "periodic_model.py": "878d90069b3c9691a9b87f403660f2f341feff84cc9e481a110d7f55cfae90de",
+    "test_periodic_wtf.py": "9100419ae10b3b0482b35128c035f021571685d2d13b09b133cc5aadb1d5ec7f"
+  },
+  "likelihood_sources": {
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/factored_likelihood.py": "7b87a19e7133155cb1bb67a790a58ab7204f605d6d12cd78471edc34e044c974",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/jax_ile/wrapper.py": "0db282efa8db272e404cc2d649485feaba3c0339998a36ddde293b7ac4166005",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/jax_ile/core.py": "0f499791e796558b7b2460027ef8459302925dcf792801883664ceaf56336ab8"
+  },
+  "current_normalized_driver_sha256": "d88a561e6f838f6066cf543fd93c58b838d96d022b7d8536fa95819e8252cf20",
+  "metric": "unit-radius T3 radians and standardized R3, ordinary tangent sum-square",
+  "gates_scope": "implementation/value-gradient/finite-update/support/lattice tests only, not calibrated inference or tuned diagonal-flow ODE fidelity",
+  "cumulative_recent_complete_allocations": {
+    "periodic_model_build_and_all_repairs_cpu_seconds": 31.05,
+    "periodic_parity_cpu_seconds": 35.83,
+    "current_smoke_cpu_seconds": 30.31,
+    "subtotal_cpu_seconds": 97.19,
+    "periodic_physical_rows": 207
+  },
+  "older_known_groups_subtotal": {
+    "cpu_seconds": 450.3,
+    "wall_seconds": 493.95,
+    "physical_rows": 378,
+    "not_exhaustive": true,
+    "note": "extra historical mathematical checks/admin/acquisition not all timed; do not claim all-history total"
+  },
+  "historical_teacher_acquisition_true_rows_lower_bound": 15984560,
+  "historical_teacher_total_cost": null,
+  "reward_mean_or_value_gain_is_not_success_criterion": true,
+  "scientific_capability_or_cost_win": false,
+  "inference_run": false,
+  "next_proposal": {
+    "launched": false,
+    "arms": [
+      "current strong AV",
+      "current AV+GMM",
+      "identical-cache resampling/warm-start",
+      "pretrained periodic map",
+      "reward-tuned periodic map"
+    ],
+    "anchor_count": 1,
+    "seed_count": 1,
+    "cpu_seconds_cap": 1200,
+    "cpu_count": 1,
+    "memory_gib": 8,
+    "attempts_per_arm": 2000,
+    "total_attempts": 10000,
+    "prerequisites": "corrected defensive final sampler and deliberate bad-oracle/cache-isolation/reset tests",
+    "scope": "exploratory accounting/coverage, not powered adoption"
+  }
+}

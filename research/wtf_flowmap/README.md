@@ -1,24 +1,23 @@
 # Learned flow-map research on S250114ax
 
-The repaired periodic model now passes the specified local physical parity
-probe: 123 attempts /115 true rows, held-out bridge and full map pullback,
-all three angular seams/representative derivatives, and16 generated points.
-Maximum value error3.03e-5 nat (<1e-3); all unchanged gradient gates passed.
-Complete cost35.83 CPU /43.78 wall seconds. No reward training or inference ran.
-See `PERIODIC_PARITY_RESULTS.md` for exact pins, scope and next bounded proposals.
+A genuinely real-reward-fine-tuned periodic model now exists. The stage3f
+implementation smoke passed19 mathematical/model tests, two real full
+lookahead/control value-gradient checks before optimizer creation, eight batch4
+updates and post-validation. The initial base/reference stayed frozen; student
+parameters changed by L2 .002805. All scientific capability/cost claims remain
+unestablished. See `PERIODIC_WTF_SMOKE_RESULTS.md` for scope, exact pins and limits.
 
-The preceding periodic model-only repair passed its unchanged sampled solver
-gates at final one-step RMS .144216. Its original five-minute model allocation
-used31.05 CPU seconds total; that cost is separate from this parity allocation.
-See `DISTILL_REPAIR_RESULTS.md` for every failed and passing training attempt.
-The current drift/map are genuine learned `PeriodicVelocity` objects with six
-state dimensions, nine periodic/nonangular features and lifted equivariant jumps.
-They still have no normalized log q or posterior/evidence calibration contract.
+The stage used100 endpoint attempts /92 physical rows,30.31 CPU /39.35 wall
+seconds including tests, setup and validation. Its separate predecessor allocations
+used31.05 CPU seconds(model build/repairs) and35.83 CPU seconds(periodic parity).
+The current checkpoint is71be3106; the pretrained comparator a63d634b is unchanged.
+Both learned maps remain implicit proposal-training objects with no normalized logq
+or posterior-draw/evidence calibration contract.
 
-Periodic actual-WTF loss adaptation and reward tuning remain unlaunched; the
-old Euclidean-lift semigroup loss is not valid unchanged. Scientific capability
-and end-to-end cost advantage remain unestablished. PR445 and production defaults
-are unchanged. `PLAN.md`/`STATE.json` record the protocol/current action boundary.
+No five-arm inference comparison ran. The conditional next request is a one-anchor,
+one-seed10000-attempt corrected accounting/coverage pilot after bad-oracle/cache
+isolation/reset tests, with20 CPU minutes/8GiB. `PLAN.md`/`STATE.json` record the
+current boundary. PR445 and all production/defaults remain unchanged.
 
 Historical progression is retained below: old-coordinate parity passed locally
 (stage3a), six old-coordinate real-objective updates stopped at the chart guard

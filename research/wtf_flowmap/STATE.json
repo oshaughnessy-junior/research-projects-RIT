@@ -1,6 +1,6 @@
 {
   "owner": "current Codex task, mini coordinator",
-  "status": "stage_3e_periodic_physical_value_and_first_derivative_parity_passed_limited_probe",
+  "status": "stage_3f_genuine_periodic_real_reward_finetuning_smoke_passed_implementation_only",
   "research_branch": "codex/learned-flowmap-realcase",
   "reasoning_effort_requested": "low",
   "source_base": "1621bb6e12391086edc3bfc8730ad807c8ad638c",
@@ -28,15 +28,18 @@
     "all original sampled gates passed on once-only reserved independent validation",
     "new periodic decoder Torch/JAX/FD Jacobian parity",
     "held-out physical bridge and three angular seam/representative gradient tests",
-    "16 generated-point values and complete repaired-jump pullback against NoLoop finite differences"
+    "16 generated-point values and complete repaired-jump pullback against NoLoop finite differences",
+    "six new periodic-objective mathematical tests plus13 model/geometry tests passed",
+    "two real full two-lookahead/control value-gradient checks before updates",
+    "eight real-log-likelihood periodic WTF regression updates and post-validation passed"
   ],
   "checkpoint": {
-    "path": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3d/repair1/accepted.pt",
-    "sha256": "a63d634bf014ed43c3c46be3318f2ad3459e9c943975320a3960a79fc73ef4ea",
+    "path": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3f/run1/periodic_wtf_tuned.pt",
+    "sha256": "71be3106af24277b3f78882b4ddf849fc748be9075055b627da24ec0e93c13e1",
     "geometry": "T3_R3_v1",
     "drift_width": 64,
     "map_width": 64,
-    "acceptance": "sampled model-only solver gates plus limited periodic physical value/first-derivative parity; not reward tuning or calibrated inference"
+    "acceptance": "actual eight-update periodic real-objective smoke implementation only; not calibrated inference"
   },
   "model_only_gates": {
     "one_step_rms": true,
@@ -109,7 +112,9 @@
     "DISTILL_REPAIR_RESULTS.md",
     "results/stage3d_repair/summary.json",
     "PERIODIC_PARITY_RESULTS.md",
-    "results/stage3e/summary.json"
+    "results/stage3e/summary.json",
+    "PERIODIC_WTF_SMOKE_RESULTS.md",
+    "results/stage3f/summary.json"
   ],
   "checkpoint_reproduced_identically_in_three_6000_step_runs": true,
   "mathematical_contract_tests_unique": 4,
@@ -119,7 +124,7 @@
     "cpu_seconds_sum": 24.16,
     "new_true_likelihood_rows": 0
   },
-  "next_after_stage3a": "New periodic physical parity passed locally. Periodic actual-WTF objective adaptation/math checks and a separately authorized smoke precede any scientific corrected-sampler comparison.",
+  "next_after_stage3a": "Periodic real-objective smoke passed. No inference pilot launched; next separate request is five-arm corrected accounting/coverage comparison after adapter/cache-isolation tests.",
   "stage3a_cost": {
     "attempted_true_rows": 116,
     "measured_process_cpu_seconds": 289.56,
@@ -204,13 +209,14 @@
     "contracts": true
   },
   "current_next_stage": {
-    "name": "periodic_actual_WTF_objective_adaptation_and_separately_bounded_smoke",
+    "name": "corrected_five_arm_exploratory_cost_and_shape_pilot",
     "launched": false,
-    "proposed_cpu_seconds": 600,
-    "proposed_memory_gib": 8,
-    "attempted_rows_cap": 256,
-    "max_updates": 8,
-    "batch": 4,
+    "cpu_seconds_proposed": 1200,
+    "memory_gib": 8,
+    "attempts_cap": 10000,
+    "per_arm": 2000,
+    "anchors": 1,
+    "seeds": 1,
     "automatic_execution_authorized": false
   },
   "stage3e": {
@@ -222,5 +228,27 @@
     "wall_seconds": 43.78,
     "optimizer_steps": 0,
     "checkpoint_unchanged": true
+  },
+  "pretrained_periodic_checkpoint": {
+    "path": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3d/repair1/accepted.pt",
+    "sha256": "a63d634bf014ed43c3c46be3318f2ad3459e9c943975320a3960a79fc73ef4ea",
+    "geometry": "T3_R3_v1",
+    "drift_width": 64,
+    "map_width": 64,
+    "acceptance": "sampled model-only solver gates plus limited periodic physical value/first-derivative parity; not reward tuning or calibrated inference"
+  },
+  "stage3f": {
+    "status": "passed_periodic_real_objective_smoke_implementation_only",
+    "result": "results/stage3f/summary.json",
+    "genuinely_reward_finetuned_periodic_model_exists": true,
+    "attempted_rows": 100,
+    "physical_rows": 92,
+    "updates_completed": 8,
+    "complete_cpu_seconds": 30.31,
+    "complete_wall_seconds": 39.35,
+    "checkpoint": {
+      "path": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3f/run1/periodic_wtf_tuned.pt",
+      "sha256": "71be3106af24277b3f78882b4ddf849fc748be9075055b627da24ec0e93c13e1"
+    }
   }
 }

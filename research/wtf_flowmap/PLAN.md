@@ -1,10 +1,10 @@
 # Learned WTF flow-map investigation — staged plan
 
-Status: stage3e limited periodic physical value/first-derivative parity passed,
-123 attempts /115 physical rows, 35.83 CPU seconds. The preceding model repair
-passed at final one-step RMS .144216, 31.05 CPU seconds in its separate allocation.
-No periodic reward training or inference launched. See PERIODIC_PARITY_RESULTS.md.
-No scientific capability/cost win claimed.
+Status: stage3f periodic actual-real-objective implementation smoke passed.
+19 tests, two real full-value gradient checks before optimizer creation,
+eight batch4 updates and post-validation;100 attempts/92 physical rows,
+30.31 CPU seconds including tests/setup/validation. No scientific capability/cost
+win claimed and no inference pilot launched. See PERIODIC_WTF_SMOKE_RESULTS.md.
 Production defaults remain fixed.
 PR445 and its negative heuristic pilot are preserved as a separate historical result.
 

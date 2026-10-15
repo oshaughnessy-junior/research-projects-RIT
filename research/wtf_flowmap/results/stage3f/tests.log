@@ -1,0 +1,9 @@
+...................                                                      [100%]
+=============================== warnings summary ===============================
+test_periodic_model.py::test_neural_shift_jump_derivative_and_decoder_contracts
+  /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3f/source/test_periodic_model.py:19: UserWarning: Converting a tensor with requires_grad=True to a scalar may lead to unexpected behavior.
+  Consider using tensor.detach() first. (Triggered internally at /home/conda/feedstock_root/build_artifacts/libtorch_1760285608890/work/torch/csrc/autograd/generated/python_variable_methods.cpp:835.)
+    diff=float((fun(x+shift)-expected).abs().max())
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+19 passed, 1 warning in 2.31s
