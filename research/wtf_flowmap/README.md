@@ -1,0 +1,193 @@
+# Learned flow-map research on S250114ax
+
+Stage 2 is complete: a genuine six-dimensional neural drift was pretrained on
+verified real RIFT exports, and a neural two-time map was distilled from that
+learned drift. **Scientific capability and end-to-end cost advantage remain
+unestablished.** This is separate from PR445's heuristic pilot, which is preserved
+unchanged. No production sampler or default is changed here.
+
+See `PLAN.md` for the staged protocol and `STATE.json` for the exact next action.
+
+## Actual learned objects and algorithm scope
+
+- `Velocity(dim=6)` learns the stochastic-interpolant flow-matching velocity on
+  real posterior training data; it is not a fitted Gaussian or kernel surrogate.
+- A second neural network learns `X(s,t,x)=x+(t-s)*v(s,t,x)` from RK4 trajectories
+  of the frozen learned drift, for arbitrary two-time jumps. The diagonal is
+  independently anchored to the drift. It is a trained approximate solution
+  operator, not a normalizing flow relabelled as one.
+- `wtf_loss` implements diagonal control regression onto the frozen policy's
+  Monte Carlo value gradient plus off-diagonal semigroup self-distillation.
+  `value_gradient` retains the exact Jacobian through both lookahead jumps and
+  through the base drift's **input**, with sum-square control norm. Frozen
+  parameters retain input derivatives. Reward/time shape guards prevent silent
+  broadcasting; constant reward/zero control gives a zero gradient.
+- These fine-tuning components are mathematically tested, but **real-likelihood
+  reward fine-tuning has not run**. The trained checkpoint contains a pretrained
+  drift and distilled map, not a scientifically validated WTF-tuned sampler.
+
+Method source: [WTF v2](https://arxiv.org/abs/2609.27033v2), especially section 4
+and Appendix A; authors' code inspected at
+`058a4f2d9a42f384a0be8d1224784b755986e4ff`. This small implementation is independent
+of their image stack. Pretraining by supervised RK4 distillation is our explicit
+choice; the paper assumes a pretrained flow map. The objective uses the paper's
+mathematical exact-gradient version, not the released image recipe's detached
+base input derivative, mean-square control norm, Euclidean reward pullback,
+normalization or jitter. Noise is time 0 and data time 1. No released checkpoint
+or reported image result was reproduced.
+
+The Euclidean control metric is in standardized chart coordinates, not an
+invariant metric on physical angles/distance. Finite data, neural approximation,
+local angular chart seams, and hard physical prior bounds violate any easy appeal
+to the population theorem. The map supplies **no normalized log q**. Outputs must
+remain proposal-training candidates behind the existing corrected final sampler;
+reward-optimized transport outputs are not posterior draws.
+
+## Verified real case and split
+
+Case: S250114ax, fixed intrinsic anchor 47536; full six-dimensional extrinsic
+inference with time marginalized. The archived accepted reference is AV,
+SEOBNRv5PHM, lmax 4, 4096 Hz, sinc interpolation and bandlimited time quadrature,
+corrected network-sky inverse mapping, internal phase rotation and full adaptation.
+Distance prior is `cosmo_sourceframe` on [1,10000] Mpc. Values/gradients under the
+current maintained target still require a matched parity check.
+
+- Reference source `276863bfe155b3df40567f2067761dc7d19e3899` plus reviewed PR195
+  inverse-map and `e014b355d` per-row-offset patches.
+- Four accepted seeds, each ESS >=100 and 100 exported fair draws. Train on
+  25011401–03; hold out 25011404. Retain fair-draw duplicates; these are not 400
+  independent exact posterior draws and are not raw importance rows.
+- Raw result archives are individually hash-verified before XML parsing; four
+  shared coordinates match the compact NPZ exactly. `collect.py` appends seeds
+  in the manifest order, which defines the group split.
+- The NPZ SHA is
+  `4581e8b8584922946f5ee01756b2ffb9f336d2a66171014ac95641ff365beb2e`;
+  manifest SHA is `4de8a247ffb55d2f007faa1ec82d65c92c165c4aa9f7ebcc66cbfa7f662cb060`.
+- RA, coalescence phase and polarization use training-only circular centers
+  (periods 2pi, 2pi, pi); declination/inclination use atanh(sin dec)/atanh(cos inc),
+  distance uses log distance. Standardization uses training rows only. Exported
+  conditional time is omitted from this time-marginalized model.
+- `results/case_inventory.json` records the paper checkout, original worker and
+  input hashes. Strain/PSDs, source archives, scientific samples and trained
+  weights remain on Caltech; only provenance and aggregate diagnostics are in Git.
+
+## Results and honest gates
+
+Two hidden layers of width 64; batch 128; seed 261015. Initial 2,000 flow-matching
+and 2,000 distillation steps missed the predeclared one-step solver gate:
+RMS .17617 > .15. That result is retained. One bounded repair increased only
+solver distillation to 6,000 steps. It was selected using the learned numerical
+teacher, not the held-out real posterior. Subsequent identical-configuration
+replays verified objective contracts and reproducibility, with no hyperparameter
+search or additional physical likelihood calls.
+
+Final solver diagnostics, on noise absent from teacher training trajectories:
+
+| Diagnostic | Measured RMS | Predeclared limit |
+|---|---:|---:|
+| one-step map versus learned-drift RK4 | .147507 | .15 |
+| 64/128-step teacher refinement | 2.88e-7 | .01 |
+| semigroup consistency | .020646 | .10 |
+| diagonal velocity agreement | .089824 | .20 |
+| arbitrary held-out segment versus RK4 | .045011 | reported |
+
+The one-step gate passes narrowly. These check the learned solver, not accuracy
+of the posterior or evidence. Held-out positive-cos(inclination) mass is .600;
+the distilled map gives .58984 and the drift .60742. One held-out sampler seed
+cannot establish mode calibration. Phase-coordinate Wasserstein distance is
+.444 standard deviations; its 5th/95th percentile discrepancies are about
+-.895/+.336 standard deviations. These linear-chart diagnostics can be affected
+by the angular seam and finite teacher ESS; they are not physical coverage tests.
+Full joint/circular, tail, evidence and held-out-anchor validation is pending.
+
+Four mathematical-contract tests passed on the existing Caltech Torch runtime:
+exact value gradient versus finite differences, frozen-weight/input-gradient
+behavior, diagonal identity/zero-drift analytic gradient, reward/time shape
+rejection, and constant-reward zero-gradient behavior (some checks share tests).
+Earlier 2/3-test executions are overlapping subsets, not additional unique tests.
+These research checks are manually run and are not claimed to be CI-covered.
+
+## Measured resources and full-cost limitations
+
+Verified route: mini -> COS-MATH2519 laptop -> ldas-grid.ligo.caltech.edu.
+Runtime `/cvmfs/software.igwn.org/conda/envs/igwn/bin/python`, Python 3.11.14,
+Torch 2.8.0, NumPy 2.2.6. One CPU thread, no GPU, no scheduler job IDs,
+900-CPU-second limit, fixed small model/arrays with 2-GiB resident-memory budget.
+No installs or shared runtime changes. Scientific scratch:
+`/scratch/richard.oshaughnessy/codex_learned_wtf_20261015`.
+
+| Run | Flow / distillation steps | Wall s | CPU user+system s | Peak RSS KiB |
+|---|---|---:|---:|---:|
+| initial, failed solver gate | 2000 / 2000 | 5.68 | 4.15 | 372672 |
+| bounded repair | 2000 / 6000 | 7.46 | 6.74 | 366572 |
+| reward-shape contract replay | 2000 / 6000 | 7.34 | 6.68 | 366544 |
+| final constant-reward contract replay | 2000 / 6000 | 7.16 | 6.59 | 368052 |
+
+All four runs total 27.64 measured wall seconds / 24.16 CPU seconds; no new true
+likelihood evaluations. Each final-config run counts 256000 flow-matching forward
+and backward examples, 65536 ODE-teacher forward examples, 2304000 distillation
+forward and 768000 backward examples, and 395520 validation forward examples.
+These are neural example counts, not interchangeable FLOP units or physical
+likelihood calls. Complete phase records, including failed-gate work, are retained.
+Final four-test check: 3.80 s wall, 2.92 CPU s, 322472 KiB peak RSS; earlier check
+logs/timing receipts are also preserved. One earlier two-test replay has only
+pytest elapsed time, so no exact total development CPU claim is made.
+
+Historical teacher generation recorded **15,984,560 sampler.ntotal rows** across
+four accepted integrations. Total true calls, hidden work, setup, device time and
+complete failed acquisition cost were not audited. This is a lower bound, not a
+free training set and not a measured cold training speedup. Neither a break-even
+reuse count nor end-to-end benefit can be established from these records alone.
+A future cost comparison must include a cached-resampling/warm-start baseline
+using the **same** posterior cache, as well as current strong AV/AV+GMM methods.
+The neural model must beat inexpensive cached reuse, not only cold inference.
+
+Final checkpoint (kept on Caltech):
+
+```
+/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/final_seed261015/pretrained.pt
+SHA256 4ce26989ccdcfcdb1702dd5e270d79a772487adb2b348b8b471bcaf3a8cf3158
+```
+
+All three 6,000-step runs produced that identical checkpoint hash. Full source
+hashes are in each `result.json`. `pretrained.pt` contains tensor state dictionaries
+and transform configuration; load only this own trusted file, using Torch's
+`weights_only=True`. It is not a posterior export.
+
+## Reproduce this stage on Caltech
+
+From this research directory, using the existing runtime:
+
+```sh
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 CUDA_VISIBLE_DEVICES=''
+P=/cvmfs/software.igwn.org/conda/envs/igwn/bin/python
+$P -m pytest -q check_model.py
+$P train_real.py --npz <pinned-sinc-bandlimited.npz> --manifest <pinned-timing_manifest.json> \
+  --worker-root <timing-continuous-stable-ensemble/results> --distill-steps 6000 \
+  --output <new-isolated-directory>
+```
+
+The exact real paths and source hashes are in `results/final_seed261015/result.json`.
+Output directories must be new, so reruns cannot overwrite earlier evidence.
+
+## Precise next stage: 3a, not yet launched
+
+Proposed bounded parity preflight: **one affinity-pinned Caltech CPU, 20 CPU minutes,
+8 GiB resident limit, no GPU, maximum 128 attempted true-likelihood rows**, including
+finite-difference and failed attempts. Check current shared-host memory/thread
+headroom first; use approved scheduler/accounting policy if batch placement is
+needed, never copy a historical accounting group blindly.
+
+Rebuild the same data/PSD/waveform bank from the hash-recorded inputs; require the
+maintained NoLoop path (all four flags from AGENTS.md), and a verified differentiable
+six-dimensional counterpart with identical stencil/quadrature/priors. Audit phase
+and polarization export/inversion, chart seams and distance bounds. Count build,
+JIT, value, gradient, finite-difference, and rejection costs. Stop on a source,
+coordinate, value/gradient, memory or time mismatch. Dependency presence is verified;
+actual waveform/bank construction and gradient parity have not run.
+
+After that gate, declare a separate small **actual real-reward WTF fine-tuning**
+budget. Then compare pretrained-map, tuned-map, and cached-resampling proposals
+behind the same corrected broad-support final sampler, at matched resource budgets
+and held-out intrinsic anchors. Reuse amortization must be measured and realistic.
+No larger training/production campaign starts automatically from a solver gate.

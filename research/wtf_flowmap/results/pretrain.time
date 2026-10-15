@@ -1,0 +1,23 @@
+	Command being timed: "/cvmfs/software.igwn.org/conda/envs/igwn/bin/python train_real.py --npz /home/richard.oshaughnessy/RIFT_roboto_paper/analyses/s250114_loud_revision_20261007/timing_replacement/stable/figure_snapshot/sinc-bandlimited.npz --manifest /home/richard.oshaughnessy/RIFT_roboto_paper/analyses/s250114_loud_revision_20261007/timing_replacement/stable/figure_snapshot/timing_manifest.json --worker-root /home/richard.oshaughnessy/LVK/IR1/high-snr/investigations/paper3-loud-revision-20261007/timing-continuous-stable-ensemble/results --output /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/pretrain_seed261015"
+	User time (seconds): 3.80
+	System time (seconds): 0.35
+	Percent of CPU this job got: 73%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:05.68
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 372672
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 317
+	Minor (reclaiming a frame) page faults: 66624
+	Voluntary context switches: 33430
+	Involuntary context switches: 71
+	Swaps: 0
+	File system inputs: 110208
+	File system outputs: 216
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

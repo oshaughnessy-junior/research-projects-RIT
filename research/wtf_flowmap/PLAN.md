@@ -8,17 +8,18 @@ PR445 and its negative heuristic pilot are preserved as a separate historical re
 
 Use S250114ax extrinsic inference at the saved intrinsic anchor 47536, then test
 reuse at held-out nearby intrinsic anchors in the same event. Start from the
-accepted continuous cubic/Simpson fixed-anchor ensemble, not an incomplete full-run
+accepted continuous sinc/bandlimited fixed-anchor ensemble, not an incomplete full-run
 posterior or an intrinsic-posterior proxy. Inventory and verify hashes, priors,
 coordinates, likelihood flags, raw likelihood-call cost, and validation records.
 The existing AV reference is a strong baseline; also compare recommended corrected
 AV+GMM with adaptation/rescue options where applicable. Historical settings are not
 a current-code matched baseline until replayed and checked.
 
-The first learned object will model the saved sky/distance/inclination marginal.
-This is a development substrate for an extrinsic proposal, not a new posterior
-estimator. Missing nuisance coordinates must be handled explicitly in the later
-training-only adapter; no implicit density or posterior claims are permitted.
+The learned object will model the full six-dimensional time-marginalized extrinsic
+posterior (RA, declination, inclination, distance, coalescence phase, polarization),
+using the accepted raw XML exports after archive-hash validation. The compact NPZ
+is a cross-check for its four shared coordinates. No implicit density or posterior
+estimation contract is supplied by the learned map.
 
 ## Stages and gates
 
@@ -45,6 +46,8 @@ training-only adapter; no implicit density or posterior claims are permitted.
    boundary and corrected broad-support final sampler. Do not add the implicit
    map as a density member. Compare drift-only map, WTF-tuned map, and strong
    nonlearned baseline with matched total resources/seeds and held-out anchors.
+   Include raw cached posterior resampling / warm-start using the identical
+   teacher cache, so the neural method must beat inexpensive existing reuse.
    Predeclare pilot request after measuring stage-2 cost; no large campaign starts
    automatically. Run small physical-likelihood/parity probes first.
 5. **Decision:** continue only if evidence/mode/tail calibration is maintained and
@@ -79,3 +82,46 @@ Research branch `codex/learned-flowmap-realcase`, based on current `rift_O4d`
 Every completed stage updates `STATE.json` and `results/` with commands, source/data
 hashes, resources, results, blockers and the precise next stage. Before a larger
 training/production campaign, report the concrete resource request to Richard.
+
+## Stage-2 pilot fixed before training
+
+Select the single accepted `sinc-bandlimited` arm: NPZ SHA256
+`4581e8b8584922946f5ee01756b2ffb9f336d2a66171014ac95641ff365beb2e`,
+400 fair draws, 100 per seed in the verified producer's concatenation order.
+Train seeds 25011401–03 (300 rows), hold out seed 25011404 (100 rows). Retain
+duplicates. These are finite-ESS conditional exports, not 400 independent truth
+rows. Historical acquisition `ntotal` lower bound is 15,984,560; hidden evaluation
+counts and total acquisition CPU cost are unavailable. No free-teacher speedup claim.
+
+Features: RA, coalescence phase and polarization unwrapped around training
+circular means, atanh(sin declination), atanh(cos inclination), log distance; standardized using training rows only.
+The atanh/tanh pairs enforce physical angular bounds; RA is periodic on inversion.
+Before training, inventory found all six physical extrinsic coordinates in the
+accepted raw exports. Verify each archive SHA and exact agreement with the NPZ
+for shared columns. Unwrap coalescence phase (2pi) and polarization (pi) about
+training circular means. The exported conditional time is omitted because this
+model targets the time-marginalized six-dimensional inference problem. These
+local angular charts have seams; full periodic reward/coordinate validation is
+a stage-3 gate, not assumed from this pretraining run.
+
+Two hidden layers of width 64, 2,000 flow-matching and 2,000 distillation Adam steps,
+batch 128, seed 261015. Cached RK4 teacher trajectories have 32 intervals. Hold-out
+noise and a 64/128-step refinement diagnostic are distinct from training trajectories.
+Model-only continuation gates: finite outputs, teacher refinement RMS <=.01,
+one-step teacher RMS <=.15, semigroup RMS <=.1, diagonal RMS <=.2 (standardized
+coordinates), and report all held-out real marginal/mode/tail errors. These gates
+only check the learned solver; no evidence or inference-efficiency success follows.
+No model-based tuning against the held-out seed is authorized in this fixed pilot.
+
+## Single bounded stage-2 solver repair
+
+The first 2,000/2,000-step real-data run produced a trained drift/map, but
+one-step RMS .17617 exceeded .15. RK4 refinement RMS 4.3e-7, semigroup .03077,
+and diagonal .15257 passed their gates. Preserve it as a failed solver-gate pilot.
+A dtype-preserving frozen-parameter copy fix is separately regression-tested.
+Allow one 2,000-flow/6,000-distillation-step pilot (same data, seed, architecture),
+chosen for teacher-solver accuracy, not for real hold-out posterior scores.
+Estimate <15 CPU seconds from the measured 4.15 CPU-second initial run; retain
+the hard 900 CPU-second/2-GiB development cap. No physical likelihood or GPU work.
+If it fails, report the model bottleneck and a concrete next-stage plan rather
+than run an open-ended search or start physical fine-tuning anyway.

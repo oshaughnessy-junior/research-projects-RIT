@@ -1,0 +1,67 @@
+{
+  "paper_checkout_commit": "d668ff9c79930783d18725f74e8fa2cf96bb852e",
+  "event": "S250114ax",
+  "anchor": 47536,
+  "source_commit": "276863bfe155b3df40567f2067761dc7d19e3899",
+  "patches": [
+    "reviewed PR195 inverse sky map",
+    "e014b355d per-row Simpson offset"
+  ],
+  "baseline_sampler": "AV",
+  "waveform": "SEOBNRv5PHM",
+  "lmax": 4,
+  "sample_rate": 4096,
+  "quadrature": "bandlimited",
+  "interpolation": "sinc",
+  "distance_prior": "cosmo_sourceframe",
+  "distance_bounds": [
+    1,
+    10000
+  ],
+  "time_marginalized": true,
+  "physical_reward_parity_run": false,
+  "inputs": [
+    {
+      "path": "/home/richard.oshaughnessy/LVK/IR1/high-snr/investigations/S250114ax-full-sky-cubic-20260930/run/H1-psd.xml.gz",
+      "exists": true,
+      "bytes": 107156,
+      "sha256": "8835d415049a43a8d03b7c0ac2c248c4aaa22ab1c2e60d470097f536a1c2652c"
+    },
+    {
+      "path": "/home/richard.oshaughnessy/LVK/IR1/high-snr/investigations/S250114ax-full-sky-cubic-20260930/run/L1-psd.xml.gz",
+      "exists": true,
+      "bytes": 107431,
+      "sha256": "99dbdc52ce608db1354b2323a8891333704481f3e9535e4fef8cca298835f7b9"
+    },
+    {
+      "path": "/home/richard.oshaughnessy/LVK/IR1/high-snr/investigations/S250114ax-full-sky-cubic-20260930/run/frames_dir/H1-S250114ax_EXACT_ENCLOSING_9S-1420878135-9.gwf",
+      "exists": true,
+      "bytes": 1123042,
+      "sha256": "8a17e71675725c1e6d2fb7414647ed9d2dec4606c38ccc269c070174e84a7229"
+    },
+    {
+      "path": "/home/richard.oshaughnessy/LVK/IR1/high-snr/investigations/S250114ax-full-sky-cubic-20260930/run/frames_dir/L1-S250114ax_EXACT_ENCLOSING_9S-1420878135-9.gwf",
+      "exists": true,
+      "bytes": 1122856,
+      "sha256": "d4446bf01b6abd654c41e3f3a96f2e2111c766e77442f747f85105d5ab5c28f7"
+    },
+    {
+      "path": "/home/richard.oshaughnessy/LVK/IR1/high-snr/investigations/paper3-loud-revision-20261007/timing-continuous-stable-ensemble/run_pilot.sh",
+      "exists": true,
+      "bytes": 4479,
+      "sha256": "f8b4501e9b9592eb19aae465110a3e4abfdb8166e9b00be2e06a697e89b181df"
+    },
+    {
+      "path": "/home/richard.oshaughnessy/LVK/IR1/high-snr/investigations/paper3-loud-revision-20261007/timing-continuous-stable-ensemble/pilot.sub",
+      "exists": true,
+      "bytes": 3854,
+      "sha256": "ccad57f97127957ae54771b2a2d6be1b381e7404a9bc2f39404c9f4c49b71811"
+    },
+    {
+      "path": "/home/richard.oshaughnessy/LVK/IR1/high-snr/investigations/paper3-loud-revision-20261007/timing-continuous-stable-ensemble/collect.py",
+      "exists": true,
+      "bytes": 6028,
+      "sha256": "b1cebaa12dd5b557b0ee1ebcc3372890230660f4521c1d97fea133660070ab71"
+    }
+  ]
+}

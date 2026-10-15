@@ -1,0 +1,393 @@
+{
+  "stage": "pretrained_real_drift_and_distilled_map",
+  "reward_finetuning_run": false,
+  "inference_capability_demonstrated": false,
+  "seed": 261015,
+  "steps_per_stage": {
+    "flow_matching": 2000,
+    "distillation": 6000
+  },
+  "model_gates": {
+    "one_step_rms": true,
+    "teacher_refinement_rms": true,
+    "semigroup_rms": true,
+    "diagonal_rms": true
+  },
+  "model_gates_passed": true,
+  "features": [
+    "unwrapped_ra",
+    "atanh_sin_dec",
+    "atanh_cos_inclination",
+    "log_distance",
+    "unwrapped_coa_phase",
+    "unwrapped_polarization"
+  ],
+  "data": {
+    "path": "/home/richard.oshaughnessy/unixhome/Projects/LIGO-ScienceMode/O4_era/RIFT_roboto_paper/analyses/s250114_loud_revision_20261007/timing_replacement/stable/figure_snapshot/sinc-bandlimited.npz",
+    "sha256": "4581e8b8584922946f5ee01756b2ffb9f336d2a66171014ac95641ff365beb2e",
+    "manifest_path": "/home/richard.oshaughnessy/unixhome/Projects/LIGO-ScienceMode/O4_era/RIFT_roboto_paper/analyses/s250114_loud_revision_20261007/timing_replacement/stable/figure_snapshot/timing_manifest.json",
+    "manifest_sha256": "4de8a247ffb55d2f007faa1ec82d65c92c165c4aa9f7ebcc66cbfa7f662cb060",
+    "source_archives": [
+      {
+        "seed": 25011401,
+        "archive_path": "/home/richard.oshaughnessy/LVK/IR1/high-snr/investigations/paper3-loud-revision-20261007/timing-continuous-stable-ensemble/results/sinc-bandlimited-anchor-25011401/pilot-artifacts.tar.gz",
+        "archive_sha256": "62ff493318a6dbae5eb56cfaf9d2a717289133df7628129dd5f561fabb511517",
+        "xml_sha256": "a24d242317aec2bdbd2c87d794e0508c1f0c31e2a712428991c5a6e39045b0d9"
+      },
+      {
+        "seed": 25011402,
+        "archive_path": "/home/richard.oshaughnessy/LVK/IR1/high-snr/investigations/paper3-loud-revision-20261007/timing-continuous-stable-ensemble/results/sinc-bandlimited-anchor-25011402/pilot-artifacts.tar.gz",
+        "archive_sha256": "9c9fa76b500e9fa4bc5c51c2d21ef721dda9e89e7767cc239866fa6afd3ca6b7",
+        "xml_sha256": "5b3e48f113b0713d2e7ee2a9d9edbed4995bc13cbb6cfc3386e7407b08baa210"
+      },
+      {
+        "seed": 25011403,
+        "archive_path": "/home/richard.oshaughnessy/LVK/IR1/high-snr/investigations/paper3-loud-revision-20261007/timing-continuous-stable-ensemble/results/sinc-bandlimited-anchor-25011403/pilot-artifacts.tar.gz",
+        "archive_sha256": "e2124067fa009845edd45fb942819490ebef47bd0b2bf96c9da0ae0008e0d8e7",
+        "xml_sha256": "b75200d77c471cfdc46110c4018c664c0e3d8ea9e989c966b9b0c434a962bd1f"
+      },
+      {
+        "seed": 25011404,
+        "archive_path": "/home/richard.oshaughnessy/LVK/IR1/high-snr/investigations/paper3-loud-revision-20261007/timing-continuous-stable-ensemble/results/sinc-bandlimited-anchor-25011404/pilot-artifacts.tar.gz",
+        "archive_sha256": "fb254458905b7f90c3e9eadea614c9a30a51252beb135fe1f9c6f0631f252c61",
+        "xml_sha256": "ea20990d39eeeea249af58043e9bc1c9852f8bbde240986893e1fff7e10da0a8"
+      }
+    ],
+    "arm": "sinc-bandlimited",
+    "anchor": 47536,
+    "train_seeds": [
+      25011401,
+      25011402,
+      25011403
+    ],
+    "validation_seeds": [
+      25011404
+    ],
+    "train_rows": 300,
+    "validation_rows": 100,
+    "fairdraw_not_raw_importance_samples": true,
+    "acquisition_ntotal_lower_bound": 15984560.0,
+    "acquisition_total_true_calls": null,
+    "acquisition_cpu_seconds": null
+  },
+  "source": {
+    "model.py": "86e3a6732687c40ba0add8c1c62d4bee13635f43d909555cb4ef5d56010b6503",
+    "train_real.py": "aecb1296cd1ec360afdf734557f4a958073f9876e2d3dae3e005506bcfcb4b49",
+    "check_model.py": "911524019df47c3d23f7970cb86998fbc140bfbe77afdc6497b1b1c3f3f89125"
+  },
+  "runtime": {
+    "torch": "2.8.0",
+    "numpy": "2.2.6",
+    "host": "ldas-grid",
+    "threads": 1,
+    "device": "cpu",
+    "cpu_limit_seconds": 900,
+    "resident_cap_kib": 2097152
+  },
+  "cost": {
+    "new_true_likelihood_rows": 0,
+    "neural": {
+      "flow_matching:neural_forward_rows": 256000,
+      "flow_matching:neural_backward_rows": 256000,
+      "ode_teacher_generation:neural_forward_rows": 65536,
+      "two_time_distillation:neural_forward_rows": 2304000,
+      "two_time_distillation:neural_backward_rows": 768000,
+      "heldout_validation:neural_forward_rows": 395520
+    },
+    "flow_matching_seconds": 0.664907892991323,
+    "teacher_generation_seconds": 0.027382600994315,
+    "distillation_seconds": 3.53593686100794,
+    "validation_seconds": 0.1689156969951,
+    "process_seconds": 6.954663055978017,
+    "cpu_user_seconds": 5.991541,
+    "cpu_system_seconds": 0.306294,
+    "max_rss_kib": 363652
+  },
+  "metrics": {
+    "one_step_rms": 0.14750701189041138,
+    "teacher_refinement_rms": 2.884401908431755e-07,
+    "semigroup_rms": 0.02064642310142517,
+    "heldout_segment_rms": 0.04501070827245712,
+    "diagonal_rms": 0.08982432633638382,
+    "map_heldout_wasserstein_standardized": [
+      0.10443292205326274,
+      0.12030397618372893,
+      0.10609638128785073,
+      0.0854626106570608,
+      0.44411892663324903,
+      0.1513734151377616
+    ],
+    "map_mean_error_standardized": [
+      -0.028137647576856745,
+      -0.052505875903835986,
+      0.010716622907793044,
+      0.034195308209965164,
+      -0.13614068987259334,
+      0.10821427980413027
+    ],
+    "map_tail_quantile_error_standardized": [
+      [
+        -0.08338043168626075,
+        -0.03578657968056076,
+        -0.14909810451247574,
+        0.36248236986103444,
+        -0.894980766498719,
+        -0.09879425557286492
+      ],
+      [
+        -0.09834846328950864,
+        0.08075862750621754,
+        0.1531455392289851,
+        0.06393245166576023,
+        0.3364945261758816,
+        0.34413085085660455
+      ]
+    ],
+    "map_invalid_cosine_fraction": 0.0,
+    "map_positive_cosi_mass": 0.58984375,
+    "drift_heldout_wasserstein_standardized": [
+      0.08615588135863766,
+      0.09490300232349658,
+      0.07729044324489281,
+      0.0786801701825475,
+      0.4346900629609178,
+      0.11851910639969679
+    ],
+    "drift_mean_error_standardized": [
+      -0.04212580717377676,
+      -0.05062619872736046,
+      0.016768990296995162,
+      0.006377351106712753,
+      -0.14430857418516344,
+      0.062396271321674066
+    ],
+    "drift_tail_quantile_error_standardized": [
+      [
+        -0.0515343375547912,
+        -0.006617020201800994,
+        -0.16413651732184764,
+        0.31848059388103866,
+        -0.8997133156892403,
+        -0.16085150035054463
+      ],
+      [
+        -0.12535497616983404,
+        0.034619631620368185,
+        0.15582421368844224,
+        0.009531751335028149,
+        0.31344611933651056,
+        0.39750580889493614
+      ]
+    ],
+    "drift_invalid_cosine_fraction": 0.0,
+    "drift_positive_cosi_mass": 0.607421875,
+    "heldout_positive_cosi_mass": 0.6
+  },
+  "loss_history": [
+    {
+      "stage": "flow_matching",
+      "step": 0,
+      "loss": 1.9561196565628052
+    },
+    {
+      "stage": "flow_matching",
+      "step": 200,
+      "loss": 1.5250200033187866
+    },
+    {
+      "stage": "flow_matching",
+      "step": 400,
+      "loss": 1.58534574508667
+    },
+    {
+      "stage": "flow_matching",
+      "step": 600,
+      "loss": 1.6532487869262695
+    },
+    {
+      "stage": "flow_matching",
+      "step": 800,
+      "loss": 1.440427303314209
+    },
+    {
+      "stage": "flow_matching",
+      "step": 1000,
+      "loss": 1.276741623878479
+    },
+    {
+      "stage": "flow_matching",
+      "step": 1200,
+      "loss": 1.3516446352005005
+    },
+    {
+      "stage": "flow_matching",
+      "step": 1400,
+      "loss": 1.3202123641967773
+    },
+    {
+      "stage": "flow_matching",
+      "step": 1600,
+      "loss": 1.1677907705307007
+    },
+    {
+      "stage": "flow_matching",
+      "step": 1800,
+      "loss": 1.197062611579895
+    },
+    {
+      "stage": "two_time_distillation",
+      "step": 0,
+      "loss": 0.1633700728416443
+    },
+    {
+      "stage": "two_time_distillation",
+      "step": 200,
+      "loss": 0.04835548996925354
+    },
+    {
+      "stage": "two_time_distillation",
+      "step": 400,
+      "loss": 0.030955012887716293
+    },
+    {
+      "stage": "two_time_distillation",
+      "step": 600,
+      "loss": 0.016676589846611023
+    },
+    {
+      "stage": "two_time_distillation",
+      "step": 800,
+      "loss": 0.00834630522876978
+    },
+    {
+      "stage": "two_time_distillation",
+      "step": 1000,
+      "loss": 0.006519354414194822
+    },
+    {
+      "stage": "two_time_distillation",
+      "step": 1200,
+      "loss": 0.006030029617249966
+    },
+    {
+      "stage": "two_time_distillation",
+      "step": 1400,
+      "loss": 0.0047264499589800835
+    },
+    {
+      "stage": "two_time_distillation",
+      "step": 1600,
+      "loss": 0.004507008008658886
+    },
+    {
+      "stage": "two_time_distillation",
+      "step": 1800,
+      "loss": 0.004706045147031546
+    },
+    {
+      "stage": "two_time_distillation",
+      "step": 2000,
+      "loss": 0.003458784893155098
+    },
+    {
+      "stage": "two_time_distillation",
+      "step": 2200,
+      "loss": 0.004499631933867931
+    },
+    {
+      "stage": "two_time_distillation",
+      "step": 2400,
+      "loss": 0.0030508218333125114
+    },
+    {
+      "stage": "two_time_distillation",
+      "step": 2600,
+      "loss": 0.0022266432642936707
+    },
+    {
+      "stage": "two_time_distillation",
+      "step": 2800,
+      "loss": 0.0020949330646544695
+    },
+    {
+      "stage": "two_time_distillation",
+      "step": 3000,
+      "loss": 0.0036819414235651493
+    },
+    {
+      "stage": "two_time_distillation",
+      "step": 3200,
+      "loss": 0.0020436521153897047
+    },
+    {
+      "stage": "two_time_distillation",
+      "step": 3400,
+      "loss": 0.001420405926182866
+    },
+    {
+      "stage": "two_time_distillation",
+      "step": 3600,
+      "loss": 0.002074786461889744
+    },
+    {
+      "stage": "two_time_distillation",
+      "step": 3800,
+      "loss": 0.0012312047183513641
+    },
+    {
+      "stage": "two_time_distillation",
+      "step": 4000,
+      "loss": 0.001589843537658453
+    },
+    {
+      "stage": "two_time_distillation",
+      "step": 4200,
+      "loss": 0.0013827329967170954
+    },
+    {
+      "stage": "two_time_distillation",
+      "step": 4400,
+      "loss": 0.001989861484616995
+    },
+    {
+      "stage": "two_time_distillation",
+      "step": 4600,
+      "loss": 0.0014713574200868607
+    },
+    {
+      "stage": "two_time_distillation",
+      "step": 4800,
+      "loss": 0.001020890544168651
+    },
+    {
+      "stage": "two_time_distillation",
+      "step": 5000,
+      "loss": 0.0009312196052633226
+    },
+    {
+      "stage": "two_time_distillation",
+      "step": 5200,
+      "loss": 0.0010986510897055268
+    },
+    {
+      "stage": "two_time_distillation",
+      "step": 5400,
+      "loss": 0.0011425151024013758
+    },
+    {
+      "stage": "two_time_distillation",
+      "step": 5600,
+      "loss": 0.0012762797996401787
+    },
+    {
+      "stage": "two_time_distillation",
+      "step": 5800,
+      "loss": 0.0012894922401756048
+    }
+  ],
+  "checkpoint": {
+    "path": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/distill6000_seed261015/pretrained.pt",
+    "sha256": "4ce26989ccdcfcdb1702dd5e270d79a772487adb2b348b8b471bcaf3a8cf3158"
+  },
+  "next_stage": "inspect model gates, then connect exact real reward/parity adapter before any inference comparison"
+}

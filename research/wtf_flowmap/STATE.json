@@ -1,0 +1,85 @@
+{
+  "owner": "current Codex task, mini coordinator",
+  "status": "stage_2_complete_scientific_value_unestablished",
+  "research_branch": "codex/learned-flowmap-realcase",
+  "reasoning_effort_requested": "low",
+  "source_base": "1621bb6e12391086edc3bfc8730ad807c8ad638c",
+  "pr445_preserved": true,
+  "case": "S250114ax, intrinsic anchor 47536, six-dimensional time-marginalized extrinsic inference",
+  "completed": [
+    "accepted real exports verified by archive hashes and NPZ cross-check",
+    "neural drift flow-matching pretraining",
+    "RK4 teacher generation",
+    "neural two-time map distillation",
+    "four exact-gradient/objective contract checks"
+  ],
+  "checkpoint": {
+    "path": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/final_seed261015/pretrained.pt",
+    "sha256": "4ce26989ccdcfcdb1702dd5e270d79a772487adb2b348b8b471bcaf3a8cf3158"
+  },
+  "model_only_gates": {
+    "one_step_rms": true,
+    "teacher_refinement_rms": true,
+    "semigroup_rms": true,
+    "diagonal_rms": true
+  },
+  "not_run": [
+    "real-likelihood reward fine-tuning",
+    "new calibrated inference comparison",
+    "held-out intrinsic-anchor evaluation",
+    "density-corrected implicit-map sampling",
+    "production shape-recovery gate"
+  ],
+  "scientific_capability_demonstrated": false,
+  "cost_advantage_demonstrated": false,
+  "acquisition_ntotal_lower_bound": 15984560,
+  "acquisition_total_true_calls": null,
+  "next_stage": {
+    "name": "3a_real_reward_and_coordinate_parity",
+    "tasks": [
+      "reconstruct same maintained NoLoop target from pinned real inputs",
+      "audit physical phase/polarization export and periodic charts",
+      "build verified differentiable six-dimensional likelihood reward callback",
+      "compare value/gradient parity before any reward tuning",
+      "meter setup/JIT and every true evaluation",
+      "include same-cache resampling/warm-start as the cheap reuse baseline"
+    ],
+    "proposed_resources": {
+      "site": "Caltech only",
+      "cpu": 1,
+      "cpu_affinity_required": true,
+      "cpu_minutes_cap": 20,
+      "resident_gib_cap": 8,
+      "gpu": 0,
+      "true_likelihood_attempted_rows_cap": 128
+    },
+    "launched": false,
+    "stop_conditions": [
+      "missing input or source parity",
+      "memory/time budget exceeded",
+      "nonfinite or discrepant values/gradients",
+      "coordinate or periodic mismatch"
+    ],
+    "next_after_pass": "bounded actual WTF reward fine-tuning with separately declared resource estimate, then training-only corrected-sampler ablation"
+  },
+  "limitations": [
+    "400 fairdraw rows have finite teacher ESS and dependence",
+    "local angular charts have seams",
+    "historical teacher generation cost incomplete",
+    "solver accuracy is not posterior/evidence calibration"
+  ],
+  "progress_files": [
+    "PLAN.md",
+    "README.md",
+    "results/case_inventory.json",
+    "results/final_seed261015/result.json"
+  ],
+  "checkpoint_reproduced_identically_in_three_6000_step_runs": true,
+  "mathematical_contract_tests_unique": 4,
+  "model_building_runs": 4,
+  "measured_training_run_costs": {
+    "wall_seconds_sum": 27.64,
+    "cpu_seconds_sum": 24.16,
+    "new_true_likelihood_rows": 0
+  }
+}
