@@ -1,0 +1,22 @@
+{
+  "reporting_only": true,
+  "new_physical_calls": 0,
+  "new_jvp_lanes": 0,
+  "coarse_grid_field_max_abs_difference": 1.7053025658242404e-13,
+  "case0_artifacts": {
+    "physical/case0_independent_dense.npz": {
+      "sha256": "afcc7508efde7e3e6ce89276009eeea1fd815157f89406ebcca5ee7188501165",
+      "bytes": 672046
+    },
+    "physical/case0_primitive_jac.npz": {
+      "sha256": "9057484dddd2b3b9b6c8c6745a2c5d4845429b797ae35a90e1320513abf5926c",
+      "bytes": 290203
+    }
+  },
+  "source_hashes": {
+    "run_physical_contract_gate.py": "a0930e844c4ef435585c64616b789513fc032e4a287648742eb42ab861ab3839",
+    "journal.json": "49085dcb38e1af4f9c8b15cdd3898065a8c697cd8d841ba353e532d0d0fce3c2",
+    "run_array_contract_gate.py": "bdf7dc4518fb1a9ed141aa6c875b1d9c8e7e3e29522d06649c6341e5a92f3f3e",
+    "common_contract_adapter.py": "90c003324f97b0c65f0d7f5ee858dc794cd3271d0c3ea147bf898e2f2177aad9"
+  }
+}

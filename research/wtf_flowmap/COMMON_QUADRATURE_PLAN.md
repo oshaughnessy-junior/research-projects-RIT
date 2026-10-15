@@ -1,5 +1,11 @@
 # Common quadrature contract: source-only decision, no new physical runs
 
+**Latest validation:** [COMMON_CONTRACT_VALIDATION_RESULTS.md](COMMON_CONTRACT_VALIDATION_RESULTS.md).
+The array gate passed, but the first independent dense physical reconstruction
+differed by .00134701 nat, exceeding the unchanged .001 threshold. Execution
+stopped at 8/40 work equivalents; no remaining points or inference were run.
+The original NaN remains classified as deliberate certificate refusal.
+
 **Correction retained:** the stage4 NaN was JAX's deliberate refusal of a failed
 integral-doubling certificate. Physical primitives were finite. The research retry
 repairs that refusal, but does not make the legacy NoLoop coarse rule a converged

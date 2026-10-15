@@ -1,6 +1,6 @@
 {
   "owner": "current Codex task, mini coordinator",
-  "status": "stage6_source_only_common_quadrature_contract_planned",
+  "status": "stage7_common_contract_unresolved_stopped_at_physical_reconstruction_mismatch",
   "research_branch": "codex/learned-flowmap-realcase",
   "reasoning_effort_requested": "low",
   "source_base": "1621bb6e12391086edc3bfc8730ad807c8ad638c",
@@ -59,11 +59,9 @@
   "acquisition_ntotal_lower_bound": 15984560,
   "acquisition_total_true_calls": null,
   "next_stage": {
-    "name": "review_array_only_reference_adapter_first",
     "automatic_execution_authorized": false,
-    "new_physical_runs_in_planning_stage": 0,
-    "decision": "common physical reconstruction and derivative reference before considering any new inference",
-    "proposed_not_run_physical_work_cap": 40
+    "decision": "stop research validation here; Richard may decide on separately scoped numerical reconstruction/contract work",
+    "inference_justified": false
   },
   "limitations": [
     "400 fairdraw rows have finite teacher ESS and dependence",
@@ -531,5 +529,108 @@
     "identified_summed_command_wall_seconds": 1259.56,
     "identified_new_real_physical_rows": 9970,
     "identified_attempted_endpoint_rows": 9993
+  },
+  "stage7": {
+    "status": "contract_unresolved_stopped_at_first_point",
+    "source_start": "2539ace73d43fb816a717f5ec3ea710915538e61",
+    "physical_contract_resolved": false,
+    "original_nan_interpretation": "deliberate integral-doubling certificate refusal, finite physical primitives",
+    "caps": {
+      "array_cpu_seconds": 30,
+      "physical_cpu_seconds": 180,
+      "work_equivalents": 40,
+      "cpu": 1,
+      "rss_gib": 8
+    },
+    "consumed": {
+      "work_equivalents": 8,
+      "actual_assembly_dispatches": 2,
+      "jvp_directions": 6,
+      "physical_time_nodes": 81127,
+      "directional_time_node_equivalents": 97099,
+      "reference_fft_operations": [
+        {
+          "fft_columns": 7,
+          "fft_input_nodes": 3274,
+          "fft_output_nodes": 419072,
+          "method": "simpson_scipy",
+          "guard": 512
+        },
+        {
+          "fft_columns": 7,
+          "fft_input_nodes": 3274,
+          "fft_output_nodes": 419072,
+          "method": "trapezoid_numpy_fft",
+          "guard": 512
+        },
+        {
+          "fft_columns": 7,
+          "fft_input_nodes": 5322,
+          "fft_output_nodes": 681216,
+          "method": "simpson_scipy",
+          "guard": 1024
+        },
+        {
+          "fft_columns": 7,
+          "fft_input_nodes": 5322,
+          "fft_output_nodes": 681216,
+          "method": "trapezoid_numpy_fft",
+          "guard": 1024
+        }
+      ],
+      "reference_quadrature_nodes": 549260,
+      "independent_dense_quadrature_nodes": 274630,
+      "cpu_seconds": 31.4,
+      "summed_command_wall_seconds": 43.23,
+      "peak_rss_kib": 1528444
+    },
+    "commands": [
+      {
+        "command": "array.time",
+        "cpu_seconds": 1.23,
+        "wall_seconds": 2.42,
+        "peak_rss_kib": 426228
+      },
+      {
+        "command": "physical.time",
+        "cpu_seconds": 30.08,
+        "wall_seconds": 40.36,
+        "peak_rss_kib": 1528444
+      },
+      {
+        "command": "reporting.time",
+        "cpu_seconds": 0.09,
+        "wall_seconds": 0.45,
+        "peak_rss_kib": 45912
+      }
+    ],
+    "results": {
+      "array_gate": "passed: three analytic/refusal tests and all three saved-array fixtures",
+      "first_physical_reference_value_and_all_six_gradient_grid_checks": "passed",
+      "reference_raw_log_integral": 47.829242649495455,
+      "independent_dense_raw_log_integral": 47.83058965737513,
+      "physical_reconstruction_difference": 0.0013470078796729013,
+      "cross_value_threshold": 0.001,
+      "independent_dense_refinement_method_spread": 3.4205034182832605e-07,
+      "coarse_field_max_abs_difference": 1.7053025658242404e-13,
+      "cases_not_run": 2,
+      "mixed_direction_fd_stencils": "not run: stopped at reconstruction mismatch",
+      "full_physical_derivative_contract": "not validated"
+    },
+    "production_exposure": "unknown: no production sweep, frequency/parameter-regime assessment, GPU check, posterior/evidence impact or globally accurate continuous-time reference established",
+    "stop_decision": "no more probes, inference or production change; numerical reconstruction definition/accuracy must be decided separately; production PR remains a recommendation only",
+    "cost_caveat": "work equivalents conservatively charge every primal and JVP direction; they are not comparable with prior endpoint-row counts or FLOPs. CPU includes timed setup/import/JIT/refinement/reporting; coordinator edits, source transfers and administrative gaps remain incompletely measured",
+    "cumulative_identified": {
+      "timed_cpu_seconds": 1163.12,
+      "summed_command_wall_seconds": 1302.79,
+      "actual_real_endpoint_dispatch_rows": 9972,
+      "attempted_endpoint_dispatch_rows": 9995,
+      "stage7_additional_directional_ad_lanes": 6,
+      "cumulative_work_equivalents": null,
+      "synthetic_callback_rows_lower_bound": 3740858,
+      "preexisting_teacher_sampler_rows_lower_bound": 15984560,
+      "historical_teacher_cpu_and_hidden_work": null,
+      "caveat": "sum of identified nonoverlapping command receipts, not complete project cost: earlier untimed checks, unaudited synthetic validations, setup/hidden teacher work, coordinator edits/admin/SSH/transfers and gaps remain unknown; synthetic and physical row units are not interchangeable"
+    }
   }
 }

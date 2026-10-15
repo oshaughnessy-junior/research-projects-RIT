@@ -1,5 +1,11 @@
 # Learned flow-map research on S250114ax
 
+**Latest validation:** [COMMON_CONTRACT_VALIDATION_RESULTS.md](COMMON_CONTRACT_VALIDATION_RESULTS.md).
+The array gate passed, but the first independent dense physical reconstruction
+differed by .00134701 nat, exceeding the unchanged .001 threshold. Execution
+stopped at 8/40 work equivalents; no remaining points or inference were run.
+The original NaN remains classified as deliberate certificate refusal.
+
 Latest decision: [COMMON_QUADRATURE_PLAN.md](COMMON_QUADRATURE_PLAN.md). The
 original valid-point NaN was deliberate certificate refusal. Source-only planning
 used no new physical calls; inference remains paused pending a common converged

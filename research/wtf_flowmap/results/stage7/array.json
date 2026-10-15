@@ -1,0 +1,1187 @@
+{
+  "status": "array_gate_passed",
+  "physical_calls": 0,
+  "waveform_calls": 0,
+  "tests": [
+    {
+      "name": "analytic_constant_all_six_derivatives",
+      "status": "passed"
+    },
+    {
+      "name": "analytic_ramp_and_normalization",
+      "status": "passed"
+    },
+    {
+      "name": "time_dependent_norm_refusal",
+      "status": "passed"
+    }
+  ],
+  "saved_cases": [
+    {
+      "index": 0,
+      "source_sha256": "4abebb6f1246f693821f339de328050f12058cf649758ff2122e16b360c84598",
+      "passed": true,
+      "raw_log_integral": 47.829242649495434,
+      "uniform_time_log_average": 49.72864388027857,
+      "gradient": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        -0.02201479807120735
+      ],
+      "grids": [
+        {
+          "factor": 32,
+          "guard": 512,
+          "method": "simpson_scipy",
+          "value": 47.82924264950355,
+          "gradient": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -0.022014798071211837
+          ],
+          "nodes": 19617
+        },
+        {
+          "factor": 64,
+          "guard": 512,
+          "method": "simpson_scipy",
+          "value": 47.82924264950355,
+          "gradient": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -0.022014798071211792
+          ],
+          "nodes": 39233
+        },
+        {
+          "factor": 128,
+          "guard": 512,
+          "method": "simpson_scipy",
+          "value": 47.82924264950355,
+          "gradient": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -0.022014798071211705
+          ],
+          "nodes": 78465
+        },
+        {
+          "factor": 32,
+          "guard": 512,
+          "method": "trapezoid_numpy_fft",
+          "value": 47.82924264950355,
+          "gradient": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -0.022014798071211802
+          ],
+          "nodes": 19617
+        },
+        {
+          "factor": 64,
+          "guard": 512,
+          "method": "trapezoid_numpy_fft",
+          "value": 47.82924264950355,
+          "gradient": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -0.022014798071211723
+          ],
+          "nodes": 39233
+        },
+        {
+          "factor": 128,
+          "guard": 512,
+          "method": "trapezoid_numpy_fft",
+          "value": 47.82924264950355,
+          "gradient": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -0.02201479807121162
+          ],
+          "nodes": 78465
+        },
+        {
+          "factor": 32,
+          "guard": 1024,
+          "method": "simpson_scipy",
+          "value": 47.82924264949544,
+          "gradient": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -0.02201479807120746
+          ],
+          "nodes": 19617
+        },
+        {
+          "factor": 64,
+          "guard": 1024,
+          "method": "simpson_scipy",
+          "value": 47.829242649495434,
+          "gradient": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -0.022014798071207403
+          ],
+          "nodes": 39233
+        },
+        {
+          "factor": 128,
+          "guard": 1024,
+          "method": "simpson_scipy",
+          "value": 47.829242649495434,
+          "gradient": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -0.02201479807120735
+          ],
+          "nodes": 78465
+        },
+        {
+          "factor": 32,
+          "guard": 1024,
+          "method": "trapezoid_numpy_fft",
+          "value": 47.82924264949544,
+          "gradient": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -0.02201479807120739
+          ],
+          "nodes": 19617
+        },
+        {
+          "factor": 64,
+          "guard": 1024,
+          "method": "trapezoid_numpy_fft",
+          "value": 47.829242649495434,
+          "gradient": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -0.02201479807120737
+          ],
+          "nodes": 39233
+        },
+        {
+          "factor": 128,
+          "guard": 1024,
+          "method": "trapezoid_numpy_fft",
+          "value": 47.829242649495434,
+          "gradient": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -0.0220147980712073
+          ],
+          "nodes": 78465
+        }
+      ],
+      "errors": [
+        {
+          "kind": "doubling",
+          "value": 0.0,
+          "gradient": 4.500373556031595e-14
+        },
+        {
+          "kind": "doubling",
+          "value": 0.0,
+          "gradient": 8.65456453082999e-14
+        },
+        {
+          "kind": "doubling",
+          "value": 0.0,
+          "gradient": 7.96219936836359e-14
+        },
+        {
+          "kind": "doubling",
+          "value": 0.0,
+          "gradient": 1.0385477436995988e-13
+        },
+        {
+          "kind": "doubling",
+          "value": 7.105427357601002e-15,
+          "gradient": 5.5389212997311935e-14
+        },
+        {
+          "kind": "doubling",
+          "value": 0.0,
+          "gradient": 5.192738718497994e-14
+        },
+        {
+          "kind": "doubling",
+          "value": 7.105427357601002e-15,
+          "gradient": 2.0770954873991976e-14
+        },
+        {
+          "kind": "doubling",
+          "value": 0.0,
+          "gradient": 6.923651624663991e-14
+        },
+        {
+          "kind": "support_or_method",
+          "value": 8.114398042380344e-12,
+          "gradient": 4.344591394476655e-12
+        },
+        {
+          "kind": "support_or_method",
+          "value": 8.114398042380344e-12,
+          "gradient": 4.258045749168355e-12
+        },
+        {
+          "kind": "support_or_method",
+          "value": 0.0,
+          "gradient": 0.0
+        },
+        {
+          "kind": "support_or_method",
+          "value": 0.0,
+          "gradient": 5.192738718497994e-14
+        }
+      ],
+      "operations": [
+        {
+          "fft_columns": 2,
+          "fft_input_nodes": 3274,
+          "fft_output_nodes": 419072,
+          "method": "simpson_scipy",
+          "guard": 512
+        },
+        {
+          "fft_columns": 2,
+          "fft_input_nodes": 3274,
+          "fft_output_nodes": 419072,
+          "method": "trapezoid_numpy_fft",
+          "guard": 512
+        },
+        {
+          "fft_columns": 2,
+          "fft_input_nodes": 5322,
+          "fft_output_nodes": 681216,
+          "method": "simpson_scipy",
+          "guard": 1024
+        },
+        {
+          "fft_columns": 2,
+          "fft_input_nodes": 5322,
+          "fft_output_nodes": 681216,
+          "method": "trapezoid_numpy_fft",
+          "guard": 1024
+        }
+      ],
+      "quadrature_nodes_traversed": 549260,
+      "refusal": null
+    },
+    {
+      "index": 1,
+      "source_sha256": "2b15245ff17084d3fa1551d5730b316f1eef34f35acdf9d709909efaa6747043",
+      "passed": true,
+      "raw_log_integral": 2862.2213237859296,
+      "uniform_time_log_average": 2864.1207250167126,
+      "gradient": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        -0.06979287999193753
+      ],
+      "grids": [
+        {
+          "factor": 32,
+          "guard": 512,
+          "method": "simpson_scipy",
+          "value": 2862.2213237882142,
+          "gradient": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -0.06979287999065975
+          ],
+          "nodes": 19617
+        },
+        {
+          "factor": 64,
+          "guard": 512,
+          "method": "simpson_scipy",
+          "value": 2862.2213237883584,
+          "gradient": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -0.06979287999841087
+          ],
+          "nodes": 39233
+        },
+        {
+          "factor": 128,
+          "guard": 512,
+          "method": "simpson_scipy",
+          "value": 2862.221323788359,
+          "gradient": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -0.06979287999841148
+          ],
+          "nodes": 78465
+        },
+        {
+          "factor": 32,
+          "guard": 512,
+          "method": "trapezoid_numpy_fft",
+          "value": 2862.2213237883584,
+          "gradient": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -0.06979287999841112
+          ],
+          "nodes": 19617
+        },
+        {
+          "factor": 64,
+          "guard": 512,
+          "method": "trapezoid_numpy_fft",
+          "value": 2862.2213237883584,
+          "gradient": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -0.06979287999841093
+          ],
+          "nodes": 39233
+        },
+        {
+          "factor": 128,
+          "guard": 512,
+          "method": "trapezoid_numpy_fft",
+          "value": 2862.2213237883584,
+          "gradient": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -0.06979287999841136
+          ],
+          "nodes": 78465
+        },
+        {
+          "factor": 32,
+          "guard": 1024,
+          "method": "simpson_scipy",
+          "value": 2862.2213237857854,
+          "gradient": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -0.06979287998418494
+          ],
+          "nodes": 19617
+        },
+        {
+          "factor": 64,
+          "guard": 1024,
+          "method": "simpson_scipy",
+          "value": 2862.2213237859296,
+          "gradient": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -0.06979287999193783
+          ],
+          "nodes": 39233
+        },
+        {
+          "factor": 128,
+          "guard": 1024,
+          "method": "simpson_scipy",
+          "value": 2862.2213237859296,
+          "gradient": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -0.06979287999193753
+          ],
+          "nodes": 78465
+        },
+        {
+          "factor": 32,
+          "guard": 1024,
+          "method": "trapezoid_numpy_fft",
+          "value": 2862.2213237859296,
+          "gradient": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -0.06979287999193698
+          ],
+          "nodes": 19617
+        },
+        {
+          "factor": 64,
+          "guard": 1024,
+          "method": "trapezoid_numpy_fft",
+          "value": 2862.2213237859296,
+          "gradient": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -0.06979287999193759
+          ],
+          "nodes": 39233
+        },
+        {
+          "factor": 128,
+          "guard": 1024,
+          "method": "trapezoid_numpy_fft",
+          "value": 2862.2213237859296,
+          "gradient": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -0.06979287999193758
+          ],
+          "nodes": 78465
+        }
+      ],
+      "errors": [
+        {
+          "kind": "doubling",
+          "value": 1.4415491023100913e-10,
+          "gradient": 7.697396841534034e-09
+        },
+        {
+          "kind": "doubling",
+          "value": 4.547473508864641e-13,
+          "gradient": 6.063904896764122e-13
+        },
+        {
+          "kind": "doubling",
+          "value": 0.0,
+          "gradient": 1.929424285334039e-13
+        },
+        {
+          "kind": "doubling",
+          "value": 0.0,
+          "gradient": 4.2722966318110866e-13
+        },
+        {
+          "kind": "doubling",
+          "value": 1.4415491023100913e-10,
+          "gradient": 7.699147104992873e-09
+        },
+        {
+          "kind": "doubling",
+          "value": 0.0,
+          "gradient": 2.8941364280010586e-13
+        },
+        {
+          "kind": "doubling",
+          "value": 0.0,
+          "gradient": 6.063904896764122e-13
+        },
+        {
+          "kind": "doubling",
+          "value": 0.0,
+          "gradient": 1.3781602038100279e-14
+        },
+        {
+          "kind": "support_or_method",
+          "value": 2.4292603484354913e-09,
+          "gradient": 6.429076005967666e-09
+        },
+        {
+          "kind": "support_or_method",
+          "value": 2.428805601084605e-09,
+          "gradient": 6.428951971549323e-09
+        },
+        {
+          "kind": "support_or_method",
+          "value": 0.0,
+          "gradient": 0.0
+        },
+        {
+          "kind": "support_or_method",
+          "value": 0.0,
+          "gradient": 4.1344806114300836e-14
+        }
+      ],
+      "operations": [
+        {
+          "fft_columns": 2,
+          "fft_input_nodes": 3274,
+          "fft_output_nodes": 419072,
+          "method": "simpson_scipy",
+          "guard": 512
+        },
+        {
+          "fft_columns": 2,
+          "fft_input_nodes": 3274,
+          "fft_output_nodes": 419072,
+          "method": "trapezoid_numpy_fft",
+          "guard": 512
+        },
+        {
+          "fft_columns": 2,
+          "fft_input_nodes": 5322,
+          "fft_output_nodes": 681216,
+          "method": "simpson_scipy",
+          "guard": 1024
+        },
+        {
+          "fft_columns": 2,
+          "fft_input_nodes": 5322,
+          "fft_output_nodes": 681216,
+          "method": "trapezoid_numpy_fft",
+          "guard": 1024
+        }
+      ],
+      "quadrature_nodes_traversed": 549260,
+      "refusal": null
+    },
+    {
+      "index": 2,
+      "source_sha256": "3cc0856f566449d6bd72ed95e5822c6651272bac81a921b2a75ad2620e7c0f89",
+      "passed": true,
+      "raw_log_integral": 2861.3464532730554,
+      "uniform_time_log_average": 2863.2458545038385,
+      "gradient": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.154047563751605
+      ],
+      "grids": [
+        {
+          "factor": 32,
+          "guard": 512,
+          "method": "simpson_scipy",
+          "value": 2861.3464532798575,
+          "gradient": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.15404756374727172
+          ],
+          "nodes": 19617
+        },
+        {
+          "factor": 64,
+          "guard": 512,
+          "method": "simpson_scipy",
+          "value": 2861.3464532801177,
+          "gradient": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.15404756373420608
+          ],
+          "nodes": 39233
+        },
+        {
+          "factor": 128,
+          "guard": 512,
+          "method": "simpson_scipy",
+          "value": 2861.3464532801177,
+          "gradient": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.15404756373420578
+          ],
+          "nodes": 78465
+        },
+        {
+          "factor": 32,
+          "guard": 512,
+          "method": "trapezoid_numpy_fft",
+          "value": 2861.346453280118,
+          "gradient": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.15404756373420567
+          ],
+          "nodes": 19617
+        },
+        {
+          "factor": 64,
+          "guard": 512,
+          "method": "trapezoid_numpy_fft",
+          "value": 2861.346453280118,
+          "gradient": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.1540475637342059
+          ],
+          "nodes": 39233
+        },
+        {
+          "factor": 128,
+          "guard": 512,
+          "method": "trapezoid_numpy_fft",
+          "value": 2861.3464532801177,
+          "gradient": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.15404756373420578
+          ],
+          "nodes": 78465
+        },
+        {
+          "factor": 32,
+          "guard": 1024,
+          "method": "simpson_scipy",
+          "value": 2861.3464532727944,
+          "gradient": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.1540475637646724
+          ],
+          "nodes": 19617
+        },
+        {
+          "factor": 64,
+          "guard": 1024,
+          "method": "simpson_scipy",
+          "value": 2861.346453273056,
+          "gradient": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.15404756375160356
+          ],
+          "nodes": 39233
+        },
+        {
+          "factor": 128,
+          "guard": 1024,
+          "method": "simpson_scipy",
+          "value": 2861.3464532730554,
+          "gradient": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.154047563751605
+          ],
+          "nodes": 78465
+        },
+        {
+          "factor": 32,
+          "guard": 1024,
+          "method": "trapezoid_numpy_fft",
+          "value": 2861.346453273055,
+          "gradient": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.15404756375160525
+          ],
+          "nodes": 19617
+        },
+        {
+          "factor": 64,
+          "guard": 1024,
+          "method": "trapezoid_numpy_fft",
+          "value": 2861.3464532730554,
+          "gradient": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.15404756375160397
+          ],
+          "nodes": 39233
+        },
+        {
+          "factor": 128,
+          "guard": 1024,
+          "method": "trapezoid_numpy_fft",
+          "value": 2861.3464532730554,
+          "gradient": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.1540475637516047
+          ],
+          "nodes": 78465
+        }
+      ],
+      "errors": [
+        {
+          "kind": "doubling",
+          "value": 2.601154847070575e-10,
+          "gradient": 1.2867412554150174e-08
+        },
+        {
+          "kind": "doubling",
+          "value": 0.0,
+          "gradient": 3.0067943827822193e-13
+        },
+        {
+          "kind": "doubling",
+          "value": 0.0,
+          "gradient": 2.1867595511143412e-13
+        },
+        {
+          "kind": "doubling",
+          "value": 4.547473508864641e-13,
+          "gradient": 1.0933797755571706e-13
+        },
+        {
+          "kind": "doubling",
+          "value": 2.6147972675971687e-10,
+          "gradient": 1.2870583355499289e-08
+        },
+        {
+          "kind": "doubling",
+          "value": 4.547473508864641e-13,
+          "gradient": 1.4213937082243218e-12
+        },
+        {
+          "kind": "doubling",
+          "value": 4.547473508864641e-13,
+          "gradient": 1.2573867418907463e-12
+        },
+        {
+          "kind": "doubling",
+          "value": 0.0,
+          "gradient": 7.106968541121609e-13
+        },
+        {
+          "kind": "support_or_method",
+          "value": 7.062226359266788e-09,
+          "gradient": 1.7135256501071257e-08
+        },
+        {
+          "kind": "support_or_method",
+          "value": 7.062226359266788e-09,
+          "gradient": 1.7135256501071257e-08
+        },
+        {
+          "kind": "support_or_method",
+          "value": 0.0,
+          "gradient": 0.0
+        },
+        {
+          "kind": "support_or_method",
+          "value": 0.0,
+          "gradient": 3.0067943827822193e-13
+        }
+      ],
+      "operations": [
+        {
+          "fft_columns": 2,
+          "fft_input_nodes": 3274,
+          "fft_output_nodes": 419072,
+          "method": "simpson_scipy",
+          "guard": 512
+        },
+        {
+          "fft_columns": 2,
+          "fft_input_nodes": 3274,
+          "fft_output_nodes": 419072,
+          "method": "trapezoid_numpy_fft",
+          "guard": 512
+        },
+        {
+          "fft_columns": 2,
+          "fft_input_nodes": 5322,
+          "fft_output_nodes": 681216,
+          "method": "simpson_scipy",
+          "guard": 1024
+        },
+        {
+          "fft_columns": 2,
+          "fft_input_nodes": 5322,
+          "fft_output_nodes": 681216,
+          "method": "trapezoid_numpy_fft",
+          "guard": 1024
+        }
+      ],
+      "quadrature_nodes_traversed": 549260,
+      "refusal": null
+    }
+  ],
+  "ramp_result": {
+    "passed": true,
+    "raw_log_integral": 4.767823363495285,
+    "uniform_time_log_average": 1.9952346412555042,
+    "gradient": [
+      11.679925501253415,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "grids": [
+      {
+        "factor": 32,
+        "guard": 64,
+        "method": "simpson_scipy",
+        "value": 4.767828527692185,
+        "gradient": [
+          11.679972277098551,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "nodes": 513
+      },
+      {
+        "factor": 64,
+        "guard": 64,
+        "method": "simpson_scipy",
+        "value": 4.767828527689283,
+        "gradient": [
+          11.679972276993617,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "nodes": 1025
+      },
+      {
+        "factor": 128,
+        "guard": 64,
+        "method": "simpson_scipy",
+        "value": 4.767828527689102,
+        "gradient": [
+          11.679972276987055,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "nodes": 2049
+      },
+      {
+        "factor": 32,
+        "guard": 64,
+        "method": "trapezoid_numpy_fft",
+        "value": 4.767831774718579,
+        "gradient": [
+          11.68000475255529,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "nodes": 513
+      },
+      {
+        "factor": 64,
+        "guard": 64,
+        "method": "trapezoid_numpy_fft",
+        "value": 4.767829339447596,
+        "gradient": [
+          11.679980395903803,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "nodes": 1025
+      },
+      {
+        "factor": 128,
+        "guard": 64,
+        "method": "trapezoid_numpy_fft",
+        "value": 4.767828730628787,
+        "gradient": [
+          11.679974306717481,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "nodes": 2049
+      },
+      {
+        "factor": 32,
+        "guard": 128,
+        "method": "simpson_scipy",
+        "value": 4.767823363502389,
+        "gradient": [
+          11.679925501407945,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "nodes": 513
+      },
+      {
+        "factor": 64,
+        "guard": 128,
+        "method": "simpson_scipy",
+        "value": 4.767823363495703,
+        "gradient": [
+          11.679925501262511,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "nodes": 1025
+      },
+      {
+        "factor": 128,
+        "guard": 128,
+        "method": "simpson_scipy",
+        "value": 4.767823363495285,
+        "gradient": [
+          11.679925501253415,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "nodes": 2049
+      },
+      {
+        "factor": 32,
+        "guard": 128,
+        "method": "trapezoid_numpy_fft",
+        "value": 4.767826616652044,
+        "gradient": [
+          11.679958034083256,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "nodes": 513
+      },
+      {
+        "factor": 64,
+        "guard": 128,
+        "method": "trapezoid_numpy_fft",
+        "value": 4.767824176785781,
+        "gradient": [
+          11.679933634487536,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "nodes": 1025
+      },
+      {
+        "factor": 128,
+        "guard": 128,
+        "method": "trapezoid_numpy_fft",
+        "value": 4.767823566817972,
+        "gradient": [
+          11.679927534563191,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "nodes": 2049
+      }
+    ],
+    "errors": [
+      {
+        "kind": "doubling",
+        "value": 2.901678897160309e-12,
+        "gradient": 4.8401793432281044e-08
+      },
+      {
+        "kind": "doubling",
+        "value": 1.8118839761882555e-13,
+        "gradient": 3.0266995909949754e-09
+      },
+      {
+        "kind": "doubling",
+        "value": 2.4352709830921526e-06,
+        "gradient": 0.011234656449997453
+      },
+      {
+        "kind": "doubling",
+        "value": 6.088188087005619e-07,
+        "gradient": 0.0028086749288126554
+      },
+      {
+        "kind": "doubling",
+        "value": 6.686207143502543e-12,
+        "gradient": 6.708228178504078e-08
+      },
+      {
+        "kind": "doubling",
+        "value": 4.1744385725905886e-13,
+        "gradient": 4.195920033970024e-09
+      },
+      {
+        "kind": "doubling",
+        "value": 2.439866263692636e-06,
+        "gradient": 0.011254464743644967
+      },
+      {
+        "kind": "doubling",
+        "value": 6.099678087068128e-07,
+        "gradient": 0.002813627908841507
+      },
+      {
+        "kind": "support_or_method",
+        "value": 5.164193816575846e-06,
+        "gradient": 0.021575597036760447
+      },
+      {
+        "kind": "support_or_method",
+        "value": 5.3671335020766264e-06,
+        "gradient": 0.022511822775305158
+      },
+      {
+        "kind": "support_or_method",
+        "value": 0.0,
+        "gradient": 0.0
+      },
+      {
+        "kind": "support_or_method",
+        "value": 2.0332268668710185e-07,
+        "gradient": 0.0009378767359844413
+      }
+    ],
+    "operations": [
+      {
+        "fft_columns": 2,
+        "fft_input_nodes": 288,
+        "fft_output_nodes": 36864,
+        "method": "simpson_scipy",
+        "guard": 64
+      },
+      {
+        "fft_columns": 2,
+        "fft_input_nodes": 288,
+        "fft_output_nodes": 36864,
+        "method": "trapezoid_numpy_fft",
+        "guard": 64
+      },
+      {
+        "fft_columns": 2,
+        "fft_input_nodes": 544,
+        "fft_output_nodes": 69632,
+        "method": "simpson_scipy",
+        "guard": 128
+      },
+      {
+        "fft_columns": 2,
+        "fft_input_nodes": 544,
+        "fft_output_nodes": 69632,
+        "method": "trapezoid_numpy_fft",
+        "guard": 128
+      }
+    ],
+    "quadrature_nodes_traversed": 14348,
+    "refusal": null
+  },
+  "physical_phase_eligible": true,
+  "cpu_seconds": 0.745335987,
+  "wall_seconds": 0.7615352820139378,
+  "peak_rss_kib": 426228
+}
