@@ -1,6 +1,8 @@
 # Learned flow-map research on S250114ax
 
-**Latest result:** [Q8_RETUNING_RESULTS.md](Q8_RETUNING_RESULTS.md). Two Q8/cubic updates and all predeclared implementation checks passed; a separate checkpoint and complete ledger were saved. Cost38.16CPU seconds,12 physical endpoints/20WE. Selected full bridges passed in [the four-endpoint continuation](ROBOTO_BRIDGE_CONTINUATION.md);31 old training targets remain unexamined. No inference or performance claim. The next proposal is a direct six-arm scientific comparison with current native and same-cache baselines, not automatically launched.
+**Latest scientific decision:** [SCIENTIFIC_DESIGN_DECISION.md](SCIENTIFIC_DESIGN_DECISION.md) withdraws the six-arm integration repeat. Existing samples show severe loss of target geometry, including after fitting good cache points. A single three-arm information-retention benchmark (strong full-cache native baseline, same-cache resampling, frozen Q8 map) is proposed with1200 new-call/300CPU-second caps and explicit futility. Nothing is launched; unconverged results cannot establish inference or efficiency.
+
+**Latest result:** [Q8_RETUNING_RESULTS.md](Q8_RETUNING_RESULTS.md). Two Q8/cubic updates and all predeclared implementation checks passed; a separate checkpoint and complete ledger were saved. Cost38.16CPU seconds,12 physical endpoints/20WE. Selected full bridges passed in [the four-endpoint continuation](ROBOTO_BRIDGE_CONTINUATION.md);31 old training targets remain unexamined. No inference or performance claim. Its six-arm proposal is superseded by the latest scientific decision above.
 
 **Stage8 result:** [ROBOTO_REUSE_RESULTS.md](ROBOTO_REUSE_RESULTS.md). The existing
 roboto reflected-Q8/cubic recipe passes the declared three-point local contract

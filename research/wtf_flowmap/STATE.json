@@ -1,6 +1,6 @@
 {
   "owner": "current Codex task, mini coordinator",
-  "status": "stage11_two_update_Q8_retuning_smoke_passed_implementation_only",
+  "status": "stage12_scientific_design_withdraws_six_arm_repeat",
   "research_branch": "codex/learned-flowmap-realcase",
   "reasoning_effort_requested": "low",
   "source_base": "1621bb6e12391086edc3bfc8730ad807c8ad638c",
@@ -59,16 +59,25 @@
   "acquisition_ntotal_lower_bound": 15984560,
   "acquisition_total_true_calls": null,
   "next_stage": {
-    "name": "one_seed_six_arm_real_scientific_comparison",
-    "automatic_execution_authorized": false,
-    "new_physical_endpoint_cap": 12000,
-    "per_arm_new_primal_endpoint_cap": 2000,
-    "scientific_cpu_seconds_cap_proposed": 1800,
+    "arms": [
+      "full300-cache warm native AV+GMM",
+      "same-cache ResamplingOracle",
+      "frozen Q8 map"
+    ],
+    "replicate_seeds": [
+      261071,
+      261072
+    ],
+    "shared_q8_cache_rescores": 400,
+    "new_map_cloud_rows": 200,
+    "new_fitted_proposal_rows": 600,
+    "max_new_physical_calls": 1200,
+    "cpu_seconds_cap": 300,
     "cpu": 1,
     "rss_gib": 8,
-    "models_frozen": true,
-    "refitting_retuning": false,
-    "production_comparison_scope": "research driver using current native AV/GMM and same-cache resampling/fitted-Gaussian baselines; not full production ILE"
+    "posterior_or_evidence_success_claim": false,
+    "name": "one_decisive_three_arm_information_retention_benchmark",
+    "automatic_execution_authorized": false
   },
   "limitations": [
     "400 fairdraw rows have finite teacher ESS and dependence",
@@ -100,7 +109,9 @@
     "Q8_RETUNING_RESULTS.md",
     "results/stage9/summary.json",
     "results/stage10/summary.json",
-    "results/stage11/summary.json"
+    "results/stage11/summary.json",
+    "SCIENTIFIC_DESIGN_DECISION.md",
+    "results/stage12/summary.json"
   ],
   "checkpoint_reproduced_identically_in_three_6000_step_runs": true,
   "mathematical_contract_tests_unique": 4,
@@ -195,16 +206,25 @@
     "contracts": true
   },
   "current_next_stage": {
-    "name": "one_seed_six_arm_real_scientific_comparison",
-    "automatic_execution_authorized": false,
-    "new_physical_endpoint_cap": 12000,
-    "per_arm_new_primal_endpoint_cap": 2000,
-    "scientific_cpu_seconds_cap_proposed": 1800,
+    "arms": [
+      "full300-cache warm native AV+GMM",
+      "same-cache ResamplingOracle",
+      "frozen Q8 map"
+    ],
+    "replicate_seeds": [
+      261071,
+      261072
+    ],
+    "shared_q8_cache_rescores": 400,
+    "new_map_cloud_rows": 200,
+    "new_fitted_proposal_rows": 600,
+    "max_new_physical_calls": 1200,
+    "cpu_seconds_cap": 300,
     "cpu": 1,
     "rss_gib": 8,
-    "models_frozen": true,
-    "refitting_retuning": false,
-    "production_comparison_scope": "research driver using current native AV/GMM and same-cache resampling/fitted-Gaussian baselines; not full production ILE"
+    "posterior_or_evidence_success_claim": false,
+    "name": "one_decisive_three_arm_information_retention_benchmark",
+    "automatic_execution_authorized": false
   },
   "stage3e": {
     "status": "passed_periodic_physical_parity_limited_probe",
@@ -826,5 +846,46 @@
     },
     "next_decision": "one-seed six-arm real comparison with native AV+GMM, same-cache ResamplingOracle, same-cache fitted FisherGaussianOracle, pretrained map, old-recipe map and separate Q8 candidate; no automatic launch"
   },
-  "current_next_decision": "Direct six-arm scientific comparison under same Q8 target; no further infrastructure campaign proposed."
+  "current_next_decision": "Withdraw six-arm/2000-row integration repeat. One three-arm information-retention benchmark with predeclared futility and no evidence estimates; stop this learned-map/proposal combination if minimum utility fails.",
+  "stage12": {
+    "status": "design_revised_no_inference_launched",
+    "analysis_cpu_seconds": 0.46,
+    "analysis_wall_seconds": 1.52,
+    "peak_rss_kib": 95160,
+    "new_physical_endpoints": 0,
+    "training_updates": 0,
+    "new_proposal_draws": 0,
+    "inference_runs": 0,
+    "scientific_decision": "Withdraw six-arm/2000-row integration repeat. One three-arm information-retention benchmark with predeclared futility and no evidence estimates; stop this learned-map/proposal combination if minimum utility fails.",
+    "proposed_only": {
+      "arms": [
+        "full300-cache warm native AV+GMM",
+        "same-cache ResamplingOracle",
+        "frozen Q8 map"
+      ],
+      "replicate_seeds": [
+        261071,
+        261072
+      ],
+      "shared_q8_cache_rescores": 400,
+      "new_map_cloud_rows": 200,
+      "new_fitted_proposal_rows": 600,
+      "max_new_physical_calls": 1200,
+      "cpu_seconds_cap": 300,
+      "cpu": 1,
+      "rss_gib": 8,
+      "posterior_or_evidence_success_claim": false
+    },
+    "cumulative_identified": {
+      "timed_cpu_seconds": 1607.54,
+      "summed_command_wall_seconds": 1785.55,
+      "actual_real_endpoint_dispatch_rows": 10064,
+      "attempted_endpoint_dispatch_rows": 10087,
+      "forward_jvp_lanes": 42,
+      "scalar_reverse_vjp_seeds": 14,
+      "teacher_sampler_rows_lower_bound": 15984560,
+      "full_cold_cost_unknown": true
+    },
+    "script_sha256": "3928a502a3b46a439cc8df923e19f41053062b140c332b12d8c3c4763523df77"
+  }
 }

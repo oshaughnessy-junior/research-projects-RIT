@@ -1,0 +1,41 @@
+{
+  "status": "design_revised_no_inference_launched",
+  "analysis_cpu_seconds": 0.46,
+  "analysis_wall_seconds": 1.52,
+  "peak_rss_kib": 95160,
+  "new_physical_endpoints": 0,
+  "training_updates": 0,
+  "new_proposal_draws": 0,
+  "inference_runs": 0,
+  "scientific_decision": "Withdraw six-arm/2000-row integration repeat. One three-arm information-retention benchmark with predeclared futility and no evidence estimates; stop this learned-map/proposal combination if minimum utility fails.",
+  "proposed_only": {
+    "arms": [
+      "full300-cache warm native AV+GMM",
+      "same-cache ResamplingOracle",
+      "frozen Q8 map"
+    ],
+    "replicate_seeds": [
+      261071,
+      261072
+    ],
+    "shared_q8_cache_rescores": 400,
+    "new_map_cloud_rows": 200,
+    "new_fitted_proposal_rows": 600,
+    "max_new_physical_calls": 1200,
+    "cpu_seconds_cap": 300,
+    "cpu": 1,
+    "rss_gib": 8,
+    "posterior_or_evidence_success_claim": false
+  },
+  "cumulative_identified": {
+    "timed_cpu_seconds": 1607.54,
+    "summed_command_wall_seconds": 1785.55,
+    "actual_real_endpoint_dispatch_rows": 10064,
+    "attempted_endpoint_dispatch_rows": 10087,
+    "forward_jvp_lanes": 42,
+    "scalar_reverse_vjp_seeds": 14,
+    "teacher_sampler_rows_lower_bound": 15984560,
+    "full_cold_cost_unknown": true
+  },
+  "script_sha256": "3928a502a3b46a439cc8df923e19f41053062b140c332b12d8c3c4763523df77"
+}

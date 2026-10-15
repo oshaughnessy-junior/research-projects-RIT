@@ -1,0 +1,817 @@
+{
+  "status": "existing_artifact_diagnosis_complete",
+  "new_physical_calls": 0,
+  "training_updates": 0,
+  "new_proposal_draws": 0,
+  "inference_runs": 0,
+  "artifacts": {
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_02_training.npz": "64d6f995705befc5bc123b417ca19258231f25a8e7e35065815cb3966154f4c7",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_03_evidence.npz": "3211ac4c0ef6e80733788c5b450b3906b1d8ded36ecd652a58b9c3018bfd65aa",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_05_evidence.npz": "23f0a5241dda179a96393afeeccb19353efab3876b71c83c9249921ffecf6334",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_07_evidence.npz": "68e73a62fefaa499a1921d504a27be9d2b472b6acb8d8df4354ff285ad0acbff",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_09_evidence.npz": "ae276682ec57f366511f7982802ec97944580fa2a6a84791644b5899fec0f837",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_11_evidence.npz": "ad79dff246f57bc5af183a8d0023c8f8e65c38fe5d8f220b470a7f73852284e9",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_13_evidence.npz": "db59bb8a5a71061ed222bccaf1fb4e64bf46121d7af7c76ccc8093f4eb628d0a",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_15_evidence.npz": "f6806d79602ba46c6feb7316f8c04dc637993a250eff19b6f21c63a5ea14f8ae",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_17_evidence.npz": "3c71f9e9acd2ba670756f3396700c2d35cbeadefa27cdbc33d3e5f5d002defb3",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_19_evidence.npz": "1eb8a526c8de0db8384ca548eb8365b7f7759f79725b03590292f0e98d6052da",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_20_evidence.npz": "64daa17c2d46f41667b24a375fc8ba799346e0c3c0ed7ea3f3a711a4e1c3478b",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_04_adaptation.npz": "566b12e29b008d8bad9fe58c36d550bc9b48b86afba5443c87b85277c4d1cf9e",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_06_adaptation.npz": "c304b6134ad2713a0ba46ef99689e2a9acf997d58fc9206becd69cf549280032",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_08_adaptation.npz": "bbc1d9d2307ad4951c4800872b93a2fecf25e58785a49b407adfff2a2962f4fc",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_10_adaptation.npz": "30e277157f5ce1e38740f54abf8429e872ed1d9d0459f2c167bd29aac62efee2",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_12_adaptation.npz": "e88d9152355c4a2277300aba60e6697bb475c59c013d4bace7c7ce2e2cd4c692",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_14_adaptation.npz": "7c5b9891f74f60c8950681fd31c60941f86de727b11d054cb1ce8df29d9171ed",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_16_adaptation.npz": "2baaa6dfeef38964a25d76f510c132a3a62e8f63530ab8f34d9096c06a997af9",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_18_adaptation.npz": "79571effe20d987cbbb9e5260427711d42be6bc79110aad9ec6fbee0cb7d34d1",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_00_validation.npz": "5157928eabb71add62c3681e1caa2a6e42cbf99bdf90b7d7ee503ebe97cd1758",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_01_validation.npz": "6960e40146c9e485516430d56829c86bf5219f4f6e295b9c4effe1a72fefa839",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_gmm_02_training.npz": "64d6f995705befc5bc123b417ca19258231f25a8e7e35065815cb3966154f4c7",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_gmm_03_evidence.npz": "d3b148a4cd055092b14d756e32c71fd139f253b9d3bd3fe945adcd81aa9a1ccf",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_gmm_05_evidence.npz": "5583d315f62dac4f74e9283854877ceb14691f97129ff25caa5a1f26e668da9d",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_gmm_07_evidence.npz": "3e55967ed6931e9ecddd4fb38d70bfec8666c916f0b1b513cae991e5a1996150",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_gmm_09_evidence.npz": "38f886f72bf8adc4b5c83341144544a47058844602fd9bf7d47f36eff65e4580",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_gmm_11_evidence.npz": "f37442d1c02531e5d910f77a01441260adf36f41d350343bb4f7c328e9bcbe07",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_gmm_13_evidence.npz": "d17f17ba219752790e7a35666ef9a7354db099401d02dd0d314a4b9edf6260eb",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_gmm_15_evidence.npz": "ae677bd64adf3c95333701a561ad2a86e8a71dff11019f11410a7dd5dadadf08",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_gmm_17_evidence.npz": "ea41033f57bb9e48f497013a0f2020dbf014570dcd6d849e8daa1b44bbe1b09d",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_gmm_19_evidence.npz": "cf6e9c2052af7c8034207258dd34f97848301fee663cf23c3261956cd65270f2",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_gmm_20_evidence.npz": "baf08a7b64c27ba8ed5cc98baac80f321f636a833d50999d1b7f178d00bb0802",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_gmm_04_adaptation.npz": "bac39b8acd5228355dc133e26bfaacac5f5d301437b646e059b6c671fed5b5f5",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_gmm_06_adaptation.npz": "af85412e0a301a329bd29a13bc0d5abe1ff2b170adb4699257199f14dacfbc2a",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_gmm_08_adaptation.npz": "18ab6920bd67d56a4cba004005d2d81c69603fbce1f898429c2041bea10da85e",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_gmm_10_adaptation.npz": "c27ff0eeba27533b6c06a8b354e04a95ab462e5cc9494a2980c46408dd22a8da",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_gmm_12_adaptation.npz": "1657e9369da941c486ae937a7c03050d56df11beca7387cc7c7876883ba45df3",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_gmm_14_adaptation.npz": "6f4e8481c7e2d43bfbb128091a107b3332b6dcc6f017e65c6f3f18c76ae5ecb0",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_gmm_16_adaptation.npz": "e63ecb7e6f388df10cc1553654eabf8350a2e7451ae201528557c1681e94dbdf",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_gmm_18_adaptation.npz": "379cf9a78aee593e439a706d38fc5f7be4b07903d661cb71001dfba04f735b89",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_gmm_00_validation.npz": "5157928eabb71add62c3681e1caa2a6e42cbf99bdf90b7d7ee503ebe97cd1758",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_gmm_01_validation.npz": "6960e40146c9e485516430d56829c86bf5219f4f6e295b9c4effe1a72fefa839",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/cache_02_training.npz": "8a744e0199f6d351c5b283dbf9eee3f42ef334f628e0b954d0ee4e1f7346a6f3",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/cache_03_evidence.npz": "955e8db000a2d4eb2a9d73329bc9afd2ca97c1cb68cb11d21447f0d756c624ca",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/cache_05_evidence.npz": "57c3845184bb3db5501c6270385e59bd0091ea4017b10666117b44102f98ddf8",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/cache_07_evidence.npz": "ffa0ff8b8d2632429ce855c6760b9c0cf929507b9c10d797fc430f45f9d3a53d",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/cache_09_evidence.npz": "2c447e76426cc62f74e75e0de261370f5d2b879f739aadf406596befc636cbc4",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/cache_11_evidence.npz": "07df143f5a15789685b8dddbdea18c6922c5001c5fa904e571753b4c881c0e65",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/cache_13_evidence.npz": "268c40022ff78e36b34272f82fd73b6962dec6e6cd3a692088b9bdab8009464e",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/cache_15_evidence.npz": "7debaecb258aa601d0ddea64b6f8a5d2d336b42f57cc82d36c9518d4eda0f1dd",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/cache_04_adaptation.npz": "0c3925a129f2b8bb7271d8322a325ee4e40adb064c9de286c61bd4be78c5d894",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/cache_06_adaptation.npz": "12d5802a66a5eedd88dab53cabf993a10f22fcfacf4f6449d118e1c72b7740be",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/cache_08_adaptation.npz": "328607ad32b7fd2c555dca63e10e839ead3b786dc967ac632bd5e4893a4af715",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/cache_10_adaptation.npz": "5d95e87819c71a199fe2c46b261080d5ca20ca1db0de22ed0625ea931d102dac",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/cache_12_adaptation.npz": "fe435fa3596226f49e80c4b2dbfa3c335ebcfd013af154bfb2795132ed77a0c5",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/cache_14_adaptation.npz": "75bccd1441eb43c488fec7aab20bedae9846e9e70a5fc9a9c6170fdbf07346a1",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/cache_16_adaptation.npz": "bf6850488d840555d8f7bd039e917e9c19e41cac5387426462be42d2a6327bd0",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/cache_00_validation.npz": "5157928eabb71add62c3681e1caa2a6e42cbf99bdf90b7d7ee503ebe97cd1758",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/cache_01_validation.npz": "6960e40146c9e485516430d56829c86bf5219f4f6e295b9c4effe1a72fefa839",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/pretrained_02_training.npz": "4f84cdd00c1feb5eeeb27503baeb574135582a9e3383a7b131aafe54629babe4",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/pretrained_03_evidence.npz": "f53fdc84dc9a579d063859cce97c1980edd052dcf67de578c5c8d2a9315aa114",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/pretrained_05_evidence.npz": "5309e1fa9d9f1efe190640574538d95cb5051f0c2c203b4de7336c64d56419a7",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/pretrained_07_evidence.npz": "593fd36b6143aaa06f4ef0f8b7b125eb29ccae56883b65fb68f1a66806847d1c",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/pretrained_09_evidence.npz": "473696b27098fc4e03a4762e93268ff7048b99e23ca0d5c23299f7ce7f835841",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/pretrained_11_evidence.npz": "6fcc35e7b69fc0b83873c9e3df9e21e189396514b25b7d10fe722ac3e75193ae",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/pretrained_13_evidence.npz": "c0e6ef24bbe8b80a4309ecdda05a93e325394362c3335a58268ace25fca3f618",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/pretrained_15_evidence.npz": "3b3925f8995bf5c39aa63eb6d3ac067b2cbca48b00a2afb18440625e8a3b09bf",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/pretrained_17_evidence.npz": "a40d6ffe8c1b9d5868e3c42d8e78c4a4846fd408574ddb8f35c105f8f59bdd3a",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/pretrained_18_evidence.npz": "8174594d4f13374017c5f27460dd603e29ef275d8feab14e4b8d1d3924c1c8f3",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/pretrained_19_evidence.npz": "bfe5cc515bcbe8d16bba7b3e318762f62da279a76860581d039ae69a24647ec3",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/pretrained_04_adaptation.npz": "dc31d6a5e5845f894b256f6df42e96b85e43a1ea36582978f3e786774bfd6b64",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/pretrained_06_adaptation.npz": "aaa84ca96ce83891a0d8b9901415f6f3df6505345d424f63370f1c9315a187b3",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/pretrained_08_adaptation.npz": "de9f523e5c350af8a1928fc3a774abbe0c8a056566c7acdad546329511ebdd82",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/pretrained_10_adaptation.npz": "250fd4b9e3816b355888bf8abacf4a36bae545bb05a3e86019b5501d0c104289",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/pretrained_12_adaptation.npz": "8aa542e976f15de0aee872462b1198213513498c8e1bfdc2b2a85b49fc6991a8",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/pretrained_14_adaptation.npz": "547eb08e7292b298390479f277b18c4873352b805bad2b244260c592281947f8",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/pretrained_16_adaptation.npz": "5823a7bf296641318fe4ad0b00bca30838b727d22d241c03391e8b687c93f172",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/pretrained_00_validation.npz": "5157928eabb71add62c3681e1caa2a6e42cbf99bdf90b7d7ee503ebe97cd1758",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/pretrained_01_validation.npz": "6960e40146c9e485516430d56829c86bf5219f4f6e295b9c4effe1a72fefa839",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/tuned_02_training.npz": "8c95b0ade426a16b834e0b707f19761d8de38ef7af5c048679f79bf29d613136",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/tuned_03_evidence.npz": "bedf696077f3438c78b15a91313a77dad1ac3f721e50d1bd5bfaff17fad4e07e",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/tuned_05_evidence.npz": "af41490607428b597d0b9223bb99bae396ea54633e5546e83fccc908527a32f4",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/tuned_07_evidence.npz": "316b77e43b8c299e9c102f02305c149a9c84df48bf9906d953a6408e7287141f",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/tuned_09_evidence.npz": "eddf4b8aa7131adbfb1e7f946ee5a4e32658df0abfa6059817631c062e481f2d",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/tuned_11_evidence.npz": "230c8db743cda56e6b19007bac9c767dbd5b4bafe59daa9a61c74d6c04f2499d",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/tuned_13_evidence.npz": "2df8760be8bc74d01d89f7b3080990d52518ede04837d15b546631d91b14bc5a",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/tuned_15_evidence.npz": "1affa8cb5fafdf561860195725894ef7cf71c8a390eadd23278f10fbe180d9cb",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/tuned_17_evidence.npz": "a929ec14d44e993770b32c4eadeba9a687aab92617a646eb7fc8057ce50454b6",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/tuned_18_evidence.npz": "72938a5722625c78ee46e426cb0e5ba337cc1b16f267cc70e3f3b7c0466cb0d4",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/tuned_19_evidence.npz": "dd710ee811599d31bfc67006646543df402100be32cef5e2721ad0c730bbf1f4",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/tuned_04_adaptation.npz": "6b998c04ec00f3c787542155696b369ce1437fd58d504dc8645432afeaca17d1",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/tuned_06_adaptation.npz": "fc51ed9208250408c58dfcdf2c4d335e60e060d28b5704356b3aa5485c39029d",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/tuned_08_adaptation.npz": "925ffa1eaaa6d795da6057c5c86fbf22b66214a3a6c36171b563d6e5098e0278",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/tuned_10_adaptation.npz": "852719be29419fd247875432cefdc0f7b2b0ca9011f250698b5a46a9623515d3",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/tuned_12_adaptation.npz": "ca1a1a8da8b128ab8b72405e4d5f6fdc8a28b1262fa4a02df32e31f056d07de3",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/tuned_14_adaptation.npz": "48e9efdc4cc092e57ea2479e4ce440d5fad57e0f7084c6fae1c8c7a7f96a668f",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/tuned_16_adaptation.npz": "6e99133b0560d116fdbd17dc215218200500a42ed3fa7681b372d7dfc023adcb",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/tuned_00_validation.npz": "5157928eabb71add62c3681e1caa2a6e42cbf99bdf90b7d7ee503ebe97cd1758",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/tuned_01_validation.npz": "6960e40146c9e485516430d56829c86bf5219f4f6e295b9c4effe1a72fefa839",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_evidence.npz": "54ff5eea2e49c686544b069ede754ea67eeae34c2b9c3ff5628656a6c23a187d",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/av_gmm_evidence.npz": "f75942193a573b53232e631500f212f036fc52ca5dfd730bd809b3c272e007e2",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/pretrained_evidence.npz": "21bb90e0fb4426f4bd80c9b3a80139bd8d4fb255e573ba5bfbb467cd891d4d09",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3/tuned_evidence.npz": "41207a448ed717f34e47ec0244643c1a44430341da7b2e73c9c59a950f66aa63",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/final_seed261015/input-25011401.xml.gz": "a24d242317aec2bdbd2c87d794e0508c1f0c31e2a712428991c5a6e39045b0d9",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/final_seed261015/input-25011402.xml.gz": "5b3e48f113b0713d2e7ee2a9d9edbed4995bc13cbb6cfc3386e7407b08baa210",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/final_seed261015/input-25011403.xml.gz": "b75200d77c471cfdc46110c4018c664c0e3d8ea9e989c966b9b0c434a962bd1f",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/final_seed261015/input-25011404.xml.gz": "ea20990d39eeeea249af58043e9bc1c9852f8bbde240986893e1fff7e10da0a8"
+  },
+  "arms": {
+    "av": {
+      "status": "complete",
+      "training_ll": {
+        "min": -138789.3630993823,
+        "p05": 11.704694990771662,
+        "median": 78.23409721375711,
+        "p95": 503.92632102984805,
+        "max": 1130.6583642038372
+      },
+      "training_fraction_above_cache_proxy": 0.0,
+      "training_cosi_positive_mass": 0.44,
+      "initial_av_volume": 1.0,
+      "final_av_volume": 0.0625,
+      "max_av_normalization_error": 0.0,
+      "max_gmm_group_normalization_error": 0,
+      "saved_evidence_rows": 1000,
+      "saved_evidence_ll": {
+        "min": -44283179.60290495,
+        "p05": -76.97097966964832,
+        "median": 128.59022963153149,
+        "p95": 620.5427595860878,
+        "max": 1790.39377117008
+      },
+      "evidence_rows_above_cache_proxy": 0,
+      "weight_log_gap_first_second": 210.2635448050446,
+      "likelihood_gap_for_weight_top_two": 213.50871911026047,
+      "top_two": {
+        "indices": [
+          634,
+          144
+        ],
+        "ll": [
+          1790.39377117008,
+          1576.8850520598196
+        ],
+        "lp": [
+          -3.3622151694675866,
+          -0.6896181104902359
+        ],
+        "logq": [
+          2.345644582454497,
+          1.773067336215945
+        ],
+        "labels": [
+          0,
+          1
+        ]
+      },
+      "logq": {
+        "min": -1.6094379127025604,
+        "p05": -1.6094379124341032,
+        "median": 2.167147122098953,
+        "p95": 2.5649493574615434,
+        "max": 2.5649493574619555
+      },
+      "logprior": {
+        "min": -12.87802297028836,
+        "p05": -3.0762756662370427,
+        "median": -0.10465779665267302,
+        "p95": 0.25382693578186916,
+        "max": 0.2608195810021453
+      },
+      "loglikelihood_range": 44284969.996676125,
+      "logq_range": 4.174387270164516,
+      "logprior_range": 13.138842551290505,
+      "minimum_q": 0.199999999946308,
+      "max_weight": 1.0,
+      "ess": 1.0,
+      "winner_batch": 6,
+      "winner_source": 0,
+      "proposal_source_counts": {
+        "0": 201,
+        "1": 799
+      },
+      "per_batch": [
+        {
+          "batch": 0,
+          "maximum_ll": 736.7679580395532,
+          "rows_above_proxy": 0
+        },
+        {
+          "batch": 1,
+          "maximum_ll": 1576.8850520598196,
+          "rows_above_proxy": 0
+        },
+        {
+          "batch": 2,
+          "maximum_ll": 948.1906002496399,
+          "rows_above_proxy": 0
+        },
+        {
+          "batch": 3,
+          "maximum_ll": 860.4505343473915,
+          "rows_above_proxy": 0
+        },
+        {
+          "batch": 4,
+          "maximum_ll": 1181.2385064424793,
+          "rows_above_proxy": 0
+        },
+        {
+          "batch": 5,
+          "maximum_ll": 1236.0332841758477,
+          "rows_above_proxy": 0
+        },
+        {
+          "batch": 6,
+          "maximum_ll": 1790.39377117008,
+          "rows_above_proxy": 0
+        },
+        {
+          "batch": 7,
+          "maximum_ll": 1291.544983073938,
+          "rows_above_proxy": 0
+        },
+        {
+          "batch": 8,
+          "maximum_ll": 1339.9733863336378,
+          "rows_above_proxy": 0
+        },
+        {
+          "batch": 9,
+          "maximum_ll": 1223.390561215426,
+          "rows_above_proxy": 0
+        }
+      ],
+      "target_score_only_effective_count_not_posterior_ess": 1.0
+    },
+    "av_gmm": {
+      "status": "complete",
+      "training_ll": {
+        "min": -138789.3630993823,
+        "p05": 11.704694990771662,
+        "median": 78.23409721375711,
+        "p95": 503.92632102984805,
+        "max": 1130.6583642038372
+      },
+      "training_fraction_above_cache_proxy": 0.0,
+      "training_cosi_positive_mass": 0.44,
+      "initial_av_volume": 1.0,
+      "final_av_volume": 0.0625,
+      "max_av_normalization_error": 0.0,
+      "max_gmm_group_normalization_error": 8.881784197001252e-16,
+      "saved_evidence_rows": 1000,
+      "saved_evidence_ll": {
+        "min": -6750134.125923297,
+        "p05": 2.681402077933432,
+        "median": 111.55335425495637,
+        "p95": 601.7035973460175,
+        "max": 1862.6324958688233
+      },
+      "evidence_rows_above_cache_proxy": 0,
+      "weight_log_gap_first_second": 45.813434621226406,
+      "likelihood_gap_for_weight_top_two": 46.13115025528373,
+      "top_two": {
+        "indices": [
+          941,
+          879
+        ],
+        "ll": [
+          1862.6324958688233,
+          1816.5013456135396
+        ],
+        "lp": [
+          -1.489308288115734,
+          -1.6911100170435924
+        ],
+        "logq": [
+          0.15293599536175861,
+          -0.3665813676234393
+        ],
+        "labels": [
+          2,
+          2
+        ]
+      },
+      "logq": {
+        "min": -1.4862966569542806,
+        "p05": -0.984085165639977,
+        "median": 0.09169924412017849,
+        "p95": 1.9656372360231167,
+        "max": 2.049369438296253
+      },
+      "logprior": {
+        "min": -12.01413329600351,
+        "p05": -3.192068150478369,
+        "median": -0.011505770884553474,
+        "p95": 0.25896904431972934,
+        "max": 0.260847485720581
+      },
+      "loglikelihood_range": 6751996.758419166,
+      "logq_range": 3.5356660952505337,
+      "logprior_range": 12.274980781724091,
+      "minimum_q": 0.22620883517037063,
+      "max_weight": 1.0,
+      "ess": 1.0,
+      "winner_batch": 9,
+      "winner_source": 2,
+      "proposal_source_counts": {
+        "0": 224,
+        "1": 402,
+        "2": 374
+      },
+      "per_batch": [
+        {
+          "batch": 0,
+          "maximum_ll": 1239.5320529782418,
+          "rows_above_proxy": 0
+        },
+        {
+          "batch": 1,
+          "maximum_ll": 1464.9332942953417,
+          "rows_above_proxy": 0
+        },
+        {
+          "batch": 2,
+          "maximum_ll": 1025.022486951653,
+          "rows_above_proxy": 0
+        },
+        {
+          "batch": 3,
+          "maximum_ll": 802.1542383822308,
+          "rows_above_proxy": 0
+        },
+        {
+          "batch": 4,
+          "maximum_ll": 1375.6892968523327,
+          "rows_above_proxy": 0
+        },
+        {
+          "batch": 5,
+          "maximum_ll": 1561.4245002693522,
+          "rows_above_proxy": 0
+        },
+        {
+          "batch": 6,
+          "maximum_ll": 1601.1572144438082,
+          "rows_above_proxy": 0
+        },
+        {
+          "batch": 7,
+          "maximum_ll": 1519.495483637717,
+          "rows_above_proxy": 0
+        },
+        {
+          "batch": 8,
+          "maximum_ll": 1816.5013456135396,
+          "rows_above_proxy": 0
+        },
+        {
+          "batch": 9,
+          "maximum_ll": 1862.6324958688233,
+          "rows_above_proxy": 0
+        }
+      ],
+      "target_score_only_effective_count_not_posterior_ess": 1.0
+    },
+    "cache": {
+      "status": "failed",
+      "training_ll": {
+        "min": 2854.3033884191345,
+        "p05": 2856.305757496625,
+        "median": 2859.7479816218865,
+        "p95": 2862.019094010173,
+        "max": 2862.7509771984123
+      },
+      "training_fraction_above_cache_proxy": 1.0,
+      "training_cosi_positive_mass": 0.71,
+      "initial_av_volume": 0.003450788751714677,
+      "final_av_volume": 0.00012860082304526745,
+      "max_av_normalization_error": 1.1102230246251565e-16,
+      "max_gmm_group_normalization_error": 4.440892098500626e-16,
+      "saved_evidence_rows": 700,
+      "saved_evidence_ll": {
+        "min": -706302.6587186286,
+        "p05": -1318.5764954727915,
+        "median": 189.16572669427592,
+        "p95": 1406.3607329627532,
+        "max": 2570.2232469709356
+      },
+      "evidence_rows_above_cache_proxy": 0
+    },
+    "pretrained": {
+      "status": "complete",
+      "training_ll": {
+        "min": -1670.3628272188053,
+        "p05": -639.7229364557218,
+        "median": 2201.5384025853436,
+        "p95": 2777.1781672406255,
+        "max": 2835.719965725605
+      },
+      "training_fraction_above_cache_proxy": 0.0,
+      "training_cosi_positive_mass": 0.61,
+      "initial_av_volume": 0.046875,
+      "final_av_volume": 0.00146484375,
+      "max_av_normalization_error": 1.1102230246251565e-16,
+      "max_gmm_group_normalization_error": 4.440892098500626e-16,
+      "saved_evidence_rows": 1000,
+      "saved_evidence_ll": {
+        "min": -1417997.984333969,
+        "p05": -411.09285598960633,
+        "median": 165.9346428739591,
+        "p95": 1114.801752049241,
+        "max": 2803.0241461890932
+      },
+      "evidence_rows_above_cache_proxy": 0,
+      "weight_log_gap_first_second": 102.42769672402073,
+      "likelihood_gap_for_weight_top_two": 104.23247484687545,
+      "top_two": {
+        "indices": [
+          72,
+          534
+        ],
+        "ll": [
+          2803.0241461890932,
+          2698.791671342218
+        ],
+        "lp": [
+          -2.859836908011636,
+          -2.686516356841889
+        ],
+        "logq": [
+          6.955806372841835,
+          5.324348801157157
+        ],
+        "labels": [
+          2,
+          1
+        ]
+      },
+      "logq": {
+        "min": -1.6094379124341458,
+        "p05": -1.246636413184758,
+        "median": 0.3390749279721561,
+        "p95": 5.612558170805338,
+        "max": 10.141704150129868
+      },
+      "logprior": {
+        "min": -10.39390395185604,
+        "p05": -3.120827966023938,
+        "median": -0.3895604255664682,
+        "p95": 0.2576032877216749,
+        "max": 0.2608472989781699
+      },
+      "loglikelihood_range": 1420801.008480158,
+      "logq_range": 11.751142062564014,
+      "logprior_range": 10.65475125083421,
+      "minimum_q": 0.1999999999999909,
+      "max_weight": 1.0,
+      "ess": 1.0,
+      "winner_batch": 0,
+      "winner_source": 2,
+      "proposal_source_counts": {
+        "0": 209,
+        "1": 413,
+        "2": 378
+      },
+      "per_batch": [
+        {
+          "batch": 0,
+          "maximum_ll": 2803.0241461890932,
+          "rows_above_proxy": 0
+        },
+        {
+          "batch": 1,
+          "maximum_ll": 1317.9001876807836,
+          "rows_above_proxy": 0
+        },
+        {
+          "batch": 2,
+          "maximum_ll": 1419.8370000869256,
+          "rows_above_proxy": 0
+        },
+        {
+          "batch": 3,
+          "maximum_ll": 1407.0277744585749,
+          "rows_above_proxy": 0
+        },
+        {
+          "batch": 4,
+          "maximum_ll": 2002.7670208225873,
+          "rows_above_proxy": 0
+        },
+        {
+          "batch": 5,
+          "maximum_ll": 2698.791671342218,
+          "rows_above_proxy": 0
+        },
+        {
+          "batch": 6,
+          "maximum_ll": 1982.0232189762867,
+          "rows_above_proxy": 0
+        },
+        {
+          "batch": 7,
+          "maximum_ll": 2174.3746185799628,
+          "rows_above_proxy": 0
+        },
+        {
+          "batch": 8,
+          "maximum_ll": 2579.974984647825,
+          "rows_above_proxy": 0
+        },
+        {
+          "batch": 9,
+          "maximum_ll": 2032.4732669786922,
+          "rows_above_proxy": 0
+        }
+      ],
+      "target_score_only_effective_count_not_posterior_ess": 1.0
+    },
+    "tuned": {
+      "status": "complete",
+      "training_ll": {
+        "min": -1668.6742375730123,
+        "p05": -633.5503295023599,
+        "median": 2195.2371795617164,
+        "p95": 2773.4653774504145,
+        "max": 2836.6663450246115
+      },
+      "training_fraction_above_cache_proxy": 0.0,
+      "training_cosi_positive_mass": 0.61,
+      "initial_av_volume": 0.046875,
+      "final_av_volume": 0.00146484375,
+      "max_av_normalization_error": 1.1102230246251565e-16,
+      "max_gmm_group_normalization_error": 4.440892098500626e-16,
+      "saved_evidence_rows": 1000,
+      "saved_evidence_ll": {
+        "min": -12203564.075752998,
+        "p05": -545.7305854635702,
+        "median": 154.3489888847069,
+        "p95": 931.3313076677234,
+        "max": 2560.3793738909126
+      },
+      "evidence_rows_above_cache_proxy": 0,
+      "weight_log_gap_first_second": 13.497350322441434,
+      "likelihood_gap_for_weight_top_two": 13.603229432519583,
+      "top_two": {
+        "indices": [
+          80,
+          30
+        ],
+        "ll": [
+          2560.3793738909126,
+          2546.776144458393
+        ],
+        "lp": [
+          -2.4943972513950574,
+          -2.492266506945017
+        ],
+        "logq": [
+          10.42060868347653,
+          10.31686031784875
+        ],
+        "labels": [
+          2,
+          2
+        ]
+      },
+      "logq": {
+        "min": -1.6094379124341458,
+        "p05": -1.2785995811482436,
+        "median": 0.23384536423609248,
+        "p95": 5.614529831621468,
+        "max": 10.42060868347653
+      },
+      "logprior": {
+        "min": -11.22157139482004,
+        "p05": -3.0634311697906047,
+        "median": -0.37573480946467863,
+        "p95": 0.2581231480567685,
+        "max": 0.26084575113136216
+      },
+      "loglikelihood_range": 12206124.455126889,
+      "logq_range": 12.030046595910676,
+      "logprior_range": 11.482417145951402,
+      "minimum_q": 0.1999999999999909,
+      "max_weight": 0.9999986254052045,
+      "ess": 1.00000274919337,
+      "winner_batch": 0,
+      "winner_source": 2,
+      "proposal_source_counts": {
+        "0": 211,
+        "1": 386,
+        "2": 403
+      },
+      "per_batch": [
+        {
+          "batch": 0,
+          "maximum_ll": 2560.3793738909126,
+          "rows_above_proxy": 0
+        },
+        {
+          "batch": 1,
+          "maximum_ll": 2232.8683158660697,
+          "rows_above_proxy": 0
+        },
+        {
+          "batch": 2,
+          "maximum_ll": 1372.286767267864,
+          "rows_above_proxy": 0
+        },
+        {
+          "batch": 3,
+          "maximum_ll": 1397.9826082863153,
+          "rows_above_proxy": 0
+        },
+        {
+          "batch": 4,
+          "maximum_ll": 1477.223401898091,
+          "rows_above_proxy": 0
+        },
+        {
+          "batch": 5,
+          "maximum_ll": 1678.213151231818,
+          "rows_above_proxy": 0
+        },
+        {
+          "batch": 6,
+          "maximum_ll": 955.5377691231176,
+          "rows_above_proxy": 0
+        },
+        {
+          "batch": 7,
+          "maximum_ll": 2229.919288330371,
+          "rows_above_proxy": 0
+        },
+        {
+          "batch": 8,
+          "maximum_ll": 1540.054803269662,
+          "rows_above_proxy": 0
+        },
+        {
+          "batch": 9,
+          "maximum_ll": 2225.7873734144914,
+          "rows_above_proxy": 0
+        }
+      ],
+      "target_score_only_effective_count_not_posterior_ess": 1.0000024782654584
+    }
+  },
+  "diagnostic_only_high_likelihood_threshold": {
+    "value": 2849.7479816218865,
+    "definition": "median of old-target scored same-cache training rows minus10; posterior-mass/accuracy claim forbidden"
+  },
+  "cache_coordinate_diagnostics": {
+    "training_rows": 300,
+    "heldout_rows": 100,
+    "training_cosi_positive_mass": 0.6366666666666667,
+    "heldout_cosi_positive_mass": 0.6,
+    "training_distance": {
+      "min": 307.58337,
+      "p05": 323.3218035,
+      "median": 388.32336999999995,
+      "p95": 447.6315955,
+      "max": 493.12075
+    },
+    "heldout_distance": {
+      "min": 289.68569,
+      "p05": 312.8876255,
+      "median": 387.70449,
+      "p95": 449.1426435,
+      "max": 483.34146
+    }
+  },
+  "within_cache_branch_correlations": {
+    "False": {
+      "rows": 109,
+      "max_omitted_cross_group_correlation": 0.438858727450932,
+      "correlation_eigenvalues": [
+        0.01533932698500299,
+        0.023748363983853965,
+        0.42326220760629685,
+        1.1990022205275874,
+        1.6545616474614204,
+        2.68408623343584
+      ],
+      "minimum_to_maximum_eigenvalue_ratio": 0.00571491585997498,
+      "correlation_matrix": [
+        [
+          1.0,
+          -0.10526812528396486,
+          0.438858727450932,
+          0.981899010906104,
+          0.03590953195134488,
+          -0.36098367362940403
+        ],
+        [
+          -0.10526812528396484,
+          0.9999999999999999,
+          -0.4935177288344826,
+          -0.10234164504899343,
+          -0.07578703736462197,
+          0.08787886106801623
+        ],
+        [
+          0.438858727450932,
+          -0.4935177288344825,
+          1.0,
+          0.43518955847031887,
+          0.07618005698673194,
+          -0.15886848707958698
+        ],
+        [
+          0.981899010906104,
+          -0.10234164504899343,
+          0.43518955847031887,
+          1.0,
+          0.057817836031137354,
+          -0.3739470612350544
+        ],
+        [
+          0.03590953195134488,
+          -0.07578703736462199,
+          0.07618005698673194,
+          0.057817836031137354,
+          1.0,
+          -0.921526074342981
+        ],
+        [
+          -0.36098367362940403,
+          0.08787886106801622,
+          -0.15886848707958698,
+          -0.37394706123505433,
+          -0.9215260743429811,
+          1.0
+        ]
+      ]
+    },
+    "True": {
+      "rows": 191,
+      "max_omitted_cross_group_correlation": 0.4985035821183061,
+      "correlation_eigenvalues": [
+        0.0030223265748464353,
+        0.031049787542109374,
+        0.8893588662541532,
+        1.0071279982474848,
+        1.5832264245981078,
+        2.4862145967833
+      ],
+      "minimum_to_maximum_eigenvalue_ratio": 0.0012156338309479659,
+      "correlation_matrix": [
+        [
+          1.0,
+          -0.0056287930891692,
+          0.14087261488151906,
+          0.9959352043619991,
+          -0.012058163180771735,
+          0.49346761406827394
+        ],
+        [
+          -0.0056287930891692,
+          1.0,
+          0.09106558208904383,
+          -0.004660149705960958,
+          -0.09767355781875556,
+          -0.19022910377389476
+        ],
+        [
+          0.14087261488151903,
+          0.09106558208904383,
+          1.0,
+          0.12860772937637902,
+          -0.04018949404678744,
+          -0.04935273195405977
+        ],
+        [
+          0.9959352043619992,
+          -0.004660149705960958,
+          0.12860772937637904,
+          1.0,
+          -0.0187834266570291,
+          0.49850358211830603
+        ],
+        [
+          -0.012058163180771735,
+          -0.09767355781875556,
+          -0.04018949404678745,
+          -0.0187834266570291,
+          0.9999999999999998,
+          0.8174003403174295
+        ],
+        [
+          0.4934676140682739,
+          -0.19022910377389476,
+          -0.049352731954059766,
+          0.4985035821183061,
+          0.8174003403174295,
+          1.0
+        ]
+      ]
+    }
+  },
+  "teacher_npz_fields": [
+    "ra",
+    "dec",
+    "time",
+    "distance",
+    "inclination"
+  ]
+}

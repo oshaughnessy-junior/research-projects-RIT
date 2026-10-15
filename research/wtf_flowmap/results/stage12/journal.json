@@ -1,0 +1,17 @@
+{
+  "status": "journaled_before_execution",
+  "scope": "existing stage4 arrays/source and cached teacher coordinates only",
+  "new_physical_calls": 0,
+  "training": 0,
+  "new_draws": 0,
+  "inference": 0,
+  "cpu_cap_seconds": 60,
+  "analysis_cpu_soft_hard": [
+    24,
+    25
+  ],
+  "coordination_reserve_cpu_seconds": 35,
+  "cpu": 1,
+  "rss_gib": 8,
+  "source_start": "704d3a970e79efa2fe419e7921d7c4aa93be55c2"
+}

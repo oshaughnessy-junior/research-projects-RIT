@@ -103,6 +103,8 @@ cost and project elapsed time remain unknown. No total-cost speedup claim.
 
 ## Next scientific comparison, proposed only
 
+**Superseded:** the [existing-artifact scientific design decision](SCIENTIFIC_DESIGN_DECISION.md) withdraws this six-arm repeat in favor of a smaller, falsifiable three-arm information-retention experiment. The original proposal below is preserved as history; it is not the current recommendation.
+
 Do a direct, bounded **one-seed, one-anchor six-arm comparison**, with all models
 frozen and the same Q8/cubic target. Reuse current driver/proposal machinery;
 no sampler rewrite or further infrastructure campaign is proposed.
