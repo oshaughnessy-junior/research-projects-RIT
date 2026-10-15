@@ -1,0 +1,779 @@
+{
+  "status": "passed",
+  "attempted_true_rows": 65,
+  "calls": [
+    {
+      "backend": "numpy_noloop",
+      "phase": "values",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.004173036984866485
+    },
+    {
+      "backend": "jax",
+      "phase": "values",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 5.660064985975623
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "values",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.00416602601762861
+    },
+    {
+      "backend": "jax",
+      "phase": "values",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.1900958140031435
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "values",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.004643647989723831
+    },
+    {
+      "backend": "jax",
+      "phase": "values",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.5671045440249145
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "values",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.004505776974838227
+    },
+    {
+      "backend": "jax",
+      "phase": "values",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 3.809176248993026
+    },
+    {
+      "backend": "jax",
+      "phase": "autodiff",
+      "rows": 1,
+      "gradient": true,
+      "status": "passed",
+      "wall_seconds": 15.125857456005178
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.004288927011657506
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.003642254014266655
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.0036391440080478787
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.003862463985569775
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.0036348039866425097
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.0034904339991044253
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.0035675339750014246
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.0034917540033347905
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.0034456629946362227
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.003470013994956389
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.0036310330033302307
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.0034800629946403205
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.0035577130038291216
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.003648545010946691
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.003495933022350073
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.0035728640214074403
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.003638333990238607
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.0036677639873232692
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.003912554995622486
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.0035767439985647798
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.0038781439943704754
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.003891646018018946
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.0038387759996112436
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.004273997008567676
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.278624080005102
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.151391183986561
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.882961075985804
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.569016791996546
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.856980985001428
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.10386432899395
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.162087165983394
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.8828034450125415
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.325534322997555
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.048304940020898
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.05664273299044
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 5.374372569000116
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.266666333016474
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.289837695017923
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 5.211258283001371
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 6.455593811988365
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.272939327987842
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.057162974990206
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.963195903983433
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.141390623990446
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.251690164994216
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.24621453799773
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.149366664001718
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 5.118768753978657
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "periodicity_baseline",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.004227097000693902
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "periodicity",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.0036168740189168602
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "periodicity",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.00356600500526838
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "periodicity",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.0035021029761992395
+    },
+    {
+      "backend": "jax",
+      "phase": "periodicity_baseline",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.057927279995056
+    },
+    {
+      "backend": "jax",
+      "phase": "periodicity",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.022251168004004
+    },
+    {
+      "backend": "jax",
+      "phase": "periodicity",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.194175010983599
+    },
+    {
+      "backend": "jax",
+      "phase": "periodicity",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.430878540995764
+    }
+  ],
+  "previous_attempted_true_rows": 51,
+  "tolerances": {
+    "value_absolute_nat": 0.001,
+    "gradient_absolute": 0.01,
+    "gradient_relative": 0.001,
+    "fd_steps_standardized": [
+      0.0001,
+      5e-05
+    ]
+  },
+  "caps": {
+    "cpu_seconds": 950,
+    "virtual_memory_bytes": 8589934592,
+    "total_stage_true_rows": 128
+  },
+  "selected_cache_indices": [
+    0,
+    100,
+    200,
+    300
+  ],
+  "fine_tuning_run": false,
+  "parameter_order": [
+    "ra",
+    "dec",
+    "psi",
+    "incl",
+    "phiref",
+    "distMpc"
+  ],
+  "coordinate_roundtrip_and_jacobian": "passed",
+  "runtime": {
+    "host": "ldas-grid",
+    "affinity": [
+      0
+    ],
+    "numpy": "2.2.6",
+    "torch": "2.8.0",
+    "jax": "0.9.0",
+    "source_file": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/factored_likelihood.py",
+    "source_sha256": "7b87a19e7133155cb1bb67a790a58ab7204f605d6d12cd78471edc34e044c974"
+  },
+  "cost": {
+    "process_wall_seconds": 168.97518470999785,
+    "cpu_user_seconds": 164.289526,
+    "cpu_system_seconds": 2.303733,
+    "max_rss_kib": 2853072
+  },
+  "frame_psd_setup_wall_seconds": 0.13517153699649498,
+  "precompute": {
+    "attempted": 1,
+    "integration_half": 0.075,
+    "storage_half": 0.37890625,
+    "guard_initial": 512,
+    "guard_certified": 1024,
+    "lmax": 4,
+    "ignore_threshold": null
+  },
+  "precompute_wall_seconds": 2.2777504889818374,
+  "modes": {
+    "H1": [
+      [
+        2,
+        -2
+      ],
+      [
+        2,
+        -1
+      ],
+      [
+        2,
+        0
+      ],
+      [
+        2,
+        1
+      ],
+      [
+        2,
+        2
+      ],
+      [
+        3,
+        -3
+      ],
+      [
+        3,
+        -2
+      ],
+      [
+        3,
+        -1
+      ],
+      [
+        3,
+        0
+      ],
+      [
+        3,
+        1
+      ],
+      [
+        3,
+        2
+      ],
+      [
+        3,
+        3
+      ],
+      [
+        4,
+        -4
+      ],
+      [
+        4,
+        -3
+      ],
+      [
+        4,
+        -2
+      ],
+      [
+        4,
+        -1
+      ],
+      [
+        4,
+        0
+      ],
+      [
+        4,
+        1
+      ],
+      [
+        4,
+        2
+      ],
+      [
+        4,
+        3
+      ],
+      [
+        4,
+        4
+      ]
+    ],
+    "L1": [
+      [
+        2,
+        -2
+      ],
+      [
+        2,
+        -1
+      ],
+      [
+        2,
+        0
+      ],
+      [
+        2,
+        1
+      ],
+      [
+        2,
+        2
+      ],
+      [
+        3,
+        -3
+      ],
+      [
+        3,
+        -2
+      ],
+      [
+        3,
+        -1
+      ],
+      [
+        3,
+        0
+      ],
+      [
+        3,
+        1
+      ],
+      [
+        3,
+        2
+      ],
+      [
+        3,
+        3
+      ],
+      [
+        4,
+        -4
+      ],
+      [
+        4,
+        -3
+      ],
+      [
+        4,
+        -2
+      ],
+      [
+        4,
+        -1
+      ],
+      [
+        4,
+        0
+      ],
+      [
+        4,
+        1
+      ],
+      [
+        4,
+        2
+      ],
+      [
+        4,
+        3
+      ],
+      [
+        4,
+        4
+      ]
+    ]
+  },
+  "value_absolute_errors": [
+    1.5904968677205034e-05,
+    7.389937309199013e-06,
+    8.796394467935897e-06,
+    2.0126427443756256e-05
+  ],
+  "gradient_errors_over_tolerance": [
+    {
+      "row": 3,
+      "backend": "numpy_noloop",
+      "ad_fd": 0.01688350445209825,
+      "fd_refinement": 0.005292336547944143
+    },
+    {
+      "row": 3,
+      "backend": "jax",
+      "ad_fd": 0.0017580406373968844,
+      "fd_refinement": 0.005293917411672899
+    }
+  ]
+}

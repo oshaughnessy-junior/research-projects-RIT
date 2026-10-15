@@ -1,6 +1,7 @@
 # Learned flow-map research on S250114ax
 
-Stage 2 is complete: a genuine six-dimensional neural drift was pretrained on
+Stage 3a passed a limited real-likelihood parity probe after one adapter repair.
+A genuine six-dimensional neural drift was pretrained on
 verified real RIFT exports, and a neural two-time map was distilled from that
 learned drift. **Scientific capability and end-to-end cost advantage remain
 unestablished.** This is separate from PR445's heuristic pilot, which is preserved
@@ -49,8 +50,8 @@ Case: S250114ax, fixed intrinsic anchor 47536; full six-dimensional extrinsic
 inference with time marginalized. The archived accepted reference is AV,
 SEOBNRv5PHM, lmax 4, 4096 Hz, sinc interpolation and bandlimited time quadrature,
 corrected network-sky inverse mapping, internal phase rotation and full adaptation.
-Distance prior is `cosmo_sourceframe` on [1,10000] Mpc. Values/gradients under the
-current maintained target still require a matched parity check.
+Distance prior is `cosmo_sourceframe` on [1,10000] Mpc. A four-point value and
+one held-out gradient parity check now passes; see `STAGE3A.md` for its limits.
 
 - Reference source `276863bfe155b3df40567f2067761dc7d19e3899` plus reviewed PR195
   inverse-map and `e014b355d` per-row-offset patches.
@@ -170,9 +171,9 @@ $P train_real.py --npz <pinned-sinc-bandlimited.npz> --manifest <pinned-timing_m
 The exact real paths and source hashes are in `results/final_seed261015/result.json`.
 Output directories must be new, so reruns cannot overwrite earlier evidence.
 
-## Precise next stage: 3a, not yet launched
+## Stage 3a completed: limited physical-reward parity
 
-Proposed bounded parity preflight: **one affinity-pinned Caltech CPU, 20 CPU minutes,
+Executed bounded parity preflight: **one affinity-pinned Caltech CPU, 20 CPU minutes,
 8 GiB resident limit, no GPU, maximum 128 attempted true-likelihood rows**, including
 finite-difference and failed attempts. Check current shared-host memory/thread
 headroom first; use approved scheduler/accounting policy if batch placement is
@@ -180,11 +181,19 @@ needed, never copy a historical accounting group blindly.
 
 Rebuild the same data/PSD/waveform bank from the hash-recorded inputs; require the
 maintained NoLoop path (all four flags from AGENTS.md), and a verified differentiable
-six-dimensional counterpart with identical stencil/quadrature/priors. Audit phase
+six-dimensional counterpart with identical physical likelihood stencil/quadrature. Audit phase
 and polarization export/inversion, chart seams and distance bounds. Count build,
 JIT, value, gradient, finite-difference, and rejection costs. Stop on a source,
 coordinate, value/gradient, memory or time mismatch. Dependency presence is verified;
-actual waveform/bank construction and gradient parity have not run.
+full-mode waveform/bank construction and the local parity gates passed.
+
+The initial adapter inherited a mode-pruning default and was stopped; its 51
+attempted rows remain charged. The repaired full-mode run used 65 rows and passed.
+Total: 116 attempted rows, 289.56 measured process CPU seconds, 302.15 wall
+seconds, peak 2,853,072 KiB RSS, including both setups/JIT and the interruption.
+Administrative source audits/transfers were not timed. The old rotated angular
+prior has mass 8; unadjusted historical evidence is not a current-code baseline.
+See `STAGE3A.md` and `results/stage3a/summary.json` for commands, costs and limits.
 
 After that gate, declare a separate small **actual real-reward WTF fine-tuning**
 budget. Then compare pretrained-map, tuned-map, and cached-resampling proposals

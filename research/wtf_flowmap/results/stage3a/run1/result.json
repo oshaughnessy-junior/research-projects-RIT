@@ -1,0 +1,487 @@
+{
+  "status": "failed",
+  "attempted_true_rows": 51,
+  "calls": [
+    {
+      "backend": "numpy_noloop",
+      "phase": "values",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.004472368018468842
+    },
+    {
+      "backend": "jax",
+      "phase": "values",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 6.31636024301406
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "values",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.003822473983746022
+    },
+    {
+      "backend": "jax",
+      "phase": "values",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.099175444018329
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "values",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.005136268999194726
+    },
+    {
+      "backend": "jax",
+      "phase": "values",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.649266294989502
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "values",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.003992305981228128
+    },
+    {
+      "backend": "jax",
+      "phase": "values",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.280503037007293
+    },
+    {
+      "backend": "jax",
+      "phase": "autodiff",
+      "rows": 1,
+      "gradient": true,
+      "status": "passed",
+      "wall_seconds": 13.191052892012522
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.0038872750010341406
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.0031921320187393576
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.0031261619878932834
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.003149871015921235
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.003119012981187552
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.0031094810110516846
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.003064421995077282
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.003090081998379901
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.0030737720080651343
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.003085070988163352
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.003169382020132616
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.003076591994613409
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.0030510520155075938
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.003060111979721114
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.0030451819766312838
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.0030775920022279024
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.003054511995287612
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.0030455910018645227
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.0030465510208159685
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.0030621619953308254
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.0030801129760220647
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.0030568520014639944
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.003094692016020417
+    },
+    {
+      "backend": "numpy_noloop",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 0.0030841919942758977
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.153636795002967
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.564708716003224
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 3.9394181550014764
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.759901212004479
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.018687872012379
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 3.987895524012856
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.669660593994195
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.097479477990419
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 3.913067227025749
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.732830525987083
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.058358954003779
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.058881985984044
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 3.968836257001385
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.823490407987265
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.085995761997765
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.207668424001895
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "passed",
+      "wall_seconds": 4.168695102998754
+    },
+    {
+      "backend": "jax",
+      "phase": "finite_difference",
+      "rows": 1,
+      "gradient": false,
+      "status": "attempted",
+      "wall_seconds": 5.094543603016064
+    }
+  ],
+  "tolerances": {
+    "value_absolute_nat": 0.001,
+    "gradient_absolute": 0.01,
+    "gradient_relative": 0.001,
+    "fd_steps_standardized": [
+      0.0001,
+      5e-05
+    ]
+  },
+  "caps": {
+    "cpu_seconds": 1100,
+    "virtual_memory_bytes": 8589934592,
+    "true_rows": 128
+  },
+  "selected_cache_indices": [
+    0,
+    100,
+    200,
+    300
+  ],
+  "fine_tuning_run": false,
+  "parameter_order": [
+    "ra",
+    "dec",
+    "psi",
+    "incl",
+    "phiref",
+    "distMpc"
+  ],
+  "coordinate_roundtrip_and_jacobian": "passed",
+  "runtime": {
+    "host": "ldas-grid",
+    "affinity": [
+      0
+    ],
+    "numpy": "2.2.6",
+    "torch": "2.8.0",
+    "jax": "0.9.0",
+    "source_file": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/factored_likelihood.py",
+    "source_sha256": "7b87a19e7133155cb1bb67a790a58ab7204f605d6d12cd78471edc34e044c974"
+  },
+  "cost": {
+    "process_wall_seconds": 128.28908519199467,
+    "cpu_user_seconds": 116.292008,
+    "cpu_system_seconds": 2.156831,
+    "max_rss_kib": 2497220
+  },
+  "frame_psd_setup_wall_seconds": 0.14392313500866294,
+  "precompute": {
+    "attempted": 1,
+    "integration_half": 0.075,
+    "storage_half": 0.37890625,
+    "guard_initial": 512,
+    "guard_certified": 1024,
+    "lmax": 4
+  },
+  "precompute_wall_seconds": 3.644172869011527,
+  "value_absolute_errors": [
+    1.604346471140161e-05,
+    7.538169938925421e-06,
+    8.704995252628578e-06,
+    1.981383820748306e-05
+  ],
+  "gradient_errors_over_tolerance": [
+    {
+      "row": 0,
+      "backend": "numpy_noloop",
+      "ad_fd": 0.014949751320612978,
+      "fd_refinement": 0.008597347450458702
+    }
+  ],
+  "blocker": "",
+  "traceback": "Traceback (most recent call last):\n  File \"/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/research/wtf_flowmap/parity_real.py\", line 184, in <module>\n    try:run(args,record,save)\n        ^^^^^^^^^^^^^^^^^^^^^\n  File \"/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/research/wtf_flowmap/parity_real.py\", line 153, in run\n    lo=call(backend,'finite_difference',lambda:fun(decode(z-e)))\n       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/research/wtf_flowmap/parity_real.py\", line 130, in call\n    out=fn()\n        ^^^^\n  File \"/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/research/wtf_flowmap/parity_real.py\", line 153, in <lambda>\n    lo=call(backend,'finite_difference',lambda:fun(decode(z-e)))\n                                               ^^^^^^^^^^^^^^^^\n  File \"/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/jax_ile/wrapper.py\", line 515, in value\n    return float(self._scalar(jnp.asarray(theta6, dtype=jnp.float64)))\n                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/jax_ile/wrapper.py\", line 494, in _scalar\n    v = fused_log_likelihood(\n        ^^^^^^^^^^^^^^^^^^^^^\n  File \"/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/jax_ile/core.py\", line 2002, in fused_log_likelihood\n    return _time_marginalize_reflected_primitive(\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/jax_ile/core.py\", line 1867, in _time_marginalize_reflected_primitive\n    refined = jax.lax.map(\n              ^^^^^^^^^^^^\n  File \"/cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/site-packages/jax/_src/traceback_util.py\", line 195, in reraise_with_filtered_traceback\n    return fun(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^\n  File \"/cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/site-packages/jax/_src/lax/control_flow/loops.py\", line 2578, in map\n    _, ys = scan(g, (), xs)\n            ^^^^^^^^^^^^^^^\n  File \"/cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/site-packages/jax/_src/traceback_util.py\", line 195, in reraise_with_filtered_traceback\n    return fun(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^\n  File \"/cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/site-packages/jax/_src/lax/control_flow/loops.py\", line 312, in scan\n    out = scan_p.bind(*consts, *args_flat,\n          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/site-packages/jax/_src/core.py\", line 632, in bind\n    return self._true_bind(*args, **params)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/site-packages/jax/_src/core.py\", line 648, in _true_bind\n    return self.bind_with_trace(prev_trace, args, params)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/site-packages/jax/_src/core.py\", line 660, in bind_with_trace\n    return trace.process_primitive(self, args, params)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/site-packages/jax/_src/core.py\", line 1205, in process_primitive\n    return primitive.impl(*args, **params)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/site-packages/jax/_src/dispatch.py\", line 91, in apply_primitive\n    outs = fun(*args)\n           ^^^^^^^^^^\n  File \"/cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/site-packages/jax/_src/traceback_util.py\", line 195, in reraise_with_filtered_traceback\n    return fun(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^\n  File \"/cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/site-packages/jax/_src/pjit.py\", line 259, in cache_miss\n    executable, pgle_profiler, const_args) = _run_python_pjit(\n                                             ^^^^^^^^^^^^^^^^^\n  File \"/cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/site-packages/jax/_src/pjit.py\", line 142, in _run_python_pjit\n    out_flat, compiled, profiler, const_args = _pjit_call_impl_python(\n                                               ^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/site-packages/jax/_src/pjit.py\", line 1202, in _pjit_call_impl_python\n    compiled = computation.compile()\n               ^^^^^^^^^^^^^^^^^^^^^\n  File \"/cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/site-packages/jax/_src/interpreters/pxla.py\", line 2510, in compile\n    executable = UnloadedMeshExecutable.from_hlo(\n                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/site-packages/jax/_src/interpreters/pxla.py\", line 3056, in from_hlo\n    xla_executable = _cached_compilation(\n                     ^^^^^^^^^^^^^^^^^^^^\n  File \"/cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/site-packages/jax/_src/interpreters/pxla.py\", line 2837, in _cached_compilation\n    xla_executable = compiler.compile_or_get_cached(\n                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/site-packages/jax/_src/compiler.py\", line 478, in compile_or_get_cached\n    return _compile_and_write_cache(\n           ^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/site-packages/jax/_src/compiler.py\", line 746, in _compile_and_write_cache\n    executable = backend_compile_and_load(\n                 ^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/site-packages/jax/_src/profiler.py\", line 359, in wrapper\n    return func(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^\n  File \"/cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/site-packages/jax/_src/compiler.py\", line 362, in backend_compile_and_load\n    return backend.compile_and_load(\n           ^^^^^^^^^^^^^^^^^^^^^^^^^\nKeyboardInterrupt\n"
+}

@@ -1,0 +1,63 @@
+{
+  "stage": "3a_real_likelihood_coordinate_gradient_parity",
+  "status": "passed_limited_four_point_probe_after_one_adapter_repair",
+  "base_commit": "1621bb6e12391086edc3bfc8730ad807c8ad638c",
+  "research_parent_commit": "875d52c9516cf58877aec53c1f55b284e81bfd79",
+  "atlas_commit": "bb8608c695028f7eeeff53e5c4b5eef6537b2a39",
+  "route": "mini -> COS-MATH2519 via atlas Tailscale IP -> ldas-grid.ligo.caltech.edu",
+  "execution": "interactive one CPU affinity [0], no scheduler job, no GPU",
+  "runs": [
+    {
+      "run": "run1",
+      "status": "failed",
+      "attempted_true_rows": 51,
+      "cpu_seconds": 120.55,
+      "wall_seconds": 130.56,
+      "max_rss_kib": 2497220,
+      "precompute_seconds": 3.644172869011527,
+      "acceptance_evidence": false
+    },
+    {
+      "run": "run2",
+      "status": "passed",
+      "attempted_true_rows": 65,
+      "cpu_seconds": 169.01,
+      "wall_seconds": 171.59,
+      "max_rss_kib": 2853072,
+      "precompute_seconds": 2.2777504889818374,
+      "acceptance_evidence": true
+    }
+  ],
+  "total_attempted_true_rows": 116,
+  "total_measured_process_cpu_seconds": 289.56,
+  "total_measured_process_wall_seconds": 302.15,
+  "max_rss_kib": 2853072,
+  "cpu_budget_seconds": 1200,
+  "row_budget": 128,
+  "administrative_preflight_transfer_cpu_seconds": null,
+  "cost_scope": "Both complete scientific processes, including imports, frame/PSD setup, precompute, JIT, failed/interrupted work, finite differences and validation. Read-only source audits and source transfer were not timed; no claim of exact all-administration total.",
+  "first_attempt_exit": "Interrupted deliberately: SSH shell exit 130; do not treat GNU time Exit status 0 as success.",
+  "first_adapter_sha256": "a30e571d36b3c0561e200f2d95a203f2e744cb7709f6e97fc9f9c9218f04d894",
+  "executed_repaired_adapter_sha256": "6a1cb6c06c1faec197a5308430ac6974d31aeb857865502f84dd16fc420a6006",
+  "first_attempt_issue": "Inherited precompute mode-pruning default 1e-4; invalid for full-target parity. All 51 attempted rows retained in cost.",
+  "repaired_modes_per_detector": 21,
+  "full_mode_max_value_difference_nat": 2.0126427443756256e-05,
+  "full_mode_gradient_points": 1,
+  "periodicity_gates": [
+    "RA +2pi",
+    "phase +2pi",
+    "psi +pi"
+  ],
+  "historical_angular_prior_total_mass": 8,
+  "historical_lnZ_normalization_offset": 2.0794415416798357,
+  "real_reward_finetuning_run": false,
+  "corrected_inference_comparison_run": false,
+  "scientific_capability_or_cost_win_claimed": false,
+  "limitations": [
+    "Four cached physical points, one held-out gradient; not global domain/gradient validation",
+    "No Torch-JAX reward bridge tested",
+    "No historical waveform checkpoint parity across backend versions",
+    "No evidence/posterior estimate in this stage",
+    "No production shape-recovery gate run or claimed"
+  ]
+}
