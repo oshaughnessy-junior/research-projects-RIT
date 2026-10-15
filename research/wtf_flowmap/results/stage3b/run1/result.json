@@ -1,0 +1,49 @@
+{
+  "status": "stopped",
+  "attempted_endpoint_rows": 0,
+  "dispatched_physical_rows": 0,
+  "jax_gradient_rows": 0,
+  "torch_reward_backward_rows": 0,
+  "calls": [],
+  "updates": [],
+  "updates_completed": 0,
+  "seed": 261016,
+  "reward_scale": 0.001,
+  "adam_lr": 1e-05,
+  "beta": 1.0,
+  "dtype": "float64",
+  "max_updates": 8,
+  "batch_size": 4,
+  "reference": "frozen initial pretrained map, never refreshed",
+  "caps": {
+    "cpu_seconds": 570,
+    "reserve_cpu_seconds": 30,
+    "virtual_memory_bytes": 8589934592,
+    "attempted_rows": 256
+  },
+  "source_parent_commit": "4865d36e5af47808024a23e2bb40830499d8e57e",
+  "source_sha256": {
+    "smoke_real.py": "607e364cd7de267989daadc2a7867ffc15add990c1ea021cdc4abf116ccbf7ea",
+    "real_target.py": "831f7240c3c4fbd978155e246c4bae7835316b4f696f725fbfdefe79969f2c87",
+    "model.py": "5510640a980b8b2bba10d36eb8079ab0a6d44f83a1d7f330fda620387b4075da"
+  },
+  "previous_stage_costs_charged_separately": true,
+  "scientific_performance_claim": false,
+  "cost": {
+    "process_wall_seconds": 6.214271298988024,
+    "cpu_user_seconds": 3.4644209999999998,
+    "cpu_system_seconds": 0.7661789999999999,
+    "max_rss_kib": 850504
+  },
+  "parameter_order": [
+    "ra",
+    "dec",
+    "psi",
+    "incl",
+    "phiref",
+    "distMpc"
+  ],
+  "coordinate_roundtrip_and_jacobian": "passed",
+  "blocker": "NameError: name 'os' is not defined",
+  "traceback": "Traceback (most recent call last):\n  File \"/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3b/source/smoke_real.py\", line 218, in <module>\n    try:run(args,record,save)\n        ^^^^^^^^^^^^^^^^^^^^^\n  File \"/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3b/source/smoke_real.py\", line 33, in run\n    target=build_real_target(args,record,save)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3b/source/real_target.py\", line 66, in build_real_target\n    record['runtime'] = dict(host=os.uname().nodename, affinity=sorted(os.sched_getaffinity(0)),\n                                  ^^\nNameError: name 'os' is not defined\n"
+}

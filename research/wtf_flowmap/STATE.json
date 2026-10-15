@@ -1,6 +1,6 @@
 {
   "owner": "current Codex task, mini coordinator",
-  "status": "stage_3a_limited_real_likelihood_parity_passed_after_adapter_repair",
+  "status": "stage_3b_blocked_on_angular_chart_guard_after_six_real_objective_updates",
   "research_branch": "codex/learned-flowmap-realcase",
   "reasoning_effort_requested": "low",
   "source_base": "1621bb6e12391086edc3bfc8730ad807c8ad638c",
@@ -14,7 +14,10 @@
     "four exact-gradient/objective contract checks",
     "full-mode real NoLoop/JAX four-point value parity",
     "one held-out physical/standardized gradient parity against both backend finite differences",
-    "physical angular periodicity and coordinate Jacobian/round-trip checks"
+    "physical angular periodicity and coordinate Jacobian/round-trip checks",
+    "Torch/JAX bridge with full chart Jacobian and finite-difference parity",
+    "three strict domain/seam rejection fixtures",
+    "six frozen-reference true-log-likelihood WTF objective updates"
   ],
   "checkpoint": {
     "path": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/final_seed261015/pretrained.pt",
@@ -27,11 +30,12 @@
     "diagonal_rms": true
   },
   "not_run": [
-    "real-likelihood reward fine-tuning",
     "new calibrated inference comparison",
     "held-out intrinsic-anchor evaluation",
     "density-corrected implicit-map sampling",
-    "production shape-recovery gate"
+    "production shape-recovery gate",
+    "complete eight-update real-objective smoke test",
+    "post-update real-objective validation"
   ],
   "scientific_capability_demonstrated": false,
   "cost_advantage_demonstrated": false,
@@ -80,7 +84,9 @@
     "results/case_inventory.json",
     "results/final_seed261015/result.json",
     "STAGE3A.md",
-    "results/stage3a/summary.json"
+    "results/stage3a/summary.json",
+    "STAGE3B.md",
+    "results/stage3b/summary.json"
   ],
   "checkpoint_reproduced_identically_in_three_6000_step_runs": true,
   "mathematical_contract_tests_unique": 4,
@@ -90,11 +96,36 @@
     "cpu_seconds_sum": 24.16,
     "new_true_likelihood_rows": 0
   },
-  "next_after_stage3a": "Proposed eight-update real-objective smoke test after Torch-JAX bridge/domain checks; budget proposal in STAGE3A.md, not launched",
+  "next_after_stage3a": "Resolve the stage3b angular chart/domain failure before any further smoke training or corrected inference",
   "stage3a_cost": {
     "attempted_true_rows": 116,
     "measured_process_cpu_seconds": 289.56,
     "measured_process_wall_seconds": 302.15,
     "max_rss_kib": 2853072
+  },
+  "stage3b": {
+    "status": "stopped_on_strict_angular_chart_guard_after_six_updates",
+    "result": "results/stage3b/summary.json",
+    "cost": {
+      "total_measured_process_cpu_seconds": 38.5,
+      "total_measured_process_wall_seconds": 44.06,
+      "peak_rss_kib": 2142916,
+      "attempted_endpoint_rows": 62,
+      "dispatched_physical_rows": 55,
+      "jax_gradient_rows": 54,
+      "torch_reward_backward_rows": 25,
+      "deliberate_domain_fixture_rejections": 3,
+      "unresolved_training_batch_rejected_rows": 4,
+      "unresolved_training_batch_dispatched_rows": 0,
+      "process_setup_imports_precompute_JIT_validation_and_failed_work_included": true,
+      "administrative_transfer_audit_seconds": null
+    },
+    "bridge_passed": true,
+    "updates_completed": 6,
+    "partial_checkpoint": {
+      "path": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3b/run2/partial_smoke.pt",
+      "sha256": "479eac9c0c5e412755ce6a55de4a248eda60c8e3d8c47452e0efb4a4591673c9"
+    },
+    "next_blocker": "Resolve periodic chart/domain contract without clipping or redraw; no further training or inference until reviewed"
   }
 }

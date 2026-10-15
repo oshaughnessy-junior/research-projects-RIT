@@ -1,5 +1,8 @@
 # Learned flow-map research on S250114ax
 
+Stage 3b passed the Torch/JAX bridge and completed six true-log-likelihood
+objective updates, then stopped at the strict angular-chart guard. The complete
+eight-update smoke test did not pass; see STAGE3B.md.
 Stage 3a passed a limited real-likelihood parity probe after one adapter repair.
 A genuine six-dimensional neural drift was pretrained on
 verified real RIFT exports, and a neural two-time map was distilled from that
@@ -23,9 +26,10 @@ See `PLAN.md` for the staged protocol and `STATE.json` for the exact next action
   through the base drift's **input**, with sum-square control norm. Frozen
   parameters retain input derivatives. Reward/time shape guards prevent silent
   broadcasting; constant reward/zero control gives a zero gradient.
-- These fine-tuning components are mathematically tested, but **real-likelihood
-  reward fine-tuning has not run**. The trained checkpoint contains a pretrained
-  drift and distilled map, not a scientifically validated WTF-tuned sampler.
+- These fine-tuning components passed mathematical and real Torch/JAX bridge
+  checks. **Six real-likelihood objective updates ran**, but the seventh batch
+  stopped at the chart guard; final validation did not run. The six-update
+  partial checkpoint is not a scientifically validated WTF-tuned sampler.
 
 Method source: [WTF v2](https://arxiv.org/abs/2609.27033v2), especially section 4
 and Appendix A; authors' code inspected at
@@ -195,8 +199,19 @@ Administrative source audits/transfers were not timed. The old rotated angular
 prior has mass 8; unadjusted historical evidence is not a current-code baseline.
 See `STAGE3A.md` and `results/stage3a/summary.json` for commands, costs and limits.
 
-After that gate, declare a separate small **actual real-reward WTF fine-tuning**
-budget. Then compare pretrained-map, tuned-map, and cached-resampling proposals
+That gate led to the bounded **actual real-reward WTF objective smoke** below;
+it stopped at the angular-chart guard. After resolving that failure, compare
+pretrained-map, tuned-map, and cached-resampling proposals
 behind the same corrected broad-support final sampler, at matched resource budgets
 and held-out intrinsic anchors. Reuse amortization must be measured and realistic.
 No larger training/production campaign starts automatically from a solver gate.
+
+## Stage 3b stop and next decision
+
+See `STAGE3B.md` and `results/stage3b/summary.json`: bridge checks passed, six
+updates completed, seventh batch rejected at the strict angular-chart boundary.
+Including setup repair: 62 endpoint attempts, 55 physical rows, 38.50 CPU /
+44.06 wall seconds, 2,142,916 KiB peak RSS. Previous costs remain separate.
+Resolve that representation/domain contract before more training or inference.
+A conditional 10,000-row / 20-CPU-minute corrected-sampler accounting pilot is
+estimated in STAGE3B.md; no inference pilot or campaign was launched.

@@ -1,0 +1,613 @@
+{
+  "status": "stopped",
+  "attempted_endpoint_rows": 62,
+  "dispatched_physical_rows": 55,
+  "jax_gradient_rows": 54,
+  "torch_reward_backward_rows": 25,
+  "calls": [
+    {
+      "phase": "guard_contract",
+      "kind": "deliberate_domain_guard_fixture",
+      "attempted_rows": 1,
+      "physical_rows": 0,
+      "status": "expected_domain_rejection",
+      "reason": "endpoint outside strict distance support (1,10000) Mpc"
+    },
+    {
+      "phase": "guard_contract",
+      "kind": "deliberate_domain_guard_fixture",
+      "attempted_rows": 1,
+      "physical_rows": 0,
+      "status": "expected_domain_rejection",
+      "reason": "endpoint outside local angular chart or at its seam"
+    },
+    {
+      "phase": "guard_contract",
+      "kind": "deliberate_domain_guard_fixture",
+      "attempted_rows": 1,
+      "physical_rows": 0,
+      "status": "expected_domain_rejection",
+      "reason": "endpoint at canonical angle seam"
+    },
+    {
+      "phase": "bridge",
+      "kind": "torch_jax_value_gradient",
+      "attempted_rows": 1,
+      "physical_rows": 1,
+      "status": "passed",
+      "wall_seconds": 16.947287311020773
+    },
+    {
+      "phase": "bridge",
+      "kind": "independent_jax_value_gradient",
+      "attempted_rows": 1,
+      "physical_rows": 1,
+      "status": "passed",
+      "wall_seconds": 0.10386919300071895
+    },
+    {
+      "phase": "bridge",
+      "kind": "numpy_noloop_value",
+      "attempted_rows": 1,
+      "physical_rows": 1,
+      "status": "passed",
+      "wall_seconds": 0.006737977004377171
+    },
+    {
+      "phase": "bridge",
+      "kind": "torch_jax_value_gradient",
+      "attempted_rows": 1,
+      "physical_rows": 1,
+      "status": "passed",
+      "wall_seconds": 0.11117772100260481
+    },
+    {
+      "phase": "bridge",
+      "kind": "torch_jax_value_gradient",
+      "attempted_rows": 1,
+      "physical_rows": 1,
+      "status": "passed",
+      "wall_seconds": 0.1038819829991553
+    },
+    {
+      "phase": "bridge",
+      "kind": "torch_jax_value_gradient",
+      "attempted_rows": 1,
+      "physical_rows": 1,
+      "status": "passed",
+      "wall_seconds": 0.10662281399709173
+    },
+    {
+      "phase": "bridge",
+      "kind": "torch_jax_value_gradient",
+      "attempted_rows": 1,
+      "physical_rows": 1,
+      "status": "passed",
+      "wall_seconds": 0.11145663101342507
+    },
+    {
+      "phase": "bridge",
+      "kind": "torch_jax_value_gradient",
+      "attempted_rows": 1,
+      "physical_rows": 1,
+      "status": "passed",
+      "wall_seconds": 0.10797304700827226
+    },
+    {
+      "phase": "bridge",
+      "kind": "torch_jax_value_gradient",
+      "attempted_rows": 1,
+      "physical_rows": 1,
+      "status": "passed",
+      "wall_seconds": 0.11238457600120455
+    },
+    {
+      "phase": "bridge",
+      "kind": "torch_jax_value_gradient",
+      "attempted_rows": 1,
+      "physical_rows": 1,
+      "status": "passed",
+      "wall_seconds": 0.1149904960184358
+    },
+    {
+      "phase": "bridge",
+      "kind": "torch_jax_value_gradient",
+      "attempted_rows": 1,
+      "physical_rows": 1,
+      "status": "passed",
+      "wall_seconds": 0.11826911801472306
+    },
+    {
+      "phase": "bridge",
+      "kind": "torch_jax_value_gradient",
+      "attempted_rows": 1,
+      "physical_rows": 1,
+      "status": "passed",
+      "wall_seconds": 0.11037661801674403
+    },
+    {
+      "phase": "bridge",
+      "kind": "torch_jax_value_gradient",
+      "attempted_rows": 1,
+      "physical_rows": 1,
+      "status": "passed",
+      "wall_seconds": 0.10456605500075966
+    },
+    {
+      "phase": "bridge",
+      "kind": "torch_jax_value_gradient",
+      "attempted_rows": 1,
+      "physical_rows": 1,
+      "status": "passed",
+      "wall_seconds": 0.1281526050006505
+    },
+    {
+      "phase": "bridge",
+      "kind": "torch_jax_value_gradient",
+      "attempted_rows": 1,
+      "physical_rows": 1,
+      "status": "passed",
+      "wall_seconds": 0.11333798998384736
+    },
+    {
+      "phase": "bridge",
+      "kind": "torch_jax_value_gradient",
+      "attempted_rows": 1,
+      "physical_rows": 1,
+      "status": "passed",
+      "wall_seconds": 0.10797363801975735
+    },
+    {
+      "phase": "bridge",
+      "kind": "torch_jax_value_gradient",
+      "attempted_rows": 1,
+      "physical_rows": 1,
+      "status": "passed",
+      "wall_seconds": 0.119723392999731
+    },
+    {
+      "phase": "bridge",
+      "kind": "torch_jax_value_gradient",
+      "attempted_rows": 1,
+      "physical_rows": 1,
+      "status": "passed",
+      "wall_seconds": 0.12199872199562378
+    },
+    {
+      "phase": "bridge",
+      "kind": "torch_jax_value_gradient",
+      "attempted_rows": 1,
+      "physical_rows": 1,
+      "status": "passed",
+      "wall_seconds": 0.11898780000046827
+    },
+    {
+      "phase": "bridge",
+      "kind": "torch_jax_value_gradient",
+      "attempted_rows": 1,
+      "physical_rows": 1,
+      "status": "passed",
+      "wall_seconds": 0.11981586497859098
+    },
+    {
+      "phase": "bridge",
+      "kind": "torch_jax_value_gradient",
+      "attempted_rows": 1,
+      "physical_rows": 1,
+      "status": "passed",
+      "wall_seconds": 0.1200350459839683
+    },
+    {
+      "phase": "bridge",
+      "kind": "torch_jax_value_gradient",
+      "attempted_rows": 1,
+      "physical_rows": 1,
+      "status": "passed",
+      "wall_seconds": 0.11771580498316325
+    },
+    {
+      "phase": "bridge",
+      "kind": "torch_jax_value_gradient",
+      "attempted_rows": 1,
+      "physical_rows": 1,
+      "status": "passed",
+      "wall_seconds": 0.11980140401283279
+    },
+    {
+      "phase": "bridge",
+      "kind": "torch_jax_value_gradient",
+      "attempted_rows": 1,
+      "physical_rows": 1,
+      "status": "passed",
+      "wall_seconds": 0.11605615899316035
+    },
+    {
+      "phase": "bridge",
+      "kind": "torch_jax_value_gradient",
+      "attempted_rows": 1,
+      "physical_rows": 1,
+      "status": "passed",
+      "wall_seconds": 0.11866873898543417
+    },
+    {
+      "phase": "bridge",
+      "kind": "torch_jax_value_gradient",
+      "attempted_rows": 1,
+      "physical_rows": 1,
+      "status": "passed",
+      "wall_seconds": 0.12060836699674837
+    },
+    {
+      "phase": "bridge",
+      "kind": "torch_jax_value_gradient",
+      "attempted_rows": 1,
+      "physical_rows": 1,
+      "status": "passed",
+      "wall_seconds": 0.12039667600765824
+    },
+    {
+      "phase": "pre_update_validation",
+      "kind": "torch_jax_value_gradient",
+      "attempted_rows": 4,
+      "physical_rows": 4,
+      "status": "passed",
+      "wall_seconds": 0.4695620419806801
+    },
+    {
+      "phase": "real_objective_updates",
+      "kind": "torch_jax_value_gradient",
+      "attempted_rows": 4,
+      "physical_rows": 4,
+      "status": "passed",
+      "wall_seconds": 0.44363906705984846
+    },
+    {
+      "phase": "real_objective_updates",
+      "kind": "torch_jax_value_gradient",
+      "attempted_rows": 4,
+      "physical_rows": 4,
+      "status": "passed",
+      "wall_seconds": 0.41644251297111623
+    },
+    {
+      "phase": "real_objective_updates",
+      "kind": "torch_jax_value_gradient",
+      "attempted_rows": 4,
+      "physical_rows": 4,
+      "status": "passed",
+      "wall_seconds": 0.4871232050063554
+    },
+    {
+      "phase": "real_objective_updates",
+      "kind": "torch_jax_value_gradient",
+      "attempted_rows": 4,
+      "physical_rows": 4,
+      "status": "passed",
+      "wall_seconds": 0.3401795669924468
+    },
+    {
+      "phase": "real_objective_updates",
+      "kind": "torch_jax_value_gradient",
+      "attempted_rows": 4,
+      "physical_rows": 4,
+      "status": "passed",
+      "wall_seconds": 0.3788040370272938
+    },
+    {
+      "phase": "real_objective_updates",
+      "kind": "torch_jax_value_gradient",
+      "attempted_rows": 4,
+      "physical_rows": 4,
+      "status": "passed",
+      "wall_seconds": 0.3191151740029454
+    },
+    {
+      "phase": "real_objective_updates",
+      "kind": "torch_jax_value_gradient",
+      "attempted_rows": 4,
+      "physical_rows": 0,
+      "status": "rejected_domain",
+      "reason": "endpoint outside local angular chart or at its seam"
+    }
+  ],
+  "updates": [
+    {
+      "step": 0,
+      "loss": 37.676261217035076,
+      "diagonal": 37.67388671129825,
+      "distillation": 0.002374505736822159,
+      "value": 1.9239688082266304
+    },
+    {
+      "step": 1,
+      "loss": 38.650154507318845,
+      "diagonal": 38.647205676494295,
+      "distillation": 0.002948830824552699,
+      "value": 0.8160075895519684
+    },
+    {
+      "step": 2,
+      "loss": 51.68119495453716,
+      "diagonal": 51.671024656991385,
+      "distillation": 0.010170297545779939,
+      "value": 1.363110733819188
+    },
+    {
+      "step": 3,
+      "loss": 67.89231438480729,
+      "diagonal": 67.89097807612633,
+      "distillation": 0.0013363086809610276,
+      "value": 0.03259033647811393
+    },
+    {
+      "step": 4,
+      "loss": 17.396755447011884,
+      "diagonal": 17.394129590565317,
+      "distillation": 0.0026258564465674594,
+      "value": 1.368652156126502
+    },
+    {
+      "step": 5,
+      "loss": 15.571443040132577,
+      "diagonal": 15.56388783434863,
+      "distillation": 0.007555205783946976,
+      "value": 1.3331607635668188
+    }
+  ],
+  "updates_completed": 6,
+  "seed": 261016,
+  "reward_scale": 0.001,
+  "adam_lr": 1e-05,
+  "beta": 1.0,
+  "dtype": "float64",
+  "max_updates": 8,
+  "batch_size": 4,
+  "reference": "frozen initial pretrained map, never refreshed",
+  "caps": {
+    "cpu_seconds": 570,
+    "reserve_cpu_seconds": 30,
+    "virtual_memory_bytes": 8589934592,
+    "attempted_rows": 256
+  },
+  "source_parent_commit": "4865d36e5af47808024a23e2bb40830499d8e57e",
+  "source_sha256": {
+    "smoke_real.py": "607e364cd7de267989daadc2a7867ffc15add990c1ea021cdc4abf116ccbf7ea",
+    "real_target.py": "ba06d69217d9a7fabe840483907af6326e8d5d1f6f53b9c19a5fc940cdf63d7b",
+    "model.py": "5510640a980b8b2bba10d36eb8079ab0a6d44f83a1d7f330fda620387b4075da"
+  },
+  "previous_stage_costs_charged_separately": true,
+  "scientific_performance_claim": false,
+  "cost": {
+    "process_wall_seconds": 34.78086972399615,
+    "cpu_user_seconds": 28.187543,
+    "cpu_system_seconds": 3.332377,
+    "max_rss_kib": 2142916
+  },
+  "parameter_order": [
+    "ra",
+    "dec",
+    "psi",
+    "incl",
+    "phiref",
+    "distMpc"
+  ],
+  "coordinate_roundtrip_and_jacobian": "passed",
+  "runtime": {
+    "host": "ldas-grid",
+    "affinity": [
+      0
+    ],
+    "numpy": "2.2.6",
+    "torch": "2.8.0",
+    "jax": "0.9.0",
+    "source_file": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/factored_likelihood.py",
+    "source_sha256": "7b87a19e7133155cb1bb67a790a58ab7204f605d6d12cd78471edc34e044c974"
+  },
+  "frame_psd_setup_wall_seconds": 0.13233805197523907,
+  "precompute": {
+    "attempted": 1,
+    "integration_half": 0.075,
+    "storage_half": 0.37890625,
+    "guard_initial": 512,
+    "guard_certified": 1024,
+    "lmax": 4,
+    "ignore_threshold": null
+  },
+  "precompute_wall_seconds": 2.205014581006253,
+  "modes": {
+    "H1": [
+      [
+        2,
+        -2
+      ],
+      [
+        2,
+        -1
+      ],
+      [
+        2,
+        0
+      ],
+      [
+        2,
+        1
+      ],
+      [
+        2,
+        2
+      ],
+      [
+        3,
+        -3
+      ],
+      [
+        3,
+        -2
+      ],
+      [
+        3,
+        -1
+      ],
+      [
+        3,
+        0
+      ],
+      [
+        3,
+        1
+      ],
+      [
+        3,
+        2
+      ],
+      [
+        3,
+        3
+      ],
+      [
+        4,
+        -4
+      ],
+      [
+        4,
+        -3
+      ],
+      [
+        4,
+        -2
+      ],
+      [
+        4,
+        -1
+      ],
+      [
+        4,
+        0
+      ],
+      [
+        4,
+        1
+      ],
+      [
+        4,
+        2
+      ],
+      [
+        4,
+        3
+      ],
+      [
+        4,
+        4
+      ]
+    ],
+    "L1": [
+      [
+        2,
+        -2
+      ],
+      [
+        2,
+        -1
+      ],
+      [
+        2,
+        0
+      ],
+      [
+        2,
+        1
+      ],
+      [
+        2,
+        2
+      ],
+      [
+        3,
+        -3
+      ],
+      [
+        3,
+        -2
+      ],
+      [
+        3,
+        -1
+      ],
+      [
+        3,
+        0
+      ],
+      [
+        3,
+        1
+      ],
+      [
+        3,
+        2
+      ],
+      [
+        3,
+        3
+      ],
+      [
+        4,
+        -4
+      ],
+      [
+        4,
+        -3
+      ],
+      [
+        4,
+        -2
+      ],
+      [
+        4,
+        -1
+      ],
+      [
+        4,
+        0
+      ],
+      [
+        4,
+        1
+      ],
+      [
+        4,
+        2
+      ],
+      [
+        4,
+        3
+      ],
+      [
+        4,
+        4
+      ]
+    ]
+  },
+  "domain_guard_contract_tests": 3,
+  "bridge": {
+    "status": "passed",
+    "jacobian": "torch_ad_vs_jax_ad_and_central_fd",
+    "value_vs_noloop_absolute_error": 2.0126427443756256e-05,
+    "gradient_error_over_tolerance": 0.001758829450576981,
+    "fd_refinement_over_tolerance": 0.0052929293718509945,
+    "gradient_order": "standardized six-dimensional model chart",
+    "higher_derivatives_supported": false
+  },
+  "validation_before_mean_logL": 1302.2729512378266,
+  "partial_checkpoint": {
+    "path": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3b/run2/partial_smoke.pt",
+    "sha256": "479eac9c0c5e412755ce6a55de4a248eda60c8e3d8c47452e0efb4a4591673c9"
+  },
+  "neural_counts": {
+    "pre_update_validation:neural_forward_rows": 4,
+    "real_objective_updates:neural_forward_rows": 264,
+    "real_objective_updates:neural_backward_rows": 24
+  },
+  "blocker": "ValueError: endpoint outside local angular chart or at its seam",
+  "traceback": "Traceback (most recent call last):\n  File \"/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3b/source2/smoke_real.py\", line 218, in <module>\n    try:run(args,record,save)\n        ^^^^^^^^^^^^^^^^^^^^^\n  File \"/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3b/source2/smoke_real.py\", line 171, in run\n    loss,parts=wtf_loss(student,reference,base,noise,t,tau,reward,reward_scale=1e-3,beta=1.)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3b/source2/model.py\", line 106, in wtf_loss\n    target, values = value_gradient(reference, base, xt, t, tau, reward, reward_scale)\n                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3b/source2/model.py\", line 86, in value_gradient\n    rewards = reward(endpoint)\n              ^^^^^^^^^^^^^^^^\n  File \"/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3b/source2/smoke_real.py\", line 99, in reward\n    try:guard(z.detach(),theta.detach())\n        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3b/source2/smoke_real.py\", line 55, in guard\n    raise ValueError('endpoint outside local angular chart or at its seam')\nValueError: endpoint outside local angular chart or at its seam\n"
+}

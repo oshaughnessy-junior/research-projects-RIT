@@ -1,0 +1,141 @@
+{
+  "stage": "3b_actual_real_objective_implementation_smoke",
+  "status": "stopped_on_strict_angular_chart_guard_after_six_updates",
+  "parent_commit": "4865d36e5af47808024a23e2bb40830499d8e57e",
+  "base_commit": "1621bb6e12391086edc3bfc8730ad807c8ad638c",
+  "atlas_commit": "bb8608c695028f7eeeff53e5c4b5eef6537b2a39",
+  "runs": [
+    {
+      "run": "run1",
+      "status": "stopped",
+      "blocker": "NameError: name 'os' is not defined",
+      "attempted_endpoint_rows": 0,
+      "dispatched_physical_rows": 0,
+      "cpu_seconds": 5.36,
+      "wall_seconds": 7.5,
+      "max_rss_kib": 858672,
+      "updates_completed": 0
+    },
+    {
+      "run": "run2",
+      "status": "stopped",
+      "blocker": "ValueError: endpoint outside local angular chart or at its seam",
+      "attempted_endpoint_rows": 62,
+      "dispatched_physical_rows": 55,
+      "cpu_seconds": 33.14,
+      "wall_seconds": 36.56,
+      "max_rss_kib": 2142916,
+      "updates_completed": 6
+    }
+  ],
+  "cost": {
+    "total_measured_process_cpu_seconds": 38.5,
+    "total_measured_process_wall_seconds": 44.06,
+    "peak_rss_kib": 2142916,
+    "attempted_endpoint_rows": 62,
+    "dispatched_physical_rows": 55,
+    "jax_gradient_rows": 54,
+    "torch_reward_backward_rows": 25,
+    "deliberate_domain_fixture_rejections": 3,
+    "unresolved_training_batch_rejected_rows": 4,
+    "unresolved_training_batch_dispatched_rows": 0,
+    "process_setup_imports_precompute_JIT_validation_and_failed_work_included": true,
+    "administrative_transfer_audit_seconds": null
+  },
+  "execution": {
+    "site": "Caltech ldas-grid",
+    "cpu_affinity": [
+      0
+    ],
+    "gpu": 0,
+    "scheduler_job_id": null,
+    "hard_cpu_seconds_per_process": 570,
+    "stage_cpu_cap_seconds": 600,
+    "memory_hard_virtual_bytes": 8589934592,
+    "stage_endpoint_cap": 256
+  },
+  "bridge": {
+    "status": "passed",
+    "jacobian": "torch_ad_vs_jax_ad_and_central_fd",
+    "value_vs_noloop_absolute_error": 2.0126427443756256e-05,
+    "gradient_error_over_tolerance": 0.001758829450576981,
+    "fd_refinement_over_tolerance": 0.0052929293718509945,
+    "gradient_order": "standardized six-dimensional model chart",
+    "higher_derivatives_supported": false
+  },
+  "domain_guard_fixture_tests_passed": 3,
+  "optimizer_updates_completed": 6,
+  "optimizer_updates_planned": 8,
+  "final_validation_run": false,
+  "frozen_initial_reference": true,
+  "base_and_reference_equality_asserted_after_each_completed_update": true,
+  "settings": {
+    "seed": 261016,
+    "reward_scale": 0.001,
+    "adam_lr": 1e-05,
+    "beta": 1,
+    "batch": 4,
+    "dtype": "float64",
+    "reward": "physical log likelihood only, no prior or Jacobian"
+  },
+  "starting_checkpoint_sha256": "4ce26989ccdcfcdb1702dd5e270d79a772487adb2b348b8b471bcaf3a8cf3158",
+  "partial_checkpoint": {
+    "path": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3b/run2/partial_smoke.pt",
+    "sha256": "479eac9c0c5e412755ce6a55de4a248eda60c8e3d8c47452e0efb4a4591673c9"
+  },
+  "executed_source_sha256": {
+    "smoke_real.py": "607e364cd7de267989daadc2a7867ffc15add990c1ea021cdc4abf116ccbf7ea",
+    "real_target.py": "ba06d69217d9a7fabe840483907af6326e8d5d1f6f53b9c19a5fc940cdf63d7b",
+    "model.py": "5510640a980b8b2bba10d36eb8079ab0a6d44f83a1d7f330fda620387b4075da"
+  },
+  "inventory_sha256": "b1b15c19dadf435f9e94414e5ed5f22cb6817302ffb3957f8106494b2a630c28",
+  "source_likelihood_sha256": "7b87a19e7133155cb1bb67a790a58ab7204f605d6d12cd78471edc34e044c974",
+  "neural_counts_logged_through_last_complete_update": {
+    "pre_update_validation:neural_forward_rows": 4,
+    "real_objective_updates:neural_forward_rows": 264,
+    "real_objective_updates:neural_backward_rows": 24
+  },
+  "neural_failure_work": {
+    "derived_extra_forward_rows": 20,
+    "derivation": "five batch-four frozen forward calls before the failed reward guard in model.wtf_loss/value_gradient; inferred from audited control flow, not the last persisted neural snapshot",
+    "total_forward_rows_including_derived_failure_work": 288,
+    "total_student_backward_rows": 24,
+    "all_work_included_in_measured_process_time": true
+  },
+  "scientific_performance_claim": false,
+  "production_inference_run": false,
+  "historical_angular_prior_mass": 8,
+  "historical_lnZ_normalization_offset": 2.0794415416798357,
+  "previous_costs_separate": {
+    "stage3a_true_rows": 116,
+    "stage3a_cpu_seconds": 289.56,
+    "stage3a_wall_seconds": 302.15,
+    "model_build_cpu_seconds": 24.16,
+    "model_build_wall_seconds": 27.64,
+    "historical_acquisition_rows_lower_bound": 15984560,
+    "historical_hidden_cost": null
+  },
+  "coordinator_transport_outage": "Transient, recovered; verified no retry process/run directory before launching run2",
+  "next_blocker": "Resolve periodic chart/domain contract without clipping or redraw; no further training or inference until reviewed",
+  "conditional_corrected_sampler_allocation_proposal": {
+    "launched": false,
+    "prerequisite": "bridge/domain gate and complete smoke validation pass",
+    "anchor_count": 1,
+    "seed_count": 1,
+    "arms": [
+      "current AV",
+      "current AV+GMM",
+      "same-cache resampling",
+      "pretrained-map training oracle",
+      "tuned-map training oracle"
+    ],
+    "attempted_physical_rows_per_arm": 2000,
+    "total_attempted_physical_rows": 10000,
+    "cpu_count": 1,
+    "cpu_minutes_cap": 20,
+    "memory_gib_cap": 8,
+    "scope": "accounting/configuration pilot, not powered scientific comparison",
+    "runtime_forecast": null,
+    "budget_basis": "bounded coverage allocation, not cached-row-rate extrapolation"
+  }
+}

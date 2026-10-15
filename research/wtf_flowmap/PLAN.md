@@ -1,7 +1,8 @@
 # Learned WTF flow-map investigation — staged plan
 
-Status: stages 1–2 complete; limited stage-3a real-likelihood parity passed after
-one adapter repair (see STAGE3A.md). No cost/capability win claimed. Owner: this
+Status: stages 1–2 complete; stage3a local parity passed. Stage3b bridge passed
+and six real-objective updates completed, then stopped at the strict angular-chart
+guard (see STAGE3B.md). No cost/capability win claimed. Owner: this
 Codex task on the mini, low-effort blue-sky work. Production defaults remain fixed.
 PR445 and its negative heuristic pilot are preserved as a separate historical result.
 
