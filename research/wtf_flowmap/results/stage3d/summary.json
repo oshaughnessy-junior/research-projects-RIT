@@ -1,0 +1,217 @@
+{
+  "stage": "3d_periodic_model_rebuild",
+  "status": "failed_one_step_teacher_accuracy_gate",
+  "parent_commit": "12ad1573de6091a41b0aa97a79c3e438d1f7df23",
+  "base_commit": "1621bb6e12391086edc3bfc8730ad807c8ad638c",
+  "atlas_commit": "bb8608c695028f7eeeff53e5c4b5eef6537b2a39",
+  "trained_from_scratch": true,
+  "old_checkpoint_weights_loaded": false,
+  "training_build_count": 1,
+  "seed": 261017,
+  "new_physical_likelihood_rows": 0,
+  "physical_parity_run": false,
+  "inference_pilot_run": false,
+  "geometry": "T3_R3_v1",
+  "checkpoint": {
+    "path": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3d/seed261017/periodic_pretrained.pt",
+    "sha256": "394ad4a1a56e2f648c11c4d14ff5a0a4a7b9a16cf39dfab3d6b29787fb580a6d"
+  },
+  "executed_source_sha256": {
+    "periodic_model.py": "878d90069b3c9691a9b87f403660f2f341feff84cc9e481a110d7f55cfae90de",
+    "test_periodic_model.py": "a75a0282eeea806cfccdd859c7fd28332175b721fd2208afb0d663f06fcea439",
+    "train_periodic.py": "6762d0c4849a78cc8a63aa6b5bd1022e0adc96fb19f52ae24845ea769b118f6a",
+    "model.py": "5510640a980b8b2bba10d36eb8079ab0a6d44f83a1d7f330fda620387b4075da",
+    "periodic_geometry.py": "abba7015b768b4841bc68475942fd4adaf873e5d6af79a4fc109503aae579fd7"
+  },
+  "read_only_validator_source_sha256": {
+    "validate_periodic_checkpoint.py": "b3d903a845afe0026f265abab9eb8e79bbb86d4160db003cd6a48a73bfe31867",
+    "periodic_model.py": "878d90069b3c9691a9b87f403660f2f341feff84cc9e481a110d7f55cfae90de",
+    "model.py": "5510640a980b8b2bba10d36eb8079ab0a6d44f83a1d7f330fda620387b4075da"
+  },
+  "data_npz_sha256": "4581e8b8584922946f5ee01756b2ffb9f336d2a66171014ac95641ff365beb2e",
+  "data_manifest_sha256": "4de8a247ffb55d2f007faa1ec82d65c92c165c4aa9f7ebcc66cbfa7f662cb060",
+  "data_provenance_sha256": "e809627592936cd16e2e55fe9abece6ea476d25323d550f47b91162b097166a9",
+  "model_and_geometry_tests": {
+    "unique_test_count": 13,
+    "passed": true,
+    "manual_caltech": true,
+    "ci_run": false
+  },
+  "trained_contract_max_error": 7.049916206369744e-15,
+  "gates": {
+    "one_step_rms": false,
+    "teacher_refinement_rms": true,
+    "semigroup_rms": true,
+    "diagonal_rms": true,
+    "map_finite_and_support": true,
+    "drift_finite_and_support": true
+  },
+  "metrics": {
+    "one_step_rms": 0.27770426373495816,
+    "teacher_refinement_rms": 4.035600755553781e-08,
+    "semigroup_rms": 0.0318199170597049,
+    "heldout_segment_rms": 0.07637057462889381,
+    "diagonal_rms": 0.1356362206606505,
+    "map_physical_support_failures": 0,
+    "map_nonfinite_state_rows": 0,
+    "map_circular_moment_error_real": [
+      0.12515496319014152,
+      0.047768284065710605,
+      0.12838776680889707
+    ],
+    "map_circular_moment_error_imag": [
+      -0.040833039418988915,
+      0.1500033156072725,
+      -0.06490944619724875
+    ],
+    "map_positive_cosi_mass": 0.6328125,
+    "map_linear_wasserstein_standardized": [
+      0.17227403486380016,
+      0.19355631606250903,
+      0.1601832874830374
+    ],
+    "map_linear_tail_error_standardized": [
+      [
+        0.11867754925929308,
+        -0.12138788653175459,
+        0.47836351117319564
+      ],
+      [
+        0.04982636161673404,
+        0.1768938345963229,
+        -0.009462532571732574
+      ]
+    ],
+    "drift_physical_support_failures": 0,
+    "drift_nonfinite_state_rows": 0,
+    "drift_circular_moment_error_real": [
+      0.07143330096017919,
+      0.01627321472435183,
+      0.059012100719655236
+    ],
+    "drift_circular_moment_error_imag": [
+      -0.001696952643749361,
+      0.13518493020662134,
+      -0.018348072514850544
+    ],
+    "drift_positive_cosi_mass": 0.6171875,
+    "drift_linear_wasserstein_standardized": [
+      0.1125625861893262,
+      0.12404803908815452,
+      0.14959888309177677
+    ],
+    "drift_linear_tail_error_standardized": [
+      [
+        0.0759617363484204,
+        -0.12930834053457696,
+        0.4984538676319794
+      ],
+      [
+        -0.0016742824505882048,
+        0.09002963365252192,
+        0.0339225011462172
+      ]
+    ],
+    "heldout_positive_cosi_mass": 0.6,
+    "map_angular_16bin_L1": [
+      0.263828125,
+      0.9517968749999999,
+      0.27734375
+    ],
+    "drift_angular_16bin_L1": [
+      0.23257812500000002,
+      0.47328125,
+      0.15234375
+    ]
+  },
+  "independent_read_only_validation": {
+    "status": "read_only_validation_complete_not_training_acceptance",
+    "seed": 261020,
+    "checkpoint_sha256": "394ad4a1a56e2f648c11c4d14ff5a0a4a7b9a16cf39dfab3d6b29787fb580a6d",
+    "source_sha256": {
+      "validate_periodic_checkpoint.py": "b3d903a845afe0026f265abab9eb8e79bbb86d4160db003cd6a48a73bfe31867",
+      "periodic_model.py": "878d90069b3c9691a9b87f403660f2f341feff84cc9e481a110d7f55cfae90de",
+      "model.py": "5510640a980b8b2bba10d36eb8079ab0a6d44f83a1d7f330fda620387b4075da"
+    },
+    "one_step_rms": 0.27198090907624706,
+    "coordinate_rms": [
+      0.3077406539966243,
+      0.3346469060264574,
+      0.30129452905993814,
+      0.24035111981802965,
+      0.25225504077260735,
+      0.1580163534001446
+    ],
+    "coordinate_order": [
+      "ra_radians",
+      "phase_radians",
+      "twice_psi_radians",
+      "standardized_atanh_sin_dec",
+      "standardized_atanh_cos_incl",
+      "standardized_log_distance"
+    ],
+    "mixed_signed_shift_errors": {
+      "drift": 1.9984014443252818e-15,
+      "map_velocity": 1.5543122344752192e-15,
+      "map_jump": 3.552713678800501e-15
+    },
+    "diagonal_time_derivative_contract": "passed",
+    "payload": {
+      "path": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3d/checkpoint_validation/solver_validation.pt",
+      "sha256": "cb2313d8d91253d5451e9f20f660d49418623bcbcca0a010a72c1f0668211a65"
+    },
+    "new_physical_rows": 0,
+    "optimizer_steps": 0,
+    "cost": {
+      "process_wall_seconds": 1.2789161399996374,
+      "cpu_user_seconds": 0.7938139999999999,
+      "cpu_system_seconds": 0.150591,
+      "max_rss_kib": 240332
+    }
+  },
+  "cost": {
+    "processes": [
+      {
+        "process": "model_and_geometry_tests",
+        "cpu_seconds": 2.83,
+        "wall_seconds": 3.82,
+        "peak_rss_kib": 327436
+      },
+      {
+        "process": "one_fixed_seed_training_and_gates",
+        "cpu_seconds": 9.1,
+        "wall_seconds": 9.75,
+        "peak_rss_kib": 374852
+      },
+      {
+        "process": "read_only_checkpoint_validation",
+        "cpu_seconds": 1.13,
+        "wall_seconds": 1.63,
+        "peak_rss_kib": 241888
+      }
+    ],
+    "total_measured_process_cpu_seconds": 13.06,
+    "total_measured_process_wall_seconds": 15.2,
+    "peak_rss_kib": 374852,
+    "stage_cpu_seconds_cap": 300,
+    "admin_transfer_audit_seconds": null
+  },
+  "prior_checkpoints_reverified_unchanged": [
+    "4ce26989ccdcfcdb1702dd5e270d79a772487adb2b348b8b471bcaf3a8cf3158",
+    "479eac9c0c5e412755ce6a55de4a248eda60c8e3d8c47452e0efb4a4591673c9"
+  ],
+  "prior_failed_endpoint": "Original not captured; stage3c validated reconstruction remains distinct",
+  "next_blocker": "Map-to-drift long-jump distillation accuracy, not periodic representation",
+  "proposed_physical_parity": {
+    "launched": false,
+    "blocked_until": "one_step_rms <= .15 and remaining model gates pass",
+    "cpu_count": 1,
+    "cpu_seconds_cap": 600,
+    "memory_gib_cap": 8,
+    "attempted_endpoint_cap": 128,
+    "planned_attempts": 123,
+    "optimizer_steps": 0
+  },
+  "scientific_capability_or_speedup_claim": false,
+  "previous_stage_costs_separate": true
+}

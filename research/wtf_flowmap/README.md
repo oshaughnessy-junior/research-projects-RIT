@@ -1,3 +1,9 @@
+Stage 3d rebuilt both periodic models. Representation, derivative and support
+contracts passed, but the one-step teacher RMS .277704 exceeded .15. **The stage
+failed its solver gate.** No physical evaluation ran and the parity gate stays
+blocked. See `PERIODIC_RESULTS.md` for measured cost, checkpoint/source/data pins
+and the independent read-only confirmation.
+
 Stage 3c diagnosed the failure as a phase-chart representation defect in the
 frozen reference. A validated forward-only replay and nine local geometry tests
 used zero likelihood calls and no training. See `CHART_REPAIR.md` for the proposed
@@ -230,3 +236,14 @@ its reconstructed private artifact is distinguished from an original capture.
 A torus-equivariant representation is specified and unit-tested algebraically,
 but no replacement neural model has been built or trained. Old checkpoint/guard
 behavior is preserved. See `CHART_REPAIR.md` and `results/stage3c/summary.json`.
+
+## Stage 3d periodic rebuild
+
+13 model/geometry tests passed; trained shift/Jacobian discrepancies <=7.05e-15.
+RK4 refinement, semigroup and diagonal gates passed, with zero finite/support
+failures in1024 drift/map endpoint checks. One-step teacher accuracy failed at
+.277704 (> .15), confirmed at .271981 on separate fixed validation noise.
+This periodic checkpoint is not accepted for physical reward tuning. Tests,
+build and follow-up used13.06 CPU /15.20 wall seconds, zero physical rows.
+Old checkpoints and their guards are untouched. `PERIODIC_RESULTS.md` records
+the source/data pins and blocked128-attempt physical parity proposal.

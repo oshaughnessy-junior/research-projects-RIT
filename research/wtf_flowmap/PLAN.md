@@ -1,9 +1,9 @@
 # Learned WTF flow-map investigation — staged plan
 
-Status: stage3c identified a frozen-reference phase-chart representation defect.
-Zero-likelihood forward replay and nine mathematical tests passed; a periodic
-model repair is designed but not implemented/trained. See CHART_REPAIR.md.
-No cost/capability win claimed. Owner: current Codex task on the mini.
+Status: stage3d periodic models rebuilt from scratch. Representation contracts
+pass; one-step teacher RMS .277704 fails .15. No physical rows in this stage;
+parity/reward/inference remain blocked pending solver distillation repair.
+See PERIODIC_RESULTS.md. No scientific capability/cost win claimed.
 Production defaults remain fixed.
 PR445 and its negative heuristic pilot are preserved as a separate historical result.
 

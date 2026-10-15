@@ -1,6 +1,6 @@
 {
   "owner": "current Codex task, mini coordinator",
-  "status": "stage_3c_phase_chart_defect_diagnosed_periodic_repair_designed_not_trained",
+  "status": "stage_3d_periodic_representation_passes_but_one_step_solver_gate_fails",
   "research_branch": "codex/learned-flowmap-realcase",
   "reasoning_effort_requested": "low",
   "source_base": "1621bb6e12391086edc3bfc8730ad807c8ad638c",
@@ -20,7 +20,10 @@
     "six frozen-reference true-log-likelihood WTF objective updates",
     "validated forward-only replay identifies phase chart failure, no prior violation in failed batch",
     "finite partial checkpoint inspected, failure causally independent of student updates",
-    "nine untrained periodic-geometry mathematical tests passed on mini"
+    "nine untrained periodic-geometry mathematical tests passed on mini",
+    "both periodic models retrained from scratch on identical pinned real data",
+    "13 model/geometry tests and actual-trained shift/derivative contracts passed",
+    "independent read-only validation confirms long-jump solver error"
   ],
   "checkpoint": {
     "path": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/final_seed261015/pretrained.pt",
@@ -91,7 +94,9 @@
     "STAGE3B.md",
     "results/stage3b/summary.json",
     "CHART_REPAIR.md",
-    "results/stage3c/summary.json"
+    "results/stage3c/summary.json",
+    "PERIODIC_RESULTS.md",
+    "results/stage3d/summary.json"
   ],
   "checkpoint_reproduced_identically_in_three_6000_step_runs": true,
   "mathematical_contract_tests_unique": 4,
@@ -101,7 +106,7 @@
     "cpu_seconds_sum": 24.16,
     "new_true_likelihood_rows": 0
   },
-  "next_after_stage3a": "Stage3c diagnosis complete; periodic architecture/retraining and parity are separately proposed, not executed",
+  "next_after_stage3a": "Periodic representation rebuilt; solver gate failed. Physical parity and reward tuning remain blocked pending distillation repair.",
   "stage3a_cost": {
     "attempted_true_rows": 116,
     "measured_process_cpu_seconds": 289.56,
@@ -140,5 +145,21 @@
     "optimizer_steps": 0,
     "old_checkpoints_forensic_only": true,
     "next": "Proposed periodic-model implementation/retraining then new-coordinate physical parity; none executed"
+  },
+  "stage3d": {
+    "status": "failed_one_step_teacher_accuracy_gate",
+    "result": "results/stage3d/summary.json",
+    "checkpoint": {
+      "path": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3d/seed261017/periodic_pretrained.pt",
+      "sha256": "394ad4a1a56e2f648c11c4d14ff5a0a4a7b9a16cf39dfab3d6b29787fb580a6d"
+    },
+    "new_physical_rows": 0,
+    "one_step_rms": 0.27770426373495816,
+    "one_step_limit": 0.15,
+    "model_gates_passed": false,
+    "cpu_seconds": 13.06,
+    "wall_seconds": 15.2,
+    "physical_parity_launched": false,
+    "next": "Separately bounded teacher-to-map distillation repair before physical parity"
   }
 }

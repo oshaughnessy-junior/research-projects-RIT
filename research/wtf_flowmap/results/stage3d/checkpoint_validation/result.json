@@ -1,0 +1,45 @@
+{
+  "status": "read_only_validation_complete_not_training_acceptance",
+  "seed": 261020,
+  "checkpoint_sha256": "394ad4a1a56e2f648c11c4d14ff5a0a4a7b9a16cf39dfab3d6b29787fb580a6d",
+  "source_sha256": {
+    "validate_periodic_checkpoint.py": "b3d903a845afe0026f265abab9eb8e79bbb86d4160db003cd6a48a73bfe31867",
+    "periodic_model.py": "878d90069b3c9691a9b87f403660f2f341feff84cc9e481a110d7f55cfae90de",
+    "model.py": "5510640a980b8b2bba10d36eb8079ab0a6d44f83a1d7f330fda620387b4075da"
+  },
+  "one_step_rms": 0.27198090907624706,
+  "coordinate_rms": [
+    0.3077406539966243,
+    0.3346469060264574,
+    0.30129452905993814,
+    0.24035111981802965,
+    0.25225504077260735,
+    0.1580163534001446
+  ],
+  "coordinate_order": [
+    "ra_radians",
+    "phase_radians",
+    "twice_psi_radians",
+    "standardized_atanh_sin_dec",
+    "standardized_atanh_cos_incl",
+    "standardized_log_distance"
+  ],
+  "mixed_signed_shift_errors": {
+    "drift": 1.9984014443252818e-15,
+    "map_velocity": 1.5543122344752192e-15,
+    "map_jump": 3.552713678800501e-15
+  },
+  "diagonal_time_derivative_contract": "passed",
+  "payload": {
+    "path": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3d/checkpoint_validation/solver_validation.pt",
+    "sha256": "cb2313d8d91253d5451e9f20f660d49418623bcbcca0a010a72c1f0668211a65"
+  },
+  "new_physical_rows": 0,
+  "optimizer_steps": 0,
+  "cost": {
+    "process_wall_seconds": 1.2789161399996374,
+    "cpu_user_seconds": 0.7938139999999999,
+    "cpu_system_seconds": 0.150591,
+    "max_rss_kib": 240332
+  }
+}
