@@ -548,7 +548,7 @@ def walk_out_slices(d_slices, lnL_slices, ln_prior_d, run_fresh, d_min, d_max,
             d_new = d_edge * np.exp(side * step)
             if not (d_min <= d_new <= d_max):
                 d_new = d_min if side < 0 else d_max
-                if abs(np.log(d_new / d_edge)) < min_log_step:
+                if side * np.log(d_new / d_edge) < min_log_step:   # clamped step must still move outward
                     break
             lnL_k, sig_k, neff_k, nt_k = (np.asarray(v).ravel()[0] for v in run_fresh(np.array([d_new])))
             for lst, v in zip(out, (d_new, lnL_k, sig_k, neff_k, nt_k)):

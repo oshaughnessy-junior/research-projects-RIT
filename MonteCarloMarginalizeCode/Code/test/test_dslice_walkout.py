@@ -80,6 +80,13 @@ def test_stops_at_range_limit():
     assert dw.max() <= dmax and np.sum(dw > d.max()) == 1
 
 
+def test_edge_beyond_range_limit_never_walks_inward():
+    d = narrow_core()
+    f = Fresh()
+    dw = walk_out_slices(d, lnL(d), flat, f, 1.0, d.max() * 0.99, delta_lnL=7.0)[0]
+    assert not np.any(dw > d.min()), dw     # far side adds nothing; nothing lands inside the core
+
+
 @pytest.mark.parametrize("bad_value", [-np.inf, np.nan])
 def test_stops_on_nonfinite_slice_and_respects_max_steps(bad_value):
     d = narrow_core()
