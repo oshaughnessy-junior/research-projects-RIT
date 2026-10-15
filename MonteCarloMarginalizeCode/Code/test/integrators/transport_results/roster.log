@@ -1,0 +1,17 @@
+
+test-ci-roster: FAIL
+  MonteCarloMarginalizeCode/Code/demo/rift/export_likelihoods/head_to_head/._run_test.py is reachable from no CI job and has no entry in .travis/ci_roster.txt.
+    An unlisted test never runs here and the job stays green forever.
+    Either register it with a job, or add a line to the roster saying why not.
+  MonteCarloMarginalizeCode/Code/test/._factored_likelihood_test.py is reachable from no CI job and has no entry in .travis/ci_roster.txt.
+    An unlisted test never runs here and the job stays green forever.
+    Either register it with a job, or add a line to the roster saying why not.
+test-ci-roster: 351 test files under MonteCarloMarginalizeCode/Code
+  reachable from CI : 298
+  rostered           : 51
+      BROKEN       1   (collects but fails; needs a fix before it can be gated)
+      EXPENSIVE    3   (opt-in behind an env var by design)
+      GPU          2   (needs a GPU; CI runners have none)
+      HANDRUN      6   (hand-run study or demo; not a pytest target)
+      LEGACY      28   (imports pre-package flat modules; cannot be imported at all)
+      OPTDEP      11   (needs a dependency CI does not install)
