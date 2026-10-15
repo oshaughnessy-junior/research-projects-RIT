@@ -1,10 +1,10 @@
 # Learned WTF flow-map investigation — staged plan
 
-Status: periodic model-only long-jump repair passed unchanged selection and
-reserved-final gates, one-step RMS .144216. Frozen teacher unchanged; original
-300-CPU-second allocation used31.05 seconds including all failed work. New-periodic-coordinate
-physical parity, actual reward adaptation and inference are not launched. See
-DISTILL_REPAIR_RESULTS.md. No scientific capability/cost win claimed.
+Status: stage3e limited periodic physical value/first-derivative parity passed,
+123 attempts /115 physical rows, 35.83 CPU seconds. The preceding model repair
+passed at final one-step RMS .144216, 31.05 CPU seconds in its separate allocation.
+No periodic reward training or inference launched. See PERIODIC_PARITY_RESULTS.md.
+No scientific capability/cost win claimed.
 Production defaults remain fixed.
 PR445 and its negative heuristic pilot are preserved as a separate historical result.
 

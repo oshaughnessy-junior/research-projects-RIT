@@ -1,0 +1,157 @@
+{
+  "stage": "3e_periodic_model_physical_parity",
+  "status": "passed_periodic_physical_parity_limited_probe",
+  "parent_commit": "419528e32638c0e4fb289deeaf6f3331e6910e2f",
+  "checkpoint": {
+    "path": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3d/repair1/accepted.pt",
+    "sha256": "a63d634bf014ed43c3c46be3318f2ad3459e9c943975320a3960a79fc73ef4ea",
+    "verified_unchanged": true
+  },
+  "attempted_rows": 123,
+  "dispatched_physical_rows": 115,
+  "expected_guard_rejections": 8,
+  "unexpected_failures": 0,
+  "backend_rows": {
+    "numpy_noloop": 50,
+    "jax_value_only": 26,
+    "jax_value_and_gradient": 39
+  },
+  "torch_reward_backward_rows": 2,
+  "heldout_bridge_passed": true,
+  "physical_seams_and_periods_passed": true,
+  "generated_full_pullback_passed": true,
+  "maximum_absolute_value_error_nat": 3.0257144771894673e-05,
+  "gradient_errors": [
+    {
+      "label": "heldout_bridge_fd",
+      "error_over_tolerance": 0.04829840000443649
+    },
+    {
+      "label": "heldout_fd_refinement",
+      "error_over_tolerance": 0.14490157203263726
+    },
+    {
+      "label": "ra_period_gradient",
+      "error_over_tolerance": 1.3282277952449327e-07
+    },
+    {
+      "label": "ra_period_gradient",
+      "error_over_tolerance": 9.207761649074502e-08
+    },
+    {
+      "label": "psi_period_gradient",
+      "error_over_tolerance": 7.031298202693133e-12
+    },
+    {
+      "label": "psi_period_gradient",
+      "error_over_tolerance": 1.8596726955013e-11
+    },
+    {
+      "label": "phase_period_gradient",
+      "error_over_tolerance": 3.170691935987159e-11
+    },
+    {
+      "label": "phase_period_gradient",
+      "error_over_tolerance": 3.0736418058918302e-12
+    },
+    {
+      "label": "generated_full_pullback_fd",
+      "error_over_tolerance": 0.0006470553981594868
+    },
+    {
+      "label": "generated_full_pullback_refinement",
+      "error_over_tolerance": 0.0008176160031682282
+    }
+  ],
+  "tolerances": {
+    "value_absolute_nat": 0.001,
+    "gradient_absolute": 0.01,
+    "gradient_relative": 0.001,
+    "fd_steps": [
+      0.0001,
+      5e-05
+    ]
+  },
+  "cost": {
+    "complete_process_cpu_seconds": 35.83,
+    "complete_process_wall_seconds": 43.78,
+    "peak_rss_kib": 2056840,
+    "administrative_transfer_and_local_syntax_seconds": null,
+    "all_setup_jit_validation_and_shutdown_included": true
+  },
+  "caps": {
+    "cpu_seconds": 600,
+    "cpu_count": 1,
+    "memory_gib": 8,
+    "attempted_rows": 128
+  },
+  "source_sha256": {
+    "parity_periodic.py": "e28aad15f851b8c02f50a81997527c7a71e1eb6f0b5e3bd48e4ee1fe32dc16a6",
+    "periodic_target_bank.py": "f17c6e525580904040a14d75a1141a98de84fce527d89c0afbdcbf9e4a28ed8c",
+    "periodic_model.py": "878d90069b3c9691a9b87f403660f2f341feff84cc9e481a110d7f55cfae90de"
+  },
+  "likelihood_sources": {
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/factored_likelihood.py": "7b87a19e7133155cb1bb67a790a58ab7204f605d6d12cd78471edc34e044c974",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/jax_ile/wrapper.py": "0db282efa8db272e404cc2d649485feaba3c0339998a36ddde293b7ac4166005",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/jax_ile/core.py": "0f499791e796558b7b2460027ef8459302925dcf792801883664ceaf56336ab8"
+  },
+  "normalized_driver_sha256": "d88a561e6f838f6066cf543fd93c58b838d96d022b7d8536fa95819e8252cf20",
+  "case_inventory_sha256": "b1b15c19dadf435f9e94414e5ed5f22cb6817302ffb3957f8106494b2a630c28",
+  "data_provenance_sha256": "e809627592936cd16e2e55fe9abece6ea476d25323d550f47b91162b097166a9",
+  "fixed_points": {
+    "path": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3e/run1/fixed_points.pt",
+    "sha256": "fd4a702a928411eea4920baf619f1c0439137fd16472c2553eb0698b678691b9",
+    "generated_rows": 16
+  },
+  "time_grid": {
+    "count": 614,
+    "first": -0.074951171875,
+    "last": 0.07470703125,
+    "spacing": 0.000244140625,
+    "sha256": "58069d49c1da7eab8cddf84193abff20e5a1ba5dda5af42c7b2ff04c08684d63",
+    "definition": "shared raw log integral over closed NoLoop grid; no new time normalization"
+  },
+  "normalization_convention": {
+    "reward": "physical log time-integral API only, no prior or Jacobian added",
+    "angular_prior": "unit mass on RA[0,2pi),phase[0,2pi),psi[0,pi)",
+    "distance_prior": "current normalized Planck15 cosmo_sourceframe on [1,10000]",
+    "historical_angular_prior_mass": 8,
+    "historical_lnZ_offset": 2.0794415416798357,
+    "likelihood_is_not_evidence": true
+  },
+  "full_mode_count_per_detector": 21,
+  "optimizer_steps": 0,
+  "reward_training_run": false,
+  "inference_run": false,
+  "posterior_or_speedup_claim": false,
+  "prior_model_cpu_cost_separate": 31.05,
+  "scope_limitations": [
+    "finite four-cache/16-generated-point first-derivative probe",
+    "single repaired jump pullback, not full two-lookahead/control WTF gradient",
+    "no evidence or integrator-prior-normalization numerical validation",
+    "no historical waveform/version or all-anchor truth guarantee",
+    "narrow model solver margin and finite-ESS acquisition remain"
+  ],
+  "next_proposals_not_launched": {
+    "periodic_objective_smoke": {
+      "cpu_seconds_cap": 600,
+      "cpu_count": 1,
+      "memory_gib": 8,
+      "attempted_rows_cap": 256,
+      "max_updates": 8,
+      "batch": 4,
+      "prerequisite": "periodic WTF semigroup/control mathematical tests and new-metric coefficient declaration"
+    },
+    "five_arm_cost_coverage_pilot": {
+      "cpu_seconds_cap": 1200,
+      "cpu_count": 1,
+      "memory_gib": 8,
+      "attempted_rows_cap": 10000,
+      "per_arm": 2000,
+      "seeds": 1,
+      "anchors": 1,
+      "prerequisite": "actual periodic-WTF-tuned model and training-only/cache-isolation contracts",
+      "statistically_powered": false
+    }
+  }
+}

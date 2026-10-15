@@ -1,24 +1,24 @@
 # Learned flow-map research on S250114ax
 
-The periodic model-only long-jump repair passes every unchanged sampled gate:
-reserved final one-step RMS .144216 (<.15), with the teacher frozen. A matched
-extra-duration control failed; half-endpoint coverage passed. The original
-five-minute allocation has used31.05 CPU seconds total, zero physical rows in
-this model-only allocation. See `DISTILL_REPAIR_RESULTS.md` for all attempts,
-costs, checkpoint/source/data pins and limitations.
+The repaired periodic model now passes the specified local physical parity
+probe: 123 attempts /115 true rows, held-out bridge and full map pullback,
+all three angular seams/representative derivatives, and16 generated points.
+Maximum value error3.03e-5 nat (<1e-3); all unchanged gradient gates passed.
+Complete cost35.83 CPU /43.78 wall seconds. No reward training or inference ran.
+See `PERIODIC_PARITY_RESULTS.md` for exact pins, scope and next bounded proposals.
 
-The current learned drift and two-time map use `PeriodicVelocity`: six state
-coordinates, nine periodic/nonangular features, and lifted equivariant jumps.
-The drift was pretrained from real exports; the map was distilled from that
-frozen drift. These are neural learned objects, not heuristic candidate generators.
-The accepted checkpoint is **model-gate-only**, not a WTF reward-tuned or calibrated
-inference model. No normalized log q or posterior-draw contract is supplied.
+The preceding periodic model-only repair passed its unchanged sampled solver
+gates at final one-step RMS .144216. Its original five-minute model allocation
+used31.05 CPU seconds total; that cost is separate from this parity allocation.
+See `DISTILL_REPAIR_RESULTS.md` for every failed and passing training attempt.
+The current drift/map are genuine learned `PeriodicVelocity` objects with six
+state dimensions, nine periodic/nonangular features and lifted equivariant jumps.
+They still have no normalized log q or posterior/evidence calibration contract.
 
-The new-coordinate physical-parity gate, periodic actual-WTF loss adaptation,
-and inference remain unlaunched. Scientific capability and end-to-end cost
-advantage remain unestablished. PR445's heuristic negative pilot is preserved
-unchanged; no production sampler/default is changed. `PLAN.md` describes the
-protocol; `STATE.json` records the exact current action boundary.
+Periodic actual-WTF loss adaptation and reward tuning remain unlaunched; the
+old Euclidean-lift semigroup loss is not valid unchanged. Scientific capability
+and end-to-end cost advantage remain unestablished. PR445 and production defaults
+are unchanged. `PLAN.md`/`STATE.json` record the protocol/current action boundary.
 
 Historical progression is retained below: old-coordinate parity passed locally
 (stage3a), six old-coordinate real-objective updates stopped at the chart guard
