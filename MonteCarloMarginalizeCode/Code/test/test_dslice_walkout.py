@@ -104,3 +104,32 @@ def test_disabled_or_degenerate_input_adds_nothing(delta, n):
     f = Fresh()
     dw = walk_out_slices(d, lnL(d), flat, f, 1.0, 1e4, delta_lnL=delta)[0]
     assert len(dw) == 0 and not f.calls
+
+
+def test_running_peak_raises_the_target_when_the_walk_crosses_the_peak():
+    # the core sits entirely on the near side of the peak; the far walk crosses it
+    u = U0 + SU * np.linspace(2.0, 4.0, 50)
+    d = 1.0 / u
+    why = []
+    dw, lw = walk_out_slices(d, lnL(d), flat, Fresh(), 1.0, 1e4, delta_lnL=7.0, reasons=why)[:2]
+    far = np.sort(dw[dw > d.max()])
+    lp_far = lnL(far)
+    run_peak = max(lnL(d).max(), lp_far.max())
+    assert run_peak > lnL(d).max() + 1.0                      # the walk found a higher peak
+    assert run_peak - lp_far[-1] >= 7.0
+    assert np.all(run_peak - lp_far[:-1] < 7.0)               # stopped at the first slice past the new target
+    assert why == ["target", "target"]
+
+
+def test_stop_reasons():
+    d = narrow_core()
+    why = []
+    walk_out_slices(d, lnL(d), flat, Fresh(), 1.0, d.max() * 1.05, delta_lnL=7.0, reasons=why)
+    assert why == ["target", "range"]
+    why = []
+    walk_out_slices(d, lnL(d), flat, Fresh(lambda dd: np.full(len(dd), np.nan)), 1.0, 1e4, delta_lnL=7.0, reasons=why)
+    assert why == ["nonfinite", "nonfinite"]
+    why = []
+    walk_out_slices(d, lnL(d), flat, Fresh(lambda dd: np.full(len(dd), 50.0)), 1.0, 1e9, delta_lnL=7.0,
+                    max_steps=3, reasons=why)
+    assert why == ["max_steps", "max_steps"]

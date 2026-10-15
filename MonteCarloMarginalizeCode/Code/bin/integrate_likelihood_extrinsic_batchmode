@@ -569,6 +569,8 @@ def _normalize_interpolate_time_argv(argv):
     return out
 
 opts, args = optp.parse_args(_normalize_interpolate_time_argv(sys.argv[1:]))
+if opts.distance_slice_walkout_delta_lnL < 0 or opts.distance_slice_walkout_max_steps < 0:
+    optp.error("--distance-slice-walkout-delta-lnL and --distance-slice-walkout-max-steps must be >= 0")
 # The GWSignal route does not consume RIFT's LAL-dictionary options. Reject the
 # explicit combination before data loading and the per-event exception handler,
 # so a requested physics option cannot disappear in a successful worker run.
@@ -5894,6 +5896,9 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
           # otherwise. Resolved once here so the advisories print once per event.
           slice_chunk = distance_slices.resolve_slice_chunk(
               getattr(opts, "distance_slice_chunk", None), opts.n_chunk)
+          if not all_fresh and float(getattr(opts, "distance_slice_walkout_delta_lnL", 0.0) or 0.0) > 0:
+            print("    : WARNING --distance-slice-walkout-delta-lnL is ignored: this export is not all-fresh"
+                  " (reweight core + parabolic wings)")
           if all_fresh:
             # All K slices fresh.  Place centers at posterior-d quantiles: rough
             # placement is fine even at low n_eff -- the precision of each row comes
@@ -5909,7 +5914,10 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
             )
             lnL_wings = lnL_wings_raw + manual_avoid_overflow_logarithm
             walk_delta = float(getattr(opts, "distance_slice_walkout_delta_lnL", 0.0) or 0.0)
-            if walk_delta > 0:
+            if walk_delta > 0 and distance_slices.is_uninformative(lnL_wings, threshold=opts.distance_slice_skip_threshold):
+              print("    : peak slice lnL < {:.2f} nats (effectively undetected); skipping walk-out".format(
+                  opts.distance_slice_skip_threshold))
+            elif walk_delta > 0:
               def _walk_fresh(d_new):
                 l_raw, s_k, n_k, t_k = distance_slices.fresh_sample_slices(
                     sampler, like_to_integrate, d_new,
@@ -5919,12 +5927,14 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
                     return_lnL=return_lnL,
                 )
                 return l_raw + manual_avoid_overflow_logarithm, s_k, n_k, t_k
+              walk_why = []
               _ln_pi_d = lambda dd: np.log(np.maximum(np.asarray(identity_convert(prior_pdf_d(np.asarray(dd, float))), float), np.finfo(float).tiny))
               d_w, l_w, s_w, n_w, t_w = distance_slices.walk_out_slices(
                   d_wings, lnL_wings, _ln_pi_d, _walk_fresh,
                   float(sampler.llim["distance"]), float(sampler.rlim["distance"]),
-                  delta_lnL=walk_delta, max_steps=int(opts.distance_slice_walkout_max_steps))
-              print("    : walk-out added {} fresh slices (target {:.1f} nats below peak)".format(len(d_w), walk_delta))
+                  delta_lnL=walk_delta, max_steps=int(opts.distance_slice_walkout_max_steps), reasons=walk_why)
+              print("    : walk-out added {} fresh slices (target {:.1f} nats below peak; stopped near/far: {})".format(
+                  len(d_w), walk_delta, "/".join(walk_why)))
               if len(d_w):
                 d_wings = np.concatenate([np.asarray(d_wings, float), d_w])
                 lnL_wings = np.concatenate([np.asarray(lnL_wings, float), l_w])

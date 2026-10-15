@@ -510,7 +510,7 @@ def pick_wing_centers(d_min, d_max, d_core, n_wing,
 
 
 def walk_out_slices(d_slices, lnL_slices, ln_prior_d, run_fresh, d_min, d_max,
-                    delta_lnL=7.0, max_steps=8, min_log_step=0.02):
+                    delta_lnL=7.0, max_steps=8, min_log_step=0.02, reasons=None):
     """Extend a slice set outward until the conditional falls ``delta_lnL`` below its peak.
 
     Quantile placement from the main loop's samples (``quantile_slice_centers``) inherits
@@ -525,7 +525,9 @@ def walk_out_slices(d_slices, lnL_slices, ln_prior_d, run_fresh, d_min, d_max,
     ``ln_prior_d(d)`` returns ln pi(d) for an array of distances.  ``run_fresh(d_array)``
     returns (lnL, sigmaL, neff, ntotal) arrays for fresh slices at those distances, on the
     same lnL axis as ``lnL_slices``.  Returns the added slices as
-    (d, lnL, sigmaL, neff, ntotal) arrays, unsorted (near-side slices first).
+    (d, lnL, sigmaL, neff, ntotal) arrays, unsorted (near-side slices first).  If
+    ``reasons`` is a list, one stop reason per side is appended to it (near side first):
+    'target', 'range', 'nonfinite' or 'max_steps'.
     """
     d = np.asarray(d_slices, float)
     y = np.asarray(lnL_slices, float)
@@ -539,28 +541,35 @@ def walk_out_slices(d_slices, lnL_slices, ln_prior_d, run_fresh, d_min, d_max,
     lp = y + np.asarray(ln_prior_d(d), float)
     peak = float(np.max(lp))
     for side in (-1, +1):
+        why = "max_steps"
         i_edge, i_next = (0, 1) if side < 0 else (-1, -2)
         d_edge, lp_edge = float(d[i_edge]), float(lp[i_edge])
         step = 2.0 * max(abs(np.log(d[i_edge] / d[i_next])), min_log_step)
         for _ in range(int(max_steps)):
             if peak - lp_edge >= delta_lnL:
+                why = "target"
                 break
             d_new = d_edge * np.exp(side * step)
             if not (d_min <= d_new <= d_max):
                 d_new = d_min if side < 0 else d_max
                 if side * np.log(d_new / d_edge) < min_log_step:   # clamped step must still move outward
+                    why = "range"
                     break
             lnL_k, sig_k, neff_k, nt_k = (np.asarray(v).ravel()[0] for v in run_fresh(np.array([d_new])))
             for lst, v in zip(out, (d_new, lnL_k, sig_k, neff_k, nt_k)):
                 lst.append(v)
             if not np.isfinite(lnL_k):
+                why = "nonfinite"
                 break
             d_edge = d_new
             lp_edge = float(lnL_k + np.asarray(ln_prior_d(np.array([d_new])), float)[0])
             peak = max(peak, lp_edge)
             if d_new in (d_min, d_max):
+                why = "target" if peak - lp_edge >= delta_lnL else "range"
                 break
             step *= 2.0
+        if reasons is not None:
+            reasons.append(why)
     return (np.array(out[0], float), np.array(out[1], float), np.array(out[2], float),
             np.array(out[3], float), np.array(out[4], int))
 
