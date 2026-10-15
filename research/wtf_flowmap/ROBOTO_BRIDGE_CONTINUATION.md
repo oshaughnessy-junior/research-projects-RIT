@@ -1,5 +1,7 @@
 # Four-endpoint bridge continuation: passed, no training
 
+Update: a separately authorized [two-update Q8 smoke](Q8_RETUNING_RESULTS.md) has now passed. This continuation’s zero-update/four-endpoint scope and its historical accounting remain unchanged.
+
 The authorized continuation completed exactly the four missing h/2 endpoints
 from stage9: inclination and log-distance state coordinates, plus/minus, at
 h=5e-5. It reused the20 completed native stencil values after verifying their

@@ -1,0 +1,38 @@
+{
+  "status": "passed_two_update_q8_smoke_implementation_only",
+  "updates_completed": 2,
+  "physical_endpoints": 12,
+  "scalar_reverse_vjp_seeds": 8,
+  "work_equivalents": 20,
+  "cpu_seconds": 38.16,
+  "command_wall_seconds": 42.21,
+  "peak_rss_kib": 2372680,
+  "candidate": {
+    "path": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage11/run1/q8_smoke_2updates.pt",
+    "sha256": "71dacb2fb9846a94962799ba8bdd654176e429c89d5c05646e0d645a66e2839a"
+  },
+  "validation": {
+    "criteria_passed": true,
+    "periodic_contract_max_error": 1.0547118733938987e-14,
+    "student_weight_change_l2": 0.0011415902871919638,
+    "fixed_mean_value_before": 1.9977074295669117,
+    "fixed_mean_value_after": 1.997946129091717,
+    "change_is_diagnostic_not_success": 0.0002386995248053747
+  },
+  "old_checkpoints_unchanged": true,
+  "reference_base_unchanged": true,
+  "performance_claim": false,
+  "inference_run": false,
+  "source_and_cost_ledger": "journal.json, physical.json, manifest.json, retune.time",
+  "cumulative_identified": {
+    "timed_cpu_seconds": 1607.08,
+    "summed_command_wall_seconds": 1784.03,
+    "actual_real_endpoint_dispatch_rows": 10064,
+    "attempted_endpoint_dispatch_rows": 10087,
+    "forward_jvp_lanes": 42,
+    "scalar_reverse_vjp_seeds": 14,
+    "teacher_sampler_rows_lower_bound": 15984560,
+    "complete_project_cost_unknown": true
+  },
+  "next_decision": "one-seed six-arm real comparison with native AV+GMM, same-cache ResamplingOracle, same-cache fitted FisherGaussianOracle, pretrained map, old-recipe map and separate Q8 candidate; no automatic launch"
+}

@@ -1,17 +1,19 @@
 # Learned flow-map research on S250114ax
 
-**Latest result:** [ROBOTO_REUSE_RESULTS.md](ROBOTO_REUSE_RESULTS.md). The existing
+**Latest result:** [Q8_RETUNING_RESULTS.md](Q8_RETUNING_RESULTS.md). Two Q8/cubic updates and all predeclared implementation checks passed; a separate checkpoint and complete ledger were saved. Cost38.16CPU seconds,12 physical endpoints/20WE. Selected full bridges passed in [the four-endpoint continuation](ROBOTO_BRIDGE_CONTINUATION.md);31 old training targets remain unexamined. No inference or performance claim. The next proposal is a direct six-arm scientific comparison with current native and same-cache baselines, not automatically launched.
+
+**Stage8 result:** [ROBOTO_REUSE_RESULTS.md](ROBOTO_REUSE_RESULTS.md). The existing
 roboto reflected-Q8/cubic recipe passes the declared three-point local contract
 with the same converged quadrature and stricter tolerances. Earlier coarse-sinc
 failures remain preserved; no inference, production default or checkpoint changed.
 
-**Latest validation:** [COMMON_CONTRACT_VALIDATION_RESULTS.md](COMMON_CONTRACT_VALIDATION_RESULTS.md).
+**Earlier failed validation:** [COMMON_CONTRACT_VALIDATION_RESULTS.md](COMMON_CONTRACT_VALIDATION_RESULTS.md).
 The array gate passed, but the first independent dense physical reconstruction
 differed by .00134701 nat, exceeding the unchanged .001 threshold. Execution
 stopped at 8/40 work equivalents; no remaining points or inference were run.
 The original NaN remains classified as deliberate certificate refusal.
 
-Latest decision: [COMMON_QUADRATURE_PLAN.md](COMMON_QUADRATURE_PLAN.md). The
+Earlier decision: [COMMON_QUADRATURE_PLAN.md](COMMON_QUADRATURE_PLAN.md). The
 original valid-point NaN was deliberate certificate refusal. Source-only planning
 used no new physical calls; inference remains paused pending a common converged
 value/derivative and reconstruction contract.

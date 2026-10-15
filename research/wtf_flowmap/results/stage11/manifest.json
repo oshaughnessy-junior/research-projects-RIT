@@ -1,0 +1,40 @@
+{
+  "status": "passed_two_update_q8_smoke_implementation_only",
+  "candidate": {
+    "path": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage11/run1/q8_smoke_2updates.pt",
+    "sha256": "71dacb2fb9846a94962799ba8bdd654176e429c89d5c05646e0d645a66e2839a"
+  },
+  "complete_cost_ledger": {
+    "cpu_seconds": 38.16,
+    "summed_command_wall_seconds": 42.21,
+    "peak_rss_kib": 2372680,
+    "physical_endpoints": 12,
+    "scalar_reverse_vjp_seeds": 8,
+    "work_equivalents": 20,
+    "includes": "imports, source/input checks, waveform/bank construction, pregrid, JIT, all validation and training likelihood/AD calls, optimizer work, partial/final checkpoint serialization and interpreter teardown",
+    "untimed_coordination_and_manifest_reserve_cpu_seconds": 35,
+    "full_project_and_historical_teacher_cost_unknown": true
+  },
+  "files": {
+    "summary.json": "1a2ff91734f87711b2b574f992efc45dcddf7899c0e22fca84a477473b9c623f",
+    "retune.time": "ef544dc5f74a776515dd6c7211426df6b41434988ecf67c8c9b5713932dcb334",
+    "q8_smoke_2updates.pt": "71dacb2fb9846a94962799ba8bdd654176e429c89d5c05646e0d645a66e2839a",
+    "partial_after_update1_not_validated.pt": "21471d716af6459cd7c89e47bf923000e819b1bdc2654d08009db3b1bb0d59b0",
+    "partial_after_update2_not_validated.pt": "163490a0e194510d5e924757e4fec180f74700dcae05d723b12130a02380446a"
+  },
+  "source_files": {
+    "retune_roboto_q8.py": "6e90c7410531736271e3fcd9886b4e2ee45b8e1fa39d02cce6eed5f0f2be0c5d",
+    "periodic_wtf.py": "440b52051b3b0213833aba1b607f11a775a43490607474b777aa4c31e3766a48",
+    "model.py": "5510640a980b8b2bba10d36eb8079ab0a6d44f83a1d7f330fda620387b4075da",
+    "test_periodic_model.py": "a75a0282eeea806cfccdd859c7fd28332175b721fd2208afb0d663f06fcea439",
+    "periodic_model.py": "878d90069b3c9691a9b87f403660f2f341feff84cc9e481a110d7f55cfae90de",
+    "periodic_geometry.py": "abba7015b768b4841bc68475942fd4adaf873e5d6af79a4fc109503aae579fd7",
+    "periodic_target_bank.py": "f17c6e525580904040a14d75a1141a98de84fce527d89c0afbdcbf9e4a28ed8c",
+    "journal.json": "bcdd522a36f05fcfe1935f337a2e1da411dc2ce76e4c305f63ad32ebf09cc415",
+    "periodic_real_context.py": "037eff5c2430bc0f884d005705569e170dc1dbb43b637a51005c61dd046d0714",
+    "roboto_pregrid_adapter.py": "44f3b041ca4414a9f8084c69b1951cc8882889056823415889f31f51ae7f5ee8"
+  },
+  "old_checkpoints_unchanged": true,
+  "inference_run": false,
+  "performance_claim": false
+}

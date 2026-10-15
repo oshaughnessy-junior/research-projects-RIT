@@ -1,0 +1,940 @@
+{
+  "status": "passed_two_update_q8_smoke_implementation_only",
+  "journal": {
+    "status": "journaled_before_execution",
+    "source_start": "8abaee4cc836f0a4209d614dac6f22600856672d",
+    "scope": "two-update genuine periodic-model Q8 retuning implementation smoke; no inference or performance claim",
+    "cpu_cap_seconds": 300,
+    "cpu": 1,
+    "rss_gib": 8,
+    "process_cpu_soft_hard": [
+      260,
+      265
+    ],
+    "dispatch_cpu_reserve_at": 245,
+    "untimed_coordination_reserve_cpu_seconds": 35,
+    "physical_endpoint_cap": 12,
+    "work_equivalent_cap": 20,
+    "we_definition": "primal endpoint1WE; one scalar reverse VJP seed adds1WE; no extra smoothing/perturbed reward evaluations",
+    "allocation": {
+      "training_updates": 2,
+      "batch": 4,
+      "training_value_vjp_endpoints": 8,
+      "validation_value_only_endpoints": 4,
+      "scalar_vjp_seeds": 8
+    },
+    "optimizer": {
+      "type": "Adam",
+      "lr": 1e-05,
+      "betas": [
+        0.9,
+        0.999
+      ],
+      "eps": 1e-08,
+      "weight_decay": 0,
+      "state": "new/reset; no implicit old optimizer reuse",
+      "gradient_clipping": false
+    },
+    "objective": {
+      "reward_scale": 0.001,
+      "beta": 1.0,
+      "metric": "flat unit-radius T3 and standardized R3 tangent sum-square; periodic chord semigroup term",
+      "reference": "original pretrained accepted.pt frozen; NOT warm-start student",
+      "base": "original pretrained drift frozen; input derivatives retained",
+      "reward": "raw physical log time integral only; no prior/Jacobian, smoothing/rescaling or perturbed rewards"
+    },
+    "seeds": {
+      "global_seed": 261060,
+      "training": 261061,
+      "validation": 261062
+    },
+    "validation": {
+      "noise_rows": 2,
+      "t": [
+        0.25,
+        0.35
+      ],
+      "tau": [
+        0.625,
+        0.725
+      ],
+      "criteria": [
+        "finite physical values with valid support at both before/after endpoints",
+        "finite nonzero physical gradients and finite full loss/parameter gradients on both updates",
+        "exact frozen-reference/base and old-file equality",
+        "finite changed student weights",
+        "periodic velocity/jump/input-derivative/decoder contracts <=1e-10 plus existing FD tolerances",
+        "exact12 completed physical endpoints,20WE,eight scalar VJP seeds andtwo updates"
+      ],
+      "reward_increase_required": false,
+      "loss_decrease_required": false,
+      "holdout_noise_independent_of_training": true,
+      "diagnostic_not_quality": true
+    },
+    "warm_start_sha256": "71be3106af24277b3f78882b4ddf849fc748be9075055b627da24ec0e93c13e1",
+    "pretrained_sha256": "a63d634bf014ed43c3c46be3318f2ad3459e9c943975320a3960a79fc73ef4ea",
+    "source_pins": {
+      "rift_base": "1621bb6e12391086edc3bfc8730ad807c8ad638c",
+      "infra_atlas": "bb8608c695028f7eeeff53e5c4b5eef6537b2a39",
+      "roboto_paper": "d668ff9c79930783d18725f74e8fa2cf96bb852e",
+      "authors_wtf_code": "058a4f2d9a42f384a0be8d1224784b755986e4ff",
+      "paper": "arxiv2609.27033v2"
+    },
+    "helper_sha256": {
+      "periodic_wtf.py": "440b52051b3b0213833aba1b607f11a775a43490607474b777aa4c31e3766a48",
+      "periodic_model.py": "878d90069b3c9691a9b87f403660f2f341feff84cc9e481a110d7f55cfae90de",
+      "periodic_real_context.py": "037eff5c2430bc0f884d005705569e170dc1dbb43b637a51005c61dd046d0714",
+      "periodic_target_bank.py": "f17c6e525580904040a14d75a1141a98de84fce527d89c0afbdcbf9e4a28ed8c",
+      "roboto_pregrid_adapter.py": "44f3b041ca4414a9f8084c69b1951cc8882889056823415889f31f51ae7f5ee8",
+      "test_periodic_model.py": "a75a0282eeea806cfccdd859c7fd28332175b721fd2208afb0d663f06fcea439",
+      "periodic_geometry.py": "abba7015b768b4841bc68475942fd4adaf873e5d6af79a4fc109503aae579fd7",
+      "model.py": "5510640a980b8b2bba10d36eb8079ab0a6d44f83a1d7f330fda620387b4075da"
+    },
+    "script_sha256": "6e90c7410531736271e3fcd9886b4e2ee45b8e1fa39d02cce6eed5f0f2be0c5d",
+    "checkpoint": "separate stage11 directory; partial files unvalidated; final candidate only after full smoke pass; complete ledger sidecar covers final serialization and process teardown",
+    "stop": "first failed criterion, resource or numerical certificate failure; never silently extend/restart; save any completed updates as explicitly unvalidated partial",
+    "old_raw_reward_shifts_nat": [
+      0.24180033469565387,
+      0.4986873256088984
+    ],
+    "historical_training_targets_rechecked": 1,
+    "historical_training_targets_unexamined": 31,
+    "no_extra_historical_replay": true
+  },
+  "physical_endpoints": 12,
+  "work_equivalents": 20,
+  "scalar_vjp_seeds": 8,
+  "updates_completed": 2,
+  "dispatches": [
+    {
+      "ordinal": 0,
+      "phase": "before_fixed_validation",
+      "physical": [
+        -3.330127508633438,
+        0.7126251366302577,
+        1.3868722200857335,
+        2.323746488510721,
+        1.2541940464578087,
+        371.84237612252866
+      ],
+      "endpoint_state": [
+        -3.330127508633438,
+        1.2541940464578087,
+        2.773744440171467,
+        1.1153248110084033,
+        -1.2817706750452764,
+        -0.44529090749549466
+      ],
+      "reverse_vjp": false,
+      "we": 1,
+      "status": "completed",
+      "raw_log_reward": 2807.458352727374
+    },
+    {
+      "ordinal": 1,
+      "phase": "before_fixed_validation",
+      "physical": [
+        -2.9258153984141417,
+        0.6961037579203505,
+        -0.3288543640336268,
+        1.9647873492515235,
+        0.04628959013405662,
+        395.22346378880286
+      ],
+      "endpoint_state": [
+        -2.9258153984141417,
+        0.04628959013405662,
+        -0.6577087280672536,
+        1.0427492119528128,
+        -0.7668143452402284,
+        0.19522099724193442
+      ],
+      "reverse_vjp": false,
+      "we": 1,
+      "status": "completed",
+      "raw_log_reward": 1344.5315469278619
+    },
+    {
+      "ordinal": 2,
+      "phase": "q8_training_update_0",
+      "physical": [
+        2.146858292714628,
+        -0.14073546390056252,
+        1.2838799439104802,
+        0.9196564147963959,
+        -1.893625909506581,
+        286.41795077628876
+      ],
+      "endpoint_state": [
+        2.146858292714628,
+        -1.893625909506581,
+        2.5677598878209604,
+        -1.9747718664288594,
+        0.5543443872242476,
+        -3.1868709803116566
+      ],
+      "reverse_vjp": true,
+      "we": 2,
+      "status": "completed",
+      "physical_gradient": [
+        1229.6945065412533,
+        65.4374744810187,
+        -2.1197985548656444,
+        -436.53368689264977,
+        117.56742684608548,
+        -1.7068134078039883
+      ],
+      "raw_log_reward": 2822.1378340378583
+    },
+    {
+      "ordinal": 3,
+      "phase": "q8_training_update_0",
+      "physical": [
+        2.7285438102861943,
+        0.6310625380228452,
+        1.2929026849213874,
+        2.014371465124694,
+        -1.8715305979044476,
+        374.7101839295715
+      ],
+      "endpoint_state": [
+        2.7285438102861943,
+        -1.8715305979044476,
+        2.5858053698427748,
+        0.7662787143208285,
+        -0.8315788688503694,
+        -0.3645948397361015
+      ],
+      "reverse_vjp": true,
+      "we": 2,
+      "status": "completed",
+      "physical_gradient": [
+        -20.13519528146972,
+        489.9677840810387,
+        -532.1765443550042,
+        519.3416182643709,
+        714.7190416730695,
+        -1.5301615668200843
+      ],
+      "raw_log_reward": 2753.3433296773082
+    },
+    {
+      "ordinal": 4,
+      "phase": "q8_training_update_0",
+      "physical": [
+        2.220617362134854,
+        0.18253632084413823,
+        -1.7329002709922103,
+        0.8269732080719278,
+        -0.390793100591184,
+        402.01974257754654
+      ],
+      "endpoint_state": [
+        2.220617362134854,
+        -0.390793100591184,
+        -3.4658005419844207,
+        -0.8876851291733112,
+        0.6987438891297676,
+        0.3743028016818501
+      ],
+      "reverse_vjp": true,
+      "we": 2,
+      "status": "completed",
+      "physical_gradient": [
+        612.8264465710776,
+        -2549.728616625278,
+        -966.1798042293351,
+        3585.830424052631,
+        -1363.017158584776,
+        9.525273620542478
+      ],
+      "raw_log_reward": -1434.7418886118724
+    },
+    {
+      "ordinal": 5,
+      "phase": "q8_training_update_0",
+      "physical": [
+        -3.2681135518226383,
+        0.7058600806607338,
+        1.3460445501724045,
+        2.5777554110822156,
+        -1.7886981823413428,
+        409.4087559767716
+      ],
+      "endpoint_state": [
+        -3.2681135518226383,
+        -1.7886981823413428,
+        2.692089100344809,
+        1.0854837035199554,
+        -1.7625176425701057,
+        0.5656000771867211
+      ],
+      "reverse_vjp": true,
+      "we": 2,
+      "status": "completed",
+      "physical_gradient": [
+        -1721.4935398298621,
+        4804.415078442119,
+        672.0824318934687,
+        -596.5842226249372,
+        -680.3713428564831,
+        2.3452025230047373
+      ],
+      "raw_log_reward": 2635.5452160313866
+    },
+    {
+      "ordinal": 6,
+      "phase": "q8_training_update_1",
+      "physical": [
+        2.4108255142135318,
+        0.3396435080634926,
+        -1.6584144163141663,
+        0.6405913718886164,
+        1.1568790921507497,
+        445.97457697302417
+      ],
+      "endpoint_state": [
+        2.4108255142135318,
+        1.1568790921507497,
+        -3.3168288326283326,
+        -0.3427040422510458,
+        1.0324816647589241,
+        1.4641451724542942
+      ],
+      "reverse_vjp": true,
+      "we": 2,
+      "status": "completed",
+      "physical_gradient": [
+        982.5252998043438,
+        -732.5248536430106,
+        -87.60951449164124,
+        173.25146502439563,
+        -82.1448535529166,
+        0.511431319650152
+      ],
+      "raw_log_reward": 2847.570035452655
+    },
+    {
+      "ordinal": 7,
+      "phase": "q8_training_update_1",
+      "physical": [
+        -3.2854233342748507,
+        0.769940704198208,
+        -1.6520496713358348,
+        2.510343937152994,
+        1.1920391897994942,
+        420.074191923109
+      ],
+      "endpoint_state": [
+        -3.2854233342748507,
+        1.1920391897994942,
+        -3.3040993426716696,
+        1.375526219975925,
+        -1.6194164435821943,
+        0.8357194092669764
+      ],
+      "reverse_vjp": true,
+      "we": 2,
+      "status": "completed",
+      "physical_gradient": [
+        1181.5438537482491,
+        -931.214090117979,
+        -1027.0521253471181,
+        -253.8460185733795,
+        1050.9618176180352,
+        0.8884868367036668
+      ],
+      "raw_log_reward": 2753.3557114912915
+    },
+    {
+      "ordinal": 8,
+      "phase": "q8_training_update_1",
+      "physical": [
+        2.2125891419563866,
+        0.018589305206836708,
+        1.1876244202779587,
+        0.8968536154336512,
+        1.412356512737998,
+        366.94970015923485
+      ],
+      "endpoint_state": [
+        2.2125891419563866,
+        1.412356512737998,
+        2.3752488405559173,
+        -1.4398904378642479,
+        0.5888528976194882,
+        -0.5844114161372822
+      ],
+      "reverse_vjp": true,
+      "we": 2,
+      "status": "completed",
+      "physical_gradient": [
+        1847.3116556373388,
+        -355.28518881497,
+        -154.9589168834484,
+        -478.4497526572374,
+        -138.93548849912708,
+        -1.7141234475650695
+      ],
+      "raw_log_reward": 2790.7941483817663
+    },
+    {
+      "ordinal": 9,
+      "phase": "q8_training_update_1",
+      "physical": [
+        2.9593564961680467,
+        0.7411142722865068,
+        -1.5647875243400464,
+        2.352386680292576,
+        1.2976780080781403,
+        400.95083962788425
+      ],
+      "endpoint_state": [
+        2.9593564961680467,
+        1.2976780080781403,
+        -3.129575048680093,
+        1.2429531080318972,
+        -1.3292476167405631,
+        0.34633878966835796
+      ],
+      "reverse_vjp": true,
+      "we": 2,
+      "status": "completed",
+      "physical_gradient": [
+        590.4921766606288,
+        429.0590189181472,
+        -964.5346545284074,
+        -50.708586304321145,
+        1028.7414817357221,
+        0.11891852375684275
+      ],
+      "raw_log_reward": 2763.6887727170665
+    },
+    {
+      "ordinal": 10,
+      "phase": "after_fixed_validation",
+      "physical": [
+        -3.3300941208263506,
+        0.7127338399315604,
+        1.386794353409607,
+        2.324014507990368,
+        1.2541498252049688,
+        371.8588219299358
+      ],
+      "endpoint_state": [
+        -3.3300941208263506,
+        1.2541498252049688,
+        2.773588706819214,
+        1.1158057275059354,
+        -1.2822089763663622,
+        -0.4448263737143005
+      ],
+      "reverse_vjp": false,
+      "we": 1,
+      "status": "completed",
+      "raw_log_reward": 2807.678573385115
+    },
+    {
+      "ordinal": 11,
+      "phase": "after_fixed_validation",
+      "physical": [
+        -2.9259112166794274,
+        0.6961246371503746,
+        -0.32894478749973444,
+        1.9649191259809902,
+        0.04627891613095661,
+        395.23985332951133
+      ],
+      "endpoint_state": [
+        -2.9259112166794274,
+        0.04627891613095661,
+        -0.6578895749994689,
+        1.0428402928503906,
+        -0.7669846196140839,
+        0.19565655489148742
+      ],
+      "reverse_vjp": false,
+      "we": 1,
+      "status": "completed",
+      "raw_log_reward": 1344.646163947271
+    }
+  ],
+  "updates": [
+    {
+      "step": 0,
+      "loss": 2.3621099917855037,
+      "diagonal": 2.355979258726483,
+      "semigroup": 0.006130733059020638,
+      "value": 1.6626350065878643
+    },
+    {
+      "step": 1,
+      "loss": 0.5513734548727924,
+      "diagonal": 0.5484282857949571,
+      "semigroup": 0.0029451690778353745,
+      "value": 2.777363771612973
+    }
+  ],
+  "optimizer_steps": 2,
+  "checkpoint_files": [
+    {
+      "path": "partial_after_update1_not_validated.pt",
+      "sha256": "21471d716af6459cd7c89e47bf923000e819b1bdc2654d08009db3b1bb0d59b0",
+      "validated": false
+    },
+    {
+      "path": "partial_after_update2_not_validated.pt",
+      "sha256": "163490a0e194510d5e924757e4fec180f74700dcae05d723b12130a02380446a",
+      "validated": false
+    },
+    {
+      "path": "q8_smoke_2updates.pt",
+      "sha256": "71dacb2fb9846a94962799ba8bdd654176e429c89d5c05646e0d645a66e2839a",
+      "validated": true
+    }
+  ],
+  "inference_run": false,
+  "likelihood_sources": {
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/factored_likelihood.py": "7b87a19e7133155cb1bb67a790a58ab7204f605d6d12cd78471edc34e044c974",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/jax_ile/wrapper.py": "0db282efa8db272e404cc2d649485feaba3c0339998a36ddde293b7ac4166005",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/jax_ile/core.py": "0f499791e796558b7b2460027ef8459302925dcf792801883664ceaf56336ab8"
+  },
+  "current_normalized_driver_sha256": "d88a561e6f838f6066cf543fd93c58b838d96d022b7d8536fa95819e8252cf20",
+  "coordinate_contracts": "two-row roundtrip, Torch/JAX/full FD Jacobian passed",
+  "normalization_convention": {
+    "reward": "physical log time-integral API only, no prior or Jacobian added",
+    "angular_prior": "unit mass on RA[0,2pi),phase[0,2pi),psi[0,pi)",
+    "distance_prior": "current normalized Planck15 cosmo_sourceframe on [1,10000]",
+    "historical_angular_prior_mass": 8,
+    "historical_lnZ_offset": 2.0794415416798357,
+    "likelihood_is_not_evidence": true
+  },
+  "runtime": {
+    "host": "ldas-grid",
+    "affinity": [
+      0
+    ],
+    "pid": 3024686,
+    "numpy": "2.2.6",
+    "torch": "2.8.0",
+    "jax": "0.9.0"
+  },
+  "frame_psd_setup_wall_seconds": 0.13892536002094857,
+  "precompute": {
+    "attempted": 1,
+    "integration_half": 0.075,
+    "storage_half": 0.37890625,
+    "guard_initial": 512,
+    "guard_certified": 1024,
+    "lmax": 4,
+    "ignore_threshold": null
+  },
+  "cpu_seconds": 36.427807155,
+  "wall_seconds": 40.28785547299776,
+  "peak_rss_kib": 2372680,
+  "precompute_wall_seconds": 2.219415609986754,
+  "modes": {
+    "H1": [
+      [
+        2,
+        -2
+      ],
+      [
+        2,
+        -1
+      ],
+      [
+        2,
+        0
+      ],
+      [
+        2,
+        1
+      ],
+      [
+        2,
+        2
+      ],
+      [
+        3,
+        -3
+      ],
+      [
+        3,
+        -2
+      ],
+      [
+        3,
+        -1
+      ],
+      [
+        3,
+        0
+      ],
+      [
+        3,
+        1
+      ],
+      [
+        3,
+        2
+      ],
+      [
+        3,
+        3
+      ],
+      [
+        4,
+        -4
+      ],
+      [
+        4,
+        -3
+      ],
+      [
+        4,
+        -2
+      ],
+      [
+        4,
+        -1
+      ],
+      [
+        4,
+        0
+      ],
+      [
+        4,
+        1
+      ],
+      [
+        4,
+        2
+      ],
+      [
+        4,
+        3
+      ],
+      [
+        4,
+        4
+      ]
+    ],
+    "L1": [
+      [
+        2,
+        -2
+      ],
+      [
+        2,
+        -1
+      ],
+      [
+        2,
+        0
+      ],
+      [
+        2,
+        1
+      ],
+      [
+        2,
+        2
+      ],
+      [
+        3,
+        -3
+      ],
+      [
+        3,
+        -2
+      ],
+      [
+        3,
+        -1
+      ],
+      [
+        3,
+        0
+      ],
+      [
+        3,
+        1
+      ],
+      [
+        3,
+        2
+      ],
+      [
+        3,
+        3
+      ],
+      [
+        4,
+        -4
+      ],
+      [
+        4,
+        -3
+      ],
+      [
+        4,
+        -2
+      ],
+      [
+        4,
+        -1
+      ],
+      [
+        4,
+        0
+      ],
+      [
+        4,
+        1
+      ],
+      [
+        4,
+        2
+      ],
+      [
+        4,
+        3
+      ],
+      [
+        4,
+        4
+      ]
+    ]
+  },
+  "time_grid": {
+    "count": 614,
+    "first": -0.074951171875,
+    "last": 0.07470703125,
+    "spacing": 0.000244140625,
+    "sha256": "58069d49c1da7eab8cddf84193abff20e5a1ba5dda5af42c7b2ff04c08684d63",
+    "definition": "shared raw log integral over closed NoLoop grid; no new time normalization"
+  },
+  "q_pregrid_reports": {
+    "H1": {
+      "factor": 8,
+      "input_bytes": 1042944,
+      "retained_bytes": 8341200,
+      "output_bytes": 8341200,
+      "peak_allocation_bytes": 45887184,
+      "roundtrip_max": 3.6333414458276873e-16
+    },
+    "L1": {
+      "factor": 8,
+      "input_bytes": 1042944,
+      "retained_bytes": 8341200,
+      "output_bytes": 8341200,
+      "peak_allocation_bytes": 45887184,
+      "roundtrip_max": 3.495821227364118e-16
+    }
+  },
+  "numerical_contract": {
+    "q_pregrid_factor": 8,
+    "arrival_interpolator": "cubic",
+    "terminal_quadrature": "bandlimited canonical adaptive integral with research-only one-extra-doubling certificate retry",
+    "patched_core_sha256": "70fb605f65a3a6cda71e1819b79bcd232f6b6719b0842076cae373bb5e4f1097",
+    "physical_order": [
+      "RA",
+      "dec",
+      "psi",
+      "incl",
+      "phase",
+      "D_Mpc"
+    ],
+    "window": [
+      -0.074951171875,
+      0.07470703125
+    ],
+    "base_time_nodes": 614,
+    "deltaT": 0.000244140625,
+    "duration": 0.149658203125,
+    "reward": "raw log physical time integral; no parameter prior or decoder Jacobian",
+    "uniform_time_prior_log_offset": 1.8994012307831323,
+    "dtype": "float64",
+    "geometry": "T3_R3_v1",
+    "reference_pretrained_sha256": "a63d634bf014ed43c3c46be3318f2ad3459e9c943975320a3960a79fc73ef4ea",
+    "warm_start_old_recipe_sha256": "71be3106af24277b3f78882b4ddf849fc748be9075055b627da24ec0e93c13e1",
+    "source_pins": {
+      "rift_base": "1621bb6e12391086edc3bfc8730ad807c8ad638c",
+      "infra_atlas": "bb8608c695028f7eeeff53e5c4b5eef6537b2a39",
+      "roboto_paper": "d668ff9c79930783d18725f74e8fa2cf96bb852e",
+      "authors_wtf_code": "058a4f2d9a42f384a0be8d1224784b755986e4ff",
+      "paper": "arxiv2609.27033v2"
+    },
+    "likelihood_sources": {
+      "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/factored_likelihood.py": "7b87a19e7133155cb1bb67a790a58ab7204f605d6d12cd78471edc34e044c974",
+      "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/jax_ile/wrapper.py": "0db282efa8db272e404cc2d649485feaba3c0339998a36ddde293b7ac4166005",
+      "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/jax_ile/core.py": "0f499791e796558b7b2460027ef8459302925dcf792801883664ceaf56336ab8"
+    },
+    "prior_contract": {
+      "reward": "physical log time-integral API only, no prior or Jacobian added",
+      "angular_prior": "unit mass on RA[0,2pi),phase[0,2pi),psi[0,pi)",
+      "distance_prior": "current normalized Planck15 cosmo_sourceframe on [1,10000]",
+      "historical_angular_prior_mass": 8,
+      "historical_lnZ_offset": 2.0794415416798357,
+      "likelihood_is_not_evidence": true
+    },
+    "q_pregrid_reports": {
+      "H1": {
+        "factor": 8,
+        "input_bytes": 1042944,
+        "retained_bytes": 8341200,
+        "output_bytes": 8341200,
+        "peak_allocation_bytes": 45887184,
+        "roundtrip_max": 3.6333414458276873e-16
+      },
+      "L1": {
+        "factor": 8,
+        "input_bytes": 1042944,
+        "retained_bytes": 8341200,
+        "output_bytes": 8341200,
+        "peak_allocation_bytes": 45887184,
+        "roundtrip_max": 3.495821227364118e-16
+      }
+    }
+  },
+  "validation_states": {
+    "base_noise": [
+      [
+        -1.885665043451446,
+        1.8381975071025294,
+        1.8780940435857754,
+        -0.41654801791396173,
+        -0.7498154677809109,
+        -0.3521100650107403
+      ],
+      [
+        -0.9572850440610221,
+        -0.5255411081422062,
+        -0.5390327689372308,
+        0.8494462233650679,
+        -0.6306618843031365,
+        -0.10905958749383778
+      ]
+    ],
+    "x": [
+      [
+        -2.389043346334633,
+        1.8915183339680555,
+        2.1401002318079914,
+        -0.06933135964170933,
+        -0.7200693453567724,
+        -0.31170718760728877
+      ],
+      [
+        -1.5747636131894711,
+        -0.4011796241956394,
+        -0.5311357676908367,
+        0.7108059523835528,
+        -0.44684014153242924,
+        -0.004448050145580487
+      ]
+    ],
+    "t": [
+      0.25,
+      0.35
+    ],
+    "tau": [
+      0.625,
+      0.725
+    ]
+  },
+  "phase": "after_fixed_validation",
+  "neural_counts": {
+    "unclassified:neural_forward_rows": 2,
+    "before_fixed_validation:neural_forward_rows": 2,
+    "q8_training_update_0:neural_forward_rows": 36,
+    "q8_training_update_0:physical_reward_backward_rows": 4,
+    "q8_training_update_0:student_output_backward_rows": 8,
+    "q8_training_update_1:neural_forward_rows": 36,
+    "q8_training_update_1:physical_reward_backward_rows": 4,
+    "q8_training_update_1:student_output_backward_rows": 8,
+    "after_fixed_validation:neural_forward_rows": 2,
+    "pure_neural_contract_validation:neural_forward_rows": 45,
+    "pure_neural_contract_validation:input_jacobian_output_rows": 42
+  },
+  "validation_before": {
+    "values": [
+      2.784587727394333,
+      1.2108271317394905
+    ],
+    "mean_value": 1.9977074295669117,
+    "raw_rewards": [
+      2807.458352727374,
+      1344.5315469278619
+    ]
+  },
+  "current_training_state": {
+    "step": 1,
+    "noise": [
+      [
+        1.0810722754366318,
+        0.06019692661370684,
+        -1.0373397518965661,
+        0.5447983281917083,
+        1.0435485303870489,
+        1.8207515693249292
+      ],
+      [
+        -1.9898363609003409,
+        0.3541542577407615,
+        -2.348152422201081,
+        0.2924087676488727,
+        -1.5578838900920746,
+        0.6374873041268714
+      ],
+      [
+        2.5047113768949463,
+        2.3836135751621845,
+        1.0790892630868347,
+        -2.136827436541098,
+        -0.630444996353306,
+        -0.037962837736607455
+      ],
+      [
+        2.23599752620166,
+        0.9094755698023702,
+        -1.0483073920601953,
+        0.17610892260322808,
+        -0.5944591911169481,
+        0.24839953833896272
+      ]
+    ],
+    "t": [
+      0.45278354031390045,
+      0.8037614188689477,
+      0.5991945316857774,
+      0.7859913079170562
+    ],
+    "tau": [
+      0.995354247154957,
+      0.8615288524984206,
+      0.6288945150652712,
+      0.9143595374458422
+    ]
+  },
+  "validation_after": {
+    "values": [
+      2.7849101569617503,
+      1.2109821012216837
+    ],
+    "mean_value": 1.997946129091717,
+    "raw_rewards": [
+      2807.678573385115,
+      1344.646163947271
+    ]
+  },
+  "validation_mean_value_change": 0.0002386995248053747,
+  "periodic_contract_max_error": 1.0547118733938987e-14,
+  "student_weight_change_l2": 0.0011415902871919638,
+  "old_checkpoints_unchanged": true,
+  "frozen_reference_and_base_unchanged": true,
+  "validation_criteria_passed": true,
+  "performance_claim": false,
+  "posterior_claim": false
+}

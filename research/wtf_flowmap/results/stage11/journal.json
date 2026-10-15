@@ -1,0 +1,101 @@
+{
+  "status": "journaled_before_execution",
+  "source_start": "8abaee4cc836f0a4209d614dac6f22600856672d",
+  "scope": "two-update genuine periodic-model Q8 retuning implementation smoke; no inference or performance claim",
+  "cpu_cap_seconds": 300,
+  "cpu": 1,
+  "rss_gib": 8,
+  "process_cpu_soft_hard": [
+    260,
+    265
+  ],
+  "dispatch_cpu_reserve_at": 245,
+  "untimed_coordination_reserve_cpu_seconds": 35,
+  "physical_endpoint_cap": 12,
+  "work_equivalent_cap": 20,
+  "we_definition": "primal endpoint1WE; one scalar reverse VJP seed adds1WE; no extra smoothing/perturbed reward evaluations",
+  "allocation": {
+    "training_updates": 2,
+    "batch": 4,
+    "training_value_vjp_endpoints": 8,
+    "validation_value_only_endpoints": 4,
+    "scalar_vjp_seeds": 8
+  },
+  "optimizer": {
+    "type": "Adam",
+    "lr": 1e-05,
+    "betas": [
+      0.9,
+      0.999
+    ],
+    "eps": 1e-08,
+    "weight_decay": 0,
+    "state": "new/reset; no implicit old optimizer reuse",
+    "gradient_clipping": false
+  },
+  "objective": {
+    "reward_scale": 0.001,
+    "beta": 1.0,
+    "metric": "flat unit-radius T3 and standardized R3 tangent sum-square; periodic chord semigroup term",
+    "reference": "original pretrained accepted.pt frozen; NOT warm-start student",
+    "base": "original pretrained drift frozen; input derivatives retained",
+    "reward": "raw physical log time integral only; no prior/Jacobian, smoothing/rescaling or perturbed rewards"
+  },
+  "seeds": {
+    "global_seed": 261060,
+    "training": 261061,
+    "validation": 261062
+  },
+  "validation": {
+    "noise_rows": 2,
+    "t": [
+      0.25,
+      0.35
+    ],
+    "tau": [
+      0.625,
+      0.725
+    ],
+    "criteria": [
+      "finite physical values with valid support at both before/after endpoints",
+      "finite nonzero physical gradients and finite full loss/parameter gradients on both updates",
+      "exact frozen-reference/base and old-file equality",
+      "finite changed student weights",
+      "periodic velocity/jump/input-derivative/decoder contracts <=1e-10 plus existing FD tolerances",
+      "exact12 completed physical endpoints,20WE,eight scalar VJP seeds andtwo updates"
+    ],
+    "reward_increase_required": false,
+    "loss_decrease_required": false,
+    "holdout_noise_independent_of_training": true,
+    "diagnostic_not_quality": true
+  },
+  "warm_start_sha256": "71be3106af24277b3f78882b4ddf849fc748be9075055b627da24ec0e93c13e1",
+  "pretrained_sha256": "a63d634bf014ed43c3c46be3318f2ad3459e9c943975320a3960a79fc73ef4ea",
+  "source_pins": {
+    "rift_base": "1621bb6e12391086edc3bfc8730ad807c8ad638c",
+    "infra_atlas": "bb8608c695028f7eeeff53e5c4b5eef6537b2a39",
+    "roboto_paper": "d668ff9c79930783d18725f74e8fa2cf96bb852e",
+    "authors_wtf_code": "058a4f2d9a42f384a0be8d1224784b755986e4ff",
+    "paper": "arxiv2609.27033v2"
+  },
+  "helper_sha256": {
+    "periodic_wtf.py": "440b52051b3b0213833aba1b607f11a775a43490607474b777aa4c31e3766a48",
+    "periodic_model.py": "878d90069b3c9691a9b87f403660f2f341feff84cc9e481a110d7f55cfae90de",
+    "periodic_real_context.py": "037eff5c2430bc0f884d005705569e170dc1dbb43b637a51005c61dd046d0714",
+    "periodic_target_bank.py": "f17c6e525580904040a14d75a1141a98de84fce527d89c0afbdcbf9e4a28ed8c",
+    "roboto_pregrid_adapter.py": "44f3b041ca4414a9f8084c69b1951cc8882889056823415889f31f51ae7f5ee8",
+    "test_periodic_model.py": "a75a0282eeea806cfccdd859c7fd28332175b721fd2208afb0d663f06fcea439",
+    "periodic_geometry.py": "abba7015b768b4841bc68475942fd4adaf873e5d6af79a4fc109503aae579fd7",
+    "model.py": "5510640a980b8b2bba10d36eb8079ab0a6d44f83a1d7f330fda620387b4075da"
+  },
+  "script_sha256": "6e90c7410531736271e3fcd9886b4e2ee45b8e1fa39d02cce6eed5f0f2be0c5d",
+  "checkpoint": "separate stage11 directory; partial files unvalidated; final candidate only after full smoke pass; complete ledger sidecar covers final serialization and process teardown",
+  "stop": "first failed criterion, resource or numerical certificate failure; never silently extend/restart; save any completed updates as explicitly unvalidated partial",
+  "old_raw_reward_shifts_nat": [
+    0.24180033469565387,
+    0.4986873256088984
+  ],
+  "historical_training_targets_rechecked": 1,
+  "historical_training_targets_unexamined": 31,
+  "no_extra_historical_replay": true
+}

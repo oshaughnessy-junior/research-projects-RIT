@@ -1,6 +1,6 @@
 {
   "owner": "current Codex task, mini coordinator",
-  "status": "stage8_existing_roboto_Q8_cubic_local_contract_gate_passed",
+  "status": "stage11_two_update_Q8_retuning_smoke_passed_implementation_only",
   "research_branch": "codex/learned-flowmap-realcase",
   "reasoning_effort_requested": "low",
   "source_base": "1621bb6e12391086edc3bfc8730ad807c8ad638c",
@@ -32,15 +32,15 @@
     "six new periodic-objective mathematical tests plus13 model/geometry tests passed",
     "two real full two-lookahead/control value-gradient checks before updates",
     "eight real-log-likelihood periodic WTF regression updates and post-validation passed",
-    "bounded five-arm matched-cost pilot, negative/inconclusive, plus exact cache failure replay and backend diagnosis"
+    "bounded five-arm matched-cost pilot, negative/inconclusive, plus exact cache failure replay and backend diagnosis",
+    "Q8/cubic selected complete reward/control bridge with immutable partial continuation",
+    "two Q8 true-reward updates from labeled old-recipe warm start with separate validated candidate and complete timing sidecar"
   ],
   "checkpoint": {
-    "path": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3f/run1/periodic_wtf_tuned.pt",
-    "sha256": "71be3106af24277b3f78882b4ddf849fc748be9075055b627da24ec0e93c13e1",
+    "path": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage11/run1/q8_smoke_2updates.pt",
+    "sha256": "71dacb2fb9846a94962799ba8bdd654176e429c89d5c05646e0d645a66e2839a",
     "geometry": "T3_R3_v1",
-    "drift_width": 64,
-    "map_width": 64,
-    "acceptance": "actual eight-update periodic real-objective smoke implementation only; not calibrated inference"
+    "acceptance": "two-update Q8 smoke: implementation and selected bridge contracts only; no inference or efficiency claim"
   },
   "model_only_gates": {
     "one_step_rms": true,
@@ -59,10 +59,16 @@
   "acquisition_ntotal_lower_bound": 15984560,
   "acquisition_total_true_calls": null,
   "next_stage": {
+    "name": "one_seed_six_arm_real_scientific_comparison",
     "automatic_execution_authorized": false,
-    "name": "bounded_full_reward_gradient_recheck_under_existing_roboto_recipe",
-    "larger_inference_authorized": false,
-    "scientific_inference_capability_demonstrated": false
+    "new_physical_endpoint_cap": 12000,
+    "per_arm_new_primal_endpoint_cap": 2000,
+    "scientific_cpu_seconds_cap_proposed": 1800,
+    "cpu": 1,
+    "rss_gib": 8,
+    "models_frozen": true,
+    "refitting_retuning": false,
+    "production_comparison_scope": "research driver using current native AV/GMM and same-cache resampling/fitted-Gaussian baselines; not full production ILE"
   },
   "limitations": [
     "400 fairdraw rows have finite teacher ESS and dependence",
@@ -88,7 +94,13 @@
     "PERIODIC_PARITY_RESULTS.md",
     "results/stage3e/summary.json",
     "PERIODIC_WTF_SMOKE_RESULTS.md",
-    "results/stage3f/summary.json"
+    "results/stage3f/summary.json",
+    "ROBOTO_BRIDGE_RESULTS.md",
+    "ROBOTO_BRIDGE_CONTINUATION.md",
+    "Q8_RETUNING_RESULTS.md",
+    "results/stage9/summary.json",
+    "results/stage10/summary.json",
+    "results/stage11/summary.json"
   ],
   "checkpoint_reproduced_identically_in_three_6000_step_runs": true,
   "mathematical_contract_tests_unique": 4,
@@ -183,15 +195,16 @@
     "contracts": true
   },
   "current_next_stage": {
-    "name": "corrected_five_arm_exploratory_cost_and_shape_pilot",
-    "launched": false,
-    "cpu_seconds_proposed": 1200,
-    "memory_gib": 8,
-    "attempts_cap": 10000,
-    "per_arm": 2000,
-    "anchors": 1,
-    "seeds": 1,
-    "automatic_execution_authorized": false
+    "name": "one_seed_six_arm_real_scientific_comparison",
+    "automatic_execution_authorized": false,
+    "new_physical_endpoint_cap": 12000,
+    "per_arm_new_primal_endpoint_cap": 2000,
+    "scientific_cpu_seconds_cap_proposed": 1800,
+    "cpu": 1,
+    "rss_gib": 8,
+    "models_frozen": true,
+    "refitting_retuning": false,
+    "production_comparison_scope": "research driver using current native AV/GMM and same-cache resampling/fitted-Gaussian baselines; not full production ILE"
   },
   "stage3e": {
     "status": "passed_periodic_physical_parity_limited_probe",
@@ -756,5 +769,62 @@
       "historical_teacher_cpu_and_hidden_work": null,
       "caveat": "sum of identified nonoverlapping command receipts, not complete project cost: earlier untimed checks, unaudited synthetic validations, setup/hidden teacher work, coordinator edits/admin/SSH/transfers and gaps remain unknown; synthetic and physical row units are not interchangeable"
     }
-  }
+  },
+  "old_recipe_checkpoint": {
+    "path": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3f/run1/periodic_wtf_tuned.pt",
+    "sha256": "71be3106af24277b3f78882b4ddf849fc748be9075055b627da24ec0e93c13e1",
+    "geometry": "T3_R3_v1",
+    "drift_width": 64,
+    "map_width": 64,
+    "acceptance": "actual eight-update periodic real-objective smoke implementation only; not calibrated inference"
+  },
+  "stage9": {
+    "status": "partial_due_CPU_reserve_resolved_by_stage10",
+    "result": "results/stage9/summary.json"
+  },
+  "stage10": {
+    "status": "two_selected_full_bridges_passed_no_training",
+    "result": "results/stage10/summary.json",
+    "actual_historical_targets_rechecked": 1,
+    "unexamined": 31
+  },
+  "stage11": {
+    "status": "passed_two_update_q8_smoke_implementation_only",
+    "updates_completed": 2,
+    "physical_endpoints": 12,
+    "scalar_reverse_vjp_seeds": 8,
+    "work_equivalents": 20,
+    "cpu_seconds": 38.16,
+    "command_wall_seconds": 42.21,
+    "peak_rss_kib": 2372680,
+    "candidate": {
+      "path": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage11/run1/q8_smoke_2updates.pt",
+      "sha256": "71dacb2fb9846a94962799ba8bdd654176e429c89d5c05646e0d645a66e2839a"
+    },
+    "validation": {
+      "criteria_passed": true,
+      "periodic_contract_max_error": 1.0547118733938987e-14,
+      "student_weight_change_l2": 0.0011415902871919638,
+      "fixed_mean_value_before": 1.9977074295669117,
+      "fixed_mean_value_after": 1.997946129091717,
+      "change_is_diagnostic_not_success": 0.0002386995248053747
+    },
+    "old_checkpoints_unchanged": true,
+    "reference_base_unchanged": true,
+    "performance_claim": false,
+    "inference_run": false,
+    "source_and_cost_ledger": "journal.json, physical.json, manifest.json, retune.time",
+    "cumulative_identified": {
+      "timed_cpu_seconds": 1607.08,
+      "summed_command_wall_seconds": 1784.03,
+      "actual_real_endpoint_dispatch_rows": 10064,
+      "attempted_endpoint_dispatch_rows": 10087,
+      "forward_jvp_lanes": 42,
+      "scalar_reverse_vjp_seeds": 14,
+      "teacher_sampler_rows_lower_bound": 15984560,
+      "complete_project_cost_unknown": true
+    },
+    "next_decision": "one-seed six-arm real comparison with native AV+GMM, same-cache ResamplingOracle, same-cache fitted FisherGaussianOracle, pretrained map, old-recipe map and separate Q8 candidate; no automatic launch"
+  },
+  "current_next_decision": "Direct six-arm scientific comparison under same Q8 target; no further infrastructure campaign proposed."
 }
