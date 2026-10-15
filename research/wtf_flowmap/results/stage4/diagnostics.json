@@ -1,0 +1,672 @@
+{
+  "interpretation": "single seed, single training anchor; held-out finite-ESS fairdraw cache is a diagnostic reference, not exact posterior truth",
+  "absolute_evidence_error": null,
+  "true_mode_mass_error": null,
+  "uncertainty": "nominal conditional-importance sample variance and SNIS standard errors; adaptive dependence and teacher correlation are not fully calibrated",
+  "time_prior_conversion": "lnZ_uniform_closed_time = lnI_API - log(613/4096); API integral is the primary target",
+  "arms": {
+    "av": {
+      "status": "complete",
+      "lnZ": 1777.7781561391757,
+      "relative_se": 1.0000000000000002,
+      "ess": 1.0,
+      "max_weight": 1.0,
+      "metrics": {
+        "mean_distance": {
+          "value": 244.12590032438405,
+          "nominal_snis_se": 6.042835248162022e-89,
+          "heldout_reference": 385.5906610999999,
+          "heldout_naive_sem": 3.9832896730315346,
+          "diagnostic_discrepancy": -141.46476077561587
+        },
+        "second_distance_moment": {
+          "value": 59597.455209191095,
+          "nominal_snis_se": 1.0514899667596203e-85,
+          "heldout_reference": 150250.95099284372,
+          "heldout_naive_sem": 3057.4863433378196,
+          "diagnostic_discrepancy": -90653.49578365262
+        },
+        "mean_sindec": {
+          "value": 0.3545178943602876,
+          "nominal_snis_se": 9.884312546648578e-93,
+          "heldout_reference": 0.40801128924811025,
+          "heldout_naive_sem": 0.023919984865475474,
+          "diagnostic_discrepancy": -0.053493394887822676
+        },
+        "mean_cosi": {
+          "value": -0.18142076423766326,
+          "nominal_snis_se": 3.8296438089861556e-92,
+          "heldout_reference": 0.13870155295031134,
+          "heldout_naive_sem": 0.06750683541637384,
+          "diagnostic_discrepancy": -0.32012231718797457
+        },
+        "positive_cosi_mass": {
+          "value": 1.9709409106630935e-240,
+          "nominal_snis_se": 0.0,
+          "heldout_reference": 0.6,
+          "heldout_naive_sem": 0.0492365963917331,
+          "diagnostic_discrepancy": -0.6
+        },
+        "distance_tail_mass": {
+          "value": 1.0,
+          "nominal_snis_se": 0.0,
+          "heldout_reference": 0.14,
+          "heldout_naive_sem": 0.034873508801977704,
+          "diagnostic_discrepancy": 0.86
+        },
+        "polar_tail_mass": {
+          "value": 4.827282840217312e-92,
+          "nominal_snis_se": 6.826808862046237e-92,
+          "heldout_reference": 0.0,
+          "heldout_naive_sem": 0.0,
+          "diagnostic_discrepancy": 4.827282840217312e-92
+        },
+        "ra_cos": {
+          "value": -0.794489275487448,
+          "nominal_snis_se": 4.163046495851597e-93,
+          "heldout_reference": -0.8160044680300627,
+          "heldout_naive_sem": 0.014019713650059593,
+          "diagnostic_discrepancy": 0.02151519254261469
+        },
+        "ra_sin": {
+          "value": 0.607278182660492,
+          "nominal_snis_se": 6.4520523951772195e-93,
+          "heldout_reference": 0.48295256660764774,
+          "heldout_naive_sem": 0.028680553692358036,
+          "diagnostic_discrepancy": 0.12432561605284431
+        },
+        "psi_cos": {
+          "value": 0.5360598877710425,
+          "nominal_snis_se": 7.4132405342935e-92,
+          "heldout_reference": -0.84162052332046,
+          "heldout_naive_sem": 0.01332374839837725,
+          "diagnostic_discrepancy": 1.3776804110915024
+        },
+        "psi_sin": {
+          "value": 0.8441799551771514,
+          "nominal_snis_se": 4.205251919103942e-92,
+          "heldout_reference": 0.46497337728059324,
+          "heldout_naive_sem": 0.02418363005041774,
+          "diagnostic_discrepancy": 0.37920657789655815
+        },
+        "phase_cos": {
+          "value": 0.6526386362155879,
+          "nominal_snis_se": 5.789110511882683e-92,
+          "heldout_reference": 0.00908606958845944,
+          "heldout_naive_sem": 0.02611253631990676,
+          "diagnostic_discrepancy": 0.6435525666271285
+        },
+        "phase_sin": {
+          "value": 0.7576693279516187,
+          "nominal_snis_se": 3.848224577098663e-93,
+          "heldout_reference": -0.003604991578679687,
+          "heldout_naive_sem": 0.09704730995716923,
+          "diagnostic_discrepancy": 0.7612743195302983
+        },
+        "phase_psi_quadrant_0_0": {
+          "value": 1.0,
+          "nominal_snis_se": 4.827282840217312e-92,
+          "heldout_reference": 0.46,
+          "heldout_naive_sem": 0.05009082659620331,
+          "diagnostic_discrepancy": 0.54
+        },
+        "phase_psi_quadrant_0_1": {
+          "value": 4.827282840217312e-92,
+          "nominal_snis_se": 6.826808862046237e-92,
+          "heldout_reference": 0.04,
+          "heldout_naive_sem": 0.019694638556693237,
+          "diagnostic_discrepancy": -0.04
+        },
+        "phase_psi_quadrant_1_0": {
+          "value": 1.10599950906262e-216,
+          "nominal_snis_se": 0.0,
+          "heldout_reference": 0.49,
+          "heldout_naive_sem": 0.05024183937956914,
+          "diagnostic_discrepancy": -0.49
+        },
+        "phase_psi_quadrant_1_1": {
+          "value": 1.9709409106630935e-240,
+          "nominal_snis_se": 0.0,
+          "heldout_reference": 0.01,
+          "heldout_naive_sem": 0.009999999999999998,
+          "diagnostic_discrepancy": -0.01
+        }
+      },
+      "first_half": {
+        "lnZ": 1568.2077585146912,
+        "relative_se": 1.0,
+        "ess": 1.0,
+        "max_weight": 1.0
+      },
+      "second_half": {
+        "lnZ": 1778.4713033197359,
+        "relative_se": 1.0,
+        "ess": 1.0,
+        "max_weight": 1.0
+      },
+      "split_lnZ_difference": 210.2635448050446,
+      "split_bound": 4.242640687119286,
+      "predeclared_convergence": false,
+      "total_attempts": 1941,
+      "physical_rows": 1941,
+      "phases": {
+        "prior_failed_validation": 2,
+        "validation": 2,
+        "reference_validation": 2,
+        "training": 100,
+        "evidence": 1000,
+        "adaptation": 835
+      },
+      "neural_forward_rows": 0,
+      "neural_gradient_rows": 0,
+      "cold_ess_per_true_row_upper_bound": null,
+      "arm_cpu_seconds": 62.63971523400001,
+      "arm_wall_seconds": 62.96516529098153,
+      "shared_setup_cpu_share": 6.2752566406,
+      "shared_setup_wall_share": 8.512449949603294,
+      "ess_per_total_attempt": 0.0005151983513652757,
+      "ess_per_reuse_cpu_second": 0.014510634957809073,
+      "ess_per_reuse_wall_second": 0.01399039400844759,
+      "lnZ_uniform_closed_time": 1779.6775573699588
+    },
+    "av_gmm": {
+      "status": "complete",
+      "lnZ": 1854.0824963063635,
+      "relative_se": 1.0000000000000002,
+      "ess": 1.0,
+      "max_weight": 1.0,
+      "metrics": {
+        "mean_distance": {
+          "value": 787.4879849235433,
+          "nominal_snis_se": 1.3201686313481796e-18,
+          "heldout_reference": 385.5906610999999,
+          "heldout_naive_sem": 3.9832896730315346,
+          "diagnostic_discrepancy": 401.8973238235434
+        },
+        "second_distance_moment": {
+          "value": 620137.3263989427,
+          "nominal_snis_se": 1.941899047719267e-15,
+          "heldout_reference": 150250.95099284372,
+          "heldout_naive_sem": 3057.4863433378196,
+          "diagnostic_discrepancy": 469886.375406099
+        },
+        "mean_sindec": {
+          "value": 0.6431465026137901,
+          "nominal_snis_se": 9.674473523416214e-22,
+          "heldout_reference": 0.40801128924811025,
+          "heldout_naive_sem": 0.023919984865475474,
+          "diagnostic_discrepancy": 0.23513521336567988
+        },
+        "mean_cosi": {
+          "value": -0.5700693522469029,
+          "nominal_snis_se": 4.58044110734858e-21,
+          "heldout_reference": 0.13870155295031134,
+          "heldout_naive_sem": 0.06750683541637384,
+          "diagnostic_discrepancy": -0.7087709051972142
+        },
+        "positive_cosi_mass": {
+          "value": 1.5181215314703958e-132,
+          "nominal_snis_se": 2.1469480591360472e-132,
+          "heldout_reference": 0.6,
+          "heldout_naive_sem": 0.0492365963917331,
+          "diagnostic_discrepancy": -0.6
+        },
+        "distance_tail_mass": {
+          "value": 1.0,
+          "nominal_snis_se": 0.0,
+          "heldout_reference": 0.14,
+          "heldout_naive_sem": 0.034873508801977704,
+          "diagnostic_discrepancy": 0.86
+        },
+        "polar_tail_mass": {
+          "value": 1.2690482862699823e-20,
+          "nominal_snis_se": 1.794705297749343e-20,
+          "heldout_reference": 0.0,
+          "heldout_naive_sem": 0.0,
+          "diagnostic_discrepancy": 1.2690482862699823e-20
+        },
+        "ra_cos": {
+          "value": -0.9784349139779438,
+          "nominal_snis_se": 2.6570749304401118e-21,
+          "heldout_reference": -0.8160044680300627,
+          "heldout_naive_sem": 0.014019713650059593,
+          "diagnostic_discrepancy": -0.16243044594788114
+        },
+        "ra_sin": {
+          "value": 0.20655536572302757,
+          "nominal_snis_se": 5.490179691496019e-21,
+          "heldout_reference": 0.48295256660764774,
+          "heldout_naive_sem": 0.028680553692358036,
+          "diagnostic_discrepancy": -0.27639720088462016
+        },
+        "psi_cos": {
+          "value": -0.7557861523846764,
+          "nominal_snis_se": 3.03475458815645e-21,
+          "heldout_reference": -0.84162052332046,
+          "heldout_naive_sem": 0.01332374839837725,
+          "diagnostic_discrepancy": 0.08583437093578361
+        },
+        "psi_sin": {
+          "value": 0.6548185182656083,
+          "nominal_snis_se": 7.032730757236653e-21,
+          "heldout_reference": 0.46497337728059324,
+          "heldout_naive_sem": 0.02418363005041774,
+          "diagnostic_discrepancy": 0.1898451409850151
+        },
+        "phase_cos": {
+          "value": -0.1310691109187423,
+          "nominal_snis_se": 3.684939164445706e-21,
+          "heldout_reference": 0.00908606958845944,
+          "heldout_naive_sem": 0.02611253631990676,
+          "diagnostic_discrepancy": -0.14015518050720174
+        },
+        "phase_sin": {
+          "value": -0.9913732335316353,
+          "nominal_snis_se": 2.5109430826106837e-20,
+          "heldout_reference": -0.003604991578679687,
+          "heldout_naive_sem": 0.09704730995716923,
+          "diagnostic_discrepancy": -0.9877682419529557
+        },
+        "phase_psi_quadrant_0_0": {
+          "value": 1.269048286270747e-20,
+          "nominal_snis_se": 1.794705297749884e-20,
+          "heldout_reference": 0.46,
+          "heldout_naive_sem": 0.05009082659620331,
+          "diagnostic_discrepancy": -0.46
+        },
+        "phase_psi_quadrant_0_1": {
+          "value": 5.012437231573789e-201,
+          "nominal_snis_se": 0.0,
+          "heldout_reference": 0.04,
+          "heldout_naive_sem": 0.019694638556693237,
+          "diagnostic_discrepancy": -0.04
+        },
+        "phase_psi_quadrant_1_0": {
+          "value": 1.0,
+          "nominal_snis_se": 1.2690482862699823e-20,
+          "heldout_reference": 0.49,
+          "heldout_naive_sem": 0.05024183937956914,
+          "diagnostic_discrepancy": 0.51
+        },
+        "phase_psi_quadrant_1_1": {
+          "value": 3.4314908161689714e-173,
+          "nominal_snis_se": 0.0,
+          "heldout_reference": 0.01,
+          "heldout_naive_sem": 0.009999999999999998,
+          "diagnostic_discrepancy": -0.01
+        }
+      },
+      "first_half": {
+        "lnZ": 1457.6614172059853,
+        "relative_se": 1.0,
+        "ess": 1.0,
+        "max_weight": 1.0
+      },
+      "second_half": {
+        "lnZ": 1854.7756434869236,
+        "relative_se": 1.0,
+        "ess": 1.0,
+        "max_weight": 1.0
+      },
+      "split_lnZ_difference": 397.1142262809383,
+      "split_bound": 4.242640687119286,
+      "predeclared_convergence": false,
+      "total_attempts": 1934,
+      "physical_rows": 1934,
+      "phases": {
+        "prior_failed_validation": 2,
+        "validation": 2,
+        "reference_validation": 2,
+        "training": 100,
+        "evidence": 1000,
+        "adaptation": 828
+      },
+      "neural_forward_rows": 0,
+      "neural_gradient_rows": 0,
+      "cold_ess_per_true_row_upper_bound": null,
+      "arm_cpu_seconds": 18.587073499,
+      "arm_wall_seconds": 18.668535617005546,
+      "shared_setup_cpu_share": 6.2752566406,
+      "shared_setup_wall_share": 8.512449949603294,
+      "ess_per_total_attempt": 0.000517063081695967,
+      "ess_per_reuse_cpu_second": 0.04022149148471121,
+      "ess_per_reuse_wall_second": 0.036790424598454406,
+      "lnZ_uniform_closed_time": 1855.9818975371466
+    },
+    "cache": {
+      "status": "failed",
+      "error": "ValueError('nonfinite physical target')"
+    },
+    "pretrained": {
+      "status": "complete",
+      "lnZ": 2786.3007476292573,
+      "relative_se": 1.0,
+      "ess": 1.0,
+      "max_weight": 1.0,
+      "metrics": {
+        "mean_distance": {
+          "value": 326.4800618651481,
+          "nominal_snis_se": 1.1646706228250868e-43,
+          "heldout_reference": 385.5906610999999,
+          "heldout_naive_sem": 3.9832896730315346,
+          "diagnostic_discrepancy": -59.110599234851804
+        },
+        "second_distance_moment": {
+          "value": 106589.23079547094,
+          "nominal_snis_se": 8.018062723003649e-41,
+          "heldout_reference": 150250.95099284372,
+          "heldout_naive_sem": 3057.4863433378196,
+          "diagnostic_discrepancy": -43661.72019737278
+        },
+        "mean_sindec": {
+          "value": 0.19227534082810813,
+          "nominal_snis_se": 1.6531269115479353e-45,
+          "heldout_reference": 0.40801128924811025,
+          "heldout_naive_sem": 0.023919984865475474,
+          "diagnostic_discrepancy": -0.21573594842000213
+        },
+        "mean_cosi": {
+          "value": 0.5515526688155465,
+          "nominal_snis_se": 4.320164588784536e-45,
+          "heldout_reference": 0.13870155295031134,
+          "heldout_naive_sem": 0.06750683541637384,
+          "diagnostic_discrepancy": 0.4128511158652352
+        },
+        "positive_cosi_mass": {
+          "value": 1.0,
+          "nominal_snis_se": 3.2825890669762806e-45,
+          "heldout_reference": 0.6,
+          "heldout_naive_sem": 0.0492365963917331,
+          "diagnostic_discrepancy": 0.4
+        },
+        "distance_tail_mass": {
+          "value": 4.561156204976395e-97,
+          "nominal_snis_se": 6.439545531750087e-97,
+          "heldout_reference": 0.14,
+          "heldout_naive_sem": 0.034873508801977704,
+          "diagnostic_discrepancy": -0.14
+        },
+        "polar_tail_mass": {
+          "value": 1.5459146871239543e-99,
+          "nominal_snis_se": 2.186253516802456e-99,
+          "heldout_reference": 0.0,
+          "heldout_naive_sem": 0.0,
+          "diagnostic_discrepancy": 1.5459146871239543e-99
+        },
+        "ra_cos": {
+          "value": -0.7086486026328294,
+          "nominal_snis_se": 6.076853948827183e-46,
+          "heldout_reference": -0.8160044680300627,
+          "heldout_naive_sem": 0.014019713650059593,
+          "diagnostic_discrepancy": 0.1073558653972333
+        },
+        "ra_sin": {
+          "value": 0.7055615904983338,
+          "nominal_snis_se": 3.7883781141479975e-45,
+          "heldout_reference": 0.48295256660764774,
+          "heldout_naive_sem": 0.028680553692358036,
+          "diagnostic_discrepancy": 0.22260902389068604
+        },
+        "psi_cos": {
+          "value": -0.9751440250376928,
+          "nominal_snis_se": 1.8863664598998e-45,
+          "heldout_reference": -0.84162052332046,
+          "heldout_naive_sem": 0.01332374839837725,
+          "diagnostic_discrepancy": -0.13352350171723282
+        },
+        "psi_sin": {
+          "value": 0.22157195317387884,
+          "nominal_snis_se": 2.2805162729021695e-45,
+          "heldout_reference": 0.46497337728059324,
+          "heldout_naive_sem": 0.02418363005041774,
+          "diagnostic_discrepancy": -0.2434014241067144
+        },
+        "phase_cos": {
+          "value": -0.4942149132678329,
+          "nominal_snis_se": 4.731787746987989e-45,
+          "heldout_reference": 0.00908606958845944,
+          "heldout_naive_sem": 0.02611253631990676,
+          "diagnostic_discrepancy": -0.5033009828562923
+        },
+        "phase_sin": {
+          "value": -0.8693397606825932,
+          "nominal_snis_se": 3.905590483922246e-45,
+          "heldout_reference": -0.003604991578679687,
+          "heldout_naive_sem": 0.09704730995716923,
+          "diagnostic_discrepancy": -0.8657347691039136
+        },
+        "phase_psi_quadrant_0_0": {
+          "value": 3.2825890669762806e-45,
+          "nominal_snis_se": 4.6422819782155e-45,
+          "heldout_reference": 0.46,
+          "heldout_naive_sem": 0.05009082659620331,
+          "diagnostic_discrepancy": -0.46
+        },
+        "phase_psi_quadrant_0_1": {
+          "value": 1.5459146871239543e-99,
+          "nominal_snis_se": 2.186253516802456e-99,
+          "heldout_reference": 0.04,
+          "heldout_naive_sem": 0.019694638556693237,
+          "diagnostic_discrepancy": -0.04
+        },
+        "phase_psi_quadrant_1_0": {
+          "value": 1.0,
+          "nominal_snis_se": 3.2825890669762806e-45,
+          "heldout_reference": 0.49,
+          "heldout_naive_sem": 0.05024183937956914,
+          "diagnostic_discrepancy": 0.51
+        },
+        "phase_psi_quadrant_1_1": {
+          "value": 4.5456970581051555e-97,
+          "nominal_snis_se": 6.42858643001179e-97,
+          "heldout_reference": 0.01,
+          "heldout_naive_sem": 0.009999999999999998,
+          "diagnostic_discrepancy": -0.01
+        }
+      },
+      "first_half": {
+        "lnZ": 2786.9938948098174,
+        "relative_se": 1.0,
+        "ess": 1.0,
+        "max_weight": 1.0
+      },
+      "second_half": {
+        "lnZ": 2684.5661980857967,
+        "relative_se": 1.0,
+        "ess": 1.0,
+        "max_weight": 1.0
+      },
+      "split_lnZ_difference": 102.42769672402073,
+      "split_bound": 4.242640687119286,
+      "predeclared_convergence": false,
+      "total_attempts": 1928,
+      "physical_rows": 1928,
+      "phases": {
+        "prior_failed_validation": 2,
+        "validation": 2,
+        "reference_validation": 2,
+        "training": 100,
+        "evidence": 1000,
+        "adaptation": 822
+      },
+      "neural_forward_rows": 100,
+      "neural_gradient_rows": 0,
+      "cold_ess_per_true_row_upper_bound": 6.255282586143999e-08,
+      "arm_cpu_seconds": 29.996254961999995,
+      "arm_wall_seconds": 30.180695671995636,
+      "shared_setup_cpu_share": 6.2752566406,
+      "shared_setup_wall_share": 8.512449949603294,
+      "ess_per_total_attempt": 0.0005186721991701245,
+      "ess_per_reuse_cpu_second": 0.027569846301313743,
+      "ess_per_reuse_wall_second": 0.025844370726007586,
+      "lnZ_uniform_closed_time": 2788.2001488600404
+    },
+    "tuned": {
+      "status": "complete",
+      "lnZ": 2540.5566140516544,
+      "relative_se": 0.9999986240303607,
+      "ess": 1.00000274919337,
+      "max_weight": 0.9999986254052045,
+      "metrics": {
+        "mean_distance": {
+          "value": 406.67543543461574,
+          "nominal_snis_se": 1.0255844691144778e-06,
+          "heldout_reference": 385.5906610999999,
+          "heldout_naive_sem": 3.9832896730315346,
+          "diagnostic_discrepancy": 21.084774334615815
+        },
+        "second_distance_moment": {
+          "value": 165384.90978634707,
+          "nominal_snis_se": 0.0008347224538163475,
+          "heldout_reference": 150250.95099284372,
+          "heldout_naive_sem": 3057.4863433378196,
+          "diagnostic_discrepancy": 15133.958793503349
+        },
+        "mean_sindec": {
+          "value": 0.45796547961351003,
+          "nominal_snis_se": 2.933879885177811e-07,
+          "heldout_reference": 0.40801128924811025,
+          "heldout_naive_sem": 0.023919984865475474,
+          "diagnostic_discrepancy": 0.049954190365399775
+        },
+        "mean_cosi": {
+          "value": 0.6422873788338639,
+          "nominal_snis_se": 6.328043884272944e-07,
+          "heldout_reference": 0.13870155295031134,
+          "heldout_naive_sem": 0.06750683541637384,
+          "diagnostic_discrepancy": 0.5035858258835526
+        },
+        "positive_cosi_mass": {
+          "value": 0.9999999999998177,
+          "nominal_snis_se": 1.8229837005688775e-13,
+          "heldout_reference": 0.6,
+          "heldout_naive_sem": 0.0492365963917331,
+          "diagnostic_discrepancy": 0.3999999999998177
+        },
+        "distance_tail_mass": {
+          "value": 1.5564841335461293e-140,
+          "nominal_snis_se": 2.2002955208483228e-140,
+          "heldout_reference": 0.14,
+          "heldout_naive_sem": 0.034873508801977704,
+          "diagnostic_discrepancy": -0.14
+        },
+        "polar_tail_mass": {
+          "value": 0.0,
+          "nominal_snis_se": 0.0,
+          "heldout_reference": 0.0,
+          "heldout_naive_sem": 0.0,
+          "diagnostic_discrepancy": 0.0
+        },
+        "ra_cos": {
+          "value": -0.8537822807472673,
+          "nominal_snis_se": 2.687296813151213e-07,
+          "heldout_reference": -0.8160044680300627,
+          "heldout_naive_sem": 0.014019713650059593,
+          "diagnostic_discrepancy": -0.037777812717204595
+        },
+        "ra_sin": {
+          "value": 0.5206301444325803,
+          "nominal_snis_se": 3.459036135072607e-07,
+          "heldout_reference": 0.48295256660764774,
+          "heldout_naive_sem": 0.028680553692358036,
+          "diagnostic_discrepancy": 0.03767757782493253
+        },
+        "psi_cos": {
+          "value": -0.8720267487319386,
+          "nominal_snis_se": 3.328434848965458e-08,
+          "heldout_reference": -0.84162052332046,
+          "heldout_naive_sem": 0.01332374839837725,
+          "diagnostic_discrepancy": -0.030406225411478638
+        },
+        "psi_sin": {
+          "value": 0.48945821854285165,
+          "nominal_snis_se": 6.189554561232268e-08,
+          "heldout_reference": 0.46497337728059324,
+          "heldout_naive_sem": 0.02418363005041774,
+          "diagnostic_discrepancy": 0.024484841262258417
+        },
+        "phase_cos": {
+          "value": -0.11288892125914937,
+          "nominal_snis_se": 7.432174558925657e-07,
+          "heldout_reference": 0.00908606958845944,
+          "heldout_naive_sem": 0.02611253631990676,
+          "diagnostic_discrepancy": -0.12197499084760881
+        },
+        "phase_sin": {
+          "value": 0.9936075126771051,
+          "nominal_snis_se": 5.946161409959627e-08,
+          "heldout_reference": -0.003604991578679687,
+          "heldout_naive_sem": 0.09704730995716923,
+          "diagnostic_discrepancy": 0.9972125042557848
+        },
+        "phase_psi_quadrant_0_0": {
+          "value": 0.9999999999998177,
+          "nominal_snis_se": 1.8229837005688775e-13,
+          "heldout_reference": 0.46,
+          "heldout_naive_sem": 0.05009082659620331,
+          "diagnostic_discrepancy": 0.5399999999998177
+        },
+        "phase_psi_quadrant_0_1": {
+          "value": 2.6932233925124377e-142,
+          "nominal_snis_se": 3.808790430420715e-142,
+          "heldout_reference": 0.04,
+          "heldout_naive_sem": 0.019694638556693237,
+          "diagnostic_discrepancy": -0.04
+        },
+        "phase_psi_quadrant_1_0": {
+          "value": 1.2513530857951752e-58,
+          "nominal_snis_se": 1.769679288953408e-58,
+          "heldout_reference": 0.49,
+          "heldout_naive_sem": 0.05024183937956914,
+          "diagnostic_discrepancy": -0.49
+        },
+        "phase_psi_quadrant_1_1": {
+          "value": 0.0,
+          "nominal_snis_se": 0.0,
+          "heldout_reference": 0.01,
+          "heldout_naive_sem": 0.009999999999999998,
+          "diagnostic_discrepancy": -0.01
+        }
+      },
+      "first_half": {
+        "lnZ": 2541.2497612322145,
+        "relative_se": 0.9999986226516328,
+        "ess": 1.00000274919337,
+        "max_weight": 0.9999986254052045
+      },
+      "second_half": {
+        "lnZ": 2215.319818466701,
+        "relative_se": 0.9556437991048181,
+        "ess": 1.0947763657778065,
+        "max_weight": 0.9546584215794228
+      },
+      "split_lnZ_difference": 325.9299427655137,
+      "split_bound": 4.149610926900722,
+      "predeclared_convergence": false,
+      "total_attempts": 1942,
+      "physical_rows": 1942,
+      "phases": {
+        "prior_failed_validation": 2,
+        "validation": 2,
+        "reference_validation": 2,
+        "training": 100,
+        "evidence": 1000,
+        "adaptation": 836
+      },
+      "neural_forward_rows": 100,
+      "neural_gradient_rows": 0,
+      "cold_ess_per_true_row_upper_bound": 6.255294305116717e-08,
+      "arm_cpu_seconds": 26.109465784999998,
+      "arm_wall_seconds": 26.217605662008282,
+      "shared_setup_cpu_share": 6.2752566406,
+      "shared_setup_wall_share": 8.512449949603294,
+      "ess_per_total_attempt": 0.0005149344743529197,
+      "ess_per_reuse_cpu_second": 0.030878842685490238,
+      "ess_per_reuse_wall_second": 0.028793583297892306,
+      "lnZ_uniform_closed_time": 2542.4560152824374
+    }
+  },
+  "analysis_cpu_seconds": 0.021023082999999998,
+  "analysis_wall_seconds": 0.0547587419860065,
+  "max_rss_kib": 87940
+}

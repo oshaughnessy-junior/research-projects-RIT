@@ -1,0 +1,610 @@
+{
+  "run1/summary.json": {
+    "status": "setup_failed",
+    "arms": {},
+    "global_attempts": 0,
+    "physical_rows": 0,
+    "caps": {
+      "cpu_seconds": 1200,
+      "prior_gate_cpu_seconds": 3.3,
+      "rss_gib": 8,
+      "attempts": 10000,
+      "per_arm": 2000
+    },
+    "seed": 261051,
+    "training_seed": 261050,
+    "estimator": "fixed 1000 conditional importance draws; normalized six-dimensional prior; raw time-integral API",
+    "historical_acquisition_rows_lower_bound": 15984560,
+    "historical_acquisition_cpu_seconds": null,
+    "likelihood_sources": {
+      "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/factored_likelihood.py": "7b87a19e7133155cb1bb67a790a58ab7204f605d6d12cd78471edc34e044c974",
+      "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/jax_ile/wrapper.py": "0db282efa8db272e404cc2d649485feaba3c0339998a36ddde293b7ac4166005",
+      "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/jax_ile/core.py": "0f499791e796558b7b2460027ef8459302925dcf792801883664ceaf56336ab8"
+    },
+    "current_normalized_driver_sha256": "d88a561e6f838f6066cf543fd93c58b838d96d022b7d8536fa95819e8252cf20",
+    "error": "AssertionError('\\nNot equal to tolerance rtol=1e-10, atol=1e-10\\n\\nMismatched elements: 3 / 36 (8.33%)\\nMax absolute difference among violations: 1.30067067e-05\\nMax relative difference among violations: 3.56866107e-07\\n ACTUAL: array([[ 1.      ,  0.      ,  0.      ,  0.      ,  0.      ,\\n         0.      ],\\n       [ 0.      ,  0.      ,  0.      ,  0.293584,  0.      ,...\\n DESIRED: array([[ 1.      ,  0.      ,  0.      ,  0.      ,  0.      ,\\n         0.      ],\\n       [ 0.      ,  0.      ,  0.      ,  0.293584,  0.      ,...')",
+    "traceback": "Traceback (most recent call last):\n  File \"/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/source/run_five_arm.py\", line 44, in main\n    ctx=load_context(a,r,save);like=ctx['bank']['like'];ref=ctx['bank']['reference']\n        ^^^^^^^^^^^^^^^^^^^^^^\n  File \"/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/source/periodic_real_context.py\", line 63, in load_context\n    jj=np.asarray(jax.jacfwd(jax_decode)(states[i]));np.testing.assert_allclose(jt,jj,atol=1e-10,rtol=1e-10)\n                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/site-packages/numpy/testing/_private/utils.py\", line 1715, in assert_allclose\n    assert_array_compare(compare, actual, desired, err_msg=str(err_msg),\n  File \"/cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/site-packages/numpy/testing/_private/utils.py\", line 921, in assert_array_compare\n    raise AssertionError(msg)\nAssertionError: \nNot equal to tolerance rtol=1e-10, atol=1e-10\n\nMismatched elements: 3 / 36 (8.33%)\nMax absolute difference among violations: 1.30067067e-05\nMax relative difference among violations: 3.56866107e-07\n ACTUAL: array([[ 1.      ,  0.      ,  0.      ,  0.      ,  0.      ,\n         0.      ],\n       [ 0.      ,  0.      ,  0.      ,  0.293584,  0.      ,...\n DESIRED: array([[ 1.      ,  0.      ,  0.      ,  0.      ,  0.      ,\n         0.      ],\n       [ 0.      ,  0.      ,  0.      ,  0.293584,  0.      ,...\n",
+    "process_cpu_seconds": 4.680843993,
+    "wall_seconds": 8.391502493992448,
+    "peak_rss_kib": 857864
+  },
+  "run2/summary.json": {
+    "status": "pilot_complete_not_calibrated",
+    "arms": {
+      "av": {
+        "status": "failed",
+        "attempts": 2,
+        "physical_rows": 2,
+        "phases": {
+          "validation": 1,
+          "reference_validation": 1
+        },
+        "error": "AssertionError('NoLoop/JAX mismatch')",
+        "traceback": "Traceback (most recent call last):\n  File \"/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/source2/run_five_arm.py\", line 101, in main\n    gold=ref(physical(x)[0]);assert abs(val-gold)<1e-6,'NoLoop/JAX mismatch'\n                                    ^^^^^^^^^^^^^^^^^^\nAssertionError: NoLoop/JAX mismatch\n",
+        "cpu_seconds": 5.67041188,
+        "wall_seconds": 5.674773222010117
+      },
+      "av_gmm": {
+        "status": "failed",
+        "attempts": 2,
+        "physical_rows": 2,
+        "phases": {
+          "validation": 1,
+          "reference_validation": 1
+        },
+        "error": "AssertionError('NoLoop/JAX mismatch')",
+        "traceback": "Traceback (most recent call last):\n  File \"/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/source2/run_five_arm.py\", line 101, in main\n    gold=ref(physical(x)[0]);assert abs(val-gold)<1e-6,'NoLoop/JAX mismatch'\n                                    ^^^^^^^^^^^^^^^^^^\nAssertionError: NoLoop/JAX mismatch\n",
+        "cpu_seconds": 0.032247118000000796,
+        "wall_seconds": 0.034134159999666736
+      },
+      "cache": {
+        "status": "failed",
+        "attempts": 2,
+        "physical_rows": 2,
+        "phases": {
+          "validation": 1,
+          "reference_validation": 1
+        },
+        "error": "AssertionError('NoLoop/JAX mismatch')",
+        "traceback": "Traceback (most recent call last):\n  File \"/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/source2/run_five_arm.py\", line 101, in main\n    gold=ref(physical(x)[0]);assert abs(val-gold)<1e-6,'NoLoop/JAX mismatch'\n                                    ^^^^^^^^^^^^^^^^^^\nAssertionError: NoLoop/JAX mismatch\n",
+        "cpu_seconds": 0.032477661999999796,
+        "wall_seconds": 0.03413306799484417
+      },
+      "pretrained": {
+        "status": "failed",
+        "attempts": 2,
+        "physical_rows": 2,
+        "phases": {
+          "validation": 1,
+          "reference_validation": 1
+        },
+        "error": "AssertionError('NoLoop/JAX mismatch')",
+        "traceback": "Traceback (most recent call last):\n  File \"/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/source2/run_five_arm.py\", line 101, in main\n    gold=ref(physical(x)[0]);assert abs(val-gold)<1e-6,'NoLoop/JAX mismatch'\n                                    ^^^^^^^^^^^^^^^^^^\nAssertionError: NoLoop/JAX mismatch\n",
+        "cpu_seconds": 0.03236626099999995,
+        "wall_seconds": 0.0343961100152228
+      },
+      "tuned": {
+        "status": "failed",
+        "attempts": 2,
+        "physical_rows": 2,
+        "phases": {
+          "validation": 1,
+          "reference_validation": 1
+        },
+        "error": "AssertionError('NoLoop/JAX mismatch')",
+        "traceback": "Traceback (most recent call last):\n  File \"/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/source2/run_five_arm.py\", line 101, in main\n    gold=ref(physical(x)[0]);assert abs(val-gold)<1e-6,'NoLoop/JAX mismatch'\n                                    ^^^^^^^^^^^^^^^^^^\nAssertionError: NoLoop/JAX mismatch\n",
+        "cpu_seconds": 0.03227927899999905,
+        "wall_seconds": 0.03399653700762428
+      }
+    },
+    "global_attempts": 10,
+    "physical_rows": 10,
+    "caps": {
+      "cpu_seconds": 1200,
+      "prior_gate_cpu_seconds": 3.3,
+      "rss_gib": 8,
+      "attempts": 10000,
+      "per_arm": 2000
+    },
+    "seed": 261051,
+    "training_seed": 261050,
+    "estimator": "fixed 1000 conditional importance draws; normalized six-dimensional prior; raw time-integral API",
+    "historical_acquisition_rows_lower_bound": 15984560,
+    "historical_acquisition_cpu_seconds": null,
+    "likelihood_sources": {
+      "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/factored_likelihood.py": "7b87a19e7133155cb1bb67a790a58ab7204f605d6d12cd78471edc34e044c974",
+      "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/jax_ile/wrapper.py": "0db282efa8db272e404cc2d649485feaba3c0339998a36ddde293b7ac4166005",
+      "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/jax_ile/core.py": "0f499791e796558b7b2460027ef8459302925dcf792801883664ceaf56336ab8"
+    },
+    "current_normalized_driver_sha256": "d88a561e6f838f6066cf543fd93c58b838d96d022b7d8536fa95819e8252cf20",
+    "coordinate_contracts": "two-row roundtrip, Torch/JAX/full FD Jacobian passed",
+    "normalization_convention": {
+      "reward": "physical log time-integral API only, no prior or Jacobian added",
+      "angular_prior": "unit mass on RA[0,2pi),phase[0,2pi),psi[0,pi)",
+      "distance_prior": "current normalized Planck15 cosmo_sourceframe on [1,10000]",
+      "historical_angular_prior_mass": 8,
+      "historical_lnZ_offset": 2.0794415416798357,
+      "likelihood_is_not_evidence": true
+    },
+    "runtime": {
+      "host": "ldas-grid",
+      "affinity": [
+        0
+      ],
+      "pid": 2222691,
+      "numpy": "2.2.6",
+      "torch": "2.8.0",
+      "jax": "0.9.0"
+    },
+    "frame_psd_setup_wall_seconds": 0.1383570109901484,
+    "precompute": {
+      "attempted": 1,
+      "integration_half": 0.075,
+      "storage_half": 0.37890625,
+      "guard_initial": 512,
+      "guard_certified": 1024,
+      "lmax": 4,
+      "ignore_threshold": null
+    },
+    "process_cpu_seconds": 12.938770344,
+    "wall_seconds": 15.406904171977658,
+    "peak_rss_kib": 1490164,
+    "precompute_wall_seconds": 2.3065027850097977,
+    "modes": {
+      "H1": [
+        [
+          2,
+          -2
+        ],
+        [
+          2,
+          -1
+        ],
+        [
+          2,
+          0
+        ],
+        [
+          2,
+          1
+        ],
+        [
+          2,
+          2
+        ],
+        [
+          3,
+          -3
+        ],
+        [
+          3,
+          -2
+        ],
+        [
+          3,
+          -1
+        ],
+        [
+          3,
+          0
+        ],
+        [
+          3,
+          1
+        ],
+        [
+          3,
+          2
+        ],
+        [
+          3,
+          3
+        ],
+        [
+          4,
+          -4
+        ],
+        [
+          4,
+          -3
+        ],
+        [
+          4,
+          -2
+        ],
+        [
+          4,
+          -1
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          1
+        ],
+        [
+          4,
+          2
+        ],
+        [
+          4,
+          3
+        ],
+        [
+          4,
+          4
+        ]
+      ],
+      "L1": [
+        [
+          2,
+          -2
+        ],
+        [
+          2,
+          -1
+        ],
+        [
+          2,
+          0
+        ],
+        [
+          2,
+          1
+        ],
+        [
+          2,
+          2
+        ],
+        [
+          3,
+          -3
+        ],
+        [
+          3,
+          -2
+        ],
+        [
+          3,
+          -1
+        ],
+        [
+          3,
+          0
+        ],
+        [
+          3,
+          1
+        ],
+        [
+          3,
+          2
+        ],
+        [
+          3,
+          3
+        ],
+        [
+          4,
+          -4
+        ],
+        [
+          4,
+          -3
+        ],
+        [
+          4,
+          -2
+        ],
+        [
+          4,
+          -1
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          1
+        ],
+        [
+          4,
+          2
+        ],
+        [
+          4,
+          3
+        ],
+        [
+          4,
+          4
+        ]
+      ]
+    },
+    "time_grid": {
+      "count": 614,
+      "first": -0.074951171875,
+      "last": 0.07470703125,
+      "spacing": 0.000244140625,
+      "sha256": "58069d49c1da7eab8cddf84193abff20e5a1ba5dda5af42c7b2ff04c08684d63",
+      "definition": "shared raw log integral over closed NoLoop grid; no new time normalization"
+    },
+    "prior_mass": 0.9999996943566771,
+    "prior_quadrature_error": 1.997132986050377e-06,
+    "tail_thresholds_mpc": [
+      323.3218035,
+      447.6315955
+    ],
+    "shared_setup_cpu_seconds": 7.1359512380000005,
+    "shared_setup_wall_seconds": 9.591005388996564
+  },
+  "run3/cache-replay.json": {
+    "status": "reconstructed_after_exact_saved_prefix_match",
+    "prefix_batches_matched": 15,
+    "failed_batch_rows": 100,
+    "true_likelihood_attempts": 0,
+    "cache_target_replay_rows": 1602,
+    "nonpositive_or_nonfinite_prior_rows": 0,
+    "distance_min": 53.109720781937284,
+    "distance_max": 9788.488300671852,
+    "prior_interpolation_domain": [
+      0.9999999846457888,
+      9999.999973599273
+    ],
+    "boundary_rows": 0,
+    "failure_capture": "reconstruction; original failing batch was not saved"
+  },
+  "diagnose/summary.json": {
+    "status": "diagnostic_complete",
+    "attempts": 101,
+    "prior_cache_attempts": 1708,
+    "prior_global_attempts": 9453,
+    "diagnostic_cap": 108,
+    "phase": "failure_diagnosis_only_no_evidence",
+    "likelihood_sources": {
+      "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/factored_likelihood.py": "7b87a19e7133155cb1bb67a790a58ab7204f605d6d12cd78471edc34e044c974",
+      "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/jax_ile/wrapper.py": "0db282efa8db272e404cc2d649485feaba3c0339998a36ddde293b7ac4166005",
+      "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/jax_ile/core.py": "0f499791e796558b7b2460027ef8459302925dcf792801883664ceaf56336ab8"
+    },
+    "current_normalized_driver_sha256": "d88a561e6f838f6066cf543fd93c58b838d96d022b7d8536fa95819e8252cf20",
+    "coordinate_contracts": "two-row roundtrip, Torch/JAX/full FD Jacobian passed",
+    "normalization_convention": {
+      "reward": "physical log time-integral API only, no prior or Jacobian added",
+      "angular_prior": "unit mass on RA[0,2pi),phase[0,2pi),psi[0,pi)",
+      "distance_prior": "current normalized Planck15 cosmo_sourceframe on [1,10000]",
+      "historical_angular_prior_mass": 8,
+      "historical_lnZ_offset": 2.0794415416798357,
+      "likelihood_is_not_evidence": true
+    },
+    "runtime": {
+      "host": "ldas-grid",
+      "affinity": [
+        0
+      ],
+      "pid": 2262572,
+      "numpy": "2.2.6",
+      "torch": "2.8.0",
+      "jax": "0.9.0"
+    },
+    "frame_psd_setup_wall_seconds": 0.14733380000689067,
+    "precompute": {
+      "attempted": 1,
+      "integration_half": 0.075,
+      "storage_half": 0.37890625,
+      "guard_initial": 512,
+      "guard_certified": 1024,
+      "lmax": 4,
+      "ignore_threshold": null
+    },
+    "cpu_seconds": 14.185949417,
+    "wall_seconds": 18.408738307975,
+    "precompute_wall_seconds": 2.7179258999822196,
+    "modes": {
+      "H1": [
+        [
+          2,
+          -2
+        ],
+        [
+          2,
+          -1
+        ],
+        [
+          2,
+          0
+        ],
+        [
+          2,
+          1
+        ],
+        [
+          2,
+          2
+        ],
+        [
+          3,
+          -3
+        ],
+        [
+          3,
+          -2
+        ],
+        [
+          3,
+          -1
+        ],
+        [
+          3,
+          0
+        ],
+        [
+          3,
+          1
+        ],
+        [
+          3,
+          2
+        ],
+        [
+          3,
+          3
+        ],
+        [
+          4,
+          -4
+        ],
+        [
+          4,
+          -3
+        ],
+        [
+          4,
+          -2
+        ],
+        [
+          4,
+          -1
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          1
+        ],
+        [
+          4,
+          2
+        ],
+        [
+          4,
+          3
+        ],
+        [
+          4,
+          4
+        ]
+      ],
+      "L1": [
+        [
+          2,
+          -2
+        ],
+        [
+          2,
+          -1
+        ],
+        [
+          2,
+          0
+        ],
+        [
+          2,
+          1
+        ],
+        [
+          2,
+          2
+        ],
+        [
+          3,
+          -3
+        ],
+        [
+          3,
+          -2
+        ],
+        [
+          3,
+          -1
+        ],
+        [
+          3,
+          0
+        ],
+        [
+          3,
+          1
+        ],
+        [
+          3,
+          2
+        ],
+        [
+          3,
+          3
+        ],
+        [
+          4,
+          -4
+        ],
+        [
+          4,
+          -3
+        ],
+        [
+          4,
+          -2
+        ],
+        [
+          4,
+          -1
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          1
+        ],
+        [
+          4,
+          2
+        ],
+        [
+          4,
+          3
+        ],
+        [
+          4,
+          4
+        ]
+      ]
+    },
+    "time_grid": {
+      "count": 614,
+      "first": -0.074951171875,
+      "last": 0.07470703125,
+      "spacing": 0.000244140625,
+      "sha256": "58069d49c1da7eab8cddf84193abff20e5a1ba5dda5af42c7b2ff04c08684d63",
+      "definition": "shared raw log integral over closed NoLoop grid; no new time normalization"
+    },
+    "nan_rows": 1,
+    "positive_infinity_rows": 0,
+    "negative_infinity_rows": 0,
+    "finite_rows": 99,
+    "reference_checks": [
+      {
+        "index": 12,
+        "jax_kind": "nan",
+        "reference": 47.83659196403751,
+        "reference_finite": true
+      }
+    ]
+  },
+  "gate1/time.txt": "\tCommand being timed: \"timeout 120 taskset -c 0 /cvmfs/software.igwn.org/conda/envs/igwn/bin/python -m pytest -q test_five_arm_sampling.py\"\n\tUser time (seconds): 2.82\n\tSystem time (seconds): 0.48\n\tPercent of CPU this job got: 68%\n\tElapsed (wall clock) time (h:mm:ss or m:ss): 0:04.80\n\tAverage shared text size (kbytes): 0\n\tAverage unshared data size (kbytes): 0\n\tAverage stack size (kbytes): 0\n\tAverage total size (kbytes): 0\n\tMaximum resident set size (kbytes): 249340\n\tAverage resident set size (kbytes): 0\n\tMajor (requiring I/O) page faults: 674\n\tMinor (reclaiming a frame) page faults: 73012\n\tVoluntary context switches: 40133\n\tInvoluntary context switches: 18\n\tSwaps: 0\n\tFile system inputs: 121456\n\tFile system outputs: 2288\n\tSocket messages sent: 0\n\tSocket messages received: 0\n\tSignals delivered: 0\n\tPage size (bytes): 4096\n\tExit status: 0\n",
+  "gate1/tests.txt": ".....                                                                    [100%]\n=============================== warnings summary ===============================\ntest_five_arm_sampling.py::test_native_wrong_oracle_normalization_and_fresh_reset\n  /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/integrators/mcsampler.py:1277: DeprecationWarning: invalid escape sequence '\\p'\n    \"\"\"\n\ntest_five_arm_sampling.py::test_native_wrong_oracle_normalization_and_fresh_reset\n  /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/integrators/gaussian_mixture_model.py:41: DeprecationWarning: `scipy.stats.mvn.mvnun` is deprecated along with the `scipy.stats.mvn` namespace. `scipy.stats.mvn.mvnun` will be removed in SciPy 1.14.0, and the `scipy.stats.mvn` namespace will be removed in SciPy 2.0.0.\n    from scipy.stats.mvn import mvnun\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n5 passed, 2 warnings in 2.26s\n",
+  "run1.time": "Command exited with non-zero status 1\n\tCommand being timed: \"timeout 1150 /cvmfs/software.igwn.org/conda/envs/igwn/bin/python -u /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/source/run_five_arm.py --output /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run1 --training /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/final_seed261015 --inventory /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/research/wtf_flowmap/results/case_inventory.json --checkpoint /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3d/repair1/accepted.pt --tuned /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3f/run1/periodic_wtf_tuned.pt\"\n\tUser time (seconds): 5.12\n\tSystem time (seconds): 0.87\n\tPercent of CPU this job got: 60%\n\tElapsed (wall clock) time (h:mm:ss or m:ss): 0:09.95\n\tAverage shared text size (kbytes): 0\n\tAverage unshared data size (kbytes): 0\n\tAverage stack size (kbytes): 0\n\tAverage total size (kbytes): 0\n\tMaximum resident set size (kbytes): 864588\n\tAverage resident set size (kbytes): 0\n\tMajor (requiring I/O) page faults: 2699\n\tMinor (reclaiming a frame) page faults: 187778\n\tVoluntary context switches: 75518\n\tInvoluntary context switches: 38\n\tSwaps: 0\n\tFile system inputs: 439512\n\tFile system outputs: 2224\n\tSocket messages sent: 0\n\tSocket messages received: 0\n\tSignals delivered: 0\n\tPage size (bytes): 4096\n\tExit status: 1\n",
+  "run2.time": "\tCommand being timed: \"timeout 1150 /cvmfs/software.igwn.org/conda/envs/igwn/bin/python -u /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/source2/run_five_arm.py --output /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run2 --training /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/final_seed261015 --inventory /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/research/wtf_flowmap/results/case_inventory.json --checkpoint /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3d/repair1/accepted.pt --tuned /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3f/run1/periodic_wtf_tuned.pt\"\n\tUser time (seconds): 13.21\n\tSystem time (seconds): 1.21\n\tPercent of CPU this job got: 84%\n\tElapsed (wall clock) time (h:mm:ss or m:ss): 0:16.99\n\tAverage shared text size (kbytes): 0\n\tAverage unshared data size (kbytes): 0\n\tAverage stack size (kbytes): 0\n\tAverage total size (kbytes): 0\n\tMaximum resident set size (kbytes): 1490164\n\tAverage resident set size (kbytes): 0\n\tMajor (requiring I/O) page faults: 184\n\tMinor (reclaiming a frame) page faults: 397219\n\tVoluntary context switches: 79564\n\tInvoluntary context switches: 428\n\tSwaps: 0\n\tFile system inputs: 21784\n\tFile system outputs: 576\n\tSocket messages sent: 0\n\tSocket messages received: 0\n\tSignals delivered: 0\n\tPage size (bytes): 4096\n\tExit status: 0\n",
+  "run3.time": "\tCommand being timed: \"timeout 1150 /cvmfs/software.igwn.org/conda/envs/igwn/bin/python -u /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/source3/run_five_arm.py --output /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3 --training /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/final_seed261015 --inventory /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/research/wtf_flowmap/results/case_inventory.json --checkpoint /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3d/repair1/accepted.pt --tuned /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3f/run1/periodic_wtf_tuned.pt\"\n\tUser time (seconds): 188.64\n\tSystem time (seconds): 6.32\n\tPercent of CPU this job got: 97%\n\tElapsed (wall clock) time (h:mm:ss or m:ss): 3:19.74\n\tAverage shared text size (kbytes): 0\n\tAverage unshared data size (kbytes): 0\n\tAverage stack size (kbytes): 0\n\tAverage total size (kbytes): 0\n\tMaximum resident set size (kbytes): 2287632\n\tAverage resident set size (kbytes): 0\n\tMajor (requiring I/O) page faults: 2293\n\tMinor (reclaiming a frame) page faults: 1936176\n\tVoluntary context switches: 87486\n\tInvoluntary context switches: 5955\n\tSwaps: 0\n\tFile system inputs: 299368\n\tFile system outputs: 9128\n\tSocket messages sent: 0\n\tSocket messages received: 0\n\tSignals delivered: 0\n\tPage size (bytes): 4096\n\tExit status: 0\n",
+  "validation/tests.time": "\tCommand being timed: \"timeout 60 taskset -c 0 /cvmfs/software.igwn.org/conda/envs/igwn/bin/python -m pytest -q test_five_arm_sampling.py\"\n\tUser time (seconds): 2.97\n\tSystem time (seconds): 0.50\n\tPercent of CPU this job got: 48%\n\tElapsed (wall clock) time (h:mm:ss or m:ss): 0:07.21\n\tAverage shared text size (kbytes): 0\n\tAverage unshared data size (kbytes): 0\n\tAverage stack size (kbytes): 0\n\tAverage total size (kbytes): 0\n\tMaximum resident set size (kbytes): 247976\n\tAverage resident set size (kbytes): 0\n\tMajor (requiring I/O) page faults: 1150\n\tMinor (reclaiming a frame) page faults: 72369\n\tVoluntary context switches: 43107\n\tInvoluntary context switches: 20\n\tSwaps: 0\n\tFile system inputs: 229824\n\tFile system outputs: 208\n\tSocket messages sent: 0\n\tSocket messages received: 0\n\tSignals delivered: 0\n\tPage size (bytes): 4096\n\tExit status: 0\n",
+  "validation/tests.txt": ".......                                                                  [100%]\n=============================== warnings summary ===============================\ntest_five_arm_sampling.py::test_native_wrong_oracle_normalization_and_fresh_reset\n  /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/integrators/gaussian_mixture_model.py:41: DeprecationWarning: `scipy.stats.mvn.mvnun` is deprecated along with the `scipy.stats.mvn` namespace. `scipy.stats.mvn.mvnun` will be removed in SciPy 1.14.0, and the `scipy.stats.mvn` namespace will be removed in SciPy 2.0.0.\n    from scipy.stats.mvn import mvnun\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n7 passed, 1 warning in 2.75s\n",
+  "validation/analysis.time": "\tCommand being timed: \"timeout 60 taskset -c 0 /cvmfs/software.igwn.org/conda/envs/igwn/bin/python analyze_five_arm.py --output /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/run3 --training /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/final_seed261015\"\n\tUser time (seconds): 0.20\n\tSystem time (seconds): 0.08\n\tPercent of CPU this job got: 64%\n\tElapsed (wall clock) time (h:mm:ss or m:ss): 0:00.45\n\tAverage shared text size (kbytes): 0\n\tAverage unshared data size (kbytes): 0\n\tAverage stack size (kbytes): 0\n\tAverage total size (kbytes): 0\n\tMaximum resident set size (kbytes): 90060\n\tAverage resident set size (kbytes): 0\n\tMajor (requiring I/O) page faults: 5\n\tMinor (reclaiming a frame) page faults: 12313\n\tVoluntary context switches: 4432\n\tInvoluntary context switches: 3\n\tSwaps: 0\n\tFile system inputs: 520\n\tFile system outputs: 56\n\tSocket messages sent: 0\n\tSocket messages received: 0\n\tSignals delivered: 0\n\tPage size (bytes): 4096\n\tExit status: 0\n",
+  "replay.time": "\tCommand being timed: \"timeout 60 /cvmfs/software.igwn.org/conda/envs/igwn/bin/python /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/source3/replay_cache_failure.py\"\n\tUser time (seconds): 3.20\n\tSystem time (seconds): 0.52\n\tPercent of CPU this job got: 66%\n\tElapsed (wall clock) time (h:mm:ss or m:ss): 0:05.60\n\tAverage shared text size (kbytes): 0\n\tAverage unshared data size (kbytes): 0\n\tAverage stack size (kbytes): 0\n\tAverage total size (kbytes): 0\n\tMaximum resident set size (kbytes): 474824\n\tAverage resident set size (kbytes): 0\n\tMajor (requiring I/O) page faults: 1037\n\tMinor (reclaiming a frame) page faults: 81605\n\tVoluntary context switches: 45680\n\tInvoluntary context switches: 59\n\tSwaps: 0\n\tFile system inputs: 162192\n\tFile system outputs: 96\n\tSocket messages sent: 0\n\tSocket messages received: 0\n\tSignals delivered: 0\n\tPage size (bytes): 4096\n\tExit status: 0\n",
+  "diagnose.time": "\tCommand being timed: \"timeout 120 /cvmfs/software.igwn.org/conda/envs/igwn/bin/python /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/source3/diagnose_cache_target.py --output /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage4/diagnose --checkpoint /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3d/repair1/accepted.pt --training /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/final_seed261015 --inventory /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/research/wtf_flowmap/results/case_inventory.json\"\n\tUser time (seconds): 15.50\n\tSystem time (seconds): 1.20\n\tPercent of CPU this job got: 77%\n\tElapsed (wall clock) time (h:mm:ss or m:ss): 0:21.58\n\tAverage shared text size (kbytes): 0\n\tAverage unshared data size (kbytes): 0\n\tAverage stack size (kbytes): 0\n\tAverage total size (kbytes): 0\n\tMaximum resident set size (kbytes): 1683140\n\tAverage resident set size (kbytes): 0\n\tMajor (requiring I/O) page faults: 1504\n\tMinor (reclaiming a frame) page faults: 425702\n\tVoluntary context switches: 78245\n\tInvoluntary context switches: 543\n\tSwaps: 0\n\tFile system inputs: 251064\n\tFile system outputs: 112\n\tSocket messages sent: 0\n\tSocket messages received: 0\n\tSignals delivered: 0\n\tPage size (bytes): 4096\n\tExit status: 0\n"
+}

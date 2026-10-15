@@ -1,6 +1,6 @@
 {
   "owner": "current Codex task, mini coordinator",
-  "status": "stage_3f_genuine_periodic_real_reward_finetuning_smoke_passed_implementation_only",
+  "status": "stage4_bounded_pilot_inconclusive_backend_parity_blocked",
   "research_branch": "codex/learned-flowmap-realcase",
   "reasoning_effort_requested": "low",
   "source_base": "1621bb6e12391086edc3bfc8730ad807c8ad638c",
@@ -31,7 +31,8 @@
     "16 generated-point values and complete repaired-jump pullback against NoLoop finite differences",
     "six new periodic-objective mathematical tests plus13 model/geometry tests passed",
     "two real full two-lookahead/control value-gradient checks before updates",
-    "eight real-log-likelihood periodic WTF regression updates and post-validation passed"
+    "eight real-log-likelihood periodic WTF regression updates and post-validation passed",
+    "bounded five-arm matched-cost pilot, negative/inconclusive, plus exact cache failure replay and backend diagnosis"
   ],
   "checkpoint": {
     "path": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3f/run1/periodic_wtf_tuned.pt",
@@ -48,47 +49,20 @@
     "diagonal_rms": true
   },
   "not_run": [
-    "new calibrated inference comparison",
+    "calibrated real-case inference comparison",
     "held-out intrinsic-anchor evaluation",
     "density-corrected implicit-map sampling",
-    "production shape-recovery gate",
-    "complete eight-update real-objective smoke test",
-    "post-update real-objective validation"
+    "production shape-recovery gate"
   ],
   "scientific_capability_demonstrated": false,
   "cost_advantage_demonstrated": false,
   "acquisition_ntotal_lower_bound": 15984560,
   "acquisition_total_true_calls": null,
   "next_stage": {
-    "name": "3a_real_reward_and_coordinate_parity",
-    "tasks": [
-      "reconstruct same maintained NoLoop target from pinned real inputs",
-      "audit physical phase/polarization export and periodic charts",
-      "build verified differentiable six-dimensional likelihood reward callback",
-      "compare value/gradient parity before any reward tuning",
-      "meter setup/JIT and every true evaluation",
-      "include same-cache resampling/warm-start as the cheap reuse baseline"
-    ],
-    "proposed_resources": {
-      "site": "Caltech only",
-      "cpu": 1,
-      "cpu_affinity_required": true,
-      "cpu_minutes_cap": 20,
-      "resident_gib_cap": 8,
-      "gpu": 0,
-      "true_likelihood_attempted_rows_cap": 128
-    },
-    "launched": true,
-    "stop_conditions": [
-      "missing input or source parity",
-      "memory/time budget exceeded",
-      "nonfinite or discrepant values/gradients",
-      "coordinate or periodic mismatch"
-    ],
-    "next_after_pass": "bounded actual WTF reward fine-tuning with separately declared resource estimate, then training-only corrected-sampler ablation",
-    "completed": true,
-    "result": "results/stage3a/summary.json",
-    "limits": "Local probe only: four values, one held-out gradient, no global neural-endpoint domain validation"
+    "name": "backend_failure_regression_before_any_larger_study",
+    "automatic_execution_authorized": false,
+    "blocker": "valid input: JAX NaN vs NumPy NoLoop finite47.83659196403751",
+    "powered_study_justified": false
   },
   "limitations": [
     "400 fairdraw rows have finite teacher ESS and dependence",
@@ -250,5 +224,85 @@
       "path": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3f/run1/periodic_wtf_tuned.pt",
       "sha256": "71be3106af24277b3f78882b4ddf849fc748be9075055b627da24ec0e93c13e1"
     }
+  },
+  "stage4": {
+    "status": "inconclusive_and_backend_parity_blocked",
+    "total_attempts": 9554,
+    "total_physical_rows": 9554,
+    "per_arm_attempts": {
+      "av": 1941,
+      "av_gmm": 1934,
+      "cache": 1809,
+      "pretrained": 1928,
+      "tuned": 1942
+    },
+    "phase_rows": {
+      "validation_including_failed_attempts": 30,
+      "initial_training": 500,
+      "selfish_adaptation": 4123,
+      "evidence_attempts": 4800,
+      "failure_diagnosis": 101
+    },
+    "measured_cpu_seconds": 242.84,
+    "measured_command_wall_seconds": 266.32,
+    "peak_rss_kib": 2287632,
+    "commands": [
+      {
+        "command": "gate1/time.txt",
+        "cpu_seconds": 3.3,
+        "wall_seconds": 4.8,
+        "peak_rss_kib": 249340
+      },
+      {
+        "command": "run1.time",
+        "cpu_seconds": 5.99,
+        "wall_seconds": 9.95,
+        "peak_rss_kib": 864588
+      },
+      {
+        "command": "run2.time",
+        "cpu_seconds": 14.42,
+        "wall_seconds": 16.99,
+        "peak_rss_kib": 1490164
+      },
+      {
+        "command": "run3.time",
+        "cpu_seconds": 194.96,
+        "wall_seconds": 199.74,
+        "peak_rss_kib": 2287632
+      },
+      {
+        "command": "validation/tests.time",
+        "cpu_seconds": 3.47,
+        "wall_seconds": 7.21,
+        "peak_rss_kib": 247976
+      },
+      {
+        "command": "validation/analysis.time",
+        "cpu_seconds": 0.28,
+        "wall_seconds": 0.45,
+        "peak_rss_kib": 90060
+      },
+      {
+        "command": "replay.time",
+        "cpu_seconds": 3.72,
+        "wall_seconds": 5.6,
+        "peak_rss_kib": 474824
+      },
+      {
+        "command": "diagnose.time",
+        "cpu_seconds": 16.7,
+        "wall_seconds": 21.58,
+        "peak_rss_kib": 1683140
+      }
+    ],
+    "historical_acquisition_rows_lower_bound": 15984560,
+    "historical_acquisition_cpu_seconds": null,
+    "prior_selected_stages_cpu_seconds": 450.3,
+    "prior_selected_stages_wall_seconds": 493.95,
+    "prior_selected_stages_physical_rows": 378,
+    "historical_cost_caveat": "selected prior stages are not exhaustive project history; historical acquisition CPU, hidden row work, and administrative/audit/transfer time remain unknown",
+    "target_gate": "failed: JAX NaN vs finite maintained NoLoop 47.83659196403751 at reconstructed valid point",
+    "decision": "repair and regress backend failure before any larger or powered held-out-anchor study; no estimate or campaign authorized by this result"
   }
 }

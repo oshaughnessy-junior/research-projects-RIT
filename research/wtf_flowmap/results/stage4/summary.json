@@ -1,0 +1,80 @@
+{
+  "status": "inconclusive_and_backend_parity_blocked",
+  "total_attempts": 9554,
+  "total_physical_rows": 9554,
+  "per_arm_attempts": {
+    "av": 1941,
+    "av_gmm": 1934,
+    "cache": 1809,
+    "pretrained": 1928,
+    "tuned": 1942
+  },
+  "phase_rows": {
+    "validation_including_failed_attempts": 30,
+    "initial_training": 500,
+    "selfish_adaptation": 4123,
+    "evidence_attempts": 4800,
+    "failure_diagnosis": 101
+  },
+  "measured_cpu_seconds": 242.84,
+  "measured_command_wall_seconds": 266.32,
+  "peak_rss_kib": 2287632,
+  "commands": [
+    {
+      "command": "gate1/time.txt",
+      "cpu_seconds": 3.3,
+      "wall_seconds": 4.8,
+      "peak_rss_kib": 249340
+    },
+    {
+      "command": "run1.time",
+      "cpu_seconds": 5.99,
+      "wall_seconds": 9.95,
+      "peak_rss_kib": 864588
+    },
+    {
+      "command": "run2.time",
+      "cpu_seconds": 14.42,
+      "wall_seconds": 16.99,
+      "peak_rss_kib": 1490164
+    },
+    {
+      "command": "run3.time",
+      "cpu_seconds": 194.96,
+      "wall_seconds": 199.74,
+      "peak_rss_kib": 2287632
+    },
+    {
+      "command": "validation/tests.time",
+      "cpu_seconds": 3.47,
+      "wall_seconds": 7.21,
+      "peak_rss_kib": 247976
+    },
+    {
+      "command": "validation/analysis.time",
+      "cpu_seconds": 0.28,
+      "wall_seconds": 0.45,
+      "peak_rss_kib": 90060
+    },
+    {
+      "command": "replay.time",
+      "cpu_seconds": 3.72,
+      "wall_seconds": 5.6,
+      "peak_rss_kib": 474824
+    },
+    {
+      "command": "diagnose.time",
+      "cpu_seconds": 16.7,
+      "wall_seconds": 21.58,
+      "peak_rss_kib": 1683140
+    }
+  ],
+  "historical_acquisition_rows_lower_bound": 15984560,
+  "historical_acquisition_cpu_seconds": null,
+  "prior_selected_stages_cpu_seconds": 450.3,
+  "prior_selected_stages_wall_seconds": 493.95,
+  "prior_selected_stages_physical_rows": 378,
+  "historical_cost_caveat": "selected prior stages are not exhaustive project history; historical acquisition CPU, hidden row work, and administrative/audit/transfer time remain unknown",
+  "target_gate": "failed: JAX NaN vs finite maintained NoLoop 47.83659196403751 at reconstructed valid point",
+  "decision": "repair and regress backend failure before any larger or powered held-out-anchor study; no estimate or campaign authorized by this result"
+}

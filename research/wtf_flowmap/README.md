@@ -249,3 +249,14 @@ This periodic checkpoint is not accepted for physical reward tuning. Tests,
 build and follow-up used13.06 CPU /15.20 wall seconds, zero physical rows.
 Old checkpoints and their guards are untouched. `PERIODIC_RESULTS.md` records
 the source/data pins and blocked128-attempt physical parity proposal.
+
+## Latest result: bounded five-arm pilot
+
+See [FIVE_ARM_RESULTS.md](FIVE_ARM_RESULTS.md) and results/stage4/summary.json.
+Four arms completed but all had ESS about one; the cache arm stopped on a JAX NaN
+where maintained NumPy NoLoop is finite. No calibrated inference or cost advantage
+was demonstrated. All setup failures, tests and diagnosis remain charged:9,554
+physical attempts,242.84 CPU /266.32 summed command wall seconds, one CPU, peak
+2.18 GiB. Historical teacher acquisition >=15,984,560 rows remains additional.
+No larger campaign was started. This section supersedes earlier prospective
+next-stage wording above; prior stage records are preserved as history.
