@@ -1,0 +1,25 @@
+{
+  "status": "journaled_before_execution",
+  "source_start": "48bcb759cf2cdcb446d8067c71445366dfe89cdc",
+  "scope": "only four missing stage9 stored-state h/2 endpoints and pure-neural control/loss checks",
+  "cpu_cap_seconds": 120,
+  "process_cpu_soft_hard": [
+    100,
+    105
+  ],
+  "dispatch_cpu_reserve_at": 90,
+  "untimed_coordination_reserve_cpu_seconds": 15,
+  "cpu": 1,
+  "rss_gib": 8,
+  "new_physical_endpoint_cap": 4,
+  "work_equivalent_cap": 4,
+  "scalar_vjp_seeds": 0,
+  "previous_raw_sha256": "b13a9d95ccf2ca4df8d46f6ed43cb5389a36916686f2a0a51c83bf1c4687e93d",
+  "previous_raw": "stage9/run1/summary.json; immutable evidence",
+  "stencils": "h=5e-5, stateaxis4=inclination and stateaxis5=logdistance; signs plus/minus only",
+  "reuse": "20 completed native physical stencil values, all old/new physical gradients, preflight pass; no redispatch of any completed stencil",
+  "dtype": "float64",
+  "stop": "first budget/numerical/source failure; no full-suite retry",
+  "forbidden": "other31 historical endpoints, training, checkpoint replacement, inference, production default or PR445 change",
+  "script_sha256": "3060db258c702f1217723a31144dbe715f3586b4aea0d0235262787eb44a181e"
+}

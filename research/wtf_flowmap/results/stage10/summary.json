@@ -1,0 +1,73 @@
+{
+  "status": "two_selected_full_bridges_passed_no_training",
+  "completed": {
+    "preflight_states": 1,
+    "historical_training_targets": 1,
+    "total_historical_training_targets": 32,
+    "other_historical_training_targets_unexamined": 31,
+    "new_physical_endpoints": 4,
+    "reused_native_stencils": 20,
+    "other_reused_values": "all stage9 old/Q8/Q16 physical gradients and prior preflight pass"
+  },
+  "remaining_authorized_checks": 0,
+  "raw_reward_shifts_nat": [
+    0.24180033469565387,
+    0.4986873256088984
+  ],
+  "new_completed_training_state": {
+    "full_gradient_error_ratio": 0.0007598143575442227,
+    "fd_refinement_ratio": 9.080324774615441e-06,
+    "control_gradient_fd_passed": true,
+    "cached_ad_replay_passed": true,
+    "tuned_loss_backward_finite": true
+  },
+  "receipts": [
+    {
+      "file": "continuation.time",
+      "cpu_seconds": 24.099999999999998,
+      "command_wall_seconds": 26.49
+    },
+    {
+      "file": "analysis.time",
+      "cpu_seconds": 0.93,
+      "command_wall_seconds": 1.33
+    }
+  ],
+  "total_timed_cpu_seconds": 25.03,
+  "total_command_wall_seconds": 27.82,
+  "peak_rss_kib": 991304,
+  "untimed_coordination_reserve_cpu_seconds": 15,
+  "budget_cpu_seconds": 120,
+  "budget_endpoint_calls": 4,
+  "no_scheduler_job": true,
+  "checkpoint_files_unchanged": true,
+  "optimizer_steps": 0,
+  "inference_run": false,
+  "pr445_changed": false,
+  "production_defaults_changed": false,
+  "cumulative_identified": {
+    "timed_cpu_seconds": 1568.92,
+    "summed_command_wall_seconds": 1741.82,
+    "actual_real_endpoint_dispatch_rows": 10052,
+    "attempted_endpoint_dispatch_rows": 10075,
+    "prior_forward_jvp_lanes": 42,
+    "scalar_reverse_vjp_seeds": 6,
+    "stage9_and10_work_equivalents": 62,
+    "teacher_sampler_rows_lower_bound": 15984560,
+    "full_cold_cost_and_project_wall_time_unknown": true
+  },
+  "recommendation": "Keep old checkpoint as explicitly old-recipe baseline and warm start. Prefer small separately authorized Q8 retuning for a Q8-trained label; neither global historical gradient consistency nor posterior improvement established.",
+  "next_stage_proposed_not_authorized": {
+    "cpu_seconds": 300,
+    "cpu": 1,
+    "rss_gib": 8,
+    "work_equivalents": 20,
+    "physical_endpoints": 12,
+    "scalar_vjp_seeds": 8,
+    "max_updates": 2,
+    "batch": 4,
+    "training_value_vjp_endpoints": 8,
+    "validation_value_only_endpoints": 4,
+    "no_inference": true
+  }
+}

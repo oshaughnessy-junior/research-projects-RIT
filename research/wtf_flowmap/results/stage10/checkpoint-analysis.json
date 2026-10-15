@@ -1,0 +1,40 @@
+{
+  "status": "pure_checkpoint_cached_target_analysis_passed",
+  "physical_evaluations": 0,
+  "optimizer_steps": 0,
+  "checkpoint_writes": 0,
+  "checkpoints": {
+    "pretrained_sha256": "a63d634bf014ed43c3c46be3318f2ad3459e9c943975320a3960a79fc73ef4ea",
+    "tuned_sha256": "71be3106af24277b3f78882b4ddf849fc748be9075055b627da24ec0e93c13e1"
+  },
+  "metadata": {
+    "updates_completed": 8,
+    "reward_scale": 0.001,
+    "beta": 1.0,
+    "adam_lr": 1e-05,
+    "implementation_validation_only": true,
+    "source_checkpoint_sha256": "a63d634bf014ed43c3c46be3318f2ad3459e9c943975320a3960a79fc73ef4ea"
+  },
+  "student_change_from_pretrained_l2": 0.002805142667758647,
+  "base_unchanged": true,
+  "cases": [
+    {
+      "name": "original_preflight0",
+      "raw_reward_shift_nat": 0.24180033469565387,
+      "full_target_delta_l2": 0.014996688541005743,
+      "full_target_relative_delta_l2": 0.00042982724149758845,
+      "student_diagonal_loss_old_cached_target": 1205.8879852341752,
+      "student_diagonal_loss_q8_cached_target": 1206.6645885283638,
+      "scope": "two cached targets only, not training trajectory or posterior quality"
+    },
+    {
+      "name": "actual_first_training_member0",
+      "raw_reward_shift_nat": 0.4986873256088984,
+      "full_target_delta_l2": 0.008973118089650973,
+      "full_target_relative_delta_l2": 0.015853651887188253,
+      "student_diagonal_loss_old_cached_target": 0.39204158709101755,
+      "student_diagonal_loss_q8_cached_target": 0.39234568582099266,
+      "scope": "two cached targets only, not training trajectory or posterior quality"
+    }
+  ]
+}

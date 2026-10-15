@@ -1,0 +1,12 @@
+{
+  "status": "journaled_before_execution",
+  "purpose": "source/checkpoint and cached-target analysis only; no new or historical likelihood endpoints",
+  "continuation_main_cpu_receipt_seconds": 24.1,
+  "analysis_cpu_soft_hard": [
+    15,
+    16
+  ],
+  "analysis_physical_endpoint_cap": 0,
+  "total_stage_cpu_cap": 120,
+  "coordination_reserve_cpu_seconds": 15
+}

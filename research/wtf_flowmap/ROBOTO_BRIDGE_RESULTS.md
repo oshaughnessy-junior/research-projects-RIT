@@ -1,5 +1,7 @@
 # Complete reward/control bridge recheck (stage9)
 
+Update: the separately budgeted [four-endpoint continuation](ROBOTO_BRIDGE_CONTINUATION.md) now completes both selected bridges. This original partial-stage record and its costs remain unchanged.
+
 This stage audits the existing periodic learned-map objective under the already
 verified roboto reflected-Q8 plus cubic recipe. It does not train, replace a
 checkpoint, run inference, change a production default, or modify draft PR445.
