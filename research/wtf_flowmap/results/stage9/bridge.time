@@ -1,0 +1,23 @@
+	Command being timed: "timeout 280 /cvmfs/software.igwn.org/conda/envs/igwn/bin/python /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage9/source/recheck_roboto_bridge.py --output /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage9/run1 --checkpoint /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3d/repair1/accepted.pt --tuned /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3f/run1/periodic_wtf_tuned.pt --training /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/final_seed261015 --inventory /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/research/wtf_flowmap/results/case_inventory.json --patched-core /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage5/retry/core_retry.py --journal /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage9/source/journal.json"
+	User time (seconds): 243.95
+	System time (seconds): 3.08
+	Percent of CPU this job got: 98%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 4:10.09
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 2616468
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 871
+	Minor (reclaiming a frame) page faults: 1629238
+	Voluntary context switches: 86525
+	Involuntary context switches: 17753
+	Swaps: 0
+	File system inputs: 120640
+	File system outputs: 9304
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

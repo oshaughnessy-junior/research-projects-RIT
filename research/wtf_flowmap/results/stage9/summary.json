@@ -1,0 +1,61 @@
+{
+  "status": "budget_stopped_partial_bridge_not_certified",
+  "cases": [
+    {
+      "name": "original_preflight0",
+      "full_check": "passed",
+      "old_to_new_gradient_error_ratio": 0.6212882204543622,
+      "raw_log_reward_shift": 0.24180033469565387,
+      "q8_q16_gradient_error_ratio": 0.009918907138581538,
+      "native_raw_value_difference": -7.223178215554071e-06
+    },
+    {
+      "name": "actual_first_training_member0",
+      "full_check": "incomplete: four final FD probes and control/loss checks not run",
+      "old_to_new_gradient_error_ratio": 0.7283184559166301,
+      "raw_log_reward_shift": 0.4986873256088984,
+      "q8_q16_gradient_error_ratio": 0.016904033351820977,
+      "native_raw_value_difference": 4.968393113813363e-06
+    }
+  ],
+  "work_equivalents": 58,
+  "cap": 64,
+  "endpoint_dispatches": 52,
+  "scalar_vjp_seeds": 6,
+  "unrun_probes": 4,
+  "receipts": [
+    {
+      "name": "import_failure.time",
+      "cpu_seconds": 1.58,
+      "wall_seconds": 2.56
+    },
+    {
+      "name": "bridge.time",
+      "cpu_seconds": 247.03,
+      "wall_seconds": 250.09
+    }
+  ],
+  "total_timed_cpu_seconds": 248.61,
+  "total_command_wall_seconds": 252.65,
+  "peak_rss_kib": 2616468,
+  "prior_reserved_untimed_coordination_cpu_seconds": 35,
+  "optimizer_steps": 0,
+  "checkpoint_writes": 0,
+  "inference_run": false,
+  "production_defaults_changed": false,
+  "pr445_changed": false,
+  "historical_first_training_gradient_norm": 5573.794392712065,
+  "replayed_old_first_training_gradient_norm": 5573.794392712092,
+  "checkpoint_validity": "Original geometry/weights unchanged. First full new bridge passes; historical first-training gradient norm faithfully replays; selected old/new pulled-back gradients within declared tolerance. Raw reward recipe differs by .242/.499nat. New bridge incomplete and other31 old training targets not audited: no Q8-trained, calibration or efficiency claim.",
+  "remaining": "Finish four stored-state h/2 physical FD probes and pure-neural control/loss checks before declaring second-state full pass; separately assess remaining old training targets before any training decision.",
+  "cumulative_identified": {
+    "timed_cpu_seconds": 1543.89,
+    "summed_command_wall_seconds": 1714.0,
+    "actual_real_endpoint_dispatch_rows": 10048,
+    "attempted_endpoint_dispatch_rows": 10071,
+    "prior_forward_jvp_lanes": 42,
+    "new_scalar_reverse_vjp_seeds": 6,
+    "teacher_sampler_rows_lower_bound": 15984560,
+    "full_project_cost_unknown": true
+  }
+}

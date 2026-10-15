@@ -1,0 +1,36 @@
+{
+  "status": "journaled_before_execution",
+  "source_start": "fcdcd8ed5c1ccd7358e4ecd937518db935639e79",
+  "scope": "two-state complete original frozen-map two-lookahead physical reward/control pullback; no updates or inference",
+  "cpu_cap_seconds": 300,
+  "process_cpu_soft_hard": [
+    260,
+    265
+  ],
+  "coordination_reserve_cpu_seconds": 35,
+  "cpu": 1,
+  "rss_gib": 8,
+  "we_cap": 64,
+  "planned_we": 62,
+  "reserve_we": 2,
+  "we_definition": "Each attempted endpoint primal costs1WE; one scalar reverse VJP seed costs1 additionalWE (all six physical derivatives); each independent NoLoop dense FD endpoint costs1WE. Max78465 time nodes. Not FLOPs or interchangeable with previous forward-mode lane costs.",
+  "allocation_per_state": {
+    "q8_value_vjp": 2,
+    "old_value_vjp": 2,
+    "q16_value_vjp": 2,
+    "native_baseline": 1,
+    "six_axis_two_step_native_fd": 24
+  },
+  "states": [
+    "seed261040 preflight0 t=.25 tau=.625",
+    "seed261041 first actual training batch member0; exact draw order"
+  ],
+  "dtype": "float64 explicitly required",
+  "paper_source": "stage8/paper-provenance.json; paper head d668ff9c79930783d18725f74e8fa2cf96bb852e",
+  "method": "existing native reflected Q8 + cubic, Q16 reference; isolated already-reviewed bounded integral-doubling retry",
+  "physical_contract": "same full21-mode bank, fixed614-node time window [-.074951171875,.07470703125], no added parameter prior or decoder Jacobian",
+  "checkpoint_sha256": "71be3106af24277b3f78882b4ddf849fc748be9075055b627da24ec0e93c13e1",
+  "stop": "first unresolved numerical/derivative/support/resource failure; charge attempts before dispatch; no retraining, checkpoint replacement or automatic inference",
+  "limitations": "Two selected historical states cannot certify all32 old training endpoints or posterior quality",
+  "local_setup_failure": "py_compile cache path outside sandbox; corrected by ast.parse, no physical computation"
+}
