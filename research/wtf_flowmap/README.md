@@ -1,29 +1,32 @@
-Stage 3d rebuilt both periodic models. Representation, derivative and support
-contracts passed, but the one-step teacher RMS .277704 exceeded .15. **The stage
-failed its solver gate.** No physical evaluation ran and the parity gate stays
-blocked. See `PERIODIC_RESULTS.md` for measured cost, checkpoint/source/data pins
-and the independent read-only confirmation.
-
-Stage 3c diagnosed the failure as a phase-chart representation defect in the
-frozen reference. A validated forward-only replay and nine local geometry tests
-used zero likelihood calls and no training. See `CHART_REPAIR.md` for the proposed
-periodic architecture, invalidated checkpoint contracts and bounded next gates.
-
 # Learned flow-map research on S250114ax
 
-Stage 3b passed the Torch/JAX bridge and completed six true-log-likelihood
-objective updates, then stopped at the strict angular-chart guard. The complete
-eight-update smoke test did not pass; see STAGE3B.md.
-Stage 3a passed a limited real-likelihood parity probe after one adapter repair.
-A genuine six-dimensional neural drift was pretrained on
-verified real RIFT exports, and a neural two-time map was distilled from that
-learned drift. **Scientific capability and end-to-end cost advantage remain
-unestablished.** This is separate from PR445's heuristic pilot, which is preserved
-unchanged. No production sampler or default is changed here.
+The periodic model-only long-jump repair passes every unchanged sampled gate:
+reserved final one-step RMS .144216 (<.15), with the teacher frozen. A matched
+extra-duration control failed; half-endpoint coverage passed. The original
+five-minute allocation has used31.05 CPU seconds total, zero physical rows in
+this model-only allocation. See `DISTILL_REPAIR_RESULTS.md` for all attempts,
+costs, checkpoint/source/data pins and limitations.
 
-See `PLAN.md` for the staged protocol and `STATE.json` for the exact next action.
+The current learned drift and two-time map use `PeriodicVelocity`: six state
+coordinates, nine periodic/nonangular features, and lifted equivariant jumps.
+The drift was pretrained from real exports; the map was distilled from that
+frozen drift. These are neural learned objects, not heuristic candidate generators.
+The accepted checkpoint is **model-gate-only**, not a WTF reward-tuned or calibrated
+inference model. No normalized log q or posterior-draw contract is supplied.
 
-## Actual learned objects and algorithm scope
+The new-coordinate physical-parity gate, periodic actual-WTF loss adaptation,
+and inference remain unlaunched. Scientific capability and end-to-end cost
+advantage remain unestablished. PR445's heuristic negative pilot is preserved
+unchanged; no production sampler/default is changed. `PLAN.md` describes the
+protocol; `STATE.json` records the exact current action boundary.
+
+Historical progression is retained below: old-coordinate parity passed locally
+(stage3a), six old-coordinate real-objective updates stopped at the chart guard
+(stage3b), validated replay diagnosed that defect(stage3c), and the first periodic
+build failed one-step accuracy(stage3d). The subsequent repair now passes; it does
+not relabel any earlier failed checkpoint or recreate the unsaved original endpoint.
+
+## Original chart implementation and algorithm scope (historical)
 
 - `Velocity(dim=6)` learns the stochastic-interpolant flow-matching velocity on
   real posterior training data; it is not a fitted Gaussian or kernel surrogate.

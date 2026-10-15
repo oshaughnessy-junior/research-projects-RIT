@@ -1,6 +1,6 @@
 {
   "owner": "current Codex task, mini coordinator",
-  "status": "stage_3d_periodic_representation_passes_but_one_step_solver_gate_fails",
+  "status": "periodic_model_solver_repair_passed_selection_and_reserved_final_gates",
   "research_branch": "codex/learned-flowmap-realcase",
   "reasoning_effort_requested": "low",
   "source_base": "1621bb6e12391086edc3bfc8730ad807c8ad638c",
@@ -23,11 +23,17 @@
     "nine untrained periodic-geometry mathematical tests passed on mini",
     "both periodic models retrained from scratch on identical pinned real data",
     "13 model/geometry tests and actual-trained shift/derivative contracts passed",
-    "independent read-only validation confirms long-jump solver error"
+    "independent read-only validation confirms long-jump solver error",
+    "matched duration vs half-endpoint map distillation continuation against unchanged teacher",
+    "all original sampled gates passed on once-only reserved independent validation"
   ],
   "checkpoint": {
-    "path": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/final_seed261015/pretrained.pt",
-    "sha256": "4ce26989ccdcfcdb1702dd5e270d79a772487adb2b348b8b471bcaf3a8cf3158"
+    "path": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3d/repair1/accepted.pt",
+    "sha256": "a63d634bf014ed43c3c46be3318f2ad3459e9c943975320a3960a79fc73ef4ea",
+    "geometry": "T3_R3_v1",
+    "drift_width": 64,
+    "map_width": 64,
+    "acceptance": "sampled model-only solver gates; not physical parity or reward tuning"
   },
   "model_only_gates": {
     "one_step_rms": true,
@@ -96,7 +102,9 @@
     "CHART_REPAIR.md",
     "results/stage3c/summary.json",
     "PERIODIC_RESULTS.md",
-    "results/stage3d/summary.json"
+    "results/stage3d/summary.json",
+    "DISTILL_REPAIR_RESULTS.md",
+    "results/stage3d_repair/summary.json"
   ],
   "checkpoint_reproduced_identically_in_three_6000_step_runs": true,
   "mathematical_contract_tests_unique": 4,
@@ -106,7 +114,7 @@
     "cpu_seconds_sum": 24.16,
     "new_true_likelihood_rows": 0
   },
-  "next_after_stage3a": "Periodic representation rebuilt; solver gate failed. Physical parity and reward tuning remain blocked pending distillation repair.",
+  "next_after_stage3a": "Model-only periodic solver gates now pass; separate new-coordinate physical parity remains unlaunched, before any actual reward tuning or inference.",
   "stage3a_cost": {
     "attempted_true_rows": 116,
     "measured_process_cpu_seconds": 289.56,
@@ -161,5 +169,42 @@
     "wall_seconds": 15.2,
     "physical_parity_launched": false,
     "next": "Separately bounded teacher-to-map distillation repair before physical parity"
+  },
+  "stage3d_repair": {
+    "status": "passed_selection_and_untouched_final_gates",
+    "result": "results/stage3d_repair/summary.json",
+    "checkpoint": {
+      "path": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3d/repair1/accepted.pt",
+      "sha256": "a63d634bf014ed43c3c46be3318f2ad3459e9c943975320a3960a79fc73ef4ea"
+    },
+    "source_checkpoint_sha256": "394ad4a1a56e2f648c11c4d14ff5a0a4a7b9a16cf39dfab3d6b29787fb580a6d",
+    "new_physical_rows": 0,
+    "repair_cpu_seconds": 17.99,
+    "cumulative_original_allocation_cpu_seconds": 31.05,
+    "remaining_original_allocation_cpu_seconds": 268.95,
+    "final_one_step_rms": 0.1442161786908772,
+    "teacher_unchanged": true,
+    "parity_launched": false
+  },
+  "legacy_chart_checkpoint": {
+    "path": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/final_seed261015/pretrained.pt",
+    "sha256": "4ce26989ccdcfcdb1702dd5e270d79a772487adb2b348b8b471bcaf3a8cf3158"
+  },
+  "current_model_only_gates": {
+    "one_step": true,
+    "semigroup": true,
+    "diagonal": true,
+    "teacher_refinement": true,
+    "support": true,
+    "contracts": true
+  },
+  "current_next_stage": {
+    "name": "new_periodic_coordinate_physical_parity",
+    "launched": false,
+    "proposed_cpu_seconds": 600,
+    "proposed_memory_gib": 8,
+    "attempted_rows_cap": 128,
+    "planned_attempts": 123,
+    "automatic_execution_authorized": false
   }
 }

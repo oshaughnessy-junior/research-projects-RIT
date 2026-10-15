@@ -1,0 +1,222 @@
+{
+  "status": "passed_selection_and_untouched_final_gates",
+  "parent_commit": "34a39f4f46d9b337f965f8ed8f9ddf8e8a094fb4",
+  "original_allocation_cpu_seconds": 300,
+  "prior_cpu_seconds": 13.059999999999999,
+  "repair_complete_cpu_seconds": 17.99,
+  "cumulative_cpu_seconds": 31.05,
+  "remaining_cpu_seconds": 268.95,
+  "repair_wall_seconds": 20.44,
+  "cumulative_wall_seconds": 35.64,
+  "repair_peak_rss_kib": 321424,
+  "cumulative_peak_rss_kib": 374852,
+  "administrative_and_local_test_process_cpu_seconds": null,
+  "new_physical_rows": 0,
+  "physical_parity_run": false,
+  "inference_run": false,
+  "teacher_unchanged": true,
+  "teacher_tensor_sha256": "fd2e2e6e4d1ce1d8ad8dbe10613606ccf939293f00d38b67958c709d893ae217",
+  "accepted_checkpoint": {
+    "path": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3d/repair1/accepted.pt",
+    "sha256": "a63d634bf014ed43c3c46be3318f2ad3459e9c943975320a3960a79fc73ef4ea"
+  },
+  "attempts": [
+    {
+      "label": "duration_control_6000",
+      "steps_planned": 6000,
+      "steps_completed": 6000,
+      "width": 64,
+      "endpoint_half": false,
+      "optimizer": "Adam lr1e-3",
+      "status": "selection_failed",
+      "last_loss": 0.002442107003044003,
+      "training_wall_seconds": 7.738276349002263,
+      "metrics": {
+        "one_step_rms": 0.22304124394813943,
+        "semigroup_rms": 0.02584945053098776,
+        "diagonal_rms": 0.10623160855569497,
+        "coordinate_rms": [
+          0.266814317545936,
+          0.2680251528674372,
+          0.24724175380069488,
+          0.18997587085325518,
+          0.20092488873036216,
+          0.13366708328634808
+        ],
+        "map_support_failures": 0,
+        "teacher_support_failures": 0,
+        "nonfinite_state_rows": 0,
+        "contract_max_error": 7.105427357601002e-15
+      },
+      "gates": {
+        "one_step": false,
+        "semigroup": true,
+        "diagonal": true,
+        "teacher_refinement": true,
+        "support": true,
+        "contracts": true
+      },
+      "checkpoint": {
+        "path": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3d/repair1/duration_control_6000.pt",
+        "sha256": "c32383699b58024d60f5e76bf4e996800e53e11c7a1991c5641b103834af5b52"
+      }
+    },
+    {
+      "label": "endpoint_half_6000",
+      "steps_planned": 6000,
+      "steps_completed": 6000,
+      "width": 64,
+      "endpoint_half": true,
+      "optimizer": "Adam lr1e-3",
+      "status": "selection_passed",
+      "last_loss": 0.012647342395575108,
+      "training_wall_seconds": 6.717195615987293,
+      "metrics": {
+        "one_step_rms": 0.14762047667635456,
+        "semigroup_rms": 0.0243241543720184,
+        "diagonal_rms": 0.16571591303377384,
+        "coordinate_rms": [
+          0.18063282460018998,
+          0.18559522926988203,
+          0.11825912887272395,
+          0.13581951435565118,
+          0.14573441329855483,
+          0.10003171043787712
+        ],
+        "map_support_failures": 0,
+        "teacher_support_failures": 0,
+        "nonfinite_state_rows": 0,
+        "contract_max_error": 1.1324274851176597e-14
+      },
+      "gates": {
+        "one_step": true,
+        "semigroup": true,
+        "diagonal": true,
+        "teacher_refinement": true,
+        "support": true,
+        "contracts": true
+      },
+      "checkpoint": {
+        "path": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3d/repair1/endpoint_half_6000.pt",
+        "sha256": "d5f768fd117163a07fdf1a74c818abca446ba20de41cfe04806812a636a8873d"
+      }
+    }
+  ],
+  "baseline_selection": {
+    "metrics": {
+      "one_step_rms": 0.27198090907624706,
+      "semigroup_rms": 0.03068834345019131,
+      "diagonal_rms": 0.1390986400457196,
+      "coordinate_rms": [
+        0.3077406539966243,
+        0.3346469060264574,
+        0.30129452905993814,
+        0.24035111981802965,
+        0.25225504077260735,
+        0.1580163534001446
+      ],
+      "map_support_failures": 0,
+      "teacher_support_failures": 0,
+      "nonfinite_state_rows": 0,
+      "contract_max_error": 7.049916206369744e-15
+    },
+    "gates": {
+      "one_step": false,
+      "semigroup": true,
+      "diagonal": true,
+      "teacher_refinement": true,
+      "support": true,
+      "contracts": true
+    }
+  },
+  "reserved_final": {
+    "metrics": {
+      "one_step_rms": 0.1442161786908772,
+      "semigroup_rms": 0.0316251506178293,
+      "diagonal_rms": 0.16600012401067848,
+      "coordinate_rms": [
+        0.1750506947411188,
+        0.17140461593884285,
+        0.13464334897962413,
+        0.13284415204548725,
+        0.1384916722710707,
+        0.09905153021095908
+      ],
+      "map_support_failures": 0,
+      "teacher_support_failures": 0,
+      "nonfinite_state_rows": 0,
+      "contract_max_error": 1.1324274851176597e-14,
+      "teacher_refinement_rms": 4.41551082439526e-08
+    },
+    "gates": {
+      "one_step": true,
+      "semigroup": true,
+      "diagonal": true,
+      "teacher_refinement": true,
+      "support": true,
+      "contracts": true
+    },
+    "payload": {
+      "path": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3d/repair1/reserved_final_validation.pt",
+      "sha256": "7c05bb519391f5d514a9505a6a6379b2bf9c3f973e2004642cb5201baf846a5a"
+    }
+  },
+  "seed_roles": {
+    "teacher_cache": 261021,
+    "training_draws": 261024,
+    "capacity_initialization": 261025,
+    "reused_selection_validation": 261020,
+    "reserved_final_validation": 261022
+  },
+  "source_sha256": {
+    "repair_periodic_distillation.py": "8ed86b375aeb7124831d313ca1891833c834d4917d881b9d4c5424da3154d2b2",
+    "periodic_model.py": "878d90069b3c9691a9b87f403660f2f341feff84cc9e481a110d7f55cfae90de",
+    "test_periodic_model.py": "a75a0282eeea806cfccdd859c7fd28332175b721fd2208afb0d663f06fcea439",
+    "distill_diagnostics.py": "46f1a8dd10700af7a988b709b20fad4e7f3fb4611c311a9512b2f24aa9a5d229",
+    "model.py": "5510640a980b8b2bba10d36eb8079ab0a6d44f83a1d7f330fda620387b4075da"
+  },
+  "teacher_cache": {
+    "path": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3d/repair1/teacher_cache.pt",
+    "sha256": "80aa74d157cb968419a19f80e324abaa4f28ec1e298c58ab7a333ba212f844ae",
+    "rows": 4096,
+    "steps": 32
+  },
+  "prior_timing_records": [
+    {
+      "path": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3d/checkpoint_validation.time",
+      "cpu_seconds": 1.13
+    },
+    {
+      "path": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3d/tests.time",
+      "cpu_seconds": 2.83
+    },
+    {
+      "path": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3d/train.time",
+      "cpu_seconds": 9.1
+    }
+  ],
+  "all_attempts_recorded": true,
+  "capacity_change_executed": false,
+  "additional_duration_candidates_executed": false,
+  "local_mathematical_tests": {
+    "count": 2,
+    "passed": true,
+    "test_body_seconds": 0.0,
+    "command": "PYTHONPYCACHEPREFIX=/tmp/wtf-pycache python3 -m unittest discover -s learned-flowmap/research/wtf_flowmap -p test_distill_diagnostics.py -v"
+  },
+  "limitations": [
+    "narrow sampled one-step margin, no uniform accuracy guarantee",
+    "finite-data frozen drift is not exact posterior truth",
+    "selection validation reused explicitly; reserved confirmation inspected once",
+    "same-anchor only; no physical likelihood/parity/reward tuning/inference",
+    "old actual WTF Euclidean semigroup loss needs periodic adaptation",
+    "no normalized logq or posterior/evidence calibration"
+  ],
+  "next_gate": {
+    "launched": false,
+    "cpu_seconds_cap": 600,
+    "memory_gib_cap": 8,
+    "attempted_rows_cap": 128,
+    "planned_attempts": 123
+  }
+}

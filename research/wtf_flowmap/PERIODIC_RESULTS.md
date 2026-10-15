@@ -1,3 +1,7 @@
+**Follow-up:** the separately recorded model-only continuation passed the unchanged
+solver gates. See `DISTILL_REPAIR_RESULTS.md`. This file preserves the original
+failed build and its complete costs; it has not been relabelled as a pass.
+
 # Periodic model rebuild: representation contracts pass, solver gate fails
 
 **This stage did not pass.** Both learned models were rebuilt from scratch on
