@@ -1,5 +1,10 @@
 # Common-contract validation stopped: physical reconstruction mismatch remains
 
+**Latest result:** [ROBOTO_REUSE_RESULTS.md](ROBOTO_REUSE_RESULTS.md). The existing
+roboto reflected-Q8/cubic recipe passes the declared three-point local contract
+with the same converged quadrature and stricter tolerances. Earlier coarse-sinc
+failures remain preserved; no inference, production default or checkpoint changed.
+
 **The contract is not resolved.** The authorized array-only gate passed. At the
 first physical point, integration and all six derivative components converged on
 the shared frozen grids, but independent dense physical gathering disagreed in

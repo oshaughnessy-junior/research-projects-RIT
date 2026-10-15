@@ -1,6 +1,6 @@
 {
   "owner": "current Codex task, mini coordinator",
-  "status": "stage7_common_contract_unresolved_stopped_at_physical_reconstruction_mismatch",
+  "status": "stage8_existing_roboto_Q8_cubic_local_contract_gate_passed",
   "research_branch": "codex/learned-flowmap-realcase",
   "reasoning_effort_requested": "low",
   "source_base": "1621bb6e12391086edc3bfc8730ad807c8ad638c",
@@ -60,8 +60,9 @@
   "acquisition_total_true_calls": null,
   "next_stage": {
     "automatic_execution_authorized": false,
-    "decision": "stop research validation here; Richard may decide on separately scoped numerical reconstruction/contract work",
-    "inference_justified": false
+    "name": "bounded_full_reward_gradient_recheck_under_existing_roboto_recipe",
+    "larger_inference_authorized": false,
+    "scientific_inference_capability_demonstrated": false
   },
   "limitations": [
     "400 fairdraw rows have finite teacher ESS and dependence",
@@ -628,6 +629,129 @@
       "stage7_additional_directional_ad_lanes": 6,
       "cumulative_work_equivalents": null,
       "synthetic_callback_rows_lower_bound": 3740858,
+      "preexisting_teacher_sampler_rows_lower_bound": 15984560,
+      "historical_teacher_cpu_and_hidden_work": null,
+      "caveat": "sum of identified nonoverlapping command receipts, not complete project cost: earlier untimed checks, unaudited synthetic validations, setup/hidden teacher work, coordinator edits/admin/SSH/transfers and gaps remain unknown; synthetic and physical row units are not interchangeable"
+    }
+  },
+  "stage8": {
+    "status": "declared_local_three_point_gate_closed_using_existing_roboto_recipe",
+    "production_defaults_changed": false,
+    "shared_runtime_changed": false,
+    "inference_rerun": false,
+    "new_production_pr": false,
+    "paper": {
+      "repository": "https://github.com/oshaughnessy-junior/RIFT_roboto_paper",
+      "head": "d668ff9c79930783d18725f74e8fa2cf96bb852e",
+      "branch": "codex/paper3-transverse-o4b",
+      "primary_manuscript": "RIFT for the O4 era: operating points, calibration marginalization, and cross-code validation, paper3_core_operating.tex",
+      "companion": "Scaling RIFT1, working AppendixD and arXiv2609.37393v1; working source and posted version not conflated"
+    },
+    "reused_method": {
+      "candidate": "native reflected Q pregrid factor8 + native four-tap cubic",
+      "reference": "same existing builder at factor16, numerical convergence check only",
+      "rift_base": "1621bb6e12391086edc3bfc8730ad807c8ad638c",
+      "pr261_merge": "552d84b9f570f64404f6804d63ca38c826cfccca",
+      "pr274_merge": "b8200920c64bf108da8a5433b4feea392df5d3c5",
+      "library_entry": "core.build_likelihood_data -> core.build_q_time_pregrid -> factored_likelihood.build_reflected_q_pregrid",
+      "new_interpolation_implementation": false
+    },
+    "original_nan": "deliberate first integral-certificate refusal, not nonfinite physical primitives; previous coarse-sinc failures remain preserved",
+    "metrics": [
+      {
+        "case": "reconstructed_failure",
+        "q8_value": 47.830978325412495,
+        "q8_reconstruction_difference": 2.9354247033097636e-08,
+        "q16_reconstruction_difference": -6.1847345023124944e-09,
+        "q8_minus_q16_value": -4.8951179110190424e-08,
+        "q8_q16_gradient_error_over_tolerance": 0.012114969678224318,
+        "mixed_ad_fd_max_error": 4.0761825689425955e-09,
+        "mixed_ad_fd_tolerance": 1.2243503270607252e-05,
+        "mixed_fd_self_change": 3.553530802946625e-10
+      },
+      {
+        "case": "earlier_parity0",
+        "q8_value": 2862.271481759549,
+        "q8_reconstruction_difference": 1.8402969089947874e-05,
+        "q16_reconstruction_difference": -1.9148515093547758e-06,
+        "q8_minus_q16_value": -9.681641813585884e-05,
+        "q8_q16_gradient_error_over_tolerance": 0.4284210030137146,
+        "mixed_ad_fd_max_error": 6.720349017444276e-07,
+        "mixed_ad_fd_tolerance": 1.4178434157378743e-05,
+        "mixed_fd_self_change": 6.812115316279233e-10
+      },
+      {
+        "case": "earlier_parity3",
+        "q8_value": 2861.471247894846,
+        "q8_reconstruction_difference": -1.5045966392790433e-05,
+        "q16_reconstruction_difference": 1.0885878509725444e-07,
+        "q8_minus_q16_value": -5.9467558003234444e-05,
+        "q8_q16_gradient_error_over_tolerance": 0.5286379204558076,
+        "mixed_ad_fd_max_error": 7.085084017233699e-07,
+        "mixed_ad_fd_tolerance": 1.3976333317394562e-05,
+        "mixed_fd_self_change": 2.1259438653942198e-10
+      }
+    ],
+    "max_q8_physical_reconstruction_error": 1.8402969089947874e-05,
+    "max_q8_q16_value_difference": 9.681641813585884e-05,
+    "max_q8_q16_gradient_error_over_tolerance": 0.5286379204558076,
+    "consumed": {
+      "work_equivalents": 60,
+      "cap_work_equivalents": 64,
+      "actual_endpoint_assembly_dispatches": 24,
+      "jvp_directions": 36,
+      "physical_time_nodes": 1428342,
+      "directional_time_node_equivalents": 1524174,
+      "cpu_seconds": 132.16,
+      "summed_command_wall_seconds": 158.56,
+      "peak_rss_kib": 1809908
+    },
+    "commands": [
+      {
+        "command": "regressions.time",
+        "cpu_seconds": 16.91,
+        "command_wall_seconds": 31.53,
+        "peak_rss_kib": 1048128
+      },
+      {
+        "command": "regressions64.time",
+        "cpu_seconds": 14.33,
+        "command_wall_seconds": 21.3,
+        "peak_rss_kib": 1048652
+      },
+      {
+        "command": "physical.time",
+        "cpu_seconds": 100.92,
+        "command_wall_seconds": 105.72999999999999,
+        "peak_rss_kib": 1809908
+      }
+    ],
+    "regressions": {
+      "existing_selected_tests": "5 passed in required float64,16 deselected",
+      "first_run_precision_miss": "5 passed but float32 warnings; not accepted as precision gate; costs and raw log retained",
+      "physical_cases": "3 passed",
+      "component_gradient_checks": "all6 components over fixed grids/guards/methods and Q8->Q16",
+      "independent_physical_fd": "mixed direction h and h/2 per case; not full per-coordinate FD",
+      "new_head_ci": "not run",
+      "full_gpu_or_production_sweep": "not run",
+      "full_frequency_oracle_for_this_real_case": "not run; paper oracle evidence is source-reported"
+    },
+    "limitations": [
+      "only three fixed real-case points",
+      "Q16 convergence shares reflected-boundary family; not new absolute Fourier-oracle validation",
+      "canonical adaptive reward endpoint/full two-lookahead WTF objective not rerun",
+      "old learned checkpoints and teacher cache used old numerical likelihood recipe",
+      "no posterior/evidence calibration or performance advantage"
+    ],
+    "next_decision": "use explicit Q8/cubic target for a bounded on-policy full reward/value-gradient bridge recheck before deciding on another matched-cost oracle pilot; no automatic inference or training",
+    "cost_caveat": "measured scientific commands include setup/import/JIT/pregrid construction, all gradients/refinements and precision retry. Source audit/coordinator/transfer/admin work is not fully timed;100 CPU seconds conservatively reserved in the600-second budget, not claimed as a measurement.",
+    "cumulative_identified": {
+      "timed_cpu_seconds": 1295.28,
+      "summed_command_wall_seconds": 1461.35,
+      "actual_real_endpoint_dispatch_rows": 9996,
+      "attempted_endpoint_dispatch_rows": 10019,
+      "newly_journaled_directional_ad_lanes": 42,
+      "cumulative_work_equivalents": null,
       "preexisting_teacher_sampler_rows_lower_bound": 15984560,
       "historical_teacher_cpu_and_hidden_work": null,
       "caveat": "sum of identified nonoverlapping command receipts, not complete project cost: earlier untimed checks, unaudited synthetic validations, setup/hidden teacher work, coordinator edits/admin/SSH/transfers and gaps remain unknown; synthetic and physical row units are not interchangeable"

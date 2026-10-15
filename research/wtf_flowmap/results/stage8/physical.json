@@ -1,0 +1,3201 @@
+{
+  "status": "local_three_point_roboto_recipe_gate_passed",
+  "journal": {
+    "status": "journaled_before_execution",
+    "source_start": "a5ce5ce14747f244d014f16365808c475ba9fedc",
+    "paper_repo": "oshaughnessy-junior/RIFT_roboto_paper",
+    "paper_head": "d668ff9c79930783d18725f74e8fa2cf96bb852e",
+    "paper_branch": "codex/paper3-transverse-o4b",
+    "manuscripts": [
+      "paper/paper3_core_operating.tex, time-interpolation and direct-time-oracle discussion",
+      "paper/sections/appendix_quadrature_revised.tex, equation q-time-pregrid and accuracy contract in companion Paper1 AppendixD"
+    ],
+    "rift_base": "1621bb6e12391086edc3bfc8730ad807c8ad638c",
+    "existing_method": "PR261 native reflected-Q spectral pregrid builder, shared by JAX PR274, followed by existing four-tap cubic gather; production default unchanged",
+    "candidate_q_factor": 8,
+    "reference_q_factor": 16,
+    "q_reflection": "native build_reflected_q_pregrid, literal doubled turning samples for cropped Q, no analysis reimplementation",
+    "integration_factors": [
+      32,
+      64,
+      128
+    ],
+    "support_guards": [
+      512,
+      1024
+    ],
+    "time_window": [
+      -0.074951171875,
+      0.07470703125
+    ],
+    "duration": 0.149658203125,
+    "time_prior": "raw log integral primary; normalized uniform time average subtracts log(duration), same gradient",
+    "value_cross_tolerance_nat": 0.001,
+    "gradient_cross_tolerance": "0.01+0.001*abs(reference gradient), each physical component",
+    "reference_value_tolerance_nat": 0.0001,
+    "reference_gradient_tolerance": "0.001+0.0001*abs(reference gradient)",
+    "case_order": [
+      "faithfully reconstructed failure, not original capture",
+      "earlier parity0",
+      "earlier parity3"
+    ],
+    "we_cap": 64,
+    "we_definition": "One attempted endpoint assembly at <=78465 time nodes costs1WE; each JVP direction costs1 additionalWE. Coarse assemblies conservatively cost the same as a maximum-grid assembly. Actual dispatches, directional lanes, time nodes, Q-pregrid transforms/bytes, FFT and reduction traversals are separately logged. Tokens are not FLOPs or performance-normalized units.",
+    "allocation_per_case": {
+      "candidate_value_plus_six_jvps": 7,
+      "candidate_independent_dense": 1,
+      "reference_value_plus_six_jvps": 7,
+      "reference_independent_dense": 1,
+      "candidate_independent_mixed_fd_rows": 4
+    },
+    "planned_total_we": 60,
+    "reserve_we": 4,
+    "mixed_direction": "d=(1,-1,1,-1,1,100)*1e-5 physical units; NoLoop dense q8 at theta +/-d and +/-d/2 on the same fixed time grids",
+    "cpu_cap_seconds": 600,
+    "timed_scientific_job_subcaps": {
+      "existing_selected_regressions": 90,
+      "physical_validation_including_setup": 400,
+      "reporting": 10
+    },
+    "conservative_source_audit_and_coordination_reserve_cpu_seconds": 100,
+    "cpu": 1,
+    "rss_gib": 8,
+    "stop": "selected regressions must pass first; stop on unresolved numerical or derivative mismatch, unavailable support, resource limit or method fallback. No inference, checkpoint retraining, production default change, or new interpolation programme.",
+    "reference_limitations": "Existing paper independent full-frequency oracle evidence is source-reported. This bounded real-case check reuses original bank and compares both implementations and q8->q16; it does not generate a new full-frequency capture or claim universal absolute physical accuracy. Paper validation budgets differ from stricter gates here."
+  },
+  "work_equivalents": 60,
+  "assembly_dispatches": 24,
+  "jvp_lanes": 36,
+  "dispatches": [
+    {
+      "label": "case0_q8_primal_six_jvps",
+      "work_equivalents": 7,
+      "time_nodes": 2662,
+      "jvp_lanes": 6,
+      "directional_time_node_equivalents": 18634,
+      "attempted": true,
+      "completed": true
+    },
+    {
+      "label": "case0_q8_independent_dense",
+      "work_equivalents": 1,
+      "time_nodes": 78465,
+      "jvp_lanes": 0,
+      "directional_time_node_equivalents": 78465,
+      "attempted": true,
+      "completed": true
+    },
+    {
+      "label": "case0_q16_primal_six_jvps",
+      "work_equivalents": 7,
+      "time_nodes": 2662,
+      "jvp_lanes": 6,
+      "directional_time_node_equivalents": 18634,
+      "attempted": true,
+      "completed": true
+    },
+    {
+      "label": "case0_q16_independent_dense",
+      "work_equivalents": 1,
+      "time_nodes": 78465,
+      "jvp_lanes": 0,
+      "directional_time_node_equivalents": 78465,
+      "attempted": true,
+      "completed": true
+    },
+    {
+      "label": "case0_q8_fd_1.0_1",
+      "work_equivalents": 1,
+      "time_nodes": 78465,
+      "jvp_lanes": 0,
+      "directional_time_node_equivalents": 78465,
+      "attempted": true,
+      "completed": true
+    },
+    {
+      "label": "case0_q8_fd_1.0_-1",
+      "work_equivalents": 1,
+      "time_nodes": 78465,
+      "jvp_lanes": 0,
+      "directional_time_node_equivalents": 78465,
+      "attempted": true,
+      "completed": true
+    },
+    {
+      "label": "case0_q8_fd_0.5_1",
+      "work_equivalents": 1,
+      "time_nodes": 78465,
+      "jvp_lanes": 0,
+      "directional_time_node_equivalents": 78465,
+      "attempted": true,
+      "completed": true
+    },
+    {
+      "label": "case0_q8_fd_0.5_-1",
+      "work_equivalents": 1,
+      "time_nodes": 78465,
+      "jvp_lanes": 0,
+      "directional_time_node_equivalents": 78465,
+      "attempted": true,
+      "completed": true
+    },
+    {
+      "label": "case1_q8_primal_six_jvps",
+      "work_equivalents": 7,
+      "time_nodes": 2662,
+      "jvp_lanes": 6,
+      "directional_time_node_equivalents": 18634,
+      "attempted": true,
+      "completed": true
+    },
+    {
+      "label": "case1_q8_independent_dense",
+      "work_equivalents": 1,
+      "time_nodes": 78465,
+      "jvp_lanes": 0,
+      "directional_time_node_equivalents": 78465,
+      "attempted": true,
+      "completed": true
+    },
+    {
+      "label": "case1_q16_primal_six_jvps",
+      "work_equivalents": 7,
+      "time_nodes": 2662,
+      "jvp_lanes": 6,
+      "directional_time_node_equivalents": 18634,
+      "attempted": true,
+      "completed": true
+    },
+    {
+      "label": "case1_q16_independent_dense",
+      "work_equivalents": 1,
+      "time_nodes": 78465,
+      "jvp_lanes": 0,
+      "directional_time_node_equivalents": 78465,
+      "attempted": true,
+      "completed": true
+    },
+    {
+      "label": "case1_q8_fd_1.0_1",
+      "work_equivalents": 1,
+      "time_nodes": 78465,
+      "jvp_lanes": 0,
+      "directional_time_node_equivalents": 78465,
+      "attempted": true,
+      "completed": true
+    },
+    {
+      "label": "case1_q8_fd_1.0_-1",
+      "work_equivalents": 1,
+      "time_nodes": 78465,
+      "jvp_lanes": 0,
+      "directional_time_node_equivalents": 78465,
+      "attempted": true,
+      "completed": true
+    },
+    {
+      "label": "case1_q8_fd_0.5_1",
+      "work_equivalents": 1,
+      "time_nodes": 78465,
+      "jvp_lanes": 0,
+      "directional_time_node_equivalents": 78465,
+      "attempted": true,
+      "completed": true
+    },
+    {
+      "label": "case1_q8_fd_0.5_-1",
+      "work_equivalents": 1,
+      "time_nodes": 78465,
+      "jvp_lanes": 0,
+      "directional_time_node_equivalents": 78465,
+      "attempted": true,
+      "completed": true
+    },
+    {
+      "label": "case2_q8_primal_six_jvps",
+      "work_equivalents": 7,
+      "time_nodes": 2662,
+      "jvp_lanes": 6,
+      "directional_time_node_equivalents": 18634,
+      "attempted": true,
+      "completed": true
+    },
+    {
+      "label": "case2_q8_independent_dense",
+      "work_equivalents": 1,
+      "time_nodes": 78465,
+      "jvp_lanes": 0,
+      "directional_time_node_equivalents": 78465,
+      "attempted": true,
+      "completed": true
+    },
+    {
+      "label": "case2_q16_primal_six_jvps",
+      "work_equivalents": 7,
+      "time_nodes": 2662,
+      "jvp_lanes": 6,
+      "directional_time_node_equivalents": 18634,
+      "attempted": true,
+      "completed": true
+    },
+    {
+      "label": "case2_q16_independent_dense",
+      "work_equivalents": 1,
+      "time_nodes": 78465,
+      "jvp_lanes": 0,
+      "directional_time_node_equivalents": 78465,
+      "attempted": true,
+      "completed": true
+    },
+    {
+      "label": "case2_q8_fd_1.0_1",
+      "work_equivalents": 1,
+      "time_nodes": 78465,
+      "jvp_lanes": 0,
+      "directional_time_node_equivalents": 78465,
+      "attempted": true,
+      "completed": true
+    },
+    {
+      "label": "case2_q8_fd_1.0_-1",
+      "work_equivalents": 1,
+      "time_nodes": 78465,
+      "jvp_lanes": 0,
+      "directional_time_node_equivalents": 78465,
+      "attempted": true,
+      "completed": true
+    },
+    {
+      "label": "case2_q8_fd_0.5_1",
+      "work_equivalents": 1,
+      "time_nodes": 78465,
+      "jvp_lanes": 0,
+      "directional_time_node_equivalents": 78465,
+      "attempted": true,
+      "completed": true
+    },
+    {
+      "label": "case2_q8_fd_0.5_-1",
+      "work_equivalents": 1,
+      "time_nodes": 78465,
+      "jvp_lanes": 0,
+      "directional_time_node_equivalents": 78465,
+      "attempted": true,
+      "completed": true
+    }
+  ],
+  "cases": [
+    {
+      "index": 0,
+      "physical": [
+        3.3098110759092685,
+        0.048317966390789106,
+        1.0625090397890906,
+        1.3211940156563102,
+        6.169022226149153,
+        1861.1068204841292
+      ],
+      "origin": "reconstructed_failure",
+      "status": "passed",
+      "q_factors": {
+        "8": {
+          "reference": {
+            "passed": true,
+            "raw_log_integral": 47.830978325412495,
+            "uniform_time_log_average": 49.73037955619563,
+            "gradient": [
+              -78.17385033562614,
+              -11.255360127193708,
+              40.24532040925123,
+              -41.75693046110232,
+              0.7172595053386992,
+              -0.02201606222212969
+            ],
+            "grids": [
+              {
+                "factor": 32,
+                "guard": 512,
+                "method": "simpson_scipy",
+                "value": 47.83097832582779,
+                "gradient": [
+                  -78.17385026071632,
+                  -11.255360121155174,
+                  40.2453203438879,
+                  -41.75693052530586,
+                  0.7172594200210443,
+                  -0.022016062222348316
+                ],
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "guard": 512,
+                "method": "simpson_scipy",
+                "value": 47.83097832582779,
+                "gradient": [
+                  -78.17385026071639,
+                  -11.255360121155167,
+                  40.24532034388791,
+                  -41.75693052530573,
+                  0.7172594200210147,
+                  -0.022016062222348164
+                ],
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "guard": 512,
+                "method": "simpson_scipy",
+                "value": 47.83097832582779,
+                "gradient": [
+                  -78.17385026071608,
+                  -11.255360121155174,
+                  40.245320343887954,
+                  -41.75693052530612,
+                  0.7172594200210028,
+                  -0.022016062222348178
+                ],
+                "nodes": 78465
+              },
+              {
+                "factor": 32,
+                "guard": 512,
+                "method": "trapezoid_numpy_fft",
+                "value": 47.83097832582779,
+                "gradient": [
+                  -78.17385026071612,
+                  -11.255360121155128,
+                  40.24532034388784,
+                  -41.756930525306004,
+                  0.717259420021044,
+                  -0.022016062222348302
+                ],
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "guard": 512,
+                "method": "trapezoid_numpy_fft",
+                "value": 47.83097832582779,
+                "gradient": [
+                  -78.17385026071634,
+                  -11.255360121155222,
+                  40.24532034388761,
+                  -41.756930525306,
+                  0.7172594200210549,
+                  -0.0220160622223483
+                ],
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "guard": 512,
+                "method": "trapezoid_numpy_fft",
+                "value": 47.83097832582779,
+                "gradient": [
+                  -78.17385026071622,
+                  -11.255360121155205,
+                  40.245320343888004,
+                  -41.756930525305776,
+                  0.7172594200210586,
+                  -0.022016062222348094
+                ],
+                "nodes": 78465
+              },
+              {
+                "factor": 32,
+                "guard": 1024,
+                "method": "simpson_scipy",
+                "value": 47.830978325412495,
+                "gradient": [
+                  -78.17385033562601,
+                  -11.255360127193688,
+                  40.24532040925091,
+                  -41.75693046110223,
+                  0.7172595053387089,
+                  -0.02201606222212982
+                ],
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "guard": 1024,
+                "method": "simpson_scipy",
+                "value": 47.830978325412495,
+                "gradient": [
+                  -78.17385033562616,
+                  -11.255360127193704,
+                  40.24532040925101,
+                  -41.75693046110208,
+                  0.7172595053387072,
+                  -0.02201606222212964
+                ],
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "guard": 1024,
+                "method": "simpson_scipy",
+                "value": 47.830978325412495,
+                "gradient": [
+                  -78.17385033562614,
+                  -11.255360127193708,
+                  40.24532040925123,
+                  -41.75693046110232,
+                  0.7172595053386992,
+                  -0.02201606222212969
+                ],
+                "nodes": 78465
+              },
+              {
+                "factor": 32,
+                "guard": 1024,
+                "method": "trapezoid_numpy_fft",
+                "value": 47.830978325412495,
+                "gradient": [
+                  -78.1738503356259,
+                  -11.255360127193674,
+                  40.245320409250986,
+                  -41.75693046110217,
+                  0.7172595053387715,
+                  -0.02201606222212974
+                ],
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "guard": 1024,
+                "method": "trapezoid_numpy_fft",
+                "value": 47.830978325412495,
+                "gradient": [
+                  -78.1738503356259,
+                  -11.255360127193766,
+                  40.24532040925058,
+                  -41.75693046110229,
+                  0.7172595053387235,
+                  -0.022016062222129762
+                ],
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "guard": 1024,
+                "method": "trapezoid_numpy_fft",
+                "value": 47.830978325412495,
+                "gradient": [
+                  -78.1738503356264,
+                  -11.255360127193672,
+                  40.245320409251164,
+                  -41.75693046110221,
+                  0.7172595053386484,
+                  -0.022016062222129658
+                ],
+                "nodes": 78465
+              }
+            ],
+            "errors": [
+              {
+                "kind": "doubling",
+                "value": 0.0,
+                "gradient": 2.755548882652148e-11
+              },
+              {
+                "kind": "doubling",
+                "value": 0.0,
+                "gradient": 7.550650728055789e-11
+              },
+              {
+                "kind": "doubling",
+                "value": 0.0,
+                "gradient": 4.525270683742476e-11
+              },
+              {
+                "kind": "doubling",
+                "value": 0.0,
+                "gradient": 7.77780898768238e-11
+              },
+              {
+                "kind": "doubling",
+                "value": 0.0,
+                "gradient": 2.882975732530392e-11
+              },
+              {
+                "kind": "doubling",
+                "value": 0.0,
+                "gradient": 4.667674995525397e-11
+              },
+              {
+                "kind": "doubling",
+                "value": 0.0,
+                "gradient": 8.060638405416284e-11
+              },
+              {
+                "kind": "doubling",
+                "value": 0.0,
+                "gradient": 1.1596006127090094e-10
+              },
+              {
+                "kind": "support_or_method",
+                "value": 4.1529801819706336e-10,
+                "gradient": 7.960775449146036e-05
+              },
+              {
+                "kind": "support_or_method",
+                "value": 4.1529801819706336e-10,
+                "gradient": 7.96077024882446e-05
+              },
+              {
+                "kind": "support_or_method",
+                "value": 0.0,
+                "gradient": 0.0
+              },
+              {
+                "kind": "support_or_method",
+                "value": 0.0,
+                "gradient": 4.7445164971980597e-11
+              }
+            ],
+            "operations": [
+              {
+                "fft_columns": 7,
+                "fft_input_nodes": 3274,
+                "fft_output_nodes": 419072,
+                "method": "simpson_scipy",
+                "guard": 512
+              },
+              {
+                "fft_columns": 7,
+                "fft_input_nodes": 3274,
+                "fft_output_nodes": 419072,
+                "method": "trapezoid_numpy_fft",
+                "guard": 512
+              },
+              {
+                "fft_columns": 7,
+                "fft_input_nodes": 5322,
+                "fft_output_nodes": 681216,
+                "method": "simpson_scipy",
+                "guard": 1024
+              },
+              {
+                "fft_columns": 7,
+                "fft_input_nodes": 5322,
+                "fft_output_nodes": 681216,
+                "method": "trapezoid_numpy_fft",
+                "guard": 1024
+              }
+            ],
+            "quadrature_nodes_traversed": 549260,
+            "refusal": null
+          },
+          "independent": {
+            "value": 47.83097835476674,
+            "convergence_error": 7.155051662266487e-09,
+            "grids": [
+              {
+                "factor": 32,
+                "method": "simpson_scipy",
+                "value": 47.83097834761169,
+                "nodes": 19617
+              },
+              {
+                "factor": 32,
+                "method": "trapezoid_numpy_fft",
+                "value": 47.83097835504463,
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "method": "simpson_scipy",
+                "value": 47.83097835302742,
+                "nodes": 39233
+              },
+              {
+                "factor": 64,
+                "method": "trapezoid_numpy_fft",
+                "value": 47.83097835353172,
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "method": "simpson_scipy",
+                "value": 47.83097835476674,
+                "nodes": 78465
+              },
+              {
+                "factor": 128,
+                "method": "trapezoid_numpy_fft",
+                "value": 47.83097835445799,
+                "nodes": 78465
+              }
+            ]
+          },
+          "physical_reconstruction_difference": 2.9354247033097636e-08,
+          "coarse_field_max_error": 1.7053025658242404e-13
+        },
+        "16": {
+          "reference": {
+            "passed": true,
+            "raw_log_integral": 47.830978374363674,
+            "uniform_time_log_average": 49.73037960514681,
+            "gradient": [
+              -78.17357331716359,
+              -11.255617638356888,
+              40.24530373079103,
+              -41.7569462071327,
+              0.7172381071621671,
+              -0.022016062126659137
+            ],
+            "grids": [
+              {
+                "factor": 32,
+                "guard": 512,
+                "method": "simpson_scipy",
+                "value": 47.83097837477921,
+                "gradient": [
+                  -78.17357324210803,
+                  -11.255617632409901,
+                  40.245303665392846,
+                  -41.75694627137066,
+                  0.7172380217991464,
+                  -0.022016062126877907
+                ],
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "guard": 512,
+                "method": "simpson_scipy",
+                "value": 47.8309783747792,
+                "gradient": [
+                  -78.17357324210825,
+                  -11.255617632409912,
+                  40.24530366539311,
+                  -41.75694627137066,
+                  0.7172380217991163,
+                  -0.022016062126877768
+                ],
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "guard": 512,
+                "method": "simpson_scipy",
+                "value": 47.8309783747792,
+                "gradient": [
+                  -78.17357324210735,
+                  -11.255617632409933,
+                  40.24530366539319,
+                  -41.75694627137065,
+                  0.7172380217990681,
+                  -0.022016062126877813
+                ],
+                "nodes": 78465
+              },
+              {
+                "factor": 32,
+                "guard": 512,
+                "method": "trapezoid_numpy_fft",
+                "value": 47.83097837477921,
+                "gradient": [
+                  -78.1735732421076,
+                  -11.255617632409903,
+                  40.24530366539287,
+                  -41.756946271370545,
+                  0.7172380217991148,
+                  -0.022016062126877827
+                ],
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "guard": 512,
+                "method": "trapezoid_numpy_fft",
+                "value": 47.83097837477921,
+                "gradient": [
+                  -78.1735732421079,
+                  -11.255617632409908,
+                  40.24530366539268,
+                  -41.75694627137065,
+                  0.7172380217991516,
+                  -0.022016062126877855
+                ],
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "guard": 512,
+                "method": "trapezoid_numpy_fft",
+                "value": 47.8309783747792,
+                "gradient": [
+                  -78.1735732421075,
+                  -11.255617632410038,
+                  40.245303665392846,
+                  -41.75694627137043,
+                  0.7172380217989904,
+                  -0.02201606212687766
+                ],
+                "nodes": 78465
+              },
+              {
+                "factor": 32,
+                "guard": 1024,
+                "method": "simpson_scipy",
+                "value": 47.830978374363674,
+                "gradient": [
+                  -78.17357331716384,
+                  -11.255617638356952,
+                  40.245303730790624,
+                  -41.75694620713268,
+                  0.7172381071621347,
+                  -0.022016062126659325
+                ],
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "guard": 1024,
+                "method": "simpson_scipy",
+                "value": 47.830978374363674,
+                "gradient": [
+                  -78.17357331716384,
+                  -11.255617638356833,
+                  40.24530373079079,
+                  -41.75694620713271,
+                  0.7172381071620171,
+                  -0.02201606212665917
+                ],
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "guard": 1024,
+                "method": "simpson_scipy",
+                "value": 47.830978374363674,
+                "gradient": [
+                  -78.17357331716359,
+                  -11.255617638356888,
+                  40.24530373079103,
+                  -41.7569462071327,
+                  0.7172381071621671,
+                  -0.022016062126659137
+                ],
+                "nodes": 78465
+              },
+              {
+                "factor": 32,
+                "guard": 1024,
+                "method": "trapezoid_numpy_fft",
+                "value": 47.830978374363674,
+                "gradient": [
+                  -78.17357331716357,
+                  -11.255617638356876,
+                  40.24530373079075,
+                  -41.75694620713266,
+                  0.7172381071621334,
+                  -0.022016062126659172
+                ],
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "guard": 1024,
+                "method": "trapezoid_numpy_fft",
+                "value": 47.830978374363674,
+                "gradient": [
+                  -78.17357331716386,
+                  -11.255617638356918,
+                  40.24530373079026,
+                  -41.75694620713288,
+                  0.717238107162075,
+                  -0.02201606212665925
+                ],
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "guard": 1024,
+                "method": "trapezoid_numpy_fft",
+                "value": 47.830978374363674,
+                "gradient": [
+                  -78.17357331716414,
+                  -11.255617638356933,
+                  40.245303730790816,
+                  -41.75694620713265,
+                  0.7172381071620486,
+                  -0.022016062126659054
+                ],
+                "nodes": 78465
+              }
+            ],
+            "errors": [
+              {
+                "kind": "doubling",
+                "value": 7.105427357601002e-15,
+                "gradient": 5.232345964905129e-11
+              },
+              {
+                "kind": "doubling",
+                "value": 0.0,
+                "gradient": 1.015365277119208e-10
+              },
+              {
+                "kind": "doubling",
+                "value": 0.0,
+                "gradient": 3.676783651014415e-11
+              },
+              {
+                "kind": "doubling",
+                "value": 7.105427357601002e-15,
+                "gradient": 1.5041597617192278e-10
+              },
+              {
+                "kind": "doubling",
+                "value": 0.0,
+                "gradient": 1.097042140262164e-10
+              },
+              {
+                "kind": "doubling",
+                "value": 0.0,
+                "gradient": 1.3995315689274634e-10
+              },
+              {
+                "kind": "doubling",
+                "value": 0.0,
+                "gradient": 9.757618150769023e-11
+              },
+              {
+                "kind": "doubling",
+                "value": 0.0,
+                "gradient": 1.1030350953043244e-10
+              },
+              {
+                "kind": "support_or_method",
+                "value": 4.155253918725066e-10,
+                "gradient": 7.965027749618858e-05
+              },
+              {
+                "kind": "support_or_method",
+                "value": 4.155253918725066e-10,
+                "gradient": 7.965035001077764e-05
+              },
+              {
+                "kind": "support_or_method",
+                "value": 0.0,
+                "gradient": 0.0
+              },
+              {
+                "kind": "support_or_method",
+                "value": 0.0,
+                "gradient": 1.1053295218694325e-10
+              }
+            ],
+            "operations": [
+              {
+                "fft_columns": 7,
+                "fft_input_nodes": 3274,
+                "fft_output_nodes": 419072,
+                "method": "simpson_scipy",
+                "guard": 512
+              },
+              {
+                "fft_columns": 7,
+                "fft_input_nodes": 3274,
+                "fft_output_nodes": 419072,
+                "method": "trapezoid_numpy_fft",
+                "guard": 512
+              },
+              {
+                "fft_columns": 7,
+                "fft_input_nodes": 5322,
+                "fft_output_nodes": 681216,
+                "method": "simpson_scipy",
+                "guard": 1024
+              },
+              {
+                "fft_columns": 7,
+                "fft_input_nodes": 5322,
+                "fft_output_nodes": 681216,
+                "method": "trapezoid_numpy_fft",
+                "guard": 1024
+              }
+            ],
+            "quadrature_nodes_traversed": 549260,
+            "refusal": null
+          },
+          "independent": {
+            "value": 47.83097836817894,
+            "convergence_error": 2.0097132846785826e-09,
+            "grids": [
+              {
+                "factor": 32,
+                "method": "simpson_scipy",
+                "value": 47.83097836616923,
+                "nodes": 19617
+              },
+              {
+                "factor": 32,
+                "method": "trapezoid_numpy_fft",
+                "value": 47.83097836825947,
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "method": "simpson_scipy",
+                "value": 47.830978367738325,
+                "nodes": 39233
+              },
+              {
+                "factor": 64,
+                "method": "trapezoid_numpy_fft",
+                "value": 47.83097836786861,
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "method": "simpson_scipy",
+                "value": 47.83097836817894,
+                "nodes": 78465
+              },
+              {
+                "factor": 128,
+                "method": "trapezoid_numpy_fft",
+                "value": 47.830978368101356,
+                "nodes": 78465
+              }
+            ]
+          },
+          "physical_reconstruction_difference": -6.1847345023124944e-09,
+          "coarse_field_max_error": 1.4210854715202004e-13
+        }
+      },
+      "q8_vs_q16": {
+        "value_difference": -4.8951179110190424e-08,
+        "gradient_error_over_tolerance": 0.012114969678224318
+      },
+      "mixed_direction_stencils": [
+        {
+          "scale": 1.0,
+          "sign": 1,
+          "result": {
+            "value": 47.83111452267629,
+            "convergence_error": 7.917087430087122e-09,
+            "grids": [
+              {
+                "factor": 32,
+                "method": "simpson_scipy",
+                "value": 47.8311145147592,
+                "nodes": 19617
+              },
+              {
+                "factor": 32,
+                "method": "trapezoid_numpy_fft",
+                "value": 47.83111452341509,
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "method": "simpson_scipy",
+                "value": 47.831114521599396,
+                "nodes": 39233
+              },
+              {
+                "factor": 64,
+                "method": "trapezoid_numpy_fft",
+                "value": 47.83111452205332,
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "method": "simpson_scipy",
+                "value": 47.83111452267629,
+                "nodes": 78465
+              },
+              {
+                "factor": 128,
+                "method": "trapezoid_numpy_fft",
+                "value": 47.831114522520544,
+                "nodes": 78465
+              }
+            ]
+          }
+        },
+        {
+          "scale": 1.0,
+          "sign": -1,
+          "result": {
+            "value": 47.83084252695573,
+            "convergence_error": 5.8804801028600195e-09,
+            "grids": [
+              {
+                "factor": 32,
+                "method": "simpson_scipy",
+                "value": 47.83084252107525,
+                "nodes": 19617
+              },
+              {
+                "factor": 32,
+                "method": "trapezoid_numpy_fft",
+                "value": 47.83084252728186,
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "method": "simpson_scipy",
+                "value": 47.83084252506567,
+                "nodes": 39233
+              },
+              {
+                "factor": 64,
+                "method": "trapezoid_numpy_fft",
+                "value": 47.83084252561972,
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "method": "simpson_scipy",
+                "value": 47.83084252695573,
+                "nodes": 78465
+              },
+              {
+                "factor": 128,
+                "method": "trapezoid_numpy_fft",
+                "value": 47.83084252662172,
+                "nodes": 78465
+              }
+            ]
+          }
+        },
+        {
+          "scale": 0.5,
+          "sign": 1,
+          "result": {
+            "value": 47.83104639645062,
+            "convergence_error": 7.791499001541524e-09,
+            "grids": [
+              {
+                "factor": 32,
+                "method": "simpson_scipy",
+                "value": 47.83104638865912,
+                "nodes": 19617
+              },
+              {
+                "factor": 32,
+                "method": "trapezoid_numpy_fft",
+                "value": 47.83104639670398,
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "method": "simpson_scipy",
+                "value": 47.831046394787236,
+                "nodes": 39233
+              },
+              {
+                "factor": 64,
+                "method": "trapezoid_numpy_fft",
+                "value": 47.83104639526642,
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "method": "simpson_scipy",
+                "value": 47.83104639645062,
+                "nodes": 78465
+              },
+              {
+                "factor": 128,
+                "method": "trapezoid_numpy_fft",
+                "value": 47.83104639615457,
+                "nodes": 78465
+              }
+            ]
+          }
+        },
+        {
+          "scale": 0.5,
+          "sign": -1,
+          "result": {
+            "value": 47.830910398234984,
+            "convergence_error": 6.5180145725207694e-09,
+            "grids": [
+              {
+                "factor": 32,
+                "method": "simpson_scipy",
+                "value": 47.83091039171697,
+                "nodes": 19617
+              },
+              {
+                "factor": 32,
+                "method": "trapezoid_numpy_fft",
+                "value": 47.83091039853713,
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "method": "simpson_scipy",
+                "value": 47.830910396420094,
+                "nodes": 39233
+              },
+              {
+                "factor": 64,
+                "method": "trapezoid_numpy_fft",
+                "value": 47.83091039694935,
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "method": "simpson_scipy",
+                "value": 47.830910398234984,
+                "nodes": 78465
+              },
+              {
+                "factor": 128,
+                "method": "trapezoid_numpy_fft",
+                "value": 47.83091039791358,
+                "nodes": 78465
+              }
+            ]
+          }
+        }
+      ],
+      "mixed_direction": {
+        "ad": 0.00013599413945046855,
+        "fd": [
+          0.0001359978602799572,
+          0.0001359982156330375
+        ],
+        "tolerance": 1.2243503270607252e-05,
+        "self_convergence_tolerance": 1.2243503270607253e-06
+      }
+    },
+    {
+      "index": 1,
+      "physical": [
+        2.3252168,
+        0.18612677,
+        1.3018215,
+        0.79601209,
+        4.4065736,
+        382.81811
+      ],
+      "origin": "earlier_parity0",
+      "status": "passed",
+      "q_factors": {
+        "8": {
+          "reference": {
+            "passed": true,
+            "raw_log_integral": 2862.271481759549,
+            "uniform_time_log_average": 2864.170882990332,
+            "gradient": [
+              188.89585941118375,
+              -97.17623406301057,
+              25.365793564974382,
+              -12.405975685141714,
+              37.007159573913654,
+              -0.06992393439650253
+            ],
+            "grids": [
+              {
+                "factor": 32,
+                "guard": 512,
+                "method": "simpson_scipy",
+                "value": 2862.271481928976,
+                "gradient": [
+                  188.89586140173793,
+                  -97.17630989110573,
+                  25.365795162630384,
+                  -12.405975889483221,
+                  37.00716123575724,
+                  -0.06992393483589643
+                ],
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "guard": 512,
+                "method": "simpson_scipy",
+                "value": 2862.271481929213,
+                "gradient": [
+                  188.89586144689017,
+                  -97.17630720043154,
+                  25.365795701884753,
+                  -12.405975906323498,
+                  37.00716180173283,
+                  -0.06992393484865825
+                ],
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "guard": 512,
+                "method": "simpson_scipy",
+                "value": 2862.2714819292128,
+                "gradient": [
+                  188.89586144688923,
+                  -97.17630720049003,
+                  25.36579570187341,
+                  -12.40597590632292,
+                  37.007161801720784,
+                  -0.06992393484865735
+                ],
+                "nodes": 78465
+              },
+              {
+                "factor": 32,
+                "guard": 512,
+                "method": "trapezoid_numpy_fft",
+                "value": 2862.2714819292128,
+                "gradient": [
+                  188.89586144688954,
+                  -97.17630720047286,
+                  25.36579570187635,
+                  -12.405975906323317,
+                  37.00716180172394,
+                  -0.06992393484865828
+                ],
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "guard": 512,
+                "method": "trapezoid_numpy_fft",
+                "value": 2862.271481929213,
+                "gradient": [
+                  188.89586144689,
+                  -97.176307200442,
+                  25.365795701882664,
+                  -12.405975906323443,
+                  37.00716180173062,
+                  -0.06992393484865828
+                ],
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "guard": 512,
+                "method": "trapezoid_numpy_fft",
+                "value": 2862.2714819292128,
+                "gradient": [
+                  188.89586144688928,
+                  -97.17630720047798,
+                  25.365795701875715,
+                  -12.405975906323052,
+                  37.00716180172323,
+                  -0.06992393484865754
+                ],
+                "nodes": 78465
+              },
+              {
+                "factor": 32,
+                "guard": 1024,
+                "method": "simpson_scipy",
+                "value": 2862.271481759312,
+                "gradient": [
+                  188.89585936603345,
+                  -97.1762367535657,
+                  25.365793025744573,
+                  -12.405975668302371,
+                  37.00715900796278,
+                  -0.06992393438374123
+                ],
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "guard": 1024,
+                "method": "simpson_scipy",
+                "value": 2862.2714817595493,
+                "gradient": [
+                  188.8958594111843,
+                  -97.17623406298219,
+                  25.365793564980002,
+                  -12.405975685142225,
+                  37.00715957391929,
+                  -0.0699239343965035
+                ],
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "guard": 1024,
+                "method": "simpson_scipy",
+                "value": 2862.271481759549,
+                "gradient": [
+                  188.89585941118375,
+                  -97.17623406301057,
+                  25.365793564974382,
+                  -12.405975685141714,
+                  37.007159573913654,
+                  -0.06992393439650253
+                ],
+                "nodes": 78465
+              },
+              {
+                "factor": 32,
+                "guard": 1024,
+                "method": "trapezoid_numpy_fft",
+                "value": 2862.271481759549,
+                "gradient": [
+                  188.89585941118298,
+                  -97.17623406305964,
+                  25.365793564965013,
+                  -12.405975685141819,
+                  37.00715957390292,
+                  -0.06992393439650314
+                ],
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "guard": 1024,
+                "method": "trapezoid_numpy_fft",
+                "value": 2862.2714817595493,
+                "gradient": [
+                  188.89585941118392,
+                  -97.17623406300159,
+                  25.36579356497624,
+                  -12.40597568514212,
+                  37.0071595739152,
+                  -0.0699239343965034
+                ],
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "guard": 1024,
+                "method": "trapezoid_numpy_fft",
+                "value": 2862.2714817595493,
+                "gradient": [
+                  188.8958594111838,
+                  -97.1762340630083,
+                  25.36579356497486,
+                  -12.405975685141813,
+                  37.00715957391406,
+                  -0.06992393439650273
+                ],
+                "nodes": 78465
+              }
+            ],
+            "errors": [
+              {
+                "kind": "doubling",
+                "value": 2.3737811716273427e-10,
+                "gradient": 0.00025105138440401434
+              },
+              {
+                "kind": "doubling",
+                "value": 4.547473508864641e-13,
+                "gradient": 5.457541825306454e-09
+              },
+              {
+                "kind": "doubling",
+                "value": 4.547473508864641e-13,
+                "gradient": 2.879927318893493e-09
+              },
+              {
+                "kind": "doubling",
+                "value": 4.547473508864641e-13,
+                "gradient": 3.357263338599597e-09
+              },
+              {
+                "kind": "doubling",
+                "value": 2.3737811716273427e-10,
+                "gradient": 0.00025104292362306506
+              },
+              {
+                "kind": "doubling",
+                "value": 4.547473508864641e-13,
+                "gradient": 2.647888975980804e-09
+              },
+              {
+                "kind": "doubling",
+                "value": 4.547473508864641e-13,
+                "gradient": 5.416437890276206e-09
+              },
+              {
+                "kind": "doubling",
+                "value": 0.0,
+                "gradient": 6.25840559170225e-10
+              },
+              {
+                "kind": "support_or_method",
+                "value": 1.6966396287898533e-07,
+                "gradient": 0.0068240389392801104
+              },
+              {
+                "kind": "support_or_method",
+                "value": 1.6966396287898533e-07,
+                "gradient": 0.006824037814888597
+              },
+              {
+                "kind": "support_or_method",
+                "value": 0.0,
+                "gradient": 0.0
+              },
+              {
+                "kind": "support_or_method",
+                "value": 4.547473508864641e-13,
+                "gradient": 2.121493420916017e-10
+              }
+            ],
+            "operations": [
+              {
+                "fft_columns": 7,
+                "fft_input_nodes": 3274,
+                "fft_output_nodes": 419072,
+                "method": "simpson_scipy",
+                "guard": 512
+              },
+              {
+                "fft_columns": 7,
+                "fft_input_nodes": 3274,
+                "fft_output_nodes": 419072,
+                "method": "trapezoid_numpy_fft",
+                "guard": 512
+              },
+              {
+                "fft_columns": 7,
+                "fft_input_nodes": 5322,
+                "fft_output_nodes": 681216,
+                "method": "simpson_scipy",
+                "guard": 1024
+              },
+              {
+                "fft_columns": 7,
+                "fft_input_nodes": 5322,
+                "fft_output_nodes": 681216,
+                "method": "trapezoid_numpy_fft",
+                "guard": 1024
+              }
+            ],
+            "quadrature_nodes_traversed": 549260,
+            "refusal": null
+          },
+          "independent": {
+            "value": 2862.271500162518,
+            "convergence_error": 8.240690476668533e-07,
+            "grids": [
+              {
+                "factor": 32,
+                "method": "simpson_scipy",
+                "value": 2862.271500156399,
+                "nodes": 19617
+              },
+              {
+                "factor": 32,
+                "method": "trapezoid_numpy_fft",
+                "value": 2862.2715006473877,
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "method": "simpson_scipy",
+                "value": 2862.271499338449,
+                "nodes": 39233
+              },
+              {
+                "factor": 64,
+                "method": "trapezoid_numpy_fft",
+                "value": 2862.2714996656837,
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "method": "simpson_scipy",
+                "value": 2862.271500162518,
+                "nodes": 78465
+              },
+              {
+                "factor": 128,
+                "method": "trapezoid_numpy_fft",
+                "value": 2862.2715000383096,
+                "nodes": 78465
+              }
+            ]
+          },
+          "physical_reconstruction_difference": 1.8402969089947874e-05,
+          "coarse_field_max_error": 3.637978807091713e-12
+        },
+        "16": {
+          "reference": {
+            "passed": true,
+            "raw_log_integral": 2862.271578575967,
+            "uniform_time_log_average": 2864.17097980675,
+            "gradient": [
+              188.87321588625562,
+              -97.13033717650421,
+              25.365796062985552,
+              -12.406047049203755,
+              37.00716422412043,
+              -0.06992418736811779
+            ],
+            "grids": [
+              {
+                "factor": 32,
+                "guard": 512,
+                "method": "simpson_scipy",
+                "value": 2862.2715787454445,
+                "gradient": [
+                  188.8732178615886,
+                  -97.13041296461707,
+                  25.36579766123527,
+                  -12.406047253611368,
+                  37.00716588658076,
+                  -0.06992418780765054
+                ],
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "guard": 512,
+                "method": "simpson_scipy",
+                "value": 2862.271578745682,
+                "gradient": [
+                  188.8732179067399,
+                  -97.13041027399696,
+                  25.365798200478437,
+                  -12.406047270451644,
+                  37.00716645254489,
+                  -0.06992418782041308
+                ],
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "guard": 512,
+                "method": "simpson_scipy",
+                "value": 2862.2715787456814,
+                "gradient": [
+                  188.87321790674028,
+                  -97.13041027397254,
+                  25.365798200484036,
+                  -12.406047270451472,
+                  37.007166452550344,
+                  -0.06992418782041303
+                ],
+                "nodes": 78465
+              },
+              {
+                "factor": 32,
+                "guard": 512,
+                "method": "trapezoid_numpy_fft",
+                "value": 2862.271578745682,
+                "gradient": [
+                  188.87321790673946,
+                  -97.13041027402224,
+                  25.36579820047348,
+                  -12.406047270451321,
+                  37.00716645253952,
+                  -0.06992418782041272
+                ],
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "guard": 512,
+                "method": "trapezoid_numpy_fft",
+                "value": 2862.271578745682,
+                "gradient": [
+                  188.8732179067398,
+                  -97.13041027400331,
+                  25.365798200477183,
+                  -12.406047270451568,
+                  37.007166452543544,
+                  -0.06992418782041303
+                ],
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "guard": 512,
+                "method": "trapezoid_numpy_fft",
+                "value": 2862.2715787456814,
+                "gradient": [
+                  188.87321790674005,
+                  -97.13041027398032,
+                  25.36579820048232,
+                  -12.406047270451491,
+                  37.007166452548645,
+                  -0.06992418782041306
+                ],
+                "nodes": 78465
+              },
+              {
+                "factor": 32,
+                "guard": 1024,
+                "method": "simpson_scipy",
+                "value": 2862.271578575729,
+                "gradient": [
+                  188.87321584110285,
+                  -97.13033986721953,
+                  25.365795523723385,
+                  -12.406047032362762,
+                  37.00716365813622,
+                  -0.06992418735535519
+                ],
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "guard": 1024,
+                "method": "simpson_scipy",
+                "value": 2862.271578575967,
+                "gradient": [
+                  188.87321588625574,
+                  -97.13033717650222,
+                  25.365796062985957,
+                  -12.40604704920386,
+                  37.00716422412079,
+                  -0.06992418736811812
+                ],
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "guard": 1024,
+                "method": "simpson_scipy",
+                "value": 2862.271578575967,
+                "gradient": [
+                  188.87321588625562,
+                  -97.13033717650421,
+                  25.365796062985552,
+                  -12.406047049203755,
+                  37.00716422412043,
+                  -0.06992418736811779
+                ],
+                "nodes": 78465
+              },
+              {
+                "factor": 32,
+                "guard": 1024,
+                "method": "trapezoid_numpy_fft",
+                "value": 2862.271578575966,
+                "gradient": [
+                  188.87321588625315,
+                  -97.13033717665982,
+                  25.36579606295459,
+                  -12.406047049202606,
+                  37.00716422408763,
+                  -0.06992418736811737
+                ],
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "guard": 1024,
+                "method": "trapezoid_numpy_fft",
+                "value": 2862.271578575967,
+                "gradient": [
+                  188.87321588625508,
+                  -97.13033717654159,
+                  25.365796062978117,
+                  -12.406047049203545,
+                  37.00716422411249,
+                  -0.06992418736811792
+                ],
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "guard": 1024,
+                "method": "trapezoid_numpy_fft",
+                "value": 2862.271578575967,
+                "gradient": [
+                  188.8732158862555,
+                  -97.13033717651352,
+                  25.365796062983694,
+                  -12.4060470492037,
+                  37.00716422411845,
+                  -0.06992418736811781
+                ],
+                "nodes": 78465
+              }
+            ],
+            "errors": [
+              {
+                "kind": "doubling",
+                "value": 2.3737811716273427e-10,
+                "gradient": 0.00025115389142542604
+              },
+              {
+                "kind": "doubling",
+                "value": 4.547473508864641e-13,
+                "gradient": 2.2789294838578706e-09
+              },
+              {
+                "kind": "doubling",
+                "value": 0.0,
+                "gradient": 1.7668999257850314e-09
+              },
+              {
+                "kind": "doubling",
+                "value": 4.547473508864641e-13,
+                "gradient": 2.146279339279415e-09
+              },
+              {
+                "kind": "doubling",
+                "value": 2.3783286451362073e-10,
+                "gradient": 0.0002511629646953152
+              },
+              {
+                "kind": "doubling",
+                "value": 0.0,
+                "gradient": 1.8571020240983814e-10
+              },
+              {
+                "kind": "doubling",
+                "value": 9.094947017729282e-13,
+                "gradient": 1.1036492028927523e-08
+              },
+              {
+                "kind": "doubling",
+                "value": 0.0,
+                "gradient": 2.619840355424502e-09
+              },
+              {
+                "kind": "support_or_method",
+                "value": 1.6971443983493373e-07,
+                "gradient": 0.006823227692291927
+              },
+              {
+                "kind": "support_or_method",
+                "value": 1.6971443983493373e-07,
+                "gradient": 0.006823228417888219
+              },
+              {
+                "kind": "support_or_method",
+                "value": 0.0,
+                "gradient": 0.0
+              },
+              {
+                "kind": "support_or_method",
+                "value": 0.0,
+                "gradient": 8.688584469888855e-10
+              }
+            ],
+            "operations": [
+              {
+                "fft_columns": 7,
+                "fft_input_nodes": 3274,
+                "fft_output_nodes": 419072,
+                "method": "simpson_scipy",
+                "guard": 512
+              },
+              {
+                "fft_columns": 7,
+                "fft_input_nodes": 3274,
+                "fft_output_nodes": 419072,
+                "method": "trapezoid_numpy_fft",
+                "guard": 512
+              },
+              {
+                "fft_columns": 7,
+                "fft_input_nodes": 5322,
+                "fft_output_nodes": 681216,
+                "method": "simpson_scipy",
+                "guard": 1024
+              },
+              {
+                "fft_columns": 7,
+                "fft_input_nodes": 5322,
+                "fft_output_nodes": 681216,
+                "method": "trapezoid_numpy_fft",
+                "guard": 1024
+              }
+            ],
+            "quadrature_nodes_traversed": 549260,
+            "refusal": null
+          },
+          "independent": {
+            "value": 2862.2715766611154,
+            "convergence_error": 2.1174764697207138e-07,
+            "grids": [
+              {
+                "factor": 32,
+                "method": "simpson_scipy",
+                "value": 2862.2715766570745,
+                "nodes": 19617
+              },
+              {
+                "factor": 32,
+                "method": "trapezoid_numpy_fft",
+                "value": 2862.271576795166,
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "method": "simpson_scipy",
+                "value": 2862.271576449368,
+                "nodes": 39233
+              },
+              {
+                "factor": 64,
+                "method": "trapezoid_numpy_fft",
+                "value": 2862.2715765358175,
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "method": "simpson_scipy",
+                "value": 2862.2715766611154,
+                "nodes": 78465
+              },
+              {
+                "factor": 128,
+                "method": "trapezoid_numpy_fft",
+                "value": 2862.271576629791,
+                "nodes": 78465
+              }
+            ]
+          },
+          "physical_reconstruction_difference": -1.9148515093547758e-06,
+          "coarse_field_max_error": 3.183231456205249e-12
+        }
+      },
+      "q8_vs_q16": {
+        "value_difference": -9.681641813585884e-05,
+        "gradient_error_over_tolerance": 0.4284210030137146
+      },
+      "mixed_direction_stencils": [
+        {
+          "scale": 1.0,
+          "sign": 1,
+          "result": {
+            "value": 2862.2750284458325,
+            "convergence_error": 8.6049476522021e-07,
+            "grids": [
+              {
+                "factor": 32,
+                "method": "simpson_scipy",
+                "value": 2862.275028143536,
+                "nodes": 19617
+              },
+              {
+                "factor": 32,
+                "method": "trapezoid_numpy_fft",
+                "value": 2862.2750287444874,
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "method": "simpson_scipy",
+                "value": 2862.2750275853377,
+                "nodes": 39233
+              },
+              {
+                "factor": 64,
+                "method": "trapezoid_numpy_fft",
+                "value": 2862.275027875125,
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "method": "simpson_scipy",
+                "value": 2862.2750284458325,
+                "nodes": 78465
+              },
+              {
+                "factor": 128,
+                "method": "trapezoid_numpy_fft",
+                "value": 2862.2750283031555,
+                "nodes": 78465
+              }
+            ]
+          }
+        },
+        {
+          "scale": 1.0,
+          "sign": -1,
+          "result": {
+            "value": 2862.2679526159627,
+            "convergence_error": 7.875582923588809e-07,
+            "grids": [
+              {
+                "factor": 32,
+                "method": "simpson_scipy",
+                "value": 2862.2679529059587,
+                "nodes": 19617
+              },
+              {
+                "factor": 32,
+                "method": "trapezoid_numpy_fft",
+                "value": 2862.2679532871466,
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "method": "simpson_scipy",
+                "value": 2862.2679518284044,
+                "nodes": 39233
+              },
+              {
+                "factor": 64,
+                "method": "trapezoid_numpy_fft",
+                "value": 2862.2679521930904,
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "method": "simpson_scipy",
+                "value": 2862.2679526159627,
+                "nodes": 78465
+              },
+              {
+                "factor": 128,
+                "method": "trapezoid_numpy_fft",
+                "value": 2862.2679525102444,
+                "nodes": 78465
+              }
+            ]
+          }
+        },
+        {
+          "scale": 0.5,
+          "sign": 1,
+          "result": {
+            "value": 2862.2732667112286,
+            "convergence_error": 8.422935025009792e-07,
+            "grids": [
+              {
+                "factor": 32,
+                "method": "simpson_scipy",
+                "value": 2862.2732665570256,
+                "nodes": 19617
+              },
+              {
+                "factor": 32,
+                "method": "trapezoid_numpy_fft",
+                "value": 2862.2732671029767,
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "method": "simpson_scipy",
+                "value": 2862.273265868935,
+                "nodes": 39233
+              },
+              {
+                "factor": 64,
+                "method": "trapezoid_numpy_fft",
+                "value": 2862.2732661774457,
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "method": "simpson_scipy",
+                "value": 2862.2732667112286,
+                "nodes": 78465
+              },
+              {
+                "factor": 128,
+                "method": "trapezoid_numpy_fft",
+                "value": 2862.273266577783,
+                "nodes": 78465
+              }
+            ]
+          }
+        },
+        {
+          "scale": 0.5,
+          "sign": -1,
+          "result": {
+            "value": 2862.269728796975,
+            "convergence_error": 8.058241292019375e-07,
+            "grids": [
+              {
+                "factor": 32,
+                "method": "simpson_scipy",
+                "value": 2862.269728938925,
+                "nodes": 19617
+              },
+              {
+                "factor": 32,
+                "method": "trapezoid_numpy_fft",
+                "value": 2862.269729374992,
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "method": "simpson_scipy",
+                "value": 2862.269727991151,
+                "nodes": 39233
+              },
+              {
+                "factor": 64,
+                "method": "trapezoid_numpy_fft",
+                "value": 2862.2697283371117,
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "method": "simpson_scipy",
+                "value": 2862.269728796975,
+                "nodes": 78465
+              },
+              {
+                "factor": 128,
+                "method": "trapezoid_numpy_fft",
+                "value": 2862.2697286820094,
+                "nodes": 78465
+              }
+            ]
+          }
+        }
+      ],
+      "mixed_direction": {
+        "ad": 0.003538586288585738,
+        "fd": [
+          0.0035379149348955252,
+          0.0035379142536839936
+        ],
+        "tolerance": 1.4178434157378743e-05,
+        "self_convergence_tolerance": 1.4178434157378744e-06
+      }
+    },
+    {
+      "index": 2,
+      "physical": [
+        2.9305606,
+        0.7372427,
+        1.4331813,
+        2.3928349,
+        4.5442746,
+        414.20043
+      ],
+      "origin": "earlier_parity3",
+      "status": "passed",
+      "q_factors": {
+        "8": {
+          "reference": {
+            "passed": true,
+            "raw_log_integral": 2861.471247894846,
+            "uniform_time_log_average": 2863.370649125629,
+            "gradient": [
+              34.70907040876716,
+              -138.9538207886494,
+              50.34523930806749,
+              -52.10819775438843,
+              -56.14238383597535,
+              0.15374619643608314
+            ],
+            "grids": [
+              {
+                "factor": 32,
+                "guard": 512,
+                "method": "simpson_scipy",
+                "value": 2861.4712481291353,
+                "gradient": [
+                  34.70910625760464,
+                  -138.95383093152597,
+                  50.34523505016825,
+                  -52.108197585767705,
+                  -56.14237941217929,
+                  0.15374619586562596
+                ],
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "guard": 512,
+                "method": "simpson_scipy",
+                "value": 2861.471248129276,
+                "gradient": [
+                  34.709107438964,
+                  -138.95383110440957,
+                  50.34523554219201,
+                  -52.1081975786739,
+                  -56.14237992589323,
+                  0.1537461958585761
+                ],
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "guard": 512,
+                "method": "simpson_scipy",
+                "value": 2861.471248129276,
+                "gradient": [
+                  34.70910743892629,
+                  -138.95383110440403,
+                  50.34523554217609,
+                  -52.10819757867415,
+                  -56.142379925876185,
+                  0.15374619585857627
+                ],
+                "nodes": 78465
+              },
+              {
+                "factor": 32,
+                "guard": 512,
+                "method": "trapezoid_numpy_fft",
+                "value": 2861.471248129276,
+                "gradient": [
+                  34.70910743893331,
+                  -138.95383110440517,
+                  50.34523554217959,
+                  -52.1081975786742,
+                  -56.14237992587993,
+                  0.15374619585857538
+                ],
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "guard": 512,
+                "method": "trapezoid_numpy_fft",
+                "value": 2861.471248129276,
+                "gradient": [
+                  34.709107438956316,
+                  -138.9538311044085,
+                  50.34523554218889,
+                  -52.10819757867399,
+                  -56.14237992588987,
+                  0.1537461958585759
+                ],
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "guard": 512,
+                "method": "trapezoid_numpy_fft",
+                "value": 2861.471248129276,
+                "gradient": [
+                  34.70910743893373,
+                  -138.95383110440503,
+                  50.34523554217924,
+                  -52.108197578674094,
+                  -56.14237992587966,
+                  0.15374619585857616
+                ],
+                "nodes": 78465
+              },
+              {
+                "factor": 32,
+                "guard": 1024,
+                "method": "simpson_scipy",
+                "value": 2861.471247894705,
+                "gradient": [
+                  34.709069227526584,
+                  -138.95382061578331,
+                  50.3452388160932,
+                  -52.108197761481904,
+                  -56.14238332231264,
+                  0.1537461964431357
+                ],
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "guard": 1024,
+                "method": "simpson_scipy",
+                "value": 2861.471247894846,
+                "gradient": [
+                  34.709070408841136,
+                  -138.95382078866032,
+                  50.34523930809837,
+                  -52.108197754387675,
+                  -56.14238383600712,
+                  0.153746196436083
+                ],
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "guard": 1024,
+                "method": "simpson_scipy",
+                "value": 2861.471247894846,
+                "gradient": [
+                  34.70907040876716,
+                  -138.9538207886494,
+                  50.34523930806749,
+                  -52.10819775438843,
+                  -56.14238383597535,
+                  0.15374619643608314
+                ],
+                "nodes": 78465
+              },
+              {
+                "factor": 32,
+                "guard": 1024,
+                "method": "trapezoid_numpy_fft",
+                "value": 2861.4712478948454,
+                "gradient": [
+                  34.70907040885894,
+                  -138.95382078866294,
+                  50.34523930810588,
+                  -52.10819775438836,
+                  -56.14238383601494,
+                  0.15374619643608442
+                ],
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "guard": 1024,
+                "method": "trapezoid_numpy_fft",
+                "value": 2861.471247894846,
+                "gradient": [
+                  34.70907040884557,
+                  -138.95382078866092,
+                  50.34523930810026,
+                  -52.108197754387874,
+                  -56.142383836009124,
+                  0.15374619643608334
+                ],
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "guard": 1024,
+                "method": "trapezoid_numpy_fft",
+                "value": 2861.471247894846,
+                "gradient": [
+                  34.70907040878678,
+                  -138.9538207886522,
+                  50.34523930807568,
+                  -52.108197754388264,
+                  -56.142383835983765,
+                  0.1537461964360832
+                ],
+                "nodes": 78465
+              }
+            ],
+            "errors": [
+              {
+                "kind": "doubling",
+                "value": 1.405169314239174e-10,
+                "gradient": 0.00026423259262175634
+              },
+              {
+                "kind": "doubling",
+                "value": 0.0,
+                "gradient": 8.434195263293624e-09
+              },
+              {
+                "kind": "doubling",
+                "value": 0.0,
+                "gradient": 5.146019269369654e-09
+              },
+              {
+                "kind": "doubling",
+                "value": 0.0,
+                "gradient": 5.052253013380522e-09
+              },
+              {
+                "kind": "doubling",
+                "value": 1.4097167877480388e-10,
+                "gradient": 0.0002642225707571755
+              },
+              {
+                "kind": "doubling",
+                "value": 0.0,
+                "gradient": 1.654577103564159e-08
+              },
+              {
+                "kind": "doubling",
+                "value": 4.547473508864641e-13,
+                "gradient": 2.990984640195704e-09
+              },
+              {
+                "kind": "doubling",
+                "value": 0.0,
+                "gradient": 1.3149525458543706e-08
+              },
+              {
+                "kind": "support_or_method",
+                "value": 2.3442999008693732e-07,
+                "gradient": 0.008282471272366478
+              },
+              {
+                "kind": "support_or_method",
+                "value": 2.3442999008693732e-07,
+                "gradient": 0.008282472936320206
+              },
+              {
+                "kind": "support_or_method",
+                "value": 0.0,
+                "gradient": 0.0
+              },
+              {
+                "kind": "support_or_method",
+                "value": 0.0,
+                "gradient": 4.387942928576163e-09
+              }
+            ],
+            "operations": [
+              {
+                "fft_columns": 7,
+                "fft_input_nodes": 3274,
+                "fft_output_nodes": 419072,
+                "method": "simpson_scipy",
+                "guard": 512
+              },
+              {
+                "fft_columns": 7,
+                "fft_input_nodes": 3274,
+                "fft_output_nodes": 419072,
+                "method": "trapezoid_numpy_fft",
+                "guard": 512
+              },
+              {
+                "fft_columns": 7,
+                "fft_input_nodes": 5322,
+                "fft_output_nodes": 681216,
+                "method": "simpson_scipy",
+                "guard": 1024
+              },
+              {
+                "fft_columns": 7,
+                "fft_input_nodes": 5322,
+                "fft_output_nodes": 681216,
+                "method": "trapezoid_numpy_fft",
+                "guard": 1024
+              }
+            ],
+            "quadrature_nodes_traversed": 549260,
+            "refusal": null
+          },
+          "independent": {
+            "value": 2861.4712328488795,
+            "convergence_error": 3.127693162241485e-06,
+            "grids": [
+              {
+                "factor": 32,
+                "method": "simpson_scipy",
+                "value": 2861.4712359765726,
+                "nodes": 19617
+              },
+              {
+                "factor": 32,
+                "method": "trapezoid_numpy_fft",
+                "value": 2861.471234173822,
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "method": "simpson_scipy",
+                "value": 2861.4712330309517,
+                "nodes": 39233
+              },
+              {
+                "factor": 64,
+                "method": "trapezoid_numpy_fft",
+                "value": 2861.4712333166694,
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "method": "simpson_scipy",
+                "value": 2861.4712328488795,
+                "nodes": 78465
+              },
+              {
+                "factor": 128,
+                "method": "trapezoid_numpy_fft",
+                "value": 2861.4712329658273,
+                "nodes": 78465
+              }
+            ]
+          },
+          "physical_reconstruction_difference": -1.5045966392790433e-05,
+          "coarse_field_max_error": 1.3642420526593924e-12
+        },
+        "16": {
+          "reference": {
+            "passed": true,
+            "raw_log_integral": 2861.471307362404,
+            "uniform_time_log_average": 2863.370708593187,
+            "gradient": [
+              34.68544798646896,
+              -138.91251018446206,
+              50.34523540087436,
+              -52.10815757369801,
+              -56.142383992259106,
+              0.1537460528262936
+            ],
+            "grids": [
+              {
+                "factor": 32,
+                "guard": 512,
+                "method": "simpson_scipy",
+                "value": 2861.4713075967497,
+                "gradient": [
+                  34.68548382209708,
+                  -138.91252029161194,
+                  50.345231142114216,
+                  -52.108157405030354,
+                  -56.142379567565,
+                  0.15374605225569504
+                ],
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "guard": 512,
+                "method": "simpson_scipy",
+                "value": 2861.47130759689,
+                "gradient": [
+                  34.68548500340029,
+                  -138.91252046448753,
+                  50.34523163411462,
+                  -52.10815739793665,
+                  -56.14238008125441,
+                  0.15374605224864554
+                ],
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "guard": 512,
+                "method": "simpson_scipy",
+                "value": 2861.47130759689,
+                "gradient": [
+                  34.68548500343623,
+                  -138.91252046449281,
+                  50.34523163412969,
+                  -52.10815739793672,
+                  -56.14238008126959,
+                  0.15374605224864624
+                ],
+                "nodes": 78465
+              },
+              {
+                "factor": 32,
+                "guard": 512,
+                "method": "trapezoid_numpy_fft",
+                "value": 2861.4713075968903,
+                "gradient": [
+                  34.68548500343835,
+                  -138.91252046449304,
+                  50.34523163413062,
+                  -52.10815739793672,
+                  -56.14238008127122,
+                  0.15374605224864474
+                ],
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "guard": 512,
+                "method": "trapezoid_numpy_fft",
+                "value": 2861.47130759689,
+                "gradient": [
+                  34.68548500340976,
+                  -138.9125204644889,
+                  50.345231634118626,
+                  -52.10815739793665,
+                  -56.142380081258636,
+                  0.1537460522486453
+                ],
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "guard": 512,
+                "method": "trapezoid_numpy_fft",
+                "value": 2861.47130759689,
+                "gradient": [
+                  34.6854850034296,
+                  -138.9125204644917,
+                  50.34523163412695,
+                  -52.10815739793667,
+                  -56.142380081266865,
+                  0.15374605224864593
+                ],
+                "nodes": 78465
+              },
+              {
+                "factor": 32,
+                "guard": 1024,
+                "method": "simpson_scipy",
+                "value": 2861.471307362263,
+                "gradient": [
+                  34.685446805143464,
+                  -138.9125100115834,
+                  50.345234908864526,
+                  -52.108157580791875,
+                  -56.142383478559815,
+                  0.1537460528333471
+                ],
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "guard": 1024,
+                "method": "simpson_scipy",
+                "value": 2861.471307362404,
+                "gradient": [
+                  34.68544798649933,
+                  -138.91251018446664,
+                  50.34523540088699,
+                  -52.10815757369782,
+                  -56.1423839922721,
+                  0.15374605282629342
+                ],
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "guard": 1024,
+                "method": "simpson_scipy",
+                "value": 2861.471307362404,
+                "gradient": [
+                  34.68544798646896,
+                  -138.91251018446206,
+                  50.34523540087436,
+                  -52.10815757369801,
+                  -56.142383992259106,
+                  0.1537460528262936
+                ],
+                "nodes": 78465
+              },
+              {
+                "factor": 32,
+                "guard": 1024,
+                "method": "trapezoid_numpy_fft",
+                "value": 2861.4713073624034,
+                "gradient": [
+                  34.68544798648644,
+                  -138.9125101844647,
+                  50.345235400881506,
+                  -52.10815757369822,
+                  -56.14238399226659,
+                  0.15374605282629614
+                ],
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "guard": 1024,
+                "method": "trapezoid_numpy_fft",
+                "value": 2861.471307362404,
+                "gradient": [
+                  34.685447986496115,
+                  -138.9125101844661,
+                  50.3452354008856,
+                  -52.10815757369793,
+                  -56.14238399227075,
+                  0.15374605282629406
+                ],
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "guard": 1024,
+                "method": "trapezoid_numpy_fft",
+                "value": 2861.471307362404,
+                "gradient": [
+                  34.68544798647583,
+                  -138.91251018446303,
+                  50.34523540087714,
+                  -52.10815757369799,
+                  -56.142383992261976,
+                  0.15374605282629378
+                ],
+                "nodes": 78465
+              }
+            ],
+            "errors": [
+              {
+                "kind": "doubling",
+                "value": 1.4006218407303095e-10,
+                "gradient": 0.00026435970943986475
+              },
+              {
+                "kind": "doubling",
+                "value": 0.0,
+                "gradient": 8.042719317847837e-09
+              },
+              {
+                "kind": "doubling",
+                "value": 4.547473508864641e-13,
+                "gradient": 6.398557242985309e-09
+              },
+              {
+                "kind": "doubling",
+                "value": 0.0,
+                "gradient": 4.439555621872511e-09
+              },
+              {
+                "kind": "doubling",
+                "value": 1.4097167877480388e-10,
+                "gradient": 0.00026437149366146707
+              },
+              {
+                "kind": "doubling",
+                "value": 0.0,
+                "gradient": 6.796081922594238e-09
+              },
+              {
+                "kind": "doubling",
+                "value": 4.547473508864641e-13,
+                "gradient": 2.1657144545094414e-09
+              },
+              {
+                "kind": "doubling",
+                "value": 0.0,
+                "gradient": 4.539731841133961e-09
+              },
+              {
+                "kind": "support_or_method",
+                "value": 2.3448592401109636e-07,
+                "gradient": 0.008283897540966574
+              },
+              {
+                "kind": "support_or_method",
+                "value": 2.3448592401109636e-07,
+                "gradient": 0.008283896057404469
+              },
+              {
+                "kind": "support_or_method",
+                "value": 0.0,
+                "gradient": 0.0
+              },
+              {
+                "kind": "support_or_method",
+                "value": 0.0,
+                "gradient": 1.5376254607273346e-09
+              }
+            ],
+            "operations": [
+              {
+                "fft_columns": 7,
+                "fft_input_nodes": 3274,
+                "fft_output_nodes": 419072,
+                "method": "simpson_scipy",
+                "guard": 512
+              },
+              {
+                "fft_columns": 7,
+                "fft_input_nodes": 3274,
+                "fft_output_nodes": 419072,
+                "method": "trapezoid_numpy_fft",
+                "guard": 512
+              },
+              {
+                "fft_columns": 7,
+                "fft_input_nodes": 5322,
+                "fft_output_nodes": 681216,
+                "method": "simpson_scipy",
+                "guard": 1024
+              },
+              {
+                "fft_columns": 7,
+                "fft_input_nodes": 5322,
+                "fft_output_nodes": 681216,
+                "method": "trapezoid_numpy_fft",
+                "guard": 1024
+              }
+            ],
+            "quadrature_nodes_traversed": 549260,
+            "refusal": null
+          },
+          "independent": {
+            "value": 2861.4713074712627,
+            "convergence_error": 8.041724868235178e-07,
+            "grids": [
+              {
+                "factor": 32,
+                "method": "simpson_scipy",
+                "value": 2861.471308275435,
+                "nodes": 19617
+              },
+              {
+                "factor": 32,
+                "method": "trapezoid_numpy_fft",
+                "value": 2861.4713078005107,
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "method": "simpson_scipy",
+                "value": 2861.4713075174186,
+                "nodes": 39233
+              },
+              {
+                "factor": 64,
+                "method": "trapezoid_numpy_fft",
+                "value": 2861.471307588192,
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "method": "simpson_scipy",
+                "value": 2861.4713074712627,
+                "nodes": 78465
+              },
+              {
+                "factor": 128,
+                "method": "trapezoid_numpy_fft",
+                "value": 2861.4713075004947,
+                "nodes": 78465
+              }
+            ]
+          },
+          "physical_reconstruction_difference": 1.0885878509725444e-07,
+          "coarse_field_max_error": 1.3642420526593924e-12
+        }
+      },
+      "q8_vs_q16": {
+        "value_difference": -5.9467558003234444e-05,
+        "gradient_error_over_tolerance": 0.5286379204558076
+      },
+      "mixed_direction_stencils": [
+        {
+          "scale": 1.0,
+          "sign": 1,
+          "result": {
+            "value": 2861.4735777240953,
+            "convergence_error": 3.073096195294056e-06,
+            "grids": [
+              {
+                "factor": 32,
+                "method": "simpson_scipy",
+                "value": 2861.4735807971915,
+                "nodes": 19617
+              },
+              {
+                "factor": 32,
+                "method": "trapezoid_numpy_fft",
+                "value": 2861.4735790730174,
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "method": "simpson_scipy",
+                "value": 2861.47357779687,
+                "nodes": 39233
+              },
+              {
+                "factor": 64,
+                "method": "trapezoid_numpy_fft",
+                "value": 2861.473578115907,
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "method": "simpson_scipy",
+                "value": 2861.4735777240953,
+                "nodes": 78465
+              },
+              {
+                "factor": 128,
+                "method": "trapezoid_numpy_fft",
+                "value": 2861.4735778220484,
+                "nodes": 78465
+              }
+            ]
+          }
+        },
+        {
+          "scale": 1.0,
+          "sign": -1,
+          "result": {
+            "value": 2861.4688721694056,
+            "convergence_error": 3.18240108754253e-06,
+            "grids": [
+              {
+                "factor": 32,
+                "method": "simpson_scipy",
+                "value": 2861.4688753518067,
+                "nodes": 19617
+              },
+              {
+                "factor": 32,
+                "method": "trapezoid_numpy_fft",
+                "value": 2861.468873470436,
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "method": "simpson_scipy",
+                "value": 2861.468872460754,
+                "nodes": 39233
+              },
+              {
+                "factor": 64,
+                "method": "trapezoid_numpy_fft",
+                "value": 2861.4688727131747,
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "method": "simpson_scipy",
+                "value": 2861.4688721694056,
+                "nodes": 78465
+              },
+              {
+                "factor": 128,
+                "method": "trapezoid_numpy_fft",
+                "value": 2861.4688723053478,
+                "nodes": 78465
+              }
+            ]
+          }
+        },
+        {
+          "scale": 0.5,
+          "sign": 1,
+          "result": {
+            "value": 2861.4724072620083,
+            "convergence_error": 3.100380126852542e-06,
+            "grids": [
+              {
+                "factor": 32,
+                "method": "simpson_scipy",
+                "value": 2861.4724103623885,
+                "nodes": 19617
+              },
+              {
+                "factor": 32,
+                "method": "trapezoid_numpy_fft",
+                "value": 2861.472408598932,
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "method": "simpson_scipy",
+                "value": 2861.4724073894336,
+                "nodes": 39233
+              },
+              {
+                "factor": 64,
+                "method": "trapezoid_numpy_fft",
+                "value": 2861.4724076918083,
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "method": "simpson_scipy",
+                "value": 2861.4724072620083,
+                "nodes": 78465
+              },
+              {
+                "factor": 128,
+                "method": "trapezoid_numpy_fft",
+                "value": 2861.4724073694583,
+                "nodes": 78465
+              }
+            ]
+          }
+        },
+        {
+          "scale": 0.5,
+          "sign": -1,
+          "result": {
+            "value": 2861.470054484876,
+            "convergence_error": 3.155032572976779e-06,
+            "grids": [
+              {
+                "factor": 32,
+                "method": "simpson_scipy",
+                "value": 2861.4700576399086,
+                "nodes": 19617
+              },
+              {
+                "factor": 32,
+                "method": "trapezoid_numpy_fft",
+                "value": 2861.470055797853,
+                "nodes": 19617
+              },
+              {
+                "factor": 64,
+                "method": "simpson_scipy",
+                "value": 2861.4700547215893,
+                "nodes": 39233
+              },
+              {
+                "factor": 64,
+                "method": "trapezoid_numpy_fft",
+                "value": 2861.4700549906556,
+                "nodes": 39233
+              },
+              {
+                "factor": 128,
+                "method": "simpson_scipy",
+                "value": 2861.470054484876,
+                "nodes": 78465
+              },
+              {
+                "factor": 128,
+                "method": "trapezoid_numpy_fft",
+                "value": 2861.470054611321,
+                "nodes": 78465
+              }
+            ]
+          }
+        }
+      ],
+      "mixed_direction": {
+        "ad": 0.002353485640675055,
+        "fd": [
+          0.002352777344867718,
+          0.0023527771322733315
+        ],
+        "tolerance": 1.3976333317394562e-05,
+        "self_convergence_tolerance": 1.3976333317394562e-06
+      }
+    }
+  ],
+  "likelihood_sources": {
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/factored_likelihood.py": "7b87a19e7133155cb1bb67a790a58ab7204f605d6d12cd78471edc34e044c974",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/jax_ile/wrapper.py": "0db282efa8db272e404cc2d649485feaba3c0339998a36ddde293b7ac4166005",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/jax_ile/core.py": "0f499791e796558b7b2460027ef8459302925dcf792801883664ceaf56336ab8"
+  },
+  "current_normalized_driver_sha256": "d88a561e6f838f6066cf543fd93c58b838d96d022b7d8536fa95819e8252cf20",
+  "coordinate_contracts": "two-row roundtrip, Torch/JAX/full FD Jacobian passed",
+  "normalization_convention": {
+    "reward": "physical log time-integral API only, no prior or Jacobian added",
+    "angular_prior": "unit mass on RA[0,2pi),phase[0,2pi),psi[0,pi)",
+    "distance_prior": "current normalized Planck15 cosmo_sourceframe on [1,10000]",
+    "historical_angular_prior_mass": 8,
+    "historical_lnZ_offset": 2.0794415416798357,
+    "likelihood_is_not_evidence": true
+  },
+  "runtime": {
+    "host": "ldas-grid",
+    "affinity": [
+      0
+    ],
+    "pid": 2974896,
+    "numpy": "2.2.6",
+    "torch": "2.8.0",
+    "jax": "0.9.0"
+  },
+  "frame_psd_setup_wall_seconds": 0.1597295610117726,
+  "precompute": {
+    "attempted": 1,
+    "integration_half": 0.075,
+    "storage_half": 0.37890625,
+    "guard_initial": 512,
+    "guard_certified": 1024,
+    "lmax": 4,
+    "ignore_threshold": null
+  },
+  "cpu_seconds": 95.591692404,
+  "wall_seconds": 97.30857647000812,
+  "peak_rss_kib": 1809908,
+  "precompute_wall_seconds": 2.4052226819912903,
+  "modes": {
+    "H1": [
+      [
+        2,
+        -2
+      ],
+      [
+        2,
+        -1
+      ],
+      [
+        2,
+        0
+      ],
+      [
+        2,
+        1
+      ],
+      [
+        2,
+        2
+      ],
+      [
+        3,
+        -3
+      ],
+      [
+        3,
+        -2
+      ],
+      [
+        3,
+        -1
+      ],
+      [
+        3,
+        0
+      ],
+      [
+        3,
+        1
+      ],
+      [
+        3,
+        2
+      ],
+      [
+        3,
+        3
+      ],
+      [
+        4,
+        -4
+      ],
+      [
+        4,
+        -3
+      ],
+      [
+        4,
+        -2
+      ],
+      [
+        4,
+        -1
+      ],
+      [
+        4,
+        0
+      ],
+      [
+        4,
+        1
+      ],
+      [
+        4,
+        2
+      ],
+      [
+        4,
+        3
+      ],
+      [
+        4,
+        4
+      ]
+    ],
+    "L1": [
+      [
+        2,
+        -2
+      ],
+      [
+        2,
+        -1
+      ],
+      [
+        2,
+        0
+      ],
+      [
+        2,
+        1
+      ],
+      [
+        2,
+        2
+      ],
+      [
+        3,
+        -3
+      ],
+      [
+        3,
+        -2
+      ],
+      [
+        3,
+        -1
+      ],
+      [
+        3,
+        0
+      ],
+      [
+        3,
+        1
+      ],
+      [
+        3,
+        2
+      ],
+      [
+        3,
+        3
+      ],
+      [
+        4,
+        -4
+      ],
+      [
+        4,
+        -3
+      ],
+      [
+        4,
+        -2
+      ],
+      [
+        4,
+        -1
+      ],
+      [
+        4,
+        0
+      ],
+      [
+        4,
+        1
+      ],
+      [
+        4,
+        2
+      ],
+      [
+        4,
+        3
+      ],
+      [
+        4,
+        4
+      ]
+    ]
+  },
+  "time_grid": {
+    "count": 614,
+    "first": -0.074951171875,
+    "last": 0.07470703125,
+    "spacing": 0.000244140625,
+    "sha256": "58069d49c1da7eab8cddf84193abff20e5a1ba5dda5af42c7b2ff04c08684d63",
+    "definition": "shared raw log integral over closed NoLoop grid; no new time normalization"
+  },
+  "q_pregrid_build_reports": {
+    "8": {
+      "H1": {
+        "factor": 8,
+        "input_bytes": 1042944,
+        "retained_bytes": 8341200,
+        "output_bytes": 8341200,
+        "peak_allocation_bytes": 45887184,
+        "roundtrip_max": 3.6333414458276873e-16
+      },
+      "L1": {
+        "factor": 8,
+        "input_bytes": 1042944,
+        "retained_bytes": 8341200,
+        "output_bytes": 8341200,
+        "peak_allocation_bytes": 45887184,
+        "roundtrip_max": 3.495821227364118e-16
+      }
+    },
+    "16": {
+      "H1": {
+        "factor": 16,
+        "input_bytes": 1042944,
+        "retained_bytes": 16682064,
+        "output_bytes": 16682064,
+        "peak_allocation_bytes": 87602256,
+        "roundtrip_max": 2.786645681477921e-16
+      },
+      "L1": {
+        "factor": 16,
+        "input_bytes": 1042944,
+        "retained_bytes": 16682064,
+        "output_bytes": 16682064,
+        "peak_allocation_bytes": 87602256,
+        "roundtrip_max": 3.3164272113707866e-16
+      }
+    }
+  },
+  "cases_not_run": 0
+}

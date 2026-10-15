@@ -1,5 +1,10 @@
 # Learned flow-map research on S250114ax
 
+**Latest result:** [ROBOTO_REUSE_RESULTS.md](ROBOTO_REUSE_RESULTS.md). The existing
+roboto reflected-Q8/cubic recipe passes the declared three-point local contract
+with the same converged quadrature and stricter tolerances. Earlier coarse-sinc
+failures remain preserved; no inference, production default or checkpoint changed.
+
 **Latest validation:** [COMMON_CONTRACT_VALIDATION_RESULTS.md](COMMON_CONTRACT_VALIDATION_RESULTS.md).
 The array gate passed, but the first independent dense physical reconstruction
 differed by .00134701 nat, exceeding the unchanged .001 threshold. Execution

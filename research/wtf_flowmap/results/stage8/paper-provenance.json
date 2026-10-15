@@ -1,0 +1,50 @@
+{
+  "repository": "https://github.com/oshaughnessy-junior/RIFT_roboto_paper",
+  "path": "/home/richard.oshaughnessy/unixhome/Projects/LIGO-ScienceMode/O4_era/RIFT_roboto_paper",
+  "head": "d668ff9c79930783d18725f74e8fa2cf96bb852e",
+  "branch": "codex/paper3-transverse-o4b",
+  "files": {
+    "README.md": {
+      "committed_sha256": "581e2a563179e962e0767ee164761e4bba5c8f5eed6b1d73153de65bb4e513f8",
+      "working_copy_matches_commit": true
+    },
+    "paper/paper3_core_operating.tex": {
+      "committed_sha256": "3833be311f30a8674c530db84ce2ae24f45647942eb30d58007010ae9c1c9c74",
+      "working_copy_matches_commit": true
+    },
+    "paper/paper1_scaling3g.tex": {
+      "committed_sha256": "33ed5742429d972f2abf24cad1551f180fde24666c8a1ca7b6cafae12b590d9d",
+      "working_copy_matches_commit": true
+    },
+    "paper/sections/appendix_quadrature_revised.tex": {
+      "committed_sha256": "156000faf4ebdc040f158aabd556a6d5f542351543ecc4b690c9ad1ef3845722",
+      "working_copy_matches_commit": true
+    },
+    "paper/supplementary_marginalization_audit.tex": {
+      "committed_sha256": "e6b0bcfd61d7f8aed10c1ab81e9cf6107cbf8d3e58e17f45cf132003010b276d",
+      "working_copy_matches_commit": true
+    },
+    "analyses/marginalization_reference_ile/NOTE_03_DIRECT_TIME_ORACLE.md": {
+      "committed_sha256": "fe6171f801bc97d2fb472018e7d4730c88d67375bf4751747eb15798ed46a08e",
+      "working_copy_matches_commit": true
+    },
+    "analyses/marginalization_reference_ile/NOTE_04_Q_PREGRID_PRODUCTION_GATE.md": {
+      "committed_sha256": "5d0cbda1c9d9fe46d0bff056ffb309e5cafb713306474ae2a423ab649866531d",
+      "working_copy_matches_commit": true
+    },
+    "analyses/va_sequence_20260902/RESULTS_20260907_jax_q_pregrid.md": {
+      "committed_sha256": "09934101b959ca37f1f5e67100a1b80e5af015785b927106c988e9a42bcc60ef",
+      "working_copy_matches_commit": true
+    },
+    "analyses/paper3_jax_time_check_20261007/README.md": {
+      "committed_sha256": "171297c4043ca3bfcb4a56a276661cd76dcc64d77519ba29aac14f985ba97a7c",
+      "working_copy_matches_commit": true
+    },
+    "paper/figures/jax_time_check_macros.tex": {
+      "committed_sha256": "dc6387321a9ee433bb8376ec362c1fc9626f974326c05792bea65ad7e55e42c8",
+      "working_copy_matches_commit": true
+    }
+  },
+  "concurrent_unrelated_work_present": true,
+  "paper_checkout_changed_by_this_task": false
+}

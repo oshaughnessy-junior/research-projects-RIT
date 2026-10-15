@@ -1,0 +1,111 @@
+{
+  "regressions.time": "\tCommand being timed: \"timeout 90 taskset -c 0 /cvmfs/software.igwn.org/conda/envs/igwn/bin/python -m pytest -q test_jax_q_time_pregrid.py -k pregrid_cubic_beats or refined_cubic_error_falls or duplicated_reflection_is or gradient_still_flows or unrefined_bank_with_a_declared\"\n\tUser time (seconds): 12.61\n\tSystem time (seconds): 4.30\n\tPercent of CPU this job got: 53%\n\tElapsed (wall clock) time (h:mm:ss or m:ss): 0:31.53\n\tAverage shared text size (kbytes): 0\n\tAverage unshared data size (kbytes): 0\n\tAverage stack size (kbytes): 0\n\tAverage total size (kbytes): 0\n\tMaximum resident set size (kbytes): 1048128\n\tAverage resident set size (kbytes): 0\n\tMajor (requiring I/O) page faults: 4735\n\tMinor (reclaiming a frame) page faults: 630656\n\tVoluntary context switches: 85717\n\tInvoluntary context switches: 186\n\tSwaps: 0\n\tFile system inputs: 1076192\n\tFile system outputs: 328\n\tSocket messages sent: 0\n\tSocket messages received: 0\n\tSignals delivered: 0\n\tPage size (bytes): 4096\n\tExit status: 0\n",
+  "regressions.log": ".....                                                                    [100%]\n=============================== warnings summary ===============================\n../../../../../cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/site-packages/qnm/schwarzschild/tabulated.py:169\n  /cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/site-packages/qnm/schwarzschild/tabulated.py:169: DeprecationWarning: Please import `OptimizeResult` from the `scipy.optimize` namespace; the `scipy.optimize.optimize` namespace is deprecated and will be removed in SciPy 2.0.0.\n    loaded = pickle.load(handle, encoding='latin1')\n\ntest_jax_q_time_pregrid.py::test_pregrid_cubic_beats_the_production_stencil_against_the_oracle\ntest_jax_q_time_pregrid.py::test_refined_cubic_error_falls_like_the_fourth_power_of_the_step\ntest_jax_q_time_pregrid.py::test_duplicated_reflection_is_the_right_one_for_a_crop\ntest_jax_q_time_pregrid.py::test_gradient_still_flows_through_the_refined_gather\n  /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/jax_ile/core.py:364: UserWarning: Explicitly requested dtype complex128 requested in zeros is not available, and will be truncated to dtype complex64. To enable more dtypes, set the jax_enable_x64 configuration option or the JAX_ENABLE_X64 shell environment variable. See https://github.com/jax-ml/jax#current-gotchas for more.\n    out = jnp.zeros(pos.shape, dtype=jnp.complex128)\n\ntest_jax_q_time_pregrid.py::test_unrefined_bank_with_a_declared_factor_fails_closed\ntest_jax_q_time_pregrid.py::test_gradient_still_flows_through_the_refined_gather\n  /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/jax_ile/core.py:164: UserWarning: Explicitly requested dtype float64 requested in asarray is not available, and will be truncated to dtype float32. To enable more dtypes, set the jax_enable_x64 configuration option or the JAX_ENABLE_X64 shell environment variable. See https://github.com/jax-ml/jax#current-gotchas for more.\n    self.tvals = jnp.asarray(tvals, dtype=jnp.float64)\n\ntest_jax_q_time_pregrid.py::test_unrefined_bank_with_a_declared_factor_fails_closed\ntest_jax_q_time_pregrid.py::test_gradient_still_flows_through_the_refined_gather\n  /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/jax_ile/core.py:168: UserWarning: Explicitly requested dtype float64 requested in asarray is not available, and will be truncated to dtype float32. To enable more dtypes, set the jax_enable_x64 configuration option or the JAX_ENABLE_X64 shell environment variable. See https://github.com/jax-ml/jax#current-gotchas for more.\n    self.w_t = jnp.asarray(_simpson_weights(self.npts, self.deltaT),\n\ntest_jax_q_time_pregrid.py::test_unrefined_bank_with_a_declared_factor_fails_closed\ntest_jax_q_time_pregrid.py::test_gradient_still_flows_through_the_refined_gather\n  /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/jax_ile/core.py:728: UserWarning: Explicitly requested dtype float64 requested in asarray is not available, and will be truncated to dtype float32. To enable more dtypes, set the jax_enable_x64 configuration option or the JAX_ENABLE_X64 shell environment variable. See https://github.com/jax-ml/jax#current-gotchas for more.\n    ra = jnp.asarray(ra, dtype=jnp.float64)\n\ntest_jax_q_time_pregrid.py::test_unrefined_bank_with_a_declared_factor_fails_closed\ntest_jax_q_time_pregrid.py::test_gradient_still_flows_through_the_refined_gather\n  /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/jax_ile/core.py:729: UserWarning: Explicitly requested dtype float64 requested in asarray is not available, and will be truncated to dtype float32. To enable more dtypes, set the jax_enable_x64 configuration option or the JAX_ENABLE_X64 shell environment variable. See https://github.com/jax-ml/jax#current-gotchas for more.\n    dec = jnp.asarray(dec, dtype=jnp.float64)\n\ntest_jax_q_time_pregrid.py::test_unrefined_bank_with_a_declared_factor_fails_closed\ntest_jax_q_time_pregrid.py::test_gradient_still_flows_through_the_refined_gather\n  /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/jax_ile/core.py:730: UserWarning: Explicitly requested dtype float64 requested in asarray is not available, and will be truncated to dtype float32. To enable more dtypes, set the jax_enable_x64 configuration option or the JAX_ENABLE_X64 shell environment variable. See https://github.com/jax-ml/jax#current-gotchas for more.\n    psi = jnp.asarray(psi, dtype=jnp.float64)\n\ntest_jax_q_time_pregrid.py::test_unrefined_bank_with_a_declared_factor_fails_closed\ntest_jax_q_time_pregrid.py::test_gradient_still_flows_through_the_refined_gather\n  /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/jax_ile/core.py:731: UserWarning: Explicitly requested dtype float64 requested in asarray is not available, and will be truncated to dtype float32. To enable more dtypes, set the jax_enable_x64 configuration option or the JAX_ENABLE_X64 shell environment variable. See https://github.com/jax-ml/jax#current-gotchas for more.\n    incl = jnp.asarray(incl, dtype=jnp.float64)\n\ntest_jax_q_time_pregrid.py::test_unrefined_bank_with_a_declared_factor_fails_closed\ntest_jax_q_time_pregrid.py::test_gradient_still_flows_through_the_refined_gather\n  /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/jax_ile/core.py:732: UserWarning: Explicitly requested dtype float64 requested in asarray is not available, and will be truncated to dtype float32. To enable more dtypes, set the jax_enable_x64 configuration option or the JAX_ENABLE_X64 shell environment variable. See https://github.com/jax-ml/jax#current-gotchas for more.\n    phiref = jnp.asarray(phiref, dtype=jnp.float64)\n\ntest_jax_q_time_pregrid.py::test_unrefined_bank_with_a_declared_factor_fails_closed\ntest_jax_q_time_pregrid.py::test_gradient_still_flows_through_the_refined_gather\n  /cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/site-packages/jax/_src/numpy/lax_numpy.py:5958: UserWarning: Explicitly requested dtype float64 requested in arange is not available, and will be truncated to dtype float32. To enable more dtypes, set the jax_enable_x64 configuration option or the JAX_ENABLE_X64 shell environment variable. See https://github.com/jax-ml/jax#current-gotchas for more.\n    return _arange(start, stop=stop, step=step, dtype=dtype,\n\ntest_jax_q_time_pregrid.py::test_unrefined_bank_with_a_declared_factor_fails_closed\ntest_jax_q_time_pregrid.py::test_gradient_still_flows_through_the_refined_gather\n  /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/jax_ile/core.py:740: UserWarning: Explicitly requested dtype complex128 requested in zeros is not available, and will be truncated to dtype complex64. To enable more dtypes, set the jax_enable_x64 configuration option or the JAX_ENABLE_X64 shell environment variable. See https://github.com/jax-ml/jax#current-gotchas for more.\n    kappa_unit = jnp.zeros((S, npts), dtype=jnp.complex128)\n\ntest_jax_q_time_pregrid.py::test_unrefined_bank_with_a_declared_factor_fails_closed\ntest_jax_q_time_pregrid.py::test_gradient_still_flows_through_the_refined_gather\n  /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/jax_ile/core.py:741: UserWarning: Explicitly requested dtype float64 requested in zeros is not available, and will be truncated to dtype float32. To enable more dtypes, set the jax_enable_x64 configuration option or the JAX_ENABLE_X64 shell environment variable. See https://github.com/jax-ml/jax#current-gotchas for more.\n    rho_sq_unit = jnp.zeros((S, npts), dtype=jnp.float64)\n\ntest_jax_q_time_pregrid.py::test_unrefined_bank_with_a_declared_factor_fails_closed\ntest_jax_q_time_pregrid.py::test_gradient_still_flows_through_the_refined_gather\n  /cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/site-packages/jax/_src/numpy/array_methods.py:125: UserWarning: Explicitly requested dtype complex128 requested in astype is not available, and will be truncated to dtype complex64. To enable more dtypes, set the jax_enable_x64 configuration option or the JAX_ENABLE_X64 shell environment variable. See https://github.com/jax-ml/jax#current-gotchas for more.\n    return lax_numpy.astype(self, dtype, copy=copy, device=device)\n\ntest_jax_q_time_pregrid.py::test_unrefined_bank_with_a_declared_factor_fails_closed\ntest_jax_q_time_pregrid.py::test_gradient_still_flows_through_the_refined_gather\n  /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/jax_ile/spherical.py:197: UserWarning: Explicitly requested dtype float64 requested in asarray is not available, and will be truncated to dtype float32. To enable more dtypes, set the jax_enable_x64 configuration option or the JAX_ENABLE_X64 shell environment variable. See https://github.com/jax-ml/jax#current-gotchas for more.\n    m_arr = jnp.asarray(m_vals, dtype=jnp.float64)\n\ntest_jax_q_time_pregrid.py::test_gradient_still_flows_through_the_refined_gather\n  /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/jax_ile/core.py:1983: UserWarning: Explicitly requested dtype float64 requested in asarray is not available, and will be truncated to dtype float32. To enable more dtypes, set the jax_enable_x64 configuration option or the JAX_ENABLE_X64 shell environment variable. See https://github.com/jax-ml/jax#current-gotchas for more.\n    distMpc = jnp.asarray(distMpc, dtype=jnp.float64)\n\ntest_jax_q_time_pregrid.py::test_gradient_still_flows_through_the_refined_gather\n  /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/jax_ile/core.py:789: UserWarning: Explicitly requested dtype complex128 requested in zeros is not available, and will be truncated to dtype complex64. To enable more dtypes, set the jax_enable_x64 configuration option or the JAX_ENABLE_X64 shell environment variable. See https://github.com/jax-ml/jax#current-gotchas for more.\n    kappa_det = jnp.zeros((S, npts), dtype=jnp.complex128)\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n5 passed, 16 deselected, 31 warnings in 25.84s\n",
+  "regressions64.time": "\tCommand being timed: \"timeout 60 taskset -c 0 /cvmfs/software.igwn.org/conda/envs/igwn/bin/python -m pytest -q test_jax_q_time_pregrid.py -k pregrid_cubic_beats or refined_cubic_error_falls or duplicated_reflection_is or gradient_still_flows or unrefined_bank_with_a_declared\"\n\tUser time (seconds): 10.40\n\tSystem time (seconds): 3.93\n\tPercent of CPU this job got: 67%\n\tElapsed (wall clock) time (h:mm:ss or m:ss): 0:21.30\n\tAverage shared text size (kbytes): 0\n\tAverage unshared data size (kbytes): 0\n\tAverage stack size (kbytes): 0\n\tAverage total size (kbytes): 0\n\tMaximum resident set size (kbytes): 1048652\n\tAverage resident set size (kbytes): 0\n\tMajor (requiring I/O) page faults: 911\n\tMinor (reclaiming a frame) page faults: 584208\n\tVoluntary context switches: 78755\n\tInvoluntary context switches: 116\n\tSwaps: 0\n\tFile system inputs: 198832\n\tFile system outputs: 288\n\tSocket messages sent: 0\n\tSocket messages received: 0\n\tSignals delivered: 0\n\tPage size (bytes): 4096\n\tExit status: 0\n",
+  "regressions64.log": ".....                                                                    [100%]\n=============================== warnings summary ===============================\n../../../../../cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/site-packages/qnm/schwarzschild/tabulated.py:169\n  /cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/site-packages/qnm/schwarzschild/tabulated.py:169: DeprecationWarning: Please import `OptimizeResult` from the `scipy.optimize` namespace; the `scipy.optimize.optimize` namespace is deprecated and will be removed in SciPy 2.0.0.\n    loaded = pickle.load(handle, encoding='latin1')\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n5 passed, 16 deselected, 1 warning in 17.14s\n",
+  "physical.time": "\tCommand being timed: \"timeout 400 /cvmfs/software.igwn.org/conda/envs/igwn/bin/python /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage8/source/validate_roboto_pregrid.py --output /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage8/physical --checkpoint /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3d/repair1/accepted.pt --training /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/final_seed261015 --inventory /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/research/wtf_flowmap/results/case_inventory.json\"\n\tUser time (seconds): 96.34\n\tSystem time (seconds): 4.58\n\tPercent of CPU this job got: 95%\n\tElapsed (wall clock) time (h:mm:ss or m:ss): 1:45.73\n\tAverage shared text size (kbytes): 0\n\tAverage unshared data size (kbytes): 0\n\tAverage stack size (kbytes): 0\n\tAverage total size (kbytes): 0\n\tMaximum resident set size (kbytes): 1809908\n\tAverage resident set size (kbytes): 0\n\tMajor (requiring I/O) page faults: 1334\n\tMinor (reclaiming a frame) page faults: 2007385\n\tVoluntary context switches: 72252\n\tInvoluntary context switches: 6787\n\tSwaps: 0\n\tFile system inputs: 268216\n\tFile system outputs: 35032\n\tSocket messages sent: 0\n\tSocket messages received: 0\n\tSignals delivered: 0\n\tPage size (bytes): 4096\n\tExit status: 0\n",
+  "source_sha256": {
+    "test_jax_q_time_pregrid.py": "b838ceed8fcd78d23244a93b63f797fcd4879a566bd9d0540e3aae1c5645efd7",
+    "roboto_pregrid_adapter.py": "44f3b041ca4414a9f8084c69b1951cc8882889056823415889f31f51ae7f5ee8",
+    "validate_roboto_pregrid.py": "57f42a73dbbbe9c060fd9bd9a438dc354d353a86093196756950a207ba5466df",
+    "journal.json": "8932e1012833952d89379a8444452f5ff2677eaff9e3d446c95edf9171dce3d5"
+  },
+  "private_artifacts": {
+    "physical/case0_q8_fd_0.5_-1.npz": {
+      "sha256": "3e83a481c7a10edf77f83b2a391b5a67d54ba52b9c7888a08e04e18529391724",
+      "bytes": 672050
+    },
+    "physical/case1_q8_fd_1.0_1.npz": {
+      "sha256": "17b708fc701e19e8f5059a6634b754d88ef996eac193bcd26a683b4d0caa558c",
+      "bytes": 596817
+    },
+    "physical/case1_q8_fd_0.5_-1.npz": {
+      "sha256": "d5a7d0fee020e59e764ade2ceec47131bdd46af8e1385175d414de9d57f138ad",
+      "bytes": 596850
+    },
+    "physical/case2_q8_fd_0.5_-1.npz": {
+      "sha256": "7f94259166898881c21ee0e31e1b8caad903cb1192ba6d9f9861b242d13177aa",
+      "bytes": 596970
+    },
+    "physical/case0_q8_fd_1.0_1.npz": {
+      "sha256": "fa46d1b31c310343a6d4217712387fc75838a0eea64f44889bbda3b9ef5d7895",
+      "bytes": 671528
+    },
+    "physical/case2_q8_primitive_jac.npz": {
+      "sha256": "88fc7519297e28477601f9bc85db00284a4f2f4091f474a040932c2c9132038a",
+      "bytes": 289345
+    },
+    "physical/case0_q16_independent.npz": {
+      "sha256": "7e6822f137daf65c0efb7edf4720ad2f24ed02503e9103c6ea4fd9dcc514277a",
+      "bytes": 672120
+    },
+    "physical/case1_q8_independent.npz": {
+      "sha256": "e9cf07385cae88f56ff98afa56be3add7331e1f26ba10d762bacbaca75911c8c",
+      "bytes": 596951
+    },
+    "physical/case2_q8_fd_1.0_1.npz": {
+      "sha256": "1bea70a766f6cda2eae03319cd03d9eff7bc3750f3bad0b0f3f2ddc4e77330f6",
+      "bytes": 596873
+    },
+    "physical/case2_q16_primitive_jac.npz": {
+      "sha256": "8b25cbc7f687bdf0176c499ee46db781d7d157e4968696478848bb9879cebadd",
+      "bytes": 289423
+    },
+    "physical/case0_q8_independent.npz": {
+      "sha256": "a97e7bd1af98a4a3c25fb7deb68f24519d7846f3b784327812958d41c6bf9bbd",
+      "bytes": 671893
+    },
+    "physical/case0_q8_primitive_jac.npz": {
+      "sha256": "2bfbfda3f005cd93e8a6eb06e06f771a1aa2d7d3248b15b9f7482ef5c2f37566",
+      "bytes": 290237
+    },
+    "physical/case1_q16_primitive_jac.npz": {
+      "sha256": "6f4a9dabdb1fd9e1d65117e6a5cbdf3c5b304c3fbd35eb59ef998a2912667b7b",
+      "bytes": 289400
+    },
+    "physical/case2_q8_fd_0.5_1.npz": {
+      "sha256": "269bad2981fa2b6aa99d4b8f458b05f4230373ad6d654f0b738abc897c2abfad",
+      "bytes": 596972
+    },
+    "physical/case2_q16_independent.npz": {
+      "sha256": "6e3103cbdcdcb535edfe814e9c0603ef5267c9ee299e64099cec46eb9a38f44a",
+      "bytes": 597063
+    },
+    "physical/case2_q8_independent.npz": {
+      "sha256": "55e5ef859c3e336157724313a046dbd35653899c34025005087fce0e20d905bd",
+      "bytes": 597058
+    },
+    "physical/case0_q8_fd_1.0_-1.npz": {
+      "sha256": "acc1b5c1a95d7ded04b880e08dfc1a2bfad24a34f20f91001968be65c94037d0",
+      "bytes": 672114
+    },
+    "physical/case1_q8_fd_0.5_1.npz": {
+      "sha256": "57b9320df426019154cbd6609c1f93de114a33b599caf54319a5dc6d822c539b",
+      "bytes": 596860
+    },
+    "physical/case1_q8_fd_1.0_-1.npz": {
+      "sha256": "e31b6b5179e8fd5bdf505d9075a6dfa6393cdd38ba388bbd15cd15ec80f0bf58",
+      "bytes": 596913
+    },
+    "physical/case2_q8_fd_1.0_-1.npz": {
+      "sha256": "696bd6cdbc9a687cb48e2d766dd085f32defdaf8c0acd1dba10dd04a53094f89",
+      "bytes": 596846
+    },
+    "physical/case0_q16_primitive_jac.npz": {
+      "sha256": "2ae99f26481d9ad58aca9a58644e22eb507582e2ec1e88c6357fb5e9b3d69277",
+      "bytes": 290293
+    },
+    "physical/case1_q8_primitive_jac.npz": {
+      "sha256": "f5670740e6fff92c3d578b60e6efd827039039a866f1d9f1ef6560cbda3ddbcf",
+      "bytes": 289364
+    },
+    "physical/case1_q16_independent.npz": {
+      "sha256": "b1d964610d91b1b22580f54e76b44aa8a65039cc7fc7e0894f72cf4c0ed58e25",
+      "bytes": 597012
+    },
+    "physical/case0_q8_fd_0.5_1.npz": {
+      "sha256": "6223cf9d081c29d0e0e4a0d4c6a1e644e3d1bf56c87a76948af05f642f2abd28",
+      "bytes": 671925
+    }
+  }
+}
