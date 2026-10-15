@@ -80,9 +80,10 @@ def test_stops_at_range_limit():
     assert dw.max() <= dmax and np.sum(dw > d.max()) == 1
 
 
-def test_stops_on_nonfinite_slice_and_respects_max_steps():
+@pytest.mark.parametrize("bad_value", [-np.inf, np.nan])
+def test_stops_on_nonfinite_slice_and_respects_max_steps(bad_value):
     d = narrow_core()
-    bad = Fresh(lambda dd: np.full(len(dd), -np.inf))
+    bad = Fresh(lambda dd: np.full(len(dd), bad_value))
     dw, lw = walk_out_slices(d, lnL(d), flat, bad, 1.0, 1e4, delta_lnL=7.0)[:2]
     assert len(dw) == 2 and not np.any(np.isfinite(lw))      # one per side, then stop
     capped = Fresh(lambda dd: np.full(len(dd), 50.0))           # flat: never reaches target
