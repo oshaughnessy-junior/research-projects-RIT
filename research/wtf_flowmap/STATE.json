@@ -1,6 +1,6 @@
 {
   "owner": "current Codex task, mini coordinator",
-  "status": "stage_3b_blocked_on_angular_chart_guard_after_six_real_objective_updates",
+  "status": "stage_3c_phase_chart_defect_diagnosed_periodic_repair_designed_not_trained",
   "research_branch": "codex/learned-flowmap-realcase",
   "reasoning_effort_requested": "low",
   "source_base": "1621bb6e12391086edc3bfc8730ad807c8ad638c",
@@ -17,7 +17,10 @@
     "physical angular periodicity and coordinate Jacobian/round-trip checks",
     "Torch/JAX bridge with full chart Jacobian and finite-difference parity",
     "three strict domain/seam rejection fixtures",
-    "six frozen-reference true-log-likelihood WTF objective updates"
+    "six frozen-reference true-log-likelihood WTF objective updates",
+    "validated forward-only replay identifies phase chart failure, no prior violation in failed batch",
+    "finite partial checkpoint inspected, failure causally independent of student updates",
+    "nine untrained periodic-geometry mathematical tests passed on mini"
   ],
   "checkpoint": {
     "path": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/final_seed261015/pretrained.pt",
@@ -86,7 +89,9 @@
     "STAGE3A.md",
     "results/stage3a/summary.json",
     "STAGE3B.md",
-    "results/stage3b/summary.json"
+    "results/stage3b/summary.json",
+    "CHART_REPAIR.md",
+    "results/stage3c/summary.json"
   ],
   "checkpoint_reproduced_identically_in_three_6000_step_runs": true,
   "mathematical_contract_tests_unique": 4,
@@ -96,7 +101,7 @@
     "cpu_seconds_sum": 24.16,
     "new_true_likelihood_rows": 0
   },
-  "next_after_stage3a": "Resolve the stage3b angular chart/domain failure before any further smoke training or corrected inference",
+  "next_after_stage3a": "Stage3c diagnosis complete; periodic architecture/retraining and parity are separately proposed, not executed",
   "stage3a_cost": {
     "attempted_true_rows": 116,
     "measured_process_cpu_seconds": 289.56,
@@ -127,5 +132,13 @@
       "sha256": "479eac9c0c5e412755ce6a55de4a248eda60c8e3d8c47452e0efb4a4591673c9"
     },
     "next_blocker": "Resolve periodic chart/domain contract without clipping or redraw; no further training or inference until reviewed"
+  },
+  "stage3c": {
+    "result": "results/stage3c/summary.json",
+    "diagnosis": "diagnosed_phase_chart_representation_defect",
+    "new_physical_rows": 0,
+    "optimizer_steps": 0,
+    "old_checkpoints_forensic_only": true,
+    "next": "Proposed periodic-model implementation/retraining then new-coordinate physical parity; none executed"
   }
 }

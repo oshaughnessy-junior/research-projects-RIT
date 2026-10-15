@@ -1,0 +1,222 @@
+{
+  "stage": "3c_forward_only_chart_diagnosis_and_untrained_geometry_design",
+  "status": "diagnosed_phase_chart_representation_defect",
+  "parent_commit": "857b8344cc6f2f11b8ee659876a108d4cdedb9bf",
+  "new_physical_likelihood_rows": 0,
+  "optimizer_steps": 0,
+  "new_neural_training_runs": 0,
+  "inference_pilot_launched": false,
+  "existing_guard_changed": false,
+  "original_failed_endpoint_saved": false,
+  "reconstruction_evidence": "Exact match of recorded first-step distillation loss; first six batches inside charts and seventh batch reproduced phase failure. No original endpoint bytes/RNG exist for direct comparison.",
+  "replay": {
+    "status": "forward_replay_fingerprint_passed",
+    "original_failed_endpoint_saved": false,
+    "original_rng_state_saved": false,
+    "replay_first_loss_absolute_error": 0.0,
+    "replay_batches": [
+      {
+        "step": 0,
+        "failed_chart_coordinates": [
+          0,
+          0,
+          0
+        ],
+        "chart_failed_rows": 0,
+        "distance_failed_rows": 0,
+        "pole_failed_rows": 0,
+        "physical_finite": true,
+        "max_half_period_excess_radians": [
+          -2.795632185630078,
+          -0.49409678330650975,
+          -1.347007292632783
+        ]
+      },
+      {
+        "step": 1,
+        "failed_chart_coordinates": [
+          0,
+          0,
+          0
+        ],
+        "chart_failed_rows": 0,
+        "distance_failed_rows": 0,
+        "pole_failed_rows": 0,
+        "physical_finite": true,
+        "max_half_period_excess_radians": [
+          -2.6736526461957966,
+          -1.5032871679260316,
+          -1.2721894069475335
+        ]
+      },
+      {
+        "step": 2,
+        "failed_chart_coordinates": [
+          0,
+          0,
+          0
+        ],
+        "chart_failed_rows": 0,
+        "distance_failed_rows": 0,
+        "pole_failed_rows": 0,
+        "physical_finite": true,
+        "max_half_period_excess_radians": [
+          -2.9266748998818626,
+          -0.23692024960207636,
+          -1.303792779161227
+        ]
+      },
+      {
+        "step": 3,
+        "failed_chart_coordinates": [
+          0,
+          0,
+          0
+        ],
+        "chart_failed_rows": 0,
+        "distance_failed_rows": 0,
+        "pole_failed_rows": 0,
+        "physical_finite": true,
+        "max_half_period_excess_radians": [
+          -2.7881996309262385,
+          -0.40034080780209447,
+          -1.169932479468953
+        ]
+      },
+      {
+        "step": 4,
+        "failed_chart_coordinates": [
+          0,
+          0,
+          0
+        ],
+        "chart_failed_rows": 0,
+        "distance_failed_rows": 0,
+        "pole_failed_rows": 0,
+        "physical_finite": true,
+        "max_half_period_excess_radians": [
+          -2.8327960181736347,
+          -1.1135277047286847,
+          -1.3288039227302983
+        ]
+      },
+      {
+        "step": 5,
+        "failed_chart_coordinates": [
+          0,
+          0,
+          0
+        ],
+        "chart_failed_rows": 0,
+        "distance_failed_rows": 0,
+        "pole_failed_rows": 0,
+        "physical_finite": true,
+        "max_half_period_excess_radians": [
+          -2.711075339770802,
+          -0.3862910880050503,
+          -1.4781635777088107
+        ]
+      },
+      {
+        "step": 6,
+        "failed_chart_coordinates": [
+          0,
+          1,
+          0
+        ],
+        "chart_failed_rows": 1,
+        "distance_failed_rows": 0,
+        "pole_failed_rows": 0,
+        "physical_finite": true,
+        "max_half_period_excess_radians": [
+          -2.818455249926037,
+          0.19617395053080333,
+          -1.4383247127576109
+        ]
+      }
+    ],
+    "diagnosis": "local angular chart representation failure in frozen reference",
+    "replay_private_artifact": {
+      "path": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3c/forward_replay/replayed_endpoint.pt",
+      "sha256": "0ba0c682e5068811b16893a90d7728a8be1d94be2a04ce5f50faf0c3b525c9b6"
+    },
+    "source_checkpoint_sha256": "4ce26989ccdcfcdb1702dd5e270d79a772487adb2b348b8b471bcaf3a8cf3158",
+    "partial_checkpoint_sha256": "479eac9c0c5e412755ce6a55de4a248eda60c8e3d8c47452e0efb4a4591673c9",
+    "partial_updates": 6,
+    "partial_parameters_finite": true,
+    "partial_parameter_change_l2": 0.0016055308386224206,
+    "partial_vs_initial_validation_endpoint_rms": 0.001256674881785245,
+    "new_physical_likelihood_rows": 0,
+    "optimizer_steps": 0,
+    "neural_training_run": false,
+    "host": "ldas-grid",
+    "affinity": [
+      0
+    ],
+    "torch": "2.8.0",
+    "source_sha256": {
+      "diagnose_chart.py": "ec257d49a57d4df9fb334c521624c079db4398d6f5c12ec4e2ec7d74dc8071c5",
+      "model.py": "5510640a980b8b2bba10d36eb8079ab0a6d44f83a1d7f330fda620387b4075da"
+    },
+    "cost": {
+      "process_wall_seconds": 1.0362603230169043,
+      "cpu_user_seconds": 0.604761,
+      "cpu_system_seconds": 0.13369699999999998,
+      "max_rss_kib": 237424
+    }
+  },
+  "complete_process_cost": {
+    "cpu_seconds": 0.89,
+    "wall_seconds": 1.33,
+    "peak_rss_kib": 238548,
+    "admin_transfer_audit_seconds": null
+  },
+  "local_tests": {
+    "command": "PYTHONPYCACHEPREFIX=/tmp/wtf-pycache python3 -m unittest discover -s learned-flowmap/research/wtf_flowmap -p test_periodic_geometry.py -v",
+    "count": 9,
+    "status": "passed",
+    "python": "3.9.6",
+    "test_body_seconds": 0.001,
+    "full_process_cpu_seconds": null
+  },
+  "source_sha256": {
+    "diagnose_chart.py": "ec257d49a57d4df9fb334c521624c079db4398d6f5c12ec4e2ec7d74dc8071c5",
+    "periodic_geometry.py": "abba7015b768b4841bc68475942fd4adaf873e5d6af79a4fc109503aae579fd7",
+    "test_periodic_geometry.py": "44749960366692461b276dc336a8be73c0dd9af878e6985b6bddbfd1fdc0f0e0",
+    "model.py": "5510640a980b8b2bba10d36eb8079ab0a6d44f83a1d7f330fda620387b4075da",
+    "smoke_real.py": "607e364cd7de267989daadc2a7867ffc15add990c1ea021cdc4abf116ccbf7ea"
+  },
+  "minimal_repair": "periodic angular Fourier features and equivariant residual jumps on three circle coordinates; retain strict existing distance/pole guards; retrain drift and map",
+  "optional_not_selected": "bounded logit distance geometry is unit-tested but not required for observed phase failure",
+  "checkpoint_invalidation": [
+    "old drift/map input shape and angular law change",
+    "old semigroup and one-step accuracy cannot certify periodic replacement",
+    "six-update checkpoint remains forensic only"
+  ],
+  "next_budgets_proposed_not_executed": {
+    "model_only": {
+      "cpu": 1,
+      "cpu_seconds_cap": 300,
+      "resident_gib_cap": 2,
+      "physical_rows": 0,
+      "flow_steps": 2000,
+      "distill_steps": 6000,
+      "seeds": 1
+    },
+    "coordinate_parity": {
+      "cpu": 1,
+      "cpu_seconds_cap": 600,
+      "memory_gib_cap": 8,
+      "endpoint_attempts_cap": 128,
+      "planned_attempts": 111,
+      "optimizer_steps": 0
+    }
+  },
+  "prior_stages_separate": {
+    "stage3a_cpu_seconds": 289.56,
+    "stage3a_physical_rows": 116,
+    "stage3b_cpu_seconds": 38.5,
+    "stage3b_physical_rows": 55,
+    "historical_teacher_rows_lower_bound": 15984560
+  }
+}

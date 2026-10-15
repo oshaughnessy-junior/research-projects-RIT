@@ -1,0 +1,156 @@
+{
+  "status": "forward_replay_fingerprint_passed",
+  "original_failed_endpoint_saved": false,
+  "original_rng_state_saved": false,
+  "replay_first_loss_absolute_error": 0.0,
+  "replay_batches": [
+    {
+      "step": 0,
+      "failed_chart_coordinates": [
+        0,
+        0,
+        0
+      ],
+      "chart_failed_rows": 0,
+      "distance_failed_rows": 0,
+      "pole_failed_rows": 0,
+      "physical_finite": true,
+      "max_half_period_excess_radians": [
+        -2.795632185630078,
+        -0.49409678330650975,
+        -1.347007292632783
+      ]
+    },
+    {
+      "step": 1,
+      "failed_chart_coordinates": [
+        0,
+        0,
+        0
+      ],
+      "chart_failed_rows": 0,
+      "distance_failed_rows": 0,
+      "pole_failed_rows": 0,
+      "physical_finite": true,
+      "max_half_period_excess_radians": [
+        -2.6736526461957966,
+        -1.5032871679260316,
+        -1.2721894069475335
+      ]
+    },
+    {
+      "step": 2,
+      "failed_chart_coordinates": [
+        0,
+        0,
+        0
+      ],
+      "chart_failed_rows": 0,
+      "distance_failed_rows": 0,
+      "pole_failed_rows": 0,
+      "physical_finite": true,
+      "max_half_period_excess_radians": [
+        -2.9266748998818626,
+        -0.23692024960207636,
+        -1.303792779161227
+      ]
+    },
+    {
+      "step": 3,
+      "failed_chart_coordinates": [
+        0,
+        0,
+        0
+      ],
+      "chart_failed_rows": 0,
+      "distance_failed_rows": 0,
+      "pole_failed_rows": 0,
+      "physical_finite": true,
+      "max_half_period_excess_radians": [
+        -2.7881996309262385,
+        -0.40034080780209447,
+        -1.169932479468953
+      ]
+    },
+    {
+      "step": 4,
+      "failed_chart_coordinates": [
+        0,
+        0,
+        0
+      ],
+      "chart_failed_rows": 0,
+      "distance_failed_rows": 0,
+      "pole_failed_rows": 0,
+      "physical_finite": true,
+      "max_half_period_excess_radians": [
+        -2.8327960181736347,
+        -1.1135277047286847,
+        -1.3288039227302983
+      ]
+    },
+    {
+      "step": 5,
+      "failed_chart_coordinates": [
+        0,
+        0,
+        0
+      ],
+      "chart_failed_rows": 0,
+      "distance_failed_rows": 0,
+      "pole_failed_rows": 0,
+      "physical_finite": true,
+      "max_half_period_excess_radians": [
+        -2.711075339770802,
+        -0.3862910880050503,
+        -1.4781635777088107
+      ]
+    },
+    {
+      "step": 6,
+      "failed_chart_coordinates": [
+        0,
+        1,
+        0
+      ],
+      "chart_failed_rows": 1,
+      "distance_failed_rows": 0,
+      "pole_failed_rows": 0,
+      "physical_finite": true,
+      "max_half_period_excess_radians": [
+        -2.818455249926037,
+        0.19617395053080333,
+        -1.4383247127576109
+      ]
+    }
+  ],
+  "diagnosis": "local angular chart representation failure in frozen reference",
+  "replay_private_artifact": {
+    "path": "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3c/forward_replay/replayed_endpoint.pt",
+    "sha256": "0ba0c682e5068811b16893a90d7728a8be1d94be2a04ce5f50faf0c3b525c9b6"
+  },
+  "source_checkpoint_sha256": "4ce26989ccdcfcdb1702dd5e270d79a772487adb2b348b8b471bcaf3a8cf3158",
+  "partial_checkpoint_sha256": "479eac9c0c5e412755ce6a55de4a248eda60c8e3d8c47452e0efb4a4591673c9",
+  "partial_updates": 6,
+  "partial_parameters_finite": true,
+  "partial_parameter_change_l2": 0.0016055308386224206,
+  "partial_vs_initial_validation_endpoint_rms": 0.001256674881785245,
+  "new_physical_likelihood_rows": 0,
+  "optimizer_steps": 0,
+  "neural_training_run": false,
+  "host": "ldas-grid",
+  "affinity": [
+    0
+  ],
+  "torch": "2.8.0",
+  "source_sha256": {
+    "diagnose_chart.py": "ec257d49a57d4df9fb334c521624c079db4398d6f5c12ec4e2ec7d74dc8071c5",
+    "model.py": "5510640a980b8b2bba10d36eb8079ab0a6d44f83a1d7f330fda620387b4075da"
+  },
+  "cost": {
+    "process_wall_seconds": 1.0362603230169043,
+    "cpu_user_seconds": 0.604761,
+    "cpu_system_seconds": 0.13369699999999998,
+    "max_rss_kib": 237424
+  }
+}

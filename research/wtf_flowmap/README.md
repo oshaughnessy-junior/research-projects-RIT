@@ -1,3 +1,8 @@
+Stage 3c diagnosed the failure as a phase-chart representation defect in the
+frozen reference. A validated forward-only replay and nine local geometry tests
+used zero likelihood calls and no training. See `CHART_REPAIR.md` for the proposed
+periodic architecture, invalidated checkpoint contracts and bounded next gates.
+
 # Learned flow-map research on S250114ax
 
 Stage 3b passed the Torch/JAX bridge and completed six true-log-likelihood
@@ -215,3 +220,13 @@ Including setup repair: 62 endpoint attempts, 55 physical rows, 38.50 CPU /
 Resolve that representation/domain contract before more training or inference.
 A conditional 10,000-row / 20-CPU-minute corrected-sampler accounting pilot is
 estimated in STAGE3B.md; no inference pilot or campaign was launched.
+
+## Stage 3c diagnosis
+
+One reconstructed phase endpoint is .196174 rad outside the local chart; all
+failed-batch physical distance/pole checks pass. The frozen reference generates
+it independently of student updates. The original failed endpoint was not saved;
+its reconstructed private artifact is distinguished from an original capture.
+A torus-equivariant representation is specified and unit-tested algebraically,
+but no replacement neural model has been built or trained. Old checkpoint/guard
+behavior is preserved. See `CHART_REPAIR.md` and `results/stage3c/summary.json`.

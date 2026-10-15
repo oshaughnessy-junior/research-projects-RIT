@@ -1,9 +1,10 @@
 # Learned WTF flow-map investigation — staged plan
 
-Status: stages 1–2 complete; stage3a local parity passed. Stage3b bridge passed
-and six real-objective updates completed, then stopped at the strict angular-chart
-guard (see STAGE3B.md). No cost/capability win claimed. Owner: this
-Codex task on the mini, low-effort blue-sky work. Production defaults remain fixed.
+Status: stage3c identified a frozen-reference phase-chart representation defect.
+Zero-likelihood forward replay and nine mathematical tests passed; a periodic
+model repair is designed but not implemented/trained. See CHART_REPAIR.md.
+No cost/capability win claimed. Owner: current Codex task on the mini.
+Production defaults remain fixed.
 PR445 and its negative heuristic pilot are preserved as a separate historical result.
 
 ## Real use case and baseline

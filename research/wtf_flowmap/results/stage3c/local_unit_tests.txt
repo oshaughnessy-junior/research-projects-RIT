@@ -1,0 +1,14 @@
+test_distance_saturation_is_rejected_not_clipped (test_periodic_geometry.GeometryTests) ... ok
+test_full_jacobian_and_sign_by_independent_finite_difference (test_periodic_geometry.GeometryTests) ... ok
+test_naive_wrapping_of_nonperiodic_net_is_not_a_repair (test_periodic_geometry.GeometryTests) ... ok
+test_optional_bounded_distance_is_separate_from_minimal_phase_repair (test_periodic_geometry.GeometryTests) ... ok
+test_periodic_features_and_equivariant_residual_jump (test_periodic_geometry.GeometryTests) ... ok
+test_polarization_jacobian_preserves_uniform_prior_mass (test_periodic_geometry.GeometryTests) ... ok
+test_roundtrip_and_strict_physical_support (test_periodic_geometry.GeometryTests) ... ok
+test_short_arc_crosses_seam_without_state_clipping (test_periodic_geometry.GeometryTests) ... ok
+test_torus_error_invariant_to_representatives (test_periodic_geometry.GeometryTests) ... ok
+
+----------------------------------------------------------------------
+Ran 9 tests in 0.001s
+
+OK
