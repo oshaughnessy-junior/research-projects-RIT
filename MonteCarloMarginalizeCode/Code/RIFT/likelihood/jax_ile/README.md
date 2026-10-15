@@ -80,8 +80,10 @@ the endpoint-nonduplicating even extension
 applies the phase reduction on the
 fine grid, and integrates the original closed interval with a stable trapezoid
 rule.  The per-row power-of-two factor is derived from fine-grid peak curvature,
-remeasured after interpolation, and doubled until the integral agrees within
-1e-3 nat.  Row-local `lax.map` execution bounds scratch memory independently of
+remeasured after interpolation, and checked against one factor doubling within
+1e-3 nat. If that first certificate fails, one additional doubling is allowed,
+with the same resolution and guard certificates and a maximum fine factor of
+2048. Previously accepted rows keep their original value and derivative.  Row-local `lax.map` execution bounds scratch memory independently of
 the sampler batch.  There is deliberately no public factor knob; a row that
 cannot meet the criterion fails closed.
 

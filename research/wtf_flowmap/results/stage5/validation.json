@@ -1,0 +1,307 @@
+{
+  "status": "isolated_retry_gradient_checks_passed_common_target_still_mismatched",
+  "attempts": 29,
+  "prior_stage5_attempts": 9,
+  "cap": 64,
+  "checks": [
+    {
+      "label": "earlier_parity_control_0",
+      "value_delta": 0.0,
+      "max_abs_gradient_delta": 0.0
+    },
+    {
+      "label": "earlier_parity_control_1",
+      "value_delta": 0.0,
+      "max_abs_gradient_delta": 0.0
+    }
+  ],
+  "likelihood_sources": {
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/factored_likelihood.py": "7b87a19e7133155cb1bb67a790a58ab7204f605d6d12cd78471edc34e044c974",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/jax_ile/wrapper.py": "0db282efa8db272e404cc2d649485feaba3c0339998a36ddde293b7ac4166005",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/jax_ile/core.py": "0f499791e796558b7b2460027ef8459302925dcf792801883664ceaf56336ab8"
+  },
+  "current_normalized_driver_sha256": "d88a561e6f838f6066cf543fd93c58b838d96d022b7d8536fa95819e8252cf20",
+  "coordinate_contracts": "two-row roundtrip, Torch/JAX/full FD Jacobian passed",
+  "normalization_convention": {
+    "reward": "physical log time-integral API only, no prior or Jacobian added",
+    "angular_prior": "unit mass on RA[0,2pi),phase[0,2pi),psi[0,pi)",
+    "distance_prior": "current normalized Planck15 cosmo_sourceframe on [1,10000]",
+    "historical_angular_prior_mass": 8,
+    "historical_lnZ_offset": 2.0794415416798357,
+    "likelihood_is_not_evidence": true
+  },
+  "runtime": {
+    "host": "ldas-grid",
+    "affinity": [
+      0
+    ],
+    "pid": 2324398,
+    "numpy": "2.2.6",
+    "torch": "2.8.0",
+    "jax": "0.9.0"
+  },
+  "frame_psd_setup_wall_seconds": 0.1481678349955473,
+  "precompute": {
+    "attempted": 1,
+    "integration_half": 0.075,
+    "storage_half": 0.37890625,
+    "guard_initial": 512,
+    "guard_certified": 1024,
+    "lmax": 4,
+    "ignore_threshold": null
+  },
+  "cpu_seconds": 42.713366731,
+  "wall_seconds": 44.71819617800065,
+  "precompute_wall_seconds": 2.710067597014131,
+  "modes": {
+    "H1": [
+      [
+        2,
+        -2
+      ],
+      [
+        2,
+        -1
+      ],
+      [
+        2,
+        0
+      ],
+      [
+        2,
+        1
+      ],
+      [
+        2,
+        2
+      ],
+      [
+        3,
+        -3
+      ],
+      [
+        3,
+        -2
+      ],
+      [
+        3,
+        -1
+      ],
+      [
+        3,
+        0
+      ],
+      [
+        3,
+        1
+      ],
+      [
+        3,
+        2
+      ],
+      [
+        3,
+        3
+      ],
+      [
+        4,
+        -4
+      ],
+      [
+        4,
+        -3
+      ],
+      [
+        4,
+        -2
+      ],
+      [
+        4,
+        -1
+      ],
+      [
+        4,
+        0
+      ],
+      [
+        4,
+        1
+      ],
+      [
+        4,
+        2
+      ],
+      [
+        4,
+        3
+      ],
+      [
+        4,
+        4
+      ]
+    ],
+    "L1": [
+      [
+        2,
+        -2
+      ],
+      [
+        2,
+        -1
+      ],
+      [
+        2,
+        0
+      ],
+      [
+        2,
+        1
+      ],
+      [
+        2,
+        2
+      ],
+      [
+        3,
+        -3
+      ],
+      [
+        3,
+        -2
+      ],
+      [
+        3,
+        -1
+      ],
+      [
+        3,
+        0
+      ],
+      [
+        3,
+        1
+      ],
+      [
+        3,
+        2
+      ],
+      [
+        3,
+        3
+      ],
+      [
+        4,
+        -4
+      ],
+      [
+        4,
+        -3
+      ],
+      [
+        4,
+        -2
+      ],
+      [
+        4,
+        -1
+      ],
+      [
+        4,
+        0
+      ],
+      [
+        4,
+        1
+      ],
+      [
+        4,
+        2
+      ],
+      [
+        4,
+        3
+      ],
+      [
+        4,
+        4
+      ]
+    ]
+  },
+  "time_grid": {
+    "count": 614,
+    "first": -0.074951171875,
+    "last": 0.07470703125,
+    "spacing": 0.000244140625,
+    "sha256": "58069d49c1da7eab8cddf84193abff20e5a1ba5dda5af42c7b2ff04c08684d63",
+    "definition": "shared raw log integral over closed NoLoop grid; no new time normalization"
+  },
+  "probes": [
+    "old_control_gradient_0",
+    "new_control_gradient_0",
+    "old_control_gradient_1",
+    "new_control_gradient_1",
+    "new_failure_value_gradient",
+    "new_fd_plus_0",
+    "new_fd_minus_0",
+    "noloop_fd_plus_0",
+    "noloop_fd_minus_0",
+    "new_fd_plus_1",
+    "new_fd_minus_1",
+    "noloop_fd_plus_1",
+    "noloop_fd_minus_1",
+    "new_fd_plus_2",
+    "new_fd_minus_2",
+    "noloop_fd_plus_2",
+    "noloop_fd_minus_2",
+    "new_fd_plus_3",
+    "new_fd_minus_3",
+    "noloop_fd_plus_3",
+    "noloop_fd_minus_3",
+    "new_fd_plus_4",
+    "new_fd_minus_4",
+    "noloop_fd_plus_4",
+    "noloop_fd_minus_4",
+    "new_fd_plus_5",
+    "new_fd_minus_5",
+    "noloop_fd_plus_5",
+    "noloop_fd_minus_5"
+  ],
+  "failure_point": {
+    "patched_value": 47.82924264949544,
+    "patched_gradient": [
+      -80.38681745139968,
+      -9.279366708048832,
+      40.14605288329033,
+      -41.85036588335205,
+      0.5885311210158868,
+      -0.022014798071207497
+    ],
+    "patched_central_fd": [
+      -80.3868427038168,
+      -9.279365700720632,
+      40.14604928457288,
+      -41.850369036922075,
+      0.5885230709878897,
+      -0.022014798069847075
+    ],
+    "noloop_central_fd": [
+      -82.37146211911295,
+      -6.8185671150189355,
+      39.435034503654265,
+      -42.58528001770401,
+      -0.42945556053552986,
+      -0.022014087925015247
+    ],
+    "maximum_patched_ad_fd_error": 2.5252417117371806e-05,
+    "noloop_gradient_discrepancy": [
+      1.984644667713269,
+      -2.460799593029896,
+      0.7110183796360658,
+      0.7349141343519605,
+      1.0179866815514167,
+      -7.101461922502661e-07
+    ],
+    "reference_value": 47.83659196403751,
+    "value_difference_from_reference": -0.007349314542068441
+  }
+}

@@ -1,0 +1,300 @@
+{
+  "status": "extraction_complete",
+  "attempts": 9,
+  "cap": 64,
+  "physical_rows": 9,
+  "probes": [
+    "jax_full_0",
+    "numpy_noloop_0",
+    "accumulate_primitive_0",
+    "jax_full_1",
+    "numpy_noloop_1",
+    "accumulate_primitive_1",
+    "jax_full_2",
+    "numpy_noloop_2",
+    "accumulate_primitive_2"
+  ],
+  "likelihood_sources": {
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/factored_likelihood.py": "7b87a19e7133155cb1bb67a790a58ab7204f605d6d12cd78471edc34e044c974",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/jax_ile/wrapper.py": "0db282efa8db272e404cc2d649485feaba3c0339998a36ddde293b7ac4166005",
+    "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/jax_ile/core.py": "0f499791e796558b7b2460027ef8459302925dcf792801883664ceaf56336ab8"
+  },
+  "current_normalized_driver_sha256": "d88a561e6f838f6066cf543fd93c58b838d96d022b7d8536fa95819e8252cf20",
+  "coordinate_contracts": "two-row roundtrip, Torch/JAX/full FD Jacobian passed",
+  "normalization_convention": {
+    "reward": "physical log time-integral API only, no prior or Jacobian added",
+    "angular_prior": "unit mass on RA[0,2pi),phase[0,2pi),psi[0,pi)",
+    "distance_prior": "current normalized Planck15 cosmo_sourceframe on [1,10000]",
+    "historical_angular_prior_mass": 8,
+    "historical_lnZ_offset": 2.0794415416798357,
+    "likelihood_is_not_evidence": true
+  },
+  "runtime": {
+    "host": "ldas-grid",
+    "affinity": [
+      0
+    ],
+    "pid": 2291318,
+    "numpy": "2.2.6",
+    "torch": "2.8.0",
+    "jax": "0.9.0"
+  },
+  "frame_psd_setup_wall_seconds": 0.1629866139846854,
+  "precompute": {
+    "attempted": 1,
+    "integration_half": 0.075,
+    "storage_half": 0.37890625,
+    "guard_initial": 512,
+    "guard_certified": 1024,
+    "lmax": 4,
+    "ignore_threshold": null
+  },
+  "cpu_seconds": 13.894039124999999,
+  "wall_seconds": 17.159730939980363,
+  "precompute_wall_seconds": 2.4418889230000786,
+  "modes": {
+    "H1": [
+      [
+        2,
+        -2
+      ],
+      [
+        2,
+        -1
+      ],
+      [
+        2,
+        0
+      ],
+      [
+        2,
+        1
+      ],
+      [
+        2,
+        2
+      ],
+      [
+        3,
+        -3
+      ],
+      [
+        3,
+        -2
+      ],
+      [
+        3,
+        -1
+      ],
+      [
+        3,
+        0
+      ],
+      [
+        3,
+        1
+      ],
+      [
+        3,
+        2
+      ],
+      [
+        3,
+        3
+      ],
+      [
+        4,
+        -4
+      ],
+      [
+        4,
+        -3
+      ],
+      [
+        4,
+        -2
+      ],
+      [
+        4,
+        -1
+      ],
+      [
+        4,
+        0
+      ],
+      [
+        4,
+        1
+      ],
+      [
+        4,
+        2
+      ],
+      [
+        4,
+        3
+      ],
+      [
+        4,
+        4
+      ]
+    ],
+    "L1": [
+      [
+        2,
+        -2
+      ],
+      [
+        2,
+        -1
+      ],
+      [
+        2,
+        0
+      ],
+      [
+        2,
+        1
+      ],
+      [
+        2,
+        2
+      ],
+      [
+        3,
+        -3
+      ],
+      [
+        3,
+        -2
+      ],
+      [
+        3,
+        -1
+      ],
+      [
+        3,
+        0
+      ],
+      [
+        3,
+        1
+      ],
+      [
+        3,
+        2
+      ],
+      [
+        3,
+        3
+      ],
+      [
+        4,
+        -4
+      ],
+      [
+        4,
+        -3
+      ],
+      [
+        4,
+        -2
+      ],
+      [
+        4,
+        -1
+      ],
+      [
+        4,
+        0
+      ],
+      [
+        4,
+        1
+      ],
+      [
+        4,
+        2
+      ],
+      [
+        4,
+        3
+      ],
+      [
+        4,
+        4
+      ]
+    ]
+  },
+  "time_grid": {
+    "count": 614,
+    "first": -0.074951171875,
+    "last": 0.07470703125,
+    "spacing": 0.000244140625,
+    "sha256": "58069d49c1da7eab8cddf84193abff20e5a1ba5dda5af42c7b2ff04c08684d63",
+    "definition": "shared raw log integral over closed NoLoop grid; no new time normalization"
+  },
+  "coordinate_order": [
+    "ra",
+    "dec",
+    "psi",
+    "incl",
+    "phiref",
+    "distMpc"
+  ],
+  "physical_coordinate": [
+    3.3098110759092685,
+    0.048317966390789106,
+    1.0625090397890906,
+    1.3211940156563102,
+    6.169022226149153,
+    1861.1068204841292
+  ],
+  "origin": {
+    "kind": "reconstructed, not original failing-batch capture",
+    "reconstructed_batch_sha256": "c36de2dac9018672c4abf60e57161686b2092187b14d3d4115a45122823745a1",
+    "diagnostic_array_sha256": "90f92df7c4d009f78f31cf71abf307ef42529b8a83b8d138968047af378224a2",
+    "batch_index": 12,
+    "prefix_replay_batches": 15,
+    "replay_summary_sha256": "923eba06e913c0da926074241cb198de715431f374c9f19e59dc0b091647e738"
+  },
+  "additional_sources": {
+    "time_marginalization_quadrature.py": "6f21ed72f1612c187df24db5fa666608104621dd150bf68a7b77bcb36b7ca44b",
+    "core.py": "0f499791e796558b7b2460027ef8459302925dcf792801883664ceaf56336ab8"
+  },
+  "precision": {
+    "jax_enable_x64": true,
+    "guard": 1024,
+    "npts": 614,
+    "deltaT": 0.000244140625
+  },
+  "points": [
+    {
+      "index": 0,
+      "label": "failure",
+      "original_value": null,
+      "original_kind": "nonfinite",
+      "reference": 47.83659196403751,
+      "primitive_finite": true,
+      "primitive_sha256": "4abebb6f1246f693821f339de328050f12058cf649758ff2122e16b360c84598"
+    },
+    {
+      "index": 1,
+      "label": "earlier_parity_0",
+      "original_value": 2862.2213237859287,
+      "original_kind": "finite",
+      "reference": 2862.2213078809596,
+      "primitive_finite": true,
+      "primitive_sha256": "2b15245ff17084d3fa1551d5730b316f1eef34f35acdf9d709909efaa6747043"
+    },
+    {
+      "index": 2,
+      "label": "earlier_parity_3",
+      "original_value": 2861.3464532730536,
+      "original_kind": "finite",
+      "reference": 2861.346473399481,
+      "primitive_finite": true,
+      "primitive_sha256": "3cc0856f566449d6bd72ed95e5822c6651272bac81a921b2a75ad2620e7c0f89"
+    }
+  ]
+}

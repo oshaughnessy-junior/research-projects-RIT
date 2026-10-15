@@ -1829,7 +1829,25 @@ def _time_marginalize_reflected_primitive(kappa_t, rho_sq, deltaT,
             else:
                 g1 = True
             c1 = r1 & b1 & g1 & (jnp.abs(v1 - v0) <= _TIME_ADAPTIVE_RTOL)
-            return jnp.where(c1, v1, jnp.nan)
+            # A curvature-derived starting factor need not already pass the
+            # independent integral-doubling certificate.  Permit ONE further
+            # doubling, keeping every certificate and the existing 2048 fine
+            # grid ceiling.  Previously accepted rows retain their exact value
+            # and derivative; no Simpson/reference fallback is substituted.
+            if 4 * base > 2 * _TIME_ADAPTIVE_FACTOR_MAX:
+                return jnp.where(c1, v1, jnp.nan)
+
+            def retry(_):
+                v2, r2, b2 = at_factor(kappa, rho, 4 * base, guard)
+                if guard:
+                    vg2, _, _ = at_factor(kappa, rho, 4 * base, inner_guard)
+                    g2 = jnp.abs(v2 - vg2) <= _TIME_ADAPTIVE_RTOL
+                else:
+                    g2 = True
+                c2 = r2 & b2 & g2 & (jnp.abs(v2 - v1) <= _TIME_ADAPTIVE_RTOL)
+                return jnp.where(c2, v2, jnp.nan)
+
+            return jax.lax.cond(c1, lambda _: v1, retry, operand=None)
         return branch
 
     branches = tuple(make_branch(f) for f in powers)

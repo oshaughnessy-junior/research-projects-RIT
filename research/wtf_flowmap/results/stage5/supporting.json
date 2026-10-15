@@ -1,0 +1,932 @@
+{
+  "extract/summary.json": {
+    "status": "extraction_complete",
+    "attempts": 9,
+    "cap": 64,
+    "physical_rows": 9,
+    "probes": [
+      "jax_full_0",
+      "numpy_noloop_0",
+      "accumulate_primitive_0",
+      "jax_full_1",
+      "numpy_noloop_1",
+      "accumulate_primitive_1",
+      "jax_full_2",
+      "numpy_noloop_2",
+      "accumulate_primitive_2"
+    ],
+    "likelihood_sources": {
+      "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/factored_likelihood.py": "7b87a19e7133155cb1bb67a790a58ab7204f605d6d12cd78471edc34e044c974",
+      "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/jax_ile/wrapper.py": "0db282efa8db272e404cc2d649485feaba3c0339998a36ddde293b7ac4166005",
+      "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/jax_ile/core.py": "0f499791e796558b7b2460027ef8459302925dcf792801883664ceaf56336ab8"
+    },
+    "current_normalized_driver_sha256": "d88a561e6f838f6066cf543fd93c58b838d96d022b7d8536fa95819e8252cf20",
+    "coordinate_contracts": "two-row roundtrip, Torch/JAX/full FD Jacobian passed",
+    "normalization_convention": {
+      "reward": "physical log time-integral API only, no prior or Jacobian added",
+      "angular_prior": "unit mass on RA[0,2pi),phase[0,2pi),psi[0,pi)",
+      "distance_prior": "current normalized Planck15 cosmo_sourceframe on [1,10000]",
+      "historical_angular_prior_mass": 8,
+      "historical_lnZ_offset": 2.0794415416798357,
+      "likelihood_is_not_evidence": true
+    },
+    "runtime": {
+      "host": "ldas-grid",
+      "affinity": [
+        0
+      ],
+      "pid": 2291318,
+      "numpy": "2.2.6",
+      "torch": "2.8.0",
+      "jax": "0.9.0"
+    },
+    "frame_psd_setup_wall_seconds": 0.1629866139846854,
+    "precompute": {
+      "attempted": 1,
+      "integration_half": 0.075,
+      "storage_half": 0.37890625,
+      "guard_initial": 512,
+      "guard_certified": 1024,
+      "lmax": 4,
+      "ignore_threshold": null
+    },
+    "cpu_seconds": 13.894039124999999,
+    "wall_seconds": 17.159730939980363,
+    "precompute_wall_seconds": 2.4418889230000786,
+    "modes": {
+      "H1": [
+        [
+          2,
+          -2
+        ],
+        [
+          2,
+          -1
+        ],
+        [
+          2,
+          0
+        ],
+        [
+          2,
+          1
+        ],
+        [
+          2,
+          2
+        ],
+        [
+          3,
+          -3
+        ],
+        [
+          3,
+          -2
+        ],
+        [
+          3,
+          -1
+        ],
+        [
+          3,
+          0
+        ],
+        [
+          3,
+          1
+        ],
+        [
+          3,
+          2
+        ],
+        [
+          3,
+          3
+        ],
+        [
+          4,
+          -4
+        ],
+        [
+          4,
+          -3
+        ],
+        [
+          4,
+          -2
+        ],
+        [
+          4,
+          -1
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          1
+        ],
+        [
+          4,
+          2
+        ],
+        [
+          4,
+          3
+        ],
+        [
+          4,
+          4
+        ]
+      ],
+      "L1": [
+        [
+          2,
+          -2
+        ],
+        [
+          2,
+          -1
+        ],
+        [
+          2,
+          0
+        ],
+        [
+          2,
+          1
+        ],
+        [
+          2,
+          2
+        ],
+        [
+          3,
+          -3
+        ],
+        [
+          3,
+          -2
+        ],
+        [
+          3,
+          -1
+        ],
+        [
+          3,
+          0
+        ],
+        [
+          3,
+          1
+        ],
+        [
+          3,
+          2
+        ],
+        [
+          3,
+          3
+        ],
+        [
+          4,
+          -4
+        ],
+        [
+          4,
+          -3
+        ],
+        [
+          4,
+          -2
+        ],
+        [
+          4,
+          -1
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          1
+        ],
+        [
+          4,
+          2
+        ],
+        [
+          4,
+          3
+        ],
+        [
+          4,
+          4
+        ]
+      ]
+    },
+    "time_grid": {
+      "count": 614,
+      "first": -0.074951171875,
+      "last": 0.07470703125,
+      "spacing": 0.000244140625,
+      "sha256": "58069d49c1da7eab8cddf84193abff20e5a1ba5dda5af42c7b2ff04c08684d63",
+      "definition": "shared raw log integral over closed NoLoop grid; no new time normalization"
+    },
+    "coordinate_order": [
+      "ra",
+      "dec",
+      "psi",
+      "incl",
+      "phiref",
+      "distMpc"
+    ],
+    "physical_coordinate": [
+      3.3098110759092685,
+      0.048317966390789106,
+      1.0625090397890906,
+      1.3211940156563102,
+      6.169022226149153,
+      1861.1068204841292
+    ],
+    "origin": {
+      "kind": "reconstructed, not original failing-batch capture",
+      "reconstructed_batch_sha256": "c36de2dac9018672c4abf60e57161686b2092187b14d3d4115a45122823745a1",
+      "diagnostic_array_sha256": "90f92df7c4d009f78f31cf71abf307ef42529b8a83b8d138968047af378224a2",
+      "batch_index": 12,
+      "prefix_replay_batches": 15,
+      "replay_summary_sha256": "923eba06e913c0da926074241cb198de715431f374c9f19e59dc0b091647e738"
+    },
+    "additional_sources": {
+      "time_marginalization_quadrature.py": "6f21ed72f1612c187df24db5fa666608104621dd150bf68a7b77bcb36b7ca44b",
+      "core.py": "0f499791e796558b7b2460027ef8459302925dcf792801883664ceaf56336ab8"
+    },
+    "precision": {
+      "jax_enable_x64": true,
+      "guard": 1024,
+      "npts": 614,
+      "deltaT": 0.000244140625
+    },
+    "points": [
+      {
+        "index": 0,
+        "label": "failure",
+        "original_value": null,
+        "original_kind": "nonfinite",
+        "reference": 47.83659196403751,
+        "primitive_finite": true,
+        "primitive_sha256": "4abebb6f1246f693821f339de328050f12058cf649758ff2122e16b360c84598"
+      },
+      {
+        "index": 1,
+        "label": "earlier_parity_0",
+        "original_value": 2862.2213237859287,
+        "original_kind": "finite",
+        "reference": 2862.2213078809596,
+        "primitive_finite": true,
+        "primitive_sha256": "2b15245ff17084d3fa1551d5730b316f1eef34f35acdf9d709909efaa6747043"
+      },
+      {
+        "index": 2,
+        "label": "earlier_parity_3",
+        "original_value": 2861.3464532730536,
+        "original_kind": "finite",
+        "reference": 2861.346473399481,
+        "primitive_finite": true,
+        "primitive_sha256": "3cc0856f566449d6bd72ed95e5822c6651272bac81a921b2a75ad2620e7c0f89"
+      }
+    ]
+  },
+  "extract/certificate-audit.json": {
+    "true_likelihood_attempts": 0,
+    "points": [
+      {
+        "index": 0,
+        "initial_base": 1,
+        "finite_primitive": true,
+        "factors": [
+          {
+            "factor": 1,
+            "value": 47.82795959124954,
+            "width": 0.0005021703035794358,
+            "measurable": true,
+            "resolved": true,
+            "half_guard_value": 47.82795959124954,
+            "guard_difference": 0.0
+          },
+          {
+            "factor": 2,
+            "value": 47.82924266156774,
+            "width": 0.0005052348427065751,
+            "measurable": true,
+            "resolved": true,
+            "half_guard_value": 47.82924266157589,
+            "guard_difference": 8.149925179168349e-12
+          },
+          {
+            "factor": 4,
+            "value": 47.829242649495434,
+            "width": 0.0004964152542851328,
+            "measurable": true,
+            "resolved": true,
+            "half_guard_value": 47.82924264950358,
+            "guard_difference": 8.142819751810748e-12
+          },
+          {
+            "factor": 8,
+            "value": 47.829242649495434,
+            "width": 0.000496581173152835,
+            "measurable": true,
+            "resolved": true,
+            "half_guard_value": 47.82924264950357,
+            "guard_difference": 8.135714324453147e-12
+          },
+          {
+            "factor": 16,
+            "value": 47.82924264949542,
+            "width": 0.0004966227242026357,
+            "measurable": true,
+            "resolved": true,
+            "half_guard_value": 47.82924264950357,
+            "guard_difference": 8.149925179168349e-12
+          },
+          {
+            "factor": 32,
+            "value": 47.829242649495434,
+            "width": 0.0004966331164057734,
+            "measurable": true,
+            "resolved": true,
+            "half_guard_value": 47.829242649503584,
+            "guard_difference": 8.149925179168349e-12
+          }
+        ],
+        "numpy_same_coarse_primitive_value": 47.8365919640375,
+        "numpy_rule_report": {
+          "upsample_factor": 1,
+          "factor_histogram": {},
+          "n_refinements": 0,
+          "sigma_t_min": "inf",
+          "n_rows": 1,
+          "n_wrap_exposed_rows": 0,
+          "n_unmeasurable_rows": 0,
+          "n_flat_rows": 0,
+          "n_refined_rows": 0,
+          "cpu_fft_workers": 1,
+          "retained_fft_batches": 0,
+          "retained_fft_rows": 0,
+          "full_fft_selected_batches": 0,
+          "full_fft_selected_rows": 0,
+          "full_fft_selected_reasons": {},
+          "full_fft_fallback_batches": 0,
+          "full_fft_fallback_rows": 0,
+          "full_fft_fallback_reasons": {},
+          "max_reflected_period": 0,
+          "max_dense_factor": 1,
+          "max_reference_full_fft_length": 0,
+          "max_retained_fft_length": 0,
+          "max_retained_grid_length": 0,
+          "bandlimited_fft_strategy": "not-used",
+          "n_retained_fft_plans": 0
+        }
+      },
+      {
+        "index": 1,
+        "initial_base": 32,
+        "finite_primitive": true,
+        "factors": [
+          {
+            "factor": 1,
+            "value": 2848.119921144439,
+            "width": 1.5729262613440266e-05,
+            "measurable": true,
+            "resolved": false,
+            "half_guard_value": 2848.119921144439,
+            "guard_difference": 0.0
+          },
+          {
+            "factor": 2,
+            "value": 2861.011786654654,
+            "width": 1.5640924287556573e-05,
+            "measurable": true,
+            "resolved": false,
+            "half_guard_value": 2861.011786657414,
+            "guard_difference": 2.760316419880837e-09
+          },
+          {
+            "factor": 4,
+            "value": 2861.5116438229747,
+            "width": 1.563042597369642e-05,
+            "measurable": true,
+            "resolved": false,
+            "half_guard_value": 2861.5116438251557,
+            "guard_difference": 2.180968294851482e-09
+          },
+          {
+            "factor": 8,
+            "value": 2862.2300845980817,
+            "width": 1.5622007498667357e-05,
+            "measurable": true,
+            "resolved": false,
+            "half_guard_value": 2862.2300846005264,
+            "guard_difference": 2.444721758365631e-09
+          },
+          {
+            "factor": 16,
+            "value": 2862.2213237863616,
+            "width": 1.562132461056219e-05,
+            "measurable": true,
+            "resolved": false,
+            "half_guard_value": 2862.221323788797,
+            "guard_difference": 2.4351720639970154e-09
+          },
+          {
+            "factor": 32,
+            "value": 2862.2213237859282,
+            "width": 1.562115389170585e-05,
+            "measurable": true,
+            "resolved": true,
+            "half_guard_value": 2862.2213237883634,
+            "guard_difference": 2.4351720639970154e-09
+          },
+          {
+            "factor": 64,
+            "value": 2862.2213237859282,
+            "width": 1.5621224936033024e-05,
+            "measurable": true,
+            "resolved": true,
+            "half_guard_value": 2862.221323788364,
+            "guard_difference": 2.435626811347902e-09
+          }
+        ],
+        "numpy_same_coarse_primitive_value": 2862.2213078809573,
+        "numpy_rule_report": {
+          "upsample_factor": 32,
+          "factor_histogram": {
+            "32": 1
+          },
+          "n_refinements": 0,
+          "sigma_t_min": 1.5621159093436977e-05,
+          "n_rows": 1,
+          "n_wrap_exposed_rows": 0,
+          "n_unmeasurable_rows": 0,
+          "n_flat_rows": 0,
+          "n_refined_rows": 1,
+          "cpu_fft_workers": 1,
+          "retained_fft_batches": 1,
+          "retained_fft_rows": 1,
+          "full_fft_selected_batches": 0,
+          "full_fft_selected_rows": 0,
+          "full_fft_selected_reasons": {},
+          "full_fft_fallback_batches": 0,
+          "full_fft_fallback_rows": 0,
+          "full_fft_fallback_reasons": {},
+          "max_reflected_period": 1228,
+          "max_dense_factor": 32,
+          "max_reference_full_fft_length": 39296,
+          "max_retained_fft_length": 21000,
+          "max_retained_grid_length": 19617,
+          "bandlimited_fft_strategy": "retained-grid-zoomfft",
+          "n_retained_fft_plans": 1
+        }
+      },
+      {
+        "index": 2,
+        "initial_base": 32,
+        "finite_primitive": true,
+        "factors": [
+          {
+            "factor": 1,
+            "value": 2850.466102418419,
+            "width": 1.5767770701998697e-05,
+            "measurable": true,
+            "resolved": false,
+            "half_guard_value": 2850.466102418419,
+            "guard_difference": 0.0
+          },
+          {
+            "factor": 2,
+            "value": 2858.7125091979015,
+            "width": 1.569683852265709e-05,
+            "measurable": true,
+            "resolved": false,
+            "half_guard_value": 2858.7125092063525,
+            "guard_difference": 8.45102476887405e-09
+          },
+          {
+            "factor": 4,
+            "value": 2861.1706603154457,
+            "width": 1.5678514502217877e-05,
+            "measurable": true,
+            "resolved": false,
+            "half_guard_value": 2861.1706603215534,
+            "guard_difference": 6.1077116697560996e-09
+          },
+          {
+            "factor": 8,
+            "value": 2861.337149510552,
+            "width": 1.5674214407011774e-05,
+            "measurable": true,
+            "resolved": false,
+            "half_guard_value": 2861.337149517621,
+            "guard_difference": 7.069047569530085e-09
+          },
+          {
+            "factor": 16,
+            "value": 2861.3464532738367,
+            "width": 1.5673004356270828e-05,
+            "measurable": true,
+            "resolved": false,
+            "half_guard_value": 2861.3464532809016,
+            "guard_difference": 7.0649548433721066e-09
+          },
+          {
+            "factor": 32,
+            "value": 2861.3464532730536,
+            "width": 1.567283633213769e-05,
+            "measurable": true,
+            "resolved": true,
+            "half_guard_value": 2861.3464532801195,
+            "guard_difference": 7.0658643380738795e-09
+          },
+          {
+            "factor": 64,
+            "value": 2861.3464532730536,
+            "width": 1.567267658629932e-05,
+            "measurable": true,
+            "resolved": true,
+            "half_guard_value": 2861.3464532801195,
+            "guard_difference": 7.0658643380738795e-09
+          }
+        ],
+        "numpy_same_coarse_primitive_value": 2861.346473399479,
+        "numpy_rule_report": {
+          "upsample_factor": 32,
+          "factor_histogram": {
+            "32": 1
+          },
+          "n_refinements": 0,
+          "sigma_t_min": 1.5672829958639546e-05,
+          "n_rows": 1,
+          "n_wrap_exposed_rows": 0,
+          "n_unmeasurable_rows": 0,
+          "n_flat_rows": 0,
+          "n_refined_rows": 1,
+          "cpu_fft_workers": 1,
+          "retained_fft_batches": 1,
+          "retained_fft_rows": 1,
+          "full_fft_selected_batches": 0,
+          "full_fft_selected_rows": 0,
+          "full_fft_selected_reasons": {},
+          "full_fft_fallback_batches": 0,
+          "full_fft_fallback_rows": 0,
+          "full_fft_fallback_reasons": {},
+          "max_reflected_period": 1228,
+          "max_dense_factor": 32,
+          "max_reference_full_fft_length": 39296,
+          "max_retained_fft_length": 21000,
+          "max_retained_grid_length": 19617,
+          "bandlimited_fft_strategy": "retained-grid-zoomfft",
+          "n_retained_fft_plans": 1
+        }
+      }
+    ]
+  },
+  "validate2/summary.json": {
+    "status": "isolated_retry_gradient_checks_passed_common_target_still_mismatched",
+    "attempts": 29,
+    "prior_stage5_attempts": 9,
+    "cap": 64,
+    "checks": [
+      {
+        "label": "earlier_parity_control_0",
+        "value_delta": 0.0,
+        "max_abs_gradient_delta": 0.0
+      },
+      {
+        "label": "earlier_parity_control_1",
+        "value_delta": 0.0,
+        "max_abs_gradient_delta": 0.0
+      }
+    ],
+    "likelihood_sources": {
+      "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/factored_likelihood.py": "7b87a19e7133155cb1bb67a790a58ab7204f605d6d12cd78471edc34e044c974",
+      "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/jax_ile/wrapper.py": "0db282efa8db272e404cc2d649485feaba3c0339998a36ddde293b7ac4166005",
+      "/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/MonteCarloMarginalizeCode/Code/RIFT/likelihood/jax_ile/core.py": "0f499791e796558b7b2460027ef8459302925dcf792801883664ceaf56336ab8"
+    },
+    "current_normalized_driver_sha256": "d88a561e6f838f6066cf543fd93c58b838d96d022b7d8536fa95819e8252cf20",
+    "coordinate_contracts": "two-row roundtrip, Torch/JAX/full FD Jacobian passed",
+    "normalization_convention": {
+      "reward": "physical log time-integral API only, no prior or Jacobian added",
+      "angular_prior": "unit mass on RA[0,2pi),phase[0,2pi),psi[0,pi)",
+      "distance_prior": "current normalized Planck15 cosmo_sourceframe on [1,10000]",
+      "historical_angular_prior_mass": 8,
+      "historical_lnZ_offset": 2.0794415416798357,
+      "likelihood_is_not_evidence": true
+    },
+    "runtime": {
+      "host": "ldas-grid",
+      "affinity": [
+        0
+      ],
+      "pid": 2324398,
+      "numpy": "2.2.6",
+      "torch": "2.8.0",
+      "jax": "0.9.0"
+    },
+    "frame_psd_setup_wall_seconds": 0.1481678349955473,
+    "precompute": {
+      "attempted": 1,
+      "integration_half": 0.075,
+      "storage_half": 0.37890625,
+      "guard_initial": 512,
+      "guard_certified": 1024,
+      "lmax": 4,
+      "ignore_threshold": null
+    },
+    "cpu_seconds": 42.713366731,
+    "wall_seconds": 44.71819617800065,
+    "precompute_wall_seconds": 2.710067597014131,
+    "modes": {
+      "H1": [
+        [
+          2,
+          -2
+        ],
+        [
+          2,
+          -1
+        ],
+        [
+          2,
+          0
+        ],
+        [
+          2,
+          1
+        ],
+        [
+          2,
+          2
+        ],
+        [
+          3,
+          -3
+        ],
+        [
+          3,
+          -2
+        ],
+        [
+          3,
+          -1
+        ],
+        [
+          3,
+          0
+        ],
+        [
+          3,
+          1
+        ],
+        [
+          3,
+          2
+        ],
+        [
+          3,
+          3
+        ],
+        [
+          4,
+          -4
+        ],
+        [
+          4,
+          -3
+        ],
+        [
+          4,
+          -2
+        ],
+        [
+          4,
+          -1
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          1
+        ],
+        [
+          4,
+          2
+        ],
+        [
+          4,
+          3
+        ],
+        [
+          4,
+          4
+        ]
+      ],
+      "L1": [
+        [
+          2,
+          -2
+        ],
+        [
+          2,
+          -1
+        ],
+        [
+          2,
+          0
+        ],
+        [
+          2,
+          1
+        ],
+        [
+          2,
+          2
+        ],
+        [
+          3,
+          -3
+        ],
+        [
+          3,
+          -2
+        ],
+        [
+          3,
+          -1
+        ],
+        [
+          3,
+          0
+        ],
+        [
+          3,
+          1
+        ],
+        [
+          3,
+          2
+        ],
+        [
+          3,
+          3
+        ],
+        [
+          4,
+          -4
+        ],
+        [
+          4,
+          -3
+        ],
+        [
+          4,
+          -2
+        ],
+        [
+          4,
+          -1
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          1
+        ],
+        [
+          4,
+          2
+        ],
+        [
+          4,
+          3
+        ],
+        [
+          4,
+          4
+        ]
+      ]
+    },
+    "time_grid": {
+      "count": 614,
+      "first": -0.074951171875,
+      "last": 0.07470703125,
+      "spacing": 0.000244140625,
+      "sha256": "58069d49c1da7eab8cddf84193abff20e5a1ba5dda5af42c7b2ff04c08684d63",
+      "definition": "shared raw log integral over closed NoLoop grid; no new time normalization"
+    },
+    "probes": [
+      "old_control_gradient_0",
+      "new_control_gradient_0",
+      "old_control_gradient_1",
+      "new_control_gradient_1",
+      "new_failure_value_gradient",
+      "new_fd_plus_0",
+      "new_fd_minus_0",
+      "noloop_fd_plus_0",
+      "noloop_fd_minus_0",
+      "new_fd_plus_1",
+      "new_fd_minus_1",
+      "noloop_fd_plus_1",
+      "noloop_fd_minus_1",
+      "new_fd_plus_2",
+      "new_fd_minus_2",
+      "noloop_fd_plus_2",
+      "noloop_fd_minus_2",
+      "new_fd_plus_3",
+      "new_fd_minus_3",
+      "noloop_fd_plus_3",
+      "noloop_fd_minus_3",
+      "new_fd_plus_4",
+      "new_fd_minus_4",
+      "noloop_fd_plus_4",
+      "noloop_fd_minus_4",
+      "new_fd_plus_5",
+      "new_fd_minus_5",
+      "noloop_fd_plus_5",
+      "noloop_fd_minus_5"
+    ],
+    "failure_point": {
+      "patched_value": 47.82924264949544,
+      "patched_gradient": [
+        -80.38681745139968,
+        -9.279366708048832,
+        40.14605288329033,
+        -41.85036588335205,
+        0.5885311210158868,
+        -0.022014798071207497
+      ],
+      "patched_central_fd": [
+        -80.3868427038168,
+        -9.279365700720632,
+        40.14604928457288,
+        -41.850369036922075,
+        0.5885230709878897,
+        -0.022014798069847075
+      ],
+      "noloop_central_fd": [
+        -82.37146211911295,
+        -6.8185671150189355,
+        39.435034503654265,
+        -42.58528001770401,
+        -0.42945556053552986,
+        -0.022014087925015247
+      ],
+      "maximum_patched_ad_fd_error": 2.5252417117371806e-05,
+      "noloop_gradient_discrepancy": [
+        1.984644667713269,
+        -2.460799593029896,
+        0.7110183796360658,
+        0.7349141343519605,
+        1.0179866815514167,
+        -7.101461922502661e-07
+      ],
+      "reference_value": 47.83659196403751,
+      "value_difference_from_reference": -0.007349314542068441
+    }
+  },
+  "extract.time": "\tCommand being timed: \"timeout 120 /cvmfs/software.igwn.org/conda/envs/igwn/bin/python /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage5/source/isolate_time_certificate.py --output /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage5/extract --checkpoint /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3d/repair1/accepted.pt --training /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/final_seed261015 --inventory /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/research/wtf_flowmap/results/case_inventory.json\"\n\tUser time (seconds): 15.58\n\tSystem time (seconds): 1.03\n\tPercent of CPU this job got: 78%\n\tElapsed (wall clock) time (h:mm:ss or m:ss): 0:21.18\n\tAverage shared text size (kbytes): 0\n\tAverage unshared data size (kbytes): 0\n\tAverage stack size (kbytes): 0\n\tAverage total size (kbytes): 0\n\tMaximum resident set size (kbytes): 1472564\n\tAverage resident set size (kbytes): 0\n\tMajor (requiring I/O) page faults: 2811\n\tMinor (reclaiming a frame) page faults: 335392\n\tVoluntary context switches: 85154\n\tInvoluntary context switches: 710\n\tSwaps: 0\n\tFile system inputs: 342928\n\tFile system outputs: 552\n\tSocket messages sent: 0\n\tSocket messages received: 0\n\tSignals delivered: 0\n\tPage size (bytes): 4096\n\tExit status: 0\n",
+  "audit.time": "Command exited with non-zero status 1\n\tCommand being timed: \"timeout 120 /cvmfs/software.igwn.org/conda/envs/igwn/bin/python /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage5/source/audit_time_certificate.py --directory /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage5/extract\"\n\tUser time (seconds): 9.25\n\tSystem time (seconds): 0.75\n\tPercent of CPU this job got: 85%\n\tElapsed (wall clock) time (h:mm:ss or m:ss): 0:11.66\n\tAverage shared text size (kbytes): 0\n\tAverage unshared data size (kbytes): 0\n\tAverage stack size (kbytes): 0\n\tAverage total size (kbytes): 0\n\tMaximum resident set size (kbytes): 1084984\n\tAverage resident set size (kbytes): 0\n\tMajor (requiring I/O) page faults: 21\n\tMinor (reclaiming a frame) page faults: 224900\n\tVoluntary context switches: 53011\n\tInvoluntary context switches: 203\n\tSwaps: 0\n\tFile system inputs: 64\n\tFile system outputs: 16\n\tSocket messages sent: 0\n\tSocket messages received: 0\n\tSignals delivered: 0\n\tPage size (bytes): 4096\n\tExit status: 1\n",
+  "audit.log": " no cupy (factored)\nlal.MSUN_SI != Msun\nTraceback (most recent call last):\n  File \"/scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage5/source/audit_time_certificate.py\", line 34, in <module>\n    (root/'certificate-audit.json').write_text(json.dumps(result,indent=2,allow_nan=False))\n                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/json/__init__.py\", line 238, in dumps\n    **kw).encode(obj)\n          ^^^^^^^^^^^\n  File \"/cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/json/encoder.py\", line 202, in encode\n    chunks = list(chunks)\n             ^^^^^^^^^^^^\n  File \"/cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/json/encoder.py\", line 432, in _iterencode\n    yield from _iterencode_dict(o, _current_indent_level)\n  File \"/cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/json/encoder.py\", line 406, in _iterencode_dict\n    yield from chunks\n  File \"/cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/json/encoder.py\", line 326, in _iterencode_list\n    yield from chunks\n  File \"/cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/json/encoder.py\", line 406, in _iterencode_dict\n    yield from chunks\n  File \"/cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/json/encoder.py\", line 398, in _iterencode_dict\n    yield _floatstr(value)\n          ^^^^^^^^^^^^^^^^\n  File \"/cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/json/encoder.py\", line 240, in floatstr\n    raise ValueError(\nValueError: Out of range float values are not JSON compliant: inf\n",
+  "audit2.time": "\tCommand being timed: \"timeout 120 /cvmfs/software.igwn.org/conda/envs/igwn/bin/python /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage5/source/audit_time_certificate2.py --directory /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage5/extract\"\n\tUser time (seconds): 8.85\n\tSystem time (seconds): 0.67\n\tPercent of CPU this job got: 85%\n\tElapsed (wall clock) time (h:mm:ss or m:ss): 0:11.17\n\tAverage shared text size (kbytes): 0\n\tAverage unshared data size (kbytes): 0\n\tAverage stack size (kbytes): 0\n\tAverage total size (kbytes): 0\n\tMaximum resident set size (kbytes): 1087044\n\tAverage resident set size (kbytes): 0\n\tMajor (requiring I/O) page faults: 0\n\tMinor (reclaiming a frame) page faults: 228978\n\tVoluntary context switches: 62931\n\tInvoluntary context switches: 162\n\tSwaps: 0\n\tFile system inputs: 0\n\tFile system outputs: 56\n\tSocket messages sent: 0\n\tSocket messages received: 0\n\tSignals delivered: 0\n\tPage size (bytes): 4096\n\tExit status: 0\n",
+  "retry/old.time": "Command exited with non-zero status 1\n\tCommand being timed: \"timeout 120 taskset -c 0 /cvmfs/software.igwn.org/conda/envs/igwn/bin/python -m pytest -q test_jax_primitive_retry.py\"\n\tUser time (seconds): 53.02\n\tSystem time (seconds): 1.44\n\tPercent of CPU this job got: 95%\n\tElapsed (wall clock) time (h:mm:ss or m:ss): 0:56.78\n\tAverage shared text size (kbytes): 0\n\tAverage unshared data size (kbytes): 0\n\tAverage stack size (kbytes): 0\n\tAverage total size (kbytes): 0\n\tMaximum resident set size (kbytes): 1523348\n\tAverage resident set size (kbytes): 0\n\tMajor (requiring I/O) page faults: 18\n\tMinor (reclaiming a frame) page faults: 543923\n\tVoluntary context switches: 74092\n\tInvoluntary context switches: 730\n\tSwaps: 0\n\tFile system inputs: 11368\n\tFile system outputs: 160\n\tSocket messages sent: 0\n\tSocket messages received: 0\n\tSignals delivered: 0\n\tPage size (bytes): 4096\n\tExit status: 1\n",
+  "retry/old.txt": "FFF..F                                                                   [100%]\n=================================== FAILURES ===================================\n__________ test_additional_doubling_recovers_convergent_linear_field ___________\n\n    def test_additional_doubling_recovers_convergent_linear_field():\n        # Analytic exp(linear) integral. Trapezoid1->2 differs ~.0025 nat,\n        # so the first certificate fails; 2->4 differs ~.000625 and passes.\n        actual=float(value(.2));truth=np.log(np.expm1(.2*16)/.2)\n>       assert np.isfinite(actual)\nE       AssertionError: assert np.False_\nE        +  where np.False_ = <ufunc 'isfinite'>(nan)\nE        +    where <ufunc 'isfinite'> = np.isfinite\n\ntest_jax_primitive_retry.py:28: AssertionError\n________________ test_retry_gradient_matches_finite_difference _________________\n\n    def test_retry_gradient_matches_finite_difference():\n        f=jax.jit(value);g=float(jax.grad(value)(.2));h=1e-5\n        fd=(float(f(.2+h))-float(f(.2-h)))/(2*h)\n        assert np.isfinite(g)\n>       assert g==pytest.approx(fd,rel=1e-6,abs=1e-7)\nE       assert 0.0 == nan \u00b1 ???\nE         \nE         comparison failed\nE         Obtained: 0.0\nE         Expected: nan \u00b1 ???\n\ntest_jax_primitive_retry.py:36: AssertionError\n______________ test_already_accepted_constant_value_and_gradient _______________\n\n    def test_already_accepted_constant_value_and_gradient():\n        def constant(a):\n            return core._time_marginalize_reflected_primitive(jnp.full((1,273),a,dtype=jnp.complex128),jnp.zeros((1,273)),1.,guard=128)[0]\n        v,g=jax.value_and_grad(constant)(2.)\n>       assert float(v)==pytest.approx(2+np.log(16),abs=1e-10)\nE       assert 4.772589220158325 == 4.772588722239782 \u00b1 1.0e-10\nE         \nE         comparison failed\nE         Obtained: 4.772589220158325\nE         Expected: 4.772588722239782 \u00b1 1.0e-10\n\ntest_jax_primitive_retry.py:43: AssertionError\n________________ test_recorded_private_primitive_when_available ________________\n\n    def test_recorded_private_primitive_when_available():\n        path=os.environ.get('RESEARCH_PRIMITIVE_FIXTURE')\n        if not path:pytest.skip('private scientific fixture stays on Caltech')\n        d=np.load(path);k=jnp.asarray(d['kappa']);r=jnp.asarray(d['rho'])\n        v=core._time_marginalize_reflected_primitive(k,r,float(d['deltaT']),guard=int(d['guard']))\n>       assert float(v[0])==pytest.approx(47.829242649495434,abs=1e-9)\nE       assert nan == 47.829242649495434 \u00b1 1.0e-09\nE         \nE         comparison failed\nE         Obtained: nan\nE         Expected: 47.829242649495434 \u00b1 1.0e-09\n\ntest_jax_primitive_retry.py:61: AssertionError\n=============================== warnings summary ===============================\n../../../../../cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/site-packages/qnm/schwarzschild/tabulated.py:169\n  /cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/site-packages/qnm/schwarzschild/tabulated.py:169: DeprecationWarning: Please import `OptimizeResult` from the `scipy.optimize` namespace; the `scipy.optimize.optimize` namespace is deprecated and will be removed in SciPy 2.0.0.\n    loaded = pickle.load(handle, encoding='latin1')\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED test_jax_primitive_retry.py::test_additional_doubling_recovers_convergent_linear_field\nFAILED test_jax_primitive_retry.py::test_retry_gradient_matches_finite_difference\nFAILED test_jax_primitive_retry.py::test_already_accepted_constant_value_and_gradient\nFAILED test_jax_primitive_retry.py::test_recorded_private_primitive_when_available\n4 failed, 2 passed, 1 warning in 52.27s\n",
+  "retry/new.time": "Command exited with non-zero status 1\n\tCommand being timed: \"timeout 120 taskset -c 0 /cvmfs/software.igwn.org/conda/envs/igwn/bin/python -m pytest -q test_jax_primitive_retry.py\"\n\tUser time (seconds): 69.78\n\tSystem time (seconds): 2.28\n\tPercent of CPU this job got: 94%\n\tElapsed (wall clock) time (h:mm:ss or m:ss): 1:16.08\n\tAverage shared text size (kbytes): 0\n\tAverage unshared data size (kbytes): 0\n\tAverage stack size (kbytes): 0\n\tAverage total size (kbytes): 0\n\tMaximum resident set size (kbytes): 1732076\n\tAverage resident set size (kbytes): 0\n\tMajor (requiring I/O) page faults: 3\n\tMinor (reclaiming a frame) page faults: 815566\n\tVoluntary context switches: 61900\n\tInvoluntary context switches: 896\n\tSwaps: 0\n\tFile system inputs: 144\n\tFile system outputs: 440\n\tSocket messages sent: 0\n\tSocket messages received: 0\n\tSignals delivered: 0\n\tPage size (bytes): 4096\n\tExit status: 1\n",
+  "retry/new.txt": "..F...                                                                   [100%]\n=================================== FAILURES ===================================\n______________ test_already_accepted_constant_value_and_gradient _______________\n\n    def test_already_accepted_constant_value_and_gradient():\n        def constant(a):\n            return core._time_marginalize_reflected_primitive(jnp.full((1,273),a,dtype=jnp.complex128),jnp.zeros((1,273)),1.,guard=128)[0]\n        v,g=jax.value_and_grad(constant)(2.)\n>       assert float(v)==pytest.approx(2+np.log(16),abs=1e-10)\nE       assert 4.772589220158325 == 4.772588722239782 \u00b1 1.0e-10\nE         \nE         comparison failed\nE         Obtained: 4.772589220158325\nE         Expected: 4.772588722239782 \u00b1 1.0e-10\n\ntest_jax_primitive_retry.py:43: AssertionError\n=============================== warnings summary ===============================\n../../../../../cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/site-packages/qnm/schwarzschild/tabulated.py:169\n  /cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/site-packages/qnm/schwarzschild/tabulated.py:169: DeprecationWarning: Please import `OptimizeResult` from the `scipy.optimize` namespace; the `scipy.optimize.optimize` namespace is deprecated and will be removed in SciPy 2.0.0.\n    loaded = pickle.load(handle, encoding='latin1')\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED test_jax_primitive_retry.py::test_already_accepted_constant_value_and_gradient\n1 failed, 5 passed, 1 warning in 71.34s (0:01:11)\n",
+  "retry/old_constant.time": "Command exited with non-zero status 124\n\tCommand being timed: \"timeout 30 taskset -c 0 /cvmfs/software.igwn.org/conda/envs/igwn/bin/python -m pytest -q test_jax_primitive_retry_final.py -k already_accepted\"\n\tUser time (seconds): 11.81\n\tSystem time (seconds): 1.00\n\tPercent of CPU this job got: 42%\n\tElapsed (wall clock) time (h:mm:ss or m:ss): 0:30.05\n\tAverage shared text size (kbytes): 0\n\tAverage unshared data size (kbytes): 0\n\tAverage stack size (kbytes): 0\n\tAverage total size (kbytes): 0\n\tMaximum resident set size (kbytes): 1201668\n\tAverage resident set size (kbytes): 0\n\tMajor (requiring I/O) page faults: 116\n\tMinor (reclaiming a frame) page faults: 305872\n\tVoluntary context switches: 70766\n\tInvoluntary context switches: 182\n\tSwaps: 0\n\tFile system inputs: 6296\n\tFile system outputs: 64\n\tSocket messages sent: 0\n\tSocket messages received: 0\n\tSignals delivered: 0\n\tPage size (bytes): 4096\n\tExit status: 124\n",
+  "retry/old_constant.txt": "",
+  "retry/final.time": "\tCommand being timed: \"timeout 120 taskset -c 0 /cvmfs/software.igwn.org/conda/envs/igwn/bin/python -m pytest -q test_jax_primitive_retry_final.py\"\n\tUser time (seconds): 61.88\n\tSystem time (seconds): 1.60\n\tPercent of CPU this job got: 97%\n\tElapsed (wall clock) time (h:mm:ss or m:ss): 1:05.21\n\tAverage shared text size (kbytes): 0\n\tAverage unshared data size (kbytes): 0\n\tAverage stack size (kbytes): 0\n\tAverage total size (kbytes): 0\n\tMaximum resident set size (kbytes): 1766488\n\tAverage resident set size (kbytes): 0\n\tMajor (requiring I/O) page faults: 5\n\tMinor (reclaiming a frame) page faults: 760755\n\tVoluntary context switches: 60848\n\tInvoluntary context switches: 875\n\tSwaps: 0\n\tFile system inputs: 344\n\tFile system outputs: 88\n\tSocket messages sent: 0\n\tSocket messages received: 0\n\tSignals delivered: 0\n\tPage size (bytes): 4096\n\tExit status: 0\n",
+  "retry/final.txt": "......                                                                   [100%]\n=============================== warnings summary ===============================\n../../../../../cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/site-packages/qnm/schwarzschild/tabulated.py:169\n  /cvmfs/software.igwn.org/conda/envs/igwn/lib/python3.11/site-packages/qnm/schwarzschild/tabulated.py:169: DeprecationWarning: Please import `OptimizeResult` from the `scipy.optimize` namespace; the `scipy.optimize.optimize` namespace is deprecated and will be removed in SciPy 2.0.0.\n    loaded = pickle.load(handle, encoding='latin1')\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n6 passed, 1 warning in 60.98s (0:01:00)\n",
+  "validate.time": "Command exited with non-zero status 2\n\tCommand being timed: \"timeout 180 /cvmfs/software.igwn.org/conda/envs/igwn/bin/python /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage5/source/validate_time_retry_real.py --output /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage5/validate --patched-core /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage5/retry/core_retry.py --checkpoint /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3d/repair1/accepted.pt --training /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/final_seed261015 --inventory /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/research/wtf_flowmap/results/case_inventory.json\"\n\tUser time (seconds): 1.37\n\tSystem time (seconds): 0.22\n\tPercent of CPU this job got: 58%\n\tElapsed (wall clock) time (h:mm:ss or m:ss): 0:02.74\n\tAverage shared text size (kbytes): 0\n\tAverage unshared data size (kbytes): 0\n\tAverage stack size (kbytes): 0\n\tAverage total size (kbytes): 0\n\tMaximum resident set size (kbytes): 339964\n\tAverage resident set size (kbytes): 0\n\tMajor (requiring I/O) page faults: 5\n\tMinor (reclaiming a frame) page faults: 55741\n\tVoluntary context switches: 22648\n\tInvoluntary context switches: 16\n\tSwaps: 0\n\tFile system inputs: 360\n\tFile system outputs: 16\n\tSocket messages sent: 0\n\tSocket messages received: 0\n\tSignals delivered: 0\n\tPage size (bytes): 4096\n\tExit status: 2\n",
+  "validate.log": "usage: validate_time_retry_real.py [-h] --output OUTPUT --checkpoint\n                                   CHECKPOINT --training TRAINING --inventory\n                                   INVENTORY --patched_core PATCHED_CORE\nvalidate_time_retry_real.py: error: the following arguments are required: --patched_core\n",
+  "validate2.time": "\tCommand being timed: \"timeout 180 /cvmfs/software.igwn.org/conda/envs/igwn/bin/python /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage5/source/validate_time_retry_real2.py --output /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage5/validate2 --patched-core /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage5/retry/core_retry.py --checkpoint /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3d/repair1/accepted.pt --training /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/final_seed261015 --inventory /scratch/richard.oshaughnessy/codex_learned_wtf_20261015/stage3a/source/research/wtf_flowmap/results/case_inventory.json\"\n\tUser time (seconds): 43.66\n\tSystem time (seconds): 2.02\n\tPercent of CPU this job got: 94%\n\tElapsed (wall clock) time (h:mm:ss or m:ss): 0:48.21\n\tAverage shared text size (kbytes): 0\n\tAverage unshared data size (kbytes): 0\n\tAverage stack size (kbytes): 0\n\tAverage total size (kbytes): 0\n\tMaximum resident set size (kbytes): 2212180\n\tAverage resident set size (kbytes): 0\n\tMajor (requiring I/O) page faults: 19\n\tMinor (reclaiming a frame) page faults: 1024046\n\tVoluntary context switches: 77145\n\tInvoluntary context switches: 2073\n\tSwaps: 0\n\tFile system inputs: 1608\n\tFile system outputs: 560\n\tSocket messages sent: 0\n\tSocket messages received: 0\n\tSignals delivered: 0\n\tPage size (bytes): 4096\n\tExit status: 0\n",
+  "artifact_hashes": {
+    "extract/primitive_2.npz": "3cc0856f566449d6bd72ed95e5822c6651272bac81a921b2a75ad2620e7c0f89",
+    "extract/primitive_1.npz": "2b15245ff17084d3fa1551d5730b316f1eef34f35acdf9d709909efaa6747043",
+    "extract/primitive_0.npz": "4abebb6f1246f693821f339de328050f12058cf649758ff2122e16b360c84598",
+    "source/validate_time_retry_real2.py": "fa65a5146cc151543eb105adf3e6d8998d3c9dcd1765f69883a2becb37bfc216",
+    "source/validate_time_retry_real.py": "78694be3103867ef763e8b71f754ba63d9fa83acd08097ee2ace41ac44134722",
+    "source/isolate_time_certificate.py": "5f057d5b309dea4253652e5f684ac5913da85aa6d3e5350d981e76e7f0483a0e",
+    "source/audit_time_certificate2.py": "3851007e3e0256942deff87600122585e310279b7e43e89f13883fd41e780d24",
+    "source/audit_time_certificate.py": "0ca07ad6fa00c9cdb4694e7f3286b3d52a5c565ce9e801be6061b0e37359e8e3",
+    "retry/core_retry.py": "70fb605f65a3a6cda71e1819b79bcd232f6b6719b0842076cae373bb5e4f1097",
+    "retry/test_jax_primitive_retry_final.py": "19ea80b9d476e8cc45c5eb5edd549f196c749dc5087bf25f511eae1ac3f71579",
+    "retry/test_jax_primitive_retry.py": "839af890aed7f8c0b2a3e16facaaa1b56e049f66e0786feaecec8b7eba21aebf",
+    "isolated/Code/RIFT/likelihood/jax_ile/core.py": "70fb605f65a3a6cda71e1819b79bcd232f6b6719b0842076cae373bb5e4f1097"
+  }
+}

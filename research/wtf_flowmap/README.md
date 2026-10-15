@@ -260,3 +260,14 @@ physical attempts,242.84 CPU /266.32 summed command wall seconds, one CPU, peak
 2.18 GiB. Historical teacher acquisition >=15,984,560 rows remains additional.
 No larger campaign was started. This section supersedes earlier prospective
 next-stage wording above; prior stage records are preserved as history.
+
+## Stage5: valid-point NaN isolated
+
+[TIME_CERTIFICATE_RESULTS.md](TIME_CERTIFICATE_RESULTS.md) identifies a failed
+first doubling certificate, with finite physical primitives. A narrow research
+patch permits one additional certified doubling; seven isolated regressions pass.
+Two earlier controls have exactly unchanged values and gradients. The recovered
+point still differs from NoLoop's coarse Simpson rule by .0073493 nat and has
+material derivative differences. The common-target gate remains blocked; no
+inference arm was rerun. Stage5 used 38 physical attempts and 358.50 measured CPU
+seconds, including setup and failed attempts. Previous costs remain additional.

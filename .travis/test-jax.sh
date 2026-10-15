@@ -621,6 +621,7 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 FILES=(
   "${JAXDIR}/test_jax_time_quadrature.py"
   "${JAXDIR}/test_jax_terminal_time_marginalization.py"
+  "${JAXDIR}/test_jax_primitive_retry.py"
   "${JAXDIR}/test_jax_likelihood.py"
   "${JAXDIR}/test_jax_banded_data_term.py"
   "${JAXDIR}/test_jax_endtoend.py"
@@ -684,6 +685,9 @@ FILES=(
 # test_*.py to test/jax/ forces a decision instead of being silently unrun -- which is
 # this gate's own failure mode, one level up.
 DESELECTED_TESTS=(
+  # Private scientific primitive remains on Caltech; six portable retry tests
+  # run in CI. The private case was executed manually with its pinned fixture.
+  "${JAXDIR}/test_jax_primitive_retry.py::test_recorded_private_primitive_when_available"
   # importorskip("flowMC"): flowMC is deliberately not installed in jax-ile-check
   # (ci.yml), and the OUTCOME check below rejects a skip.  The prior-mc and
   # laplace-is driver tests in the same file are the executable coverage that
@@ -1237,7 +1241,8 @@ fi
 # and --use-gwsignal-lmax-nyquist as numpy ILE does).  With 15 tests, CI read
 # "collected 1032 tests from 58 files" (the base already collected 1017); review
 # fixes and the compat-option type parity tests added 12 more.  1032 + 12 = 1044.
-EXPECTED_TESTS=1044
+# 2026-10-15: +6 portable primitive retry/certificate regressions.
+EXPECTED_TESTS=1050
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"

@@ -1,0 +1,119 @@
+{
+  "status": "narrow_retry_passed_common_quadrature_contract_still_blocked",
+  "physical_attempts": 38,
+  "physical_rows": 38,
+  "cap_rows": 64,
+  "cpu_cap_seconds": 600,
+  "rss_cap_gib": 8,
+  "measured_cpu_seconds": 358.5,
+  "summed_command_wall_seconds": 397.82,
+  "peak_rss_kib": 2212180,
+  "commands": [
+    {
+      "command": "extract.time",
+      "cpu_seconds": 16.61,
+      "wall_seconds": 21.18,
+      "peak_rss_kib": 1472564
+    },
+    {
+      "command": "audit.time",
+      "cpu_seconds": 10.0,
+      "wall_seconds": 11.66,
+      "peak_rss_kib": 1084984
+    },
+    {
+      "command": "audit2.time",
+      "cpu_seconds": 9.52,
+      "wall_seconds": 11.17,
+      "peak_rss_kib": 1087044
+    },
+    {
+      "command": "retry/old.time",
+      "cpu_seconds": 54.46,
+      "wall_seconds": 56.78,
+      "peak_rss_kib": 1523348
+    },
+    {
+      "command": "retry/new.time",
+      "cpu_seconds": 72.06,
+      "wall_seconds": 76.08,
+      "peak_rss_kib": 1732076
+    },
+    {
+      "command": "retry/old_constant.time",
+      "cpu_seconds": 12.81,
+      "wall_seconds": 30.05,
+      "peak_rss_kib": 1201668
+    },
+    {
+      "command": "retry/final.time",
+      "cpu_seconds": 63.48,
+      "wall_seconds": 65.21,
+      "peak_rss_kib": 1766488
+    },
+    {
+      "command": "validate.time",
+      "cpu_seconds": 1.59,
+      "wall_seconds": 2.74,
+      "peak_rss_kib": 339964
+    },
+    {
+      "command": "validate2.time",
+      "cpu_seconds": 45.68,
+      "wall_seconds": 48.21,
+      "peak_rss_kib": 2212180
+    },
+    {
+      "command": "isolated/final.time",
+      "cpu_seconds": 72.29,
+      "wall_seconds": 74.74,
+      "peak_rss_kib": 1752344
+    }
+  ],
+  "physical_dispatch_types": {
+    "numpy_noloop": 15,
+    "jax_value_only": 3,
+    "jax_value_and_gradient": 17,
+    "jax_primitive_accumulation": 3
+  },
+  "result": {
+    "root_cause": "first integral-doubling certificate fails; all physical primitives finite",
+    "retry": "one additional certified doubling; no relaxed threshold or fallback",
+    "original_nan": true,
+    "patched_value": 47.82924264949544,
+    "noloop_value": 47.83659196403751,
+    "independent_dense_reference": 47.829242649495434,
+    "earlier_control_value_and_gradient_max_delta": 0.0,
+    "patched_ad_fd_max_abs_error": 2.5252417117371806e-05,
+    "noloop_gradient_max_abs_discrepancy": 2.460799593029896
+  },
+  "tests": {
+    "final_isolated": "7 passed",
+    "portable_ci_cases": 6,
+    "private_fixture_cases": 1,
+    "old_regressions_failed": [
+      "recovery",
+      "retry gradient",
+      "private primitive"
+    ],
+    "initial_constant_fixture_failure_corrected": true,
+    "old_constant_control_timeout": true,
+    "full_jax_suite": "not run",
+    "gpu_gates": "not run",
+    "new_head_ci": "not run",
+    "local_roster": "failed: existing q-window hook needs mapfile unavailable in macOS system Bash",
+    "shell_syntax": "passed"
+  },
+  "costs_caveat": "all measured Caltech command setup/import/test/failure costs included; coordinator source preparation, SSH/transfers, local census and administrative elapsed are not fully measured; previous stages and acquisition remain additional",
+  "execution": {
+    "site": "ldas-grid",
+    "cpu_affinity": [
+      0
+    ],
+    "gpu": 0,
+    "scheduler": "bounded interactive validation; no batch job ID",
+    "shared_runtime_changed": false,
+    "source_start": "a53d0e8694fec967ac84b24e373e06c290856a77"
+  },
+  "scientific_decision": "no larger study or performance claim; first agree and regress common coarse-row quadrature contract"
+}
