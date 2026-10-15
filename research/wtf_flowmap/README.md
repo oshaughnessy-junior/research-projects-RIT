@@ -1,5 +1,10 @@
 # Learned flow-map research on S250114ax
 
+Latest decision: [COMMON_QUADRATURE_PLAN.md](COMMON_QUADRATURE_PLAN.md). The
+original valid-point NaN was deliberate certificate refusal. Source-only planning
+used no new physical calls; inference remains paused pending a common converged
+value/derivative and reconstruction contract.
+
 A genuinely real-reward-fine-tuned periodic model now exists. The stage3f
 implementation smoke passed19 mathematical/model tests, two real full
 lookahead/control value-gradient checks before optimizer creation, eight batch4

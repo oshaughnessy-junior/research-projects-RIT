@@ -1,5 +1,11 @@
 # Bounded five-arm real-case pilot: inconclusive, with a backend blocker
 
+**Later diagnosis corrects the NaN interpretation:** it was a deliberate JAX
+integral-certificate refusal with finite physical primitives, not a demonstrated
+nonfinite physical model. See TIME_CERTIFICATE_RESULTS.md and
+COMMON_QUADRATURE_PLAN.md. The recorded cache arm remains incomplete; this
+correction does not turn any pilot result into calibrated evidence.
+
 The pilot does **not** demonstrate calibrated inference or a transport advantage.
 Four arms completed their fixed 1,000 evidence draws, all with Kish ESS about one.
 The cache arm failed before completing that population. A bounded diagnostic

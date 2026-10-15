@@ -76,5 +76,12 @@
   "prior_selected_stages_physical_rows": 378,
   "historical_cost_caveat": "selected prior stages are not exhaustive project history; historical acquisition CPU, hidden row work, and administrative/audit/transfer time remain unknown",
   "target_gate": "failed: JAX NaN vs finite maintained NoLoop 47.83659196403751 at reconstructed valid point",
-  "decision": "repair and regress backend failure before any larger or powered held-out-anchor study; no estimate or campaign authorized by this result"
+  "decision": "repair and regress backend failure before any larger or powered held-out-anchor study; no estimate or campaign authorized by this result",
+  "later_diagnosis": {
+    "original_nan": "deliberate integral-doubling certificate refusal",
+    "physical_primitives_finite": true,
+    "remaining_issue": "different converged-vs-coarse time-quadrature policies, not a demonstrated nonfinite physical model",
+    "reference": "../../COMMON_QUADRATURE_PLAN.md",
+    "historical_numbers_and_failed_population_preserved": true
+  }
 }

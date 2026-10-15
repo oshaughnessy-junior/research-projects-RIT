@@ -1,0 +1,325 @@
+{
+  "physical_calls": 0,
+  "waveform_calls": 0,
+  "runtime": "pure NumPy/SciPy on saved primitives; one CPU",
+  "points": [
+    {
+      "index": 0,
+      "source_sha256": "4abebb6f1246f693821f339de328050f12058cf649758ff2122e16b360c84598",
+      "closed_interval_duration": 0.149658203125,
+      "log_time_prior_offset": 1.8994012307831323,
+      "grids": [
+        {
+          "factor": 4,
+          "values": [
+            {
+              "guard": 512,
+              "log_integral": 47.82924264547945,
+              "distance_gradient": -0.022014798033120724
+            },
+            {
+              "guard": 1024,
+              "log_integral": 47.829242645471304,
+              "distance_gradient": -0.02201479803311635
+            }
+          ],
+          "value_guard_difference": 8.142819751810748e-12,
+          "gradient_guard_difference": 4.3749726064135075e-15
+        },
+        {
+          "factor": 8,
+          "values": [
+            {
+              "guard": 512,
+              "log_integral": 47.82924264950355,
+              "distance_gradient": -0.022014798071211858
+            },
+            {
+              "guard": 1024,
+              "log_integral": 47.8292426494954,
+              "distance_gradient": -0.022014798071207473
+            }
+          ],
+          "value_guard_difference": 8.149925179168349e-12,
+          "gradient_guard_difference": 4.385380947269368e-15
+        },
+        {
+          "factor": 16,
+          "values": [
+            {
+              "guard": 512,
+              "log_integral": 47.82924264950354,
+              "distance_gradient": -0.022014798071211854
+            },
+            {
+              "guard": 1024,
+              "log_integral": 47.82924264949542,
+              "distance_gradient": -0.02201479807120748
+            }
+          ],
+          "value_guard_difference": 8.121503469737945e-12,
+          "gradient_guard_difference": 4.3749726064135075e-15
+        },
+        {
+          "factor": 32,
+          "values": [
+            {
+              "guard": 512,
+              "log_integral": 47.82924264950354,
+              "distance_gradient": -0.022014798071211858
+            },
+            {
+              "guard": 1024,
+              "log_integral": 47.82924264949542,
+              "distance_gradient": -0.022014798071207483
+            }
+          ],
+          "value_guard_difference": 8.121503469737945e-12,
+          "gradient_guard_difference": 4.3749726064135075e-15
+        },
+        {
+          "factor": 64,
+          "values": [
+            {
+              "guard": 512,
+              "log_integral": 47.82924264950354,
+              "distance_gradient": -0.022014798071211858
+            },
+            {
+              "guard": 1024,
+              "log_integral": 47.82924264949543,
+              "distance_gradient": -0.022014798071207483
+            }
+          ],
+          "value_guard_difference": 8.114398042380344e-12,
+          "gradient_guard_difference": 4.3749726064135075e-15
+        }
+      ],
+      "distance_finite_differences": [
+        {
+          "step_mpc": 0.001,
+          "gradient": -0.022014798069847075
+        },
+        {
+          "step_mpc": 0.0005,
+          "gradient": -0.022014798076952502
+        }
+      ],
+      "normalized_time_log_integral": 49.72864388027856,
+      "gradient_time_prior_difference": 0.0
+    },
+    {
+      "index": 1,
+      "source_sha256": "2b15245ff17084d3fa1551d5730b316f1eef34f35acdf9d709909efaa6747043",
+      "closed_interval_duration": 0.149658203125,
+      "log_time_prior_offset": 1.8994012307831323,
+      "grids": [
+        {
+          "factor": 4,
+          "values": [
+            {
+              "guard": 512,
+              "log_integral": 2861.6348588075407,
+              "distance_gradient": -0.06675345292660308
+            },
+            {
+              "guard": 1024,
+              "log_integral": 2861.6348588054702,
+              "distance_gradient": -0.06675345292146008
+            }
+          ],
+          "value_guard_difference": 2.070464688586071e-09,
+          "gradient_guard_difference": 5.142997139273575e-12
+        },
+        {
+          "factor": 8,
+          "values": [
+            {
+              "guard": 512,
+              "log_integral": 2862.3877969859204,
+              "distance_gradient": -0.07038638847678681
+            },
+            {
+              "guard": 1024,
+              "log_integral": 2862.387796983443,
+              "distance_gradient": -0.07038638847015362
+            }
+          ],
+          "value_guard_difference": 2.4774635676294565e-09,
+          "gradient_guard_difference": 6.6331939940766915e-12
+        },
+        {
+          "factor": 16,
+          "values": [
+            {
+              "guard": 512,
+              "log_integral": 2862.218386378838,
+              "distance_gradient": -0.06975316496187081
+            },
+            {
+              "guard": 1024,
+              "log_integral": 2862.2183863764117,
+              "distance_gradient": -0.06975316495543918
+            }
+          ],
+          "value_guard_difference": 2.4265318643301725e-09,
+          "gradient_guard_difference": 6.431633003955994e-12
+        },
+        {
+          "factor": 32,
+          "values": [
+            {
+              "guard": 512,
+              "log_integral": 2862.221323788214,
+              "distance_gradient": -0.06979287999065717
+            },
+            {
+              "guard": 1024,
+              "log_integral": 2862.2213237857845,
+              "distance_gradient": -0.06979287998418494
+            }
+          ],
+          "value_guard_difference": 2.4292603484354913e-09,
+          "gradient_guard_difference": 6.472225533293852e-12
+        },
+        {
+          "factor": 64,
+          "values": [
+            {
+              "guard": 512,
+              "log_integral": 2862.2213237883584,
+              "distance_gradient": -0.06979287999840965
+            },
+            {
+              "guard": 1024,
+              "log_integral": 2862.2213237859296,
+              "distance_gradient": -0.06979287999193855
+            }
+          ],
+          "value_guard_difference": 2.428805601084605e-09,
+          "gradient_guard_difference": 6.471101432481419e-12
+        }
+      ],
+      "distance_finite_differences": [
+        {
+          "step_mpc": 0.001,
+          "gradient": -0.06979287968533754
+        },
+        {
+          "step_mpc": 0.0005,
+          "gradient": -0.06979287991271121
+        }
+      ],
+      "normalized_time_log_integral": 2864.1207250167126,
+      "gradient_time_prior_difference": 0.0
+    },
+    {
+      "index": 2,
+      "source_sha256": "3cc0856f566449d6bd72ed95e5822c6651272bac81a921b2a75ad2620e7c0f89",
+      "closed_interval_duration": 0.149658203125,
+      "log_time_prior_offset": 1.8994012307831323,
+      "grids": [
+        {
+          "factor": 4,
+          "values": [
+            {
+              "guard": 512,
+              "log_integral": 2861.4367118677196,
+              "distance_gradient": 0.15459805363828252
+            },
+            {
+              "guard": 1024,
+              "log_integral": 2861.4367118616665,
+              "distance_gradient": 0.1545980536525046
+            }
+          ],
+          "value_guard_difference": 6.053141987649724e-09,
+          "gradient_guard_difference": 1.4222067967750718e-11
+        },
+        {
+          "factor": 8,
+          "values": [
+            {
+              "guard": 512,
+              "log_integral": 2861.3870083284114,
+              "distance_gradient": 0.15400653742638148
+            },
+            {
+              "guard": 1024,
+              "log_integral": 2861.3870083210863,
+              "distance_gradient": 0.15400653744460138
+            }
+          ],
+          "value_guard_difference": 7.325070328079164e-09,
+          "gradient_guard_difference": 1.821989781269906e-11
+        },
+        {
+          "factor": 16,
+          "values": [
+            {
+              "guard": 512,
+              "log_integral": 2861.3495353986864,
+              "distance_gradient": 0.1540089042744216
+            },
+            {
+              "guard": 1024,
+              "log_integral": 2861.3495353916246,
+              "distance_gradient": 0.15400890429179806
+            }
+          ],
+          "value_guard_difference": 7.061771611915901e-09,
+          "gradient_guard_difference": 1.7376461380891328e-11
+        },
+        {
+          "factor": 32,
+          "values": [
+            {
+              "guard": 512,
+              "log_integral": 2861.3464532798566,
+              "distance_gradient": 0.15404756374727327
+            },
+            {
+              "guard": 1024,
+              "log_integral": 2861.346453272795,
+              "distance_gradient": 0.1540475637646716
+            }
+          ],
+          "value_guard_difference": 7.061771611915901e-09,
+          "gradient_guard_difference": 1.7398332774476444e-11
+        },
+        {
+          "factor": 64,
+          "values": [
+            {
+              "guard": 512,
+              "log_integral": 2861.3464532801177,
+              "distance_gradient": 0.15404756373420603
+            },
+            {
+              "guard": 1024,
+              "log_integral": 2861.346453273055,
+              "distance_gradient": 0.15404756375160758
+            }
+          ],
+          "value_guard_difference": 7.062681106617674e-09,
+          "gradient_guard_difference": 1.7401552421247857e-11
+        }
+      ],
+      "distance_finite_differences": [
+        {
+          "step_mpc": 0.001,
+          "gradient": 0.1540475643651007
+        },
+        {
+          "step_mpc": 0.0005,
+          "gradient": 0.15404756550196907
+        }
+      ],
+      "normalized_time_log_integral": 2863.245854503838,
+      "gradient_time_prior_difference": 0.0
+    }
+  ],
+  "cpu_seconds": 0.350170713,
+  "wall_seconds": 0.35304410199751146,
+  "peak_rss_kib": 206460
+}

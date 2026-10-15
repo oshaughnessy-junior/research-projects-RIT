@@ -1,0 +1,100 @@
+{
+  "status": "source_only_common_contract_plan_complete_no_new_physical_runs",
+  "source_start": "30b930578de7563c7eaac0775348297ad72a8ffa",
+  "correction": "original NaN was deliberate integral-certificate refusal, not nonfinite physical primitives",
+  "new_work": {
+    "physical_likelihood_calls": 0,
+    "waveform_calls": 0,
+    "array_integrals": 42,
+    "off_base_algebraic_distance_integrals": 12,
+    "measured_cpu_seconds": 0.77,
+    "measured_command_wall_seconds": 1.92,
+    "peak_rss_kib": 206460,
+    "source_sha256": "586534ccf57cdf4566fa29b09914da3e12fa116b4103f61f481f611a38cceeb9"
+  },
+  "array_checks": {
+    "max_32_to_64_value_difference_nat": 2.601154847070575e-10,
+    "max_32_to_64_distance_gradient_difference": 1.3064022086339833e-11,
+    "max_distance_gradient_vs_algebraic_fd_difference": 1.7503614946345891e-09,
+    "normalization_duration_seconds": 0.149658203125,
+    "uniform_time_prior_log_offset": 1.8994012307831323,
+    "limitations": [
+      "only three saved primitive reconstructions",
+      "no full angular derivatives available in saved arrays",
+      "no new physical dense-gather check",
+      "only one independent 32->64 refinement pair tested here; proposed two-pair reference contract not yet fully exercised"
+    ]
+  },
+  "future_not_run": {
+    "array_only_adapter_cpu_cap_seconds": 30,
+    "conditional_physical_work_equivalent_cap": 40,
+    "conditional_physical_cpu_cap_seconds": 180,
+    "cpu": 1,
+    "rss_gib": 8,
+    "estimated_cpu_seconds": [
+      80,
+      130
+    ],
+    "allocation": {
+      "primitive_plus_directional_ad_equivalents": 21,
+      "independent_numpy_assemblies": 3,
+      "mixed_direction_h_and_halfh_stencil_rows": 12,
+      "reserve": 4
+    },
+    "caveat": "planning estimate only; actual endpoint dispatches, JVP lanes and time-node work must be logged separately; not permission for another physical stage"
+  },
+  "scientific_decision": "pause WTF inference; establish common converged primitive and derivative reference; recommend separately reviewed numerical contract/regression draft, with no production-impact claim",
+  "cumulative_identified_timed_work": [
+    {
+      "group": "simplified analytic-target prototype, seven recorded command timers",
+      "cpu_seconds": 69.47,
+      "command_wall_seconds": 85.74,
+      "real_physical_rows": 0,
+      "synthetic_callback_rows_lower_bound": 3740858
+    },
+    {
+      "group": "selected earlier learned/real stages, published stage3f subtotal",
+      "cpu_seconds": 450.3,
+      "command_wall_seconds": 493.95,
+      "real_physical_rows": 378,
+      "attempted_endpoint_rows": 401
+    },
+    {
+      "group": "three extra model-check receipts excluded from that subtotal",
+      "cpu_seconds": 9.84,
+      "command_wall_seconds": 13.81,
+      "real_physical_rows": 0
+    },
+    {
+      "group": "stage4, failures/validation/replay/diagnosis included",
+      "cpu_seconds": 242.84,
+      "command_wall_seconds": 266.32,
+      "real_physical_rows": 9554,
+      "attempted_endpoint_rows": 9554
+    },
+    {
+      "group": "stage5, failures/validation included",
+      "cpu_seconds": 358.5,
+      "command_wall_seconds": 397.82,
+      "real_physical_rows": 38,
+      "attempted_endpoint_rows": 38
+    },
+    {
+      "group": "stage6 saved-array planning check",
+      "cpu_seconds": 0.77,
+      "command_wall_seconds": 1.92,
+      "real_physical_rows": 0
+    }
+  ],
+  "historical_teacher_acquisition": {
+    "preexisting": true,
+    "sampler_ntotal_lower_bound": 15984560,
+    "true_call_overhead": null,
+    "cpu_seconds": null
+  },
+  "cumulative_caveat": "sum of identified nonoverlapping command receipts, not complete project cost: earlier untimed checks, unaudited synthetic validations, setup/hidden teacher work, coordinator edits/admin/SSH/transfers and gaps remain unknown; synthetic and physical row units are not interchangeable",
+  "identified_timed_cpu_seconds": 1131.72,
+  "identified_summed_command_wall_seconds": 1259.56,
+  "identified_new_real_physical_rows": 9970,
+  "identified_attempted_endpoint_rows": 9993
+}
