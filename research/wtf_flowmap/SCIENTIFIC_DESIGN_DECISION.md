@@ -1,5 +1,7 @@
 # Decision: withdraw the six-arm integration repeat
 
+Update: the separately authorized [three-arm benchmark](RETENTION_BENCHMARK_RESULTS.md) fired both first-seed futility conditions and closed this candidate/adapter line. The pre-evaluation design below is preserved.
+
 Do **not** spend12,000 calls repeating the old2,000-attempt arms. There is no
 power calculation supporting that budget: each complete arm had only1,000 final
 draws, the other calls went to preparation/adaptation, and every final population

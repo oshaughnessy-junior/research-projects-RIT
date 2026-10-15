@@ -1,6 +1,6 @@
 {
   "owner": "current Codex task, mini coordinator",
-  "status": "stage12_scientific_design_withdraws_six_arm_repeat",
+  "status": "closed_stage13_negative_information_retention_benchmark",
   "research_branch": "codex/learned-flowmap-realcase",
   "reasoning_effort_requested": "low",
   "source_base": "1621bb6e12391086edc3bfc8730ad807c8ad638c",
@@ -59,25 +59,9 @@
   "acquisition_ntotal_lower_bound": 15984560,
   "acquisition_total_true_calls": null,
   "next_stage": {
-    "arms": [
-      "full300-cache warm native AV+GMM",
-      "same-cache ResamplingOracle",
-      "frozen Q8 map"
-    ],
-    "replicate_seeds": [
-      261071,
-      261072
-    ],
-    "shared_q8_cache_rescores": 400,
-    "new_map_cloud_rows": 200,
-    "new_fitted_proposal_rows": 600,
-    "max_new_physical_calls": 1200,
-    "cpu_seconds_cap": 300,
-    "cpu": 1,
-    "rss_gib": 8,
-    "posterior_or_evidence_success_claim": false,
-    "name": "one_decisive_three_arm_information_retention_benchmark",
-    "automatic_execution_authorized": false
+    "name": "none_current_line_closed",
+    "automatic_execution_authorized": false,
+    "different_direction_requires_explicit_user_judgment": true
   },
   "limitations": [
     "400 fairdraw rows have finite teacher ESS and dependence",
@@ -111,7 +95,9 @@
     "results/stage10/summary.json",
     "results/stage11/summary.json",
     "SCIENTIFIC_DESIGN_DECISION.md",
-    "results/stage12/summary.json"
+    "results/stage12/summary.json",
+    "RETENTION_BENCHMARK_RESULTS.md",
+    "results/stage13/summary.json"
   ],
   "checkpoint_reproduced_identically_in_three_6000_step_runs": true,
   "mathematical_contract_tests_unique": 4,
@@ -206,25 +192,9 @@
     "contracts": true
   },
   "current_next_stage": {
-    "arms": [
-      "full300-cache warm native AV+GMM",
-      "same-cache ResamplingOracle",
-      "frozen Q8 map"
-    ],
-    "replicate_seeds": [
-      261071,
-      261072
-    ],
-    "shared_q8_cache_rescores": 400,
-    "new_map_cloud_rows": 200,
-    "new_fitted_proposal_rows": 600,
-    "max_new_physical_calls": 1200,
-    "cpu_seconds_cap": 300,
-    "cpu": 1,
-    "rss_gib": 8,
-    "posterior_or_evidence_success_claim": false,
-    "name": "one_decisive_three_arm_information_retention_benchmark",
-    "automatic_execution_authorized": false
+    "name": "none_current_line_closed",
+    "automatic_execution_authorized": false,
+    "different_direction_requires_explicit_user_judgment": true
   },
   "stage3e": {
     "status": "passed_periodic_physical_parity_limited_probe",
@@ -846,7 +816,7 @@
     },
     "next_decision": "one-seed six-arm real comparison with native AV+GMM, same-cache ResamplingOracle, same-cache fitted FisherGaussianOracle, pretrained map, old-recipe map and separate Q8 candidate; no automatic launch"
   },
-  "current_next_decision": "Withdraw six-arm/2000-row integration repeat. One three-arm information-retention benchmark with predeclared futility and no evidence estimates; stop this learned-map/proposal combination if minimum utility fails.",
+  "current_next_decision": "Current candidate/adapter line closed; no automatic retry, seed, retuning, sampler rewrite or inference. Different research direction requires explicit user judgment.",
   "stage12": {
     "status": "design_revised_no_inference_launched",
     "analysis_cpu_seconds": 0.46,
@@ -887,5 +857,108 @@
       "full_cold_cost_unknown": true
     },
     "script_sha256": "3928a502a3b46a439cc8df923e19f41053062b140c332b12d8c3c4763523df77"
+  },
+  "stage13": {
+    "status": "negative_benchmark_closed_at_predeclared_futility",
+    "scientific_decision": "close_current_candidate_adapter_line",
+    "both_stopping_conditions_triggered": true,
+    "seeds_completed": [
+      261071
+    ],
+    "seed_not_run": 261072,
+    "physical_calls": 800,
+    "physical_calls_by_phase": {
+      "shared_training_cache_q8": 300,
+      "shared_heldout_cache_q8": 100,
+      "seed261071_map_source": 100,
+      "seed261071_native_full_cache_postfit": 100,
+      "seed261071_same_cache_resampling_postfit": 100,
+      "seed261071_q8_map_postfit": 100
+    },
+    "logical_cached_resampling_score_rows": 100,
+    "neural_updates": 0,
+    "native_proposal_fits": 3,
+    "neural_forward_rows": 100,
+    "scalar_vjp_seeds": 0,
+    "evidence_or_posterior_rows": 0,
+    "threshold": 2850.038794730212,
+    "arms": {
+      "native_full_cache": {
+        "source_hits": 300,
+        "source_rows": 300,
+        "postfit_hits": 0,
+        "postfit_rows": 100,
+        "mean_heldout_logq": 8.672528961251299,
+        "branch_counts": [
+          41,
+          59
+        ],
+        "diagnostic_ess_not_success": 1.0
+      },
+      "same_cache_resampling": {
+        "source_hits": 100,
+        "source_rows": 100,
+        "postfit_hits": 0,
+        "postfit_rows": 100,
+        "mean_heldout_logq": 8.725748496067688,
+        "branch_counts": [
+          50,
+          50
+        ],
+        "diagnostic_ess_not_success": 1.3192134135355968
+      },
+      "q8_map": {
+        "source_hits": 0,
+        "source_rows": 100,
+        "postfit_hits": 0,
+        "postfit_rows": 100,
+        "mean_heldout_logq": 7.0736021633104205,
+        "branch_counts": [
+          48,
+          52
+        ],
+        "diagnostic_ess_not_success": 1.0
+      }
+    },
+    "paired_logq_delta_map_minus_resampling": -1.6521463327572679,
+    "nominal_paired_se_not_calibrated": 0.08606676538034462,
+    "normalized_density_checks_passed": true,
+    "candidate_unchanged": true,
+    "receipts": [
+      {
+        "file": "benchmark.time",
+        "cpu_seconds": 36.5,
+        "wall_seconds": 45.16
+      },
+      {
+        "file": "components.time",
+        "cpu_seconds": 0.11,
+        "wall_seconds": 0.44
+      }
+    ],
+    "total_cpu_seconds": 36.61,
+    "summed_command_wall_seconds": 45.6,
+    "peak_rss_kib": 1921744,
+    "untimed_coordination_provenance_and_report_reserve_cpu_seconds": 35,
+    "caps": {
+      "physical_calls": 1200,
+      "cpu_seconds": 300,
+      "cpu": 1,
+      "rss_gib": 8
+    },
+    "no_scheduler_job": true,
+    "no_performance_or_posterior_claim": true,
+    "no_automatic_followup": true,
+    "different_research_direction_requires_explicit_user_judgment": true,
+    "cumulative_identified": {
+      "timed_cpu_seconds": 1644.15,
+      "summed_command_wall_seconds": 1831.15,
+      "actual_real_endpoint_dispatch_rows": 10864,
+      "attempted_endpoint_dispatch_rows": 10887,
+      "forward_jvp_lanes": 42,
+      "scalar_reverse_vjp_seeds": 14,
+      "teacher_acquisition_sampler_rows_lower_bound": 15984560,
+      "full_cold_cost_unknown": true
+    }
   }
 }

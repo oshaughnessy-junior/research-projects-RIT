@@ -1,0 +1,101 @@
+{
+  "status": "journaled_before_evaluation",
+  "source_start": "7d3daa96f1c0204283470319355215ee57286424",
+  "design": "SCIENTIFIC_DESIGN_DECISION.md",
+  "design_sha256": "bf18f58e545e9f39fbdc1924fe62ae5dbbd078301c26bc4b2b3a612482cae3fc",
+  "cpu_seconds_cap": 300,
+  "cpu": 1,
+  "rss_gib": 8,
+  "process_cpu_soft_hard": [
+    260,
+    265
+  ],
+  "dispatch_cpu_reserve_at": 245,
+  "untimed_coordination_reserve_cpu_seconds": 35,
+  "new_attempted_physical_rows_cap": 1200,
+  "scalar_vjp_seeds": 0,
+  "training_updates": 0,
+  "seeds": [
+    261071,
+    261072
+  ],
+  "streams": {
+    "map_torch": "seed",
+    "resampling_numpy": "seed+20",
+    "fitting_numpy": "seed+10 reset identically per arm",
+    "mixture_numpy": "seed+30 reset identically per arm"
+  },
+  "allocation": {
+    "shared_train_q8": 300,
+    "shared_heldout_q8": 100,
+    "per_seed_new_map_source": 100,
+    "per_seed_postfit_each_arm": 100,
+    "logical_resampling_source": 100,
+    "no_new_calls_for_resampled_cache_lookup": true
+  },
+  "arms": [
+    "native_full_cache300",
+    "same_cache_resampling100",
+    "q8_map100"
+  ],
+  "candidate_sha256": "71dacb2fb9846a94962799ba8bdd654176e429c89d5c05646e0d645a66e2839a",
+  "fitter": {
+    "native_AV_bootstrap": {
+      "cover_frac": 0,
+      "dilate": 1,
+      "inflate": 1
+    },
+    "GMM_groups": [
+      [
+        0,
+        1
+      ],
+      [
+        2,
+        4
+      ],
+      [
+        3,
+        5
+      ]
+    ],
+    "components": [
+      4,
+      4,
+      2
+    ],
+    "weights": "unweighted heuristic for all clouds",
+    "tempering_exp": 0.1,
+    "mixture": [
+      0.2,
+      0.4,
+      0.4
+    ],
+    "online_adaptation": false
+  },
+  "diagnostics": {
+    "score_band": "median of100 heldout Q8 logL minus10; freeze formula before scoring",
+    "branches": "cos(incl)<=0 and >0, source and postfit counts",
+    "tails": "distance outside training-cache5/95% and abs(cosincl)>.9",
+    "moments": "mean distance,mean sindec,branch fraction,circular sin/cos RA/psi/phase minus finite heldout empirical reference",
+    "predictive_density": "normalized final q at100 heldout coordinates; paired map-minus-better-control mean and nominal SE, correlation caveat",
+    "normalization": "existing AV mass/error<=1e-10, independent grouped-GMM mass error<=1e-5; q>=.2; exact law and density equality",
+    "weight_concentration": "logL+normalized Planck15 source-frame cube logprior-logq; ESS/max weight only, no evidence estimate"
+  },
+  "utility": {
+    "logq_mean_advantage_at_least_nat": 1,
+    "both_branches_present_in_source_and_postfit": true,
+    "max_postfit_high_score_hit_fraction_deficit": 0.05,
+    "both_seeds_required": true,
+    "uncertainty_clause": "operationalized conservatively before evaluation: mean paired logq advantage minus2 nominal SE>=1; not a calibrated CI for correlated teacher"
+  },
+  "early_stop": {
+    "common_fitter_failure": "all3 postfit clouds have0/100 high-score hits after first seed",
+    "clear_map_failure": "map source0/100 hits AND resampling source>=90/100 hits AND map mean heldout logq at least1nat below full-cache native",
+    "action": "stop all arms, no second seed; close current candidate/adapter line"
+  },
+  "terminal_rule": "if minimum utility fails or remains uncertain after at most2 seeds, close current candidate/adapter line; any different direction requires explicit user judgment",
+  "forbidden": "evidence estimates, posterior output/main cache, performance win, retraining, extra seeds, budget expansion, implementation sweep",
+  "script_sha256": "93ad9ea9ebaa2c2eb8586935655e8470e91c66a4f7818bad34ca868197253ab7",
+  "trusted_checkpoint_read": "own exact SHA256-verified stage11 artifact; weights_only=False to read its typed complete-ledger metadata; no unknown deserialization"
+}

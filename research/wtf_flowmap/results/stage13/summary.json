@@ -1,0 +1,103 @@
+{
+  "status": "negative_benchmark_closed_at_predeclared_futility",
+  "scientific_decision": "close_current_candidate_adapter_line",
+  "both_stopping_conditions_triggered": true,
+  "seeds_completed": [
+    261071
+  ],
+  "seed_not_run": 261072,
+  "physical_calls": 800,
+  "physical_calls_by_phase": {
+    "shared_training_cache_q8": 300,
+    "shared_heldout_cache_q8": 100,
+    "seed261071_map_source": 100,
+    "seed261071_native_full_cache_postfit": 100,
+    "seed261071_same_cache_resampling_postfit": 100,
+    "seed261071_q8_map_postfit": 100
+  },
+  "logical_cached_resampling_score_rows": 100,
+  "neural_updates": 0,
+  "native_proposal_fits": 3,
+  "neural_forward_rows": 100,
+  "scalar_vjp_seeds": 0,
+  "evidence_or_posterior_rows": 0,
+  "threshold": 2850.038794730212,
+  "arms": {
+    "native_full_cache": {
+      "source_hits": 300,
+      "source_rows": 300,
+      "postfit_hits": 0,
+      "postfit_rows": 100,
+      "mean_heldout_logq": 8.672528961251299,
+      "branch_counts": [
+        41,
+        59
+      ],
+      "diagnostic_ess_not_success": 1.0
+    },
+    "same_cache_resampling": {
+      "source_hits": 100,
+      "source_rows": 100,
+      "postfit_hits": 0,
+      "postfit_rows": 100,
+      "mean_heldout_logq": 8.725748496067688,
+      "branch_counts": [
+        50,
+        50
+      ],
+      "diagnostic_ess_not_success": 1.3192134135355968
+    },
+    "q8_map": {
+      "source_hits": 0,
+      "source_rows": 100,
+      "postfit_hits": 0,
+      "postfit_rows": 100,
+      "mean_heldout_logq": 7.0736021633104205,
+      "branch_counts": [
+        48,
+        52
+      ],
+      "diagnostic_ess_not_success": 1.0
+    }
+  },
+  "paired_logq_delta_map_minus_resampling": -1.6521463327572679,
+  "nominal_paired_se_not_calibrated": 0.08606676538034462,
+  "normalized_density_checks_passed": true,
+  "candidate_unchanged": true,
+  "receipts": [
+    {
+      "file": "benchmark.time",
+      "cpu_seconds": 36.5,
+      "wall_seconds": 45.16
+    },
+    {
+      "file": "components.time",
+      "cpu_seconds": 0.11,
+      "wall_seconds": 0.44
+    }
+  ],
+  "total_cpu_seconds": 36.61,
+  "summed_command_wall_seconds": 45.6,
+  "peak_rss_kib": 1921744,
+  "untimed_coordination_provenance_and_report_reserve_cpu_seconds": 35,
+  "caps": {
+    "physical_calls": 1200,
+    "cpu_seconds": 300,
+    "cpu": 1,
+    "rss_gib": 8
+  },
+  "no_scheduler_job": true,
+  "no_performance_or_posterior_claim": true,
+  "no_automatic_followup": true,
+  "different_research_direction_requires_explicit_user_judgment": true,
+  "cumulative_identified": {
+    "timed_cpu_seconds": 1644.15,
+    "summed_command_wall_seconds": 1831.15,
+    "actual_real_endpoint_dispatch_rows": 10864,
+    "attempted_endpoint_dispatch_rows": 10887,
+    "forward_jvp_lanes": 42,
+    "scalar_reverse_vjp_seeds": 14,
+    "teacher_acquisition_sampler_rows_lower_bound": 15984560,
+    "full_cold_cost_unknown": true
+  }
+}

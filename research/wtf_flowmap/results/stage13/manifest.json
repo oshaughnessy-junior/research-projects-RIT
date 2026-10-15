@@ -1,0 +1,14 @@
+{
+  "raw_private_artifact_manifest": "raw-manifest.json",
+  "local_files": {
+    "summary.json": "30b108a27444eab52b8da8c9e1cf4526b6a2c76884813e15614b16384622bf2e",
+    "benchmark.time": "f7007f1717bd821069b166b296cd9b90228c31ecf62d70b23d54e711ebe8a42a",
+    "journal.json": "c8bc866a69f094d61e13fb38228d6233739aa64b7263e13bf07f04589458555c",
+    "raw-manifest.json": "499747d60bc3bec49101d8f663d1285d40b6add967bb900c5d381e17e33bdc50",
+    "components.time": "080ccae1daa1d0970a33750cc0994e168c8f9f217bbe0aa5dd9c25b7e032ee8d",
+    "components.json": "9a3dd781e818b2b55bf61dcb63639e32b4ccb89c40baeb0058ed31346cca0326",
+    "physical.json": "4d8f0292cc8be68e0f32a5200cbf31b17033a7e9bdbfc1938afa07a7255396c1",
+    "postprocess.sh": "e53cb3a17677aaa4b9df597a41d41092a863079c7b93c66cfc0d12da5ffdf253"
+  },
+  "source_sha256": "93ad9ea9ebaa2c2eb8586935655e8470e91c66a4f7818bad34ca868197253ab7"
+}

@@ -1,0 +1,77 @@
+{
+  "new_physical_calls": 0,
+  "new_draws": 0,
+  "training_updates": 0,
+  "interpretation": "unweighted proposal components, not posterior moments; separate intentional defensive-uniform broadening",
+  "components": {
+    "native_full_cache": {
+      "uniform": {
+        "n": 20,
+        "high_score_hits": 0,
+        "maximum_ll": 492.1418352925141,
+        "mean_ll": -2337.668902683962,
+        "mean_distance_mpc": 5254.854559538706
+      },
+      "AV": {
+        "n": 43,
+        "high_score_hits": 0,
+        "maximum_ll": 2659.865332308525,
+        "mean_ll": -5657.1608764331,
+        "mean_distance_mpc": 777.9517456651922
+      },
+      "GMM": {
+        "n": 37,
+        "high_score_hits": 0,
+        "maximum_ll": 2572.303757714029,
+        "mean_ll": 841.8027975057472,
+        "mean_distance_mpc": 385.5280887461256
+      }
+    },
+    "same_cache_resampling": {
+      "uniform": {
+        "n": 20,
+        "high_score_hits": 0,
+        "maximum_ll": 492.1418352925141,
+        "mean_ll": -2337.668902683962,
+        "mean_distance_mpc": 5254.854559538706
+      },
+      "AV": {
+        "n": 43,
+        "high_score_hits": 0,
+        "maximum_ll": 2009.0240121502256,
+        "mean_ll": -5703.71028783187,
+        "mean_distance_mpc": 1008.8717464017508
+      },
+      "GMM": {
+        "n": 37,
+        "high_score_hits": 0,
+        "maximum_ll": 2644.746295948096,
+        "mean_ll": 861.9133453377639,
+        "mean_distance_mpc": 392.89089852684793
+      }
+    },
+    "q8_map": {
+      "uniform": {
+        "n": 20,
+        "high_score_hits": 0,
+        "maximum_ll": 492.1418352925141,
+        "mean_ll": -2337.668902683962,
+        "mean_distance_mpc": 5254.854559538706
+      },
+      "AV": {
+        "n": 43,
+        "high_score_hits": 0,
+        "maximum_ll": 2417.97039280156,
+        "mean_ll": -88.07151345824627,
+        "mean_distance_mpc": 1532.6336502354507
+      },
+      "GMM": {
+        "n": 37,
+        "high_score_hits": 0,
+        "maximum_ll": 2115.7377957286435,
+        "mean_ll": 341.0297040694446,
+        "mean_distance_mpc": 388.0592699738815
+      }
+    }
+  }
+}
