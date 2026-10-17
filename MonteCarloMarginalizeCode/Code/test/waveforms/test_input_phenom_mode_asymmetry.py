@@ -1,7 +1,8 @@
 """Upstream LAL mode parity contracts, deliberately NOT xfailed or skipped.
 
 These tests call raw SimInspiralChooseFDModes, without RIFT conditioning,
-rotation, FFTs or likelihood code. LALSuite 7.26.16 fails two of the contracts.
+rotation, FFTs or likelihood code. LALSuite 7.26.16 fails the XPHM contract;
+the XPNR failure is platform dependent, so every residual is retained in JUnit.
 They should turn green when the input implementation is fixed; do not change
 thresholds or symmetrize the modes to silence them.
 
@@ -67,28 +68,32 @@ def reflected_amplitude_residual(model, case, mode, spintaylor=False):
     return float(np.linalg.norm(abs(candidate) - abs(target)) / scale)
 
 
-def test_input_generic_xpnr_reflected_mode_amplitude():
+def test_input_generic_xpnr_reflected_mode_amplitude(record_property):
     residual = reflected_amplitude_residual("IMRPhenomXPNR", GENERIC, (3, 2))
+    record_property("reflected_amplitude_residual", residual)
     assert residual <= AMPLITUDE_TOLERANCE, (
         f"LALSuite {version('lalsuite')} raw XPNR (3,2) reflected-pair amplitude "
         f"residual={residual:.9g}; upstream mode-parity defect remains")
 
 
-def test_input_generic_spintaylor_reflection_control():
+def test_input_generic_spintaylor_reflection_control(record_property):
     residual = reflected_amplitude_residual(
         "IMRPhenomXPHM", GENERIC, (3, 2), spintaylor=True)
+    record_property("reflected_amplitude_residual", residual)
     assert residual <= AMPLITUDE_TOLERANCE
 
 
-def test_input_generic_xpnr_keeps_physical_mode_asymmetry():
+def test_input_generic_xpnr_keeps_physical_mode_asymmetry(record_property):
     modes = raw_modes("IMRPhenomXPNR", GENERIC)
     same_binary_reflection = np.conj(modes[2, -2][::-1])
     asymmetry = np.linalg.norm(modes[2, 2] - same_binary_reflection) / np.linalg.norm(modes[2, 2])
+    record_property("physical_mode_asymmetry", float(asymmetry))
     assert asymmetry > .01, "This precessing control must retain physical mode asymmetry"
 
 
-def test_input_aligned_default_xphm_mode_pair_amplitude():
+def test_input_aligned_default_xphm_mode_pair_amplitude(record_property):
     residual = reflected_amplitude_residual("IMRPhenomXPHM", ALIGNED, (2, 1))
+    record_property("reflected_amplitude_residual", residual)
     assert residual <= AMPLITUDE_TOLERANCE, (
         f"LALSuite {version('lalsuite')} raw aligned XPHM (2,1) amplitude "
         f"residual={residual:.9g}; upstream mode-parity defect remains")
