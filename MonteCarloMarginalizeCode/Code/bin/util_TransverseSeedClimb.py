@@ -298,8 +298,14 @@ def main(argv=None):
     # --- collect seeds ----------------------------------------------------------
     Xh, lnLh, labels = oracle.near_peak(opts.delta_lnL)
     best = float(np.max(oracle.reference_lnL))
-    n_hist = min(len(Xh), opts.n_seed_points)
-    sel = np.argsort(-lnLh)[:n_hist]
+    # equal quota per climb: a plain top-N by lnL is dominated by the low-chi1_perp
+    # climbs and starves the high rungs, which are the point of the ladder
+    labels = np.array(labels)
+    groups = [np.flatnonzero(labels == lab) for lab in dict.fromkeys(labels)]
+    quota = int(np.ceil(opts.n_seed_points / max(1, len(groups))))
+    sel = np.concatenate([g[np.argsort(-lnLh[g])][:quota] for g in groups]) if groups else np.array([], int)
+    sel = sel[np.argsort(-lnLh[sel])][:opts.n_seed_points]
+    n_hist = len(sel)
     X_seed = Xh[sel]
     n_draw = max(0, opts.n_seed_points - n_hist)
     if n_draw:
