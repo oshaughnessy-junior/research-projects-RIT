@@ -3796,6 +3796,48 @@ def write_init_sub(tag='gridinit', exe=None,arg_str=None,log_dir=None, use_eos=F
 
 
 
+def write_seed_climb_sub(tag='seed_climb', exe=None, arg_str='', log_dir=None, out_dir=None,
+                         request_memory=8192, request_gpus=0, request_disk='4G',
+                         use_singularity=False, singularity_image=None,
+                         universe='vanilla', **kwargs):
+    """
+    Submit file for the transverse-spin seed climb (util_TransverseSeedClimb.py).
+
+    Runs before the iteration-0 ILE jobs, on the shared filesystem, in out_dir.
+    It reads overlap-grid-0 and the ILE argument file and rewrites overlap-grid-0
+    with the seeds appended, so it must finish before ILE starts.  With
+    request_gpus the JAX kernel runs on the GPU; without, it runs (slower) on CPU.
+    No file transfer: like the other non-worker jobs, it needs the run directory.
+    """
+    exe = exe or which("util_TransverseSeedClimb.py")
+    job = CondorDAGJob(universe=universe, executable=exe)
+    sub_name = tag + '.sub'
+    job.set_sub_file(sub_name)
+    job.add_opt(arg_str.strip().lstrip('-'), '')   # add_opt prepends '--'
+    log_dir = log_dir or ((out_dir + "/") if out_dir else "")
+    uniq_str = "$(cluster)-$(process)"
+    job.set_log_file("%s%s-%s.log" % (log_dir, tag, uniq_str))
+    job.set_stderr_file("%s%s-%s.err" % (log_dir, tag, uniq_str))
+    job.set_stdout_file("%s%s-%s.out" % (log_dir, tag, uniq_str))
+    if out_dir:
+        job.add_condor_cmd('initialdir', out_dir)
+    job.add_condor_cmd('getenv', default_getenv_value)
+    job.add_condor_cmd('request_memory', str(request_memory) + "M")
+    job.add_condor_cmd('request_disk', request_disk)
+    job.add_condor_cmd('environment', '"OMP_NUM_THREADS=1 JAX_ENABLE_X64=1 XLA_PYTHON_CLIENT_PREALLOCATE=false"')
+    if request_gpus:
+        job.add_condor_cmd('request_GPUs', str(int(request_gpus)))
+    if use_singularity and singularity_image:
+        job.add_condor_cmd('MY.SingularityImage', '"' + singularity_image + '"')
+        job.add_condor_cmd('MY.SingularityBindCVMFS', 'True')
+    try:
+        job.add_condor_cmd('accounting_group', os.environ['LIGO_ACCOUNTING'])
+        job.add_condor_cmd('accounting_group_user', os.environ['LIGO_USER_NAME'])
+    except KeyError:
+        print(" LIGO accounting information not available.  You must add this manually to " + sub_name)
+    return job, sub_name
+
+
 def write_psd_sub_BW_monoblock(tag='PSD_BW_mono', exe=None, log_dir=None, ncopies=1,arg_str=None,request_memory=4096,arg_vals=None, transfer_files=None,transfer_output_files=None,use_singularity=False,use_osg=False,singularity_image=None,frames_dir=None,cache_file=None,psd_length=4,srate=4096,data_start_time=None,event_time=None,universe='local',no_grid=False,**kwargs):
     """
     Write a submit file for constructing the PSD using BW

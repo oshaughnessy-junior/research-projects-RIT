@@ -323,6 +323,11 @@ parser.add_argument("--test-args",default=None,help="filename of args_test.txt, 
 parser.add_argument("--convert-args",default=None,help="filename of args_convert.txt, which holds arguments to the convert function. Needed if you plan to export tide informaton")
 parser.add_argument("--plot-args",default=None,help="filename of args_plot.txt, which holds plot arguments.  Note i/o arguments will be modified, so should NOT specify the samples files or the output file, just the test to be performed and any related arguments.  To create the posterior samples file, you probably need to run the convert job (e.g., via the tests)")
 parser.add_argument("--gridinit-args",default=None,help="arguments for grid creation or equivalent executable.  If empty, will attempt to use the --input-grid argument")
+parser.add_argument("--seed-climb-exe",default=None,help="Transverse-spin seed climb (util_TransverseSeedClimb.py) run as a DAG node BEFORE the iteration-0 ILE jobs.  It rewrites overlap-grid-0 with seed points appended.  Requires --seed-climb-args.")
+parser.add_argument("--seed-climb-args",default=None,help="Argument file for --seed-climb-exe (first token dropped, as for the other *-args files).  The builder adds --working-directory, --ile-args, --inj-file overlap-grid-0, --inj-file-out overlap-grid-0 and --append-to-input.")
+parser.add_argument("--seed-climb-n-max",default=1000,type=int,help="Most points the seed climb may add.  Iteration-0 ILE batches are sized at DAG-build time for (input grid + this many) points; ILE exits cleanly on indices past the end of the grid.")
+parser.add_argument("--seed-climb-request-gpu",action='store_true',help="Seed-climb node requests a GPU (JAX kernel on GPU).  Without it the node runs on CPU.")
+parser.add_argument("--seed-climb-request-memory",default=8192,type=int,help="request_memory (MB) for the seed-climb node")
 parser.add_argument("--fetch-ext-grid-args",default=None,help="arguments for command  for fetching external grid. Don't over-specify the --output-file argument, which will be used by the pipeline")
 parser.add_argument("--ile-batch",action='store_true',help="Different workflow: the ILE job is assumed to create a .composite file directly in the current working directory. Designed for fake ILE sets and long-term batch workflow. NOT IMPLEMENTED ")
 parser.add_argument("--transfer-file-list",default=None,help="File containing list of *input* filenames to transfer, one name per file. Copied into transfer_files for condor directly.  If provided, also enables attempts to deduce files that need to be transferred for the pipeline to operate, as needed for OSG, etc")
@@ -651,6 +656,10 @@ if (it_start == 0) and not gridinit_args:
         os.symlink(_seed_grid_name, "posterior_samples-0.dat")
     else:
         n_initial = len(lalsimutils.xml_to_ChooseWaveformParams_array(_seed_grid_name))
+if opts.seed_climb_exe and opts.seed_climb_args and it_start == 0 and not opts.first_iteration_jumpstart:
+    if _use_hpip_pipeline:
+        raise SystemExit("--seed-climb-exe writes sim_inspiral XML; incompatible with RIFT_HYPERPIPELINE_FORMAT")
+    n_initial += opts.seed_climb_n_max   # grid grows at run time; batches sized for the cap
 
 transfer_file_names = []
 if not (opts.transfer_file_list is None):
@@ -1674,6 +1683,25 @@ if opts.gridinit_args:
         gridinit_job.set_sub_file(fname)
     gridinit_job.write_sub_file()
 
+seed_climb_job = None
+if opts.seed_climb_exe and opts.seed_climb_args and it_start == 0 and not opts.first_iteration_jumpstart:
+    with open(opts.seed_climb_args) as f:
+        _sc_args = ' '.join(x.replace('\\', '') for x in f.readlines())
+    _sc_args = ' '.join(_sc_args.split(' ')[1:]).strip()
+    _grid0 = opts.working_directory + "/overlap-grid-0.xml.gz"
+    _sc_args += " --working-directory {wd} --ile-args {ile} --inj-file {g} --inj-file-out {g} --append-to-input --output-json {wd}/seed_climb.json --output-dat {wd}/seed_climb_history.dat".format(
+        wd=opts.working_directory, ile=opts.ile_args, g=_grid0)
+    if opts.n_samples_per_job and not gridinit_args:
+        _sc_args += " --n-max-output {}".format(n_initial)
+    seed_climb_job, _ = dag_utils.write_seed_climb_sub(
+        tag='seed_climb', exe=opts.seed_climb_exe, arg_str=_sc_args,
+        out_dir=opts.working_directory, request_memory=opts.seed_climb_request_memory,
+        request_gpus=1 if opts.seed_climb_request_gpu else 0,
+        use_singularity=opts.use_singularity, singularity_image=singularity_image)
+    if opts.use_full_submit_paths:
+        seed_climb_job.set_sub_file(opts.working_directory + "/" + seed_climb_job.get_sub_file())
+    seed_climb_job.write_sub_file()
+
 if opts.frame_rotation:
     # Wriite command to do the conversion
     extra_arg=''
@@ -1857,6 +1885,13 @@ if opts.gridinit_args:
    grid_node = pipeline.CondorDAGNode(gridinit_job) 
    dag.add_node(grid_node)
    parent_fit_node = grid_node  # this must happen before the first ILE jobs
+
+if seed_climb_job is not None:
+   seed_climb_node = pipeline.CondorDAGNode(seed_climb_job)
+   if parent_fit_node: seed_climb_node.add_parent(parent_fit_node)
+   seed_climb_node.set_retry(opts.general_retries)
+   dag.add_node(seed_climb_node)
+   parent_fit_node = seed_climb_node   # iteration-0 ILE reads the grid it rewrites
 
 convert_psd_node_list = []
 if opts.use_bw_psd:
