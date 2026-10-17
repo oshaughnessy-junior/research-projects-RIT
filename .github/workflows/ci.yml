@@ -388,6 +388,9 @@ jobs:
           python -m pip install -r requirements.txt --break-system-packages
           python -m pip install coverage pytest --break-system-packages
           python -m pip install --editable . --break-system-packages
+      # The manifest includes test_source_angular_basis.py (full mixed U/V),
+      # test_fd_component_conditioning.py (linear shared FD operator), and
+      # test_xpnr_source_basis.py (PE-coordinate and source reuse contracts).
       # The manifest includes test_gwsignal_seob_conditioning.py: shared linear
       # SEOB filtering, common trimming and epoch/selection invariants (no backend).
       # The manifest includes test_phenom_lframe_conventions.py: generic-spin
@@ -993,3 +996,39 @@ jobs:
           publish_dir: ./docs/build/
           publish_branch: gh-pages
           force_push: true
+
+  xpnr-source-basis-check:
+    env:
+      PYTHONPYCACHEPREFIX: ${{ github.workspace }}/.cache/xpnr-python
+    needs: install
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install pinned native XPNR comparison runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install numpy==2.1.3 lalsuite==7.26.16 bilby==2.5.0 pytest
+          python -m pip install --no-deps --editable .
+          python -m pip freeze --all > xpnr-source-environment.txt
+      - name: Validate 216 native PE and full asymmetric NoLoop points
+        env:
+          RIFT_NO_EXTERNAL: '1'
+          GW_SURROGATE: ''
+          PYTHONDONTWRITEBYTECODE: '1'
+          OMP_NUM_THREADS: '1'
+          OPENBLAS_NUM_THREADS: '1'
+          RIFT_PRECOMPUTE_BATCHED_CROSSTERMS: '1'
+        run: >-
+          python -u MonteCarloMarginalizeCode/Code/test/waveforms/check_xpnr_source_basis_likelihood.py
+          --output xpnr-source-likelihood.json
+      - name: Preserve native waveform and likelihood evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xpnr-source-basis-evidence
+          path: xpnr-source-*

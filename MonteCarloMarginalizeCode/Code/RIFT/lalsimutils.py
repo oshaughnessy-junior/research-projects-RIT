@@ -3746,6 +3746,144 @@ def non_herm_hoff(P):
 #argist_FromPolarizations=lalsim.SimInspiralTDModesFromPolarizations.__doc__.split('->')[0].replace('SimInspiralTDModesFromPolarizations','').replace('REAL8','').replace('Dict','').replace('Approximant','').replace('(','').replace(')','').split(',')
 
 
+def _fd_mode_centering_factor(P, fd_centering_factor, fd_alignment_postevent_time):
+    """Resolve the fixed FD buffer location without fitting a waveform peak."""
+    TDlen = int(1. / (P.deltaT * P.deltaF))
+    if fd_alignment_postevent_time:
+        if fd_alignment_postevent_time < TDlen * P.deltaT / 2:
+            fd_centering_factor = 1 - fd_alignment_postevent_time / (TDlen * P.deltaT)
+        else:
+            print(" Warning: fd alignment postevent time requested incompatible with short duration ", file=sys.stderr)
+    return fd_centering_factor
+
+
+def condition_fd_mode_components(P, components, *, global_sign,
+                                 fd_standoff_factor=0.964, no_condition=False,
+                                 fd_centering_factor=0.9, fd_alignment_postevent_time=None,
+                                 fd_end_taper_max_time=1.0, copy_inputs=True):
+    """Condition arbitrary native-LAL FD basis components on one fixed grid.
+
+    ``components`` maps any immutable label to a COMPLEX16FrequencySeries on
+    LAL's ascending, center-DC two-sided grid (as returned by ChooseFDModes).
+    This differs from the reversed RIFT DataFourier packing. All components
+    must share their length, deltaF, f0 and epoch; N or N+1 samples are accepted,
+    where N = 1/(P.deltaT*P.deltaF). Metadata f0 need not equal -Nyquist: native
+    ChooseFDModes may label the centered grid with f0=0.
+
+    Generation is the caller's responsibility, including start frequency
+    P.fmin*fd_standoff_factor and resolution of any default reference frequency
+    before lowering that start. This helper never changes P or selects modes.
+    Split any independent positive/negative-frequency angular coefficients
+    BEFORE calling: the TD tapers mix frequencies. No reflection, conjugation,
+    antisymmetric-mode removal or angular-weight correction is performed here.
+
+    ``global_sign`` must explicitly be +1 (native-J basis normalization) or -1
+    (historical RIFT ChooseFDModes normalization). That sign is not a rotation
+    or a fitted phase; angular coefficients must use the same declared choice.
+    The shared highpass, fixed centering/epoch, Nyquist endpoint handling and TD
+    taper/padding operator otherwise match hlmoft's historical FD path exactly.
+    By default the input series are copied; copy_inputs=False transfers their
+    ownership to this function, as used by the existing hlmoft implementation.
+    """
+    if global_sign not in (-1, 1):
+        raise ValueError("FD component global_sign must be explicitly +1 or -1")
+    if not components:
+        raise ValueError("FD conditioning requires at least one component")
+    if P.deltaT <= 0 or P.deltaF is None or P.deltaF <= 0 or P.fmin <= 0:
+        raise ValueError("FD conditioning requires positive deltaT, deltaF and fmin")
+    TDlen = int(1. / (P.deltaT * P.deltaF))
+    reference = next(iter(components.values()))
+    if reference.data.length not in (TDlen, TDlen + 1):
+        raise ValueError("FD components must span the native two-sided N or N+1 grid")
+    if reference.deltaF != P.deltaF:
+        raise ValueError("FD component deltaF differs from ChooseWaveformParams")
+    hlmsdict = {}
+    for key, value in components.items():
+        if (value.data.length != reference.data.length or value.deltaF != reference.deltaF
+                or value.f0 != reference.f0 or value.epoch != reference.epoch):
+            raise ValueError("FD components must share one native frequency grid")
+        if copy_inputs:
+            item = lal.CreateCOMPLEX16FrequencySeries(value.name, value.epoch, value.f0,
+                    value.deltaF, value.sampleUnits, value.data.length)
+            item.data.data[:] = value.data.data
+            hlmsdict[key] = item
+        else:
+            hlmsdict[key] = value
+    fd_centering_factor = _fd_mode_centering_factor(
+        P, fd_centering_factor, fd_alignment_postevent_time)
+    hlmsT = {}
+    # FD conditioning using fd_standoff_factor, HIGH PASS FILTER to eliminate LOW FREQUENCIES
+    # Note this conditioning is based on the L=2 mode start frequency -- we should use different conditioning for each coprecessing mode
+    # but that is very difficult to do because modes of different 'm' and thus typical frequency generally mix
+    # Note also that unless the segment length is large, this is often surprisingly few frequency bins for tapering
+    if not(no_condition):
+        # lal_convention=True is REQUIRED here: ChooseFDModes returns the ascending
+        # center-DC grid, and the default (RIFT reversed) convention would shift the
+        # high-pass window by one bin between (l,m) and (l,-m), breaking the
+        # conjugate-pair identity at the percent level.  See evaluate_fvals docs.
+        our_fvals = evaluate_fvals(reference, lal_convention=True)
+        vectaper_symmetric  = np.ones(len(our_fvals))
+        indx_below = np.logical_and(np.abs(our_fvals)<P.fmin, np.abs(our_fvals)>=P.fmin*fd_standoff_factor)
+        vectaper_symmetric[indx_below] = 0.5 + 0.5*np.cos(np.pi* (np.abs(our_fvals[indx_below])/P.fmin - 1)/(1-fd_standoff_factor))
+        indx_within = np.abs(our_fvals)< P.fmin*fd_standoff_factor
+        for mode in hlmsdict:
+            hlmsdict[mode].data.data*=vectaper_symmetric
+            hlmsdict[mode].data.data[indx_within]=0
+
+    # Base taper, based on 1% of waveform length
+    ntaper = int(0.01*TDlen)  # fixed 1% of waveform length, at start
+    ntaper = np.max([ntaper, int(1./(P.fmin*P.deltaT))])  # require at least one waveform cycle of tapering; should never happen
+    vectaper= 0.5 - 0.5*np.cos(np.pi*np.arange(ntaper)/(1.*ntaper))
+    # End taper: same 1% rule, capped in duration so it cannot reach the merger in long buffers
+    ntaper_end = ntaper
+    if fd_end_taper_max_time is not None:
+        ntaper_end = int(np.min([ntaper, np.max([int(fd_end_taper_max_time/P.deltaT), 1])]))
+    vectaper_end = 0.5 - 0.5*np.cos(np.pi*np.arange(ntaper_end)/(1.*ntaper_end))
+
+    # Taper any wraparound that has happened after the peak
+    #    - Based on SimInspiralTDFromTD  https://git.ligo.org/lscsoft/lalsuite/-/blob/master/lalsimulation/lib/LALSimInspiral.c
+    tchirp = lalsim.SimInspiralChirpTimeBound(P.fmin, P.m1,P.m2, P.s1z, P.s2z)
+    s = lalsim.SimInspiralFinalBlackHoleSpinBound(P.s1z,P.s2z)
+    t_merge = lalsim.SimInspiralMergeTimeBound(P.m1,P.m2) + lalsim.SimInspiralRingdownTimeBound(P.m1+P.m2,s)
+    t_extra = 3./P.fmin
+    indx_crit = int(TDlen*(fd_centering_factor)) + int((t_merge+t_extra)/P.deltaT)  # t_extra is a lot of time generally if fmin is low
+    if indx_crit + ntaper_end > TDlen:
+        indx_crit = TDlen - ntaper_end
+
+    for mode in hlmsdict:
+        npts_fd_pre_resize = hlmsdict[mode].data.length
+        hlmsdict[mode] = lal.ResizeCOMPLEX16FrequencySeries(hlmsdict[mode],0, TDlen)
+        if npts_fd_pre_resize > TDlen:
+            # The resize above truncated the +fNyq bin from the two-sided grid but kept
+            # its -fNyq partner (index 0).  Zero it so the truncation commutes with the
+            # conjugate-pair (f -> -f) reflection for models with support at Nyquist.
+            # Tied to the truncation itself, NOT to no_condition: an asymmetric
+            # truncation would reintroduce (l,±m) asymmetry even on the raw path.
+            hlmsdict[mode].data.data[0] = 0
+        hlmsT[mode] = DataInverseFourier(hlmsdict[mode])
+        # Phase factors: see crazy conventions in https://git.ligo.org/lscsoft/lalsuite/-/blob/master/lalsimulation/lib/LALSimInspiral.c
+        if global_sign == -1:
+            hlmsT[mode].data.data = -1*hlmsT[mode].data.data   # shifts polarization angle
+        # Assume fourier transform is CENTERED.  This makes sure any ringdown dies out. In practice, too pessimistic .. better to be asymmetric
+        factor_centering = fd_centering_factor   # not clear it works right if we shift it
+        hlmsT[mode].data.data = np.roll(hlmsT[mode].data.data,-int(hlmsT[mode].data.length*(1-factor_centering)))
+        hlmsT[mode].epoch = -(hlmsT[mode].data.length*hlmsT[mode].deltaT)*(factor_centering)
+        if not(no_condition):
+            # Taper at the start of the segment
+            hlmsT[mode].data.data[:ntaper]*=vectaper
+            # Taper anything at the *end* of the segment. This could be  important when interacting with real data, which when wrapped is strongly discontinuous
+            #     - this generally will NOT taper everything, because some of the turn-on generally extends well past this
+            if TDlen-ntaper_end < indx_crit:
+                # just multiply the very end by a small amount of tapering
+                hlmsT[mode].data.data[TDlen-ntaper_end:]*=vectaper_end[::-1]
+            else:
+                # zero out a a lot of time at the end, and taper time as we approach this critical extra time
+                hlmsT[mode].data.data[indx_crit:indx_crit+ntaper_end] *= vectaper_end[::-1]
+                hlmsT[mode].data.data[indx_crit+ntaper_end:] = 0
+    return hlmsT
+
+
+
 def hlmoft(P, Lmax=2,nr_polarization_convention=False, fixed_tapering=False, silent=True, fd_standoff_factor=0.964,no_condition=False,fd_L_frame=False,fd_centering_factor=0.9,fd_alignment_postevent_time=None,fd_end_taper_max_time=1.0,**kwargs ):
     """
     Generate the TD h_lm -2-spin-weighted spherical harmonic modes of a GW
@@ -3803,11 +3941,8 @@ def hlmoft(P, Lmax=2,nr_polarization_convention=False, fixed_tapering=False, sil
 #       extra_params = P.to_lal_dict_extended(extra_args_dict=extra_waveform_args)
        fNyq = 0.5/P.deltaT
        TDlen = int(1./(P.deltaT*P.deltaF))
-       if fd_alignment_postevent_time:
-           if fd_alignment_postevent_time < TDlen*P.deltaT/2:
-               fd_centering_factor = 1-fd_alignment_postevent_time/(TDlen*P.deltaT)  # align so there is a time fd_alignment_time_postevent
-           else:
-               print(" Warning: fd alignment postevent time requested incompatible with short duration ",file=sys.stderr)
+       fd_centering_factor = _fd_mode_centering_factor(
+           P, fd_centering_factor, fd_alignment_postevent_time)
        fNyq_offset = fNyq - P.deltaF
        # Argh: https://git.ligo.org/waveforms/reviews/imrphenomxhm-amplitude-recalibration/-/wikis/home#review-statement
 #       if P.approx == lalIMRPhenomXPHM and 'release' in kwargs:
@@ -3820,74 +3955,10 @@ def hlmoft(P, Lmax=2,nr_polarization_convention=False, fixed_tapering=False, sil
        hlms = {}
        hlmsdict = SphHarmFrequencySeries_to_dict(hlms_struct,Lmax)
 
-       # FD conditioning using fd_standoff_factor, HIGH PASS FILTER to eliminate LOW FREQUENCIES
-       # Note this conditioning is based on the L=2 mode start frequency -- we should use different conditioning for each coprecessing mode
-       # but that is very difficult to do because modes of different 'm' and thus typical frequency generally mix
-       # Note also that unless the segment length is large, this is often surprisingly few frequency bins for tapering
-       if not(no_condition):
-           # lal_convention=True is REQUIRED here: ChooseFDModes returns the ascending
-           # center-DC grid, and the default (RIFT reversed) convention would shift the
-           # high-pass window by one bin between (l,m) and (l,-m), breaking the
-           # conjugate-pair identity at the percent level.  See evaluate_fvals docs.
-           our_fvals = evaluate_fvals(hlmsdict[(2,2)], lal_convention=True)
-           vectaper_symmetric  = np.ones(len(our_fvals))
-           indx_below = np.logical_and(np.abs(our_fvals)<P.fmin, np.abs(our_fvals)>=P.fmin*fd_standoff_factor)
-           vectaper_symmetric[indx_below] = 0.5 + 0.5*np.cos(np.pi* (np.abs(our_fvals[indx_below])/P.fmin - 1)/(1-fd_standoff_factor))
-           indx_within = np.abs(our_fvals)< P.fmin*fd_standoff_factor
-           for mode in hlmsdict:
-               hlmsdict[mode].data.data*=vectaper_symmetric
-               hlmsdict[mode].data.data[indx_within]=0
-       
-       # Base taper, based on 1% of waveform length
-       ntaper = int(0.01*TDlen)  # fixed 1% of waveform length, at start
-       ntaper = np.max([ntaper, int(1./(P.fmin*P.deltaT))])  # require at least one waveform cycle of tapering; should never happen
-       vectaper= 0.5 - 0.5*np.cos(np.pi*np.arange(ntaper)/(1.*ntaper))
-       # End taper: same 1% rule, capped in duration so it cannot reach the merger in long buffers
-       ntaper_end = ntaper
-       if fd_end_taper_max_time is not None:
-           ntaper_end = int(np.min([ntaper, np.max([int(fd_end_taper_max_time/P.deltaT), 1])]))
-       vectaper_end = 0.5 - 0.5*np.cos(np.pi*np.arange(ntaper_end)/(1.*ntaper_end))
-
-       # Taper any wraparound that has happened after the peak
-       #    - Based on SimInspiralTDFromTD  https://git.ligo.org/lscsoft/lalsuite/-/blob/master/lalsimulation/lib/LALSimInspiral.c
-       tchirp = lalsim.SimInspiralChirpTimeBound(P.fmin, P.m1,P.m2, P.s1z, P.s2z)
-       s = lalsim.SimInspiralFinalBlackHoleSpinBound(P.s1z,P.s2z)
-       t_merge = lalsim.SimInspiralMergeTimeBound(P.m1,P.m2) + lalsim.SimInspiralRingdownTimeBound(P.m1+P.m2,s)
-       t_extra = 3./P.fmin
-       indx_crit = int(TDlen*(fd_centering_factor)) + int((t_merge+t_extra)/P.deltaT)  # t_extra is a lot of time generally if fmin is low
-       if indx_crit + ntaper_end > TDlen:
-           indx_crit = TDlen - ntaper_end
-
-       for mode in hlmsdict:
-          npts_fd_pre_resize = hlmsdict[mode].data.length
-          hlmsdict[mode] = lal.ResizeCOMPLEX16FrequencySeries(hlmsdict[mode],0, TDlen)
-          if npts_fd_pre_resize > TDlen:
-              # The resize above truncated the +fNyq bin from the two-sided grid but kept
-              # its -fNyq partner (index 0).  Zero it so the truncation commutes with the
-              # conjugate-pair (f -> -f) reflection for models with support at Nyquist.
-              # Tied to the truncation itself, NOT to no_condition: an asymmetric
-              # truncation would reintroduce (l,±m) asymmetry even on the raw path.
-              hlmsdict[mode].data.data[0] = 0
-          hlmsT[mode] = DataInverseFourier(hlmsdict[mode])
-          # Phase factors: see crazy conventions in https://git.ligo.org/lscsoft/lalsuite/-/blob/master/lalsimulation/lib/LALSimInspiral.c
-          if True: #P.approx == lalIMRPhenomXHM or P.approx == lalIMRPhenomHM:
-              hlmsT[mode].data.data = -1*hlmsT[mode].data.data   # shifts polarization angle
-          # Assume fourier transform is CENTERED.  This makes sure any ringdown dies out. In practice, too pessimistic .. better to be asymmetric
-          factor_centering = fd_centering_factor   # not clear it works right if we shift it
-          hlmsT[mode].data.data = np.roll(hlmsT[mode].data.data,-int(hlmsT[mode].data.length*(1-factor_centering)))  
-          hlmsT[mode].epoch = -(hlmsT[mode].data.length*hlmsT[mode].deltaT)*(factor_centering)
-          if not(no_condition):
-              # Taper at the start of the segment
-              hlmsT[mode].data.data[:ntaper]*=vectaper
-              # Taper anything at the *end* of the segment. This could be  important when interacting with real data, which when wrapped is strongly discontinuous
-              #     - this generally will NOT taper everything, because some of the turn-on generally extends well past this
-              if TDlen-ntaper_end < indx_crit:
-                  # just multiply the very end by a small amount of tapering
-                  hlmsT[mode].data.data[TDlen-ntaper_end:]*=vectaper_end[::-1]
-              else:
-                  # zero out a a lot of time at the end, and taper time as we approach this critical extra time
-                  hlmsT[mode].data.data[indx_crit:indx_crit+ntaper_end] *= vectaper_end[::-1]
-                  hlmsT[mode].data.data[indx_crit+ntaper_end:] = 0
+       hlmsT = condition_fd_mode_components(
+           P, hlmsdict, global_sign=-1, fd_standoff_factor=fd_standoff_factor,
+           no_condition=no_condition, fd_centering_factor=fd_centering_factor,
+           fd_end_taper_max_time=fd_end_taper_max_time, copy_inputs=False)
 
        # Rotate if requested, and if P.fref is specified
        # see discussion in https://git.ligo.org/lscsoft/lalsuite/-/blob/master/lalsimulation/lib/LALSimInspiral.c

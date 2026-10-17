@@ -549,7 +549,7 @@ def PrecomputeLikelihoodTerms(event_time_geo, t_window, P, data_dict,
         extra_waveform_kwargs={},
         use_gwsignal=False,
         use_gwsignal_approx=None,
-        use_external_EOB=False,nr_lookup=False,nr_lookup_valid_groups=None,no_memory=True,perturbative_extraction=False,perturbative_extraction_full=False,hybrid_use=False,hybrid_method='taper_add',use_provided_strain=False,ROM_group=None,ROM_param=None,ROM_use_basis=False,ROM_limit_basis_size=None,skip_interpolation=False,force_22_mode=False, calibration_realizations=None, calibration_conjugate=False, return_calibration_crossterms=False, calibration_self_term=True):
+        use_external_EOB=False,nr_lookup=False,nr_lookup_valid_groups=None,no_memory=True,perturbative_extraction=False,perturbative_extraction_full=False,hybrid_use=False,hybrid_method='taper_add',use_provided_strain=False,ROM_group=None,ROM_param=None,ROM_use_basis=False,ROM_limit_basis_size=None,skip_interpolation=False,force_22_mode=False, calibration_realizations=None, calibration_conjugate=False, return_calibration_crossterms=False, calibration_self_term=True, source_basis_generator=None):
     """
     Compute < h_lm(t) | d > and < h_lm | h_l'm' >
 
@@ -561,8 +561,25 @@ def PrecomputeLikelihoodTerms(event_time_geo, t_window, P, data_dict,
         - Dictionary of discrete time series of < h_lm(t) | d >, keyed the same
           as the interpolating functions.
           Their main use is to validate the interpolating functions
+
+    source_basis_generator, when provided, is called as (P, Lmax) after the
+    reference distance and deltaF are set. It returns two dictionaries of FD
+    components: the components themselves and Fourier transforms of their
+    ACTUAL complex-conjugate time series, with identical hashable keys. No
+    reflection or aligned-spin symmetry is inferred. Component pruning must be
+    disabled with ignore_threshold=None. Pack with source_basis=True and use
+    NoLoop's source_angular_basis hook with the same ordered component labels.
     """
     assert data_dict.keys() == psd_dict.keys()
+    if source_basis_generator is not None:
+        if not callable(source_basis_generator):
+            raise TypeError("source_basis_generator must be callable")
+        if ignore_threshold is not None:
+            raise ValueError("A source basis requires ignore_threshold=None; physical-mode reflection pruning does not apply to components")
+        if ROM_use_basis:
+            raise ValueError("A source basis cannot be combined with ROM_use_basis")
+        if force_22_mode:
+            raise ValueError("force_22_mode cannot be applied implicitly to a source basis; select components in its generator")
     global distMpcRef
     detectors = list(data_dict.keys())
     first_data = data_dict[detectors[0]]
@@ -603,7 +620,23 @@ def PrecomputeLikelihoodTerms(event_time_geo, t_window, P, data_dict,
     P.deltaF = first_data.deltaF
 
     # call internal waveform generator
-    hlms, hlms_conj = internal_hlm_generator(P,Lmax, verbose=verbose, quiet=quiet,
+    if source_basis_generator is not None:
+        # The generator sees the same reference distance and frequency grid as
+        # the ordinary source. Every component participates in all Q/U/V terms.
+        hlms, hlms_conj = source_basis_generator(P, Lmax)
+        if not hlms or set(hlms) != set(hlms_conj):
+            raise ValueError("Source basis and conjugate basis must have identical nonempty keys")
+        reference = next(iter(hlms.values()))
+        if (reference.deltaF != first_data.deltaF or reference.f0 != first_data.f0 or
+            reference.data.length != first_data.data.length):
+            raise ValueError("Source basis must use the data frequency grid")
+        for bank in (hlms, hlms_conj):
+            if any(h.deltaF != reference.deltaF or h.f0 != reference.f0 or
+                   h.data.length != reference.data.length or h.epoch != reference.epoch
+                   for h in bank.values()):
+                raise ValueError("All source and conjugate components must share one frequency grid and epoch")
+    else:
+      hlms, hlms_conj = internal_hlm_generator(P,Lmax, verbose=verbose, quiet=quiet,
                                              NR_group=NR_group,NR_param=NR_param, nr_lookup=nr_lookup,nr_lookup_valid_groups=nr_lookup_valid_groups,
                                              no_memory=no_memory,perturbative_extraction=perturbative_extraction,perturbative_extraction_full=perturbative_extraction_full,
                                              hybrid_use=hybrid_use,hybrid_method=hybrid_method,use_provided_strain=use_provided_strain,
@@ -1844,11 +1877,16 @@ def IdentifyEffectiveModesForDetector(crossTermsOneDetector, fac,det):
 #### Reimplementation with arrays   [NOT YET GENERALIZED TO USE V]
 ####
 
-def PackLikelihoodDataStructuresAsArrays(pairKeys, rholms_intpDictionaryForDetector, rholmsDictionaryForDetector,crossTermsForDetector, crossTermsForDetectorV):
+def PackLikelihoodDataStructuresAsArrays(pairKeys, rholms_intpDictionaryForDetector, rholmsDictionaryForDetector,crossTermsForDetector, crossTermsForDetectorV, source_basis=False):
     """
     Accepts list of LM pairs, dictionary for rholms against keys, and cross terms (a dictionary)
 
     PROBLEM: Different detectors may have different time zeros. User must use the returned arrays with great care.
+
+    source_basis=True retains arbitrary immutable component labels, rather than
+    an integer (l,m) table. Its conjugation-index return is None: a source basis
+    need not close under physical-mode reflection. The maintained NoLoop path
+    uses the supplied full U/V matrices and never reads that legacy lookup.
     """
     #print pairKeys, rholmsDictionaryForDetector
     nKeys  = len(pairKeys)
@@ -1857,15 +1895,24 @@ def PackLikelihoodDataStructuresAsArrays(pairKeys, rholms_intpDictionaryForDetec
 
 
     ### Step 0: Create two lookup tables: index->pair and pair->index
-    lookupNumberToKeys = np.zeros((nKeys,2),dtype=int)
+    if not source_basis:
+        if any(len(key) != 2 for key in pairKeys):
+            raise ValueError("Component labels require source_basis=True")
+        lookupNumberToKeys = np.zeros((nKeys,2),dtype=int)
+    else:
+        # Immutable host labels may carry arbitrary hashable component metadata.
+        # Conjugation of physical modes is NOT inferred: V was computed from the
+        # true conjugate time series supplied by the source basis generator.
+        lookupNumberToKeys = tuple(pairKeys)
     lookupKeysToNumber = {}
     for indx, val in enumerate(pairKeys):
-        lookupNumberToKeys[indx][0]= val[0]  
-        lookupNumberToKeys[indx][1]= val[1]  
+        if not source_basis:
+            lookupNumberToKeys[indx][0]= val[0]
+            lookupNumberToKeys[indx][1]= val[1]
         lookupKeysToNumber[val] = indx
     # Now create a *second* lookup table, for complex-conjugation-in-time: (l,m)->(l,-m)
-    lookupNumberToNumberConjugation = np.zeros(nKeys,dtype=int)
-    for indx in np.arange(nKeys):
+    lookupNumberToNumberConjugation = None if source_basis else np.zeros(nKeys,dtype=int)
+    for indx in ([] if source_basis else np.arange(nKeys)):
         l = lookupNumberToKeys[indx][0]
         m = lookupNumberToKeys[indx][1]
         indxOut = lookupKeysToNumber[(l,-m)]
@@ -2755,7 +2802,7 @@ def _nearest_Q_window_numpy(Q_block, start_indices, npts, xpy=np):
     return Qlms
 
 
-def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDict, rholmsArrayDict, ctUArrayDict,ctVArrayDict,epochDict,Lmax=2,array_output=False,xpy=np, loglikelihood=_factored_lnL_helper,return_lnLt=False,phase_marginalization=False,n_cal=1,cal_method='loop',cal_distmarg=None,cal_log_weights=None,return_cal_components=False,time_interp='nearest',ctUArrayDict_cal=None,ctVArrayDict_cal=None,time_quadrature=None,explicit_time_values=False,return_time_draw=False,time_draw_uniforms=None,q_deltaT=None):
+def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDict, rholmsArrayDict, ctUArrayDict,ctVArrayDict,epochDict,Lmax=2,array_output=False,xpy=np, loglikelihood=_factored_lnL_helper,return_lnLt=False,phase_marginalization=False,n_cal=1,cal_method='loop',cal_distmarg=None,cal_log_weights=None,return_cal_components=False,time_interp='nearest',ctUArrayDict_cal=None,ctVArrayDict_cal=None,time_quadrature=None,explicit_time_values=False,return_time_draw=False,time_draw_uniforms=None,q_deltaT=None,source_angular_basis=None):
     """
     DiscreteFactoredLogLikelihoodViaArray uses the array-ized data structures to compute the log likelihood,
     either as an array vs time *or* marginalized in time.
@@ -2763,6 +2810,14 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
     The timeseries quantities are computed via discrete shifts of an existing grid
     Note 'P' must have the *sampling rate* set to correctly interpret the event time.
      Note arguments passed are NOW ARRAYS, in contrast to similar function which does not have 'Vector' postfix
+
+    source_angular_basis is an optional source-only callback, called with
+    (ordered_labels, incl, phiref, xpy=xpy, l_max=Lmax, P_vec=P_vec). It returns complex
+    coefficients shaped (n_extrinsic, n_components), on the selected backend.
+    The result is shared by detectors carrying the same labels. All U/V entries
+    are contracted exactly as for physical modes; no component cross terms are
+    discarded. Analytic phase marginalization is refused for this general basis.
+    Omitting the callback retains the ordinary spherical-harmonic path.
 
     Calibration marginalization (n_cal>=1)
     --------------------------------------
@@ -2933,6 +2988,11 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
                 "which returns lnL(t) on the original grid and takes no time integral.  "
                 "Drop the argument." % time_quadrature)
 
+    if source_angular_basis is not None:
+        if not callable(source_angular_basis):
+            raise TypeError("source_angular_basis must be callable")
+        if phase_marginalization:
+            raise NotImplementedError("Analytic phase marginalization is not supported with a source angular basis")
     detectors = rholmsArrayDict.keys()
     npts = len(tvals)
     npts_extrinsic = len(P_vec.phi)
@@ -3062,15 +3122,36 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
 
         # These do depend on extrinsic params
         # Array of shape (npts_extrinsic, n_lms,)
-        _mode_key = _mode_list_key(lms)
+        if source_angular_basis is None:
+            ordinary_shape = getattr(lms, 'shape', None)
+            if ((ordinary_shape is not None and
+                 (len(ordinary_shape) != 2 or ordinary_shape[1] != 2)) or
+                (ordinary_shape is None and any(not isinstance(label, (tuple, list)) or
+                                               len(label) != 2 for label in lms))):
+                raise ValueError("Source component labels require source_angular_basis")
+        _mode_key = (_mode_list_key(lms) if source_angular_basis is None or hasattr(lms, 'shape')
+                     else tuple(lms))
         Ylms_vec = _ylm_by_modes.get(_mode_key)
         if Ylms_vec is None:
+          if source_angular_basis is None:
             Ylms_vec = SphericalHarmonicsVectorized(
                 lms, incl, -phiref,
                 xpy=xpy,
                 l_max=Lmax,
             )
-            _ylm_by_modes[_mode_key] = Ylms_vec
+          else:
+            Ylms_vec = source_angular_basis(lms, incl, phiref, xpy=xpy, l_max=Lmax, P_vec=P_vec)
+            if not isinstance(Ylms_vec, xpy.ndarray):
+                raise TypeError("Source angular coefficients must already be an array on the selected xpy backend")
+            if Ylms_vec.shape != (npts_extrinsic, n_lms):
+                raise ValueError("Source angular coefficients must have shape (n_extrinsic, n_components)")
+            if Ylms_vec.dtype.kind not in 'fc':
+                raise TypeError("Source angular coefficients must have floating or complex dtype")
+            # One explicit scalar check per source coefficient bank, shared by
+            # all detectors. Never transfer coefficient arrays between backends.
+            if not xpy.all(xpy.isfinite(Ylms_vec)).item():
+                raise ValueError("Source angular coefficients must be finite")
+          _ylm_by_modes[_mode_key] = Ylms_vec
         if phase_marginalization:
             # The phase-marginalization branch below CONJUGATES Ylms_vec in place, and
             # rho_sq_det above must see the un-conjugated array.  Hand each detector its
