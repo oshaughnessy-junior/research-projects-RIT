@@ -119,3 +119,37 @@ def test_old_j_tilt_resolution_guard_excludes_near_cancellation():
         s1x=.1,s1y=.1,s1z=.2,s2x=-.4,s2y=-.4+1e-6,s2z=-.1,fref=20.)
     with pytest.raises(ValueError,match='degenerate native reference J'):
         _native_old_frame(p)
+
+
+@pytest.mark.parametrize('native_f0',[0.,-128.])
+@pytest.mark.parametrize('no_condition',[False,True])
+def test_source_frequency_metadata_normalization_preserves_waveform_bytes(monkeypatch,native_f0,no_condition):
+    import lal
+    from RIFT import lalsimutils as lsu
+    p=lsu.ChooseWaveformParams();p.deltaT=1/256;p.deltaF=1/8;p.fmin=p.fref=20.
+    n=int(1/(p.deltaT*p.deltaF));frequency=(np.arange(n+1)-n//2)*p.deltaF
+    values=np.exp(-((frequency-50.)/9.)**2)*(1+.3j)+.2j*np.exp(-((frequency+70.)/7.)**2)
+    def raw_components():
+        h=lal.CreateCOMPLEX16FrequencySeries('native component',lal.LIGOTimeGPS(0),
+            native_f0,p.deltaF,lal.DimensionlessUnit,n+1)
+        h.data.data[:]=values
+        return {LABELS[0]:h}
+    options=dict(fd_standoff_factor=.9,fd_alignment_postevent_time=2.,no_condition=no_condition)
+    # Independent pre-normalization replay uses the real shared conditioner.
+    previous_time=lsu.condition_fd_mode_components(p,raw_components(),global_sign=1,**options)[LABELS[0]]
+    previous_standard=lsu.DataFourier(previous_time)
+    previous_conjugate_time=lal.CreateCOMPLEX16TimeSeries('conjugate',previous_time.epoch,
+        previous_time.f0,previous_time.deltaT,previous_time.sampleUnits,n)
+    previous_conjugate_time.data.data[:]=np.conj(previous_time.data.data)
+    previous_conjugate=lsu.DataFourier(previous_conjugate_time)
+    b=XPNRSourceBasis(conditioning_options={'no_condition':no_condition});b.parameters=p
+    supplied=raw_components()
+    monkeypatch.setattr(b,'generate_raw',lambda *args,**kwargs:supplied)
+    standard,conjugate=b(p,4)
+    for actual,previous in [(standard[LABELS[0]],previous_standard),(conjugate[LABELS[0]],previous_conjugate)]:
+        assert actual.f0==-.5/p.deltaT
+        assert lsu.DataInverseFourier(actual).f0==0.
+        assert actual.data.data.tobytes()==previous.data.data.tobytes()
+        assert actual.epoch==previous.epoch and actual.deltaF==previous.deltaF
+    assert supplied[LABELS[0]].data.data.tobytes()==values.tobytes()
+    assert supplied[LABELS[0]].f0==-.5/p.deltaT

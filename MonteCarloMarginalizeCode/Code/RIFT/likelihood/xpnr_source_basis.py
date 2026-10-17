@@ -186,6 +186,12 @@ class XPNRSourceBasis:
         identical linear conditioning operator exactly once.
         """
         components=self.generate_raw(P,Lmax)
+        # Native ChooseFDModes labels its centered arrays f0=0. Normalize only
+        # this new source's metadata to the actual -Nyquist origin before the
+        # shared inverse FFT: this gives non-heterodyned TD f0=0 and standard
+        # RIFT FD f0=-Nyquist on re-FFT. No data reorder or phase factor occurs.
+        for component in components.values():
+            component.f0=-.5/self.parameters.deltaT
         conditioner=self.conditioner or getattr(lsu,'condition_fd_mode_components',None)
         if conditioner is None:
             raise RuntimeError('shared condition_fd_mode_components helper is required')
