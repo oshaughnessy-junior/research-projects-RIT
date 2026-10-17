@@ -27,6 +27,7 @@ jobs:
         run: >-
           python -m pytest -v
           MonteCarloMarginalizeCode/Code/test/waveforms/test_input_phenom_mode_asymmetry.py
+          MonteCarloMarginalizeCode/Code/test/waveforms/test_input_xpnr_pole_continuity.py
           --junitxml=upstream-mode-asymmetry-junit.xml
           -o junit_family=legacy
       - name: Preserve the failing input-code evidence
