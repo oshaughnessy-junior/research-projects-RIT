@@ -108,7 +108,12 @@ evaluation uses these fixed arrays and analytic coefficients.
 `XPNRSourceBasis.generate_raw(P,Lmax)` returns native ascending two-sided LAL FD
 series. ChooseFDModes labels this grid with f0=0 despite data ordering from
 -Nyquist to+Nyquist; the physical frequency axis is reconstructed explicitly and
-validated. Split positive/negative support **before** applying TD tapers, which
+validated. Before invoking the shared conditioner, the source callback normalizes
+its owned component metadata to f0=-Nyquist. Native f0=0 on the same array would
+produce heterodyned TD metadata f0=+Nyquist and re-FFT metadata f0=0. The normalized
+source instead has TD f0=0 and standard/conjugate RIFT FD f0=-Nyquist, matching the
+data grid. This changes no array bytes, ordering, phase, epoch or normalization;
+the legacy helper and ordinary waveform path are unchanged. Split positive/negative support **before** applying TD tapers, which
 mix frequencies. Apply the shared `condition_fd_mode_components` identically to
 all components with global_sign=+1. Existing hlmoft retains its historical sign.
 
@@ -185,9 +190,11 @@ Projection and shared conditioning commute to6.57e-16; literal time-conjugate
 components round-trip to4.89e-16, with all76 epochs equal to-14s in the exercised
 16s buffer/postevent2s setup.
 
-Fast contracts in `test/test_xpnr_source_basis.py` cover initialization, scalar
+Fast contracts in `test/test_xpnr_source_basis.py` also verify source-only frequency
+metadata normalization against byte-exact standard/conjugate pre-normalization
+replays, with and without conditioning. They cover initialization, scalar
 spin broadcasting, complete common-spin rotation, intrinsic-reuse refusals and
-pole handling (21 tests passed). `check_xpnr_phase_covariance.py` retains18 native
+pole handling (25 tests passed). `check_xpnr_phase_covariance.py` retains18 native
 phase controls. Final direct-bin/cubic NoLoop likelihood tests must include all
 mixed S/A and mprime U,V terms, true conjugates, varied time/distance/polarization,
 detector caching, and reject unsupported analytic phase marginalization.

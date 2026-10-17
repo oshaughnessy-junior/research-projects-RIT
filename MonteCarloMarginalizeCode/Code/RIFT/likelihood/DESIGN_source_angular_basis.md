@@ -15,7 +15,13 @@ ignore_threshold=None)` invokes `generator(P,Lmax)` after setting the ordinary
 reference distance and frequency resolution. The generator returns FD component
 dictionaries `(h, h_conj)`, where `h_conj[key]` is the Fourier transform of the
 actual complex-conjugate time series. It must not infer conjugation from `-m`
-parity. The existing Q/U/V precomputation then retains every component pair,
+parity. Source components must match the data's frequency origin as well as its
+resolution and length. Native ChooseFDModes arrays may carry f0=0 metadata despite
+ascending centered data. The XPNR source callback normalizes its owned native
+component metadata to -Nyquist before shared conditioning, so the conditioned TD
+series has f0=0 and both standard and true-conjugate re-FFTs have RIFT f0=-Nyquist.
+This changes no waveform bytes or epoch and does not modify the legacy conditioner.
+The existing Q/U/V precomputation then retains every component pair,
 including mixed sectors and mixed co-precessing harmonics. Reflection-based mode
 pruning is refused for this path.
 `force_22_mode=True` is also refused: component selection must be explicit in
