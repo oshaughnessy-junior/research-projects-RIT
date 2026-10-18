@@ -1027,6 +1027,9 @@ class MCSampler(SamplerOutputMixin, object):
         # Axis-neighbour layers added to the occupied bins each cycle in integrate_log (see
         # dilate_bins).  0 draws only from bins that hold a retained point.
         self.dilate_layers = 0
+        # Largest Good-Turing unseen fraction (weight of live points alone in a bin) integrate_log
+        # accepts before coarsening the grid; see _coarsen_for_coverage.  0 disables.
+        self.coverage_unseen_tol = 0.05
 
 
     def setup(self, **kwargs):
@@ -1295,6 +1298,41 @@ class MCSampler(SamplerOutputMixin, object):
         else:
             nbins[adaptive] = np.exp(c[adaptive] / csum * total_log)  # prod(adaptive)=1/delta_V
         return nbins
+
+    def _coarsen_for_coverage(self, X, lnw, nbins, enforce_bounds):
+        """Coarsen nbins until the live points cover the occupied region.
+
+        A bin with no live point leaves the next grid while retained points stay in every
+        later one, so log_retained_density over-counts where points remain and lnZ reads low
+        when the live set has fewer points than the live region has bins.  Acts only when an
+        adaptive axis is unresolved (live points within 2 bins) and another spans more: while
+        the weight of live points alone in their bin (Good-Turing) exceeds
+        coverage_unseen_tol, the axes spanning the most bins are coarsened by 0.8.
+        See DESIGN_av_coverage_guard.md.  Returns (nbins, unseen fraction, steps)."""
+        tol = float(getattr(self, 'coverage_unseen_tol', 0) or 0)
+        nbins = np.array(nbins, dtype=float)
+        X = np.asarray(identity_convert(X), dtype=float)
+        ax = np.array(self.indx_adaptive, dtype=int)
+        if len(X) == 0 or len(ax) == 0:
+            return nbins, 0.0, 0
+        w = np.asarray(identity_convert(lnw), dtype=float)
+        w = np.exp(w - np.max(w))
+        w /= np.sum(w)
+        lo = self.my_ranges.T[0]
+        width = np.diff(self.my_ranges, axis=1).flatten()
+        steps = 0
+        while True:
+            idx = ((X[:, ax] - lo[ax]) / (width[ax] / nbins[ax])).astype(np.int64)
+            _, inv, counts = np.unique(idx, axis=0, return_inverse=True, return_counts=True)
+            unseen = float(np.sum(w[counts[np.asarray(inv).ravel()] == 1]))
+            span = np.array([len(np.unique(idx[:, j])) for j in range(len(ax))])
+            if tol <= 0 or unseen <= tol or span.min() > 2 or span.max() <= 2:
+                return nbins, unseen, steps
+            pick = ax[(span == span.max()) & (nbins[ax] > 1)]
+            nbins[pick] = np.maximum(1.0, nbins[pick] * 0.8)
+            if enforce_bounds:
+                nbins[pick] = np.floor(nbins[pick])
+            steps += 1
 
     @staticmethod
     def _at_final_threshold(trunc_p, enc_prob=0.999):
@@ -1981,6 +2019,8 @@ class MCSampler(SamplerOutputMixin, object):
             self.anisotropic_bins = bool(kwargs["anisotropic_bins"])
         if kwargs.get("dilate_layers") is not None:
             self.dilate_layers = int(kwargs["dilate_layers"])
+        if kwargs.get("coverage_unseen_tol") is not None:
+            self.coverage_unseen_tol = float(kwargs["coverage_unseen_tol"])
         # FIXME: The adaptive step relies on the _rvs cache, so this has to be
         # on in order to work
         if n_adapt > 0 and tempering_exp > 0.0:
@@ -2081,6 +2121,8 @@ class MCSampler(SamplerOutputMixin, object):
 
         # live-volume health bookkeeping (reported at the end and in dict_return)
         n_empty_cycles = 0      # cycles in which NO finite sample fell inside the live volume
+        n_coarsen_cycles = 0    # cycles in which _coarsen_for_coverage coarsened the grid
+        unseen_frac = 0.0       # Good-Turing unseen fraction of the last grid
         n_live_collapses = 0    # cycles in which the threshold would have emptied the live set
         collapse_reported = False
         nrec = 0
@@ -2256,6 +2298,9 @@ class MCSampler(SamplerOutputMixin, object):
             # bin sizes integers?  May slow us down
             if enforce_bounds:
               self.nbins = np.floor(self.nbins)
+            if self.d_adaptive > 0:
+              self.nbins, unseen_frac, n_coarsen = self._coarsen_for_coverage(allx, allloglkl, self.nbins, enforce_bounds)
+              n_coarsen_cycles += int(n_coarsen > 0)
 
             self.dx = np.diff(self.my_ranges, axis = 1).flatten() / self.nbins   # update bin widths
             binidx = ( (( identity_convert(allx) - self.my_ranges.T[0]) / self.dx.T).astype(int)  ) #bin indexs of the samples ... sent back to CPU as needed
@@ -2455,10 +2500,11 @@ class MCSampler(SamplerOutputMixin, object):
                 if _q is not None:
                     mc_diag['lnZ_ci90'] = _q
             dict_return.update(mc_diag)
-            print(" [AV mc diag] sigma_mc={:.4f} sigma_lnV={:.4f} trunc_p={:.2e} khat={} ESS={}".format(
+            print(" [AV mc diag] sigma_mc={:.4f} sigma_lnV={:.4f} trunc_p={:.2e} khat={} ESS={} unseen={:.3f} coarsened={}".format(
                 mc_diag['sigma_lnZ_mc'], mc_diag['sigma_lnV'], mc_diag['trunc_p'],
                 round(mc_diag['pareto_khat'],3) if 'pareto_khat' in mc_diag else None,
-                round(mc_diag['n_ESS'],1) if 'n_ESS' in mc_diag else None))
+                round(mc_diag['n_ESS'],1) if 'n_ESS' in mc_diag else None,
+                unseen_frac, n_coarsen_cycles))
         except Exception as _e_diag:
             print(" mcsamplerAdaptiveVolume: MC-error diagnostics failed ({}); continuing.".format(_e_diag))
 
@@ -2478,6 +2524,8 @@ class MCSampler(SamplerOutputMixin, object):
         dict_return['n_live_final'] = n_live_final
         dict_return['n_empty_cycles'] = int(n_empty_cycles)
         dict_return['n_live_collapses'] = int(n_live_collapses)
+        dict_return['n_coarsen_cycles'] = int(n_coarsen_cycles)
+        dict_return['unseen_frac_final'] = float(unseen_frac)
         if n_warm_seed is not None:
             dict_return['n_warm_seed'] = int(n_warm_seed)
             if n_warm_seed_rank is not None:
