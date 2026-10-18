@@ -328,6 +328,7 @@ parser.add_argument("--seed-climb-args",default=None,help="Argument file for --s
 parser.add_argument("--seed-climb-n-max",default=1000,type=int,help="Most points the seed climb may add.  Iteration-0 ILE batches are sized at DAG-build time for (input grid + this many) points; ILE exits cleanly on indices past the end of the grid.")
 parser.add_argument("--seed-climb-request-gpu",action='store_true',help="Seed-climb node requests a GPU (JAX kernel on GPU).  Without it the node runs on CPU.")
 parser.add_argument("--seed-climb-request-memory",default=8192,type=int,help="request_memory (MB) for the seed-climb node")
+parser.add_argument("--seed-climb-mode",default="prepend",choices=["prepend","parallel"],help="prepend: the seed climb runs before the iteration-0 ILE jobs and appends to overlap-grid-0.  parallel: it runs alongside them, writes seed-0, and its own ILE_seed jobs feed the iteration-0 consolidation, so iteration 0 is not delayed.")
 parser.add_argument("--fetch-ext-grid-args",default=None,help="arguments for command  for fetching external grid. Don't over-specify the --output-file argument, which will be used by the pipeline")
 parser.add_argument("--ile-batch",action='store_true',help="Different workflow: the ILE job is assumed to create a .composite file directly in the current working directory. Designed for fake ILE sets and long-term batch workflow. NOT IMPLEMENTED ")
 parser.add_argument("--transfer-file-list",default=None,help="File containing list of *input* filenames to transfer, one name per file. Copied into transfer_files for condor directly.  If provided, also enables attempts to deduce files that need to be transferred for the pipeline to operate, as needed for OSG, etc")
@@ -656,7 +657,7 @@ if (it_start == 0) and not gridinit_args:
         os.symlink(_seed_grid_name, "posterior_samples-0.dat")
     else:
         n_initial = len(lalsimutils.xml_to_ChooseWaveformParams_array(_seed_grid_name))
-if opts.seed_climb_exe and opts.seed_climb_args and it_start == 0 and not opts.first_iteration_jumpstart:
+if opts.seed_climb_exe and opts.seed_climb_args and it_start == 0 and not opts.first_iteration_jumpstart and opts.seed_climb_mode == 'prepend':
     if _use_hpip_pipeline:
         raise SystemExit("--seed-climb-exe writes sim_inspiral XML; incompatible with RIFT_HYPERPIPELINE_FORMAT")
     n_initial += opts.seed_climb_n_max   # grid grows at run time; batches sized for the cap
@@ -889,6 +890,22 @@ if not (fetch_args is None):
     _add_hpip_condor_env(ileFetch_job)
     ileFetch_job.write_sub_file()
 
+
+ileSeed_job = None
+if opts.seed_climb_exe and opts.seed_climb_args and opts.seed_climb_mode == "parallel" and it_start == 0 and not opts.first_iteration_jumpstart:
+    ile_args_forseed = ile_args_orig + ' {} '.format(sim_grid_flag) + working_dir_inside + '/seed-$(macroiteration).{} '.format(grid_suffix)
+    transfer_file_names_seed = list(transfer_file_names[:-1])
+    transfer_file_names_seed.append(opts.working_directory+"/seed-$(macroiteration).{}".format(grid_suffix))
+    # same as ILE_fetch: a separate job so climbed points stay labelled apart from the grid
+    ileSeed_job, _ = dag_utils.write_ILE_sub_simple(tag='ILE_seed',log_dir=None,arg_str=ile_args_forseed,output_file="CME_seed_out.xml",ncopies=opts.n_copies,exe=ile_exe,transfer_files=transfer_file_names_seed,request_memory=opts.request_memory_ILE,request_disk=request_disk,request_gpu=opts.request_gpu_ILE,request_cross_platform=opts.request_xpu_ILE,use_singularity=opts.use_singularity,singularity_image=singularity_image,use_osg=opts.use_osg,simple_osg_requirements=opts.use_osg_simple_requirements,frames_dir=opts.frames_dir,cache_file=opts.cache_file,use_cvmfs_frames=opts.use_cvmfs_frames,oauth_files=opts.use_oauth_files,max_runtime_minutes=opts.ile_runtime_max_minutes,condor_commands=ile_condor_commands,ile_profiles=True)
+    ileSeed_job.add_condor_cmd("initialdir",opts.working_directory+"/iteration_$(macroiteration)_ile")
+    ileSeed_job.set_log_file(opts.working_directory+"/iteration_$(macroiteration)_ile/logs/ILE_seed-$(macroevent)-$(cluster)-$(process).log")
+    ileSeed_job.set_stderr_file(opts.working_directory+"/iteration_$(macroiteration)_ile/logs/ILE_seed-$(macroevent)-$(cluster)-$(process).err")
+    ileSeed_job.set_stdout_file(opts.working_directory+"/iteration_$(macroiteration)_ile/logs/ILE_seed-$(macroevent)-$(cluster)-$(process).out")
+    if opts.use_full_submit_paths:
+        ileSeed_job.set_sub_file(opts.working_directory+"/"+ileSeed_job.get_sub_file())
+    _add_hpip_condor_env(ileSeed_job)
+    ileSeed_job.write_sub_file()
 
 if  (opts.last_iteration_extrinsic):
     n_points_per_ILE = opts.last_iteration_extrinsic_samples_per_ile
@@ -1689,10 +1706,16 @@ if opts.seed_climb_exe and opts.seed_climb_args and it_start == 0 and not opts.f
         _sc_args = ' '.join(x.replace('\\', '') for x in f.readlines())
     _sc_args = ' '.join(_sc_args.split(' ')[1:]).strip()
     _grid0 = opts.working_directory + "/overlap-grid-0.xml.gz"
-    _sc_args += " --working-directory {wd} --ile-args {ile} --inj-file {g} --inj-file-out {g} --append-to-input --output-json {wd}/seed_climb.json --output-dat {wd}/seed_climb_history.dat".format(
-        wd=opts.working_directory, ile=opts.ile_args, g=_grid0)
-    if opts.n_samples_per_job and not gridinit_args:
-        _sc_args += " --n-max-output {}".format(n_initial)
+    if opts.seed_climb_mode == "parallel":
+        if _use_hpip_pipeline:
+            raise SystemExit("--seed-climb-exe writes sim_inspiral XML; incompatible with RIFT_HYPERPIPELINE_FORMAT")
+        _sc_args += " --working-directory {wd} --ile-args {ile} --inj-file {g} --inj-file-out {wd}/seed-0.xml.gz --n-max-output {n} --output-json {wd}/seed_climb.json --output-dat {wd}/seed_climb_history.dat".format(
+            wd=opts.working_directory, ile=opts.ile_args, g=_grid0, n=opts.seed_climb_n_max)
+    else:
+        _sc_args += " --working-directory {wd} --ile-args {ile} --inj-file {g} --inj-file-out {g} --append-to-input --output-json {wd}/seed_climb.json --output-dat {wd}/seed_climb_history.dat".format(
+            wd=opts.working_directory, ile=opts.ile_args, g=_grid0)
+        if opts.n_samples_per_job and not gridinit_args:
+            _sc_args += " --n-max-output {}".format(n_initial)
     seed_climb_job, _ = dag_utils.write_seed_climb_sub(
         tag='seed_climb', exe=opts.seed_climb_exe, arg_str=_sc_args,
         out_dir=opts.working_directory, request_memory=opts.seed_climb_request_memory,
@@ -1891,7 +1914,8 @@ if seed_climb_job is not None:
    if parent_fit_node: seed_climb_node.add_parent(parent_fit_node)
    seed_climb_node.set_retry(opts.general_retries)
    dag.add_node(seed_climb_node)
-   parent_fit_node = seed_climb_node   # iteration-0 ILE reads the grid it rewrites
+   if opts.seed_climb_mode == "prepend":
+       parent_fit_node = seed_climb_node   # iteration-0 ILE reads the grid it rewrites
 
 convert_psd_node_list = []
 if opts.use_bw_psd:
@@ -2112,6 +2136,11 @@ for it in np.arange(it_start,opts.n_iterations):
         #     dag.add_node(ile_node)
         #     ile_node_list_per_iteration[it].append(ile_node)
             
+    if ileSeed_job is not None and it == it_start:
+        n_seed_jobs = (opts.seed_climb_n_max + n_group_here - 1) // n_group_here
+        print(" ILE jobs for the parallel seed climb on iteration ", it, n_seed_jobs)
+        add_batch_ILE_nodes_to_dag(dag, ileSeed_job, seed_climb_node, con_node, n_seed_jobs, n_group_here, it, n_retries=opts.ile_retries, node_list_dict=ile_node_list_per_iteration)
+
     # add con job
     dag.add_node(con_node)
     dag.add_node(unify_node)

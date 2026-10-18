@@ -641,7 +641,7 @@ parser.add_argument("--manual-initial-grid",default=None,type=str,help="Filename
 parser.add_argument("--manual-initial-grid-supplements",action='store_true', help="Manual inital grid used to SUPPLEMENT output of the default helper grid.")
 parser.add_argument("--manual-extra-ile-args",default=None,type=str,help="Avenue to adjoin extra ILE arguments.  Needed for unusual configurations (e.g., if channel names are not being selected, etc)")
 parser.add_argument("--internal-ile-force-adapt-all",action='store_true', help="Syntactic sugar to prevent need to add manual-extra-ile-args for this: easier on user")
-parser.add_argument("--transverse-seed-climb",default=None,choices=["setup","dag"],help="Seed the initial grid with near-peak points across transverse spin, found by hillclimbing a fast marginalized likelihood (util_TransverseSeedClimb.py: CMA-ES in mu1,mu2,q,s2z,chi1_perp,phi1; free climbs plus a ladder of pinned chi1_perp).  'setup' runs it here, on this host, and appends to proposed-grid.xml.gz.  'dag' adds a node before the iteration-0 ILE jobs (GPU with --transverse-seed-climb-request-gpu) that appends to overlap-grid-0.  The seeds are proposals: ILE re-scores them.  Off by default.")
+parser.add_argument("--transverse-seed-climb",default=None,choices=["setup","dag","parallel"],help="Seed the initial grid with near-peak points across transverse spin, found by hillclimbing a fast marginalized likelihood (util_TransverseSeedClimb.py: CMA-ES in mu1,mu2,q,s2z,chi1_perp,phi1; free climbs plus a ladder of pinned chi1_perp).  'setup' runs it here, on this host, and appends to proposed-grid.xml.gz.  'dag' adds a node before the iteration-0 ILE jobs (GPU with --transverse-seed-climb-request-gpu) that appends to overlap-grid-0.  'parallel' runs that node alongside iteration 0 and gives its points their own ILE_seed jobs, which join the iteration-0 consolidation; iteration 0 is not delayed.  The seeds are proposals: ILE re-scores them.  Off by default.")
 parser.add_argument("--transverse-seed-climb-args",default="",type=str,help="Extra arguments for util_TransverseSeedClimb.py (e.g. '--chi1-perp-ladder 0.2,0.5,0.8 --n-seed-points 400 --climb-approx IMRPhenomXPHM').")
 parser.add_argument("--transverse-seed-climb-n-max",default=1000,type=int,help="'dag' mode: most points the climb may add (iteration-0 ILE batches are sized for it).")
 parser.add_argument("--transverse-seed-climb-request-gpu",action='store_true',help="'dag' mode: the climb node requests a GPU.")
@@ -2510,12 +2510,13 @@ if opts.use_gauss_early:
     cmd += " --cip-exe-G `which util_ConstructIntrinsicPosterior_GaussianResampling.py ` "
 if opts.first_iteration_jumpstart:
     cmd += " --first-iteration-jumpstart "
-if opts.transverse_seed_climb == "dag":
+if opts.transverse_seed_climb in ("dag", "parallel"):
     if cepp != "create_event_parameter_pipeline_BasicIteration":
         raise SystemExit("pseudo_pipe: --transverse-seed-climb dag is wired only for BasicIteration (got {}); use 'setup'".format(cepp))
     with open("seed_climb_args.txt", "w") as f:
         f.write("X " + opts.transverse_seed_climb_args)
     cmd += " --seed-climb-exe `which util_TransverseSeedClimb.py` --seed-climb-args `pwd`/seed_climb_args.txt --seed-climb-n-max {} ".format(opts.transverse_seed_climb_n_max)
+    cmd += " --seed-climb-mode {} ".format("parallel" if opts.transverse_seed_climb == "parallel" else "prepend")
     if opts.transverse_seed_climb_request_gpu:
         cmd += " --seed-climb-request-gpu "
 if opts.internal_use_amr:

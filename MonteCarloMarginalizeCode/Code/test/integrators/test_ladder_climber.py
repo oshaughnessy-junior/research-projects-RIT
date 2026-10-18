@@ -53,3 +53,15 @@ def test_draws_stay_in_box():
     assert rv.shape == (2000, 4)
     assert np.all((rv[:, 2] >= 0) & (rv[:, 2] <= 1))
     assert np.all((rv[:, 3] >= 0) & (rv[:, 3] < 2 * np.pi))
+
+
+def test_covariance_placement_shares_and_spreads():
+    o = _oracle(5)
+    o.run(np.array([0.0, 0.0, 0.1, 4.0]), np.array([0.1, 0.1, 0.25, 1.5]))
+    X = o.place(400, delta_lnL=1e9, pinned_sd=0.1)
+    assert X.shape == (400, 4)
+    assert np.all((X[:, 2] >= 0) & (X[:, 2] <= 1)) and np.all((X[:, 3] >= 0) & (X[:, 3] < 2 * np.pi))
+    # rungs at c = 0.5 and 0.8 are spread (pinned_sd), not collapsed onto the rung value
+    near = lambda v: np.sum(np.abs(X[:, 2] - v) < 0.25)
+    assert near(0.5) > 40 and near(0.8) > 40
+    assert len(np.unique(np.round(X[:, 2], 6))) > 300

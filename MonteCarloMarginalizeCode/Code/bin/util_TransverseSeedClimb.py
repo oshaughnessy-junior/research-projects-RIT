@@ -102,13 +102,16 @@ def build_parser():
     p.add_argument("--n-start-eval", type=int, default=150,
                    help="input-grid points scored to choose the climb starts")
     p.add_argument("--n-free-starts", type=int, default=2)
-    p.add_argument("--chi1-perp-ladder", default="0.2,0.4,0.6,0.8")
+    p.add_argument("--chi1-perp-ladder", default="0.3,0.6")
     p.add_argument("--climb-chi2-perp", action="store_true",
                    help="also climb in (chi2_perp, phi2); default holds chi2_perp=0")
     p.add_argument("--popsize", type=int, default=10)
     p.add_argument("--n-generations", type=int, default=30, help="CMA-ES generations per free climb")
     p.add_argument("--n-generations-ladder", type=int, default=12,
                    help="generations per ladder rung (rungs warm-start from a neighbour)")
+    p.add_argument("--placement", choices=["covariance", "history"], default="covariance",
+                   help="covariance: seeds drawn from each climb's final CMA Gaussian (equal share per "
+                        "climb); history: climb points within --delta-lnL, topped up with draws")
     p.add_argument("--delta-lnL", type=float, default=10.0,
                    help="keep climb points within this of the best")
     p.add_argument("--n-seed-points", type=int, default=500,
@@ -130,6 +133,12 @@ def build_parser():
                    help="'ripple': IMRPhenomXPHM modes from ripple (optional dependency, "
                         "RIFT/likelihood/jax_ile/ripple_modes.py), so the whole objective runs on the "
                         "accelerator. J-frame modes without RIFT conditioning; --climb-approx is ignored.")
+    p.add_argument("--angle-scheme", choices=["grid", "exact"], default="grid",
+                   help="(phi, psi) marginalization: 'grid' (nphi x npsi quadrature) or 'exact' "
+                        "(anglemarg exact coefficients, lattice sized from the data)")
+    p.add_argument("--rb-eps", type=float, default=None,
+                   help="ripple backend: relative binning with this phase bound per bin (e.g. 0.3); "
+                        "the fiducial is the point each climb starts from")
     p.add_argument("--no-sky-readapt", action="store_true",
                    help="adapt the sky batch once, not before every climb")
     p.add_argument("--seed", type=int, default=0)
@@ -209,7 +218,13 @@ def main(argv=None):
 
     approx = opts.climb_approx or opts.approx
     P_base = lalsimutils.ChooseWaveformParams()
-    P_base.approx = lalsim.GetApproximantFromString(approx)
+    if opts.mode_backend == "ripple":
+        approx = "IMRPhenomXPHM"                  # what the ripple backend generates
+    try:
+        P_base.approx = lalsim.GetApproximantFromString(approx)
+    except Exception:
+        sys.exit("util_TransverseSeedClimb: %r is not a lalsimulation approximant; pass "
+                 "--climb-approx (e.g. IMRPhenomXPHM) or --mode-backend ripple" % approx)
     P_base.fmin = opts.fmin_template
     P_base.fref = opts.reference_freq
     P_base.deltaT = 1.0 / opts.srate
@@ -229,7 +244,7 @@ def main(argv=None):
         waveform_kwargs=dict(ignore_threshold=None, extra_waveform_kwargs=wf_extra),
         seed=opts.seed, verbose=opts.verbose,
         device_precompute={"off": False, "gpu": True, "numpy": "numpy"}[opts.device_precompute],
-        mode_backend=opts.mode_backend)
+        mode_backend=opts.mode_backend, angle_scheme=opts.angle_scheme, rb_eps=opts.rb_eps)
 
     # --- starting grid: score a subset, pick distinct starts --------------------
     rng = np.random.default_rng(opts.seed)
@@ -238,7 +253,14 @@ def main(argv=None):
     X_in = np.array([P_to_x(P, with_chi2) for P in P_in])
     idx = rng.choice(len(P_in), size=min(opts.n_start_eval, len(P_in)), replace=False)
     obj.adapt_sky(P_in[idx[0]])
-    lnL_start = np.array([obj(x_to_P(X_in[i], P_base) or P_in[i]) for i in idx])
+    P_start = [x_to_P(X_in[i], P_base) or P_in[i] for i in idx]
+    if opts.mode_backend == "ripple":
+        # population-sized chunks: the same batch shape as the climb, one compile
+        lnL_start = np.concatenate([obj.batch((P_start[k:k + opts.popsize] + [P_start[0]] * opts.popsize)[:opts.popsize])
+                                    [:len(P_start[k:k + opts.popsize])]
+                                    for k in range(0, len(P_start), opts.popsize)])
+    else:
+        lnL_start = np.array([obj(P) for P in P_start])
     order = idx[np.argsort(-lnL_start)]
     print(" [seedclimb] start grid: scored %d of %d points, best lnL %.2f (%.1f s)"
           % (len(idx), len(P_in), np.max(lnL_start), time.time() - t_start))
@@ -254,10 +276,20 @@ def main(argv=None):
 
     def lnL_cols(*cols):
         X = np.column_stack(cols)
-        out = np.empty(len(X))
-        for j, x in enumerate(X):
-            P = x_to_P(x, P_base)
-            out[j] = -np.inf if P is None else obj(P)
+        Ps = [x_to_P(x, P_base) for x in X]
+        ok = np.array([P is not None for P in Ps])
+        out = np.full(len(X), -np.inf)
+        if not ok.any():
+            return out
+        if opts.mode_backend == "ripple" and len(X) > 1:
+            # one vmapped call per generation; pad invalid points to keep the shape
+            fill = Ps[int(np.flatnonzero(ok)[0])]
+            vals = obj.batch([P if P is not None else fill for P in Ps])
+            out[ok] = vals[ok]
+            return out
+        for j, P in enumerate(Ps):
+            if P is not None:
+                out[j] = obj(P)
         return out
 
     oracle = LadderClimbingOracle()
@@ -313,22 +345,38 @@ def main(argv=None):
     # --- collect seeds ----------------------------------------------------------
     Xh, lnLh, labels = oracle.near_peak(opts.delta_lnL)
     best = float(np.max(oracle.reference_lnL))
+    n_draw = 0
+    if opts.placement == "covariance":
+        # equal share per climb; oversample, drop points outside the Kerr bound,
+        # then subsample at random so no climb is cut off
+        spacing = np.min(np.diff(sorted(set([0.0] + ladder + [1.0])))) if ladder else 0.2
+        Xp = oracle.place(opts.n_seed_points * 3, delta_lnL=opts.delta_lnL, pinned_sd=0.5 * spacing)
+        Xp = Xp[[x_to_P(x, P_base) is not None for x in Xp]]
+        X_seed = Xp[rng.permutation(len(Xp))[:opts.n_seed_points]]
+        n_hist = 0
+    else:
+        X_seed, n_hist, n_draw = None, 0, 0
     # equal quota per climb: a plain top-N by lnL is dominated by the low-chi1_perp
     # climbs and starves the high rungs, which are the point of the ladder
-    labels = np.array(labels)
-    groups = [np.flatnonzero(labels == lab) for lab in dict.fromkeys(labels)]
-    quota = int(np.ceil(opts.n_seed_points / max(1, len(groups))))
-    sel = np.concatenate([g[np.argsort(-lnLh[g])][:quota] for g in groups]) if groups else np.array([], int)
-    sel = sel[np.argsort(-lnLh[sel])][:opts.n_seed_points]
-    n_hist = len(sel)
-    X_seed = Xh[sel]
-    n_draw = max(0, opts.n_seed_points - n_hist)
-    if n_draw:
-        _, _, X_draw = oracle.draw_simplified(n_draw, delta_lnL=opts.delta_lnL)
-        X_seed = np.concatenate([X_seed, X_draw])
+    if X_seed is None:
+        labels = np.array(labels)
+        groups = [np.flatnonzero(labels == lab) for lab in dict.fromkeys(labels)]
+        quota = int(np.ceil(opts.n_seed_points / max(1, len(groups))))
+        sel = np.concatenate([g[np.argsort(-lnLh[g])][:quota] for g in groups]) if groups else np.array([], int)
+        sel = sel[np.argsort(-lnLh[sel])][:opts.n_seed_points]
+        n_hist = len(sel)
+        X_seed = Xh[sel]
+        n_draw = max(0, opts.n_seed_points - n_hist)
+        if n_draw:
+            _, _, X_draw = oracle.draw_simplified(n_draw, delta_lnL=opts.delta_lnL)
+            X_seed = np.concatenate([X_seed, X_draw])
     P_seed = [P for P in (x_to_P(x, P_base) for x in X_seed) if P is not None]
-    for P in P_seed:
-        P.approx = lalsim.GetApproximantFromString(opts.approx)
+    try:            # gwsignal-only names (e.g. SEOBNRv5PHM) are not lalsim approximants;
+        _ap = lalsim.GetApproximantFromString(opts.approx)   # ILE uses its own --approx anyway
+        for P in P_seed:
+            P.approx = _ap
+    except Exception:
+        pass
     print(" [seedclimb] %d evaluations, best lnL %.2f; %d history points within %.1f; "
           "%d Gaussian draws; %d seeds written (%.1f s)"
           % (len(oracle.history), best, len(Xh), opts.delta_lnL, n_draw, len(P_seed), t_climb))

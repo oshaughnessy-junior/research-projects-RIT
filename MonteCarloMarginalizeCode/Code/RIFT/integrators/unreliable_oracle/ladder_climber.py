@@ -230,6 +230,24 @@ class LadderClimbingOracle(MCSamplerGeneric):
         lab = [h[0] for h, k in zip(self.history, keep) if k]
         return X, lnl[keep], lab
 
+    def place(self, n_samples, delta_lnL=10.0, inflate=1.5, pinned_sd=None):
+        """Covariance placement: equal draws per good climb from N(best_x, inflate^2 cov).
+
+        A rung's pinned coordinate has zero variance in its CMA covariance; give it
+        sd ``pinned_sd`` (e.g. half the rung spacing) so seeds fill between rungs.
+        """
+        best = max(c["best_lnL"] for c in self.climbs.values())
+        good = [c for c in self.climbs.values() if c["best_lnL"] > best - delta_lnL]
+        per = int(np.ceil(n_samples / max(1, len(good))))
+        out = []
+        for c in good:
+            cov = (inflate ** 2) * np.array(c["cov"], dtype=float)
+            for k in c["pinned"]:
+                if pinned_sd:
+                    cov[k, k] = pinned_sd ** 2
+            out.append(self.rng.multivariate_normal(c["best_x"], cov, size=per, method="eigh"))
+        return self._fold(np.concatenate(out))[:n_samples]
+
     def draw_simplified(self, n_samples, *args, delta_lnL=10.0, **kwargs):
         """Draw from the final Gaussians of climbs whose best is within delta_lnL."""
         best = max(c["best_lnL"] for c in self.climbs.values())

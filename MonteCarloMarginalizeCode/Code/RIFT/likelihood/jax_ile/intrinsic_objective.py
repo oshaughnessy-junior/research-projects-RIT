@@ -23,6 +23,7 @@ import lal
 import lalsimulation as lalsim
 
 import jax
+jax.config.update("jax_enable_x64", True)   # the kernels assume float64
 import jax.numpy as jnp
 import jax.dlpack
 from jax.scipy.special import logsumexp
@@ -210,7 +211,8 @@ class IntrinsicMarginalObjective:
                  integration_window_half=0.075, interp=None, reduce="marginal",
                  waveform_kwargs=None, seed=0, verbose=False, analyticPSD_Q=False,
                  device_precompute=False, device_check_rtol=1e-8,
-                 mode_backend="lalsim", adapt_incl=False):
+                 mode_backend="lalsim", adapt_incl=False, angle_scheme="grid",
+                 rb_eps=None):
         self.data_dict, self.psd_dict = data_dict, psd_dict
         self.P_base = P_base.copy()
         self.event_time = float(event_time)
@@ -233,7 +235,16 @@ class IntrinsicMarginalObjective:
         # modes, t = 0 at the LAL FD reference: valid for this orientation-
         # marginalized objective only.  P.approx is ignored on this path.
         self.mode_backend = mode_backend
+        # angle_scheme 'exact': anglemarg's exact-coefficient (phi, psi) marginalization,
+        # whose dense lattice is sized from a data-derived amplitude bound (static
+        # under jit).  The bound is refreshed at each adapt_sky; the kernel is
+        # rebuilt only when it grows by more than 25%.
+        self.angle_scheme = angle_scheme
+        self._amp = None
         self._ripple = None
+        # rb_eps: relative binning (relative_binning.py) for the ripple backend, with
+        # phase-bound eps per bin; the fiducial is refreshed at each adapt_sky.
+        self.rb_eps = rb_eps
         self.t_waveform = 0.0
         self.x_grid, self.log_w_grid = core.make_distance_grid(
             d_min, d_max, n_grid=n_dist, d_prior=d_prior)
@@ -247,6 +258,8 @@ class IntrinsicMarginalObjective:
         self.n_calls = 0
         self.n_compiles = 0
         self.n_nonfinite = 0
+        self.n_exceptions = 0
+        self._consecutive_failures = 0
         self.t_precompute = 0.0
         self.t_kernel = 0.0
 
@@ -260,6 +273,7 @@ class IntrinsicMarginalObjective:
         P.tref = self.event_time
         P.dist = core.DIST_MPC_REF * 1e6 * _PC
         P.phiref = P.psi = P.incl = 0.0
+        P.theta = P.phi = 0.0          # sky enters n_shift/epoch; keep it fixed
         return P
 
     def precompute(self, P):
@@ -312,14 +326,29 @@ class IntrinsicMarginalObjective:
             return {det: reduce_qvu(h, v["d"], v["w"], df, v["n_shift"], n_window)
                     for det, v in dets.items()}
         self._ripple = dict(modes=modes, dets=dets, fn=jax.jit(_all), deltaT=P.deltaT)
+        if self.rb_eps:
+            from .relative_binning import RelativeBinning, phase_bins, qvu_state
+            fw = min(float(np.min(np.abs(freqs[np.asarray(v["w"]) > 0]))) for v in dets.values())
+            fhi = float(self.fmax or fNyq)
+            rb = RelativeBinning(freqs, dets, n_window, df, P.deltaT,
+                                 phase_bins(max(fw, P.fmin), fhi, self.rb_eps))
+            f_e = jnp.asarray(rb.f_edges)
+
+            def _rb(m1, m2, c1, c2, state):
+                hp, hn = modes.modes_at(f_e, m1, m2, c1, c2)
+                return qvu_state(state, hp, hn)
+            self._ripple.update(rb=rb, rb_fn=jax.jit(_rb), rb_state=None)
 
     def _ripple_precompute(self, P):
         if self._ripple is None:
             self._ripple_setup()
         r = self._ripple
         t0 = time.time()
-        out = r["fn"](jnp.asarray(P.m1 / lal.MSUN_SI), jnp.asarray(P.m2 / lal.MSUN_SI),
-                      jnp.asarray([P.s1x, P.s1y, P.s1z]), jnp.asarray([P.s2x, P.s2y, P.s2z]))
+        args = (jnp.asarray(P.m1 / lal.MSUN_SI), jnp.asarray(P.m2 / lal.MSUN_SI),
+                jnp.asarray([P.s1x, P.s1y, P.s1z]), jnp.asarray([P.s2x, P.s2y, P.s2z]))
+        if "rb" in r and r["rb_state"] is None:
+            self.rb_refresh(P)
+        out = r["rb_fn"](*args, r["rb_state"]) if "rb" in r else r["fn"](*args)
         jax.block_until_ready(out)        # so t_waveform is not billed to the kernel
         self.t_waveform += time.time() - t0
         lms = r["modes"].lms
@@ -334,6 +363,13 @@ class IntrinsicMarginalObjective:
                                  epoch=float(self._template.detectors[det]["epoch"]),
                                  Q=q, U=u, V=v) for det, (q, u, v) in out.items()}
         return d
+
+    def rb_refresh(self, P):
+        """Make P the relative-binning fiducial (full-grid ripple evaluation once)."""
+        r = self._ripple
+        h0 = r["modes"](P.m1 / lal.MSUN_SI, P.m2 / lal.MSUN_SI, [P.s1x, P.s1y, P.s1z], [P.s2x, P.s2y, P.s2z])
+        r["rb"].set_fiducial(h0)
+        r["rb_state"] = r["rb"].state()
 
     # -- device precompute ----------------------------------------------------
     def _device_setup(self):
@@ -432,17 +468,45 @@ class IntrinsicMarginalObjective:
         dets = list(data.detector_names)
         xg, lwg, pg, sg = self.x_grid, self.log_w_grid, self.phi_grid, self.psi_grid
         interp = self.interp
+        if self.angle_scheme == "exact":
+            from . import anglemarg
+            if self._amp is None:
+                self._amp = self._amp_bound(data)
+            amp = self._amp
 
-        def _kernel(arrays, ra, dec, incl):
-            d2 = copy.copy(template)
-            d2.detectors = {det: dict(template.detectors[det], Q=arrays[det][0],
-                                      U=arrays[det][1], V=arrays[det][2])
-                            for det in dets}
-            return core.fused_log_likelihood_distphipsimarg(
-                d2, ra, dec, incl, xg, lwg, pg, sg, interp=interp)
+            def _kernel(arrays, ra, dec, incl):
+                d2 = copy.copy(template)
+                d2.detectors = {det: dict(template.detectors[det], Q=arrays[det][0],
+                                          U=arrays[det][1], V=arrays[det][2])
+                                for det in dets}
+                return anglemarg.fused_log_likelihood_distphipsimarg_exact(
+                    d2, ra, dec, incl, xg, lwg, interp=interp, amp_sizing=amp)
+        else:
+            def _kernel(arrays, ra, dec, incl):
+                d2 = copy.copy(template)
+                d2.detectors = {det: dict(template.detectors[det], Q=arrays[det][0],
+                                          U=arrays[det][1], V=arrays[det][2])
+                                for det in dets}
+                return core.fused_log_likelihood_distphipsimarg(
+                    d2, ra, dec, incl, xg, lwg, pg, sg, interp=interp)
         self._kernel = jax.jit(_kernel)
         self._template = template
         self.n_compiles += 1
+
+    def _amp_bound(self, data):
+        from . import anglemarg
+        a = float(anglemarg.estimate_angle_amplitude(data, self.x_grid, interp=self.interp))
+        return max(1.5 * a, anglemarg.ANGLE_MARG_CROSSOVER_AMPLITUDE)
+
+    def _refresh_amp(self, data):
+        if self.angle_scheme != "exact" or self._template is None:
+            return
+        a = self._amp_bound(data)
+        if a > 1.25 * self._amp:
+            if self.verbose:
+                print(" [intrinsic_objective] angle amplitude bound %.1f -> %.1f; rebuilding kernel" % (self._amp, a))
+            self._amp = a
+            self._build_kernel(self._template)
 
     def lnL_sky(self, P, ra=None, dec=None, incl=None, data=None):
         """Per-sky-point lnL (marginalized over t, d, phi, psi) and the data object."""
@@ -468,9 +532,14 @@ class IntrinsicMarginalObjective:
         self.n_calls += 1
         try:
             lnL, _ = self.lnL_sky(P)
-        except Exception as exc:   # waveform generation failure, out-of-domain point
-            if self.verbose:
-                print(" [intrinsic_objective] evaluation failed:", exc)
+            self._consecutive_failures = 0
+        except Exception as exc:   # waveform failure / out-of-domain point: score as -inf,
+            self.n_exceptions += 1   # but never silently, and not when everything fails
+            self._consecutive_failures += 1
+            if self.n_exceptions <= 5:
+                print(" [intrinsic_objective] evaluation failed (%d so far): %r" % (self.n_exceptions, exc))
+            if self.n_calls == 1 or self._consecutive_failures >= 20:
+                raise
             return -np.inf
         bad = ~np.isfinite(lnL)
         if np.any(bad):
@@ -482,6 +551,41 @@ class IntrinsicMarginalObjective:
             return float(np.max(lnL))
         return float(logsumexp(lnL + self.sky.log_w) - np.log(len(lnL)))
 
+    def batch(self, P_list):
+        """Objective for a list of points in one vmapped call (ripple backend only).
+
+        The list length should be constant across calls (e.g. the CMA population)
+        so the batched program compiles once.  Falls back to a loop otherwise.
+        """
+        if self.mode_backend != "ripple":
+            return np.array([self(P) for P in P_list])
+        if self._template is None:
+            self(P_list[0])                       # builds template and kernel
+        r = self._ripple
+        self.n_calls += len(P_list)
+        if "vfn" not in r:
+            r["vfn"] = (jax.jit(jax.vmap(r["rb_fn"], in_axes=(0, 0, 0, 0, None))) if "rb" in r
+                        else jax.jit(jax.vmap(r["fn"])))
+        if self._key not in r.get("vkern", {}):
+            r.setdefault("vkern", {})[self._key] = jax.jit(jax.vmap(self._kernel, in_axes=(0, None, None, None)))
+        m1 = jnp.asarray([P.m1 / lal.MSUN_SI for P in P_list]); m2 = jnp.asarray([P.m2 / lal.MSUN_SI for P in P_list])
+        c1 = jnp.asarray([[P.s1x, P.s1y, P.s1z] for P in P_list]); c2 = jnp.asarray([[P.s2x, P.s2y, P.s2z] for P in P_list])
+        t0 = time.time()
+        out = r["vfn"](m1, m2, c1, c2, r["rb_state"]) if "rb" in r else r["vfn"](m1, m2, c1, c2)
+        jax.block_until_ready(out)
+        self.t_waveform += time.time() - t0
+        t0 = time.time()
+        lnL = np.asarray(r["vkern"][self._key](out, jnp.asarray(self.sky.ra), jnp.asarray(self.sky.dec),
+                                               jnp.asarray(self.sky.incl)))
+        self.t_kernel += time.time() - t0
+        bad = ~np.isfinite(lnL)
+        if np.any(bad):
+            self.n_nonfinite += int(bad.sum())
+            lnL = np.where(bad, -np.inf, lnL)
+        if self.reduce == "profile":
+            return lnL.max(axis=1)
+        return logsumexp(lnL + self.sky.log_w[None, :], axis=1) - np.log(lnL.shape[1])
+
     def adapt_sky(self, P, n_pilot_batches=4, n_rounds=6, neff_target=None,
                   n_prior_batches=16, **kw):
         """Refit the sky/inclination proposal at P.
@@ -490,7 +594,10 @@ class IntrinsicMarginalObjective:
         pilot from the current proposal, with weights ln L + ln(p/q).  Stops early once the batch n_eff
         reaches neff_target (default: 5% of the batch).
         """
+        if self._ripple is not None and "rb" in self._ripple:
+            self.rb_refresh(P)
         data, _ = self.precompute(P)
+        self._refresh_amp(data)
         neff_target = neff_target or 0.05 * self.sky.n
         info = {}
         for rnd in range(n_rounds):
@@ -519,5 +626,6 @@ class IntrinsicMarginalObjective:
 
     def stats(self):
         return dict(n_calls=self.n_calls, n_compiles=self.n_compiles, n_nonfinite=self.n_nonfinite,
+                    n_exceptions=self.n_exceptions,
                     t_waveform=self.t_waveform, device_precompute=str(self.device_precompute),
                     t_precompute=self.t_precompute, t_kernel=self.t_kernel)

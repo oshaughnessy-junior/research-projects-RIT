@@ -71,7 +71,8 @@ class RippleXPHMModes:
         pos = np.flatnonzero((freqs >= fmin) & (freqs <= fmax))
         fband = freqs[pos]
         # negative-frequency bins whose |f| is in band, mapped onto the band index
-        neg = np.flatnonzero((-freqs >= fmin) & (-freqs <= fmax))
+        # -f must have a +f partner on the grid: drop the -fNyq bin (no +fNyq bin)
+        neg = np.flatnonzero((-freqs >= fmin) & (-freqs <= fmax) & (-freqs < -freqs[0]))
         lookup = {round(f / (freqs[1] - freqs[0])): i for i, f in enumerate(fband)}
         negmap = np.array([lookup[round(-freqs[k] / (freqs[1] - freqs[0]))] for k in neg])
         self._pos, self._neg, self._negmap = map(jnp.asarray, (pos, neg, negmap))
@@ -82,8 +83,16 @@ class RippleXPHMModes:
         self._fn = jax.jit(self._modes)
 
     def _modes(self, m1, m2, chi1, chi2):
+        hpos, hneg = self.modes_at(self.fband, m1, m2, chi1, chi2)
+        full = jnp.zeros((len(self.lms), self.N), dtype=jnp.complex128)
+        full = full.at[:, self._pos].set(hpos)
+        full = full.at[:, self._neg].set(hneg[:, self._negmap])
+        return full
+
+    def modes_at(self, fpos, m1, m2, chi1, chi2):
+        """(h_lm(+f), h_lm(-f)) at positive frequencies fpos, each (K, len(fpos))."""
         X = self._X
-        Mf = self.fband * self._msec(m1, m2)
+        Mf = fpos * self._msec(m1, m2)
         Mtot = m1 + m2
         amp0 = Mtot * self._MRSUN * Mtot * self._MTSUN / (self.dist_mpc * self._MPC)
         pairs = [(2, 1), (2, 2), (3, 2), (3, 3), (4, 4)]
@@ -115,10 +124,7 @@ class RippleXPHMModes:
             hp, hc = jax.vmap(one)(jnp.arange(len(self.lms)))
         finally:
             X.compute_sminus2_l2, X.compute_sminus2_l3, X.compute_sminus2_l4 = saved
-        full = jnp.zeros((len(self.lms), self.N), dtype=jnp.complex128)
-        full = full.at[:, self._pos].set(hp - 1j * hc)
-        full = full.at[:, self._neg].set(jnp.conj(hp + 1j * hc)[:, self._negmap])
-        return full
+        return hp - 1j * hc, jnp.conj(hp + 1j * hc)
 
     def __call__(self, m1, m2, chi1, chi2):
         """(K, N) complex modes for masses in Msun, chi1/chi2 = (x, y, z) at fref."""

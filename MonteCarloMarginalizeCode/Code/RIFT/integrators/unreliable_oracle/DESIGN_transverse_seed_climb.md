@@ -61,6 +61,7 @@ an evidence or posterior.
 |---|---|---|---|
 | (a) setup | `pseudo_pipe --transverse-seed-climb setup` | submit host, during setup, CPU unless a GPU is visible | appends seeds to `proposed-grid.xml.gz` |
 | (b) DAG | `pseudo_pipe --transverse-seed-climb dag [--transverse-seed-climb-request-gpu]` | node `seed_climb.sub`, parent of every iteration-0 ILE job | appends seeds to `overlap-grid-0.xml.gz` |
+| (c) parallel | `pseudo_pipe --transverse-seed-climb parallel` | node `seed_climb.sub` with no parent, alongside iteration 0 | writes `seed-0.xml.gz`; its `ILE_seed` jobs feed the iteration-0 consolidation, so every iteration-0 CIP sees them and iteration 0 is not delayed |
 
 Both take extra climber arguments through `--transverse-seed-climb-args`. The
 climber reads data, PSD and waveform settings from `args_ile.txt`.
@@ -103,6 +104,17 @@ The sub file has no file transfer, so it needs the shared run directory
 - The sky batch adapts in (ra, sin dec) only and draws cos incl from its prior.
   Inclination depends on frame, and a batch concentrated in incl biased the
   comparison between intrinsic points.
+- Placement defaults to covariance: two free climbs and rungs at chi1_perp 0.3
+  and 0.6, then equal draws per climb from N(best point, (1.5)^2 x final CMA
+  covariance), with the pinned chi1_perp spread by half the rung spacing.
+- Speed options, measured on S250830bp (32 s at 4096 Hz, l_max 4, ripple):
+  `--srate 1024 --fmax 448` cut the cost per point 3.6x; batched generations
+  (automatic with ripple) reach 0.26 s per point on an A100; `--rb-eps 0.2`
+  (relative binning, `relative_binning.py`) cuts the waveform stage 80x at
+  <= 0.3 nat error near the fiducial. A full climb with all three (bp4) took
+  1897 s against 10243 s, but landed at q = 0.51 (Bilby 0.59 to 0.98) with no
+  seed in the Bilby box; bp3 at 4096 Hz had 63% in the box. Cause not yet
+  isolated, so these options stay opt-in.
 - Cost per point is the precompute plus the kernel. See the RESULTS note in
   RIFT_roboto_paper `analyses/transverse_seed_climb/` for timings.
 - JAX on a CIT head node starts an XLA thread pool sized by the CPU count. With
