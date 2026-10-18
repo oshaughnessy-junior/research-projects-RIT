@@ -63,8 +63,9 @@ from RIFT.likelihood.time_interp_choice import (
 # likelihood -- the pipeline would accept 'bandlimted', forward it, and the mistake
 # would only surface when the first ILE job died.
 from RIFT.likelihood.time_marginalization_quadrature import (
-    TIME_QUADRATURE_CHOICES, validate_time_quadrature,
-    refuse_unhonourable_time_quadrature, refuse_unless_time_quadrature_emitted)
+    TIME_QUADRATURE_CHOICES, NOLOOP_ONLY_TIME_QUADRATURES, validate_time_quadrature,
+    refuse_unhonourable_time_quadrature, refuse_unless_time_quadrature_emitted,
+    refuse_jax_unsupported_time_quadrature)
 # Same reason, same leaf-module discipline, for the Q_lm pregrid factor.
 from RIFT.likelihood.q_time_pregrid import (
     Q_TIME_PREGRID_CHOICES, validate_q_time_pregrid_factor,
@@ -789,6 +790,12 @@ if opts.use_jax_ile and opts.calmarg_envelope_directory:
         "(--calmarg-envelope-directory): bin/integrate_likelihood_extrinsic_jax does "
         "not implement --calibration-* options (see check_critical_and_report in "
         "that driver).  Drop --calmarg-envelope-directory or drop --use-jax-ile.")
+if opts.use_jax_ile and opts.internal_ile_time_marginalization_quadrature in NOLOOP_ONLY_TIME_QUADRATURES:
+    raise ValueError(
+        "--use-jax-ile is incompatible with --internal-ile-time-marginalization-quadrature "
+        "%r: bin/integrate_likelihood_extrinsic_jax does not implement it, so every ILE "
+        "job would fail at startup.  Drop one of the two."
+        % opts.internal_ile_time_marginalization_quadrature)
 
 # TIME-MARGINALIZATION QUADRATURE, part 1 of 2: everything refusable WITHOUT running the
 # helper.  Deliberately placed AFTER the --use-ini block above: the ini parser OVERRIDES the
@@ -1844,6 +1851,10 @@ if opts.extrinsic_handoff:
 # opts-keyed version skipped entirely.  Called unconditionally for that reason.
 refuse_unless_time_quadrature_emitted(
     opts.internal_ile_time_marginalization_quadrature, line, "args_ile.txt")
+# The early --use-jax-ile refusal reads only the pipeline option; a quadrature passed by
+# hand through --manual-extra-ile-args reaches the JAX driver too, so check the bytes.
+if opts.use_jax_ile:
+    refuse_jax_unsupported_time_quadrature(line, "args_ile.txt")
 # Same discipline, same reason, for the Q_lm pregrid factor -- including the forced-cubic-stencil
 # conflict, which can only be checked here: --interpolate-time is resolved and emitted by the
 # helper, so it is not visible to this script until `line` is fully assembled.

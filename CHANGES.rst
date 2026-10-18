@@ -47,6 +47,12 @@ development tree is rift_O4d; PRs refer to oshaughn/research-projects-RIT.
      Add Bilby-compatible noise evidence and opt-in GPU GP, AV stopping and RF spin features;
      expand numerical, workflow and CPU/GPU regression coverage (PR #208).
 
+   - (unreleased) Time marginalization uses the same rule on CPU and GPU.  'simpson' is now
+     scipy's rule on every backend, so GPU lnL at even npts (srate 4096/8192) moves by up to
+     0.405 nats onto the CPU value; CPU results are unchanged.  New opt-in
+     --time-marginalization-quadrature trapezoid (NoLoop only; refused with --use-jax-ile).
+     Supersedes fork PR #204.
+
    - (unreleased) Fork PR #435 retires the physics3 RF transverse-spin mode, which
      gave CIP 11 fit coordinates for 8 degrees of freedom; every layer now refuses it.
      `auto` and Asimov `true` select geometric4; `auto` leaves fixed-EOS, EOB-parameter
