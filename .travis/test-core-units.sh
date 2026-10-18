@@ -114,6 +114,7 @@ FILES=(
   "$C/test/test_av_host_backend.py"
   "$C/test/test_av_kish_loop.py"
   "$C/test/test_av_retained_density.py"
+  "$C/test/test_av_coverage_guard.py"
   "$C/test/test_matern_gp.py"
   "$C/test/integrators/test_seeding_public_paths.py"
   "$C/test/integrators/test_seeding_reproducibility.py"
@@ -461,7 +462,8 @@ done
 # test_dslice_rf_tails.py adds 10 tests and no skips -> 888/868.
 # test_dslice_amplitude_model.py: +1 (_lognorm chunk memory bound), passes, no skips -> 889/869.
 # test_dslice_bounds.py adds 2 tests and no skips -> 891/871.
-EXPECTED_TESTS=891
+# test_av_coverage_guard.py adds 2 tests and no skips -> 893/873.
+EXPECTED_TESTS=893
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -484,7 +486,8 @@ EXPECTED_TESTS=891
 # test_fd_end_taper_cap.py adds 3 tests and no skips; 878/858 (above).
 # test_dslice_rf_tails.py adds 10 tests and no skips; 888/868 (above).
 # test_dslice_bounds.py adds 2 tests and no skips; 891/871 (above).
-EXPECTED_PASSED=871
+# test_av_coverage_guard.py adds 2 tests and no skips; 893/873 (above).
+EXPECTED_PASSED=873
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 MAX_SKIPPED=19
 
