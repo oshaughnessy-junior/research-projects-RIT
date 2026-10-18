@@ -6740,20 +6740,20 @@ def rotate_hlm_static(hlm,alphaA,betaA,gammaA,extra_polarization=None):
         for M in range(-L,L+1):
             hCatOut[(L,M)] = None
             # Define output data
-            if isinstance(hlm[(L,M)], lal.COMPLEX16TimeSeries):
+            if isinstance(h0, lal.COMPLEX16TimeSeries):
                 hCatOut[(L,M)] = lal.CreateCOMPLEX16TimeSeries("Template h(t)", 
                                                  h0.epoch, h0.f0, h0.deltaT, lsu_DimensionlessUnit, 
                                                  h0.data.length)
                 hCatOut[(L,M)].data.data[:] = 0 # initialize
                 lal_type=True
-            elif isinstance(hlm[(L,M)] , lal.Complex16FrequencySeries):
+            elif isinstance(h0, lal.COMPLEX16FrequencySeries):
                 hCatOut[(L,M)] =  lal.CreateCOMPLEX16FrequencySeries("Template h(t)", 
                                                                      h0.epoch, h0.f0, h0.deltaF, lsu_HertzUnit ,
                                                                      h0.data.length)
                 hCatOut[(L,M)].data.data[:] = 0 # initialize
                 lal_type=True
-            elif isinstance(hlm[(L,M)], np.ndarray):
-                hCatOut[(L,M)] = np.zeros(h0.shape)
+            elif isinstance(h0, np.ndarray):
+                hCatOut[(L,M)] = np.zeros(h0.shape, dtype=complex)
             else:
                 raise ValueError(" hlm unknown data type for rotation")
             # Loop and populate, based on input modes. Does not need to be full in input, but will be full output

@@ -195,6 +195,9 @@ FILES=(
   # every caller indexes it.  A dict keyed the other way is still a populated dict: the
   # mode sum silently loses modes rather than raising.
   "$C/test/test_std_and_conj_hlmoff_sphharm.py"
+  # -- rotate_hlm_static: TimeSeries, FrequencySeries and ndarray inputs agree with a direct
+  # Wigner-D sum (FrequencySeries/ndarray inputs used to raise AttributeError).
+  "$C/test/test_rotate_hlm_static_types.py"
   # -- hlmoft ChooseFDModes end taper is capped in duration: long buffers keep the merger,
   # buffers <= 100 s are bit-identical to the uncapped 1% rule.
   "$C/test/test_fd_end_taper_cap.py"
