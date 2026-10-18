@@ -392,6 +392,94 @@ def ComputeModeCrossTermsPieces(early, late, plan):
 
 
 # ---------------------------------------------------------------------------------------------
+# Per-point preparation on an array backend (cupy on a GPU, numpy otherwise).  Same arithmetic as
+# Q_two_rate / ComputeModeCrossTermsPieces, which stay as the reference; the data-side FFTs, the
+# lag-interpolation matrix and the U, V gather indices are built once per job and detector.
+# ---------------------------------------------------------------------------------------------
+def _select_xpy(choice=None):
+    """numpy or cupy, chosen as factored_likelihood chooses: cupy when it imports and can allocate
+    on a device.  choice 'numpy' or 'cupy' forces one."""
+    if choice == "numpy":
+        return np
+    try:
+        import cupy
+        cupy.zeros(1)
+        return cupy
+    except Exception:
+        if choice == "cupy":
+            raise
+        return np
+
+
+def _to_host(xp, a):
+    return a.get() if xp is not np else a
+
+
+def ifft_centred(xp, X, deltaF):
+    """lsu.DataInverseFourier for a two-sided centred FD array: x[k] = df sum_j X[j] exp(2 pi i f_j t_k)."""
+    return xp.fft.ifft(xp.fft.ifftshift(X)) * (len(X) * deltaF)
+
+
+def taper_top_quarter_factor(n, deltaF, fs_e):
+    """The DSWr factor taper_top_quarter applies, as an array over a centred two-sided grid."""
+    f = (np.arange(n) - n // 2) * deltaF
+    x = np.clip((np.abs(f) - 0.75 * fs_e / 2) / (0.25 * fs_e / 2), 0, 1)
+    return np.cos(0.5 * np.pi * x)**2
+
+
+class TwoRateDevice(object):
+    """Once per job and detector: the data-side pieces of Q_two_rate on the backend xp."""
+
+    def __init__(self, xp, prep, sch, deltaT, n_coarse, n_late, N, j_peak, lags, n_late_off):
+        self.xp, M = xp, sch.M
+        lags = np.asarray(lags)
+        self.LE = _sp_fft.next_fast_len(max(len(prep["dE"]), n_coarse) + int(np.max(np.abs(lags))) // M + 8)
+        self.LL = _sp_fft.next_fast_len(len(prep["dL"]) + n_late + 8)
+        self.FE = M * xp.fft.fft(xp.asarray(prep["dE"]), self.LE)
+        self.FL = xp.fft.fft(xp.asarray(prep["dL"]), self.LL)
+        hI = sch.h_interp
+        D = (len(hI) - 1) // 2
+        P = D // M + 1
+        q = np.arange(int(np.min(lags)) // M - P, int(np.max(lags)) // M + P + 2)
+        k = lags[:, None] - M * q[None, :] + D
+        ok = (k >= 0) & (k < len(hI))
+        self.W = xp.asarray(np.where(ok, hI[np.clip(k, 0, len(hI) - 1)], 0.))
+        self.qidx = xp.asarray(q % self.LE)
+        self.lidx = xp.asarray((lags - prep["i_l0"] + n_late_off) % self.LL)
+        self.wh = xp.asarray(early_template_window(n_coarse, j_peak, sch, deltaT))
+        self.scale = 2. * deltaT
+
+    def Q(self, hE_td, hL_td):
+        """Q_two_rate (interp) for one mode, from device TD templates (hE tapered, coarse)."""
+        xp = self.xp
+        c = xp.fft.ifft(self.FE * xp.conj(xp.fft.fft(self.wh * hE_td, self.LE)))
+        z = xp.fft.ifft(self.FL * xp.conj(xp.fft.fft(hL_td, self.LL)))
+        return self.scale * (self.W @ c[self.qidx] + z[self.lidx])
+
+
+def pieces_uv_plan_device(xp, plan):
+    """pieces_uv_plan's arrays on the backend xp."""
+    g = {am: {sgn: tuple(xp.asarray(a) for a in v) for sgn, v in d.items()} for am, d in plan["gather"].items()}
+    return dict(plan, g_dev=xp.asarray(plan["g"]), gather_dev=g)
+
+
+def ComputeModeCrossTermsPiecesDevice(xp, early_fd, late_fd, plan_dev, keys):
+    """ComputeModeCrossTermsPieces from device FD arrays (dicts keyed by mode)."""
+    def gather(k, sgn):
+        use_late, il, ie = plan_dev["gather_dev"][abs(k[1])][sgn]
+        return xp.where(use_late, late_fd[k][il], early_fd[k][ie])
+    A = xp.stack([gather(k, "pos") for k in keys])
+    An = xp.stack([gather(k, "neg") for k in keys])
+    g = plan_dev["g_dev"]
+    Um = _to_host(xp, (xp.conj(A) * g) @ A.T)
+    Vm = _to_host(xp, (An * g) @ A.T)
+    df2 = 2. * plan_dev["deltaF"]
+    U = {(a, b): df2 * Um[i, j] for i, a in enumerate(keys) for j, b in enumerate(keys)}
+    V = {(a, b): df2 * Vm[i, j] for i, a in enumerate(keys) for j, b in enumerate(keys)}
+    return U, V
+
+
+# ---------------------------------------------------------------------------------------------
 # Opt-in precompute (DESIGN_early_time_multirate.md, "Opt-in interface").  Same arguments and
 # return tuple as factored_likelihood.PrecomputeLikelihoodTerms, plus a schedule:
 #   kind        "one_segment" (full rate, per-|m| calls: the matched control) or "two_rate"
@@ -484,6 +572,18 @@ def PrecomputeLikelihoodTermsMultirate(event_time_geo, t_window, P, data_dict, p
         early = _per_m_modes(P, Lmax, schedule["fs_e"], seglen, P.fmin, post)
         late = _per_m_modes(P, Lmax, fs, schedule["late_buffer"], f22_late, post)
         keys = sorted(early)
+        # backend for the per-point preparation; multirate_reference=True keeps the CPU reference path
+        use_ref = bool(kwargs.get("multirate_reference", False))
+        xp = _select_xpy(kwargs.get("multirate_xpy"))
+        if not use_ref:
+            n_e, n_l = early[keys[0]].data.length, late[keys[0]].data.length
+            tk = ("taper", n_e, early[keys[0]].deltaF, schedule["fs_e"], xp.__name__)
+            if tk not in _JOB_CACHE:
+                _JOB_CACHE[tk] = xp.asarray(taper_top_quarter_factor(n_e, early[keys[0]].deltaF, schedule["fs_e"]))
+            e_fd = {k: xp.asarray(early[k].data.data) for k in keys}
+            l_fd = {k: xp.asarray(late[k].data.data) for k in keys}
+            hE_td = {k: ifft_centred(xp, e_fd[k] * _JOB_CACHE[tk], early[k].deltaF) for k in keys}
+            hL_td = {k: ifft_centred(xp, l_fd[k], late[k].deltaF) for k in keys}
         bands = multiband_schedule(P.fmin, fMax, seglen, mc_lo, Lmax, extra_s=schedule["uv_margin"],
                                    top_edge_K=int(round(seglen / schedule["late_buffer"])))
     rholms, rholms_intp, crossTerms, crossTermsV = {}, {}, {}, {}
@@ -530,12 +630,27 @@ def PrecomputeLikelihoodTermsMultirate(event_time_geo, t_window, P, data_dict, p
                 _JOB_CACHE[pk] = pieces_uv_plan(psd_dict[det], P.fmin, fMax, fNyq, P.deltaF, bands, schedule["fs_e"],
                                                 f22_late, early[keys[0]].data.length, late[keys[0]].data.length,
                                                 keys, analyticPSD_Q, inv_spec_trunc_Q, T_spec)
-            U, V, _ = ComputeModeCrossTermsPieces(early, late, _JOB_CACHE[pk])
-            crossTerms[det], crossTermsV[det] = U, V
             j_peak = N - int(round(post * fs))
             lags = np.arange(N_shift, N_shift + N_window)
             n_late_off = N - late[keys[0]].data.length
             rholms[det] = {}
+            if not use_ref:
+                dk = ("device", det, id(data_dict[det]), schedule["_hash"], N_shift, xp.__name__)
+                if dk not in _JOB_CACHE:      # once per job and detector: data FFTs, interpolation, indices
+                    _JOB_CACHE[dk] = TwoRateDevice(xp, prep, sch, dt, n_e, n_l, N, j_peak, lags, n_late_off)
+                    _JOB_CACHE[dk + ("uv",)] = pieces_uv_plan_device(xp, _JOB_CACHE[pk])
+                dev = _JOB_CACHE[dk]
+                crossTerms[det], crossTermsV[det] = ComputeModeCrossTermsPiecesDevice(xp, e_fd, l_fd, _JOB_CACHE[dk + ("uv",)], keys)
+                for k in keys:
+                    ts = lal.CreateCOMPLEX16TimeSeries("rho", rho_epoch, 0., dt, lsu.lsu_DimensionlessUnit, N_window)
+                    ts.epoch += N_shift * dt
+                    ts.data.data = _to_host(xp, dev.Q(hE_td[k], hL_td[k]))
+                    rholms[det][k] = ts
+                t = np.arange(N_window) * dt + float(rho_epoch + N_shift * dt)
+                rholms_intp[det] = None if skip_interpolation else fl.InterpolateRholms(rholms[det], t, verbose=verbose)
+                continue
+            U, V, _ = ComputeModeCrossTermsPieces(early, late, _JOB_CACHE[pk])
+            crossTerms[det], crossTermsV[det] = U, V
             for k in keys:
                 hE = lal.CreateCOMPLEX16FrequencySeries("e", early[k].epoch, early[k].f0, early[k].deltaF,
                                                         early[k].sampleUnits, early[k].data.length)
