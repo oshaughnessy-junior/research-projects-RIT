@@ -13,6 +13,7 @@ import inspect
 import os
 import subprocess
 import sys
+import warnings
 
 os.environ.setdefault("RIFT_LOWLATENCY", "1")
 
@@ -87,7 +88,10 @@ def test_nothing_in_RIFT_reaches_the_vendored_rule():
                     or fname.startswith('test_')):
                 continue
             path = os.path.join(root, fname)
-            for node in ast.walk(ast.parse(open(path).read())):
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')        # invalid escapes in parsed sources
+                tree = ast.parse(open(path).read())
+            for node in ast.walk(tree):
                 hit = (isinstance(node, ast.Attribute) and node.attr == 'simps'
                        and 'optimized_gpu_tools' in ast.dump(node.value))
                 hit = hit or (isinstance(node, ast.ImportFrom)
@@ -189,10 +193,20 @@ def test_cpu_and_gpu_agree_at_even_npts(name):
 
 # ---- refusal where a driver cannot honour the name -------------------------------------
 
+def _jax_time_quad_choices():
+    # Read from the source: importing jax_ile.core needs jax, which the CI runner
+    # for this gate does not install, and a skip there fails the gate.
+    path = os.path.join(CODE_DIR, 'RIFT', 'likelihood', 'jax_ile', 'core.py')
+    for node in ast.parse(open(path).read()).body:
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and getattr(node.targets[0], 'id', None) == '_TIME_QUAD_CHOICES'):
+            return set(ast.literal_eval(node.value))
+    raise AssertionError('_TIME_QUAD_CHOICES not found as a literal in %s' % path)
+
+
 def test_noloop_only_list_matches_the_jax_driver():
-    core = pytest.importorskip('RIFT.likelihood.jax_ile.core')
     assert set(tmq.NOLOOP_ONLY_TIME_QUADRATURES) == (
-        set(tmq.TIME_QUADRATURE_CHOICES) - set(core._TIME_QUAD_CHOICES))
+        set(tmq.TIME_QUADRATURE_CHOICES) - _jax_time_quad_choices())
 
 
 @pytest.mark.parametrize('args, refused', [
