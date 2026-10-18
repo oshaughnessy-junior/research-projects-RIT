@@ -1262,7 +1262,7 @@ if time_quadrature_choice is not None:
     print("  ==> Time-marginalization quadrature: '{}' (emitted as --time-marginalization-quadrature; "
           "the ILE driver refuses rather than ignores if its configuration cannot honour it)".format(
               time_quadrature_choice))
-    if time_quadrature_choice != 'simpson':
+    if time_quadrature_choice in ('bandlimited', 'peak-local'):
         # Sub-sample integration is also an export contract.  The extrinsic stage
         # uses the same reflected, derived-resolution reconstruction to draw a
         # continuous conditional time, rather than calling coarse-grid

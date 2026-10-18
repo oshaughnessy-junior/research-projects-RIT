@@ -1062,12 +1062,9 @@ def test_bandlimited_runs_on_the_gpu_backend_and_matches_numpy():
 def test_the_likelihood_hands_the_bandlimited_path_its_own_simpson_rule():
     """Rows that fall back must reproduce what THIS run would have returned.
 
-    `factored_likelihood` integrates with scipy on CPU and with
-    `optimized_gpu_tools.simps` on GPU, and the two are NOT interchangeable: the
-    vendored GPU copy is an old scipy with `even='avg'` while modern scipy uses
-    the Cartwright correction, so for EVEN npts -- production is 614 at srate
-    4096 -- they disagree.  A private scipy copy inside the module would be
-    bit-for-bit on CPU and quietly wrong on GPU.
+    The fallback rows must use the likelihood's own rule
+    (`factored_likelihood.time_quadrature_rule`), and scipy cannot consume a
+    device array, so the module must not substitute a private copy.
     """
     # Behavioural, not a source grep: a non-numpy backend with no `simps` must
     # REFUSE, because the scipy default cannot consume a device array and that
