@@ -1323,7 +1323,12 @@ class MCSampler(SamplerOutputMixin, object):
         steps = 0
         while True:
             idx = ((X[:, ax] - lo[ax]) / (width[ax] / nbins[ax])).astype(np.int64)
-            _, inv, counts = np.unique(idx, axis=0, return_inverse=True, return_counts=True)
+            idx -= idx.min(axis=0)
+            shape = idx.max(axis=0) + 1
+            if np.prod(shape.astype(float)) < 2.0**62:   # 1-D keys: far cheaper than unique(axis=0)
+                _, inv, counts = np.unique(np.ravel_multi_index(tuple(idx.T), shape), return_inverse=True, return_counts=True)
+            else:
+                _, inv, counts = np.unique(idx, axis=0, return_inverse=True, return_counts=True)
             unseen = float(np.sum(w[counts[np.asarray(inv).ravel()] == 1]))
             span = np.array([len(np.unique(idx[:, j])) for j in range(len(ax))])
             if tol <= 0 or unseen <= tol or span.min() > 2 or span.max() <= 2:

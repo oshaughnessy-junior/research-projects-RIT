@@ -22,6 +22,7 @@ LNZ_EXACT = 2 * np.log(np.sqrt(2 * np.pi) * SIG / 2)
 
 def _run(names, seed, **kw):
     np.random.seed(seed)
+    mcsamplerAV.xpy_default.random.seed(seed)   # draws use the active backend (cupy on a GPU host)
     s = mcsamplerAV.MCSampler()
     for p in names:
         lo, hi = BOUNDS[p]
