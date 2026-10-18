@@ -121,6 +121,10 @@ def build_parser():
     p.add_argument("--nphi", type=int, default=16)
     p.add_argument("--npsi", type=int, default=8)
     p.add_argument("--objective", choices=["marginal", "profile"], default="marginal")
+    p.add_argument("--device-precompute", choices=["off", "gpu", "numpy"], default="off",
+                   help="reduce Q/U/V on the device (RIFT/likelihood/gpu_precompute.py, cupy); the "
+                        "first point is also built on CPU and compared. 'numpy' runs the same "
+                        "array code on the host (tests). Waveforms stay on CPU (lalsim).")
     p.add_argument("--no-sky-readapt", action="store_true",
                    help="adapt the sky batch once, not before every climb")
     p.add_argument("--seed", type=int, default=0)
@@ -214,7 +218,8 @@ def main(argv=None):
         npsi=opts.npsi, n_dist=opts.n_dist, reduce=opts.objective,
         integration_window_half=opts.data_integration_window_half,
         waveform_kwargs=dict(ignore_threshold=None, extra_waveform_kwargs=wf_extra),
-        seed=opts.seed, verbose=opts.verbose)
+        seed=opts.seed, verbose=opts.verbose,
+        device_precompute={"off": False, "gpu": True, "numpy": "numpy"}[opts.device_precompute])
 
     # --- starting grid: score a subset, pick distinct starts --------------------
     rng = np.random.default_rng(opts.seed)

@@ -24,6 +24,7 @@ import lalsimulation as lalsim
 
 import jax
 import jax.numpy as jnp
+import jax.dlpack
 from jax.scipy.special import logsumexp
 
 from RIFT import lalsimutils
@@ -195,7 +196,8 @@ class IntrinsicMarginalObjective:
                  l_max=2, fmax=None, n_sky=1024, nphi=16, npsi=8, n_dist=128,
                  d_prior="euclidean", storage_window_half=0.15,
                  integration_window_half=0.075, interp=None, reduce="marginal",
-                 waveform_kwargs=None, seed=0, verbose=False, analyticPSD_Q=False):
+                 waveform_kwargs=None, seed=0, verbose=False, analyticPSD_Q=False,
+                 device_precompute=False, device_check_rtol=1e-8):
         self.data_dict, self.psd_dict = data_dict, psd_dict
         self.P_base = P_base.copy()
         self.event_time = float(event_time)
@@ -206,6 +208,14 @@ class IntrinsicMarginalObjective:
         self.waveform_kwargs = dict(waveform_kwargs or {})
         self.verbose = verbose
         self.analyticPSD_Q = analyticPSD_Q
+        # device_precompute: lalsim modes on CPU, Q/U/V reduced on the device by
+        # gpu_precompute.compound_precompute_arrays (A=1).  True needs cupy; 'numpy'
+        # runs the same array code on the host (tests).  The first point is also
+        # built by the CPU precompute and the two are compared (device_check_rtol).
+        self.device_precompute = device_precompute
+        self.device_check_rtol = float(device_check_rtol)
+        self._device = None
+        self.t_waveform = 0.0
         self.x_grid, self.log_w_grid = core.make_distance_grid(
             d_min, d_max, n_grid=n_dist, d_prior=d_prior)
         self.phi_grid = core.phi_ref_grid(nphi)
@@ -234,6 +244,11 @@ class IntrinsicMarginalObjective:
         return P
 
     def precompute(self, P):
+        if self.device_precompute and self._template is not None:
+            t0 = time.time()
+            data = self._device_precompute(P)
+            self.t_precompute += time.time() - t0
+            return data, {}
         t0 = time.time()
         data, extras = build_data_from_precompute(
             self._prepare(P), self.data_dict, self.psd_dict, self.event_time,
@@ -241,7 +256,95 @@ class IntrinsicMarginalObjective:
             analyticPSD_Q=self.analyticPSD_Q,
             **self.waveform_kwargs)
         self.t_precompute += time.time() - t0
+        if self.device_precompute and self._template is None:
+            self._check_device_against(P, data)
         return data, extras
+
+    # -- device precompute ----------------------------------------------------
+    def _device_setup(self):
+        from RIFT.likelihood import gpu_precompute as gp
+        if self.device_precompute == "numpy":
+            xp = np
+        else:
+            import cupy as xp          # ImportError here is the honest failure
+        P = self._prepare(self.P_base)
+        fNyq = 0.5 / P.deltaT
+        dev = dict(xp=xp, gp=gp, weights={}, data={}, fNyq=fNyq)
+        for det in self.data_dict:
+            IP = lalsimutils.ComplexOverlap(P.fmin, self.fmax, fNyq, P.deltaF,
+                                            self.psd_dict[det], self.analyticPSD_Q,
+                                            False, 0.0, full_output=True)
+            dev["weights"][det] = xp.asarray(np.asarray(IP.weights2side, dtype=np.float64))
+            dev["data"][det] = xp.asarray(np.asarray(self.data_dict[det].data.data))
+        self._device = dev
+
+    def _device_arrays(self, P):
+        """Return (lms, {det: (Q (npts,K), U, V, epoch)}) built on the device."""
+        from RIFT.likelihood import factored_likelihood as fl
+        if self._device is None:
+            self._device_setup()
+        dev = self._device
+        xp, gp = dev["xp"], dev["gp"]
+        P = self._prepare(P)
+        P.dist = core.DIST_MPC_REF * 1e6 * _PC
+        P.deltaF = self.data_dict[list(self.data_dict)[0]].deltaF
+        wk = {k: v for k, v in self.waveform_kwargs.items()
+              if k in ("extra_waveform_kwargs", "use_gwsignal", "use_gwsignal_approx", "no_memory")}
+        t0 = time.time()
+        hlms, hlms_conj = fl.internal_hlm_generator(P, self.l_max, verbose=False, quiet=True,
+                                                    skip_interpolation=True, **wk)
+        self.t_waveform += time.time() - t0
+        lms = list(hlms.keys())
+        basis = xp.asarray(np.stack([hlms[m].data.data for m in lms]))[None]
+        basis_c = xp.asarray(np.stack([hlms_conj[m].data.data for m in lms]))[None]
+        h0 = hlms[lms[0]]
+        out = {}
+        for det, dfd in self.data_dict.items():
+            t_det = fl.ComputeArrivalTimeAtDetector(det, P.phi, P.theta, self.event_time)
+            rho_epoch = dfd.epoch - h0.epoch
+            n_shift = int(float(float(t_det) - self.swh - float(rho_epoch)) / P.deltaT + 0.5)
+            n_window = int(2 * self.swh / P.deltaT)
+            q, u, v = gp.compound_precompute_arrays(
+                basis, basis_c, dev["data"][det], dev["weights"][det], P.deltaF, P.deltaT,
+                n_shift, n_window, backend=xp, return_device=True)
+            out[det] = (q[0].T, u[0, 0], v[0, 0], float(rho_epoch) + n_shift * P.deltaT)
+        return lms, out
+
+    def _check_device_against(self, P, data):
+        """Compare the device Q/U/V for P with the CPU precompute; raise on mismatch."""
+        lms, arr = self._device_arrays(P)
+        for det in data.detector_names:
+            d = data.detectors[det]
+            if [tuple(x) for x in d["lms"]] != [tuple(x) for x in lms]:
+                raise RuntimeError("device precompute: mode order %s != CPU %s" % (lms, d["lms"]))
+            Q, U, V, ep = arr[det]
+            for name, a, b in (("Q", Q, d["Q"]), ("U", U, d["U"]), ("V", V, d["V"])):
+                a = np.asarray(self._device["xp"].asnumpy(a) if hasattr(self._device["xp"], "asnumpy") else a)
+                b = np.asarray(b)
+                err = np.max(np.abs(a - b)) / max(np.max(np.abs(b)), 1e-300)
+                if not err <= self.device_check_rtol:
+                    raise RuntimeError("device precompute: %s %s differs from CPU by %.3g (rel)" % (det, name, err))
+            if abs(ep - float(d["epoch"])) > 1e-6 * float(data.deltaT):
+                raise RuntimeError("device precompute: %s epoch %.9f != CPU %.9f" % (det, ep, d["epoch"]))
+        if self.verbose:
+            print(" [intrinsic_objective] device precompute matches CPU on the first point")
+
+    def _device_precompute(self, P):
+        lms, arr = self._device_arrays(P)
+        tmpl = self._template
+        dets = {}
+        for det in tmpl.detector_names:
+            Q, U, V, ep = arr[det]
+            td = tmpl.detectors[det]
+            if abs(ep - float(td["epoch"])) > 1e-6 * float(tmpl.deltaT):
+                raise RuntimeError("device precompute: epoch moved; refusing")
+            to_j = (lambda a: jnp.asarray(a)) if self._device["xp"] is np else \
+                   (lambda a: jax.dlpack.from_dlpack(a))
+            dets[det] = dict(lms=[tuple(x) for x in lms], npts_full=int(Q.shape[0]),
+                             epoch=float(td["epoch"]), Q=to_j(Q), U=to_j(U), V=to_j(V))
+        d = copy.copy(tmpl)
+        d.detectors = dets
+        return d
 
     def _shape_key(self, data):
         return tuple((det, tuple(map(tuple, data.detectors[det]["lms"])),
@@ -341,4 +444,5 @@ class IntrinsicMarginalObjective:
 
     def stats(self):
         return dict(n_calls=self.n_calls, n_compiles=self.n_compiles, n_nonfinite=self.n_nonfinite,
+                    t_waveform=self.t_waveform, device_precompute=str(self.device_precompute),
                     t_precompute=self.t_precompute, t_kernel=self.t_kernel)

@@ -78,7 +78,12 @@ The sub file has no file transfer, so it needs the shared run directory
 - The climb model must have the same precession as the analysis model. On IR1
   PP event 005 (XPHM injection, q = 0.09, chi1 = 0.94), IMRPhenomPv2 scores the
   true parameters 38 nats below XPHM. A Pv2 climb would follow the wrong ridge.
-- Cost per point is the CPU precompute plus the kernel. See the RESULTS note in
+- `--device-precompute gpu` reduces Q/U/V on the GPU with
+  `gpu_precompute.compound_precompute_arrays` (A = 1), the reduction written for
+  the rotating finite-response likelihood. The first point is also built on CPU
+  and compared. lalsim mode generation stays on CPU and is the floor: about
+  1.6 s (l_max 2) and 3.3 s (l_max 4) per point on S250830bp (32 s at 4096 Hz).
+- Cost per point is the precompute plus the kernel. See the RESULTS note in
   RIFT_roboto_paper `analyses/transverse_seed_climb/` for timings.
 - JAX on a CIT head node starts an XLA thread pool sized by the CPU count. With
   the 500-thread user cap, a second JAX process on a busy node fails with
