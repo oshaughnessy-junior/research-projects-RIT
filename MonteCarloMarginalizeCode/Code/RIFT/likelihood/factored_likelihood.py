@@ -262,7 +262,7 @@ def _simps_weights(simps, npts, deltaT, xpy, block=256):
     other would silently change the integral.  The rule itself comes from
     time_quadrature_rule, which chooses it by name, not by backend.
     """
-    key = (int(npts), float(deltaT), id(xpy), id(simps))
+    key = (int(npts), float(deltaT), id(xpy), _device_id(xpy), id(simps))
     w = _SIMPS_WEIGHTS_CACHE.get(key)
     if w is None:
         n = int(npts)
@@ -334,6 +334,7 @@ def time_quadrature_rule(time_quadrature, xpy=np):
     not refine.  On numpy, Simpson is ``scipy.integrate.simpson`` itself, so CPU
     results are unchanged bit for bit.  The callable takes ``(y, dx=..., axis=-1)``.
     """
+    time_quadrature_module.validate_time_quadrature(time_quadrature)
     kind = 'trapezoid' if time_quadrature == 'trapezoid' else 'simpson'
     if kind == 'simpson' and xpy is np:
         return my_simps
@@ -2965,11 +2966,14 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
         # as 'bandlimited' -- it only moves WHERE the refined grid is placed -- so it
         # inherits the same exclusions rather than getting a parallel set.
         if n_cal != 1:
+            why = ("it has not been validated with the calibration reduction"
+                   if time_quadrature == 'trapezoid' else
+                   "the cal reduction sums exp() over realizations, so each "
+                   "realization's kappa row must be refined and the derived factor "
+                   "reconciled across them; that is untested")
             raise NotImplementedError(
-                "time_quadrature=%r is not implemented for calibration " % time_quadrature +
-                "marginalization (n_cal=%d).  The cal reduction sums exp() over "
-                "realizations, so each realization's kappa row must be refined and the "
-                "derived factor reconciled across them; that is untested." % n_cal)
+                "time_quadrature=%r is not implemented for calibration "
+                "marginalization (n_cal=%d): %s." % (time_quadrature, n_cal, why))
         if return_cal_components:
             raise NotImplementedError(
                 "time_quadrature=%r is not implemented for return_cal_components, "

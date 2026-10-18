@@ -68,20 +68,33 @@ def test_trapezoid_is_selected_by_name():
     assert abs(rule(y, dx=DELTAT)[0] / simpson(y, dx=DELTAT)[0] - 1) > 1e-3
 
 
-def test_no_likelihood_selects_its_rule_by_backend():
-    # The defect's form was a bare reference to the vendored rule at a call site
-    # (`optimized_gpu_tools.simps if on_gpu else my_simps`), so match the name.
-    likelihood_dir = os.path.dirname(os.path.abspath(fl.__file__))
+def test_selector_refuses_an_unknown_name():
+    for bad in ('Trapezoid', 'log-hermite', 'trapz'):
+        with pytest.raises(ValueError):
+            fl.time_quadrature_rule(bad, np)
+
+
+def test_nothing_in_RIFT_reaches_the_vendored_rule():
+    # The defect's form was a bare reference at a call site
+    # (`optimized_gpu_tools.simps if on_gpu else my_simps`); an aliased import
+    # (`from .optimized_gpu_tools import simps as s`) is the same defect.  The CPU
+    # suite cannot see either one, so this guard is what CI has.
+    rift_dir = os.path.dirname(os.path.dirname(os.path.abspath(fl.__file__)))
     offenders = []
-    for fname in sorted(os.listdir(likelihood_dir)):
-        if not fname.endswith('.py') or fname == 'optimized_gpu_tools.py' or fname.startswith('test_'):
-            continue
-        tree = ast.parse(open(os.path.join(likelihood_dir, fname)).read())
-        for node in ast.walk(tree):
-            if (isinstance(node, ast.Attribute) and node.attr == 'simps'
-                    and isinstance(node.value, (ast.Name, ast.Attribute))
-                    and 'optimized_gpu_tools' in ast.dump(node.value)):
-                offenders.append('%s:%d' % (fname, node.lineno))
+    for root, _dirs, files in os.walk(rift_dir):
+        for fname in sorted(files):
+            if (not fname.endswith('.py') or fname == 'optimized_gpu_tools.py'
+                    or fname.startswith('test_')):
+                continue
+            path = os.path.join(root, fname)
+            for node in ast.walk(ast.parse(open(path).read())):
+                hit = (isinstance(node, ast.Attribute) and node.attr == 'simps'
+                       and 'optimized_gpu_tools' in ast.dump(node.value))
+                hit = hit or (isinstance(node, ast.ImportFrom)
+                              and (node.module or '').endswith('optimized_gpu_tools')
+                              and any(a.name == 'simps' for a in node.names))
+                if hit:
+                    offenders.append('%s:%d' % (os.path.relpath(path, rift_dir), node.lineno))
     assert not offenders, offenders
 
 
@@ -180,6 +193,24 @@ def test_noloop_only_list_matches_the_jax_driver():
     core = pytest.importorskip('RIFT.likelihood.jax_ile.core')
     assert set(tmq.NOLOOP_ONLY_TIME_QUADRATURES) == (
         set(tmq.TIME_QUADRATURE_CHOICES) - set(core._TIME_QUAD_CHOICES))
+
+
+@pytest.mark.parametrize('args, refused', [
+    ('--time-marginalization --time-marginalization-quadrature simpson', False),
+    ('--time-marginalization-quadrature trapezoid', True),
+    ('--time-marginalization-quadrature peak-local', True),
+    ('--time-marginalization-quadrature bandlimited', False),
+    # a hand-passed value after the helper's wins, as it does in optparse
+    ('--time-marginalization-quadrature simpson --time-marginalization-quadrature trapezoid', True),
+    ('--time-marginalization-quadrature trapezoid --time-marginalization-quadrature simpson', False),
+    ('--time-marginalization', False),
+])
+def test_jax_refusal_reads_the_assembled_arguments(args, refused):
+    if refused:
+        with pytest.raises(ValueError, match='does not implement'):
+            tmq.refuse_jax_unsupported_time_quadrature(args, 'args_ile.txt')
+    else:
+        tmq.refuse_jax_unsupported_time_quadrature(args, 'args_ile.txt')
 
 
 def test_pseudo_pipe_refuses_trapezoid_with_jax_ile():

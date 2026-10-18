@@ -181,6 +181,7 @@ __all__ = [
     "ILE_TIME_QUADRATURE_FLAG",
     "refuse_unless_time_quadrature_emitted",
     "refuse_unhonourable_time_quadrature",
+    "refuse_jax_unsupported_time_quadrature",
     "find_time_quadrature_in_ile_args",
     "draw_piecewise_linear_log_posterior",
     "time_marginalize_bandlimited",
@@ -708,6 +709,20 @@ def refuse_unhonourable_time_quadrature(time_quadrature, ile_args, where):
             "{}.  Refusing rather than running the historical Simpson quadrature while "
             "reporting that you asked for something else.".format(
                 time_quadrature, where, "; ".join(missing)))
+
+
+def refuse_jax_unsupported_time_quadrature(ile_args, where):
+    """Raise if ``ile_args`` selects a quadrature the JAX ILE driver does not implement.
+
+    Reads the bytes, so a value passed by hand (``--manual-extra-ile-args``, ini) is
+    caught as well as the pipeline option.  optparse takes the last occurrence.
+    """
+    found = [q for q in find_time_quadrature_in_ile_args(ile_args) if q is not None]
+    if found and found[-1] in NOLOOP_ONLY_TIME_QUADRATURES:
+        raise ValueError(
+            "--use-jax-ile: {} carries --time-marginalization-quadrature {!r}, which "
+            "bin/integrate_likelihood_extrinsic_jax does not implement, so every ILE job "
+            "would fail at startup.".format(where, found[-1]))
 
 
 def refuse_unless_time_quadrature_emitted(time_quadrature, ile_args, where):

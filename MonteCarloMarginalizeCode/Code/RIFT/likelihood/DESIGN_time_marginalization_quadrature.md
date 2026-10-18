@@ -145,7 +145,8 @@ linear, so each is a weight vector, `rule(I, dx)`:
 | odd  | `4/3, 2/3, 4/3, ...`      | identical |
 | even | `4/3, 2/3, ...`, tail `[5/4, 1, 5/12]` | `1, 1, 1, ...` (trapezoid), ends `[5/12, 13/12]` |
 
-npts is even at srate 4096 and 8192.  For a non-negative integrand the log-ratio is bounded
+npts is even at srate 4096 and 8192.  The scipy column holds for scipy >= 1.11 (IGWN ships
+1.13); older scipy defaults to `even='avg'` and matches the vendored rule.  For a non-negative integrand the log-ratio is bounded
 by `[ln(2/3), ln(4/3)]`, and a sharp peak saturates it: numpy vs cupy differed by up to
 0.405 nats through the shipped likelihood (oshaughnessy-junior/research-projects-RIT#204).
 
