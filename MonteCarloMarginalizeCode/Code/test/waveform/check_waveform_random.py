@@ -44,7 +44,6 @@ parser.add_argument("--stress-q4-edge", action='store_true')
 parser.add_argument("--stress-near-aligned", action='store_true')
 parser.add_argument("--mtot",default=40,type=float)
 parser.add_argument("--fmin",default=20,type=float)
-parser.add_argument("--seglen", default=8, type=int)
 parser.add_argument("--use-gwsignal",action='store_true')
 parser.add_argument("--use-extra-fd-args",action='store_true')
 parser.add_argument("--use-xphm-spintaylor",action='store_true') # see https://git.ligo.org/asimov/data/-/blob/main/analyses/bilby-bbh/analysis_bilby_IMRPhenomXPHM-SpinTaylor.yaml?ref_type=heads
@@ -61,6 +60,7 @@ parser.add_argument("--force-zero-inclination",action='store_true')
 parser.add_argument("--use-eccentric",action='store_true')
 parser.add_argument("--inj", default=None,help="inspiral XML file containing injection information.")
 parser.add_argument("--event",type=int, default=None,help="event ID of injection XML to use.")
+parser.add_argument("--seglen",default=8,type=int)
 parser.add_argument("--verbose",action='store_true')
 parser.add_argument("--assert-overlap", type=float, default=None,
                     help="fail unless the mode-sum/direct flat-noise overlap, maximized over integer time and constant phase, reaches this value")
@@ -105,7 +105,7 @@ if not(opts.fiducial or opts.stress_q4_edge or opts.stress_near_aligned) and not
       P.meanPerAno = np.random.uniform(0.0,2*np.pi)
 
 elif opts.inj:
-   if not(opts.event):
+   if (opts.event is None):
       print("ERROR: must specify event to use.")
       sys.exit(0)
    else:
@@ -117,6 +117,7 @@ elif opts.inj:
       xmldoc = utils.load_filename(filename, verbose = True, contenthandler =lalsimutils.cthdler)
       sim_inspiral_table = lsctables.SimInspiralTable.get_table(xmldoc)
       P.copy_sim_inspiral(sim_inspiral_table[int(event)])
+      P.taper = lalsimutils.lsu_TAPER_START
       P.tref = 0.0 ## force this for plotting purposes only - safe?
 else:
    print("Using fiducial event parameters.")
@@ -181,12 +182,15 @@ extra_waveform_args ={}
 extra_waveform_args['fd_centering_factor']= 0.9
 if opts.use_extra_fd_args:
     extra_waveform_args['fd_L_frame'] = True
-lal_waveform_args = {}
+# Keep the independent native reference consistent with RIFT mode generation.
+lal_waveform_args = {'PhenomXPHMMBandVersion': 0,
+                     'PhenomXHMThresholdMband': 0.,
+                     'PhenomXPHMThresholdMband': 0.}
 if opts.use_xphm_spintaylor:
-    lal_waveform_args = {'PhenomXPFinalSpinMod': 2,
+    lal_waveform_args.update({'PhenomXPFinalSpinMod': 2,
                         'PhenomXHMReleaseVersion': 122022,
-                        'PhenomXPrecVersion': 320}
-    extra_waveform_args['extra_waveform_args'] = lal_waveform_args
+                        'PhenomXPrecVersion': 320})
+extra_waveform_args['extra_waveform_args'] = lal_waveform_args
 
 
 P_copy = P.manual_copy() # beware, call may change P!
