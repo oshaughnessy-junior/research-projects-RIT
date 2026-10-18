@@ -89,6 +89,9 @@ def build_parser():
     for key, (typ, app) in _ILE_KEYS.items():
         p.add_argument("--" + key, type=typ, action="append" if app else "store", default=None)
     p.add_argument("--internal-waveform-fd-L-frame", action="store_true", default=None)
+    p.add_argument("--climb-l-max", type=int, default=2,
+                   help="l_max for the climb objective (default 2), overriding the ILE l_max: higher "
+                        "modes rarely matter for targeting, and l_max 2 cuts the kernel cost ~4x")
     p.add_argument("--climb-approx", default=None,
                    help="approximant for the climb (default: --approx). The climb only pays "
                         "off if this model's precession matches the analysis model's.")
@@ -101,7 +104,7 @@ def build_parser():
                    help="cap on the total number of output points (input + seeds)")
     p.add_argument("--n-start-eval", type=int, default=150,
                    help="input-grid points scored to choose the climb starts")
-    p.add_argument("--n-free-starts", type=int, default=2)
+    p.add_argument("--n-free-starts", type=int, default=4)
     p.add_argument("--chi1-perp-ladder", default="0.3,0.6")
     p.add_argument("--climb-chi2-perp", action="store_true",
                    help="also climb in (chi2_perp, phi2); default holds chi2_perp=0")
@@ -139,8 +142,11 @@ def build_parser():
     p.add_argument("--rb-eps", type=float, default=None,
                    help="ripple backend: relative binning with this phase bound per bin (e.g. 0.3); "
                         "the fiducial is the point each climb starts from")
-    p.add_argument("--no-sky-readapt", action="store_true",
-                   help="adapt the sky batch once, not before every climb")
+    p.add_argument("--sky-readapt", action="store_true",
+                   help="re-adapt the sky batch before every climb.  Off by default: a batch adapted at "
+                        "one climb's start favours that region (9 nats on S250830bp), so lnL from "
+                        "different climbs would not be comparable")
+    p.add_argument("--no-sky-readapt", action="store_true", help=argparse.SUPPRESS)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--output-dat", default=None,
                    help="write every climb evaluation (coordinates, lnL, label) here")
@@ -199,6 +205,8 @@ def main(argv=None):
     if missing:
         sys.exit("util_TransverseSeedClimb: missing settings %s (give --ile-args or options)" % missing)
 
+    if opts.climb_l_max:
+        opts.l_max = opts.climb_l_max
     # Coarser grids alias: on S250830bp an 8 x 4 grid moved lnL by up to 20 nats at
     # l_max 4 and reversed the mass-ratio ranking (J-frame modes populate every m).
     opts.nphi = opts.nphi or 8 * opts.l_max
@@ -261,6 +269,18 @@ def main(argv=None):
                                     for k in range(0, len(P_start), opts.popsize)])
     else:
         lnL_start = np.array([obj(P) for P in P_start])
+    # the first batch was adapted at an arbitrary grid point: adapt at the best scored
+    # point, and rescore the top of the list with that batch (used for every climb)
+    top = np.argsort(-lnL_start)[:min(20, len(idx))]
+    obj.adapt_sky(P_start[top[0]])
+    _Ptop = [P_start[i] for i in top]
+    if opts.mode_backend == "ripple":
+        _pad = (_Ptop + [_Ptop[0]] * opts.popsize)
+        lnL_top = np.concatenate([obj.batch(_pad[k:k + opts.popsize])[:len(_Ptop[k:k + opts.popsize])]
+                                  for k in range(0, len(_Ptop), opts.popsize)])
+    else:
+        lnL_top = np.array([obj(P) for P in _Ptop])
+    lnL_start = np.full(len(idx), -np.inf); lnL_start[top] = lnL_top
     order = idx[np.argsort(-lnL_start)]
     print(" [seedclimb] start grid: scored %d of %d points, best lnL %.2f (%.1f s)"
           % (len(idx), len(P_in), np.max(lnL_start), time.time() - t_start))
@@ -335,8 +355,11 @@ def main(argv=None):
     def readapt(x):
         x = project_kerr(np.asarray(x, dtype=float))
         P = x_to_P(x, P_base)
-        if P is not None and not opts.no_sky_readapt:
-            obj.adapt_sky(P)
+        if P is not None:
+            if opts.sky_readapt and not opts.no_sky_readapt:
+                obj.adapt_sky(P)                 # also refreshes the RB fiducial
+            elif opts.rb_eps:
+                obj.rb_refresh(P)                # the RB fiducial follows each climb
         return x
 
     oracle.run(np.array(starts), scale, between_climbs=readapt)

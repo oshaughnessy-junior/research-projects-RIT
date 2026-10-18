@@ -115,6 +115,18 @@ The sub file has no file transfer, so it needs the shared run directory
   1897 s against 10243 s, but landed at q = 0.51 (Bilby 0.59 to 0.98) with no
   seed in the Bilby box; bp3 at 4096 Hz had 63% in the box. Cause not yet
   isolated, so these options stay opt-in.
+- Decisions (RO, 2026-10-18): the climb is for targeting, and seeds need only
+  support large transverse spin near the peak, since the puff spreads around
+  them; points outside the Bilby box are acceptable. Speed matters more than
+  accuracy. The climb uses l_max 2 by default (`--climb-l-max`). The intended
+  production use is the parallel iteration-0 mode.
+- One sky batch serves all climbs (`--sky-readapt` restores per-climb
+  adaptation). A batch adapted at one climb's start scored that climb's best
+  point 9 nats higher than a common batch did, so lnL from different climbs was
+  not comparable. Four free starts by default.
+- bp4's miss was a search failure: every objective variant (4096 Hz; 1024 Hz;
+  1024 Hz with relative binning) prefers bp3's region by 5 to 15 nats, and
+  relative binning agrees with the full 1024 Hz objective to 0.3 nat there.
 - Cost per point is the precompute plus the kernel. See the RESULTS note in
   RIFT_roboto_paper `analyses/transverse_seed_climb/` for timings.
 - JAX on a CIT head node starts an XLA thread pool sized by the CPU count. With
