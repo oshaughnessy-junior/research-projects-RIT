@@ -91,10 +91,18 @@ The sub file has no file transfer, so it needs the shared run directory
   lalsim XPHM path to within 1.4 nats over a 7 to 46 nat range, with the same
   ranking of six test points. ripple is an optional dependency, for targeting
   and development; the dependency-free cupy port is PR #453.
-- Default kernel settings (S = 256 sky points, 8 x 4 phase/polarization grid,
-  24 distance nodes) are coarse on purpose: on PP 005 with ripple they cost
-  0.33 s per point against 1.29 s at (512, 16 x 8, 48), move lnL by up to
-  3 nats, and keep the ranking.
+- The phiref and psi grids default to 8 l_max and 4 l_max points. lnL has
+  phiref harmonics up to 2 l_max, and J-frame modes populate every m. On
+  S250830bp at l_max 4 an 8 x 4 grid moved lnL by up to 20 nats and reversed the
+  mass-ratio ranking (the ripple climb then settled at q = 0.28); at 32 x 16 the
+  ripple and lalsim objectives agree to 0.4 nats at 5 of 6 test points. An
+  earlier note here, that 8 x 4 kept the ranking, rested on one event and was
+  wrong.
+- ripple 0.4.1 XPHM itself departs from lalsim near q = 0.74 with s2z near -0.9
+  (h+ overlap 0.96 to 0.97); elsewhere tested it matches to 1e-5.
+- The sky batch adapts in (ra, sin dec) only and draws cos incl from its prior.
+  Inclination depends on frame, and a batch concentrated in incl biased the
+  comparison between intrinsic points.
 - Cost per point is the precompute plus the kernel. See the RESULTS note in
   RIFT_roboto_paper `analyses/transverse_seed_climb/` for timings.
 - JAX on a CIT head node starts an XLA thread pool sized by the CPU count. With

@@ -118,8 +118,9 @@ def build_parser():
     # objective
     p.add_argument("--n-sky", type=int, default=256)
     p.add_argument("--n-dist", type=int, default=24)
-    p.add_argument("--nphi", type=int, default=8)
-    p.add_argument("--npsi", type=int, default=4)
+    p.add_argument("--nphi", type=int, default=None,
+                   help="phiref grid; default 8*l_max (lnL has phiref harmonics up to 2*l_max)")
+    p.add_argument("--npsi", type=int, default=None, help="psi grid; default 4*l_max")
     p.add_argument("--objective", choices=["marginal", "profile"], default="marginal")
     p.add_argument("--device-precompute", choices=["off", "gpu", "numpy"], default="off",
                    help="reduce Q/U/V on the device (RIFT/likelihood/gpu_precompute.py, cupy); the "
@@ -189,6 +190,10 @@ def main(argv=None):
     if missing:
         sys.exit("util_TransverseSeedClimb: missing settings %s (give --ile-args or options)" % missing)
 
+    # Coarser grids alias: on S250830bp an 8 x 4 grid moved lnL by up to 20 nats at
+    # l_max 4 and reversed the mass-ratio ranking (J-frame modes populate every m).
+    opts.nphi = opts.nphi or 8 * opts.l_max
+    opts.npsi = opts.npsi or 4 * opts.l_max
     # JAX is imported only now, after argument checking
     from RIFT.likelihood.jax_ile.intrinsic_objective import (
         load_frame_data, IntrinsicMarginalObjective)

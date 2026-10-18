@@ -91,9 +91,14 @@ class SkyBatch:
 
     _LOG_PRIOR = -np.log(8 * np.pi)   # 1/(2pi * 2 * 2)
 
-    def __init__(self, n, rng):
+    def __init__(self, n, rng, adapt_incl=False):
         self.n = int(n)
         self.rng = rng
+        # adapt_incl False: the mixture covers (ra, sin dec) only and cos incl is
+        # drawn from its prior.  Inclination is frame-dependent (J vs L frame, and
+        # the L frame moves with the spins); a batch concentrated in incl biases
+        # the comparison between intrinsic points.  Sky position is not.
+        self.adapt_incl = bool(adapt_incl)
         self.gmm = None          # (weights, means, covs)
         self.f_prior = 1.0
         self.ra, self.dec, self.incl = _prior_draw(rng, self.n)
@@ -101,23 +106,26 @@ class SkyBatch:
 
     def _log_gmm(self, u):
         wts, mus, covs = self.gmm
-        shifts = [np.array([a, 0, 0]) for a in (0.0, 2 * np.pi, -2 * np.pi)]
+        d = mus.shape[1]
+        v0 = u[:, :d]
+        shifts = [np.array([a] + [0.0] * (d - 1)) for a in (0.0, 2 * np.pi, -2 * np.pi)]
+        mirrors = [(0, 0), (1, 0), (2, 0)] if d == 2 else [(a, b) for a in (0, 1, 2) for b in (0, 1, 2)]
         out = []
         for wk, mu, cov in zip(wts, mus, covs):
             L = np.linalg.cholesky(cov)
             logdet = 2 * np.sum(np.log(np.diag(L)))
             terms = []
             for sh in shifts:
-                for m1 in (0, 1, 2):
-                    for m2 in (0, 1, 2):
-                        v = u + sh
-                        if m1: v = v.copy(); v[:, 1] = (2 if m1 == 1 else -2) - v[:, 1]
-                        if m2: v = v.copy(); v[:, 2] = (2 if m2 == 1 else -2) - v[:, 2]
-                        z = np.linalg.solve(L, (v - mu).T)
-                        terms.append(-0.5 * np.sum(z ** 2, axis=0))
-            out.append(np.log(wk) - 0.5 * logdet - 1.5 * np.log(2 * np.pi)
+                for m1, m2 in mirrors:
+                    v = v0 + sh
+                    if m1: v = v.copy(); v[:, 1] = (2 if m1 == 1 else -2) - v[:, 1]
+                    if m2: v = v.copy(); v[:, 2] = (2 if m2 == 1 else -2) - v[:, 2]
+                    z = np.linalg.solve(L, (v - mu).T)
+                    terms.append(-0.5 * np.sum(z ** 2, axis=0))
+            out.append(np.log(wk) - 0.5 * logdet - 0.5 * d * np.log(2 * np.pi)
                        + logsumexp(np.array(terms), axis=0))
-        return logsumexp(np.array(out), axis=0)
+        lg = logsumexp(np.array(out), axis=0)
+        return lg if d == 3 else lg - np.log(2.0)      # times the uniform cos-incl density
 
     def log_q(self, u):
         lp = self._LOG_PRIOR * np.ones(len(u))
@@ -134,13 +142,14 @@ class SkyBatch:
         lw = np.asarray(log_weight) - np.max(log_weight)
         w = np.exp(lw); w /= w.sum()
         neff = 1.0 / np.sum(w ** 2)
-        x = u[self.rng.choice(len(w), size=n_resample, p=w)]
+        d = 3 if self.adapt_incl else 2
+        x = u[self.rng.choice(len(w), size=n_resample, p=w)][:, :d]
         # cut the ra circle at its widest empty gap so no mode straddles 0/2pi
         r = np.sort(np.mod(x[:, 0], 2 * np.pi))
         gaps = np.diff(np.concatenate([r, [r[0] + 2 * np.pi]]))
         cut = r[np.argmax(gaps)] + 0.5 * np.max(gaps)
         x[:, 0] = np.mod(x[:, 0] - cut, 2 * np.pi) + cut
-        jitter = self.rng.normal(scale=[0.01, 0.005, 0.01], size=x.shape)   # break exact duplicates
+        jitter = self.rng.normal(scale=[0.01, 0.005, 0.01][:d], size=x.shape)   # break exact duplicates
         x = x + jitter
         best, best_bic = None, np.inf
         for k in range(1, max_components + 1):
@@ -162,13 +171,15 @@ class SkyBatch:
             wts, mus, covs = self.gmm
             m = self.n - n_prior
             comp = self.rng.choice(len(wts), size=m, p=wts / wts.sum())
+            d = mus.shape[1]
             u_k = np.empty((m, 3))
+            u_k[:, 2] = self.rng.uniform(-1, 1, m)          # cos incl from the prior unless adapted
             for c in range(len(wts)):
                 sel = comp == c
                 if np.any(sel):
-                    u_k[sel] = self.rng.multivariate_normal(mus[c], covs[c], size=int(sel.sum()))
+                    u_k[sel, :d] = self.rng.multivariate_normal(mus[c], covs[c], size=int(sel.sum()))
             u_k[:, 0] = np.mod(u_k[:, 0], 2 * np.pi)
-            for k in (1, 2):
+            for k in range(1, d):
                 y = np.mod(u_k[:, k] + 1, 4)                      # reflect into [-1, 1]
                 u_k[:, k] = np.where(y > 2, 4 - y, y) - 1
             u = np.concatenate([u, u_k])
@@ -199,7 +210,7 @@ class IntrinsicMarginalObjective:
                  integration_window_half=0.075, interp=None, reduce="marginal",
                  waveform_kwargs=None, seed=0, verbose=False, analyticPSD_Q=False,
                  device_precompute=False, device_check_rtol=1e-8,
-                 mode_backend="lalsim"):
+                 mode_backend="lalsim", adapt_incl=False):
         self.data_dict, self.psd_dict = data_dict, psd_dict
         self.P_base = P_base.copy()
         self.event_time = float(event_time)
@@ -229,7 +240,7 @@ class IntrinsicMarginalObjective:
         self.phi_grid = core.phi_ref_grid(nphi)
         self.psi_grid = core.psi_grid(npsi)
         self.rng = np.random.default_rng(seed)
-        self.sky = SkyBatch(n_sky, self.rng)
+        self.sky = SkyBatch(n_sky, self.rng, adapt_incl=adapt_incl)
         self._template = None
         self._key = None
         self._kernel = None
