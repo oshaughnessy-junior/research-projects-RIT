@@ -139,12 +139,21 @@ class XPNRSourceBasis:
         self.beta_new=float(np.interp(Q.fref,freq.data,beta.data))
         self.kappa_old0,_,_=_geometry(self.beta_old,self.phiJ,0.,0.)
         self.kappa_new0,self.zeta0,_=_geometry(self.beta_new,self.phiJ,0.,0.)
+        # Cache backend-neutral scalars: CuPy rejects NumPy zero-dimensional arrays.
+        self.kappa_old0=float(self.kappa_old0)
+        self.kappa_new0=float(self.kappa_new0)
+        self.zeta0=float(self.zeta0)
         self.reference_spin=('s1' if np.hypot(Q.s1x,Q.s1y)>=np.hypot(Q.s2x,Q.s2y) else 's2')
         if max(np.hypot(Q.s1x,Q.s1y),np.hypot(Q.s2x,Q.s2y))<1e-3:
             raise ValueError('This generic precessing basis excludes the native aligned/fallback branch')
+        # Native OneMode and polarization routes initialize the aligned waveform
+        # struct on opposite sides of the equal-mass spin-ordering check. Undo
+        # that interface mismatch ONLY for mode generation; physical PE spins,
+        # frame geometry and public angle/preflight arguments retain input order.
+        spin1=(Q.s1x,Q.s1y,Q.s1z);spin2=(Q.s2x,Q.s2y,Q.s2z)
+        if Q.m1==Q.m2:spin1,spin2=spin2,spin1
         def modes(phase,anti,convention=1):
-            h=lalsim.SimInspiralChooseFDModes(Q.m1,Q.m2,Q.s1x,Q.s1y,Q.s1z,
-                Q.s2x,Q.s2y,Q.s2z,Q.deltaF,generation_min,.5/Q.deltaT,
+            h=lalsim.SimInspiralChooseFDModes(Q.m1,Q.m2,*spin1,*spin2,Q.deltaF,generation_min,.5/Q.deltaT,
                 Q.fref,phase,Q.dist,0.,_dictionary(Q,anti,convention),Q.approx)
             return lsu.SphHarmFrequencySeries_to_dict(h,min(Lmax,4))
         symmetric=modes(0.,False);full=modes(0.,True)
@@ -174,7 +183,8 @@ class XPNRSourceBasis:
             reference_frequency=float(Q.fref),generation_minimum=float(generation_min),
             generation_nyquist=float(.5/Q.deltaT),beta_old=self.beta_old,
             beta_new=self.beta_new,phiJ=self.phiJ,
-            native_commit=lalsim.SimulationVCSInfo.vcsId)
+            native_commit=lalsim.SimulationVCSInfo.vcsId,
+            equal_mass_mode_spin_swap=bool(Q.m1==Q.m2))
         self._ready=True
         return out
 
@@ -243,7 +253,9 @@ class XPNRSourceBasis:
             # rotation of BOTH spins. This also rejects changed spin magnitudes.
             fref=field_value('fref')
             if fref is not None:
-                normalized=xpy.where(xpy.asarray(fref)==0.,self.parameters.fmin,xpy.asarray(fref))
+                effective_min=field_value('fmin')
+                if effective_min is None:effective_min=self.parameters.fmin
+                normalized=xpy.where(xpy.asarray(fref)==0.,xpy.asarray(effective_min),xpy.asarray(fref))
                 if bool(xpy.any(~xpy.isfinite(normalized))) or bool(xpy.any(xpy.abs(normalized-self.parameters.fref)>1e-12*max(self.parameters.fref,1.))):
                     raise ValueError('basis reuse changes intrinsic spin reference frequency')
             for name in ('m1','m2','s1z','s2z'):

@@ -250,6 +250,24 @@ def test_common_shifted_source_frequency_grid_is_refused():
             source_basis_generator=lambda *args:(bank,bank),quiet=True,verbose=False)
 
 
+@pytest.mark.parametrize('changed', ['f0', 'deltaF', 'length'])
+def test_secondary_detector_must_match_source_frequency_grid(changed):
+    data = lsu.DataFourier(time_series(np.zeros(32), 0.))
+    second = lsu.DataFourier(time_series(np.zeros(33 if changed == 'length' else 32), 1.))
+    # Distinct detector epochs are supported. Frequency origins/resolutions and
+    # lengths are not: all Q/U/V terms must use the actual source grid.
+    if changed == 'f0':
+        second.f0 = data.f0 + 64.
+    elif changed == 'deltaF':
+        second.deltaF = 2 * data.deltaF
+    bank = {LABELS[0]: data, LABELS[1]: data}
+    with pytest.raises(ValueError, match=r'every detector data frequency grid \(L1\)'):
+        fl.PrecomputeLikelihoodTerms(EVENT, .1, physical_parameters(),
+            {'H1': data, 'L1': second}, {'H1': None, 'L1': None}, 2, 400.,
+            ignore_threshold=None, source_basis_generator=lambda *args: (bank, bank),
+            quiet=True, verbose=False)
+
+
 def test_full_source_parameter_vector_reaches_coefficients(problem):
     seen = []
     def angular(labels, incl, phase, *, P_vec, **kwargs):

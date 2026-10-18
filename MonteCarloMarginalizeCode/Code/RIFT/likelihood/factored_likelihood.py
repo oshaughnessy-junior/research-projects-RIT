@@ -627,9 +627,10 @@ def PrecomputeLikelihoodTerms(event_time_geo, t_window, P, data_dict,
         if not hlms or set(hlms) != set(hlms_conj):
             raise ValueError("Source basis and conjugate basis must have identical nonempty keys")
         reference = next(iter(hlms.values()))
-        if (reference.deltaF != first_data.deltaF or reference.f0 != first_data.f0 or
-            reference.data.length != first_data.data.length):
-            raise ValueError("Source basis must use the data frequency grid")
+        for detector, data in data_dict.items():
+            if (reference.deltaF != data.deltaF or reference.f0 != data.f0 or
+                reference.data.length != data.data.length):
+                raise ValueError("Source basis must use every detector data frequency grid (" + detector + ")")
         for bank in (hlms, hlms_conj):
             if any(h.deltaF != reference.deltaF or h.f0 != reference.f0 or
                    h.data.length != reference.data.length or h.epoch != reference.epoch

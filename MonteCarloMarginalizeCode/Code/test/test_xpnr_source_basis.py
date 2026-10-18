@@ -153,3 +153,66 @@ def test_source_frequency_metadata_normalization_preserves_waveform_bytes(monkey
         assert actual.epoch==previous.epoch and actual.deltaF==previous.deltaF
     assert supplied[LABELS[0]].data.data.tobytes()==values.tobytes()
     assert supplied[LABELS[0]].f0==-.5/p.deltaT
+
+
+def test_zero_reference_uses_supplied_minimum():
+    b=basis();p=fields(b);p.update(fref=0.,fmin=30.)
+    with pytest.raises(ValueError,match='reference frequency'):
+        b.angular_coefficients(LABELS,.8,.7,P_vec=p)
+
+
+@pytest.fixture(scope='module',params=[(50.,20.),(50.,30.),(49.9,20.)])
+def native_source(request):
+    import lal,lalsimulation as ls
+    from RIFT import lalsimutils as lsu
+    p=lsu.ChooseWaveformParams();p.m1=50*lal.MSUN_SI;p.m2=request.param[0]*lal.MSUN_SI
+    p.s1x,p.s1y,p.s1z=.7,.1,.1;p.s2x,p.s2y,p.s2z=-.4,.3,-.4
+    p.fmin=20.;p.fref=request.param[1];p.deltaT=1/2048;p.deltaF=1/4
+    p.dist=400e6*lal.PC_SI;p.approx=ls.IMRPhenomXPNR
+    b=XPNRSourceBasis();raw=b.generate_raw(p)
+    return p,b,raw
+
+
+def test_native_mode_interface_order_preserves_both_sectors(native_source):
+    import lalsimulation as ls
+    from RIFT.likelihood.xpnr_source_basis import _dictionary
+    p,b,raw=native_source;labels=tuple(raw);matrix=np.array([raw[k].data.data for k in labels])
+    assert all(type(getattr(b,name)) is float for name in ('kappa_old0','kappa_new0','zeta0'))
+    assert b.metadata['equal_mass_mode_spin_swap']==(p.m1==p.m2)
+    # Original physical input labels remain available to validate PE reuse.
+    assert b.parameters.s1z==p.s1z and b.parameters.s2z==p.s2z
+    for delta,incl,phase in [(0.,1.5,1.2),(.5,.3,2.8),(-2.7,2.4,.1)]:
+        q=p.manual_copy();q.incl=incl;q.phiref=phase
+        for spin in ('s1','s2'):
+            z=complex(getattr(q,spin+'x'),getattr(q,spin+'y'))*np.exp(1j*delta)
+            setattr(q,spin+'x',z.real);setattr(q,spin+'y',z.imag)
+        coefficients=b.angular_coefficients(labels,incl,phase,P_vec=q)[0]
+        for anti in (False,True):
+            use=np.array([anti or k[2][0]=='S' for k in labels])
+            h=coefficients[use]@matrix[use];hc=np.conj(h[::-1]);mid=len(h)//2
+            reconstructed=[(.5*(h+hc))[mid:],(.5j*(h-hc))[mid:]]
+            native=ls.SimInspiralChooseFDWaveform(q.m1,q.m2,q.s1x,q.s1y,q.s1z,
+                q.s2x,q.s2y,q.s2z,q.dist,incl,phase,0.,0.,0.,q.deltaF,
+                18.,1024.,q.fref,_dictionary(q,anti),q.approx)
+            band=(np.arange(len(reconstructed[0]))*q.deltaF>=20.)&(np.arange(len(reconstructed[0]))*q.deltaF<=512.)
+            for actual,reference in zip(reconstructed,native):
+                ref=reference.data.data
+                residual=np.linalg.norm((actual-ref)[band])/np.linalg.norm(ref[band])
+                assert residual<(1e-9 if delta==0 else 1e-4)
+
+
+def test_actual_native_source_callback_cupy(native_source):
+    cp=pytest.importorskip('cupy')
+    try:
+        if cp.cuda.runtime.getDeviceCount()<1:pytest.skip('CUDA device unavailable')
+    except cp.cuda.runtime.CUDARuntimeError:pytest.skip('CUDA runtime unavailable')
+    p,b,raw=native_source;labels=tuple(raw);angles=np.array([.3,.8,1.5])
+    delta=np.array([0.,.5,-2.7]);values=fields(b)
+    for spin in ('s1','s2'):
+        z=complex(getattr(p,spin+'x'),getattr(p,spin+'y'))*np.exp(1j*delta)
+        values[spin+'x'],values[spin+'y']=z.real,z.imag
+    values.update(fref=p.fref,fmin=p.fmin)
+    expected=b.angular_coefficients(labels,angles,.7,P_vec=values)
+    device_values={key:cp.asarray(value) for key,value in values.items()}
+    actual=b.angular_coefficients(labels,cp.asarray(angles),cp.asarray(.7),xpy=cp,P_vec=device_values)
+    np.testing.assert_allclose(cp.asnumpy(actual),expected,rtol=1e-12,atol=1e-12)

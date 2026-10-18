@@ -15,7 +15,7 @@ ignore_threshold=None)` invokes `generator(P,Lmax)` after setting the ordinary
 reference distance and frequency resolution. The generator returns FD component
 dictionaries `(h, h_conj)`, where `h_conj[key]` is the Fourier transform of the
 actual complex-conjugate time series. It must not infer conjugation from `-m`
-parity. Source components must match the data's frequency origin as well as its
+parity. Source components must match every detector's frequency origin as well as its
 resolution and length. Native ChooseFDModes arrays may carry f0=0 metadata despite
 ascending centered data. The XPNR source callback normalizes its owned native
 component metadata to -Nyquist before shared conditioning, so the conditioned TD
@@ -118,3 +118,24 @@ harness hashes, conditioning settings and use of the existing optional batched
 cross-term precompute. The mathematical complete-pair computation is retained
 on either cross-term path. This CPU result does not claim the production GPU,
 calibration or analytic-marginalization gates have been met.
+
+## Adversarial expansion and matched-object likelihood oracle
+
+The exact equal-mass two-spin case exposed native mode/polarization spin-order
+call-depth differences. The source adapter compensates only mode-call arguments;
+physical PE parameters, angle helpers and NoLoop contractions retain their input
+order. Cached intrinsic reference angles are Python scalars so the real CuPy
+callback can use them. Zero-reference reuse resolves the supplied minimum
+frequency, and every detector must match the source frequency grid.
+
+The expanded scientific gate has four generic sources and 288 fixed points. Its
+mandatory independent likelihood oracle generates native polarizations at the
+same 18 Hz start as the source bank, applies the declared common linear
+conditioner, and evaluates detector responses and direct bin sums without using
+source components or angular coefficients. Both raw native20/native18 waveform
+criteria and Bilby identities remain required. The likelihood tolerance remains
+0.1 nat. The original raw-native20 comparison remains explicitly recorded: one
+equal-mass point exceeds it at 0.106947 nat, while the component-direct error is
+0.002633 nat. `--require-requested-start` retains that original criterion as an
+ordinary failing generation/conditioning diagnostic; the historical failed
+receipt is not relabeled. No fitted lag/phase or tolerance inflation is used.

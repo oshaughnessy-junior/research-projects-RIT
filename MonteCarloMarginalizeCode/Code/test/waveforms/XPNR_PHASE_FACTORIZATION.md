@@ -211,3 +211,41 @@ mode32 mixing and expose coS32 residuals3.13944e-4,5.64428e-5,5.41910e-5 while
 coS21/22/33/44 remain below9.78e-10. The1e-7 precision contract intentionally fails
 on the tested native build; this belongs to the visible input-model checks, not
 to a masked or xfailed production RIFT regression.
+
+### Exact equal-mass native interface ordering
+
+The precision basis compensates a native interface inconsistency only when
+`m1 == m2`, by exchanging the two **complete** Cartesian spin argument triples
+at `SimInspiralChooseFDModes`. Stored physical parameters, reference-frame
+geometry, public angle queries, preflight, and PE spin-rotation validation retain
+the original labels. No mass perturbation, fitted phase, or symmetry projection
+is applied. The receipt records `equal_mass_mode_spin_swap`.
+
+This follows the pinned LALSuite `548bc5710bea021239da56e9beff1feaae163956`
+call graph. `LALSimIMRPhenomXUtilities.c:562` uses strict `m1 > m2` in
+`XLALIMRPhenomXPCheckMassesAndSpins`, exchanging spins at equality.
+`LALSimIMRPhenomX_internals.c:341` instead uses `m1 >= m2`, preserving input
+aligned spins at equality. The polarization entry in
+`LALSimIMRPhenomXPHM.c:196–203,277` saves the original aligned spins before the
+checker and initializes the waveform struct from those originals. The mode
+entry `OneMode` at `2324,2403` initializes that struct from the already checked
+spins; `XPHMModes:3487` calls this entry for each mode. Thus the two interfaces
+assign opposite aligned-spin labels at exact equality. The full-spin exchange
+at the mode interface restores the polarization convention; unequal masses use
+the original argument order.
+
+The regression compares both symmetric and full asymmetric polarization sectors
+against independent native `ChooseFDWaveform`, at exact equal mass with reference
+frequencies 20/30 Hz, and a nearby unequal-mass control. It includes changed
+inclinations/phases and common physical PE spin rotations. Fixed-Cartesian
+controls require relative residual below `1e-9`; rotated controls require
+`1e-4`, retaining the previously documented native numerical covariance envelope.
+Independent review also checked 28 mode-only compensation controls: fixed-input
+maximum residual `3.90e-13`, rotated maximum `4.685e-5`.
+
+Reference observer angles are cached as Python floats, avoiding host NumPy
+zero-dimensional arrays in the CuPy callback. An optional CUDA regression uses
+all actual native components and PE-rotated device spin fields. For supplied
+`P_vec.fref == 0`, the effective reference frequency is the supplied `P_vec.fmin`
+when present; changing that effective frequency refuses reuse of the intrinsic
+bank. These checks preserve the precomputed reference spin frequency.
