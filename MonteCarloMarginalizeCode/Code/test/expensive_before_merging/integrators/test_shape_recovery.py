@@ -17,8 +17,9 @@ import os
 
 import pytest
 
-from shape_recovery import (GROUP_CASES, GroupedMixtureTarget, MixtureTarget, PRESETS,
-                            assert_rift_under_test, cell_budget, evaluate, run_group_case, run_one)
+from shape_recovery import (GROUP_CASES, NARROW_FLAT_CASES, GroupedMixtureTarget, MixtureTarget,
+                            NarrowFlatTarget, PRESETS, assert_rift_under_test, cell_budget,
+                            evaluate, run_group_case, run_narrow_flat_case, run_one)
 
 _EXPENSIVE = bool(os.environ.get("RIFT_RUN_EXPENSIVE"))
 
@@ -92,3 +93,12 @@ def test_group_case(kind, sizes, ncomp, tseed, nmax, neff):
     status, reasons = evaluate(run_group_case(kind, target, nmax, neff))
     assert status == "PASS", "{} on {}: {} -- {}".format(kind, target.name, status,
                                                          "; ".join(reasons))
+
+
+@pytest.mark.parametrize("sigma,n_flat,nmax,neff,n_seeds", NARROW_FLAT_CASES)
+def test_narrow_flat_case(sigma, n_flat, nmax, neff, n_seeds):
+    """AV lnZ on a narrow peak with flat axes, at production bounds (OPEN_av_412_narrow_flat_axes)."""
+    target = NarrowFlatTarget(sigma, n_flat)
+    r = run_narrow_flat_case(target, nmax, neff, n_seeds)
+    status, reasons = evaluate(r)
+    assert status == "PASS", "{}: {} -- {}".format(target.name, status, "; ".join(reasons))

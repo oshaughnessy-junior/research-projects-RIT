@@ -43,6 +43,11 @@ Notes for agents:
   drawn, scored or written into rows (`MonteCarloEnsemble._sample`, `gmm.sample`/`score`)
   is visible only there.  `--preset standard` runs it; alone: `shape_recovery.py --no-matrix
   --warm-cases off --group-cases on` (about 10-25 s with `--jobs 6`).
+- The narrow-flat lane (`AV_narrowflat`; `NARROW_FLAT_CASES`) runs AV at production bounds on
+  a peak narrower than one bin on two axes, with three flat axes, at several run seeds, and
+  gates the mean lnZ against the exact value.  The mixture matrix never reaches this regime
+  (see DESIGN_av_coverage_guard.md).  `--preset standard` runs it; alone: `shape_recovery.py
+  --no-matrix --warm-cases off --group-cases off --narrow-flat-cases on` (about 20 s).
 - If your change is behind an opt-in flag, the default-path gate will show
   bitwise-identical results; you must ALSO probe the flag ON (use
   shape_recovery.py as a library; see its docstring).
