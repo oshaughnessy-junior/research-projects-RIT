@@ -117,14 +117,18 @@ def build_parser():
                    help="widen the (mu1, mu2) box of the input grid by this fraction")
     # objective
     p.add_argument("--n-sky", type=int, default=256)
-    p.add_argument("--n-dist", type=int, default=48)
-    p.add_argument("--nphi", type=int, default=16)
-    p.add_argument("--npsi", type=int, default=8)
+    p.add_argument("--n-dist", type=int, default=24)
+    p.add_argument("--nphi", type=int, default=8)
+    p.add_argument("--npsi", type=int, default=4)
     p.add_argument("--objective", choices=["marginal", "profile"], default="marginal")
     p.add_argument("--device-precompute", choices=["off", "gpu", "numpy"], default="off",
                    help="reduce Q/U/V on the device (RIFT/likelihood/gpu_precompute.py, cupy); the "
                         "first point is also built on CPU and compared. 'numpy' runs the same "
                         "array code on the host (tests). Waveforms stay on CPU (lalsim).")
+    p.add_argument("--mode-backend", choices=["lalsim", "ripple"], default="lalsim",
+                   help="'ripple': IMRPhenomXPHM modes from ripple (optional dependency, "
+                        "RIFT/likelihood/jax_ile/ripple_modes.py), so the whole objective runs on the "
+                        "accelerator. J-frame modes without RIFT conditioning; --climb-approx is ignored.")
     p.add_argument("--no-sky-readapt", action="store_true",
                    help="adapt the sky batch once, not before every climb")
     p.add_argument("--seed", type=int, default=0)
@@ -219,7 +223,8 @@ def main(argv=None):
         integration_window_half=opts.data_integration_window_half,
         waveform_kwargs=dict(ignore_threshold=None, extra_waveform_kwargs=wf_extra),
         seed=opts.seed, verbose=opts.verbose,
-        device_precompute={"off": False, "gpu": True, "numpy": "numpy"}[opts.device_precompute])
+        device_precompute={"off": False, "gpu": True, "numpy": "numpy"}[opts.device_precompute],
+        mode_backend=opts.mode_backend)
 
     # --- starting grid: score a subset, pick distinct starts --------------------
     rng = np.random.default_rng(opts.seed)

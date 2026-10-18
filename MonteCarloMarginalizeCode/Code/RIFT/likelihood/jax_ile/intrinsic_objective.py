@@ -28,6 +28,7 @@ import jax.dlpack
 from jax.scipy.special import logsumexp
 
 from RIFT import lalsimutils
+from RIFT.likelihood import factored_likelihood
 from . import core
 from .wrapper import build_data_from_precompute
 
@@ -197,7 +198,8 @@ class IntrinsicMarginalObjective:
                  d_prior="euclidean", storage_window_half=0.15,
                  integration_window_half=0.075, interp=None, reduce="marginal",
                  waveform_kwargs=None, seed=0, verbose=False, analyticPSD_Q=False,
-                 device_precompute=False, device_check_rtol=1e-8):
+                 device_precompute=False, device_check_rtol=1e-8,
+                 mode_backend="lalsim"):
         self.data_dict, self.psd_dict = data_dict, psd_dict
         self.P_base = P_base.copy()
         self.event_time = float(event_time)
@@ -215,6 +217,12 @@ class IntrinsicMarginalObjective:
         self.device_precompute = device_precompute
         self.device_check_rtol = float(device_check_rtol)
         self._device = None
+        # mode_backend 'ripple': XPHM modes from ripple (ripple_modes.py), reduced
+        # to Q/U/V in JAX; the whole objective runs on the accelerator.  J-frame
+        # modes, t = 0 at the LAL FD reference: valid for this orientation-
+        # marginalized objective only.  P.approx is ignored on this path.
+        self.mode_backend = mode_backend
+        self._ripple = None
         self.t_waveform = 0.0
         self.x_grid, self.log_w_grid = core.make_distance_grid(
             d_min, d_max, n_grid=n_dist, d_prior=d_prior)
@@ -244,6 +252,11 @@ class IntrinsicMarginalObjective:
         return P
 
     def precompute(self, P):
+        if self.mode_backend == "ripple":
+            t0 = time.time()
+            data = self._ripple_precompute(P)
+            self.t_precompute += time.time() - t0
+            return data, {}
         if self.device_precompute and self._template is not None:
             t0 = time.time()
             data = self._device_precompute(P)
@@ -259,6 +272,57 @@ class IntrinsicMarginalObjective:
         if self.device_precompute and self._template is None:
             self._check_device_against(P, data)
         return data, extras
+
+    # -- ripple backend ---------------------------------------------------------
+    def _ripple_setup(self):
+        from .ripple_modes import RippleXPHMModes, reduce_qvu
+        P = self._prepare(self.P_base)
+        d0 = self.data_dict[list(self.data_dict)[0]]
+        freqs = d0.f0 + d0.deltaF * np.arange(d0.data.length)
+        fNyq = 0.5 / P.deltaT
+        modes = RippleXPHMModes(freqs, P.fmin, self.fmax or fNyq, P.fref, l_max=self.l_max,
+                                dist_mpc=core.DIST_MPC_REF)
+        dets = {}
+        for det, dfd in self.data_dict.items():
+            IP = lalsimutils.ComplexOverlap(P.fmin, self.fmax, fNyq, P.deltaF, self.psd_dict[det],
+                                            self.analyticPSD_Q, False, 0.0, full_output=True)
+            from RIFT.likelihood import factored_likelihood as fl
+            t_det = fl.ComputeArrivalTimeAtDetector(det, 0.0, 0.0, self.event_time)
+            rho_epoch = float(dfd.epoch)          # mode epoch 0
+            n_shift = int((float(t_det) - self.swh - rho_epoch) / P.deltaT + 0.5)
+            dets[det] = dict(w=jnp.asarray(np.asarray(IP.weights2side, dtype=np.float64)),
+                             d=jnp.asarray(np.asarray(dfd.data.data)), n_shift=n_shift,
+                             epoch=rho_epoch + n_shift * P.deltaT)
+        n_window = int(2 * self.swh / P.deltaT)
+        df = float(d0.deltaF)
+
+        def _all(m1, m2, c1, c2):
+            h = modes._modes(m1, m2, c1, c2)
+            return {det: reduce_qvu(h, v["d"], v["w"], df, v["n_shift"], n_window)
+                    for det, v in dets.items()}
+        self._ripple = dict(modes=modes, dets=dets, fn=jax.jit(_all), deltaT=P.deltaT)
+
+    def _ripple_precompute(self, P):
+        if self._ripple is None:
+            self._ripple_setup()
+        r = self._ripple
+        t0 = time.time()
+        out = r["fn"](jnp.asarray(P.m1 / lal.MSUN_SI), jnp.asarray(P.m2 / lal.MSUN_SI),
+                      jnp.asarray([P.s1x, P.s1y, P.s1z]), jnp.asarray([P.s2x, P.s2y, P.s2z]))
+        jax.block_until_ready(out)        # so t_waveform is not billed to the kernel
+        self.t_waveform += time.time() - t0
+        lms = r["modes"].lms
+        if self._template is None:
+            packed = {det: dict(lms=np.array(lms), rholmArray=np.asarray(q).T, U=np.asarray(u),
+                                V=np.asarray(v), epoch=r["dets"][det]["epoch"])
+                      for det, (q, u, v) in out.items()}
+            tvals = factored_likelihood.marginalization_time_grid(self.iwh, r["deltaT"], xpy=np)
+            return core.build_likelihood_data(packed, r["deltaT"], self.event_time, tvals)
+        d = copy.copy(self._template)
+        d.detectors = {det: dict(lms=[tuple(x) for x in lms], npts_full=int(q.shape[0]),
+                                 epoch=float(self._template.detectors[det]["epoch"]),
+                                 Q=q, U=u, V=v) for det, (q, u, v) in out.items()}
+        return d
 
     # -- device precompute ----------------------------------------------------
     def _device_setup(self):

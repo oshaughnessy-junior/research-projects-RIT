@@ -83,6 +83,18 @@ The sub file has no file transfer, so it needs the shared run directory
   the rotating finite-response likelihood. The first point is also built on CPU
   and compared. lalsim mode generation stays on CPU and is the floor: about
   1.6 s (l_max 2) and 3.3 s (l_max 4) per point on S250830bp (32 s at 4096 Hz).
+- `--mode-backend ripple` takes IMRPhenomXPHM modes from ripple 0.4.1
+  (`RIFT/likelihood/jax_ile/ripple_modes.py`), so the objective runs on the
+  accelerator. ripple's h+, hx match lalsim XPHM to overlap 0.999999. The modes
+  are J-frame and unconditioned, which is valid only because the objective
+  marginalizes orientation. On PP 005 (pcdev11) the objective agrees with the
+  lalsim XPHM path to within 1.4 nats over a 7 to 46 nat range, with the same
+  ranking of six test points. ripple is an optional dependency, for targeting
+  and development; the dependency-free cupy port is PR #453.
+- Default kernel settings (S = 256 sky points, 8 x 4 phase/polarization grid,
+  24 distance nodes) are coarse on purpose: on PP 005 with ripple they cost
+  0.33 s per point against 1.29 s at (512, 16 x 8, 48), move lnL by up to
+  3 nats, and keep the ranking.
 - Cost per point is the precompute plus the kernel. See the RESULTS note in
   RIFT_roboto_paper `analyses/transverse_seed_climb/` for timings.
 - JAX on a CIT head node starts an XLA thread pool sized by the CPU count. With
