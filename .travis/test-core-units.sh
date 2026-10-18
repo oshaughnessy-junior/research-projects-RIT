@@ -128,6 +128,7 @@ FILES=(
   "$C/test/test_distance_tail.py"
   "$C/test/test_dslice_device_native.py"
   "$C/test/test_dslice_walkout.py"
+  "$C/test/test_dslice_bounds.py"
   # -- hyperpipe (paper4 area; the hydra leg is rostered OPTDEP, not here)
   "$C/test/hyperpipe/tests/test_config.py"
   "$C/test/hyperpipe/tests/test_coords.py"
@@ -461,7 +462,8 @@ done
 # test_dslice_rf_tails.py adds 10 tests and no skips -> 888/868.
 # test_dslice_amplitude_model.py: +1 (_lognorm chunk memory bound), passes, no skips -> 889/869.
 # test_dslice_walkout.py adds 12 tests and no skips -> 901/881.
-EXPECTED_TESTS=901
+# test_dslice_bounds.py adds 2 tests and no skips -> 903/883.
+EXPECTED_TESTS=903
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -484,7 +486,8 @@ EXPECTED_TESTS=901
 # test_fd_end_taper_cap.py adds 3 tests and no skips; 878/858 (above).
 # test_dslice_rf_tails.py adds 10 tests and no skips; 888/868 (above).
 # test_dslice_walkout.py adds 12 tests and no skips; 901/881 (above).
-EXPECTED_PASSED=881
+# test_dslice_bounds.py adds 2 tests and no skips; 903/883 (above).
+EXPECTED_PASSED=883
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 MAX_SKIPPED=19
 
