@@ -1,0 +1,5 @@
+ no cupy (factored)
+The pyseobnr package has failed to load, you will not be able to employ SEOBNRv5 approximants.
+ early-time multirate: backend numpy
+ early-time multirate: schedule /var/folders/s8/z3q_zcj5431b31bb3j3tdxn40000gs/T/tmpjsfv7qtg/two_rate.json (hash 1cd16ecdc1c1), H1: early 256 Hz before t_det - 60 s, late 128 s at 4096 Hz
+PASS: XPHM two-rate vs one-segment full-rate at 1e-5

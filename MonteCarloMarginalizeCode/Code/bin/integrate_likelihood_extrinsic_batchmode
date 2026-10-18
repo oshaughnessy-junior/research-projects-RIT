@@ -387,6 +387,7 @@ optp.add_option("--response-order-Q-reference", "--response-order-q-reference", 
 optp.add_option("--response-order-max-bank-gib", type=float, default=4.0, help="Refuse a diagnostic whose dense U,V planning estimate exceeds this many GiB (default 4).")
 optp.add_option("--force-xpy", action="store_true", help="Use the xpy code path.  Use with --vectorized --gpu to use the fallback CPU-based code path. Useful for debugging.")
 optp.add_option("--early-time-multirate", default=None, help="Opt-in prototype (RIFT/likelihood/DESIGN_early_time_multirate.md): path to a schedule JSON. Replaces the precompute with factored_likelihood_multirate.PrecomputeLikelihoodTermsMultirate (data-side weighting; kind two_rate, or one_segment as the matched full-rate control). IMRPhenomXHM/XPHM with aligned spins only; refuses calibration marginalization, --rotation-slow, --freqresponse, ROM, NR, gwsignal and extra waveform arguments. Default off.")
+optp.add_option("--early-time-multirate-backend", type="choice", choices=["numpy", "cupy", "reference"], default=None, help="Backend for opt-in multirate precompute. Default follows --gpu and the ILE array backend. Explicit cupy requires a usable GPU; reference uses the CPU reference arithmetic.")
 optp.add_option("-o", "--output-file", help="Save result to this file.")
 optp.add_option("-O", "--output-format", default='xml', help="[xml|hdf5]")
 optp.add_option("-S", "--save-samples", action="store_true", help="Save sample points to output-file (sparse sim_inspiral XML). Requires --output-file to be defined. NOTE: the XML carries lnL only, not the importance weight -- it does NOT persist the joint prior / sampling prior, so it must not be reweighted by likelihood for a weighted-posterior/shape check. For that, use the ASCII per-sample outputs --extrinsic-proposal-output (full log-weight) or --calibration-export-posterior.")
@@ -568,6 +569,8 @@ def _normalize_interpolate_time_argv(argv):
     return out
 
 opts, args = optp.parse_args(_normalize_interpolate_time_argv(sys.argv[1:]))
+if opts.early_time_multirate_backend and not opts.early_time_multirate:
+    optp.error("--early-time-multirate-backend requires --early-time-multirate")
 # The GWSignal route does not consume RIFT's LAL-dictionary options. Reject the
 # explicit combination before data loading and the per-event exception handler,
 # so a requested physics option cannot disappear in a successful worker run.
@@ -3854,12 +3857,17 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
             raise ValueError("--early-time-multirate refuses %s" % _bad)
         _etm_schedule = factored_likelihood_multirate.load_schedule(opts.early_time_multirate)
         _wg = {k: v for k, v in waveform_generation_kwargs.items() if k not in ("extra_waveform_kwargs", "use_gwsignal_approx")}
+        _etm_backend = opts.early_time_multirate_backend
+        if _etm_backend is None:
+            _etm_backend = "cupy" if opts.gpu and xpy_default is not numpy else "numpy"
         rholms_intp, cross_terms, cross_terms_V,  rholms,  guess_snr, rest, cross_terms_cal, cross_terms_cal_V=factored_likelihood_multirate.PrecomputeLikelihoodTermsMultirate(
             fiducial_epoch, t_window, P, data_dict, psd_dict, opts.l_max, fmax,
             False, inv_spec_trunc_Q, T_spec,
             return_calibration_crossterms=True,
             verbose=opts.verbose,quiet=not opts.verbose,
             skip_interpolation=opts.vectorized, schedule=_etm_schedule,
+            multirate_xpy="numpy" if _etm_backend == "reference" else _etm_backend,
+            multirate_reference=_etm_backend == "reference",
             **_wg, **extra_kwargs)
     else:
      rholms_intp, cross_terms, cross_terms_V,  rholms,  guess_snr, rest, cross_terms_cal, cross_terms_cal_V=factored_likelihood.PrecomputeLikelihoodTerms(

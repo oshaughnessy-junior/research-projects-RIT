@@ -1,0 +1,14 @@
+/Users/rossma/.matplotlib is not a writable directory
+Matplotlib created a temporary cache directory at /var/folders/s8/z3q_zcj5431b31bb3j3tdxn40000gs/T/matplotlib-5kizjxmp because there was an issue with the default path (/Users/rossma/.matplotlib); it is highly recommended to set the MPLCONFIGDIR environment variable to a writable directory, in particular to speed up the import of Matplotlib and to better support multiprocessing.
+
+Fontconfig error: No writable cache directories
+	/opt/homebrew/var/cache/fontconfig
+	/Users/rossma/.cache/fontconfig
+	/Users/rossma/.fontconfig
+Matplotlib is building the font cache; this may take a moment.
+ no cupy (factored)
+The pyseobnr package has failed to load, you will not be able to employ SEOBNRv5 approximants.
+(2, -1) 0.030164928797054413
+Traceback (most recent call last):
+  File "<stdin>", line 17, in <module>
+AssertionError

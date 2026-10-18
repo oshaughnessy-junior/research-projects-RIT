@@ -1,0 +1,11 @@
+INFO:    underlay of /etc/localtime required more than 50 (88) bind mounts
+INFO:    underlay of /usr/bin/nvidia-smi required more than 50 (422) bind mounts
+INFO:    underlay of /usr/share/nvidia/nvoptix.bin required more than 50 (56) bind mounts
+...                                                                      [100%]
+=============================== warnings summary ===============================
+../../usr/local/lib/python3.10/dist-packages/qnm/schwarzschild/tabulated.py:169
+  /usr/local/lib/python3.10/dist-packages/qnm/schwarzschild/tabulated.py:169: DeprecationWarning: Please import `OptimizeResult` from the `scipy.optimize` namespace; the `scipy.optimize.optimize` namespace is deprecated and will be removed in SciPy 2.0.0.
+    loaded = pickle.load(handle, encoding='latin1')
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+3 passed, 29 deselected, 1 warning in 101.11s (0:01:41)

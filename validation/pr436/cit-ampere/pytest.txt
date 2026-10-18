@@ -1,0 +1,65 @@
+INFO:    underlay of /etc/localtime required more than 50 (94) bind mounts
+INFO:    underlay of /usr/bin/nvidia-smi required more than 50 (434) bind mounts
+INFO:    underlay of /usr/share/nvidia/nvoptix.bin required more than 50 (59) bind mounts
+============================= test session starts ==============================
+platform linux -- Python 3.10.12, pytest-9.1.1, pluggy-1.7.0 -- /usr/local/bin/python
+rootdir: /scratch/richard.oshaughnessy/pr436_adversarial_20261018
+plugins: ligo.skymap-2.3.0
+collecting ... collected 48 items
+
+../final_code/test/test_multirate_xpy.py::test_ifft_centred_matches_lal PASSED [  2%]
+../final_code/test/test_multirate_xpy.py::test_xphm_matches_unrestricted_mode_generation PASSED [  4%]
+../final_code/test/test_multirate_xpy.py::test_backend_numpy_matches_reference PASSED [  6%]
+../final_code/test/test_multirate_xpy.py::test_backend_cupy_matches_numpy PASSED [  8%]
+../final_code/test/test_multirate_xpy.py::test_cache_tracks_inputs[window] PASSED [ 10%]
+../final_code/test/test_multirate_xpy.py::test_cache_tracks_inputs[fmax] PASSED [ 12%]
+../final_code/test/test_multirate_xpy.py::test_cache_tracks_inputs[lmax] PASSED [ 14%]
+../final_code/test/test_multirate_xpy.py::test_cache_tracks_inputs[psd] PASSED [ 16%]
+../final_code/test/test_multirate_xpy.py::test_cache_tracks_inputs[data] PASSED [ 18%]
+../final_code/test/test_multirate_xpy.py::test_cache_tracks_inputs[sky] PASSED [ 20%]
+../final_code/test/test_multirate_xpy.py::test_cache_tracks_inputs[truncation] PASSED [ 22%]
+../final_code/test/test_multirate_xpy.py::test_invalid_backend_refused PASSED [ 25%]
+../final_code/test/test_multirate_xpy.py::test_bad_schedule_refused[fs_e-0] PASSED [ 27%]
+../final_code/test/test_multirate_xpy.py::test_bad_schedule_refused[guard-nan] PASSED [ 29%]
+../final_code/test/test_multirate_xpy.py::test_bad_schedule_refused[atten_db-4] PASSED [ 31%]
+../final_code/test/test_multirate_xpy.py::test_bad_schedule_refused[mc_range-value3] PASSED [ 33%]
+../final_code/test/test_multirate_xpy.py::test_bad_schedule_refused[mc_range-value4] PASSED [ 35%]
+../final_code/test/test_multirate_xpy.py::test_bad_schedule_refused[late_buffer-64] PASSED [ 37%]
+../final_code/test/test_multirate_xpy.py::test_cache_device_isolation PASSED [ 39%]
+../final_code/test/test_multirate_xpy.py::test_complex_correlation_offsets[1] PASSED [ 41%]
+../final_code/test/test_multirate_xpy.py::test_complex_correlation_offsets[2] PASSED [ 43%]
+../final_code/test/test_multirate_xpy.py::test_complex_correlation_offsets[8] PASSED [ 45%]
+../final_code/test/test_multirate_xpy.py::test_backend_configurations[xhm_l2] PASSED [ 47%]
+../final_code/test/test_multirate_xpy.py::test_backend_configurations[xhm_l3] PASSED [ 50%]
+../final_code/test/test_multirate_xpy.py::test_backend_configurations[xphm] PASSED [ 52%]
+../final_code/test/test_multirate_xpy.py::test_backend_configurations[mass_low] PASSED [ 54%]
+../final_code/test/test_multirate_xpy.py::test_backend_configurations[mass_high] PASSED [ 56%]
+../final_code/test/test_multirate_xpy.py::test_backend_configurations[spin] PASSED [ 58%]
+../final_code/test/test_multirate_xpy.py::test_backend_configurations[early512] PASSED [ 60%]
+../final_code/test/test_multirate_xpy.py::test_backend_configurations[network_truncated] PASSED [ 62%]
+../final_code/test/test_multirate_xpy.py::test_backend_configurations[srate2048] PASSED [ 64%]
+../final_code/test/test_multirate_xpy.py::test_backend_configurations[srate8192] PASSED [ 66%]
+../final_code/test/test_multirate_precompute.py::test_two_rate_matches_one_segment[97] PASSED [ 68%]
+../final_code/test/test_multirate_precompute.py::test_two_rate_matches_one_segment[101] PASSED [ 70%]
+../final_code/test/test_multirate_precompute.py::test_schedule_rejects_short_late_buffer PASSED [ 72%]
+../final_code/test/test_multirate_precompute.py::test_refusals[P0-in-plane] PASSED [ 75%]
+../final_code/test/test_multirate_precompute.py::test_refusals[P1-outside] PASSED [ 77%]
+../final_code/test/test_multirate_precompute.py::test_pieces_uv_plan_matches_full_grid_reference PASSED [ 79%]
+../final_code/test/test_multirate_two_rate.py::test_two_rate_matches_full_rate[interp] PASSED [ 81%]
+../final_code/test/test_multirate_two_rate.py::test_two_rate_matches_full_rate[subphase] PASSED [ 83%]
+../final_code/test/test_multirate_two_rate.py::test_interp_matches_subphase PASSED [ 85%]
+../final_code/test/test_multirate_two_rate.py::test_mode_array_lmax4_all_m PASSED [ 87%]
+../final_code/test/test_multirate_two_rate.py::test_mode_array_call_matches_full_call PASSED [ 89%]
+../final_code/test/test_multirate_two_rate.py::test_two_rate_detects_wrong_early_amplitude PASSED [ 91%]
+../final_code/test/test_multirate_dsw_onesegment.py::test_one_segment_dsw_matches_ComputeModeIPTimeSeries[trunc0] PASSED [ 93%]
+../final_code/test/test_multirate_dsw_onesegment.py::test_one_segment_dsw_matches_ComputeModeIPTimeSeries[trunc1] PASSED [ 95%]
+../final_code/test/test_multirate_dsw_onesegment.py::test_one_segment_UV_match_ComputeModeCrossTermIP[trunc0] PASSED [ 97%]
+../final_code/test/test_multirate_dsw_onesegment.py::test_one_segment_UV_match_ComputeModeCrossTermIP[trunc1] PASSED [100%]
+
+=============================== warnings summary ===============================
+../../../../usr/local/lib/python3.10/dist-packages/qnm/schwarzschild/tabulated.py:169
+  /usr/local/lib/python3.10/dist-packages/qnm/schwarzschild/tabulated.py:169: DeprecationWarning: Please import `OptimizeResult` from the `scipy.optimize` namespace; the `scipy.optimize.optimize` namespace is deprecated and will be removed in SciPy 2.0.0.
+    loaded = pickle.load(handle, encoding='latin1')
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+================== 48 passed, 1 warning in 280.02s (0:04:40) ===================

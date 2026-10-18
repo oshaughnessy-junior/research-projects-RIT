@@ -191,7 +191,8 @@ class TwoRateSchedule(object):
             nL0 = len(self.h)
         # lag interpolation: the early correlation is band-limited below f_pass_h, so its images
         # at coarse sampling start at fs_e - f_pass_h; upsample by M with this filter
-        self.h_interp = self.M * kaiser_lowpass(fs, self.f_pass_h, fs_e - self.f_pass_h, atten_db)
+        self.h_interp = (np.ones(1) if self.M == 1 else
+                         self.M * kaiser_lowpass(fs, self.f_pass_h, fs_e - self.f_pass_h, atten_db))
         self.late_buffer = late_buffer
 
 
@@ -399,6 +400,8 @@ def ComputeModeCrossTermsPieces(early, late, plan):
 def _select_xpy(choice=None):
     """numpy or cupy, chosen as factored_likelihood chooses: cupy when it imports and can allocate
     on a device.  choice 'numpy' or 'cupy' forces one."""
+    if choice not in (None, "numpy", "cupy"):
+        raise ValueError("multirate backend must be numpy or cupy, got %r" % choice)
     if choice == "numpy":
         return np
     try:
@@ -491,24 +494,59 @@ SCHEDULE_KEYS = ("kind", "fs_e", "tau_tr", "guard", "atten_db", "late_start", "l
                  "uv_margin", "mc_range")
 
 
+def _cache_context(data, psds, schedule, params, xp):
+    """Bound storage to one input context, including in-place data/PSD changes.
+
+    Content hashing costs a linear host read per point, but avoids stale likelihoods and
+    recycled Python ids. Intrinsic masses/spins are deliberately absent: plans are shared
+    across those points. Include the CUDA device so allocations never cross devices.
+    """
+    import hashlib, json
+
+    def signature(series):
+        a = np.ascontiguousarray(series.data.data)
+        return (str(series.epoch), series.f0, series.deltaF, a.shape, a.dtype.str,
+                hashlib.blake2b(a.view(np.uint8), digest_size=16).digest())
+
+    device = None if xp is np else xp.cuda.runtime.getDevice()
+    context = (json.dumps({k: schedule[k] for k in SCHEDULE_KEYS}, sort_keys=True),
+               params, xp.__name__, device,
+               tuple((det, signature(data[det]), signature(psds[det])) for det in sorted(data)))
+    if _JOB_CACHE.get("context") != context:
+        _JOB_CACHE.clear()
+        _JOB_CACHE["context"] = context
+        return True
+    return False
+
+
+def _validate_schedule(sch):
+    """Reject malformed schedules before allocating or generating templates."""
+    missing = [k for k in SCHEDULE_KEYS if k not in sch]
+    if missing:
+        raise ValueError("early-time multirate schedule lacks %s" % missing)
+    if sch["kind"] not in ("one_segment", "two_rate"):
+        raise ValueError("schedule kind must be one_segment or two_rate, not %r" % sch["kind"])
+    for key in SCHEDULE_KEYS[1:-1]:
+        value = sch[key]
+        if not isinstance(value, (int, float)) or not np.isfinite(value) or value <= 0:
+            raise ValueError("schedule %s must be finite and positive" % key)
+    mc = sch["mc_range"]
+    if not isinstance(mc, (list, tuple)) or len(mc) != 2 or not all(
+            isinstance(v, (int, float)) and np.isfinite(v) and v > 0 for v in mc) or mc[0] > mc[1]:
+        raise ValueError("schedule mc_range must be two ordered positive finite masses")
+    if sch["atten_db"] <= 8:
+        raise ValueError("schedule atten_db must exceed 8 dB")
+    if sch["late_buffer"] < sch["late_start"] + sch["post"] + 8:
+        raise ValueError("late_buffer cannot hold late_start plus post and 8 s")
+    if sch["late_start"] * (mc[0] / mc[1])**(5. / 3) <= sch["tau_tr"] + sch["guard"]:
+        raise ValueError("late_start is too close to tau_tr for the heaviest template")
+
+
 def load_schedule(path):
     import json, hashlib
     raw = open(path, "rb").read()
     sch = json.loads(raw)
-    missing = [k for k in SCHEDULE_KEYS if k not in sch]
-    if missing:
-        raise ValueError("early-time multirate schedule %s lacks %s" % (path, missing))
-    if sch["kind"] not in ("one_segment", "two_rate"):
-        raise ValueError("schedule kind must be one_segment or two_rate, not %r" % sch["kind"])
-    # the late template starts late_start s before merger (at Mc_min; sooner for heavier
-    # templates) and must fit its buffer with the post-event time; it must also start before
-    # the transition, so the late piece covers the data's late window
-    if sch["late_buffer"] < sch["late_start"] + sch["post"] + 8:
-        raise ValueError("late_buffer %g s cannot hold late_start %g s plus post %g s and 8 s"
-                         % (sch["late_buffer"], sch["late_start"], sch["post"]))
-    if sch["late_start"] * (sch["mc_range"][0] / sch["mc_range"][1])**(5. / 3) <= sch["tau_tr"] + sch["guard"]:
-        raise ValueError("late_start %g s is too close to tau_tr %g s for the heaviest template"
-                         % (sch["late_start"], sch["tau_tr"]))
+    _validate_schedule(sch)
     sch["_hash"] = hashlib.sha256(raw).hexdigest()[:12]
     sch["_path"] = path
     return sch
@@ -524,6 +562,13 @@ def _per_m_modes(P, Lmax, srate, seglen, f22_start, post):
         Pm.fmin = (am / 2.) * f22_start
         Pm.deltaT, Pm.deltaF = 1. / srate, 1. / seglen
         extra = dict(PhenomXHMThresholdMband=0, PhenomXPHMThresholdMband=0, ModeArray=mode_array_for_m(Lmax, am))
+        if P.approx == lalsim.IMRPhenomXPHM:
+            # Restrict the output only. Restricting XPHM's co-precessing inputs
+            # changes even aligned-spin modes (e.g. (2,1) by 3% at zero spin).
+            # Its unrestricted J-frame output also requests absent l values and
+            # fails if only the per-|m| co-precessing inputs were supplied.
+            del extra["ModeArray"]
+            extra["ModeArrayJframe"] = mode_array_for_m(Lmax, am)
         hF, _ = lsu.std_and_conj_hlmoff(Pm, Lmax=Lmax, fd_alignment_postevent_time=post, extra_waveform_args=extra)
         out.update({k: v for k, v in hF.items() if abs(k[1]) == am})
     return out
@@ -533,7 +578,8 @@ def _refuse(P, schedule, kwargs):
     import lalsimulation as lalsim
     bad = [k for k in ("calibration_realizations", "NR_group", "ROM_group") if kwargs.get(k) is not None]
     bad += [k for k in ("ROM_use_basis", "use_gwsignal", "use_external_EOB", "nr_lookup", "hybrid_use",
-                        "use_provided_strain", "analyticPSD_Q") if kwargs.get(k)]
+                        "use_provided_strain", "analyticPSD_Q", "force_22_mode",
+                        "perturbative_extraction", "perturbative_extraction_full", "extra_waveform_kwargs") if kwargs.get(k)]
     if bad:
         raise ValueError("early-time multirate refuses %s" % bad)
     if P.approx not in (lalsim.IMRPhenomXHM, lalsim.IMRPhenomXPHM):
@@ -553,7 +599,14 @@ def PrecomputeLikelihoodTermsMultirate(event_time_geo, t_window, P, data_dict, p
                                        quiet=False, schedule=None, return_calibration_crossterms=False,
                                        skip_interpolation=False, **kwargs):
     from RIFT.likelihood import factored_likelihood as fl
+    if schedule is None:
+        raise ValueError("early-time multirate requires a schedule")
+    _validate_schedule(schedule)
     _refuse(P, schedule, dict(kwargs, analyticPSD_Q=analyticPSD_Q))
+    if Lmax not in (2, 3, 4):
+        raise ValueError("early-time multirate requires Lmax = 2, 3 or 4")
+    if not data_dict or set(data_dict) != set(psd_dict):
+        raise ValueError("multirate requires matching nonempty data and PSD detectors")
     detectors = list(data_dict.keys())
     first = data_dict[detectors[0]]
     P.dist = fl.distMpcRef * 1e6 * lsu.lsu_PC
@@ -561,6 +614,22 @@ def PrecomputeLikelihoodTermsMultirate(event_time_geo, t_window, P, data_dict, p
     dt = P.deltaT; fs = 1. / dt; N = first.data.length; seglen = N * dt
     fNyq = fs / 2.
     post = schedule["post"]
+    if not (np.isfinite(t_window) and t_window > 0 and int(2 * t_window / dt) >= 4):
+        raise ValueError("multirate t_window must contain at least four samples")
+    if not (0 < P.fmin < fMax <= fNyq):
+        raise ValueError("multirate requires 0 < fmin < fMax <= Nyquist")
+    if any(d.data.length != N or d.deltaF != first.deltaF for d in data_dict.values()):
+        raise ValueError("multirate detector data must share a frequency grid")
+    if not np.isclose(seglen * first.deltaF, 1., rtol=0, atol=1e-12):
+        raise ValueError("multirate data grid does not match deltaT")
+    for label, n in (("full", N), ("early", seglen * schedule["fs_e"]),
+                     ("late", schedule["late_buffer"] * fs)):
+        if n != int(n) or n < 2 or int(n) & (int(n) - 1):
+            raise ValueError("multirate %s buffer must have a power-of-two sample count" % label)
+    if schedule["late_buffer"] > seglen or fs < schedule["fs_e"] or fs % schedule["fs_e"]:
+        raise ValueError("multirate requires an integer rate ratio and late_buffer <= data duration")
+    if post >= schedule["late_buffer"] / 2 or not np.isclose(post * schedule["fs_e"], round(post * schedule["fs_e"]), atol=1e-10, rtol=0):
+        raise ValueError("multirate post must be below half the late buffer and align to the early grid")
     mc_lo = schedule["mc_range"][0]
     f22_late = float(f22_newtonian(schedule["late_start"], mc_lo))
     if schedule["kind"] == "one_segment":
@@ -574,7 +643,13 @@ def PrecomputeLikelihoodTermsMultirate(event_time_geo, t_window, P, data_dict, p
         keys = sorted(early)
         # backend for the per-point preparation; multirate_reference=True keeps the CPU reference path
         use_ref = bool(kwargs.get("multirate_reference", False))
-        xp = _select_xpy(kwargs.get("multirate_xpy"))
+        xp = _select_xpy("numpy" if use_ref else kwargs.get("multirate_xpy"))
+        if _cache_context(data_dict, psd_dict, schedule,
+                          (dt, P.fmin, fMax, Lmax, t_window, str(event_time_geo), P.phi, P.theta,
+                           inv_spec_trunc_Q, T_spec, P.approx), xp):
+            print(" early-time multirate: backend %s%s" % (
+                "reference" if use_ref else xp.__name__,
+                "" if xp is np else " device=%d" % xp.cuda.runtime.getDevice()))
         if not use_ref:
             n_e, n_l = early[keys[0]].data.length, late[keys[0]].data.length
             tk = ("taper", n_e, early[keys[0]].deltaF, schedule["fs_e"], xp.__name__)
@@ -615,7 +690,7 @@ def PrecomputeLikelihoodTermsMultirate(event_time_geo, t_window, P, data_dict, p
             rholms[det] = fl.ComputeModeIPTimeSeries(hlms, data_dict[det], psd_dict[det], P.fmin, fMax, fNyq,
                                                      N_shift, N_window, analyticPSD_Q, inv_spec_trunc_Q, T_spec)
         else:
-            ck = (det, id(data_dict[det]), schedule["_hash"])
+            ck = ("data", det)
             if ck not in _JOB_CACHE:
                 dbar = data_side_weighted(data_dict[det], psd_dict[det], P.fmin, fMax, fNyq, analyticPSD_Q,
                                           inv_spec_trunc_Q, T_spec)
@@ -625,7 +700,7 @@ def PrecomputeLikelihoodTermsMultirate(event_time_geo, t_window, P, data_dict, p
                       "late %g s at %g Hz" % (schedule["_path"], schedule["_hash"], det, schedule["fs_e"],
                                               schedule["tau_tr"], schedule["late_buffer"], fs))
             prep = _JOB_CACHE[ck]
-            pk = ("uv_plan", det, id(psd_dict[det]), schedule["_hash"])
+            pk = ("uv_plan", det)
             if pk not in _JOB_CACHE:      # once per job: bins, weights and gather indices
                 _JOB_CACHE[pk] = pieces_uv_plan(psd_dict[det], P.fmin, fMax, fNyq, P.deltaF, bands, schedule["fs_e"],
                                                 f22_late, early[keys[0]].data.length, late[keys[0]].data.length,
@@ -635,7 +710,7 @@ def PrecomputeLikelihoodTermsMultirate(event_time_geo, t_window, P, data_dict, p
             n_late_off = N - late[keys[0]].data.length
             rholms[det] = {}
             if not use_ref:
-                dk = ("device", det, id(data_dict[det]), schedule["_hash"], N_shift, xp.__name__)
+                dk = ("device", det, N_shift)
                 if dk not in _JOB_CACHE:      # once per job and detector: data FFTs, interpolation, indices
                     _JOB_CACHE[dk] = TwoRateDevice(xp, prep, sch, dt, n_e, n_l, N, j_peak, lags, n_late_off)
                     _JOB_CACHE[dk + ("uv",)] = pieces_uv_plan_device(xp, _JOB_CACHE[pk])

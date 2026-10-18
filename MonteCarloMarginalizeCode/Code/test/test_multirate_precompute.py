@@ -54,9 +54,12 @@ def _run(tmp_path, inputs, kind, P=None):
                                                   schedule=_schedule(tmp_path, kind), skip_interpolation=True)
 
 
-def test_two_rate_matches_one_segment(tmp_path, inputs):
-    _, U1, V1, rho1, _, _ = _run(tmp_path, inputs, "one_segment")
-    _, U2, V2, rho2, _, _ = _run(tmp_path, inputs, "two_rate")
+@pytest.mark.parametrize("approx", [lalsim.IMRPhenomXHM, lalsim.IMRPhenomXPHM])
+def test_two_rate_matches_one_segment(tmp_path, inputs, approx):
+    p = _P()
+    p.approx = approx
+    _, U1, V1, rho1, _, _ = _run(tmp_path, inputs, "one_segment", p)
+    _, U2, V2, rho2, _, _ = _run(tmp_path, inputs, "two_rate", p)
     sU = max(abs(v) for v in U1["H1"].values())
     for key in U1["H1"]:
         assert abs(U2["H1"][key] - U1["H1"][key]) <= 1e-5 * sU, ("U", key)

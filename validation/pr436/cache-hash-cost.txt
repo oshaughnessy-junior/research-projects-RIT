@@ -1,0 +1,4 @@
+ no cupy (factored)
+The pyseobnr package has failed to load, you will not be able to employ SEOBNRv5 approximants.
+H1 512 s at 4096 Hz, data+PSD bytes: 41943048
+Median context fingerprint seconds: 0.02639820845797658
