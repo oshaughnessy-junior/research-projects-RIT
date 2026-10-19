@@ -63,6 +63,15 @@ export MPLBACKEND="${MPLBACKEND:-Agg}"
 C="MonteCarloMarginalizeCode/Code"
 
 FILES=(
+  # Experimental TD operators; only the public PCG backend test is optional.
+  "$C/test/test_td_calmarg_guard.py"
+  "$C/test/test_td_factory.py"
+  "$C/test/test_td_driver_normalization.py"
+  "$C/test/test_td_glitch.py"
+  "$C/test/test_td_inner_product.py"
+  "$C/test/test_td_rank_augmentation.py"
+  "$C/test/test_td_segment.py"
+  "$C/test/test_td_upstream_guards.py"
   # -- calibration marginalization (module-level suites the calmarg gate never picked up)
   "$C/RIFT/calmarg/test_cal_mc_error.py"
   "$C/RIFT/calmarg/test_seed_fallback.py"
@@ -473,7 +482,8 @@ done
 # test_dslice_bounds.py adds 2 tests and no skips.
 # test_gwsignal_seob_conditioning.py adds 8 passing tests with LALSuite 7.26.16:
 # shared-grid operator tests plus native/no_condition conflict refusal.
-EXPECTED_TESTS=953
+# TD: 67 focused cases, including eight driver normalization/export cases.
+EXPECTED_TESTS=1020
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -496,9 +506,9 @@ EXPECTED_TESTS=953
 # test_fd_end_taper_cap.py adds 3 tests and no skips; 878/858 (above).
 # test_dslice_rf_tails.py adds 10 tests and no skips; 888/868 (above).
 # test_dslice_bounds.py adds 2 tests; SEOB conditioning adds 8, all passing.
-EXPECTED_PASSED=933
+EXPECTED_PASSED=999
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
-MAX_SKIPPED=19
+MAX_SKIPPED=20 # one optional tdanalysis PCG test when the extra is absent
 
 # The floors must be INTEGERS, and this is checked rather than assumed.  `[ 347 -lt FOO ]` does
 # not fail the build: bash prints "integer expression expected", returns 2, and the `if` is
