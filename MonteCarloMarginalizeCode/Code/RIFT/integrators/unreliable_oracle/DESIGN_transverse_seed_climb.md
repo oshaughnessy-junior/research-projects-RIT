@@ -137,8 +137,8 @@ The sub file has no file transfer, so it needs the shared run directory
   not comparable. Four free starts by default.
 - Production re-score (S250830bp, SEOBNRv5PHM ILE, peak lnL 178.7): seeds from
   the slow configuration (l_max 4, 4096 Hz) are within 10 nats of the peak for
-  62 of 66 at chi1_perp >= 0.3; seeds from the fast one (l_max 2, 1024 Hz) for
-  4 of 141. The fast settings, not XPHM, misplace the large-chi1_perp seeds.
+  115 of 143 at chi1_perp 0.3 to 0.7 and 8 of 33 above 0.7; seeds from the fast
+  one (l_max 2, 1024 Hz) for 4 of 122 and 0 of 19. The fast settings, not XPHM, misplace the large-chi1_perp seeds.
   Which of l_max or the frequency cut is responsible is not yet known.
 - Recommended fast command (S250830bp, 32 s at 4096 Hz): `--mode-backend ripple
   --rb-eps 0.2 --srate 1024 --fmax 448` with the defaults (l_max 2, S = 1024,
