@@ -147,6 +147,11 @@ def build_parser():
                         "one climb's start favours that region (9 nats on S250830bp), so lnL from "
                         "different climbs would not be comparable")
     p.add_argument("--no-sky-readapt", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument("--jax-cache-dir", default=os.environ.get("JAX_COMPILATION_CACHE_DIR"),
+                   help="persistent JAX compilation cache.  Compiling the batched ripple program takes "
+                        "~10 min on CPU; with a cache shared by jobs (e.g. /scratch/$USER/jax_cache) it is "
+                        "paid once per shape.  Default: $JAX_COMPILATION_CACHE_DIR, else "
+                        "/scratch/$USER/jax_cache_seedclimb if /scratch exists")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--output-dat", default=None,
                    help="write every climb evaluation (coordinates, lnL, label) here")
@@ -215,6 +220,14 @@ def main(argv=None):
     from RIFT.likelihood.jax_ile.intrinsic_objective import (
         load_frame_data, IntrinsicMarginalObjective)
     import jax
+    cache = opts.jax_cache_dir
+    if cache is None and os.path.isdir("/scratch/" + os.environ.get("USER", "")):
+        cache = "/scratch/%s/jax_cache_seedclimb" % os.environ["USER"]
+    if cache:
+        os.makedirs(cache, exist_ok=True)
+        jax.config.update("jax_compilation_cache_dir", cache)
+        jax.config.update("jax_persistent_cache_min_compile_time_secs", 1.0)
+        print(" [seedclimb] JAX compilation cache:", cache)
     print(" [seedclimb] JAX backend:", jax.default_backend(), jax.devices())
 
     t_start = time.time()
