@@ -6818,8 +6818,14 @@ def _xpnr_reference_opening_angle(P, params, fmin, fmax):
         P.m1, P.m2, P.s1x, P.s1y, P.s1z, P.s2x, P.s2y, P.s2z,
         P.incl, P.deltaF, fmin, fmax, P.fref, 2, 2, angle_params)
     # fref need not coincide with the public API's sampling grid.
+    # The public grid stops at floor(f_max_prime/deltaF)*deltaF. Native
+    # ChooseFDModes can still evaluate its spline in the final partial bin.
+    # Extend only that terminal bin, using the same cubic polynomial; never
+    # clamp the reference angle or extrapolate beyond one native grid step.
+    terminal_bin = (frequencies.data[-1] < P.fref <=
+                    min(fmax, frequencies.data[-1] + P.deltaF))
     angle = float(interpolate.CubicSpline(frequencies.data, beta.data,
-                                         extrapolate=False)(P.fref))
+                                         extrapolate=terminal_bin)(P.fref))
     if not np.isfinite(angle):
         raise ValueError("XPNR reference opening angle is not finite at fref")
     return angle

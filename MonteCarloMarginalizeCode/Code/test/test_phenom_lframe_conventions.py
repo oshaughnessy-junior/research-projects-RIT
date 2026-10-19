@@ -108,6 +108,14 @@ def test_generic_symmetric_xpnr_fixed_phase(case, phase, fref):
     assert_fixed_phase_agreement(p, PHENOM_TEST_OPTIONS)
 
 
+def test_xpnr_reference_in_native_cutoff_partial_bin():
+    # For this mass pair native f_max_prime is 676.751489 Hz, whereas the
+    # public beta samples stop at 676.75 Hz. This is a valid native request.
+    p = parameters("IMRPhenomXPNR", GENERIC[0])
+    p.fref = 676.751
+    assert_fixed_phase_agreement(p, PHENOM_TEST_OPTIONS)
+
+
 def test_xpnr_reference_mapping_preserves_explicit_angle_selection():
     p = parameters("IMRPhenomXPNR", GENERIC[0])
     d = p.to_lal_dict_extended(extra_args_dict={**PHENOM_TEST_OPTIONS,
