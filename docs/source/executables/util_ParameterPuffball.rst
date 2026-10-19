@@ -97,9 +97,10 @@ the four-dimensional covariance remain zero.
 
 Omit ``--parameter``: this mode uses a fixed chart. Input seeds should already
 be selected using likelihood results; this executable does not rank them.
-Each attempt selects an input parent uniformly and perturbs its joint
-mass/aligned coordinates by ``--puff-factor`` times their measured covariance
-factor. An atomic vectorized inverse reconstructs both masses and aligned
+The default budget makes one attempt per input seed, preserving seed-branch
+coverage. An explicit proposal count instead selects parents uniformly.
+Each attempt perturbs the joint mass/aligned coordinates by ``--puff-factor``
+times their measured covariance factor. An atomic vectorized inverse reconstructs both masses and aligned
 spins together. The inverse uses the existing mu coordinate convention
 (``tools.fref=200 Hz``), independently of waveform ``--fref``.
 

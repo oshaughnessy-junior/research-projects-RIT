@@ -55,11 +55,13 @@ def test_real_build_default_uses_legacy_single_puff(tmp_path):
 def test_real_build_schedule_routes_first_batch_and_refinement(tmp_path):
     result, run = _build(tmp_path, 'scheduled', [
         '--internal-puff-mu-random-transverse', '--internal-n-iterations-subdag-max', '2',
+        '--rf-transverse-spin-coordinates', 'geometric4',
         '--internal-force-puff-iterations', '20'])
     assert result.returncode == 0, result.stdout[-6000:]
     cip = (run/'args_cip_list.txt').read_text().splitlines()
     puff = (run/'args_puff_list.txt').read_text().splitlines()
     assert [x.split()[0] for x in cip] == [x.split()[0] for x in puff]
+    assert any('--rf-transverse-spin-coordinates geometric4' in x for x in cip)
     assert '--puff-coordinate-system mu-random-transverse' in puff[0]
     assert all('--puff-coordinate-system' not in x for x in puff[1:])
     assert all('--parameter chi1_perp_u' in x for x in puff[1:])

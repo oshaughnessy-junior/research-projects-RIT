@@ -92,6 +92,14 @@ def test_transverse_redraw_is_independent_of_old_transverse_covariance():
     assert np.all(np.hypot(single[:, 2], single[:, 3]) <= .2)
 
 
+def test_default_budget_does_not_resample_away_seed_branches():
+    rows = physical_rows(20)
+    out, parents, stats = puff.propose(rows, scale=0, rng=99)
+    np.testing.assert_array_equal(parents, np.arange(len(rows)))
+    np.testing.assert_allclose(out[:, :2], rows[:, :2], rtol=1e-11)
+    assert stats['attempted'] == len(rows)
+
+
 @pytest.mark.parametrize('kwargs', [{'scale': -1}, {'scale': np.nan},
                                   {'transverse_max': 1.01}, {'count': 0}])
 def test_invalid_configuration(kwargs):

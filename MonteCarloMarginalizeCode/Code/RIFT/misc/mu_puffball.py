@@ -75,8 +75,9 @@ def aligned_coordinates(rows):
 def propose(rows, *, count=None, scale=1., transverse_max=1., rng=None):
     """Puff four correlated coordinates, independently REDRAW transverse spins.
 
-    Each proposal chooses an input row uniformly, preserving a parent index for
-    metadata. Radius is uniform on [0,min(transverse_max,sqrt(1-z**2))],
+    By default each input row gets one proposal. An explicit count instead
+    samples parents uniformly, preserving parent indices for metadata.
+    Radius is uniform on [0,min(transverse_max,sqrt(1-z**2))],
     azimuth uniform on [0,2pi), independently for both bodies. This is proposal
     exploration, not an isotropic-spin prior. It works with aligned seeds and
     with contracted later grids using the same settings. Rejected inverse rows
@@ -87,7 +88,8 @@ def propose(rows, *, count=None, scale=1., transverse_max=1., rng=None):
     if not np.isfinite(transverse_max) or not 0 <= transverse_max <= 1:
         raise ValueError('transverse_max must lie in [0,1]')
     z = aligned_coordinates(rows)
-    if count is None:
+    one_per_seed = count is None
+    if one_per_seed:
         count = len(z)
     if isinstance(count, bool) or int(count) != count or count < 1:
         raise ValueError('mu puff count must be a positive integer')
@@ -101,7 +103,7 @@ def propose(rows, *, count=None, scale=1., transverse_max=1., rng=None):
     correlation = covariance / units[:, None] / units[None, :]
     ev, vec = np.linalg.eigh(correlation)
     factor = units[:, None] * vec * np.sqrt(np.maximum(ev, 0))[None, :]
-    parents = rng.integers(len(z), size=count)
+    parents = np.arange(len(z)) if one_per_seed else rng.integers(len(z), size=count)
     out = z[parents] + scale * (rng.normal(size=(count, 4)) @ factor.T)
     mc, z1 = inverse_mu(*out.T)
     q, z2 = out[:, 2], out[:, 3]
