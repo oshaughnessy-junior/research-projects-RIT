@@ -122,7 +122,8 @@ def build_parser():
     p.add_argument("--mu-margin", type=float, default=0.5,
                    help="widen the (mu1, mu2) box of the input grid by this fraction")
     # objective
-    p.add_argument("--n-sky", type=int, default=256)
+    p.add_argument("--n-sky", type=int, default=1024,
+                   help="sky batch size; at 256 the ranking of two regions moved by up to 5 nat with the adaptation point, at 1024 by <= 0.4 (S250830bp)")
     p.add_argument("--n-dist", type=int, default=24)
     p.add_argument("--nphi", type=int, default=None,
                    help="phiref grid; default 8*l_max (lnL has phiref harmonics up to 2*l_max)")
