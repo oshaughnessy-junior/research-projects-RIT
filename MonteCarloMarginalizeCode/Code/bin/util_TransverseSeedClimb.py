@@ -229,6 +229,7 @@ def main(argv=None):
         jax.config.update("jax_compilation_cache_dir", cache)
         jax.config.update("jax_persistent_cache_min_compile_time_secs", 1.0)
         print(" [seedclimb] JAX compilation cache:", cache)
+        os.environ.setdefault("JAX_EXPORT_CACHE_DIR", os.path.join(cache, "exported"))
     print(" [seedclimb] JAX backend:", jax.default_backend(), jax.devices())
 
     t_start = time.time()
@@ -266,7 +267,8 @@ def main(argv=None):
         waveform_kwargs=dict(ignore_threshold=None, extra_waveform_kwargs=wf_extra),
         seed=opts.seed, verbose=opts.verbose,
         device_precompute={"off": False, "gpu": True, "numpy": "numpy"}[opts.device_precompute],
-        mode_backend=opts.mode_backend, angle_scheme=opts.angle_scheme, rb_eps=opts.rb_eps)
+        mode_backend=opts.mode_backend, angle_scheme=opts.angle_scheme, rb_eps=opts.rb_eps,
+        batch_size=opts.popsize)
 
     # --- starting grid: score a subset, pick distinct starts --------------------
     rng = np.random.default_rng(opts.seed)

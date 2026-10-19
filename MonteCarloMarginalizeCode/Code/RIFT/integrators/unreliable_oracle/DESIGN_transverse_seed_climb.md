@@ -134,6 +134,12 @@ The sub file has no file transfer, so it needs the shared run directory
   climbing 0.28 s per point over 1340 points). 67 of 500 seeds have
   chi1_perp >= 0.5. Of the warm start stage, about 6 min is data loading,
   tracing and sky adaptation, not likelihood work: the next target.
+- Warm start-up: JAX's compilation cache is keyed on lowered HLO, so it skips
+  only the XLA compile; tracing ripple cost ~6 min per run. `export_cache.py`
+  serializes the lowered ripple programs (`jax.export`; needs `flatbuffers`) under
+  `$JAX_EXPORT_CACHE_DIR`, default `<compilation cache>/exported`. Single points
+  run through the batched program. Warm start stage on S250830bp: 360 s to
+  133 s, with identical lnL.
 - Cost per point is the precompute plus the kernel. See the RESULTS note in
   RIFT_roboto_paper `analyses/transverse_seed_climb/` for timings.
 - JAX on a CIT head node starts an XLA thread pool sized by the CPU count. With

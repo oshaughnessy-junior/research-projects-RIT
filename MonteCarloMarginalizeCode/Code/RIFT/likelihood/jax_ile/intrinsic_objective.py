@@ -15,6 +15,7 @@ the per-point arrays (Q, U, V) are jit ARGUMENTS substituted into a fixed
 template, so the kernel compiles once per (modes, buffer length) shape.
 """
 import copy
+import os
 import time
 
 import numpy as np
@@ -212,7 +213,7 @@ class IntrinsicMarginalObjective:
                  waveform_kwargs=None, seed=0, verbose=False, analyticPSD_Q=False,
                  device_precompute=False, device_check_rtol=1e-8,
                  mode_backend="lalsim", adapt_incl=False, angle_scheme="grid",
-                 rb_eps=None):
+                 rb_eps=None, batch_size=10, export_dir=None):
         self.data_dict, self.psd_dict = data_dict, psd_dict
         self.P_base = P_base.copy()
         self.event_time = float(event_time)
@@ -245,6 +246,11 @@ class IntrinsicMarginalObjective:
         # rb_eps: relative binning (relative_binning.py) for the ripple backend, with
         # phase-bound eps per bin; the fiducial is refreshed at each adapt_sky.
         self.rb_eps = rb_eps
+        # ripple + RB: single points run through the batched program (padded to
+        # batch_size), so ripple is traced for one batched shape only; with
+        # export_dir the traced programs are cached on disk (export_cache.py).
+        self.batch_size = int(batch_size)
+        self.export_dir = export_dir or os.environ.get("JAX_EXPORT_CACHE_DIR")
         self.t_waveform = 0.0
         self.x_grid, self.log_w_grid = core.make_distance_grid(
             d_min, d_max, n_grid=n_dist, d_prior=d_prior)
@@ -337,7 +343,7 @@ class IntrinsicMarginalObjective:
             def _rb(m1, m2, c1, c2, state):
                 hp, hn = modes.modes_at(f_e, m1, m2, c1, c2)
                 return qvu_state(state, hp, hn)
-            self._ripple.update(rb=rb, rb_fn=jax.jit(_rb), rb_state=None)
+            self._ripple.update(rb=rb, rb_fn=jax.jit(_rb), rb_fn_raw=_rb, rb_state=None)
 
     def _ripple_precompute(self, P):
         if self._ripple is None:
@@ -348,7 +354,13 @@ class IntrinsicMarginalObjective:
                 jnp.asarray([P.s1x, P.s1y, P.s1z]), jnp.asarray([P.s2x, P.s2y, P.s2z]))
         if "rb" in r and r["rb_state"] is None:
             self.rb_refresh(P)
-        out = r["rb_fn"](*args, r["rb_state"]) if "rb" in r else r["fn"](*args)
+        if "rb" in r:
+            B = self.batch_size
+            rep = lambda a: jnp.broadcast_to(a, (B,) + jnp.shape(a))
+            out = self._vfn_rb()(*map(rep, args), r["rb_state"])
+            out = jax.tree.map(lambda a: a[0], out)
+        else:
+            out = r["fn"](*args)
         jax.block_until_ready(out)        # so t_waveform is not billed to the kernel
         self.t_waveform += time.time() - t0
         lms = r["modes"].lms
@@ -364,10 +376,48 @@ class IntrinsicMarginalObjective:
                                  Q=q, U=u, V=v) for det, (q, u, v) in out.items()}
         return d
 
+    def _ripple_sources(self):
+        import ripplegw.waveforms.cbc.IMRPhenomX.IMRPhenomXPHM as X
+        from . import ripple_modes, relative_binning
+        return [X.__file__, ripple_modes.__file__, relative_binning.__file__, __file__]
+
+    def _vfn_rb(self):
+        r = self._ripple
+        if "vfn" not in r:
+            raw = jax.vmap(r["rb_fn_raw"], in_axes=(0, 0, 0, 0, None))
+            B = self.batch_size
+            ex = (np.zeros(B), np.zeros(B), np.zeros((B, 3)), np.zeros((B, 3)), r["rb_state"])
+            if self.export_dir:
+                from .export_cache import exported_call
+                m = r["modes"]
+                r["vfn"] = exported_call(raw, ex, self.export_dir,
+                                         key_parts=("rb", m.lms, m.fref, m.dist_mpc, B),
+                                         key_arrays=(r["rb"].f_edges,),
+                                         source_files=self._ripple_sources())
+            else:
+                r["vfn"] = jax.jit(raw)
+        return r["vfn"]
+
+    def _full_modes(self, P):
+        r = self._ripple
+        m = r["modes"]
+        if "full_fn" not in r:
+            if self.export_dir:
+                from .export_cache import exported_call
+                r["full_fn"] = exported_call(m._modes, (0.0, 0.0, np.zeros(3), np.zeros(3)), self.export_dir,
+                                             key_parts=("full", m.lms, m.fref, m.dist_mpc, m.N),
+                                             key_arrays=(np.asarray(m.fband), np.asarray(m._pos),
+                                                         np.asarray(m._neg), np.asarray(m._negmap)),
+                                             source_files=self._ripple_sources())
+            else:
+                r["full_fn"] = m._fn
+        return r["full_fn"](jnp.asarray(P.m1 / lal.MSUN_SI), jnp.asarray(P.m2 / lal.MSUN_SI),
+                            jnp.asarray([P.s1x, P.s1y, P.s1z]), jnp.asarray([P.s2x, P.s2y, P.s2z]))
+
     def rb_refresh(self, P):
         """Make P the relative-binning fiducial (full-grid ripple evaluation once)."""
         r = self._ripple
-        h0 = r["modes"](P.m1 / lal.MSUN_SI, P.m2 / lal.MSUN_SI, [P.s1x, P.s1y, P.s1z], [P.s2x, P.s2y, P.s2z])
+        h0 = self._full_modes(P)
         r["rb"].set_fiducial(h0)
         r["rb_state"] = r["rb"].state()
 
@@ -563,15 +613,18 @@ class IntrinsicMarginalObjective:
             self(P_list[0])                       # builds template and kernel
         r = self._ripple
         self.n_calls += len(P_list)
-        if "vfn" not in r:
-            r["vfn"] = (jax.jit(jax.vmap(r["rb_fn"], in_axes=(0, 0, 0, 0, None))) if "rb" in r
-                        else jax.jit(jax.vmap(r["fn"])))
+        if "rb" in r:
+            vfn = self._vfn_rb()
+        else:
+            if "vfn" not in r:
+                r["vfn"] = jax.jit(jax.vmap(r["fn"]))
+            vfn = r["vfn"]
         if self._key not in r.get("vkern", {}):
             r.setdefault("vkern", {})[self._key] = jax.jit(jax.vmap(self._kernel, in_axes=(0, None, None, None)))
         m1 = jnp.asarray([P.m1 / lal.MSUN_SI for P in P_list]); m2 = jnp.asarray([P.m2 / lal.MSUN_SI for P in P_list])
         c1 = jnp.asarray([[P.s1x, P.s1y, P.s1z] for P in P_list]); c2 = jnp.asarray([[P.s2x, P.s2y, P.s2z] for P in P_list])
         t0 = time.time()
-        out = r["vfn"](m1, m2, c1, c2, r["rb_state"]) if "rb" in r else r["vfn"](m1, m2, c1, c2)
+        out = vfn(m1, m2, c1, c2, r["rb_state"]) if "rb" in r else vfn(m1, m2, c1, c2)
         jax.block_until_ready(out)
         self.t_waveform += time.time() - t0
         t0 = time.time()
