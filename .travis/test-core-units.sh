@@ -466,12 +466,14 @@ done
 # -> 878/858.
 # test_dslice_rf_tails.py adds 10 tests and no skips -> 888/868.
 # test_dslice_amplitude_model.py: +1 (_lognorm chunk memory bound), passes, no skips -> 889/869.
-# test_phenom_lframe_conventions.py adds 34 passing tests: generic-spin waveform
+# Symmetric XPNR reference-frame regression adds 19 tests (18 generic-spin
+# phase/reference-frequency cases and explicit native-angle selection).
+# test_phenom_lframe_conventions.py originally added 34 passing tests: generic-spin waveform
 # and polarization controls, aligned boundaries, and SpinTaylor option transport.
 # test_dslice_bounds.py adds 2 tests and no skips.
 # test_gwsignal_seob_conditioning.py adds 8 passing tests with LALSuite 7.26.16:
 # shared-grid operator tests plus native/no_condition conflict refusal.
-EXPECTED_TESTS=933
+EXPECTED_TESTS=952
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -494,7 +496,7 @@ EXPECTED_TESTS=933
 # test_fd_end_taper_cap.py adds 3 tests and no skips; 878/858 (above).
 # test_dslice_rf_tails.py adds 10 tests and no skips; 888/868 (above).
 # test_dslice_bounds.py adds 2 tests; SEOB conditioning adds 8, all passing.
-EXPECTED_PASSED=913
+EXPECTED_PASSED=932
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 MAX_SKIPPED=19
 

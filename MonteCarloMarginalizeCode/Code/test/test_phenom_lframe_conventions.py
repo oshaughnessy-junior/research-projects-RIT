@@ -98,7 +98,7 @@ def test_generic_spintaylor_fixed_phase(case):
 
 @pytest.mark.parametrize("case", GENERIC, ids=["q3.5", "two-tilted-spins", "q5.3"])
 @pytest.mark.parametrize("phase", [None, 0.], ids=["fixture-phase", "zero-phase"])
-@pytest.mark.parametrize("fref", [0., 20., 35.])
+@pytest.mark.parametrize("fref", [0., 20., 35.013])
 def test_generic_symmetric_xpnr_fixed_phase(case, phase, fref):
     p = parameters("IMRPhenomXPNR", case)
     if phase is not None:
