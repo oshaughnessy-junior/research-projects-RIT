@@ -2,6 +2,12 @@
 ------------
 development tree is rift_O4d; PRs refer to oshaughn/research-projects-RIT.
 
+   - Opt-in mu/random-transverse puffing for the first CIP batch, with an atomic
+     vectorized mass/aligned-spin inverse and independent random transverse redraws.
+     Later batches retain internal-puff-transverse covariance puffing; BasicIteration
+     accepts a puff argument schedule paired with the CIP batch schedule. Default
+     puff behavior is unchanged.
+
    - (rc0) O4d base refresh: modern Python/numpy support, portable GPU execution, generic workflow
      backends, hyperpipe and simulation-manager support; distance-likelihood export, parsimonious
      placement preview, waveform utilities and diagnostics (PRs #129, #132, #135, #143).
