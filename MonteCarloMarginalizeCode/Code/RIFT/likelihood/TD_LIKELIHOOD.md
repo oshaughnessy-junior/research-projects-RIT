@@ -48,7 +48,9 @@ and repeatable `--td-gap tstart,tend` configure the experimental operator. Tempo
 cut offsets are seconds relative to the template peak. Gap offsets are geocentric
 seconds relative to the event; the factory resolves their data-frame placement.
 `util_RIFT_pseudo_pipe.py` forwards the corresponding `--internal-ile-td-*` flags.
-Slow rotation, frequency response and FD-only noise-evidence exports are refused.
+The separate LISA driver is not extended; its drift ledger records the TDI-specific
+physics validation needed before porting these flags. Slow rotation, frequency
+response and FD-only noise-evidence exports are refused.
 Calibration's per-realization FD self term is refused; global-norm calibration
 uses the selected factory consistently.
 
