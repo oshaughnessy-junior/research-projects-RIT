@@ -127,6 +127,13 @@ The sub file has no file transfer, so it needs the shared run directory
 - bp4's miss was a search failure: every objective variant (4096 Hz; 1024 Hz;
   1024 Hz with relative binning) prefers bp3's region by 5 to 15 nats, and
   relative binning agrees with the full 1024 Hz objective to 0.3 nat there.
+- Recommended fast command (S250830bp, 32 s at 4096 Hz): `--mode-backend ripple
+  --rb-eps 0.2 --srate 1024 --fmax 448` with the defaults (l_max 2, S = 1024,
+  4 free starts, rungs 0.3 and 0.6, covariance placement). On pcdev11 (RTX PRO
+  4000): 1428 s with a cold compilation cache, 746 s warm (start stage 360 s,
+  climbing 0.28 s per point over 1340 points). 67 of 500 seeds have
+  chi1_perp >= 0.5. Of the warm start stage, about 6 min is data loading,
+  tracing and sky adaptation, not likelihood work: the next target.
 - Cost per point is the precompute plus the kernel. See the RESULTS note in
   RIFT_roboto_paper `analyses/transverse_seed_climb/` for timings.
 - JAX on a CIT head node starts an XLA thread pool sized by the CPU count. With
