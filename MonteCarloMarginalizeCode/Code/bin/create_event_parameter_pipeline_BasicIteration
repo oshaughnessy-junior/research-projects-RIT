@@ -328,7 +328,7 @@ parser.add_argument("--seed-climb-args",default=None,help="Argument file for --s
 parser.add_argument("--seed-climb-n-max",default=1000,type=int,help="Most points the seed climb may add.  Iteration-0 ILE batches are sized at DAG-build time for (input grid + this many) points; ILE exits cleanly on indices past the end of the grid.")
 parser.add_argument("--seed-climb-request-gpu",action='store_true',help="Seed-climb node requests a GPU (JAX kernel on GPU).  Without it the node runs on CPU.")
 parser.add_argument("--seed-climb-request-memory",default=8192,type=int,help="request_memory (MB) for the seed-climb node")
-parser.add_argument("--seed-climb-mode",default="prepend",choices=["prepend","parallel"],help="prepend: the seed climb runs before the iteration-0 ILE jobs and appends to overlap-grid-0.  parallel: it runs alongside them, writes seed-0, and its own ILE_seed jobs feed the iteration-0 consolidation, so iteration 0 is not delayed.")
+parser.add_argument("--seed-climb-mode",default="prepend",choices=["prepend","parallel","composite"],help="prepend: the seed climb runs before the iteration-0 ILE jobs and appends to overlap-grid-0.  parallel: it runs alongside them, writes seed-0, and its own ILE_seed jobs feed the iteration-0 consolidation, so iteration 0 is not delayed.  composite: it runs after the iteration-0 unify, climbs from the best lines of all.net beside CIP 0, writes seed-1, and its ILE_seed jobs feed the iteration-1 consolidation.")
 parser.add_argument("--fetch-ext-grid-args",default=None,help="arguments for command  for fetching external grid. Don't over-specify the --output-file argument, which will be used by the pipeline")
 parser.add_argument("--ile-batch",action='store_true',help="Different workflow: the ILE job is assumed to create a .composite file directly in the current working directory. Designed for fake ILE sets and long-term batch workflow. NOT IMPLEMENTED ")
 parser.add_argument("--transfer-file-list",default=None,help="File containing list of *input* filenames to transfer, one name per file. Copied into transfer_files for condor directly.  If provided, also enables attempts to deduce files that need to be transferred for the pipeline to operate, as needed for OSG, etc")
@@ -892,7 +892,9 @@ if not (fetch_args is None):
 
 
 ileSeed_job = None
-if opts.seed_climb_exe and opts.seed_climb_args and opts.seed_climb_mode == "parallel" and it_start == 0 and not opts.first_iteration_jumpstart:
+if opts.seed_climb_exe and opts.seed_climb_args and opts.seed_climb_mode in ("parallel", "composite") and it_start == 0 and not opts.first_iteration_jumpstart:
+    if opts.seed_climb_mode == "composite" and opts.n_iterations < 2:
+        raise SystemExit("--seed-climb-mode composite feeds iteration 1; needs --n-iterations >= 2")
     ile_args_forseed = ile_args_orig + ' {} '.format(sim_grid_flag) + working_dir_inside + '/seed-$(macroiteration).{} '.format(grid_suffix)
     transfer_file_names_seed = list(transfer_file_names[:-1])
     transfer_file_names_seed.append(opts.working_directory+"/seed-$(macroiteration).{}".format(grid_suffix))
@@ -1706,9 +1708,13 @@ if opts.seed_climb_exe and opts.seed_climb_args and it_start == 0 and not opts.f
         _sc_args = ' '.join(x.replace('\\', '') for x in f.readlines())
     _sc_args = ' '.join(_sc_args.split(' ')[1:]).strip()
     _grid0 = opts.working_directory + "/overlap-grid-0.xml.gz"
-    if opts.seed_climb_mode == "parallel":
-        if _use_hpip_pipeline:
-            raise SystemExit("--seed-climb-exe writes sim_inspiral XML; incompatible with RIFT_HYPERPIPELINE_FORMAT")
+    if opts.seed_climb_mode in ("parallel", "composite") and _use_hpip_pipeline:
+        raise SystemExit("--seed-climb-exe writes sim_inspiral XML; incompatible with RIFT_HYPERPIPELINE_FORMAT")
+    if opts.seed_climb_mode == "composite":
+        # all.net is rewritten only by the iteration-1 unify, which waits on the seed ILE jobs
+        _sc_args += " --working-directory {wd} --ile-args {ile} --start-composite {wd}/all.net --inj-file-out {wd}/seed-1.xml.gz --n-max-output {n} --output-json {wd}/seed_climb.json --output-dat {wd}/seed_climb_history.dat".format(
+            wd=opts.working_directory, ile=opts.ile_args, n=opts.seed_climb_n_max)
+    elif opts.seed_climb_mode == "parallel":
         _sc_args += " --working-directory {wd} --ile-args {ile} --inj-file {g} --inj-file-out {wd}/seed-0.xml.gz --n-max-output {n} --output-json {wd}/seed_climb.json --output-dat {wd}/seed_climb_history.dat".format(
             wd=opts.working_directory, ile=opts.ile_args, g=_grid0, n=opts.seed_climb_n_max)
     else:
@@ -1909,7 +1915,8 @@ if opts.gridinit_args:
    dag.add_node(grid_node)
    parent_fit_node = grid_node  # this must happen before the first ILE jobs
 
-if seed_climb_job is not None:
+seed_climb_node = None
+if seed_climb_job is not None and opts.seed_climb_mode != "composite":   # composite: made after the iteration-0 unify
    seed_climb_node = pipeline.CondorDAGNode(seed_climb_job)
    if parent_fit_node: seed_climb_node.add_parent(parent_fit_node)
    seed_climb_node.set_retry(opts.general_retries)
@@ -1983,6 +1990,12 @@ for it in np.arange(it_start,opts.n_iterations):
     unify_node.add_macro("macroiteration",it)
     unify_node.add_parent(con_node)
     unify_node.set_retry(opts.general_retries)
+    if seed_climb_job is not None and opts.seed_climb_mode == "composite" and it == it_start:
+        # climbs from this iteration's all.net, beside CIP; feeds the next consolidation
+        seed_climb_node = pipeline.CondorDAGNode(seed_climb_job)
+        seed_climb_node.add_parent(unify_node)
+        seed_climb_node.set_retry(opts.general_retries)
+        dag.add_node(seed_climb_node)
     if not(it ==0) and not(opts.first_iteration_jumpstart):  # don't require first composite to be nonempty if we are running a jumpstart!
         unify_node_list.append(unify_node)
         
@@ -2136,10 +2149,16 @@ for it in np.arange(it_start,opts.n_iterations):
         #     dag.add_node(ile_node)
         #     ile_node_list_per_iteration[it].append(ile_node)
             
-    if ileSeed_job is not None and it == it_start:
+    if ileSeed_job is not None and it == it_start + (1 if opts.seed_climb_mode == "composite" else 0):
         n_seed_jobs = (opts.seed_climb_n_max + n_group_here - 1) // n_group_here
         print(" ILE jobs for the parallel seed climb on iteration ", it, n_seed_jobs)
-        add_batch_ILE_nodes_to_dag(dag, ileSeed_job, seed_climb_node, con_node, n_seed_jobs, n_group_here, it, n_retries=opts.ile_retries, node_list_dict=ile_node_list_per_iteration)
+        # at it > it_start the seed ILE reads the same iteration-(it-1) breadcrumbs as the puff ILE
+        _seed_extra = []
+        if it > it_start and calpilot_job and ((it-1) in calpilot_node_per_iteration):
+            _seed_extra.append(calpilot_node_per_iteration[it-1])
+        if it > it_start and extrconsolidate_job and ((it-1) in extrconsolidate_node_per_iteration):
+            _seed_extra.append(extrconsolidate_node_per_iteration[it-1])
+        add_batch_ILE_nodes_to_dag(dag, ileSeed_job, seed_climb_node, con_node, n_seed_jobs, n_group_here, it, n_retries=opts.ile_retries, node_list_dict=ile_node_list_per_iteration, extra_parent_nodes=_seed_extra or None)
 
     # add con job
     dag.add_node(con_node)

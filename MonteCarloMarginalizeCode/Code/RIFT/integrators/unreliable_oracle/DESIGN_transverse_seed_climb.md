@@ -62,8 +62,19 @@ an evidence or posterior.
 | (a) setup | `pseudo_pipe --transverse-seed-climb setup` | submit host, during setup, CPU unless a GPU is visible | appends seeds to `proposed-grid.xml.gz` |
 | (b) DAG | `pseudo_pipe --transverse-seed-climb dag [--transverse-seed-climb-request-gpu]` | node `seed_climb.sub`, parent of every iteration-0 ILE job | appends seeds to `overlap-grid-0.xml.gz` |
 | (c) parallel | `pseudo_pipe --transverse-seed-climb parallel` | node `seed_climb.sub` with no parent, alongside iteration 0 | writes `seed-0.xml.gz`; its `ILE_seed` jobs feed the iteration-0 consolidation, so every iteration-0 CIP sees them and iteration 0 is not delayed |
+| (d) composite | `pseudo_pipe --transverse-seed-climb composite` | node `seed_climb.sub`, child of the iteration-0 unify, beside CIP 0 | climbs from the best lines of `all.net` (`--start-composite`), writes `seed-1.xml.gz`; its `ILE_seed` jobs feed the iteration-1 consolidation |
 
-Both take extra climber arguments through `--transverse-seed-climb-args`. The
+Scheme (d) is the intended seeding strategy. Iteration 0 runs unchanged. Its
+best ILE-scored lines, usually near aligned spin, give the climb starts close
+to the (mc, q, chi_eff) peak, so the climb spends its budget on transverse
+spin. The climb and its ILE jobs run while CIP 0 and the iteration-1 ILE jobs
+run, and add a few hundred re-scored points at large chi1_perp to the
+iteration-1 fit. Later puffs spread around them. `all.net` is rewritten only by
+the iteration-1 unify, which waits on the seed ILE jobs. The seed ILE jobs carry
+the same iteration-0 calibration and extrinsic breadcrumb barriers as the puff
+ILE jobs. It needs at least two iterations.
+
+All take extra climber arguments through `--transverse-seed-climb-args`. The
 climber reads data, PSD and waveform settings from `args_ile.txt`.
 
 Scheme (b) uses the CEPP options `--seed-climb-exe`, `--seed-climb-args`,
@@ -124,9 +135,11 @@ The sub file has no file transfer, so it needs the shared run directory
   adaptation). A batch adapted at one climb's start scored that climb's best
   point 9 nats higher than a common batch did, so lnL from different climbs was
   not comparable. Four free starts by default.
-- bp4's miss was a search failure: every objective variant (4096 Hz; 1024 Hz;
-  1024 Hz with relative binning) prefers bp3's region by 5 to 15 nats, and
-  relative binning agrees with the full 1024 Hz objective to 0.3 nat there.
+- Production re-score (S250830bp, SEOBNRv5PHM ILE, peak lnL 178.7): seeds from
+  the slow configuration (l_max 4, 4096 Hz) are within 10 nats of the peak for
+  62 of 66 at chi1_perp >= 0.3; seeds from the fast one (l_max 2, 1024 Hz) for
+  4 of 141. The fast settings, not XPHM, misplace the large-chi1_perp seeds.
+  Which of l_max or the frequency cut is responsible is not yet known.
 - Recommended fast command (S250830bp, 32 s at 4096 Hz): `--mode-backend ripple
   --rb-eps 0.2 --srate 1024 --fmax 448` with the defaults (l_max 2, S = 1024,
   4 free starts, rungs 0.3 and 0.6, covariance placement). On pcdev11 (RTX PRO
@@ -145,8 +158,6 @@ The sub file has no file transfer, so it needs the shared run directory
 - JAX on a CIT head node starts an XLA thread pool sized by the CPU count. With
   the 500-thread user cap, a second JAX process on a busy node fails with
   `pthread_create() failed`. Condor execute nodes have no such cap.
-- The sky batch is small (256 to 512 points). For targeting this is enough; the
-  objective's lnL can sit a few nats from the ILE value.
 - Only BasicIteration has scheme (b). Other builders can use scheme (a).
 - Open: on CPU (jax 0.9.0), `IntrinsicMarginalObjective.__call__` followed by
   `lnL_sky` on the same point once returned all-NaN rows; the same call with the
@@ -157,4 +168,5 @@ The sub file has no file transfer, so it needs the shared run directory
 ## Tests
 
 - `test/integrators/test_ladder_climber.py`: toy ridge, box reflection, draws.
+- `test/integrators/test_seed_climb_composite.py`: composite reader (duplicates, failed lines, mass order).
 - Real-data runs and their numbers are in the paper-repo RESULTS note.

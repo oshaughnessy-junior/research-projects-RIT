@@ -20,6 +20,8 @@ options.
   Setup-time use :  --inj-file proposed-grid.xml.gz --inj-file-out seeds
   DAG first layer:  --inj-file overlap-grid-0.xml.gz --append-to-input
                     --inj-file-out overlap-grid-0   (rewrites the iteration-0 grid)
+  After iteration 0: --start-composite all.net --inj-file-out seed-1
+                    (climbs from the best ILE-scored lines, beside CIP 0)
 """
 import argparse
 import ast
@@ -96,7 +98,12 @@ def build_parser():
                    help="approximant for the climb (default: --approx). The climb only pays "
                         "off if this model's precession matches the analysis model's.")
     # grids
-    p.add_argument("--inj-file", required=True, help="starting grid (sim_inspiral XML)")
+    p.add_argument("--inj-file", default=None, help="starting grid (sim_inspiral XML)")
+    p.add_argument("--start-composite", default=None,
+                   help="start from ILE-scored lines instead (all.net / *.composite: "
+                        "indx m1 m2 s1x s1y s1z s2x s2y s2z ... lnL sigma ntot neff)")
+    p.add_argument("--n-composite-starts", type=int, default=20,
+                   help="with --start-composite: highest-lnL lines rescored to choose the starts")
     p.add_argument("--inj-file-out", required=True, help="output grid (.xml.gz appended)")
     p.add_argument("--append-to-input", action="store_true",
                    help="write the input grid followed by the seeds")
@@ -192,8 +199,38 @@ def x_to_P(x, P_base):
     return P
 
 
+def load_composite(fname, P_base):
+    """ChooseWaveformParams and lnL for the finite-lnL lines of a RIFT composite file.
+
+    Columns: indx m1 m2 (Msun) s1x s1y s1z s2x s2y s2z [extra ...] lnL sigma ntot neff.
+    Duplicate lines (all.net repeats points scored more than once) are dropped.
+    """
+    dat = np.atleast_2d(np.loadtxt(fname))
+    if dat.shape[1] < 13:
+        sys.exit("util_TransverseSeedClimb: %s has %d columns; need >= 13" % (fname, dat.shape[1]))
+    lnL = dat[:, -4]
+    dat = dat[np.isfinite(lnL)]
+    _, keep = np.unique(np.round(dat[:, 1:9], 6), axis=0, return_index=True)
+    dat = dat[np.sort(keep)]
+    if len(dat) == 0:
+        sys.exit("util_TransverseSeedClimb: no finite-lnL lines in %s" % fname)
+    Ps = []
+    for row in dat:
+        P = P_base.copy()
+        P.m1, P.m2 = row[1] * MSUN, row[2] * MSUN
+        P.s1x, P.s1y, P.s1z, P.s2x, P.s2y, P.s2z = row[3:9]
+        if P.m2 > P.m1:
+            P.swap_components()
+        Ps.append(P)
+    return Ps, dat[:, -4]
+
+
 def main(argv=None):
     opts = build_parser().parse_args(argv)
+    if (opts.inj_file is None) == (opts.start_composite is None):
+        sys.exit("util_TransverseSeedClimb: give exactly one of --inj-file, --start-composite")
+    if opts.start_composite and opts.append_to_input:
+        sys.exit("util_TransverseSeedClimb: --append-to-input needs --inj-file")
     if opts.working_directory:
         os.chdir(opts.working_directory)
     if opts.ile_args:
@@ -272,10 +309,16 @@ def main(argv=None):
 
     # --- starting grid: score a subset, pick distinct starts --------------------
     rng = np.random.default_rng(opts.seed)
-    P_in = lalsimutils.xml_to_ChooseWaveformParams_array(opts.inj_file)
     with_chi2 = opts.climb_chi2_perp
+    if opts.start_composite:
+        # the whole composite sets the box; its best lines (by ILE lnL) are the candidates
+        P_in, lnL_ile = load_composite(opts.start_composite, P_base)
+        idx = np.argsort(-lnL_ile)[:min(opts.n_composite_starts, len(P_in))]
+        print(" [seedclimb] %s: %d lines, best ILE lnL %.2f" % (opts.start_composite, len(P_in), lnL_ile.max()))
+    else:
+        P_in = lalsimutils.xml_to_ChooseWaveformParams_array(opts.inj_file)
+        idx = rng.choice(len(P_in), size=min(opts.n_start_eval, len(P_in)), replace=False)
     X_in = np.array([P_to_x(P, with_chi2) for P in P_in])
-    idx = rng.choice(len(P_in), size=min(opts.n_start_eval, len(P_in)), replace=False)
     obj.adapt_sky(P_in[idx[0]])
     P_start = [x_to_P(X_in[i], P_base) or P_in[i] for i in idx]
     if opts.mode_backend == "ripple":
