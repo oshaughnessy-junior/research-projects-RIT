@@ -51,3 +51,28 @@ def test_glitch_constant_in_integral_and_saved_likelihood(constant, log_return):
     # This is the same offset restoration used by evidence and sample-export writers.
     restored = sampler_log + namespace['manual_avoid_overflow_logarithm']
     np.testing.assert_allclose(restored, raw+constant, atol=1e-12, rtol=0)
+
+
+@pytest.mark.parametrize('constant', [0.0, -30.0, 5.0, 1000.0])
+def test_arrival_resampling_restores_same_normalization(constant):
+    source = Path(__file__).parents[1] / 'bin/integrate_likelihood_extrinsic_batchmode'
+    tree = ast.parse(source.read_text())
+    analyze = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'analyze_event')
+    branch = next(n for n in ast.walk(analyze) if isinstance(n, ast.If)
+                  and isinstance(n.test, ast.Attribute)
+                  and n.test.attr == 'resample_time_marginalization'
+                  and any(isinstance(x, ast.Call) and isinstance(x.func, ast.Name)
+                          and x.func.id == 'resample_samples' for x in ast.walk(n)))
+    raw, times = np.array([-2., -1.]), np.array([-.01, .02])
+    def draw(samples, *args, **kwargs):
+        return dict(lnL_raw=raw.copy(), t_ref=times.copy())
+    ns = dict(samples={}, resample_samples=draw, _glitch_lnL_constant=constant,
+              lookupNKDict={}, rholmArrayDict={}, ctUArrayDict={}, ctVArrayDict={},
+              epochDict={}, n_cal_for_likelihood=1, calibration_log_weights=None,
+              ctUArrayDict_cal=None, ctVArrayDict_cal=None)
+    # Execute the actual driver export, before unrelated calibration exports.
+    block = ast.fix_missing_locations(ast.Module(body=branch.body[:3], type_ignores=[]))
+    exec(compile(block, str(source), 'exec'), ns)
+    np.testing.assert_array_equal(ns['samples']['t_ref'], times)
+    np.testing.assert_allclose(ns['samples']['lnL_raw'], raw+constant, rtol=0, atol=1e-12)
+    np.testing.assert_allclose(ns['samples']['loglikelihood'], raw+constant, rtol=0, atol=1e-12)

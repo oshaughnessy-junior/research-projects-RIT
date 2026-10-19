@@ -6256,6 +6256,11 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
 
       if opts.resample_time_marginalization:
         samples = resample_samples(samples,lookupNKDict, rholmArrayDict, ctUArrayDict, ctVArrayDict,epochDict, n_cal=n_cal_for_likelihood, cal_log_weights=calibration_log_weights, ctUArrayDict_cal=ctUArrayDict_cal, ctVArrayDict_cal=ctVArrayDict_cal)
+        # The time-draw helper evaluates raw NoLoop statistics, bypassing the
+        # sampler callback. Restore the same data-normalization term in its export;
+        # it is constant in arrival time and does not change the draw probabilities.
+        if _glitch_lnL_constant != 0.0:
+            samples["lnL_raw"] = samples["lnL_raw"] + _glitch_lnL_constant
         samples["loglikelihood" ] = samples["lnL_raw"]  # export the non-time-marginalized likelihood, if we are in the final stages
 #        print(samples['t_ref'] - fiducial_epoch, len(samples['t_ref']))
         # Recovered CALIBRATION posterior (opt-in): for each fair-draw sample, draw ONE cal
