@@ -93,13 +93,15 @@ log_coord_names = ['lambda1', 'lambda2', 'LambdaTilde']
 coord_names = opts.parameter # Used  in fit
 if opts.puff_coordinate_system:
     incompatible = [name for name in (
-        'parameter', 'no_correlation', 'reflect_parameter', 'random_parameter',
+        'parameter', 'no_correlation', 'random_parameter',
         'append_with_random_parameter', 'eccentric_phase_coordinates',
         'regularize', 'force_away', 'force_scatter', 'force_plunge', 'force_zoomwhirl')
         if getattr(opts, name)]
     if incompatible:
         parser.error('mu-random-transverse does not support ' + ', '.join(
             '--' + name.replace('_', '-') for name in incompatible))
+    if any(name not in ('q', 's2z') for name in opts.reflect_parameter or []):
+        parser.error('mu puff --reflect-parameter supports only q and s2z; physical bounds are used, narrowed by native downselection')
     if not np.isfinite(opts.puff_factor) or opts.puff_factor < 0:
         parser.error('mu puff requires a finite nonnegative --puff-factor')
     if not np.isfinite(opts.mu_puff_transverse_max) or not 0 <= opts.mu_puff_transverse_max <= 1:
@@ -176,7 +178,7 @@ for indx in np.arange(len(dlist_ranges)):
 
 indx_reflect=[]
 rlist=[]
-if opts.reflect_parameter:
+if opts.reflect_parameter and not opts.puff_coordinate_system:
     rlist  = opts.reflect_parameter
     indx_reflect = [coord_names.index(param) for param in opts.reflect_parameter]
 if len(rlist) > len(coord_names):
@@ -219,6 +221,7 @@ if opts.puff_coordinate_system:
     P_out, summary = mu_puffball.waveform_proposals(
         P_list, count=opts.mu_puff_n_proposals, scale=opts.puff_factor,
         transverse_max=opts.mu_puff_transverse_max, rng=opts.random_seed,
+        reflect_parameters=opts.reflect_parameter,
         downselect=downselect_dict, fref=opts.fref, fmin=opts.fmin,
         duration_bound=opts.enforce_duration_bound)
     print(' Mu/random-transverse puff:', json.dumps(summary, sort_keys=True))
