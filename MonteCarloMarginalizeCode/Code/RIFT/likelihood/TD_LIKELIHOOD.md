@@ -83,6 +83,7 @@ Tests cover default-path parity, complex Hermitian conventions, covariance solve
 against dense references, Woodbury inverses/determinants, mixture identities,
 temporal cuts/gaps, NoLoop parity, driver normalization/export accounting and
 incompatible configuration guards. The optional PCG check
-requires the public extra; run it with `pytest -k dense_vs_iterative -rs` to make
+requires the public extra. The modern dependency-compatibility CI lane installs
+the public wheel and runs this case with an explicit import check. Locally, run it with `pytest -k dense_vs_iterative -rs` to make
 its execution or skip visible. Full likelihood and GPU regressions follow the
 existing `.travis/PRECOMMIT.md` requirements before production merge.
