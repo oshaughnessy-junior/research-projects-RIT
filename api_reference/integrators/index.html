@@ -1227,6 +1227,16 @@ an angle in radians must not get different tolerances.</p></li>
 <dd></dd></dl>
 
 <dl class="py function">
+<dt class="sig sig-object py" id="RIFT.integrators.mcsamplerAdaptiveVolume.unseen_fraction">
+<span class="sig-prename descclassname"><span class="pre">RIFT.integrators.mcsamplerAdaptiveVolume.</span></span><span class="sig-name descname"><span class="pre">unseen_fraction</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">X</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">lnw</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">box_lo</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dx</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">axes</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerAdaptiveVolume.unseen_fraction" title="Link to this definition"></a></dt>
+<dd><p>Good-Turing estimate of the posterior mass the grid does not cover: the weight exp(lnw)
+of live points alone in their bin, as a fraction of the total, binning only <cite>axes</cite>.</p>
+<p>Grids hold only bins with a live point and retained points stay in every later grid, so
+log_retained_density over-counts where points remain when the live set leaves bins empty.
+Diagnostic only; see DESIGN_av_coverage_diagnostic.md.</p>
+</dd></dl>
+
+<dl class="py function">
 <dt class="sig sig-object py" id="RIFT.integrators.mcsamplerAdaptiveVolume.warm_seed_scale_from_finite_points">
 <span class="sig-prename descclassname"><span class="pre">RIFT.integrators.mcsamplerAdaptiveVolume.</span></span><span class="sig-name descname"><span class="pre">warm_seed_scale_from_finite_points</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">points</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">lnL</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">box_lo</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">box_hi</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">axes</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">eig_lo</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1e-05</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">eig_hi</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.5</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerAdaptiveVolume.warm_seed_scale_from_finite_points" title="Link to this definition"></a></dt>
 <dd><p>Estimate the POSTERIOR scale (a box-scaled covariance over <cite>axes</cite>) from the finite
