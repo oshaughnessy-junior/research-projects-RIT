@@ -1,8 +1,10 @@
 # DESIGN: early-time multirate precompute (data-side weighting, DSWc)
 
-**Status:** design only, 2026-10-08. No code until session A's combined DSWc plus
-multibanded U, V run passes G1-G4 (Richard O'Shaughnessy, 2026-10-08). This file is a
-record; it will be superseded by the implementation and its tests.
+**Status:** implemented as an opt-in prototype (research-projects-RIT #436,
+`factored_likelihood_multirate.py`, ILE `--early-time-multirate`); default off. Tests:
+`test/test_multirate_*.py` (core-unit-check; cupy legs in `test_multirate_cupy.py`, GPU only).
+Validation records from the PR's own review moved to RIFT_roboto_paper
+`analyses/early_time_compression/rift_interface/validation_pr436/`.
 **Evidence:** RIFT_roboto_paper `analyses/early_time_compression/`: session A's
 `RESULTS_2026-10-07b_review.md` (PR #216, `64573f9a`) and session B's `rift_interface/`
 notes (PR #215). Base: `rift_O4d` at `615dc1bfa`. No default changes.
@@ -34,9 +36,11 @@ open item (A's `development/OPEN_fmax_convergence_full_rate.md`).
   included, is untouched.
 - Dispatch at the precompute call (`integrate_likelihood_extrinsic_batchmode:3821`). Build
   the data products once, after the data and PSD load (`:1503`, `:1525`).
-- Refuse, never fall through: calibration marginalization, `--freqresponse`, ROM basis, a
+- Refuse before data loading, with a nonzero exit (`validate_job`): calibration marginalization, `--freqresponse`, ROM basis, a
   TD-only approximant, an intrinsic point outside the frozen range, a waveform whose
-  generator rejects the low rate, or in-plane spins (precession; see below).
+  generator rejects the low rate, in-plane spins (precession; see below),
+  `--internal-precompute-ignore-threshold` (not ported), or `--early-time-multirate-waveform xp`
+  without `RIFT.likelihood.gpu_waveform_xhm` (#465).
 - Log one line per job naming the schedule, its hash and the segments.
 
 ## Time convention
@@ -82,7 +86,8 @@ bound uses m_max = l_max, which covers mode mixing. The precession-frequency spr
 its own margin there.
 
 - One call per |m| group: `f_min,lm = (m/2) f22(tau_start)`, inside RIFT's call with
-  `fd_standoff_factor = 0.9` (the driver's value, `factored_likelihood.py:422`). tau_start
+  `fd_standoff_factor = 0.964` (the `hlmoft` default). The production driver sets 0.9
+  (`factored_likelihood.py:488`); see "Template conventions against production" below. tau_start
   is the late-segment start plus guard plus 100 s.
 - Buffer: a power of two at least tau_start plus 2 s.
 - Measured (B, 3G BNS, zero spin, XHM l <= 4, tau_start 600 s, 1024 s buffer): all modes
@@ -137,10 +142,10 @@ wrapper extended to the new functions.
 
 ## Acceptance
 
-1. A one-segment full-rate schedule reproduces today's `rholms`, `crossTerms` and
-   `crossTermsV` to floating-point precision on identical inputs, under production flags:
-   `fd_alignment_postevent_time=2` as ILE sets it, on a power-of-2 segment of at least 8 s.
-   The template epochs then carry no offset on either path.
+1. Status 2026-10-20: met only with production set to the multirate template conventions
+   (multibanding off, per-|m| f_min, standoff 0.964): then one_segment equals production
+   `rholms`, `crossTerms` and `crossTermsV` to 1e-16. Against the production default it differs
+   by the template offset in "Template conventions against production".
 2. Status 2026-10-09: passed (RIFT_roboto_paper PR #221: CE BNS from 10 Hz, XHM l <= 4, 256 Hz).
    2a: D3_Q 2.5e-5 at rho = 1000 with the interpolated early Q. 2b: D1 2.3e-4 at rho = 1000 over
    four templates, draws and lags, with U, V from the early and late templates; peak shift
@@ -151,19 +156,40 @@ wrapper extended to the new functions.
    with h the raw template, gate min(0.03, 0.1/rho_e). The prototype computes it both per mode
    and for the injected strain. The injected-strain form has never been computed. For
    precessing templates the per-inertial-mode D2_DSW is the spectral rate-bound check.
-   G4 also holds: the peak-time shift is at most 0.1 sigma_t. Expected scale, A's end-to-end
-   D1 at rho = 1000 with the 32 s U, V margin (PR #216, `2950de6f`): at 200 dB, 7.2e-6 (CE BNS),
-   7.9e-7 (ET BNS), 1.1e-4 (O4 BNS, limited by U, V), 7.2e-6 (CE higher modes); at 160 dB,
-   1.55e-3 (CE BNS) and 1.7e-4 (O4 BNS). The smaller DSW-only rows are not end-to-end figures.
-   These use A's IMRPhenomTHM/TPHM modes. RIFT's own XHM early-template path has not been run
-   through DSWc. Under the original whiten-first D2, the strain term fails for bns_et at
-   rho = 1000 and for the hard-cut rows from rho = 300; A's review keeps that verdict, since
-   the DSW amendment is not retroactive.
+   G4 also holds: the peak-time shift is at most 0.1 sigma_t. A's end-to-end D1 values at
+   rho = 1000 are in PR #216 (`2950de6f`); they use A's IMRPhenomTHM/TPHM modes, not RIFT's XHM
+   early-template path.
 3. Measured per-point time and peak RSS are compared with B's prediction (5.0-7.3x for the
-   3G CE BNS). A gap of more than 2x is a finding, not a tuning target.
+   3G CE BNS). A gap of more than 2x is a finding.
 4. Status 2026-10-09: passed (PR #221, `RESULTS_2026-10-09_accept4.md`): zero-noise O4 BNS,
    NoLoop, two_rate against the one_segment control, per-sample lnL equal to 1.1e-5 within 50
    nats of the maximum. One end-to-end ILE run on a known injection, with the multirate path in force (log line
    present). A run that falls back to the full-rate path does not test it. Both paths use
    per-|m| f_min and the controls above, so a production higher-mode wrap or end-taper
    difference is not read as a multirate failure.
+
+## Template conventions against production (measured 2026-10-20)
+
+Multirate templates use three conventions that production does not: XHM multibanding off,
+per-|m| f_min = (m/2) f_min, and the `hlmoft` standoff 0.964 (production 0.9). With all three
+set, production arithmetic reproduces the one_segment control (D) to 1e-16.
+
+lnL at 33 fixed extrinsic samples, zero noise, H1+L1, O4 PSD, 20-1700 Hz, XHM l <= 4; data from
+`lsu.hoft` at 8 Hz, multibanding off. Entries are max |Delta lnL| / (rho^2/2). Delta lnL scales
+as rho^2 in zero noise.
+
+| Difference | 36+29 | 30+6 | 10+4 |
+|---|---|---|---|
+| multibanding on vs off (A-B) | 1.1e-4 | 1.4e-4 | 1.6e-4 |
+| per-\|m\| f_min vs common (B-C) | 8.2e-5 | 9.4e-4 | 1.7e-4 |
+| standoff 0.964 vs 0.9 (C-C964) | 9.9e-5 | 2.9e-4 | 5.5e-5 |
+| C964 vs one_segment (C964-D) | 1.4e-16 | 1.7e-16 | 1.1e-16 |
+| production vs one_segment (A-D) | 1.7e-4 | 1.2e-3 | 2.9e-4 |
+| A-D in nats, rho 300 / 1000 | 7 / 83 | 55 / 610 | 13 / 145 |
+
+Production with multibanding off and a common f_min (B) equals a reference with every mode
+started at f22 = 8 Hz to 1e-5 nats, so B is closest to LAL with multibanding off. Per-|m| f_min
+drops the m >= 3 modes between f_min and (m/2) f_min, which is in band, and moves the standoff
+taper into band. Multirate-vs-production comparisons therefore carry about 10^2 nats at rho 1000
+before any multirate error; two_rate against one_segment does not. Script and outputs:
+RIFT_roboto_paper `analyses/early_time_compression/rift_interface/validation_pr436/template_offset/`.
