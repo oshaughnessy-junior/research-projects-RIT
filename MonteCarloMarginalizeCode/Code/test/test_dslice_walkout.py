@@ -133,3 +133,50 @@ def test_stop_reasons():
     walk_out_slices(d, lnL(d), flat, Fresh(lambda dd: np.full(len(dd), 50.0)), 1.0, 1e9, delta_lnL=7.0,
                     max_steps=3, reasons=why)
     assert why == ["max_steps", "max_steps"]
+
+
+def test_walk_out_fresh_slices_restores_the_overflow_offset(monkeypatch):
+    # fresh_sample_slices integrates the offset-subtracted likelihood; the walk-out rows must be
+    # put back on ILE's axis before they are compared with the existing slices or written.
+    import RIFT.misc.distance_slices as ds
+    offset = 123.0
+    calls = []
+
+    def fake_fresh(sampler, like, d_new, n_max, n_eff_target, n_chunk, return_lnL):
+        calls.append(float(d_new[0]))
+        return lnL(d_new) - offset, np.full(1, 0.1), np.full(1, 30.0), np.full(1, 1000)
+
+    monkeypatch.setattr(ds, "fresh_sample_slices", fake_fresh)
+    d = narrow_core()
+    why = []
+    dw, lw, sw, nw, tw = ds.walk_out_fresh_slices(None, None, d, lnL(d), flat, 1.0, 1e4,
+                                                  lnL_offset=offset, delta_lnL=7.0, max_steps=8,
+                                                  n_max=1, n_eff_target=1, n_chunk=1, reasons=why)
+    ref = walk_out_slices(d, lnL(d), flat, Fresh(), 1.0, 1e4, delta_lnL=7.0)
+    assert len(calls) == len(dw) > 0
+    np.testing.assert_allclose(lw, lnL(dw))          # on the slices' axis, not offset below it
+    np.testing.assert_allclose(dw, ref[0])           # same stopping points as the offset-free walk
+    assert why == ["target", "target"]
+
+
+def test_merge_walkout_appends_rows_with_integer_ntotal():
+    from RIFT.misc.distance_slices import merge_walkout
+    base = (np.array([1.0, 2.0]), np.array([5.0, 6.0]), np.array([0.1, 0.1]), np.array([30.0, 30.0]),
+            np.array([100, 200]))
+    added = (np.array([0.5, 3.0]), np.array([1.0, 2.0]), np.array([0.2, 0.2]), np.array([20.0, 20.0]),
+             np.array([300.0, 400.0]))
+    d, l, s, n, t = merge_walkout(*base, added)
+    np.testing.assert_array_equal(d, [1.0, 2.0, 0.5, 3.0])
+    np.testing.assert_array_equal(l, [5.0, 6.0, 1.0, 2.0])
+    np.testing.assert_array_equal(t, [100, 200, 300, 400])
+    assert t.dtype.kind == "i" and len(s) == len(n) == 4
+    empty = tuple(np.array([]) for _ in range(5))
+    d0 = merge_walkout(*base, empty)
+    np.testing.assert_array_equal(d0[0], base[0]) and np.testing.assert_array_equal(d0[4], base[4])
+
+
+def test_disabled_walk_reports_off():
+    d = narrow_core()
+    why = []
+    walk_out_slices(d, lnL(d), flat, Fresh(), 1.0, 1e4, delta_lnL=7.0, max_steps=0, reasons=why)
+    assert why == ["off", "off"]
