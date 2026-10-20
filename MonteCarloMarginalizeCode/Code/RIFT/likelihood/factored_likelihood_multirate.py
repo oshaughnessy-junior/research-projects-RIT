@@ -714,9 +714,9 @@ def PrecomputeLikelihoodTermsMultirate(event_time_geo, t_window, P, data_dict, p
         if _cache_context(data_dict, psd_dict, schedule,
                           (dt, P.fmin, fMax, Lmax, t_window, str(event_time_geo), P.phi, P.theta,
                            inv_spec_trunc_Q, T_spec, P.approx), xp):
-            print(" early-time multirate: backend %s%s" % (
+            print(" early-time multirate: backend %s%s, templates %s" % (
                 "reference" if use_ref else xp.__name__,
-                "" if xp is np else " device=%d" % xp.cuda.runtime.getDevice()))
+                "" if xp is np else " device=%d" % xp.cuda.runtime.getDevice(), wf))
         if not use_ref:
             n_e, n_l = early[keys[0]].data.length, late[keys[0]].data.length
             tk = ("taper", n_e, early[keys[0]].deltaF, schedule["fs_e"], xp.__name__)
