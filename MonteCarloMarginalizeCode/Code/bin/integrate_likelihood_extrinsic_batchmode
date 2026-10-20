@@ -617,6 +617,16 @@ if opts.gwsignal_mode_conditioning == "native" and opts.internal_waveform_fd_no_
 if opts.log_noise_evidence_only and opts.log_noise_evidence_output is None:
   opts.log_noise_evidence_output = "log_noise_evidence.json"
 
+# The --td-* options below belong to the finite-covariance td-gs code path; on any other
+# inner product they would be ignored, so they are refused before any data are read.
+_gs_options = (opts.td_mref is not None or opts.td_piece or opts.td_ifo_time_offset or
+               opts.td_acf_file or opts.td_highpass is not None or opts.td_u_svd_tol is not None or
+               opts.td_whiteness_check or opts.td_acf_cond != 1e8 or opts.td_dense_max_n != 4096 or
+               opts.td_u_stride != 1 or opts.td_u_method != 'auto' or opts.td_subsample != 1 or
+               opts.td_calibration_correction_type != 'rift' or opts.td_calibration_fir_half_length is not None)
+if _gs_options and opts.internal_ile_inner_product != 'td-gs':
+    optp.error("TD-GS settings require --internal-ile-inner-product td-gs")
+
 # These upstream paths build FD-diagonal statistics independently of IP_factory.
 # Refuse the combination before loading data or writing a mislabeled noise evidence.
 if opts.internal_ile_inner_product == "td-toeplitz":
