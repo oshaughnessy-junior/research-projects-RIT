@@ -239,10 +239,8 @@ def _detector_geometry(det, xpy):
 #
 # NOT bitwise against simps(): a gemv reassociates the summation.  The RULE is identical
 # -- the weights come from the very same simps implementation the call site would have
-# used, so the even='avg'-vs-Cartwright distinction that separates the vendored GPU copy
-# from scipy's is preserved, and only the order of the additions changes.  The measured
-# discrepancy is at the floating-point noise floor; see
-# DESIGN_noloop_per_detector_glue.md for the number.
+# used, and only the order of the additions changes.  The measured discrepancy is at the
+# floating-point noise floor; see DESIGN_noloop_per_detector_glue.md for the number.
 _SIMPS_WEIGHTS_CACHE = {}
 
 
@@ -259,14 +257,12 @@ def _simps_weights(simps, npts, deltaT, xpy, block=256):
     default).  simps reduces along axis=-1, so rows are independent and the blocked
     result is bitwise identical to the whole-identity one.
 
-    Keyed on the quadrature FUNCTION as well as (npts, dx, backend): on GPU `simps` is
-    the vendored old-scipy copy with even='avg' and on CPU it is scipy's Cartwright
-    form, and those two disagree by 0.405 nats on an under-resolved peak.  Today the
-    rule is a pure function of the backend so id(xpy) would suffice, but this helper is
-    module-level and nothing stops a future caller passing a different rule at the same
-    shape -- which would silently serve the other rule's weights.
+    Keyed on the quadrature FUNCTION as well as (npts, dx, backend): 'simpson' and
+    'trapezoid' share every other key field, and serving one rule's weights for the
+    other would silently change the integral.  The rule itself comes from
+    time_quadrature_rule, which chooses it by name, not by backend.
     """
-    key = (int(npts), float(deltaT), id(xpy), id(simps))
+    key = (int(npts), float(deltaT), id(xpy), _device_id(xpy), id(simps))
     w = _SIMPS_WEIGHTS_CACHE.get(key)
     if w is None:
         n = int(npts)
@@ -280,6 +276,73 @@ def _simps_weights(simps, npts, deltaT, xpy, block=256):
         w = xpy.concatenate(parts) if len(parts) > 1 else parts[0]
         _SIMPS_WEIGHTS_CACHE[key] = w
     return w
+
+
+# --- the time rule, chosen by NAME and never by backend -----------------------
+# Until 2026-10 the vectorized paths chose by backend: scipy's Simpson on CPU, the
+# vendored optimized_gpu_tools.simps (old scipy, even='avg') on GPU.  For even npts
+# (srate 4096 and 8192) the vendored rule is the trapezoidal rule in the interior, so
+# identical inputs gave lnL differing by up to ln(3/2) nats between devices.  Now each
+# name is one rule on every backend.  See DESIGN_time_marginalization_quadrature.md.
+_TIME_RULES = {}
+
+
+def _device_id(xpy):
+    cuda = getattr(xpy, 'cuda', None)
+    return None if cuda is None else int(cuda.runtime.getDevice())
+
+
+class _HostWeightRule(object):
+    """``rule(y, dx=..., axis=-1)`` as ``y . w``, with ``w`` built on the HOST.
+
+    'simpson' takes its weights from scipy's own rule, so a device run integrates with
+    exactly the weights a CPU run uses; 'trapezoid' is the trapezoidal rule.  Weights
+    are cached per (npts, dx, device).
+    """
+
+    def __init__(self, kind, xpy):
+        self.kind = kind
+        self.xpy = xpy
+        self._weights = {}
+
+    def weights(self, npts, dx):
+        key = (int(npts), float(dx), _device_id(self.xpy))
+        w = self._weights.get(key)
+        if w is None:
+            n = int(npts)
+            if self.kind == 'simpson':
+                w_host = np.array(_simps_weights(my_simps, n, float(dx), np))
+            else:
+                w_host = np.full(n, float(dx))
+                w_host[[0, -1]] = 0.5 * float(dx)
+                if n < 2:
+                    w_host[:] = 0.0
+            w = self.xpy.asarray(w_host)
+            self._weights[key] = w
+        return w
+
+    def __call__(self, y, dx=1.0, axis=-1):
+        y = self.xpy.moveaxis(y, axis, -1)
+        return y.dot(self.weights(y.shape[-1], dx))
+
+
+def time_quadrature_rule(time_quadrature, xpy=np):
+    """The fixed-grid time rule for ``time_quadrature``, the same on every backend.
+
+    'trapezoid' gives the trapezoidal rule.  Every other name gives scipy's Simpson
+    rule, which is also what 'bandlimited' and 'peak-local' apply to the rows they do
+    not refine.  On numpy, Simpson is ``scipy.integrate.simpson`` itself, so CPU
+    results are unchanged bit for bit.  The callable takes ``(y, dx=..., axis=-1)``.
+    """
+    time_quadrature_module.validate_time_quadrature(time_quadrature)
+    kind = 'trapezoid' if time_quadrature == 'trapezoid' else 'simpson'
+    if kind == 'simpson' and xpy is np:
+        return my_simps
+    key = (kind, id(xpy))
+    rule = _TIME_RULES.get(key)
+    if rule is None:
+        rule = _TIME_RULES[key] = _HostWeightRule(kind, xpy)
+    return rule
 
 
 # --- mode-list identity, cached across likelihood calls -----------------------
@@ -2841,9 +2904,14 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
         All three stencils have CPU and GPU implementations.  See _sinc_Q_window_numpy and
         RIFT/likelihood/DESIGN_q_window_stencil.md for the measured tables.
 
-    time_quadrature : {'simpson', 'bandlimited', 'peak-local'} or None
+    time_quadrature : {'simpson', 'trapezoid', 'bandlimited', 'peak-local'} or None
         Rule used for the time integral.  None (the default) defers to the
-        module-level ``TIME_QUADRATURE_DEFAULT``, which is 'simpson'.
+        module-level ``TIME_QUADRATURE_DEFAULT``, which is 'simpson'.  Each name is
+        the same rule on CPU and GPU (``time_quadrature_rule``).
+
+        'trapezoid' is the trapezoidal rule at the same fixed spacing.  For a peak
+        well inside the window it converges exponentially in sigma_t/deltaT and beats
+        Simpson; it does not fix under-resolution.
 
         'simpson' is the historical rule: Simpson's rule at the FIXED spacing
         deltaT=1/srate.  The integrand's width, however, is set by the signal --
@@ -2898,11 +2966,14 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
         # as 'bandlimited' -- it only moves WHERE the refined grid is placed -- so it
         # inherits the same exclusions rather than getting a parallel set.
         if n_cal != 1:
+            why = ("it has not been validated with the calibration reduction"
+                   if time_quadrature == 'trapezoid' else
+                   "the cal reduction sums exp() over realizations, so each "
+                   "realization's kappa row must be refined and the derived factor "
+                   "reconciled across them; that is untested")
             raise NotImplementedError(
-                "time_quadrature=%r is not implemented for calibration " % time_quadrature +
-                "marginalization (n_cal=%d).  The cal reduction sums exp() over "
-                "realizations, so each realization's kappa row must be refined and the "
-                "derived factor reconciled across them; that is untested." % n_cal)
+                "time_quadrature=%r is not implemented for calibration "
+                "marginalization (n_cal=%d): %s." % (time_quadrature, n_cal, why))
         if return_cal_components:
             raise NotImplementedError(
                 "time_quadrature=%r is not implemented for return_cal_components, "
@@ -3017,12 +3088,8 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
     _use_rho_sq_cal = (ctUArrayDict_cal is not None) and (ctVArrayDict_cal is not None)
     rho_sq_cal = xpy.zeros((n_cal, npts_extrinsic), dtype=np.float64) if _use_rho_sq_cal else None
 
-    if (xpy is np) or (optimized_gpu_tools is None):
-        simps = my_simps
-    elif not (xpy is np):
-        simps = optimized_gpu_tools.simps
-    else:
-        raise NotImplementedError("Backend not supported: {}".format(xpy))
+    # The rule is chosen by name, never by backend; see time_quadrature_rule.
+    simps = time_quadrature_rule(time_quadrature, xpy)
 
     # ---- source-only geometry: built ONCE, shared by every detector -------------
     # None of this depends on the interferometer, only on the extrinsic samples, but it
@@ -3312,14 +3379,9 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
             # whose maximum can exceed the coarse one by hundreds of nats.  That is
             # a numerical detail of an offset-invariant expression, not a second
             # change of estimator.)
-            # Hand over THIS path's Simpson rule, not a private copy.  On GPU
-            # that is optimized_gpu_tools.simps and on CPU it is scipy's, and the
-            # two are NOT interchangeable: the vendored GPU copy is an old scipy
-            # with even='avg' while modern scipy uses the Cartwright correction,
-            # so for EVEN npts (production is 614 at srate 4096) they disagree --
-            # by 0.405 nats on an under-resolved peak.  Rows that fall back must
-            # reproduce what the run they are in would have returned.  Omitting
-            # this also made the module default to scipy, which RAISES on a cupy
+            # Hand over THIS path's Simpson rule, not a private copy, so rows that
+            # fall back reproduce what the run they are in would have returned.
+            # Omitting it made the module default to scipy, which RAISES on a cupy
             # array: every --vectorized --gpu run of this option crashed.
             _time_result = time_quadrature_module.time_marginalize_bandlimited(
                 kappa_sq, _dense_rho_sq(rho_sq_here), float(deltaT), loglikelihood,
