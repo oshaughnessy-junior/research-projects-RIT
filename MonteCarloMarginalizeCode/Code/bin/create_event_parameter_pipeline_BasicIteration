@@ -330,6 +330,7 @@ parser.add_argument("--seed-climb-args",default=None,help="Argument file for --s
 parser.add_argument("--seed-climb-n-max",default=1000,type=int,help="Most points the seed climb may add.  Iteration-0 ILE batches are sized at DAG-build time for (input grid + this many) points; ILE exits cleanly on indices past the end of the grid.")
 parser.add_argument("--seed-climb-request-gpu",action='store_true',help="Seed-climb node requests a GPU (JAX kernel on GPU).  Without it the node runs on CPU.")
 parser.add_argument("--seed-climb-request-memory",default=8192,type=int,help="request_memory (MB) for the seed-climb node")
+parser.add_argument("--seed-climb-singularity-image",default=None,help="Container image for the seed-climb node.  It needs JAX, which no RIFT ILE image carries, so with --use-singularity this is required.")
 parser.add_argument("--seed-climb-mode",default="prepend",choices=["prepend","parallel","composite"],help="prepend: the seed climb runs before the iteration-0 ILE jobs and appends to overlap-grid-0.  parallel: it runs alongside them, writes seed-0, and its own ILE_seed jobs feed the iteration-0 consolidation, so iteration 0 is not delayed.  composite: it runs after the iteration-0 unify, climbs from the best lines of all.net beside CIP 0, writes seed-1, and its ILE_seed jobs feed the iteration-1 consolidation.")
 parser.add_argument("--fetch-ext-grid-args",default=None,help="arguments for command  for fetching external grid. Don't over-specify the --output-file argument, which will be used by the pipeline")
 parser.add_argument("--ile-batch",action='store_true',help="Different workflow: the ILE job is assumed to create a .composite file directly in the current working directory. Designed for fake ILE sets and long-term batch workflow. NOT IMPLEMENTED ")
@@ -1741,6 +1742,8 @@ if opts.gridinit_args:
 
 seed_climb_job = None
 if opts.seed_climb_exe and opts.seed_climb_args and it_start == 0 and not opts.first_iteration_jumpstart:
+    if opts.use_singularity and not opts.seed_climb_singularity_image:
+        raise SystemExit("--seed-climb-exe with --use-singularity needs --seed-climb-singularity-image: the ILE image has no JAX")
     with open(opts.seed_climb_args) as f:
         _sc_args = ' '.join(x.replace('\\', '') for x in f.readlines())
     _sc_args = ' '.join(_sc_args.split(' ')[1:]).strip()
@@ -1763,7 +1766,8 @@ if opts.seed_climb_exe and opts.seed_climb_args and it_start == 0 and not opts.f
         tag='seed_climb', exe=opts.seed_climb_exe, arg_str=_sc_args,
         out_dir=opts.working_directory, request_memory=opts.seed_climb_request_memory,
         request_gpus=1 if opts.seed_climb_request_gpu else 0,
-        use_singularity=opts.use_singularity, singularity_image=singularity_image)
+        use_singularity=opts.use_singularity, singularity_image=opts.seed_climb_singularity_image,
+        condor_commands=ile_condor_commands)   # a GPU worker job: same device requirements as ILE
     if opts.use_full_submit_paths:
         seed_climb_job.set_sub_file(opts.working_directory + "/" + seed_climb_job.get_sub_file())
     seed_climb_job.write_sub_file()

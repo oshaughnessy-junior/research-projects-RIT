@@ -36,6 +36,7 @@ def test_auxiliary_grid_transfers_are_independent(tmp_path, frame_mode, schedule
            '--ile-args', str(tmp_path/'ile.args'), '--cip-args', str(tmp_path/'cip.args'),
            '--seed-climb-exe', '/bin/true', '--seed-climb-args', str(tmp_path/'seed.args'),
            '--seed-climb-mode', 'composite', '--seed-climb-n-max', '2',
+           '--seed-climb-singularity-image', '/unused-jax-image.sif',
            '--puff-args', str(tmp_path/'puff.args'), '--puff-cadence', '1',
            '--fetch-ext-grid-exe', '/bin/true', '--fetch-ext-grid-args', str(tmp_path/'fetch.args'),
            '--transfer-file-list', str(tmp_path/'transfer.txt'),
@@ -45,7 +46,7 @@ def test_auxiliary_grid_transfers_are_independent(tmp_path, frame_mode, schedule
         (tmp_path/'cip.list').write_text('1 --no-plots --fit-method rf --parameter mc --parameter eta\n'+('Z' if schedule=='Z' else 'G1')+' --no-plots --fit-method rf --parameter mc --parameter eta\n')
         cmd += ['--cip-args-list', str(tmp_path/'cip.list'), '--n-iterations-subdag-max', '1']
     if not seeded:
-        for key in ['--seed-climb-exe', '--seed-climb-args', '--seed-climb-mode', '--seed-climb-n-max']:
+        for key in ['--seed-climb-exe', '--seed-climb-args', '--seed-climb-mode', '--seed-climb-n-max', '--seed-climb-singularity-image']:
             index=cmd.index(key);del cmd[index:index+2]
     if frame_mode == 'staged':
         cmd += ['--frames-dir', str(tmp_path/'frames')]
@@ -62,6 +63,11 @@ def test_auxiliary_grid_transfers_are_independent(tmp_path, frame_mode, schedule
         assert 'psd.xml.gz' in line
         assert line.count('ile_pre.sh') <= 1
         assert line.count('ile_dispatch.sh') <= 1
+    if seeded:
+        # the climb needs JAX: its own image, kept in the CIT pool, executable not transferred
+        sub=(tmp_path/'seed_climb.sub').read_text()
+        assert 'MY.SingularityImage = "/unused-jax-image.sif"' in sub
+        assert 'MY.POOLS = "CIT"' in sub and 'transfer_executable = False' in sub
 
     # Every final extrinsic worker must consume the grid emitted by the final fit.
     import re
@@ -72,3 +78,29 @@ def test_auxiliary_grid_transfers_are_independent(tmp_path, frame_mode, schedule
         variables=re.search(r'^VARS '+re.escape(node)+r' (.*)$',dag,re.M).group(1)
         assert 'macroiteration="2"' in variables, variables
     assert (tmp_path/'iteration_2_ile/logs').is_dir()
+
+
+def test_seed_climb_refuses_container_without_jax_image(tmp_path):
+    """--use-singularity with a seed climb but no climb image fails at build time."""
+    (tmp_path/'ile.args').write_text('X --approx IMRPhenomXPHM --l-max 2\n')
+    (tmp_path/'cip.args').write_text('X --no-plots --fit-method rf --parameter mc --parameter eta\n')
+    (tmp_path/'seed.args').write_text('X\n')
+    lal = pytest.importorskip('lal')
+    from RIFT import lalsimutils
+    p = lalsimutils.ChooseWaveformParams()
+    p.m1, p.m2 = 30 * lal.MSUN_SI, 20 * lal.MSUN_SI
+    lalsimutils.ChooseWaveformParams_array_to_xml([p], fname=str(tmp_path/'input'))
+    env = dict(os.environ, SINGULARITY_RIFT_IMAGE='/unused-image.sif', SINGULARITY_BASE_EXE_DIR='/usr/local/bin', OMP_NUM_THREADS='1')
+    env['PATH'] = str(CODE/'bin')+os.pathsep+str(Path(sys.executable).parent)+os.pathsep+env.get('PATH','')
+    env['PYTHONPATH'] = str(CODE)+os.pathsep+env.get('PYTHONPATH','')
+    cmd = [sys.executable, str(BUILDER), '--working-directory', str(tmp_path),
+           '--input-grid', str(tmp_path/'input.xml.gz'), '--ile-args', str(tmp_path/'ile.args'),
+           '--cip-args', str(tmp_path/'cip.args'), '--seed-climb-exe', '/bin/true',
+           '--seed-climb-args', str(tmp_path/'seed.args'), '--seed-climb-mode', 'composite',
+           '--n-iterations', '2', '--n-samples-per-job', '2', '--use-singularity',
+           '--transfer-file-list', str(tmp_path/'transfer.txt'), '--frames-dir', str(tmp_path/'frames')]
+    (tmp_path/'psd.xml.gz').touch()
+    (tmp_path/'transfer.txt').write_text(str(tmp_path/'psd.xml.gz')+'\n')
+    (tmp_path/'frames').mkdir()
+    proc = subprocess.run(cmd, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=90)
+    assert proc.returncode != 0 and 'seed-climb-singularity-image' in proc.stdout + proc.stderr

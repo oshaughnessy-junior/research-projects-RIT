@@ -3799,7 +3799,7 @@ def write_init_sub(tag='gridinit', exe=None,arg_str=None,log_dir=None, use_eos=F
 def write_seed_climb_sub(tag='seed_climb', exe=None, arg_str='', log_dir=None, out_dir=None,
                          request_memory=8192, request_gpus=0, request_disk='4G',
                          use_singularity=False, singularity_image=None,
-                         universe='vanilla', **kwargs):
+                         universe='vanilla', condor_commands=None, **kwargs):
     """
     Submit file for the transverse-spin seed climb (util_TransverseSeedClimb.py).
 
@@ -3828,8 +3828,18 @@ def write_seed_climb_sub(tag='seed_climb', exe=None, arg_str='', log_dir=None, o
     if request_gpus:
         job.add_condor_cmd('request_GPUs', str(int(request_gpus)))
     if use_singularity and singularity_image:
+        # The climb reads and writes the run directory in place, so it must stay
+        # in the CIT pool, where /scratch is mounted; the executable is a path
+        # inside the container (or on a filesystem the container binds).
         job.add_condor_cmd('MY.SingularityImage', '"' + singularity_image + '"')
         job.add_condor_cmd('MY.SingularityBindCVMFS', 'True')
+        job.add_condor_cmd('MY.flock_local', 'true')
+        job.add_condor_cmd('MY.POOLS', '"CIT"')   # flock_local now maps to "IGWN,CIT"
+        job.add_condor_cmd('requirements', '(HAS_SINGULARITY=?=TRUE)')
+        job.add_condor_cmd('transfer_executable', 'False')
+    if condor_commands is not None:
+        for cmd, value in condor_commands.items():
+            job.add_condor_cmd(cmd, value)
     try:
         job.add_condor_cmd('accounting_group', os.environ['LIGO_ACCOUNTING'])
         job.add_condor_cmd('accounting_group_user', os.environ['LIGO_USER_NAME'])

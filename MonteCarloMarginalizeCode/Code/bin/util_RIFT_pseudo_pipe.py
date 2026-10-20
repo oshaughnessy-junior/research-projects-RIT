@@ -648,6 +648,8 @@ parser.add_argument("--transverse-seed-climb",default=None,choices=["setup","dag
 parser.add_argument("--transverse-seed-climb-args",default="",type=str,help="Extra arguments for util_TransverseSeedClimb.py (e.g. '--chi1-perp-ladder 0.2,0.5,0.8 --n-seed-points 400 --climb-approx IMRPhenomXPHM').")
 parser.add_argument("--transverse-seed-climb-n-max",default=1000,type=int,help="'dag', 'parallel', 'composite' modes: most points the climb may add (seed ILE batches are sized for it).")
 parser.add_argument("--transverse-seed-climb-request-gpu",action='store_true',help="DAG modes: the climb node requests a GPU.")
+parser.add_argument("--transverse-seed-climb-singularity-image",default=None,help="DAG modes with containers: image for the climb node (needs JAX; the ILE image has none).  Default: $SINGULARITY_RIFT_SEED_CLIMB_IMAGE.")
+parser.add_argument("--transverse-seed-climb-exe",default=None,help="DAG modes: climb executable.  Default: `which util_TransverseSeedClimb.py`.  In a container this path is resolved inside the image, so it must exist there or on a bound filesystem (/scratch, /cvmfs).")
 parser.add_argument("--internal-puff-transverse",action='store_true', help=" appends the following arguments: --parameter phi1 --parameter phi2 --parameter chi1_perp_u --parameter chi2_perp_u ")
 parser.add_argument("--internal-puff-mu-random-transverse", action='store_true',
                     help="Opt-in BBH/BasicIteration: use mu1,mu2,q,s2z puff plus RANDOM transverse spins for the first CIP batch; later batches (including refinement subdags) use internal-puff-transverse covariance puff. Default: unchanged legacy puff.")
@@ -2603,7 +2605,10 @@ if opts.transverse_seed_climb in ("dag", "parallel", "composite"):
         raise SystemExit("pseudo_pipe: --transverse-seed-climb dag is wired only for BasicIteration (got {}); use 'setup'".format(cepp))
     with open("seed_climb_args.txt", "w") as f:
         f.write("X " + opts.transverse_seed_climb_args)
-    cmd += " --seed-climb-exe `which util_TransverseSeedClimb.py` --seed-climb-args `pwd`/seed_climb_args.txt --seed-climb-n-max {} ".format(opts.transverse_seed_climb_n_max)
+    cmd += " --seed-climb-exe {} --seed-climb-args `pwd`/seed_climb_args.txt --seed-climb-n-max {} ".format(opts.transverse_seed_climb_exe or "`which util_TransverseSeedClimb.py`", opts.transverse_seed_climb_n_max)
+    _sc_image = opts.transverse_seed_climb_singularity_image or os.environ.get("SINGULARITY_RIFT_SEED_CLIMB_IMAGE")
+    if _sc_image:
+        cmd += " --seed-climb-singularity-image {} ".format(_sc_image)
     cmd += " --seed-climb-mode {} ".format({"dag": "prepend"}.get(opts.transverse_seed_climb, opts.transverse_seed_climb))
     if opts.transverse_seed_climb_request_gpu:
         cmd += " --seed-climb-request-gpu "
