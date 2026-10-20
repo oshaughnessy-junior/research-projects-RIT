@@ -69,14 +69,17 @@ def _libm(fun, nin=1):
     return wrapped
 
 
-def _libm_hypot():
-    """C hypot (CPython's math.hypot is its own algorithm, not libm's)."""
+def _libm_c(name, nargs):
+    """A double-precision function straight from the C libm.
+
+    Used for hypot (CPython's math.hypot is its own algorithm) and cbrt
+    (math.cbrt needs Python >= 3.11)."""
     import ctypes
     import ctypes.util
-    lib = ctypes.CDLL(ctypes.util.find_library("m"))
-    lib.hypot.restype = ctypes.c_double
-    lib.hypot.argtypes = (ctypes.c_double, ctypes.c_double)
-    return lib.hypot
+    fun = getattr(ctypes.CDLL(ctypes.util.find_library("m")), name)
+    fun.restype = ctypes.c_double
+    fun.argtypes = (ctypes.c_double,) * nargs
+    return fun
 
 
 class _LibmNumPy:
@@ -84,7 +87,7 @@ class _LibmNumPy:
     power = staticmethod(_libm(math.pow, 2))
     exp = staticmethod(_libm(math.exp))
     log = staticmethod(_libm(math.log))
-    cbrt = staticmethod(_libm(math.cbrt))
+    cbrt = staticmethod(_libm(_libm_c("cbrt", 1)))
     arctan = staticmethod(_libm(math.atan))
     atan = arctan
     sqrt = staticmethod(np.sqrt)
@@ -92,7 +95,13 @@ class _LibmNumPy:
     sin = staticmethod(_libm(math.sin))
     cos = staticmethod(_libm(math.cos))
     tanh = staticmethod(_libm(math.tanh))
-    hypot = staticmethod(_libm(_libm_hypot(), 2))
+    hypot = staticmethod(_libm(_libm_c("hypot", 2), 2))
+
+    class linalg:
+        @staticmethod
+        def solve(A, b):
+            """GSL-order LU solve for the stage-1 collocation systems."""
+            return _lu_solve(A, b[..., 0])[..., None]
 
     def __getattr__(self, name):
         return getattr(np, name)
@@ -257,6 +266,9 @@ def _hm_variables(ell, emm, w):
                F.evaluate_QNMfit_re_l2m2lp3(af) + 1j * F.evaluate_QNMfit_im_l2m2lp3(af),
                F.evaluate_QNMfit_re_l3m2lp2(af) + 1j * F.evaluate_QNMfit_im_l3m2lp2(af),
                F.evaluate_QNMfit_re_l3m2lp3(af) + 1j * F.evaluate_QNMfit_im_l3m2lp3(af)]
+        # LAL stores the mixing coefficients as single-precision complex numbers.
+        mix = [np.real(z).astype(np.float32).astype(np.float64)
+               + 1j * np.imag(z).astype(np.float32).astype(np.float64) for z in mix]
         mix[2] = -1.0 * mix[2]
         mix[3] = -1.0 * mix[3]
         h.mix2c = np.conj(mix[2])
@@ -837,7 +849,12 @@ def imrphenomxhm_setup(m1, m2, chi1z, chi2z, distance, phi_ref, f_min, f_ref, f_
     distance = X._as_points(X._host(distance), n, np)
     phi_ref = X._as_points(X._host(phi_ref), n, np)
     fref = float(f_ref) if f_ref else float(f_min)
-    w, a, c = _setup_22(m1, m2, chi1z, chi2z, distance, phi_ref, float(f_min), fref, float(f_max))
+    with np.errstate(divide="ignore", invalid="ignore"):   # vanishing odd modes at q = 1
+        return _setup_all(m1, m2, chi1z, chi2z, distance, phi_ref, float(f_min), fref, float(f_max), modes)
+
+
+def _setup_all(m1, m2, chi1z, chi2z, distance, phi_ref, f_min, fref, f_max, modes):
+    w, a, c = _setup_22(m1, m2, chi1z, chi2z, distance, phi_ref, f_min, fref, f_max)
     s22 = SimpleNamespace(w=w, c=c, eta=w.eta, fRING=w.fRING, gammaR=a.gamma2 / (a.gamma3 * w.fDAMP),
                           gammaD13=w.fDAMP * a.gamma1 * a.gamma3,
                           gammaD2=(w.fDAMP * a.gamma3) * (w.fDAMP * a.gamma3))
