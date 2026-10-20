@@ -898,21 +898,59 @@ def _ns_dev(ns, xp, skip=()):
     return out
 
 
-def _grid_powers(Mf, xp):
-    p = X._powers(Mf, xp)
-    p.five = p.four * Mf
-    p.m_five = 1.0 / p.five
+def _grid_powers(M_sec, safe, xp):
+    """Powers of Mf = M_sec * f on the grid, identical on NumPy and CuPy.
+
+    Mf^(1/6) = M_sec^(1/6) * f^(1/6) and log(Mf) = log(M_sec) + log(f), with the
+    two transcendentals of f taken once on the host.  Every remaining operation
+    is an IEEE multiply or divide, so both backends give the same bits.  A
+    device pow differs from the host's by an ulp, which at the inspiral phases of
+    a long BNS signal (1e6 rad) is a 1e-10 error."""
+    fs = X._host(safe)
+    g6 = xp.asarray(np.power(fs, 1.0 / 6.0))[None, :]
+    lg = xp.asarray(np.log(fs))[None, :]
+    Ms = X._host(M_sec)
+    m6 = xp.asarray(H.power(Ms, 1.0 / 6.0))[:, None]
+    lm = xp.asarray(H.log(Ms))[:, None]
+    x = xp.asarray(Ms)[:, None] * xp.asarray(fs)[None, :]
+    p = SimpleNamespace()
+    sixth = m6 * g6
+    p.one_sixth = sixth
+    p.m_one_sixth = 1.0 / sixth
+    p.itself = x
+    p.m_one = 1.0 / x
+    p.one_third = sixth * sixth
+    p.m_one_third = 1.0 / p.one_third
+    p.two_thirds = p.one_third * p.one_third
+    p.m_two_thirds = 1.0 / p.two_thirds
+    p.four_thirds = p.two_thirds * p.two_thirds
     p.m_four_thirds = 1.0 / p.four_thirds
+    p.five_thirds = p.four_thirds * p.one_third
+    p.m_five_thirds = 1.0 / p.five_thirds
+    p.seven_thirds = p.four_thirds * x
     p.m_seven_thirds = 1.0 / p.seven_thirds
+    p.eight_thirds = p.seven_thirds * p.one_third
+    p.m_eight_thirds = 1.0 / p.eight_thirds
+    p.two = x * x
+    p.three = p.two * x
+    p.four = p.three * x
+    p.five = p.four * x
+    p.m_two = 1.0 / p.two
+    p.m_three = 1.0 / p.three
+    p.m_four = 1.0 / p.four
+    p.m_five = 1.0 / p.five
+    p.seven_sixths = sixth * x
+    p.m_seven_sixths = p.m_one_sixth * p.m_one
+    p.log = lm + lg
     return p
 
 
-def _hm_on_grid(Mf, h, A, P, xp):
+def _hm_on_grid(p, h, A, P, xp):
     """h_{l,-m}(f) / amp0 for f > 0 (without the (-1)^l sign)."""
     hd = _ns_dev(h, xp, skip=("s22",))
     Ad = _ns_dev(A, xp)
     Pd = _ns_dev(P, xp)
-    p = _grid_powers(Mf, xp)
+    Mf = p.itself
     # amplitude
     a_ins = _insp_amp_ansatz(p, hd, Ad, xp)
     a_int = 0.0
@@ -946,7 +984,7 @@ def _hm_on_grid(Mf, h, A, P, xp):
 
 def imrphenomxhm_modes(m1, m2, chi1z, chi2z, distance, phi_ref, f_min, f_ref,
                        delta_f, n_freq, f_max=0.0, modes=XHM_MODES, xp=None,
-                       two_sided=True):
+                       two_sided=True, chunk=None):
     """IMRPhenomXHM modes h_lm(f) for n aligned-spin points.
 
     Equals ``SimInspiralChooseFDModes(..., IMRPhenomXHM)`` with
@@ -957,13 +995,33 @@ def imrphenomxhm_modes(m1, m2, chi1z, chi2z, distance, phi_ref, f_min, f_ref,
     ascending grid ``f = (k - n_freq + 1) * delta_f``: h_{l,-|m|} lives at
     f > 0 and h_{l,|m|}(f) = (-1)^l conj(h_{l,-|m|}(-f)) at f < 0.  Otherwise
     returns (n, nmodes, n_freq) holding h_{l,-|m|}(k delta_f) for every entry.
+    Points are evaluated in chunks of ``chunk`` (default: about 4e6 grid values
+    per chunk) to bound the temporary memory.
     """
     xp = X._module(xp)
+    m1 = np.atleast_1d(X._host(m1))
+    n = m1.shape[0]
+    args = [m1] + [X._as_points(X._host(v), n, np) for v in (m2, chi1z, chi2z, distance, phi_ref)]
+    if chunk is None:
+        chunk = max(1, int(4e6 // n_freq))
+    if n <= chunk:
+        return _modes_chunk(*args, f_min, f_ref, delta_f, n_freq, f_max, modes, xp, two_sided)
+    width = 2 * n_freq - 1 if two_sided else n_freq
+    out = xp.empty((n, len(modes), width), dtype=xp.complex128)
+    for s0 in range(0, n, chunk):
+        sl = slice(s0, min(n, s0 + chunk))
+        out[sl] = _modes_chunk(*[v[sl] for v in args], f_min, f_ref, delta_f, n_freq, f_max,
+                               modes, xp, two_sided)
+    return out
+
+
+def _modes_chunk(m1, m2, chi1z, chi2z, distance, phi_ref, f_min, f_ref, delta_f, n_freq,
+                 f_max, modes, xp, two_sided):
     w, a, c, per_mode = imrphenomxhm_setup(m1, m2, chi1z, chi2z, distance, phi_ref,
                                            f_min, f_ref, f_max, modes)
     wd = X._to_device(w, xp)
     freqs, safe = X._grid(delta_f, n_freq, f_min, xp)
-    Mf = wd.M_sec[:, None] * safe[None, :]
+    p = _grid_powers(w.M_sec, safe, xp)
     mask = X._frequency_mask(freqs, wd, float(f_min), float(delta_f), xp)
     amp0 = wd.amp0[:, None]
     out = []
@@ -971,13 +1029,13 @@ def imrphenomxhm_modes(m1, m2, chi1z, chi2z, distance, phi_ref, f_min, f_ref,
     for (ell, emm), entry in zip(modes, per_mode):
         if entry is None:
             if h22 is None:
-                h22 = X.imrphenomxas_h22(m1, m2, chi1z, chi2z, distance, f_min, f_ref, phi_ref,
-                                         delta_f, n_freq, f_max=f_max, xp=xp)
+                ad, cd = X._to_device(a, xp), X._to_device(c, xp)
+                h22 = xp.where(mask, X._xas_22_on_grid(p.itself, wd, ad, cd, xp, p=p), 0.0)
             hneg = h22
         else:
             hh, A, P = entry
             sign = -1.0 if ell % 2 else 1.0
-            hneg = xp.where(mask, (sign * amp0) * _hm_on_grid(Mf, hh, A, P, xp), 0.0)
+            hneg = xp.where(mask, (sign * amp0) * _hm_on_grid(p, hh, A, P, xp), 0.0)
         if two_sided:
             sgn = -1.0 if ell % 2 else 1.0
             if emm < 0:
