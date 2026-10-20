@@ -626,6 +626,17 @@ _gs_options = (opts.td_mref is not None or opts.td_piece or opts.td_ifo_time_off
                opts.td_calibration_correction_type != 'rift' or opts.td_calibration_fir_half_length is not None)
 if _gs_options and opts.internal_ile_inner_product != 'td-gs':
     optp.error("TD-GS settings require --internal-ile-inner-product td-gs")
+if opts.internal_ile_inner_product == 'td-gs':
+    # The time-indexed U(t), V(t) are consumed only by the time-marginalized NoLoop likelihood.
+    if not opts.time_marginalization:
+        optp.error("td-gs requires --time-marginalization")
+    # Refused here, before data loading: inside analyze_event the same refusal (generate_td_modes,
+    # precompute_likelihood_terms_td_gs) is caught as a failed analysis.
+    from RIFT.likelihood.td_gs_precompute import template_route_is_fd
+    if (opts.use_gwsignal or opts.use_external_EOB or
+        opts.nr_lookup or opts.nr_group or opts.rom_group or opts.nr_hybrid_use or opts.nr_use_provided_strain or
+        template_route_is_fd(lalsimutils.lalsim.GetApproximantFromString(opts.approximant))):
+        optp.error("td-gs requires an untapered native TD waveform generator")
 
 # These upstream paths build FD-diagonal statistics independently of IP_factory.
 # Refuse the combination before loading data or writing a mislabeled noise evidence.
