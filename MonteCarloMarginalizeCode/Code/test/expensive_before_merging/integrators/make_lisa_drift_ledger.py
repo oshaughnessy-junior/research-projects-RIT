@@ -44,8 +44,9 @@ OUT = os.path.join(HERE, "lisa_drift_ledger.json")
 # First match wins.
 # ---------------------------------------------------------------------------------------
 RULES = [
+    (r"^FUNC:_series_deltaF$", "PHYSICS", "Finite covariance TD-GS data loading is not wired to LISA; requires a TDI covariance/response decision."),
     # Ground-based TD operators: only this explicitly reviewed option set.
-    (r"^OPTION:--(internal-ile-inner-product|td-solver|td-acf-duration|td-analysis-start|td-analysis-end|td-gap|glitch-basis|glitch-basis-file|glitch-sigma)$", "PHYSICS",
+    (r"^OPTION:--(internal-ile-inner-product|td-mref|td-piece|td-ifo-time-offset|td-acf-file|td-acf-cond|td-dense-max-n|td-u-stride|td-u-method|td-highpass|td-u-svd-tol|td-whiteness-check|td-solver|td-acf-duration|td-analysis-start|td-analysis-end|td-gap|glitch-basis|glitch-basis-file|glitch-sigma)$", "PHYSICS",
      "The ground-based Toeplitz/cropped-precision and Gaussian-glitch factory is not "
      "wired into the LISA driver. Porting requires a TDI-channel covariance, boundary "
      "and response-model decision with LISA-specific validation; copying the "
