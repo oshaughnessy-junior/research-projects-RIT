@@ -161,13 +161,34 @@ Mismatch is maximized over time and phase with the aLIGO zero-detuned high-power
 | (3,2) | 8.8e-7 | 5.9e-3 |
 | CuPy vs NumPy, all modes (pcdev13) | | 1.6e-13 of max mode |
 
-The (3,2) error sits in the intermediate phase. Its coefficients depend on the
-second difference above. A 1e-15 change in the (2,2) setup (for example the
-time shift `linb`) moves them by 1e-4. The median (3,2) relative error is 1.3e-7.
-The test bounds it at 2e-6 and 1e-2.
+Two more samples run in the same test:
 
-Changing one inspiral-amplitude fit coefficient of the (4,4) by 4e-11 (relative)
-raised its relative error to 1.2e-9, and the test failed. The mismatch did not move.
+| Sample | strict modes: max mismatch / max rel. error | (3,2): mismatch / rel. error |
+|---|---|---|
+| 12 points, q 50-200, chi1 of both signs, 16-64 s | 7.8e-16 / 9.3e-10 | 1.3e-5 / 3.0e-2 |
+| 6 points, 512-2048 s, f_min 5-12 Hz | 3.1e-15 / 1.6e-9 | 4.2e-15 / 5.4e-7 |
+
+On the long grids the inspiral phase reaches 1e5 rad. The remaining 1e-15 relative
+differences in the (2,2) phase coefficients (linear solves, the time shift) then give
+phase errors of about 1e-9 rad. The test bounds the relative error there at 1e-8; the
+#465 review measured 2.8e-9.
+
+The (3,2) error sits in the intermediate phase. Its coefficients depend on the
+second difference above. A 1e-15 change in the (2,2) setup moves them by 1e-4. LAL
+shows the same sensitivity: at q = 186 a 1e-13 change of m1 moves LAL's own (3,2) by
+mismatch 1.3e-5, equal to the port's error there. The test bounds the (3,2) at
+mismatch 5e-5 and relative error 0.1.
+
+At eta < 0.01 and chi1 < 0 LAL multiplies the (3,2) phase cut by (1.2 - 0.25 chi1)
+(`IMRPhenomXHM_Intermediate_CollocPtsFreqs`). Stage 2 at bef7889cd missed this; at
+q = 199, chi = (-0.68, 0.37) the (3,-2) mismatch was 0.24-0.62. With the branch it
+is at most 2e-11, and `test_32_emr_negative_spin_cut` guards it. The eta <= 0.01 inspiral-phase
+fits (`Insp_Phase_*_lambda`) add a term linear in f, which the inspiral-intermediate
+connection removes again. A change to them does not change the waveform, so no test
+can detect it.
+
+Mutations that fail the tests: one (4,4) inspiral-amplitude coefficient changed by
+4e-11 (relative error 1.2e-9); the (3,2) cut factor 1.2 changed to 1.19.
 
 Throughput of the five modes h_{l,-m}(f >= 0), f_min = 20 Hz, ldas-pcdev13 (RTX
 PRO 4000 Blackwell, CuPy 14.1 in `rift_o4d_cc90-120_cuda128_20260717.sif`; Xeon
