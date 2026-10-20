@@ -387,7 +387,7 @@ optp.add_option("--response-order-p-reference", type=int, default=2, help="Highe
 optp.add_option("--response-order-Q-reference", "--response-order-q-reference", dest="response_order_Q_reference", type=int, default=8, help="Highest Q used by the diagnostic reference bank (default 8).")
 optp.add_option("--response-order-max-bank-gib", type=float, default=4.0, help="Refuse a diagnostic whose dense U,V planning estimate exceeds this many GiB (default 4).")
 optp.add_option("--force-xpy", action="store_true", help="Use the xpy code path.  Use with --vectorized --gpu to use the fallback CPU-based code path. Useful for debugging.")
-optp.add_option("--early-time-multirate", default=None, help="Opt-in prototype (RIFT/likelihood/DESIGN_early_time_multirate.md): path to a schedule JSON. Replaces the precompute with factored_likelihood_multirate.PrecomputeLikelihoodTermsMultirate (data-side weighting; kind two_rate, or one_segment as the matched full-rate control). IMRPhenomXHM/XPHM with aligned spins only; refuses calibration marginalization, --rotation-slow, --freqresponse, ROM, NR, gwsignal and extra waveform arguments. Default off.")
+optp.add_option("--early-time-multirate", default=None, help="Opt-in prototype (RIFT/likelihood/DESIGN_early_time_multirate.md): path to a schedule JSON. Replaces the precompute with factored_likelihood_multirate.PrecomputeLikelihoodTermsMultirate (data-side weighting; kind two_rate, or one_segment as the matched full-rate control). IMRPhenomXHM/XPHM with aligned spins only; refuses calibration marginalization, --rotation-slow, --freqresponse, ROM, NR, gwsignal, extra waveform arguments and --internal-precompute-ignore-threshold, before data loading, with a nonzero exit. Default off.")
 optp.add_option("--early-time-multirate-backend", type="choice", choices=["numpy", "cupy", "reference"], default=None, help="Backend for opt-in multirate precompute. Default follows --gpu and the ILE array backend. Explicit cupy requires a usable GPU; reference uses the CPU reference arithmetic.")
 optp.add_option("--early-time-multirate-waveform", type="choice", choices=["lal", "xp"], default=None, help="Template source for opt-in multirate precompute: lal (default, lalsimulation) or xp (RIFT.likelihood.gpu_waveform_xhm on the multirate backend; IMRPhenomXHM only, not with backend reference).")
 optp.add_option("-o", "--output-file", help="Save result to this file.")
@@ -1482,6 +1482,39 @@ else:
     taper= taper_default
     )
  P_list= [P]
+
+# Opt-in early-time multirate: refuse a configuration it cannot honour HERE, before data loading
+# and before the event loop.  Inside analyze_event a refusal is caught by the per-point handler,
+# which prints FAILED ANALYSIS and exits 0 with no output, so a pipeline would drop the point.
+if opts.early_time_multirate:
+    import RIFT.likelihood.factored_likelihood_multirate as factored_likelihood_multirate
+    _etm_refused = [name for name, on in (
+        ("calibration marginalization", opts.calibration_envelope_directory),
+        ("--rotation-slow", opts.rotation_slow), ("--freqresponse", opts.freqresponse),
+        ("--force-hyperbolic-22", opts.force_hyperbolic_22),
+        ("--internal-waveform-fd-L-frame", opts.internal_waveform_fd_L_frame),
+        ("--internal-waveform-fd-no-condition", opts.internal_waveform_fd_no_condition),
+        ("--internal-waveform-extra-lalsuite-args", opts.internal_waveform_extra_lalsuite_args),
+        ("--internal-waveform-extra-kwargs", opts.internal_waveform_extra_kwargs),
+        ("--use-gwsignal", opts.use_gwsignal),
+        ("--use-gwsignal-lmax-nyquist", opts.use_gwsignal_lmax_nyquist is not None),
+        ("--use-external-EOB", opts.use_external_EOB),
+        ("NR templates (--nr-*)", getattr(opts, "nr_group", None) or opts.nr_lookup or opts.nr_hybrid_use
+                                  or opts.nr_use_provided_strain or opts.nr_perturbative_extraction
+                                  or opts.nr_perturbative_extraction_full),
+        ("ROM templates (--rom-*)", opts.rom_group or opts.rom_use_basis),
+        # the multirate precompute keeps every mode; PrecomputeLikelihoodTerms' threshold is not ported
+        ("--internal-precompute-ignore-threshold", opts.internal_precompute_ignore_threshold),
+    ) if on]
+    try:
+        if _etm_refused:
+            raise ValueError("refuses %s" % ", ".join(_etm_refused))
+        factored_likelihood_multirate.validate_job(
+            opts.early_time_multirate, P_list, opts.l_max,
+            backend=opts.early_time_multirate_backend, waveform=opts.early_time_multirate_waveform)
+    except Exception as _etm_exc:
+        sys.exit("ILE --early-time-multirate: refusing this job before analysis: %s: %s"
+                 % (type(_etm_exc).__name__, _etm_exc))
 
 # User requested bounds for data segment
 if not (opts.data_start_time == None) and  not (opts.data_end_time == None):

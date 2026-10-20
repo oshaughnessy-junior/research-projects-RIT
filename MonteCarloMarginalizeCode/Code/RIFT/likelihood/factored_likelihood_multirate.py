@@ -634,13 +634,17 @@ def _per_m_modes_xp(xp, P, Lmax, srate, seglen, f22_start, post, fd_standoff_fac
 
 
 def _refuse(P, schedule, kwargs):
-    import lalsimulation as lalsim
     bad = [k for k in ("calibration_realizations", "NR_group", "ROM_group") if kwargs.get(k) is not None]
     bad += [k for k in ("ROM_use_basis", "use_gwsignal", "use_external_EOB", "nr_lookup", "hybrid_use",
                         "use_provided_strain", "analyticPSD_Q", "force_22_mode",
                         "perturbative_extraction", "perturbative_extraction_full", "extra_waveform_kwargs") if kwargs.get(k)]
     if bad:
         raise ValueError("early-time multirate refuses %s" % bad)
+    _refuse_point(P, schedule)
+
+
+def _refuse_point(P, schedule):
+    import lalsimulation as lalsim
     if P.approx not in (lalsim.IMRPhenomXHM, lalsim.IMRPhenomXPHM):
         raise ValueError("early-time multirate supports IMRPhenomXHM/XPHM only, not %s"
                          % lalsim.GetStringFromApproximant(P.approx))
@@ -651,6 +655,43 @@ def _refuse(P, schedule, kwargs):
     lo, hi = schedule["mc_range"]
     if not (lo <= mc <= hi):
         raise ValueError("intrinsic point Mc = %.5f outside the schedule's frozen range [%g, %g]" % (mc, lo, hi))
+
+
+def validate_job(schedule_path, P_list, Lmax, backend=None, waveform=None):
+    """Job-level checks, run by ILE before its event loop.  A refusal inside the precompute is
+    caught by ILE's per-point handler, which logs it and exits 0 with no output; this runs first
+    so a refused configuration exits nonzero instead.  Returns the loaded schedule."""
+    schedule = load_schedule(schedule_path)
+    if Lmax not in (2, 3, 4):
+        raise ValueError("early-time multirate requires Lmax = 2, 3 or 4, not %s" % Lmax)
+    if backend not in (None, "numpy", "cupy", "reference"):
+        raise ValueError("multirate backend must be numpy, cupy or reference, got %r" % backend)
+    if waveform not in (None, "lal", "xp"):
+        raise ValueError("multirate waveform must be lal or xp, got %r" % waveform)
+    if backend == "cupy":
+        _select_xpy("cupy")
+    if waveform == "xp":
+        import lalsimulation as lalsim
+        if backend == "reference":
+            raise ValueError("multirate waveform xp needs a non-reference backend")
+        if schedule["kind"] == "one_segment":
+            raise ValueError("multirate waveform xp applies to two_rate schedules; one_segment "
+                             "always uses lalsimulation templates")
+        bad = sorted({lalsim.GetStringFromApproximant(P.approx) for P in P_list
+                      if P.approx != lalsim.IMRPhenomXHM})
+        if bad:
+            raise ValueError("multirate waveform xp supports IMRPhenomXHM only, not %s" % bad)
+        try:
+            from RIFT.likelihood import gpu_waveform_xhm  # noqa: F401
+        except ImportError as exc:
+            raise ImportError("multirate waveform xp needs RIFT.likelihood.gpu_waveform_xhm "
+                              "(research-projects-RIT #465): %s" % exc)
+    for i, P in enumerate(P_list):
+        try:
+            _refuse_point(P, schedule)
+        except ValueError as exc:
+            raise ValueError("point %d: %s" % (i, exc))
+    return schedule
 
 
 def PrecomputeLikelihoodTermsMultirate(event_time_geo, t_window, P, data_dict, psd_dict, Lmax, fMax,

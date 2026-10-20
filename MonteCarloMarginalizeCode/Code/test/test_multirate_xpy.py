@@ -1,6 +1,6 @@
 """Multirate per-point preparation on an array backend (TwoRateDevice, ComputeModeCrossTermsPiecesDevice)
-against the CPU reference path (Q_two_rate, ComputeModeCrossTermsPieces), and cupy against numpy.
-The cupy test needs a working GPU; it is skipped without one, so run this file on a GPU host."""
+against the CPU reference path (Q_two_rate, ComputeModeCrossTermsPieces).  The cupy legs are in
+test_multirate_cupy.py (GPU host only); RIFT_CI_REQUIRE_GPU=1 runs the cupy cases here too."""
 import numpy as np
 import pytest
 import lal
@@ -70,26 +70,13 @@ def test_backend_numpy_matches_reference(tmp_path, inputs):
     _assert_close(ref, new, 1e-10)
 
 
-def test_backend_cupy_matches_numpy(tmp_path, inputs):
-    if flm._select_xpy() is np:
-        pytest.skip("no usable GPU")
-    a = _run(tmp_path, inputs, multirate_xpy="numpy")
-    b = _run(tmp_path, inputs, multirate_xpy="cupy")
-    _assert_close(a, b, 1e-10)
-
-
 # (3, +-2) reaches LAL only to ~1e-6: LAL's own spherical-harmonic ringdown uses finite differences
 # (gpu_waveform_xhm's gate, RIFT #465); every other mode agrees to roundoff
 XP_WF_TOL = {(3, 2): 1e-5}
 
 
-@pytest.mark.parametrize("backend", ["numpy", "cupy"])
-def test_xp_waveform_matches_lal_pieces(backend):
+def test_xp_waveform_matches_lal_pieces(xp=np):
     """Device templates (gpu_waveform_xhm plus hlmoft's conditioning on xp) against lalsimulation."""
-    pytest.importorskip("RIFT.likelihood.gpu_waveform_xhm")
-    xp = flm._select_xpy(backend) if backend == "numpy" or flm._select_xpy() is not np else None
-    if xp is None:
-        pytest.skip("no usable GPU")
     p = _P()
     p.m1, p.m2, p.s1z, p.s2z, p.phiref = 30 * lal.MSUN_SI, 25 * lal.MSUN_SI, 0.3, -0.2, 0.7
     p.dist = 100e6 * lal.PC_SI
@@ -106,7 +93,6 @@ def test_xp_waveform_matches_lal_pieces(backend):
 
 
 def test_xp_waveform_precompute_matches_lal(tmp_path, inputs):
-    pytest.importorskip("RIFT.likelihood.gpu_waveform_xhm")
     a = _run(tmp_path, inputs, multirate_xpy="numpy")
     b = _run(tmp_path, inputs, multirate_xpy="numpy", multirate_waveform="xp")
     _assert_close(a, b, 1e-6)

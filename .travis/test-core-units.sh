@@ -232,6 +232,14 @@ FILES=(
   "$C/test/test_eos_evidence_lnL_shift.py"
   # -- coordinates: per-row fallbacks convert each row independently of the others
   "$C/test/test_convert_coordinates_row_independence.py"
+  # -- opt-in early-time multirate precompute (PR #436): two-rate vs one-segment and full-rate
+  #    references, numpy backend vs CPU reference, xp templates vs lalsimulation, schedule and
+  #    job-level refusals (ILE exits nonzero).  The cupy legs are test_multirate_cupy.py (roster: GPU).
+  "$C/test/test_multirate_dsw_onesegment.py"
+  "$C/test/test_multirate_two_rate.py"
+  "$C/test/test_multirate_precompute.py"
+  "$C/test/test_multirate_xpy.py"
+  "$C/test/test_multirate_ile_refusal.py"
 )
 
 # A manifest entry that stops existing is a SILENT no-op: the gate keeps passing while
