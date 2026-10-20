@@ -78,6 +78,47 @@ def test_backend_cupy_matches_numpy(tmp_path, inputs):
     _assert_close(a, b, 1e-10)
 
 
+# (3, +-2) reaches LAL only to ~1e-6: LAL's own spherical-harmonic ringdown uses finite differences
+# (gpu_waveform_xhm's gate, RIFT #465); every other mode agrees to roundoff
+XP_WF_TOL = {(3, 2): 1e-5}
+
+
+@pytest.mark.parametrize("backend", ["numpy", "cupy"])
+def test_xp_waveform_matches_lal_pieces(backend):
+    """Device templates (gpu_waveform_xhm plus hlmoft's conditioning on xp) against lalsimulation."""
+    pytest.importorskip("RIFT.likelihood.gpu_waveform_xhm")
+    xp = flm._select_xpy(backend) if backend == "numpy" or flm._select_xpy() is not np else None
+    if xp is None:
+        pytest.skip("no usable GPU")
+    p = _P()
+    p.m1, p.m2, p.s1z, p.s2z, p.phiref = 30 * lal.MSUN_SI, 25 * lal.MSUN_SI, 0.3, -0.2, 0.7
+    p.dist = 100e6 * lal.PC_SI
+    for fref in (10., 0.):
+        p.fref = fref
+        ref = flm._per_m_modes(p, 4, 2048, 16, 10., 2.)
+        got = flm._per_m_modes_xp(xp, p, 4, 2048, 16, 10., 2.)
+        assert sorted(ref) == sorted(got)
+        for k in ref:
+            a, b = flm._to_host(xp, got[k].dev), ref[k].data.data
+            assert abs(got[k].epoch - float(ref[k].epoch)) < 1e-9 and got[k].deltaF == ref[k].deltaF
+            tol = XP_WF_TOL.get((k[0], abs(k[1])), 1e-10)
+            assert np.max(np.abs(a - b)) <= tol * np.max(np.abs(b)), (fref, k)
+
+
+def test_xp_waveform_precompute_matches_lal(tmp_path, inputs):
+    pytest.importorskip("RIFT.likelihood.gpu_waveform_xhm")
+    a = _run(tmp_path, inputs, multirate_xpy="numpy")
+    b = _run(tmp_path, inputs, multirate_xpy="numpy", multirate_waveform="xp")
+    _assert_close(a, b, 1e-6)
+
+
+@pytest.mark.parametrize("bad", [dict(multirate_waveform="xp", multirate_reference=True),
+                                 dict(multirate_waveform="jax")])
+def test_xp_waveform_refusals(tmp_path, inputs, bad):
+    with pytest.raises(ValueError):
+        _run(tmp_path, inputs, **bad)
+
+
 @pytest.mark.parametrize("change", ["window", "fmax", "lmax", "psd", "data", "sky", "truncation"])
 def test_cache_tracks_inputs(tmp_path, inputs, change):
     """A warm plan must give the same result as a fresh plan after inputs change."""
