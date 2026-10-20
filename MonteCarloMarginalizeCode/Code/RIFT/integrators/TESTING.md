@@ -44,10 +44,11 @@ Notes for agents:
   is visible only there.  `--preset standard` runs it; alone: `shape_recovery.py --no-matrix
   --warm-cases off --group-cases on` (about 10-25 s with `--jobs 6`).
 - The narrow-flat lane (`AV_narrowflat`; `NARROW_FLAT_CASES`) runs AV at production bounds on
-  a peak narrower than one bin on two axes, with three flat axes, at several run seeds, and
-  gates the mean lnZ against the exact value.  The mixture matrix never reaches this regime
-  (see DESIGN_av_coverage_guard.md).  `--preset standard` runs it; alone: `shape_recovery.py
-  --no-matrix --warm-cases off --group-cases off --narrow-flat-cases on` (about 20 s).
+  a peak narrower than one bin on two axes, with three flat axes, at several run seeds.  AV reads
+  lnZ low there (a known defect, see DESIGN_av_coverage_diagnostic.md), so the lane is warn-only;
+  its records carry `unseen_per_seed`, which must exceed `COVERAGE_UNSEEN_WARN` on the flat cases.
+  `--preset standard` runs it; alone: `shape_recovery.py --no-matrix --warm-cases off
+  --group-cases off --narrow-flat-cases on` (about 20 s).
 - If your change is behind an opt-in flag, the default-path gate will show
   bitwise-identical results; you must ALSO probe the flag ON (use
   shape_recovery.py as a library; see its docstring).

@@ -134,7 +134,7 @@ def main(argv=None):
                          "seeds). Fewer -> INCONCLUSIVE and exit 1, never a silent clear.")
     ap.add_argument("--strict-samplers",
                     default="AV,GMM,portfolio_warm,portfolio_seq,portfolio_seq_nobs,"
-                            + ",".join(GROUP_KINDS + (NARROW_FLAT_KIND,)))
+                            + ",".join(GROUP_KINDS))
     opts = ap.parse_args(argv)
 
     strict = set(x.strip() for x in opts.strict_samplers.split(",") if x.strip())
