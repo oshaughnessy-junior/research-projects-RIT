@@ -1788,6 +1788,16 @@ if opts.internal_ile_inner_product:
         if not os.path.isfile(_path_abs):
             print(" FAILURE: --internal-ile-glitch-basis-file {}: no such file {}".format(_ifo, _path_abs))
             sys.exit(1)
+        if opts.use_osg:
+            for _source in (opts.ile_additional_files_to_transfer or "").split(","):
+                if not _source:
+                    continue
+                _source_abs = os.path.abspath(os.path.expanduser(_source))
+                if (os.path.basename(_source_abs) == os.path.basename(_path_abs)
+                        and os.path.realpath(_source_abs) != os.path.realpath(_path_abs)):
+                    print(" FAILURE: OSG glitch basis basename collision: {} and {}".format(
+                        _source_abs, _path_abs))
+                    sys.exit(1)
         # abspath onto the transfer list (condor source); basename on OSG execute nodes.
         opts.ile_additional_files_to_transfer = (
             (opts.ile_additional_files_to_transfer + "," + _path_abs)

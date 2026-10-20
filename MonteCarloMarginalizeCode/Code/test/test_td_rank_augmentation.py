@@ -522,3 +522,19 @@ def test_correlated_blocks_use_joint_woodbury_update():
     reconstruct = mu + (cp-cov.C) @ np.linalg.solve(cp, d-mu)
     np.testing.assert_allclose(aug.glitch_reconstruction(d, sigma), reconstruct,
                                rtol=1e-11, atol=1e-11)
+
+
+def test_slepian_rank_validation_and_short_support():
+    import pytest
+    for rank in (0, -2, 1, 3, 5, 2.5, True):
+        with pytest.raises(ValueError, match="positive even integer"):
+            tra.slepian_basis(256, 256, .25, .75, 32, 64, r=rank)
+    for rank in (2, 4, 6):
+        basis, prior = tra.slepian_basis(256, 256, .25, .75, 32, 64, r=rank)
+        assert basis.shape == (256, rank)
+        assert prior.shape == (rank,)
+    for size in (16, 32):
+        basis, prior = tra.slepian_basis(size, size, 0, 1, 0, size / 2)
+        assert basis.shape[1] <= size
+        assert prior.shape == (basis.shape[1],)
+        np.testing.assert_allclose(basis.T @ basis, np.eye(basis.shape[1]), atol=1e-12)

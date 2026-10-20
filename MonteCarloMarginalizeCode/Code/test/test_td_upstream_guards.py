@@ -42,3 +42,45 @@ def test_td_requests_are_not_ignored_by_fd(flags, tmp_path):
                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
     assert proc.returncode != 0
     assert "--internal-ile-inner-product td-toeplitz" in proc.stdout, proc.stdout[-3000:]
+
+
+@pytest.mark.parametrize("same_source,osg,existing_aux,refused", [
+    (False, True, False, True),
+    (True, True, False, False),
+    (False, True, True, True),
+    (False, False, False, False),
+])
+def test_pipeline_basis_transfer_names(tmp_path, same_source, osg, existing_aux, refused):
+    """Execute the actual forwarding block without launching a pipeline."""
+    import ast
+    from types import SimpleNamespace
+    code = Path(__file__).resolve().parents[1]
+    tree = ast.parse((code / "bin/util_RIFT_pseudo_pipe.py").read_text())
+    helper = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_as_list")
+    block = next(n for n in tree.body if isinstance(n, ast.If)
+                 and isinstance(n.test, ast.Attribute) and n.test.attr == "internal_ile_inner_product")
+    paths = []
+    for detector in ("H1", "L1"):
+        path = tmp_path / detector / "basis.npz"
+        path.parent.mkdir()
+        path.touch()
+        paths.append(path)
+    if same_source:
+        paths[1] = paths[0]
+    opts = SimpleNamespace(internal_ile_inner_product="td-toeplitz",
+        internal_ile_td_solver=None, internal_ile_td_acf_duration=None,
+        internal_ile_td_analysis_start=None, internal_ile_td_analysis_end=None,
+        internal_ile_td_gap=None, internal_ile_glitch_basis=None,
+        internal_ile_glitch_sigma=None, use_osg=osg,
+        ile_additional_files_to_transfer=str(paths[0]) if existing_aux else None,
+        internal_ile_glitch_basis_file=(["L1:" + str(paths[1])] if existing_aux else
+                                      [ifo + ":" + str(path) for ifo, path in zip(("H1", "L1"), paths)]))
+    namespace = dict(opts=opts, os=os, sys=sys, line="")
+    module = ast.fix_missing_locations(ast.Module(body=[helper, block], type_ignores=[]))
+    if refused:
+        with pytest.raises(SystemExit) as exc:
+            exec(compile(module, "pipeline_td_forwarding", "exec"), namespace)
+        assert exc.value.code == 1
+    else:
+        exec(compile(module, "pipeline_td_forwarding", "exec"), namespace)
+        assert "--glitch-basis-file" in namespace["line"]

@@ -410,6 +410,7 @@ _ILE_INT_OPTS = {
     "--use-gwsignal-lmax-nyquist",
 }
 _ILE_FLOAT_OPTS = {
+    "--td-acf-duration", "--td-analysis-start", "--td-analysis-end",
     "--adapt-floor-level", "--calibration-burn-in-neff",
     "--calibration-neff-cal-target", "--distance-slice-skip-threshold",
     "--distance-slice-wing-delta-lnL", "--extrinsic-proposal-field-cover-frac",

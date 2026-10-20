@@ -692,7 +692,7 @@ def slepian_basis(N, fs, t_start, t_end, f_low, f_high, r=None):
     f_low, f_high : float
         Band edges [Hz].
     r : int or None
-        Number of columns.  If None, r = 2 * (ceil(2 * W * T) + 4) where W is the band
+        Positive even number of columns (paired cosine/sine quadratures). If None, r = 2 * (ceil(2 * W * T) + 4) where W is the band
         half-width and T the support duration (time-bandwidth theorem + buffer, doubled
         for the cos/sin pair).
 
@@ -728,11 +728,16 @@ def slepian_basis(N, fs, t_start, t_end, f_low, f_high, r=None):
         n_real = int(np.ceil(2.0 * W * T)) + 4
         # r counts total columns after cos/sin doubling.
     else:
-        n_real = max(1, int(np.ceil(r / 2.0)))
+        if (isinstance(r, (bool, np.bool_)) or not isinstance(r, (int, np.integer))
+                or r <= 0 or r % 2):
+            raise ValueError("Slepian rank r must be a positive even integer.")
+        n_real = int(r) // 2
 
     # scipy.signal.windows.dpss needs 1 <= Kmax <= Msup, and NW must be > 0.5 for a
     # meaningful concentration; clamp gently.
-    n_real = min(n_real, Msup)
+    # There cannot be more independent supported columns than support samples.
+    # Keep complete quadrature pairs and keep reduced QR square in column space.
+    n_real = min(n_real, Msup // 2)
     NW_use = max(NW, 0.5 + 1e-6)
 
     tapers, eigvals = scipy.signal.windows.dpss(
