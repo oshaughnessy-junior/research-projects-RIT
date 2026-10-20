@@ -574,6 +574,65 @@ def _per_m_modes(P, Lmax, srate, seglen, f22_start, post):
     return out
 
 
+class _DeviceModeSeries(object):
+    """The fields of a lal FD series the device path reads, plus the device array."""
+
+    def __init__(self, dev, epoch, deltaF):
+        self.dev, self.epoch, self.deltaF = dev, epoch, deltaF
+        self.data = type("data", (), {"length": int(dev.shape[-1])})()
+
+
+def _per_m_modes_xp(xp, P, Lmax, srate, seglen, f22_start, post, fd_standoff_factor=0.964,
+                    fd_end_taper_max_time=1.0):
+    """_per_m_modes for IMRPhenomXHM on xp: the modes come from RIFT.likelihood.gpu_waveform_xhm
+    (equal to ChooseFDModes with PhenomXHMThresholdMband=0) and are conditioned on xp exactly as
+    lsu.hlmoft conditions ChooseFDModes output (high-pass, centring roll, start and capped end
+    tapers), then Fourier transformed as lsu.DataFourier does.  Returns {(l, m): _DeviceModeSeries}."""
+    import lalsimulation as lalsim
+    from RIFT.likelihood import gpu_waveform_xhm as XHM
+    dt, df = 1. / srate, 1. / seglen
+    n = int(round(srate * seglen))
+    centring = 1 - post / seglen
+    m1, m2 = P.m1 / lal.MSUN_SI, P.m2 / lal.MSUN_SI
+    s = lalsim.SimInspiralFinalBlackHoleSpinBound(P.s1z, P.s2z)
+    t_merge = lalsim.SimInspiralMergeTimeBound(P.m1, P.m2) + lalsim.SimInspiralRingdownTimeBound(P.m1 + P.m2, s)
+    epoch = -(n * dt) * centring
+    out = {}
+    for am in range(1, Lmax + 1):
+        modes = [(l, sg * am) for (l, m) in XHM_MODES if m == am and l <= Lmax for sg in (1, -1)]
+        if not modes:
+            continue
+        fmin = (am / 2.) * f22_start
+        H = XHM.imrphenomxhm_modes(np.array([m1]), np.array([m2]), np.array([P.s1z]), np.array([P.s2z]), P.dist,
+                                   np.array([P.phiref]), fmin * fd_standoff_factor, P.fref, df, n // 2 + 1,
+                                   f_max=srate / 2., modes=modes, xp=xp)[0]
+        # hlmoft: high-pass on |f| (LAL's ascending grid), then resize to n, zeroing the -fNyq bin
+        f = np.abs(df * (np.arange(n + 1) - (n + 1) // 2))
+        hp = np.where(f < fmin, 0.5 + 0.5 * np.cos(np.pi * (f / fmin - 1) / (1 - fd_standoff_factor)), 1.)
+        hp[f < fmin * fd_standoff_factor] = 0.
+        hp[0] = 0.
+        H = H[:, :n] * xp.asarray(hp[:n])
+        h = -xp.fft.ifft(xp.fft.ifftshift(H, axes=-1), axis=-1) * (n * df)
+        h = xp.roll(h, -int(n * (1 - centring)), axis=-1)
+        ntaper = max(int(0.01 * n), int(1. / (fmin * dt)))
+        ntaper_end = int(min(ntaper, max(int(fd_end_taper_max_time / dt), 1)))
+        w = np.ones(n)
+        w[:ntaper] = 0.5 - 0.5 * np.cos(np.pi * np.arange(ntaper) / (1. * ntaper))
+        vend = (0.5 - 0.5 * np.cos(np.pi * np.arange(ntaper_end) / (1. * ntaper_end)))[::-1]
+        crit = int(n * centring) + int((t_merge + 3. / fmin) / dt)
+        if crit + ntaper_end > n:
+            crit = n - ntaper_end
+        if n - ntaper_end < crit:
+            w[n - ntaper_end:] *= vend
+        else:
+            w[crit:crit + ntaper_end] *= vend
+            w[crit + ntaper_end:] = 0.
+        X = xp.fft.fftshift(xp.fft.fft(h * xp.asarray(w), axis=-1), axes=-1) * dt
+        for i, k in enumerate(modes):
+            out[k] = _DeviceModeSeries(X[i], epoch, df)
+    return out
+
+
 def _refuse(P, schedule, kwargs):
     import lalsimulation as lalsim
     bad = [k for k in ("calibration_realizations", "NR_group", "ROM_group") if kwargs.get(k) is not None]
@@ -598,6 +657,7 @@ def PrecomputeLikelihoodTermsMultirate(event_time_geo, t_window, P, data_dict, p
                                        analyticPSD_Q=False, inv_spec_trunc_Q=False, T_spec=0., verbose=True,
                                        quiet=False, schedule=None, return_calibration_crossterms=False,
                                        skip_interpolation=False, **kwargs):
+    import lalsimulation as lalsim
     from RIFT.likelihood import factored_likelihood as fl
     if schedule is None:
         raise ValueError("early-time multirate requires a schedule")
@@ -638,12 +698,19 @@ def PrecomputeLikelihoodTermsMultirate(event_time_geo, t_window, P, data_dict, p
     else:
         sch = TwoRateSchedule(fs, schedule["fs_e"], schedule["tau_tr"], schedule["guard"], schedule["atten_db"],
                               mc_min=mc_lo, m_max=Lmax, lag_halfwidth=t_window)
-        early = _per_m_modes(P, Lmax, schedule["fs_e"], seglen, P.fmin, post)
-        late = _per_m_modes(P, Lmax, fs, schedule["late_buffer"], f22_late, post)
-        keys = sorted(early)
         # backend for the per-point preparation; multirate_reference=True keeps the CPU reference path
         use_ref = bool(kwargs.get("multirate_reference", False))
         xp = _select_xpy("numpy" if use_ref else kwargs.get("multirate_xpy"))
+        # template source: lalsimulation (default), or gpu_waveform_xhm on xp ("xp", XHM only)
+        wf = kwargs.get("multirate_waveform") or "lal"
+        if wf not in ("lal", "xp"):
+            raise ValueError("multirate waveform must be lal or xp, got %r" % wf)
+        if wf == "xp" and (use_ref or P.approx != lalsim.IMRPhenomXHM):
+            raise ValueError("multirate waveform xp requires IMRPhenomXHM and a non-reference backend")
+        gen = (lambda *a: _per_m_modes_xp(xp, P, Lmax, *a)) if wf == "xp" else (lambda *a: _per_m_modes(P, Lmax, *a))
+        early = gen(schedule["fs_e"], seglen, P.fmin, post)
+        late = gen(fs, schedule["late_buffer"], f22_late, post)
+        keys = sorted(early)
         if _cache_context(data_dict, psd_dict, schedule,
                           (dt, P.fmin, fMax, Lmax, t_window, str(event_time_geo), P.phi, P.theta,
                            inv_spec_trunc_Q, T_spec, P.approx), xp):
@@ -655,8 +722,8 @@ def PrecomputeLikelihoodTermsMultirate(event_time_geo, t_window, P, data_dict, p
             tk = ("taper", n_e, early[keys[0]].deltaF, schedule["fs_e"], xp.__name__)
             if tk not in _JOB_CACHE:
                 _JOB_CACHE[tk] = xp.asarray(taper_top_quarter_factor(n_e, early[keys[0]].deltaF, schedule["fs_e"]))
-            e_fd = {k: xp.asarray(early[k].data.data) for k in keys}
-            l_fd = {k: xp.asarray(late[k].data.data) for k in keys}
+            e_fd = {k: early[k].dev if wf == "xp" else xp.asarray(early[k].data.data) for k in keys}
+            l_fd = {k: late[k].dev if wf == "xp" else xp.asarray(late[k].data.data) for k in keys}
             hE_td = {k: ifft_centred(xp, e_fd[k] * _JOB_CACHE[tk], early[k].deltaF) for k in keys}
             hL_td = {k: ifft_centred(xp, l_fd[k], late[k].deltaF) for k in keys}
         bands = multiband_schedule(P.fmin, fMax, seglen, mc_lo, Lmax, extra_s=schedule["uv_margin"],
