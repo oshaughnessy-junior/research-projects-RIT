@@ -681,6 +681,10 @@ def _phase_setup(h, w, a, c, A, P):
         cf = [fcut, (math.sqrt(3) * (fcut - fEnd) + 2 * (fcut + fEnd)) / 4., (3 * fcut + fEnd) / 4.,
               (fcut + fEnd) / 2., fEnd, fEnd]
         P.fPhaseMatchIM = fEnd
+        # LAL corrects the cutting frequency for EMR with negative spins
+        # (IMRPhenomXHM_Intermediate_CollocPtsFreqs, phase freqs version 122019).
+        emr_neg = (w.eta < 0.01) & (w.chi1L < 0)
+        P.fPhaseMatchIM = np.where(emr_neg, P.fPhaseMatchIM * (1.2 - 0.25 * w.chi1L), P.fPhaseMatchIM)
     else:
         cf = [fcut, (math.sqrt(3) * (fcut - fring) + 2 * (fcut + fring)) / 4., (3 * fcut + fring) / 4.,
               (fcut + fring) / 2., (fcut + 3 * fring) / 4., (fcut + 7 * fring) / 8.]
@@ -790,7 +794,7 @@ def _phase_setup(h, w, a, c, A, P):
         P.dphi0RD = (np.longdouble(0.5) * fstep_m1 * (args[2] - args[0])).astype(np.float64)
         d2phi0RD = (fstep_m1 * fstep_m1 * (args[2] - np.longdouble(2.) * args[1] + args[0])).astype(np.float64)
         cv[4] = np.where(w.eta > ETA_EMR, P.dphi0RD, cv[4])
-        cf[4] = fcutRD
+        cf[4] = np.where(w.eta > ETA_EMR, fcutRD, cf[4])
         cf[5] = fcutRD
         cv[5] = d2phi0RD
         M = np.zeros((n, 6, 6))
