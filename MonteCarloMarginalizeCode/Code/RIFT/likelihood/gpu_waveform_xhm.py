@@ -562,6 +562,10 @@ def _insp_phase_int(Mf, p, P, xp=None):
     logMf = p.log
     philm = 0.
     for i in range(13):
+        if xp is not None and not P.nzL[i]:
+            if P.nz[i]:
+                philm = philm + P.phi[i] * freqs[i]
+            continue
         philm = philm + (P.phi[i] + P.phiL[i] * logMf) * freqs[i]
     return philm
 
@@ -719,6 +723,10 @@ def _phase_setup(h, w, a, c, A, P):
     lam_fit = _fit("IMRPhenomXHM_Insp_Phase_%d_lambda" % tag, w, 122019)
     P.LambdaPN = np.where(w.eta > 0.01, lam, lam_fit)
     P.phi[8] = P.phi[8] + P.LambdaPN
+    # Grid evaluation skips terms whose coefficients vanish for every point;
+    # x + 0*y == x, so the result is unchanged.
+    P.nz = [bool(np.any(v != 0)) for v in P.phi]
+    P.nzL = [bool(np.any(v != 0)) for v in P.phiL]
 
     if tag == 21:
         hs = w.STotR >= 0.8
@@ -898,6 +906,22 @@ def _ns_dev(ns, xp, skip=()):
     return out
 
 
+_GRID_CACHE = {}
+
+
+def _grid_factors(safe, xp):
+    """Host f, f^(1/6), log f on ``xp``; the last grid is cached."""
+    fs = X._host(safe)
+    key = (id(xp), fs.shape[0], float(fs[0]), float(fs[-1]))
+    hit = _GRID_CACHE.get("last")
+    if hit is not None and hit[0] == key:
+        return fs, hit[1], hit[2]
+    g6 = xp.asarray(np.power(fs, 1.0 / 6.0))[None, :]
+    lg = xp.asarray(np.log(fs))[None, :]
+    _GRID_CACHE["last"] = (key, g6, lg)
+    return fs, g6, lg
+
+
 def _grid_powers(M_sec, safe, xp):
     """Powers of Mf = M_sec * f on the grid, identical on NumPy and CuPy.
 
@@ -906,9 +930,7 @@ def _grid_powers(M_sec, safe, xp):
     is an IEEE multiply or divide, so both backends give the same bits.  A
     device pow differs from the host's by an ulp, which at the inspiral phases of
     a long BNS signal (1e6 rad) is a 1e-10 error."""
-    fs = X._host(safe)
-    g6 = xp.asarray(np.power(fs, 1.0 / 6.0))[None, :]
-    lg = xp.asarray(np.log(fs))[None, :]
+    fs, g6, lg = _grid_factors(safe, xp)
     Ms = X._host(M_sec)
     m6 = xp.asarray(H.power(Ms, 1.0 / 6.0))[:, None]
     lm = xp.asarray(H.log(Ms))[:, None]
