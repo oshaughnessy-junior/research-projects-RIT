@@ -3593,6 +3593,8 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
             V_ndim = np.ndim(ctVArrayDict[det])
             if U_ndim != V_ndim or U_ndim not in (2, 3):
                 raise ValueError("ctUArrayDict[{}] and ctVArrayDict[{}] must both be 2-D or both be 3-D; got ndim {} and {}".format(det, det, U_ndim, V_ndim))
+            if ctUArrayDict[det].shape != ctVArrayDict[det].shape:
+                raise ValueError("U/V must have matching scalar or time-indexed shapes")
             time_indexed_UV[det] = (U_ndim == 3)
         time_indexed_cal[det] = False
         n_blocks_det = n_cal
@@ -3620,6 +3622,10 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
                     raise ValueError("compressed cross terms for {} must share the rholm time grid: npts_full {} vs rholm length {}".format(det, ctUArrayDict[det].npts_full, npts_full_det))
             elif ctUArrayDict[det].shape[0] != ctVArrayDict[det].shape[0] or ctUArrayDict[det].shape[0] not in (npts_full_det, N_window_block_det):
                 raise ValueError("time-indexed cross terms for {} must share the rholm time grid (length {}) or be one realization block long ({}): U {} V {}".format(det, npts_full_det, N_window_block_det, ctUArrayDict[det].shape, ctVArrayDict[det].shape))
+            if not compressed_UV[det]:
+                nmode = len(lookupNKDict[det])
+                if tuple(ctUArrayDict[det].shape[1:]) != (nmode, nmode):
+                    raise ValueError("time-indexed U/V must share the Q time grid and modes")
             if n_cal != 1 and cal_method == 'fused':
                 raise NotImplementedError("cal_method='fused' is not implemented for time-indexed cross terms ({}, n_cal={}); use cal_method='loop'".format(det, n_cal))
     _any_time_indexed_cal = any(time_indexed_cal.values())
