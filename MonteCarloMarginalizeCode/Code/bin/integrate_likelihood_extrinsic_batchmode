@@ -5131,6 +5131,19 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
                     # lnL = 0 at every distance.  Dividing by it gave NaN, which the time
                     # integral then spread over the whole sample.
                     has_template = rho_sq > 0
+                    if opts._noloop_time_interp == 'nearest':
+                        # With the nearest stencil a norm is a sum of Gram-matrix values, so a
+                        # negative one, or a zero one with a nonzero data overlap, means the
+                        # time-indexed terms (or the per-realization ones) are inconsistent.
+                        scale = xpy_default.max(xpy_default.abs(rho_sq))
+                        if bool(xpy_default.any(rho_sq < -1e-10 * scale)):
+                            raise ValueError("td-gs has a negative template norm")
+                        # (Not with --calibration-global-norm: there the norm is the uncalibrated
+                        # template's while the overlap is the FIR-filtered template's, which reaches
+                        # further, so a zero norm can meet a nonzero overlap.)
+                        if (not (opts.calibration_envelope_directory and opts.calibration_global_norm) and
+                                bool(xpy_default.any((~has_template) & (xpy_default.abs(kappa_sq) > 0)))):
+                            raise ValueError("td-gs zero template norm has nonzero data overlap")
                     rho_sq = xpy_default.where(has_template, rho_sq, 1.0)
                 x0 = kappa_sq / rho_sq
 #                lnI = np.ones(shape=x0.shape) * -np.inf
