@@ -315,9 +315,6 @@ RULES = [
      "waveform path the LISA driver does not offer (it takes --modes / h5 frames)."),
 
     # ---------------------------------------------------------- distance slice / grid export
-    (r"^FUNC:analyze_event\._walk_fresh$", "NA",
-     "Fresh-slice callback for the .dslice walk-out (--distance-slice-walkout-delta-lnL), "
-     "used only inside the .dslice export, which LISA does not consume (OPTION rule below)."),
     (r"^OPTION:--(export-distance-slices|distance-slice-|n-distance-slice-)", "NA",
      "The .dslice export and its placement/tuning knobs. This is a data product for a "
      "downstream LIGO CIP distance workflow that the LISA pipeline does not run; there "

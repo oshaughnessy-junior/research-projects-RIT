@@ -69,10 +69,6 @@
       "decision": "NA",
       "reason": "Calibration Monte-Carlo error probe; see the --calibration-* reason."
     },
-    "FUNC:analyze_event._walk_fresh": {
-      "decision": "NA",
-      "reason": "Fresh-slice callback for the .dslice walk-out (--distance-slice-walkout-delta-lnL), used only inside the .dslice export, which LISA does not consume (OPTION rule below)."
-    },
     "FUNC:dLofz": {
       "decision": "PORT",
       "reason": "Cosmology helpers behind --d-prior-redshift. Planck15 via the framework helper; the interpolation grid still needs a z ceiling that covers MBHB (z~20), which is a gridding choice rather than a physics decision."
