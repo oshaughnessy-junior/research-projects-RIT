@@ -385,8 +385,12 @@ def test_factory_places_event_relative_gaps_in_each_detector_stream():
         np.testing.assert_array_equal(ctx.retain_mask, expected)
 
 
-def test_glitch_segment_combination_is_refused():
+def test_glitch_segment_combination_is_refused(monkeypatch):
     import pytest
+    import RIFT.likelihood.td_inner_product as td
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Unsupported combination reached expensive context setup")
+    monkeypatch.setattr(td, "ToeplitzInnerProductContext", forbidden)
     rng = np.random.default_rng(1241)
     for kw in [dict(gaps=[(0.1, 0.2)]), dict(template_start_offset=0.0),
                dict(acf_duration=0.125)]:
@@ -486,11 +490,19 @@ def test_gapped_overlap_masks_both_precision_rows_and_columns():
     n, fs = 64, 64.
     ctx = ToeplitzInnerProductContext(lambda f: 1.+(f/10.)**2, 1., 32., 1.,
           fMax=31., analyticPSD_Q=True, gap_sample_ranges=[(25, 37)])
+    # A full-length gap uses the same precision apply with row/column masks,
+    # not another dense matrix and an O(N^3) eigensolve.
+    assert ctx._Kseg is None
+    # Exercise the FFT apply used for long streams, against an independent
+    # explicitly formed retained precision matrix at this tractable test size.
+    ctx._use_dense = False
+    dense = ctx.kappa[np.abs(np.subtract.outer(np.arange(n), np.arange(n)))]
+    dense = (ctx.ip_normalization * dense * ctx.retain_mask[:, None]
+             * ctx.retain_mask[None, :])
     fd = lal.CreateCOMPLEX16FrequencySeries("x", lal.LIGOTimeGPS(0.),
           0., 1., lsu.lsu_HertzUnit, n)
     h, d = [rng.normal(size=n)+1j*rng.normal(size=n) for _ in range(2)]
     hf, df = ctx._fd_from_td(h, fd), ctx._fd_from_td(d, fd)
     _, q, _, _ = ToeplitzComplexOverlap(ctx).ip(hf, df)
-    expected = [ctx.ip_normalization * ctx.segment_dot_td(np.roll(h, k), d)
-                for k in range(n)]
+    expected = [np.vdot(np.roll(h, k), dense @ d) for k in range(n)]
     np.testing.assert_allclose(q.data.data, expected, rtol=1e-11, atol=1e-12)

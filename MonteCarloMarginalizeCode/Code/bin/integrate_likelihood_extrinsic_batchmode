@@ -607,6 +607,11 @@ if (opts.glitch_basis or opts.glitch_basis_file) and opts.internal_ile_inner_pro
     raise ValueError("--glitch-basis/--glitch-basis-file requires "
                      "--internal-ile-inner-product td-toeplitz")
 
+if (opts.glitch_basis or opts.glitch_basis_file) and (
+        opts.td_analysis_start is not None or opts.td_analysis_end is not None or opts.td_gap):
+    raise ValueError("Glitch marginalization requires the full segment; "
+                     "cannot combine glitch bases with TD cuts or gaps")
+
 _response_order_active = any((opts.check_slowrot_pmax, opts.check_finite_size_Qmax,
                               opts.choose_slowrot_pmax, opts.choose_slowrot_Qmax))
 if (opts.check_slowrot_pmax or opts.choose_slowrot_pmax) and not opts.rotation_slow:

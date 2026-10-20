@@ -310,8 +310,8 @@ class ToeplitzInnerProductContext(object):
             or self.template_end_offset is not None)
 
         # Build the (dense) truncated precision operator K_seg and run the D5 SPD check.
-        # ONLY for a genuinely sub-length or gapped segment.  A pure template-frame
-        # truncation leaves N_seg == len2side with no gaps: ``segment_dot_td`` then applies
+        # ONLY for a genuinely sub-length segment. With full-length data, template
+        # cuts and gaps retain N_seg == len2side: ``segment_dot_td`` applies
         # the FULL precision operator (``_apply_seg`` -> ``apply_K``, the FFT matvec), so
         # materialising the len2side x len2side dense K_seg (~2 GB at 2^14) and running its
         # O(N^3) ``eigvalsh`` SPD check would be wasted work.  Skip it there; ``is_spd`` stays
@@ -320,7 +320,10 @@ class ToeplitzInnerProductContext(object):
         self._Kseg = None
         self.is_spd = None
         self._Kseg_min_eig = None
-        needs_dense_Kseg = (self.N_seg != self.len2side) or (not self.retain_mask.all())
+        # Full-length gaps use M K M through the existing full operator.
+        # Building its identical dense matrix and eigenspectrum adds O(N^3)
+        # work while the FFT apply already handles masked vectors exactly.
+        needs_dense_Kseg = (self.N_seg != self.len2side)
         if self.segment_active and needs_dense_Kseg and self.N_seg <= _MAX_DENSE_N:
             self._Kseg = scipy.linalg.toeplitz(self.kappa[:self.N_seg])
             self._spd_check_Kseg()
@@ -1340,6 +1343,18 @@ class TDInnerProductFactory(object):
                self.segment_start_index, self.gap_time_origin)
         ctx = self._contexts.get(key)
         if ctx is None:
+            reg = self._detector_registry.get(id(psd))
+            has_glitch = reg is not None and (
+                reg["ifo"] in self.glitch_specs or reg["ifo"] in self.glitch_basis_files)
+            full_n = 2 * int(float(fNyq) / float(deltaF))
+            shortened = (self.acf_duration is not None and
+                         int(round(float(self.acf_duration) * 2.0 * float(fNyq))) != full_n)
+            if has_glitch and (self.gaps or self.template_start_offset is not None
+                    or self.template_end_offset is not None or self.segment_start_index != 0
+                    or shortened):
+                raise ValueError("Glitch marginalization requires the full segment; "
+                                 "cannot combine glitch bases with TD cuts, gaps or "
+                                 "a shortened --td-acf-duration")
             if not self._logged_window:
                 # One-time provenance banner: assert the TD kernel inherited the SAME data
                 # window the surrounding pipeline applied (windowing + PSD <w^2> rescale happen
