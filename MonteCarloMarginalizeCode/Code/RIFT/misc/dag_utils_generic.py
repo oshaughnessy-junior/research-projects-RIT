@@ -3821,10 +3821,19 @@ def write_seed_climb_sub(tag='seed_climb', exe=None, arg_str='', log_dir=None, o
     job.set_stdout_file("%s%s-%s.out" % (log_dir, tag, uniq_str))
     if out_dir:
         job.add_condor_cmd('initialdir', out_dir)
-    job.add_condor_cmd('getenv', default_getenv_value)
+    env = "OMP_NUM_THREADS=1 JAX_ENABLE_X64=1 XLA_PYTHON_CLIENT_PREALLOCATE=false"
+    if use_singularity and singularity_image:
+        # getenv=* would carry the submit host's HOME, which the container
+        # runtime then fails to create on the worker.  Pass RIFT variables only,
+        # plus an explicit checkout for a climber not yet in the image.
+        job.add_condor_cmd('getenv', os.environ.get('RIFT_GETENV_OSG', '*RIFT*'))
+        if os.environ.get('RIFT_SEED_CLIMB_PYTHONPATH'):
+            env += " PYTHONPATH=" + os.environ['RIFT_SEED_CLIMB_PYTHONPATH']
+    else:
+        job.add_condor_cmd('getenv', default_getenv_value)
     job.add_condor_cmd('request_memory', str(request_memory) + "M")
     job.add_condor_cmd('request_disk', request_disk)
-    job.add_condor_cmd('environment', '"OMP_NUM_THREADS=1 JAX_ENABLE_X64=1 XLA_PYTHON_CLIENT_PREALLOCATE=false"')
+    job.add_condor_cmd('environment', '"' + env + '"')
     if request_gpus:
         job.add_condor_cmd('request_GPUs', str(int(request_gpus)))
     if use_singularity and singularity_image:
@@ -3833,10 +3842,14 @@ def write_seed_climb_sub(tag='seed_climb', exe=None, arg_str='', log_dir=None, o
         # inside the container (or on a filesystem the container binds).
         job.add_condor_cmd('MY.SingularityImage', '"' + singularity_image + '"')
         job.add_condor_cmd('MY.SingularityBindCVMFS', 'True')
-        job.add_condor_cmd('MY.flock_local', 'true')
-        job.add_condor_cmd('MY.POOLS', '"CIT"')   # flock_local now maps to "IGWN,CIT"
+        # No flock_local: the CIT schedd rewrites it to POOLS = "IGWN,CIT".
+        job.add_condor_cmd('MY.POOLS', '"CIT"')
         job.add_condor_cmd('requirements', '(HAS_SINGULARITY=?=TRUE)')
         job.add_condor_cmd('transfer_executable', 'False')
+        # A transfer sandbox gives the container a HOME; without one, Singularity
+        # tries to create the submit user's /home on the worker and fails.
+        job.add_condor_cmd('should_transfer_files', 'YES')
+        job.add_condor_cmd('when_to_transfer_output', 'ON_EXIT')
     if condor_commands is not None:
         for cmd, value in condor_commands.items():
             job.add_condor_cmd(cmd, value)

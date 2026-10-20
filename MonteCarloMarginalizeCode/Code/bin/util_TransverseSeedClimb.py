@@ -281,8 +281,13 @@ def main(argv=None):
         load_frame_data, IntrinsicMarginalObjective)
     import jax
     cache = opts.jax_cache_dir
-    if cache is None and os.path.isdir("/scratch/" + os.environ.get("USER", "")):
-        cache = "/scratch/%s/jax_cache_seedclimb" % os.environ["USER"]
+    import getpass
+    try:
+        user = os.environ.get("USER") or getpass.getuser()
+    except Exception:                    # no passwd entry inside some containers
+        user = ""
+    if cache is None and user and os.path.isdir("/scratch/" + user):
+        cache = "/scratch/%s/jax_cache_seedclimb" % user
     if cache:
         os.makedirs(cache, exist_ok=True)
         jax.config.update("jax_compilation_cache_dir", cache)

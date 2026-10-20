@@ -90,12 +90,14 @@ In a container (`--use-singularity`) the climb needs its own image, because no
 RIFT ILE image carries JAX: `--seed-climb-singularity-image` (pseudo_pipe
 `--transverse-seed-climb-singularity-image` or
 `$SINGULARITY_RIFT_SEED_CLIMB_IMAGE`), or the build refuses. The sub sets
-`MY.POOLS = "CIT"`, since `flock_local` now maps to "IGWN,CIT" and IGWN nodes
-lack `/scratch`. It takes the ILE condor commands (GPU requirements) and does
+`MY.POOLS = "CIT"` and omits `flock_local`, which the CIT schedd rewrites to
+"IGWN,CIT" (IGWN nodes lack `/scratch`). It requests a transfer sandbox so the
+container has a `HOME`. It takes the ILE condor commands (GPU requirements) and does
 not transfer the executable, so the climber path must exist in the image or on
 a bound filesystem. Until a RIFT image ships the climber, point
-`--transverse-seed-climb-exe` at a `/scratch` checkout and pass `PYTHONPATH`
-through the environment (the sub uses `getenv`).
+`--transverse-seed-climb-exe` at a `/scratch` checkout and set
+`RIFT_SEED_CLIMB_PYTHONPATH` at build time. The container sub passes only
+`*RIFT*` variables.
 
 The final extrinsic stage reads the grid of the last fit, in seeded and
 unseeded runs alike (RO, 2026-10-20: the earlier choice was an off-by-one).
@@ -166,9 +168,8 @@ unseeded runs alike (RO, 2026-10-20: the earlier choice was an off-by-one).
   `$JAX_EXPORT_CACHE_DIR`, default `<compilation cache>/exported`. Single points
   run through the batched program. Warm start stage on S250830bp: 360 s to
   133 s, with identical lnL.
-- JAX on a CIT head node starts an XLA thread pool sized by the CPU count. With
-  the 500-thread user cap, a second JAX process on a busy node fails with
-  `pthread_create() failed`. Condor execute nodes have no such cap.
+- On CIT head nodes, a second JAX process can hit the 500-thread cap
+  (`pthread_create() failed`). Execute nodes have no such cap.
 - Only BasicIteration has the three DAG schemes. Other builders can use setup mode.
 - Open: on CPU (jax 0.9.0), `IntrinsicMarginalObjective.__call__` followed by
   `lnL_sky` on the same point once returned all-NaN rows; the same call with the

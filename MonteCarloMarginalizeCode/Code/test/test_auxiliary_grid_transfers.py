@@ -41,7 +41,8 @@ def test_auxiliary_grid_transfers_are_independent(tmp_path, frame_mode, schedule
            '--fetch-ext-grid-exe', '/bin/true', '--fetch-ext-grid-args', str(tmp_path/'fetch.args'),
            '--transfer-file-list', str(tmp_path/'transfer.txt'),
            '--n-iterations', '2', '--n-samples-per-job', '2', '--use-singularity',
-           '--last-iteration-extrinsic', '--last-iteration-extrinsic-nsamples', '2']
+           '--last-iteration-extrinsic', '--last-iteration-extrinsic-nsamples', '2',
+           '--use-oauth-files', 'scitokens']
     if schedule != 'ordinary':
         (tmp_path/'cip.list').write_text('1 --no-plots --fit-method rf --parameter mc --parameter eta\n'+('Z' if schedule=='Z' else 'G1')+' --no-plots --fit-method rf --parameter mc --parameter eta\n')
         cmd += ['--cip-args-list', str(tmp_path/'cip.list'), '--n-iterations-subdag-max', '1']
@@ -63,11 +64,15 @@ def test_auxiliary_grid_transfers_are_independent(tmp_path, frame_mode, schedule
         assert 'psd.xml.gz' in line
         assert line.count('ile_pre.sh') <= 1
         assert line.count('ile_dispatch.sh') <= 1
+        # an unknown writer keyword falls through to the ILE command line
+        assert '--oauth-files' not in sub, tag
     if seeded:
         # the climb needs JAX: its own image, kept in the CIT pool, executable not transferred
         sub=(tmp_path/'seed_climb.sub').read_text()
         assert 'MY.SingularityImage = "/unused-jax-image.sif"' in sub
         assert 'MY.POOLS = "CIT"' in sub and 'transfer_executable = False' in sub
+        assert 'getenv = *RIFT*' in sub   # getenv=* carries HOME; container start then fails
+        assert 'flock_local' not in sub and 'should_transfer_files = YES' in sub
 
     # Every final extrinsic worker must consume the grid emitted by the final fit.
     import re

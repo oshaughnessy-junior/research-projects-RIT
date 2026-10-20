@@ -330,6 +330,7 @@ parser.add_argument("--seed-climb-args",default=None,help="Argument file for --s
 parser.add_argument("--seed-climb-n-max",default=1000,type=int,help="Most points the seed climb may add.  Iteration-0 ILE batches are sized at DAG-build time for (input grid + this many) points; ILE exits cleanly on indices past the end of the grid.")
 parser.add_argument("--seed-climb-request-gpu",action='store_true',help="Seed-climb node requests a GPU (JAX kernel on GPU).  Without it the node runs on CPU.")
 parser.add_argument("--seed-climb-request-memory",default=8192,type=int,help="request_memory (MB) for the seed-climb node")
+parser.add_argument("--seed-climb-condor-commands",default=None,help="File of condor commands for the seed-climb node, in the --ile-condor-commands format.  Default: the ILE condor commands.  Use it when the climb image needs different GPUs from the ILE image.")
 parser.add_argument("--seed-climb-singularity-image",default=None,help="Container image for the seed-climb node.  It needs JAX, which no RIFT ILE image carries, so with --use-singularity this is required.")
 parser.add_argument("--seed-climb-mode",default="prepend",choices=["prepend","parallel","composite"],help="prepend: the seed climb runs before the iteration-0 ILE jobs and appends to overlap-grid-0.  parallel: it runs alongside them, writes seed-0, and its own ILE_seed jobs feed the iteration-0 consolidation, so iteration 0 is not delayed.  composite: it runs after the iteration-0 unify, climbs from the best lines of all.net beside CIP 0, writes seed-1, and its ILE_seed jobs feed the iteration-1 consolidation.")
 parser.add_argument("--fetch-ext-grid-args",default=None,help="arguments for command  for fetching external grid. Don't over-specify the --output-file argument, which will be used by the pipeline")
@@ -908,7 +909,7 @@ if not (fetch_args is None):
     transfer_file_names_fetch.append(opts.working_directory+"/fetch-$(macroiteration).{}".format(grid_suffix)) # could also use ../puffball, because relative is ok to initialdir
     # Write a version of the ILE job that uses puffball inputs ... IDENTICAL to code above for standard ILE case,just different argument for input
     # Yes, it would logically be simpler to make overlap-grid.xml.gz larger ... but I want to keep 'real samples' and 'puffed samples' seperate.
-    ileFetch_job, ileFetch_job_name = dag_utils.write_ILE_sub_simple(tag='ILE_fetch',log_dir=None,arg_str=ile_args_forfetch,output_file="CME_fetch_out.xml",ncopies=opts.n_copies,exe=ile_exe,transfer_files=transfer_file_names_fetch,request_memory=opts.request_memory_ILE,request_disk=request_disk,request_gpu=opts.request_gpu_ILE,request_cross_platform=opts.request_xpu_ILE,use_singularity=opts.use_singularity,singularity_image=singularity_image,use_osg=opts.use_osg,simple_osg_requirements=opts.use_osg_simple_requirements,frames_dir=opts.frames_dir,cache_file=opts.cache_file,use_cvmfs_frames=opts.use_cvmfs_frames,oauth_files=opts.use_oauth_files,max_runtime_minutes=opts.ile_runtime_max_minutes,condor_commands=ile_condor_commands,ile_profiles=True)
+    ileFetch_job, ileFetch_job_name = dag_utils.write_ILE_sub_simple(tag='ILE_fetch',log_dir=None,arg_str=ile_args_forfetch,output_file="CME_fetch_out.xml",ncopies=opts.n_copies,exe=ile_exe,transfer_files=transfer_file_names_fetch,request_memory=opts.request_memory_ILE,request_disk=request_disk,request_gpu=opts.request_gpu_ILE,request_cross_platform=opts.request_xpu_ILE,use_singularity=opts.use_singularity,singularity_image=singularity_image,use_osg=opts.use_osg,simple_osg_requirements=opts.use_osg_simple_requirements,frames_dir=opts.frames_dir,cache_file=opts.cache_file,use_cvmfs_frames=opts.use_cvmfs_frames,use_oauth_files=opts.use_oauth_files,max_runtime_minutes=opts.ile_runtime_max_minutes,condor_commands=ile_condor_commands,ile_profiles=True)
     ileFetch_job.add_condor_cmd("initialdir",opts.working_directory+"/iteration_$(macroiteration)_ile")
     ileFetch_job.set_log_file(opts.working_directory+"/iteration_$(macroiteration)_ile/logs/ILE_fetch-$(macroevent)-$(cluster)-$(process).log")
     ileFetch_job.set_stderr_file(opts.working_directory+"/iteration_$(macroiteration)_ile/logs/ILE_fetch-$(macroevent)-$(cluster)-$(process).err")
@@ -928,7 +929,7 @@ if opts.seed_climb_exe and opts.seed_climb_args and opts.seed_climb_mode in ("pa
     transfer_file_names_seed = list(transfer_file_names_ile_base)
     transfer_file_names_seed.append(opts.working_directory+"/seed-$(macroiteration).{}".format(grid_suffix))
     # same as ILE_fetch: a separate job so climbed points stay labelled apart from the grid
-    ileSeed_job, _ = dag_utils.write_ILE_sub_simple(tag='ILE_seed',log_dir=None,arg_str=ile_args_forseed,output_file="CME_seed_out.xml",ncopies=opts.n_copies,exe=ile_exe,transfer_files=transfer_file_names_seed,request_memory=opts.request_memory_ILE,request_disk=request_disk,request_gpu=opts.request_gpu_ILE,request_cross_platform=opts.request_xpu_ILE,use_singularity=opts.use_singularity,singularity_image=singularity_image,use_osg=opts.use_osg,simple_osg_requirements=opts.use_osg_simple_requirements,frames_dir=opts.frames_dir,cache_file=opts.cache_file,use_cvmfs_frames=opts.use_cvmfs_frames,oauth_files=opts.use_oauth_files,max_runtime_minutes=opts.ile_runtime_max_minutes,condor_commands=ile_condor_commands,ile_profiles=True)
+    ileSeed_job, _ = dag_utils.write_ILE_sub_simple(tag='ILE_seed',log_dir=None,arg_str=ile_args_forseed,output_file="CME_seed_out.xml",ncopies=opts.n_copies,exe=ile_exe,transfer_files=transfer_file_names_seed,request_memory=opts.request_memory_ILE,request_disk=request_disk,request_gpu=opts.request_gpu_ILE,request_cross_platform=opts.request_xpu_ILE,use_singularity=opts.use_singularity,singularity_image=singularity_image,use_osg=opts.use_osg,simple_osg_requirements=opts.use_osg_simple_requirements,frames_dir=opts.frames_dir,cache_file=opts.cache_file,use_cvmfs_frames=opts.use_cvmfs_frames,use_oauth_files=opts.use_oauth_files,max_runtime_minutes=opts.ile_runtime_max_minutes,condor_commands=ile_condor_commands,ile_profiles=True)
     ileSeed_job.add_condor_cmd("initialdir",opts.working_directory+"/iteration_$(macroiteration)_ile")
     ileSeed_job.set_log_file(opts.working_directory+"/iteration_$(macroiteration)_ile/logs/ILE_seed-$(macroevent)-$(cluster)-$(process).log")
     ileSeed_job.set_stderr_file(opts.working_directory+"/iteration_$(macroiteration)_ile/logs/ILE_seed-$(macroevent)-$(cluster)-$(process).err")
@@ -1762,12 +1763,20 @@ if opts.seed_climb_exe and opts.seed_climb_args and it_start == 0 and not opts.f
             wd=opts.working_directory, ile=opts.ile_args, g=_grid0)
         if opts.n_samples_per_job and not gridinit_args:
             _sc_args += " --n-max-output {}".format(n_initial)
+    _sc_condor_commands = ile_condor_commands   # a GPU worker job: ILE's device requirements by default
+    if opts.seed_climb_condor_commands:
+        _sc_condor_commands = {}
+        with open(opts.seed_climb_condor_commands) as f:
+            for line in f:
+                if line.strip():
+                    key, value = line.split(" ", 1)
+                    _sc_condor_commands[key] = value.strip()
     seed_climb_job, _ = dag_utils.write_seed_climb_sub(
         tag='seed_climb', exe=opts.seed_climb_exe, arg_str=_sc_args,
         out_dir=opts.working_directory, request_memory=opts.seed_climb_request_memory,
         request_gpus=1 if opts.seed_climb_request_gpu else 0,
         use_singularity=opts.use_singularity, singularity_image=opts.seed_climb_singularity_image,
-        condor_commands=ile_condor_commands)   # a GPU worker job: same device requirements as ILE
+        condor_commands=_sc_condor_commands)
     if opts.use_full_submit_paths:
         seed_climb_job.set_sub_file(opts.working_directory + "/" + seed_climb_job.get_sub_file())
     seed_climb_job.write_sub_file()
