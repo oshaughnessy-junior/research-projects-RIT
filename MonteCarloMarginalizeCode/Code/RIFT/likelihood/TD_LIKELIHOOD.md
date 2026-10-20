@@ -46,13 +46,17 @@ integrate_likelihood_extrinsic_batchmode \
 `--td-solver {auto,dense,pcg}`, `--td-acf-duration`, `--td-analysis-start/end`
 and repeatable `--td-gap tstart,tend` configure the experimental operator. Temporal
 cut offsets are seconds relative to the template peak. Gap offsets are geocentric
-seconds relative to the event; the factory resolves their data-frame placement.
+seconds relative to the event; the factory resolves their data-frame placement
+from each registered detector stream epoch. A single dominant-mode peak sets
+the template-cut reference for all modes and detectors at each intrinsic point.
 `util_RIFT_pseudo_pipe.py` forwards the corresponding `--internal-ile-td-*` flags.
 The separate LISA driver is not extended; its drift ledger records the TDI-specific
 physics validation needed before porting these flags. Slow rotation, frequency
 response and FD-only noise-evidence exports are refused.
 Calibration's per-realization FD self term is refused; global-norm calibration
-uses the selected factory consistently.
+uses the selected factory consistently on the full stationary operator. Calibration
+with cuts, gaps or glitch projection is refused because data-side frequency
+calibration does not commute with those operators.
 
 ## Gaussian glitch marginalization
 
@@ -62,10 +66,13 @@ uses the selected factory consistently.
 `t0` is the first sample's geocentric offset in seconds from the event, and `fs`
 is the sample rate. The pipeline transfers basis files as auxiliary inputs.
 Independent Gaussian coefficients can be integrated analytically with Woodbury
-identities. Multiple disturbance blocks retain cross-Gram terms within a detector.
+identities. Glitch bases require the full segment; combining them with TD cuts,
+gaps or shortened ACF duration is refused. Duplicate basis specifications and
+requests for detectors without data are also refused. Multiple disturbance blocks retain cross-Gram terms within a detector.
 The default scale is empirically profiled, not integrated under a hyperprior.
 
-The current Precompute self-overlaps are scalar reference-time values. A localized
+The current Precompute self-overlaps are scalar values at the nominal geocenter
+event, with template epochs translated into the detector data frame. A localized
 basis can make them arrival-time dependent; endpoint diagnostics do not bound
 that effect. Posterior coverage and precision evidences require validation of this
 approximation or time-indexed self terms. A visually accurate reconstruction does

@@ -240,33 +240,44 @@ class ToeplitzCovariance(object):
 class RankAugmentation(object):
     """Woodbury-corrected covariance augmentation C' = C + sum_k B_k Lambda_k B_k^T.
 
-    Constructed from a ToeplitzCovariance and a list of INDEPENDENT blocks
-    [(B_k, Lambda0_k, ifo_label_k)].  Each block is a low-rank disturbance model
-    (glitch, line, ...) living in a single detector; because glitches are incoherent,
-    the blocks do not couple and M is block-diagonal -- each block is handled on its own.
+    The supplied blocks live in ONE detector and have independent coefficient
+    priors, not independent noise-weighted projections. Multiple blocks are
+    concatenated into B with a block-diagonal Lambda0; the joint Gram matrix
+    B.T C^{-1} B retains cross-correlations between their columns. Independent
+    detectors require separate RankAugmentation objects.
 
-    Precomputes, per block, the sigma_g-independent ingredients (Sec. 2 of the design):
-
-        Phi_k   = C^{-1} B_k        (N x r_k)
-        G_k     = B_k^T Phi_k       (r_k x r_k)
-        gamma_k = Phi_k^T d         (r_k,)   -- per supplied data vector d
-
-    With Lambda_k = sigma_g^2 Lambda0_k, the block Woodbury matrix is
-    M_k(sigma_g) = Lambda_k^{-1} + G_k, and
-
-        C'^{-1} d = C^{-1} d - sum_k Phi_k M_k^{-1} (Phi_k^T d)
-        u^T C'^{-1} v = u^T C^{-1} v - sum_k (Phi_k^T u)^T M_k^{-1} (Phi_k^T v)
-        ln det C' - ln det C = sum_k ln det(I + sigma_g^2 Lambda0_k G_k)
-
-    and the Occam-disciplined glitch evidence terms
-
-        Delta lnZ(sigma_g) = sum_k [ 1/2 gamma_k^T M_k^{-1} gamma_k
-                                     - 1/2 ln det(I + sigma_g^2 Lambda0_k G_k) ].
+    The resulting joint update is stored as one entry in blocks. All primitives
+    use its full Woodbury matrix M = Lambda^{-1} + B.T C^{-1} B.
     """
 
     def __init__(self, toeplitz_cov, blocks):
         self.cov = toeplitz_cov
         self.N = toeplitz_cov.N
+        blocks = list(blocks)
+        if len(blocks) > 1:
+            bases, priors, means, labels = [], [], [], []
+            for entry in blocks:
+                if len(entry) not in (2, 3, 4):
+                    raise ValueError("Each block must be (B, Lambda0[, ifo_label[, mu0]]).")
+                B = np.asarray(entry[0], dtype=np.float64)
+                if B.ndim != 2 or B.shape[0] != self.N:
+                    raise ValueError("Every block basis must have shape (N, r).")
+                r = B.shape[1]
+                prior = np.asarray(entry[1], dtype=np.float64)
+                if prior.ndim == 1 and prior.shape == (r,):
+                    prior = np.diag(prior)
+                if prior.shape != (r, r):
+                    raise ValueError("Every block prior must have shape (r,) or (r, r).")
+                mean = (np.asarray(entry[3], dtype=np.float64).reshape(-1)
+                        if len(entry) == 4 and entry[3] is not None else np.zeros(r))
+                if mean.shape != (r,):
+                    raise ValueError("Every block mean must have length r.")
+                bases.append(B)
+                priors.append(prior)
+                means.append(mean)
+                labels.append(entry[2] if len(entry) >= 3 else None)
+            blocks = [(np.concatenate(bases, axis=1), scipy.linalg.block_diag(*priors),
+                       tuple(labels), np.concatenate(means))]
         self.blocks = []
         for entry in blocks:
             # A block is (B, Lambda0[, ifo_label[, mu0]]).  mu0 is the OPTIONAL dimensionless

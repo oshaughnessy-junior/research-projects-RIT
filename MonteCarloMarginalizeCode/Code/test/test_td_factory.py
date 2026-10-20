@@ -367,3 +367,130 @@ def test_full_segment_noloop_likelihood_parity():
     marginal = [np.asarray(fl.DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(
         times, P, *a, xpy=np)) for a in args]
     np.testing.assert_allclose(marginal[1], marginal[0], rtol=1e-11, atol=1e-10)
+
+
+def test_factory_places_event_relative_gaps_in_each_detector_stream():
+    """A gap at the event must not excise the beginning of the data."""
+    rng = np.random.default_rng(1240)
+    fac = TDInnerProductFactory(gaps=[(-0.01, 0.02)], window_shape=0.0)
+    for ifo, epoch in [("H1", 99.5), ("L1", 99.25)]:
+        psd = make_psd_series()
+        data = make_bandlimited_series(rng, epoch=epoch)
+        fac.register_detector_data(ifo, psd, data, event_time_geo=100.0)
+        ctx = fac.context_for(FLOW, FMAX, FNYQ, DELTAF, psd)
+        lo = int(np.floor((100.0 - epoch - 0.01) * FS))
+        hi = int(np.ceil((100.0 - epoch + 0.02) * FS))
+        expected = np.ones(N, dtype=bool)
+        expected[lo:hi] = False
+        np.testing.assert_array_equal(ctx.retain_mask, expected)
+
+
+def test_glitch_segment_combination_is_refused():
+    import pytest
+    rng = np.random.default_rng(1241)
+    for kw in [dict(gaps=[(0.1, 0.2)]), dict(template_start_offset=0.0),
+               dict(acf_duration=0.125)]:
+        psd = make_psd_series()
+        data = make_bandlimited_series(rng)
+        for basis in [dict(glitch_specs={"H1": dict(t1=.1, t2=.2, f1=50, f2=100)}),
+                      dict(glitch_basis_files={"H1": "unused.npz"})]:
+            fac = TDInnerProductFactory(**kw, **basis)
+            fac.register_detector_data("H1", psd, data, event_time_geo=0.0)
+            with pytest.raises(ValueError, match="requires the full segment"):
+                fac.context_for(FLOW, FMAX, FNYQ, DELTAF, psd)
+
+
+def test_template_cut_shares_dominant_reference_and_updates_cached_context(monkeypatch):
+    import inspect
+    from types import SimpleNamespace
+    import RIFT.likelihood.td_inner_product as td
+    # Peaks occur at different times. The weaker mode must use the dominant
+    # mode's cut, rather than moving its own boundary to its later peak.
+    arrays = {1: np.array([0., 0., 8., 0., 0., 0., 0., 0.]),
+              2: np.array([0., 0., 0., 1., 3., 0., 0., 0.])}
+    modes = {(2, 2): SimpleNamespace(tag=1, epoch=-.25, deltaF=1., data=SimpleNamespace(length=8)),
+             (3, 3): SimpleNamespace(tag=2, epoch=-.25, deltaF=1., data=SimpleNamespace(length=8))}
+    monkeypatch.setattr(td, "_ifft_to_td", lambda h: arrays[h.tag])
+    fac = TDInnerProductFactory(template_start_offset=0., template_end_offset=.125)
+    ctx = td.ToeplitzInnerProductContext(lambda f: np.ones_like(f), 1., 4., 0.,
+          fMax=4., analyticPSD_Q=True, template_start_offset=0., template_end_offset=.125)
+    fac._contexts["cached"] = ctx
+    fac.register_template_modes(modes)
+    assert ctx.template_ref_time == 0.
+    np.testing.assert_array_equal(ctx.apply_template_truncation(arrays[2], -.25),
+                                 [0., 0., 0., 1., 0., 0., 0., 0.])
+    arrays[1] = np.roll(arrays[1], 1)
+    fac.register_template_modes(modes)
+    assert ctx.template_ref_time == .125
+    # The real Precompute hook must precede even the fiducial U used to select modes.
+    source = inspect.getsource(fl.PrecomputeLikelihoodTerms)
+    assert source.index("IP_factory.register_template_modes(hlms)") < source.index("crossTermsFiducial =")
+
+
+def test_nonstationary_td_calibration_is_refused():
+    import pytest
+    rng = np.random.default_rng(1242)
+    psd = make_psd_series()
+    hlms = make_hlm_dict(rng, MODES)
+    data = make_bandlimited_series(rng)
+    for kw in [dict(gaps=[(.1, .2)]), dict(template_start_offset=0.)]:
+        fac = TDInnerProductFactory(**kw)
+        with pytest.raises(ValueError, match="does not commute"):
+            fl.ComputeModeIPTimeSeries(hlms, data, psd, FLOW, FMAX, FNYQ, 0, 32,
+                calibration_realizations=np.ones((N, 1)), IP_factory=fac)
+
+
+def test_nonstationary_scalar_products_are_invariant_to_template_epoch():
+    from RIFT.likelihood.td_inner_product import ToeplitzComplexIP
+    rng = np.random.default_rng(1290)
+    n, fs = 64, 64.
+    psd = lambda f: 1.
+    data = lal.CreateCOMPLEX16FrequencySeries("data", lal.LIGOTimeGPS(99.5),
+            0., 1., lsu.lsu_HertzUnit, n)
+    spectra = [rng.normal(size=n) + 1j*rng.normal(size=n) for _ in range(2)]
+    for a in spectra:
+        a[[0, n//2]] = 0.
+    arrays = [np.fft.ifft(a) for a in spectra]
+    for mode in ("gap", "glitch", "segment"):
+        fac = TDInnerProductFactory(window_shape=.1,
+             **({"gaps": [(-.05, .05)]} if mode == "gap" else
+                {"acf_duration": .75} if mode == "segment" else {}))
+        fac.register_detector_data("H1", psd, data, event_time_geo=100.)
+        ctx = fac.context_for(1., 31., 32., 1., psd, analyticPSD_Q=True)
+        if mode == "glitch":
+            basis = np.zeros((n, 1)); basis[32] = 1.
+            ctx.attach_glitch_basis([(basis, np.ones(1))], data, sigma_g=1.)
+        ip = ToeplitzComplexIP(ctx)
+        def series(a, offset):
+            h = lal.CreateCOMPLEX16FrequencySeries("h", lal.LIGOTimeGPS(-.5-offset/fs),
+                    0., 1., lsu.lsu_HertzUnit, n)
+            shifted = np.fft.ifft(np.fft.fft(a) *
+                      np.exp(-2j*np.pi*np.fft.fftfreq(n)*offset))
+            return ctx._fd_from_td(shifted, h)
+        import pytest
+        with pytest.raises(ValueError, match="include_epoch_differences is unsupported"):
+            ip.ip(series(arrays[0], 0.), series(arrays[1], 0.),
+                  include_epoch_differences=True)
+        for conjugate in (False, True):
+            first = np.conj(arrays[0]) if conjugate else arrays[0]
+            ref = ip.ip(series(first, 0.), series(arrays[1], 0.))
+            assert abs(ref) > 1e-8
+            for offset in (8., 8.25):
+                got = ip.ip(series(first, offset), series(arrays[1], offset))
+                np.testing.assert_allclose(got, ref, rtol=1e-10, atol=1e-12)
+
+
+def test_gapped_overlap_masks_both_precision_rows_and_columns():
+    from RIFT.likelihood.td_inner_product import ToeplitzInnerProductContext, ToeplitzComplexOverlap
+    rng = np.random.default_rng(1291)
+    n, fs = 64, 64.
+    ctx = ToeplitzInnerProductContext(lambda f: 1.+(f/10.)**2, 1., 32., 1.,
+          fMax=31., analyticPSD_Q=True, gap_sample_ranges=[(25, 37)])
+    fd = lal.CreateCOMPLEX16FrequencySeries("x", lal.LIGOTimeGPS(0.),
+          0., 1., lsu.lsu_HertzUnit, n)
+    h, d = [rng.normal(size=n)+1j*rng.normal(size=n) for _ in range(2)]
+    hf, df = ctx._fd_from_td(h, fd), ctx._fd_from_td(d, fd)
+    _, q, _, _ = ToeplitzComplexOverlap(ctx).ip(hf, df)
+    expected = [ctx.ip_normalization * ctx.segment_dot_td(np.roll(h, k), d)
+                for k in range(n)]
+    np.testing.assert_allclose(q.data.data, expected, rtol=1e-11, atol=1e-12)

@@ -240,6 +240,7 @@ _ILE_APPEND_OPTS = {
     "--channel-name", "--psd-file", "--fmin-ifo", "--nr-lookup-group",
     "--parameter", "--parameter-range", "--sampler-portfolio",
     "--sampler-portfolio-args",
+    "--td-gap", "--glitch-basis", "--glitch-basis-file",
 }
 # Clip on |lnL - logZ| when writing the sim_inspiral sampling-prior column.
 # float64 exp() overflows past ~709, and the failure is not a loud one: an inf
@@ -287,6 +288,9 @@ def _register_ile_short_forms(optp):
 
 # The full ILE option set (so anything not implemented is still accepted).
 _ILE_ALL_OPTS = {
+    "--internal-ile-inner-product", "--td-solver", "--td-acf-duration",
+    "--td-analysis-start", "--td-analysis-end", "--td-gap",
+    "--glitch-basis", "--glitch-basis-file", "--glitch-sigma",
     "--adapt-adapt", "--adapt-floor-level", "--adapt-intrinsic", "--adapt-log",
     "--adapt-weight-exponent", "--amp-order", "--approximant",
     "--auto-logarithm-offset", "--cache-file", "--calibration-burn-in-neff",
@@ -466,6 +470,18 @@ def check_critical_and_report(opts, optp):
         return bool(v) if name in _ILE_BOOL_OPTS else (v is not None and v != [])
 
     fatal = []
+    # TD operators have no JAX implementation. Accept the FD selector for
+    # executable substitution, but never silently drop a different likelihood.
+    _ip = getattr(opts, "internal_ile_inner_product", None)
+    if _ip not in (None, "fd-diagonal"):
+        fatal.append("--internal-ile-inner-product %s is not implemented by JAX; "
+                     "use integrate_likelihood_extrinsic_batchmode" % _ip)
+    for _name in ("--td-solver", "--td-acf-duration", "--td-analysis-start",
+                  "--td-analysis-end", "--td-gap", "--glitch-basis",
+                  "--glitch-basis-file", "--glitch-sigma"):
+        if is_set(_name):
+            fatal.append("%s requires the batchmode TD likelihood; not implemented by JAX"
+                         % _name)
     # --distance-gh-nodes / JAX_ILE_DISTMARG_GH resolution (RO'S 2026-09-08,
     # revised same day per adversarial review: the option must default to
     # None, not 0, or an explicit ``--distance-gh-nodes 0`` is indistinguish-

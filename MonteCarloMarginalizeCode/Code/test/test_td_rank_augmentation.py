@@ -494,3 +494,31 @@ if __name__ == "__main__":
     print("\nTotal runtime: %.2f s ; %d/%d passed"
           % (time.time() - t0, len(tests) - failures, len(tests)))
     raise SystemExit(1 if failures else 0)
+
+
+def test_correlated_blocks_use_joint_woodbury_update():
+    # Independent coefficient priors do not make B_i.T C^-1 B_j vanish.
+    rng = np.random.default_rng(843)
+    n = 12
+    cov = tra.ToeplitzCovariance(0.4 ** np.arange(n), n)
+    b1 = rng.normal(size=(n, 2))
+    b2 = b1[:, :1] + 0.1 * rng.normal(size=(n, 1))
+    p1, p2 = np.array([1., 0.6]), np.array([[1.]])
+    m1, m2 = np.array([0.3, -0.1]), np.array([0.2])
+    sigma = 0.8
+    aug = tra.RankAugmentation(cov, [(b1, p1, "a", m1), (b2, p2, "b", m2)])
+    b = np.column_stack((b1, b2))
+    prior = tra.scipy.linalg.block_diag(np.diag(p1), p2)
+    cp = cov.C + sigma ** 2 * b @ prior @ b.T
+    d, u = rng.normal(size=n), rng.normal(size=n)
+    inverse_d = np.linalg.solve(cp, d)
+    np.testing.assert_allclose(aug.solve(d, sigma), inverse_d, rtol=1e-11, atol=1e-11)
+    np.testing.assert_allclose(aug.dot(u, d, sigma), u @ inverse_d, rtol=1e-11)
+    np.testing.assert_allclose(aug.logdet(sigma), np.linalg.slogdet(cp)[1], rtol=1e-11)
+    mu = sigma * b @ np.concatenate((m1, m2))
+    delta = (0.5 * (d @ cov.solve(d) - (d-mu) @ np.linalg.solve(cp, d-mu))
+             - 0.5 * (np.linalg.slogdet(cp)[1] - cov.logdet()))
+    np.testing.assert_allclose(aug.delta_lnZ(d, sigma), delta, rtol=1e-11)
+    reconstruct = mu + (cp-cov.C) @ np.linalg.solve(cp, d-mu)
+    np.testing.assert_allclose(aug.glitch_reconstruction(d, sigma), reconstruct,
+                               rtol=1e-11, atol=1e-11)

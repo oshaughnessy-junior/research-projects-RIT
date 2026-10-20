@@ -598,6 +598,15 @@ if opts.internal_ile_inner_product == "td-toeplitz":
     if opts.log_noise_evidence_output:
         raise ValueError("td-toeplitz does not support FD --log-noise-evidence-output/only")
 
+if opts.internal_ile_inner_product != "td-toeplitz":
+    if (opts.td_analysis_start is not None or opts.td_analysis_end is not None
+            or opts.td_gap or opts.td_acf_duration is not None or opts.td_solver != "auto"):
+        raise ValueError("TD cuts, gaps and solver settings require "
+                         "--internal-ile-inner-product td-toeplitz")
+if (opts.glitch_basis or opts.glitch_basis_file) and opts.internal_ile_inner_product != "td-toeplitz":
+    raise ValueError("--glitch-basis/--glitch-basis-file requires "
+                     "--internal-ile-inner-product td-toeplitz")
+
 _response_order_active = any((opts.check_slowrot_pmax, opts.check_finite_size_Qmax,
                               opts.choose_slowrot_pmax, opts.choose_slowrot_Qmax))
 if (opts.check_slowrot_pmax or opts.choose_slowrot_pmax) and not opts.rotation_slow:
@@ -1689,6 +1698,8 @@ if opts.internal_ile_inner_product == "td-toeplitz":
             _parts = _rest.split(":")
             _t1, _t2, _f1, _f2 = (float(x) for x in _parts[0].split(","))
             _r = int(_parts[1]) if len(_parts) > 1 and _parts[1] != "" else None
+            if _ifo in glitch_specs:
+                raise ValueError("Duplicate --glitch-basis for %s" % _ifo)
             glitch_specs[_ifo] = dict(t1=_t1, t2=_t2, f1=_f1, f2=_f2, r=_r)
     # Parse repeatable --glitch-basis-file 'IFO:path.npz' (data-informed basis, Sec. 3 modes
     # 3/4).  The npz payload (basis/lambda0/t0/fs) is validated when the factory attaches it.
@@ -1696,6 +1707,8 @@ if opts.internal_ile_inner_product == "td-toeplitz":
     if opts.glitch_basis_file:
         for _spec in opts.glitch_basis_file:
             _ifo, _path = _spec.split(":", 1)
+            if _ifo in glitch_basis_files:
+                raise ValueError("Duplicate --glitch-basis-file for %s" % _ifo)
             if _ifo in glitch_specs:
                 print("FAIL: --glitch-basis and --glitch-basis-file both given for %s "
                       "(one glitch block per detector)" % _ifo)
@@ -1704,9 +1717,12 @@ if opts.internal_ile_inner_product == "td-toeplitz":
                 print("FAIL: --glitch-basis-file %s: no such file %r" % (_ifo, _path))
                 sys.exit(1)
             glitch_basis_files[_ifo] = _path
-    # Gap times are geocenter-relative-to-event; the context places them relative to the
-    # segment sample-0 origin (T7 supplies the per-detector geocenter origin; default 0
-    # here means gap times are interpreted relative to segment sample 0).
+    unknown_glitch_ifos = (set(glitch_specs) | set(glitch_basis_files)) - set(data_dict)
+    if unknown_glitch_ifos:
+        raise ValueError("Glitch basis requested for detectors without data: %s"
+                         % sorted(unknown_glitch_ifos))
+    # Gap offsets are relative to the event. Registered detector epochs let the
+    # factory place them at the correct samples of each stream.
     ile_ip_factory = TDInnerProductFactory(
         solver=opts.td_solver, acf_duration=opts.td_acf_duration,
         template_start_offset=opts.td_analysis_start,
@@ -1717,11 +1733,10 @@ if opts.internal_ile_inner_product == "td-toeplitz":
         window_shape=opts.window_shape)
     # Register each detector's (psd, data, event time) so the per-IFO glitch basis can be
     # placed and its sigma_g profiled (G3).  Keyed on id(psd) -- the object Precompute forwards.
-    if glitch_specs or glitch_basis_files:
-        for _inst in data_dict:
-            ile_ip_factory.register_detector_data(
-                _inst, psd_dict[_inst], data_dict[_inst],
-                event_time_geo=float(event_time))
+    for _inst in data_dict:
+        ile_ip_factory.register_detector_data(
+            _inst, psd_dict[_inst], data_dict[_inst],
+            event_time_geo=float(event_time))
     print("  [TD] Using time-domain Toeplitz inner product (solver=%s, acf_duration=%s, "
           "analysis=[%s,%s]s, gaps=%s, glitch=%s/sigma=%s). "
           "EXPERIMENTAL; inverse-spectrum truncation is ignored; data conditioning remains required "
@@ -1917,6 +1932,13 @@ def _draw_more_calibration_draws(n_more, psd_dict):
 # products in one likelihood.  PrecomputeLikelihoodTerms refuses it, but that happens per
 # intrinsic point AFTER all the setup above; check here so a misconfigured job dies at
 # startup with the fix in hand.  Predicate is shared with FL so the two cannot drift.
+if (ile_ip_factory is not None) and calibration_marginalization:
+    if (opts.td_acf_duration is not None or opts.td_analysis_start is not None
+            or opts.td_analysis_end is not None or opts.td_gap
+            or opts.glitch_basis or opts.glitch_basis_file):
+        raise ValueError("Calibration with TD cuts, gaps or glitch projection is unsupported, "
+                         "including --calibration-global-norm; data-side calibration "
+                         "does not commute with these operators")
 if (ile_ip_factory is not None) and calibration_marginalization and not opts.calibration_global_norm:
     if not factored_likelihood.CalibrationSelfTermInnerProductSupported(ile_ip_factory):
         print("FAIL: --internal-ile-inner-product %r cannot be combined with calibration "

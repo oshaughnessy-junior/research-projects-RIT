@@ -163,6 +163,7 @@ class ToeplitzInnerProductContext(object):
         self.kappa = self._weight_to_kappa()
 
         self._solver = solver
+        self._template_data_time_origin = None
         self._dense = None
         self._pcg = None
         # Whether the dense N x N precision Toeplitz is the chosen apply path.
@@ -601,6 +602,22 @@ class ToeplitzInnerProductContext(object):
             self.template_start_offset, self.template_end_offset,
             t_ref=self.template_ref_time)
 
+    def template_in_data_frame(self, x_td, epoch):
+        """Place a template at the nominal geocenter event in data coordinates.
+
+        Q carries its time translation through the overlap epoch. Scalar U/V
+        must explicitly use the same nominal placement for a nonstationary
+        operator. The origin is event_time - data_sample_zero_time.
+        """
+        if self._template_data_time_origin is None:
+            return x_td
+        shift = (self._template_data_time_origin + float(epoch)) * self.fs
+        nearest = int(round(shift))
+        if abs(shift - nearest) < 1e-8:
+            return np.roll(x_td, nearest)
+        frequencies = np.fft.fftfreq(self.len2side)
+        return np.fft.ifft(np.fft.fft(x_td) * np.exp(-2j * np.pi * frequencies * shift))
+
     # ------------------------------------------------------------------ physical covariance
 
     def covariance_acf(self, acf_duration=None):
@@ -999,6 +1016,10 @@ class ToeplitzComplexIP(object):
         assert abs(h1.deltaF - h2.deltaF) <= _TOL_DF
 
         if include_epoch_differences:
+            if ctx.segment_active or ctx.glitch_active:
+                raise ValueError("include_epoch_differences is unsupported for TD cuts, "
+                                 "gaps or glitch projection; the FD phase shortcut "
+                                 "cannot apply the nonstationary operator")
             # Mirror lsu.ComplexIP: multiply h2's spectrum by the epoch phase in FD, then
             # transform.  Uses lalsimutils.evaluate_fvals for the (reversed) lal f grid.
             from RIFT import lalsimutils as lsu
@@ -1018,7 +1039,12 @@ class ToeplitzComplexIP(object):
             # truncation to each, then the truncated/gapped precision quadratic form.
             h1_td = ctx.apply_template_truncation(h1_td, float(h1.epoch))
             h2_td = ctx.apply_template_truncation(h2_td, float(h2.epoch))
+            h1_td = ctx.template_in_data_frame(h1_td, h1.epoch)
+            h2_td = ctx.template_in_data_frame(h2_td, h2.epoch)
             return ctx.ip_normalization * ctx.segment_dot_td(h1_td, h2_td)
+        if ctx.glitch_active:
+            h1_td = ctx.template_in_data_frame(h1_td, h1.epoch)
+            h2_td = ctx.template_in_data_frame(h2_td, h2.epoch)
         val = ctx.ip_normalization * ctx.dot_td(h1_td, h2_td)
         if ctx.glitch_active:
             # G3: U'/V' = U/V - conj(Phi^T h1)^T M^{-1} (Phi^T h2)  (Hermitian correction).
@@ -1116,6 +1142,10 @@ class ToeplitzComplexOverlap(object):
         data_td = _ifft_to_td(data)
         data_seg = ctx._segment_window(data_td)         # windowed + gap-masked
         Kd_seg = ctx._apply_seg(data_seg)               # length N_seg
+        # Delete both precision rows and columns: M K M, not merely K M.
+        # The shifted template need not vanish on the data-fixed gap.
+        if not ctx.retain_mask.all():
+            Kd_seg[~ctx.retain_mask] = 0.0
         Kd_full = np.zeros(ctx.len2side, dtype=complex)
         Kd_full[ctx.segment_start_index:ctx.segment_start_index + ctx.N_seg] = Kd_seg
 
@@ -1274,6 +1304,7 @@ class TDInnerProductFactory(object):
         self.segment_start_index = segment_start_index
         self.gap_time_origin = gap_time_origin
         self._contexts = {}
+        self._template_ref_time = None
         self._warned_inv_spec_trunc = False
 
     # -------------------------------------------------------------- inv-spec-trunc policy
@@ -1327,17 +1358,57 @@ class TDInnerProductFactory(object):
                         "--data-tukey-window-time -> ILE --window-shape).  See plan T7c." % (_ws,),
                         stacklevel=2)
                 self._logged_window = True
+            # The registered stream epoch is measured relative to the event.
+            # Context gap conversion subtracts the time of segment sample zero.
+            gap_origin = self.gap_time_origin
+            reg = self._detector_registry.get(id(psd))
+            if self.gaps and gap_origin is None and reg is not None:
+                evt = reg["event_time_geo"]
+                if evt is not None:
+                    gap_origin = (float(reg["data_fd"].epoch) - float(evt)
+                                  + self.segment_start_index / (2.0 * float(fNyq)))
             ctx = ToeplitzInnerProductContext(
                 psd, deltaF, fNyq, fmin, fMax=fMax,
                 analyticPSD_Q=analyticPSD_Q, solver=self.solver,
                 segment_duration=self.acf_duration,
                 segment_start_index=self.segment_start_index,
-                gaps=self.gaps, gap_time_origin=self.gap_time_origin,
+                gaps=self.gaps, gap_time_origin=gap_origin,
                 template_start_offset=self.template_start_offset,
-                template_end_offset=self.template_end_offset)
+                template_end_offset=self.template_end_offset,
+                template_ref_time=self._template_ref_time)
+            if reg is not None and reg["event_time_geo"] is not None:
+                ctx._template_data_time_origin = (float(reg["event_time_geo"])
+                                                 - float(reg["data_fd"].epoch))
             self._maybe_attach_glitch(ctx, psd)
             self._contexts[key] = ctx
         return ctx
+
+    def assert_data_calibration_supported(self, fmin, fMax, fNyq, deltaF, psd,
+                                          analyticPSD_Q=False):
+        """Data-side frequency calibration must commute with the precision."""
+        ctx = self.context_for(fmin, fMax, fNyq, deltaF, psd, analyticPSD_Q)
+        if ctx.segment_active or ctx.glitch_active:
+            raise ValueError("Data-side calibration does not commute with TD cuts, gaps "
+                             "or glitch projection; this combination is unsupported, "
+                             "including --calibration-global-norm")
+
+    def register_template_modes(self, hlms):
+        """Use one dominant-mode peak for every mode and detector's temporal cut.
+
+        Called once per intrinsic waveform before any U, V or Q is constructed.
+        Cached detector contexts must also update when processing another waveform.
+        """
+        if self.template_start_offset is None and self.template_end_offset is None:
+            return
+        if not hlms:
+            raise ValueError("A template-frame cut requires waveform modes")
+        modes = {mode: _ifft_to_td(h) for mode, h in hlms.items()}
+        dominant = max(modes, key=lambda m: float(np.max(np.abs(modes[m]))))
+        h = hlms[dominant]
+        dt = 1.0 / (h.data.length * h.deltaF)
+        self._template_ref_time = template_peak_time(modes[dominant], dt, float(h.epoch))
+        for ctx in self._contexts.values():
+            ctx.template_ref_time = self._template_ref_time
 
     def register_detector_data(self, ifo, psd, data_fd, event_time_geo=None):
         """Register a detector's (psd, data, event time) so its glitch basis can be attached.
@@ -1371,12 +1442,10 @@ class TDInnerProductFactory(object):
         if spec is None and basis_file is None:
             return
         if ctx.segment_active:
-            import warnings
-            warnings.warn(
-                "TDInnerProductFactory: --glitch-basis for %s ignored -- glitch marginalization "
-                "is wired for the full segment only, but a truncated/gapped segment is active "
-                "(deferred; see attach_glitch_basis)." % ifo, stacklevel=2)
-            return
+            raise ValueError(
+                "Glitch marginalization requires the full segment; cannot combine "
+                "--glitch-basis/--glitch-basis-file with TD cuts, gaps or a "
+                "shortened --td-acf-duration (%s)." % ifo)
         from RIFT.likelihood import td_rank_augmentation as tra
         data_fd = reg["data_fd"]
         evt = reg["event_time_geo"]
@@ -1613,6 +1682,7 @@ class TDInnerProductFactory(object):
         dom = max(hlms.keys(),
                   key=lambda m: float(np.max(np.abs(_ifft_to_td(hlms[m])))))
         h_td = ctx.apply_template_truncation(_ifft_to_td(hlms[dom]), float(hlms[dom].epoch))
+        h_td = ctx.template_in_data_frame(h_td, hlms[dom].epoch)
         rep = ctx.uv_edge_sensitivity(h_td, window_half)
         tag = "" if det is None else (" [%s]" % det)
         msg = ("  [T6]%s U edge-sensitivity (mode %s, +-%.3f s window): rel_var=%.3e "

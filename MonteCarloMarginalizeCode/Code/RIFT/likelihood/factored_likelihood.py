@@ -685,6 +685,9 @@ def PrecomputeLikelihoodTerms(event_time_geo, t_window, P, data_dict,
                                              skip_interpolation=skip_interpolation,force_22_mode=force_22_mode)
                                              
 
+    if IP_factory is not None and hasattr(IP_factory, "register_template_modes"):
+        IP_factory.register_template_modes(hlms)
+
     if not(ignore_threshold is None) and (not ROM_use_basis):
             crossTermsFiducial = ComputeModeCrossTermIP(hlms,hlms, psd_dict[detectors[0]], 
                                                         P.fmin, fMax,
@@ -1258,6 +1261,11 @@ def ComputeModeIPTimeSeries(hlms, data, psd, fmin, fMax, fNyq,
     assert data.deltaF == hlms[list(hlms.keys())[0]].deltaF
     assert data.data.length == hlms[list(hlms.keys())[0]].data.length
     deltaT = 1./(2*fNyq)
+
+    if calibration_realizations is not None and IP_factory is not None:
+        if hasattr(IP_factory, "assert_data_calibration_supported"):
+            IP_factory.assert_data_calibration_supported(
+                fmin, fMax, fNyq, data.deltaF, psd, analyticPSD_Q)
 
     # Create an instance of class to compute inner product time series
     if IP_factory is None:
