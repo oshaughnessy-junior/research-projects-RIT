@@ -22,6 +22,7 @@ FILES=(
   "$C/test_gpu_jax_handoff.py"
   "$C/waveforms/test_gpu_legacy_compat.py"
   "$C/waveforms/test_gpu_waveform.py"
+  "$C/waveforms/test_gpu_waveform_xphm.py"
 )
 report_dir="$(mktemp -d)"
 for file in "${FILES[@]}"; do
