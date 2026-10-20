@@ -393,6 +393,25 @@ and filters against dense numpy/scipy) are tdanalysis' own (`tests/test_toeplitz
 `test_toeplitz_solver.py`, `test_sliding_forms.py`, `test_filters.py`); RIFT's tests compare its
 outputs (Q, U, V, lnL) with dense brute force.
 
+## Scope of the likelihood
+
+- tdanalysis is an optional external package with its own licence (noncommercial use, with
+  additional terms; see its `LICENSE` and <https://pypi.org/project/tdanalysis/>). Base RIFT does
+  not import it; it is needed for `td-gs` and for the optional tdanalysis solvers of `td-toeplitz`.
+- Disjoint pieces are independent covariance blocks: the noise correlation between samples of
+  different pieces is left out. This is a modelling choice, not the covariance of all the retained
+  samples taken together.
+- `--td-highpass` filters the data only. It does not transform the templates or the covariance, so
+  it is a conditioning approximation whose effect has to be checked for each analysis.
+- `td-gs` (the finite covariance of each piece, inverted exactly) and `td-toeplitz` (the
+  band-limited precision kernel on the segment) are different noise models; their posteriors need
+  not agree.
+- The tests compare the code path with dense reference algebra. They do not establish coverage on
+  real data or agreement with frequency-domain posteriors.
+- lnL is a likelihood ratio for a fixed noise model and a fixed data selection (the pieces).
+  Absolute evidences from different piece selections can be compared only once the noise
+  normalization of each selection is included.
+
 ## Known limitations
 
 - Calibration marginalization runs on the loop reduction only (no fused kernel, also with
