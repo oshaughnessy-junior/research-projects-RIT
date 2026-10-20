@@ -1,5 +1,9 @@
 """IntrinsicMarginalObjective: one compile across intrinsic points, same values as the stock wrapper."""
 import numpy as np
+import pytest
+from types import SimpleNamespace
+import jax
+import jax.numpy as jnp
 import lal
 import lalsimulation as lalsim
 
@@ -72,3 +76,106 @@ def test_device_precompute_matches_cpu_numpy_backend():
         b, _ = cpu.lnL_sky(P, ra, dec, incl)
         assert np.allclose(a, b, rtol=0, atol=1e-7), np.max(np.abs(a - b))
     assert dev.n_compiles == 1
+
+
+def _numeric_rb_objective(bad_component=None, full_nonfinite=False):
+    """Separate the RB/full dispatch contract from waveform compilation."""
+    obj = object.__new__(IntrinsicMarginalObjective)
+    obj.mode_backend = "ripple"
+    obj.batch_size = 2
+    obj._template = SimpleNamespace(detectors={"H1": dict(epoch=0.)}, detector_names=["H1"])
+    obj._key = ("mock-shape",)
+    obj.n_calls = obj.n_nonfinite = 0
+    obj.t_waveform = obj.t_kernel = 0.
+    obj.reduce = "profile"
+    obj.sky = SimpleNamespace(ra=jnp.zeros(1), dec=jnp.zeros(1), incl=jnp.zeros(1))
+    obj._kernel = jax.jit(lambda a, ra, dec, incl: jnp.full_like(ra, a["H1"][0][0,0]))
+
+    def full(m1, m2, c1, c2):
+        q = jnp.ones((1,1)) * (jnp.nan if full_nonfinite else m1)
+        return {"H1": (q, jnp.ones((1,1)), jnp.zeros((1,1)))}
+
+    def approximate(m1, m2, c1, c2, state):
+        values = [-m1[:,None,None], jnp.ones((len(m1),1,1)), jnp.zeros((len(m1),1,1))]
+        if bad_component is not None:
+            values[bad_component] = jnp.full_like(values[bad_component], jnp.inf)
+        return {"H1": tuple(values)}
+
+    obj._ripple = dict(rb=object(), rb_state={}, fn=full,
+                       modes=SimpleNamespace(lms=[(2,2)]))
+    obj._vfn_rb = lambda: approximate
+    return obj
+
+
+@pytest.mark.parametrize("method", ["scalar", "batch"])
+@pytest.mark.parametrize("bad_component", [None,0,1,2])
+def test_nonfinite_rb_arrays_use_full_grid_only_when_needed(method, bad_component):
+    obj = _numeric_rb_objective(bad_component)
+    p = _P(35,30,.3)
+    if method == "scalar":
+        value = np.asarray(obj._ripple_precompute(p).detectors["H1"]["Q"])[0,0]
+    else:
+        value = np.asarray(obj.batch([p]))[0]
+    # The finite approximation has a distinct sign, so this also proves that
+    # valid RB arrays keep their fast path rather than always using full grid.
+    np.testing.assert_allclose(value, -35. if bad_component is None else 35.)
+
+
+def test_nonfinite_full_grid_retains_existing_zero_likelihood_behavior():
+    obj = _numeric_rb_objective(bad_component=1, full_nonfinite=True)
+    assert np.isneginf(np.asarray(obj.batch([_P(35,30,.3)]))[0])
+    assert obj.n_nonfinite == 1
+
+
+@pytest.mark.parametrize("fmin, expect_fallback", [(63., True), (20., False)])
+def test_automatic_mesh_initial_fallback_matches_full_grid(monkeypatch, fmin, expect_fallback):
+    from RIFT.likelihood.jax_ile import ripple_modes
+
+    class ConstantModes:
+        # Isolate the automatic mesh and real Q/U/V/likelihood path from a
+        # costly waveform compile. Intrinsic amplitude still varies per row.
+        def __init__(self, freqs, fmin, fmax, fref, **kwargs):
+            self.freqs = jnp.asarray(freqs)
+            self.lms = [(2,2)]
+            self._fn = self._modes
+
+        def _modes(self, m1, m2, c1, c2):
+            return jnp.ones((1, len(self.freqs)), dtype=complex) * m1
+
+        def modes_at(self, freqs, m1, m2, c1, c2):
+            values = jnp.ones((1, len(freqs)), dtype=complex) * m1
+            return values, values
+
+    monkeypatch.setattr(ripple_modes, "RippleXPHMModes", ConstantModes)
+    p = _P(35.,30.,.3)
+    p.fmin = p.fref = fmin
+    p.deltaF, p.deltaT = 1., 1/128.
+    data = lal.CreateCOMPLEX16FrequencySeries(
+        "H1", lal.LIGOTimeGPS(FID-.5), -64., 1., lal.DimensionlessUnit, 128)
+    data.data.data[:] = 1.
+    kwargs = dict(l_max=2, fmax=64., n_sky=4, nphi=4, npsi=4, n_dist=8,
+                  analyticPSD_Q=True, mode_backend="ripple", batch_size=2,
+                  storage_window_half=.125, integration_window_half=.0625, seed=7)
+    inputs = ({"H1":data}, {"H1":lambda _:1.}, p, FID, 100., 2000.)
+    obj = IntrinsicMarginalObjective(*inputs, rb_eps=.3, **kwargs)
+    reference = IntrinsicMarginalObjective(*inputs, rb_eps=None, **kwargs)
+    got, _ = obj.precompute(p)
+    want, _ = reference.precompute(p)
+    assert bool(obj._ripple.get("rb_fallback")) is expect_fallback
+    assert (obj._ripple["rb_state"] is None) is expect_fallback
+    if expect_fallback:
+        assert "two distinct edges" in obj._ripple["rb_fallback"]
+    else:
+        assert len(obj._ripple["rb"].f_edges) > 2
+    for key in ("Q", "U", "V"):
+        np.testing.assert_allclose(got.detectors["H1"][key], want.detectors["H1"][key],
+                                   rtol=1e-12, atol=1e-9)
+    assert float(np.real(np.asarray(want.detectors["H1"]["U"])[0,0])) > 0.
+    p2 = p.copy()
+    p2.m1 = 36.*MSUN
+    scalar = np.array([obj(p),obj(p2)])
+    expected = np.array([reference(p),reference(p2)])
+    assert np.isfinite(scalar).all()
+    np.testing.assert_allclose(scalar, expected, rtol=0., atol=1e-8)
+    np.testing.assert_allclose(obj.batch([p,p2]), expected, rtol=0., atol=1e-8)
+    assert bool(obj._ripple.get("rb_fallback")) is expect_fallback

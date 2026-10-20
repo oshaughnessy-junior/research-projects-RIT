@@ -1,5 +1,6 @@
 """LadderClimbingOracle: finds a narrow correlated peak and follows a ridge along the ladder."""
 import numpy as np
+import pytest
 
 from RIFT.integrators.unreliable_oracle import LadderClimbingOracle
 
@@ -65,3 +66,37 @@ def test_covariance_placement_shares_and_spreads():
     near = lambda v: np.sum(np.abs(X[:, 2] - v) < 0.25)
     assert near(0.5) > 40 and near(0.8) > 40
     assert len(np.unique(np.round(X[:, 2], 6))) > 300
+
+
+def test_free_climb_uses_corrected_callback_start():
+    """Constraint projection must affect the optimizer as well as its fiducial."""
+    o = LadderClimbingOracle()
+    o.add_parameter("x", left_limit=-1., right_limit=1.)
+    o.setup(lnL=lambda x: -(x-.7)**2, n_generations=1, popsize=4, seed=1)
+    o.run(np.array([-.7]), np.array([.001]),
+          between_climbs=lambda x: np.array([.7]))
+    assert np.all(np.abs(o.reference_samples[:, 0] - .7) < .002)
+
+
+@pytest.mark.parametrize("step_scale", [1.5, 50.])
+def test_periodic_climb_is_invariant_under_rotation_across_seam(step_scale):
+    """Wrapping an equivalent chart must not change steps or placement width."""
+    results = []
+    histories = []
+    placements = []
+    for target in (.03, 3.):
+        o = LadderClimbingOracle()
+        o.add_parameter("phi", left_limit=0., right_limit=2*np.pi)
+        o.setup(lnL=lambda x: -.5*(np.angle(np.exp(1j*(x-target)))/.01)**2,
+                n_generations=30, popsize=10, seed=4, periodic=["phi"])
+        start = np.mod(target - (.03 + 2*np.pi - 6.2), 2*np.pi)
+        results.append(o.climb(np.array([start]), np.array([step_scale])))
+        histories.append(np.array([np.angle(np.exp(1j*(h[1][0]-target))) for h in o.history]))
+        placed = o.place(100)
+        assert np.all((placed >= 0) & (placed < 2*np.pi))
+        placements.append(np.angle(np.exp(1j*(placed[:, 0]-target))))
+    np.testing.assert_allclose(histories[0], histories[1], atol=1e-8, rtol=0)
+    np.testing.assert_allclose(placements[0], placements[1], atol=1e-8, rtol=0)
+    np.testing.assert_allclose(results[0]["cov"], results[1]["cov"], atol=1e-20, rtol=1e-6)
+    if step_scale == 1.5:
+        assert results[0]["cov"][0, 0] < 1e-10

@@ -32,8 +32,8 @@ intrinsic point:
    importance proposal: a BIC-selected Gaussian mixture in
    (ra, sin dec, cos incl), plus 10% prior.
 
-The batch is fixed during a climb (common random numbers), so the objective is a
-deterministic function of x. It is re-adapted before each climb. The per-point
+One batch is fixed across all climbs (common random numbers), so their scores
+are comparable. `--sky-readapt` restores adaptation before each climb. The per-point
 arrays are jit arguments substituted into a template data object, so the kernel
 compiles once per run. The stock wrappers close over one data object and would
 recompile for every point.
@@ -44,11 +44,12 @@ box edges and wrapping of angles. It runs:
 - free climbs from the best few points of the input grid, after scoring a subset
   of it;
 - a ladder of climbs with chi1_perp pinned at fixed values (default
-  0.2, 0.4, 0.6, 0.8). Rungs run outward from the free optimum. Each starts from
+  0.3 and 0.6). Rungs run outward from the free optimum. Each starts from
   its neighbour's best point, projected inside the Kerr bound at fixed (Mc, q).
 
-The output is every climb point within `--delta-lnL` (default 10) of the best,
-topped up with draws from each climb's final Gaussian. The ladder supplies
+Default placement draws an equal share from each qualifying climb's final
+Gaussian, broadening pinned coordinates between rungs. History placement is
+also available. `--delta-lnL` (default 10) selects qualifying climbs. The ladder supplies
 near-peak points at large chi1_perp with the in-plane orientation the data
 prefer. Random seeding does not.
 
@@ -61,7 +62,7 @@ an evidence or posterior.
 |---|---|---|---|
 | (a) setup | `pseudo_pipe --transverse-seed-climb setup` | submit host, during setup, CPU unless a GPU is visible | appends seeds to `proposed-grid.xml.gz` |
 | (b) DAG | `pseudo_pipe --transverse-seed-climb dag [--transverse-seed-climb-request-gpu]` | node `seed_climb.sub`, parent of every iteration-0 ILE job | appends seeds to `overlap-grid-0.xml.gz` |
-| (c) parallel | `pseudo_pipe --transverse-seed-climb parallel` | node `seed_climb.sub` with no parent, alongside iteration 0 | writes `seed-0.xml.gz`; its `ILE_seed` jobs feed the iteration-0 consolidation, so every iteration-0 CIP sees them and iteration 0 is not delayed |
+| (c) parallel | `pseudo_pipe --transverse-seed-climb parallel` | node `seed_climb.sub` with no parent, alongside iteration 0 | writes `seed-0.xml.gz`; its `ILE_seed` jobs feed iteration-0 consolidation, which waits for both branches; ordinary iteration-0 ILE starts independently |
 | (d) composite | `pseudo_pipe --transverse-seed-climb composite` | node `seed_climb.sub`, child of the iteration-0 unify, beside CIP 0 | climbs from the best lines of `all.net` (`--start-composite`), writes `seed-1.xml.gz`; its `ILE_seed` jobs feed the iteration-1 consolidation |
 
 Scheme (d) is the intended seeding strategy. Iteration 0 runs unchanged. Its
@@ -118,35 +119,37 @@ The sub file has no file transfer, so it needs the shared run directory
 - Placement defaults to covariance: two free climbs and rungs at chi1_perp 0.3
   and 0.6, then equal draws per climb from N(best point, (1.5)^2 x final CMA
   covariance), with the pinned chi1_perp spread by half the rung spacing.
-- Speed options, measured on S250830bp (32 s at 4096 Hz, l_max 4, ripple):
-  `--srate 1024 --fmax 448` cut the cost per point 3.6x; batched generations
-  (automatic with ripple) reach 0.26 s per point on an A100; `--rb-eps 0.2`
-  (relative binning, `relative_binning.py`) cuts the waveform stage 80x at
-  <= 0.3 nat error near the fiducial. A full climb with all three (bp4) took
-  1897 s against 10243 s, but landed at q = 0.51 (Bilby 0.59 to 0.98) with no
-  seed in the Bilby box; bp3 at 4096 Hz had 63% in the box. Cause not yet
-  isolated, so these options stay opt-in.
+- Reduced-band, batching and relative-binning timings from the October 18
+  investigation remain historical observations. The archived reproduction script
+  differs from its original manifest; those timings are excluded from acceptance
+  evidence. Relative binning and batching remain opt-in performance choices.
 - Decisions (RO, 2026-10-18): the climb is for targeting, and seeds need only
   support large transverse spin near the peak, since the puff spreads around
   them; points outside the Bilby box are acceptable. Speed matters more than
   accuracy. The climb uses l_max 2 by default (`--climb-l-max`). The intended
-  production use is the parallel iteration-0 mode.
+  production use is now composite mode, described above.
 - One sky batch serves all climbs (`--sky-readapt` restores per-climb
   adaptation). A batch adapted at one climb's start scored that climb's best
   point 9 nats higher than a common batch did, so lnL from different climbs was
   not comparable. Four free starts by default.
-- Production re-score (S250830bp, SEOBNRv5PHM ILE, peak lnL 178.7): seeds from
-  the slow configuration (l_max 4, 4096 Hz) are within 10 nats of the peak for
-  115 of 143 at chi1_perp 0.3 to 0.7 and 8 of 33 above 0.7; seeds from the fast
-  one (l_max 2, 1024 Hz) for 4 of 122 and 0 of 19. The fast settings, not XPHM, misplace the large-chi1_perp seeds.
-  Which of l_max or the frequency cut is responsible is not yet known.
-- Recommended fast command (S250830bp, 32 s at 4096 Hz): `--mode-backend ripple
-  --rb-eps 0.2 --srate 1024 --fmax 448` with the defaults (l_max 2, S = 1024,
-  4 free starts, rungs 0.3 and 0.6, covariance placement). On pcdev11 (RTX PRO
-  4000): 1428 s with a cold compilation cache, 746 s warm (start stage 360 s,
-  climbing 0.28 s per point over 1340 points). 67 of 500 seeds have
-  chi1_perp >= 0.5. Of the warm start stage, about 6 min is data loading,
-  tracing and sky adaptation, not likelihood work: the next target.
+- Complete production re-score (S250830bp, SEOBNRv5PHM ILE, peak lnL 178.7):
+  all 993 seeds are finite. At chi1_perp 0.5 to 0.7, slow seeds (l_max 4,
+  4096 Hz, fmax 1792 Hz) reach within 10 nats for 59 of 69 points; fast seeds
+  (l_max 2, 1024 Hz, fmax 448 Hz) reach it for 0 of 48. Above 0.7 the counts
+  are 8 of 40 and 0 of 19. The reduced-band setup fails the tested targeting task.
+- A six-cell diagnostic on four fixed points separates l_max, frequency cutoff
+  and sampling rate using one common sky batch. For the fast high-spin optimum,
+  cutting fmax at 4096 Hz shifts the objective by +12.62 nats; downsampling at
+  fmax 448 Hz then shifts it by -3.63 nats. Changing l_max shifts this point
+  by less than one nat. Both band and rate matter; this is a conditional
+  objective diagnostic, not a converged marginalized-likelihood comparison.
+  Inputs, sampled sky and hashes are in the paper repository's
+  `analyses/transverse_seed_climb/RESULTS_2026-10-19.md`.
+- Preserve the analysis sampling rate and frequency band for S250830bp.
+  The reduced-band speed configuration failed its production high-spin
+  re-score and is withdrawn as a recommendation. The complete re-score and
+  paired multipole/band diagnostic are in the paper repository's
+  `analyses/transverse_seed_climb/RESULTS_2026-10-19.md` internal candidate.
 - Warm start-up: JAX's compilation cache is keyed on lowered HLO, so it skips
   only the XLA compile; tracing ripple cost ~6 min per run. `export_cache.py`
   serializes the lowered ripple programs (`jax.export`; needs `flatbuffers`) under
@@ -158,7 +161,7 @@ The sub file has no file transfer, so it needs the shared run directory
 - JAX on a CIT head node starts an XLA thread pool sized by the CPU count. With
   the 500-thread user cap, a second JAX process on a busy node fails with
   `pthread_create() failed`. Condor execute nodes have no such cap.
-- Only BasicIteration has scheme (b). Other builders can use scheme (a).
+- Only BasicIteration has the three DAG schemes. Other builders can use setup mode.
 - Open: on CPU (jax 0.9.0), `IntrinsicMarginalObjective.__call__` followed by
   `lnL_sky` on the same point once returned all-NaN rows; the same call with the
   precomputed data passed in never did (12 of 12 calls, both jax versions).

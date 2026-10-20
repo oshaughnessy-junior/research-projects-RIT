@@ -55,6 +55,13 @@ _ILE_KEYS = {
     "data-integration-window-half": (float, False),
 }
 _ILE_FLAGS = ("internal-waveform-fd-L-frame",)
+# Full ILE spellings and its declared short aliases; retain the historic
+# --cache/--approx abbreviations used by generated argument files.
+_ILE_ALIASES = {"--cache-file": "cache", "--approximant": "approx",
+                "-c": "cache", "-C": "channel-name", "-p": "psd-file",
+                "-t": "event-time", "-s": "data-start-time", "-e": "data-end-time",
+                "-w": "window-shape", "-F": "fmax", "-f": "reference-freq",
+                "-a": "approx"}
 
 
 def parse_ile_args(fname):
@@ -65,19 +72,34 @@ def parse_ile_args(fname):
     i = 0
     while i < len(toks):
         t = toks[i]
-        if t.startswith("--"):
-            key = t[2:]
+        if t.startswith("--") or t[:2] in _ILE_ALIASES:
+            if t.startswith("--"):
+                option, sep, inline = t.partition("=")
+                key = _ILE_ALIASES.get(option, option[2:])
+            else:
+                option = t[:2]
+                key = _ILE_ALIASES[option]
+                inline = t[2:]
+                sep = bool(inline)
             if key in _ILE_FLAGS:
+                if sep:
+                    raise ValueError("--%s does not take a value" % key)
                 out[key.replace("-", "_")] = True
-            elif key in _ILE_KEYS and i + 1 < len(toks):
+            elif key in _ILE_KEYS:
                 typ, app = _ILE_KEYS[key]
-                val = typ(toks[i + 1])
+                if sep:
+                    value = inline
+                elif i + 1 < len(toks) and not toks[i + 1].startswith("--") and toks[i + 1][:2] not in _ILE_ALIASES:
+                    i += 1
+                    value = toks[i]
+                else:
+                    raise ValueError("--%s requires a value in %s" % (key, fname))
+                val = typ(value)
                 k = key.replace("-", "_")
                 if app:
                     out.setdefault(k, []).append(val)
                 else:
                     out[k] = val
-                i += 1
         i += 1
     return out
 
@@ -92,8 +114,8 @@ def build_parser():
         p.add_argument("--" + key, type=typ, action="append" if app else "store", default=None)
     p.add_argument("--internal-waveform-fd-L-frame", action="store_true", default=None)
     p.add_argument("--climb-l-max", type=int, default=2,
-                   help="l_max for the climb objective (default 2), overriding the ILE l_max: higher "
-                        "modes rarely matter for targeting, and l_max 2 cuts the kernel cost ~4x")
+                   help="l_max for the climb objective (default 2), overriding the ILE l_max. "
+                        "Validate seed targeting with production ILE re-scores at the analysis band.")
     p.add_argument("--climb-approx", default=None,
                    help="approximant for the climb (default: --approx). The climb only pays "
                         "off if this model's precession matches the analysis model's.")

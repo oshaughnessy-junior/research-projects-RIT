@@ -86,11 +86,15 @@ FILES=(
   "$C/test/test_sky_rotations.py"
   # -- pseudo_pipe: per-class disk requests reach their own job class
   "$C/test/test_pseudo_pipe_request_disk.py"
+  "$C/test/test_auxiliary_grid_transfers.py"
   # The Bilby-convention noise evidence: its normalization is checked against the
   # 4/T sum |d|^2/S formula through the real ComplexIP, so a factor of two regresses
   # loudly instead of shifting every reported log evidence by a plausible amount.
   "$C/test/test_noise_evidence.py"
   # -- integrators: seeding, allocation, weight derivation
+  "$C/test/integrators/test_ladder_climber.py"
+  "$C/test/integrators/test_seed_climb_composite.py"
+  "$C/test/integrators/test_seed_climb_cli.py"
   "$C/test/integrators/test_convergence_sample_order.py"
   "$C/test/integrators/test_extrinsic_phase_group_uniform.py"
   "$C/test/integrators/test_gmm_adaptive.py"
@@ -127,6 +131,7 @@ FILES=(
   "$C/test/test_dgrid_retained_set.py"
   "$C/test/test_distance_tail.py"
   "$C/test/test_dslice_device_native.py"
+  "$C/test/test_dslice_bounds.py"
   # -- hyperpipe (paper4 area; the hydra leg is rostered OPTDEP, not here)
   "$C/test/hyperpipe/tests/test_config.py"
   "$C/test/hyperpipe/tests/test_coords.py"
@@ -198,6 +203,12 @@ FILES=(
   # -- hlmoft ChooseFDModes end taper is capped in duration: long buffers keep the merger,
   # buffers <= 100 s are bit-identical to the uncapped 1% rule.
   "$C/test/test_fd_end_taper_cap.py"
+  # Fixed-phase Phenom mode conventions: generic spins first, aligned boundaries.
+  "$C/test/test_phenom_lframe_conventions.py"
+  # Native SEOB mode conditioning: linear shared-grid filtering, canonical
+  # trimming before mode selection, zero modes, and explicit reference state.
+  # Does not require the optional pySEOBNR waveform backend.
+  "$C/test/test_gwsignal_seob_conditioning.py"
   "$C/test/test_complex_overlap_interpolate_max.py"
   # -- coordinates: vectorized in-plane spin / ring coordinates agree with extract_param
   "$C/test/test_ring_coordinates.py"
@@ -459,7 +470,19 @@ done
 # -> 878/858.
 # test_dslice_rf_tails.py adds 10 tests and no skips -> 888/868.
 # test_dslice_amplitude_model.py: +1 (_lognorm chunk memory bound), passes, no skips -> 889/869.
-EXPECTED_TESTS=889
+# Symmetric XPNR reference-frame regression adds 20 tests (18 generic-spin
+# phase/reference-frequency cases, native-cutoff endpoint, explicit angle selection).
+# test_phenom_lframe_conventions.py originally added 34 passing tests: generic-spin waveform
+# and polarization controls, aligned boundaries, and SpinTaylor option transport.
+# test_dslice_bounds.py adds 2 tests and no skips.
+# test_gwsignal_seob_conditioning.py adds 8 passing tests with LALSuite 7.26.16:
+# shared-grid operator tests plus native/no_condition conflict refusal.
+# 2026-10-19: whole manifest measured on CI merge 010bb870 plus seed-climb
+# scientific, CLI, and compatibility fixes, CVMFS IGWN Python 3.11 on CIT.
+# CPU collection: 953 baseline + 7 ladder + 4 composite + 9 CLI + 12 auxiliary
+# + 6 compatibility = 991 tests from 90 files. The optional 16 GMM device
+# parametrizations belong to the RIFT_REQUIRE_GPU precommit route below.
+EXPECTED_TESTS=991
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -481,7 +504,8 @@ EXPECTED_TESTS=889
 # test_std_and_conj_hlmoff_sphharm.py adds 2 tests and no skips; 875/855 (above).
 # test_fd_end_taper_cap.py adds 3 tests and no skips; 878/858 (above).
 # test_dslice_rf_tails.py adds 10 tests and no skips; 888/868 (above).
-EXPECTED_PASSED=869
+# test_dslice_bounds.py adds 2 tests; SEOB conditioning adds 8, all passing.
+EXPECTED_PASSED=933
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 MAX_SKIPPED=19
 
@@ -503,7 +527,8 @@ for _f in EXPECTED_TESTS EXPECTED_PASSED MAX_SKIPPED; do
   esac
 done
 
-# PER-FILE collection floor of 1.  A file that collects nothing is the exit-5 trap arriving
+# PER-FILE floor of 1; pin all 17 GMM host cases and 12 auxiliary handoffs.
+# A file that collects nothing is the exit-5 trap arriving
 # through the front door: inside a multi-file run pytest's exit 5 never appears at all, so it
 # has to be checked per file.
 echo "== per-file collection floor =="
@@ -511,10 +536,13 @@ floor_rc=0
 for f in "${FILES[@]}"; do
   n=$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "$f" 2>/dev/null | grep -c '::')
   printf '  %-72s %3d\n' "$f" "$n"
-  if [ "$n" -lt 1 ]; then
-    echo "test-core-units.sh: $f collects 0 tests." >&2
-    echo "  pytest exits 5 on that ('no tests ran'), which reads as a pass.  Either it is not" >&2
-    echo "  a pytest target and belongs in .travis/ci_roster.txt, or its entry points broke." >&2
+  file_floor=1
+  # ordinary/Z/G x staged/CVMFS x seeded/unseeded must all remain covered.
+  if [ "$f" = "$C/test/test_auxiliary_grid_transfers.py" ]; then file_floor=12; fi
+  if [ "$f" = "$C/test/integrators/test_gmm_sample_matches_score.py" ]; then file_floor=17; fi
+  if [ "$n" -lt "$file_floor" ]; then
+    echo "test-core-units.sh: $f collects $n tests; requires at least $file_floor." >&2
+    echo "  Restore the required test cases; reduced collection can hide a missing gate." >&2
     floor_rc=1
   fi
 done

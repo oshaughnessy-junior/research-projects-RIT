@@ -37,6 +37,12 @@ from .wrapper import build_data_from_precompute
 _PC = lal.PC_SI
 
 
+@jax.jit
+def _qvu_all_finite(arrays):
+    """One device scalar; do not copy the Q/U/V arrays back to the host."""
+    return jnp.all(jnp.stack([jnp.all(jnp.isfinite(a)) for a in jax.tree.leaves(arrays)]))
+
+
 def load_frame_data(cache_file, channel_names, psd_files, data_start_time,
                     data_end_time, srate, window_shape=0.0, psd_window_shape=0.0,
                     fmin_ifo=None):
@@ -352,13 +358,16 @@ class IntrinsicMarginalObjective:
         t0 = time.time()
         args = (jnp.asarray(P.m1 / lal.MSUN_SI), jnp.asarray(P.m2 / lal.MSUN_SI),
                 jnp.asarray([P.s1x, P.s1y, P.s1z]), jnp.asarray([P.s2x, P.s2y, P.s2z]))
-        if "rb" in r and r["rb_state"] is None:
+        if "rb" in r and r["rb_state"] is None and not r.get("rb_fallback"):
             self.rb_refresh(P)
-        if "rb" in r:
+        if "rb" in r and not r.get("rb_fallback"):
             B = self.batch_size
             rep = lambda a: jnp.broadcast_to(a, (B,) + jnp.shape(a))
             out = self._vfn_rb()(*map(rep, args), r["rb_state"])
             out = jax.tree.map(lambda a: a[0], out)
+            if not bool(_qvu_all_finite(out)):
+                self._decline_rb("non-finite relative-binned Q/U/V")
+                out = r["fn"](*args)
         else:
             out = r["fn"](*args)
         jax.block_until_ready(out)        # so t_waveform is not billed to the kernel
@@ -383,20 +392,20 @@ class IntrinsicMarginalObjective:
 
     def _vfn_rb(self):
         r = self._ripple
-        if "vfn" not in r:
+        if "rb_vfn" not in r:
             raw = jax.vmap(r["rb_fn_raw"], in_axes=(0, 0, 0, 0, None))
             B = self.batch_size
             ex = (np.zeros(B), np.zeros(B), np.zeros((B, 3)), np.zeros((B, 3)), r["rb_state"])
             if self.export_dir:
                 from .export_cache import exported_call
                 m = r["modes"]
-                r["vfn"] = exported_call(raw, ex, self.export_dir,
+                r["rb_vfn"] = exported_call(raw, ex, self.export_dir,
                                          key_parts=("rb", m.lms, m.fref, m.dist_mpc, B),
                                          key_arrays=(r["rb"].f_edges,),
                                          source_files=self._ripple_sources())
             else:
-                r["vfn"] = jax.jit(raw)
-        return r["vfn"]
+                r["rb_vfn"] = jax.jit(raw)
+        return r["rb_vfn"]
 
     def _full_modes(self, P):
         r = self._ripple
@@ -414,12 +423,32 @@ class IntrinsicMarginalObjective:
         return r["full_fn"](jnp.asarray(P.m1 / lal.MSUN_SI), jnp.asarray(P.m2 / lal.MSUN_SI),
                             jnp.asarray([P.s1x, P.s1y, P.s1z]), jnp.asarray([P.s2x, P.s2y, P.s2z]))
 
+    def _vfn_full(self):
+        r = self._ripple
+        if "full_vfn" not in r:
+            r["full_vfn"] = jax.jit(jax.vmap(r["fn"]))
+        return r["full_vfn"]
+
+    def _decline_rb(self, reason):
+        self._ripple["rb_state"] = None
+        self._ripple["rb_fallback"] = reason
+        print(" [intrinsic_objective] relative binning fallback:", reason)
+
     def rb_refresh(self, P):
         """Make P the relative-binning fiducial (full-grid ripple evaluation once)."""
+        from .relative_binning import UnsupportedFiducial
         r = self._ripple
         h0 = self._full_modes(P)
-        r["rb"].set_fiducial(h0)
+        try:
+            r["rb"].set_fiducial(h0)
+        except UnsupportedFiducial as exc:
+            # Edge ratios cannot restore a mode absent from the fiducial. Keep
+            # the entire candidate waveform on the exact grid, including modes
+            # that become nonzero, until a later refresh restores RB support.
+            self._decline_rb(str(exc))
+            return
         r["rb_state"] = r["rb"].state()
+        r.pop("rb_fallback", None)
 
     # -- device precompute ----------------------------------------------------
     def _device_setup(self):
@@ -613,23 +642,29 @@ class IntrinsicMarginalObjective:
             self(P_list[0])                       # builds template and kernel
         r = self._ripple
         self.n_calls += len(P_list)
-        if "rb" in r:
+        use_rb = "rb" in r and not r.get("rb_fallback")
+        if use_rb:
             vfn = self._vfn_rb()
         else:
-            if "vfn" not in r:
-                r["vfn"] = jax.jit(jax.vmap(r["fn"]))
-            vfn = r["vfn"]
-        if self._key not in r.get("vkern", {}):
-            r.setdefault("vkern", {})[self._key] = jax.jit(jax.vmap(self._kernel, in_axes=(0, None, None, None)))
+            vfn = self._vfn_full()
+        # An exact-angle amplitude refresh replaces the kernel without changing
+        # the Q/U/V shape key. Keep the batched wrapper tied to that kernel,
+        # including when its angular lattice has been rebuilt at the same shape.
+        if r.get("vkern_source") is not self._kernel:
+            r["vkern"] = jax.jit(jax.vmap(self._kernel, in_axes=(0, None, None, None)))
+            r["vkern_source"] = self._kernel
         m1 = jnp.asarray([P.m1 / lal.MSUN_SI for P in P_list]); m2 = jnp.asarray([P.m2 / lal.MSUN_SI for P in P_list])
         c1 = jnp.asarray([[P.s1x, P.s1y, P.s1z] for P in P_list]); c2 = jnp.asarray([[P.s2x, P.s2y, P.s2z] for P in P_list])
         t0 = time.time()
-        out = vfn(m1, m2, c1, c2, r["rb_state"]) if "rb" in r else vfn(m1, m2, c1, c2)
+        out = vfn(m1, m2, c1, c2, r["rb_state"]) if use_rb else vfn(m1, m2, c1, c2)
+        if use_rb and not bool(_qvu_all_finite(out)):
+            self._decline_rb("non-finite relative-binned Q/U/V")
+            out = self._vfn_full()(m1, m2, c1, c2)
         jax.block_until_ready(out)
         self.t_waveform += time.time() - t0
         t0 = time.time()
-        lnL = np.asarray(r["vkern"][self._key](out, jnp.asarray(self.sky.ra), jnp.asarray(self.sky.dec),
-                                               jnp.asarray(self.sky.incl)))
+        lnL = np.asarray(r["vkern"](out, jnp.asarray(self.sky.ra), jnp.asarray(self.sky.dec),
+                                    jnp.asarray(self.sky.incl)))
         self.t_kernel += time.time() - t0
         bad = ~np.isfinite(lnL)
         if np.any(bad):

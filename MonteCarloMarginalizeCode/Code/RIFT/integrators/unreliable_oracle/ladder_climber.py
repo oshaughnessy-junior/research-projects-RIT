@@ -94,6 +94,7 @@ class LadderClimbingOracle(MCSamplerGeneric):
         """Climb from x0 with per-axis step `scale`; `pinned` = {index: value}."""
         pinned = pinned or {}
         free = np.array([k for k in range(len(x0)) if k not in pinned])
+        periodic_free = np.array([self.params_ordered[k] in self.periodic for k in free])
         n = len(free)
         lam = self.popsize
         mu = lam // 2
@@ -127,8 +128,10 @@ class LadderClimbingOracle(MCSamplerGeneric):
             X[:, free] = x_full[free] + Xw * S
             X = self._fold(X)
             vals = self._eval(X, label)
-            # map folded points back into the working frame (reflection/wrap)
-            Xw = (X[:, free] - x_full[free]) / S
+            # Reflect bounded coordinates back into the working frame. Periodic
+            # coordinates keep their unwrapped optimizer values: a wrap is only
+            # an equivalent evaluation point, not a long step across the box.
+            Xw[:, ~periodic_free] = ((X[:, free] - x_full[free]) / S)[:, ~periodic_free]
             order = np.argsort(-vals)
             if vals[order[0]] > best_v:
                 best_v, best_x = vals[order[0]], X[order[0]].copy()
@@ -193,7 +196,9 @@ class LadderClimbingOracle(MCSamplerGeneric):
         best = None
         for i, xs in enumerate(starts):
             if between_climbs:
-                between_climbs(xs)
+                fixed = between_climbs(xs)
+                if fixed is not None:
+                    xs = np.asarray(fixed, dtype=float)
             rec = self.climb(xs, scale, label="free" if len(starts) == 1 else "free%d" % i)
             if best is None or rec["best_lnL"] > best["best_lnL"]:
                 best = rec

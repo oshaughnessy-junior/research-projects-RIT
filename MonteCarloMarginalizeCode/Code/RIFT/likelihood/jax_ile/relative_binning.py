@@ -19,6 +19,15 @@ import numpy as np
 import jax.numpy as jnp
 
 
+class UnsupportedFiducial(ValueError):
+    """The multiplicative ratio cannot represent a fiducial mode's support.
+
+    Callers with a full-grid waveform path should use it until a representable
+    fiducial is available. A zero fiducial mode does not imply that the same
+    mode is zero at the candidate intrinsic point.
+    """
+
+
 def phase_bins(fmin, fmax, eps=0.3, gammas=(-5. / 3, -2. / 3, 1., 5. / 3, 7. / 3)):
     """Edges with the Zackay et al. phase bound changing by <= eps per bin."""
     f = np.linspace(fmin, fmax, 200000)
@@ -47,6 +56,55 @@ class RelativeBinning:
         """h0_full: (K, N) fiducial modes on the full grid (numpy or jax)."""
         h0 = np.asarray(h0_full)
         K = h0.shape[0]
+        # Snapping/clipping may collapse a narrow band to a single edge.
+        # Reject during activation so rb_refresh can choose the full grid.
+        if len(self.k_pos) < 2:
+            raise UnsupportedFiducial(
+                "relative binning needs at least two distinct edges; require full-grid evaluation")
+        if not np.isfinite(h0).all():
+            raise ValueError("relative binning requires finite fiducial modes")
+        amplitude = np.max(np.abs(h0), axis=1)
+        scale = amplitude ** 2
+        missing = np.flatnonzero(amplitude == 0)
+        if len(missing):
+            raise UnsupportedFiducial(
+                "zero fiducial modes %s require full-grid evaluation" % missing.tolist())
+        # A zero reference edge cannot recover the candidate ratio wherever
+        # that edge's interpolation coefficient is used. Even at the fiducial,
+        # replacing its undefined ratio by zero loses weighted interior power.
+        active = np.logical_or.reduce([np.asarray(v["w"]) != 0 for v in self.dets.values()])
+        # V couples h(f) to h(-f), including for asymmetric detector weights.
+        active = active | active[(len(self.freqs)-np.arange(len(self.freqs))) % len(self.freqs)]
+        covered = np.zeros(len(self.freqs), dtype=bool)
+        idx = np.arange(self.k_pos[0], self.k_pos[-1] + 1)
+        covered[idx] = True
+        covered[(-idx) % len(self.freqs)] = True
+        if np.any(active & ~covered):
+            # h0=0 outside the span cannot certify that future candidates stay
+            # zero there. Callers may omit only weights known structurally zero.
+            raise UnsupportedFiducial(
+                "weighted frequencies outside bin edges require full-grid evaluation")
+        for side, edges in (("positive", self.k_pos), ("negative", self.k_neg)):
+            for b in range(len(edges)-1):
+                idx = np.arange(self.k_pos[b], self.k_pos[b+1] + (b == len(edges)-2))
+                if side == "negative":
+                    idx = (len(self.freqs)-idx) % len(self.freqs)
+                # Even finite edge ratios cannot restore candidate power at an
+                # interior frequency where the reference is exactly zero.
+                missing = np.flatnonzero(np.any((h0[:, idx] == 0) & active[idx], axis=1))
+                if len(missing):
+                    raise UnsupportedFiducial(
+                        "zero fiducial support for modes %s in weighted %s bin %d "
+                        "requires full-grid evaluation" % (missing.tolist(), side, b))
+                u = (np.abs(self.freqs[idx])-self.f_edges[b]) / (self.f_edges[b+1]-self.f_edges[b])
+                left_used = np.any(active[idx] & (u != 1))
+                right_used = np.any(active[idx] & (u != 0))
+                missing = np.flatnonzero(((h0[:, edges[b]] == 0) & left_used)
+                                         | ((h0[:, edges[b+1]] == 0) & right_used))
+                if len(missing):
+                    raise UnsupportedFiducial(
+                        "zero fiducial edges for modes %s in weighted %s bin %d "
+                        "require full-grid evaluation" % (missing.tolist(), side, b))
         self.h0p, self.h0n = h0[:, self.k_pos], h0[:, self.k_neg]
         ne = len(self.k_pos)
         tj = None
@@ -85,11 +143,11 @@ class RelativeBinning:
                 out[side] = (jnp.asarray(C), jnp.asarray(T), jnp.asarray(W))
             self.summary[det] = out
         self._h0p, self._h0n = jnp.asarray(self.h0p), jnp.asarray(self.h0n)
-        self._scale = jnp.asarray(np.max(np.abs(h0), axis=1) ** 2)
+        self._scale = jnp.asarray(scale)
         return self
 
     def state(self):
-        """Pytree of everything qvu needs; pass it as a jit argument."""
+        """Pytree for qvu; scale is retained for cached-state compatibility."""
         return dict(summary=self.summary, h0p=self._h0p, h0n=self._h0n, scale=self._scale)
 
     def qvu(self, hp, hn, state=None):
@@ -97,9 +155,17 @@ class RelativeBinning:
 
 
 def qvu_state(st, hp, hn, reg=1e-8):
-    """hp, hn: (K, n_edges) template modes at +edges and -edges."""
+    """hp, hn: (K, n_edges) template modes at +edges and -edges.
+
+    ``st`` must come from a validated fiducial. ``reg`` is retained for API
+    compatibility: damping nonzero edge ratios changes the fiducial itself.
+    """
     def ratio(h, h0):
-        return h * jnp.conj(h0) / (jnp.abs(h0) ** 2 + reg * st["scale"][:, None])
+        # Complex division avoids squaring tiny denominators. Zero edges are
+        # allowed only where their interpolation basis has no weighted support.
+        supported = h0 != 0
+        denominator = jnp.where(supported, h0, jnp.ones_like(h0))
+        return jnp.where(supported, h / denominator, 0.)
     rp, rn = ratio(hp, st["h0p"]), ratio(hn, st["h0n"])
     res = {}
     for det, s in st["summary"].items():

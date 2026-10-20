@@ -3803,11 +3803,11 @@ def write_seed_climb_sub(tag='seed_climb', exe=None, arg_str='', log_dir=None, o
     """
     Submit file for the transverse-spin seed climb (util_TransverseSeedClimb.py).
 
-    Runs before the iteration-0 ILE jobs, on the shared filesystem, in out_dir.
-    It reads overlap-grid-0 and the ILE argument file and rewrites overlap-grid-0
-    with the seeds appended, so it must finish before ILE starts.  With
-    request_gpus the JAX kernel runs on the GPU; without, it runs (slower) on CPU.
-    No file transfer: like the other non-worker jobs, it needs the run directory.
+    Run the climber with explicit arg_str arguments in out_dir.  The caller
+    chooses prepend, parallel or composite inputs and outputs, and places the
+    node using DAG dependencies.  Inputs and outputs need a filesystem shared
+    with the worker: this helper does not stage input files.  request_gpus
+    reserves a device; the runtime arguments and backend determine its use.
     """
     exe = exe or which("util_TransverseSeedClimb.py")
     job = CondorDAGJob(universe=universe, executable=exe)

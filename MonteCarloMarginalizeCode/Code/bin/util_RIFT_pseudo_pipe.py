@@ -63,8 +63,9 @@ from RIFT.likelihood.time_interp_choice import (
 # likelihood -- the pipeline would accept 'bandlimted', forward it, and the mistake
 # would only surface when the first ILE job died.
 from RIFT.likelihood.time_marginalization_quadrature import (
-    TIME_QUADRATURE_CHOICES, validate_time_quadrature,
-    refuse_unhonourable_time_quadrature, refuse_unless_time_quadrature_emitted)
+    TIME_QUADRATURE_CHOICES, NOLOOP_ONLY_TIME_QUADRATURES, validate_time_quadrature,
+    refuse_unhonourable_time_quadrature, refuse_unless_time_quadrature_emitted,
+    refuse_jax_unsupported_time_quadrature)
 # Same reason, same leaf-module discipline, for the Q_lm pregrid factor.
 from RIFT.likelihood.q_time_pregrid import (
     Q_TIME_PREGRID_CHOICES, validate_q_time_pregrid_factor,
@@ -477,6 +478,8 @@ parser.add_argument("--use-meanPerAno",action='store_true', help="Add meanPerAno
 parser.add_argument("--use-EOB-parameters",action='store_true', help="Add sampling in EOB parameters; currently only a6c")
 parser.add_argument("--assume-hyperbolic",action='store_true', help="Add hyperbolic options for each part of analysis")
 parser.add_argument("--internal-cip-use-periodic-ecc-vars",action='store_true', help="use e cos ell, e sin ell as fitting variables ")
+from RIFT.misc import eccentric_phase_pipeline, eccentric_phase_models
+eccentric_phase_pipeline.add_arguments(parser)
 parser.add_argument("--assume-lowlatency-tradeoffs",action='store_true', help="Force analysis with various low-latency tradeoffs (e.g., drop spin 2, use aligned, etc)")
 parser.add_argument("--assume-highq",action='store_true', help="Force analysis with the high-q strategy, neglecting spin2. Passed to 'helper'")
 parser.add_argument("--assume-well-placed",action='store_true',help="If present, the code will adopt a strategy that assumes the initial grid is very well placed, and will minimize the number of early iterations performed. Not as extrme as --propose-flat-strategy")
@@ -646,6 +649,8 @@ parser.add_argument("--transverse-seed-climb-args",default="",type=str,help="Ext
 parser.add_argument("--transverse-seed-climb-n-max",default=1000,type=int,help="'dag', 'parallel', 'composite' modes: most points the climb may add (seed ILE batches are sized for it).")
 parser.add_argument("--transverse-seed-climb-request-gpu",action='store_true',help="DAG modes: the climb node requests a GPU.")
 parser.add_argument("--internal-puff-transverse",action='store_true', help=" appends the following arguments: --parameter phi1 --parameter phi2 --parameter chi1_perp_u --parameter chi2_perp_u ")
+parser.add_argument("--internal-puff-mu-random-transverse", action='store_true',
+                    help="Opt-in BBH/BasicIteration: use mu1,mu2,q,s2z puff plus RANDOM transverse spins for the first CIP batch; later batches (including refinement subdags) use internal-puff-transverse covariance puff. Default: unchanged legacy puff.")
 parser.add_argument("--manual-extra-puff-args",default=None,type=str,help="Avenue to adjoin extra PUFF arguments.  ")
 parser.add_argument("--manual-extra-test-args",default=None,type=str,help="Avenue to adjoin extra TEST arguments.  ")
 parser.add_argument("--manual-extra-cip-args",default=None,type=str,help="Avenue to adjoin extra CIP arguments.  Needed for external priors or likelihoods in CIP stage")
@@ -758,6 +763,13 @@ if (opts.use_ini):
             ile_condor_commands.append([item, val])
 
 # After the ini, which can set the mode.
+if opts.eccentric_phase_coordinates:
+    if not opts.assume_eccentric or not opts.use_meanPerAno:
+        parser.error('--eccentric-phase-coordinates requires --assume-eccentric and --use-meanPerAno')
+    if opts.internal_cip_use_periodic_ecc_vars or opts.internal_use_amr:
+        parser.error('Effective eccentric-phase coordinates cannot be combined with the legacy periodic-ecc basis or AMR')
+    eccentric_phase_pipeline.validate_request(opts)
+
 if opts.rf_transverse_spin_coordinates == 'physics3':
     from RIFT.misc.rf_transverse_spin import RETIRED_MESSAGE
     parser.error(RETIRED_MESSAGE)
@@ -784,6 +796,12 @@ if opts.use_jax_ile and opts.calmarg_envelope_directory:
         "(--calmarg-envelope-directory): bin/integrate_likelihood_extrinsic_jax does "
         "not implement --calibration-* options (see check_critical_and_report in "
         "that driver).  Drop --calmarg-envelope-directory or drop --use-jax-ile.")
+if opts.use_jax_ile and opts.internal_ile_time_marginalization_quadrature in NOLOOP_ONLY_TIME_QUADRATURES:
+    raise ValueError(
+        "--use-jax-ile is incompatible with --internal-ile-time-marginalization-quadrature "
+        "%r: bin/integrate_likelihood_extrinsic_jax does not implement it, so every ILE "
+        "job would fail at startup.  Drop one of the two."
+        % opts.internal_ile_time_marginalization_quadrature)
 
 # TIME-MARGINALIZATION QUADRATURE, part 1 of 2: everything refusable WITHOUT running the
 # helper.  Deliberately placed AFTER the --use-ini block above: the ini parser OVERRIDES the
@@ -1257,6 +1275,20 @@ def approx_supports_precession(approx_name):
         return None
     return support in precessing_support
 
+if opts.internal_puff_mu_random_transverse:
+    if (opts.assume_nospin or opts.assume_nonprecessing or not (
+            is_analysis_precessing or approx_supports_precession(opts.approx))):
+        raise ValueError('--internal-puff-mu-random-transverse requires a precessing analysis')
+    if (opts.assume_matter or opts.assume_eccentric or opts.assume_hyperbolic
+            or opts.use_EOB_parameters or opts.internal_use_amr
+            or opts.use_subdags or opts.approx_extra
+            or opts.pipeline_builder not in (None, 'BasicIteration')
+            or opts.internal_cip_transverse_tails
+            or opts.internal_test_convergence_method == 'js_lame'):
+        raise ValueError('early mu/random-transverse puff currently supports precessing BBH with BasicIteration; incompatible with nuisance-coordinate puffing, Alternate/MultiApprox, AMR and the transverse-tails bundle')
+    is_analysis_precessing = True
+    opts.internal_puff_transverse = True
+
 if opts.internal_cip_transverse_tails or opts.internal_test_convergence_method == 'js_lame':
     # "precessing approximant or --assume-precessing" is the contract, so ask lalsimulation about
     # the approximant rather than trusting only the name list.  The forced flags still win, since
@@ -1291,6 +1323,8 @@ if opts.internal_use_gracedb_bayestar:
     cmd += " --internal-use-gracedb-bayestar "
 if opts.internal_use_amr:
     cmd += " --internal-use-amr " # minimal support performed in this routine, mainly for puff
+if opts.eccentric_phase_coordinates:
+    cmd += eccentric_phase_pipeline.build_arguments(opts)
 if opts.internal_use_aligned_phase_coordinates:
     cmd += " --internal-use-aligned-phase-coordinates "
 if opts.internal_use_rescaled_transverse_spin_coordinates:
@@ -1597,6 +1631,14 @@ if _helper_rc != 0:
     print(" FAILURE: helper call exited nonzero; refusing to use any pre-existing "
           "helper_ile_args.txt")
     sys.exit(1)
+if opts.eccentric_phase_coordinates:
+    if _helper_rc != 0:
+        raise RuntimeError('Helper failed before freezing the eccentric-phase mass anchor')
+    from RIFT.misc import eccentric_phase_policy
+    eccentric_phase_build = eccentric_phase_policy.read_into(opts)
+    if not opts.skip_reproducibility:
+        with open('reproducibility/the_arguments_used.json','w') as f:
+            json.dump(vars(opts),f)
 # we MUST make helper_ile_args.txt
 if not(os.path.exists('helper_ile_args.txt')):
     print(" FAILURE: helper call failed to generate required file helper_ile_args.txt")
@@ -1829,12 +1871,18 @@ if opts.extrinsic_handoff:
 # opts-keyed version skipped entirely.  Called unconditionally for that reason.
 refuse_unless_time_quadrature_emitted(
     opts.internal_ile_time_marginalization_quadrature, line, "args_ile.txt")
+# The early --use-jax-ile refusal reads only the pipeline option; a quadrature passed by
+# hand through --manual-extra-ile-args reaches the JAX driver too, so check the bytes.
+if opts.use_jax_ile:
+    refuse_jax_unsupported_time_quadrature(line, "args_ile.txt")
 # Same discipline, same reason, for the Q_lm pregrid factor -- including the forced-cubic-stencil
 # conflict, which can only be checked here: --interpolate-time is resolved and emitted by the
 # helper, so it is not visible to this script until `line` is fully assembled.
 refuse_unless_q_time_pregrid_emitted(
     opts.internal_ile_q_time_pregrid_factor, line, "args_ile.txt")
 
+if opts.eccentric_phase_coordinates:
+    eccentric_phase_policy.check_final_ile(eccentric_phase_build,line)
 with open('args_ile.txt','w') as f:
         f.write(line)
 
@@ -2177,6 +2225,18 @@ for indx_rf, line_rf in enumerate(lines):
     if '--rf-transverse-spin-coordinates' in line_rf and stage_problem(line_rf):
         raise ValueError('RF transverse-spin stage {} activated but CIP would refuse it ({}); conflicting options: {}'.format(
             indx_rf, stage_problem(line_rf), ', '.join('--'+name.replace('_','-') for name in rf_transverse_conflicts) or 'see --manual-extra-cip-args'))
+
+if opts.eccentric_phase_coordinates:
+    eccentric_phase_build=eccentric_phase_policy.finalize_map(opts,eccentric_phase_build,lines)
+    if not opts.skip_reproducibility:
+        with open('reproducibility/the_arguments_used.json','w') as f:
+            json.dump(vars(opts),f)
+    lines = [eccentric_phase_pipeline.stage_arguments(line,
+        opts.eccentric_phase_reference_frequency,opts.eccentric_phase_target_frequency,
+        **eccentric_phase_models.worker_options(opts)) for line in lines]
+    if not any(eccentric_phase_pipeline.FLAG in line for line in lines):
+        raise ValueError('No CIP stage fits native eccentricity/anomaly for the requested effective coordinates')
+
 with open("args_cip_list.txt",'w') as f:
    if not(opts.internal_truncate_cip_arg_list is None):
        if opts.internal_truncate_cip_arg_list < 1:
@@ -2232,6 +2292,10 @@ if opts.internal_cip_transverse_tails:
     # safe to append them unconditionally here.
     puff_params += ' --append-with-random-parameter chi1_perp --append-with-random-fraction {} '.format(opts.internal_cip_transverse_tails_puff_fraction)
     puff_max_it = max(puff_max_it, 30)
+if opts.eccentric_phase_coordinates:
+    puff_params = eccentric_phase_pipeline.puff_arguments(puff_params,
+        opts.eccentric_phase_reference_frequency,opts.eccentric_phase_target_frequency,
+        **eccentric_phase_models.worker_options(opts))
 if opts.assume_matter:
 #    puff_params += " --parameter LambdaTilde "  # should already be present
     puff_max_it +=5   # make sure we resolve the correlations
@@ -2301,6 +2365,19 @@ with open("args_puff.txt",'w') as f:
             puff_args += " {} ".format(opts.manual_extra_puff_args)  # embed with space on each side, avoid collisions
         f.write("X " + puff_args)
 
+if opts.internal_puff_mu_random_transverse:
+    from RIFT.misc import mu_puffball_pipeline
+    # The refinement grid has measured transverse covariance. The early aligned
+    # grid does not: keep its RANDOM transverse discovery out of that covariance.
+    # Each puff line is paired with a CIP batch, including its count/Z/G prefix.
+    # Keep args_puff.txt as the legacy single configuration for other consumers.
+    scheduled_puff_args = mu_puffball_pipeline.stage_arguments(lines, puff_args)
+    with open('args_puff_list.txt', 'w') as f:
+        f.write('\n'.join(scheduled_puff_args) + '\n')
+    # Ensure the first batch can actually puff. Preserve the existing stop
+    # policy for subsequent outer batches; subdags retain their normal policy.
+    puff_max_it = max(puff_max_it, int(lines[0].split()[0].lstrip('G')) - 1)
+
 # Create archive dag.  Based on Udall's experience/code
 #    * if ini file, use it
 #    * PSD files: will need to convert from XML.  Will need wrapper to generate this (not raw pesummary call).. Not now.
@@ -2356,9 +2433,17 @@ if opts.transverse_seed_climb == "setup":
         cmd_climb += " --cache {} ".format(opts.fake_data_cache)
     if "--psd-file" not in opts.transverse_seed_climb_args:
         with open("args_ile.txt") as f:
-            _toks = f.read().split()
-        _missing = [_toks[k + 1].split("=", 1)[1] for k in range(len(_toks) - 1)
-                    if _toks[k] == "--psd-file" and not os.path.exists(_toks[k + 1].split("=", 1)[1])]
+            _toks = shlex.split(f.read())
+        _psds = []
+        for _k, _tok in enumerate(_toks):
+            if _tok in ("--psd-file", "-p") and _k + 1 < len(_toks):
+                _psds.append(_toks[_k + 1])
+            elif _tok.startswith("--psd-file="):
+                _psds.append(_tok.split("=", 1)[1])
+            elif _tok.startswith("-p") and not _tok.startswith("--") and len(_tok) > 2:
+                _psds.append(_tok[2:])
+        _missing = [_psd.split("=", 1)[1] for _psd in _psds
+                    if not os.path.exists(_psd.split("=", 1)[1])]
         if _missing:
             raise SystemExit("pseudo_pipe: --transverse-seed-climb setup needs the PSD files {} in the run directory at setup time; pass --psd-file IFO=/abs/path in --transverse-seed-climb-args, or use 'dag' mode".format(_missing))
     print(" Transverse seed climb (setup): ", cmd_climb)
@@ -2438,7 +2523,10 @@ if opts.assume_matter or opts.assume_eccentric or opts.assume_hyperbolic:
 if not(opts.ile_runtime_max_minutes is None):
     cmd += " --ile-runtime-max-minutes {} ".format(opts.ile_runtime_max_minutes)
 if not(opts.internal_use_amr) or opts.internal_use_amr_puff:
-    cmd+= " --puff-exe `which util_ParameterPuffball.py` --puff-cadence 1 --puff-max-it " + str(puff_max_it)+ " --puff-args `pwd`/args_puff.txt "
+    if opts.internal_puff_mu_random_transverse:
+        cmd += " --puff-exe `which util_ParameterPuffball.py` --puff-cadence 1 --puff-max-it {} --puff-args-list `pwd`/args_puff_list.txt ".format(puff_max_it)
+    else:
+        cmd+= " --puff-exe `which util_ParameterPuffball.py` --puff-cadence 1 --puff-max-it " + str(puff_max_it)+ " --puff-args `pwd`/args_puff.txt "
 if opts.use_EOB_parameters:
     cmd += " --use-EOB-parameters "
 if opts.calmarg_pilot:
@@ -2631,9 +2719,15 @@ if opts.cip_explode_jobs:
    cmd+= " --cip-explode-jobs  " + str(opts.cip_explode_jobs) + " --cip-explode-jobs-dag "  # use dag workers
    if opts.cip_fit_method and opts.cip_fit_method not in ('gp', 'gp-matern'):
        # if we are not using default GP fit, so all fit instances are equal
-       cmd += " --cip-explode-jobs-flat "  
+       cmd += " --cip-explode-jobs-flat "
    if opts.cip_explode_jobs_last:
        cmd += " --cip-explode-jobs-last {} ".format(opts.cip_explode_jobs_last)
+# Effective phase coordinates need flat workers for EVERY fit method, including the default gp:
+# CIP refuses stored fits (--fit-load-gp) with these coordinates, so each exploded worker must
+# compute its own fresh fit.  Either explode route above creates workers.
+if opts.eccentric_phase_coordinates and (opts.cip_explode_jobs or opts.cip_explode_jobs_dag) \
+   and ' --cip-explode-jobs-flat ' not in cmd:
+    cmd += " --cip-explode-jobs-flat "
 if opts.make_bw_psds:
     cmd+= " --use-bw-psd --bw-exe `which BayesWave` --bw-post-exe `which BayesWavePost` "
 if opts.use_osg:
@@ -2680,6 +2774,7 @@ if opts.calibration_reweighting:
          # whose string values contain '--', apostrophes or double quotes.
          my_parser = argparse.ArgumentParser()
          my_parser.add_argument("--use-gwsignal", action='store_true')
+         my_parser.add_argument("--gwsignal-mode-conditioning", choices=("legacy", "native"), default="legacy")
          my_parser.add_argument("--use-gwsignal-lmax-nyquist", type=int, default=None)
          my_parser.add_argument("--internal-waveform-fd-L-frame", action='store_true')
          my_parser.add_argument("--internal-waveform-fd-no-condition", action='store_true')
@@ -2698,6 +2793,12 @@ if opts.calibration_reweighting:
              my_parser.error("--internal-waveform-extra-lalsuite-args cannot be used with --use-gwsignal; "
                              "use --internal-waveform-extra-kwargs for GWSignal backend options")
          my_extra_args = {}
+         if my_opts.gwsignal_mode_conditioning == "native" and not effective_gwsignal:
+             my_parser.error("--gwsignal-mode-conditioning native requires --use-gwsignal")
+         if my_opts.gwsignal_mode_conditioning == 'native' and my_opts.internal_waveform_fd_no_condition:
+             my_parser.error('--gwsignal-mode-conditioning native conflicts with --internal-waveform-fd-no-condition')
+         if effective_gwsignal:
+             my_extra_args['gwsignal_mode_conditioning'] = my_opts.gwsignal_mode_conditioning
          gwsignal_lmax_nyquist = my_opts.use_gwsignal_lmax_nyquist
          if gwsignal_lmax_nyquist is not None and not effective_gwsignal:
              # ILE does not select GWSignal merely because lmax was set.
