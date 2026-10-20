@@ -20,6 +20,7 @@ SIG = 0.001
 
 def _unseen(names, seed):
     np.random.seed(seed)
+    mcsamplerAV.xpy_default.random.seed(seed)   # draws use the active backend (cupy on a GPU host)
     s = mcsamplerAV.MCSampler()
     for p in names:
         lo, hi = BOUNDS[p]
