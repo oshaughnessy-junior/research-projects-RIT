@@ -123,6 +123,7 @@ FILES=(
   "$C/test/test_av_host_backend.py"
   "$C/test/test_av_kish_loop.py"
   "$C/test/test_av_retained_density.py"
+  "$C/test/test_av_coverage_diagnostic.py"
   "$C/test/test_matern_gp.py"
   "$C/test/integrators/test_seeding_public_paths.py"
   "$C/test/integrators/test_seeding_reproducibility.py"
@@ -205,6 +206,9 @@ FILES=(
   # every caller indexes it.  A dict keyed the other way is still a populated dict: the
   # mode sum silently loses modes rather than raising.
   "$C/test/test_std_and_conj_hlmoff_sphharm.py"
+  # -- rotate_hlm_static: TimeSeries, FrequencySeries and ndarray inputs agree with a direct
+  # Wigner-D sum (FrequencySeries/ndarray inputs used to raise AttributeError).
+  "$C/test/test_rotate_hlm_static_types.py"
   # -- hlmoft ChooseFDModes end taper is capped in duration: long buffers keep the merger,
   # buffers <= 100 s are bit-identical to the uncapped 1% rule.
   "$C/test/test_fd_end_taper_cap.py"
@@ -483,7 +487,8 @@ done
 # test_gwsignal_seob_conditioning.py adds 8 passing tests with LALSuite 7.26.16:
 # shared-grid operator tests plus native/no_condition conflict refusal.
 # TD: 90 focused cases, including OSG staging and basis-rank regressions.
-EXPECTED_TESTS=1043
+# Public-base update adds 2 AV coverage and 9 rotation-type cases, all passing.
+EXPECTED_TESTS=1054
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -506,7 +511,8 @@ EXPECTED_TESTS=1043
 # test_fd_end_taper_cap.py adds 3 tests and no skips; 878/858 (above).
 # test_dslice_rf_tails.py adds 10 tests and no skips; 888/868 (above).
 # test_dslice_bounds.py adds 2 tests; SEOB conditioning adds 8, all passing.
-EXPECTED_PASSED=1022
+# Public-base update: all 11 newly registered cases pass without skips.
+EXPECTED_PASSED=1033
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 MAX_SKIPPED=20 # one optional tdanalysis PCG test when the extra is absent
 
