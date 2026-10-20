@@ -81,10 +81,24 @@ climber reads data, PSD and waveform settings from `args_ile.txt`.
 Scheme (b) uses the CEPP options `--seed-climb-exe`, `--seed-climb-args`,
 `--seed-climb-n-max`, `--seed-climb-request-gpu` and `--seed-climb-request-memory`
 (BasicIteration only). The iteration-0 ILE batches are sized at build time for
-(input grid + `--seed-climb-n-max`) points. ILE exits cleanly on indices past
+(input grid + `--seed-climb-n-max`) points. ILE exits without error on indices past
 the end of the grid. The node is skipped under `--first-iteration-jumpstart`.
 The sub file has no file transfer, so it needs the shared run directory
 (CIT local pool on `/scratch`, as for the other non-worker jobs).
+
+In a container (`--use-singularity`) the climb needs its own image, because no
+RIFT ILE image carries JAX: `--seed-climb-singularity-image` (pseudo_pipe
+`--transverse-seed-climb-singularity-image` or
+`$SINGULARITY_RIFT_SEED_CLIMB_IMAGE`), or the build refuses. The sub sets
+`MY.POOLS = "CIT"`, since `flock_local` now maps to "IGWN,CIT" and IGWN nodes
+lack `/scratch`. It takes the ILE condor commands (GPU requirements) and does
+not transfer the executable, so the climber path must exist in the image or on
+a bound filesystem. Until a RIFT image ships the climber, point
+`--transverse-seed-climb-exe` at a `/scratch` checkout and pass `PYTHONPATH`
+through the environment (the sub uses `getenv`).
+
+The final extrinsic stage reads the grid of the last fit, in seeded and
+unseeded runs alike (RO, 2026-10-20: the earlier choice was an off-by-one).
 
 ## Limits
 
@@ -141,23 +155,17 @@ The sub file has no file transfer, so it needs the shared run directory
   and sampling rate using one common sky batch. For the fast high-spin optimum,
   cutting fmax at 4096 Hz shifts the objective by +12.62 nats; downsampling at
   fmax 448 Hz then shifts it by -3.63 nats. Changing l_max shifts this point
-  by less than one nat. Both band and rate matter; this is a conditional
-  objective diagnostic, not a converged marginalized-likelihood comparison.
-  Inputs, sampled sky and hashes are in the paper repository's
+  by less than one nat. Both band and rate matter (a conditional objective
+  diagnostic on one sky batch).
+- Keep the analysis sampling rate and frequency band. The reduced-band speed
+  configuration is withdrawn. Evidence: paper repository
   `analyses/transverse_seed_climb/RESULTS_2026-10-19.md`.
-- Preserve the analysis sampling rate and frequency band for S250830bp.
-  The reduced-band speed configuration failed its production high-spin
-  re-score and is withdrawn as a recommendation. The complete re-score and
-  paired multipole/band diagnostic are in the paper repository's
-  `analyses/transverse_seed_climb/RESULTS_2026-10-19.md` internal candidate.
 - Warm start-up: JAX's compilation cache is keyed on lowered HLO, so it skips
   only the XLA compile; tracing ripple cost ~6 min per run. `export_cache.py`
   serializes the lowered ripple programs (`jax.export`; needs `flatbuffers`) under
   `$JAX_EXPORT_CACHE_DIR`, default `<compilation cache>/exported`. Single points
   run through the batched program. Warm start stage on S250830bp: 360 s to
   133 s, with identical lnL.
-- Cost per point is the precompute plus the kernel. See the RESULTS note in
-  RIFT_roboto_paper `analyses/transverse_seed_climb/` for timings.
 - JAX on a CIT head node starts an XLA thread pool sized by the CPU count. With
   the 500-thread user cap, a second JAX process on a busy node fails with
   `pthread_create() failed`. Condor execute nodes have no such cap.
