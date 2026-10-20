@@ -3830,6 +3830,14 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
           else:
             rho_sq_det = _time_indexed_self_term(U, V, F_vec, Ylms_vec, ifirst, frac_first, npts, time_interp, xpy=xpy, stride=td_subsample)
           rho_sq_det *= xpy.asarray(0.5 * xpy.square(distMpcRef / distMpc)).reshape(-1, 1)
+          if time_interp == 'nearest':
+              # Each bin is one Gram matrix of the template on the pieces: a norm below rounding
+              # is an error in U(t), V(t), not a property of the data.  (The cubic stencil can
+              # take a sum of nonnegative norms negative, e.g. across the zero extension at the
+              # buffer edge, so it is not checked here.)
+              scale = xpy.maximum(xpy.max(xpy.abs(rho_sq_det)), xpy.finfo(xpy.float64).tiny)
+              if bool(xpy.any(~xpy.isfinite(rho_sq_det))) or bool(xpy.any(rho_sq_det < -1e-12 * scale)):
+                  raise ValueError("time-indexed U/V produced a nonfinite or negative template norm")
         else:
           # Has shape (npts_extrinsic,)
           rho_sq_det = (

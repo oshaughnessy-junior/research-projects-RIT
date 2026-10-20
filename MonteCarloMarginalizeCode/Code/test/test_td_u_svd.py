@@ -72,11 +72,13 @@ def _low_rank_case(seed, rank, modes=((2, 2), (2, -2), (2, 1)), npts_full=256, *
     rng = np.random.default_rng(1000 + seed)
     n_lm = len(modes)
     for det in case["dets"]:
-        a = rng.standard_normal((npts_full, rank))
+        a = np.abs(rng.standard_normal((npts_full, rank)))
         A = rng.standard_normal((rank, n_lm, n_lm)) + 1j*rng.standard_normal((rank, n_lm, n_lm))
         B = rng.standard_normal((rank, n_lm, n_lm)) + 1j*rng.standard_normal((rank, n_lm, n_lm))
         A = A + np.conj(np.swapaxes(A, 1, 2))
         B = B + np.swapaxes(B, 1, 2)
+        floor = 2 * (np.sum(np.abs(A), axis=(1, 2)) + np.sum(np.abs(B), axis=(1, 2)))
+        A = A + floor[:, None, None] * np.eye(n_lm)[None]
         case["U_t"][det] = np.einsum("tk,kij->tij", a, A)
         case["V_t"][det] = np.einsum("tk,kij->tij", a, B)
     return case
@@ -226,11 +228,13 @@ def test_truncation_error_tracks_tol():
     rng = np.random.default_rng(61)
     n_lm = 3
     R = 10
-    decay = 10.0**(-1.3*np.arange(R))           # s_k / s_0 ~ 1, 5e-2, 2.5e-3, ..., 5e-12
+    decay = 10.0**(-1.0*np.arange(R))           # graded coefficient amplitudes through 1e-9
     for det in case["dets"]:
-        a = rng.standard_normal((512, R)) * decay
+        a = np.abs(rng.standard_normal((512, R))) * decay
         A = rng.standard_normal((R, n_lm, n_lm)) + 1j*rng.standard_normal((R, n_lm, n_lm))
         B = rng.standard_normal((R, n_lm, n_lm)) + 1j*rng.standard_normal((R, n_lm, n_lm))
+        floor = 4 * (np.sum(np.abs(A), axis=(1, 2)) + np.sum(np.abs(B), axis=(1, 2)))
+        A += floor[:, None, None] * np.eye(n_lm)[None]
         case["U_t"][det] = np.einsum("tk,kij->tij", a, A + np.conj(np.swapaxes(A, 1, 2)))
         case["V_t"][det] = np.einsum("tk,kij->tij", a, B + np.swapaxes(B, 1, 2))
     ref = _call(case, case["U_t"], case["V_t"], return_lnLt=True, loglikelihood=lambda k, r: r)

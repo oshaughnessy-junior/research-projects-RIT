@@ -34,7 +34,7 @@ class _PVec(object):
 
 def _make_case(seed=7, dets=("H1", "L1", "V1"), modes=((2, 2), (2, -2), (2, 1)),
                npts_full=256, npts=12, npts_extrinsic=5, deltaT=1.0/4096,
-               epoch_offset=-0.03, hermitian=True):
+               epoch_offset=-0.03, hermitian=True, physical=True):
     """Synthetic inputs.  Returns a dict with everything the likelihood needs.
 
     U_t[det] is (npts_full, n_lm, n_lm): Hermitian at each time when
@@ -64,6 +64,11 @@ def _make_case(seed=7, dets=("H1", "L1", "V1"), modes=((2, 2), (2, -2), (2, 1)),
         if hermitian:
             A = A + np.conj(np.swapaxes(A, 1, 2))
             B = B + np.swapaxes(B, 1, 2)
+        if physical:
+            # Diagonal dominance of the real quadratic form ensures a valid norm
+            # for every complex detector response and mode coefficient vector.
+            floor = 2 * (np.sum(np.abs(A), axis=(1, 2)) + np.sum(np.abs(B), axis=(1, 2)))
+            A = A + floor[:, None, None] * np.eye(n_lm)[None]
         U_t[det] = A
         V_t[det] = B
         U_s[det] = A[0].copy()
@@ -178,7 +183,7 @@ _SCALAR_REFERENCE = {
 
 @pytest.mark.parametrize("time_interp,phase_marg", sorted(_SCALAR_REFERENCE.keys()))
 def test_scalar_path_bit_identical_to_parent(time_interp, phase_marg):
-    case = _make_case(seed=7, modes=((2, 2), (2, -2)))
+    case = _make_case(seed=7, modes=((2, 2), (2, -2)), physical=False)
     lnL = _call(case, case["U_s"], case["V_s"], time_interp=time_interp, phase_marginalization=phase_marg)
     ref = np.array([float.fromhex(h) for h in _SCALAR_REFERENCE[(time_interp, phase_marg)]])
     assert ref.shape == lnL.shape
@@ -363,6 +368,14 @@ def test_refuse_bad_shapes():
     with pytest.raises(ValueError):            # time grid mismatch
         _call(case, U_short, V_short)
 
+
+
+def test_negative_norm_refused_on_ordinary_likelihood():
+    case = _make_case(dets=('H1',), modes=((2, 2),))
+    U = {'H1': -np.ones((256, 1, 1), dtype=complex)}
+    V = {'H1': np.zeros((256, 1, 1), dtype=complex)}
+    with pytest.raises(ValueError, match='negative template norm'):
+        _call(case, U, V)
 
 def test_refuse_legacy_array_likelihoods():
     case = _make_case(seed=53, modes=((2, 2), (2, -2)))
