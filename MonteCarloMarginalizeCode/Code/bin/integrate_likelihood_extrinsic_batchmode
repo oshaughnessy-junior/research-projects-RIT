@@ -1960,6 +1960,8 @@ if use_td_gs:
     td_ifo_offset = {}
     for _spec in (opts.td_ifo_time_offset or []):
         _ifo, _val = _spec.split(":", 1)
+        if _ifo not in data_dict or _ifo in td_ifo_offset:
+            raise ValueError("unknown or duplicate --td-ifo-time-offset detector: " + _ifo)
         td_ifo_offset[_ifo] = float(_val)
     td_acf_paths = {}
     for _spec in (opts.td_acf_file or []):
@@ -1967,6 +1969,8 @@ if use_td_gs:
         if not os.path.isfile(_path):
             print("FAIL: --td-acf-file %s: no such file %r" % (_ifo, _path))
             sys.exit(1)
+        if _ifo not in data_dict or _ifo in td_acf_paths:
+            raise ValueError("unknown or duplicate --td-acf-file detector: " + _ifo)
         td_acf_paths[_ifo] = _path
     try:
         td_pieces_s = parse_td_pieces(opts.td_piece, opts.td_mref)
