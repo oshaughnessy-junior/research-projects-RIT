@@ -232,6 +232,14 @@ FILES=(
   "$C/test/test_eos_evidence_lnL_shift.py"
   # -- coordinates: per-row fallbacks convert each row independently of the others
   "$C/test/test_convert_coordinates_row_independence.py"
+  # -- opt-in early-time multirate precompute (PR #436): two-rate vs one-segment and full-rate
+  #    references, numpy backend vs CPU reference, xp templates vs lalsimulation, schedule and
+  #    job-level refusals (ILE exits nonzero).  The cupy legs are test_multirate_cupy.py (roster: GPU).
+  "$C/test/test_multirate_dsw_onesegment.py"
+  "$C/test/test_multirate_two_rate.py"
+  "$C/test/test_multirate_precompute.py"
+  "$C/test/test_multirate_xpy.py"
+  "$C/test/test_multirate_ile_refusal.py"
 )
 
 # A manifest entry that stops existing is a SILENT no-op: the gate keeps passing while
@@ -478,7 +486,11 @@ done
 # test_gwsignal_seob_conditioning.py adds 8 passing tests with LALSuite 7.26.16:
 # shared-grid operator tests plus native/no_condition conflict refusal.
 # test_av_coverage_diagnostic.py adds 2 tests and no skips -> 955.
-EXPECTED_TESTS=955
+# PR #436: the five test_multirate_*.py files add 62 tests (4+6+6+35+11) and no skips.  RE-MEASURED
+# on 3cf152745 (rift_O4d 48acbd2f8 merged in) 2026-10-20: CI runner 1038 collected / 1019 passed /
+# 19 skipped; ldas-grid (IGWN python, cupy importable, CUDA_VISIBLE_DEVICES='') 1038 / 1018 / 20,
+# the 20th skip being the cupy-importable tempering leg as above.  Less 3 subtests -> 1035/1015.
+EXPECTED_TESTS=1035
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -502,7 +514,8 @@ EXPECTED_TESTS=955
 # test_dslice_rf_tails.py adds 10 tests and no skips; 888/868 (above).
 # test_dslice_bounds.py adds 2 tests; SEOB conditioning adds 8, all passing.
 # test_av_coverage_diagnostic.py adds 2 tests, both passing -> 935.
-EXPECTED_PASSED=935
+# PR #436 multirate files: re-measured 1035/1015 (above; the lower, ldas-grid, passed count).
+EXPECTED_PASSED=1015
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 MAX_SKIPPED=19
 
