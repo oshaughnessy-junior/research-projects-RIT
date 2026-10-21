@@ -2052,6 +2052,14 @@ def PackLikelihoodDataStructuresAsArrays(pairKeys, rholms_intpDictionaryForDetec
     Accepts list of LM pairs, dictionary for rholms against keys, and cross terms (a dictionary)
 
     PROBLEM: Different detectors may have different time zeros. User must use the returned arrays with great care.
+
+    Cross-term values are either scalars (every frequency-domain code path) or 1-D
+    arrays of length npts, the length of rholms[mode].data.data (the time-domain
+    fixed-segment code path, where <h|h> depends on the arrival time because the
+    template slides relative to a fixed data segment).  Scalars pack to
+    crossTermsArrayU/V of shape (nKeys, nKeys); time-indexed values pack to shape
+    (npts, nKeys, nKeys), with index j along axis 0 sharing the time grid and
+    epoch of rholmArray[:, j].  All pairs of one detector must be of one kind.
     """
     #print pairKeys, rholmsDictionaryForDetector
     nKeys  = len(pairKeys)
@@ -2075,14 +2083,28 @@ def PackLikelihoodDataStructuresAsArrays(pairKeys, rholms_intpDictionaryForDetec
         lookupNumberToNumberConjugation[indx] = indxOut
         
     ### Step 1: Convert crossTermsForDetector explicitly into a matrix
-    crossTermsArrayU = np.zeros((nKeys,nKeys),dtype=np.complex128)   # Make sure complex numbers can be stored
-    crossTermsArrayV = np.zeros((nKeys,nKeys),dtype=np.complex128)   # Make sure complex numbers can be stored
+    # Time-indexed cross terms (1-D arrays of length npts) get a leading time axis.
+    time_indexed = np.ndim(crossTermsForDetector[(keyRef,keyRef)]) == 1
+    if time_indexed:
+        ct_shape = (npts,nKeys,nKeys)
+    else:
+        ct_shape = (nKeys,nKeys)
+    crossTermsArrayU = np.zeros(ct_shape,dtype=np.complex128)   # Make sure complex numbers can be stored
+    crossTermsArrayV = np.zeros(ct_shape,dtype=np.complex128)   # Make sure complex numbers can be stored
     for pair1 in pairKeys:
         for pair2 in pairKeys:
             indx1 = lookupKeysToNumber[pair1]
             indx2 = lookupKeysToNumber[pair2]
-            crossTermsArrayU[indx1][indx2] = crossTermsForDetector[(pair1,pair2)]
-            crossTermsArrayV[indx1][indx2] = crossTermsForDetectorV[(pair1,pair2)]
+            ctU_here = crossTermsForDetector[(pair1,pair2)]
+            ctV_here = crossTermsForDetectorV[(pair1,pair2)]
+            if time_indexed:
+                if np.shape(ctU_here) != (npts,) or np.shape(ctV_here) != (npts,):
+                    raise ValueError("Time-indexed cross terms for pair {} must be 1-D arrays of length {} (the rholm length); got U {} and V {}".format((pair1,pair2), npts, np.shape(ctU_here), np.shape(ctV_here)))
+                crossTermsArrayU[:,indx1,indx2] = ctU_here
+                crossTermsArrayV[:,indx1,indx2] = ctV_here
+            else:
+                crossTermsArrayU[indx1][indx2] = ctU_here
+                crossTermsArrayV[indx1][indx2] = ctV_here
 #            pair1New = (pair1[0], -pair1[1])
 #            crossTermsArrayV[indx1][indx2] = (-1)**pair1[0]*crossTermsForDetector[(pair1New,pair2)]   # this actually should be a seperate array in general; we are assuming reflection symmetry to populate it
     if rosDebugMessagesDictionary["DebugMessagesLong"]:
@@ -2132,6 +2154,14 @@ def PackCalCrossTermsAsArrays(pairKeys, lookupKeysToNumber, crossTermsCalList, c
                 U_cal[c, indx1, indx2] = ctU_c[(pair1, pair2)]
                 V_cal[c, indx1, indx2] = ctV_c[(pair1, pair2)]
     return U_cal, V_cal
+
+
+def _require_scalar_cross_terms(ctUArrayDict, ctVArrayDict, det, caller):
+    """Refuse time-indexed (npts, n_lm, n_lm) cross terms in routes that only
+    implement the time-independent (n_lm, n_lm) self term.  Only
+    DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop evaluates the time-indexed form."""
+    if np.ndim(ctUArrayDict[det]) == 3 or np.ndim(ctVArrayDict[det]) == 3:
+        raise NotImplementedError("{}: time-indexed cross terms (shape {}) for {} are only supported by DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop".format(caller, np.shape(ctUArrayDict[det]), det))
 
 
 def SingleDetectorLogLikelihoodDataViaArray(epoch,lookupNK, rholms_intpArrayDict,tref, RA,DEC, thS,phiS,psi,  dist, det):
@@ -2223,6 +2253,7 @@ def SingleDetectorLogLikelihoodModelViaArray(lookupNKDict,ctUArrayDict,ctVArrayD
     # Said another way, the m^th harmonic of the waveform should transform as
     # e^{- i m phiref}, but the Ylms go as e^{+ i m phiref}, so we must give
     # - phiref as an argument so Y_lm h_lm has the proper phiref dependence
+    _require_scalar_cross_terms(ctUArrayDict, ctVArrayDict, det, "SingleDetectorLogLikelihoodModelViaArray")
     U = ctUArrayDict[det]
     V = ctVArrayDict[det]
     Ylms = ComputeYlmsArray(lookupNKDict[det], thS,-phiS)
@@ -2313,6 +2344,7 @@ def  DiscreteFactoredLogLikelihoodViaArray(tvals, P, lookupNKDict, rholmsArrayDi
     for det in detectors:
             assert len(tvals) <= len(rholmsArrayDict[det][0])   # code cannot work if window too large!
 
+            _require_scalar_cross_terms(ctUArrayDict, ctVArrayDict, det, "DiscreteFactoredLogLikelihoodViaArray")
             U = ctUArrayDict[det]
             V = ctVArrayDict[det]
             Ylms = ComputeYlmsArray(lookupNKDict[det], incl,-phiref)
@@ -2393,6 +2425,7 @@ def  DiscreteFactoredLogLikelihoodViaArrayVector(tvals, P_vec, lookupNKDict, rho
 
     for det in detectors:  # strings right now - need to change to make ufunc-able
       # these do not depend on extrinsic params
+      _require_scalar_cross_terms(ctUArrayDict, ctVArrayDict, det, "DiscreteFactoredLogLikelihoodViaArrayVector")
       U= ctUArrayDict[det]
       V = ctVArrayDict[det]
 
@@ -2479,6 +2512,7 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoopOrig(tvals, P_vec, lookupN
         # These do not depend on extrinsic params.
         # Arrays of shape (n_lms, n_lms).
         # Axis 0 corresponds to (l,m), and axis 1 corresponds to (l',m').
+        _require_scalar_cross_terms(ctUArrayDict, ctVArrayDict, det, "DiscreteFactoredLogLikelihoodViaArrayVectorNoLoopOrig")
         U = ctUArrayDict[det]
         V = ctVArrayDict[det]
 
@@ -2958,6 +2992,110 @@ def _nearest_Q_window_numpy(Q_block, start_indices, npts, xpy=np):
     return Qlms
 
 
+# Largest number of pseudo-modes handed to one Q_inner kernel launch.  The nearest
+# kernel stages A in shared memory (num_threads_x * num_lms * 16 bytes), so wide
+# pseudo-mode blocks are split into chunks and the partial products summed.
+_TIME_INDEXED_SELF_TERM_MAX_COLS = 512
+
+
+def _time_indexed_self_term_block(U, V, xpy=np):
+    """Pack time-indexed cross terms into one pseudo-mode time series.
+
+    U and V have shape (npts_full, n_lm, n_lm).  For the self term only
+        Re[ sum_ij c_ij U_ij ]   with  c_ij = |F|^2 conj(Y_i) Y_j   (Hermitian in ij)
+        Re[ sum_ij d_ij V_ij ]   with  d_ij = F^2 Y_i Y_j           (symmetric in ij)
+    is needed, so each unordered pair (i<=j) is one pseudo-mode:
+        U:  U_ii on the diagonal,  U_ij + conj(U_ji) for i<j
+        V:  V_ii on the diagonal,  V_ij + V_ji       for i<j
+    with weights c_ij, d_ij.  This halving is exact for any U and V (no Hermitian
+    or symmetric assumption): Re[c_ij U_ij + c_ji U_ji] = Re[c_ij (U_ij + conj(U_ji))]
+    because c_ji = conj(c_ij), and d_ij V_ij + d_ji V_ji = d_ij (V_ij + V_ji).
+
+    Returns (block, iu, ju): block has shape (npts_full, n_lm*(n_lm+1)) and is
+    C-contiguous complex128, the first half holding the U pseudo-modes and the
+    second half the V pseudo-modes, in the order of the (iu, ju) pair index arrays.
+    """
+    n_lm = U.shape[1]
+    iu, ju = np.triu_indices(n_lm)
+    off = np.nonzero(iu != ju)[0]          # column positions of the i<j pairs
+    iu_x = xpy.asarray(iu)
+    ju_x = xpy.asarray(ju)
+    off_x = xpy.asarray(off)
+    iu_off = xpy.asarray(iu[off])
+    ju_off = xpy.asarray(ju[off])
+    U_cols = U[:, iu_x, ju_x]              # fancy indexing: a copy, U itself is untouched
+    U_cols[:, off_x] += xpy.conj(U[:, ju_off, iu_off])
+    V_cols = V[:, iu_x, ju_x]
+    V_cols[:, off_x] += V[:, ju_off, iu_off]
+    block = xpy.ascontiguousarray(xpy.concatenate([U_cols, V_cols], axis=1).astype(np.complex128, copy=False))
+    return block, iu, ju
+
+
+def _time_indexed_self_term_weights(F_vec, Ylms_vec, iu, ju, xpy=np):
+    """Per-extrinsic-sample weights matching _time_indexed_self_term_block:
+    (npts_extrinsic, n_lm*(n_lm+1)) complex128, C-contiguous."""
+    iu_x = xpy.asarray(iu)
+    ju_x = xpy.asarray(ju)
+    FF = (F_vec*xpy.conj(F_vec)).real[..., np.newaxis]
+    w_U = FF * xpy.conj(Ylms_vec[:, iu_x]) * Ylms_vec[:, ju_x]
+    w_V = xpy.square(F_vec)[..., np.newaxis] * Ylms_vec[:, iu_x] * Ylms_vec[:, ju_x]
+    return xpy.ascontiguousarray(xpy.concatenate([w_U, w_V], axis=1).astype(np.complex128, copy=False))
+
+
+def _time_indexed_self_term(U, V, F_vec, Ylms_vec, ifirst, frac_first, npts, time_interp, xpy=np):
+    """Self term rho_sq_det(e, t) for time-indexed cross terms, WITHOUT the
+    0.5 (D_ref/D)^2 factor:
+        Re[ |F_e|^2 sum_ij conj(Y_ei) Y_ej U_ij(t) + F_e^2 sum_ij Y_ei Y_ej V_ij(t) ]
+    evaluated at the same per-sample window (ifirst[e] + j, with the same
+    'nearest'/'cubic' time_interp handling) at which the data term gathers Q.
+    Reuses the Q_inner_product kernels / numpy windows with the pairs as pseudo-modes.
+
+    Returns a real array of shape (npts_extrinsic, npts).
+    """
+    block, iu, ju = _time_indexed_self_term_block(U, V, xpy=xpy)
+    W = _time_indexed_self_term_weights(F_vec, Ylms_vec, iu, ju, xpy=xpy)
+    n_cols = block.shape[1]
+    npts_extrinsic = W.shape[0]
+    out = xpy.zeros((npts_extrinsic, npts), dtype=np.complex128)
+    if not (xpy is np):
+        for k0 in range(0, n_cols, _TIME_INDEXED_SELF_TERM_MAX_COLS):
+            k1 = min(k0 + _TIME_INDEXED_SELF_TERM_MAX_COLS, n_cols)
+            block_k = xpy.ascontiguousarray(block[:, k0:k1])
+            W_k = xpy.ascontiguousarray(W[:, k0:k1])
+            if time_interp == 'nearest':
+                out += Q_inner_product.Q_inner_product_cupy(block_k, W_k, ifirst, npts)
+            else:
+                out += Q_inner_product.Q_inner_product_cubic_cupy(block_k, W_k, ifirst, frac_first, npts)
+    else:
+        if time_interp == 'nearest':
+            windows = _nearest_Q_window_numpy(block, ifirst, npts, xpy=xpy)
+        else:
+            windows = _cubic_Q_window_numpy(block, ifirst, frac_first, npts)
+        out += np.einsum("ek,etk->et", W, windows)
+    return out.real
+
+
+def _require_time_indexed_supported(time_interp, time_quadrature, explicit_time_values,
+                                    q_deltaT, q_deltaT_attr, deltaT):
+    """Refuse NoLoop options that the time-indexed (3-D) self term does not implement.
+
+    The time-indexed self term is gathered with the 'nearest' or 'cubic' stencil at the
+    same window as Q on the likelihood's own time grid.  The 'sinc' stencil, a Q pregrid
+    with its own spacing, explicitly supplied per-time positions, and the 'bandlimited' /
+    'peak-local' quadratures (which reconstruct lnL(t) assuming rho_sq does not depend on
+    time) have not been implemented or checked for it, so they raise instead of
+    returning an unchecked number."""
+    if time_interp not in ('nearest', 'cubic'):
+        raise NotImplementedError("time-indexed cross terms support time_interp 'nearest' and 'cubic' only, got {!r}".format(time_interp))
+    if time_quadrature in ('bandlimited', 'peak-local'):
+        raise NotImplementedError("time_quadrature={!r} assumes a time-independent self term; it is not implemented for time-indexed cross terms (use 'simpson' or 'trapezoid')".format(time_quadrature))
+    if explicit_time_values:
+        raise NotImplementedError("explicit_time_values is not implemented for time-indexed cross terms")
+    for q in (q_deltaT, q_deltaT_attr):
+        if q is not None and float(q) != float(deltaT):
+            raise NotImplementedError("an independently spaced Q pregrid (q_deltaT={} vs deltaT={}) is not implemented for time-indexed cross terms".format(q, deltaT))
+
+
 def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDict, rholmsArrayDict, ctUArrayDict,ctVArrayDict,epochDict,Lmax=2,array_output=False,xpy=np, loglikelihood=_factored_lnL_helper,return_lnLt=False,phase_marginalization=False,n_cal=1,cal_method='loop',cal_distmarg=None,cal_log_weights=None,return_cal_components=False,time_interp='nearest',ctUArrayDict_cal=None,ctVArrayDict_cal=None,time_quadrature=None,explicit_time_values=False,return_time_draw=False,time_draw_uniforms=None,q_deltaT=None):
     """
     DiscreteFactoredLogLikelihoodViaArray uses the array-ized data structures to compute the log likelihood,
@@ -3080,6 +3218,25 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
         grid would cost more than the dense one, is given the 'bandlimited' value.
         Same exclusions as 'bandlimited', PLUS phase marginalization, which it
         refuses.  RIFT.likelihood.time_marginalization_peak_local.
+
+    Time-indexed cross terms (ctUArrayDict[det].ndim == 3)
+    ------------------------------------------------------
+    For the time-domain fixed-segment code path, U and V depend on the arrival
+    time and are supplied as (npts_full, n_lms, n_lms) arrays on the SAME time
+    grid and epoch as rholmsArrayDict[det] (axis 0 of U <-> axis 1 of rholm).
+    The self term is then evaluated per sample and per time at the same window
+    index (ifirst + j, with the same time_interp handling) as the data term,
+    and rho_sq becomes genuinely (npts_extrinsic, npts).  Detectors may mix
+    (some scalar, some time-indexed).  All n_cal==1 reductions are supported
+    (time marginalization, return_lnLt, phase_marginalization, and any
+    elementwise loglikelihood such as the distance-marginalization table).
+    Calibration marginalization (n_cal>1, cal_method='fused', ctUArrayDict_cal)
+    is refused with NotImplementedError for time-indexed cross terms.
+    The self term is gathered with the 'nearest' and 'cubic' stencils on the
+    likelihood's own time grid only: time_interp='sinc', an independently spaced
+    Q pregrid (q_deltaT != deltaT), explicit_time_values, and the 'bandlimited'
+    and 'peak-local' time quadratures (which assume a time-independent rho_sq)
+    are refused with NotImplementedError when any detector is time-indexed.
     """
     global distMpcRef
 
@@ -3147,6 +3304,28 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
     detectors = rholmsArrayDict.keys()
     npts = len(tvals)
     npts_extrinsic = len(P_vec.phi)
+
+    # Time-indexed cross terms: validate the shapes up front and refuse the
+    # calibration-marginalization paths, whose rholm buffers hold n_cal
+    # concatenated realizations and whose self term is per realization.
+    time_indexed_UV = {}
+    for det in detectors:
+        U_ndim = np.ndim(ctUArrayDict[det])
+        V_ndim = np.ndim(ctVArrayDict[det])
+        if U_ndim != V_ndim or U_ndim not in (2, 3):
+            raise ValueError("ctUArrayDict[{}] and ctVArrayDict[{}] must both be 2-D or both be 3-D; got ndim {} and {}".format(det, det, U_ndim, V_ndim))
+        time_indexed_UV[det] = (U_ndim == 3)
+        if time_indexed_UV[det]:
+            npts_full_det = rholmsArrayDict[det].shape[-1]
+            if ctUArrayDict[det].shape[0] != npts_full_det or ctVArrayDict[det].shape[0] != npts_full_det:
+                raise ValueError("time-indexed cross terms for {} must share the rholm time grid: U {} V {} vs rholm length {}".format(det, ctUArrayDict[det].shape, ctVArrayDict[det].shape, npts_full_det))
+            if n_cal != 1:
+                raise NotImplementedError("time-indexed cross terms for {} are not implemented with calibration marginalization (n_cal={})".format(det, n_cal))
+            if (ctUArrayDict_cal is not None) or (ctVArrayDict_cal is not None):
+                raise NotImplementedError("time-indexed cross terms for {} are not implemented together with ctUArrayDict_cal/ctVArrayDict_cal".format(det))
+    if any(time_indexed_UV.values()):
+        _require_time_indexed_supported(time_interp, time_quadrature, explicit_time_values,
+                                        q_deltaT, getattr(P_vec, 'q_deltaT', None), float(P_vec.deltaT))
     # npts_full = len(rholmsArrayDict[detectors[0]][0]) # all have same size
     # print " npts :", npts
     # print " npts_full:", npts_full
@@ -3208,6 +3387,9 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
     # result is bitwise unchanged.  (The calibration path already did exactly this with
     # broadcast_to for rho_sq_cal; this brings the ordinary path in line.)
     rho_sq_vec = xpy.zeros(npts_extrinsic, dtype=np.float64)
+    # Time-indexed self terms (ctUArrayDict[det] 3-D) are genuinely (npts_extrinsic, npts);
+    # they are summed here and added to the broadcast rho_sq_vec after the detector loop.
+    rho_sq_t = None
 
     # When marginalizing over calibration (n_cal>1), cache the per-detector data
     # term inputs here; the calibration-independent rho_sq is still accumulated
@@ -3259,8 +3441,8 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
         detector_location, detector_response = _detector_geometry(det, xpy)
 
         # These do not depend on extrinsic params.
-        # Arrays of shape (n_lms, n_lms).
-        # Axis 0 corresponds to (l,m), and axis 1 corresponds to (l',m').
+        # Arrays of shape (n_lms, n_lms), or (npts_full, n_lms, n_lms) when time-indexed.
+        # The last two axes correspond to (l,m) and (l',m').
         U = ctUArrayDict[det]
         V = ctVArrayDict[det]
 
@@ -3308,26 +3490,33 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
 #        ilast = ifirst + npts
 
 
-        # Has shape (npts_extrinsic,)
-        rho_sq_det = (
+        if time_indexed_UV[det]:
+          # Time-indexed U,V: has shape (npts_extrinsic, npts), gathered at the
+          # same window index (and interpolation) as Q below.  Uses the original
+          # (un-phase-conjugated) Ylms_vec, like the scalar self term.
+          rho_sq_det = _time_indexed_self_term(U, V, F_vec, Ylms_vec, ifirst, frac_first, npts, time_interp, xpy=xpy)
+          rho_sq_det *= xpy.asarray(0.5 * xpy.square(distMpcRef / distMpc)).reshape(-1, 1)
+        else:
+          # Has shape (npts_extrinsic,)
+          rho_sq_det = (
             (F_vec*xpy.conj(F_vec)).real *
             xpy.einsum(
                 "...i,...j,ij",
                 xpy.conj(Ylms_vec), Ylms_vec, U,
             ).real
-        )
+          )
 
-        rho_sq_det += (
+          rho_sq_det += (
             xpy.square(F_vec) *
             xpy.einsum(
                 "...i,...j,ij",
                 Ylms_vec, Ylms_vec, V,
             )
-        ).real
-        # NOTE: Double-check this 0.5 is correct.  It used to be -0.25, but
-        # we're slightly reorganizing the expressions from term2 = -0.5 rho_sq
-        # into using rho_sq directly
-        rho_sq_det *= 0.5 * xpy.square(distMpcRef / distMpc)
+          ).real
+          # NOTE: Double-check this 0.5 is correct.  It used to be -0.25, but
+          # we're slightly reorganizing the expressions from term2 = -0.5 rho_sq
+          # into using rho_sq directly
+          rho_sq_det *= 0.5 * xpy.square(distMpcRef / distMpc)
 
         # Fused-calmarg self-term fix: the per-realization template self-term
         # rho_sq_c = <C_c h | C_c h>, built EXACTLY like rho_sq_det above but from the
@@ -3466,7 +3655,11 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
 
         # Accumulate term2 into the time-dependent log likelihood.
         # Have to create a view with an extra axis so they broadcast.
-        rho_sq_vec += rho_sq_det
+        if time_indexed_UV[det]:
+            # already (npts_extrinsic, npts)
+            rho_sq_t = rho_sq_det if rho_sq_t is None else rho_sq_t + rho_sq_det
+        else:
+            rho_sq_vec += rho_sq_det
         # lnL_t_accum += term2[..., np.newaxis]
 
 #        print lnL_t_accum.shape, lnL_t.shape
@@ -3480,6 +3673,9 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
     # helpers, which are free to write -- go through _dense_rho_sq() and pay exactly what
     # they paid before.
     rho_sq = xpy.broadcast_to(rho_sq_vec[:, np.newaxis], (npts_extrinsic, npts))
+    if rho_sq_t is not None:
+        # time-indexed self terms: rho_sq is then a dense (npts_extrinsic, npts) array
+        rho_sq = rho_sq_t + rho_sq
 
     def _dense_rho_sq(a):
         """A writable, contiguous copy of a possibly stride-0 rho_sq view."""
