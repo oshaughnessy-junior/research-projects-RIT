@@ -54,7 +54,7 @@ if _use_hpip_pp:
 
 # Backward compatibility
 from RIFT.misc.dag_utils_generic import which
-from RIFT.misc.cip_pipeline import flag_final_group_unique
+from RIFT.misc.cip_pipeline import flag_final_group_unique, configure_eccentricity_prior
 # leaf module: numpy only, so this does not drag numba/cupy into the pipeline script
 from RIFT.likelihood.time_interp_choice import (
     BARE_FLAG_SENTINEL, CROSSOVER_GUIDANCE, resolve_interpolate_time_request)
@@ -547,7 +547,7 @@ parser.add_argument("--use-jax-ile",action='store_true',help="Use `which integra
 parser.add_argument("--jax-ile-container-ok",action='store_true',help="Override the --use-jax-ile + --use-osg refusal (see --use-jax-ile help).  Pass this ONLY when the container named by SINGULARITY_RIFT_IMAGE / resolved via SINGULARITY_BASE_EXE_DIR actually provides both a JAX installation and the integrate_likelihood_extrinsic_jax executable -- no container built by this repository does.  Has no effect without --use-jax-ile, and does not affect the separate --lisa-known-sky refusal.")
 parser.add_argument("--fake-data-cache",type=str)
 parser.add_argument("--spin-magnitude-prior",default='default',type=str,help="options are default [uniform mag for precessing, zprior for aligned], volumetric, uniform_mag_prec, uniform_mag_aligned, zprior_aligned")
-parser.add_argument("--eccentricity-prior",default='uniform',type=str,choices=['uniform','log_uniform'],help="options are uniform in e ('uniform') and uniform in log(e) ('log_uniform')")  # constrained: the value is forwarded verbatim to CIP, which only branches on the exact string 'log_uniform', so an unrecognized value here would silently run the uniform prior instead of failing
+parser.add_argument("--eccentricity-prior",default='uniform',type=str,choices=['uniform','log_uniform'],help="Target prior for convergence subdags and the final CIP group: uniform in e ('uniform') or uniform in log(e) ('log_uniform'). Preliminary eccentric PE groups use uniform.")  # constrained: the value is forwarded verbatim to CIP, which only branches on the exact string 'log_uniform', so an unrecognized value here would silently run the uniform prior instead of failing
 parser.add_argument("--force-lambda-max",default=None,type=float,help="Provide this value to override the value of lambda-max provided") 
 parser.add_argument("--force-lambda-small-max",default=None,type=float,help="Provide this value to override the value of lambda-small-max provided") 
 parser.add_argument("--force-lambda-no-linear-init",action='store_true',help="Disables use of priors focused towards small lambda for initial iterations. Designed for PP plot tests with wide/uniform priors.")
@@ -644,6 +644,32 @@ parser.add_argument("--manual-initial-grid",default=None,type=str,help="Filename
 parser.add_argument("--manual-initial-grid-supplements",action='store_true', help="Manual inital grid used to SUPPLEMENT output of the default helper grid.")
 parser.add_argument("--manual-extra-ile-args",default=None,type=str,help="Avenue to adjoin extra ILE arguments.  Needed for unusual configurations (e.g., if channel names are not being selected, etc)")
 parser.add_argument("--internal-ile-force-adapt-all",action='store_true', help="Syntactic sugar to prevent need to add manual-extra-ile-args for this: easier on user")
+# --- Time-domain (Toeplitz) inner product + glitch marginalization passthroughs ---
+#   ALL default None/OFF => byte-identical pipeline behavior (the ILE default inner product
+#   is the classic fd-diagonal lsu.ComplexIP/ComplexOverlap).  These are thin passthroughs to
+#   the ILE binary flags of the same name; they exist so an ini-driven PRODUCTION run can
+#   enable the TD path + glitch marginalization without --manual-extra-ile-args string surgery,
+#   and (crucially) so the --glitch-basis-file .npz rides the condor transfer_input_files list.
+parser.add_argument("--internal-ile-inner-product",default=None,type=str,help="Passthrough to ILE --internal-ile-inner-product: 'fd-diagonal' (default OFF, classic), 'td-toeplitz' (time-domain Toeplitz precision kernel, plan T3) or 'td-gs' (fully time-domain route: unwindowed data, untapered templates, Toeplitz covariance on hard-cut pieces, U(t)/V(t); see --internal-ile-td-mref/-piece/-acf-file). EXPERIMENTAL. Enables the TD/glitch flags below.")
+parser.add_argument("--internal-ile-td-mref",default=None,type=float,help="Passthrough to ILE --td-mref MSUN (td-gs: time unit of the pieces).")
+parser.add_argument("--internal-ile-td-piece",action='append',default=None,help="Passthrough to ILE --td-piece 'START,END' in units of M_ref relative to the event time (td-gs; repeatable). In an ini give a list literal or a single quoted string.")
+parser.add_argument("--internal-ile-td-ifo-time-offset",action='append',default=None,help="Passthrough to ILE --td-ifo-time-offset 'IFO:SECONDS' (td-gs; repeatable).")
+parser.add_argument("--internal-ile-td-acf-file",action='append',default=None,help="Passthrough to ILE --td-acf-file 'IFO:path.npy' (td-gs; repeatable; tdanalysis (2,N) [tau,R] format). The .npy is ADDED TO THE ILE CONDOR TRANSFER LIST and the flag rewritten to the transferred basename on OSG, as for --internal-ile-glitch-basis-file.")
+parser.add_argument("--internal-ile-td-dense-max-n",default=None,type=int,help="Passthrough to ILE --td-dense-max-n (td-gs).")
+parser.add_argument("--internal-ile-td-u-stride",default=None,type=int,help="Passthrough to ILE --td-u-stride (td-gs).")
+parser.add_argument("--internal-ile-td-u-method",default=None,type=str,help="Passthrough to ILE --td-u-method {auto,prefix,recursion,batched,chunked} (td-gs).")
+parser.add_argument("--internal-ile-td-highpass",default=None,type=float,help="Passthrough to ILE --td-highpass FREQ (td-gs: zero-phase high-pass of the data, e.g. 10 Hz for real strain with walled ACFs; default off).")
+parser.add_argument("--internal-ile-td-u-svd-tol",default=None,type=float,help="Passthrough to ILE --td-u-svd-tol TOL (td-gs: SVD-over-time compression of U(t),V(t); recommended 1e-13; default off).")
+parser.add_argument("--internal-ile-td-acf-cond",default=None,type=float,help="Passthrough to ILE --td-acf-cond (td-gs PSD->ACF target condition number).")
+parser.add_argument("--internal-ile-td-whiteness-check",action='store_true',default=False,help="Passthrough to ILE --td-whiteness-check (td-gs).")
+parser.add_argument("--internal-ile-td-solver",default=None,type=str,help="Passthrough to ILE --td-solver {auto,dense,pcg} (TD path only).")
+parser.add_argument("--internal-ile-td-acf-duration",default=None,type=float,help="Passthrough to ILE --td-acf-duration [s] (TD truncated-segment path).")
+parser.add_argument("--internal-ile-td-analysis-start",default=None,type=float,help="Passthrough to ILE --td-analysis-start [s] (template-frame segment start, plan T5/D1).")
+parser.add_argument("--internal-ile-td-analysis-end",default=None,type=float,help="Passthrough to ILE --td-analysis-end [s] (template-frame segment end, plan T5/D1).")
+parser.add_argument("--internal-ile-td-gap",action='append',default=None,help="Passthrough to ILE --td-gap 'tstart,tend' (geocenter s rel. event, repeatable). In an ini give a Python list literal or a single quoted string.")
+parser.add_argument("--internal-ile-glitch-basis",action='append',default=None,help="Passthrough to ILE --glitch-basis 'IFO:t1,t2,f1,f2[:r]' (analytic Slepian glitch marginalization, G3). Repeatable. Requires --internal-ile-inner-product td-toeplitz. In an ini give a list literal or a single quoted string.")
+parser.add_argument("--internal-ile-glitch-basis-file",action='append',default=None,help="Data-informed glitch basis for one detector, 'IFO:path.npz' (G4, glitschen/BayesWave PCA/SVD). Repeatable. The .npz is ADDED TO THE ILE CONDOR TRANSFER LIST and the ILE flag is rewritten to reference the transferred basename, so it works on execute nodes / OSG. Requires --internal-ile-inner-product td-toeplitz. In an ini give a list literal or a single quoted string.")
+parser.add_argument("--internal-ile-glitch-sigma",default=None,type=str,help="Passthrough to ILE --glitch-sigma (glitch amplitude hyperparameter mode; only 'profile' is wired).")
 parser.add_argument("--internal-puff-transverse",action='store_true', help=" appends the following arguments: --parameter phi1 --parameter phi2 --parameter chi1_perp_u --parameter chi2_perp_u ")
 parser.add_argument("--internal-puff-mu-random-transverse", action='store_true',
                     help="Opt-in BBH/BasicIteration: use mu1,mu2,q,s2z puff plus RANDOM transverse spins for the first CIP batch; later batches (including refinement subdags) use internal-puff-transverse covariance puff. Default: unchanged legacy puff.")
@@ -1737,6 +1763,87 @@ if not(opts.manual_extra_ile_args is None):
     line += " {} ".format(opts.manual_extra_ile_args)  # embed with space on each side, avoid collisions
     if '--declination ' in opts.manual_extra_ile_args:   # if we are pinning dec, we aren't using a cosine coordinate. Don't mess up.
         line = line.replace('--declination-cosine-sampler', '')
+# --- Time-domain (Toeplitz) inner product + glitch marginalization passthroughs ---
+#   Default None/OFF => nothing appended => byte-identical args_ile.txt.  When the TD inner
+#   product is requested, thread the ILE flags of the same name into args_ile.txt.  The
+#   --glitch-basis-file .npz files are additionally routed onto the ILE condor transfer list
+#   (via ile_additional_files_to_transfer, the same mechanism/idiom PSD-independent auxiliary
+#   files already use) and the ILE flag is rewritten to the transferred BASENAME on OSG /
+#   file-transfer (mirroring the PSD --psd-file convention: abspath in the transfer list =
+#   condor source, basename on the execute node), while a shared-FS (non-OSG) run keeps the
+#   absolute path exactly as PSD files do.
+def _as_list(_v):
+    # append-action gives a list on the CLI; an ini's eval() of a quoted scalar gives a str.
+    if _v is None:
+        return []
+    return _v if isinstance(_v, (list, tuple)) else [_v]
+if opts.internal_ile_inner_product:
+    line += " --internal-ile-inner-product {} ".format(opts.internal_ile_inner_product)
+    if opts.internal_ile_td_solver:
+        line += " --td-solver {} ".format(opts.internal_ile_td_solver)
+    if not(opts.internal_ile_td_acf_duration is None):
+        line += " --td-acf-duration {} ".format(opts.internal_ile_td_acf_duration)
+    if not(opts.internal_ile_td_analysis_start is None):
+        line += " --td-analysis-start {} ".format(opts.internal_ile_td_analysis_start)
+    if not(opts.internal_ile_td_analysis_end is None):
+        line += " --td-analysis-end {} ".format(opts.internal_ile_td_analysis_end)
+    for _gap in _as_list(opts.internal_ile_td_gap):
+        line += " --td-gap {} ".format(_gap)
+    for _gb in _as_list(opts.internal_ile_glitch_basis):
+        line += " --glitch-basis {} ".format(_gb)
+    if opts.internal_ile_glitch_sigma:
+        line += " --glitch-sigma {} ".format(opts.internal_ile_glitch_sigma)
+    for _spec in _as_list(opts.internal_ile_glitch_basis_file):
+        _ifo, _path = _spec.split(":", 1)
+        _path_abs = os.path.abspath(os.path.expanduser(_path))
+        if not os.path.isfile(_path_abs):
+            print(" FAILURE: --internal-ile-glitch-basis-file {}: no such file {}".format(_ifo, _path_abs))
+            sys.exit(1)
+        if opts.use_osg:
+            for _source in (opts.ile_additional_files_to_transfer or "").split(","):
+                if not _source:
+                    continue
+                _source_abs = os.path.abspath(os.path.expanduser(_source))
+                if (os.path.basename(_source_abs) == os.path.basename(_path_abs)
+                        and os.path.realpath(_source_abs) != os.path.realpath(_path_abs)):
+                    print(" FAILURE: OSG glitch basis basename collision: {} and {}".format(
+                        _source_abs, _path_abs))
+                    sys.exit(1)
+        # abspath onto the transfer list (condor source); basename on OSG execute nodes.
+        opts.ile_additional_files_to_transfer = (
+            (opts.ile_additional_files_to_transfer + "," + _path_abs)
+            if opts.ile_additional_files_to_transfer else _path_abs)
+        _ref = os.path.basename(_path_abs) if opts.use_osg else _path_abs
+        line += " --glitch-basis-file {}:{} ".format(_ifo, _ref)
+    # Finite covariance options are opt-in and retain their native ILE names.
+    for _name in ('mref', 'dense_max_n', 'u_stride', 'u_method', 'highpass', 'u_svd_tol', 'acf_cond'):
+        _value = getattr(opts, 'internal_ile_td_' + _name)
+        if _value is not None:
+            line += " --td-{} {} ".format(_name.replace('_', '-'), _value)
+    for _name in ('piece', 'ifo_time_offset'):
+        for _value in _as_list(getattr(opts, 'internal_ile_td_' + _name)):
+            line += " --td-{} {} ".format(_name.replace('_', '-'), _value)
+    if opts.internal_ile_td_whiteness_check:
+        line += " --td-whiteness-check "
+    for _spec in _as_list(opts.internal_ile_td_acf_file):
+        _ifo, _path = _spec.split(':', 1)
+        _path_abs = os.path.abspath(_path)
+        if not os.path.isfile(_path_abs):
+            raise ValueError("missing TD-GS ACF file: " + _path_abs)
+        if opts.use_osg:
+            raise ValueError("TD-GS ACF transfer on OSG is not yet supported")
+        line += " --td-acf-file {}:{} ".format(_ifo, _path_abs)
+elif (opts.internal_ile_td_gap or opts.internal_ile_glitch_basis or
+      opts.internal_ile_glitch_basis_file or opts.internal_ile_glitch_sigma or
+      opts.internal_ile_td_solver or opts.internal_ile_td_analysis_start is not None or
+      opts.internal_ile_td_analysis_end is not None or opts.internal_ile_td_acf_duration is not None or
+      any(getattr(opts, 'internal_ile_td_' + n) is not None for n in
+          ('mref', 'dense_max_n', 'u_stride', 'u_method', 'highpass', 'u_svd_tol', 'acf_cond')) or
+      opts.internal_ile_td_piece or opts.internal_ile_td_ifo_time_offset or opts.internal_ile_td_acf_file or
+      opts.internal_ile_td_whiteness_check):
+    print(" FAILURE: --internal-ile-td-* / --internal-ile-glitch-* require "
+          "--internal-ile-inner-product td-toeplitz")
+    sys.exit(1)
 if opts.internal_ile_force_adapt_all:
     line += " --force-adapt-all "
 # NOTE on per-distance export (grid/slices): the --last-iteration-export-*
@@ -2239,6 +2346,8 @@ with open("args_cip_list.txt",'w') as f:
            parser.error("--internal-truncate-cip-arg-list must be positive")
        lines = lines[-opts.internal_truncate_cip_arg_list:]  # truncate the cip arg list file
        n_iterations = sum(1 if line.split()[0] == "Z" else int(line.split()[0].lstrip("G")) for line in lines)
+   if opts.assume_eccentric and not opts.internal_use_amr:
+       lines = configure_eccentricity_prior(lines, opts.eccentricity_prior)
    # The final CIP group produces both the published posterior and the downstream grid,
    # so it gets the duplicate-free fair draw (capped at sum(w)/max(w)).  Internal
    # iterations keep the fair draw with duplicates allowed, so successive iterations feed

@@ -3822,7 +3822,9 @@ def hlmoft(P, Lmax=2,nr_polarization_convention=False, fixed_tapering=False, sil
            # center-DC grid, and the default (RIFT reversed) convention would shift the
            # high-pass window by one bin between (l,m) and (l,-m), breaking the
            # conjugate-pair identity at the percent level.  See evaluate_fvals docs.
-           our_fvals = evaluate_fvals(hlmsdict[(2,2)], lal_convention=True)
+           # all modes share one grid; a ModeArray without (2,2) (per-|m| calls) uses any mode's
+           our_fvals = evaluate_fvals(hlmsdict[(2,2)] if (2,2) in hlmsdict else next(iter(hlmsdict.values())),
+                                      lal_convention=True)
            vectaper_symmetric  = np.ones(len(our_fvals))
            indx_below = np.logical_and(np.abs(our_fvals)<P.fmin, np.abs(our_fvals)>=P.fmin*fd_standoff_factor)
            vectaper_symmetric[indx_below] = 0.5 + 0.5*np.cos(np.pi* (np.abs(our_fvals[indx_below])/P.fmin - 1)/(1-fd_standoff_factor))
@@ -3924,12 +3926,13 @@ def hlmoft(P, Lmax=2,nr_polarization_convention=False, fixed_tapering=False, sil
 
     if (P.approx == lalsim.SEOBNRv2 or P.approx == lalsim.SEOBNRv1 or P.approx == lalSEOBv4 or P.approx==lalsim.SEOBNRv4_opt or P.approx == lalsim.EOBNRv2 or P.approx == lalTEOBv2 or P.approx==lalTEOBv4 or P.approx == lalSEOBNRv4HM):
         hlm_out = hlmoft_SEOB_dict(P,Lmax=Lmax)
-        if True: #not (P.taper == lsu_TAPER_NONE): #True: #P.taper:
+        for key in hlm_out.keys():
+            hlm_out[key].data.data *= sign_factor
+        if not(no_condition): #not (P.taper == lsu_TAPER_NONE): #True: #P.taper:
             ntaper = int(0.01*hlm_out[(2,2)].data.length)  # fixed 1% of waveform length, at start
             ntaper = np.max([ntaper, int(1./(P.fmin*P.deltaT))])  # require at least one waveform cycle of tapering; should never happen
             vectaper= 0.5 - 0.5*np.cos(np.pi*np.arange(ntaper)/(1.*ntaper))
             for key in hlm_out.keys():
-                hlm_out[key].data.data *= sign_factor
                 # Apply a naive filter to the start. Ideally, use an earlier frequency to start with
                 hlm_out[key].data.data[:ntaper]*=vectaper
         return hlm_out
@@ -3938,13 +3941,14 @@ def hlmoft(P, Lmax=2,nr_polarization_convention=False, fixed_tapering=False, sil
         if not hlm_out:
             print( " Failed generation: SEOBNRv3 ")
             sys.exit(0)
-        if True: #P.taper:
+        for key in hlm_out.keys():
+            hlm_out[key].data.data *= sign_factor
+        if not(no_condition): #P.taper:
             ntaper = int(0.01*hlm_out[(2,2)].data.length)  # fixed 1% of waveform length, at start
             ntaper = np.max([ntaper, int(1./(P.fmin*P.deltaT))])  # require at least one waveform cycle of tapering; should never happen
             vectaper= 0.5 - 0.5*np.cos(np.pi*np.arange(ntaper)/(1.*ntaper))
             for key in hlm_out.keys():
                 # Apply a naive filter to the start. Ideally, use an earlier frequency to start with
-                hlm_out[key].data.data *= sign_factor
                 hlm_out[key].data.data[:ntaper]*=vectaper
         return hlm_out
 
@@ -3959,13 +3963,14 @@ def hlmoft(P, Lmax=2,nr_polarization_convention=False, fixed_tapering=False, sil
                     hlms[mode] = lal.ResizeCOMPLEX16TimeSeries(hlms[mode],0,TDlen)
                 if TDlen < hlms[mode].data.length:  # we have generated too long a signal!...truncate from LEFT. Danger!
                     hlms[mode] = lal.ResizeCOMPLEX16TimeSeries(hlms[mode],hlms[mode].data.length-TDlen,TDlen)
-        if True: #P.taper:
+        for key in hlms.keys():
+            hlms[key].data.data *= sign_factor
+        if not(no_condition): #P.taper:
             ntaper = int(0.01*np.min([hlms[(2,2)].data.length,TDlen_orig]))  # fixed 1% of waveform length, at start, be consistent with other methods
             ntaper = np.max([ntaper, int(1./(P.fmin*P.deltaT))])  # require at least one waveform cycle of tapering; should never happen
             vectaper= 0.5 - 0.5*np.cos(np.pi*np.arange(ntaper)/(1.*ntaper))
             for key in hlms.keys():
                 # Apply a naive filter to the start. Ideally, use an earlier frequency to start with
-                hlms[key].data.data *= sign_factor
                 hlms[key].data.data[:ntaper]*=vectaper
 
         return hlms
@@ -6752,20 +6757,20 @@ def rotate_hlm_static(hlm,alphaA,betaA,gammaA,extra_polarization=None):
         for M in range(-L,L+1):
             hCatOut[(L,M)] = None
             # Define output data
-            if isinstance(hlm[(L,M)], lal.COMPLEX16TimeSeries):
+            if isinstance(h0, lal.COMPLEX16TimeSeries):
                 hCatOut[(L,M)] = lal.CreateCOMPLEX16TimeSeries("Template h(t)", 
                                                  h0.epoch, h0.f0, h0.deltaT, lsu_DimensionlessUnit, 
                                                  h0.data.length)
                 hCatOut[(L,M)].data.data[:] = 0 # initialize
                 lal_type=True
-            elif isinstance(hlm[(L,M)] , lal.Complex16FrequencySeries):
+            elif isinstance(h0, lal.COMPLEX16FrequencySeries):
                 hCatOut[(L,M)] =  lal.CreateCOMPLEX16FrequencySeries("Template h(t)", 
                                                                      h0.epoch, h0.f0, h0.deltaF, lsu_HertzUnit ,
                                                                      h0.data.length)
                 hCatOut[(L,M)].data.data[:] = 0 # initialize
                 lal_type=True
-            elif isinstance(hlm[(L,M)], np.ndarray):
-                hCatOut[(L,M)] = np.zeros(h0.shape)
+            elif isinstance(h0, np.ndarray):
+                hCatOut[(L,M)] = np.zeros(h0.shape, dtype=complex)
             else:
                 raise ValueError(" hlm unknown data type for rotation")
             # Loop and populate, based on input modes. Does not need to be full in input, but will be full output
