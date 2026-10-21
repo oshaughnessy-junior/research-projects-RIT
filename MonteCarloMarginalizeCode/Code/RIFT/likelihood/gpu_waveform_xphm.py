@@ -921,12 +921,15 @@ def _expand(c, attr_names):
     return out
 
 
-def _xas_22_on_grid(Mf, w, a, c, xp):
-    """XAS (2,2) h(f) at geometric frequencies Mf (shape (n, nf)), unmasked."""
+def _xas_22_on_grid(Mf, w, a, c, xp, p=None):
+    """XAS (2,2) h(f) at geometric frequencies Mf (shape (n, nf)), unmasked.
+
+    ``p`` optionally supplies precomputed powers of Mf (see gpu_waveform_xhm)."""
     w2 = _expand(w, list(vars(w)))
     a2 = _expand(a, list(vars(a)))
     c2 = _expand(c, list(vars(c)))
-    p = _powers(Mf, xp)
+    if p is None:
+        p = _powers(Mf, xp)
     phi_ins = _ins_phase_ansatz_int(Mf, p, c2)
     phi_rd = _rd_phase_ansatz_int(Mf, p, w2, c2, xp) + c2.C1MRD + c2.C2MRD * Mf
     phi_int = _int_phase_ansatz_int(Mf, p, w2, c2, xp) + c2.C1Int + c2.C2Int * Mf

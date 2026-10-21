@@ -313,7 +313,9 @@ _ILE_ALL_OPTS = {
     "--distance-slice-skip-threshold", "--distance-slice-wing-delta-lnL",
     "--distance-slice-wing-neff", "--distance-slice-wing-nmax", "--d-max",
     "--d-min", "--d-prior", "--d-prior-redshift", "--eff-lambda", "--e-freq",
-    "--dump-lnL-time-series", "--event", "--event-time",
+    "--dump-lnL-time-series", "--early-time-multirate",
+    "--early-time-multirate-backend", "--early-time-multirate-waveform",
+    "--event", "--event-time",
     "--export-distance-slices", "--export-eos-index",
     "--export-marginal-distance-grid", "--extrinsic-proposal-adapt",
     "--extrinsic-proposal-breadcrumb", "--extrinsic-proposal-output",
@@ -438,6 +440,8 @@ _ILE_FLOAT_OPTS = {
 _ILE_CHOICE_OPTS = {
     "--sampler-l0-rescue-puff-scale": ["fixed", "auto"],
     "--time-posterior-export": ["auto", "continuous", "grid"],
+    "--early-time-multirate-backend": ["numpy", "cupy", "reference"],
+    "--early-time-multirate-waveform": ["lal", "xp"],
 }
 
 
@@ -537,6 +541,9 @@ def check_critical_and_report(opts, optp):
         fatal.append("supplementary likelihood factors are not implemented")
     if is_set("--nr-lookup") or is_set("--nr-params") or is_set("--nr-index"):
         fatal.append("NR-waveform templates (--nr-*) are not implemented")
+    if any(is_set(x) for x in ("--early-time-multirate", "--early-time-multirate-backend",
+                               "--early-time-multirate-waveform")):
+        fatal.append("--early-time-multirate* (two-rate precompute) is not implemented")
     if is_set("--zero-likelihood"):
         fatal.append("--zero-likelihood is not implemented")
     if is_set("--maximize-only"):

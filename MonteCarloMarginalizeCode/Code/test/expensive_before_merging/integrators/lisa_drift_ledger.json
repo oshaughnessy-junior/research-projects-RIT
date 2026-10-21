@@ -217,6 +217,18 @@
       "decision": "NA",
       "reason": "TEOBResumS eccentric-frequency convention. Tied to a ground-based eccentric waveform path the LISA driver does not offer (it takes --modes / h5 frames)."
     },
+    "OPTION:--early-time-multirate": {
+      "decision": "NA",
+      "reason": "Opt-in two-rate precompute (PR #436) for ground-based detector strain: it wraps PrecomputeLikelihoodTerms, decimates each IFO's C^-1 d, and builds lalsimulation FD modes per |m|. The LISA driver precomputes through PrecomputeAlignedSpinLISA with the TDI response and has no per-IFO strain to decimate. A LISA multirate path would be its own design, not a port of this one."
+    },
+    "OPTION:--early-time-multirate-backend": {
+      "decision": "NA",
+      "reason": "Opt-in two-rate precompute (PR #436) for ground-based detector strain: it wraps PrecomputeLikelihoodTerms, decimates each IFO's C^-1 d, and builds lalsimulation FD modes per |m|. The LISA driver precomputes through PrecomputeAlignedSpinLISA with the TDI response and has no per-IFO strain to decimate. A LISA multirate path would be its own design, not a port of this one."
+    },
+    "OPTION:--early-time-multirate-waveform": {
+      "decision": "NA",
+      "reason": "Opt-in two-rate precompute (PR #436) for ground-based detector strain: it wraps PrecomputeLikelihoodTerms, decimates each IFO's C^-1 d, and builds lalsimulation FD modes per |m|. The LISA driver precomputes through PrecomputeAlignedSpinLISA with the TDI response and has no per-IFO strain to decimate. A LISA multirate path would be its own design, not a port of this one."
+    },
     "OPTION:--export-distance-slices": {
       "decision": "NA",
       "reason": "The .dslice export and its placement/tuning knobs. This is a data product for a downstream LIGO CIP distance workflow that the LISA pipeline does not run; there is no consumer. If a LISA distance workflow is ever built, note that the .dslice reweight core was the third Finding-2 site and must not be revived in its pre-#87 form."
