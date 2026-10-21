@@ -861,6 +861,7 @@ jobs:
             MonteCarloMarginalizeCode/Code/test/test_mu_puffball.py \
             MonteCarloMarginalizeCode/Code/test/test_mu_puffball_pipeline.py \
             MonteCarloMarginalizeCode/Code/test/test_eccentric_phase.py \
+            MonteCarloMarginalizeCode/Code/test/test_eccentric_phase_sampling.py \
             MonteCarloMarginalizeCode/Code/test/test_eccentric_phase_puff.py \
             MonteCarloMarginalizeCode/Code/test/test_eccentric_phase_policy.py \
             MonteCarloMarginalizeCode/Code/test/test_eccentric_phase_models.py \
