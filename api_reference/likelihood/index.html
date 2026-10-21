@@ -180,6 +180,15 @@ waveform. Precomputes terms that depend only on intrinsic parameters
 and computes the log likelihood for given values of extrinsic parameters</p>
 <p>Requires python SWIG bindings of the LIGO Algorithms Library (LAL)</p>
 <dl class="py function">
+<dt class="sig sig-object py" id="RIFT.likelihood.factored_likelihood.AssertCalibrationSelfTermInnerProductSupported">
+<span class="sig-prename descclassname"><span class="pre">RIFT.likelihood.factored_likelihood.</span></span><span class="sig-name descname"><span class="pre">AssertCalibrationSelfTermInnerProductSupported</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">IP_factory</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.likelihood.factored_likelihood.AssertCalibrationSelfTermInnerProductSupported" title="Link to this definition"></a></dt>
+<dd><p>Raise ValueError if <code class="docutils literal notranslate"><span class="pre">IP_factory</span></code> cannot supply the calibration self-term cross terms.</p>
+<p>Called from PrecomputeLikelihoodTerms BEFORE any waveform is generated, so a misconfigured
+job dies at once instead of producing a likelihood whose U/V cross terms and whose
+per-realization calibration self terms come from two DIFFERENT inner products.</p>
+</dd></dl>
+
+<dl class="py function">
 <dt class="sig sig-object py" id="RIFT.likelihood.factored_likelihood.BuildCalibrationSelfTermBasis">
 <span class="sig-prename descclassname"><span class="pre">RIFT.likelihood.factored_likelihood.</span></span><span class="sig-name descname"><span class="pre">BuildCalibrationSelfTermBasis</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">calibration_realizations</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">base_weights2side</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rank_tol</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1e-10</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rank_max</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">verbose</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_cache</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.likelihood.factored_likelihood.BuildCalibrationSelfTermBasis" title="Link to this definition"></a></dt>
 <dd><p>Low-rank basis for the per-realization <a href="#id1"><span class="problematic" id="id2">|</span></a>C_c(f)|^2 profiles used by the fused-
@@ -232,6 +241,18 @@ integrals, ONCE), then each realization’s cross terms are the cheap linear com
 <p>Because <a href="#id21"><span class="problematic" id="id22">|</span></a>C_c(f)|^2 = sum_k alpha[k,c] b_k(f) exactly (to the basis rank_tol), this
 reproduces the per-realization &lt;C_c h|C_c h&gt; to that tolerance.  alpha is real, so
 the U-hermitian / V-symmetric structure of each U^(k) (real weight) carries to U_c.</p>
+<p><code class="docutils literal notranslate"><span class="pre">IP</span></code> MUST be a frequency-domain-diagonal inner product (lsu.ComplexIP): the basis
+weight is applied by assigning <code class="docutils literal notranslate"><span class="pre">IP.weights2side</span></code>, which only a diagonal kernel reads.
+Callers reach this through PrecomputeLikelihoodTerms, which refuses any other inner
+product up front (CalibrationSelfTermInnerProductSupported).</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.likelihood.factored_likelihood.CalibrationSelfTermInnerProductSupported">
+<span class="sig-prename descclassname"><span class="pre">RIFT.likelihood.factored_likelihood.</span></span><span class="sig-name descname"><span class="pre">CalibrationSelfTermInnerProductSupported</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">IP_factory</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.likelihood.factored_likelihood.CalibrationSelfTermInnerProductSupported" title="Link to this definition"></a></dt>
+<dd><p>True if <code class="docutils literal notranslate"><span class="pre">IP_factory</span></code> may be used for the <a href="#id23"><span class="problematic" id="id24">|</span></a>C_c|^2-weighted calibration self-term
+cross terms.  <code class="docutils literal notranslate"><span class="pre">None</span></code> (the default frequency-domain-diagonal lsu path) always is; any
+other factory must advertise <code class="docutils literal notranslate"><span class="pre">supports_calibration_self_term</span> <span class="pre">=</span> <span class="pre">True</span></code>.</p>
 </dd></dl>
 
 <dl class="py function">
@@ -267,7 +288,7 @@ from the time of arrival at the geocenter.</p>
 
 <dl class="py function">
 <dt class="sig sig-object py" id="RIFT.likelihood.factored_likelihood.ComputeModeCrossTermIP">
-<span class="sig-prename descclassname"><span class="pre">RIFT.likelihood.factored_likelihood.</span></span><span class="sig-name descname"><span class="pre">ComputeModeCrossTermIP</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">hlmsA</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">hlmsB</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">psd</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">fmin</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">fMax</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">fNyq</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">deltaF</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">analyticPSD_Q</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">inv_spec_trunc_Q</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">T_spec</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">verbose</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">prefix</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'U'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">same_waveform_Q</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">batched</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.likelihood.factored_likelihood.ComputeModeCrossTermIP" title="Link to this definition"></a></dt>
+<span class="sig-prename descclassname"><span class="pre">RIFT.likelihood.factored_likelihood.</span></span><span class="sig-name descname"><span class="pre">ComputeModeCrossTermIP</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">hlmsA</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">hlmsB</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">psd</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">fmin</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">fMax</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">fNyq</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">deltaF</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">analyticPSD_Q</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">inv_spec_trunc_Q</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">T_spec</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">verbose</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">prefix</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'U'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">same_waveform_Q</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">batched</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">IP_factory</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.likelihood.factored_likelihood.ComputeModeCrossTermIP" title="Link to this definition"></a></dt>
 <dd><p>Compute the ‘cross terms’ between waveform modes, i.e.
 &lt; h_lm | h_l’m’ &gt;.
 The inner product is weighted by power spectral density ‘psd’ and
@@ -277,13 +298,18 @@ i.e. ((l,m),(l’,m’))</p>
 <dl class="simple">
 <dt>same_waveform_Q:  if true, it will do a loop that assumes (a) the same keys in both loops and (b) the same waveform in both (i.e., conjugate transpose)</dt><dd><p>Note we WILL use the ‘prefix’ quantity to identify if we are computing ‘V’ and therefore using a different symmetry!</p>
 </dd>
+<dt>IP_factory:  optional inner-product factory (see RIFT.likelihood.td_inner_product,</dt><dd><p>task T3 of TD_LIKELIHOOD.md).  When None (the default), the inner
+product is exactly the current lsu.ComplexIP construction (byte-identical default
+path).  When provided, IP_factory.ip_scalar(…) returns a drop-in object whose
+.ip(h1, h2) yields the same scalar &lt;h1|h2&gt;.</p>
+</dd>
 </dl>
 </dd></dl>
 
 <dl class="py function">
 <dt class="sig sig-object py" id="RIFT.likelihood.factored_likelihood.ComputeModeCrossTermIPCal">
 <span class="sig-prename descclassname"><span class="pre">RIFT.likelihood.factored_likelihood.</span></span><span class="sig-name descname"><span class="pre">ComputeModeCrossTermIPCal</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">hlmsA</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">hlmsB</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">psd</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">fmin</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">fMax</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">fNyq</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">deltaF</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">calibration_realizations</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">analyticPSD_Q</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">inv_spec_trunc_Q</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">T_spec</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">verbose</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">prefix</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'U'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">same_waveform_Q</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cal_basis</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.likelihood.factored_likelihood.ComputeModeCrossTermIPCal" title="Link to this definition"></a></dt>
-<dd><p>Per-realization <a href="#id23"><span class="problematic" id="id24">|</span></a>C_c(f)|^2-weighted mode cross terms for the fused-calmarg
+<dd><p>Per-realization <a href="#id25"><span class="problematic" id="id26">|</span></a>C_c(f)|^2-weighted mode cross terms for the fused-calmarg
 self-term fix (rho_sq_c = &lt;C_c h | C_c h&gt;; the calmarg self-term-bias analysis note).</p>
 <p>Uses the low-rank basis expansion (BuildCalibrationSelfTermBasis +
 CalibrationSelfTermCrossTermsFromBasis): rank (&lt;= n_spline*(n_spline+1)/2, NOT n_cal)
@@ -295,7 +321,7 @@ across the U and V calls; otherwise it is built here from the local IP weights.<
 
 <dl class="py function">
 <dt class="sig sig-object py" id="RIFT.likelihood.factored_likelihood.ComputeModeIPTimeSeries">
-<span class="sig-prename descclassname"><span class="pre">RIFT.likelihood.factored_likelihood.</span></span><span class="sig-name descname"><span class="pre">ComputeModeIPTimeSeries</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">hlms</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">data</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">psd</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">fmin</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">fMax</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">fNyq</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">N_shift</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">N_window</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">analyticPSD_Q</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">inv_spec_trunc_Q</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">T_spec</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">calibration_realizations</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">calibration_conjugate</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.likelihood.factored_likelihood.ComputeModeIPTimeSeries" title="Link to this definition"></a></dt>
+<span class="sig-prename descclassname"><span class="pre">RIFT.likelihood.factored_likelihood.</span></span><span class="sig-name descname"><span class="pre">ComputeModeIPTimeSeries</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">hlms</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">data</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">psd</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">fmin</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">fMax</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">fNyq</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">N_shift</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">N_window</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">analyticPSD_Q</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">inv_spec_trunc_Q</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">T_spec</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">calibration_realizations</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">calibration_conjugate</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">IP_factory</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.likelihood.factored_likelihood.ComputeModeIPTimeSeries" title="Link to this definition"></a></dt>
 <dd><p>Compute the complex-valued overlap between
 each member of a SphHarmFrequencySeries ‘hlms’
 and the interferometer data COMPLEX16FrequencySeries ‘data’,
@@ -306,6 +332,13 @@ at a discrete series of time shifts.</p>
 <p>Returns a SphHarmTimeSeries object containing the complex inner product
 for discrete values of the reference time tref.  The epoch of the
 SphHarmTimeSeries object is set to account for the transformation</p>
+<dl class="simple">
+<dt>IP_factory:  optional inner-product factory (see RIFT.likelihood.td_inner_product,</dt><dd><p>task T3 of TD_LIKELIHOOD.md).  When None (the default), the overlap
+object is exactly the current lsu.ComplexOverlap construction (byte-identical
+default path).  When provided, IP_factory.overlap(…) returns a drop-in object
+whose .ip(hlm, data) yields the same (rho, rhoTS, rhoIdx, rhoPhase) contract.</p>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="py function">
@@ -387,7 +420,7 @@ term kappa = &lt;h|C_c d&gt; changes per realization, selected by shifting the w
 offset ifirst -&gt; ifirst + c*N_window.</p>
 <p>The template self-term is NOT calibration-independent once the calibration is
 applied to the data: the statistically complete term is the per-realization
-rho_sq_c = &lt;C_c h | C_c h&gt; = &lt;h| <a href="#id25"><span class="problematic" id="id26">|</span></a>C_c|^2 <a href="#id27"><span class="problematic" id="id28">|</span></a>h&gt;.  When the <a href="#id29"><span class="problematic" id="id30">|</span></a>C_c|^2-weighted cross
+rho_sq_c = &lt;C_c h | C_c h&gt; = &lt;h| <a href="#id27"><span class="problematic" id="id28">|</span></a>C_c|^2 <a href="#id29"><span class="problematic" id="id30">|</span></a>h&gt;.  When the <a href="#id31"><span class="problematic" id="id32">|</span></a>C_c|^2-weighted cross
 terms are supplied (ctUArrayDict_cal/ctVArrayDict_cal), this per-realization
 rho_sq_c is used in place of the shared, cal-independent rho_sq=&lt;h|h&gt; – for
 every n_cal, INCLUDING n_cal==1 (a single applied draw still carries its own
@@ -408,7 +441,7 @@ loglikelihood callback (distance/phase marginalization).</p>
 </dd>
 <dt>‘fused’ (Option C): a single fused kernel (RIFT.likelihood.Q_fused_calmarg)</dt><dd><p>does the Q-product, the loglikelihood, and the cal+time log-sum-exp in
 one launch – a CUDA kernel on GPU, or pure numpy on CPU.  Supports
-phase marginalization (<a href="#id45"><span class="problematic" id="id46">|kappa|</span></a>).  With cal_distmarg=None it
+phase marginalization (<a href="#id47"><span class="problematic" id="id48">|kappa|</span></a>).  With cal_distmarg=None it
 uses the default (distance-unmarginalized) helper kernel; with
 cal_distmarg=&lt;table dict&gt; it uses the separate distance-marginalization
 kernel (Q_fused_calmarg_distmarg) reproducing distmarg_loglikelihood.
@@ -620,7 +653,7 @@ rholm_intp(t) = &lt; h_lm(t) | d &gt;</p>
 <dd><p>Uses DiscreteSingleDetectorLogLikelihoodData to calculate the lnL(t) on a discrete grid.
 - Mode 1: array_output = False</p>
 <blockquote>
-<div><p>Computes int L dt/T over tref+deltaTWindow (GPSTime + pair, with <a href="#id31"><span class="problematic" id="id32">|</span></a>deltaTWindow|=T)</p>
+<div><p>Computes int L dt/T over tref+deltaTWindow (GPSTime + pair, with <a href="#id33"><span class="problematic" id="id34">|</span></a>deltaTWindow|=T)</p>
 </div></blockquote>
 <ul class="simple">
 <li><p>Mode 2: array_output = True
@@ -631,7 +664,7 @@ Returns lnL(t) as a raw numpy array.</p></li>
 <dl class="py function">
 <dt class="sig sig-object py" id="RIFT.likelihood.factored_likelihood.PackCalCrossTermsAsArrays">
 <span class="sig-prename descclassname"><span class="pre">RIFT.likelihood.factored_likelihood.</span></span><span class="sig-name descname"><span class="pre">PackCalCrossTermsAsArrays</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">pairKeys</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">lookupKeysToNumber</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">crossTermsCalList</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">crossTermsCalListV</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.likelihood.factored_likelihood.PackCalCrossTermsAsArrays" title="Link to this definition"></a></dt>
-<dd><p>Pack the per-realization <a href="#id33"><span class="problematic" id="id34">|</span></a>C_c|^2-weighted cross terms (fused-calmarg self-term
+<dd><p>Pack the per-realization <a href="#id35"><span class="problematic" id="id36">|</span></a>C_c|^2-weighted cross terms (fused-calmarg self-term
 fix) into arrays, using the SAME (l,m)-&gt;index mapping (lookupKeysToNumber) that
 PackLikelihoodDataStructuresAsArrays produced for the cal-independent U,V.  This
 guarantees ctUArrayDict_cal[det][c] is index-aligned with ctUArrayDict[det].</p>
@@ -651,7 +684,7 @@ guarantees ctUArrayDict_cal[det][c] is index-aligned with ctUArrayDict[det].</p>
 
 <dl class="py function">
 <dt class="sig sig-object py" id="RIFT.likelihood.factored_likelihood.PrecomputeLikelihoodTerms">
-<span class="sig-prename descclassname"><span class="pre">RIFT.likelihood.factored_likelihood.</span></span><span class="sig-name descname"><span class="pre">PrecomputeLikelihoodTerms</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">event_time_geo</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">t_window</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">P</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">data_dict</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">psd_dict</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">Lmax</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">fMax</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">analyticPSD_Q</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">inv_spec_trunc_Q</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">T_spec</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">verbose</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">quiet</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">internal_fast_precompute</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">NR_group</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">NR_param</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ignore_threshold</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0001</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">extra_waveform_kwargs</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">{}</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_gwsignal</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_gwsignal_approx</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_external_EOB</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">nr_lookup</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">nr_lookup_valid_groups</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">no_memory</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">perturbative_extraction</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">perturbative_extraction_full</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">hybrid_use</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">hybrid_method</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'taper_add'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_provided_strain</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ROM_group</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ROM_param</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ROM_use_basis</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ROM_limit_basis_size</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">skip_interpolation</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">force_22_mode</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">calibration_realizations</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">calibration_conjugate</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">return_calibration_crossterms</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">calibration_self_term</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.likelihood.factored_likelihood.PrecomputeLikelihoodTerms" title="Link to this definition"></a></dt>
+<span class="sig-prename descclassname"><span class="pre">RIFT.likelihood.factored_likelihood.</span></span><span class="sig-name descname"><span class="pre">PrecomputeLikelihoodTerms</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">event_time_geo</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">t_window</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">P</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">data_dict</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">psd_dict</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">Lmax</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">fMax</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">analyticPSD_Q</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">inv_spec_trunc_Q</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">T_spec</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">verbose</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">quiet</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">internal_fast_precompute</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">NR_group</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">NR_param</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ignore_threshold</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0001</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">extra_waveform_kwargs</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">{}</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_gwsignal</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_gwsignal_approx</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_external_EOB</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">nr_lookup</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">nr_lookup_valid_groups</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">no_memory</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">perturbative_extraction</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">perturbative_extraction_full</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">hybrid_use</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">hybrid_method</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'taper_add'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_provided_strain</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ROM_group</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ROM_param</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ROM_use_basis</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ROM_limit_basis_size</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">skip_interpolation</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">force_22_mode</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">calibration_realizations</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">calibration_conjugate</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">return_calibration_crossterms</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">calibration_self_term</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">IP_factory</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.likelihood.factored_likelihood.PrecomputeLikelihoodTerms" title="Link to this definition"></a></dt>
 <dd><p>Compute &lt; h_lm(t) | d &gt; and &lt; h_lm | h_l’m’ &gt;</p>
 <dl class="simple">
 <dt>Returns:</dt><dd><ul class="simple">
@@ -663,6 +696,11 @@ e.g. crossTerms[((2,2),(2,1))]</p></li>
 as the interpolating functions.
 Their main use is to validate the interpolating functions</p></li>
 </ul>
+</dd>
+<dt>IP_factory:  optional inner-product factory threaded to ComputeModeCrossTermIP and</dt><dd><p>ComputeModeIPTimeSeries (task T3 of TD_LIKELIHOOD.md).  Default None
+keeps the frequency-domain-diagonal lsu inner products (byte-identical default);
+a factory (e.g. RIFT.likelihood.td_inner_product.TDInnerProductFactory) swaps in
+the time-domain Toeplitz inner products at these two Precompute call sites only.</p>
 </dd>
 </dl>
 </dd></dl>
@@ -841,8 +879,8 @@ reproducing the former JAX <code class="docutils literal notranslate"><span clas
 is symmetric, <code class="docutils literal notranslate"><span class="pre">[-(npts//2),</span> <span class="pre">+(npts//2)]</span></code>.  Either way <code class="docutils literal notranslate"><span class="pre">t=0</span></code> – the
 fiducial epoch – is on the grid exactly, which the old linspace only
 achieved for odd npts.</p>
-<section id="id35">
-<h3>Parameters<a class="headerlink" href="#id35" title="Link to this heading"></a></h3>
+<section id="id37">
+<h3>Parameters<a class="headerlink" href="#id37" title="Link to this heading"></a></h3>
 <dl class="simple">
 <dt>integration_window_half<span class="classifier">float</span></dt><dd><p>Half-width of the marginalization window in seconds (the drivers’
 <code class="docutils literal notranslate"><span class="pre">t_ref_wind</span></code> / <code class="docutils literal notranslate"><span class="pre">--data-integration-window-half</span></code>).</p>
@@ -853,8 +891,8 @@ achieved for odd npts.</p>
 </dd>
 </dl>
 </section>
-<section id="id36">
-<h3>Returns<a class="headerlink" href="#id36" title="Link to this heading"></a></h3>
+<section id="id38">
+<h3>Returns<a class="headerlink" href="#id38" title="Link to this heading"></a></h3>
 <p>array of shape (npts,), spacing exactly <code class="docutils literal notranslate"><span class="pre">deltaT</span></code>, containing 0.0.</p>
 </section>
 </dd></dl>
@@ -1172,8 +1210,8 @@ weights:  weights in histogram</p>
 <dd><p>One-dimensional linear interpolation.</p>
 <p>Returns the one-dimensional piecewise linear interpolant to a function
 with given discrete data points (<cite>xp</cite>, <cite>fp</cite>), evaluated at <cite>x</cite>.</p>
-<section id="id37">
-<h3>Parameters<a class="headerlink" href="#id37" title="Link to this heading"></a></h3>
+<section id="id39">
+<h3>Parameters<a class="headerlink" href="#id39" title="Link to this heading"></a></h3>
 <dl>
 <dt>x<span class="classifier">array_like</span></dt><dd><p>The x-coordinates at which to evaluate the interpolated values.</p>
 </dd>
@@ -1196,8 +1234,8 @@ are ignored if <cite>period</cite> is specified.</p>
 </dd>
 </dl>
 </section>
-<section id="id38">
-<h3>Returns<a class="headerlink" href="#id38" title="Link to this heading"></a></h3>
+<section id="id40">
+<h3>Returns<a class="headerlink" href="#id40" title="Link to this heading"></a></h3>
 <dl class="simple">
 <dt>y<span class="classifier">float or complex (corresponding to fp) or ndarray</span></dt><dd><p>The interpolated values, same shape as <cite>x</cite>.</p>
 </dd>
@@ -1229,8 +1267,8 @@ A simple check for increasing is:</p>
 <dl class="py function">
 <dt class="sig sig-object py" id="RIFT.likelihood.vectorized_lal_tools.ComputeDetAMResponse">
 <span class="sig-prename descclassname"><span class="pre">RIFT.likelihood.vectorized_lal_tools.</span></span><span class="sig-name descname"><span class="pre">ComputeDetAMResponse</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">detector_response_matrix</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">source_right_ascension_radians</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">source_declination_radians</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">source_polarization_radians</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">greenwich_mean_sidereal_time</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">xpy=&lt;module</span> <span class="pre">'numpy'</span> <span class="pre">from</span> <span class="pre">'/opt/hostedtoolcache/Python/3.11.17/x64/lib/python3.11/site-packages/numpy/__init__.py'&gt;</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dtype_real=&lt;class</span> <span class="pre">'numpy.float64'&gt;</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dtype_complex=&lt;class</span> <span class="pre">'numpy.complex128'&gt;</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.likelihood.vectorized_lal_tools.ComputeDetAMResponse" title="Link to this definition"></a></dt>
-<dd><section id="id39">
-<h3>Parameters<a class="headerlink" href="#id39" title="Link to this heading"></a></h3>
+<dd><section id="id41">
+<h3>Parameters<a class="headerlink" href="#id41" title="Link to this heading"></a></h3>
 <dl class="simple">
 <dt>detector_response_matrix<span class="classifier">array_like, shape = det_shape + (3, 3)</span></dt><dd><p>Detector response matrix, or matrices for multiple detectors.  Last two
 axes must be 3-by-3 response matrix, and may include arbitrary axes before
@@ -1248,8 +1286,8 @@ array.</p>
 </dd>
 </dl>
 </section>
-<section id="id40">
-<h3>Returns<a class="headerlink" href="#id40" title="Link to this heading"></a></h3>
+<section id="id42">
+<h3>Returns<a class="headerlink" href="#id42" title="Link to this heading"></a></h3>
 <p>F : array_like, shape = det_shape + sample_shape</p>
 </section>
 </dd></dl>
@@ -1272,8 +1310,8 @@ contraction and is only equal to ~4e-16; that is deliberately not done here.)</p
 <p>Six trig evaluations and twelve elementwise combinations, none of which depend on
 the DETECTOR – only the contraction with the response matrix does.  A caller
 looping over detectors at fixed extrinsic samples should build this once.</p>
-<section id="id41">
-<h3>Returns<a class="headerlink" href="#id41" title="Link to this heading"></a></h3>
+<section id="id43">
+<h3>Returns<a class="headerlink" href="#id43" title="Link to this heading"></a></h3>
 <p>X, Y : array_like, shape = sample_shape + (3,)</p>
 </section>
 </dd></dl>
@@ -1286,8 +1324,8 @@ looping over detectors at fixed extrinsic samples should build this once.</p>
 detectors with a fixed set of extrinsic samples can build it once and hand it to
 <code class="docutils literal notranslate"><span class="pre">TimeDelayFromEarthCenterPrecomputed</span></code> for each detector instead of recomputing
 three trig evaluations per detector.</p>
-<section id="id42">
-<h3>Returns<a class="headerlink" href="#id42" title="Link to this heading"></a></h3>
+<section id="id44">
+<h3>Returns<a class="headerlink" href="#id44" title="Link to this heading"></a></h3>
 <p>ehat_src : array_like, shape = sample_shape + (3,)</p>
 </section>
 </dd></dl>
@@ -1295,8 +1333,8 @@ three trig evaluations per detector.</p>
 <dl class="py function">
 <dt class="sig sig-object py" id="RIFT.likelihood.vectorized_lal_tools.TimeDelayFromEarthCenter">
 <span class="sig-prename descclassname"><span class="pre">RIFT.likelihood.vectorized_lal_tools.</span></span><span class="sig-name descname"><span class="pre">TimeDelayFromEarthCenter</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">detector_earthfixed_xyz_metres</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">source_right_ascension_radians</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">source_declination_radians</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">greenwich_mean_sidereal_time</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">xpy=&lt;module</span> <span class="pre">'numpy'</span> <span class="pre">from</span> <span class="pre">'/opt/hostedtoolcache/Python/3.11.17/x64/lib/python3.11/site-packages/numpy/__init__.py'&gt;</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dtype=&lt;class</span> <span class="pre">'numpy.float64'&gt;</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.likelihood.vectorized_lal_tools.TimeDelayFromEarthCenter" title="Link to this definition"></a></dt>
-<dd><section id="id43">
-<h3>Parameters<a class="headerlink" href="#id43" title="Link to this heading"></a></h3>
+<dd><section id="id45">
+<h3>Parameters<a class="headerlink" href="#id45" title="Link to this heading"></a></h3>
 <dl class="simple">
 <dt>detector_earthfixed_xyz_metres<span class="classifier">array_like, shape = det_shape + (3,)</span></dt><dd><p>Location of detector(s) relative to Earth’s center in meters. May provide
 multiple detectors, last axis must be (x,y,z) but other axes can take
@@ -1311,8 +1349,8 @@ array.</p>
 </dd>
 </dl>
 </section>
-<section id="id44">
-<h3>Returns<a class="headerlink" href="#id44" title="Link to this heading"></a></h3>
+<section id="id46">
+<h3>Returns<a class="headerlink" href="#id46" title="Link to this heading"></a></h3>
 <p>time_delay_from_earth_center : array_like, shape = det_shape + sample_shape</p>
 </section>
 </dd></dl>
