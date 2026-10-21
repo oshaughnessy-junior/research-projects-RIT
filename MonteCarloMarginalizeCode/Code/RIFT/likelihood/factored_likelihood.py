@@ -59,6 +59,31 @@ if hasattr(integrate, 'simpson'):
 else:
   my_simps = integrate.simps  # old name
 
+_simpson_weight_cache = {}
+
+def simpson_weights(npts, dx, xpy=np):
+    """Weights w with my_simps(y, dx=dx, axis=-1) == y @ w, for any npts (scipy's rule, including
+    its treatment of an even number of samples).  Computed once per (npts, dx) with scipy and
+    moved to the array backend."""
+    key = (int(npts), float(dx), xpy.__name__)
+    w = _simpson_weight_cache.get(key)
+    if w is None:
+        w = xpy.asarray(my_simps(np.eye(int(npts)), dx=float(dx), axis=-1))
+        _simpson_weight_cache[key] = w
+    return w
+
+def simpson_function(xpy=np):
+    """Time-integration rule for the xpy likelihoods.  numpy uses scipy directly; other backends
+    apply scipy's weights, so CPU and GPU integrate with the same rule for odd and even npts
+    (optimized_gpu_tools.simps handles an even npts differently from current scipy)."""
+    if xpy is np:
+        return my_simps
+    def _simps(y, dx=1.0, axis=-1):
+        if axis not in (-1, y.ndim - 1):
+            raise NotImplementedError("simpson_function: only the last axis is supported")
+        return y @ simpson_weights(y.shape[-1], dx, xpy=xpy)
+    return _simps
+
 from scipy import special
 from itertools import product, combinations
 import math
