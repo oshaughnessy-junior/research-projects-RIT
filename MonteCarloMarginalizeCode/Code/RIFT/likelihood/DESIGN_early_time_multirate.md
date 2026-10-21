@@ -1,5 +1,12 @@
 # DESIGN: early-time multirate precompute (data-side weighting, DSWc)
 
+> **PROTOTYPE, NOT READY FOR HIGH-SNR USE** (RO, 2026-10-20). The multirate template conventions
+> (per-|m| f_min, XHM multibanding off, standoff 0.964) differ from the LAL-closest convention
+> (common f_min, multibanding off) by up to ~1.2e-3 of rho^2/2: about 55 nats at rho 300 and 610
+> at rho 1000 for 30+6. Per-|m| f_min drops in-band m >= 3 content. High- and low-SNR use will
+> need different conventions (future work). Offsets: "Template conventions against production"
+> below. ILE prints this warning whenever `--early-time-multirate` is set.
+
 **Status:** implemented as an opt-in prototype (research-projects-RIT #436,
 `factored_likelihood_multirate.py`, ILE `--early-time-multirate`); default off. Tests:
 `test/test_multirate_*.py` (core-unit-check; cupy legs in `test_multirate_cupy.py`, GPU only).

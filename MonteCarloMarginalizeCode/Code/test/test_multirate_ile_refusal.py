@@ -56,6 +56,7 @@ def _assert_refused(r, reason):
     assert r.returncode != 0, r.stdout[-2000:]
     assert "refusing this job before analysis" in r.stderr, r.stderr[-2000:]
     assert reason in r.stderr, r.stderr[-2000:]
+    assert "NOT READY FOR HIGH-SNR USE" in r.stderr, r.stderr[-2000:]
     assert "FAILED ANALYSIS" not in r.stdout
 
 
@@ -103,6 +104,7 @@ def test_validate_job_refusals(tmp_path, sched_kw, P_kw, kw, msg):
         flm.validate_job(_sched(tmp_path, **sched_kw), [_P(), _P(**P_kw)], Lmax, **kw)
 
 
-def test_validate_job_accepts_supported_points(tmp_path):
+def test_validate_job_accepts_supported_points(tmp_path, capsys):
     sch = flm.validate_job(_sched(tmp_path), [_P(), _P(approx=lalsim.IMRPhenomXPHM, s1z=0.4)], 4)
     assert sch["kind"] == "two_rate"
+    assert "PROTOTYPE, NOT READY FOR HIGH-SNR USE" in capsys.readouterr().err

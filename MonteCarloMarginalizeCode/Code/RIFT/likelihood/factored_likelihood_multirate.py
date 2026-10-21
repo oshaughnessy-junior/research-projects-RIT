@@ -10,6 +10,8 @@ time series that function returns is
 
 so the data-side weighting can be applied once per job and the template enters raw.
 """
+import sys
+
 import numpy as np
 import lal
 
@@ -657,10 +659,16 @@ def _refuse_point(P, schedule):
         raise ValueError("intrinsic point Mc = %.5f outside the schedule's frozen range [%g, %g]" % (mc, lo, hi))
 
 
+PROTOTYPE_WARNING = ("early-time multirate is a PROTOTYPE, NOT READY FOR HIGH-SNR USE: its template "
+                     "conventions (per-|m| f_min, XHM multibanding off) bias lnL by up to ~1e-3 of "
+                     "rho^2/2 against the LAL-closest convention; see DESIGN_early_time_multirate.md")
+
+
 def validate_job(schedule_path, P_list, Lmax, backend=None, waveform=None):
     """Job-level checks, run by ILE before its event loop.  A refusal inside the precompute is
     caught by ILE's per-point handler, which logs it and exits 0 with no output; this runs first
     so a refused configuration exits nonzero instead.  Returns the loaded schedule."""
+    print("WARNING: " + PROTOTYPE_WARNING, file=sys.stderr)
     schedule = load_schedule(schedule_path)
     if Lmax not in (2, 3, 4):
         raise ValueError("early-time multirate requires Lmax = 2, 3 or 4, not %s" % Lmax)
