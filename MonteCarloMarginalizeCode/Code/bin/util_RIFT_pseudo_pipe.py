@@ -54,7 +54,7 @@ if _use_hpip_pp:
 
 # Backward compatibility
 from RIFT.misc.dag_utils_generic import which
-from RIFT.misc.cip_pipeline import flag_final_group_unique
+from RIFT.misc.cip_pipeline import flag_final_group_unique, configure_eccentricity_prior
 # leaf module: numpy only, so this does not drag numba/cupy into the pipeline script
 from RIFT.likelihood.time_interp_choice import (
     BARE_FLAG_SENTINEL, CROSSOVER_GUIDANCE, resolve_interpolate_time_request)
@@ -547,7 +547,7 @@ parser.add_argument("--use-jax-ile",action='store_true',help="Use `which integra
 parser.add_argument("--jax-ile-container-ok",action='store_true',help="Override the --use-jax-ile + --use-osg refusal (see --use-jax-ile help).  Pass this ONLY when the container named by SINGULARITY_RIFT_IMAGE / resolved via SINGULARITY_BASE_EXE_DIR actually provides both a JAX installation and the integrate_likelihood_extrinsic_jax executable -- no container built by this repository does.  Has no effect without --use-jax-ile, and does not affect the separate --lisa-known-sky refusal.")
 parser.add_argument("--fake-data-cache",type=str)
 parser.add_argument("--spin-magnitude-prior",default='default',type=str,help="options are default [uniform mag for precessing, zprior for aligned], volumetric, uniform_mag_prec, uniform_mag_aligned, zprior_aligned")
-parser.add_argument("--eccentricity-prior",default='uniform',type=str,choices=['uniform','log_uniform'],help="options are uniform in e ('uniform') and uniform in log(e) ('log_uniform')")  # constrained: the value is forwarded verbatim to CIP, which only branches on the exact string 'log_uniform', so an unrecognized value here would silently run the uniform prior instead of failing
+parser.add_argument("--eccentricity-prior",default='uniform',type=str,choices=['uniform','log_uniform'],help="Final CIP iteration-group prior: uniform in e ('uniform') or uniform in log(e) ('log_uniform'). Earlier eccentric PE groups always use uniform.")  # constrained: the value is forwarded verbatim to CIP, which only branches on the exact string 'log_uniform', so an unrecognized value here would silently run the uniform prior instead of failing
 parser.add_argument("--force-lambda-max",default=None,type=float,help="Provide this value to override the value of lambda-max provided") 
 parser.add_argument("--force-lambda-small-max",default=None,type=float,help="Provide this value to override the value of lambda-small-max provided") 
 parser.add_argument("--force-lambda-no-linear-init",action='store_true',help="Disables use of priors focused towards small lambda for initial iterations. Designed for PP plot tests with wide/uniform priors.")
@@ -2346,6 +2346,8 @@ with open("args_cip_list.txt",'w') as f:
            parser.error("--internal-truncate-cip-arg-list must be positive")
        lines = lines[-opts.internal_truncate_cip_arg_list:]  # truncate the cip arg list file
        n_iterations = sum(1 if line.split()[0] == "Z" else int(line.split()[0].lstrip("G")) for line in lines)
+   if opts.assume_eccentric and not opts.internal_use_amr:
+       lines = configure_eccentricity_prior(lines, opts.eccentricity_prior)
    # The final CIP group produces both the published posterior and the downstream grid,
    # so it gets the duplicate-free fair draw (capped at sum(w)/max(w)).  Internal
    # iterations keep the fair draw with duplicates allowed, so successive iterations feed
