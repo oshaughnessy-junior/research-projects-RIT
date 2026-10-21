@@ -3850,6 +3850,9 @@ def write_seed_climb_sub(tag='seed_climb', exe=None, arg_str='', log_dir=None, o
         # tries to create the submit user's /home on the worker and fails.
         job.add_condor_cmd('should_transfer_files', 'YES')
         job.add_condor_cmd('when_to_transfer_output', 'ON_EXIT')
+        # stream logs: an evicted sandboxed job otherwise returns no output at all
+        job.add_condor_cmd('stream_output', 'True')
+        job.add_condor_cmd('stream_error', 'True')
     if condor_commands is not None:
         for cmd, value in condor_commands.items():
             job.add_condor_cmd(cmd, value)
