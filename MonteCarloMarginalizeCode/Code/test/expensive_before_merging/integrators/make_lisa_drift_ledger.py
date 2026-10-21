@@ -432,6 +432,12 @@ RULES = [
      "Separate internal sampling rate for the ground-based precompute. LISA's "
      "precompute takes its rate from the h5 frame and P.deltaT; there is no second "
      "internal rate to set."),
+    (r"^OPTION:--early-time-multirate(-backend|-waveform)?$", "NA",
+     "Opt-in two-rate precompute (PR #436) for ground-based detector strain: it wraps "
+     "PrecomputeLikelihoodTerms, decimates each IFO's C^-1 d, and builds lalsimulation FD "
+     "modes per |m|. The LISA driver precomputes through PrecomputeAlignedSpinLISA with the "
+     "TDI response and has no per-IFO strain to decimate. A LISA multirate path would be "
+     "its own design, not a port of this one."),
     (r"^OPTION:--srate-resample-time-marginalization$", "PORT",
      "Interpolate the lnL time series onto a finer grid before time resampling. LISA "
      "already has --resample-time-marginalization and its own time-resampling block, "

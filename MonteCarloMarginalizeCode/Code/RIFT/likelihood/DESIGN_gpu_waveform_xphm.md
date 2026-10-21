@@ -1,7 +1,8 @@
-# DESIGN: batched CuPy IMRPhenomXPHM, stage 1
+# DESIGN: batched CuPy IMRPhenomXPHM, stages 1-2
 
-Module: `gpu_waveform_xphm.py`. Test: `test/waveforms/test_gpu_waveform_xphm.py`.
-Benchmark: `test/waveforms/benchmark_gpu_waveform_xphm.py`.
+Stage 1 module: `gpu_waveform_xphm.py`. Test: `test/waveforms/test_gpu_waveform_xphm.py`.
+Benchmark: `test/waveforms/benchmark_gpu_waveform_xphm.py`. Stage 2 (aligned-spin
+higher modes) is described in its own section below.
 
 ## Scope
 
@@ -96,14 +97,135 @@ Xeon E5-2630 v4, one thread):
 
 The CuPy floor of about 15 ms per call is the host setup plus kernel launches.
 
+## Stage 2: IMRPhenomXHM aligned higher modes
+
+Module: `gpu_waveform_xhm.py`, with fits generated into `gpu_waveform_xhm_fits.py`
+by `test/waveforms/gen_gpu_waveform_xhm_fits.py` from the LAL 6.2.0 C files.
+Test: `test/waveforms/test_gpu_waveform_xhm.py`. Benchmark:
+`test/waveforms/benchmark_gpu_waveform_xhm.py`.
+
+`imrphenomxhm_modes` returns the modes (2,2), (2,1), (3,3), (3,2) and (4,4) for n
+aligned-spin points. It equals `SimInspiralChooseFDModes(IMRPhenomXHM)` with
+`PhenomXHMThresholdMband=0`. With `two_sided=True` the output is (n, nmodes, 2N-1) on
+LAL's two-sided grid, and m may have either sign. Otherwise it is (n, nmodes, N) and
+holds h_{l,-|m|}(f >= 0). The (2,2) mode is the stage-1 XAS evaluation.
+
+Only LAL defaults are implemented:
+
+| Setting | Value |
+|---|---|
+| PhenomXHMReleaseVersion | 122022 |
+| Amplitude: inspiral / intermediate / ringdown | 123 / 211112 (110102 for the 21) / 2 (1 for the 32) |
+| Intermediate amplitude points | equispaced |
+| Phase: inspiral / intermediate / ringdown | 122019 |
+| (3,2) spheroidal ringdown phase | 122019, four collocation points |
+| Multibanding, PNR, tides | off |
+
+### Host setup and exactness
+
+LAL builds several collocation values from finite differences. The amplitude uses
+fourth-order differences with step 1e-9 at the inspiral boundary. The (3,2) phase
+uses a second difference with step 1e-7, in long double. One ulp in an ansatz value
+there changes the waveform by about 1e-7. The host setup therefore reproduces LAL's
+arithmetic:
+
+- Transcendentals call the C libm (`math`, or `ctypes` for `hypot` and `cbrt`).
+  NumPy's SIMD `pow`, `exp` and `log` differ from libm by an ulp on AVX-512 hosts
+  such as ldas-grid. CPython's `math.hypot` is not libm's `hypot`.
+- C divides a complex number by a real one part by part. NumPy multiplies by the
+  reciprocal, so the PN amplitude coefficients use `_cdiv`.
+- LAL stores the (3,2) mixing coefficients as `COMPLEX8`. The port rounds them to
+  float32.
+- Linear systems use the GSL unblocked LU algorithm (`_lu_solve`). The stage-1
+  (2,2) setup is called with the same solver.
+
+The grid powers are backend-independent. `Mf^(1/6)` is `M^(1/6) f^(1/6)` and
+`log Mf` is `log M + log f`, with the transcendentals of f taken once on the host.
+The rest is IEEE multiplication and division, so CuPy and NumPy agree to 1e-13.
+A device `pow` alone gave 6e-10 on 256 s BNS grids, where the inspiral phase
+reaches 1e6 rad.
+
+### Validation (2026-10-20, ldas-grid, CVMFS IGWN python, numpy backend)
+
+50 random aligned-spin points: 20 BBH (Mtot 10-150, q 0.05-1, |chi| <= 0.95), 10
+NSBH and 20 BNS. f_min = f_ref is drawn from 10-20 Hz, the duration from 8-256 s,
+and the sample rate is 4096 Hz. Each mode is compared on its own norm, both m signs.
+Mismatch is maximized over time and phase with the aLIGO zero-detuned high-power PSD.
+
+| Mode | max mismatch | max relative error |
+|---|---|---|
+| (2,2) | 6.7e-16 | 1.1e-10 |
+| (2,1) | 1.0e-15 | 1.6e-11 |
+| (3,3) | 8.9e-16 | 3.3e-10 |
+| (4,4) | 1.0e-15 | 7.0e-10 |
+| (3,2) | 8.8e-7 | 5.9e-3 |
+| CuPy vs NumPy, all modes (pcdev13) | | 1.6e-13 of max mode |
+
+Two more samples run in the same test:
+
+| Sample | strict modes: max mismatch / max rel. error | (3,2): mismatch / rel. error |
+|---|---|---|
+| 12 points, q 50-200, chi1 of both signs, 16-64 s | 7.8e-16 / 9.3e-10 | 1.3e-5 / 3.0e-2 |
+| 6 points, 512-2048 s, f_min 5-12 Hz | 3.1e-15 / 1.6e-9 | 4.2e-15 / 5.4e-7 |
+
+On the long grids the inspiral phase reaches 1e5 rad. The remaining 1e-15 relative
+differences in the (2,2) phase coefficients (linear solves, the time shift) then give
+phase errors of about 1e-9 rad. The test bounds the relative error there at 1e-8; the
+#465 review measured 2.8e-9.
+
+The (3,2) error sits in the intermediate phase. Its coefficients depend on the
+second difference above. A 1e-15 change in the (2,2) setup moves them by 1e-4. LAL
+shows the same sensitivity: at q = 186 a 1e-13 change of m1 moves LAL's own (3,2) by
+mismatch 1.3e-5, equal to the port's error there. The test bounds the (3,2) at
+mismatch 5e-5 and relative error 0.1.
+
+At eta < 0.01 and chi1 < 0 LAL multiplies the (3,2) phase cut by (1.2 - 0.25 chi1)
+(`IMRPhenomXHM_Intermediate_CollocPtsFreqs`). Stage 2 at bef7889cd missed this; at
+q = 199, chi = (-0.68, 0.37) the (3,-2) mismatch was 0.24-0.62. With the branch it
+is at most 2e-11, and `test_32_emr_negative_spin_cut` guards it. The eta <= 0.01 inspiral-phase
+fits (`Insp_Phase_*_lambda`) add a term linear in f, which the inspiral-intermediate
+connection removes again. A change to them does not change the waveform, so no test
+can detect it.
+
+Mutations that fail the tests: one (4,4) inspiral-amplitude coefficient changed by
+4e-11 (relative error 1.2e-9); the (3,2) cut factor 1.2 changed to 1.19.
+
+Throughput of the five modes h_{l,-m}(f >= 0), f_min = 20 Hz, ldas-pcdev13 (RTX
+PRO 4000 Blackwell, CuPy 14.1 in `rift_o4d_cc90-120_cuda128_20260717.sif`; Xeon
+E5-2650 v4, one thread). LAL is ChooseFDModes with the five negative-m modes.
+
+| Grid | n | CuPy pts/s | GPU pool | NumPy pts/s | LAL pts/s |
+|---|---|---|---|---|---|
+| 8 s, 2048 Hz | 1 | 11 | 0.01 GB | 22 | 192 |
+| 8 s, 2048 Hz | 10 | 112 | 0.05 GB | 51 | 123 |
+| 8 s, 2048 Hz | 100 | 945 | 0.5 GB | 54 | 126 |
+| 256 s, 4096 Hz | 1 | 11 | 0.4 GB | 0.9 | 5.2 |
+| 256 s, 4096 Hz | 10 | 42 | 2.9 GB | 0.7 | 2.7 |
+| 256 s, 4096 Hz | 100 | 46 | 6.6 GB | 0.7 | 2.8 |
+| 2048 s, 4096 Hz | 1 | 4.4 | 2.9 GB | 0.1 | 0.6 |
+| 2048 s, 4096 Hz | 10 | 5.0 | 6.3 GB | | |
+| 2048 s, 4096 Hz | 100 | out of memory | | | |
+
+The CuPy floor is about 85 ms per call: 20-30 ms of host setup and 10-25 ms of
+kernel launches per mode. On long grids the evaluation is limited by memory
+traffic, about 130 passes over (n, N) arrays per mode. At 2048 s and n = 100 the
+output alone is 33 GB. Points are evaluated in chunks of about 4e6 grid values.
+
+### Remaining gaps
+
+1. Precessing XPHM higher modes: twisting-up of the (2,1), (3,3), (3,2) and (4,4)
+   with the l = 3, 4 Wigner-d matrices and the mprime-dependent angle offsets.
+2. MSA angles (PrecVersion 223) and the SpinTaylor angles (PrecVersion 300, the LAL
+   6.2.0 default).
+3. RIFT conditioning and the L-frame rotation for l > 2.
+4. Kernel fusion. A fused kernel must disable FMA contraction (`--fmad=false`) to
+   keep CuPy and NumPy equal.
+5. The (3,2) mode matches LAL only to 1e-3 in phase, as stated above.
+
 ## Next stages
 
-2. MSA angles (PrecVersion 223, the XPHM default) and FinalSpinMod 3.
-3. XHM higher modes (21, 33, 32 with mode mixing, 44) twisted with the same
-   Wigner-d machinery, with the mprime-dependent angle offsets.
-
-Later: device-side RIFT conditioning and `extract_JL_angles`, and fusing the
-grid evaluation into fewer kernels.
+See "Remaining gaps" in the stage-2 section. Later: device-side
+`extract_JL_angles`.
 
 ## Licence
 
