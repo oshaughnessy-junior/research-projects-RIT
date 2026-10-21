@@ -120,6 +120,17 @@ for various features.  The most important feature for most users is their accoun
 <span class="go">export LIGO_ACCOUNTING=ligo.dev.o4.rift</span>
 </pre></div>
 </div>
+<p>For eccentric PE (<code class="code docutils literal notranslate"><span class="pre">--assume-eccentric</span></code>), preliminary CIP iteration
+groups use <code class="code docutils literal notranslate"><span class="pre">--eccentricity-prior</span> <span class="pre">uniform</span></code> to explore the likelihood.
+The pipeline option <code class="code docutils literal notranslate"><span class="pre">--eccentricity-prior</span> <span class="pre">log_uniform</span></code> selects the prior
+for every <code class="code docutils literal notranslate"><span class="pre">Z</span></code> run-to-convergence subdag and the final CIP argument
+group. A convergence subdag retains that target prior even when followed by
+a final extrinsic-sampling group; all of its child CIP jobs use the same prior.
+The default, <code class="code docutils literal notranslate"><span class="pre">uniform</span></code>, keeps all groups uniform. A schedule containing only one group uses the requested final
+prior throughout. Inspect <code class="code docutils literal notranslate"><span class="pre">args_cip_list.txt</span></code> before submission to see
+the prior assigned to each group. This scheduling policy also applies when
+extra CIP arguments specify an eccentricity prior; direct CIP invocations
+continue to use the prior passed to them.</p>
 <p>When you run <code class="code docutils literal notranslate"><span class="pre">util_RIFT_psuedo_pipe.py</span></code>, the pipeline will create a directory structure as follows:</p>
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">long_directory_name_here/</span>
 <span class="go">   -&gt; local.cache</span>
