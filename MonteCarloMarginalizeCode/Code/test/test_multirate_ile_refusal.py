@@ -108,3 +108,11 @@ def test_validate_job_accepts_supported_points(tmp_path, capsys):
     sch = flm.validate_job(_sched(tmp_path), [_P(), _P(approx=lalsim.IMRPhenomXPHM, s1z=0.4)], 4)
     assert sch["kind"] == "two_rate"
     assert "PROTOTYPE, NOT READY FOR HIGH-SNR USE" in capsys.readouterr().err
+
+
+def test_ile_refuses_td_inner_product_before_loading_data(tmp_path):
+    r = _ile(tmp_path, ["--internal-ile-inner-product", "td-toeplitz"])
+    assert r.returncode != 0
+    assert "TD likelihood operators are not supported by multirate precomputation" in r.stderr
+    assert "FAILED ANALYSIS" not in r.stdout
+    assert not (tmp_path / "out").exists()

@@ -44,6 +44,13 @@ OUT = os.path.join(HERE, "lisa_drift_ledger.json")
 # First match wins.
 # ---------------------------------------------------------------------------------------
 RULES = [
+    # Ground-based TD operators: only this explicitly reviewed option set.
+    (r"^OPTION:--(internal-ile-inner-product|td-solver|td-acf-duration|td-analysis-start|td-analysis-end|td-gap|glitch-basis|glitch-basis-file|glitch-sigma)$", "PHYSICS",
+     "The ground-based Toeplitz/cropped-precision and Gaussian-glitch factory is not "
+     "wired into the LISA driver. Porting requires a TDI-channel covariance, boundary "
+     "and response-model decision with LISA-specific validation; copying the "
+     "ground-based option passthrough would not establish that model."),
+
 
     # ---------------------------------------------------------------- the fair-draw family
     # PORTED in this pass.  These are the PR #87 correctness helpers.  They are pure

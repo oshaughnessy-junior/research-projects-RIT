@@ -63,6 +63,15 @@ export MPLBACKEND="${MPLBACKEND:-Agg}"
 C="MonteCarloMarginalizeCode/Code"
 
 FILES=(
+  # Experimental TD operators; only the public PCG backend test is optional.
+  "$C/test/test_td_calmarg_guard.py"
+  "$C/test/test_td_factory.py"
+  "$C/test/test_td_driver_normalization.py"
+  "$C/test/test_td_glitch.py"
+  "$C/test/test_td_inner_product.py"
+  "$C/test/test_td_rank_augmentation.py"
+  "$C/test/test_td_segment.py"
+  "$C/test/test_td_upstream_guards.py"
   # -- calibration marginalization (module-level suites the calmarg gate never picked up)
   "$C/RIFT/calmarg/test_cal_mc_error.py"
   "$C/RIFT/calmarg/test_seed_fallback.py"
@@ -490,7 +499,10 @@ done
 # on 3cf152745 (rift_O4d 48acbd2f8 merged in) 2026-10-20: CI runner 1038 collected / 1019 passed /
 # 19 skipped; ldas-grid (IGWN python, cupy importable, CUDA_VISIBLE_DEVICES='') 1038 / 1018 / 20,
 # the 20th skip being the cupy-importable tempering leg as above.  Less 3 subtests -> 1035/1015.
-EXPECTED_TESTS=1035
+# The upstream 1035/1015 floors already include the rotation-type cases.
+# TD adds 90 collected cases (89 required passes; PCG is optional).
+# The startup TD/multirate refusal adds one case: measured collection is 1126.
+EXPECTED_TESTS=1126
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -515,9 +527,10 @@ EXPECTED_TESTS=1035
 # test_dslice_bounds.py adds 2 tests; SEOB conditioning adds 8, all passing.
 # test_av_coverage_diagnostic.py adds 2 tests, both passing -> 935.
 # PR #436 multirate files: re-measured 1035/1015 (above; the lower, ldas-grid, passed count).
-EXPECTED_PASSED=1015
+# TD adds 89 required passes and the startup refusal adds one -> 1105.
+EXPECTED_PASSED=1105
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
-MAX_SKIPPED=19
+MAX_SKIPPED=20 # one optional tdanalysis PCG test when the extra is absent
 
 # The floors must be INTEGERS, and this is checked rather than assumed.  `[ 347 -lt FOO ]` does
 # not fail the build: bash prints "integer expression expected", returns 2, and the `if` is

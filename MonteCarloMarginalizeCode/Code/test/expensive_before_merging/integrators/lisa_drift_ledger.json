@@ -277,6 +277,18 @@
       "decision": "NA",
       "reason": "Finite light-travel-time transfer across the arms for 3G ground detectors (CE/ET), built on lalsimulation detector geometry and an arm-length override in metres. LISA's finite-size response is not an add-on: it is the whole point of the TDI response the LISA driver already applies."
     },
+    "OPTION:--glitch-basis": {
+      "decision": "PHYSICS",
+      "reason": "The ground-based Toeplitz/cropped-precision and Gaussian-glitch factory is not wired into the LISA driver. Porting requires a TDI-channel covariance, boundary and response-model decision with LISA-specific validation; copying the ground-based option passthrough would not establish that model."
+    },
+    "OPTION:--glitch-basis-file": {
+      "decision": "PHYSICS",
+      "reason": "The ground-based Toeplitz/cropped-precision and Gaussian-glitch factory is not wired into the LISA driver. Porting requires a TDI-channel covariance, boundary and response-model decision with LISA-specific validation; copying the ground-based option passthrough would not establish that model."
+    },
+    "OPTION:--glitch-sigma": {
+      "decision": "PHYSICS",
+      "reason": "The ground-based Toeplitz/cropped-precision and Gaussian-glitch factory is not wired into the LISA driver. Porting requires a TDI-channel covariance, boundary and response-model decision with LISA-specific validation; copying the ground-based option passthrough would not establish that model."
+    },
     "OPTION:--gwsignal-mode-conditioning": {
       "decision": "NA",
       "reason": "Selects native conditioning only for ground-based SEOBNRv5HM/PHM. The LISA mode/frame path does not offer this model-specific conditioning policy; unsupported LISA requests must not silently select a different waveform."
@@ -312,6 +324,10 @@
     "OPTION:--internal-gmm-sky-components": {
       "decision": "PORT",
       "reason": "mcsamplerEnsemble (GMM) tuning. LISA wires that sampler and exposes the same 'GMM' method string, so these knobs are reachable physics-wise but simply not plumbed. Pure pass-through. Caveat for whoever ports --internal-gmm-sky-components: the default grouping is (sky)(distance,inclination)(psi,phi), and 'sky' for LISA is the ecliptic pair -- the grouping still makes sense, the docstring does not."
+    },
+    "OPTION:--internal-ile-inner-product": {
+      "decision": "PHYSICS",
+      "reason": "The ground-based Toeplitz/cropped-precision and Gaussian-glitch factory is not wired into the LISA driver. Porting requires a TDI-channel covariance, boundary and response-model decision with LISA-specific validation; copying the ground-based option passthrough would not establish that model."
     },
     "OPTION:--internal-precompute-ignore-threshold": {
       "decision": "PORT",
@@ -472,6 +488,26 @@
     "OPTION:--srate-internal": {
       "decision": "NA",
       "reason": "Separate internal sampling rate for the ground-based precompute. LISA's precompute takes its rate from the h5 frame and P.deltaT; there is no second internal rate to set."
+    },
+    "OPTION:--td-acf-duration": {
+      "decision": "PHYSICS",
+      "reason": "The ground-based Toeplitz/cropped-precision and Gaussian-glitch factory is not wired into the LISA driver. Porting requires a TDI-channel covariance, boundary and response-model decision with LISA-specific validation; copying the ground-based option passthrough would not establish that model."
+    },
+    "OPTION:--td-analysis-end": {
+      "decision": "PHYSICS",
+      "reason": "The ground-based Toeplitz/cropped-precision and Gaussian-glitch factory is not wired into the LISA driver. Porting requires a TDI-channel covariance, boundary and response-model decision with LISA-specific validation; copying the ground-based option passthrough would not establish that model."
+    },
+    "OPTION:--td-analysis-start": {
+      "decision": "PHYSICS",
+      "reason": "The ground-based Toeplitz/cropped-precision and Gaussian-glitch factory is not wired into the LISA driver. Porting requires a TDI-channel covariance, boundary and response-model decision with LISA-specific validation; copying the ground-based option passthrough would not establish that model."
+    },
+    "OPTION:--td-gap": {
+      "decision": "PHYSICS",
+      "reason": "The ground-based Toeplitz/cropped-precision and Gaussian-glitch factory is not wired into the LISA driver. Porting requires a TDI-channel covariance, boundary and response-model decision with LISA-specific validation; copying the ground-based option passthrough would not establish that model."
+    },
+    "OPTION:--td-solver": {
+      "decision": "PHYSICS",
+      "reason": "The ground-based Toeplitz/cropped-precision and Gaussian-glitch factory is not wired into the LISA driver. Porting requires a TDI-channel covariance, boundary and response-model decision with LISA-specific validation; copying the ground-based option passthrough would not establish that model."
     },
     "OPTION:--time-marginalization-quadrature": {
       "decision": "PORT",

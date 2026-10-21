@@ -612,7 +612,7 @@ def PrecomputeLikelihoodTerms(event_time_geo, t_window, P, data_dict,
         extra_waveform_kwargs={},
         use_gwsignal=False,
         use_gwsignal_approx=None,
-        use_external_EOB=False,nr_lookup=False,nr_lookup_valid_groups=None,no_memory=True,perturbative_extraction=False,perturbative_extraction_full=False,hybrid_use=False,hybrid_method='taper_add',use_provided_strain=False,ROM_group=None,ROM_param=None,ROM_use_basis=False,ROM_limit_basis_size=None,skip_interpolation=False,force_22_mode=False, calibration_realizations=None, calibration_conjugate=False, return_calibration_crossterms=False, calibration_self_term=True):
+        use_external_EOB=False,nr_lookup=False,nr_lookup_valid_groups=None,no_memory=True,perturbative_extraction=False,perturbative_extraction_full=False,hybrid_use=False,hybrid_method='taper_add',use_provided_strain=False,ROM_group=None,ROM_param=None,ROM_use_basis=False,ROM_limit_basis_size=None,skip_interpolation=False,force_22_mode=False, calibration_realizations=None, calibration_conjugate=False, return_calibration_crossterms=False, calibration_self_term=True, IP_factory=None):
     """
     Compute < h_lm(t) | d > and < h_lm | h_l'm' >
 
@@ -624,6 +624,12 @@ def PrecomputeLikelihoodTerms(event_time_geo, t_window, P, data_dict,
         - Dictionary of discrete time series of < h_lm(t) | d >, keyed the same
           as the interpolating functions.
           Their main use is to validate the interpolating functions
+
+    IP_factory:  optional inner-product factory threaded to ComputeModeCrossTermIP and
+        ComputeModeIPTimeSeries (task T3 of TD_LIKELIHOOD.md).  Default None
+        keeps the frequency-domain-diagonal lsu inner products (byte-identical default);
+        a factory (e.g. RIFT.likelihood.td_inner_product.TDInnerProductFactory) swaps in
+        the time-domain Toeplitz inner products at these two Precompute call sites only.
     """
     assert data_dict.keys() == psd_dict.keys()
     global distMpcRef
@@ -648,6 +654,10 @@ def PrecomputeLikelihoodTerms(event_time_geo, t_window, P, data_dict,
     # <h|h>.  When the build is skipped the trailing crossTermsCal/crossTermsCalV are None.
     _build_cal_ct = _have_cal and return_calibration_crossterms and calibration_self_term
     if _build_cal_ct:
+        # The |C_c|^2-weighted self-term route below is FD-diagonal-ONLY: refuse the silent
+        # two-kernel mix (U/V from IP_factory, self terms from lsu.ComplexIP) rather than
+        # compute it.  See CalibrationSelfTermInnerProductSupported.
+        AssertCalibrationSelfTermInnerProductSupported(IP_factory)
         crossTermsCal = {}
         crossTermsCalV = {}
 
@@ -675,10 +685,13 @@ def PrecomputeLikelihoodTerms(event_time_geo, t_window, P, data_dict,
                                              skip_interpolation=skip_interpolation,force_22_mode=force_22_mode)
                                              
 
+    if IP_factory is not None and hasattr(IP_factory, "register_template_modes"):
+        IP_factory.register_template_modes(hlms)
+
     if not(ignore_threshold is None) and (not ROM_use_basis):
             crossTermsFiducial = ComputeModeCrossTermIP(hlms,hlms, psd_dict[detectors[0]], 
                                                         P.fmin, fMax,
-                                                        1./2./P.deltaT, P.deltaF, analyticPSD_Q=analyticPSD_Q, inv_spec_trunc_Q=inv_spec_trunc_Q, T_spec=T_spec,verbose=verbose,same_waveform_Q=internal_fast_precompute)
+                                                        1./2./P.deltaT, P.deltaF, analyticPSD_Q=analyticPSD_Q, inv_spec_trunc_Q=inv_spec_trunc_Q, T_spec=T_spec,verbose=verbose,same_waveform_Q=internal_fast_precompute,IP_factory=IP_factory)
             theWorthwhileModes =  IdentifyEffectiveModesForDetector(crossTermsFiducial, ignore_threshold, detectors)
             # Make sure worthwhile modes satisfy reflection symmetry! Do not truncate egregiously!
             theWorthwhileModes  = theWorthwhileModes.union(  set([(p,-q) for (p,q) in theWorthwhileModes]))
@@ -719,10 +732,20 @@ def PrecomputeLikelihoodTerms(event_time_geo, t_window, P, data_dict,
         # Compute cross terms < h_lm | h_l'm' >
         crossTerms[det] = ComputeModeCrossTermIP(hlms, hlms, psd_dict[det], P.fmin,
                 fMax, 1./2./P.deltaT, P.deltaF, analyticPSD_Q,
-                inv_spec_trunc_Q, T_spec,verbose=verbose,same_waveform_Q=internal_fast_precompute)
+                inv_spec_trunc_Q, T_spec,verbose=verbose,same_waveform_Q=internal_fast_precompute,IP_factory=IP_factory)
         crossTermsV[det] = ComputeModeCrossTermIP(hlms_conj, hlms, psd_dict[det], P.fmin,
                 fMax, 1./2./P.deltaT, P.deltaF, analyticPSD_Q,
-                inv_spec_trunc_Q, T_spec,prefix="V",verbose=verbose,same_waveform_Q=internal_fast_precompute)
+                inv_spec_trunc_Q, T_spec,prefix="V",verbose=verbose,same_waveform_Q=internal_fast_precompute,IP_factory=IP_factory)
+        # T6 (TD_LIKELIHOOD.md): U/V edge-sensitivity diagnostic for the TD path.
+        # Cheap (2 scalar IPs per det); logs the dominant-mode U variation across the time
+        # window and warns if the scalar-U (shift-invariance) assumption looks violated.
+        if IP_factory is not None and hasattr(IP_factory, "report_uv_edge_sensitivity"):
+            try:
+                IP_factory.report_uv_edge_sensitivity(
+                    hlms, psd_dict[det], P.fmin, fMax, 1./2./P.deltaT, P.deltaF,
+                    analyticPSD_Q=analyticPSD_Q, det=det, window_half=t_window)
+            except Exception as _e_t6:
+                print("  [T6] edge-sensitivity diagnostic skipped:", _e_t6)
         # Compute rholm(t) = < h_lm(t) | d >
         cal_realization = None
         if _have_cal:
@@ -745,7 +768,7 @@ def PrecomputeLikelihoodTerms(event_time_geo, t_window, P, data_dict,
         rholms[det] = ComputeModeIPTimeSeries(hlms, data_dict[det],
                 psd_dict[det], P.fmin, fMax, 1./2./P.deltaT, N_shift, N_window,
                 analyticPSD_Q, inv_spec_trunc_Q, T_spec, calibration_realizations=cal_realization,
-                calibration_conjugate=calibration_conjugate)
+                calibration_conjugate=calibration_conjugate, IP_factory=IP_factory)
 #        rhoXX = rholms[det][list(rholms[det].keys())[0]]
         # The vector of time steps within our window of interest
         # for which we have discrete values of the rholms
@@ -1213,7 +1236,7 @@ def SingleDetectorLogLikelihood(rholm_vals, crossTerms,crossTermsV, Ylms, F, dis
 def ComputeModeIPTimeSeries(hlms, data, psd, fmin, fMax, fNyq,
         N_shift, N_window, analyticPSD_Q=False,
         inv_spec_trunc_Q=False, T_spec=0., calibration_realizations=None,
-        calibration_conjugate=False):
+        calibration_conjugate=False, IP_factory=None):
     r"""
     Compute the complex-valued overlap between
     each member of a SphHarmFrequencySeries 'hlms'
@@ -1227,15 +1250,31 @@ def ComputeModeIPTimeSeries(hlms, data, psd, fmin, fMax, fNyq,
     Returns a SphHarmTimeSeries object containing the complex inner product
     for discrete values of the reference time tref.  The epoch of the
     SphHarmTimeSeries object is set to account for the transformation
+
+    IP_factory:  optional inner-product factory (see RIFT.likelihood.td_inner_product,
+        task T3 of TD_LIKELIHOOD.md).  When None (the default), the overlap
+        object is exactly the current lsu.ComplexOverlap construction (byte-identical
+        default path).  When provided, IP_factory.overlap(...) returns a drop-in object
+        whose .ip(hlm, data) yields the same (rho, rhoTS, rhoIdx, rhoPhase) contract.
     """
     rholms = {}
     assert data.deltaF == hlms[list(hlms.keys())[0]].deltaF
     assert data.data.length == hlms[list(hlms.keys())[0]].data.length
     deltaT = 1./(2*fNyq)
 
+    if calibration_realizations is not None and IP_factory is not None:
+        if hasattr(IP_factory, "assert_data_calibration_supported"):
+            IP_factory.assert_data_calibration_supported(
+                fmin, fMax, fNyq, data.deltaF, psd, analyticPSD_Q)
+
     # Create an instance of class to compute inner product time series
-    IP = lsu.ComplexOverlap(fmin, fMax, fNyq, data.deltaF, psd,
-            analyticPSD_Q, inv_spec_trunc_Q, T_spec, full_output=True)
+    if IP_factory is None:
+        IP = lsu.ComplexOverlap(fmin, fMax, fNyq, data.deltaF, psd,
+                analyticPSD_Q, inv_spec_trunc_Q, T_spec, full_output=True)
+    else:
+        IP = IP_factory.overlap(fmin, fMax, fNyq, data.deltaF, psd,
+                analyticPSD_Q=analyticPSD_Q, inv_spec_trunc_Q=inv_spec_trunc_Q,
+                T_spec=T_spec, full_output=True)
 
     # Loop over modes and compute the overlap time series
     if calibration_realizations is None:
@@ -1365,7 +1404,7 @@ def _crossterm_batched_default():
 
 def ComputeModeCrossTermIP(hlmsA, hlmsB, psd, fmin, fMax, fNyq, deltaF, 
         analyticPSD_Q=False, inv_spec_trunc_Q=False, T_spec=0., verbose=True,prefix="U",same_waveform_Q=False,
-        batched=None):
+        batched=None, IP_factory=None):
     """
     Compute the 'cross terms' between waveform modes, i.e.
     < h_lm | h_l'm' >.
@@ -1377,16 +1416,33 @@ def ComputeModeCrossTermIP(hlmsA, hlmsB, psd, fmin, fMax, fNyq, deltaF,
 
     same_waveform_Q:  if true, it will do a loop that assumes (a) the same keys in both loops and (b) the same waveform in both (i.e., conjugate transpose)
         Note we WILL use the 'prefix' quantity to identify if we are computing 'V' and therefore using a different symmetry!
+
+    IP_factory:  optional inner-product factory (see RIFT.likelihood.td_inner_product,
+        task T3 of TD_LIKELIHOOD.md).  When None (the default), the inner
+        product is exactly the current lsu.ComplexIP construction (byte-identical default
+        path).  When provided, IP_factory.ip_scalar(...) returns a drop-in object whose
+        .ip(h1, h2) yields the same scalar <h1|h2>.
     """
+    # The private pre-batching API used this positional slot for IP_factory.
+    # Factories are distinguishable from the upstream boolean batching flag.
+    if IP_factory is None and hasattr(batched, "ip_scalar"):
+        IP_factory, batched = batched, None
+
     # Create an instance of class to compute inner product
-    IP = lsu.ComplexIP(fmin, fMax, fNyq, deltaF, psd, analyticPSD_Q,
-            inv_spec_trunc_Q, T_spec)
+    if IP_factory is None:
+        IP = lsu.ComplexIP(fmin, fMax, fNyq, deltaF, psd, analyticPSD_Q,
+                inv_spec_trunc_Q, T_spec)
+    else:
+        IP = IP_factory.ip_scalar(fmin, fMax, fNyq, deltaF, psd,
+                analyticPSD_Q=analyticPSD_Q, inv_spec_trunc_Q=inv_spec_trunc_Q,
+                T_spec=T_spec)
 
     crossTerms = {}
 
     if batched is None:
         batched = _crossterm_batched_default()
-    if batched:
+    # Custom operators need not provide the FD-only ip_matrix reduction.
+    if batched and IP_factory is None:
       # One GEMM over the whole (mode x mode) block instead of Na*Nb separate full-length
       # reductions.  The symmetry bookkeeping below is kept identical to the loop, so the
       # exact Hermitian/transpose relations the shipped path guarantees still hold.
@@ -1436,6 +1492,60 @@ def ComputeModeCrossTermIP(hlmsA, hlmsB, psd, fmin, fMax, fNyq, deltaF,
                         crossTerms[(mode1,mode2) ])
 
     return crossTerms
+
+
+#
+# --- Which inner products the |C_c|^2-weighted calibration self term supports -------------
+#
+# The self-term route (BuildCalibrationSelfTermBasis + CalibrationSelfTermCrossTermsFromBasis)
+# is written against the FREQUENCY-DOMAIN-DIAGONAL inner product and ONLY that one: it forms
+# <C_c h|C_c h> = <h|h>_{|C_c|^2/S} by SWAPPING the band weight ``IP.weights2side`` for
+# ``base_weights2side * b_k(f)`` between ``IP.ip`` calls.  That trick presumes the inner
+# product IS a diagonal sum against ``weights2side`` -- true for lsu.ComplexIP, false for any
+# non-diagonal kernel.  In particular ToeplitzComplexIP (RIFT.likelihood.td_inner_product,
+# the --internal-ile-inner-product td-toeplitz path) evaluates
+# ``2 dT conj(h1_td)^T K h2_td`` with K = Toeplitz(irfft(weights)) and NEVER reads
+# ``weights2side`` on its default branch, so assigning to it would set a dead attribute and
+# silently return the UNWEIGHTED base kernel for every realization.
+#
+# Supporting the TD kernel here is not a plumbing change: it needs one precision context per
+# basis function per detector (symbol ``weights*b_k(f)``, which is sign-indefinite), and the
+# truncated/gapped K_seg and the glitch rank-augmentation correction are both defined against
+# the BASE precision operator with no |C_c|^2-weighted analogue.  Until someone works that
+# out, an inner-product factory is opted IN to this route by setting
+# ``supports_calibration_self_term = True`` on itself; everything else is refused early
+# (AssertCalibrationSelfTermInnerProductSupported) instead of silently mixing two kernels in
+# one likelihood.
+#
+
+def CalibrationSelfTermInnerProductSupported(IP_factory):
+    """True if ``IP_factory`` may be used for the |C_c|^2-weighted calibration self-term
+    cross terms.  ``None`` (the default frequency-domain-diagonal lsu path) always is; any
+    other factory must advertise ``supports_calibration_self_term = True``."""
+    if IP_factory is None:
+        return True
+    return bool(getattr(IP_factory, "supports_calibration_self_term", False))
+
+
+def AssertCalibrationSelfTermInnerProductSupported(IP_factory):
+    """Raise ValueError if ``IP_factory`` cannot supply the calibration self-term cross terms.
+
+    Called from PrecomputeLikelihoodTerms BEFORE any waveform is generated, so a misconfigured
+    job dies at once instead of producing a likelihood whose U/V cross terms and whose
+    per-realization calibration self terms come from two DIFFERENT inner products."""
+    if CalibrationSelfTermInnerProductSupported(IP_factory):
+        return
+    raise ValueError(
+        "calibration marginalization with the per-realization self term is not supported by "
+        "inner-product factory %r (type %s).  The |C_c|^2-weighted self-term cross terms are "
+        "frequency-domain-diagonal only (they reweight IP.weights2side), so proceeding would "
+        "compute the U/V cross terms with one inner product and the calibration self terms "
+        "with another -- two kernels in one likelihood.  Fix by EITHER dropping "
+        "--internal-ile-inner-product td-toeplitz (use fd-diagonal) OR adding "
+        "--calibration-global-norm, which uses the calibration-independent norm <h|h> from the "
+        "same (factory) inner product for every realization.  A factory that genuinely "
+        "implements the weighted self term should set supports_calibration_self_term=True."
+        % (IP_factory, type(IP_factory).__name__))
 
 
 _cal_selfterm_basis_cache = {}   # key -> (weakref(cal), basis dict); bounded to a few entries
@@ -1547,6 +1657,11 @@ def CalibrationSelfTermCrossTermsFromBasis(IP, hlmsA, hlmsB, cal_basis,
     Because |C_c(f)|^2 = sum_k alpha[k,c] b_k(f) exactly (to the basis rank_tol), this
     reproduces the per-realization <C_c h|C_c h> to that tolerance.  alpha is real, so
     the U-hermitian / V-symmetric structure of each U^(k) (real weight) carries to U_c.
+
+    ``IP`` MUST be a frequency-domain-diagonal inner product (lsu.ComplexIP): the basis
+    weight is applied by assigning ``IP.weights2side``, which only a diagonal kernel reads.
+    Callers reach this through PrecomputeLikelihoodTerms, which refuses any other inner
+    product up front (CalibrationSelfTermInnerProductSupported).
     """
     w2 = cal_basis["weights2side"]
     alpha = cal_basis["alpha"]
