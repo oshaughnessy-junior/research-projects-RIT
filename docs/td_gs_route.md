@@ -77,7 +77,14 @@ are at least as accurate.
 ## Requirements
 
 ```bash
-pip install --no-deps 'tdanalysis>=1.1' waveformtools   # Toeplitz algebra and PSD->ACF; --no-deps avoids pulling bilby/pycbc
+pip install 'RIFT[td]'                           # RIFT with tdanalysis >= 1.1 (brings waveformtools, spectools)
+```
+
+In an environment that already has lalsuite, bilby and pycbc, the dependencies can instead be
+added without letting pip touch those:
+
+```bash
+pip install --no-deps 'tdanalysis>=1.1' waveformtools spectools
 pip install termcolor                            # imported by waveformtools; matplotlib is assumed present
 ```
 

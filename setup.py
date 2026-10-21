@@ -65,6 +65,9 @@ setuptools.setup(
    extras_require={
         # Public optional PCG backend; requires Python >=3.11.
         'td-pcg': ['tdanalysis>=1.0.0,<2'],
+        # Finite-covariance time-domain likelihood (--internal-ile-inner-product td-gs);
+        # tdanalysis brings waveformtools and spectools with it.
+        'td': ['tdanalysis>=1.1,<2'],
         'jax-interp': ['jax', 'optax', 'equinox', 'tinygp'],
         # AD applications of the differentiable export (gradient sampling, AD
         # population inference): RIFT.interpolators.jax_gp.applications
