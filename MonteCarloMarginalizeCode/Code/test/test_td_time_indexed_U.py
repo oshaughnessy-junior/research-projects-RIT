@@ -156,9 +156,10 @@ def _brute_force(case, U, V, time_interp='nearest', phase_marginalization=False,
     lnL_t = loglikelihood(k_in, rho_sq)
     if return_lnLt:
         return lnL_t
-    m = np.max(lnL_t)
+    # per-row offset, as the likelihood takes it (a single batch maximum underflows quiet rows)
+    m = np.max(lnL_t, axis=-1, keepdims=True)
     L = fl.my_simps(np.exp(lnL_t - m), dx=deltaT, axis=-1)
-    return m + np.log(L)
+    return m[:, 0] + np.log(L)
 
 
 # --------------------------------------------------------------------------

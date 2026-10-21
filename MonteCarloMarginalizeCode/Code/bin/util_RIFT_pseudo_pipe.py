@@ -665,6 +665,7 @@ parser.add_argument("--internal-ile-td-acf-file",action='append',default=None,he
 parser.add_argument("--internal-ile-td-dense-max-n",default=None,type=int,help="Passthrough to ILE --td-dense-max-n (td-gs).")
 parser.add_argument("--internal-ile-td-u-stride",default=None,type=int,help="Passthrough to ILE --td-u-stride (td-gs).")
 parser.add_argument("--internal-ile-td-u-method",default=None,type=str,help="Passthrough to ILE --td-u-method {auto,prefix,recursion,batched,chunked} (td-gs).")
+parser.add_argument("--internal-ile-td-u-svd-tol",default=None,type=float,help="Passthrough to ILE --td-u-svd-tol TOL (td-gs: SVD-over-time compression of U(t),V(t); recommended 1e-13; default off).")
 parser.add_argument("--internal-ile-td-acf-cond",default=None,type=float,help="Passthrough to ILE --td-acf-cond (td-gs PSD->ACF target condition number).")
 parser.add_argument("--internal-ile-td-whiteness-check",action='store_true',default=False,help="Passthrough to ILE --td-whiteness-check (td-gs).")
 parser.add_argument("--internal-ile-td-solver",default=None,type=str,help="Passthrough to ILE --td-solver {auto,dense,pcg} (TD path only).")
@@ -1833,6 +1834,8 @@ if opts.internal_ile_inner_product:
         line += " --td-u-stride {} ".format(opts.internal_ile_td_u_stride)
     if opts.internal_ile_td_u_method:
         line += " --td-u-method {} ".format(opts.internal_ile_td_u_method)
+    if not(opts.internal_ile_td_u_svd_tol is None):
+        line += " --td-u-svd-tol {} ".format(opts.internal_ile_td_u_svd_tol)
     if not(opts.internal_ile_td_acf_cond is None):
         line += " --td-acf-cond {} ".format(opts.internal_ile_td_acf_cond)
     if opts.internal_ile_td_whiteness_check:
@@ -1856,7 +1859,7 @@ elif (opts.internal_ile_td_gap or opts.internal_ile_glitch_basis or
       opts.internal_ile_td_ifo_time_offset or opts.internal_ile_td_acf_file or
       opts.internal_ile_td_dense_max_n is not None or opts.internal_ile_td_u_stride is not None or
       opts.internal_ile_td_u_method or opts.internal_ile_td_acf_cond is not None or
-      opts.internal_ile_td_whiteness_check):
+      opts.internal_ile_td_u_svd_tol is not None or opts.internal_ile_td_whiteness_check):
     print(" FAILURE: --internal-ile-td-* / --internal-ile-glitch-* require "
           "--internal-ile-inner-product td-toeplitz or td-gs")
     sys.exit(1)

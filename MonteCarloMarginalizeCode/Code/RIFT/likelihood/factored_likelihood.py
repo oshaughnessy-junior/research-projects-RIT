@@ -2184,6 +2184,8 @@ def _require_scalar_cross_terms(ctUArrayDict, ctVArrayDict, det, caller):
     """Refuse time-indexed (npts, n_lm, n_lm) cross terms in code paths that only
     implement the time-independent (n_lm, n_lm) self term.  Only
     DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop evaluates the time-indexed form."""
+    if isinstance(ctUArrayDict[det], TimeIndexedCrossTermsSVD) or isinstance(ctVArrayDict[det], TimeIndexedCrossTermsSVD):
+        raise NotImplementedError("{}: SVD-compressed time-indexed cross terms for {} are only supported by DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop".format(caller, det))
     if np.ndim(ctUArrayDict[det]) == 3 or np.ndim(ctVArrayDict[det]) == 3:
         raise NotImplementedError("{}: time-indexed cross terms (shape {}) for {} are only supported by DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop".format(caller, np.shape(ctUArrayDict[det]), det))
 
@@ -3099,6 +3101,169 @@ def _time_indexed_self_term(U, V, F_vec, Ylms_vec, ifirst, frac_first, npts, tim
     return out.real
 
 
+class TimeIndexedCrossTermsSVD(object):
+    """Time-indexed cross terms U(t), V(t) compressed by an SVD over time.
+
+    Built by compress_time_indexed_cross_terms.  Stack the pseudo-mode time
+    series of _time_indexed_self_term_block as M (npts_full x n_cols), with
+    n_cols = n_lm (n_lm+1), and take the thin SVD M = W diag(s) Z^H.  Keeping the
+    r components with s_k > tol * s_0,
+
+        M[t, col] = sum_k c_k(t) Zh[k, col],     c_k(t) = W[t, k] s_k,
+
+    so the self term with the pseudo-mode weights w_e[col] of
+    _time_indexed_self_term_weights becomes
+
+        rho_sq(e, t) = Re sum_col w_e[col] M[t_e, col]
+                     = Re sum_k g_{e,k} c_k(t_e),   g_{e,k} = sum_col w_e[col] Zh[k, col].
+
+    The weights are the same complex numbers as on the uncompressed path, so the
+    only approximation is the dropped singular components (each bounded by
+    tol * s_0 in spectral norm); with tol at rounding level the two agree to
+    rounding.  g is formed once per extrinsic sample (r contractions), and the
+    time gather over the r series c_k uses the same Q_inner_product kernels /
+    numpy windows as the data term, for nearest and cubic time_interp alike
+    (cubic interpolation is linear in the series, so interpolating c_k is
+    identical to interpolating M).
+
+    Attributes
+    ----------
+    c : (npts_full, r) complex128, C-contiguous   -- the component time series
+    right : (n_cols, r) complex128, C-contiguous  -- Zh^T, so g = w @ right
+    iu, ju : numpy int arrays, the unordered pair index (as the uncompressed path)
+    n_lm, npts_full, n_cols, r : ints
+    singular_values : numpy float64, all min(npts_full, n_cols) singular values
+    tol : the relative cutoff used
+    rel_err_fro : ||M - c right^T||_F / ||M||_F   (0 when nothing is dropped)
+    rel_err_max : max |M - c right^T| / max |M|
+    """
+
+    def __init__(self, c, right, iu, ju, n_lm, npts_full, singular_values, tol, rel_err_fro, rel_err_max):
+        self.c = c
+        self.right = right
+        self.iu = np.asarray(iu)
+        self.ju = np.asarray(ju)
+        self.n_lm = int(n_lm)
+        self.npts_full = int(npts_full)
+        self.n_cols = int(right.shape[0])
+        self.r = int(right.shape[1])
+        self.singular_values = np.asarray(singular_values, dtype=np.float64)
+        self.tol = tol
+        self.rel_err_fro = float(rel_err_fro)
+        self.rel_err_max = float(rel_err_max)
+
+    @property
+    def shape(self):
+        """The shape of the (uncompressed) time-indexed array this stands for."""
+        return (self.npts_full, self.n_lm, self.n_lm)
+
+    @property
+    def ndim(self):
+        return 3
+
+    def to_xpy(self, xpy):
+        """Copy with c and right as xpy arrays (e.g. cupy); the index arrays and
+        diagnostics stay numpy."""
+        return TimeIndexedCrossTermsSVD(
+            xpy.ascontiguousarray(xpy.asarray(self.c)), xpy.ascontiguousarray(xpy.asarray(self.right)),
+            self.iu, self.ju, self.n_lm, self.npts_full, self.singular_values, self.tol,
+            self.rel_err_fro, self.rel_err_max)
+
+    def component_matrices(self, k, xpy=np):
+        """(U_k, V_k): upper-triangular n_lm x n_lm matrices such that, for any F, Y,
+            |F|^2 conj(Y)^T U_k Y + F^2 Y^T V_k Y = sum_col w[col] right[col, k] = g_k
+        exactly as complex numbers (the k-th contraction).  The pseudo-mode of the
+        pair (i<j) carries U_ij + conj(U_ji), so U_k is not Hermitian; the self
+        term is Re sum_k g_k c_k(t), and g_k must be kept complex."""
+        n = self.n_lm
+        iu = xpy.asarray(self.iu)
+        ju = xpy.asarray(self.ju)
+        half = len(self.iu)
+        U_k = xpy.zeros((n, n), dtype=np.complex128)
+        V_k = xpy.zeros((n, n), dtype=np.complex128)
+        U_k[iu, ju] = self.right[:half, k]
+        V_k[iu, ju] = self.right[half:, k]
+        return U_k, V_k
+
+    def __repr__(self):
+        return ("TimeIndexedCrossTermsSVD(n_lm=%d, npts_full=%d, n_cols=%d, r=%d, tol=%s, rel_err_fro=%.2e, rel_err_max=%.2e)"
+                % (self.n_lm, self.npts_full, self.n_cols, self.r, self.tol, self.rel_err_fro, self.rel_err_max))
+
+
+def compress_time_indexed_cross_terms(U3, V3, tol, xpy=np):
+    """SVD-over-time compression of time-indexed cross terms; see
+    TimeIndexedCrossTermsSVD for the formulation.
+
+    U3, V3 : (npts_full, n_lm, n_lm) arrays (numpy, or xpy arrays).
+    tol    : relative singular-value cutoff, 0 < tol < 1; components with
+             s_k > tol * s_0 are kept.  1e-13 keeps the result at rounding level
+             for well-scaled U(t) (see docs/td_gs_route.md).
+
+    The SVD itself is done with xpy.linalg.svd (LAPACK on numpy, cuSOLVER on
+    cupy).  Returns a TimeIndexedCrossTermsSVD whose arrays live on xpy.
+    """
+    tol = float(tol)
+    if not (0.0 < tol < 1.0):
+        raise ValueError("compress_time_indexed_cross_terms: tol must satisfy 0 < tol < 1, got %r" % (tol,))
+    if np.ndim(U3) != 3 or np.ndim(V3) != 3:
+        raise ValueError("compress_time_indexed_cross_terms: U3 and V3 must be 3-D (npts_full, n_lm, n_lm); got ndim %d and %d" % (np.ndim(U3), np.ndim(V3)))
+    if tuple(U3.shape) != tuple(V3.shape) or U3.shape[1] != U3.shape[2]:
+        raise ValueError("compress_time_indexed_cross_terms: U3 %s and V3 %s must have the same (npts_full, n_lm, n_lm) shape" % (tuple(U3.shape), tuple(V3.shape)))
+    npts_full, n_lm = int(U3.shape[0]), int(U3.shape[1])
+    block, iu, ju = _time_indexed_self_term_block(U3, V3, xpy=xpy)     # (npts_full, n_cols)
+    n_cols = block.shape[1]
+    Wsv, s, Zh = xpy.linalg.svd(block, full_matrices=False)
+    s_np = np.asarray(s.get() if hasattr(s, 'get') else s, dtype=np.float64)
+    if s_np.size == 0 or s_np[0] == 0.0:
+        r = 0
+    else:
+        r = int(np.count_nonzero(s_np > tol * s_np[0]))
+    c = xpy.ascontiguousarray((Wsv[:, :r] * s[:r][np.newaxis, :]).astype(np.complex128, copy=False))
+    right = xpy.ascontiguousarray(Zh[:r, :].T.astype(np.complex128, copy=False))     # (n_cols, r)
+    if r < s_np.size:
+        resid = block - c @ right.T
+        norm_fro = xpy.linalg.norm(block)
+        rel_err_fro = float(xpy.linalg.norm(resid) / norm_fro) if float(norm_fro) > 0 else 0.0
+        amax = float(xpy.max(xpy.abs(block)))
+        rel_err_max = float(xpy.max(xpy.abs(resid)) / amax) if amax > 0 else 0.0
+    else:
+        rel_err_fro = 0.0
+        rel_err_max = 0.0
+    return TimeIndexedCrossTermsSVD(c, right, iu, ju, n_lm, npts_full, s_np, tol, rel_err_fro, rel_err_max)
+
+
+def _time_indexed_self_term_compressed(comp, F_vec, Ylms_vec, ifirst, frac_first, npts, time_interp, xpy=np):
+    """Same quantity as _time_indexed_self_term (no 0.5 (D_ref/D)^2 factor), from a
+    TimeIndexedCrossTermsSVD: g = w @ right once per sample, then the Q-style
+    gather over the r component series comp.c.  Returns (npts_extrinsic, npts) real."""
+    W = _time_indexed_self_term_weights(F_vec, Ylms_vec, comp.iu, comp.ju, xpy=xpy)   # (ne, n_cols)
+    npts_extrinsic = W.shape[0]
+    out = xpy.zeros((npts_extrinsic, npts), dtype=np.complex128)
+    r = comp.r
+    if r == 0:
+        return out.real
+    g = xpy.ascontiguousarray(W @ comp.right)        # (ne, r)
+    c = comp.c
+    if not (xpy is np):
+        for k0 in range(0, r, _TIME_INDEXED_SELF_TERM_MAX_COLS):
+            k1 = min(k0 + _TIME_INDEXED_SELF_TERM_MAX_COLS, r)
+            c_k = c if (k0 == 0 and k1 == r) else xpy.ascontiguousarray(c[:, k0:k1])
+            g_k = g if (k0 == 0 and k1 == r) else xpy.ascontiguousarray(g[:, k0:k1])
+            if time_interp == 'nearest':
+                out += Q_inner_product.Q_inner_product_cupy(c_k, g_k, ifirst, npts)
+            else:
+                out += Q_inner_product.Q_inner_product_cubic_cupy(c_k, g_k, ifirst, frac_first, npts)
+    else:
+        if time_interp == 'nearest':
+            windows = _nearest_Q_window_numpy(c, ifirst, npts, xpy=xpy)
+        else:
+            windows = _cubic_Q_window_numpy(c, ifirst, frac_first, npts)
+        out += np.einsum("ek,etk->et", g, windows)
+    return out.real
+
+
+
+
 def _require_time_indexed_supported(time_interp, time_quadrature, explicit_time_values,
                                     q_deltaT, q_deltaT_attr, deltaT):
     """Refuse NoLoop options that the time-indexed (3-D) self term does not implement.
@@ -3256,6 +3421,15 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
     elementwise loglikelihood such as the distance-marginalization table).
     Calibration marginalization (n_cal>1, cal_method='fused', ctUArrayDict_cal)
     is refused with NotImplementedError for time-indexed cross terms.
+
+    SVD-compressed cross terms (ctUArrayDict[det] a TimeIndexedCrossTermsSVD)
+    ------------------------------------------------------------------------
+    compress_time_indexed_cross_terms(U3, V3, tol) replaces the pair (U(t), V(t))
+    by one object holding r component time series and their pair-space right
+    vectors; pass it as ctUArrayDict[det] (ctVArrayDict[det] the same object or
+    None).  The self term is then r Q-style gathers per sample instead of
+    n_lm (n_lm+1); exact up to the dropped singular components.  Same
+    restrictions as the 3-D arrays.
     The self term is gathered with the 'nearest' and 'cubic' stencils on the
     likelihood's own time grid only: time_interp='sinc', an independently spaced
     Q pregrid (q_deltaT != deltaT), explicit_time_values, and the 'bandlimited'
@@ -3333,15 +3507,29 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
     # calibration-marginalization paths, whose rholm buffers hold n_cal
     # concatenated realizations and whose self term is per realization.
     time_indexed_UV = {}
+    compressed_UV = {}
     for det in detectors:
-        U_ndim = np.ndim(ctUArrayDict[det])
-        V_ndim = np.ndim(ctVArrayDict[det])
-        if U_ndim != V_ndim or U_ndim not in (2, 3):
-            raise ValueError("ctUArrayDict[{}] and ctVArrayDict[{}] must both be 2-D or both be 3-D; got ndim {} and {}".format(det, det, U_ndim, V_ndim))
-        time_indexed_UV[det] = (U_ndim == 3)
+        compressed_UV[det] = isinstance(ctUArrayDict[det], TimeIndexedCrossTermsSVD)
+        if compressed_UV[det]:
+            # SVD-compressed U(t),V(t) (compress_time_indexed_cross_terms): one object
+            # stands for both, so ctVArrayDict[det] must be that same object or None.
+            if not (ctVArrayDict[det] is ctUArrayDict[det] or ctVArrayDict[det] is None):
+                raise ValueError("ctUArrayDict[{}] is a TimeIndexedCrossTermsSVD (U and V together); ctVArrayDict[{}] must be the same object or None".format(det, det))
+            if ctUArrayDict[det].n_lm != len(lookupNKDict[det]):
+                raise ValueError("compressed cross terms for {} have n_lm={} but lookupNKDict has {} modes".format(det, ctUArrayDict[det].n_lm, len(lookupNKDict[det])))
+            time_indexed_UV[det] = True
+        else:
+            U_ndim = np.ndim(ctUArrayDict[det])
+            V_ndim = np.ndim(ctVArrayDict[det])
+            if U_ndim != V_ndim or U_ndim not in (2, 3):
+                raise ValueError("ctUArrayDict[{}] and ctVArrayDict[{}] must both be 2-D or both be 3-D; got ndim {} and {}".format(det, det, U_ndim, V_ndim))
+            time_indexed_UV[det] = (U_ndim == 3)
         if time_indexed_UV[det]:
             npts_full_det = rholmsArrayDict[det].shape[-1]
-            if ctUArrayDict[det].shape[0] != npts_full_det or ctVArrayDict[det].shape[0] != npts_full_det:
+            if compressed_UV[det]:
+                if ctUArrayDict[det].npts_full != npts_full_det:
+                    raise ValueError("compressed cross terms for {} must share the rholm time grid: npts_full {} vs rholm length {}".format(det, ctUArrayDict[det].npts_full, npts_full_det))
+            elif ctUArrayDict[det].shape[0] != npts_full_det or ctVArrayDict[det].shape[0] != npts_full_det:
                 raise ValueError("time-indexed cross terms for {} must share the rholm time grid: U {} V {} vs rholm length {}".format(det, ctUArrayDict[det].shape, ctVArrayDict[det].shape, npts_full_det))
             if n_cal != 1:
                 raise NotImplementedError("time-indexed cross terms for {} are not implemented with calibration marginalization (n_cal={})".format(det, n_cal))
@@ -3518,7 +3706,10 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
           # Time-indexed U,V: has shape (npts_extrinsic, npts), gathered at the
           # same window index (and interpolation) as Q below.  Uses the original
           # (un-phase-conjugated) Ylms_vec, like the scalar self term.
-          rho_sq_det = _time_indexed_self_term(U, V, F_vec, Ylms_vec, ifirst, frac_first, npts, time_interp, xpy=xpy)
+          if compressed_UV[det]:
+            rho_sq_det = _time_indexed_self_term_compressed(U, F_vec, Ylms_vec, ifirst, frac_first, npts, time_interp, xpy=xpy)
+          else:
+            rho_sq_det = _time_indexed_self_term(U, V, F_vec, Ylms_vec, ifirst, frac_first, npts, time_interp, xpy=xpy)
           rho_sq_det *= xpy.asarray(0.5 * xpy.square(distMpcRef / distMpc)).reshape(-1, 1)
         else:
           # Has shape (npts_extrinsic,)

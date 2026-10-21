@@ -342,6 +342,7 @@ optp.add_option("--td-acf-cond", type=float, default=1e8, help="td-gs: target co
 optp.add_option("--td-dense-max-n", type=int, default=4096, help="td-gs: pieces with at most this many samples use a Cholesky factor of C (tdanalysis ToeplitzSolver, built once); longer pieces use its Gohberg-Semencul method. Both are exact. Default 4096.")
 optp.add_option("--td-u-stride", type=int, default=1, help="td-gs: compute U(t),V(t) every K samples of the storage grid and cubic-interpolate between (1 = exact at every sample, default). Q(t) is always exact.")
 optp.add_option("--td-u-method", type=str, default="auto", help="td-gs: how U(t),V(t) are evaluated; every method is exact. 'auto' (default): 'chunked' on Cholesky pieces, 'prefix' on GS pieces where the shifted template ends (or, mirrored, starts) inside the piece for every grid shift, 'recursion' on GS pieces it overruns at both ends. 'prefix': windowed sums of one Gohberg-Semencul kernel correlation per mode (O(n + N_window) per mode pair; refuses pieces where its condition fails). 'recursion': the kernel correlations slid sample by sample, any cut, no per-shift solve. 'prefix' and 'recursion' use Gohberg-Semencul generators of the ACF on every piece, so on Cholesky pieces with a badly conditioned ACF they differ from 'chunked' by ~cond(C) eps. 'batched': stack the cut shifted templates and apply C^-1 once (reference; memory n x N_window per mode). 'chunked': 'batched' in column blocks under a memory bound. The methods are tdanalysis' (tdanalysis.forms.sliding.sliding_self_terms, tdanalysis >= 1.1).")
+optp.add_option("--td-u-svd-tol", type=float, default=None, help="td-gs: compress the time-indexed cross terms U(t),V(t) per detector by an SVD over time, keeping the components with singular value > TOL x the largest (RIFT.likelihood.factored_likelihood.compress_time_indexed_cross_terms). The self term then costs r gathers per time bin instead of n_modes(n_modes+1); exact up to the dropped components, so TOL at rounding level (recommended 1e-13) reproduces the uncompressed likelihood to ~1e-12 relative. Done once per intrinsic point on the CPU after packing, before any GPU transfer; r and the reconstruction error are printed per detector. Default None = off.")
 optp.add_option("--td-whiteness-check", action="store_true", default=False, help="td-gs: in addition to the always-printed d^T C^-1 d / n per piece (should be ~1), whiten each piece (tdanalysis ToeplitzSolver.whiten: the Cholesky factor on Cholesky pieces, a Levinson-Durbin recursion on GS pieces, O(n^2) once per job) and print the variance and lag-1 autocorrelation of L^-1 d. Diagnostic only (the data are not high-passed on this code path; a value far from 1 means the ACF does not describe the data).")
 optp.add_option("--td-solver", type=str, default="auto", help="Solver mode for --internal-ile-inner-product td-toeplitz: {auto,dense,pcg}. Affects only the physical-covariance/augmentation path; the full-segment precision-kernel inner products are FFT-based and solver-independent. Default auto.")
 optp.add_option("--td-acf-duration", type=float, default=None, help="Optional ACF truncation duration [s] for --internal-ile-inner-product td-toeplitz (Stage-3 truncated-segment path). Default None = full segment; sets N_seg = round(duration*srate) and builds the truncated precision kernel K_seg = Toeplitz(kappa[:N_seg]).")
@@ -1875,6 +1876,11 @@ elif opts.internal_ile_inner_product != "fd-diagonal":
     sys.exit(1)
 
 #
+if opts.td_u_svd_tol is not None and opts.internal_ile_inner_product != "td-gs":
+    print("FAIL: --td-u-svd-tol compresses the time-indexed U(t),V(t) of --internal-ile-inner-product td-gs; "
+          "the other inner products have scalar cross terms (nothing to compress)")
+    sys.exit(1)
+
 # Fully time-domain code path (--internal-ile-inner-product td-gs): one TDGSDetectorContext per
 # detector, built ONCE here (ACF, per-piece covariance solvers, w = C^{-1} d) and reused for
 # every intrinsic point through PrecomputeLikelihoodTerms(td_gs_contexts=...).  The
@@ -1898,6 +1904,9 @@ if use_td_gs:
         if getattr(opts, _flag, None) not in (None, "auto"):
             print("FAIL: --%s belongs to the td-toeplitz code path, not td-gs" % _flag.replace("_", "-"))
             sys.exit(1)
+    if opts.td_u_svd_tol is not None and not (0. < opts.td_u_svd_tol < 1.):
+        print("FAIL: --td-u-svd-tol must satisfy 0 < tol < 1, got %r" % (opts.td_u_svd_tol,))
+        sys.exit(1)
     td_ifo_offset = {}
     for _spec in (opts.td_ifo_time_offset or []):
         _ifo, _val = _spec.split(":", 1)
@@ -4268,6 +4277,20 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
             if _have_cal_crossterms:
                 ctUArrayDict_cal[det], ctVArrayDict_cal[det] = factored_likelihood.PackCalCrossTermsAsArrays(
                     list(rholms[det].keys()), lookupKNDict[det], cross_terms_cal[det], cross_terms_cal_V[det])
+            # td-gs --td-u-svd-tol: compress U(t),V(t) ONCE per intrinsic point, here on the
+            # CPU (LAPACK SVD of an N_window x n_modes(n_modes+1) matrix, a few 10 ms) before
+            # the GPU transfer, which then moves r component series instead of two
+            # (N_window, n_modes, n_modes) arrays.  Both dict entries hold the same object.
+            if (ile_td_gs_contexts is not None) and (opts.td_u_svd_tol is not None):
+                _comp = factored_likelihood.compress_time_indexed_cross_terms(ctUArrayDict[det], ctVArrayDict[det], opts.td_u_svd_tol)
+                print("  [td-gs] %s: U(t),V(t) SVD-compressed: %d of %d pair columns kept (tol %g; s_1/s_0 = %.2e, s_r/s_0 = %.2e); "
+                      "reconstruction error %.2e (Frobenius), %.2e (max)"
+                      % (det, _comp.r, _comp.n_cols, opts.td_u_svd_tol,
+                         (_comp.singular_values[1] / _comp.singular_values[0]) if _comp.singular_values.size > 1 and _comp.singular_values[0] > 0 else 0.,
+                         (_comp.singular_values[_comp.r - 1] / _comp.singular_values[0]) if _comp.r > 0 else 0.,
+                         _comp.rel_err_fro, _comp.rel_err_max))
+                ctUArrayDict[det] = _comp
+                ctVArrayDict[det] = _comp
         if opts.q_time_pregrid_factor == 8:
             _q_transfer = cupy.asarray if opts.gpu and (not xpy_default is np) else None
             _q_cleanup = (lambda: cupy.get_default_memory_pool().free_all_blocks()) \
@@ -4298,8 +4321,12 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
                 # default/fallback path still needs its ordinary transfer.
                 if opts.q_time_pregrid_factor != 8 and not isinstance(rholmArrayDict[det], cupy.ndarray):
                     rholmArrayDict[det] = cupy.asarray(rholmArrayDict[det])
-                ctUArrayDict[det] = cupy.asarray(ctUArrayDict[det])
-                ctVArrayDict[det] = cupy.asarray(ctVArrayDict[det])
+                if isinstance(ctUArrayDict[det], factored_likelihood.TimeIndexedCrossTermsSVD):
+                    ctUArrayDict[det] = ctUArrayDict[det].to_xpy(cupy)
+                    ctVArrayDict[det] = ctUArrayDict[det]
+                else:
+                    ctUArrayDict[det] = cupy.asarray(ctUArrayDict[det])
+                    ctVArrayDict[det] = cupy.asarray(ctVArrayDict[det])
                 epochDict[det] = cupy.asarray(epochDict[det])
                 if _have_cal_crossterms:
                     ctUArrayDict_cal[det] = cupy.asarray(ctUArrayDict_cal[det])
