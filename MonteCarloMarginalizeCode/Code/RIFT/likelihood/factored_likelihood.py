@@ -637,7 +637,7 @@ def PrecomputeLikelihoodTerms(event_time_geo, t_window, P, data_dict,
         extra_waveform_kwargs={},
         use_gwsignal=False,
         use_gwsignal_approx=None,
-        use_external_EOB=False,nr_lookup=False,nr_lookup_valid_groups=None,no_memory=True,perturbative_extraction=False,perturbative_extraction_full=False,hybrid_use=False,hybrid_method='taper_add',use_provided_strain=False,ROM_group=None,ROM_param=None,ROM_use_basis=False,ROM_limit_basis_size=None,skip_interpolation=False,force_22_mode=False, calibration_realizations=None, calibration_conjugate=False, return_calibration_crossterms=False, calibration_self_term=True, IP_factory=None):
+        use_external_EOB=False,nr_lookup=False,nr_lookup_valid_groups=None,no_memory=True,perturbative_extraction=False,perturbative_extraction_full=False,hybrid_use=False,hybrid_method='taper_add',use_provided_strain=False,ROM_group=None,ROM_param=None,ROM_use_basis=False,ROM_limit_basis_size=None,skip_interpolation=False,force_22_mode=False, calibration_realizations=None, calibration_conjugate=False, return_calibration_crossterms=False, calibration_self_term=True, IP_factory=None, td_gs_contexts=None):
     """
     Compute < h_lm(t) | d > and < h_lm | h_l'm' >
 
@@ -655,7 +655,31 @@ def PrecomputeLikelihoodTerms(event_time_geo, t_window, P, data_dict,
         keeps the frequency-domain-diagonal lsu inner products (byte-identical default);
         a factory (e.g. RIFT.likelihood.td_inner_product.TDInnerProductFactory) swaps in
         the time-domain Toeplitz inner products at these two Precompute call sites only.
+
+    td_gs_contexts:  optional {det: RIFT.likelihood.td_gs_precompute.TDGSDetectorContext}
+        (ILE --internal-ile-inner-product td-gs).  When given, data_dict holds TIME-domain
+        strain and the whole computation is handed to the time-domain code path
+        (precompute_likelihood_terms_td_gs): TD modes with conditioning off, Q/U/V by
+        direct quadratic forms against a Toeplitz covariance on the analysis pieces, no
+        FFT of data or templates.  On that code path crossTerms[det][(p1,p2)] and
+        crossTermsV[det][(p1,p2)] are ARRAYS of length N_window (U(t), V(t) aligned with
+        rholms), not scalars.  Default None: this function is unchanged.
     """
+    if td_gs_contexts is not None:
+        if force_22_mode:
+            raise NotImplementedError("force_22_mode is not implemented for the td-gs Precompute (td_gs_contexts)")
+        from RIFT.likelihood.td_gs_precompute import precompute_likelihood_terms_td_gs
+        return precompute_likelihood_terms_td_gs(
+            event_time_geo, t_window, P, data_dict, td_gs_contexts, Lmax,
+            verbose=verbose, quiet=quiet, extra_waveform_kwargs=extra_waveform_kwargs,
+            skip_interpolation=skip_interpolation,
+            return_calibration_crossterms=return_calibration_crossterms,
+            ignore_threshold=ignore_threshold,
+            IP_factory=IP_factory, calibration_realizations=calibration_realizations,
+            NR_group=NR_group, NR_param=NR_param, nr_lookup=nr_lookup,
+            use_external_EOB=use_external_EOB, use_gwsignal=use_gwsignal,
+            hybrid_use=hybrid_use, use_provided_strain=use_provided_strain,
+            ROM_group=ROM_group, ROM_param=ROM_param, ROM_use_basis=ROM_use_basis)
     assert data_dict.keys() == psd_dict.keys()
     global distMpcRef
     detectors = list(data_dict.keys())
@@ -2157,7 +2181,7 @@ def PackCalCrossTermsAsArrays(pairKeys, lookupKeysToNumber, crossTermsCalList, c
 
 
 def _require_scalar_cross_terms(ctUArrayDict, ctVArrayDict, det, caller):
-    """Refuse time-indexed (npts, n_lm, n_lm) cross terms in routes that only
+    """Refuse time-indexed (npts, n_lm, n_lm) cross terms in code paths that only
     implement the time-independent (n_lm, n_lm) self term.  Only
     DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop evaluates the time-indexed form."""
     if np.ndim(ctUArrayDict[det]) == 3 or np.ndim(ctVArrayDict[det]) == 3:

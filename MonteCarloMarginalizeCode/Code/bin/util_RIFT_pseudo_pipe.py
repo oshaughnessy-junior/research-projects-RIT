@@ -657,7 +657,16 @@ parser.add_argument("--transverse-seed-climb-exe",default=None,help="DAG modes: 
 #   the ILE binary flags of the same name; they exist so an ini-driven PRODUCTION run can
 #   enable the TD path + glitch marginalization without --manual-extra-ile-args string surgery,
 #   and (crucially) so the --glitch-basis-file .npz rides the condor transfer_input_files list.
-parser.add_argument("--internal-ile-inner-product",default=None,type=str,help="Passthrough to ILE --internal-ile-inner-product: 'fd-diagonal' (default OFF, classic) or 'td-toeplitz' (time-domain Toeplitz precision kernel, plan T3). EXPERIMENTAL. Enables the TD/glitch flags below.")
+parser.add_argument("--internal-ile-inner-product",default=None,type=str,help="Passthrough to ILE --internal-ile-inner-product: 'fd-diagonal' (default OFF, classic), 'td-toeplitz' (time-domain Toeplitz precision kernel, plan T3) or 'td-gs' (fully time-domain code path: unwindowed data, untapered templates, Toeplitz covariance on hard-cut pieces, U(t)/V(t); see --internal-ile-td-mref/-piece/-acf-file). EXPERIMENTAL. Enables the TD/glitch flags below.")
+parser.add_argument("--internal-ile-td-mref",default=None,type=float,help="Passthrough to ILE --td-mref MSUN (td-gs: time unit of the pieces).")
+parser.add_argument("--internal-ile-td-piece",action='append',default=None,help="Passthrough to ILE --td-piece 'START,END' in units of M_ref relative to the event time (td-gs; repeatable). In an ini give a list literal or a single quoted string.")
+parser.add_argument("--internal-ile-td-ifo-time-offset",action='append',default=None,help="Passthrough to ILE --td-ifo-time-offset 'IFO:SECONDS' (td-gs; repeatable).")
+parser.add_argument("--internal-ile-td-acf-file",action='append',default=None,help="Passthrough to ILE --td-acf-file 'IFO:path.npy' (td-gs; repeatable; tdanalysis (2,N) [tau,R] format). The .npy is ADDED TO THE ILE CONDOR TRANSFER LIST and the flag rewritten to the transferred basename on OSG, as for --internal-ile-glitch-basis-file.")
+parser.add_argument("--internal-ile-td-dense-max-n",default=None,type=int,help="Passthrough to ILE --td-dense-max-n (td-gs).")
+parser.add_argument("--internal-ile-td-u-stride",default=None,type=int,help="Passthrough to ILE --td-u-stride (td-gs).")
+parser.add_argument("--internal-ile-td-u-method",default=None,type=str,help="Passthrough to ILE --td-u-method {auto,prefix,recursion,batched,chunked} (td-gs).")
+parser.add_argument("--internal-ile-td-acf-cond",default=None,type=float,help="Passthrough to ILE --td-acf-cond (td-gs PSD->ACF target condition number).")
+parser.add_argument("--internal-ile-td-whiteness-check",action='store_true',default=False,help="Passthrough to ILE --td-whiteness-check (td-gs).")
 parser.add_argument("--internal-ile-td-solver",default=None,type=str,help="Passthrough to ILE --td-solver {auto,dense,pcg} (TD path only).")
 parser.add_argument("--internal-ile-td-acf-duration",default=None,type=float,help="Passthrough to ILE --td-acf-duration [s] (TD truncated-segment path).")
 parser.add_argument("--internal-ile-td-analysis-start",default=None,type=float,help="Passthrough to ILE --td-analysis-start [s] (template-frame segment start, plan T5/D1).")
@@ -1811,12 +1820,45 @@ if opts.internal_ile_inner_product:
             if opts.ile_additional_files_to_transfer else _path_abs)
         _ref = os.path.basename(_path_abs) if opts.use_osg else _path_abs
         line += " --glitch-basis-file {}:{} ".format(_ifo, _ref)
+    # td-gs flags (fully time-domain code path)
+    if not(opts.internal_ile_td_mref is None):
+        line += " --td-mref {} ".format(opts.internal_ile_td_mref)
+    for _piece in _as_list(opts.internal_ile_td_piece):
+        line += " --td-piece {} ".format(_piece)
+    for _off in _as_list(opts.internal_ile_td_ifo_time_offset):
+        line += " --td-ifo-time-offset {} ".format(_off)
+    if not(opts.internal_ile_td_dense_max_n is None):
+        line += " --td-dense-max-n {} ".format(opts.internal_ile_td_dense_max_n)
+    if not(opts.internal_ile_td_u_stride is None):
+        line += " --td-u-stride {} ".format(opts.internal_ile_td_u_stride)
+    if opts.internal_ile_td_u_method:
+        line += " --td-u-method {} ".format(opts.internal_ile_td_u_method)
+    if not(opts.internal_ile_td_acf_cond is None):
+        line += " --td-acf-cond {} ".format(opts.internal_ile_td_acf_cond)
+    if opts.internal_ile_td_whiteness_check:
+        line += " --td-whiteness-check "
+    for _spec in _as_list(opts.internal_ile_td_acf_file):
+        _ifo, _path = _spec.split(":", 1)
+        _path_abs = os.path.abspath(os.path.expanduser(_path))
+        if not os.path.isfile(_path_abs):
+            print(" FAILURE: --internal-ile-td-acf-file {}: no such file {}".format(_ifo, _path_abs))
+            sys.exit(1)
+        opts.ile_additional_files_to_transfer = (
+            (opts.ile_additional_files_to_transfer + "," + _path_abs)
+            if opts.ile_additional_files_to_transfer else _path_abs)
+        _ref = os.path.basename(_path_abs) if opts.use_osg else _path_abs
+        line += " --td-acf-file {}:{} ".format(_ifo, _ref)
 elif (opts.internal_ile_td_gap or opts.internal_ile_glitch_basis or
       opts.internal_ile_glitch_basis_file or opts.internal_ile_glitch_sigma or
       opts.internal_ile_td_solver or opts.internal_ile_td_analysis_start is not None or
-      opts.internal_ile_td_analysis_end is not None or opts.internal_ile_td_acf_duration is not None):
+      opts.internal_ile_td_analysis_end is not None or opts.internal_ile_td_acf_duration is not None or
+      opts.internal_ile_td_mref is not None or opts.internal_ile_td_piece or
+      opts.internal_ile_td_ifo_time_offset or opts.internal_ile_td_acf_file or
+      opts.internal_ile_td_dense_max_n is not None or opts.internal_ile_td_u_stride is not None or
+      opts.internal_ile_td_u_method or opts.internal_ile_td_acf_cond is not None or
+      opts.internal_ile_td_whiteness_check):
     print(" FAILURE: --internal-ile-td-* / --internal-ile-glitch-* require "
-          "--internal-ile-inner-product td-toeplitz")
+          "--internal-ile-inner-product td-toeplitz or td-gs")
     sys.exit(1)
 if opts.internal_ile_force_adapt_all:
     line += " --force-adapt-all "

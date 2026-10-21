@@ -72,6 +72,11 @@ def test_pipeline_basis_transfer_names(tmp_path, same_source, osg, existing_aux,
         internal_ile_td_analysis_start=None, internal_ile_td_analysis_end=None,
         internal_ile_td_gap=None, internal_ile_glitch_basis=None,
         internal_ile_glitch_sigma=None, use_osg=osg,
+        internal_ile_td_mref=None, internal_ile_td_piece=None,
+        internal_ile_td_ifo_time_offset=None, internal_ile_td_acf_file=None,
+        internal_ile_td_dense_max_n=None, internal_ile_td_u_stride=None,
+        internal_ile_td_u_method=None, internal_ile_td_acf_cond=None,
+        internal_ile_td_whiteness_check=False,
         ile_additional_files_to_transfer=str(paths[0]) if existing_aux else None,
         internal_ile_glitch_basis_file=(["L1:" + str(paths[1])] if existing_aux else
                                       [ifo + ":" + str(path) for ifo, path in zip(("H1", "L1"), paths)]))

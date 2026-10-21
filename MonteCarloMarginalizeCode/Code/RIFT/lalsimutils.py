@@ -3757,7 +3757,7 @@ def hlmoft(P, Lmax=2,nr_polarization_convention=False, fixed_tapering=False, sil
           WARNING: internal_hlm_generator will CHANGE this factor to 0.9, to better match complex_hoft.  I'm keeping the default of this function here to match the nominal documentaiton of SimInspiralTD, while internal_hlm_generator has a different factor, chosen to match its actual output.
     
 
-    no_condition: disable conditioning (for ChooseFDModes specifically). For diagnostic plots on impact of/need for conditioning.
+    no_condition: disable conditioning: the ChooseFDModes high-pass/taper, the start tapers of the SEOB, SEOBv3 and IMRPhenomP branches, and the start taper applied to ChooseTDModes / TDModesFromPolarizations output at the end of this function. Used by the td-gs likelihood code path (no windows, no tapers) and for diagnostic plots on impact of/need for conditioning. Does not touch lalsuite's own internal conditioning of FD-generated models.
     fd_L_frame: rotate hlmoft to L frame from J frame for return values from ChooseFDModes (XO4/XPHM).
     fd_end_taper_max_time: cap (seconds) on the ChooseFDModes end taper, which is otherwise 1% of the
           buffer.  With fd_alignment_postevent_time=2 an uncapped end taper covers the merger once the
@@ -3926,12 +3926,13 @@ def hlmoft(P, Lmax=2,nr_polarization_convention=False, fixed_tapering=False, sil
 
     if (P.approx == lalsim.SEOBNRv2 or P.approx == lalsim.SEOBNRv1 or P.approx == lalSEOBv4 or P.approx==lalsim.SEOBNRv4_opt or P.approx == lalsim.EOBNRv2 or P.approx == lalTEOBv2 or P.approx==lalTEOBv4 or P.approx == lalSEOBNRv4HM):
         hlm_out = hlmoft_SEOB_dict(P,Lmax=Lmax)
-        if True: #not (P.taper == lsu_TAPER_NONE): #True: #P.taper:
+        for key in hlm_out.keys():
+            hlm_out[key].data.data *= sign_factor
+        if not(no_condition): #not (P.taper == lsu_TAPER_NONE): #True: #P.taper:
             ntaper = int(0.01*hlm_out[(2,2)].data.length)  # fixed 1% of waveform length, at start
             ntaper = np.max([ntaper, int(1./(P.fmin*P.deltaT))])  # require at least one waveform cycle of tapering; should never happen
             vectaper= 0.5 - 0.5*np.cos(np.pi*np.arange(ntaper)/(1.*ntaper))
             for key in hlm_out.keys():
-                hlm_out[key].data.data *= sign_factor
                 # Apply a naive filter to the start. Ideally, use an earlier frequency to start with
                 hlm_out[key].data.data[:ntaper]*=vectaper
         return hlm_out
@@ -3940,13 +3941,14 @@ def hlmoft(P, Lmax=2,nr_polarization_convention=False, fixed_tapering=False, sil
         if not hlm_out:
             print( " Failed generation: SEOBNRv3 ")
             sys.exit(0)
-        if True: #P.taper:
+        for key in hlm_out.keys():
+            hlm_out[key].data.data *= sign_factor
+        if not(no_condition): #P.taper:
             ntaper = int(0.01*hlm_out[(2,2)].data.length)  # fixed 1% of waveform length, at start
             ntaper = np.max([ntaper, int(1./(P.fmin*P.deltaT))])  # require at least one waveform cycle of tapering; should never happen
             vectaper= 0.5 - 0.5*np.cos(np.pi*np.arange(ntaper)/(1.*ntaper))
             for key in hlm_out.keys():
                 # Apply a naive filter to the start. Ideally, use an earlier frequency to start with
-                hlm_out[key].data.data *= sign_factor
                 hlm_out[key].data.data[:ntaper]*=vectaper
         return hlm_out
 
@@ -3961,13 +3963,14 @@ def hlmoft(P, Lmax=2,nr_polarization_convention=False, fixed_tapering=False, sil
                     hlms[mode] = lal.ResizeCOMPLEX16TimeSeries(hlms[mode],0,TDlen)
                 if TDlen < hlms[mode].data.length:  # we have generated too long a signal!...truncate from LEFT. Danger!
                     hlms[mode] = lal.ResizeCOMPLEX16TimeSeries(hlms[mode],hlms[mode].data.length-TDlen,TDlen)
-        if True: #P.taper:
+        for key in hlms.keys():
+            hlms[key].data.data *= sign_factor
+        if not(no_condition): #P.taper:
             ntaper = int(0.01*np.min([hlms[(2,2)].data.length,TDlen_orig]))  # fixed 1% of waveform length, at start, be consistent with other methods
             ntaper = np.max([ntaper, int(1./(P.fmin*P.deltaT))])  # require at least one waveform cycle of tapering; should never happen
             vectaper= 0.5 - 0.5*np.cos(np.pi*np.arange(ntaper)/(1.*ntaper))
             for key in hlms.keys():
                 # Apply a naive filter to the start. Ideally, use an earlier frequency to start with
-                hlms[key].data.data *= sign_factor
                 hlms[key].data.data[:ntaper]*=vectaper
 
         return hlms
