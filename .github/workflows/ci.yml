@@ -233,6 +233,7 @@ jobs:
             MonteCarloMarginalizeCode/Code/test/expensive_before_merging/integrators/test_rift_provenance_guard.py \
             MonteCarloMarginalizeCode/Code/test/expensive_before_merging/integrators/test_seq_gmm_check.py \
             MonteCarloMarginalizeCode/Code/test/test_cip_priors.py \
+            MonteCarloMarginalizeCode/Code/test/test_eccentric_prior_schedule.py \
             MonteCarloMarginalizeCode/Code/test/test_cip_gp_kernel_bounds.py \
             MonteCarloMarginalizeCode/Code/test/test_cosmology_single_source.py \
             MonteCarloMarginalizeCode/Code/test/test_multiapprox_marginalization.py \
