@@ -333,7 +333,7 @@ optp.add_option("--srate",default=16384,type=int,help="Sampling rate. Change ONL
 optp.add_option("--srate-internal",default=None,type=int,help="If provided, internal-use sampling rate. If not provided, all calculations performed with 'srate'. Change ONLY IF YOU ARE ABSOLUTELY SURE YOU KNOW WHAT YOU ARE DOING.")
 optp.add_option("-t", "--event-time", type=float, help="GPS time of the event --- probably the end time. Required if --coinc-xml not given.")
 optp.add_option("-i", "--inv-spec-trunc-time", type=float, default=8., help="Timescale of inverse spectrum truncation in seconds (Default is 8 - give 0 for no truncation)")
-optp.add_option("--internal-ile-inner-product", type=str, default="fd-diagonal", help="Inner product used in the Precompute step: 'fd-diagonal' (default, the classic frequency-domain-diagonal lsu.ComplexIP/ComplexOverlap, zero behavioral change) 'td-toeplitz' (time-domain Toeplitz precision kernel; TD_LIKELIHOOD.md task T3), or 'td-gs' (fully time-domain code path: unwindowed TD data, untapered TD template modes, Toeplitz covariance C=Toeplitz(ACF) on hard-cut analysis pieces solved with tdanalysis' ToeplitzSolver (tdanalysis >= 1.1: Cholesky for short pieces, Gohberg-Semencul for long ones), Q(t),U(t),V(t) by direct quadratic forms, no FFT of data or templates; see --td-mref/--td-piece/--td-acf-file. Requires --vectorized; no calibration/glitch marginalization yet). EXPERIMENTAL.")
+optp.add_option("--internal-ile-inner-product", type=str, default="fd-diagonal", help="Inner product used in the Precompute step: 'fd-diagonal' (default, the classic frequency-domain-diagonal lsu.ComplexIP/ComplexOverlap, zero behavioral change) 'td-toeplitz' (time-domain Toeplitz precision kernel; TD_LIKELIHOOD.md task T3), or 'td-gs' (fully time-domain code path: unwindowed TD data, untapered TD template modes, Toeplitz covariance C=Toeplitz(ACF) on hard-cut analysis pieces solved with tdanalysis' ToeplitzSolver (tdanalysis >= 1.1: Cholesky for short pieces, Gohberg-Semencul for long ones), Q(t),U(t),V(t) by direct quadratic forms, no FFT of data or templates; see --td-mref/--td-piece/--td-acf-file. Requires --vectorized; calibration marginalization runs as exact FIR filters on the template (--td-calibration-correction-type); no glitch marginalization yet). EXPERIMENTAL.")
 optp.add_option("--td-mref", type=float, default=None, help="td-gs: reference total mass [Msun, detector frame] that sets the time unit of --td-piece (1 M = M_ref * G Msun / c^3).")
 optp.add_option("--td-piece", action="append", default=None, help="td-gs: analysis piece 'START,END' in units of M_ref (--td-mref) relative to the event time (geocenter, or detector-frame via --td-ifo-time-offset). Repeatable; disjoint pieces are independent blocks (block-diagonal covariance). None = the full data segment (IMR). A piece may not extend before the template's first non-zero sample for any storage-grid shift (an abrupt turn-on inside a piece biases real-data fits): refused.")
 optp.add_option("--td-ifo-time-offset", action="append", default=None, help="td-gs: 'IFO:SECONDS' added to the event time for that detector before placing the --td-piece intervals (e.g. the detector-frame peak time minus the geocenter event time). Repeatable; default 0.")
@@ -344,6 +344,8 @@ optp.add_option("--td-u-stride", type=int, default=1, help="td-gs: compute U(t),
 optp.add_option("--td-u-method", type=str, default="auto", help="td-gs: how U(t),V(t) are evaluated; every method is exact. 'auto' (default): 'chunked' on Cholesky pieces, 'prefix' on GS pieces where the shifted template ends (or, mirrored, starts) inside the piece for every grid shift, 'recursion' on GS pieces it overruns at both ends. 'prefix': windowed sums of one Gohberg-Semencul kernel correlation per mode (O(n + N_window) per mode pair; refuses pieces where its condition fails). 'recursion': the kernel correlations slid sample by sample, any cut, no per-shift solve. 'prefix' and 'recursion' use Gohberg-Semencul generators of the ACF on every piece, so on Cholesky pieces with a badly conditioned ACF they differ from 'chunked' by ~cond(C) eps. 'batched': stack the cut shifted templates and apply C^-1 once (reference; memory n x N_window per mode). 'chunked': 'batched' in column blocks under a memory bound. The methods are tdanalysis' (tdanalysis.forms.sliding.sliding_self_terms, tdanalysis >= 1.1).")
 optp.add_option("--td-highpass", type=float, default=None, help="td-gs: zero-phase 8th-order Butterworth high-pass of the time-domain data at this corner frequency [Hz] before C^-1 d (tdanalysis.utils.filters.highpass_zero_phase; default off). Needed on real strain when the ACF walls the band below f_min (the conditioned tdanalysis ACFs do): use e.g. 10 Hz, which is flat to 2e-5 at 20 Hz. Analysis pieces should stay a few / corner seconds away from the data edges.")
 optp.add_option("--td-u-svd-tol", type=float, default=None, help="td-gs: compress the time-indexed cross terms U(t),V(t) per detector by an SVD over time, keeping the components with singular value > TOL x the largest (RIFT.likelihood.factored_likelihood.compress_time_indexed_cross_terms). The self term then costs r gathers per time bin instead of n_modes(n_modes+1); exact up to the dropped components, so TOL at rounding level (recommended 1e-13) reproduces the uncompressed likelihood to ~1e-12 relative. Done once per intrinsic point on the CPU after packing, before any GPU transfer; r and the reconstruction error are printed per detector. Default None = off.")
+optp.add_option("--td-calibration-correction-type", type=str, default="rift", help="td-gs with --calibration-envelope-directory: how a realization eta_c(f) becomes the factor on the TEMPLATE. 'rift' (default): C_c = eta_c for every detector, which reproduces RIFT's frequency-domain calibration marginalization exactly (eta_c on the data in RIFT's reversed packing is eta_c on the template at face value in the standard convention); 'bilby': bilby_pipe's per-detector semantics, C_c = eta_c for V1 (envelope of 'template' type) and C_c = 1/eta_c for H1, L1, K1 ('data' type: eta maps calibrated data to theoretical strain). --calibration-conjugate-phase conjugates C_c in both cases. See docs/td_gs_route.md.")
+optp.add_option("--td-calibration-fir-half-length", type=int, default=None, help="td-gs calibration: force the symmetric half-length L (samples) of the FIR filters applied to the template. Default None = exact: per intrinsic point the taps are truncated at the template's reach (beyond which no tap meets a non-zero template sample), or all N taps are used, so the result equals the N-tap inverse-DFT filter of each realization to rounding. A forced L shorter than the reach is an approximation (speed studies only).")
 optp.add_option("--td-whiteness-check", action="store_true", default=False, help="td-gs: in addition to the always-printed d^T C^-1 d / n per piece (should be ~1), whiten each piece (tdanalysis ToeplitzSolver.whiten: the Cholesky factor on Cholesky pieces, a Levinson-Durbin recursion on GS pieces, O(n^2) once per job) and print the variance and lag-1 autocorrelation of L^-1 d. Diagnostic only (the data are not high-passed on this code path; a value far from 1 means the ACF does not describe the data).")
 optp.add_option("--td-solver", type=str, default="auto", help="Solver mode for --internal-ile-inner-product td-toeplitz: {auto,dense,pcg}. Affects only the physical-covariance/augmentation path; the full-segment precision-kernel inner products are FFT-based and solver-independent. Default auto.")
 optp.add_option("--td-acf-duration", type=float, default=None, help="Optional ACF truncation duration [s] for --internal-ile-inner-product td-toeplitz (Stage-3 truncated-segment path). Default None = full segment; sets N_seg = round(duration*srate) and builds the truncated precision kernel K_seg = Toeplitz(kappa[:N_seg]).")
@@ -1901,10 +1903,21 @@ if use_td_gs:
         print("FAIL: --internal-ile-inner-product td-gs requires --vectorized (the non-vectorized "
               "likelihoods assume scalar <h|h> cross terms; td-gs produces U(t), V(t) arrays)")
         sys.exit(1)
-    if opts.calibration_envelope_directory:
-        print("FAIL: calibration marginalization is not available with --internal-ile-inner-product td-gs "
-              "(planned in a later stage); drop --calibration-envelope-directory")
+    if opts.td_calibration_correction_type not in ("rift", "bilby"):
+        print("FAIL: --td-calibration-correction-type must be 'rift' or 'bilby', got %r" % (opts.td_calibration_correction_type,))
         sys.exit(1)
+    if opts.calibration_envelope_directory:
+        if opts.calibration_fused_kernel:
+            print("FAIL: --calibration-fused-kernel is not implemented for --internal-ile-inner-product td-gs "
+                  "(the per-realization self term is time-indexed there); drop it, the loop method is used")
+            sys.exit(1)
+        if opts.td_u_svd_tol is not None:
+            print("FAIL: --td-u-svd-tol is not implemented together with calibration marginalization on td-gs "
+                  "(the per-realization U_c(t), V_c(t) are not compressed); drop one of them")
+            sys.exit(1)
+        if opts.td_calibration_fir_half_length is not None and opts.td_calibration_fir_half_length < 0:
+            print("FAIL: --td-calibration-fir-half-length must be >= 0")
+            sys.exit(1)
     if opts.rotation_slow or opts.freqresponse:
         print("FAIL: --rotation-slow / --freqresponse have their own Precompute and are not wired to td-gs")
         sys.exit(1)
@@ -1949,7 +1962,9 @@ if use_td_gs:
                 n_valid=td_gs_n_valid[inst], dense_max_n=opts.td_dense_max_n,
                 u_stride=opts.td_u_stride, u_method=opts.td_u_method,
                 acf_condition_number=opts.td_acf_cond, whiteness_check=opts.td_whiteness_check,
-                ifo=inst, verbose=True)
+                ifo=inst, verbose=True,
+                calibration_correction_type=opts.td_calibration_correction_type,
+                calibration_fir_half_length=opts.td_calibration_fir_half_length)
         except ValueError as _e:
             print("FAIL: td-gs context for %s: %s" % (inst, _e))
             sys.exit(1)
@@ -1959,6 +1974,14 @@ if use_td_gs:
           "truncation is ignored."
           % (opts.td_mref, opts.td_piece, td_ifo_offset, list(td_acf_paths.keys()),
              opts.td_acf_cond, opts.td_dense_max_n, opts.td_u_stride, opts.td_u_method))
+    if opts.calibration_envelope_directory:
+        print("  [td-gs] calibration marginalization: realizations applied as exact FIR filters on the template "
+              "(correction type %s%s, FIR half-length %s); per-realization time-indexed Q_c(t) and %s; "
+              "likelihood reduction cal_method='loop'."
+              % (opts.td_calibration_correction_type, ", conjugate phase" if opts.calibration_conjugate_phase else "",
+                 "exact (template reach)" if opts.td_calibration_fir_half_length is None else "FORCED %d (approximate)" % opts.td_calibration_fir_half_length,
+                 "the calibration-independent self term U(t), V(t) (--calibration-global-norm)" if opts.calibration_global_norm
+                 else "self terms U_c(t), V_c(t)"))
 
 
 
@@ -4562,6 +4585,18 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
             if n_cap is None:
                 n_cap = max(int(opts.calibration_mc_error_extrinsic or 0), n_start)
             _warned = []
+            # The probe writes extrinsic ARRAYS into the shared P; restore the scalars
+            # afterwards, because the incremental Precompute of the adaptive draw growth
+            # regenerates the waveform from this same P (array-valued phiref/dist would
+            # be refused by the generator).
+            _P_saved = {k: getattr(P, k) for k in ('phi', 'theta', 'incl', 'psi', 'phiref', 'tref', 'dist')}
+            try:
+                return _cal_error_probe_body(n_cal_now, n_start, n_cap, rel_tol, _adapt, _lse, _rng, _warned)
+            finally:
+                for k, v in _P_saved.items():
+                    setattr(P, k, v)
+
+        def _cal_error_probe_body(n_cal_now, n_start, n_cap, rel_tol, _adapt, _lse, _rng, _warned):
             def _draw_dist(n):
                 if 'distance' in pinned_params:
                     if not _warned:

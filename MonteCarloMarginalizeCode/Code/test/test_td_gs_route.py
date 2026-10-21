@@ -711,7 +711,7 @@ def test_precompute_driver_interface(ringdown_setup):
     with pytest.raises(ValueError, match="not supported"):
         fl.PrecomputeLikelihoodTerms(s["tpk"], t_window, P, data_dict, psd_dict, 2, 1500.,
                                      verbose=False, quiet=True, skip_interpolation=True,
-                                     td_gs_contexts=contexts, calibration_realizations={"H1": 1})
+                                     td_gs_contexts=contexts, IP_factory=object())
     print("[td-gs] driver: 2 detectors, %d modes, N_window=%d, guess_snr=%.2f" % (n, N_window, guess_snr))
 
 

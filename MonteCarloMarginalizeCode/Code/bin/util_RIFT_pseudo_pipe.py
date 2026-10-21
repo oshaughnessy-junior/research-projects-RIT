@@ -668,6 +668,8 @@ parser.add_argument("--internal-ile-td-u-method",default=None,type=str,help="Pas
 parser.add_argument("--internal-ile-td-highpass",default=None,type=float,help="Passthrough to ILE --td-highpass FREQ (td-gs: zero-phase high-pass of the data, e.g. 10 Hz for real strain with walled ACFs; default off).")
 parser.add_argument("--internal-ile-td-u-svd-tol",default=None,type=float,help="Passthrough to ILE --td-u-svd-tol TOL (td-gs: SVD-over-time compression of U(t),V(t); recommended 1e-13; default off).")
 parser.add_argument("--internal-ile-td-acf-cond",default=None,type=float,help="Passthrough to ILE --td-acf-cond (td-gs PSD->ACF target condition number).")
+parser.add_argument("--internal-ile-td-calibration-correction-type",default=None,type=str,help="Passthrough to ILE --td-calibration-correction-type {rift,bilby} (td-gs with in-loop calmarg: how a realization becomes the template factor; rift = RIFT's FD convention, bilby = per-detector bilby_pipe semantics).")
+parser.add_argument("--internal-ile-td-calibration-fir-half-length",default=None,type=int,help="Passthrough to ILE --td-calibration-fir-half-length (td-gs calmarg: force the FIR half-length; default exact).")
 parser.add_argument("--internal-ile-td-whiteness-check",action='store_true',default=False,help="Passthrough to ILE --td-whiteness-check (td-gs).")
 parser.add_argument("--internal-ile-td-solver",default=None,type=str,help="Passthrough to ILE --td-solver {auto,dense,pcg} (TD path only).")
 parser.add_argument("--internal-ile-td-acf-duration",default=None,type=float,help="Passthrough to ILE --td-acf-duration [s] (TD truncated-segment path).")
@@ -1841,6 +1843,10 @@ if opts.internal_ile_inner_product:
         line += " --td-u-svd-tol {} ".format(opts.internal_ile_td_u_svd_tol)
     if not(opts.internal_ile_td_acf_cond is None):
         line += " --td-acf-cond {} ".format(opts.internal_ile_td_acf_cond)
+    if opts.internal_ile_td_calibration_correction_type:
+        line += " --td-calibration-correction-type {} ".format(opts.internal_ile_td_calibration_correction_type)
+    if not(opts.internal_ile_td_calibration_fir_half_length is None):
+        line += " --td-calibration-fir-half-length {} ".format(opts.internal_ile_td_calibration_fir_half_length)
     if opts.internal_ile_td_whiteness_check:
         line += " --td-whiteness-check "
     for _spec in _as_list(opts.internal_ile_td_acf_file):

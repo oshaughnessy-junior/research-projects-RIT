@@ -676,6 +676,7 @@ def PrecomputeLikelihoodTerms(event_time_geo, t_window, P, data_dict,
             return_calibration_crossterms=return_calibration_crossterms,
             ignore_threshold=ignore_threshold,
             IP_factory=IP_factory, calibration_realizations=calibration_realizations,
+            calibration_conjugate=calibration_conjugate, calibration_self_term=calibration_self_term,
             NR_group=NR_group, NR_param=NR_param, nr_lookup=nr_lookup,
             use_external_EOB=use_external_EOB, use_gwsignal=use_gwsignal,
             hybrid_use=hybrid_use, use_provided_strain=use_provided_strain,
@@ -2084,6 +2085,9 @@ def PackLikelihoodDataStructuresAsArrays(pairKeys, rholms_intpDictionaryForDetec
     crossTermsArrayU/V of shape (nKeys, nKeys); time-indexed values pack to shape
     (npts, nKeys, nKeys), with index j along axis 0 sharing the time grid and
     epoch of rholmArray[:, j].  All pairs of one detector must be of one kind.
+    With calibration marginalization the rholms hold n_cal contiguous realization
+    blocks; the (calibration-independent) time-indexed cross terms may then be one
+    block long (npts / n_cal, which must divide npts) and pack to (N_window, nKeys, nKeys).
     """
     #print pairKeys, rholmsDictionaryForDetector
     nKeys  = len(pairKeys)
@@ -2110,7 +2114,10 @@ def PackLikelihoodDataStructuresAsArrays(pairKeys, rholms_intpDictionaryForDetec
     # Time-indexed cross terms (1-D arrays of length npts) get a leading time axis.
     time_indexed = np.ndim(crossTermsForDetector[(keyRef,keyRef)]) == 1
     if time_indexed:
-        ct_shape = (npts,nKeys,nKeys)
+        npts_ct = np.shape(crossTermsForDetector[(keyRef,keyRef)])[0]
+        if npts_ct <= 0 or npts % npts_ct != 0:
+            raise ValueError("Time-indexed cross terms must be 1-D arrays of the rholm length {} or of one realization block (a divisor of it); got length {}".format(npts, npts_ct))
+        ct_shape = (npts_ct,nKeys,nKeys)
     else:
         ct_shape = (nKeys,nKeys)
     crossTermsArrayU = np.zeros(ct_shape,dtype=np.complex128)   # Make sure complex numbers can be stored
@@ -2122,8 +2129,8 @@ def PackLikelihoodDataStructuresAsArrays(pairKeys, rholms_intpDictionaryForDetec
             ctU_here = crossTermsForDetector[(pair1,pair2)]
             ctV_here = crossTermsForDetectorV[(pair1,pair2)]
             if time_indexed:
-                if np.shape(ctU_here) != (npts,) or np.shape(ctV_here) != (npts,):
-                    raise ValueError("Time-indexed cross terms for pair {} must be 1-D arrays of length {} (the rholm length); got U {} and V {}".format((pair1,pair2), npts, np.shape(ctU_here), np.shape(ctV_here)))
+                if np.shape(ctU_here) != (npts_ct,) or np.shape(ctV_here) != (npts_ct,):
+                    raise ValueError("Time-indexed cross terms for pair {} must be 1-D arrays of length {} (the rholm length, or one realization block of it); got U {} and V {}".format((pair1,pair2), npts_ct, np.shape(ctU_here), np.shape(ctV_here)))
                 crossTermsArrayU[:,indx1,indx2] = ctU_here
                 crossTermsArrayV[:,indx1,indx2] = ctV_here
             else:
@@ -2160,14 +2167,24 @@ def PackCalCrossTermsAsArrays(pairKeys, lookupKeysToNumber, crossTermsCalList, c
     guarantees ctUArrayDict_cal[det][c] is index-aligned with ctUArrayDict[det].
 
     crossTermsCalList, crossTermsCalListV : lists of n_cal cross-term dicts (the
-        ComputeModeCrossTermIPCal output for one detector).
+        ComputeModeCrossTermIPCal output for one detector; or, on the td-gs code path, dicts of
+        time-indexed 1-D arrays of length N_window, the per-realization U_c(t), V_c(t)).
 
-    Returns (U_cal, V_cal), each (n_cal, nKeys, nKeys) complex128.
+    Returns (U_cal, V_cal), each (n_cal, nKeys, nKeys) complex128 for scalar entries, or
+    (n_cal, N_window, nKeys, nKeys) for time-indexed ones (axis 1 shares the time grid of
+    the realization's rholm block).
     """
     nKeys = len(pairKeys)
     n_cal = len(crossTermsCalList)
-    U_cal = np.zeros((n_cal, nKeys, nKeys), dtype=np.complex128)
-    V_cal = np.zeros((n_cal, nKeys, nKeys), dtype=np.complex128)
+    keys = list(pairKeys)
+    time_indexed = n_cal > 0 and np.ndim(crossTermsCalList[0][(keys[0], keys[0])]) == 1
+    if time_indexed:
+        npts = np.shape(crossTermsCalList[0][(keys[0], keys[0])])[0]
+        U_cal = np.zeros((n_cal, npts, nKeys, nKeys), dtype=np.complex128)
+        V_cal = np.zeros((n_cal, npts, nKeys, nKeys), dtype=np.complex128)
+    else:
+        U_cal = np.zeros((n_cal, nKeys, nKeys), dtype=np.complex128)
+        V_cal = np.zeros((n_cal, nKeys, nKeys), dtype=np.complex128)
     for c in range(n_cal):
         ctU_c = crossTermsCalList[c]
         ctV_c = crossTermsCalListV[c]
@@ -2175,8 +2192,14 @@ def PackCalCrossTermsAsArrays(pairKeys, lookupKeysToNumber, crossTermsCalList, c
             indx1 = lookupKeysToNumber[pair1]
             for pair2 in pairKeys:
                 indx2 = lookupKeysToNumber[pair2]
-                U_cal[c, indx1, indx2] = ctU_c[(pair1, pair2)]
-                V_cal[c, indx1, indx2] = ctV_c[(pair1, pair2)]
+                if time_indexed:
+                    if np.shape(ctU_c[(pair1, pair2)]) != (npts,) or np.shape(ctV_c[(pair1, pair2)]) != (npts,):
+                        raise ValueError("Time-indexed calibration cross terms for pair {} realization {} must be 1-D arrays of length {}; got U {} and V {}".format((pair1, pair2), c, npts, np.shape(ctU_c[(pair1, pair2)]), np.shape(ctV_c[(pair1, pair2)])))
+                    U_cal[c, :, indx1, indx2] = ctU_c[(pair1, pair2)]
+                    V_cal[c, :, indx1, indx2] = ctV_c[(pair1, pair2)]
+                else:
+                    U_cal[c, indx1, indx2] = ctU_c[(pair1, pair2)]
+                    V_cal[c, indx1, indx2] = ctV_c[(pair1, pair2)]
     return U_cal, V_cal
 
 
@@ -3419,8 +3442,23 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
     (some scalar, some time-indexed).  All n_cal==1 reductions are supported
     (time marginalization, return_lnLt, phase_marginalization, and any
     elementwise loglikelihood such as the distance-marginalization table).
-    Calibration marginalization (n_cal>1, cal_method='fused', ctUArrayDict_cal)
-    is refused with NotImplementedError for time-indexed cross terms.
+    The self term is gathered with the 'nearest' and 'cubic' stencils on the
+    likelihood's own time grid only: time_interp='sinc', an independently spaced
+    Q pregrid (q_deltaT != deltaT), explicit_time_values, and the 'bandlimited'
+    and 'peak-local' time quadratures (which assume a time-independent rho_sq)
+    are refused with NotImplementedError when any detector is time-indexed.
+
+    Calibration marginalization with time-indexed terms (the td-gs code path) runs on
+    cal_method='loop' only.  The rholm buffers hold n_cal contiguous blocks as on the
+    FD code path; a time-indexed base U(t) may then be ONE block long (N_window =
+    npts_full/n_blocks; it is gathered block-locally) or the full length.  The
+    per-realization self term may be time-indexed: ctUArrayDict_cal[det] of shape
+    (n_blocks, N_window, n_lms, n_lms) -- U_c(t) of the template filtered with
+    realization c, on the time grid of block c -- gathered per realization at the same
+    window index as its Q_c block, exactly as the time-indexed n_cal==1 self term.  The
+    calmarg reduction (streaming log-sum-exp over realizations, importance weights,
+    return_lnLt, return_cal_components) is unchanged.  cal_method='fused' and the
+    SVD-compressed base U refuse these inputs with NotImplementedError.
 
     SVD-compressed cross terms (ctUArrayDict[det] a TimeIndexedCrossTermsSVD)
     ------------------------------------------------------------------------
@@ -3430,11 +3468,6 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
     None).  The self term is then r Q-style gathers per sample instead of
     n_lm (n_lm+1); exact up to the dropped singular components.  Same
     restrictions as the 3-D arrays.
-    The self term is gathered with the 'nearest' and 'cubic' stencils on the
-    likelihood's own time grid only: time_interp='sinc', an independently spaced
-    Q pregrid (q_deltaT != deltaT), explicit_time_values, and the 'bandlimited'
-    and 'peak-local' time quadratures (which assume a time-independent rho_sq)
-    are refused with NotImplementedError when any detector is time-indexed.
     """
     global distMpcRef
 
@@ -3503,11 +3536,13 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
     npts = len(tvals)
     npts_extrinsic = len(P_vec.phi)
 
-    # Time-indexed cross terms: validate the shapes up front and refuse the
-    # calibration-marginalization paths, whose rholm buffers hold n_cal
-    # concatenated realizations and whose self term is per realization.
+    # Time-indexed cross terms: validate the shapes up front.  With calibration the rholm
+    # buffers hold n_blocks concatenated realizations (n_blocks >= n_cal: the burn-in runs
+    # n_cal=1 on the full arrays), and a time-indexed base U(t) may be one block long.
     time_indexed_UV = {}
     compressed_UV = {}
+    time_indexed_cal = {}
+    _have_cal_arrays = (ctUArrayDict_cal is not None) and (ctVArrayDict_cal is not None)
     for det in detectors:
         compressed_UV[det] = isinstance(ctUArrayDict[det], TimeIndexedCrossTermsSVD)
         if compressed_UV[det]:
@@ -3524,18 +3559,36 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
             if U_ndim != V_ndim or U_ndim not in (2, 3):
                 raise ValueError("ctUArrayDict[{}] and ctVArrayDict[{}] must both be 2-D or both be 3-D; got ndim {} and {}".format(det, det, U_ndim, V_ndim))
             time_indexed_UV[det] = (U_ndim == 3)
+        time_indexed_cal[det] = False
+        n_blocks_det = n_cal
+        if _have_cal_arrays:
+            cal_ndim = np.ndim(ctUArrayDict_cal[det])
+            if cal_ndim != np.ndim(ctVArrayDict_cal[det]) or cal_ndim not in (3, 4):
+                raise ValueError("ctUArrayDict_cal[{}] and ctVArrayDict_cal[{}] must both be (n_cal, n_lms, n_lms) or both (n_cal, N_window, n_lms, n_lms); got ndim {} and {}".format(det, det, cal_ndim, np.ndim(ctVArrayDict_cal[det])))
+            if ctUArrayDict_cal[det].shape[0] < n_cal:
+                raise ValueError("ctUArrayDict_cal[{}] holds {} realizations but n_cal={}".format(det, ctUArrayDict_cal[det].shape[0], n_cal))
+            time_indexed_cal[det] = (cal_ndim == 4)
+            if time_indexed_cal[det]:
+                n_blocks_det = int(ctUArrayDict_cal[det].shape[0])
+                npts_full_det = rholmsArrayDict[det].shape[-1]
+                if tuple(ctUArrayDict_cal[det].shape) != tuple(ctVArrayDict_cal[det].shape) or ctUArrayDict_cal[det].shape[2] != len(lookupNKDict[det]) or n_blocks_det * ctUArrayDict_cal[det].shape[1] != npts_full_det:
+                    raise ValueError("time-indexed calibration cross terms for {} must be (n_blocks, N_window, n_lms, n_lms) with n_blocks*N_window = rholm length {}: got U {} V {} for {} modes".format(det, npts_full_det, ctUArrayDict_cal[det].shape, ctVArrayDict_cal[det].shape, len(lookupNKDict[det])))
+                if cal_method == 'fused':
+                    raise NotImplementedError("cal_method='fused' is not implemented for time-indexed per-realization self terms (ctUArrayDict_cal[{}] is 4-D, the td-gs code path); use cal_method='loop'".format(det))
         if time_indexed_UV[det]:
             npts_full_det = rholmsArrayDict[det].shape[-1]
+            N_window_block_det = npts_full_det // max(1, n_blocks_det)
             if compressed_UV[det]:
+                if n_cal != 1 or _have_cal_arrays:
+                    raise NotImplementedError("SVD-compressed time-indexed cross terms for {} are not implemented with calibration marginalization (n_cal={}, cal arrays {})".format(det, n_cal, _have_cal_arrays))
                 if ctUArrayDict[det].npts_full != npts_full_det:
                     raise ValueError("compressed cross terms for {} must share the rholm time grid: npts_full {} vs rholm length {}".format(det, ctUArrayDict[det].npts_full, npts_full_det))
-            elif ctUArrayDict[det].shape[0] != npts_full_det or ctVArrayDict[det].shape[0] != npts_full_det:
-                raise ValueError("time-indexed cross terms for {} must share the rholm time grid: U {} V {} vs rholm length {}".format(det, ctUArrayDict[det].shape, ctVArrayDict[det].shape, npts_full_det))
-            if n_cal != 1:
-                raise NotImplementedError("time-indexed cross terms for {} are not implemented with calibration marginalization (n_cal={})".format(det, n_cal))
-            if (ctUArrayDict_cal is not None) or (ctVArrayDict_cal is not None):
-                raise NotImplementedError("time-indexed cross terms for {} are not implemented together with ctUArrayDict_cal/ctVArrayDict_cal".format(det))
-    if any(time_indexed_UV.values()):
+            elif ctUArrayDict[det].shape[0] != ctVArrayDict[det].shape[0] or ctUArrayDict[det].shape[0] not in (npts_full_det, N_window_block_det):
+                raise ValueError("time-indexed cross terms for {} must share the rholm time grid (length {}) or be one realization block long ({}): U {} V {}".format(det, npts_full_det, N_window_block_det, ctUArrayDict[det].shape, ctVArrayDict[det].shape))
+            if n_cal != 1 and cal_method == 'fused':
+                raise NotImplementedError("cal_method='fused' is not implemented for time-indexed cross terms ({}, n_cal={}); use cal_method='loop'".format(det, n_cal))
+    _any_time_indexed_cal = any(time_indexed_cal.values())
+    if any(time_indexed_UV.values()) or _any_time_indexed_cal:
         _require_time_indexed_supported(time_interp, time_quadrature, explicit_time_values,
                                         q_deltaT, getattr(P_vec, 'q_deltaT', None), float(P_vec.deltaT))
     # npts_full = len(rholmsArrayDict[detectors[0]][0]) # all have same size
@@ -3619,8 +3672,20 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
     # Active whenever the |C_c|^2-weighted cross terms are supplied -- INCLUDING n_cal==1
     # (a single calibration draw is still applied to the data, so its self-term must be
     # <C h|C h>, not the cal-independent <h|h>; the n_cal==1 path below uses rho_sq_cal[0]).
-    _use_rho_sq_cal = (ctUArrayDict_cal is not None) and (ctVArrayDict_cal is not None)
+    _use_rho_sq_cal = _have_cal_arrays
     rho_sq_cal = xpy.zeros((n_cal, npts_extrinsic), dtype=np.float64) if _use_rho_sq_cal else None
+    # Time-indexed per-realization self terms (td-gs): per detector the inputs of the
+    # per-realization gather, evaluated inside the realization loop below (the full
+    # (n_cal, npts_extrinsic, npts) array would not fit).
+    cal_self_cache = {}
+
+    def _rho_sq_cal_time_indexed(c):
+        """sum over detectors of 0.5 (D_ref/D)^2 x the self term of realization c's filtered
+        template, gathered at that detector's window: (npts_extrinsic, npts)."""
+        out = xpy.zeros((npts_extrinsic, npts), dtype=np.float64)
+        for det_c, (U_cal_det, V_cal_det, F_det, Y_det, ifirst_det, frac_det, dfac) in cal_self_cache.items():
+            out += dfac * _time_indexed_self_term(U_cal_det[c], V_cal_det[c], F_det, Y_det, ifirst_det, frac_det, npts, time_interp, xpy=xpy)
+        return out
 
     # The rule is chosen by name, never by backend; see time_quadrature_rule.
     simps = time_quadrature_rule(time_quadrature, xpy)
@@ -3739,7 +3804,14 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
         # extra leading axis is the calibration realization c.  MUST use the original
         # (un-phase-conjugated) Ylms_vec, matching rho_sq_det, so it is computed here
         # before the phase_marginalization conjugation below.
-        if _use_rho_sq_cal:
+        if _use_rho_sq_cal and time_indexed_cal[det]:
+            # Time-indexed per-realization self term (td-gs): U_c(t), V_c(t) of the filtered
+            # template on block c's time grid, gathered at the same block-local window as Q_c
+            # (ifirst is block-local already).  Evaluated per realization in the reductions
+            # below; keep the un-phase-conjugated Ylms (the self term uses them, as above).
+            cal_self_cache[det] = (ctUArrayDict_cal[det], ctVArrayDict_cal[det], F_vec, xpy.array(Ylms_vec, copy=True),
+                                   ifirst, frac_first, xpy.asarray(0.5 * xpy.square(distMpcRef / distMpc)).reshape(-1, 1))
+        elif _use_rho_sq_cal:
             # Use the FIRST n_cal weighted blocks.  The supplied arrays may hold more
             # realizations than n_cal -- e.g. the zero-cal burn-in (--calibration-burn-in-neff)
             # runs with n_cal=1 while retaining the full N_cal cross-term arrays -- and without
@@ -3903,7 +3975,13 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
         # cal-independent <h|h>.  Falls back to rho_sq for the ordinary (no-cal) likelihood.
         if kappa_sq is None:   # no detectors: preserve the old all-zeros behaviour
             kappa_sq = xpy.zeros((npts_extrinsic, npts), dtype=np.complex128)
-        rho_sq_here = rho_sq if not _use_rho_sq_cal else xpy.broadcast_to(rho_sq_cal[0][:, np.newaxis], (npts_extrinsic, npts))
+        if not _use_rho_sq_cal:
+            rho_sq_here = rho_sq
+        else:
+            rho_sq_here = xpy.broadcast_to(rho_sq_cal[0][:, np.newaxis], (npts_extrinsic, npts))
+            if _any_time_indexed_cal:
+                # td-gs: realization 0's time-indexed self term (zeros in rho_sq_cal for those detectors)
+                rho_sq_here = rho_sq_here + _rho_sq_cal_time_indexed(0)
         if phase_marginalization:
             lnL_t = loglikelihood(xpy.abs(kappa_sq), rho_sq_here)
         else:
@@ -4080,6 +4158,10 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
         # Falls back to rho_sq when the fix is inactive.
         if _use_rho_sq_cal:
             rho_sq_here = xpy.broadcast_to(rho_sq_cal[c][:, np.newaxis], (npts_extrinsic, npts))
+            if _any_time_indexed_cal:
+                # td-gs: this realization's time-indexed self term U_c(t), V_c(t), gathered at
+                # the same block-local window as its Q_c block
+                rho_sq_here = rho_sq_here + _rho_sq_cal_time_indexed(c)
         else:
             rho_sq_here = rho_sq
         if phase_marginalization:

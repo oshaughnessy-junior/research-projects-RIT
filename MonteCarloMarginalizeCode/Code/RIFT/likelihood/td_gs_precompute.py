@@ -26,10 +26,13 @@
 #     ToeplitzSolver.whiten                             L^{-1} d_p for the whiteness check
 #     tdanalysis.utils.filters.highpass_zero_phase      the optional data high-pass
 #                                                       (--td-highpass; re-exported here)
+#     tdanalysis.utils.filters.fir_*                    calibration realizations as exact FIR
+#                                                       filters on the template
 # This module adds what is RIFT's: lal series and epochs, the (l,m) mode bookkeeping, the
 # analysis pieces (in units of M_ref on the ILE command line), RIFT's storage grid of
-# shifts, the sum over pieces, the turn-on refusal and its message, and the output
-# contract below.
+# shifts, the sum over pieces, the turn-on refusal and its message, the calibration
+# conventions (RIFT's packing, correction type, conjugate phase) and the output contract
+# below.
 #
 # Per detector and ILE job (built ONCE, TDGSDetectorContext):
 #     w_p = C_p^{-1} d_p                 for every piece p (ToeplitzSolver of piece p)
@@ -84,8 +87,42 @@
 #     crossTerms[(p1,p2)]     complex ndarray of length N_window, aligned sample-by-sample
 #     crossTermsV[(p1,p2)]    with rholms (entry i <-> shift k = N_shift + i).
 #
+# Calibration marginalization (TDCalibrationFilters, precompute(..., calibration=...)):
+# each RIFT realization eta_c(f) (RIFT.calmarg.generate_realizations, RIFT's reversed
+# two-sided packing, unity outside the band) becomes a real FIR filter K_c on the TEMPLATE,
+# "calibrate then cut": (K_c h)[j] = sum_i c_c[i] h[j-i], a linear convolution of the
+# zero-extended template, then cut to the pieces.  The data are untouched.  K_c is the
+# N-tap filter whose response ON THE REALIZATION'S GRID f_m = m/(N deltaT) is eta_c exactly:
+# its taps are the inverse DFT of eta_c (real, since eta_c(-f) = conj eta_c(f)), i = -N/2+1 ..
+# N/2 (tdanalysis.utils.filters.fir_taps_from_response).  The FD code path multiplies by eta_c on that grid, i.e. convolves CIRCULARLY with the
+# same taps; the TD code path convolves linearly, so the two agree exactly where the FD code path
+# does not wrap around.  Because the template has compact support, a tap c_c[i] contributes
+# to a piece sample only if |i| is at most the reach R = max over pieces and grid shifts of
+# the distance from a piece sample to the template's support; the filter truncated to
+# half-length L >= R gives the SAME values on the pieces as the N-tap filter (to rounding),
+# so per intrinsic point L = min(R, N/2) is used (the full N taps when R >= N/2), with no
+# tolerance anywhere (tdanalysis' fir_max_lag and fir_truncate_at_max_lag).
+# --td-calibration-fir-half-length forces a shorter L (then an approximation; measured
+# errors in docs/td_gs_route.md).  Everything is exact to rounding:
+#     Q_c(t)        = (K_c h_t)|_pieces^H w = h_t^H (K_c^T w)       (w zero outside the pieces,
+#                     so W_c = K_c^T w with the N-tap filter is one exact linear correlation per
+#                     realization, formed once per realization set; Q_c(t) is then the exact
+#                     correlation of the template's support with W_c, for every template)
+#     U_c(t), V_c(t) = the exact U/V methods above on the filtered template g_c = K_c h, whose
+#                     support is the template's extended by the taps' reach on each side
+#                     (passed to the sliding forms as support=: the method selection uses
+#                     it, and the rounding residue the convolution leaves outside it is ignored).
+# Convention (td_calibration.py, test/td_calibration_study.md): RIFT's FD default -- the
+# realization multiplying the DATA in RIFT's reversed packing -- equals, in the standard
+# e^{-2 pi i f t} convention, the TEMPLATE filtered with eta_c at face value; this is the
+# default here (correction_type "rift": C_c = eta_c for every detector).  RIFT's
+# --calibration-conjugate-phase is C_c = conj(eta_c).  correction_type "bilby" uses
+# bilby_pipe's per-detector semantics: C_c = eta_c for V1 ("template" type) and C_c =
+# 1/eta_c for H1, L1, K1 ("data" type: eta maps calibrated data to theoretical strain).
+#
 
 import numpy as np
+import scipy.signal
 
 import lal
 
@@ -130,7 +167,8 @@ def _missing_tdanalysis_api():
                     "SLIDING_METHODS", "DEFAULT_BLOCK_BYTES", "PrefixNotApplicable")),
         (_gs, ("gs_generators_from_acorr",)),
         (_psd, ("PSDToAutocorr", "PSDToAutocorrConfig")),
-        (_filters, ("highpass_zero_phase",)),
+        (_filters, ("highpass_zero_phase", "fir_taps_from_response", "fir_truncate",
+                    "fir_max_lag", "fir_truncate_at_max_lag")),
     ]
     missing = ["%s.%s" % (mod.__name__, name) for mod, names in wanted for name in names
                if not hasattr(mod, name)]
@@ -141,7 +179,7 @@ def _missing_tdanalysis_api():
     if hasattr(_sliding, "sliding_self_terms"):
         params = inspect.signature(_sliding.sliding_self_terms).parameters
         missing += ["the %s= argument of tdanalysis.forms.sliding.sliding_self_terms" % name
-                    for name in ("offset", "compute_V") if name not in params]
+                    for name in ("offset", "compute_V", "support") if name not in params]
     config = getattr(_psd, "PSDToAutocorrConfig", None)
     if config is not None and dataclasses.is_dataclass(config) and \
             "sampling_rate" not in {f.name for f in dataclasses.fields(config)}:
@@ -163,10 +201,13 @@ from tdanalysis.forms.sliding import (sliding_data_term, sliding_self_terms,  # 
                                       is_turn_on_inside_window, SLIDING_METHODS,
                                       DEFAULT_BLOCK_BYTES, PrefixNotApplicable)
 from tdanalysis.utils.filters import highpass_zero_phase  # noqa: E402,F401  (ILE --td-highpass)
+from tdanalysis.utils.filters import (fir_taps_from_response, fir_truncate,  # noqa: E402
+                                      fir_max_lag, fir_truncate_at_max_lag)
 
 DEFAULT_ACF_CONDITION_NUMBER = 1.0e8   # as the tdanalysis real-event / XG ACF files
 U_METHODS = tuple(SLIDING_METHODS)     # ("auto", "prefix", "recursion", "batched", "chunked")
 DEFAULT_UV_BLOCK_BYTES = DEFAULT_BLOCK_BYTES   # memory bound of one column block of "chunked"
+CALIBRATION_CORRECTION_TYPES = ("rift", "bilby")
 
 
 # --------------------------------------------------------------------------- helpers
@@ -306,6 +347,131 @@ def template_route_is_fd(approx):
     return False
 
 
+# --------------------------------------------------------------------------- calibration filters
+
+def calibration_template_factor(cal2side, ifo, correction_type="rift", conjugate=False):
+    """The per-bin factor C_c(f) that multiplies the TEMPLATE (RIFT packing, same shape as the
+    input) from RIFT realizations eta_c(f) (create_realizations output, (npts, n_cal)).
+
+    correction_type "rift"  : C = eta for every detector.  This reproduces RIFT's FD code path
+                              (eta applied to the data in RIFT's reversed packing equals, in
+                              the standard convention, eta on the template at face value).
+                     "bilby" : bilby_pipe's per-detector semantics
+                              (RIFT.calmarg.calibration.correction_type_for_ifo): C = eta for
+                              V1 ("template" type), C = 1/eta for H1, L1, K1 ("data" type).
+    conjugate : RIFT's --calibration-conjugate-phase, C -> conj(C).
+    Returns (C, bilby_type) with bilby_type the "template"/"data" label used.
+    """
+    from RIFT.likelihood.td_calibration import template_factor
+    if correction_type == "rift":
+        ctype = "template"
+    elif correction_type == "bilby":
+        from RIFT.calmarg.calibration import correction_type_for_ifo
+        ctype = correction_type_for_ifo(None, ifo)
+    else:
+        raise ValueError("correction_type must be one of %s, got %r"
+                         % (CALIBRATION_CORRECTION_TYPES, correction_type))
+    return template_factor(cal2side, ctype, conjugate), ctype
+
+
+class TDCalibrationFilters(object):
+    r"""One detector's calibration realizations as FIR filters on the template, plus the
+    adjoint-filtered data weights, built once per realization set (TDGSDetectorContext.
+    calibration_filters caches it).  The filters are tdanalysis' (tdanalysis.utils.filters:
+    fir_taps_from_response, fir_truncate, fir_max_lag, fir_truncate_at_max_lag); this
+    class holds RIFT's conventions (packing, correction type, conjugate phase) and the data
+    weights.
+
+    Attributes
+    ----------
+    n_cal, N           : realizations; segment length (= taps per filter)
+    taps_full          : (n_cal, N) real, periodic index (tap i at column i mod N)
+    W                  : (n_cal, 2N-1) real, W[c, j + N/2] = (K_c^T w)[j] with w the piecewise
+                         C^{-1} d, zero outside the pieces, K_c the N-tap filter: Q_c(t) =
+                         h_t^H K_c^T w is a correlation of the unfiltered template with W[c].
+    half_length        : None (exact: L from the template's reach per intrinsic point) or a
+                         forced symmetric half-length (an approximation when shorter than
+                         the reach).
+    correction_type, bilby_type, conjugate : the convention used (module header).
+    """
+
+    def __init__(self, ctx, cal2side, correction_type="rift", conjugate=False, half_length=None,
+                 verbose=True):
+        from RIFT.likelihood.td_calibration import realizations_to_positive, is_hermitian_rift
+        cal = np.asarray(cal2side)
+        if cal.ndim != 2 or cal.shape[0] != ctx.N:
+            raise ValueError(
+                "%s: calibration realizations have shape %s; expected (%d, n_cal) -- RIFT's two-sided "
+                "packing on the data segment's grid (T = N deltaT = %g s)"
+                % (ctx.ifo, cal.shape, ctx.N, ctx.N * ctx.deltaT))
+        self.n_cal = int(cal.shape[1])
+        self.N = int(ctx.N)
+        self.deltaT = ctx.deltaT
+        self.correction_type = correction_type
+        self.conjugate = bool(conjugate)
+        C2, self.bilby_type = calibration_template_factor(cal, ctx.ifo, correction_type, conjugate)
+        if not is_hermitian_rift(C2):
+            raise ValueError("%s: calibration realizations are not Hermitian (C(-f) != conj C(f)); "
+                             "no real filter exists" % ctx.ifo)
+        C_pos = realizations_to_positive(C2)                               # (N/2+1, n_cal)
+        # the N taps whose response on the realization's grid is C_c exactly
+        self.taps_full = np.ascontiguousarray(fir_taps_from_response(C_pos).T)   # (n_cal, N)
+        half = self.N // 2
+        if half_length is not None:
+            half_length = int(half_length)
+            if half_length < 0 or half_length > half - 1:
+                raise ValueError("%s: calibration FIR half-length %d must lie in [0, %d]" % (ctx.ifo, half_length, half - 1))
+        self.half_length = half_length
+        # adjoint-filtered data weights with the N-tap filter: W_c[j + N/2] = sum_m c_c[m - j] w[m]
+        # (exact linear correlation: fftconvolve of the zero-extended w with the reversed taps)
+        w_full = np.zeros(self.N, dtype=np.float64)
+        for (i0, i1), w in zip(ctx.runs, ctx.w):
+            w_full[i0:i1] = w
+        taps_all, _, self._W_offset = fir_truncate(self.taps_full.T)               # (N, n_cal)
+        self.W = np.array([scipy.signal.fftconvolve(w_full, taps_all[::-1, c]) for c in range(self.n_cal)])
+        # magnitude of the taps far from the centre (how fast the realization's impulse response
+        # decays): |c[i]| for |i| = 1, 2, 4, ... relative to c[0]
+        if verbose:
+            idx = [2 ** k for k in range(0, int(np.log2(half)) + 1) if 2 ** k <= half]
+            tail = ["%d:%.1e" % (i, np.max(np.abs(self.taps_full[:, i])) / np.max(np.abs(self.taps_full[:, 0]))) for i in idx[::3]]
+            print("  [td-gs] %s: calibration: %d realizations as N-tap FIR filters on the template "
+                  "(N = %d, %.4g s); convention %s (bilby type '%s'%s); %s; max |c[i]|/|c[0]| at i = %s"
+                  % (ctx.ifo, self.n_cal, self.N, self.N * ctx.deltaT, correction_type, self.bilby_type,
+                     ", conjugated" if conjugate else "",
+                     "L from the template's reach per intrinsic point (exact)" if half_length is None
+                     else "FORCED half-length L = %d (an approximation when shorter than the reach)" % half_length,
+                     " ".join(tail)))
+
+    def taps_for(self, R):
+        """(taps (n_cal, n_taps), L_neg, L_pos) exact on the pieces for reach R
+        (tdanalysis.utils.filters.fir_max_lag): tdanalysis' fir_truncate_at_max_lag, the
+        symmetric truncation at L = R when R < N/2 (identical values on the pieces as the N-tap
+        filter), else all N taps; a forced half_length overrides (approximate when < R)."""
+        if self.half_length is not None:
+            taps, L_neg, L_pos = fir_truncate(self.taps_full.T, self.half_length)
+        else:
+            taps, L_neg, L_pos = fir_truncate_at_max_lag(self.taps_full.T, R)
+        return np.ascontiguousarray(taps.T), L_neg, L_pos
+
+    def filtered_template(self, h, taps_c, L_neg):
+        """g_c = K_c h on the whole template line as a 'full' linear convolution: sample j' of
+        the result is template index j' - L_neg (the template origin moves by L_neg)."""
+        return scipy.signal.fftconvolve(h, taps_c)
+
+    def data_term(self, h, c, j_first, j_last, N_shift, T):
+        """Q_c(t) = sum_j conj(h[j]) W_c[j + N_shift + t + N/2], t = 0..T-1: the exact linear
+        correlation of the template's support with the matching window of W[c]."""
+        h_sup = h[j_first:j_last + 1]
+        a = N_shift + self._W_offset + j_first
+        b = N_shift + T - 1 + self._W_offset + j_last + 1
+        win = np.zeros(b - a, dtype=np.float64)
+        lo, hi = max(a, 0), min(b, self.W.shape[1])
+        if hi > lo:
+            win[lo - a:hi - a] = self.W[c, lo:hi]
+        out = scipy.signal.fftconvolve(win, np.conj(h_sup)[::-1], mode="valid")
+        return out
+
+
 # --------------------------------------------------------------------------- per-detector context
 
 class TDGSDetectorContext(object):
@@ -360,16 +526,34 @@ class TDGSDetectorContext(object):
         at cond 1e8 is ~4e-7 relative, far below what the diagnostic resolves), and report
         the variance and lag-1 autocorrelation of z.  The cheap d_p^T C_p^{-1} d_p / n_p is
         always computed (``self.whiteness``).
+    calibration_correction_type : {"rift", "bilby"}
+        How a calibration realization eta_c becomes the template factor C_c (module header):
+        "rift" (default) C_c = eta_c, RIFT's FD convention; "bilby" per-detector bilby_pipe
+        semantics (1/eta for H1/L1/K1, eta for V1).
+    calibration_fir_half_length : int or None
+        None (default): the calibration filters are exact (module header: per intrinsic
+        point the taps are truncated at the template's reach, or all N are used).  An
+        integer forces a symmetric half-length L, an approximation when shorter than the
+        reach (for speed studies; measured errors in docs/td_gs_route.md).
     """
 
     def __init__(self, data_td, psd, fLow, fMax, pieces=None, acf=None, n_valid=None,
                  dense_max_n=4096, u_stride=1, u_method="auto",
                  acf_condition_number=DEFAULT_ACF_CONDITION_NUMBER, whiteness_check=False,
-                 ifo=None, verbose=True, uv_block_bytes=DEFAULT_UV_BLOCK_BYTES):
+                 ifo=None, verbose=True, uv_block_bytes=DEFAULT_UV_BLOCK_BYTES,
+                 calibration_correction_type="rift", calibration_fir_half_length=None):
         self.ifo = ifo
         self.deltaT = float(data_td.deltaT)
         self.epoch = data_td.epoch
         self.N = int(data_td.data.length)
+        if calibration_correction_type not in CALIBRATION_CORRECTION_TYPES:
+            raise ValueError("calibration_correction_type must be one of %s, got %r"
+                             % (CALIBRATION_CORRECTION_TYPES, calibration_correction_type))
+        self.calibration_correction_type = calibration_correction_type
+        self.calibration_fir_half_length = calibration_fir_half_length
+        self._calibration_cache = None
+        self.uv_routes_cal = []
+        self.calibration_last = {}      # diagnostics of the last calibrated precompute
         self.n_valid = self.N if n_valid is None else int(n_valid)
         self.d = np.asarray(data_td.data.data)
         if np.iscomplexobj(self.d):
@@ -450,6 +634,25 @@ class TDGSDetectorContext(object):
             raise ValueError("ACF has %d lags; %d needed" % (self.acf.size, n))
         return self.acf[:n]
 
+    # ------------------------------------------------------------------ calibration
+
+    def calibration_filters(self, cal2side, conjugate=False, verbose=True):
+        """TDCalibrationFilters for this detector's realization set (RIFT packing, (N, n_cal)),
+        with the context's convention and FIR settings; cached on the array's identity, shape
+        and a content digest so the per-point Precompute does not rebuild it."""
+        import hashlib
+        cal = np.asarray(cal2side)
+        digest = hashlib.blake2b(np.ascontiguousarray(cal[::max(1, cal.shape[0] // 64)]).tobytes(),
+                                 digest_size=16).digest()
+        key = (id(cal2side), tuple(cal.shape), str(cal.dtype), bool(conjugate), digest)
+        if self._calibration_cache is not None and self._calibration_cache[0] == key:
+            return self._calibration_cache[1]
+        filters = TDCalibrationFilters(self, cal, correction_type=self.calibration_correction_type,
+                                       conjugate=conjugate, half_length=self.calibration_fir_half_length,
+                                       verbose=verbose)
+        self._calibration_cache = (key, filters)
+        return filters
+
     def report(self):
         """Print the one-line summary and the per-piece whiteness diagnostic."""
         print("  [td-gs] %s: %d piece(s) %s samples, solver(s) %s, ACF %s, U/V by %s"
@@ -505,7 +708,10 @@ class TDGSDetectorContext(object):
         extends before that turn-on contains a step the data does not have, which biases
         real-data fits.  Shift k puts the turn-on at data sample k + j_first; the grid is
         k in [N_shift, N_shift + N_window - 1] (tdanalysis.forms.sliding.
-        is_turn_on_inside_window on each piece).
+        is_turn_on_inside_window on each piece).  (With calibration the same check applies
+        to the unfiltered template; the FIR then smears the turn-on step into the piece
+        with the taps' magnitude at the turn-on distance, which precompute reports as the
+        turn-on leakage -- the FD code path's circulant multiplication smears it the same way.)
         """
         shifts = N_shift + np.arange(N_window)
         lo = N_shift + j_first
@@ -546,14 +752,15 @@ class TDGSDetectorContext(object):
             return ("prefix", label[len("prefix("):-1])
         return (label, None)
 
-    def _uv_all(self, H, N_shift, T, tsel, j_first, j_last):
+    def _uv_all(self, H, N_shift, T, tsel, j_first, j_last, support=None):
         """U(t), V(t) of every pair of rows of H at the shifts N_shift + tsel, summed over
         the pieces: tdanalysis' sliding_self_terms on each piece (offset = piece start)
         with that piece's solver and the context's u_method.  Returns (U, V, methods):
         U, V of shape (len(tsel), n_modes, n_modes), Hermitian / symmetric in the modes,
         and per piece the (method, orientation or None) used.  u_method="prefix" on a
         piece where the prefix condition fails raises ValueError naming every such piece
-        (template support j_first..j_last)."""
+        (template support j_first..j_last).  ``support`` = (first, last), if given, goes to
+        sliding_self_terms: the template samples used, whatever H holds outside them."""
         nm = H.shape[0]
         shifts = N_shift + np.asarray(tsel)
         U = np.zeros((tsel.size, nm, nm), dtype=np.complex128)
@@ -563,7 +770,7 @@ class TDGSDetectorContext(object):
             try:
                 Up, Vp, label = sliding_self_terms(H, sol, shifts, method=self.u_method,
                                                    block_bytes=self.uv_block_bytes, offset=i0,
-                                                   return_method=True)
+                                                   return_method=True, support=support)
             except PrefixNotApplicable:
                 # only raised for u_method="prefix"; collect every failing piece
                 bad.append((i0, i1))
@@ -610,11 +817,21 @@ class TDGSDetectorContext(object):
             rholms[m] = ts
         return rholms
 
-    def precompute(self, hlms, N_shift, N_window, verbose=False):
+    def precompute(self, hlms, N_shift, N_window, verbose=False, calibration=None,
+                   calibration_self_term=True):
         """Q_lm(t), U(t), V(t) on the storage grid for TD modes ``hlms`` ({(l,m): lal
         COMPLEX16TimeSeries}, all with the same epoch/deltaT).
 
         Returns (rholms, crossTerms, crossTermsV); see the module header for the contract.
+
+        calibration : TDCalibrationFilters (from ``calibration_filters``) or None.  With
+            filters, the return value is (rholms, crossTerms, crossTermsV, crossTermsCal,
+            crossTermsCalV): rholms[mode] holds the n_cal realizations' Q_c(t) as contiguous
+            blocks of length N_window (block 0's epoch, as ComputeModeIPTimeSeries does);
+            crossTerms/crossTermsV are the UNCALIBRATED U(t), V(t) (one block); crossTermsCal
+            and crossTermsCalV are lists of n_cal dicts with the per-realization U_c(t),
+            V_c(t) of the filtered templates, or None when ``calibration_self_term`` is
+            False (RIFT's --calibration-global-norm: the calibration-independent self term).
         """
         modes = list(hlms.keys())
         h0 = hlms[modes[0]]
@@ -633,9 +850,6 @@ class TDGSDetectorContext(object):
 
         U, V, self.uv_routes = self._uv_all(H, N_shift, T, tsel, j_first, j_last)
         crossTerms, crossTermsV = self._complete_pairs(U, V, modes, tsel, T)
-        Q = self._q_all(H, N_shift, T)
-        rholms = self._rholm_series({m: Q[ia] for ia, m in enumerate(modes)}, hlms, modes,
-                                    N_shift, self.deltaT)
         if verbose:
             print("  [td-gs] %s: N_shift=%d N_window=%d template support %d..%d; U/V methods %s; "
                   "U(2,2) centre %.6g, |U| range %.3g..%.3g"
@@ -644,7 +858,77 @@ class TDGSDetectorContext(object):
                      np.real(crossTerms[(modes[0], modes[0])][T // 2]),
                      np.min(np.abs(crossTerms[(modes[0], modes[0])])),
                      np.max(np.abs(crossTerms[(modes[0], modes[0])]))))
-        return rholms, crossTerms, crossTermsV
+        if calibration is None:
+            Q = self._q_all(H, N_shift, T)
+            rholms = self._rholm_series({m: Q[ia] for ia, m in enumerate(modes)}, hlms, modes,
+                                        N_shift, self.deltaT)
+            return rholms, crossTerms, crossTermsV
+
+        # ---- calibration: per realization, Q_c by the adjoint method, U_c/V_c on the
+        #      filtered template (module header) ----
+        import time as _time
+        n_cal = calibration.n_cal
+        R = fir_max_lag(j_first, j_last, (N_shift, N_shift + T - 1), self.runs)
+        taps, L_neg, L_pos = calibration.taps_for(R)
+        exact = calibration.half_length is None or calibration.half_length >= R
+        # turn-on leakage: the taps' largest magnitude at or beyond the distance between the
+        # template's turn-on (latest grid shift) and each piece start, relative to c[0]
+        leak = 0.0
+        for (i0, i1) in self.runs:
+            d = i0 - (N_shift + T - 1 + j_first)
+            if d >= 1 and d <= L_pos:
+                leak = max(leak, float(np.max(np.abs(taps[:, L_neg + d:])) / np.max(np.abs(taps[:, L_neg]))))
+        self.calibration_last = dict(reach=int(R), L_neg=int(L_neg), L_pos=int(L_pos), exact=bool(exact),
+                                     turn_on_leakage=leak, n_cal=n_cal)
+        t0 = _time.time()
+        # Q_c(t): the exact correlation of the template's support with W_c = K_c^T w (N-tap filter)
+        Qcal = {m: np.empty(n_cal * T, dtype=np.complex128) for m in modes}
+        for c in range(n_cal):
+            for ia, m in enumerate(modes):
+                Qcal[m][c * T:(c + 1) * T] = calibration.data_term(H[ia], c, j_first, j_last, N_shift, T)
+        t_q = _time.time() - t0
+        rholms_cal = self._rholm_series(Qcal, hlms, modes, N_shift, self.deltaT)
+        crossTermsCal = crossTermsCalV = None
+        t_uv = 0.0
+        if calibration_self_term:
+            # g_c = K_c h on the whole template line ('full' linear convolution): sample j' of
+            # g_c is template index j' - L_neg, so it sits at data sample j' - L_neg + k: the
+            # template origin moves by L_neg, N_shift -> N_shift - L_neg, and the support
+            # becomes [j_first, j_last + L_neg + L_pos] in the new indexing.  That extended
+            # support goes to sliding_self_terms as support=, so the method selection (prefix
+            # validity) uses it and the rounding residue outside it is ignored.
+            t0 = _time.time()
+            N_shift_c = N_shift - L_neg
+            j_last_c = j_last + L_neg + L_pos
+            crossTermsCal, crossTermsCalV = [], []
+            for c in range(n_cal):
+                Hc = self._filtered_modes(calibration, H, taps[c], L_neg)
+                Uc, Vc, self.uv_routes_cal = self._uv_all(Hc, N_shift_c, T, tsel, j_first, j_last_c,
+                                                          support=(j_first, j_last_c))
+                ct, ctV = self._complete_pairs(Uc, Vc, modes, tsel, T)
+                crossTermsCal.append(ct)
+                crossTermsCalV.append(ctV)
+            t_uv = _time.time() - t0
+        if verbose:
+            msg = ("  [td-gs] %s: calibration: %d realizations; taps reach %d, used %d..%d (%s); turn-on "
+                   "leakage %.1e; Q_c(t) %.2f s" % (self.ifo, n_cal, R, -L_neg, L_pos,
+                                                     "exact" if exact else "FORCED, approximate", leak, t_q))
+            if calibration_self_term:
+                u0 = crossTermsCal[0][(modes[0], modes[0])]
+                msg += ("; U_c(t), V_c(t) %.2f s with methods %s; U_0(2,2) centre %.6g (uncalibrated %.6g)"
+                        % (t_uv, [r if o is None else "%s(%s)" % (r, o) for (r, o) in self.uv_routes_cal],
+                           np.real(u0[T // 2]), np.real(crossTerms[(modes[0], modes[0])][T // 2])))
+            else:
+                msg += "; self term: calibration-independent U(t), V(t)"
+            print(msg)
+        return rholms_cal, crossTerms, crossTermsV, crossTermsCal, crossTermsCalV
+
+    @staticmethod
+    def _filtered_modes(calibration, H, taps_c, L_neg):
+        """K_c applied to every row of H (calibration.filtered_template, a 'full' linear
+        convolution).  Outside the filtered support the convolution leaves only rounding
+        residue; the caller passes that support to sliding_self_terms, which ignores it."""
+        return np.array([calibration.filtered_template(H[a], taps_c, L_neg) for a in range(H.shape[0])])
 
     def _expand(self, y, tsel, T):
         if tsel.size == T:
@@ -711,16 +995,29 @@ def generate_td_modes(P, Lmax, extra_waveform_kwargs=None, quiet=True):
 def precompute_likelihood_terms_td_gs(event_time_geo, t_window, P, data_dict, td_gs_contexts,
                                       Lmax, verbose=True, quiet=False,
                                       extra_waveform_kwargs=None, skip_interpolation=False,
-                                      return_calibration_crossterms=False, **refused):
+                                      return_calibration_crossterms=False,
+                                      calibration_realizations=None, calibration_conjugate=False,
+                                      calibration_self_term=True, **refused):
     """td-gs branch of PrecomputeLikelihoodTerms.  Same return tuple.
 
+    calibration_realizations : {det: (N, n_cal) complex, RIFT packing} or None.  With
+        realizations each detector's context builds (and caches) its TDCalibrationFilters
+        (module header: template filtered with C_c, the context's convention, RIFT's
+        --calibration-conjugate-phase as ``calibration_conjugate``) and returns rholms with
+        n_cal contiguous blocks of Q_c(t), as the FD code path does.  With
+        ``calibration_self_term`` (default) the per-realization time-indexed U_c(t), V_c(t)
+        come back as the two trailing dicts of the eight-value return (each det -> list of
+        n_cal cross-term dicts of length-N_window arrays); with it False (RIFT's
+        --calibration-global-norm) they are None and the likelihood uses the calibration-
+        independent U(t), V(t).
+
     ``refused`` carries the keyword arguments of PrecomputeLikelihoodTerms that this code path
-    does not support (calibration, glitch/TD-Toeplitz factory, ROM/NR/gwsignal/external
-    EOB generators); any of them set to a non-default value is an error.
+    does not support (glitch/TD-Toeplitz factory, ROM/NR/gwsignal/external EOB generators);
+    any of them set to a non-default value is an error.
     """
     from RIFT.likelihood import factored_likelihood as fl
     _not_supported = {
-        'IP_factory': None, 'calibration_realizations': None, 'ROM_group': None,
+        'IP_factory': None, 'ROM_group': None,
         'ROM_param': None, 'NR_group': None, 'NR_param': None, 'nr_lookup': False,
         'use_external_EOB': False, 'use_gwsignal': False, 'hybrid_use': False,
         'ROM_use_basis': False, 'use_provided_strain': False,
@@ -730,6 +1027,9 @@ def precompute_likelihood_terms_td_gs(event_time_geo, t_window, P, data_dict, td
         if key in refused and refused[key] not in (default, 0, False, None):
             raise ValueError("td-gs: %s=%r is not supported on the time-domain code path "
                              "(planned for a later stage)" % (key, refused[key]))
+    have_cal = calibration_realizations is not None
+    if have_cal and not isinstance(calibration_realizations, dict):
+        raise ValueError("td-gs: calibration_realizations must be a per-detector dict")
 
     detectors = list(data_dict.keys())
     first_data = data_dict[detectors[0]]
@@ -742,6 +1042,8 @@ def precompute_likelihood_terms_td_gs(event_time_geo, t_window, P, data_dict, td
     hlms = generate_td_modes(P, Lmax, extra_waveform_kwargs, quiet=quiet)
 
     rholms, rholms_intp, crossTerms, crossTermsV = {}, {}, {}, {}
+    crossTermsCal = {} if (have_cal and calibration_self_term) else None
+    crossTermsCalV = {} if (have_cal and calibration_self_term) else None
     for det in detectors:
         ctx = td_gs_contexts[det]
         data = data_dict[det]
@@ -753,8 +1055,19 @@ def precompute_likelihood_terms_td_gs(event_time_geo, t_window, P, data_dict, td
         t_shift = float(float(t_det) - float(t_window) - float(rho_epoch))
         N_shift = int(t_shift / P.deltaT + 0.5)
         N_window = int(2 * t_window / P.deltaT)
-        rholms[det], crossTerms[det], crossTermsV[det] = ctx.precompute(
-            hlms, N_shift, N_window, verbose=verbose)
+        if have_cal:
+            if det not in calibration_realizations:
+                raise ValueError("td-gs: no calibration realizations for %s" % det)
+            filters = ctx.calibration_filters(calibration_realizations[det], conjugate=calibration_conjugate,
+                                              verbose=verbose or not quiet)
+            rholms[det], crossTerms[det], crossTermsV[det], ct_cal, ctV_cal = ctx.precompute(
+                hlms, N_shift, N_window, verbose=verbose, calibration=filters,
+                calibration_self_term=calibration_self_term)
+            if calibration_self_term:
+                crossTermsCal[det], crossTermsCalV[det] = ct_cal, ctV_cal
+        else:
+            rholms[det], crossTerms[det], crossTermsV[det] = ctx.precompute(
+                hlms, N_shift, N_window, verbose=verbose)
         if ignore_threshold is not None and det == detectors[0]:
             # Mode pruning on the first detector, as the FD code path does with its fiducial
             # cross terms, but with time-dependent U: a mode is kept when max_t |U(t)| of
@@ -768,6 +1081,11 @@ def precompute_likelihood_terms_td_gs(event_time_geo, t_window, P, data_dict, td
             rholms[det] = {m: rholms[det][m] for m in keep if m in rholms[det]}
             crossTerms[det] = {k: v for k, v in crossTerms[det].items() if k[0] in keep and k[1] in keep}
             crossTermsV[det] = {k: v for k, v in crossTermsV[det].items() if k[0] in keep and k[1] in keep}
+            if crossTermsCal is not None:
+                crossTermsCal[det] = [{k: v for k, v in ct.items() if k[0] in keep and k[1] in keep}
+                                      for ct in crossTermsCal[det]]
+                crossTermsCalV[det] = [{k: v for k, v in ct.items() if k[0] in keep and k[1] in keep}
+                                       for ct in crossTermsCalV[det]]
         t = np.arange(N_window) * P.deltaT + float(rho_epoch + N_shift * P.deltaT)
         if verbose:
             print("For detector", det, "(td-gs) ...")
@@ -775,7 +1093,7 @@ def precompute_likelihood_terms_td_gs(event_time_geo, t_window, P, data_dict, td
             print("\tEvent time at detector is: %.18g" % float(t_det))
             print("\tComputed t_shift = %.20g, N_shift = %d" % (t_shift, N_shift))
             print("\tInterpolation starts at time %.20g" % t[0])
-        if not skip_interpolation:
+        if not skip_interpolation and not have_cal:
             rholms_intp[det] = fl.InterpolateRholms(rholms[det], t, verbose=verbose)
         else:
             rholms_intp[det] = None
@@ -793,6 +1111,5 @@ def precompute_likelihood_terms_td_gs(event_time_geo, t_window, P, data_dict, td
     guess_snr = rho_max
 
     if return_calibration_crossterms:
-        return rholms_intp, crossTerms, crossTermsV, rholms, guess_snr, None, None, None
+        return rholms_intp, crossTerms, crossTermsV, rholms, guess_snr, None, crossTermsCal, crossTermsCalV
     return rholms_intp, crossTerms, crossTermsV, rholms, guess_snr, None
-

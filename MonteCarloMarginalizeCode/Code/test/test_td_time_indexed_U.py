@@ -313,15 +313,30 @@ def test_window_past_buffer_edge_zero_extension(time_interp):
 # 4. refusals
 # --------------------------------------------------------------------------
 def test_refuse_calibration_paths():
+    """Calibration with time-indexed terms runs on the loop method only (test_td_gs_calibration.py
+    checks the values); the fused kernel and the compressed base U refuse it."""
     case = _make_case(seed=43, modes=((2, 2), (2, -2)))
     with pytest.raises(NotImplementedError):
-        _call(case, case["U_t"], case["V_t"], n_cal=2)
-    with pytest.raises(NotImplementedError):
         _call(case, case["U_t"], case["V_t"], n_cal=2, cal_method='fused')
+    comp = {det: fl.compress_time_indexed_cross_terms(case["U_t"][det], case["V_t"][det], 1e-13) for det in case["dets"]}
+    with pytest.raises(NotImplementedError):
+        _call(case, comp, comp, n_cal=2)
     U_cal = {det: case["U_s"][det][None] for det in case["dets"]}
     V_cal = {det: case["V_s"][det][None] for det in case["dets"]}
     with pytest.raises(NotImplementedError):
-        _call(case, case["U_t"], case["V_t"], ctUArrayDict_cal=U_cal, ctVArrayDict_cal=V_cal)
+        _call(case, comp, comp, ctUArrayDict_cal=U_cal, ctVArrayDict_cal=V_cal)
+    # the loop method with the realization blocks (npts_full = 2 blocks of 128) runs: the base
+    # U(t) may be the full length or one block long, and gives the same result either way
+    lnL_full = _call(case, case["U_t"], case["V_t"], n_cal=2)
+    U_blk = {det: case["U_t"][det][:128] for det in case["dets"]}
+    V_blk = {det: case["V_t"][det][:128] for det in case["dets"]}
+    lnL_blk = _call(case, U_blk, V_blk, n_cal=2)
+    # block 1 of the full-length U is gathered for realization 1 in lnL_full but block 0's is reused
+    # in lnL_blk; realization 0 agrees exactly
+    c_full = _call(case, case["U_t"], case["V_t"], n_cal=2, return_cal_components=True)
+    c_blk = _call(case, U_blk, V_blk, n_cal=2, return_cal_components=True)
+    np.testing.assert_allclose(c_full[:, 0], c_blk[:, 0], rtol=0, atol=1e-12)
+    assert np.all(np.isfinite(lnL_full)) and np.all(np.isfinite(lnL_blk))
 
 
 def test_refuse_options_not_implemented_for_time_indexed():
