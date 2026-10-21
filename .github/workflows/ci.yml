@@ -156,6 +156,9 @@ jobs:
           # Refuse a broken import; the ordinary suite permits the optional test to skip.
           python -c "from tdanalysis.forms.pcg import PCGQuadraticForm"
           python -m pytest MonteCarloMarginalizeCode/Code/test/test_td_inner_product.py::test_dense_vs_iterative -q -rs
+          python -m pip install '.[td-gs]' --break-system-packages
+          python -c "from tdanalysis.forms.gs import GSQuadraticForm; from tdanalysis.covariance.psd import PSDToAutocorr"
+          python -m pytest MonteCarloMarginalizeCode/Code/test/test_td_gs_guards.py MonteCarloMarginalizeCode/Code/test/test_td_gs_route.py MonteCarloMarginalizeCode/Code/test/test_td_time_indexed_U.py MonteCarloMarginalizeCode/Code/test/test_td_u_svd.py -q -rs
 
   sim-manager-check:
     needs: install
