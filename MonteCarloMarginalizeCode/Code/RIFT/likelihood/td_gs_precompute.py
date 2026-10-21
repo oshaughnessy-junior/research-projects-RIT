@@ -24,6 +24,8 @@
 #     tdanalysis.forms.sliding.is_turn_on_inside_window the template turn-on check
 #     ToeplitzSolver.apply_Cinv                         C_p^{-1} d_p, once per piece and job
 #     ToeplitzSolver.whiten                             L^{-1} d_p for the whiteness check
+#     tdanalysis.utils.filters.highpass_zero_phase      the optional data high-pass
+#                                                       (--td-highpass; re-exported here)
 # This module adds what is RIFT's: lal series and epochs, the (l,m) mode bookkeeping, the
 # analysis pieces (in units of M_ref on the ILE command line), RIFT's storage grid of
 # shifts, the sum over pieces, the turn-on refusal and its message, and the output
@@ -105,10 +107,11 @@ try:
     import tdanalysis.forms.sliding as _sliding
     import tdanalysis.forms.gs as _gs
     import tdanalysis.covariance.psd as _psd
+    import tdanalysis.utils.filters as _filters
 except ImportError as _exc:
     raise ImportError(
         "the td-gs code path (RIFT.likelihood.td_gs_precompute) needs %s ("
-        "tdanalysis.forms.toeplitz_solver, tdanalysis.forms.sliding). "
+        "tdanalysis.forms.toeplitz_solver, tdanalysis.forms.sliding, tdanalysis.utils.filters). "
         "The tdanalysis on this path (%s) does not have them: %s"
         % (_TDANALYSIS_NEEDED, _tdanalysis_location(), _exc))
 
@@ -127,6 +130,7 @@ def _missing_tdanalysis_api():
                     "SLIDING_METHODS", "DEFAULT_BLOCK_BYTES", "PrefixNotApplicable")),
         (_gs, ("gs_generators_from_acorr",)),
         (_psd, ("PSDToAutocorr", "PSDToAutocorrConfig")),
+        (_filters, ("highpass_zero_phase",)),
     ]
     missing = ["%s.%s" % (mod.__name__, name) for mod, names in wanted for name in names
                if not hasattr(mod, name)]
@@ -158,6 +162,7 @@ from tdanalysis.forms.toeplitz_solver import ToeplitzSolver  # noqa: E402
 from tdanalysis.forms.sliding import (sliding_data_term, sliding_self_terms,  # noqa: E402
                                       is_turn_on_inside_window, SLIDING_METHODS,
                                       DEFAULT_BLOCK_BYTES, PrefixNotApplicable)
+from tdanalysis.utils.filters import highpass_zero_phase  # noqa: E402,F401  (ILE --td-highpass)
 
 DEFAULT_ACF_CONDITION_NUMBER = 1.0e8   # as the tdanalysis real-event / XG ACF files
 U_METHODS = tuple(SLIDING_METHODS)     # ("auto", "prefix", "recursion", "batched", "chunked")

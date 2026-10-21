@@ -342,6 +342,7 @@ optp.add_option("--td-acf-cond", type=float, default=1e8, help="td-gs: target co
 optp.add_option("--td-dense-max-n", type=int, default=4096, help="td-gs: pieces with at most this many samples use a Cholesky factor of C (tdanalysis ToeplitzSolver, built once); longer pieces use its Gohberg-Semencul method. Both are exact. Default 4096.")
 optp.add_option("--td-u-stride", type=int, default=1, help="td-gs: compute U(t),V(t) every K samples of the storage grid and cubic-interpolate between (1 = exact at every sample, default). Q(t) is always exact.")
 optp.add_option("--td-u-method", type=str, default="auto", help="td-gs: how U(t),V(t) are evaluated; every method is exact. 'auto' (default): 'chunked' on Cholesky pieces, 'prefix' on GS pieces where the shifted template ends (or, mirrored, starts) inside the piece for every grid shift, 'recursion' on GS pieces it overruns at both ends. 'prefix': windowed sums of one Gohberg-Semencul kernel correlation per mode (O(n + N_window) per mode pair; refuses pieces where its condition fails). 'recursion': the kernel correlations slid sample by sample, any cut, no per-shift solve. 'prefix' and 'recursion' use Gohberg-Semencul generators of the ACF on every piece, so on Cholesky pieces with a badly conditioned ACF they differ from 'chunked' by ~cond(C) eps. 'batched': stack the cut shifted templates and apply C^-1 once (reference; memory n x N_window per mode). 'chunked': 'batched' in column blocks under a memory bound. The methods are tdanalysis' (tdanalysis.forms.sliding.sliding_self_terms, tdanalysis >= 1.1).")
+optp.add_option("--td-highpass", type=float, default=None, help="td-gs: zero-phase 8th-order Butterworth high-pass of the time-domain data at this corner frequency [Hz] before C^-1 d (tdanalysis.utils.filters.highpass_zero_phase; default off). Needed on real strain when the ACF walls the band below f_min (the conditioned tdanalysis ACFs do): use e.g. 10 Hz, which is flat to 2e-5 at 20 Hz. Analysis pieces should stay a few / corner seconds away from the data edges.")
 optp.add_option("--td-u-svd-tol", type=float, default=None, help="td-gs: compress the time-indexed cross terms U(t),V(t) per detector by an SVD over time, keeping the components with singular value > TOL x the largest (RIFT.likelihood.factored_likelihood.compress_time_indexed_cross_terms). The self term then costs r gathers per time bin instead of n_modes(n_modes+1); exact up to the dropped components, so TOL at rounding level (recommended 1e-13) reproduces the uncompressed likelihood to ~1e-12 relative. Done once per intrinsic point on the CPU after packing, before any GPU transfer; r and the reconstruction error are printed per detector. Default None = off.")
 optp.add_option("--td-whiteness-check", action="store_true", default=False, help="td-gs: in addition to the always-printed d^T C^-1 d / n per piece (should be ~1), whiten each piece (tdanalysis ToeplitzSolver.whiten: the Cholesky factor on Cholesky pieces, a Levinson-Durbin recursion on GS pieces, O(n^2) once per job) and print the variance and lag-1 autocorrelation of L^-1 d. Diagnostic only (the data are not high-passed on this code path; a value far from 1 means the ACF does not describe the data).")
 optp.add_option("--td-solver", type=str, default="auto", help="Solver mode for --internal-ile-inner-product td-toeplitz: {auto,dense,pcg}. Affects only the physical-covariance/augmentation path; the full-segment precision-kernel inner products are FFT-based and solver-independent. Default auto.")
@@ -1641,6 +1642,9 @@ td_gs_n_valid = {}     # td-gs: number of real (unpadded) samples per detector
 # PSD rescale is therefore the identity on this code path (window_shape_data = 0); the
 # --psd-window-shape factor, which undoes how the PSD was estimated, still applies.
 window_shape_data = opts.window_shape
+if opts.td_highpass and not use_td_gs:
+    print("FAIL: --td-highpass applies to --internal-ile-inner-product td-gs only")
+    sys.exit(1)
 if use_td_gs and opts.window_shape > 0:
     print("  [td-gs] --window-shape %g is SKIPPED: the time-domain code path applies no Tukey "
           "window to the data (and no <w^2> data-window PSD rescale)." % opts.window_shape)
@@ -1656,6 +1660,10 @@ for inst, chan in map(lambda c: c.split("="), opts.channel_name):
                 inst+":"+chan, start=start_time, stop=end_time,
                 window_shape=0., deltaT=deltaT, deltaT_internal=deltaT_internal, use_gwpy=opts.internal_use_gwpy)
         td_gs_n_valid[inst] = _ht.data.length
+        if opts.td_highpass:
+            from RIFT.likelihood.td_gs_precompute import highpass_zero_phase
+            _ht.data.data[:] = highpass_zero_phase(_ht.data.data, 1./_ht.deltaT, opts.td_highpass)
+            print("  [td-gs] %s: zero-phase high-pass at %g Hz (order 8) applied to the data" % (inst, opts.td_highpass))
         # Zero-pad to a power of two exactly as frame_data_to_non_herm_hoff does, so the
         # segment length, deltaF and every downstream grid match the default code path.  The
         # padding never enters an analysis piece (pieces must lie inside the valid samples).

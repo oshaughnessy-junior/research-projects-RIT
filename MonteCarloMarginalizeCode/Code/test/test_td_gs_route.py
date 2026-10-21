@@ -819,3 +819,22 @@ def test_tdanalysis_api_check(monkeypatch):
 if __name__ == "__main__":
     import sys
     sys.exit(pytest.main([__file__, "-s", "-q"]))
+
+
+def test_highpass_zero_phase():
+    """--td-highpass: the filter ILE applies to the data (tdanalysis' highpass_zero_phase,
+    re-exported by td_gs_precompute) is flat in band, zero phase, and suppresses the
+    sub-band rise."""
+    from tdanalysis.utils.filters import highpass_zero_phase
+    assert tdg.highpass_zero_phase is highpass_zero_phase
+    fs, n = 4096.0, 4 * 4096
+    t = np.arange(n) / fs
+    rng = np.random.default_rng(4)
+    band = np.zeros(n)
+    for f0 in (20.0, 60.0, 300.0):
+        band += np.cos(2 * np.pi * f0 * t + rng.uniform(0, 2 * np.pi))
+    low = 1e3 * np.cos(2 * np.pi * 2.0 * t + 0.3)
+    y = tdg.highpass_zero_phase(band + low, fs, 10.0)
+    core = slice(n // 4, 3 * n // 4)           # away from the edge transients
+    err = np.max(np.abs(y[core] - band[core])) / np.max(np.abs(band[core]))
+    assert err < 1e-3                          # 20 Hz passes at 1 - 2e-5, 2 Hz down by > 1e10
