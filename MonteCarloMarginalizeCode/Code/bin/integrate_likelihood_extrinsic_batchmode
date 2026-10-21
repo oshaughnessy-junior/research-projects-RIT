@@ -341,6 +341,7 @@ optp.add_option("--td-acf-file", action="append", default=None, help="td-gs: 'IF
 optp.add_option("--td-acf-cond", type=float, default=1e8, help="td-gs: target condition number of the Toeplitz covariance when the ACF is built from the PSD (tdanalysis PSDToAutocorr target_condition_number; the out-of-band wall is cond x the in-band floor, and in-band bins below S_max/cond are floored -- the floored count is printed and warned about). Default 1e8, as the tdanalysis ACF files.")
 optp.add_option("--td-dense-max-n", type=int, default=4096, help="td-gs: pieces with at most this many samples use a Cholesky factor of C (tdanalysis ToeplitzSolver, built once); longer pieces use its Gohberg-Semencul method. Both are exact. Default 4096.")
 optp.add_option("--td-u-stride", type=int, default=1, help="td-gs: compute U(t),V(t) every K samples of the storage grid and cubic-interpolate between (1 = exact at every sample, default). Q(t) is always exact.")
+optp.add_option("--td-subsample", type=int, default=1, help="td-gs: place templates to 1/K of a sample (default 1 = whole samples, the historical behaviour). Precompute evaluates Q(t), U(t), V(t) for K template sets moved by j/K of a sample with tdanalysis' Lanczos fractional-shift resampler (tdanalysis.utils.subsample_align.fractional_shift, half-width 16; tdanalysis >= 1.1), each through the same exact methods, so the series live on a grid of spacing deltaT/K and the likelihood finds each extrinsic sample's arrival time on that grid (residual step deltaT/K with the default nearest lookup; --interpolate-time applies its cubic stencil on the fine grid). Removes the one-sample staircase of lnL in t_c and in the sky. COST: Precompute x K per intrinsic point; the likelihood stage is unchanged (one gather per time bin, Simpson over the same coarse bins). Memory of the packed series x K.")
 optp.add_option("--td-u-method", type=str, default="auto", help="td-gs: how U(t),V(t) are evaluated; every method is exact. 'auto' (default): 'chunked' on Cholesky pieces, 'prefix' on GS pieces where the shifted template ends (or, mirrored, starts) inside the piece for every grid shift, 'recursion' on GS pieces it overruns at both ends. 'prefix': windowed sums of one Gohberg-Semencul kernel correlation per mode (O(n + N_window) per mode pair; refuses pieces where its condition fails). 'recursion': the kernel correlations slid sample by sample, any cut, no per-shift solve. 'prefix' and 'recursion' use Gohberg-Semencul generators of the ACF on every piece, so on Cholesky pieces with a badly conditioned ACF they differ from 'chunked' by ~cond(C) eps. 'batched': stack the cut shifted templates and apply C^-1 once (reference; memory n x N_window per mode). 'chunked': 'batched' in column blocks under a memory bound. The methods are tdanalysis' (tdanalysis.forms.sliding.sliding_self_terms, tdanalysis >= 1.1).")
 optp.add_option("--td-highpass", type=float, default=None, help="td-gs: zero-phase 8th-order Butterworth high-pass of the time-domain data at this corner frequency [Hz] before C^-1 d (tdanalysis.utils.filters.highpass_zero_phase; default off). Needed on real strain when the ACF walls the band below f_min (the conditioned tdanalysis ACFs do): use e.g. 10 Hz, which is flat to 2e-5 at 20 Hz. Analysis pieces should stay a few / corner seconds away from the data edges.")
 optp.add_option("--td-u-svd-tol", type=float, default=None, help="td-gs: compress the time-indexed cross terms U(t),V(t) per detector by an SVD over time, keeping the components with singular value > TOL x the largest (RIFT.likelihood.factored_likelihood.compress_time_indexed_cross_terms). The self term then costs r gathers per time bin instead of n_modes(n_modes+1); exact up to the dropped components, so TOL at rounding level (recommended 1e-13) reproduces the uncompressed likelihood to ~1e-12 relative. Done once per intrinsic point on the CPU after packing, before any GPU transfer; r and the reconstruction error are printed per detector. Default None = off.")
@@ -1647,6 +1648,13 @@ window_shape_data = opts.window_shape
 if opts.td_highpass and not use_td_gs:
     print("FAIL: --td-highpass applies to --internal-ile-inner-product td-gs only")
     sys.exit(1)
+if opts.td_subsample != 1 and not use_td_gs:
+    print("FAIL: --td-subsample applies to --internal-ile-inner-product td-gs only")
+    sys.exit(1)
+if opts.td_subsample < 1:
+    print("FAIL: --td-subsample must be a positive integer, got %r" % (opts.td_subsample,))
+    sys.exit(1)
+td_subsample_for_likelihood = int(opts.td_subsample)   # td-gs: K entries per sample in the packed series
 if use_td_gs and opts.window_shape > 0:
     print("  [td-gs] --window-shape %g is SKIPPED: the time-domain code path applies no Tukey "
           "window to the data (and no <w^2> data-window PSD rescale)." % opts.window_shape)
@@ -1964,24 +1972,26 @@ if use_td_gs:
                 acf_condition_number=opts.td_acf_cond, whiteness_check=opts.td_whiteness_check,
                 ifo=inst, verbose=True,
                 calibration_correction_type=opts.td_calibration_correction_type,
-                calibration_fir_half_length=opts.td_calibration_fir_half_length)
-        except ValueError as _e:
+                calibration_fir_half_length=opts.td_calibration_fir_half_length,
+                subsample=opts.td_subsample)
+        except (ValueError, ImportError) as _e:
             print("FAIL: td-gs context for %s: %s" % (inst, _e))
             sys.exit(1)
     print("  [td-gs] Using the fully time-domain code path (M_ref=%s Msun, pieces(M)=%s, ifo offsets=%s, "
-          "ACF files=%s, acf-cond=%g, dense-max-n=%d, u-stride=%d, u-method=%s). EXPERIMENTAL; the TD "
+          "ACF files=%s, acf-cond=%g, dense-max-n=%d, u-stride=%d, u-method=%s, subsample=1/%d). EXPERIMENTAL; the TD "
           "data were not windowed or high-passed, templates are untapered, inverse-spectrum "
           "truncation is ignored."
           % (opts.td_mref, opts.td_piece, td_ifo_offset, list(td_acf_paths.keys()),
-             opts.td_acf_cond, opts.td_dense_max_n, opts.td_u_stride, opts.td_u_method))
+             opts.td_acf_cond, opts.td_dense_max_n, opts.td_u_stride, opts.td_u_method, opts.td_subsample))
     if opts.calibration_envelope_directory:
         print("  [td-gs] calibration marginalization: realizations applied as exact FIR filters on the template "
               "(correction type %s%s, FIR half-length %s); per-realization time-indexed Q_c(t) and %s; "
-              "likelihood reduction cal_method='loop'."
+              "likelihood reduction cal_method='loop'%s."
               % (opts.td_calibration_correction_type, ", conjugate phase" if opts.calibration_conjugate_phase else "",
                  "exact (template reach)" if opts.td_calibration_fir_half_length is None else "FORCED %d (approximate)" % opts.td_calibration_fir_half_length,
                  "the calibration-independent self term U(t), V(t) (--calibration-global-norm)" if opts.calibration_global_norm
-                 else "self terms U_c(t), V_c(t)"))
+                 else "self terms U_c(t), V_c(t)",
+                 "" if opts.td_subsample == 1 else "; each realization block on the 1/%d sub-sample grid (shifted template, then its FIR)" % opts.td_subsample))
 
 
 
@@ -3227,7 +3237,7 @@ def resample_samples(my_samples,
                           tvals, P, lookupNKDict, rholmArrayDict, ctUArrayDict,
                           ctVArrayDict, epochDict, Lmax=opts.l_max, xpy=xpy_default,
                           n_cal=n_cal, cal_log_weights=cal_log_weights,
-                          time_interp=opts._noloop_time_interp,
+                          time_interp=opts._noloop_time_interp, td_subsample=td_subsample_for_likelihood,
                           ctUArrayDict_cal=ctUArrayDict_cal,
                           ctVArrayDict_cal=ctVArrayDict_cal,
                           time_quadrature="bandlimited", return_time_draw=True)
@@ -3240,7 +3250,7 @@ def resample_samples(my_samples,
     # marginalized likelihood.
     lnLt = factored_likelihood.DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals,
                           P, lookupNKDict, rholmArrayDict, ctUArrayDict, ctVArrayDict,epochDict,Lmax=opts.l_max,xpy=xpy_default,return_lnLt=True,n_cal=n_cal,cal_log_weights=cal_log_weights,
-                          time_interp=opts._noloop_time_interp,
+                          time_interp=opts._noloop_time_interp, td_subsample=td_subsample_for_likelihood,
                           ctUArrayDict_cal=ctUArrayDict_cal, ctVArrayDict_cal=ctVArrayDict_cal)
 
     if opts._time_posterior_export == "continuous":
@@ -3271,7 +3281,7 @@ def resample_samples(my_samples,
                             ctUArrayDict, ctVArrayDict, epochDict, Lmax=opts.l_max,
                             xpy=xpy_default, return_lnLt=True, n_cal=n_cal,
                             cal_log_weights=cal_log_weights,
-                            time_interp=opts._noloop_time_interp,
+                            time_interp=opts._noloop_time_interp, td_subsample=td_subsample_for_likelihood,
                             ctUArrayDict_cal=ctUArrayDict_cal,
                             ctVArrayDict_cal=ctVArrayDict_cal,
                             explicit_time_values=True)
@@ -4367,9 +4377,10 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
         P.q_deltaT = q_deltaT
         if ile_td_gs_contexts is not None:
             _det0 = list(ctUArrayDict.keys())[0]
-            print("  [td-gs] cross terms packed as time-dependent arrays, shape %s = (N_window, n_modes, n_modes), "
+            print("  [td-gs] cross terms packed as time-dependent arrays, shape %s = (%s, n_modes, n_modes), "
                   "aligned with rholms; the likelihood must consume U(t), V(t) (scalar-U likelihoods will fail here)."
-                  % (tuple(ctUArrayDict[_det0].shape),))
+                  % (tuple(ctUArrayDict[_det0].shape),
+                     "N_window" if td_subsample_for_likelihood == 1 else "%d*N_window (sub-sample grid, deltaT/%d)" % (td_subsample_for_likelihood, td_subsample_for_likelihood)))
         # Pass None (not empty dicts) downstream when the fix is inactive, so the
         # likelihood keeps its exact cal-independent behavior.
         if not _have_cal_crossterms:
@@ -4641,7 +4652,7 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
                 _comp = factored_likelihood.DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(
                     _tv, P, lookupNKDict, rholmArrayDict, ctUArrayDict, ctVArrayDict, epochDict,
                     Lmax=opts.l_max, xpy=xpy_default, n_cal=n_cal_now, cal_method='loop',
-                    return_cal_components=True, time_interp=opts._noloop_time_interp,
+                    return_cal_components=True, time_interp=opts._noloop_time_interp, td_subsample=td_subsample_for_likelihood,
                     ctUArrayDict_cal=ctUArrayDict_cal, ctVArrayDict_cal=ctVArrayDict_cal)
                 comp_list.append(np.atleast_2d(np.asarray(identity_convert(_comp), dtype=float)))
                 corr_list.append(_corr)
@@ -4729,7 +4740,7 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
             _comp = factored_likelihood.DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(
                 _tvals, P, lookupNKDict, rholmArrayDict, ctUArrayDict, ctVArrayDict, epochDict,
                 Lmax=opts.l_max, xpy=xpy_default, n_cal=n_cal_for_likelihood, cal_method='loop',
-                return_cal_components=True, time_interp=opts._noloop_time_interp,
+                return_cal_components=True, time_interp=opts._noloop_time_interp, td_subsample=td_subsample_for_likelihood,
                 ctUArrayDict_cal=ctUArrayDict_cal, ctVArrayDict_cal=ctVArrayDict_cal)
             _comp = np.asarray(identity_convert(_comp))                       # (Next, n_cal) -> CPU
             from scipy.special import logsumexp as _logsumexp
@@ -5024,7 +5035,7 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
                   lnL = factored_likelihood.DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals,
                         P, lookupNKDict, rholmArrayDict, ctUArrayDict, ctVArrayDict,epochDict,Lmax=opts.l_max,xpy=xpy_default,n_cal=n_cal_for_likelihood,
                         cal_method=('fused' if use_fused_calmarg and opts._noloop_time_interp == 'nearest' else 'loop'), cal_log_weights=calibration_log_weights,
-                        time_interp=opts._noloop_time_interp,
+                        time_interp=opts._noloop_time_interp, td_subsample=td_subsample_for_likelihood,
                         ctUArrayDict_cal=ctUArrayDict_cal, ctVArrayDict_cal=ctVArrayDict_cal)  # non-distmarg: default-helper fused kernel (cal_distmarg=None)
 #                nEvals +=len(right_ascension)
                 if opts.internal_reparam_dl_incl:
@@ -5175,7 +5186,7 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
                   lnL = factored_likelihood.DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals,
                     P, lookupNKDict, rholmArrayDict, ctUArrayDict, ctVArrayDict,epochDict,Lmax=opts.l_max,xpy=xpy_default, loglikelihood=distmarg_loglikelihood, phase_marginalization=True,n_cal=n_cal_for_likelihood,
                     cal_method=('fused' if cal_distmarg_dict is not None and opts._noloop_time_interp == 'nearest' else 'loop'), cal_distmarg=(cal_distmarg_dict if opts._noloop_time_interp == 'nearest' else None), cal_log_weights=calibration_log_weights,
-                    time_interp=opts._noloop_time_interp,
+                    time_interp=opts._noloop_time_interp, td_subsample=td_subsample_for_likelihood,
                     ctUArrayDict_cal=ctUArrayDict_cal, ctVArrayDict_cal=ctVArrayDict_cal)
 #                  nEvals +=len(right_ascension)
                   if supplemental_ln_likelihood:
@@ -5223,7 +5234,7 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
                   lnL = factored_likelihood.DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals,
                     P, lookupNKDict, rholmArrayDict, ctUArrayDict, ctVArrayDict,epochDict,Lmax=opts.l_max,xpy=xpy_default, loglikelihood=distmarg_loglikelihood,n_cal=n_cal_for_likelihood,
                     cal_method=('fused' if cal_distmarg_dict is not None and opts._noloop_time_interp == 'nearest' else 'loop'), cal_distmarg=(cal_distmarg_dict if opts._noloop_time_interp == 'nearest' else None), cal_log_weights=calibration_log_weights,
-                    time_interp=opts._noloop_time_interp,
+                    time_interp=opts._noloop_time_interp, td_subsample=td_subsample_for_likelihood,
                     ctUArrayDict_cal=ctUArrayDict_cal, ctVArrayDict_cal=ctVArrayDict_cal)
 #                  nEvals +=len(right_ascension)
                   if supplemental_ln_likelihood:
@@ -6611,7 +6622,7 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
             _comp = factored_likelihood.DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(_tv,
                        P, lookupNKDict, rholmArrayDict, ctUArrayDict, ctVArrayDict, epochDict,
                        Lmax=opts.l_max, xpy=xpy_default, n_cal=n_cal_for_likelihood,
-                       cal_method='loop', return_cal_components=True, time_interp=opts._noloop_time_interp,
+                       cal_method='loop', return_cal_components=True, time_interp=opts._noloop_time_interp, td_subsample=td_subsample_for_likelihood,
                        ctUArrayDict_cal=ctUArrayDict_cal, ctVArrayDict_cal=ctVArrayDict_cal)
             _comp = np.atleast_2d(np.asarray(identity_convert(_comp), dtype=float))   # (n_samples, n_cal)
             _calw = np.zeros(n_cal_for_likelihood) if calibration_log_weights is None else np.asarray(identity_convert(calibration_log_weights), dtype=float)

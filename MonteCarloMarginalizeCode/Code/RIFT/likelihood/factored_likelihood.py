@@ -2759,7 +2759,10 @@ def _cubic_Q_window_numpy(Q_block, start_indices, fractional_offsets, npts,
     Q_block has shape (n_time, n_lm).  The returned array has shape
     (n_extrinsic, npts, n_lm), matching the CPU fallback layout used by NoLoop.
     The interpolation is a local four-point cubic Lagrange stencil; at integer
-    offsets it reproduces the original samples exactly.
+    offsets it reproduces the original samples exactly.  ``time_stride`` (default 1)
+    is the number of Q_block samples between consecutive window entries: the
+    td-gs sub-sample grid holds K entries per time bin, and the stencil then
+    acts on that fine grid.
     """
     npts_extrinsic = len(start_indices)
     n_lms_det = Q_block.shape[1]
@@ -2941,8 +2944,12 @@ def _q_window_numpy_interp(Q_block, start_indices, fractional_offsets, npts, tim
     """CPU Q-window dispatch.  start_indices must already match the stencil: 'nearest' rounds,
     the interpolating stencils floor and carry the fractional part separately."""
     if time_interp == 'nearest':
-        return _nearest_Q_window_numpy(Q_block, start_indices, npts, xpy=xpy)
+        return _nearest_Q_window_numpy(Q_block, start_indices, npts, xpy=xpy,
+                                       time_stride=time_stride)
     if time_interp == 'sinc':
+        if int(time_stride) != 1:
+            raise NotImplementedError("the 'sinc' Q window has no strided gather (time_stride=%r)"
+                                      % (time_stride,))
         return _sinc_Q_window_numpy(Q_block, start_indices, fractional_offsets, npts)
     if time_interp == 'cubic':
         return _cubic_Q_window_numpy(Q_block, start_indices, fractional_offsets, npts,
@@ -2965,8 +2972,12 @@ def _q_inner_product_gpu(Q, A, start_indices, fractional_offsets, npts, time_int
     CONTRACTED (n_extrinsic, npts) product, not the (n_extrinsic, npts, n_lm) window the CPU
     builder returns -- the device kernels fuse the lm contraction to avoid the large temporary."""
     if time_interp == 'nearest':
-        return Q_inner_product.Q_inner_product_cupy(Q, A, start_indices, npts)
+        return Q_inner_product.Q_inner_product_cupy(Q, A, start_indices, npts,
+                                                    time_stride=time_stride)
     if time_interp == 'sinc':
+        if int(time_stride) != 1:
+            raise NotImplementedError("the 'sinc' Q kernel has no strided gather (time_stride=%r)"
+                                      % (time_stride,))
         return Q_inner_product.Q_inner_product_sinc_cupy(
             Q, A, start_indices, fractional_offsets, npts)
     if time_interp == 'cubic':
@@ -3027,15 +3038,16 @@ def _q_inner_product_explicit_times(Q, A, start_indices, fractional_offsets,
     return out
 
 
-def _nearest_Q_window_numpy(Q_block, start_indices, npts, xpy=np):
-    """Return nearest-grid Q windows with zero extension."""
+def _nearest_Q_window_numpy(Q_block, start_indices, npts, xpy=np, time_stride=1):
+    """Return nearest-grid Q windows with zero extension (``time_stride`` Q_block samples
+    between consecutive window entries; 1 = the plain contiguous window)."""
     npts_extrinsic = len(start_indices)
     n_lms_det = Q_block.shape[1]
     Qlms = xpy.zeros((npts_extrinsic, npts, n_lms_det), dtype=np.complex128)
     tgrid = np.arange(npts)
     n_time = Q_block.shape[0]
     for i in range(npts_extrinsic):
-        idxs = int(start_indices[i]) + tgrid
+        idxs = int(start_indices[i]) + tgrid*int(time_stride)
         valid = (idxs >= 0) & (idxs < n_time)
         Qlms[i, valid] = Q_block[idxs[valid]]
     return Qlms
@@ -3091,11 +3103,11 @@ def _time_indexed_self_term_weights(F_vec, Ylms_vec, iu, ju, xpy=np):
     return xpy.ascontiguousarray(xpy.concatenate([w_U, w_V], axis=1).astype(np.complex128, copy=False))
 
 
-def _time_indexed_self_term(U, V, F_vec, Ylms_vec, ifirst, frac_first, npts, time_interp, xpy=np):
+def _time_indexed_self_term(U, V, F_vec, Ylms_vec, ifirst, frac_first, npts, time_interp, xpy=np, stride=1):
     """Self term rho_sq_det(e, t) for time-indexed cross terms, WITHOUT the
     0.5 (D_ref/D)^2 factor:
         Re[ |F_e|^2 sum_ij conj(Y_ei) Y_ej U_ij(t) + F_e^2 sum_ij Y_ei Y_ej V_ij(t) ]
-    evaluated at the same per-sample window (ifirst[e] + j, with the same
+    evaluated at the same per-sample window (ifirst[e] + stride*j, with the same
     'nearest'/'cubic' time_interp handling) at which the data term gathers Q.
     Reuses the Q_inner_product kernels / numpy windows with the pairs as pseudo-modes.
 
@@ -3112,14 +3124,14 @@ def _time_indexed_self_term(U, V, F_vec, Ylms_vec, ifirst, frac_first, npts, tim
             block_k = xpy.ascontiguousarray(block[:, k0:k1])
             W_k = xpy.ascontiguousarray(W[:, k0:k1])
             if time_interp == 'nearest':
-                out += Q_inner_product.Q_inner_product_cupy(block_k, W_k, ifirst, npts)
+                out += Q_inner_product.Q_inner_product_cupy(block_k, W_k, ifirst, npts, time_stride=stride)
             else:
-                out += Q_inner_product.Q_inner_product_cubic_cupy(block_k, W_k, ifirst, frac_first, npts)
+                out += Q_inner_product.Q_inner_product_cubic_cupy(block_k, W_k, ifirst, frac_first, npts, time_stride=stride)
     else:
         if time_interp == 'nearest':
-            windows = _nearest_Q_window_numpy(block, ifirst, npts, xpy=xpy)
+            windows = _nearest_Q_window_numpy(block, ifirst, npts, xpy=xpy, time_stride=stride)
         else:
-            windows = _cubic_Q_window_numpy(block, ifirst, frac_first, npts)
+            windows = _cubic_Q_window_numpy(block, ifirst, frac_first, npts, time_stride=stride)
         out += np.einsum("ek,etk->et", W, windows)
     return out.real
 
@@ -3255,7 +3267,7 @@ def compress_time_indexed_cross_terms(U3, V3, tol, xpy=np):
     return TimeIndexedCrossTermsSVD(c, right, iu, ju, n_lm, npts_full, s_np, tol, rel_err_fro, rel_err_max)
 
 
-def _time_indexed_self_term_compressed(comp, F_vec, Ylms_vec, ifirst, frac_first, npts, time_interp, xpy=np):
+def _time_indexed_self_term_compressed(comp, F_vec, Ylms_vec, ifirst, frac_first, npts, time_interp, xpy=np, stride=1):
     """Same quantity as _time_indexed_self_term (no 0.5 (D_ref/D)^2 factor), from a
     TimeIndexedCrossTermsSVD: g = w @ right once per sample, then the Q-style
     gather over the r component series comp.c.  Returns (npts_extrinsic, npts) real."""
@@ -3273,14 +3285,14 @@ def _time_indexed_self_term_compressed(comp, F_vec, Ylms_vec, ifirst, frac_first
             c_k = c if (k0 == 0 and k1 == r) else xpy.ascontiguousarray(c[:, k0:k1])
             g_k = g if (k0 == 0 and k1 == r) else xpy.ascontiguousarray(g[:, k0:k1])
             if time_interp == 'nearest':
-                out += Q_inner_product.Q_inner_product_cupy(c_k, g_k, ifirst, npts)
+                out += Q_inner_product.Q_inner_product_cupy(c_k, g_k, ifirst, npts, time_stride=stride)
             else:
-                out += Q_inner_product.Q_inner_product_cubic_cupy(c_k, g_k, ifirst, frac_first, npts)
+                out += Q_inner_product.Q_inner_product_cubic_cupy(c_k, g_k, ifirst, frac_first, npts, time_stride=stride)
     else:
         if time_interp == 'nearest':
-            windows = _nearest_Q_window_numpy(c, ifirst, npts, xpy=xpy)
+            windows = _nearest_Q_window_numpy(c, ifirst, npts, xpy=xpy, time_stride=stride)
         else:
-            windows = _cubic_Q_window_numpy(c, ifirst, frac_first, npts)
+            windows = _cubic_Q_window_numpy(c, ifirst, frac_first, npts, time_stride=stride)
         out += np.einsum("ek,etk->et", g, windows)
     return out.real
 
@@ -3289,7 +3301,8 @@ def _time_indexed_self_term_compressed(comp, F_vec, Ylms_vec, ifirst, frac_first
 
 def _require_time_indexed_supported(time_interp, time_quadrature, explicit_time_values,
                                     q_deltaT, q_deltaT_attr, deltaT):
-    """Refuse NoLoop options that the time-indexed (3-D) self term does not implement.
+    """Refuse NoLoop options that the time-indexed (3-D) self term, and the td-gs sub-sample
+    grid (td_subsample > 1), do not implement.
 
     The time-indexed self term is gathered with the 'nearest' or 'cubic' stencil at the
     same window as Q on the likelihood's own time grid.  The 'sinc' stencil, a Q pregrid
@@ -3298,17 +3311,17 @@ def _require_time_indexed_supported(time_interp, time_quadrature, explicit_time_
     time) have not been implemented or checked for it, so they raise instead of
     returning an unchecked number."""
     if time_interp not in ('nearest', 'cubic'):
-        raise NotImplementedError("time-indexed cross terms support time_interp 'nearest' and 'cubic' only, got {!r}".format(time_interp))
+        raise NotImplementedError("time-indexed cross terms and td_subsample > 1 support time_interp 'nearest' and 'cubic' only, got {!r}".format(time_interp))
     if time_quadrature in ('bandlimited', 'peak-local'):
-        raise NotImplementedError("time_quadrature={!r} assumes a time-independent self term; it is not implemented for time-indexed cross terms (use 'simpson' or 'trapezoid')".format(time_quadrature))
+        raise NotImplementedError("time_quadrature={!r} is not implemented for time-indexed cross terms or td_subsample > 1 (it assumes a time-independent self term on the likelihood's own grid; use 'simpson' or 'trapezoid')".format(time_quadrature))
     if explicit_time_values:
-        raise NotImplementedError("explicit_time_values is not implemented for time-indexed cross terms")
+        raise NotImplementedError("explicit_time_values is not implemented for time-indexed cross terms or td_subsample > 1")
     for q in (q_deltaT, q_deltaT_attr):
         if q is not None and float(q) != float(deltaT):
-            raise NotImplementedError("an independently spaced Q pregrid (q_deltaT={} vs deltaT={}) is not implemented for time-indexed cross terms".format(q, deltaT))
+            raise NotImplementedError("an independently spaced Q pregrid (q_deltaT={} vs deltaT={}) is not implemented for time-indexed cross terms or td_subsample > 1".format(q, deltaT))
 
 
-def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDict, rholmsArrayDict, ctUArrayDict,ctVArrayDict,epochDict,Lmax=2,array_output=False,xpy=np, loglikelihood=_factored_lnL_helper,return_lnLt=False,phase_marginalization=False,n_cal=1,cal_method='loop',cal_distmarg=None,cal_log_weights=None,return_cal_components=False,time_interp='nearest',ctUArrayDict_cal=None,ctVArrayDict_cal=None,time_quadrature=None,explicit_time_values=False,return_time_draw=False,time_draw_uniforms=None,q_deltaT=None):
+def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDict, rholmsArrayDict, ctUArrayDict,ctVArrayDict,epochDict,Lmax=2,array_output=False,xpy=np, loglikelihood=_factored_lnL_helper,return_lnLt=False,phase_marginalization=False,n_cal=1,cal_method='loop',cal_distmarg=None,cal_log_weights=None,return_cal_components=False,time_interp='nearest',ctUArrayDict_cal=None,ctVArrayDict_cal=None,time_quadrature=None,explicit_time_values=False,return_time_draw=False,time_draw_uniforms=None,q_deltaT=None,td_subsample=1):
     """
     DiscreteFactoredLogLikelihoodViaArray uses the array-ized data structures to compute the log likelihood,
     either as an array vs time *or* marginalized in time.
@@ -3455,7 +3468,8 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
     per-realization self term may be time-indexed: ctUArrayDict_cal[det] of shape
     (n_blocks, N_window, n_lms, n_lms) -- U_c(t) of the template filtered with
     realization c, on the time grid of block c -- gathered per realization at the same
-    window index as its Q_c block, exactly as the time-indexed n_cal==1 self term.  The
+    window index as its Q_c block, exactly as the time-indexed n_cal==1 self term (with
+    td_subsample=K the block length is K*N_window and the gathers step by K).  The
     calmarg reduction (streaming log-sum-exp over realizations, importance weights,
     return_lnLt, return_cal_components) is unchanged.  cal_method='fused' and the
     SVD-compressed base U refuse these inputs with NotImplementedError.
@@ -3468,12 +3482,33 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
     None).  The self term is then r Q-style gathers per sample instead of
     n_lm (n_lm+1); exact up to the dropped singular components.  Same
     restrictions as the 3-D arrays.
+
+    Sub-sample time grid (td_subsample = K > 1; td-gs --td-subsample K)
+    -------------------------------------------------------------------
+    The rholm series (and the time-indexed U, V on the same grid) hold K entries
+    per sample of P_vec.deltaT: entry r sits at epochDict[det] + r*deltaT/K
+    (td_gs_precompute, "Sub-sample placement").  Each extrinsic sample's first
+    arrival time is then located on that fine grid (nearest fine entry, or the
+    four-point cubic stencil on the fine grid for time_interp='cubic'), and its
+    time bins -- still tvals, spaced deltaT -- are gathered with stride K, so
+    one gather per bin as before and the Simpson integral keeps dx = deltaT.
+    The residual placement step of 'nearest' is deltaT/K.  K = 1 is the
+    historical code path, unchanged.  With calibration marginalization the
+    realization blocks of the rholms and the time-indexed per-realization self
+    terms carry the same fine grid (K*N_window entries per block) and the loop
+    reduction gathers them with the same stride; cal_method='fused' is refused
+    with K > 1, as are the options refused for time-indexed cross terms above.
     """
     global distMpcRef
 
     validate_time_interp(time_interp, on_gpu=not (xpy is np))
     if time_interp != 'nearest' and cal_method == 'fused':
         raise NotImplementedError("time_interp='{}' is not implemented for cal_method='fused'".format(time_interp))
+    td_subsample = int(td_subsample)
+    if td_subsample < 1:
+        raise ValueError("td_subsample must be a positive integer, got {}".format(td_subsample))
+    if td_subsample > 1 and cal_method == 'fused':
+        raise NotImplementedError("td_subsample={} (sub-sample time grid) is not implemented for cal_method='fused'; use cal_method='loop'".format(td_subsample))
 
     _time_quadrature_explicit = time_quadrature is not None
     if time_quadrature is None:
@@ -3588,7 +3623,7 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
             if n_cal != 1 and cal_method == 'fused':
                 raise NotImplementedError("cal_method='fused' is not implemented for time-indexed cross terms ({}, n_cal={}); use cal_method='loop'".format(det, n_cal))
     _any_time_indexed_cal = any(time_indexed_cal.values())
-    if any(time_indexed_UV.values()) or _any_time_indexed_cal:
+    if any(time_indexed_UV.values()) or _any_time_indexed_cal or td_subsample > 1:
         _require_time_indexed_supported(time_interp, time_quadrature, explicit_time_values,
                                         q_deltaT, getattr(P_vec, 'q_deltaT', None), float(P_vec.deltaT))
     # npts_full = len(rholmsArrayDict[detectors[0]][0]) # all have same size
@@ -3684,7 +3719,7 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
         template, gathered at that detector's window: (npts_extrinsic, npts)."""
         out = xpy.zeros((npts_extrinsic, npts), dtype=np.float64)
         for det_c, (U_cal_det, V_cal_det, F_det, Y_det, ifirst_det, frac_det, dfac) in cal_self_cache.items():
-            out += dfac * _time_indexed_self_term(U_cal_det[c], V_cal_det[c], F_det, Y_det, ifirst_det, frac_det, npts, time_interp, xpy=xpy)
+            out += dfac * _time_indexed_self_term(U_cal_det[c], V_cal_det[c], F_det, Y_det, ifirst_det, frac_det, npts, time_interp, xpy=xpy, stride=td_subsample)
         return out
 
     # The rule is chosen by name, never by backend; see time_quadrature_rule.
@@ -3761,9 +3796,22 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
         t_det = float(tref - float(t_ref)) + TimeDelayFromEarthCenterPrecomputed(
             detector_location, ehat_src, xpy=xpy,
         )
-        ifirst, frac_first, _q_per_time, _q_time_stride = _q_sample_positions(
-            t_det, tvals, deltaT, q_deltaT, time_interp,
-            explicit_time_values, xpy=xpy)
+        if td_subsample == 1:
+            ifirst, frac_first, _q_per_time, _q_time_stride = _q_sample_positions(
+                t_det, tvals, deltaT, q_deltaT, time_interp,
+                explicit_time_values, xpy=xpy)
+        else:
+            # Sub-sample grid: K entries per deltaT.  Position of the first time bin on
+            # the fine grid; the window then steps by K entries per bin (stride below).
+            sample_first = (t_det + tvals[0]) * td_subsample / deltaT
+            if time_interp == 'nearest':
+                ifirst = xpy.rint(sample_first).astype(np.int32)
+                frac_first = None
+            else:
+                ifirst = xpy.floor(sample_first).astype(np.int32)
+                frac_first = (sample_first - xpy.floor(sample_first)).astype(np.float64)
+            _q_per_time = False
+            _q_time_stride = td_subsample
 #        ilast = ifirst + npts
 
 
@@ -3772,9 +3820,9 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
           # same window index (and interpolation) as Q below.  Uses the original
           # (un-phase-conjugated) Ylms_vec, like the scalar self term.
           if compressed_UV[det]:
-            rho_sq_det = _time_indexed_self_term_compressed(U, F_vec, Ylms_vec, ifirst, frac_first, npts, time_interp, xpy=xpy)
+            rho_sq_det = _time_indexed_self_term_compressed(U, F_vec, Ylms_vec, ifirst, frac_first, npts, time_interp, xpy=xpy, stride=td_subsample)
           else:
-            rho_sq_det = _time_indexed_self_term(U, V, F_vec, Ylms_vec, ifirst, frac_first, npts, time_interp, xpy=xpy)
+            rho_sq_det = _time_indexed_self_term(U, V, F_vec, Ylms_vec, ifirst, frac_first, npts, time_interp, xpy=xpy, stride=td_subsample)
           rho_sq_det *= xpy.asarray(0.5 * xpy.square(distMpcRef / distMpc)).reshape(-1, 1)
         else:
           # Has shape (npts_extrinsic,)
@@ -4128,7 +4176,8 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
             # zeros (the shared kernel / CPU fill below guard against N_window_block)
             # instead of bleeding into the neighbouring block or reading out of
             # bounds.  This matches the per-block n_cal==1 reference and the fused
-            # kernel exactly.
+            # kernel exactly.  On the td-gs sub-sample grid a block holds K entries per
+            # time bin (N_window_block = K*N_window) and the gather steps by K.
             Q_block = Q_det[c*N_window_block:(c+1)*N_window_block]   # (N_window, n_lms)
             ifirst_within = ifirst_det.astype(np.int32)
             if not (xpy is np):
@@ -4138,7 +4187,8 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
                         time_interp, xpy=xpy)
                 else:
                     Q_prod_result = _q_inner_product_gpu(
-                        Q_block, FY_conj_det, ifirst_within, frac_first_det, npts, time_interp)
+                        Q_block, FY_conj_det, ifirst_within, frac_first_det, npts, time_interp,
+                        time_stride=td_subsample)
             else:
                 if explicit_time_values:
                     Q_prod_result = _q_inner_product_explicit_times(
@@ -4146,7 +4196,7 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
                         time_interp, xpy=xpy)
                 else:
                     Qlms = _q_window_numpy_interp(Q_block, ifirst_within, frac_first_det, npts,
-                                                  time_interp, xpy=xpy)
+                                                  time_interp, xpy=xpy, time_stride=td_subsample)
                     # Q_det and FY_conj_det already encode any phase-marg conjugation
                     Q_prod_result = np.einsum("ej,etj->et", FY_conj_det, Qlms)
             kappa_sq_c += Q_prod_result * invDistMpc[..., np.newaxis]

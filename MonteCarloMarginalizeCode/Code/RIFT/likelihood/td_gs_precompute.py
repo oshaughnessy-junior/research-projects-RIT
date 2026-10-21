@@ -28,11 +28,13 @@
 #                                                       (--td-highpass; re-exported here)
 #     tdanalysis.utils.filters.fir_*                    calibration realizations as exact FIR
 #                                                       filters on the template
+#     tdanalysis.utils.subsample_align.fractional_shift the sub-sample template placement
+#                                                       (--td-subsample)
 # This module adds what is RIFT's: lal series and epochs, the (l,m) mode bookkeeping, the
 # analysis pieces (in units of M_ref on the ILE command line), RIFT's storage grid of
 # shifts, the sum over pieces, the turn-on refusal and its message, the calibration
-# conventions (RIFT's packing, correction type, conjugate phase) and the output contract
-# below.
+# conventions (RIFT's packing, correction type, conjugate phase), the interleaving of the
+# sub-sample phases onto the fine grid, and the output contract below.
 #
 # Per detector and ILE job (built ONCE, TDGSDetectorContext):
 #     w_p = C_p^{-1} d_p                 for every piece p (ToeplitzSolver of piece p)
@@ -119,6 +121,36 @@
 # --calibration-conjugate-phase is C_c = conj(eta_c).  correction_type "bilby" uses
 # bilby_pipe's per-detector semantics: C_c = eta_c for V1 ("template" type) and C_c =
 # 1/eta_c for H1, L1, K1 ("data" type: eta maps calibrated data to theoretical strain).
+#
+# Sub-sample placement (subsample = K > 1, ILE --td-subsample K):
+#     The series are returned on a grid of spacing deltaT/K (rholms deltaT = deltaT/K,
+#     length K*N_window, same epoch): entry r <-> the template placed at shift
+#     N_shift + r/K.  Phase j = r mod K is the template moved by a fraction of a sample
+#     with tdanalysis' Lanczos resampler (tdanalysis.utils.subsample_align.fractional_shift,
+#     half-width SHIFT_STENCIL = 16), by s_j = j/K for j/K <= 1/2 and s_j = j/K - 1 placed
+#     one sample later otherwise -- the same residual-in-[-1/2, 1/2] decomposition
+#     GWTransientTD._get_peak_and_target_indices uses, so where a sample's fractional
+#     offset falls on the 1/K grid the two codes evaluate the identical resampled template.
+#     Every phase
+#     goes through the same exact Q/U/V methods as phase 0 (which is the K = 1 result,
+#     bit for bit); Precompute costs K times the K = 1 cost.  Q is linear in the template,
+#     so a fine-grid Q equals the Lanczos interpolation of the coarse Q; U and V are
+#     quadratic, so interpolating them would not be equivalent -- they are recomputed from
+#     the shifted templates.  The likelihood (factored_likelihood.
+#     DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop, td_subsample=K) finds each
+#     extrinsic sample's arrival time on the fine grid and gathers its time bins with
+#     stride K, so the time marginalization keeps its coarse bins and Simpson spacing.
+#     With calibration, each phase j runs the calibrated body above on its shifted template:
+#     the Lanczos shift first (the shifted template as RIFT and GWTransientTD place it, same
+#     length as the input), then the calibration FIR as a full linear convolution of that
+#     template, then the cut and the exact U/V methods.  Both are linear time-invariant
+#     filters, so the order matters only through the shift's cut at the template's ends;
+#     this order is "calibration applied to the physically shifted signal", and identity
+#     realizations give the uncalibrated fine grid to rounding.  The reach R and the exact
+#     tap truncation are those of each shifted template, so every phase is exact by the
+#     argument above.  The realization blocks of Q_c and the per-realization U_c(t), V_c(t)
+#     carry the fine grid (n_cal blocks of K*N_window entries, r = K*i + j within a block),
+#     and the likelihood's calibration loop gathers them with the same stride K.
 #
 
 import numpy as np
@@ -291,6 +323,51 @@ def acf_from_psd(psd, deltaF, fs, n_lags, fLow, fMax, condition_number=DEFAULT_A
     info = dict(getattr(conv, "patch_info", {}) or {})
     info["condition_number"] = float(condition_number)
     return np.asarray(acf[:n_lags], dtype=np.float64), info
+
+
+def import_fractional_shift():
+    """tdanalysis' Lanczos fractional-shift resampler, (fractional_shift, SHIFT_STENCIL).
+
+    Imported, not copied: the td-gs sub-sample placement must move templates with the
+    same kernel as GWTransientTD.  It is tdanalysis.utils.subsample_align (tdanalysis >= 1.1).
+    """
+    try:
+        from tdanalysis.utils.subsample_align import fractional_shift, SHIFT_STENCIL
+    except ImportError as e:
+        raise ImportError(
+            "td-gs --td-subsample needs tdanalysis >= 1.1 (tdanalysis.utils.subsample_align."
+            "fractional_shift, SHIFT_STENCIL). The tdanalysis on this path (%s) does not have "
+            "it: %s" % (_tdanalysis_location(), e))
+    return fractional_shift, int(SHIFT_STENCIL)
+
+
+def subsample_phases(K):
+    """Fractional shift s_j and extra whole-sample offset e_j of each phase j = 0..K-1 of a
+    1/K grid: phase j is the template moved right by s_j samples with the Lanczos kernel
+    and placed e_j samples later, s_j + e_j = j/K, with s_j in (-1/2, 1/2] (the residual
+    range GWTransientTD._get_peak_and_target_indices uses; |s| <= 1/2 also halves the
+    resampler's worst-case error).  Returns a list of (s_j, e_j)."""
+    K = int(K)
+    if K < 1:
+        raise ValueError("subsample must be a positive integer, got %r" % (K,))
+    out = []
+    for j in range(K):
+        if 2 * j <= K:
+            out.append((j / float(K), 0))
+        else:
+            out.append((j / float(K) - 1.0, 1))
+    return out
+
+
+def shifted_modes(harr, s, fractional_shift=None):
+    """{mode: template moved right by s samples} with tdanalysis' fractional_shift (the
+    output has the input's length, as in GWTransientTD; s = 0 returns the inputs)."""
+    if fractional_shift is None:
+        fractional_shift = import_fractional_shift()[0]
+    if s == 0.0:
+        return {m: np.asarray(harr[m], dtype=np.complex128) for m in harr}
+    return {m: np.asarray(fractional_shift(np.asarray(harr[m], dtype=np.complex128), float(s)),
+                          dtype=np.complex128) for m in harr}
 
 
 def parse_td_pieces(piece_strings, mref_msun):
@@ -535,14 +612,29 @@ class TDGSDetectorContext(object):
         point the taps are truncated at the template's reach, or all N are used).  An
         integer forces a symmetric half-length L, an approximation when shorter than the
         reach (for speed studies; measured errors in docs/td_gs_route.md).
+    subsample : int
+        K >= 1.  With K > 1, ``precompute`` returns Q(t), U(t), V(t) on a grid of spacing
+        deltaT/K (module header, "Sub-sample placement"): K - 1 extra template sets moved
+        by a fraction of a sample with tdanalysis' Lanczos resampler, each through the
+        same exact methods (calibration included: each phase's shifted template is filtered
+        and its realization blocks carry the fine grid).  Costs K times the K = 1
+        Precompute.  Needs ``tdanalysis.utils.subsample_align`` (tdanalysis >= 1.1; checked
+        here, at construction).
     """
 
     def __init__(self, data_td, psd, fLow, fMax, pieces=None, acf=None, n_valid=None,
                  dense_max_n=4096, u_stride=1, u_method="auto",
                  acf_condition_number=DEFAULT_ACF_CONDITION_NUMBER, whiteness_check=False,
                  ifo=None, verbose=True, uv_block_bytes=DEFAULT_UV_BLOCK_BYTES,
-                 calibration_correction_type="rift", calibration_fir_half_length=None):
+                 calibration_correction_type="rift", calibration_fir_half_length=None, subsample=1):
         self.ifo = ifo
+        self.subsample = int(subsample)
+        if self.subsample < 1:
+            raise ValueError("subsample must be a positive integer, got %r" % (subsample,))
+        self._fractional_shift = None
+        self.shift_stencil = 0
+        if self.subsample > 1:
+            self._fractional_shift, self.shift_stencil = import_fractional_shift()
         self.deltaT = float(data_td.deltaT)
         self.epoch = data_td.epoch
         self.N = int(data_td.data.length)
@@ -552,7 +644,8 @@ class TDGSDetectorContext(object):
         self.calibration_correction_type = calibration_correction_type
         self.calibration_fir_half_length = calibration_fir_half_length
         self._calibration_cache = None
-        self.uv_routes_cal = []
+        self.uv_routes_cal = []           # per piece, the method of the last calibrated precompute (phase 0)
+        self.uv_routes_cal_by_phase = []  # the same per sub-sample phase (one entry when K = 1)
         self.calibration_last = {}      # diagnostics of the last calibrated precompute
         self.n_valid = self.N if n_valid is None else int(n_valid)
         self.d = np.asarray(data_td.data.data)
@@ -566,7 +659,8 @@ class TDGSDetectorContext(object):
             raise ValueError("u_method must be one of %s" % (U_METHODS,))
         self.u_method = u_method
         self.uv_block_bytes = int(uv_block_bytes)
-        self.uv_routes = []           # per piece, the U/V method precompute used last
+        self.uv_routes = []           # per piece, the U/V method precompute used last (phase 0)
+        self.uv_routes_by_phase = []  # the same per sub-sample phase (one entry when K = 1)
         self.dense_max_n = int(dense_max_n)
         self.fLow, self.fMax = float(fLow), float(fMax)
         self._warned_support = False
@@ -655,12 +749,15 @@ class TDGSDetectorContext(object):
 
     def report(self):
         """Print the one-line summary and the per-piece whiteness diagnostic."""
-        print("  [td-gs] %s: %d piece(s) %s samples, solver(s) %s, ACF %s, U/V by %s"
+        print("  [td-gs] %s: %d piece(s) %s samples, solver(s) %s, ACF %s, U/V by %s%s"
               % (self.ifo, len(self.runs), [(int(a), int(b)) for (a, b) in self.runs],
                  [s.method for s in self.solvers],
                  "file (%d lags)" % self.acf.size if self.acf_supplied
                  else "PSD->tdanalysis (cond %.1e)" % self.acf_info.get("condition_number", np.nan),
-                 self.u_method))
+                 self.u_method,
+                 "" if self.subsample == 1 else
+                 ", sub-sample placement 1/%d (tdanalysis Lanczos shift, half-width %d; "
+                 "Precompute cost x%d)" % (self.subsample, self.shift_stencil, self.subsample)))
         if not self.acf_supplied:
             n_floored = int(self.acf_info.get("n_floored", 0) or 0)
             keys = [k for k in ("n_floored", "n_walled", "wall", "s_floor", "s_lo", "s_hi", "nfft", "df")
@@ -832,6 +929,11 @@ class TDGSDetectorContext(object):
             and crossTermsCalV are lists of n_cal dicts with the per-realization U_c(t),
             V_c(t) of the filtered templates, or None when ``calibration_self_term`` is
             False (RIFT's --calibration-global-norm: the calibration-independent self term).
+
+        With ``self.subsample`` = K > 1 every series has K entries per storage sample at
+        spacing deltaT/K (rholms deltaT = deltaT/K): entry r of a block <-> shift
+        N_shift + r/K, so the uncalibrated series are K*N_window long and each realization
+        block of the calibrated ones as well (n_cal*K*N_window in total).
         """
         modes = list(hlms.keys())
         h0 = hlms[modes[0]]
@@ -839,6 +941,104 @@ class TDGSDetectorContext(object):
             raise ValueError("template deltaT %g != data deltaT %g" % (h0.deltaT, self.deltaT))
         N_shift, T = int(N_shift), int(N_window)
         harr = {m: np.asarray(hlms[m].data.data, dtype=np.complex128) for m in modes}
+        K = self.subsample
+        # Phase j = 0..K-1 (subsample_phases): the template moved by s_j of a sample with
+        # tdanalysis' kernel and placed e_j samples later, each through the whole-sample
+        # Precompute body (calibration included).  Phase 0 is the unshifted template, the
+        # K = 1 result bit for bit.  Fine entry r = K*i + j <-> shift N_shift + i + j/K.
+        phases = []
+        for j, (s_j, e_j) in enumerate(subsample_phases(K)):
+            harr_j = harr if j == 0 else shifted_modes(harr, s_j, self._fractional_shift)
+            try:
+                phases.append(self._precompute_phase(harr_j, modes, N_shift + e_j, T,
+                                                     calibration, calibration_self_term))
+            except ValueError as e:
+                if j == 0:
+                    raise
+                raise ValueError(
+                    "%s (template moved by %+.4f sample for sub-sample phase %d/%d: the "
+                    "Lanczos shift kernel, half-width %d, spreads the template's first "
+                    "sample over the %d samples before it, so the piece must also clear "
+                    "that margin)" % (e, s_j, j, K, self.shift_stencil, self.shift_stencil - 1))
+        ph0 = phases[0]
+        self.uv_routes = ph0["uv_routes"]
+        self.uv_routes_by_phase = [ph["uv_routes"] for ph in phases]
+        dt_out = self.deltaT / K
+        crossTerms = {k: self._interleave([ph["U"][k] for ph in phases]) for k in ph0["U"]}
+        crossTermsV = {k: self._interleave([ph["V"][k] for ph in phases]) for k in ph0["V"]}
+        if verbose:
+            u00 = crossTerms[(modes[0], modes[0])]
+            print("  [td-gs] %s: N_shift=%d N_window=%d template support %d..%d; U/V methods %s; "
+                  "U(2,2) centre %.6g, |U| range %.3g..%.3g%s"
+                  % (self.ifo, N_shift, T, ph0["j_first"], ph0["j_last"],
+                     [r if o is None else "%s(%s)" % (r, o) for (r, o) in self.uv_routes],
+                     np.real(u00[u00.size // 2]), np.min(np.abs(u00)), np.max(np.abs(u00)),
+                     "" if K == 1 else "; sub-sample 1/%d: %d entries at deltaT/%d, methods per phase %s"
+                     % (K, K * T, K, [[r for (r, o) in rp] for rp in self.uv_routes_by_phase])))
+        if calibration is None:
+            Q = {m: self._interleave([ph["Q"][m] for ph in phases]) for m in modes}
+            rholms = self._rholm_series(Q, hlms, modes, N_shift, dt_out)
+            return rholms, crossTerms, crossTermsV
+
+        # ---- calibration: the per-phase realization blocks interleaved onto the fine grid ----
+        n_cal = calibration.n_cal
+        self.uv_routes_cal = ph0["uv_routes_cal"]
+        self.uv_routes_cal_by_phase = [ph["uv_routes_cal"] for ph in phases]
+        self.calibration_last = dict(ph0["calibration_last"])
+        self.calibration_last["phases"] = [ph["calibration_last"] for ph in phases]
+        Qcal = {m: self._interleave([ph["Qcal"][m] for ph in phases], n_cal) for m in modes}
+        rholms_cal = self._rholm_series(Qcal, hlms, modes, N_shift, dt_out)
+        crossTermsCal = crossTermsCalV = None
+        if calibration_self_term:
+            crossTermsCal = [{k: self._interleave([ph["Ucal"][c][k] for ph in phases]) for k in ph0["Ucal"][c]}
+                             for c in range(n_cal)]
+            crossTermsCalV = [{k: self._interleave([ph["Vcal"][c][k] for ph in phases]) for k in ph0["Vcal"][c]}
+                              for c in range(n_cal)]
+        if verbose:
+            cl = ph0["calibration_last"]
+            msg = ("  [td-gs] %s: calibration: %d realizations; taps reach %d, used %d..%d (%s); turn-on "
+                   "leakage %.1e; Q_c(t) %.2f s" % (self.ifo, n_cal, cl["reach"], -cl["L_neg"], cl["L_pos"],
+                                                     "exact" if cl["exact"] else "FORCED, approximate",
+                                                     cl["turn_on_leakage"], sum(ph["t_q"] for ph in phases)))
+            if calibration_self_term:
+                u0 = crossTermsCal[0][(modes[0], modes[0])]
+                u00 = crossTerms[(modes[0], modes[0])]
+                msg += ("; U_c(t), V_c(t) %.2f s with methods %s; U_0(2,2) centre %.6g (uncalibrated %.6g)"
+                        % (sum(ph["t_uv"] for ph in phases),
+                           [r if o is None else "%s(%s)" % (r, o) for (r, o) in self.uv_routes_cal],
+                           np.real(u0[u0.size // 2]), np.real(u00[u00.size // 2])))
+            else:
+                msg += "; self term: calibration-independent U(t), V(t)"
+            if K > 1:
+                msg += "; sub-sample 1/%d: %d entries per realization block, reach per phase %s" % (
+                    K, K * T, [ph["calibration_last"]["reach"] for ph in phases])
+            print(msg)
+        return rholms_cal, crossTerms, crossTermsV, crossTermsCal, crossTermsCalV
+
+    @staticmethod
+    def _interleave(per_phase, n_blocks=1):
+        """One fine-grid array from the K per-phase arrays, each made of ``n_blocks``
+        contiguous blocks of T entries: out[b*K*T + K*i + j] = per_phase[j][b*T + i].
+        K = 1 returns the array itself (no copy)."""
+        K = len(per_phase)
+        if K == 1:
+            return per_phase[0]
+        T = per_phase[0].size // n_blocks
+        out = np.empty(n_blocks * K * T, dtype=np.complex128)
+        view = out.reshape(n_blocks, T, K)
+        for j, a in enumerate(per_phase):
+            view[:, :, j] = np.asarray(a).reshape(n_blocks, T)
+        return out
+
+    def _precompute_phase(self, harr, modes, N_shift, T, calibration=None, calibration_self_term=True):
+        """The whole-sample Precompute body for the template arrays ``harr`` placed at
+        shifts N_shift + i, i = 0..T-1: Q, U, V (dicts of length-T arrays, U/V Hermitian/
+        symmetric completed; Q only without calibration) and, with ``calibration``, the
+        per-realization Q_c (dict of n_cal*T arrays, contiguous realization blocks) and U_c,
+        V_c (lists of n_cal dicts, or None without the self term).  Sets self.uv_routes (and
+        self.uv_routes_cal, self.calibration_last).  Returns a dict with keys U, V, j_first,
+        j_last, uv_routes, and Q without calibration or Qcal, Ucal, Vcal, uv_routes_cal,
+        calibration_last, t_q, t_uv with it."""
         H = self._stack_modes(harr, modes)
         j_first, j_last = self._template_support(H)
         self._check_template_support(H, j_first, N_shift, T)
@@ -850,19 +1050,11 @@ class TDGSDetectorContext(object):
 
         U, V, self.uv_routes = self._uv_all(H, N_shift, T, tsel, j_first, j_last)
         crossTerms, crossTermsV = self._complete_pairs(U, V, modes, tsel, T)
-        if verbose:
-            print("  [td-gs] %s: N_shift=%d N_window=%d template support %d..%d; U/V methods %s; "
-                  "U(2,2) centre %.6g, |U| range %.3g..%.3g"
-                  % (self.ifo, N_shift, T, j_first, j_last,
-                     [r if o is None else "%s(%s)" % (r, o) for (r, o) in self.uv_routes],
-                     np.real(crossTerms[(modes[0], modes[0])][T // 2]),
-                     np.min(np.abs(crossTerms[(modes[0], modes[0])])),
-                     np.max(np.abs(crossTerms[(modes[0], modes[0])]))))
+        out = dict(U=crossTerms, V=crossTermsV, j_first=j_first, j_last=j_last, uv_routes=self.uv_routes)
         if calibration is None:
             Q = self._q_all(H, N_shift, T)
-            rholms = self._rholm_series({m: Q[ia] for ia, m in enumerate(modes)}, hlms, modes,
-                                        N_shift, self.deltaT)
-            return rholms, crossTerms, crossTermsV
+            out["Q"] = {m: Q[ia] for ia, m in enumerate(modes)}
+            return out
 
         # ---- calibration: per realization, Q_c by the adjoint method, U_c/V_c on the
         #      filtered template (module header) ----
@@ -887,7 +1079,6 @@ class TDGSDetectorContext(object):
             for ia, m in enumerate(modes):
                 Qcal[m][c * T:(c + 1) * T] = calibration.data_term(H[ia], c, j_first, j_last, N_shift, T)
         t_q = _time.time() - t0
-        rholms_cal = self._rholm_series(Qcal, hlms, modes, N_shift, self.deltaT)
         crossTermsCal = crossTermsCalV = None
         t_uv = 0.0
         if calibration_self_term:
@@ -909,19 +1100,9 @@ class TDGSDetectorContext(object):
                 crossTermsCal.append(ct)
                 crossTermsCalV.append(ctV)
             t_uv = _time.time() - t0
-        if verbose:
-            msg = ("  [td-gs] %s: calibration: %d realizations; taps reach %d, used %d..%d (%s); turn-on "
-                   "leakage %.1e; Q_c(t) %.2f s" % (self.ifo, n_cal, R, -L_neg, L_pos,
-                                                     "exact" if exact else "FORCED, approximate", leak, t_q))
-            if calibration_self_term:
-                u0 = crossTermsCal[0][(modes[0], modes[0])]
-                msg += ("; U_c(t), V_c(t) %.2f s with methods %s; U_0(2,2) centre %.6g (uncalibrated %.6g)"
-                        % (t_uv, [r if o is None else "%s(%s)" % (r, o) for (r, o) in self.uv_routes_cal],
-                           np.real(u0[T // 2]), np.real(crossTerms[(modes[0], modes[0])][T // 2])))
-            else:
-                msg += "; self term: calibration-independent U(t), V(t)"
-            print(msg)
-        return rholms_cal, crossTerms, crossTermsV, crossTermsCal, crossTermsCalV
+        out.update(Qcal=Qcal, Ucal=crossTermsCal, Vcal=crossTermsCalV, uv_routes_cal=self.uv_routes_cal,
+                   calibration_last=self.calibration_last, t_q=t_q, t_uv=t_uv)
+        return out
 
     @staticmethod
     def _filtered_modes(calibration, H, taps_c, L_neg):
@@ -1086,13 +1267,23 @@ def precompute_likelihood_terms_td_gs(event_time_geo, t_window, P, data_dict, td
                                       for ct in crossTermsCal[det]]
                 crossTermsCalV[det] = [{k: v for k, v in ct.items() if k[0] in keep and k[1] in keep}
                                        for ct in crossTermsCalV[det]]
-        t = np.arange(N_window) * P.deltaT + float(rho_epoch + N_shift * P.deltaT)
+        # Time grid of one block of the returned series: N_window points at deltaT, or
+        # K*N_window at deltaT/K with sub-sample placement (ctx.subsample = K); the same
+        # expression for K = 1 (rholm deltaT is then the data deltaT).  With calibration the
+        # rholms hold n_cal such blocks and are not interpolated.
+        _rho0 = rholms[det][list(rholms[det].keys())[0]]
+        _dt_rho = P.deltaT if ctx.subsample == 1 else float(_rho0.deltaT)
+        t = np.arange(ctx.subsample * N_window) * _dt_rho + float(rho_epoch + N_shift * P.deltaT)
         if verbose:
             print("For detector", det, "(td-gs) ...")
             print("\tData starts at %.20g" % float(data.epoch))
             print("\tEvent time at detector is: %.18g" % float(t_det))
             print("\tComputed t_shift = %.20g, N_shift = %d" % (t_shift, N_shift))
             print("\tInterpolation starts at time %.20g" % t[0])
+            if ctx.subsample > 1:
+                print("\tSub-sample placement 1/%d: %d series entries at deltaT/%d%s"
+                      % (ctx.subsample, _rho0.data.length, ctx.subsample,
+                         " (%d realization blocks)" % len(crossTermsCal[det]) if crossTermsCal is not None else ""))
         if not skip_interpolation and not have_cal:
             rholms_intp[det] = fl.InterpolateRholms(rholms[det], t, verbose=verbose)
         else:

@@ -665,6 +665,7 @@ parser.add_argument("--internal-ile-td-acf-file",action='append',default=None,he
 parser.add_argument("--internal-ile-td-dense-max-n",default=None,type=int,help="Passthrough to ILE --td-dense-max-n (td-gs).")
 parser.add_argument("--internal-ile-td-u-stride",default=None,type=int,help="Passthrough to ILE --td-u-stride (td-gs).")
 parser.add_argument("--internal-ile-td-u-method",default=None,type=str,help="Passthrough to ILE --td-u-method {auto,prefix,recursion,batched,chunked} (td-gs).")
+parser.add_argument("--internal-ile-td-subsample",default=None,type=int,help="Passthrough to ILE --td-subsample K (td-gs: templates placed to 1/K of a sample with tdanalysis' Lanczos resampler; Precompute cost x K; default 1 = whole samples).")
 parser.add_argument("--internal-ile-td-highpass",default=None,type=float,help="Passthrough to ILE --td-highpass FREQ (td-gs: zero-phase high-pass of the data, e.g. 10 Hz for real strain with walled ACFs; default off).")
 parser.add_argument("--internal-ile-td-u-svd-tol",default=None,type=float,help="Passthrough to ILE --td-u-svd-tol TOL (td-gs: SVD-over-time compression of U(t),V(t); recommended 1e-13; default off).")
 parser.add_argument("--internal-ile-td-acf-cond",default=None,type=float,help="Passthrough to ILE --td-acf-cond (td-gs PSD->ACF target condition number).")
@@ -1837,6 +1838,8 @@ if opts.internal_ile_inner_product:
         line += " --td-u-stride {} ".format(opts.internal_ile_td_u_stride)
     if opts.internal_ile_td_u_method:
         line += " --td-u-method {} ".format(opts.internal_ile_td_u_method)
+    if not(opts.internal_ile_td_subsample is None):
+        line += " --td-subsample {} ".format(opts.internal_ile_td_subsample)
     if not(opts.internal_ile_td_highpass is None):
         line += " --td-highpass {} ".format(opts.internal_ile_td_highpass)
     if not(opts.internal_ile_td_u_svd_tol is None):

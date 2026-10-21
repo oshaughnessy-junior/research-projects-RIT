@@ -28,6 +28,13 @@ Run with  python -m pytest test/test_td_gs_calibration.py  from MonteCarloMargin
       malformed 4-D arrays, wrong realization grid, bad correction type, forced L out of range.
   Plus the Precompute driver with calibration (two detectors; packed 4-D shapes; global-norm
   variant) and the adaptive-growth layout (concatenating realization blocks).
+  (g) test_subsample_*                  : calibration together with --td-subsample K (skipped when the
+      tdanalysis on the path has no subsample_align): identity realizations at K = 4 reproduce the
+      uncalibrated K = 4 fine grid to rounding and phase 0 is the K = 1 calibrated result bit for
+      bit; per-realization Q_c, U_c, V_c at every fractional phase vs the dense brute force on the
+      template moved by tdanalysis' kernel (ringdown piece, dense and GS, two spliced pieces); the
+      NoLoop calmarg loop with stride K vs per-realization runs and vs the dense residual likelihood
+      of the calibrated shifted template; the driver with subsample=4 and realizations.
 """
 
 import os
@@ -39,6 +46,7 @@ import pytest
 import lal
 import lalsimulation as lalsim
 import scipy.linalg
+import scipy.signal
 from scipy.special import logsumexp
 
 import RIFT.lalsimutils as lsu
@@ -700,6 +708,288 @@ def test_precompute_driver_with_calibration(ringdown_case, env_path):
         fl.PrecomputeLikelihoodTerms(s["tpk"], t_window, P, data_dict, psd_dict, 2, 1500., False, False, 0.,
                                      verbose=False, quiet=True, skip_interpolation=True, td_gs_contexts=contexts,
                                      calibration_realizations={"H1": cal["H1"]})
+
+
+# --------------------------------------------------------------------------- (g) with --td-subsample K
+
+try:
+    _fractional_shift, SHIFT_STENCIL = tdg.import_fractional_shift()
+    _NO_SUBSAMPLE = ""
+except ImportError as _exc:
+    _fractional_shift, SHIFT_STENCIL = None, 0
+    _NO_SUBSAMPLE = str(_exc)
+
+needs_subsample = pytest.mark.skipif(bool(_NO_SUBSAMPLE), reason=_NO_SUBSAMPLE)
+
+
+class _ArrSeries(object):
+    """The .data.data interface brute_force_calibrated uses, around a plain array."""
+    def __init__(self, x):
+        self.data = _PVec()
+        self.data.data = x
+        self.data.length = x.size
+
+
+def _as_hT(harr):
+    return {m: _ArrSeries(harr[m]) for m in harr}
+
+
+def _ctx(s, pieces, K, dense_max_n=4096, ifo="H1"):
+    return tdg.TDGSDetectorContext(s["dts"], s["psd"], 20., 1500., pieces=pieces, dense_max_n=dense_max_n,
+                                   ifo=ifo, verbose=False, subsample=K)
+
+
+@needs_subsample
+def test_subsample_identity_calibration_and_phase0(ringdown_case):
+    """K = 4: the uncalibrated block of the calibrated call is the uncalibrated fine grid bit for
+    bit; identity realizations give the uncalibrated fine grid to rounding in every block; phase 0
+    of every realization block (and of U_c, V_c) is the K = 1 calibrated result bit for bit."""
+    s = ringdown_case
+    K, T = 4, s["N_window"]
+    one = np.ones((s["N"], 2), dtype=complex)
+    for label, pieces, dmax in (("ringdown dense", s["pieces"], 4096), ("ringdown gs", s["pieces"], 0), ("full segment", None, 0)):
+        ctx1 = _ctx(s, pieces, 1, dmax)
+        ctxK = _ctx(s, pieces, K, dmax)
+        rho0, U0, V0 = ctxK.precompute(s["hT"], s["N_shift"], T)
+        rhoK, UK, VK, UcK, VcK = ctxK.precompute(s["hT"], s["N_shift"], T, calibration=ctxK.calibration_filters(one, verbose=False))
+        rho1, U1, V1, Uc1, Vc1 = ctx1.precompute(s["hT"], s["N_shift"], T, calibration=ctx1.calibration_filters(one, verbose=False))
+        assert rhoK[(2, 2)].data.length == 2 * K * T and abs(rhoK[(2, 2)].deltaT - DT / K) < 1e-18
+        assert float(rhoK[(2, 2)].epoch) == float(rho1[(2, 2)].epoch) == float(rho0[(2, 2)].epoch)
+        assert all(UcK[c][k].shape == (K * T,) for c in range(2) for k in UcK[0])
+        for key in U0:
+            np.testing.assert_array_equal(UK[key], U0[key])
+            np.testing.assert_array_equal(VK[key], V0[key])
+        qs = np.max(np.abs(rho0[(2, 2)].data.data))
+        us = np.max(np.abs(U0[((2, 2), (2, 2))]))
+        dq = max(np.max(np.abs(rhoK[m].data.data[c * K * T:(c + 1) * K * T] - rho0[m].data.data)) for m in s["hT"] for c in range(2)) / qs
+        du = max(np.max(np.abs(UcK[c][k] - U0[k])) for k in U0 for c in range(2)) / us
+        dv = max(np.max(np.abs(VcK[c][k] - V0[k])) for k in V0 for c in range(2)) / us
+        # phase 0 (fine entries K*i within each block) is the K = 1 result
+        for m in s["hT"]:
+            np.testing.assert_array_equal(rhoK[m].data.data.reshape(2, T, K)[:, :, 0].ravel(), rho1[m].data.data)
+        for c in range(2):
+            for k in Uc1[c]:
+                np.testing.assert_array_equal(UcK[c][k][0::K], Uc1[c][k])
+                np.testing.assert_array_equal(VcK[c][k][0::K], Vc1[c][k])
+        assert ctxK.uv_routes_cal == ctx1.uv_routes_cal and len(ctxK.uv_routes_cal_by_phase) == K
+        print("[td-gs cal g] K=4 identity calibration (%s): Q %.1e, U %.1e, V %.1e relative to the uncalibrated "
+              "fine grid; phase 0 equals K=1 bit for bit" % (label, dq, du, dv))
+        assert dq < 1e-13 and du < 1e-13 and dv < 1e-13
+
+
+@needs_subsample
+@pytest.mark.parametrize("layout", ["ringdown dense", "ringdown gs", "two pieces"])
+def test_subsample_per_realization_vs_brute_force(ringdown_case, layout):
+    """K = 4, three realizations: Q_c, U_c, V_c at every fractional phase vs the dense brute force
+    on the template moved by tdanalysis' kernel (the shifted template, then the full N-tap filter
+    of the realization, placed at N_shift + i + e_j, cut, dense C^{-1})."""
+    s = ringdown_case
+    K, T = 4, s["N_window"]
+    tpk = s["tpk"]
+    pieces, dmax = {"ringdown dense": (s["pieces"], 4096), "ringdown gs": (s["pieces"], 0),
+                    "two pieces": ([(tpk - 0.15, tpk - 0.05), (tpk - 0.01, tpk + 0.04)], 4096)}[layout]
+    ctx = _ctx(s, pieces, K, dmax)
+    filt = ctx.calibration_filters(s["cal"], verbose=False)
+    rho, U, V, Uc, Vc = ctx.precompute(s["hT"], s["N_shift"], T, calibration=filt)
+    assert ctx.calibration_last["exact"] and all(ph["exact"] for ph in ctx.calibration_last["phases"])
+    assert len(ctx.calibration_last["phases"]) == K
+    harr = harr_of(s["hT"])
+    modes = list(s["hT"].keys())
+    qs = np.max(np.abs(rho[(2, 2)].data.data))
+    us = max(np.max(np.abs(Uc[c][((2, 2), (2, 2))])) for c in range(filt.n_cal))
+    idx = [0, 128, 255]
+    worst = 0.0
+    for j, (s_j, e_j) in enumerate(tdg.subsample_phases(K)):
+        hT_j = _as_hT(tdg.shifted_modes(harr, s_j, _fractional_shift))
+        for c in range(filt.n_cal):
+            ref = brute_force_calibrated(ctx, hT_j, s["cal"], c, s["N_shift"] + e_j, idx)
+            for i in idx:
+                r = K * i + j
+                for ma in modes:
+                    worst = max(worst, abs(ref[("Q", ma, i)] - rho[ma].data.data[c * K * T + r]) / qs)
+                    for mb in modes:
+                        worst = max(worst, abs(ref[("U", ma, mb, i)] - Uc[c][(ma, mb)][r]) / us,
+                                    abs(ref[("V", ma, mb, i)] - Vc[c][(ma, mb)][r]) / us)
+    # the fractional phases differ from phase 0 by far more than the agreement
+    spread = max(np.max(np.abs(Uc[c][((2, 2), (2, 2))][1::K] - Uc[c][((2, 2), (2, 2))][0::K])) for c in range(filt.n_cal)) / us
+    print("[td-gs cal g] K=4 %s (methods %s, reach per phase %s): per-realization Q_c, U_c, V_c at every phase vs "
+          "dense brute force on the shifted template, worst %.2e relative; |U_c(phase 1) - U_c(phase 0)| up to %.2e"
+          % (layout, ctx.uv_routes_cal, [ph["reach"] for ph in ctx.calibration_last["phases"]], worst, spread))
+    assert worst < 1e-8
+    assert spread > 1e-4
+
+
+def _geom(det, P, e, epoch):
+    """F, the arrival time of extrinsic sample e relative to the rholm epoch, and the amplitude
+    factor, with lal."""
+    d = lalsim.DetectorPrefixToLALDetector(det)
+    gmst = lal.GreenwichMeanSiderealTime(P.tref)
+    fp, fc = lal.ComputeDetAMResponse(d.response, P.phi[e], P.theta[e], P.psi[e], gmst)
+    delay = lal.TimeDelayFromEarthCenter(d.location, P.phi[e], P.theta[e], lal.LIGOTimeGPS(P.tref))
+    return fp + 1j * fc, (P.tref - epoch) + delay, fl.distMpcRef / (P.dist[e] / (1e6 * lal.PC_SI))
+
+
+def _ylm(lms, incl, phiref):
+    return np.array([lal.SpinWeightedSphericalHarmonic(incl, -phiref, -2, int(l), int(m)) for (l, m) in lms])
+
+
+def _lnL_dense_calibrated(ctx, blocks, g_c, L_neg, lms, fine_entry, K, N_shift, F, Y, amp):
+    """Residual likelihood -1/2 (d-h)^T C^-1 (d-h) + 1/2 d^T C^-1 d on the pieces for the
+    calibrated shifted template g_c[j] = {mode: (K_c S_j h)[j'] at template index j' - L_neg}
+    placed at fine entry r (shift N_shift + i + e_j): h = amp Re[F sum_lm Y_lm g_lm]."""
+    N = ctx.d.size
+    i, j = divmod(int(fine_entry), K)
+    s_j, e_j = tdg.subsample_phases(K)[j]
+    k = N_shift + i + e_j
+    H = np.zeros(N, dtype=complex)
+    for lm_idx, lm in enumerate(lms):
+        g = g_c[j][tuple(lm)]
+        src = np.arange(g.size) - L_neg + k
+        ok = (src >= 0) & (src < N)
+        x = np.zeros(N, dtype=complex)
+        x[src[ok]] = g[ok]
+        H += Y[lm_idx] * x
+    h = amp * np.real(F * H)
+    out = 0.0
+    for (i0, i1, Cinv, w) in blocks:
+        r = ctx.d[i0:i1] - h[i0:i1]
+        out += -0.5 * (r @ Cinv @ r) + 0.5 * (ctx.d[i0:i1] @ w)
+    return out
+
+
+@needs_subsample
+@pytest.mark.parametrize("interp", ["nearest", "cubic"])
+def test_subsample_noloop_calmarg_vs_brute_force(ringdown_case, env_path, interp):
+    """K = 4, two detectors, three realizations: the NoLoop calmarg loop (td_subsample=4, 4-D
+    self terms on the fine grid) vs every realization through the n_cal=1 time-indexed path
+    (its own fine-grid block and U_c, V_c) combined by log-sum-exp, weighted, lnL(t) and
+    components; and, with nearest lookup, each realization's lnL(t) on H1 vs the dense residual
+    likelihood of the calibrated template moved by tdanalysis' kernel to the 1/K point used."""
+    s = ringdown_case
+    K, T = 4, s["N_window"]
+    dets = ["H1", "L1"]
+    n_cal = 3
+    cal = {d: realizations(os.path.join(env_path, "%s.txt" % d), s["N"], 20., 1500., n_cal, seed=60 + i) for i, d in enumerate(dets)}
+    ctx, rholms, ct, ctV, ct_c, ctV_c = {}, {}, {}, {}, {}, {}
+    for d in dets:
+        ctx[d] = _ctx(s, s["pieces"], K, 4096, ifo=d)
+        filt = ctx[d].calibration_filters(cal[d], verbose=False)
+        rholms[d], ct[d], ctV[d], ct_c[d], ctV_c[d] = ctx[d].precompute(s["hT"], s["N_shift"], T, calibration=filt)
+    packed = pack_calibrated(rholms, ct, ctV, ct_c, ctV_c)
+    lookupNK, rhoA, ctU, ctVa, epoch, ctU_cal, ctV_cal = packed
+    assert ctU_cal["H1"].shape == (n_cal, K * T, 5, 5) and rhoA["H1"].shape == (5, n_cal * K * T) and ctU["H1"].shape == (K * T, 5, 5)
+    P = extrinsic_vector(5, s["tpk"], seed=7)
+    tvals = np.linspace(-0.004, 0.004, 33)
+    log_w = np.log(np.array([0.6, 1.5, 0.9]))
+    kw = dict(Lmax=2, xpy=np, time_interp=interp, td_subsample=K)
+    call = lambda **k2: fl.DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P, lookupNK, rhoA, ctU, ctVa, epoch, n_cal=n_cal,
+                                                                             ctUArrayDict_cal=ctU_cal, ctVArrayDict_cal=ctV_cal, **kw, **k2)
+    lnL, lnL_w, lnLt, comps = call(), call(cal_log_weights=log_w), call(return_lnLt=True), call(return_cal_components=True)
+    lnL_c, lnLt_c = [], []
+    for c in range(n_cal):
+        rA = {d: rhoA[d][:, c * K * T:(c + 1) * K * T] for d in dets}
+        U_c = {d: ctU_cal[d][c] for d in dets}
+        V_c = {d: ctV_cal[d][c] for d in dets}
+        lnL_c.append(fl.DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P, lookupNK, rA, U_c, V_c, epoch, **kw))
+        lnLt_c.append(fl.DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P, lookupNK, rA, U_c, V_c, epoch, return_lnLt=True, **kw))
+    lnL_c, lnLt_c = np.array(lnL_c), np.array(lnLt_c)
+    ref, ref_w, ref_t = (logsumexp(lnL_c, axis=0) - np.log(n_cal), logsumexp(lnL_c + log_w[:, None], axis=0) - np.log(n_cal),
+                         logsumexp(lnLt_c, axis=0) - np.log(n_cal))
+    e1, e2, e4 = rel_err_finite(lnL, ref), rel_err_finite(lnL_w, ref_w), rel_err_finite(comps, lnL_c.T)
+    near = ref_t > np.max(ref_t) - 600.0
+    e3 = np.max(np.abs(lnLt[near] - ref_t[near])) / np.max(np.abs(ref_t[near]))
+    # the fine grid matters: the same inputs read on the coarse grid (phase 0 only) give another lnL
+    rhoA0 = {d: rhoA[d].reshape(5, n_cal, T, K)[:, :, :, 0].reshape(5, n_cal * T) for d in dets}
+    lnL_coarse = fl.DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(
+        tvals, P, lookupNK, rhoA0, {d: ctU[d][0::K] for d in dets}, {d: ctVa[d][0::K] for d in dets}, epoch, n_cal=n_cal,
+        ctUArrayDict_cal={d: ctU_cal[d][:, 0::K] for d in dets}, ctVArrayDict_cal={d: ctV_cal[d][:, 0::K] for d in dets},
+        Lmax=2, xpy=np, time_interp=interp)
+    moved = rel_err_finite(lnL_coarse, lnL)
+    print("[td-gs cal g] K=4 NoLoop calmarg (%s) vs per-realization fine-grid runs: lnL %.1e, weighted %.1e, lnL(t) %.1e, "
+          "components %.1e; the coarse-grid (phase 0) lnL differs by %.1e" % (interp, e1, e2, e3, e4, moved))
+    assert e1 < 1e-12 and e2 < 1e-12 and e3 < 1e-12 and e4 < 1e-12
+    assert moved > 1e-6
+    if interp != "nearest":
+        return
+    # dense residual likelihood on H1: realization c's lnL(t) per bin, template K_c S_j h at the
+    # 1/K point the likelihood used
+    det = "H1"
+    lms = lookupNK[det]
+    blocks = []
+    for (i0, i1) in ctx[det].runs:
+        Cinv = np.linalg.inv(scipy.linalg.toeplitz(ctx[det].acf_lags(i1 - i0)))
+        blocks.append((i0, i1, Cinv, Cinv @ ctx[det].d[i0:i1]))
+    filt = ctx[det].calibration_filters(cal[det], verbose=False)
+    taps_all, L_neg, _ = filt.taps_for(s["N"])
+    harr = harr_of(s["hT"])
+    npts = 7
+    tv = tvals[:npts]
+    worst = 0.0
+    for c in range(n_cal):
+        g_c = []
+        for (s_j, e_j) in tdg.subsample_phases(K):
+            hj = tdg.shifted_modes(harr, s_j, _fractional_shift)
+            g_c.append({m: scipy.signal.fftconvolve(hj[m], taps_all[c]) for m in hj})
+        rA = {det: rhoA[det][:, c * K * T:(c + 1) * K * T]}
+        lnLt_1 = np.asarray(fl.DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(
+            tv, P, {det: lms}, rA, {det: ctU_cal[det][c]}, {det: ctV_cal[det][c]}, {det: epoch[det]}, return_lnLt=True, **kw))
+        for e in range(len(P.phi)):
+            F, t_det, amp = _geom(det, P, e, epoch[det])
+            Y = _ylm(lms, P.incl[e], P.phiref[e])
+            r0 = int(np.rint((t_det + tv[0]) / DT * K))
+            for m in range(npts):
+                ref_d = _lnL_dense_calibrated(ctx[det], blocks, g_c, L_neg, lms, r0 + m * K, K, s["N_shift"], F, Y, amp)
+                worst = max(worst, abs(lnLt_1[e, m] - ref_d) / max(1.0, abs(ref_d)))
+    print("[td-gs cal g] K=4 realization lnL(t) on H1 vs the dense residual likelihood of the calibrated shifted template: %.2e" % worst)
+    # the dense inverse of the cond-1e8 ACF is itself good to ~1e-8 on Q, U, V (section b), and
+    # lnL combines them with cancellation
+    assert worst < 1e-7
+
+
+@needs_subsample
+def test_subsample_precompute_driver_with_calibration(ringdown_case, env_path):
+    s = ringdown_case
+    K = 4
+    dets = ["H1", "L1"]
+    data_dict = {d: s["dts"] for d in dets}
+    psd_dict = {d: s["psd"] for d in dets}
+    contexts = {d: _ctx(s, s["pieces"], K, 4096, ifo=d) for d in dets}
+    cal = {d: realizations(os.path.join(env_path, "%s.txt" % d), s["N"], 20., 1500., 2, seed=70 + i) for i, d in enumerate(dets)}
+    P = make_P(s["N"])
+    P.tref = s["tpk"]
+    t_window = 0.02
+    N_window = int(2 * t_window / DT)
+    out = fl.PrecomputeLikelihoodTerms(s["tpk"], t_window, P, data_dict, psd_dict, 2, 1500., False, False, 0.,
+                                       verbose=False, quiet=True, skip_interpolation=True, td_gs_contexts=contexts,
+                                       return_calibration_crossterms=True, calibration_realizations=cal)
+    rholms_intp, crossTerms, crossTermsV, rholms, guess_snr, rest, ct_cal, ct_cal_V = out
+    assert np.isfinite(guess_snr) and rest is None
+    packed = {}
+    for det in dets:
+        for m in rholms[det]:
+            assert rholms[det][m].data.length == 2 * K * N_window and abs(rholms[det][m].deltaT - DT / K) < 1e-18
+        lk, lKN, _, ctU, ctV, rhoA, _, ep = fl.PackLikelihoodDataStructuresAsArrays(list(rholms[det].keys()), None, rholms[det], crossTerms[det], crossTermsV[det])
+        U_cal, V_cal = fl.PackCalCrossTermsAsArrays(list(rholms[det].keys()), lKN, ct_cal[det], ct_cal_V[det])
+        n = len(rholms[det])
+        assert ctU.shape == (K * N_window, n, n) and U_cal.shape == (2, K * N_window, n, n) and rhoA.shape == (n, 2 * K * N_window)
+        packed[det] = (lk, rhoA, ctU, ctV, ep, U_cal, V_cal)
+    Pv = extrinsic_vector(3, s["tpk"], seed=8)
+    tvals = np.linspace(-0.003, 0.003, 25)
+    lnL = fl.DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(
+        tvals, Pv, {d: packed[d][0] for d in dets}, {d: packed[d][1] for d in dets}, {d: packed[d][2] for d in dets},
+        {d: packed[d][3] for d in dets}, {d: packed[d][4] for d in dets}, Lmax=2, xpy=np, n_cal=2, td_subsample=K,
+        ctUArrayDict_cal={d: packed[d][5] for d in dets}, ctVArrayDict_cal={d: packed[d][6] for d in dets})
+    assert np.all(np.isfinite(lnL))
+    # global norm: no per-realization self terms; the fine-grid Q_c blocks are the same
+    out2 = fl.PrecomputeLikelihoodTerms(s["tpk"], t_window, P, data_dict, psd_dict, 2, 1500., False, False, 0.,
+                                        verbose=False, quiet=True, skip_interpolation=True, td_gs_contexts=contexts,
+                                        return_calibration_crossterms=True, calibration_realizations=cal, calibration_self_term=False)
+    assert out2[6] is None and out2[7] is None
+    for det in dets:
+        for m in out2[3][det]:
+            np.testing.assert_array_equal(out2[3][det][m].data.data, rholms[det][m].data.data)
+    print("[td-gs cal g] driver with subsample=4 and 2 realizations: %d entries per detector at deltaT/4; calmarg NoLoop lnL %s"
+          % (2 * K * N_window, np.array2string(np.asarray(lnL), precision=3)))
 
 
 if __name__ == "__main__":

@@ -36,6 +36,7 @@ def test_glitch_constant_in_integral_and_saved_likelihood(constant, log_return):
         lalsimutils=SimpleNamespace(lsu_PC=3.085677581491367e16),
         lookupNKDict={}, rholmArrayDict={}, ctUArrayDict={}, ctVArrayDict={}, epochDict={},
         n_cal_for_likelihood=1, use_fused_calmarg=False, calibration_log_weights=None,
+        td_subsample_for_likelihood=1,
         ctUArrayDict_cal=None, ctVArrayDict_cal=None, supplemental_ln_likelihood=None,
         return_lnL=log_return, manual_avoid_overflow_logarithm=17.,
         identity_convert_lnL=lambda x:x,
