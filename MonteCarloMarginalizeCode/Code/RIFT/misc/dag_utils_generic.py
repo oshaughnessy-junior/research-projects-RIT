@@ -3860,7 +3860,7 @@ def write_seed_climb_sub(tag='seed_climb', exe=None, arg_str='', log_dir=None, o
             if climb_requirements is not None and cmd.lower() == 'requirements':
                 # Condor submit keys are case insensitive. Keep container and
                 # CPU eligibility when inheriting ILE GPU requirements.
-                climb_requirements += ' && (' + value + ')'
+                climb_requirements += ' && (' + str(value).strip() + ')'   # ILE command values keep their newline
                 continue
             job.add_condor_cmd(cmd, value)
     if climb_requirements is not None:

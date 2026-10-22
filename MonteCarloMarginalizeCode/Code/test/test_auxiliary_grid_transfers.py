@@ -32,6 +32,20 @@ def test_seed_container_requirements_survive_gpu_commands(tmp_path, key):
         assert expr.endswith(' && (' + commands[key] + ')'), expr
 
 
+def test_seed_inherited_requirements_with_newline(tmp_path):
+    """--ile-condor-commands values keep their newline; the climb sub must stay one line."""
+    from RIFT.misc import dag_utils_generic as dag_utils
+    job, _ = dag_utils.write_seed_climb_sub(
+        exe='/bin/true', arg_str='--test', use_singularity=True,
+        singularity_image='/unused-jax-image.sif',
+        condor_commands={'requirements': 'TARGET.AllowTestGPU\n'})
+    path = tmp_path / 'seed.sub'
+    job.set_sub_file(str(path))
+    job.write_sub_file()
+    lines = [l for l in path.read_text().splitlines() if l.lower().startswith('requirements')]
+    assert len(lines) == 1 and lines[0].endswith('&& (TARGET.AllowTestGPU)'), lines
+
+
 def test_seed_native_requirements_are_preserved(tmp_path):
     from RIFT.misc import dag_utils_generic as dag_utils
     expr = 'TARGET.CUDACapability >= 9.0'
