@@ -852,13 +852,17 @@ def _local_kernels(x, w, centers, cov, H_global, floor, inflate, k, shrink, n_po
     Lg = np.linalg.cholesky(cov + np.diag(floor))
     zp = np.linalg.solve(Lg, pool.T).T
     zc = np.linalg.solve(Lg, centers.T).T
-    Ls, ln_norm = np.empty((len(centers), p, p)), np.empty(len(centers))
-    for m in range(len(centers)):
-        nb = pool[np.argpartition(np.sum((zp - zc[m]) ** 2, 1), k)[:k]]
-        C = np.cov(nb.T) if len(nb) > 1 else np.zeros((p, p))
-        Hm = (1 - shrink) * inflate * C + shrink * H_global + np.diag(floor)
-        Ls[m] = np.linalg.cholesky(Hm)
-        ln_norm[m] = -0.5 * p * np.log(2 * np.pi) - np.sum(np.log(np.diag(Ls[m])))
+    idx = np.empty((len(centers), k), dtype=int)
+    for i in range(0, len(centers), 256):           # (256 x n_pool) distance blocks
+        d2 = (np.sum(zc[i:i + 256] ** 2, 1)[:, None] + np.sum(zp ** 2, 1)[None, :]
+              - 2 * zc[i:i + 256] @ zp.T)
+        idx[i:i + 256] = np.argpartition(d2, k, axis=1)[:, :k]
+    nb = pool[idx]                                   # (M, k, p)
+    dnb = nb - nb.mean(axis=1, keepdims=True)
+    C = np.einsum("mki,mkj->mij", dnb, dnb) / (k - 1)
+    H = (1 - shrink) * inflate * C + shrink * H_global + np.diag(floor)
+    Ls = np.linalg.cholesky(H)
+    ln_norm = -0.5 * p * np.log(2 * np.pi) - np.sum(np.log(np.diagonal(Ls, axis1=1, axis2=2)), axis=1)
     return dict(centers=centers, Ls=Ls, Linvs=np.linalg.inv(Ls), ln_norms=ln_norm, neff=neff)
 
 
