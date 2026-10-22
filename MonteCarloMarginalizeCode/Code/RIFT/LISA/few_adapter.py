@@ -132,6 +132,18 @@ def _load_few():
     return GenerateEMRIWaveform, YRSID_SI, installed
 
 
+def _termination_metadata(generator, config):
+    """Refuse FEW's early-termination zero padding for this fixed-span contract."""
+    padding = int(generator.create_waveform.num_pts_pad)
+    end_time = float(generator.end_time)
+    requested_span = (config.n_samples-1)*config.dt_seconds
+    slack = 16*np.finfo(float).eps*max(1., requested_span)
+    if padding != 0 or not np.isfinite(end_time) or end_time+slack < requested_span:
+        raise ValueError('FEW physical trajectory ended before the requested span; zero padding is refused')
+    return {'trajectory_end_time_seconds': end_time, 'zero_padding_samples': padding,
+            'termination_policy': 'require physical evolution across all requested samples'}
+
+
 def _few_duration_years(n_samples, dt_seconds, year_seconds):
     """FEW includes the endpoint after flooring duration/dt; request N-1 steps."""
     steps = n_samples - 1
@@ -179,9 +191,10 @@ class FewWaveformAdapter:
         if polarizations.shape[1] != c.n_samples or not np.all(np.isfinite(polarizations)):
             raise ValueError('FEW output must be finite with the requested sample count')
         generator = self.waveform.waveform_generator
+        termination = _termination_metadata(generator, c)
         retained_modes = np.column_stack([generator.ls, generator.ms,
                                           generator.ks, generator.ns]).astype(int).tolist()
-        metadata = {'retained_lmkn': retained_modes,
+        metadata = {**termination, 'retained_lmkn': retained_modes,
                     'mode_selection': 'threshold', 'include_minus_mkn': True,
                     'few_version': self.few_version, 'model': self.model, 'backend': 'cpu',
                     'frame': 'SSB polarizations (FEW detector frame)',

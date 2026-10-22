@@ -48,7 +48,8 @@ def test_api_units_phase_order_and_output_contract(monkeypatch):
             calls['evaluation'] = (args, kw)
             return [np.ones(4096), 2*np.ones(4096)]
         from types import SimpleNamespace
-        wave.waveform_generator = SimpleNamespace(ls=[2], ms=[2], ks=[0], ns=[1])
+        wave.waveform_generator = SimpleNamespace(ls=[2], ms=[2], ks=[0], ns=[1],
+            end_time=40950., create_waveform=SimpleNamespace(num_pts_pad=0))
         return wave
     monkeypatch.setattr(fa, '_load_few', lambda: (factory, 100., '2.2.0'))
     out = fa.FewWaveformAdapter(config()).generate(parameters())
@@ -140,3 +141,19 @@ def test_endpoint_inclusive_duration(n, dt):
     duration = fa._few_duration_years(n, dt, year)
     assert int(duration*year/dt)+1 == n
     assert duration*year == pytest.approx((n-1)*dt)
+
+
+@pytest.mark.parametrize('padding,end_time', [(1, 40950.), (0, 40000.), (0, np.nan)])
+def test_physical_termination_guard(padding, end_time):
+    from types import SimpleNamespace
+    generator = SimpleNamespace(end_time=end_time,
+                    create_waveform=SimpleNamespace(num_pts_pad=padding))
+    with pytest.raises(ValueError, match='zero padding is refused'):
+        fa._termination_metadata(generator, config())
+
+
+def test_physical_termination_allows_endpoint_roundoff():
+    from types import SimpleNamespace
+    generator = SimpleNamespace(end_time=np.nextafter(40950., 0),
+                    create_waveform=SimpleNamespace(num_pts_pad=0))
+    assert fa._termination_metadata(generator, config())['zero_padding_samples'] == 0
