@@ -67,6 +67,13 @@ def test_api_units_phase_order_and_output_contract(monkeypatch):
     assert out.n_samples == 4096
     assert out.epoch_reference == config().epoch_reference
     assert out.metadata['carrier_nyquist_ratio'] < 1
+    all_config = replace(config(), mode_selection='all', eps=None)
+    all_out = fa.FewWaveformAdapter(all_config).generate(parameters())
+    all_kwargs = calls['evaluation'][1]
+    assert all_kwargs['mode_selection'] == 'all'
+    assert 'mode_selection_threshold' not in all_kwargs
+    assert all_out.metadata['mode_selection'] == 'all'
+    assert all_out.metadata['retained_mode_count'] == 1
     monkeypatch.setattr(fa, '_carrier_frequency_bound', lambda *args: 0.05)
     with pytest.raises(ValueError, match='reaches Nyquist'):
         fa.FewWaveformAdapter(config()).generate(parameters())
@@ -239,3 +246,45 @@ def test_duration_rejects_few_second_floor_representation_loss():
     assert int((43*.1)/.1) == 42
     with pytest.raises(ValueError, match='cannot represent this cadence'):
         fa._few_duration_years(44, .1, 31558149.7635456)
+
+
+@pytest.mark.parametrize('policy,eps', [('all', 1e-5), ('threshold', None), ('unknown', None)])
+def test_selection_policy_requires_explicit_effective_threshold(policy, eps):
+    with pytest.raises(ValueError):
+        replace(config(), mode_selection=policy, eps=eps)
+
+
+def test_all_selection_config_roundtrip():
+    value = replace(config(), mode_selection='all', eps=None)
+    assert fa.FEWConfig.from_dict(value.to_dict()) == value
+
+
+@pytest.mark.skipif(os.environ.get('RIFT_RUN_FEW_ALL') != '1',
+                    reason='all-mode actual CPU reference requires a separate bounded allocation')
+def test_actual_all_mode_selector_branch(monkeypatch):
+    adapter = fa.FewWaveformAdapter(replace(config(), mode_selection='all', eps=None))
+    selector_type = type(adapter.waveform.waveform_generator.mode_selector)
+    original = selector_type.__call__
+    seen = []
+    def selector(self, *args, **kwargs):
+        seen.append(dict(kwargs))
+        return original(self, *args, **kwargs)
+    monkeypatch.setattr(selector_type, '__call__', selector)
+    wrapper_type = type(adapter.waveform)
+    wrapper_original = wrapper_type.__call__
+    raw_calls = []
+    def raw_call(self, *args, **kwargs):
+        raw_calls.append(dict(kwargs))
+        return wrapper_original(self, *args, **kwargs)
+    monkeypatch.setattr(wrapper_type, '__call__', raw_call)
+    out = adapter(parameters())
+    assert seen and all(kw['mode_selection'] == 'all' for kw in seen)
+    # FEW's internal default threshold is forwarded but ignored by its all branch.
+    # The adapter itself must omit the unused argument at the public boundary.
+    assert raw_calls and all('mode_selection_threshold' not in kw for kw in raw_calls)
+    available = len(adapter.waveform.waveform_generator.amplitude_generator.l_arr_no_mask)
+    assert out.metadata['retained_mode_count'] == available
+    assert out.metadata['mode_selection'] == 'all'
+    assert out.metadata['zero_padding_samples'] == 0
+    assert out.metadata['carrier_nyquist_ratio'] < 1
+    assert np.all(np.isfinite(out.polarizations)) and np.linalg.norm(out.polarizations) > 0

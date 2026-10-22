@@ -4,11 +4,13 @@ Outputs are SSB polarizations hp,hc. They contain no LISA response or TDI.
 Component masses are detector-frame solar masses, distance is Gpc, and p0 is
 passed unchanged in FEW's dimensionless orbital coordinate. Orbital phases
 are independent; qK is a spin-axis angle, not orbital inclination xI0.
+All-mode selection includes the finite ROMAN catalog, not infinite harmonics.
 """
 from dataclasses import asdict, dataclass
 from importlib.metadata import version
 import hashlib
 import math
+from typing import Optional
 
 import numpy as np
 
@@ -66,14 +68,24 @@ class FEWConfig:
     dt_seconds: float
     epoch_start_seconds: float
     epoch_reference: str
-    eps: float = 1e-5  # FEW mode_selection_threshold, not trajectory tolerance.
+    eps: Optional[float] = 1e-5  # FEW threshold; explicitly None for all modes.
+    mode_selection: str = 'threshold'
 
     def __post_init__(self):
         if isinstance(self.n_samples, bool) or not isinstance(self.n_samples, (int, np.integer)) or self.n_samples < 2:
             raise ValueError('n_samples must be an integer >=2')
-        _finite_fields(self, ('dt_seconds', 'epoch_start_seconds', 'eps'))
-        if self.dt_seconds <= 0 or not 0 < self.eps < 1:
-            raise ValueError('require dt_seconds>0 and 0<eps<1')
+        _finite_fields(self, ('dt_seconds', 'epoch_start_seconds'))
+        if self.dt_seconds <= 0:
+            raise ValueError('require dt_seconds>0')
+        if self.mode_selection == 'threshold':
+            _finite_fields(self, ('eps',))
+            if not 0 < self.eps < 1:
+                raise ValueError('threshold selection requires 0<eps<1')
+        elif self.mode_selection == 'all':
+            if self.eps is not None:
+                raise ValueError('all-mode selection requires eps=None; threshold is unused')
+        else:
+            raise ValueError('mode_selection must be threshold or all')
         if not isinstance(self.epoch_reference, str) or not self.epoch_reference.strip():
             raise ValueError('epoch_reference must name the origin and time convention')
 
@@ -237,12 +249,14 @@ class FewWaveformAdapter:
             raise TypeError('params must be EMRIParameters')
         c = self.config
         duration_years = _few_duration_years(c.n_samples, c.dt_seconds, self.year_seconds)
+        selection = {'mode_selection': c.mode_selection, 'include_minus_mkn': True, 'batch_size': -1}
+        if c.mode_selection == 'threshold':
+            selection['mode_selection_threshold'] = c.eps
         hp, hc = self.waveform(
             params.m1_msun, params.m2_msun, params.a, params.p0, params.e0, params.xI0,
             params.distance_gpc, params.qS, params.phiS, params.qK, params.phiK,
             params.Phi_phi0, params.Phi_theta0, params.Phi_r0,
-            T=duration_years, dt=c.dt_seconds, mode_selection_threshold=c.eps,
-            mode_selection='threshold', include_minus_mkn=True, batch_size=-1)
+            T=duration_years, dt=c.dt_seconds, **selection)
         polarizations = np.asarray([hp, hc])
         if polarizations.ndim != 2 or polarizations.shape[0] != 2 or not np.isrealobj(polarizations):
             raise ValueError('FEW must return real hp,hc arrays with matching shape')
@@ -262,7 +276,8 @@ class FewWaveformAdapter:
         metadata = {**termination, 'retained_lmkn': retained_modes,
                     'max_retained_carrier_frequency_bound_hz': carrier_bound,
                     'carrier_nyquist_ratio': carrier_ratio,
-                    'mode_selection': 'threshold', 'include_minus_mkn': True,
+                    'mode_selection': c.mode_selection, 'retained_mode_count': len(retained_modes),
+                    'include_minus_mkn': True,
                     'few_version': self.few_version, 'model': self.model, 'backend': 'cpu',
                     'frame': 'SSB polarizations (FEW detector frame)',
                     'YRSID_SI': self.year_seconds, 'backend_duration_years': duration_years,
