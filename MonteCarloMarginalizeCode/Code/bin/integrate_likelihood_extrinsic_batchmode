@@ -559,6 +559,9 @@ intrinsic_params.add_option("--distance-slice-skip-threshold",type=float,default
 intrinsic_params.add_option("--distance-slice-wing-delta-lnL",type=float,default=7.0,help="Target lnL drop below peak used to place wing slice centers: wings span from the core edge out to where the parabolic lnL(1/d) model falls this many nats below peak (default 7 ~ prior weight <1e-3 outside). Falls back to log-uniform full-range placement if the parabolic fit is degenerate.")
 intrinsic_params.add_option("--distance-slice-walkout-delta-lnL",type=float,default=0.0,help="(all-fresh only) After the K quantile-placed fresh slices, walk each edge outward with extra fresh slices (steps doubling in ln d, from twice the edge spacing) until lnL + ln pi(d) at the edge is this many nats below its peak, the distance range ends, or --distance-slice-walkout-max-steps slices were added on that side. 0 (default) disables. Quantile placement from a main loop at n_eff ~ 10 ends where the conditional is typically only 1-3 nats below peak; this measures the tails instead of leaving them to extrapolation. Adds a variable number of rows per point. COST: up to 2 x --distance-slice-walkout-max-steps extra sequential fresh integrations per point (16 at the default), each budgeted like a slice (--distance-slice-wing-nmax); measured +14-29% of the quantile slices' samples on O4 events at delta 5.")
 intrinsic_params.add_option("--distance-slice-walkout-max-steps",type=int,default=8,help="Cap on walk-out slices per side (see --distance-slice-walkout-delta-lnL).")
+intrinsic_params.add_option("--distance-slice-warm-start",action="store_true",default=False,help="(all-fresh only) Replace each slice's fresh AV integration with adaptive importance sampling over all extrinsic axes, warm-started: the first slice's proposal is a kernel density fitted to the main loop's samples (tempered by --distance-slice-warm-seed-temper), each later slice's to the nearest finished slice, refitted after every block; a uniform component over the prior box keeps the estimate unbiased if the seed is off. Assumes the main loop found every mode of each slice's conditional. Walk-out slices are warm-started too. Default off.")
+intrinsic_params.add_option("--distance-slice-warm-block",type=int,default=2000,help="Block size (likelihood evaluations per proposal refit) for --distance-slice-warm-start.")
+intrinsic_params.add_option("--distance-slice-warm-seed-temper",type=float,default=0.3,help="Exponent applied to the main loop's posterior weights before they seed --distance-slice-warm-start; < 1 broadens the seed so it covers the conditionals at the edge slices.")
 optp.add_option_group(intrinsic_params)
 
 
@@ -593,6 +596,8 @@ def _normalize_interpolate_time_argv(argv):
     return out
 
 opts, args = optp.parse_args(_normalize_interpolate_time_argv(sys.argv[1:]))
+if opts.distance_slice_warm_block < 1 or not (0 < opts.distance_slice_warm_seed_temper <= 1):
+    optp.error("--distance-slice-warm-block must be >= 1 and --distance-slice-warm-seed-temper in (0, 1]")
 if opts.distance_slice_walkout_delta_lnL < 0 or opts.distance_slice_walkout_max_steps < 0:
     optp.error("--distance-slice-walkout-delta-lnL and --distance-slice-walkout-max-steps must be >= 0")
 if opts.early_time_multirate and opts.internal_ile_inner_product != "fd-diagonal":
@@ -6314,19 +6319,34 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
           if not all_fresh and float(getattr(opts, "distance_slice_walkout_delta_lnL", 0.0) or 0.0) > 0:
             print("    : WARNING --distance-slice-walkout-delta-lnL is ignored: this export is not all-fresh"
                   " (reweight core + parabolic wings)")
+          if not all_fresh and opts.distance_slice_warm_start:
+            print("    : WARNING --distance-slice-warm-start is ignored: this export is not all-fresh")
           if all_fresh:
             # All K slices fresh.  Place centers at posterior-d quantiles: rough
             # placement is fine even at low n_eff -- the precision of each row comes
             # from its own fresh fixed-d integral, not from where it is centered.
             d_wings = distance_slices.quantile_slice_centers(dL_samp, ln_w_full, K, randomize=getattr(opts, "distance_slice_randomize", False))
             print("    : running {} fresh integrations (all-fresh{}; no reweight core)".format(len(d_wings), ", randomized-d" if getattr(opts, "distance_slice_randomize", False) else ""))
-            lnL_wings_raw, sigmaL_wings, neff_wings, ntotal_wings = distance_slices.fresh_sample_slices(
+            warm = None
+            if opts.distance_slice_warm_start:
+              warm = distance_slices.WarmSliceSampler(
+                  sampler, like_to_integrate, rvs, float(opts.distance_slice_warm_seed_temper) * ln_w_full,
+                  seed_distance=dL_samp, n_block=int(opts.distance_slice_warm_block), return_lnL=return_lnL,
+                  fallback=lambda dd: distance_slices.fresh_sample_slices(
+                      sampler, like_to_integrate, dd, n_max=int(opts.distance_slice_wing_nmax),
+                      n_eff_target=int(opts.distance_slice_wing_neff), n_chunk=slice_chunk, return_lnL=return_lnL))
+              print("    : warm-started slices ({} seed rows, block {})".format(len(dL_samp), opts.distance_slice_warm_block))
+              lnL_wings_raw, sigmaL_wings, neff_wings, ntotal_wings = warm.run(
+                  d_wings, n_max=int(opts.distance_slice_wing_nmax), n_eff_target=int(opts.distance_slice_wing_neff))
+              print("    : warm-started slices: {} of {} redone cold (k-hat or n_eff)".format(warm.n_fallback, len(d_wings)))
+            else:
+              lnL_wings_raw, sigmaL_wings, neff_wings, ntotal_wings = distance_slices.fresh_sample_slices(
                 sampler, like_to_integrate, d_wings,
                 n_max=int(opts.distance_slice_wing_nmax),
                 n_eff_target=int(opts.distance_slice_wing_neff),
                 n_chunk=slice_chunk,
                 return_lnL=return_lnL,
-            )
+              )
             lnL_wings = lnL_wings_raw + manual_avoid_overflow_logarithm
             walk_delta = float(getattr(opts, "distance_slice_walkout_delta_lnL", 0.0) or 0.0)
             if walk_delta > 0 and distance_slices.is_uninformative(lnL_wings, threshold=opts.distance_slice_skip_threshold):
@@ -6341,7 +6361,11 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
                   lnL_offset=manual_avoid_overflow_logarithm, delta_lnL=walk_delta,
                   max_steps=int(opts.distance_slice_walkout_max_steps),
                   n_max=int(opts.distance_slice_wing_nmax), n_eff_target=int(opts.distance_slice_wing_neff),
-                  n_chunk=slice_chunk, return_lnL=return_lnL, reasons=walk_why)
+                  n_chunk=slice_chunk, return_lnL=return_lnL, reasons=walk_why,
+                  runner=None if warm is None else (lambda dd: warm.run(
+                      dd, n_max=int(opts.distance_slice_wing_nmax), n_eff_target=int(opts.distance_slice_wing_neff))))
+              if warm is not None:
+                print("    : warm-started slices incl. walk-out: {} of {} redone cold".format(warm.n_fallback, len(d_wings) + len(added[0])))
               print("    : walk-out added {} fresh slices (target {:.1f} nats below peak; stopped near/far: {})".format(
                   len(added[0]), walk_delta, "/".join(walk_why)))
               d_wings, lnL_wings, sigmaL_wings, neff_wings, ntotal_wings = distance_slices.merge_walkout(

@@ -580,8 +580,11 @@ def walk_out_slices(d_slices, lnL_slices, ln_prior_d, run_fresh, d_min, d_max,
 
 def walk_out_fresh_slices(reference_sampler, like_to_integrate, d_slices, lnL_slices, ln_prior_d,
                           d_min, d_max, lnL_offset, delta_lnL, max_steps,
-                          n_max, n_eff_target, n_chunk, return_lnL=True, reasons=None):
+                          n_max, n_eff_target, n_chunk, return_lnL=True, reasons=None, runner=None):
     """``walk_out_slices`` with fresh fixed-d integrations as the step.
+
+    ``runner(d_array)``, if given, replaces ``fresh_sample_slices`` (e.g. ``WarmSliceSampler.run``);
+    it returns the same tuple, on the same offset-subtracted axis.
 
     ``lnL_slices`` are on ILE's lnL axis (the overflow offset restored); fresh_sample_slices
     returns the integral of the offset-subtracted likelihood, so ``lnL_offset``
@@ -589,9 +592,12 @@ def walk_out_fresh_slices(reference_sampler, like_to_integrate, d_slices, lnL_sl
     it is compared with the existing slices or returned.
     """
     def run_fresh(d_new):
-        l_raw, s_k, n_k, t_k = fresh_sample_slices(
-            reference_sampler, like_to_integrate, d_new,
-            n_max=n_max, n_eff_target=n_eff_target, n_chunk=n_chunk, return_lnL=return_lnL)
+        if runner is not None:
+            l_raw, s_k, n_k, t_k = runner(d_new)
+        else:
+            l_raw, s_k, n_k, t_k = fresh_sample_slices(
+                reference_sampler, like_to_integrate, d_new,
+                n_max=n_max, n_eff_target=n_eff_target, n_chunk=n_chunk, return_lnL=return_lnL)
         return np.asarray(l_raw, float) + float(lnL_offset), s_k, n_k, t_k
     return walk_out_slices(d_slices, lnL_slices, ln_prior_d, run_fresh, d_min, d_max,
                            delta_lnL=delta_lnL, max_steps=max_steps, reasons=reasons)
@@ -761,6 +767,342 @@ def fresh_sample_slices(reference_sampler, like_to_integrate, d_slices,
         ntotal_out[k] = int(getattr(sampler, "ntotal", 0))
 
     return lnL_out, sigmaL_out, neff_out, ntotal_out
+
+
+# ---------------------------------------------------------------------------------------------
+# Warm-started slices.  Every slice integrates the same extrinsic space at a nearby distance, and
+# the main loop already sampled that space; a fresh AV per slice re-learns it ~K times.  Here each
+# slice is an adaptive importance sampler (population Monte Carlo) whose first proposal is a kernel
+# density fitted to weighted samples from the main loop or from the nearest finished slice, mixed
+# with a uniform component over the whole box.  The uniform component keeps q > 0 wherever the
+# integrand is, so a displaced seed costs samples, not bias.
+# ---------------------------------------------------------------------------------------------
+
+def _neff(ln_w):
+    ln_w = np.asarray(ln_w, float)
+    m = np.max(ln_w) if len(ln_w) else -np.inf
+    if not np.isfinite(m):
+        return 0.0
+    w = np.exp(ln_w - m)
+    return float(w.sum() ** 2 / np.sum(w ** 2))
+
+
+def fit_kde_proposal(x, ln_w, lo, hi, n_kernel=1000, rng=None, min_frac=1e-3, inflate=1.0):
+    """Gaussian KDE fitted to weighted points ``x`` (N, p): kernels at ``n_kernel`` points drawn by
+    weight, one shared covariance = inflate x Scott factor^2 x weighted covariance, floored at
+    (min_frac x box width)^2 per axis.  Returns a dict for ``kde_draw``/``kde_logpdf``, or None if
+    no point has finite weight."""
+    rng = np.random.default_rng() if rng is None else rng
+    x = np.atleast_2d(np.asarray(x, float))
+    ln_w = np.asarray(ln_w, float)
+    ok = np.isfinite(ln_w) & np.all(np.isfinite(x), axis=1)
+    if not np.any(ok):
+        return None
+    x, ln_w = x[ok], ln_w[ok]
+    w = np.exp(ln_w - ln_w.max())
+    w /= w.sum()
+    p = x.shape[1]
+    neff = 1.0 / np.sum(w ** 2)
+    mu = w @ x
+    cov = (x - mu).T @ ((x - mu) * w[:, None]) / max(1.0 - np.sum(w ** 2), 1e-12)
+    floor = (min_frac * (np.asarray(hi, float) - np.asarray(lo, float))) ** 2
+    h2 = neff ** (-2.0 / (p + 4))
+    H = inflate * h2 * cov + np.diag(floor)
+    L = np.linalg.cholesky(H)
+    centers = x[rng.choice(len(x), size=int(n_kernel), p=w)]
+    return dict(centers=centers, L=L, Linv=np.linalg.inv(L),
+                ln_norm=-0.5 * p * np.log(2 * np.pi) - np.sum(np.log(np.diag(L))), neff=neff)
+
+
+def kde_draw(kde, n, rng):
+    c = kde["centers"][rng.integers(len(kde["centers"]), size=n)]
+    return c + rng.standard_normal((n, c.shape[1])) @ kde["L"].T
+
+
+def kde_logpdf(kde, x, block=2048):
+    zc = kde["centers"] @ kde["Linv"].T
+    out = np.empty(len(x))
+    for i in range(0, len(x), block):
+        z = x[i:i + block] @ kde["Linv"].T
+        d2 = (np.sum(z ** 2, 1)[:, None] + np.sum(zc ** 2, 1)[None, :] - 2 * z @ zc.T)
+        out[i:i + block] = _logsumexp_rows(-0.5 * d2) - np.log(len(zc))
+    return out + kde["ln_norm"]
+
+
+def _block_estimate(ln_w, n):
+    m = np.max(ln_w) if len(ln_w) else -np.inf
+    if not np.isfinite(m):
+        return -np.inf, np.inf
+    w = np.exp(ln_w - m)
+    s = w.sum() / n
+    var = max(np.sum(w ** 2) / n - s ** 2, 0.0) / n
+    return m + np.log(s), np.sqrt(var) / s
+
+
+def _blocks_agree(lws, n_block, nsigma):
+    """The last block alone and all earlier blocks pooled give the same lnZ within nsigma.
+
+    A proposal still creeping toward the target's bulk gives a rising sequence of block estimates
+    while the pooled n_eff already looks healthy; this catches it."""
+    if len(lws) < 2:
+        return False
+    a, sa = _block_estimate(lws[-1], n_block)
+    b, sb = _block_estimate(np.concatenate(lws[:-1]), n_block * (len(lws) - 1))
+    if not (np.isfinite(a) and np.isfinite(b)):
+        return False
+    return abs(a - b) <= nsigma * np.hypot(sa, sb)
+
+
+def _gpd_k(x):
+    """Shape k of a generalized Pareto fitted to exceedances ``x`` > 0 (Zhang & Stephens 2009, with the
+    weak prior toward k = 0.5 used by PSIS, Vehtari et al. 2024)."""
+    x = np.sort(np.asarray(x, float))
+    n = len(x)
+    m = 30 + int(np.sqrt(n))
+    bs = 1.0 - np.sqrt(m / (np.arange(1, m + 1) - 0.5))
+    bs = bs / (3.0 * x[max(int(n / 4.0 + 0.5) - 1, 0)]) + 1.0 / x[-1]
+    ks = np.mean(np.log1p(-bs[:, None] * x[None, :]), axis=1)
+    L = n * (np.log(-bs / ks) - ks - 1.0)
+    w = 1.0 / np.sum(np.exp(L[None, :] - L[:, None]), axis=1)
+    b = np.sum(bs * w) / np.sum(w)
+    k = np.mean(np.log1p(-b * x))
+    return float((n * k + 5.0) / (n + 10.0))
+
+
+def pareto_khat(ln_w):
+    """PSIS tail diagnostic of importance log weights: k-hat of a generalized Pareto fitted to the
+    largest min(n/5, 3 sqrt n) weights.  k-hat > 0.7 means the proposal's tails are too light for
+    the target -- the estimate is unreliable however its sigma looks -- which is how a proposal that
+    sits in the target's tail shows up (Vehtari et al. 2024).  inf if too few finite weights."""
+    lw = np.asarray(ln_w, float)
+    lw = lw[np.isfinite(lw)]
+    n = len(lw)
+    M = int(min(np.ceil(0.2 * n), np.ceil(3 * np.sqrt(n))))
+    if n < 10 or M < 5:
+        return np.inf
+    lw = np.sort(lw)
+    w = np.exp(lw - lw[-1])
+    tail = w[-M:] - w[-M - 1]
+    if not np.all(tail[-1:] > 0) or np.sum(tail > 0) < 5:
+        return np.inf
+    return _gpd_k(tail[tail > 0])
+
+
+def _weighted_moments(x, ln_w):
+    ok = np.isfinite(ln_w)
+    if np.sum(ok) < 2:
+        return None, None, 0.0
+    w = np.exp(ln_w[ok] - ln_w[ok].max())
+    w /= w.sum()
+    mu = w @ x[ok]
+    cov = (x[ok] - mu).T @ ((x[ok] - mu) * w[:, None])
+    return mu, cov, 1.0 / np.sum(w ** 2)
+
+
+def _means_agree(xs, lws, nsigma, lo, hi):
+    """The last block's weighted mean sits where the earlier blocks put the target's mean.
+
+    Shift between the two weighted means, whitened by the pooled weighted covariance, against
+    what n_eff alone would give: |dz|^2 <= nsigma^2 * p * (1/neff_last + 1/neff_prev).  A proposal
+    creeping up the target's tail moves its weighted mean every block, even when consecutive lnZ
+    estimates happen to agree."""
+    if len(lws) < 2:
+        return False
+    xa, la = xs[-1], lws[-1]
+    xb, lb = np.concatenate(xs[:-1]), np.concatenate(lws[:-1])
+    ma, _, na = _weighted_moments(xa, la)
+    mb, _, nb = _weighted_moments(xb, lb)
+    _, cov, _ = _weighted_moments(np.concatenate(xs), np.concatenate(lws))
+    if ma is None or mb is None or cov is None or na < 2 or nb < 2:
+        return False
+    cov = cov + np.diag((1e-6 * (np.asarray(hi) - np.asarray(lo))) ** 2)
+    d = ma - mb
+    chi2 = float(d @ np.linalg.solve(cov, d))
+    return chi2 <= nsigma ** 2 * len(d) * (1.0 / na + 1.0 / nb)
+
+
+def _logsumexp_rows(a):
+    m = np.max(a, axis=1)
+    return m + np.log(np.sum(np.exp(a - m[:, None]), axis=1))
+
+
+def warm_integrate_slice(ln_f, lo, hi, seed_x, seed_ln_w, n_max, n_eff_target, n_block=2000,
+                         defensive=0.1, n_kernel=1000, rng=None, inflate=4.0, stable_nsigma=2.0,
+                         include_decider=True, mean_nsigma=None, khat_max=0.7):
+    """ln of the integral over the box [lo, hi] of exp(ln_f(x)) by adaptive importance sampling.
+
+    ``ln_f(x)`` takes an (n, p) array of in-box points and returns ln integrand (lnL + ln prior).
+    The proposal is defensive * Uniform(box) + (1 - defensive) * KDE (``fit_kde_proposal``, kernels
+    widened by ``inflate``); the KDE starts from the seed (``seed_x``, ``seed_ln_w``).
+
+    Two phases.  ADAPT: draw a block, refit the KDE to every weighted draw so far, repeat until a
+    block's estimate agrees with the earlier blocks' pooled estimate within ``stable_nsigma``
+    (``_blocks_agree``).  A proposal still moving toward the target gives rising block estimates and
+    keeps adapting.  ESTIMATE: freeze the proposal that drew the agreeing block and draw from it until
+    those draws alone reach ``n_eff_target``; only they enter lnZ (plain importance sampling, so
+    sigma is the usual one).  Adaptation blocks are discarded from the estimate: under a displaced
+    seed their weights are heavy-tailed, and pooling them leaves a bias their sigma does not show.
+    ``include_decider`` counts the agreeing block toward the estimate.  Draws outside the box count
+    as zeros.  ``n_max`` caps all draws (block-granular); if it runs out while adapting, the last
+    block's proposal is used as is.
+    The proposal also freezes only once the agreeing block's Pareto k-hat (``pareto_khat``) is at most
+    ``khat_max``: two blocks from a proposal stuck in the target's tail can agree with each other.
+    Returns (lnZ, sigma_lnZ, n_eff, n_total, x, ln_w, khat); x and ln_w are all draws (seed for the
+    next slice); khat is the estimate-phase weights' (> 0.7: do not trust lnZ).
+    """
+    rng = np.random.default_rng() if rng is None else rng
+    lo, hi = np.asarray(lo, float), np.asarray(hi, float)
+    p = len(lo)
+    ln_vol = float(np.sum(np.log(hi - lo)))
+    kde = fit_kde_proposal(seed_x, seed_ln_w, lo, hi, n_kernel, rng, inflate=inflate) if seed_x is not None else None
+
+    def block(kde):
+        a = 1.0 if kde is None else float(defensive)
+        n_u = rng.binomial(n_block, a)
+        x = np.empty((n_block, p))
+        x[:n_u] = lo + (hi - lo) * rng.random((n_u, p))
+        if n_block > n_u:
+            x[n_u:] = kde_draw(kde, n_block - n_u, rng)
+        inside = np.all((x >= lo) & (x <= hi), axis=1)
+        ln_q = np.full(n_block, np.log(a) - ln_vol) if a > 0 else np.full(n_block, -np.inf)
+        if kde is not None:
+            ln_q = np.logaddexp(ln_q, np.log1p(-a) + kde_logpdf(kde, x)) if a < 1 else kde_logpdf(kde, x)
+        ln_w = np.full(n_block, -np.inf)
+        if np.any(inside):
+            ln_w[inside] = np.asarray(ln_f(x[inside]), float) - ln_q[inside]
+        ln_w[~np.isfinite(ln_w)] = -np.inf
+        return x[inside], ln_w[inside]
+
+    xs, lws = [], []          # every draw
+    est = []                  # ln_w of the estimate phase, per block
+    n_total = 0
+    while n_total < n_max:    # adapt
+        x, lw = block(kde)
+        xs.append(x)
+        lws.append(lw)
+        n_total += n_block
+        if _blocks_agree(lws, n_block, stable_nsigma) and pareto_khat(lw) <= khat_max and (
+                mean_nsigma is None or _means_agree(xs, lws, mean_nsigma, lo, hi)):
+            if include_decider:
+                est.append(lw)
+            break
+        all_lw = np.concatenate(lws)
+        if np.any(np.isfinite(all_lw)):
+            kde = fit_kde_proposal(np.concatenate(xs), all_lw, lo, hi, n_kernel, rng, inflate=inflate)
+    while n_total < n_max and (not est or _neff(np.concatenate(est)) < n_eff_target):   # estimate
+        x, lw = block(kde)
+        xs.append(x)
+        lws.append(lw)
+        est.append(lw)
+        n_total += n_block
+    x_all, lw_all = np.concatenate(xs), np.concatenate(lws)
+    if not est:
+        return -np.inf, np.inf, 0.0, int(n_total), x_all, lw_all, np.inf
+    lw_est = np.concatenate(est)
+    lnZ, sigma = _block_estimate(lw_est, n_block * len(est))
+    return float(lnZ), float(sigma), _neff(lw_est), int(n_total), x_all, lw_all, pareto_khat(lw_est)
+
+
+class WarmSliceSampler:
+    """Warm-started fixed-d integrals over the extrinsic parameters of ``reference_sampler``.
+
+    Seeded with the main loop's samples ``seed`` ({param: array}, all extrinsic axes) and their
+    posterior log weights ``seed_ln_w``; ``seed_distance`` (optional) orders the first slices
+    outward from the seed's weighted median distance.  Each later slice is seeded by the finished
+    slice nearest in ln d.  ``run(d_slices)`` returns (lnL, sigmaL, neff, ntotal) like
+    ``fresh_sample_slices`` (lnL is the integral of the offset-subtracted likelihood).
+
+    A slice is trusted when it reaches ``n_eff_target`` with Pareto k-hat <= ``khat_max``; only trusted
+    slices seed later ones.  An untrusted slice is redone by ``fallback(d_array)`` (same return as
+    ``fresh_sample_slices``; ILE passes the cold AV) when given, its draws added to ntotal, and counted
+    in ``n_fallback``; without a fallback it is returned as is.
+    """
+
+    def __init__(self, reference_sampler, like_to_integrate, seed, seed_ln_w, seed_distance=None,
+                 n_block=2000, n_kernel=1000, defensive=0.1, rng=None, return_lnL=True, verbose=True,
+                 fallback=None, khat_max=0.7, **integrator_kw):
+        from RIFT.integrators.mcsamplerAdaptiveVolume import _prior_pdf_accepts_xpy
+        self._accepts_xpy = _prior_pdf_accepts_xpy
+        self.like = like_to_integrate
+        self.arg_names = like_to_integrate.__code__.co_varnames[:like_to_integrate.__code__.co_argcount]
+        if "distance" not in self.arg_names:
+            raise ValueError("like_to_integrate has no 'distance' arg")
+        self.params = [a for a in self.arg_names if a != "distance"]
+        self.lo = np.array([float(reference_sampler.llim[q]) for q in self.params])
+        self.hi = np.array([float(reference_sampler.rlim[q]) for q in self.params])
+        self.prior = [reference_sampler.prior_pdf[q] for q in self.params]
+        self.n_block, self.n_kernel, self.defensive = int(n_block), int(n_kernel), float(defensive)
+        self.rng = np.random.default_rng() if rng is None else rng
+        self.return_lnL, self.verbose, self.integrator_kw = return_lnL, verbose, integrator_kw
+        self.fallback, self.khat_max, self.n_fallback = fallback, float(khat_max), 0
+        self.integrator_kw["khat_max"] = self.khat_max
+        self.seed_x = np.column_stack([np.asarray(_to_cpu(seed[q]), float) for q in self.params])
+        self.seed_ln_w = np.asarray(_to_cpu(seed_ln_w), float)
+        self.d_center = None
+        if seed_distance is not None:
+            dd = np.asarray(_to_cpu(seed_distance), float)
+            ok = np.isfinite(self.seed_ln_w) & (dd > 0)
+            if np.any(ok):
+                w = np.exp(self.seed_ln_w[ok] - self.seed_ln_w[ok].max())
+                o = np.argsort(dd[ok])
+                c = np.cumsum(w[o])
+                self.d_center = float(dd[ok][o][np.searchsorted(c, 0.5 * c[-1])])
+        self.done = []          # (ln d, x, ln_w) of finished slices
+
+    def _ln_prior(self, x):
+        out = np.zeros(len(x))
+        for j, fn in enumerate(self.prior):
+            xc = x[:, j]
+            v = np.asarray(_to_cpu(fn(xc, xpy=np) if self._accepts_xpy(fn) else fn(xc)), float)
+            with np.errstate(divide="ignore"):
+                out += np.log(v)
+        return out
+
+    def _ln_f(self, d):
+        def f(x):
+            cols = {q: x[:, j] for j, q in enumerate(self.params)}
+            cols["distance"] = np.full(len(x), float(d))
+            lnL = np.asarray(_to_cpu(self.like(*(cols[a] for a in self.arg_names))), float)
+            if not self.return_lnL:
+                with np.errstate(divide="ignore"):
+                    lnL = np.log(lnL)
+            return lnL + self._ln_prior(x)
+        return f
+
+    def run(self, d_slices, n_max, n_eff_target):
+        d = np.asarray(d_slices, float)
+        K = len(d)
+        out = (np.full(K, -np.inf), np.full(K, np.inf), np.zeros(K), np.zeros(K, dtype=int))
+        ref = np.log(self.d_center) if self.d_center else float(np.median(np.log(d))) if K else 0.0
+        for k in np.argsort(np.abs(np.log(d) - ref), kind="stable"):
+            lnd = np.log(d[k])
+            if self.done:
+                j = int(np.argmin([abs(lnd - r[0]) for r in self.done]))
+                sx, sw = self.done[j][1], self.done[j][2]
+            else:
+                sx, sw = self.seed_x, self.seed_ln_w
+            try:
+                lnZ, sig, ne, nt, x, lw, kh = warm_integrate_slice(
+                    self._ln_f(d[k]), self.lo, self.hi, sx, sw, n_max, n_eff_target,
+                    n_block=self.n_block, defensive=self.defensive, n_kernel=self.n_kernel, rng=self.rng,
+                    **self.integrator_kw)
+            except Exception as e:
+                print("  warm slice d={:.2f} failed: {!r}".format(d[k], e))
+                lnZ, sig, ne, nt, kh = -np.inf, np.inf, 0.0, 0, np.inf
+            trusted = np.isfinite(lnZ) and ne >= n_eff_target and kh <= self.khat_max
+            if self.verbose:
+                print("    : warm slice d={:.1f} lnZ={:.3f} sigma={:.3f} neff={:.1f} khat={:.2f} ntotal={} seed={}{}".format(
+                    d[k], lnZ, sig, ne, kh, nt, "slice" if self.done else "main",
+                    "" if trusted else " -> cold fallback" if self.fallback else " UNTRUSTED"))
+            if trusted:
+                self.done.append((lnd, x, lw))
+            elif self.fallback is not None:
+                self.n_fallback += 1
+                fl, fs, fn, ft = (np.asarray(v).ravel()[0] for v in self.fallback(np.array([d[k]])))
+                lnZ, sig, ne, nt = fl, fs, fn, nt + int(ft)
+            for arr, v in zip(out, (lnZ, sig, ne, nt)):
+                arr[k] = v
+        return out
 
 
 def build_distance_slice_table(d_slices, lnL_slices, sigmaL_slices,
