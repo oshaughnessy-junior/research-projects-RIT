@@ -138,6 +138,7 @@ FILES=(
   "$C/test/test_distance_tail.py"
   "$C/test/test_dslice_device_native.py"
   "$C/test/test_dslice_walkout.py"
+  "$C/test/test_dslice_warm.py"
   "$C/test/test_dslice_bounds.py"
   # -- hyperpipe (paper4 area; the hydra leg is rostered OPTDEP, not here)
   "$C/test/hyperpipe/tests/test_config.py"
@@ -504,7 +505,8 @@ done
 # TD adds 90 collected cases (89 required passes; PCG is optional).
 # The startup TD/multirate refusal adds one case: measured collection is 1126.
 # test_dslice_walkout.py adds 15 tests and no skips -> 1141/1120.
-EXPECTED_TESTS=1141
+# test_dslice_warm.py adds 10 tests and no skips -> 1151/1130.
+EXPECTED_TESTS=1151
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -531,7 +533,8 @@ EXPECTED_TESTS=1141
 # PR #436 multirate files: re-measured 1035/1015 (above; the lower, ldas-grid, passed count).
 # TD adds 89 required passes and the startup refusal adds one -> 1105.
 # test_dslice_walkout.py adds 15 tests and no skips; 1141/1120 (above).
-EXPECTED_PASSED=1120
+# test_dslice_warm.py adds 10 tests and no skips; 1151/1130 (above).
+EXPECTED_PASSED=1130
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 MAX_SKIPPED=20 # one optional tdanalysis PCG test when the extra is absent
 

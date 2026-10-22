@@ -31,7 +31,8 @@ def run(ln_f, seed, reps, **kw):
     out = []
     for r in range(reps):
         res = ds.warm_integrate_slice(ln_f, LO, HI, seed[0], seed[1], n_max=200000,
-                                      n_eff_target=30, rng=np.random.default_rng(10 + r), **kw)
+                                      n_eff_target=30, rng=np.random.default_rng(10 + r), n_block=2000,
+                                      khat_max=0.7, **kw)
         out.append((res["lnZ"], res["sigma"], res["neff"], res["ntotal"], res["converged"] and res["khat"] <= 0.7))
     return np.array(out)
 
@@ -114,7 +115,7 @@ def make_warm(rng=1):
     seed = {"right_ascension": mode(1000.0) + SD * r.standard_normal(500),
             "declination": 0.4 + SD * r.standard_normal(500)}
     return ds.WarmSliceSampler(FakeSampler(), like, seed, np.zeros(500), seed_distance=np.full(500, 1000.0),
-                               rng=np.random.default_rng(rng), verbose=False)
+                               rng=np.random.default_rng(rng), verbose=False, n_block=2000)
 
 
 def test_slices_follow_a_moving_conditional():
@@ -160,7 +161,7 @@ def test_mode_at_the_periodic_wrap_point():
     ra = np.mod(s_ra * r.standard_normal(500), 2 * np.pi)
     seed = {"right_ascension": ra, "declination": 0.2 + s_dec * r.standard_normal(500)}
     w = ds.WarmSliceSampler(PeriodicSampler(), like_ra, seed, np.zeros(500), rng=np.random.default_rng(4),
-                            verbose=False)
+                            verbose=False, n_block=2000)
     lnL, sig, ne, nt = w.run(np.array([1000.0]), n_max=100000, n_eff_target=30)
     assert abs(lnL[0] - truth) < 4 * sig[0] + 0.02, (lnL[0] - truth, sig[0])
     assert nt[0] <= 4 * 2000 and len(w.done) == 1

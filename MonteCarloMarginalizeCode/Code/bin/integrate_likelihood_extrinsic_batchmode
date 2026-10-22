@@ -560,8 +560,8 @@ intrinsic_params.add_option("--distance-slice-wing-delta-lnL",type=float,default
 intrinsic_params.add_option("--distance-slice-walkout-delta-lnL",type=float,default=0.0,help="(all-fresh only) After the K quantile-placed fresh slices, walk each edge outward with extra fresh slices (steps doubling in ln d, from twice the edge spacing) until lnL + ln pi(d) at the edge is this many nats below its peak, the distance range ends, or --distance-slice-walkout-max-steps slices were added on that side. 0 (default) disables. Quantile placement from a main loop at n_eff ~ 10 ends where the conditional is typically only 1-3 nats below peak; this measures the tails instead of leaving them to extrapolation. Adds a variable number of rows per point. COST: up to 2 x --distance-slice-walkout-max-steps extra sequential fresh integrations per point (16 at the default), each budgeted like a slice (--distance-slice-wing-nmax); measured +14-29% of the quantile slices' samples on O4 events at delta 5.")
 intrinsic_params.add_option("--distance-slice-walkout-max-steps",type=int,default=8,help="Cap on walk-out slices per side (see --distance-slice-walkout-delta-lnL).")
 intrinsic_params.add_option("--distance-slice-warm-start",action="store_true",default=False,help="(all-fresh only) Replace each slice's fresh AV integration with adaptive importance sampling over all extrinsic axes, warm-started: the first slice's proposal is a kernel density fitted to the main loop's samples (tempered by --distance-slice-warm-seed-temper), each later slice's to the nearest finished slice, refitted after every block; a uniform component over the prior box keeps the estimate unbiased if the seed is off. Assumes the main loop found every mode of each slice's conditional. Walk-out slices are warm-started too. Default off.")
-intrinsic_params.add_option("--distance-slice-warm-block",type=int,default=2000,help="Block size (likelihood evaluations per proposal refit) for --distance-slice-warm-start.")
-intrinsic_params.add_option("--distance-slice-warm-khat-max",type=float,default=0.7,help="--distance-slice-warm-start: a warm slice whose estimate-phase Pareto k-hat exceeds this is redone by the cold AV (and the proposal does not freeze while a block's k-hat exceeds it).")
+intrinsic_params.add_option("--distance-slice-warm-block",type=int,default=None,help="Block size (likelihood evaluations per proposal refit) for --distance-slice-warm-start.  Default: the slice chunk (--distance-slice-chunk, else --n-chunk; 10000 on a default run).  Small blocks are cheaper on easy events but adapt badly on hard ones.")
+intrinsic_params.add_option("--distance-slice-warm-khat-max",type=float,default=float("inf"),help="--distance-slice-warm-start: a warm slice whose estimate-phase Pareto k-hat exceeds this is redone by the cold AV (and the proposal does not freeze while a block's k-hat exceeds it).  Default: no k-hat gate; k-hat is logged.  On O4 slices at n_eff 30 good slices show k-hat 1-2 (60 slices paired against the cold AV agreed within error), so the textbook 0.7 rejects every slice.")
 intrinsic_params.add_option("--distance-slice-warm-seed-temper",type=float,default=0.3,help="Exponent applied to the main loop's posterior weights before they seed --distance-slice-warm-start; < 1 broadens the seed so it covers the conditionals at the edge slices.")
 optp.add_option_group(intrinsic_params)
 
@@ -597,7 +597,7 @@ def _normalize_interpolate_time_argv(argv):
     return out
 
 opts, args = optp.parse_args(_normalize_interpolate_time_argv(sys.argv[1:]))
-if opts.distance_slice_warm_block < 1 or not (0 < opts.distance_slice_warm_seed_temper <= 1):
+if (opts.distance_slice_warm_block is not None and opts.distance_slice_warm_block < 1) or not (0 < opts.distance_slice_warm_seed_temper <= 1):
     optp.error("--distance-slice-warm-block must be >= 1 and --distance-slice-warm-seed-temper in (0, 1]")
 if opts.distance_slice_walkout_delta_lnL < 0 or opts.distance_slice_walkout_max_steps < 0:
     optp.error("--distance-slice-walkout-delta-lnL and --distance-slice-walkout-max-steps must be >= 0")
@@ -6345,7 +6345,7 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
                 print("    : WARNING no retained-set reserve; warm slices seeded from _rvs ({} rows)".format(len(dL_samp)))
               warm = distance_slices.WarmSliceSampler(
                   sampler, like_to_integrate, _ws_seed, float(opts.distance_slice_warm_seed_temper) * _ws_lnw,
-                  seed_distance=_ws_d, n_block=int(opts.distance_slice_warm_block), return_lnL=return_lnL,
+                  seed_distance=_ws_d, n_block=int(opts.distance_slice_warm_block or slice_chunk), return_lnL=return_lnL,
                   khat_max=float(opts.distance_slice_warm_khat_max),
                   xp=xpy_default,
                   fallback=lambda dd: distance_slices.fresh_sample_slices(
@@ -6353,7 +6353,7 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
                       n_eff_target=int(opts.distance_slice_wing_neff), n_chunk=slice_chunk, return_lnL=return_lnL))
               print("    : warm-started slices ({} seed rows, seed n_eff {:.1f} after tempering, block {})".format(
                   len(_ws_d), distance_slices._neff(float(opts.distance_slice_warm_seed_temper) * np.asarray(_ws_lnw, float)),
-                  opts.distance_slice_warm_block))
+                  int(opts.distance_slice_warm_block or slice_chunk)))
               lnL_wings_raw, sigmaL_wings, neff_wings, ntotal_wings = warm.run(
                   d_wings, n_max=int(opts.distance_slice_wing_nmax), n_eff_target=int(opts.distance_slice_wing_neff))
               print("    : warm-started slices: {} of {} redone cold (k-hat or n_eff)".format(warm.n_fallback, len(d_wings)))

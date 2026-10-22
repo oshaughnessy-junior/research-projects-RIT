@@ -952,9 +952,9 @@ def _means_agree(xs, lws, nsigma, lo, hi):
     return chi2 <= nsigma ** 2 * len(d) * (1.0 / na + 1.0 / nb)
 
 
-def warm_integrate_slice(ln_f, lo, hi, seed_x, seed_ln_w, n_max, n_eff_target, n_block=2000,
+def warm_integrate_slice(ln_f, lo, hi, seed_x, seed_ln_w, n_max, n_eff_target, n_block=AV_NSEL_SATURATION_CHUNK,
                          defensive=0.1, n_kernel=1000, rng=None, inflate=4.0, stable_nsigma=2.0,
-                         include_decider=True, mean_nsigma=None, khat_max=0.7, max_adapt_blocks=5,
+                         include_decider=True, mean_nsigma=None, khat_max=np.inf, max_adapt_blocks=5,
                          broad=None, broad_frac=0.1, refit_temper=0.5, xp=None, max_blocks=50):
     """ln of the integral over the box [lo, hi] of exp(ln_f(x)) by adaptive importance sampling.
 
@@ -1089,8 +1089,8 @@ class WarmSliceSampler:
     """
 
     def __init__(self, reference_sampler, like_to_integrate, seed, seed_ln_w, seed_distance=None,
-                 n_block=2000, n_kernel=1000, defensive=0.1, rng=None, return_lnL=True, verbose=True,
-                 fallback=None, khat_max=0.7, periodic=PERIODIC_EXTRINSIC, xp=None, **integrator_kw):
+                 n_block=AV_NSEL_SATURATION_CHUNK, n_kernel=1000, defensive=0.1, rng=None, return_lnL=True,
+                 verbose=True, fallback=None, khat_max=np.inf, periodic=PERIODIC_EXTRINSIC, xp=None, **integrator_kw):
         from RIFT.integrators.mcsamplerAdaptiveVolume import _prior_pdf_accepts_xpy
         self._accepts_xpy = _prior_pdf_accepts_xpy
         self.like = like_to_integrate
