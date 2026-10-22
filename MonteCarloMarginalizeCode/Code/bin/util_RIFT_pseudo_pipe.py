@@ -63,9 +63,10 @@ from RIFT.likelihood.time_interp_choice import (
 # likelihood -- the pipeline would accept 'bandlimted', forward it, and the mistake
 # would only surface when the first ILE job died.
 from RIFT.likelihood.time_marginalization_quadrature import (
-    TIME_QUADRATURE_CHOICES, NOLOOP_ONLY_TIME_QUADRATURES, validate_time_quadrature,
-    refuse_unhonourable_time_quadrature, refuse_unless_time_quadrature_emitted,
-    refuse_jax_unsupported_time_quadrature)
+    TIME_QUADRATURE_CHOICES, validate_time_quadrature,
+    refuse_unhonourable_time_quadrature, refuse_unless_time_quadrature_emitted)
+from RIFT.misc.bootstrap_quadrature_compat import (
+    NOLOOP_ONLY_TIME_QUADRATURES, refuse_jax_unsupported_time_quadrature)
 # Same reason, same leaf-module discipline, for the Q_lm pregrid factor.
 from RIFT.likelihood.q_time_pregrid import (
     Q_TIME_PREGRID_CHOICES, validate_q_time_pregrid_factor,
