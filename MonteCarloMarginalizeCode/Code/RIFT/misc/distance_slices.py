@@ -778,6 +778,24 @@ def fresh_sample_slices(reference_sampler, like_to_integrate, d_slices,
 # integrand is, so a displaced seed costs samples, not bias.
 # ---------------------------------------------------------------------------------------------
 
+class _NeffSum:
+    """Kish n_eff of a list of log-weight blocks, from per-block sums (no concatenation)."""
+
+    def __init__(self, blocks):
+        ms = [np.max(b) for b in blocks if len(b)]
+        self.m = max(ms) if ms else -np.inf
+        if not np.isfinite(self.m):
+            self.neff = 0.0
+            return
+        s1 = s2 = 0.0
+        for b in blocks:
+            if len(b):
+                e = np.exp(b - self.m)
+                s1 += e.sum()
+                s2 += (e * e).sum()
+        self.neff = float(s1 * s1 / s2)
+
+
 def _neff(ln_w):
     ln_w = np.asarray(ln_w, float)
     m = np.max(ln_w) if len(ln_w) else -np.inf
@@ -819,14 +837,22 @@ def kde_draw(kde, n, rng):
     return c + rng.standard_normal((n, c.shape[1])) @ kde["L"].T
 
 
-def kde_logpdf(kde, x, block=2048):
-    zc = kde["centers"] @ kde["Linv"].T
+def kde_logpdf(kde, x, block=2048, xp=None):
+    """log density of the KDE at x (host array in, host array out).  ``xp`` (e.g. cupy) does the
+    N x n_kernel arithmetic on that backend; on a GPU run it was 75% of the slice wall time on the
+    host (S240426s profile, 2026-10-22)."""
+    xp = np if xp is None else xp
+    Linv = xp.asarray(kde["Linv"])
+    zc = xp.asarray(kde["centers"]) @ Linv.T
+    nc = xp.sum(zc ** 2, 1)[None, :]
     out = np.empty(len(x))
     for i in range(0, len(x), block):
-        z = x[i:i + block] @ kde["Linv"].T
-        d2 = (np.sum(z ** 2, 1)[:, None] + np.sum(zc ** 2, 1)[None, :] - 2 * z @ zc.T)
-        out[i:i + block] = _logsumexp_rows(-0.5 * d2) - np.log(len(zc))
-    return out + kde["ln_norm"]
+        z = xp.asarray(x[i:i + block]) @ Linv.T
+        a = -0.5 * (xp.sum(z ** 2, 1)[:, None] + nc - 2 * z @ zc.T)
+        m = xp.max(a, axis=1)
+        r = m + xp.log(xp.sum(xp.exp(a - m[:, None]), axis=1))
+        out[i:i + block] = _to_cpu(r)
+    return out - np.log(len(kde["centers"])) + kde["ln_norm"]
 
 
 def _block_estimate(ln_w, n):
@@ -921,15 +947,10 @@ def _means_agree(xs, lws, nsigma, lo, hi):
     return chi2 <= nsigma ** 2 * len(d) * (1.0 / na + 1.0 / nb)
 
 
-def _logsumexp_rows(a):
-    m = np.max(a, axis=1)
-    return m + np.log(np.sum(np.exp(a - m[:, None]), axis=1))
-
-
 def warm_integrate_slice(ln_f, lo, hi, seed_x, seed_ln_w, n_max, n_eff_target, n_block=2000,
                          defensive=0.1, n_kernel=1000, rng=None, inflate=4.0, stable_nsigma=2.0,
                          include_decider=True, mean_nsigma=None, khat_max=0.7, max_adapt_blocks=5,
-                         broad=None, broad_frac=0.1, refit_temper=0.5):
+                         broad=None, broad_frac=0.1, refit_temper=0.5, xp=None):
     """ln of the integral over the box [lo, hi] of exp(ln_f(x)) by adaptive importance sampling.
 
     ``ln_f(x)`` takes an (n, p) array of in-box points and returns ln integrand (lnL + ln prior).
@@ -991,7 +1012,7 @@ def warm_integrate_slice(ln_f, lo, hi, seed_x, seed_ln_w, n_max, n_eff_target, n
         ln_q = np.full(n_block, -np.inf)
         for fc, kc in comps:
             if fc > 0:
-                ln_q = np.logaddexp(ln_q, np.log(fc) + (-ln_vol if kc is None else kde_logpdf(kc, x)))
+                ln_q = np.logaddexp(ln_q, np.log(fc) + (-ln_vol if kc is None else kde_logpdf(kc, x, xp=xp)))
         ln_w = np.full(n_block, -np.inf)
         if np.any(inside):
             ln_w[inside] = np.asarray(ln_f(x[inside]), float) - ln_q[inside]
@@ -1018,7 +1039,7 @@ def warm_integrate_slice(ln_f, lo, hi, seed_x, seed_ln_w, n_max, n_eff_target, n
         all_lw = np.concatenate(lws)
         if np.any(np.isfinite(all_lw)):
             kde = fit_kde_proposal(np.concatenate(xs), refit_temper * all_lw, lo, hi, n_kernel, rng, inflate=inflate)
-    while n_total < n_max and (not est or _neff(np.concatenate(est)) < n_eff_target):   # estimate
+    while n_total < n_max and (not est or _NeffSum(est).neff < n_eff_target):   # estimate
         x, lw = block(kde)
         xs.append(x)
         lws.append(lw)
@@ -1057,7 +1078,7 @@ class WarmSliceSampler:
 
     def __init__(self, reference_sampler, like_to_integrate, seed, seed_ln_w, seed_distance=None,
                  n_block=2000, n_kernel=1000, defensive=0.1, rng=None, return_lnL=True, verbose=True,
-                 fallback=None, khat_max=0.7, periodic=PERIODIC_EXTRINSIC, **integrator_kw):
+                 fallback=None, khat_max=0.7, periodic=PERIODIC_EXTRINSIC, xp=None, **integrator_kw):
         from RIFT.integrators.mcsamplerAdaptiveVolume import _prior_pdf_accepts_xpy
         self._accepts_xpy = _prior_pdf_accepts_xpy
         self.like = like_to_integrate
@@ -1073,6 +1094,7 @@ class WarmSliceSampler:
         self.return_lnL, self.verbose, self.integrator_kw = return_lnL, verbose, integrator_kw
         self.fallback, self.khat_max, self.n_fallback = fallback, float(khat_max), 0
         self.integrator_kw["khat_max"] = self.khat_max
+        self.integrator_kw["xp"] = xp
         seed_x = np.column_stack([np.asarray(_to_cpu(seed[q]), float) for q in self.params])
         self.seed_ln_w = np.asarray(_to_cpu(seed_ln_w), float)
         # Periodic axes are sampled in a rotated copy whose box centre is the seed's circular mean,

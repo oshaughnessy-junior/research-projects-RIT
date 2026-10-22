@@ -6347,6 +6347,7 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
                   sampler, like_to_integrate, _ws_seed, float(opts.distance_slice_warm_seed_temper) * _ws_lnw,
                   seed_distance=_ws_d, n_block=int(opts.distance_slice_warm_block), return_lnL=return_lnL,
                   khat_max=float(opts.distance_slice_warm_khat_max),
+                  xp=xpy_default,
                   fallback=lambda dd: distance_slices.fresh_sample_slices(
                       sampler, like_to_integrate, dd, n_max=int(opts.distance_slice_wing_nmax),
                       n_eff_target=int(opts.distance_slice_wing_neff), n_chunk=slice_chunk, return_lnL=return_lnL))
