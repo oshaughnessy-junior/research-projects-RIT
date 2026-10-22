@@ -301,3 +301,16 @@ def test_actual_generated_submit_files_route_sampling_to_cip_only(tmp_path):
     args=(run/'args_ile.txt').read_text()
     assert all(flag in args for flag in ['--time-marginalization','--vectorized','--gpu','--force-xpy'])
     assert list(run.glob('*.dag'))
+
+
+def test_flat_helper_schedule_keeps_sheared_angle_fitted():
+    import ast
+    from types import SimpleNamespace
+    helper=Path(__file__).resolve().parents[1]/'bin/helper_LDG_Events.py'
+    tree=ast.parse(helper.read_text())
+    block=next(n for n in ast.walk(tree) if isinstance(n,ast.Assign) and isinstance(n.value,ast.ListComp) and 'helper_cip_stage' in ast.unparse(n))
+    for flat in [False,True]:
+        ns=dict(helper_cip_arg_list=['3 X','4 X'],opts=SimpleNamespace(propose_flat_strategy=flat),
+                eccentric_phase_pipeline=SimpleNamespace(helper_cip_stage=lambda line,opts,first: (line,first)))
+        exec(compile(ast.Module(body=[block],type_ignores=[]),'helper-flat','exec'),ns)
+        assert ns['helper_cip_arg_list']==[('3 X',not flat),('4 X',False)]

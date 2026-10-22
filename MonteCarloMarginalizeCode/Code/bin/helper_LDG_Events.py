@@ -2117,7 +2117,7 @@ if opts.rf_transverse_spin_coordinates:
         rf_fref, rf_activated))
 
 if opts.eccentric_phase_coordinates:
-    helper_cip_arg_list = [eccentric_phase_pipeline.helper_cip_stage(line,opts,first=(i==0))
+    helper_cip_arg_list = [eccentric_phase_pipeline.helper_cip_stage(line,opts,first=(i==0 and not opts.propose_flat_strategy))
                           for i,line in enumerate(helper_cip_arg_list)]
 
 with open("helper_cip_arg_list.txt",'w+') as f:
