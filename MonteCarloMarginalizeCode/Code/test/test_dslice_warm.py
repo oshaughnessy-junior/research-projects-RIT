@@ -30,9 +30,9 @@ def seed_at(mu, n=300, seed=0):
 def run(ln_f, seed, reps, **kw):
     out = []
     for r in range(reps):
-        lz, sg, ne, nt, _, _, _ = ds.warm_integrate_slice(ln_f, LO, HI, seed[0], seed[1], n_max=200000,
-                                                       n_eff_target=30, rng=np.random.default_rng(10 + r), **kw)
-        out.append((lz, sg, ne, nt))
+        res = ds.warm_integrate_slice(ln_f, LO, HI, seed[0], seed[1], n_max=200000,
+                                      n_eff_target=30, rng=np.random.default_rng(10 + r), **kw)
+        out.append((res["lnZ"], res["sigma"], res["neff"], res["ntotal"], res["converged"] and res["khat"] <= 0.7))
     return np.array(out)
 
 

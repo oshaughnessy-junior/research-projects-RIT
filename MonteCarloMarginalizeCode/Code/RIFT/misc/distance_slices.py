@@ -928,7 +928,8 @@ def _logsumexp_rows(a):
 
 def warm_integrate_slice(ln_f, lo, hi, seed_x, seed_ln_w, n_max, n_eff_target, n_block=2000,
                          defensive=0.1, n_kernel=1000, rng=None, inflate=4.0, stable_nsigma=2.0,
-                         include_decider=True, mean_nsigma=None, khat_max=0.7):
+                         include_decider=True, mean_nsigma=None, khat_max=0.7, max_adapt_blocks=5,
+                         broad=None, broad_frac=0.1):
     """ln of the integral over the box [lo, hi] of exp(ln_f(x)) by adaptive importance sampling.
 
     ``ln_f(x)`` takes an (n, p) array of in-box points and returns ln integrand (lnL + ln prior).
@@ -947,8 +948,14 @@ def warm_integrate_slice(ln_f, lo, hi, seed_x, seed_ln_w, n_max, n_eff_target, n
     block's proposal is used as is.
     The proposal also freezes only once the agreeing block's Pareto k-hat (``pareto_khat``) is at most
     ``khat_max``: two blocks from a proposal stuck in the target's tail can agree with each other.
-    Returns (lnZ, sigma_lnZ, n_eff, n_total, x, ln_w, khat); x and ln_w are all draws (seed for the
-    next slice); khat is the estimate-phase weights' (> 0.7: do not trust lnZ).
+    ``broad`` = (x, ln_w), if given, adds a fixed KDE of those points with weight ``broad_frac`` to every
+    block's mixture (ILE passes the main loop's tempered posterior): mass anywhere the main loop saw
+    stays reachable when the slice seed is displaced, where the uniform box would almost never land.
+    Adaptation stops after ``max_adapt_blocks`` blocks whatever the checks say; a seed that needs more is
+    far from the target, and on synthetic tests those are the runs that later pass k-hat while biased
+    low by nats, so the result is returned with ``converged`` False for the caller to redo cold.
+    Returns a dict: lnZ, sigma, neff, ntotal, x, ln_w (all draws, the seed for the next slice), khat
+    (estimate-phase weights; > 0.7: do not trust lnZ), n_adapt (adaptation blocks), converged.
     """
     rng = np.random.default_rng() if rng is None else rng
     lo, hi = np.asarray(lo, float), np.asarray(hi, float)
@@ -956,17 +963,32 @@ def warm_integrate_slice(ln_f, lo, hi, seed_x, seed_ln_w, n_max, n_eff_target, n
     ln_vol = float(np.sum(np.log(hi - lo)))
     kde = fit_kde_proposal(seed_x, seed_ln_w, lo, hi, n_kernel, rng, inflate=inflate) if seed_x is not None else None
 
+    broad_kde = None
+    if broad is not None and broad_frac > 0:
+        broad_kde = fit_kde_proposal(broad[0], broad[1], lo, hi, n_kernel, rng, inflate=inflate)
+
     def block(kde):
-        a = 1.0 if kde is None else float(defensive)
-        n_u = rng.binomial(n_block, a)
+        # mixture: uniform box (defensive), fixed broad KDE (broad_frac), adaptive KDE (the rest)
+        comps = [(float(defensive), None)]
+        if broad_kde is not None:
+            comps.append((float(broad_frac), broad_kde))
+        rest = 1.0 - sum(c[0] for c in comps)
+        if kde is not None and rest > 0:
+            comps.append((rest, kde))
+        else:
+            comps[0] = (comps[0][0] + rest, None)
+        fr = np.array([c[0] for c in comps])
+        counts = rng.multinomial(n_block, fr / fr.sum())
         x = np.empty((n_block, p))
-        x[:n_u] = lo + (hi - lo) * rng.random((n_u, p))
-        if n_block > n_u:
-            x[n_u:] = kde_draw(kde, n_block - n_u, rng)
+        i0 = 0
+        for (fc, kc), nc in zip(comps, counts):
+            x[i0:i0 + nc] = lo + (hi - lo) * rng.random((nc, p)) if kc is None else kde_draw(kc, nc, rng)
+            i0 += nc
         inside = np.all((x >= lo) & (x <= hi), axis=1)
-        ln_q = np.full(n_block, np.log(a) - ln_vol) if a > 0 else np.full(n_block, -np.inf)
-        if kde is not None:
-            ln_q = np.logaddexp(ln_q, np.log1p(-a) + kde_logpdf(kde, x)) if a < 1 else kde_logpdf(kde, x)
+        ln_q = np.full(n_block, -np.inf)
+        for fc, kc in comps:
+            if fc > 0:
+                ln_q = np.logaddexp(ln_q, np.log(fc) + (-ln_vol if kc is None else kde_logpdf(kc, x)))
         ln_w = np.full(n_block, -np.inf)
         if np.any(inside):
             ln_w[inside] = np.asarray(ln_f(x[inside]), float) - ln_q[inside]
@@ -976,7 +998,10 @@ def warm_integrate_slice(ln_f, lo, hi, seed_x, seed_ln_w, n_max, n_eff_target, n
     xs, lws = [], []          # every draw
     est = []                  # ln_w of the estimate phase, per block
     n_total = 0
-    while n_total < n_max:    # adapt
+    converged = False
+    n_adapt = 0
+    while n_total < n_max and n_adapt < max_adapt_blocks:    # adapt
+        n_adapt += 1
         x, lw = block(kde)
         xs.append(x)
         lws.append(lw)
@@ -985,6 +1010,7 @@ def warm_integrate_slice(ln_f, lo, hi, seed_x, seed_ln_w, n_max, n_eff_target, n
                 mean_nsigma is None or _means_agree(xs, lws, mean_nsigma, lo, hi)):
             if include_decider:
                 est.append(lw)
+            converged = True
             break
         all_lw = np.concatenate(lws)
         if np.any(np.isfinite(all_lw)):
@@ -996,11 +1022,13 @@ def warm_integrate_slice(ln_f, lo, hi, seed_x, seed_ln_w, n_max, n_eff_target, n
         est.append(lw)
         n_total += n_block
     x_all, lw_all = np.concatenate(xs), np.concatenate(lws)
-    if not est:
-        return -np.inf, np.inf, 0.0, int(n_total), x_all, lw_all, np.inf
-    lw_est = np.concatenate(est)
-    lnZ, sigma = _block_estimate(lw_est, n_block * len(est))
-    return float(lnZ), float(sigma), _neff(lw_est), int(n_total), x_all, lw_all, pareto_khat(lw_est)
+    res = dict(lnZ=-np.inf, sigma=np.inf, neff=0.0, ntotal=int(n_total), x=x_all, ln_w=lw_all, khat=np.inf,
+               n_adapt=n_adapt, converged=converged)
+    if est:
+        lw_est = np.concatenate(est)
+        lnZ, sigma = _block_estimate(lw_est, n_block * len(est))
+        res.update(lnZ=float(lnZ), sigma=float(sigma), neff=_neff(lw_est), khat=pareto_khat(lw_est))
+    return res
 
 
 class WarmSliceSampler:
@@ -1009,7 +1037,8 @@ class WarmSliceSampler:
     Seeded with the main loop's samples ``seed`` ({param: array}, all extrinsic axes) and their
     posterior log weights ``seed_ln_w``; ``seed_distance`` (optional) orders the first slices
     outward from the seed's weighted median distance.  Each later slice is seeded by the finished
-    slice nearest in ln d.  ``run(d_slices)`` returns (lnL, sigmaL, neff, ntotal) like
+    slice nearest in ln d, with the main loop's seed kept in every slice's mixture as a fixed broad
+    component (``warm_integrate_slice``'s ``broad``).  ``run(d_slices)`` returns (lnL, sigmaL, neff, ntotal) like
     ``fresh_sample_slices`` (lnL is the integral of the offset-subtracted likelihood).
 
     A slice is trusted when it reaches ``n_eff_target`` with Pareto k-hat <= ``khat_max``; only trusted
@@ -1082,14 +1111,16 @@ class WarmSliceSampler:
             else:
                 sx, sw = self.seed_x, self.seed_ln_w
             try:
-                lnZ, sig, ne, nt, x, lw, kh = warm_integrate_slice(
+                res = warm_integrate_slice(
                     self._ln_f(d[k]), self.lo, self.hi, sx, sw, n_max, n_eff_target,
                     n_block=self.n_block, defensive=self.defensive, n_kernel=self.n_kernel, rng=self.rng,
-                    **self.integrator_kw)
+                    broad=(self.seed_x, self.seed_ln_w), **self.integrator_kw)
+                lnZ, sig, ne, nt, x, lw, kh = (res[q] for q in ("lnZ", "sigma", "neff", "ntotal", "x", "ln_w", "khat"))
+                conv = res["converged"]
             except Exception as e:
                 print("  warm slice d={:.2f} failed: {!r}".format(d[k], e))
-                lnZ, sig, ne, nt, kh = -np.inf, np.inf, 0.0, 0, np.inf
-            trusted = np.isfinite(lnZ) and ne >= n_eff_target and kh <= self.khat_max
+                lnZ, sig, ne, nt, kh, conv = -np.inf, np.inf, 0.0, 0, np.inf, False
+            trusted = conv and np.isfinite(lnZ) and ne >= n_eff_target and kh <= self.khat_max
             if self.verbose:
                 print("    : warm slice d={:.1f} lnZ={:.3f} sigma={:.3f} neff={:.1f} khat={:.2f} ntotal={} seed={}{}".format(
                     d[k], lnZ, sig, ne, kh, nt, "slice" if self.done else "main",
