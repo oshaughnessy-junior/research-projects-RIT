@@ -63,6 +63,9 @@ setuptools.setup(
    # base install so the production pipeline is unaffected; install with
    #   pip install RIFT[jax-interp]
    extras_require={
+        # Public optional PCG backend; requires Python >=3.11.
+        'td-pcg': ['tdanalysis>=1.0.0,<2'],
+        'td-gs': ['tdanalysis==1.0.0', 'waveformtools==2026.10.15'],
         'jax-interp': ['jax', 'optax', 'equinox', 'tinygp'],
         # AD applications of the differentiable export (gradient sampling, AD
         # population inference): RIFT.interpolators.jax_gp.applications

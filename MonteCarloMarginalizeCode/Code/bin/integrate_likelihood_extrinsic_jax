@@ -198,6 +198,7 @@ _PHASE_ANALYTIC_MODES = frozenset((
 
 # Boolean (zero-argument) ILE options (action=store_true/false).
 _ILE_BOOL_OPTS = {
+    "--td-whiteness-check",
     "--calibration-conjugate-phase", "--calibration-global-norm",
     "--check-good-enough", "--zero-likelihood", "--random-event",
     "--soft-fail-event-range", "--fmin-template-correct-for-lmax",
@@ -237,9 +238,11 @@ _ILE_BOOL_OPTS = {
 }
 # ILE options taking repeated values (action=append).
 _ILE_APPEND_OPTS = {
+    "--td-piece", "--td-ifo-time-offset", "--td-acf-file",
     "--channel-name", "--psd-file", "--fmin-ifo", "--nr-lookup-group",
     "--parameter", "--parameter-range", "--sampler-portfolio",
     "--sampler-portfolio-args",
+    "--td-gap", "--glitch-basis", "--glitch-basis-file",
 }
 # Clip on |lnL - logZ| when writing the sim_inspiral sampling-prior column.
 # float64 exp() overflows past ~709, and the failure is not a loud one: an inf
@@ -287,6 +290,10 @@ def _register_ile_short_forms(optp):
 
 # The full ILE option set (so anything not implemented is still accepted).
 _ILE_ALL_OPTS = {
+    "--td-mref", "--td-piece", "--td-ifo-time-offset", "--td-acf-file", "--td-acf-cond", "--td-dense-max-n", "--td-u-stride", "--td-u-method", "--td-highpass", "--td-u-svd-tol", "--td-whiteness-check",
+    "--internal-ile-inner-product", "--td-solver", "--td-acf-duration",
+    "--td-analysis-start", "--td-analysis-end", "--td-gap",
+    "--glitch-basis", "--glitch-basis-file", "--glitch-sigma",
     "--adapt-adapt", "--adapt-floor-level", "--adapt-intrinsic", "--adapt-log",
     "--adapt-weight-exponent", "--amp-order", "--approximant",
     "--auto-logarithm-offset", "--cache-file", "--calibration-burn-in-neff",
@@ -306,7 +313,9 @@ _ILE_ALL_OPTS = {
     "--distance-slice-skip-threshold", "--distance-slice-wing-delta-lnL",
     "--distance-slice-wing-neff", "--distance-slice-wing-nmax", "--d-max",
     "--d-min", "--d-prior", "--d-prior-redshift", "--eff-lambda", "--e-freq",
-    "--dump-lnL-time-series", "--event", "--event-time",
+    "--dump-lnL-time-series", "--early-time-multirate",
+    "--early-time-multirate-backend", "--early-time-multirate-waveform",
+    "--event", "--event-time",
     "--export-distance-slices", "--export-eos-index",
     "--export-marginal-distance-grid", "--extrinsic-proposal-adapt",
     "--extrinsic-proposal-breadcrumb", "--extrinsic-proposal-output",
@@ -393,6 +402,7 @@ _ILE_ALL_OPTS = {
 # option accepts any string, so a value numpy ILE refuses at parse time would
 # reach the driver, or a number would arrive as a string where it is used.
 _ILE_INT_OPTS = {
+    "--td-dense-max-n", "--td-u-stride",
     "--amp-order", "--calibration-burn-in-nmax",
     "--calibration-mc-error-extrinsic", "--calibration-n-realizations",
     "--calibration-n-realizations-max", "--calibration-pilot-extrinsic",
@@ -406,6 +416,11 @@ _ILE_INT_OPTS = {
     "--use-gwsignal-lmax-nyquist",
 }
 _ILE_FLOAT_OPTS = {
+    "--td-acf-duration", "--td-analysis-start", "--td-analysis-end",
+    "--td-mref", "--td-acf-cond", "--td-highpass", "--td-u-svd-tol",
+
+    "--td-acf-duration", "--td-analysis-start", "--td-analysis-end",
+
     "--adapt-floor-level", "--calibration-burn-in-neff",
     "--calibration-neff-cal-target", "--distance-slice-skip-threshold",
     "--distance-slice-wing-delta-lnL", "--extrinsic-proposal-field-cover-frac",
@@ -425,6 +440,8 @@ _ILE_FLOAT_OPTS = {
 _ILE_CHOICE_OPTS = {
     "--sampler-l0-rescue-puff-scale": ["fixed", "auto"],
     "--time-posterior-export": ["auto", "continuous", "grid"],
+    "--early-time-multirate-backend": ["numpy", "cupy", "reference"],
+    "--early-time-multirate-waveform": ["lal", "xp"],
 }
 
 
@@ -466,6 +483,19 @@ def check_critical_and_report(opts, optp):
         return bool(v) if name in _ILE_BOOL_OPTS else (v is not None and v != [])
 
     fatal = []
+    # TD operators have no JAX implementation. Accept the FD selector for
+    # executable substitution, but never silently drop a different likelihood.
+    _ip = getattr(opts, "internal_ile_inner_product", None)
+    if _ip not in (None, "fd-diagonal"):
+        fatal.append("--internal-ile-inner-product %s is not implemented by JAX; "
+                     "use integrate_likelihood_extrinsic_batchmode" % _ip)
+    for _name in ("--td-mref", "--td-piece", "--td-ifo-time-offset", "--td-acf-file", "--td-acf-cond", "--td-dense-max-n", "--td-u-stride", "--td-u-method", "--td-highpass", "--td-u-svd-tol", "--td-whiteness-check",
+                  "--td-solver", "--td-acf-duration", "--td-analysis-start",
+                  "--td-analysis-end", "--td-gap", "--glitch-basis",
+                  "--glitch-basis-file", "--glitch-sigma"):
+        if is_set(_name):
+            fatal.append("%s requires the batchmode TD likelihood; not implemented by JAX"
+                         % _name)
     # --distance-gh-nodes / JAX_ILE_DISTMARG_GH resolution (RO'S 2026-09-08,
     # revised same day per adversarial review: the option must default to
     # None, not 0, or an explicit ``--distance-gh-nodes 0`` is indistinguish-
@@ -511,6 +541,9 @@ def check_critical_and_report(opts, optp):
         fatal.append("supplementary likelihood factors are not implemented")
     if is_set("--nr-lookup") or is_set("--nr-params") or is_set("--nr-index"):
         fatal.append("NR-waveform templates (--nr-*) are not implemented")
+    if any(is_set(x) for x in ("--early-time-multirate", "--early-time-multirate-backend",
+                               "--early-time-multirate-waveform")):
+        fatal.append("--early-time-multirate* (two-rate precompute) is not implemented")
     if is_set("--zero-likelihood"):
         fatal.append("--zero-likelihood is not implemented")
     if is_set("--maximize-only"):

@@ -3836,6 +3836,7 @@ def write_seed_climb_sub(tag='seed_climb', exe=None, arg_str='', log_dir=None, o
     job.add_condor_cmd('environment', '"' + env + '"')
     if request_gpus:
         job.add_condor_cmd('request_GPUs', str(int(request_gpus)))
+    climb_requirements = None
     if use_singularity and singularity_image:
         # The climb reads and writes the run directory in place, so it must stay
         # in the CIT pool, where /scratch is mounted; the executable is a path
@@ -3845,7 +3846,7 @@ def write_seed_climb_sub(tag='seed_climb', exe=None, arg_str='', log_dir=None, o
         # No flock_local: the CIT schedd rewrites it to POOLS = "IGWN,CIT".
         job.add_condor_cmd('MY.POOLS', '"CIT"')
         # prebuilt jaxlib needs AVX; CIT's x86_64-v1 GPU hosts (GTX 1050 Ti) lack it
-        job.add_condor_cmd('requirements', '(HAS_SINGULARITY=?=TRUE) && (TARGET.Microarch =!= "x86_64-v1") && (TARGET.has_avx =!= False)')
+        climb_requirements = '(HAS_SINGULARITY=?=TRUE) && (TARGET.Microarch =!= "x86_64-v1") && (TARGET.has_avx =!= False)'
         job.add_condor_cmd('transfer_executable', 'False')
         # A transfer sandbox gives the container a HOME; without one, Singularity
         # tries to create the submit user's /home on the worker and fails.
@@ -3856,7 +3857,14 @@ def write_seed_climb_sub(tag='seed_climb', exe=None, arg_str='', log_dir=None, o
         job.add_condor_cmd('stream_error', 'True')
     if condor_commands is not None:
         for cmd, value in condor_commands.items():
+            if climb_requirements is not None and cmd.lower() == 'requirements':
+                # Condor submit keys are case insensitive. Keep container and
+                # CPU eligibility when inheriting ILE GPU requirements.
+                climb_requirements += ' && (' + value + ')'
+                continue
             job.add_condor_cmd(cmd, value)
+    if climb_requirements is not None:
+        job.add_condor_cmd('requirements', climb_requirements)
     try:
         job.add_condor_cmd('accounting_group', os.environ['LIGO_ACCOUNTING'])
         job.add_condor_cmd('accounting_group_user', os.environ['LIGO_USER_NAME'])

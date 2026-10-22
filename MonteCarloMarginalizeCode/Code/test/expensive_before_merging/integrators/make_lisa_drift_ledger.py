@@ -44,6 +44,14 @@ OUT = os.path.join(HERE, "lisa_drift_ledger.json")
 # First match wins.
 # ---------------------------------------------------------------------------------------
 RULES = [
+    (r"^FUNC:_series_deltaF$", "PHYSICS", "Finite covariance TD-GS data loading is not wired to LISA; requires a TDI covariance/response decision."),
+    # Ground-based TD operators: only this explicitly reviewed option set.
+    (r"^OPTION:--(internal-ile-inner-product|td-mref|td-piece|td-ifo-time-offset|td-acf-file|td-acf-cond|td-dense-max-n|td-u-stride|td-u-method|td-highpass|td-u-svd-tol|td-whiteness-check|td-solver|td-acf-duration|td-analysis-start|td-analysis-end|td-gap|glitch-basis|glitch-basis-file|glitch-sigma)$", "PHYSICS",
+     "The ground-based Toeplitz/cropped-precision and Gaussian-glitch factory is not "
+     "wired into the LISA driver. Porting requires a TDI-channel covariance, boundary "
+     "and response-model decision with LISA-specific validation; copying the "
+     "ground-based option passthrough would not establish that model."),
+
 
     # ---------------------------------------------------------------- the fair-draw family
     # PORTED in this pass.  These are the PR #87 correctness helpers.  They are pure
@@ -425,6 +433,12 @@ RULES = [
      "Separate internal sampling rate for the ground-based precompute. LISA's "
      "precompute takes its rate from the h5 frame and P.deltaT; there is no second "
      "internal rate to set."),
+    (r"^OPTION:--early-time-multirate(-backend|-waveform)?$", "NA",
+     "Opt-in two-rate precompute (PR #436) for ground-based detector strain: it wraps "
+     "PrecomputeLikelihoodTerms, decimates each IFO's C^-1 d, and builds lalsimulation FD "
+     "modes per |m|. The LISA driver precomputes through PrecomputeAlignedSpinLISA with the "
+     "TDI response and has no per-IFO strain to decimate. A LISA multirate path would be "
+     "its own design, not a port of this one."),
     (r"^OPTION:--srate-resample-time-marginalization$", "PORT",
      "Interpolate the lnL time series onto a finer grid before time resampling. LISA "
      "already has --resample-time-marginalization and its own time-resampling block, "

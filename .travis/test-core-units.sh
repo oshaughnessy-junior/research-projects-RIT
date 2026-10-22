@@ -63,6 +63,15 @@ export MPLBACKEND="${MPLBACKEND:-Agg}"
 C="MonteCarloMarginalizeCode/Code"
 
 FILES=(
+  # Experimental TD operators; only the public PCG backend test is optional.
+  "$C/test/test_td_calmarg_guard.py"
+  "$C/test/test_td_factory.py"
+  "$C/test/test_td_driver_normalization.py"
+  "$C/test/test_td_glitch.py"
+  "$C/test/test_td_inner_product.py"
+  "$C/test/test_td_rank_augmentation.py"
+  "$C/test/test_td_segment.py"
+  "$C/test/test_td_upstream_guards.py"
   # -- calibration marginalization (module-level suites the calmarg gate never picked up)
   "$C/RIFT/calmarg/test_cal_mc_error.py"
   "$C/RIFT/calmarg/test_seed_fallback.py"
@@ -118,6 +127,7 @@ FILES=(
   "$C/test/test_av_host_backend.py"
   "$C/test/test_av_kish_loop.py"
   "$C/test/test_av_retained_density.py"
+  "$C/test/test_av_coverage_diagnostic.py"
   "$C/test/test_matern_gp.py"
   "$C/test/integrators/test_seeding_public_paths.py"
   "$C/test/integrators/test_seeding_reproducibility.py"
@@ -200,6 +210,9 @@ FILES=(
   # every caller indexes it.  A dict keyed the other way is still a populated dict: the
   # mode sum silently loses modes rather than raising.
   "$C/test/test_std_and_conj_hlmoff_sphharm.py"
+  # -- rotate_hlm_static: TimeSeries, FrequencySeries and ndarray inputs agree with a direct
+  # Wigner-D sum (FrequencySeries/ndarray inputs used to raise AttributeError).
+  "$C/test/test_rotate_hlm_static_types.py"
   # -- hlmoft ChooseFDModes end taper is capped in duration: long buffers keep the merger,
   # buffers <= 100 s are bit-identical to the uncapped 1% rule.
   "$C/test/test_fd_end_taper_cap.py"
@@ -232,6 +245,14 @@ FILES=(
   "$C/test/test_eos_evidence_lnL_shift.py"
   # -- coordinates: per-row fallbacks convert each row independently of the others
   "$C/test/test_convert_coordinates_row_independence.py"
+  # -- opt-in early-time multirate precompute (PR #436): two-rate vs one-segment and full-rate
+  #    references, numpy backend vs CPU reference, xp templates vs lalsimulation, schedule and
+  #    job-level refusals (ILE exits nonzero).  The cupy legs are test_multirate_cupy.py (roster: GPU).
+  "$C/test/test_multirate_dsw_onesegment.py"
+  "$C/test/test_multirate_two_rate.py"
+  "$C/test/test_multirate_precompute.py"
+  "$C/test/test_multirate_xpy.py"
+  "$C/test/test_multirate_ile_refusal.py"
 )
 
 # A manifest entry that stops existing is a SILENT no-op: the gate keeps passing while
@@ -477,12 +498,17 @@ done
 # test_dslice_bounds.py adds 2 tests and no skips.
 # test_gwsignal_seob_conditioning.py adds 8 passing tests with LALSuite 7.26.16:
 # shared-grid operator tests plus native/no_condition conflict refusal.
-# 2026-10-19: whole manifest measured on CI merge 010bb870 plus seed-climb
-# scientific, CLI, and compatibility fixes, CVMFS IGWN Python 3.11 on CIT.
-# CPU collection: 953 baseline + 7 ladder + 4 composite + 9 CLI + 12 auxiliary
-# + 6 compatibility = 991 tests from 90 files. The optional 16 GMM device
-# parametrizations belong to the RIFT_REQUIRE_GPU precommit route below.
-EXPECTED_TESTS=991
+# test_av_coverage_diagnostic.py adds 2 tests and no skips -> 955.
+# PR #436: the five test_multirate_*.py files add 62 tests (4+6+6+35+11) and no skips.  RE-MEASURED
+# on 3cf152745 (rift_O4d 48acbd2f8 merged in) 2026-10-20: CI runner 1038 collected / 1019 passed /
+# 19 skipped; ldas-grid (IGWN python, cupy importable, CUDA_VISIBLE_DEVICES='') 1038 / 1018 / 20,
+# the 20th skip being the cupy-importable tempering leg as above.  Less 3 subtests -> 1035/1015.
+# The upstream 1035/1015 floors already include the rotation-type cases.
+# TD adds 90 collected cases (89 required passes; PCG is optional).
+# The startup TD/multirate refusal adds one case: measured collection is 1126.
+# Seed-climb adds 34 cases across four new files and six compatibility cases.
+# Preserve the current target floors and add all 40 cases.
+EXPECTED_TESTS=1166
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -505,9 +531,12 @@ EXPECTED_TESTS=991
 # test_fd_end_taper_cap.py adds 3 tests and no skips; 878/858 (above).
 # test_dslice_rf_tails.py adds 10 tests and no skips; 888/868 (above).
 # test_dslice_bounds.py adds 2 tests; SEOB conditioning adds 8, all passing.
-EXPECTED_PASSED=933
+# test_av_coverage_diagnostic.py adds 2 tests, both passing -> 935.
+# PR #436 multirate files: re-measured 1035/1015 (above; the lower, ldas-grid, passed count).
+# TD adds 89 required passes and the startup refusal adds one -> 1105.
+EXPECTED_PASSED=1145
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
-MAX_SKIPPED=19
+MAX_SKIPPED=20 # one optional tdanalysis PCG test when the extra is absent
 
 # The floors must be INTEGERS, and this is checked rather than assumed.  `[ 347 -lt FOO ]` does
 # not fail the build: bash prints "integer expression expected", returns 2, and the `if` is
@@ -527,7 +556,7 @@ for _f in EXPECTED_TESTS EXPECTED_PASSED MAX_SKIPPED; do
   esac
 done
 
-# PER-FILE floor of 1; pin all 17 GMM host cases and 12 auxiliary handoffs.
+# PER-FILE floor of 1; pin 17 GMM host cases and 17 auxiliary/container cases.
 # A file that collects nothing is the exit-5 trap arriving
 # through the front door: inside a multi-file run pytest's exit 5 never appears at all, so it
 # has to be checked per file.
@@ -538,7 +567,7 @@ for f in "${FILES[@]}"; do
   printf '  %-72s %3d\n' "$f" "$n"
   file_floor=1
   # ordinary/Z/G x staged/CVMFS x seeded/unseeded must all remain covered.
-  if [ "$f" = "$C/test/test_auxiliary_grid_transfers.py" ]; then file_floor=12; fi
+  if [ "$f" = "$C/test/test_auxiliary_grid_transfers.py" ]; then file_floor=17; fi
   if [ "$f" = "$C/test/integrators/test_gmm_sample_matches_score.py" ]; then file_floor=17; fi
   if [ "$n" -lt "$file_floor" ]; then
     echo "test-core-units.sh: $f collects $n tests; requires at least $file_floor." >&2
