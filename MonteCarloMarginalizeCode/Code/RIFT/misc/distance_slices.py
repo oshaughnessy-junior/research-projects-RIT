@@ -1031,6 +1031,11 @@ def warm_integrate_slice(ln_f, lo, hi, seed_x, seed_ln_w, n_max, n_eff_target, n
     return res
 
 
+#: Extrinsic axes on which ILE's likelihood is periodic over its box (RA and orbital phase over 2 pi;
+#: polarization over pi, so also over a 2 pi box).
+PERIODIC_EXTRINSIC = ("right_ascension", "phi_orb", "psi")
+
+
 class WarmSliceSampler:
     """Warm-started fixed-d integrals over the extrinsic parameters of ``reference_sampler``.
 
@@ -1049,7 +1054,7 @@ class WarmSliceSampler:
 
     def __init__(self, reference_sampler, like_to_integrate, seed, seed_ln_w, seed_distance=None,
                  n_block=2000, n_kernel=1000, defensive=0.1, rng=None, return_lnL=True, verbose=True,
-                 fallback=None, khat_max=0.7, **integrator_kw):
+                 fallback=None, khat_max=0.7, periodic=PERIODIC_EXTRINSIC, **integrator_kw):
         from RIFT.integrators.mcsamplerAdaptiveVolume import _prior_pdf_accepts_xpy
         self._accepts_xpy = _prior_pdf_accepts_xpy
         self.like = like_to_integrate
@@ -1065,8 +1070,23 @@ class WarmSliceSampler:
         self.return_lnL, self.verbose, self.integrator_kw = return_lnL, verbose, integrator_kw
         self.fallback, self.khat_max, self.n_fallback = fallback, float(khat_max), 0
         self.integrator_kw["khat_max"] = self.khat_max
-        self.seed_x = np.column_stack([np.asarray(_to_cpu(seed[q]), float) for q in self.params])
+        seed_x = np.column_stack([np.asarray(_to_cpu(seed[q]), float) for q in self.params])
         self.seed_ln_w = np.asarray(_to_cpu(seed_ln_w), float)
+        # Periodic axes are sampled in a rotated copy whose box centre is the seed's circular mean,
+        # so a mode at the wrap point (sky at RA ~ 0, measured on S240426s) is not split across the
+        # two ends of the box, where one shared kernel covariance would smear it over the whole
+        # circle.  A rotation mod the period preserves measure: the integral is unchanged.
+        self.rot = np.zeros(len(self.params))
+        self.period = np.zeros(len(self.params))
+        ok = np.isfinite(self.seed_ln_w)
+        w = np.exp(self.seed_ln_w[ok] - self.seed_ln_w[ok].max()) if np.any(ok) else None
+        for j, q in enumerate(self.params):
+            width = self.hi[j] - self.lo[j]
+            if q in periodic and w is not None and (np.isclose(width, 2 * np.pi) or np.isclose(width, np.pi)):
+                a = 2 * np.pi * (seed_x[ok, j] - self.lo[j]) / width
+                m = np.arctan2(w @ np.sin(a), w @ np.cos(a)) % (2 * np.pi)
+                self.period[j], self.rot[j] = width, m * width / (2 * np.pi) - 0.5 * width
+        self.seed_x = self._to_internal(seed_x)
         self.d_center = None
         if seed_distance is not None:
             dd = np.asarray(_to_cpu(seed_distance), float)
@@ -1078,6 +1098,18 @@ class WarmSliceSampler:
                 self.d_center = float(dd[ok][o][np.searchsorted(c, 0.5 * c[-1])])
         self.done = []          # (ln d, x, ln_w) of finished slices
 
+    def _to_internal(self, x):
+        y = np.array(x, float, copy=True)
+        for j in np.flatnonzero(self.period):
+            y[:, j] = self.lo[j] + np.mod(y[:, j] - self.lo[j] - self.rot[j], self.period[j])
+        return y
+
+    def _to_external(self, y):
+        x = np.array(y, float, copy=True)
+        for j in np.flatnonzero(self.period):
+            x[:, j] = self.lo[j] + np.mod(x[:, j] - self.lo[j] + self.rot[j], self.period[j])
+        return x
+
     def _ln_prior(self, x):
         out = np.zeros(len(x))
         for j, fn in enumerate(self.prior):
@@ -1088,7 +1120,8 @@ class WarmSliceSampler:
         return out
 
     def _ln_f(self, d):
-        def f(x):
+        def f(y):
+            x = self._to_external(y)
             cols = {q: x[:, j] for j, q in enumerate(self.params)}
             cols["distance"] = np.full(len(x), float(d))
             lnL = np.asarray(_to_cpu(self.like(*(cols[a] for a in self.arg_names))), float)

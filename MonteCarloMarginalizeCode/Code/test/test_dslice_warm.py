@@ -137,3 +137,30 @@ def test_walkout_runner_uses_the_warm_sampler():
                                      runner=lambda dd: w.run(dd, n_max=100000, n_eff_target=30))
     assert len(added[0]) > 0 and why == ["target", "target"]
     assert np.all(np.abs(added[1] - truth(added[0])) < 4 * added[2] + 0.02)
+
+
+class PeriodicSampler:
+    def __init__(self):
+        self.llim = {"right_ascension": 0.0, "declination": -1.0}
+        self.rlim = {"right_ascension": 2 * np.pi, "declination": 1.0}
+        self.prior_pdf = {"right_ascension": lambda x: np.full_like(x, 1 / (2 * np.pi)),
+                          "declination": lambda x: np.full_like(x, 0.5)}
+
+
+def test_mode_at_the_periodic_wrap_point():
+    # sky mode at RA = 0 = 2 pi: half the seed sits near 0, half near 2 pi
+    s_ra, s_dec = 0.05, 0.05
+
+    def like_ra(right_ascension, declination, distance):
+        dra = np.angle(np.exp(1j * right_ascension))           # wrapped offset from RA = 0
+        return -0.5 * (dra / s_ra) ** 2 - 0.5 * ((declination - 0.2) / s_dec) ** 2
+
+    truth = np.log(2 * np.pi * s_ra * s_dec / (2 * np.pi * 2))
+    r = np.random.default_rng(3)
+    ra = np.mod(s_ra * r.standard_normal(500), 2 * np.pi)
+    seed = {"right_ascension": ra, "declination": 0.2 + s_dec * r.standard_normal(500)}
+    w = ds.WarmSliceSampler(PeriodicSampler(), like_ra, seed, np.zeros(500), rng=np.random.default_rng(4),
+                            verbose=False)
+    lnL, sig, ne, nt = w.run(np.array([1000.0]), n_max=100000, n_eff_target=30)
+    assert abs(lnL[0] - truth) < 4 * sig[0] + 0.02, (lnL[0] - truth, sig[0])
+    assert nt[0] <= 4 * 2000 and len(w.done) == 1
