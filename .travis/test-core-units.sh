@@ -527,7 +527,7 @@ for _f in EXPECTED_TESTS EXPECTED_PASSED MAX_SKIPPED; do
   esac
 done
 
-# PER-FILE floor of 1; pin all 17 GMM host cases and 12 auxiliary handoffs.
+# PER-FILE floor of 1; pin 17 GMM host cases and 17 auxiliary/container cases.
 # A file that collects nothing is the exit-5 trap arriving
 # through the front door: inside a multi-file run pytest's exit 5 never appears at all, so it
 # has to be checked per file.
@@ -538,7 +538,7 @@ for f in "${FILES[@]}"; do
   printf '  %-72s %3d\n' "$f" "$n"
   file_floor=1
   # ordinary/Z/G x staged/CVMFS x seeded/unseeded must all remain covered.
-  if [ "$f" = "$C/test/test_auxiliary_grid_transfers.py" ]; then file_floor=12; fi
+  if [ "$f" = "$C/test/test_auxiliary_grid_transfers.py" ]; then file_floor=17; fi
   if [ "$f" = "$C/test/integrators/test_gmm_sample_matches_score.py" ]; then file_floor=17; fi
   if [ "$n" -lt "$file_floor" ]; then
     echo "test-core-units.sh: $f collects $n tests; requires at least $file_floor." >&2

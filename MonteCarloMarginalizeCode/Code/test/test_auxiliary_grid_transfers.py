@@ -9,6 +9,39 @@ import pytest
 CODE = Path(__file__).resolve().parents[1]
 BUILDER = CODE / 'bin' / 'create_event_parameter_pipeline_BasicIteration'
 
+
+@pytest.mark.parametrize('key', [None, 'requirements', 'Requirements'])
+def test_seed_container_requirements_survive_gpu_commands(tmp_path, key):
+    from RIFT.misc import dag_utils_generic as dag_utils
+    commands = {} if key is None else {key: 'TARGET.CUDACapability >= 9.0 || TARGET.AllowTestGPU'}
+    job, _ = dag_utils.write_seed_climb_sub(
+        exe='/bin/true', arg_str='--test', use_singularity=True,
+        singularity_image='/unused-jax-image.sif', condor_commands=commands)
+    path = tmp_path / 'seed.sub'
+    job.set_sub_file(str(path))
+    job.write_sub_file()
+    requirements = [line.split('=', 1)[1].strip() for line in path.read_text().splitlines()
+                    if line.split('=', 1)[0].strip().lower() == 'requirements']
+    assert len(requirements) == 1
+    expr = requirements[0]
+    for guard in ['HAS_SINGULARITY=?=TRUE', 'TARGET.Microarch =!= "x86_64-v1"',
+                  'TARGET.has_avx =!= False']:
+        assert guard in expr, expr
+    if key is not None:
+        # The inherited OR must not bypass the container/AVX conjunction.
+        assert expr.endswith(' && (' + commands[key] + ')'), expr
+
+
+def test_seed_native_requirements_are_preserved(tmp_path):
+    from RIFT.misc import dag_utils_generic as dag_utils
+    expr = 'TARGET.CUDACapability >= 9.0'
+    job, _ = dag_utils.write_seed_climb_sub(
+        exe='/bin/true', arg_str='--test', condor_commands={'requirements': expr})
+    path = tmp_path / 'seed.sub'
+    job.set_sub_file(str(path))
+    job.write_sub_file()
+    assert 'requirements = ' + expr in path.read_text()
+
 @pytest.mark.parametrize('frame_mode', ['staged', 'cvmfs'])
 @pytest.mark.parametrize('schedule', ['ordinary', 'Z', 'G'])
 @pytest.mark.parametrize('seeded', [True, False])
