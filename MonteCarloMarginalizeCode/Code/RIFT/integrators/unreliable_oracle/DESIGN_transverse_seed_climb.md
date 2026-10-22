@@ -92,7 +92,8 @@ RIFT ILE image carries JAX: `--seed-climb-singularity-image` (pseudo_pipe
 `$SINGULARITY_RIFT_SEED_CLIMB_IMAGE`), or the build refuses. The sub sets
 `MY.POOLS = "CIT"` and omits `flock_local`, which the CIT schedd rewrites to
 "IGWN,CIT" (IGWN nodes lack `/scratch`). It requests a transfer sandbox so the
-container has a `HOME`. It takes the ILE condor commands (GPU requirements) and does
+container has a `HOME`, and excludes `x86_64-v1` hosts: prebuilt jaxlib needs AVX,
+which CIT's GTX 1050 Ti nodes lack (so a CUDA 11 JAX image gains no CIT GPUs). It takes the ILE condor commands (GPU requirements) and does
 not transfer the executable, so the climber path must exist in the image or on
 a bound filesystem. Until a RIFT image ships the climber, point
 `--transverse-seed-climb-exe` at a `/scratch` checkout and set

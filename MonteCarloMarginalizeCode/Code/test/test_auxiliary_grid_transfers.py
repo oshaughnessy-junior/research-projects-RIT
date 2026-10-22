@@ -73,6 +73,7 @@ def test_auxiliary_grid_transfers_are_independent(tmp_path, frame_mode, schedule
         assert 'MY.POOLS = "CIT"' in sub and 'transfer_executable = False' in sub
         assert 'getenv = *RIFT*' in sub   # getenv=* carries HOME; container start then fails
         assert 'flock_local' not in sub and 'should_transfer_files = YES' in sub
+        assert 'x86_64-v1' in sub   # jaxlib needs AVX
 
     # Every final extrinsic worker must consume the grid emitted by the final fit.
     import re

@@ -3844,7 +3844,8 @@ def write_seed_climb_sub(tag='seed_climb', exe=None, arg_str='', log_dir=None, o
         job.add_condor_cmd('MY.SingularityBindCVMFS', 'True')
         # No flock_local: the CIT schedd rewrites it to POOLS = "IGWN,CIT".
         job.add_condor_cmd('MY.POOLS', '"CIT"')
-        job.add_condor_cmd('requirements', '(HAS_SINGULARITY=?=TRUE)')
+        # prebuilt jaxlib needs AVX; CIT's x86_64-v1 GPU hosts (GTX 1050 Ti) lack it
+        job.add_condor_cmd('requirements', '(HAS_SINGULARITY=?=TRUE) && (TARGET.Microarch =!= "x86_64-v1") && (TARGET.has_avx =!= False)')
         job.add_condor_cmd('transfer_executable', 'False')
         # A transfer sandbox gives the container a HOME; without one, Singularity
         # tries to create the submit user's /home on the worker and fails.
