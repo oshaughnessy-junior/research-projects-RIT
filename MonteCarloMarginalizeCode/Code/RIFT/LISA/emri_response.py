@@ -7,6 +7,8 @@ the likelihood caller; the response does not imply independent channel noise.
 from dataclasses import dataclass
 import hashlib
 from importlib import metadata
+from importlib.machinery import EXTENSION_SUFFIXES
+import sys
 from numbers import Integral, Real
 from pathlib import Path
 
@@ -91,6 +93,40 @@ def _load_backend():
     return pyResponseTDI, Orbits, versions
 
 
+
+def _module_artifact(module):
+    """Describe the loaded file, including an explicitly selected overlay."""
+    origin = getattr(module, "__file__", None)
+    if not origin:
+        raise RuntimeError("loaded response provenance requires a module file")
+    path = Path(origin).resolve(strict=True)
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return {"module": module.__name__, "path": str(path), "sha256": digest.hexdigest()}
+
+
+def _loaded_backend_provenance(response, response_class, orbit_class):
+    """Bind provenance to the native object actually constructed by FLR."""
+    native = sys.modules.get("fastlisaresponse_backend_cpu.responselisa")
+    if (native is None or not hasattr(native, "pyLISAResponseWrap")
+            or type(response.cpp_response) is not native.pyLISAResponseWrap):
+        raise RuntimeError("selected response object is not the loaded native CPU backend")
+    artifact = _module_artifact(native)
+    if not any(artifact["path"].endswith(suffix) for suffix in EXTENSION_SUFFIXES):
+        raise RuntimeError("selected CPU response module is not a native extension file")
+    modules = {"python_wrapper": response_class.__module__,
+               "lat_detector": orbit_class.__module__}
+    result = {"native_cpu": artifact}
+    for role, name in modules.items():
+        module = sys.modules.get(name)
+        if module is None:
+            raise RuntimeError("defining response module is not loaded: " + name)
+        result[role] = _module_artifact(module)
+    return result
+
+
 def equal_arm_aet(hp, hc, *, dt, sky_colatitude, sky_longitude, epoch=0.0,
                   config):
     """Return trimmed A/E/T from hp,hc sampled at the orbit's zero epoch.
@@ -136,6 +172,7 @@ def equal_arm_aet(hp, hc, *, dt, sky_colatitude, sky_longitude, epoch=0.0,
         order=config.interpolation_order, tdi=config.tdi_generation,
         orbits=orbits, tdi_chan="AET", force_backend="cpu",
     )
+    backend_artifacts = _loaded_backend_provenance(response, response_class, orbit_class)
     if response.num_pts != count:
         raise RuntimeError("the response changed the requested sample count")
     # pyResponseTDI consumes hp + i*hc; FEW's complex convention is hp - i*hc.
@@ -152,7 +189,7 @@ def equal_arm_aet(hp, hc, *, dt, sky_colatitude, sky_longitude, epoch=0.0,
     channels = full[:, trim:-trim].copy()
     channels.setflags(write=False)
     info = {
-        **versions, "backend": "cpu", "channels": ["A", "E", "T"],
+        **versions, "backend": "cpu", "backend_artifacts": backend_artifacts, "channels": ["A", "E", "T"],
         "observable": "TDI fractional-frequency", "orbit_git_blob": ORBIT_GIT_BLOB,
         "orbit_sha256": orbit_sha256, "input_epoch_seconds": float(epoch),
         "epoch_reference": "pinned equal-arm orbit t=0",
