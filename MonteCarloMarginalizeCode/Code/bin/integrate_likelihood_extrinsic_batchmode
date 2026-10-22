@@ -561,6 +561,7 @@ intrinsic_params.add_option("--distance-slice-walkout-delta-lnL",type=float,defa
 intrinsic_params.add_option("--distance-slice-walkout-max-steps",type=int,default=8,help="Cap on walk-out slices per side (see --distance-slice-walkout-delta-lnL).")
 intrinsic_params.add_option("--distance-slice-warm-start",action="store_true",default=False,help="(all-fresh only) Replace each slice's fresh AV integration with adaptive importance sampling over all extrinsic axes, warm-started: the first slice's proposal is a kernel density fitted to the main loop's samples (tempered by --distance-slice-warm-seed-temper), each later slice's to the nearest finished slice, refitted after every block; a uniform component over the prior box keeps the estimate unbiased if the seed is off. Assumes the main loop found every mode of each slice's conditional. Walk-out slices are warm-started too. Default off.")
 intrinsic_params.add_option("--distance-slice-warm-block",type=int,default=2000,help="Block size (likelihood evaluations per proposal refit) for --distance-slice-warm-start.")
+intrinsic_params.add_option("--distance-slice-warm-khat-max",type=float,default=0.7,help="--distance-slice-warm-start: a warm slice whose estimate-phase Pareto k-hat exceeds this is redone by the cold AV (and the proposal does not freeze while a block's k-hat exceeds it).")
 intrinsic_params.add_option("--distance-slice-warm-seed-temper",type=float,default=0.3,help="Exponent applied to the main loop's posterior weights before they seed --distance-slice-warm-start; < 1 broadens the seed so it covers the conditionals at the edge slices.")
 optp.add_option_group(intrinsic_params)
 
@@ -6345,6 +6346,7 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
               warm = distance_slices.WarmSliceSampler(
                   sampler, like_to_integrate, _ws_seed, float(opts.distance_slice_warm_seed_temper) * _ws_lnw,
                   seed_distance=_ws_d, n_block=int(opts.distance_slice_warm_block), return_lnL=return_lnL,
+                  khat_max=float(opts.distance_slice_warm_khat_max),
                   fallback=lambda dd: distance_slices.fresh_sample_slices(
                       sampler, like_to_integrate, dd, n_max=int(opts.distance_slice_wing_nmax),
                       n_eff_target=int(opts.distance_slice_wing_neff), n_chunk=slice_chunk, return_lnL=return_lnL))

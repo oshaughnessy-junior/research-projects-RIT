@@ -929,7 +929,7 @@ def _logsumexp_rows(a):
 def warm_integrate_slice(ln_f, lo, hi, seed_x, seed_ln_w, n_max, n_eff_target, n_block=2000,
                          defensive=0.1, n_kernel=1000, rng=None, inflate=4.0, stable_nsigma=2.0,
                          include_decider=True, mean_nsigma=None, khat_max=0.7, max_adapt_blocks=5,
-                         broad=None, broad_frac=0.1):
+                         broad=None, broad_frac=0.1, refit_temper=0.5):
     """ln of the integral over the box [lo, hi] of exp(ln_f(x)) by adaptive importance sampling.
 
     ``ln_f(x)`` takes an (n, p) array of in-box points and returns ln integrand (lnL + ln prior).
@@ -948,6 +948,9 @@ def warm_integrate_slice(ln_f, lo, hi, seed_x, seed_ln_w, n_max, n_eff_target, n
     block's proposal is used as is.
     The proposal also freezes only once the agreeing block's Pareto k-hat (``pareto_khat``) is at most
     ``khat_max``: two blocks from a proposal stuck in the target's tail can agree with each other.
+    Refits use the draws' weights raised to ``refit_temper``: at n_eff ~ 30 the raw weights put the
+    kernels on ~30 points, and a curved conditional (sky ring, phase-polarization ridge) falls
+    between them; tempering spreads the kernels along it.  The estimate uses the raw weights.
     ``broad`` = (x, ln_w), if given, adds a fixed KDE of those points with weight ``broad_frac`` to every
     block's mixture (ILE passes the main loop's tempered posterior): mass anywhere the main loop saw
     stays reachable when the slice seed is displaced, where the uniform box would almost never land.
@@ -1014,7 +1017,7 @@ def warm_integrate_slice(ln_f, lo, hi, seed_x, seed_ln_w, n_max, n_eff_target, n
             break
         all_lw = np.concatenate(lws)
         if np.any(np.isfinite(all_lw)):
-            kde = fit_kde_proposal(np.concatenate(xs), all_lw, lo, hi, n_kernel, rng, inflate=inflate)
+            kde = fit_kde_proposal(np.concatenate(xs), refit_temper * all_lw, lo, hi, n_kernel, rng, inflate=inflate)
     while n_total < n_max and (not est or _neff(np.concatenate(est)) < n_eff_target):   # estimate
         x, lw = block(kde)
         xs.append(x)
@@ -1140,7 +1143,7 @@ class WarmSliceSampler:
             lnd = np.log(d[k])
             if self.done:
                 j = int(np.argmin([abs(lnd - r[0]) for r in self.done]))
-                sx, sw = self.done[j][1], self.done[j][2]
+                sx, sw = self.done[j][1], self.integrator_kw.get("refit_temper", 0.5) * self.done[j][2]
             else:
                 sx, sw = self.seed_x, self.seed_ln_w
             try:
