@@ -63,3 +63,18 @@ def test_invalid_channels_and_no_band_power():
     data = rng.normal(size=(3, 64))
     with pytest.raises(ValueError):
         evaluate_channel_trials(data, [('bad', data[:, :-1])], **kwargs)
+
+
+def test_absolute_psd_is_frozen_across_fixture_changes():
+    n, dt = 128, 2.
+    t = np.arange(n)
+    data = np.asarray([np.cos(2*np.pi*k*t/n) for k in (2, 4, 7)])
+    kwargs = dict(dt=dt, psd_levels=[2, 3, 5], target_snr=None, fmin=0, fmax=.25)
+    base = evaluate_channel_trials(data, [('offset', data/2)], **kwargs)
+    changed = evaluate_channel_trials(data*2, [('offset', data)], **kwargs)
+    assert base['noise']['normalization'] == 'fixed_supplied_psd'
+    assert base['noise']['one_sided_psd'] == [2., 3., 5.]
+    assert changed['noise'] == base['noise']
+    assert changed['snr_squared'] == pytest.approx(4*base['snr_squared'])
+    assert changed['trials'][0]['log_likelihood'] == pytest.approx(
+        4*base['trials'][0]['log_likelihood'])

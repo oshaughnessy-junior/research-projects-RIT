@@ -28,6 +28,7 @@ def evaluate_channel_trials(data, models, *, dt, psd_levels, target_snr,
 
     This constructs an artificial diagonal noise model in the response output
     observable. It makes no statement about physical LISA noise covariance.
+    target_snr=None uses psd_levels as fixed absolute PSDs for convergence runs.
     DC and any Nyquist endpoint are excluded; all trials use the same mask/PSD.
     """
     data = np.asarray(data)
@@ -40,8 +41,9 @@ def evaluate_channel_trials(data, models, *, dt, psd_levels, target_snr,
     levels = np.asarray(psd_levels, dtype=float)
     if levels.shape != (3,) or not np.all(np.isfinite(levels)) or np.any(levels <= 0):
         raise ValueError('psd_levels must contain three finite positive values')
-    if not np.isscalar(target_snr) or not np.isfinite(target_snr) or target_snr <= 0:
-        raise ValueError('target_snr must be finite and positive')
+    if target_snr is not None and (
+            not np.isscalar(target_snr) or not np.isfinite(target_snr) or target_snr <= 0):
+        raise ValueError('target_snr must be null (fixed PSD) or finite and positive')
     if not np.isfinite(fmin) or not np.isfinite(fmax) or not 0 <= fmin < fmax:
         raise ValueError('frequency limits must be finite, ordered and nonnegative')
     n = data.shape[1]
@@ -57,7 +59,10 @@ def evaluate_channel_trials(data, models, *, dt, psd_levels, target_snr,
     raw_norm = aet_inner_product(fd, fd, psd, df, mask=mask)
     if not np.isfinite(raw_norm) or raw_norm <= 0:
         raise ValueError('injection has no nonzero power in the selected band')
-    psd *= raw_norm / target_snr**2
+    normalization = 'fixed_supplied_psd'
+    if target_snr is not None:
+        psd *= raw_norm / target_snr**2
+        normalization = 'fixed_from_injection_target_snr'
     snr_squared = aet_inner_product(fd, fd, psd, df, mask=mask)
     records = []
     for trial_id, model in models:
@@ -72,7 +77,7 @@ def evaluate_channel_trials(data, models, *, dt, psd_levels, target_snr,
                         'channel_sha256': channel_digest(model)})
     return {'noise': {'kind': 'synthetic_independent_white',
                       'one_sided_psd': psd[:, 0].tolist(),
-                      'normalization': 'fixed_from_injection_target_snr'},
+                      'normalization': normalization},
             'snr_squared': snr_squared,
             'null_log_likelihood': aet_log_likelihood(fd, 0*fd, psd, df, mask=mask),
             'injection_log_likelihood': aet_log_likelihood(fd, fd, psd, df, mask=mask),

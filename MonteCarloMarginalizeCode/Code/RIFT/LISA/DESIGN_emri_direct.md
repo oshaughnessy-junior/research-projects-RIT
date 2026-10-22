@@ -32,7 +32,9 @@ to eight trial points. The command permits at most 64 points.
 Noise fields are `kind`, `psd_levels`, `target_snr`, `fmin_hz`, and `fmax_hz`.
 The only supported kind is `synthetic_independent_white`.
 Three positive PSD levels define their relative channel weights.
-Their common scale is set once from the injection and requested SNR.
+A positive `target_snr` sets their common scale once from the injection.
+Set `target_snr` to JSON `null` to use the supplied absolute PSD levels.
+For convergence runs, copy the canonical output PSD and use this fixed mode.
 That PSD remains fixed for every trial. The covariance is diagonal by this
 synthetic experiment's definition; no physical LISA noise model is asserted.
 
