@@ -65,7 +65,7 @@ class FEWConfig:
     dt_seconds: float
     epoch_start_seconds: float
     epoch_reference: str
-    eps: float = 1e-5
+    eps: float = 1e-5  # FEW mode_selection_threshold, not trajectory tolerance.
 
     def __post_init__(self):
         if isinstance(self.n_samples, bool) or not isinstance(self.n_samples, (int, np.integer)) or self.n_samples < 2:
@@ -171,13 +171,19 @@ class FewWaveformAdapter:
             params.m1_msun, params.m2_msun, params.a, params.p0, params.e0, params.xI0,
             params.distance_gpc, params.qS, params.phiS, params.qK, params.phiK,
             params.Phi_phi0, params.Phi_theta0, params.Phi_r0,
-            T=duration_years, dt=c.dt_seconds, eps=c.eps)
+            T=duration_years, dt=c.dt_seconds, mode_selection_threshold=c.eps,
+            mode_selection='threshold', include_minus_mkn=True, batch_size=-1)
         polarizations = np.asarray([hp, hc])
         if polarizations.ndim != 2 or polarizations.shape[0] != 2 or not np.isrealobj(polarizations):
             raise ValueError('FEW must return real hp,hc arrays with matching shape')
         if polarizations.shape[1] != c.n_samples or not np.all(np.isfinite(polarizations)):
             raise ValueError('FEW output must be finite with the requested sample count')
-        metadata = {'few_version': self.few_version, 'model': self.model, 'backend': 'cpu',
+        generator = self.waveform.waveform_generator
+        retained_modes = np.column_stack([generator.ls, generator.ms,
+                                          generator.ks, generator.ns]).astype(int).tolist()
+        metadata = {'retained_lmkn': retained_modes,
+                    'mode_selection': 'threshold', 'include_minus_mkn': True,
+                    'few_version': self.few_version, 'model': self.model, 'backend': 'cpu',
                     'frame': 'SSB polarizations (FEW detector frame)',
                     'YRSID_SI': self.year_seconds, 'backend_duration_years': duration_years,
                     'sample_span_seconds': (c.n_samples-1)*c.dt_seconds,

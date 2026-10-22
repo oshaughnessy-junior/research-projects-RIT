@@ -47,12 +47,15 @@ def test_api_units_phase_order_and_output_contract(monkeypatch):
         def wave(*args, **kw):
             calls['evaluation'] = (args, kw)
             return [np.ones(4096), 2*np.ones(4096)]
+        from types import SimpleNamespace
+        wave.waveform_generator = SimpleNamespace(ls=[2], ms=[2], ks=[0], ns=[1])
         return wave
     monkeypatch.setattr(fa, '_load_few', lambda: (factory, 100., '2.2.0'))
     out = fa.FewWaveformAdapter(config()).generate(parameters())
     args, kw = calls['evaluation']
     assert args == (1e6, 10., 0., 12., .2, 1., 1., 1., 2., .7, .3, .2, 0., .4)
-    assert kw == {'T': 409.5, 'dt': 10., 'eps': 1e-5}
+    assert kw == {'T': 409.5, 'dt': 10., 'mode_selection_threshold': 1e-5,
+                  'mode_selection': 'threshold', 'include_minus_mkn': True, 'batch_size': -1}
     assert calls['construction'][1]['frame'] == 'detector'
     assert out.polarizations.shape == (2, 4096)
     assert out.n_samples == 4096
@@ -61,9 +64,16 @@ def test_api_units_phase_order_and_output_contract(monkeypatch):
 
 @pytest.mark.skipif(os.environ.get('RIFT_RUN_FEW_REAL') != '1',
                     reason='requires prefetched FEW2.2.0 model data; explicit opt-in')
-def test_actual_few_polarizations_distance_and_phases():
+def test_actual_few_polarizations_distance_and_phases(monkeypatch):
     adapter = fa.FewWaveformAdapter(config())
     p = parameters()
+    selector_type = type(adapter.waveform.waveform_generator.mode_selector)
+    original_selector_call = selector_type.__call__
+    recorded_thresholds = []
+    def selector_call(self, *args, **kwargs):
+        recorded_thresholds.append(kwargs.get('mode_selection_threshold'))
+        return original_selector_call(self, *args, **kwargs)
+    monkeypatch.setattr(selector_type, '__call__', selector_call)
     out = adapter(p)
     doubled_distance = adapter(replace(p, distance_gpc=2*p.distance_gpc))
     np.testing.assert_allclose(doubled_distance.polarizations,
@@ -75,6 +85,12 @@ def test_actual_few_polarizations_distance_and_phases():
         assert difference > 1e-5*np.linalg.norm(out.polarizations)
     assert out.metadata['backend'] == 'cpu'
     assert out.metadata['few_version'] == '2.2.0'
+    assert len(out.metadata['retained_lmkn']) > 0
+    assert recorded_thresholds and all(v == config().eps for v in recorded_thresholds)
+    loose = fa.FewWaveformAdapter(replace(config(), eps=0.1))(p)
+    assert recorded_thresholds[-1] == 0.1
+    assert len(loose.metadata['retained_lmkn']) < len(out.metadata['retained_lmkn'])
+    assert not np.array_equal(loose.polarizations, out.polarizations)
 
 
 @pytest.mark.parametrize('output', [np.zeros((2, 4095)), np.full((2, 4096), np.nan),
