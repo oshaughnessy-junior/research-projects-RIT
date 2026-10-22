@@ -506,9 +506,10 @@ done
 # The upstream 1035/1015 floors already include the rotation-type cases.
 # TD adds 90 collected cases (89 required passes; PCG is optional).
 # The startup TD/multirate refusal adds one case: measured collection is 1126.
-# Seed-climb adds 34 cases across four new files and six compatibility cases.
-# Preserve the current target floors and add all 40 cases.
-EXPECTED_TESTS=1166
+# PR #448 core census: auxiliary transfers 18 + ladder 7 + composite 1 + seed CLI 9
+# add 35 cases to 1126. The six multiapprox compatibility cases run in test-run,
+# not this manifest. CI's 105 per-file counts sum 1161; JUnit 1164 includes 3 subtests.
+EXPECTED_TESTS=1161
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -534,7 +535,9 @@ EXPECTED_TESTS=1166
 # test_av_coverage_diagnostic.py adds 2 tests, both passing -> 935.
 # PR #436 multirate files: re-measured 1035/1015 (above; the lower, ldas-grid, passed count).
 # TD adds 89 required passes and the startup refusal adds one -> 1105.
-EXPECTED_PASSED=1145
+# CI: 1144 JUnit passes minus 3 extra subtests = 1141 ordinary passes; 20 skipped
+# outcomes include one xfail. Preserve the full measured plugin-free pass floor.
+EXPECTED_PASSED=1141
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 MAX_SKIPPED=20 # one optional tdanalysis PCG test when the extra is absent
 
@@ -556,18 +559,20 @@ for _f in EXPECTED_TESTS EXPECTED_PASSED MAX_SKIPPED; do
   esac
 done
 
-# PER-FILE floor of 1; pin 17 GMM host cases and 17 auxiliary/container cases.
+# PER-FILE floor of 1; pin 17 GMM host cases and 18 auxiliary/container cases.
 # A file that collects nothing is the exit-5 trap arriving
 # through the front door: inside a multi-file run pytest's exit 5 never appears at all, so it
 # has to be checked per file.
 echo "== per-file collection floor =="
 floor_rc=0
+collected_total=0
 for f in "${FILES[@]}"; do
   n=$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "$f" 2>/dev/null | grep -c '::')
   printf '  %-72s %3d\n' "$f" "$n"
+  collected_total=$(( collected_total + n ))
   file_floor=1
-  # ordinary/Z/G x staged/CVMFS x seeded/unseeded must all remain covered.
-  if [ "$f" = "$C/test/test_auxiliary_grid_transfers.py" ]; then file_floor=17; fi
+  # Transfer matrix, container guards, and newline requirements must remain covered.
+  if [ "$f" = "$C/test/test_auxiliary_grid_transfers.py" ]; then file_floor=18; fi
   if [ "$f" = "$C/test/integrators/test_gmm_sample_matches_score.py" ]; then file_floor=17; fi
   if [ "$n" -lt "$file_floor" ]; then
     echo "test-core-units.sh: $f collects $n tests; requires at least $file_floor." >&2
@@ -576,7 +581,11 @@ for f in "${FILES[@]}"; do
   fi
 done
 [ "$floor_rc" -eq 0 ] || exit 1
-
+# Reuse collection already performed above; no additional pytest process.
+if [ "$collected_total" -lt "$EXPECTED_TESTS" ]; then
+  echo "test-core-units.sh: per-file collection totals ${collected_total}; requires ${EXPECTED_TESTS}." >&2
+  exit 1
+fi
 
 junit="$(mktemp -t core-units-junit-XXXXXX.xml)"
 echo "== running =="
