@@ -35,6 +35,8 @@ def test_polarization_sign_angles_trim_epoch_and_backend(monkeypatch, tmp_path):
         def get_tdi_delays(self):
             return np.arange(3 * self.num_pts).reshape(3, self.num_pts)
 
+    artifacts = {"native_cpu": {"path": "/test/native.so", "sha256": "recorded"}}
+    monkeypatch.setattr(response, "_loaded_backend_provenance", lambda *args: artifacts)
     monkeypatch.setattr(response, "_verified_orbit", lambda path: "sha256")
     monkeypatch.setattr(response, "_load_backend", lambda: (Backend, Orbit, {}))
     config = response.ResponseConfig(str(tmp_path / "orbit.h5"), trim_seconds=20)
@@ -48,6 +50,7 @@ def test_polarization_sign_angles_trim_epoch_and_backend(monkeypatch, tmp_path):
     np.testing.assert_array_equal(output.channels, np.arange(36).reshape(3, 12)[:, 2:-2])
     assert output.epoch_seconds == 20
     assert output.dt == 10
+    assert output.metadata["backend_artifacts"] == artifacts
     assert output.metadata["input_samples"] == 12
     assert output.metadata["output_samples"] == 8
     assert not output.channels.flags.writeable
@@ -156,3 +159,50 @@ def test_pinned_cpu_response_matches_wrapper_and_xyz_transform():
     flipped = response.equal_arm_aet(hp, -hc, dt=dt, sky_colatitude=1,
                                      sky_longitude=2, config=config)
     assert np.linalg.norm(flipped.channels-actual.channels) > 0.01*np.linalg.norm(actual.channels)
+
+
+def test_actual_loaded_module_paths_and_hashes_not_distribution_guess(monkeypatch,tmp_path):
+    import hashlib
+    from types import ModuleType,SimpleNamespace
+    cpu=ModuleType('fastlisaresponse_backend_cpu.responselisa')
+    wrapper=ModuleType('test_loaded_flr_wrapper')
+    detector=ModuleType('test_loaded_lat_detector')
+    class Native:pass
+    class Wrapper:pass
+    class Orbit:pass
+    cpu.pyLISAResponseWrap=Native
+    Wrapper.__module__=wrapper.__name__;Orbit.__module__=detector.__name__
+    for module,filename,payload in [(cpu,'overlay'+response.EXTENSION_SUFFIXES[0],b'loaded native overlay'),
+            (wrapper,'wrapper.py',b'python wrapper bytes'),(detector,'detector.py',b'LAT detector bytes')]:
+        path=tmp_path/filename;path.write_bytes(payload);module.__file__=str(path)
+        monkeypatch.setitem(sys.modules,module.__name__,module)
+    obj=SimpleNamespace(cpp_response=Native())
+    artifacts=response._loaded_backend_provenance(obj,Wrapper,Orbit)
+    for role,module in [('native_cpu',cpu),('python_wrapper',wrapper),('lat_detector',detector)]:
+        assert artifacts[role]=={'module':module.__name__,'path':str(Path(module.__file__).resolve()),
+            'sha256':hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest()}
+    # Same distribution/version cannot conceal a different selected extension.
+    Path(cpu.__file__).write_bytes(b'different loaded overlay')
+    changed=response._loaded_backend_provenance(obj,Wrapper,Orbit)
+    assert changed['native_cpu']['sha256']!=artifacts['native_cpu']['sha256']
+    assert changed['python_wrapper']==artifacts['python_wrapper']
+    with pytest.raises(RuntimeError,match='native CPU backend'):
+        response._loaded_backend_provenance(SimpleNamespace(cpp_response=object()),Wrapper,Orbit)
+    monkeypatch.delitem(sys.modules,cpu.__name__)
+    with pytest.raises(RuntimeError,match='native CPU backend'):
+        response._loaded_backend_provenance(obj,Wrapper,Orbit)
+
+
+def test_provenance_refuses_unavailable_or_non_native_origins(monkeypatch,tmp_path):
+    from types import ModuleType,SimpleNamespace
+    cpu=ModuleType('fastlisaresponse_backend_cpu.responselisa')
+    class Native:pass
+    cpu.pyLISAResponseWrap=Native
+    cpu.__file__=str(tmp_path/'pretend.py');Path(cpu.__file__).write_bytes(b'not native')
+    monkeypatch.setitem(sys.modules,cpu.__name__,cpu)
+    with pytest.raises(RuntimeError,match='native extension'):
+        response._loaded_backend_provenance(SimpleNamespace(cpp_response=Native()),Native,Native)
+    with pytest.raises(RuntimeError,match='module file'):
+        response._module_artifact(ModuleType('no_origin'))
+    cpu.__file__=str(tmp_path/('missing'+response.EXTENSION_SUFFIXES[0]))
+    with pytest.raises(FileNotFoundError):response._module_artifact(cpu)
