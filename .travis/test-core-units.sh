@@ -95,11 +95,15 @@ FILES=(
   "$C/test/test_sky_rotations.py"
   # -- pseudo_pipe: per-class disk requests reach their own job class
   "$C/test/test_pseudo_pipe_request_disk.py"
+  "$C/test/test_auxiliary_grid_transfers.py"
   # The Bilby-convention noise evidence: its normalization is checked against the
   # 4/T sum |d|^2/S formula through the real ComplexIP, so a factor of two regresses
   # loudly instead of shifting every reported log evidence by a plausible amount.
   "$C/test/test_noise_evidence.py"
   # -- integrators: seeding, allocation, weight derivation
+  "$C/test/integrators/test_ladder_climber.py"
+  "$C/test/integrators/test_seed_climb_composite.py"
+  "$C/test/integrators/test_seed_climb_cli.py"
   "$C/test/integrators/test_convergence_sample_order.py"
   "$C/test/integrators/test_extrinsic_phase_group_uniform.py"
   "$C/test/integrators/test_gmm_adaptive.py"
@@ -504,9 +508,11 @@ done
 # The upstream 1035/1015 floors already include the rotation-type cases.
 # TD adds 90 collected cases (89 required passes; PCG is optional).
 # The startup TD/multirate refusal adds one case: measured collection is 1126.
-# test_dslice_walkout.py adds 15 tests and no skips -> 1141/1120.
-# test_dslice_warm.py adds 11 tests and no skips -> 1152/1131.
-EXPECTED_TESTS=1152
+# Seed-climb adds 34 cases across four new files and six compatibility cases.
+# Preserve the current target floors and add all 40 cases.
+# test_dslice_walkout.py adds 15 tests and no skips -> 1181/1160.
+# test_dslice_warm.py adds 11 tests and no skips -> 1192/1171.
+EXPECTED_TESTS=1192
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -532,9 +538,9 @@ EXPECTED_TESTS=1152
 # test_av_coverage_diagnostic.py adds 2 tests, both passing -> 935.
 # PR #436 multirate files: re-measured 1035/1015 (above; the lower, ldas-grid, passed count).
 # TD adds 89 required passes and the startup refusal adds one -> 1105.
-# test_dslice_walkout.py adds 15 tests and no skips; 1141/1120 (above).
-# test_dslice_warm.py adds 11 tests and no skips; 1152/1131 (above).
-EXPECTED_PASSED=1131
+# test_dslice_walkout.py adds 15 tests and no skips; 1181/1160 (above).
+# test_dslice_warm.py adds 11 tests and no skips; 1192/1171 (above).
+EXPECTED_PASSED=1171
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 MAX_SKIPPED=20 # one optional tdanalysis PCG test when the extra is absent
 
@@ -556,7 +562,8 @@ for _f in EXPECTED_TESTS EXPECTED_PASSED MAX_SKIPPED; do
   esac
 done
 
-# PER-FILE collection floor of 1.  A file that collects nothing is the exit-5 trap arriving
+# PER-FILE floor of 1; pin 17 GMM host cases and 17 auxiliary/container cases.
+# A file that collects nothing is the exit-5 trap arriving
 # through the front door: inside a multi-file run pytest's exit 5 never appears at all, so it
 # has to be checked per file.
 echo "== per-file collection floor =="
@@ -564,10 +571,13 @@ floor_rc=0
 for f in "${FILES[@]}"; do
   n=$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "$f" 2>/dev/null | grep -c '::')
   printf '  %-72s %3d\n' "$f" "$n"
-  if [ "$n" -lt 1 ]; then
-    echo "test-core-units.sh: $f collects 0 tests." >&2
-    echo "  pytest exits 5 on that ('no tests ran'), which reads as a pass.  Either it is not" >&2
-    echo "  a pytest target and belongs in .travis/ci_roster.txt, or its entry points broke." >&2
+  file_floor=1
+  # ordinary/Z/G x staged/CVMFS x seeded/unseeded must all remain covered.
+  if [ "$f" = "$C/test/test_auxiliary_grid_transfers.py" ]; then file_floor=17; fi
+  if [ "$f" = "$C/test/integrators/test_gmm_sample_matches_score.py" ]; then file_floor=17; fi
+  if [ "$n" -lt "$file_floor" ]; then
+    echo "test-core-units.sh: $f collects $n tests; requires at least $file_floor." >&2
+    echo "  Restore the required test cases; reduced collection can hide a missing gate." >&2
     floor_rc=1
   fi
 done
