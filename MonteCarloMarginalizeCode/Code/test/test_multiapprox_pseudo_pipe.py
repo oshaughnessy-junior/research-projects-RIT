@@ -83,6 +83,20 @@ def test_api_only_flag_is_refused_when_used(tmp_path):
     assert "--n-iterations-subdag-max" in out.stdout
 
 
+@pytest.mark.parametrize('option,value', [('--seed-climb-exe', 'climb'),
+    ('--seed-climb-args', 'args.txt'), ('--seed-climb-mode', 'composite'),
+    ('--seed-climb-n-max', '16'), ('--seed-climb-request-memory', '8192'),
+    ('--seed-climb-request-gpu', None)])
+def test_unimplemented_seed_climb_options_are_refused(tmp_path, option, value):
+    args = [sys.executable, str(MULTI), '--approx', 'IMRPhenomD', option]
+    if value is not None:
+        args.append(value)
+    out = subprocess.run(args, cwd=str(tmp_path), text=True,
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    assert out.returncode != 0
+    assert 'NOT implement' in out.stdout and option in out.stdout, out.stdout[-800:]
+
+
 def test_pseudo_pipe_offers_and_routes_to_the_builder():
     text = PSEUDO.read_text()
     assert '"BasicMultiApproxIteration"' in text, (
