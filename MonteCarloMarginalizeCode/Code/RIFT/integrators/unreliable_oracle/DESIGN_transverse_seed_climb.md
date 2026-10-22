@@ -172,11 +172,11 @@ unseeded runs alike (RO, 2026-10-20: the earlier choice was an off-by-one).
 - On CIT head nodes, a second JAX process can hit the 500-thread cap
   (`pthread_create() failed`). Execute nodes have no such cap.
 - Only BasicIteration has the three DAG schemes. Other builders can use setup mode.
-- Open: on CPU (jax 0.9.0), `IntrinsicMarginalObjective.__call__` followed by
-  `lnL_sky` on the same point once returned all-NaN rows; the same call with the
-  precomputed data passed in never did (12 of 12 calls, both jax versions).
-  Not yet isolated. Non-finite rows score as zero likelihood and are counted in
-  `stats()['n_nonfinite']`.
+- The intermittent all-NaN rows came from the waveform, not the objective.
+  For IMRPhenomPv2, `lalsimutils.hlmoft_IMRPv2_dict` returns a non-finite (2,-2)
+  mode in 2 of 20 fresh processes (CPU and GPU). IMRPhenomXPHM, the climb model,
+  gave 0 of 40. The tests now use XPHM. Non-finite rows still score as zero
+  likelihood and are counted in `stats()['n_nonfinite']`.
 
 ## Tests
 

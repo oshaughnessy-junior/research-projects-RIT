@@ -22,7 +22,9 @@ def _P(m1, m2, s1x=0.0):
     P.s1x, P.s1z, P.s2z = s1x, 0.1, -0.2
     P.fmin = P.fref = 30.0
     P.deltaT, P.deltaF = 1.0 / 2048, 0.25
-    P.approx = lalsim.IMRPhenomPv2
+    # Not IMRPhenomPv2: RIFT builds its modes in hlmoft_IMRPv2_dict, whose (2,-2) mode
+    # from the inclination-pi evaluation is non-finite in ~1 of 10 fresh processes.
+    P.approx = lalsim.IMRPhenomXPHM
     P.radec = True
     P.tref = FID
     return P
