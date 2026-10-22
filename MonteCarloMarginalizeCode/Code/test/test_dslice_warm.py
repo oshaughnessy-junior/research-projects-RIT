@@ -164,3 +164,12 @@ def test_mode_at_the_periodic_wrap_point():
     lnL, sig, ne, nt = w.run(np.array([1000.0]), n_max=100000, n_eff_target=30)
     assert abs(lnL[0] - truth) < 4 * sig[0] + 0.02, (lnL[0] - truth, sig[0])
     assert nt[0] <= 4 * 2000 and len(w.done) == 1
+
+
+def test_running_neff_matches_concatenated():
+    r = np.random.default_rng(5)
+    blocks = [r.normal(0, s, 300) for s in (0.5, 3.0, 1.0)] + [np.array([-np.inf, 9.0])]
+    run = ds._RunningNeff()
+    for b in blocks:
+        run.add(b)
+    assert abs(run.neff - ds._neff(np.concatenate(blocks))) < 1e-9 * run.neff

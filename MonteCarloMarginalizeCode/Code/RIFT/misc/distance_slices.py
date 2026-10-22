@@ -778,22 +778,27 @@ def fresh_sample_slices(reference_sampler, like_to_integrate, d_slices,
 # integrand is, so a displaced seed costs samples, not bias.
 # ---------------------------------------------------------------------------------------------
 
-class _NeffSum:
-    """Kish n_eff of a list of log-weight blocks, from per-block sums (no concatenation)."""
+class _RunningNeff:
+    """Kish n_eff of log weights added block by block: running sums, rescaled when the maximum moves."""
 
-    def __init__(self, blocks):
-        ms = [np.max(b) for b in blocks if len(b)]
-        self.m = max(ms) if ms else -np.inf
-        if not np.isfinite(self.m):
-            self.neff = 0.0
+    def __init__(self):
+        self.m, self.s1, self.s2 = -np.inf, 0.0, 0.0
+
+    def add(self, lw):
+        lw = np.asarray(lw, float)
+        lw = lw[np.isfinite(lw)]
+        if not len(lw):
             return
-        s1 = s2 = 0.0
-        for b in blocks:
-            if len(b):
-                e = np.exp(b - self.m)
-                s1 += e.sum()
-                s2 += (e * e).sum()
-        self.neff = float(s1 * s1 / s2)
+        m = max(self.m, float(lw.max()))
+        if self.m > -np.inf and m > self.m:
+            self.s1 *= np.exp(self.m - m)
+            self.s2 *= np.exp(2 * (self.m - m))
+        e = np.exp(lw - m)
+        self.m, self.s1, self.s2 = m, self.s1 + e.sum(), self.s2 + (e * e).sum()
+
+    @property
+    def neff(self):
+        return self.s1 * self.s1 / self.s2 if self.s2 > 0 else 0.0
 
 
 def _neff(ln_w):
@@ -950,7 +955,7 @@ def _means_agree(xs, lws, nsigma, lo, hi):
 def warm_integrate_slice(ln_f, lo, hi, seed_x, seed_ln_w, n_max, n_eff_target, n_block=2000,
                          defensive=0.1, n_kernel=1000, rng=None, inflate=4.0, stable_nsigma=2.0,
                          include_decider=True, mean_nsigma=None, khat_max=0.7, max_adapt_blocks=5,
-                         broad=None, broad_frac=0.1, refit_temper=0.5, xp=None):
+                         broad=None, broad_frac=0.1, refit_temper=0.5, xp=None, max_blocks=50):
     """ln of the integral over the box [lo, hi] of exp(ln_f(x)) by adaptive importance sampling.
 
     ``ln_f(x)`` takes an (n, p) array of in-box points and returns ln integrand (lnL + ln prior).
@@ -975,6 +980,8 @@ def warm_integrate_slice(ln_f, lo, hi, seed_x, seed_ln_w, n_max, n_eff_target, n
     ``broad`` = (x, ln_w), if given, adds a fixed KDE of those points with weight ``broad_frac`` to every
     block's mixture (ILE passes the main loop's tempered posterior): mass anywhere the main loop saw
     stays reachable when the slice seed is displaced, where the uniform box would almost never land.
+    The whole slice stops after ``max_blocks`` blocks (or ``n_max`` draws) whether or not n_eff was
+    reached; a warm proposal that slow is not worth continuing, and the caller redoes it cold.
     Adaptation stops after ``max_adapt_blocks`` blocks whatever the checks say; a seed that needs more is
     far from the target, and on synthetic tests those are the runs that later pass k-hat while biased
     low by nats, so the result is returned with ``converged`` False for the caller to redo cold.
@@ -1039,11 +1046,16 @@ def warm_integrate_slice(ln_f, lo, hi, seed_x, seed_ln_w, n_max, n_eff_target, n
         all_lw = np.concatenate(lws)
         if np.any(np.isfinite(all_lw)):
             kde = fit_kde_proposal(np.concatenate(xs), refit_temper * all_lw, lo, hi, n_kernel, rng, inflate=inflate)
-    while n_total < n_max and (not est or _NeffSum(est).neff < n_eff_target):   # estimate
+    run = _RunningNeff()
+    for lw in est:
+        run.add(lw)
+    n_cap = min(n_max, int(max_blocks) * n_block)
+    while n_total < n_cap and run.neff < n_eff_target:   # estimate
         x, lw = block(kde)
         xs.append(x)
         lws.append(lw)
         est.append(lw)
+        run.add(lw)
         n_total += n_block
     x_all, lw_all = np.concatenate(xs), np.concatenate(lws)
     res = dict(lnZ=-np.inf, sigma=np.inf, neff=0.0, ntotal=int(n_total), x=x_all, ln_w=lw_all, khat=np.inf,
