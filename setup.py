@@ -63,6 +63,7 @@ setuptools.setup(
    # base install so the production pipeline is unaffected; install with
    #   pip install RIFT[jax-interp]
    extras_require={
+        'emri-few': ['fastemriwaveforms==2.2.0'],
         # Public optional PCG backend; requires Python >=3.11.
         'td-pcg': ['tdanalysis>=1.0.0,<2'],
         'td-gs': ['tdanalysis==1.0.0', 'waveformtools==2026.10.15'],
