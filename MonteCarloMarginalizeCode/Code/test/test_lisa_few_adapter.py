@@ -67,9 +67,13 @@ def test_api_units_phase_order_and_output_contract(monkeypatch):
     assert out.n_samples == 4096
     assert out.epoch_reference == config().epoch_reference
     assert out.metadata['carrier_nyquist_ratio'] < 1
-    all_config = replace(config(), mode_selection='all', eps=None)
+    all_config = replace(config(), mode_selection='all', eps=None, integration_span_seconds=40955.)
     all_out = fa.FewWaveformAdapter(all_config).generate(parameters())
     all_kwargs = calls['evaluation'][1]
+    assert 40955 < all_kwargs['T']*100 < 40955+1e-7
+    assert all_out.metadata['sample_span_seconds'] == 40950
+    assert all_out.metadata['requested_integration_span_seconds'] == 40955
+    assert all_out.metadata['integration_margin_seconds'] > 0
     assert all_kwargs['mode_selection'] == 'all'
     assert 'mode_selection_threshold' not in all_kwargs
     assert all_out.metadata['mode_selection'] == 'all'
@@ -288,3 +292,53 @@ def test_actual_all_mode_selector_branch(monkeypatch):
     assert out.metadata['zero_padding_samples'] == 0
     assert out.metadata['carrier_nyquist_ratio'] < 1
     assert np.all(np.isfinite(out.polarizations)) and np.linalg.norm(out.polarizations) > 0
+
+
+@pytest.mark.parametrize('horizon', [40949., 40960., np.nan, np.inf, True])
+def test_integration_horizon_bounds(horizon):
+    with pytest.raises(ValueError):
+        replace(config(), integration_span_seconds=horizon)
+
+
+def test_shared_horizon_identical_duration_and_legacy_default():
+    year = 31558149.763545595
+    coarse = fa._few_duration_years(13108, 10., year, 131075.)
+    fine = fa._few_duration_years(26216, 5., year, 131075.)
+    assert coarse == fine
+    assert int(coarse*year/10)+1 == 13108
+    assert int(fine*year/5)+1 == 26216
+    assert fa._few_duration_years(13108,10.,year) == fa._few_duration_years(13108,10.,year,None)
+    assert fa._few_duration_years(13108,10.,year) == 131070.*(1+64*np.finfo(float).eps)/year
+    assert replace(config(),integration_span_seconds=40955.).to_dict()['integration_span_seconds'] == 40955.
+
+
+@pytest.mark.skipif(os.environ.get('RIFT_RUN_FEW_SHARED_HORIZON') != '1',
+                    reason='shared-horizon all-mode CPU reference requires its own bounded allocation')
+def test_actual_shared_horizon_common_ssb_samples(monkeypatch, record_property):
+    coarse_config = replace(config(), mode_selection='all',eps=None,integration_span_seconds=40955.)
+    fine_config = replace(coarse_config,n_samples=8192,dt_seconds=5.)
+    coarse_adapter = fa.FewWaveformAdapter(coarse_config)
+    fine_adapter = fa.FewWaveformAdapter(fine_config)
+    wrapper_type = type(coarse_adapter.waveform)
+    original = wrapper_type.__call__
+    calls = []
+    def recorded(self,*args,**kwargs):
+        calls.append(dict(kwargs))
+        return original(self,*args,**kwargs)
+    monkeypatch.setattr(wrapper_type,'__call__',recorded)
+    coarse = coarse_adapter(parameters())
+    fine = fine_adapter(parameters())
+    assert len(calls)==2 and calls[0]['T']==calls[1]['T']
+    assert calls[0]['dt']==10. and calls[1]['dt']==5.
+    for output, adapter in [(coarse,coarse_adapter),(fine,fine_adapter)]:
+        available = len(adapter.waveform.waveform_generator.amplitude_generator.l_arr_no_mask)
+        assert output.metadata['retained_mode_count']==available
+        assert output.metadata['zero_padding_samples']==0
+        assert output.metadata['carrier_nyquist_ratio']<1
+    # This diagnostic compares SSB values at identical times only. Fourier-grid
+    # and response convergence remain separate required scientific evidence.
+    relative_error = np.linalg.norm(coarse.polarizations-fine.polarizations[:,::2])/np.linalg.norm(coarse.polarizations)
+    print('shared_horizon_ssb_relative_error=',repr(float(relative_error)))
+    record_property('shared_horizon_ssb_relative_error', float(relative_error))
+    # Measure the source-derived hypothesis without declaring a new science gate.
+    assert np.isfinite(relative_error)
