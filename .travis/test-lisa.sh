@@ -10,6 +10,7 @@ fi
   MonteCarloMarginalizeCode/Code/test/test_emri_direct_cli.py \
   MonteCarloMarginalizeCode/Code/test/test_lisa_direct_likelihood.py \
   MonteCarloMarginalizeCode/Code/test/test_lisa_few_adapter.py \
+  MonteCarloMarginalizeCode/Code/test/test_lisa_emri_response.py \
   MonteCarloMarginalizeCode/Code/test/test_lisa_auxiliary_imports.py \
   MonteCarloMarginalizeCode/Code/test/test_lisa_response_import.py \
   MonteCarloMarginalizeCode/Code/test/test_lisa_lalsimutils_compat.py \
