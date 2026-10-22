@@ -70,6 +70,8 @@ class FEWConfig:
     epoch_reference: str
     eps: Optional[float] = 1e-5  # FEW threshold; explicitly None for all modes.
     mode_selection: str = 'threshold'
+    # Optional trajectory horizon, independent of the sampled output span.
+    integration_span_seconds: Optional[float] = None
 
     def __post_init__(self):
         if isinstance(self.n_samples, bool) or not isinstance(self.n_samples, (int, np.integer)) or self.n_samples < 2:
@@ -77,6 +79,10 @@ class FEWConfig:
         _finite_fields(self, ('dt_seconds', 'epoch_start_seconds'))
         if self.dt_seconds <= 0:
             raise ValueError('require dt_seconds>0')
+        if self.integration_span_seconds is not None:
+            _finite_fields(self, ('integration_span_seconds',))
+            if not (self.n_samples-1)*self.dt_seconds <= self.integration_span_seconds < self.n_samples*self.dt_seconds:
+                raise ValueError('integration_span_seconds must lie in [(N-1)*dt,N*dt)')
         if self.mode_selection == 'threshold':
             _finite_fields(self, ('eps',))
             if not 0 < self.eps < 1:
@@ -206,18 +212,23 @@ def _termination_metadata(generator, config):
             'termination_policy': 'require physical evolution across all requested samples'}
 
 
-def _few_duration_years(n_samples, dt_seconds, year_seconds):
+def _few_duration_years(n_samples, dt_seconds, year_seconds, integration_span_seconds=None):
     """Request N-1 steps with roundoff margin inside the same FEW output bin.
 
     FEW passes unquantized T to trajectory integration before summation floors
     it. The forward margin avoids an endpoint rounded below the last sample.
-    The unchanged physical-support/no-padding guard verifies the actual result.
+    An explicit horizon may extend beyond the last sample within the same output
+    bin, allowing two cadences to share a trajectory integration request. The
+    unchanged physical-support/no-padding guard verifies the actual result.
     """
     steps = n_samples - 1
     span = steps*dt_seconds
     if int(span/dt_seconds) != steps:
         raise ValueError('FEW sample-count arithmetic cannot represent this cadence and count')
-    duration = (span*(1+64*np.finfo(float).eps))/year_seconds
+    horizon = span if integration_span_seconds is None else integration_span_seconds
+    if not np.isfinite(horizon) or not span <= horizon < n_samples*dt_seconds:
+        raise ValueError('integration horizon must lie in [(N-1)*dt,N*dt)')
+    duration = (horizon*(1+64*np.finfo(float).eps))/year_seconds
     for _ in range(4):
         recovered = int(duration*year_seconds/dt_seconds)
         if recovered == steps:
@@ -248,7 +259,10 @@ class FewWaveformAdapter:
         if not isinstance(params, EMRIParameters):
             raise TypeError('params must be EMRIParameters')
         c = self.config
-        duration_years = _few_duration_years(c.n_samples, c.dt_seconds, self.year_seconds)
+        duration_years = _few_duration_years(c.n_samples, c.dt_seconds, self.year_seconds,
+                                             c.integration_span_seconds)
+        horizon = ((c.n_samples-1)*c.dt_seconds if c.integration_span_seconds is None
+                   else c.integration_span_seconds)
         selection = {'mode_selection': c.mode_selection, 'include_minus_mkn': True, 'batch_size': -1}
         if c.mode_selection == 'threshold':
             selection['mode_selection_threshold'] = c.eps
@@ -282,7 +296,8 @@ class FewWaveformAdapter:
                     'frame': 'SSB polarizations (FEW detector frame)',
                     'YRSID_SI': self.year_seconds, 'backend_duration_years': duration_years,
                     'sample_span_seconds': (c.n_samples-1)*c.dt_seconds,
-                    'integration_margin_seconds': duration_years*self.year_seconds-(c.n_samples-1)*c.dt_seconds,
+                    'requested_integration_span_seconds': horizon,
+                    'integration_margin_seconds': duration_years*self.year_seconds-horizon,
                     'model_data_sha256': dict(MODEL_DATA_SHA256),
                     'parameters': params.to_dict(),
                     'config': c.to_dict()}
