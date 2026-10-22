@@ -65,3 +65,21 @@ This provides an analytic check independent of the likelihood implementation.
 The Paper 5 runtime fixture registers that identity before execution.
 Mass perturbations require direct numerical evaluation; no BBH mass or phase
 approximation is substituted.
+
+## Separately declared periodic Hann observable (schema 2)
+
+Schema 1 retains its rectangular analysis and field set. Schema 2 adds exactly
+`window: {"kind": "periodic_hann"}` and requires
+`noise.kind="synthetic_independent_white_after_window"`, fixed absolute positive
+PSDs, and `target_snr=null`. On each identical retained half-open segment of N
+samples, the analysis multiplies every A/E/T injection and trial by
+`w[j]=0.5*(1-cos(2*pi*j/N))` before the existing `dt*rfft` calculation. This is
+the periodic Hann, with no fitted window parameters or normalization change.
+
+`apply_analysis_window` records the weights digest, raw and windowed channel
+digests, retained start, duration, and count. Likelihood channel hashes describe
+the windowed observable. Noise is an artificial independent Fourier noise model
+**after** the declared window; this does not model the covariance induced by
+windowing a physical stationary time series. The 16384-sample CLI cap and
+waveform/response guards remain in force. This extension supplies an explicitly
+separate experiment; it supplies no numerical convergence evidence by itself.

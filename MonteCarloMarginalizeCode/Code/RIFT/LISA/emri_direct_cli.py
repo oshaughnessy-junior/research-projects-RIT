@@ -22,13 +22,64 @@ def channel_digest(channels):
     return digest.hexdigest()
 
 
+
+def validate_fixture_schema(config):
+    """Accept the original rectangle or the separately declared Hann observable."""
+    required = {'schema_version', 'waveform', 'response', 'injection', 'trials', 'noise'}
+    if not isinstance(config, dict):
+        raise ValueError('fixture must be an object')
+    schema = config.get('schema_version')
+    if type(schema) is not int or schema not in (1, 2):
+        raise ValueError('fixture schema_version must be 1 or 2')
+    if schema == 2:
+        required = required | {'window'}
+    if set(config) != required:
+        raise ValueError('fixture must have exactly the declared schema fields')
+    expected_noise = ('synthetic_independent_white' if schema == 1
+                      else 'synthetic_independent_white_after_window')
+    if not isinstance(config['noise'], dict) or config['noise'].get('kind') != expected_noise:
+        raise ValueError('noise kind must match the declared analysis observable')
+    if schema == 2:
+        if config['window'] != {'kind': 'periodic_hann'}:
+            raise ValueError('schema 2 requires exactly periodic_hann window')
+        if config['noise'].get('target_snr') is not None or 'target_snr' not in config['noise']:
+            raise ValueError('schema 2 requires target_snr=null and fixed absolute PSD')
+    return schema
+
+
+def apply_analysis_window(channels, *, dt, epoch_seconds, window):
+    """Apply a periodic Hann on the retained half-open segment, with provenance.
+
+    Noise is defined independently in Fourier space after this window; this
+    does not transform a stationary physical time-domain noise covariance.
+    """
+    if window != {'kind': 'periodic_hann'}:
+        raise ValueError('only exactly periodic_hann analysis window is supported')
+    raw = np.asarray(channels)
+    if (raw.ndim != 2 or raw.shape[0] != 3 or raw.shape[1] < 4
+            or not np.isrealobj(raw) or not np.all(np.isfinite(raw))):
+        raise ValueError('window channels must be finite real arrays with shape (3,N), N>=4')
+    if not np.isfinite(dt) or dt <= 0 or not np.isfinite(epoch_seconds):
+        raise ValueError('window sampling and retained start must be finite; dt>0')
+    n = raw.shape[1]
+    weights = .5*(1-np.cos(2*np.pi*np.arange(n)/n))
+    result = raw*weights[None, :]
+    return result, {'kind': 'periodic_hann', 'weights_sha256': channel_digest(weights),
+                    'retained_start_seconds': float(epoch_seconds),
+                    'retained_duration_seconds': float(n*dt), 'n_samples': n,
+                    'raw_channel_sha256': channel_digest(raw),
+                    'windowed_channel_sha256': channel_digest(result)}
+
+
 def evaluate_channel_trials(data, models, *, dt, psd_levels, target_snr,
-                            fmin, fmax):
+                            fmin, fmax, analysis_window=None, retained_epoch_seconds=0.):
     """Evaluate real A/E/T arrays using fixed synthetic white channel noise.
 
     This constructs an artificial diagonal noise model in the response output
     observable. It makes no statement about physical LISA noise covariance.
     target_snr=None uses psd_levels as fixed absolute PSDs for convergence runs.
+    An explicit periodic Hann defines a separate observable with independent
+    synthetic Fourier noise AFTER windowing and requires a fixed absolute PSD.
     DC and any Nyquist endpoint are excluded; all trials use the same mask/PSD.
     """
     data = np.asarray(data)
@@ -46,6 +97,12 @@ def evaluate_channel_trials(data, models, *, dt, psd_levels, target_snr,
         raise ValueError('target_snr must be null (fixed PSD) or finite and positive')
     if not np.isfinite(fmin) or not np.isfinite(fmax) or not 0 <= fmin < fmax:
         raise ValueError('frequency limits must be finite, ordered and nonnegative')
+    window_metadata = None
+    if analysis_window is not None:
+        if target_snr is not None:
+            raise ValueError('windowed observable requires fixed absolute PSD; target_snr=null')
+        data, window_metadata = apply_analysis_window(
+            data, dt=dt, epoch_seconds=retained_epoch_seconds, window=analysis_window)
     n = data.shape[1]
     frequencies = np.fft.rfftfreq(n, dt)
     mask = (frequencies > 0) & (frequencies >= fmin) & (frequencies <= fmax)
@@ -71,11 +128,17 @@ def evaluate_channel_trials(data, models, *, dt, psd_levels, target_snr,
             raise ValueError('trial channels must match the real injection shape')
         if not np.all(np.isfinite(model)):
             raise ValueError('trial channels must be finite')
+        trial_window_metadata = None
+        if analysis_window is not None:
+            model, trial_window_metadata = apply_analysis_window(
+                model, dt=dt, epoch_seconds=retained_epoch_seconds, window=analysis_window)
         fm = dt * np.fft.rfft(model, axis=1)
         log_likelihood = aet_log_likelihood(fd, fm, psd, df, mask=mask)
         records.append({'id': trial_id, 'log_likelihood': log_likelihood,
                         'channel_sha256': channel_digest(model)})
-    return {'noise': {'kind': 'synthetic_independent_white',
+        if trial_window_metadata is not None:
+            records[-1]['window'] = trial_window_metadata
+    result = {'noise': {'kind': 'synthetic_independent_white',
                       'one_sided_psd': psd[:, 0].tolist(),
                       'normalization': normalization},
             'snr_squared': snr_squared,
@@ -86,6 +149,10 @@ def evaluate_channel_trials(data, models, *, dt, psd_levels, target_snr,
             'first_frequency_hz': float(frequencies[mask][0]),
             'last_frequency_hz': float(frequencies[mask][-1]),
             'injection_sha256': channel_digest(data), 'trials': records}
+    if window_metadata is not None:
+        result['noise']['kind'] = 'synthetic_independent_white_after_window'
+        result['window'] = window_metadata
+    return result
 
 
 def run_fixture(config, *, max_points=8):
@@ -94,9 +161,7 @@ def run_fixture(config, *, max_points=8):
     from .few_adapter import EMRIParameters, FEWConfig, FewWaveformAdapter
     from .emri_response import ResponseConfig, equal_arm_aet
 
-    required = {'schema_version', 'waveform', 'response', 'injection', 'trials', 'noise'}
-    if not isinstance(config, dict) or set(config) != required or config['schema_version'] != 1:
-        raise ValueError('fixture must have exactly the schema_version=1 fields')
+    schema = validate_fixture_schema(config)
     trials = config['trials']
     if not isinstance(trials, list) or not 1 <= len(trials) <= max_points:
         raise ValueError('trial count must be between one and max_points')
@@ -115,8 +180,6 @@ def run_fixture(config, *, max_points=8):
     noise_fields = {'kind', 'psd_levels', 'target_snr', 'fmin_hz', 'fmax_hz'}
     if not isinstance(noise, dict) or set(noise) != noise_fields:
         raise ValueError('noise requires the complete synthetic white noise fields')
-    if noise['kind'] != 'synthetic_independent_white':
-        raise ValueError('only explicitly synthetic independent white noise is supported')
     wave_config = FEWConfig.from_dict(config['waveform'])
     if wave_config.epoch_reference != 'pinned equal-arm orbit t=0':
         raise ValueError('fixture epoch_reference must be pinned equal-arm orbit t=0')
@@ -157,18 +220,22 @@ def run_fixture(config, *, max_points=8):
                 raise ValueError('trial response sampling/epoch differs from injection')
             yield trial['id'], result.channels
 
+    window_kwargs = ({} if schema == 1 else {
+        'analysis_window': config['window'], 'retained_epoch_seconds': data.epoch_seconds})
     result = evaluate_channel_trials(
         data.channels, models(), dt=data.dt, psd_levels=noise['psd_levels'],
         target_snr=noise['target_snr'], fmin=noise['fmin_hz'], fmax=noise['fmax_hz'],
+        **window_kwargs,
     )
     versions = {}
     for package in ('numpy', 'fastemriwaveforms', 'fastlisaresponse', 'lisaanalysistools'):
         versions[package] = importlib.metadata.version(package)
-    result.update({'schema_version': 1, 'status': 'COMPLETED',
+    result.update({'schema_version': schema, 'status': 'COMPLETED',
                    'backend': 'few_cpu_equal_arm_direct_fixed_nuisance',
                    'marginalized_parameters': [], 'fixture': config,
                    'versions': versions, 'response_epoch_seconds': data.epoch_seconds,
-                   'window': 'rectangular; identical retained segment for every trial',
+                   'window': (result['window'] if schema == 2 else
+                              'rectangular; identical retained segment for every trial'),
                    'module_sha256': {
                        name: hashlib.sha256((Path(__file__).parent / name).read_bytes()).hexdigest()
                        for name in ('emri_direct_cli.py', 'direct_likelihood.py',
