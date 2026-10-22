@@ -6329,13 +6329,28 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
             print("    : running {} fresh integrations (all-fresh{}; no reweight core)".format(len(d_wings), ", randomized-d" if getattr(opts, "distance_slice_randomize", False) else ""))
             warm = None
             if opts.distance_slice_warm_start:
+              # Seed from the retained-set reserve, not _rvs: by now _rvs is usually the fair-draw
+              # export (a handful of rows, with replacement), which cannot seed a proposal.
+              _ws_seed, _ws_lnw, _ws_d = rvs, ln_w_full, dL_samp
+              _res_ds = _warm_seed_reserve_for(sampler)
+              if _res_ds is not None and "distance" in list(_res_ds.get("params_ordered") or []):
+                _rn = list(_res_ds["params_ordered"])
+                _rX = np.asarray(_res_ds["X"], float)
+                _ws_seed = {_n: _rX[:, _i] for _i, _n in enumerate(_rn)}
+                _ws_lnw = (np.asarray(_res_ds["lnL"], float) + np.asarray(_res_ds["log_joint_prior"], float)
+                           - np.asarray(_res_ds["log_joint_s_prior"], float))
+                _ws_d = _ws_seed["distance"]
+              else:
+                print("    : WARNING no retained-set reserve; warm slices seeded from _rvs ({} rows)".format(len(dL_samp)))
               warm = distance_slices.WarmSliceSampler(
-                  sampler, like_to_integrate, rvs, float(opts.distance_slice_warm_seed_temper) * ln_w_full,
-                  seed_distance=dL_samp, n_block=int(opts.distance_slice_warm_block), return_lnL=return_lnL,
+                  sampler, like_to_integrate, _ws_seed, float(opts.distance_slice_warm_seed_temper) * _ws_lnw,
+                  seed_distance=_ws_d, n_block=int(opts.distance_slice_warm_block), return_lnL=return_lnL,
                   fallback=lambda dd: distance_slices.fresh_sample_slices(
                       sampler, like_to_integrate, dd, n_max=int(opts.distance_slice_wing_nmax),
                       n_eff_target=int(opts.distance_slice_wing_neff), n_chunk=slice_chunk, return_lnL=return_lnL))
-              print("    : warm-started slices ({} seed rows, block {})".format(len(dL_samp), opts.distance_slice_warm_block))
+              print("    : warm-started slices ({} seed rows, seed n_eff {:.1f} after tempering, block {})".format(
+                  len(_ws_d), distance_slices._neff(float(opts.distance_slice_warm_seed_temper) * np.asarray(_ws_lnw, float)),
+                  opts.distance_slice_warm_block))
               lnL_wings_raw, sigmaL_wings, neff_wings, ntotal_wings = warm.run(
                   d_wings, n_max=int(opts.distance_slice_wing_nmax), n_eff_target=int(opts.distance_slice_wing_neff))
               print("    : warm-started slices: {} of {} redone cold (k-hat or n_eff)".format(warm.n_fallback, len(d_wings)))
