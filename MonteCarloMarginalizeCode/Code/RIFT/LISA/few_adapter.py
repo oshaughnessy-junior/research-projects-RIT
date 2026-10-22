@@ -132,6 +132,18 @@ def _load_few():
     return GenerateEMRIWaveform, YRSID_SI, installed
 
 
+def _few_duration_years(n_samples, dt_seconds, year_seconds):
+    """FEW includes the endpoint after flooring duration/dt; request N-1 steps."""
+    steps = n_samples - 1
+    duration = steps*dt_seconds/year_seconds
+    for _ in range(4):
+        recovered = int(duration*year_seconds/dt_seconds)
+        if recovered == steps:
+            return duration
+        duration = np.nextafter(duration, np.inf if recovered < steps else 0.)
+    raise ValueError('cannot represent the requested FEW endpoint duration')
+
+
 class FewWaveformAdapter:
     """Generate SSB hp,hc with a fixed CPU model and explicit sampling contract.
 
@@ -154,11 +166,12 @@ class FewWaveformAdapter:
         if not isinstance(params, EMRIParameters):
             raise TypeError('params must be EMRIParameters')
         c = self.config
+        duration_years = _few_duration_years(c.n_samples, c.dt_seconds, self.year_seconds)
         hp, hc = self.waveform(
             params.m1_msun, params.m2_msun, params.a, params.p0, params.e0, params.xI0,
             params.distance_gpc, params.qS, params.phiS, params.qK, params.phiK,
             params.Phi_phi0, params.Phi_theta0, params.Phi_r0,
-            T=c.n_samples*c.dt_seconds/self.year_seconds, dt=c.dt_seconds, eps=c.eps)
+            T=duration_years, dt=c.dt_seconds, eps=c.eps)
         polarizations = np.asarray([hp, hc])
         if polarizations.ndim != 2 or polarizations.shape[0] != 2 or not np.isrealobj(polarizations):
             raise ValueError('FEW must return real hp,hc arrays with matching shape')
@@ -166,7 +179,9 @@ class FewWaveformAdapter:
             raise ValueError('FEW output must be finite with the requested sample count')
         metadata = {'few_version': self.few_version, 'model': self.model, 'backend': 'cpu',
                     'frame': 'SSB polarizations (FEW detector frame)',
-                    'YRSID_SI': self.year_seconds, 'model_data_sha256': dict(MODEL_DATA_SHA256),
+                    'YRSID_SI': self.year_seconds, 'backend_duration_years': duration_years,
+                    'sample_span_seconds': (c.n_samples-1)*c.dt_seconds,
+                    'model_data_sha256': dict(MODEL_DATA_SHA256),
                     'parameters': params.to_dict(),
                     'config': c.to_dict()}
         return FEWPolarizations(polarizations, c.dt_seconds, c.epoch_start_seconds,

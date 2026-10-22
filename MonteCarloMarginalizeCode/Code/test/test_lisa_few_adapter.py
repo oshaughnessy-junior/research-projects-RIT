@@ -52,7 +52,7 @@ def test_api_units_phase_order_and_output_contract(monkeypatch):
     out = fa.FewWaveformAdapter(config()).generate(parameters())
     args, kw = calls['evaluation']
     assert args == (1e6, 10., 0., 12., .2, 1., 1., 1., 2., .7, .3, .2, 0., .4)
-    assert kw == {'T': 409.6, 'dt': 10., 'eps': 1e-5}
+    assert kw == {'T': 409.5, 'dt': 10., 'eps': 1e-5}
     assert calls['construction'][1]['frame'] == 'detector'
     assert out.polarizations.shape == (2, 4096)
     assert out.n_samples == 4096
@@ -114,3 +114,13 @@ def test_prefetched_data_checksum_validation(tmp_path, monkeypatch):
     path.write_bytes(b'changed')
     with pytest.raises(ValueError, match='SHA256 mismatch'):
         fa._verify_prefetched_files(Manager())
+
+
+@pytest.mark.parametrize('n', [2, 127, 128, 4096, 13108, 13109])
+@pytest.mark.parametrize('dt', [0.1, 4., 10.])
+def test_endpoint_inclusive_duration(n, dt):
+    # Pinned SummationBase floors the requested steps and adds the initial point.
+    year = 31558149.7635456
+    duration = fa._few_duration_years(n, dt, year)
+    assert int(duration*year/dt)+1 == n
+    assert duration*year == pytest.approx((n-1)*dt)
