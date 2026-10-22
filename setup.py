@@ -64,6 +64,8 @@ setuptools.setup(
    #   pip install RIFT[jax-interp]
    extras_require={
         'emri-few': ['fastemriwaveforms==2.2.0'],
+        'emri-response': ['fastemriwaveforms==2.2.0', 'fastlisaresponse==1.1.17',
+                          'lisaanalysistools==1.2.8', 'h5py<3.15'],
         # Public optional PCG backend; requires Python >=3.11.
         'td-pcg': ['tdanalysis>=1.0.0,<2'],
         'td-gs': ['tdanalysis==1.0.0', 'waveformtools==2026.10.15'],

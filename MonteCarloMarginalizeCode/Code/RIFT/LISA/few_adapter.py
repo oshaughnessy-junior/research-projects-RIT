@@ -7,6 +7,7 @@ are independent; qK is a spin-axis angle, not orbital inclination xI0.
 """
 from dataclasses import asdict, dataclass
 from importlib.metadata import version
+import hashlib
 
 import numpy as np
 
@@ -96,6 +97,27 @@ class FEWPolarizations:
         return self.polarizations.shape[1]
 
 
+MODEL_DATA_SHA256 = {
+    'FluxNewMinusPNScaled_fixed_y_order.dat': 'c551ace42fbc79febbda132a78868e20900a0a97a06fa4f4d4bf23b12cc1517c',
+    'SchwarzschildEccentricInput.hdf5': 'edb90365f3a5ee39b92ea1ebeb96c916d059f0835234b768087d9b7e80d1bede',
+    'AmplitudeVectorNorm.dat': 'df04fd629353703d140fad80b6877e0b51e0944f1ba60c50412d66df422752e1',
+}
+
+
+def _verify_prefetched_files(manager):
+    """Check pinned model files locally without FEW's downloading get_file API."""
+    for name, expected in MODEL_DATA_SHA256.items():
+        path = manager.try_get_local_file(name)
+        if path is None:
+            raise FileNotFoundError(f'Prefetch required FEW model data before running: {name}')
+        digest = hashlib.sha256()
+        with open(path, 'rb') as stream:
+            for chunk in iter(lambda: stream.read(1024*1024), b''):
+                digest.update(chunk)
+        if digest.hexdigest() != expected:
+            raise ValueError(f'FEW model data SHA256 mismatch: {name}')
+
+
 def _load_few():
     try:
         installed = version('fastemriwaveforms')
@@ -103,6 +125,8 @@ def _load_few():
         raise ImportError('FEW adapter requires fastemriwaveforms==2.2.0 with Python>=3.12') from exc
     if installed != '2.2.0':
         raise ImportError(f'FEW adapter requires fastemriwaveforms==2.2.0; found {installed}')
+    from few import get_file_manager
+    _verify_prefetched_files(get_file_manager())
     from few.waveform import GenerateEMRIWaveform
     from few.utils.constants import YRSID_SI
     return GenerateEMRIWaveform, YRSID_SI, installed
@@ -111,8 +135,8 @@ def _load_few():
 class FewWaveformAdapter:
     """Generate SSB hp,hc with a fixed CPU model and explicit sampling contract.
 
-    Required model data must be prefetched by the caller. FEW may otherwise
-    download files when the model is constructed. This adapter does not certify
+    Required model data must be prefetched by the caller. Local SHA256 checks
+    precede model construction and refuse missing data. This adapter does not certify
     adiabatic accuracy at any mass ratio; its bounds restrict the model domain.
     """
     model = 'FastSchwarzschildEccentricFlux'
@@ -142,7 +166,8 @@ class FewWaveformAdapter:
             raise ValueError('FEW output must be finite with the requested sample count')
         metadata = {'few_version': self.few_version, 'model': self.model, 'backend': 'cpu',
                     'frame': 'SSB polarizations (FEW detector frame)',
-                    'YRSID_SI': self.year_seconds, 'parameters': params.to_dict(),
+                    'YRSID_SI': self.year_seconds, 'model_data_sha256': dict(MODEL_DATA_SHA256),
+                    'parameters': params.to_dict(),
                     'config': c.to_dict()}
         return FEWPolarizations(polarizations, c.dt_seconds, c.epoch_start_seconds,
                                 c.epoch_reference, metadata)

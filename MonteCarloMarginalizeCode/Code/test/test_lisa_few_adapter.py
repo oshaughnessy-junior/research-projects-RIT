@@ -90,3 +90,27 @@ def test_unreviewed_few_version_is_refused(monkeypatch):
     monkeypatch.setattr(fa, 'version', lambda distribution: '2.1.0')
     with pytest.raises(ImportError, match='requires fastemriwaveforms==2.2.0'):
         fa.FewWaveformAdapter(config())
+
+
+def test_missing_prefetched_data_refused_without_download():
+    class Manager:
+        def try_get_local_file(self, name):
+            return None
+        def get_file(self, name):
+            raise AssertionError('downloading API must not be called')
+    with pytest.raises(FileNotFoundError, match='Prefetch required'):
+        fa._verify_prefetched_files(Manager())
+
+
+def test_prefetched_data_checksum_validation(tmp_path, monkeypatch):
+    import hashlib
+    path = tmp_path / 'data'
+    path.write_bytes(b'model')
+    class Manager:
+        def try_get_local_file(self, name):
+            return path
+    monkeypatch.setattr(fa, 'MODEL_DATA_SHA256', {'data': hashlib.sha256(b'model').hexdigest()})
+    fa._verify_prefetched_files(Manager())
+    path.write_bytes(b'changed')
+    with pytest.raises(ValueError, match='SHA256 mismatch'):
+        fa._verify_prefetched_files(Manager())
