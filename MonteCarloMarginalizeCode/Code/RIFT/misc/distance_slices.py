@@ -810,7 +810,8 @@ def _neff(ln_w):
     return float(w.sum() ** 2 / np.sum(w ** 2))
 
 
-def fit_kde_proposal(x, ln_w, lo, hi, n_kernel=1000, rng=None, min_frac=1e-3, inflate=1.0):
+def fit_kde_proposal(x, ln_w, lo, hi, n_kernel=1000, rng=None, min_frac=1e-3, inflate=1.0, local_k=None,
+                     local_shrink=0.1, n_pool=5000):
     """Gaussian KDE fitted to weighted points ``x`` (N, p): kernels at ``n_kernel`` points drawn by
     weight, one shared covariance = inflate x Scott factor^2 x weighted covariance, floored at
     (min_frac x box width)^2 per axis.  Returns a dict for ``kde_draw``/``kde_logpdf``, or None if
@@ -833,13 +834,41 @@ def fit_kde_proposal(x, ln_w, lo, hi, n_kernel=1000, rng=None, min_frac=1e-3, in
     H = inflate * h2 * cov + np.diag(floor)
     L = np.linalg.cholesky(H)
     centers = x[rng.choice(len(x), size=int(n_kernel), p=w)]
+    if local_k:
+        return _local_kernels(x, w, centers, cov, H, floor, inflate, int(local_k), local_shrink, n_pool, rng, neff)
     return dict(centers=centers, L=L, Linv=np.linalg.inv(L),
                 ln_norm=-0.5 * p * np.log(2 * np.pi) - np.sum(np.log(np.diag(L))), neff=neff)
 
 
+def _local_kernels(x, w, centers, cov, H_global, floor, inflate, k, shrink, n_pool, rng, neff):
+    """Per-kernel covariances: each kernel takes the covariance of its k nearest neighbours in a
+    weight-proportional pool of the points (unique rows), so it lies along the ridge it sits on.  At
+    fixed distance the O4 conditionals lock phi -/+ 2 psi on each inclination branch (S240514x,
+    2026-10-22): two straight ridges wrapping the (phi, psi) torus, which one shared covariance
+    spreads over the whole torus.  Shrunk toward the global kernel by ``shrink`` and floored."""
+    p = x.shape[1]
+    pool = x[np.unique(rng.choice(len(x), size=int(n_pool), p=w))]
+    k = max(min(k, len(pool) - 1), p + 1)
+    Lg = np.linalg.cholesky(cov + np.diag(floor))
+    zp = np.linalg.solve(Lg, pool.T).T
+    zc = np.linalg.solve(Lg, centers.T).T
+    Ls, ln_norm = np.empty((len(centers), p, p)), np.empty(len(centers))
+    for m in range(len(centers)):
+        nb = pool[np.argpartition(np.sum((zp - zc[m]) ** 2, 1), k)[:k]]
+        C = np.cov(nb.T) if len(nb) > 1 else np.zeros((p, p))
+        Hm = (1 - shrink) * inflate * C + shrink * H_global + np.diag(floor)
+        Ls[m] = np.linalg.cholesky(Hm)
+        ln_norm[m] = -0.5 * p * np.log(2 * np.pi) - np.sum(np.log(np.diag(Ls[m])))
+    return dict(centers=centers, Ls=Ls, Linvs=np.linalg.inv(Ls), ln_norms=ln_norm, neff=neff)
+
+
 def kde_draw(kde, n, rng):
-    c = kde["centers"][rng.integers(len(kde["centers"]), size=n)]
-    return c + rng.standard_normal((n, c.shape[1])) @ kde["L"].T
+    i = rng.integers(len(kde["centers"]), size=n)
+    c = kde["centers"][i]
+    z = rng.standard_normal((n, c.shape[1]))
+    if "Ls" in kde:
+        return c + np.einsum("nij,nj->ni", kde["Ls"][i], z)
+    return c + z @ kde["L"].T
 
 
 def kde_logpdf(kde, x, block=2048, xp=None):
@@ -847,6 +876,8 @@ def kde_logpdf(kde, x, block=2048, xp=None):
     N x n_kernel arithmetic on that backend; on a GPU run it was 75% of the slice wall time on the
     host (S240426s profile, 2026-10-22)."""
     xp = np if xp is None else xp
+    if "Ls" in kde:
+        return _local_kde_logpdf(kde, x, xp, block=max(64, block // 8))
     Linv = xp.asarray(kde["Linv"])
     zc = xp.asarray(kde["centers"]) @ Linv.T
     nc = xp.sum(zc ** 2, 1)[None, :]
@@ -858,6 +889,20 @@ def kde_logpdf(kde, x, block=2048, xp=None):
         r = m + xp.log(xp.sum(xp.exp(a - m[:, None]), axis=1))
         out[i:i + block] = _to_cpu(r)
     return out - np.log(len(kde["centers"])) + kde["ln_norm"]
+
+
+def _local_kde_logpdf(kde, x, xp, block=256):
+    Linvs = xp.asarray(kde["Linvs"])
+    c = xp.asarray(kde["centers"])
+    lnn = xp.asarray(kde["ln_norms"])
+    out = np.empty(len(x))
+    for i in range(0, len(x), block):
+        d = xp.asarray(x[i:i + block])[:, None, :] - c[None, :, :]          # (b, M, p)
+        z = xp.einsum("mij,bmj->bmi", Linvs, d)
+        a = lnn[None, :] - 0.5 * xp.sum(z * z, axis=2)
+        m = xp.max(a, axis=1)
+        out[i:i + block] = _to_cpu(m + xp.log(xp.sum(xp.exp(a - m[:, None]), axis=1)))
+    return out - np.log(len(kde["centers"]))
 
 
 def _block_estimate(ln_w, n):
@@ -955,7 +1000,8 @@ def _means_agree(xs, lws, nsigma, lo, hi):
 def warm_integrate_slice(ln_f, lo, hi, seed_x, seed_ln_w, n_max, n_eff_target, n_block=AV_NSEL_SATURATION_CHUNK,
                          defensive=0.1, n_kernel=1000, rng=None, inflate=4.0, stable_nsigma=2.0,
                          include_decider=True, mean_nsigma=None, khat_max=np.inf, max_adapt_blocks=5,
-                         broad=None, broad_frac=0.1, refit_temper=0.5, xp=None, max_blocks=50):
+                         broad=None, broad_frac=0.1, refit_temper=0.5, xp=None, max_blocks=50,
+                         local_k=None):
     """ln of the integral over the box [lo, hi] of exp(ln_f(x)) by adaptive importance sampling.
 
     ``ln_f(x)`` takes an (n, p) array of in-box points and returns ln integrand (lnL + ln prior).
@@ -992,11 +1038,12 @@ def warm_integrate_slice(ln_f, lo, hi, seed_x, seed_ln_w, n_max, n_eff_target, n
     lo, hi = np.asarray(lo, float), np.asarray(hi, float)
     p = len(lo)
     ln_vol = float(np.sum(np.log(hi - lo)))
-    kde = fit_kde_proposal(seed_x, seed_ln_w, lo, hi, n_kernel, rng, inflate=inflate) if seed_x is not None else None
+    kde = fit_kde_proposal(seed_x, seed_ln_w, lo, hi, n_kernel, rng, inflate=inflate,
+                           local_k=local_k) if seed_x is not None else None
 
     broad_kde = None
     if broad is not None and broad_frac > 0:
-        broad_kde = fit_kde_proposal(broad[0], broad[1], lo, hi, n_kernel, rng, inflate=inflate)
+        broad_kde = fit_kde_proposal(broad[0], broad[1], lo, hi, n_kernel, rng, inflate=inflate, local_k=local_k)
 
     def block(kde):
         # mixture: uniform box (defensive), fixed broad KDE (broad_frac), adaptive KDE (the rest)
@@ -1045,7 +1092,8 @@ def warm_integrate_slice(ln_f, lo, hi, seed_x, seed_ln_w, n_max, n_eff_target, n
             break
         all_lw = np.concatenate(lws)
         if np.any(np.isfinite(all_lw)):
-            kde = fit_kde_proposal(np.concatenate(xs), refit_temper * all_lw, lo, hi, n_kernel, rng, inflate=inflate)
+            kde = fit_kde_proposal(np.concatenate(xs), refit_temper * all_lw, lo, hi, n_kernel, rng, inflate=inflate,
+                                   local_k=local_k)
     run = _RunningNeff()
     for lw in est:
         run.add(lw)
@@ -1068,7 +1116,8 @@ def warm_integrate_slice(ln_f, lo, hi, seed_x, seed_ln_w, n_max, n_eff_target, n
 
 
 #: Extrinsic axes on which ILE's likelihood is periodic over its box (RA and orbital phase over 2 pi;
-#: polarization over pi, so also over a 2 pi box).
+#: polarization over pi, so also over a 2 pi box; under --internal-rotate-phase the phi_orb and psi
+#: slots hold phi +/- psi on (0, 4 pi), periodic over that box too).
 PERIODIC_EXTRINSIC = ("right_ascension", "phi_orb", "psi")
 
 
@@ -1119,7 +1168,7 @@ class WarmSliceSampler:
         w = np.exp(self.seed_ln_w[ok] - self.seed_ln_w[ok].max()) if np.any(ok) else None
         for j, q in enumerate(self.params):
             width = self.hi[j] - self.lo[j]
-            if q in periodic and w is not None and (np.isclose(width, 2 * np.pi) or np.isclose(width, np.pi)):
+            if q in periodic and w is not None and any(np.isclose(width, c * np.pi) for c in (1, 2, 4)):
                 a = 2 * np.pi * (seed_x[ok, j] - self.lo[j]) / width
                 m = np.arctan2(w @ np.sin(a), w @ np.cos(a)) % (2 * np.pi)
                 self.period[j], self.rot[j] = width, m * width / (2 * np.pi) - 0.5 * width

@@ -174,3 +174,14 @@ def test_running_neff_matches_concatenated():
     for b in blocks:
         run.add(b)
     assert abs(run.neff - ds._neff(np.concatenate(blocks))) < 1e-9 * run.neff
+
+
+def test_local_kernel_density_matches_an_explicit_mixture():
+    from scipy.stats import multivariate_normal
+    rng = np.random.default_rng(6)
+    x, lw = seed_at(MU)
+    kde = ds.fit_kde_proposal(x, lw, LO, HI, n_kernel=40, rng=rng, local_k=15, n_pool=200)
+    assert "Ls" in kde and kde["Ls"].shape == (40, P, P)
+    y = ds.kde_draw(kde, 6, rng)
+    ref = np.log(np.mean([multivariate_normal(c, L @ L.T).pdf(y) for c, L in zip(kde["centers"], kde["Ls"])], axis=0))
+    np.testing.assert_allclose(ds.kde_logpdf(kde, y), ref, rtol=0, atol=1e-8)

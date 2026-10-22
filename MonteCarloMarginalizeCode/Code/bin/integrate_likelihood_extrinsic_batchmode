@@ -562,6 +562,7 @@ intrinsic_params.add_option("--distance-slice-walkout-max-steps",type=int,defaul
 intrinsic_params.add_option("--distance-slice-warm-start",action="store_true",default=False,help="(all-fresh only) Replace each slice's fresh AV integration with adaptive importance sampling over all extrinsic axes, warm-started: the first slice's proposal is a kernel density fitted to the main loop's samples (tempered by --distance-slice-warm-seed-temper), each later slice's to the nearest finished slice, refitted after every block; a uniform component over the prior box keeps the estimate unbiased if the seed is off. Assumes the main loop found every mode of each slice's conditional. Walk-out slices are warm-started too. Default off.")
 intrinsic_params.add_option("--distance-slice-warm-block",type=int,default=None,help="Block size (likelihood evaluations per proposal refit) for --distance-slice-warm-start.  Default: the slice chunk (--distance-slice-chunk, else --n-chunk; 10000 on a default run).  Small blocks are cheaper on easy events but adapt badly on hard ones.")
 intrinsic_params.add_option("--distance-slice-warm-khat-max",type=float,default=float("inf"),help="--distance-slice-warm-start: a warm slice whose estimate-phase Pareto k-hat exceeds this is redone by the cold AV (and the proposal does not freeze while a block's k-hat exceeds it).  Default: no k-hat gate; k-hat is logged.  On O4 slices at n_eff 30 good slices show k-hat 1-2 (60 slices paired against the cold AV agreed within error), so the textbook 0.7 rejects every slice.")
+intrinsic_params.add_option("--distance-slice-warm-local-k",type=int,default=0,help="--distance-slice-warm-start: if > 0, each proposal kernel takes the covariance of its k nearest neighbours (shrunk toward the shared one) instead of one shared covariance. At fixed distance the O4 conditionals split into separated phase/polarization copies, which one shared covariance spans.  0 (default): shared covariance.")
 intrinsic_params.add_option("--distance-slice-warm-seed-temper",type=float,default=0.3,help="Exponent applied to the main loop's posterior weights before they seed --distance-slice-warm-start; < 1 broadens the seed so it covers the conditionals at the edge slices.")
 optp.add_option_group(intrinsic_params)
 
@@ -6347,6 +6348,7 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
                   sampler, like_to_integrate, _ws_seed, float(opts.distance_slice_warm_seed_temper) * _ws_lnw,
                   seed_distance=_ws_d, n_block=int(opts.distance_slice_warm_block or slice_chunk), return_lnL=return_lnL,
                   khat_max=float(opts.distance_slice_warm_khat_max),
+                  local_k=int(opts.distance_slice_warm_local_k) or None,
                   xp=xpy_default,
                   fallback=lambda dd: distance_slices.fresh_sample_slices(
                       sampler, like_to_integrate, dd, n_max=int(opts.distance_slice_wing_nmax),
