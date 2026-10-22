@@ -1764,7 +1764,10 @@ if opts.assume_hyperbolic:
     if opts.force_zoomwhirl_grids:
         helper_puff_args += " --force-zoomwhirl "
 if opts.assume_eccentric:
-    helper_puff_args += " --parameter eccentricity "
+    eccentric_puff_range = ecc_range_str if 'ecc_range_str' in globals() else '[0,1]'
+    helper_puff_args += (" --parameter eccentricity --reflect-parameter eccentricity"
+                         " --downselect-parameter eccentricity --downselect-parameter-range "
+                         + eccentric_puff_range + " ")
     if opts.use_meanPerAno:
         helper_puff_args += " --parameter meanPerAno "
 
