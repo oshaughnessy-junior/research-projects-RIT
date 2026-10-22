@@ -713,7 +713,7 @@ do not rely on it.</p>
 the default AV+GMM portfolio that is the GMM member: a Gaussian mixture has
 nonzero density over the whole box, so q_mix never vanishes and a badly-seeded
 AV member costs efficiency rather than bias (measured with a deliberately
-displaced seed at d=4 and d=6: <a href="#id40"><span class="problematic" id="id41">|lnZ bias|</span></a> &lt;= 0.05 in every run).  An ALL-AV
+displaced seed at d=4 and d=6: <a href="#id42"><span class="problematic" id="id43">|lnZ bias|</span></a> &lt;= 0.05 in every run).  An ALL-AV
 portfolio has no such member – every component is a hard-edged box – and the
 same displaced seed gave lnZ bias -1.0 to -6.8 nats.</p>
 <p>And note the limit of any coverage fix: in that all-AV test, keeping one member
@@ -1091,7 +1091,7 @@ it exactly would mean tracking whether the peak was already in the subsample.</p
 <dd><p>Per-point log density of the retained set, for the deterministic-mixture estimator.</p>
 <p>grids[k] = (dx, bins, n_drawn) is the proposal integrate_log drew cycle k from: uniform
 over the occupied bins (an (M, ndim) array, or a _BinSet over the non-pinned dims),
-density 1/<a href="#id42"><span class="problematic" id="id43">|B_k|</span></a>.  The pooled draws come from the mixture sum_k n_k 1[x in B_k]/<a href="#id44"><span class="problematic" id="id45">|B_k|</span></a>;
+density 1/<a href="#id44"><span class="problematic" id="id45">|B_k|</span></a>.  The pooled draws come from the mixture sum_k n_k 1[x in B_k]/<a href="#id46"><span class="problematic" id="id47">|B_k|</span></a>;
 dividing by the retained count gives a density for which
 logsumexp(lnL + ln p - ln p_s) - ln(n_retained) is the balance-heuristic estimate
 (1/N) sum L p / q_mix.  origin[i] is the cycle that drew point i, which is a member of
@@ -1986,7 +1986,7 @@ cold makes the mixture-level guarantee TRUE instead of merely asserted.</p>
 run-to-run scatter, so it is cheap insurance.  That is the case for the default.</p></li>
 <li><p>It is NOT what protects the DEFAULT AV+GMM portfolio.  The GMM member is a Gaussian
 mixture with nonzero density over the whole box, so q_mix never vanishes there
-regardless of this setting.  With a deliberately displaced seed, <a href="#id46"><span class="problematic" id="id47">|lnZ bias|</span></a> stayed
+regardless of this setting.  With a deliberately displaced seed, <a href="#id48"><span class="problematic" id="id49">|lnZ bias|</span></a> stayed
 &lt;= 0.05 in every d=4 and d=6 run in BOTH arms.  That unbounded support is the real
 (previously undocumented) reason production has not been biased by warm starts.</p></li>
 <li><p>It does NOT rescue a badly mismatched seed.  In an ALL-AV portfolio (every component
@@ -2257,11 +2257,11 @@ it prints additionally the change and time needed for each step.</p>
 <section id="attributes">
 <h3>Attributes<a class="headerlink" href="#attributes" title="Link to this heading"></a></h3>
 <dl>
-<dt><a href="#id48"><span class="problematic" id="id49">weights_</span></a><span class="classifier">array, shape (<cite>n_components</cite>,)</span></dt><dd><p>This attribute stores the mixing weights for each mixture component.</p>
+<dt><a href="#id50"><span class="problematic" id="id51">weights_</span></a><span class="classifier">array, shape (<cite>n_components</cite>,)</span></dt><dd><p>This attribute stores the mixing weights for each mixture component.</p>
 </dd>
-<dt><a href="#id50"><span class="problematic" id="id51">means_</span></a><span class="classifier">array, shape (<cite>n_components</cite>, <cite>n_features</cite>)</span></dt><dd><p>Mean parameters for each mixture component.</p>
+<dt><a href="#id52"><span class="problematic" id="id53">means_</span></a><span class="classifier">array, shape (<cite>n_components</cite>, <cite>n_features</cite>)</span></dt><dd><p>Mean parameters for each mixture component.</p>
 </dd>
-<dt><a href="#id52"><span class="problematic" id="id53">covars_</span></a><span class="classifier">array</span></dt><dd><p>Covariance parameters for each mixture component.  The shape
+<dt><a href="#id54"><span class="problematic" id="id55">covars_</span></a><span class="classifier">array</span></dt><dd><p>Covariance parameters for each mixture component.  The shape
 depends on <cite>covariance_type</cite>:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="p">(</span><span class="n">n_components</span><span class="p">,</span> <span class="n">n_features</span><span class="p">)</span>             <span class="k">if</span> <span class="s1">'spherical'</span><span class="p">,</span>
 <span class="p">(</span><span class="n">n_features</span><span class="p">,</span> <span class="n">n_features</span><span class="p">)</span>               <span class="k">if</span> <span class="s1">'tied'</span><span class="p">,</span>
@@ -2270,7 +2270,7 @@ depends on <cite>covariance_type</cite>:</p>
 </pre></div>
 </div>
 </dd>
-<dt><a href="#id54"><span class="problematic" id="id55">converged_</span></a><span class="classifier">bool</span></dt><dd><p>True when convergence was reached in fit(), False otherwise.</p>
+<dt><a href="#id56"><span class="problematic" id="id57">converged_</span></a><span class="classifier">bool</span></dt><dd><p>True when convergence was reached in fit(), False otherwise.</p>
 </dd>
 </dl>
 </section>
@@ -3120,6 +3120,68 @@ not already in this oracle’s params_ordered order.  adapt=True refreshes
 adapt is False (default), the oracle keeps the supplied Fisher/Gaussian
 and this is a no-op – the robust behaviour when a trustworthy Fisher is
 available.  With adapt=True it becomes a self-refining Gaussian proposal.</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="RIFT.integrators.unreliable_oracle.LadderClimbingOracle">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">RIFT.integrators.unreliable_oracle.</span></span><span class="sig-name descname"><span class="pre">LadderClimbingOracle</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.unreliable_oracle.LadderClimbingOracle" title="Link to this definition"></a></dt>
+<dd><p>Bases: <a class="reference internal" href="#RIFT.integrators.mcsampler_generic.MCSamplerGeneric" title="RIFT.integrators.mcsampler_generic.MCSamplerGeneric"><code class="xref py py-class docutils literal notranslate"><span class="pre">MCSamplerGeneric</span></code></a></p>
+<dl class="py method">
+<dt class="sig sig-object py" id="RIFT.integrators.unreliable_oracle.LadderClimbingOracle.add_parameter">
+<span class="sig-name descname"><span class="pre">add_parameter</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">params</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">pdf</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.unreliable_oracle.LadderClimbingOracle.add_parameter" title="Link to this definition"></a></dt>
+<dd><p>Add one (or more) parameters to sample dimensions. params is either a string describing the parameter, or a tuple of strings. The tuple will indicate to the sampler that these parameters must be sampled together. left_limit and right_limit are on the infinite interval by default, but can and probably should be specified. If several params are given, left_limit, and right_limit must be a set of tuples with corresponding length. Sampling PDF is required, and if not provided, the cdf inverse function will be determined numerically from the sampling PDF.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="RIFT.integrators.unreliable_oracle.LadderClimbingOracle.climb">
+<span class="sig-name descname"><span class="pre">climb</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">x0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">scale</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">label</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'free'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">pinned</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">n_generations</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.unreliable_oracle.LadderClimbingOracle.climb" title="Link to this definition"></a></dt>
+<dd><p>Climb from x0 with per-axis step <cite>scale</cite>; <cite>pinned</cite> = {index: value}.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="RIFT.integrators.unreliable_oracle.LadderClimbingOracle.draw_simplified">
+<span class="sig-name descname"><span class="pre">draw_simplified</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">n_samples</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">args</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">delta_lnL</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">10.0</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.unreliable_oracle.LadderClimbingOracle.draw_simplified" title="Link to this definition"></a></dt>
+<dd><p>Draw from the final Gaussians of climbs whose best is within delta_lnL.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="RIFT.integrators.unreliable_oracle.LadderClimbingOracle.near_peak">
+<span class="sig-name descname"><span class="pre">near_peak</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">delta_lnL</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">10.0</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.unreliable_oracle.LadderClimbingOracle.near_peak" title="Link to this definition"></a></dt>
+<dd><p>History points within delta_lnL of the overall best: (X, lnL, labels).</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="RIFT.integrators.unreliable_oracle.LadderClimbingOracle.place">
+<span class="sig-name descname"><span class="pre">place</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">n_samples</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">delta_lnL</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">10.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">inflate</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1.5</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">pinned_sd</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.unreliable_oracle.LadderClimbingOracle.place" title="Link to this definition"></a></dt>
+<dd><p>Covariance placement: equal draws per good climb from N(best_x, inflate^2 cov).</p>
+<p>A rung’s pinned coordinate has zero variance in its CMA covariance; give it
+sd <code class="docutils literal notranslate"><span class="pre">pinned_sd</span></code> (e.g. half the rung spacing) so seeds fill between rungs.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="RIFT.integrators.unreliable_oracle.LadderClimbingOracle.run">
+<span class="sig-name descname"><span class="pre">run</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">x0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">scale</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">between_climbs</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.unreliable_oracle.LadderClimbingOracle.run" title="Link to this definition"></a></dt>
+<dd><p>Free climb(s), then the ladder outward from the best free optimum.</p>
+<p>x0 is one start (ndim,) or several (n_start, ndim); each gets a free
+climb.  between_climbs(x_start) is called before each climb (e.g. to
+re-adapt an auxiliary proposal at the start point).</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="RIFT.integrators.unreliable_oracle.LadderClimbingOracle.setup">
+<span class="sig-name descname"><span class="pre">setup</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">lnL</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">periodic</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">()</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ladder_param</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ladder_values</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">()</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">popsize</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">10</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">n_generations</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">25</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">n_generations_ladder</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sigma0</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.3</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">seed</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">verbose</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">callback</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.unreliable_oracle.LadderClimbingOracle.setup" title="Link to this definition"></a></dt>
+<dd><p>lnL : callable(<a href="#id40"><span class="problematic" id="id41">*</span></a>cols) -&gt; array.  ladder_param : name pinned on rungs.
+sigma0 : initial step, in units of the scale passed to update (or the
+box width when no scale is known).  callback(label, gen, best_lnL) is
+called once per generation (for logging / pre-emption).</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="RIFT.integrators.unreliable_oracle.LadderClimbingOracle.update_sampling_prior">
+<span class="sig-name descname"><span class="pre">update_sampling_prior</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">ln_weights</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">n_history</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">external_rvs</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">lnw_cut</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">-10</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.unreliable_oracle.LadderClimbingOracle.update_sampling_prior" title="Link to this definition"></a></dt>
+<dd><p>Start from the weighted history: best point, weighted spread as scale.</p>
 </dd></dl>
 
 </dd></dl>
