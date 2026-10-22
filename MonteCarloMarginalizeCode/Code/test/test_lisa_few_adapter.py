@@ -48,7 +48,11 @@ def test_api_units_phase_order_and_output_contract(monkeypatch):
             calls['evaluation'] = (args, kw)
             return [np.ones(4096), 2*np.ones(4096)]
         from types import SimpleNamespace
+        phase_coefficients = np.zeros((1,3,8))
+        phase_coefficients[0,0,1] = 2*np.pi*.001*40950
         wave.waveform_generator = SimpleNamespace(ls=[2], ms=[2], ks=[0], ns=[1],
+            inspiral_generator=SimpleNamespace(integrator_spline_t=np.array([0.,40950.]),
+                integrator_spline_phase_coeff=phase_coefficients),
             end_time=40950., create_waveform=SimpleNamespace(num_pts_pad=0))
         return wave
     monkeypatch.setattr(fa, '_load_few', lambda: (factory, 100., '2.2.0'))
@@ -61,6 +65,10 @@ def test_api_units_phase_order_and_output_contract(monkeypatch):
     assert out.polarizations.shape == (2, 4096)
     assert out.n_samples == 4096
     assert out.epoch_reference == config().epoch_reference
+    assert out.metadata['carrier_nyquist_ratio'] < 1
+    monkeypatch.setattr(fa, '_carrier_frequency_bound', lambda *args: 0.05)
+    with pytest.raises(ValueError, match='reaches Nyquist'):
+        fa.FewWaveformAdapter(config()).generate(parameters())
 
 
 @pytest.mark.skipif(os.environ.get('RIFT_RUN_FEW_REAL') != '1',
@@ -157,3 +165,48 @@ def test_physical_termination_allows_endpoint_roundoff():
     generator = SimpleNamespace(end_time=np.nextafter(40950., 0),
                     create_waveform=SimpleNamespace(num_pts_pad=0))
     assert fa._termination_metadata(generator, config())['zero_padding_samples'] == 0
+
+
+
+def test_carrier_bound_for_linear_independent_phases():
+    phases = np.zeros((2, 3, 8))
+    widths = np.array([2., 3.])
+    angular_rates = np.array([.3, .2, .1])
+    phases[:, :, 1] = widths[:, None]*angular_rates
+    modes = np.array([[2, 2, 0, 1], [3, -1, 2, -3]])
+    bound = fa._carrier_frequency_bound([0., 2., 5.], phases, modes, 4.)
+    expected = max(abs(modes[:, 1:]@angular_rates))/(2*np.pi)
+    assert bound == pytest.approx(expected, rel=1e-12)
+
+
+def test_carrier_bound_encloses_dense_curved_phase_derivative():
+    rng = np.random.default_rng(73)
+    phases = rng.normal(size=(1, 3, 8))
+    modes = np.array([[2, 2, 0, -3]])
+    bound = fa._carrier_frequency_bound([0., 2.], phases, modes, 2.)
+    # Independent derivative of the nested FEW phase polynomial via Polynomial.
+    from numpy.polynomial import Polynomial as P
+    s, one = P([0, 1]), P([1])
+    carrier = modes[0, 1:]@phases[0]
+    r1,r2,r3,r4,r5,r6,r7,r8 = carrier
+    phase = r1+s*(r2+(one-s)*(r3+s*(r4+(one-s)*(r5+s*(r6+(one-s)*(r7+s*r8))))))
+    sampled = np.abs(phase.deriv()(np.linspace(0,1,10001)))/(2*2*np.pi)
+    assert sampled.max() <= bound
+
+
+@pytest.mark.parametrize('times,shape', [([0.,0.], (1,3,8)), ([1.,2.], (1,3,8)),
+    ([0.,1.], (1,3,8)), ([0.,2.], (2,3,8))])
+def test_carrier_bound_rejects_missing_coverage_and_bad_shapes(times, shape):
+    with pytest.raises(ValueError):
+        fa._carrier_frequency_bound(times, np.zeros(shape), np.array([[2,2,0,0]]), 2.)
+
+
+def test_carrier_bound_catches_frequency_peak_between_knots():
+    # rcont5-only phase=s^2(1-s)^2 has zero frequency at both knots.
+    phases = np.zeros((1, 3, 8))
+    phases[0, 0, 4] = 1.
+    bound = fa._carrier_frequency_bound([0., 1.], phases, np.array([[2,1,0,0]]), 1.)
+    # Max |2*s-6*s^2+4*s^3| = sqrt(3)/9 in the open interval.
+    exact_peak_hz = np.sqrt(3)/(18*np.pi)
+    assert bound >= exact_peak_hz
+    assert bound > 0

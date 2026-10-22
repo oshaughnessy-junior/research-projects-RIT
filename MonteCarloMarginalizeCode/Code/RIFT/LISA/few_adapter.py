@@ -8,6 +8,7 @@ are independent; qK is a spin-axis angle, not orbital inclination xI0.
 from dataclasses import asdict, dataclass
 from importlib.metadata import version
 import hashlib
+import math
 
 import numpy as np
 
@@ -132,6 +133,55 @@ def _load_few():
     return GenerateEMRIWaveform, YRSID_SI, installed
 
 
+def _carrier_frequency_bound(times, phase_coefficients, retained_lmkn, span_seconds):
+    """Bound retained carrier frequencies via FEW's DOPR853 phase polynomials.
+
+    Public phase coefficients already include FEW's mass-ratio scaling. The
+    Bernstein convex-hull bound covers every overlapping dense-output interval.
+    This checks carriers only; amplitude/response sidebands still need cadence
+    convergence and no strict signal bandlimit is asserted.
+    """
+    times = np.asarray(times, dtype=float)
+    phases = np.asarray(phase_coefficients, dtype=float)
+    modes = np.asarray(retained_lmkn)
+    if (times.ndim != 1 or len(times) < 2 or not np.all(np.isfinite(times))
+            or np.any(np.diff(times) <= 0)):
+        raise ValueError('FEW dense-output times must be finite and strictly increasing')
+    if phases.shape != (len(times)-1, 3, 8) or not np.all(np.isfinite(phases)):
+        raise ValueError('FEW phase coefficients must be finite with shape (n_segments,3,8)')
+    if (modes.ndim != 2 or modes.shape[1] != 4 or len(modes) == 0
+            or not np.issubdtype(modes.dtype, np.integer)):
+        raise ValueError('retained harmonics must be a nonempty integer (l,m,k,n) array')
+    if not np.isfinite(span_seconds) or span_seconds <= 0:
+        raise ValueError('sample span must be finite and positive')
+    slack = 16*np.finfo(float).eps*max(1., span_seconds)
+    if times[0] > slack or times[-1]+slack < span_seconds:
+        raise ValueError('FEW dense-output intervals do not cover the requested sample span')
+    # FEW dopr853.py order=1: coefficients in ascending powers of normalized s.
+    derivative_basis = np.array([
+        [0, 0, 0, 0, 0, 0, 0], [1, 0, 0, 0, 0, 0, 0],
+        [1, -2, 0, 0, 0, 0, 0], [0, 2, -3, 0, 0, 0, 0],
+        [0, 2, -6, 4, 0, 0, 0], [0, 0, 3, -8, 5, 0, 0],
+        [0, 0, 3, -12, 15, -6, 0], [0, 0, 0, 4, -15, 18, -7],
+    ], dtype=float)
+    power_to_bernstein = np.array([
+        [math.comb(k, j)/math.comb(6, j) if j <= k else 0 for j in range(7)]
+        for k in range(7)])
+    active = (times[:-1] < span_seconds) & (times[1:] > 0)
+    widths = np.diff(times)[active]
+    derivative = np.einsum('spi,ij->spj', phases[active], derivative_basis)
+    carrier_power = np.einsum('mp,spj->smj', modes[:, 1:], derivative)
+    carrier_power /= widths[:, None, None] * (2*np.pi)
+    bernstein = np.einsum('smj,kj->smk', carrier_power, power_to_bernstein)
+    bound = np.max(np.abs(bernstein), axis=-1)
+    # Cover floating-point coefficient conversion with a conservative margin.
+    bound += 64*np.finfo(float).eps*(np.sum(np.abs(carrier_power), axis=-1)+bound)
+    result = float(np.max(bound))
+    if not np.isfinite(result):
+        raise ValueError('retained carrier frequency bound is not finite')
+    return result
+
+
 def _termination_metadata(generator, config):
     """Refuse FEW's early-termination zero padding for this fixed-span contract."""
     padding = int(generator.create_waveform.num_pts_pad)
@@ -194,7 +244,16 @@ class FewWaveformAdapter:
         termination = _termination_metadata(generator, c)
         retained_modes = np.column_stack([generator.ls, generator.ms,
                                           generator.ks, generator.ns]).astype(int).tolist()
+        trajectory = generator.inspiral_generator
+        carrier_bound = _carrier_frequency_bound(trajectory.integrator_spline_t,
+            trajectory.integrator_spline_phase_coeff, retained_modes,
+            (c.n_samples-1)*c.dt_seconds)
+        carrier_ratio = 2*c.dt_seconds*carrier_bound
+        if carrier_ratio >= 1:
+            raise ValueError('retained EMRI carrier frequency bound reaches Nyquist; reduce dt_seconds')
         metadata = {**termination, 'retained_lmkn': retained_modes,
+                    'max_retained_carrier_frequency_bound_hz': carrier_bound,
+                    'carrier_nyquist_ratio': carrier_ratio,
                     'mode_selection': 'threshold', 'include_minus_mkn': True,
                     'few_version': self.few_version, 'model': self.model, 'backend': 'cpu',
                     'frame': 'SSB polarizations (FEW detector frame)',
