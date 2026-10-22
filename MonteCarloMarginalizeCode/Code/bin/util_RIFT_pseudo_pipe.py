@@ -644,6 +644,13 @@ parser.add_argument("--manual-initial-grid",default=None,type=str,help="Filename
 parser.add_argument("--manual-initial-grid-supplements",action='store_true', help="Manual inital grid used to SUPPLEMENT output of the default helper grid.")
 parser.add_argument("--manual-extra-ile-args",default=None,type=str,help="Avenue to adjoin extra ILE arguments.  Needed for unusual configurations (e.g., if channel names are not being selected, etc)")
 parser.add_argument("--internal-ile-force-adapt-all",action='store_true', help="Syntactic sugar to prevent need to add manual-extra-ile-args for this: easier on user")
+parser.add_argument("--transverse-seed-climb",default=None,choices=["setup","dag","parallel","composite"],help="Seed the initial grid with near-peak points across transverse spin, found by hillclimbing a fast marginalized likelihood (util_TransverseSeedClimb.py: CMA-ES in mu1,mu2,q,s2z,chi1_perp,phi1; free climbs plus a ladder of pinned chi1_perp).  'setup' runs it here, on this host, and appends to proposed-grid.xml.gz.  'dag' adds a node before the iteration-0 ILE jobs (GPU with --transverse-seed-climb-request-gpu) that appends to overlap-grid-0.  'parallel' runs that node alongside iteration 0 and gives its points their own ILE_seed jobs, which join the iteration-0 consolidation; iteration 0 is not delayed.  'composite' runs the node after iteration 0, climbing from the best ILE-scored lines of all.net beside CIP 0; its ILE_seed jobs join the iteration-1 consolidation (needs >= 2 iterations).  The seeds are proposals: ILE re-scores them.  Off by default.")
+parser.add_argument("--transverse-seed-climb-args",default="",type=str,help="Extra arguments for util_TransverseSeedClimb.py (e.g. '--chi1-perp-ladder 0.2,0.5,0.8 --n-seed-points 400 --climb-approx IMRPhenomXPHM').")
+parser.add_argument("--transverse-seed-climb-n-max",default=1000,type=int,help="'dag', 'parallel', 'composite' modes: most points the climb may add (seed ILE batches are sized for it).")
+parser.add_argument("--transverse-seed-climb-request-gpu",action='store_true',help="DAG modes: the climb node requests a GPU.")
+parser.add_argument("--transverse-seed-climb-singularity-image",default=None,help="DAG modes with containers: image for the climb node (needs JAX; the ILE image has none).  Default: $SINGULARITY_RIFT_SEED_CLIMB_IMAGE.")
+parser.add_argument("--transverse-seed-climb-condor-commands",default=None,help="DAG modes: condor commands file for the climb node (--ile-condor-commands format).  Default: the ILE condor commands.")
+parser.add_argument("--transverse-seed-climb-exe",default=None,help="DAG modes: climb executable.  Default: `which util_TransverseSeedClimb.py`.  In a container this path is resolved inside the image, so it must exist there or on a bound filesystem (/scratch, /cvmfs).")
 # --- Time-domain (Toeplitz) inner product + glitch marginalization passthroughs ---
 #   ALL default None/OFF => byte-identical pipeline behavior (the ILE default inner product
 #   is the classic fd-diagonal lsu.ComplexIP/ComplexOverlap).  These are thin passthroughs to
@@ -785,7 +792,7 @@ if (opts.use_ini):
             ile_condor_commands.append([item, val])
 
 # After the ini, which can set the mode.
-if opts.eccentric_phase_coordinates:
+if eccentric_phase_pipeline.requested(opts):
     if not opts.assume_eccentric or not opts.use_meanPerAno:
         parser.error('--eccentric-phase-coordinates requires --assume-eccentric and --use-meanPerAno')
     if opts.internal_cip_use_periodic_ecc_vars or opts.internal_use_amr:
@@ -1345,7 +1352,7 @@ if opts.internal_use_gracedb_bayestar:
     cmd += " --internal-use-gracedb-bayestar "
 if opts.internal_use_amr:
     cmd += " --internal-use-amr " # minimal support performed in this routine, mainly for puff
-if opts.eccentric_phase_coordinates:
+if eccentric_phase_pipeline.requested(opts):
     cmd += eccentric_phase_pipeline.build_arguments(opts)
 if opts.internal_use_aligned_phase_coordinates:
     cmd += " --internal-use-aligned-phase-coordinates "
@@ -1653,7 +1660,7 @@ if _helper_rc != 0:
     print(" FAILURE: helper call exited nonzero; refusing to use any pre-existing "
           "helper_ile_args.txt")
     sys.exit(1)
-if opts.eccentric_phase_coordinates:
+if eccentric_phase_pipeline.requested(opts):
     if _helper_rc != 0:
         raise RuntimeError('Helper failed before freezing the eccentric-phase mass anchor')
     from RIFT.misc import eccentric_phase_policy
@@ -1984,7 +1991,7 @@ if opts.use_jax_ile:
 refuse_unless_q_time_pregrid_emitted(
     opts.internal_ile_q_time_pregrid_factor, line, "args_ile.txt")
 
-if opts.eccentric_phase_coordinates:
+if eccentric_phase_pipeline.requested(opts):
     eccentric_phase_policy.check_final_ile(eccentric_phase_build,line)
 with open('args_ile.txt','w') as f:
         f.write(line)
@@ -2217,10 +2224,11 @@ for indx in np.arange(len(instructions_cip)):
 
     if opts.fit_save_gp:
         line += " --fit-save-gp my_gp "  # fiducial filename, stored in each iteration
-    line += " --eccentricity-prior {}".format(opts.eccentricity_prior)
+    if not eccentric_phase_pipeline.requested(opts):
+        line += " --eccentricity-prior {}".format(opts.eccentricity_prior)
     if opts.use_EOB_parameters:
         line += " --use-EOB-parameters --parameter a6c --a6c-min {} --a6c-max {} ".format(opts.force_a6c_min,opts.force_a6c_max)
-    if opts.assume_eccentric:
+    if opts.assume_eccentric and not eccentric_phase_pipeline.requested(opts):
         if opts.use_meanPerAno:
             line += " --parameter meanPerAno --use-meanPerAno "
         if opts.use_eccentricity_squared:
@@ -2285,7 +2293,7 @@ if opts.cip_quadratic_first:
     lines[0]=lines[0].replace(' --fit-method gp ', ' --fit-method quadratic ')
     lines[0]=lines[0].replace(' --parameter delta_mc ', ' --parameter eta ')   # almost without fail we are using mc, delta_mc, xi  as zeroth layer
 
-if opts.assume_eccentric:
+if opts.assume_eccentric and not eccentric_phase_pipeline.requested(opts):
     # iteration 0 is eccentricity_squared and nofit meanPerAno
     lines[0] = lines[0].replace('--parameter eccentricity ','--parameter eccentricity_squared ')
     if opts.use_meanPerAno:
@@ -2329,7 +2337,7 @@ for indx_rf, line_rf in enumerate(lines):
         raise ValueError('RF transverse-spin stage {} activated but CIP would refuse it ({}); conflicting options: {}'.format(
             indx_rf, stage_problem(line_rf), ', '.join('--'+name.replace('_','-') for name in rf_transverse_conflicts) or 'see --manual-extra-cip-args'))
 
-if opts.eccentric_phase_coordinates:
+if eccentric_phase_pipeline.requested(opts):
     eccentric_phase_build=eccentric_phase_policy.finalize_map(opts,eccentric_phase_build,lines)
     if not opts.skip_reproducibility:
         with open('reproducibility/the_arguments_used.json','w') as f:
@@ -2397,7 +2405,7 @@ if opts.internal_cip_transverse_tails:
     # safe to append them unconditionally here.
     puff_params += ' --append-with-random-parameter chi1_perp --append-with-random-fraction {} '.format(opts.internal_cip_transverse_tails_puff_fraction)
     puff_max_it = max(puff_max_it, 30)
-if opts.eccentric_phase_coordinates:
+if eccentric_phase_pipeline.requested(opts):
     puff_params = eccentric_phase_pipeline.puff_arguments(puff_params,
         opts.eccentric_phase_reference_frequency,opts.eccentric_phase_target_frequency,
         **eccentric_phase_models.worker_options(opts))
@@ -2527,6 +2535,33 @@ if not (opts.manual_initial_grid is None):
         # shutil.copyfile is format-agnostic: works for either .xml.gz or
         # .dat as long as the source matches the active mode.
         shutil.copyfile(opts.manual_initial_grid, "proposed-grid." + grid_suffix_pp)
+
+# Transverse-spin seed climb, setup-time variant: append seeds to the proposed grid
+if opts.transverse_seed_climb == "setup":
+    if _use_hpip_pp:
+        raise SystemExit("pseudo_pipe: --transverse-seed-climb writes sim_inspiral XML; incompatible with RIFT_HYPERPIPELINE_FORMAT")
+    cmd_climb = "util_TransverseSeedClimb.py --ile-args args_ile.txt --inj-file proposed-grid.xml.gz --inj-file-out proposed-grid --append-to-input --output-json seed_climb.json --output-dat seed_climb_history.dat " + opts.transverse_seed_climb_args
+    # local.cache is staged into the run directory only later in this script
+    if not os.path.exists("local.cache") and opts.fake_data_cache and "--cache" not in opts.transverse_seed_climb_args:
+        cmd_climb += " --cache {} ".format(opts.fake_data_cache)
+    if "--psd-file" not in opts.transverse_seed_climb_args:
+        with open("args_ile.txt") as f:
+            _toks = shlex.split(f.read())
+        _psds = []
+        for _k, _tok in enumerate(_toks):
+            if _tok in ("--psd-file", "-p") and _k + 1 < len(_toks):
+                _psds.append(_toks[_k + 1])
+            elif _tok.startswith("--psd-file="):
+                _psds.append(_tok.split("=", 1)[1])
+            elif _tok.startswith("-p") and not _tok.startswith("--") and len(_tok) > 2:
+                _psds.append(_tok[2:])
+        _missing = [_psd.split("=", 1)[1] for _psd in _psds
+                    if not os.path.exists(_psd.split("=", 1)[1])]
+        if _missing:
+            raise SystemExit("pseudo_pipe: --transverse-seed-climb setup needs the PSD files {} in the run directory at setup time; pass --psd-file IFO=/abs/path in --transverse-seed-climb-args, or use 'dag' mode".format(_missing))
+    print(" Transverse seed climb (setup): ", cmd_climb)
+    if os.system(cmd_climb) != 0:
+        raise SystemExit("pseudo_pipe: util_TransverseSeedClimb.py failed; see output above")
 
 # override npts_it if needed
 if opts.internal_n_evaluations_per_iteration:
@@ -2676,6 +2711,20 @@ if opts.use_gauss_early:
     cmd += " --cip-exe-G `which util_ConstructIntrinsicPosterior_GaussianResampling.py ` "
 if opts.first_iteration_jumpstart:
     cmd += " --first-iteration-jumpstart "
+if opts.transverse_seed_climb in ("dag", "parallel", "composite"):
+    if cepp != "create_event_parameter_pipeline_BasicIteration":
+        raise SystemExit("pseudo_pipe: --transverse-seed-climb dag is wired only for BasicIteration (got {}); use 'setup'".format(cepp))
+    with open("seed_climb_args.txt", "w") as f:
+        f.write("X " + opts.transverse_seed_climb_args)
+    cmd += " --seed-climb-exe {} --seed-climb-args `pwd`/seed_climb_args.txt --seed-climb-n-max {} ".format(opts.transverse_seed_climb_exe or "`which util_TransverseSeedClimb.py`", opts.transverse_seed_climb_n_max)
+    _sc_image = opts.transverse_seed_climb_singularity_image or os.environ.get("SINGULARITY_RIFT_SEED_CLIMB_IMAGE")
+    if _sc_image:
+        cmd += " --seed-climb-singularity-image {} ".format(_sc_image)
+    if opts.transverse_seed_climb_condor_commands:
+        cmd += " --seed-climb-condor-commands {} ".format(os.path.abspath(opts.transverse_seed_climb_condor_commands))
+    cmd += " --seed-climb-mode {} ".format({"dag": "prepend"}.get(opts.transverse_seed_climb, opts.transverse_seed_climb))
+    if opts.transverse_seed_climb_request_gpu:
+        cmd += " --seed-climb-request-gpu "
 if opts.internal_use_amr:
     print(" AMR prototype: Using hardcoded aligned-spin settings, assembling grid, requires coinc!")
     if _use_hpip_pp and opts.manual_initial_grid is None:
@@ -2794,7 +2843,7 @@ if opts.cip_explode_jobs:
 # Effective phase coordinates need flat workers for EVERY fit method, including the default gp:
 # CIP refuses stored fits (--fit-load-gp) with these coordinates, so each exploded worker must
 # compute its own fresh fit.  Either explode route above creates workers.
-if opts.eccentric_phase_coordinates and (opts.cip_explode_jobs or opts.cip_explode_jobs_dag) \
+if eccentric_phase_pipeline.requested(opts) and (opts.cip_explode_jobs or opts.cip_explode_jobs_dag) \
    and ' --cip-explode-jobs-flat ' not in cmd:
     cmd += " --cip-explode-jobs-flat "
 if opts.make_bw_psds:
