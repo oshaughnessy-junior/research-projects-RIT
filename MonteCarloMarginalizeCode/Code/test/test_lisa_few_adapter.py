@@ -59,7 +59,8 @@ def test_api_units_phase_order_and_output_contract(monkeypatch):
     out = fa.FewWaveformAdapter(config()).generate(parameters())
     args, kw = calls['evaluation']
     assert args == (1e6, 10., 0., 12., .2, 1., 1., 1., 2., .7, .3, .2, 0., .4)
-    assert kw == {'T': 409.5, 'dt': 10., 'mode_selection_threshold': 1e-5,
+    assert 40950 < kw.pop('T')*100 < 40950+1e-7
+    assert kw == {'dt': 10., 'mode_selection_threshold': 1e-5,
                   'mode_selection': 'threshold', 'include_minus_mkn': True, 'batch_size': -1}
     assert calls['construction'][1]['frame'] == 'detector'
     assert out.polarizations.shape == (2, 4096)
@@ -210,3 +211,31 @@ def test_carrier_bound_catches_frequency_peak_between_knots():
     exact_peak_hz = np.sqrt(3)/(18*np.pi)
     assert bound >= exact_peak_hz
     assert bound > 0
+
+
+@pytest.mark.parametrize('m1,m2', [(1e6,10.), (1001000.,10.), (1e5,1.), (1e7,100.)])
+@pytest.mark.parametrize('year', [31558149.7635456, 31558149.763545595])
+def test_duration_margin_covers_mass_scaled_time_roundoff(m1, m2, year):
+    # Match FEW run_inspiral's operation order without changing its no-pad guard.
+    mtsun = 4.9254909476412675e-6
+    n, dt = 4096, 10.
+    duration = fa._few_duration_years(n, dt, year)
+    total = m1+m2
+    eta = (m1*m2/total)/total
+    tmax = duration*year/(total*mtsun)*eta
+    msec = mtsun*total/eta
+    first_end = tmax*msec
+    assert first_end > (n-1)*dt
+    # Pinned get_inspiral reruns trajectories with fewer than eight points.
+    rerun_duration = first_end/year
+    rerun_tmax = rerun_duration*year/(total*mtsun)*eta
+    assert rerun_tmax*msec > (n-1)*dt
+    assert int(duration*year/dt)+1 == n
+
+
+
+def test_duration_rejects_few_second_floor_representation_loss():
+    # Summation floors once to steps, then again after multiplying/dividing dt.
+    assert int((43*.1)/.1) == 42
+    with pytest.raises(ValueError, match='cannot represent this cadence'):
+        fa._few_duration_years(44, .1, 31558149.7635456)

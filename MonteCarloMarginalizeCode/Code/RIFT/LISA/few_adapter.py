@@ -195,9 +195,17 @@ def _termination_metadata(generator, config):
 
 
 def _few_duration_years(n_samples, dt_seconds, year_seconds):
-    """FEW includes the endpoint after flooring duration/dt; request N-1 steps."""
+    """Request N-1 steps with roundoff margin inside the same FEW output bin.
+
+    FEW passes unquantized T to trajectory integration before summation floors
+    it. The forward margin avoids an endpoint rounded below the last sample.
+    The unchanged physical-support/no-padding guard verifies the actual result.
+    """
     steps = n_samples - 1
-    duration = steps*dt_seconds/year_seconds
+    span = steps*dt_seconds
+    if int(span/dt_seconds) != steps:
+        raise ValueError('FEW sample-count arithmetic cannot represent this cadence and count')
+    duration = (span*(1+64*np.finfo(float).eps))/year_seconds
     for _ in range(4):
         recovered = int(duration*year_seconds/dt_seconds)
         if recovered == steps:
@@ -259,6 +267,7 @@ class FewWaveformAdapter:
                     'frame': 'SSB polarizations (FEW detector frame)',
                     'YRSID_SI': self.year_seconds, 'backend_duration_years': duration_years,
                     'sample_span_seconds': (c.n_samples-1)*c.dt_seconds,
+                    'integration_margin_seconds': duration_years*self.year_seconds-(c.n_samples-1)*c.dt_seconds,
                     'model_data_sha256': dict(MODEL_DATA_SHA256),
                     'parameters': params.to_dict(),
                     'config': c.to_dict()}
