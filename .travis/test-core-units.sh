@@ -23,8 +23,8 @@
 #
 # The original manifest was run file by file on CIT (IGWN conda python 3.11, numpy 1.26.4,
 # lal 7.7.0) before it was added; the measured collection counts are the floors below.  Later
-# entries are verified by this gate itself, which collects every file individually before the
-# combined run, so an addition that collects nothing or fails is caught here rather than
+# entries are verified by this gate itself, which reports per-file counts from one joint collection
+# before the combined run, so an addition that collects nothing or fails is caught rather than
 # trusted on a quoted number.
 #
 # SHAPE.  Modelled on .travis/test-slowrot.sh, and it keeps that script's defences, because
@@ -268,15 +268,15 @@ done
 # 1.26.4, scipy 1.14.1, lal 7.7.0), whole manifest in one run: 319 collected,
 # 307 passed, 12 skipped (11 pytest.skip + 1 xfail).
 #
-# COST: 363 s total on CIT for the 347-test manifest, of which the pytest run is ~145 s.  The
-# rest is the per-file collection loop below -- one interpreter per manifest entry, each
-# importing RIFT (lal, numpy, numba), so it grows linearly with the manifest and now dominates.
-# That is the price of the exit-5 defence and it is worth paying, but it is why this job's
-# timeout-minutes is 20 rather than something tight: measure before trimming the budget.
+# HISTORICAL COST: 363 s total on CIT for the 347-test manifest; pytest took ~145 s.
+# The remaining cost included one collection interpreter per manifest entry, each importing
+# RIFT (lal, numpy, numba). The current joint collector shares those imports while retaining
+# per-file floors and the exit-5 defence. Its timing must be measured in CI; the existing
+# 20-minute budget is unchanged.
 #
-# History.  Both branches of a merge have now moved these numbers twice, and the arithmetic is
-# NOT the way to combine them -- this gate collects every file individually before the combined
-# run, so the merged floor is RE-MEASURED, never added up:
+# History. Both branches of a merge have moved these numbers twice; arithmetic alone cannot
+# combine them. The gate measures per-file collection counts before the combined run, so the
+# merged floor is RE-MEASURED, never added up:
 #   278/266  original manifest
 #   296/284  + test_replica_pooling.py, test_marg_list.py (rostered BROKEN until fixed)
 #   299/287  + test_vectorized_lal_tools_split.py (from rift_O4d, then 3 -> 7 tests: its
@@ -425,7 +425,7 @@ done
 #            NaN-returning coordinate plugin, and the CIP route through
 #            --downselect-enforce-kerr).  The file defines exactly two test_* functions, has no
 #            parametrization and no skip or xfail marks, so the raise is +2/+2 over the row
-#            above; the per-file collection loop below is what confirms it on the runner, and it
+#            above; the per-file collection counts below confirm it on the runner, and it
 #            fails rather than reports if that is wrong.
 #            MEASURED on CIT (ldas-grid; `import cupy` FAILS there) 2026-10-03, IGWN conda
 #            python 3.11: junit 661 collected / 648 passed / 13 skipped / 0 failed, 3 subtests.
@@ -563,11 +563,31 @@ done
 # A file that collects nothing is the exit-5 trap arriving
 # through the front door: inside a multi-file run pytest's exit 5 never appears at all, so it
 # has to be checked per file.
-echo "== per-file collection floor =="
+echo "== joint collection with per-file floors =="
+collection_counts="$(mktemp -t core-unit-counts-XXXXXX.tsv)"
+if ! "${PYTHON_BIN}" .travis/core_unit_collection.py "$collection_counts" "${FILES[@]}"; then
+  rm -f "$collection_counts"
+  echo "test-core-units.sh: joint collection failed." >&2
+  exit 1
+fi
+exec 3< "$collection_counts"
+rm -f "$collection_counts"
 floor_rc=0
 collected_total=0
 for f in "${FILES[@]}"; do
-  n=$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "$f" 2>/dev/null | grep -c '::')
+  if ! IFS= read -r collection_row <&3; then
+    echo "test-core-units.sh: missing collection row for $f." >&2
+    exit 1
+  fi
+  collected_file=${collection_row%%$'\t'*}
+  n=${collection_row#*$'\t'}
+  if [ "$collected_file" != "$f" ] || [ "$collection_row" = "$collected_file" ]; then
+    echo "test-core-units.sh: missing or reordered collection row for $f." >&2
+    exit 1
+  fi
+  case "$n" in
+    ''|*[!0-9]*) echo "test-core-units.sh: invalid collection count for $f." >&2; exit 1 ;;
+  esac
   printf '  %-72s %3d\n' "$f" "$n"
   collected_total=$(( collected_total + n ))
   file_floor=1
@@ -580,6 +600,11 @@ for f in "${FILES[@]}"; do
     floor_rc=1
   fi
 done
+if IFS= read -r extra_row <&3 || [ -n "$extra_row" ]; then
+  echo "test-core-units.sh: unexpected trailing collection row." >&2
+  exit 1
+fi
+exec 3<&-
 [ "$floor_rc" -eq 0 ] || exit 1
 # Reuse collection already performed above; no additional pytest process.
 if [ "$collected_total" -lt "$EXPECTED_TESTS" ]; then
