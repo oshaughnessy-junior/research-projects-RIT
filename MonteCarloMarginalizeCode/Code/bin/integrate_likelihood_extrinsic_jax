@@ -198,7 +198,6 @@ _PHASE_ANALYTIC_MODES = frozenset((
 
 # Boolean (zero-argument) ILE options (action=store_true/false).
 _ILE_BOOL_OPTS = {
-    "--td-whiteness-check",
     "--calibration-conjugate-phase", "--calibration-global-norm",
     "--check-good-enough", "--zero-likelihood", "--random-event",
     "--soft-fail-event-range", "--fmin-template-correct-for-lmax",
@@ -238,7 +237,6 @@ _ILE_BOOL_OPTS = {
 }
 # ILE options taking repeated values (action=append).
 _ILE_APPEND_OPTS = {
-    "--td-piece", "--td-ifo-time-offset", "--td-acf-file",
     "--channel-name", "--psd-file", "--fmin-ifo", "--nr-lookup-group",
     "--parameter", "--parameter-range", "--sampler-portfolio",
     "--sampler-portfolio-args",
@@ -290,7 +288,6 @@ def _register_ile_short_forms(optp):
 
 # The full ILE option set (so anything not implemented is still accepted).
 _ILE_ALL_OPTS = {
-    "--td-mref", "--td-piece", "--td-ifo-time-offset", "--td-acf-file", "--td-acf-cond", "--td-dense-max-n", "--td-u-stride", "--td-u-method", "--td-highpass", "--td-u-svd-tol", "--td-whiteness-check",
     "--internal-ile-inner-product", "--td-solver", "--td-acf-duration",
     "--td-analysis-start", "--td-analysis-end", "--td-gap",
     "--glitch-basis", "--glitch-basis-file", "--glitch-sigma",
@@ -402,7 +399,6 @@ _ILE_ALL_OPTS = {
 # option accepts any string, so a value numpy ILE refuses at parse time would
 # reach the driver, or a number would arrive as a string where it is used.
 _ILE_INT_OPTS = {
-    "--td-dense-max-n", "--td-u-stride",
     "--amp-order", "--calibration-burn-in-nmax",
     "--calibration-mc-error-extrinsic", "--calibration-n-realizations",
     "--calibration-n-realizations-max", "--calibration-pilot-extrinsic",
@@ -417,10 +413,6 @@ _ILE_INT_OPTS = {
 }
 _ILE_FLOAT_OPTS = {
     "--td-acf-duration", "--td-analysis-start", "--td-analysis-end",
-    "--td-mref", "--td-acf-cond", "--td-highpass", "--td-u-svd-tol",
-
-    "--td-acf-duration", "--td-analysis-start", "--td-analysis-end",
-
     "--adapt-floor-level", "--calibration-burn-in-neff",
     "--calibration-neff-cal-target", "--distance-slice-skip-threshold",
     "--distance-slice-wing-delta-lnL", "--extrinsic-proposal-field-cover-frac",
@@ -489,8 +481,7 @@ def check_critical_and_report(opts, optp):
     if _ip not in (None, "fd-diagonal"):
         fatal.append("--internal-ile-inner-product %s is not implemented by JAX; "
                      "use integrate_likelihood_extrinsic_batchmode" % _ip)
-    for _name in ("--td-mref", "--td-piece", "--td-ifo-time-offset", "--td-acf-file", "--td-acf-cond", "--td-dense-max-n", "--td-u-stride", "--td-u-method", "--td-highpass", "--td-u-svd-tol", "--td-whiteness-check",
-                  "--td-solver", "--td-acf-duration", "--td-analysis-start",
+    for _name in ("--td-solver", "--td-acf-duration", "--td-analysis-start",
                   "--td-analysis-end", "--td-gap", "--glitch-basis",
                   "--glitch-basis-file", "--glitch-sigma"):
         if is_set(_name):
