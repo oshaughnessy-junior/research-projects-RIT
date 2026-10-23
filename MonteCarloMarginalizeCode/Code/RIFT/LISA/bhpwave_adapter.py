@@ -175,8 +175,12 @@ def _load_backend(runtime_lock):
         constants = importlib.import_module('bhpwave.constants')
         geodesic = importlib.import_module('bhpwave.trajectory.geodesic')
         native = importlib.import_module('bhpwaveformcy')
+    except ModuleNotFoundError as exc:
+        raise ImportError('missing BHPWave runtime or dependency '+repr(exc.name)+
+                          '; provide the pinned optional CPU runtime on PYTHONPATH') from exc
     except ImportError as exc:
-        raise ImportError('provide the pinned optional BHPWave CPU runtime on PYTHONPATH') from exc
+        raise ImportError('BHPWave runtime could not load; check native ABI and shared-library '
+                          'compatibility against the runtime lock: '+str(exc)) from exc
     root = Path(waveform.__file__).resolve().parent.parent
     for name, expected in SOURCE_FILES.items():
         if _sha256(root/name) != expected:
