@@ -47,7 +47,7 @@ def test_sampling_guards(field,value):
 
 
 def fake_adapter(monkeypatch, *, count=1024, merger=1e7, omega=.068,
-                 output=None, bad_class=False, check_radius_error=False):
+                 output=None, bad_class=False, check_radius_error=False, sampling=None):
     calls={}
     class Native:
         def time_step_number(self,*args):
@@ -76,7 +76,7 @@ def fake_adapter(monkeypatch, *, count=1024, merger=1e7, omega=.068,
         SimpleNamespace(TrajectoryData=Data,InspiralGenerator=Evolution),
         SimpleNamespace(yr_MKS=100,Modot_GC1_to_S=5e-6),
         SimpleNamespace(WaveformGeneratorPy=Native),{'test_fixture':True}))
-    return ba.BHPWaveAdapter(config(),'unused-fixture-lock'),calls
+    return ba.BHPWaveAdapter(config() if sampling is None else sampling,'unused-fixture-lock'),calls
 
 
 def test_native_api_mapping_and_output_metadata(monkeypatch):
@@ -226,3 +226,15 @@ def test_backend_import_failure_preserves_actionable_cause(tmp_path,monkeypatch,
     assert failure.value.__cause__ is cause
     if not isinstance(cause,ModuleNotFoundError):
         assert str(cause) in str(failure.value)
+
+
+@pytest.mark.parametrize('count,dt',[(26216,5.),(131076,1.)])
+def test_bounded_observation_and_fine_reference_counts_reach_generator(monkeypatch,count,dt):
+    sampling=ba.BHPWaveConfig(count,dt,0.,'seconds from declared mission t=0')
+    adapter,calls=fake_adapter(monkeypatch,count=count,sampling=sampling)
+    result=adapter.generate(parameters())
+    assert result.polarizations.shape==(2,count)
+    assert result.metadata['config']==sampling.to_dict()
+    assert result.metadata['sample_span_seconds']==131075.
+    assert calls['evaluation'][1]['pad_output'] is False
+    assert calls['count_args'][-2]==dt

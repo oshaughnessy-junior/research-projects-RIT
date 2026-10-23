@@ -27,7 +27,7 @@ SOURCE_FILES = {
     'bhpwave/trajectory/geodesic.py': '3b1d14b7bbf7b75aa18707d77e0b8badc43ba86fd2e179e41b8c2461f8745f73',
     'bhpwave/trajectory/inspiral.py': '0bffe347b90e67d03f6fa8890960f5bc1c1413bc08248b08235888b8e5872394',
 }
-MAX_SAMPLES = 16384
+MAX_SAMPLES = 262144
 
 
 def _real(value, name):

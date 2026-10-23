@@ -24,7 +24,11 @@ against the loaded trajectory table. Ordered positive masses are an input
 contract, not an adiabatic-accuracy bound. The initial tested configuration is
 recorded in the paper evidence; it does not certify an extended physical domain.
 
-Sampling is explicit, limited to 2–16384 points, with named epoch convention.
+Sampling is explicit, limited to 2–262144 points, with named epoch convention.
+The returned float64 hp,hc pair occupies at most 4 MiB; backend workspace is
+additional. The cap permits the bounded dt5 observation window and its finer
+reference grid. Longer-duration coverage and convergence require native checks;
+the allocation limit does not establish them.
 The backend uses sidereal years and an inclusive endpoint. The adapter requests
 a small floating-point duration margin within the same output bin and refuses
 any actual sample-count mismatch. Physical time to merger must exceed the
