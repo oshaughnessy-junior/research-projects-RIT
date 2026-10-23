@@ -44,8 +44,12 @@ OUT = os.path.join(HERE, "lisa_drift_ledger.json")
 # First match wins.
 # ---------------------------------------------------------------------------------------
 RULES = [
+    (r"^FUNC:_series_deltaF$", "PHYSICS",
+     "Frequency spacing of a loaded data series, used by the td-gs (finite-covariance "
+     "time-domain) set-up. The LISA driver has no td-gs code path; see the TD option "
+     "reason below."),
     # Ground-based TD operators: only this explicitly reviewed option set.
-    (r"^OPTION:--(internal-ile-inner-product|td-solver|td-acf-duration|td-analysis-start|td-analysis-end|td-gap|glitch-basis|glitch-basis-file|glitch-sigma)$", "PHYSICS",
+    (r"^OPTION:--(internal-ile-inner-product|td-subsample|td-calibration-correction-type|td-calibration-fir-half-length|td-highpass|td-u-svd-tol|td-mref|td-piece|td-ifo-time-offset|td-acf-file|td-acf-cond|td-dense-max-n|td-u-stride|td-u-method|td-whiteness-check|td-solver|td-acf-duration|td-analysis-start|td-analysis-end|td-gap|glitch-basis|glitch-basis-file|glitch-sigma)$", "PHYSICS",
      "The ground-based Toeplitz/cropped-precision and Gaussian-glitch factory is not "
      "wired into the LISA driver. Porting requires a TDI-channel covariance, boundary "
      "and response-model decision with LISA-specific validation; copying the "
@@ -275,7 +279,7 @@ RULES = [
      "RIFT.integrators.seeding.derived_rng, which is a shared module both drivers already "
      "import, and the LISA driver calls seed_everything on the same footing as the main "
      "one. If LISA ever models calibration, it wants derived_rng directly, not this wrapper."),
-    (r"^FUNC:analyze_event\._cal_error_probe(\._draw_dist)?$", "NA",
+    (r"^FUNC:analyze_event\._cal_error_probe(_body)?(\._draw_dist)?$", "NA",
      "Calibration Monte-Carlo error probe; see the --calibration-* reason."),
     (r"^FUNC:fused_calmarg_in_use$", "NA",
      "THE predicate for 'will the fused in-loop calibration kernel actually run?', shared by "
