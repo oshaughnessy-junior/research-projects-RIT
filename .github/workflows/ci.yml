@@ -381,14 +381,15 @@ jobs:
     # Python 3.10 to match the sibling numpy jobs.  timeout-minutes is a runaway backstop,
     # not a budget -- but the margin is no longer large: re-measured on CIT 2026-09-15 at
     # 465-510 s (was 350 s when this comment was written, and 49 s when it first claimed 'an
-    # order of magnitude'), because the per-file collection loop spawns one RIFT-importing
-    # interpreter per manifest entry and grows with the manifest, and because members now run
+    # order of magnitude'), because the per-file collection loop then spawned one RIFT-importing
+    # interpreter per manifest entry, and because members now run
     # RIFT DRIVERS as subprocesses.  Those CIT figures came off a head node at load 227-246, so
     # treat them as an upper bound rather than a budget.  20 min is ~2.4x, not 20x.
     # NOTE FOR ANYONE ADDING A SUBPROCESS TEST: keep its subprocess `timeout=` BELOW this cap.
     # A timeout above 1200 s can never fire -- the job is cancelled first, and you get no test
     # diagnostic at all.  Re-measure before adding many more files, and see
-    # .travis/test-core-units.sh for the breakdown.
+    # .travis/test-core-units.sh for the breakdown. The core gate now shares one joint
+    # collection process while retaining every per-file floor; the 20-minute cap is unchanged.
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -409,6 +410,8 @@ jobs:
       # SEOB filtering, common trimming and epoch/selection invariants (no backend).
       # The manifest includes test_phenom_lframe_conventions.py: generic-spin
       # controls and fixed-phase aligned Phenom boundary regressions.
+      - name: Test core collection accounting
+        run: python -m pytest -q -p no:cacheprovider .travis/test_core_unit_collection.py
       - name: Run core unit gate
         env:
           OMP_NUM_THREADS: 1
