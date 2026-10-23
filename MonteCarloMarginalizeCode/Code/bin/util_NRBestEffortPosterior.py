@@ -1,11 +1,13 @@
 #!/usr/bin/env python
 """Discrete NR-catalog posterior: plan from cleaned ILE spokes, combine conditionals.
 
-Only numpy is required unless XML export is requested. See docs/source/nr_best_effort.rst.
+Planning/combining ASCII needs only NumPy; XML/catalog checks need RIFT/lalsuite.
+Installed instructions: sys.prefix/share/RIFT/nr-best-effort/nr_best_effort.rst.
 """
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -52,7 +54,7 @@ def make_plan(data, mass_range, power=0., digits=4, eccentric=False, mean_per_an
         raise ValueError("mass range must be finite, positive, and increasing; prior power finite")
     extra = int(eccentric) + int(mean_per_ano)
     data = np.atleast_2d(np.asarray(data, dtype=float))
-    if data.shape[1] != 13 + extra or not np.all(np.isfinite(data)):
+    if not data.size or data.shape[1] != 13 + extra or not np.all(np.isfinite(data)):
         raise ValueError("expected finite cleaned ILE rows: index,masses,6 spins,[ecc,meanPerAno],lnL,sigma/L,ntot,neff")
     if np.any(data[:, 1:3] <= 0) or np.any(data[:, 10 + extra] < 0):
         raise ValueError("nonpositive masses or negative relative likelihood error")
@@ -74,8 +76,12 @@ def make_plan(data, mass_range, power=0., digits=4, eccentric=False, mean_per_an
     tolerance = 10. ** (-digits)
     for coord, intrinsic, row in records:
         n = len(group_keys)
+        # Records (and new group minima) are monotone in q. Exclude groups
+        # already outside the q tolerance before comparing the other labels;
+        # large completed catalogs otherwise pay O(rows * all_simulations).
+        start = int(np.searchsorted(minima[:n, 0], coord[0] - tolerance*(1+1e-12)))
         matches = np.flatnonzero(np.all(
-            np.maximum(maxima[:n], coord) - np.minimum(minima[:n], coord) <= tolerance, axis=1))
+            np.maximum(maxima[start:n], coord) - np.minimum(minima[start:n], coord) <= tolerance, axis=1)) + start
         if len(matches) > 1:
             raise ValueError("ambiguous near-coincident spokes; increase --digits or select simulations explicitly")
         if len(matches):
@@ -116,7 +122,9 @@ def make_plan(data, mass_range, power=0., digits=4, eccentric=False, mean_per_an
             merged = []
             buckets = {}
             for item in rows:
-                buckets.setdefault(round(item[0], digits), []).append(item)
+                # Use the same quantizer as duplicate detection below. Python's
+                # round and numpy.round differ at binary half-way values.
+                buckets.setdefault(float(np.round(item[0], digits)), []).append(item)
             for bucket in buckets.values():
                 if len(bucket) == 1:
                     merged.append(bucket[0])
@@ -140,8 +148,8 @@ def make_plan(data, mass_range, power=0., digits=4, eccentric=False, mean_per_an
         masses_all = np.array([item[0] for item in rows])
         if np.any(np.diff(np.round(masses_all, digits)) <= 0):
             raise ValueError("duplicate masses on spoke {}; clean repeated estimates first, or use --coalesce-repeats for same-waveform replicas".format(key))
-        rows = [item for item in rows if lo <= item[0] <= hi]
-        masses = np.array([item[0] for item in rows])
+        rows = [item for item in rows if lo-1e-8 <= item[0] <= hi+1e-8]
+        masses = np.clip(np.array([item[0] for item in rows]), lo, hi)
         complete = len(rows) >= 2 and np.isclose(masses[0], lo, rtol=0, atol=1e-8) and np.isclose(masses[-1], hi, rtol=0, atol=1e-8)
         if len(rows) < 2 or (not complete and not allow_partial_mass_range):
             raise ValueError("spoke {} needs grid nodes at both mass-prior boundaries {}; no extrapolation".format(key, mass_range))
@@ -173,18 +181,24 @@ def make_plan(data, mass_range, power=0., digits=4, eccentric=False, mean_per_an
                 interpretation='discrete physical-spoke prior; detector-frame mass quadrature')
 
 
-def export_xml(plan, draws, template_path, output_dir):
+def export_xml(plan, draws, template_path, output_dir, posterior_only=False, settings_only=False):
     # Lazy imports keep likelihood-table planning and posterior combination kernel-free.
     import lal
     from RIFT import lalsimutils
-    templates = lalsimutils.xml_to_ChooseWaveformParams_array(str(template_path))
+    templates = lalsimutils.xml_to_ChooseWaveformParams_array(str(template_path),
+                                                           **({'minrow': 0, 'maxrow': 1} if settings_only else {}))
+    if not templates:
+        raise ValueError('template XML is empty')
+    required = {plan['components'][int(i)]['simulation'] for i in draws} if posterior_only else None
     representatives = {}
     for component in plan['components']:
+        if required is not None and component['simulation'] not in required:
+            continue
         representatives.setdefault(component['simulation'], coordinates(component['intrinsic']))
-    keys = list(representatives)
+    keys = sorted(representatives, key=lambda k: representatives[k][0])
     coords = np.array([representatives[k] for k in keys])
     lookup = {}
-    for point in templates:
+    for point in ([] if settings_only else templates):
         intrinsic = dict(m1=point.m1 / lal.MSUN_SI, m2=point.m2 / lal.MSUN_SI,
                          **{out: getattr(point, src) for out, src in
                             zip(('a1x','a1y','a1z','a2x','a2y','a2z'),
@@ -192,16 +206,22 @@ def export_xml(plan, draws, template_path, output_dir):
         for name, enabled in [('eccentricity', plan['eccentric']), ('meanPerAno', plan['mean_per_ano'])]:
             if enabled:
                 intrinsic[name] = getattr(point, name)
-        matches = np.flatnonzero(np.all(np.abs(coords - coordinates(intrinsic)) <= 10.**(-plan['digits']), axis=1))
+        coord = coordinates(intrinsic)
+        tolerance = 10.**(-plan['digits'])
+        start = int(np.searchsorted(coords[:,0],coord[0]-tolerance*(1+1e-12)))
+        stop = int(np.searchsorted(coords[:,0],coord[0]+tolerance*(1+1e-12),side='right'))
+        matches = np.flatnonzero(np.all(np.abs(coords[start:stop] - coord) <= tolerance, axis=1)) + start
         if len(matches) > 1:
             raise ValueError("template XML ambiguously matches multiple spokes")
         if len(matches):
             lookup.setdefault(keys[int(matches[0])], point)
+            if len(lookup)==len(keys):
+                break
 
     def copy_component(component):
-        if component['simulation'] not in lookup:
+        if not settings_only and component['simulation'] not in lookup:
             raise ValueError("template XML lacks spoke " + component['simulation'])
-        template = lookup[component['simulation']]
+        template = templates[0] if settings_only else lookup[component['simulation']]
         point = template.manual_copy()
         point.tref = template.tref
         point.m1 = component['intrinsic']['m1'] * lal.MSUN_SI
@@ -215,10 +235,65 @@ def export_xml(plan, draws, template_path, output_dir):
         return point
 
     # One event per mass cell: row index is manifest component id.
-    grid = [copy_component(c) for c in plan['components']]
     posterior = [copy_component(plan['components'][int(i)]) for i in draws]
-    lalsimutils.ChooseWaveformParams_array_to_xml(grid, str(output_dir / 'quadrature-grid'))
+    if not posterior_only:
+        grid = [copy_component(c) for c in plan['components']]
+        lalsimutils.ChooseWaveformParams_array_to_xml(grid, str(output_dir / 'quadrature-grid'))
     lalsimutils.ChooseWaveformParams_array_to_xml(posterior, str(output_dir / 'intrinsic-posterior'))
+
+
+def check_catalog(plan, group, nrwf=None):
+    """Match native intrinsic labels via the maintained metadata-only public API.
+
+    Never invert q without also exchanging spins, and never run NRSimulationLookup:
+    historical implementations fold q>1 independently of the spin labels. Report
+    all identities rather than silently choosing a resolution/extraction.
+    """
+    if nrwf is None:
+        from RIFT.physics._nrwf_loader import get_nrwf
+        nrwf, available = get_nrwf()
+        if not available:
+            raise ValueError('NR backend unavailable; configure NR_BASE and the public NRWaveformCatalogManager3 module')
+    if group not in nrwf.internal_ParametersAvailable:
+        raise ValueError('NR group is absent from this backend: ' + group)
+    representatives = {}
+    for component in plan['components']:
+        representatives.setdefault(component['simulation'], component['intrinsic'])
+    keys = list(representatives)
+    targets = np.array([coordinates(representatives[k]) for k in keys])
+    matches = {k: [] for k in keys}
+    for param in nrwf.internal_ParametersAvailable[group]:
+        point = nrwf.WaveformModeCatalog(group, param, metadata_only=True).P
+        intrinsic = dict(m1=float(point.m1), m2=float(point.m2),
+            **{out: float(getattr(point, src)) for out, src in zip(
+                ('a1x','a1y','a1z','a2x','a2y','a2z'), ('s1x','s1y','s1z','s2x','s2y','s2z'))})
+        for name in ('eccentricity', 'meanPerAno'):
+            if name in representatives[keys[0]]:
+                value = getattr(point, name, None)
+                if value is None:
+                    raise ValueError('catalog metadata lacks native ' + name)
+                intrinsic[name] = float(value)
+        coord = coordinates(intrinsic)
+        found = np.flatnonzero(np.all(np.abs(targets-coord) <= 10.**(-plan['digits']), axis=1))
+        for index in found:
+            matches[keys[int(index)]].append(dict(group=group, parameter=str(param)))
+    absent = [k for k in keys if not matches[k]]
+    if absent:
+        raise ValueError('{} spokes do not match native catalog metadata (first: {}). Check archive version, component ordering, and remapped eccentricities.'.format(len(absent), absent[0]))
+    module_path = getattr(nrwf, '__file__', None)
+    result = dict(group=group, backend=getattr(nrwf, '__name__', type(nrwf).__name__),
+                  module_path=module_path, nr_base=os.environ.get('NR_BASE'),
+                  waveform_io_validated=False, matches=matches,
+                  ambiguous_spokes=[k for k in keys if len(matches[k]) != 1])
+    if module_path and Path(module_path).is_file():
+        result['module_sha256'] = hashlib.sha256(Path(module_path).read_bytes()).hexdigest()
+    if hasattr(nrwf, 'legacy_module'):
+        legacy = nrwf.legacy_module()
+        legacy_path = getattr(legacy, '__file__', None)
+        if legacy_path and Path(legacy_path).is_file():
+            result['wrapped_module_path'] = legacy_path
+            result['wrapped_module_sha256'] = hashlib.sha256(Path(legacy_path).read_bytes()).hexdigest()
+    return result
 
 
 def combine(plan, manifest_dir, count, seed):
@@ -307,9 +382,15 @@ def main(argv=None):
     build.add_argument('--eccentric', action='store_true')
     build.add_argument('--mean-per-ano', action='store_true')
     build.add_argument('--template-xml', type=Path, help='also export quadrature and posterior XML using original grid settings')
+    build.add_argument('--posterior-xml-only', action='store_true', help='with --template-xml, skip the full quadrature-grid XML (intrinsic followups need only posterior draws)')
+    build.add_argument('--template-settings-only', action='store_true', help='use only the first XML row for shared run settings; overwrite every intrinsic label from the composite instead of matching template spokes')
     build.add_argument('--output-dir', type=Path, required=True)
     build.add_argument('--n-output-samples', type=positive_int, default=3000)
     build.add_argument('--seed', type=int, default=0)
+    catalog = sub.add_parser('catalog-check', help='check native spoke labels against NRWaveformCatalogManager3 metadata')
+    catalog.add_argument('--manifest', type=Path, required=True)
+    catalog.add_argument('--group', required=True)
+    catalog.add_argument('--output', type=Path, required=True)
     merge = sub.add_parser('combine', help='combine saved conditional fair posterior draws')
     merge.add_argument('--manifest', type=Path, required=True)
     merge.add_argument('--output', type=Path, required=True)
@@ -330,7 +411,9 @@ def main(argv=None):
             out = args.output_dir
             out.mkdir(parents=True, exist_ok=False)
             if args.template_xml:
-                export_xml(plan, draws, args.template_xml, out)
+                export_xml(plan, draws, args.template_xml, out, args.posterior_xml_only, args.template_settings_only)
+                plan['posterior_xml_only'] = args.posterior_xml_only
+                plan['template_settings_only'] = args.template_settings_only
                 plan['template_xml'] = dict(path=str(args.template_xml.resolve()),
                     sha256=hashlib.sha256(args.template_xml.read_bytes()).hexdigest())
             fields = list(plan['components'][0]['intrinsic'])
@@ -342,7 +425,18 @@ def main(argv=None):
             print("Wrote {} mass cells on {} spokes to {}".format(len(plan['components']), len(plan['simulations']), out))
             if any(not s['complete_mass_range'] for s in plan['simulations']):
                 print('WARNING: partial mass coverage; evidences omit unobserved mass intervals. Inspect manifest.json.')
+        elif args.command == 'catalog-check':
+            report = check_catalog(json.loads(args.manifest.read_text()), args.group)
+            report['manifest_sha256'] = hashlib.sha256(args.manifest.read_bytes()).hexdigest()
+            with args.output.open('x') as stream:
+                json.dump(report, stream, indent=2, allow_nan=False)
+                stream.write('\n')
+            print('Matched {} spokes; {} have multiple catalog identities. Metadata check only.'.format(
+                  len(report['matches']), len(report['ambiguous_spokes'])))
         else:
+            for path in (args.output, Path(str(args.output)+'.component_ids'), Path(str(args.output)+'.provenance.json')):
+                if path.exists():
+                    raise ValueError('refusing to overwrite ' + str(path))
             plan = json.loads(args.manifest.read_text())
             result, choices, diagnostics = combine(plan, args.manifest.resolve().parent,
                                                    args.n_output_samples, args.seed)
@@ -357,7 +451,7 @@ def main(argv=None):
                 sampling='with replacement; output count is not effective sample count',
                 components=diagnostics), indent=2) + '\n')
             print("Wrote {} posterior samples to {}".format(len(result), args.output))
-    except (ValueError, KeyError, OSError) as exc:
+    except (ValueError, KeyError, OSError, ImportError, NotImplementedError) as exc:
         parser.error(str(exc))
 
 

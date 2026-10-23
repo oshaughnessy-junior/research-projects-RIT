@@ -5,7 +5,9 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -23,6 +25,77 @@ def rows(masses=(10., 11., 14.), ratio=1., log_l=1000.):
 
 
 class NRBestEffortTests(unittest.TestCase):
+    def test_demo_resolves_inputs_for_isolated_working_directory(self):
+        demo=SCRIPT.parents[1]/'demo/nr_best_effort/bootstrap_existing_run.py'
+        if not demo.exists(): demo=SCRIPT.with_name('bootstrap_existing_run.py')
+        demo_spec=importlib.util.spec_from_file_location('bootstrap_demo',demo)
+        module=importlib.util.module_from_spec(demo_spec);demo_spec.loader.exec_module(module)
+        args=['--cache','local.cache','--psd-file','H1=H1.xml.gz','--event','2']
+        result=module.absolute_inputs(args,Path('/source/run'))
+        self.assertEqual(result,['--cache','/source/run/local.cache','--psd-file','H1=/source/run/H1.xml.gz','--event','2'])
+        self.assertEqual(args[1],'local.cache')
+
+    def test_demo_run_never_uses_source_as_working_directory(self):
+        demo=SCRIPT.parents[1]/'demo/nr_best_effort/bootstrap_existing_run.py'
+        if not demo.exists(): demo=SCRIPT.with_name('bootstrap_existing_run.py')
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);source=root/'original';source.mkdir();out=root/'followup';out.mkdir()
+            ile=root/'fake_ile';converter=root/'fake_converter'
+            ile.write_text('#!'+sys.executable+'\nimport sys\nfrom pathlib import Path\n'
+                'Path("cwd-marker").write_text("here")\n'
+                'p=sys.argv[sys.argv.index("--output-file")+1]\nPath(p+"_0_.xml.gz").write_text("fixture")\n')
+            converter.write_text('#!'+sys.executable+'\nprint("# m1 m2 distance")\nprint("5 5 10")\n')
+            ile.chmod(0o755);converter.chmod(0o755)
+            (out/'config.json').write_text(json.dumps(dict(source_hashes={},samples=1,seed=17,
+                source_run=str(source),ile=str(ile),converter=str(converter),args=[],columns=13)))
+            subprocess.run([sys.executable,str(demo),'run','--out',str(out),'--index','0'],
+                           check=True,capture_output=True)
+            self.assertTrue((out/'events/0/cwd-marker').is_file())
+            self.assertFalse((source/'cwd-marker').exists())
+    def test_demo_finish_preserves_equal_per_intrinsic_draw_and_rejects_mismatch(self):
+        demo=SCRIPT.parents[1]/'demo/nr_best_effort/bootstrap_existing_run.py'
+        if not demo.exists(): demo=SCRIPT.with_name('bootstrap_existing_run.py')
+        with tempfile.TemporaryDirectory() as tmp:
+            out=Path(tmp)
+            (out/'plan').mkdir()
+            (out/'config.json').write_text(json.dumps(dict(source_hashes={},samples=2,seed=17)))
+            np.savetxt(out/'plan/intrinsic_posterior_samples.dat',[[5,5],[6,6]],header='m1 m2')
+            for index,(mass,count,distance) in enumerate([(5,1,10),(6,100,20)]):
+                job=out/'events'/str(index);job.mkdir(parents=True)
+                np.savetxt(job/'posterior.dat',np.tile([mass,mass,distance],(count,1)),header='m1 m2 distance')
+            command=[sys.executable,str(demo),'finish','--out',str(out)]
+            subprocess.run(command,check=True,capture_output=True)
+            result=np.genfromtxt(out/'extrinsic_posterior_samples.dat',names=True)
+            np.testing.assert_equal(result['distance'],[10,20])
+            (out/'extrinsic_posterior_samples.dat').unlink()
+            np.savetxt(out/'events/1/posterior.dat',[[5,5,20]],header='m1 m2 distance')
+            result=subprocess.run(command,capture_output=True)
+            self.assertNotEqual(result.returncode,0)
+            self.assertIn(b'intrinsic mismatch',result.stderr)
+
+    def test_catalog_matches_native_labels_without_reciprocal_q_or_waveform_io(self):
+        data=rows(ratio=2.)
+        data[:,3]=.3
+        data=np.insert(data,9,.2,axis=1)
+        plan=nr.make_plan(data,(10,14),eccentric=True)
+        def constructor(group,param,metadata_only=False):
+            self.assertTrue(metadata_only)
+            point=types.SimpleNamespace(m1=1.,m2=2. if param!='reciprocal' else .5,
+                s1x=.3,s1y=0.,s1z=0.,s2x=0.,s2y=0.,s2z=0.,eccentricity=.2)
+            return types.SimpleNamespace(P=point)
+        backend=types.SimpleNamespace(internal_ParametersAvailable={'public':['native','reciprocal']},
+            WaveformModeCatalog=constructor)
+        report=nr.check_catalog(plan,'public',backend)
+        matched=list(report['matches'].values())[0]
+        self.assertEqual([m['parameter'] for m in matched],['native'])
+        self.assertFalse(report['waveform_io_validated'])
+        data[:,9]=.4
+        with self.assertRaisesRegex(ValueError,'native catalog metadata'):
+            nr.check_catalog(nr.make_plan(data,(10,14),eccentric=True),'public',backend)
+
+    def test_empty_table_is_a_clean_error(self):
+        with self.assertRaises(ValueError): nr.make_plan(np.empty((0,13)),(10,14))
+
     def test_nonuniform_grid_and_constant_evidence(self):
         plan = nr.make_plan(np.vstack([rows(), rows(ratio=.5, log_l=1000+np.log(3))]), (10,14))
         np.testing.assert_allclose([s['posterior_probability'] for s in plan['simulations']], [.75,.25])
@@ -109,6 +182,23 @@ class NRBestEffortTests(unittest.TestCase):
         self.assertAlmostEqual(first['relative_error'],.1/np.sqrt(2)/1.5)
         self.assertEqual(plan['simulations'][0]['combined_repeat_rows'],1)
 
+    def test_mass_halfway_rounding_uses_one_quantizer(self):
+        plan=nr.make_plan(rows((100.,100.00005,101.,104.)),(100,104),coalesce_repeats=True)
+        self.assertEqual(plan['simulations'][0]['combined_repeat_rows'],1)
+
+    def test_pruned_grouping_matches_full_group_scan(self):
+        pieces=[]
+        for ratio in [.2,.33335,.66695,1.,1.3,2.]:
+            for spin in [0.,.2,.4]:
+                data=rows(ratio=ratio)
+                data[:,3]=spin
+                pieces.append(data)
+        data=np.vstack(pieces)
+        plan=nr.make_plan(data,(10,14))
+        with patch.object(nr.np,'searchsorted',return_value=0):
+            reference=nr.make_plan(data[::-1],(10,14))
+        self.assertEqual(plan,reference)
+
     def test_log_weight_validation(self):
         for logs in [[],[np.nan],[np.inf],[-np.inf]]:
             with self.assertRaises(ValueError):
@@ -183,6 +273,9 @@ class NRBestEffortTests(unittest.TestCase):
             self.assertEqual(len(samples),3000)
             self.assertTrue(Path(str(output)+'.provenance.json').exists())
             self.assertEqual(len(np.loadtxt(str(output)+'.component_ids')),3000)
+            rerun=subprocess.run(command+['combine','--manifest',str(manifest),'--output',str(output)],capture_output=True)
+            self.assertNotEqual(rerun.returncode,0)
+            self.assertIn(b'refusing to overwrite',rerun.stderr)
 
     def test_xml_roundtrip_when_lalsuite_available(self):
         try:
@@ -212,6 +305,22 @@ class NRBestEffortTests(unittest.TestCase):
                 self.assertAlmostEqual(point.m1/lal.MSUN_SI,component['intrinsic']['m1'],places=5)
                 self.assertAlmostEqual(point.m2/lal.MSUN_SI,component['intrinsic']['m2'],places=5)
                 self.assertAlmostEqual(float(point.tref),1242442967.4,places=5)
+            only=directory/'only'
+            only.mkdir()
+            nr.export_xml(plan,[0,3,2],directory/'template.xml.gz',only,posterior_only=True)
+            self.assertTrue((only/'intrinsic-posterior.xml.gz').exists())
+            self.assertFalse((only/'quadrature-grid.xml.gz').exists())
+            settings=directory/'settings'
+            settings.mkdir()
+            eccentric_data=np.insert(rows(ratio=.25),9,.3,axis=1)
+            eccentric_data[:,3]=.2
+            other_plan=nr.make_plan(eccentric_data,(10,14),eccentric=True)
+            nr.export_xml(other_plan,[0,2],directory/'template.xml.gz',settings,
+                          posterior_only=True,settings_only=True)
+            exported=lalsimutils.xml_to_ChooseWaveformParams_array(str(settings/'intrinsic-posterior.xml.gz'))
+            self.assertAlmostEqual(exported[0].eccentricity,.3)
+            self.assertAlmostEqual(exported[0].s1x,.2)
+            self.assertAlmostEqual(exported[0].m2/exported[0].m1,.25)
 
 
 if __name__ == '__main__':

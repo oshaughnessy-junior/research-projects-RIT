@@ -7,6 +7,37 @@ conditional extrinsic posteriors. It does not require a continuous CIP fit, and
 planning or combining ASCII files only requires NumPy. XML grid export additionally
 requires the usual RIFT/lalsuite environment.
 
+Installed instructions and modern catalog compatibility
+-------------------------------------------------------
+
+The RIFT wheel and source distribution include the CLI, this document, and
+``demo/nr_best_effort/{README.rst,bootstrap_existing_run.py}``. Installed examples
+are under ``sys.prefix/share/RIFT/nr-best-effort``. The utility is installed in
+``sys.prefix/bin``. No NR waveform data or site-specific archives are bundled.
+
+The ``catalog-check`` subcommand checks native intrinsic labels with the public
+``WaveformModeCatalog(group,param,metadata_only=True).P`` interface::
+
+   util_NRBestEffortPosterior.py catalog-check --manifest nr-best-effort/manifest.json \
+     --group RIT-Five --output catalog-check.json
+
+Configure ``NR_BASE`` and the module path for the same catalog revision used by
+ILE. Both a direct ``NRWaveformCatalogManager3`` import and RIFT's
+``nrcatalog.compat_nrwf`` backend are supported when the latter wraps an operational
+waveform constructor. A registry-only backend whose constructor raises
+``NotImplementedError`` cannot supply an ILE waveform. Catalog metadata checking
+uses no waveform I/O and does not resolve multiple resolutions/extractions; its
+report lists all matching identities and flags ambiguity. It preserves component
+ordering rather than independently folding q to its reciprocal. Eccentricity
+must retain the native NR labels, not a frequency-remapped CIP coordinate.
+
+For an extrinsic-only followup of one existing run set, see the installed
+``README.rst`` and ``bootstrap_existing_run.py``. They prepare an intrinsic
+posterior grid, retain the source ILE data/prior/frequency settings, and require
+one conditional draw per scheduled intrinsic draw. They refuse missing events,
+wrong intrinsic coordinates, changed source hashes, and existing output paths.
+A separate smoke output directory prevents short I/O checks entering the result.
+
 What is already available
 -------------------------
 
@@ -146,6 +177,19 @@ Bootstrap from a completed run
    * ``quadrature-grid.xml.gz``: one event per manifest component, with XML row
      number equal to component id. Use this for separate conditional followups
      and the manifest-based combination described next.
+
+   An old refined XML can carry intrinsic labels that differ from those actually
+   recorded by ILE (including older eccentricity labels). If XML is used only to
+   supply common run settings, explicitly add ``--template-settings-only``:
+   the first XML row supplies settings, and every intrinsic coordinate is
+   overwritten from the composite. This does not remap the composite's labels;
+   validate them with ``catalog-check`` against the intended archive. The
+   one-run demo uses this mode and retains the exact source ILE arguments.
+
+   For a posterior-grid followup, add ``--posterior-xml-only`` to skip the
+   potentially large quadrature XML. A smaller refined template from the same
+   run can be used if it contains every selected spoke; missing or ambiguous
+   matches are rejected.
 
    Both XML files preserve settings from a representative point of the matching
    original-grid spoke, with masses replaced by the planned masses. Use a template

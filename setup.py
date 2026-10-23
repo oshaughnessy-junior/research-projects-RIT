@@ -56,7 +56,11 @@ setuptools.setup(
 # https://docs.python.org/2/distutils/setupscript.html
 # Would be preferable to be *global* path, not relative to install. Depends on if doing user install or not
 # This pathname puts it in the same place as the other files, in site-packages/
-   data_files=[('RIFT/likelihood',my_extra_source)],
+   data_files=[('RIFT/likelihood',my_extra_source),
+               ('share/RIFT/nr-best-effort', [
+                   'docs/source/nr_best_effort.rst',
+                   'MonteCarloMarginalizeCode/Code/demo/nr_best_effort/README.rst',
+                   'MonteCarloMarginalizeCode/Code/demo/nr_best_effort/bootstrap_existing_run.py'])],
    setup_requires=['setuptools','pip'],
    install_requires=REQUIREMENTS["install"],
    # Optional JAX interpolator stack (RIFT.interpolators.jax_gp). Kept out of the
