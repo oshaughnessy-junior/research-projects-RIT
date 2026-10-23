@@ -29,6 +29,16 @@ The returned float64 hp,hc pair occupies at most 4 MiB; backend workspace is
 additional. The cap permits the bounded dt5 observation window and its finer
 reference grid. Longer-duration coverage and convergence require native checks;
 the allocation limit does not establish them.
+An optional generation_dt_seconds selects a finer native grid. Its binary64
+value must divide the requested output cadence by an exact integer. The adapter
+checks the complete native count, then copies the genuine samples at that stride;
+it does no interpolation, padding or phase adjustment. Native allocations are
+separately limited to 524288 samples (8 MiB for a native hp/hc pair, excluding
+backend workspace). The default None keeps direct native sampling unchanged.
+Generation cadence, native count and stride are recorded in metadata. Output
+carrier Nyquist and trajectory/coverage checks remain required. Choosing a finer
+grid does not itself prove convergence or physical waveform accuracy.
+
 The backend uses sidereal years and an inclusive endpoint. The adapter requests
 a small floating-point duration margin within the same output bin and refuses
 any actual sample-count mismatch. Physical time to merger must exceed the

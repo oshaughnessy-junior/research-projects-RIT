@@ -238,3 +238,32 @@ def test_bounded_observation_and_fine_reference_counts_reach_generator(monkeypat
     assert result.metadata['sample_span_seconds']==131075.
     assert calls['evaluation'][1]['pad_output'] is False
     assert calls['count_args'][-2]==dt
+
+
+@pytest.mark.parametrize('count,dt,native_dt,stride',[(26216,5.,1.,5),(131076,1.,.5,2)])
+def test_explicit_generation_grid_reaches_native_and_restricts_genuine_samples(monkeypatch,count,dt,native_dt,stride):
+    sampling=ba.BHPWaveConfig(count,dt,0.,'seconds from declared mission t=0',generation_dt_seconds=native_dt)
+    native_count=(count-1)*stride+1
+    raw=np.array([np.arange(native_count,dtype=float),-2*np.arange(native_count,dtype=float)])
+    adapter,calls=fake_adapter(monkeypatch,count=native_count,sampling=sampling,output=raw)
+    result=adapter.generate(parameters())
+    np.testing.assert_array_equal(result.polarizations,raw[:,::stride])
+    assert result.polarizations.shape==(2,count) and result.polarizations.flags.c_contiguous
+    assert result.polarizations.base is None and not result.polarizations.flags.writeable
+    assert calls['count_args'][-2]==native_dt and calls['evaluation'][1]['dt']==native_dt
+    assert calls['evaluation'][1]['pad_output'] is False
+    assert result.metadata['native_n_samples']==native_count
+    assert result.metadata['native_stride']==stride and result.metadata['native_dt_seconds']==native_dt
+    assert result.metadata['sample_span_seconds']==131075.
+
+
+@pytest.mark.parametrize('generation_dt',[True,0.,-1.,float('inf'),float('nan'),'1',20.,3.])
+def test_generation_grid_refuses_invalid_or_noncommensurate_steps(generation_dt):
+    with pytest.raises(ValueError):replace(config(),generation_dt_seconds=generation_dt)
+
+
+def test_generation_grid_bounds_internal_allocation_before_backend_loading():
+    with pytest.raises(ValueError,match='internal native sample count'):
+        ba.BHPWaveConfig(131076,1.,0.,'test seconds',generation_dt_seconds=.25)
+    assert ba.BHPWaveConfig(131076,1.,0.,'test seconds',generation_dt_seconds=.5).n_samples==131076
+    assert ba.BHPWaveConfig.from_dict(config().to_dict()).generation_dt_seconds is None
