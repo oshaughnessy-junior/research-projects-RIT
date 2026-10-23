@@ -630,7 +630,9 @@ fi
 
 junit="$(mktemp -t core-units-junit-XXXXXX.xml)"
 echo "== running (workers: ${WORKERS}) =="
-"${PYTHON_BIN}" -m pytest -q -p no:cacheprovider --durations=10 "${XDIST_ARGS[@]}" --junit-xml="${junit}" "${FILES[@]}"
+# ${XDIST_ARGS[@]+...} because under `set -u` Bash 3.2 -- still /bin/bash on macOS -- treats
+# "${XDIST_ARGS[@]}" as an unbound variable when the array is empty, i.e. in the serial default.
+"${PYTHON_BIN}" -m pytest -q -p no:cacheprovider --durations=10 ${XDIST_ARGS[@]+"${XDIST_ARGS[@]}"} --junit-xml="${junit}" "${FILES[@]}"
 rc=$?
 if [ "$rc" -ne 0 ]; then
   echo "test-core-units.sh: pytest exited ${rc}" >&2
