@@ -384,6 +384,9 @@ jobs:
     # runner, so 18 min of a 20 min job.  The run therefore uses the runner's 4 vCPUs through
     # pytest-xdist (RIFT_COREUNIT_WORKERS below; see .travis/test-core-units.sh).  The floor is
     # the slowest file: test_dslice_amplitude_model.py alone took 200-330 s serial.
+    # Hosted with 4 workers (PR #480 run 39964516925, 8176cc00c): pytest 287 s, job 5m46s;
+    # 1161 collected, 1141 passed, 19 skipped, 1 xfailed, 3 subtests (junit 1164/1144/20),
+    # the same counts as serial.  One test there took 201 s, so it sets the floor.
     # NOTE FOR ANYONE ADDING A SUBPROCESS TEST: keep its subprocess `timeout=` BELOW this cap.
     # A timeout above 1200 s can never fire -- the job is cancelled first, and you get no test
     # diagnostic at all.
