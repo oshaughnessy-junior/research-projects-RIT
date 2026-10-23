@@ -23,8 +23,8 @@
 #
 # The original manifest was run file by file on CIT (IGWN conda python 3.11, numpy 1.26.4,
 # lal 7.7.0) before it was added; the measured collection counts are the floors below.  Later
-# entries are verified by this gate itself, which collects every file individually before the
-# combined run, so an addition that collects nothing or fails is caught here rather than
+# entries are verified by this gate itself, which reports per-file counts from one joint collection
+# before the combined run, so an addition that collects nothing or fails is caught rather than
 # trusted on a quoted number.
 #
 # SHAPE.  Modelled on .travis/test-slowrot.sh, and it keeps that script's defences, because
@@ -270,15 +270,15 @@ done
 # 1.26.4, scipy 1.14.1, lal 7.7.0), whole manifest in one run: 319 collected,
 # 307 passed, 12 skipped (11 pytest.skip + 1 xfail).
 #
-# COST: 363 s total on CIT for the 347-test manifest, of which the pytest run is ~145 s.  The
-# rest is the per-file collection loop below -- one interpreter per manifest entry, each
-# importing RIFT (lal, numpy, numba), so it grows linearly with the manifest and now dominates.
-# That is the price of the exit-5 defence and it is worth paying, but it is why this job's
-# timeout-minutes is 20 rather than something tight: measure before trimming the budget.
+# HISTORICAL COST: 363 s total on CIT for the 347-test manifest; pytest took ~145 s.
+# The remaining cost included one collection interpreter per manifest entry, each importing
+# RIFT (lal, numpy, numba). The current joint collector shares those imports while retaining
+# per-file floors and the exit-5 defence. Its timing must be measured in CI; the existing
+# 20-minute budget is unchanged.
 #
-# History.  Both branches of a merge have now moved these numbers twice, and the arithmetic is
-# NOT the way to combine them -- this gate collects every file individually before the combined
-# run, so the merged floor is RE-MEASURED, never added up:
+# History. Both branches of a merge have moved these numbers twice; arithmetic alone cannot
+# combine them. The gate measures per-file collection counts before the combined run, so the
+# merged floor is RE-MEASURED, never added up:
 #   278/266  original manifest
 #   296/284  + test_replica_pooling.py, test_marg_list.py (rostered BROKEN until fixed)
 #   299/287  + test_vectorized_lal_tools_split.py (from rift_O4d, then 3 -> 7 tests: its
@@ -427,7 +427,7 @@ done
 #            NaN-returning coordinate plugin, and the CIP route through
 #            --downselect-enforce-kerr).  The file defines exactly two test_* functions, has no
 #            parametrization and no skip or xfail marks, so the raise is +2/+2 over the row
-#            above; the per-file collection loop below is what confirms it on the runner, and it
+#            above; the per-file collection counts below confirm it on the runner, and it
 #            fails rather than reports if that is wrong.
 #            MEASURED on CIT (ldas-grid; `import cupy` FAILS there) 2026-10-03, IGWN conda
 #            python 3.11: junit 661 collected / 648 passed / 13 skipped / 0 failed, 3 subtests.
@@ -508,11 +508,12 @@ done
 # The upstream 1035/1015 floors already include the rotation-type cases.
 # TD adds 90 collected cases (89 required passes; PCG is optional).
 # The startup TD/multirate refusal adds one case: measured collection is 1126.
-# Seed-climb adds 34 cases across four new files and six compatibility cases.
-# Preserve the current target floors and add all 40 cases.
-# test_dslice_walkout.py adds 15 tests and no skips -> 1181/1160.
-# test_dslice_warm.py adds 11 tests and no skips -> 1192/1171.
-EXPECTED_TESTS=1192
+# PR #448 core census: auxiliary transfers 18 + ladder 7 + composite 1 + seed CLI 9
+# add 35 cases to 1126. The six multiapprox compatibility cases run in test-run,
+# not this manifest. CI's 105 per-file counts sum 1161; JUnit 1164 includes 3 subtests.
+# PR #446: test_dslice_walkout.py adds 15 tests and no skips -> 1176/1156.
+# PR #476: test_dslice_warm.py adds 11 tests and no skips -> 1187/1167.
+EXPECTED_TESTS=1187
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -538,9 +539,11 @@ EXPECTED_TESTS=1192
 # test_av_coverage_diagnostic.py adds 2 tests, both passing -> 935.
 # PR #436 multirate files: re-measured 1035/1015 (above; the lower, ldas-grid, passed count).
 # TD adds 89 required passes and the startup refusal adds one -> 1105.
-# test_dslice_walkout.py adds 15 tests and no skips; 1181/1160 (above).
-# test_dslice_warm.py adds 11 tests and no skips; 1192/1171 (above).
-EXPECTED_PASSED=1171
+# CI: 1144 JUnit passes minus 3 extra subtests = 1141 ordinary passes; 20 skipped
+# outcomes include one xfail. Preserve the full measured plugin-free pass floor.
+# PR #446: test_dslice_walkout.py adds 15 passes; 1176/1156 (above).
+# PR #476: test_dslice_warm.py adds 11 passes; 1187/1167 (above).
+EXPECTED_PASSED=1167
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 MAX_SKIPPED=20 # one optional tdanalysis PCG test when the extra is absent
 
@@ -562,18 +565,40 @@ for _f in EXPECTED_TESTS EXPECTED_PASSED MAX_SKIPPED; do
   esac
 done
 
-# PER-FILE floor of 1; pin 17 GMM host cases and 17 auxiliary/container cases.
+# PER-FILE floor of 1; pin 17 GMM host cases and 18 auxiliary/container cases.
 # A file that collects nothing is the exit-5 trap arriving
 # through the front door: inside a multi-file run pytest's exit 5 never appears at all, so it
 # has to be checked per file.
-echo "== per-file collection floor =="
+echo "== joint collection with per-file floors =="
+collection_counts="$(mktemp -t core-unit-counts-XXXXXX.tsv)"
+if ! "${PYTHON_BIN}" .travis/core_unit_collection.py "$collection_counts" "${FILES[@]}"; then
+  rm -f "$collection_counts"
+  echo "test-core-units.sh: joint collection failed." >&2
+  exit 1
+fi
+exec 3< "$collection_counts"
+rm -f "$collection_counts"
 floor_rc=0
+collected_total=0
 for f in "${FILES[@]}"; do
-  n=$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "$f" 2>/dev/null | grep -c '::')
+  if ! IFS= read -r collection_row <&3; then
+    echo "test-core-units.sh: missing collection row for $f." >&2
+    exit 1
+  fi
+  collected_file=${collection_row%%$'\t'*}
+  n=${collection_row#*$'\t'}
+  if [ "$collected_file" != "$f" ] || [ "$collection_row" = "$collected_file" ]; then
+    echo "test-core-units.sh: missing or reordered collection row for $f." >&2
+    exit 1
+  fi
+  case "$n" in
+    ''|*[!0-9]*) echo "test-core-units.sh: invalid collection count for $f." >&2; exit 1 ;;
+  esac
   printf '  %-72s %3d\n' "$f" "$n"
+  collected_total=$(( collected_total + n ))
   file_floor=1
-  # ordinary/Z/G x staged/CVMFS x seeded/unseeded must all remain covered.
-  if [ "$f" = "$C/test/test_auxiliary_grid_transfers.py" ]; then file_floor=17; fi
+  # Transfer matrix, container guards, and newline requirements must remain covered.
+  if [ "$f" = "$C/test/test_auxiliary_grid_transfers.py" ]; then file_floor=18; fi
   if [ "$f" = "$C/test/integrators/test_gmm_sample_matches_score.py" ]; then file_floor=17; fi
   if [ "$n" -lt "$file_floor" ]; then
     echo "test-core-units.sh: $f collects $n tests; requires at least $file_floor." >&2
@@ -581,12 +606,39 @@ for f in "${FILES[@]}"; do
     floor_rc=1
   fi
 done
+if IFS= read -r extra_row <&3 || [ -n "$extra_row" ]; then
+  echo "test-core-units.sh: unexpected trailing collection row." >&2
+  exit 1
+fi
+exec 3<&-
 [ "$floor_rc" -eq 0 ] || exit 1
+# Reuse collection already performed above; no additional pytest process.
+if [ "$collected_total" -lt "$EXPECTED_TESTS" ]; then
+  echo "test-core-units.sh: per-file collection totals ${collected_total}; requires ${EXPECTED_TESTS}." >&2
+  exit 1
+fi
 
+# RIFT_COREUNIT_WORKERS > 1 runs the same cases under pytest-xdist, one file per worker
+# (--dist loadfile keeps module fixtures and module-local scratch files on one process).
+# CI sets 4, the hosted runner's vCPU count: serial, the run took 737-1023 s there for the
+# same 1161 cases, too close to the 20-minute cap.  Default stays serial so a CIT head node,
+# with its 500-thread cap, is not handed extra interpreters.  junit counts are unchanged.
+XDIST_ARGS=()
+WORKERS="${RIFT_COREUNIT_WORKERS:-1}"
+case "${WORKERS}" in
+  ''|*[!0-9]*|0) echo "test-core-units.sh: RIFT_COREUNIT_WORKERS='${WORKERS}' is not a positive integer." >&2; exit 1 ;;
+esac
+if [ "${WORKERS}" -gt 1 ]; then
+  "${PYTHON_BIN}" -c 'import xdist' \
+    || { echo "test-core-units.sh: RIFT_COREUNIT_WORKERS=${WORKERS} needs pytest-xdist" >&2; exit 1; }
+  XDIST_ARGS=(-n "${WORKERS}" --dist loadfile)
+fi
 
 junit="$(mktemp -t core-units-junit-XXXXXX.xml)"
-echo "== running =="
-"${PYTHON_BIN}" -m pytest -q -p no:cacheprovider --durations=10 --junit-xml="${junit}" "${FILES[@]}"
+echo "== running (workers: ${WORKERS}) =="
+# ${XDIST_ARGS[@]+...} because under `set -u` Bash 3.2 -- still /bin/bash on macOS -- treats
+# "${XDIST_ARGS[@]}" as an unbound variable when the array is empty, i.e. in the serial default.
+"${PYTHON_BIN}" -m pytest -q -p no:cacheprovider --durations=10 ${XDIST_ARGS[@]+"${XDIST_ARGS[@]}"} --junit-xml="${junit}" "${FILES[@]}"
 rc=$?
 if [ "$rc" -ne 0 ]; then
   echo "test-core-units.sh: pytest exited ${rc}" >&2
