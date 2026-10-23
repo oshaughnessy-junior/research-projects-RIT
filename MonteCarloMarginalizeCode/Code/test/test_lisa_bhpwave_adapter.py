@@ -209,3 +209,20 @@ def test_verified_loader_rejects_changed_source_data_and_binary(tmp_path,monkeyp
     (root/relatives[0]).write_text('# changed scientific source')
     with pytest.raises(ValueError,match='source mismatch'):
         ba._load_backend(lock_path)
+
+
+@pytest.mark.parametrize('cause,expected',[
+    (ModuleNotFoundError("No module named 'bhpwave'",name='bhpwave'),'missing BHPWave runtime'),
+    (ModuleNotFoundError("No module named 'dependency'",name='dependency'),"'dependency'"),
+    (ImportError("libm.so.6: version `GLIBC_2.38' not found"),'native ABI'),
+])
+def test_backend_import_failure_preserves_actionable_cause(tmp_path,monkeypatch,cause,expected):
+    path,_=lock_fixture(tmp_path,monkeypatch)
+    def fail_import(name):
+        raise cause
+    monkeypatch.setattr(ba.importlib,'import_module',fail_import)
+    with pytest.raises(ImportError,match=expected) as failure:
+        ba._load_backend(path)
+    assert failure.value.__cause__ is cause
+    if not isinstance(cause,ModuleNotFoundError):
+        assert str(cause) in str(failure.value)
