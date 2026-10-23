@@ -156,9 +156,30 @@ jobs:
           # Refuse a broken import; the ordinary suite permits the optional test to skip.
           python -c "from tdanalysis.forms.pcg import PCGQuadraticForm"
           python -m pytest MonteCarloMarginalizeCode/Code/test/test_td_inner_product.py::test_dense_vs_iterative -q -rs
-          python -m pip install '.[td-gs]' --break-system-packages
-          python -c "from tdanalysis.forms.gs import GSQuadraticForm; from tdanalysis.covariance.psd import PSDToAutocorr"
-          python -m pytest MonteCarloMarginalizeCode/Code/test/test_td_gs_guards.py MonteCarloMarginalizeCode/Code/test/test_td_gs_route.py MonteCarloMarginalizeCode/Code/test/test_td_time_indexed_U.py MonteCarloMarginalizeCode/Code/test/test_td_u_svd.py -q -rs
+      - name: Run the time-domain likelihood tests
+        if: matrix.lane == 'modern'
+        env:
+          GW_SURROGATE: ''
+          OMP_NUM_THREADS: '1'
+          OPENBLAS_NUM_THREADS: '1'
+        run: |
+          python -m pip install pytest --break-system-packages
+          # The td-gs code path needs tdanalysis >= 1.1.  --no-deps keeps pip away from the
+          # lalsuite, bilby and pycbc this job already has; termcolor is imported by waveformtools.
+          python -m pip install --no-deps 'tdanalysis>=1.1,<2' waveformtools spectools termcolor --break-system-packages
+          # Refuse a broken import: the td-gs test files skip without tdanalysis >= 1.1.
+          python -c "from tdanalysis.forms.sliding import sliding_self_terms; from tdanalysis.covariance.psd import PSDToAutocorr"
+          python -m pytest \
+            MonteCarloMarginalizeCode/Code/test/test_td_inner_product.py \
+            MonteCarloMarginalizeCode/Code/test/test_simpson_weights.py \
+            MonteCarloMarginalizeCode/Code/test/test_td_time_indexed_U.py \
+            MonteCarloMarginalizeCode/Code/test/test_td_gs_route.py \
+            MonteCarloMarginalizeCode/Code/test/test_td_u_svd.py \
+            MonteCarloMarginalizeCode/Code/test/test_td_calibration.py \
+            MonteCarloMarginalizeCode/Code/test/test_td_gs_calibration.py \
+            MonteCarloMarginalizeCode/Code/test/test_td_subsample.py \
+            MonteCarloMarginalizeCode/Code/test/test_td_upstream_guards.py \
+            -q -rs
 
   sim-manager-check:
     needs: install

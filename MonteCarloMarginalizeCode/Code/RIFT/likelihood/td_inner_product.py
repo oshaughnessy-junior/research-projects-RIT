@@ -127,7 +127,7 @@ class ToeplitzInnerProductContext(object):
                  segment_duration=None, segment_start_index=0,
                  gaps=None, gap_time_origin=None, gap_sample_ranges=None,
                  template_start_offset=None, template_end_offset=None,
-                 template_ref_time=None, spd_tol=1e-8):
+                 template_ref_time=None, spd_tol=1e-8, acf=None):
         self.deltaF = float(deltaF)
         self.fNyq = float(fNyq)
         self.fLow = float(fLow)
@@ -177,6 +177,16 @@ class ToeplitzInnerProductContext(object):
         #     matrix at all.
         #   * solver="pcg": FFT matvec for the precision apply; the optional tdanalysis PCG is
         #     used only for the physical-covariance solve (lazy, see _ensure_pcg).
+        #   * solver="gs": COVARIANCE kernel.  Every inner product uses C^{-1}, C =
+        #     Toeplitz(ACF of the physical PSD) cut to the segment, applied with tdanalysis'
+        #     ToeplitzSolver on its GS method (see _gs_apply).  The precision kernel K is
+        #     not used.
+        #     The ACF is ``acf`` if given (lags 0, 1/fs, ...; e.g. from tdanalysis), else
+        #     tdanalysis' PSD->ACF on this context's PSD (see gs_acf).
+        self._use_gs = (solver == "gs")
+        self._gs_forms = {}     # segment length n -> tdanalysis ToeplitzSolver (GS)
+        self._acf_input = None if acf is None else np.asarray(acf, dtype=np.float64)
+        self._acf_from_psd = None
         self._use_dense = (solver == "dense") or (solver == "auto" and self.N < _MAX_DENSE_N)
         if self._use_dense and self.N < _MAX_DENSE_N:
             # Cheap for small N; build eagerly so callers that read ``ctx._dense`` directly
@@ -324,6 +334,14 @@ class ToeplitzInnerProductContext(object):
         # Building its identical dense matrix and eigenspectrum adds O(N^3)
         # work while the FFT apply already handles masked vectors exactly.
         needs_dense_Kseg = (self.N_seg != self.len2side)
+        if self._use_gs:
+            # Covariance kernel on spliced segments: each contiguous retained run [i0, i1) is
+            # one piece with its own Toeplitz C = Toeplitz(acf[:i1-i0]), and pieces are
+            # treated as independent (block-diagonal C, as in tdanalysis' segmented
+            # likelihood).  Noise correlation across a gap is neglected.
+            edges = np.diff(np.concatenate(([0], self.retain_mask.astype(np.int8), [0])))
+            self._gs_runs = list(zip(np.nonzero(edges == 1)[0], np.nonzero(edges == -1)[0]))
+            return
         if self.segment_active and needs_dense_Kseg and self.N_seg <= _MAX_DENSE_N:
             self._Kseg = scipy.linalg.toeplitz(self.kappa[:self.N_seg])
             self._spd_check_Kseg()
@@ -388,8 +406,15 @@ class ToeplitzInnerProductContext(object):
         When ``K_seg`` is built (truncated and/or gapped segment) use it.  For a full-length
         segment (N_seg == len2side, e.g. the T6 full-segment diagnostic) fall back to the
         full precision operator ``apply_K`` (dense or FFT matvec) rather than materialising a
-        second len2side dense matrix.
+        second len2side dense matrix.  With solver="gs" this is the block-diagonal C^{-1} v
+        over the retained pieces (zero on gap samples).
         """
+        if self._use_gs:
+            v = np.asarray(v)
+            out = np.zeros(v.shape, dtype=np.result_type(v, np.float64))
+            for (i0, i1) in self._gs_runs:
+                out[i0:i1] = self._gs_apply(v[i0:i1], int(i1 - i0))
+            return out
         if self._Kseg is not None:
             return self.apply_Kseg(v)
         if self.N_seg == self.len2side:
@@ -535,8 +560,11 @@ class ToeplitzInnerProductContext(object):
 
         For the dense path this is a matrix-vector product; for the iterative path the
         exact Toeplitz matvec via circulant embedding is used.  Bilinear (no conjugation).
+        With solver="gs" the operator is instead C^{-1} on the full segment (``_gs_apply``).
         """
         v = np.asarray(v)
+        if self._use_gs:
+            return self._gs_apply(v, self.N)
         dense = self._ensure_dense()
         if dense is not None:
             if np.iscomplexobj(v):
@@ -588,8 +616,66 @@ class ToeplitzInnerProductContext(object):
 
     @property
     def ip_normalization(self):
-        """The scalar (2 deltaT) mapping the TD quadratic form onto lsu.ComplexIP (eq. III)."""
+        """The scalar (2 deltaT) mapping the TD quadratic form onto lsu.ComplexIP (eq. III).
+
+        With solver="gs" it is 1: the ACF convention (tdanalysis PSDToAutocorr) already makes
+        conj(u)^T C^{-1} v the matched-filter inner product, and C^{-1} ~= (2 deltaT) K.
+        """
+        if self._use_gs:
+            return 1.0
         return 2.0 * self.deltaT
+
+    def gs_acf(self, n):
+        r"""ACF lags 0..n-1 defining the GS covariance C_n = Toeplitz(acf[:n]).
+
+        The supplied ``acf`` if one was given.  Otherwise tdanalysis' ``PSDToAutocorr`` on
+        this context's in-band PSD, walled outside [fLow, fMax): it re-grids onto an FFT
+        long enough that the lags kept here do not wrap around, so C_n is a genuine
+        Toeplitz covariance rather than the circulant an N-point FFT of S would give.
+        """
+        if self._acf_input is not None:
+            if self._acf_input.size < n:
+                raise ValueError("supplied ACF has {0} lags; segment needs {1}".format(
+                    self._acf_input.size, n))
+            return self._acf_input[:n]
+        if self._acf_from_psd is None:
+            from tdanalysis.covariance.psd import PSDToAutocorr, PSDToAutocorrConfig
+            fs = int(round(self.fs))
+            duration = (self.N - 1) / self.fs
+            band = np.isfinite(self.psd_onesided)
+            f = np.arange(self.len1side) * self.deltaF
+            conv = PSDToAutocorr(PSDToAutocorrConfig(
+                sampling_rate=fs, acorr_duration=duration, f_min=self.fLow, f_max=self.fMax,
+                patch_band=True, run_diagnostics=False))
+            _, self._acf_from_psd = conv._psd_to_autocorr(
+                f[band], self.psd_onesided[band], fs, duration)
+        return self._acf_from_psd[:n]
+
+    def _gs_apply(self, v, n):
+        r"""Return C_n^{-1} v, C_n = Toeplitz(gs_acf(n)), with tdanalysis' ToeplitzSolver.
+
+        The solver always takes its Gohberg-Semencul method here (``dense_max_n=0``): the
+        generators come from the ACF by refined Levinson solves
+        (tdanalysis.forms.gs.gs_generators_from_acorr) and nothing n x n is formed.  It also
+        checks that C_n is positive definite.  ``v`` is real or complex, shape (n,) or
+        (n, r).  One solver is kept per length n.
+        """
+        gs = self._gs_forms.get(n)
+        if gs is None:
+            try:
+                from tdanalysis.forms.toeplitz_solver import ToeplitzSolver
+            except Exception as exc:
+                raise NotImplementedError(
+                    "solver='gs' needs tdanalysis >= 1.1 (tdanalysis.forms.toeplitz_solver): "
+                    "{0!r}".format(exc))
+            if not hasattr(ToeplitzSolver, "apply_Cinv"):
+                # earlier 1.1 development trees carry the same version string with apply()
+                raise NotImplementedError(
+                    "solver='gs' needs tdanalysis 1.1 (the final release): the tdanalysis "
+                    "on this path has no ToeplitzSolver.apply_Cinv")
+            gs = ToeplitzSolver(self.gs_acf(n), dense_max_n=0)
+            self._gs_forms[n] = gs
+        return gs.apply_Cinv(np.asarray(v))
 
     def apply_template_truncation(self, x_td, epoch):
         """Apply the stored template-frame truncation window to a template TD array (T5).
@@ -1023,6 +1109,9 @@ class ToeplitzComplexIP(object):
                 raise ValueError("include_epoch_differences is unsupported for TD cuts, "
                                  "gaps or glitch projection; the FD phase shortcut "
                                  "cannot apply the nonstationary operator")
+            if ctx._use_gs:
+                raise NotImplementedError(
+                    "include_epoch_differences uses the FD weights; not available with solver='gs'.")
             # Mirror lsu.ComplexIP: multiply h2's spectrum by the epoch phase in FD, then
             # transform.  Uses lalsimutils.evaluate_fvals for the (reversed) lal f grid.
             from RIFT import lalsimutils as lsu
@@ -1102,6 +1191,10 @@ class ToeplitzComplexOverlap(object):
         # returns `data` unchanged -> byte-identical.
         data_use = ctx.glitch_corrected_data_fd(data) if ctx.glitch_active else data
 
+        if ctx._use_gs:
+            # Covariance kernel: no FD weight exists, so correlate h with w = C^{-1} d in TD.
+            return self._ip_segment(hlm, data_use)
+
         # Integrand exactly as lsu.ComplexOverlap: 2 conj(hlm~) data~ weights2side.
         # Because K's FD symbol == weights2side, this is 2 conj(hlm~) (K data)~, i.e. the
         # impulse-response construction rhoTS = iFFT(conj(hlm~) FFT(K data)) up to the
@@ -1142,23 +1235,36 @@ class ToeplitzComplexOverlap(object):
             self._fwdplan = lal.CreateForwardCOMPLEX16FFTPlan(ctx.len2side, 0)
 
         hlm_td = ctx.apply_template_truncation(_ifft_to_td(hlm), float(hlm.epoch))
-        data_td = _ifft_to_td(data)
-        data_seg = ctx._segment_window(data_td)         # windowed + gap-masked
-        Kd_seg = ctx._apply_seg(data_seg)               # length N_seg
-        # Delete both precision rows and columns: M K M, not merely K M.
-        # The shifted template need not vanish on the data-fixed gap.
-        if not ctx.retain_mask.all():
-            Kd_seg[~ctx.retain_mask] = 0.0
-        Kd_full = np.zeros(ctx.len2side, dtype=complex)
-        Kd_full[ctx.segment_start_index:ctx.segment_start_index + ctx.N_seg] = Kd_seg
 
-        # forward-FFT Kd_full into lal FD packing (multiplies by deltaT, as data~ was)
-        kd_ts = lal.CreateCOMPLEX16TimeSeries(
-            "Kd", data.epoch, 0., ctx.deltaT, _dimensionless_unit(), ctx.len2side)
-        kd_ts.data.data = Kd_full
-        kd_f = lal.CreateCOMPLEX16FrequencySeries(
-            "Kd_f", data.epoch, 0., ctx.deltaF, _hertz_unit(), ctx.len2side)
-        lal.COMPLEX16TimeFreqFFT(kd_f, kd_ts, self._fwdplan)
+        # w = K_seg d (or C^{-1} d) depends only on the data: computed once per data series
+        # and reused for every mode and intrinsic point.  The series is held in the cache
+        # so its id() cannot be recycled.
+        cached = ctx._w_cache.get(id(data))
+        if cached is not None and cached[0] is data:
+            kd_f = cached[1]
+        else:
+            data_seg = ctx._segment_window(_ifft_to_td(data))   # windowed + gap-masked
+            Kd_seg = ctx._apply_seg(data_seg)                   # length N_seg
+            # Delete both precision rows and columns: M K M, not merely K M.
+            # The shifted template need not vanish on the data-fixed gap.
+            if not ctx.retain_mask.all():
+                Kd_seg[~ctx.retain_mask] = 0.0
+            if ctx._use_gs:
+                # The FFT correlation below supplies (2 deltaT); the C^{-1} form needs none.
+                Kd_seg = Kd_seg / (2.0 * ctx.deltaT)
+            Kd_full = np.zeros(ctx.len2side, dtype=complex)
+            Kd_full[ctx.segment_start_index:ctx.segment_start_index + ctx.N_seg] = Kd_seg
+
+            # forward-FFT Kd_full into lal FD packing (multiplies by deltaT, as data~ was)
+            kd_ts = lal.CreateCOMPLEX16TimeSeries(
+                "Kd", data.epoch, 0., ctx.deltaT, _dimensionless_unit(), ctx.len2side)
+            kd_ts.data.data = Kd_full
+            kd_f = lal.CreateCOMPLEX16FrequencySeries(
+                "Kd_f", data.epoch, 0., ctx.deltaF, _hertz_unit(), ctx.len2side)
+            lal.COMPLEX16TimeFreqFFT(kd_f, kd_ts, self._fwdplan)
+            if not ctx.glitch_active:
+                # glitch-corrected data is rebuilt per sign branch; do not hold every copy
+                ctx._w_cache[id(data)] = (data, kd_f)
 
         # hlm_td back to FD (same forward plan) to form conj(h~) * kd_f
         h_ts = lal.CreateCOMPLEX16TimeSeries(
@@ -1184,6 +1290,8 @@ class ToeplitzComplexOverlap(object):
 
     def norm(self, h):
         """sqrt(|2 deltaF sum |h~|^2 / S|), matching lsu.ComplexOverlap.norm."""
+        if self.ctx._use_gs:
+            return ToeplitzComplexIP(self.ctx).norm(h)
         self.ctx._check_series(h)
         val = np.sum(np.conj(np.asarray(h.data.data)) * np.asarray(h.data.data)
                      * self.ctx.weights2side)
@@ -1220,12 +1328,14 @@ class TDInnerProductFactory(object):
 
     Parameters
     ----------
-    solver : {"auto", "dense", "pcg"}
-        Solver mode forwarded to ``ToeplitzInnerProductContext``.  Note this affects only
-        the physical-covariance / augmentation path (``solve_covariance``); the full-segment
+    solver : {"auto", "dense", "pcg", "gs"}
+        Solver mode forwarded to ``ToeplitzInnerProductContext``.  For auto/dense/pcg this
+        affects only the physical-covariance / augmentation path (``solve_covariance``); the
         precision-kernel inner products (this seam) are FFT-based and solver-independent.
-        Corresponds to the ILE ``--td-solver`` flag ({auto,dense,pcg}; "gs" is not wired in
-        this adapter).
+        "gs" switches every inner product (Q, U, V) to the covariance kernel C^{-1}, with C
+        = Toeplitz(ACF) cut to the segment, solved by tdanalysis' ToeplitzSolver (GS method;
+        tdanalysis >= 1.1).
+        Corresponds to the ILE ``--td-solver`` flag.
     acf_duration : float or None
         Optional ACF truncation duration [s] carried for the Stage-3 truncated-segment
         path; unused by the full-segment precision-kernel inner products (D5 DEFAULT: the
