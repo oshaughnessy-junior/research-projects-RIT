@@ -612,9 +612,27 @@ if [ "$collected_total" -lt "$EXPECTED_TESTS" ]; then
   exit 1
 fi
 
+# RIFT_COREUNIT_WORKERS > 1 runs the same cases under pytest-xdist, one file per worker
+# (--dist loadfile keeps module fixtures and module-local scratch files on one process).
+# CI sets 4, the hosted runner's vCPU count: serial, the run took 737-1023 s there for the
+# same 1161 cases, too close to the 20-minute cap.  Default stays serial so a CIT head node,
+# with its 500-thread cap, is not handed extra interpreters.  junit counts are unchanged.
+XDIST_ARGS=()
+WORKERS="${RIFT_COREUNIT_WORKERS:-1}"
+case "${WORKERS}" in
+  ''|*[!0-9]*|0) echo "test-core-units.sh: RIFT_COREUNIT_WORKERS='${WORKERS}' is not a positive integer." >&2; exit 1 ;;
+esac
+if [ "${WORKERS}" -gt 1 ]; then
+  "${PYTHON_BIN}" -c 'import xdist' \
+    || { echo "test-core-units.sh: RIFT_COREUNIT_WORKERS=${WORKERS} needs pytest-xdist" >&2; exit 1; }
+  XDIST_ARGS=(-n "${WORKERS}" --dist loadfile)
+fi
+
 junit="$(mktemp -t core-units-junit-XXXXXX.xml)"
-echo "== running =="
-"${PYTHON_BIN}" -m pytest -q -p no:cacheprovider --durations=10 --junit-xml="${junit}" "${FILES[@]}"
+echo "== running (workers: ${WORKERS}) =="
+# ${XDIST_ARGS[@]+...} because under `set -u` Bash 3.2 -- still /bin/bash on macOS -- treats
+# "${XDIST_ARGS[@]}" as an unbound variable when the array is empty, i.e. in the serial default.
+"${PYTHON_BIN}" -m pytest -q -p no:cacheprovider --durations=10 ${XDIST_ARGS[@]+"${XDIST_ARGS[@]}"} --junit-xml="${junit}" "${FILES[@]}"
 rc=$?
 if [ "$rc" -ne 0 ]; then
   echo "test-core-units.sh: pytest exited ${rc}" >&2
