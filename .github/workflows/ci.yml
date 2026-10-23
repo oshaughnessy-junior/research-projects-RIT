@@ -170,6 +170,7 @@ jobs:
           # Refuse a broken import: the td-gs test files skip without tdanalysis >= 1.1.
           python -c "from tdanalysis.forms.sliding import sliding_self_terms; from tdanalysis.covariance.psd import PSDToAutocorr"
           python -m pytest \
+            MonteCarloMarginalizeCode/Code/test/test_td_inner_product.py \
             MonteCarloMarginalizeCode/Code/test/test_simpson_weights.py \
             MonteCarloMarginalizeCode/Code/test/test_td_time_indexed_U.py \
             MonteCarloMarginalizeCode/Code/test/test_td_gs_route.py \
