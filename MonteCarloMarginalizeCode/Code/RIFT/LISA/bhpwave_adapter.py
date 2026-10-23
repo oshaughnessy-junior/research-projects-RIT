@@ -4,6 +4,8 @@ Masses are observed primary/secondary solar masses, r0 is in primary-mass
 Boyer-Lindquist units, distance is Gpc, and angles use BHPWave's SSB basis.
 The selected (2,+/-2) pair is not a complete waveform or a LISA response.
 """
+from fractions import Fraction
+from typing import Optional
 from dataclasses import asdict, dataclass
 import hashlib
 import importlib
@@ -28,6 +30,7 @@ SOURCE_FILES = {
     'bhpwave/trajectory/inspiral.py': '0bffe347b90e67d03f6fa8890960f5bc1c1413bc08248b08235888b8e5872394',
 }
 MAX_SAMPLES = 262144
+MAX_NATIVE_SAMPLES = 524288
 
 
 def _real(value, name):
@@ -80,12 +83,27 @@ class BHPWaveParameters:
         return asdict(self)
 
 
+def _native_sampling(n_samples, dt_seconds, generation_dt_seconds):
+    native_dt = dt_seconds if generation_dt_seconds is None else _real(generation_dt_seconds, 'generation_dt_seconds')
+    if native_dt <= 0 or native_dt > dt_seconds:
+        raise ValueError('generation cadence must be positive and no coarser than output')
+    ratio = Fraction.from_float(dt_seconds) / Fraction.from_float(native_dt)
+    if ratio.denominator != 1:
+        raise ValueError('output cadence must be an exact integer stride of generation cadence')
+    stride = ratio.numerator
+    native_count = (n_samples-1)*stride+1
+    if native_count > MAX_NATIVE_SAMPLES:
+        raise ValueError('internal native sample count exceeds {}'.format(MAX_NATIVE_SAMPLES))
+    return native_count, native_dt, stride
+
+
 @dataclass(frozen=True)
 class BHPWaveConfig:
     n_samples: int
     dt_seconds: float
     epoch_start_seconds: float
     epoch_reference: str
+    generation_dt_seconds: Optional[float] = None
 
     def __post_init__(self):
         if (isinstance(self.n_samples, (bool, np.bool_))
@@ -98,6 +116,9 @@ class BHPWaveConfig:
         if self.dt_seconds <= 0:
             raise ValueError('dt_seconds must be positive')
         _real((self.n_samples-1)*self.dt_seconds, 'sample span')
+        if self.generation_dt_seconds is not None:
+            object.__setattr__(self, 'generation_dt_seconds', _real(self.generation_dt_seconds, 'generation_dt_seconds'))
+        _native_sampling(self.n_samples, self.dt_seconds, self.generation_dt_seconds)
         if not isinstance(self.epoch_reference, str) or not self.epoch_reference.strip():
             raise ValueError('epoch_reference must name the time origin and scale')
 
@@ -225,6 +246,7 @@ class BHPWaveAdapter:
         p, c = parameters, self.config
         self._evolution.check_radius(p.a, p.r0)
         span = (c.n_samples-1)*c.dt_seconds
+        native_count, native_dt, native_stride = _native_sampling(c.n_samples, c.dt_seconds, c.generation_dt_seconds)
         year_seconds = _real(self._constants.yr_MKS, 'BHPWave sidereal year')
         if year_seconds <= 0:
             raise ValueError('BHPWave sidereal year must be positive')
@@ -232,8 +254,8 @@ class BHPWaveAdapter:
         merger = _real(self._data.time_to_merger(p.primary_msun,p.secondary_msun,p.a,p.r0), 'time to merger')
         if merger <= duration*year_seconds:
             raise ValueError('physical evolution ends before the requested span')
-        count = self._generator.waveform_generator.time_step_number(p.primary_msun,p.secondary_msun,p.a,p.r0,c.dt_seconds,duration)
-        if count != c.n_samples:
+        count = self._generator.waveform_generator.time_step_number(p.primary_msun,p.secondary_msun,p.a,p.r0,native_dt,duration)
+        if count != native_count:
             raise ValueError('physical backend sample count differs from request')
         omega_max = _real(self._data.base_class.max_orbital_frequency(p.a), 'table orbital frequency limit')
         primary_seconds = p.primary_msun*self._constants.Modot_GC1_to_S
@@ -242,19 +264,23 @@ class BHPWaveAdapter:
             raise ValueError('selected m=2 carrier bound reaches Nyquist')
         hp,hc = self._generator(p.primary_msun,p.secondary_msun,p.a,p.r0,p.distance_gpc,
                                 p.qS,p.phiS,p.qK,p.phiK,p.Phi_phi0,
-                                dt=c.dt_seconds,T=duration,pad_output=False,return_list=True,
+                                dt=native_dt,T=duration,pad_output=False,return_list=True,
                                 select_modes=[(2,2)],include_negative_m=True)
         arrays = [np.asarray(value) for value in (hp,hc)]
-        if any(value.shape != (c.n_samples,) or value.dtype.kind not in 'fi'
+        if any(value.shape != (native_count,) or value.dtype.kind not in 'fi'
                or not np.all(np.isfinite(value)) for value in arrays):
             raise ValueError('backend must return finite real hp,hc at every requested sample')
-        values = np.array(arrays,dtype=float,copy=True)
+        values = np.array(np.asarray(arrays)[:,::native_stride],dtype=float,copy=True)
+        if values.shape != (2,c.n_samples):
+            raise ValueError('native restriction does not cover the exact output grid')
         values.setflags(write=False)
         metadata = dict(self._receipt)
         metadata.update(model='KerrCircularWaveform', frame='SSB, BHPWave polarization basis',
                         complex_convention='hp - 1j*hc', parameters=p.to_dict(), config=c.to_dict(),
                         retained_positive_modes=[[2,2]],include_negative_m=True,
                         num_threads=1,pad_output=False,time_to_merger_seconds=merger,
+                        native_n_samples=native_count,native_dt_seconds=native_dt,native_stride=native_stride,
+                        sampling_policy='direct native sampling' if native_stride == 1 else 'explicit genuine native samples at an integer stride; no interpolation',
                         carrier_frequency_upper_bound_hz=bound,carrier_nyquist_ratio=2*c.dt_seconds*bound,
                         sample_span_seconds=span,requested_duration_years=duration,
                         scope='selected-pair CPU polarizations; no waveform-accuracy or response qualification')
