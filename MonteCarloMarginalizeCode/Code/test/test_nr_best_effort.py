@@ -43,7 +43,8 @@ class NRBestEffortTests(unittest.TestCase):
             ile=root/'fake_ile';converter=root/'fake_converter'
             ile.write_text('#!'+sys.executable+'\nimport sys\nfrom pathlib import Path\n'
                 'Path("cwd-marker").write_text("here")\n'
-                'p=sys.argv[sys.argv.index("--output-file")+1]\nPath(p+"_0_.xml.gz").write_text("fixture")\n')
+                'p=sys.argv[sys.argv.index("--output-file")+1]\nPath(p+"_0_.xml.gz").write_text("fixture")\n'
+                'Path(p+"_0_integrator_status.json").write_text(\'{"collapsed":false}\')\n')
             converter.write_text('#!'+sys.executable+'\nprint("# m1 m2 distance")\nprint("5 5 10")\n')
             ile.chmod(0o755);converter.chmod(0o755)
             (out/'config.json').write_text(json.dumps(dict(source_hashes={},samples=1,seed=17,
@@ -52,6 +53,20 @@ class NRBestEffortTests(unittest.TestCase):
                            check=True,capture_output=True)
             self.assertTrue((out/'events/0/cwd-marker').is_file())
             self.assertFalse((source/'cwd-marker').exists())
+
+    def test_demo_rejects_collapsed_or_missing_status(self):
+        demo=SCRIPT.parents[1]/'demo/nr_best_effort/bootstrap_existing_run.py'
+        if not demo.exists(): demo=SCRIPT.with_name('bootstrap_existing_run.py')
+        demo_spec=importlib.util.spec_from_file_location('bootstrap_status_demo',demo)
+        module=importlib.util.module_from_spec(demo_spec);demo_spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as tmp:
+            job=Path(tmp)
+            with self.assertRaisesRegex(ValueError,'integrator status'): module.posterior_status(job)
+            p=job/'ile_0_integrator_status.json'
+            p.write_text(json.dumps({'collapsed':True,'collapse_reason':'ESS=1'}))
+            with self.assertRaisesRegex(ValueError,'not a valid posterior'): module.posterior_status(job)
+            p.write_text(json.dumps({'collapsed':False}))
+            self.assertEqual(module.posterior_status(job),p)
     def test_demo_finish_preserves_equal_per_intrinsic_draw_and_rejects_mismatch(self):
         demo=SCRIPT.parents[1]/'demo/nr_best_effort/bootstrap_existing_run.py'
         if not demo.exists(): demo=SCRIPT.with_name('bootstrap_existing_run.py')
@@ -63,6 +78,7 @@ class NRBestEffortTests(unittest.TestCase):
             for index,(mass,count,distance) in enumerate([(5,1,10),(6,100,20)]):
                 job=out/'events'/str(index);job.mkdir(parents=True)
                 np.savetxt(job/'posterior.dat',np.tile([mass,mass,distance],(count,1)),header='m1 m2 distance')
+                (job/'ile_0_integrator_status.json').write_text(json.dumps({'collapsed':False}))
             command=[sys.executable,str(demo),'finish','--out',str(out)]
             subprocess.run(command,check=True,capture_output=True)
             result=np.genfromtxt(out/'extrinsic_posterior_samples.dat',names=True)
@@ -223,6 +239,17 @@ class NRBestEffortTests(unittest.TestCase):
             np.testing.assert_equal(result,other)
             np.testing.assert_equal(ids,other_ids)
             self.assertEqual(stats['0']['available'],10)
+
+    def test_combine_checks_attached_integrator_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory=Path(tmp);plan=self.setup_pools(directory)
+            path=directory/'status.json';path.write_text(json.dumps({'collapsed':True}))
+            plan['components'][0]['status_files']=['status.json']
+            with self.assertRaisesRegex(ValueError,'not a valid posterior'):
+                nr.combine(plan,directory,10,0)
+            path.write_text(json.dumps({'collapsed':False}))
+            _,_,stats=nr.combine(plan,directory,10,0)
+            self.assertEqual(stats['0']['status_files'][0]['path'],str(path.resolve()))
 
     def test_missing_pool_is_never_silently_dropped(self):
         with tempfile.TemporaryDirectory() as tmp:

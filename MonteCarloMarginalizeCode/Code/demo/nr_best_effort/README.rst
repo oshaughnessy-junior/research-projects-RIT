@@ -53,7 +53,10 @@ Run a bounded I/O smoke check first::
      --index 0 --smoke-n-max 20000
 
 Inspect ``smoke/0/ile.log`` for the selected waveform, NoLoop path, data loading,
-and completed fairdraw export. Smoke output is kept separate and cannot be
+and completed export. The script rejects a missing or collapsed integrator
+status; an undersampled smoke run may deliberately fail this quality check.
+Its XML/logs can establish I/O, but its samples are not a posterior. Smoke
+output is kept separate and cannot be
 used by ``finish``. This checks execution, not posterior convergence.
 
 Run one conditional followup under the full source-run sampling settings::

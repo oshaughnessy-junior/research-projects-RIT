@@ -169,7 +169,7 @@ def make_plan(data, mass_range, power=0., digits=4, eccentric=False, mean_per_an
             components.append(dict(id=len(components), simulation=key, intrinsic=intrinsic,
                                    mass=mass, log_marginal_likelihood=float(likelihoods[i]),
                                    log_weight=float(sim_log_prior + mass_logs[i] + likelihoods[i]),
-                                   relative_error=float(row[10 + extra]), samples=[]))
+                                   relative_error=float(row[10 + extra]), samples=[], status_files=[]))
     sim_probs = probabilities([s['log_evidence'] + s['log_prior'] for s in summaries])
     for summary, prob in zip(summaries, sim_probs):
         summary['posterior_probability'] = float(prob)
@@ -322,6 +322,15 @@ def combine(plan, manifest_dir, count, seed):
             continue
         arrays = []
         files = []
+        statuses = []
+        if not isinstance(component.get('status_files', []), list):
+            raise ValueError('component status_files must be a list of filenames')
+        for filename in component.get('status_files', []):
+            path = (manifest_dir / filename).resolve()
+            status = json.loads(path.read_text())
+            if status.get('collapsed') is not False:
+                raise ValueError('conditional samples are not a valid posterior: '+str(path))
+            statuses.append(dict(path=str(path), sha256=hashlib.sha256(path.read_bytes()).hexdigest()))
         for filename in component['samples']:
             path = (manifest_dir / filename).resolve()
             if path in seen:
@@ -347,7 +356,7 @@ def combine(plan, manifest_dir, count, seed):
             arrays.append(data)
         pools[i] = np.concatenate(arrays)
         diagnostics[str(component['id'])] = dict(available=len(pools[i]), drawn=0,
-            unique_drawn=0, posterior_probability=float(prob), files=files)
+            unique_drawn=0, posterior_probability=float(prob), files=files, status_files=statuses)
     choices = rng.choice(len(components), size=count, p=probs)
     result = np.empty(count, dtype=pools[int(choices[0])].dtype)
     for i in np.unique(choices):

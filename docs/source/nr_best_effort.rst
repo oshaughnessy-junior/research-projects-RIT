@@ -199,6 +199,16 @@ Bootstrap from a completed run
 Reuse saved conditional extrinsic samples
 -----------------------------------------
 
+A modern ILE fairdraw flag is not by itself proof of valid posterior sampling.
+Check the ``*_integrator_status.json`` report: a collapsed live volume invalidates
+its output even if XML serialization succeeded. Attach these reports in each
+component's optional ``status_files`` list to make ``combine`` reject collapsed,
+missing, or malformed status records and record their hashes. Without attached
+status files, ``sample_kind=fairdraw`` is the operator's assertion that the saved
+conditionals were validated (necessary for older runs with no status reports).
+The one-run demo requires a noncollapsed modern status for every event, both at
+conversion and at final assembly, and never silently omits a failed event.
+
 For each component, put converted ASCII fair posterior draw files in its manifest
 ``samples`` list. Paths are relative to the manifest; absolute paths also work.
 Pool only independent conditional runs of the same intrinsic point and analysis

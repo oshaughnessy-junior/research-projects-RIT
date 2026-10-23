@@ -57,6 +57,17 @@ def absolute_inputs(tokens, source):
     return result
 
 
+def posterior_status(job):
+    files=list(job.glob('ile_*_integrator_status.json'))
+    if len(files)!=1:
+        raise ValueError('expected one modern ILE integrator status in '+str(job))
+    status=json.loads(files[0].read_text())
+    if status.get('collapsed') is not False:
+        raise ValueError('ILE samples are not a valid posterior in {}: {}'.format(
+            job,status.get('collapse_reason','missing/nonfalse collapse status')))
+    return files[0]
+
+
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     commands=parser.add_subparsers(dest='action',required=True)
@@ -147,6 +158,7 @@ def main(argv=None):
                     env[key]='2'
                 with (job/'ile.log').open('w') as stream:
                     subprocess.run(command,cwd=job,env=env,stdout=stream,stderr=subprocess.STDOUT,check=True)
+                posterior_status(job)
                 files=list(job.glob('ile_*_.xml.gz'))
                 if len(files)!=1: raise ValueError('ILE did not emit exactly one fairdraw XML; inspect '+str(job/'ile.log'))
                 converter=[config['converter']]
@@ -168,7 +180,10 @@ def main(argv=None):
                 # Require every scheduled intrinsic draw, even if its ILE failed.
                 # Equal rows per event prevent fairdraw yield from changing the prior.
                 for index in range(config['samples']):
-                    path=out/'events'/str(index)/'posterior.dat'
+                    job=out/'events'/str(index)
+                    status_path=posterior_status(job)
+                    hashes[str(status_path)]=sha(status_path)
+                    path=job/'posterior.dat'
                     table=np.atleast_1d(np.genfromtxt(path,names=True,dtype=float))
                     if not len(table): raise ValueError('empty conditional posterior '+str(path))
                     if names is None: names=table.dtype.names
