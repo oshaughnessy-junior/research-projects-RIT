@@ -178,6 +178,7 @@ jobs:
             MonteCarloMarginalizeCode/Code/test/test_td_calibration.py \
             MonteCarloMarginalizeCode/Code/test/test_td_gs_calibration.py \
             MonteCarloMarginalizeCode/Code/test/test_td_subsample.py \
+            MonteCarloMarginalizeCode/Code/test/test_td_upstream_guards.py \
             -q -rs
 
   sim-manager-check:

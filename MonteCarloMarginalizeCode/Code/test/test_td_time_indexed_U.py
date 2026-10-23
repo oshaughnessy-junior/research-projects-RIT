@@ -370,6 +370,19 @@ def test_refuse_bad_shapes():
 
 
 
+def test_refuse_mismatched_mode_shapes():
+    case = _make_case(seed=47, modes=((2, 2), (2, -2)))
+    U3 = {det: np.zeros((256, 3, 3), dtype=complex) for det in case["dets"]}
+    with pytest.raises(ValueError, match="modes"):         # 3 modes in U(t), V(t); 2 in lookupNKDict
+        _call(case, U3, U3)
+    V_bad = {det: case["V_t"][det][:, :1, :] for det in case["dets"]}
+    with pytest.raises(ValueError, match="matching"):      # U(t), V(t) of different shapes
+        _call(case, case["U_t"], V_bad)
+    V_s_bad = {det: np.zeros((3, 3), dtype=complex) for det in case["dets"]}
+    with pytest.raises(ValueError, match="matching"):      # scalar U, V of different shapes
+        _call(case, case["U_s"], V_s_bad)
+
+
 def test_negative_norm_refused_on_ordinary_likelihood():
     case = _make_case(dets=('H1',), modes=((2, 2),))
     U = {'H1': -np.ones((256, 1, 1), dtype=complex)}

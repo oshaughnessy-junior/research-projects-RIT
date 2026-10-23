@@ -543,7 +543,10 @@ EXPECTED_PASSED=1141
 # The six solver="gs" tests in test_td_inner_product.py need tdanalysis >= 1.1, which this
 # job does not install, so they skip here; ci.yml's time-domain likelihood step runs them
 # with tdanalysis installed.  They do not count toward EXPECTED_PASSED.
-MAX_SKIPPED=26 # the optional tdanalysis PCG test and the six GS tests when the extra is absent
+# The six td-gs startup checks in test_td_upstream_guards.py (non-native template generators,
+# five cases, and the native-generator case) import td_gs_precompute, so they also skip here;
+# ci.yml's time-domain likelihood step runs them with tdanalysis installed.
+MAX_SKIPPED=32 # the optional tdanalysis PCG test, the six GS tests and the six td-gs startup checks when the extra is absent
 
 # The floors must be INTEGERS, and this is checked rather than assumed.  `[ 347 -lt FOO ]` does
 # not fail the build: bash prints "integer expression expected", returns 2, and the `if` is
