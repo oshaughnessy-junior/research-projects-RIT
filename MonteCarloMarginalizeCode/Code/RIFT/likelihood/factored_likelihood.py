@@ -1318,17 +1318,10 @@ def ComputeModeIPTimeSeries(hlms, data, psd, fmin, fMax, fNyq,
           # supplied separately via the |C_c|^2-weighted cross terms
           # (ComputeModeCrossTermIPCal) and used in place of <h|h> in the reduction.
           #
-          # Phase-convention caveat (the calmarg self-term-bias analysis note, sec 6):
-          # applying C to the DATA gives kappa = <h|C d>, whereas the template-side
-          # (bilby) matched filter is <d|C h>.  The IDENTITY <h|conj(C) d> = conj(<d|C h>)
-          # means using conj(C) on the data makes |kappa| EXACTLY equal the template-side
-          # |<d|C h>| (any phase size) and Re<h|conj(C) d> = Re<d|C h> (correct-SIGN phase
-          # tracking).  With plain C on the data the phase tracks the WRONG sign for a
-          # phase-unmarginalized or large-phase treatment; under phase marginalization and
-          # small phase the two conventions agree to <0.05 nats.  |C|^2 (the self-term
-          # weight) is conjugation-invariant, so this only affects kappa, never rho_sq_c.
-          # Default keeps the historical C-on-data behavior; set calibration_conjugate=True
-          # for the correct-sign / phase-unmarginalized convention.
+          # Realizations are template responses alpha.  RIFT's two-sided packing labels
+          # bin k with f = deltaF*(npts/2 - k), the negative of the LAL frequency, so the
+          # array C stored at label f is conj(alpha(f)) in the standard convention.
+          # Hence <h|C d> = <alpha h|d> with no conjugation; conj(C) reverses the phase.
           _cal_here = np.conj(calib_array) if calibration_conjugate else calib_array
           data_now.data.data = _cal_here * data.data.data
           rho, rhoTS, rhoIdx, rhoPhase = IP.ip(hlms[pair], data_now)

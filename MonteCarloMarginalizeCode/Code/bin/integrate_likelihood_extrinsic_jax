@@ -299,7 +299,7 @@ _ILE_ALL_OPTS = {
     "--adapt-weight-exponent", "--amp-order", "--approximant",
     "--auto-logarithm-offset", "--cache-file", "--calibration-burn-in-neff",
     "--calibration-burn-in-nmax", "--calibration-dump-responsibilities",
-    "--calibration-conjugate-phase", "--calibration-global-norm",
+    "--calibration-conjugate-phase", "--calibration-correction-type", "--calibration-global-norm",
     "--calibration-mc-error-extrinsic", "--calibration-n-realizations-max",
     "--calibration-neff-cal-target",
     "--calibration-envelope-directory", "--calibration-export-posterior",
