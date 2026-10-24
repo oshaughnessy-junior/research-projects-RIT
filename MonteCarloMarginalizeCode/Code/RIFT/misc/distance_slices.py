@@ -509,6 +509,102 @@ def pick_wing_centers(d_min, d_max, d_core, n_wing,
     return np.sort(np.concatenate(wings))
 
 
+def walk_out_slices(d_slices, lnL_slices, ln_prior_d, run_fresh, d_min, d_max,
+                    delta_lnL=7.0, max_steps=8, min_log_step=0.02, reasons=None):
+    """Extend a slice set outward until the conditional falls ``delta_lnL`` below its peak.
+
+    Quantile placement from the main loop's samples (``quantile_slice_centers``) inherits
+    their spread; at the main loop's usual n_eff ~ 10 the outermost slices end where
+    lp(d) = lnL(d) + ln pi(d) is typically only 1-3 nats below its peak, so the conditional
+    is cut off where it still has mass.  This walks each edge outward with fresh slices, in
+    steps that double in ln d (starting at twice the edge spacing), until the edge slice is
+    ``delta_lnL`` below the running peak, the next slice would leave [d_min, d_max], a slice
+    comes back non-finite, or ``max_steps`` slices were added on that side.  It measures
+    rather than extrapolates: no shape is assumed beyond the last slice.
+
+    ``ln_prior_d(d)`` returns ln pi(d) for an array of distances.  ``run_fresh(d_array)``
+    returns (lnL, sigmaL, neff, ntotal) arrays for fresh slices at those distances, on the
+    same lnL axis as ``lnL_slices``.  Returns the added slices as
+    (d, lnL, sigmaL, neff, ntotal) arrays, unsorted (near-side slices first).  If
+    ``reasons`` is a list, one stop reason per side is appended to it (near side first):
+    'target', 'range', 'nonfinite' or 'max_steps'; 'off' for both sides when the walk-out
+    does not run (delta_lnL or max_steps <= 0, or fewer than two finite slices).
+    """
+    d = np.asarray(d_slices, float)
+    y = np.asarray(lnL_slices, float)
+    ok = np.isfinite(d) & (d > 0) & np.isfinite(y)
+    out = ([], [], [], [], [])
+    if np.sum(ok) < 2 or delta_lnL <= 0 or max_steps <= 0:
+        if reasons is not None:
+            reasons.extend(["off", "off"])
+        return tuple(np.array(v) for v in out)
+    d, y = d[ok], y[ok]
+    o = np.argsort(d)
+    d, y = d[o], y[o]
+    lp = y + np.asarray(ln_prior_d(d), float)
+    peak = float(np.max(lp))
+    for side in (-1, +1):
+        why = "max_steps"
+        i_edge, i_next = (0, 1) if side < 0 else (-1, -2)
+        d_edge, lp_edge = float(d[i_edge]), float(lp[i_edge])
+        step = 2.0 * max(abs(np.log(d[i_edge] / d[i_next])), min_log_step)
+        for _ in range(int(max_steps)):
+            if peak - lp_edge >= delta_lnL:
+                why = "target"
+                break
+            d_new = d_edge * np.exp(side * step)
+            if not (d_min <= d_new <= d_max):
+                d_new = d_min if side < 0 else d_max
+                if side * np.log(d_new / d_edge) < min_log_step:   # clamped step must still move outward
+                    why = "range"
+                    break
+            lnL_k, sig_k, neff_k, nt_k = (np.asarray(v).ravel()[0] for v in run_fresh(np.array([d_new])))
+            for lst, v in zip(out, (d_new, lnL_k, sig_k, neff_k, nt_k)):
+                lst.append(v)
+            if not np.isfinite(lnL_k):
+                why = "nonfinite"
+                break
+            d_edge = d_new
+            lp_edge = float(lnL_k + np.asarray(ln_prior_d(np.array([d_new])), float)[0])
+            peak = max(peak, lp_edge)
+            if d_new in (d_min, d_max):
+                why = "target" if peak - lp_edge >= delta_lnL else "range"
+                break
+            step *= 2.0
+        if reasons is not None:
+            reasons.append(why)
+    return (np.array(out[0], float), np.array(out[1], float), np.array(out[2], float),
+            np.array(out[3], float), np.array(out[4], int))
+
+
+
+def walk_out_fresh_slices(reference_sampler, like_to_integrate, d_slices, lnL_slices, ln_prior_d,
+                          d_min, d_max, lnL_offset, delta_lnL, max_steps,
+                          n_max, n_eff_target, n_chunk, return_lnL=True, reasons=None):
+    """``walk_out_slices`` with fresh fixed-d integrations as the step.
+
+    ``lnL_slices`` are on ILE's lnL axis (the overflow offset restored); fresh_sample_slices
+    returns the integral of the offset-subtracted likelihood, so ``lnL_offset``
+    (ILE's ``manual_avoid_overflow_logarithm``) is added back to every walk-out slice before
+    it is compared with the existing slices or returned.
+    """
+    def run_fresh(d_new):
+        l_raw, s_k, n_k, t_k = fresh_sample_slices(
+            reference_sampler, like_to_integrate, d_new,
+            n_max=n_max, n_eff_target=n_eff_target, n_chunk=n_chunk, return_lnL=return_lnL)
+        return np.asarray(l_raw, float) + float(lnL_offset), s_k, n_k, t_k
+    return walk_out_slices(d_slices, lnL_slices, ln_prior_d, run_fresh, d_min, d_max,
+                           delta_lnL=delta_lnL, max_steps=max_steps, reasons=reasons)
+
+
+def merge_walkout(d, lnL, sigmaL, neff, ntotal, added):
+    """Append walk-out rows ``added = (d, lnL, sigmaL, neff, ntotal)`` to a slice set (ntotal int)."""
+    base = (np.asarray(d, float), np.asarray(lnL, float), np.asarray(sigmaL, float),
+            np.asarray(neff, float), np.asarray(ntotal, dtype=int))
+    if len(added[0]) == 0:
+        return base
+    return tuple(np.concatenate([b, np.asarray(a, dtype=b.dtype)]) for b, a in zip(base, added))
+
 def fresh_sample_slices(reference_sampler, like_to_integrate, d_slices,
                          n_max=20000, n_eff_target=30,
                          n_chunk=AV_NSEL_SATURATION_CHUNK,

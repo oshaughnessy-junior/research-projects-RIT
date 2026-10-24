@@ -141,6 +141,7 @@ FILES=(
   "$C/test/test_dgrid_retained_set.py"
   "$C/test/test_distance_tail.py"
   "$C/test/test_dslice_device_native.py"
+  "$C/test/test_dslice_walkout.py"
   "$C/test/test_dslice_bounds.py"
   # -- hyperpipe (paper4 area; the hydra leg is rostered OPTDEP, not here)
   "$C/test/hyperpipe/tests/test_config.py"
@@ -509,7 +510,8 @@ done
 # PR #448 core census: auxiliary transfers 18 + ladder 7 + composite 1 + seed CLI 9
 # add 35 cases to 1126. The six multiapprox compatibility cases run in test-run,
 # not this manifest. CI's 105 per-file counts sum 1161; JUnit 1164 includes 3 subtests.
-EXPECTED_TESTS=1161
+# PR #446: test_dslice_walkout.py adds 15 tests and no skips -> 1176/1156.
+EXPECTED_TESTS=1176
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -537,7 +539,8 @@ EXPECTED_TESTS=1161
 # TD adds 89 required passes and the startup refusal adds one -> 1105.
 # CI: 1144 JUnit passes minus 3 extra subtests = 1141 ordinary passes; 20 skipped
 # outcomes include one xfail. Preserve the full measured plugin-free pass floor.
-EXPECTED_PASSED=1141
+# PR #446: test_dslice_walkout.py adds 15 passes; 1176/1156 (above).
+EXPECTED_PASSED=1156
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 MAX_SKIPPED=20 # one optional tdanalysis PCG test when the extra is absent
 
