@@ -104,6 +104,9 @@ FILES=(
   "$C/test/integrators/test_ladder_climber.py"
   "$C/test/integrators/test_seed_climb_composite.py"
   "$C/test/integrators/test_seed_climb_cli.py"
+  # The floor below includes six seed-climb refusal cases in this module.
+  # Register the full module so those compatibility cases actually reach this gate.
+  "$C/test/test_multiapprox_pseudo_pipe.py"
   "$C/test/integrators/test_convergence_sample_order.py"
   "$C/test/integrators/test_extrinsic_phase_group_uniform.py"
   "$C/test/integrators/test_gmm_adaptive.py"
@@ -508,6 +511,10 @@ done
 # The startup TD/multirate refusal adds one case: measured collection is 1126.
 # Seed-climb adds 34 cases across four new files and six compatibility cases.
 # Preserve the current target floors and add all 40 cases.
+# The merge originally omitted test_multiapprox_pseudo_pipe.py from FILES despite
+# counting its six seed-climb cases here. Registering the full module above
+# restores that coverage; keep these floors rather than lowering them to the
+# incomplete manifest's observed 1164 collected / 1144 passed (including subtests).
 EXPECTED_TESTS=1166
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
