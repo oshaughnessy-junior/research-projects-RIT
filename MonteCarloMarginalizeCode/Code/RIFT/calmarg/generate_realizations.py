@@ -107,6 +107,9 @@ def node_prior(fname, fmin, fmax, n_spline_points, correction_type="template"):
     create_realizations() draws from).
 
     Returns dict(mean, sigma, node_log_f, n_nodes_amp) -- mean/sigma length 2N.
+
+    correction_type defaults to "template". LVK H1/L1/K1 envelopes are "data";
+    resolve per detector with calibration.correction_type_for_ifo, as ILE does.
     """
     log_freq_spline_locations = np.linspace(np.log10(fmin), np.log10(fmax), n_spline_points)
     dat_amp, dat_phase = retrieve_envelope_from_file(fname, frequency_array=10**log_freq_spline_locations,
@@ -202,6 +205,8 @@ def build_realizations_from_nodes(amp_rand_array, phase_rand_array, T_segment, d
 
 def create_realizations(fname, T_segment,dT, fmin,  fmax, n_spline_points, n_realizations,
                         correction_type="template"):
+    # correction_type defaults to "template"; LVK H1/L1/K1 envelopes are "data".
+    # Resolve per detector with calibration.correction_type_for_ifo, as ILE does.
     # NOTE
     #    - the bilby tool (because it needs high computational efficiency, being done many times) is much harder to read. We will use library code, because we only call it ONCE PER RUN
     #    - similarly, the LI/bilby tool uses a slightly different representation, because they are trying to avoid transcendental operations to improve efficiency
