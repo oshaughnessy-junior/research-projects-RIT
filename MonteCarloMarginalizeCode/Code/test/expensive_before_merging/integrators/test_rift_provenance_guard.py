@@ -34,6 +34,34 @@ def test_conftest_pins_the_cpu_path():
         "conftest.py did not pin the CPU path; the pytest run is not the gate's experiment"
 
 
+def _fake_cupy_with_devices(n):
+    """A cupy whose driver was initialised before conftest.py ran: it still sees n devices."""
+    import types
+    cupy = types.ModuleType("cupy")
+    cupy.cuda = types.SimpleNamespace(runtime=types.SimpleNamespace(getDeviceCount=lambda: n))
+    return cupy
+
+
+@pytest.mark.parametrize("value", ["", "-1"])
+def test_cpu_request_wins_over_an_already_initialised_cupy(monkeypatch, value):
+    """The env pin above is necessary, not sufficient.  On ldas-pcdev2 (3 GPUs) a pytest plugin
+    imports cupy and initialises CUDA before conftest.py sets CUDA_VISIBLE_DEVICES, so inside a
+    test the variable read "" while getDeviceCount() still returned 3 and _gpu_available() said
+    True -- the pytest entry ran the GMM stack on cupy, a different code path from the gate."""
+    monkeypatch.setitem(sys.modules, "cupy", _fake_cupy_with_devices(3))
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", value)
+    assert SR._gpu_available() is False
+
+
+def test_gpu_still_used_when_not_hidden(monkeypatch):
+    """Only an explicit request turns the GPU off; an ordinary device list still reaches cupy."""
+    monkeypatch.setitem(sys.modules, "cupy", _fake_cupy_with_devices(3))
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    assert SR._gpu_available() is True
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES")
+    assert SR._gpu_available() is True
+
+
 def test_checkout_code_dir_defaults_to_the_enclosing_checkout():
     code = SR.checkout_code_dir()
     assert os.path.basename(code) == "Code"
