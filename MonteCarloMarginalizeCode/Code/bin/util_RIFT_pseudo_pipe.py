@@ -407,6 +407,7 @@ parser.add_argument("--calibration-reweighting-osg",action='store_true',help="At
 # postprocessing --calibration-reweighting path above.  Setting the envelope directory
 # enables it and threads the corresponding flags into the ILE arguments (args_ile.txt).
 parser.add_argument("--calmarg-envelope-directory",default=None,type=str,help="Enable IN-LOOP calibration marginalization in ILE. Directory with per-IFO calibration envelope files named <IFO>.txt (e.g. H1.txt, L1.txt, V1.txt). Threaded to ILE as --calibration-envelope-directory (absolute path).")
+parser.add_argument("--calmarg-correction-type", default=None, help="Envelope convention: data, template, or per-detector H1:data,L1:data,V1:template (bilby-pipe defaults if omitted).")
 parser.add_argument("--calmarg-n-realizations",default=100,type=int,help="Number of calibration realizations for in-loop calmarg. Threaded to ILE as --calibration-n-realizations.")
 parser.add_argument("--calmarg-spline-count",default=10,type=int,help="Number of spline nodes for in-loop calmarg envelopes. Threaded to ILE as --calibration-spline-count.")
 parser.add_argument("--calmarg-fused-kernel",action='store_true',help="Use the fused GPU kernel (Option C) for in-loop calmarg. GPU only; ILE falls back to the loop method otherwise. Threaded to ILE as --calibration-fused-kernel.")
@@ -1887,6 +1888,9 @@ if opts.internal_ile_srate_time_resampling:
 # distance-marginalization code path (kept in args_ile.txt); the fused kernel
 # additionally requires GPU and falls back to the loop method otherwise.
 if opts.calmarg_envelope_directory:
+    from RIFT.calmarg.calibration import correction_types_argument
+    cal_types_arg = correction_types_argument(opts.calmarg_correction_type, event_dict["IFOs"])
+    line += " --calibration-correction-type {} ".format(cal_types_arg)
     cal_dir = os.path.abspath(opts.calmarg_envelope_directory)
     cal_dir_arg = cal_dir
     if opts.use_osg_file_transfer:
@@ -1927,7 +1931,8 @@ if opts.calmarg_envelope_directory:
             try:
                 import RIFT.calmarg.generate_realizations as _genr_ph, RIFT.calmarg.breadcrumbs as _bcr_ph
                 _cal_ph = _genr_ph.prior_cal_breadcrumb_dict(cal_dir, list(event_dict["IFOs"]),
-                              fmin_template, srate/2. - 1., opts.calmarg_spline_count)
+                              fmin_template, srate/2. - 1., opts.calmarg_spline_count,
+                              correction_types=opts.calmarg_correction_type)
                 _bcr_ph.save(_cal_ph_path, cal=_cal_ph, meta=dict(placeholder=True, iteration=-1))
             except Exception as _e_calph:
                 print("  WARNING: could not build prior cal placeholder ({}); writing 0-byte placeholder (needs the ILE empty-breadcrumb guard).".format(_e_calph))
