@@ -343,8 +343,7 @@ uncalibrated Q, U, V to 2e-15 and the uncalibrated lnL to 3e-15; per-realization
 dense brute force (template filtered by exact frequency-domain multiplication with the full N-tap
 response on a long zero-padded stream, then cut, dense C⁻¹) 1.2e-9 to 5.7e-9 (the dense reference's
 own precision) on a ringdown piece (dense and GS solvers) and on two spliced pieces; the NoLoop
-calmarg lnL vs a brute force over realizations 1e-16 (nearest and cubic, with and without phase
-marginalization, weighted, lnL(t), components); on a full 2 s segment with a compact signal, TD vs
+calmarg lnL vs a brute force over realizations 1e-16 (nearest and cubic, with explicit orbital phase, weighted, lnL(t), components); on a full 2 s segment with a compact signal, TD vs
 RIFT's FD calmarg (same realizations) 7e-6 relative in lnL for both conventions, the level at which
 the code paths agree without calibration (7e-6), while the realizations move lnL by 0.13–0.16.
 
@@ -431,3 +430,16 @@ outputs (Q, U, V, lnL) with dense brute force.
   20 Hz. Use `--td-highpass 10` (tdanalysis' zero-phase IIR Butterworth, order 8, run forward and
   backward with `sosfiltfilt`; off by default) and check whiteness (`--td-whiteness-check`) on
   off-source data.
+
+## Orbital phase and calibration burn-in
+
+Finite analysis pieces make the template self norm depend on orbital phase, including
+for the quadrupole pair. Analytic orbital-phase marginalization is refused at startup
+and by NoLoop. Sample phase explicitly; a distance lookup table must marginalize only
+distance. CPU/GPU phase cases test this refusal, rather than comparing the same invalid
+absolute-overlap shortcut on both backends.
+
+Calibration burn-in evaluates the first stored realization while retaining the full
+calibration buffers. With `--calibration-global-norm`, the one-block U/V length determines
+the stored Q block length independently of the active `n_cal`. Gathers stay inside that
+block, including at its zero-extension boundary.

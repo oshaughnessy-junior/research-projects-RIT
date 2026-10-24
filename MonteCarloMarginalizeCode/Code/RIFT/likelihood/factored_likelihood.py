@@ -3453,8 +3453,10 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
     index (ifirst + j, with the same time_interp handling) as the data term,
     and rho_sq becomes genuinely (npts_extrinsic, npts).  Detectors may mix
     (some scalar, some time-indexed).  All n_cal==1 reductions are supported
-    (time marginalization, return_lnLt, phase_marginalization, and any
+    (time marginalization, return_lnLt, and any
     elementwise loglikelihood such as the distance-marginalization table).
+    Analytic orbital-phase marginalization is refused: the finite-segment norm
+    depends on phase, even for the (2,+/-2) pair. Sample phase explicitly.
     The self term is gathered with the 'nearest' and 'cubic' stencils on the
     likelihood's own time grid only: time_interp='sinc', an independently spaced
     Q pregrid (q_deltaT != deltaT), explicit_time_values, and the 'bandlimited'
@@ -3577,6 +3579,7 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
     time_indexed_UV = {}
     compressed_UV = {}
     time_indexed_cal = {}
+    q_block_lengths = {}
     _have_cal_arrays = (ctUArrayDict_cal is not None) and (ctVArrayDict_cal is not None)
     for det in detectors:
         compressed_UV[det] = isinstance(ctUArrayDict[det], TimeIndexedCrossTermsSVD)
@@ -3612,9 +3615,20 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
                     raise ValueError("time-indexed calibration cross terms for {} must be (n_blocks, N_window, n_lms, n_lms) with n_blocks*N_window = rholm length {}: got U {} V {} for {} modes".format(det, npts_full_det, ctUArrayDict_cal[det].shape, ctVArrayDict_cal[det].shape, len(lookupNKDict[det])))
                 if cal_method == 'fused':
                     raise NotImplementedError("cal_method='fused' is not implemented for time-indexed per-realization self terms (ctUArrayDict_cal[{}] is 4-D, the td-gs code path); use cal_method='loop'".format(det))
+        npts_full_det = rholmsArrayDict[det].shape[-1]
+        if time_indexed_UV[det] and not compressed_UV[det] and not _have_cal_arrays:
+            # Global-norm calibration stores one U/V block even during n_cal=1
+            # burn-in. Infer the STORED block count independently of active draws.
+            n_uv = ctUArrayDict[det].shape[0]
+            if n_uv != npts_full_det:
+                if n_uv <= 0 or npts_full_det % n_uv or npts_full_det // n_uv < n_cal:
+                    raise ValueError("time-indexed cross terms for {} must share the rholm time grid or divide it into at least n_cal realization blocks".format(det))
+                n_blocks_det = npts_full_det // n_uv
+        if npts_full_det % max(1, n_blocks_det):
+            raise ValueError("rholm time grid for {} must contain whole calibration realization blocks".format(det))
+        q_block_lengths[det] = npts_full_det // max(1, n_blocks_det)
         if time_indexed_UV[det]:
-            npts_full_det = rholmsArrayDict[det].shape[-1]
-            N_window_block_det = npts_full_det // max(1, n_blocks_det)
+            N_window_block_det = q_block_lengths[det]
             if compressed_UV[det]:
                 if n_cal != 1 or _have_cal_arrays:
                     raise NotImplementedError("SVD-compressed time-indexed cross terms for {} are not implemented with calibration marginalization (n_cal={}, cal arrays {})".format(det, n_cal, _have_cal_arrays))
@@ -3629,6 +3643,10 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
             if n_cal != 1 and cal_method == 'fused':
                 raise NotImplementedError("cal_method='fused' is not implemented for time-indexed cross terms ({}, n_cal={}); use cal_method='loop'".format(det, n_cal))
     _any_time_indexed_cal = any(time_indexed_cal.values())
+    if phase_marginalization and (any(time_indexed_UV.values()) or _any_time_indexed_cal):
+        raise NotImplementedError(
+            "time-indexed U/V require explicit phase sampling; the finite-segment "
+            "template norm depends on orbital phase")
     if any(time_indexed_UV.values()) or _any_time_indexed_cal or td_subsample > 1:
         _require_time_indexed_supported(time_interp, time_quadrature, explicit_time_values,
                                         q_deltaT, getattr(P_vec, 'q_deltaT', None), float(P_vec.deltaT))
@@ -3937,8 +3955,10 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
             # ).real * (distMpcRef/distMpc)[...,None]
 
         if n_cal == 1:
-          # ---- standard path (no calibration marginalization): UNCHANGED ----
+          # A burn-in may retain several Q blocks while evaluating only draw 0.
+          # Restrict gathers to that block, including their zero-extension boundary.
           if not (xpy is np):
+            Q = Q[:q_block_lengths[det]]
             FY_conj = xpy.conj(F_vec_dummy_lm * Ylms_vec)
             # Shape Q = (npts_time_full, nlms)
             # Shape A=FY_conj = (npts_extrinsic, nlms)
@@ -3954,6 +3974,7 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
             # Use old code completely unchanged ... very wasteful on memory management!
             Q_block = (Q if phase_marginalization and _q_per_time
                        else rholmsArrayDict[det].T)
+            Q_block = Q_block[:q_block_lengths[det]]
             if _q_per_time:
                 Q_prod_result = _q_inner_product_explicit_times(
                     Q_block, np.conj(F_vec_dummy_lm * Ylms_vec), ifirst,
@@ -3991,7 +4012,7 @@ def  DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P_vec, lookupNKDic
           # (npts_full, n_lms) and FY_conj is (npts_extrinsic, n_lms); both already
           # encode any phase-marginalization conjugation built above.
           npts_full_det = Q.shape[0]
-          N_window_block = npts_full_det // n_cal
+          N_window_block = q_block_lengths[det]
           FY_conj_cal = xpy.conj(F_vec_dummy_lm * Ylms_vec)
           cal_cache[det] = (Q, FY_conj_cal, ifirst, N_window_block, frac_first)
         # lnL_t_accum += Q_prod_result * (distMpcRef/distMpc)[...,None]

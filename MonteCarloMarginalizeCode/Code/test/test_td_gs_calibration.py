@@ -222,7 +222,9 @@ def test_identity_calibration_reproduces_uncalibrated_terms(ringdown_case):
         dv = max(np.max(np.abs(Vc[c][k] - V0[k])) for k in V0 for c in range(2)) / us
         print("[td-gs cal a] identity calibration (%s): Q %.1e, U %.1e, V %.1e relative" % (
             "ringdown piece" if pieces else "full segment", dq, du, dv))
-        assert dq < 1e-13 and du < 1e-13 and dv < 1e-13
+        # Independent FFT convolutions with different padding accumulate a few
+        # 1e-13 relative roundoff on SciPy 1.13; require twelve-digit agreement.
+        assert max(dq, du, dv) < 1e-12
 
 
 def test_identity_calibration_reproduces_uncalibrated_lnL(ringdown_case):
@@ -316,7 +318,8 @@ def test_reach_truncation_is_exact_and_forced_L_is_not(ringdown_case):
         out[L] = max(np.max(np.abs(Uc2[c][k] - Uc[c][k])) for c in range(filt.n_cal) for k in Uc[0]) / us
     print("[td-gs cal b] U_c vs the exact reach truncation (R = %d): L = N/2-1 %.1e, L = R %.1e, L = R/4 %.1e"
           % (R, out[s["N"] // 2 - 1], out[R], out[max(R // 4, 8)]))
-    assert out[s["N"] // 2 - 1] < 1e-13 and out[R] == 0.0
+    # Different FIR support lengths change FFT padding and its roundoff.
+    assert out[s["N"] // 2 - 1] < 1e-12 and out[R] == 0.0
     assert out[max(R // 4, 8)] > 1e-6
     # taps: the N-tap filter RIFT builds from the realization (convention, packing) has the
     # realization itself as its grid response
@@ -372,6 +375,12 @@ def test_noloop_calmarg_vs_brute_force(network_case, interp, pm):
     tvals = np.linspace(-0.004, 0.004, 33)
     log_w = np.log(np.array([0.5, 1.7, 0.8]))
     kw = dict(Lmax=2, xpy=np, time_interp=interp, phase_marginalization=pm)
+    if pm:
+        with pytest.raises(NotImplementedError, match="explicit phase sampling"):
+            fl.DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(
+                tvals, P, lookupNK, rhoA, ctU, ctV, epoch, n_cal=n_cal,
+                ctUArrayDict_cal=ctU_cal, ctVArrayDict_cal=ctV_cal, **kw)
+        return
     lnL = fl.DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P, lookupNK, rhoA, ctU, ctV, epoch, n_cal=n_cal,
                                                               ctUArrayDict_cal=ctU_cal, ctVArrayDict_cal=ctV_cal, **kw)
     lnL_w = fl.DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P, lookupNK, rhoA, ctU, ctV, epoch, n_cal=n_cal,
@@ -433,6 +442,13 @@ def test_noloop_global_norm_and_burn_in_layout(network_case):
         ref.append(fl.DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P, lookupNK, rA, ctU, ctV, epoch, Lmax=2, xpy=np))
     ref = logsumexp(np.array(ref), axis=0) - np.log(n_cal)
     assert rel_err_finite(lnL, ref) < 1e-12
+    # Combined global-norm + burn-in must select block 0 without calibrated U/V.
+    lnL_global_burn = fl.DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(
+        tvals, P, lookupNK, rhoA, ctU, ctV, epoch, n_cal=1, Lmax=2, xpy=np)
+    rho_first = {d: rhoA[d][:, :T] for d in nc["dets"]}
+    ref_global_burn = fl.DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(
+        tvals, P, lookupNK, rho_first, ctU, ctV, epoch, Lmax=2, xpy=np)
+    np.testing.assert_allclose(lnL_global_burn, ref_global_burn, rtol=1e-12, atol=1e-12)
     # burn-in: n_cal=1 with the full (n_cal x N_window) rholms and the full 4-D cal arrays -> block 0
     lnL_b = fl.DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals, P, lookupNK, rhoA, ctU, ctV, epoch, n_cal=1, Lmax=2, xpy=np,
                                                                 ctUArrayDict_cal=ctU_cal, ctVArrayDict_cal=ctV_cal)
@@ -774,7 +790,9 @@ def test_subsample_identity_calibration_and_phase0(ringdown_case):
         assert ctxK.uv_routes_cal == ctx1.uv_routes_cal and len(ctxK.uv_routes_cal_by_phase) == K
         print("[td-gs cal g] K=4 identity calibration (%s): Q %.1e, U %.1e, V %.1e relative to the uncalibrated "
               "fine grid; phase 0 equals K=1 bit for bit" % (label, dq, du, dv))
-        assert dq < 1e-13 and du < 1e-13 and dv < 1e-13
+        # Independent FFT convolutions with different padding accumulate a few
+        # 1e-13 relative roundoff on SciPy 1.13; require twelve-digit agreement.
+        assert max(dq, du, dv) < 1e-12
 
 
 @needs_subsample

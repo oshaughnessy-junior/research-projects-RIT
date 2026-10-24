@@ -8,8 +8,7 @@ finite on both sides; the non-finite pattern must agree).  Target: 1e-12.
 
 Cases
   1. NoLoop, td_subsample K = 1, 4, 8: the stride-K gathers of the data term and the
-     time-indexed self term, nearest and cubic time_interp, with and without phase
-     marginalization, time-marginalized lnL and lnL(t); even (12) and odd (13) numbers
+     time-indexed self term, nearest and cubic time_interp, with explicit phase and analytic-phase refusal, time-marginalized lnL and lnL(t); even (12) and odd (13) numbers
      of time bins (the Simpson rule on both backends); a window running past the buffer
      edge (zero extension); the kernels Q_inner_product_cupy / Q_inner_product_cubic_cupy
      against the numpy windows directly, with negative and over-running start indices;
@@ -22,8 +21,9 @@ Cases
   3. Calibration marginalization, cal_method='loop', with 4-D per-realization self terms
      ctUArrayDict_cal (n_cal, K*N_window, n, n) and per-realization rholm blocks, K = 1
      and 4: lnL, importance-weighted lnL, return_lnLt, return_cal_components, nearest and
-     cubic, with and without phase marginalization; the burn-in layout (n_cal=1 with the
-     4-D arrays); cal_method='fused' refused on both backends.
+     cubic, with explicit phase and analytic-phase refusal; the burn-in layout (n_cal=1 with the
+     4-D arrays); cal_method='fused' refused on both backends. Global-norm burn-in
+     and active subsets are checked against independently sliced stored Q blocks.
   4. simpson_function(cupy) against scipy for even and odd npts.
 
 The synthetic inputs come from test/test_td_time_indexed_U.py::_make_case (random Q, U, V
@@ -148,6 +148,22 @@ def call_noloop(xpy, case, U, V, npts=None, **kw):
 
 def both(case, U, V, name, npts=None, **kw):
     """numpy and cupy NoLoop on the same inputs; records lnL and lnL(t)."""
+    if kw.get("phase_marginalization") and any(
+            isinstance(v, fl.TimeIndexedCrossTermsSVD) or np.ndim(v) == 3 for v in U.values()):
+        variants = [(name, {})]
+        if not kw.get("return_cal_components"):
+            variants.append((name + " [lnL(t)]", {"return_lnLt": True}))
+        for label, extra in variants:
+            for backend in (np, XP):
+                try:
+                    call_noloop(backend, case, U, V, npts=npts, **dict(kw, **extra))
+                except NotImplementedError as exc:
+                    assert "explicit phase sampling" in str(exc), str(exc)
+                else:
+                    raise AssertionError("time-indexed analytic phase marginalization was accepted")
+            record(label + " [phase refused]", 0., 0., note="explicit phase sampling required")
+            RESULTS[-1]["kind"] = "refusal"
+        return None, None
     ref = call_noloop(np, case, U, V, npts=npts, **kw)
     got = call_noloop(XP, case, U, V, npts=npts, **kw)
     record(name, got, ref)
@@ -314,6 +330,30 @@ def section_cal():
                 print("  %-78s %s" % ("cal K=%d pm=%d cal_method='fused' refused [%s]" % (K, pm, xpy.__name__), "ok" if refused else "FAIL"))
 
 
+def section_global_norm_blocks():
+    """Global-norm burn-in/subsets vs independently evaluated stored Q blocks."""
+    from scipy.special import logsumexp
+    print("\n[3b] global norm, stored Q blocks, burn-in and active subsets")
+    case = ttu._make_case(seed=701, dets=("H1",), modes=MODES2,
+                          npts_full=512, npts=80, epoch_offset=-0.001)
+    U = {d: case["U_t"][d][:128] for d in case["dets"]}
+    V = {d: case["V_t"][d][:128] for d in case["dets"]}
+    for interp in ("nearest", "cubic"):
+        for active in (1, 2, 4):
+            for return_lnLt in (False, True):
+                kw = dict(time_interp=interp, return_lnLt=return_lnLt)
+                separate = []
+                for c in range(active):
+                    one = dict(case, rholmsArrayDict={
+                        d: case["rholmsArrayDict"][d][:, c*128:(c+1)*128] for d in case["dets"]})
+                    separate.append(call_noloop(np, one, U, V, **kw))
+                ref = logsumexp(np.asarray(separate), axis=0) - np.log(active)
+                for backend in (np, XP):
+                    got = call_noloop(backend, case, U, V, n_cal=active, **kw)
+                    record("global norm %s active=%d lnLt=%s [%s]" %
+                           (interp, active, return_lnLt, backend.__name__), got, ref)
+
+
 # --------------------------------------------------------------------------- 4. Simpson rule
 
 def section_simpson():
@@ -355,6 +395,7 @@ def main():
     section_kernels()
     section_svd()
     section_cal()
+    section_global_norm_blocks()
     section_simpson()
     n_fail = sum(1 for r in RESULTS if not r["ok"])
     worst = max((r["rel_diff"] for r in RESULTS if np.isfinite(r["rel_diff"])), default=0.0)

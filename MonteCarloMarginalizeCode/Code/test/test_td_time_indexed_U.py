@@ -10,11 +10,12 @@ random Q/U/V and random extrinsic parameters:
      hex-exact reference values, same deterministic inputs);
   2. time-indexed U that is constant in time gives exactly the scalar-U result;
   3. genuinely time-varying U against a brute-force per-sample, per-time loop,
-     for nearest and cubic time_interp, with and without phase marginalization,
+     for nearest and cubic time_interp, with explicit orbital phase,
      with return_lnLt, with an elementwise custom loglikelihood (the distance
      marginalization hook), with mixed scalar/time-indexed detectors, and with
      a window running past the buffer edge (zero extension);
-  4. refusals: calibration paths, the legacy array likelihoods, and bad shapes.
+  4. refusals: analytic phase marginalization, unsupported calibration paths,
+     the legacy array likelihoods, and bad shapes.
 
 Run with:  pytest test/test_td_time_indexed_U.py
 """
@@ -211,6 +212,10 @@ def test_constant_time_indexed_equals_scalar(time_interp, phase_marg):
     U_const = {det: np.broadcast_to(case["U_s"][det], (256, 2, 2)).copy() for det in case["dets"]}
     V_const = {det: np.broadcast_to(case["V_s"][det], (256, 2, 2)).copy() for det in case["dets"]}
     kw = dict(time_interp=time_interp, phase_marginalization=phase_marg)
+    if phase_marg:
+        with pytest.raises(NotImplementedError, match="explicit phase sampling"):
+            _call(case, U_const, V_const, **kw)
+        return
     lnL_s = _call(case, case["U_s"], case["V_s"], **kw)
     lnL_t = _call(case, U_const, V_const, **kw)
     # Same quantities, summed in a different order: agreement to a few ulp.
@@ -255,6 +260,10 @@ def test_constant_time_indexed_self_term_exact():
 def test_time_varying_against_brute_force(time_interp, phase_marg, hermitian):
     case = _make_case(seed=23, modes=((2, 2), (2, -2)), hermitian=hermitian)
     kw = dict(time_interp=time_interp, phase_marginalization=phase_marg)
+    if phase_marg:
+        with pytest.raises(NotImplementedError, match="explicit phase sampling"):
+            _call(case, case["U_t"], case["V_t"], **kw)
+        return
     lnL = _call(case, case["U_t"], case["V_t"], **kw)
     ref = _brute_force(case, case["U_t"], case["V_t"], **kw)
     np.testing.assert_allclose(lnL, ref, rtol=1e-10, atol=1e-10)
@@ -452,6 +461,115 @@ def test_pack_time_indexed_cross_terms():
     ct_bad[(modes[1], modes[2])] = ct_bad[(modes[1], modes[2])][:-1]
     with pytest.raises(ValueError):
         fl.PackLikelihoodDataStructuresAsArrays(modes, None, rholms, ct_bad, ctV)
+
+
+
+
+# Review regressions: phase-dependent norms and retained calibration buffers.
+@pytest.mark.parametrize("interp", ["nearest", "cubic"])
+@pytest.mark.parametrize("active", [1, 2, 4])
+@pytest.mark.parametrize("return_lnLt", [False, True])
+def test_global_norm_uses_stored_blocks_during_burn_in(interp, active, return_lnLt):
+    from scipy.special import logsumexp
+    case = _make_case(seed=701, dets=("H1",), modes=((2, 2), (2, -2)),
+                      npts_full=512, npts=80, epoch_offset=-0.001)
+    U = {d: case["U_t"][d][:128] for d in case["dets"]}
+    V = {d: case["V_t"][d][:128] for d in case["dets"]}
+    kw = dict(time_interp=interp, return_lnLt=return_lnLt)
+    got = _call(case, U, V, n_cal=active, **kw)
+    separate = []
+    for c in range(active):
+        one = dict(case, rholmsArrayDict={
+            d: case["rholmsArrayDict"][d][:, c*128:(c+1)*128] for d in case["dets"]})
+        separate.append(_call(one, U, V, **kw))
+    ref = logsumexp(np.asarray(separate), axis=0) - np.log(active)
+    np.testing.assert_allclose(got, ref, rtol=1e-12, atol=1e-12)
+    # Ensure this exercises the data term, including windows crossing block edges.
+    zero = dict(case, rholmsArrayDict={d: np.zeros_like(v) for d, v in case["rholmsArrayDict"].items()})
+    assert np.max(np.abs(got - _call(zero, U, V, n_cal=active, **kw))) > 1e-4
+
+
+@pytest.mark.parametrize("layout", ["dense", "compressed", "calibration_only"])
+def test_analytic_phase_refused_for_all_time_indexed_norm_layouts(layout):
+    case = _make_case(seed=703, modes=((2, 2), (2, -2)))
+    U, V, kw = case["U_t"], case["V_t"], {}
+    if layout == "compressed":
+        U = {d: fl.compress_time_indexed_cross_terms(U[d], V[d], tol=1e-13) for d in case["dets"]}
+        V = U
+    elif layout == "calibration_only":
+        kw = dict(ctUArrayDict_cal={d: U[d][None] for d in case["dets"]},
+                  ctVArrayDict_cal={d: V[d][None] for d in case["dets"]})
+        U, V = case["U_s"], case["V_s"]
+    with pytest.raises(NotImplementedError, match="explicit phase sampling"):
+        _call(case, U, V, phase_marginalization=True, **kw)
+
+
+@pytest.mark.parametrize("name,value", [
+    ("internal_ile_td_subsample", 4),
+    ("internal_ile_td_calibration_correction_type", "bilby"),
+    ("internal_ile_td_calibration_fir_half_length", 32),
+])
+@pytest.mark.parametrize("route", [None, "td-gs"])
+def test_pipeline_td_knobs_require_and_reach_the_selected_route(name, value, route):
+    import ast, types, sys, os
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    tree = ast.parse((root / "bin/util_RIFT_pseudo_pipe.py").read_text())
+    node = next(n for n in tree.body if isinstance(n, ast.If) and
+                isinstance(n.test, ast.Attribute) and n.test.attr == "internal_ile_inner_product")
+    attrs = {n.attr for n in ast.walk(node) if isinstance(n, ast.Attribute) and
+             isinstance(n.value, ast.Name) and n.value.id == "opts"}
+    opts = types.SimpleNamespace(**dict.fromkeys(attrs))
+    opts.internal_ile_inner_product = route
+    setattr(opts, name, value)
+    scope = dict(opts=opts, line="", sys=sys, os=os, _as_list=lambda x: x or [])
+    compiled = compile(ast.fix_missing_locations(ast.Module(body=[node], type_ignores=[])), "pipeline_td", "exec")
+    if route is None:
+        with pytest.raises(SystemExit) as exc:
+            exec(compiled, scope)
+        assert exc.value.code == 1
+    else:
+        exec(compiled, scope)
+        flag = {"internal_ile_td_subsample": "--td-subsample",
+                "internal_ile_td_calibration_correction_type": "--td-calibration-correction-type",
+                "internal_ile_td_calibration_fir_half_length": "--td-calibration-fir-half-length"}[name]
+        assert flag + " " + str(value) in scope["line"]
+
+
+@pytest.mark.parametrize("td,phase", [(False, False), (False, True), (True, False), (True, True)])
+def test_tdgs_phase_table_refused_at_driver_startup(td, phase):
+    import ast
+    from pathlib import Path
+    tree = ast.parse((Path(__file__).resolve().parents[1] / "bin/integrate_likelihood_extrinsic_batchmode").read_text())
+    node = next(n for n in tree.body if isinstance(n, ast.If) and
+                isinstance(n.test, ast.BoolOp) and
+                {v.id for v in n.test.values if isinstance(v, ast.Name)} == {"_td_gs_requested", "_tq_phase_marg"})
+    scope = dict(_td_gs_requested=td, _tq_phase_marg=phase)
+    compiled = compile(ast.fix_missing_locations(ast.Module(body=[node], type_ignores=[])), "driver_phase_guard", "exec")
+    if td and phase:
+        with pytest.raises(ValueError, match="explicit orbital-phase sampling"):
+            exec(compiled, scope)
+    else:
+        exec(compiled, scope)
+
+
+@pytest.mark.parametrize("missing,expected", [("tdanalysis", True), ("tdanalysis.forms.gs", False), ("numpy", False), (None, False)])
+def test_optional_td_import_skip_does_not_hide_broken_installed_apis(missing, expected):
+    import ast
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[3]
+    tree = ast.parse((root / ".travis/test-all-mod.py").read_text())
+    nodes = [n for n in tree.body if
+             (isinstance(n, ast.FunctionDef) and n.name == "_missing_optional_module") or
+             (isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "OPTIONAL_MODULE_DEPENDENCIES" for t in n.targets))]
+    scope = {}
+    exec(compile(ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[])), "optional_import", "exec"), scope)
+    exc = ImportError("td-gs needs the final tdanalysis API")
+    if missing:
+        exc.__cause__ = ModuleNotFoundError("No module named " + repr(missing), name=missing)
+    check = scope["_missing_optional_module"]
+    assert check("RIFT.likelihood.td_gs_precompute", exc) is expected
+    assert check("RIFT.unrelated", exc) is False
 
 
 if __name__ == "__main__":

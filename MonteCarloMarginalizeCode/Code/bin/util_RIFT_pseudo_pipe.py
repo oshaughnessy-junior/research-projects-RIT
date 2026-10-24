@@ -1872,7 +1872,9 @@ elif (opts.internal_ile_td_gap or opts.internal_ile_glitch_basis or
       opts.internal_ile_td_dense_max_n is not None or opts.internal_ile_td_u_stride is not None or
       opts.internal_ile_td_u_method or opts.internal_ile_td_acf_cond is not None or
       opts.internal_ile_td_u_svd_tol is not None or opts.internal_ile_td_highpass is not None or
-      opts.internal_ile_td_whiteness_check):
+      opts.internal_ile_td_whiteness_check or opts.internal_ile_td_subsample is not None or
+      opts.internal_ile_td_calibration_correction_type is not None or
+      opts.internal_ile_td_calibration_fir_half_length is not None):
     print(" FAILURE: --internal-ile-td-* / --internal-ile-glitch-* require "
           "--internal-ile-inner-product td-toeplitz or td-gs")
     sys.exit(1)

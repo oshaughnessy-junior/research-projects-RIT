@@ -1142,6 +1142,9 @@ _tq_prereqs = (
 # likelihood also refuses it, but by then the run is under way.
 _tq_phase_marg = bool(opts.distance_marginalization) and bool(
     lookup_table["phase_marginalization"])
+if _td_gs_requested and _tq_phase_marg:
+    raise ValueError("td-gs requires explicit orbital-phase sampling: the finite-segment "
+                     "template norm depends on phase; use a distance-only lookup table")
 if opts._time_quadrature == 'peak-local' and _tq_phase_marg:
     _tq_prereqs = _tq_prereqs + ((
         "not phase marginalization (the peak-local width picks up an (I1/I0)(|kappa|/D) "

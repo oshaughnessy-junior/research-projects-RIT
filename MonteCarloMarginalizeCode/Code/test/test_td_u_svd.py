@@ -153,10 +153,11 @@ def test_rank_recovered_and_lnL_matches(rank, time_interp):
 @pytest.mark.parametrize("time_interp", ['nearest', 'cubic'])
 @pytest.mark.parametrize("rank", [1, 3, None])
 def test_phase_marginalization(rank, time_interp):
-    # the phase-marginalized path is defined for the (2,2),(2,-2) pair
+    # Finite-piece norms depend on phase even for the quadrupole pair.
     case = _low_rank_case(seed=17 + (rank or 0), rank=rank, modes=((2, 2), (2, -2)))
     comp = _compress(case, 1e-13)
-    _compare(case, comp, time_interp=time_interp, phase_marginalization=True)
+    with pytest.raises(NotImplementedError, match="explicit phase sampling"):
+        _call(case, comp, comp, time_interp=time_interp, phase_marginalization=True)
     _compare(case, comp, time_interp=time_interp, phase_marginalization=False)
 
 
