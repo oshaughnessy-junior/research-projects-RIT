@@ -1,0 +1,20 @@
+......                                                                   [100%]
+=============================== warnings summary ===============================
+MonteCarloMarginalizeCode/Code/test/integrators/test_transport_cost.py::test_oracle_setup_args_are_independent_and_reset_replays
+  /scratch/richard.oshaughnessy/codex_transport_20261015/source/MonteCarloMarginalizeCode/Code/RIFT/integrators/mcsampler.py:1277: DeprecationWarning: invalid escape sequence '\p'
+    """
+
+MonteCarloMarginalizeCode/Code/test/integrators/test_transport_cost.py::test_wrong_collapsed_oracle_never_enters_evidence_cache_or_fairdraw
+  /scratch/richard.oshaughnessy/codex_transport_20261015/source/MonteCarloMarginalizeCode/Code/RIFT/integrators/statutils.py:136: RuntimeWarning: divide by zero encountered in log
+    log_M2 = logsumexp( 2*xpy_here.log(xpy_here.abs(dat - xpy_here.exp(log_mean) )))
+
+MonteCarloMarginalizeCode/Code/test/integrators/test_transport_cost.py::test_wrong_collapsed_oracle_never_enters_evidence_cache_or_fairdraw
+  /scratch/richard.oshaughnessy/codex_transport_20261015/source/MonteCarloMarginalizeCode/Code/RIFT/integrators/statutils.py:166: RuntimeWarning: divide by zero encountered in log
+    log_M2B = logsumexp( 2*xpy_here.log(xpy_here.abs(xpy_here.exp(newLogValues-log_refB) - xpy_here.exp(log_xBmean) )))
+
+MonteCarloMarginalizeCode/Code/test/integrators/test_transport_cost.py::test_wrong_collapsed_oracle_never_enters_evidence_cache_or_fairdraw
+  /scratch/richard.oshaughnessy/codex_transport_20261015/source/MonteCarloMarginalizeCode/Code/RIFT/integrators/statutils.py:178: RuntimeWarning: divide by zero encountered in log
+    log_delta = xpy_here.log(xpy_here.abs(xpy_here.exp(log_xAmean)- xpy_here.exp(log_xBmean))) # sign irrelevant
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+6 passed, 4 warnings in 2.43s
