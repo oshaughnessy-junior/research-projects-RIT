@@ -167,6 +167,11 @@ def build_realizations_from_nodes(amp_rand_array, phase_rand_array, T_segment, d
 
     amp_rand_array, phase_rand_array : (n_spline_points, n_realizations).
     Returns dat_out (npts_seg, n_realizations) complex, unity outside [fmin,fmax].
+
+    Phase sign: the RIFT packing labels bins with the negative of the LAL frequency,
+    so dat_out at label f is conj(alpha(f)) for the standard-convention response
+    alpha = amp*exp(i*phase).  Apply it to the data UNCONJUGATED: <h|C d> = <alpha h|d>.
+    See DESIGN_calmarg_in_loop.md, "Phase-sign trap".
     """
     n_realizations = amp_rand_array.shape[1]
     deltaF_seg = 1./T_segment

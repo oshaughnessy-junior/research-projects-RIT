@@ -612,7 +612,7 @@ def PrecomputeLikelihoodTerms(event_time_geo, t_window, P, data_dict,
         extra_waveform_kwargs={},
         use_gwsignal=False,
         use_gwsignal_approx=None,
-        use_external_EOB=False,nr_lookup=False,nr_lookup_valid_groups=None,no_memory=True,perturbative_extraction=False,perturbative_extraction_full=False,hybrid_use=False,hybrid_method='taper_add',use_provided_strain=False,ROM_group=None,ROM_param=None,ROM_use_basis=False,ROM_limit_basis_size=None,skip_interpolation=False,force_22_mode=False, calibration_realizations=None, calibration_conjugate=True, return_calibration_crossterms=False, calibration_self_term=True, IP_factory=None, td_gs_contexts=None):
+        use_external_EOB=False,nr_lookup=False,nr_lookup_valid_groups=None,no_memory=True,perturbative_extraction=False,perturbative_extraction_full=False,hybrid_use=False,hybrid_method='taper_add',use_provided_strain=False,ROM_group=None,ROM_param=None,ROM_use_basis=False,ROM_limit_basis_size=None,skip_interpolation=False,force_22_mode=False, calibration_realizations=None, calibration_conjugate=False, return_calibration_crossterms=False, calibration_self_term=True, IP_factory=None, td_gs_contexts=None):
     """
     Compute < h_lm(t) | d > and < h_lm | h_l'm' >
 
@@ -1254,7 +1254,7 @@ def SingleDetectorLogLikelihood(rholm_vals, crossTerms,crossTermsV, Ylms, F, dis
 def ComputeModeIPTimeSeries(hlms, data, psd, fmin, fMax, fNyq,
         N_shift, N_window, analyticPSD_Q=False,
         inv_spec_trunc_Q=False, T_spec=0., calibration_realizations=None,
-        calibration_conjugate=True, IP_factory=None):
+        calibration_conjugate=False, IP_factory=None):
     r"""
     Compute the complex-valued overlap between
     each member of a SphHarmFrequencySeries 'hlms'
@@ -1318,8 +1318,10 @@ def ComputeModeIPTimeSeries(hlms, data, psd, fmin, fMax, fNyq,
           # supplied separately via the |C_c|^2-weighted cross terms
           # (ComputeModeCrossTermIPCal) and used in place of <h|h> in the reduction.
           #
-          # Realizations are template responses alpha. Moving alpha from the
-          # template to the data in <h|alpha* d> requires conjugation.
+          # Realizations are template responses alpha.  RIFT's two-sided packing labels
+          # bin k with f = deltaF*(npts/2 - k), the negative of the LAL frequency, so the
+          # array C stored at label f is conj(alpha(f)) in the standard convention.
+          # Hence <h|C d> = <alpha h|d> with no conjugation; conj(C) reverses the phase.
           _cal_here = np.conj(calib_array) if calibration_conjugate else calib_array
           data_now.data.data = _cal_here * data.data.data
           rho, rhoTS, rhoIdx, rhoPhase = IP.ip(hlms[pair], data_now)

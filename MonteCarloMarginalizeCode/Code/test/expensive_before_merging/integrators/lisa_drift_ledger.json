@@ -105,6 +105,10 @@
       "decision": "NA",
       "reason": "LIGO/Virgo spline calibration-envelope marginalization. The LISA driver models no instrument calibration: it takes no envelope directory, has no cal nodes, and its response is applied analytically by factored_likelihood_LISA. LISA calibration, if it is ever modelled, will not have this data product or this spline parameterization, so porting the LIGO machinery would be actively misleading."
     },
+    "OPTION:--calibration-correction-type": {
+      "decision": "NA",
+      "reason": "LIGO/Virgo spline calibration-envelope marginalization. The LISA driver models no instrument calibration: it takes no envelope directory, has no cal nodes, and its response is applied analytically by factored_likelihood_LISA. LISA calibration, if it is ever modelled, will not have this data product or this spline parameterization, so porting the LIGO machinery would be actively misleading."
+    },
     "OPTION:--calibration-dump-responsibilities": {
       "decision": "NA",
       "reason": "LIGO/Virgo spline calibration-envelope marginalization. The LISA driver models no instrument calibration: it takes no envelope directory, has no cal nodes, and its response is applied analytically by factored_likelihood_LISA. LISA calibration, if it is ever modelled, will not have this data product or this spline parameterization, so porting the LIGO machinery would be actively misleading."

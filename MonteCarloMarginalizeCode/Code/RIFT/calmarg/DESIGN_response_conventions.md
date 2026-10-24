@@ -25,11 +25,17 @@ transformed envelope, rather than inverting individual Gaussian random draws.
 Envelope summaries are interpolated in log frequency. The response spline uses
 an exponential phase, while Bilby's spline uses its rational phase parameterization.
 
-The factored cross-term is `<h|conj(alpha)*d>`; the complete template norm is
-`<alpha*h|alpha*h>`. Both use the released-strain PSD. Conjugation is enabled by
-default and always selected by ILE. The old `--calibration-conjugate-phase` flag
-is accepted for command-line compatibility. `--calibration-global-norm` remains
-an explicit approximation that omits the amplitude-dependent norm.
+The factored cross-term is `<alpha*h|d>`; the complete template norm is
+`<alpha*h|alpha*h>`. Both use the released-strain PSD. RIFT's two-sided packing
+labels bin k with f = deltaF*(npts/2 - k), the negative of the LAL frequency, so
+the realization array C stored at label f equals conj(alpha(f)) in the standard
+convention. Multiplying the data by C, unconjugated, therefore gives
+`<h|C d> = <alpha*h|d>`. Multiplying by conj(C) reverses the phase.
+`test_cross_term_matches_time_domain_calibrated_template` checks this against a
+template calibrated in the time domain with numpy's FFT. ILE never conjugates;
+the old `--calibration-conjugate-phase` flag is accepted and ignored.
+`--calibration-global-norm` remains an explicit approximation that omits the
+amplitude-dependent norm.
 
 Prior draws, pilot draws, exported nodes, and draw growth use the same converted
 prior. Exported amplitude nodes are full template-response amplitudes near one.

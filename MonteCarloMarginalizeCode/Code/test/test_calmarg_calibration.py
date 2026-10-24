@@ -121,7 +121,8 @@ def test_real_cross_term_and_self_term_match_distorted_template(tmp_path, conven
         return fs
     h = series(rng.normal(size=256) + 1j*rng.normal(size=256))
     d = series(rng.normal(size=256) + 1j*rng.normal(size=256))
-    ah = series(alpha[:, 0] * h.data.data)
+    # In RIFT packing the array at label f is conj(alpha(f)); see the time-domain test.
+    ah = series(np.conj(alpha[:, 0]) * h.data.data)
     psd = lambda f: 1.0
     actual = fl.ComputeModeIPTimeSeries({(2,2):h}, d, psd, 20, 120, 128, 0, 32,
                                         analyticPSD_Q=True, calibration_realizations=alpha)
@@ -134,6 +135,56 @@ def test_real_cross_term_and_self_term_match_distorted_template(tmp_path, conven
     ref_u = fl.ComputeModeCrossTermIP({(2,2):ah}, {(2,2):ah}, psd, 20, 120, 128,
                                       1, analyticPSD_Q=True)
     assert actual_u[0][((2,2),(2,2))] == pytest.approx(ref_u[((2,2),(2,2))], rel=1e-12)
+
+
+def test_cross_term_matches_time_domain_calibrated_template():
+    """Known answer in the standard FFT convention, independent of RIFT's packing.
+
+    The calibrated template alpha*h is built in the TIME domain with numpy's FFT
+    (alpha at f>0, conj(alpha) at f<0). Production overlaps with the realization
+    array on the data must reproduce <alpha*h|d>; conjugating the array must not.
+    """
+    import numpy as np
+    import lal
+    import scipy.interpolate
+    from RIFT import lalsimutils as lsu
+    from RIFT.calmarg import generate_realizations as gr
+    from RIFT.likelihood import factored_likelihood as fl
+    dT, T = 1/256, 4
+    n = int(T/dT)
+    t = np.arange(n)*dT
+    logf = np.linspace(np.log10(20), np.log10(120), 5)
+    amp_nodes = np.array([1.05, 0.95, 1.1, 1.0, 0.9])
+    phase_nodes = np.array([0.5, 0.1, -0.2, 0.3, 0.6])   # not degenerate with time or phase
+    alpha_rift = gr.build_realizations_from_nodes(amp_nodes[:, None], phase_nodes[:, None],
+                                                  T, dT, 20, 120, logf)
+    f = np.fft.fftfreq(n, dT)
+    band = (np.abs(f) >= 20) & (np.abs(f) <= 120)
+    lf = np.log10(np.abs(f[band]))
+    alpha_std = np.ones(n, dtype=complex)
+    alpha_std[band] = (scipy.interpolate.CubicSpline(logf, amp_nodes)(lf)
+                       * np.exp(1j*np.sign(f[band])*scipy.interpolate.CubicSpline(logf, phase_nodes)(lf)))
+    rng = np.random.default_rng(4)
+    h_t = rng.normal(size=n) + 1j*rng.normal(size=n)    # complex, like an h_lm
+    d_t = rng.normal(size=n)                            # real detector data
+    def fseries(x):
+        ts = lal.CreateCOMPLEX16TimeSeries("x", lal.LIGOTimeGPS(1000), 0, dT,
+                                           lal.DimensionlessUnit, n)
+        ts.data.data = np.asarray(x, dtype=complex)
+        return lsu.DataFourier(ts)
+    h, d = fseries(h_t), fseries(d_t)
+    ah = fseries(np.fft.ifft(alpha_std*np.fft.fft(h_t)))
+    psd = lambda f: 1.0
+    args = ({(2, 2): h}, d, psd, 20, 120, 128, 0, 32)
+    ref = fl.ComputeModeIPTimeSeries({(2, 2): ah}, *args[1:], analyticPSD_Q=True)
+    actual = fl.ComputeModeIPTimeSeries(*args, analyticPSD_Q=True,
+                                        calibration_realizations=alpha_rift)
+    flipped = fl.ComputeModeIPTimeSeries(*args, analyticPSD_Q=True,
+                                         calibration_realizations=alpha_rift,
+                                         calibration_conjugate=True)
+    r = ref[(2, 2)].data.data
+    np.testing.assert_allclose(actual[(2, 2)].data.data, r, rtol=1e-10, atol=1e-10*np.abs(r).max())
+    assert np.abs(flipped[(2, 2)].data.data - r).max() > 0.1*np.abs(r).max()
 
 
 def _driver_parts():
@@ -178,7 +229,7 @@ def test_driver_prior_and_growth_propagate_conventions(tmp_path, export):
                         and t.slice.value == "calibration_conjugate" for t in n.targets))
     ns["extra_kwargs"] = {}
     exec(compile(ast.Module(body=[site], type_ignores=[]), str(path), "exec"), ns)
-    assert ns["extra_kwargs"]["calibration_conjugate"] is True
+    assert ns["extra_kwargs"]["calibration_conjugate"] is False
 
 
 @pytest.mark.parametrize("setting", [None, "H1:template,V1:data"])
