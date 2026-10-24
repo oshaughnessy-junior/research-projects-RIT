@@ -69,6 +69,7 @@ Refusal = collections.namedtuple("Refusal", "kind options message enable_require
 #
 # (cli_flag, opts_attribute).
 CAL_OPT_IN_FLAGS = (
+    ("--calibration-correction-type", "calibration_correction_type"),
     ("--calibration-fused-kernel", "calibration_fused_kernel"),
     ("--calibration-conjugate-phase", "calibration_conjugate_phase"),
     ("--calibration-global-norm", "calibration_global_norm"),

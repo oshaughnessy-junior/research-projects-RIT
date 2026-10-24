@@ -30,6 +30,9 @@ export OMP_NUM_THREADS=1
 # this makes the whole script safe the same way its sibling gates are.
 export PYTHONPATH="$PWD/$CODE${PYTHONPATH:+:$PYTHONPATH}"
 
+# Independent Bilby envelope-prior parity (Bilby is installed in calmarg-check).
+"$PY" -m pytest -q "$CODE/test/test_calmarg_bilby_prior.py"
+
 # precompute alignment + identity-cal self-term cross terms == baseline
 "$PY" "$CODE/RIFT/calmarg/test_precompute_alignment.py"
 
