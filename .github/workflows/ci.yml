@@ -839,6 +839,8 @@ jobs:
             MonteCarloMarginalizeCode/Code/test/test_rvs_record.py \
             MonteCarloMarginalizeCode/Code/test/test_ile_lnL_backend_defects.py \
             MonteCarloMarginalizeCode/Code/test/integrators/test_mcsamplerGPU_default_adapt.py
+      - name: Check NR evidence-weighted posterior bootstrap
+        run: python MonteCarloMarginalizeCode/Code/test/test_nr_best_effort.py
       - name: Audit _rvs consumers against the fair-draw rebind
         # sampler._rvs is rebound to an EXPORT resample at the end of integrate_log, and five
         # separate defects have come from a consumer reading it afterwards as though it were
