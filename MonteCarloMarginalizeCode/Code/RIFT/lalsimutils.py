@@ -3757,7 +3757,7 @@ def hlmoft(P, Lmax=2,nr_polarization_convention=False, fixed_tapering=False, sil
           WARNING: internal_hlm_generator will CHANGE this factor to 0.9, to better match complex_hoft.  I'm keeping the default of this function here to match the nominal documentaiton of SimInspiralTD, while internal_hlm_generator has a different factor, chosen to match its actual output.
     
 
-    no_condition: disable conditioning (for ChooseFDModes specifically). For diagnostic plots on impact of/need for conditioning.
+    no_condition: disable conditioning: the ChooseFDModes high-pass/taper, the start tapers of the SEOB, SEOBv3 and IMRPhenomP branches, and the start taper applied to ChooseTDModes / TDModesFromPolarizations output at the end of this function. Used by the td-gs likelihood code path (no windows, no tapers) and for diagnostic plots on impact of/need for conditioning. Does not touch lalsuite's own internal conditioning of FD-generated models.
     fd_L_frame: rotate hlmoft to L frame from J frame for return values from ChooseFDModes (XO4/XPHM).
     fd_end_taper_max_time: cap (seconds) on the ChooseFDModes end taper, which is otherwise 1% of the
           buffer.  With fd_alignment_postevent_time=2 an uncapped end taper covers the merger once the

@@ -1,5 +1,5 @@
 """
-SVD-over-time compression of the time-indexed self term (td-gs route).
+SVD-over-time compression of the time-indexed self term (td-gs code path).
 
 compress_time_indexed_cross_terms(U3, V3, tol) stacks the pseudo-mode time series
 of U(t), V(t) as M (npts_full x n_lm(n_lm+1)), takes its thin SVD and keeps the
@@ -41,7 +41,7 @@ import RIFT.likelihood.factored_likelihood as fl
 from test_td_time_indexed_U import _make_case, _brute_force, _PVec  # noqa: E402
 
 try:
-    from tdanalysis.forms.gs import GSQuadraticForm  # noqa: F401
+    from tdanalysis.forms.sliding import sliding_self_terms  # noqa: F401  (tdanalysis >= 1.1)
     from tdanalysis.covariance.psd import PSDToAutocorr  # noqa: F401
     HAVE_TDANALYSIS = True
 except Exception:   # pragma: no cover
@@ -127,7 +127,7 @@ def _compare(case, comp, Lmax=2, rtol=1e-12, brute=True, **kw):
 # --------------------------------------------------------------------------
 # (a) synthetic low-rank and full-rank U(t), V(t)
 # --------------------------------------------------------------------------
-@pytest.mark.parametrize("time_interp", ['nearest'])
+@pytest.mark.parametrize("time_interp", ['nearest', 'cubic'])
 @pytest.mark.parametrize("rank", [1, 3, 8, None])
 def test_rank_recovered_and_lnL_matches(rank, time_interp):
     case = _low_rank_case(seed=7 + (rank or 0), rank=rank)
@@ -150,18 +150,18 @@ def test_rank_recovered_and_lnL_matches(rank, time_interp):
     print("[td-u-svd a] rank %s %s: lnL diff %.1e, lnL(t) diff %.1e" % (rank, time_interp, d[0], d[1]))
 
 
-@pytest.mark.parametrize("time_interp", ['nearest'])
+@pytest.mark.parametrize("time_interp", ['nearest', 'cubic'])
 @pytest.mark.parametrize("rank", [1, 3, None])
 def test_phase_marginalization(rank, time_interp):
-    # the phase-marginalized path is defined for the (2,2),(2,-2) pair
+    # Finite-piece norms depend on phase even for the quadrupole pair.
     case = _low_rank_case(seed=17 + (rank or 0), rank=rank, modes=((2, 2), (2, -2)))
     comp = _compress(case, 1e-13)
-    with pytest.raises(NotImplementedError, match="phase"):
+    with pytest.raises(NotImplementedError, match="explicit phase sampling"):
         _call(case, comp, comp, time_interp=time_interp, phase_marginalization=True)
     _compare(case, comp, time_interp=time_interp, phase_marginalization=False)
 
 
-@pytest.mark.parametrize("time_interp", ['nearest'])
+@pytest.mark.parametrize("time_interp", ['nearest', 'cubic'])
 def test_mixed_detectors(time_interp):
     # H1 compressed, L1 scalar (2-D), V1 time-indexed (3-D, uncompressed)
     case = _low_rank_case(seed=37, rank=3, modes=((2, 2), (2, -2)))
@@ -178,7 +178,7 @@ def test_mixed_detectors(time_interp):
     np.testing.assert_allclose(_call(case, U_c, V_c, time_interp=time_interp), ref, rtol=1e-10, atol=1e-10)
 
 
-@pytest.mark.parametrize("time_interp", ['nearest'])
+@pytest.mark.parametrize("time_interp", ['nearest', 'cubic'])
 def test_window_past_buffer_edge(time_interp):
     case = _low_rank_case(seed=41, rank=3, modes=((2, 2), (2, -2)), epoch_offset=-0.0005, npts_full=64)
     comp = _compress(case, 1e-13)
@@ -189,8 +189,8 @@ def test_V_none_and_custom_loglikelihood():
     case = _low_rank_case(seed=31, rank=2, modes=((2, 2), (2, -2)))
     comp = _compress(case, 1e-13)
     V_none = {det: None for det in case["dets"]}
-    a = _call(case, comp, comp, time_interp='nearest')
-    b = _call(case, comp, V_none, time_interp='nearest')
+    a = _call(case, comp, comp, time_interp='cubic')
+    b = _call(case, comp, V_none, time_interp='cubic')
     np.testing.assert_array_equal(a, b)
     seen = {}
 
@@ -303,7 +303,7 @@ def _report_spectrum(name, case, Lmax, brute):
         comp = _compress(case, tol)
         c = comp[det]
         d = {}
-        for time_interp in ('nearest',):
+        for time_interp in ('nearest', 'cubic'):
             d[time_interp] = _compare(case, comp, Lmax=Lmax, rtol=np.inf, brute=False, time_interp=time_interp)
         d_lnL = max(v[0] for v in d.values())
         d_lnLt = max(v[1] for v in d.values())
@@ -312,7 +312,7 @@ def _report_spectrum(name, case, Lmax, brute):
         out[tol] = (c.r, d_lnL, d_lnLt)
     if brute:
         comp = _compress(case, 1e-13)
-        for time_interp in ('nearest',):
+        for time_interp in ('nearest', 'cubic'):
             ref = _brute_force(case, case["U_t"], case["V_t"], time_interp=time_interp)
             np.testing.assert_allclose(_call(case, comp, comp, time_interp=time_interp), ref, rtol=1e-9, atol=1e-9)
     return out
@@ -432,7 +432,7 @@ def test_all_zero_cross_terms_give_rank_zero():
     for det in case["dets"]:
         assert comp[det].r == 0 and comp[det].c.shape == (256, 0)
         assert comp[det].rel_err_fro == 0.0
-    for time_interp in ('nearest',):
+    for time_interp in ('nearest', 'cubic'):
         a = _call(case, Z, Z, time_interp=time_interp, return_lnLt=True)
         b = _call(case, comp, comp, time_interp=time_interp, return_lnLt=True)
         np.testing.assert_array_equal(a, b)
@@ -553,7 +553,7 @@ def _profile(n_extrinsic=(500, 2000), npts=64, reps=3):
                     Y = rng.standard_normal((ne, n_lm)) + 1j*rng.standard_normal((ne, n_lm))
                     ifirst = rng.integers(-npts//2, npts_full - npts//2, ne).astype(np.int32)
                     frac = rng.uniform(0, 1, ne)
-                    for time_interp in ('nearest',):
+                    for time_interp in ('nearest', 'cubic'):
                         fr = None if time_interp == 'nearest' else frac
                         tu = []
                         tc = []

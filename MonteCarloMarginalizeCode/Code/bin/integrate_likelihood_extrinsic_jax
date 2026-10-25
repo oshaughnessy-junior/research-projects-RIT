@@ -292,6 +292,7 @@ def _register_ile_short_forms(optp):
 # The full ILE option set (so anything not implemented is still accepted).
 _ILE_ALL_OPTS = {
     "--td-mref", "--td-piece", "--td-ifo-time-offset", "--td-acf-file", "--td-acf-cond", "--td-dense-max-n", "--td-u-stride", "--td-u-method", "--td-highpass", "--td-u-svd-tol", "--td-whiteness-check",
+    "--td-subsample", "--td-calibration-correction-type", "--td-calibration-fir-half-length",
     "--internal-ile-inner-product", "--td-solver", "--td-acf-duration",
     "--td-analysis-start", "--td-analysis-end", "--td-gap",
     "--glitch-basis", "--glitch-basis-file", "--glitch-sigma",
@@ -406,7 +407,7 @@ _ILE_ALL_OPTS = {
 # option accepts any string, so a value numpy ILE refuses at parse time would
 # reach the driver, or a number would arrive as a string where it is used.
 _ILE_INT_OPTS = {
-    "--td-dense-max-n", "--td-u-stride",
+    "--td-dense-max-n", "--td-u-stride", "--td-subsample", "--td-calibration-fir-half-length",
     "--amp-order", "--calibration-burn-in-nmax",
     "--calibration-mc-error-extrinsic", "--calibration-n-realizations",
     "--calibration-n-realizations-max", "--calibration-pilot-extrinsic",
@@ -424,9 +425,6 @@ _ILE_INT_OPTS = {
 _ILE_FLOAT_OPTS = {
     "--td-acf-duration", "--td-analysis-start", "--td-analysis-end",
     "--td-mref", "--td-acf-cond", "--td-highpass", "--td-u-svd-tol",
-
-    "--td-acf-duration", "--td-analysis-start", "--td-analysis-end",
-
     "--adapt-floor-level", "--calibration-burn-in-neff",
     "--calibration-neff-cal-target", "--distance-slice-skip-threshold",
     "--distance-slice-walkout-delta-lnL", "--distance-slice-warm-khat-max",
@@ -497,6 +495,7 @@ def check_critical_and_report(opts, optp):
         fatal.append("--internal-ile-inner-product %s is not implemented by JAX; "
                      "use integrate_likelihood_extrinsic_batchmode" % _ip)
     for _name in ("--td-mref", "--td-piece", "--td-ifo-time-offset", "--td-acf-file", "--td-acf-cond", "--td-dense-max-n", "--td-u-stride", "--td-u-method", "--td-highpass", "--td-u-svd-tol", "--td-whiteness-check",
+                  "--td-subsample", "--td-calibration-correction-type", "--td-calibration-fir-half-length",
                   "--td-solver", "--td-acf-duration", "--td-analysis-start",
                   "--td-analysis-end", "--td-gap", "--glitch-basis",
                   "--glitch-basis-file", "--glitch-sigma"):

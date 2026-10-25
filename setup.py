@@ -65,10 +65,11 @@ setuptools.setup(
    extras_require={
         # Public optional PCG backend; requires Python >=3.11.
         'td-pcg': ['tdanalysis>=1.0.0,<2'],
-        # tdanalysis is pinned: td_gs_precompute checks its version.  waveformtools is not:
-        # this route uses only its `message` print helper, via tdanalysis, which requires it
-        # unpinned.  An exact pin broke CI when 2026.10.15 was deleted from PyPI (2026-10-23).
-        'td-gs': ['tdanalysis==1.0.0'],
+        # Finite-covariance time-domain likelihood (--internal-ile-inner-product td-gs).
+        # Keep both extra names compatible with the >=1.1 backend API. tdanalysis
+        # supplies waveformtools and spectools; do not pin deleted transitive releases.
+        'td': ['tdanalysis>=1.1,<2'],
+        'td-gs': ['tdanalysis>=1.1,<2'],
         'jax-interp': ['jax', 'optax', 'equinox', 'tinygp'],
         # AD applications of the differentiable export (gradient sampling, AD
         # population inference): RIFT.interpolators.jax_gp.applications

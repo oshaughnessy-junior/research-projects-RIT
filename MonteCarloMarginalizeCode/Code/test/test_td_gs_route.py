@@ -1,9 +1,9 @@
 """
-test_td_gs_route.py: tests for the fully time-domain Precompute route
+test_td_gs_route.py: tests for the fully time-domain Precompute code path
 (RIFT/likelihood/td_gs_precompute.py, ILE --internal-ile-inner-product td-gs).
 
 Run with  python -m pytest test/test_td_gs_route.py  from MonteCarloMarginalizeCode/Code
-(needs lal, lalsimulation with IMRPhenomTPHM, and tdanalysis on PYTHONPATH).
+(needs lal, lalsimulation with IMRPhenomTPHM, and tdanalysis >= 1.1 on PYTHONPATH).
 
   (a) test_q_matches_fd_diagonal_full_segment : Q_lm(t) vs the fd-diagonal
       ComputeModeIPTimeSeries on a 2 s segment, compact template, PSD-derived ACF:
@@ -11,7 +11,7 @@ Run with  python -m pytest test/test_td_gs_route.py  from MonteCarloMarginalizeC
   (b) test_u_matches_scalar_u_full_segment  : U(t), V(t) at the grid centre vs the scalar
       ComputeModeCrossTermIP (<= 1e-5 of |U_22|) and U(t) constant across the grid.
   (c) test_ringdown_piece_vs_brute_force    : ringdown-only piece, dense and GS solvers,
-      recursion and batched U/V routes, vs a direct dense C^{-1} quadratic form at
+      recursion and batched U/V methods, vs a direct dense C^{-1} quadratic form at
       several shifts (<= 1e-8); U(t) varies strongly with t; --td-u-stride error reported.
   (d) test_two_pieces_vs_block_diagonal     : spliced two-piece segment vs a dense
       block-diagonal brute force (<= 1e-8); plus an inspiral piece the template overruns
@@ -20,10 +20,10 @@ Run with  python -m pytest test/test_td_gs_route.py  from MonteCarloMarginalizeC
   (f) test_default_fd_route_unchanged       : PrecomputeLikelihoodTerms default path and
       PackLikelihoodDataStructuresAsArrays bit-identical to by-hand lsu constructions;
       hlmoft(no_condition=False) still tapers the SEOB branch.
-  (g) test_prefix_route_* / test_all_routes_* : the prefix-sum route (windowed sums of one
-      kernel correlation per mode) and the column-blocked "chunked" route against the
+  (g) test_prefix_route_* / test_all_routes_* : the prefix-sum method (windowed sums of one
+      kernel correlation per mode) and the column-blocked "chunked" method against the
       recursion, the batched reference and the dense brute force (<= 1e-12 relative
-      between routes sharing the GS kernels) on the full segment, a ringdown piece the
+      between methods sharing the GS kernels) on the full segment, a ringdown piece the
       template ends inside, a piece it overruns at both ends, two spliced pieces, and the
       mirror case (template starts inside, overruns the data end); a ringdown piece whose
       end is one sample too early for the prefix condition is sent to the recursion by
@@ -33,9 +33,9 @@ Run with  python -m pytest test/test_td_gs_route.py  from MonteCarloMarginalizeC
       (two detectors, packed shapes).
 
 The FD-vs-TD comparisons use a template whose start is smoothed FOR THE TEST ONLY (the
-same series is fed to both routes): the Toeplitz covariance and the circulant FD weight
+same series is fed to both code paths): the Toeplitz covariance and the circulant FD weight
 agree only for signals with little power at the band edges, and an abruptly starting
-chirp has plenty.  The route itself never tapers.
+chirp has plenty.  The code path itself never tapers.
 """
 
 import numpy as np
@@ -49,10 +49,11 @@ import RIFT.lalsimutils as lsu
 import RIFT.likelihood.factored_likelihood as fl
 
 try:
-    from tdanalysis.forms.gs import GSQuadraticForm  # noqa: F401
+    from tdanalysis.forms.toeplitz_solver import ToeplitzSolver  # noqa: F401
+    from tdanalysis.forms.sliding import sliding_self_terms  # noqa: F401
     from tdanalysis.covariance.psd import PSDToAutocorr  # noqa: F401
 except Exception as _exc:   # pragma: no cover
-    pytest.skip("tdanalysis not importable (%r)" % (_exc,), allow_module_level=True)
+    pytest.skip("tdanalysis >= 1.1 not importable (%r)" % (_exc,), allow_module_level=True)
 
 from RIFT.likelihood import td_gs_precompute as tdg
 
@@ -87,7 +88,7 @@ def make_P(N, approx=lalsim.IMRPhenomTPHM):
 
 
 def make_modes(N, smooth_start=None):
-    """IMRPhenomTPHM l=2 modes, untapered (td-gs route).  smooth_start (fraction of the
+    """IMRPhenomTPHM l=2 modes, untapered (td-gs code path).  smooth_start (fraction of the
     template's non-zero length) applies a test-only Hann rise so FD/TD comparisons are
     not dominated by band-edge leakage."""
     hT = tdg.generate_td_modes(make_P(N), 2)
@@ -256,7 +257,7 @@ def test_ringdown_piece_vs_brute_force(ringdown_setup, dense_max_n, u_method):
     s = ringdown_setup
     ctx = tdg.TDGSDetectorContext(s["dts"], s["psd"], 20., 1500., pieces=s["pieces"],
                                   dense_max_n=dense_max_n, u_method=u_method, ifo="H1", verbose=False)
-    assert ctx.solvers[0].dense == (dense_max_n > 0)
+    assert (ctx.solvers[0].method == "dense") == (dense_max_n > 0)
     rho, U, V = ctx.precompute(s["hT"], s["N_shift"], s["N_window"])
     idx = [0, 37, 128, 200, 255]
     worst = compare_brute(ctx, s["hT"], rho, U, V, s["N_shift"], idx)
@@ -270,7 +271,7 @@ def test_ringdown_piece_vs_brute_force(ringdown_setup, dense_max_n, u_method):
 
 
 def test_recursion_equals_batched_everywhere(ringdown_setup):
-    """The two U/V routes agree at EVERY grid sample (brute force only probes a few)."""
+    """The two U/V methods agree at EVERY grid sample (brute force only probes a few)."""
     s = ringdown_setup
     out = {}
     for method in U_METHODS:
@@ -283,14 +284,29 @@ def test_recursion_equals_batched_everywhere(ringdown_setup):
     worst_q = max(np.max(np.abs(out["recursion"][0][m].data.data - out["batched"][0][m].data.data))
                   for m in s["hT"]) / np.max(np.abs(out["batched"][0][(2, 2)].data.data))
     print("[td-gs c] recursion vs batched over the whole grid: U/V %.3e, Q %.3e" % (worst, worst_q))
-    assert worst < 1e-8 and worst_q < 1e-12     # both routes sit ~1e-9 from the dense reference
+    assert worst < 1e-8 and worst_q < 1e-12     # both methods sit ~1e-9 from the dense reference
 
 
-def test_u_stride_interpolation_refused(ringdown_setup):
+def test_u_stride_interpolation_error(ringdown_setup):
     s = ringdown_setup
-    with pytest.raises(NotImplementedError, match="u_stride"):
-        tdg.TDGSDetectorContext(s["dts"], s["psd"], 20., 1500., pieces=s["pieces"], u_stride=2)
+    exact = tdg.TDGSDetectorContext(s["dts"], s["psd"], 20., 1500., pieces=s["pieces"],
+                                    ifo="H1", verbose=False).precompute(s["hT"], s["N_shift"], s["N_window"])
+    scale = np.max(np.abs(exact[1][((2, 2), (2, 2))]))
+    errs = {}
+    for stride in (2, 4, 8):
+        strided = tdg.TDGSDetectorContext(s["dts"], s["psd"], 20., 1500., pieces=s["pieces"],
+                                          u_stride=stride, ifo="H1", verbose=False).precompute(
+            s["hT"], s["N_shift"], s["N_window"])
+        err = max(np.max(np.abs(strided[1][k] - exact[1][k])) / scale for k in exact[1])
+        errv = max(np.max(np.abs(strided[2][k] - exact[2][k])) / scale for k in exact[2])
+        assert np.array_equal(strided[0][(2, 2)].data.data, exact[0][(2, 2)].data.data)  # Q exact
+        errs[stride] = (err, errv)
+        print("[td-gs c] --td-u-stride %d: max |U interp error| / max|U22| = %.3e (V: %.3e)"
+              % (stride, err, errv))
+    assert errs[2][0] < 1e-3 and errs[4][0] < 1e-2
 
+
+# --------------------------------------------------------------------------- (d): spliced pieces
 
 @pytest.mark.parametrize("u_method", U_METHODS)
 def test_two_pieces_vs_block_diagonal(ringdown_setup, u_method):
@@ -325,7 +341,7 @@ def test_inspiral_piece_template_overruns_both_ends(ringdown_setup, u_method):
     assert worst < 1e-8
 
 
-# --------------------------------------------------------------------------- (g): prefix / chunked routes
+# --------------------------------------------------------------------------- (g): prefix / chunked methods
 
 def template_support(hT):
     """(j_first, j_last) over all modes: first and last non-zero template sample."""
@@ -360,8 +376,8 @@ def route_diff(a, b):
 
 def check_routes(label, s, out, idx, ref="recursion", tol_route=1e-12, tol_brute=1e-8,
                  hT=None, N_shift=None):
-    """Every route vs ``ref`` over the whole grid and vs the dense brute force at ``idx``
-    (one brute force per layout: all routes share data, ACF and pieces)."""
+    """Every method vs ``ref`` over the whole grid and vs the dense brute force at ``idx``
+    (one brute force per layout: all methods share data, ACF and pieces)."""
     hT = hT or s["hT"]
     N_shift = s["N_shift"] if N_shift is None else N_shift
     ctx0 = out[ref][0]
@@ -370,7 +386,7 @@ def check_routes(label, s, out, idx, ref="recursion", tol_route=1e-12, tol_brute
         assert ctx.runs == ctx0.runs and np.array_equal(ctx.acf, ctx0.acf)
         worst_b = compare_brute(ctx, hT, rho, U, V, N_shift, idx, ref=brute)
         worst_r, worst_q = route_diff(out[method], out[ref])
-        print("[td-gs g] %s: %-9s routes %s: vs %s U/V %.2e Q %.2e; vs brute force %.2e"
+        print("[td-gs g] %s: %-9s methods %s: vs %s U/V %.2e Q %.2e; vs brute force %.2e"
               % (label, method, ctx.uv_routes, ref, worst_r, worst_q, worst_b))
         assert worst_b < tol_brute
         assert worst_r < tol_route and worst_q < tol_route
@@ -382,7 +398,7 @@ def check_routes(label, s, out, idx, ref="recursion", tol_route=1e-12, tol_brute
 
 def test_all_routes_full_segment_gs(ringdown_setup):
     """Full segment on a GS solver: the template ends inside for every shift, so auto
-    picks the prefix route; all routes agree to rounding and match the brute force."""
+    picks the prefix method; all methods agree to rounding and match the brute force."""
     s = ringdown_setup
     j_first, j_last = template_support(s["hT"])
     assert j_last + s["N_shift"] + s["N_window"] - 1 <= s["N"] - 1
@@ -407,7 +423,7 @@ def test_prefix_route_ringdown_piece_and_one_shift_violation(ringdown_setup):
     i1_ok = j_last + s["N_shift"] + s["N_window"]        # last template sample at i1_ok - 1
     out = route_outputs(s, ringdown_piece_ending_at(s, i1_ok), ALL_METHODS, dense_max_n=0)
     ctx = out["auto"][0]
-    assert ctx.runs[0][1] == i1_ok and not ctx.solvers[0].dense
+    assert ctx.runs[0][1] == i1_ok and ctx.solvers[0].method == "gs"
     assert ctx.uv_routes == [("prefix", "end")]
     check_routes("ringdown piece %s" % (ctx.runs,), s, out, [0, 1, 100, 254, 255])
     # one shift of the grid now puts the template's last sample past the piece end
@@ -420,7 +436,7 @@ def test_prefix_route_ringdown_piece_and_one_shift_violation(ringdown_setup):
                  s, out2, [0, 1, 100, 254, 255])
     with pytest.raises(ValueError, match="u_method='prefix'"):
         route_outputs(s, ringdown_piece_ending_at(s, i1_ok - 1), ["prefix"], dense_max_n=0)
-    # the dense solver keeps the batched route on auto whatever the condition
+    # the dense solver keeps the batched method on auto whatever the condition
     ctx3 = route_outputs(s, ringdown_piece_ending_at(s, i1_ok), ["auto"], dense_max_n=4096)["auto"][0]
     assert ctx3.uv_routes == [("chunked", None)]
 
@@ -443,7 +459,7 @@ def test_all_routes_inspiral_piece_overrun_both_ends_gs(ringdown_setup):
 
 def test_all_routes_two_spliced_pieces(ringdown_setup):
     """Two spliced GS pieces: auto picks per piece (prefix where the template ends inside,
-    recursion elsewhere); every route matches the block-diagonal brute force."""
+    recursion elsewhere); every method matches the block-diagonal brute force."""
     s = ringdown_setup
     tpk = s["tpk"]
     j_first, j_last = template_support(s["hT"])
@@ -469,13 +485,13 @@ def test_all_routes_two_spliced_pieces(ringdown_setup):
     out = route_outputs(s, pieces, ["auto", "recursion"], dense_max_n=n1)
     assert out["auto"][0].uv_routes == [("chunked", None), ("prefix", "end")]
     check_routes("two pieces %s (dense + gs)" % (out["auto"][0].runs,), s, out, [0, 50, 128, 255],
-                 tol_route=1e-8)     # dense inverse vs GS kernels from its columns: ~1e-9
+                 tol_route=1e-8)     # Cholesky solve vs GS kernels at cond 1e8: ~1e-9
 
 
 def test_prefix_route_mirror_template_overruns_data_end(ringdown_setup):
     """Full segment with the injection late in the data: the template starts inside but
     its ringdown runs past the data end for the late shifts.  The mirror ("start")
-    orientation of the prefix route applies (persymmetry of C^-1)."""
+    orientation of the prefix method applies (persymmetry of C^-1)."""
     s = ringdown_setup
     N = s["N"]
     k_inj = 3000
@@ -485,7 +501,7 @@ def test_prefix_route_mirror_template_overruns_data_end(ringdown_setup):
     assert j_last + N_shift + s["N_window"] - 1 > N - 1 and j_first + N_shift >= 0
     # The numerical GS form built from x, y is persymmetric only to ~cond(C) eps, and
     # the mirror evaluates it on the reversed vectors: at the default cond 1e8 it sits
-    # ~1e-9 from the recursion (as far as every route sits from the brute force); at
+    # ~1e-9 from the recursion (as far as every method sits from the brute force); at
     # cond 1e4 everything agrees to 1e-12, brute force included.
     for cond, tol, methods in ((1e8, 1e-8, ["recursion", "prefix", "auto"]), (1e4, 1e-12, ALL_METHODS)):
         out = route_outputs(s, None, methods, dense_max_n=0, N_shift=N_shift, dts=dts,
@@ -497,7 +513,7 @@ def test_prefix_route_mirror_template_overruns_data_end(ringdown_setup):
 
 def test_all_routes_well_conditioned_acf_vs_brute_force(ringdown_setup):
     """With a well-conditioned ACF (cond 1e4) the dense brute force is itself good to
-    ~1e-13, and every route on every layout reproduces it to 1e-12."""
+    ~1e-13, and every method on every layout reproduces it to 1e-12."""
     s = ringdown_setup
     tpk = s["tpk"]
     j_first, j_last = template_support(s["hT"])
@@ -515,8 +531,9 @@ def test_all_routes_well_conditioned_acf_vs_brute_force(ringdown_setup):
 
 
 def test_chunked_block_size_independence(ringdown_setup):
-    """The chunked route gives the batched result for any block size (down to one
-    column per block) on dense and GS pieces."""
+    """The chunked method gives the batched result for any block size (down to one
+    column per block) on dense and GS pieces.  On the Cholesky solver (dense) the block
+    size changes the order of the triangular-solve sums, ~1e-13 of max|U| at cond 1e8."""
     s = ringdown_setup
     for dense_max_n in (4096, 0):
         ref = route_outputs(s, s["pieces"], ["batched"], dense_max_n=dense_max_n)["batched"]
@@ -527,7 +544,7 @@ def test_chunked_block_size_independence(ringdown_setup):
             worst, worst_q = route_diff(got, ref)
             print("[td-gs g] chunked (%s, block %d bytes) vs batched: U/V %.2e Q %.2e"
                   % ("dense" if dense_max_n else "gs", block_bytes, worst, worst_q))
-            assert worst < 1e-13 and worst_q == 0.0
+            assert worst < (1e-12 if dense_max_n else 1e-13) and worst_q == 0.0
 
 
 def test_u_method_names(ringdown_setup):
@@ -566,7 +583,7 @@ def test_acf_file_loading_and_validation(tmp_path, ringdown_setup):
     with pytest.raises(ValueError, match="ACF too short"):
         tdg.TDGSDetectorContext(s["dts"], s["psd"], 20., 1500., pieces=s["pieces"], acf=short,
                                 ifo="H1", verbose=False)
-    # A file holding the PSD-derived ACF reproduces the PSD route exactly.
+    # A file holding the PSD-derived ACF reproduces the PSD-derived one exactly.
     ctx_file = tdg.TDGSDetectorContext(s["dts"], s["psd"], 20., 1500., pieces=s["pieces"],
                                        acf=tdg.load_acf_file(str(good), DT), ifo="H1", verbose=False)
     assert ctx_file.acf_supplied and not ctx_psd.acf_supplied
@@ -607,6 +624,15 @@ def test_whiteness_on_noise_drawn_from_acf(ringdown_setup):
                                 {k: ctx.acf_info[k] for k in ("n_floored", "condition_number") if k in ctx.acf_info}))
     assert abs(e["chi2_per_n"] - 1) < 0.1 and abs(e["white_var"] - 1) < 0.1 and abs(e["white_lag1"]) < 0.1
     assert int(ctx.acf_info.get("n_floored", 0) or 0) == 0
+    # the same piece on the GS solver: whitened by Levinson-Durbin, same diagnostic
+    ctx_gs = tdg.TDGSDetectorContext(ts, s["psd"], 20., 1500., whiteness_check=True, dense_max_n=0,
+                                     ifo="H1", verbose=False)
+    assert ctx_gs.solvers[0].method == "gs"
+    e_gs = ctx_gs.whiteness[0]
+    print("[td-gs] whiteness, GS piece (Levinson-Durbin): whitened var %.6f (Cholesky %.6f), "
+          "lag-1 %.6f (Cholesky %.6f)" % (e_gs["white_var"], e["white_var"], e_gs["white_lag1"], e["white_lag1"]))
+    assert abs(e_gs["white_var"] - e["white_var"]) < 1e-5 * e["white_var"]
+    assert abs(e_gs["white_lag1"] - e["white_lag1"]) < 1e-5
     ctx_bad = tdg.TDGSDetectorContext(s["dts"], s["psd"], 20., 1500., ifo="H1", verbose=False)
     assert not (0.7 <= ctx_bad.whiteness[0]["chi2_per_n"] <= 1.4)
 
@@ -673,7 +699,7 @@ def test_precompute_driver_interface(ringdown_setup):
         i22 = lookupKN[(2, 2)]
         np.testing.assert_array_equal(ctU[:, i22, i22], crossTerms[det][((2, 2), (2, 2))])
         assert epoch == float(rholms[det][(2, 2)].epoch)
-        # The (2,2) data-term peak sits where the FD-route bookkeeping puts the injection:
+        # The (2,2) data-term peak sits where the FD code path bookkeeping puts the injection:
         # grid index k_inj - N_shift with N_shift from t_det (the injection is at the
         # geocenter time; the detector arrival time differs by the light-travel delay).
         t_det = fl.ComputeArrivalTimeAtDetector(det, P.phi, P.theta, s["tpk"])
@@ -689,7 +715,7 @@ def test_precompute_driver_interface(ringdown_setup):
     print("[td-gs] driver: 2 detectors, %d modes, N_window=%d, guess_snr=%.2f" % (n, N_window, guess_snr))
 
 
-# --------------------------------------------------------------------------- (f): default route unchanged
+# --------------------------------------------------------------------------- (f): default code path unchanged
 
 def test_default_fd_route_unchanged():
     N = 4096
@@ -767,13 +793,40 @@ def test_hlmoft_no_condition_seob_branch():
     print("[td-gs] hlmoft SEOB branch: conditioning unchanged when no_condition=False")
 
 
+def test_tdanalysis_api_check(monkeypatch):
+    """The tdanalysis API check passes on the tdanalysis under test and names what an
+    earlier 1.1 development tree (same version string, other names) lacks."""
+    assert tdg._missing_tdanalysis_api() == []
+    import types
+    old_tree = types.ModuleType("tdanalysis.forms.sliding")
+    for name in ("sliding_data_term", "DEFAULT_BLOCK_BYTES", "PrefixNotApplicable"):
+        setattr(old_tree, name, getattr(tdg._sliding, name))
+    old_tree.turn_on_inside_window = tdg.is_turn_on_inside_window
+    old_tree.METHODS = tdg.SLIDING_METHODS
+
+    def sliding_self_terms(H, solver, shifts, method="auto", pairs=None, block_bytes=None,
+                           want_V=True, offset=0, return_method=False, support=None):
+        raise AssertionError("not called")
+    old_tree.sliding_self_terms = sliding_self_terms
+    monkeypatch.setattr(tdg, "_sliding", old_tree)
+    missing = tdg._missing_tdanalysis_api()
+    assert "tdanalysis.forms.sliding.is_turn_on_inside_window" in missing
+    assert "tdanalysis.forms.sliding.SLIDING_METHODS" in missing
+    assert any("compute_V=" in m for m in missing)
+    assert not any("offset=" in m for m in missing)
+
+
 if __name__ == "__main__":
     import sys
     sys.exit(pytest.main([__file__, "-s", "-q"]))
 
 
 def test_highpass_zero_phase():
-    """--td-highpass helper: flat in band, zero phase, suppresses the sub-band rise."""
+    """--td-highpass: the filter ILE applies to the data (tdanalysis' highpass_zero_phase,
+    re-exported by td_gs_precompute) is flat in band, zero phase, and suppresses the
+    sub-band rise."""
+    from tdanalysis.utils.filters import highpass_zero_phase
+    assert tdg.highpass_zero_phase is highpass_zero_phase
     fs, n = 4096.0, 4 * 4096
     t = np.arange(n) / fs
     rng = np.random.default_rng(4)

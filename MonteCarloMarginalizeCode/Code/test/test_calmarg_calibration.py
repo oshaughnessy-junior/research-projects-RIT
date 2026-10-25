@@ -205,7 +205,7 @@ def test_driver_prior_and_growth_propagate_conventions(tmp_path, export):
         table[:, 3] = table[:, 5] = table[:, 1]
         table[:, 4] = table[:, 6] = table[:, 2]
         np.savetxt(tmp_path / f"{ifo}.txt", table)
-    ns = dict(np=np, opts=SimpleNamespace(calibration_export_posterior=export,
+    ns = dict(np=np, use_td_gs=False, opts=SimpleNamespace(calibration_export_posterior=export,
               calibration_proposal_breadcrumb=None, calibration_envelope_directory=str(tmp_path),
               fmin_template=20, calibration_spline_count=4, calibration_n_realizations=2, seed=8),
               P=SimpleNamespace(deltaF=1, deltaT=1/256), fmax=120,
@@ -232,14 +232,16 @@ def test_driver_prior_and_growth_propagate_conventions(tmp_path, export):
     assert ns["extra_kwargs"]["calibration_conjugate"] is False
 
 
+@pytest.mark.parametrize("route", ["fd-diagonal", "td-gs"])
 @pytest.mark.parametrize("setting", [None, "H1:template,V1:data"])
-def test_pipeline_emitter_and_ile_parser_preserve_convention(setting):
+def test_pipeline_emitter_and_ile_parser_preserve_convention(setting, route):
     import ast
     import os
     import shlex
     from pathlib import Path
     from types import SimpleNamespace
     from optparse import OptionParser
+    from argparse import ArgumentParser
     ast, driver, tree = _driver_parts()
     path = driver.parent / "util_RIFT_pseudo_pipe.py"
     pipe_tree = ast.parse(path.read_text())
@@ -249,9 +251,20 @@ def test_pipeline_emitter_and_ile_parser_preserve_convention(setting):
         def __getattr__(self, name):
             return False
     ns = dict(os=os, line="", event_dict={"IFOs":["H1", "V1"]},
-              opts=Options(calmarg_envelope_directory="/unused/envelopes", use_osg_file_transfer=False,
+              parser=ArgumentParser(),
+              opts=Options(internal_ile_inner_product=route, calmarg_envelope_directory="/unused/envelopes", use_osg_file_transfer=False,
                            calmarg_correction_type=setting, calmarg_n_realizations=3, calmarg_spline_count=4))
+    if route == "td-gs" and setting is not None:
+        with pytest.raises(SystemExit) as exc:
+            exec(compile(ast.Module(body=[block], type_ignores=[]), str(path), "exec"), ns)
+        assert exc.value.code == 2
+        return
     exec(compile(ast.Module(body=[block], type_ignores=[]), str(path), "exec"), ns)
+    if route == "td-gs":
+        assert "--calibration-correction-type" not in ns["line"]
+        assert ns["_cal_envelope_type"] == "template"
+        assert "--calibration-envelope-directory" in ns["line"]
+        return
     declarations = [n for n in tree.body if isinstance(n, ast.Expr) and isinstance(n.value, ast.Call)
                     and isinstance(n.value.func, ast.Attribute) and n.value.func.attr == "add_option"
                     and any(isinstance(a, ast.Constant) and a.value in

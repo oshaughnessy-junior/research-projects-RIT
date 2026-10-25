@@ -32,7 +32,7 @@ the realization array C stored at label f equals conj(alpha(f)) in the standard
 convention. Multiplying the data by C, unconjugated, therefore gives
 `<h|C d> = <alpha*h|d>`. Multiplying by conj(C) reverses the phase.
 `test_cross_term_matches_time_domain_calibrated_template` checks this against a
-template calibrated in the time domain with numpy's FFT. ILE never conjugates;
+template calibrated in the time domain with numpy's FFT. FD ILE never conjugates;
 the old `--calibration-conjugate-phase` flag is accepted and ignored.
 `--calibration-global-norm` remains an explicit approximation that omits the
 amplitude-dependent norm.
@@ -43,3 +43,5 @@ Saved pilot Gaussians remain sampling proposals; their importance weights use
 the current envelopes' prior. An old proposal may be inefficient after changing
 conventions, but its stored prior cannot replace the live target prior.
 
+TDGS retains its separate raw-envelope/FIR conversion contract; see
+`docs/td_gs_route.md`. Its explicit TD response conjugation is preserved.
