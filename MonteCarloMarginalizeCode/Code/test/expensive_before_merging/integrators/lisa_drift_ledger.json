@@ -37,6 +37,10 @@
       "decision": "NA",
       "reason": "Calibration-envelope internals; see the --calibration-* reason."
     },
+    "FUNC:_calibration_envelope_types": {
+      "decision": "NA",
+      "reason": "Ground-detector calibration-envelope handoff between FD prior conversion and the TDGS template FIR. LISA exposes neither calibration envelopes nor TDGS; see the --calibration-* and TD-option reasons."
+    },
     "FUNC:_draw_more_calibration_draws": {
       "decision": "NA",
       "reason": "Calibration-envelope internals; see the --calibration-* reason."

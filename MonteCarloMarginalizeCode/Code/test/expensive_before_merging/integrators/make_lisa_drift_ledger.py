@@ -44,6 +44,10 @@ OUT = os.path.join(HERE, "lisa_drift_ledger.json")
 # First match wins.
 # ---------------------------------------------------------------------------------------
 RULES = [
+    (r"^FUNC:_calibration_envelope_types$", "NA",
+     "Ground-detector calibration-envelope handoff between FD prior conversion and "
+     "the TDGS template FIR. LISA exposes neither calibration envelopes nor TDGS; "
+     "see the --calibration-* and TD-option reasons."),
     (r"^FUNC:_series_deltaF$", "PHYSICS",
      "Frequency spacing of a loaded data series, used by the td-gs (finite-covariance "
      "time-domain) set-up. The LISA driver has no td-gs code path; see the TD option "
