@@ -218,6 +218,9 @@ FILES=(
   # -- hlmoft ChooseFDModes end taper is capped in duration: long buffers keep the merger,
   # buffers <= 100 s are bit-identical to the uncapped 1% rule.
   "$C/test/test_fd_end_taper_cap.py"
+  # -- approximant fallback sentinels in lalsimutils are distinct (issue #488): a shared code
+  # routes a model missing from LALSuite down another model's hlmoft branch.
+  "$C/test/test_lalsimutils_fallback_codes.py"
   # Fixed-phase Phenom mode conventions: generic spins first, aligned boundaries.
   "$C/test/test_phenom_lframe_conventions.py"
   # Native SEOB mode conditioning: linear shared-grid filtering, canonical
@@ -516,7 +519,8 @@ done
 # The td-gs series adds six solver="gs" tests to test_td_inner_product.py -> 1193.
 # Seven merge-handoff regressions are mandatory without tdanalysis -> 1200.
 # Two TD pipeline-emitter cases add mandatory coverage -> 1202.
-EXPECTED_TESTS=1202
+# test_lalsimutils_fallback_codes.py adds 2 tests and no skips -> 1204.
+EXPECTED_TESTS=1204
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -548,7 +552,8 @@ EXPECTED_TESTS=1202
 # PR #476: test_dslice_warm.py adds 11 passes; 1187/1167 (above).
 # Seven merge-handoff regressions run in every core environment.
 # Two TD pipeline-emitter cases run in every core environment.
-EXPECTED_PASSED=1176
+# test_lalsimutils_fallback_codes.py adds 2 passes -> 1178.
+EXPECTED_PASSED=1178
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 # The six solver="gs" tests in test_td_inner_product.py need tdanalysis >= 1.1, which this
 # job does not install, so they skip here; ci.yml's time-domain likelihood step runs them
