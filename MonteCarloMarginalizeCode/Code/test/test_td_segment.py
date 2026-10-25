@@ -10,11 +10,11 @@ Groups:
       lnL = 0.5 * A^2 * <t|t>_seg with <t|t>_seg = (2 deltaT) kappa[0] ||t_window||^2.
 
   (b) GAP EXCISION -- a controlled signal plus a loud disturbance placed INSIDE a gap.
-      Checks (i) the retain-mask gap implementation equals the brute-force dense
-      retained-sample precision submatrix K_seg[R][:,R] to ~1e-10 (the plan's Eqs. 11-12
-      "delete the kernel entries", precision-kernel version); (ii) the gapped likelihood on
+      Checks (i) the inpainting gap implementation equals the dense marginal
+      retained-sample precision K_RR - K_RG K_GG^+ K_GR to ~1e-10; (ii) the gapped likelihood on
       glitchy data equals the gapped likelihood on glitch-free data (the disturbance is
-      excised); (iii) WITHOUT the gap the glitch measurably contaminates the inner product.
+      excised); (iii) WITHOUT the gap the glitch measurably contaminates the inner product;
+      (iv) the gapped likelihood equals a dense (C_RR)^-1 reference on a PSD with a line.
 
   (c) FULL-SEGMENT REGRESSION -- the segment machinery reduces to the full-segment path when
       no segment is configured (segment_dot_td == dot_td), and the default factory stays
@@ -32,6 +32,7 @@ PYTHONPATH=<worktree>/MonteCarloMarginalizeCode/Code.  Runnable as
 """
 
 import numpy as np
+import scipy.linalg
 
 import lal
 import RIFT.lalsimutils as lsu
@@ -117,7 +118,7 @@ def test_ringdown_white_noise_analytic():
 # --------------------------------------------------------------------------- (b) gap excision
 
 def test_gap_excision_and_brute_force():
-    """Gap zeroes data+template rows AND deletes K_seg entries; matches brute-force dense."""
+    """Gap marginalizes the gap samples; matches the dense marginal retained operator."""
     T_seg = 1.0
     N_seg = int(round(T_seg * FS))
     seg_start = 800
@@ -144,7 +145,7 @@ def test_gap_excision_and_brute_force():
     Q_gap_glitchy = ipn * ctx.segment_dot_td(t_td, d_glitchy)
     U_gap = ipn * ctx.segment_dot_td(t_td, t_td)
 
-    # (i) brute-force retained-sample precision submatrix K_seg[R][:,R]
+    # (i) dense marginal retained-sample precision
     Kret, R = ctx.dense_retained_operator()
     t_seg = t_td[seg_start:seg_start + N_seg]
     U_bf = ipn * np.conj(t_seg[R]) @ (Kret @ t_seg[R])
@@ -170,6 +171,62 @@ def test_gap_excision_and_brute_force():
     assert rel_U < 1e-10 and rel_Q < 1e-10          # (i) mask == submatrix
     assert rel_excise < 1e-10                        # (ii) glitch excised
     assert contam > 1e-2                             # (iii) glitch would contaminate
+
+
+# --------------------------------------------------------------------------- (b') marginal gap
+
+def _line_psd(f):
+    """Colored PSD plus a narrow line at 60 Hz (long-range precision kernel)."""
+    f = np.atleast_1d(np.asarray(f, dtype=float))
+    fsafe = np.maximum(np.abs(f), 1.0)
+    out = 1e-46 * (1.0 + (20.0 / fsafe) ** 4 + (fsafe / 250.0) ** 2
+                   + 1e4 / (1.0 + ((fsafe - 60.0) / 0.3) ** 2))
+    return out if out.size > 1 else float(out[0])
+
+
+def test_gap_matches_marginal_likelihood():
+    """A gap must marginalize over the deleted samples: precision (C_RR)^-1, not (C^-1)_RR.
+
+    Reference: the segment-model covariance C = (K + eps I)^-1, inverted densely on the
+    retained samples.  The error of <h|d> is measured in units of its noise spread, with
+    noise drawn from the colored PSD.  The cropped kernel (C^-1)_RR misses by ~2 sigma here.
+    fMax = fNyq keeps the reference well posed: with a band wall below Nyquist, K_GG has
+    near-null modes and the marginal depends on how they are regularized.
+    """
+    fs, n = 512.0, 1024                       # small full-length (circulant) segment
+    fnyq, df = fs / 2.0, fs / n
+    gap = (0.80, 0.95)                        # seconds into the segment
+    ctx = ToeplitzInnerProductContext(
+        _line_psd, df, fnyq, fLow=20.0, fMax=fnyq, analyticPSD_Q=True,
+        solver="dense", gaps=[gap])
+    K = scipy.linalg.toeplitz(ctx.kappa[:n])
+    R = np.nonzero(ctx.retain_mask)[0]
+    eps = 1e-9 * np.abs(K).max()
+    C = np.linalg.inv(K + eps * np.eye(n))
+    K_marg = np.zeros((n, n))
+    K_marg[np.ix_(R, R)] = np.linalg.inv(C[np.ix_(R, R)])
+    K_crop = np.zeros((n, n))
+    K_crop[np.ix_(R, R)] = K[np.ix_(R, R)]
+
+    # noise covariance of the data: circulant with the PSD as its symbol
+    freqs = np.fft.fftfreq(n, 1.0 / fs)
+    Sym = _line_psd(freqs)
+
+    def noise_sd(a):
+        return np.sqrt(np.sum(np.abs(np.fft.fft(a)) ** 2 * Sym))
+
+    t = np.arange(n) / fs
+    h = np.exp(-0.5 * ((t - 0.85) / 0.15) ** 2) * np.cos(2 * np.pi * (40.0 * t + 30.0 * t ** 2))
+    Kh_code = np.where(ctx.retain_mask, ctx._apply_seg(ctx._segment_window(h)).real, 0.0)
+    sd = noise_sd(K_marg @ h)
+    err_code = noise_sd(Kh_code - K_marg @ h) / sd
+    err_crop = noise_sd(K_crop @ h - K_marg @ h) / sd
+    U_rel = abs(ctx.segment_dot_td(h, h).real - h @ K_marg @ h) / (h @ K_marg @ h)
+    print("[T5-b'] err(code)=%.3e sigma  err(cropped)=%.3e sigma  U_rel=%.3e"
+          % (err_code, err_crop, U_rel))
+    assert err_crop > 1.0             # the fixture discriminates the two kernels
+    assert err_code < 1e-2
+    assert U_rel < 1e-3
 
 
 # --------------------------------------------------------------------------- (c) regression
@@ -292,6 +349,7 @@ if __name__ == "__main__":
     tests = [
         ("(a) ringdown white-noise analytic", test_ringdown_white_noise_analytic),
         ("(b) gap excision + brute force", test_gap_excision_and_brute_force),
+        ("(b') gap == marginal likelihood", test_gap_matches_marginal_likelihood),
         ("(c) full-segment reduction", test_full_segment_reduces_to_full_path),
         ("(c) default factory == lsu", test_default_factory_byte_identical),
         ("template-frame hard cut", test_template_truncation_hard_cut),
