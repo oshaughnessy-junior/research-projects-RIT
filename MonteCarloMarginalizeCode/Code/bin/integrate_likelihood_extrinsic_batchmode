@@ -337,6 +337,7 @@ optp.add_option("-i", "--inv-spec-trunc-time", type=float, default=8., help="Tim
 optp.add_option("--internal-ile-inner-product", type=str, default="fd-diagonal", help="Inner product used in the Precompute step: 'fd-diagonal' (default, the classic frequency-domain-diagonal lsu.ComplexIP/ComplexOverlap, zero behavioral change) 'td-toeplitz' (time-domain Toeplitz precision kernel; TD_LIKELIHOOD.md task T3), or 'td-gs' (fully time-domain code path: unwindowed TD data, untapered TD template modes, Toeplitz covariance C=Toeplitz(ACF) on hard-cut analysis pieces solved with tdanalysis' ToeplitzSolver (tdanalysis >= 1.1: Cholesky for short pieces, Gohberg-Semencul for long ones), Q(t),U(t),V(t) by direct quadratic forms, no FFT of data or templates; see --td-mref/--td-piece/--td-acf-file. Requires --vectorized; calibration marginalization runs as exact FIR filters on the template (--td-calibration-correction-type); no glitch marginalization yet). EXPERIMENTAL.")
 optp.add_option("--td-mref", type=float, default=None, help="td-gs: reference total mass [Msun, detector frame] that sets the time unit of --td-piece (1 M = M_ref * G Msun / c^3).")
 optp.add_option("--td-piece", action="append", default=None, help="td-gs: analysis piece 'START,END' in units of M_ref (--td-mref) relative to the event time (geocenter, or detector-frame via --td-ifo-time-offset). Repeatable; disjoint pieces are independent blocks (block-diagonal covariance). None = the full data segment (IMR). A piece may not extend before the template's first non-zero sample for any storage-grid shift (an abrupt turn-on inside a piece biases real-data fits): refused.")
+optp.add_option("--td-piece-ifo", action="append", default=None, help="td-gs: 'IFO:START,END' analysis piece for ONE detector, in units of M_ref relative to that detector's reference time (event time + --td-ifo-time-offset). Repeatable. If any --td-piece-ifo names a detector, its pieces replace the --td-piece list for that detector only (e.g. a gap in one interferometer).")
 optp.add_option("--td-ifo-time-offset", action="append", default=None, help="td-gs: 'IFO:SECONDS' added to the event time for that detector before placing the --td-piece intervals (e.g. the detector-frame peak time minus the geocenter event time). Repeatable; default 0.")
 optp.add_option("--td-acf-file", action="append", default=None, help="td-gs: 'IFO:PATH.npy' autocorrelation for that detector in the tdanalysis format (float64 (2,N) [tau, R(tau)], tau[k]=k/fs). Repeatable. The lag spacing must equal the analysis deltaT: run ILE at the ACF's sample rate (the real-event files are 4096 Hz -> --srate 4096; ILE defaults to 16384 and would refuse them). The ACF must cover the longest piece. Without a file the ACF is built from the PSD with tdanalysis PSDToAutocorr (band [fmin, fmax] walled, see --td-acf-cond).")
 optp.add_option("--td-acf-cond", type=float, default=1e8, help="td-gs: target condition number of the Toeplitz covariance when the ACF is built from the PSD (tdanalysis PSDToAutocorr target_condition_number; the out-of-band wall is cond x the in-band floor, and in-band bins below S_max/cond are floored -- the floored count is printed and warned about). Default 1e8, as the tdanalysis ACF files.")
@@ -650,7 +651,8 @@ _td_toeplitz_gap = (opts.internal_ile_inner_product == 'td-toeplitz' and bool(op
 if _td_toeplitz_gap and opts.td_highpass is None:
     optp.error("--td-gap requires --td-highpass FREQ (e.g. 10): the gap marginal models noise "
                "outside [fmin, fmax] as a wall, and raw strain below fmin exceeds it")
-_gs_options = (opts.td_mref is not None or opts.td_piece or opts.td_ifo_time_offset or
+_gs_options = (opts.td_mref is not None or opts.td_piece or opts.td_piece_ifo or
+               opts.td_ifo_time_offset or
                opts.td_acf_file or (opts.td_highpass is not None and not opts.td_gap) or
                opts.td_u_svd_tol is not None or
                opts.td_whiteness_check or opts.td_acf_cond != 1e8 or opts.td_dense_max_n != 4096 or
@@ -2014,6 +2016,15 @@ if use_td_gs:
         td_acf_paths[_ifo] = _path
     try:
         td_pieces_s = parse_td_pieces(opts.td_piece, opts.td_mref)
+        td_pieces_ifo_s = {}
+        _by_ifo = {}
+        for _spec in (opts.td_piece_ifo or []):
+            _ifo, _rng = _spec.split(":", 1)
+            if _ifo not in data_dict:
+                raise ValueError("unknown --td-piece-ifo detector: " + _ifo)
+            _by_ifo.setdefault(_ifo, []).append(_rng)
+        for _ifo, _rngs in _by_ifo.items():
+            td_pieces_ifo_s[_ifo] = parse_td_pieces(_rngs, opts.td_mref)
     except ValueError as _e:
         print("FAIL: %s" % _e)
         sys.exit(1)
@@ -2028,7 +2039,7 @@ if use_td_gs:
                 print("FAIL: %s" % _e)
                 sys.exit(1)
         _t_ref = float(event_time) + td_ifo_offset.get(inst, 0.)
-        _pieces = [(_t_ref + a, _t_ref + b) for (a, b) in td_pieces_s] or None
+        _pieces = [(_t_ref + a, _t_ref + b) for (a, b) in td_pieces_ifo_s.get(inst, td_pieces_s)] or None
         try:
             ile_td_gs_contexts[inst] = TDGSDetectorContext(
                 data_dict[inst], psd_dict[inst], _flow, fmax, pieces=_pieces, acf=_acf,
@@ -2046,7 +2057,7 @@ if use_td_gs:
           "ACF files=%s, acf-cond=%g, dense-max-n=%d, u-stride=%d, u-method=%s, subsample=1/%d). EXPERIMENTAL; the TD "
           "data were not windowed or high-passed, templates are untapered, inverse-spectrum "
           "truncation is ignored."
-          % (opts.td_mref, opts.td_piece, td_ifo_offset, list(td_acf_paths.keys()),
+          % (opts.td_mref, (opts.td_piece or []) + (opts.td_piece_ifo or []), td_ifo_offset, list(td_acf_paths.keys()),
              opts.td_acf_cond, opts.td_dense_max_n, opts.td_u_stride, opts.td_u_method, opts.td_subsample))
     if opts.calibration_envelope_directory:
         print("  [td-gs] calibration marginalization: realizations applied as exact FIR filters on the template "
