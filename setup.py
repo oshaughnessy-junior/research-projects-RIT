@@ -67,9 +67,12 @@ setuptools.setup(
    # base install so the production pipeline is unaffected; install with
    #   pip install RIFT[jax-interp]
    extras_require={
+        # EMRI direct likelihood (RIFT.LISA.emri_direct_cli). fastemriwaveforms 2.2.0
+        # publishes wheels for Python 3.12 only, so these extras fail to resolve on
+        # 3.10/3.11. lisaanalysistools 1.2.8 itself requires h5py<3.15.
         'emri-few': ['fastemriwaveforms==2.2.0'],
         'emri-response': ['fastemriwaveforms==2.2.0', 'fastlisaresponse==1.1.17',
-                          'lisaanalysistools==1.2.8', 'h5py<3.15'],
+                          'lisaanalysistools==1.2.8'],
         # Public optional PCG backend; requires Python >=3.11.
         'td-pcg': ['tdanalysis>=1.0.0,<2'],
         # Finite-covariance time-domain likelihood (--internal-ile-inner-product td-gs).
