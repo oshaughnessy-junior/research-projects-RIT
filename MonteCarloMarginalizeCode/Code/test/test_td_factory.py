@@ -484,21 +484,24 @@ def test_nonstationary_scalar_products_are_invariant_to_template_epoch():
                 np.testing.assert_allclose(got, ref, rtol=1e-10, atol=1e-12)
 
 
-def test_gapped_overlap_masks_both_precision_rows_and_columns():
+def test_gapped_overlap_marginalizes_gap():
     from RIFT.likelihood.td_inner_product import ToeplitzInnerProductContext, ToeplitzComplexOverlap
     rng = np.random.default_rng(1291)
     n, fs = 64, 64.
     ctx = ToeplitzInnerProductContext(lambda f: 1.+(f/10.)**2, 1., 32., 1.,
           fMax=31., analyticPSD_Q=True, gap_sample_ranges=[(25, 37)])
-    # A full-length gap uses the same precision apply with row/column masks,
-    # not another dense matrix and an O(N^3) eigensolve.
+    # A full-length gap uses the full precision apply, not another dense N x N
+    # matrix and an O(N^3) eigensolve.
     assert ctx._Kseg is None
-    # Exercise the FFT apply used for long streams, against an independent
-    # explicitly formed retained precision matrix at this tractable test size.
+    # Exercise the FFT apply used for long streams, against an explicitly formed
+    # marginal retained precision K_RR - K_RG K_GG^+ K_GR at this tractable size.
     ctx._use_dense = False
-    dense = ctx.kappa[np.abs(np.subtract.outer(np.arange(n), np.arange(n)))]
-    dense = (ctx.ip_normalization * dense * ctx.retain_mask[:, None]
-             * ctx.retain_mask[None, :])
+    K = ctx.kappa[np.abs(np.subtract.outer(np.arange(n), np.arange(n)))]
+    R, G = ctx.retain_mask, ~ctx.retain_mask
+    dense = np.zeros((n, n))
+    dense[np.ix_(R, R)] = K[np.ix_(R, R)] - K[np.ix_(R, G)] @ np.linalg.pinv(
+        K[np.ix_(G, G)], rcond=1e-12, hermitian=True) @ K[np.ix_(G, R)]
+    dense *= ctx.ip_normalization
     fd = lal.CreateCOMPLEX16FrequencySeries("x", lal.LIGOTimeGPS(0.),
           0., 1., lsu.lsu_HertzUnit, n)
     h, d = [rng.normal(size=n)+1j*rng.normal(size=n) for _ in range(2)]
