@@ -1916,8 +1916,14 @@ if opts.internal_ile_srate_time_resampling:
 # additionally requires GPU and falls back to the loop method otherwise.
 if opts.calmarg_envelope_directory:
     from RIFT.calmarg.calibration import correction_types_argument
-    cal_types_arg = correction_types_argument(opts.calmarg_correction_type, event_dict["IFOs"])
-    line += " --calibration-correction-type {} ".format(cal_types_arg)
+    _cal_td_gs = opts.internal_ile_inner_product == "td-gs"
+    if _cal_td_gs and opts.calmarg_correction_type is not None:
+        parser.error("td-gs uses --internal-ile-td-calibration-correction-type; "
+                     "--calmarg-correction-type is for the frequency-domain routes")
+    _cal_envelope_type = "template" if _cal_td_gs else opts.calmarg_correction_type
+    cal_types_arg = correction_types_argument(_cal_envelope_type, event_dict["IFOs"])
+    if not _cal_td_gs:
+        line += " --calibration-correction-type {} ".format(cal_types_arg)
     cal_dir = os.path.abspath(opts.calmarg_envelope_directory)
     cal_dir_arg = cal_dir
     if opts.use_osg_file_transfer:
@@ -1959,7 +1965,7 @@ if opts.calmarg_envelope_directory:
                 import RIFT.calmarg.generate_realizations as _genr_ph, RIFT.calmarg.breadcrumbs as _bcr_ph
                 _cal_ph = _genr_ph.prior_cal_breadcrumb_dict(cal_dir, list(event_dict["IFOs"]),
                               fmin_template, srate/2. - 1., opts.calmarg_spline_count,
-                              correction_types=opts.calmarg_correction_type)
+                              correction_types=_cal_envelope_type)
                 _bcr_ph.save(_cal_ph_path, cal=_cal_ph, meta=dict(placeholder=True, iteration=-1))
             except Exception as _e_calph:
                 print("  WARNING: could not build prior cal placeholder ({}); writing 0-byte placeholder (needs the ILE empty-breadcrumb guard).".format(_e_calph))

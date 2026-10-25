@@ -232,14 +232,16 @@ def test_driver_prior_and_growth_propagate_conventions(tmp_path, export):
     assert ns["extra_kwargs"]["calibration_conjugate"] is False
 
 
+@pytest.mark.parametrize("route", ["fd-diagonal", "td-gs"])
 @pytest.mark.parametrize("setting", [None, "H1:template,V1:data"])
-def test_pipeline_emitter_and_ile_parser_preserve_convention(setting):
+def test_pipeline_emitter_and_ile_parser_preserve_convention(setting, route):
     import ast
     import os
     import shlex
     from pathlib import Path
     from types import SimpleNamespace
     from optparse import OptionParser
+    from argparse import ArgumentParser
     ast, driver, tree = _driver_parts()
     path = driver.parent / "util_RIFT_pseudo_pipe.py"
     pipe_tree = ast.parse(path.read_text())
@@ -249,9 +251,20 @@ def test_pipeline_emitter_and_ile_parser_preserve_convention(setting):
         def __getattr__(self, name):
             return False
     ns = dict(os=os, line="", event_dict={"IFOs":["H1", "V1"]},
-              opts=Options(calmarg_envelope_directory="/unused/envelopes", use_osg_file_transfer=False,
+              parser=ArgumentParser(),
+              opts=Options(internal_ile_inner_product=route, calmarg_envelope_directory="/unused/envelopes", use_osg_file_transfer=False,
                            calmarg_correction_type=setting, calmarg_n_realizations=3, calmarg_spline_count=4))
+    if route == "td-gs" and setting is not None:
+        with pytest.raises(SystemExit) as exc:
+            exec(compile(ast.Module(body=[block], type_ignores=[]), str(path), "exec"), ns)
+        assert exc.value.code == 2
+        return
     exec(compile(ast.Module(body=[block], type_ignores=[]), str(path), "exec"), ns)
+    if route == "td-gs":
+        assert "--calibration-correction-type" not in ns["line"]
+        assert ns["_cal_envelope_type"] == "template"
+        assert "--calibration-envelope-directory" in ns["line"]
+        return
     declarations = [n for n in tree.body if isinstance(n, ast.Expr) and isinstance(n.value, ast.Call)
                     and isinstance(n.value.func, ast.Attribute) and n.value.func.attr == "add_option"
                     and any(isinstance(a, ast.Constant) and a.value in
