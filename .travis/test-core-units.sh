@@ -141,6 +141,8 @@ FILES=(
   "$C/test/test_dgrid_retained_set.py"
   "$C/test/test_distance_tail.py"
   "$C/test/test_dslice_device_native.py"
+  "$C/test/test_dslice_walkout.py"
+  "$C/test/test_dslice_warm.py"
   "$C/test/test_dslice_bounds.py"
   # -- hyperpipe (paper4 area; the hydra leg is rostered OPTDEP, not here)
   "$C/test/hyperpipe/tests/test_config.py"
@@ -509,8 +511,11 @@ done
 # PR #448 core census: auxiliary transfers 18 + ladder 7 + composite 1 + seed CLI 9
 # add 35 cases to 1126. The six multiapprox compatibility cases run in test-run,
 # not this manifest. CI's 105 per-file counts sum 1161; JUnit 1164 includes 3 subtests.
-# The td-gs series adds six solver="gs" tests to test_td_inner_product.py -> 1167.
-EXPECTED_TESTS=1167
+# PR #446: test_dslice_walkout.py adds 15 tests and no skips -> 1176/1156.
+# PR #476: test_dslice_warm.py adds 11 tests and no skips -> 1187/1167.
+# The td-gs series adds six solver="gs" tests to test_td_inner_product.py -> 1193.
+# Seven merge-handoff regressions are mandatory without tdanalysis -> 1200.
+EXPECTED_TESTS=1200
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -538,7 +543,10 @@ EXPECTED_TESTS=1167
 # TD adds 89 required passes and the startup refusal adds one -> 1105.
 # CI: 1144 JUnit passes minus 3 extra subtests = 1141 ordinary passes; 20 skipped
 # outcomes include one xfail. Preserve the full measured plugin-free pass floor.
-EXPECTED_PASSED=1141
+# PR #446: test_dslice_walkout.py adds 15 passes; 1176/1156 (above).
+# PR #476: test_dslice_warm.py adds 11 passes; 1187/1167 (above).
+# Seven merge-handoff regressions run in every core environment.
+EXPECTED_PASSED=1174
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 # The six solver="gs" tests in test_td_inner_product.py need tdanalysis >= 1.1, which this
 # job does not install, so they skip here; ci.yml's time-domain likelihood step runs them

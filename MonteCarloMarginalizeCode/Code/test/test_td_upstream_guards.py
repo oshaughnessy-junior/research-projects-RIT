@@ -266,3 +266,48 @@ def test_distmarg_wrapper_td_gs_global_norm_calibration():
                                   [[0.5, 0., 0.5]])
     with pytest.raises(ValueError, match="negative template norm"):
         f(np.array([[2., 0., 1.]]), np.array([[4., 0., -1e-3]]))
+
+
+@pytest.mark.parametrize("route,override,expected", [
+    ("td-gs", None, {"H1": "template", "V1": "template"}),
+    ("fd-diagonal", None, {"H1": "data", "V1": "template"}),
+    ("fd-diagonal", "template", {"H1": "template", "V1": "template"}),
+])
+def test_calibration_prior_conversion_happens_once(route, override, expected):
+    """Execute the ILE resolver with the shared loader: TD FIR gets raw priors."""
+    import ast
+    from types import SimpleNamespace
+    from RIFT.calmarg.calibration import correction_types_for_ifos
+    code = Path(__file__).resolve().parents[1]
+    tree = ast.parse((code / "bin/integrate_likelihood_extrinsic_batchmode").read_text())
+    helper = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
+                  and n.name == "_calibration_envelope_types")
+    ns = dict(correction_types_for_ifos=correction_types_for_ifos)
+    exec(compile(ast.Module(body=[helper], type_ignores=[]), "calibration_route", "exec"), ns)
+    opts = SimpleNamespace(internal_ile_inner_product=route, calibration_correction_type=override)
+    assert ns["_calibration_envelope_types"](opts, ["H1", "V1"]) == expected
+
+
+def test_td_gs_refuses_fd_calibration_convention_flag(tmp_path):
+    proc = _run_batchmode(["--internal-ile-inner-product", "td-gs",
+                          "--calibration-correction-type", "data"], tmp_path)
+    assert proc.returncode != 0
+    assert "td-gs uses --td-calibration-correction-type" in proc.stdout, proc.stdout[-3000:]
+
+
+@pytest.mark.parametrize("td_gs,conjugate,expected", [
+    (True, True, True), (True, False, False), (False, True, False),
+])
+def test_calibration_phase_transport_respects_route(td_gs, conjugate, expected):
+    import ast
+    from types import SimpleNamespace
+    code = Path(__file__).resolve().parents[1]
+    tree = ast.parse((code / "bin/integrate_likelihood_extrinsic_batchmode").read_text())
+    assignments = [n for n in ast.walk(tree) if isinstance(n, ast.Assign)
+                   and any(isinstance(t, ast.Subscript) and isinstance(t.value, ast.Name)
+                           and t.value.id == "extra_kwargs" and isinstance(t.slice, ast.Constant)
+                           and t.slice.value == "calibration_conjugate" for t in n.targets)]
+    assert len(assignments) == 1
+    ns = dict(use_td_gs=td_gs, opts=SimpleNamespace(calibration_conjugate_phase=conjugate), extra_kwargs={})
+    exec(compile(ast.Module(body=assignments, type_ignores=[]), "calibration_phase", "exec"), ns)
+    assert ns["extra_kwargs"]["calibration_conjugate"] is expected

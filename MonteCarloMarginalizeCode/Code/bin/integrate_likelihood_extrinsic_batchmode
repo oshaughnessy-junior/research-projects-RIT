@@ -371,7 +371,8 @@ optp.add_option("--calibration-envelope-directory",default=None, help="Name of d
 optp.add_option("--calibration-n-realizations", default=100, type=int, help="Number of realizations to use for calmarg, recommend 100")
 optp.add_option("--calibration-spline-count", default=10,type=int)
 optp.add_option("--calibration-fused-kernel", action="store_true", default=False, help="Opt-in: use the fused GPU kernel (Option C) for in-loop calibration marginalization. GPU only, no phase marginalization; with distance marginalization it uses the fused distmarg kernel. Falls back to the loop method (Option B) otherwise.")
-optp.add_option("--calibration-conjugate-phase", action="store_true", default=False, help="Opt-in calmarg phase-convention fix: apply conj(C) instead of C to the data when building the per-realization rholms, so the recovered calibration PHASE tracks the correct sign (matches the template-side <d|C h> convention).  Needed only for a phase-UNmarginalized or large-phase treatment; under phase marginalization with small phase it changes lnL by <0.05 nats.  Independent of the per-realization self-term amplitude fix (|C|^2 is conjugation-invariant), which is on by default when calibration marginalization is active.")
+optp.add_option("--calibration-conjugate-phase", action="store_true", default=False, help="FD routes: deprecated and ignored, since conjugation reverses the calibration phase in RIFT's FFT packing. TDGS: retain the explicit conjugation of the template response.")
+optp.add_option("--calibration-correction-type", default=None, help="Envelope convention: data, template, or per-detector H1:data,L1:data,V1:template. Defaults match bilby-pipe: V1 template; H1/L1/K1 data.")
 optp.add_option("--calibration-global-norm", action="store_true", default=False, help="Opt-in cheaper calmarg route: use the calibration-INDEPENDENT template norm <h|h> for every realization instead of the complete per-realization self-term <C_c h|C_c h>.  Skips the amplitude-basis precompute (an SVD of {|C_c|^2} plus rank-M(M+1)/2 weighted template blocks), which can dominate the per-intrinsic-point cost for long low-mass templates and large --calibration-n-realizations.  The dropped term is the amplitude self-term, whose evidence bias scales as ~0.5 rho^4 sigma_A^2 (amplitude-only, phase-independent): negligible at low/moderate SNR unless the amplitude envelope is wide, but growing as rho^4, so NOT for loud sources or wide amplitude envelopes.")
 optp.add_option("--calibration-proposal-breadcrumb",default=None, help="Opt-in (Option C / adaptive pilot): path to a breadcrumb .npz (RIFT.calmarg.breadcrumbs) carrying a LEARNED Gaussian proposal over cal spline nodes. When set, the cal realizations are drawn from that proposal instead of the broad prior, and the marginalization carries Phase-0 importance weights log(prior/proposal) so it stays unbiased. Requires --calibration-envelope-directory (the prior).")
 optp.add_option("--calibration-dump-responsibilities",default=None, help="Opt-in (Option C / adaptive pilot): path to write per-cal-realization log-responsibilities (length n_cal), accumulated over the evaluated grid, plus the cal node draws. This is the pilot's output, fitted into a proposal by util_CalPilotFit.py. No effect on the returned likelihood.")
@@ -560,6 +561,13 @@ intrinsic_params.add_option("--distance-slice-wing-neff",type=int,default=30,hel
 intrinsic_params.add_option("--distance-slice-chunk",type=int,default=None,help="AV block size for each fresh per-slice integration. DEFAULT: inherit --n-chunk, i.e. run the slice path at the same block size as the main extrinsic loop (10000) instead of a private number; this replaces a hardcoded 2000. An inherited value below 10000 is raised to 10000 (AV's live volume only contracts and each cycle's threshold comes from nsel=min(1000,0.1*n_chunk) samples, so a smaller block makes every threshold a permanent support cut decided by too few samples; 10000 is where nsel saturates) -- this matters because the input-skymap path sets --n-chunk 500. Setting this flag explicitly overrides both, unclamped. Measured on a real event, 2000 -> 10000 takes rms(dlnL) 3.58 -> 0.35 and sigma-understatement 38.8x -> 4.0x for +9% cost, and removes the 'cap-burner' slices (3.1% of slices, 40.9% of all evaluations) that exhaust n-max without reaching the n_eff target. Larger is not uniformly better: 40000 was worse than 10000-15000 on hard targets. Must be >=1. MEMORY: fresh slices preserve the adaptive-volume block's native array backend. On GPU runs the angular and pinned-distance arrays stay on device through the likelihood call; only the returned likelihood vector and summary bookkeeping move to host. On CPU runs block arrays remain in system memory. Budget and measure both host and device memory for the selected backend rather than assuming either is immune. Interacts with --distance-slice-wing-nmax, which is a block-granular budget, not a hard cap.")
 intrinsic_params.add_option("--distance-slice-skip-threshold",type=float,default=1.0,help="Absolute lnL scale: if the PEAK lnL across core slices is below this many nats, treat the event as effectively undetected and skip wing integrations. (lnL is a likelihood ratio vs noise, so this is an absolute detectability cut, not a relative-spread test.)")
 intrinsic_params.add_option("--distance-slice-wing-delta-lnL",type=float,default=7.0,help="Target lnL drop below peak used to place wing slice centers: wings span from the core edge out to where the parabolic lnL(1/d) model falls this many nats below peak (default 7 ~ prior weight <1e-3 outside). Falls back to log-uniform full-range placement if the parabolic fit is degenerate.")
+intrinsic_params.add_option("--distance-slice-walkout-delta-lnL",type=float,default=0.0,help="(all-fresh only) After the K quantile-placed fresh slices, walk each edge outward with extra fresh slices (steps doubling in ln d, from twice the edge spacing) until lnL + ln pi(d) at the edge is this many nats below its peak, the distance range ends, or --distance-slice-walkout-max-steps slices were added on that side. 0 (default) disables. Quantile placement from a main loop at n_eff ~ 10 ends where the conditional is typically only 1-3 nats below peak; this measures the tails instead of leaving them to extrapolation. Adds a variable number of rows per point. COST: up to 2 x --distance-slice-walkout-max-steps extra sequential fresh integrations per point (16 at the default), each budgeted like a slice (--distance-slice-wing-nmax); measured +14-29% of the quantile slices' samples on O4 events at delta 5.")
+intrinsic_params.add_option("--distance-slice-walkout-max-steps",type=int,default=8,help="Cap on walk-out slices per side (see --distance-slice-walkout-delta-lnL).")
+intrinsic_params.add_option("--distance-slice-warm-start",action="store_true",default=False,help="(all-fresh only) Replace each slice's fresh AV integration with adaptive importance sampling over all extrinsic axes, warm-started: the first slice's proposal is a kernel density fitted to the main loop's samples (tempered by --distance-slice-warm-seed-temper), each later slice's to the nearest finished slice, refitted after every block; a uniform component over the prior box keeps the estimate unbiased if the seed is off. Assumes the main loop found every mode of each slice's conditional. Walk-out slices are warm-started too. Default off.")
+intrinsic_params.add_option("--distance-slice-warm-block",type=int,default=None,help="Block size (likelihood evaluations per proposal refit) for --distance-slice-warm-start.  Default: the slice chunk (--distance-slice-chunk, else --n-chunk; 10000 on a default run).  Small blocks are cheaper on easy events but adapt badly on hard ones.")
+intrinsic_params.add_option("--distance-slice-warm-khat-max",type=float,default=float("inf"),help="--distance-slice-warm-start: a warm slice whose estimate-phase Pareto k-hat exceeds this is redone by the cold AV (and the proposal does not freeze while a block's k-hat exceeds it).  Default: no k-hat gate; k-hat is logged.  On O4 slices at n_eff 30 good slices show k-hat 1-2 (60 slices paired against the cold AV agreed within error), so the textbook 0.7 rejects every slice.")
+intrinsic_params.add_option("--distance-slice-warm-local-k",type=int,default=30,help="--distance-slice-warm-start: each proposal kernel takes the covariance of its k nearest neighbours (shrunk toward the shared one).  At fixed distance the O4 conditionals split into separated phase/polarization copies, which one shared covariance spans: on S240514x, 30 gave 8x fewer slice samples than the cold AV where a shared covariance gave ~1x.  0: one shared covariance.")
+intrinsic_params.add_option("--distance-slice-warm-seed-temper",type=float,default=0.3,help="Exponent applied to the main loop's posterior weights before they seed --distance-slice-warm-start; < 1 broadens the seed so it covers the conditionals at the edge slices.")
 optp.add_option_group(intrinsic_params)
 
 
@@ -594,6 +602,10 @@ def _normalize_interpolate_time_argv(argv):
     return out
 
 opts, args = optp.parse_args(_normalize_interpolate_time_argv(sys.argv[1:]))
+if (opts.distance_slice_warm_block is not None and opts.distance_slice_warm_block < 1) or not (0 < opts.distance_slice_warm_seed_temper <= 1):
+    optp.error("--distance-slice-warm-block must be >= 1 and --distance-slice-warm-seed-temper in (0, 1]")
+if opts.distance_slice_walkout_delta_lnL < 0 or opts.distance_slice_walkout_max_steps < 0:
+    optp.error("--distance-slice-walkout-delta-lnL and --distance-slice-walkout-max-steps must be >= 0")
 if opts.early_time_multirate and opts.internal_ile_inner_product != "fd-diagonal":
     optp.error("--early-time-multirate requires --internal-ile-inner-product fd-diagonal; "
                "TD likelihood operators are not supported by multirate precomputation")
@@ -627,6 +639,9 @@ _gs_options = (opts.td_mref is not None or opts.td_piece or opts.td_ifo_time_off
 if _gs_options and opts.internal_ile_inner_product != 'td-gs':
     optp.error("TD-GS settings require --internal-ile-inner-product td-gs")
 if opts.internal_ile_inner_product == 'td-gs':
+    if opts.calibration_correction_type is not None:
+        optp.error("td-gs uses --td-calibration-correction-type; "
+                   "--calibration-correction-type is for the frequency-domain routes")
     # The time-indexed U(t), V(t) are consumed only by the time-marginalized NoLoop likelihood.
     if not opts.time_marginalization:
         optp.error("td-gs requires --time-marginalization")
@@ -2028,6 +2043,16 @@ if use_td_gs:
 # Load in calibration realizations, if desired
 #
 calibration_marginalization=False
+from RIFT.calmarg.calibration import correction_types_for_ifos
+def _calibration_envelope_types(opts, ifos):
+    # TDGS consumes raw envelope draws and applies rift/bilby conversion in its
+    # template FIR. The FD generator instead converts priors before drawing.
+    # Suppress that earlier conversion for TDGS so the response is mapped once.
+    requested = "template" if opts.internal_ile_inner_product == "td-gs" else opts.calibration_correction_type
+    return correction_types_for_ifos(requested, ifos)
+
+calibration_correction_types = _calibration_envelope_types(opts, psd_dict)
+calibration_current_prior = None
 calibration_realization_dict = {}
 calibration_log_weights = None   # Phase-0 importance weights log(prior/proposal); None => uniform (prior draws)
 _calpilot = None                 # pilot bookkeeping (node draws + prior) when dumping responsibilities
@@ -2063,13 +2088,14 @@ def _cal_setup_prior_with_nodes(psd_dict):
         _ret = _genr.draw_prior_realizations_with_nodes(
             opts.calibration_envelope_directory, list(psd_dict.keys()), 1./P.deltaF, P.deltaT,
             opts.fmin_template, fmax, opts.calibration_spline_count, opts.calibration_n_realizations,
-            fmin_ifo=cal_fmin_ifo, rng=np.random.default_rng(getattr(opts,'seed',None)))
+            fmin_ifo=cal_fmin_ifo, correction_types=calibration_correction_types, rng=np.random.default_rng(getattr(opts,'seed',None)))
         calibration_realization_dict = _ret['realizations']
         calibration_nodes = _ret['nodes']; calibration_node_dets = list(_ret['dets']); calibration_n_nodes_amp = int(_ret['n_nodes_amp'])
     else:
         for ifo in psd_dict:
             fname = opts.calibration_envelope_directory + "/" + ifo + ".txt"
-            calibration_realization_dict[ifo] = _genr.create_realizations(fname, 1./P.deltaF, P.deltaT, cal_fmin_ifo[ifo], fmax, opts.calibration_spline_count, opts.calibration_n_realizations)
+            calibration_realization_dict[ifo] = _genr.create_realizations(fname, 1./P.deltaF, P.deltaT, cal_fmin_ifo[ifo], fmax, opts.calibration_spline_count, opts.calibration_n_realizations,
+                correction_type=calibration_correction_types[ifo])
 if opts.calibration_envelope_directory:
 #  t_ref_wind = opts.calibration_n_realizations * t_ref_wind  # changes length of buffer, should produce longer window. DOES NOT WORK PROPERLY
   import RIFT.calmarg.generate_realizations
@@ -2078,6 +2104,16 @@ if opts.calibration_envelope_directory:
   cal_fmin_ifo = {}
   for ifo in psd_dict:
      cal_fmin_ifo[ifo] = flow_ifo_dict[ifo] if opts.fmin_ifo else opts.fmin_template
+  from RIFT.calmarg.generate_realizations import prior_cal_breadcrumb_dict
+  calibration_current_prior = prior_cal_breadcrumb_dict(
+      opts.calibration_envelope_directory, list(psd_dict), opts.fmin_template, fmax,
+      opts.calibration_spline_count, fmin_ifo=cal_fmin_ifo,
+      correction_types=calibration_correction_types)
+  if opts.calibration_conjugate_phase and not use_td_gs:
+      print(" WARNING: --calibration-conjugate-phase is deprecated and ignored; realizations are applied unconjugated.")
+  print(" Calibration envelope conventions:", calibration_correction_types,
+        "; internal nodes and saved posterior columns use the template-response convention")
+
   # Graceful fallback: a seeded run is given a per-iteration breadcrumb path, but the
   # FIRST iteration (and any iteration before a pilot has run) has no breadcrumb yet.  If
   # the path is missing OR EMPTY, fall back to the broad prior -- so the SAME fixed ILE args
@@ -2107,8 +2143,10 @@ if opts.calibration_envelope_directory:
            RIFT.calmarg.generate_realizations.seed_realizations_from_breadcrumb(
               _bc, 1./P.deltaF, P.deltaT, opts.fmin_template, fmax,
               opts.calibration_spline_count, opts.calibration_n_realizations,
-              fmin_ifo=cal_fmin_ifo, rng=np.random.default_rng(getattr(opts,'seed',None)))
-        _cal = _bc["cal"]
+              fmin_ifo=cal_fmin_ifo, prior=calibration_current_prior, rng=np.random.default_rng(getattr(opts,'seed',None)))
+        _cal = dict(_bc["cal"], prior_mean=calibration_current_prior["prior_mean"],
+                    prior_sigma=calibration_current_prior["prior_sigma"],
+                    node_log_f=calibration_current_prior["node_log_f"])
         _calpilot = dict(nodes=_pilot_nodes, prior_mean=_cal["prior_mean"], prior_sigma=_cal["prior_sigma"],
                          node_log_f=_cal["node_log_f"], n_nodes_amp=int(_cal["n_nodes_amp"]),
                          dets=list(_cal["dets"]), log_w=np.asarray(calibration_log_weights))
@@ -2118,7 +2156,7 @@ if opts.calibration_envelope_directory:
         _calpilot = RIFT.calmarg.generate_realizations.draw_prior_realizations_with_nodes(
            opts.calibration_envelope_directory, list(psd_dict.keys()), 1./P.deltaF, P.deltaT,
            opts.fmin_template, fmax, opts.calibration_spline_count, opts.calibration_n_realizations,
-           fmin_ifo=cal_fmin_ifo, rng=np.random.default_rng(getattr(opts,'seed',None)))
+           fmin_ifo=cal_fmin_ifo, correction_types=calibration_correction_types, rng=np.random.default_rng(getattr(opts,'seed',None)))
         calibration_realization_dict = _calpilot['realizations']
         _calpilot['log_w'] = np.zeros(opts.calibration_n_realizations)   # prior draws -> uniform
         print(" Calibration PILOT mode (cold): prior cal draws; responsibilities -> {}".format(
@@ -2134,7 +2172,7 @@ if opts.calibration_envelope_directory:
           RIFT.calmarg.generate_realizations.seed_realizations_from_breadcrumb(
              _bc, 1./P.deltaF, P.deltaT, opts.fmin_template, fmax,
              opts.calibration_spline_count, opts.calibration_n_realizations,
-             fmin_ifo=cal_fmin_ifo, rng=_rng)
+             fmin_ifo=cal_fmin_ifo, prior=calibration_current_prior, rng=_rng)
        if opts.calibration_export_posterior:
           calibration_nodes = _seed_nodes
           calibration_node_dets = list(_bc["cal"]["dets"]); calibration_n_nodes_amp = int(_bc["cal"]["n_nodes_amp"])
@@ -2177,7 +2215,7 @@ def _draw_more_calibration_draws(n_more, psd_dict):
         new, _lw, _nodes = _genr.seed_realizations_from_breadcrumb(
             _bc, 1./P.deltaF, P.deltaT, opts.fmin_template, fmax,
             opts.calibration_spline_count, n_more, fmin_ifo=cal_fmin_ifo,
-            rng=_rng)
+            prior=calibration_current_prior, rng=_rng)
         calibration_log_weights = np.concatenate([np.asarray(calibration_log_weights), np.asarray(_lw)])
         if calibration_nodes is not None:
             calibration_nodes = np.vstack([calibration_nodes, _nodes])
@@ -2185,14 +2223,15 @@ def _draw_more_calibration_draws(n_more, psd_dict):
         _ret = _genr.draw_prior_realizations_with_nodes(
             opts.calibration_envelope_directory, list(psd_dict.keys()), 1./P.deltaF, P.deltaT,
             opts.fmin_template, fmax, opts.calibration_spline_count, n_more,
-            fmin_ifo=cal_fmin_ifo, rng=_rng)
+            fmin_ifo=cal_fmin_ifo, correction_types=calibration_correction_types, rng=_rng)
         new = _ret['realizations']
         calibration_nodes = np.vstack([calibration_nodes, _ret['nodes']]) if calibration_nodes is not None else _ret['nodes']
     else:
         for ifo in psd_dict:
             fname = opts.calibration_envelope_directory + "/" + ifo + ".txt"
             new[ifo] = _genr.create_realizations(fname, 1./P.deltaF, P.deltaT,
-                cal_fmin_ifo[ifo], fmax, opts.calibration_spline_count, n_more)
+                cal_fmin_ifo[ifo], fmax, opts.calibration_spline_count, n_more,
+                correction_type=calibration_correction_types[ifo])
     for ifo in new:
         calibration_realization_dict[ifo] = np.concatenate([calibration_realization_dict[ifo], new[ifo]], axis=1)
     return new
@@ -4254,7 +4293,7 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
             % (_fused_calmarg_would_run, use_fused_calmarg, opts._noloop_time_interp))
     if calibration_marginalization:
       extra_kwargs['calibration_realizations'] = calibration_realization_dict
-      extra_kwargs['calibration_conjugate'] = bool(opts.calibration_conjugate_phase)
+      extra_kwargs['calibration_conjugate'] = bool(opts.calibration_conjugate_phase) if use_td_gs else False
       # --calibration-global-norm falls back to the cheaper <h|h> route: skip the
       # per-realization self-term cross terms (and their SVD-basis precompute) entirely.
       extra_kwargs['calibration_self_term'] = not bool(opts.calibration_global_norm)
@@ -6423,20 +6462,78 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
           # otherwise. Resolved once here so the advisories print once per event.
           slice_chunk = distance_slices.resolve_slice_chunk(
               getattr(opts, "distance_slice_chunk", None), opts.n_chunk)
+          if not all_fresh and float(getattr(opts, "distance_slice_walkout_delta_lnL", 0.0) or 0.0) > 0:
+            print("    : WARNING --distance-slice-walkout-delta-lnL is ignored: this export is not all-fresh"
+                  " (reweight core + parabolic wings)")
+          if not all_fresh and opts.distance_slice_warm_start:
+            print("    : WARNING --distance-slice-warm-start is ignored: this export is not all-fresh")
           if all_fresh:
             # All K slices fresh.  Place centers at posterior-d quantiles: rough
             # placement is fine even at low n_eff -- the precision of each row comes
             # from its own fresh fixed-d integral, not from where it is centered.
             d_wings = distance_slices.quantile_slice_centers(dL_samp, ln_w_full, K, randomize=getattr(opts, "distance_slice_randomize", False))
             print("    : running {} fresh integrations (all-fresh{}; no reweight core)".format(len(d_wings), ", randomized-d" if getattr(opts, "distance_slice_randomize", False) else ""))
-            lnL_wings_raw, sigmaL_wings, neff_wings, ntotal_wings = distance_slices.fresh_sample_slices(
+            warm = None
+            if opts.distance_slice_warm_start:
+              # Seed from the retained-set reserve, not _rvs: by now _rvs is usually the fair-draw
+              # export (a handful of rows, with replacement), which cannot seed a proposal.
+              _ws_seed, _ws_lnw, _ws_d = rvs, ln_w_full, dL_samp
+              _res_ds = _warm_seed_reserve_for(sampler)
+              if _res_ds is not None and "distance" in list(_res_ds.get("params_ordered") or []):
+                _rn = list(_res_ds["params_ordered"])
+                _rX = np.asarray(_res_ds["X"], float)
+                _ws_seed = {_n: _rX[:, _i] for _i, _n in enumerate(_rn)}
+                _ws_lnw = (np.asarray(_res_ds["lnL"], float) + np.asarray(_res_ds["log_joint_prior"], float)
+                           - np.asarray(_res_ds["log_joint_s_prior"], float))
+                _ws_d = _ws_seed["distance"]
+              else:
+                print("    : WARNING no retained-set reserve; warm slices seeded from _rvs ({} rows)".format(len(dL_samp)))
+              warm = distance_slices.WarmSliceSampler(
+                  sampler, like_to_integrate, _ws_seed, float(opts.distance_slice_warm_seed_temper) * _ws_lnw,
+                  seed_distance=_ws_d, n_block=int(opts.distance_slice_warm_block or slice_chunk), return_lnL=return_lnL,
+                  khat_max=float(opts.distance_slice_warm_khat_max),
+                  local_k=int(opts.distance_slice_warm_local_k) or None,
+                  xp=xpy_default,
+                  fallback=lambda dd: distance_slices.fresh_sample_slices(
+                      sampler, like_to_integrate, dd, n_max=int(opts.distance_slice_wing_nmax),
+                      n_eff_target=int(opts.distance_slice_wing_neff), n_chunk=slice_chunk, return_lnL=return_lnL))
+              print("    : warm-started slices ({} seed rows, seed n_eff {:.1f} after tempering, block {})".format(
+                  len(_ws_d), distance_slices._neff(float(opts.distance_slice_warm_seed_temper) * np.asarray(_ws_lnw, float)),
+                  int(opts.distance_slice_warm_block or slice_chunk)))
+              lnL_wings_raw, sigmaL_wings, neff_wings, ntotal_wings = warm.run(
+                  d_wings, n_max=int(opts.distance_slice_wing_nmax), n_eff_target=int(opts.distance_slice_wing_neff))
+              print("    : warm-started slices: {} of {} redone cold (k-hat or n_eff)".format(warm.n_fallback, len(d_wings)))
+            else:
+              lnL_wings_raw, sigmaL_wings, neff_wings, ntotal_wings = distance_slices.fresh_sample_slices(
                 sampler, like_to_integrate, d_wings,
                 n_max=int(opts.distance_slice_wing_nmax),
                 n_eff_target=int(opts.distance_slice_wing_neff),
                 n_chunk=slice_chunk,
                 return_lnL=return_lnL,
-            )
+              )
             lnL_wings = lnL_wings_raw + manual_avoid_overflow_logarithm
+            walk_delta = float(getattr(opts, "distance_slice_walkout_delta_lnL", 0.0) or 0.0)
+            if walk_delta > 0 and distance_slices.is_uninformative(lnL_wings, threshold=opts.distance_slice_skip_threshold):
+              print("    : peak slice lnL < {:.2f} nats (effectively undetected); skipping walk-out".format(
+                  opts.distance_slice_skip_threshold))
+            elif walk_delta > 0:
+              walk_why = []
+              _ln_pi_d = lambda dd: np.log(np.maximum(np.asarray(identity_convert(prior_pdf_d(np.asarray(dd, float))), float), np.finfo(float).tiny))
+              added = distance_slices.walk_out_fresh_slices(
+                  sampler, like_to_integrate, d_wings, lnL_wings, _ln_pi_d,
+                  float(sampler.llim["distance"]), float(sampler.rlim["distance"]),
+                  lnL_offset=manual_avoid_overflow_logarithm, delta_lnL=walk_delta,
+                  max_steps=int(opts.distance_slice_walkout_max_steps),
+                  n_max=int(opts.distance_slice_wing_nmax), n_eff_target=int(opts.distance_slice_wing_neff),
+                  n_chunk=slice_chunk, return_lnL=return_lnL, reasons=walk_why,
+                  runner=None if warm is None else (lambda dd: warm.run(
+                      dd, n_max=int(opts.distance_slice_wing_nmax), n_eff_target=int(opts.distance_slice_wing_neff))))
+              if warm is not None:
+                print("    : warm-started slices incl. walk-out: {} of {} redone cold".format(warm.n_fallback, len(d_wings) + len(added[0])))
+              print("    : walk-out added {} fresh slices (target {:.1f} nats below peak; stopped near/far: {})".format(
+                  len(added[0]), walk_delta, "/".join(walk_why)))
+              d_wings, lnL_wings, sigmaL_wings, neff_wings, ntotal_wings = distance_slices.merge_walkout(
+                  d_wings, lnL_wings, sigmaL_wings, neff_wings, ntotal_wings, added)
           elif n_wing > 0:
             if distance_slices.is_uninformative(lnL_core, threshold=opts.distance_slice_skip_threshold):
               print("    : peak core lnL < {:.2f} nats (effectively undetected); skipping {} wing fresh integrations".format(

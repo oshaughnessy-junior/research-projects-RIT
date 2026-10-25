@@ -39,6 +39,17 @@ realization.  This is what makes in-loop marginalization cheap.
 > apply-to-data choice is what preserves the efficiency win (shared `U,V`).  The
 > backtest below quantifies the difference against `calibration_reweighting.py`.
 
+> **Phase-sign trap.** Do not conjugate the realization array before applying it
+> to the data. RIFT's two-sided FFT packing labels bins with the negative of the
+> LAL frequency (`lalsimutils.evaluate_fvals`), so the array stored at label f is
+> already conj(alpha(f)) in the standard convention, and `<h|C d> = <alpha h|d>`.
+> A derivation that treats RIFT's label as the physical frequency concludes that
+> conj(C) is needed; that reverses the calibration phase. A test that builds its
+> reference as `C*h` on RIFT's packed array has the same blind spot. The
+> known-answer test builds alpha*h in the time domain with numpy's FFT
+> (`test_cross_term_matches_time_domain_calibrated_template`). Current
+> conventions: `DESIGN_response_conventions.md`.
+
 ## Data layout
 
 `RIFT/calmarg/generate_realizations.py::create_realizations` draws `n_cal` complex,

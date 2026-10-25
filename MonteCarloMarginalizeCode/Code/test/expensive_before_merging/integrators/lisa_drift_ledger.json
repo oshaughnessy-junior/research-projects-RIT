@@ -109,6 +109,10 @@
       "decision": "NA",
       "reason": "LIGO/Virgo spline calibration-envelope marginalization. The LISA driver models no instrument calibration: it takes no envelope directory, has no cal nodes, and its response is applied analytically by factored_likelihood_LISA. LISA calibration, if it is ever modelled, will not have this data product or this spline parameterization, so porting the LIGO machinery would be actively misleading."
     },
+    "OPTION:--calibration-correction-type": {
+      "decision": "NA",
+      "reason": "LIGO/Virgo spline calibration-envelope marginalization. The LISA driver models no instrument calibration: it takes no envelope directory, has no cal nodes, and its response is applied analytically by factored_likelihood_LISA. LISA calibration, if it is ever modelled, will not have this data product or this spline parameterization, so porting the LIGO machinery would be actively misleading."
+    },
     "OPTION:--calibration-dump-responsibilities": {
       "decision": "NA",
       "reason": "LIGO/Virgo spline calibration-envelope marginalization. The LISA driver models no instrument calibration: it takes no envelope directory, has no cal nodes, and its response is applied analytically by factored_likelihood_LISA. LISA calibration, if it is ever modelled, will not have this data product or this spline parameterization, so porting the LIGO machinery would be actively misleading."
@@ -202,6 +206,34 @@
       "reason": "The .dslice export and its placement/tuning knobs. This is a data product for a downstream LIGO CIP distance workflow that the LISA pipeline does not run; there is no consumer. If a LISA distance workflow is ever built, note that the .dslice reweight core was the third Finding-2 site and must not be revived in its pre-#87 form."
     },
     "OPTION:--distance-slice-skip-threshold": {
+      "decision": "NA",
+      "reason": "The .dslice export and its placement/tuning knobs. This is a data product for a downstream LIGO CIP distance workflow that the LISA pipeline does not run; there is no consumer. If a LISA distance workflow is ever built, note that the .dslice reweight core was the third Finding-2 site and must not be revived in its pre-#87 form."
+    },
+    "OPTION:--distance-slice-walkout-delta-lnL": {
+      "decision": "NA",
+      "reason": "The .dslice export and its placement/tuning knobs. This is a data product for a downstream LIGO CIP distance workflow that the LISA pipeline does not run; there is no consumer. If a LISA distance workflow is ever built, note that the .dslice reweight core was the third Finding-2 site and must not be revived in its pre-#87 form."
+    },
+    "OPTION:--distance-slice-walkout-max-steps": {
+      "decision": "NA",
+      "reason": "The .dslice export and its placement/tuning knobs. This is a data product for a downstream LIGO CIP distance workflow that the LISA pipeline does not run; there is no consumer. If a LISA distance workflow is ever built, note that the .dslice reweight core was the third Finding-2 site and must not be revived in its pre-#87 form."
+    },
+    "OPTION:--distance-slice-warm-block": {
+      "decision": "NA",
+      "reason": "The .dslice export and its placement/tuning knobs. This is a data product for a downstream LIGO CIP distance workflow that the LISA pipeline does not run; there is no consumer. If a LISA distance workflow is ever built, note that the .dslice reweight core was the third Finding-2 site and must not be revived in its pre-#87 form."
+    },
+    "OPTION:--distance-slice-warm-khat-max": {
+      "decision": "NA",
+      "reason": "The .dslice export and its placement/tuning knobs. This is a data product for a downstream LIGO CIP distance workflow that the LISA pipeline does not run; there is no consumer. If a LISA distance workflow is ever built, note that the .dslice reweight core was the third Finding-2 site and must not be revived in its pre-#87 form."
+    },
+    "OPTION:--distance-slice-warm-local-k": {
+      "decision": "NA",
+      "reason": "The .dslice export and its placement/tuning knobs. This is a data product for a downstream LIGO CIP distance workflow that the LISA pipeline does not run; there is no consumer. If a LISA distance workflow is ever built, note that the .dslice reweight core was the third Finding-2 site and must not be revived in its pre-#87 form."
+    },
+    "OPTION:--distance-slice-warm-seed-temper": {
+      "decision": "NA",
+      "reason": "The .dslice export and its placement/tuning knobs. This is a data product for a downstream LIGO CIP distance workflow that the LISA pipeline does not run; there is no consumer. If a LISA distance workflow is ever built, note that the .dslice reweight core was the third Finding-2 site and must not be revived in its pre-#87 form."
+    },
+    "OPTION:--distance-slice-warm-start": {
       "decision": "NA",
       "reason": "The .dslice export and its placement/tuning knobs. This is a data product for a downstream LIGO CIP distance workflow that the LISA pipeline does not run; there is no consumer. If a LISA distance workflow is ever built, note that the .dslice reweight core was the third Finding-2 site and must not be revived in its pre-#87 form."
     },

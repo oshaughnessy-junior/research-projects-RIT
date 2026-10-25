@@ -443,3 +443,14 @@ Calibration burn-in evaluates the first stored realization while retaining the f
 calibration buffers. With `--calibration-global-norm`, the one-block U/V length determines
 the stored Q block length independently of the active `n_cal`. Gathers stay inside that
 block, including at its zero-extension boundary.
+
+
+### Envelope-prior handoff after the FD calibration convention update
+
+TDGS retains its raw envelope draws: the shared generator is asked for template
+envelopes, and the TD FIR applies `--td-calibration-correction-type` exactly once.
+The FD routes instead convert their envelope priors before drawing. Their
+`--calibration-correction-type` option is refused on TDGS; use the TD option there.
+`--calibration-conjugate-phase` retains its explicit TD response conjugation and
+is deprecated/ignored only on FD routes. TD pilot priors and draw growth use the
+same raw envelope convention as the initial draws.
