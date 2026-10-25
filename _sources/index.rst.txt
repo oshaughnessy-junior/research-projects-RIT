@@ -25,6 +25,7 @@ Rapid inference via Iterative FiTting: this algorithm provides a framework for e
    injections
    plotting
    demos
+   nr_best_effort
    hyperpipe
    troubleshooting
    api_samples_utils
