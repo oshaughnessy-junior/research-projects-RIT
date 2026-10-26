@@ -60,10 +60,10 @@ def test_repeated_assignment_is_idempotent():
         assert np.allclose([P.s1z, P.s2z], once, rtol=0, atol=1e-12)
 
 
-def test_puffball_tiny_factor_identity(tmp_path):
-    rng = np.random.default_rng(5)
+def _puff(tmp_path, factor, extra=(), seed=5):
+    rng = np.random.default_rng(seed)
     Ps = []
-    for _ in range(N):
+    for _ in range(N*4):
         P = lsu.ChooseWaveformParams()
         P.m1, P.m2 = rng.uniform(34, 38)*lsu.lsu_MSUN, rng.uniform(20, 30)*lsu.lsu_MSUN
         P.s1z, P.s2z = rng.uniform(-0.9, 0.9, 2)
@@ -72,13 +72,26 @@ def test_puffball_tiny_factor_identity(tmp_path):
     lsu.ChooseWaveformParams_array_to_xml(Ps, fname=str(tmp_path/"in"))
     exe = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "bin", "util_ParameterPuffball.py")
     cmd = [sys.executable, exe, "--inj-file", str(tmp_path/"in.xml.gz"), "--inj-file-out", str(tmp_path/"out"),
-           "--puff-factor", "1e-8", "--fmin", "20", "--fref", "20",
-           "--parameter", "mc", "--parameter", "delta_mc", "--parameter", "chieff_aligned"]
+           "--puff-factor", str(factor), "--fmin", "20", "--fref", "20", "--random-seed", "7",
+           "--parameter", "mc", "--parameter", "delta_mc", "--parameter", "chieff_aligned"] + list(extra)
     proc = subprocess.run(cmd, cwd=tmp_path, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                           universal_newlines=True, timeout=300)
     assert proc.returncode == 0, proc.stdout[-3000:]
-    Pout = lsu.xml_to_ChooseWaveformParams_array(str(tmp_path/"out.xml.gz"))
-    assert len(Pout) == N, proc.stdout[-3000:]
+    return Ps, lsu.xml_to_ChooseWaveformParams_array(str(tmp_path/"out.xml.gz")), proc.stdout
+
+
+def test_puffball_tiny_factor_identity(tmp_path):
+    Ps, Pout, log = _puff(tmp_path, 1e-8)   # 0 makes the covariance singular
+    assert len(Pout) == len(Ps), log[-3000:]
     got = np.array([[p.s1z, p.s2z] for p in Pout])
     want = np.array([[p.s1z, p.s2z] for p in Ps])
     assert np.allclose(got, want, rtol=0, atol=1e-6)
+
+
+def test_puffball_spin_downselect_uses_written_spins(tmp_path):
+    cap = 0.5
+    Ps, Pout, log = _puff(tmp_path, 1, ["--downselect-parameter", "chi1", "--downselect-parameter-range", "[0,%g]" % cap,
+                                        "--downselect-parameter", "chi2", "--downselect-parameter-range", "[0,%g]" % cap])
+    assert len(Pout) > 0, log[-3000:]
+    chi = np.array([[p.extract_param('chi1'), p.extract_param('chi2')] for p in Pout])
+    assert (chi <= cap + 1e-12).all()

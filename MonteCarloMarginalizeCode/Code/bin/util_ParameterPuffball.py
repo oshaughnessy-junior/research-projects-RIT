@@ -354,6 +354,13 @@ for indx, name  in enumerate(coord_names):
 # Apply downselect constraints, using conversion utility for speed
 #   WARNING: For spin, we are NOT retaining transverse DOF by default!
 names_downselect = list(set(downselect_dict.keys()) - set(rlist))
+# chieff_aligned holds each point's own s1z, s2z difference, which the converter (fresh spin-free P
+# per row) cannot see.  Test spin-dependent ranges on the assigned point instead, below.
+names_downselect_late = []
+if 'chieff_aligned' in coord_names:
+    names_downselect_late = [p for p in names_downselect
+                             if p not in coord_names and p not in ['mc', 'mtot', 'm1', 'm2', 'eta', 'delta_mc', 'q']]
+    names_downselect = [p for p in names_downselect if p not in names_downselect_late]
 if opts.eccentric_phase_coordinates:
     P_list, X_native = eccentric_phase_puff.native_proposals(
         P_list,X_out,coord_names,opts.eccentric_phase_reference_frequency,
@@ -445,6 +452,10 @@ for indx_P in np.arange(len(P_list)):
     # Apply unit spin magnitude constraint, which can ONLY be applied with the P_list construction, which has all spin information
     if P_list[indx_P].extract_param('chi1')>1 or P_list[indx_P].extract_param('chi2')>1:
         include_item =False
+    for param in names_downselect_late:
+        val = P.extract_param(param)
+        if not (downselect_dict[param][0] <= val <= downselect_dict[param][1]):
+            include_item = False
     # for param in downselect_dict:
     #     val = P.extract_param(param)
     #     if np.isnan(val):
