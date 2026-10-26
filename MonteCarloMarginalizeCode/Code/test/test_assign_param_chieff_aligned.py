@@ -103,7 +103,10 @@ def test_puffball_tiny_factor_identity(tmp_path):
 def test_puffball_spin_downselect_uses_written_spins(tmp_path):
     cap = 0.5
     Ps, Pout, log = _puff(tmp_path, 1, ["--downselect-parameter", "chi1", "--downselect-parameter-range", "[0,%g]" % cap,
-                                        "--downselect-parameter", "chi2", "--downselect-parameter-range", "[0,%g]" % cap])
+                                        "--downselect-parameter", "chi2", "--downselect-parameter-range", "[0,%g]" % cap,
+                                        "--downselect-parameter", "s2z", "--downselect-parameter-range", "[-0.3,%g]" % cap,
+                                        "--downselect-parameter", "mc_ecc", "--downselect-parameter-range", "[1,100]"])
     assert len(Pout) > 0, log[-3000:]
     chi = np.array([[p.extract_param('chi1'), p.extract_param('chi2')] for p in Pout])
     assert (chi <= cap + 1e-12).all()
+    assert all(-0.3 - 1e-12 <= p.s2z for p in Pout)

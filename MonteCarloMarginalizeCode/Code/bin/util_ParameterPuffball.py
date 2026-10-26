@@ -358,8 +358,9 @@ names_downselect = list(set(downselect_dict.keys()) - set(rlist))
 # per row) cannot see.  Test spin-dependent ranges on the assigned point instead, below.
 names_downselect_late = []
 if 'chieff_aligned' in coord_names:
-    names_downselect_late = [p for p in names_downselect
-                             if p not in coord_names and p not in ['mc', 'mtot', 'm1', 'm2', 'eta', 'delta_mc', 'q']]
+    spin_names = ['chi1', 'chi2', 's1z', 's2z', 's1z_bar', 's2z_bar', 'xi', 'chiz_plus', 'chiz_minus',
+                  'chi1_perp', 'chi2_perp', 'cos_theta1', 'cos_theta2', 'theta1', 'theta2']
+    names_downselect_late = [p for p in names_downselect if p in spin_names and p not in coord_names]
     names_downselect = [p for p in names_downselect if p not in names_downselect_late]
 if opts.eccentric_phase_coordinates:
     P_list, X_native = eccentric_phase_puff.native_proposals(
