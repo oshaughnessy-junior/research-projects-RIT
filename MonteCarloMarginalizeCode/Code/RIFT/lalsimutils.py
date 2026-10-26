@@ -939,6 +939,7 @@ class ChooseWaveformParams:
         if p == 'chieff_aligned':
             # Assign xi = (m1 s1z + m2 s2z)/M holding chiminus = (m2 s1z - m1 s2z)/M fixed.
             # Exchange-antisymmetric; for large mass ratio s1z -> xi, s2z -> -chiminus.  Can give |s_iz| > 1.
+            # Changes only s1z, s2z, so it inverts extract_param('xi') only for spin_convention == 'L' (default).
             m1 = self.m1
             m2 = self.m2
             mtot = m1 + m2

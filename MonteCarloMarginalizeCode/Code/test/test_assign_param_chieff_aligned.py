@@ -60,6 +60,18 @@ def test_repeated_assignment_is_idempotent():
         assert np.allclose([P.s1z, P.s2z], once, rtol=0, atol=1e-12)
 
 
+def test_precessing_spins_keep_inplane_components():
+    rng = np.random.default_rng(6)
+    for P in _truth(7):
+        P.s1x, P.s1y, P.s2x, P.s2y = rng.uniform(-0.3, 0.3, 4)
+        inplane = (P.s1x, P.s1y, P.s2x, P.s2y)
+        dm = _chiminus(P)
+        P.assign_param('chieff_aligned', 0.1)
+        assert P.extract_param('xi') == pytest.approx(0.1, abs=1e-12)
+        assert _chiminus(P) == pytest.approx(dm, abs=1e-12)
+        assert (P.s1x, P.s1y, P.s2x, P.s2y) == inplane
+
+
 def _puff(tmp_path, factor, extra=(), seed=5):
     rng = np.random.default_rng(seed)
     Ps = []
