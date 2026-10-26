@@ -170,7 +170,7 @@ def _read_lock(path):
     if not isinstance(lock['native_libraries'], dict) or not lock['native_libraries']:
         raise ValueError('runtime lock needs native-library provenance')
     for entry in lock['native_libraries'].values():
-        if (not isinstance(entry, dict) or set(entry) < {'resolved', 'sha256'}
+        if (not isinstance(entry, dict) or not {'resolved', 'sha256'} <= set(entry)
                 or not isinstance(entry['resolved'], str)
                 or not re.fullmatch('[0-9a-f]{64}', str(entry['sha256']))):
             raise ValueError('runtime lock native-library entries need resolved and sha256')

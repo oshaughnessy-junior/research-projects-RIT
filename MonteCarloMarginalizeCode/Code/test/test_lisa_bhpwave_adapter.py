@@ -139,7 +139,9 @@ def test_explicit_runtime_lock_is_read_without_backend_imports(tmp_path,monkeypa
 @pytest.mark.parametrize('field,value',[('schema_version',True),('source_revision','other'),
     ('python_abi','other'),('architecture','other'),('data_files',{}),
     ('native_module_sha256','invalid'),('native_libraries',{}),
-    ('native_libraries',{'x':{}}),('native_libraries',{'x':{'resolved':'/a','sha256':'bad'}})])
+    ('native_libraries',{'x':{}}),('native_libraries',{'x':{'resolved':'/a','sha256':'bad'}}),
+    ('native_libraries',{'x':{'foo':1}}),('native_libraries',{'x':{'resolved':'/a','foo':1}}),
+    ('native_libraries',{'x':{'sha256':'b'*64,'foo':1}})])
 def test_runtime_lock_identity_guards(tmp_path,monkeypatch,field,value):
     path,lock=lock_fixture(tmp_path,monkeypatch)
     lock[field]=value;path.write_text(json.dumps(lock))
@@ -173,6 +175,25 @@ def test_actual_cpu_adapter_distance_and_coverage():
     assert base.n_samples==config().n_samples
     assert base.metadata['time_to_merger_seconds']>base.metadata['sample_span_seconds']
     assert base.metadata['carrier_nyquist_ratio']<1
+
+
+@pytest.mark.skipif(os.environ.get('RIFT_RUN_BHPWAVE_REAL')!='1',
+                    reason='requires the explicitly staged pinned BHPWave CPU runtime')
+@pytest.mark.parametrize('a', [0., .5, -.5])
+def test_actual_cpu_orbit_toward_observer_is_right_handed_in_response_basis(a):
+    # The response takes hp + 1j*hc in a (u, v) basis with u x v along propagation.
+    # An orbit whose angular momentum (qK, phiK) points at the observer then
+    # rotates counterclockwise: hp*dhc/dt - hc*dhp/dt > 0. Avoid the exactly
+    # face-on direction, where the in-plane azimuth is degenerate.
+    adapter=ba.BHPWaveAdapter(config(),os.environ['RIFT_BHPWAVE_RUNTIME_LOCK'])
+    qS,phiS=1.,2.
+    def circulation(qK,phiK):
+        hp,hc=adapter.generate(replace(parameters(),a=a,qS=qS,phiS=phiS,qK=qK,phiK=phiK)).polarizations
+        dhp,dhc=np.gradient(hp),np.gradient(hc)
+        return np.mean(hp*dhc-hc*dhp)/np.sqrt(np.mean(hp**2+hc**2)*np.mean(dhp**2+dhc**2))
+    toward=circulation(np.pi-qS+1e-2,(phiS+np.pi)%(2*np.pi))
+    away=circulation(qS+1e-2,phiS)
+    assert toward>0.5 and away<-0.5
 
 
 def test_verified_loader_rejects_changed_source_data_and_binary(tmp_path,monkeypatch):
