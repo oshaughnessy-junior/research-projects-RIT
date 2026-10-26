@@ -677,7 +677,7 @@ parser.add_argument("--internal-ile-td-solver",default=None,type=str,help="Passt
 parser.add_argument("--internal-ile-td-acf-duration",default=None,type=float,help="Passthrough to ILE --td-acf-duration [s] (TD truncated-segment path).")
 parser.add_argument("--internal-ile-td-analysis-start",default=None,type=float,help="Passthrough to ILE --td-analysis-start [s] (template-frame segment start, plan T5/D1).")
 parser.add_argument("--internal-ile-td-analysis-end",default=None,type=float,help="Passthrough to ILE --td-analysis-end [s] (template-frame segment end, plan T5/D1).")
-parser.add_argument("--internal-ile-td-gap",action='append',default=None,help="Passthrough to ILE --td-gap 'tstart,tend' (geocenter s rel. event, repeatable). In an ini give a Python list literal or a single quoted string.")
+parser.add_argument("--internal-ile-td-gap",action='append',default=None,help="DISABLED (refused). To excise data use --internal-ile-inner-product td-gs with disjoint --internal-ile-td-piece intervals.")
 parser.add_argument("--internal-ile-glitch-basis",action='append',default=None,help="Passthrough to ILE --glitch-basis 'IFO:t1,t2,f1,f2[:r]' (analytic Slepian glitch marginalization, G3). Repeatable. Requires --internal-ile-inner-product td-toeplitz. In an ini give a list literal or a single quoted string.")
 parser.add_argument("--internal-ile-glitch-basis-file",action='append',default=None,help="Data-informed glitch basis for one detector, 'IFO:path.npz' (G4, glitschen/BayesWave PCA/SVD). Repeatable. The .npz is ADDED TO THE ILE CONDOR TRANSFER LIST and the ILE flag is rewritten to reference the transferred basename, so it works on execute nodes / OSG. Requires --internal-ile-inner-product td-toeplitz. In an ini give a list literal or a single quoted string.")
 parser.add_argument("--internal-ile-glitch-sigma",default=None,type=str,help="Passthrough to ILE --glitch-sigma (glitch amplitude hyperparameter mode; only 'profile' is wired).")
@@ -794,6 +794,18 @@ if (opts.use_ini):
         for item in rift_items:
             val = rift_items[item].strip()
             ile_condor_commands.append([item, val])
+
+# --internal-ile-td-gap is refused, from the command line or the ini above.
+_TD_GAP_REFUSAL = (" FAILURE: --internal-ile-td-gap is disabled (the gap-marginalized td-toeplitz "
+                   "likelihood is not yet regularized for fMax < fNyq).  To excise data, use "
+                   "--internal-ile-inner-product td-gs with --internal-ile-td-mref M and disjoint "
+                   "--internal-ile-td-piece START,END intervals (units of M_ref) covering the data "
+                   "to KEEP.  Pieces are independent blocks: correlations across the gap are dropped.")
+def _td_gap_requested(_v):
+    return bool(_v if isinstance(_v, (list, tuple)) else _v is not None)
+if _td_gap_requested(opts.internal_ile_td_gap):
+    print(_TD_GAP_REFUSAL)
+    sys.exit(1)
 
 # After the ini, which can set the mode.
 if eccentric_phase_pipeline.requested(opts):
@@ -1798,8 +1810,9 @@ if opts.internal_ile_inner_product:
         line += " --td-analysis-start {} ".format(opts.internal_ile_td_analysis_start)
     if not(opts.internal_ile_td_analysis_end is None):
         line += " --td-analysis-end {} ".format(opts.internal_ile_td_analysis_end)
-    for _gap in _as_list(opts.internal_ile_td_gap):
-        line += " --td-gap {} ".format(_gap)
+    if _as_list(opts.internal_ile_td_gap):      # also set via an ini
+        print(_TD_GAP_REFUSAL)
+        sys.exit(1)
     for _gb in _as_list(opts.internal_ile_glitch_basis):
         line += " --glitch-basis {} ".format(_gb)
     if opts.internal_ile_glitch_sigma:

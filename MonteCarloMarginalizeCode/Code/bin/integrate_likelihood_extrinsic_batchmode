@@ -352,7 +352,7 @@ optp.add_option("--td-solver", type=str, default="auto", help="Solver mode for -
 optp.add_option("--td-acf-duration", type=float, default=None, help="Optional ACF truncation duration [s] for --internal-ile-inner-product td-toeplitz (Stage-3 truncated-segment path). Default None = full segment; sets N_seg = round(duration*srate) and builds the truncated precision kernel K_seg = Toeplitz(kappa[:N_seg]).")
 optp.add_option("--td-analysis-start", type=float, default=None, help="TD segment analysis START offset [seconds], geocenter, relative to the TEMPLATE peak-amplitude reference. The template is hard-cut (no taper) to [t_ref+start, t_ref+end] in its own frame and slides inside the data segment. Geometric-unit (xM) start times convert as t[s] = xM * (G Mtot/c^3) ~ xM * 4.925e-6 * (Mtot/Msun); pick xM externally and pass the resulting seconds (one run per start-time choice, embarrassingly parallel). Requires --internal-ile-inner-product td-toeplitz. Default None = no start cut.")
 optp.add_option("--td-analysis-end", type=float, default=None, help="TD segment analysis END offset [seconds], geocenter, relative to the template peak reference. See --td-analysis-start for the xM conversion. Default None = no end cut (keep to segment end, e.g. ringdown-only with --td-analysis-start >=0).")
-optp.add_option("--td-gap", action="append", default=None, help="TD gap interval 'tstart,tend' in geocenter seconds relative to the event time. Repeatable. Requires --internal-ile-inner-product td-toeplitz.")
+optp.add_option("--td-gap", action="append", default=None, help="DISABLED (refused at startup). TD gap interval 'tstart,tend' in geocenter seconds relative to the event time. To excise data use --internal-ile-inner-product td-gs with disjoint --td-piece intervals.")
 optp.add_option("--glitch-basis", action="append", default=None, help="Analytic GLITCH MARGINALIZATION basis for one detector. Format 'IFO:t1,t2,f1,f2[:r]': IFO the glitchy detector; t1,t2 geocenter seconds relative to the event time (glitch time support); f1,f2 Hz (glitch band); optional :r number of Slepian columns (default from the 2*W*T time-bandwidth theorem). A per-detector, band-limited Slepian (DPSS) basis is built and its coefficients are analytically marginalized (Woodbury) in the TD Toeplitz Precompute: Q'/U' corrections + a per-detector Delta-lnZ evidence term added to lnL_marg. Repeatable (one glitch block per detector). Requires --internal-ile-inner-product td-toeplitz. EXPERIMENTAL.")
 optp.add_option("--glitch-basis-file", action="append", default=None, help="Analytic GLITCH MARGINALIZATION basis for one detector from a FILE (data-informed basis, TD_LIKELIHOOD.md Sec. 3 modes 3/4: e.g. glitschen-style PCA of real glitches, or BayesWave-draw SVD). Format 'IFO:path.npz'; the npz must contain 'basis' (n_snip x r time-domain snippet columns at the analysis sample rate), 'lambda0' (length-r dimensionless shape prior, max entry 1 per design Sec. 2b -- sigma_g carries the strain scale), 't0' (scalar: geocenter seconds RELATIVE TO THE EVENT TIME of snippet sample 0), and 'fs' (snippet sample rate [Hz], checked against the analysis rate). The snippet columns are zero-embedded into the analysis segment at t0 and their coefficients marginalized exactly like --glitch-basis (same Woodbury Q'/U' corrections + per-detector Delta-lnZ). Repeatable (one block per detector); mutually exclusive per-IFO with --glitch-basis. Requires --internal-ile-inner-product td-toeplitz. EXPERIMENTAL.")
 optp.add_option("--glitch-sigma", type=str, default="profile", help="Glitch amplitude hyperparameter sigma_g mode for --glitch-basis: 'profile' (default, and the only mode wired in G3: empirical-Bayes maximize Delta-lnZ over sigma_g per detector from the data). Grid marginalization is a documented follow-on (out of scope for G3).")
@@ -602,6 +602,14 @@ def _normalize_interpolate_time_argv(argv):
     return out
 
 opts, args = optp.parse_args(_normalize_interpolate_time_argv(sys.argv[1:]))
+if opts.td_gap:
+    # Refused for every inner product, before any other option check.
+    raise ValueError("--td-gap is disabled: the gap-marginalized td-toeplitz likelihood depends on an "
+                     "unregularized pseudo-inverse when fMax < fNyq.  To excise data, use "
+                     "--internal-ile-inner-product td-gs --vectorized with --td-mref M and disjoint "
+                     "--td-piece START,END intervals (units of M_ref, relative to the event) covering "
+                     "the data to KEEP.  Pieces are independent blocks: correlations across the gap "
+                     "are dropped.")
 if (opts.distance_slice_warm_block is not None and opts.distance_slice_warm_block < 1) or not (0 < opts.distance_slice_warm_seed_temper <= 1):
     optp.error("--distance-slice-warm-block must be >= 1 and --distance-slice-warm-seed-temper in (0, 1]")
 if opts.distance_slice_walkout_delta_lnL < 0 or opts.distance_slice_walkout_max_steps < 0:
@@ -1862,13 +1870,7 @@ if (opts.glitch_basis or opts.glitch_basis_file) and opts.internal_ile_inner_pro
     sys.exit(1)
 if opts.internal_ile_inner_product == "td-toeplitz":
     from RIFT.likelihood.td_inner_product import TDInnerProductFactory
-    # Parse repeatable --td-gap 'tstart,tend' (geocenter seconds relative to the event).
-    td_gaps = None
-    if opts.td_gap:
-        td_gaps = []
-        for _g in opts.td_gap:
-            _t0, _t1 = (float(x) for x in _g.split(","))
-            td_gaps.append((_t0, _t1))
+    td_gaps = None      # --td-gap is refused at startup
     # Parse repeatable --glitch-basis 'IFO:t1,t2,f1,f2[:r]' (G3).  t1,t2 geocenter seconds
     # relative to the event; f1,f2 Hz; optional r Slepian columns.  One block per detector.
     glitch_specs = {}
