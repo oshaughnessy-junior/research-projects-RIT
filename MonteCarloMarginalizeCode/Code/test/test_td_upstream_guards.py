@@ -94,6 +94,61 @@ def test_pipeline_basis_transfer_names(tmp_path, same_source, osg, existing_aux,
         assert "--glitch-basis-file" in namespace["line"]
 
 
+
+# --------------------------------------------------------------------------- --td-gap refusal
+def test_ile_refuses_td_gap(tmp_path):
+    """The gap-marginalized td-toeplitz likelihood is regularization-dependent: refuse it."""
+    code = Path(__file__).resolve().parents[1]
+    env = dict(os.environ, GW_SURROGATE="", OMP_NUM_THREADS="1",
+               OPENBLAS_NUM_THREADS="1", MKL_NUM_THREADS="1", PYTHONPATH=str(code))
+    proc = subprocess.run([sys.executable, str(code / "bin/integrate_likelihood_extrinsic_batchmode"),
+                           "--internal-ile-inner-product", "td-toeplitz", "--td-gap", "-.1,.1"],
+                          cwd=tmp_path, env=env, text=True, stdout=subprocess.PIPE,
+                          stderr=subprocess.STDOUT, timeout=120)
+    assert proc.returncode != 0
+    assert "--td-gap is disabled" in proc.stdout, proc.stdout[-3000:]
+    assert "--internal-ile-inner-product td-gs" in proc.stdout
+
+
+def test_pseudo_pipe_refuses_td_gap_on_the_command_line(tmp_path):
+    code = Path(__file__).resolve().parents[1]
+    env = dict(os.environ, GW_SURROGATE="", OMP_NUM_THREADS="1",
+               OPENBLAS_NUM_THREADS="1", MKL_NUM_THREADS="1", PYTHONPATH=str(code))
+    proc = subprocess.run([sys.executable, str(code / "bin/util_RIFT_pseudo_pipe.py"),
+                           "--internal-ile-td-gap=-.1,.1"],
+                          cwd=tmp_path, env=env, text=True, stdout=subprocess.PIPE,
+                          stderr=subprocess.STDOUT, timeout=120)
+    assert proc.returncode == 1
+    assert "--internal-ile-td-gap is disabled" in proc.stdout, proc.stdout[-3000:]
+    assert "--internal-ile-td-piece" in proc.stdout
+
+
+def test_pseudo_pipe_refuses_td_gap_from_an_ini():
+    """An ini sets opts after parsing, so the ILE-line builder must refuse too."""
+    import ast
+    code = Path(__file__).resolve().parents[1]
+    tree = ast.parse((code / "bin/util_RIFT_pseudo_pipe.py").read_text())
+    msg = next(n for n in tree.body if isinstance(n, ast.Assign)
+               and getattr(n.targets[0], "id", None) == "_TD_GAP_REFUSAL")
+    helper = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_as_list")
+    block = next(n for n in tree.body if isinstance(n, ast.If)
+                 and isinstance(n.test, ast.Attribute) and n.test.attr == "internal_ile_inner_product")
+
+    class _Opts(object):
+        internal_ile_inner_product = "td-toeplitz"
+        internal_ile_td_gap = "-.1,.1"          # an ini's eval() of a quoted scalar
+        internal_ile_td_whiteness_check = False
+
+        def __getattr__(self, name):
+            return None
+
+    namespace = dict(opts=_Opts(), os=os, sys=sys, line="")
+    module = ast.fix_missing_locations(ast.Module(body=[msg, helper, block], type_ignores=[]))
+    with pytest.raises(SystemExit) as exc:
+        exec(compile(module, "pipeline_td_gap", "exec"), namespace)
+    assert exc.value.code == 1
+    assert "--td-gap" not in namespace["line"]
+
 # --------------------------------------------------------------------------- td-gs startup checks
 def _run_batchmode(flags, tmp_path, keep_pythonpath=False):
     code = Path(__file__).resolve().parents[1]

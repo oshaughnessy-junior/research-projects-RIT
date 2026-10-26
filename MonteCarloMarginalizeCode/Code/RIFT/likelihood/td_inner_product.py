@@ -89,7 +89,9 @@ from RIFT.likelihood import td_rank_augmentation as tra
 _MAX_DENSE_N = 1 << 14
 
 # Relative eigenvalue cutoff for the pseudo-inverse of the gap block K_GG.  Exactly-null
-# directions of K_GG (band-limited weight) are also null for K E_G, so dropping them is exact.
+# modes contribute nothing, but with fMax < fNyq K_GG also has near-null modes whose
+# contribution is O(1), so the gap marginal depends on this cutoff there.  ILE --td-gap is
+# refused until that regularization is defined.
 _GAP_RCOND = 1e-12
 
 # Frequency tolerance for deltaF comparisons, matching lalsimutils.TOL_DF spirit.
@@ -333,9 +335,8 @@ class ToeplitzInnerProductContext(object):
         self._Kseg = None
         self.is_spd = None
         self._Kseg_min_eig = None
-        # Full-length gaps use M K M through the existing full operator.
-        # Building its identical dense matrix and eigenspectrum adds O(N^3)
-        # work while the FFT apply already handles masked vectors exactly.
+        # Full-length gaps use the full FFT operator inside _apply_seg; a dense
+        # len2side x len2side K_seg and its O(N^3) eigenspectrum are not needed.
         needs_dense_Kseg = (self.N_seg != self.len2side)
         if self._use_gs:
             # Covariance kernel on spliced segments: each contiguous retained run [i0, i1) is
@@ -1282,8 +1283,7 @@ class ToeplitzComplexOverlap(object):
         else:
             data_seg = ctx._segment_window(_ifft_to_td(data))   # windowed + gap-masked
             Kd_seg = ctx._apply_seg(data_seg)                   # length N_seg
-            # Delete both precision rows and columns: M K M, not merely K M.
-            # The shifted template need not vanish on the data-fixed gap.
+            # Zero on the gap: the shifted template need not vanish there.
             if not ctx.retain_mask.all():
                 Kd_seg[~ctx.retain_mask] = 0.0
             if ctx._use_gs:
