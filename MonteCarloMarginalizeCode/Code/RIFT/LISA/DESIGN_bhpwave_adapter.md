@@ -15,7 +15,9 @@ It does not return orientation-independent RIFT h_lm or LISA channels.
 Primary and secondary masses are observed solar masses. BHPWave receives those
 component inputs directly; secondary mass is not replaced by reduced mass.
 Radius r0 is a Boyer-Lindquist coordinate in primary-mass units, distance is
-Gpc, and qS/phiS and qK/phiK describe SSB sky and spin-axis orientation.
+Gpc, and qS/phiS give the SSB sky position. qK/phiK give the direction of the
+orbital angular momentum, not the spin axis: BHPWave encodes a retrograde orbit as
+a<0 with the same (qK, phiK). For a<0 the spin axis points opposite to (qK, phiK).
 Phi_phi0 is the circular orbital phase. Eccentricity, orbital inclination,
 secondary spin, and independent radial/polar phases are not accepted fields.
 
@@ -78,6 +80,11 @@ CI gate. Native CPU tests require `RIFT_RUN_BHPWAVE_REAL=1` and
 runtime on PYTHONPATH. A skip is not numerical evidence.
 
 A caller may pass returned hp,hc and the explicit sampling/sky fields into a
-separately validated response. Preserve BHPWave's `h=hp-i*hc` convention at that
-boundary. Cross-model SSB basis agreement and response qualification remain
+separately validated response. The adapter returns real arrays (hp, hc).
+fastlisaresponse takes `hp+1j*hc` without `flip_hx`; BHPWave's internal complex
+form `hp-1j*hc` must not be passed to it. Cross-model SSB basis agreement and response qualification remain
 separate gates. This module does not enable BBH factored-phase ILE for EMRIs.
+
+The runtime lock is a provenance check after import: BHPWave's Python modules
+run before any hash is compared. It pins the host's glibc and loaded libraries,
+so it is valid only on the runtime that wrote it.

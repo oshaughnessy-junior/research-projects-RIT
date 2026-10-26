@@ -169,6 +169,11 @@ def _read_lock(path):
         raise ValueError('runtime lock needs a native-module SHA256')
     if not isinstance(lock['native_libraries'], dict) or not lock['native_libraries']:
         raise ValueError('runtime lock needs native-library provenance')
+    for entry in lock['native_libraries'].values():
+        if (not isinstance(entry, dict) or set(entry) < {'resolved', 'sha256'}
+                or not isinstance(entry['resolved'], str)
+                or not re.fullmatch('[0-9a-f]{64}', str(entry['sha256']))):
+            raise ValueError('runtime lock native-library entries need resolved and sha256')
     return lock, _sha256(path)
 
 
@@ -276,7 +281,7 @@ class BHPWaveAdapter:
         values.setflags(write=False)
         metadata = dict(self._receipt)
         metadata.update(model='KerrCircularWaveform', frame='SSB, BHPWave polarization basis',
-                        complex_convention='hp - 1j*hc', parameters=p.to_dict(), config=c.to_dict(),
+                        complex_convention='real (hp, hc); response input hp + 1j*hc', parameters=p.to_dict(), config=c.to_dict(),
                         retained_positive_modes=[[2,2]],include_negative_m=True,
                         num_threads=1,pad_output=False,time_to_merger_seconds=merger,
                         native_n_samples=native_count,native_dt_seconds=native_dt,native_stride=native_stride,

@@ -138,7 +138,8 @@ def test_explicit_runtime_lock_is_read_without_backend_imports(tmp_path,monkeypa
 
 @pytest.mark.parametrize('field,value',[('schema_version',True),('source_revision','other'),
     ('python_abi','other'),('architecture','other'),('data_files',{}),
-    ('native_module_sha256','invalid'),('native_libraries',{})])
+    ('native_module_sha256','invalid'),('native_libraries',{}),
+    ('native_libraries',{'x':{}}),('native_libraries',{'x':{'resolved':'/a','sha256':'bad'}})])
 def test_runtime_lock_identity_guards(tmp_path,monkeypatch,field,value):
     path,lock=lock_fixture(tmp_path,monkeypatch)
     lock[field]=value;path.write_text(json.dumps(lock))
