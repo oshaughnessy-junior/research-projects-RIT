@@ -5043,9 +5043,10 @@ def complex_hoff(P, sgn=-1, fwdplan=None,**kwargs):
             hptilde.epoch, hptilde.f0, 1./P.deltaT/TDlen, lsu_HertzUnit, 
             TDlen)
 
-        # create the 2-sided hoff
+        # create the 2-sided hoff (RIFT packing, see evaluate_fvals): bin N/2+j holds tmp[j].
+        # The lower-half write below sets DC; together the two writes cover every bin.
         tmp  = hptilde.data.data + sgn*1j*hctilde.data.data
-        hoff.data.data[-int(TDlen/2)-2:-1] = tmp
+        hoff.data.data[int(TDlen/2):] = tmp[:TDlen-int(TDlen/2)]
         tmp= np.conj(hptilde.data.data) + sgn*1j*np.conj(hctilde.data.data)
         hoff.data.data[0:int(TDlen/2)+1] = tmp[::-1]
 
