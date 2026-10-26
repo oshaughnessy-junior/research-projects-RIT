@@ -263,7 +263,7 @@ def main(argv=None):
     raw = args.fixture.read_bytes()
     result = run_fixture(json.loads(raw), max_points=args.max_points)
     result['fixture_sha256'] = hashlib.sha256(raw).hexdigest()
-    # Serialize before creating the file, so a failure leaves no partial output.
+    # Serialize before creating the file: a non-JSON value then leaves no file.
     text = json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + '\n'
     with args.output.open('x') as stream:
         stream.write(text)

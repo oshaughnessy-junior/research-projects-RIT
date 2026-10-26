@@ -32,6 +32,7 @@ class FakeParameters(SimpleNamespace):
 
 class FakeAdapter:
     calls = 0
+    epoch_by_dist = {}
 
     def __init__(self, config):
         self.config = config
@@ -41,18 +42,29 @@ class FakeAdapter:
         t = np.arange(N) * DT
         hp = np.cos(2*np.pi*t*7/(N*DT)) / params.dist
         hc = np.sin(2*np.pi*t*11/(N*DT)) / params.dist
-        return SimpleNamespace(polarizations=(hp, hc), dt_seconds=DT,
-                               epoch_start_seconds=0., metadata={'fake': True})
+        epoch = FakeAdapter.epoch_by_dist.get(params.dist, 30.)
+        out = SimpleNamespace(polarizations=(hp, hc), dt_seconds=DT,
+                              epoch_start_seconds=epoch, metadata={'fake': True})
+        RESPONSE_CALLS.append({'expect': (params.qS, params.phiS, epoch, DT)})
+        return out
+
+
+RESPONSE_CALLS = []
 
 
 def fake_aet(hp, hc, *, dt, sky_colatitude, sky_longitude, epoch, config):
-    return SimpleNamespace(channels=np.asarray([hp, hc, hp + hc]), dt=dt,
+    RESPONSE_CALLS[-1]['got'] = (sky_colatitude, sky_longitude, epoch, dt)
+    # Sky-dependent gain, so a sky change reaches the likelihood.
+    gain = 1 + 0.1*np.cos(sky_colatitude) + 0.05*np.sin(sky_longitude)
+    return SimpleNamespace(channels=gain*np.asarray([hp, hc, hp + hc]), dt=dt,
                            epoch_seconds=epoch, metadata={'fake': True})
 
 
 @pytest.fixture
 def fake_backends(monkeypatch):
     FakeAdapter.calls = 0
+    FakeAdapter.epoch_by_dist = {}
+    RESPONSE_CALLS.clear()
     monkeypatch.setattr(few_adapter, 'FEWConfig', SimpleNamespace(
         from_dict=lambda d: SimpleNamespace(epoch_reference=d['epoch_reference'],
                                             n_samples=d['n_samples'])))
@@ -94,6 +106,24 @@ def test_main_writes_closed_form_distance_likelihoods(fake_backends, tmp_path):
     got = {r['id']: r['log_likelihood'] for r in result['trials']}
     assert got == pytest.approx(expected)
     assert FakeAdapter.calls == 4
+    assert all(call['got'] == call['expect'] for call in RESPONSE_CALLS)
+
+
+def test_each_trial_reaches_the_response_with_its_own_sky(fake_backends):
+    trials = [{'id': 'sky', 'changes': {'qS': 1.3, 'phiS': 2.4}}]
+    result = cli.run_fixture(fixture(trials=trials))
+    assert [call['got'] for call in RESPONSE_CALLS] == [call['expect'] for call in RESPONSE_CALLS]
+    assert RESPONSE_CALLS[-1]['got'][:2] == (1.3, 2.4)
+    gain = lambda colat, lon: 1 + 0.1*np.cos(colat) + 0.05*np.sin(lon)
+    ratio = gain(1.3, 2.4) / gain(1.0, 2.0)
+    assert result['trials'][0]['log_likelihood'] == pytest.approx(
+        -.5*TARGET_SNR**2*(1 - ratio)**2)
+
+
+def test_trial_with_different_response_epoch_is_refused(fake_backends):
+    FakeAdapter.epoch_by_dist = {2.0: 40.}
+    with pytest.raises(ValueError, match='sampling/epoch differs'):
+        cli.run_fixture(fixture())
 
 
 def test_main_refuses_existing_output_or_missing_directory_before_running(
@@ -127,6 +157,8 @@ def test_main_leaves_no_file_when_serialization_fails(monkeypatch, tmp_path):
     ({'noise': {'kind': 'synthetic_independent_white', 'psd_levels': [1., 1., 1.],
                 'target_snr': 5.}}, 'complete synthetic white noise'),
     ({'waveform': {'epoch_reference': 'other', 'n_samples': N}}, 'epoch_reference'),
+    ({'waveform': {'epoch_reference': 'pinned equal-arm orbit t=0', 'n_samples': 16385}},
+     '16384'),
 ])
 def test_run_fixture_refuses_before_generating(fake_backends, overrides, message):
     with pytest.raises(ValueError, match=message):

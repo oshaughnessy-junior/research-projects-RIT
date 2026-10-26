@@ -69,7 +69,7 @@ setuptools.setup(
    extras_require={
         # EMRI direct likelihood (RIFT.LISA.emri_direct_cli). fastemriwaveforms 2.2.0
         # publishes wheels for Python 3.12 only, so these extras fail to resolve on
-        # 3.10/3.11. lisaanalysistools 1.2.8 itself requires h5py<3.15.
+        # 3.10/3.11. fastlisaresponse 1.1.17 itself requires h5py<3.15.
         'emri-few': ['fastemriwaveforms==2.2.0'],
         'emri-response': ['fastemriwaveforms==2.2.0', 'fastlisaresponse==1.1.17',
                           'lisaanalysistools==1.2.8'],
