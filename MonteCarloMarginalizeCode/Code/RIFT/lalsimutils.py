@@ -937,38 +937,15 @@ class ChooseWaveformParams:
             self.lambda1, self.lambda2 = tidal_lambda_from_tilde(self.m1, self.m2, Lt, dLt)
             return self
         if p == 'chieff_aligned':
-            chieff = self.extract_param('xi')
-            chieff_new  = val
-            mtot = self.extract_param('mtot')
-            m1 = self.extract_param('m1')
-            m2 = self.extract_param('m2')
-            if np.abs(m1/m2 -1) > 1e-5:
-            # only works for aligned system. Note aligned convention changes from iteration to iteration -- will eventually be aligned with z, but..
-            # This assumes chiminus is a good and useful parameter.  
-            # This parameterization was designed to be more stable for extreme mass ratio systems, where the usual chi- becomes highly degenerate
-            # Note that by construction, in the limit of large mass ratio, chi1 -> xi and chi2 -> - chiminus, so the parameterization is not degenerate
-            # Note we have chosen an exchange-antisymmetric combination (!), changing from prior use
-            # Note that this transformation can as a side effect change spins to be > 1
-# {(m1 c1 +     m2 c2 ) == (m1 + m2) \[Xi], (m2 c1 - m1 c2)/(m1 +      m2) == \[Chi]Diff}
-# {c1, c2} /. Solve[%, {c1, c2}][[1]] // Simplify
-# Collect[%[[2]], {\[Xi], \[Chi]Diff}]
-# % - \[Xi] // Simplify // FullSimplify
-                chi1 = self.s1z
-                chi2 = self.s2z
-                chiminus =  (m2*chi1 - m1*chi2)/(m1 + m2)  # change to be consistent with the 'chiMinus' use elsewhere, avoid extremes
-                # Solve equations for M xi, M chiminus.  
-                chi1_new = (m1+m2)/(m1**2+m2**2) * (m1*chieff_new + m2*chiminus)
-                chi2_new = (m1+m2)/(m1**2+m2**2) * (m2*chieff_new + m1*chiminus)
-#                chi1_new = chieff_new + (m1 - m2)*m2*(chieff_new + chiminus)/(m1**2 + m2**2)
-#                chi2_new = chieff_new - (m1 - m2)*m1*(chieff_new + chiminus)/(m1**2 + m2**2)
-                self.s1z = chi1_new
-                self.s2z = chi2_new
-                #self.assign_param('chi1', chi1_new)
-                #self.assign_param('chi2', chi2_new)
-            else:
-                # for equal mass, require them to have the same value
-                self.assign_param('chi1', chieff_new)
-                self.assign_param('chi2', chieff_new)                
+            # Assign xi = (m1 s1z + m2 s2z)/M holding chiminus = (m2 s1z - m1 s2z)/M fixed.
+            # Exchange-antisymmetric; for large mass ratio s1z -> xi, s2z -> -chiminus.  Can give |s_iz| > 1.
+            m1 = self.m1
+            m2 = self.m2
+            mtot = m1 + m2
+            chiminus = (m2*self.s1z - m1*self.s2z)/mtot
+            norm = mtot/(m1**2 + m2**2)
+            self.s1z = norm*(m1*val + m2*chiminus)
+            self.s2z = norm*(m2*val - m1*chiminus)
             return self
         # Soichiro's coordinates : mu1, mu2, q_mu, chi2z_mu
         if p == 'mu1':
