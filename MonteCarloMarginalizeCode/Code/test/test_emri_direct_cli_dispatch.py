@@ -159,6 +159,9 @@ def test_main_leaves_no_file_when_serialization_fails(monkeypatch, tmp_path):
     ({'waveform': {'epoch_reference': 'other', 'n_samples': N}}, 'epoch_reference'),
     ({'waveform': {'epoch_reference': 'pinned equal-arm orbit t=0',
                    'n_samples': cli.MAX_WAVEFORM_SAMPLES + 1}}, 'limited to'),
+    # Literal pin: a cap raised to "no cap" must fail this case.
+    ({'waveform': {'epoch_reference': 'pinned equal-arm orbit t=0', 'n_samples': 32769}},
+     'limited to 32768 waveform samples'),
 ])
 def test_run_fixture_refuses_before_generating(fake_backends, overrides, message):
     with pytest.raises(ValueError, match=message):
