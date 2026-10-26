@@ -258,12 +258,15 @@ def main(argv=None):
         parser.error('--max-points must be between 1 and 64')
     if args.output.exists():
         parser.error('output already exists; preserve previous evidence')
+    if not args.output.parent.is_dir():
+        parser.error('output directory does not exist')
     raw = args.fixture.read_bytes()
     result = run_fixture(json.loads(raw), max_points=args.max_points)
     result['fixture_sha256'] = hashlib.sha256(raw).hexdigest()
+    # Serialize before creating the file: a non-JSON value then leaves no file.
+    text = json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + '\n'
     with args.output.open('x') as stream:
-        json.dump(result, stream, indent=2, sort_keys=True, allow_nan=False)
-        stream.write('\n')
+        stream.write(text)
     return 0
 
 
