@@ -22,6 +22,9 @@ It rejects changes to sample count and coverage outside the orbit.
 
 The backend receives `hp+i*hc`. FEW's default complex output is `hp-i*hc`;
 callers using the FEW polarization pair should pass it without another sign flip.
+`test/test_lisa_emri_polarization_basis.py` checks this sign independently: FLR link
+outputs follow e+ = uu - vv, ex = uv + vu with u x v along propagation, and a FEW orbit
+whose angular momentum points at the observer rotates counterclockwise in (u, v).
 The sky input uses ecliptic colatitude and longitude. The response converts
 colatitude to latitude once.
 
