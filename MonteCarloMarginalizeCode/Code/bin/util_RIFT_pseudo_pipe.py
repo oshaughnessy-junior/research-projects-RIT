@@ -715,13 +715,6 @@ parser.add_argument("--force-zoomwhirl-grids",action='store_true',help="Eliminat
 parser.add_argument("--force-hyperbolic-22", action='store_true', help='Forces just the 22 modes for hyperbolic waveforms')
 opts=  parser.parse_args()
 
-_TD_GAP_REFUSAL = (" FAILURE: --internal-ile-td-gap is disabled (the gap-marginalized td-toeplitz "
-          "likelihood is not yet regularized for fMax < fNyq).  To excise data, use "
-          "--internal-ile-inner-product td-gs with disjoint --internal-ile-td-piece intervals.")
-if opts.internal_ile_td_gap:
-    print(_TD_GAP_REFUSAL)
-    sys.exit(1)
-
 # Resolve the sub-sample stencil request IMMEDIATELY, so a bare flag / retired 'True' / typo
 # fails here rather than being forwarded into a workflow build.  Value unused at this point --
 # the call is for its validation side effect; the helper resolves it again for the emission.
@@ -801,6 +794,18 @@ if (opts.use_ini):
         for item in rift_items:
             val = rift_items[item].strip()
             ile_condor_commands.append([item, val])
+
+# --internal-ile-td-gap is refused, from the command line or the ini above.
+_TD_GAP_REFUSAL = (" FAILURE: --internal-ile-td-gap is disabled (the gap-marginalized td-toeplitz "
+                   "likelihood is not yet regularized for fMax < fNyq).  To excise data, use "
+                   "--internal-ile-inner-product td-gs with --internal-ile-td-mref M and disjoint "
+                   "--internal-ile-td-piece START,END intervals (units of M_ref) covering the data "
+                   "to KEEP.  Pieces are independent blocks: correlations across the gap are dropped.")
+def _td_gap_requested(_v):
+    return bool(_v if isinstance(_v, (list, tuple)) else _v is not None)
+if _td_gap_requested(opts.internal_ile_td_gap):
+    print(_TD_GAP_REFUSAL)
+    sys.exit(1)
 
 # After the ini, which can set the mode.
 if eccentric_phase_pipeline.requested(opts):

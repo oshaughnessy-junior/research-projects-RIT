@@ -1442,7 +1442,7 @@ class TDInnerProductFactory(object):
         #   * template_start/end     -> template-frame truncation offsets (ILE
         #                               --td-analysis-start / --td-analysis-end), seconds,
         #                               geocenter, relative to the template peak reference
-        #   * gaps                   -> list of (t0, t1) seconds (ILE --td-gap, repeatable)
+        #   * gaps                   -> list of (t0, t1) seconds (library only; ILE --td-gap is refused)
         # NOTE for the full end-to-end ILE segment run (plan T7): the per-detector geocenter
         # placement (segment_start_index derived from the event time, gap_time_origin from
         # the detector epoch, and the segment margin = data-integration-window-half + Earth

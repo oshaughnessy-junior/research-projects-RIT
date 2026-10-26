@@ -29,7 +29,7 @@ def test_refuse_fd_only_path_with_td(flags, message, tmp_path):
 
 @pytest.mark.parametrize("flags", [
     ["--td-analysis-start", "0"], ["--td-analysis-end", ".1"],
-    ["--td-gap", "-.1,.1"], ["--td-acf-duration", "1"],
+    ["--td-acf-duration", "1"],
     ["--td-solver", "pcg"], ["--glitch-basis", "H1:0,.1,40,100"],
     ["--glitch-basis-file", "H1:unused.npz"],
 ])
@@ -96,18 +96,20 @@ def test_pipeline_basis_transfer_names(tmp_path, same_source, osg, existing_aux,
 
 
 # --------------------------------------------------------------------------- --td-gap refusal
-def test_ile_refuses_td_gap(tmp_path):
+@pytest.mark.parametrize("inner_product", ["fd-diagonal", "td-toeplitz", "td-gs"])
+def test_ile_refuses_td_gap(inner_product, tmp_path):
     """The gap-marginalized td-toeplitz likelihood is regularization-dependent: refuse it."""
     code = Path(__file__).resolve().parents[1]
     env = dict(os.environ, GW_SURROGATE="", OMP_NUM_THREADS="1",
                OPENBLAS_NUM_THREADS="1", MKL_NUM_THREADS="1", PYTHONPATH=str(code))
     proc = subprocess.run([sys.executable, str(code / "bin/integrate_likelihood_extrinsic_batchmode"),
-                           "--internal-ile-inner-product", "td-toeplitz", "--td-gap", "-.1,.1"],
+                           "--internal-ile-inner-product", inner_product, "--td-gap", "-.1,.1"],
                           cwd=tmp_path, env=env, text=True, stdout=subprocess.PIPE,
                           stderr=subprocess.STDOUT, timeout=120)
     assert proc.returncode != 0
     assert "--td-gap is disabled" in proc.stdout, proc.stdout[-3000:]
     assert "--internal-ile-inner-product td-gs" in proc.stdout
+    assert "--td-mref" in proc.stdout
 
 
 def test_pseudo_pipe_refuses_td_gap_on_the_command_line(tmp_path):
