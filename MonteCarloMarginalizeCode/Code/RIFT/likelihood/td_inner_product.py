@@ -88,14 +88,31 @@ from RIFT.likelihood import td_rank_augmentation as tra
 # the optional iterative (tdanalysis PCG) path.  Mirrors td_rank_augmentation._MAX_DENSE_N.
 _MAX_DENSE_N = 1 << 14
 
-# Relative eigenvalue cutoff for the pseudo-inverse of the gap block K_GG.  Exactly-null
-# modes contribute nothing, but with fMax < fNyq K_GG also has near-null modes whose
-# contribution is O(1), so the gap marginal depends on this cutoff there.  ILE --td-gap is
-# refused until that regularization is defined.
-_GAP_RCOND = 1e-12
+# Gap marginalization noise model.  The band-limited weight gives K_GG near-null modes,
+# so the gap marginal uses a fill precision whose out-of-band (and zero-weight) bins carry
+# the td-gs wall: tdanalysis PSDToAutocorr's wall value at its default
+# target_condition_number, w_out = min(max(w_band) / (kappa/2), min(w_band)).  In-band
+# weights are not floored, so cond(K_fill) = max(kappa/2, in-band dynamic range).  The
+# model holds only if the data's out-of-band noise lies below the wall, so gapped data
+# must be high-passed (``data_highpass``).
+_GAP_KAPPA = 1e8
+# Order of the zero-phase Butterworth data high-pass (tdanalysis highpass_zero_phase), and
+# the smallest power response it may have at fLow, where templates are not filtered.
+_GAP_HIGHPASS_ORDER = 8
+_GAP_HIGHPASS_MIN_RESPONSE = 0.999
+# Several coupled gaps are Cholesky-factored densely: at most this many gap samples in total.
+_GAP_MAX_DENSE = 1 << 13
 
 # Frequency tolerance for deltaF comparisons, matching lalsimutils.TOL_DF spirit.
 _TOL_DF = 1e-6
+
+
+def _highpass_response(f, f_corner):
+    """Power response 1/(1 + (fc/f)^(2 order)) of the zero-phase Butterworth high-pass."""
+    f = np.abs(np.asarray(f, dtype=float))
+    with np.errstate(divide="ignore"):
+        r = 1.0 / (1.0 + (f_corner / f) ** (2 * _GAP_HIGHPASS_ORDER))
+    return np.where(f > 0, r, 0.0)
 
 
 class ToeplitzInnerProductContext(object):
@@ -126,6 +143,9 @@ class ToeplitzInnerProductContext(object):
         array / REAL8FrequencySeries to be indexed.  Mirrors lsu.InnerProduct.
     N : int or None
         Two-sided segment length.  If None it is derived as len2side = 2*(round(fNyq/deltaF)).
+    data_highpass : float or None
+        Corner [Hz] of the zero-phase high-pass applied to the data stream before a gapped
+        overlap (see ``highpass_gapped_data``).  Required when the overlap has gaps.
     """
 
     def __init__(self, psd, deltaF, fNyq, fLow, fMax=None,
@@ -133,13 +153,21 @@ class ToeplitzInnerProductContext(object):
                  segment_duration=None, segment_start_index=0,
                  gaps=None, gap_time_origin=None, gap_sample_ranges=None,
                  template_start_offset=None, template_end_offset=None,
-                 template_ref_time=None, spd_tol=1e-8, acf=None):
+                 template_ref_time=None, spd_tol=1e-8, acf=None, data_highpass=None):
         self.deltaF = float(deltaF)
         self.fNyq = float(fNyq)
         self.fLow = float(fLow)
         self.fMax = float(fMax) if fMax is not None else float(fNyq)
         if self.fMax > self.fNyq + _TOL_DF:
             raise ValueError("fMax ({0}) must be <= fNyq ({1}).".format(self.fMax, self.fNyq))
+        self.data_highpass = None if data_highpass is None else float(data_highpass)
+        if self.data_highpass is not None and not (
+                0.0 < self.data_highpass
+                and _highpass_response(self.fLow, self.data_highpass) >= _GAP_HIGHPASS_MIN_RESPONSE):
+            raise ValueError(
+                "data high-pass corner {0} Hz: its power response at fLow={1} Hz must be >= {2} "
+                "because templates are not filtered".format(
+                    self.data_highpass, self.fLow, _GAP_HIGHPASS_MIN_RESPONSE))
 
         self.len1side = int(self.fNyq / self.deltaF) + 1
         self.len2side = 2 * (self.len1side - 1)
@@ -259,12 +287,15 @@ class ToeplitzInnerProductContext(object):
         (it is commonly non-SPD after truncation for sharp lines -- see ``is_spd``).
 
         Gaps.  The gap samples G are marginalized: the retained-sample precision is
-        ``(C_RR)^-1`` with ``C = K_seg^-1``, i.e. the Schur complement
-        ``K_RR - K_RG K_GG^+ K_GR``.  Cropping ``K_seg`` to ``K_seg[R][:,R]`` instead gives
-        ``(C^-1)_RR``, which mis-weights the data near the gap by several noise sigma when
-        the PSD has lines.  ``_apply_seg`` applies the Schur complement as inpainting: fill
-        the gap with ``x = -K_GG^+ (K v0)_G`` so that ``K (v0 + E_G x)`` vanishes on G.
-        ``dense_retained_operator`` returns the same operator densely.
+        ``(C_RR)^-1`` with ``C = K_fill^-1``, i.e. the Schur complement
+        ``K_RR - K_RG K_GG^-1 K_GR`` of ``K_fill``.  ``K_fill`` is ``K_seg`` with the td-gs
+        wall weight on out-of-band bins (see ``_GAP_KAPPA``); the band-limited ``K_seg``
+        itself would leave the marginal set by a pseudo-inverse cutoff.  Cropping ``K_seg``
+        to ``K_seg[R][:,R]`` instead gives ``(C^-1)_RR``, which mis-weights the data near
+        the gap by several noise sigma when the PSD has lines.  ``_apply_seg`` applies the
+        Schur complement as inpainting: fill the gap with ``x = -K_GG^-1 (K v0)_G`` so that
+        ``K (v0 + E_G x)`` vanishes on G.  ``dense_retained_operator`` returns the same
+        operator densely.
 
         Parameters
         ----------
@@ -314,7 +345,10 @@ class ToeplitzInnerProductContext(object):
                 self.retain_mask[i0c:i1c] = False
         self._gap_ranges = gap_ranges
         self._gap_idx = None if self.retain_mask.all() else np.nonzero(~self.retain_mask)[0]
-        self._gap_Q = None
+        edges = np.diff(np.concatenate(([0], (~self.retain_mask).astype(np.int8), [0])))
+        self._gap_runs = list(zip(np.nonzero(edges == 1)[0], np.nonzero(edges == -1)[0]))
+        self._kappa_fill = None
+        self._gap_cho = None
 
         # Is a non-trivial (truncated or gapped) segment active?
         self.segment_active = (
@@ -404,16 +438,73 @@ class ToeplitzInnerProductContext(object):
             return self._Kseg.dot(v.real) + 1j * self._Kseg.dot(v.imag)
         return self._Kseg.dot(v)
 
+    def fill_weights(self):
+        """One-sided weight of K_fill: the band weight, with the td-gs wall elsewhere."""
+        w = self.weights
+        band = w > 0
+        w_out = min(w[band].max() / (0.5 * _GAP_KAPPA), w[band].min())
+        return np.where(band, w, w_out)
+
     def _ensure_gap_solve(self):
-        """Eigendecompose the gap block K_GG once, for the inpainting solve in _apply_seg."""
-        if self._gap_Q is not None:
+        """Build K_fill's first column on the segment and its FFT embedding, once."""
+        if self._kappa_fill is not None:
             return
-        G = self._gap_idx
-        # K_seg[i, j] = kappa[|i - j|] for both the full (circulant) and truncated segment
-        lam, Q = np.linalg.eigh(self.kappa[np.abs(G[:, None] - G[None, :])])
-        keep = np.abs(lam) > _GAP_RCOND * np.abs(lam).max()
-        self._gap_Q = Q[:, keep]
-        self._gap_lam_inv = 1.0 / lam[keep]
+        n = self.N_seg
+        # K_fill[i, j] = col[|i - j|] for both the full (circulant) and truncated segment
+        col = np.fft.irfft(self.fill_weights(), n=self.len2side)[:n]
+        self._kappa_fill = col
+        self._fill_fft = np.fft.fft(np.concatenate([col, [0.0], col[:0:-1]]))
+
+    def _apply_fill(self, v):
+        """K_fill v on the segment, by zero-padded FFT."""
+        n = self.N_seg
+        y = np.fft.ifft(self._fill_fft * np.fft.fft(v, n=2 * n))[:n]
+        return y if np.iscomplexobj(v) else y.real
+
+    def _solve_gap(self, b):
+        """Return K_fill[G, G]^-1 b.
+
+        One contiguous gap is a symmetric Toeplitz block, solved by Levinson recursion in
+        O(g^2) time and O(g) memory.  Several gaps couple and are not Toeplitz together:
+        their block is Cholesky-factored once (at most _GAP_MAX_DENSE gap samples in total).
+        """
+        rhs = np.column_stack([b.real, b.imag]) if np.iscomplexobj(b) else b
+        if len(self._gap_runs) == 1:
+            x = scipy.linalg.solve_toeplitz(self._kappa_fill[:len(b)], rhs)
+        else:
+            if self._gap_cho is None:
+                G = self._gap_idx
+                if G.size > _GAP_MAX_DENSE:
+                    raise NotImplementedError(
+                        "{0} gaps totalling {1} samples: the coupled gap solve is dense and "
+                        "limited to {2} samples".format(len(self._gap_runs), G.size,
+                                                        _GAP_MAX_DENSE))
+                Gi = G.astype(np.int32)
+                self._gap_cho = scipy.linalg.cho_factor(
+                    self._kappa_fill[np.abs(Gi[:, None] - Gi[None, :])], overwrite_a=True)
+            x = scipy.linalg.cho_solve(self._gap_cho, rhs)
+        return x[:, 0] + 1j * x[:, 1] if np.iscomplexobj(b) else x
+
+    def highpass_gapped_data(self, x_td):
+        """Zero-phase high-pass of a full-length data stream, for the gap marginal.
+
+        The fill precision gives out-of-band data a small weight, and a gap couples it into
+        the band, so data with out-of-band power above the td-gs wall (seismic noise below
+        fLow in raw strain) would bias the gapped overlap.  The power response is that of
+        tdanalysis ``highpass_zero_phase`` (order-8 Butterworth, filtered forward and back),
+        applied as an FFT multiplication on the whole stream.  Like the circulant operator
+        itself, it treats the stream as periodic, so a gapped run sees no more out-of-band
+        data at the stream ends than the ungapped operator does; ``sosfiltfilt`` transients
+        add more on Tukey-windowed data.
+        """
+        if self.data_highpass is None:
+            raise ValueError("a gapped td-toeplitz overlap needs data_highpass (ILE --td-highpass): "
+                             "out-of-band data power above the gap model's wall biases the "
+                             "gap marginal")
+        x = np.asarray(x_td)
+        f = np.fft.fftfreq(x.shape[-1], d=self.deltaT)
+        y = np.fft.ifft(np.fft.fft(x) * _highpass_response(f, self.data_highpass))
+        return y if np.iscomplexobj(x) else y.real
 
     def _apply_seg(self, v):
         """Apply the segment precision operator, with the gap samples marginalized.
@@ -427,10 +518,10 @@ class ToeplitzInnerProductContext(object):
         G = self._gap_idx
         v = np.array(v, copy=True)
         v[G] = 0.0
-        Kv = self._apply_seg_cropped(v)
+        Kv = self._apply_fill(v)
         fill = np.zeros_like(Kv)
-        fill[G] = -self._gap_Q.dot(self._gap_lam_inv * self._gap_Q.T.dot(Kv[G]))
-        Kv = Kv + self._apply_seg_cropped(fill)
+        fill[G] = -self._solve_gap(Kv[G])
+        Kv = Kv + self._apply_fill(fill)
         Kv[G] = 0.0
         return Kv
 
@@ -509,20 +600,25 @@ class ToeplitzInnerProductContext(object):
         return {"U0": U0, "U_minus": Um, "U_plus": Up, "rel_var": float(rel), "n_shift": n}
 
     def dense_retained_operator(self):
-        """Dense marginal retained-sample precision K_RR - K_RG K_GG^+ K_GR (gap validation).
+        """Dense marginal retained-sample precision K_RR - K_RG K_GG^-1 K_GR (gap validation).
 
-        Returns ``(Kret, retained_indices)``.  ``conj(u[R])^T Kret v[R]`` equals
-        ``segment_dot_td`` to rounding error.
+        K is ``K_fill`` when there is a gap, else ``K_seg``.  Returns
+        ``(Kret, retained_indices)``.  ``conj(u[R])^T Kret v[R]`` equals ``segment_dot_td``
+        to rounding error.
         """
-        if self._Kseg is None:
-            raise NotImplementedError("K_seg not built densely for N_seg={0}".format(self.N_seg))
         R = np.nonzero(self.retain_mask)[0]
-        Kret = self._Kseg[np.ix_(R, R)]
-        if self._gap_idx is not None:
-            self._ensure_gap_solve()
-            KRG = self._Kseg[np.ix_(R, self._gap_idx)].dot(self._gap_Q)
-            Kret = Kret - (KRG * self._gap_lam_inv).dot(KRG.T)
-        return Kret, R
+        if self._gap_idx is None:
+            if self._Kseg is None:
+                raise NotImplementedError(
+                    "K_seg not built densely for N_seg={0}".format(self.N_seg))
+            return self._Kseg[np.ix_(R, R)], R
+        if self.N_seg > _MAX_DENSE_N:
+            raise NotImplementedError("dense K_fill not built for N_seg={0}".format(self.N_seg))
+        self._ensure_gap_solve()
+        K = scipy.linalg.toeplitz(self._kappa_fill)
+        G = self._gap_idx
+        KRG = K[np.ix_(R, G)]
+        return K[np.ix_(R, R)] - KRG.dot(np.linalg.solve(K[np.ix_(G, G)], KRG.T)), R
 
     # ------------------------------------------------------------------ builders
 
@@ -1281,7 +1377,10 @@ class ToeplitzComplexOverlap(object):
         if cached is not None and cached[0] is data:
             kd_f = cached[1]
         else:
-            data_seg = ctx._segment_window(_ifft_to_td(data))   # windowed + gap-masked
+            data_td = _ifft_to_td(data)
+            if ctx._gap_idx is not None and not ctx._use_gs:
+                data_td = ctx.highpass_gapped_data(data_td)     # before the gap mask
+            data_seg = ctx._segment_window(data_td)             # windowed + gap-masked
             Kd_seg = ctx._apply_seg(data_seg)                   # length N_seg
             # Zero on the gap: the shifted template need not vanish there.
             if not ctx.retain_mask.all():
@@ -1391,8 +1490,9 @@ class TDInnerProductFactory(object):
                  gaps=None, segment_start_index=0, gap_time_origin=None,
                  glitch_specs=None, glitch_sigma="profile", glitch_basis_files=None,
                  glitch_prior_mode="m2", glitch_sigma_min=None,
-                 window_shape=None):
+                 window_shape=None, data_highpass=None):
         self.solver = solver
+        self.data_highpass = data_highpass
         # population-prior detection-conditioned prior mode {m2,signmix,pinned} (default m2 =
         # zero-mean Gaussian behavior, bit-identical) and the presence-conditioning amplitude floor
         # sigma_g_min (strain; default None = code default bounds).  Both apply only to a
@@ -1442,7 +1542,8 @@ class TDInnerProductFactory(object):
         #   * template_start/end     -> template-frame truncation offsets (ILE
         #                               --td-analysis-start / --td-analysis-end), seconds,
         #                               geocenter, relative to the template peak reference
-        #   * gaps                   -> list of (t0, t1) seconds (library only; ILE --td-gap is refused)
+        #   * gaps                   -> list of (t0, t1) seconds (ILE --td-gap, repeatable)
+        #   * data_highpass          -> data high-pass corner [Hz] for gaps (ILE --td-highpass)
         # NOTE for the full end-to-end ILE segment run (plan T7): the per-detector geocenter
         # placement (segment_start_index derived from the event time, gap_time_origin from
         # the detector epoch, and the segment margin = data-integration-window-half + Earth
@@ -1537,7 +1638,8 @@ class TDInnerProductFactory(object):
                 gaps=self.gaps, gap_time_origin=gap_origin,
                 template_start_offset=self.template_start_offset,
                 template_end_offset=self.template_end_offset,
-                template_ref_time=self._template_ref_time)
+                template_ref_time=self._template_ref_time,
+                data_highpass=self.data_highpass)
             if reg is not None and reg["event_time_geo"] is not None:
                 ctx._template_data_time_origin = (float(reg["event_time_geo"])
                                                  - float(reg["data_fd"].epoch))

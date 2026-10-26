@@ -43,11 +43,16 @@ integrate_likelihood_extrinsic_batchmode \
   --internal-ile-inner-product td-toeplitz [ordinary data and waveform options]
 ```
 
-`--td-solver {auto,dense,pcg}`, `--td-acf-duration` and `--td-analysis-start/end`
-configure the experimental operator. Temporal cut offsets are seconds relative to
-the template peak. `--td-gap` is refused at startup: its gap marginal depends on the
-K_GG pseudo-inverse cutoff when fMax < fNyq. To excise data use td-gs with disjoint
-`--td-piece` intervals. A single dominant-mode peak sets
+`--td-solver {auto,dense,pcg}`, `--td-acf-duration`, `--td-analysis-start/end`
+and repeatable `--td-gap tstart,tend` configure the experimental operator. Temporal
+cut offsets are seconds relative to the template peak. Gap offsets are geocentric
+seconds relative to the event; the factory resolves their data-frame placement
+from each registered detector stream epoch. Gap samples are marginalized under a
+noise model that keeps the band weight and gives out-of-band bins the td-gs wall
+(`_GAP_KAPPA`); the band-limited weight alone leaves the marginal ill-posed when
+fMax < fNyq. The gap couples out-of-band data into the band, so `--td-gap`
+requires `--td-highpass` (e.g. 10 Hz), which high-passes the data before the gap
+mask as td-gs does. A single dominant-mode peak sets
 the template-cut reference for all modes and detectors at each intrinsic point.
 `util_RIFT_pseudo_pipe.py` forwards the corresponding `--internal-ile-td-*` flags.
 The separate LISA driver is not extended; its drift ledger records the TDI-specific
