@@ -310,7 +310,8 @@ lalIMRPhenomXPNR = getattr(lalsim, 'IMRPhenomXPNR', -19)
 
 pending_FD_approx = ['IMRPhenomXP_NRTidalv2','IMRPhenomXP_NRTidalv3']
 pending_approx_code = {}
-pending_default_code = -19
+# Below every other sentinel in this module (lowest: lalIMRPhenomTHM = -22).
+pending_default_code = -23
 for name in pending_FD_approx:
     if hasattr(lalsim, name):
         pending_approx_code[name] = getattr(lalsim, name)
@@ -340,8 +341,7 @@ except:
 # hlmoft_FromFD_dict branch, and if left out of the ChooseTDModes list they fall
 # through to a fallback that conditions them with a different epoch/merger placement
 # (which breaks time-sensitive likelihoods).
-# Sentinels: -2..-19 are used above and the pending_FD_approx block can consume
-# -19,-20, so start at -21.
+# Sentinels: -1..-19 are used above; the pending_FD_approx block starts at -23.
 try:
    lalIMRPhenomT = lalsim.IMRPhenomT
    lalIMRPhenomTHM = lalsim.IMRPhenomTHM
