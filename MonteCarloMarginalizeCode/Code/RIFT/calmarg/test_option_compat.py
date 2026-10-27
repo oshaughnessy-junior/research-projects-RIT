@@ -258,6 +258,18 @@ def test_burn_in_nmax_with_neff_is_accepted():
     assert oc.refusals_from_opts(_honoured(calibration_burn_in_neff=100.)) == []
 
 
+def test_bank_per_point_with_the_pilot_is_refused():
+    """The pilot sums responsibilities across points by realization index; a per-point
+    bank breaks that alignment.  Its nearest legal neighbours, each option alone, pass."""
+    r = oc.refusals_from_opts(_honoured(calibration_bank_per_point=True,
+                                        calibration_dump_responsibilities='resp.npz'))
+    assert len(r) == 1 and r[0].kind == oc.KIND_UNIMPLEMENTED, r
+    assert r[0].options == ('--calibration-bank-per-point',
+                            '--calibration-dump-responsibilities'), r
+    assert oc.refusals_from_opts(_honoured(calibration_bank_per_point=True)) == []
+    assert oc.refusals_from_opts(_honoured(calibration_dump_responsibilities='resp.npz')) == []
+
+
 # ------------------------------------------------------ R6: opt-ins without the envelope
 
 def test_each_opt_in_without_the_envelope_directory_is_refused():
@@ -414,6 +426,9 @@ def test_driver_refuses_through_the_real_cli():
         (['--calibration-envelope-directory', ENV_DIR,
           '--calibration-burn-in-nmax', '4000'] + _HONOURED_CLI,
          '--calibration-burn-in-neff', 'no burn-in for the cap to cap'),
+        (['--calibration-envelope-directory', ENV_DIR, '--calibration-bank-per-point',
+          '--calibration-dump-responsibilities', '/tmp/resp_unused.npz'] + _HONOURED_CLI,
+         '--calibration-bank-per-point', 'pilot needs one shared bank'),
     ]
     for args, expect, why in cases:
         out = _run(args)

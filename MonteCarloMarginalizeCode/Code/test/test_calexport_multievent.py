@@ -143,6 +143,7 @@ def _check_exports(out, proc):
 def test_every_point_exports_its_own_fair_draws(fixture_dir):
     proc = _run_driver(fixture_dir)
     assert proc.returncode == 0, proc.stdout[-4000:]
+    assert "[calmarg bank]" not in proc.stdout   # default: one shared bank, no per-point redraw
     _check_exports(fixture_dir["outdir"], proc)
 
 

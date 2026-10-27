@@ -63,6 +63,10 @@ fi
 # must hold that point's own fair draws.  One driver subprocess on synthetic data, ~3 min.
 ( cd "$CODE/test" && "$PY" -m pytest -q test_calexport_multievent.py )
 
+# --calibration-bank-per-point: per-point banks differ, reproduce under --seed, and the
+# redraw is unreachable with the option off.  Includes one driver subprocess, ~3 min.
+( cd "$CODE/test" && "$PY" -m pytest -q test_calmarg_bank_per_point.py )
+
 # Source adapters retain generator conditioning and physical waveform epochs.
 ( cd "$CODE/test" && "$PY" -m pytest -q test_calmarg_source_conditioning_epoch.py \
     test_calmarg_rift_source.py )
