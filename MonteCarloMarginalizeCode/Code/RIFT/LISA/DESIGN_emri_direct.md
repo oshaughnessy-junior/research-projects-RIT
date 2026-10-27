@@ -26,7 +26,7 @@ Waveform, response, and parameter classes reject unsupported settings.
 The waveform epoch reference must be `pinned equal-arm orbit t=0`.
 The response requires its zero input epoch and discards declared padding.
 Every trial must produce the injection's retained sampling, epoch and shape.
-The first interface caps waveform generation at 16384 samples and defaults
+The interface caps waveform generation at `MAX_WAVEFORM_SAMPLES` (32768) and defaults
 to eight trial points. The command permits at most 64 points.
 
 Noise fields are `kind`, `psd_levels`, `target_snr`, `fmin_hz`, and `fmax_hz`.
@@ -80,6 +80,6 @@ the periodic Hann, with no fitted window parameters or normalization change.
 digests, retained start, duration, and count. Likelihood channel hashes describe
 the windowed observable. Noise is an artificial independent Fourier noise model
 **after** the declared window; this does not model the covariance induced by
-windowing a physical stationary time series. The 16384-sample CLI cap and
+windowing a physical stationary time series. The CLI sample cap and
 waveform/response guards remain in force. This extension supplies an explicitly
 separate experiment; it supplies no numerical convergence evidence by itself.

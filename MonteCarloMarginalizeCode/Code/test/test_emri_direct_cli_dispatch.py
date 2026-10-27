@@ -157,10 +157,21 @@ def test_main_leaves_no_file_when_serialization_fails(monkeypatch, tmp_path):
     ({'noise': {'kind': 'synthetic_independent_white', 'psd_levels': [1., 1., 1.],
                 'target_snr': 5.}}, 'complete synthetic white noise'),
     ({'waveform': {'epoch_reference': 'other', 'n_samples': N}}, 'epoch_reference'),
-    ({'waveform': {'epoch_reference': 'pinned equal-arm orbit t=0', 'n_samples': 16385}},
-     '16384'),
+    ({'waveform': {'epoch_reference': 'pinned equal-arm orbit t=0',
+                   'n_samples': cli.MAX_WAVEFORM_SAMPLES + 1}}, 'limited to'),
+    # Literal pin: a cap raised to "no cap" must fail this case.
+    ({'waveform': {'epoch_reference': 'pinned equal-arm orbit t=0', 'n_samples': 32769}},
+     'limited to 32768 waveform samples'),
 ])
 def test_run_fixture_refuses_before_generating(fake_backends, overrides, message):
     with pytest.raises(ValueError, match=message):
         cli.run_fixture(fixture(**overrides))
     assert FakeAdapter.calls == 0
+
+
+def test_run_fixture_accepts_the_largest_permitted_sample_count(fake_backends):
+    # The dt=5 s Paper 5 fixture needs 26216 samples; the cap must admit it.
+    assert cli.MAX_WAVEFORM_SAMPLES >= 26216
+    config = fixture(waveform={'epoch_reference': 'pinned equal-arm orbit t=0',
+                               'n_samples': cli.MAX_WAVEFORM_SAMPLES})
+    assert cli.run_fixture(config)['status'] == 'COMPLETED'
