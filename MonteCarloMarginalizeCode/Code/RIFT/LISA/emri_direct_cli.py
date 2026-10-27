@@ -23,6 +23,10 @@ def channel_digest(channels):
 
 
 
+# Resource guard, not a physics limit; covers the dt=5 s Paper 5 fixture (26216).
+MAX_WAVEFORM_SAMPLES = 32768
+
+
 def validate_fixture_schema(config):
     """Accept the original rectangle or the separately declared Hann observable."""
     required = {'schema_version', 'waveform', 'response', 'injection', 'trials', 'noise'}
@@ -155,10 +159,8 @@ def evaluate_channel_trials(data, models, *, dt, psd_levels, target_snr,
     return result
 
 
-def run_fixture(config, *, max_points=8, max_waveform_samples=16384):
+def run_fixture(config, *, max_points=8):
     """Generate the real FEW/response path; reject unsupported fixture fields."""
-    if type(max_waveform_samples) is not int or max_waveform_samples not in (16384, 32768):
-        raise ValueError('max_waveform_samples must be exactly 16384 or 32768')
     started = time.monotonic()
     from .few_adapter import EMRIParameters, FEWConfig, FewWaveformAdapter
     from .emri_response import ResponseConfig, equal_arm_aet
@@ -185,8 +187,8 @@ def run_fixture(config, *, max_points=8, max_waveform_samples=16384):
     wave_config = FEWConfig.from_dict(config['waveform'])
     if wave_config.epoch_reference != 'pinned equal-arm orbit t=0':
         raise ValueError('fixture epoch_reference must be pinned equal-arm orbit t=0')
-    if wave_config.n_samples > max_waveform_samples:
-        raise ValueError(f'direct fixture is limited to {max_waveform_samples} waveform samples')
+    if wave_config.n_samples > MAX_WAVEFORM_SAMPLES:
+        raise ValueError(f'direct fixture is limited to {MAX_WAVEFORM_SAMPLES} waveform samples')
     response_config = ResponseConfig.from_dict(config['response'])
     injection = EMRIParameters.from_dict(config['injection'])
     trial_parameters = []
@@ -247,8 +249,6 @@ def run_fixture(config, *, max_points=8, max_waveform_samples=16384):
                    'setup_seconds': setup_finished - started,
                    'evaluation_seconds': time.monotonic() - setup_finished,
                    'elapsed_seconds': time.monotonic() - started})
-    if max_waveform_samples != 16384:
-        result['execution_limits'] = {'max_waveform_samples': max_waveform_samples}
     return result
 
 
@@ -257,8 +257,6 @@ def main(argv=None):
     parser.add_argument('--fixture', required=True, type=Path)
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--max-points', type=int, default=8)
-    parser.add_argument('--max-waveform-samples', type=int, choices=(16384, 32768),
-                        default=16384, help='explicit waveform sample limit (default: 16384)')
     args = parser.parse_args(argv)
     if not 1 <= args.max_points <= 64:
         parser.error('--max-points must be between 1 and 64')
@@ -267,8 +265,7 @@ def main(argv=None):
     if not args.output.parent.is_dir():
         parser.error('output directory does not exist')
     raw = args.fixture.read_bytes()
-    result = run_fixture(json.loads(raw), max_points=args.max_points,
-                         max_waveform_samples=args.max_waveform_samples)
+    result = run_fixture(json.loads(raw), max_points=args.max_points)
     result['fixture_sha256'] = hashlib.sha256(raw).hexdigest()
     # Serialize before creating the file: a non-JSON value then leaves no file.
     text = json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + '\n'

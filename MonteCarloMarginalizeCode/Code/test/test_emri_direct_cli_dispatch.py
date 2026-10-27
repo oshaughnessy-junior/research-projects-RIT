@@ -148,15 +148,10 @@ def test_main_refuses_existing_output_or_missing_directory_before_running(
 def test_main_leaves_no_file_when_serialization_fails(monkeypatch, tmp_path):
     source = tmp_path / 'fixture.json'
     source.write_text('{}')
-    reached = []
-    def not_serializable(config, *, max_points, max_waveform_samples):
-        reached.append((max_points, max_waveform_samples))
-        return {'x': np.float32(1)}
-    monkeypatch.setattr(cli, 'run_fixture', not_serializable)
+    monkeypatch.setattr(cli, 'run_fixture', lambda config, max_points: {'x': np.float32(1)})
     output = tmp_path / 'out.json'
     with pytest.raises(TypeError):
         cli.main(['--fixture', str(source), '--output', str(output)])
-    assert reached == [(8, 16384)]
     assert not output.exists()
 
 
@@ -167,89 +162,47 @@ def test_main_leaves_no_file_when_serialization_fails(monkeypatch, tmp_path):
     ({'noise': {'kind': 'synthetic_independent_white', 'psd_levels': [1., 1., 1.],
                 'target_snr': 5.}}, 'complete synthetic white noise'),
     ({'waveform': {'epoch_reference': 'other', 'n_samples': N}}, 'epoch_reference'),
-    ({'waveform': {'epoch_reference': 'pinned equal-arm orbit t=0', 'n_samples': 16385}},
-     '16384'),
+    ({'waveform': {'epoch_reference': 'pinned equal-arm orbit t=0',
+                   'n_samples': cli.MAX_WAVEFORM_SAMPLES + 1}}, 'limited to'),
+    # Literal pin: a cap raised to "no cap" must fail this case.
+    ({'waveform': {'epoch_reference': 'pinned equal-arm orbit t=0', 'n_samples': 32769}},
+     'limited to 32768 waveform samples'),
 ])
 def test_run_fixture_refuses_before_generating(fake_backends, overrides, message):
     with pytest.raises(ValueError, match=message):
         cli.run_fixture(fixture(**overrides))
     assert FakeAdapter.calls == 0
+    assert FakeAdapter.configs == []
 
 
-@pytest.mark.parametrize('count, limit, accepted', [
-    (16384, None, True), (16385, None, False), (26216, None, False),
-    (16385, 16384, False), (16384, 32768, True), (16385, 32768, True),
-    (26216, 32768, True), (32768, 32768, True), (32769, 32768, False),
-])
-def test_explicit_sample_limit_boundaries_before_adapter(fake_backends, count, limit, accepted):
+def test_run_fixture_accepts_the_largest_permitted_sample_count(fake_backends):
+    # The dt=5 s Paper 5 fixture needs 26216 samples; the cap must admit it.
+    assert cli.MAX_WAVEFORM_SAMPLES >= 26216
+    config = fixture(waveform={'epoch_reference': 'pinned equal-arm orbit t=0',
+                               'n_samples': cli.MAX_WAVEFORM_SAMPLES})
+    result = cli.run_fixture(config)
+    assert result['status'] == 'COMPLETED'
+    assert result['n_samples'] == cli.MAX_WAVEFORM_SAMPLES
+
+
+@pytest.mark.parametrize('count', [16385, 26216])
+def test_upstream_sample_cap_generates_the_requested_count(fake_backends, count):
     value = fixture(trials=[{'id': 'same', 'changes': {}}])
     value['waveform']['n_samples'] = count
-    kwargs = {} if limit is None else {'max_waveform_samples': limit}
-    if not accepted:
-        with pytest.raises(ValueError, match='waveform samples'):
-            cli.run_fixture(value, **kwargs)
-        assert FakeAdapter.configs == [] and FakeAdapter.calls == 0
-    else:
-        result = cli.run_fixture(value, **kwargs)
-        assert result['n_samples'] == count and FakeAdapter.calls == 2
-        if limit == 32768:
-            assert result['execution_limits'] == {'max_waveform_samples': 32768}
-        else:
-            assert 'execution_limits' not in result
+    result = cli.run_fixture(value)
+    assert result['n_samples'] == count
+    assert len(FakeAdapter.configs) == 1 and FakeAdapter.calls == 2
 
 
-@pytest.mark.parametrize('limit', [True, False, np.bool_(True), np.int64(32768),
-                                  16384., 32768., '32768', None, 0, 32769, -1])
-def test_sample_limit_requires_exact_allowed_integer_before_config_or_adapter(
-        fake_backends, monkeypatch, limit):
-    monkeypatch.setattr(few_adapter, 'FEWConfig', SimpleNamespace(
-        from_dict=lambda value: pytest.fail('configuration constructed before limit refusal')))
-    with pytest.raises(ValueError, match='max_waveform_samples'):
-        cli.run_fixture(fixture(), max_waveform_samples=limit)
-    assert FakeAdapter.configs == [] and FakeAdapter.calls == 0
-
-
-@pytest.mark.parametrize('schema', [1, 2])
-def test_default_and_explicit_original_limit_output_parity(fake_backends, monkeypatch, schema):
-    monkeypatch.setattr(cli.time, 'monotonic', lambda: 1.)
-    value = fixture()
-    if schema == 2:
-        value['schema_version'] = 2
-        value['window'] = {'kind': 'periodic_hann'}
-        value['noise'].update(kind='synthetic_independent_white_after_window', target_snr=None)
-    default = cli.run_fixture(value)
-    explicit = cli.run_fixture(value, max_waveform_samples=16384)
-    opted = cli.run_fixture(value, max_waveform_samples=32768)
-    assert json.dumps(default, sort_keys=True) == json.dumps(explicit, sort_keys=True)
-    assert 'execution_limits' not in default and 'execution_limits' not in explicit
-    assert opted.pop('execution_limits') == {'max_waveform_samples': 32768}
-    assert opted == default
-
-
-def test_main_forwards_explicit_cap_and_fixture_order29(fake_backends, tmp_path):
+def test_main_forwards_fixture_order29_at_fine_grid_count(fake_backends, tmp_path):
     value = fixture()
     value['waveform']['n_samples'] = 26216
     value['response']['interpolation_order'] = 29
     source = tmp_path / 'fixture.json'
     source.write_text(json.dumps(value))
     output = tmp_path / 'result.json'
-    assert cli.main(['--fixture', str(source), '--output', str(output),
-                     '--max-waveform-samples', '32768']) == 0
+    assert cli.main(['--fixture', str(source), '--output', str(output)]) == 0
     result = json.loads(output.read_text())
-    assert result['n_samples'] == 26216
-    assert result['execution_limits'] == {'max_waveform_samples': 32768}
-    assert result['fixture'] == value
+    assert result['n_samples'] == 26216 and result['fixture'] == value
     assert len(FakeAdapter.configs) == 1 and FakeAdapter.calls == 4
     assert [row['config']['interpolation_order'] for row in RESPONSE_CALLS] == [29] * 4
-
-
-@pytest.mark.parametrize('limit', ['16385', '32769', '32768.0', 'True', '0'])
-def test_main_refuses_invalid_limit_before_running(fake_backends, tmp_path, limit):
-    source = tmp_path / 'fixture.json'
-    source.write_text(json.dumps(fixture()))
-    output = tmp_path / 'result.json'
-    with pytest.raises(SystemExit) as exc:
-        cli.main(['--fixture', str(source), '--output', str(output),
-                  '--max-waveform-samples', limit])
-    assert exc.value.code == 2 and not output.exists()
-    assert FakeAdapter.configs == [] and FakeAdapter.calls == 0
