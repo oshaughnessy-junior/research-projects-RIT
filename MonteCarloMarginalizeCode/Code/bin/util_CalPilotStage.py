@@ -38,16 +38,18 @@ _STRIP_OPTS = {"--sim-xml", "--n-events-to-analyze", "--output-file", "--event",
 # wide-stage flags (no value) the pilot must not inherit.  --calibration-bank-per-point:
 # the pilot sums responsibilities by realization index, so it needs one shared bank, and
 # the driver refuses the flag together with --calibration-dump-responsibilities.
-_STRIP_FLAGS = {"--calibration-bank-per-point"}
+# Each maps to its shortest prefix optparse accepts as unambiguous in the ILE driver.
+_STRIP_FLAGS = {"--calibration-bank-per-point": "--calibration-ba"}
 
 
 def strip_opts(arg_str, strip=_STRIP_OPTS, strip_flags=_STRIP_FLAGS):
-    """Remove `--opt value` pairs for opts in `strip`, and bare flags in `strip_flags`."""
+    """Remove `--opt value` pairs for opts in `strip`, and bare flags in `strip_flags`
+    (also spelled as any prefix optparse would accept)."""
     toks = shlex.split(arg_str)
     out, i = [], 0
     while i < len(toks):
         t = toks[i]
-        if t in strip_flags:
+        if any(f.startswith(t) and t.startswith(p) for f, p in strip_flags.items()):
             i += 1
             continue
         if t in strip:

@@ -98,6 +98,15 @@ def test_banks_differ_between_points_and_reproduce(tmp_path, export):
         assert n7 is None
 
 
+def _rebuild(nodes):
+    """The bank these exported nodes describe (as _lift configures it: H1 then L1, fmin 20)."""
+    from RIFT.calmarg import generate_realizations as gr
+    log_f = np.linspace(np.log10(20), np.log10(120), 4)
+    return {ifo: gr.build_realizations_from_nodes(nodes[:, 8 * i:8 * i + 4].T, nodes[:, 8 * i + 4:8 * i + 8].T,
+                                                  1., 1 / 256., 20, 120, log_f)
+            for i, ifo in enumerate(("H1", "L1"))}
+
+
 def _skewed_envelope(path):
     """Median far from 1, so the data and template conventions give disjoint node priors:
     template amp 1.3 +- 0.02, phase 0.2 +- 0.01; data amp 1/1.3 +- 0.012, phase -0.2."""
@@ -127,24 +136,26 @@ def test_redraw_follows_correction_types_and_exports_its_own_nodes(tmp_path, exp
     prior = gr.prior_cal_breadcrumb_dict(str(tmp_path), ["H1", "L1"], 20, 120, 4,
                                          correction_types=types)
     assert np.all(np.abs((nodes - prior["prior_mean"]) / prior["prior_sigma"]) < 6)
-    log_f = np.linspace(np.log10(20), np.log10(120), 4)
-    for i_det, ifo in enumerate(("H1", "L1")):
-        block = nodes[:, 8 * i_det:8 * (i_det + 1)]
-        rebuilt = gr.build_realizations_from_nodes(block[:, :4].T, block[:, 4:].T, 1., 1 / 256.,
-                                                   20, 120, log_f)
-        np.testing.assert_allclose(bank[ifo], rebuilt, rtol=0, atol=1e-12)
+    rebuilt = _rebuild(nodes)
+    for ifo in ("H1", "L1"):
+        np.testing.assert_allclose(bank[ifo], rebuilt[ifo], rtol=0, atol=1e-12)
 
 
 def test_breadcrumb_branch_redraws_from_the_proposal(tmp_path):
     """--calibration-proposal-breadcrumb path: realizations AND importance weights are
-    replaced per point from the breadcrumb loaded at startup (_bc), and reproduce."""
+    replaced per point from the breadcrumb loaded at startup (_bc), and reproduce.  The
+    weights use the LIVE prior (calibration_current_prior), not the one the breadcrumb
+    stored, and the exported nodes rebuild the bank."""
     from RIFT.calmarg import generate_realizations as gr
+    from RIFT.calmarg import adaptive
     ns = _lift(tmp_path, export=True)
     prior = gr.prior_cal_breadcrumb_dict(str(tmp_path), ["H1", "L1"], 20, 120, 4)
     # A proposal narrower than, and offset from, the prior: draws come from it and carry
-    # nonzero importance weights, which a prior-branch draw could not imitate.
+    # nonzero importance weights, which a prior-branch draw could not imitate.  Its stored
+    # prior is twice as wide as the live one, so weights built from it are wrong.
     proposal = dict(prior, proposal_mean=prior["prior_mean"] + 0.5 * prior["prior_sigma"],
-                    proposal_cov=np.diag((0.3 * prior["prior_sigma"]) ** 2))
+                    proposal_cov=np.diag((0.3 * prior["prior_sigma"]) ** 2),
+                    prior_sigma=2 * prior["prior_sigma"])
     ns["_bc"] = {"cal": proposal}
     ns["opts"].calibration_proposal_breadcrumb = "loaded-at-startup.npz"
     ns["calibration_current_prior"] = prior
@@ -154,6 +165,12 @@ def test_breadcrumb_branch_redraws_from_the_proposal(tmp_path):
     w8 = np.array(ns["calibration_log_weights"])
     a7b, n7b = _bank(ns, 11, 7)
     assert w7.shape == (4,) and np.all(np.isfinite(w7))
+    np.testing.assert_allclose(
+        w7, adaptive.log_prior(n7, prior["prior_mean"], prior["prior_sigma"])
+        - adaptive._mvn_logpdf(n7, proposal["proposal_mean"], proposal["proposal_cov"]), rtol=1e-10)
+    rebuilt = _rebuild(n7)
+    for ifo in ("H1", "L1"):
+        np.testing.assert_allclose(a7[ifo], rebuilt[ifo], rtol=0, atol=1e-12)
     assert np.ptp(w7) > 0 and not np.allclose(w7, w8)
     # nodes sit near the proposal mean, within a few proposal sigmas
     z = (n7 - proposal["proposal_mean"]) / (0.3 * prior["prior_sigma"])
@@ -202,7 +219,11 @@ def test_the_redraw_runs_only_under_the_flag():
               and any(c is calls[0] for st in n.body for c in ast.walk(st))]
     assert len(guards) == 1, "redraw call must sit directly under one guard"
     assert ast.unparse(guards[0].test) == "calibration_marginalization and opts.calibration_bank_per_point"
-    assert not any(c is calls[0] for st in guards[0].orelse for c in ast.walk(st))
+    assert not guards[0].orelse, "option off must run nothing here"
+    # ... and that guard is the driver's only reader of the option
+    readers = [n for n in ast.walk(tree) if isinstance(n, ast.Attribute)
+               and n.attr == "calibration_bank_per_point"]
+    assert len(readers) == 1 and any(r is readers[0] for r in ast.walk(guards[0].test))
     # the point index is the GRID row, not the offset within this job
     assert ast.unparse(calls[0].args[0]) == "opts.event + indx_event"
     # ... and it runs BEFORE the bank is handed to the precompute, or the likelihood
@@ -243,16 +264,29 @@ _GUARD = "calibration_marginalization and opts.calibration_bank_per_point"
 
 
 def _driver_without_the_redraw(dest):
-    """The driver with the guarded redraw statement (and anything in its else) deleted:
-    the option-off path as it was before --calibration-bank-per-point."""
+    """The driver with every statement that reads opts.calibration_bank_per_point (today:
+    the guarded redraw) replaced by `pass`: the option-off path as it was before
+    --calibration-bank-per-point."""
     src = DRIVER.read_text()
-    guards = [n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.If)
-              and ast.unparse(n.test) == _GUARD]
-    assert len(guards) == 1
+    tree = ast.parse(src)
+    stmts = {}
+    for st in ast.walk(tree):
+        if isinstance(st, ast.stmt) and not isinstance(st, (ast.FunctionDef, ast.ClassDef)):
+            own = [n for n in ast.walk(st) if isinstance(n, ast.Attribute)
+                   and n.attr == "calibration_bank_per_point"]
+            if own:
+                stmts[id(st)] = st
+    # innermost statements only
+    inner = [st for st in stmts.values()
+             if not any(o is not st and any(o is n for n in ast.walk(st)) for o in stmts.values())]
+    assert inner and any(isinstance(st, ast.If) and ast.unparse(st.test) == _GUARD for st in inner)
     lines = src.splitlines(keepends=True)
-    del lines[guards[0].lineno - 1:guards[0].end_lineno]
+    for st in sorted(inner, key=lambda n: -n.lineno):
+        indent = lines[st.lineno - 1][:st.col_offset]
+        lines[st.lineno - 1:st.end_lineno] = [indent + "pass\n"]
     out = dest / "ile_without_redraw"
     out.write_text("".join(lines))
+    ast.parse(out.read_text())
     assert out.read_text().count("_redraw_calibration_bank_for_point(") == 1   # the def only
     return out
 

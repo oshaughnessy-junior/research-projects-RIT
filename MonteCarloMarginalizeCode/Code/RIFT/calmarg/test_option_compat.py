@@ -319,8 +319,23 @@ def test_pilot_stage_drops_bank_per_point_from_the_wide_args():
     wide = _WIDE_ARGS_WITH_BANK_PER_POINT.split()[1:]
     assert oc.refusals_from_opts(_opts_from_cli(wide)) == []
     assert _opts_from_cli(wide).calibration_bank_per_point is True
-    # strip_opts on its own, for a line where the flag is last
+    # strip_opts on its own: flag last, and the abbreviations optparse would accept
     assert stage.strip_opts('--vectorized --calibration-bank-per-point') == '--vectorized'
+    for abbrev in ('--calibration-ba', '--calibration-bank-per'):
+        assert stage.strip_opts('--gpu %s --vectorized' % abbrev) == '--gpu --vectorized'
+    assert stage.strip_opts('--calibration-b --gpu') == '--calibration-b --gpu'  # ambiguous
+    # each recorded prefix is unambiguous among the driver's options
+    with open(DRIVER) as f:
+        names = re.findall(r'add_option\("(--[a-z0-9-]+)"', f.read())
+    for flag, prefix in stage._STRIP_FLAGS.items():
+        assert [n for n in names if n.startswith(prefix)] == [flag], (flag, prefix)
+    # main() builds its command through pilot_ile_command
+    import ast
+    with open(stage.__file__) as f:
+        tree = ast.parse(f.read())
+    main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'main')
+    assert any(isinstance(n, ast.Call) and getattr(n.func, 'id', None) == 'pilot_ile_command'
+               for n in ast.walk(main))
 
 
 # ------------------------------------------------------ R6: opt-ins without the envelope
@@ -521,8 +536,11 @@ def test_driver_accepts_the_pilot_built_from_bank_per_point_wide_args():
     """The same pilot command through the real CLI."""
     cmd = _pilot_stage().pilot_ile_command(_WIDE_ARGS_WITH_BANK_PER_POINT, 'ILE',
                                            'grid.xml.gz', 3, 'pilot_out', '/tmp/resp_unused.npz')
-    out = _run(cmd[1:])
+    # --event-time: so the driver prints a line from past the gate (it fails later, on
+    # the data it was not given); a crash before the gate cannot pass this test.
+    out = _run(cmd[1:] + ['--event-time', '1000000000'])
     assert _REFUSED not in out, out[-600:]
+    assert 'Event time from command line' in out, out[-600:]
     print('driver accepts the cal pilot built from bank-per-point wide args : OK')
 
 
