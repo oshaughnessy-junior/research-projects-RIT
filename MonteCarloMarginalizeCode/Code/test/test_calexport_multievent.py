@@ -11,7 +11,10 @@ calibration envelope and two intrinsic points in one job, on the NoLoop path (al
 REDLINE flags), and checks for each point that its _cal.dat
   * has one row per fair draw in that point's samples XML,
   * has the first point's columns, and
-  * carries the same extrinsic draws as that XML, row for row.
+  * is row-aligned with that XML (both come from one samples dict, so this checks
+    alignment, not which point's draws they are).
+The row count is what fails on the bug.  test_resample_and_export_share_the_point_P
+pins the rest: the export evaluates the arrays resample_samples drew for this point.
 """
 
 import os
@@ -161,8 +164,8 @@ def test_resample_and_export_share_the_point_P():
     stores = [n for n in own_scope(analyze) if isinstance(n, ast.Name) and n.id == "P"
               and isinstance(n.ctx, ast.Store)]          # any binding form: =, for, with, tuple, :=
     assert len(stores) == 1, [n.lineno for n in stores]
-    bind = next(n for n in own_scope(analyze) if isinstance(n, ast.Assign) and stores[0] in n.targets)
-    assert ast.unparse(bind.value) == "P_list[indx_event]", ast.unparse(bind)
+    bind = next((n for n in own_scope(analyze) if isinstance(n, ast.Assign) and stores[0] in n.targets), None)
+    assert bind is not None and ast.unparse(bind.value) == "P_list[indx_event]", stores[0].lineno
     resample = [n for n in ast.walk(analyze) if isinstance(n, ast.Call)
                 and isinstance(n.func, ast.Name) and n.func.id == "resample_samples"]
     assert len(resample) == 1
@@ -172,5 +175,8 @@ def test_resample_and_export_share_the_point_P():
               and ast.unparse(n.func).endswith("DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop")
               and any(k.arg == "return_cal_components" for k in n.keywords)
               and n.lineno > resample[0].lineno]
-    assert len(export) == 1 and ast.unparse(export[0].args[1]) == "P", [ast.unparse(e) for e in export]
+    assert len(export) == 1, [ast.unparse(e) for e in export]
+    p_arg = export[0].args[1] if len(export[0].args) > 1 else \
+        next((k.value for k in export[0].keywords if k.arg == "P_vec"), None)
+    assert p_arg is not None and ast.unparse(p_arg) == "P", ast.unparse(export[0])
 
