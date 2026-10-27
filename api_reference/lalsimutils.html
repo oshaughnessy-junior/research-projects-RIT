@@ -756,7 +756,7 @@ spin_convention == radiation:</p>
 <dt class="sig sig-object py" id="RIFT.lalsimutils.Yagi13_fit_barlamdel">
 <span class="sig-prename descclassname"><span class="pre">RIFT.lalsimutils.</span></span><span class="sig-name descname"><span class="pre">Yagi13_fit_barlamdel</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">barlam2</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ell</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.lalsimutils.Yagi13_fit_barlamdel" title="Link to this definition"></a></dt>
 <dd><p>Yagi 2013 fits for multipolar
-$bar{lambda}_ell$ = 2 <a href="#id7"><span class="problematic" id="id8">k_</span></a>ell/(C^{2ell+1} (2ell-1)!!)$
+$bar{lambda}_ell$ = 2 <a href="#id9"><span class="problematic" id="id10">k_</span></a>ell/(C^{2ell+1} (2ell-1)!!)$
 Eq.(10),(61); Tab.I; Fig.8 <a class="reference external" href="http://arxiv.org/abs/1311.0872">http://arxiv.org/abs/1311.0872</a></p>
 </dd></dl>
 
@@ -764,7 +764,7 @@ Eq.(10),(61); Tab.I; Fig.8 <a class="reference external" href="http://arxiv.org/
 <dt class="sig sig-object py" id="RIFT.lalsimutils.Yagi13_fitcoefs">
 <span class="sig-prename descclassname"><span class="pre">RIFT.lalsimutils.</span></span><span class="sig-name descname"><span class="pre">Yagi13_fitcoefs</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">ell</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.lalsimutils.Yagi13_fitcoefs" title="Link to this definition"></a></dt>
 <dd><p>Coefficients of Yagi 2013 fits for multipolar
-$bar{lambda}_ell = 2 <a href="#id9"><span class="problematic" id="id10">k_</span></a>ell/(C^{2ell+1} (2ell-1)!!)$
+$bar{lambda}_ell = 2 <a href="#id11"><span class="problematic" id="id12">k_</span></a>ell/(C^{2ell+1} (2ell-1)!!)$
 Tab.I (NS) <a class="reference external" href="http://arxiv.org/abs/1311.0872">http://arxiv.org/abs/1311.0872</a></p>
 </dd></dl>
 
@@ -779,6 +779,14 @@ Assume $q=M_A/M_B&gt;=1$</p>
 <dt class="sig sig-object py" id="RIFT.lalsimutils.check_FD_pending">
 <span class="sig-prename descclassname"><span class="pre">RIFT.lalsimutils.</span></span><span class="sig-name descname"><span class="pre">check_FD_pending</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">code</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.lalsimutils.check_FD_pending" title="Link to this definition"></a></dt>
 <dd></dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="RIFT.lalsimutils.chieff_aligned_spins">
+<span class="sig-prename descclassname"><span class="pre">RIFT.lalsimutils.</span></span><span class="sig-name descname"><span class="pre">chieff_aligned_spins</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">m1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">m2</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">s1z</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">s2z</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">xi</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.lalsimutils.chieff_aligned_spins" title="Link to this definition"></a></dt>
+<dd><p>s1z, s2z with xi = (m1 s1z + m2 s2z)/M and chiminus = (m2 s1z - m1 s2z)/M held from the inputs.</p>
+<p>The inverse used by assign_param(‘chieff_aligned’); accepts arrays.  Exchange-antisymmetric; for large
+mass ratio s1z -&gt; xi, s2z -&gt; -chiminus.  Can give <a href="#id5"><span class="problematic" id="id6">|s_iz|</span></a> &gt; 1.</p>
+</dd></dl>
 
 <dl class="py function">
 <dt class="sig sig-object py" id="RIFT.lalsimutils.complex_hoff">
@@ -916,7 +924,7 @@ it is only correct for the even-length RIFT packing.</p>
 with DC at index npts//2 (odd length TDlen+1; even length after truncation keeps
 DC at npts//2).  f[k] = deltaF*(k - npts//2), exact for both parities of npts.
 Use this - not the default - on ChooseFDModes output: the default’s reversal +
-half-bin offset shifts any <a href="#id5"><span class="problematic" id="id6">|f|</span></a>-symmetric window by one bin between (l,m) and
+half-bin offset shifts any <a href="#id7"><span class="problematic" id="id8">|f|</span></a>-symmetric window by one bin between (l,m) and
 (l,-m) modes (which live at opposite signs of f), breaking the conjugate-pair
 identity h_{l,-m}(f) = (-1)^l conj(h_{lm}(-f)) at the percent level.</p>
 </dd>
