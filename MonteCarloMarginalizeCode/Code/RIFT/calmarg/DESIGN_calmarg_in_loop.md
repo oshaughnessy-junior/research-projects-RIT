@@ -398,8 +398,10 @@ above).
   `derived_rng('calmarg.bank_per_point', grid index)`. The stream is keyed on
   (`--seed`, grid index) only: with a fixed `--seed`, grid row k gets the same random
   draws in every iteration and every grid, whatever point sits there. Its bank repeats
-  whenever the source is unchanged: the prior, or the same proposal breadcrumb (with
-  `--calmarg-pilot` the breadcrumb changes per iteration). The cal error probe and
+  whenever the source is unchanged. With `--calmarg-pilot` only iterations seeded by a
+  pilot (previous iteration on cadence and at most `--calmarg-pilot-max-it`) get a new
+  breadcrumb; the others draw from the prior, so row k repeats its bank across them.
+  The cal error probe and
   adaptive growth still draw from job-wide streams.
 * **Calibration-parameter export:** Option B does not record which realization was
   selected (acceptable per scope — parameter draws can be regenerated at the end as

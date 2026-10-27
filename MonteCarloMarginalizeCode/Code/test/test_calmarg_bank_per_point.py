@@ -98,13 +98,16 @@ def test_banks_differ_between_points_and_reproduce(tmp_path, export):
         assert n7 is None
 
 
-def _rebuild(nodes):
-    """The bank these exported nodes describe (as _lift configures it: H1 then L1, fmin 20)."""
+def _rebuild(nodes, fmin_ifo=None):
+    """The bank these exported nodes describe (H1 then L1, fmax 120, fmin 20 unless given)."""
     from RIFT.calmarg import generate_realizations as gr
-    log_f = np.linspace(np.log10(20), np.log10(120), 4)
-    return {ifo: gr.build_realizations_from_nodes(nodes[:, 8 * i:8 * i + 4].T, nodes[:, 8 * i + 4:8 * i + 8].T,
-                                                  1., 1 / 256., 20, 120, log_f)
-            for i, ifo in enumerate(("H1", "L1"))}
+    fmin_ifo = fmin_ifo or {"H1": 20, "L1": 20}
+    out = {}
+    for i, ifo in enumerate(("H1", "L1")):
+        log_f = np.linspace(np.log10(fmin_ifo[ifo]), np.log10(120), 4)
+        out[ifo] = gr.build_realizations_from_nodes(nodes[:, 8 * i:8 * i + 4].T, nodes[:, 8 * i + 4:8 * i + 8].T,
+                                                    1., 1 / 256., fmin_ifo[ifo], 120, log_f)
+    return out
 
 
 def _skewed_envelope(path):
@@ -118,25 +121,31 @@ def _skewed_envelope(path):
 @pytest.mark.parametrize("export", [False, True])
 def test_redraw_follows_correction_types_and_exports_its_own_nodes(tmp_path, export):
     """H1 'template' is not H1's default ('data'), so a redraw that ignored
-    calibration_correction_types would put H1's amplitude near 1/1.3, not 1.3.
+    calibration_correction_types would put H1's amplitude near 1/1.3, not 1.3.  L1 starts
+    at 30 Hz (cal_fmin_ifo), so its 20-30 Hz rows stay exactly 1 while H1's do not.
     With export, the nodes must rebuild the bank's realizations exactly."""
     from RIFT.calmarg import generate_realizations as gr
     ns = _lift(tmp_path, export)
     for ifo in ("H1", "L1"):
         _skewed_envelope(tmp_path / ("%s.txt" % ifo))
     types = {"H1": "template", "L1": "data"}
+    fmin_ifo = {"H1": 20, "L1": 30}
     ns["calibration_correction_types"] = types
+    ns["cal_fmin_ifo"] = fmin_ifo
     bank, nodes = _bank(ns, 11, 7)
     for ifo, amp in (("H1", 1.3), ("L1", 1 / 1.3)):
         band = np.any(bank[ifo] != 1, axis=1)
         assert band.sum() > 50
         np.testing.assert_allclose(np.median(np.abs(bank[ifo][band])), amp, rtol=0.05)
+    f_abs = np.abs(128 - np.arange(256))   # RIFT packing label, deltaF = 1 Hz, 256 bins
+    low = (f_abs >= 21) & (f_abs <= 29)
+    assert np.all(bank["L1"][low] == 1) and np.all(bank["H1"][low] != 1)
     if not export:
         return
     prior = gr.prior_cal_breadcrumb_dict(str(tmp_path), ["H1", "L1"], 20, 120, 4,
-                                         correction_types=types)
+                                         fmin_ifo=fmin_ifo, correction_types=types)
     assert np.all(np.abs((nodes - prior["prior_mean"]) / prior["prior_sigma"]) < 6)
-    rebuilt = _rebuild(nodes)
+    rebuilt = _rebuild(nodes, fmin_ifo)
     for ifo in ("H1", "L1"):
         np.testing.assert_allclose(bank[ifo], rebuilt[ifo], rtol=0, atol=1e-12)
 
@@ -208,6 +217,16 @@ def test_per_point_and_shared_banks_draw_the_same_prior(tmp_path):
         np.testing.assert_allclose(a.std(axis=1), b.std(axis=1), rtol=0.1, atol=1e-9)
 
 
+def _option_readers(tree):
+    """Every AST node that names the option's dest: opts.calibration_bank_per_point, a bare
+    name, or a string such as getattr(opts, 'calibration_bank_per_point')."""
+    name = "calibration_bank_per_point"
+    return [n for n in ast.walk(tree)
+            if (isinstance(n, ast.Attribute) and n.attr == name)
+            or (isinstance(n, ast.Name) and n.id == name)
+            or (isinstance(n, ast.Constant) and isinstance(n.value, str) and name in n.value)]
+
+
 def test_the_redraw_runs_only_under_the_flag():
     """Option off => the shared startup bank, untouched: the helper's only call site is
     guarded by opts.calibration_bank_per_point."""
@@ -221,8 +240,7 @@ def test_the_redraw_runs_only_under_the_flag():
     assert ast.unparse(guards[0].test) == "calibration_marginalization and opts.calibration_bank_per_point"
     assert not guards[0].orelse, "option off must run nothing here"
     # ... and that guard is the driver's only reader of the option
-    readers = [n for n in ast.walk(tree) if isinstance(n, ast.Attribute)
-               and n.attr == "calibration_bank_per_point"]
+    readers = _option_readers(tree)
     assert len(readers) == 1 and any(r is readers[0] for r in ast.walk(guards[0].test))
     # the point index is the GRID row, not the offset within this job
     assert ast.unparse(calls[0].args[0]) == "opts.event + indx_event"
@@ -264,17 +282,14 @@ _GUARD = "calibration_marginalization and opts.calibration_bank_per_point"
 
 
 def _driver_without_the_redraw(dest):
-    """The driver with every statement that reads opts.calibration_bank_per_point (today:
-    the guarded redraw) replaced by `pass`: the option-off path as it was before
-    --calibration-bank-per-point."""
+    """The driver with every statement that reads the option (today: the guarded redraw)
+    replaced by `pass`: the option-off path as it was before --calibration-bank-per-point."""
     src = DRIVER.read_text()
     tree = ast.parse(src)
     stmts = {}
     for st in ast.walk(tree):
         if isinstance(st, ast.stmt) and not isinstance(st, (ast.FunctionDef, ast.ClassDef)):
-            own = [n for n in ast.walk(st) if isinstance(n, ast.Attribute)
-                   and n.attr == "calibration_bank_per_point"]
-            if own:
+            if _option_readers(st):
                 stmts[id(st)] = st
     # innermost statements only
     inner = [st for st in stmts.values()
