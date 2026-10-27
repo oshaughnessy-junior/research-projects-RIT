@@ -154,11 +154,13 @@ def test_breadcrumb_branch_redraws_from_the_proposal(tmp_path):
     """--calibration-proposal-breadcrumb path: realizations AND importance weights are
     replaced per point from the breadcrumb loaded at startup (_bc), and reproduce.  The
     weights use the LIVE prior (calibration_current_prior), not the one the breadcrumb
-    stored, and the exported nodes rebuild the bank."""
+    stored, and the exported nodes rebuild the bank.  L1 starts at 30 Hz (cal_fmin_ifo)."""
     from RIFT.calmarg import generate_realizations as gr
     from RIFT.calmarg import adaptive
     ns = _lift(tmp_path, export=True)
-    prior = gr.prior_cal_breadcrumb_dict(str(tmp_path), ["H1", "L1"], 20, 120, 4)
+    fmin_ifo = {"H1": 20, "L1": 30}
+    ns["cal_fmin_ifo"] = fmin_ifo
+    prior = gr.prior_cal_breadcrumb_dict(str(tmp_path), ["H1", "L1"], 20, 120, 4, fmin_ifo=fmin_ifo)
     # A proposal narrower than, and offset from, the prior: draws come from it and carry
     # nonzero importance weights, which a prior-branch draw could not imitate.  Its stored
     # prior is twice as wide as the live one, so weights built from it are wrong.
@@ -177,9 +179,11 @@ def test_breadcrumb_branch_redraws_from_the_proposal(tmp_path):
     np.testing.assert_allclose(
         w7, adaptive.log_prior(n7, prior["prior_mean"], prior["prior_sigma"])
         - adaptive._mvn_logpdf(n7, proposal["proposal_mean"], proposal["proposal_cov"]), rtol=1e-10)
-    rebuilt = _rebuild(n7)
+    rebuilt = _rebuild(n7, fmin_ifo)
     for ifo in ("H1", "L1"):
         np.testing.assert_allclose(a7[ifo], rebuilt[ifo], rtol=0, atol=1e-12)
+    low = (np.abs(128 - np.arange(256)) >= 21) & (np.abs(128 - np.arange(256)) <= 29)
+    assert np.all(a7["L1"][low] == 1) and np.all(a7["H1"][low] != 1)
     assert np.ptp(w7) > 0 and not np.allclose(w7, w8)
     # nodes sit near the proposal mean, within a few proposal sigmas
     z = (n7 - proposal["proposal_mean"]) / (0.3 * prior["prior_sigma"])
@@ -246,10 +250,12 @@ def test_the_redraw_runs_only_under_the_flag():
     assert ast.unparse(calls[0].args[0]) == "opts.event + indx_event"
     # ... and it runs BEFORE the bank is handed to the precompute, or the likelihood
     # would integrate over the old bank while the log and export report the new one.
-    hand_off = [n for n in ast.walk(tree) if isinstance(n, ast.Assign)
-                and ast.unparse(n.targets[0]) == "extra_kwargs['calibration_realizations']"
-                and ast.unparse(n.value) == "calibration_realization_dict"]
-    assert len(hand_off) == 1 and calls[0].lineno < hand_off[0].lineno
+    hand_off = [n for n in ast.walk(tree) if isinstance(n, (ast.Assign, ast.AugAssign, ast.AnnAssign))
+                and any("extra_kwargs['calibration_realizations']" == ast.unparse(t)
+                        for t in (n.targets if isinstance(n, ast.Assign) else [n.target]))]
+    assert len(hand_off) == 1, [n.lineno for n in hand_off]
+    assert ast.unparse(hand_off[0].value) == "calibration_realization_dict"
+    assert calls[0].lineno < hand_off[0].lineno
     opt = re.search(r'add_option\("--calibration-bank-per-point",action=\'store_true\',default=False',
                     DRIVER.read_text())
     assert opt, "--calibration-bank-per-point must default to off"
@@ -330,3 +336,15 @@ def test_option_off_is_unchanged_and_option_on_reaches_the_likelihood(tmp_path):
         lnl_off = np.loadtxt(out["off"] / ("out.xml_%d_.dat" % i))[-4]
         lnl_on = np.loadtxt(out["on"] / ("out.xml_%d_.dat" % i))[-4]
         assert lnl_on != lnl_off, (i, lnl_on, lnl_off)
+    # The export reads each point's own bank: the calibration nodes exported with the
+    # option on share no row between the two points, nor with the shared startup bank's
+    # draws exported with the option off.
+    def node_rows(run, i):
+        f = out[run] / ("out.xml_%d_cal.dat" % i)
+        header = f.read_text().splitlines()[0].lstrip("#").split()
+        cols = [j for j, h in enumerate(header) if h.startswith("cal_")]
+        assert cols
+        return {tuple(r) for r in np.atleast_2d(np.loadtxt(f))[:, cols]}
+    on0, on1 = node_rows("on", 0), node_rows("on", 1)
+    off = node_rows("off", 0) | node_rows("off", 1)
+    assert not (on0 & on1) and not ((on0 | on1) & off)
