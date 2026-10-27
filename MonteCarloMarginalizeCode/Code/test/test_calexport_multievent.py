@@ -47,7 +47,7 @@ def _make_fixture(outdir):
     ht.data.data = np.zeros(npts)
     fname = outdir / ("H-fake_strain-%d-%d.gwf" % (int(seg_start), int(duration)))
     lalsimutils.hoft_to_frame_data(str(fname), "H1:FAKE-STRAIN", ht)
-    os.system("echo %s | lal_path2cache > %s" % (fname, outdir / "test.cache"))
+    subprocess.run("echo %s | lal_path2cache > %s" % (fname, outdir / "test.cache"), shell=True, check=True)
 
     psd = lal.CreateREAL8FrequencySeries(
         "psd", lal.LIGOTimeGPS(0), 0, 1.0 / duration, lal.SecondUnit, npts // 2 + 1)
@@ -141,3 +141,26 @@ def test_every_point_exports_its_own_fair_draws(fixture_dir):
     proc = _run_driver(fixture_dir)
     assert proc.returncode == 0, proc.stdout[-4000:]
     _check_exports(fixture_dir["outdir"], proc)
+
+
+def test_resample_and_export_share_the_point_P():
+    """Structural pin for what the row count cannot see: the arrays the export evaluates are
+    the ones resample_samples just drew FOR THIS POINT.  In analyze_event, P is bound only to
+    P_list[indx_event], resample_samples receives that P, and the export's NoLoop call reads it."""
+    import ast
+    tree = ast.parse(BIN.read_text())
+    analyze = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "analyze_event")
+    binds = [ast.unparse(n.value) for n in ast.walk(analyze) if isinstance(n, ast.Assign)
+             and any(isinstance(t, ast.Name) and t.id == "P" for t in n.targets)]
+    assert binds == ["P_list[indx_event]"], binds
+    resample = [n for n in ast.walk(analyze) if isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Name) and n.func.id == "resample_samples"]
+    assert len(resample) == 1
+    kw = {k.arg: ast.unparse(k.value) for k in resample[0].keywords}
+    assert kw.get("P") == "P", kw
+    export = [n for n in ast.walk(analyze) if isinstance(n, ast.Call)
+              and ast.unparse(n.func).endswith("DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop")
+              and any(k.arg == "return_cal_components" for k in n.keywords)
+              and n.lineno > resample[0].lineno]
+    assert len(export) == 1 and ast.unparse(export[0].args[1]) == "P", [ast.unparse(e) for e in export]
+
