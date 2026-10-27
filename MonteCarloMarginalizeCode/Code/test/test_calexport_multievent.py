@@ -116,7 +116,7 @@ def _run_driver(d, *extra):
 
 def _check_exports(out, proc):
     """Each point's _cal.dat: its own fair draws, row for row, with the first point's columns."""
-    assert "NOT APPLIED -- this configuration cannot honour" not in proc.stdout
+    assert "NOT APPLIED" not in proc.stdout   # no stencil downgrade of any kind on this config
     assert "--calibration-export-posterior failed" not in proc.stdout, proc.stdout[-4000:]
     headers = []
     for i in range(N_POINTS):

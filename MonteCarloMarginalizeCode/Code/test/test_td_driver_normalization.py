@@ -65,12 +65,14 @@ def test_arrival_resampling_restores_same_normalization(constant):
                   and any(isinstance(x, ast.Call) and isinstance(x.func, ast.Name)
                           and x.func.id == 'resample_samples' for x in ast.walk(n)))
     raw, times = np.array([-2., -1.]), np.array([-.01, .02])
+    point = object()
     def draw(samples, *args, **kwargs):
+        assert kwargs['P'] is point   # the CURRENT point's P, not the module-global P_list[0]
         return dict(lnL_raw=raw.copy(), t_ref=times.copy())
     ns = dict(samples={}, resample_samples=draw, _glitch_lnL_constant=constant,
               lookupNKDict={}, rholmArrayDict={}, ctUArrayDict={}, ctVArrayDict={},
               epochDict={}, n_cal_for_likelihood=1, calibration_log_weights=None,
-              ctUArrayDict_cal=None, ctVArrayDict_cal=None, P=None)
+              ctUArrayDict_cal=None, ctVArrayDict_cal=None, P=point)
     # Execute the actual driver export, before unrelated calibration exports.
     block = ast.fix_missing_locations(ast.Module(body=branch.body[:3], type_ignores=[]))
     exec(compile(block, str(source), 'exec'), ns)
