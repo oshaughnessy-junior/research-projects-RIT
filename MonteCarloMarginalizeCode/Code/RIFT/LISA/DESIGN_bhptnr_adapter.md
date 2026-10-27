@@ -17,7 +17,9 @@ importing the model. Imports use that source root and data directory. Loaded
 module paths and dependency distribution paths are checked. Native Python
 namespace packages are permitted only when every namespace directory contains
 files from the recorded dependency distribution. Originless execution modules
-remain refused. The constructor
+remain refused. Empty source namespace packages must resolve to their canonical
+module directory inside the verified source root. This includes the uninitialized
+optional GPR submodule; it supplies no code to this spline model. The constructor
 restores its temporary Python path and environment settings. It does not load
 the HDF5 model; the first evaluation does. Both import and evaluation refuse
 upstream's implicit download path.

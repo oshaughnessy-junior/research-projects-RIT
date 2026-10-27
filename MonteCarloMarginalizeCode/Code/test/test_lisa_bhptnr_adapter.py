@@ -241,3 +241,32 @@ def test_real_namespace_dependency_is_checked_against_distribution(tmp_path,monk
         assert receipt['gwtools']['loaded_modules']['gwtools.tests']['namespace_directories']==[str(package/'tests')]
     else:
         with pytest.raises(ValueError,match='namespace is outside'):ba._verify_dependency_origins()
+
+
+@pytest.mark.parametrize('foreign',[False,True,'symlink'])
+def test_constructor_accepts_canonical_empty_source_namespace_only(tmp_path,monkeypatch,foreign):
+    source,data,path,_=artifacts(tmp_path,monkeypatch)
+    package=source/'BHPTNRSurrogate'
+    (package/'__init__.py').write_text('from .surrogates import BHPTNRSur1dq1e4\n')
+    sub=package/'surrogates';sub.mkdir();(sub/'__init__.py').write_text('')
+    (sub/'optional_backend').mkdir()
+    extra=tmp_path/'foreign';extra.mkdir()
+    if foreign=='symlink':
+        (sub/'optional_backend').rmdir();(sub/'optional_backend').symlink_to(extra,target_is_directory=True)
+    code="import os\nfrom . import optional_backend\nh5_data_dir=os.environ['BHPTNR_SURROGATE_DATA_DIR']\n_surrogate_data={}\n"
+    if foreign is True:code+='optional_backend.__path__.append('+repr(str(extra))+')\n'
+    (sub/'BHPTNRSur1dq1e4.py').write_text(code)
+    roster={str(p.relative_to(source)):ba._sha256(p) for p in package.rglob('*.py')}
+    monkeypatch.setattr(ba,'SOURCE_FILES',roster)
+    for name in ('BHPTNRSurrogate','BHPTNRSurrogate.surrogates',
+                 'BHPTNRSurrogate.surrogates.BHPTNRSur1dq1e4','BHPTNRSurrogate.surrogates.optional_backend'):
+        monkeypatch.setitem(sys.modules,name,None);monkeypatch.delitem(sys.modules,name)
+    if foreign:
+        with pytest.raises(ValueError,match='namespace is outside'):
+            ba.BHPTNRAdapter(source,data,path,calibrated=False)
+    else:
+        adapter=ba.BHPTNRAdapter(source,data,path,calibrated=False)
+        assert adapter._model._surrogate_data=={}
+        assert adapter._receipt['source_namespaces']=={
+            'BHPTNRSurrogate.surrogates.optional_backend':[str(sub/'optional_backend')]}
+        assert adapter._receipt['model_module_path']==str(sub/'BHPTNRSur1dq1e4.py')

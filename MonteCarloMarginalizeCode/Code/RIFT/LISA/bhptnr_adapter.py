@@ -92,6 +92,18 @@ class BHPTNRModes:
 
 
 
+
+def _namespace_directories(module, name):
+    spec = getattr(module, '__spec__', None)
+    loader = getattr(spec, 'loader', None)
+    locations = getattr(spec, 'submodule_search_locations', None)
+    if not (getattr(spec, 'origin', None) is None and locations
+            and type(loader).__module__ == '_frozen_importlib_external'
+            and type(loader).__name__ in ('NamespaceLoader', '_NamespaceLoader')):
+        raise ValueError('loaded module has no verifiable file or namespace origin: '+name)
+    return [Path(item).resolve(strict=True) for item in locations]
+
+
 def _verify_dependency_origins():
     """Refuse loaded execution submodules outside their installed distribution."""
     receipt = {}
@@ -107,15 +119,7 @@ def _verify_dependency_origins():
                 continue
             location = getattr(module, '__file__', None)
             if location is None:
-                spec = getattr(module, '__spec__', None)
-                loader = getattr(spec, 'loader', None)
-                locations = getattr(spec, 'submodule_search_locations', None)
-                is_namespace = (getattr(spec, 'origin', None) is None and locations
-                    and type(loader).__module__ == '_frozen_importlib_external'
-                    and type(loader).__name__ in ('NamespaceLoader', '_NamespaceLoader'))
-                if not is_namespace:
-                    raise ValueError('loaded dependency module has no file origin: '+module_name)
-                directories = [Path(item).resolve(strict=True) for item in locations]
+                directories = _namespace_directories(module, module_name)
                 if any(not any(directory in file.parents for file in owned) for directory in directories):
                     raise ValueError('dependency namespace is outside its distribution: '+module_name)
                 modules[module_name] = {'namespace_directories': [str(item) for item in directories]}
@@ -191,8 +195,16 @@ class BHPTNRAdapter:
             with patch.dict(os.environ, {'BHPTNR_SURROGATE_DATA_DIR': str(data)}), \
                     patch('urllib.request.urlretrieve', _no_download):
                 self._model = importlib.import_module('BHPTNRSurrogate.surrogates.BHPTNRSur1dq1e4')
+            source_namespaces = {}
             for name, module in tuple(sys.modules.items()):
                 if name == 'BHPTNRSurrogate' or name.startswith('BHPTNRSurrogate.'):
+                    if getattr(module, '__file__', None) is None:
+                        directories = _namespace_directories(module, name)
+                        expected_directory = source.joinpath(*name.split('.')).resolve(strict=True)
+                        if source not in expected_directory.parents or any(directory != expected_directory for directory in directories):
+                            raise ValueError('model namespace is outside the verified source root: '+name)
+                        source_namespaces[name] = [str(item) for item in directories]
+                        continue
                     path = Path(module.__file__).resolve(strict=True)
                     relative = str(path.relative_to(source))
                     if relative not in SOURCE_FILES or _sha256(path) != SOURCE_FILES[relative]:
@@ -201,6 +213,7 @@ class BHPTNRAdapter:
                 raise ValueError('BHPTNR data directory or initial cache mismatch')
         finally:
             sys.path[:] = old_path
+        self._receipt['source_namespaces'] = source_namespaces
         self._receipt['model_module_path'] = str(Path(self._model.__file__).resolve())
         self._receipt['loaded_dependencies'] = _verify_dependency_origins()
 
