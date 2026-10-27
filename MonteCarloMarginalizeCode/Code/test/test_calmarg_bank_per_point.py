@@ -246,6 +246,10 @@ def test_the_redraw_runs_only_under_the_flag():
     # ... and that guard is the driver's only reader of the option
     readers = _option_readers(tree)
     assert len(readers) == 1 and any(r is readers[0] for r in ast.walk(guards[0].test))
+    # ... and outside its own block the feature appears nowhere else: no option-off code
+    # (e.g. a size reset to _calibration_n_realizations_initial) runs for it
+    _, outer = _feature_statements(tree)
+    assert len(outer) == 1 and outer[0] is guards[0], [ast.unparse(st)[:80] for st in outer]
     # the point index is the GRID row, not the offset within this job
     assert ast.unparse(calls[0].args[0]) == "opts.event + indx_event"
     # ... and it runs BEFORE the bank is handed to the precompute, or the likelihood
@@ -297,13 +301,11 @@ def _names_the_feature(node):
                for n in ast.walk(node))
 
 
-def _driver_without_the_redraw(dest):
-    """The driver without the option's code: the module-level block from
-    `_calibration_n_realizations_initial = ...` through the redraw helper, and every other
-    statement naming the option or its helpers (today: the guarded redraw), become `pass`.
-    This is the option-off path as it was before --calibration-bank-per-point."""
-    src = DRIVER.read_text()
-    tree = ast.parse(src)
+def _feature_statements(tree):
+    """(block, outer): the option's module-level block, from
+    `_calibration_n_realizations_initial = ...` through the redraw helper, and the outermost
+    statements elsewhere whose own header (not their nested blocks) names the option or its
+    helpers."""
     body = tree.body
     first = next(i for i, st in enumerate(body) if isinstance(st, ast.Assign)
                  and ast.unparse(st.targets[0]) == "_calibration_n_realizations_initial")
@@ -312,6 +314,7 @@ def _driver_without_the_redraw(dest):
     assert first < last
     block = body[first:last + 1]
     lo, hi = block[0].lineno, block[-1].end_lineno
+
     def header_names_the_feature(st):
         # the statement itself, not the blocks nested in it (an `if` is hit by its test)
         return any(_names_the_feature(v) for f, v in ast.iter_fields(st)
@@ -323,6 +326,14 @@ def _driver_without_the_redraw(dest):
     # outermost hits only: deleting an `if` deletes its body and its else
     outer = [st for st in hits
              if not any(o is not st and any(st is n for n in ast.walk(o)) for o in hits)]
+    return block, outer
+
+
+def _driver_without_the_redraw(dest):
+    """The driver with the option's code (see _feature_statements) replaced by `pass`: the
+    option-off path as it was before --calibration-bank-per-point."""
+    src = DRIVER.read_text()
+    block, outer = _feature_statements(ast.parse(src))
     assert any(isinstance(st, ast.If) and ast.unparse(st.test) == _GUARD for st in outer)
     lines = src.splitlines(keepends=True)
     for st in sorted(block + outer, key=lambda n: -n.lineno):
