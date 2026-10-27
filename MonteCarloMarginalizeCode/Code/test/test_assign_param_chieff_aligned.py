@@ -72,13 +72,15 @@ def test_precessing_spins_keep_inplane_components():
         assert (P.s1x, P.s1y, P.s2x, P.s2y) == inplane
 
 
-def _puff(tmp_path, factor, extra=(), seed=5, m2_range=(20, 30), pair=('mc', 'delta_mc'), ecc=False):
+def _puff(tmp_path, factor, extra=(), seed=5, m2_range=(20, 30), pair=('mc', 'delta_mc'), ecc=False, inplane=False):
     rng = np.random.default_rng(seed)
     Ps = []
     for _ in range(N*4):
         P = lsu.ChooseWaveformParams()
         P.m1, P.m2 = rng.uniform(34, 38)*lsu.lsu_MSUN, rng.uniform(*m2_range)*lsu.lsu_MSUN
         P.s1z, P.s2z = rng.uniform(-0.9, 0.9, 2)
+        if inplane:
+            P.s1x, P.s1y, P.s2x, P.s2y = rng.uniform(-0.3, 0.3, 4)
         P.fmin = P.fref = 20.
         if ecc:
             P.eccentricity, P.meanPerAno = rng.uniform(0.05, 0.2), rng.uniform(0, 2*np.pi)
@@ -138,15 +140,17 @@ def test_vectorized_inverse_and_spin_magnitudes_match_assign_param():
 @pytest.mark.parametrize("pair,ecc", [(["mc", "delta_mc"], False), (["mc", "eta"], False), (["m1", "m2"], False),
                                       (["mc", "delta_mc"], True), (["chieff_aligned", "mc", "delta_mc"], True)])
 def test_puffball_vectorized_spin_downselect_matches_per_point(tmp_path, pair, ecc):
-    # near-equal masses and a wide puff, so some rows leave the delta_mc/eta range and stay per point
+    # a wide puff, so some rows leave the delta_mc/eta range and stay per point;
+    # in-plane spins and the chiz_minus cut make a wrong assignment order change the exported rows
     cuts = ["--downselect-parameter", "chi1", "--downselect-parameter-range", "[0,0.5]",
             "--downselect-parameter", "chi2", "--downselect-parameter-range", "[0,0.6]",
             "--downselect-parameter", "s1z", "--downselect-parameter-range", "[-0.4,0.45]",
-            "--downselect-parameter", "xi", "--downselect-parameter-range", "[-0.3,0.3]"]
+            "--downselect-parameter", "xi", "--downselect-parameter-range", "[-0.3,0.3]",
+            "--downselect-parameter", "chiz_minus", "--downselect-parameter-range", "[-0.2,0.2]"]
     def run(sub, extra):
         d = tmp_path/sub
         d.mkdir()
-        Ps, Pout, log = _puff(d, 3, extra, m2_range=(30, 38), pair=pair, ecc=ecc)
+        Ps, Pout, log = _puff(d, 3, extra, m2_range=(10, 38), pair=pair, ecc=ecc, inplane=True)
         return np.array([[p.m1, p.m2, p.s1x, p.s1y, p.s1z, p.s2x, p.s2y, p.s2z] for p in Pout]), log
     vec, log_vec = run("vec", cuts)
     ref, _ = run("ref", cuts + ["--internal-scalar-spin-downselect"])

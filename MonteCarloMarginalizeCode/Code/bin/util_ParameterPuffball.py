@@ -68,7 +68,7 @@ eccentric_phase_models.add_arguments(parser)
 parser.add_argument("--eccentric-phase-coordinates",action='store_true',help="Puff in an effective PN eccentric phase and invert to the original waveform anomaly; no waveform or prior redefinition")
 parser.add_argument("--eccentric-phase-reference-frequency",type=float,default=10.,help="Frequency label for the effective coordinate only, in Hz; does not change fref/fmin")
 parser.add_argument("--eccentric-phase-target-frequency",type=float,default=20.,help="Target frequency label for the effective coordinate only, in Hz")
-parser.add_argument("--internal-scalar-spin-downselect",action='store_true',help="Test spin downselects per point after assignment, not vectorized (for testing)")
+parser.add_argument("--internal-scalar-spin-downselect",action='store_true',help="Test spin downselects per point after assignment, and read eccentric-path downselect values per point (for testing)")
 parser.add_argument("--random-seed",type=int,default=None,help="Optional reproducible seed for puff draws")
 parser.add_argument("--puff-coordinate-system", choices=['mu-random-transverse'], default=None,
                     help="Opt-in fixed mu1,mu2,q,s2z covariance puff with independent RANDOM transverse spins; omit --parameter. Default: legacy puff.")
@@ -377,8 +377,8 @@ if opts.eccentric_phase_coordinates:
         names_downselect += names_downselect_late
         names_downselect_late = []
     # Mass and Cartesian-spin names convert in one pass; the rest are read from each candidate.
-    names_cart = [p for p in names_downselect if p in mass_names + ['chi1', 'chi2', 's1z', 's2z']
-                  or (p == 'xi' and lalsimutils.spin_convention == 'L')]
+    names_cart = [p for p in names_downselect if not opts.internal_scalar_spin_downselect and
+                  (p in mass_names + ['chi1', 'chi2', 's1z', 's2z'] or (p == 'xi' and lalsimutils.spin_convention == 'L'))]
     x_cart = lalsimutils.convert_waveform_coordinates(
         np.array([[p.m1/lal.MSUN_SI, p.m2/lal.MSUN_SI, p.s1x, p.s1y, p.s1z, p.s2x, p.s2y, p.s2z] for p in P_list]).reshape(-1, 8),
         coord_names=names_cart, low_level_coord_names=['m1', 'm2', 's1x', 's1y', 's1z', 's2x', 's2y', 's2z'])
