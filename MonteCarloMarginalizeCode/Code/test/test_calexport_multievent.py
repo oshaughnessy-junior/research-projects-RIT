@@ -150,9 +150,19 @@ def test_resample_and_export_share_the_point_P():
     import ast
     tree = ast.parse(BIN.read_text())
     analyze = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "analyze_event")
-    binds = [ast.unparse(n.value) for n in ast.walk(analyze) if isinstance(n, ast.Assign)
-             and any(isinstance(t, ast.Name) and t.id == "P" for t in n.targets)]
-    assert binds == ["P_list[indx_event]"], binds
+
+    def own_scope(node):
+        # analyze_event's own statements; nested functions have their own P.
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+                continue
+            yield child
+            yield from own_scope(child)
+    stores = [n for n in own_scope(analyze) if isinstance(n, ast.Name) and n.id == "P"
+              and isinstance(n.ctx, ast.Store)]          # any binding form: =, for, with, tuple, :=
+    assert len(stores) == 1, [n.lineno for n in stores]
+    bind = next(n for n in own_scope(analyze) if isinstance(n, ast.Assign) and stores[0] in n.targets)
+    assert ast.unparse(bind.value) == "P_list[indx_event]", ast.unparse(bind)
     resample = [n for n in ast.walk(analyze) if isinstance(n, ast.Call)
                 and isinstance(n.func, ast.Name) and n.func.id == "resample_samples"]
     assert len(resample) == 1
