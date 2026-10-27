@@ -68,6 +68,7 @@ eccentric_phase_models.add_arguments(parser)
 parser.add_argument("--eccentric-phase-coordinates",action='store_true',help="Puff in an effective PN eccentric phase and invert to the original waveform anomaly; no waveform or prior redefinition")
 parser.add_argument("--eccentric-phase-reference-frequency",type=float,default=10.,help="Frequency label for the effective coordinate only, in Hz; does not change fref/fmin")
 parser.add_argument("--eccentric-phase-target-frequency",type=float,default=20.,help="Target frequency label for the effective coordinate only, in Hz")
+parser.add_argument("--internal-scalar-spin-downselect",action='store_true',help="Test spin downselects per point after assignment, not vectorized (for testing)")
 parser.add_argument("--random-seed",type=int,default=None,help="Optional reproducible seed for puff draws")
 parser.add_argument("--puff-coordinate-system", choices=['mu-random-transverse'], default=None,
                     help="Opt-in fixed mu1,mu2,q,s2z covariance puff with independent RANDOM transverse spins; omit --parameter. Default: legacy puff.")
@@ -388,7 +389,7 @@ names_vec = [p for p in names_downselect_late
              if p in ['chi1', 'chi2', 's1z', 's2z'] or (p == 'xi' and lalsimutils.spin_convention == 'L')]
 others = [p for p in coord_names if p != 'chieff_aligned']
 pair = [p for p in others if p in ['mc', 'delta_mc', 'eta', 'm1', 'm2']]
-if names_vec and not opts.eccentric_phase_coordinates and \
+if names_vec and not opts.eccentric_phase_coordinates and not opts.internal_scalar_spin_downselect and \
         set(pair) in [{'mc', 'delta_mc'}, {'mc', 'eta'}, {'m1', 'm2'}] and \
         max(coord_names.index(p) for p in pair) < coord_names.index('chieff_aligned') and \
         set(others) - set(pair) <= {'lambda1', 'lambda2', 'LambdaTilde', 'DeltaLambdaTilde', 'eccentricity', 'a6c', 'E0', 'p_phi0', 'dist'}:

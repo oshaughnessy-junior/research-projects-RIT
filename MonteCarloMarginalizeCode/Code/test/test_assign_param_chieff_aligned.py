@@ -72,12 +72,12 @@ def test_precessing_spins_keep_inplane_components():
         assert (P.s1x, P.s1y, P.s2x, P.s2y) == inplane
 
 
-def _puff(tmp_path, factor, extra=(), seed=5):
+def _puff(tmp_path, factor, extra=(), seed=5, m2_range=(20, 30), pair=('mc', 'delta_mc')):
     rng = np.random.default_rng(seed)
     Ps = []
     for _ in range(N*4):
         P = lsu.ChooseWaveformParams()
-        P.m1, P.m2 = rng.uniform(34, 38)*lsu.lsu_MSUN, rng.uniform(20, 30)*lsu.lsu_MSUN
+        P.m1, P.m2 = rng.uniform(34, 38)*lsu.lsu_MSUN, rng.uniform(*m2_range)*lsu.lsu_MSUN
         P.s1z, P.s2z = rng.uniform(-0.9, 0.9, 2)
         P.fmin = P.fref = 20.
         Ps.append(P)
@@ -85,7 +85,7 @@ def _puff(tmp_path, factor, extra=(), seed=5):
     exe = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "bin", "util_ParameterPuffball.py")
     cmd = [sys.executable, exe, "--inj-file", str(tmp_path/"in.xml.gz"), "--inj-file-out", str(tmp_path/"out"),
            "--puff-factor", str(factor), "--fmin", "20", "--fref", "20", "--random-seed", "7",
-           "--parameter", "mc", "--parameter", "delta_mc", "--parameter", "chieff_aligned"] + list(extra)
+           ] + sum([["--parameter", p] for p in pair], []) + ["--parameter", "chieff_aligned"] + list(extra)
     proc = subprocess.run(cmd, cwd=tmp_path, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                           universal_newlines=True, timeout=300)
     assert proc.returncode == 0, proc.stdout[-3000:]
@@ -129,3 +129,22 @@ def test_vectorized_inverse_and_spin_magnitudes_match_assign_param():
         P.assign_param('chieff_aligned', xv)
     want = np.array([[P.extract_param(n) for n in names] for P in Ps])
     assert np.allclose(got, want, rtol=0, atol=1e-12)
+
+
+@pytest.mark.parametrize("pair", [["mc", "delta_mc"], ["mc", "eta"], ["m1", "m2"]])
+def test_puffball_vectorized_spin_downselect_matches_per_point(tmp_path, pair):
+    # near-equal masses and a wide puff, so some rows leave the delta_mc/eta range and stay per point
+    cuts = ["--downselect-parameter", "chi1", "--downselect-parameter-range", "[0,0.5]",
+            "--downselect-parameter", "chi2", "--downselect-parameter-range", "[0,0.6]",
+            "--downselect-parameter", "s1z", "--downselect-parameter-range", "[-0.4,0.45]",
+            "--downselect-parameter", "xi", "--downselect-parameter-range", "[-0.3,0.3]"]
+    def run(sub, extra):
+        d = tmp_path/sub
+        d.mkdir()
+        Ps, Pout, log = _puff(d, 3, extra, m2_range=(30, 38), pair=pair)
+        return np.array([[p.m1, p.m2, p.s1x, p.s1y, p.s1z, p.s2x, p.s2y, p.s2z] for p in Pout]), log
+    vec, log_vec = run("vec", cuts)
+    ref, _ = run("ref", cuts + ["--internal-scalar-spin-downselect"])
+    assert "Increment downselect : chi1" in log_vec
+    assert len(vec) > 0 and vec.shape == ref.shape
+    assert np.array_equal(vec, ref)
