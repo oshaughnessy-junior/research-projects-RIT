@@ -26,8 +26,12 @@ Waveform, response, and parameter classes reject unsupported settings.
 The waveform epoch reference must be `pinned equal-arm orbit t=0`.
 The response requires its zero input epoch and discards declared padding.
 Every trial must produce the injection's retained sampling, epoch and shape.
-The first interface caps waveform generation at 16384 samples and defaults
-to eight trial points. The command permits at most 64 points.
+Waveform generation defaults to a 16384-sample limit. The explicit command
+option `--max-waveform-samples 32768` (API `max_waveform_samples=32768`)
+permits up to 32768 samples; the only supported limits are 16384 and 32768.
+The API requires an exact integer, excluding booleans. Oversized fixtures refuse
+before adapter construction. The interface defaults to eight trial points;
+the command permits at most 64 points.
 
 Noise fields are `kind`, `psd_levels`, `target_snr`, `fmin_hz`, and `fmax_hz`.
 The only supported kind is `synthetic_independent_white`.
@@ -55,7 +59,12 @@ an external bounded runner records failure or timeout status.
 
 The result records the input fixture/hash, module hashes, dependency versions,
 waveform/response metadata, channel hashes, fixed PSD, selected band, and timings.
-It also records injection, null, and trial log likelihoods.
+It also records injection, null, and trial log likelihoods. An opted-in 32768
+limit adds `execution_limits: {"max_waveform_samples": 32768}`. The default
+and explicit 16384 limit preserve the original output field set. Interpolation
+order is selected in the existing `response.interpolation_order` fixture field,
+with default 25 and explicit alternatives 25 or 29; there is no separate order
+command option.
 `COMPLETED` means the requested evaluation finished. Scientific acceptance
 requires independent convention, response, and numerical convergence checks.
 
@@ -80,6 +89,6 @@ the periodic Hann, with no fitted window parameters or normalization change.
 digests, retained start, duration, and count. Likelihood channel hashes describe
 the windowed observable. Noise is an artificial independent Fourier noise model
 **after** the declared window; this does not model the covariance induced by
-windowing a physical stationary time series. The 16384-sample CLI cap and
-waveform/response guards remain in force. This extension supplies an explicitly
+windowing a physical stationary time series. The selected 16384- or
+32768-sample limit and waveform/response guards remain in force. This extension supplies an explicitly
 separate experiment; it supplies no numerical convergence evidence by itself.
