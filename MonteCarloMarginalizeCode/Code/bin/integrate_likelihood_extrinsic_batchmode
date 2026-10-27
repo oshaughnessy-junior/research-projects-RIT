@@ -3261,7 +3261,11 @@ if opts.sampler_method == 'adaptive_cartesian_gpu' and opts.skymap_file:
 
 
 def resample_samples(my_samples,
-                     lookupNKDict=None, rholmArrayDict=None, ctUArrayDict=None, ctVArrayDict=None,epochDict=None, n_cal=1, cal_log_weights=None, ctUArrayDict_cal=None, ctVArrayDict_cal=None): # uses LOTS of global variables, don't pass them all
+                     lookupNKDict=None, rholmArrayDict=None, ctUArrayDict=None, ctVArrayDict=None,epochDict=None, n_cal=1, cal_log_weights=None, ctUArrayDict_cal=None, ctVArrayDict_cal=None, *, P): # uses LOTS of global variables, don't pass them all
+  # P: the CURRENT intrinsic point's params object.  The drawn extrinsic arrays are written
+  # into it, and the --calibration-export-posterior block reads them back from it.  Never the
+  # module-global P (= P_list[0]): with --n-events-to-analyze > 1 that left later points
+  # exporting the last sampler batch instead of their fair draws.
   global fSample # access global sampling rate
   # will look a LOT like the likelihood function definitions, unfortunately
   if not opts.vectorized:
@@ -6735,7 +6739,7 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
             samples["alpha3"] = numpy.zeros(samples["psi"].shape)
 
       if opts.resample_time_marginalization:
-        samples = resample_samples(samples,lookupNKDict, rholmArrayDict, ctUArrayDict, ctVArrayDict,epochDict, n_cal=n_cal_for_likelihood, cal_log_weights=calibration_log_weights, ctUArrayDict_cal=ctUArrayDict_cal, ctVArrayDict_cal=ctVArrayDict_cal)
+        samples = resample_samples(samples,lookupNKDict, rholmArrayDict, ctUArrayDict, ctVArrayDict,epochDict, n_cal=n_cal_for_likelihood, cal_log_weights=calibration_log_weights, ctUArrayDict_cal=ctUArrayDict_cal, ctVArrayDict_cal=ctVArrayDict_cal, P=P)
         # The time-draw helper evaluates raw NoLoop statistics, bypassing the
         # sampler callback. Restore the same data-normalization term in its export;
         # it is constant in arrival time and does not change the draw probabilities.
