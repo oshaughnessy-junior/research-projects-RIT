@@ -367,8 +367,25 @@ if opts.eccentric_phase_coordinates:
     P_list, X_native = eccentric_phase_puff.native_proposals(
         P_list,X_out,coord_names,opts.eccentric_phase_reference_frequency,
         opts.eccentric_phase_target_frequency,**eccentric_phase_models.worker_options(opts))
+    # Each candidate already holds the spins the loop below writes, unless a mass coordinate follows
+    # chieff_aligned or a coordinate outside this list has its own spin setter.
+    mass_names = ['mc', 'delta_mc', 'eta', 'm1', 'm2', 'mtot', 'q']
+    if names_downselect_late and not opts.internal_scalar_spin_downselect and \
+            all(coord_names.index(p) < coord_names.index('chieff_aligned') for p in coord_names if p in mass_names) and \
+            set(coord_names) <= set(mass_names) | {'chieff_aligned', 'eccentricity', 'meanPerAno', 'lambda1', 'lambda2',
+                                                   'LambdaTilde', 'DeltaLambdaTilde', 'a6c', 'E0', 'p_phi0', 'dist'}:
+        names_downselect += names_downselect_late
+        names_downselect_late = []
+    # Mass and Cartesian-spin names convert in one pass; the rest are read from each candidate.
+    names_cart = [p for p in names_downselect if p in mass_names + ['chi1', 'chi2', 's1z', 's2z']
+                  or (p == 'xi' and lalsimutils.spin_convention == 'L')]
+    x_cart = lalsimutils.convert_waveform_coordinates(
+        np.array([[p.m1/lal.MSUN_SI, p.m2/lal.MSUN_SI, p.s1x, p.s1y, p.s1z, p.s2x, p.s2y, p.s2z] for p in P_list]).reshape(-1, 8),
+        coord_names=names_cart, low_level_coord_names=['m1', 'm2', 's1x', 's1y', 's1z', 's2x', 's2y', 's2z'])
     x_out_down = np.array([[p.extract_param(name)/(lal.MSUN_SI if name in ['mc','m1','m2','mtot'] else 1.)
-                            for name in names_downselect] for p in P_list])
+                            if name not in names_cart else 0. for name in names_downselect] for p in P_list]).reshape(-1, len(names_downselect))
+    for indx, name in enumerate(names_cart):
+        x_out_down[:, names_downselect.index(name)] = x_cart[:, indx]
 else:
     X_native = X_out
     x_out_down = lalsimutils.convert_waveform_coordinates(X_out, coord_names=names_downselect, low_level_coord_names=coord_names)
