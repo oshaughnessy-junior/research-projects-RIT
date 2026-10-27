@@ -886,6 +886,7 @@ jobs:
           python -m pytest -q \
             MonteCarloMarginalizeCode/Code/test/test_geometric4.py \
             MonteCarloMarginalizeCode/Code/test/test_puffball_transverse_reflect.py \
+            MonteCarloMarginalizeCode/Code/test/test_assign_param_chieff_aligned.py \
             MonteCarloMarginalizeCode/Code/test/test_mu_puffball.py \
             MonteCarloMarginalizeCode/Code/test/test_mu_puffball_pipeline.py \
             MonteCarloMarginalizeCode/Code/test/test_eccentric_phase.py \
