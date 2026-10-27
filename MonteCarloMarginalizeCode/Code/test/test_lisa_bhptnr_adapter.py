@@ -191,8 +191,8 @@ def test_generation_does_not_expose_receipt_for_mutation(monkeypatch):
     assert adapter.generate(parameters()).metadata['runtime']['versions']['fixture'] == '1'
 
 
-@pytest.mark.parametrize('foreign',[False,True])
-def test_dependency_identity_covers_execution_submodules(tmp_path,monkeypatch,foreign):
+@pytest.mark.parametrize('origin',['owned','foreign','missing'])
+def test_dependency_identity_covers_execution_submodules(tmp_path,monkeypatch,origin):
     package = tmp_path/'gwtools'
     package.mkdir()
     for filename in ('__init__.py','gwtools.py'):
@@ -205,10 +205,11 @@ def test_dependency_identity_covers_execution_submodules(tmp_path,monkeypatch,fo
         if any(name==root or name.startswith(root+'.') for root in ('numpy','scipy','h5py','gwtools')):
             monkeypatch.delitem(sys.modules,name)
     monkeypatch.setitem(sys.modules,'gwtools',SimpleNamespace(__file__=str(package/'__init__.py')))
-    location = tmp_path/'outside.py' if foreign else package/'gwtools.py'
-    if foreign: location.write_text('# wrong execution module\n')
-    monkeypatch.setitem(sys.modules,'gwtools.gwtools',SimpleNamespace(__file__=str(location)))
-    if foreign:
+    location = tmp_path/'outside.py' if origin=='foreign' else package/'gwtools.py'
+    if origin=='foreign': location.write_text('# wrong execution module\n')
+    module = SimpleNamespace() if origin=='missing' else SimpleNamespace(__file__=str(location))
+    monkeypatch.setitem(sys.modules,'gwtools.gwtools',module)
+    if origin!='owned':
         with pytest.raises(ValueError,match='gwtools.gwtools'):
             ba._verify_dependency_origins()
     else:

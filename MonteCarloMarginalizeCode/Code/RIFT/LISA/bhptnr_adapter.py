@@ -107,7 +107,7 @@ def _verify_dependency_origins():
                 continue
             location = getattr(module, '__file__', None)
             if location is None:
-                continue
+                raise ValueError('loaded dependency module has no file origin: '+module_name)
             path = Path(location).resolve(strict=True)
             if path not in owned:
                 raise ValueError('loaded dependency module is outside its distribution: '+module_name)
