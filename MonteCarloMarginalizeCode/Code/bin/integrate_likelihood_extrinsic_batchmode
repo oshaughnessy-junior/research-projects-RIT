@@ -387,6 +387,7 @@ optp.add_option("--calibration-neff-cal-target",default=10,type=float, help="Cal
 optp.add_option("--calibration-n-realizations-max",default=0,type=int, help="Cap for the adaptive cal draw count (see --calibration-neff-cal-target).  Default 0 = 8x --calibration-n-realizations.")
 optp.add_option("--calibration-burn-in-neff",default=None,type=float, help="Opt-in: before the production cal-marginalized integration, BURN IN the extrinsic sampler on the cheap ZERO-CAL (n_cal=1) likelihood until this effective sample count, then switch to the full cal-marginalized likelihood. The extrinsic posterior is ~cal-independent. CAVEAT: the AV sampler RESETS between integrate() calls (no seedable AV yet), so this gives AV no speedup (correctness-safe only). It can warm-start GMM/portfolio (model reuse). Awaiting a seedable / boundary-shifting AV; see DESIGN_adaptive_driver.md. No effect unless calmarg is active.")
 optp.add_option("--calibration-burn-in-nmax",default=None,type=int, help="Cap on the number of samples drawn during the zero-cal burn-in (default: the run's --n-max). Keeps the burn-in bounded if it cannot reach --calibration-burn-in-neff.")
+optp.add_option("--calibration-bank-per-point",action='store_true',default=False, help="Opt-in (calmarg active): draw a fresh calibration bank for EACH intrinsic point, instead of one bank per job shared by every point.  The draw stream is derived from --seed and the point's grid index (--event plus its offset in this job), so with the same --seed a point starts from the same bank whichever job analyzes it.  Only the starting bank is independent of how points are split into jobs: the cal error probe and adaptive growth still draw from job-wide streams.  Unseeded runs take fresh entropy.  Same source as the shared bank (prior, or --calibration-proposal-breadcrumb), at the starting --calibration-n-realizations.  Not with --calibration-dump-responsibilities.")
 optp.add_option("--calibration-export-posterior",action='store_true',default=False, help="Opt-in (final fairdraw export, calmarg active): for each fair-draw output sample, draw ONE calibration realization in proportion to its posterior weight (L_c * w_c, from the per-realization likelihood components) and write a SELF-CONTAINED sibling <output>_<event>_cal.dat with the FULL draw -- intrinsic + extrinsic + the drawn realization's spline-node values as labeled columns cal_<IFO>_amp_<k>/cal_<IFO>_phase_<k>.  The recovered cal posterior is then those columns, plottable with the standard tooling.  Requires --calibration-envelope-directory; retains the cal node vectors.")
 optp.add_option("--extrinsic-proposal-breadcrumb",default=None, help="Opt-in (GMM sampler): SEED the extrinsic GMM sampler from a learned proposal breadcrumb (RIFT.calmarg.extrinsic_handoff): the per-group GMMs from a previous iteration's posterior pre-fill gmm_dict, so the sampler starts on the posterior instead of cold.  The extrinsic posterior barely moves iteration-to-iteration.  Groups matched by parameter name; missing groups fall back to the default.")
 optp.add_option("--extrinsic-proposal-output",default=None, help="Opt-in (GMM sampler): after the integration, fit the run's extrinsic posterior samples to a per-group GMM and WRITE it as a proposal breadcrumb (to seed a later iteration via --extrinsic-proposal-breadcrumb).")
@@ -2237,6 +2238,38 @@ def _draw_more_calibration_draws(n_more, psd_dict):
     for ifo in new:
         calibration_realization_dict[ifo] = np.concatenate([calibration_realization_dict[ifo], new[ifo]], axis=1)
     return new
+
+_calibration_n_realizations_initial = opts.calibration_n_realizations
+def _redraw_calibration_bank_for_point(point_index, psd_dict):
+    """--calibration-bank-per-point: replace the bank with a fresh one for this point.
+
+    Stream derived_rng('calmarg.bank_per_point', point_index): fixed by --seed and the
+    point's grid index, independent of every other point and of the shared startup bank.
+    Same source as that bank (proposal breadcrumb, else the prior), at the starting size;
+    adaptive growth at an earlier point is not carried over."""
+    global calibration_realization_dict, calibration_log_weights, calibration_nodes
+    import RIFT.calmarg.generate_realizations as _genr
+    from RIFT.integrators.seeding import derived_rng
+    rng = derived_rng('calmarg.bank_per_point', int(point_index))
+    n = int(_calibration_n_realizations_initial)
+    opts.calibration_n_realizations = n
+    if opts.calibration_proposal_breadcrumb:
+        # Still set only if the startup load succeeded; reuse that breadcrumb (_bc) rather
+        # than reloading per point, which would add a failure the startup path falls back from.
+        calibration_realization_dict, calibration_log_weights, _nodes = _genr.seed_realizations_from_breadcrumb(
+            _bc, 1./P.deltaF, P.deltaT, opts.fmin_template, fmax,
+            opts.calibration_spline_count, n, fmin_ifo=cal_fmin_ifo,
+            prior=calibration_current_prior, rng=rng)
+    else:
+        _ret = _genr.draw_prior_realizations_with_nodes(
+            opts.calibration_envelope_directory, list(psd_dict.keys()), 1./P.deltaF, P.deltaT,
+            opts.fmin_template, fmax, opts.calibration_spline_count, n,
+            fmin_ifo=cal_fmin_ifo, correction_types=calibration_correction_types, rng=rng)
+        calibration_realization_dict = _ret['realizations']; _nodes = _ret['nodes']
+    if opts.calibration_export_posterior:
+        calibration_nodes = _nodes
+    print(" [calmarg bank] point {}: fresh bank of {} realizations, node checksum {:.12e}".format(
+          int(point_index), n, float(np.sum(_nodes))))
 
 
 # The per-realization calibration self term <C_c h|C_c h> is frequency-domain-diagonal only
@@ -4297,6 +4330,8 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
             "fused_calmarg_in_use's early substitution must be updated in the same commit. "
             "Refusing rather than integrating with a stencil chosen for the wrong reason."
             % (_fused_calmarg_would_run, use_fused_calmarg, opts._noloop_time_interp))
+    if calibration_marginalization and opts.calibration_bank_per_point:
+      _redraw_calibration_bank_for_point(opts.event + indx_event, psd_dict)
     if calibration_marginalization:
       extra_kwargs['calibration_realizations'] = calibration_realization_dict
       extra_kwargs['calibration_conjugate'] = bool(opts.calibration_conjugate_phase) if use_td_gs else False
