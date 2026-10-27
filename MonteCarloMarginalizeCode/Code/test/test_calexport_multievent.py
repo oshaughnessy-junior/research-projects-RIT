@@ -89,10 +89,10 @@ def _samples_xml(path):
     return lsctables.SimInspiralTable.get_table(doc)
 
 
-def _run_driver(d, *extra):
+def _run_driver(d, *extra, driver=BIN):
     out = d["outdir"]
     cmd = [
-        sys.executable, str(BIN),
+        sys.executable, str(driver),
         "--cache-file", str(out / "test.cache"),
         "--channel-name", "H1=FAKE-STRAIN",
         "--psd-file", "H1=%s" % (out / "H1_psd.xml.gz"),

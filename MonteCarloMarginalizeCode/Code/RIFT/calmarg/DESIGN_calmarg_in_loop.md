@@ -395,8 +395,10 @@ above).
   STATUS (2026-10): the starting bank is drawn once per job, seeded by `--seed`,
   so every point in a job shares it. `--calibration-bank-per-point` (opt-in, default
   off) follows the decision above: a fresh starting bank per point, drawn from
-  `derived_rng('calmarg.bank_per_point', grid index)`. The cal error probe and adaptive
-  growth still draw from job-wide streams.
+  `derived_rng('calmarg.bank_per_point', grid index)`. The stream is keyed on
+  (`--seed`, grid index) only: with a fixed `--seed`, grid row k gets the same bank in
+  every iteration and every grid, whatever point sits there. The cal error probe and
+  adaptive growth still draw from job-wide streams.
 * **Calibration-parameter export:** Option B does not record which realization was
   selected (acceptable per scope — parameter draws can be regenerated at the end as
   the current `--dump_cal_realization` path does).

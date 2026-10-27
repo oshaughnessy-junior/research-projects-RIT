@@ -270,6 +270,59 @@ def test_bank_per_point_with_the_pilot_is_refused():
     assert oc.refusals_from_opts(_honoured(calibration_dump_responsibilities='resp.npz')) == []
 
 
+def _pilot_stage():
+    import importlib.machinery, importlib.util
+    path = os.path.join(CODE_ROOT, 'bin', 'util_CalPilotStage.py')
+    loader = importlib.machinery.SourceFileLoader('util_CalPilotStage', path)
+    spec = importlib.util.spec_from_loader('util_CalPilotStage', loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+# A wide args_ile.txt line from util_RIFT_pseudo_pipe.py --calmarg-pilot
+# --manual-extra-ile-args "--calibration-bank-per-point".
+_WIDE_ARGS_WITH_BANK_PER_POINT = (
+    'X --calibration-envelope-directory %s --vectorized --gpu --force-xpy '
+    '--time-marginalization --calibration-bank-per-point --calibration-export-posterior '
+    '--sim-xml overlap-grid.xml.gz --n-events-to-analyze 20 --output-file out' % ENV_DIR)
+
+
+def _opts_from_cli(tokens):
+    """The driver options this gate reads, from a CLI token list."""
+    kw = dict(calibration_envelope_directory=None, time_marginalization=False,
+              vectorized=False, gpu=False)
+    for flag in ('--time-marginalization', '--vectorized', '--gpu'):
+        kw[flag[2:].replace('-', '_')] = flag in tokens
+    valued = {'--calibration-envelope-directory', '--calibration-dump-responsibilities',
+              '--calibration-burn-in-neff', '--calibration-burn-in-nmax'}
+    for flag in [f for f, _ in oc.CAL_OPT_IN_FLAGS] + ['--calibration-envelope-directory']:
+        if flag in tokens:
+            i = tokens.index(flag)
+            kw[flag[2:].replace('-', '_')] = tokens[i + 1] if flag in valued else True
+    return _Opts(**kw)
+
+
+def test_pilot_stage_drops_bank_per_point_from_the_wide_args():
+    """util_CalPilotStage.py copies the wide ILE args and adds
+    --calibration-dump-responsibilities.  With --calibration-bank-per-point inherited,
+    every pilot node would be refused at startup."""
+    stage = _pilot_stage()
+    cmd = stage.pilot_ile_command(_WIDE_ARGS_WITH_BANK_PER_POINT, 'ILE', 'grid.xml.gz', 3,
+                                  'pilot_out', 'resp.npz')
+    assert '--calibration-bank-per-point' not in cmd, cmd
+    assert cmd[-2:] == ['--calibration-dump-responsibilities', 'resp.npz'], cmd
+    # the flag is valueless: the option after it survives
+    assert '--calibration-export-posterior' in cmd, cmd
+    assert oc.refusals_from_opts(_opts_from_cli(cmd[1:])) == []
+    # the wide args themselves keep it, and are accepted on the wide stage
+    wide = _WIDE_ARGS_WITH_BANK_PER_POINT.split()[1:]
+    assert oc.refusals_from_opts(_opts_from_cli(wide)) == []
+    assert _opts_from_cli(wide).calibration_bank_per_point is True
+    # strip_opts on its own, for a line where the flag is last
+    assert stage.strip_opts('--vectorized --calibration-bank-per-point') == '--vectorized'
+
+
 # ------------------------------------------------------ R6: opt-ins without the envelope
 
 def test_each_opt_in_without_the_envelope_directory_is_refused():
@@ -462,6 +515,15 @@ def test_driver_accepts_the_pilot_without_time_marginalization():
                 '--calibration-dump-responsibilities', '/tmp/resp_unused.npz'])
     assert _REFUSED not in out, out[-600:]
     print('driver accepts the cal pilot on --vectorized alone : OK')
+
+
+def test_driver_accepts_the_pilot_built_from_bank_per_point_wide_args():
+    """The same pilot command through the real CLI."""
+    cmd = _pilot_stage().pilot_ile_command(_WIDE_ARGS_WITH_BANK_PER_POINT, 'ILE',
+                                           'grid.xml.gz', 3, 'pilot_out', '/tmp/resp_unused.npz')
+    out = _run(cmd[1:])
+    assert _REFUSED not in out, out[-600:]
+    print('driver accepts the cal pilot built from bank-per-point wide args : OK')
 
 
 if __name__ == '__main__':

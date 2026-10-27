@@ -7,6 +7,10 @@
 2. With the option off the helper is unreachable: its only call is guarded by the flag.
 3. End to end: two intrinsic points in one job with the option on report two different
    banks, and each point still exports its own fair draws.
+4. The redrawn bank follows --calibration-correction-type per detector, and its exported
+   nodes are the nodes of the realizations in that bank.
+5. End to end: with the option off, outputs are byte-identical to the driver with the
+   redraw statement deleted; with it on, lnL changes (the likelihood sees the new bank).
 """
 
 import ast
@@ -92,6 +96,43 @@ def test_banks_differ_between_points_and_reproduce(tmp_path, export):
         np.testing.assert_array_equal(n7, n7_again)
     else:
         assert n7 is None
+
+
+def _skewed_envelope(path):
+    """Median far from 1, so the data and template conventions give disjoint node priors:
+    template amp 1.3 +- 0.02, phase 0.2 +- 0.01; data amp 1/1.3 +- 0.012, phase -0.2."""
+    f = np.geomspace(10, 1024, 20)
+    c = np.ones_like(f)
+    np.savetxt(path, np.column_stack([f, 1.3 * c, .2 * c, 1.28 * c, .19 * c, 1.32 * c, .21 * c]))
+
+
+@pytest.mark.parametrize("export", [False, True])
+def test_redraw_follows_correction_types_and_exports_its_own_nodes(tmp_path, export):
+    """H1 'template' is not H1's default ('data'), so a redraw that ignored
+    calibration_correction_types would put H1's amplitude near 1/1.3, not 1.3.
+    With export, the nodes must rebuild the bank's realizations exactly."""
+    from RIFT.calmarg import generate_realizations as gr
+    ns = _lift(tmp_path, export)
+    for ifo in ("H1", "L1"):
+        _skewed_envelope(tmp_path / ("%s.txt" % ifo))
+    types = {"H1": "template", "L1": "data"}
+    ns["calibration_correction_types"] = types
+    bank, nodes = _bank(ns, 11, 7)
+    for ifo, amp in (("H1", 1.3), ("L1", 1 / 1.3)):
+        band = np.any(bank[ifo] != 1, axis=1)
+        assert band.sum() > 50
+        np.testing.assert_allclose(np.median(np.abs(bank[ifo][band])), amp, rtol=0.05)
+    if not export:
+        return
+    prior = gr.prior_cal_breadcrumb_dict(str(tmp_path), ["H1", "L1"], 20, 120, 4,
+                                         correction_types=types)
+    assert np.all(np.abs((nodes - prior["prior_mean"]) / prior["prior_sigma"]) < 6)
+    log_f = np.linspace(np.log10(20), np.log10(120), 4)
+    for i_det, ifo in enumerate(("H1", "L1")):
+        block = nodes[:, 8 * i_det:8 * (i_det + 1)]
+        rebuilt = gr.build_realizations_from_nodes(block[:, :4].T, block[:, 4:].T, 1., 1 / 256.,
+                                                   20, 120, log_f)
+        np.testing.assert_allclose(bank[ifo], rebuilt, rtol=0, atol=1e-12)
 
 
 def test_breadcrumb_branch_redraws_from_the_proposal(tmp_path):
@@ -195,3 +236,48 @@ def test_two_points_get_different_banks_end_to_end(tmp_path):
     single = [ln for ln in proc1.stdout.splitlines() if "[calmarg bank]" in ln]
     assert len(single) == 1 and "point 1:" in single[0], single
     assert single[0].rsplit("checksum", 1)[1] == sums[1], (single, lines)
+
+
+_CHEAP = ("--n-max", "2000")
+_GUARD = "calibration_marginalization and opts.calibration_bank_per_point"
+
+
+def _driver_without_the_redraw(dest):
+    """The driver with the guarded redraw statement (and anything in its else) deleted:
+    the option-off path as it was before --calibration-bank-per-point."""
+    src = DRIVER.read_text()
+    guards = [n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.If)
+              and ast.unparse(n.test) == _GUARD]
+    assert len(guards) == 1
+    lines = src.splitlines(keepends=True)
+    del lines[guards[0].lineno - 1:guards[0].end_lineno]
+    out = dest / "ile_without_redraw"
+    out.write_text("".join(lines))
+    assert out.read_text().count("_redraw_calibration_bank_for_point(") == 1   # the def only
+    return out
+
+
+def test_option_off_is_unchanged_and_option_on_reaches_the_likelihood(tmp_path):
+    """Off: every output byte-identical to the driver without the redraw statement, so the
+    option costs the default path no RNG draw.  On: lnL differs from off at every point, so
+    the likelihood integrates over the redrawn bank, not the startup one (zero data: lnL
+    still depends on the bank through <C h|C h>)."""
+    import test_calexport_multievent as tcm
+    out = {}
+    for name, driver, extra in (("off", DRIVER, ()),
+                                ("stripped", _driver_without_the_redraw(tmp_path), ()),
+                                ("on", DRIVER, ("--calibration-bank-per-point",))):
+        (tmp_path / name).mkdir()
+        d = tcm._make_fixture(tmp_path / name)
+        proc = tcm._run_driver(d, *(_CHEAP + extra), driver=driver)
+        assert proc.returncode == 0, proc.stdout[-4000:]
+        assert "NOT APPLIED" not in proc.stdout
+        assert ("[calmarg bank]" in proc.stdout) == (name == "on")
+        out[name] = d["outdir"]
+    for i in range(tcm.N_POINTS):
+        for suffix in ("_.dat", "_cal.dat"):
+            f = "out.xml_%d%s" % (i, suffix)
+            assert (out["off"] / f).read_bytes() == (out["stripped"] / f).read_bytes(), f
+        lnl_off = np.loadtxt(out["off"] / ("out.xml_%d_.dat" % i))[-4]
+        lnl_on = np.loadtxt(out["on"] / ("out.xml_%d_.dat" % i))[-4]
+        assert lnl_on != lnl_off, (i, lnl_on, lnl_off)
