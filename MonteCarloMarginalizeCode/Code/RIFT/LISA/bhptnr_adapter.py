@@ -107,7 +107,19 @@ def _verify_dependency_origins():
                 continue
             location = getattr(module, '__file__', None)
             if location is None:
-                raise ValueError('loaded dependency module has no file origin: '+module_name)
+                spec = getattr(module, '__spec__', None)
+                loader = getattr(spec, 'loader', None)
+                locations = getattr(spec, 'submodule_search_locations', None)
+                is_namespace = (getattr(spec, 'origin', None) is None and locations
+                    and type(loader).__module__ == '_frozen_importlib_external'
+                    and type(loader).__name__ in ('NamespaceLoader', '_NamespaceLoader'))
+                if not is_namespace:
+                    raise ValueError('loaded dependency module has no file origin: '+module_name)
+                directories = [Path(item).resolve(strict=True) for item in locations]
+                if any(not any(directory in file.parents for file in owned) for directory in directories):
+                    raise ValueError('dependency namespace is outside its distribution: '+module_name)
+                modules[module_name] = {'namespace_directories': [str(item) for item in directories]}
+                continue
             path = Path(location).resolve(strict=True)
             if path not in owned:
                 raise ValueError('loaded dependency module is outside its distribution: '+module_name)

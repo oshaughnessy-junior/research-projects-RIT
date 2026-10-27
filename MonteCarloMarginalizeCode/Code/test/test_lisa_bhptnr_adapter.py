@@ -215,3 +215,29 @@ def test_dependency_identity_covers_execution_submodules(tmp_path,monkeypatch,or
     else:
         receipt=ba._verify_dependency_origins()
         assert 'gwtools.gwtools' in receipt['gwtools']['loaded_modules']
+
+
+@pytest.mark.parametrize('owned',[True,False])
+def test_real_namespace_dependency_is_checked_against_distribution(tmp_path,monkeypatch,owned):
+    import importlib
+    package=tmp_path/'gwtools';package.mkdir()
+    (package/'__init__.py').write_text('')
+    (package/'tests').mkdir();(package/'tests/data.txt').write_text('fixture')
+    monkeypatch.syspath_prepend(str(tmp_path))
+    for name in tuple(sys.modules):
+        if any(name==root or name.startswith(root+'.') for root in ('numpy','scipy','h5py','gwtools')):
+            monkeypatch.delitem(sys.modules,name)
+    # Track absence before import so teardown also removes fixture modules.
+    for name in ('gwtools','gwtools.tests'):
+        monkeypatch.setitem(sys.modules,name,None)
+        monkeypatch.delitem(sys.modules,name)
+    module=importlib.import_module('gwtools.tests')
+    files=['gwtools/__init__.py']+(['gwtools/tests/data.txt'] if owned else [])
+    distribution=SimpleNamespace(files=files,locate_file=lambda item:tmp_path/item,version='fixture')
+    other=SimpleNamespace(files=[],locate_file=lambda item:tmp_path/item,version='fixture')
+    monkeypatch.setattr(ba.metadata,'distribution',lambda name:distribution if name=='gwtools' else other)
+    if owned:
+        receipt=ba._verify_dependency_origins()
+        assert receipt['gwtools']['loaded_modules']['gwtools.tests']['namespace_directories']==[str(package/'tests')]
+    else:
+        with pytest.raises(ValueError,match='namespace is outside'):ba._verify_dependency_origins()

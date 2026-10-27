@@ -14,7 +14,10 @@ The caller supplies a source root, a prefetched data directory and a JSON
 runtime lock. Construction checks the complete Python source roster and hashes,
 the dataset size and SHA256, platform, Python ABI and dependency versions before
 importing the model. Imports use that source root and data directory. Loaded
-module paths and dependency distribution paths are checked. The constructor
+module paths and dependency distribution paths are checked. Native Python
+namespace packages are permitted only when every namespace directory contains
+files from the recorded dependency distribution. Originless execution modules
+remain refused. The constructor
 restores its temporary Python path and environment settings. It does not load
 the HDF5 model; the first evaluation does. Both import and evaluation refuse
 upstream's implicit download path.
