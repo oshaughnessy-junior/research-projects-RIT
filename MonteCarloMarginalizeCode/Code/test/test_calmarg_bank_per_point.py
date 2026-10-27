@@ -10,7 +10,7 @@
 4. The redrawn bank follows --calibration-correction-type per detector, and its exported
    nodes are the nodes of the realizations in that bank.
 5. End to end: with the option off, outputs are byte-identical to the driver with the
-   redraw statement deleted; with it on, lnL changes (the likelihood sees the new bank).
+   option's code deleted; with it on, lnL changes (the likelihood sees the new bank).
 """
 
 import ast
@@ -288,11 +288,19 @@ _GUARD = "calibration_marginalization and opts.calibration_bank_per_point"
 
 
 def _driver_without_the_redraw(dest):
-    """The driver with every statement that reads the option (today: the guarded redraw)
-    replaced by `pass`: the option-off path as it was before --calibration-bank-per-point."""
+    """The driver without the option's code: every statement that reads the option (today:
+    the guarded redraw) and the module-level block from `_calibration_n_realizations_initial
+    = ...` through the redraw helper become `pass`.  This is the option-off path as it was
+    before --calibration-bank-per-point."""
     src = DRIVER.read_text()
     tree = ast.parse(src)
-    stmts = {}
+    body = tree.body
+    first = next(i for i, st in enumerate(body) if isinstance(st, ast.Assign)
+                 and ast.unparse(st.targets[0]) == "_calibration_n_realizations_initial")
+    last = next(i for i, st in enumerate(body) if isinstance(st, ast.FunctionDef)
+                and st.name == "_redraw_calibration_bank_for_point")
+    assert first < last
+    stmts = {id(st): st for st in body[first:last + 1]}
     for st in ast.walk(tree):
         if isinstance(st, ast.stmt) and not isinstance(st, (ast.FunctionDef, ast.ClassDef)):
             if _option_readers(st):
@@ -308,12 +316,12 @@ def _driver_without_the_redraw(dest):
     out = dest / "ile_without_redraw"
     out.write_text("".join(lines))
     ast.parse(out.read_text())
-    assert out.read_text().count("_redraw_calibration_bank_for_point(") == 1   # the def only
+    assert "_redraw_calibration_bank_for_point(" not in out.read_text()
     return out
 
 
 def test_option_off_is_unchanged_and_option_on_reaches_the_likelihood(tmp_path):
-    """Off: every output byte-identical to the driver without the redraw statement, so the
+    """Off: every output byte-identical to the driver without the option's code, so the
     option costs the default path no RNG draw.  On: lnL differs from off at every point, so
     the likelihood integrates over the redrawn bank, not the startup one (zero data: lnL
     still depends on the bank through <C h|C h>)."""
