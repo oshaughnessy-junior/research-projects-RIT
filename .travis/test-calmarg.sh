@@ -64,7 +64,7 @@ fi
 ( cd "$CODE/test" && "$PY" -m pytest -q test_calexport_multievent.py )
 
 # --calibration-bank-per-point: per-point banks differ, reproduce under --seed, and the
-# redraw is unreachable with the option off.  Includes one driver subprocess, ~3 min.
+# redraw is unreachable with the option off.  Two driver subprocesses, ~5 min.
 ( cd "$CODE/test" && "$PY" -m pytest -q test_calmarg_bank_per_point.py )
 
 # Source adapters retain generator conditioning and physical waveform epochs.

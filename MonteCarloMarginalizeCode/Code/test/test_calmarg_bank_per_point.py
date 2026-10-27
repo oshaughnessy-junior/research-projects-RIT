@@ -27,9 +27,11 @@ DRIVER = Path(__file__).resolve().parents[1] / "bin" / "integrate_likelihood_ext
 def _restore_seed_state():
     """seed_everything sets process-global RNG state; leave it as we found it."""
     from RIFT.integrators import seeding
-    saved = (seeding._seed_used, dict(seeding._stream_counters), np.random.get_state())
+    import random
+    saved = (seeding._seed_used, dict(seeding._stream_counters), np.random.get_state(), random.getstate())
     yield
     np.random.set_state(saved[2])
+    random.setstate(saved[3])
     seeding._seed_used = saved[0]
     seeding._stream_counters.clear(); seeding._stream_counters.update(saved[1])
 
@@ -92,15 +94,14 @@ def test_banks_differ_between_points_and_reproduce(tmp_path, export):
         assert n7 is None
 
 
-def test_breadcrumb_branch_redraws_from_the_proposal(tmp_path, monkeypatch):
+def test_breadcrumb_branch_redraws_from_the_proposal(tmp_path):
     """--calibration-proposal-breadcrumb path: realizations AND importance weights are
-    replaced per point, and reproduce."""
-    import RIFT.calmarg.breadcrumbs as bcmod
+    replaced per point from the breadcrumb loaded at startup (_bc), and reproduce."""
     from RIFT.calmarg import generate_realizations as gr
     ns = _lift(tmp_path, export=True)
     prior = gr.prior_cal_breadcrumb_dict(str(tmp_path), ["H1", "L1"], 20, 120, 4)
-    monkeypatch.setattr(bcmod, "load", lambda path: {"cal": prior})
-    ns["opts"].calibration_proposal_breadcrumb = "unused.npz"
+    ns["_bc"] = {"cal": prior}
+    ns["opts"].calibration_proposal_breadcrumb = "loaded-at-startup.npz"
     ns["calibration_current_prior"] = prior
     a7, n7 = _bank(ns, 11, 7)
     w7 = np.array(ns["calibration_log_weights"])
@@ -130,6 +131,12 @@ def test_the_redraw_runs_only_under_the_flag():
     assert not any(c is calls[0] for st in guards[0].orelse for c in ast.walk(st))
     # the point index is the GRID row, not the offset within this job
     assert ast.unparse(calls[0].args[0]) == "opts.event + indx_event"
+    # ... and it runs BEFORE the bank is handed to the precompute, or the likelihood
+    # would integrate over the old bank while the log and export report the new one.
+    hand_off = [n for n in ast.walk(tree) if isinstance(n, ast.Assign)
+                and ast.unparse(n.targets[0]) == "extra_kwargs['calibration_realizations']"
+                and ast.unparse(n.value) == "calibration_realization_dict"]
+    assert len(hand_off) == 1 and calls[0].lineno < hand_off[0].lineno
     opt = re.search(r'add_option\("--calibration-bank-per-point",action=\'store_true\',default=False',
                     DRIVER.read_text())
     assert opt, "--calibration-bank-per-point must default to off"

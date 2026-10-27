@@ -2254,8 +2254,8 @@ def _redraw_calibration_bank_for_point(point_index, psd_dict):
     n = int(_calibration_n_realizations_initial)
     opts.calibration_n_realizations = n
     if opts.calibration_proposal_breadcrumb:
-        import RIFT.calmarg.breadcrumbs
-        _bc = RIFT.calmarg.breadcrumbs.load(opts.calibration_proposal_breadcrumb)
+        # Still set only if the startup load succeeded; reuse that breadcrumb (_bc) rather
+        # than reloading per point, which would add a failure the startup path falls back from.
         calibration_realization_dict, calibration_log_weights, _nodes = _genr.seed_realizations_from_breadcrumb(
             _bc, 1./P.deltaF, P.deltaT, opts.fmin_template, fmax,
             opts.calibration_spline_count, n, fmin_ifo=cal_fmin_ifo,
