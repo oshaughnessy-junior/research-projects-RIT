@@ -100,21 +100,54 @@ def test_breadcrumb_branch_redraws_from_the_proposal(tmp_path):
     from RIFT.calmarg import generate_realizations as gr
     ns = _lift(tmp_path, export=True)
     prior = gr.prior_cal_breadcrumb_dict(str(tmp_path), ["H1", "L1"], 20, 120, 4)
-    ns["_bc"] = {"cal": prior}
+    # A proposal narrower than, and offset from, the prior: draws come from it and carry
+    # nonzero importance weights, which a prior-branch draw could not imitate.
+    proposal = dict(prior, proposal_mean=prior["prior_mean"] + 0.5 * prior["prior_sigma"],
+                    proposal_cov=np.diag((0.3 * prior["prior_sigma"]) ** 2))
+    ns["_bc"] = {"cal": proposal}
     ns["opts"].calibration_proposal_breadcrumb = "loaded-at-startup.npz"
     ns["calibration_current_prior"] = prior
     a7, n7 = _bank(ns, 11, 7)
     w7 = np.array(ns["calibration_log_weights"])
     a8, n8 = _bank(ns, 11, 8)
+    w8 = np.array(ns["calibration_log_weights"])
     a7b, n7b = _bank(ns, 11, 7)
-    assert w7.shape == (4,)
-    np.testing.assert_allclose(w7, 0, atol=1e-10)   # proposal == prior
+    assert w7.shape == (4,) and np.all(np.isfinite(w7))
+    assert np.ptp(w7) > 0 and not np.allclose(w7, w8)
+    # nodes sit near the proposal mean, within a few proposal sigmas
+    z = (n7 - proposal["proposal_mean"]) / (0.3 * prior["prior_sigma"])
+    assert np.all(np.abs(z) < 6), z
     for ifo in ("H1", "L1"):
         assert a7[ifo].shape == (256, 4)
         assert not np.allclose(a7[ifo], a8[ifo])
         np.testing.assert_array_equal(a7[ifo], a7b[ifo])
     np.testing.assert_array_equal(n7, n7b)
     assert not np.allclose(n7, n8)
+
+
+def test_per_point_and_shared_banks_draw_the_same_prior(tmp_path):
+    """Without export the shared bank comes from create_realizations (global RNG) and the
+    per-point bank from draw_prior_realizations_with_nodes.  Same prior: compare the
+    realization mean and spread in band over many draws."""
+    from RIFT.calmarg import generate_realizations as gr
+    f = np.geomspace(10, 1024, 20)
+    np.savetxt(tmp_path / "H1.txt", np.column_stack(
+        [f, 1 + .02 * np.log(f / 10), .01 * np.log(f / 10), .95 + 0 * f, -.03 + 0 * f, 1.06 + 0 * f, .04 + 0 * f]))
+    n = 3000
+    np.random.seed(5)
+    # The driver passes the same per-IFO correction type to both; so does this test.
+    shared = gr.create_realizations(str(tmp_path / "H1.txt"), 1., 1 / 256., 20, 120, 4, n,
+                                    correction_type="data")
+    per_point = gr.draw_prior_realizations_with_nodes(str(tmp_path), ["H1"], 1., 1 / 256., 20, 120, 4, n,
+                                                      rng=np.random.default_rng(6),
+                                                      correction_types={"H1": "data"})["realizations"]["H1"]
+    band = np.ptp(np.abs(shared), axis=1) > 0   # in-band rows; both are exactly 1 outside
+    assert band.sum() > 50
+    for part in (np.abs, np.angle):
+        a, b = part(shared[band]), part(per_point[band])
+        se = np.sqrt(a.var(axis=1) / n + b.var(axis=1) / n) + 1e-12
+        assert np.all(np.abs(a.mean(axis=1) - b.mean(axis=1)) < 5 * se)
+        np.testing.assert_allclose(a.std(axis=1), b.std(axis=1), rtol=0.1, atol=1e-9)
 
 
 def test_the_redraw_runs_only_under_the_flag():
