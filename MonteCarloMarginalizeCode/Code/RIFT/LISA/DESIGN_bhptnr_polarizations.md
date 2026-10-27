@@ -26,7 +26,10 @@ is the angle to `-n`. In the sky basis `(e_theta,e_phi)`, let
 `atan2(abs(z), -n dot L)` to retain small offsets near alignment.
 The spin rotation is `z/conj(z)`;
 the source observer azimuth is `-pi/2 - orbital_phase_offset`. The phase offset
-is periodic and does not align the intrinsic phases of independently generated
+is reduced through sine/cosine and atan2, preserving accurate reduction of
+large finite inputs and the quarter-turn offset. Harmonic azimuth factors use
+integer powers of the unit complex phase; no huge angle is multiplied by m or
+reduced against a rounded 2pi constant. The phase is periodic and does not align the intrinsic phases of independently generated
 models. At a sky pole the supplied phiS fixes the basis. An orbital axis aligned
 with the sky within 64 machine epsilons has no defined projected polarization
 angle and raises; a future explicit-gauge interface would need separate tests.

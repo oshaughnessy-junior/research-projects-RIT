@@ -171,3 +171,32 @@ def test_near_alignment_preserves_nonquadrupole_inclination(antialigned):
     actual=np.hypot(*out.polarizations)
     expected=np.hypot(*source.polarizations)
     np.testing.assert_allclose(actual,expected,rtol=1e-6,atol=0)
+
+
+@pytest.mark.parametrize('phi',[1e20,-1e20,1e308])
+@pytest.mark.parametrize('m',[-2,2])
+def test_large_finite_azimuth_against_quadrupole_trigonometry(phi,m):
+    theta=.9;unit=np.cos(phi)+1j*np.sin(phi)
+    # Closed quadrupole formula avoids multiplying a huge angle by m.
+    a,b=float(np.cos(phi)),float(np.sin(phi))
+    twice=complex(a*a-b*b,2*a*b)
+    if m<0:twice=twice.conjugate()
+    expected=np.sqrt(5/(64*np.pi))*(1+(1 if m==2 else -1)*np.cos(theta))**2*twice
+    assert abs(bp.spin_weighted_harmonic(2,m,theta,phi)-expected)<2e-15
+
+
+@pytest.mark.parametrize('phase',[1e20,-1e20,1e308])
+def test_large_orbital_phase_keeps_quarter_turn(phase):
+    n=native();qS,phiS,qL,phiL=1.,2.,.7,.3
+    sky=np.array([np.sin(qS)*np.cos(phiS),np.sin(qS)*np.sin(phiS),np.cos(qS)])
+    axis=np.array([np.sin(qL)*np.cos(phiL),np.sin(qL)*np.sin(phiL),np.cos(qL)])
+    east=np.cross([0.,0.,1.],sky);east/=np.linalg.norm(east);south=np.cross(east,sky)
+    theta=np.arctan2(np.linalg.norm(np.cross(sky,axis)),-sky@axis)
+    psi=np.arctan2(axis@east,axis@south)
+    unit=-1j*complex(np.cos(phase),-np.sin(phase))
+    value=n.positive_modes[2,2]
+    yp=np.sqrt(5/(64*np.pi))*(1+np.cos(theta))**2*unit**2
+    yn=np.sqrt(5/(64*np.pi))*(1-np.cos(theta))**2*unit.conjugate()**2
+    expected=(value*yp+value.conjugate()*yn)*np.exp(2j*psi)
+    out=bp.ssb_polarizations(n,qS=qS,phiS=phiS,qL=qL,phiL=phiL,orbital_phase_offset=phase)
+    np.testing.assert_allclose(out.polarizations[0]-1j*out.polarizations[1],expected,rtol=0,atol=3e-35)

@@ -103,7 +103,7 @@ def spin_weighted_harmonic(ell, m, theta, phi):
     if not 0<=theta<=np.pi:
         raise ValueError('theta must be in [0,pi]')
     d=_rotation_matrix(int(ell),theta)[int(m)+int(ell),2+int(ell)]
-    return np.sqrt((2*ell+1)/(4*np.pi))*d*np.exp(1j*m*(phi % (2*np.pi)))
+    return np.sqrt((2*ell+1)/(4*np.pi))*d*(np.cos(phi)+1j*np.sin(phi))**int(m)
 
 
 
@@ -162,7 +162,7 @@ def ssb_polarizations(native, *, qS, phiS, qL, phiL, orbital_phase_offset):
     if abs(projected) <= 64*np.finfo(float).eps:
         raise ValueError('aligned sky/orbital axis needs an explicit polarization gauge')
     theta = float(np.arctan2(abs(projected), -n@axis))
-    phi = -np.pi/2 - (phase % (2*np.pi))
+    phi = -np.pi/2 - float(np.arctan2(np.sin(phase),np.cos(phase)))
     rotation = projected/projected.conjugate()
     times, modes, receipt = _validated(native)
     return _finish(times, _synthesize(modes,theta,phi)*rotation, receipt,
