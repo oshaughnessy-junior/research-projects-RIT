@@ -287,11 +287,21 @@ _CHEAP = ("--n-max", "2000")
 _GUARD = "calibration_marginalization and opts.calibration_bank_per_point"
 
 
+def _names_the_feature(node):
+    """Any identifier, attribute or string naming the option, or one of its helpers."""
+    def hit(text):
+        return "bank_per_point" in text or text in (
+            "_calibration_n_realizations_initial", "_redraw_calibration_bank_for_point")
+    return any((isinstance(n, ast.Attribute) and hit(n.attr)) or (isinstance(n, ast.Name) and hit(n.id))
+               or (isinstance(n, ast.Constant) and isinstance(n.value, str) and hit(n.value))
+               for n in ast.walk(node))
+
+
 def _driver_without_the_redraw(dest):
-    """The driver without the option's code: every statement that reads the option (today:
-    the guarded redraw) and the module-level block from `_calibration_n_realizations_initial
-    = ...` through the redraw helper become `pass`.  This is the option-off path as it was
-    before --calibration-bank-per-point."""
+    """The driver without the option's code: the module-level block from
+    `_calibration_n_realizations_initial = ...` through the redraw helper, and every other
+    statement naming the option or its helpers (today: the guarded redraw), become `pass`.
+    This is the option-off path as it was before --calibration-bank-per-point."""
     src = DRIVER.read_text()
     tree = ast.parse(src)
     body = tree.body
@@ -300,23 +310,27 @@ def _driver_without_the_redraw(dest):
     last = next(i for i, st in enumerate(body) if isinstance(st, ast.FunctionDef)
                 and st.name == "_redraw_calibration_bank_for_point")
     assert first < last
-    stmts = {id(st): st for st in body[first:last + 1]}
-    for st in ast.walk(tree):
-        if isinstance(st, ast.stmt) and not isinstance(st, (ast.FunctionDef, ast.ClassDef)):
-            if _option_readers(st):
-                stmts[id(st)] = st
-    # innermost statements only
-    inner = [st for st in stmts.values()
-             if not any(o is not st and any(o is n for n in ast.walk(st)) for o in stmts.values())]
-    assert inner and any(isinstance(st, ast.If) and ast.unparse(st.test) == _GUARD for st in inner)
+    block = body[first:last + 1]
+    lo, hi = block[0].lineno, block[-1].end_lineno
+    def header_names_the_feature(st):
+        # the statement itself, not the blocks nested in it (an `if` is hit by its test)
+        return any(_names_the_feature(v) for f, v in ast.iter_fields(st)
+                   if f not in ("body", "orelse", "handlers", "finalbody")
+                   for v in (v if isinstance(v, list) else [v]) if isinstance(v, ast.AST))
+    hits = [st for st in ast.walk(tree)
+            if isinstance(st, ast.stmt) and not isinstance(st, (ast.FunctionDef, ast.ClassDef))
+            and not lo <= st.lineno <= hi and header_names_the_feature(st)]
+    # outermost hits only: deleting an `if` deletes its body and its else
+    outer = [st for st in hits
+             if not any(o is not st and any(st is n for n in ast.walk(o)) for o in hits)]
+    assert any(isinstance(st, ast.If) and ast.unparse(st.test) == _GUARD for st in outer)
     lines = src.splitlines(keepends=True)
-    for st in sorted(inner, key=lambda n: -n.lineno):
+    for st in sorted(block + outer, key=lambda n: -n.lineno):
         indent = lines[st.lineno - 1][:st.col_offset]
         lines[st.lineno - 1:st.end_lineno] = [indent + "pass\n"]
     out = dest / "ile_without_redraw"
     out.write_text("".join(lines))
-    ast.parse(out.read_text())
-    assert "_redraw_calibration_bank_for_point(" not in out.read_text()
+    assert not _names_the_feature(ast.parse(out.read_text()))
     return out
 
 

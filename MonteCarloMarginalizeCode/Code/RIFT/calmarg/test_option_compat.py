@@ -312,6 +312,10 @@ def test_pilot_stage_drops_bank_per_point_from_the_wide_args():
                                   'pilot_out', 'resp.npz')
     assert '--calibration-bank-per-point' not in cmd, cmd
     assert cmd[-2:] == ['--calibration-dump-responsibilities', 'resp.npz'], cmd
+    # ... also for a hand-written args file without the leading placeholder token
+    bare = stage.pilot_ile_command(_WIDE_ARGS_WITH_BANK_PER_POINT.split(' ', 1)[1], 'ILE',
+                                   'grid.xml.gz', 3, 'pilot_out', 'resp.npz')
+    assert bare == cmd, (bare, cmd)
     # the flag is valueless: the option after it survives
     assert '--calibration-export-posterior' in cmd, cmd
     assert oc.refusals_from_opts(_opts_from_cli(cmd[1:])) == []

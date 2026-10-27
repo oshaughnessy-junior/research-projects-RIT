@@ -398,7 +398,7 @@ above).
   `derived_rng('calmarg.bank_per_point', grid index)`. The stream is keyed on
   (`--seed`, grid index) only: with a fixed `--seed`, grid row k gets the same random
   draws in every iteration and every grid, whatever point sits there. Its bank repeats
-  whenever the source is unchanged. With `--calmarg-pilot` only iterations seeded by a
+  whenever the source and the calibration settings are unchanged. With `--calmarg-pilot` only iterations seeded by a
   pilot (previous iteration on cadence and at most `--calmarg-pilot-max-it`) get a new
   breadcrumb; the others draw from the prior (on OSG, through a prior placeholder
   breadcrumb), so row k repeats its bank across them. The cal error probe and adaptive
