@@ -59,6 +59,10 @@ if [ "${_n:-0}" -lt 20 ]; then
 fi
 ( cd "$CODE" && PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}" "$PY" -m pytest -q "RIFT/calmarg/test_option_compat.py" )
 
+# --calibration-export-posterior with two intrinsic points in one job: each point's _cal.dat
+# must hold that point's own fair draws.  One driver subprocess on synthetic data, ~3 min.
+( cd "$CODE/test" && "$PY" -m pytest -q test_calexport_multievent.py )
+
 # Source adapters retain generator conditioning and physical waveform epochs.
 ( cd "$CODE/test" && "$PY" -m pytest -q test_calmarg_source_conditioning_epoch.py \
     test_calmarg_rift_source.py )
