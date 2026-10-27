@@ -379,9 +379,44 @@ for indx, name in enumerate(names_downselect):
     indx_ok = np.logical_and(indx_ok,  x_out_down[:,indx]<= downselect_dict[name][1] )
     indx_ok = np.logical_and(indx_ok,  x_out_down[:,indx]>= downselect_dict[name][0] )
     print('   Increment downselect : {} {} '.format(name, np.sum(indx_ok) ))
+# Vectorized form of the late spin test: when a mass pair assigned before chieff_aligned fixes the
+# masses, the written s1z, s2z follow from X_native and each P's current spins.  Rows whose mass
+# assignment the loop below skips, other coordinate sets, and other names keep the per-point test.
+late_rows = np.ones(len(X_native), dtype=bool)
+names_late_rows_only = []
+names_vec = [p for p in names_downselect_late
+             if p in ['chi1', 'chi2', 's1z', 's2z'] or (p == 'xi' and lalsimutils.spin_convention == 'L')]
+others = [p for p in coord_names if p != 'chieff_aligned']
+pair = [p for p in others if p in ['mc', 'delta_mc', 'eta', 'm1', 'm2']]
+if names_vec and not opts.eccentric_phase_coordinates and \
+        set(pair) in [{'mc', 'delta_mc'}, {'mc', 'eta'}, {'m1', 'm2'}] and \
+        max(coord_names.index(p) for p in pair) < coord_names.index('chieff_aligned') and \
+        set(others) - set(pair) <= {'lambda1', 'lambda2', 'LambdaTilde', 'DeltaLambdaTilde', 'eccentricity', 'a6c', 'E0', 'p_phi0', 'dist'}:
+    m12 = lalsimutils.convert_waveform_coordinates(X_native[:, [coord_names.index(p) for p in pair]],
+                                                   coord_names=['m1', 'm2'], low_level_coord_names=pair)
+    spins = np.array([[p.s1x, p.s1y, p.s1z, p.s2x, p.s2y, p.s2z] for p in P_list]).reshape(-1, 6)
+    spins[:, 2], spins[:, 5] = lalsimutils.chieff_aligned_spins(m12[:, 0], m12[:, 1], spins[:, 2], spins[:, 5],
+                                                                X_native[:, coord_names.index('chieff_aligned')])
+    x_spin = lalsimutils.convert_waveform_coordinates(np.c_[m12, spins], coord_names=names_vec,
+                                                      low_level_coord_names=['m1', 'm2', 's1x', 's1y', 's1z', 's2x', 's2y', 's2z'])
+    if 'delta_mc' in pair:
+        dmc = X_native[:, coord_names.index('delta_mc')]
+        late_rows = (dmc < 0) | (dmc > 1)
+    elif 'eta' in pair:
+        eta = X_native[:, coord_names.index('eta')]
+        late_rows = (eta < 1e-5) | (eta > 0.25)
+    else:
+        late_rows = np.zeros(len(X_native), dtype=bool)
+    for indx, name in enumerate(names_vec):
+        val = x_spin[:, indx]
+        indx_ok &= late_rows | ((val >= downselect_dict[name][0]) & (val <= downselect_dict[name][1]))
+        print('   Increment downselect : {} {} '.format(name, np.sum(indx_ok)))
+    names_downselect_late = [p for p in names_downselect_late if p not in names_vec]
+    names_late_rows_only = names_vec
 print(" Range downselect : ", np.sum(indx_ok), len(indx_ok))
 X_out = X_out[indx_ok]
 X_native = X_native[indx_ok]
+late_rows = late_rows[indx_ok]
 P_list = list(itertools.compress(P_list, indx_ok))  # https://stackoverflow.com/questions/18665873/filtering-a-list-based-on-a-list-of-booleans
 
 # Discard points which are 'close' to the original data set
@@ -396,6 +431,7 @@ if opts.force_away > 0:
     print(" Puffball distance rejection size change " , np.sum(Y_id), len(Y_id))
     X_out = X_out[Y_id]
     X_native = X_native[Y_id]
+    late_rows = late_rows[Y_id]
     P_list = list(itertools.compress(P_list, Y_id))  # https://stackoverflow.com/questions/18665873/filtering-a-list-based-on-a-list-of-booleans
 
 
@@ -453,7 +489,7 @@ for indx_P in np.arange(len(P_list)):
     # Apply unit spin magnitude constraint, which can ONLY be applied with the P_list construction, which has all spin information
     if P_list[indx_P].extract_param('chi1')>1 or P_list[indx_P].extract_param('chi2')>1:
         include_item =False
-    for param in names_downselect_late:
+    for param in names_downselect_late + (names_late_rows_only if late_rows[indx_P] else []):
         val = P.extract_param(param)
         if not (downselect_dict[param][0] <= val <= downselect_dict[param][1]):
             include_item = False

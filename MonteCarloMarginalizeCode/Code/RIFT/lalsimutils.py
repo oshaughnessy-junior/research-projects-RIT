@@ -937,16 +937,8 @@ class ChooseWaveformParams:
             self.lambda1, self.lambda2 = tidal_lambda_from_tilde(self.m1, self.m2, Lt, dLt)
             return self
         if p == 'chieff_aligned':
-            # Assign xi = (m1 s1z + m2 s2z)/M holding chiminus = (m2 s1z - m1 s2z)/M fixed.
-            # Exchange-antisymmetric; for large mass ratio s1z -> xi, s2z -> -chiminus.  Can give |s_iz| > 1.
             # Changes only s1z, s2z, so it inverts extract_param('xi') only for spin_convention == 'L' (default).
-            m1 = self.m1
-            m2 = self.m2
-            mtot = m1 + m2
-            chiminus = (m2*self.s1z - m1*self.s2z)/mtot
-            norm = mtot/(m1**2 + m2**2)
-            self.s1z = norm*(m1*val + m2*chiminus)
-            self.s2z = norm*(m2*val - m1*chiminus)
+            self.s1z, self.s2z = chieff_aligned_spins(self.m1, self.m2, self.s1z, self.s2z, val)
             return self
         # Soichiro's coordinates : mu1, mu2, q_mu, chi2z_mu
         if p == 'mu1':
@@ -5973,6 +5965,18 @@ def DataRollTime(ht,DeltaT):  # ONLY FOR TIME DOMAIN. ACTS IN PLACE
     return DataRollBins(ht, nL)            
 
 
+def chieff_aligned_spins(m1, m2, s1z, s2z, xi):
+    """s1z, s2z with xi = (m1 s1z + m2 s2z)/M and chiminus = (m2 s1z - m1 s2z)/M held from the inputs.
+
+    The inverse used by assign_param('chieff_aligned'); accepts arrays.  Exchange-antisymmetric; for large
+    mass ratio s1z -> xi, s2z -> -chiminus.  Can give |s_iz| > 1.
+    """
+    mtot = m1 + m2
+    chiminus = (m2*s1z - m1*s2z)/mtot
+    norm = mtot/(m1**2 + m2**2)
+    return norm*(m1*xi + m2*chiminus), norm*(m2*xi - m1*chiminus)
+
+
 def convert_waveform_coordinates(x_in,coord_names=['mc', 'eta'],low_level_coord_names=['m1','m2'],enforce_kerr=False,source_redshift=0):
     """
     A wrapper for ChooseWaveformParams() 's coordinate tools (extract_param, assign_param) providing array-formatted coordinate changes.  BE VERY CAREFUL, because coordinates may be defined inconsistently (e.g., holding different variables constant: M and eta, or mc and q).  Note that if ChooseWaveformParam structuers are built ,the loops can be quite slow
@@ -6444,6 +6448,20 @@ def convert_waveform_coordinates(x_in,coord_names=['mc', 'eta'],low_level_coord_
                 x_out[:,indx_q_out] = dLt
                 coord_names_reduced.remove('DeltaLambdaTilde')
 
+
+    # Spin magnitudes from Cartesian components; a component missing from low_level_coord_names is 0, as on
+    # the per-row loop's fresh P.  Only when no other low-level name sets a spin.
+    cart = ['s1x', 's1y', 's1z', 's2x', 's2y', 's2z']
+    no_spin_setter = set(low_level_coord_names) <= set(cart) | {'m1', 'm2', 'mc', 'eta', 'delta_mc', 'mtot', 'q',
+        'lambda1', 'lambda2', 'LambdaTilde', 'DeltaLambdaTilde', 'dist', 'eccentricity', 'meanPerAno', 'a6c', 'E0', 'p_phi0'}
+    if no_spin_setter and not enforce_kerr and ('chi1' in coord_names_reduced or 'chi2' in coord_names_reduced):
+        xf = np.asarray(x_in, dtype=float)
+        sc = {n: (xf[:, low_level_coord_names.index(n)] if n in low_level_coord_names else 0.) for n in cart}
+        for k in ('1', '2'):
+            p = 'chi' + k
+            if p in coord_names_reduced:
+                x_out[:, coord_names.index(p)] = np.sqrt(sc['s%sx' % k]**2 + sc['s%sy' % k]**2 + sc['s%sz' % k]**2)
+                coord_names_reduced.remove(p)
 
     # Mass-ratio, total-mass and aligned-spin coordinates from component masses (a data file's m1, m2)
     # or from (mc, delta_mc|eta), and xi/chiMinus/mu1/mu2 from Cartesian s1z, s2z: vectorized forms of

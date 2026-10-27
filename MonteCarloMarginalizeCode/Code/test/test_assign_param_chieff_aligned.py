@@ -109,4 +109,23 @@ def test_puffball_spin_downselect_uses_written_spins(tmp_path):
     assert len(Pout) > 0, log[-3000:]
     chi = np.array([[p.extract_param('chi1'), p.extract_param('chi2')] for p in Pout])
     assert (chi <= cap + 1e-12).all()
+    assert "Increment downselect : chi1" in log   # the vectorized spin test ran
     assert all(-0.3 - 1e-12 <= p.s2z for p in Pout)
+
+
+def test_vectorized_inverse_and_spin_magnitudes_match_assign_param():
+    rng = np.random.default_rng(8)
+    Ps = _truth(9)
+    for P in Ps:
+        P.s1x, P.s1y, P.s2x, P.s2y = rng.uniform(-0.3, 0.3, 4)
+    x = rng.uniform(-0.8, 0.8, N)
+    m1, m2 = np.array([P.m1 for P in Ps])/lsu.lsu_MSUN, np.array([P.m2 for P in Ps])/lsu.lsu_MSUN
+    sp = np.array([[P.s1x, P.s1y, P.s1z, P.s2x, P.s2y, P.s2z] for P in Ps])
+    sp[:, 2], sp[:, 5] = lsu.chieff_aligned_spins(m1, m2, sp[:, 2], sp[:, 5], x)
+    names = ['chi1', 'chi2', 's1z', 's2z', 'xi']
+    got = lsu.convert_waveform_coordinates(np.c_[m1, m2, sp], coord_names=names,
+                                           low_level_coord_names=['m1', 'm2', 's1x', 's1y', 's1z', 's2x', 's2y', 's2z'])
+    for P, xv in zip(Ps, x):
+        P.assign_param('chieff_aligned', xv)
+    want = np.array([[P.extract_param(n) for n in names] for P in Ps])
+    assert np.allclose(got, want, rtol=0, atol=1e-12)
