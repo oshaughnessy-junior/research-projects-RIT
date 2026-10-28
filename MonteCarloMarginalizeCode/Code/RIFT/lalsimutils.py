@@ -406,12 +406,14 @@ def lsu_StringFromPNOrder(order):
 # Class to hold arguments of ChooseWaveform functions
 #
 
-valid_params = ['m1', 'm2', 's1x', 's1y', 's1z', 's2x', 's2y', 's2z', 'chi1_perp', 'chi2_perp', 'chi1_perp_bar', 'chi2_perp_bar','chi1_perp_u', 'chi2_perp_u', 's1z_bar', 's2z_bar', 'lambda1', 'lambda2', 'theta','phi', 'phiref',  'psi', 'incl', 'tref', 'dist', 'mc', 'mc_ecc', 'eta', 'delta_mc', 'chi1', 'chi2', 'thetaJN', 'phiJL', 'theta1', 'theta2', 'cos_theta1', 'cos_theta2',  'theta1_Jfix', 'theta2_Jfix', 'psiJ', 'beta', 'cos_beta', 'sin_phiJL', 'cos_phiJL', 'phi12', 'phi1', 'phi2', 'LambdaTilde', 'DeltaLambdaTilde', 'lambda_plus', 'lambda_minus', 'q', 'mtot','xi','chiz_plus', 'chiz_minus', 'chieff_aligned','fmin','fref', "SOverM2_perp", "SOverM2_L", "DeltaOverM2_perp", "DeltaOverM2_L", "shu","ampO", "phaseO",'eccentricity','eccentricity_squared','eccentricity_ln', 'chi_pavg','mu1','mu2','eos_table_index','meanPerAno','a6c','E0','p_phi0','hypclass']
+valid_params = ['m1', 'm2', 's1x', 's1y', 's1z', 's2x', 's2y', 's2z', 'chi1_perp', 'chi2_perp', 'chi1_perp_bar', 'chi2_perp_bar','chi1_perp_u', 'chi2_perp_u', 's1z_bar', 's2z_bar', 'lambda1', 'lambda2', 'theta','phi', 'phiref',  'psi', 'incl', 'tref', 'dist', 'mc', 'mc_ecc', 'eta', 'delta_mc', 'chi1', 'chi2', 'thetaJN', 'phiJL', 'theta1', 'theta2', 'cos_theta1', 'cos_theta2',  'theta1_Jfix', 'theta2_Jfix', 'psiJ', 'beta', 'cos_beta', 'sin_phiJL', 'cos_phiJL', 'phi12', 'phi1', 'phi2', 'LambdaTilde', 'DeltaLambdaTilde', 'lambda_plus', 'lambda_minus', 'q', 'mtot','xi','chiz_plus', 'chiz_minus', 'chieff_aligned','fmin','fref', "SOverM2_perp", "SOverM2_L", "DeltaOverM2_perp", "DeltaOverM2_L", "shu","ampO", "phaseO",'eccentricity','eccentricity_squared','eccentricity_ln', 'chi_pavg','mu1','mu2','eos_table_index','meanPerAno','a6c','E0','p_phi0','hypclass',
+  'rf_total_perp','rf_total_azimuth','rf_residual_parallel','rf_residual_perpendicular','rf_phase_excess']
 
 # so far, used for puffball, to prevent insanity (infinite growth) and/or death to downselect
 #   - note we also provide for extrinsic: RA (phi), phiref, psi, just in case we need it in the future
 periodic_params = {'phi1':2*np.pi, 'phi2':2*np.pi, 'phi12':2*np.pi, 'phiref':2*np.pi, 'psi':np.pi, 'meanPerAno':2*np.pi, 'phi':2*np.pi, 'phiJL':2*np.pi, 'psiJ':2*np.pi}
 
+rf_transverse_param_names = ('rf_total_perp','rf_total_azimuth','rf_residual_parallel','rf_residual_perpendicular','rf_phase_excess')
 tex_dictionary  = {
  "mtot": r'$M$',
  "mc": r'${\cal M}_c$',
@@ -479,6 +481,12 @@ tex_dictionary  = {
   'distance':r'$d_L$',
   'mu1':r'$\mu_1$',
   'mu2':r'$\mu_2$',
+  # geometric4 transverse-spin chart (RIFT.misc.rf_transverse_spin); depends on fref
+  'rf_total_perp':r'$|S_\perp|/M^2$',
+  'rf_total_azimuth':r'$\phi_{S_\perp}$',
+  'rf_residual_parallel':r'$r_\parallel$',
+  'rf_residual_perpendicular':r'$r_\perp$',
+  'rf_phase_excess':r'$H_\perp$',
 }
 
 # Exponent used to define the u coordinate scaling
@@ -1384,6 +1392,14 @@ class ChooseWaveformParams:
             chi2Vec = np.array([self.s2x,self.s2y,self.s2z])
             S0 = (chi1Vec*self.m1+chi2Vec*self.m2)/(self.m1+self.m2)
             return S0  # VECTOR
+        if p in rf_transverse_param_names:
+            # geometric4 chart of the L-frame transverse spins at self.fref
+            from RIFT.misc import rf_transverse_spin
+            if not self.fref > 0:
+                raise ValueError("{} requires a positive reference frequency (P.fref)".format(p))
+            fac_scale = lal.MSUN_SI if self.m1 > 1e10 else 1
+            return rf_transverse_spin.extract_physical(p, self.m1/fac_scale, self.m2/fac_scale,
+                [self.s1x,self.s1y,self.s1z], [self.s2x,self.s2y,self.s2z], self.fref)
         if p == 'chi_p':
             # see e.g.,https://journals.aps.org/prd/pdf/10.1103/PhysRevD.91.024043 Eq. 3.3, 3.4
             # Reviewed implementation  (note horrible shift in names for A1, A2 !)
@@ -5977,7 +5993,7 @@ def chieff_aligned_spins(m1, m2, s1z, s2z, xi):
     return norm*(m1*xi + m2*chiminus), norm*(m2*xi - m1*chiminus)
 
 
-def convert_waveform_coordinates(x_in,coord_names=['mc', 'eta'],low_level_coord_names=['m1','m2'],enforce_kerr=False,source_redshift=0):
+def convert_waveform_coordinates(x_in,coord_names=['mc', 'eta'],low_level_coord_names=['m1','m2'],enforce_kerr=False,source_redshift=0,fref=None):
     """
     A wrapper for ChooseWaveformParams() 's coordinate tools (extract_param, assign_param) providing array-formatted coordinate changes.  BE VERY CAREFUL, because coordinates may be defined inconsistently (e.g., holding different variables constant: M and eta, or mc and q).  Note that if ChooseWaveformParam structuers are built ,the loops can be quite slow
 
@@ -5985,7 +6001,12 @@ def convert_waveform_coordinates(x_in,coord_names=['mc', 'eta'],low_level_coord_
       - coordinates in x_out already in x_in are copied over directly
       - xi==chi_eff, chiMinus, mu1,mu2 : transformed directly from mc, delta_mc, s1z,s2z coordinates, using fast vectorized transformations.
       - source_redshift: if nonzero, convert m1 -> m1 (1+z)=m_z, as fit is done in the detector frame.  We are **assuming source-frame sampling**
+      - rf_* (geometric4) coordinates: computed from the physical components; require fref.
     """
+    if set(rf_transverse_param_names).intersection(coord_names):
+        from RIFT.misc import rf_transverse_spin
+        return rf_transverse_spin.convert(x_in, list(coord_names), list(low_level_coord_names), fref,
+            convert_waveform_coordinates, enforce_kerr=enforce_kerr, source_redshift=source_redshift)
     x_out = np.zeros( (len(x_in), len(coord_names) ) )
     kerr_violation_ring = None   # set by the vectorized in-plane block, which can end the conversion early
     # Vectorized branches need detector-frame masses. Keep the original source-frame

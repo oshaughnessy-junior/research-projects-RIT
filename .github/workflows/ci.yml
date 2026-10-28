@@ -903,11 +903,11 @@ jobs:
           python MonteCarloMarginalizeCode/Code/test/rf_transverse_cli_smoke.py geometric4
           python MonteCarloMarginalizeCode/Code/test/rf_transverse_cli_smoke.py geometric4 redshift
           python MonteCarloMarginalizeCode/Code/test/rf_transverse_cli_smoke.py geometric4 extra
-          python MonteCarloMarginalizeCode/Code/test/rf_transverse_cli_smoke.py geometric4 duplicate
+          python MonteCarloMarginalizeCode/Code/test/rf_transverse_cli_smoke.py geometric4 flag
           python MonteCarloMarginalizeCode/Code/test/rf_transverse_cli_smoke.py geometric4-phase-excess
           python MonteCarloMarginalizeCode/Code/test/rf_transverse_cli_smoke.py geometric4-phase-excess redshift
           python MonteCarloMarginalizeCode/Code/test/rf_transverse_cli_smoke.py geometric4-phase-excess extra
-          python MonteCarloMarginalizeCode/Code/test/rf_transverse_cli_smoke.py geometric4-phase-excess duplicate
+          python MonteCarloMarginalizeCode/Code/test/rf_transverse_cli_smoke.py geometric4-phase-excess flag redshift
       - name: Run corner-plot range guard tests
         # .travis/test-posterior.sh below is the only job that exercises the CIP driver's
         # plotting block, and it died intermittently there: corner RAISES on a 2-D panel
