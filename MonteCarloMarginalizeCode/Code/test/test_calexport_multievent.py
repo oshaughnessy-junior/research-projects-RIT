@@ -89,10 +89,10 @@ def _samples_xml(path):
     return lsctables.SimInspiralTable.get_table(doc)
 
 
-def _run_driver(d, *extra):
+def _run_driver(d, *extra, driver=BIN):
     out = d["outdir"]
     cmd = [
-        sys.executable, str(BIN),
+        sys.executable, str(driver),
         "--cache-file", str(out / "test.cache"),
         "--channel-name", "H1=FAKE-STRAIN",
         "--psd-file", "H1=%s" % (out / "H1_psd.xml.gz"),
@@ -113,6 +113,7 @@ def _run_driver(d, *extra):
         "--seed", "11", "--output-file", "out.xml",
     ] + list(extra)
     env = dict(os.environ, CUDA_VISIBLE_DEVICES="", OMP_NUM_THREADS="1")
+    env.pop("RIFT_HYPERPIPELINE_FORMAT", None)   # callers read the legacy .dat layout
     return subprocess.run(cmd, cwd=str(out), env=env, stdout=subprocess.PIPE,
                           stderr=subprocess.STDOUT, universal_newlines=True, timeout=1200)
 
