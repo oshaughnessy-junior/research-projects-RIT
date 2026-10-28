@@ -701,7 +701,7 @@ jobs:
           - asimov-series: '0.7'
             asimov-spec: 'asimov>=0.7,<0.8'
           - asimov-series: '0.8'
-            asimov-spec: 'asimov>=0.8,<0.9'
+            asimov-spec: 'asimov==0.8.0'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
