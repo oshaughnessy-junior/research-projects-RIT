@@ -18,6 +18,7 @@ fi
   MonteCarloMarginalizeCode/Code/test/test_lisa_bhptnr_adapter.py \
   MonteCarloMarginalizeCode/Code/test/test_lisa_bhptnr_polarizations.py \
   MonteCarloMarginalizeCode/Code/test/test_lisa_bhptnr_window.py \
+  MonteCarloMarginalizeCode/Code/test/test_lisa_bhptnr_cadence.py \
   MonteCarloMarginalizeCode/Code/test/test_lisa_response_import.py \
   MonteCarloMarginalizeCode/Code/test/test_lisa_lalsimutils_compat.py \
   MonteCarloMarginalizeCode/Code/test/test_lisa_run_checks.py \
