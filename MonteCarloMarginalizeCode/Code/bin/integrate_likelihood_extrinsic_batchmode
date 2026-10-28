@@ -2247,9 +2247,9 @@ def _redraw_calibration_bank_for_point(point_index, psd_dict):
     grid index only.  Distinct indices get independent streams, also independent of the
     shared startup bank; with a fixed --seed the same index repeats its random draws in
     every iteration and every grid, whatever point sits there, so it repeats its bank
-    whenever the source and the calibration settings are unchanged.  Same source as that bank
-    (proposal breadcrumb, else the prior), at the starting size; adaptive growth at an
-    earlier point is not carried over."""
+    whenever the source and the calibration settings are unchanged.  Same source as that
+    bank (proposal breadcrumb, else the prior), at the starting size; adaptive growth at
+    an earlier point is not carried over."""
     global calibration_realization_dict, calibration_log_weights, calibration_nodes
     import RIFT.calmarg.generate_realizations as _genr
     from RIFT.integrators.seeding import derived_rng

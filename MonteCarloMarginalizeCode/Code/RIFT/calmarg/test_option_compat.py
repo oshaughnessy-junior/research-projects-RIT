@@ -342,8 +342,30 @@ def test_pilot_stage_drops_bank_per_point_from_the_wide_args():
     with open(stage.__file__) as f:
         tree = ast.parse(f.read())
     main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'main')
-    assert any(isinstance(n, ast.Call) and getattr(n.func, 'id', None) == 'pilot_ile_command'
-               for n in ast.walk(main))
+    calls = [n for n in ast.walk(main) if isinstance(n, ast.Call)
+             and getattr(n.func, 'id', None) == 'pilot_ile_command']
+    assert len(calls) == 1
+    assert ast.unparse(calls[0].args[-1]) == 'opts.prev_breadcrumb', ast.unparse(calls[0])
+
+
+def test_pilot_command_keeps_the_refinement_breadcrumb():
+    """pilot_ile_command still appends --prev-breadcrumb when that file exists (refinement),
+    and leaves it out when it does not, with the option on or off."""
+    import tempfile
+    stage = _pilot_stage()
+    tmp = tempfile.mkdtemp()
+    prev = os.path.join(tmp, 'cal_consolidated_1.npz')
+    open(prev, 'wb').close()
+    for wide in (_WIDE_ARGS_WITH_BANK_PER_POINT,
+                 _WIDE_ARGS_WITH_BANK_PER_POINT.replace(' --calibration-bank-per-point', '')):
+        cmd = stage.pilot_ile_command(wide, 'ILE', 'grid.xml.gz', 3, 'pilot_out', 'resp.npz',
+                                      prev)
+        assert cmd[-4:] == ['--calibration-dump-responsibilities', 'resp.npz',
+                            '--calibration-proposal-breadcrumb', prev], cmd
+        missing = stage.pilot_ile_command(wide, 'ILE', 'grid.xml.gz', 3, 'pilot_out',
+                                          'resp.npz', os.path.join(tmp, 'absent.npz'))
+        assert missing == cmd[:-2], missing
+    os.remove(prev); os.rmdir(tmp)
 
 
 # ------------------------------------------------------ R6: opt-ins without the envelope
