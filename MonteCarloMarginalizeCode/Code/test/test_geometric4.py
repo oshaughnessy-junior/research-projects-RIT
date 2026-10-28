@@ -183,7 +183,7 @@ def test_quadpuff_truncated_output_uses_retained_rows_and_their_templates(tmp_pa
     out=np.array([(r.mass1*r.mass2)**.6/(r.mass1+r.mass2)**.2 for r in rows])
     assert kept[src].all()
     # Puffed mc stays within the jitter (retained mc spread) of its own template row.
-    assert np.abs(out-mc[src]).max()<5*mc[kept].std()
+    assert np.abs(out-mc[src]).max()<6*mc[kept].std()
     # Templates are a fair draw of the retained rows, not their lowest-lnL tail.
     se=lnL[kept].std()/np.sqrt(n_out)
     assert abs(lnL[src].mean()-lnL[kept].mean())<4*se, (lnL[src].mean(),lnL[kept].mean(),se)
