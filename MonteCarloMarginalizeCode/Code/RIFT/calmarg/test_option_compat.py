@@ -280,11 +280,13 @@ def _pilot_stage():
     return mod
 
 
-# A wide args_ile.txt line from util_RIFT_pseudo_pipe.py --calmarg-pilot
-# --manual-extra-ile-args "--calibration-bank-per-point".
+# An abridged wide args_ile.txt line from util_RIFT_pseudo_pipe.py --calmarg-pilot
+# --manual-extra-ile-args "--calibration-bank-per-point", with the per-iteration breadcrumb
+# that --calmarg-pilot adds next to the flag.
 _WIDE_ARGS_WITH_BANK_PER_POINT = (
     'X --calibration-envelope-directory %s --vectorized --gpu --force-xpy '
-    '--time-marginalization --calibration-bank-per-point --calibration-export-posterior '
+    '--time-marginalization --calibration-proposal-breadcrumb cal_consolidated_2.npz '
+    '--calibration-bank-per-point --calibration-export-posterior '
     '--sim-xml overlap-grid.xml.gz --n-events-to-analyze 20 --output-file out' % ENV_DIR)
 
 
@@ -311,6 +313,7 @@ def test_pilot_stage_drops_bank_per_point_from_the_wide_args():
     cmd = stage.pilot_ile_command(_WIDE_ARGS_WITH_BANK_PER_POINT, 'ILE', 'grid.xml.gz', 3,
                                   'pilot_out', 'resp.npz')
     assert '--calibration-bank-per-point' not in cmd, cmd
+    assert 'cal_consolidated_2.npz' not in cmd, cmd   # the pilot supplies its own breadcrumb
     assert cmd[-2:] == ['--calibration-dump-responsibilities', 'resp.npz'], cmd
     # ... also for a hand-written args file without the leading placeholder token
     bare = stage.pilot_ile_command(_WIDE_ARGS_WITH_BANK_PER_POINT.split(' ', 1)[1], 'ILE',
@@ -330,7 +333,8 @@ def test_pilot_stage_drops_bank_per_point_from_the_wide_args():
     assert stage.strip_opts('--calibration-b --gpu') == '--calibration-b --gpu'  # ambiguous
     # each recorded prefix is unambiguous among the driver's options
     with open(DRIVER) as f:
-        names = re.findall(r'add_option\("(--[a-z0-9-]+)"', f.read())
+        names = [n for line in f if 'add_option(' in line
+                 for n in re.findall(r"""["'](--[A-Za-z0-9-]+)["']""", line)]
     for flag, prefix in stage._STRIP_FLAGS.items():
         assert [n for n in names if n.startswith(prefix)] == [flag], (flag, prefix)
     # main() builds its command through pilot_ile_command
