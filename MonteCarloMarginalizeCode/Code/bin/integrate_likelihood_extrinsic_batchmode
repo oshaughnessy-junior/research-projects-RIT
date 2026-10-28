@@ -59,7 +59,8 @@ from RIFT.likelihood.time_interp_choice import TIME_INTERP_DEFAULT
 # driver cannot silently drift apart (PR #291 review, MAJOR #2: this used to be an independent
 # literal here, and a pipeline-side docstring claimed drift was impossible while nothing
 # enforced it).
-from RIFT.likelihood.q_time_pregrid import validate_q_time_pregrid_factor
+from RIFT.likelihood.q_time_pregrid import (
+    validate_q_time_pregrid_factor, QTimePregridError, Q_TIME_PREGRID_RESTRICTION)
 from RIFT.precision import RiftFloat
 import RIFT.integrators.mcsampler as mcsampler
 from RIFT.integrators.rvs_record import (RvsRecord as _RvsRecord,   # see DESIGN_rvs_naming.md
@@ -625,6 +626,13 @@ if opts.early_time_multirate_backend and not opts.early_time_multirate:
 # td-gs (fully time-domain Precompute) produces time-indexed U(t), V(t); several options
 # below are restricted for it, so the request is recorded before they are resolved.
 _td_gs_requested = (opts.internal_ile_inner_product == "td-gs")
+# Validate the requested Q route before optional unsupported-backend imports.
+opts.q_time_pregrid_factor = validate_q_time_pregrid_factor(opts.q_time_pregrid_factor)
+if opts.q_time_pregrid_factor > 1 and (
+        not opts.time_marginalization or not opts.vectorized or not opts.gpu
+        or opts.rotation_slow or opts.freqresponse or opts.calibration_envelope_directory
+        or _td_gs_requested or opts.zero_likelihood):
+    raise NotImplementedError(Q_TIME_PREGRID_RESTRICTION)
 # The GWSignal route does not consume RIFT's LAL-dictionary options. Reject the
 # explicit combination before data loading and the per-event exception handler,
 # so a requested physics option cannot disappear in a successful worker run.
@@ -750,21 +758,14 @@ else:
             "--interpolate-time: unrecognised value %r. Use a stencil name (nearest|cubic|sinc) "
             "or a legacy boolean (%s)." % (opts.interpolate_time,
                                            "|".join(_TI_LEGACY_BOOLEAN)))
-opts.q_time_pregrid_factor = validate_q_time_pregrid_factor(opts.q_time_pregrid_factor)
-if opts.q_time_pregrid_factor == 8:
-    if not opts.vectorized or opts.rotation_slow or opts.freqresponse or opts.calibration_envelope_directory or _td_gs_requested:
-        raise NotImplementedError(
-            "--q-time-pregrid-factor 8 is currently restricted to ordinary vectorized "
-            "NoLoop without rotation, frequency-dependent response, calibration marginalization, "
-            "or the td-gs time-indexed self term")
+if opts.q_time_pregrid_factor > 1:
     if not opts._interp_time_from_default and opts._noloop_time_interp != "cubic":
         raise ValueError(
-            "--q-time-pregrid-factor 8 uses four-tap cubic interpolation; remove the "
+            "--q-time-pregrid-factor >1 uses four-tap cubic interpolation; remove the "
             "explicit --interpolate-time option or set it to cubic")
-    opts._q_pregrid_fallback_interp = opts._noloop_time_interp
     opts._noloop_time_interp = "cubic"
-    print(" Q_lm pregrid: ENABLED factor=8 boundary=even-reflection arrival_stencil=cubic "
-          "integration_grid=unchanged")
+    print(" Q_lm pregrid: ENABLED factor={} boundary=even-reflection arrival_stencil=cubic "
+          "integration_grid=unchanged".format(opts.q_time_pregrid_factor))
 # The LEGACY scalar path (FactoredLogLikelihoodTimeMarginalized) takes a plain boolean and has
 # nothing to do with the NoLoop stencils.  It used to be handed opts.interpolate_time raw, which
 # was fine while that was only ever truthy/falsy -- but 'nearest' is a non-empty string, so once
@@ -949,6 +950,15 @@ if opts.internal_ile_inner_product == "td-gs" and not opts.gpu:
     xpy_default = numpy
     opts.gpu = True
     opts.force_xpy = True
+
+# GPU availability may have changed dispatch since the parser guard above.
+# A requested Q refinement cannot follow the inherited-stencil downgrade path.
+if opts.q_time_pregrid_factor > 1 and not (
+        opts.time_marginalization and opts.vectorized and opts.gpu
+        and not opts.zero_likelihood):
+    raise ValueError(
+        "--q-time-pregrid-factor requires --time-marginalization --vectorized "
+        "--gpu (use --force-xpy on CPU), without --zero-likelihood")
 
 # --interpolate-time IS SILENTLY IGNORED ON SEVERAL PATHS.  Now that opts.gpu is final, refuse to
 # proceed if a sub-sample stencil was asked for and this configuration cannot honour it.
@@ -4443,35 +4453,41 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
                          _comp.rel_err_fro, _comp.rel_err_max))
                 ctUArrayDict[det] = _comp
                 ctVArrayDict[det] = _comp
-        if opts.q_time_pregrid_factor == 8:
-            _q_transfer = cupy.asarray if opts.gpu and (not xpy_default is np) else None
-            _q_cleanup = (lambda: cupy.get_default_memory_pool().free_all_blocks()) \
-                if _q_transfer is not None else None
-            rholmArrayDict, _q_pregrid_reports, _q_pregrid_error = \
-                factored_likelihood.prepare_reflected_q_pregrid(
-                    rholmArrayDict, factor=8, transfer=_q_transfer, cleanup=_q_cleanup)
-            if _q_pregrid_error is None:
-                q_deltaT = float(P.deltaT) / 8.0
-                print(" Q_lm pregrid telemetry: status=active q_deltaT={:.12g} input_bytes={} "
-                      "retained_bytes={} peak_allocation_bytes={} max_roundtrip={:.3g}".format(
+        if opts.q_time_pregrid_factor > 1:
+            try:
+                _q_transfer = cupy.asarray if opts.gpu and (not xpy_default is np) else None
+                _q_cleanup = (lambda: cupy.get_default_memory_pool().free_all_blocks()) \
+                    if _q_transfer is not None else None
+                rholmArrayDict, _q_pregrid_reports, _q_pregrid_error = \
+                    factored_likelihood.prepare_reflected_q_pregrid(
+                        rholmArrayDict, factor=opts.q_time_pregrid_factor,
+                        transfer=_q_transfer, cleanup=_q_cleanup)
+                if _q_pregrid_error is not None:
+                    raise QTimePregridError(
+                        "Requested Q refinement failed: %r" % _q_pregrid_error)
+                q_deltaT = float(P.deltaT) / opts.q_time_pregrid_factor
+                print(" Q_lm pregrid telemetry: status=active factor={} "
+                      "waveform_deltaT={:.12g} integration_deltaT={:.12g} "
+                      "q_deltaT={:.12g} input_bytes={} retained_bytes={} "
+                      "peak_allocation_bytes={} max_roundtrip={:.3g}".format(
+                          opts.q_time_pregrid_factor, float(P.deltaT), float(P.deltaT),
                           q_deltaT,
                           sum(item['input_bytes'] for item in _q_pregrid_reports),
                           sum(item['retained_bytes'] for item in _q_pregrid_reports),
                           max(item['peak_allocation_bytes'] for item in _q_pregrid_reports),
                           max(item['roundtrip_max'] for item in _q_pregrid_reports)))
-            else:
-                q_deltaT = float(P.deltaT)
-                opts.q_time_pregrid_factor = 1
-                opts._noloop_time_interp = opts._q_pregrid_fallback_interp
-                print(" Q_lm pregrid telemetry: status=fallback reason={!r} q_deltaT={:.12g} "
-                      "arrival_stencil={}".format(
-                          _q_pregrid_error, q_deltaT, opts._noloop_time_interp))
+            except QTimePregridError:
+                raise
+            except Exception as _q_error:
+                # Includes failure of cleanup or the helper's recovery transfer.
+                raise QTimePregridError(
+                    "Requested Q refinement could not be prepared") from _q_error
         if opts.gpu and (not xpy_default is np):
             for det in rholmArrayDict:
                 lookupNKDict[det] = cupy.asarray(lookupNKDict[det])
                 # Q was transferred inside the pregrid transaction.  The
-                # default/fallback path still needs its ordinary transfer.
-                if opts.q_time_pregrid_factor != 8 and not isinstance(rholmArrayDict[det], cupy.ndarray):
+                # default path still needs its ordinary transfer.
+                if opts.q_time_pregrid_factor == 1 and not isinstance(rholmArrayDict[det], cupy.ndarray):
                     rholmArrayDict[det] = cupy.asarray(rholmArrayDict[det])
                 if isinstance(ctUArrayDict[det], factored_likelihood.TimeIndexedCrossTermsSVD):
                     ctUArrayDict[det] = ctUArrayDict[det].to_xpy(cupy)
@@ -7119,6 +7135,8 @@ for indx in numpy.arange(len(P_list)):
       # Note this needs to be done in a few places
       pinned_params.update({"force_no_adapt":True,"save_intg":False, "igrand_threshold_deltalnL":20})  # massively reduce memory usage in logic branch, don't save all. Highly redundant sequence to self-document all related logic branches
  except Exception as exception_failure:
+  if isinstance(exception_failure, QTimePregridError):
+    raise
   print( "  ===> FAILED ANALYSIS <==== ")
   print( exception_failure)
   # The message alone ("boolean index did not match...", "index out of range", ...) is rarely enough
