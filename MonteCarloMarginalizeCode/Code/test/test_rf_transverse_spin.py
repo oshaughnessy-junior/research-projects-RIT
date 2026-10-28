@@ -63,6 +63,33 @@ def test_any_mass_and_aligned_basis_is_accepted():
     line=FULL.replace('--parameter-implied mu1','--parameter-implied xi')
     assert rf.stage_arguments(line,'geometric4',10,True,20)==chart_line(line)+' --fref 20.0'
 
+SAMPLED='3 --fit-method rf --parameter-nofit mc --parameter delta_mc --parameter-implied mu1 --parameter-implied mu2 --parameter-implied chiMinus --parameter-nofit s1z --parameter-nofit s2z --use-precessing --parameter s1x --parameter s1y --parameter s2x  --parameter s2y'
+
+@pytest.mark.parametrize('mode',rf.GEOMETRIC4_MODES)
+def test_sampled_transverse_stay_sampled_and_chart_is_fit(mode):
+    # Volumetric-spin stages sample and fit s1x..s2y with --parameter.
+    import shlex
+    tokens=shlex.split(rf.stage_arguments(SAMPLED,mode,10,True,20))
+    def values(flag): return [tokens[i+1] for i,t in enumerate(tokens[:-1]) if t==flag]
+    assert not set(rf.TRANSVERSE)&set(values('--parameter'))
+    assert set(rf.TRANSVERSE)<=set(values('--parameter-nofit'))
+    assert values('--parameter-implied')==['mu1','mu2','chiMinus']+list(rf.geometric_names(mode))
+    # CIP samples --parameter plus --parameter-nofit: the same set as before.
+    before=shlex.split(SAMPLED)
+    def sampled(t): return sorted(t[i+1] for i,x in enumerate(t[:-1]) if x in ('--parameter','--parameter-nofit'))
+    assert sampled(tokens)==sampled(before)
+    assert values('--fref')==['20.0']
+
+@pytest.mark.parametrize('line',[SAMPLED+' --parameter-implied s1x', SAMPLED.replace('--parameter s2y','--parameter-nofit s2y')])
+def test_sampled_transverse_needs_each_component_once(line):
+    assert rf.stage_arguments(line,'geometric4',10,True,20)==line
+
+def test_mixed_sampled_and_implied_components():
+    line=FULL.replace('--parameter-implied s2y','--parameter s2y')
+    out=rf.stage_arguments(line,'geometric4',10,True,20)
+    assert '--parameter-nofit s2y --parameter-implied rf_residual_perpendicular' in out
+    assert '--parameter-implied rf_total_perp' in out and ' s1x ' not in out.replace('--parameter-nofit s1x','')
+
 def test_vector_conversion_native_columns_preserved():
     physical=np.array([[20,10,.3,.2,-.1,.1,-.2,.4],[20,20,0,0,.2,0,0,.3]])
     out=rf.convert(physical,PHYSICAL+list(rf.GEOMETRIC4_NAMES),PHYSICAL,35,_identity)
