@@ -97,6 +97,27 @@ def test_geometric4_builds_with_coordinate_rewrites(tmp_path, option):
     assert "rf_total_azimuth" in (rundir / "args_cip_list.txt").read_text()
 
 
+def _sampled_coordinates(line):
+    # CIP samples the --parameter and --parameter-nofit names (low_level_coord_names).
+    tokens = line.split()
+    return {b for a, b in zip(tokens, tokens[1:]) if a in ("--parameter", "--parameter-nofit")}
+
+
+@pytest.mark.parametrize("option", ["hierarchical-merger-prior-1g=True",
+                                    "hierarchical-merger-prior-2g=True"])
+def test_geometric4_hierarchical_prior_samples_mtot_q(tmp_path, option):
+    # The mu1/mu2 basis samples (mc, delta_mc); the prior needs (mtot, q). CIP exits
+    # on any line that samples both mc and q.
+    pytest.importorskip("lal")
+    proc, rundir = _build(tmp_path, _opt_in_ini(tmp_path, extra=[option]))
+    assert proc.returncode == 0, proc.stdout[-3000:]
+    lines = (rundir / "args_cip_list.txt").read_text().splitlines()
+    assert lines
+    for line in lines:
+        names = _sampled_coordinates(line)
+        assert {"mtot", "q"} <= names and not names & {"mc", "delta_mc"}, line
+
+
 def test_physics3_is_refused_before_the_helper(tmp_path):
     proc, rundir = _build(tmp_path, _opt_in_ini(tmp_path, "physics3"))
     assert proc.returncode != 0
