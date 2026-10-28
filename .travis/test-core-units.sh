@@ -218,12 +218,16 @@ FILES=(
   # -- hlmoft ChooseFDModes end taper is capped in duration: long buffers keep the merger,
   # buffers <= 100 s are bit-identical to the uncapped 1% rule.
   "$C/test/test_fd_end_taper_cap.py"
+  # -- approximant fallback sentinels in lalsimutils are distinct (issue #488): a shared code
+  # routes a model missing from LALSuite down another model's hlmoft branch.
+  "$C/test/test_lalsimutils_fallback_codes.py"
   # Fixed-phase Phenom mode conventions: generic spins first, aligned boundaries.
   "$C/test/test_phenom_lframe_conventions.py"
   # -- complex_hoff FD branch: two-sided packing matches DataFourier and writes every bin.
   "$C/test/test_complex_hoff_fd_packing.py"
   # -- hlmoft_IMRPv2_dict ignores garbage in its uninitialized mode buffers (#488).
   "$C/test/test_imrpv2_mode_buffer_init.py"
+  "$C/test/test_efpe_buffer_init.py"
   # Native SEOB mode conditioning: linear shared-grid filtering, canonical
   # trimming before mode selection, zero modes, and explicit reference state.
   # Does not require the optional pySEOBNR waveform backend.
@@ -521,8 +525,9 @@ done
 # Seven merge-handoff regressions are mandatory without tdanalysis -> 1200.
 # Two TD pipeline-emitter cases add mandatory coverage -> 1202.
 # test_complex_hoff_fd_packing.py adds 2 tests and no skips -> 1204.
-# test_imrpv2_mode_buffer_init.py adds 1 test and no skips -> 1205.
-EXPECTED_TESTS=1205
+# test_lalsimutils_fallback_codes.py adds 2 tests and no skips -> 1206.
+# #489: poisoned real IMRPv2 allocations (6) and EFPE buffer checks (6) -> 1218.
+EXPECTED_TESTS=1218
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -555,8 +560,9 @@ EXPECTED_TESTS=1205
 # Seven merge-handoff regressions run in every core environment.
 # Two TD pipeline-emitter cases run in every core environment.
 # test_complex_hoff_fd_packing.py adds 2 passes -> 1178.
-# test_imrpv2_mode_buffer_init.py adds 1 pass -> 1179.
-EXPECTED_PASSED=1179
+# test_lalsimutils_fallback_codes.py adds 2 passes -> 1180.
+# #489: six IMRPv2 and six EFPE buffer cases, all required -> 1192.
+EXPECTED_PASSED=1192
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 # The six solver="gs" tests in test_td_inner_product.py need tdanalysis >= 1.1, which this
 # job does not install, so they skip here; ci.yml's time-domain likelihood step runs them

@@ -88,6 +88,12 @@ from RIFT.likelihood import td_rank_augmentation as tra
 # the optional iterative (tdanalysis PCG) path.  Mirrors td_rank_augmentation._MAX_DENSE_N.
 _MAX_DENSE_N = 1 << 14
 
+# Relative eigenvalue cutoff for the pseudo-inverse of the gap block K_GG.  Exactly-null
+# modes contribute nothing, but with fMax < fNyq K_GG also has near-null modes whose
+# contribution is O(1), so the gap marginal depends on this cutoff there.  ILE --td-gap is
+# refused until that regularization is defined.
+_GAP_RCOND = 1e-12
+
 # Frequency tolerance for deltaF comparisons, matching lalsimutils.TOL_DF spirit.
 _TOL_DF = 1e-6
 
@@ -252,16 +258,13 @@ class ToeplitzInnerProductContext(object):
         PRECISION operator, applied directly as a quadratic-form kernel and NEVER factored
         (it is commonly non-SPD after truncation for sharp lines -- see ``is_spd``).
 
-        Gaps (plan Eqs. 11-12, precision-kernel version).  "Deleting the kernel entries"
-        for a PRECISION kernel means removing the rows/columns of ``K_seg`` that correspond
-        to the excised samples.  The clean, exactly-equivalent implementation used here is a
-        binary RETAIN MASK on the segment samples: the data and template streams are zeroed
-        on the gap samples, and the FULL ``K_seg`` is applied.  Because the quadratic form
-        ``conj(u)^T K_seg v`` only receives contributions from index pairs (i,j) with both
-        ``u_i`` and ``v_j`` non-zero, zeroing the gap samples is algebraically identical to
-        forming the retained-sample submatrix ``K_seg[R][:,R]`` and applying it to the
-        retained samples only (validated to ~1e-10 in the AC test against a brute-force dense
-        submatrix construction).  This is what ``dense_retained_operator`` returns.
+        Gaps.  The gap samples G are marginalized: the retained-sample precision is
+        ``(C_RR)^-1`` with ``C = K_seg^-1``, i.e. the Schur complement
+        ``K_RR - K_RG K_GG^+ K_GR``.  Cropping ``K_seg`` to ``K_seg[R][:,R]`` instead gives
+        ``(C^-1)_RR``, which mis-weights the data near the gap by several noise sigma when
+        the PSD has lines.  ``_apply_seg`` applies the Schur complement as inpainting: fill
+        the gap with ``x = -K_GG^+ (K v0)_G`` so that ``K (v0 + E_G x)`` vanishes on G.
+        ``dense_retained_operator`` returns the same operator densely.
 
         Parameters
         ----------
@@ -310,6 +313,8 @@ class ToeplitzInnerProductContext(object):
             if i1c > i0c:
                 self.retain_mask[i0c:i1c] = False
         self._gap_ranges = gap_ranges
+        self._gap_idx = None if self.retain_mask.all() else np.nonzero(~self.retain_mask)[0]
+        self._gap_Q = None
 
         # Is a non-trivial (truncated or gapped) segment active?
         self.segment_active = (
@@ -330,9 +335,8 @@ class ToeplitzInnerProductContext(object):
         self._Kseg = None
         self.is_spd = None
         self._Kseg_min_eig = None
-        # Full-length gaps use M K M through the existing full operator.
-        # Building its identical dense matrix and eigenspectrum adds O(N^3)
-        # work while the FFT apply already handles masked vectors exactly.
+        # Full-length gaps use the full FFT operator inside _apply_seg; a dense
+        # len2side x len2side K_seg and its O(N^3) eigenspectrum are not needed.
         needs_dense_Kseg = (self.N_seg != self.len2side)
         if self._use_gs:
             # Covariance kernel on spliced segments: each contiguous retained run [i0, i1) is
@@ -400,8 +404,38 @@ class ToeplitzInnerProductContext(object):
             return self._Kseg.dot(v.real) + 1j * self._Kseg.dot(v.imag)
         return self._Kseg.dot(v)
 
+    def _ensure_gap_solve(self):
+        """Eigendecompose the gap block K_GG once, for the inpainting solve in _apply_seg."""
+        if self._gap_Q is not None:
+            return
+        G = self._gap_idx
+        # K_seg[i, j] = kappa[|i - j|] for both the full (circulant) and truncated segment
+        lam, Q = np.linalg.eigh(self.kappa[np.abs(G[:, None] - G[None, :])])
+        keep = np.abs(lam) > _GAP_RCOND * np.abs(lam).max()
+        self._gap_Q = Q[:, keep]
+        self._gap_lam_inv = 1.0 / lam[keep]
+
     def _apply_seg(self, v):
-        """Apply the segment precision operator, falling back to the full K when untruncated.
+        """Apply the segment precision operator, with the gap samples marginalized.
+
+        The output is defined on the retained samples only and is zero on the gap; the gap
+        entries of ``v`` are ignored.  solver="gs" uses its own block-diagonal operator.
+        """
+        if self._use_gs or self._gap_idx is None:
+            return self._apply_seg_cropped(v)
+        self._ensure_gap_solve()
+        G = self._gap_idx
+        v = np.array(v, copy=True)
+        v[G] = 0.0
+        Kv = self._apply_seg_cropped(v)
+        fill = np.zeros_like(Kv)
+        fill[G] = -self._gap_Q.dot(self._gap_lam_inv * self._gap_Q.T.dot(Kv[G]))
+        Kv = Kv + self._apply_seg_cropped(fill)
+        Kv[G] = 0.0
+        return Kv
+
+    def _apply_seg_cropped(self, v):
+        """Apply K_seg itself, falling back to the full K when untruncated.
 
         When ``K_seg`` is built (truncated and/or gapped segment) use it.  For a full-length
         segment (N_seg == len2side, e.g. the T6 full-segment diagnostic) fall back to the
@@ -435,8 +469,8 @@ class ToeplitzInnerProductContext(object):
         r"""UNNORMALIZED conj(u_seg)^T K_seg v_seg on the truncated/gapped segment.
 
         Segment analogue of ``dot_td``: window both full-length TD streams to the analysis
-        segment, zero the gap samples (= delete the corresponding K_seg rows/cols), and
-        apply the truncated precision kernel.  Multiply by ``ip_normalization`` for the
+        segment, zero the gap samples, and apply the truncated precision kernel with the
+        gap marginalized (see ``_configure_segment``).  Multiply by ``ip_normalization`` for the
         physical inner product (identical (2 deltaT) factor as the full path).
         """
         u_seg = self._segment_window(u_full_td)
@@ -475,16 +509,20 @@ class ToeplitzInnerProductContext(object):
         return {"U0": U0, "U_minus": Um, "U_plus": Up, "rel_var": float(rel), "n_shift": n}
 
     def dense_retained_operator(self):
-        """Brute-force retained-sample precision submatrix K_seg[R][:,R] (gap validation).
+        """Dense marginal retained-sample precision K_RR - K_RG K_GG^+ K_GR (gap validation).
 
         Returns ``(Kret, retained_indices)``.  ``conj(u[R])^T Kret v[R]`` equals
-        ``segment_dot_td`` on gap-zeroed streams to machine precision -- the AC-test check
-        that the retain-mask implementation IS the precision-kernel entry deletion.
+        ``segment_dot_td`` to rounding error.
         """
         if self._Kseg is None:
             raise NotImplementedError("K_seg not built densely for N_seg={0}".format(self.N_seg))
         R = np.nonzero(self.retain_mask)[0]
-        return self._Kseg[np.ix_(R, R)], R
+        Kret = self._Kseg[np.ix_(R, R)]
+        if self._gap_idx is not None:
+            self._ensure_gap_solve()
+            KRG = self._Kseg[np.ix_(R, self._gap_idx)].dot(self._gap_Q)
+            Kret = Kret - (KRG * self._gap_lam_inv).dot(KRG.T)
+        return Kret, R
 
     # ------------------------------------------------------------------ builders
 
@@ -1245,8 +1283,7 @@ class ToeplitzComplexOverlap(object):
         else:
             data_seg = ctx._segment_window(_ifft_to_td(data))   # windowed + gap-masked
             Kd_seg = ctx._apply_seg(data_seg)                   # length N_seg
-            # Delete both precision rows and columns: M K M, not merely K M.
-            # The shifted template need not vanish on the data-fixed gap.
+            # Zero on the gap: the shifted template need not vanish there.
             if not ctx.retain_mask.all():
                 Kd_seg[~ctx.retain_mask] = 0.0
             if ctx._use_gs:
@@ -1405,7 +1442,7 @@ class TDInnerProductFactory(object):
         #   * template_start/end     -> template-frame truncation offsets (ILE
         #                               --td-analysis-start / --td-analysis-end), seconds,
         #                               geocenter, relative to the template peak reference
-        #   * gaps                   -> list of (t0, t1) seconds (ILE --td-gap, repeatable)
+        #   * gaps                   -> list of (t0, t1) seconds (library only; ILE --td-gap is refused)
         # NOTE for the full end-to-end ILE segment run (plan T7): the per-detector geocenter
         # placement (segment_start_index derived from the event time, gap_time_origin from
         # the detector epoch, and the segment margin = data-integration-window-half + Earth

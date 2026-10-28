@@ -23,6 +23,10 @@ def channel_digest(channels):
 
 
 
+# Resource guard, not a physics limit; covers the dt=5 s Paper 5 fixture (26216).
+MAX_WAVEFORM_SAMPLES = 32768
+
+
 def validate_fixture_schema(config):
     """Accept the original rectangle or the separately declared Hann observable."""
     required = {'schema_version', 'waveform', 'response', 'injection', 'trials', 'noise'}
@@ -183,8 +187,8 @@ def run_fixture(config, *, max_points=8):
     wave_config = FEWConfig.from_dict(config['waveform'])
     if wave_config.epoch_reference != 'pinned equal-arm orbit t=0':
         raise ValueError('fixture epoch_reference must be pinned equal-arm orbit t=0')
-    if wave_config.n_samples > 16384:
-        raise ValueError('initial direct fixture is limited to 16384 waveform samples')
+    if wave_config.n_samples > MAX_WAVEFORM_SAMPLES:
+        raise ValueError(f'direct fixture is limited to {MAX_WAVEFORM_SAMPLES} waveform samples')
     response_config = ResponseConfig.from_dict(config['response'])
     injection = EMRIParameters.from_dict(config['injection'])
     trial_parameters = []
