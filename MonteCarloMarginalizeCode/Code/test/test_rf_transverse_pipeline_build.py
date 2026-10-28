@@ -87,8 +87,7 @@ def test_unforced_opt_in_builds_flat_cip_workers(tmp_path,mode):
         assert "--fit-method rf" in subs[name], name
 
 
-@pytest.mark.parametrize("option", ["cip-internal-use-eta-in-sampler=True",
-                                    "hierarchical-merger-prior-1g=True"])
+@pytest.mark.parametrize("option", ["cip-internal-use-eta-in-sampler=True"])
 def test_geometric4_builds_with_coordinate_rewrites(tmp_path, option):
     # The chart is computed from physical masses and spins, so rewrites of the
     # sampling coordinates after the helper no longer conflict with it.

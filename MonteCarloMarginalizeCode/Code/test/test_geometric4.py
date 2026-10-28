@@ -119,3 +119,32 @@ def test_quadpuff_contingency_puffs_sampling_coordinates(tmp_path,mode):
     m=np.array([[r.mass1,r.mass2] for r in rows]);s1=np.array([[r.spin1x,r.spin1y,r.spin1z] for r in rows])
     assert (m>0).all() and (np.linalg.norm(s1,axis=1)<=1).all()
     assert not np.allclose(m[:,0],dat[:len(m),1])  # actually jittered
+
+
+def test_quadpuff_fallback_puffs_only_retained_rows(tmp_path):
+    # xi and chiMinus cannot be assigned, so quadpuff puffs the sampling coordinates.
+    # It must use the rows kept by --lnL-offset, not the whole input grid.
+    pytest.importorskip('lal')
+    import os,subprocess,sys
+    from igwn_ligolw import utils,lsctables
+    rng=np.random.default_rng(7);n=400
+    m1=rng.uniform(15,35,n);m2=rng.uniform(8,14,n);s=rng.uniform(-.4,.4,(n,6))
+    mc=(m1*m2)**.6/(m1+m2)**.2
+    lnL=300-200*(mc-np.median(mc))**2   # sharp peak: low n_eff
+    np.savetxt(tmp_path/'grid.dat',np.c_[np.arange(n),m1,m2,s,lnL,np.full(n,.1),np.full(n,100),np.full(n,1000)])
+    args=['--fname','grid.dat','--fit-method','rf','--use-precessing','--no-plots','--lnL-offset','50',
+          '--parameter','mc','--parameter','delta_mc','--parameter-implied','xi','--parameter-implied','chiMinus',
+          '--parameter-nofit','s1z','--parameter-nofit','s2z',
+          '--contingency-unevolved-neff','quadpuff','--sampler-method','AV','--n-eff','100000','--n-max','20000',
+          '--n-output-samples','200','--fname-output-samples','puff']
+    env=dict(os.environ,PYTHONPATH=str(CODE)+os.pathsep+os.environ.get('PYTHONPATH',''),OMP_NUM_THREADS='1',GW_SURROGATE='')
+    proc=subprocess.run([sys.executable,str(CODE/'bin/util_ConstructIntrinsicPosterior_GenericCoordinates.py')]+args,
+        cwd=tmp_path,env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,universal_newlines=True,timeout=600)
+    assert proc.returncode==0, proc.stdout[-3000:]
+    assert 'Contingency: quadpuff' in proc.stdout
+    rows=lsctables.SimInspiralTable.get_table(utils.load_filename(str(tmp_path/'puff.xml.gz')))
+    out=np.array([(r.mass1*r.mass2)**.6/(r.mass1+r.mass2)**.2 for r in rows])
+    kept=mc[lnL>lnL.max()-50]
+    assert len(out)>0
+    # Puffing adds the retained covariance once, so the spread is about sqrt(2) times the retained spread.
+    assert out.std()<3*kept.std()<mc.std(), (out.std(),kept.std(),mc.std())

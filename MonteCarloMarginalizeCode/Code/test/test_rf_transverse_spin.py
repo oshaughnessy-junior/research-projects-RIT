@@ -116,7 +116,8 @@ def test_lalsimutils_kerr_rejection_mixed_batch():
 def test_chart_names_are_registered_parameters():
     lalsimutils=_lalsimutils()
     assert set(rf.GEOMETRIC4_NAMES+rf.PHASE_EXCESS_NAMES)==set(lalsimutils.rf_transverse_param_names)
-    assert set(lalsimutils.rf_transverse_param_names)<=set(lalsimutils.valid_params)
+    # Grid readers assign every valid_params column; the chart cannot be assigned.
+    assert not set(lalsimutils.rf_transverse_param_names)&set(lalsimutils.valid_params)
     assert set(lalsimutils.rf_transverse_param_names)<=set(lalsimutils.tex_dictionary)
 
 CIP_FIT=['--parameter','delta_mc']+[a for p in ['mu1','mu2','chiMinus','s1x','s1y','s2x','s2y'] for a in ('--parameter-implied',p)]

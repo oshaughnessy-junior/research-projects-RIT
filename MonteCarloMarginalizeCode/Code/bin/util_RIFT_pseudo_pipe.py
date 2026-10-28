@@ -2079,7 +2079,7 @@ with open("helper_cip_arg_list.txt",'r') as f:
         raw_lines = f.readlines()
 
 # RF transverse opt-in: the helper may switch an unforced fit to rf. Build the DAG as an
-# explicit --cip-fit-method rf run (flat CIP workers; CIP refuses RF transverse coordinates with --fit-load-gp).
+# explicit --cip-fit-method rf run (flat CIP workers).
 if opts.rf_transverse_spin_coordinates and opts.cip_fit_method is None and any(
         '--fit-method rf' in ' '.join(line.split()) for line in raw_lines):
     opts.cip_fit_method = 'rf'
@@ -2372,7 +2372,7 @@ if opts.internal_use_amr:
         if not(opts.assume_lowlatency_tradeoffs):
             lines[0] += " --intrinsic-param spin2z "
 
-# A retired RF mode on any final CIP line (e.g. --manual-extra-cip-args) fails here, not after ILE.
+# Final CIP lines: a retired RF mode from any route (e.g. --manual-extra-cip-args) fails here, not after ILE.
 from RIFT.misc.rf_transverse_spin import retired_problem
 for indx_rf, line_rf in enumerate(lines):
     if retired_problem(line_rf):
