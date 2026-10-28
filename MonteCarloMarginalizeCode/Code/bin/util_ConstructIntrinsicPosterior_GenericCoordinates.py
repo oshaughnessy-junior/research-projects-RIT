@@ -2645,6 +2645,8 @@ for line in dat:
             if low_level_coord_names[x] in ['mc']:
                 mc_index = x
         dat_out_low_level_coord_names.append(line_out)
+        if opts.contingency_unevolved_neff == "quadpuff":
+            P_list_in.append(P.manual_copy())  # mirrored row: keep P_list_in aligned with dat_out
 
 Pref_default = P.copy()  # keep this around to fix the masses, if we don't have an inj
 
@@ -2652,6 +2654,7 @@ Pref_default = P.copy()  # keep this around to fix the masses, if we don't have 
 dat_out = np.array(dat_out,dtype=internal_dtype)
 print(" Stripped size  = ", dat_out.shape,  " with memory usage (bytes) ", sys.getsizeof(dat_out))
 dat_out_low_level_coord_names = np.array(dat_out_low_level_coord_names)
+indx_P_in = np.arange(len(dat_out_low_level_coord_names))  # input row of each retained row; cut in step with it
  # scale out mass units
 for p in ['mc', 'm1', 'm2', 'mtot']:
     if p in coord_names:
@@ -2740,6 +2743,7 @@ elif sum(indx_ok) < 5*len(X[0])**2: # and max_lnL > 30:
     Y_err = Y_err[indx_ok]
     X = X[indx_ok]
     dat_out_low_level_coord_names =     dat_out_low_level_coord_names[indx_ok]
+    indx_P_in = indx_P_in[indx_ok]
     # Reset indx_ok, so it operates correctly later
     indx_ok = np.ones(len(Y), dtype=bool)
 X_raw = X.copy()
@@ -2761,6 +2765,7 @@ elif opts.fit_method == "quadratic":
     Y=Y[indx_ok] - lnL_shift
     Y_err = Y_err[indx_ok]
     dat_out_low_level_coord_names =     dat_out_low_level_coord_names[indx_ok]
+    indx_P_in = indx_P_in[indx_ok]
     # Cap the total number of points retained, AFTER the threshold cut
     if opts.cap_points< len(Y) and opts.cap_points> 100:
         n_keep = opts.cap_points
@@ -2769,6 +2774,7 @@ elif opts.fit_method == "quadratic":
         X=X[indx]
         Y_err=Y_err[indx]
         dat_out_low_level_coord_names = dat_out_low_level_coord_names[indx]
+        indx_P_in = indx_P_in[indx]
     if opts.report_best_point:
         my_fit = fit_quadratic_alt(X,Y,y_err=Y_err,symmetry_list=symmetry_list,verbose=opts.verbose)
         pt_best_X = np.loadtxt("lnL_bestpt.dat")
@@ -2792,6 +2798,7 @@ elif opts.fit_method == "polynomial":
     Y=Y[indx_ok] - lnL_shift
     Y_err = Y_err[indx_ok]
     dat_out_low_level_coord_names =     dat_out_low_level_coord_names[indx_ok]
+    indx_P_in = indx_P_in[indx_ok]
     # Cap the total number of points retained, AFTER the threshold cut
     if opts.cap_points< len(Y) and opts.cap_points> 100:
         n_keep = opts.cap_points
@@ -2800,6 +2807,7 @@ elif opts.fit_method == "polynomial":
         X=X[indx]
         Y_err=Y_err[indx]
         dat_out_low_level_coord_names = dat_out_low_level_coord_names[indx]
+        indx_P_in = indx_P_in[indx]
     my_fit = fit_polynomial(X,Y,symmetry_list=symmetry_list,y_errors=Y_err)
 elif opts.fit_method == 'gp_hyper':
     print(" FIT METHOD ", opts.fit_method, " IS GP with hypercube rescaling")
@@ -2809,6 +2817,7 @@ elif opts.fit_method == 'gp_hyper':
     Y=Y[indx_ok] - lnL_shift
     Y_err = Y_err[indx_ok]
     dat_out_low_level_coord_names =     dat_out_low_level_coord_names[indx_ok]
+    indx_P_in = indx_P_in[indx_ok]
     # Cap the total number of points retained, AFTER the threshold cut
     if opts.cap_points< len(Y) and opts.cap_points> 100:
         n_keep = opts.cap_points
@@ -2817,6 +2826,7 @@ elif opts.fit_method == 'gp_hyper':
         X=X[indx]
         Y_err=Y_err[indx]
         dat_out_low_level_coord_names = dat_out_low_level_coord_names[indx]
+        indx_P_in = indx_P_in[indx]
     my_fit = fit_gp(X,Y,y_errors=Y_err,hypercube_rescale=True)
 elif opts.fit_method == 'gp-matern':
     print(" FIT METHOD gp-matern: bounded standardized Matérn5/2")
@@ -2824,6 +2834,7 @@ elif opts.fit_method == 'gp-matern':
     Y=Y[indx_ok] - lnL_shift
     Y_err=Y_err[indx_ok]
     dat_out_low_level_coord_names=dat_out_low_level_coord_names[indx_ok]
+    indx_P_in = indx_P_in[indx_ok]
     from RIFT.interpolators.matern_gp import native_rho1
     # Known actual native geometry, never assume final-stage feature order.
     rho1=native_rho1(dat_out_low_level_coord_names,low_level_coord_names)
@@ -2836,6 +2847,7 @@ elif opts.fit_method == 'gp':
     Y=Y[indx_ok] - lnL_shift
     Y_err = Y_err[indx_ok]
     dat_out_low_level_coord_names =     dat_out_low_level_coord_names[indx_ok]
+    indx_P_in = indx_P_in[indx_ok]
     # Cap the total number of points retained, AFTER the threshold cut
     if opts.cap_points< len(Y) and opts.cap_points> 100:
         n_keep = opts.cap_points
@@ -2844,6 +2856,7 @@ elif opts.fit_method == 'gp':
         X=X[indx]
         Y_err=Y_err[indx]
         dat_out_low_level_coord_names = dat_out_low_level_coord_names[indx]
+        indx_P_in = indx_P_in[indx]
     my_fit = fit_gp(X,Y,y_errors=Y_err)
 elif opts.fit_method == 'gp-pool':
     print(" FIT METHOD ", opts.fit_method, " IS GP (pooled) with pool size ", opts.pool_size)
@@ -2853,6 +2866,7 @@ elif opts.fit_method == 'gp-pool':
     Y=Y[indx_ok] - lnL_shift
     Y_err = Y_err[indx_ok]
     dat_out_low_level_coord_names =     dat_out_low_level_coord_names[indx_ok]
+    indx_P_in = indx_P_in[indx_ok]
     # Cap the total number of points retained, AFTER the threshold cut
     if opts.cap_points< len(Y) and opts.cap_points> 100:
         n_keep = opts.cap_points
@@ -2861,6 +2875,7 @@ elif opts.fit_method == 'gp-pool':
         X=X[indx]
         Y_err=Y_err[indx]
         dat_out_low_level_coord_names = dat_out_low_level_coord_names[indx]
+        indx_P_in = indx_P_in[indx]
     if opts.pool_size == None:
         opts.pool_size = np.max([2,np.round(4000/len(X))])  # pick a pool size that has no more than 4000 members per pool
     my_fit = fit_gp_pool(X,Y,y_errors=Y_err,n_pool=opts.pool_size)
@@ -2871,6 +2886,7 @@ elif opts.fit_method == 'gp-torch':
     Y=Y[indx_ok] - lnL_shift
     Y_err = Y_err[indx_ok]
     dat_out_low_level_coord_names =     dat_out_low_level_coord_names[indx_ok]
+    indx_P_in = indx_P_in[indx_ok]
     # Cap the total number of points retained, AFTER the threshold cut
     if not opts.fit_load_gp and 0 < opts.cap_points < len(Y):
         n_keep = opts.cap_points
@@ -2879,6 +2895,7 @@ elif opts.fit_method == 'gp-torch':
         X=X[indx]
         Y_err=Y_err[indx]
         dat_out_low_level_coord_names = dat_out_low_level_coord_names[indx]
+        indx_P_in = indx_P_in[indx]
     my_fit = fit_gpytorch(X,Y,y_errors=Y_err)
 elif opts.fit_method == 'gp-xgboost':
     print( " FIT METHOD ", opts.fit_method, " IS xgboost ")
@@ -2887,6 +2904,7 @@ elif opts.fit_method == 'gp-xgboost':
     Y=Y[indx_ok] - lnL_shift
     Y_err = Y_err[indx_ok]
     dat_out_low_level_coord_names =     dat_out_low_level_coord_names[indx_ok]
+    indx_P_in = indx_P_in[indx_ok]
     # Cap the total number of points retained, AFTER the threshold cut
     if opts.cap_points< len(Y) and opts.cap_points> 100:
         n_keep = opts.cap_points
@@ -2895,6 +2913,7 @@ elif opts.fit_method == 'gp-xgboost':
         X=X[indx]
         Y_err=Y_err[indx]
         dat_out_low_level_coord_names = dat_out_low_level_coord_names[indx]
+        indx_P_in = indx_P_in[indx]
     my_fit = fit_xg(X,Y,y_errors=Y_err)
 elif opts.fit_method == 'gp_lazy':
     print(" FIT METHOD ", opts.fit_method, " IS lazy GP")
@@ -2904,6 +2923,7 @@ elif opts.fit_method == 'gp_lazy':
     Y=Y[indx_ok] - lnL_shift
     Y_err = Y_err[indx_ok]
     dat_out_low_level_coord_names =     dat_out_low_level_coord_names[indx_ok]
+    indx_P_in = indx_P_in[indx_ok]
     # Cap the total number of points retained, AFTER the threshold cut
     if opts.cap_points< len(Y) and opts.cap_points> 100:
         n_keep = opts.cap_points
@@ -2912,6 +2932,7 @@ elif opts.fit_method == 'gp_lazy':
         X=X[indx]
         Y_err=Y_err[indx]
         dat_out_low_level_coord_names = dat_out_low_level_coord_names[indx]
+        indx_P_in = indx_P_in[indx]
     my_fit = fit_gp_lazy(X,Y,y_errors=Y_err)
 elif opts.fit_method == 'cov':
     print(" FIT METHOD ", opts.fit_method, " IS cov (a placement-only approximation!). No errors used")
@@ -2922,6 +2943,7 @@ elif opts.fit_method == 'cov':
     Y=Y[indx_ok] - lnL_shift
     Y_err = Y_err[indx_ok]
     dat_out_low_level_coord_names =     dat_out_low_level_coord_names[indx_ok]
+    indx_P_in = indx_P_in[indx_ok]
     my_fit = fit_cov(X,Y)
 elif opts.fit_method == 'nn':
     print( " FIT METHOD ", opts.fit_method, " IS NN ")
@@ -2930,6 +2952,7 @@ elif opts.fit_method == 'nn':
     Y=Y[indx_ok] - lnL_shift
     Y_err = Y_err[indx_ok]
     dat_out_low_level_coord_names =     dat_out_low_level_coord_names[indx_ok]
+    indx_P_in = indx_P_in[indx_ok]
     # Cap the total number of points retained, AFTER the threshold cut
     if opts.cap_points< len(Y) and opts.cap_points> 100:
         n_keep = opts.cap_points
@@ -2938,6 +2961,7 @@ elif opts.fit_method == 'nn':
         X=X[indx]
         Y_err=Y_err[indx]
         dat_out_low_level_coord_names = dat_out_low_level_coord_names[indx]
+        indx_P_in = indx_P_in[indx]
     my_fit = fit_nn(X,Y,y_errors=Y_err)
 elif opts.fit_method == 'rf':
     print( " FIT METHOD ", opts.fit_method, " IS RF ")
@@ -2946,6 +2970,7 @@ elif opts.fit_method == 'rf':
     Y=Y[indx_ok] - lnL_shift
     Y_err = Y_err[indx_ok]
     dat_out_low_level_coord_names =     dat_out_low_level_coord_names[indx_ok]
+    indx_P_in = indx_P_in[indx_ok]
     # Cap the total number of points retained, AFTER the threshold cut
     if opts.cap_points< len(Y) and opts.cap_points> 100:
         n_keep = opts.cap_points
@@ -2954,6 +2979,7 @@ elif opts.fit_method == 'rf':
         X=X[indx]
         Y_err=Y_err[indx]
         dat_out_low_level_coord_names = dat_out_low_level_coord_names[indx]
+        indx_P_in = indx_P_in[indx]
     my_fit = fit_rf(X,Y,y_errors=Y_err)
 elif opts.fit_method == 'rf_pca':
     print( " FIT METHOD ", opts.fit_method, " IS RF-pca ")
@@ -2961,6 +2987,7 @@ elif opts.fit_method == 'rf_pca':
     Y=Y[indx_ok] - lnL_shift
     Y_err = Y_err[indx_ok]
     dat_out_low_level_coord_names = dat_out_low_level_coord_names[indx_ok]
+    indx_P_in = indx_P_in[indx_ok]
     if opts.cap_points< len(Y) and opts.cap_points> 100:
         n_keep = opts.cap_points
         indx = np.random.choice(np.arange(len(Y)),size=n_keep,replace=False)
@@ -2968,6 +2995,7 @@ elif opts.fit_method == 'rf_pca':
         X=X[indx]
         Y_err=Y_err[indx]
         dat_out_low_level_coord_names = dat_out_low_level_coord_names[indx]
+        indx_P_in = indx_P_in[indx]
     my_fit = fit_rf_pca(X,Y,y_errors=Y_err)
 elif opts.fit_method == 'rbf':
     print( " FIT METHOD ", opts.fit_method, " IS RBF; **errors not used! **")
@@ -2975,6 +3003,7 @@ elif opts.fit_method == 'rbf':
     Y=Y[indx_ok] - lnL_shift
     Y_err = Y_err[indx_ok]
     dat_out_low_level_coord_names = dat_out_low_level_coord_names[indx_ok]
+    indx_P_in = indx_P_in[indx_ok]
     if opts.cap_points< len(Y) and opts.cap_points> 100:
         n_keep = opts.cap_points
         indx = np.random.choice(np.arange(len(Y)),size=n_keep,replace=False)
@@ -2982,6 +3011,7 @@ elif opts.fit_method == 'rbf':
         X=X[indx]
         Y_err=Y_err[indx]
         dat_out_low_level_coord_names = dat_out_low_level_coord_names[indx]
+        indx_P_in = indx_P_in[indx]
     my_fit = fit_rbf(X,Y,y_errors=Y_err)
 elif opts.fit_method == 'nn_rfwrapper':
     print( " FIT METHOD ", opts.fit_method, " IS NN with RF wrapper ")
@@ -2990,6 +3020,7 @@ elif opts.fit_method == 'nn_rfwrapper':
     Y=Y[indx_ok] - lnL_shift
     Y_err = Y_err[indx_ok]
     dat_out_low_level_coord_names =     dat_out_low_level_coord_names[indx_ok]
+    indx_P_in = indx_P_in[indx_ok]
     # Cap the total number of points retained, AFTER the threshold cut
     if opts.cap_points< len(Y) and opts.cap_points> 100:
         n_keep = opts.cap_points
@@ -2998,6 +3029,7 @@ elif opts.fit_method == 'nn_rfwrapper':
         X=X[indx]
         Y_err=Y_err[indx]
         dat_out_low_level_coord_names = dat_out_low_level_coord_names[indx]
+        indx_P_in = indx_P_in[indx]
     my_fit = fit_nn_rfwrapper(X,Y,y_errors=Y_err)
 elif opts.fit_method == 'kde':
     print( " FIT METHOD ", opts.fit_method, " IS KDE ")
@@ -3007,6 +3039,7 @@ elif opts.fit_method == 'kde':
     Y=Y[indx_ok] - lnL_shift
     Y_err = Y_err[indx_ok]
     dat_out_low_level_coord_names =     dat_out_low_level_coord_names[indx_ok]
+    indx_P_in = indx_P_in[indx_ok]
     # Cap the total number of points retained, AFTER the threshold cut
     if opts.cap_points< len(Y) and opts.cap_points> 100:
         n_keep = opts.cap_points
@@ -3015,6 +3048,7 @@ elif opts.fit_method == 'kde':
         X=X[indx]
         Y_err=Y_err[indx]
         dat_out_low_level_coord_names = dat_out_low_level_coord_names[indx]
+        indx_P_in = indx_P_in[indx]
     my_fit = fit_kde(X,Y)
 elif opts.fit_method == 'gp_sparse':
     print( " FIT METHOD ", opts.fit_method, " IS gp_sparse ")
@@ -3026,6 +3060,7 @@ elif opts.fit_method == 'gp_sparse':
     Y=Y[indx_ok] - lnL_shift
     Y_err = Y_err[indx_ok]
     dat_out_low_level_coord_names =     dat_out_low_level_coord_names[indx_ok]
+    indx_P_in = indx_P_in[indx_ok]
     # Cap the total number of points retained, AFTER the threshold cut
     if opts.cap_points< len(Y) and opts.cap_points> 100:
         n_keep = opts.cap_points
@@ -3034,6 +3069,7 @@ elif opts.fit_method == 'gp_sparse':
         X=X[indx]
         Y_err=Y_err[indx]
         dat_out_low_level_coord_names = dat_out_low_level_coord_names[indx]
+        indx_P_in = indx_P_in[indx]
     my_fit = fit_gp_sparse(X,Y,y_errors=Y_err)
 elif opts.fit_method == 'weighted_nearest':
     print( " FIT METHOD ", opts.fit_method, " IS weighted_nearest ")
@@ -3042,6 +3078,7 @@ elif opts.fit_method == 'weighted_nearest':
     Y=Y[indx_ok] - lnL_shift
     Y_err = Y_err[indx_ok]
     dat_out_low_level_coord_names =     dat_out_low_level_coord_names[indx_ok]
+    indx_P_in = indx_P_in[indx_ok]
     # Cap the total number of points retained, AFTER the threshold cut
     if opts.cap_points< len(Y) and opts.cap_points> 100:
         n_keep = opts.cap_points
@@ -3050,6 +3087,7 @@ elif opts.fit_method == 'weighted_nearest':
         X=X[indx]
         Y_err=Y_err[indx]
         dat_out_low_level_coord_names = dat_out_low_level_coord_names[indx]
+        indx_P_in = indx_P_in[indx]
     my_fit = fit_nearest(X,Y,y_errors=Y_err)
 elif opts.fit_method.startswith('gp-jax'):
     # RFF is the chosen default jax method (fast, accurate, cheapest to export);
@@ -3060,6 +3098,7 @@ elif opts.fit_method.startswith('gp-jax'):
     Y=Y[indx_ok] - lnL_shift
     Y_err = Y_err[indx_ok]
     dat_out_low_level_coord_names =     dat_out_low_level_coord_names[indx_ok]
+    indx_P_in = indx_P_in[indx_ok]
     # Cap the total number of points retained, AFTER the threshold cut
     if opts.cap_points< len(Y) and opts.cap_points> 100:
         n_keep = opts.cap_points
@@ -3068,6 +3107,7 @@ elif opts.fit_method.startswith('gp-jax'):
         X=X[indx]
         Y_err=Y_err[indx]
         dat_out_low_level_coord_names = dat_out_low_level_coord_names[indx]
+        indx_P_in = indx_P_in[indx]
     my_fit = fit_jax(X,Y,y_errors=Y_err,method=jax_method,coord_names=coord_names)
 else:
     print(" NO KNOWN FIT METHOD ")
@@ -3080,6 +3120,7 @@ indx = Y.argsort()#[::-1]
 X=X[indx]
 Y=Y[indx]
 dat_out_low_level_coord_names =dat_out_low_level_coord_names[indx]
+indx_P_in = indx_P_in[indx]
 
 # Make grid plots for all pairs of points, to facilitate direct validation of where posterior support lies
 if not no_plots:
@@ -3905,9 +3946,11 @@ if cip_acceptance_neff < opts.n_eff:
         P_out_list = []
         # Loop over points 
         # Jitter using the parameters we use to fit with (physical components in RF modes)
-        for indx_P in np.arange(np.min([len(P_list_in),len(X_puff)])):   # make sure no past-limits errors
+        # Retained rows are sorted by lnL: visit them in random order, so a truncated output
+        # does not keep only the lowest-lnL rows.  indx_P_in maps each back to its input P.
+        for indx_P in np.random.permutation(len(X_puff)):
             include_item=True
-            P = P_list_in[indx_P].manual_copy()   # copy: P_list_in is reused by later rows of a --n-events-to-analyze job
+            P = P_list_in[indx_P_in[indx_P]].manual_copy()   # copy: P_list_in is reused by later rows of a --n-events-to-analyze job
             for indx in np.arange(len(puff_names)):
                 param  = puff_names[indx]
                 fac = 1
@@ -3925,6 +3968,8 @@ if cip_acceptance_neff < opts.n_eff:
                     include_item = False
             if include_item:
                 P_out_list.append(P)
+                if len(P_out_list) >= n_output_size:
+                    break
 
         # Save output
         # Hyperpipeline ASCII grid writer (opt-in via env var).  Emits the

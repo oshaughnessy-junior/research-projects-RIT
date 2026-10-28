@@ -148,3 +148,42 @@ def test_quadpuff_fallback_puffs_only_retained_rows(tmp_path):
     assert len(out)>0
     # Puffing adds the retained covariance once, so the spread is about sqrt(2) times the retained spread.
     assert out.std()<3*kept.std()<mc.std(), (out.std(),kept.std(),mc.std())
+
+
+
+def test_quadpuff_truncated_output_uses_retained_rows_and_their_templates(tmp_path):
+    # More retained rows than requested outputs.  Each output inherits its unpuffed
+    # parameters from a template row; s1y encodes that row's input index.  The template
+    # must be the retained row whose coordinates were puffed, and the truncation must not
+    # keep only the lowest-lnL retained rows (CIP sorts retained rows by lnL).
+    pytest.importorskip('lal')
+    import os,subprocess,sys
+    from igwn_ligolw import utils,lsctables
+    rng=np.random.default_rng(7);n=2000;n_out=60
+    m1=rng.uniform(15,35,n);m2=rng.uniform(8,14,n);s=rng.uniform(-.4,.4,(n,6))
+    s[:,1]=.2*np.arange(n)/n
+    mc=(m1*m2)**.6/(m1+m2)**.2
+    lnL=300-200*(mc-np.median(mc))**2   # sharp peak: low n_eff
+    kept=lnL>lnL.max()-50
+    assert kept.sum()>4*n_out
+    np.savetxt(tmp_path/'grid.dat',np.c_[np.arange(n),m1,m2,s,lnL,np.full(n,.1),np.full(n,100),np.full(n,1000)])
+    args=['--fname','grid.dat','--fit-method','rf','--use-precessing','--no-plots','--lnL-offset','50',
+          '--parameter','mc','--parameter','delta_mc','--parameter-implied','xi','--parameter-implied','chiMinus',
+          '--parameter-nofit','s1z','--parameter-nofit','s2z',
+          '--contingency-unevolved-neff','quadpuff','--sampler-method','AV','--n-eff','100000','--n-max','20000',
+          '--n-output-samples',str(n_out),'--fname-output-samples','puff']
+    env=dict(os.environ,PYTHONPATH=str(CODE)+os.pathsep+os.environ.get('PYTHONPATH',''),OMP_NUM_THREADS='1',GW_SURROGATE='')
+    proc=subprocess.run([sys.executable,str(CODE/'bin/util_ConstructIntrinsicPosterior_GenericCoordinates.py')]+args,
+        cwd=tmp_path,env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,universal_newlines=True,timeout=600)
+    assert proc.returncode==0, proc.stdout[-3000:]
+    assert 'Contingency: quadpuff' in proc.stdout
+    rows=lsctables.SimInspiralTable.get_table(utils.load_filename(str(tmp_path/'puff.xml.gz')))
+    assert len(rows)==n_out
+    src=np.rint(np.array([r.spin1y for r in rows])*n/.2).astype(int)
+    out=np.array([(r.mass1*r.mass2)**.6/(r.mass1+r.mass2)**.2 for r in rows])
+    assert kept[src].all()
+    # Puffed mc stays within the jitter (retained mc spread) of its own template row.
+    assert np.abs(out-mc[src]).max()<5*mc[kept].std()
+    # Templates are a fair draw of the retained rows, not their lowest-lnL tail.
+    se=lnL[kept].std()/np.sqrt(n_out)
+    assert abs(lnL[src].mean()-lnL[kept].mean())<4*se, (lnL[src].mean(),lnL[kept].mean(),se)
