@@ -2333,6 +2333,14 @@ for indx in np.arange(len(instructions_cip)):
             line += " --force-zoomwhirl "
     if not(opts.manual_extra_cip_args is None):
         line += " {} ".format(opts.manual_extra_cip_args)  # embed with space on each side, avoid collisions
+    if opts.hierarchical_merger_prior_1g or opts.hierarchical_merger_prior_2g:
+        # CIP exits 0 with no samples, after ILE has run, if its mass/spin prior lacks its coordinate
+        _tokens = line.split()
+        _sampled = {b for a, b in zip(_tokens, _tokens[1:]) if a in ('--parameter', '--parameter-nofit')}
+        _needed = {'q', 'chi1'} if opts.hierarchical_merger_prior_2g else {'q'}
+        if not _needed <= _sampled or 'mc' in _sampled:
+            print(" FAILURE: hierarchical merger prior needs CIP to sample {} and not mc; CIP line {} samples {}. Other options rewrote the mass coordinates.".format(sorted(_needed), indx, sorted(_sampled)))
+            sys.exit(1)
     line += "\n"
     lines.append(line)
 

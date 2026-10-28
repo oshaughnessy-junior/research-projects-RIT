@@ -103,19 +103,32 @@ def _sampled_coordinates(line):
     return {b for a, b in zip(tokens, tokens[1:]) if a in ("--parameter", "--parameter-nofit")}
 
 
-@pytest.mark.parametrize("option", ["hierarchical-merger-prior-1g=True",
-                                    "hierarchical-merger-prior-2g=True"])
-def test_geometric4_hierarchical_prior_samples_mtot_q(tmp_path, option):
-    # The mu1/mu2 basis samples (mc, delta_mc); the prior needs (mtot, q). CIP exits
-    # on any line that samples both mc and q.
+@pytest.mark.parametrize("rf", [True, False])
+def test_hierarchical_prior_samples_mtot_q(tmp_path, rf):
+    # The mu1/mu2 basis samples (mc, delta_mc) and the standard basis (mc, delta_mc);
+    # the prior needs (mtot, q). CIP exits on any line that samples both mc and q.
     pytest.importorskip("lal")
-    proc, rundir = _build(tmp_path, _opt_in_ini(tmp_path, extra=[option]))
+    ini = _opt_in_ini(tmp_path, extra=["hierarchical-merger-prior-1g=True"])
+    if not rf:
+        ini.write_text(re.sub(r'(?m)^rf-transverse-spin-coordinates=.*\n', '', ini.read_text()))
+    proc, rundir = _build(tmp_path, ini)
     assert proc.returncode == 0, proc.stdout[-3000:]
     lines = (rundir / "args_cip_list.txt").read_text().splitlines()
-    assert lines
+    assert lines and any("rf_total_perp" in line for line in lines) == rf
     for line in lines:
         names = _sampled_coordinates(line)
         assert {"mtot", "q"} <= names and not names & {"mc", "delta_mc"}, line
+
+
+@pytest.mark.parametrize("extra", [["hierarchical-merger-prior-2g=True"],  # CIP's spin1 prior needs chi1
+                                   ["hierarchical-merger-prior-1g=True", "use-quadratic-early=True"],
+                                   ["hierarchical-merger-prior-1g=True", "cip-internal-use-eta-in-sampler=True"]])
+def test_hierarchical_prior_without_its_coordinates_is_refused_at_build(tmp_path, extra):
+    # Otherwise CIP exits 0 with no samples after ILE has run.
+    pytest.importorskip("lal")
+    proc, rundir = _build(tmp_path, _opt_in_ini(tmp_path, extra=extra))
+    assert proc.returncode != 0
+    assert "hierarchical merger prior needs CIP to sample" in proc.stdout, proc.stdout[-3000:]
 
 
 def test_physics3_is_refused_before_the_helper(tmp_path):
