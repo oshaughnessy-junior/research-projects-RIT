@@ -906,11 +906,11 @@ if opts.internal_ile_q_time_pregrid_factor is not None:
         _qp_early += " " + str(opts.manual_extra_ile_args)
     if _qp_early:
         # Only the EXCLUSIONS (and a manually-passed stencil conflict) are checkable this early
-        # -- the required --vectorized is added by the helper -- so append it to keep the
+        # -- the NoLoop flags are added by the helper -- so append them to keep the
         # message about what is actually wrong.
         refuse_unhonourable_q_time_pregrid(
             opts.internal_ile_q_time_pregrid_factor,
-            "--vectorized " + _qp_early,
+            "--time-marginalization --vectorized --gpu " + _qp_early,
             "this pipeline's own options (checked before the helper runs, so the failure is "
             "immediate rather than after a workflow has been built)")
 

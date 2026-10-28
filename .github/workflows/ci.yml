@@ -701,7 +701,7 @@ jobs:
           - asimov-series: '0.7'
             asimov-spec: 'asimov>=0.7,<0.8'
           - asimov-series: '0.8'
-            asimov-spec: 'asimov>=0.8,<0.9'
+            asimov-spec: 'asimov==0.8.0'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -743,6 +743,10 @@ jobs:
             rimsky-spec: 'rimsky==0.1.0rc1'
             python-version: '3.12'
             asimov-spec: 'asimov==0.8.0a1'
+          - rimsky-series: '0.1.0rc1-asimov-0.8-stable'
+            rimsky-spec: 'rimsky==0.1.0rc1'
+            python-version: '3.12'
+            asimov-spec: 'asimov==0.8.0'
           - rimsky-series: 'main-2621d15'
             rimsky-spec: 'git+https://git.ligo.org/colm.talbot/rimsky.git@2621d15cf9a39ce01145ac5b81c92e1173a1d2d0'
             python-version: '3.14'

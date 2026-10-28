@@ -34,12 +34,14 @@ def source_file(tmp_path, kind, data=None, reference=None):
         bilby = pytest.importorskip('bilby')
         pandas = pytest.importorskip('pandas')
         extension = 'json' if kind.startswith('bilby-json') else 'hdf5'
-        path = tmp_path / ('bilby_result.' + extension + ('.gz' if kind.endswith('-gz') else ''))
+        path = tmp_path / ('eccentric_result.' + extension)
         result = bilby.core.result.Result(label='eccentric', outdir=str(tmp_path),
                                           posterior=pandas.DataFrame(data), search_parameter_keys=[], priors=bilby.core.prior.PriorDict(),
                                           meta_data={'likelihood': {'waveform_arguments': {'reference_frequency': reference}}}
                                           if reference is not None else {})
-        result.save_to_file(filename=str(path), extension=extension, overwrite=True, gzip=kind.endswith('-gz'))
+        result.save_to_file(outdir=str(tmp_path), extension=extension, overwrite=True, gzip=kind.endswith('-gz'))
+        if kind.endswith('-gz'):
+            path = Path(str(path) + '.gz')
     else:
         h5py = pytest.importorskip('h5py')
         path = tmp_path / 'pesummary.h5'
@@ -274,16 +276,19 @@ def test_actual_build_bootstrap_block_converts_bilby_and_attaches_grid(tmp_path,
         event=SimpleNamespace(repository=SimpleNamespace(directory=str(tmp_path / 'repo')))),
         logger=SimpleNamespace(info=lambda *_: None), bootstrap=False)
     stub._find_posterior = lambda: str(path)
+    stub._bootstrap_source_requested = lambda: Rift._bootstrap_source_requested(stub)
     stub._reuse_existing_bootstrap = lambda *_: False
     stub._convert_bootstrap_grid = lambda *args: Rift._convert_bootstrap_grid(stub, *args)
     tree = ast.parse((CODE / 'RIFT/asimov/rift.py').read_text())
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'Rift')
     build = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == 'build_dag')
     convert_block = next(n for n in build.body if isinstance(n, ast.If)
-                         and 'bootstrap upstream' in ast.unparse(n.test))
+                         and ast.unparse(n.test) == 'self._bootstrap_source_requested()')
     attach_block = next(n for n in build.body if isinstance(n, ast.If)
                         and ast.unparse(n.test) == 'self.bootstrap')
-    namespace = dict(self=stub, os=os, np=np, command=[], PipelineException=PipelineException)
+    import tempfile
+    namespace = dict(self=stub, os=os, np=np, Path=Path, tempfile=tempfile,
+                     dryrun=False, bootstrap_coinc=False, command=[], PipelineException=PipelineException)
     exec(compile(ast.Module(body=[convert_block, attach_block], type_ignores=[]), '<build-bootstrap>', 'exec'), namespace)
     assert stub.bootstrap == 'manual'
     command = namespace['command']

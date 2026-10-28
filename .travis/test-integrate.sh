@@ -491,9 +491,11 @@ _QPREGRID_TESTS=(
     MonteCarloMarginalizeCode/Code/test/test_q_time_pregrid.py
     MonteCarloMarginalizeCode/Code/test/test_q_time_pregrid_pipeline.py
     MonteCarloMarginalizeCode/Code/test/test_q_time_pregrid_driver_parity.py
+    MonteCarloMarginalizeCode/Code/test/test_q_time_pregrid_native.py
+    MonteCarloMarginalizeCode/Code/test/test_native_integer_mass_ranges.py
 )
 # Raise EXPECTED by RUNNING collection, never by arithmetic.
-_QPREGRID_EXPECTED=77
+_QPREGRID_EXPECTED=152
 _QPREGRID_FOUND=$(python -m pytest -q --collect-only "${_QPREGRID_TESTS[@]}" 2>/dev/null | grep -c '::' || true)
 if [ "$_QPREGRID_FOUND" -ne "$_QPREGRID_EXPECTED" ]; then
     echo "q-time-pregrid gate: collected $_QPREGRID_FOUND tests, expected $_QPREGRID_EXPECTED" >&2
