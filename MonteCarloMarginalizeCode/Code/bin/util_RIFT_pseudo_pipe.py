@@ -1424,12 +1424,6 @@ if opts.internal_propose_converge_last_stage:
     cmd += " --propose-converge-last-stage "
 if opts.internal_test_convergence_threshold: # pass argument if provided
     cmd += " --internal-test-convergence-threshold {}  ".format(opts.internal_test_convergence_threshold)
-# Options that rewrite the CIP fit coordinates after the helper; geometric4 needs delta_mc et al.
-rf_transverse_conflicts = [name for name in ('cip_internal_use_eta_in_sampler','hierarchical_merger_prior_1g',
-    'hierarchical_merger_prior_2g','use_quadratic_early') if getattr(opts, name)]
-if opts.rf_transverse_spin_coordinates in ('physics3','geometric4','geometric4-phase-excess') and rf_transverse_conflicts:
-    raise ValueError('RF transverse-spin coordinates are incompatible with {}: they replace delta_mc in the activated CIP stage'.format(
-        ', '.join('--'+name.replace('_','-') for name in rf_transverse_conflicts)))
 if opts.rf_transverse_spin_coordinates:
     cmd += ' --rf-transverse-spin-coordinates {} '.format(opts.rf_transverse_spin_coordinates)
 if not(opts.cip_fit_method is None):
@@ -2085,7 +2079,7 @@ with open("helper_cip_arg_list.txt",'r') as f:
         raw_lines = f.readlines()
 
 # RF transverse opt-in: the helper may switch an unforced fit to rf. Build the DAG as an
-# explicit --cip-fit-method rf run (flat CIP workers; CIP refuses RF transverse coordinates with --fit-load-gp).
+# explicit --cip-fit-method rf run (flat CIP workers).
 if opts.rf_transverse_spin_coordinates and opts.cip_fit_method is None and any(
         '--fit-method rf' in ' '.join(line.split()) for line in raw_lines):
     opts.cip_fit_method = 'rf'
@@ -2378,15 +2372,11 @@ if opts.internal_use_amr:
         if not(opts.assume_lowlatency_tradeoffs):
             lines[0] += " --intrinsic-param spin2z "
 
-# Final CIP lines, from any route (e.g. --manual-extra-cip-args), must satisfy CIP's
-# RF transverse-spin guard; fail here rather than in every CIP job after ILE.
-from RIFT.misc.rf_transverse_spin import retired_problem, stage_problem
+# Final CIP lines: a retired RF mode from any route (e.g. --manual-extra-cip-args) fails here, not after ILE.
+from RIFT.misc.rf_transverse_spin import retired_problem
 for indx_rf, line_rf in enumerate(lines):
     if retired_problem(line_rf):
         raise ValueError('CIP stage {}: {}'.format(indx_rf, retired_problem(line_rf)))
-    if '--rf-transverse-spin-coordinates' in line_rf and stage_problem(line_rf):
-        raise ValueError('RF transverse-spin stage {} activated but CIP would refuse it ({}); conflicting options: {}'.format(
-            indx_rf, stage_problem(line_rf), ', '.join('--'+name.replace('_','-') for name in rf_transverse_conflicts) or 'see --manual-extra-cip-args'))
 
 if eccentric_phase_pipeline.requested(opts):
     eccentric_phase_build=eccentric_phase_policy.finalize_map(opts,eccentric_phase_build,lines)

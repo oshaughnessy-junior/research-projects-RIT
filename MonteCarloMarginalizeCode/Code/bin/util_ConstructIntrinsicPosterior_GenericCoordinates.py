@@ -277,7 +277,7 @@ parser.add_argument("--n-chunk",default=1e5,type=int)
 parser.add_argument("--contingency-unevolved-neff",default=None,help="Contingency planning for when n_eff produced by CIP is small, and user doesn't want to have hard failures.  Note --fail-unless-n-eff will prevent this from happening. Options: quadpuff, ...")
 parser.add_argument("--not-worker",action='store_true',help="Nonworker jobs, IF we have workers present, don't have the 'fail unless' statement active")
 parser.add_argument("--fail-unless-n-eff",default=None,type=float,help="If nonzero, places a minimum requirement on n_eff. Code will exit if not achieved, with no sample generation")
-parser.add_argument("--rf-transverse-spin-coordinates", choices=["physics3","geometric4","geometric4-phase-excess"], help="Opt-in RF fitting basis: geometric4 replaces four transverse inputs; sampler/prior unchanged. physics3 is retired and refused (11 fit coordinates for 8 degrees of freedom)")
+parser.add_argument("--rf-transverse-spin-coordinates", choices=["physics3","geometric4","geometric4-phase-excess"], help="DEPRECATED alias: replaces the implied s1x,s1y,s2x,s2y with the geometric4 names (rf_total_perp, ...). Name those with --parameter-implied instead. physics3 is retired and refused")
 parser.add_argument("--fit-method",default="rf",help="rf (default) : rf|gp|gp-matern|gp-torch|quadratic|polynomial|gp_hyper|gp_lazy|cov|kde|gp-jax-svgp|gp-jax-rff|gp-jax-exact.  Note 'polynomial' with --fit-order 0  will fit a constant. The gp-jax-* methods use the optional JAX interpolators (RIFT.interpolators.jax_gp) and support a differentiable export via --fit-save-jax.")
 from RIFT.misc import eccentric_phase_models
 eccentric_phase_models.add_arguments(parser)
@@ -873,8 +873,16 @@ from RIFT.misc import eccentric_phase_sampling
 if opts.eccentric_phase_sampling:
     opts.eccentric_phase_coordinates = True
     eccentric_phase_sampling.validate_options(opts)
-if set(rf_transverse_spin.FEATURE_NAMES + rf_transverse_spin.GEOMETRIC4_NAMES + rf_transverse_spin.PHASE_EXCESS_NAMES).intersection(coord_names + low_level_coord_names):
-    raise ValueError('RF fitting scalars are enabled only through the opt-in flag')
+if opts.rf_transverse_spin_coordinates in rf_transverse_spin.RETIRED_MODES:
+    raise ValueError(rf_transverse_spin.RETIRED_MESSAGE)
+if opts.rf_transverse_spin_coordinates:
+    if sorted(p for p in coord_names if p in rf_transverse_spin.TRANSVERSE) != sorted(rf_transverse_spin.TRANSVERSE):
+        raise ValueError('--rf-transverse-spin-coordinates needs s1x, s1y, s2x, s2y once each among the fit coordinates')
+    print(" DEPRECATED: --rf-transverse-spin-coordinates; use --parameter-implied with the geometric4 names")
+    coord_names = [p for p in coord_names if p not in rf_transverse_spin.TRANSVERSE] + list(rf_transverse_spin.geometric_names(opts.rf_transverse_spin_coordinates))
+rf_chart_names = set(rf_transverse_spin.GEOMETRIC4_NAMES + rf_transverse_spin.PHASE_EXCESS_NAMES)
+if rf_chart_names.intersection(coord_names) and opts.fit_method != 'rf':
+    print(" WARNING: rf_total_azimuth wraps at +/-pi; fit method {} may not fit across that seam (rf does)".format(opts.fit_method))
 if set(eccentric_phase.FEATURE_NAMES).intersection(coord_names + low_level_coord_names):
     raise ValueError('Eccentric phase fitting features are enabled only through the opt-in flag')
 if opts.eccentric_phase_coordinates:
@@ -885,38 +893,18 @@ if opts.eccentric_phase_coordinates:
     eccentric_phase_models.freeze(opts,opts.eccentric_phase_reference_frequency,opts.eccentric_phase_target_frequency)
     if (not opts.use_eccentricity or not opts.use_meanPerAno or opts.using_eos
             or opts.input_tides or opts.input_eos_index or opts.tabular_eos_file
-            or opts.rf_transverse_spin_coordinates or opts.fit_load_gp or opts.fit_load_quadratic
+            or rf_chart_names.intersection(coord_names) or opts.fit_load_gp or opts.fit_load_quadratic
             or opts.contingency_unevolved_neff == 'quadpuff' or opts.report_best_point
             or set(('lambda1', 'lambda2', 'LambdaTilde', 'DeltaLambdaTilde', 'eos_table_index')).intersection(coord_names + low_level_coord_names)):
         raise ValueError('Eccentric phase fitting requires eccentricity/anomaly input columns and a fresh BBH fit; EOS/tides, stored fits, RF transverse coordinates, report-best-point and internal quadpuff are unsupported')
     coord_names = eccentric_phase.fitting_names(coord_names, low_level_coord_names)
-if opts.rf_transverse_spin_coordinates in rf_transverse_spin.RETIRED_MODES:
-    raise ValueError(rf_transverse_spin.RETIRED_MESSAGE)
-if opts.rf_transverse_spin_coordinates:
-    if not np.isfinite(opts.fref) or opts.fref <= 0:
-        raise ValueError('RF reference frequency must be finite and positive')
-    if (opts.fit_method != 'rf' or opts.fit_load_gp or not opts.use_precessing
-            or opts.input_tides or opts.using_eos or opts.use_eccentricity
-            or not set(rf_transverse_spin.NATIVE_FEATURES).issubset(coord_names)):
-        raise ValueError('RF transverse coordinates require a fresh RF fit with delta_mc, mu1, mu2, chiMinus, s1x, s1y, s2x, s2y in a precessing BBH L-frame analysis')
-    if len(coord_names) != 8 or set(coord_names) != set(rf_transverse_spin.NATIVE_FEATURES):
-        raise ValueError('geometric4 requires exactly the eight native mass/aligned/transverse fitting coordinates')
-    # Preserve physical sampling coordinates: only replace the fitting basis.
-    coord_names = [p for p in coord_names if p not in rf_transverse_spin.TRANSVERSE] + list(rf_transverse_spin.geometric_names(opts.rf_transverse_spin_coordinates))
-    def extract_fit_param(P, name):
-        return rf_transverse_spin.extract(P, name)
-elif opts.eccentric_phase_coordinates:
+if opts.eccentric_phase_coordinates:
     def extract_fit_param(P, name):
         return eccentric_phase.extract(P, name, opts.eccentric_phase_reference_frequency,
                                        opts.eccentric_phase_target_frequency,**eccentric_phase_models.worker_options(opts))
 else:
     def extract_fit_param(P, name):
         return P.extract_param(name)
-# An RF transverse fit basis must not fit more coordinates than are sampled.
-if opts.rf_transverse_spin_coordinates:
-    sampling_problem = rf_transverse_spin.sampling_problem(coord_names, low_level_coord_names)
-    if sampling_problem:
-        raise ValueError(sampling_problem)
 # SANITY COMPATIBILITY CHECK
 if 'q' in low_level_coord_names and 'mc' in low_level_coord_names:
     print(" Coordinate compatibility error: mc,eta or mc,delta_mc or M,q are compatible coordinates for masses. Do not mix!")
@@ -930,8 +918,6 @@ if opts.fit_uses_reported_error:
     error_factor=physical_fit_dimension*opts.fit_uses_reported_error_factor
 # TeX dictionary
 tex_dictionary = dict(lalsimutils.tex_dictionary)
-if opts.rf_transverse_spin_coordinates:
-    tex_dictionary.update(zip(rf_transverse_spin.FEATURE_NAMES + rf_transverse_spin.GEOMETRIC4_NAMES + rf_transverse_spin.PHASE_EXCESS_NAMES, rf_transverse_spin.FEATURE_NAMES + rf_transverse_spin.GEOMETRIC4_NAMES + rf_transverse_spin.PHASE_EXCESS_NAMES))
 if opts.eccentric_phase_coordinates:
     tex_dictionary.update(zip(eccentric_phase.FEATURE_NAMES, (r'$\sin\theta_{\rm eff}$', r'$\cos\theta_{\rm eff}$')))
 # The effective shear is invariant under component exchange, so both features
@@ -3240,11 +3226,7 @@ if not opts.using_eos or (fake_eos):
             target_frequency=opts.eccentric_phase_target_frequency,
             **eccentric_phase_models.worker_options(opts),
             source_redshift=source_redshift, enforce_kerr=opts.downselect_enforce_kerr)
-    if opts.rf_transverse_spin_coordinates:
-        return rf_transverse_spin.convert(x_in, coord_names, low_level_coord_names, opts.fref,
-            lalsimutils.convert_waveform_coordinates, source_redshift=source_redshift,
-            enforce_kerr=opts.downselect_enforce_kerr)
-    return lalsimutils.convert_waveform_coordinates(x_in, coord_names=coord_names,low_level_coord_names=low_level_coord_names,source_redshift=source_redshift,enforce_kerr=opts.downselect_enforce_kerr)
+    return lalsimutils.convert_waveform_coordinates(x_in, coord_names=coord_names,low_level_coord_names=low_level_coord_names,source_redshift=source_redshift,enforce_kerr=opts.downselect_enforce_kerr,fref=opts.fref)
 else:
  def eos_mass_support_mask(x_in):
     """Per-row test: does every matter object in this draw have a stable star?
@@ -3888,6 +3870,16 @@ if not (opts.fail_unless_n_eff is None):
     if cip_acceptance_neff < opts.fail_unless_n_eff   and not(opts.not_worker):     # if we need the output to continue:
         print(" FAILURE: n_eff too small")
         sys.exit(1)
+def _assignable(name):
+    """True if P.assign_param(name, ...) works (it exits on names it cannot set)."""
+    import contextlib, io
+    P = lalsimutils.ChooseWaveformParams(fref=opts.fref)
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            P.assign_param(name, P.extract_param(name))
+        return True
+    except (Exception, SystemExit):
+        return False
 if cip_acceptance_neff < opts.n_eff:
     print(" ==> neff (={}) is low <==".format(neff))
     if opts.contingency_unevolved_neff == 'quadpuff'  and cip_acceptance_neff < np.min([500,opts.n_eff]): # we can usually get by with about 500 points
@@ -3899,10 +3891,13 @@ if cip_acceptance_neff < opts.n_eff:
 
         puff_names = coord_names
         X_puff = X
-        if opts.rf_transverse_spin_coordinates:
-            # RF features (and chiMinus, mu1, ...) are not assignable: puff physical components instead.
-            puff_names = ['m1','m2','s1x','s1y','s1z','s2x','s2y','s2z']
-            X_puff = np.array([[P.extract_param(p)/(lal.MSUN_SI if p in ('m1','m2') else 1) for p in puff_names] for P in P_list_in])
+        puff_sampled = not all(_assignable(p) for p in coord_names)
+        if puff_sampled:
+            # Some fit coordinates (chiMinus, chi_p, rf_*, ...) cannot be assigned: puff the sampling coordinates.
+            # Retained rows only: dat_out_low_level_coord_names is cut in step with X.
+            keep = [i for i,p in enumerate(low_level_coord_names) if p != 'chi_pavg']
+            puff_names = [low_level_coord_names[i] for i in keep]
+            X_puff = np.asarray(dat_out_low_level_coord_names, dtype=float)[:,keep]
         my_cov = np.cov(X_puff.T)  # covariance of data points
         rv = scipy.stats.multivariate_normal(mean=np.zeros(len(X_puff[0])), cov=my_cov,allow_singular=True)  # they are just complaining about dynamic range
         delta_X = rv.rvs(size=len(X_puff))
@@ -3919,8 +3914,8 @@ if cip_acceptance_neff < opts.n_eff:
                 if puff_names[indx] in ['mc', 'mtot', 'm1', 'm2']:
                     fac = lal.MSUN_SI
                 P.assign_param(param, (X_new[indx_P,indx]*fac))
-            if opts.rf_transverse_spin_coordinates and (P.m1 <= 0 or P.m2 <= 0
-                    or P.s1x**2+P.s1y**2+P.s1z**2 > 1 or P.s2x**2+P.s2y**2+P.s2z**2 > 1):
+            if puff_sampled and not (P.m1 > 0 and P.m2 > 0
+                    and P.s1x**2+P.s1y**2+P.s1z**2 <= 1 and P.s2x**2+P.s2y**2+P.s2z**2 <= 1):
                 continue
             for p in downselect_dict.keys():
                 val = P.extract_param(p) 
