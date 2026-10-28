@@ -281,13 +281,15 @@ def _pilot_stage():
 
 
 # An abridged wide args_ile.txt line from util_RIFT_pseudo_pipe.py --calmarg-pilot
-# --manual-extra-ile-args "--calibration-bank-per-point", with the per-iteration breadcrumb
-# that --calmarg-pilot adds next to the flag.
+# --manual-extra-ile-args "--calibration-bank-per-point", including the per-iteration
+# breadcrumb (an unexpanded DAG macro) that --calmarg-pilot adds.
+_WIDE_BREADCRUMB = '/home/run/cal_consolidated_$(macroiterationprev).npz'
 _WIDE_ARGS_WITH_BANK_PER_POINT = (
     'X --calibration-envelope-directory %s --vectorized --gpu --force-xpy '
-    '--time-marginalization --calibration-proposal-breadcrumb cal_consolidated_2.npz '
-    '--calibration-bank-per-point --calibration-export-posterior '
-    '--sim-xml overlap-grid.xml.gz --n-events-to-analyze 20 --output-file out' % ENV_DIR)
+    '--time-marginalization --calibration-bank-per-point --calibration-export-posterior '
+    '--calibration-proposal-breadcrumb %s '
+    '--sim-xml overlap-grid.xml.gz --n-events-to-analyze 20 --output-file out'
+    % (ENV_DIR, _WIDE_BREADCRUMB))
 
 
 def _opts_from_cli(tokens):
@@ -313,12 +315,13 @@ def test_pilot_stage_drops_bank_per_point_from_the_wide_args():
     cmd = stage.pilot_ile_command(_WIDE_ARGS_WITH_BANK_PER_POINT, 'ILE', 'grid.xml.gz', 3,
                                   'pilot_out', 'resp.npz')
     assert '--calibration-bank-per-point' not in cmd, cmd
-    assert 'cal_consolidated_2.npz' not in cmd, cmd   # the pilot supplies its own breadcrumb
+    assert _WIDE_BREADCRUMB not in cmd, cmd   # the pilot supplies its own breadcrumb
     assert cmd[-2:] == ['--calibration-dump-responsibilities', 'resp.npz'], cmd
     # ... also for a hand-written args file without the leading placeholder token
-    bare = stage.pilot_ile_command(_WIDE_ARGS_WITH_BANK_PER_POINT.split(' ', 1)[1], 'ILE',
-                                   'grid.xml.gz', 3, 'pilot_out', 'resp.npz')
-    assert bare == cmd, (bare, cmd)
+    rest = _WIDE_ARGS_WITH_BANK_PER_POINT.split(' ', 1)[1]
+    for line in (rest, '/opt/bin/integrate_likelihood_extrinsic_batchmode ' + rest):
+        other = stage.pilot_ile_command(line, 'ILE', 'grid.xml.gz', 3, 'pilot_out', 'resp.npz')
+        assert other == cmd, (line, other, cmd)
     # the flag is valueless: the option after it survives
     assert '--calibration-export-posterior' in cmd, cmd
     assert oc.refusals_from_opts(_opts_from_cli(cmd[1:])) == []
@@ -366,6 +369,47 @@ def test_pilot_command_keeps_the_refinement_breadcrumb():
                                           'resp.npz', os.path.join(tmp, 'absent.npz'))
         assert missing == cmd[:-2], missing
     os.remove(prev); os.rmdir(tmp)
+
+
+def test_pilot_main_issues_the_dump_command():
+    """main() end to end, subprocesses and the grid read stubbed: the DUMP command is the
+    one the pre-refactor main() built, minus --calibration-bank-per-point."""
+    import tempfile
+    import RIFT.lalsimutils as lalsimutils
+    stage = _pilot_stage()
+    calls = []
+
+    class _Sub(object):
+        @staticmethod
+        def check_call(cmd):
+            calls.append(list(cmd))
+    tmp = tempfile.mkdtemp()
+    args_file, prev = os.path.join(tmp, 'args_ile.txt'), os.path.join(tmp, 'prev.npz')
+    with open(args_file, 'w') as f:
+        f.write(_WIDE_ARGS_WITH_BANK_PER_POINT + '\n')
+    open(prev, 'wb').close()
+    saved = (stage.subprocess, stage._which, lalsimutils.xml_to_ChooseWaveformParams_array)
+    stage.subprocess, stage._which = _Sub, (lambda name: '/opt/bin/' + name)
+    lalsimutils.xml_to_ChooseWaveformParams_array = lambda fname: [None] * 3
+    try:
+        stage.main(['--composite', 'all.composite', '--ile-args-file', args_file,
+                    '--iteration', '4', '--output-breadcrumb', 'out.npz',
+                    '--prev-breadcrumb', prev, '--workdir', tmp])
+    finally:
+        stage.subprocess, stage._which, lalsimutils.xml_to_ChooseWaveformParams_array = saved
+        for fn in (args_file, prev):
+            os.remove(fn)
+        os.rmdir(tmp)
+    dump = [c for c in calls if '--calibration-dump-responsibilities' in c]
+    assert len(dump) == 1, calls
+    assert dump[0] == [
+        '/opt/bin/integrate_likelihood_extrinsic_batchmode',
+        '--calibration-envelope-directory', ENV_DIR, '--vectorized', '--gpu', '--force-xpy',
+        '--time-marginalization', '--calibration-export-posterior',
+        '--sim-xml', os.path.join(tmp, 'cal_pilot_grid_4.xml.gz'), '--n-events-to-analyze', '3',
+        '--output-file', os.path.join(tmp, 'cal_pilot_out_4'),
+        '--calibration-dump-responsibilities', os.path.join(tmp, 'cal_pilot_resp_4.npz'),
+        '--calibration-proposal-breadcrumb', prev], dump[0]
 
 
 # ------------------------------------------------------ R6: opt-ins without the envelope
