@@ -120,6 +120,8 @@ class Acceptance(unittest.TestCase):
             config = json.loads(path.read_text())
             self.assertEqual(config['post']['coords-sample'], 'u_mass:[0,1] u_lens_y:[0,1]')
             self.assertEqual(config['post']['settings']['n-eff'], 2000)
+            self.assertEqual(config['arch']['explode-marg-jobs'], 1)
+            self.assertEqual(config['arch']['explode-marg-jobs-last'], 1)
             grid = np.loadtxt(path.parent/'seed.dat', ndmin=2)
             self.assertEqual(grid.shape, (32, 4))
             self.assertTrue(np.all((grid[:, 2:] >= 0) & (grid[:, 2:] <= 1)))

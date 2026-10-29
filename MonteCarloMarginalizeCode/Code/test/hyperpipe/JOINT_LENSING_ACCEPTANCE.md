@@ -141,3 +141,68 @@ matched physical null/direct checks, and event results retain their separate gat
 The existing completed environment was preserved; the implementation worker
 staged missing native dependencies in an isolated runtime overlay. Exact command
 and overlay/source provenance remain part of that worker's execution record.
+
+### Actual generated native DAG inspection
+
+The generated DAG, not a dry-run command, was inspected read-only at
+`/home/oshaughn/rift-lensing-prototype/work/20261029-hyperpipe-native-runtime/gaussian-dag/run/marginalize_hyperparameters.dag`.
+Its SHA256 was
+`b4aaadb3a5aa6b488f4b5b1b0d8d632c18dd330f65ea46dda87596e51f2d8075`.
+Parsing its JOB/VARS/PARENT lines found exactly four EOS_POST workers, one at each
+iteration 0 through 3. Each depends on its UNIFY and parents its JOIN_POST;
+the final JOIN_POST parents convergence. `EOS_POST_worker.sub` requests queue 1,
+reads cumulative `all.marg_net`, carries explicit unit ranges, RF+AV,
+`--internal-use-lnL`, and `--n-eff 2000`. Its final output stem is
+`iteration_3_post/output-4-$(cluster)` for plain lnZ and paired `.dat` posterior,
+matching the scoped collector's path/count convention. `args_marg_eos.txt`
+references the absolute shared-filesystem `joint.json`. No ILE was invoked.
+
+The generated artifact check was performed with read-only SSH, reading the DAG
+and `EOS_POST_worker.sub`, and a Python `shlex` parser mapping JOB names to submit
+files and VARS iteration macros, then counting EOS_POST workers and parent/child
+edges. Equivalent bounded shell inspection is:
+
+```sh
+ssh cardassia 'cat /home/oshaughn/rift-lensing-prototype/work/20261029-hyperpipe-native-runtime/gaussian-dag/run/EOS_POST_worker.sub'
+ssh cardassia 'grep -E "JOB|VARS|PARENT" /home/oshaughn/rift-lensing-prototype/work/20261029-hyperpipe-native-runtime/gaussian-dag/run/marginalize_hyperparameters.dag'
+ssh cardassia 'cat /home/oshaughn/rift-lensing-prototype/work/20261029-hyperpipe-native-runtime/constant/native-result'
+```
+
+The final command independently returned exactly `0` for the completed native
+constant-likelihood log evidence. The implementation worker reports ESS=10000;
+the validator independently read the integral product, not that ESS claim.
+
+Actual DAG generation exposed two issues that are corrected in the candidate:
+the builder now explicitly sets `explode-marg-jobs-last=1` (the native default
+would otherwise create two final workers), and event staging skips a copy only
+when `os.path.samefile` identifies the staged destination as the source. The
+independent collection suite now has seven passing tests, including execution
+of the actual event-copy loop in isolation: identical path and symlink aliases
+preserve content, a distinct legacy source copies correctly, and a missing
+source still raises. The guard does not suppress unrelated copy errors.
+
+The iterative DAG was generated and inspected, not submitted or completed.
+The Gaussian and constant controls executed the actual native posterior sampler
+directly. Repeated seeds and full physical source/lens event inference remain
+unadmitted at this checkpoint.
+
+### Repeated native control and matched physical manifests
+
+A second completed Gaussian run was independently gated using the same command
+above with `gaussian-seed2` substituted for `gaussian`. It passed:
+`lnZ=-2.71153962780717`, exact `-2.710356875295474`, 2000 draws, posterior means
+`(5.004428648839601, 0.6921787361431133)`, covariance
+`[[0.43615915301565467,-0.0001309081246292907],
+[-0.0001309081246292907,0.1947568476407829]]`.
+The validator independently read `rift-second-seed.py`: it sets NumPy seed 991
+and `--rf-seed 991`, reuses the evaluated Gaussian grid, and supplies explicit
+output paths. Thus two native RF+AV fits/sampling runs meet the registered
+Gaussian evidence and posterior-shape gates.
+
+Independent reads of `event-manifests/lensed.json` and `unlensed.json` confirmed
+matching 15 source/nuisance coordinate priors, fixed geocentric time, data
+preparation directory, cleaning and maximum frequency. The lensed model adds only
+`MLz` and `y`. These are explicitly declared experimental priors: log-uniform
+amplitude and uniform declination, rather than a volume-distance and isotropic
+sky prior. Their normalization/matching does not make them astrophysical defaults.
+Physical event waveform/posterior/evidence admission remains separate.

@@ -1,0 +1,73 @@
+{
+  "date": "2026-10-29",
+  "base_rift_commit": "03d7fe8467d0216f72c313498603fceaf434d31e",
+  "remote_root": "/home/oshaughn/rift-lensing-prototype/work/20261029-hyperpipe-native-runtime",
+  "gaussian": {
+    "integral": "gaussian/native-result",
+    "posterior": "gaussian/native-result.dat",
+    "lnZ": -2.7166055333934622,
+    "expected_lnZ": -2.710356875295474,
+    "draws": 2000,
+    "mean_x_logy": [
+      5.003001808154449,
+      0.680115091322078
+    ],
+    "cov_x_logy": [
+      [
+        0.4216376441958916,
+        0.003743908038601144
+      ],
+      [
+        0.003743908038601144,
+        0.2047347497964037
+      ]
+    ],
+    "n_eff": 3034.6162716756635,
+    "ESS": 6059.327583803366,
+    "independent_gate": "pass"
+  },
+  "constant": {
+    "integral": "constant/native-result",
+    "lnZ": 0.0
+  },
+  "dag": {
+    "path": "gaussian-dag/run/marginalize_hyperparameters.dag",
+    "sha256": "b4aaadb3a5aa6b488f4b5b1b0d8d632c18dd330f65ea46dda87596e51f2d8075",
+    "workers_by_iteration": {
+      "0": 1,
+      "1": 1,
+      "2": 1,
+      "3": 1
+    },
+    "native_edges_and_submit_inspected": true,
+    "submitted": false
+  },
+  "not_admitted": [
+    "completed_iterative_DAG",
+    "physical_event_inference"
+  ],
+  "gaussian_seed2": {
+    "integral": "gaussian-seed2/native-result",
+    "posterior": "gaussian-seed2/native-result.dat",
+    "numpy_seed": 991,
+    "rf_seed": 991,
+    "lnZ": -2.71153962780717,
+    "expected_lnZ": -2.710356875295474,
+    "draws": 2000,
+    "mean_x_logy": [
+      5.004428648839601,
+      0.6921787361431133
+    ],
+    "cov_x_logy": [
+      [
+        0.43615915301565467,
+        -0.0001309081246292907
+      ],
+      [
+        -0.0001309081246292907,
+        0.1947568476407829
+      ]
+    ],
+    "independent_gate": "pass"
+  }
+}
