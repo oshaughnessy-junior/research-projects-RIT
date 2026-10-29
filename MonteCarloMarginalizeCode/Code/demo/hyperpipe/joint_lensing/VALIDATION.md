@@ -33,8 +33,13 @@ lane. `PYTHONPATH` adds `compatible`, the read-only pinned O4d Code directory,
 the validation root, and the owning prototype's `src` for physical waveforms.
 
 Actual native EOS_POST RF+AV control: 4096 seed rows from the production joint
-driver, unit-box prior bounds, RF seed347, n-max100000,n-step10000,n-eff2000,
-`--internal-use-lnL`. `run-native-eos-control.sh` records the exact command.
+driver, unit-box prior bounds, RF seed347 (the first sampler RNG was not explicitly seeded),
+n-max100000,n-step10000,n-eff2000,
+`--internal-use-lnL`. `run-native-eos-control.sh` records the command with explicit sample outputs;
+the initial first run used the native default sample path, which was then
+copied into its scoped result directory. The host-specific exact launchers
+`rift-native-control.py`, `run-native-eos-control.sh`, and
+`rift-second-seed.py` are retained next to this report.
 The Gaussian has source x uniform[2,8], lens y log-uniform[.2,20],
 lnL=-.5[(x-5)^2/.65^2+(log(y)-log(2))^2/.45^2].
 Its exact normalized lnZ is -2.710356875295474.
@@ -49,7 +54,10 @@ Its exact normalized lnZ is -2.710356875295474.
   native sampler L=1 normalized prior test, not just quadrature.
 * `gaussian-seed2/` uses numpy sampler seed991 and RF seed991; its exact
   launcher is `rift-second-seed.py`. Independent acceptance is recorded in
-  the test/hyperpipe acceptance notes.
+  the test/hyperpipe acceptance notes. Its lnZ=-2.71153962780717,
+  error=-.001182752511696nat; its means are
+  [5.004428648839601,.6921787361431133] and covariance diagonals
+  [.43615915301565467,.1947568476407829].
 
 The native Gaussian DAG was actually generated in `gaussian-dag/run/` and
 independently inspected: four iterations, one worker in each, normalized
