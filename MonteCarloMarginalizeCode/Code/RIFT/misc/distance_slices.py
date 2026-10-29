@@ -833,11 +833,20 @@ def fit_kde_proposal(x, ln_w, lo, hi, n_kernel=1000, rng=None, min_frac=1e-3, in
     h2 = neff ** (-2.0 / (p + 4))
     H = inflate * h2 * cov + np.diag(floor)
     L = np.linalg.cholesky(H)
+    # Collapsed: the weight sits on fewer than p+2 distinct points, so the covariance has rank < p and
+    # the kernels are a thin sheet in the other directions.  Draws stay correctly weighted, but on a 5-d
+    # test ~5% of slices from such a seed passed every trust check while 1-3 nats low (#511 review).
+    o = np.argsort(w)[::-1]
+    top = o[: int(np.searchsorted(np.cumsum(w[o]), 1.0 - 1e-6)) + 1]
+    collapsed = bool(len(np.unique(x[top], axis=0)) < p + 2)
     centers = x[rng.choice(len(x), size=int(n_kernel), p=w)]
     if local_k:
-        return _local_kernels(x, w, centers, cov, H, floor, inflate, int(local_k), local_shrink, n_pool, rng, neff)
-    return dict(centers=centers, L=L, Linv=np.linalg.inv(L),
-                ln_norm=-0.5 * p * np.log(2 * np.pi) - np.sum(np.log(np.diag(L))), neff=neff)
+        out = _local_kernels(x, w, centers, cov, H, floor, inflate, int(local_k), local_shrink, n_pool, rng, neff)
+    else:
+        out = dict(centers=centers, L=L, Linv=np.linalg.inv(L),
+                   ln_norm=-0.5 * p * np.log(2 * np.pi) - np.sum(np.log(np.diag(L))), neff=neff)
+    out["collapsed"] = collapsed
+    return out
 
 
 def _local_kernels(x, w, centers, cov, H_global, floor, inflate, k, shrink, n_pool, rng, neff):
@@ -1054,6 +1063,8 @@ def warm_integrate_slice(ln_f, lo, hi, seed_x, seed_ln_w, n_max, n_eff_target, n
     broad_kde = None
     if broad is not None and broad_frac > 0:
         broad_kde = fit_kde_proposal(broad[0], broad[1], lo, hi, n_kernel, rng, inflate=inflate, local_k=local_k)
+    # a slice whose seed or broad component collapsed is never trusted: the caller redoes it cold
+    collapsed = bool((kde is not None and kde.get("collapsed")) or (broad_kde is not None and broad_kde.get("collapsed")))
 
     def block(kde):
         # mixture: uniform box (defensive), fixed broad KDE (broad_frac), adaptive KDE (the rest)
@@ -1117,7 +1128,7 @@ def warm_integrate_slice(ln_f, lo, hi, seed_x, seed_ln_w, n_max, n_eff_target, n
         n_total += n_block
     x_all, lw_all = np.concatenate(xs), np.concatenate(lws)
     res = dict(lnZ=-np.inf, sigma=np.inf, neff=0.0, ntotal=int(n_total), x=x_all, ln_w=lw_all, khat=np.inf,
-               n_adapt=n_adapt, converged=converged)
+               n_adapt=n_adapt, converged=converged and not collapsed, collapsed=collapsed)
     if est:
         lw_est = np.concatenate(est)
         lnZ, sigma = _block_estimate(lw_est, n_block * len(est))
