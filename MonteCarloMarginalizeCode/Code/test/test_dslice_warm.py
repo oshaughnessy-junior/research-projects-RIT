@@ -185,3 +185,42 @@ def test_local_kernel_density_matches_an_explicit_mixture():
     y = ds.kde_draw(kde, 6, rng)
     ref = np.log(np.mean([multivariate_normal(c, L @ L.T).pdf(y) for c, L in zip(kde["centers"], kde["Ls"])], axis=0))
     np.testing.assert_allclose(ds.kde_logpdf(kde, y), ref, rtol=0, atol=1e-8)
+
+
+def test_local_kernels_fall_back_when_the_seed_collapses():
+    # all the weight on three of 300 rows: the pool has at most three distinct points in five dimensions
+    rng = np.random.default_rng(7)
+    x, _ = seed_at(MU)
+    lw = np.full(len(x), -1000.0)
+    lw[:3] = 0.0
+    kde = ds.fit_kde_proposal(x, lw, LO, HI, n_kernel=40, rng=rng, local_k=30)
+    assert "L" in kde and "Ls" not in kde
+    ref = ds.fit_kde_proposal(x, lw, LO, HI, n_kernel=40, rng=np.random.default_rng(7))   # shared kernel
+    np.testing.assert_allclose(kde["L"], ref["L"], rtol=1e-12)
+    assert kde["ln_norm"] == ref["ln_norm"] and kde["neff"] == ref["neff"]
+    np.testing.assert_array_equal(kde["centers"], ref["centers"])
+    # many copies of three distinct values: the pool dedups by value and also falls back
+    xd = np.repeat(x[:3], 100, axis=0)
+    kd = ds.fit_kde_proposal(xd, np.zeros(len(xd)), LO, HI, n_kernel=40, rng=rng, local_k=30)
+    assert "L" in kd and "Ls" not in kd
+    y = ds.kde_draw(kde, 100, rng)
+    assert np.all(np.isfinite(ds.kde_logpdf(kde, y)))
+
+
+def test_collapsed_seed_is_never_trusted():
+    # Slice seed's weight on three rows, broad component healthy: without the collapse flag this run
+    # converges (block agreement at the 2nd block), which is the case the #511 review showed can be
+    # 1-3 nats low.  It must report not converged so WarmSliceSampler redoes it cold.
+    x, _ = seed_at(MU)
+    lw = np.full(len(x), -1000.0)
+    lw[:3] = 0.0
+    res = ds.warm_integrate_slice(ln_gauss, LO, HI, x, lw, n_max=200000, n_eff_target=30,
+                                  rng=np.random.default_rng(0), local_k=30, broad=(x, np.zeros(len(x))))
+    assert res["collapsed"] and not res["converged"]
+    # a collapsed broad component marks the slice too; a healthy seed and broad do not
+    res = ds.warm_integrate_slice(ln_gauss, LO, HI, x, np.zeros(len(x)), n_max=200000, n_eff_target=30,
+                                  rng=np.random.default_rng(0), local_k=30, broad=(x, lw))
+    assert res["collapsed"] and not res["converged"]
+    good = ds.warm_integrate_slice(ln_gauss, LO, HI, x, np.zeros(len(x)), n_max=200000, n_eff_target=30,
+                                   rng=np.random.default_rng(0), local_k=30, broad=(x, np.zeros(len(x))))
+    assert not good["collapsed"] and good["converged"]
