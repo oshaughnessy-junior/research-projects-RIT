@@ -1189,9 +1189,12 @@ if opts.manual_postfix:
 # Override run directory name
 if opts.use_rundir:
     dirname_run = opts.use_rundir
-os.mkdir(dirname_run)
 if opts.extra_args_helper:
     opts.extra_args_helper = os.path.abspath(opts.extra_args_helper)  # read after the chdir below
+    if not os.path.isfile(opts.extra_args_helper):
+        print(" FAILURE: --extra-args-helper file not found: {} ".format(opts.extra_args_helper))
+        sys.exit(1)
+os.mkdir(dirname_run)
 os.chdir(dirname_run)
 
 
