@@ -133,7 +133,7 @@ def test_actual_build_hooks_execute_policy_not_only_accept_options(tmp_path):
     assert '--eccentric-phase-target-frequency' in ns['helper_cip_arg_list'][1]
     assert '--eccentric-phase-target-frequency' in ns['helper_puff_args']
     parent=(ROOT/'bin/util_RIFT_pseudo_pipe.py').read_text()
-    assert parent.index('eccentric_phase_policy.read_into(opts)')<parent.index('# Final CIP lines')
+    assert parent.index('eccentric_phase_policy.read_into(opts)')<parent.index('eccentric_phase_policy.finalize_map')
     assert parent.index('eccentric_phase_policy.check_final_ile')<parent.index("with open('args_ile.txt'")
 
 

@@ -163,7 +163,7 @@ def test_pipeline_checks_resolved_ini_configuration(monkeypatch, tmp_path, capsy
         argv += ['--eccentric-phase-coordinates']
     monkeypatch.setattr(sys, 'argv', argv)
     boundary = next(i for i, line in enumerate(script.read_text().splitlines(), 1)
-                    if line == "if opts.rf_transverse_spin_coordinates == 'physics3':")
+                    if line == "if opts.ile_copies <=0:")
     class Resolved(Exception):
         pass
     def trace(frame, event, arg):

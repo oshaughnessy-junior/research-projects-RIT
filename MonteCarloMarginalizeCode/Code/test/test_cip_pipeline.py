@@ -106,7 +106,7 @@ def test_extended_precision_weights_beyond_float64_range():
     import pytest
     if np.finfo(np.longdouble).max <= np.finfo(np.float64).max:
         pytest.skip("platform longdouble has no extra range")
-    big = np.longdouble(10.0) ** 400
+    big = np.longdouble("1e400")  # avoid platform scalar-power overflow before the helper runs
     w = np.full(10, big, dtype=np.longdouble)
     w[0] *= 10.0  # sum/max = 19/10 -> bound 1
     assert unique_draw_bound(w) == 1
