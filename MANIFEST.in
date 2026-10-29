@@ -3,3 +3,5 @@ include MonteCarloMarginalizeCode/Code/bin/*
 include MonteCarloMarginalizeCode/Code/RIFT/physics/*  
 include MonteCarloMarginalizeCode/Code/RIFT/integrators/*  
 include MonteCarloMarginalizeCode/Code/RIFT/asimov/*
+include MonteCarloMarginalizeCode/Code/README.eccentric_phase.md
+include docs/minimal-eccentric-17.13.rst docs/minimal-eccentric-17.13-provenance.json

@@ -108,6 +108,8 @@ and retain spin optimizations when removing the old redshift rescale. Two
 source-location test anchors were adapted to the older layout. An extended
 precision test constructs its large finite fixture from a decimal string to
 avoid a host NumPy scalar-power overflow before the helper is called.
+The source-distribution manifest explicitly includes the coordinate README
+and this branch inclusion/provenance report. No package was uploaded to PyPI.
 
 Deliberately excluded and conditional additions
 ---------------------------------------------
