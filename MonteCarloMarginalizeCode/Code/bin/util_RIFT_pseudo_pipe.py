@@ -211,6 +211,14 @@ def _lisa_data_products_from_ini(opts):
         opts.lisa_psd_file = _dict_to_assignments("lalinference", "psds")
 
 
+def extra_helper_arguments(value):
+    """--extra-args-helper: a file of helper arguments, or the arguments themselves."""
+    if os.path.isfile(value):
+        with open(value) as extra:
+            value = extra.read()
+    return shlex.split(value)
+
+
 def run_lisa_known_sky_surface(opts):
     if opts.approx is None:
         print(" --lisa-known-sky requires --approx ")
@@ -300,8 +308,7 @@ def run_lisa_known_sky_surface(opts):
     for assignment in opts.lisa_psd_file or []:
         helper_cmd.extend(["--psd-file", assignment])
     if opts.extra_args_helper:
-        with open(opts.extra_args_helper) as extra:
-            helper_cmd.extend(shlex.split(extra.read()))
+        helper_cmd.extend(extra_helper_arguments(opts.extra_args_helper))
 
     print(" LISA known-sky helper command: ", " ".join(shlex.quote(x) for x in helper_cmd))
     subprocess.run(helper_cmd, check=True)
@@ -422,7 +429,7 @@ parser.add_argument("--calmarg-export-posterior",action='store_true',help="In-lo
 parser.add_argument("--extrinsic-handoff",action='store_true',help="Extrinsic handoff (GMM sampler only): each iteration's wide ILE jobs write a per-event extrinsic GMM proposal (--extrinsic-proposal-output) of their extrinsic posterior; a per-iteration consolidation picks the most representative one and SEEDS the next iteration's wide ILE jobs via --extrinsic-proposal-breadcrumb, so the extrinsic sampler starts on the answer instead of cold.  Requires --ile-sampler-method GMM.  See RIFT/calmarg/DESIGN_extrinsic_handoff.md.")
 parser.add_argument("--extrinsic-handoff-select",default="lnL",help="Metric the extrinsic consolidation ranks per-event proposals by (lnL|neff|n_samples). Default lnL (most peak-representative).")
 parser.add_argument("--distance-reweighting",action='store_true',help="Option to add job to DAG to reweight posterior samples due to different distance prior (LVK prod prior)")
-parser.add_argument("--extra-args-helper",action=None, help="Filename with arguments for the helper. Use to provide alternative channel names and other advanced configuration (--channel-name, data type)!")
+parser.add_argument("--extra-args-helper",action=None, help="Arguments for the helper, or the name of a file holding them. Use to provide alternative channel names and other advanced configuration (--channel-name, data type)!")
 parser.add_argument("--manual-postfix",default='',type=str)
 parser.add_argument("--gracedb-id",default=None,type=str)
 parser.add_argument("--gracedb-exe",default="gracedb")
@@ -1189,11 +1196,9 @@ if opts.manual_postfix:
 # Override run directory name
 if opts.use_rundir:
     dirname_run = opts.use_rundir
+extra_args_helper = []
 if opts.extra_args_helper:
-    opts.extra_args_helper = os.path.abspath(opts.extra_args_helper)  # read after the chdir below
-    if not os.path.isfile(opts.extra_args_helper):
-        print(" FAILURE: --extra-args-helper file not found: {} ".format(opts.extra_args_helper))
-        sys.exit(1)
+    extra_args_helper = extra_helper_arguments(opts.extra_args_helper)  # before the chdir below: a relative file path
 os.mkdir(dirname_run)
 os.chdir(dirname_run)
 
@@ -1663,9 +1668,8 @@ if opts.fake_data_cache:
     if len(event_dict["IFOs"]) >0 :
         short_list = " {} ".format(event_dict['IFOs'])        
         cmd += " --manual-ifo-list {} ".format(short_list.replace(' ',''))
-if opts.extra_args_helper:
-    with open(opts.extra_args_helper) as extra:
-        cmd += " " + " ".join(shlex.quote(x) for x in shlex.split(extra.read())) + " "
+if extra_args_helper:
+    cmd += " " + " ".join(shlex.quote(x) for x in extra_args_helper) + " "
 print( cmd)
 if os.path.exists('helper_ile_args.txt'):
     # This is generated output, not an input.  Remove it before invoking the
