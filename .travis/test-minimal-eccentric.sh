@@ -4,6 +4,8 @@ cd "$(dirname "$0")/.."
 export PYTHONPATH="$PWD/MonteCarloMarginalizeCode/Code${PYTHONPATH:+:$PYTHONPATH}"
 python -m pytest -q \
   MonteCarloMarginalizeCode/Code/test/test_assign_param_chieff_aligned.py \
+  MonteCarloMarginalizeCode/Code/test/test_puffball_unwrap.py \
+  MonteCarloMarginalizeCode/Code/test/test_plot_rift_diagnostics.py \
   MonteCarloMarginalizeCode/Code/test/test_av_backport_adversarial.py \
   MonteCarloMarginalizeCode/Code/test/test_av_coverage_guard.py \
   MonteCarloMarginalizeCode/Code/test/test_av_empty_live_volume.py \

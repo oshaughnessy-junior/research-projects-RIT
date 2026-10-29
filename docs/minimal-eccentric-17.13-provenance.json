@@ -152,5 +152,19 @@
   "live_head_delta": {
     "excluded_pr": 251,
     "reason": "EOS RF fref; RF feature absent from minimal branch"
-  }
+  },
+  "requested_followups": [
+    {
+      "pr": 249,
+      "url": "https://github.com/oshaughn/research-projects-RIT/pull/249",
+      "head": "ee51fc729ab3641c84857aa676d783373750321d",
+      "upstream_base": "rift_O4d",
+      "state_at_port": "open",
+      "scope": "native periodic PUFF unwrapping and plot_RIFT HTML/PUFF diagnostics; aligned task-force gate"
+    },
+    {
+      "commit": "8cd56cf8909a89e36f7e8b05809f039b5d3a6679",
+      "status": "already implemented via #245 backport f5824e314; strengthened regression suite retained"
+    }
+  ]
 }

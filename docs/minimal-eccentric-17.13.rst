@@ -187,3 +187,35 @@ Detailed logs and port receipts are kept outside Git in
 ``/Users/rossma/LVK/eccentric-minimal-17.13-audit-20261029``. Intermediate logs
 contain superseded failures while adapting the series; ``pytest-final.log``
 is the acceptance run.
+
+Requested follow-up: aligned eccentric PUFF and diagnostics
+---------------------------------------------------------
+
+PR #249 (open against O4d, pinned head
+``ee51fc729ab3641c84857aa676d783373750321d``) is adapted onto this branch.
+It adds native ``--unwrap-parameter meanPerAno`` with ``--unwrap-center gap``
+(default) or ``mean``, plus ``plot_RIFT.py`` with HTML and PUFF-health diagnostics.
+Unwrapping is optional and is an alternative to the sheared mean-anomaly PUFF
+chart: requesting both for meanPerAno fails explicitly. Proposals are wrapped
+before native range cuts/export; eccentricity reflection and actual-spin cuts
+are retained. Broad circle coverage emits the upstream warning rather than
+claiming an efficiency improvement. No new waveform, prior, precessing
+feature, or inference policy is introduced.
+
+The plotting script did not exist in 17.13, so the upstream file is added.
+Its external corner-plot call runs in the requested output folder; otherwise
+its plotting/diagnostic behavior is retained. Scope is the aligned eccentric
+task-force use case, not general precessing/LISA certification.
+
+Requested commit ``8cd56cf8909a89e36f7e8b05809f039b5d3a6679`` was already
+implemented by the #245 port. Its effective-spin inverse, actual-spin
+PUFF selection, scalar/vector parity, and strengthened exported-spin-bound
+regressions remain present; no duplicate fix is applied.
+
+The focused adversarial gate executes the real native PUFF CLI for seam
+crossings under both centering rules, negative aligned spins, periodic output
+cuts, broad-circle warnings, incompatible requests and eccentricity reflection.
+It exercises actual diagnostic functions for aligned likelihood association,
+missing labels and embedded HTML images, and reruns all 14 spin-fix cases.
+No production inference, convergence claim or precessing extension is part
+of this follow-up. Exact follow-up results accompany the CIT definition.
