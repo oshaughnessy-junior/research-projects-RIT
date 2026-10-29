@@ -17,7 +17,8 @@ import types
 import unittest
 import numpy as np
 
-CODE = Path(__file__).resolve().parents[3]
+_HERE = Path(__file__).resolve()
+CODE = _HERE.parents[3] if len(_HERE.parents) > 3 else Path.cwd()
 DRIVERS = Path(os.environ.get('RIFT_JOINT_DRIVER_DIR', CODE / 'RIFT' / 'hyperpipe' / 'drivers'))
 
 

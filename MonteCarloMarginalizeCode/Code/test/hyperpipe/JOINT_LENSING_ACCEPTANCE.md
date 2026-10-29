@@ -109,3 +109,35 @@ plain absolute `lnZ` product, never the maximum likelihood or joined sample file
 
 At this checkpoint, native sampler accuracy and the generated DAG have not been
 admitted: no completed native control artifacts were available to this validator.
+
+### First native RF+AV control, independently checked
+
+A completed direct `util_ConstructEOSPosterior.py` Gaussian control subsequently
+became available on cardassia, under
+`/home/oshaughn/rift-lensing-prototype/work/20261029-hyperpipe-native-runtime/gaussian`.
+The validator ran the independent gate read-only through SSH against
+`native-result` and paired `native-result.dat`, with the existing
+`rift-lensing-event-demo/bin/python` runtime. The exact executed gate was:
+
+```sh
+ssh cardassia /home/oshaughn/envs_for_claude/rift-lensing-event-demo/bin/python - \
+  --native-integral /home/oshaughn/rift-lensing-prototype/work/20261029-hyperpipe-native-runtime/gaussian/native-result \
+  --native-posterior /home/oshaughn/rift-lensing-prototype/work/20261029-hyperpipe-native-runtime/gaussian/native-result.dat \
+  < MonteCarloMarginalizeCode/Code/test/hyperpipe/acceptance/check_joint_lensing.py
+```
+
+The gate passed: native `lnZ=-2.7166055333934622`, exact
+`lnZ=-2.710356875295474`, error `-0.0062486580979882` nat. The 2000 posterior
+draws had means `(5.003001808154449, 0.680115091322078)` and covariance
+`[[0.4216376441958916, 0.003743908038601144],
+[0.003743908038601144, 0.2047347497964037]]` in `(x,log(y))`.
+Independent reads of `joint.json` confirmed the Gaussian factory and registered
+uniform/log-uniform bounds; `native.log` recorded AV `n_eff=3034.6162716756635`,
+`ESS=6059.327583803366`, `sigma_mc=.0115`, `sigma_lnV=.0109`.
+
+This admits the first bounded native interpolation/sampling control only.
+Repeated seeds, constant-likelihood native control, actual iterative DAG products,
+matched physical null/direct checks, and event results retain their separate gates.
+The existing completed environment was preserved; the implementation worker
+staged missing native dependencies in an isolated runtime overlay. Exact command
+and overlay/source provenance remain part of that worker's execution record.
