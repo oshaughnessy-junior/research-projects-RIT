@@ -211,6 +211,14 @@ def _lisa_data_products_from_ini(opts):
         opts.lisa_psd_file = _dict_to_assignments("lalinference", "psds")
 
 
+def extra_helper_arguments(value):
+    """--extra-args-helper: a file of helper arguments, or the arguments themselves."""
+    if os.path.isfile(value):
+        with open(value) as extra:
+            value = extra.read()
+    return shlex.split(value)
+
+
 def run_lisa_known_sky_surface(opts):
     if opts.approx is None:
         print(" --lisa-known-sky requires --approx ")
@@ -300,8 +308,7 @@ def run_lisa_known_sky_surface(opts):
     for assignment in opts.lisa_psd_file or []:
         helper_cmd.extend(["--psd-file", assignment])
     if opts.extra_args_helper:
-        with open(opts.extra_args_helper) as extra:
-            helper_cmd.extend(shlex.split(extra.read()))
+        helper_cmd.extend(extra_helper_arguments(opts.extra_args_helper))
 
     print(" LISA known-sky helper command: ", " ".join(shlex.quote(x) for x in helper_cmd))
     subprocess.run(helper_cmd, check=True)
@@ -422,7 +429,7 @@ parser.add_argument("--calmarg-export-posterior",action='store_true',help="In-lo
 parser.add_argument("--extrinsic-handoff",action='store_true',help="Extrinsic handoff (GMM sampler only): each iteration's wide ILE jobs write a per-event extrinsic GMM proposal (--extrinsic-proposal-output) of their extrinsic posterior; a per-iteration consolidation picks the most representative one and SEEDS the next iteration's wide ILE jobs via --extrinsic-proposal-breadcrumb, so the extrinsic sampler starts on the answer instead of cold.  Requires --ile-sampler-method GMM.  See RIFT/calmarg/DESIGN_extrinsic_handoff.md.")
 parser.add_argument("--extrinsic-handoff-select",default="lnL",help="Metric the extrinsic consolidation ranks per-event proposals by (lnL|neff|n_samples). Default lnL (most peak-representative).")
 parser.add_argument("--distance-reweighting",action='store_true',help="Option to add job to DAG to reweight posterior samples due to different distance prior (LVK prod prior)")
-parser.add_argument("--extra-args-helper",action=None, help="Filename with arguments for the helper. Use to provide alternative channel names and other advanced configuration (--channel-name, data type)!")
+parser.add_argument("--extra-args-helper",action=None, help="Arguments for the helper, or the name of a file holding them. Use to provide alternative channel names and other advanced configuration (--channel-name, data type)!")
 parser.add_argument("--manual-postfix",default='',type=str)
 parser.add_argument("--gracedb-id",default=None,type=str)
 parser.add_argument("--gracedb-exe",default="gracedb")
@@ -677,7 +684,7 @@ parser.add_argument("--internal-ile-td-solver",default=None,type=str,help="Passt
 parser.add_argument("--internal-ile-td-acf-duration",default=None,type=float,help="Passthrough to ILE --td-acf-duration [s] (TD truncated-segment path).")
 parser.add_argument("--internal-ile-td-analysis-start",default=None,type=float,help="Passthrough to ILE --td-analysis-start [s] (template-frame segment start, plan T5/D1).")
 parser.add_argument("--internal-ile-td-analysis-end",default=None,type=float,help="Passthrough to ILE --td-analysis-end [s] (template-frame segment end, plan T5/D1).")
-parser.add_argument("--internal-ile-td-gap",action='append',default=None,help="Passthrough to ILE --td-gap 'tstart,tend' (geocenter s rel. event, repeatable). In an ini give a Python list literal or a single quoted string.")
+parser.add_argument("--internal-ile-td-gap",action='append',default=None,help="DISABLED (refused). To excise data use --internal-ile-inner-product td-gs with disjoint --internal-ile-td-piece intervals.")
 parser.add_argument("--internal-ile-glitch-basis",action='append',default=None,help="Passthrough to ILE --glitch-basis 'IFO:t1,t2,f1,f2[:r]' (analytic Slepian glitch marginalization, G3). Repeatable. Requires --internal-ile-inner-product td-toeplitz. In an ini give a list literal or a single quoted string.")
 parser.add_argument("--internal-ile-glitch-basis-file",action='append',default=None,help="Data-informed glitch basis for one detector, 'IFO:path.npz' (G4, glitschen/BayesWave PCA/SVD). Repeatable. The .npz is ADDED TO THE ILE CONDOR TRANSFER LIST and the ILE flag is rewritten to reference the transferred basename, so it works on execute nodes / OSG. Requires --internal-ile-inner-product td-toeplitz. In an ini give a list literal or a single quoted string.")
 parser.add_argument("--internal-ile-glitch-sigma",default=None,type=str,help="Passthrough to ILE --glitch-sigma (glitch amplitude hyperparameter mode; only 'profile' is wired).")
@@ -795,6 +802,18 @@ if (opts.use_ini):
             val = rift_items[item].strip()
             ile_condor_commands.append([item, val])
 
+# --internal-ile-td-gap is refused, from the command line or the ini above.
+_TD_GAP_REFUSAL = (" FAILURE: --internal-ile-td-gap is disabled (the gap-marginalized td-toeplitz "
+                   "likelihood is not yet regularized for fMax < fNyq).  To excise data, use "
+                   "--internal-ile-inner-product td-gs with --internal-ile-td-mref M and disjoint "
+                   "--internal-ile-td-piece START,END intervals (units of M_ref) covering the data "
+                   "to KEEP.  Pieces are independent blocks: correlations across the gap are dropped.")
+def _td_gap_requested(_v):
+    return bool(_v if isinstance(_v, (list, tuple)) else _v is not None)
+if _td_gap_requested(opts.internal_ile_td_gap):
+    print(_TD_GAP_REFUSAL)
+    sys.exit(1)
+
 # After the ini, which can set the mode.
 if eccentric_phase_pipeline.requested(opts):
     if not opts.assume_eccentric or not opts.use_meanPerAno:
@@ -894,11 +913,11 @@ if opts.internal_ile_q_time_pregrid_factor is not None:
         _qp_early += " " + str(opts.manual_extra_ile_args)
     if _qp_early:
         # Only the EXCLUSIONS (and a manually-passed stencil conflict) are checkable this early
-        # -- the required --vectorized is added by the helper -- so append it to keep the
+        # -- the NoLoop flags are added by the helper -- so append them to keep the
         # message about what is actually wrong.
         refuse_unhonourable_q_time_pregrid(
             opts.internal_ile_q_time_pregrid_factor,
-            "--vectorized " + _qp_early,
+            "--time-marginalization --vectorized --gpu " + _qp_early,
             "this pipeline's own options (checked before the helper runs, so the failure is "
             "immediate rather than after a workflow has been built)")
 
@@ -1177,6 +1196,9 @@ if opts.manual_postfix:
 # Override run directory name
 if opts.use_rundir:
     dirname_run = opts.use_rundir
+extra_args_helper = []
+if opts.extra_args_helper:
+    extra_args_helper = extra_helper_arguments(opts.extra_args_helper)  # before the chdir below: a relative file path
 os.mkdir(dirname_run)
 os.chdir(dirname_run)
 
@@ -1412,12 +1434,6 @@ if opts.internal_propose_converge_last_stage:
     cmd += " --propose-converge-last-stage "
 if opts.internal_test_convergence_threshold: # pass argument if provided
     cmd += " --internal-test-convergence-threshold {}  ".format(opts.internal_test_convergence_threshold)
-# Options that rewrite the CIP fit coordinates after the helper; geometric4 needs delta_mc et al.
-rf_transverse_conflicts = [name for name in ('cip_internal_use_eta_in_sampler','hierarchical_merger_prior_1g',
-    'hierarchical_merger_prior_2g','use_quadratic_early') if getattr(opts, name)]
-if opts.rf_transverse_spin_coordinates in ('physics3','geometric4','geometric4-phase-excess') and rf_transverse_conflicts:
-    raise ValueError('RF transverse-spin coordinates are incompatible with {}: they replace delta_mc in the activated CIP stage'.format(
-        ', '.join('--'+name.replace('_','-') for name in rf_transverse_conflicts)))
 if opts.rf_transverse_spin_coordinates:
     cmd += ' --rf-transverse-spin-coordinates {} '.format(opts.rf_transverse_spin_coordinates)
 if not(opts.cip_fit_method is None):
@@ -1652,6 +1668,8 @@ if opts.fake_data_cache:
     if len(event_dict["IFOs"]) >0 :
         short_list = " {} ".format(event_dict['IFOs'])        
         cmd += " --manual-ifo-list {} ".format(short_list.replace(' ',''))
+if extra_args_helper:
+    cmd += " " + " ".join(shlex.quote(x) for x in extra_args_helper) + " "
 print( cmd)
 if os.path.exists('helper_ile_args.txt'):
     # This is generated output, not an input.  Remove it before invoking the
@@ -1798,8 +1816,9 @@ if opts.internal_ile_inner_product:
         line += " --td-analysis-start {} ".format(opts.internal_ile_td_analysis_start)
     if not(opts.internal_ile_td_analysis_end is None):
         line += " --td-analysis-end {} ".format(opts.internal_ile_td_analysis_end)
-    for _gap in _as_list(opts.internal_ile_td_gap):
-        line += " --td-gap {} ".format(_gap)
+    if _as_list(opts.internal_ile_td_gap):      # also set via an ini
+        print(_TD_GAP_REFUSAL)
+        sys.exit(1)
     for _gb in _as_list(opts.internal_ile_glitch_basis):
         line += " --glitch-basis {} ".format(_gb)
     if opts.internal_ile_glitch_sigma:
@@ -2072,7 +2091,7 @@ with open("helper_cip_arg_list.txt",'r') as f:
         raw_lines = f.readlines()
 
 # RF transverse opt-in: the helper may switch an unforced fit to rf. Build the DAG as an
-# explicit --cip-fit-method rf run (flat CIP workers; CIP refuses RF transverse coordinates with --fit-load-gp).
+# explicit --cip-fit-method rf run (flat CIP workers).
 if opts.rf_transverse_spin_coordinates and opts.cip_fit_method is None and any(
         '--fit-method rf' in ' '.join(line.split()) for line in raw_lines):
     opts.cip_fit_method = 'rf'
@@ -2193,11 +2212,13 @@ for indx in np.arange(len(instructions_cip)):
         # Must use mtotal, q coordinates!  Change defaults
         line = line.replace('parameter mc', 'parameter mtot')
         line = line.replace('parameter delta_mc', 'parameter q')
+        line = line.replace('parameter-nofit mc ', 'parameter-nofit mtot ')  # mu1/mu2 fit basis samples mc as nofit
         line += " --prior-tapered-mass-ratio "
     elif opts.hierarchical_merger_prior_2g:
         # Must use mtotal, q coordinates! Change defaults
         line = line.replace('parameter mc', 'parameter mtot')
         line = line.replace('parameter delta_mc', 'parameter q')
+        line = line.replace('parameter-nofit mc ', 'parameter-nofit mtot ')
         line += " --prior-gaussian-mass-ratio --prior-gaussian-spin1-magnitude "   # should require precessing analysis
     elif opts.assume_highq and ('s1z' in line):
         if opts.cip_sampler_method not in {'GMM', 'AV', 'portfolio'}:
@@ -2365,15 +2386,11 @@ if opts.internal_use_amr:
         if not(opts.assume_lowlatency_tradeoffs):
             lines[0] += " --intrinsic-param spin2z "
 
-# Final CIP lines, from any route (e.g. --manual-extra-cip-args), must satisfy CIP's
-# RF transverse-spin guard; fail here rather than in every CIP job after ILE.
-from RIFT.misc.rf_transverse_spin import retired_problem, stage_problem
+# Final CIP lines: a retired RF mode from any route (e.g. --manual-extra-cip-args) fails here, not after ILE.
+from RIFT.misc.rf_transverse_spin import retired_problem
 for indx_rf, line_rf in enumerate(lines):
     if retired_problem(line_rf):
         raise ValueError('CIP stage {}: {}'.format(indx_rf, retired_problem(line_rf)))
-    if '--rf-transverse-spin-coordinates' in line_rf and stage_problem(line_rf):
-        raise ValueError('RF transverse-spin stage {} activated but CIP would refuse it ({}); conflicting options: {}'.format(
-            indx_rf, stage_problem(line_rf), ', '.join('--'+name.replace('_','-') for name in rf_transverse_conflicts) or 'see --manual-extra-cip-args'))
 
 if eccentric_phase_pipeline.requested(opts):
     eccentric_phase_build=eccentric_phase_policy.finalize_map(opts,eccentric_phase_build,lines)
@@ -2401,6 +2418,15 @@ with open("args_cip_list.txt",'w') as f:
    # not accept the flag, so that path is left untouched.
    if not(opts.internal_use_amr) and not opts.internal_ile_deduplicate_grid:
        lines = flag_final_group_unique(lines)
+   if (opts.hierarchical_merger_prior_1g or opts.hierarchical_merger_prior_2g) and not opts.internal_use_amr:
+       # CIP exits 0 with no samples, after ILE has run, if its mass/spin prior lacks its coordinate
+       _needed = {'q', 'chi1'} if opts.hierarchical_merger_prior_2g else {'q'}
+       for indx, line in enumerate(lines):
+           _tokens = ' '.join(line.split()).replace('--parameter=', '--parameter ').replace('--parameter-nofit=', '--parameter-nofit ').split()
+           _sampled = {b for a, b in zip(_tokens, _tokens[1:]) if a in ('--parameter', '--parameter-nofit')}
+           if not _needed <= _sampled or 'mc' in _sampled:
+               print(" FAILURE: hierarchical merger prior needs CIP to sample {} and not mc; CIP line {} samples {}. Other options rewrote the mass coordinates.".format(sorted(_needed), indx, sorted(_sampled)))
+               sys.exit(1)
    for line in lines:
            f.write(line.rstrip("\n") + "\n")
 

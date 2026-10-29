@@ -273,7 +273,7 @@ RULES = [
      "response is applied analytically by factored_likelihood_LISA. LISA calibration, if "
      "it is ever modelled, will not have this data product or this spline parameterization, "
      "so porting the LIGO machinery would be actively misleading."),
-    (r"^FUNC:(_cal_setup_prior_with_nodes|_draw_more_calibration_draws)$", "NA",
+    (r"^FUNC:(_cal_setup_prior_with_nodes|_draw_more_calibration_draws|_redraw_calibration_bank_for_point)$", "NA",
      "Calibration-envelope internals; see the --calibration-* reason."),
     (r"^FUNC:_cal_rng$", "NA",
      "Per-stream RNG for the calibration-side auxiliary draws (the error probe and the "

@@ -59,7 +59,8 @@ from RIFT.likelihood.time_interp_choice import TIME_INTERP_DEFAULT
 # driver cannot silently drift apart (PR #291 review, MAJOR #2: this used to be an independent
 # literal here, and a pipeline-side docstring claimed drift was impossible while nothing
 # enforced it).
-from RIFT.likelihood.q_time_pregrid import validate_q_time_pregrid_factor
+from RIFT.likelihood.q_time_pregrid import (
+    validate_q_time_pregrid_factor, QTimePregridError, Q_TIME_PREGRID_RESTRICTION)
 from RIFT.precision import RiftFloat
 import RIFT.integrators.mcsampler as mcsampler
 from RIFT.integrators.rvs_record import (RvsRecord as _RvsRecord,   # see DESIGN_rvs_naming.md
@@ -352,7 +353,7 @@ optp.add_option("--td-solver", type=str, default="auto", help="Solver mode for -
 optp.add_option("--td-acf-duration", type=float, default=None, help="Optional ACF truncation duration [s] for --internal-ile-inner-product td-toeplitz (Stage-3 truncated-segment path). Default None = full segment; sets N_seg = round(duration*srate) and builds the truncated precision kernel K_seg = Toeplitz(kappa[:N_seg]).")
 optp.add_option("--td-analysis-start", type=float, default=None, help="TD segment analysis START offset [seconds], geocenter, relative to the TEMPLATE peak-amplitude reference. The template is hard-cut (no taper) to [t_ref+start, t_ref+end] in its own frame and slides inside the data segment. Geometric-unit (xM) start times convert as t[s] = xM * (G Mtot/c^3) ~ xM * 4.925e-6 * (Mtot/Msun); pick xM externally and pass the resulting seconds (one run per start-time choice, embarrassingly parallel). Requires --internal-ile-inner-product td-toeplitz. Default None = no start cut.")
 optp.add_option("--td-analysis-end", type=float, default=None, help="TD segment analysis END offset [seconds], geocenter, relative to the template peak reference. See --td-analysis-start for the xM conversion. Default None = no end cut (keep to segment end, e.g. ringdown-only with --td-analysis-start >=0).")
-optp.add_option("--td-gap", action="append", default=None, help="TD gap interval 'tstart,tend' in geocenter seconds relative to the event time. Repeatable. Requires --internal-ile-inner-product td-toeplitz.")
+optp.add_option("--td-gap", action="append", default=None, help="DISABLED (refused at startup). TD gap interval 'tstart,tend' in geocenter seconds relative to the event time. To excise data use --internal-ile-inner-product td-gs with disjoint --td-piece intervals.")
 optp.add_option("--glitch-basis", action="append", default=None, help="Analytic GLITCH MARGINALIZATION basis for one detector. Format 'IFO:t1,t2,f1,f2[:r]': IFO the glitchy detector; t1,t2 geocenter seconds relative to the event time (glitch time support); f1,f2 Hz (glitch band); optional :r number of Slepian columns (default from the 2*W*T time-bandwidth theorem). A per-detector, band-limited Slepian (DPSS) basis is built and its coefficients are analytically marginalized (Woodbury) in the TD Toeplitz Precompute: Q'/U' corrections + a per-detector Delta-lnZ evidence term added to lnL_marg. Repeatable (one glitch block per detector). Requires --internal-ile-inner-product td-toeplitz. EXPERIMENTAL.")
 optp.add_option("--glitch-basis-file", action="append", default=None, help="Analytic GLITCH MARGINALIZATION basis for one detector from a FILE (data-informed basis, TD_LIKELIHOOD.md Sec. 3 modes 3/4: e.g. glitschen-style PCA of real glitches, or BayesWave-draw SVD). Format 'IFO:path.npz'; the npz must contain 'basis' (n_snip x r time-domain snippet columns at the analysis sample rate), 'lambda0' (length-r dimensionless shape prior, max entry 1 per design Sec. 2b -- sigma_g carries the strain scale), 't0' (scalar: geocenter seconds RELATIVE TO THE EVENT TIME of snippet sample 0), and 'fs' (snippet sample rate [Hz], checked against the analysis rate). The snippet columns are zero-embedded into the analysis segment at t0 and their coefficients marginalized exactly like --glitch-basis (same Woodbury Q'/U' corrections + per-detector Delta-lnZ). Repeatable (one block per detector); mutually exclusive per-IFO with --glitch-basis. Requires --internal-ile-inner-product td-toeplitz. EXPERIMENTAL.")
 optp.add_option("--glitch-sigma", type=str, default="profile", help="Glitch amplitude hyperparameter sigma_g mode for --glitch-basis: 'profile' (default, and the only mode wired in G3: empirical-Bayes maximize Delta-lnZ over sigma_g per detector from the data). Grid marginalization is a documented follow-on (out of scope for G3).")
@@ -387,6 +388,7 @@ optp.add_option("--calibration-neff-cal-target",default=10,type=float, help="Cal
 optp.add_option("--calibration-n-realizations-max",default=0,type=int, help="Cap for the adaptive cal draw count (see --calibration-neff-cal-target).  Default 0 = 8x --calibration-n-realizations.")
 optp.add_option("--calibration-burn-in-neff",default=None,type=float, help="Opt-in: before the production cal-marginalized integration, BURN IN the extrinsic sampler on the cheap ZERO-CAL (n_cal=1) likelihood until this effective sample count, then switch to the full cal-marginalized likelihood. The extrinsic posterior is ~cal-independent. CAVEAT: the AV sampler RESETS between integrate() calls (no seedable AV yet), so this gives AV no speedup (correctness-safe only). It can warm-start GMM/portfolio (model reuse). Awaiting a seedable / boundary-shifting AV; see DESIGN_adaptive_driver.md. No effect unless calmarg is active.")
 optp.add_option("--calibration-burn-in-nmax",default=None,type=int, help="Cap on the number of samples drawn during the zero-cal burn-in (default: the run's --n-max). Keeps the burn-in bounded if it cannot reach --calibration-burn-in-neff.")
+optp.add_option("--calibration-bank-per-point",action='store_true',default=False, help="Opt-in (calmarg active): draw a fresh calibration bank for EACH intrinsic point, instead of one bank per job shared by every point.  The draw stream is derived from --seed and the point's grid index (--event plus its offset in this job) only, so with the same --seed a grid index gets the same random draws whichever job analyzes it, and also in every iteration and every grid run with that --seed: the draws depend on the row number, not on the point, and give the same bank whenever the source (prior, or breadcrumb) and the calibration settings are unchanged.  Only the starting bank is independent of how points are split into jobs: the cal error probe and adaptive growth still draw from job-wide streams.  Unseeded runs take fresh entropy.  Same source as the shared bank (prior, or --calibration-proposal-breadcrumb), at the starting --calibration-n-realizations.  Not with --calibration-dump-responsibilities.")
 optp.add_option("--calibration-export-posterior",action='store_true',default=False, help="Opt-in (final fairdraw export, calmarg active): for each fair-draw output sample, draw ONE calibration realization in proportion to its posterior weight (L_c * w_c, from the per-realization likelihood components) and write a SELF-CONTAINED sibling <output>_<event>_cal.dat with the FULL draw -- intrinsic + extrinsic + the drawn realization's spline-node values as labeled columns cal_<IFO>_amp_<k>/cal_<IFO>_phase_<k>.  The recovered cal posterior is then those columns, plottable with the standard tooling.  Requires --calibration-envelope-directory; retains the cal node vectors.")
 optp.add_option("--extrinsic-proposal-breadcrumb",default=None, help="Opt-in (GMM sampler): SEED the extrinsic GMM sampler from a learned proposal breadcrumb (RIFT.calmarg.extrinsic_handoff): the per-group GMMs from a previous iteration's posterior pre-fill gmm_dict, so the sampler starts on the posterior instead of cold.  The extrinsic posterior barely moves iteration-to-iteration.  Groups matched by parameter name; missing groups fall back to the default.")
 optp.add_option("--extrinsic-proposal-output",default=None, help="Opt-in (GMM sampler): after the integration, fit the run's extrinsic posterior samples to a per-group GMM and WRITE it as a proposal breadcrumb (to seed a later iteration via --extrinsic-proposal-breadcrumb).")
@@ -604,6 +606,14 @@ def _normalize_interpolate_time_argv(argv):
     return out
 
 opts, args = optp.parse_args(_normalize_interpolate_time_argv(sys.argv[1:]))
+if opts.td_gap:
+    # Refused for every inner product, before any other option check.
+    raise ValueError("--td-gap is disabled: the gap-marginalized td-toeplitz likelihood depends on an "
+                     "unregularized pseudo-inverse when fMax < fNyq.  To excise data, use "
+                     "--internal-ile-inner-product td-gs --vectorized with --td-mref M and disjoint "
+                     "--td-piece START,END intervals (units of M_ref, relative to the event) covering "
+                     "the data to KEEP.  Pieces are independent blocks: correlations across the gap "
+                     "are dropped.")
 if (opts.distance_slice_warm_block is not None and opts.distance_slice_warm_block < 1) or not (0 < opts.distance_slice_warm_seed_temper <= 1):
     optp.error("--distance-slice-warm-block must be >= 1 and --distance-slice-warm-seed-temper in (0, 1]")
 if not (opts.distance_slice_refine_dlnL >= 0) or opts.distance_slice_refine_max < 0:   # also rejects NaN
@@ -620,6 +630,13 @@ if opts.early_time_multirate_backend and not opts.early_time_multirate:
 # td-gs (fully time-domain Precompute) produces time-indexed U(t), V(t); several options
 # below are restricted for it, so the request is recorded before they are resolved.
 _td_gs_requested = (opts.internal_ile_inner_product == "td-gs")
+# Validate the requested Q route before optional unsupported-backend imports.
+opts.q_time_pregrid_factor = validate_q_time_pregrid_factor(opts.q_time_pregrid_factor)
+if opts.q_time_pregrid_factor > 1 and (
+        not opts.time_marginalization or not opts.vectorized or not opts.gpu
+        or opts.rotation_slow or opts.freqresponse or opts.calibration_envelope_directory
+        or _td_gs_requested or opts.zero_likelihood):
+    raise NotImplementedError(Q_TIME_PREGRID_RESTRICTION)
 # The GWSignal route does not consume RIFT's LAL-dictionary options. Reject the
 # explicit combination before data loading and the per-event exception handler,
 # so a requested physics option cannot disappear in a successful worker run.
@@ -745,21 +762,14 @@ else:
             "--interpolate-time: unrecognised value %r. Use a stencil name (nearest|cubic|sinc) "
             "or a legacy boolean (%s)." % (opts.interpolate_time,
                                            "|".join(_TI_LEGACY_BOOLEAN)))
-opts.q_time_pregrid_factor = validate_q_time_pregrid_factor(opts.q_time_pregrid_factor)
-if opts.q_time_pregrid_factor == 8:
-    if not opts.vectorized or opts.rotation_slow or opts.freqresponse or opts.calibration_envelope_directory or _td_gs_requested:
-        raise NotImplementedError(
-            "--q-time-pregrid-factor 8 is currently restricted to ordinary vectorized "
-            "NoLoop without rotation, frequency-dependent response, calibration marginalization, "
-            "or the td-gs time-indexed self term")
+if opts.q_time_pregrid_factor > 1:
     if not opts._interp_time_from_default and opts._noloop_time_interp != "cubic":
         raise ValueError(
-            "--q-time-pregrid-factor 8 uses four-tap cubic interpolation; remove the "
+            "--q-time-pregrid-factor >1 uses four-tap cubic interpolation; remove the "
             "explicit --interpolate-time option or set it to cubic")
-    opts._q_pregrid_fallback_interp = opts._noloop_time_interp
     opts._noloop_time_interp = "cubic"
-    print(" Q_lm pregrid: ENABLED factor=8 boundary=even-reflection arrival_stencil=cubic "
-          "integration_grid=unchanged")
+    print(" Q_lm pregrid: ENABLED factor={} boundary=even-reflection arrival_stencil=cubic "
+          "integration_grid=unchanged".format(opts.q_time_pregrid_factor))
 # The LEGACY scalar path (FactoredLogLikelihoodTimeMarginalized) takes a plain boolean and has
 # nothing to do with the NoLoop stencils.  It used to be handed opts.interpolate_time raw, which
 # was fine while that was only ever truthy/falsy -- but 'nearest' is a non-empty string, so once
@@ -944,6 +954,15 @@ if opts.internal_ile_inner_product == "td-gs" and not opts.gpu:
     xpy_default = numpy
     opts.gpu = True
     opts.force_xpy = True
+
+# GPU availability may have changed dispatch since the parser guard above.
+# A requested Q refinement cannot follow the inherited-stencil downgrade path.
+if opts.q_time_pregrid_factor > 1 and not (
+        opts.time_marginalization and opts.vectorized and opts.gpu
+        and not opts.zero_likelihood):
+    raise ValueError(
+        "--q-time-pregrid-factor requires --time-marginalization --vectorized "
+        "--gpu (use --force-xpy on CPU), without --zero-likelihood")
 
 # --interpolate-time IS SILENTLY IGNORED ON SEVERAL PATHS.  Now that opts.gpu is final, refuse to
 # proceed if a sub-sample stencil was asked for and this configuration cannot honour it.
@@ -1866,13 +1885,7 @@ if (opts.glitch_basis or opts.glitch_basis_file) and opts.internal_ile_inner_pro
     sys.exit(1)
 if opts.internal_ile_inner_product == "td-toeplitz":
     from RIFT.likelihood.td_inner_product import TDInnerProductFactory
-    # Parse repeatable --td-gap 'tstart,tend' (geocenter seconds relative to the event).
-    td_gaps = None
-    if opts.td_gap:
-        td_gaps = []
-        for _g in opts.td_gap:
-            _t0, _t1 = (float(x) for x in _g.split(","))
-            td_gaps.append((_t0, _t1))
+    td_gaps = None      # --td-gap is refused at startup
     # Parse repeatable --glitch-basis 'IFO:t1,t2,f1,f2[:r]' (G3).  t1,t2 geocenter seconds
     # relative to the event; f1,f2 Hz; optional r Slepian columns.  One block per detector.
     glitch_specs = {}
@@ -2239,6 +2252,41 @@ def _draw_more_calibration_draws(n_more, psd_dict):
     for ifo in new:
         calibration_realization_dict[ifo] = np.concatenate([calibration_realization_dict[ifo], new[ifo]], axis=1)
     return new
+
+_calibration_n_realizations_initial = opts.calibration_n_realizations
+def _redraw_calibration_bank_for_point(point_index, psd_dict):
+    """--calibration-bank-per-point: replace the bank with a fresh one for this point.
+
+    Stream derived_rng('calmarg.bank_per_point', point_index): keyed on --seed and the
+    grid index only.  Distinct indices get independent streams, also independent of the
+    shared startup bank; with a fixed --seed the same index repeats its random draws in
+    every iteration and every grid, whatever point sits there, so it repeats its bank
+    whenever the source and the calibration settings are unchanged.  Same source as that
+    bank (proposal breadcrumb, else the prior), at the starting size; adaptive growth at
+    an earlier point is not carried over."""
+    global calibration_realization_dict, calibration_log_weights, calibration_nodes
+    import RIFT.calmarg.generate_realizations as _genr
+    from RIFT.integrators.seeding import derived_rng
+    rng = derived_rng('calmarg.bank_per_point', int(point_index))
+    n = int(_calibration_n_realizations_initial)
+    opts.calibration_n_realizations = n
+    if opts.calibration_proposal_breadcrumb:
+        # Still set only if the startup load succeeded; reuse that breadcrumb (_bc) rather
+        # than reloading per point, which would add a failure the startup path falls back from.
+        calibration_realization_dict, calibration_log_weights, _nodes = _genr.seed_realizations_from_breadcrumb(
+            _bc, 1./P.deltaF, P.deltaT, opts.fmin_template, fmax,
+            opts.calibration_spline_count, n, fmin_ifo=cal_fmin_ifo,
+            prior=calibration_current_prior, rng=rng)
+    else:
+        _ret = _genr.draw_prior_realizations_with_nodes(
+            opts.calibration_envelope_directory, list(psd_dict.keys()), 1./P.deltaF, P.deltaT,
+            opts.fmin_template, fmax, opts.calibration_spline_count, n,
+            fmin_ifo=cal_fmin_ifo, correction_types=calibration_correction_types, rng=rng)
+        calibration_realization_dict = _ret['realizations']; _nodes = _ret['nodes']
+    if opts.calibration_export_posterior:
+        calibration_nodes = _nodes
+    print(" [calmarg bank] point {}: fresh bank of {} realizations, node checksum {:.12e}".format(
+          int(point_index), n, float(np.sum(_nodes))))
 
 
 # The per-realization calibration self term <C_c h|C_c h> is frequency-domain-diagonal only
@@ -3263,7 +3311,11 @@ if opts.sampler_method == 'adaptive_cartesian_gpu' and opts.skymap_file:
 
 
 def resample_samples(my_samples,
-                     lookupNKDict=None, rholmArrayDict=None, ctUArrayDict=None, ctVArrayDict=None,epochDict=None, n_cal=1, cal_log_weights=None, ctUArrayDict_cal=None, ctVArrayDict_cal=None): # uses LOTS of global variables, don't pass them all
+                     lookupNKDict=None, rholmArrayDict=None, ctUArrayDict=None, ctVArrayDict=None,epochDict=None, n_cal=1, cal_log_weights=None, ctUArrayDict_cal=None, ctVArrayDict_cal=None, *, P): # uses LOTS of global variables, don't pass them all
+  # P: the CURRENT intrinsic point's params object.  The drawn extrinsic arrays are written
+  # into it, and the --calibration-export-posterior block reads them back from it.  Never the
+  # module-global P (= P_list[0]): with --n-events-to-analyze > 1 that left later points
+  # exporting the last sampler batch instead of their fair draws.
   global fSample # access global sampling rate
   # will look a LOT like the likelihood function definitions, unfortunately
   if not opts.vectorized:
@@ -4295,6 +4347,8 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
             "fused_calmarg_in_use's early substitution must be updated in the same commit. "
             "Refusing rather than integrating with a stencil chosen for the wrong reason."
             % (_fused_calmarg_would_run, use_fused_calmarg, opts._noloop_time_interp))
+    if calibration_marginalization and opts.calibration_bank_per_point:
+      _redraw_calibration_bank_for_point(opts.event + indx_event, psd_dict)
     if calibration_marginalization:
       extra_kwargs['calibration_realizations'] = calibration_realization_dict
       extra_kwargs['calibration_conjugate'] = bool(opts.calibration_conjugate_phase) if use_td_gs else False
@@ -4403,35 +4457,41 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
                          _comp.rel_err_fro, _comp.rel_err_max))
                 ctUArrayDict[det] = _comp
                 ctVArrayDict[det] = _comp
-        if opts.q_time_pregrid_factor == 8:
-            _q_transfer = cupy.asarray if opts.gpu and (not xpy_default is np) else None
-            _q_cleanup = (lambda: cupy.get_default_memory_pool().free_all_blocks()) \
-                if _q_transfer is not None else None
-            rholmArrayDict, _q_pregrid_reports, _q_pregrid_error = \
-                factored_likelihood.prepare_reflected_q_pregrid(
-                    rholmArrayDict, factor=8, transfer=_q_transfer, cleanup=_q_cleanup)
-            if _q_pregrid_error is None:
-                q_deltaT = float(P.deltaT) / 8.0
-                print(" Q_lm pregrid telemetry: status=active q_deltaT={:.12g} input_bytes={} "
-                      "retained_bytes={} peak_allocation_bytes={} max_roundtrip={:.3g}".format(
+        if opts.q_time_pregrid_factor > 1:
+            try:
+                _q_transfer = cupy.asarray if opts.gpu and (not xpy_default is np) else None
+                _q_cleanup = (lambda: cupy.get_default_memory_pool().free_all_blocks()) \
+                    if _q_transfer is not None else None
+                rholmArrayDict, _q_pregrid_reports, _q_pregrid_error = \
+                    factored_likelihood.prepare_reflected_q_pregrid(
+                        rholmArrayDict, factor=opts.q_time_pregrid_factor,
+                        transfer=_q_transfer, cleanup=_q_cleanup)
+                if _q_pregrid_error is not None:
+                    raise QTimePregridError(
+                        "Requested Q refinement failed: %r" % _q_pregrid_error)
+                q_deltaT = float(P.deltaT) / opts.q_time_pregrid_factor
+                print(" Q_lm pregrid telemetry: status=active factor={} "
+                      "waveform_deltaT={:.12g} integration_deltaT={:.12g} "
+                      "q_deltaT={:.12g} input_bytes={} retained_bytes={} "
+                      "peak_allocation_bytes={} max_roundtrip={:.3g}".format(
+                          opts.q_time_pregrid_factor, float(P.deltaT), float(P.deltaT),
                           q_deltaT,
                           sum(item['input_bytes'] for item in _q_pregrid_reports),
                           sum(item['retained_bytes'] for item in _q_pregrid_reports),
                           max(item['peak_allocation_bytes'] for item in _q_pregrid_reports),
                           max(item['roundtrip_max'] for item in _q_pregrid_reports)))
-            else:
-                q_deltaT = float(P.deltaT)
-                opts.q_time_pregrid_factor = 1
-                opts._noloop_time_interp = opts._q_pregrid_fallback_interp
-                print(" Q_lm pregrid telemetry: status=fallback reason={!r} q_deltaT={:.12g} "
-                      "arrival_stencil={}".format(
-                          _q_pregrid_error, q_deltaT, opts._noloop_time_interp))
+            except QTimePregridError:
+                raise
+            except Exception as _q_error:
+                # Includes failure of cleanup or the helper's recovery transfer.
+                raise QTimePregridError(
+                    "Requested Q refinement could not be prepared") from _q_error
         if opts.gpu and (not xpy_default is np):
             for det in rholmArrayDict:
                 lookupNKDict[det] = cupy.asarray(lookupNKDict[det])
                 # Q was transferred inside the pregrid transaction.  The
-                # default/fallback path still needs its ordinary transfer.
-                if opts.q_time_pregrid_factor != 8 and not isinstance(rholmArrayDict[det], cupy.ndarray):
+                # default path still needs its ordinary transfer.
+                if opts.q_time_pregrid_factor == 1 and not isinstance(rholmArrayDict[det], cupy.ndarray):
                     rholmArrayDict[det] = cupy.asarray(rholmArrayDict[det])
                 if isinstance(ctUArrayDict[det], factored_likelihood.TimeIndexedCrossTermsSVD):
                     ctUArrayDict[det] = ctUArrayDict[det].to_xpy(cupy)
@@ -6755,7 +6815,7 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
             samples["alpha3"] = numpy.zeros(samples["psi"].shape)
 
       if opts.resample_time_marginalization:
-        samples = resample_samples(samples,lookupNKDict, rholmArrayDict, ctUArrayDict, ctVArrayDict,epochDict, n_cal=n_cal_for_likelihood, cal_log_weights=calibration_log_weights, ctUArrayDict_cal=ctUArrayDict_cal, ctVArrayDict_cal=ctVArrayDict_cal)
+        samples = resample_samples(samples,lookupNKDict, rholmArrayDict, ctUArrayDict, ctVArrayDict,epochDict, n_cal=n_cal_for_likelihood, cal_log_weights=calibration_log_weights, ctUArrayDict_cal=ctUArrayDict_cal, ctVArrayDict_cal=ctVArrayDict_cal, P=P)
         # The time-draw helper evaluates raw NoLoop statistics, bypassing the
         # sampler callback. Restore the same data-normalization term in its export;
         # it is constant in arrival time and does not change the draw probabilities.
@@ -7097,6 +7157,8 @@ for indx in numpy.arange(len(P_list)):
       # Note this needs to be done in a few places
       pinned_params.update({"force_no_adapt":True,"save_intg":False, "igrand_threshold_deltalnL":20})  # massively reduce memory usage in logic branch, don't save all. Highly redundant sequence to self-document all related logic branches
  except Exception as exception_failure:
+  if isinstance(exception_failure, QTimePregridError):
+    raise
   print( "  ===> FAILED ANALYSIS <==== ")
   print( exception_failure)
   # The message alone ("boolean index did not match...", "index out of range", ...) is rarely enough

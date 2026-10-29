@@ -34,11 +34,11 @@ Rimsky's underscore-separated prior names for the RIFT template. See
 
 Set `sampler.cip.transverse spin coordinates: "geometric4"` (or pass
 `--rf-transverse-spin-coordinates geometric4` to the helper/pipeline).
-This replaces the four Cartesian transverse *fitting* inputs by total transverse
-angular-momentum radius `|S_perp|/M^2`, total-spin azimuth in the L plane, and two signed
-sum-frame residuals. It requires exactly the native eight-coordinate RF basis
-`delta_mc, mu1, mu2, chiMinus, s1x, s1y, s2x, s2y`; reduced stages remain
-unchanged. No physical sampling coordinate, prior, waveform, frame or Jacobian
+On each RF stage that fits all four of s1x, s1y, s2x, s2y, this replaces those
+*fitting* inputs. The new inputs are the total transverse radius `|S_perp|/M^2`,
+the total-spin azimuth in the L plane, and two signed sum-frame residuals.
+Other stages remain unchanged. The chart names are ordinary CIP coordinates
+(`rf_total_perp` and so on; see `docs/rf_transverse_spin_opt_in.md`). No physical sampling coordinate, prior, waveform, frame or Jacobian
 changes. Zero total transverse spin uses azimuth zero, and the angular seam
 remains; near zero total transverse spin the two residuals also flip sign with the azimuth.
 At detector chirp mass of 20 or more, enabling either mode also switches every
@@ -53,9 +53,7 @@ selects geometric4 at any mass.
 
 The earlier `physics3` mode is retired and refused at every layer. It appended
 three scalar features to the eight native coordinates, so CIP fit 11
-coordinates for 8 degrees of freedom. This RF transverse mode requires a nonredundant fit basis. Other CIP
-configurations, including matter fits, can use more fit features than sampled
-coordinates.
+coordinates for 8 degrees of freedom.
 This is an experimental representation, not an end-to-end accuracy claim.
 
 

@@ -622,8 +622,8 @@ class IntrinsicMarginalObjective:
             return -np.inf
         bad = ~np.isfinite(lnL)
         if np.any(bad):
-            # intermittent non-finite rows seen on CPU (open issue, see
-            # DESIGN_transverse_seed_climb.md); score them as zero likelihood
+            # non-finite rows (seen from hlmoft_IMRPv2_dict before #489; see
+            # DESIGN_transverse_seed_climb.md) score as zero likelihood
             self.n_nonfinite += int(bad.sum())
             lnL = np.where(bad, -np.inf, lnL)
         if self.reduce == "profile":

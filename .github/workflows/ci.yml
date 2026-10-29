@@ -701,7 +701,7 @@ jobs:
           - asimov-series: '0.7'
             asimov-spec: 'asimov>=0.7,<0.8'
           - asimov-series: '0.8'
-            asimov-spec: 'asimov>=0.8,<0.9'
+            asimov-spec: 'asimov==0.8.0'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -743,6 +743,10 @@ jobs:
             rimsky-spec: 'rimsky==0.1.0rc1'
             python-version: '3.12'
             asimov-spec: 'asimov==0.8.0a1'
+          - rimsky-series: '0.1.0rc1-asimov-0.8-stable'
+            rimsky-spec: 'rimsky==0.1.0rc1'
+            python-version: '3.12'
+            asimov-spec: 'asimov==0.8.0'
           - rimsky-series: 'main-2621d15'
             rimsky-spec: 'git+https://git.ligo.org/colm.talbot/rimsky.git@2621d15cf9a39ce01145ac5b81c92e1173a1d2d0'
             python-version: '3.14'
@@ -886,6 +890,7 @@ jobs:
           python -m pytest -q \
             MonteCarloMarginalizeCode/Code/test/test_geometric4.py \
             MonteCarloMarginalizeCode/Code/test/test_puffball_transverse_reflect.py \
+            MonteCarloMarginalizeCode/Code/test/test_assign_param_chieff_aligned.py \
             MonteCarloMarginalizeCode/Code/test/test_mu_puffball.py \
             MonteCarloMarginalizeCode/Code/test/test_mu_puffball_pipeline.py \
             MonteCarloMarginalizeCode/Code/test/test_eccentric_phase.py \
@@ -897,16 +902,17 @@ jobs:
             MonteCarloMarginalizeCode/Code/test/test_rf_transverse_spin.py \
             MonteCarloMarginalizeCode/Code/test/test_rf_transverse_asimov_render.py \
             MonteCarloMarginalizeCode/Code/test/test_rf_transverse_helper_generation.py \
-            MonteCarloMarginalizeCode/Code/test/test_rf_transverse_pipeline_build.py
+            MonteCarloMarginalizeCode/Code/test/test_rf_transverse_pipeline_build.py \
+            MonteCarloMarginalizeCode/Code/test/test_pseudo_pipe_extra_args_helper.py
           python MonteCarloMarginalizeCode/Code/test/rf_transverse_cli_smoke.py
           python MonteCarloMarginalizeCode/Code/test/rf_transverse_cli_smoke.py geometric4
           python MonteCarloMarginalizeCode/Code/test/rf_transverse_cli_smoke.py geometric4 redshift
           python MonteCarloMarginalizeCode/Code/test/rf_transverse_cli_smoke.py geometric4 extra
-          python MonteCarloMarginalizeCode/Code/test/rf_transverse_cli_smoke.py geometric4 duplicate
+          python MonteCarloMarginalizeCode/Code/test/rf_transverse_cli_smoke.py geometric4 flag
           python MonteCarloMarginalizeCode/Code/test/rf_transverse_cli_smoke.py geometric4-phase-excess
           python MonteCarloMarginalizeCode/Code/test/rf_transverse_cli_smoke.py geometric4-phase-excess redshift
           python MonteCarloMarginalizeCode/Code/test/rf_transverse_cli_smoke.py geometric4-phase-excess extra
-          python MonteCarloMarginalizeCode/Code/test/rf_transverse_cli_smoke.py geometric4-phase-excess duplicate
+          python MonteCarloMarginalizeCode/Code/test/rf_transverse_cli_smoke.py geometric4-phase-excess flag redshift
       - name: Run corner-plot range guard tests
         # .travis/test-posterior.sh below is the only job that exercises the CIP driver's
         # plotting block, and it died intermittently there: corner RAISES on a 2-D panel

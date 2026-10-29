@@ -209,6 +209,7 @@ _ILE_BOOL_OPTS = {
     "--dump-lnL-time-series", "--time-marginalization",
     "--resample-time-marginalization", "--distance-marginalization",
     "--calibration-fused-kernel", "--calibration-export-posterior",
+    "--calibration-bank-per-point",
     "--extrinsic-proposal-adapt", "--vectorized", "--gpu", "--force-gpu-only",
     "--force-xpy", "--save-samples", "--save-samples-process-params",
     "--internal-hard-fail-on-error", "--internal-soft-fail-on-cuda-error",
@@ -303,6 +304,7 @@ _ILE_ALL_OPTS = {
     "--calibration-conjugate-phase", "--calibration-correction-type", "--calibration-global-norm",
     "--calibration-mc-error-extrinsic", "--calibration-n-realizations-max",
     "--calibration-neff-cal-target",
+    "--calibration-bank-per-point",
     "--calibration-envelope-directory", "--calibration-export-posterior",
     "--calibration-fused-kernel", "--calibration-n-realizations",
     "--calibration-pilot-extrinsic", "--calibration-proposal-breadcrumb",
@@ -538,6 +540,7 @@ def check_critical_and_report(opts, optp):
         _gh_resolved = 0
     if getattr(opts, "calibration_n_realizations", None) not in (None, 1) \
             or is_set("--calibration-export-posterior") \
+            or is_set("--calibration-bank-per-point") \
             or is_set("--calibration-envelope-directory"):
         fatal.append("calibration marginalization (--calibration-*) is not implemented")
     if is_set("--rom-use-basis") or is_set("--rom-group") or is_set("--rom-param"):
