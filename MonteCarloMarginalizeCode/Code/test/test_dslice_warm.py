@@ -195,5 +195,13 @@ def test_local_kernels_fall_back_when_the_seed_collapses():
     lw[:3] = 0.0
     kde = ds.fit_kde_proposal(x, lw, LO, HI, n_kernel=40, rng=rng, local_k=30)
     assert "L" in kde and "Ls" not in kde
+    ref = ds.fit_kde_proposal(x, lw, LO, HI, n_kernel=40, rng=np.random.default_rng(7))   # shared kernel
+    np.testing.assert_allclose(kde["L"], ref["L"], rtol=1e-12)
+    assert kde["ln_norm"] == ref["ln_norm"] and kde["neff"] == ref["neff"]
+    np.testing.assert_array_equal(kde["centers"], ref["centers"])
+    # many copies of three distinct values: the pool dedups by value and also falls back
+    xd = np.repeat(x[:3], 100, axis=0)
+    kd = ds.fit_kde_proposal(xd, np.zeros(len(xd)), LO, HI, n_kernel=40, rng=rng, local_k=30)
+    assert "L" in kd and "Ls" not in kd
     y = ds.kde_draw(kde, 100, rng)
     assert np.all(np.isfinite(ds.kde_logpdf(kde, y)))

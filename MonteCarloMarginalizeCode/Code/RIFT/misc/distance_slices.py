@@ -847,7 +847,7 @@ def _local_kernels(x, w, centers, cov, H_global, floor, inflate, k, shrink, n_po
     2026-10-22): two straight ridges wrapping the (phi, psi) torus, which one shared covariance
     spreads over the whole torus.  Shrunk toward the global kernel by ``shrink`` and floored."""
     p = x.shape[1]
-    pool = x[np.unique(rng.choice(len(x), size=int(n_pool), p=w))]
+    pool = np.unique(x[rng.choice(len(x), size=int(n_pool), p=w)], axis=0)   # distinct rows, by value
     if len(pool) < p + 2:
         # Too few distinct points for a p-dimensional local covariance (a seed collapsed onto a handful
         # of rows; S240615dg export, 2026-10-25: "kth(=6) out of bounds (5)").  Use the shared kernel.
