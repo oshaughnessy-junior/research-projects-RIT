@@ -1912,7 +1912,7 @@ for line in dat:
         elif coord_names[x] =='ordering':
             continue
         else:
-            line_out[x] = P.extract_param(coord_names[x])
+            line_out[x] = extract_fit_param(P, coord_names[x])
  #        line_out[x] = getattr(P, coord_names[x])
     line_out[-2] = line[col_lnL]
     line_out[-1] = line[col_lnL+1]  # adjoin error estimate
@@ -1956,7 +1956,7 @@ for line in dat:
         # INPUT GRID: Evaluate binary parameters on fitting coordinates
         line_out = np.zeros(len(coord_names)+2)
         for x in np.arange(len(coord_names)):
-            line_out[x] = P.extract_param(coord_names[x])
+            line_out[x] = extract_fit_param(P, coord_names[x])
         line_out[-2] = line[col_lnL]
         line_out[-1] = line[col_lnL+1]  # adjoin error estimate
         dat_out.append(line_out)
