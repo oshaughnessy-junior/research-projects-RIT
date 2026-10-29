@@ -902,7 +902,8 @@ jobs:
             MonteCarloMarginalizeCode/Code/test/test_rf_transverse_spin.py \
             MonteCarloMarginalizeCode/Code/test/test_rf_transverse_asimov_render.py \
             MonteCarloMarginalizeCode/Code/test/test_rf_transverse_helper_generation.py \
-            MonteCarloMarginalizeCode/Code/test/test_rf_transverse_pipeline_build.py
+            MonteCarloMarginalizeCode/Code/test/test_rf_transverse_pipeline_build.py \
+            MonteCarloMarginalizeCode/Code/test/test_pseudo_pipe_extra_args_helper.py
           python MonteCarloMarginalizeCode/Code/test/rf_transverse_cli_smoke.py
           python MonteCarloMarginalizeCode/Code/test/rf_transverse_cli_smoke.py geometric4
           python MonteCarloMarginalizeCode/Code/test/rf_transverse_cli_smoke.py geometric4 redshift
