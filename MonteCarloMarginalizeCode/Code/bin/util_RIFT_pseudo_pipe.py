@@ -1190,6 +1190,8 @@ if opts.manual_postfix:
 if opts.use_rundir:
     dirname_run = opts.use_rundir
 os.mkdir(dirname_run)
+if opts.extra_args_helper:
+    opts.extra_args_helper = os.path.abspath(opts.extra_args_helper)  # read after the chdir below
 os.chdir(dirname_run)
 
 
@@ -1658,6 +1660,9 @@ if opts.fake_data_cache:
     if len(event_dict["IFOs"]) >0 :
         short_list = " {} ".format(event_dict['IFOs'])        
         cmd += " --manual-ifo-list {} ".format(short_list.replace(' ',''))
+if opts.extra_args_helper:
+    with open(opts.extra_args_helper) as extra:
+        cmd += " " + " ".join(shlex.quote(x) for x in shlex.split(extra.read())) + " "
 print( cmd)
 if os.path.exists('helper_ile_args.txt'):
     # This is generated output, not an input.  Remove it before invoking the
