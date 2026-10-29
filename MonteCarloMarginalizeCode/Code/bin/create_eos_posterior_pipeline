@@ -115,7 +115,11 @@ if opts.use_singularity:
 
 indx=0
 for event in opts.event_file:
-    shutil.copyfile(event,opts.working_directory+"/event-{}.net".format(indx))  # put in working directory !
+    destination = os.path.join(opts.working_directory, "event-{}.net".format(indx))
+    # Hydra Hyperpipe already stages these files into the working directory.
+    # Also support the legacy caller, which supplies files elsewhere.
+    if not (os.path.exists(destination) and os.path.samefile(event, destination)):
+        shutil.copyfile(event, destination)
     indx+=1
 n_events = len(opts.event_file)
 
