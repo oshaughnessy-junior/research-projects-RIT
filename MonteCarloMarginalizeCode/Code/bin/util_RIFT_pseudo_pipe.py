@@ -2212,11 +2212,13 @@ for indx in np.arange(len(instructions_cip)):
         # Must use mtotal, q coordinates!  Change defaults
         line = line.replace('parameter mc', 'parameter mtot')
         line = line.replace('parameter delta_mc', 'parameter q')
+        line = line.replace('parameter-nofit mc ', 'parameter-nofit mtot ')  # mu1/mu2 fit basis samples mc as nofit
         line += " --prior-tapered-mass-ratio "
     elif opts.hierarchical_merger_prior_2g:
         # Must use mtotal, q coordinates! Change defaults
         line = line.replace('parameter mc', 'parameter mtot')
         line = line.replace('parameter delta_mc', 'parameter q')
+        line = line.replace('parameter-nofit mc ', 'parameter-nofit mtot ')
         line += " --prior-gaussian-mass-ratio --prior-gaussian-spin1-magnitude "   # should require precessing analysis
     elif opts.assume_highq and ('s1z' in line):
         if opts.cip_sampler_method not in {'GMM', 'AV', 'portfolio'}:
@@ -2416,6 +2418,15 @@ with open("args_cip_list.txt",'w') as f:
    # not accept the flag, so that path is left untouched.
    if not(opts.internal_use_amr) and not opts.internal_ile_deduplicate_grid:
        lines = flag_final_group_unique(lines)
+   if (opts.hierarchical_merger_prior_1g or opts.hierarchical_merger_prior_2g) and not opts.internal_use_amr:
+       # CIP exits 0 with no samples, after ILE has run, if its mass/spin prior lacks its coordinate
+       _needed = {'q', 'chi1'} if opts.hierarchical_merger_prior_2g else {'q'}
+       for indx, line in enumerate(lines):
+           _tokens = ' '.join(line.split()).replace('--parameter=', '--parameter ').replace('--parameter-nofit=', '--parameter-nofit ').split()
+           _sampled = {b for a, b in zip(_tokens, _tokens[1:]) if a in ('--parameter', '--parameter-nofit')}
+           if not _needed <= _sampled or 'mc' in _sampled:
+               print(" FAILURE: hierarchical merger prior needs CIP to sample {} and not mc; CIP line {} samples {}. Other options rewrote the mass coordinates.".format(sorted(_needed), indx, sorted(_sampled)))
+               sys.exit(1)
    for line in lines:
            f.write(line.rstrip("\n") + "\n")
 

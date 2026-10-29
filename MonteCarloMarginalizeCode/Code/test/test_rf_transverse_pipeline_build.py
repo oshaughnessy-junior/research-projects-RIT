@@ -97,6 +97,42 @@ def test_geometric4_builds_with_coordinate_rewrites(tmp_path, option):
     assert "rf_total_azimuth" in (rundir / "args_cip_list.txt").read_text()
 
 
+def _sampled_coordinates(line):
+    # CIP samples the --parameter and --parameter-nofit names (low_level_coord_names).
+    tokens = line.split()
+    return {b for a, b in zip(tokens, tokens[1:]) if a in ("--parameter", "--parameter-nofit")}
+
+
+@pytest.mark.parametrize("basis", ["mu1mu2", "standard"])
+def test_hierarchical_prior_samples_mtot_q(tmp_path, basis):
+    # The mu1/mu2 basis samples (mc as nofit, delta_mc), the standard basis (mc, delta_mc);
+    # the prior needs (mtot, q). CIP exits on any line that samples both mc and q.
+    pytest.importorskip("lal")
+    ini = _opt_in_ini(tmp_path, extra=["hierarchical-merger-prior-1g=True"])
+    if basis == "standard":
+        ini.write_text(re.sub(r'(?m)^(rf-transverse-spin-coordinates|internal-use-aligned-phase-coordinates)=.*\n',
+                              '', ini.read_text()))
+    proc, rundir = _build(tmp_path, ini)
+    assert proc.returncode == 0, proc.stdout[-3000:]
+    lines = (rundir / "args_cip_list.txt").read_text().splitlines()
+    assert lines and all(("--parameter-implied mu1" in line) == (basis == "mu1mu2") for line in lines), lines
+    for line in lines:
+        names = _sampled_coordinates(line)
+        assert {"mtot", "q"} <= names and not names & {"mc", "delta_mc"}, line
+        assert "--prior-tapered-mass-ratio" in line.split(), line
+
+
+@pytest.mark.parametrize("extra", [["hierarchical-merger-prior-2g=True"],  # CIP's spin1 prior needs chi1
+                                   ["hierarchical-merger-prior-1g=True", "use-quadratic-early=True"],
+                                   ["hierarchical-merger-prior-1g=True", "cip-internal-use-eta-in-sampler=True"]])
+def test_hierarchical_prior_without_its_coordinates_is_refused_at_build(tmp_path, extra):
+    # Otherwise CIP exits 0 with no samples after ILE has run.
+    pytest.importorskip("lal")
+    proc, rundir = _build(tmp_path, _opt_in_ini(tmp_path, extra=extra))
+    assert proc.returncode != 0
+    assert "hierarchical merger prior needs CIP to sample" in proc.stdout, proc.stdout[-3000:]
+
+
 def test_physics3_is_refused_before_the_helper(tmp_path):
     proc, rundir = _build(tmp_path, _opt_in_ini(tmp_path, "physics3"))
     assert proc.returncode != 0
