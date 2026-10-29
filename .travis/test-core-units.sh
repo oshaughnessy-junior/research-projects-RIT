@@ -527,7 +527,8 @@ done
 # test_complex_hoff_fd_packing.py adds 2 tests and no skips -> 1204.
 # test_lalsimutils_fallback_codes.py adds 2 tests and no skips -> 1206.
 # #489: poisoned real IMRPv2 allocations (6) and EFPE buffer checks (6) -> 1218.
-EXPECTED_TESTS=1218
+# test_dslice_warm.py: collapsed-seed local-kernel fallback adds 1 -> 1219.
+EXPECTED_TESTS=1219
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -562,7 +563,8 @@ EXPECTED_TESTS=1218
 # test_complex_hoff_fd_packing.py adds 2 passes -> 1178.
 # test_lalsimutils_fallback_codes.py adds 2 passes -> 1180.
 # #489: six IMRPv2 and six EFPE buffer cases, all required -> 1192.
-EXPECTED_PASSED=1192
+# test_dslice_warm.py: collapsed-seed local-kernel fallback adds 1 -> 1193.
+EXPECTED_PASSED=1193
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 # The six solver="gs" tests in test_td_inner_product.py need tdanalysis >= 1.1, which this
 # job does not install, so they skip here; ci.yml's time-domain likelihood step runs them

@@ -185,3 +185,15 @@ def test_local_kernel_density_matches_an_explicit_mixture():
     y = ds.kde_draw(kde, 6, rng)
     ref = np.log(np.mean([multivariate_normal(c, L @ L.T).pdf(y) for c, L in zip(kde["centers"], kde["Ls"])], axis=0))
     np.testing.assert_allclose(ds.kde_logpdf(kde, y), ref, rtol=0, atol=1e-8)
+
+
+def test_local_kernels_fall_back_when_the_seed_collapses():
+    # all the weight on three of 300 rows: the pool has at most three distinct points in five dimensions
+    rng = np.random.default_rng(7)
+    x, _ = seed_at(MU)
+    lw = np.full(len(x), -1000.0)
+    lw[:3] = 0.0
+    kde = ds.fit_kde_proposal(x, lw, LO, HI, n_kernel=40, rng=rng, local_k=30)
+    assert "L" in kde and "Ls" not in kde
+    y = ds.kde_draw(kde, 100, rng)
+    assert np.all(np.isfinite(ds.kde_logpdf(kde, y)))

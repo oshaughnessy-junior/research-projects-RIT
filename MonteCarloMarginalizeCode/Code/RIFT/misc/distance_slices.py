@@ -848,7 +848,13 @@ def _local_kernels(x, w, centers, cov, H_global, floor, inflate, k, shrink, n_po
     spreads over the whole torus.  Shrunk toward the global kernel by ``shrink`` and floored."""
     p = x.shape[1]
     pool = x[np.unique(rng.choice(len(x), size=int(n_pool), p=w))]
-    k = max(min(k, len(pool) - 1), p + 1)
+    if len(pool) < p + 2:
+        # Too few distinct points for a p-dimensional local covariance (a seed collapsed onto a handful
+        # of rows; S240615dg export, 2026-10-25: "kth(=6) out of bounds (5)").  Use the shared kernel.
+        L = np.linalg.cholesky(H_global)
+        return dict(centers=centers, L=L, Linv=np.linalg.inv(L),
+                    ln_norm=-0.5 * p * np.log(2 * np.pi) - np.sum(np.log(np.diag(L))), neff=neff)
+    k = min(max(k, p + 1), len(pool) - 1)
     Lg = np.linalg.cholesky(cov + np.diag(floor))
     zp = np.linalg.solve(Lg, pool.T).T
     zc = np.linalg.solve(Lg, centers.T).T
