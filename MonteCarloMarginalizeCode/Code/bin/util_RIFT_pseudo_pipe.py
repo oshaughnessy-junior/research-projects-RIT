@@ -393,7 +393,7 @@ if opts.use_osg_public:
     opts.condor_local_nonworker_igwn_prefix=False
     opts.condor_nogrid_nonworker=False
 
-if opts.eccentric_phase_coordinates:
+if eccentric_phase_pipeline.requested(opts):
     if not opts.assume_eccentric or not opts.use_meanPerAno:
         parser.error('--eccentric-phase-coordinates requires --assume-eccentric and --use-meanPerAno')
     if opts.internal_cip_use_periodic_ecc_vars or opts.internal_use_amr:
@@ -699,7 +699,7 @@ if opts.internal_use_gracedb_bayestar:
     cmd += " --internal-use-gracedb-bayestar "
 if opts.internal_use_amr:
     cmd += " --internal-use-amr " # minimal support performed in this routine, mainly for puff
-if opts.eccentric_phase_coordinates:
+if eccentric_phase_pipeline.requested(opts):
     cmd += eccentric_phase_pipeline.build_arguments(opts)
 if opts.internal_use_aligned_phase_coordinates:
     cmd += " --internal-use-aligned-phase-coordinates "
@@ -875,7 +875,7 @@ if opts.fake_data_cache:
         cmd += " --manual-ifo-list {} ".format(short_list.replace(' ',''))
 print( cmd)
 helper_status = os.system(cmd)
-if opts.eccentric_phase_coordinates:
+if eccentric_phase_pipeline.requested(opts):
     if helper_status != 0:
         raise RuntimeError('Helper failed before freezing the eccentric-phase mass anchor')
     from RIFT.misc import eccentric_phase_policy
@@ -1004,7 +1004,7 @@ if opts.internal_ile_srate_internal:
 # strictly the next argument only does anything at the extrinsic step, otherwis it is ignored
 if opts.internal_ile_srate_time_resampling:
     line += " --srate-resample-time-marginalization {} ".format(opts.internal_ile_srate_time_resampling)
-if opts.eccentric_phase_coordinates:
+if eccentric_phase_pipeline.requested(opts):
     eccentric_phase_policy.check_final_ile(eccentric_phase_build,line)
 with open('args_ile.txt','w') as f:
         f.write(line)
@@ -1214,8 +1214,9 @@ for indx in np.arange(len(instructions_cip)):
 
     if opts.fit_save_gp:
         line += " --fit-save-gp my_gp "  # fiducial filename, stored in each iteration
-    line += " --eccentricity-prior {}".format(opts.eccentricity_prior)
-    if opts.assume_eccentric:
+    if not eccentric_phase_pipeline.requested(opts):
+        line += " --eccentricity-prior {}".format(opts.eccentricity_prior)
+    if opts.assume_eccentric and not eccentric_phase_pipeline.requested(opts):
         if opts.use_meanPerAno:
             line += " --parameter meanPerAno --use-meanPerAno "
         if opts.use_eccentricity_squared:
@@ -1267,7 +1268,7 @@ if opts.cip_quadratic_first:
     lines[0]=lines[0].replace(' --fit-method gp ', ' --fit-method quadratic ')
     lines[0]=lines[0].replace(' --parameter delta_mc ', ' --parameter eta ')   # almost without fail we are using mc, delta_mc, xi  as zeroth layer
 
-if opts.assume_eccentric:
+if opts.assume_eccentric and not eccentric_phase_pipeline.requested(opts):
     # iteration 0 is eccentricity_squared and nofit meanPerAno
     lines[0] = lines[0].replace('--parameter eccentricity ','--parameter eccentricity_squared ')
     if opts.use_meanPerAno:
@@ -1301,7 +1302,7 @@ if opts.internal_use_amr:
         if not(opts.assume_lowlatency_tradeoffs):
             lines[0] += " --intrinsic-param spin2z "
 
-if opts.eccentric_phase_coordinates:
+if eccentric_phase_pipeline.requested(opts):
     eccentric_phase_build=eccentric_phase_policy.finalize_map(opts,eccentric_phase_build,lines)
     if not opts.skip_reproducibility:
         with open('reproducibility/the_arguments_used.json','w') as f:
@@ -1341,7 +1342,7 @@ puff_params = ' '.join(instructions_puff)
 if opts.internal_puff_transverse:
     puff_params = puff_params.replace('--parameter chieff_aligned', '--parameter s1z_bar --parameter s2z_bar ')
     puff_params +=  ' --parameter phi1 --parameter phi2 --parameter chi1_perp_u --parameter chi2_perp_u '
-if opts.eccentric_phase_coordinates:
+if eccentric_phase_pipeline.requested(opts):
     puff_params = eccentric_phase_pipeline.puff_arguments(puff_params,
         opts.eccentric_phase_reference_frequency,opts.eccentric_phase_target_frequency,
         **eccentric_phase_models.worker_options(opts))
