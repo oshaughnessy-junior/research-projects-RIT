@@ -107,3 +107,30 @@ def test_refine_fresh_slices_restores_the_offset(monkeypatch):
     np.testing.assert_allclose(added[1], lnL(added[0]))
     ref = refine_slice_gaps(d, y, flat, Fresh(), dlnL_max=1.0, delta_lnL=5.0, max_add=20)
     np.testing.assert_allclose(added[0], ref[0])
+
+
+def test_prior_enters_the_jump():
+    # equal lnL at d and 2d: only the d^2 prior makes the pair jump by 2 ln 2 > 1 nat
+    d, y = np.array([1000.0, 2000.0]), np.array([300.0, 300.0])
+    sq = lambda dd: 2.0 * np.log(np.asarray(dd, float))
+    const = Fresh(lambda dd: np.full(len(dd), 300.0))
+    assert len(refine_slice_gaps(d, y, sq, const, dlnL_max=1.0, delta_lnL=5.0, max_add=1)[0]) == 1
+    assert len(refine_slice_gaps(d, y, flat, Fresh(lambda dd: np.full(len(dd), 300.0)),
+                                 dlnL_max=1.0, delta_lnL=5.0, max_add=1)[0]) == 0
+
+
+def test_bisects_at_the_geometric_mean_of_the_largest_jump_first():
+    d = np.array([1000.0, 1500.0, 3000.0])
+    y = np.array([300.0, 298.0, 290.0])           # jumps 2 and 8 nats: the second pair goes first
+    f = Fresh(lambda dd: np.full(len(dd), 295.0))
+    added = refine_slice_gaps(d, y, flat, f, dlnL_max=1.0, delta_lnL=20.0, max_add=1)
+    np.testing.assert_allclose(added[0], [np.sqrt(1500.0 * 3000.0)], rtol=1e-12)
+
+
+def test_narrow_gap_is_skipped_and_reported():
+    d = np.array([1000.0, 1000.0 * np.exp(0.005)])  # ln gap 0.005 < 2 * min_log_step (0.01)
+    y = np.array([300.0, 296.0])
+    why = []
+    f = Fresh()
+    added = refine_slice_gaps(d, y, flat, f, dlnL_max=1.0, delta_lnL=5.0, max_add=5, reasons=why)
+    assert len(added[0]) == 0 and not f.calls and why == ["min_step"]

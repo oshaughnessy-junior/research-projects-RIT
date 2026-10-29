@@ -616,10 +616,11 @@ def refine_slice_gaps(d_slices, lnL_slices, ln_prior_d, run_fresh, dlnL_max, del
     Repeatedly takes the neighbouring pair (in d) with the largest |lp_i - lp_{i+1}| among pairs
     where that jump exceeds ``dlnL_max`` and at least one slice is within ``delta_lnL`` of the
     running peak, and adds a slice at their geometric mean via ``run_fresh`` (same contract as in
-    ``walk_out_slices``).  Stops when no such pair remains, after ``max_add`` slices, or when the
-    pair's ln d gap is below 2 * ``min_log_step``.  A non-finite new slice is kept in the output and
-    its pair is not tried again.  Returns the added rows (d, lnL, sigmaL, neff, ntotal);
-    ``reasons`` (a list) gets 'resolved', 'max_add', 'min_step' or 'off'.
+    ``walk_out_slices``).  A pair whose ln d gap is below 2 * ``min_log_step`` is not bisected and is
+    skipped; a non-finite new slice is kept in the output and its pair is not tried again.  Stops when
+    no untried live pair remains or after ``max_add`` slices.  Returns the added rows (d, lnL,
+    sigmaL, neff, ntotal); ``reasons`` (a list) gets one of 'max_add' (cap reached), 'min_step' (no
+    pair left, but some live gap was too narrow to bisect), 'resolved', or 'off'.
     """
     d = np.asarray(d_slices, float)
     y = np.asarray(lnL_slices, float)
@@ -632,6 +633,7 @@ def refine_slice_gaps(d_slices, lnL_slices, ln_prior_d, run_fresh, dlnL_max, del
     D, Y = list(d[ok]), list(y[ok])
     tried = set()
     why = "resolved"
+    narrow = False
     while True:
         o = np.argsort(D)
         dd, yy = np.asarray(D)[o], np.asarray(Y)[o]
@@ -648,7 +650,7 @@ def refine_slice_gaps(d_slices, lnL_slices, ln_prior_d, run_fresh, dlnL_max, del
         i = max(cand, key=lambda k: jump[k])
         tried.add((round(dd[i], 9), round(dd[i + 1], 9)))
         if np.log(dd[i + 1] / dd[i]) < 2 * min_log_step:
-            why = "min_step"
+            narrow = True
             continue
         d_new = float(np.sqrt(dd[i] * dd[i + 1]))
         lnL_k, sig_k, neff_k, nt_k = (np.asarray(v).ravel()[0] for v in run_fresh(np.array([d_new])))
@@ -657,6 +659,8 @@ def refine_slice_gaps(d_slices, lnL_slices, ln_prior_d, run_fresh, dlnL_max, del
         if np.isfinite(lnL_k):
             D.append(d_new)
             Y.append(float(lnL_k))
+    if why == "resolved" and narrow:
+        why = "min_step"
     if reasons is not None:
         reasons.append(why)
     return (np.array(out[0], float), np.array(out[1], float), np.array(out[2], float),

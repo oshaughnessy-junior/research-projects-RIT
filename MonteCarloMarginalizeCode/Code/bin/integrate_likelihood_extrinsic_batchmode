@@ -606,7 +606,7 @@ def _normalize_interpolate_time_argv(argv):
 opts, args = optp.parse_args(_normalize_interpolate_time_argv(sys.argv[1:]))
 if (opts.distance_slice_warm_block is not None and opts.distance_slice_warm_block < 1) or not (0 < opts.distance_slice_warm_seed_temper <= 1):
     optp.error("--distance-slice-warm-block must be >= 1 and --distance-slice-warm-seed-temper in (0, 1]")
-if opts.distance_slice_refine_dlnL < 0 or opts.distance_slice_refine_max < 0:
+if not (opts.distance_slice_refine_dlnL >= 0) or opts.distance_slice_refine_max < 0:   # also rejects NaN
     optp.error("--distance-slice-refine-dlnL and --distance-slice-refine-max must be >= 0")
 if opts.distance_slice_walkout_delta_lnL < 0 or opts.distance_slice_walkout_max_steps < 0:
     optp.error("--distance-slice-walkout-delta-lnL and --distance-slice-walkout-max-steps must be >= 0")
