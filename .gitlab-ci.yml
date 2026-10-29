@@ -11,7 +11,7 @@ default:
 
 stages:
   - system tests
-  - unit tests # TODO: write some
+  - unit tests
   - docs
 #  - docker image
 #  - deploy
@@ -80,3 +80,8 @@ documentation:
   artifacts:
     paths:
       - docs/build/
+
+minimal_eccentric_regressions:
+  stage: unit tests
+  script:
+    - bash .travis/test-minimal-eccentric.sh

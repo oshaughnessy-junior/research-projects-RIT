@@ -1,0 +1,156 @@
+{
+  "baseline": "cac3b3e016cb30eec5d11ad227eb0d190edc99ef",
+  "upstream": "oshaughn/research-projects-RIT",
+  "branch": "rift_O4c",
+  "comparison_head": "9ea165fc30bb7de78f1824b7b54c6c646fd9fc22",
+  "date": "2026-10-29",
+  "prs": [
+    {
+      "number": 171,
+      "title": "AV: fix the high-SNR empty-live-volume crash and report the collapse; add the extrinsic zoom box",
+      "url": "https://github.com/oshaughn/research-projects-RIT/pull/171",
+      "merged_at": "2026-10-16T17:40:05Z",
+      "merge_commit": "43028029ae83a1e23cd13f9c591def99240cb58e",
+      "scope": "AV only; no new extrinsic zoom boxes"
+    },
+    {
+      "number": 174,
+      "title": "CIP: a test suite for the intrinsic prior densities (the missing half of the 0.0.17.13 eccentricity-prior fix)",
+      "url": "https://github.com/oshaughn/research-projects-RIT/pull/174",
+      "merged_at": "2026-10-16T17:56:21Z",
+      "merge_commit": "87b41e94fec16189e783bb7548b14829fa48b672",
+      "scope": "prior regression tests; runtime fix already in 17.13"
+    },
+    {
+      "number": 175,
+      "title": "GWSignal: fix TEOBResumSDALI global sign (psi was displaced by pi/2)",
+      "url": "https://github.com/oshaughn/research-projects-RIT/pull/175",
+      "merged_at": "2026-09-23T18:48:16Z",
+      "merge_commit": "5b972451bbdde71b2861c5401de12f8d98206baa",
+      "scope": "adapted branch-specific backport; unrelated CI changes omitted"
+    },
+    {
+      "number": 181,
+      "title": "ILE: label the exported time grid with the spacing the likelihood steps by (minimal, export path only)",
+      "url": "https://github.com/oshaughn/research-projects-RIT/pull/181",
+      "merged_at": "2026-10-16T16:52:13Z",
+      "merge_commit": "e393086fac01550fec7e052621c2432011af6700",
+      "scope": "adapted branch-specific backport; unrelated CI changes omitted"
+    },
+    {
+      "number": 187,
+      "title": "factored_likelihood: offset the vectorized time integral per row, not per batch (fixes -inf / mcsamplerAV collapse above rho ~ 40; issue #232)",
+      "url": "https://github.com/oshaughn/research-projects-RIT/pull/187",
+      "merged_at": "2026-09-04T11:09:04Z",
+      "merge_commit": "da37f000f891cd8db2b42c87e28170ee582f8030",
+      "scope": "adapted branch-specific backport; unrelated CI changes omitted"
+    },
+    {
+      "number": 210,
+      "title": "lalsimutils: fresh ChooseWaveformParams per row in the coordinate fallbacks (O4c)",
+      "url": "https://github.com/oshaughn/research-projects-RIT/pull/210",
+      "merged_at": "2026-10-07T00:33:38Z",
+      "merge_commit": "2fb803f8ab5cc25406006f7e0000e0fafb5f9463",
+      "scope": "adapted branch-specific backport; unrelated CI changes omitted"
+    },
+    {
+      "number": 215,
+      "title": "O4c: reflect transverse puffball coordinates; wrap only azimuths",
+      "url": "https://github.com/oshaughn/research-projects-RIT/pull/215",
+      "merged_at": "2026-10-08T00:39:10Z",
+      "merge_commit": "d91bcb04187943e0f073566a0043a6149d7ed048",
+      "scope": "adapted branch-specific backport; unrelated CI changes omitted"
+    },
+    {
+      "number": 218,
+      "title": "O4c: fair CIP posterior export via systematic resampling, final group unique (port from rift_O4d)",
+      "url": "https://github.com/oshaughn/research-projects-RIT/pull/218",
+      "merged_at": "2026-10-16T16:07:20Z",
+      "merge_commit": "11c8ed50972b4043b1ea169b956e8d477705041c",
+      "scope": "adapted branch-specific backport; unrelated CI changes omitted"
+    },
+    {
+      "number": 222,
+      "title": "Add selectable eccentric phase coordinates with Peters default and automatic EOB build",
+      "url": "https://github.com/oshaughn/research-projects-RIT/pull/222",
+      "merged_at": "2026-10-18T22:17:17Z",
+      "merge_commit": "12d901b4265f5e99d43d5a26c6f31545be111d9f",
+      "scope": "adapted branch-specific backport; unrelated CI changes omitted"
+    },
+    {
+      "number": 224,
+      "title": "Fix AV evidence normalization and enforce prior-box support",
+      "url": "https://github.com/oshaughn/research-projects-RIT/pull/224",
+      "merged_at": "2026-10-18T23:59:00Z",
+      "merge_commit": "47a7a9e72461cacd8759dc6893fe9b23e3b191be",
+      "scope": "adapted branch-specific backport; unrelated CI changes omitted"
+    },
+    {
+      "number": 231,
+      "title": "CIP: write lnZ, not ln(lnZ), with --internal-use-lnL",
+      "url": "https://github.com/oshaughn/research-projects-RIT/pull/231",
+      "merged_at": "2026-10-18T23:28:27Z",
+      "merge_commit": "172dbe4ae67c091be5500f15f76f5ba64ed6485b",
+      "scope": "adapted branch-specific backport; unrelated CI changes omitted"
+    },
+    {
+      "number": 232,
+      "title": "Preserve extended precision in CIP Monte Carlo error annotations",
+      "url": "https://github.com/oshaughn/research-projects-RIT/pull/232",
+      "merged_at": "2026-10-18T23:49:00Z",
+      "merge_commit": "3ebf14bd77fbfb64489309a8bc663a6d11abd74f",
+      "scope": "adapted branch-specific backport; unrelated CI changes omitted"
+    },
+    {
+      "number": 233,
+      "title": "Port opt-in first-batch mu puff with random transverse spins to O4c",
+      "url": "https://github.com/oshaughn/research-projects-RIT/pull/233",
+      "merged_at": "2026-10-19T14:45:33Z",
+      "merge_commit": "044f95c3f3f21c9a676bedcfa61b20644cff1451",
+      "scope": "generic legacy reflection only; no mu puff"
+    },
+    {
+      "number": 236,
+      "title": "Use uniform eccentric priors before final PE iterations",
+      "url": "https://github.com/oshaughn/research-projects-RIT/pull/236",
+      "merged_at": "2026-10-22T00:23:18Z",
+      "merge_commit": "0acf23194687cc4c700e669663feb2deb413c812",
+      "scope": "adapted branch-specific backport; unrelated CI changes omitted"
+    },
+    {
+      "number": 239,
+      "title": "Sample the eccentric phase angle internally in CIP (O4c)",
+      "url": "https://github.com/oshaughn/research-projects-RIT/pull/239",
+      "merged_at": "2026-10-22T00:02:24Z",
+      "merge_commit": "409b9b82035ee989736aa09fc435415e5ada2660",
+      "scope": "adapted branch-specific backport; unrelated CI changes omitted"
+    },
+    {
+      "number": 241,
+      "title": "Scale eccentric iteration grids and reflect eccentricity in PUFF (rift_O4c)",
+      "url": "https://github.com/oshaughn/research-projects-RIT/pull/241",
+      "merged_at": "2026-10-23T13:56:42Z",
+      "merge_commit": "d7b98454c55412d94c221a1c09d521a3ef5bbfe0",
+      "scope": "adapted branch-specific backport; unrelated CI changes omitted"
+    },
+    {
+      "number": 245,
+      "title": "O4c: fix chieff_aligned inverse and puffball spin downselects (port #496)",
+      "url": "https://github.com/oshaughn/research-projects-RIT/pull/245",
+      "merged_at": "2026-10-28T17:16:23Z",
+      "merge_commit": "b9c2b74a85a62e39a2f0bb90ce9d9be0fb8e27b9",
+      "scope": "adapted branch-specific backport; unrelated CI changes omitted"
+    }
+  ],
+  "direct_commits": [
+    {
+      "commit": "3624cf0ea4eef9b5a9442e30441f2e929df22c1f",
+      "reason": "source-redshift coordinate conversion"
+    }
+  ],
+  "initial_local_comparison_head": "48301b7b79c0cdcc6df8a2b1922e3bff498aea94",
+  "live_head_delta": {
+    "excluded_pr": 251,
+    "reason": "EOS RF fref; RF feature absent from minimal branch"
+  }
+}
