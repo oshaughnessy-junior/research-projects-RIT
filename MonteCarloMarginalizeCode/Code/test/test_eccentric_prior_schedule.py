@@ -76,7 +76,8 @@ def test_actual_pipeline_writer(tmp_path, monkeypatch, eccentric, amr, truncate,
     opts = SimpleNamespace(assume_eccentric=eccentric, internal_use_amr=amr,
                            eccentricity_prior='log_uniform',
                            internal_truncate_cip_arg_list=truncate,
-                           internal_ile_deduplicate_grid=deduplicate)
+                           internal_ile_deduplicate_grid=deduplicate,
+                           hierarchical_merger_prior_1g=False, hierarchical_merger_prior_2g=False)
     namespace = dict(opts=opts, lines=lines, n_iterations=6,
                      configure_eccentricity_prior=module.configure_eccentricity_prior,
                      flag_final_group_unique=module.flag_final_group_unique)
