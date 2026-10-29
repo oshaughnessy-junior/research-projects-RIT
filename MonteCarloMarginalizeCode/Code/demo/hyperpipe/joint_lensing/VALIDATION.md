@@ -81,3 +81,20 @@ held-out waveform/interpolation residuals, posterior shapes and repeated
 converged evidence under scientifically selected priors. Full event PE,
 calibration/systematic checks, posterior interpretation, an event Bayes factor,
 and signed-mode native NoLoop integration are not established by this pass.
+
+## PR adaptation to current O4d
+
+The six-commit checkpoint was applied without conflicts onto junior
+`rift_O4d` at `1ee33e1b2fda0272bb1f9b5521ed90205bcfce3f` for the RIFT PR.
+The original Hyperpipe package and workflow-builder files are unchanged
+between the pinned engineering base and this target. Both acceptance scripts
+were rerun on this adapted branch: four prior/likelihood tests and seven
+collector/staging tests pass; `git diff --check` passes.
+
+Native EOS_POST and physical DAG measurements above remain explicitly tied
+to the original pinned runtime/source, not a new execution on this later O4d.
+The target includes other sampler changes; the prior native-control results
+do not by themselves certify its sampler. Before physical event admission,
+repeat the native controls and execute the iterative workflows with the final
+source/environment pins. The optional physical adapter still requires the
+owning prototype package and prepared data; this PR does not vendor them.
