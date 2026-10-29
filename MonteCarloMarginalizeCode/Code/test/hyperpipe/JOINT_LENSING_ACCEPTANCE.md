@@ -64,3 +64,48 @@ range. A physical-coordinate box with that default density is not normalized.
 
 No event posterior, Bayes factor, model preference, or full-source inference is
 admitted by these deterministic seam checks.
+
+## Native collection and independent numerical gate
+
+Source inspection at the pinned base finds EOS_POST workers depending on UNIFY,
+JOIN_POST depending on workers, and convergence depending on JOIN_POST. In
+`create_eos_posterior_pipeline`, lines 517-520 establish each worker's integral
+stem; lines 538-548 join only posterior `.dat` files. In
+`util_ConstructEOSPosterior.py`, lines 1549-1550 restore the absolute likelihood
+shift and write the plain worker `lnZ` file. JOIN_POST is not an evidence combiner.
+
+The candidate collector therefore supports exactly one final worker and refuses
+ambiguous aggregation. Independent negative controls:
+
+```sh
+python MonteCarloMarginalizeCode/Code/test/hyperpipe/acceptance/check_joint_collection.py
+```
+
+Six tests pass: valid single-worker product, wrong iteration, missing paired
+posterior, duplicate workers, multiworker configuration, nonfinite integral,
+out-of-prior/wrong-schema/nonfinite posterior, and missing cumulative likelihood.
+The validator tightened the production collector to require positive iterations,
+explicit unit ranges, exact quantile schema, finite values and bounded quantiles
+in the final worker posterior, joined posterior and cumulative likelihood table.
+These checks establish artifact validity only. They cannot establish which
+likelihood generated an artifact or whether the inference converged.
+
+After a native Gaussian control is executed, use this independent gate on each
+of at least two separately seeded runs:
+
+```sh
+python MonteCarloMarginalizeCode/Code/test/hyperpipe/acceptance/check_joint_lensing.py \
+  --native-integral /path/to/iteration_3_post/output-4-CLUSTER \
+  --native-posterior /path/to/iteration_3_post/output-4-CLUSTER.dat
+```
+
+The gates are absolute log-evidence error <=0.03 nat, posterior means within
+0.1 of the smaller marginal standard deviation, each variance within 10 percent,
+and source/log-lens covariance within 0.1 times the product of marginal standard
+deviations. Require at least 2000 draws and separately inspect the sampler's
+effective sample size; repeated resampled draws do not establish independent ESS.
+This command expects the exact Gaussian factory and priors above and uses the
+plain absolute `lnZ` product, never the maximum likelihood or joined sample file.
+
+At this checkpoint, native sampler accuracy and the generated DAG have not been
+admitted: no completed native control artifacts were available to this validator.

@@ -5,6 +5,7 @@ public run API, while bypassing RIFT's heavyweight package initialization only.
 It does not exercise the adaptive native posterior/evidence executable.
 """
 from __future__ import annotations
+import argparse
 import importlib
 import json
 import math
@@ -150,7 +151,42 @@ class Acceptance(unittest.TestCase):
                           'mean_x_logy': means.tolist(), 'cov_x_logy': cov.tolist()}))
 
 
+def check_native_gaussian(integral_path, posterior_path):
+    """Gate actual EOS_POST plain lnZ file and equally weighted .dat draws.
+
+    Use >=2000 effective samples and repeat independent seeds. Tolerances allow
+    Monte Carlo fluctuations; evidence alone cannot pass the shape checks.
+    """
+    lnz = float(np.loadtxt(integral_path))
+    draws = np.genfromtxt(posterior_path, names=True)
+    if draws.size < 2000:
+        raise AssertionError('at least 2000 posterior draws required (also inspect sampler ESS)')
+    x = 2 + 6 * draws['u_source_x']
+    z = math.log(.2) + math.log(100) * draws['u_lens_y']
+    ix, mx, vx = truncated_normal(5., .65, 2., 8.)
+    iz, mz, vz = truncated_normal(math.log(2.), .45, math.log(.2), math.log(20.))
+    expected_lnz = math.log(ix*iz/(6*math.log(100)))
+    means = np.array([x.mean(), z.mean()])
+    cov = np.cov(np.array([x, z]), bias=True)
+    if abs(lnz-expected_lnz) > .03:
+        raise AssertionError(f'lnZ {lnz} differs from exact {expected_lnz} by > .03 nat')
+    np.testing.assert_allclose(means, [mx, mz], atol=.1*min(math.sqrt(vx), math.sqrt(vz)), rtol=0)
+    np.testing.assert_allclose(np.diag(cov), [vx, vz], rtol=.1, atol=0)
+    if abs(cov[0, 1]) > .1*math.sqrt(vx*vz):
+        raise AssertionError('posterior source/lens covariance gate failed')
+    print(json.dumps({'native_lnZ': lnz, 'expected_lnZ': expected_lnz,
+                      'posterior_draws': int(draws.size), 'mean_x_logy': means.tolist(),
+                      'cov_x_logy': cov.tolist()}))
+
+
 if __name__ == '__main__':
     # Factory import in the manifest must refer to the same module as __main__.
     sys.modules['check_joint_lensing'] = sys.modules[__name__]
-    unittest.main()
+    if '--native-integral' in sys.argv:
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--native-integral', required=True)
+        parser.add_argument('--native-posterior', required=True)
+        args = parser.parse_args()
+        check_native_gaussian(args.native_integral, args.native_posterior)
+    else:
+        unittest.main()
