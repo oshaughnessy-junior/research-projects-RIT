@@ -1,0 +1,40 @@
+Traceback (most recent call last):
+  File "/scratch/richard.oshaughnessy/codex_transport_20261015/source/MonteCarloMarginalizeCode/Code/test/integrators/transport_oracle_benchmark.py", line 130, in <module>
+    main()
+  File "/scratch/richard.oshaughnessy/codex_transport_20261015/source/MonteCarloMarginalizeCode/Code/test/integrators/transport_oracle_benchmark.py", line 124, in main
+    results = [run(arm, seed, args.budget) for seed in args.seeds for arm in ['none', 'cheap', 'transport']]
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/scratch/richard.oshaughnessy/codex_transport_20261015/source/MonteCarloMarginalizeCode/Code/test/integrators/transport_oracle_benchmark.py", line 124, in <listcomp>
+    results = [run(arm, seed, args.budget) for seed in args.seeds for arm in ['none', 'cheap', 'transport']]
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/scratch/richard.oshaughnessy/codex_transport_20261015/source/MonteCarloMarginalizeCode/Code/test/integrators/transport_oracle_benchmark.py", line 93, in run
+    lnZ, _, _, _ = s.integrate_log(fn, *target.params, no_protect_names=True,
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/scratch/richard.oshaughnessy/codex_transport_20261015/source/MonteCarloMarginalizeCode/Code/RIFT/integrators/mcsamplerPortfolio.py", line 1781, in integrate_log
+    n_samples_per_member = ((self.portfolio_weights)*len(log_weights)).astype(int)
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'list' object has no attribute 'astype'
+Command exited with non-zero status 1
+	Command being timed: "/cvmfs/software.igwn.org/conda/envs/igwn/bin/python MonteCarloMarginalizeCode/Code/test/integrators/transport_oracle_benchmark.py --seeds 101 --json ../pilot.json"
+	User time (seconds): 1.00
+	System time (seconds): 0.20
+	Percent of CPU this job got: 74%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:01.61
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 216400
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 2
+	Minor (reclaiming a frame) page faults: 36964
+	Voluntary context switches: 20541
+	Involuntary context switches: 54
+	Swaps: 0
+	File system inputs: 312
+	File system outputs: 384
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 1
