@@ -15,7 +15,8 @@ sys.modules[_spec.name] = response
 _spec.loader.exec_module(response)
 
 
-def test_polarization_sign_angles_trim_epoch_and_backend(monkeypatch, tmp_path):
+@pytest.mark.parametrize("order", [25, 29])
+def test_polarization_sign_angles_trim_epoch_and_backend(monkeypatch, tmp_path, order):
     seen = {}
 
     class Orbit:
@@ -39,12 +40,15 @@ def test_polarization_sign_angles_trim_epoch_and_backend(monkeypatch, tmp_path):
     monkeypatch.setattr(response, "_loaded_backend_provenance", lambda *args: artifacts)
     monkeypatch.setattr(response, "_verified_orbit", lambda path: "sha256")
     monkeypatch.setattr(response, "_load_backend", lambda: (Backend, Orbit, {}))
-    config = response.ResponseConfig(str(tmp_path / "orbit.h5"), trim_seconds=20)
+    config = response.ResponseConfig(str(tmp_path / "orbit.h5"), trim_seconds=20,
+                                     interpolation_order=order)
     hp, hc = np.arange(12.), np.arange(12.) + 100
     output = response.equal_arm_aet(hp, hc, dt=10, sky_colatitude=1,
                                    sky_longitude=2, config=config)
     np.testing.assert_array_equal(seen["projection"][0], hp + 1j * hc)
     assert seen["projection"][1:] == (2, np.pi / 2 - 1, 20)
+    assert seen["response"]["order"] == order
+    assert output.metadata["interpolation_order"] == order
     assert seen["response"]["force_backend"] == "cpu"
     assert seen["response"]["tdi_chan"] == "AET"
     np.testing.assert_array_equal(output.channels, np.arange(36).reshape(3, 12)[:, 2:-2])
@@ -114,7 +118,9 @@ def test_optional_dependency_version_is_checked(monkeypatch):
 @pytest.mark.parametrize("setting", [
     {"trim_seconds": True}, {"trim_seconds": "10000"},
     {"trim_seconds": [10000]}, {"interpolation_order": 25.0},
-    {"interpolation_order": True}, {"tdi_generation": "2nd generation"},
+    {"interpolation_order": True}, {"interpolation_order": np.bool_(True)},
+    {"interpolation_order": 29.0}, {"interpolation_order": 27},
+    {"tdi_generation": "2nd generation"},
 ])
 def test_invalid_configuration(setting, tmp_path):
     with pytest.raises(ValueError):
@@ -206,3 +212,23 @@ def test_provenance_refuses_unavailable_or_non_native_origins(monkeypatch,tmp_pa
         response._module_artifact(ModuleType('no_origin'))
     cpu.__file__=str(tmp_path/('missing'+response.EXTENSION_SUFFIXES[0]))
     with pytest.raises(FileNotFoundError):response._module_artifact(cpu)
+
+
+def test_order29_retains_full_output_finiteness_guard(monkeypatch, tmp_path):
+    class Orbit:
+        def __init__(self, **kwargs):self.t_base = np.array([0., 1e6])
+    class Backend:
+        def __init__(self, **kwargs):self.num_pts = kwargs['num_pts']
+        def get_projections(self, *args, **kwargs):self.tdi_start_ind = 2
+        def get_tdi_delays(self):
+            full = np.ones((3, self.num_pts))
+            full[0, 0] = np.nan  # Even a discarded edge must remain a refusal.
+            return full
+    monkeypatch.setattr(response, '_verified_orbit', lambda path: 'pinned')
+    monkeypatch.setattr(response, '_load_backend', lambda: (Backend, Orbit, {}))
+    monkeypatch.setattr(response, '_loaded_backend_provenance', lambda *args: {})
+    config = response.ResponseConfig(str(tmp_path / 'orbit.h5'), trim_seconds=20,
+                                     interpolation_order=29)
+    with pytest.raises(RuntimeError, match='invalid A/E/T'):
+        response.equal_arm_aet(np.ones(12), np.ones(12), dt=10,
+                              sky_colatitude=1, sky_longitude=2, config=config)
