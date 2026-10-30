@@ -219,3 +219,27 @@ It exercises actual diagnostic functions for aligned likelihood association,
 missing labels and embedded HTML images, and reruns all 14 spin-fix cases.
 No production inference, convergence claim or precessing extension is part
 of this follow-up. Exact follow-up results accompany the CIT definition.
+
+Requested sky-export correction: PRs #195 and #196
+------------------------------------------------
+
+The 30 October follow-up includes O4c #195 and #196. Batch and non-batch ILE
+map sampled network-frame angles to physical equatorial coordinates with the
+inverse frame for likelihood evaluation and export. The non-batch driver now
+also rotates saved samples back before standard output serialization.
+The helpers explicitly name each transformation direction; the inverse is an
+independent contiguous transpose of the orthonormal frame, avoiding np.matrix.
+No sampling/prior or waveform changes are included.
+
+The regression gate includes the upstream frame/round-trip/time-delay tests
+and executes both drivers' actual setup/export blocks. The latter checks
+likelihood/export agreement, a constant H1-L1 time-delay ring and unchanged
+samples when network coordinates are off. The previously recorded legacy
+skymap combinations remain outside this narrow backport; see upstream #196.
+The CIT handoff is separately pinned to the updated commit; the older
+PR249-only handoff is preserved for provenance.
+
+Local CPU validation of this follow-up: 26 passed (8 sky mapping/export
+regressions plus 18 adjacent time-integration/export regressions). Both drivers'
+help/startup and the CIT source-overlay checks are recorded with the new
+handoff. No production PE or new GPU inference was launched.

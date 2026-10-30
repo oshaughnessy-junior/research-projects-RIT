@@ -165,6 +165,16 @@
     {
       "commit": "8cd56cf8909a89e36f7e8b05809f039b5d3a6679",
       "status": "already implemented via #245 backport f5824e314; strengthened regression suite retained"
+    },
+    {
+      "pr": 195,
+      "merge_commit": "a5c7a020e5eddf583e8f16a94ebef87e8714334f",
+      "scope": "inverse network-to-physical map in batch likelihood and export; helpers and tests"
+    },
+    {
+      "pr": 196,
+      "merge_commit": "8a99e3ddbe26a3403f706bbffb6ebe79b8cd50a9",
+      "scope": "non-batch inverse map and physical sky export"
     }
   ]
 }
