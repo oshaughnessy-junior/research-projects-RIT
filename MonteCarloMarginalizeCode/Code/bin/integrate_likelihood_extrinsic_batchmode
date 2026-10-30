@@ -565,6 +565,8 @@ intrinsic_params.add_option("--distance-slice-skip-threshold",type=float,default
 intrinsic_params.add_option("--distance-slice-wing-delta-lnL",type=float,default=7.0,help="Target lnL drop below peak used to place wing slice centers: wings span from the core edge out to where the parabolic lnL(1/d) model falls this many nats below peak (default 7 ~ prior weight <1e-3 outside). Falls back to log-uniform full-range placement if the parabolic fit is degenerate.")
 intrinsic_params.add_option("--distance-slice-walkout-delta-lnL",type=float,default=0.0,help="(all-fresh only) After the K quantile-placed fresh slices, walk each edge outward with extra fresh slices (steps doubling in ln d, from twice the edge spacing) until lnL + ln pi(d) at the edge is this many nats below its peak, the distance range ends, or --distance-slice-walkout-max-steps slices were added on that side. 0 (default) disables. Quantile placement from a main loop at n_eff ~ 10 ends where the conditional is typically only 1-3 nats below peak; this measures the tails instead of leaving them to extrapolation. Adds a variable number of rows per point. COST: up to 2 x --distance-slice-walkout-max-steps extra sequential fresh integrations per point (16 at the default), each budgeted like a slice (--distance-slice-wing-nmax); measured +14-29% of the quantile slices' samples on O4 events at delta 5.")
 intrinsic_params.add_option("--distance-slice-walkout-max-steps",type=int,default=8,help="Cap on walk-out slices per side (see --distance-slice-walkout-delta-lnL).")
+intrinsic_params.add_option("--distance-slice-refine-dlnL",type=float,default=0.0,help="(all-fresh only) After the walk-out, bisect (in ln d) any pair of neighbouring slices whose lnL + ln pi(d) differ by more than this many nats while either is within the walk-out target (--distance-slice-walkout-delta-lnL, else 5) of the peak, repeating until none remain or --distance-slice-refine-max slices were added.  The walk-out's doubling steps can jump over an edge where the conditional falls from flat to nothing; interpolating across that gap moves the edge inward and drops mass (S240615dg: a quarter of points had a >6 nat jump between slices still holding mass).  0 (default) disables.  Uses the same per-slice sampler as the walk-out (warm or fresh).")
+intrinsic_params.add_option("--distance-slice-refine-max",type=int,default=12,help="Cap on slices added per point by --distance-slice-refine-dlnL.")
 intrinsic_params.add_option("--distance-slice-warm-start",action="store_true",default=False,help="(all-fresh only) Replace each slice's fresh AV integration with adaptive importance sampling over all extrinsic axes, warm-started: the first slice's proposal is a kernel density fitted to the main loop's samples (tempered by --distance-slice-warm-seed-temper), each later slice's to the nearest finished slice, refitted after every block; a uniform component over the prior box keeps the estimate unbiased if the seed is off. Assumes the main loop found every mode of each slice's conditional. Walk-out slices are warm-started too. Default off.")
 intrinsic_params.add_option("--distance-slice-warm-block",type=int,default=None,help="Block size (likelihood evaluations per proposal refit) for --distance-slice-warm-start.  Default: the slice chunk (--distance-slice-chunk, else --n-chunk; 10000 on a default run).  Small blocks are cheaper on easy events but adapt badly on hard ones.")
 intrinsic_params.add_option("--distance-slice-warm-khat-max",type=float,default=float("inf"),help="--distance-slice-warm-start: a warm slice whose estimate-phase Pareto k-hat exceeds this is redone by the cold AV (and the proposal does not freeze while a block's k-hat exceeds it).  Default: no k-hat gate; k-hat is logged.  On O4 slices at n_eff 30 good slices show k-hat 1-2 (60 slices paired against the cold AV agreed within error), so the textbook 0.7 rejects every slice.")
@@ -614,6 +616,8 @@ if opts.td_gap:
                      "are dropped.")
 if (opts.distance_slice_warm_block is not None and opts.distance_slice_warm_block < 1) or not (0 < opts.distance_slice_warm_seed_temper <= 1):
     optp.error("--distance-slice-warm-block must be >= 1 and --distance-slice-warm-seed-temper in (0, 1]")
+if not (opts.distance_slice_refine_dlnL >= 0) or opts.distance_slice_refine_max < 0:   # also rejects NaN
+    optp.error("--distance-slice-refine-dlnL and --distance-slice-refine-max must be >= 0")
 if opts.distance_slice_walkout_delta_lnL < 0 or opts.distance_slice_walkout_max_steps < 0:
     optp.error("--distance-slice-walkout-delta-lnL and --distance-slice-walkout-max-steps must be >= 0")
 if opts.early_time_multirate and opts.internal_ile_inner_product != "fd-diagonal":
@@ -6525,6 +6529,8 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
           if not all_fresh and float(getattr(opts, "distance_slice_walkout_delta_lnL", 0.0) or 0.0) > 0:
             print("    : WARNING --distance-slice-walkout-delta-lnL is ignored: this export is not all-fresh"
                   " (reweight core + parabolic wings)")
+          if not all_fresh and float(getattr(opts, "distance_slice_refine_dlnL", 0.0) or 0.0) > 0:
+            print("    : WARNING --distance-slice-refine-dlnL is ignored: this export is not all-fresh")
           if not all_fresh and opts.distance_slice_warm_start:
             print("    : WARNING --distance-slice-warm-start is ignored: this export is not all-fresh")
           if all_fresh:
@@ -6594,6 +6600,22 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
                   len(added[0]), walk_delta, "/".join(walk_why)))
               d_wings, lnL_wings, sigmaL_wings, neff_wings, ntotal_wings = distance_slices.merge_walkout(
                   d_wings, lnL_wings, sigmaL_wings, neff_wings, ntotal_wings, added)
+            refine_dlnL = float(getattr(opts, "distance_slice_refine_dlnL", 0.0) or 0.0)
+            if refine_dlnL > 0 and not distance_slices.is_uninformative(lnL_wings, threshold=opts.distance_slice_skip_threshold):
+              refine_why = []
+              _ln_pi_d = lambda dd: np.log(np.maximum(np.asarray(identity_convert(prior_pdf_d(np.asarray(dd, float))), float), np.finfo(float).tiny))
+              added_r = distance_slices.refine_fresh_slices(
+                  sampler, like_to_integrate, d_wings, lnL_wings, _ln_pi_d, manual_avoid_overflow_logarithm,
+                  dlnL_max=refine_dlnL, delta_lnL=(walk_delta if walk_delta > 0 else 5.0),
+                  max_add=int(opts.distance_slice_refine_max),
+                  n_max=int(opts.distance_slice_wing_nmax), n_eff_target=int(opts.distance_slice_wing_neff),
+                  n_chunk=slice_chunk, return_lnL=return_lnL, reasons=refine_why,
+                  runner=None if warm is None else (lambda dd: warm.run(
+                      dd, n_max=int(opts.distance_slice_wing_nmax), n_eff_target=int(opts.distance_slice_wing_neff))))
+              print("    : gap refinement added {} slices (jumps > {:.1f} nats; {})".format(
+                  len(added_r[0]), refine_dlnL, "/".join(refine_why)))
+              d_wings, lnL_wings, sigmaL_wings, neff_wings, ntotal_wings = distance_slices.merge_walkout(
+                  d_wings, lnL_wings, sigmaL_wings, neff_wings, ntotal_wings, added_r)
           elif n_wing > 0:
             if distance_slices.is_uninformative(lnL_core, threshold=opts.distance_slice_skip_threshold):
               print("    : peak core lnL < {:.2f} nats (effectively undetected); skipping {} wing fresh integrations".format(

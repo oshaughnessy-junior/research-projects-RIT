@@ -603,6 +603,88 @@ def walk_out_fresh_slices(reference_sampler, like_to_integrate, d_slices, lnL_sl
                            delta_lnL=delta_lnL, max_steps=max_steps, reasons=reasons)
 
 
+def refine_slice_gaps(d_slices, lnL_slices, ln_prior_d, run_fresh, dlnL_max, delta_lnL, max_add=12,
+                      min_log_step=0.005, reasons=None):
+    """Bisect slice gaps the conditional crosses too fast to interpolate.
+
+    The walk-out's steps double in ln d, so its last step can jump straight over an edge: on
+    S240615dg MR-1 grid point 6 the conditional lp(d) = lnL + ln pi is flat to 1.7 Gpc and the next
+    walk-out slice sits at 2.36 Gpc, 15 nats down, while the deep draws have q95 1.86 Gpc.  Linear
+    interpolation of lnL in 1/d across that gap moves the cliff inward and drops real mass
+    (checkpoints/2026-10-25-truth in RIFT_roboto_paper).
+
+    Repeatedly takes the neighbouring pair (in d) with the largest |lp_i - lp_{i+1}| among pairs
+    where that jump exceeds ``dlnL_max`` and at least one slice is within ``delta_lnL`` of the
+    running peak, and adds a slice at their geometric mean via ``run_fresh`` (same contract as in
+    ``walk_out_slices``).  A pair whose ln d gap is below 2 * ``min_log_step`` is not bisected and is
+    skipped; a non-finite new slice is kept in the output and its pair is not tried again.  Stops when
+    no untried live pair remains or after ``max_add`` slices.  Returns the added rows (d, lnL,
+    sigmaL, neff, ntotal); ``reasons`` (a list) gets one of 'max_add' (cap reached), 'min_step' (no
+    pair left, but some live gap was too narrow to bisect), 'resolved', or 'off'.
+    """
+    d = np.asarray(d_slices, float)
+    y = np.asarray(lnL_slices, float)
+    out = ([], [], [], [], [])
+    ok = np.isfinite(d) & (d > 0) & np.isfinite(y)
+    if dlnL_max <= 0 or max_add <= 0 or np.sum(ok) < 2:
+        if reasons is not None:
+            reasons.append("off")
+        return tuple(np.array(v) for v in out)
+    D, Y = list(d[ok]), list(y[ok])
+    tried = set()
+    why = "resolved"
+    narrow = False
+    while True:
+        o = np.argsort(D)
+        dd, yy = np.asarray(D)[o], np.asarray(Y)[o]
+        lp = yy + np.asarray(ln_prior_d(dd), float)
+        peak = np.max(lp)
+        jump = np.abs(np.diff(lp))
+        live = (np.maximum(lp[1:], lp[:-1]) > peak - delta_lnL) & (jump > dlnL_max)
+        cand = [i for i in np.flatnonzero(live) if (round(dd[i], 9), round(dd[i + 1], 9)) not in tried]
+        if not cand:
+            break
+        if len(out[0]) >= max_add:
+            why = "max_add"
+            break
+        i = max(cand, key=lambda k: jump[k])
+        tried.add((round(dd[i], 9), round(dd[i + 1], 9)))
+        if np.log(dd[i + 1] / dd[i]) < 2 * min_log_step:
+            narrow = True
+            continue
+        d_new = float(np.sqrt(dd[i] * dd[i + 1]))
+        lnL_k, sig_k, neff_k, nt_k = (np.asarray(v).ravel()[0] for v in run_fresh(np.array([d_new])))
+        for lst, v in zip(out, (d_new, lnL_k, sig_k, neff_k, nt_k)):
+            lst.append(v)
+        if np.isfinite(lnL_k):
+            D.append(d_new)
+            Y.append(float(lnL_k))
+    if why == "resolved" and narrow:
+        why = "min_step"
+    if reasons is not None:
+        reasons.append(why)
+    return (np.array(out[0], float), np.array(out[1], float), np.array(out[2], float),
+            np.array(out[3], float), np.array(out[4], int))
+
+
+def refine_fresh_slices(reference_sampler, like_to_integrate, d_slices, lnL_slices, ln_prior_d, lnL_offset,
+                        dlnL_max, delta_lnL, max_add, n_max, n_eff_target, n_chunk, return_lnL=True,
+                        reasons=None, runner=None):
+    """``refine_slice_gaps`` with fixed-d integrations as the step (offset handled as in
+    ``walk_out_fresh_slices``: ``lnL_slices`` are on ILE's axis, the runner's output is shifted by
+    ``lnL_offset`` before comparison)."""
+    def run_fresh(d_new):
+        if runner is not None:
+            l_raw, s_k, n_k, t_k = runner(d_new)
+        else:
+            l_raw, s_k, n_k, t_k = fresh_sample_slices(
+                reference_sampler, like_to_integrate, d_new,
+                n_max=n_max, n_eff_target=n_eff_target, n_chunk=n_chunk, return_lnL=return_lnL)
+        return np.asarray(l_raw, float) + float(lnL_offset), s_k, n_k, t_k
+    return refine_slice_gaps(d_slices, lnL_slices, ln_prior_d, run_fresh, dlnL_max, delta_lnL,
+                             max_add=max_add, reasons=reasons)
+
+
 def merge_walkout(d, lnL, sigmaL, neff, ntotal, added):
     """Append walk-out rows ``added = (d, lnL, sigmaL, neff, ntotal)`` to a slice set (ntotal int)."""
     base = (np.asarray(d, float), np.asarray(lnL, float), np.asarray(sigmaL, float),

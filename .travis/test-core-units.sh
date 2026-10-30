@@ -143,6 +143,7 @@ FILES=(
   "$C/test/test_dslice_device_native.py"
   "$C/test/test_dslice_walkout.py"
   "$C/test/test_dslice_warm.py"
+  "$C/test/test_dslice_refine.py"
   "$C/test/test_dslice_bounds.py"
   # -- hyperpipe (paper4 area; the hydra leg is rostered OPTDEP, not here)
   "$C/test/hyperpipe/tests/test_config.py"
@@ -528,7 +529,8 @@ done
 # test_lalsimutils_fallback_codes.py adds 2 tests and no skips -> 1206.
 # #489: poisoned real IMRPv2 allocations (6) and EFPE buffer checks (6) -> 1218.
 # test_dslice_warm.py: collapsed-seed fallback and never-trusted tests add 2 -> 1220.
-EXPECTED_TESTS=1220
+# test_dslice_refine.py adds 10 tests and no skips -> 1230.
+EXPECTED_TESTS=1230
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -564,7 +566,8 @@ EXPECTED_TESTS=1220
 # test_lalsimutils_fallback_codes.py adds 2 passes -> 1180.
 # #489: six IMRPv2 and six EFPE buffer cases, all required -> 1192.
 # test_dslice_warm.py: collapsed-seed fallback and never-trusted tests add 2 -> 1194.
-EXPECTED_PASSED=1194
+# test_dslice_refine.py adds 10 passes -> 1204.
+EXPECTED_PASSED=1204
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 # The six solver="gs" tests in test_td_inner_product.py need tdanalysis >= 1.1, which this
 # job does not install, so they skip here; ci.yml's time-domain likelihood step runs them
