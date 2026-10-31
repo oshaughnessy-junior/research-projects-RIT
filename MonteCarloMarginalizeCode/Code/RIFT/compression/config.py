@@ -132,6 +132,8 @@ def resolve(config, rundir):
     if polar and any("theta"+str(i) in paramset and "cos_theta"+str(i) in paramset for i in (1,2)):
         raise ValueError("Overparameterized polar spin coordinates")
     precessing = not aligned
+    if precessing and spin_caps[1] > spin_caps[0]:
+        raise ValueError("Secondary spin cap exceeds the primary cap; native Cartesian downselection creates an anisotropic prior requiring a separate adapter")
     if "assume-precessing" in pseudo and (pseudo["assume-precessing"].lower() in ("", "true", "1", "yes")) != precessing:
         raise ValueError("High-level INI precession choice conflicts with final CIP coordinates")
     aligned_prior = last(cip, "aligned-prior", "uniform")
@@ -171,7 +173,7 @@ def resolve(config, rundir):
     # Direct s1z/s2z sampling uses CIP's 0.999 spin-cap box.
     if cartesian or aligned:
         cuts.update(s1z=[-.999*spin_caps[0], .999*spin_caps[0]],
-                    s2z=[-.999*spin_caps[1], .999*spin_caps[1]])
+                    s2z=[-min(.999*spin_caps[1], spin_caps[0]), min(.999*spin_caps[1], spin_caps[0])])
     for name, value in zip(cip.get("downselect-parameter", []), cip.get("downselect-parameter-range", [])):
         if name not in ("m1", "m2", "mtot", "mc", "eta", "q", "s1x", "s1y", "s1z", "s2x", "s2y", "s2z", "chi1", "chi2"):
             raise ValueError("Unsupported coupled support cut: " + name)

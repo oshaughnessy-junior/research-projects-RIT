@@ -315,6 +315,17 @@ def test_framework_default_boolean_and_overwritten_cuts(tmp_path):
     assert resolve(ini, tmp_path)[1]["spin_prior"] == "uniform_aligned"
 
 
+def test_reverse_spin_caps_respect_native_cartesian_clip(tmp_path):
+    ini = configuration(tmp_path)
+    with (tmp_path/"args_cip_list.txt").open("a") as stream:
+        stream.write(" --chi-max .5 --chi-small-max .9")
+    with pytest.raises(ValueError, match="anisotropic"):
+        resolve(ini, tmp_path)
+    ini.write_text(ini.read_text().replace("assume-precessing = True", "assume-precessing = False"))
+    (tmp_path/"args_cip_list.txt").write_text("1 X --parameter mc --parameter eta --parameter s1z --parameter s2z --chi-max .5 --chi-small-max .9")
+    assert resolve(ini, tmp_path)[1]["cuts"]["s2z"] == [-.5,.5]
+
+
 def test_real_pseudo_pipe_terminal_job(tmp_path):
     pytest.importorskip("lal")
     from test_rf_transverse_pipeline_build import _build, _opt_in_ini
