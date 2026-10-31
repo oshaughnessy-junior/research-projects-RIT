@@ -3,6 +3,7 @@ import ast
 import configparser
 import hashlib
 from pathlib import Path
+import re
 import shlex
 import numpy as np
 
@@ -26,6 +27,8 @@ def enabled(path):
 
 
 def options(text):
+    # BasicIteration quotes whitespace-containing Python range literals too.
+    text = re.sub(r"\[[^\[\]]*\]", lambda m: m.group(0).replace(" ", ""), text)
     tokens = shlex.split(text.replace("\\\n", " "))
     result = {}
     for i, token in enumerate(tokens):
@@ -67,6 +70,8 @@ def resolve(config, rundir):
     ile = options(ilepath.read_text())
     ciptext = cippath.read_text().strip().splitlines()[-1]
     cip = options(ciptext)
+    if any(k in cip for k in ("trust-sample-parameter-box", "no-downselect", "using-eos", "using-eos-index", "using-eos-for-prior")):
+        raise ValueError("Data-dependent or EOS/downselection prior support needs an explicit adapter")
     forbidden = [k for k in cip if any(s in k for s in ("supplementary", "import-prior", "prior-gaussian", "prior-tapered", "pseudo-gaussian"))]
     if forbidden:
         raise ValueError("Unsupported retained-prior modification: " + ", ".join(forbidden))
@@ -96,13 +101,39 @@ def resolve(config, rundir):
         raise ValueError("Spin caps must be in (0,1]")
     params = cip.get("parameter", []) + cip.get("parameter-nofit", [])
     paramset = set(params)
+    massset = paramset & {"mc", "eta", "delta_mc", "mtot", "q", "m1", "m2"}
+    if massset not in ({"mc", "eta"}, {"mc", "delta_mc"}, {"mtot", "q"}, {"m1", "m2"}):
+        raise ValueError("Unsupported CIP mass-coordinate prior; use a complete standard mass pair")
+    if massset == {"mtot", "q"}:
+        total_bounds = interval(last(cip, "mtot-range", "[1,300]"))
+        eta_bounds = interval(last(cip, "eta-range", str([.01/(1.01**2), .25])))
+        bounds["eta"] = eta_bounds
+        bounds["mc"] = [total_bounds[0]*eta_bounds[0]**.6, total_bounds[1]*eta_bounds[1]**.6]
+    elif massset == {"m1", "m2"}:
+        qmin = .9/1000.
+        bounds["eta"] = [qmin/(1+qmin)**2, .25]
+        bounds["mc"] = [.9*2**(-.2), 1000*2**(-.2)]
+    elif massset == {"mc", "delta_mc"} and "eta-range" not in cip:
+        bounds["eta"] = [(1-.9**2)/4, .25]
+    if bounds["mc"][0] <= 0 or bounds["eta"][0] <= 0 or bounds["eta"][1] > .25:
+        raise ValueError("Unphysical native mass support")
     cartesian = {"s1x", "s1y", "s1z", "s2x", "s2y", "s2z"} <= paramset
     polar = {"chi1", "chi2", "phi1", "phi2"} <= paramset and all("theta"+str(i) in paramset or "cos_theta"+str(i) in paramset for i in (1,2))
     cylindrical = {"s1z_bar", "s2z_bar", "chi1_perp_u", "chi2_perp_u", "phi1", "phi2"} <= paramset
     aligned = {"s1z", "s2z"} <= paramset and not (cartesian or polar or cylindrical)
     if not any((cartesian, polar, cylindrical, aligned)):
         raise ValueError("Unsupported or incomplete native spin-coordinate set")
+    mass_and_nuisance = {"mc", "eta", "delta_mc", "mtot", "q", "m1", "m2", "lambda1", "lambda2", "lambda_plus", "lambda_minus", "eccentricity", "eccentricity_squared", "eccentricity_ln", "meanPerAno"}
+    allowed_spin = ({"s1x", "s1y", "s1z", "s2x", "s2y", "s2z"} if cartesian else
+        {"chi1", "chi2", "phi1", "phi2", "theta1", "theta2", "cos_theta1", "cos_theta2"} if polar else
+        {"s1z_bar", "s2z_bar", "chi1_perp_u", "chi2_perp_u", "phi1", "phi2"} if cylindrical else {"s1z", "s2z"})
+    if paramset - mass_and_nuisance - allowed_spin:
+        raise ValueError("Unsupported or incomplete native spin-coordinate set: "+str(sorted(paramset-mass_and_nuisance-allowed_spin)))
+    if polar and any("theta"+str(i) in paramset and "cos_theta"+str(i) in paramset for i in (1,2)):
+        raise ValueError("Overparameterized polar spin coordinates")
     precessing = not aligned
+    if "assume-precessing" in pseudo and (pseudo["assume-precessing"].lower() in ("true", "1", "yes")) != precessing:
+        raise ValueError("High-level INI precession choice conflicts with final CIP coordinates")
     aligned_prior = last(cip, "aligned-prior", "uniform")
     transverse_prior = last(cip, "transverse-prior", "uniform")
     if aligned_prior not in ("uniform", "alignedspin-zprior") or transverse_prior != "uniform":
@@ -121,13 +152,18 @@ def resolve(config, rundir):
         spin_prior = "volumetric"
     elif correction is not None:
         raise ValueError("Unsupported spin prior-in-integrand correction/coordinate pair")
-    if "pseudo-uniform-magnitude-prior" in cip or "pseudo-uniform-magnitude-prior-alternate-sampling" in cip:
+    if "pseudo-uniform-magnitude-prior" in cip:
         if not cartesian or correction is not None:
             raise ValueError("Unsupported composition of post-sampling spin corrections")
         spin_prior = "uniform_mag_prec"
-    # Standard CIP mass coordinates produce a density uniform in detector component masses.
-    if params and not ({"mc", "eta"} <= set(params) or {"mc", "delta_mc"} <= set(params) or {"mtot", "q"} <= set(params) or {"m1", "m2"} <= set(params)):
-        raise ValueError("Unsupported CIP mass-coordinate prior; use standard mass coordinates")
+    if "spin-magnitude-prior" in pseudo:
+        requested = pseudo["spin-magnitude-prior"]
+        expected = {"default": "uniform_mag_prec" if precessing else "zprior_aligned",
+                    "volumetric": "volumetric" if precessing else "uniform_aligned",
+                    "uniform_mag_prec": "uniform_mag_prec", "uniform_aligned": "uniform_aligned",
+                    "zprior_aligned": "zprior_aligned"}.get(requested)
+        if expected != spin_prior:
+            raise ValueError("High-level INI spin prior conflicts with the final CIP prior")
     cuts = {}
     if {"mtot", "q"} <= paramset:
         cuts["mtot"] = interval(last(cip, "mtot-range", "[1,300]"))
@@ -140,7 +176,11 @@ def resolve(config, rundir):
     for name, value in zip(cip.get("downselect-parameter", []), cip.get("downselect-parameter-range", [])):
         if name not in ("m1", "m2", "mtot", "mc", "eta", "q", "s1z", "s2z", "chi1", "chi2"):
             raise ValueError("Unsupported coupled support cut: " + name)
-        cuts[name] = interval(value)
+        if name != "eta":  # CIP replaces every requested eta downselection by [0,.25].
+            limits = interval(value)
+            if name in cuts:
+                limits = [max(limits[0], cuts[name][0]), min(limits[1], cuts[name][1])]
+            cuts[name] = interval(str(limits))
     analysis_cosmology = unquote(engine.get("cosmology", engine.get("with-cosmology", pseudo.get("cosmology", "Planck15"))))
     cosmology = auto.get("cosmology", analysis_cosmology)
     if cosmology != analysis_cosmology:

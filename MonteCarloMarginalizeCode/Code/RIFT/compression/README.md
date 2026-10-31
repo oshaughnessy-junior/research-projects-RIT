@@ -1,19 +1,26 @@
 # Automatic posterior compression
 
-The standalone executable compresses a completed RIFT posterior without waveform
-calls or new PE sampling. The pipeline can run the same executable after final
-extrinsic export and calibration reweighting.
+The standalone executable compresses the last CIP posterior without waveform
+calls or new PE sampling. The pipeline uses the final CIP product and its
+paired conditional extrinsic export.
 
 ```bash
 util_RIFT_compress_posterior.py --config /path/production.ini \
     --rundir /path/completed_run
 ```
 
-The run directory supplies `args_ile.txt`, `args_cip_list.txt` and
+The intrinsic posterior is the largest numbered final CIP product,
+`posterior_samples-N.dat` or its original `overlap-grid-N.xml.gz`/`.dat`.
+The pipeline passes that final CIP product explicitly. Standalone use can set
+`--intrinsic-posterior FILE` when the file has a different name.
+The run directory also supplies the final paired conditional distance draws in
 `extrinsic_posterior_samples.dat`. An alternative paired table can be selected
 with `--posterior FILE`. Relative posterior and output paths resolve under
 `--rundir`. `--output NEW_DIRECTORY` preserves an earlier candidate or failed run.
-Existing output directories are never overwritten.
+Existing output directories are never overwritten. Paired rows must match the
+last CIP posterior. Conditional draws retain their relative weights, while
+their intrinsic group masses come from that CIP posterior. Missing pairs fail
+with an instruction to complete final extrinsic export; distance is never invented.
 
 ## Configuration
 
@@ -33,6 +40,8 @@ request_memory_mb = 4096
 request_disk_mb = 2048
 max_runtime_seconds = 1800
 ```
+
+For an aligned analysis, request `targets = aligned_distance`.
 
 For weighted tables, set `weight_column` to the posterior weight column.
 Fairdraw tables use equal weights. Set `group_column` when the table records
@@ -77,8 +86,11 @@ Tidal/EOS and eccentric nuisance assumptions remain those of the generating run.
 
 ## Cosmology and distance prior
 
-The resolver reads the analysis INI and executed argument files. An omitted
-auto-fit cosmology or distance prior inherits the analysis setting. Current
+The high-level production INI specifies the analysis choices. An omitted
+auto-fit cosmology or distance prior inherits those choices. The existing
+`args_ile.txt` and final `args_cip_list.txt` provide consistency checks and
+resolved support for bounds chosen automatically by RIFT. Conflicts fail.
+Current
 RIFT ILE cosmological distance priors use Planck15; conflicting declarations
 are refused. Existing source columns are checked against the resolved cosmology.
 The candidate stores the native cosmology and distance prior with their provenance.

@@ -42,7 +42,7 @@ weight_column = posterior_weight
 group_column = intrinsic_group
 validation_ks = .08
 """)
-    (tmp_path/"args_ile.txt").write_text(f"X --d-min 100 --d-max 2500 --d-prior {distance} --fref 20")
+    (tmp_path/"args_ile.txt").write_text(f"X --d-min 100 --d-max 2500 --d-prior {distance} --reference-freq 20")
     (tmp_path/"args_cip_list.txt").write_text("2 X --parameter mc --parameter eta --parameter s1x --parameter s1y --parameter s1z --parameter s2x --parameter s2y --parameter s2z --mc-range [10,60] --eta-range [.08,.25] --chi-max .99")
     return ini
 
@@ -134,13 +134,17 @@ def test_wrong_cosmology_and_custom_priors_refused(tmp_path):
 def test_actual_sampling_spin_priors(tmp_path, coordinates, extra, prior):
     ini = configuration(tmp_path)
     (tmp_path/"args_cip_list.txt").write_text("1 X --parameter mc --parameter eta "+coordinates+" "+extra)
-    ini.write_text(ini.read_text().replace("spin-magnitude-prior = volumetric", 'spin-magnitude-prior = "volumetric"'))
+    requested = {"uniform_aligned":"volumetric", "zprior_aligned":"zprior_aligned", "uniform_mag_prec":"uniform_mag_prec"}[prior]
+    ini.write_text(ini.read_text().replace("spin-magnitude-prior = volumetric", 'spin-magnitude-prior = "'+requested+'"'))
+    if prior in ("uniform_aligned", "zprior_aligned"):
+        ini.write_text(ini.read_text().replace("assume-precessing = True", "assume-precessing = False"))
     _, contract, _ = resolve(ini, tmp_path)
     assert contract["spin_prior"] == prior
 
 
 def test_native_mass_support_and_missing_records(tmp_path):
     ini = configuration(tmp_path)
+    ini.write_text(ini.read_text().replace("assume-precessing = True", "assume-precessing = False"))
     (tmp_path/"args_cip_list.txt").write_text("1 X --parameter mtot --parameter q --mtot-range [40,80] --parameter s1z --parameter s2z")
     _, contract, _ = resolve(ini, tmp_path)
     assert contract["cuts"]["mtot"] == [40, 80]
@@ -176,6 +180,33 @@ def test_nonflat_cosmology_derivative():
     np.testing.assert_allclose(ctx.redshift(ctx.luminosity_distance(z)), z, atol=1e-8)
 
 
+def test_native_distance_prior_matches_rift(tmp_path):
+    env = dict(os.environ, PYTHONPATH=str(CODE)+os.pathsep+os.environ.get("PYTHONPATH", ""))
+    script = """
+import numpy as np
+import importlib.util
+from pathlib import Path
+import RIFT
+from RIFT.compression import CosmologyContext
+spec = importlib.util.spec_from_file_location('distance_prior_reference', Path(RIFT.__file__).parent/'likelihood/jax_ile/distance_prior.py')
+reference_module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(reference_module)
+cosmo_distance_prior = reference_module.cosmo_distance_prior
+from RIFT.likelihood.priors_utils import dist_prior_pseudo_cosmo
+context = CosmologyContext('Planck15', 10000)
+distance = np.geomspace(1., 9000., 100)
+for kind in ('cosmo', 'cosmo_sourceframe'):
+    actual = context.distance_logprior(distance, kind)
+    reference = cosmo_distance_prior(kind).log_density_unnormalized(distance)
+    np.testing.assert_allclose(actual-actual[0], reference-reference[0], atol=2e-5)
+actual = context.distance_logprior(distance, 'pseudo_cosmo')
+reference = np.log(dist_prior_pseudo_cosmo(distance))
+np.testing.assert_allclose(actual-actual[0], reference-reference[0], atol=1e-12)
+"""
+    proc = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, env=env, timeout=120)
+    assert proc.returncode == 0, proc.stdout+proc.stderr
+
+
 def test_fake_ile_existing_run_cli(tmp_path):
     ini = configuration(tmp_path)
     fake = CODE/"demo/auto_fit/fake_ile.py"
@@ -186,6 +217,22 @@ def test_fake_ile_existing_run_cli(tmp_path):
     for target in ("aligned_distance", "precessing_source_redshift"):
         loaded = CompressedFit.load(tmp_path/"auto_fit"/target/"model.json")
         assert loaded.dimension == (5 if target == "aligned_distance" else 9)
+    probes, means, covariance = known_likelihood(4000, 9, seed=37372)
+    points = probes.copy()
+    points[:, 1] = (1-probes[:, 1]**2)/4
+    recovered = loaded.log_likelihood(points, mass_frame="detector", radial_coordinate="luminosity_distance")
+    residual = recovered-truth_logpdf(probes, means, covariance)
+    residual -= np.median(residual)
+    rms = float(np.sqrt(np.mean(residual**2)))
+    assert rms < .3
+    (tmp_path/"known_answer_cli.json").write_text(json.dumps(dict(log_likelihood_shape_rms=rms,
+        maximum_ks={k:v["maximum_ks"] for k,v in result["reports"].items()})))
+    env = dict(os.environ, PYTHONPATH=str(CODE)+os.pathsep+os.environ.get("PYTHONPATH", ""))
+    proc = subprocess.run([sys.executable, str(CODE/"bin/util_RIFT_compress_posterior.py"),
+        "--config", str(ini), "--rundir", str(tmp_path), "--output", "standalone"],
+        capture_output=True, text=True, env=env, timeout=120)
+    assert proc.returncode == 0, proc.stdout+proc.stderr
+    assert json.loads((tmp_path/"standalone/manifest.json").read_text())["status"] == "complete"
     with pytest.raises(FileExistsError):
         run(ini, tmp_path)
     # An already exported redshift from a different cosmology must not be trusted.
@@ -206,6 +253,55 @@ def test_group_information_cannot_be_manufactured(tmp_path):
         fit_posterior(x, np.ones(len(x)), np.zeros(len(x)), contract, "aligned_distance")
 
 
+def test_last_cip_binding_rejects_stale_or_incomplete_pairs(tmp_path):
+    from compression.cli import read_posterior, bind_final_cip
+    fake = CODE/"demo/auto_fit/fake_ile.py"
+    subprocess.run([sys.executable, str(fake), "--output", str(tmp_path/"paired.dat"), "--rows", "3000"], check=True)
+    aligned, full, weights, _, _ = read_posterior(tmp_path/"paired.dat")
+    final = tmp_path/"posterior_samples-1.dat"
+    adjusted, groups, binding = bind_final_cip(aligned, full, weights, final)
+    assert np.isclose(adjusted.sum(), 1)
+    assert binding["rows"] == 3000
+    stale = full.copy()
+    stale[:, 0] += 10
+    with pytest.raises(ValueError, match="final CIP"):
+        bind_final_cip(aligned, stale, weights, final)
+    with pytest.raises(ValueError, match="lack paired"):
+        bind_final_cip(aligned[:10], full[:10], weights[:10], final)
+
+
+@pytest.mark.parametrize("extra", ["--no-downselect", "--trust-sample-parameter-box"])
+def test_unresolved_native_support_refused(tmp_path, extra):
+    ini = configuration(tmp_path)
+    with (tmp_path/"args_cip_list.txt").open("a") as stream:
+        stream.write(" "+extra)
+    with pytest.raises(ValueError, match="support"):
+        resolve(ini, tmp_path)
+
+
+def test_inactive_ranges_and_partial_spins(tmp_path):
+    ini = configuration(tmp_path)
+    ini.write_text(ini.read_text().replace("assume-precessing = True", "assume-precessing = False"))
+    cip = tmp_path/"args_cip_list.txt"
+    cip.write_text("1 X --parameter m1 --parameter m2 --mc-range [10, 60] --parameter s1z --parameter s2z")
+    contract = resolve(ini, tmp_path)[1]
+    assert contract["bounds"]["mc"][1] > 800
+    assert contract["bounds"]["eta"][0] < .01
+    cip.write_text("1 X --parameter mtot --parameter q --mtot-range [40, 800] --parameter s1z --parameter s2z")
+    contract = resolve(ini, tmp_path)[1]
+    assert contract["bounds"]["mc"][1] > 300
+    cip.write_text("1 X --parameter mc --parameter eta --parameter s1x --parameter s1y --parameter s1z --parameter s2z")
+    with pytest.raises(ValueError, match="incomplete"):
+        resolve(ini, tmp_path)
+
+
+def test_alternate_sampling_flag_alone_does_not_change_prior(tmp_path):
+    ini = configuration(tmp_path)
+    with (tmp_path/"args_cip_list.txt").open("a") as stream:
+        stream.write(" --pseudo-uniform-magnitude-prior-alternate-sampling")
+    assert resolve(ini, tmp_path)[1]["spin_prior"] == "volumetric"
+
+
 def test_real_pseudo_pipe_terminal_job(tmp_path):
     pytest.importorskip("lal")
     from test_rf_transverse_pipeline_build import _build, _opt_in_ini
@@ -217,6 +313,11 @@ def test_real_pseudo_pipe_terminal_job(tmp_path):
     assert "universe = local" in submit.lower()
     assert "auto_fit.sh" in submit
     assert (rundir/"auto_fit.production.ini").read_text() == ini.read_text()
+    wrapper = (rundir/"auto_fit.sh").read_text()
+    assert "--intrinsic-posterior overlap-grid-6.xml.gz" in wrapper
+    from compression.cli import read_posterior
+    intrinsic, full, _, _, _ = read_posterior(rundir/"target_params.xml.gz", intrinsic_only=True)
+    assert len(intrinsic) > 0 and full is not None
     dag = (rundir/"marginalize_intrinsic_parameters_BasicIterationWorkflow.dag").read_text()
     assert "AUTO_FIT.sub" in dag
     lines = dag.splitlines()

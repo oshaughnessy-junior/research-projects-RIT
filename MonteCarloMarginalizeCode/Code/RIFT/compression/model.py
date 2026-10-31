@@ -152,7 +152,12 @@ class CompressedFit:
         values = dict(m1=m1, m2=m2, mtot=total, mc=x[:, 0], eta=eta, q=q, s1z=sz[:, 0], s2z=sz[:, 1])
         if self.dimension == 9:
             values.update(chi1=radii[:, 0], chi2=radii[:, 1])
+        elif not self.contract["precessing"]:
+            values.update(chi1=abs(sz[:, 0]), chi2=abs(sz[:, 1]))
         for key, limits in self.contract.get("cuts", {}).items():
+            if self.dimension == 5 and self.contract["precessing"] and key in ("chi1", "chi2"):
+                good &= abs(sz[:, int(key[-1])-1]) <= limits[1]
+                continue
             if key not in values:
                 raise ValueError("Cannot marginalize a coupled spin-magnitude cut in an aligned product")
             good &= (values[key] >= limits[0]) & (values[key] <= limits[1])
@@ -183,12 +188,17 @@ class CompressedFit:
                 raise ValueError("Full-spin target requires a precessing native spin prior")
         else:
             sz = x[:, 2:4]
+            radial = np.array([self.contract.get("cuts", {}).get("chi"+str(i+1), [0., cap]) for i, cap in enumerate(caps)])
+            if self.contract["precessing"]:
+                radial[:, 1] = np.minimum(radial[:, 1], caps)
+                if np.any(radial[:, 0] < 0) or np.any(radial[:, 0] >= radial[:, 1]):
+                    raise ValueError("Invalid native spin-shell support")
             if prior == "volumetric":
-                density = np.asarray(caps)**2-sz**2
+                density = radial[:, 1]**2-np.maximum(sz**2, radial[:, 0]**2)
             elif prior in ("uniform_mag_prec", "zprior_aligned"):
                 if np.any(sz == 0):
                     raise ValueError("Exact projected-spin prior cusp is uncertified")
-                density = np.log(np.asarray(caps)/abs(sz))
+                density = np.log(radial[:, 1]/np.maximum(abs(sz), radial[:, 0])) if self.contract["precessing"] else np.log(np.asarray(caps)/abs(sz))
             elif prior == "uniform_aligned":
                 density = np.ones_like(sz)
             else:

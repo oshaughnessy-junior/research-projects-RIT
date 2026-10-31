@@ -2725,7 +2725,6 @@ if opts.calibration_reweighting:
         calibration_node.add_parent(last_node)
         calibration_node.set_retry(opts.general_retries)
         dag.add_node(calibration_node)
-        last_node=calibration_node
     else:
         # Make job to reweight everything, after producing samples
         reweight_merge_node =    pipeline.CondorDAGNode(reweight_merge_job)
@@ -2746,7 +2745,6 @@ if opts.calibration_reweighting:
             
         # add the merge node.  Thouls be the last node
         dag.add_node(reweight_merge_node)
-        last_node=reweight_merge_node
     
 if opts.comov_distance_reweighting:
     convert_ascii_node = pipeline.CondorDAGNode(convert_ascii_job)
@@ -2762,9 +2760,11 @@ if opts.comov_distance_reweighting:
     dag.add_node(distance_node)
 if auto_fit_settings is not None:
     from RIFT.compression.workflow import attach as attach_auto_fit
-    final_posterior = "reweighted_posterior_samples.dat" if opts.calibration_reweighting else "extrinsic_posterior_samples.dat"
+    # Compression targets the final CIP posterior, before downstream reweighting.
+    final_posterior = "extrinsic_posterior_samples.dat"
     last_node = attach_auto_fit(dag, pipeline, opts.auto_fit_config,
-        opts.working_directory, last_node, final_posterior, runtime_prefix=extra_text)
+        opts.working_directory, last_node, final_posterior,
+        "overlap-grid-{}.{}".format(final_fit_grid_iteration, grid_suffix), runtime_prefix=extra_text)
 
 # Create final node for overall plots.  (Note: default setup is designed to enable plots of the last two iterations *at each step* but this seems like overkill)
 if plot_args:

@@ -25,7 +25,8 @@ class CosmologyContext:
         self.serialized = cosmology.to_format("yaml")
         zmax = float(ac.z_at_value(cosmology.luminosity_distance,
                                    distance_max * (1 + 1e-8) * u.Mpc))
-        self.z = np.expm1(np.linspace(0., np.log1p(zmax), nodes))
+        # Resolve the dVc/dz ~ z^2 limit as well as cosmological distances.
+        self.z = np.r_[0., np.geomspace(min(1e-9, zmax/1e6), zmax, nodes-1)]
         self.dl = cosmology.luminosity_distance(self.z).to_value(u.Mpc)
         if not np.all(np.diff(self.dl) > 0):
             raise ValueError("Distance map is not monotone on the requested domain")
@@ -34,6 +35,11 @@ class CosmologyContext:
         self._volume = PchipInterpolator(self.z,
             cosmology.differential_comoving_volume(self.z).to_value(u.Mpc**3/u.sr),
             extrapolate=False)
+        probes = (self.z[:-1]+self.z[1:])/2
+        probes = probes[np.linspace(0, len(probes)-1, min(129, len(probes)), dtype=int)]
+        exact = cosmology.luminosity_distance(probes).to_value(u.Mpc)
+        if np.max(abs(self._forward(probes)-exact)/np.maximum(exact, 1e-12)) > 1e-5:
+            raise ValueError("Cosmology interpolation is unresolved; increase nodes")
 
     @classmethod
     def from_yaml(cls, serialized, distance_max):

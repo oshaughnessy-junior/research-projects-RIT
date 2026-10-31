@@ -6,6 +6,7 @@ volumetric-spin/Euclidean-distance retained prior in the Mc,delta,spin,dL chart.
 Thus weighted rows represent L*pi, without using the compression implementation.
 """
 import argparse
+from pathlib import Path
 import numpy as np
 
 
@@ -31,9 +32,13 @@ def main():
     m1, m2 = total*(1+delta)/2, total*(1-delta)/2
     # Uniform Cartesian density inside the spin balls; no retained spin factor.
     weight = mc*eta**(-1.2)/2*distance**2
-    weight /= weight.max()
-    data = np.column_stack([m1, m2, mc, eta, x[:, 2:8], distance, weight, np.arange(args.rows)])
+    # Fairdraw native posterior, retaining original proposal ancestry.
+    index = rng.choice(args.rows, args.rows, p=weight/weight.sum())
+    data = np.column_stack([m1, m2, mc, eta, x[:, 2:8], distance, np.ones(args.rows), np.arange(args.rows)])[index]
     np.savetxt(args.output, data, header="m1 m2 mc eta s1x s1y s1z s2x s2y s2z dist posterior_weight intrinsic_group", comments="")
+    # The final CIP intrinsic marginal is authoritative; distance here is ignored.
+    np.savetxt(Path(args.output).parent/"posterior_samples-1.dat", data,
+               header="m1 m2 mc eta s1x s1y s1z s2x s2y s2z dist posterior_weight intrinsic_group", comments="")
 
 
 if __name__ == "__main__":
