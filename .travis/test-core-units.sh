@@ -63,6 +63,7 @@ export MPLBACKEND="${MPLBACKEND:-Agg}"
 C="MonteCarloMarginalizeCode/Code"
 
 FILES=(
+  "$C/test/test_posterior_compression.py"
   # Experimental TD operators; only the public PCG backend test is optional.
   "$C/test/test_td_calmarg_guard.py"
   "$C/test/test_td_factory.py"
@@ -530,7 +531,7 @@ done
 # #489: poisoned real IMRPv2 allocations (6) and EFPE buffer checks (6) -> 1218.
 # test_dslice_warm.py: collapsed-seed fallback and never-trusted tests add 2 -> 1220.
 # test_dslice_refine.py adds 10 tests and no skips -> 1230.
-EXPECTED_TESTS=1230
+EXPECTED_TESTS=1271
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -567,7 +568,7 @@ EXPECTED_TESTS=1230
 # #489: six IMRPv2 and six EFPE buffer cases, all required -> 1192.
 # test_dslice_warm.py: collapsed-seed fallback and never-trusted tests add 2 -> 1194.
 # test_dslice_refine.py adds 10 passes -> 1204.
-EXPECTED_PASSED=1204
+EXPECTED_PASSED=1245
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 # The six solver="gs" tests in test_td_inner_product.py need tdanalysis >= 1.1, which this
 # job does not install, so they skip here; ci.yml's time-domain likelihood step runs them
@@ -627,6 +628,7 @@ for f in "${FILES[@]}"; do
   printf '  %-72s %3d\n' "$f" "$n"
   collected_total=$(( collected_total + n ))
   file_floor=1
+  if [ "$f" = "$C/test/test_posterior_compression.py" ]; then file_floor=41; fi
   # Transfer matrix, container guards, and newline requirements must remain covered.
   if [ "$f" = "$C/test/test_auxiliary_grid_transfers.py" ]; then file_floor=18; fi
   if [ "$f" = "$C/test/integrators/test_gmm_sample_matches_score.py" ]; then file_floor=17; fi
